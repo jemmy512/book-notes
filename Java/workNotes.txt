@@ -1,0 +1,162 @@
+1. WebService：
+2. 文件操作
+3. 分页插件
+4. 权限检查
+5. 会话时长控制
+6. 
+******************************* Java Utility ************************************
+1. Canlendar and Day
+	Canlendar tNow = Canlender.getInstance();
+	int Year = tNow.get(Canlendar.YEAE);
+	int Month = tNow.get(Canlendar.MONTH) + 1;
+	int Day = tNow.get(Canlendar.DAY_OF_MONTH);
+	set(int field, int value), add(int field, int value), roll(int field, int value)
+	
+	Day tNow = new Day();
+	SimpleDataFormate sdf = new SimpleDataFormate("yyyy-MM-dd HH:mm:ss");
+	tnow = sdf.formatt(tNow);
+2. Timer
+	
+******************************** 分页插件 ***************************************
+public class PageBean<T> {
+	private int pageNo = 1; 	//当前页
+	private int pageSize = 10; //每页显示的数据条数
+	private int totalRecord; 	//数据总条数
+	private int totalPage; 		//总页数
+	private List<T> pageList; //要显示的数据集
+}
+
+******************************** 文档操作 ***************************************
+	File				contentType			 			Type 
+	---------------------------------------------------------
+	word		application/wsword, charset=UTF-8		.doc 
+	xls			application/xls, charset=UTF-8			.xls
+	pdf			application/pdf, charset=UTF-8			.pdf
+	response.setHeader("Content-Disposition", "attachment;filename=mabTable");
+数据导出--xls：
+	WritableWorkBook wb = Workbook.createWorkbook(os);
+	// 创建一个第n页名字为SheetName的工作表
+	WritebleSheet sheet = wk.createSheet(String sheetName, int n);
+	sheet.setColumnView(int c, int width); // 设置列宽
+	WritebleCellFormat cellFormat = new WritableCellFormat();
+	cellFormat.setBackground(Colour.GREEN);
+	
+	Lable lb = new Lable(int c, int r, String cont);// 列，行，内容；创建一个label
+	sheet.addCell(lb); // 将lable加入工作表中
+	
+	wb.write();
+	wb.close();
+数据导出--doc：
+	Document document = new Document(PageSize.A4);
+	RtfWrite2.getInstance(document, os);// 建立一个书写器与document关联
+	document.open();
+	
+	BaseFont bfChinese = BaseFont.createFont(...); // set font style
+	Font titleFont = new Font(bfChinese, 12, Font.BOLD); // set title font
+	Paragraph heater = new Paragraph("标题");
+	heater.setAlignment(Element.ALIGN_CENTER); // 标题对其方式
+	Table table = null;
+	table = new Tale(int n); // n 列的table
+	table.setAlingment(Element.ALING_MIDDLE);
+	table.setBorderWidth(int);
+	table.setBorderColor(new Color(0, 0, 0));
+	table.setBorder(int);
+	table.setAutoFillEmptyCells(bool);
+	table.setPadding(0);
+	Cell cell = new Cell(String cont);
+	table.addCell(cell);
+	document.add(table);
+	table.endHeaders();
+	
+数据导出--pdf：	
+	Document document = new Document();
+	Font textFont = new Font(bfChinese, 10, Font.NORMAL);
+	document.setPageSize(PageSize.A4);
+	PdfWriter.getInstancer(document, os);
+	document.open();
+	
+	PdfTable table = new PdfTable(int);
+	table.setTotalWidth(int);
+	table.setLockedWidth(int);
+	table.setHorizontalAlignment(Element.ALIGN_CENTER);
+	table.getDefaultCell.setBoder(int);
+	
+	PdfCell cell = new PdfCell();
+	cell.setVerticalAlignment(Element.ALIGN_MIDDLE);
+	cell.setColspan(colspan);
+	cell.setPhrase(new Phrase(string value, font);
+	table.addCell(cell);
+	
+	document.add(table);
+	document.close();
+	
+****************************** File Control *************************************
+Read System Config File	
+	BufferReader br 
+	try {
+		br = new BufferReader(new InputStreamReader(new FilelInputStream(String fileName, "GB2313")));
+		// br = new BufferReader(new FileReader(String fileName));
+		String str = br.readLine();
+		while (str != null) {
+			jump = 0;
+			if (str.matches(regexBlock)) {
+				Pattern pattern = Pattern.compile(rgexBlocks);
+				Macher matcher = pattern.matcher(str);
+				while (matcher.find()) {
+					block = matcher.group(1);
+				}
+				HashMap<String, String> section = new HashMap<String, String>();
+				str.readLine();
+				while (str != null) {
+					if (str.matches(regexBlock)) {
+						jump =1;
+						break;
+					}
+					if (!"".equals(str.trim() && !str.trim().contain('#')) {
+						String[] line = str.split("=", 2);
+						key  = line[0].trim();
+						value = line.length == 1 ? "" : line[1].trim();
+						section.put(key, value);
+					}
+					str.readLine();
+				}
+			}
+			if (jump == 1) }{
+				continue;
+			}
+			str = br.readLine();
+		}
+	} catch(FileNotFound f){
+	
+	} catch(IoException) {
+	
+	} finally{
+		try{
+			br.close();
+		} catch(IoException e) {
+		
+		}
+	}
+Write to System Config File	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
