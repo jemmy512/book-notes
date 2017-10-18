@@ -1,0 +1,9 @@
+					Computer System A Programmer's Perspective
+1. A Tour of Coumpuer System
+1.1 Compilation System
+	Preprocessiong phase: #include | .i
+	Compilation phase: translate .i file into assembly-language program | .s
+	Assembly phase: translate .s file into machine-language instruction | .o
+	Linking phase: merge .o file | .exe
+	
+	P 10
