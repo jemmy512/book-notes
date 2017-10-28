@@ -1,0 +1,173 @@
+man 
+--help
+
+
+Network Config:
+	ifconfig
+	sudo ifconfig eth0 192.168.1.212 netmask 255.255.255.0
+
+FTP service：
+	check service: lsof -i :21
+	Install service: apt-get install vsftpd
+SSH service：
+	check service：lsof -i :22  
+	Install service: apt-get install openssh-server
+
+**********************************************  GDB  ***********************************************	
+**********************************************  Make File  *****************************************
+
+1. synttarget: prerequisites...
+	command # command line must must start with tab
+	...
+	
+2. file name rules: Makefile / makefile / GNUmakefile
+
+3. Five parts of makefile: 
+	1. explicit rules 2. implicit rules 3. comments 4. variable defination
+	5. file instruction:
+		3.1 include other makefile
+		3.2 specify valid parts of makefile according to cases
+		3.3 define a mutil-line command
+4. wildcards: *, ? [...]
+	object = *.o # value of variable object is '*.o' not all .o suffix files
+	objects := $(wildcard *.o) # value of variable object is all .o suffix files
+
+5. File Search:
+	1. makefile special variable:
+		VPATH = <path1> : <path2> : <path3> ...
+	2.makefile vpath keyword
+		vapth <pattern> <directories> # vpath %.h ../header
+		vpath <path> 	# clear search directories for files that match pattern <pattern>
+		vpath			# clear all file search directories that have been set up
+6. Mutil Target:
+	bigoutput littleoutput: text.gcc
+		generate text.g  -$(func args,,$@)>$@ # $:function, $@: sets of target
+7. Static Mode:
+	<target...> : <target-pattern> : <prereq-pattern>
+		<command>
+  eg:
+	objects = foo.o bar.o
+	all: $(objects)
+	$(objects): %.o: %.c
+           $(CC) -c $(CFLAGS) $< -o $@ # $<: sets of target dependences, $@: sets of targets
+
+	
+**********************************************  GDB  ***********************************************	
+Gdb:
+	file <program>
+	kill <program>
+	make source file to be debug:
+		gcc -g -o ObjFileName sourceFileName
+	open gdb:
+		1. gdb <program>
+		2. gdb <attach> <pid> 
+		3. gdb <program> core
+	run program: r
+	run program with args: 
+		set args <arg1><arg2>...
+		show args
+		show path
+	exit gdb: quit/q
+	Show content of file: list/l
+		set listsize <num>
+		show listsize
+		list <linenum>
+		list <function>
+		list <filename:linenum>
+		list <filename:funciton>
+		list <+offset>
+		list <-offset>
+		list <firstLine>, <lastLine>
+		list , <last>
+		list + <num>
+		l 10
+		l main
+		l hello.c:20
+		l hello.c:main
+	show content in GUI: focus, layout
+	BreakPoint: break/b 
+		b <linenum>
+		b <function>
+		b <funcion(type...)>
+		b <filenname:linenum>
+		b *<address>
+		b if <conditon>
+		b <linenum> thread <threadno> if...
+		ignore <bk no> <count>
+	watch point:
+		watch <expr> # a virable
+		rwatch <expr>
+		awatch <expr>
+	catch point:
+		catch <event> #event: throw, catch, exec, fork, vfork, load, unload
+		tcatch <event> # one time catch point
+		
+	go: run/r
+	Step into: step/s  <count>
+	Step over: next/n  <count>
+	run to next bk: continue/c <ignor-count>
+	finish for loop: util/u <linenum>
+	finish current function: finish/f
+	set step-mode <on/off>
+	
+	step machine code: 
+		setpi/si
+		nexti
+		display/i $pc
+	function call stack: bt <n> #backtrack
+	switch current stack:
+		frame <n>
+		up <n>
+		down <n>
+		info frame
+		info args
+		info locals
+		info catch #
+		info program #check the satus of current program and pid, stop reason
+		info threads
+		info watchpoints
+		info signals
+		info handle
+	Methods of stopping program:
+		BreakPoint, WatchPoint, CatchPoint, Signals, Thread Stops
+	Signals:
+		handle <signal> <keywords...>
+		#keywords: nostop, stop, print, noprint, pass noignore, nopass ignore
+	memory: examine/x (x/n,f,u)
+	disable/enable breakpoint: 
+		disable/enables breakpoint bkNum
+		delete <bk no><range>
+	view breakpoint info: info breakpoint
+	clean breakpoint: clear
+	condition bk:
+		condition <bk no> <expr>
+		condition <bk no> # clear bk which num is no
+	command: # when bk we can do other things
+		command <bkno>
+		... commnad-list...
+		end
+	view registers: info register (i r)
+	view vriable:
+		info local variableName
+		info local file::variableName
+		info local function::variable
+		info registers variableName
+		whatis <var> # show var type and value
+		ptype <var> # show var type
+	view: print/f
+		x d u o t a c f 
+	view array:
+		print *<array>@<len>
+		int a[10]-> p *a@10
+	run shell in gdb: shell <command>
+Search:
+	forward-search <regexp>
+	search <regexp>
+	reverse-search <regexp>
+source path:
+		directory <dirname...> # :(unix), ;(window)
+		directory # clear path info
+		show directories
+define own enviroment variable int GDB:
+	set $<varname> = <value> # enviromet var have no type
+	show convenience # view all enviroment variable
