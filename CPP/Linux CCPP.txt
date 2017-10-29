@@ -13,7 +13,6 @@ SSH service：
 	check service：lsof -i :22  
 	Install service: apt-get install openssh-server
 
-**********************************************  GDB  ***********************************************	
 **********************************************  Make File  *****************************************
 
 1. synttarget: prerequisites...
@@ -50,8 +49,18 @@ SSH service：
 	all: $(objects)
 	$(objects): %.o: %.c
            $(CC) -c $(CFLAGS) $< -o $@ # $<: sets of target dependences, $@: sets of targets
+8. Automatically generate dependencies
+	%.d: %.c
+		@set -e; rm -f $@; \
+		$(CC) -M $(CPPFLAGS) $< > $@.
+		; \
+				sed 's,$∗\.o[ :]*,\1.o $@ : ,g' < $@.
+		> $@; \
+				rm -f $@.
 
-	
+				
+				
+				
 **********************************************  GDB  ***********************************************	
 Gdb:
 	file <program>
@@ -90,14 +99,15 @@ Gdb:
 		b <function>
 		b <funcion(type...)>
 		b <filenname:linenum>
-		b *<address>
+		b *<address> # memory breakpoint
 		b if <conditon>
-		b <linenum> thread <threadno> if...
+		b <linenum> thread <threadno> # if there is no threadno specified, bk will apply to all threads
+		b <linenum> thread <threadno> if... # when one thread stop, all threads will be stopped by gdb
 		ignore <bk no> <count>
 	watch point:
-		watch <expr> # a virable
-		rwatch <expr>
-		awatch <expr>
+		watch <expr> 
+		rwatch <expr> # stop program when expr is readed
+		awatch <expr> # stop program when expr is read or writed
 	catch point:
 		catch <event> #event: throw, catch, exec, fork, vfork, load, unload
 		tcatch <event> # one time catch point
@@ -155,8 +165,24 @@ Gdb:
 		whatis <var> # show var type and value
 		ptype <var> # show var type
 	view: print/f
-		x d u o t a c f 
-	view array:
+		x d u o t a c f
+		
+		set print pretty  = on/off
+		$1 = {a = 100, b = 200, c = 300}
+		
+		print var = value # change the local variable's value
+	display:
+		display/<fmt> <varname>
+		display/i $pc
+		info display
+		disalbe enable 
+	jump:
+		jump <linenum>
+		jump <address>
+		set $pc = address
+	call:
+		call <funname>
+ 	view array:
 		print *<array>@<len>
 		int a[10]-> p *a@10
 	run shell in gdb: shell <command>
