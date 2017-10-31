@@ -1,11 +1,77 @@
 
 
+ls:
+	ls [-aAdfFhilnrRSt]
+	ls [--color={never,auto,always}]
+	ls [--full-time]
+cp:
+	cp [-adfilprsu] sourc） destination
+	cp [options] source1 source2 source3 .... directory # last file must be a directory
+mv:	
+	mv [-fiu] source destination
+	mv [options] source1 source2 source3 .... directory
+rm: rm [-fir]
+basename  dirname 
+cat [-AbEnTv]
+tail -n num filename
+more:
+	<space>                 Display next k lines of text [current screen size]
+	z                       Display next k lines of text [current screen size]*
+	<return>                Display next k lines of text [1]*
+	d or ctrl-D             Scroll k lines [current scroll size, initially 11]*
+	q or Q or <interrupt>   Exit from more
+	s                       Skip forward k lines of text [1]
+	f                       Skip forward k screenfuls of text [1]
+	b or ctrl-B             Skip backwards k screenfuls of text [1]
+	'                       Go to place where previous search started
+	=                       Display current line number
+	/<regular expression>   Search for kth occurrence of regular expression [1]
+	n                       Search for kth occurrence of last r.e [1]
+	!<cmd> or :!<cmd>       Execute <cmd> in a subshell
+	v                       Start up /usr/bin/vi at current line
+	ctrl-L                  Redraw screen
+	:n                      Go to kth next file [1]
+	:p                      Go to kth previous file [1]
+	:f                      Display current file name and line number
+	.                       Repeat previous command
+touch: # change time of file: modification time(mtime), access time(atime), status time(ctime)
+	touch [-acdmt] file
+
+which [-a] name # search instruction by file
+whereis [-bmsu] name # search file by name
+locate/updatedb [-iclSr] keyword
+
+
+
+硬链接：
+	文件有相同的 inode 及 data block；
+	只能对已存在的文件进行创建；
+	不能交叉文件系统进行硬链接的创建；
+	不能对目录进行创建，只可对文件创建；
+	删除一个硬链接文件并不影响其他有相同 inode 号的文件。
+软链接：
+	软链接有自己的文件属性及权限等；
+	可对不存在的文件或目录创建软链接；
+	软链接可交叉文件系统；
+	软链接可对文件或目录创建；
+	创建软链接时，链接计数 i_nlink 不会增加；
+	删除软链接并不影响被指向的文件，但若被指向的原文件被删除，则相关软连接被称为
+		死链接（即 dangling link，若被指向路径文件被重新创建，死链接可恢复为正常的软链接）。
+
+	
+crontab:
+	/etc/cron.deny  # user in this file don't allow use crontab
+	/etc/cron.allow
+	/var/spool/cron/  # all user's crontab file reserved here and named with user name
+	
+	/sbin/service cron [start, stop, restart, reload, status]
+	
+	
 File System:
 	chgrp [-R] dirname/filename...
 	chown [-R] owner:group dir/file
 	chmod [-R] xyz dir/file
 	chmod | u g o a | + - = | r w x | dir or file |
-	cp sourceFile targetFile
 
 	mkdir[-mp] # m: 
 	rmdir [-P] # P, remove current directory and it's parent and empty directory
