@@ -144,6 +144,9 @@ Gdb:
 		handle <signal> <keywords...>
 		#keywords: nostop, stop, print, noprint, pass noignore, nopass ignore
 	memory: examine/x (x/n,f,u)
+		x [Address expression]
+		x /[Format] [Address expression]
+		x /[Length][Format] [Address expression]
 	disable/enable breakpoint: 
 		disable/enables breakpoint bkNum
 		delete <bk no><range>
@@ -197,3 +200,6 @@ source path:
 define own enviroment variable int GDB:
 	set $<varname> = <value> # enviromet var have no type
 	show convenience # view all enviroment variable
+	
+
+**********************************************  Network Programming  *******************************
