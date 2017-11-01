@@ -1,5 +1,5 @@
 
-
+*********************************  Linux File and Management  **************************
 ls:
 	ls [-aAdfFhilnrRSt]
 	ls [--color={never,auto,always}]
@@ -37,11 +37,127 @@ more:
 touch: # change time of file: modification time(mtime), access time(atime), status time(ctime)
 	touch [-acdmt] file
 
-which [-a] name # search instruction by file
-whereis [-bmsu] name # search file by name
+which [-a] name 
+	# search instruction by name
+	# which: search file according to $PATH variable
+whereis [-lbmsu] name 
+	# search file by name
+	# whereis: search file in specific pathes. /bin/sbin/  /usr/share/man
 locate/updatedb [-iclSr] keyword
+	# updatedb: search file according to /etc/updatedb.conf and update /var/lib/mlocation
+	# locate: search file according to /var/lib/mlocate
+	# find: search file within whole disk
+	
+*********************************  Linux File System  ***********************************
+Superblock:
+	the total amount of block and inode
+	the number of inode/block that are not uesed and used
+	size of block and inode
+	system mount time, the last write time, check time(fsck) and other system information
+	valid bit: 0(system has been mounted), 1(system is not mounted)
+inode table:
+inode:
+	read and wirte mode(read/write/excute)
+	file's owner and group(owner/group)
+	file capacity
+	ctime, atime, mtime
+	flag(SetUID)
+	pointer
+block bitmap:
+inode bitmap:
+	
+XFS File System:
+	data section: inode/data block/superblock
+	log section:  
+	realtime section:
 
+	df [-ahikHTm] name # list usage of file system
+	du [-ahskm] name # evaluate the disk usage of file system
+	xfs_info /dev/vda1
 
+Hard, Symbolic Link:
+	ln [-sf] source destination
+	
+Partition:
+	lsblk [-dfimpt] [device] # list all disk lists on system
+	blkid # list device UUID
+	parted device_name print # list disk partition table type and partition info
+	
+	Wizard to part the bisk:
+		1. use lsblk to find disk
+		2. use pared /dev/xxx print get the partition table type
+		3. use appropriate method (gdisk/fdisk) to part disk
+
+*********************************  VIM  *************************************************
+command mode:
+	Cursor:
+		ctrl + f # page down
+		ctrl + b # page up
+		0 and $ # to and curretn line head and real
+		H # to the most left top head of the current screen
+		M # to the middle line head of the current screen
+		L # to the bottom line head of the current screen
+		G # to the bottom of the file
+		nG # to the n line of the file
+		gg (1G) # to the first line of the file
+		n<Enter> # down n line
+	Search:
+		/word # down search
+		?word # up search
+		n # key, repeat previous search, down
+		N # key, repeat previous search, up
+		: n1, n2s/word1/word2/g # search word1 and replace it with word2 between n1 and n2
+		:1, $s/word1/word2/g # search word and replace between first line and last one
+		:1, $s/word1/word2/gc # replace need c(confirm)
+	delete, copy and past:
+		x,X # backwords and forward delete
+		nx # delete n characters backwords
+		dd # delete current line
+		d<n>G # delete line from curretn to <n> line
+		dG # delete line from current to last
+		d$, d0 # delete from cursor to last or first character of current line
+		
+		yy # copy current line
+		nyy # copy n line down from current line
+		y1G # copy from current line to first one
+		yG # copy from current line to the last one
+		y0 # copy from cursor to first character of this line
+		y$ # copy from cursor to last charactter of this line
+		
+		p,P # past the data to the previous/next line
+		J # combine the this lint with next line into one line
+		c # repeat delete mutil data eg: 10cj
+		u # undo previous operation
+		ctrl + r # redo the previous operation
+		. # repeat previous action
+insert mode:
+	ZZ # save if changes and quit
+	:w[fileName] # save file with name
+	:r[fileName] # read other file's date and append to cursor of this file
+	:!command # 
+	:n1,n2 w [file] # save data from n1 to n2 to file
+Additional operation:
+	visual Block:
+		v # character selection, will pass the cursor through the place to choose
+		V # line selection
+		ctrl + v # visual block selection, can select column
+		y # copy the visual block data
+		d # delete the vidua block data
+		p # append visual block data to the cursor
+	multi file Edtion:
+		:n # edit next file
+		:N # edit previous file
+		:file # show all files opened by vim
+	multi windows:
+		:sp [filename] #
+		ctr + W + #
+		ctr + w + q
+	Automatic comletion:
+	ctrl + x -> ctrl + n # completion based on content of this file
+	ctrl + x -> ctrl + f # completion based on the file name of the file within this directory
+	ctrl + x -> ctrl + o # completion based on the syntax of file suffix name 
+command line mode:
+*********************************  Linux File System  ***********************************
 
 硬链接：
 	文件有相同的 inode 及 data block；
