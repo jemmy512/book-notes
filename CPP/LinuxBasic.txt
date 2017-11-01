@@ -153,9 +153,9 @@ Additional operation:
 		ctr + W + #
 		ctr + w + q
 	Automatic comletion:
-	ctrl + x -> ctrl + n # completion based on content of this file
-	ctrl + x -> ctrl + f # completion based on the file name of the file within this directory
-	ctrl + x -> ctrl + o # completion based on the syntax of file suffix name 
+		ctrl + x -> ctrl + n # completion based on content of this file
+		ctrl + x -> ctrl + f # completion based on the file name of the file within this directory
+		ctrl + x -> ctrl + o # completion based on the syntax of file suffix name 
 command line mode:
 *********************************  Linux File System  ***********************************
 
