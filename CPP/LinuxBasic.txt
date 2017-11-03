@@ -164,7 +164,28 @@ Additional operation:
 command line mode:
 
 Enviroment Setting:
+	/etc/vimrc		~/.vimrc(no exsit by default)
+	:set all
+	:set # show the different setings with the default of system
+	:set ruler # status instraction in right bottom corner
+	:set backspace=(012)
+	:set bg=dark/light # show different color tones
+
 	
+*********************************  Bash  ************************************************
+history: ~/.bash_historys
+type [tpa] name # check weather the instruction is built in or not
+ctr + u/k # delete all input before/after cursor
+ctr +a/e # move cursor to line head/rear
+ctr + l # clean current screen
+set variable:
+	set name, unset name, export # make local variable to be global variable
+enviroment variable:
+	env #
+
+
+
+
 *********************************  Linux File System  ***********************************
 
 硬链接：
