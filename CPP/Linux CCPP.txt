@@ -48,20 +48,89 @@ SSH service：
 	objects = foo.o bar.o
 	all: $(objects)
 	$(objects): %.o: %.c
-           $(CC) -c $(CFLAGS) $< -o $@ # $<: sets of target dependences, $@: sets of targets
+           $(CC) -c $(CFLAGS) $< -o $@ # $<: first file of dependences, $^: all dependences, $@: sets of targets
+	# $?: all dependences that newer than target file, $*: represent '%' in the target pasttern and its predecessor
 8. Automatically generate dependencies
 	%.d: %.c
 		@set -e; rm -f $@; \
-		$(CC) -M $(CPPFLAGS) $< > $@.
-		; \
+		$(CC) -M $(CPPFLAGS) $< > $@.  //-MM include std head files, -M just include dependent head files
+	; \
 				sed 's,$∗\.o[ :]*,\1.o $@ : ,g' < $@.
 		> $@; \
 				rm -f $@.
 
-				
-				
-				
+9. ; # if two next instruction dependent on previous instruction, thems should write in one line, sperate by ;
+	exec:
+		cd /home/hchen; pwd	# result is: pwd = /home/hchen
+10 clean
+	.PHONE clean
+	clean:
+		rm -i -f -k # -i(-ignore-errors) -k(-keep-going) -f(-force)
+11. Nested Make
+	subsystem:
+           cd subdir && $(MAKE) # execute makefile in sudir directory may be with arguments $(MAKE)
+	(un)export<variable ...>  # pass variables in current makefile to child makefile 
+							  # SHELL and MAKEFLAGS varialbles always pass to child makefile
+12. define instruction pakage
+	define	pakageName
+		command...
+		command...
+	enddef
+13 Variable
+	13.1 define
+		x = $(y) # current variable can use next defined varaible
+		y = z    
+
+		x := foo # current variable can use only previous defined variables
+		FOO ?= bar # if FOO is not defined its value is bar, otherwise is previous defined value
+	13.2 value replacement
+		foo := a.o b.o c.o
+		bar := $(foo:.o=.c)	# a.c b.c c.c
+		
+		foo := a.o b.o c.o
+		bar := $(foo:%.o=%.c) # static mode
+
+		first_second = Hello
+		a = first
+		b = second
+		all = $($a_$b) # all = first_sencond
+	13.3 append value to value	
+		objects = main.o foo.o bar.o utils.o
+		objects += another.o
+	13.4 override
+		override <variable> = <value> # override variables defined  make instruction line
+		override <variable> := <value>
+		override <variable> = <value>
+	13.5 multi-line variable
+		define two-lines
+		echo foo
+		echo $(bar)
+		endef
+
+
+
+
+
 **********************************************  GDB  ***********************************************	
+__LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
+
+#define DEBUG
+
+#ifdef DEBUG
+ #define DBG_PRINT(fmt, args...) do {printf("[*]%s: <%s>: "fmt"\n"\
+    , __FILE__, __func__, ##args); } while (FALSE);
+	
+//DBG_PRINT(format,...) printf("FILE: "__FILE__", LINE: %d: "format"/n", __LINE__, ##__VA_ARGS__)
+#else
+ #define BEG_PRINT(...) do {} while (FALSE)
+#endif
+
+core dump:
+	1. suffix with pid
+		echo "1" > /proc/sys/kernel/core_uses_pid  # 0 without suffix, 1 with pid suffix
+	2. name form and path
+		echo "/corefile/core-%e-%p-%t" > proc/sys/kernel/core_pattern
+		%e(name) %p(pid) %u(uid) %g(gid) %s(signal) %t(time) %h(host name)
 Gdb:
 	file <program>
 	kill <program>
@@ -104,6 +173,15 @@ Gdb:
 		b <linenum> thread <threadno> # if there is no threadno specified, bk will apply to all threads
 		b <linenum> thread <threadno> if... # when one thread stop, all threads will be stopped by gdb
 		ignore <bk no> <count>
+	view breakpoint info: info breakpoint
+	clean breakpoint: clear
+	condition bk:
+		condition <bk no> <expr>
+		condition <bk no> # clear bk which num is no
+	command: # when bk we can do other things
+		command <bkno>
+		... commnad-list...
+		end
 	watch point:
 		watch <expr> 
 		rwatch <expr> # stop program when expr is readed
@@ -150,15 +228,7 @@ Gdb:
 	disable/enable breakpoint: 
 		disable/enables breakpoint bkNum
 		delete <bk no><range>
-	view breakpoint info: info breakpoint
-	clean breakpoint: clear
-	condition bk:
-		condition <bk no> <expr>
-		condition <bk no> # clear bk which num is no
-	command: # when bk we can do other things
-		command <bkno>
-		... commnad-list...
-		end
+	
 	view registers: info register (i r)
 	view vriable:
 		info local variableName
@@ -221,7 +291,7 @@ Procedure of socket:
 		
 		struct sockaddr_in {
 			sa_family_t sin_family;	// address family
-			in_port_t sim_port;		// port in network byte order
+			in_port_t sin_port;		// port in network byte order
 			struct in_addr sin_addr;// internet address
 		};
 		struct in_addr {
@@ -241,6 +311,8 @@ Procedure of socket:
 		in_addr_t inet_addr(const char *cp);
 		in_addr_t inet_network(const char *cp);
 		char *inet_ntoa(struct in_addr in);
+		int inet_pton(int af, const char *src, void *dst); // "0.0.0.0" -> 0.0.0.0
+		const char *inet_ntop(int af, const void *src, char *dst, socklen_t cnt); 
 		struct in_addr inet_makeaddr(int net, int host);
 		in_addr_t inet_lnaof(struct in_addr in);
 		in_addr_t inet_netof(struct in_addr in);
@@ -292,9 +364,53 @@ Components of Server:
 Two high-performance server architectures:
 	1. Reactor
 	2. Proactor
+	
+Port multiplexing:
+	1. select
+		#include <sys/select.h>
+		#include <sys/time.h>
+		int select(int maxfs1, fs_set *readset, fd_set *writeset, fd_set *exceptset, const struct timeval *timeout)
+		void FD_ZERO(fd_set *fdset);
+		void FD_SET(int fd, fd_set *fdset);
+		void FD_CLR(int fd, fd_set *fdset);
+		void FD_ISSET(int fd, fd_set *fdset);
+		void FD_ZERO(fd_set *fdset); 
+        struct timeval{
+			long tv_sec;   //seconds
+            long tv_usec;  //microseconds
+		};
+	2. Poll
+		# include <poll.h>
+		int poll( struct pollfd * fds, unsigned int nfds, int timeout);
 
-
-
+		struct pollfd {
+			int fd;         	
+			short events;       // waiting event  
+			short revents;      // happend event
+		} ; 
+		Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
+				POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
+	3. Epoll
+		#include <sys/epoll.h>
+		int epoll_create(int size);
+		int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+			op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
+			struct epoll_event {
+			  __uint32_t events;  /* Epoll events */
+			  epoll_data_t data;  /* User data variable */
+			};
+			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP
+		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
+		
+		#include <sys/socket.h>
+		int setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
+			level: SOL_SOCKET, IPPROTO_TCP
+			option_name: SO_REUSEADDR, SO_KEEPLIVE, SO_LINGER
+			
+		#include <unistd.h>
+		#include <fcntl.h>
+		int fcntl(int fd, int cmd, ... /* arg */ ); // manipulate file descriptor
+			cmd: F_DUPFD, F_SETFD, F_GETFL, 
 
 
 
