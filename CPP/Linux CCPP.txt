@@ -15,8 +15,9 @@ SSH service：
 
 **********************************************  Make File  *****************************************
 
-1. synttarget: prerequisites...
-	command # command line must must start with tab
+1. syntax
+	target: prerequisites...
+		command # command line must must start with tab
 	...
 	
 2. file name rules: Makefile / makefile / GNUmakefile

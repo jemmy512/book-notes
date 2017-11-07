@@ -6,4 +6,4 @@
 	Assembly phase: translate .s file into machine-language instruction | .o
 	Linking phase: merge .o file | .exe
 	
-	P 10
+	P 49
