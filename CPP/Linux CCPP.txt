@@ -461,7 +461,7 @@ Linux Signals are:
 sighandler_t signal(int signum, sighandler_t handler);
     // multi-process is unspecified
     // behavior is undefined if a process ignores SIGFPE, SIGILL, SIGSEGV
-int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+    
 sending a signal:
     raise(); kill(); killpg(); pthread_kill(); tgkill(); sigqueue();
 waiting for a signal to be caught:  
@@ -471,13 +471,27 @@ syschronously accepting a signal:
     signalfd();
 signal mask:
     pthread_sigmask(); int sigprocmask (int how, const sigset_t *restrict set, sigset_t *restrict oldset);
+    how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
 sigset_t:
     sigemptyset(sigset_t *set);   sigaddset(sigset_t *set, int signum);  
     sigfillset(sigset_t *set);    sigdelset(sigset_t *set, int signum);
     sigismember(const sigset_t *set, int signum);
 
     sigaltstack();
+sigaction:
+    int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+    
+    struct sigaction {
+      void (*sa_handler)(int);
+      void (*sa_sigaction)(int, siginfo_t *, void *);
+      sigset_t sa_mask;
+      int sa_flags;
+      void (*sa_restorer)(void);
+    };
+    
+    sa_mask: SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESTART, SA_RESETORE, SA_SIGINFO
 
+signaltstack():
 
 
 
