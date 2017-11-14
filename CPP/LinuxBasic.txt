@@ -5,7 +5,7 @@ ls:
 	ls [--color={never,auto,always}]
 	ls [--full-time]
 cp:
-	cp [-adfilprsu] sourc） destination
+	cp [-adfilprsu] sourc destination
 	cp [options] source1 source2 source3 .... directory # last file must be a directory
 mv:	
 	mv [-fiu] source destination
@@ -48,6 +48,12 @@ locate/updatedb [-iclSr] keyword
 	# locate: search file according to /var/lib/mlocate
 	# find: search file within whole disk
 	
+tar: # A(catenate), c(create), d(diff, delete), r(append), t(list), u(update) x(extract)
+	tar -cjv -f ***.tar.bz2 srcFile # -z(.tar.gz), -j(tar.bz2), -J(tar.xz)
+	tar -tjv -f ***.tar.bz srcFile
+	tar -xjv -f ***.tar.bz2 -C srcFile
+	tar -czvf combined.tar.gz t1.tar.gz t2.tar.gz
+
 *********************************  Linux File System  ***********************************
 Superblock:
 	the total amount of block and inode
