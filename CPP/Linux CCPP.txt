@@ -468,9 +468,12 @@ sighandler_t signal(int signum, sighandler_t handler);
     // behavior is undefined if a process ignores SIGFPE, SIGILL, SIGSEGV
     
 sending a signal:
-    raise(); kill(); killpg(); pthread_kill(); tgkill(); sigqueue();
+    raise(int sig); kill(getpid(), int sig); killpg(pid_t pgrp , int sig);
+	pthread_kill(); tgkill(); sigqueue();
+signal description:
+	sys_siglist[SIGPIPE]; strsignal(int sig); psignal(int sig, const char *msg);
 waiting for a signal to be caught:  
-    pause(); sigsuspend();
+    sigsuspend();  pause(); // -1
 syschronously accepting a signal:
     sigwaitinfo(); sigtimedwait(); sigwait();
     signalfd();
@@ -480,14 +483,14 @@ signal mask:
 sigset_t:
     sigemptyset(sigset_t *set);   sigaddset(sigset_t *set, int signum);  
     sigfillset(sigset_t *set);    sigdelset(sigset_t *set, int signum);
-    sigismember(const sigset_t *set, int signum);
+    sigismember(const sigset_t *set, int signum); // ok: 1
 
     sigaltstack();
 sigaction:
     int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
     
     struct sigaction {
-      void (*sa_handler)(int);
+      void (*sa_handler)(int); // SIG_IGN, SIG_DFL
       void (*sa_sigaction)(int, siginfo_t *, void *);
       sigset_t sa_mask;
       int sa_flags;
