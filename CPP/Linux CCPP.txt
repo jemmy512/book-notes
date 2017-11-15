@@ -506,6 +506,19 @@ int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1)
 
 
 
+**********************************************  Aio Programming  ***********************************
 
+struct aiocb {
+    int             aio_fildes;
+    volatile void   *aio_buf;
+    int             aio_nbytes;
+    off_t           aio_offset;
+    int             aio_reqprio;    // request priority
+    struct sigevent aio_sigevent;
+    int             aio_lio_opcode; // lio_listio() only [LIO_READ, LIO_WRITE, LIO_NOP]
+};
 
-
+operation:
+    // simultaneous aio_read or aio_write using same aiocb yield undefined result
+    aio_read();     aio_write();    aio_fsync();   aio_error(); aio_return();
+    aio_suspend();  aio_cancel();   lio_listio();
