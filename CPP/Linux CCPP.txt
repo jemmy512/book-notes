@@ -13,7 +13,7 @@ SSH service：
 	check service：lsof -i :22  
 	Install service: apt-get install openssh-server
 
-**********************************************  Make File  *****************************************
+**********************************************  Make File  ******************************************************
 
 1. syntax
 	target: prerequisites...
@@ -111,8 +111,7 @@ SSH service：
 
 
 
-
-**********************************************  GDB  ***********************************************	
+**********************************************  GDB  ************************************************************	
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 
 #define DEBUG
@@ -272,8 +271,7 @@ define own enviroment variable int GDB:
 	set $<varname> = <value> # enviromet var have no type
 	show convenience # view all enviroment variable
 	
-
-**********************************************  Network Programming  *******************************
+**********************************************  Network Programming  ********************************************
 Procedure of socket:
 	1. Create Soket (client and server)
 		int socket(int domain, int type, int protocol);
@@ -418,14 +416,17 @@ Raw-socket:
 			SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, 
 		IPPROTO_IP: IP_HDRINCL(bool), IP_ADD_MEMBERSHIP(struct ip_mreq), IP_DROP_MEMBERSHIP, IP_MULTICAST_IF(DWORD),
 			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
-
-**********************************************  Signal Programming  ********************************
+            
+**********************************************  Signal Programming  *********************************************
 Methods of Local Processes Communication:
 	1. Messaging (pipeline, FIFO, message queue)
 	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
 	3. Shared memory (anonymous and named)
 	4. Remote procedure Call (Solaris gate and sun RPC)
-
+    
+checking for the existence of a process:
+    wait(); semophore and exclusive file locks; IPC(pipes, FIFOs...); /proc/PID
+ 
 Signal dispositions: Term, Ign, Core, Stop, Cont
 
 Linux Signals are:
@@ -464,6 +465,10 @@ Linux Signals are:
 sighandler_t signal(int signum, sighandler_t handler);
     // multi-process is unspecified
     // behavior is undefined if a process ignores SIGFPE, SIGILL, SIGSEGV
+    Two common design:
+        1. set a global flag and exits;
+        2. perform some type of cleanup and then either teriminates the process or uses a nonlocal 
+            goto to unwind the stack and return control to a predetermined location in the main program;
     
 sending a signal:
     raise(int sig); kill(getpid(), int sig); killpg(pid_t pgrp , int sig);
@@ -501,10 +506,26 @@ signaltstack():
 
 int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1) 
 
+signal handler:
+    reentrant function:
+        A function is one, whose effect, when called by two or more threads, is guaranted to be
+        as if threads each executed the function one after the other in undefined order, 
+        even if the actual execution is interleaved.
+        
+        use global or static data structure is nonreentrant function.
+        
+    async-signal-safe function:
+        implementation guarantees to be safe when called form a signal handler, either it is
+        reentrant or is not interruptible by a signal handler.
+    tips for writing async-signal-safe functions:
+        1. ensure reentrant and call only async-signal-safe function inside;
+        2. block delivery of signal while executing code in main program that calls unsafe functions 
+            or work with global data structure also updata by signal handler
+        
 
 
 
-**********************************************  Aio Programming  ***********************************
+**********************************************  Aio Programming  ************************************************
 
 struct aiocb {
     int             aio_fildes;
@@ -520,3 +541,6 @@ operation:
     // simultaneous aio_read or aio_write using same aiocb yield undefined result
     aio_read();     aio_write();    aio_fsync();   aio_error(); aio_return();
     aio_suspend();  aio_cancel();   lio_listio();
+    
+**********************************************  Aio Programming  ************************************************
+**********************************************  Aio Programming  ************************************************

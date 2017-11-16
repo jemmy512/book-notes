@@ -140,10 +140,31 @@ Read System Config File
 Write to System Config File	
 	
 	
-	
-	
-	
-	
+
+****************************** network ******************************************
+	HttpClient  httpClient = new SSLClient();
+    HttpGet     httpGet = new HttpGet(url + "?" + param);
+    String result = null;
+    
+    httpGet.addHeader("SEC", "c42bcd45-70cd-4d48-847f-7058bf542e37");
+    httpGet.addHeader("Referer", "https://10.10.13.220/api_doc");
+    httpGet.addHeader("X-Requeseted_With", "XMLHttpRequest");
+    httpGet.addHeadr("Accept", "application/json");
+    httpGet.addHeader("Content-Type", "application/json");
+    httpGet.addHeader("User_Agent", "Mozilla/5.0 (Windows NT 6.1; AppleWebKit/537.36 (KHTML, like Gecko) Chrome/55.0.2883.87 Safari/537.36)");
+    
+    String userCredentials = USRE + ":" + PWD;
+    String basicAuth = "Basic" + new String(Base64.encodeBase64(userCredentials.getBytes()));
+    httpGet.addHeader("Authorization", basicAuth);
+    
+    HttpResponse reponse = httpClient.execute(httpGet);
+    if (response != null) {
+        HttpEntity  repsEntity = reponse.getEntity();
+        if (resEntity != null) {
+            result = EntityUtils.toString(resEntity, "utf-8");
+        }
+        httpGet.releaseConnection();
+    }
 	
 	
 	
