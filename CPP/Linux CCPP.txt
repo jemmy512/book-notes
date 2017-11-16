@@ -308,12 +308,9 @@ Procedure of socket:
 		#include <sys/socket.h>
 		#include <netinet/in.h>
 		#include <arpa/inet.h>
-<<<<<<< HEAD
+        
 		int inet_aton(const char *cp, struct in_addr *inp);
 		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-=======
-		int inet_aton(const char *cp, struct in_addr *inp); //
->>>>>>> 81a8620ba3f92ceda0e539de6558d276f9d53fe1
 		in_addr_t inet_addr(const char *cp);
 		in_addr_t inet_network(const char *cp);
 		char *inet_ntoa(struct in_addr in);
@@ -515,10 +512,16 @@ struct aiocb {
     off_t           aio_offset;
     int             aio_reqprio;    // request priority
     struct sigevent aio_sigevent;
-    int             aio_lio_opcode; // lio_listio() only [LIO_READ, LIO_WRITE, LIO_NOP]
+    int             aio_lio_opcode; // LIO_READ, LIO_WRITE, LIO_NOP
 };
 
 operation:
     // simultaneous aio_read or aio_write using same aiocb yield undefined result
+    // errno: EINPROGRESS, ENOSYS, EINTER, ECANCELED
     aio_read();     aio_write();    aio_fsync();   aio_error(); aio_return();
     aio_suspend();  aio_cancel();   lio_listio();
+    int aio_suspend(const struct aiocb *const aiocb_list[], // don't forget const
+                        int  nitems, const struct timespec *timeout); 
+    // aio_suspend && lio_listio --> 0:ok, else: -1                   
+    int lio_listio(int mode, struct aiocb *const aiocb_list[],
+                      int nitems, struct sigevent *sevp);
