@@ -274,12 +274,6 @@ define own enviroment variable int GDB:
 	
 
 **********************************************  Network Programming  *******************************
-Methods of Local Processes Communication:
-	1. Messaging (pipeline, FIFO, message queue)
-	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
-	3. Shared memory (anonymous and named)
-	4. Remote procedure Call (Solaris gate and sun RPC)
-	
 Procedure of socket:
 	1. Create Soket (client and server)
 		int socket(int domain, int type, int protocol);
@@ -308,12 +302,10 @@ Procedure of socket:
 		#include <sys/socket.h>
 		#include <netinet/in.h>
 		#include <arpa/inet.h>
-<<<<<<< HEAD
+		
 		int inet_aton(const char *cp, struct in_addr *inp);
 		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-=======
-		int inet_aton(const char *cp, struct in_addr *inp); //
->>>>>>> 81a8620ba3f92ceda0e539de6558d276f9d53fe1
+		
 		in_addr_t inet_addr(const char *cp);
 		in_addr_t inet_network(const char *cp);
 		char *inet_ntoa(struct in_addr in);
@@ -428,6 +420,12 @@ Raw-socket:
 			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
 
 **********************************************  Signal Programming  ********************************
+Methods of Local Processes Communication:
+	1. Messaging (pipeline, FIFO, message queue)
+	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
+	3. Shared memory (anonymous and named)
+	4. Remote procedure Call (Solaris gate and sun RPC)
+
 Signal dispositions: Term, Ign, Core, Stop, Cont
 
 Linux Signals are:
