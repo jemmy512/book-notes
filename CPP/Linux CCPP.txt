@@ -204,18 +204,18 @@ Gdb:
 		display/i $pc
 	function call stack: bt <n> #backtrack
 	switch current stack:
-		frame <n>
-		up <n>
-		down <n>
-		info frame
-		info args
-		info locals
-		info catch #
-		info program #check the satus of current program and pid, stop reason
-		info threads
-		info watchpoints
-		info signals
-		info handle
+        frame <n>
+        up <n>
+        down <n>
+        info frame
+        info args
+        info locals
+        info catch #
+        info program #check the satus of current program and pid, stop reason
+        info threads
+        info watchpoints
+        info signals
+        info handle
 	Methods of stopping program:
 		BreakPoint, WatchPoint, CatchPoint, Signals, Thread Stops
 	Signals:
@@ -430,37 +430,37 @@ checking for the existence of a process:
 Signal dispositions: Term, Ign, Core, Stop, Cont
 
 Linux Signals are:
-    Name	Number	Func	Description
-    SIGHUP	1				Hangup (POSIX)
-    SIGINT	2				Terminal interrupt (ANSI)
-    SIGQUIT	3				Terminal quit (POSIX)
-    SIGILL	4				Illegal instruction (ANSI)
-    SIGTRAP	5				Trace trap (POSIX)
-    SIGIOT	6				IOT Trap (4.2 BSD)
-    SIGBUS	7				BUS error (4.2 BSD)
-    SIGFPE	8				Floating point exception (ANSI)
-    SIGKILL	9				Kill(can't be caught or ignored) (POSIX)
-    SIGUSR1	10				User defined signal 1 (POSIX)
-    SIGSEGV	11				Invalid memory segment access (ANSI)
-    SIGUSR2	12				User defined signal 2 (POSIX)
-    SIGPIPE	13				Write on a pipe with no reader, Broken pipe (POSIX)
-    SIGALRM	14				Alarm clock (POSIX)
-    SIGTERM	15				Termination (ANSI)
-    SIGSTKFLT	16			Stack fault
-    SIGCHLD	17				Child process has stopped or exited, changed (POSIX)
-    SIGCONT	18				Continue executing, if stopped (POSIX)
-    SIGSTOP	19				Stop executing(can't be caught or ignored) (POSIX)
-    SIGTSTP	20				Terminal stop signal (POSIX)
-    SIGTTIN	21				Background process trying to read, from TTY (POSIX)
-    SIGTTOU	22				Background process trying to write, to TTY (POSIX)
-    SIGURG	23				Urgent condition on socket (4.2 BSD)
-    SIGXCPU	24				CPU limit exceeded (4.2 BSD)
-    SIGXFSZ	25				File size limit exceeded (4.2 BSD)
-    SIGVTALRM				26	Virtual alarm clock (4.2 BSD)
-    SIGPROF	27				Profiling alarm clock (4.2 BSD)
-    SIGWINCH	28			Window size change (4.3 BSD, Sun)
-    SIGIO	29				I/O now possible (4.2 BSD)
-    SIGPWR	30				Power failure restart (System V)
+    Name	Number	Description
+    SIGHUP	1       Hangup (POSIX)
+    SIGINT	2       Terminal interrupt (ANSI)
+    SIGQUIT	3       Terminal quit (POSIX)
+    SIGILL	4       Illegal instruction (ANSI)
+    SIGTRAP	5       Trace trap (POSIX)
+    SIGIOT	6       IOT Trap (4.2 BSD)
+    SIGBUS	7       BUS error (4.2 BSD)
+    SIGFPE	8       Floating point exception (ANSI)
+    SIGKILL	9       Kill(can't be caught or ignored) (POSIX)
+    SIGUSR1	10      User defined signal 1 (POSIX)
+    SIGSEGV	11      Invalid memory segment access (ANSI)
+    SIGUSR2	12      User defined signal 2 (POSIX)
+    SIGPIPE	13      Write on a pipe with no reader, Broken pipe (POSIX)
+    SIGALRM	14      Alarm clock (POSIX)
+    SIGTERM	15      Termination (ANSI)
+    SIGSTKFLT	16  Stack fault
+    SIGCHLD	17      Child process has stopped or exited, changed (POSIX)
+    SIGCONT	18      Continue executing, if stopped (POSIX)
+    SIGSTOP	19      Stop executing(can't be caught or ignored) (POSIX)
+    SIGTSTP	20      Terminal stop signal (POSIX)
+    SIGTTIN	21      Background process trying to read, from TTY (POSIX)
+    SIGTTOU	22      Background process trying to write, to TTY (POSIX)
+    SIGURG	23      Urgent condition on socket (4.2 BSD)
+    SIGXCPU	24      CPU limit exceeded (4.2 BSD)
+    SIGXFSZ	25      File size limit exceeded (4.2 BSD)
+    SIGVTALRM       26	Virtual alarm clock (4.2 BSD)
+    SIGPROF	27      Profiling alarm clock (4.2 BSD)
+    SIGWINCH	28  Window size change (4.3 BSD, Sun)
+    SIGIO	29      I/O now possible (4.2 BSD)
+    SIGPWR	30      Power failure restart (System V)
 
 sighandler_t signal(int signum, sighandler_t handler);
     // multi-process is unspecified
@@ -520,10 +520,16 @@ signal handler:
     tips for writing async-signal-safe functions:
         1. ensure reentrant and call only async-signal-safe function inside;
         2. block delivery of signal while executing code in main program that calls unsafe functions 
-            or work with global data structure also updata by signal handler
+            or work with global data structures also updata by signal handler
+    use erro inside the signal handler    
+    global variable should be declared by using volatile:   volatile sig_atomic_t flag;
+        in order to prevent compiler from performing optimizations that result in varaible being stored in register
+    terminating a signal handler:
+        _exit(); kill(); raise(); nonlocal goto; abort();
+    
+    performing a nonlocal goto from a signal handler: <setjmp.h> 
+        int sigsetjmp(sigjump_buf env, int savesigs);    void siglongjmp(sigjmp_buf env, int val);
         
-
-
 
 **********************************************  Aio Programming  ************************************************
 

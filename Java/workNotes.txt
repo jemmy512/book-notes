@@ -89,7 +89,8 @@ public class PageBean<T> {
 	
 	document.add(table);
 	document.close();
-	
+    
+
 ****************************** File Control *************************************
 Read System Config File	
 	BufferReader br 
@@ -139,9 +140,13 @@ Read System Config File
 	}
 Write to System Config File	
 	
+    handler: reentrancy, async-siangl-safe funtion
+    perform normal return 
+    perform on alternate stack
+    SA_SIGINFO
+    call restart
 	
-
-****************************** network ******************************************
+**********************************************  network  ********************************************************
 	HttpClient  httpClient = new SSLClient();
     HttpGet     httpGet = new HttpGet(url + "?" + param);
     String result = null;
