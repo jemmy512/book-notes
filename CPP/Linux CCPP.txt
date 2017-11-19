@@ -300,16 +300,10 @@ Procedure of socket:
 		#include <sys/socket.h>
 		#include <netinet/in.h>
 		#include <arpa/inet.h>
-<<<<<<< HEAD
         
 		int inet_aton(const char *cp, struct in_addr *inp);
 		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-=======
-		
-		int inet_aton(const char *cp, struct in_addr *inp);
-		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-		
->>>>>>> 3ec0c672778162c9d0cc8a05b4bf80eb5b0fc9a3
+
 		in_addr_t inet_addr(const char *cp);
 		in_addr_t inet_network(const char *cp);
 		char *inet_ntoa(struct in_addr in);
@@ -423,6 +417,66 @@ Raw-socket:
 		IPPROTO_IP: IP_HDRINCL(bool), IP_ADD_MEMBERSHIP(struct ip_mreq), IP_DROP_MEMBERSHIP, IP_MULTICAST_IF(DWORD),
 			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
             
+**********************************************  File System Programming  ****************************************
+   
+struct stat {
+    dev_t   st_dev;     //Id of device containing file
+    ino_t   st_ino;     // inode number
+    mode_t  st_mode;    // file type and mode
+    nlink_t st_nlink;   // number of hard link
+    uid_t   st_uid;     // user id
+    gid_t   st_git;
+    dev_t   st_rdev;    // Device Id (if special file)
+    off_t   st_size;    // Total size, in bytes
+    blksize_t st_blksize;   // block size for filesystem I/O
+    blksize_t st_blocks;    // Number of 512B blocks allocatd
+    
+    struct timespec st_atim;    // last access time
+    struct timespec st_mtim;    // last modification time
+    struct timespec st_ctim;    // last stat change  time
+};
+
+mode_t:
+    S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIO
+    S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+    S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
+int stat(const char *pathname, strutct stat *statbuf);
+int fstat(int fd, struct stat *statbuf);
+int lstat(const char *pathname, struct stat *statbuf); // pathname is symbolic link, return info about link itself
+   
+int mkdir(const char *pathname, mode_t mode);  
+struct FTW {
+    int base;   // offset of the filename
+    int leve;
+};
+ 
+int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
+          int fd_limit, int flags);
+    flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS
+    
+    FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN 
+    
+int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
+    advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEDD, *_DONTNEED
+int fallocate(int fd, int mode, off_t offset, off_t len); // nonportable
+int posix_fallocate(int fd, int mode, off_t offset, off_t len);
+    Allocating disk space:      0, FALLOC_FL_KEEP_SIZE, *_UNSHARE
+    Deallocating disk space:    FALLOC_FL_PUNCH_HOLE, 
+    Collapsing file space:      FALLOC_FL_COLLAPSE_RANGE
+    Zeroing file spece:         FALLOC_FL_ZERO_RANGE(nonportable)
+    Increasing file space:      FALLOC_FL_INSERT_RANGE
+ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
+ssize_t write(int fildes, const void *buf, size_t nbyte);    
+    
+**********************************************  Semaphore Programming  *******************************************
+    sem_init(sem_t *sem, int pshared, unsigned int value); // Initializing initialized semaphore is undefined
+    sem_open(); shm_open(); sem_close(); sem_destroy(); sem_unlink();
+    int sem_post(set_t *sem);    // -pthread_kill
+    sem_wait(sem_t *); sem_timewait(set_t *); sem_trywait(sem_t *, const struct timespec *abs_timeout);
+    sem_getvalue(sem_t *sem, int *sval);
+    sem_overview();
+    signal-safety();
+    
 **********************************************  Signal Programming  *********************************************
 Methods of Local Processes Communication:
 	1. Messaging (pipeline, FIFO, message queue)
@@ -468,6 +522,20 @@ Linux Signals are:
     SIGIO	29      I/O now possible (4.2 BSD)
     SIGPWR	30      Power failure restart (System V)
 
+union sigval {
+    int     sival_int;  // Integer value
+    void    *sival_ptr;
+};
+    
+struct sigevent {
+    int             sigev_notify;   // SIGEV_THREAD, SIGEN_NONE, SIGEN_SIGNAL, SIGEV_THREAD_ID
+    void (*sigev_notify_function) (union sigval);   //        
+    void            *sigev_notify_attributes;       // SIGEV_THREAD
+    int             sigev_signo;
+    union sigval    sigev_value;                    // Data passed with notifications   
+    pid_t           sigev_notify_thread_id;         // SIGEV_THREAD_ID 
+};
+    
 sighandler_t signal(int signum, sighandler_t handler);
     // multi-process is unspecified
     // behavior is undefined if a process ignores SIGFPE, SIGILL, SIGSEGV
@@ -500,7 +568,7 @@ sigaction:
     
     struct sigaction {
       void (*sa_handler)(int); // SIG_IGN, SIG_DFL
-      void (*sa_sigaction)(int, siginfo_t *, void *);
+      void (*sa_sigaction)(int, siginfo_t *, void *);   // si_code, si_signo, si_value
       sigset_t sa_mask;
       int sa_flags;
       void (*sa_restorer)(void);
@@ -540,7 +608,7 @@ signal handler:
 **********************************************  Aio Programming  ************************************************
 
 struct aiocb {
-    int             aio_fildes;
+    int             aio_fildes; // 
     volatile void   *aio_buf;
     int             aio_nbytes;
     off_t           aio_offset;
