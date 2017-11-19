@@ -628,3 +628,16 @@ operation:
     // aio_suspend && lio_listio --> 0:ok, else: -1                   
     int lio_listio(int mode, struct aiocb *const aiocb_list[],
                       int nitems, struct sigevent *sevp);
+
+
+**********************************************  IPC Programming  ************************************************
+Unix inter-domain communication:
+    Unix communicatin:
+        soketpair, pipe, FIFO, signal
+    System V:
+        semaphore, message queue, shared memory
+        
+Pipe:
+    int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
+    flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
+    
