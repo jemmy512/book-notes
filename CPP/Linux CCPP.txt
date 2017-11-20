@@ -640,4 +640,7 @@ Unix inter-domain communication:
 Pipe:
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
     flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
-    
+   
+popen: pipe stream to or from a process
+    FILE *popen(const char *command, const char *type); // type: "r", "w","e"
+    int pclose(FILE *stream);
