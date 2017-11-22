@@ -694,3 +694,52 @@ msg_queue:
         ssize_t msgrcv(int msgid, void *msgp, size_t msgsz, long msgtyp, int msgflag);
         flag: MSG_NOERROR, MSG_COPY, MSG_EXCEPT, MSG_COPY, IPC_NOWAIT
         type: 0, >0, <0
+        
+semaphore:
+    category:
+        1. kernel semaphore
+        2. user semaphore: POXIS, SYSTEM V
+    POXIS unamed semaphore:
+        int sem_init(sem_t *sem, int pshared, unsigned int value);
+        int sem_getvalue(sem_t *sem, int *sval);
+        int sem_wait(sem_t *sem);
+        int sem_pose(sem_t *sem);
+        int sem_trywait(sem_t *sem);
+    POSIX named semaphore:
+        sem_t *open(const char *name, int oflag, mode_t mode, int value);
+            oflag: O_CREAT, O_CREATE|O_EXCL
+        int sem_wait(sem_t *sem);
+        int sem_pose(sem_t *sem);
+        int sem_close(sem_t *sem);
+        int sem_unlink(const char *name);
+    SYSTEM V semaphore:
+        struct semid_ds {
+            struct ipc_perm sem_perm;
+            struct sem      *sem_base;
+            ushort          sem_nsems;
+            time_t          sem_otime;
+            time_t          sem_ctime;
+        };
+        struct sem {
+            ushort  semval;
+            short   sempid;
+            ushort  semncnt;
+            ushort  semzcnt;
+        };
+        struct sembuf {
+            short   sem_num;
+            short   sem_op;
+            short   sem_flg;    // SEM_UNDO, IPC_NOWAIT
+        };
+        int semget(key_t key, int nsems, int oflag);
+        int semop(int semid, struct sembuf *opsptr, size_t nops);
+        int semctl(int semid, int semnum, int cmd, ../*union semun arg*/);
+            union semun {
+                int             val;    // cmd == SETVAL
+                struct semid_ds *buf;   // cmd == IPC_SET, IPC_STAT
+                ushort          *array; // cmd == SETALL, GETALL
+            };
+            
+            
+        
+        
