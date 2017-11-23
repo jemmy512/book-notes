@@ -715,10 +715,11 @@ semaphore:
     SYSTEM V semaphore:
         struct semid_ds {
             struct ipc_perm sem_perm;
-            struct sem      *sem_base;
-            ushort          sem_nsems;
+            struct sem      *sem_base; // ptr to first sem in array 
+            ushort          sem_nsems; // num of the sem array
             time_t          sem_otime;
             time_t          sem_ctime;
+            ...
         };
         struct sem {
             ushort  semval;
@@ -739,7 +740,23 @@ semaphore:
                 struct semid_ds *buf;   // cmd == IPC_SET, IPC_STAT
                 ushort          *array; // cmd == SETALL, GETALL
             };
-            
-            
-        
-        
+            cmd: IPC_RMID, IPC_INFO, GETALL, GETNCNT, GETPID, GETVAL 
+Shared memory:
+    struct shmid_dsn{
+        struct ipc_perm shm_perm;
+        size_t          shm_segsz;
+        time_t          shm_ctime;
+        time_t          shm_atime;
+        time_t          shm_dtime;
+        pid_t           shm_cpid;
+        pid_t           shm_lpid;   
+        shmatt_t        shm_nattch;
+        ...
+    };
+    int shmget(key_t key, size_t size, int shmflag);
+        shmflag: SHM_R, SHM_W
+    void *shmat(int shmid, const void *shmaddr, int shmfalg);
+        shmflag: SHM_EXEC, SHM_RDONLY, 0
+    int shmctl(int shmid, int cmd, struct shmid_ds *buf);      
+        cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
+    int shmdt(const char *shmaddr);
