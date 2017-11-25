@@ -760,3 +760,9 @@ Shared memory:
     int shmctl(int shmid, int cmd, struct shmid_ds *buf);      
         cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
     int shmdt(const char *shmaddr);
+    
+    
+    
+**********************************************  Thread Process Programming  *************************************
+    fork();
+    vfork();
