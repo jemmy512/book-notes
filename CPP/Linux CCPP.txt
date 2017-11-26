@@ -669,7 +669,7 @@ msg_queue:
         unsigned short  __seq;  // sequence number
     };
     struct msgbuf{
-        long mtype;     
+        long mtype;     // who     
         char mtext[1];  // msg data
     };
     struct msg_info {
@@ -682,16 +682,12 @@ msg_queue:
         int     msgtql; // message max size on all queues in system
         unsigned short int msgseg;  // segment max size
     };
-    creat msg queue:
-        int msgget(key_t key, int msgflag);
+    int msgget(key_t key, int msgflag);
         msgflag: IPC_CREAT|666, IPC_EXCL|666, IPC_NOWAIT|666
-    control msg queue:
-        int msgctl(int msgid, int cmd, struct msqid_ds *buf);
+    int msgctl(int msgid, int cmd, struct msqid_ds *buf);
         cmd: IPC_STAT, IPC_SET, IPC_RMID, IPC_INFO, MSG_INFO, MSG_STAT
-    send to msg queue:
-        int msgsnd(int msgid, const void *msgp, size_t msgsz, int msgflag);
-    receive from msg queue:
-        ssize_t msgrcv(int msgid, void *msgp, size_t msgsz, long msgtyp, int msgflag);
+    int msgsnd(int msgid, const void *msgbuf, size_t msgsz, int msgflag);
+    ssize_t msgrcv(int msgid, void *msgbuf, size_t msgsz, long msgtyp, int msgflag);
         flag: MSG_NOERROR, MSG_COPY, MSG_EXCEPT, MSG_COPY, IPC_NOWAIT
         type: 0, >0, <0
         
