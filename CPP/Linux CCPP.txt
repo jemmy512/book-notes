@@ -673,11 +673,11 @@ msg_queue:
         char mtext[1];  // msg data
     };
     struct msg_info {
-        int     msgpool;// unused within kernel
-        int     msgmap; // unused
-        int     msgmax; // message max size  
+        int     msgpool;// kibibytes of buffer pool, hold msg data
+        int     msgmap; // Maximun num of entries in msg map
+        int     msgmax; // Single message max size  
         int     msgmnb; // queue max size
-        int     msgmni; // message queues max size
+        int     msgmni; // message queues max num
         int     msgssz; // message segment size
         int     msgtql; // message max size on all queues in system
         unsigned short int msgseg;  // segment max size
@@ -738,7 +738,7 @@ semaphore:
             };
             cmd: IPC_RMID, IPC_INFO, GETALL, GETNCNT, GETPID, GETVAL 
 Shared memory:
-    struct shmid_dsn{
+    struct shmid_ds{
         struct ipc_perm shm_perm;
         size_t          shm_segsz;
         time_t          shm_ctime;
@@ -750,7 +750,7 @@ Shared memory:
         ...
     };
     int shmget(key_t key, size_t size, int shmflag);
-        shmflag: SHM_R, SHM_W
+        shmflag: SHM_R, SHM_W, 0
     void *shmat(int shmid, const void *shmaddr, int shmfalg);
         shmflag: SHM_EXEC, SHM_RDONLY, 0
     int shmctl(int shmid, int cmd, struct shmid_ds *buf);      
@@ -762,3 +762,10 @@ Shared memory:
 **********************************************  Thread Process Programming  *************************************
     fork();
     vfork();
+    pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
+    pthread_join(pthread_t thread, void **value_ptr);
+    pthread_exit(void *_retval);
+    pthread_detach();
+    pthread_cancel();
+    pthread_cleanup_push
+    pthread_cleanup_pop
