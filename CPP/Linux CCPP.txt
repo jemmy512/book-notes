@@ -774,7 +774,7 @@ Shared memory:
     pthread_cancel(pthread_t thread); // cancellation stat and type 
         pthread_setcancelstate(int state, int *oldstate); // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
         pthread_setcanceltype(int type, int *oldtype);  // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
-        pthread_testcancel(void);
+        pthread_testcancel(void); // create a cancellation point
         pthread_cleanup_push(void (*routine)(void *), void *arg);
         pthread_cleanup_pop (int execute);
     pthread_sigmask();
@@ -798,9 +798,11 @@ phtread_cond:
     int pthread_cond_destroy(pthread_cond_t *cond);
     int pthread_cond_signal(pthread_cond_t *cond);
     int pthread_cond_broadcast(pthread_cond_t *cond);
-    int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+    int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
     int pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex);
     
+    
+     
     
     
     
