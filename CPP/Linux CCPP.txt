@@ -781,27 +781,37 @@ Shared memory:
     atexit(void (*function)(void));
     
 pthread_key:
-    int pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
-    int pthread_key_delete(pthread_key_t key);
-    int pthread_setspecific(pthread_key_t key, const void *pointer);
+    pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
+    pthread_key_delete(pthread_key_t key);
+    pthread_setspecific(pthread_key_t key, const void *pointer);
     void *pthread_getspecific(pthread_key_t key);
 pthread_mutex:
-    int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);    
+    pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);    
     pthread_mutex_t lock = PTHREAD_MUTEXT_INITIALIZER;
-    int pthread_mutex_destroy(pthread_mutex_t *mutex);
-    int pthread_mutex_lock(pthread_mutex_t *mutex);
-    int phtread_mutex_trylock(pthread_mutex_t *mutex);
-    int phtread_mutex_unlock(phtread_mutex_t *mutex);
+    pthread_mutex_destroy(pthread_mutex_t *mutex);
+    pthread_mutex_lock(pthread_mutex_t *mutex);
+    phtread_mutex_trylock(pthread_mutex_t *mutex);
+    phtread_mutex_unlock(phtread_mutex_t *mutex);
 phtread_cond:
-    int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
+    pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
     pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-    int pthread_cond_destroy(pthread_cond_t *cond);
-    int pthread_cond_signal(pthread_cond_t *cond);
-    int pthread_cond_broadcast(pthread_cond_t *cond);
-    int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
-    int pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex);
-    
-    
+    pthread_cond_destroy(pthread_cond_t *cond);
+    pthread_cond_signal(pthread_cond_t *cond);
+    pthread_cond_broadcast(pthread_cond_t *cond);
+    pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
+    pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+pthread_rwlock:
+    pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr);
+    pthread_rwlock_destroy(pthread_rwlock_t *rwlock);
+    pthread_rwlock_rdlock(pthread_rwlock_t *rwlock);
+    pthread_rwlock_tryrdlock(phtread_rwlock_t *rwlock);
+    pthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
+    pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
+    pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
+pthread asynchronous:
+    pthread_kill(pthread_t thread, int sig); // 0: test the existence of thread
+    phread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
+        how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
      
     
     
