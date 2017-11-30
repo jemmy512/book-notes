@@ -779,7 +779,32 @@ Shared memory:
         pthread_cleanup_pop (int execute);
     pthread_sigmask();
     atexit(void (*function)(void));
-    
+pthread_attr:
+    typedef struct {
+        int     detachstate;// PTHREAD_CREATE_<JOINABLE, DETACHED>, td ID, rsc can be reused; join not reuse
+        int     schedpolicy;    // SCHED_FIFO, SCHED_RR, SCHED_OTHER    
+        int     inheritsched;
+        struct sched_param  schedparam;
+        int     scope;          // SCOPE_SYSTEM, SCOPT_PROCESS
+        size_t  guardsize; // ignored if stackaddr is set
+        int     stackaddr_set;
+        void *  stackaddr;  // PTHREAD_STACK_SIZE
+        size_t  stacksize; // with JOINABLE attr, can't free untill pthread_join() called.
+    }pthread_attr_t;
+    pthread_attr_init(struct pthread_attr_t *attr);
+        scope           PTHREAD_SCOPE_PROCESS
+        detachstate     PTTHREAD_CREATE_JOINABLE
+        stackaddr       NULL
+        stacksize       1M
+        inheritsched    PTHREAD_INHERIT_SCHED
+        schedpolicy     SCHED_OTHER
+    pthread_attr_destroy();
+    pthread_attr_setdetachstate(pthread_attr_t *attr, int state);
+    pthread_attr_getdetachstate(pthread_attr_t *attr, int *state);
+    pthread_attr_setstacksize(pthread_attr_t *attr, size_t size); // PTHREAD_STACK_MIN
+    pthread_attr_getstacksize(pthread_attr_t *attr, size_t *size); // get mim stack size
+    pthread_attr_setguardsize(pthread_attr_t *attr, size_t size); // 0, PAGESIZE
+    pthread_attr_getguardsize(pthread_attr_t *attr, size_t *size);
 pthread_key:
     pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
     pthread_key_delete(pthread_key_t key);
@@ -813,6 +838,7 @@ pthread asynchronous:
     phread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
         how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
      
+xinetd:
     
     
     
