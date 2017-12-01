@@ -803,7 +803,7 @@ pthread_attr:
     pthread_attr_getdetachstate(pthread_attr_t *attr, int *state);
     pthread_attr_setstacksize(pthread_attr_t *attr, size_t size); // PTHREAD_STACK_MIN
     pthread_attr_getstacksize(pthread_attr_t *attr, size_t *size); // get mim stack size
-    pthread_attr_setguardsize(pthread_attr_t *attr, size_t size); // 0, PAGESIZE
+    pthread_attr_setguardsize(pthread_attr_t *attr, size_t size); // 0[no guard], round up to multiple PAGESIZE
     pthread_attr_getguardsize(pthread_attr_t *attr, size_t *size);
 pthread_key:
     pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
@@ -823,8 +823,8 @@ phtread_cond:
     pthread_cond_destroy(pthread_cond_t *cond);
     pthread_cond_signal(pthread_cond_t *cond);
     pthread_cond_broadcast(pthread_cond_t *cond);
-    pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
-    pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+    pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // Boolean predicate
+    pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
 pthread_rwlock:
     pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr);
     pthread_rwlock_destroy(pthread_rwlock_t *rwlock);
@@ -835,7 +835,7 @@ pthread_rwlock:
     pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
 pthread asynchronous:
     pthread_kill(pthread_t thread, int sig); // 0: test the existence of thread
-    phread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
+    phread_sigmask(int how, const sigset_t *set, sigset_t *oldset); // sigprocmaks(...);
         how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
      
 xinetd:
