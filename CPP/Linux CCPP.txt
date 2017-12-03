@@ -467,16 +467,7 @@ int posix_fallocate(int fd, int mode, off_t offset, off_t len);
     Increasing file space:      FALLOC_FL_INSERT_RANGE
 ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
 ssize_t write(int fildes, const void *buf, size_t nbyte);    
-    
-**********************************************  Semaphore Programming  *******************************************
-    sem_init(sem_t *sem, int pshared, unsigned int value); // Initializing initialized semaphore is undefined
-    sem_open(); shm_open(); sem_close(); sem_destroy(); sem_unlink();
-    int sem_post(set_t *sem);    // -pthread_kill
-    sem_wait(sem_t *); sem_timewait(set_t *); sem_trywait(sem_t *, const struct timespec *abs_timeout);
-    sem_getvalue(sem_t *sem, int *sval);
-    sem_overview();
-    signal-safety();
-    
+
 **********************************************  Signal Programming  *********************************************
 Methods of Local Processes Communication:
 	1. Messaging (pipeline, FIFO, message queue)
@@ -633,14 +624,19 @@ operation:
 **********************************************  IPC Programming  ************************************************
 Unix inter-domain communication:
     Unix communicatin:
-        soketpair, pipe, FIFO, signal
+        soketpair, pipe(PIPE_BUF), FIFO, signal
     System V:
         semaphore, message queue, shared memory
+Unix outer-domain communication:
+    sockets, STREAMS
         
 Pipe:
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
     flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
-   
+FIFO:
+    mkfifo(const char *path, mode_t mode);
+    mkfifoat(int fd, const char *path, mode_t mode);
+    
 popen: pipe stream to or from a process
     FILE *popen(const char *command, const char *type); // type: "r", "w","e"
     int pclose(FILE *stream);
@@ -761,9 +757,9 @@ Shared memory:
     
 **********************************************  Thread Process Programming  *************************************
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
-    vfork();
+    vfork(); //WIFEXITED
     wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
-        WIFEXITED(); WEXITEDSTATUS();
+        WIFEXITED(); WEXITEDSTATUS(); //check child process exit formal or not and retrieve exit code
     pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
         // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack
     pthread_join(pthread_t thread, void **retval);
@@ -771,18 +767,20 @@ Shared memory:
     pthread_detach(pthread_t thread);
         pthread_attr_setdetachstate(pthread_att_t *attr, int detachstate); // PTHREAD_CREATE_<DETACHED, JOINABLE>
         pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate); //
-    pthread_cancel(pthread_t thread); // cancellation stat and type 
+    pthread_cancel(pthread_t); //re-acquire mutex before acting cancle and ensure it not consume any condtion signal
         pthread_setcancelstate(int state, int *oldstate); // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
         pthread_setcanceltype(int type, int *oldtype);  // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
         pthread_testcancel(void); // create a cancellation point
         pthread_cleanup_push(void (*routine)(void *), void *arg);
         pthread_cleanup_pop (int execute);
-    pthread_sigmask();
+    pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
     atexit(void (*function)(void));
+process completion status:
+    int WIFEXITED(int)-WEXITSTATUS, WIFSIGNALED-WTERMSIG, WCOREDUMP, WIFSTOPED, WSTOPSIG
 pthread_attr:
     typedef struct {
         int     detachstate;// PTHREAD_CREATE_<JOINABLE, DETACHED>, td ID, rsc can be reused; join not reuse
-        int     schedpolicy;    // SCHED_FIFO, SCHED_RR, SCHED_OTHER    
+        int     schedpolicy;    // SCHED_<FIFO,RR,OTHER>,determine which thread to proceed not the ordering rule    
         int     inheritsched;
         struct sched_param  schedparam;
         int     scope;          // SCOPE_SYSTEM, SCOPT_PROCESS
@@ -833,6 +831,7 @@ pthread_rwlock:
     pthread_rwlock_wrlock(pthread_rwlock_t *rwlock);
     pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
     pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
+    pthread_rwlock_timed***(...);
 pthread asynchronous:
     pthread_kill(pthread_t thread, int sig); // 0: test the existence of thread
     phread_sigmask(int how, const sigset_t *set, sigset_t *oldset); // sigprocmaks(...);
