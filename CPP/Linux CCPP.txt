@@ -636,8 +636,8 @@ Pipe:
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
     flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
 FIFO:
-    mkfifo(const char *path, mode_t mode);
-    mkfifoat(int fd, const char *path, mode_t mode);
+    mkfifo(const char *path, mode_t mode);              // absolute path
+    mkfifoat(int fd, const char *path, mode_t mode);    // path relative to the directory of fd
     
 popen: pipe stream to or from a process
     FILE *popen(const char *command, const char *type); // type: "r", "w","e"
