@@ -697,15 +697,15 @@ semaphore:
         int sem_init(sem_t *sem, int pshared, unsigned int value);
         int sem_getvalue(sem_t *sem, int *sval);
         int sem_wait(sem_t *sem);
-        int sem_pose(sem_t *sem);
+        int sem_post(sem_t *sem);
         int sem_trywait(sem_t *sem);
     POSIX named semaphore:
         sem_t *open(const char *name, int oflag, mode_t mode, int value);
             oflag: O_CREAT, O_CREATE|O_EXCL
         int sem_wait(sem_t *sem);
-        int sem_pose(sem_t *sem);
-        int sem_close(sem_t *sem);
-        int sem_unlink(const char *name);
+        int sem_post(sem_t *sem);
+        int sem_close(sem_t *sem); // system will auto close if forget call
+        int sem_unlink(const char *name); // destroy
     SYSTEM V semaphore:
         struct semid_ds {
             struct ipc_perm sem_perm;
@@ -736,10 +736,10 @@ semaphore:
                 ushort          *array; // cmd == SETALL, GETALL
             };
             cmd: IPC_RMID, IPC_INFO, GETALL, GETNCNT, GETPID, GETVAL 
-Shared memory:
+Shared memory: (fastest IPC)
     struct shmid_ds{
         struct ipc_perm shm_perm;
-        size_t          shm_segsz;
+        size_t          shm_segsz; // round up to system multiple page sizse
         time_t          shm_ctime;
         time_t          shm_atime;
         time_t          shm_dtime;
@@ -750,11 +750,11 @@ Shared memory:
     };
     int shmget(key_t key, size_t size, int shmflag);
         shmflag: SHM_R, SHM_W, 0
-    void *shmat(int shmid, const void *shmaddr, int shmfalg);
-        shmflag: SHM_EXEC, SHM_RDONLY, 0
+    void *shmat(int shmid, const void *shmaddr, int shmfalg); // return addr of the shm in the process addr space
+        shmflag: SHM_EXEC, SHM_RDONLY, 0, SHM_RND
     int shmctl(int shmid, int cmd, struct shmid_ds *buf);      
         cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
-    int shmdt(const char *shmaddr);
+    int shmdt(const char *shmaddr); // shm remains in existence untill call shmctl with IPC_RMID flag
     
     
     
