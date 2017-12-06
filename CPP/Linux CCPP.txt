@@ -804,7 +804,7 @@ pthread_attr:
         stacksize       1M
         inheritsched    PTHREAD_INHERIT_SCHED
         schedpolicy     SCHED_OTHER
-    pthread_attr_destroy();
+    pthread_attr_destroy(pthread_attr_t *attr);
     pthread_attr_setdetachstate(pthread_attr_t *attr, int state);
     pthread_attr_getdetachstate(pthread_attr_t *attr, int *state);
     pthread_attr_setstacksize(pthread_attr_t *attr, size_t size); // PTHREAD_STACK_MIN
