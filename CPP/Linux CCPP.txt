@@ -365,36 +365,41 @@ Port multiplexing:
 	1. select
 		#include <sys/select.h>
 		#include <sys/time.h>
-		int select(int maxfs1, fs_set *readset, fd_set *writeset, fd_set *exceptset, const struct timeval *timeout)
+		int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
 		void FD_ZERO(fd_set *fdset);
 		void FD_SET(int fd, fd_set *fdset);
 		void FD_CLR(int fd, fd_set *fdset);
 		void FD_ISSET(int fd, fd_set *fdset);
-		void FD_ZERO(fd_set *fdset); 
         struct timeval{
 			long tv_sec;   //seconds
             long tv_usec;  //microseconds
 		};
-	2. Poll
+	2. poll
 		# include <poll.h>
-		int poll( struct pollfd * fds, unsigned int nfds, int timeout);
+		int poll( struct pollfd *fds, unsigned int nfds, int timeout);
 
 		struct pollfd {
-			int fd;         	
-			short events;       // waiting event  
-			short revents;      // happend event
+			int fd;             
+			short events;       // request event  
+			short revents;      // return event
 		} ; 
 		Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
 				POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
-	3. Epoll
+	3. epoll
 		#include <sys/epoll.h>
 		int epoll_create(int size);
 		int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
 			op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
 			struct epoll_event {
-			  __uint32_t events;  /* Epoll events */
-			  epoll_data_t data;  /* User data variable */
+                uint32_t        events; /* Epoll events */
+                epoll_data_t    data;   /* User data variable */
 			};
+            typedef union epoll_data {
+                voit        *ptr;
+                int         fd;
+                uint32_t    u32;
+                uint64_t    u64;
+            } epoll_data_t;
 			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP
 		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
 		
@@ -420,14 +425,14 @@ Raw-socket:
 **********************************************  File System Programming  ****************************************
    
 struct stat {
-    dev_t   st_dev;     //Id of device containing file
-    ino_t   st_ino;     // inode number
-    mode_t  st_mode;    // file type and mode
-    nlink_t st_nlink;   // number of hard link
-    uid_t   st_uid;     // user id
-    gid_t   st_git;
-    dev_t   st_rdev;    // Device Id (if special file)
-    off_t   st_size;    // Total size, in bytes
+    dev_t       st_dev;     //Id of device containing file
+    ino_t       st_ino;     // inode number
+    mode_t      st_mode;    // file type and mode
+    nlink_t     st_nlink;   // number of hard link
+    uid_t       st_uid;     // user id
+    gid_t       st_git;
+    dev_t       st_rdev;    // Device Id (if special file)
+    off_t       st_size;    // Total size, in bytes
     blksize_t st_blksize;   // block size for filesystem I/O
     blksize_t st_blocks;    // Number of 512B blocks allocatd
     
