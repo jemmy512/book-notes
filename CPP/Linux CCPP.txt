@@ -335,6 +335,7 @@ Procedure of socket:
 		
 	5. close <unistd.h>
 		int close(int fd);
+    6. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
 
 Components of Server:
 	1. IO communication unit
@@ -476,6 +477,15 @@ int posix_fallocate(int fd, int mode, off_t offset, off_t len);
     Increasing file space:      FALLOC_FL_INSERT_RANGE
 ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
 ssize_t write(int fildes, const void *buf, size_t nbyte);    
+
+#include<sys/resource.h>
+struct rlimit {
+    rlim_t rlim_cur;  /* Soft limit */
+    rlim_t rlim_max;  /* Hard limit (ceiling for rlim_cur) */
+};
+setrlimit(int resource, const struct rlimit *rlp);
+getrlimit(int resourcr struct rlimit *rlp);
+    RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS
 
 **********************************************  Signal Programming  *********************************************
 Methods of Local Processes Communication:
@@ -704,6 +714,7 @@ semaphore:
         2. user semaphore: POXIS, SYSTEM V
     POXIS unamed semaphore:
         int sem_init(sem_t *sem, int pshared, unsigned int value);
+        // pshard: zero[shared between threads within process], non-zero[shared between processes]
         int sem_getvalue(sem_t *sem, int *sval);
         int sem_wait(sem_t *sem);
         int sem_post(sem_t *sem);
