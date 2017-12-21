@@ -284,7 +284,7 @@ Procedure of socket:
 		
 		struct sockaddr_in {
 			sa_family_t sin_family;	// address _
-			in_port_t sin_port;		// port in network byte order
+			in_port_t sin_port;		// port in network byte order, > 1024
 			struct in_addr sin_addr;// internet address
 		};
 		struct in_addr {
@@ -308,7 +308,7 @@ Procedure of socket:
 		in_addr_t inet_network(const char *cp);
 		char *inet_ntoa(struct in_addr in);
 		int inet_pton(int af, const char *src, void *dst); // "0.0.0.0" -> 0.0.0.0
-		const char *inet_ntop(int af, const void *src, char *dst, socklen_t cnt); 
+		const char *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
 		struct in_addr inet_makeaddr(int net, int host);
 		in_addr_t inet_lnaof(struct in_addr in);
 		in_addr_t inet_netof(struct in_addr in);
@@ -333,10 +333,13 @@ Procedure of socket:
 		ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
 		ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
 		
-	5. close <unistd.h>
+    5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
+	6. close <unistd.h>
 		int close(int fd);
-    6. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
-
+        
+int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp); // ok: 0, error: -1
+int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp);
+        
 Components of Server:
 	1. IO communication unit
 		1.1 Port multiplexing
@@ -426,7 +429,21 @@ Raw-socket:
 			SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, 
 		IPPROTO_IP: IP_HDRINCL(bool), IP_ADD_MEMBERSHIP(struct ip_mreq), IP_DROP_MEMBERSHIP, IP_MULTICAST_IF(DWORD),
 			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
-            
+ 
+Network configuration information:
+    #include<netdb.h>
+    struct hostnet *gethostent(void);
+    void sethostent(int stayopen);
+    void endhostent(void);
+    struct hostent {
+        char     *h_name;
+        char    **h_aliases;
+        int       h_addrtype;
+        int       h_length;
+        char    **h_addr_list;
+        ...
+    };
+    
 **********************************************  File System Programming  ****************************************
    
 struct stat {
@@ -652,20 +669,25 @@ Unix inter-domain communication:
         semaphore, message queue, shared memory
 Unix outer-domain communication:
     sockets, STREAMS
-Problems with IPC:
-    1. They are systemwide have no reference count
+Advantages and Disabvantages of XSI IPC:
+    1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
     2. They are not known by names in the file system
-Pipe:
+Pipe: PIPE_BUF
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
     flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
+    // when last process referred to it terminates, the pipe is completely removed. 
 FIFO:
-    mkfifo(const char *path, mode_t mode);              // absolute path
+    mkfifo(const char *path, mode_t mode);              // absolute path, mode same to open
     mkfifoat(int fd, const char *path, mode_t mode);    // path relative to the directory of fd
-    
+    // Once created, FIFO file exites in the file system
+    // without O_NONBLOCK: read block untill other process write, the same to write;
+    // O_NONBLOCK: read return immediately if no write, but write return -1 with errno  ENXIO if no read
+    // As with pipe if write to a FIFO without reader SIGPIPE is generated
+    // When last process referred to it terminates, the FIFO name remains in system, but any data removed. 
 popen: pipe stream to or from a process
     FILE *popen(const char *command, const char *type); // type: "r", "w","e"
     int pclose(FILE *stream);
-ID, Key:
+Identifiers and Keys:
     key_t ftok(const char *pathname, int proj_id);
     key: 31-24(proj_id low 8 bits), 23-16(st_dev low 8 bits), 15-0(st_ino low 16 bits)
 msg_queue: a linked list of messages
@@ -694,13 +716,13 @@ msg_queue: a linked list of messages
         char mtext[1];  // msg data
     };
     struct msg_info {
-        int     msgpool;// kibibytes of buffer pool, hold msg data
-        int     msgmap; // Maximun num of entries in msg map
-        int     msgmax; // Single message max size  
-        int     msgmnb; // queue max size
-        int     msgmni; // message queues max num
-        int     msgssz; // message segment size
-        int     msgtql; // message max size on all queues in system
+        int     msgpool;    // kibibytes of buffer pool, hold msg data
+        int     msgmap;     // Maximun num of entries in msg map
+        int     msgmax;     // Single message max size  
+        int     msgmnb;     // queue max size
+        int     msgmni;     // message queues max num
+        int     msgssz;     // message segment size
+        int     msgtql;     // message max size on all queues in system
         unsigned short int msgseg;  // segment max size
     };
     int msgget(key_t key, int msgflag); // open or creat a new one
@@ -710,9 +732,9 @@ msg_queue: a linked list of messages
     int msgsnd(int msgid, const void *msgbuf, size_t msgsz, int msgflag);
     ssize_t msgrcv(int msgid, void *msgbuf, size_t msgsz, long msgtyp, int msgflag);
         flag: MSG_NOERROR, MSG_COPY, MSG_EXCEPT, MSG_COPY, IPC_NOWAIT
-        type: 0, >0, <0
+        type: 0, >0, <0(the first msg whose type is the lowest value less than or euqal to absolute value of type)
         
-semaphore:
+semaphore: is a counter used to provide access to the shared object for multiple process
     category:
         1. kernel semaphore
         2. user semaphore: POXIS, SYSTEM V
@@ -780,10 +802,13 @@ Shared memory: (fastest IPC)
         cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
     int shmdt(const char *shmaddr); // shm remains in existence untill call shmctl with IPC_RMID flag
     
-    
+Summary:    
+   Learn pipe and FIFOs avoid using message queue and semaphore, Full-duplex pipes and record locking should be 
+   considered instead as they are far simpler. Shared memory still has its use.
     
 **********************************************  Thread Process Programming  *************************************
-    fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
+  
+   fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
     vfork(); //WIFEXITED
     wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
         WIFEXITED(); WEXITEDSTATUS(); //check child process exit formal or not and retrieve exit code
