@@ -323,10 +323,14 @@ Procedure of socket:
 		ssize_t write(int fd, const void *buf, size_t count);
 		
 		ssize_t send(int sockfd, const *buf, size_t len, int flags);
+            // return success doesn't mean the the other end of connection recvices data, just means the data
+            // has been delivered to network drivers without error
+            // send data out of boundary will cause send fail with errno set to EMSGSIZE
+            // with byte-stream protocol send will block until entire amount of data has been transmitted
 		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
-		
+            // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
 		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
-						const struct sockaddr *dest_addr, socklen_t addrlen);
+                        const struct sockaddr *dest_addr, socklen_t addrlen);
 		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
 						struct sockaddr *stc_addr, socklen_t *addrlen);
 						
