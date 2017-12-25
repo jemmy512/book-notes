@@ -1,0 +1,92 @@
+
+**********************************************  Linux Q&A Network  **********************************************
+
+1. TCP/IP协议栈层次结构
+      | OSI中的层     功能                                    TCP/IP协议族                          设备
+      | 应用层       文件传输，电子邮件，                     TFTP，HTTP，SNMP，                
+    5 |              文件服务，虚拟终端                       FTP，SMTP，DNS，Telnet
+    　| 表示层       数据格式化，代码转换，数据加密           没有协议
+    　| 会话层       解除或建立与别的接点的联系               没有协议
+    --------------------------------------------------------------------------------------------------------------
+    4 | 传输层       提供端对端的接口                         TCP，UDP                            四层交换机
+    3 | 网络层       为数据包选择路由                         IP，ICMP，RIP，OSPF，BGP，IGMP      路由器，三层交换机
+    2 | 数据链路层   传输有地址的帧以及错误检测功能           SLIP，CSLIP，PPP，ARP，RARP，MTU    网桥，网卡，交换机
+    1 | 物理层       以二进制数据形式在物理媒体上传输数据     ISO2110，IEEE802，IEEE802.2         中继器，集线器
+    
+    特点：
+        面向连接：   两端组成一个连接，每端以五元组为标识
+        双工字节流： 采用字节流进行双工数据通信
+        有序性：     利用序列号保证发送的有序性
+        可靠性：     利用ACK保证数据的可靠性
+        流控：       接收方利用接收窗口通告发送方
+        拥塞控制：   接收方利用拥塞窗口通告发送方
+    
+2. TCP三次握手需要知道的细节点
+3. TCP四次挥手需要知道的细节点(CLOSE_WAIT、TIME_WAIT、MSL)
+4. TCP与UDP的区别与适用场景
+    TCP可靠性：重连，重发，通信建立在连接基础上，协议栈保证数据有序性
+5. linux常见网络模型详解(select、poll与epoll)
+6. epoll_event结构中的epoll_data_t的fd与ptr的使用场景
+7. Windows常见的网络模型详解(select、WSAEventSelect、WSAAsyncSelect)
+8. Windows上的完成端口模型(IOCP)
+9. 异步的connect函数如何编写
+10.select函数可以检测网络异常吗
+    No. 
+11.你问我答环节一
+12. epoll的水平模式和边缘模式
+    边缘模式接受数据时必须一次性接收所有
+    发送数据：注册事件--发送数据--返回-1，errno=EWOULDBLOCK,EAGAIN无法发送--检测注册可写事件--下次可写时写
+13. 如何将socket设置成非阻塞的(创建时设置与创建完成后设置)，非阻塞socket与阻塞的socket在收发数据上的区别
+    SOCK_NONBLOCK, fcntl(), accept4()
+    
+14. send/recv(read/write)返回值大于0、等于0、小于0的区别
+    [nogle algorithem] TCP_NODELAY
+    block:      -1: blocked, error                     0: connection close  >0: real data size send to networkCard buf
+    nonblock:   -1: blocked, errno: EBLOKC, EINTER,    0: connection close  >0: real data size send to networkCard buf
+15.如何编写正确的收数据代码与发数据代码
+16.发送数据缓冲区与接收数据缓冲区如何设计
+17.socket选项SO_SNDTIMEO和SO_RCVTIMEO
+18.socket选项TCP_NODELAY
+19.socket选项SO_REUSEADDR和SO_REUSEPORT（Windows平台与linux平台的区别）
+20.socket选项SO_LINGER
+21.shutdown与优雅关闭 http://blog.csdn.net/zhangshouming/article/details/39558473
+    TIME_WAIT：1.使得TCP的全双工连接能够可靠的终止 2.使得连接终止后网络上任然残余数据被丢弃而不至于被新连接接收.
+    选项            间隔    关闭方式  等待关闭与否
+    SO_DONTLINGER   不关心  优雅      否
+    SO_LINGER       零      强制      否
+    SO_LINGER       非零    优雅      是
+    -------------------------------------------------------------------------------------------------------------------                    
+    SO_LINGER.l_onoff   SO_LINGER.l_linger  close() 
+    0                   非0/0               默认行为：立即返回；socket发送缓冲区有数据，写入FIN，立即返回， TCP尽量发送数据
+    非0                 0                   清空socket发送缓冲区，写入RST，返回；非正常4次挥手，避免TIME_WAIT状态 
+    非0                 非0                 阻塞直到：1. 发送缓冲区数据及FIN发送并得到对等端确认 2. l_linger 时间超时。 非
+                                                阻塞模式下，close并不等待数据发送完成或超时，而是立即返回，发送缓冲区数据
+                                                会被丢弃。在数据和FIN确认之前超时，close返回EWOULDBLOCK。
+                                                close成功返回仅表示对等端TCP收到数据，不表示对等进程收到数据，使用shutdown
+                                                和read可知道对等进程是否收到数据
+22.你问我答环节二
+23.socket选项SO_KEEPALIVE
+24.关于错误码EINTR
+25.如何解决tcp粘包问题
+26.信号SIGPIPE与EPIPE错误码
+27.gethostbyname阻塞与错误码获取问题
+28.心跳包的设计技巧（保活心跳包与业务心跳包）
+29.断线重连机制如何设计
+30.如何检测对端已经关闭
+31.如何清除无效的死链（端与端之间的线路故障）
+32.定时器的不同实现及优缺点
+33.你问我答环节三
+34.http协议的具体格式
+35.http head、get与post方法的细节
+36.http代理、socks4代理与socks5代理如何编码实现
+37.ping
+38.telnet
+
+
+
+
+
+
+
+nonblock connection
+SO_REUSEADDR
