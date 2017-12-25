@@ -322,13 +322,17 @@ Procedure of socket:
 		ssize_t read(int fd, void *buf, size_t count);
 		ssize_t write(int fd, const void *buf, size_t count);
 		
+        // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL
 		ssize_t send(int sockfd, const *buf, size_t len, int flags);
             // return success doesn't mean the the other end of connection recvices data, just means the data
             // has been delivered to network drivers without error
             // send data out of boundary will cause send fail with errno set to EMSGSIZE
             // with byte-stream protocol send will block until entire amount of data has been transmitted
 		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
+<<<<<<< HEAD
+=======
             // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
+>>>>>>> 88f0db3ea52ad9e2af98e932ac7fea40f538706d
 		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                         const struct sockaddr *dest_addr, socklen_t addrlen);
 		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
@@ -414,7 +418,11 @@ Port multiplexing:
 		#include <sys/socket.h>
 		int setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
 			level: SOL_SOCKET, IPPROTO_TCP
-			option_name: SO_REUSEADDR, SO_KEEPLIVE, SO_LINGER
+			option_name: SO_REUSEADDR, SO_LINGER, SO_SNDBUF, SO_TCPDELAY, SO_RCVTIMEO, TCP_DEFER_ACCEPT
+                SO_RCVBUF(mininum 512 bytes, maximum 1048576 bytes);
+                SO_BROADCASE(have no meaning for stream sockets)
+                SO_KEEPALIVE(only have meaning for stream sockets)
+                SO_OOBINLINE()
 			
 		#include <unistd.h>
 		#include <fcntl.h>
