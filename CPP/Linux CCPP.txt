@@ -285,7 +285,7 @@ Procedure of socket:
 		struct sockaddr_in {
 			sa_family_t sin_family;	// address _
 			in_port_t sin_port;		// port in network byte order, > 1024
-			struct in_addr sin_addr;// internet address
+			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
 		};
 		struct in_addr {
 			uint32_t s_addr;	// address in network byte order
@@ -329,10 +329,7 @@ Procedure of socket:
             // send data out of boundary will cause send fail with errno set to EMSGSIZE
             // with byte-stream protocol send will block until entire amount of data has been transmitted
 		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
-<<<<<<< HEAD
-=======
             // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
->>>>>>> 88f0db3ea52ad9e2af98e932ac7fea40f538706d
 		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                         const struct sockaddr *dest_addr, socklen_t addrlen);
 		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
@@ -416,9 +413,10 @@ Port multiplexing:
 		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
 		
 		#include <sys/socket.h>
+        #include<netient/in.h>
 		int setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
 			level: SOL_SOCKET, IPPROTO_TCP
-			option_name: SO_REUSEADDR, SO_LINGER, SO_SNDBUF, SO_TCPDELAY, SO_RCVTIMEO, TCP_DEFER_ACCEPT
+			option_name: SO_REUSEADDR, SO_LINGER, SO_SNDUF, SO_TCPDELAY, SO_RCVTIMEO, TCP_DEFER_ACCEPT
                 SO_RCVBUF(mininum 512 bytes, maximum 1048576 bytes);
                 SO_BROADCASE(have no meaning for stream sockets)
                 SO_KEEPALIVE(only have meaning for stream sockets)
