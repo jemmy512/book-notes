@@ -324,10 +324,10 @@ Procedure of socket:
 		
         // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL
 		ssize_t send(int sockfd, const *buf, size_t len, int flags);
-            // return success doesn't mean the the other end of connection recvices data, just means the data
-            // has been delivered to network drivers without error
+            // return success doesn't mean the peer process recvices data, just means the data
+            // \has been delivered to network drivers without error
             // send data out of boundary will cause send fail with errno set to EMSGSIZE
-            // with byte-stream protocol send will block until entire amount of data has been transmitted
+            // \with byte-stream protocol send will block until entire amount of data has been transmitted
 		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
             // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
 		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
@@ -339,9 +339,10 @@ Procedure of socket:
 		ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
 		
     5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
-	6. close <unistd.h>
-		int close(int fd);
-        
+        // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
+	6. close <unistd.h> int close(int fd);
+        // In multi-thread one thread close socket just decrement its reference count until to 0, not affect other threads
+           \action to the same socket. Once all threads call close() to the same socket, socket will close at the end.
 int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp); // ok: 0, error: -1
 int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp);
         
