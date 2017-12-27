@@ -320,16 +320,19 @@ Procedure of socket:
 		int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
 	5. read and write (client and server)
 		ssize_t read(int fd, void *buf, size_t count);
+            // The behavior of multi-thread read or write is undefined
+            // 
 		ssize_t write(int fd, const void *buf, size_t count);
 		
-        // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL
+            // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL
+            // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
 		ssize_t send(int sockfd, const *buf, size_t len, int flags);
             // return success doesn't mean the peer process recvices data, just means the data
             // \has been delivered to network drivers without error
             // send data out of boundary will cause send fail with errno set to EMSGSIZE
             // \with byte-stream protocol send will block until entire amount of data has been transmitted
 		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
-            // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
+            
 		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                         const struct sockaddr *dest_addr, socklen_t addrlen);
 		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
@@ -414,7 +417,6 @@ Port multiplexing:
 		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
 		
 		#include <sys/socket.h>
-        #include<netient/in.h>
 		int setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
 			level: SOL_SOCKET, IPPROTO_TCP
 			option_name: SO_REUSEADDR, SO_LINGER, SO_SNDUF, SO_TCPDELAY, SO_RCVTIMEO, TCP_DEFER_ACCEPT
@@ -427,6 +429,7 @@ Port multiplexing:
 		#include <fcntl.h>
 		int fcntl(int fd, int cmd, ... /* arg */ ); // manipulate file descriptor
 			cmd: F_DUPFD, F_SETFD, F_GETFL, 
+                F_SRTOWN: if thired argument is positive it represents process ID, otherwise presents process group ID
 
 Raw-socket:
 	int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
@@ -815,7 +818,7 @@ Summary:
     
 **********************************************  Thread Process Programming  *************************************
   
-   fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
+    fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
     vfork(); //WIFEXITED
     wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
         WIFEXITED(); WEXITEDSTATUS(); //check child process exit formal or not and retrieve exit code
@@ -898,12 +901,92 @@ pthread asynchronous:
      
 xinetd:
     
+ 
+**********************************************  HTTPS Programming   *********************************************
+SSL:
+    Consists of two layers of protocol:
+        High-level protocol: 
+            SSL HandShake Protocol: Algorithm negotiation, identity authentication, private key determination
+                categories: Full HandShake, Resume session HandShake, <Server, Client> Re-nogotiation HandShake
+            Change Cipher Spec Protocol
+            AlertProtocol
+        Low-level protocol: 
+            SSL Record Protocol(certificate information, test data is tampered or not)
+                | type(1 byte) | version(2 byte) | length(2)byte | data | HMAC | Filling 0 | Fill length | 
+Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
+    1. init
+        SSL_library_init();
+        OpenSSL_add_all_algorithms();
+        SSL_load_error_strings(); // void ERR_print_errors_fp(FILE *fp);
+    2. Specify method
+        SSL_METHOD* method = SSLv23_server_method(void); // server method is the same as the client
+    3. Set CTX
+        SSL_CTX *ctx = SSL_CTX_new(SSL_METHOD*);
+        // set the verify method
+        void SSL_set_verify(SSL_CTX *, int, int *(int, X509_STORE_CTX *)); // SSL_VERIFY_<PEER, NONE>
+        // load certificate
+        void SSL_CTX_load_veriry_locations(SSL_CTS *, const char *file, const char *path);
+        // load local certificate
+        int SSL_CTX_use_certificate_file(SSL_CTX *, const char *file, int type);
+        // load private key
+        int SSL_CTX_use_PrivateKey_file(SSL_CTX *, const char *file, int type);
+        // validata private key and certificate
+        BOOL SSL_CTX_check_private_key(SSL_CTX *);
+    4. Attach to a connected socket
+        SSL *SSL_new(SSL_CTX *);
+        int SSL_set_fd(SSL *ssl, int fd); int SSL_set_rfd(SSL *, int); int SSL_set_wfd(SSL *, int); 
+    5. SSL connect and communication
+        int SSL_connect(SSL *ssl); int SSL_accept(SSL *ssl);
+        int SSL_read(SSL *ssl, char *buf, int len);
+        int SSL_write(SSL *ssl, char *buf, int len);
+    6. Free
+        int SSL_shutdown(SSL *ssl);
+        void SSL_free(SSL *ssl);
+        void SSL_CTX_free(SSL_CTX *);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
     
     
     
     
-    
-    
+   
     
     
     
