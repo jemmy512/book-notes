@@ -270,189 +270,6 @@ source path:
 define own enviroment variable int GDB:
 	set $<varname> = <value> # enviromet var have no type
 	show convenience # view all enviroment variable
-	
-**********************************************  Network Programming  ********************************************
-Procedure of socket:
-	1. Create Soket (client and server)
-		int socket(int domain, int type, int protocol);
-		
-		doamin: AF_INET, AF_INET6, AF_LOCAL, AF_ROUTE
-		type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
-		protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
-	2. bind (server)
-		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-		
-		struct sockaddr_in {
-			sa_family_t sin_family;	// address _
-			in_port_t sin_port;		// port in network byte order, > 1024
-			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
-		};
-		struct in_addr {
-			uint32_t s_addr;	// address in network byte order
-		};
-		
-		#include <arpa/inet.h>
-		uint32_t htonl(uint32_t hostlong);
-		uint16_t htons(uint16_t hostshort);
-		uint32_t ntohl(uint32_t netlong);
-		uint16_t ntohs(uint16_t netshort);
-		
-		#include <sys/socket.h>
-		#include <netinet/in.h>
-		#include <arpa/inet.h>
-        
-		int inet_aton(const char *cp, struct in_addr *inp);
-		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-
-		in_addr_t       inet_addr(const char *cp);
-		in_addr_t       inet_network(const char *cp);
-		char           *inet_ntoa(struct in_addr in);
-		int             inet_pton(int af, const char *src, void *dst); // "0.0.0.0" -> 0.0.0.0
-		const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
-		struct in_addr  inet_makeaddr(int net, int host);
-		in_addr_t       inet_lnaof(struct in_addr in);
-		in_addr_t       inet_netof(struct in_addr in);
-		
-	3. listen(sever) and connect(client)
-		int listen (int sockfd, int backlog);
-		int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-	4. accept (client and server)
-		int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
-	5. read and write (client and server)
-		ssize_t read(int fd, void *buf, size_t count);
-            // The behavior of multi-thread read or write is undefined
-            // 
-		ssize_t write(int fd, const void *buf, size_t count);
-		
-            // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL
-            // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB
-		ssize_t send(int sockfd, const *buf, size_t len, int flags);
-            // return success doesn't mean the peer process recvices data, just means the data
-            // \has been delivered to network drivers without error
-            // send data out of boundary will cause send fail with errno set to EMSGSIZE
-            // \with byte-stream protocol send will block until entire amount of data has been transmitted
-		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
-            
-		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
-                        const struct sockaddr *dest_addr, socklen_t addrlen);
-		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
-						struct sockaddr *stc_addr, socklen_t *addrlen);
-						
-		ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
-		ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
-		
-    5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
-        // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
-	6. close <unistd.h> int close(int fd);
-        // In multi-thread one thread close socket just decrement its reference count until to 0, not affect other threads
-           \action to the same socket. Once all threads call close() to the same socket, socket will close at the end.
-int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp); // ok: 0, error: -1
-int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp);
-        
-Components of Server:
-	1. IO communication unit
-		1.1 Port multiplexing
-			select 1000, poll, epoll 30W
-		1.2 Synchronization	
-			http https 
-		1.3 asynchroniztion
-			signal, sigaction
-		1.4 asynchronous IO
-			aio_read, aio_write
-	2. Data Process Unit	
-		2.1 Multiple Thread	
-			Thread Mutext: mutex, spin, atomic
-			Thread Synchronization: PV, semaphore
-			Thread Communication
-		2.2 Multiple Prcesses
-			IPC pip, fifo, socketpair
-		2.3 Multiple Thread + Multiple Process
-			Thread Pool
-			Process Pool
-	3. Date Storage
-Two high-performance server architectures:
-	1. Reactor
-	2. Proactor
-	
-Port multiplexing:
-	1. select
-		#include <sys/select.h>
-		#include <sys/time.h>
-		int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
-		void FD_ZERO(fd_set *fdset);
-		void FD_SET(int fd, fd_set *fdset);
-		void FD_CLR(int fd, fd_set *fdset);
-		void FD_ISSET(int fd, fd_set *fdset);
-        struct timeval{
-			long tv_sec;   //seconds
-            long tv_usec;  //microseconds
-		};
-	2. poll
-		# include <poll.h>
-		int poll( struct pollfd *fds, unsigned int nfds, int timeout);
-
-		struct pollfd {
-			int fd;             
-			short events;       // request event  
-			short revents;      // return event
-		} ; 
-		Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
-				POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
-	3. epoll
-		#include <sys/epoll.h>
-		int epoll_create(int size);
-		int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
-			op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
-			struct epoll_event {
-                uint32_t        events; /* Epoll events */
-                epoll_data_t    data;   /* User data variable */
-			};
-            typedef union epoll_data {
-                voit        *ptr;
-                int         fd;
-                uint32_t    u32;
-                uint64_t    u64;
-            } epoll_data_t;
-			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP
-		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
-		
-		#include <sys/socket.h>
-		int setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
-			level: SOL_SOCKET, IPPROTO_TCP
-			option_name: SO_REUSEADDR, SO_LINGER, SO_SNDUF, SO_TCPDELAY, SO_RCVTIMEO, TCP_DEFER_ACCEPT
-                SO_RCVBUF(mininum 512 bytes, maximum 1048576 bytes);
-                SO_BROADCASE(have no meaning for stream sockets)
-                SO_KEEPALIVE(only have meaning for stream sockets)
-                SO_OOBINLINE()
-			
-		#include <unistd.h>
-		#include <fcntl.h>
-		int fcntl(int fd, int cmd, ... /* arg */ ); // manipulate file descriptor
-			cmd: F_DUPFD, F_SETFD, F_GETFL, 
-                F_SRTOWN: if thired argument is positive it represents process ID, otherwise presents process group ID
-
-Raw-socket:
-	int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
-	int getsockopt (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
-	level: 	
-		SOL_SOKCET: SO_BROADCASE(bool), SO_RCVTIMEO(struct timeval), SO_SNDTIMEO(struct timeval), 
-			SO_REUSEADDR, SO_KEEPALIVE, SO_LINGER, 
-		IPPROTO_IP: IP_HDRINCL(bool), IP_ADD_MEMBERSHIP(struct ip_mreq), IP_DROP_MEMBERSHIP, IP_MULTICAST_IF(DWORD),
-			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
- 
-Network configuration information:
-    #include<netdb.h>
-    struct hostnet *gethostent(void);
-    void sethostent(int stayopen);
-    void endhostent(void);
-    struct hostent {
-        char     *h_name;
-        char    **h_aliases;
-        int       h_addrtype;
-        int       h_length;
-        char    **h_addr_list;
-        ...
-    };
     
 **********************************************  File System Programming  ****************************************
    
@@ -517,8 +334,204 @@ struct rlimit {
 setrlimit(int resource, const struct rlimit *rlp);
 getrlimit(int resourcr struct rlimit *rlp);
     RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS
+	
+**********************************************  Network Programming  ********************************************
 
+Procedure of socket:
+	1. Create Soket (client and server)
+		int socket(int domain, int type, int protocol);
+		
+		doamin: AF_INET, AF_INET6, AF_LOCAL, AF_ROUTE
+		type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
+		protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
+	2. bind (server)
+		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+		
+		struct sockaddr_in {
+			sa_family_t sin_family;	// address _
+			in_port_t sin_port;		// port in network byte order, > 1024
+			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
+		};
+		struct in_addr {
+			uint32_t s_addr;	// address in network byte order
+		};
+		
+		#include <arpa/inet.h>
+		uint32_t htonl(uint32_t hostlong);
+		uint16_t htons(uint16_t hostshort);
+		uint32_t ntohl(uint32_t netlong);
+		uint16_t ntohs(uint16_t netshort);
+		
+		#include <sys/socket.h>
+		#include <netinet/in.h>
+		#include <arpa/inet.h>
+        
+		int inet_aton(const char *cp, struct in_addr *inp);
+		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
+
+		in_addr_t       inet_addr(const char *cp);
+		in_addr_t       inet_network(const char *cp);
+		char           *inet_ntoa(struct in_addr in);
+		int             inet_pton(int af, const char *src, void *dst); // "0.0.0.0" -> 0.0.0.0
+		const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
+		struct in_addr  inet_makeaddr(int net, int host);
+		in_addr_t       inet_lnaof(struct in_addr in);
+		in_addr_t       inet_netof(struct in_addr in);
+		
+	3. listen(sever) and connect(client)
+		int listen (int sockfd, int backlog);
+		int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+	4. accept (client and server)
+		int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
+	5. read and write (client and server)
+		ssize_t read(int fd, void *buf, size_t count);
+            // The behavior of multi-thread read or write is undefined
+            // 
+		ssize_t write(int fd, const void *buf, size_t count);
+		
+            // flags: MSG_PEEK, MSG_OOB(SIGURG), MSG_WAITALL
+            // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL
+		ssize_t send(int sockfd, const *buf, size_t len, int flags);
+            // return success doesn't mean the peer process recvices data, just means the data
+            // \has been delivered to network drivers without error
+            // send data out of boundary will cause send fail with errno set to EMSGSIZE
+            // \with byte-stream protocol send will block until entire amount of data has been transmitted
+		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
+            
+		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+                        const struct sockaddr *dest_addr, socklen_t addrlen);
+		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
+						struct sockaddr *stc_addr, socklen_t *addrlen);
+						
+		ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
+		ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+		
+    5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
+        // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
+	6. close <unistd.h> int close(int fd);
+        // In multi-thread one thread close socket just decrement its reference count until to 0, not affect other threads
+           \action to the same socket. Once all threads call close() to the same socket, socket will close at the end.
+int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp); // ok: 0, error: -1
+int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp);
+       
+Raw-socket:
+	int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
+	int getsockopt (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
+	level: 	
+		SOL_SOKCET: SO_BROADCASE(bool), SO_RCVTIMEO(struct timeval), SO_SNDTIMEO(struct timeval), 
+			SO_REUSEADDR, SO_KEEPALIVE, 
+		IPPROTO_IP: IP_HDRINCL(bool), IP_ADD_MEMBERSHIP(struct ip_mreq), IP_DROP_MEMBERSHIP, IP_MULTICAST_IF(DWORD),
+			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
+            SO_RCVBUF(mininum 512 bytes, maximum 1048576 bytes);
+            SO_BROADCASE(have no meaning for stream sockets)
+            SO_KEEPALIVE(only have meaning for stream sockets)
+            SO_OOBINLINE
+    int sockatmark(int sockfd); 
+        // return 1 when we have readched urgent data, 0 if not, -1 on error; can be safe use in the handler for SIGURG
+Out-of-Band data:
+    OOB data is only supported on AF_INET and AF_INET6, the data can be sent by specifying the MSG_OOB fly on send function.
+    The SIOCATMARK ioctl() request determine if the read pointer is pointing to the last OOB byte.
+    If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final OOB data occurrence.
+    ISGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
+    Reciev OOB data:
+        The socket API keeps track of recieved OOB data by using OOB marker witch points to the last byte of the OOB data.
+        Independent of the OOB data is recieved inline, an input operation processes data up to OOB marker, if OOB data sent.
+        If SO_OOBINLINE is not set:
+            if MSG_OOB is specified the data will be recieved, otherwise not. if multi-data sent, only final OOB is remebered.
+        If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying MSG_OOB(EINVAL).
+        
+    
+Components of Server:
+	1. IO communication unit
+		1.1 Port multiplexing
+			select 1000, poll, epoll 30W
+		1.2 Synchronization	
+			http https 
+		1.3 asynchroniztion
+			signal, sigaction
+		1.4 asynchronous IO
+			aio_read, aio_write
+	2. Data Process Unit	
+		2.1 Multiple Thread	
+			Thread Mutext: mutex, spin, atomic
+			Thread Synchronization: PV, semaphore
+			Thread Communication
+		2.2 Multiple Prcesses
+			IPC pip, fifo, socketpair
+		2.3 Multiple Thread + Multiple Process
+			Thread Pool
+			Process Pool
+	3. Date Storage
+Two high-performance server architectures:
+	1. Reactor
+	2. Proactor
+	
+Port multiplexing:
+	1. select
+		#include <sys/select.h>
+		#include <sys/time.h>
+		int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
+        // nfds is the value of max fd plus one
+        // timeout and every fs_set needs clean up first and then init at each time select execute
+		void FD_ZERO(fd_set *fdset);
+		void FD_SET(int fd, fd_set *fdset);
+		void FD_CLR(int fd, fd_set *fdset);
+		void FD_ISSET(int fd, fd_set *fdset);
+        struct timeval{
+			long tv_sec;   //seconds
+            long tv_usec;  //microseconds
+		};
+	2. poll
+		# include <poll.h>
+		int poll( struct pollfd *fds, unsigned int nfds, int timeout);
+
+		struct pollfd {
+			int fd;             
+			short events;       // request event  
+			short revents;      // return event
+		} ; 
+		Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
+				POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
+	3. epoll
+		#include <sys/epoll.h>
+		int epoll_create(int size);
+		int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+			op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
+			struct epoll_event {
+                uint32_t        events; /* Epoll events */
+                epoll_data_t    data;   /* User data variable */
+			};
+            typedef union epoll_data {
+                voit        *ptr;
+                int         fd;
+                uint32_t    u32;
+                uint64_t    u64;
+            } epoll_data_t;
+			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP
+		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
+		
+			
+		#include <unistd.h>
+		#include <fcntl.h>
+		int fcntl(int fd, int cmd, ... /* arg */ ); // manipulate file descriptor
+			cmd: F_DUPFD, F_SETFD, F_GETFL, SIG_URG
+                F_SRTOWN: if thired argument is positive it represents process ID, otherwise presents process group ID
+Network configuration information:
+    #include<netdb.h>
+    struct hostnet *gethostent(void);
+    void sethostent(int stayopen);
+    void endhostent(void);
+    struct hostent {
+        char     *h_name;
+        char    **h_aliases;
+        int       h_addrtype;
+        int       h_length;
+        char    **h_addr_list;
+        ...
+    };
+ 
 **********************************************  Signal Programming  *********************************************
+
 Methods of Local Processes Communication:
 	1. Messaging (pipeline, FIFO, message queue)
 	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
@@ -817,7 +830,18 @@ Summary:
    considered instead as they are far simpler. Shared memory still has its use.
     
 **********************************************  Thread Process Programming  *************************************
-  
+Results of different order of parent and child process exit:
+    1. parent exit before child process: child process becomes orphan process ,init process take over it.
+    2. parent exit after child without call wait or waitpid, child becomes zombie process.
+    3. parent exit after child with call wait, both parent and child exit normally. 
+Process Enviroment:
+    Exit Function:
+        _exit(...), _Exit(...) // return to the kernel immediately
+        exit(...) // performs certain cleanup processing then returns to kernel
+        ptread_exit();
+        returns of the last thread from its start routine
+        response of the last thread to the cancellation request
+        int atexit(void *(func)(void)); // call on registered func in reverse order and as many times as registered
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
     vfork(); //WIFEXITED
     wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED

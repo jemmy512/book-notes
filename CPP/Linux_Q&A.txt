@@ -83,6 +83,7 @@
 29.断线重连机制如何设计
     1. 等待等间距，指数时间重新连接   2. 监控网络状态重连 3. 用户选择重连
 30.如何检测对端已经关闭
+    1. 心跳包机制 2. 判断recv和errno(对端主动关闭recv：-1，errno：EBADF；对端被动关闭recv：0，errno：EWOULDBLOCK)
 31.如何清除无效的死链（端与端之间的线路故障）
     死链： socket异常关闭，没有正常4次挥手；路由中间链路短路断开，select，epoll无法检测到该错误，此时由心跳包检测
 32.定时器的不同实现及优缺点
@@ -91,8 +92,8 @@
 34.http协议的具体格式
     Method_url_version\r\n
     key:_value\r\n
-    Connection: Keep-alive\r\n
-    Content-length: 8
+    Connection:_Keep-alive\r\n
+    Content-length:_8
     \r\n
     abcdefgh
 35.http head、get与post方法的细节
