@@ -333,7 +333,7 @@ struct rlimit {
 };
 setrlimit(int resource, const struct rlimit *rlp);
 getrlimit(int resourcr struct rlimit *rlp);
-    RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS
+    RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS, RLIM_INFINITY
 	
 **********************************************  Network Programming  ********************************************
 
@@ -834,6 +834,36 @@ Results of different order of parent and child process exit:
     1. parent exit before child process: child process becomes orphan process ,init process take over it.
     2. parent exit after child without call wait or waitpid, child becomes zombie process.
     3. parent exit after child with call wait, both parent and child exit normally. 
+Enviroment List: <stdlib.h>
+    Global variable: environ;
+    opt: getenv(const char *name), putevn(char *string);
+Consists of Program:
+                    |---------------------------------------------------------------------------------
+                    |                               |
+    high  address   |                               | command-line arguments and enviroment variables
+                    |                               |
+                    |-------------------------------|------------------------------------------------- 0xC0000000
+                    |   stack                       | automatic variable, function called  info
+                    |- - - - - - - - - - - - - - - -| - - - - - - - - - - - - - - - -  
+                    |                               |
+                    |                               | 
+                    |                               |
+                    |- - - - - - - - - - - - - - - -| - - - - - - - - - - - - - - - -
+                    |   heap                        | dynamic memeory allocation
+                    |-------------------------------|--------------------------------
+                    |   uninitialized data          | initialized to zero by exex
+                    |-------------------------------|-------------------------------------------------------------
+                    |   initialized data (bss)      |
+                    |-------------------------------|--------- read from program file by exec
+                    |      Text                     | (machine instructions, sharable, read only)
+    low addresss    |-------------------------------|-------------------------------------------------- 0x08048000
+    notes:
+        Only initialized data and text segment are stored in the program file on disk
+Memory Allocation: <stdlib.h>
+    Implemented with sbrk() system call.
+    Freed space is not returned to the kernel, instead, it's kept in the malloc pool and can be use for next call.
+    Writing past of the end or before the begining of a allocated block is fatal.
+    
 Process Enviroment:
     Exit Function:
         _exit(...), _Exit(...) // return to the kernel immediately
@@ -843,11 +873,17 @@ Process Enviroment:
         response of the last thread to the cancellation request
         int atexit(void *(func)(void)); // call on registered func in reverse order and as many times as registered
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
+        // child process copys parent's data, head and stack but shares text segment and file descriptors.
+        // There are two ways to handling descriptors after fork:
+           1. Parent waits fo child to complete.
+           2. Both parent and child go their way(close descriptors don't need, respectively) 
     vfork(); //WIFEXITED
     wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
         WIFEXITED(); WEXITEDSTATUS(); //check child process exit formal or not and retrieve exit code
+pthread:
     pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
-        // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack
+        // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack.
+        // The order of executing between child and parent process depends on the scheduling algorithm used by kernel.
     pthread_join(pthread_t thread, void **retval);
     pthread_exit(void *retval);
     pthread_detach(pthread_t thread);
