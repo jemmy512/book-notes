@@ -1,6 +1,3 @@
-man 
---help
-
 
 Network Config:
 	ifconfig
@@ -111,7 +108,8 @@ SSH service：
 
 
 
-**********************************************  GDB  ************************************************************	
+**********************************************  GDB  ************************************************************
+	
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 
 #define DEBUG
@@ -830,13 +828,14 @@ Summary:
    considered instead as they are far simpler. Shared memory still has its use.
     
 **********************************************  Thread Process Programming  *************************************
+
 Results of different order of parent and child process exit:
     1. parent exit before child process: child process becomes orphan process ,init process take over it.
     2. parent exit after child without call wait or waitpid, child becomes zombie process.
     3. parent exit after child with call wait, both parent and child exit normally. 
 Enviroment List: <stdlib.h>
     Global variable: environ;
-    opt: getenv(const char *name), putevn(char *string);
+    opt: getenv(const char *name), putenv(char *string);
 Consists of Program:
                     |---------------------------------------------------------------------------------
                     |                               |
@@ -877,9 +876,40 @@ Process Enviroment:
         // There are two ways to handling descriptors after fork:
            1. Parent waits fo child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
-    vfork(); //WIFEXITED
-    wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
-        WIFEXITED(); WEXITEDSTATUS(); //check child process exit formal or not and retrieve exit code
+    pid_t wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
+        WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
+        // return immediatelly with terminate status if one child is zombie.
+Process Shceduling: <unistd.h>
+    nice value range: 0 - 2 * NZERO - 1
+    modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
+    priority: <sys/resource.h>
+        int getpriority(int which, id_t who);  
+            // which: PRIO_PROCESS, PRIO_PGRP, PRIO_USER
+            // Return: nice value between -NZERO and NZERO - 1 if ok, -1 on error
+        int setpriority(int which, id_t who, int value);
+            // The value is added to NZERO and this becomes new nice value
+            // Return: 0 if ok, -1 on error
+Process Time: <sys/times.h>
+    struct tms {
+        clock_t tms_utime;  // user CPU time
+        clock_t tms_stime;  // system CPU time
+        clock_t tms_cutime; // user CPU time, terminated children
+        clock_t tms_cstime; // system CPU time, terminated children
+    };
+    clock_t times(struct tms *buf); // return wall clock time
+    
+Process exit functions:
+    Five normal terminations:
+        1. Executing return from the main function.
+        2. Executing return from the start routine of the last thread in the process.
+        3. Calling the exit(...) function.
+        4. Calling the _exit(...), _Exit(...) function.
+        5. Calling the pthread_exit(...) from the last thread in the process.
+    Three abnormal terminations:
+        1. Calling the abort(...) function. SIGABRT will generate.
+        2. When process receive certain signals.
+        3. The last thread responds to the cancellation request.
+    Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
 pthread:
     pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
         // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack.
@@ -963,6 +993,7 @@ xinetd:
     
  
 **********************************************  HTTPS Programming   *********************************************
+
 SSL:
     Consists of two layers of protocol:
         High-level protocol: 
