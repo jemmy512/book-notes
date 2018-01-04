@@ -268,6 +268,17 @@ source path:
 define own enviroment variable int GDB:
 	set $<varname> = <value> # enviromet var have no type
 	show convenience # view all enviroment variable
+
+**********************************************  File I/O ********************************************************
+By convention: <unistd.h>
+    0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stands for standard input, output and error, respectively.
+    Range: 0 - (OPEN_MAX - 1)
+        
+    #include<fcntl.h>
+    int open(const char *path, int oflag, ... /*mode_t mode*/);
+    int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
+        // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, 
+        // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK, O_SYNC, O_TRUNC
     
 **********************************************  File System Programming  ****************************************
    
@@ -833,6 +844,11 @@ Results of different order of parent and child process exit:
     1. parent exit before child process: child process becomes orphan process ,init process take over it.
     2. parent exit after child without call wait or waitpid, child becomes zombie process.
     3. parent exit after child with call wait, both parent and child exit normally. 
+Handle Zombie process:
+    1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate  zombie
+        while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);
+    2. fork twice.
+    3. Ignore the SIGCHLD signal.
 Enviroment List: <stdlib.h>
     Global variable: environ;
     opt: getenv(const char *name), putenv(char *string);
@@ -876,9 +892,14 @@ Process Enviroment:
         // There are two ways to handling descriptors after fork:
            1. Parent waits fo child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
-    pid_t wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
+    pid_t wait(int *stat_loc);  
         WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
         // return immediatelly with terminate status if one child is zombie.
+    pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
+        // pid > 0; wait the process whose process ID equals pid
+        // pid == 0; wait the process whose process group ID equals calling process group ID
+        // pid == -1; wait for any process
+        // pid < -1; wait the process whose process group ID equals absolute value of pid
 Process Shceduling: <unistd.h>
     nice value range: 0 - 2 * NZERO - 1
     modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
