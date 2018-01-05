@@ -277,11 +277,28 @@ By convention: <unistd.h>
     #include<fcntl.h>
     int open(const char *path, int oflag, ... /*mode_t mode*/);
     int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
-        // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, 
-        // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK, O_SYNC, O_TRUNC
+        // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, O_TTY_INIT, O_SYNC, O_DSYNC, O_RSYNC
+        // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK,  O_TRUNC
+    int create(const char *path, mode_t mode); // 
+    int close(int fd); <unistd.h> == [ open(path, O_WRONLY | O_CREATE | O_TRUNC, mode)]
+    off_t lseek(int fd, off_t offset, int whence); // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
+        // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
+        // rather than testing whether it is less than 0. Because offset is possible a negative value.
+    off_t fseek(FILE *stream, long int offset, int whence) <stdio.h>
+    off_t ftell(FILE *stream); <stdio.h> // return current offset
+    int read(int fd, void *buf, size_t nbytes);
+        // There are several cases actual bytes read less than amount requested:
+        // 1. Reading from aregular file, end of the file is reached before requested number of bytes has been read.
+        // 2. Reading from a terminal device. Normally, up to one line is read at a time.
+        // 3. Reading from a network. Buffering with network may cause less than request amount  to be return.
+        // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
+        // 5. Reading from a record-oritend device. 
+        // 6. Interrupted by a signal and partial data have been read.
     
-**********************************************  File System Programming  ****************************************
-   
+**********************************************  File and Directories  *******************************************
+TOCTTOU: time-of-check-to-time-of-use
+    This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
+    program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
 struct stat {
     dev_t       st_dev;     //Id of device containing file
     ino_t       st_ino;     // inode number
@@ -308,21 +325,15 @@ int fstat(int fd, struct stat *statbuf);
 int lstat(const char *pathname, struct stat *statbuf); // pathname is symbolic link, return info about link itself
    
 int mkdir(const char *pathname, mode_t mode);  
+int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
+          int fd_limit, int flags);
+   flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
+   
 struct FTW {
     int base;   // offset of the filename
     int leve;
 };
- 
-int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
-          int fd_limit, int flags);
-    flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS
-        FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
-        
-off_t lseek(int fd, off_t offset, int whence);
-    whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
-off_t fseek(FILE *stream, long int offset, int whence)
-off_t ftell(FILE *stream);
-    
+
 int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
     advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEDD, *_DONTNEED
 int fallocate(int fd, int mode, off_t offset, off_t len); // nonportable
