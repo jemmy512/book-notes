@@ -481,8 +481,7 @@ Port multiplexing:
 			long tv_sec;   //seconds
             long tv_usec;  //microseconds
 		};
-	2. poll
-		# include <poll.h>
+	2. poll #include <poll.h>
 		int poll( struct pollfd *fds, unsigned int nfds, int timeout);
 
 		struct pollfd {
@@ -840,7 +839,7 @@ Enviroment List: <stdlib.h>
 Consists of Program:
                     |---------------------------------------------------------------------------------
                     |                               |
-    high  address   |                               | command-line arguments and enviroment variables
+    high  address   |                               | command-line arguments and environment variables
                     |                               |
                     |-------------------------------|------------------------------------------------- 0xC0000000
                     |   stack                       | automatic variable, function called  info
