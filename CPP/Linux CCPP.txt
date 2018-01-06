@@ -1,6 +1,3 @@
-man 
---help
-
 
 Network Config:
 	ifconfig
@@ -111,7 +108,8 @@ SSH service：
 
 
 
-**********************************************  GDB  ************************************************************	
+**********************************************  GDB  ************************************************************
+	
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 
 #define DEBUG
@@ -270,9 +268,37 @@ source path:
 define own enviroment variable int GDB:
 	set $<varname> = <value> # enviromet var have no type
 	show convenience # view all enviroment variable
+
+**********************************************  File I/O ********************************************************
+By convention: <unistd.h>
+    0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stands for standard input, output and error, respectively.
+    Range: 0 - (OPEN_MAX - 1)
+        
+    #include<fcntl.h>
+    int open(const char *path, int oflag, ... /*mode_t mode*/);
+    int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
+        // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, O_TTY_INIT, O_SYNC, O_DSYNC, O_RSYNC
+        // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK,  O_TRUNC
+    int create(const char *path, mode_t mode); // 
+    int close(int fd); <unistd.h> == [ open(path, O_WRONLY | O_CREATE | O_TRUNC, mode)]
+    off_t lseek(int fd, off_t offset, int whence); // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
+        // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
+        // rather than testing whether it is less than 0. Because offset is possible a negative value.
+    off_t fseek(FILE *stream, long int offset, int whence) <stdio.h>
+    off_t ftell(FILE *stream); <stdio.h> // return current offset
+    int read(int fd, void *buf, size_t nbytes);
+        // There are several cases actual bytes read less than amount requested:
+        // 1. Reading from aregular file, end of the file is reached before requested number of bytes has been read.
+        // 2. Reading from a terminal device. Normally, up to one line is read at a time.
+        // 3. Reading from a network. Buffering with network may cause less than request amount  to be return.
+        // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
+        // 5. Reading from a record-oritend device. 
+        // 6. Interrupted by a signal and partial data have been read.
     
-**********************************************  File System Programming  ****************************************
-   
+**********************************************  File and Directories  *******************************************
+TOCTTOU: time-of-check-to-time-of-use
+    This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
+    program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
 struct stat {
     dev_t       st_dev;     //Id of device containing file
     ino_t       st_ino;     // inode number
@@ -299,21 +325,15 @@ int fstat(int fd, struct stat *statbuf);
 int lstat(const char *pathname, struct stat *statbuf); // pathname is symbolic link, return info about link itself
    
 int mkdir(const char *pathname, mode_t mode);  
+int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
+          int fd_limit, int flags);
+   flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
+   
 struct FTW {
     int base;   // offset of the filename
     int leve;
 };
- 
-int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
-          int fd_limit, int flags);
-    flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS
-        FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
-        
-off_t lseek(int fd, off_t offset, int whence);
-    whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
-off_t fseek(FILE *stream, long int offset, int whence)
-off_t ftell(FILE *stream);
-    
+
 int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
     advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEDD, *_DONTNEED
 int fallocate(int fd, int mode, off_t offset, off_t len); // nonportable
@@ -829,13 +849,19 @@ Summary:
    considered instead as they are far simpler. Shared memory still has its use.
     
 **********************************************  Thread Process Programming  *************************************
+
 Results of different order of parent and child process exit:
     1. parent exit before child process: child process becomes orphan process ,init process take over it.
     2. parent exit after child without call wait or waitpid, child becomes zombie process.
     3. parent exit after child with call wait, both parent and child exit normally. 
+Handle Zombie process:
+    1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate  zombie
+        while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);
+    2. fork twice.
+    3. Ignore the SIGCHLD signal.
 Enviroment List: <stdlib.h>
     Global variable: environ;
-    opt: getenv(const char *name), putevn(char *string);
+    opt: getenv(const char *name), putenv(char *string);
 Consists of Program:
                     |---------------------------------------------------------------------------------
                     |                               |
@@ -876,9 +902,45 @@ Process Enviroment:
         // There are two ways to handling descriptors after fork:
            1. Parent waits fo child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
-    vfork(); //WIFEXITED
-    wait(int *stat_loc); waitpid(pid_t pid, int *stat_loc, int options);  // options: WCONTINUED, WNOHANG, WUNTRACED
-        WIFEXITED(); WEXITEDSTATUS(); //check child process exit formal or not and retrieve exit code
+    pid_t wait(int *stat_loc);  
+        WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
+        // return immediatelly with terminate status if one child is zombie.
+    pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
+        // pid > 0; wait the process whose process ID equals pid
+        // pid == 0; wait the process whose process group ID equals calling process group ID
+        // pid == -1; wait for any process
+        // pid < -1; wait the process whose process group ID equals absolute value of pid
+Process Shceduling: <unistd.h>
+    nice value range: 0 - 2 * NZERO - 1
+    modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
+    priority: <sys/resource.h>
+        int getpriority(int which, id_t who);  
+            // which: PRIO_PROCESS, PRIO_PGRP, PRIO_USER
+            // Return: nice value between -NZERO and NZERO - 1 if ok, -1 on error
+        int setpriority(int which, id_t who, int value);
+            // The value is added to NZERO and this becomes new nice value
+            // Return: 0 if ok, -1 on error
+Process Time: <sys/times.h>
+    struct tms {
+        clock_t tms_utime;  // user CPU time
+        clock_t tms_stime;  // system CPU time
+        clock_t tms_cutime; // user CPU time, terminated children
+        clock_t tms_cstime; // system CPU time, terminated children
+    };
+    clock_t times(struct tms *buf); // return wall clock time
+    
+Process exit functions:
+    Five normal terminations:
+        1. Executing return from the main function.
+        2. Executing return from the start routine of the last thread in the process.
+        3. Calling the exit(...) function.
+        4. Calling the _exit(...), _Exit(...) function.
+        5. Calling the pthread_exit(...) from the last thread in the process.
+    Three abnormal terminations:
+        1. Calling the abort(...) function. SIGABRT will generate.
+        2. When process receive certain signals.
+        3. The last thread responds to the cancellation request.
+    Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
 pthread:
     pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
         // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack.
@@ -962,6 +1024,7 @@ xinetd:
     
  
 **********************************************  HTTPS Programming   *********************************************
+
 SSL:
     Consists of two layers of protocol:
         High-level protocol: 
