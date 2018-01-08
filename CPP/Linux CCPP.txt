@@ -288,7 +288,7 @@ By convention: <unistd.h>
     off_t ftell(FILE *stream); <stdio.h> // return current offset
     int read(int fd, void *buf, size_t nbytes);
         // There are several cases actual bytes read less than amount requested:
-        // 1. Reading from aregular file, end of the file is reached before requested number of bytes has been read.
+        // 1. Reading from a regular file, end of the file is reached before requested number of bytes has been read.
         // 2. Reading from a terminal device. Normally, up to one line is read at a time.
         // 3. Reading from a network. Buffering with network may cause less than request amount  to be return.
         // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
@@ -309,7 +309,16 @@ By convention: <unistd.h>
             int         *flag;
             int         val;
         };
-
+FD Duplicate:
+        int dup(int fd);
+        int dup2(int fd, int fd2);
+Data sync between kernel buffer and disk:
+    void sync(void);
+    int fsync(int fd);
+    int fdatasync(int fd);
+Aotomic Operation: <unistd.h>
+    ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
+    ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
 **********************************************  File and Directories  *******************************************
 TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
@@ -1089,6 +1098,33 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
         void SSL_CTX_free(SSL_CTX *);
 
 
+**********************************************  MYSQL Programming  **********************************************
+Direct Exexute:
+    MYSQL *mysql_init(MYSQL *mysql);                        // init MYSQL struct
+    MYSQL *mysql_real_connect(MYSQL *mysql, const char *host, const char *user, const char *pwd, const char *db, 
+        unsigned int port, const char *unix_socket, unsigned long client_flag); // connect to mysql server
+    int mysql_query(MYSQL *mysql, const char *stmt_str);    // execute query
+    MYSQL_RES *mysql_store_result(MYSQL *mysql);            // store query result
+    unsigned int mysql_field_count(MYSQL *mysql);           // get last result column amount
+    unsigned int mysq_num_field(MYSQl_RES *result);         // get result column amount
+    my_ulonglong mysql_num_row(MYSQL_RES *result);          // get result row amount
+    MYSQL_ROW mysql_fetch_row(MYSQL_RES *result);           // get next data from result
+    void mysql_free_result(MYSQL_RES *result);              // free MYSQL_RES struct
+    void mysql_close(MYSQL *connection);  
+
+Prepared Statment:
+    MYSQL_STMT *mysql_stmt_init(); 
+    mysql_stmt_prepare(); // prepare stmt on server
+    mysql_stmt_bind_param(); // set the values of any parameters
+    mysql_stmt_execute();
+    mysql_stmt_result_metadata(); obtain the result set meta data
+    mysql_stmt_bind_result();   // retrieve result set row
+    mysql_stmt_fetch();          // fetch data row by row
+    mysql_stmt_next_result();   // more result: -1 = no, >0 = error, 0 = yes 
+    
+
+unsigned int mysql_errno(MYSQL *connection);  
+char *mysql_error(MYSQL *connection);
 
 
 
