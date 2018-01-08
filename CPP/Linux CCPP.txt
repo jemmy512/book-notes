@@ -294,6 +294,7 @@ By convention: <unistd.h>
         // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
         // 5. Reading from a record-oritend device. 
         // 6. Interrupted by a signal and partial data have been read.
+Parse Command Line Option
     int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
         // If an option followed by a colon it takes an argument, otherwise it exits by itself.
         // Encounters a invalid option, returs a question mark instead of characters
@@ -309,7 +310,12 @@ By convention: <unistd.h>
             int         *flag;
             int         val;
         };
-
+Syslog:
+    void openlog(const char *ident, int logopt, int facility);
+    void closelog(void);
+    int setlogmask(int maskpri);
+    void syslog(int priority, const char *message, .../*arguments*/);
+    
 **********************************************  File and Directories  *******************************************
 TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
@@ -1066,16 +1072,17 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
         SSL_METHOD* method = SSLv23_server_method(void); // server method is the same as the client
     3. Set CTX
         SSL_CTX *ctx = SSL_CTX_new(SSL_METHOD*);
-        // set the verify method
+            // set the verify method
         void SSL_set_verify(SSL_CTX *, int, int *(int, X509_STORE_CTX *)); // SSL_VERIFY_<PEER, NONE>
-        // load certificate
-        void SSL_CTX_load_veriry_locations(SSL_CTS *, const char *file, const char *path);
-        // load local certificate
+            // load certificate
+        void SSL_CTX_load_verify_locations(SSL_CTS *, const char *file, const char *path);
+            // load local certificate
         int SSL_CTX_use_certificate_file(SSL_CTX *, const char *file, int type);
-        // load private key
+            // load private key
         int SSL_CTX_use_PrivateKey_file(SSL_CTX *, const char *file, int type);
-        // validata private key and certificate
+            // validata private key and certificate
         BOOL SSL_CTX_check_private_key(SSL_CTX *);
+        
     4. Attach to a connected socket
         SSL *SSL_new(SSL_CTX *);
         int SSL_set_fd(SSL *ssl, int fd); int SSL_set_rfd(SSL *, int); int SSL_set_wfd(SSL *, int); 
