@@ -294,7 +294,22 @@ By convention: <unistd.h>
         // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
         // 5. Reading from a record-oritend device. 
         // 6. Interrupted by a signal and partial data have been read.
-    
+    int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
+        // If an option followed by a colon it takes an argument, otherwise it exits by itself.
+        // Encounters a invalid option, returs a question mark instead of characters
+        // If an option's missing, returns a question mark; if first character of options is colon, return colon
+        // Pattern -- can stop getopt processing options and return -1
+        // optopt, optarg, opterr, optind
+    int getopt_long(int argc, char * const argv[], const char *optstring,
+           const struct option *longopts, int *longindex); <getopt.h>
+        // longopts' last element must be a zero array
+        struct option{              
+            const char  *name;
+            int         has_flag;
+            int         *flag;
+            int         val;
+        };
+
 **********************************************  File and Directories  *******************************************
 TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
@@ -333,6 +348,13 @@ struct FTW {
     int base;   // offset of the filename
     int leve;
 };
+
+int chdir(const char *pathname);
+int fchfir(int fd);
+
+char *getcwd(char *buf, size_t size);
+char *getwd(char *buf);
+char *get_current_dir_name(void); 
 
 int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
     advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEDD, *_DONTNEED
@@ -501,8 +523,7 @@ Port multiplexing:
 			long tv_sec;   //seconds
             long tv_usec;  //microseconds
 		};
-	2. poll
-		# include <poll.h>
+	2. poll #include <poll.h>
 		int poll( struct pollfd *fds, unsigned int nfds, int timeout);
 
 		struct pollfd {
@@ -866,7 +887,7 @@ Enviroment List: <stdlib.h>
 Consists of Program:
                     |---------------------------------------------------------------------------------
                     |                               |
-    high  address   |                               | command-line arguments and enviroment variables
+    high  address   |                               | command-line arguments and environment variables
                     |                               |
                     |-------------------------------|------------------------------------------------- 0xC0000000
                     |   stack                       | automatic variable, function called  info
