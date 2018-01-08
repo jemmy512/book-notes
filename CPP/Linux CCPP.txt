@@ -300,7 +300,7 @@ TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
     program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
 struct stat {
-    dev_t       st_dev;     //Id of device containing file
+    dev_t       st_dev;     // Id of device containing file
     ino_t       st_ino;     // inode number
     mode_t      st_mode;    // file type and mode
     nlink_t     st_nlink;   // number of hard link
