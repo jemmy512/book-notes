@@ -310,8 +310,8 @@ By convention: <unistd.h>
             int         val;
         };
 FD Duplicate:
-        int dup(int fd);
-        int dup2(int fd, int fd2);
+    int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
+    int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
 Data sync between kernel buffer and disk:
     void sync(void);
     int fsync(int fd);
@@ -319,40 +319,58 @@ Data sync between kernel buffer and disk:
 Aotomic Operation: <unistd.h>
     ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
     ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
+File property change:
+    int fcntl(int fd, int cmd, ... /*int arg*/); <fcntl.h>
+        // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
+        // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN, F_SETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
+        // F_GETFL{O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH} {O_APPEND, O_NONBLOCK, O_SYNC, O_DSYNC, O_RSYNC}
+ioctl: <sys/ioctl.h>
+    int ioctl(int fd, int request, ...);
+/dev/fd/:
+    
 **********************************************  File and Directories  *******************************************
 TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
     program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
-struct stat {
-    dev_t       st_dev;     // Id of device containing file
-    ino_t       st_ino;     // inode number
-    mode_t      st_mode;    // file type and mode
-    nlink_t     st_nlink;   // number of hard link
-    uid_t       st_uid;     // user id
-    gid_t       st_git;
-    dev_t       st_rdev;    // Device Id (if special file)
-    off_t       st_size;    // Total size, in bytes
-    blksize_t st_blksize;   // block size for filesystem I/O
-    blksize_t st_blocks;    // Number of 512B blocks allocatd
     
-    struct timespec st_atim;    // last access time
-    struct timespec st_mtim;    // last modification time
-    struct timespec st_ctim;    // last stat change  time
-};
-
-mode_t:
-    S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIO
-    S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
-    S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
-int stat(const char *pathname, strutct stat *statbuf);
-int fstat(int fd, struct stat *statbuf);
-int lstat(const char *pathname, struct stat *statbuf); // pathname is symbolic link, return info about link itself
-   
-int mkdir(const char *pathname, mode_t mode);  
-int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
-          int fd_limit, int flags);
-   flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
-   
+Stata Family function: <sys/stat.h>
+    int stat(const char *pathname, struct stat *buf);
+    int fstat(int fd, struct stat *buf);
+    int lstat(const char *pathname, struct stat *buf);  // return symbolic infomation, not referenced file
+    int fstatat(int fd, consth char *pathname, struct stat *buf, int flag); // AT_SYMLINK_NOFOLLOW, AT_FDCWD
+    struct stat {
+        dev_t       st_dev;     // Id of device containing file
+        ino_t       st_ino;     // inode number
+        mode_t      st_mode;    // file type and mode (permission)
+        nlink_t     st_nlink;   // number of hard link
+        uid_t       st_uid;     // user id
+        gid_t       st_git;
+        dev_t       st_rdev;    // Device Id (if special file)
+        off_t       st_size;    // Total size, in bytes
+        blksize_t   st_blksize; // block size for filesystem I/O
+        blksize_t   st_blocks;  // Number of 512B blocks allocatd
+        
+        struct timespec st_atim;    // last access time
+        struct timespec st_mtim;    // last modification time
+        struct timespec st_ctim;    // last stat change  time
+    };
+    mode_t:
+        S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIO
+        S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+        S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
+File Type:
+    1. Regular file 2. Directory file 3. Block special file 4. Character specil file 5. FIFO 6. Socket 7. Symbolic link
+    S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
+    S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
+    
+    int mkdir(const char *pathname, mode_t mode);  
+    int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
+              int fd_limit, int flags);
+       flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
+File Access Permission:
+    S_ISUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+    1. Whenever we open any type of file by name, we must have execute permission on each directory mentioned in name.
+    2. 
 struct FTW {
     int base;   // offset of the filename
     int leve;
@@ -1125,60 +1143,3 @@ Prepared Statment:
 
 unsigned int mysql_errno(MYSQL *connection);  
 char *mysql_error(MYSQL *connection);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- 
-    
-    
-    
-    
-   
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
