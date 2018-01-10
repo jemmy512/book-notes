@@ -374,9 +374,38 @@ File Type:
               int fd_limit, int flags);
        flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
 File Access Permission:
-    S_ISUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+    st_mode mask:
+        S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+    
     1. Whenever we open any type of file by name, we must have execute permission on each directory mentioned in name.
-    2. 
+    2. The read permission determines whether we can open an existing file for reading
+    3. We must have write permission for a file to specify the O_TRUNC flag in the open function
+    4. We can only create/delete new file in a directory unless we have write permission and execute permission
+    5. Execute permission for a file must be on if we use exec function and file also has to be a regular file.
+access and faccessat: <unistd.h> determine accessibility based on readl use and group id
+    int access(const chat *pathname, int mode); 
+    int faccessat(int fd, const chatr *pathname, int mode, int flag);
+    // mode: F_OK, R_OK, W_OK, X_OK; flag: AR_EACCESS
+umask: <sys/stat.h>  // set and get file mode creation mask
+     mode_t umask(mode_t cmask);
+     // any bits that are on in the file mode creation mask are tured off in the file's mode
+chmod, fchmod, fchmodat: <sys/stat.h>
+    int chmod(const char *pathname, mode_t mode);
+    int fchmod(int fd, mode_t mode);
+    int fchmodat(int fd, const char *pathname, mode_t mode, int flag); // 
+        // flag: AT_SYMLINKS_NOFOLLOW doesn't follow symbolic links
+    // effective user ID of the process must be equal to owner of the file or have supersuer permissions
+    // S_ISUID, S_ISGID, S_ISVTX; S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR
+    // S_IRWXG, S_IRGRP, S_IWGRP, S_IXGRP; S_IRWXO, S_IROTH, S_IWOTH, S_IXOTH
+    // S_ISVTX(sticky bit): only owner or superuser can rename or delete permission.
+    //              Two permissions are automatically remvoed by chomd:
+    // 1. Only superuser can set sticky bit of a regular file.
+    // 2. If the group id of new file doesn't equal to either effective group id of the  process or one the process's
+    //    supplementary group IDs and if process doesn't have superuser privileges,set-group-id bit is removed.
+    
+    
+    
+    
 struct FTW {
     int base;   // offset of the filename
     int leve;
