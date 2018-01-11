@@ -381,7 +381,7 @@ struct FTW {
     int base;   // offset of the filename
     int leve;
 };
-
+    mode_t umask(mode_t cmask); // set and get file mode creation mask
 int chdir(const char *pathname);
 int fchfir(int fd);
 
