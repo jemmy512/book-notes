@@ -352,7 +352,7 @@ Stata Family function: <sys/stat.h>
         uid_t       st_uid;     // user id
         gid_t       st_git;
         dev_t       st_rdev;    // Device Id (if special file)
-        off_t       st_size;    // Total size, in bytes
+        off_t       st_size;    // Total size, in bytes (files, directories, symbolic links)
         blksize_t   st_blksize; // block size for filesystem I/O
         blksize_t   st_blocks;  // Number of 512B blocks allocatd
         
@@ -374,9 +374,62 @@ File Type:
               int fd_limit, int flags);
        flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
 File Access Permission:
-    S_ISUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+    st_mode mask:
+        S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+    
     1. Whenever we open any type of file by name, we must have execute permission on each directory mentioned in name.
-    2. 
+    2. The read permission determines whether we can open an existing file for reading
+    3. We must have write permission for a file to specify the O_TRUNC flag in the open function
+    4. We can only create/delete new file in a directory unless we have write permission and execute permission
+    5. Execute permission for a file must be on if we use exec function and file also has to be a regular file.
+access and faccessat: <unistd.h> determine accessibility based on readl use and group id
+    int access(const chat *pathname, int mode); 
+    int faccessat(int fd, const chatr *pathname, int mode, int flag);
+    // mode: F_OK, R_OK, W_OK, X_OK; flag: AR_EACCESS
+umask: <sys/stat.h>  // set and get file mode creation mask
+     mode_t umask(mode_t cmask);
+     // any bits that are on in the file mode creation mask are tured off in the file's mode
+chmod, fchmod, fchmodat: <sys/stat.h>
+    int chmod(const char *pathname, mode_t mode);
+    int fchmod(int fd, mode_t mode);
+    int fchmodat(int fd, const char *pathname, mode_t mode, int flag); // 
+        // flag: AT_SYMLINKS_NOFOLLOW doesn't follow symbolic links
+    // effective user ID of the process must be equal to owner of the file or have supersuer permissions
+    // S_ISUID, S_ISGID, S_ISVTX; S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR
+    // S_IRWXG, S_IRGRP, S_IWGRP, S_IXGRP; S_IRWXO, S_IROTH, S_IWOTH, S_IXOTH
+    // S_ISVTX(sticky bit): only owner or superuser can rename or delete permission.
+    //              Two permissions are automatically remvoed by chomd:
+    // 1. Only superuser can set sticky bit of a regular file.
+    // 2. If the group id of new file doesn't equal to either effective group id of the  process or one the process's
+    //    supplementary group IDs and if process doesn't have superuser privileges,set-group-id bit is removed.
+chown, fchown, fchownat, lchown:    <unistd.h>
+    int chown(const char *pathname, uid_t owner, git_t group);
+        // can't used to change ownership of symbolic link
+    int fchown(int fd, uit_t owner, git_t group);
+    int fchownat(int fd, const char *pathname, uit_t owner, git_t group, int flag); // AT_SYMLINK_NOFOLLOW
+    int lchown(const char *pathname, uit_t owner, git_t group);
+    // with _POSIX_CHOWN_RESTRICTED, you can only change the group ID of the files you own, superuser can change UID
+File size:
+    1. Regular file size 0 is allowed.
+    2. Directory size is usually a multiple of a number, such as 16 or 512.
+    3. Symbolic link size is the number of byts in filename. (Symbolic link don't contain normal c null byte)
+File Truncation:    <unistd.h>
+    int truncate(const char *pathname, off_t length);
+    int ftruncate(int fd, off_t length);
+    // if previous file size is less than length, file size will increases, a hole probably crated
+File system:
+    
+link, linkat, unlink, unlinkat, remove: <unistd.h>
+    int link(const char *existingpath, const char *newpath);
+    int linkat(const efd, const char *existingpath, int nfd, const char newpath, int flag); // AT_SYMLINK_NOFOLLOW
+    int unlink(const char *pathname);
+    int unlinkat(int fd, const char *pathname, int flag); // AT_REMOVEDIR
+    int remove(const char *pathname);
+    
+    
+    
+    
+    
 struct FTW {
     int base;   // offset of the filename
     int leve;
@@ -1150,3 +1203,70 @@ Prepared Statment:
 
 unsigned int mysql_errno(MYSQL *connection);  
 char *mysql_error(MYSQL *connection);
+
+
+
+**********************************************  Kernel Programming  *********************************************
+Advantages:
+    1. Don' have to rebuild kernel as ofen.
+    2. Help diagnose system problems.
+    3. Save memory.
+    4. Much faster to maintain and debug.
+Used for:
+    1. Device drivers   2. Filesystem drivers   3. System calls   
+    4.Network drivers   5. TTY line disciplines  6. Executeable interpreters
+LKM utilities:
+    insmod  rmmod   depmod  kerneld  ksyms  lsmod   modinfo   modprobe
+What happen when An LKM loads:
+    1. Search system for device it is know how to drive.
+    2. Register itself as the driver for particular major number /proc/devices
+    3. May register itself as the handler for the interrupt level that device uses / proc/interrupts
+    4. May send setup commands to the device
+    5. A nice device driver issuses kernel msg (/var/log/message) telling what devices if found and is prepared to
+        drive. (dmesg can display recent kernel message)
+    6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) 
+        rather than major number. /proc/net/dev
+    7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
