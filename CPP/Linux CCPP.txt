@@ -352,7 +352,7 @@ Stata Family function: <sys/stat.h>
         uid_t       st_uid;     // user id
         gid_t       st_git;
         dev_t       st_rdev;    // Device Id (if special file)
-        off_t       st_size;    // Total size, in bytes
+        off_t       st_size;    // Total size, in bytes (files, directories, symbolic links)
         blksize_t   st_blksize; // block size for filesystem I/O
         blksize_t   st_blocks;  // Number of 512B blocks allocatd
         
@@ -402,6 +402,30 @@ chmod, fchmod, fchmodat: <sys/stat.h>
     // 1. Only superuser can set sticky bit of a regular file.
     // 2. If the group id of new file doesn't equal to either effective group id of the  process or one the process's
     //    supplementary group IDs and if process doesn't have superuser privileges,set-group-id bit is removed.
+chown, fchown, fchownat, lchown:    <unistd.h>
+    int chown(const char *pathname, uid_t owner, git_t group);
+        // can't used to change ownership of symbolic link
+    int fchown(int fd, uit_t owner, git_t group);
+    int fchownat(int fd, const char *pathname, uit_t owner, git_t group, int flag); // AT_SYMLINK_NOFOLLOW
+    int lchown(const char *pathname, uit_t owner, git_t group);
+    // with _POSIX_CHOWN_RESTRICTED, you can only change the group ID of the files you own, superuser can change UID
+File size:
+    1. Regular file size 0 is allowed.
+    2. Directory size is usually a multiple of a number, such as 16 or 512.
+    3. Symbolic link size is the number of byts in filename. (Symbolic link don't contain normal c null byte)
+File Truncation:    <unistd.h>
+    int truncate(const char *pathname, off_t length);
+    int ftruncate(int fd, off_t length);
+    // if previous file size is less than length, file size will increases, a hole probably crated
+File system:
+    
+link, linkat, unlink, unlinkat, remove: <unistd.h>
+    int link(const char *existingpath, const char *newpath);
+    int linkat(const efd, const char *existingpath, int nfd, const char newpath, int flag); // AT_SYMLINK_NOFOLLOW
+    int unlink(const char *pathname);
+    int unlinkat(int fd, const char *pathname, int flag); // AT_REMOVEDIR
+    int remove(const char *pathname);
+    
     
     
     
@@ -1179,3 +1203,70 @@ Prepared Statment:
 
 unsigned int mysql_errno(MYSQL *connection);  
 char *mysql_error(MYSQL *connection);
+
+
+
+**********************************************  Kernel Programming  *********************************************
+Advantages:
+    1. Don' have to rebuild kernel as ofen.
+    2. Help diagnose system problems.
+    3. Save memory.
+    4. Much faster to maintain and debug.
+Used for:
+    1. Device drivers   2. Filesystem drivers   3. System calls   
+    4.Network drivers   5. TTY line disciplines  6. Executeable interpreters
+LKM utilities:
+    insmod  rmmod   depmod  kerneld  ksyms  lsmod   modinfo   modprobe
+What happen when An LKM loads:
+    1. Search system for device it is know how to drive.
+    2. Register itself as the driver for particular major number /proc/devices
+    3. May register itself as the handler for the interrupt level that device uses / proc/interrupts
+    4. May send setup commands to the device
+    5. A nice device driver issuses kernel msg (/var/log/message) telling what devices if found and is prepared to
+        drive. (dmesg can display recent kernel message)
+    6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) 
+        rather than major number. /proc/net/dev
+    7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
