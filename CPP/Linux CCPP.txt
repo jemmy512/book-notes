@@ -1227,7 +1227,8 @@ What happen when An LKM loads:
     6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) 
         rather than major number. /proc/net/dev
     7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
-    
+LKM procedure:
+    moduel_init(...); module_exit(...);
     
     
     
