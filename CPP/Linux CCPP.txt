@@ -345,13 +345,13 @@ Stata Family function: <sys/stat.h>
     int lstat(const char *pathname, struct stat *buf);  // return symbolic infomation, not referenced file
     int fstatat(int fd, consth char *pathname, struct stat *buf, int flag); // AT_SYMLINK_NOFOLLOW, AT_FDCWD
     struct stat {
-        dev_t       st_dev;     // Id of device containing file
+        dev_t       st_dev;     // Id of device containing file nane and i-node
         ino_t       st_ino;     // inode number
         mode_t      st_mode;    // file type and mode (permission)
         nlink_t     st_nlink;   // number of hard link
         uid_t       st_uid;     // user id
         gid_t       st_git;
-        dev_t       st_rdev;    // Device Id (if special file)
+        dev_t       st_rdev;    // Device Id (if special file: character and block special file)
         off_t       st_size;    // Total size, in bytes (files, directories, symbolic links)
         blksize_t   st_blksize; // block size for filesystem I/O
         blksize_t   st_blocks;  // Number of 512B blocks allocatd
@@ -382,6 +382,10 @@ File Access Permission:
     3. We must have write permission for a file to specify the O_TRUNC flag in the open function
     4. We can only create/delete new file in a directory unless we have write permission and execute permission
     5. Execute permission for a file must be on if we use exec function and file also has to be a regular file.
+Ownership of New Files and Directory:
+    The user ID of the file is set to the effective user ID of the proces, group ID can be following rules:
+        1. Can be the effective group ID of the process.
+        2. Can be the group ID of the directory in which the file is being created.
 access and faccessat: <unistd.h> determine accessibility based on readl use and group id
     int access(const chat *pathname, int mode); 
     int faccessat(int fd, const chatr *pathname, int mode, int flag);
@@ -425,11 +429,61 @@ link, linkat, unlink, unlinkat, remove: <unistd.h>
     int unlink(const char *pathname);
     int unlinkat(int fd, const char *pathname, int flag); // AT_REMOVEDIR
     int remove(const char *pathname);
-    
-    
-    
-    
-    
+rename, renameat: <stdio.h>
+    int rename(const char *oldname, const char *name);
+    int renameat(int oldfd, const char *oldname, int newfd, const char *newname); // AT_FDCWD
+    // 1. If oldname specifies a file, if newname is exists, it can't refer to a directory, it is remvoed, and 
+            oldname renamed to newname
+       2. If oldname specifies a directory, newname must refer to a directory. If newname exits, it must be empty,
+            then it is removed. newname can't contain a path prefix that names oldname, because oldname cant removed.
+        3. If either oldname or newname refers to a symbolic link, then the link itself is proceessed, not the file 
+            to which it resolves.
+        4. Can't rename dot or dot-dot.
+        5. As a special case, if oldname and newname refer to the same file, the function return success and without
+            changing anything.
+Symbolic Links: <unistd.h>
+    limitation of hard link:
+        1. Hard links normally require that link and the file reside in the same file system.
+        2. Only the superuser can create a hard link to a directory
+    int symlink(const char *actualpath, const char *sympath);
+    int symlinkat(const char *actualpath, int fd, const char *sympath);
+    // actualpath and sympath need not reside in the same file system.
+    ssize_t readlink(const char *pathname, char *buf, size_t bufsize);
+    ssize_t readlinkat(int fd, const char *pathname, char *buf, size_t bufsize);
+    // combine the action of the open, read and close, return the number of bytes placed into buf. Contents returned
+        in the buf are not null terminated.
+File Time:
+    st_atim, st_mtim(contents change time), st_ctim(i-node change time)
+    Action changes i-node:
+        change access permission, change uid, change number of links
+futimens, utimensat, utimes: <sys/stat.h> change the access time and modification time of a file
+    int futimens(int fd, const struct timespec times[2]); // calendar times
+    int utimensat(int fd, const char *path, const struct timespec times[2], int flag);
+    // First element of times array contain the access time and second contains the modification time.
+    //                  Timestamps can be specified in four forms:
+    // 1. If times[2] Null pointer. The times are set to the current time.
+    // 2. Pointer to an timespec structure array. If tv_nsec is UTIME_NOW, time set to current time, tv_sec ignored.
+    // 3. Pointer to an timespec structure array. If tv_nsec is UTIME_OMIT, time unchange, tv_sec ignored.
+    // 4. Pointer to an timespec structure array. If tv_nsec is not UTIME_OMIT|UTIME_NOW, timestamp is set to the value 
+        specified by the corresponding tv_sec and tv_nsec fields.
+mkdir, mkdirat, rmdir: <sys/stat.h> 
+    int mkdir(const char *pathname, mode_t mode);
+    int mkdirat(int fd, const char *pathname, mode_t mode);
+    int rmdir(const char *pathname);<unistd.h>
+Reading Directories: <dirent.h>
+    DIR *opendir(const char *pathname);
+    DIR *fdopendir(int fd);
+    struct dirent *readdir(DIR *dp);
+    void rewinddir(DIR *dp);
+    int closedir(DIR *dp);
+    long telldir(DIR *dp);
+    void seekdir(DIR *dp, long loc);
+    // Only kernel has permission to write to directory itself.
+    // Ordering of entries within the directory is implementation dependent and usually not alphabetical.
+chdir, fchdir, getcwd: <unistd.h>
+    int chdir(const char *pathname);
+    int fchdir(int fd);
+    char *getcwd(char *buf, size_t size);
 struct FTW {
     int base;   // offset of the filename
     int leve;
