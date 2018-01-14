@@ -270,6 +270,7 @@ define own enviroment variable int GDB:
 	show convenience # view all enviroment variable
 
 **********************************************  File I/O ********************************************************
+
 By convention: <unistd.h>
     0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stands for standard input, output and error, respectively.
     Range: 0 - (OPEN_MAX - 1)
@@ -281,7 +282,8 @@ By convention: <unistd.h>
         // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK,  O_TRUNC
     int create(const char *path, mode_t mode); // 
     int close(int fd); <unistd.h> == [ open(path, O_WRONLY | O_CREATE | O_TRUNC, mode)]
-    off_t lseek(int fd, off_t offset, int whence); // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
+    off_t lseek(int fd, off_t offset, int whence);  // move the read/write offset
+        // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
         // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
         // rather than testing whether it is less than 0. Because offset is possible a negative value.
     off_t fseek(FILE *stream, long int offset, int whence) <stdio.h>
@@ -294,27 +296,6 @@ By convention: <unistd.h>
         // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
         // 5. Reading from a record-oritend device. 
         // 6. Interrupted by a signal and partial data have been read.
-Parse Command Line Option
-    int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
-        // If an option followed by a colon it takes an argument, otherwise it exits by itself.
-        // Encounters a invalid option, returs a question mark instead of characters
-        // If an option's missing, returns a question mark; if first character of options is colon, return colon
-        // Pattern -- can stop getopt processing options and return -1
-        // optopt, optarg, opterr, optind
-    int getopt_long(int argc, char * const argv[], const char *optstring,
-           const struct option *longopts, int *longindex); <getopt.h>
-        // longopts' last element must be a zero array
-        struct option{              
-            const char  *name;
-            int         has_flag;
-            int         *flag;
-            int         val;
-        };
-Syslog:
-    void openlog(const char *ident, int logopt, int facility);
-    void closelog(void);
-    int setlogmask(int maskpri);
-    void syslog(int priority, const char *message, .../*arguments*/);
 FD Duplicate:
     int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
     int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
@@ -328,13 +309,47 @@ Aotomic Operation: <unistd.h>
 File property change:
     int fcntl(int fd, int cmd, ... /*int arg*/); <fcntl.h>
         // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
-        // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN, F_SETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
+        // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN,F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
         // F_GETFL{O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH} {O_APPEND, O_NONBLOCK, O_SYNC, O_DSYNC, O_RSYNC}
-ioctl: <sys/ioctl.h>
-    int ioctl(int fd, int request, ...);
-/dev/fd/:
+            
+    int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
+       // advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEED, *_DONTNEED
+    int fallocate(int fd, int mode, off_t offset, off_t len); // allocate file space, nonportable
+    int posix_fallocate(int fd, int mode, off_t offset, off_t len);
+        // After a successful call, subsequent writes to the specified range guaranteed not to fail because of lock.
+        Allocating disk space:      0, FALLOC_FL_KEEP_SIZE, *_UNSHARE
+        Deallocating disk space:    FALLOC_FL_PUNCH_HOLE, 
+        Collapsing file space:      FALLOC_FL_COLLAPSE_RANGE
+        Zeroing file spece:         FALLOC_FL_ZERO_RANGE(nonportable)
+        Increasing file space:      FALLOC_FL_INSERT_RANGE
+    ioctl: <sys/ioctl.h>
+        int ioctl(int fd, int request, ...);
+    /dev/fd/:
+    
+Parse Command Line Option
+    int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
+        // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
+        // Encounters a invalid option, returs a question mark (?) instead of characters
+        // If an option's missing, returns a question mark(?); if first character of options is colon, return colon(:)
+        // Pattern -- can stop getopt processing options and return -1
+        // optopt, optarg, opterr, optind
+    int getopt_long(int argc, char * const argv[], const char *optstring,
+           const struct option *longopts, int *longindex); <getopt.h>
+        // longopts' last element must be a zero array
+        struct option{              
+            const char  *name;      // long option name
+            int         has_flag;   // 1--has, 0--hasn't
+            int         *flag;      // specifies how results returned for long option
+            int         val;        // return value; flag is NULL, return 0;
+        };
+Syslog:
+    void openlog(const char *ident, int logopt, int facility);
+    void closelog(void);
+    int setlogmask(int maskpri);
+    void syslog(int priority, const char *message, .../*arguments*/);
     
 **********************************************  File and Directories  *******************************************
+
 TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
     program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
@@ -361,29 +376,25 @@ Stata Family function: <sys/stat.h>
         struct timespec st_ctim;    // last stat change  time
     };
     mode_t:
-        S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIO
+        S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
         S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
         S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
 File Type:
-    1. Regular file 2. Directory file 3. Block special file 4. Character specil file 5. FIFO 6. Socket 7. Symbolic link
+    1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
     S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
     S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
     
-    int mkdir(const char *pathname, mode_t mode);  
-    int nftw(const char *path, int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
-              int fd_limit, int flags);
-       flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, FTW_D, FTW_DNR, FTW_DP, FTW_F, FTW_NS, FTW_SL, FTW_SLN
 File Access Permission:
     st_mode mask:
         S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
     
-    1. Whenever we open any type of file by name, we must have execute permission on each directory mentioned in name.
-    2. The read permission determines whether we can open an existing file for reading
+    1. Whenever we open any type of file by name, we must have execute permission on each directory.
+    2. The read permission determines whether we can open an existing file for reading.
     3. We must have write permission for a file to specify the O_TRUNC flag in the open function
-    4. We can only create/delete new file in a directory unless we have write permission and execute permission
+    4. We can only create/delete new file in a directory when we have write permission and execute permission
     5. Execute permission for a file must be on if we use exec function and file also has to be a regular file.
 Ownership of New Files and Directory:
-    The user ID of the file is set to the effective user ID of the proces, group ID can be following rules:
+    The user ID of the file is set to the effective user ID of the process, group ID can be following rules:
         1. Can be the effective group ID of the process.
         2. Can be the group ID of the directory in which the file is being created.
 access and faccessat: <unistd.h> determine accessibility based on readl use and group id
@@ -396,9 +407,9 @@ umask: <sys/stat.h>  // set and get file mode creation mask
 chmod, fchmod, fchmodat: <sys/stat.h>
     int chmod(const char *pathname, mode_t mode);
     int fchmod(int fd, mode_t mode);
-    int fchmodat(int fd, const char *pathname, mode_t mode, int flag); // 
+    int fchmodat(int fd, const char *pathname, mode_t mode, int flag); 
         // flag: AT_SYMLINKS_NOFOLLOW doesn't follow symbolic links
-    // effective user ID of the process must be equal to owner of the file or have supersuer permissions
+    // effective user ID of the process must be equal to owner of the file or have supersuser permissions
     // S_ISUID, S_ISGID, S_ISVTX; S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR
     // S_IRWXG, S_IRGRP, S_IWGRP, S_IXGRP; S_IRWXO, S_IROTH, S_IWOTH, S_IXOTH
     // S_ISVTX(sticky bit): only owner or superuser can rename or delete permission.
@@ -471,40 +482,39 @@ mkdir, mkdirat, rmdir: <sys/stat.h>
     int mkdirat(int fd, const char *pathname, mode_t mode);
     int rmdir(const char *pathname);<unistd.h>
 Reading Directories: <dirent.h>
+    struct dirent { // incomplete type
+        inot_t  d_ino;      // file serial number;
+        char    d_name[];   // filename string of entry
+        ...
+    };
     DIR *opendir(const char *pathname);
     DIR *fdopendir(int fd);
     struct dirent *readdir(DIR *dp);
-    void rewinddir(DIR *dp);
+    void rewinddir(DIR *dp);    // reset the position of a directory stream to the begining of a directory.
     int closedir(DIR *dp);
-    long telldir(DIR *dp);
-    void seekdir(DIR *dp, long loc);
+    long telldir(DIR *dp);  // current location of a named directory stream
+    void seekdir(DIR *dp, long loc);    // set the position of a directory stream
     // Only kernel has permission to write to directory itself.
     // Ordering of entries within the directory is implementation dependent and usually not alphabetical.
+File Tree walk: <ftw.h>
+    int nftw(const char *dirpath, int (*fn)(const char *fpath, const struct stat *sb,
+            int typeflag, struct FTW *ftwbuf), int nopenfd, int flags);
+       //typeflag: FTW_F, FTW_D, FTW_DNR, FTW_DP, FTW_NS, FTW_SL, FTW_SLN
+       //flags: FTW_CHDIR, FTW_DEPTH, FTW_MOUNT, FTW_PHYS, 
+            FTW_ACTIONRETVAL:  // Enable this feature _GNU_SOURCE must be defind before any including header files 
+                fn() return following value: FTW_CONTINUE, FTW_SKIP_SIBLINGS, FTW_SKIP_SUBTREE, FTW_STOP
+    struct FTW {
+        int base;   // offset of the filename in the pathname given in fpath
+        int level;  // depth of the fpath in the directory tree, relative to the root of the tree(dirpath, depth 0)
+    };
 chdir, fchdir, getcwd: <unistd.h>
     int chdir(const char *pathname);
     int fchdir(int fd);
     char *getcwd(char *buf, size_t size);
-struct FTW {
-    int base;   // offset of the filename
-    int leve;
-};
-    mode_t umask(mode_t cmask); // set and get file mode creation mask
-int chdir(const char *pathname);
-int fchfir(int fd);
+    char *getwd(char *buf);
+    char *get_current_dir_name(void); 
 
-char *getcwd(char *buf, size_t size);
-char *getwd(char *buf);
-char *get_current_dir_name(void); 
 
-int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
-    advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEDD, *_DONTNEED
-int fallocate(int fd, int mode, off_t offset, off_t len); // nonportable
-int posix_fallocate(int fd, int mode, off_t offset, off_t len);
-    Allocating disk space:      0, FALLOC_FL_KEEP_SIZE, *_UNSHARE
-    Deallocating disk space:    FALLOC_FL_PUNCH_HOLE, 
-    Collapsing file space:      FALLOC_FL_COLLAPSE_RANGE
-    Zeroing file spece:         FALLOC_FL_ZERO_RANGE(nonportable)
-    Increasing file space:      FALLOC_FL_INSERT_RANGE
 ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
 ssize_t write(int fildes, const void *buf, size_t nbyte);    
 
@@ -516,7 +526,118 @@ struct rlimit {
 setrlimit(int resource, const struct rlimit *rlp);
 getrlimit(int resourcr struct rlimit *rlp);
     RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS, RLIM_INFINITY
-	
+
+**********************************************  Standard I/O Library  *******************************************
+Stream's Oritention: <stdio.h> <wchar.h>
+    int fwide(FILE *fd, int mode); // set a stream's oritention
+        // Not change the orientation of stream that has already oriented.
+        // If mode is negtive, make stream byte oriented, return negtive;
+        // If mode is positive, make stream wide oriented, return positive;
+        // If mode is zero, return a value specifing the stream's oriention
+    FILE *freopen(const char *pathname, const char *type,FILE *fp); // clear stream's orientation.
+Standard input, output, error:
+    File descriptor: STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
+    File pointer: stdin, stdout, stderr
+Buffering: <stdio.h>
+    Full buffered. (File in disk) Actual I/O takes place when buffer is filled.
+    Line bufferd. (Terminal) Actual I/O takes place when newline character encountered on input and output. 
+    unbuffered. (error msg)
+    
+    void setbuf(FILE *fp, char *buf); //  BUFSIZE; turn buffering on or off
+    int setvbuf(FILE *fp, char *buf, int mode, size_t size); // mode: _IOFBF, _IOLBF, _IONBF
+    int fflush(FILE *fp); 
+Opening a Stream:
+    FILE *fopen(const char *pathname, const char *type);
+    FILE *freopen(const char *pathname, const char *type, FILE *fp);
+    FILE *fdopen(int fd, const char *type);
+        // type: r, w, a, b, +
+    int fclose(FILE *fp);
+Reading and Writing a Stream:
+    1. Character-at-a-time I/O:
+        int getc(FILE *fp); // can be implementated as a macro
+        int fgetc(FILE *fp);
+        int getchar(void);
+        int ungetc(int c, FILE *fp); // push back charactes in reverse order.
+        
+        int putc(int c, FILE *fp);
+        int fputc(int c, FILE *fp);     // return c if ok, EOF on error
+        int putchar(int c); 
+        
+        int ferror(FILE *fp);
+        int feof(FILE *fp);     // return nonzero if condition is true, 0 otherwise
+        void clearerr(FILE *fp);
+    2. Line-at-a-time I/O
+        char *gets(char *buf);                  // reads from standard input  
+            // unsafe, may cause data overwritten. 
+        char *fgets(char *buf, int n, FILE *fp); // buf if ok, NULL on error
+            // Read through and include next newline, but no more than n - 1 characters
+            // If line is longer than n - 1, only partial line is read, but buffer is always null terminated.
+        int fputs(const char *str, FILE *fp);
+            // writes the null terminated string to stream, but null null bytes and the end is not written.
+            // This need not be line-at-a-time ouput. Last non-null character is newline is not required.
+        int puts(const char *str); // unsage as gets(...);
+Binary I/O:
+    size_t fread(void *ptr, size_t size, size_t nobj, FILE *fp);        // return number of obj read/write
+    size_t fwrite(const void *ptr, size_t size, size_t nojb, FILE *fp);
+Position a Stream:
+    1. ftell, fseek: file's position can be stored in a long integer.
+    2. ftello, fseeko: replace the long integer with off_t data type. SUS
+    3. fgetpos, fsetpos: fpot_t, can be made as big as necessary to record a file's position. ISO C
+    
+    long ftell(FILE *fp);
+    int fseek(FILE *fp, long offset, int whence); // SEEK_SET, SEEK_CUR, SEEK_END
+    void rewind(FILE *fp);
+    
+    int fgetpos(FILE *fp, fpost_t *pos);
+    int fsetpos(FILE *fp, const fpot_t *post);
+Formatted I/O:
+    int printf(const char *format, ...);
+    int fprintf(FILE *fp, const char *format, ...);
+    int dprintf(int fd, const char *format, ...);
+    int sprintf(char *buf, const cahr *format, ...);
+    int snprintf(char *buf, size_t n, const char *format, ...);
+       
+    int scanf(const char format, ...);
+    int fscanf(FILE *fp, const char *format, ...);
+    int sscanf(const char *buf, const char *format, ...);
+Memory Stream:
+    FILE *fmemopen(void *buf, size_t size, const char *type); // type: r, w, a, b, +
+        // If buf is NULL, fmemopen allocates a buffer of size bytes, and will be freed when stream is closed.
+    
+**********************************************  Advanced I/O ****************************************************
+
+Nonblocking I/O:
+    Two ways to specify nonblocking I/O for a given descriptor:
+        1. Specify O_NONBLOCK when call open.
+        2. Call fcntl to turn on O_NONBLOCK file status flag on a opened file descriptor.
+Record Locking:
+    int fcntl(int fd, int cmd, ... /*struct flock *flockptr*/);
+        // cmd: F_SETLK, F_SETLKW(wait), F_GETLK
+    struct flock {
+        short   l_type;     // F_RDLCK, F_WRLCK, F_UNLCK
+        short   l_whence;   // SEEK_SET, SEEK_CUR, SEEK_END
+        off_t   l_start;    // offset in bytes, relative to l_whence
+        off_t   l_len;      // length, in bytes; 0 means lock to EOF
+        pid_t   l_pid;      // returned with F_GETLK
+    };
+        // Lokcs can start and extend beyond the current end of file, but can't start extend before the beginning.
+        // When setting or releasing a lock on a file, the system combines or splits adjacent areas as required.
+
+Meory-Mapped I/O: <sys/mman.h>
+    void *mmap(void *addr, size_t len, int prot, int flag, int fd, off_t off);
+        // protection: PROT_READ, PROT_WRITE, PROT_EXEC, PROT_NONE
+        // flag: MAP_FIXED, MAP_SHARED, MAP_PRIVATE, 0
+        // If file size is 12 bytes, system page size is 512bytes, system will provides 512 for mapped region, but 
+            any modification out of 12 bytes are not reflected in the file.
+        // A memory-mapped region is inherited by a child across a fork.
+    int mprotec(void *addr, size_t len, int prot); // change the premission on an existing mapping.
+    // When modify pages using MAP_SHARED, the changes aren't written back to the file immediately.
+    // When the changes are written back, they are written in units of pages. If modify only one bytes, entire
+        page will be written.
+    int msync(void *addr, size_t len, int flags);   // MS_SYNC, MS_ASYNC, MS_INVALIDATE
+    int munmap(void *adrr, size_t len); // automatically unmapped when process terminates or call this function.
+        // The call this function doesn't cause the contents of the mapped region to be written to the disk file.
+            It's determined by the kernel's virual memory algorithm sometime after we store into the region.
 **********************************************  Network Programming  ********************************************
 
 Procedure of socket:
