@@ -1,0 +1,46 @@
+
+**********************************************  STL Containers ***************************************************
+
+Containers Ability:
+    1. All containers provide value rather than reference semantics.
+    2. The elements inside a container have a specific order.
+    3. In general, operations are not safe in the sense that they check for every possible error.
+Container Operations:
+    Initialization:
+        1. Initialize a container with elements of another container.
+            std::make_move_iterator();
+        2. Initialize a container with elements of ordinary c-style array.
+            std::begin(), std::end();
+        3. Initialized a container from stdin.
+            std::deque<int> d{std::istream_iterator(std::cin), std::istream_iterator()};
+            std::deque<int> d((std::istream_iterator(std::cin)), (std::istream_iterator()));
+                // This construct is valid syntactically as either a declaration or an expression.
+                // It's treated as a declaration by language rules, but extra parentheses force it to be an expession.
+    Assignments and Swap:
+        Iterators and Reference to elements of a container follow swapped elements, after swap they still refer
+            to the elements they referred before, but in a different container.
+    Size Operation:
+        size(), empty(), max_size();
+    Elements Access:
+        All containers except vector and deques guarantee that iterators and references remain valid if other
+            elements are deleted. For vector only elements before point of erase remain valid.
+        If insert elements only list, forward-list and associated container guarantee that iterators and 
+            references to elements remain valid.
+        For vector insertion that guarantee is given but insertion don't exceed the capacity.
+        For unordered list that guarantee is given for reference in general but for iterators only when no rehashing.
+    Container Types:
+        size_type, diff_type, val_type, reference, const_reference, iterator, const_iterator, pointer, const_pointer
+Array <array>     
+    namespace std {
+        template <typename T, size_t N>
+        class array;
+    }
+    
+    Abilities:
+        Initialization:
+            Note array<> is the only container whose elements are default initialize when nothing passed.
+            Which means for fundamental type, the initial value may undefined rather zero.
+            std::array<int, 4> x; // elements of x have undined value
+            std::array<int, x> x = {}; // ok, all elements are zero initialized
+            
+            
