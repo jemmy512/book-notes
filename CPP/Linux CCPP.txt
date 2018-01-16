@@ -10,6 +10,25 @@ SSH service：
 	check service：lsof -i :22  
 	Install service: apt-get install openssh-server
 
+**********************************************  GCC 7.2.0 Install  **********************************************
+downlaod src code:
+    wget https://ftp.gnu.org/gnu/gcc/gcc-7.2.0/gcc-7.2.0.tar.gz
+install prerequsities:
+    yum install libmpc-devel mpfr-devel gmp-devel zlib-devel* 
+    yum groupinstall "Development Tools"
+extract src code:
+     tar -xzvf gcc-7.2.0.tar.gz
+cd gcc-7.2.0
+./contrib/download_prerequisites
+cd ..
+mkdir objdir
+cd objdir
+$PWD/../gcc-7.2.0/configure --prefix=$HOME/gcc-7.2.0 --disable-multilib --enable-languages=c,c++
+    ../gcc-7.2.0/configure --prefix=/usr/local/gcc7 --enable-languages=c,c++,go  --disable-multilib
+    ./configure –enable-checking=release –enable-languages=c,c++ –disable-multilib
+make -j n // n is amount number of processor core
+make install
+
 **********************************************  Make File  ******************************************************
 
 1. syntax
@@ -652,7 +671,7 @@ I/O  Multiplexing:
 			long tv_sec;   //seconds
             long tv_usec;  //microseconds
 		};
-	2. poll: #include <poll.h>
+	2. poll: <poll.h>
 		int poll(struct pollfd *fds, unsigned int nfds, int timeout);
         // timeout == -1(wait forever), timeout == 0(no wait) ; milliseconds
 		struct pollfd {
@@ -662,8 +681,7 @@ I/O  Multiplexing:
 		} ; 
 		Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
 				POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
-	3. epoll
-		#include <sys/epoll.h>
+	3. epoll: <sys/epoll.h>
 		int epoll_create(int size);
 		int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
 			op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
@@ -722,6 +740,9 @@ Scatter Read and Gather Write: <sys/uio.h>
 readn and writen:
     ssize_t readn(int fd, void *buf, size_t nbytes);
     ssize_t writen(int fd, void *buf, size_t nbytes);
+    
+    -- P524 -- review code
+    
 **********************************************  Network Programming  ********************************************
 
 Procedure of socket:
@@ -1312,7 +1333,33 @@ pthread asynchronous:
     pthread_kill(pthread_t thread, int sig); // 0: test the existence of thread
     phread_sigmask(int how, const sigset_t *set, sigset_t *oldset); // sigprocmaks(...);
         how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
-     
+Spin Block:
+        //pshared: PTHREAD_PROCESS_SHARED(can be access by threads from different process)
+        //         PTHREAD_PROCESS_PRIVATE(can be access only by threads within same process)
+    int pthread_spin_init(pthread_spinlock_t *lock, int pshared);
+    int pthread_spin_destroy(pthread_psinlock_t *lock);
+    int pthread_spin_lock(pthread_spinlock_t *lock);    // lock the lock already locked, behavior is undefined.
+    int pthread_spin_trylock(pthread_psinlock_t *lock); // if locked, return 0
+        // Doesn't spin. Return EBUSY if not acquired immediatelly.
+    int pthread_spin_unlock(pthread_spin_lock_t *lock); // unlock the lock doesn't locked, behavior is undefined.
+    // A spin lock like a mutex, it blocks a process by busy-waiting(spinnig) rather that sleeping(mutex);
+    // Used in situation where locks are held for a short periods of times and threads don't want to incur the cost
+            of being descheduled.
+    // They are useful in nonpreemptive kernel: providing a mutual exclusion mechanism, interrupt handler can't 
+        deadlock system by trying to acquire a spin lock that is already locked.
+    // At user level they aren't as useful unless running in a real-time-sharing shceduling not allow preemption
+Barriers:
+    It's a synchronization mechanism that can be used to coordinate multiple threads working in parallel.
+    A barrier allows each thread to wait unitl all cooperrating threads have reached the same point, and then
+        continue executing from there.
+    int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count);
+    int pthread_barrier_destroy(pthread_barrier_t *barreir);
+    int pthread_barrier_wait(pthread_barrier_t *barrier);
+        // The thread calling this is put to sleep if the barrier count is not yet staisfied.
+        // To one arbitary thread, it will appear as this return PTHREAD_BARRIER_SERIAL_THREAD, the remaining 
+            threads see a return value of 0. This allows this thread to continue as the master to act the results
+            of the work done by all of the other threads.
+    
 xinetd:
     
  
