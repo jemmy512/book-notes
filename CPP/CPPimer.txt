@@ -5,7 +5,7 @@ Array:
     2. A default-initialized array have undefined values. Random value given by compiler.
     3. Character arrays can be initialized from a string literal. But string literal end with a null character,
         so array size must be bigger than the number of explicit elements. 
-        char arr[5] = “hello”;   // error: dimension must be at least 6;
+        char arr[5] = "hello";   // error: dimension must be at least 6;
     4. No copy and assignment for arrays initialization.
     5. It’s much more easier to understand array declaration from right to left and from inside out. 
     6. begin() and end() function which are defined in iterator header return pointers to the first and the one past 

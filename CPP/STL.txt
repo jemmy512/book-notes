@@ -30,7 +30,8 @@ Container Operations:
         For unordered list that guarantee is given for reference in general but for iterators only when no rehashing.
     Container Types:
         size_type, diff_type, val_type, reference, const_reference, iterator, const_iterator, pointer, const_pointer
-Array <array>     
+Array: <array>     
+    // Copy their elements into their internal static C-style array.
     namespace std {
         template <typename T, size_t N>
         class array;
@@ -40,7 +41,108 @@ Array <array>
         Initialization:
             Note array<> is the only container whose elements are default initialize when nothing passed.
             Which means for fundamental type, the initial value may undefined rather zero.
-            std::array<int, 4> x; // elements of x have undined value
-            std::array<int, x> x = {}; // ok, all elements are zero initialized
-            
-            
+            std::array<int, 4> x; // elements of x have undfined value          ----> default-initialization
+            std::array<int, x> x = {}; // ok, all elements are zero initialized ----> value-initialization
+            // array<> doesn't provide a constructor for initializer list, it fulfills the requirement of aggregate.
+            // An aggregate is an array or a class with no-provided constructor, no private or protected nonstatic 
+                data member, no base calsses, and no virtual functions.
+            // Number of elements in initializer list higher than required, its ill-formed.
+            // Initializer list is the only way to initialize array during its declaration, so can't use parenthesis
+                syntax to specify initial values.
+                std::array<int, 5> a({1, 2, 3}); // error
+                std::vector<int>   v({1, 2, 3}); // ok
+        swap() and move semantics:
+            swap assigns new value to the element that iterator, reference and pointer refer to.
+            array<> can't simpley swap pointer internally, so swap has liner complexity, iterator and reference 
+                don't swap containers with their elements.
+            std::move() is implecity provided for array<>
+    Operation:
+        creat, copy and destroy:
+            // Because class array<> is an aggreagte, those constructors are implicitly defined. The default 
+                constructor default initialize the elements, which means the fundamental type value is undefined.
+            array<Elem, N> c;               // Default constructor
+            array<Elem, N> c(c2);           // Copy constructor
+            array<Elem, N> c = c2;          // Copy constructor
+            array<Elem, N> c(rv);           // Move contructor
+            array<Elem, N> c = rc;          // Move constructor
+            array<Elem, N> c = initist;     // Creates an array initialized with elements of initializer list
+        Nonmodifying Operations:
+            c.size();   c.empty();  c.max_size(); // maximum number
+        Assignment Operations:
+            c = c2; c = rm; c.swap(c2); swap(c, c2); c = fill(val); // assign val to each element in array c
+        Access Operations:
+            c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
+        Iterator Functions:
+            being(); end(); cbegin(); cend(); rbegin(); rend(); crbegin(); crend();
+            // Iterators remain valid as long as array remain valid.
+Vector: <vector>
+    namespace std {
+        template<typname T, typname Allocator = allocator<T>>
+        class vector;
+    }
+  1.Abilities:
+    Size and Capaicity: 
+        // The capacity of a vector is important for two reasons:
+            1. Reallocation invalidates all reference, pointers, iterator for elements of the vector.
+            2. Reallocation takes time.
+        // avoid reallocation:
+            v.reserve(80); // reserve memory for 80 elements
+            std::vector<int> v(80);
+        // To avoid internal fragmentation, implementations allocate a whole block of memory.
+        // The capacity of vector never shrinks.
+        // C++11 introduced a nonbinding request to shrink the capacity to fit the current number of items.
+            v.shrink_to_fit(); 
+                // this request is nonbinding to allow latitude for implementation-specific optimizaion. 
+        // Capacity could only shrink indirectly:
+            std::vector<T>(v).swap(v);
+            // after swap all references, pointers, iterators invalide.
+        vector<T> v;            vector<T> v(n);         v.~vector(); // detroys elems and frees memory.
+        vector<T> v(v2);        vector<T> v(n, elem);
+        vector<T> v = v2;       vector<T> v(beg, end);
+        vector<T> v(rm);        vector<T> v(initlist);
+        vector<T> v = rm;       vector<T> v = initlist;
+  2. operation:
+        // An explicit call to default constructor could initializes fundamental types.
+        v.empty(); v.size(); v.max_size(); v.capacity(); v.reserve(); v.shrink_to_fit(); == != < >=
+    Assignments
+        v = v2; v = rm; v = initlist; v = assign(n, elem); v = assign(beg, end); v = assign(initlist);
+        v.swap(v2); swap(v, v2);
+    Access Operations:
+        c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
+    Iterator Functions:
+        // The exact type of these iterators is implementation defined.
+    Insertion and Removing Elements:
+        Interting and Removing happen faster when:
+            1. Interting and removing at the end.
+            2. The capacity is large enough on entry.
+            3. Multiple elements are inserted by a single call rather than multiple calls.
+        v.push_back(elem); 
+        v.pop_back();               v.emplace(pos, arg...);     v.resize(num);
+        v.insert(pos, elem);        v.emplace_back(arg...);     v.resize(num, elem);
+        v.insert(pos, n, elem);     v.erase(pos);               v.clear();
+        v.insert(pos, beg, end);    v.erase(beg, end);
+        v.insert(pos, initlist);    
+    Using vector as C-style Array:
+        std::vector<char> v;
+        v.resize(41);
+        strcpy(v.data(), "hello world");
+        printf("%s\n", v.data());
+Deque:
+    Deque manages its elements with dynamic array.
+    namespace std {
+        template<typename T, typename Allocator = allocator<T>>
+        class deque;
+    }
+    1. Abilities:
+        // Iterator must be smart pointer rather than ordinary pointer, because they must jump between 
+            different blocks.
+        // The internal structure has one more direction so the element access and iterator movement a bit slower.
+        // Deques provide no support for capacity and moment of reallcation.
+        // Blocks might get freed when they're no longer used, so size of deque might shrink.
+    2. Operations:
+        Most operations of deque are same to vector, here are some different one:   
+            push_front(); emplace_front(); 
+List:
+    c.unique();     c.splice(pos, c2);  c.splice(pos, c2, c2pos);   c.splice(pos, c2, c2beg, c2end);
+    c.unique(op);   c.sort();   c.sort(op); c.merge(c2);    c.merge(c2, op);    c.reverse();
+    // op means op() return true
