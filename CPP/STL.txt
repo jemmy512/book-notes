@@ -38,43 +38,43 @@ Array: <array>
     }
     
     Abilities:
-        Initialization:
-            Note array<> is the only container whose elements are default initialize when nothing passed.
-            Which means for fundamental type, the initial value may undefined rather zero.
-            std::array<int, 4> x; // elements of x have undfined value          ----> default-initialization
-            std::array<int, x> x = {}; // ok, all elements are zero initialized ----> value-initialization
-            // array<> doesn't provide a constructor for initializer list, it fulfills the requirement of aggregate.
-            // An aggregate is an array or a class with no-provided constructor, no private or protected nonstatic 
-                data member, no base calsses, and no virtual functions.
-            // Number of elements in initializer list higher than required, its ill-formed.
-            // Initializer list is the only way to initialize array during its declaration, so can't use parenthesis
-                syntax to specify initial values.
-                std::array<int, 5> a({1, 2, 3}); // error
-                std::vector<int>   v({1, 2, 3}); // ok
-        swap() and move semantics:
-            swap assigns new value to the element that iterator, reference and pointer refer to.
-            array<> can't simpley swap pointer internally, so swap has liner complexity, iterator and reference 
-                don't swap containers with their elements.
-            std::move() is implecity provided for array<>
+    1.Initialization:
+        Note array<> is the only container whose elements are default initialize when nothing passed.
+        Which means for fundamental type, the initial value may undefined rather zero.
+        std::array<int, 4> x; // elements of x have undfined value          ----> default-initialization
+        std::array<int, x> x = {}; // ok, all elements are zero initialized ----> value-initialization
+        // array<> doesn't provide a constructor for initializer list, it fulfills the requirement of aggregate.
+        // An aggregate is an array or a class with no-provided constructor, no private or protected nonstatic 
+            data member, no base calsses, and no virtual functions.
+        // Number of elements in initializer list higher than required, its ill-formed.
+        // Initializer list is the only way to initialize array during its declaration, so can't use parenthesis
+            syntax to specify initial values.
+            std::array<int, 5> a({1, 2, 3}); // error
+            std::vector<int>   v({1, 2, 3}); // ok
+    2.swap() and move semantics:
+        swap assigns new value to the element that iterator, reference and pointer refer to.
+        array<> can't simpley swap pointer internally, so swap has liner complexity, iterator and reference 
+            don't swap containers with their elements.
+        std::move() is implecity provided for array<>
     Operation:
-        creat, copy and destroy:
-            // Because class array<> is an aggreagte, those constructors are implicitly defined. The default 
-                constructor default initialize the elements, which means the fundamental type value is undefined.
-            array<Elem, N> c;               // Default constructor
-            array<Elem, N> c(c2);           // Copy constructor
-            array<Elem, N> c = c2;          // Copy constructor
-            array<Elem, N> c(rv);           // Move contructor
-            array<Elem, N> c = rc;          // Move constructor
-            array<Elem, N> c = initist;     // Creates an array initialized with elements of initializer list
-        Nonmodifying Operations:
-            c.size();   c.empty();  c.max_size(); // maximum number
-        Assignment Operations:
-            c = c2; c = rm; c.swap(c2); swap(c, c2); c = fill(val); // assign val to each element in array c
-        Access Operations:
-            c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
-        Iterator Functions:
-            being(); end(); cbegin(); cend(); rbegin(); rend(); crbegin(); crend();
-            // Iterators remain valid as long as array remain valid.
+    1.creat, copy and destroy:
+        // Because class array<> is an aggreagte, those constructors are implicitly defined. The default 
+            constructor default initialize the elements, which means the fundamental type value is undefined.
+        array<Elem, N> c;               // Default constructor
+        array<Elem, N> c(c2);           // Copy constructor
+        array<Elem, N> c = c2;          // Copy constructor
+        array<Elem, N> c(rv);           // Move contructor
+        array<Elem, N> c = rc;          // Move constructor
+        array<Elem, N> c = initist;     // Creates an array initialized with elements of initializer list
+    2.Nonmodifying Operations:
+        c.size();   c.empty();  c.max_size(); // maximum number
+    3.Assignment Operations:
+        c = c2; c = rm; c.swap(c2); swap(c, c2); c = fill(val); // assign val to each element in array c
+    4.Access Operations:
+        c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
+    5.Iterator Functions:
+        being(); end(); cbegin(); cend(); rbegin(); rend(); crbegin(); crend();
+        // Iterators remain valid as long as array remain valid.
 Vector: <vector>
     namespace std {
         template<typname T, typname Allocator = allocator<T>>
@@ -142,7 +142,52 @@ Deque:
     2. Operations:
         Most operations of deque are same to vector, here are some different one:   
             push_front(); emplace_front(); 
-List:
+List: <list> double list
     c.unique();     c.splice(pos, c2);  c.splice(pos, c2, c2pos);   c.splice(pos, c2, c2beg, c2end);
     c.unique(op);   c.sort();   c.sort(op); c.merge(c2);    c.merge(c2, op);    c.reverse();
     // op means op() return true
+Forward-List: <forward_list>
+    The standard states: "It's intended that forward_list have zero spece or time overhead relative to a
+        hand-written C-style singly linked list. Features that would conflict with that goal have been omitted".
+    Abilities:
+        1. Only provide forward iterators, not bidirectional iterators. And reverse supports are not provided also.
+            Functions like reverser_iterator, rbebin(), rend(), crbegin(), crend() not provided also.
+        2. The anchor of forward_list has no pointer to the last elements. So it doesn't provide functions to deal
+            with the last element. Such as back(), push_back() and pop_back().
+        3. For any operations that modify list in a way that elements are inserted or deleted at specific position, 
+            special versions are provided. Such as _before and _after suffix member functions.
+    Operations:
+    1. Create, copy and destroy:
+        The ability to create, copy and destroy is the same as for every sequence container.
+        forward_list<Elem> l;           forward_list<Elem> l(n);            l.~forward_list();
+        forward_list<Elem> l(l2);       forward_list<Elem> l(n, elem);
+        forward_list<Elem> l = l2;      forward_list<Elem> l(beg, end);
+        forward_list<Elem> l(rm);       forward_list<Elem> l(initlist);
+        forward_list<Elem> l = rm;      forward_list<Elem> l = initlist;
+    2. Nonmodifyint operations:
+        l.empty(); l.max_size(); < = > // note: size() function si not provided.
+    3. Assignment:
+        l = l2; l = rm; l = initlist; l = assign(n, elem); l = assign(beg, end); l = assign(initlist); swap(l, l2);
+    4. Access:
+        front();
+    5. Iterator function:
+        begin(); end(); cbegin(); cend(); before_begin(); cbefore_end();
+    6. Inserting and Removing:
+        Gerneral hints apply:
+            1. As usual when using with STL, we must ensure that arguments are valid.
+            2. Inserting and removing is faster if, when working with multiple elements, you use a singal call 
+                for all elements rather than multiple calls.
+        l.push_front(elem);                 l.emplace_front(pos, args...);  l.reseize(num, elem);
+        l.pop_front();                      l.emplace_front(args...);       l.clear();
+        l.insert_after(pos, elem);          l.erase_after(pos);
+        l.insert_after(pos, n, elem);       l.erase_after(beg, end);
+        l.insert_after(pos, begin, end);    l.remove(val);
+        l.insert_after(pos, initlist);      l.resize(num);
+    7. splice and functions to change order:
+        l.unique();                             l.sort();
+        l.unique(op);                           l.sort(op);
+        l.splice_after(pos, l2);                l.merge(l2);
+        l.splice_after(pos, l2, l2pos);         l.merge(l2,op);
+        l.splice_after(pos, l2, l2beg, l2end);  l.reverse();
+set and multiple set:
+    
