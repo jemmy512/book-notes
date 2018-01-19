@@ -598,7 +598,7 @@ Function-Template Explicit Arguments
         compare<int>(2.3, 4);   // OK
 
 Trailing Return Types and Type Transformation
-    template <typename It> auto fcn(It beg, It end) -> decltype( * beg) {
+    template <typename It> auto fcn(It beg, It end) -> decltype( *beg) {
         // process the range
         //The dereference operator returns an lvalue, so 
         return * beg;        // return a reference to an element from the range
