@@ -1372,6 +1372,8 @@ Barriers:
         // To one arbitary thread, it will appear as this return PTHREAD_BARRIER_SERIAL_THREAD, the remaining 
             threads see a return value of 0. This allows this thread to continue as the master to act the results
             of the work done by all of the other threads.
+        // Once barrier count is reached and all threads is unblocked, barrier can be used aggain. But barrier 
+            count can be changed.
     
 xinetd:
     
