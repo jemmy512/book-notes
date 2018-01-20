@@ -123,10 +123,7 @@ make install
 		echo foo
 		echo $(bar)
 		endef
-
-
-
-
+        
 **********************************************  GDB  ************************************************************
 	
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
@@ -307,7 +304,7 @@ By convention: <unistd.h>
         // rather than testing whether it is less than 0. Because offset is possible a negative value.
     off_t fseek(FILE *stream, long int offset, int whence) <stdio.h>
     off_t ftell(FILE *stream); <stdio.h> // return current offset
-    int read(int fd, void *buf, size_t nbytes);
+    ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
         // There are several cases actual bytes read less than amount requested:
         // 1. Reading from a regular file, end of the file is reached before requested number of bytes has been read.
         // 2. Reading from a terminal device. Normally, up to one line is read at a time.
@@ -318,9 +315,10 @@ By convention: <unistd.h>
 FD Duplicate:
     int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
     int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
+        // fd2 shares the same file table as fd.
 Data sync between kernel buffer and disk:
-    void sync(void);
-    int fsync(int fd);
+    void sync(void);        // Queues all the modified block buffers for writing and returns.
+    int fsync(int fd);      
     int fdatasync(int fd);
 Aotomic Operation: <unistd.h>
     ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
@@ -343,19 +341,19 @@ File property change:
         Increasing file space:      FALLOC_FL_INSERT_RANGE
     ioctl: <sys/ioctl.h>
         int ioctl(int fd, int request, ...);
-    /dev/fd/:
+/dev/fd/:
     
 Parse Command Line Option
     int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
         // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
-        // If an option followed by two colons(::), it's free to take or not take argument, but there must no be 
-            be any spece between option and arguement. eg: "a:b::c" --> -a aa -bbb -c / -a aa -b -c
-        // Encounters a invalid option, returs a question mark (?) instead of characters
+        // If an option followed by two colons(::), it's free to take or not take argument, but there must be 
+            no any space between option and arguement. eg: "a:b::c" --> -a aa -bbb -c / -a aa -b -c
+        // Encounters a invalid option, returs a question mark (?) instead of characters.
         // If an option's missing, returns a question mark(?); if first character of options is colon, return colon(:)
         // Pattern -- can stop getopt processing options and return -1
         // optopt, optarg, opterr, optind
     int getopt_long(int argc, char * const argv[], const char *optstring,
-           const struct option *longopts, int *longindex); <getopt.h>
+           const struct option *longopts, int *longindex); <getopt.h> _GNU_SOURCE
         // longopts' last element must be a zero array
         struct option{              
             const char  *name;      // long option name
@@ -402,8 +400,9 @@ Stata Family function: <sys/stat.h>
         S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
 File Type:
     1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
-    S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
-    S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
+    functions to determine file type:
+        S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
+        S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
     
 File Access Permission:
     st_mode mask:
@@ -418,7 +417,7 @@ Ownership of New Files and Directory:
     The user ID of the file is set to the effective user ID of the process, group ID can be following rules:
         1. Can be the effective group ID of the process.
         2. Can be the group ID of the directory in which the file is being created.
-access and faccessat: <unistd.h> determine accessibility based on readl use and group id
+access and faccessat: <unistd.h> determine accessibility based on real user and group id
     int access(const chat *pathname, int mode); 
     int faccessat(int fd, const chatr *pathname, int mode, int flag);
     // mode: F_OK, R_OK, W_OK, X_OK; flag: AR_EACCESS
@@ -547,7 +546,8 @@ struct rlimit {
 setrlimit(int resource, const struct rlimit *rlp);
 getrlimit(int resourcr struct rlimit *rlp);
     RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS, RLIM_INFINITY
-
+getrusage(int who, struct rusage *r_usgage); // get information about resource utilization
+    // who: RUSAGE_SELF, RUSAGE_CHILDREN
 **********************************************  Standard I/O Library  *******************************************
 Stream's Oritention: <stdio.h> <wchar.h>
     int fwide(FILE *fd, int mode); // set a stream's oritention
@@ -745,6 +745,52 @@ readn and writen:
     
     -- P524 -- review code
     
+**********************************************  system Data Files and Information  ******************************
+
+System Identification:
+    int uname(struct utsname *name); // return information on the current host and operating system.
+    struct utsname {
+        char sysname[];     // operating system name
+        char nodename[];    // name of this node
+        char release[];     // current release of operating system
+        char version[];     // current version of this release
+        char machine[];     // name of hardware type
+    };
+Time and Data Rountine:
+    time_t              --------------> time
+    struct timespec {   --------------> clock_gettime
+        time_t  tv_sec;
+        logn    tv_nsec;
+    };
+    struct timeval{     --------------> gettimeofday
+        long tv_sec;   //seconds
+        long tv_usec;  //microseconds
+    };
+    struct tm { broken-down time
+        int tm_sec;     // second after minues: [0-60]
+        int tm_min;     // minutes after hours: [0-59]
+        int tm_hour;    // hours after midnight: [0-23]
+        int tm_mday;    // day of the month: [1-31]
+        int tm_mon;     // months since January: [0-11]
+        int tm_year;    // year since 1900
+        int tm_wday;    // day since Sunday:[0-6]
+        int tm_yday;    // day since January: [0-365]
+        int tm_isdst;   // daylight saving time flag: 0 and positive value
+    };
+    time_t time(time_t *calptr); // <time.h>
+    int clock_gettime(clokid_t clock_id, struct timespec *tsp); // <sys/time.h>
+        // clock_id: CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THRAD_CPUTIME_ID
+    int clock_getres(clockid_t clock_id, struct timespec *tsp); // determine the resolution of given system clock
+    int clock_settime(clock_id clock_id, const struct timespec *tsp);
+    int gettimeofday(struct timeval *tp, void *tzp);
+    
+    struct tm *gmtime(const time_t *calptr);
+    struct tm *localtime(const time_t *calptr);
+    time_t mktime(struct tm *tmptr);
+    size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr);
+    size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr, local_t local);
+    char *strptime(const char *buf, const char *format, struct tm *tmptr);
+    
 **********************************************  Network Programming  ********************************************
 
 Procedure of socket:
@@ -851,7 +897,6 @@ Out-of-Band data:
             if MSG_OOB is specified the data will be recieved, otherwise not. if multi-data sent, only final OOB is remebered.
         If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying MSG_OOB(EINVAL).
         
-    
 Components of Server:
 	1. IO communication unit
 		1.1 Port multiplexing
@@ -1167,18 +1212,27 @@ Summary:
     
 **********************************************  Thread Process Programming  *************************************
 
+Main function:
+    1. When a C program is executed by the kernal-by one of the exec functions, a special start-up routine is called
+        before the main is called.
+    2. The executable program file specifies this routine as the starting address for the program. This is set
+        by the link editor when it is invoked by the C compiler.
+    3. This start-up routine takes up values from the kernel and sets things up so that the main functions is called.
 Results of different order of parent and child process exit:
-    1. parent exit before child process: child process becomes orphan process ,init process take over it.
+    1. parent exit before child process: child process becomes orphan process, init process takes over it.
     2. parent exit after child without call wait or waitpid, child becomes zombie process.
     3. parent exit after child with call wait, both parent and child exit normally. 
 Handle Zombie process:
-    1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate  zombie
-        while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);
+    1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate  
+        zombie while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);
     2. fork twice.
     3. Ignore the SIGCHLD signal.
 Enviroment List: <stdlib.h>
     Global variable: environ;
-    opt: getenv(const char *name), putenv(char *string);
+    char* getenv(const char *name);
+    int putenv(char *str); //form: "name=value"; already exited one will be remvoed
+    int setenv(const char *name, const char *value, int rewrite); 
+    int unsetenv(const chart *name);
 Consists of Program:
                     |---------------------------------------------------------------------------------
                     |                               |
@@ -1210,16 +1264,17 @@ Process Enviroment:
     Exit Function:
         _exit(...), _Exit(...) // return to the kernel immediately
         exit(...) // performs certain cleanup processing then returns to kernel
-        ptread_exit();
+        pthread_exit();
         returns of the last thread from its start routine
         response of the last thread to the cancellation request
         int atexit(void *(func)(void)); // call on registered func in reverse order and as many times as registered
+            // register at leat 32 exit handlers that are automatically called by exit.
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
         // child process copys parent's data, head and stack but shares text segment and file descriptors.
         // There are two ways to handling descriptors after fork:
            1. Parent waits fo child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
-    pid_t wait(int *stat_loc);  
+    pid_t wait(int *stat_loc);  <sys/wait.h>
         WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
         // return immediatelly with terminate status if one child is zombie.
     pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
@@ -1227,7 +1282,25 @@ Process Enviroment:
         // pid == 0; wait the process whose process group ID equals calling process group ID
         // pid == -1; wait for any process
         // pid < -1; wait the process whose process group ID equals absolute value of pid
-Process Shceduling: <unistd.h>
+    int waittid(idtype_t idtype, id_t id, siginfo_t *infop, int options);
+        // idtype: P_PID, P_PGID, P_ALL
+        // options: WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTOPED
+    #include<sys/types.h> <sys//wait.h> <sys/time.h> <sys/resource.h>
+    pid_t wait3(int *statloc, int options, struct rusage *rusage);
+    pid_t wait4(pid_t pid, int *statloc, int options, struct rusage *rusage);
+        // Additional feature is allow kernel to return a summary of resources used by the terminated process and   
+            all its child processes.
+        // Resource information includes such  statistics as the amount of the user CPU time, amount of the system
+            CPU time, number of page faults, number of signals received...
+Memory Allocation:
+    void *malloc(size_t size);  // initial value of the memory is indeterminate.
+    void *calloc(size_t nobj, size_t size); // initial value is 0.
+    void *reallocc(void *ptr, size_t newsize);  // contents in newly increased space is indeterminate
+        // Because old erea may move, we shouldn't have any pointers into this area.
+    void free(void *ptr);
+        // The freed space is usually not return to kernel but put into a pool of available memory(malloc pool)and
+            can be used again by call to one of the three alloc functions.
+Process Scheduling: <unistd.h>
     nice value range: 0 - 2 * NZERO - 1
     modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
     priority: <sys/resource.h>
@@ -1259,7 +1332,7 @@ Process exit functions:
         3. The last thread responds to the cancellation request.
     Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
 pthread:
-    pthread_t pthread_self(void);
+    pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);
     pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
         // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack.
@@ -1274,19 +1347,22 @@ pthread:
         // A thread's termination status is retained until we call pthread_join for the thread.
         // A thread underlying storage can be reclaimed immediatelly on termination if the thread has been detached.
     pthread_cancel(pthread_t); //re-acquire mutex before acting cancle and ensure it not consume any condtion signal
-        // This fun doesn't wait for the thread to terminate, it merely makes the request.
+        // This fun doesn't wait for the thread to terminate, it merely makes a request.
         // Calling on the detached thread rereults in undefined behavior.
         pthread_setcancelstate(int state, int *oldstate); // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
         pthread_setcanceltype(int type, int *oldtype);  // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
         pthread_testcancel(void); // create a cancellation point
         pthread_cleanup_push(void (*routine)(void *), void *arg);
-        pthread_cleanup_pop (int execute);
-        // Cleanup handler are recorded in the stack which means they are executed in a reverse order.
-        // Cleanup functions can be called when a call to pthread_exit, response to a cancellation request and 
-            pthread_cleanup_pop with nonzero execute argument.
-        // Those functions can be implemented as macros and must be used in matched paires within 
-            same scop in the thread.
-    pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset);
+        pthread_cleanup_pop (int execute); 
+            // execute: wether execute the clean up handler routines when pop them. 
+            // Cleanup handler are recorded in the stack which means they are executed in a reverse order.
+            // Cleanup functions can be called when: 
+                a. a call to pthread_exit
+                b. response to a cancellation request 
+                c. pthread_cleanup_pop with nonzero execute argument.
+            // Those functions can be implemented as macros and must be used in matched paires within 
+                same scop in the thread.
+    pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset); //how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
     atexit(void (*function)(void));
 process completion status:
     int WIFEXITED(int)-WEXITSTATUS, WIFSIGNALED-WTERMSIG, WCOREDUMP, WIFSTOPED, WSTOPSIG
@@ -1312,9 +1388,9 @@ pthread_attr:
     pthread_attr_destroy(pthread_attr_t *attr);
     pthread_attr_setdetachstate(pthread_attr_t *attr, int state);
     pthread_attr_getdetachstate(pthread_attr_t *attr, int *state);
-    pthread_attr_setstacksize(pthread_attr_t *attr, size_t size); // PTHREAD_STACK_MIN
-    pthread_attr_getstacksize(pthread_attr_t *attr, size_t *size); // get mim stack size
-    pthread_attr_setguardsize(pthread_attr_t *attr, size_t size); // 0[no guard], round up to multiple PAGESIZE
+    pthread_attr_setstacksize(pthread_attr_t *attr, size_t size);   // PTHREAD_STACK_MIN
+    pthread_attr_getstacksize(pthread_attr_t *attr, size_t *size);  // get mim stack size
+    pthread_attr_setguardsize(pthread_attr_t *attr, size_t size);   // 0[no guard], round up to multiple PAGESIZE
     pthread_attr_getguardsize(pthread_attr_t *attr, size_t *size);
 pthread_key:
     pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
@@ -1427,6 +1503,7 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
 
 
 **********************************************  MYSQL Programming  **********************************************
+
 Direct Exexute:
     MYSQL *mysql_init(MYSQL *mysql);                        // init MYSQL struct
     MYSQL *mysql_real_connect(MYSQL *mysql, const char *host, const char *user, const char *pwd, const char *db, 
@@ -1454,17 +1531,15 @@ Prepared Statment:
 unsigned int mysql_errno(MYSQL *connection);  
 char *mysql_error(MYSQL *connection);
 
-
-
 **********************************************  Kernel Programming  *********************************************
 Advantages:
-    1. Don' have to rebuild kernel as ofen.
+    1. Don' have to rebuild kernel as often.
     2. Help diagnose system problems.
     3. Save memory.
     4. Much faster to maintain and debug.
 Used for:
     1. Device drivers   2. Filesystem drivers   3. System calls   
-    4.Network drivers   5. TTY line disciplines  6. Executeable interpreters
+    4. Network drivers  5. TTY line disciplines 6. Executeable interpreters
 LKM utilities:
     insmod  rmmod   depmod  kerneld  ksyms  lsmod   modinfo   modprobe
 What happen when An LKM loads:

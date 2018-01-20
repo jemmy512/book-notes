@@ -9,7 +9,7 @@ Container Operations:
     Initialization:
         1. Initialize a container with elements of another container.
             std::make_move_iterator();
-        2. Initialize a container with elements of ordinary c-style array.
+        2. Initialize a container with elements of ordinary C-style array.
             std::begin(), std::end();
         3. Initialized a container from stdin.
             std::deque<int> d{std::istream_iterator(std::cin), std::istream_iterator()};
@@ -189,5 +189,55 @@ Forward-List: <forward_list>
         l.splice_after(pos, l2);                l.merge(l2);
         l.splice_after(pos, l2, l2pos);         l.merge(l2,op);
         l.splice_after(pos, l2, l2beg, l2end);  l.reverse();
-set and multiple set:
+set and multiple set: // sort elements automatically according to certain sort criterion
+    teplate<typename T, typename Compare = less<T>, typename Allocator = allocator<T>>
+    class set, multiset;
+    // impelmented as red-black-tree, which are good for both changing and searching for elements.
+    
+    Operation:
+    1. Create, copy and destroy:
+        SET s;          SET s(beg, end);        SET:
+        SET s(op);      SET s(initlist);            set<Elem>; set<Elem, op>; 
+        SET s(s2);      SET s = initlist;           multiset<Elem>, multiset<Elem, op>
+        SET s = s2;     s.~SET();
+        SET s(rm);
+        SET s = rm;
+        SET s = rm;
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     
