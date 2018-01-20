@@ -348,6 +348,8 @@ File property change:
 Parse Command Line Option
     int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
         // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
+        // If an option followed by two colons(::), it's free to take or not take argument, but there must no be 
+            be any spece between option and arguement. eg: "a:b::c" --> -a aa -bbb -c / -a aa -b -c
         // Encounters a invalid option, returs a question mark (?) instead of characters
         // If an option's missing, returns a question mark(?); if first character of options is colon, return colon(:)
         // Pattern -- can stop getopt processing options and return -1
@@ -760,6 +762,7 @@ Procedure of socket:
 			in_port_t sin_port;		// port in network byte order, > 1024
 			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
 		};
+        typedef unsigned short sa_family_t;
 		struct in_addr {
 			uint32_t s_addr;	// address in network byte order
 		};
