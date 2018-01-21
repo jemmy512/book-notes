@@ -190,8 +190,9 @@ Forward-List: <forward_list>
         l.splice_after(pos, l2, l2pos);         l.merge(l2,op);
         l.splice_after(pos, l2, l2beg, l2end);  l.reverse();
 set and multiple set: // sort elements automatically according to certain sort criterion
-    teplate<typename T, typename Compare = less<T>, typename Allocator = allocator<T>>
-    class set, multiset;
+    prototype:
+        teplate<typename T, typename Compare = less<T>, typename Allocator = allocator<T>>
+        class set, multiset;
     // impelmented as red-black-tree, which are good for both changing and searching for elements.
     
     Operation:
@@ -203,7 +204,100 @@ set and multiple set: // sort elements automatically according to certain sort c
         SET s(rm);
         SET s = rm;
         SET s = rm;
-    
+        Sorting criterion can defined int two ways:
+            1. As a template parameter.
+                std::set<int, std::greater<int>> coll;
+            2. As a contructor parameter.
+                std::set<int> coll(std::greater<int>);
+    2. Nonmodifying Operation: 
+        c.key_comp();   c.vlaue_comp(); c.empty();  c.size();   c.max_size();   == < !=
+    3. Special Search Operations:
+        c.count(vla);   c.find();   c.lower_bound(val); c.upper_bound(val); c.equal_bound(val);
+    4. Assignment:
+        // Both containers must have same elements type and comparison criteria.
+        c = c2; c = rm; c = initlist; c.swap(c2);
+    5. Iterator Functions:
+        // Set and multiset do not provide direct elements access.
+        c.begin(); c.end(); c.cbegin(); c.rbegin(); c.crbegin();
+        // As with all associated container classes, the iterators are bidirectional iterators.
+        // More important is the constraint that, from an iterator's point of view, all elements are
+            considered constant. So, you can't compromise the order of the element by changing their value.
+        // Can't call modifying algorithm on the set or multiset, just user member function.
+    6. Inserting and Removing:
+        c.insert(val);          c.emplace(arg...);              c.erase(beg, end);
+        c.insert(pos, val);     c.emplace_hint(pos, arg...);    c.clear();
+        c.insert(beg, end);     c.erase(val);
+        c.insert(initlist);     c.erase(pos, val);
+        
+        Return type of insert() and empalce is different:
+            set:
+                pair<iterator, bool>    insert(const value_type &val);
+                iterator                insert(const_iterator posHint, const value_type &val);
+                
+                template<typeneme...Args>
+                pair<iterator, bool>    emplace(Args&&...args);
+                tempalte<typename...Args>
+                iterator                emplace_hint(const_iterator posHint, Args&&...args);
+            multiset:
+                iterator                insert(const value_type &val);
+                iterator                insert(const_iterator posHint, const value_type &val);
+                
+                template<typeneme...Args>
+                iterator                emplace(Args&&...args);
+                tempalte<typename...Args>
+                iterator                emplace_hint(const_iterator posHint, Args&&...args);
+Map and multimap:
+    prototype:
+        template<typename Key, typename value, typename Compare = less<Key>, typename Allocator
+            = allocator<pair<const Key, value>>>;
+        class map, multimap;
+    Abilities:
+        // sets and multisets, maps and multimaps use the same internal data structure, so you could
+            consider sets and multisets as the special maps and multimaps, respectively.
+        // And maps and multimaps have the abilities of the sets and multisets.
+        // You may not change the key directly which may compromise the correct order. To modify the element
+            you should remove the element that hold the old key and insert a new element that has the new 
+            key and old value.
+        1. Create, copy and destroy
+            map c();        map c (initlist);       c.~map();   map:
+            map c(op);      map c = initlist;                       map<Key, val>   map<Key, val, op>
+            map c(c2);      map c(beg, end);                        multimap<Key, val> multimap<Key, val, op>                
+            map c = c2;     map c(beg, end, op);
+        2. Nonmodifying Operations:
+            c.key_comp();   c.value_comp(); c.empty(); c.size(); c.max_size(); == >= < !=
+        3. Special Search Operations:
+            c.count(val); c.find(val); c.lower_bound(val); c.upper_bound(); c.equal_range();
+            // Using the find_if algorithm to search for an element with a certain value is even more complicated
+                that writing a loop, because have to provide a function object that compres the value of an 
+                element with a certain value.
+        4. Assignment:
+            c = c2; c = rm; c = initlist; swap
+        5. Iterator Function and access:
+            begin(); end(); cbegin(); cend(); rbegin(); crbegin();
+            map also provide: at() and [](return reference) elements access operators;
+            // If no such element in map, [key] will insert a new element with key and default init value.
+            // The key inside map and multimap are considered to be constant, so type of elements is:
+                pair<const Key, T>
+            // To change the key of an element only way is to replace the old element with a new element that has
+                the same value.
+        6. Inserting and Removing Function:
+            insert(val);        emplace(args...);               erase(val);
+            insert(pos, val);   emplace_hint(pos, args...);     eraase(pos);
+            insert(beg, end);   clear();                        erase(beg, end);
+            insert(initlist);
+            // Inserting elementa are placed at the end of the existing equivalent values.
+            // Thress other ways to pass a value into a map:
+                1. use value_type. To avoid implicit type conversion.
+                        coll.insert(map<string, float>::value_type("otto", 22.3));
+                    or  coll.insert(decltype(coll)::value_type("otto", 22.3));
+                2. User pair<>.
+                    coll.insert(pair<string, float>("otto", 22.3));         // implicit conversion
+                    coll.insert(pair<const string, float>("otto", 22.3));   // no implicit conversion
+                3. Use make_pair();
+                    coll.insert(make_pair("otto", 22.3));
+            // Calling erase() for the element to which you are referring with pos invalidates pos as an 
+                iterator of coll.
+            
     
     
     
