@@ -1,4 +1,34 @@
 
+Network Config:
+	ifconfig
+	sudo ifconfig eth0 192.168.1.212 netmask 255.255.255.0
+
+FTP service：
+	check service: lsof -i :21
+	Install service: apt-get install vsftpd
+SSH service：
+	check service：lsof -i :22  
+	Install service: apt-get install openssh-server
+
+**********************************************  GCC 7.2.0 Install  **********************************************
+downlaod src code:
+    wget https://ftp.gnu.org/gnu/gcc/gcc-7.2.0/gcc-7.2.0.tar.gz
+install prerequsities:
+    yum install libmpc-devel mpfr-devel gmp-devel zlib-devel* 
+    yum groupinstall "Development Tools"
+extract src code:
+     tar -xzvf gcc-7.2.0.tar.gz
+cd gcc-7.2.0
+./contrib/download_prerequisites
+cd ..
+mkdir objdir
+cd objdir
+$PWD/../gcc-7.2.0/configure --prefix=$HOME/gcc-7.2.0 --disable-multilib --enable-languages=c,c++
+    ../gcc-7.2.0/configure --prefix=/usr/local/gcc7 --enable-languages=c,c++,go  --disable-multilib
+    ./configure –enable-checking=release –enable-languages=c,c++ –disable-multilib
+make -j n // n is amount number of processor core
+make install
+
 *********************************  Linux File and Management  **************************
 ls:
 	ls [-aAdfFhilnrRSt]
