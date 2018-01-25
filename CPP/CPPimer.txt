@@ -200,7 +200,7 @@ Operation specified to weak_ptr
     weak_ptr<T> w;          weak_ptr<T> w(sp);      w = p;      w.reset();
     w.use_count();          w.expired();            w.lock();        
 Programs tend to use dynamic memory for three purpose:
-    1.  They don’t know how many objects they need
+    1. They don’t know how many objects they need
     2. They don’t know the precise type of the objects they need
     3. They want to share data between several objects
 If new is unable to allocate the request storage, it’ll throw an exception of type bad_alloc, we can
@@ -257,7 +257,7 @@ The Copy constructor
 Difference between copy and direct initialization:
     Direct: we’re asking compiler use ordinary function matching to select the constructor
         that best matches the arguments we provide;
-    Coyt: we’re asking compiler to copy the right-hand operand to the object being created, converting if necessary.
+    Cope: we’re asking compiler to copy the right-hand operand to the object being created, converting if necessary.
 Copy constructor happens:
     1. When we use =
     2. Pass an object as an argument to parameter of non-reference type
@@ -434,7 +434,7 @@ Template arguments used for non type template parameters must be constant expres
 Template programs should try to minimize the number of arguments placed on the arg types.
 Function templates and member functions of class templates are ordinarily put into head file.
 It's up to the caller to guarantee that the arguments passed to the template support any operations that 
-    template uses,  and that those operations behave correctly in the context in which the template uses them. 
+    template uses, and that those operations behave correctly in the context in which the template uses them. 
 Class Template
     A function of  a class template is instantiated only if the program uses that function.
     There is one exception to the rule that when we use a class template we must supply the template arguments 
@@ -541,7 +541,7 @@ Template Parameter
     typename T::value_type top(const T& c);     // T is a class type
 
 Default template Arguments:
-    template<typename T = int> void f(T a, T b);       f<>(2, 3);       f<string>(“3”, “5”);
+    template<typename T = int> void f(T a, T b);       f<>(2, 3);       f<string>("3", "5");
     template<class T = int> class Base;                Base<> b;        Base<string> ba;
 Member template
     Category: member template for normal class and class template.
@@ -785,7 +785,7 @@ P 712 Exercises
 
 ********************************** Chapter 17  *******************************************************************
 
-A tuple can be thought of as a “quick and dirty” data struct.
+A tuple can be thought of as a "quick and dirty" data struct.
 
 Tuple type:
     tuple<T1, T2, T3...> t;  tuple<T1, T2, T3...>  t(V1, V2, V3..);  make_tuple(V1, V2, V3...);  get<i>(t);
