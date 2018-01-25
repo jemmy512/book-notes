@@ -1,34 +1,4 @@
 
-Network Config:
-	ifconfig
-	sudo ifconfig eth0 192.168.1.212 netmask 255.255.255.0
-
-FTP service：
-	check service: lsof -i :21
-	Install service: apt-get install vsftpd
-SSH service：
-	check service：lsof -i :22  
-	Install service: apt-get install openssh-server
-
-**********************************************  GCC 7.2.0 Install  **********************************************
-downlaod src code:
-    wget https://ftp.gnu.org/gnu/gcc/gcc-7.2.0/gcc-7.2.0.tar.gz
-install prerequsities:
-    yum install libmpc-devel mpfr-devel gmp-devel zlib-devel* 
-    yum groupinstall "Development Tools"
-extract src code:
-     tar -xzvf gcc-7.2.0.tar.gz
-cd gcc-7.2.0
-./contrib/download_prerequisites
-cd ..
-mkdir objdir
-cd objdir
-$PWD/../gcc-7.2.0/configure --prefix=$HOME/gcc-7.2.0 --disable-multilib --enable-languages=c,c++
-    ../gcc-7.2.0/configure --prefix=/usr/local/gcc7 --enable-languages=c,c++,go  --disable-multilib
-    ./configure –enable-checking=release –enable-languages=c,c++ –disable-multilib
-make -j n // n is amount number of processor core
-make install
-
 **********************************************  Make File  ******************************************************
 
 1. syntax
@@ -41,9 +11,9 @@ make install
 3. Five parts of makefile: 
 	1. explicit rules 2. implicit rules 3. comments 4. variable defination
 	5. file instruction:
-		3.1 include other makefile
-		3.2 specify valid parts of makefile according to cases
-		3.3 define a mutil-line command
+		5.1 include other makefile
+		5.2 specify valid parts of makefile according to cases
+		5.3 define a mutil-line command
 4. wildcards: *, ? [...]
 	object = *.o # value of variable object is '*.o' not all .o suffix files
 	objects := $(wildcard *.o) # value of variable object is all .o suffix files
@@ -288,10 +258,10 @@ define own enviroment variable int GDB:
 **********************************************  File I/O ********************************************************
 
 By convention: <unistd.h>
-    0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stands for standard input, output and error, respectively.
+    0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stand for standard input, output and error, respectively.
     Range: 0 - (OPEN_MAX - 1)
         
-    #include<fcntl.h>
+#include<fcntl.h>
     int open(const char *path, int oflag, ... /*mode_t mode*/);
     int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
         // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, O_TTY_INIT, O_SYNC, O_DSYNC, O_RSYNC
@@ -301,8 +271,8 @@ By convention: <unistd.h>
     off_t lseek(int fd, off_t offset, int whence);  // move the read/write offset
         // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
         // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
-        // rather than testing whether it is less than 0. Because offset is possible a negative value.
-    off_t fseek(FILE *stream, long int offset, int whence) <stdio.h>
+            rather than testing whether it is less than 0. Because offset is possible a negative value.
+    off_t fseek(FILE *stream, long int offset, int whence;  <stdio.h>
     off_t ftell(FILE *stream); <stdio.h> // return current offset
     ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
         // There are several cases actual bytes read less than amount requested:
@@ -315,23 +285,23 @@ By convention: <unistd.h>
 FD Duplicate:
     int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
     int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
-        // fd2 shares the same file table as fd.
+                                // fd2 shares the same file table as fd.
 Data sync between kernel buffer and disk:
-    void sync(void);        // Queues all the modified block buffers for writing and returns.
+    void sync(void);            // Queues all the modified block buffers for writing and returns.
     int fsync(int fd);      
     int fdatasync(int fd);
 Aotomic Operation: <unistd.h>
     ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
     ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
-File property change:
-    int fcntl(int fd, int cmd, ... /*int arg*/); <fcntl.h>
+File property change: <fcntl.h>
+    int fcntl(int fd, int cmd, ... /*int arg*/); 
         // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
-        // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN,F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
+        // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
         // F_GETFL{O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH} {O_APPEND, O_NONBLOCK, O_SYNC, O_DSYNC, O_RSYNC}
             
-    int posix_fadvise(int fd, off_t offset, off_t len, int advise);// predeclare an access pattern for file data
+    int posix_fadvise(int fd, off_t offset, off_t len, int advise); // predeclare an access pattern for file data
        // advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEED, *_DONTNEED
-    int fallocate(int fd, int mode, off_t offset, off_t len); // allocate file space, nonportable
+    int fallocate(int fd, int mode, off_t offset, off_t len);       // allocate file space, nonportable
     int posix_fallocate(int fd, int mode, off_t offset, off_t len);
         // After a successful call, subsequent writes to the specified range guaranteed not to fail because of lock.
         Allocating disk space:      0, FALLOC_FL_KEEP_SIZE, *_UNSHARE
@@ -343,7 +313,7 @@ File property change:
         int ioctl(int fd, int request, ...);
 /dev/fd/:
     
-Parse Command Line Option
+Parse Command Line Option: <unistd.h> <getopt.h>
     int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
         // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
         // If an option followed by two colons(::), it's free to take or not take argument, but there must be 
@@ -354,17 +324,17 @@ Parse Command Line Option
         // optopt, optarg, opterr, optind
     int getopt_long(int argc, char * const argv[], const char *optstring,
            const struct option *longopts, int *longindex); <getopt.h> _GNU_SOURCE
-        // longopts' last element must be a zero array
+        // longopts' last element must be a zero array {0, 0, 0, 0}
         struct option{              
             const char  *name;      // long option name
             int         has_flag;   // 1--has, 0--hasn't
             int         *flag;      // specifies how results returned for long option
             int         val;        // return value; flag is NULL, return 0;
         };
-Syslog:
+Syslog: <syslog.h>
     void openlog(const char *ident, int logopt, int facility);
     void closelog(void);
-    int setlogmask(int maskpri);
+    int  setlogmask(int maskpri);
     void syslog(int priority, const char *message, .../*arguments*/);
     
 **********************************************  File and Directories  *******************************************
@@ -395,9 +365,9 @@ Stata Family function: <sys/stat.h>
         struct timespec st_ctim;    // last stat change  time
     };
     mode_t:
-        S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
-        S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
-        S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
+        mode: S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
+        check file type: S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+        access permission: S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
 File Type:
     1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
     functions to determine file type:
@@ -424,6 +394,7 @@ access and faccessat: <unistd.h> determine accessibility based on real user and 
 umask: <sys/stat.h>  // set and get file mode creation mask
      mode_t umask(mode_t cmask);
      // any bits that are on in the file mode creation mask are tured off in the file's mode
+     // retuen previous value of the file mode creation mask
 chmod, fchmod, fchmodat: <sys/stat.h>
     int chmod(const char *pathname, mode_t mode);
     int fchmod(int fd, mode_t mode);
@@ -448,10 +419,10 @@ File size:
     1. Regular file size 0 is allowed.
     2. Directory size is usually a multiple of a number, such as 16 or 512.
     3. Symbolic link size is the number of byts in filename. (Symbolic link don't contain normal c null byte)
-File Truncation:    <unistd.h>
+File Truncation:    <unistd.h> truncate a file to specified length
     int truncate(const char *pathname, off_t length);
     int ftruncate(int fd, off_t length);
-    // if previous file size is less than length, file size will increases, a hole probably crated
+    // if previous file size is less than length, file size will increases, a hole probably created
 File system:
     
 link, linkat, unlink, unlinkat, remove: <unistd.h>
@@ -501,10 +472,10 @@ mkdir, mkdirat, rmdir: <sys/stat.h>
     int mkdir(const char *pathname, mode_t mode);
     int mkdirat(int fd, const char *pathname, mode_t mode);
     int rmdir(const char *pathname);<unistd.h>
-Reading Directories: <dirent.h>
+Directories: <dirent.h>
     struct dirent { // incomplete type
-        inot_t  d_ino;      // file serial number;
-        char    d_name[];   // filename string of entry
+        inot_t  d_ino;          // file serial number;
+        char    d_name[];       // filename string of entry
         ...
     };
     DIR *opendir(const char *pathname);
@@ -512,7 +483,7 @@ Reading Directories: <dirent.h>
     struct dirent *readdir(DIR *dp);
     void rewinddir(DIR *dp);    // reset the position of a directory stream to the begining of a directory.
     int closedir(DIR *dp);
-    long telldir(DIR *dp);  // current location of a named directory stream
+    long telldir(DIR *dp);      // current location of a named directory stream
     void seekdir(DIR *dp, long loc);    // set the position of a directory stream
     // Only kernel has permission to write to directory itself.
     // Ordering of entries within the directory is implementation dependent and usually not alphabetical.
@@ -539,16 +510,18 @@ ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
 ssize_t write(int fildes, const void *buf, size_t nbyte);    
 
 #include<sys/resource.h>
-struct rlimit {
-    rlim_t rlim_cur;  /* Soft limit */
-    rlim_t rlim_max;  /* Hard limit (ceiling for rlim_cur) */
-};
-setrlimit(int resource, const struct rlimit *rlp);
-getrlimit(int resourcr struct rlimit *rlp);
-    RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS, RLIM_INFINITY
-getrusage(int who, struct rusage *r_usgage); // get information about resource utilization
-    // who: RUSAGE_SELF, RUSAGE_CHILDREN
+    struct rlimit {
+        rlim_t rlim_cur;  /* Soft limit */
+        rlim_t rlim_max;  /* Hard limit (ceiling for rlim_cur) */
+    };
+    setrlimit(int resource, const struct rlimit *rlp);
+    getrlimit(int resourcr struct rlimit *rlp);
+        RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_NOFILE, RLIMIT_STACK, RLIMIT_AS, RLIM_INFINITY
+    getrusage(int who, struct rusage *r_usgage); // get information about resource utilization
+        // who: RUSAGE_SELF, RUSAGE_CHILDREN
+        
 **********************************************  Standard I/O Library  *******************************************
+
 Stream's Oritention: <stdio.h> <wchar.h>
     int fwide(FILE *fd, int mode); // set a stream's oritention
         // Not change the orientation of stream that has already oriented.
@@ -843,16 +816,14 @@ Procedure of socket:
 	5. read and write (client and server)
 		ssize_t read(int fd, void *buf, size_t count);
             // The behavior of multi-thread read or write is undefined
-            // 
 		ssize_t write(int fd, const void *buf, size_t count);
-		
             // flags: MSG_PEEK, MSG_OOB(SIGURG), MSG_WAITALL
             // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL
 		ssize_t send(int sockfd, const *buf, size_t len, int flags);
             // return success doesn't mean the peer process recvices data, just means the data
-            // \has been delivered to network drivers without error
+                has been delivered to network drivers without error
             // send data out of boundary will cause send fail with errno set to EMSGSIZE
-            // \with byte-stream protocol send will block until entire amount of data has been transmitted
+                with byte-stream protocol send will block until entire amount of data has been transmitted
 		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
             
 		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
@@ -866,10 +837,11 @@ Procedure of socket:
     5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
         // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
 	6. close <unistd.h> int close(int fd);
-        // In multi-thread one thread close socket just decrement its reference count until to 0, not affect other threads
-           \action to the same socket. Once all threads call close() to the same socket, socket will close at the end.
-int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp); // ok: 0, error: -1
-int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *restrict alenp);
+        // In multi-thread one thread close socket just decrement its reference count until to 0, not affect
+            other threads action to the same socket. Once all threads call close() to the same socket,
+            socket will close at the end.
+    int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
+    int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
        
 Raw-socket:
 	int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
@@ -1473,7 +1445,7 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
     1. init
         SSL_library_init();
         OpenSSL_add_all_algorithms();
-        SSL_load_error_strings(); // void ERR_print_errors_fp(FILE *fp);
+        SSL_load_error_strings();       // void ERR_print_errors_fp(FILE *fp);
     2. Specify method
         SSL_METHOD* method = SSLv23_server_method(void); // server method is the same as the client
     3. Set CTX
@@ -1519,12 +1491,12 @@ Direct Exexute:
 
 Prepared Statment:
     MYSQL_STMT *mysql_stmt_init(); 
-    mysql_stmt_prepare(); // prepare stmt on server
-    mysql_stmt_bind_param(); // set the values of any parameters
+    mysql_stmt_prepare();       // prepare stmt on server
+    mysql_stmt_bind_param();    // set the values of any parameters
     mysql_stmt_execute();
     mysql_stmt_result_metadata(); obtain the result set meta data
     mysql_stmt_bind_result();   // retrieve result set row
-    mysql_stmt_fetch();          // fetch data row by row
+    mysql_stmt_fetch();         // fetch data row by row
     mysql_stmt_next_result();   // more result: -1 = no, >0 = error, 0 = yes 
     
 
