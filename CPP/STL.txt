@@ -1,5 +1,5 @@
 
-**********************************************  STL Containers ***************************************************
+********************************************** 7. STL Containers ***************************************************
 
 Containers Ability:
     1. All containers provide value rather than reference semantics.
@@ -340,12 +340,14 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
         2. Layout operations:
             hash_function(); key_eq(); bucket_count(); max_bucket_count();    rehash(bnum);
             load_factor();   max_load_factor();        max_load_factor(val);  reserve(num);
-        3. Other Operations:
+        3. Nonmodifying operations:
             empty(); size(); max_sizse(); == !=
         4. Special Searching Operations:
             Unordered container optimized for fast searching of elements, they provide special version of 
                 general algorithm with the same name.
             find(val); count(val); equal_range(val);
+        5. Access:
+            c[key]; c.at(key); // unordered map provided only
         5. Assignment:
             c = c2; c = rm; c = initlist; swap();
         6. Iterators and Access:
@@ -374,11 +376,34 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
         8. Bucket Interface:
             bucket(val); bucket_count(); bucket_size(bucketidx); 
             begin(bucketidx); end(bucketidx); cbegin(bucketidx);
+********************************************** 8. STL Container Member in Detail ***********************************
+
+Type Definitions:
+    container::value_type; 
     
-    
-    
-    
-    
+**********************************************  STL Iterator *****************************************************
+
+std::iterator_traits
+    template<class Iterator> struct iterator_traits;
+    template<class T> struct iterator_traits<T*>;
+    template<class T> struct iterator_traits<const T*> (until C++20);
+
+**********************************************  STL Header *******************************************************
+
+<utility>:
+    swap
+    exchange: C++14
+        template<class T, class U = T> T exchange(T &obj, U &&new_value); (since C++14 until C++20)
+        template<class T, class U = T> constexpr T exchange(T &obj, U &&new_value); (since C++20)
+    move: C++11
+    move_if_noexcept: C++11
+    as_const: C++17
+    declval: C++14
+    make_pair:
+    == >= < !=
+    std::get: C++11
+    to_char: C++17
+    from_chars: C++17
     
     
     
