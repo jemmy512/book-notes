@@ -1,5 +1,5 @@
 
-**********************************************  STL Containers ***************************************************
+********************************************** 7. STL Containers ***************************************************
 
 Containers Ability:
     1. All containers provide value rather than reference semantics.
@@ -297,15 +297,113 @@ Map and multimap:
                     coll.insert(make_pair("otto", 22.3));
             // Calling erase() for the element to which you are referring with pos invalidates pos as an 
                 iterator of coll.
+Unordered Container: <unordered_set> <unordred_map> <functional>
+    prototype:
+        template<typename T, typename Hash = hash<T>,
+            typename EpPred = equal_to<T>, typename Allocator = allocator<T>>
+        class unordered_set, unordered_multiset;
+        
+        template<typename Key, typename T, typename Hash = hash<T>, 
+            typename EpPred = equal_to<T>, typename Allocator = allocator<pair<const Key, T>>>;
+        class unordered_map, unordered_multimap;
+    Abilities:
+        1. Diadvantages over ordered container:
+            Don't provide <, <=, >, >= except ==, !=.
+            Don't provide lower_boud() and upper_bound().
+            Don't provide reverse operations, because iteratora are guaranteed to be forward list.
+        2. programmer's operations can infulence the behavior of the hash table:
+            Can specify the minum of the buckets.
+            Can provide you own hash function.
+            Can provide you own equivalence criterion.
+            Can specify load factor.
+            Can force rehashing.
+        3. programmer can not infulence the following bahavior:
+            The growth factor.
+            The minum load factor.
+        4. element access:
+            Don't provide direct element access.
+            Indirect element access via iterator has constraint, from point of view, the key is constant.
+        1. Create, copy, destroy:
+            UNORD c;                    UNORD c(beg, end);
+            UNORD c(bnum);              UNORD c(beg, end, bnum);
+            UNORD c(bnum, hf);          UNORD c(beg, end, bnum, hf);
+            UNORD c(bnum, hf, cmp);     UNORD c(beg, end, bnum, hf, cmp);
+            UNORD c(c2);                c.~UNORD();
+            UNORD c = c2;               max_load_factor(0.7);// call after contrction.
+            UNORD c(initlist);
+            UNORD c = initlist;
             
+            UNORD:
+                unordered_set<Elem>;                unordered_map<Key, T>;
+                unordered_set<Elem, Hash>;          unordered_map<Key, T, Hash>;
+                unordered_set<Elem, Hash, Cmp>;     unordered_map<Key, T, Hash, Cmp>;
+        2. Layout operations:
+            hash_function(); key_eq(); bucket_count(); max_bucket_count();    rehash(bnum);
+            load_factor();   max_load_factor();        max_load_factor(val);  reserve(num);
+        3. Nonmodifying operations:
+            empty(); size(); max_sizse(); == !=
+        4. Special Searching Operations:
+            Unordered container optimized for fast searching of elements, they provide special version of 
+                general algorithm with the same name.
+            find(val); count(val); equal_range(val);
+        5. Access:
+            c[key]; c.at(key); // unordered map provided only
+        5. Assignment:
+            c = c2; c = rm; c = initlist; swap();
+        6. Iterators and Access:
+            begin(); cbegin(); rbegin(); crbegin();
+        7. Inserting and Removing 
+            // In general, erasing elements don't invalidate iterators and references to other elements.
+            // Inserting and emplacing may invalidate iterators when rehashing happens, wehereas reference 
+                to elements remain vliad.
+            insert(val);        emplace(args...);           erase(val); // return number of removed elems
+            insert(pos, val);   emplace_hit(pos, args...);  erase(pos); // return following position
+            insert(beg, end);                               erase(beg, end);
+            insert(initlist);                               clear();
+            // insert return new element postion and whether it is succeeded or following position.
+            // erase return number of elements erased or following position.
+            // For unordered maps and multimaps, to insert a key/value must keep in mind that inside, 
+                the key is considered to be constant, so you must provide correct type or implicit or 
+                explicity type conversions.
+            // Since C++ 11, the most convenient way to insert element is to pass them as initlist.
+            // Three other ways to insert elements:
+                1. vale_type:
+                    coll.insert(unorderedmap<string, int>::value_type("otto", 123));
+                2. pair<>:
+                    coll.insert(pair<string, int>("otto", 123));
+                3. mak_pair:
+                    coll.insert(make_pair("otto", 123));
+        8. Bucket Interface:
+            bucket(val); bucket_count(); bucket_size(bucketidx); 
+            begin(bucketidx); end(bucketidx); cbegin(bucketidx);
+********************************************** 8. STL Container Member in Detail ***********************************
+
+Type Definitions:
+    container::value_type; 
     
-    
-    
-    
-    
-    
-    
-    
+**********************************************  STL Iterator *****************************************************
+
+std::iterator_traits
+    template<class Iterator> struct iterator_traits;
+    template<class T> struct iterator_traits<T*>;
+    template<class T> struct iterator_traits<const T*> (until C++20);
+
+**********************************************  STL Header *******************************************************
+
+<utility>:
+    swap
+    exchange: C++14
+        template<class T, class U = T> T exchange(T &obj, U &&new_value); (since C++14 until C++20)
+        template<class T, class U = T> constexpr T exchange(T &obj, U &&new_value); (since C++20)
+    move: C++11
+    move_if_noexcept: C++11
+    as_const: C++17
+    declval: C++14
+    make_pair:
+    == >= < !=
+    std::get: C++11
+    to_char: C++17
+    from_chars: C++17
     
     
     
