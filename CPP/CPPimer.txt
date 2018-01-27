@@ -1,4 +1,18 @@
 
+********************************** Chapter 0 Key Words  **********************************************************
+
+constexpr:
+    Specifies that the value of a variable or function can apper in constant expression.
+    conexpr variable Requirements:
+        Its type must be a LiteralType.
+        It must be immediately initialized.
+        The full-expression of its initialization, including all implicit conversions, constructor calls etc, must
+            be a constant exprssion.
+    conexpr function requirements:
+        It must not be virtual.
+        Its return type must be LiteralType.
+        each of its parameters must be LiteralType.
+        
 ********************************** Chapter 2: Variables and Basic Type *******************************************
 
 std::function: <functional>
@@ -6,7 +20,7 @@ std::function: <functional>
         template<Class R, Class....Args>   
         class function<R(Args...)>;
     Class template std:: function is a general-purpose polymorphic function wrapper. Instances of std::function can
-        store, copy and invoke any  Callable target--functions, lambda expressions, bind expressions, or other function
+        store, copy and invoke any Callable target--functions, lambda expressions, bind expressions, or other function
         objects, as well as pointers to member functions and pointers to data members.
     Member functions:
         (constructor), (destructor), operator=, swap, assign(C++17), operator bool, operator()
@@ -17,17 +31,15 @@ std::function: <functional>
         std::swap, operator==, operator!=
     Usage:
         1. store a normal function
-            function<void(int)> func = void (int a) { return ++a};
+            function<void(int)> func = void (int a) { return ++a;};
         2. store a lambda
-            function<sizt_t(Cumstomer&, Customer&)> func = [](Cumstomer &c, Customer &s) { return ;};
+            function<sizt_t(Cumstomer&, Customer&)> func = [](Cumstomer &c, Customer &s) ->size_t{ return 0;};
         3. store the result of a call to std::bind
             function<void()> func = std::bind(print_num, 3317);
-            func();
         4. store a call to a member function
-            function<void(const Foo&, int)> func = &Foo::print_add;
+            function<void(const Foo&, int)> func = &Foo::print_add; // get the address of the memeber functioin
         5. store a template function    
-            template<typename T>
-            T g_Minux(T i, T j) { return i - j;}
+            template<typename T> T g_Minux(T i, T j) { return i - j;}
             function<int(int, int)> func = g_Minux<int>;
         6. store a function object
             struct Minux {
@@ -64,16 +76,16 @@ The delctype Specifier:
 
 Array:
     1. Dimension of arrays must be a constant expression.
-    2. A default-initialized array have undefined values. Random value given by compiler.
+    2. A default-initialized array have undefined values. Random value given by compiler. eg: int arr[10];
     3. Character arrays can be initialized from a string literal. But string literal end with a null character,
         so array size must be bigger than the number of explicit elements. 
         char arr[5] = "hello";   // error: dimension must be at least 6;
     4. No copy and assignment for arrays initialization.
-    5. It’s much more easier to understand array declaration from right to left and from inside out. 
+    5. It’s much more easier to understand array declaration from right to left and from inside to out. 
     6. begin() and end() function which are defined in iterator header return pointers to the first and the one past 
         the last element in an array.
-    7. The result of subtracting two pointers is a library type named ptrdiff_t which is defined in cstddef header
-        file and is a signed integral type. 
+    7. The result of subtracting two pointers is a library type named ptrdiff_t (difference_type C++ container library) 
+        which is defined in cstddef header file and is a signed integer type. 
     8.  The result of subtracting two null pointers is 0.
     9.  Unlike subscripts for vector and string (Library type such as vector and string that have subscript operator 
         force the index used with subscript to be an unsigned value), the index for built-in subscript operator is not
@@ -95,9 +107,8 @@ Some classes can’t rely on synthesized default constructor:
    3. Compiler is unable to synthesize one default constructor. If a class has a member that has class type 
         which doesn’t have a default constructor, so the compiler can’t initialize that member.
 Benefits of Encapsulation:
-   1. User code cannot inadvertently corrupt the state of an encapsulated object
-   2. The implementation of an encapsulated object can change over time without requiring changes in user-level code
-
+   1. User code cannot inadvertently corrupt the state of an encapsulated object.
+   2. The implementation of an encapsulated object can change over time without requiring changes in user-level code.
 
 7.3 Additional Class features
 7.3.1  class members revisited
@@ -113,24 +124,24 @@ Benefits of Encapsulation:
         A mutable data member is never const, even it’s a member of a const object, we can modify a mutable 
             data member inside a const function.
     Initializers for Data Member of Class Type
-        In-class initializer  followed by an = sign or curly brace
+        In-class initializer followed by an = sign or curly brace
 7.3.1 Functions That Return *this
     A const member function returns *this as a reference to const
-        Screen &display (ostream &os)  {do_display(os) return *this; }
-        const Screen &display (ostream &os) {do_display(os) return *this; }
+        Screen &display (ostream &os)  {do_display(os); return *this; }
+        const Screen &display (ostream &os) {do_display(os); return *this; }
         void do_display(ostream &os) {cout << contents << endl; }
     When non-const version of display call do_display, it’s this pointer is implicitly converted from a 
         pointer to non-const to a pointer to const
     When we call display on an object, whether the object is const determines which version of display is called
 7.3.4 Friendship Revisited
     Friendship Between Classes
-        The members of friend class can access all members of class granting  friendship
+        The members of friend class can access all members of class granting friendship
 
 
 Making A Member Function a Friend
 Overloaded Functions and Friendship
 Friend Declarations and Scope
-    Class and nonmember functions need not have been declared before  They are used in a friend declaration.
+    Class and nonmember functions need not have been declared before they are used in a friend declaration.
     When a name is first appears in a friend declaration, it’s implicitly assumed to be part of surrounding scope. 
         However, the friend is not actually declared in that scope.        
     Even if we define the function inside the class, we must provide declaration out the class itself to make that
@@ -146,8 +157,8 @@ Friend Declarations and Scope
     void X::h() { f(); }    // ok: declaration of f is now in scope
 7.4 Class Scope
     Scope and Member Defined outside the Class
-        Once the class name is seen, the remainder of class -- including the  parameter list and function body   
-            --is in scope of the class
+        Once the class name is seen, the remainder of class including the parameter list and function body   
+            is in scope of the class
         If a member function is defined outside the class, any name used in return type is out the scope of class. 
             As a result, we must specify the class of which it is a member.
         // ScreenIndex which is a type name defined inside Window_mgr class
@@ -155,7 +166,7 @@ Friend Declarations and Scope
 7.4.1 Name Lookup and Scope
     Class definition are processed in two phases:
         1. Members declaration are processed first
-        2. Members body processed are entire class has been seen
+        2. Members body are processed after entire class has been seen
     Name Lookup for Class Member Declaration 
         Name used in declaration, including names used for return type and types in parameter list, must see
             before they are used.  
@@ -173,6 +184,7 @@ Friend Declarations and Scope
             or that are of a Class type that does not define a default constructor
     Order of Members Initialization
         A constructor that supplies default arguments for all its parameters also defines the default constructor 
+            FOO(string name = "XXX", string sex = "man", int age = 20) : name(name), sex(sex), age(age) {}
 7.5.2 Delegating Constructor
     Sales_data(): Sales_data("", 0, 0);
     Sales_data(string s): Sales_data(s, 0, 0);
@@ -180,9 +192,9 @@ Friend Declarations and Scope
     Default initialization happens:
         1. When we define non-static variables or arrays at block scope without initializer
         2. When a class has members of class type uses synthesized default constructors
-        3. When a class member are not explicitly  initialized in a constructor initializer list
+        3. When a class member are not explicitly initialized in a constructor initializer list
     Value initialization happens:
-        1. During array initialization we provide fewer initializer than the size of ary
+        1. During array initialization we provide fewer initializer than the size of array
         2. When we define a local static object without initializer
         3. When we explicitly request value initialization by writing the expression
             of the form of T(), where T is the name of a type
@@ -209,7 +221,7 @@ Friend Declarations and Scope
     Static members can be defined inside or outside the class body.  The static keyword is used only on the
         declaration inside the class body not on the definition outside the class body.
     Static members should be initialized outside the class body. We can provide in-class initializers for static
-        members that have const integral type and must do so for static members that are constexpres of literal 
+        members that have const integer type and must do so for static members that are constexpr of literal 
         type. If there is an initializer inside the class there shouldn’t be another one outside the class. 
     Even if a const static data member is initialized in the class body, the members ordinarily should be defined 
         outside the class definition.  
@@ -218,7 +230,7 @@ Friend Declarations and Scope
 ********************************** Chapter 8: IO Library *********************************************************
 
 8.1 The IO Class
-8.1.1 No copy or assign for Io Object
+8.1.1 No copy or assign for IO Object
 8.1.2 Condition States
     IO type:  ios_base::iostate        
     State flag:  ios_base::goodbit   ios_base::badbit  ios_base::eofbit  ios_base::failbit
@@ -266,7 +278,7 @@ Programs tend to use dynamic memory for three purpose:
     2. They don’t know the precise type of the objects they need
     3. They want to share data between several objects
 If new is unable to allocate the request storage, it’ll throw an exception of type bad_alloc, we can
-    use “nothrow” keyword to prevent it throw such exception, the result is a null pointer.
+    use "nothrow" keyword to prevent it throw such exception, the result is a null pointer.
 Smart pointer must be initialized directly, we can’t implicitly convert a built-in pointer to smart pointer
     eg: shared_ptr<int> p = new int(1024);  // error: implicit conversion
     shared_prt<int> p(new int (1024));      // ok: user direct initialization
@@ -274,7 +286,7 @@ Don’t mix ordinary pointer and smart pointer
     It’s dangerous to use built-in pointer to access the object owned by smart pointer, because 
         we may not know when the object is destroyed. 
 Don’t use get to initialize or assign another smart pointer
-        Use get() to pass access to the pointer to the code that will not delete the pointer.
+Use get() to pass access to the pointer to the code that will not delete the pointer.
 Smart pointer can automatically free the memory it manages when an exception occurs
 Smart pointer pitfalls:
     1. Don’t use built-in pointer to initialize or set more than one smart pointer
@@ -285,7 +297,6 @@ Smart pointer pitfalls:
     6. Passing and returning unique_ptr
 There is one exception for the rule that we cannot copy or assign a unique_ptr: we do those when 
     a unique_ptr is about to be destroyed. 
-
     
 Dynamic Arrays
     We can use empty parentheses to value initialize elements of a dynamic array but not the initializer inside
@@ -303,8 +314,7 @@ The Allocator Class
     Decoupling the allocation from construction.
     Oporation:
         allocator<T> a;     a.allocate(n);  a.construct(p, args);   a.destroy(p);   a.deallocate(p, n);
-    Algorithms to copy and fill the uninitialized memory
-        Defined in memory header
+    Algorithms to copy and fill the uninitialized memory <memory>
         // returns a pointer pointing to the element pass to the last constructed element
         uninitialized_copy(b, e, p2);           uninitialized_copy_n(b, n, p2);
         uninitialized_fill(b, e, t);            uninitialized_fill_n(b, n, t);
@@ -346,9 +356,9 @@ The Copy-control members may be synthesized as deleted
         member with deleted or inaccessible destructor.
     3. Deleted copy-assignment operator: if a member has deleted or inaccessible copy-assignment operator, or the 
         class has const or reference member. 
-        1. Deleted default constructor: if the class has deleted or inaccessible constructor; or a reference member
-            does not have an in-class initializer; or a const member whose type does not explicitly define a default 
-            constructor and that member does not have in-class initializer.
+    4. Deleted default constructor: if the class has deleted or inaccessible constructor; or a reference member
+        does not have an in-class initializer; or a const member whose type does not explicitly define a default 
+        constructor and that member does not have in-class initializer.
 Two points in mind when writing assignment operator:
     1. Assignment operator should work correctly if an object is assigned to itself
     2. Most assignment operators share work with destructor and copy constructor
@@ -365,7 +375,7 @@ Good pattern to write assignment operator:
         }
 LVALUE REFERENCE:
     1. Rvalue reference may  be bound only to an object that is about to be destroyed.
-    2. Lvalue reference refers to an object's identity whereas  rvalue refers to an object' value.
+    2. Lvalue reference refers to an object's identity whereas rvalue refers to an object' value.
     3. Functions that return lvalue references, along with assignment, subscript, dereference and prefix
         increment/decrement operators, are all examples of expression that return lvalue.
     4. Functions that return rvalue reference, along with arithmetic, relational, bitwise, postfix 
@@ -373,7 +383,7 @@ LVALUE REFERENCE:
         these expressions.
     5. Because rvalue reference can only be bound to temporaries, so:
         1. There can be no other users of that object
-        2. These facts together mean that code uses rvalue reference is free to  take over the resource from the 
+        2. These facts together mean that code uses rvalue reference is free to take over the resource from the 
             object which the reference refers.
         3. The referred-to object is about to be destroyed
     6. Rvalue references refer to objects that are about to be destroyed. Hence, we can "steal" the state from an
@@ -392,7 +402,7 @@ std::move<header::utility>
     5. After move operation, the moved-from object must remain a valid, destructible object but user may make no
         assumptions about its value.
     6. The compiler synthesizes the move constructor and move assignment operator only if the class doesn't define
-        any of its copy-control members and only if  all data members can be moved constructed and moved assigned, 
+        any of its copy-control members and only if all data members can be moved constructed and moved assigned, 
         respectively.
     7. Move operations are never implicit defined as deleted:  e. if ask compiler to generate a move operation by
         using =default, then the operation will be defined as deleted.
@@ -408,11 +418,11 @@ std::move<header::utility>
 
 
 Move Iterator:
-    Return rvalue reference by calling library make_move_iterator function which takes a normal iterator and returns
+    Return rvalue reference by calling library "make_move_iterator" function which takes a normal iterator and returns
     a rvalue reference rather than normal iterator which return lvalue reference. 
 Rvalue LValue reference member function:
     In order to maintain backward compatibility, the library continue allow assignment to rvalue. However, 
-        we can prevent this feature by indicating rvlaue/lvalue reference in the same way that  we define const
+        we can prevent this feature by indicating rvlaue/lvalue reference in the same way that we define const
         member functions, we place a reference qualifier (& or &&) after the parameter list.
     A function can be both const and reference qualified, the reference must follow const.
 Overloading and Reference Function
