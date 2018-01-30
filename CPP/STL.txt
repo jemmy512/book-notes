@@ -462,7 +462,20 @@ Stream Iterators:
         list<string> s;
         vector<string> v1(s.begin(), s.end());                                          // copy s to v1
         vector<string> v2(make_move_iterator(s.begin()), make_move_iterator(s.end()));  // move s to v2
-    
+Iterator Traits:
+    Categories:
+        std::output_iterator_tag;
+        std::input_iterator_tag;
+        std::forward_iterator_tag : input_iterator_tag;
+        std::bidirectional_iterator_tag : forward_iterator_tag;
+        std::random_access_iterator_tag : bidirectional_iterator_tag;
+    templage<typename T> struct iterator_traits< T*> {
+        typedef typename T::iterator_category   iterator_category;
+        typedef typename T::value_type          value_type;
+        typedef typename T::difference_type     difference_type;
+        typedef typename T::pointer             pointer;
+        typedef typename T::reference           reference;
+    }
     
     
     
