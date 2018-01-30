@@ -676,7 +676,6 @@ Trailing Return Types and Type Transformation
         return * beg;        // return a reference to an element from the range
     }
 
-
     1. The Type Transformation Library Template Classes
         Header: < type_traits>
         // must use typename to use a type member of a template parameter; see § 16.1.3 (p. 670)
@@ -685,22 +684,6 @@ Trailing Return Types and Type Transformation
             return * beg; // return a copy of an element from the range
         }
         
-    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-                                Standard Type Transformation Template
-    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    For Mod<T>, where Mod is    If T is                                 Then Mod<T>::type is
-    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-    remove_reference            [X& or X&&] [otherwise]                 [X] [T]
-    add_const                   [X&, const X, or function] [otherwise]  [T] [const T]       
-    add_lvalue_reference        [X&] [X&&] [otherwise]                  [T] [X&] [T&]        
-    add_rvalue_reference        [X& or X&&] [otherwise]                 [T] [T&&]
-    remove_pointer              [X*] [otherwise]                        [X] [T]
-    add_pointer                 [X& or X&&] [otherwise]                 [X*] [T*]
-    make_signed                 [unsigned X] [otherwise]                [X] [T]
-    make_unsigned               [signed type] [otherwise]               [unsigned T] [T]
-    remove_extent               X[n] otherwise                          X T
-    remove_all_extents          X[n1][n2]... otherwise                  X T
-    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 Function Pointers and Arguments Deduction
         template<typename T> int compare(const T&, const T&);
@@ -729,6 +712,22 @@ Reference Collapsing and Rvalue Reference Parameter
         template parameter type. 
     Reference collapse apper in following context:
         instantiation of template;  generation of auto; typedef with class type; decltype
+    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+                                Standard Type Transformation Template
+    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    For Mod<T>, where Mod is    If T is                                 Then Mod<T>::type is
+    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    remove_reference            [X& or X&&] [otherwise]                 [X] [T]
+    add_const                   [X&, const X, or function] [otherwise]  [T] [const T]       
+    add_lvalue_reference        [X&] [X&&] [otherwise]                  [T] [X&] [T&]        
+    add_rvalue_reference        [X& or X&&] [otherwise]                 [T] [T&&]
+    remove_pointer              [X*] [otherwise]                        [X] [T]
+    add_pointer                 [X& or X&&] [otherwise]                 [X*] [T*]
+    make_signed                 [unsigned X] [otherwise]                [X] [T]
+    make_unsigned               [signed type] [otherwise]               [unsigned T] [T]
+    remove_extent               X[n] otherwise                          X T
+    remove_all_extents          X[n1][n2]... otherwise                  X T
+    - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Writing Template Functions with Rvalue Reference Parameter
     Rvalue reference are used in one of the two contexts: either the template is forwarding it parameters 
         or the template is overloaded.
@@ -740,7 +739,7 @@ UnderStanding std::move
         return static_cast<typename remove_reference<T>::type&&>(t);
     }
 
-Forwarding
+Forwarding: <utility>
     template<typename T> T&& forward(typename remove_reference<T>::type& param) {
         return static_cast<T&&>(param);
     }
@@ -748,7 +747,6 @@ Forwarding
         A function parameter that is an rvalue reference to a template type parameter can preserve 
             constness and lvalue / rvalue property of corresponding arguments.
     2. Using std::forward<T> to Preserve Type Information in a Call 
-        Header: utility
         Must be used with an explicit template argument,  return type is T&&.
         When used with function parameter that is an rvalue reference to template type parameter(T&&), 
             forward represent all details about an argument’s type.
@@ -813,7 +811,7 @@ Class Template Specialization
     Specialize hash template:
     namespace std{
         template<>                          // indicates we are fully specializing a template
-            struct hash<sales_data> {
+        struct hash<sales_data> {
             typedef size_t return_type;
             typedef sales_data arguments_type;
             size_t operator(const sales_data &) const;
