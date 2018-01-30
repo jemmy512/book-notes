@@ -73,7 +73,7 @@ Array: <array>
     4.Access Operations:
         c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
     5.Iterator Functions:
-        being(); end(); cbegin(); cend(); rbegin(); rend(); crbegin(); crend();
+        begin(); end(); cbegin(); cend(); rbegin(); rend(); crbegin(); crend();
         // Iterators remain valid as long as array remain valid.
 Vector: <vector>
     namespace std {
@@ -379,7 +379,117 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
 ********************************************** 8. STL Container Member in Detail ***********************************
 
 Type Definitions:
-    container::value_type; 
+    container::reference;       container::iterator         container::const_reverse_iterator   
+    container::const_reference; container::const_iterator   container::pointer                  
+                                container::reverse_iterator container::const_pointer
+    container::value_type;      container::key_compare
+    container::size_type        container::value_compare    container::local_iterator  // bucket iterator
+    container::key_type         container::hasher           container::const_local_iterator
+    container::difference_type  container::key_equal // equality predicate of unordered container
+    container::mapped_type 
+Creat, Copy and Destroy
+    container::container();
+    explicit container::container(const CompFunc &cmpPred); // set, multiset, map, multimap
+    explicit container::container(<initializer-list>, <size_type bnum>,
+        <const Hasher &hashser>, <const KeyEqual &eqPred>);//
+Nonmodifying Policy Functions:
+    value_compare container::value_comp() const;
+    key_compare container::key_comp() const;
+    key_equal container::key_eq() const;
+    hasher container::hash_function() const;
+    float container::load_factor() const;
+Modifying Policy Functions:
+    void container::reserse(size_type num);
+    void container::shrink_to_fit();
+    void container::rehash(size_type num);
+    void container::max_load_factor(floag loadFactor);
+Bucket Interface for Unordered Container:
+    local_iterator container::begin(sizt_type bucketIdx);
+    const_local_iterator container::begin(sizt_type bucketIdx) const;
+Allocator Support:
+    container::allocator_type;
+    allocator_type container::get_allocator() const;
+    
+********************************************** 9. STL Iterators ****************************************************
+
+Categories:
+    Output Iterators, Input Iterators, Forward Iterators, Bidirectional Itrators, Random-access Itrators
+Auxiliary Iterator Functions:
+    void advance(InputIterator &pos, Dist n);  // no check end
+    ForwardIterator next(ForwardIterator pos);
+    ForwardIterator next(ForwardIterator pos, Dist n);
+    BIdirectionalIterator prev(BidirectionalIterator pos, <Dist n>);
+    Dist distance(InputIterator pos1, InputIterator pos2); // bad performen for other than random-access iterator
+    void iter_swap(ForwardIterator1 pos1,  ForwardIterator2, pos2); // swap the values of two iterators
+Converting Reverse Iterators Back Using base():
+    reverse iterator provide base() member function.
+    deque<int>::reverse_iterator riter;
+    deque<int>::iterator iter = riter.base();
+Functionality of Insert Iterators:
+    OuputIterator copy(InputIterator from_pos, InputIterator from_end, OutputIterator to_pos);
+Kinds of Insert Iterators:
+    Name                Class                   Called Function     Creation
+    Back inserter       back_insert_iterator    push_back(value)    back_inserter(cont)
+    Front inserter      front_insert_iterator   push_front(value)   front_inserter(cont)
+    General inserter    insert_iterator         insert(pos, value)  inserter(cont, pos)
+    eg:
+        list<int> coll;
+        back_inserter(coll) = 44;       coll.push_back(44);
+        front_inserter(coll) = 55;      coll.push_front(55);
+        inserter(coll, 1) = 46;         coll.insert(1, 44);
+Stream Iterators:
+    A stream iterator is an iterator that allow you to use a stream as source or destination of algorithm.
+    
+    1. ostream Iterator:
+    template<typename T, typename charT = char, typename traits = char_traits<charT>> class ostream_iterator;
+    ostream_iterator<T> (ostream);
+    ostream_iterator<T> (ostream, const char * delim); // use delim as delimiter between the values.
+    
+    2. istream_iterator:
+    template<typename T, typename charT = char, typename traits = char_traits<charT>, typename Distance = ptrdiff_t>
+    class istream_iterator;
+    istream_iterator<T> ();
+    istream_iterator<T> (istream);
+    eg: 
+        istream_iterator<int> intReader(cin); // create an enf-of-stream iterator
+        istream_iterator<int> intReaderEOF; // create end-of-stream iterator
+        while (inReader != intReaderEOF) {
+            cout << *intReader << endl;
+            ++intReader;
+        }
+     
+    3. Move Iterator:
+        list<string> s;
+        vector<string> v1(s.begin(), s.end());                                          // copy s to v1
+        vector<string> v2(make_move_iterator(s.begin()), make_move_iterator(s.end()));  // move s to v2
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     
 **********************************************  STL Iterator *****************************************************
 
