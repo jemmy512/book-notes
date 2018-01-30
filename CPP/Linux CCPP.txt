@@ -1524,6 +1524,27 @@ What happen when An LKM loads:
         rather than major number. /proc/net/dev
     7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
 LKM procedure:
-    moduel_init(...); module_exit(...);
+    1. create, init and add struct file_operatiosn, cdev, custom LKM object.
+        /*-- create object --*/
+        dev_t MKDEV(ma, mi); // make a device
+        int register_chrdev_region (dev_t from, unsigned count, const char *name); // register a range of devide num
+        int alloc_chrdev_region (dev_t *dev, unsigned baseminor, 
+            unsigned count, const char *name);  // register a range of char device number
+        void unregister_chrdev_region(dev_t from, unsigned count); // return a range of devices number
+        void *kmalloc(size t, gfp_t flags); // alloc memory for ojbects smaller than page size in kernel
+        void *kzalloc(size t, gfp_t flags); // allocate memory, the memory is set to zero
+            flags:  GFP_USER, GFP_KERNEL, GFP_ATOMIC, GFP_HIGHUSER, GFP_NOIO, GFP_NOFS, GFP_NOWAIT
+        
+        /*-- init object --*/
+        void cdev_init(struct cdev *cdev, const struct file_operations *fops); 
+        int cdev_add(struct cdev *p, dev_t dev, unsigned count); // make device live immediatelly
+        
+        // create file system node of device
+        struct class *class_create(struct module *owner, const char *name);
+        void class_destroy(struct class *cls);
+        struct device *device_create(struct class *cls, struct device *parent, dev_t devt, const char *fmg, ...);
+        void device_destroy(struct class *cls, dev_t devt);
+    moduel_init(...); 
+    module_exit(...);
     
     
