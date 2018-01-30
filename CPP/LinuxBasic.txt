@@ -13,6 +13,8 @@ Statistics port traffic:
     iptables -A OUTPUT -p tcp --sport 8512  // add input port need statistic
     iptables -A INPUT -p tcp --dport 8512   // add output port need statistic
     iptables -L -v -n -x                    // view statistic traffic
+    Iptable -Z INPUT/OUTPUT                 // reset all statistic port
+    iptables -D INPUT -p tcp --dport 8080   // remove statistic port
     
     
 **********************************************  GCC 7.2.0 Install  **********************************************

@@ -1460,7 +1460,6 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
         int SSL_CTX_use_PrivateKey_file(SSL_CTX *, const char *file, int type);
             // validata private key and certificate
         BOOL SSL_CTX_check_private_key(SSL_CTX *);
-        
     4. Attach to a connected socket
         SSL *SSL_new(SSL_CTX *);
         int SSL_set_fd(SSL *ssl, int fd); int SSL_set_rfd(SSL *, int); int SSL_set_wfd(SSL *, int); 
