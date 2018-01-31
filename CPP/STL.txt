@@ -490,7 +490,17 @@ Concept of function objects:
         1. A functions might be smarter because it may have a state.
         2. Each function has its owen type.
         3. A function ojbect is usually faster than a function pointer.
-    
+    1. Function object can be used as sorting criterion.
+    2. Function object has useful internal stata.
+    3.  for_each
+        template< class InputIt, class UnaryFunction >
+        UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f ); (until C++20)
+        
+        template< class InputIt, class UnaryFunction >
+        constexpr UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f );   (since C++20)
+        
+        template< class ExecutionPolicy, class ForwardIt, class UnaryFunction2 >
+        void for_each( ExecutionPolicy&& policy, ForwardIt first, ForwardIt last, UnaryFunction2 f );  (since C++17)
 
     
     
