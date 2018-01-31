@@ -477,6 +477,22 @@ Iterator Traits:
         typedef typename T::reference           reference;
     }
     
+********************************************** 10. Function Ojbect and Using Lambda ********************************
+    A function object is an object that has operator() defined.
+Concept of function objects:
+    class FunctionObjectType {
+    public:
+        void operator()() {
+            statements
+        }
+    }
+    Advantages of this definition:
+        1. A functions might be smarter because it may have a state.
+        2. Each function has its owen type.
+        3. A function ojbect is usually faster than a function pointer.
+    
+
+    
     
     
     

@@ -515,6 +515,7 @@ Class Template
         friends access or instantiation of the template. When friends is itself a template, the class granting
         friendship controls friendship includes all instantiations or specified instantiation. 
     In the scope of the class template, we may refer to the template without specify the template arguments. 
+    
     In order to refer to a specific instantiation of a template, we must declare first the template itself.
 
         template<typename> class Friend;
@@ -797,15 +798,16 @@ Variadic Templates
             template<typename T> int compare(const T&, const T&);
             template<>    // indicate this is a specialization
                 // T: char* const. A reference to const pointer to const char
-            Int compare(const char*const &, const char* &);    
+            Int compare(const char*const &, const char* &);  
+            
 Function overloading Versus Template Specialization
     Specializations instantiate a template, they do not overload it. As result, they have no effect 
         on function matching.
-    In order to specialize a template, a declaration for the original  template must be in the scope. 
+    In order to specialize a template, a declaration for the original template must be in the scope. 
     Moreover, a declaration for a specialization must be in scope before any code use that instantiation. 
     Templates and their specializations should be declared in the same header. Declaration for all 
         template with name should appear first, followed by any specializations of those templates. 
-        If declaration for a specialization missing, code works good, because compiler will generate
+    If declaration for a specialization missing, code works good, because compiler will generate
         code from original template.
 Class Template Specialization
     Specialize hash template:
@@ -826,10 +828,9 @@ Class Template Specialization
 
 Class-Template Partial Specialization
     A class partial specialization is itself a template.
-    // original, most general template
-    template <class T> struct remove_reference 
-    {typedef T type;};
-    // partial specializations that will be used for lvalue and rvalue references
+        // original, most general template
+    template <class T> struct remove_reference {typedef T type;};
+        // partial specializations that will be used for lvalue and rvalue references
     template <class T> struct remove_reference<T&> // lvalue references
     { typedef T type; };
     template <class T> struct remove_reference<T&&> // rvalue references
