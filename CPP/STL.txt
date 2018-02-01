@@ -592,8 +592,23 @@ Operations:
         char c;
         size_type num, char c;
         const_iterator beg, const_iterator end, initlist;
-    Only single-arguement version const char *handles the character '\0' as special character,.
-    
+    Only single-arguement version const char* handles the character '\0' as special character,.
+Constructor and Destructor:
+    string s;                       string s(num, c);
+    string s(str);                  string s(beg, end);
+    string s(mvstr);                string(initlist);
+    string s(str, stridx);          s.~string();
+    string s(str, stridx, strlen);
+    string s(cstr);
+    string s(chars, charslen);
+Strings and C-Strings
+    In standard C++, the type of string literal was changed from char * to const char *.
+    There is automatic type conversion from const char * into strings, but not vice versa.
+    String do not provide special meaning for the character '\0'.
+    Transfer:
+        data() and c_str(); // return the contents of the string as an array of characters including '\0'.
+            // return an array that is owned by the string, so caller must not modify or free the memeory.
+        copy(); // '\0' character is not provided.
 ********************************************** 11. STL Algorithm ***************************************************
      
            
