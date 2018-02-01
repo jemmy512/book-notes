@@ -497,14 +497,107 @@ Concept of function objects:
         UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f ); (until C++20)
         
         template< class InputIt, class UnaryFunction >
-        constexpr UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f );   (since C++20)
+        constexpr UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f);   (since C++20)
         
         template< class ExecutionPolicy, class ForwardIt, class UnaryFunction2 >
         void for_each( ExecutionPolicy&& policy, ForwardIt first, ForwardIt last, UnaryFunction2 f );  (since C++17)
+    4. Predicates versus Function Objects
+        Predicates are functions or function objects that return a Boolean value. Not every function that returns
+            a Boolean value is a valid predicate for STL.
+        template<typename ForwIter, typename Predicate>
+        ForwIter std::remove_if(ForwIer beg, ForwIter end, Predicate op) {
+            beg = find_if(beg, end, op);
+            if (beg == end)
+                return beg;
+            else {
+                ForwIter next = beg;
+                return remove_copy_if(++next, end, beg, op);
+            }
+        }
+        A predicate should always stateless. You shouldn't pass a function ojbect for which the behavior depends
+            on how often it is copied or called.
+Predefined Function Objects <functional>
+    negate<type>()          plus<type>()    
+    minus<type>()           less_equal<type>()
+    multiplies<type>()      greater_equal<type>()    
+    divides<type>()         logical_not<type>()
+    modules<type>()         logical_and<type>()
+    equal_to<type>()        logical_or<type>()
+    not_equal_to<type>()    bit_and<type>()    
+    less<type>()            bit_or<type>()
+    greater<type>()         bit_xor<type>()
+    
+    Function Adapters and Binders
+        A function adapter is a function ojbect that enables the composition of function objects with each other,
+            with certain values, or with special functions.
+        bind(op, args...);  mem_fn(op); not1(op);   not2(op);
+        template<class F, class... Args> /*unspecified*/ bind(F &&f, Args &&... args);
+        what bind can do:
+            Adapt and compose new function object out of existing or predefined function objects.
+            Call global functions.
+            Call member function for object, pointers to objects, and smart pointer to objects.
+            
+            for_each(sp.begin(), sp.end(), bind(&Person::print, _1));
+            for_each(sp,begin, sp.end, mem_fn(&Persion::print));
+            mem_fn(&Person::printf)(ojb, "Person: ");   // call ojb.printf(...);
+            acculate(coll.begin(), coll.end(), 0,       // binding to map data member
+                bind(plus<int>(), _1, bind(&map<string, int>::value_type::second, _2)));
+    Using Lambdas
+        lambdas versus Binders
+        Lambdas versus Stateful Functions
+        Lambdas Calling Global and Member Functions
+        Lambda as Hash Function, Sorting, Equal Criterion
+        
+********************************************** 11. STL Algorithm ***************************************************
+Head files: <algorithm> <numeric> <functional>
+A Brief Introduction:
+     Algorithms work in overwrite mode rather than insert mode. So destination must have enough space.
 
+********************************************** 12. Special Container ***********************************************
+
+stack: <stack>
+    template<typename T, typename Container = deque<T>> class stack;
+    Reason why deque is default container:
+        Unlike vector, deque free their memory when eles are removed and don't have to copy all eles on realocation.
+    Interface:
+        push()  top()   pop()
+        
+********************************************** 13. String **********************************************************
     
+Types:
+    template<typenaem charT, typename traits = char_traits<charT>, typename Allocator = allocator<charT>
+    class badic_string;
     
+    typedef basic_string<char>      string;
+    typedef basic_string<wchar_t>   wstring;
+    typedef basic_string<char16_t>  u16string;
+    typedef badic_string<char32_t>  u32string;
     
+Operations:
+    constructor                 replace()               [], at()                to_string(), to_wstring()
+    destructor                  +                       front(), back()         copy()
+    =, assign()                 ==, !=, <, > compare()  >>, getline()           data(), c_str()
+    swap()                      empty()                 <<                      find
+    +=, append(), push_back()   size(), length()        stoi(), stol(), stoll() begin(), end()
+    insert()                    reserve()               stoul(), stoull()       crbegin()
+    erase(), pop_back()         shrink_to_fit()         stof(), stod(), stold() get_allocator()
+    clear
+    resize()
+    
+    Argument types:
+        const string &str;
+        const string &str, size_type idx, size_type num;
+        const char *cstr
+        const char *chars, size_type len;
+        char c;
+        size_type num, char c;
+        const_iterator beg, const_iterator end, initlist;
+    Only single-arguement version const char *handles the character '\0' as special character,.
+    
+********************************************** 11. STL Algorithm ***************************************************
+     
+           
+        
     
     
     

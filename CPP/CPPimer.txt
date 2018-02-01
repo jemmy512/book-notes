@@ -474,7 +474,8 @@ Function-call operator
         often used in combination with the standard algorithme.
 Lambdas Are Function Objects
     When we write a lambda, the compiler translates that expression into an unnamed object of an unnamed class 
-        which contain an overloaded function-call operator.
+        which contain an overloaded function-call operator which is const function but we can use 'mutable' key 
+        word to modify the captured data members.
     Classes generated from lambda expression have a deleted default constructor deleted assignment operator, 
         and a default destructor, where has copy/move constructor depends on the type of the captured data members.
 Callable Objects: 
