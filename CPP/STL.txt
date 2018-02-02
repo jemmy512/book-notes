@@ -376,6 +376,7 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
         8. Bucket Interface:
             bucket(val); bucket_count(); bucket_size(bucketidx); 
             begin(bucketidx); end(bucketidx); cbegin(bucketidx);
+            
 ********************************************** 8. STL Container Member in Detail ***********************************
 
 Type Definitions:
@@ -478,6 +479,7 @@ Iterator Traits:
     }
     
 ********************************************** 10. Function Ojbect and Using Lambda ********************************
+
     A function object is an object that has operator() defined.
 Concept of function objects:
     class FunctionObjectType {
@@ -609,32 +611,22 @@ Strings and C-Strings
         data() and c_str(); // return the contents of the string as an array of characters including '\0'.
             // return an array that is owned by the string, so caller must not modify or free the memeory.
         copy(); // '\0' character is not provided.
+    Searching and Finding
+        find();             find_last_of()      // find the last character that is part of value
+        rfind();            find_first_not_of() // find the first character that it not part of value
+        find_first_of()     find_last_not_of
+    The value npos (staic const size_type npos = -1)
+        If s search function fails, it returns string::npos.
+        Alwyas use string::size_type, not int or unsigned for the search and find return type. 
+    Numeric Conversions:
+        stoi(str, idxRet = nullptr, base = 10); // stod, stol, stoll, stoul, stoull
+        1. Those functions skip leading whitespaces.
+        2. They allow you to return the index of the first character after the last processed character.
+        3. Exception invalid_arguement or out_of_range may be throw.
+    Regex: 
+        
 ********************************************** 11. STL Algorithm ***************************************************
      
-           
-        
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     
     
     

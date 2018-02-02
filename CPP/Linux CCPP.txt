@@ -776,14 +776,14 @@ Procedure of socket:
 	2. bind (server)
 		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 		
-		struct sockaddr_in {
+		struct sockaddr_in {    <netinet/in.h>
 			sa_family_t sin_family;	// address family
 			in_port_t sin_port;		// port in network byte order, > 1024
 			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
 		};
         typedef unsigned short sa_family_t;
 		struct in_addr {
-			uint32_t s_addr;	// address in network byte order
+			uint32_t s_addr;	// 32-bit address in network byte order
 		};
 		
 		#include <arpa/inet.h>
@@ -1513,7 +1513,7 @@ Used for:
     1. Device drivers   2. Filesystem drivers   3. System calls   
     4. Network drivers  5. TTY line disciplines 6. Executeable interpreters
 LKM utilities:
-    insmod  rmmod   depmod  kerneld  ksyms  lsmod   modinfo   modprobe
+    insmod  rmmod   depmod  kerneld  ksyms  lsmod(/proc/modules)   modinfo   modprobe
 What happen when An LKM loads:
     1. Search system for device it is know how to drive.
     2. Register itself as the driver for particular major number /proc/devices
@@ -1542,13 +1542,16 @@ LKM procedure:
         void cdev_init(struct cdev *cdev, const struct file_operations *fops); 
         int cdev_add(struct cdev *p, dev_t dev, unsigned count); // make device live immediatelly
         
-        // create file system node of device
+        // create and register device with sysfs
         struct class *class_create(struct module *owner, const char *name);
         void class_destroy(struct class *cls);
         struct device *device_create(struct class *cls, struct device *parent, dev_t devt, const char *fmg, ...);
         void device_destroy(struct class *cls, dev_t devt);
+        
+        list_del_init (struct list_head * entry);// &__this_module.list, hide module from lsmod(/proc/modules) cmd
+        kobject_del(&THIS_MODULE->mkobj.kobj);   // hide module from sysfs /sys/module
     moduel_init(...); 
-    module_exit(...);
+    module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
     MODULE_LICENSE("GPL v2");
     
     
