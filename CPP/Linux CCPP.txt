@@ -1554,4 +1554,6 @@ LKM procedure:
     module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
     MODULE_LICENSE("GPL v2");
     
+    2. Hijack System call
+        
     
