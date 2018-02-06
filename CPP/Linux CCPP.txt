@@ -767,25 +767,7 @@ Time and Data Rountine:
 **********************************************  Network Programming  ********************************************
 
 Procedure of socket:
-	1. Create Soket (client and server)
-		int socket(int domain, int type, int protocol);
-		
-		doamin: AF_INET, AF_INET6, AF_LOCAL, AF_ROUTE
-		type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
-		protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
-	2. bind (server)
-		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-		
-		struct sockaddr_in {    <netinet/in.h>
-			sa_family_t sin_family;	// address family
-			in_port_t sin_port;		// port in network byte order, > 1024
-			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
-		};
-        typedef unsigned short sa_family_t;
-		struct in_addr {
-			uint32_t s_addr;	// 32-bit address in network byte order
-		};
-		
+	Data trasformation:	
 		#include <arpa/inet.h>
 		uint32_t htonl(uint32_t hostlong);
 		uint16_t htons(uint16_t hostshort);
@@ -807,11 +789,40 @@ Procedure of socket:
 		struct in_addr  inet_makeaddr(int net, int host);
 		in_addr_t       inet_lnaof(struct in_addr in);
 		in_addr_t       inet_netof(struct in_addr in);
-		
+        
+	1. Create Soket (client and server)
+		int socket(int domain, int type, int protocol);
+		doamin: AF_INET, AF_INET6, AF_LOCAL(AF_UNIX), AF_ROUTE
+		type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
+		protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
+	2. bind (server) assigns a local protocal addr to socket
+		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+		struct sockaddr_in {    <netinet/in.h>
+			sa_family_t sin_family;	// address family
+			in_port_t sin_port;		// port in network byte order, > 1024
+			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
+		};
+        typedef unsigned short sa_family_t;
+		struct in_addr {
+			uint32_t s_addr;	// 32-bit address in network byte order
+		};
+        // If a TCP client or server do not specify port, the kernel chooes an ephemeral port for the socket   
+            when either connect or listen is called. We can call getsockname return the protocol addr.
+		// If a TCP server do not bind and IP addr to its socket, the kernel uses the destination IP addr of the 
+            client's SYN as the server's source IP address.
+        // INADDR_ANY(0), INADDR_XXX defined by the <netinet/in.h> header are defined in host byte order.
+         
 	3. listen(sever) and connect(client)
 		int listen (int sockfd, int backlog);
 		int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-	4. accept (client and server)
+        // Three conditions generate RST:
+            1. When a SYN arrives for a port that has no listening server
+            2. When TCP wants to abort an existing connection.
+            3. When TCP receives a segment for a connection that does not exist.
+        // Do no specify backlog to 0, different implementation interpret this different. If don't want any 
+            client connecting to listening socket, just close the listening socket.
+        // Berkeley-derived implementation add a fudge factor to backlog: it is multiplied by 1.5.(MacOS)    
+	4. accept (client and server) return the next completed connetion form the front of the completed conn queue.
 		int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
 	5. read and write (client and server)
 		ssize_t read(int fd, void *buf, size_t count);
@@ -837,6 +848,10 @@ Procedure of socket:
     5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
         // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
 	6. close <unistd.h> int close(int fd);
+        // The default action of close with a TCP socket is to mark the socket as closed and return to the process
+            immediately. The scoket descriptor is no longer usable by the process: It can not be used as argument 
+            to read or write. But, TCP try to send any data that is already queued to be sent to the other end, and
+            after this occurs, the normal TCP connection termination sequence takes palce.
         // In multi-thread one thread close socket just decrement its reference count until to 0, not affect
             other threads action to the same socket. Once all threads call close() to the same socket,
             socket will close at the end.
@@ -907,7 +922,15 @@ Network configuration information:
         char    **h_addr_list;
         ...
     };	
-
+Connection Abort befor 'accept' Returns:
+    When client call connect, three-way handshake completes, the connection established, and then client TCP
+        send an RST. On server side, the connection is queued by its TCP, waiting for the server process to call
+        accept when the RST arrives. Sometime later, ther server process calls accept.
+    What happens to the aborted connection is implementation-dependent. Berkeley-derived implementation handle the 
+        aborted connection completely within the kernel, and ther server process never sees it. Most SVR4 
+        implementations, return error to the process as the return from accept, and error depends on the
+        implementation. SVR4 return an errno of EPROTO but POSIX return ECONNABORTED. 
+        
 **********************************************  Signal Programming  *********************************************
 
 Methods of Local Processes Communication:
@@ -1005,9 +1028,8 @@ sigaction:
       int sa_flags;
       void (*sa_restorer)(void);
     };
-    
-    sa_mask: SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESTART, SA_RESETORE, SA_SIGINFO
-
+    sa_mask: SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESETORE, SA_SIGINFO
+        SA_RESTART: a system call interrupted by this signal will be automatically restarted by the kernel.
 signaltstack():
 
 int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1) 
@@ -1035,7 +1057,14 @@ signal handler:
     
     performing a nonlocal goto from a signal handler: <setjmp.h> 
         int sigsetjmp(sigjump_buf env, int savesigs);    void siglongjmp(sigjmp_buf env, int val);
-     
+POSIX Signal Semantics:
+    1. Once a signal handler is installed, it remains installed.
+    2. While a signal handler is executing, the signal being delivered is blocked.
+    3. If the signal is generated one or more times while it is blocked, it is normally delivered only one time
+        after the signal is unlocked. By default, Unix signal are not queued.
+    4. It is possible to selectively block and unblock a set of signal using the sigprocmask function.
+    
+    
 **********************************************  IPC Programming  ************************************************
 
 Unix inter-domain communication:
@@ -1194,11 +1223,20 @@ Results of different order of parent and child process exit:
     1. parent exit before child process: child process becomes orphan process, init process takes over it.
     2. parent exit after child without call wait or waitpid, child becomes zombie process.
     3. parent exit after child with call wait, both parent and child exit normally. 
-Handle Zombie process:
+Handling Zombie process:
     1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate  
         zombie while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);
     2. fork twice.
-    3. Ignore the SIGCHLD signal.
+    3. Ignore the SIGCHLD signal. (only works under System V and Unix 98, unspecified in POSIX)
+The purpose of the zombie state:
+    is to maintain information about the child for the parent to fetch at some later time.
+Handling Interrupted System Calls:
+    When a process is blocked in a slow system call and process catches a signal and the signal handler returns,
+        the system call can return an error of EINTER. We should handle this error to restart system call.
+    Even if an implementation supports the SA_RESATRT flag, not all interrupted system call may automatically
+        be restarted. 
+    We can recall accept, read write, select and open to handle those system call's interruption, but can't recall
+        connect for which happen we must call select to wait for the connection to comlete.
 Enviroment List: <stdlib.h>
     Global variable: environ;
     char* getenv(const char *name);
@@ -1242,9 +1280,10 @@ Process Enviroment:
         int atexit(void *(func)(void)); // call on registered func in reverse order and as many times as registered
             // register at leat 32 exit handlers that are automatically called by exit.
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
-        // child process copys parent's data, head and stack but shares text segment and file descriptors.
+        // child process copys parent's data, head and stack but shares text segment and file descriptors including 
+            server's listenfd, and connectfds.
         // There are two ways to handling descriptors after fork:
-           1. Parent waits fo child to complete.
+           1. Parent waits for child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
     pid_t wait(int *stat_loc);  <sys/wait.h>
         WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
