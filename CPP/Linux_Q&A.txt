@@ -18,7 +18,7 @@
         双工字节流： 采用字节流进行双工数据通信
         有序性：     利用序列号保证发送的有序性
         可靠性：     利用ACK保证数据的可靠性
-        流控：       接收方利用接收窗口通告发送方
+        流量控制：   接收方利用接收窗口通告发送方
         拥塞控制：   接收方利用拥塞窗口通告发送方
     
 2. TCP三次握手需要知道的细节点
@@ -59,6 +59,10 @@
     SO_LINGER       零      强制      否
     SO_LINGER       非零    优雅      是
     -------------------------------------------------------------------------------------------------------------------                    
+    struct linger {
+        int l_onoff;    // 0--off, nonzero--on 
+        int l_linger;   // linger time, POSIX specifies units as seconds
+    }
     SO_LINGER.l_onoff   SO_LINGER.l_linger  close() 
     0                   非0/0               默认行为：立即返回；socket发送缓冲区有数据，写入FIN，立即返回， TCP尽量发送数据
     非0                 0                   清空socket发送缓冲区，发送RST，返回；非正常4次挥手，避免TIME_WAIT状态 

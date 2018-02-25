@@ -1,4 +1,45 @@
 
-********************************** 3 Sockts Introduction *********************************************************
+********************************** 2 The Transport Layer: TCP, UDP, SCTP  ****************************************
+
+TCP:
+    reliable, full-duplex byte stream, acknowlegments, timeouts, sequence number, RTT estimate, retransmissions.
+    TCP is not a 100% reliable protocol, it provides reliable delivery of data or reliable notification of failure.
+    TCP contains algorithms to estimate the round-trip time(RTT) between a client and server dynamically.
+    TCP sequences the data by associating a sequence number with every byte that it sends.
+    TCP provides flow control which is called advertised window.
+    
+UDP:
+    The application writes a msg to a UDP socket, which is then encapsulated in a UDP datagram and then further 
+        encapsulated as an IP datagram. And sent to its destination.
+    Each UDP datagram has a length while TCP is a bytes-stream protocol without any record boundaries at all.
+Three-Way Handshake:
+    SYN: tell server/client client/server inital sequence number. Contain an IP header, a TCP header and options.
+    The ACK of each FIN is the sequence number of the FIN plus one.
+TCP Options:
+    MSS(maxmium segment size): fetch this option by TCP_MAXSEG
+    Window scale option: fetch by SO_REVBUF
+    Timestamp option.
+TCP Termination:
+TIME_WAIT State:
+    The duration that this endpoint remains in this state is twice the maxmium segment lifetime, 2MSL.
+    Two reasons for TIME_WAIT:
+        1. To implement TCP's full-duplex connection termination reliably
+        2. To allow old duplicate segments to expire in the network
+Port Numbers:
+    1. The well-know ports: 0 - 1023
+    2. The regisered ports: 1024 - 49151
+    3. The dynamic or private ports: 49152 - 65535
+    
+
+
+********************************** 4 Elementary of TCP Sockets  **************************************************
+
+********************************** 5 TCP Client and Server Example  **********************************************
+
+********************************** 7 Sockets Options  ************************************************************
+
+
+
+********************************** Chapter 0 Key Words  **********************************************************
 
 
