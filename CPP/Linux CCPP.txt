@@ -344,7 +344,7 @@ TOCTTOU: time-of-check-to-time-of-use
     program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
     
 Stata Family function: <sys/stat.h>
-    int stat(const char *pathname, struct stat *buf);
+    int stat(const char *pathname, struct stat *buf); // get file stat
     int fstat(int fd, struct stat *buf);
     int lstat(const char *pathname, struct stat *buf);  // return symbolic infomation, not referenced file
     int fstatat(int fd, consth char *pathname, struct stat *buf, int flag); // AT_SYMLINK_NOFOLLOW, AT_FDCWD
@@ -1219,11 +1219,13 @@ Consists of Program:
                     |- - - - - - - - - - - - - - - -| - - - - - - - - - - - - - - - -
                     |   heap                        | dynamic memeory allocation
                     |-------------------------------|--------------------------------
-                    |   uninitialized data          | initialized to zero by exex
+                    |uninitialized static data(.data)| initialized to zero by exex
                     |-------------------------------|-------------------------------------------------------------
-                    |   initialized data (bss)      |
+                    | initialized static data (.bss)|
+                    |       constance               |
                     |-------------------------------|--------- read from program file by exec
-                    |      Text                     | (machine instructions, sharable, read only)
+                    |      .rodata                  | (machine instructions, sharable, read only)
+                    |      .text                    |
     low addresss    |-------------------------------|-------------------------------------------------- 0x08048000
     notes:
         Only initialized data and text segment are stored in the program file on disk
@@ -1553,5 +1555,18 @@ LKM procedure:
     moduel_init(...); 
     module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
     MODULE_LICENSE("GPL v2");
+Process Managemenet:
+    struct task_struct {
     
+    };
+File System:
+    struct file {
+        unsigned short f_mode;      // file type and property
+        unsigned short f_flags;     // file flag
+        unsigned short f_count;     // file reference amount
+        struct m_inode * f_inode;   
+        off_t f_pos;                // file_operation
+    };
     
+    1. Process to find a file:
+        fd -> struct file -> struct m_inode -> i_zone -> position in the disk

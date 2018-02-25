@@ -501,6 +501,8 @@ Conversion Operator
         The condition of an if, while, do statement
         The condition expression in a for, logical NOT(!),  OR(||), AND(&&), (?:).
 
+********************************** 15 Object-Oriented Programming ************************************************
+
 ********************************** Chapter 16 Template ***********************************************************
 
 Template arguments used for non type template parameters must be constant expression.
@@ -876,10 +878,33 @@ Bitset:
         (seq, m, r, mfg)  (seq, r, mft)
         
         
-        
-        
-        
-        
+
+********************************** FAQ ***************************************************************************
+
+vptr and vtbl(virutal function table and it's pointer): 
+[refer]https://www.nowcoder.com/profile/3669004/test/13503903/22584#summary
+http://blog.csdn.net/haoel/article/details/1948051
+    1. When new an object, the compiler only allocates space for member variables while member functions 
+        are shared among objects belonging to same class.
+    2. The compiler adds _vptr to class automatically, and ensures contents of _vtbl at compile time, initializes
+        _vptr in constructor of the class. _vptr at the begining of the class in memory. The objects of the class
+        share the _vtbl of the class.
+    3. _vtbl is essentially an array of pointers that hold function pointers
+    4. In multi-inheritance, each base classes _vtbl stored in the derived class in defined order, and derived 
+        class shares the same _vptr as the first base class.
+    5. virtual functions declared in the derived class not only overwrite the virtual functions corresponding
+        to each base class but also add to virtual function table of the first base class.
+    6. _vptr and _vtbl memory Layout:
+        _vptr stored in the begining of the class momory in heap.
+        _vtbl stored in .rodata segment.
+        virtual functions themselves stored in .text segment.
+    7. Polymorphism process:
+        base pointer(stack) ==> _vptr(heap) ==> _vtbl(.rodata) ==> .text
+Scope(::) purpose:
+    1. To access the global variable when there is a local variale with the same name.
+    2. To define functions outside the class.
+    3. To access class's staic variale.
+    4. In case of the multiple Inheritance.
         
         
         
