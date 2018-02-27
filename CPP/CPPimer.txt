@@ -70,8 +70,26 @@ The delctype Specifier:
         3) if the value category of expression is prvalue, then decltype yields T.
     If an expression is a function call which returns a prvalue of class type or is a comma expression whose right
         operand is such a function call, a temporary object is not introduced for materialized from that prvalue.
-    If the name of an object is parenthesized, it is treated as an ordinary lvalue expression.    
+    If the name of an object is parenthesized, it is treated as an ordinary lvalue expression.  
+Const qualifier:
+    initialize with const:
     
+    Reference to const:
+    
+    pointer and const:
+    
+    top-lever const:
+    
+    constexpr and const expression:
+    
+    pointer and constexpr:
+    
+    
+Dealing with Types:
+    auto:
+    
+    delctype:
+        
 ********************************** Chapter 3: string, vector and array *******************************************
 
 Array:
