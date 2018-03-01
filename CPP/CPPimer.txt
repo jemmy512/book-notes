@@ -72,23 +72,55 @@ The delctype Specifier:
         operand is such a function call, a temporary object is not introduced for materialized from that prvalue.
     If the name of an object is parenthesized, it is treated as an ordinary lvalue expression.  
 Const qualifier:
+    1. We can't change the value the of const object after we create it, so it must be initialized.
+    
     initialize with const:
-    
+        By default, const objects are local to file.
+        The compiler will replaces the uses of the const variable with its value during compile time.
     Reference to const:
-    
+        To bound a reference to const we must use reference to const.
+        const int i = 12;
+        const int &j = i;
+        int &k = i; // error: nonconst reference to a const object
+    initialization and reference to const:
+        There are two exceptions to the rule that the type of the reference must match the type of the object 
+            to which it refers:
+                1. We can initialize the reference to const from the type that can be converted to the type of
+                    reference.
+                    float  a = 3.4;
+                    const int &b = 3; // ok, b is 3
+                    int &c = a; // error: invalid initialization of type of reference of type int & from int
+                2. A reference to const may refer to an object that is nonconst.
+        
     pointer and const:
-    
+        1. pointer to const: the rule is the same as reference.
+        2. const pointer: 
     top-lever const:
     
     constexpr and const expression:
-    
+        Wheather a given object is a constant expression depends on the types and initializers.
+        Variables declared as constexpr are implicitly const and must be initialized by const expression.
+        It's good idea to use constexpr for variable that intend to  use it as constant expression.
     pointer and constexpr:
-    
+        constexpr specifier applies to pointer, not the type to which the pointer points.
     
 Dealing with Types:
     auto:
-    
+        Auto tell the compiler to deduce the type of the variable from the initializer which is required.
+        Auto ordinarily ignores the top-level consts.
+        When use reference, we are really using the object to which it refers.
+        When we ask for a reference to auto-deduced type, top-level consts in the initializer are not ignored.
+            const int ci = i, &cr = i;
+            auto b = ci;    // int
+            auto c = i;     // int
+            auto d = &ci;   // const int * (& of const object is a low-lever const)
+            auto e = &i;    // int *        (& of int object is int *)
+            auto &h = ci;   // const int &, reference to auto-deduced, consts doesn't ignore
+            auto &f = 42;   // error: cannot bind a plain reference to literal
+            const auto &j = 42; // ok
     delctype:
+        decltype((variale)); // always a reference 
+        decltype(variable);  // reference only when variable is a reference
         
 ********************************** Chapter 3: string, vector and array *******************************************
 
