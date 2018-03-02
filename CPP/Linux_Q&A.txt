@@ -118,3 +118,7 @@
 
 nonblock connection
 SO_REUSEADDR
+
+42. Q: what happens in the background from the time you press the Power button until the Linux login prompt appears?
+    A: https://discuss.leetcode.com/topic/92910/what-happens-in-the-background-from
+        -the-time-you-press-the-power-button-until-the-linux-login-prompt-appears
