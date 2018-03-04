@@ -146,7 +146,26 @@ Array:
 
 ********************************** Chapter 6: Functions **********************************************************
 
-    Overloaded Functions:
+    Overloaded Functions
+Features of specified uses:
+    Default Arguements:
+        If a parameter has default arguement, all the parameter follow it must also have default arguement.
+        A function can be declared mulitple times, but it can only have default specified once in a given scope.
+        Defaults can only be specified if all paramters to the right already have defaults.
+    Inline and constexpr function:
+        A function defined entirely inside class/struct/union definition, whether it's a member or non-member 
+            friend funtion is implicitly an inline function.
+        Inline function avoid function call overhead, it is expanded "in line" at each call.
+        Inline specification is just a request to compiler.
+        
+        Constexpr function restriction:
+            1. Return type and type of each parameter must be a literal type.
+            2. Function body must contain exactly one return statement.
+        Inorder to expand function immediately, constexpr functions are implicitly inline.
+        Inline function bans to use loop(for, while), switch, exception interface declaration and recursive function.
+    Aids for debugging:
+        assert(expr);   // <cassert>
+        NDEBUG
 
 ********************************** Chapter 7: class **************************************************************
 
@@ -550,7 +569,14 @@ Conversion Operator
     Explicit conversion can implicitly use as:
         The condition of an if, while, do statement
         The condition expression in a for, logical NOT(!),  OR(||), AND(&&), (?:).
-
+new and delete:
+    Category:
+        new/delete/new[]/delete[] operator      // global, can not be overloaded
+        operator new/delete/new[]/delete[]
+        placement new/new[]                     // note: there are no placement delete/delete[]
+    Process of new and delete:
+        new: call operator new to malloc memory, call constructor construct object and return pointer
+        delete: call destructor destruct object, free memory
 ********************************** 15 Object-Oriented Programming ************************************************
 
 ********************************** Chapter 16 Template ***********************************************************
@@ -660,7 +686,7 @@ Template Parameter
     Template Parameters follow normal scoping rules.
     A name used as template parameter can not be reused within template.
 
-    By, default, the language assumes a name accessed through scope operator is not a type, so we use keyword 
+    By default, the language assumes a name accessed through scope operator is not a type, so we use keyword 
         "typename" to tell compiler that we are using a name that is a type name of template. When we want to inform
         the compiler that a name represents a type, we must use the keyword typename, not class.
     template <typename T>
@@ -731,7 +757,7 @@ Trailing Return Types and Type Transformation
     }
 
     1. The Type Transformation Library Template Classes
-        Header: < type_traits>
+        Header: <type_traits>
         // must use typename to use a type member of a template parameter; see § 16.1.3 (p. 670)
         template <typename It> auto fcn2(It beg, It end) -> typename remove_reference<decltype( * beg)>::type {
             // process the range
@@ -950,7 +976,7 @@ http://blog.csdn.net/haoel/article/details/1948051
         virtual functions themselves stored in .text segment.
     7. Polymorphism process:
         base pointer(stack) ==> _vptr(heap) ==> _vtbl(.rodata) ==> .text
-Scope(::) purpose:
+Scope(::) operator purpose:
     1. To access the global variable when there is a local variale with the same name.
     2. To define functions outside the class.
     3. To access class's staic variale.

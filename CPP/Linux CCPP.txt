@@ -159,6 +159,9 @@ Gdb:
 		ignore <bk no> <count>
 	view breakpoint info: info breakpoint
 	clean breakpoint: clear
+	disable/enable breakpoint: 
+		disable/enables breakpoint bkNum
+		delete <bk no><range>
 	condition bk:
 		condition <bk no> <expr>
 		condition <bk no> # clear bk which num is no
@@ -209,9 +212,6 @@ Gdb:
 		x [Address expression]
 		x /[Format] [Address expression]
 		x /[Length][Format] [Address expression]
-	disable/enable breakpoint: 
-		disable/enables breakpoint bkNum
-		delete <bk no><range>
 	
 	view registers: info register (i r)
 	view vriable:
