@@ -487,6 +487,13 @@ Directories: <dirent.h>
     void seekdir(DIR *dp, long loc);    // set the position of a directory stream
     // Only kernel has permission to write to directory itself.
     // Ordering of entries within the directory is implementation dependent and usually not alphabetical.
+chdir, fchdir, getcwd: <unistd.h>
+    int chdir(const char *pathname);
+    int fchdir(int fd);
+    char *getcwd(char *buf, size_t size);
+    char *getwd(char *buf);
+    char *get_current_dir_name(void); 
+
 File Tree walk: <ftw.h>
     int nftw(const char *dirpath, int (*fn)(const char *fpath, const struct stat *sb,
             int typeflag, struct FTW *ftwbuf), int nopenfd, int flags);
@@ -498,13 +505,6 @@ File Tree walk: <ftw.h>
         int base;   // offset of the filename in the pathname given in fpath
         int level;  // depth of the fpath in the directory tree, relative to the root of the tree(dirpath, depth 0)
     };
-chdir, fchdir, getcwd: <unistd.h>
-    int chdir(const char *pathname);
-    int fchdir(int fd);
-    char *getcwd(char *buf, size_t size);
-    char *getwd(char *buf);
-    char *get_current_dir_name(void); 
-
 
 ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
 ssize_t write(int fildes, const void *buf, size_t nbyte);    
@@ -1525,7 +1525,7 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
         OpenSSL_add_all_algorithms();
         SSL_load_error_strings();       // void ERR_print_errors_fp(FILE *fp);
     2. Specify method
-        SSL_METHOD* method = SSLv23_server_method(void); // server method is the same as the client
+        SSL_METHOD* method = SSLv23_server_method(void); // server method must is the same as the client
     3. Set CTX
         SSL_CTX *ctx = SSL_CTX_new(SSL_METHOD*);
             // set the verify method
@@ -1628,13 +1628,13 @@ LKM procedure:
         
         list_del_init (struct list_head * entry);// &__this_module.list, hide module from lsmod(/proc/modules) cmd
         kobject_del(&THIS_MODULE->mkobj.kobj);   // hide module from sysfs /sys/module
-    moduel_init(...); 
-    module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
-    MODULE_LICENSE("GPL v2");
+        moduel_init(...); 
+        module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
+        MODULE_LICENSE("GPL v2");
+    2. Hijack System call
 Process Managemenet:
     struct task_struct {
-    
-<<<<<<< HEAD
+   
     };
 File System:
     struct file {
@@ -1644,10 +1644,36 @@ File System:
         struct m_inode * f_inode;   
         off_t f_pos;                // file_operation
     };
-=======
-    2. Hijack System call
-        
->>>>>>> dd2527bb299636193eecd9054d3e0aa5404c49b4
-    
     1. Process to find a file:
         fd -> struct file -> struct m_inode -> i_zone -> position in the disk
+Kernel Network:
+    struct ifreq {  //<net/if.h>
+       char ifr_name[IFNAMSIZ]; /* Interface name */
+       union {
+           struct sockaddr ifr_addr;
+           struct sockaddr ifr_dstaddr;
+           struct sockaddr ifr_broadaddr;
+           struct sockaddr ifr_netmask;
+           struct sockaddr ifr_hwaddr;
+           short           ifr_flags;
+           int             ifr_ifindex;
+           int             ifr_metric;
+           int             ifr_mtu;
+           struct ifmap    ifr_map;
+           char            ifr_slave[IFNAMSIZ];
+           char            ifr_newname[IFNAMSIZ];
+           char           *ifr_data;
+       };
+   };
+   TUN/TAP: virtual network device:
+   
+   
+
+**********************************************  Utility  ********************************************************
+<cstdarg>:
+    void my_err(char *msg, ...) { // my_err("Error connecting to tun/tap interface %s!\n", if_name)
+        va_list argp;
+        va_start(argp, msg);
+        vfprintf(stderr, msg, argp);
+        va_end(argp);
+    }

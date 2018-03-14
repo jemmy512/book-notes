@@ -73,7 +73,9 @@ The delctype Specifier:
     If the name of an object is parenthesized, it is treated as an ordinary lvalue expression.  
 Const qualifier:
     1. We can't change the value the of const object after we create it, so it must be initialized.
-    
+    2. But we can the const variable via a pointer, the value of the addr pointer pointes is changed, but the const
+        variable value is not changed.
+        int a = 10; int *p = (int *)&a; *p = 20; // a is 10, *p is 20
     initialize with const:
         By default, const objects are local to file.
         The compiler will replaces the uses of the const variable with its value during compile time.
