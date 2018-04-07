@@ -1,6 +1,18 @@
 
 ********************************************** 7. STL Containers ***************************************************
 
+        Sequence Containers                          Associative Container
+        - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+        array(build-in)                              RB-tree(non-public)
+        vector                                          set, multiset
+            headp(implemented by algorithm)             map, mutimap
+                priority-queue                       hashtable(non-standard)
+        list                                            hash_set, hash_multiset(non-standard)
+        slit(non-standard)                              hash_map, hash_multimap(non-standard)
+        deque
+            stack(adaptor)
+            queue(adaptor)
+
 Containers Ability:
     1. All containers provide value rather than reference semantics.
     2. The elements inside a container have a specific order.
@@ -152,7 +164,7 @@ Forward-List: <forward_list>
     Abilities:
         1. Only provide forward iterators, not bidirectional iterators. And reverse supports are not provided also.
             Functions like reverser_iterator, rbebin(), rend(), crbegin(), crend() not provided also.
-        2. The anchor of forward_list has no pointer to the last elements. So it doesn't provide functions to deal
+        2. The anchor of forward_list has no pointer to the last element. So it doesn't provide functions to deal
             with the last element. Such as back(), push_back() and pop_back().
         3. For any operations that modify list in a way that elements are inserted or deleted at specific position, 
             special versions are provided. Such as _before and _after suffix member functions.
@@ -224,10 +236,10 @@ Set and multiple Set: // sort elements automatically according to certain sort c
             considered constant. So, you can't compromise the order of the element by changing their value.
         // Can't call modifying algorithm on the set or multiset, just user member function.
     6. Inserting and Removing:
-        c.insert(val);          c.emplace(arg...);              c.erase(beg, end);
-        c.insert(pos, val);     c.emplace_hint(pos, arg...);    c.clear();
-        c.insert(beg, end);     c.erase(val);
-        c.insert(initlist);     c.erase(pos, val);
+        paire<iterator, bool> insert(val);      c.emplace(arg...);              c.erase(beg, end);
+        iterator insert(pos, val);              c.emplace_hint(pos, arg...);    c.clear();
+        void     insert(beg, end);              c.erase(val);
+        void     insert(initlist);              c.erase(pos, val);
         
         Return type of insert() and empalce is different:
             set:
@@ -246,6 +258,9 @@ Set and multiple Set: // sort elements automatically according to certain sort c
                 iterator                emplace(Args&&...args);
                 tempalte<typename...Args>
                 iterator                emplace_hint(const_iterator posHint, Args&&...args);
+    Implementation:
+        1. The iterator in set is const, so we can't change value of the set by iterator.
+        2. Iterators before/after insert/erase are still valid except the current iterator.
 Map and multimap:
     prototype:
         template<typename Key, typename value, typename Compare = less<Key>, typename Allocator
@@ -281,10 +296,10 @@ Map and multimap:
             // To change the key of an element only way is to replace the old element with a new element that has
                 the same value.
         6. Inserting and Removing Function:
-            insert(val);        emplace(args...);               erase(val);
-            insert(pos, val);   emplace_hint(pos, args...);     eraase(pos);
-            insert(beg, end);   clear();                        erase(beg, end);
-            insert(initlist);
+            pair<iterator, bool> insert(val);  emplace(args...);               erase(val);
+            iterator insert(pos, val);          emplace_hint(pos, args...);     eraase(pos);
+            void     insert(beg, end);          clear();                        erase(beg, end);
+            void     insert(initlist);
             // Inserting elementa are placed at the end of the existing equivalent values.
             // Thress other ways to pass a value into a map:
                 1. use value_type. To avoid implicit type conversion.
@@ -297,6 +312,9 @@ Map and multimap:
                     coll.insert(make_pair("otto", 22.3));
             // Calling erase() for the element to which you are referring with pos invalidates pos as an 
                 iterator of coll.
+    Implementation:
+        1. Can't change key by iterator.
+        2. Iterators before/after insert/erase are still valid except the current iterator.
 Unordered Container: <unordered_set> <unordred_map> <functional>
     prototype:
         template<typename T, typename Hash = hash<T>,
@@ -423,8 +441,8 @@ Auxiliary Iterator Functions:
     Dist distance(InputIterator pos1, InputIterator pos2); // bad performen for other than random-access iterator
     void iter_swap(ForwardIterator1 pos1,  ForwardIterator2, pos2); // swap the values of two iterators
 Converting Reverse Iterators Back Using base():
-    reverse iterator provide base() member function.
     deque<int>::reverse_iterator riter;
+    reverse_iterator<deque<int>::iterator> riter; // convert normal iterator to reverse iterator
     deque<int>::iterator iter = riter.base();
 Functionality of Insert Iterators:
     OuputIterator copy(InputIterator from_pos, InputIterator from_end, OutputIterator to_pos);
@@ -477,10 +495,52 @@ Iterator Traits:
         typedef typename T::pointer             pointer;
         typedef typename T::reference           reference;
     }
+    iterator_category(const Iterator &);
+    value_type(const Iterator &);
+    distance_type(const Iterator &);
+Portable Interface:
+    template<class Category, class T, class Distance = ptrdiff_t, 
+        class Pointer = T*, class Reference = T&>
+    struct iterator {
+        typedef Category    iterator_category;
+        typedef T           value_type;
+        typedef Distance    distance_type;
+        typedef Pointer     pointer;
+        typedef Reference   reference;
+    };
+    eg: template<class Item>
+    struct ListIter: public std::iterator<std::forward_iterator_tag, item> {...};
+        
+Type Traits:
+    struct _true_type {};
+    struct _false_type {};
+    
+    template<class type>
+    struct _type_traits {
+        typedef _true_type this_dummy_member_must_be_first;
+        
+        typedef _false_type has_trivial_default_constructor;
+        typedef _false_type has_trivial_copy_constructor;
+        typedef _false_type has_trivial_assigment_operator;
+        typedef _false_type has_trivial_destructor;
+        typedef _false_type is_POD_type;
+    };
     
 ********************************************** 10. Function Ojbect and Using Lambda ********************************
 
     A function object is an object that has operator() defined.
+Adaptable:
+    template<class Arg, class Result>
+    struct unary_function() {
+        typedef Arg argument_type;
+        typedef Result result_type;
+    };
+    template<calss Arg1, class Arg2, class Result>
+    struct binary_function {
+        typedef Arg1 first_argument_type;
+        typedef Arg2 second_argument_type;
+        typedef Result result_argument_type;
+    };
 Concept of function objects:
     class FunctionObjectType {
     public:
@@ -519,42 +579,56 @@ Concept of function objects:
         A predicate should always stateless. You shouldn't pass a function ojbect for which the behavior depends
             on how often it is copied or called.
 Predefined Function Objects <functional>
-    negate<type>()          plus<type>()    
-    minus<type>()           less_equal<type>()
-    multiplies<type>()      greater_equal<type>()    
-    divides<type>()         logical_not<type>()
-    modules<type>()         logical_and<type>()
-    equal_to<type>()        logical_or<type>()
-    not_equal_to<type>()    bit_and<type>()    
-    less<type>()            bit_or<type>()
-    greater<type>()         bit_xor<type>()
+    negate<T>()          plus<T>()    
+    minus<T>()           less_equal<T>()
+    multiplies<T>()      greater_equal<T>()    
+    divides<T>()         logical_not<T>()
+    modules<T>()         logical_and<T>()
+    equal_to<T>()        logical_or<T>()
+    not_equal_to<T>()    bit_and<T>()    
+    less<T>()            bit_or<T>()
+    greater<T>()         bit_xor<T>()
     
-    Function Adapters and Binders
-        A function adapter is a function ojbect that enables the composition of function objects with each other,
-            with certain values, or with special functions.
-        bind(op, args...);  mem_fn(op); not1(op);   not2(op);
-        template<class F, class... Args> /*unspecified*/ bind(F &&f, Args &&... args);
-        what bind can do:
-            Adapt and compose new function object out of existing or predefined function objects.
-            Call global functions.
-            Call member function for object, pointers to objects, and smart pointer to objects.
-            
-            for_each(sp.begin(), sp.end(), bind(&Person::print, _1));
-            for_each(sp,begin, sp.end, mem_fn(&Persion::print));
-            mem_fn(&Person::printf)(ojb, "Person: ");   // call ojb.printf(...);
-            acculate(coll.begin(), coll.end(), 0,       // binding to map data member
-                bind(plus<int>(), _1, bind(&map<string, int>::value_type::second, _2)));
-    Using Lambdas
-        lambdas versus Binders
-        Lambdas versus Stateful Functions
-        Lambdas Calling Global and Member Functions
-        Lambda as Hash Function, Sorting, Equal Criterion
+Function Adapters and Binders
+	A function adapter is a function ojbect that enables the composition of function objects with each other,
+		with certain values, or with special functions.
+	bind(op, args...);  mem_fn(op); not1(op);   not2(op);
+	template<class F, class... Args> /*unspecified*/ bind(F &&f, Args &&... args);
+	what bind can do:
+		Adapt and compose new function object out of existing or predefined function objects.
+		Call global functions.
+		Call member function for object, pointers to objects, and smart pointer to objects.
+		
+		for_each(sp.begin(), sp.end(), bind(&Person::print, _1));
+		for_each(sp,begin, sp.end, mem_fn(&Persion::print));
+		mem_fn(&Person::printf)(ojb, "Person: ");   // call ojb.printf(...);
+		acculate(coll.begin(), coll.end(), 0,       // binding to map data member
+			bind(plus<int>(), _1, bind(&map<string, int>::value_type::second, _2)));
+Using Lambdas
+	lambdas versus Binders
+	Lambdas versus Stateful Functions
+	Lambdas Calling Global and Member Functions
+	Lambda as Hash Function, Sorting, Equal Criterion
         
 ********************************************** 11. STL Algorithm ***************************************************
 Head files: <algorithm> <numeric> <functional>
 A Brief Introduction:
      Algorithms work in overwrite mode rather than insert mode. So destination must have enough space.
-
+<numeric>:
+    accmulate, iner_product, partial_sum, power, iota
+<algorithm>:
+    iter_swap, swap, fill, fill_n, max, min, lexicographical_compare
+    equal: compare two sequences in range [firsr, last), extra sequence of second one out of last will be discareded.
+    mismatch: return iterator of the first not equal character, extra characters discareded; if the second sequence 
+        length is less than the first one, the behavior is undefined.
+    set_union, set_intersection, set_difference, set_symmetric_difference
+Data process:
+    adjacent_find, 
+    for_each(first, last, Function f): process data in [first, last) by f, f should not change the element, because 
+        first and last is InputIterator has no guarantee for assignment operation, but transform() can change.
+    
+    
+  
 ********************************************** 12. Special Container ***********************************************
 
 stack: <stack>
@@ -624,18 +698,42 @@ Strings and C-Strings
         2. They allow you to return the index of the first character after the last processed character.
         3. Exception invalid_arguement or out_of_range may be throw.
     Regex: 
-        
-********************************************** 11. STL Algorithm ***************************************************
-     
-    
-    
-    
-**********************************************  STL Iterator *****************************************************
+   
+   
+********************************************** 19. Allocator *******************************************************
+STL Portable Interface: simple_alloc
+Design Philosophy:
+    1. Require space from System Heap
+    2. Multi-thread safe
+    3. The handler of not enough memory
+    4. Memory fragment
 
-std::iterator_traits
-    template<class Iterator> struct iterator_traits;
-    template<class T> struct iterator_traits<T*>;
-    template<class T> struct iterator_traits<const T*> (until C++20);
+**********************************************  STL Adapter ******************************************************
+Container Adapter:
+    queue:
+    stack:
+Iterator Adapter:
+    Insert Iterator:
+    IOStream Iterator:
+    Reverse Iterator:
+Function Adapter:
+    template<class Arg, class Result>
+    struct unary_function() {
+        typedef Arg argument_type;
+        typedef Result result_type;
+    };
+    template<calss Arg1, class Arg2, class Result>
+    struct binary_function {
+        typedef Arg1 first_argument_type;
+        typedef Arg2 second_argument_type;
+        typedef Result result_argument_type;
+    };
+	not1, not2;
+	bind1st, bind2nd;
+	compose1, compose2;
+	ptr_fun
+	mem_fun, mem_fun_ref
+
 
 **********************************************  STL Header *******************************************************
 
