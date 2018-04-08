@@ -641,7 +641,7 @@ stack: <stack>
 ********************************************** 13. String **********************************************************
     
 Types:
-    template<typenaem charT, typename traits = char_traits<charT>, typename Allocator = allocator<charT>
+    template<typenaem charT, typename traits = char_traits<charT>, typename Allocator = allocator<charT>>
     class badic_string;
     
     typedef basic_string<char>      string;
@@ -714,7 +714,18 @@ Container Adapter:
     stack:
 Iterator Adapter:
     Insert Iterator:
+    Name                Class                   Called Function     Creation
+    Back inserter       back_insert_iterator    push_back(value)    back_inserter(cont)
+    Front inserter      front_insert_iterator   push_front(value)   front_inserter(cont)
+    General inserter    insert_iterator         insert(pos, value)  inserter(cont, pos)
+    eg:
+        list<int> coll;
+        back_inserter(coll) = 44;       coll.push_back(44);
+        front_inserter(coll) = 55;      coll.push_front(55);
+        inserter(coll, 1) = 46;         coll.insert(1, 44);
     IOStream Iterator:
+        istream_iterator;
+        ostream_iterator;
     Reverse Iterator:
 Function Adapter:
     template<class Arg, class Result>
@@ -728,12 +739,17 @@ Function Adapter:
         typedef Arg2 second_argument_type;
         typedef Result result_argument_type;
     };
-	not1, not2;
-	bind1st, bind2nd;
-	compose1, compose2;
-	ptr_fun
-	mem_fun, mem_fun_ref
-
+    bind1st(const Op &op, const T &x);
+    bind2nd(const Op &op, const T &x);
+    not1(const Pred &pred);
+    not2(const Pred &pred);
+    ptr_fun(Result(*fp)(Arg));
+    ptr_fun(Result(*fp)(Arg1, Arg2));
+    mem_fun(S (T::*f)());
+    mem_fun(S (T::*f)() const);
+    mem_fun(S (T::*f)(A));
+    mem_fun_ref(S (T::*f)() const);
+    
 
 **********************************************  STL Header *******************************************************
 
@@ -754,31 +770,4 @@ Function Adapter:
     
 <iomanip>
     setw();
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+   
