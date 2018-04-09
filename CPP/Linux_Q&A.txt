@@ -40,7 +40,7 @@
     
 14. send/recv(read/write)返回值大于0、等于0、小于0的区别
     [nogle algorithem] TCP_NODELAY
-    block:      -1: EWOULDBLOCK            0: connection close  >0: real data size send to networkCard buf
+    block:      -1: ERROR                  0: connection close  >0: real data size send to networkCard buf
     nonblock:   -1: EWOULDBLOCK EINTER,    0: connection close  >0: real data size send to networkCard buf
 15.如何编写正确的收数据代码与发数据代码
 16.发送数据缓冲区与接收数据缓冲区如何设计
@@ -53,7 +53,10 @@
     一个地址或者端口释放2分钟之后才能被使用
 20.socket选项SO_LINGER
 21.shutdown与优雅关闭 http://blog.csdn.net/zhangshouming/article/details/39558473
-    TIME_WAIT：1.使得TCP的全双工连接能够可靠的终止 2.使得连接终止后网络上任然残余数据被丢弃而不至于被新连接接收.
+    TIME_WAIT：
+        1.使得TCP的全双工连接能够可靠的终止 
+        2.使得连接终止后网络上任然残余数据被丢弃而不至于被新连接接收.
+    TCP_NODELAY: shut down "nagle" algorithm
     选项            间隔    关闭方式  等待关闭与否
     SO_DONTLINGER   不关心  优雅      否
     SO_LINGER       零      强制      否
