@@ -6,6 +6,10 @@
     网络层     ICMP IP(0x800)          实现数据包的选路和转发
     链路层     ARP(0x806)  RARP(0x835) 实现网卡接口的网络驱动程序，以处理数据在物理媒介的传输
     
+IP 头部的源IP和目的IP在传输过程中始终不变。
+链路层数据帧中的源MAC和目的MAC在传输过程中始终变化。
+
+
 ********************************** 2. IP 协议协议详解  ***********************************************************
 IP协议特点：
     无状态：通信双方不同步彼此传输数据的状态信息
@@ -24,10 +28,13 @@ TIME_WAIT:
 带外数据(OOB)
     紧急指针指向最后一个带外数据的下一个字节，一次发送多个带外数据，有效的只是最后一个。TCP接收端读取带外数据存放到
     带外缓冲区。若没有及时接收，带外数据将被普通数据覆盖。SO_OOBINLINE指定可像接受普通数据一样接受带外数据。
-拥塞控制：SWND, RWND, CWND, IW
+拥塞控制：SWND, RWND, CWND(Congestion Window), IW(Initial Window), SMSS(sender maxium segament size)
     慢启动(slow start)，拥塞避免(congestion avoidance ):
         CWND += min(N, SMSS) N: 此次确认中包含的之前未被确认的字节数
-        
+        当CWND超过慢启动门限(slow start threshold size, ssthres)时，TCP阻塞控制进入阻塞避免阶段。
+        阻塞避免算法是的CWND按照线型方式增加。
+        网络阻塞判断标准：传输超时，接收到重复的报文确认段。
     快速重传(fast retransmit)，快速回复(fast recovery):
+        
     
     

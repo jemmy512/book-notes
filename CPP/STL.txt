@@ -657,7 +657,7 @@ Operations:
     +=, append(), push_back()   size(), length()        stoi(), stol(), stoll() begin(), end()
     insert()                    reserve()               stoul(), stoull()       crbegin()
     erase(), pop_back()         shrink_to_fit()         stof(), stod(), stold() get_allocator()
-    clear
+    clear                       substr(beg, count);
     resize()
     
     Argument types:

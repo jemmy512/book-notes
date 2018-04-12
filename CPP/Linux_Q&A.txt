@@ -152,3 +152,10 @@ SO_REUSEADDR
 42. Q: what happens in the background from the time you press the Power button until the Linux login prompt appears?
     A: https://discuss.leetcode.com/topic/92910/what-happens-in-the-background-from
         -the-time-you-press-the-power-button-until-the-linux-login-prompt-appears
+  
+43. 惊群(thundering herd) 问题
+    当多进程线程阻塞在同一个事件时，该事件的发生的会唤醒所有线程进程，但最终只有一个线程对该事件进行处理，其他线程进程
+        会在失败后重新进行休眠。
+    新版Linux系统解决accept惊群问题，epoll_wait部分惊群问题（在worker保持工作状态下，都会被唤醒）
+    解决方法：
+        Nginx 使用mutex解决该问题。每个子进程在epoll_wait之前先去申请mutex，申请到了继续处理，否则继续等待。
