@@ -28,6 +28,10 @@ TIME_WAIT:
 带外数据(OOB)
     紧急指针指向最后一个带外数据的下一个字节，一次发送多个带外数据，有效的只是最后一个。TCP接收端读取带外数据存放到
     带外缓冲区。若没有及时接收，带外数据将被普通数据覆盖。SO_OOBINLINE指定可像接受普通数据一样接受带外数据。
+    Linux 提供两种机制通知应用程序OOB的到来：
+        1. I/O复用产生的异常事件
+        2. SIGURG信号
+    int sockatmark(int sockfd); // 判断下一个数据是否是OOB数据，是 ？ 1 ： 0
 拥塞控制：SWND, RWND, CWND(Congestion Window), IW(Initial Window), SMSS(sender maxium segament size)
     慢启动(slow start)，拥塞避免(congestion avoidance ):
         CWND += min(N, SMSS) N: 此次确认中包含的之前未被确认的字节数

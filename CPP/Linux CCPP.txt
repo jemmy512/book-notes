@@ -773,24 +773,22 @@ Time and Data Rountine:
 
 Procedure of socket:
 	Data trasformation:	
-		#include <arpa/inet.h>
+		#include <netinet/in.h>
 		uint32_t htonl(uint32_t hostlong);
 		uint16_t htons(uint16_t hostshort);
 		uint32_t ntohl(uint32_t netlong);
 		uint16_t ntohs(uint16_t netshort);
 		
-		#include <sys/socket.h>
-		#include <netinet/in.h>
 		#include <arpa/inet.h>
-        
-		int inet_aton(const char *cp, struct in_addr *inp);
-		int inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-
 		in_addr_t       inet_addr(const char *cp);
+		int             inet_aton(const char *cp, struct in_addr *inp);
+		char           *inet_ntoa(struct in_addr in); 
+            // return a pointer to a static variable in funciton which store the rst, func can't reenter. 
+		
+        const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
+        int             inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
+
 		in_addr_t       inet_network(const char *cp);
-		char           *inet_ntoa(struct in_addr in);
-		int             inet_pton(int af, const char *src, void *dst); // "0.0.0.0" -> 0.0.0.0
-		const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
 		struct in_addr  inet_makeaddr(int net, int host);
 		in_addr_t       inet_lnaof(struct in_addr in);
 		in_addr_t       inet_netof(struct in_addr in);
@@ -800,6 +798,7 @@ Procedure of socket:
 		doamin: AF_INET, AF_INET6, AF_LOCAL(AF_UNIX), AF_ROUTE
 		type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
 		protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
+        // type can combine with SOCK_CLOEXEC: when create new socket by fork, close this socket in child socket.
 	2. bind (server) assigns a local protocal addr to socket
 		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 		struct sockaddr_in {    <netinet/in.h>
@@ -827,14 +826,17 @@ Procedure of socket:
         // Do no specify backlog to 0, different implementation interpret this different. If don't want any 
             client connecting to listening socket, just close the listening socket.
         // Berkeley-derived implementation add a fudge factor to backlog: it is multiplied by 1.5.(MacOS)    
-	4. accept (client and server) return the next completed connetion form the front of the completed conn queue.
+	4. accept (client and server) 
+        // return the next completed connetion from the front of the completed conn queue, don't care the status
+            of the socket(may be ESTABLISHED or CLOSE_WAIT) and the changes of the network.
 		int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
 	5. read and write (client and server)
 		ssize_t read(int fd, void *buf, size_t count);
             // The behavior of multi-thread read or write is undefined
 		ssize_t write(int fd, const void *buf, size_t count);
-            // flags: MSG_PEEK, MSG_OOB(SIGURG), MSG_WAITALL
-            // flag: MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL
+        
+            // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL, MSG_CONFIRM, MSG_DONTROUTE
+                MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL
 		ssize_t send(int sockfd, const *buf, size_t len, int flags);
             // return success doesn't mean the peer process recvices data, just means the data
                 has been delivered to network drivers without error
@@ -852,7 +854,8 @@ Procedure of socket:
 		
     5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
         // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
-	6. close <unistd.h> int close(int fd);
+	6. close <unistd.h> 
+        int close(int fd);
         // The default action of close with a TCP socket is to mark the socket as closed and return to the process
             immediately. The scoket descriptor is no longer usable by the process: It can not be used as argument 
             to read or write. But, TCP try to send any data that is already queued to be sent to the other end, and
@@ -867,27 +870,40 @@ Raw-socket:
 	int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
 	int getsockopt (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
 	level: 	
-		SOL_SOKCET: SO_BROADCASE(bool), SO_RCVTIMEO(struct timeval), SO_SNDTIMEO(struct timeval), 
-			SO_REUSEADDR, SO_KEEPALIVE, 
-		IPPROTO_IP: IP_HDRINCL(bool), IP_ADD_MEMBERSHIP(struct ip_mreq), IP_DROP_MEMBERSHIP, IP_MULTICAST_IF(DWORD),
-			IP_MULTICAST_LOOP, IP_MULTICAST_TTL	
-            SO_RCVBUF(mininum 512 bytes, maximum 1048576 bytes);
-            SO_BROADCASE(have no meaning for stream sockets)
+		SOL_SOKCET: 
+            SO_BROADCASE(bool)  SO_RCVTIMEO(struct timeval) SO_SNDTIMEO(struct timeval)
+			SO_OOBINLINE    SO_LINGER   SO_TYPE     SO_RCBLOWAT     SO_SNDLOWAT
+            SO_DONTROUTE    SO_ERROR    SO_DEBUG
             SO_KEEPALIVE(only have meaning for stream sockets)
-            SO_OOBINLINE
-    int sockatmark(int sockfd); 
-        // return 1 when we have readched urgent data, 0 if not, -1 on error; can be safe use in the handler for SIGURG
+            SO_RCVBUF [/proc/sys/net/ipv4/tcp_rmem]
+            SO_SNDBUF [/proc/sys/net/ipv4/tcp_wmem]
+            SO_BROADCASE(have no meaning for stream sockets)
+            SO_REUSEADDR [/proc/sys/net/ipv4/tcp_tw_recycle]
+		IPPROTO_IP:     
+            IP_HDRINCL(bool)    IP_TOS  IP_TTL
+			IP_MULTICAST_LOOP   IP_MULTICAST_TTL	
+            IP_ADD_MEMBERSHIP(struct ip_mreq)
+            IP_DROP_MEMBERSHIP  IP_MULTICAST_IF(DWORD),
+        IPPROTO_TCP:
+            TCP_MAXSEG  TCP_NODELAY
 Out-of-Band data:
-    OOB data is only supported on AF_INET and AF_INET6, the data can be sent by specifying the MSG_OOB fly on send function.
+    int sockatmark(int fd);
+    OOB data is only supported on AF_INET and AF_INET6, the data can be sent by specifying the MSG_OOB 
+        fly on send function.
     The SIOCATMARK ioctl() request determine if the read pointer is pointing to the last OOB byte.
-    If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final OOB data occurrence.
+    If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final
+        OOB data occurrence.
     ISGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
     Reciev OOB data:
-        The socket API keeps track of recieved OOB data by using OOB marker witch points to the last byte of the OOB data.
-        Independent of the OOB data is recieved inline, an input operation processes data up to OOB marker, if OOB data sent.
+        The socket API keeps track of recieved OOB data by using OOB marker witch points to the last byte of 
+            the OOB data.
+        Independent of the OOB data is recieved inline, an input operation processes data up to OOB marker, 
+            if OOB data sent.
         If SO_OOBINLINE is not set:
-            if MSG_OOB is specified the data will be recieved, otherwise not. if multi-data sent, only final OOB is remebered.
-        If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying MSG_OOB(EINVAL).
+            if MSG_OOB is specified the data will be recieved, otherwise not. if multi-data sent, only final
+            OOB is remebered.
+        If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying 
+            MSG_OOB(EINVAL).
         
 Components of Server:
 	1. IO communication unit
