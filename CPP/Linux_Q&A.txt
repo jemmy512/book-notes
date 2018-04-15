@@ -82,11 +82,12 @@
     SO_LINGER.l_onoff   SO_LINGER.l_linger  close() 
     0                   非0/0               默认行为：立即返回；socket发送缓冲区有数据，写入FIN，立即返回， TCP尽量发送数据
     非0                 0                   清空socket发送缓冲区，发送RST，返回；非正常4次挥手，避免TIME_WAIT状态 
-    非0                 非0                 阻塞直到：1. 发送缓冲区数据及FIN发送并得到对等端确认 2. l_linger 时间超时。 非
-                                                阻塞模式下，close并不等待数据发送完成或超时，而是立即返回，发送缓冲区数据
-                                                会被丢弃。在数据和FIN确认之前超时，close返回EWOULDBLOCK。
+    非0                 非0                 阻塞直到：1. 发送缓冲区数据及FIN发送并得到对等端确认 2. l_linger 时间超时， 
+                                                在数据和FIN确认之前超时，close返回EWOULDBLOCK。
                                                 close成功返回仅表示对等端TCP收到数据，不表示对等进程收到数据，使用shutdown
-                                                和read可知道对等进程是否收到数据
+                                                和read可知道对等进程是否收到数据。
+                                            非阻塞模式下，close并不等待数据发送完成或超时，而是立即返回，根据返回值和errno
+                                                可判断残余数据是否发送完毕。
 23.socket选项SO_KEEPALIVE
     对所有socket起所用，默认时间太长2小时，产生无用网络流量，无论client，server有无交互，心跳包依然会发送
     

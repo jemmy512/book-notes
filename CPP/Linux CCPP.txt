@@ -284,8 +284,10 @@ By convention: <unistd.h>
         // 6. Interrupted by a signal and partial data have been read.
 FD Duplicate:
     int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
+        // Always return the minum fd number of the system.
     int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
                                 // fd2 shares the same file table as fd.
+        // new fd created by dup or dup2 doesn't inherit the property of the old fd such as close-on-exec, non-blcking
 Data sync between kernel buffer and disk:
     void sync(void);            // Queues all the modified block buffers for writing and returns.
     int fsync(int fd);      
@@ -293,6 +295,10 @@ Data sync between kernel buffer and disk:
 Aotomic Operation: <unistd.h>
     ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
     ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
+sendfile:  <sys/sendfile.h>, designed to transfer file over internet
+    int sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
+    // out_fd can be any fd while in_fd must refer to real file, not socket or pipe.
+    // Operation is completed in kernel, so it's very efficient and is a 0 COPY.
 File property change: <fcntl.h>
     int fcntl(int fd, int cmd, ... /*int arg*/); 
         // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
@@ -333,10 +339,12 @@ Parse Command Line Option: <unistd.h> <getopt.h>
         };
 Syslog: <syslog.h>
     void openlog(const char *ident, int logopt, int facility);
-    void closelog(void);
-    int  setlogmask(int maskpri);
     void syslog(int priority, const char *message, .../*arguments*/);
-    
+    int  setlogmask(int maskpri);
+    void closelog(void);
+    // priority: LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
+    // logopt: LOG_PID, LOG_CONS, LOG_ODELAY, LOG_NDELAY
+    // facility: LOG_AUTH, LOG_DEAMON, LOG_KERN, LOG_LPR, LOG_LOCAL0~LOG_LOCAL7, LOG_MAIN, LOG_NEWS, LOG_USER
 **********************************************  File and Directories  *******************************************
 
 TOCTTOU: time-of-check-to-time-of-use
@@ -394,7 +402,7 @@ access and faccessat: <unistd.h> determine accessibility based on real user and 
 umask: <sys/stat.h>  // set and get file mode creation mask
      mode_t umask(mode_t cmask);
      // any bits that are on in the file mode creation mask are tured off in the file's mode
-     // retuen previous value of the file mode creation mask
+     // return previous value of the file mode creation mask
 chmod, fchmod, fchmodat: <sys/stat.h>
     int chmod(const char *pathname, mode_t mode);
     int fchmod(int fd, mode_t mode);
@@ -605,6 +613,17 @@ I/O Moudles:
     I/O multiplexing(select, poll, epoll)
     signal driven I/O(SIGIO)
     asynchronous I/O(aio_)
+FD ready conditions:
+    Readable condition:
+        1. The size of socket buffer in kernel is not less than SO_RECLOWAT
+        2. The peer of socket close connection, read return 0
+        3. There is a new connection in the scoket
+        4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
+    Writeble condition:
+        1. The size of socket buffer in kernel is not big that SO_SNDLOWAT
+        2. The write of socket is closed, write to such socket will trigger SIGPIPE
+        3. Using non-blocking connect connect success or fail
+        4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
 Nonblocking I/O:
     Two ways to specify nonblocking I/O for a given descriptor:
         1. Specify O_NONBLOCK when call open.
@@ -625,7 +644,7 @@ Record Locking:
 Meory-Mapped I/O: <sys/mman.h>
     void *mmap(void *addr, size_t len, int prot, int flag, int fd, off_t off);
         // protection: PROT_READ, PROT_WRITE, PROT_EXEC, PROT_NONE
-        // flag: MAP_FIXED, MAP_SHARED, MAP_PRIVATE, 0
+        // flag: MAP_FIXED, MAP_SHARED, MAP_PRIVATE, 0, MAP_ANONYMOUS, MAP_HUGETLB
         // If file size is 12 bytes, system page size is 512bytes, system will provides 512 for mapped region, but 
             any modification out of 12 bytes are not reflected in the file.
         // A memory-mapped region is inherited by a child across a fork.
@@ -639,10 +658,12 @@ Meory-Mapped I/O: <sys/mman.h>
             It's determined by the kernel's virual memory algorithm sometime after we store into the region.
 I/O Multiplexing:
 	1. select: <sys/select.h> <sys/time.h>
-		int select(int maxfdp1, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
+		int select(int nfd, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
         // nfds is the value of max fd plus one
         // timeout and every fs_set needs clean up first and then init at each time select execute
-        // timeout == NULL (wait forever), timeout == 0(return immediatelly)
+        // timeout == NULL (wait forever), timeout == 0(return immediately)
+        // Normal data and OOB data arrive case select return, but select in readable and exception state, 
+            respectively, we can use recv(fd, buf, bufsize, MSG_OOB) get OOB data.
 		void FD_ZERO(fd_set *fdset);
 		void FD_SET(int fd, fd_set *fdset);
 		void FD_CLR(int fd, fd_set *fdset);
@@ -675,7 +696,9 @@ I/O Multiplexing:
                 uint32_t    u32;
                 uint64_t    u64;
             } epoll_data_t;
-			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP
+			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP
+                EPOLLONESHOT:// once the socket is handled by thread, the thread should register the
+                    EPOLLONESHOT again to insure the event can be captured again.
 		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
 Asynchronous I/O:
     struct aiocb {
@@ -893,7 +916,10 @@ Out-of-Band data:
     The SIOCATMARK ioctl() request determine if the read pointer is pointing to the last OOB byte.
     If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final
         OOB data occurrence.
-    ISGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
+    SIGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
+    Two method to detect OOB data's arrival:
+        1. SIGURG will be triggered.
+        2. I/O multiplexing return exception event.
     Reciev OOB data:
         The socket API keeps track of recieved OOB data by using OOB marker witch points to the last byte of 
             the OOB data.
@@ -904,8 +930,7 @@ Out-of-Band data:
             OOB is remebered.
         If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying 
             MSG_OOB(EINVAL).
-        
-Components of Server:
+Architecture of Server:
 	1. IO communication unit
 		1.1 Port multiplexing
 			select 1000, poll, epoll 30W
@@ -926,10 +951,12 @@ Components of Server:
 			Thread Pool
 			Process Pool
 	3. Date Storage
-Two high-performance server architectures:
-	1. Reactor
-	2. Proactor
-    
+Two High-performance Event Handle Architectures:
+	1. Reactor: implemented by synchronize I/O
+	2. Proactor: implemented by asynchronize I/O
+Two high-performance Concurrent Architectures:
+    1. half-sync/half-async
+    2. leader/follwer
 Network configuration information:
     #include<netdb.h>
     struct hostnet *gethostent(void);
@@ -1060,12 +1087,15 @@ signal description:
 waiting for a signal to be caught:  
     sigsuspend();  pause(); // -1
 syschronously accepting a signal:
-    sigwaitinfo(); sigtimedwait(); sigwait();
+    sigwaitinfo(); sigtimedwait(); sigwait(const sigset_t *set, int *sig);
     signalfd();
-signal mask:
+signal mask: // specify which signals can not be sent to the process
     pthread_sigmask(); int sigprocmask (int how, const sigset_t *restrict set, sigset_t *restrict oldset);
     how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
-sigset_t:
+    // when a signal which is masked is sent to the process, the system set this signal as pending signal 
+        in the process, when we unmask the pending signals, signals will  be received by the process immediately
+    int sigpending(sigset_t *set); // get the current pending signals
+sigset_t: 
     sigemptyset(sigset_t *set);   sigaddset(sigset_t *set, int signum);  
     sigfillset(sigset_t *set);    sigdelset(sigset_t *set, int signum);
     sigismember(const sigset_t *set, int signum); // ok: 1
@@ -1077,8 +1107,8 @@ sigaction:
     struct sigaction {
       void (*sa_handler)(int); // SIG_IGN, SIG_DFL
       void (*sa_sigaction)(int, siginfo_t *, void *);   // si_code, si_signo, si_value
-      sigset_t sa_mask;
-      int sa_flags;
+      sigset_t  sa_mask;
+      int       sa_flags; // set the behavior when program receives a signal
       void (*sa_restorer)(void);
     };
     sa_mask: SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESETORE, SA_SIGINFO
@@ -1131,9 +1161,15 @@ Advantages and Disabvantages of XSI IPC:
     1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
     2. They are not known by names in the file system
 Pipe: PIPE_BUF
+    <unistd.h>
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
-    flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
+    flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCKf
     // when last process referred to it terminates, the pipe is completely removed. 
+    // If the fd[1]'s reference is down to 0, the read() from fd[0] will return 0;
+    // If the fd[0]'s reference is down to 0, the write() to fd[1] will fail, SIGPIPE will trigger.
+    // The capacity of the pipe can be changed by fcntl funciton.
+    <sys/socket.h><sys/types.h>
+    int socketpair(int domain, int type, int proto, int fd[2]);
 FIFO:
     mkfifo(const char *path, mode_t mode);              // absolute path, mode same to open
     mkfifoat(int fd, const char *path, mode_t mode);    // path relative to the directory of fd
@@ -1192,13 +1228,14 @@ msg_queue: a linked list of messages
         flag: MSG_NOERROR, MSG_COPY, MSG_EXCEPT, MSG_COPY, IPC_NOWAIT
         type: 0, >0, <0(the first msg whose type is the lowest value less than or euqal to absolute value of type)
         
-semaphore: is a counter used to provide access to the shared object for multiple process
+semaphore: is a counter used to provide access to the shared object for multiple processes
     category:
         1. kernel semaphore
         2. user semaphore: POXIS, SYSTEM V
     POXIS unamed semaphore:
         int sem_init(sem_t *sem, int pshared, unsigned int value);
         // pshard: zero[shared between threads within process], non-zero[shared between processes]
+        // The behavior of initializing a initiazlied thread is undefined
         int sem_getvalue(sem_t *sem, int *sval);
         int sem_wait(sem_t *sem);
         int sem_post(sem_t *sem);
@@ -1265,7 +1302,22 @@ Summary:
    considered instead as they are far simpler. Shared memory still has its use.
     
 **********************************************  Thread Process Programming  *************************************
-
+Thread & Signal:
+    pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset); //how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
+    pthread_kill(pthread_t pthread, int sig); // send a signal to a specific pthread
+    
+    All threads share the signals and sigHandler of the process which they belong to, 
+        system sends process signal to thread according to the thread signal mask. 
+    When we set a new sigHandler in a thread, it will overwrite all other threads sigHandler for this signal.
+    We should define a dedicated thread to handle all signals:
+        1. Set signals mask before main thread creates any thread, the new thread will inherite this sigmask.
+        2. Call sigwait(const sigset_t *set, int *sig) in one thread to handle all signals.
+Methods of Local Processes Communication:
+	1. Messaging (pipeline, FIFO, message queue)
+	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
+	3. Shared memory (anonymous and named)
+	4. Remote procedure Call (Solaris gate and sun RPC)
+    
 Main function:
     1. When a C program is executed by the kernal-by one of the exec functions, a special start-up routine is called
         before the main is called.
@@ -1290,6 +1342,14 @@ Handling Interrupted System Calls:
         be restarted. 
     We can recall accept, read write, select and open to handle those system call's interruption, but can't recall
         connect for which happen we must call select to wait for the connection to comlete.
+Session:
+    int setsid(void); // <unistd.h>
+    // if the calling process is not the process grop leader:
+        1. The process becomes the session leader and the only process of this session.
+        2. The process becomes the prcess group leader of the new process group and the process group ID is the
+            calling process ID.
+        3. The process has no controling terminal.
+    // The function returns an error is the process is already a process leader.
 Enviroment List: <stdlib.h>
     Global variable: environ;
     char* getenv(const char *name);
@@ -1327,12 +1387,13 @@ Memory Allocation: <stdlib.h>
     
 Process Enviroment:
     Exit Function:
-        _exit(...), _Exit(...) // return to the kernel immediately
-        exit(...) // performs certain cleanup processing then returns to kernel
+        _exit(...), _Exit(...)  // return to the kernel immediately
+        exit(...)               // performs certain cleanup processing then returns to kernel
         pthread_exit();
         returns of the last thread from its start routine
         response of the last thread to the cancellation request
-        int atexit(void *(func)(void)); // call on registered func in reverse order and as many times as registered
+        int atexit(void *(func)(void)); 
+            // call on registered func in reverse order and as many times as registered
             // register at leat 32 exit handlers that are automatically called by exit.
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
         // child process copys parent's data, head and stack but shares text segment and file descriptors including 
@@ -1340,9 +1401,11 @@ Process Enviroment:
         // There are two ways to handling descriptors after fork:
            1. Parent waits for child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
+    pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)); // clean up lock status
+        // child process can inherits parent's lock, but don't know whether it is locked or unlocked 
     pid_t wait(int *stat_loc);  <sys/wait.h>
         WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
-        // return immediatelly with terminate status if one child is zombie.
+        // return immediately with terminate status if one child is zombie.
     pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
         // pid > 0; wait the process whose process ID equals pid
         // pid == 0; wait the process whose process group ID equals calling process group ID
@@ -1360,7 +1423,7 @@ Process Enviroment:
             CPU time, number of page faults, number of signals received...
 Memory Allocation:
     void *malloc(size_t size);  // initial value of the memory is indeterminate.
-    void *calloc(size_t nobj, size_t size); // initial value is 0.
+    void *calloc(size_t nobj, size_t size);     // initial value is 0.
     void *reallocc(void *ptr, size_t newsize);  // contents in newly increased space is indeterminate
         // Because old erea may move, we shouldn't have any pointers into this area.
     void free(void *ptr);
@@ -1411,12 +1474,12 @@ pthread:
         pthread_attr_setdetachstate(pthread_att_t *attr, int detachstate); // PTHREAD_CREATE_<DETACHED, JOINABLE>
         pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate); //
         // A thread's termination status is retained until we call pthread_join for the thread.
-        // A thread underlying storage can be reclaimed immediatelly on termination if the thread has been detached.
+        // A thread underlying storage can be reclaimed immediately on termination if the thread has been detached.
     pthread_cancel(pthread_t); //re-acquire mutex before acting cancle and ensure it not consume any condtion signal
         // This fun doesn't wait for the thread to terminate, it merely makes a request.
         // Calling on the detached thread rereults in undefined behavior.
-        pthread_setcancelstate(int state, int *oldstate); // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
-        pthread_setcanceltype(int type, int *oldtype);  // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
+        pthread_setcancelstate(int state, int *oldstate);   // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
+        pthread_setcanceltype(int type, int *oldtype);      // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
         pthread_testcancel(void); // create a cancellation point
         pthread_cleanup_push(void (*routine)(void *), void *arg);
         pthread_cleanup_pop (int execute); 
@@ -1428,21 +1491,20 @@ pthread:
                 c. pthread_cleanup_pop with nonzero execute argument.
             // Those functions can be implemented as macros and must be used in matched paires within 
                 same scop in the thread.
-    pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset); //how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
     atexit(void (*function)(void));
 process completion status:
     int WIFEXITED(int)-WEXITSTATUS, WIFSIGNALED-WTERMSIG, WCOREDUMP, WIFSTOPED, WSTOPSIG
 pthread_attr:
     typedef struct {
-        int     detachstate;// PTHREAD_CREATE_<JOINABLE, DETACHED>, td ID, rsc can be reused; join not reuse
+        int     detachstate;    // PTHREAD_CREATE_<JOINABLE, DETACHED>, td ID, rsc can be reused; join not reuse
         int     schedpolicy;    // SCHED_<FIFO,RR,OTHER>,determine which thread to proceed not the ordering rule    
         int     inheritsched;
         struct sched_param  schedparam;
         int     scope;          // SCOPE_SYSTEM, SCOPT_PROCESS
-        size_t  guardsize; // ignored if stackaddr is set
+        size_t  guardsize;      // ignored if stackaddr is set
         int     stackaddr_set;
-        void *  stackaddr;  // PTHREAD_STACK_SIZE
-        size_t  stacksize; // with JOINABLE attr, can't free untill pthread_join() called.
+        void *  stackaddr;      // PTHREAD_STACK_SIZE
+        size_t  stacksize;      // with JOINABLE attr, can't free untill pthread_join() called.
     }pthread_attr_t;
     pthread_attr_init(struct pthread_attr_t *attr);
         scope           PTHREAD_SCOPE_PROCESS
@@ -1470,6 +1532,18 @@ pthread_mutex:
     pthread_mutex_lock(pthread_mutex_t *mutex);
     phtread_mutex_trylock(pthread_mutex_t *mutex);
     phtread_mutex_unlock(phtread_mutex_t *mutex);
+    
+    pthread_mutexattr_init(pthread_mutexattr_t *attr);
+    pthread_mutexattr_destroy(pthread_mutexattr_t *attr);
+    pthread_mutexattr_getpshared(const pthread_mutexattr_t *attr, int *pshared);
+    pthread_mutexattr_setpshared(pthread_mutexattr_t *attr, int pshared);
+    // pshared: PTHREAD_PROCESS_PRIVATE PTHREAD_PROCESS_SHARED
+    pthread_mutexattr_gettype(const phread_mutexattr_t *attr, int *type);
+    pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
+    // type: 
+        PTHREAD_MUTEX_NORMAL        PTHREAD_MUTEX_ERRORCHECK
+        PTHREAD_MUTEX_RECURSIVE     PTHREAD_MUTEX_DEFAULT        
+    
 phtread_cond:
     pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
     pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -1498,7 +1572,7 @@ Spin Block:
     int pthread_spin_destroy(pthread_psinlock_t *lock);
     int pthread_spin_lock(pthread_spinlock_t *lock);    // lock the lock already locked, behavior is undefined.
     int pthread_spin_trylock(pthread_psinlock_t *lock); // if locked, return 0
-        // Doesn't spin. Return EBUSY if not acquired immediatelly.
+        // Doesn't spin. Return EBUSY if not acquired immediately.
     int pthread_spin_unlock(pthread_spin_lock_t *lock); // unlock the lock doesn't locked, behavior is undefined.
     // A spin lock like a mutex, it blocks a process by busy-waiting(spinnig) rather that sleeping(mutex);
     // Used in situation where locks are held for a short periods of times and threads don't want to incur the cost
@@ -1634,7 +1708,7 @@ LKM procedure:
         
         /*-- init object --*/
         void cdev_init(struct cdev *cdev, const struct file_operations *fops); 
-        int cdev_add(struct cdev *p, dev_t dev, unsigned count); // make device live immediatelly
+        int cdev_add(struct cdev *p, dev_t dev, unsigned count); // make device live immediately
         
         // create and register device with sysfs
         struct class *class_create(struct module *owner, const char *name);
