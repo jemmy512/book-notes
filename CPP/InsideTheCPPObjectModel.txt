@@ -1,0 +1,67 @@
+********************************************** 1. Object Lessons **************************************************
+Layout costs for Adding Encapsulation:
+    1. Data members are directly contained within each class object;
+    2. Function members: one copy only of each non-inline member function is gernerated;
+        Each inline function has either zero or one definition of itself generated with module in which it is used.
+    3. Virtual function is the primary layout and access-time overheads:
+        1> The virual function mechanism in its support of an efficient run-time binding.
+        2> A virtual base class in its support of a single, shared instance of a base class occurring multiple times
+            with an inheritance hierarchy.
+1.1 The C++ Object Model
+    1. Nonstatic data members are allocated directly within each class  object.
+    2. Static data members are stored outside the individual class object.
+    3. Static and nonstatic function members are also hoisted outside the class object.
+    4. Virtual funtions are supported in two steps:
+        4.1 A table of pointers to virutal functions is generated for each class(virutal table, vtbl).
+        4.2 A single pointer to associated virtual table is inserted within each class object(vptr).
+            The setting, resetting, and not setting of the vptr is handled automatically through code generated with
+                each class constructor, destructor, and copy assignment operator. 
+            The type_info object associated with each class 
+                in Support of runtime type identification(RTTI) is also addressed within the virtual table, usually
+                within the table's first slot.
+    Addint Inheritance:
+        The original model of virtual base class support added a pointer into the calss object for each associated
+            virtual base class. Alternative models have evolved that either introduce a virutal bases class table 
+            or augment the existing virual tabls to maintain the location of each virual base calss.
+1.3 An Object Distinction
+    The C++ language supports polymorphism in the following ways:
+        1. Through a set of implicit conversion, such as the conversion of a derived class pointer to a pointer of 
+            it's public base type.
+        2. Through the virtual function mechanism.
+        3. Through the dynamic_case and typeif operator.
+            if (circle *pc = dynamic_case<circle *>(pc)) ...
+    The primary use of polymorphism is to effect type encapsulation through a shared interface usually defined within
+        an abstract base class from which specific subtypes are derived.
+    The memory requirement to represent a class object in general are the following:
+        1. The accumulated size of its nonstatic data member
+        2. Plus any padding(between members or on the aggreaget boundary itself) due to the alignment constrints.
+        3. Plus any internally generated overhead to support the virtuals
+      
+      
+********************************************** 2. The Semantics of Constructor ************************************
+2.1 Default Constructor Construction
+    If there is no user-declared constructor for class X, a default constructor is implicityly declared...
+    A constructor is trivial if it is an implicitly declared default constructor...
+    
+    The Four conditions that default constructor is nontrivial:
+        1. Member Class Object with Default Constructor.
+            a. Compiler will generate default constructor for Class object which has ojbect member and without
+                any constructor.
+            b. Compiler will expand user defined contructor which not initialized the ojbect member
+        2. Base class with constructor
+        3. Class with virutal function
+            I. The class ethier declares(or inherits) a virtual function
+            II. The class is derived from an inheritance chain in which one or more base classes are virtual. 
+            
+            The following two class "augmentation" occur during compilation:
+                I. A virtual function table is generated and populated with the address of the active virtual functions
+                    for that class.
+                II. Within each class object, an additional pointer member is synthesized to hold the address of the 
+                    associated clas vtbl.
+        4. Class with a virutal Base class
+    Summary:
+        The four above characteristics of a class under which the compiler needs to synthesize a default constructor 
+            for a class that declare no constructor at all.
+        The synthesized constructor fulfills only an implementation need. 
+2.2 Copy Constructor Construction
+    

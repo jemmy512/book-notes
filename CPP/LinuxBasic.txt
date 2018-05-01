@@ -16,6 +16,26 @@ Statistic port traffic:
     Iptable -Z INPUT/OUTPUT                 // reset all statistic port
     iptables -D INPUT -p tcp --dport 8080   // remove statistic port
     
+******************************** Linux modulation, debuggin and testing ********************************************
+Max Fd:
+    ulimit -n // view user-level max fd
+    ulimit -SHn max-file-number // set user-level max fd to max-file-number, only valid in current session
+    /etc/security/limits.conf:  // set user-level max fd to max-file-number, permanently
+        hard nofile max-file-number
+        soft nofile max-file-number
+    sysctl -w fs.file-max=max-file-number // set system-level max fd, only valid in current session
+    /etc/sysctl.conf:   set system-level max fd, permanent
+        1. add: fs.file-max=max-file-number
+        2. run cmd: sysctl -p 
+/proc/sys/fs:
+    /proc/sys/fs/file-max // system fd limitation, /proc/sys/fs/inode-max is its 3~4 times the size
+    /proc/sys/fs/epoll/max_user_watches // The total number of epoll events that a user can register
+/proc/sys/net:
+    /proc/sys/net/core/somaxconn // The max number of socks which in listen queue can transfer to ESTANBLISHED status
+                                    or SYN_RCVD status
+    /proc/sys/net/ipv4/tcp_wmem // A socket TCP write buffer's minmum, default and maxmum size
+    /proc/sys/net/ipv4/tcp_rmem // A socket TCP reade buffer's minmum, default adn maxmum size
+    /proc/sys/net/ipv4/syncookies
     
 **********************************************  GCC 7.2.0 Install  **********************************************
 downlaod src code:
