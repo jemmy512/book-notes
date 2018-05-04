@@ -296,7 +296,7 @@ Map and multimap:
             // To change the key of an element only way is to replace the old element with a new element that has
                 the same value.
         6. Inserting and Removing Function:
-            pair<iterator, bool> insert(val);  emplace(args...);               erase(val);
+            pair<iterator, bool> insert(val);   emplace(args...);               erase(val);
             iterator insert(pos, val);          emplace_hint(pos, args...);     eraase(pos);
             void     insert(beg, end);          clear();                        erase(beg, end);
             void     insert(initlist);
@@ -325,7 +325,7 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
             typename EpPred = equal_to<T>, typename Allocator = allocator<pair<const Key, T>>>;
         class unordered_map, unordered_multimap;
     Abilities:
-        1. Diadvantages over ordered container:
+        1. Disadvantages over ordered container:
             Don't provide <, <=, >, >= except ==, !=.
             Don't provide lower_boud() and upper_bound().
             Don't provide reverse operations, because iteratora are guaranteed to be forward list.
@@ -373,7 +373,7 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
         7. Inserting and Removing 
             // In general, erasing elements don't invalidate iterators and references to other elements.
             // Inserting and emplacing may invalidate iterators when rehashing happens, wehereas reference 
-                to elements remain vliad.
+                to elements remain valiad.
             insert(val);        emplace(args...);           erase(val); // return number of removed elems
             insert(pos, val);   emplace_hit(pos, args...);  erase(pos); // return following position
             insert(beg, end);                               erase(beg, end);
@@ -392,8 +392,8 @@ Unordered Container: <unordered_set> <unordred_map> <functional>
                 3. mak_pair:
                     coll.insert(make_pair("otto", 123));
         8. Bucket Interface:
-            bucket(val); bucket_count(); bucket_size(bucketidx); 
-            begin(bucketidx); end(bucketidx); cbegin(bucketidx);
+            bucket(val);        bucket_count();     bucket_size(bucketidx); 
+            begin(bucketidx);   end(bucketidx);     cbegin(bucketidx);
             
 ********************************************** 8. STL Container Member in Detail ***********************************
 
