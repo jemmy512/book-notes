@@ -160,3 +160,4 @@ SO_REUSEADDR
     新版Linux系统解决accept惊群问题，epoll_wait部分惊群问题（在worker保持工作状态下，都会被唤醒）
     解决方法：
         Nginx 使用mutex解决该问题。每个子进程在epoll_wait之前先去申请mutex，申请到了继续处理，否则继续等待。
+44. fork 和 vfork 区别

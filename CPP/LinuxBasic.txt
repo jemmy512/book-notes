@@ -15,7 +15,10 @@ Statistic port traffic:
     iptables -L -v -n -x                    // view statistic traffic
     Iptable -Z INPUT/OUTPUT                 // reset all statistic port
     iptables -D INPUT -p tcp --dport 8080   // remove statistic port
-    
+-----------------------------------------------------------------------------
+    table       command chain   parameter & Xmatch  target
+    -t filer    -A
+        nat 
     
 **********************************************  GCC 7.2.0 Install  **********************************************
 downlaod src code:
