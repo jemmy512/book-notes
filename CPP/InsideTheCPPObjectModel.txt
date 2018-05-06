@@ -64,4 +64,65 @@ Layout costs for Adding Encapsulation:
             for a class that declare no constructor at all.
         The synthesized constructor fulfills only an implementation need. 
 2.2 Copy Constructor Construction
-    
+Copy constructor happens:
+    1. When we use =
+    2. Pass an object as an argument to parameter of non-reference type
+    3. Return an object from a function that has non-reference return type
+    4. Brace initialize the elements of an array or elements of aggregate class
+Default Member Initializaion
+    A class object can be copied in two way:
+        1. By initialization(copy constructor);
+        2. By assignment(copy assignment).
+    The Standard distinguishes between a trivial and nontrivial copy constructor. It is only nontrivial instance that 
+        in practice is synthesized within the program. The criteria for determining whether a copy constructor is
+        trivial is whether the class exhibits bitwise copy semantics.
+Bitwise Copy Semantics -- Not！
+    When are bitwise copy semantics not exhibited by a class? There are four instances:
+        1. When the class contains a member object of a class for which a copy constructor exists(either declared by class
+            designer or synthesized by compiler).
+        2. When the class is derived from a base class for which a copy constructor exists(either explicity declared
+            synthesized by compiler).
+        3. When the class declares one or more virtual functions.
+        4. When the class is derived from an inheritance chain in which one or more base class are vitual.
+    Summary:
+        The four conditions above under which bitwise copy semantics do not hold for a class and the default copy 
+        constructor, if undeclared, is considered nontrivial. Under these conditions, the compiler, in the absence of 
+        a declared copy constructor, must synthesize a copy constructor in order to correctly implement the initialization
+        of one class object with another.
+ 
+2.3 Program Transformation Semantics
+    Explicit Initialization:
+        The required program transformation is two-fold:
+            1. Each definition is rewritten with the initialization stripped out.
+            2. An invocation of the class copy constructor is inserted.
+    Argument Initialization:
+        The implementation is to copy construct the actual argument directly onto its place within the function's 
+            activation recored on the program stack. Prior to the return of the function, the local object's destructor
+            , if defined, is applied to it. 
+    Return Value Initialization:
+        1. Add an additonal argument of type reference to the class object. This argument will hold the copy constructed
+            "return type".
+        2. Insert an invocation of copy constructor prior to the return statement to initialize the added arguement
+            with value of the object being returned.
+        3. A final transformation rewrites the function to have it not return a value.
+    Optimization at Compiler Level:
+        All return statements return the same named value, it is possible for the compiler itself to optimize the
+            function by substituting the result arguement for the named return value. This optimization referred to 
+            as the Named Return Value(NRV) optimization.
+2.4 Member Initialization List:
+    Member Initialization list is used in order for program to compile:
+        1. When initialize a reference member
+        2. When initialize a const member
+        3. When invoking a base or member class constructor with a set of arguments
+    The compiler iterates over the initialization list, inserting the initializations in the proper order within the 
+        constructor prior to any explicit user code.
+    The order in which the list entries are set down is determined by the declaration order of the members within the 
+        class declaration.
+            class Base {
+            public:
+                Base(int val) : j(val+1), i(j-1) {} // i is initialized before j 
+            private:
+                int i, j;
+            };
+  
+********************************************** 3. The Semantics of Data *******************************************
