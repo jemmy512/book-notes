@@ -959,7 +959,7 @@ Bitset:
 
 ********************************** FAQ ***************************************************************************
 
-vptr and vtbl(virutal function table and it's pointer): 
+1. vptr and vtbl(virutal function table and it's pointer): 
 [refer]https://www.nowcoder.com/profile/3669004/test/13503903/22584#summary
 http://blog.csdn.net/haoel/article/details/1948051
     1. When new an object, the compiler only allocates space for member variables while member functions 
@@ -978,11 +978,13 @@ http://blog.csdn.net/haoel/article/details/1948051
         virtual functions themselves stored in .text segment.
     7. Polymorphism process:
         base pointer(stack) ==> _vptr(heap) ==> _vtbl(.rodata) ==> .text
-Scope(::) operator purpose:
+2. Scope(::) operator purpose:
     1. To access the global variable when there is a local variale with the same name.
     2. To define functions outside the class.
-    3. To access class's staic variale.
+    3. To access class's staic variable.
     4. In case of the multiple Inheritance.
-        
+3. Single, multiple and virtual inheritance:
+    
+ 
         
         
