@@ -1,3 +1,7 @@
+TODO:
+    1. 3.4, 3.5, 3.6 look back
+    2. 4.2 look back
+
 ********************************************** 1. Object Lessons **************************************************
 Layout costs for Adding Encapsulation:
     1. Data members are directly contained within each class object;
@@ -126,3 +130,150 @@ Bitwise Copy Semantics -- Not！
             };
   
 ********************************************** 3. The Semantics of Data *******************************************
+    class X {};
+    class Y : public virtual X {};
+    class Z : public virtual X {};
+    class A : public virtual Y, public virtual Z {};
+    
+    An empty class is never empty, it has an associated size of 1 byte -- a char member inserted by compiler in order
+        to allocate unique address for object in memory.
+    The size of class Y and class Z on any machine is the interplay of three factors:
+        1. Language support overhead. Within the derived class, this overhead is reflect as some form of pointer,
+            either virtual base class subojbect or to an associated table within which either the address or offset
+            to the virutal base class suboject is stored.
+        2. Compiler optimization of recognized special cases. 
+        3. Alignment constraints.
+3.1 The Binding of A Data Member    
+    The analysis of the member function's body is delayed until the entire class declaration is seen. Thus the binding
+        of a data member within the body of an inline member function does not occur until the after the entire class
+        declaration is seen.
+3.2 Data Member Layout
+    The Standard requires within an access section(private, public, protected) only that the member be set down such 
+        that "later members have higher address within a class object".
+3.3 Access of Data Member
+    Static Data Member:
+        1. Each member's access permission and class association is maintained without incurring any space or runtime
+            overhead either in the individual class object or in the static data member itself.
+        2. A single instance of each class static data member is stored within the data segment of the program. Each
+            reference to the static member is internally translated to be a direct reference of that single extern
+            instance.
+        3. No mater static member is an inherited member of a complex inheritance hierarchy, there is still only a 
+            single instance of the member within the program, an its access is direct.
+        4. When static data member is invocated by a function, the Standard C++ explicitly require the function should
+            be evaluated, although no use is made of its result.
+                // foolbar().chunckSize = 250;
+                // evaluate expression, discarding result
+                (void) foolvar();
+                Point3d.chunkSize = 250;
+        5. If two classes each declare a static member 'freeList', then placing both of them in the program data segment
+            is going to result a name conflict. The compiler resolves this by internally encoding the name of the each
+            static data member [name-mangling] to yield a unique program identifier.
+    NonStatic Data Member:
+        1. Nonstatic data members are stored directly within each class obejct and cannot be accessed except through an 
+            explicit or implicit class object. An implicit class object is present whenever the programmer directly accesses
+            a nonstatic data member within a member function.
+        2. Access of a nonstatic data member requires the addition of the begining address of the class object with
+            the offset location of the data member.
+                origin._y = 0.0;
+                &origin._y == &origin + (&Point3d::_y - 1);
+            The offset of each nonstatic data member is known at compilr time, so access of a nonstatic data member is 
+                equivalent in performance to that of a C struct member or the member of a nonderived class.
+        3. Virtual inheritance introduces an additional level of indirection in the access of its member throuth a 
+            base class suboject.
+            Point3d *pt3d;  pt3d->_x = 0.0;
+            Performs equivalently if _x is a member of a struct, class, single inheritance hierarchy, or multiple inheritance
+            hierarchy, but it performs slower if it is a member of virutal base class.
+        4. Access a data member through a pointer or class object is significantly different when class is a derived class 
+            contianing a virutal base class within its inheritance hirarchy and the member being accesed is an inherited 
+            member of that virtual base class. In this case, with pointer, we cannot say with any certainty which class
+            type pt address (and therefore we cannot know at compile time the actual offset location of the member),
+            so the resolution of the access must be delayed until runtime through an additional indrection.
+            But this is not the case with class object, its type is clear, and the offset location of even inherited 
+            virutal bases class member are fixed at compile time.
+3.4 Inheritance and the Data Member
+    Inheritance without Polymorphism
+    Addind Polymorphism
+    Multiple Inheritance
+    Virutal Inheritance
+        https://www.nowcoder.com/profile/3669004/note/detail/232803
+3.5 Object Member Efficiency
+3.6 Poiner to Data Member
+    
+  
+********************************************** 4. The Semantics of Function ***************************************
+4.1 Varieties of Member Invocation
+    Nonstatic Member Function:
+        1. One C++ design criterion is that a nonstatic member function at a minimum must be as efficient as its 
+            analogous nonmember function.
+        2. The member function is transformed internally to be equivalent to the nonmember instance:
+            2.1 Rewrite the signature to insert an additional argument to the member function that provides access 
+                to the invoking class object.
+                Point3d::magnitude(Point3d *const this)
+            2.2 Rewrite each direct access of a nonstatic data member of the class to access the member through the 
+                'this' pointer
+                {
+                    return sqrt(
+                        this->_x * this->_x +
+                        this->_y * this->_y +
+                        this->_z * this->_z
+                    );
+                }
+            2.3 Rewrite the member function into an external function, mangling its name so that it's lexically unique
+                within the program:
+                extern magningtude_7Point3dFv(register Point3d *const this);
+        3. Name Mangling
+            In general, member names are made unique by concatenating the name of the member with that of the class.
+    Virtual Member Function:
+        1. ptr->normalize(); [ internally transformed to >>> (*ptr->vptr[1])(ptr);
+        2. magnitude() were a virtual function, its invocation within normalize() would be transformed to:
+            // register float mag = magnitude();
+            register float mag = (*this->vptpr[2])(this);
+            register float mag = Point3d::magnitude();
+            register float mag = magnitude_7Point3dFv(this);
+    Static Member Function:
+        1. Characteristics of static memeber function:
+            1.1 without 'this' pointer
+            1.2 Cannot directly access the nonstatic members of its class
+            1.3 Cannot be declared const, volatitle, virutal
+            1.4 Does not need to invoked throuth an object of its class.
+        2. Static member functions, by beging this-less and therefore of the same type as an equivalent nonmember
+            function.
+4.2 Virtual Member Functions:
+    In C++ polymorphism "exhibits" itself as the potential addressing of a derived class object through a pointer
+        or reference of a public base class.
+    Virtual Function Under MI:
+4.3 Function Efficiency
+    A nonmember, static member, and nonstatic member function are internally transformed into equivalent representations.
+        So there is no difference inperformance between these three forms.
+    Inline expansion not only saves the overhead associated with a function call but also provides additional
+        opportunities for program optimization.
+4.4 Pointer to Member Functions
+    A pointer to member would be no more expensive than a nonmember pointer to function if it weren't for virutal 
+        function and multiple inheritance, which complicate both the type and invocation of a pointer to member.
+    4.4.1 Supporting Pointer-to-Virtual-Member Functions
+        Taking the address of a nonstatic member function yields its address in memory.
+        Taking the address of a virtual   member function yields its index into it's associated virtual table.
+        
+        Evaluation of a pointer-to-member function is complicated by the dual values (nonvirutal and virutal)
+            it can hold and by the very different invocation strategies those value require. 
+            (((int)pmf) & 127) ? (*pmf)(ptr) : (*ptr->vptr[(int)pmf](ptr));
+    4.4.2 Pointer-to-Member Function Under MI
+        struct _mptr {                             (ptr->*pmf)();         
+            int delta;  // offset of this pointer  (pmf.index < 0) ? (*pmf.addr)(ptr) : (*ptr->vptr[pmf.indx](ptr));
+            int index;
+            union {
+                ptrtofunc   faddr;
+                int         v_offset;
+            };
+        };
+4.5 Inline Function
+    There are two phases to the handling of an inline function:
+        1. The analysis of the function definition to determine the "intrisic inline-ability" of the function.
+            If the function is judged non-inlineable, due either to its complexity or its construction, it is turned
+            into a static function and definition is generated within the module being compiled.
+        2. The actual inline expansion of the funtion at a point of call. This involves arguement evaluation and 
+            management of temporaries.
+    
+    4.5.1 Formal Arguments
+    
+    4.5.2 Local Variables
