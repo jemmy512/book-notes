@@ -1,0 +1,44 @@
+Item_1: View C++ as a federation of languages.
+    A multiparadigm programming language, one supporting a combination of procedural, object-oriented, functional
+        generic and metaprogramming features.
+Item_2: Prefer consts, enums, and inline to #defines.
+    When replacing #define with contants:
+        1. Defining constant pointers.
+        2. Class-specific constants. To limit the scope of a constant to a class, make it a member, and to ensuer there's at
+            most one copy of the constant, make it a static member.
+Item_3: Use const whenever possible.
+    Const Member Function:
+        The purpose is to identify which member functions may be invoked on const objects.
+    Avoiding Duplication in const and Non-const Member Functions:
+        Having the non-const version function call the const version is a safe way to avoid code duplication.
+            class TextBlock {
+            public:
+                const char &operator[](std::size_t position) const {
+                    ...
+                    ...
+                    return text[position];
+                }
+                
+                char &operator[](std::size_t position) {
+                    return 
+                        const_cast<char &>(                     // cast away const on op[]'s return type;
+                        static_cast<const TextBlock &>(*this)   // add const to *this's type;
+                        [position]                              // call const version of op[];
+                    );
+                }
+            };
+        Compilers enforce bitwise constness, but you should program using logical constness.
+        When const and non-const member functions have essentially identical implementations, code duplication can be
+            avoided by having the non-const version call the const version.
+Item_4: Make suer that objects are initialized before they're used.
+    The rules of C++ stipulate that data members of an object are initialized before the body of a constructor is entered.
+    A::A(string name, int age, string sex) {name = name; age = age; sex = sex;}
+    A::A(string name, int age, string sex) : name(name), age(age), sex(sex) {}
+        The assignment-based version first called default constructor to initialize name, age, sex then promptly
+            assigned new value in those default-constructed ones. All the work performed in those default constructions 
+            was wasted. The member initialization list approach avoids that problem.
+    Manually initialize objects of built-in type, because C++ only sometimes initializes them itself.
+    In a constructor, prefer use of the member initialization list to assignment inside the body of the constructor.
+    Avoid initialization order problems across translation units by replacing non-local static object with local static obj.
+Item_5: Know What Functions C++ silently Writes and Calls.
+    

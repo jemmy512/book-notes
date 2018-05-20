@@ -275,5 +275,21 @@ Bitwise Copy Semantics -- Not！
             management of temporaries.
     
     4.5.1 Formal Arguments
-    
+        What happens during inline function expasion?
+            1. If the actual arguments exhibits a side effect, there will be a tempory ojbect.
+            2. If the actual argument is a constant expression, we'd like to evaluated prior to its substitution.
+            3. If it is neither a constanct expression nor an expression with side effect, a straight substitution
+                of each argument with associated formal argument is carried out.
+          inline int min(int a, int b) {return a < b ? a : b; }
+          min(va, vb);              // return va < vb ? va : vb;
+          min(12, 13);              // return 12 < 13 ? 12 : 13;         
+          min(foo(), bar() + 1);    // tmp1 = foo(), tmp2 = bar()+ 1; return tmp1 < tmp2 ? tmp1 : tmp2; 
     4.5.2 Local Variables
+        
+        
+********************************************** 5. Semantics of Construction, Destruction, and Copy ****************
+Presence of a Pure Virtual Function
+    Pure virtual destructor must be defined by the class designer:
+        Every derived class destructor is internally augmented to statically invoke each of its virtual base and
+        immediate base class destructor. The absence of a definition of any of the base class destructor in general
+        results in a link-time error.
