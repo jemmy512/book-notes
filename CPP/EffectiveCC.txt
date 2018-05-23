@@ -1,11 +1,13 @@
 Item_1: View C++ as a federation of languages.
     A multiparadigm programming language, one supporting a combination of procedural, object-oriented, functional
         generic and metaprogramming features.
+        
 Item_2: Prefer consts, enums, and inline to #defines.
     When replacing #define with contants:
         1. Defining constant pointers.
         2. Class-specific constants. To limit the scope of a constant to a class, make it a member, and to ensuer there's at
             most one copy of the constant, make it a static member.
+            
 Item_3: Use const whenever possible.
     Const Member Function:
         The purpose is to identify which member functions may be invoked on const objects.
@@ -30,6 +32,7 @@ Item_3: Use const whenever possible.
         Compilers enforce bitwise constness, but you should program using logical constness.
         When const and non-const member functions have essentially identical implementations, code duplication can be
             avoided by having the non-const version call the const version.
+            
 Item_4: Make suer that objects are initialized before they're used.
     The rules of C++ stipulate that data members of an object are initialized before the body of a constructor is entered.
     A::A(string name, int age, string sex) {name = name; age = age; sex = sex;}
@@ -40,5 +43,64 @@ Item_4: Make suer that objects are initialized before they're used.
     Manually initialize objects of built-in type, because C++ only sometimes initializes them itself.
     In a constructor, prefer use of the member initialization list to assignment inside the body of the constructor.
     Avoid initialization order problems across translation units by replacing non-local static object with local static obj.
+
 Item_5: Know What Functions C++ silently Writes and Calls.
+    Compilers may implicitly generate a class's default constructor, copy constructor, copy assignment operator, and destructor.
+    If a class contains reference member, const member, and you want to support assignment operator, compiler refuse to work 
+        unless you define your own assignment operator, in this case default assignment operator doesn't work.
+
+Item_6: Explicitly disallow the use of compiler-generated functions you do not want.
+    Before C++11:
+        To disallow functionality automatically provided by compilers, declare the corresponding member functions private and 
+            give no implementation.
+    After C++11:
+        use 'delete' keyword.
+        
+Item_7: Declare destructor virtaul in polymorphic base class.
+    C++ sepecifies that a derived class object is deleted through a pointer to a base class with a non-virtual destructor, 
+        results are undefiend. The derived part of the object is never destroyed but base class part typically would be 
+        destroyed, thus leading a curious partially destroyed object.
+    Polymorphic base class should declare virtual destructor. If a class has any virtual functions,it should have a virtual 
+        destructor.
+    Classes not designed to be base calsses or not designed to be used polymorphically should not declare virtual destructor.
+    
+Item_8: Prevent exceptions from leaving destructors
+    Destructor should never emit exceptions. If functions called in a destructor may throw, the destructor should catch any
+        exceptons, then swallow them or terminate the program.
+    If class clients need to be able to react to exceptions thrown during an operation, the class should provide a regular
+        function [i.e., non-destructor] that perform the operation.
+        
+Item_9: Never call Virutal Functions During Construction or Destruction
+    Don't call virtual functions during construction or destruction, because such call will never go to a more derived class
+        than that of the currently executing constructor or destructor.
+        
+Item_10: Having Assignment Operators Return a Reference to *this.
+    The assignment operators return a reference to *this, this is a convention.
+ 
+Item_11: Handle assignment to self in operator=
+    In general, code that operates on references or poiters to multiple objects of the same type needs to consider that
+        objects might be the same. Two objects need not even be declared to be of the same type.
+    The traditional way to prevent self assignment is via an identity test at the top of the operator=.
+    Make suer operator= is well-behaved when an object is assigned to itself. Techniques include comparing address of 
+        source and target objects, careful statement ordering, and copy-and-swap.
+    Make suer that any function operation on more than one object behaves correctly if two or more of the objects are
+        the same.
+     
+Item_12: Copy all parts of an object.
+    Copy functions should be sure to copy all of the object's data members and all of its base class parts(via calling
+        appropriate base functions).
+    Don't try to implement one of the copying functions in terms of the other. Instead, put common functionality in a
+        third function that both call.
+    
+Item_13: Use objects to manage resources.
+    To prevent resource leaks, use RAII(resource acquisition is initialization) objects that acquire resources in
+        their constructors and release them in their destructor.
+    Two commonly useful RAII calsses are std::shared_ptr and auto_ptr. shared_ptr is usually the better choise, 
+        because it behavior when copied is inituitive. Copying an auto_ptr set it to null.
+    Both auto_ptr and shared_ptr use 'delete' in their destructors, not 'delet[]'. There is nothing like auto_ptr 
+        or shared_ptr for dynamically allocated arrays in C++, because vector and string can almost replace 
+        dynamically allocated arrays.
+        
+Item_14: Think carefully about copying behavior in resource-manging classes.
+    
     
