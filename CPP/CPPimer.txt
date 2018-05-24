@@ -336,8 +336,8 @@ Friend Declarations and Scope
 Common operation on shared_ptr and unique_prt
     shared_prt<T> p;        p->get();               p->man();   swap(m, n);                 unique_ptr<T> q;        
 Operation specified to shared_ptr
-    make_shared<T>(args);   shared_ptr<T> p(q);     p=q;        p.unique(); p.use_count();        
-    shared_ptr<T> p(q)      shared_ptr<T> p(q, d)               shared_ptr<T> p(u)
+    make_shared<T>(args);   shared_ptr<T> p(q);     p = q;      p.unique(); p.use_count();        
+    shared_ptr<T> p(q)      shared_ptr<T> p(q, deleter)         shared_ptr<T> p(u)
     shared_ptr<T> p(p2, d)  p.reset()               p.reset(q)  p.reset(q, d) 
 Operation specified to unique_ptr
     unique_ptr<T, D> u(q);  u.release()             u.reset(q)

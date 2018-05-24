@@ -102,5 +102,56 @@ Item_13: Use objects to manage resources.
         dynamically allocated arrays.
         
 Item_14: Think carefully about copying behavior in resource-manging classes.
+    What happen when an RAII object is copied?
+        1. Prohibit copying.
+        2. Reference-count the underlying resource.
+            class Lock{
+                public:
+                    explicit Lock(Mutex *pm) : mutexPtr(pm, unlock) {   // init shared_ptr with Mutex to point to and 
+                        lock(mutexPtr.get());                           // the unlock function as the deleter
+                    }
+                    // There is no need to declare destructor, default it enough. Class's destructor automatically invokes
+                    // the destructors of the class's non-static data members, here is mutexPtr, but its destructor will
+                    // automatically call the shared_ptr's deleter--unlock.
+                privae:
+                    shared_ptr<Mutex> mutexPtr;
+            };
+        3. Copy the underlying resource.
+        4. Transfer ownership of the underlying resource.
+    Copying an RAII object entails copying the resource it manages, so the copying behavior of the resource determines
+        the copying bahavior of the RAII object.
+    Common RAII class copying behaviors are disallowing copying and performing reference counting, but other behavior
+        are possible.
+ 
+Item_15: Provide access to raw resources in resource managing classes.
+    APIs often require access to raw resource, so each RAII calss should offer a way to get at the resource it manages.
+    Access may be via explicit conversion or implicit conversion. In general, explicit conversion si safer, but 
+        implicit is more convenient for clients.
+ 
+Item_16: Use the same form in corresponding uses of the new and delete.
+    Single object memory layout is generally different from arrays's. Array memory layout includes the size of the array.
+    If you use [] in new expression, you should use [] in the corresponding delete expresion.
     
+Item_17: Store newed object in smart pointers in standalone statements.
+    C++ compilers are granted considerable latitude in determing the order in which these things are to be doen.
+    
+    Function ProtoType:
+        int priority();
+        void processWidger(shared_ptr<Widget> pw, int priority);
+    Usage:
+        processWidger(new Widget, priority()); // can't compile. no implicit conversion from raw pointer return by 
+            //expression 'new Widget' to shared_ptr required by processWidger.
+        processWidger(shared_ptr<Wiget> (new Widget), priority()) // can compile. But may cause resource leak. If 
+            // 'new Widget' execute first, then priority(), but priority() yields an exception, in this case pointer 
+            //    returned from 'new Widget' will be lost. 
+    Store newed object in smart pointers in standalone statements. Failure to do this can lead to subtle resource
+        leaks when exception are thrown.
+       
+Item_18: Make interfaces easy to use correctly and hard to use incorrectly.
+    You should strive for these characteristics in all your interfaces.
+    Ways to facilitate correct use include consistency in interfaces and behavioral compatibility with build-in type.
+    Ways to prevent errors include creating new types, restricting operations on types, constraining object values,
+        and eliminating client resource management responsibilities.
+    shared_ptr supports custom deleters. This prevents the crosss-DLL problem, can be used to automatically unlock 
+        mutexes.
     
