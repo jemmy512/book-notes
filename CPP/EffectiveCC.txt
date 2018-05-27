@@ -154,4 +154,72 @@ Item_18: Make interfaces easy to use correctly and hard to use incorrectly.
         and eliminating client resource management responsibilities.
     shared_ptr supports custom deleters. This prevents the crosss-DLL problem, can be used to automatically unlock 
         mutexes.
+ 
+Item_19: Treat class design as type design
+    1. How should object of your new type be created and destroyed?
+    2. How should object initialization differ from object assignment?
+    3. What does it mean for object of your new type to be passed by value?
+    4. What are the restrictions on legal values of for your new type?
+    5. Does your new type fit into an inheritance graph?
+    6. What kind of type conversions are allowed for your new type?
+    7. What operators and functions make sense for the new type?
+    8. What standard functions should be disallowed?
+    9. Who should have access to the members of your type?
+    10. What is the "undeclared interface" of your new type?
+    11. How general is your new type?
+    12. Is a new type really what your need?
     
+Item_20: Prefer pass-by-reference-to-const to pass-by-value
+    By default, C++ passes objects to and from functions by value.
+    References are typically implemented as pointers.
+    Pass-by-referenc-to-const is efficient and can avoid the slicing problem.
+    The rule doesn't apply to built-in types and STL iterator and function object types.
+  
+Item_21: Don't try to return a reference when you must be return an object.
+    A reference is just a name, a name for some existing object.
+    The cost of an assignment is about the same as a call to a destructor(to destroy the old value) plus a call to a 
+        constructor(to copy over the new value).
+    Never return a pointer or reference to a local stack object, a reference to a head-allocated objec, or a pointer
+        or a reference to a local static object if there is a chance that more than one such object will be needed.
+     
+Item_22: Declare data members privaete.
+    Declare data member private. It gives clients syntactically uniform access to data, affords fine-grained access
+        control, allows invariants to be enforced, and offers class authors implementation flexibility.
+    Protected is no more encapsulated than public.
+ 
+Item_23: Prefer non-member non-friend functions to member functions.
+    The more somethin is encapsulated, the fewer things can see it. The few things can see it, the greater flexibility
+        we have to change it. It affords us the flexibility to change things in a way that affects only a limited 
+        number of clients.
+    This adivce can increase encapsulation, packaging flexibility, and functional extensibility.
+   
+Item_24: Declare non-member functions when type conversions should apply to all parameters.
+    Implicit type conversion: compilers know you're passing an int that the function requires a Rational, but they also
+        know they can conjure up a suitable Rational by calling the Rational constructor with int you passed. Compilers
+        do this only because non-explicit constructor is involved.
+
+Item_25: Consider support for a non-throwing swap.
+    Compilers will prefer a T-specific specialization of std::swap over the general template, so if std::swap has been
+        specialized for T, the specialzied version will be used.
+    Provide a swap member function when std::swap would be inefficient for your type. Make sure your swap doesn't 
+        throw exception.
+    If you offer a member swap, also offer a non-member swap that calls the member. For class(not templates), 
+        specialize std::swap too.
+    When calling swap, employ a using declaration for std::swap, then call swap without namespace qualification.
+    It's fine to totally specialize std templates for user-defined types, but never try to add something completely 
+        new to std.
+        
+        ~
+        ~
+        ~
+        ~
+Item_32: Make sure public inheritance models "is-a".
+    Public inheritance means "is-a". Everythins that applies to base classes must also apply to derived classes, because
+        every derived class object is a base class object.
+   
+Item_33: Avoid hiding inherited names.
+    Names in derived classes hide names in base classes. Under public inheritance, this is never desirable.
+    To make hidden names visible again, employ using declaration or forwarding functions.
+ 
+Item_34: 
+        
