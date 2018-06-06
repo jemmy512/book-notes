@@ -161,3 +161,5 @@ SO_REUSEADDR
     解决方法：
         Nginx 使用mutex解决该问题。每个子进程在epoll_wait之前先去申请mutex，申请到了继续处理，否则继续等待。
 44. fork 和 vfork 区别
+
+45. 窗口滑动机制
