@@ -16,6 +16,65 @@ Statistic port traffic:
     Iptable -Z INPUT/OUTPUT                 // reset all statistic port
     iptables -D INPUT -p tcp --dport 8080   // remove statistic port
 
+lsof: (list open file)
+    lsof -u root    // list open file by user
+    lsof -i TCP:22  // find process running on specific port
+    lsof -i TCP:1-1024  // list open files of port ranges 1 - 1024
+    lsof -i 4 <6>   // list only IPV4 or IPV6 open files
+    lsof -i -u root // find out who's looking what files and commands
+    lsof -p 878     // search by pid
+    kill -9 'lsof -t -u <user>' // kill all activity of particular user
+    lsof <filename> // find out all processes open specific file
+    lsof -d /DIR/   // list files opened by process under /DIR/]
+    lsof -d FD      // 
+iptables:
+    -t   <table>
+    -A： append rule to chain 
+    -D： delete rule from chain
+    -i： insert rule to chain
+    -R： replace rule in chain
+    -X   delete user defined chain
+    -L： list runles in chain
+    -F： remove all rules existing
+    -Z： zero counter in chain
+    -N： created user fined chain
+    -P： define default target in chain
+    -p： protocal
+    -s:  sourc ip     
+    -j:  jump ip
+    -i  <interface>:    interface which data in
+    -o  <interface>:    interface which data out 
+    
+    iptables -t "tableNmae" <-A/I/D/R> "ruleChainName" [ruleNum] <-i/o "interface"> -p "protocal" 
+    <-s "sourceIp"/ "sourcr child net"> --sport "sourcePort" <-d "dest IP"/"dest chid net"> --dport "dest port" -j "action"
+    
+    Table: raw, mangle, filter, nat
+    
+    RuleChain:
+        INPUT, OUTPUT, FORWARD, PREROUTING, POSTROUTING
+     
+    Action:
+        accetp, drop, redirect, snat, dnat, masquerade, log
+    
+    Practice:
+        iptables -L -n -v   // list existing rules
+        iptables -L -n --line-numbers   // list all rules by number
+        empty rule:
+            iptables -F
+            iptables -X
+            iptables -Z
+        iptables -A INPUT -p tcp --dport 9000 -j DROP   // deny access of port 9000
+        iptables -I INPUT -s 192.168.31.31 -j DROP      // deny access of host ip is 192.168.31.31
+        iptables -A FORWARD -i eth0 -o eth1 -j ACCEPT   // interface forward
+        iptables -t nat -A PREROUTING -p tcp -d 192.168.102.37 --dport 422 -j DNAT --to 192.168.102.37:22   // port forward
+        iptables -A INPUT -p tcp --dport 80 -m limit --limit 25/minute --limit-burst 100 -j ACCEPT          // DDos
+ifconfig:
+    ifconfig eth0 up/down   // up or down a interface
+    ifconfig eth0 mtu 1500
+    ifconfig eth0 hw ether 00:AA:BB:CC:dd:EE
+    ifconfig eth0 192.168.2.10 netmask 255.255.255.0 broadcast 192.168.2.255
+        
+tcpdump:
     
 ******************************** Linux modulation, debuggin and testing ********************************************
 Max Fd:
@@ -269,12 +328,13 @@ enviroment variable:
 
 	
 crontab:
+
 	/etc/cron.deny  # user in this file don't allow use crontab
 	/etc/cron.allow
 	/var/spool/cron/  # all user's crontab file reserved here and named with user name
 	
 	/sbin/service cron [start, stop, restart, reload, status]
-	
+    /etc/init.d/cron [start, stop, restart, reload, status]
 	
 File System:
 	chgrp [-R] dirname/filename...
