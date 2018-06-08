@@ -701,7 +701,7 @@ I/O Multiplexing:
                 uint32_t    u32;
                 uint64_t    u64;
             } epoll_data_t;
-			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP
+			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP, EPOLLRDHUP 
                 EPOLLONESHOT:// once the socket is handled by thread, the thread should register the
                     EPOLLONESHOT again to insure the event can be captured again.
 		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
@@ -968,13 +968,17 @@ Network configuration information:
     void sethostent(int stayopen);
     void endhostent(void);
     struct hostent {
-        char     *h_name;
-        char    **h_aliases;
-        int       h_addrtype;
+        char     *h_name;       // "offical" name
+        char    **h_aliases;    // 
+        int       h_addrtype;   // AF_INET, AF_INET6
         int       h_length;
         char    **h_addr_list;
+        char    *h_addr;        // h_addr_list[0]
         ...
     };	
+    struct hostent * gethostbyname (const char *name);
+    struct hostent * gethostbyaddr (const void *addr, socklen_t length, int format); AF_INET, AF_INET6
+    
 Connection Abort befor 'accept' Returns:
     When client call connect, three-way handshake completes, the connection established, and then client TCP
         send an RST. On server side, the connection is queued by its TCP, waiting for the server process to call
@@ -1078,7 +1082,7 @@ struct sigevent {
     
 sighandler_t signal(int signum, sighandler_t handler);
     // multi-process is unspecified
-    // behavior is undefined if a process ignores SIGFPE, SIGILL, SIGSEGV
+    // behavior is undefined if a process ignores SIGFPE, SIGKILL, SIGSEGV
     Two common design:
         1. set a global flag and exits;
         2. perform some type of cleanup and then either teriminates the process or uses a nonlocal 
@@ -1118,6 +1122,17 @@ sigaction:
     };
     sa_mask: SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESETORE, SA_SIGINFO
         SA_RESTART: a system call interrupted by this signal will be automatically restarted by the kernel.
+    struct siginfo_t {
+        int     si_signo;   // signal number
+        int     si_code;    // signal code
+        pid_t   si_pid;     // sending process ID
+        pid_t   si_uid;     // real user ID of sending process
+        void   *si_addr;    // address of faulting instruction
+        int     si_status;  // exit value of signal
+        long    si_band;    // band event for SIGPOLL
+        union sigval si_val;// signal value
+    }
+
 signaltstack():
 
 int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1) 
@@ -1468,7 +1483,7 @@ Process exit functions:
 pthread:
     pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);
-    pthread_creat(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
+    pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
         // inherits a copy of the creating thread's signal mask; pending signal is empty; don't inherit singal stack.
         // Newly created threads have access to the process address space and inherit calling thread's floating-point
             environment.
@@ -1531,7 +1546,8 @@ pthread_key:
     pthread_setspecific(pthread_key_t key, const void *pointer);
     void *pthread_getspecific(pthread_key_t key);
 pthread_mutex:
-    pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);    
+    pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);   
+        // initialization will not execute immediately until first call
     pthread_mutex_t lock = PTHREAD_MUTEXT_INITIALIZER;
     pthread_mutex_destroy(pthread_mutex_t *mutex);
     pthread_mutex_lock(pthread_mutex_t *mutex);
