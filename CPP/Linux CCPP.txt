@@ -501,6 +501,7 @@ Directories: <dirent.h>
     // Ordering of entries within the directory is implementation dependent and usually not alphabetical.
 chdir, fchdir, getcwd: <unistd.h>
     int chdir(const char *pathname);
+    int chroot(const char *pathname);   // change process root directory
     int fchdir(int fd);
     char *getcwd(char *buf, size_t size);
     char *getwd(char *buf);
@@ -1350,7 +1351,7 @@ Session:
     int setsid(void); // <unistd.h>
     // if the calling process is not the process grop leader:
         1. The process becomes the session leader and the only process of this session.
-        2. The process becomes the prcess group leader of the new process group and the process group ID is the
+        2. Create a new process group and the process becomes the new group leader, and the process group ID is the
             calling process ID.
         3. The process has no controling terminal.
     // The function returns an error is the process is already a process leader.
