@@ -763,6 +763,18 @@ System Identification:
         char machine[];     // name of hardware type
     };
 Time and Data Rountine:
+
+                string              formatted string
+                    \                   /
+                     \                 /
+                  struct tm(broken-down time)                 \
+                               |
+                               |
+        timeval ---> time_t(calendar time) <--- timespec
+                          \    |     /
+                           \   |    /
+                             kernel
+           
     time_t              --------------> time
     struct timespec {   --------------> clock_gettime
         time_t  tv_sec;
