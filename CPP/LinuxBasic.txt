@@ -75,6 +75,29 @@ ifconfig:
     ifconfig eth0 192.168.2.10 netmask 255.255.255.0 broadcast 192.168.2.255
         
 tcpdump:
+    -A display package in ASCII not display header
+    -n display host by IP not host name, display port by number not service name
+    -i interface to listen '-i any': listen all interface
+    -v echo more detial information, eg: show TTL and TOS information in IP
+    -t not echo time stamp
+    -e display ethernet frame header information
+    -c only get specified number of data packages
+    -x diplay package in hexadecimal, not display header information
+    -X same to -x but also display each hexadecimal byte's ASCII character
+    -XX same to -X but also display packege head information
+    -s capture length when capturing packege
+    -S display absolute value of TCP sequence nuber
+    -w redirect tcpdump output to a file in a special format
+    -r read and display from file
+    
+    <type: host, net, port, portrange> <dir> <proto>
+    tcpdump net 1.2.3.0/24
+    tcpdump dst port 13459
+    tcpdump icmp
+    tcpdump ip host ernest-laptop && ! Kongming20
+    tcpdump 'src 10.0.2.4 && (dst port 3389 || 22)'
+    tcpdump 'tcp[13] & 2 != 0' // filer package
+    tcpdump 'tcp[tcpflags' & tcp-syn != 0'
     
 ******************************** Linux modulation, debuggin and testing ********************************************
 Max Fd:
