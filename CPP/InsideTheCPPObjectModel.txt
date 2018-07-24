@@ -242,6 +242,11 @@ Bitwise Copy Semantics -- Not！
     In C++ polymorphism "exhibits" itself as the potential addressing of a derived class object through a pointer
         or reference of a public base class.
     Virtual Function Under MI:
+    Three cases that the presence of second or subsequent base class affect support of virtual functions:
+        1. Derived class virtual function is invoked through a pointer of second base classs.
+        2. invocation of the inherited virtual function of the second base class through a derived class pointer.
+        3. allows the return type of a virtual function to vary with regard to the base and publicly 
+            derived types of an inheritance hierarchy. <P 124 EN>
 4.3 Function Efficiency
     A nonmember, static member, and nonstatic member function are internally transformed into equivalent representations.
         So there is no difference inperformance between these three forms.
