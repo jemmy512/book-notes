@@ -778,11 +778,11 @@ Time and Data Rountine:
     time_t              --------------> time
     struct timespec {   --------------> clock_gettime
         time_t  tv_sec;
-        logn    tv_nsec;
+        long    tv_nsec;
     };
     struct timeval{     --------------> gettimeofday
         long tv_sec;   //seconds
-        long tv_usec;  //microseconds
+        long tv_usec;  //microseconds 999999 20bits
     };
     struct tm { broken-down time
         int tm_sec;     // second after minues: [0-60]
@@ -1381,6 +1381,7 @@ Session:
         2. Create a new process group and the process becomes the new group leader, and the process group ID is the
             calling process ID.
         3. The process has no controling terminal.
+        getsid(pid_t pid); the same as the getpgid(pid_t pid);
     // The function returns an error is the process is already a process leader.
 Enviroment List: <stdlib.h>
     Global variable: environ;
