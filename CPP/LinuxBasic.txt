@@ -72,7 +72,7 @@ ifconfig:
     ifconfig eth0 up/down   // up or down a interface
     ifconfig eth0 mtu 1500
     ifconfig eth0 hw ether 00:AA:BB:CC:dd:EE
-    ifconfig eth0 192.168.2.10 netmask 255.255.255.0 broadcast 192.168.2.255
+    ifconfig eth0 172.172.21.50 netmask 255.255.255.0 broadcast 172.172.21.255
         
 tcpdump:
     -A display package in ASCII not display header

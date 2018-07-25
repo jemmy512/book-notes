@@ -900,9 +900,9 @@ Procedure of socket:
             immediately. The scoket descriptor is no longer usable by the process: It can not be used as argument 
             to read or write. But, TCP try to send any data that is already queued to be sent to the other end, and
             after this occurs, the normal TCP connection termination sequence takes palce.
-        // In multi-thread one thread close socket just decrement its reference count until to 0, not affect
+        // In multi-thread one thread close socket just decrement its reference count, not affect
             other threads action to the same socket. Once all threads call close() to the same socket,
-            socket will close at the end.
+            socket will close at the end that is the reference count is down to 0.
     int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
     int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
        
