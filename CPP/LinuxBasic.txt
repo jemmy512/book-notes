@@ -9,6 +9,8 @@ FTP service：
 SSH service：
 	check service：lsof -i :22  
 	Install service: apt-get install openssh-server
+Allow root login:
+    vi /etc/ssh/sshd_config -> PermitRootLogin yes
 Statistic port traffic:
     iptables -A OUTPUT -p tcp --sport 8512  // add input port need statistic
     iptables -A INPUT -p tcp --dport 8512   // add output port need statistic
