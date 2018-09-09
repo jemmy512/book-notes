@@ -224,5 +224,12 @@ Item_33: Avoid hiding inherited names.
     To make hidden names visible again, employ using declaration or forwarding functions.
  
 Item_34: Differentiate between inheritence of interface and inheritance of implementation
+    The purpose of declaring a pure virtual function is to have derived
+    classes inherit a function interface only.
     
+    The purpose of declaring a simple virtual function is to have derived classes inherit a function interface
+    as well as a default implementation.
+    
+    The purpose of declaring a non-virtual function is to have derived classes inherit a function interface as
+    well as a mandatory implementation
         
