@@ -232,4 +232,11 @@ Item_34: Differentiate between inheritence of interface and inheritance of imple
     
     The purpose of declaring a non-virtual function is to have derived classes inherit a function interface as
     well as a mandatory implementation
+    
+Item_35: Consider alternatives to virtual functions
+
+    1. The Template Method Pattern via Non-Virtual Interface Idiom
+    2. The Strategy Pattern via Function Pointer
+    3. The Strategy Pattern via tr1::function
+    4. Replace virtual functions in one hierarchy with virtual functions in another hierarchy.
         
