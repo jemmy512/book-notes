@@ -239,4 +239,18 @@ Item_35: Consider alternatives to virtual functions
     2. The Strategy Pattern via Function Pointer
     3. The Strategy Pattern via tr1::function
     4. Replace virtual functions in one hierarchy with virtual functions in another hierarchy.
-        
+     
+Item_36: Never redefine an inherited non-virtual function
+    1. Public inheritance means is-a. Everything that applies to B objects also applies to D object, because 
+    every D object is a B object.
+    
+    2. Declaring a non-virtual function establishes an invarient over specialization for that class. 
+    Class derived from B must inherit the interface and the implementation for mf, because mf is non-virutal in B.
+    
+Item_37: Never redefine a function's inherited default parameter value
+    Default parameters are statically bound while virtual functions are dynamically bound.
+    
+    Q: why C++ insist on acting in this perverse manner?
+    A: The answer has to do with runtime efficiently.
+    
+Item_38: 
