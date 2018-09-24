@@ -253,4 +253,43 @@ Item_37: Never redefine a function's inherited default parameter value
     Q: why C++ insist on acting in this perverse manner?
     A: The answer has to do with runtime efficiently.
     
-Item_38: 
+Item_38: Model "has-a" or "is-implemented-in-terms-of" through composition
+    Composition has meanings completely different from that of public inheritance.
+    In application domain, composition means has-a. In implementation domain, it means is-implemented-in-terms-of.
+    
+Item_39: Use private inheritence judiciously
+    Private inheritance behavior:
+    1. In contrast to public inheritance, compilers will not convert a derived class object to a base object.
+    2. Members inherited from private base class become private members of derived class.
+        
+    Q: How to choose between private inheritance and composition which both mean is-implemented-in-terms-of?
+    A: Use composition whenever you can and use private inheritance you must.
+    
+    class Widget {
+    private:
+        class WidgetTimer: public Timer {
+            virtual void onTick() const;
+        };
+        
+        WidgetTimer timer;
+    };
+    Prefer public inheritance plus composition instead private inheritance.
+    1. Can prevent derived class from redefining virtual functions of the base class.
+    2. Minimize compilation dependencies.
+    
+    The constraint that "freestanding objects mustn't have zero size" doesn't apply to base calss parts of 
+    derived class object. This is known as empty base optimization(EBO). EBP is only viable under single inheritance.
+    
+    Private inheritance is most likely to be a legitimate design strategy when you’re dealing with two classes
+    not related by is-a where one either needs access to the protected members of another or needs to
+    redefine one or more of its virtual functions.
+    
+    Unlike composition private inheritance can enable empty base optimization(EBO).
+    
+Item_40: Use multiple inheritance judiciously
+    C++ checkes accessibility only after finding the best-match function.
+        
+    
+     
+        
+    
