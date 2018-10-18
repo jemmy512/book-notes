@@ -288,8 +288,15 @@ Item_39: Use private inheritence judiciously
     
 Item_40: Use multiple inheritance judiciously
     C++ checkes accessibility only after finding the best-match function.
-        
-    
-     
-        
-    
+
+    Initializaion rules of virtual base classes:
+    1. Class derived from virtual bases that require initialization must be aware of their bases
+    2. When a new derived class is added to the hierarchy, it must assume initialization responsibilities of it's
+        virtual bases
+
+    Advices on virtual base classes:
+    1. Don't use virtual bases if have to
+    2. When use virtual bases try to avoid putting data in them
+
+    Multiple inheritance does have legitimate uses. One scenario involes combining public inheritance from an 
+    interface with private inheritance from a class that helps with implementation 
