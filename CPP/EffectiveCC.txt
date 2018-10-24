@@ -300,3 +300,26 @@ Item_40: Use multiple inheritance judiciously
 
     Multiple inheritance does have legitimate uses. One scenario involes combining public inheritance from an 
     interface with private inheritance from a class that helps with implementation 
+
+    ~
+    ~
+    ~
+
+Item_49: Understand the behavior of the new-handler
+    
+    Requirements of new handler:
+    1. Make more memory avaliable
+    2. Install a different new handler
+    3. Deinstall the new handler
+    4. Throw an exception
+    5. No return
+
+    std::set_new_handler allows to set new handler to be called when memory allocation request can't be satisfied.
+    Nothrow new is of limited utility, because it applies only to memory allocation, associated constructor may 
+        may still throw exceptions. 
+
+Item_50: Understand when it make sense to replace new and delete
+
+    Reasons to replace default operator new and operator delete:
+    1. To detect usage error
+    2.  
