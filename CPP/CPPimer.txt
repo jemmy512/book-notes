@@ -397,30 +397,39 @@ The Copy constructor
         parameters have default values.
     If we do not define copy constructor the compiler will synthesize one for us even if we define any other 
         constructor.
+
 Difference between copy and direct initialization:
     Direct: we’re asking compiler use ordinary function matching to select the constructor
         that best matches the arguments we provide;
     Cope: we’re asking compiler to copy the right-hand operand to the object being created, converting if necessary.
+
 Copy constructor happens:
     1. When we use =
     2. Pass an object as an argument to parameter of non-reference type
     3. Return an object from a function that has non-reference return type
     4. Brace initialize the elements of an array or elements of aggregate class
+
 Why Copy construct first parameter must be a reference:
     To call copy constructor, we’d need to call copy constructor to copy the arguments, to copy the arguments,
         we’d need to call copy constructor and indefinitely. 
+
 Copy-assignment operator:
     Assignment operators ordinarily should return a reference to their left-hand operand.
     Compilers will generate synthesized copy-assignment operator if we don’t define it’s own.
     Some synthesized copy-assignment operator disallow assignment, otherwise, it assigns each right-hand object
         to the corresponding left-hand object of the class using copy-assignment operator for the type of that member.
-If a class needs a destructor, it’s almost surely it needs copy constructor and copy-assign operator. 
+
+If a class needs a destructor, it’s almost surely it needs copy constructor and copy-assign operator.
+ 
 Classes that need copy need assignment, and vice versa.
+
 Preventing Copy: =delete
     =delete must appear on the first declaration of the deleted function.
     We can specify =delete on any function.
+
 The destructor should not be deleted
     The compiler won’t let us define variables or temporaries of type that has deleted destructor.
+
 The Copy-control members may be synthesized as deleted
     1. Deleted destructor:  the class has member whose own destructor is deleted or inaccessible.
     2. Deleted copy constructor: class has member whose own copy constructor is deleted or inaccessible or has 
@@ -430,9 +439,11 @@ The Copy-control members may be synthesized as deleted
     4. Deleted default constructor: if the class has deleted or inaccessible constructor; or a reference member
         does not have an in-class initializer; or a const member whose type does not explicitly define a default 
         constructor and that member does not have in-class initializer.
+
 Two points in mind when writing assignment operator:
     1. Assignment operator should work correctly if an object is assigned to itself
     2. Most assignment operators share work with destructor and copy constructor
+
 Good pattern to write assignment operator:
     1. Copy the right-hand operand into the local temporary
     2. Destroy the existing members of the left-hand operand
@@ -444,14 +455,18 @@ Good pattern to write assignment operator:
             this->num = rhs.num;
             return *this;
         }
+
 LVALUE REFERENCE:
     1. Rvalue reference may  be bound only to an object that is about to be destroyed.
     2. Lvalue reference refers to an object's identity whereas rvalue refers to an object' value.
     3. Functions that return lvalue references, along with assignment, subscript, dereference and prefix
         increment/decrement operators, are all examples of expression that return lvalue.
     4. Functions that return rvalue reference, along with arithmetic, relational, bitwise, postfix 
-        increments/decrement  operators, are all yield rvalue. We can bind either lvalue to const or rvalue to 
-        these expressions.
+        increments/decrement  operators, are all yield rvalue.
+
+        We can bind either lvalue to const or rvalue to these expressions, and its lifetime is extended.
+            int &&x = 2 + 3; // x itself a lvalue, bug it binds to a rvalue
+            
     5. Because rvalue reference can only be bound to temporaries, so:
         1. There can be no other users of that object
         2. These facts together mean that code uses rvalue reference is free to take over the resource from the 
@@ -461,6 +476,7 @@ LVALUE REFERENCE:
         object bound to rvalue reference.
     7.  A variable is an lvalue; we cannot bind an rvalue reference to an variable even if that variable is defined 
         as an rvalue reference type.        
+
 std::move <utility>
     1. We can destroy the moved-from object and assign a new value to it, but cannot use the value of moved-from 
         object.
@@ -491,11 +507,13 @@ std::move <utility>
 Move Iterator:
     Return rvalue reference by calling library "make_move_iterator" function which takes a normal iterator and returns
     a rvalue reference rather than normal iterator which return lvalue reference. 
+
 Rvalue LValue reference member function:
     In order to maintain backward compatibility, the library continue allow assignment to rvalue. However, 
         we can prevent this feature by indicating rvlaue/lvalue reference in the same way that we define const
         member functions, we place a reference qualifier (& or &&) after the parameter list.
     A function can be both const and reference qualified, the reference must follow const.
+
 Overloading and Reference Function
     If a member function has a reference qualifier, all the versions of that function with same parameter 
         list must have reference qualifier(overloading functions have ref-qualifier). 
