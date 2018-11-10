@@ -51,3 +51,112 @@ Item_01: Understand template type deduction
         const char * const ptr = "Hello World";
         foo(ptr);   // T is const char *, constess of what ptr points is preversed, 
                         but not the constness of ptr itself
+    
+    Array Arguments:
+        const char name[] = "Jemmy";
+        
+        template<typename T>
+        void foo(T name_);
+        foo(name);  // name is array, but T deduced as const char *
+                    // array decay to pointer
+    
+        void foo(T& name_);
+        foo(name);  // T is deduced const char[5] while argument type is const char (&)[5]
+
+    Function Arguments:
+        void foo(int, double);
+
+        template<typename T>
+        void f1(T param);
+        void f2(T &param);
+
+        f1(foo);    // param is deduced to ptr-to-func: void (*) (int, double)
+                    // function decay to pointer to function
+        f2(foo);    // param is deduced to ref-to-func: void (&) (int, double)
+
+    Summary:
+    1. During template type deduction, referenceness, constness and volatileness are ignored
+    2. Array and function decay to pointers, unless they're used to initialize references
+
+Itemm_02: Understand auto type deduction
+
+    Auto type deduction is template type deduction
+
+    auto x = 27;
+    auto x(27); // both type is int 
+
+    auto x = {27};
+    auto x{27}; // both type is std::initializer_list<int>
+
+    The treatment of braced initializers is the only way where auto type deduction and template type deduction differ.
+
+    Auto in a function return type or a labmda parameter implies template type deduction not auto type deduction.
+        auto foo() { return {1, 2, 3}; }    // error: cant't deduct type
+        auto lambda = [&v](const auto & newValue) { v = newValue; }
+        lambda({1, 2, 3});  // error: can't detect type
+
+Item_03: Understand decltype
+    
+    /* C++11
+     * auto befor function name has nothing to do with type deduction   
+     * it indicates C++11 trailing return type syntax is being used
+     */
+    template<typename Container, typename Index> 
+    auto authAndAccess(Container& c, Index i) -> decltype(c[i]) { // traling return type can be omit int C++14
+        authenticateUser();
+        return c[i];
+    } 
+
+    C++11 permits return types for sigle-statement lambdas to be deduced, C++14 extends this to both all
+    lambdas and functions, including those with multiple statements.
+    
+    std::deque<int> d;
+    authAndAccess(d, 5) = 10;
+    /* compile error, return c[i] type is int&, but auto deduction will ignore reference-ness, so 
+     * authAndAccess(d, 5) return type is int.
+     */
+
+    template<typename Container, typename Index>
+    decltype(auto) authAndAcess(container &c, Index i) {    // now authAndAccess return is int&
+        return c[i];
+    }
+    eg:
+        int a = 20;
+        const int &age = a;
+        auto age0 = age;            // age0 type is int
+        decltype(auto) age1 = age;  // age1 type is const int &
+
+    Above authAndAccess can only accept lvalue container, we can support rvalue by this one:
+        template<typename Container, typename Index>
+        auto authAndAcess(Container &&c, Index i) { // universal reference
+            return forward<Container>(c)[i];
+        }
+
+    decltype((x)) return type is reference
+    eg:
+        decltype(auto) foo() { int x = 0; return x; }   // return type is int
+        decltype(auto) foo() { int x = 0; return (x); } // return type is int&
+
+Item_04: Know how to view deduced type
+
+    
+
+Item_05: Prefer auto to explicit type declaration
+
+    std::function<bool(const std::unique_ptr<Widget> &, const std::unique_ptr<Widget> &)>
+    derefUPLess = [](const std::unique_ptr<Widget> &p1, const std::unique_ptr<Widget> &p2) { return *p1 < *p2; };
+
+    auto derefUPLess = [](const auto &p1, const auto &p2) { return *p1 < *p2; };
+
+    /* auto-declared variable holding a closure has the same type as the closure, 
+     * and as much it uses only as many memory as the closure requires.
+     * While std::function has fixed size for any signature, that's may not be adequate for the closure it's 
+     * asked to store, in the case, std::function constructor allocate head memory to store the closure.
+     * So, std::function object typically uses more memory that auto-declard object.
+     *
+     * All in all, std::function is bigger and slower than auto, and it may yield out-of-memory exception.
+     */
+
+    
+
+    
