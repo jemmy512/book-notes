@@ -158,5 +158,26 @@ Item_05: Prefer auto to explicit type declaration
      */
 
     
+    unordered_map<string, int> mp;
+    for (const pair<string, int> &p : mpi;  // implicit conversion
+    for (const auto &p : mp);
+    /* std::map::value_type here is pair<const string, int>, compiler will convert pair<const string, int>
+     * to pair<string, int> by create a temporary object which is bound to p, so take p's address will 
+     * will get the temporary object's address. So it's not efficient.
+     */
+    
+    Auto variables must be initialzed, are generally immune to type mismatches that can lead to portability or 
+    efficiency problems, can ease the process of refactoring, and typically requires less typing than variables 
+    with explicitly specified types.
 
+    auto-typed variables are subject to the pitfalls described in Item_02 and 06.
+
+Item_06: Use the explicit initializer idiom  when auto deduces undesired types
+
+    vector<bool> features(const Widget &w);
+    bool highPriority = features(w)[5]; // return type is vector<bool>::reference implicitly convert to bool 
+    auto highPriority = features(w)[5]; // return type is vector<bool>::reference
+    processWidget(w, highPriority);     // for auto version, undefined behavior
+    /* 
+     */
     
