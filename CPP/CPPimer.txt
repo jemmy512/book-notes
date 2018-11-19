@@ -419,6 +419,37 @@ Copy-assignment operator:
     Some synthesized copy-assignment operator disallow assignment, otherwise, it assigns each right-hand object
         to the corresponding left-hand object of the class using copy-assignment operator for the type of that member.
 
+Copy elision:
+    1. In a return statement, when the oparand is a prvalue as the same class type as the return type
+        T f() {
+            return T(); // f(), only one call to default constructor of T
+        }
+    2. In a initialization of a variable, when the initializer expression is a prvalue of the same type
+        as the variable type
+            T x = T(T(f()));    // only one call to default constructor of T to initialize x
+
+    3. In a return statement, when the operand is the name of a non-volatile object with automatic storage 
+        duration, which isn't a function parameter or a catch clause parameter, and which is of the same class
+        type (ignoring cv-qualification) as the function return type. This variant of copy elision is known as
+        NRVO, "named return value optimization".
+
+    4. In the initialization of an object, when the source object is a nameless temporary and is of the
+        same class type (ignoring cv-qualification) as the target object. When the nameless temporary is
+        the operand of a return statement, this variant of copy elision is known as 
+        RVO, "return value optimization".   (until C++17)
+
+    5. In a throw-expression, when the operand is the name of a non-volatile object with automatic storage duration,
+        which isn't a function parameter or a catch clause parameter, and whose scope does not extend past
+        the innermost try-block (if there is a try-block).  ()
+
+    6. In a catch clause, when the argument is of the same type (ignoring cv-qualification) as the exception
+        object thrown, the copy of the exception object is omitted and the body of the catch clause accesses
+        the exception object directly, as if caught by reference (there cannot be a move from the exception
+        object because it is always an lvalue). This is disabled if such copy elision would change the
+        observable behavior of the program for any reason other than skipping the copy constructor and the
+        destructor of the catch clause argument (for example, if the catch clause argument is modified, and the 
+        exception object is rethrown with throw).   (sicen C++11)
+
 If a class needs a destructor, it’s almost surely it needs copy constructor and copy-assign operator.
  
 Classes that need copy need assignment, and vice versa.

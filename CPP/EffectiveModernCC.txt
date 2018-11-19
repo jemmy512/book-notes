@@ -5,7 +5,7 @@ Item_01: Understand template type deduction
     foo(expr);
 
     Type of T depends on both types of ParamType and expr:
-    1. ParamTye is a pointer or reference, but not a universal reference
+    1. ParamType is a pointer or reference, but not a universal reference
     1.1 If expr's type is a reference, ignore the reference part, also const
     1.2 Then pattern-match expr's type against ParamType to determin T
 
@@ -17,8 +17,8 @@ Item_01: Understand template type deduction
         const int &x = x;   // T is int, ParamType is int&
 
     2. ParamType is a universal type
-    2.1 If expr is a lvalue reference, both T and ParamType are lvalue reference
-    2.2 If expr is a rvalue reference, case 1 rules apply
+    2.1 If expr is a lvalue, both T and ParamType are lvalue reference
+    2.2 If expr is a rvalue, case 1 rules apply
 
         template<typename T>
         void foo(T&& param);    // param is now a universal reference
@@ -28,7 +28,7 @@ Item_01: Understand template type deduction
         const int &rx = x;
 
         foo(x);     // x is lvalue, both T and ParamType are int&
-        foo(cx);    // x is lvalue, both T and ParamType are const int
+        foo(cx);    // x is lvalue, both T and ParamType are const int&
         foo(rx);    // x is lvalue, both T and ParamType are const int&
         foo(27);    // 27 is rvalue, T is int, ParamType is int&&
    
@@ -94,6 +94,16 @@ Itemm_02: Understand auto type deduction
         auto foo() { return {1, 2, 3}; }    // error: cant't deduct type
         auto lambda = [&v](const auto & newValue) { v = newValue; }
         lambda({1, 2, 3});  // error: can't detect type
+
+    /* new rules of direct initialization in C++17: 
+     * For a braced-init-list with only a single element, auto deduction will deduce from that entry;
+     * For a braced-init-list with more than one element, auto deduction will be ill-formed.
+     */
+    auto x1 = { 1, 2 };     // decltype(x1) is std::initializer_list<int>
+    auto x2 = { 1, 2.0 };   // error: cannot deduce element type
+    auto x3{ 1, 2 };        // error: not a single element
+    auto x4 = { 3 };        // decltype(x4) is std::initializer_list<int>
+    auto x5{ 3 };           // decltype(x5) is int
 
 Item_03: Understand decltype
     
@@ -178,6 +188,58 @@ Item_06: Use the explicit initializer idiom  when auto deduces undesired types
     bool highPriority = features(w)[5]; // return type is vector<bool>::reference implicitly convert to bool 
     auto highPriority = features(w)[5]; // return type is vector<bool>::reference
     processWidget(w, highPriority);     // for auto version, undefined behavior
-    /* 
-     */
+
+    auto index = static_cast<int>(d * c.size());
+    Invisible” proxy types can cause auto to deduce the “wrong” type for an ini‐ tializing expression.
+    The explicitly typed initializer idiom forces auto to deduce the type you want it to have.
+   
+Item_07: Distinguish between () and {} when creating objects
+
+    A novel feature of braced initialization is that it prohibits implicit narrowing conversions among built-in types.
+
+    Another noteworthy characteristic of braced initialization is its immunity to C++’s most vexing parse:
+    eg:
+        Widget w1(10);  // call ctor with argument 10
+        Widget w2();    // most vexing parse: declares a function with return type of Widget
+        Widget w3{};    // call Widget ctor with no argument
+    This vexing parse is caused by the rule: A side effect of C++’s rule that anything that can be parsed as a
+    declaration must be interpreted as one
+
+    In the constructor, parentheses and braces have the same meaning as long as std::initializer_list is not involved:
+        class Widget {
+            public: 
+                widget(int i, bool b); 
+                Widget(int i, double d);
+        };
+
+        Widget w1(10, true); Widget w2{10, true};   // call first ctor
+        Widget w3(10, 5.0);  Widget w4{10, 5.0};    // call second ctor
+
+    If std::initializer_list involed, calls taking breaces initialization syntax strong prefer the overloads taking
+    std::initializer_lits:
+        Widget(std::initalizer_list<long double> il);        
+        Widget w5{10, true}; Widget w6{10, 5.0}; // 10, true and 5.0 convert to long double
     
+    Compiler's determination to match braced initializer with constructor taking std::inistailizer_list is so 
+    strong, it prevails even if the best-match std::initializer_list can't be called:
+        Widget (std::initializer_list<bool> il);
+        Widget w7{10, 5.0}; // error: requires narrowing conversions, 10 and 5.0 should narroed converted to bool
+
+    When using an empty set of braces to construct an object that support both default construction and 
+    std::initializer_list construction, the empty set of braces means default contruction:
+        class Widget {
+        public:
+            Widget();
+            Widget(std::initializer_list<int> il);
+        };
+        
+        Widget w1;      // default contruction
+        Widget w2();    // most vexing parse! declares a function
+        Widget w3{};    // -- defaul construction
+        Widget w4({});  // std::initializer_list ctor with empty list
+        Widget w5{{}};  // ditto
+
+Item_08: Prefer nullptr to 0 and NULL
+
+    The fact that template type deduction deduce the wrong types for 0 and NULL (i.e, their true types, rather than 
+    their fallback meaning a representation for a nulll pointer) is the most compelling reason to use nullptr.
