@@ -243,3 +243,13 @@ Item_08: Prefer nullptr to 0 and NULL
 
     The fact that template type deduction deduce the wrong types for 0 and NULL (i.e, their true types, rather than 
     their fallback meaning a representation for a nulll pointer) is the most compelling reason to use nullptr.
+
+Item_09: Prefer alias declarations to typedefs
+
+    Typedefs don’t support templatization, but alias declarations do.
+    Alias templates avoid the “::type” suffix and, in templates, the “typename” prefix often required to refer to typedefs.
+    C++14 offers alias templates for all the C++11 type traits transformations.
+
+Item_10: Prefer scoped enums to unscoped enums
+
+    
