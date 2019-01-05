@@ -252,4 +252,179 @@ Item_09: Prefer alias declarations to typedefs
 
 Item_10: Prefer scoped enums to unscoped enums
 
+    C++98-style enums are now known as unscoped enums.  
+
+    Enumerators of scoped enums are visible only within the enum. They convert  to other types only with a cast. 
+ 
+    Both scoped and unscoped enums support specification of the underlying type. The default underlying type for 
+     scoped enums is int. Unscoped enums have no default underlying type.  
+
+    Scoped enums may always be forward-declared. Unscoped enums may be forward-declared only if their declaration 
+    specifies an underlying type.
+  
+Item_11: Prefer deleted functions to private undefined ones
+
+	Any function may be deleted, including non-member functions and template instantiations
+
+Item_12: Declare overriding functions override
+
+	Declaring derived class overrides is important to get right, but easy to get wrong. So, c++11 introduce: override
+
+	Overriding function requirements:
+	1. The base class function must be virtual
+	2. The name of base and derived class must be identical
+	3. The parameter types of base and derived functions must be identical
+	4. The constness of the base and derived functions must be identical
+	5. The return type and exceptions specification of base and derived function must be compatible
+	6. The reference qualifiers must be identical
+
+	class Widget {
+	public: 		
+        void doWork() &; 	// this version applies only when *this is lvalue
+	    void doWork() &&; 	// this version applies only when *this is rvalue
+
+        using DateType = std::vector<double>;
+
+        DateType &data() & {
+            return values;
+        }
+
+        DateType data() && {
+            return std::move(values);
+        }
+
+    private:
+        DateType values;
+	};  
+    Widget w;
+    auto val1 = w.date();               // copy-construct val1
+    auto val2 = makeWidget().data();    // move-construct val2
+
+    Member function reference qualifiers make it possible to treat lvalue and rvalue object(*this) differently
+
+Item_13: Prefer const_iterator to iterator
+
+
+Item_14: Declare functions noexcept if they won't emit exceptions
+
+    With c++11 noexcept specification, at runtime the stack is only possible unwound before program execution is terminated
+
+    So optimizers need not keep the runtime statck in an unwindable state if an exception would propagate out of the function,
+    nor must they ensure that object in an noexcept function are destroyed in the inverse order of construction should 
+    an exception leave the function.
+
+    noexcept is particularly valualbe for the move operations, swap, memory deallocation functions, and destructors.
+
+    Most functions are exceptio-neutral rather than noexcept.
+
+Item_15: Use constexpr whenever possible
+
+    constexpr functions:
+    1. Can be used in contexts that demand compile-time constants. If any of the arugments's values is not known during 
+        compilation, code will rejected.
+    2. When called with on or more values that are not known during compilation, it acts like a normal function, computing
+        the result at runtime.
     
+    constexpr objects are const and are initialized with values known during compilaiton. But cosnts are not constexpr
+
+    constexpr functions can produce compile-time results when called with arguments whose values are known during compilation
+
+    constexpr objects and functions may be uesed in a wide range of contexts than non-constexpr objects and functions
+
+    constexpr is part of an objects's or function's interface
+
+Item_16: Make const member functions thread safe
+
+    Make const member functions thread safe unless you're certain they'll never be used in a concurrent context
+
+    Use of std::atomic variable may offer better performance than a mutex, but they're suited for manipulation of 
+    only a single variable or memory location.
+
+Item_17: Understand special member functions generation
+
+    Generated special member functions are implicitly public, inline and nonvirtual. 
+
+    Move operations peform "memberwise moves" on the non-static data members of the class. 
+
+    The two copy operations are independent, when you just declare one but not the other, compiler will generate the 
+    other if needed.
+    But move operations are not independent. when you declate either, that prevent from generating the other.
+
+    Declaring a move operation in a class causes compilers to disable the copy operations, and vise versa.
+
+    Declaring a destructor has a potentially significant side effect: it prevents the move operations from being generated.
+
+    Generation of the copy operations in classess with an explicitly decalared destructor is deprecated.
+
+    Move operations are generated only for classes lacking explicitly declared move operations, copy operations and destructor.
+
+    Member functions templates never suppress generation of special member functions.
+
+    
+Item_18: User std::unique_ptr for exclusive-ownership resources management
+    
+    Moving a std::unique_ptr transfers the owenership from the source pointer to the destination pointer, the source pointer is 
+    set to null, copy is not allowed.
+
+    When using the default deleter std::unique_ptr objects are the same size as raw pointers, but custom deletes generally cause
+    the size to grow from on word to two.
+    For deleters that are function objects, the changes in size depends on how much state is stored in the function objects.
+    For stateless functions objects(e.g., lambda without captures) incur no size penalty.
+
+    
+Item_19: User std::shared_ptr for shared-ownership resource management
+
+    The existence of the reference count has performance implications:
+    1. std::shared_ptr are twice of the size of a raw pointer
+    2. Memory for reference count must be dynamically allocated
+    3. Increments and decrements of the reference count must be atomic
+
+    std::make_shared is an alternative to std::shared_ptr<T>(new T(args…). The trade-offs are:
+    1. Std::shared_ptr performs at least two allocations while std::make_shared typically performs only one allocation
+    2. If any std::weak_ptr references the control block created by std::make_shared after the lifetime of all owners ended,
+        the memory occupied by T persists until all weak owners get destroyed as well, which may be undesirable 
+        if sizeof(T) is large
+    3. Std::shared_ptr may call a non-public constructor of T if executed in context where it is accessible, 
+        while std::make_shared requires public access to the selected constructor 
+    4. Unlike the std::shared_ptr constructor, std::make_shared does not allowed a custom deleter
+    5. Std::make_shared new ::new, so if any special behavior has been set up using a class specific operator new, 
+        it will differ from std::shared_ptr
+    6. Std:shared_ptr supports array type, but std::make_shared does not
+    7. Code such as f(shared_ptr<int>(new int(42), g()) can cause a memory leak if g gets called after new int(42) 
+        and throws an exception, while std::make_shared is safe
+
+    Control block:
+    1. An object's control block is set up by the function creating the first std::shared_ptr to the object
+    2. std::make_shared always creats a control block, it manufacture a new object to point to
+    3. A control block is created when a std::shared_ptr is constructed from a unique-ownership pointer
+    4. When a std::shared_ptr constructor is called with a raw pointer, it creates a contorl block
+
+    pitfall:
+    1. Avoid to creating std::shared_ptr from variable of raw pointer type
+
+Item_20: Use std::weak_ptr for std::shared_ptr like pointers that dangle
+   
+   Potential use cases for std::weak_ptr include caching, observer lists, and the prevention of std::shared_ptr cycles.
+
+Item_21: Prefer std::make_unique and std::make_shared to direct use of new 
+
+    Advantages of make functions compared to direct use of new:
+    1. eliminate source code duplication
+    2. improve exception safety
+    3. much more efficient(just allocate memory once)
+
+    Limitation of make functins:
+    1. Don't permit the specification of custom deleter.
+    2. Syntactic detail of implementation.
+        Within the make functions, the perfect forwarding code uses parentheses, not braces. (i.e., braced initializer can't 
+        be perfect-forwarded.)
+
+        Solution to use initializerlist in make function:
+            auto initList = {10, 20, 30};
+            autp spv = std::make_shared<std::vector<int>>(initList);
+
+    3. For std::shared_ptr, make functions may be ill-advised:
+        3.1 classes with custom memory management
+        3.2 system with memory concern
+        3.3 very large object
+        3.4 std::weak_ptr that outlive the corresponding std::shared_ptrs

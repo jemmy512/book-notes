@@ -1005,6 +1005,53 @@ Bitset:
         (seq, m, r, mfg)  (seq, r, mft)
         
         
+********************************** Chapter 18  *******************************************************************
+
+
+18.2 Namespace
+
+18.2.1 Namespace Definition
+    
+    Each namespace is scope
+
+    Namespace can be discontiguous
+    Namespaces that defien multiple, unrelated types, should use separate files to represent each types that the
+    namespace defines.
+
+    Namespace members are possible to defined outside the namespace, but not in the unrelated namespace.
+
+    inline namespace: can be used as if they were direct members of the enclosing namespace.
+
+    unnamed namespace, variables defiend in an unnamed space have static lifetime: they are created before their first
+    use and destroyed when the program ends.
+    
+    The use of file static declarations is deprecated by the C++ standard. File static should be avoided and 
+    unnamespaces used instead.
+
+18.2.2 Using namespace members
+
+    Namespace aliases
+        namespace cplusplus_primer{};
+        namespace primer  = cplusplus_primer;
+    
+    using Deaclaration
+        Introduces only one namespace member at a time and obey normal scope rules: they are visible from the point of 
+        the using declaration to the end of the scope in which the declaration appears.
+    
+    using Directives
+        Allows  us to use the unqualied form of a namespace name. Unlike a using declaration, we retain no control over
+        which names are made visile---- they all are.
+        
+    Using directives and scope
+    
+18.2.3 Classes, Namespaces, and Scope
+    
+    Arguemnt-Dependent Lookup and Parameter of Class Type
+    
+    
+    
+
+
 
 ********************************** FAQ ***************************************************************************
 
