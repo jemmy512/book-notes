@@ -135,7 +135,7 @@ Item_03: Understand decltype
         int a = 20;
         const int &age = a;
         auto age0 = age;            // age0 type is int
-        decltype(auto) age1 = age;  // age1 type is const int &
+        decltype(auto) age1 = age;  // age1 type is const int&
 
     Above authAndAccess can only accept lvalue container, we can support rvalue by this one:
         template<typename Container, typename Index>
@@ -599,11 +599,183 @@ Item_30: Familiarize yourself with perfect forwarding failure cases
 
 Item_31: Avoid default capture modes
 
+    Capure apply only to non-static locak varivables(parameters) visible in the scope where the lambda is created.
+
+    A by-reference capture causes a closure to contain a refernce to a local variable or to a parameter that's available in 
+    the scope where the lambda is defined. If the lifetime of a closure created from the lambda exceeds the lifetime of the local
+    variable or paramter the reference in the closure will dangle.
+
+    class Widget{
+        public:
+            void addFilter(){
+            // what's captured is: this. without explicitly declaration compile will fail, since this can't be implicitly captured
+                [=](int value){ return value % divisor == 0; };
+            }
+        private:
+            int divisor;
+    };
+
+
+    Default by-reference capture can lead to dangling reference
+
+    Defalt by-value capture is susceptiable to dangling pointers, and it misleadingly suggests that lambdas are self-contained. 
+
+Item_32: Use init capture to move objects into closures
+ 
+    The scope on the left is different from the scope on the right:
+    left: scope of the closure class
+    right: scope the same as where the lambda is being defined
+
+    std::bind objects contains copies of all the arguments passed to std::bind.
+    For lvalue argument, the corresponding object in the bind object is copy constructed.
+    While for rvalue arguemnt is move constructed.
+
+    auto func = [pw = std::move(widgets)] { return pw->isValidated() && pw->isArchived(); }; // C++14 init capture
+    auto func = std::bind([](const std::vector<Widget>& widgets){ ... }, std::move(widgets));// C++11 emulation of move capture
+
+    Use C++14's init capture to move objects into closures.
+    
+    In C++11 emulate init capture via band-written class or std::bind
+
+Item_33: User decltype on auto&& parameters to std::forward them
+
+    C++14 support generic lambds: lambds that use auto in their paramter specifications
+
+Item_34: Prefer lambds to std::bind
+
+    void setAlarm(Time t, Sound s, Duration d);
+    auto setSoundL = [](Sound s) { setAlarm(steady_clock::now() + hours(1), s, seconds(30)); };
+    auto setSoundB = std::bind(setAlarm, steady_clock::now() +1h, _1, 30s);
+    
+    Problem with std::bind:
+    1. The first parameter is evaluated when std::bind is called rather than setAlarm is call which causes wrong timer time
+    2. When there are overloaded version of setAlarm, std::bind doesn't know call which one, the solution is define setAlarm
+        as function pointer
+    3. normal function may be optimized by compiler as inline function, std::bind call function pointer doesn't be optimzied
+    4. It's unclare whether std::bind store arguments by reference or by value, but it's explicit for lambda
+
+    Lambdas are more readable, more expressive, and may be more efficient than using std::bind
+
+    In C++11 only, std::bind may be useful for implementing move capture or for binding objects with templatized functions call
+
+Item_35: Prefer task-based programming to thread-based
+    
+    Three Type Threads:
+    1. Hardware threads. one or more hardware threads per CPU core.
+    2. Sofeware threads. are limited resource, if exceed the capability of the system, std::system_error is thrown
+    3. std::threads. Ojbects in a C++ process that act as handles to underlying software threads.
+
+    The std::thread API offers no direct way to get return values from systemchronously run functions, and if thos functions 
+    thrown the program is terminated
+
+    Thead-based programming calls for manual management of thread exhustion, oversubsrciption, load balancing, and adaption 
+    to new platforms
+
+    Taks-based programming via std::aysnc with the default launch policy handles most of these issues for you
+    
+Item_36: Specify std::launch::async if asynchronicity is essential
+
+    It's not possible to predict whether f will run concurrently with current thread t, because f might be scheduled to run
+    deffered
+
+    It's not possible to predict whether f runs on a thread different from the thread invoking get or wait on futureT.
+
+    It's not possible to predict whether whether f runs at all, because it may not be possible to guarantee that get or wait 
+    will be called on futureT along every path throgh the program
+
+    The default launch policy for std::async permits both asynchronous and synchronous task execution
+
+    This flexibility leads to uncertainty when accessing thread_locals, implies that the task may never execute, and affects 
+    program logic for timeout-based wait calls
+
+    Specify std::launch::async if asynchronous task execution is essential
+
+Item_37: Make std::threads unjoinable on all paths
+    
+    The desctructor for a joinable thread is invoked, execution of the program is terminated. The reason for this is beacause 
+    two other obvious options are argubly worse:
+    1. An implicit join which could lead to performance anomalies.
+    2. An implicit detach which 
+
+    Invoking join or detach on an unjoinable thread yields undefined behavior.    
+
+    Joinable Thread:
+    1. A joinable std::thread corresponds to an underlying asynchronous thread of execution that is or could be runing
+    2. A std::thread corresponds to an underlying thread that's blocked or waiting to be scheduled is joinalbe.
+
+    Unjoinable Thread:
+    1. Default-constructed std::threads
+    2. std::thread objects that have been moved from
+    3. std::threads that have been joined
+    4. std::threads that have been detached
     
 
-    
+    join-on-destrution can lead to difficult-to-debug performance anomalies
 
-    
+    detach-on-destruciton can lead to difficult-to-debug undefined behaviour
 
-
+    declare std::thread objects last in lists of data memberss
     
+Item_38: Be aware of varying thread handle destructor behavior
+
+    Normal behavior of the destruction of a futute:
+    It just destroys the future object, doesn't join with anything, doesn't detach from anthing, doesn't run anything, and
+    decrements the reference count inside the shared state.
+
+    The exception to this normal behavior arises only for a future for which all of the following apply:
+    1. It refers to a shared state that was create due to a call to std::async
+    2. The task's launch policy is std::launch::async
+    3. The future is the last future referring to the shared state
+    Only when all of those conditions are fulfilled does a funture's destructor exhibit especial bahavior: block until the 
+    asynchronously running task completes.
+
+    Future destructors normally just destroy the future's data member.
+
+    The final future referring to a shared state of a non-deferred task launched via std::async blokcs until the task complets,
+    while destructors for all other futures simply destroy the future objects.
+
+Item_39: Consider void futures for one-shot event communication
+
+    Two problems of condvar-based communication:
+    1. The detecting task notifies the condvar before the reacting task waits, the reacting task will hang
+    2. The wait statement fails to account for spurious wakeups
+
+    Only condition variables are susceptible to spurious wakeups problem.
+
+    Condvar-based event commmunication:
+    requires a superfluous mutex, impose constraints on the relative progress of detecting and reacting tasks, and require
+    reacting tasks to verify that the event has taken place.
+
+    flag-based event communication:
+    avoid those problems, but are based on polling, not blocking
+
+    condvar-flag-based can be used together, but the resulting communications mechanism is somewhat stilted.
+
+    std::promise and futures dodges these issues, but approach uses heap memory for shared states, and it's limited to
+    one-shot communication.
+
+Item_40: use std::atomic for concurrency, volatitle for sepcial memory
+
+    std::atomic is for data accessed from multiple threads without using mutexes. It's a tool for writing concurrent software.
+
+    volatile is for memory where reads and writes should not be optimized. It's a tool for working with special memory.
+
+Item_41: Consider pass by value for compable parameters that are cheap to move and always copied
+
+    For copyable, cheap-to-move parameters that are always copied, pass by value may be nearly as efficient as 
+    pass by reference, it’s easier to implement, and it can generate less object code.
+
+    Copying parameters via construction may be significantly more expensive than copying them via assignment.
+    
+    Pass by value is subject to the slicing problem, so it’s typically inappropriate for base class parameter types.
+
+Item_42: Consider emplacement instead of insertion
+    
+    If all the following are true, emplacement will almost certainly outperform insertion:
+    1. The value being added is constructed into the container, not assigned
+    2. The arguement type is being passed differ from the type held by the container
+    3. The container is unlikely to reject the new value as a duplicate
+
+    Emplacement functions may perform type conversions that would be rejected by insertion functions.
+    Emplacement functions use direct initialization, which means they may use explicit constructors.
+    Insertion functions employ copy initialization, so they can’t.
