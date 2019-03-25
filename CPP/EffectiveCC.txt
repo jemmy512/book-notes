@@ -210,7 +210,60 @@ Item_25: Consider support for a non-throwing swap.
     When calling swap, employ a using declaration for std::swap, then call swap without namespace qualification.
     It's fine to totally specialize std templates for user-defined types, but never try to add something completely 
         new to std.
-        
+
+Item_26: Postpone variable definitions as long as possible
+    
+Item_27: Minimize casting
+
+    dynamic_cast:
+    is primarily used to perform "safe downcasting", i.e., to determine whether an object an object is of a particular type
+    in an inheritance hierarchy.
+       
+    Avoid casts whenever practical, especially dynamic_casts in performance-sensitive code. If a design requires casting,
+    try to devolop a cast-free alternative
+
+    When casting is necessary, try to hide it inside a function. clients can then call the function instead of putting casts
+    in their own code.
+
+    Prefer C++-style casts to old-style cast. They are easier to see, and they are more specific about what they do.
+
+Item_28: Avoid returning "handles" to object internals
+
+    1. A data member is only as encapsulated as the most accessible function returing a reference to it.
+    2. If a const member function returns a reference to data associated with an object that is store outside the object
+        itself, the caller of the function can modify that data.
+    
+    References, pointers, and iterators are all hanlders(ways to get at other objects), and returning a handle to an 
+    object's internals always runs the risk of compromising an object's encapsulation. It can also lead to const member
+    functions that allow an objects's state to be modified.
+
+    Those handles may lead to dangling problems.
+
+Item_29: Strive for exceptoion-safe code
+
+    Rquirements for exception safety:
+    1. Leadk no resources
+    2. Don't allow data structures to became corrupted
+
+    Exception-safe functions offer one of three guarantees:
+    1. Functions offering the basic guarantee promise that if an exception is thrown, everything in the program remains
+        in a valid state.
+    2. Functions offering the strong gurantee promise that if an exceptions is thrown, the state of the program is unchanged
+    3. Functions offering the nothrow guarantee promise never to thrown exceptions, because they do what they promise to do.
+
+    The strong guarantee can ofen be implemented via copy-and-swap but the strong guarantee is not practical for all functions   
+
+Item_30: Understand the ins and outs of inlining
+
+    Limit most inlining to small, frequently called functions. This facilitates debugging and binary upgradability,
+    minimizes potential code bloat, and maximizes the chances of greater program speed.
+
+    Don't declare function templates inline just because they appear in header files.
+
+Item_31: Minimize compilation dependencies between files
+
+    
+
         ~
         ~
         ~

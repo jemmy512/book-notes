@@ -106,8 +106,22 @@ Itemm_02: Understand auto type deduction
     auto x4 = { 3 };        // decltype(x4) is std::initializer_list<int>
     auto x5{ 3 };           // decltype(x5) is int
 
+    auto& and auto* versus auto 
+    // always be explicit and use the form auto& as well as auto* even if auto is able to deduce a pointer type.
+        Foo* GetFoo() { ... }
+    
+        auto fp0 = GetFoo();                // Foo *
+        const auto fp1 = GetFoo();          // Foo * const
+        auto const fp2 = GetFoo();          // Foo * const
+        const auto const fp3 = GetFoo();    // error
+        const auto* fp4 = GetFoo();         // const Foo *
+        auto* const fp5 = GetFoo();         // Foo * const
+        const auto* const fp6 = GetFoo();   // cosnt Foo * const
+
 Item_03: Understand decltype
     
+    Auto removes all top-level qulifiers while decltype doesn't.    
+
     /* C++11
      * auto befor function name has nothing to do with type deduction   
      * it indicates C++11 trailing return type syntax is being used
@@ -148,9 +162,13 @@ Item_03: Understand decltype
         decltype(auto) foo() { int x = 0; return x; }   // return type is int
         decltype(auto) foo() { int x = 0; return (x); } // return type is int&
 
-Item_04: Know how to view deduced type
+    Decltype almost always yields the type of a variable or expression without any modifications.
 
-    
+    For lvalue expressions of type T other than names, decltype always reports a type of T&.
+
+    C++14 supports decltype(auto), which, like auto, deduces a type from its initializer, but it performs the 
+    type deduction using the decltype rules    
+
 
 Item_05: Prefer auto to explicit type declaration
 
@@ -599,7 +617,12 @@ Item_30: Familiarize yourself with perfect forwarding failure cases
 
 Item_31: Avoid default capture modes
 
+    The closure type associated with a lambda-expression has a deleted ([dcl.fct.def.delete]) 
+    default constructor and a deleted copy assignment operator.
+
     Capure apply only to non-static locak varivables(parameters) visible in the scope where the lambda is created.
+
+    The C++ closures do not extend the lifetimes of the captured references.
 
     A by-reference capture causes a closure to contain a refernce to a local variable or to a parameter that's available in 
     the scope where the lambda is defined. If the lifetime of a closure created from the lambda exceeds the lifetime of the local
@@ -619,6 +642,18 @@ Item_31: Avoid default capture modes
     Default by-reference capture can lead to dangling reference
 
     Defalt by-value capture is susceptiable to dangling pointers, and it misleadingly suggests that lambdas are self-contained. 
+
+    By default operator() of the closure type is const, and you cannot modify captured variables inside the body of
+    the lambda.
+        auto foo = [x, y]() mutable { ++x; ++y; };
+    
+    Capturing Globals / Capturing Statics
+        
+        int global = 2;
+        // [=] can caputure varaibles who has automatic storage duration
+        // warning: capture of variable 'global' with non-automatic storage duration
+        [=]() { cout << global << endl;}();
+
 
 Item_32: Use init capture to move objects into closures
  

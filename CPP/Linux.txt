@@ -2,103 +2,103 @@
 **********************************************  Make File  ******************************************************
 
 1. syntax
-	target: prerequisites...
-		command # command line must must start with tab
-	...
-	
+    target: prerequisites...
+        command # command line must must start with tab
+    ...
+    
 2. file name rules: Makefile / makefile / GNUmakefile
 
 3. Five parts of makefile: 
-	1. explicit rules 2. implicit rules 3. comments 4. variable defination
-	5. file instruction:
-		5.1 include other makefile
-		5.2 specify valid parts of makefile according to cases
-		5.3 define a mutil-line command
+    1. explicit rules 2. implicit rules 3. comments 4. variable defination
+    5. file instruction:
+        5.1 include other makefile
+        5.2 specify valid parts of makefile according to cases
+        5.3 define a mutil-line command
 4. wildcards: *, ? [...]
-	object = *.o # value of variable object is '*.o' not all .o suffix files
-	objects := $(wildcard *.o) # value of variable object is all .o suffix files
+    object = *.o # value of variable object is '*.o' not all .o suffix files
+    objects := $(wildcard *.o) # value of variable object is all .o suffix files
 
 5. File Search:
-	1. makefile special variable:
-		VPATH = <path1> : <path2> : <path3> ...
-	2.makefile vpath keyword
-		vapth <pattern> <directories> # vpath %.h ../header
-		vpath <path> 	# clear search directories for files that match pattern <pattern>
-		vpath			# clear all file search directories that have been set up
+    1. makefile special variable:
+        VPATH = <path1> : <path2> : <path3> ...
+    2.makefile vpath keyword
+        vapth <pattern> <directories> # vpath %.h ../header
+        vpath <path>    # clear search directories for files that match pattern <pattern>
+        vpath           # clear all file search directories that have been set up
 6. Mutil Target:
-	bigoutput littleoutput: text.gcc
-		generate text.g  -$(func args,,$@)>$@ # $:function, $@: sets of target
+    bigoutput littleoutput: text.gcc
+        generate text.g  -$(func args,,$@)>$@ # $:function, $@: sets of target
 7. Static Mode:
-	<target...> : <target-pattern> : <prereq-pattern>
-		<command>
+    <target...> : <target-pattern> : <prereq-pattern>
+        <command>
   eg:
-	objects = foo.o bar.o
-	all: $(objects)
-	$(objects): %.o: %.c
+    objects = foo.o bar.o
+    all: $(objects)
+    $(objects): %.o: %.c
            $(CC) -c $(CFLAGS) $< -o $@ # $<: first file of dependences, $^: all dependences, $@: sets of targets
-	# $?: all dependences that newer than target file, $*: represent '%' in the target pasttern and its predecessor
+    # $?: all dependences that newer than target file, $*: represent '%' in the target pasttern and its predecessor
 8. Automatically generate dependencies
-	%.d: %.c
-		@set -e; rm -f $@; \
-		$(CC) -M $(CPPFLAGS) $< > $@.  //-MM include std head files, -M just include dependent head files
-	; \
-				sed 's,$∗\.o[ :]*,\1.o $@ : ,g' < $@.
-		> $@; \
-				rm -f $@.
+    %.d: %.c
+        @set -e; rm -f $@; \
+        $(CC) -M $(CPPFLAGS) $< > $@.  //-MM include std head files, -M just include dependent head files
+    ; \
+                sed 's,$∗\.o[ :]*,\1.o $@ : ,g' < $@.
+        > $@; \
+                rm -f $@.
 
 9. ; # if two next instruction dependent on previous instruction, thems should write in one line, sperate by ;
-	exec:
-		cd /home/hchen; pwd	# result is: pwd = /home/hchen
+    exec:
+        cd /home/hchen; pwd # result is: pwd = /home/hchen
 10 clean
-	.PHONE clean
-	clean:
-		rm -i -f -k # -i(-ignore-errors) -k(-keep-going) -f(-force)
+    .PHONE clean
+    clean:
+        rm -i -f -k # -i(-ignore-errors) -k(-keep-going) -f(-force)
 11. Nested Make
-	subsystem:
+    subsystem:
            cd subdir && $(MAKE) # execute makefile in sudir directory may be with arguments $(MAKE)
-	(un)export<variable ...>  # pass variables in current makefile to child makefile 
-							  # SHELL and MAKEFLAGS varialbles always pass to child makefile
+    (un)export<variable ...>  # pass variables in current makefile to child makefile 
+                              # SHELL and MAKEFLAGS varialbles always pass to child makefile
 12. define instruction pakage
-	define	pakageName
-		command...
-		command...
-	enddef
+    define  pakageName
+        command...
+        command...
+    enddef
 13 Variable
-	13.1 define
-		x = $(y) # current variable can use next defined varaible
-		y = z    
+    13.1 define
+        x = $(y) # current variable can use next defined varaible
+        y = z    
 
-		x := foo # current variable can use only previous defined variables
-		FOO ?= bar # if FOO is not defined its value is bar, otherwise is previous defined value
-	13.2 value replacement
-		foo := a.o b.o c.o
-		bar := $(foo:.o=.c)	# a.c b.c c.c
-		
-		foo := a.o b.o c.o
-		bar := $(foo:%.o=%.c) # static mode
+        x := foo # current variable can use only previous defined variables
+        FOO ?= bar # if FOO is not defined its value is bar, otherwise is previous defined value
+    13.2 value replacement
+        foo := a.o b.o c.o
+        bar := $(foo:.o=.c) # a.c b.c c.c
+        
+        foo := a.o b.o c.o
+        bar := $(foo:%.o=%.c) # static mode
 
-		first_second = Hello
-		a = first
-		b = second
-		all = $($a_$b) # all = first_sencond
-	13.3 append value to value	
-		objects = main.o foo.o bar.o utils.o
-		objects += another.o
-	13.4 override
-		override <variable> = <value> # override variables defined  make instruction line
-		override <variable> := <value>
-		override <variable> = <value>
-	13.5 multi-line variable
-		define two-lines
-		echo foo
-		echo $(bar)
-		endef
+        first_second = Hello
+        a = first
+        b = second
+        all = $($a_$b) # all = first_sencond
+    13.3 append value to value  
+        objects = main.o foo.o bar.o utils.o
+        objects += another.o
+    13.4 override
+        override <variable> = <value> # override variables defined  make instruction line
+        override <variable> := <value>
+        override <variable> = <value>
+    13.5 multi-line variable
+        define two-lines
+        echo foo
+        echo $(bar)
+        endef
         
 **********************************************  Vim  ************************************************************
 
 
 **********************************************  GDB  ************************************************************
-	
+    
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 
 #define DEBUG
@@ -106,95 +106,95 @@ __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 #ifdef DEBUG
  #define DBG_PRINT(fmt, args...) do {printf("[*]%s: <%s>: "fmt"\n"\
     , __FILE__, __func__, ##args); } while (FALSE);
-	
+    
 //DBG_PRINT(format,...) printf("FILE: "__FILE__", LINE: %d: "format"/n", __LINE__, ##__VA_ARGS__)
 #else
  #define BEG_PRINT(...) do {} while (FALSE)
 #endif
 
 core dump:
-	1. suffix with pid
-		echo "1" > /proc/sys/kernel/core_uses_pid  # 0 without suffix, 1 with pid suffix
-	2. name form and path
-		echo "/corefile/core-%e-%p-%t" > proc/sys/kernel/core_pattern
-		%e(name) %p(pid) %u(uid) %g(gid) %s(signal) %t(time) %h(host name)
+    1. suffix with pid
+        echo "1" > /proc/sys/kernel/core_uses_pid  # 0 without suffix, 1 with pid suffix
+    2. name form and path
+        echo "/corefile/core-%e-%p-%t" > proc/sys/kernel/core_pattern
+        %e(name) %p(pid) %u(uid) %g(gid) %s(signal) %t(time) %h(host name)
 Gdb:
-	file <program>
-	kill <program>
-	make source file to be debug:
-		gcc -g -o ObjFileName sourceFileName
-	open gdb:
-		1. gdb <program>
-		2. gdb <attach> <pid> 
-		3. gdb <program> core
-	run program: r
-	run program with args: 
+    file <program>
+    kill <program>
+    make source file to be debug:
+        gcc -g -o ObjFileName sourceFileName
+    open gdb:
+        1. gdb <program>
+        2. gdb <attach> <pid> 
+        3. gdb <program> core
+    run program: r
+    run program with args: 
         r <arg1><arg2>...
-		set args <arg1><arg2>...
-		show args
-		show path
-	exit gdb: quit/q
-	Show content of file: list/l
-		set listsize <num>
-		show listsize
-		list <linenum>
-		list <function>
-		list <filename:linenum>
-		list <filename:funciton>
-		list <+offset>
-		list <-offset>
-		list <firstLine>, <lastLine>
-		list , <last>
-		list + <num>
-		l 10
-		l main
-		l hello.c:20
-		l hello.c:main
-	show content in GUI: focus, layout
-	BreakPoint: break/b 
-		b <linenum>
-		b <function>
-		b <funcion(type...)>
-		b <filenname:linenum>
-		b *<address> # memory breakpoint
-		b if <conditon>
-		b <linenum> thread <threadno> # if there is no threadno specified, bk will apply to all threads
-		b <linenum> thread <threadno> if... # when one thread stop, all threads will be stopped by gdb
-		ignore <bk no> <count>
-	view breakpoint info: info breakpoint
-	clean breakpoint: clear
-	disable/enable breakpoint: 
-		disable/enables breakpoint bkNum
-		delete <bk no><range>
-	condition bk:
-		condition <bk no> <expr>
-		condition <bk no> # clear bk which num is no
-	command: # when bk we can do other things
-		command <bkno>
-		... commnad-list...
-		end
-	watch point:
-		watch <expr> 
-		rwatch <expr> # stop program when expr is readed
-		awatch <expr> # stop program when expr is read or writed
-	catch point:
-		catch <event> #event: throw, catch, exec, fork, vfork, load, unload
-		tcatch <event> # one time catch point
-		
-	go: run/r
-	Step into: step/s  <count>
-	Step over: next/n  <count>
-	run to next bk: continue/c <ignor-count>
-	finish for loop: util/u <linenum>
-	finish current function: finish/f
-	set step-mode <on/off>
-	
-	step machine code: 
-		setpi/si
-		nexti
-		display/i $pc
-	function call stack: bt <n> #backtrack
-	switch current stack:
+        set args <arg1><arg2>...
+        show args
+        show path
+    exit gdb: quit/q
+    Show content of file: list/l
+        set listsize <num>
+        show listsize
+        list <linenum>
+        list <function>
+        list <filename:linenum>
+        list <filename:funciton>
+        list <+offset>
+        list <-offset>
+        list <firstLine>, <lastLine>
+        list , <last>
+        list + <num>
+        l 10
+        l main
+        l hello.c:20
+        l hello.c:main
+    show content in GUI: focus, layout
+    BreakPoint: break/b 
+        b <linenum>
+        b <function>
+        b <funcion(type...)>
+        b <filenname:linenum>
+        b *<address> # memory breakpoint
+        b if <conditon>
+        b <linenum> thread <threadno> # if there is no threadno specified, bk will apply to all threads
+        b <linenum> thread <threadno> if... # when one thread stop, all threads will be stopped by gdb
+        ignore <bk no> <count>
+    view breakpoint info: info breakpoint
+    clean breakpoint: clear
+    disable/enable breakpoint: 
+        disable/enables breakpoint bkNum
+        delete <bk no><range>
+    condition bk:
+        condition <bk no> <expr>
+        condition <bk no> # clear bk which num is no
+    command: # when bk we can do other things
+        command <bkno>
+        ... commnad-list...
+        end
+    watch point:
+        watch <expr> 
+        rwatch <expr> # stop program when expr is readed
+        awatch <expr> # stop program when expr is read or writed
+    catch point:
+        catch <event> #event: throw, catch, exec, fork, vfork, load, unload
+        tcatch <event> # one time catch point
+        
+    go: run/r
+    Step into: step/s  <count>
+    Step over: next/n  <count>
+    run to next bk: continue/c <ignor-count>
+    finish for loop: util/u <linenum>
+    finish current function: finish/f
+    set step-mode <on/off>
+    
+    step machine code: 
+        setpi/si
+        nexti
+        display/i $pc
+    function call stack: bt <n> #backtrack
+    switch current stack:
         frame <n>
         up <n>
         down <n>
@@ -207,57 +207,57 @@ Gdb:
         info watchpoints
         info signals
         info handle
-	Methods of stopping program:
-		BreakPoint, WatchPoint, CatchPoint, Signals, Thread Stops
-	Signals:
-		handle <signal> <keywords...>
-		#keywords: nostop, stop, print, noprint, pass noignore, nopass ignore
-	memory: examine/x (x/n,f,u)
-		x [Address expression]
-		x /[Format] [Address expression]
-		x /[Length][Format] [Address expression]
-	
-	view registers: info register (i r)
-	view vriable:
-		info local variableName
-		info local file::variableName
-		info local function::variable
-		info registers variableName
-		whatis <var> # show var type and value
-		ptype <var> # show var type
-	view: print/f
-		x d u o t a c f
-		
-		set print pretty  = on/off
-		$1 = {a = 100, b = 200, c = 300}
-		
-		print var = value # change the local variable's value
-	display:
-		display/<fmt> <varname>
-		display/i $pc
-		info display
-		disalbe enable 
-	jump:
-		jump <linenum>
-		jump <address>
-		set $pc = address
-	call:
-		call <funname>
- 	view array:
-		print *<array>@<len>
-		int a[10]-> p *a@10
-	run shell in gdb: shell <command>
+    Methods of stopping program:
+        BreakPoint, WatchPoint, CatchPoint, Signals, Thread Stops
+    Signals:
+        handle <signal> <keywords...>
+        #keywords: nostop, stop, print, noprint, pass noignore, nopass ignore
+    memory: examine/x (x/n,f,u)
+        x [Address expression]
+        x /[Format] [Address expression]
+        x /[Length][Format] [Address expression]
+    
+    view registers: info register (i r)
+    view vriable:
+        info local variableName
+        info local file::variableName
+        info local function::variable
+        info registers variableName
+        whatis <var> # show var type and value
+        ptype <var> # show var type
+    view: print/f
+        x d u o t a c f
+        
+        set print pretty  = on/off
+        $1 = {a = 100, b = 200, c = 300}
+        
+        print var = value # change the local variable's value
+    display:
+        display/<fmt> <varname>
+        display/i $pc
+        info display
+        disalbe enable 
+    jump:
+        jump <linenum>
+        jump <address>
+        set $pc = address
+    call:
+        call <funname>
+    view array:
+        print *<array>@<len>
+        int a[10]-> p *a@10
+    run shell in gdb: shell <command>
 Search:
-	forward-search <regexp>
-	search <regexp>
-	reverse-search <regexp>
+    forward-search <regexp>
+    search <regexp>
+    reverse-search <regexp>
 source path:
-		directory <dirname...> # :(unix), ;(window)
-		directory # clear path info
-		show directories
+        directory <dirname...> # :(unix), ;(window)
+        directory # clear path info
+        show directories
 define own enviroment variable int GDB:
-	set $<varname> = <value> # enviromet var have no type
-	show convenience # view all enviroment variable
+    set $<varname> = <value> # enviromet var have no type
+    show convenience # view all enviroment variable
 
 **********************************************  File I/O ********************************************************
 
@@ -665,49 +665,49 @@ Meory-Mapped I/O: <sys/mman.h>
         // The call this function doesn't cause the contents of the mapped region to be written to the disk file.
             It's determined by the kernel's virual memory algorithm sometime after we store into the region.
 I/O Multiplexing:
-	1. select: <sys/select.h> <sys/time.h>
-		int select(int nfd, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
+    1. select: <sys/select.h> <sys/time.h>
+        int select(int nfd, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
         // nfds is the value of max fd plus one
         // timeout and every fs_set needs clean up first and then init at each time select execute
         // timeout == NULL (wait forever), timeout == 0(return immediately)
         // Normal data and OOB data arrive case select return, but select in readable and exception state, 
             respectively, we can use recv(fd, buf, bufsize, MSG_OOB) get OOB data.
-		void FD_ZERO(fd_set *fdset);
-		void FD_SET(int fd, fd_set *fdset);
-		void FD_CLR(int fd, fd_set *fdset);
-		void FD_ISSET(int fd, fd_set *fdset);
+        void FD_ZERO(fd_set *fdset);
+        void FD_SET(int fd, fd_set *fdset);
+        void FD_CLR(int fd, fd_set *fdset);
+        void FD_ISSET(int fd, fd_set *fdset);
         struct timeval{
-			long tv_sec;   //seconds
+            long tv_sec;   //seconds
             long tv_usec;  //microseconds
-		};
-	2. poll: <poll.h>
-		int poll(struct pollfd *fds, unsigned int nfds, int timeout);
+        };
+    2. poll: <poll.h>
+        int poll(struct pollfd *fds, unsigned int nfds, int timeout);
         // timeout == -1(wait forever), timeout == 0(no wait) ; milliseconds
-		struct pollfd {
-			int fd;             
-			short events;       // request event  
-			short revents;      // return event
-		} ; 
-		Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
-				POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
-	3. epoll: <sys/epoll.h>
-		int epoll_create(int size);
-		int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
-			op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
-			struct epoll_event {
+        struct pollfd {
+            int fd;             
+            short events;       // request event  
+            short revents;      // return event
+        } ; 
+        Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
+                POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
+    3. epoll: <sys/epoll.h>
+        int epoll_create(int size);
+        int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+            op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
+            struct epoll_event {
                 uint32_t        events; /* Epoll events */
                 epoll_data_t    data;   /* User data variable */
-			};
+            };
             typedef union epoll_data {
                 voit        *ptr;
                 int         fd;
                 uint32_t    u32;
                 uint64_t    u64;
             } epoll_data_t;
-			Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP, EPOLLRDHUP 
+            Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP, EPOLLRDHUP 
                 EPOLLONESHOT:// once the socket is handled by thread, the thread should register the
                     EPOLLONESHOT again to insure the event can be captured again.
-		int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
+        int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
 Asynchronous I/O:
     struct aiocb {
         int             aio_fildes;     // file descriptor 
@@ -739,7 +739,7 @@ Asynchronous I/O:
         int aio_cancel(int fd, struct aiocb *aiocb); 
             // if aiocb is NULL, cancel all opt on the fd.
             // return value: AIO_ALLOWED, AIO_CANCELED, AIO_NOTCANCELED, -1
-        int lio_listio(int mode, struct aiocb *const aiocb_list[], int nitems, struct sigevent *sevp);	
+        int lio_listio(int mode, struct aiocb *const aiocb_list[], int nitems, struct sigevent *sevp);  
             //mode: LIO_WAIT, LIO_NOWAIT
 Scatter Read and Gather Write: <sys/uio.h>
     ssize_t readv(int fd, const struct iovec *iov, int iovcnt);
@@ -815,53 +815,53 @@ Time and Data Rountine:
 **********************************************  Network Programming  ********************************************
 
 Procedure of socket:
-	Data trasformation:	
-		#include <netinet/in.h>
-		uint32_t htonl(uint32_t hostlong);
-		uint16_t htons(uint16_t hostshort);
-		uint32_t ntohl(uint32_t netlong);
-		uint16_t ntohs(uint16_t netshort);
-		
-		#include <arpa/inet.h>
-		in_addr_t       inet_addr(const char *cp);
-		int             inet_aton(const char *cp, struct in_addr *inp);
-		char           *inet_ntoa(struct in_addr in); 
-            // return a pointer to a static variable in funciton which store the rst, func can't reenter. 
-		
-        const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
-        int             inet_pton(int af, const char *src, void *dst);	// convert IP from text to binary form
-
-		in_addr_t       inet_network(const char *cp);
-		struct in_addr  inet_makeaddr(int net, int host);
-		in_addr_t       inet_lnaof(struct in_addr in);
-		in_addr_t       inet_netof(struct in_addr in);
+    Data trasformation: 
+        #include <netinet/in.h>
+        uint32_t htonl(uint32_t hostlong);
+        uint16_t htons(uint16_t hostshort);
+        uint32_t ntohl(uint32_t netlong);
+        uint16_t ntohs(uint16_t netshort);
         
-	1. Create Soket (client and server)
-		int socket(int domain, int type, int protocol);
-		doamin: AF_INET, AF_INET6, AF_LOCAL(AF_UNIX), AF_ROUTE
-		type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
-		protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
+        #include <arpa/inet.h>
+        in_addr_t       inet_addr(const char *cp);
+        int             inet_aton(const char *cp, struct in_addr *inp);
+        char           *inet_ntoa(struct in_addr in); 
+            // return a pointer to a static variable in funciton which store the rst, func can't reenter. 
+        
+        const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
+        int             inet_pton(int af, const char *src, void *dst);  // convert IP from text to binary form
+
+        in_addr_t       inet_network(const char *cp);
+        struct in_addr  inet_makeaddr(int net, int host);
+        in_addr_t       inet_lnaof(struct in_addr in);
+        in_addr_t       inet_netof(struct in_addr in);
+        
+    1. Create Soket (client and server)
+        int socket(int domain, int type, int protocol);
+        doamin: AF_INET, AF_INET6, AF_LOCAL(AF_UNIX), AF_ROUTE
+        type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
+        protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
         // type can combine with SOCK_CLOEXEC: when create new socket by fork, close this socket in child socket.
-	2. bind (server) assigns a local protocal addr to socket
-		int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
-		struct sockaddr_in {    <netinet/in.h>
-			sa_family_t sin_family;	// address family
-			in_port_t sin_port;		// port in network byte order, > 1024
-			struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
-		};
+    2. bind (server) assigns a local protocal addr to socket
+        int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+        struct sockaddr_in {    <netinet/in.h>
+            sa_family_t sin_family; // address family
+            in_port_t sin_port;     // port in network byte order, > 1024
+            struct in_addr sin_addr;// internet address: INADDR_<ANY, BROADCASE>
+        };
         typedef unsigned short sa_family_t;
-		struct in_addr {
-			uint32_t s_addr;	// 32-bit address in network byte order
-		};
+        struct in_addr {
+            uint32_t s_addr;    // 32-bit address in network byte order
+        };
         // If a TCP client or server do not specify port, the kernel chooes an ephemeral port for the socket   
             when either connect or listen is called. We can call getsockname return the protocol addr.
-		// If a TCP server do not bind and IP addr to its socket, the kernel uses the destination IP addr of the 
+        // If a TCP server do not bind and IP addr to its socket, the kernel uses the destination IP addr of the 
             client's SYN as the server's source IP address.
         // INADDR_ANY(0), INADDR_XXX defined by the <netinet/in.h> header are defined in host byte order.
          
-	3. listen(sever) and connect(client)
-		int listen (int sockfd, int backlog);
-		int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+    3. listen(sever) and connect(client)
+        int listen (int sockfd, int backlog);
+        int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
         // Three conditions generate RST:
             1. When a SYN arrives for a port that has no listening server
             2. When TCP wants to abort an existing connection.
@@ -869,35 +869,35 @@ Procedure of socket:
         // Do no specify backlog to 0, different implementation interpret this different. If don't want any 
             client connecting to listening socket, just close the listening socket.
         // Berkeley-derived implementation add a fudge factor to backlog: it is multiplied by 1.5.(MacOS)    
-	4. accept (client and server) 
+    4. accept (client and server) 
         // return the next completed connetion from the front of the completed conn queue, don't care the status
             of the socket(may be ESTABLISHED or CLOSE_WAIT) and the changes of the network.
-		int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
-	5. read and write (client and server)
-		ssize_t read(int fd, void *buf, size_t count);
+        int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
+    5. read and write (client and server)
+        ssize_t read(int fd, void *buf, size_t count);
             // The behavior of multi-thread read or write is undefined
-		ssize_t write(int fd, const void *buf, size_t count);
+        ssize_t write(int fd, const void *buf, size_t count);
         
             // flags: MSG_PEEK, MSG_OOB, MSG_WAITALL, MSG_CONFIRM, MSG_DONTROUTE
                 MSG_DONTWAIT, MSG_EOF, MSG_EOR, MSG_MORE, MSG_NOSIGNAL
-		ssize_t send(int sockfd, const *buf, size_t len, int flags);
+        ssize_t send(int sockfd, const *buf, size_t len, int flags);
             // return success doesn't mean the peer process recvices data, just means the data
                 has been delivered to network drivers without error
             // send data out of boundary will cause send fail with errno set to EMSGSIZE
                 with byte-stream protocol send will block until entire amount of data has been transmitted
-		ssize_t recv(int sockfd, void *buf, size_t len, int flags);
+        ssize_t recv(int sockfd, void *buf, size_t len, int flags);
             
-		ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
+        ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
                         const struct sockaddr *dest_addr, socklen_t addrlen);
-		ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
-						struct sockaddr *stc_addr, socklen_t *addrlen);
-						
-		ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
-		ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
-		
+        ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, 
+                        struct sockaddr *stc_addr, socklen_t *addrlen);
+                        
+        ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags);
+        ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+        
     5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
         // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
-	6. close <unistd.h> 
+    6. close <unistd.h> 
         int close(int fd);
         // The default action of close with a TCP socket is to mark the socket as closed and return to the process
             immediately. The scoket descriptor is no longer usable by the process: It can not be used as argument 
@@ -910,21 +910,21 @@ Procedure of socket:
     int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
        
 Raw-socket:
-	int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
-	int getsockopt (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
-	level: 	
-		SOL_SOKCET: 
+    int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
+    int getsockopt (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
+    level:  
+        SOL_SOKCET: 
             SO_BROADCASE(bool)  SO_RCVTIMEO(struct timeval) SO_SNDTIMEO(struct timeval)
-			SO_OOBINLINE    SO_LINGER   SO_TYPE     SO_RCBLOWAT     SO_SNDLOWAT
+            SO_OOBINLINE    SO_LINGER   SO_TYPE     SO_RCBLOWAT     SO_SNDLOWAT
             SO_DONTROUTE    SO_ERROR    SO_DEBUG
             SO_KEEPALIVE(only have meaning for stream sockets)
             SO_RCVBUF [/proc/sys/net/ipv4/tcp_rmem]
             SO_SNDBUF [/proc/sys/net/ipv4/tcp_wmem]
             SO_BROADCASE(have no meaning for stream sockets)
             SO_REUSEADDR [/proc/sys/net/ipv4/tcp_tw_recycle]
-		IPPROTO_IP:     
+        IPPROTO_IP:     
             IP_HDRINCL(bool)    IP_TOS  IP_TTL
-			IP_MULTICAST_LOOP   IP_MULTICAST_TTL	
+            IP_MULTICAST_LOOP   IP_MULTICAST_TTL    
             IP_ADD_MEMBERSHIP(struct ip_mreq)
             IP_DROP_MEMBERSHIP  IP_MULTICAST_IF(DWORD),
         IPPROTO_TCP:
@@ -951,29 +951,29 @@ Out-of-Band data:
         If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying 
             MSG_OOB(EINVAL).
 Architecture of Server:
-	1. IO communication unit
-		1.1 Port multiplexing
-			select 1000, poll, epoll 30W
-		1.2 Synchronization	
-			http https 
-		1.3 asynchroniztion
-			signal, sigaction
-		1.4 asynchronous IO
-			aio_read, aio_write
-	2. Data Process Unit	
-		2.1 Multiple Thread	
-			Thread Mutext: mutex, spin, atomic
-			Thread Synchronization: PV, semaphore
-			Thread Communication
-		2.2 Multiple Prcesses
-			IPC pip, fifo, socketpair
-		2.3 Multiple Thread + Multiple Process
-			Thread Pool
-			Process Pool
-	3. Date Storage
+    1. IO communication unit
+        1.1 Port multiplexing
+            select 1000, poll, epoll 30W
+        1.2 Synchronization 
+            http https 
+        1.3 asynchroniztion
+            signal, sigaction
+        1.4 asynchronous IO
+            aio_read, aio_write
+    2. Data Process Unit    
+        2.1 Multiple Thread 
+            Thread Mutext: mutex, spin, atomic
+            Thread Synchronization: PV, semaphore
+            Thread Communication
+        2.2 Multiple Prcesses
+            IPC pip, fifo, socketpair
+        2.3 Multiple Thread + Multiple Process
+            Thread Pool
+            Process Pool
+    3. Date Storage
 Two High-performance Event Handle Architectures:
-	1. Reactor: implemented by synchronize I/O
-	2. Proactor: implemented by asynchronize I/O
+    1. Reactor: implemented by synchronize I/O
+    2. Proactor: implemented by asynchronize I/O
 Two high-performance Concurrent Architectures:
     1. half-sync/half-async
     2. leader/follwer
@@ -990,7 +990,7 @@ Network configuration information:
         char    **h_addr_list;
         char    *h_addr;        // h_addr_list[0]
         ...
-    };	
+    };  
     struct hostent * gethostbyname (const char *name);
     struct hostent * gethostbyaddr (const void *addr, socklen_t length, int format); AF_INET, AF_INET6
     
@@ -1038,10 +1038,10 @@ Shutdown of Server Host:
 **********************************************  Signal Programming  *********************************************
 
 Methods of Local Processes Communication:
-	1. Messaging (pipeline, FIFO, message queue)
-	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
-	3. Shared memory (anonymous and named)
-	4. Remote procedure Call (Solaris gate and sun RPC)
+    1. Messaging (pipeline, FIFO, message queue)
+    2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
+    3. Shared memory (anonymous and named)
+    4. Remote procedure Call (Solaris gate and sun RPC)
     
 checking for the existence of a process:
     wait(); semophore and exclusive file locks; IPC(pipes, FIFOs...); /proc/PID
@@ -1049,37 +1049,37 @@ checking for the existence of a process:
 Signal dispositions: Term, Ign, Core, Stop, Cont
 
 Linux Signals are:
-    Name	Number	Description
-    SIGHUP	1       Hangup (POSIX)
-    SIGINT	2       Terminal interrupt (ANSI)
-    SIGQUIT	3       Terminal quit (POSIX)
-    SIGILL	4       Illegal instruction (ANSI)
-    SIGTRAP	5       Trace trap (POSIX)
-    SIGIOT	6       IOT Trap (4.2 BSD)
-    SIGBUS	7       BUS error (4.2 BSD)
-    SIGFPE	8       Floating point exception (ANSI)
-    SIGKILL	9       Kill(can't be caught or ignored) (POSIX)
-    SIGUSR1	10      User defined signal 1 (POSIX)
-    SIGSEGV	11      Invalid memory segment access (ANSI)
-    SIGUSR2	12      User defined signal 2 (POSIX)
-    SIGPIPE	13      Write on a pipe with no reader, Broken pipe (POSIX)
-    SIGALRM	14      Alarm clock (POSIX)
-    SIGTERM	15      Termination (ANSI)
-    SIGSTKFLT	16  Stack fault
-    SIGCHLD	17      Child process has stopped or exited, changed (POSIX)
-    SIGCONT	18      Continue executing, if stopped (POSIX)
-    SIGSTOP	19      Stop executing(can't be caught or ignored) (POSIX)
-    SIGTSTP	20      Terminal stop signal (POSIX)
-    SIGTTIN	21      Background process trying to read, from TTY (POSIX)
-    SIGTTOU	22      Background process trying to write, to TTY (POSIX)
-    SIGURG	23      Urgent condition on socket (4.2 BSD)
-    SIGXCPU	24      CPU limit exceeded (4.2 BSD)
-    SIGXFSZ	25      File size limit exceeded (4.2 BSD)
-    SIGVTALRM       26	Virtual alarm clock (4.2 BSD)
-    SIGPROF	27      Profiling alarm clock (4.2 BSD)
-    SIGWINCH	28  Window size change (4.3 BSD, Sun)
-    SIGIO	29      I/O now possible (4.2 BSD)
-    SIGPWR	30      Power failure restart (System V)
+    Name    Number  Description
+    SIGHUP  1       Hangup (POSIX)
+    SIGINT  2       Terminal interrupt (ANSI)
+    SIGQUIT 3       Terminal quit (POSIX)
+    SIGILL  4       Illegal instruction (ANSI)
+    SIGTRAP 5       Trace trap (POSIX)
+    SIGIOT  6       IOT Trap (4.2 BSD)
+    SIGBUS  7       BUS error (4.2 BSD)
+    SIGFPE  8       Floating point exception (ANSI)
+    SIGKILL 9       Kill(can't be caught or ignored) (POSIX)
+    SIGUSR1 10      User defined signal 1 (POSIX)
+    SIGSEGV 11      Invalid memory segment access (ANSI)
+    SIGUSR2 12      User defined signal 2 (POSIX)
+    SIGPIPE 13      Write on a pipe with no reader, Broken pipe (POSIX)
+    SIGALRM 14      Alarm clock (POSIX)
+    SIGTERM 15      Termination (ANSI)
+    SIGSTKFLT   16  Stack fault
+    SIGCHLD 17      Child process has stopped or exited, changed (POSIX)
+    SIGCONT 18      Continue executing, if stopped (POSIX)
+    SIGSTOP 19      Stop executing(can't be caught or ignored) (POSIX)
+    SIGTSTP 20      Terminal stop signal (POSIX)
+    SIGTTIN 21      Background process trying to read, from TTY (POSIX)
+    SIGTTOU 22      Background process trying to write, to TTY (POSIX)
+    SIGURG  23      Urgent condition on socket (4.2 BSD)
+    SIGXCPU 24      CPU limit exceeded (4.2 BSD)
+    SIGXFSZ 25      File size limit exceeded (4.2 BSD)
+    SIGVTALRM       26  Virtual alarm clock (4.2 BSD)
+    SIGPROF 27      Profiling alarm clock (4.2 BSD)
+    SIGWINCH    28  Window size change (4.3 BSD, Sun)
+    SIGIO   29      I/O now possible (4.2 BSD)
+    SIGPWR  30      Power failure restart (System V)
 
 union sigval {
     int     sival_int;  // Integer value
@@ -1105,9 +1105,9 @@ sighandler_t signal(int signum, sighandler_t handler);
     
 sending a signal:
     raise(int sig); kill(getpid(), int sig); killpg(pid_t pgrp , int sig);
-	pthread_kill(); tgkill(); sigqueue();
+    pthread_kill(); tgkill(); sigqueue();
 signal description:
-	sys_siglist[SIGPIPE]; strsignal(int sig); psignal(int sig, const char *msg);
+    sys_siglist[SIGPIPE]; strsignal(int sig); psignal(int sig, const char *msg);
 waiting for a signal to be caught:  
     sigsuspend();  pause(); // -1
 syschronously accepting a signal:
@@ -1348,10 +1348,10 @@ Thread & Signal:
         1. Set signals mask before main thread creates any thread, the new thread will inherite this sigmask.
         2. Call sigwait(const sigset_t *set, int *sig) in one thread to handle all signals.
 Methods of Local Processes Communication:
-	1. Messaging (pipeline, FIFO, message queue)
-	2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
-	3. Shared memory (anonymous and named)
-	4. Remote procedure Call (Solaris gate and sun RPC)
+    1. Messaging (pipeline, FIFO, message queue)
+    2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
+    3. Shared memory (anonymous and named)
+    4. Remote procedure Call (Solaris gate and sun RPC)
     
 Main function:
     1. When a C program is executed by the kernal-by one of the exec functions, a special start-up routine is called
