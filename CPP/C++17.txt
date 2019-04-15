@@ -1,2 +1,67 @@
 Item_1. Structedbidling
     
+
+
+Chapter 2 If and switch with Initializers
+
+Inline variable
+
+    
+
+Aggregate Extension
+
+    Data a{};
+    Data d;
+    Difference between using empty curly braces and no braces at all:
+        1. Definition of a zero-initializes all members so that string name is default constructed, the double value is initialzized
+            by 0.0, and the bool flaf is initialized by false
+        2. The definiiton of a only initializes string name by calling the default constructor; all other members are not initiazlied
+            and have a unspecified value
+
+    You can also derive aggregates form non-aggreagete classes.
+        struct MyString : std::string{
+            void print() const {
+                if (empty()) {
+                    std::cout << "<undefined>\n";
+                } else {
+                    std::cout << c_str() << std::endl;
+                }
+            }
+        };
+
+    You can even derive aggregates from multiple base classes and/or aggregates:
+        template<typename T>
+        struct D : std::string, std::complex<T>
+        {
+            std::string data;
+        };
+        which you could then use and initialize as follows:
+        D<float> s{{"hello"}, {4.5,6.7}, "world"};  // Ok since C++17
+        D<float> t{"hello", {4.5, 6.7}, "world"};   // Ok Since C++17
+        std::cout << s.data;                        // << "world"
+        std::cout << static_cast<std::string>(s);   // << "hello"
+        std::cout << static_cast<std::complex<float>>(s);   << << (4.5, 6.7)
+
+Mandatory copy elision or passing unmaterialized objects
+
+    The copy elision to initialize objects from temporaries is mandatory since C++17, but other optional copy elision still
+    are optional require a callable copy or move constructors
+
+    C++17 introduces a materialization for the moment a prvalue becomes a temporary object, but it does not mean that creating
+    a new/different objects.
+        void f(const X& p); // accepts an expression of any value category, but expects a glvalue
+        f(X());             // passes a prvalue materialized as xvalue 
+    
+
+Lambda extesion
+    1.Constexpr lambda
+
+        1.1 Since C++17, lambdas are implicitly constexptr if possible.
+        1.2 Using features(static variable, virtual function, try catch, new delete) that are not allowed in constexpr contexts
+            disalbe this ability, when using at compile-time therer will be error, but you can still use the lambda in 
+            run-time contexts, in comile-time 
+        1.3 For an implicit or explicit constexptr lambda, the function call operator is constexpr
+
+    2. Passing copies of this to lambda
+
+        Since C++17, you can explicitly ask to capture a copy of the current object by capturing *this:
