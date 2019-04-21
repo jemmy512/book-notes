@@ -64,4 +64,115 @@ Lambda extesion
 
     2. Passing copies of this to lambda
 
-        Since C++17, you can explicitly ask to capture a copy of the current object by capturing *this:
+        Since C++17, you can explicitly ask to capture a copy of the current object by capturing *this
+
+Class template arguments deduction
+
+    Since C++17, the constraint that you always have to specify the template arguments explicitly was relaxed.
+        std::complex c1{1.1, 2.2};  // deduces std::complex<double>
+        std::complex c2(2.2, 3.3);  // deduces std::complex<double>
+        std::complex c3 = 3.3;      // deduces std::complex<double>
+        std::complex c4 = {4.4};    // deduces std::complex<double>
+
+    Note that the template parameter has to be unambiguously deducible. Thus, the following initialization doesn’t work:
+        std::complex c5{5,3.3}; // ERROR: attempts to int and double as T
+
+    As usual for templates there are no type conversions used to deduce template parameters.
+
+    Class template argument deduction for variadic templates is also supported.
+
+    You can also deduce non-type template parameters.
+        template<typename T, int SZ>
+        class MyClass {
+        public:
+            MyClass (T(&)[SZ]) {
+                ...
+            } 
+        };
+        MyClass mc("hello"); // deduces T as const char and SZ as 6
+
+    If class template argument deduction could be interpreted as initializing a copy, it prefers this inter- pretation
+        std::vector v1{42}; // std::vector<int> with one element
+        std::vector v2{v1}; // v2 is also std::vector<int> rather std::vector<std::vector<int>>;
+        auto v3 = std::vector{v2};  // v3 is std::vector<int>
+
+    Only if multiple elements are passed so that this cannot be interpreted as creating a copy, the elements of the 
+    initializer list define the element type of the new vector:
+        std::vector vv{v, v}; // vv is vector<vector<int>>
+
+
+std::optional
+
+    Both operator* and value() return the contained object by reference, so be careful when calling the these operation directly
+    for temporary values
+
+    Implicit type conversion for the underlying typ are supported:
+        std::optional<int>      o1{42};
+        std::optional<double>   o2{42.0};
+        o2 = 42;
+        o1 = o2;
+
+    Move Sematics:
+    a moved-from object still has the same state, but any value became unspecified
+
+std::variant
+    Initializations and assignment always use the best match to find out the new alternative. If the type doesn’t fit exactly,
+    there might be surprises.
+
+    Note that empty variants, variants with reference members, variants with C-style array members, and variants with 
+    incomplete types (such as void) are not allowed
+
+    The default constructor initializes the first type with the default constructor, If there is no default constructor
+    defined for the first type, calling the default constructor for the variant is a compile-time error
+
+    use the in_place_index tags to resolve ambiguities
+        std::variant<int, int> v13{std::in_place_index<1>, 77};
+
+    std::monostate can serve as a first alternative type to make the variant type default constructible. For example:
+        std::variant<std::monostate, NoDefConstr> v2; // OK 
+        std::cout << "index: " << v2.index() << '\n'; // prints 0 
+
+    Move sematics
+        As a result, a moved-from object still has the same alternative, but any value becomes unspecified
+
+    Valueless by exception
+        When modifying a variant so that it gets a new value and this modification throws an exception, 
+        the variant can get into a very special state: The variant already lost its old value, but didn’t get its new value
+
+    Special case:
+        If a std::variant<> has both a bool and a std::string alternative, assigning string literals can become surprising 
+        because a string literal converts better to bool than to std::string.
+            std::variant<bool, std::string> v;
+            v = "hi"; // OOPS: sets the bool alternative
+
+
+std::any
+    
+     std::optional<> and std::variant<> the resulting objects have value semantics
+
+    If the object is empty, the type ID is typeid(void)
+
+    std::any_cast<> creates an object of the passed type, Without such an initialization, it is usually better 
+    to cast to a reference type to avoid creating a temporary object
+
+    values are stored using their decayed type (arrays convert to pointers, and top-level referencesandconstareignored)
+
+    To hold a different type than the type of the initial value, you have to use the in_place_type tags:
+        std::any a4{std::in_place_type<long>, 42};
+        std::any a5{std::in_place_type<std::string>, "hello"};
+
+    move semantics:
+        move semantics is only supported for type that also have copy semantics
+
+std::string_view
+
+    Properties:
+        1. read only
+        2. not a null terminated byts stream
+        3. the value can be the nullptr(default constructor)
+        4. there is no allocator support
+    Due to the possible nullptr value and possible missing null terminator, you should always use 
+    size() before accessing characters via operator[] or data()
+
+    String views are in fact more dangerous than string references or smart pointers. They behave more like 
+    raw character pointers
