@@ -656,14 +656,17 @@ Class Template
         class Base {
         public:
             friend bool compare<T>(const Base<T>&, const Base<T>&);
+            
             /*        one-to-one friendShip
              *     Forward declaration necessary       
             */
             friend class Friend<T>;
+
             /*        Specific friendShip
              *      Forward declaration necessary         
             */
             friend class Friend<int>;
+
             /*      Generic friendShip
              *      Forward declaration unnecessary
              *      All instantiations are friends to each instantiation of Base    

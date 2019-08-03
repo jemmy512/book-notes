@@ -271,16 +271,16 @@ Item_09: Prefer alias declarations to typedefs
 
 Item_10: Prefer scoped enums to unscoped enums
 
-    C++98-style enums are now known as unscoped enums.  
+    C++98-style enums are now known as unscoped enums.
 
-    Enumerators of scoped enums are visible only within the enum. They convert  to other types only with a cast. 
- 
+    Enumerators of scoped enums are visible only within the enum. They convert to other types only with a cast. 
+
     Both scoped and unscoped enums support specification of the underlying type. The default underlying type for 
-     scoped enums is int. Unscoped enums have no default underlying type.  
+    scoped enums is int. Unscoped enums have no default underlying type.
 
     Scoped enums may always be forward-declared. Unscoped enums may be forward-declared only if their declaration 
     specifies an underlying type.
-  
+
 Item_11: Prefer deleted functions to private undefined ones
 
 	Any function may be deleted, including non-member functions and template instantiations
@@ -298,7 +298,7 @@ Item_12: Declare overriding functions override
 	6. The reference qualifiers must be identical
 
 	class Widget {
-	public: 		
+	public:	
         void doWork() &; 	// this version applies only when *this is lvalue
 	    void doWork() &&; 	// this version applies only when *this is rvalue
 
@@ -344,7 +344,7 @@ Item_15: Use constexpr whenever possible
     2. When called with on or more values that are not known during compilation, it acts like a normal function, computing
         the result at runtime.
     
-    constexpr objects are const and are initialized with values known during compilaiton. But cosnts are not constexpr
+    constexpr objects are const and are initialized with values known during compilaiton. But consts are not constexpr
 
     constexpr functions can produce compile-time results when called with arguments whose values are known during compilation
 
@@ -361,9 +361,10 @@ Item_16: Make const member functions thread safe
 
 Item_17: Understand special member functions generation
 
-    Generated special member functions are implicitly public, inline and nonvirtual. 
+    Generated special member functions are implicitly public, inline and nonvirtual unless the function in question is 
+    a destructor in a derived class inheriting from a base class with a virtual destructor 
 
-    Move operations peform "memberwise moves" on the non-static data members of the class. 
+    Move operations peform "memberwise moves" on the non-static data members of the class and move operate on their base class
 
     The two copy operations are independent, when you just declare one but not the other, compiler will generate the 
     other if needed.

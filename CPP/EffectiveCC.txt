@@ -35,7 +35,8 @@ Item_3: Use const whenever possible.
         When const and non-const member functions have essentially identical implementations, code duplication can be
             avoided by having the non-const version call the const version.
             
-Item_4: Make suer that objects are initialized before they're used.
+Item_4: Make sure that objects are initialized before they're used.
+
     The rules of C++ stipulate that data members of an object are initialized before the body of a constructor is entered.
     A::A(string name, int age, string sex) {name = name; age = age; sex = sex;}
     A::A(string name, int age, string sex) : name(name), age(age), sex(sex) {}
@@ -47,18 +48,21 @@ Item_4: Make suer that objects are initialized before they're used.
     Avoid initialization order problems across translation units by replacing non-local static object with local static obj.
 
 Item_5: Know What Functions C++ silently Writes and Calls.
+
     Compilers may implicitly generate a class's default constructor, copy constructor, copy assignment operator, and destructor.
     If a class contains reference member, const member, and you want to support assignment operator, compiler refuse to work 
         unless you define your own assignment operator, in this case default assignment operator doesn't work.
 
-Item_6: Explicitly disallow the use of compiler-generated functions you do not want.
+Item_6: Explicitly disallow the use of compiler-generated functions you do not want
+
     Before C++11:
         To disallow functionality automatically provided by compilers, declare the corresponding member functions private and 
             give no implementation.
     After C++11:
         use 'delete' keyword.
         
-Item_7: Declare destructor virtaul in polymorphic base class.
+Item_7: Declare destructor virtaul in polymorphic base class
+
     C++ sepecifies that a derived class object is deleted through a pointer to a base class with a non-virtual destructor, 
         results are undefiend. The derived part of the object is never destroyed but base class part typically would be 
         destroyed, thus leading a curious partially destroyed object.
@@ -67,19 +71,23 @@ Item_7: Declare destructor virtaul in polymorphic base class.
     Classes not designed to be base calsses or not designed to be used polymorphically should not declare virtual destructor.
     
 Item_8: Prevent exceptions from leaving destructors
+
     Destructor should never emit exceptions. If functions called in a destructor may throw, the destructor should catch any
         exceptons, then swallow them or terminate the program.
     If class clients need to be able to react to exceptions thrown during an operation, the class should provide a regular
         function [i.e., non-destructor] that perform the operation.
         
 Item_9: Never call Virutal Functions During Construction or Destruction
+
     Don't call virtual functions during construction or destruction, because such call will never go to a more derived class
         than that of the currently executing constructor or destructor.
         
 Item_10: Having Assignment Operators Return a Reference to *this.
+
     The assignment operators return a reference to *this, this is a convention.
  
 Item_11: Handle assignment to self in operator=
+
     In general, code that operates on references or poiters to multiple objects of the same type needs to consider that
         objects might be the same. Two objects need not even be declared to be of the same type.
     The traditional way to prevent self assignment is via an identity test at the top of the operator=.
@@ -88,13 +96,15 @@ Item_11: Handle assignment to self in operator=
     Make suer that any function operation on more than one object behaves correctly if two or more of the objects are
         the same.
      
-Item_12: Copy all parts of an object.
+Item_12: Copy all parts of an object
+
     Copy functions should be sure to copy all of the object's data members and all of its base class parts(via calling
         appropriate base functions).
     Don't try to implement one of the copying functions in terms of the other. Instead, put common functionality in a
         third function that both call.
     
-Item_13: Use objects to manage resources.
+Item_13: Use objects to manage resources
+
     To prevent resource leaks, use RAII(resource acquisition is initialization) objects that acquire resources in
         their constructors and release them in their destructor.
     Two commonly useful RAII calsses are std::shared_ptr and auto_ptr. shared_ptr is usually the better choise, 
@@ -103,7 +113,8 @@ Item_13: Use objects to manage resources.
         or shared_ptr for dynamically allocated arrays in C++, because vector and string can almost replace 
         dynamically allocated arrays.
         
-Item_14: Think carefully about copying behavior in resource-manging classes.
+Item_14: Think carefully about copying behavior in resource-manging classes
+
     What happen when an RAII object is copied?
         1. Prohibit copying.
         2. Reference-count the underlying resource.
@@ -172,35 +183,41 @@ Item_19: Treat class design as type design
     12. Is a new type really what your need?
     
 Item_20: Prefer pass-by-reference-to-const to pass-by-value
+
     By default, C++ passes objects to and from functions by value.
     References are typically implemented as pointers.
     Pass-by-referenc-to-const is efficient and can avoid the slicing problem.
     The rule doesn't apply to built-in types and STL iterator and function object types.
   
-Item_21: Don't try to return a reference when you must be return an object.
+Item_21: Don't try to return a reference when you must be return an object
+
     A reference is just a name, a name for some existing object.
     The cost of an assignment is about the same as a call to a destructor(to destroy the old value) plus a call to a 
         constructor(to copy over the new value).
     Never return a pointer or reference to a local stack object, a reference to a head-allocated objec, or a pointer
         or a reference to a local static object if there is a chance that more than one such object will be needed.
      
-Item_22: Declare data members privaete.
+Item_22: Declare data members privaete
+
     Declare data member private. It gives clients syntactically uniform access to data, affords fine-grained access
         control, allows invariants to be enforced, and offers class authors implementation flexibility.
     Protected is no more encapsulated than public.
  
-Item_23: Prefer non-member non-friend functions to member functions.
-    The more somethin is encapsulated, the fewer things can see it. The few things can see it, the greater flexibility
+Item_23: Prefer non-member non-friend functions to member functions
+
+    The more something is encapsulated, the fewer things can see it. The few things can see it, the greater flexibility
         we have to change it. It affords us the flexibility to change things in a way that affects only a limited 
         number of clients.
     This adivce can increase encapsulation, packaging flexibility, and functional extensibility.
    
-Item_24: Declare non-member functions when type conversions should apply to all parameters.
+Item_24: Declare non-member functions when type conversions should apply to all parameters
+
     Implicit type conversion: compilers know you're passing an int that the function requires a Rational, but they also
         know they can conjure up a suitable Rational by calling the Rational constructor with int you passed. Compilers
         do this only because non-explicit constructor is involved.
 
-Item_25: Consider support for a non-throwing swap.
+Item_25: Consider support for a non-throwing swap
+
     Compilers will prefer a T-specific specialization of std::swap over the general template, so if std::swap has been
         specialized for T, the specialzied version will be used.
     Provide a swap member function when std::swap would be inefficient for your type. Make sure your swap doesn't 
@@ -268,15 +285,18 @@ Item_31: Minimize compilation dependencies between files
         ~
         ~
         ~
-Item_32: Make sure public inheritance models "is-a".
+Item_32: Make sure public inheritance models "is-a"
+
     Public inheritance means "is-a". Everythins that applies to base classes must also apply to derived classes, because
         every derived class object is a base class object.
    
-Item_33: Avoid hiding inherited names.
+Item_33: Avoid hiding inherited names
+
     Names in derived classes hide names in base classes. Under public inheritance, this is never desirable.
     To make hidden names visible again, employ using declaration or forwarding functions.
  
 Item_34: Differentiate between inheritence of interface and inheritance of implementation
+
     The purpose of declaring a pure virtual function is to have derived
     classes inherit a function interface only.
     
@@ -294,6 +314,7 @@ Item_35: Consider alternatives to virtual functions
     4. Replace virtual functions in one hierarchy with virtual functions in another hierarchy.
      
 Item_36: Never redefine an inherited non-virtual function
+
     1. Public inheritance means is-a. Everything that applies to B objects also applies to D object, because 
     every D object is a B object.
     
@@ -311,6 +332,7 @@ Item_38: Model "has-a" or "is-implemented-in-terms-of" through composition
     In application domain, composition means has-a. In implementation domain, it means is-implemented-in-terms-of.
     
 Item_39: Use private inheritence judiciously
+
     Private inheritance behavior:
     1. In contrast to public inheritance, compilers will not convert a derived class object to a base object.
     2. Members inherited from private base class become private members of derived class.
@@ -340,6 +362,7 @@ Item_39: Use private inheritence judiciously
     Unlike composition private inheritance can enable empty base optimization(EBO).
     
 Item_40: Use multiple inheritance judiciously
+
     C++ checkes accessibility only after finding the best-match function.
 
     Initializaion rules of virtual base classes:
