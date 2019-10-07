@@ -43,6 +43,7 @@ Layout costs for Adding Encapsulation:
       
       
 ********************************************** 2. The Semantics of Constructor ************************************
+
 2.1 Default Constructor Construction
     If there is no user-declared constructor for class X, a default constructor is implicityly declared...
     A constructor is trivial if it is an implicitly declared default constructor...
@@ -63,56 +64,122 @@ Layout costs for Adding Encapsulation:
                 II. Within each class object, an additional pointer member is synthesized to hold the address of the 
                     associated clas vtbl.
         4. Class with a virutal Base class
+
     Summary:
         The four above characteristics of a class under which the compiler needs to synthesize a default constructor 
             for a class that declare no constructor at all.
-        The synthesized constructor fulfills only an implementation need. 
+        The synthesized constructor fulfills only an implementation need.
+
 2.2 Copy Constructor Construction
-Copy constructor happens:
-    1. When we use =
-    2. Pass an object as an argument to parameter of non-reference type
-    3. Return an object from a function that has non-reference return type
-    4. Brace initialize the elements of an array or elements of aggregate class
-Default Member Initializaion
-    A class object can be copied in two way:
-        1. By initialization(copy constructor);
-        2. By assignment(copy assignment).
-    The Standard distinguishes between a trivial and nontrivial copy constructor. It is only nontrivial instance that 
-        in practice is synthesized within the program. The criteria for determining whether a copy constructor is
-        trivial is whether the class exhibits bitwise copy semantics.
-Bitwise Copy Semantics -- Not！
-    When are bitwise copy semantics not exhibited by a class? There are four instances:
-        1. When the class contains a member object of a class for which a copy constructor exists(either declared by class
-            designer or synthesized by compiler).
-        2. When the class is derived from a base class for which a copy constructor exists(either explicity declared
-            synthesized by compiler).
-        3. When the class declares one or more virtual functions.
-        4. When the class is derived from an inheritance chain in which one or more base class are vitual.
+    Copy constructor happens:
+        1. When we use =
+        2. Pass an object as an argument to parameter of non-reference type
+        3. Return an object from a function that has non-reference return type
+        4. Brace initialize the elements of an array or elements of aggregate class
+
+    Default Memberwise Initializaion
+        If the class does not provide an explicit copy constructor? Each class object initialized with another object
+        of its class is initialized by what is called default memberwise initialization.
+
+        A class object can be copied in two way:
+            1. By initialization(copy constructor);
+            2. By assignment(copy assignment).
+        The Standard distinguishes between a trivial and nontrivial copy constructor. It is only nontrivial 
+            instance that in practice is synthesized within the program. The criteria for determining whether a 
+            copy constructor is trivial is whether the class exhibits bitwise copy semantics.
+
+    Bitwise Copy Semantics -- Not！
+        When are bitwise copy semantics not exhibited by a class. There are four instances:
+            1. When the class contains a member object of a class for which a copy constructor exists
+                (either declared by class designer or synthesized by compiler).
+            2. When the class is derived from a base class for which a copy constructor exists(either explicity declared
+                synthesized by compiler).
+            3. When the class declares one or more virtual functions.
+            4. When the class is derived from an inheritance chain in which one or more base class are vitual.
+
+    Global objects are guaranteed to have their associated memory "zeroed out" at program start-up. Local objects 
+    allocated on the program stack and heap objects allocated on the free-store do not have their associated memory 
+    zeroed out; rather, the memory retains the arbitrary bit pattern of its previous use.
+
+    Resetting the Virtual Table Pointer
+        Recall that two program "augmentations" occur during compilation whenever a class declares one or more virtual
+        functions.
+            1. A virtual function table that contains the address of each active virtual function associated with that
+                class (the vtbl) is generated.
+            2. A pointer to the virtual function table is inserted within each class object (the vptr).
+    
+        Once the compiler introduces a vptr into a class, the affected class no longer exhibits bitwise semantics. 
+        Rather, the implementation now needs to synthesize a copy constructor in order to properly initialize the vptr.
+
+    Handling the Virtual Base Class Subobject
+        The compiler must synthesize a copy constructor, inserting code to initialize the virtual base class 
+        pointer/offset (or simply being sure that it not be reset), performing the necessary memberwise initializations 
+        of its members, and other memory tasks.
+
+    The copy between objects of the same level of hierarchy is bitwise copy semantics
+        The initialization of one ZooAnimal class object with another or one Bear class object with another is 
+        straightforward and could actually be im-plemented with bitwise copy semantics.
+
+
     Summary:
         The four conditions above under which bitwise copy semantics do not hold for a class and the default copy 
         constructor, if undeclared, is considered nontrivial. Under these conditions, the compiler, in the absence of 
-        a declared copy constructor, must synthesize a copy constructor in order to correctly implement the initialization
-        of one class object with another.
+        a declared copy constructor, must synthesize a copy constructor in order to correctly implement 
+        the initialization of one class object with another.
  
 2.3 Program Transformation Semantics
     Explicit Initialization:
         The required program transformation is two-fold:
             1. Each definition is rewritten with the initialization stripped out.
             2. An invocation of the class copy constructor is inserted.
+
+        X x0;                       // May be transfromed to:
+        void foo_bar() {            void foo_bar() {
+            X x1( x0 );                 X x1, x2, x3;
+            X x2 = x0;                  x1.X::X( x0 );
+            X x3 = x( x0 );             x2.X::X( x0 );
+            // ...                      x3.X::X( x0 );
+        }                           }
+
     Argument Initialization:
-        The implementation is to copy construct the actual argument directly onto its place within the function's 
-            activation recored on the program stack. Prior to the return of the function, the local object's destructor
-            , if defined, is applied to it. 
+        Passing a class object as an argument to a function (or as that function's return value) is equivalent to the 
+        following form of initialization:
+            X xx = arg; // xx refers to formal argument, foo(X xx);
+
+        1. One implementation strategy is to introduce a temporary object, initialize it with a call of the copy
+            constructor, and then pass that temporary object to the function.
+        2. The another implementation is to copy construct the actual argument directly onto its place within the 
+            function's activation recored on the program stack. Prior to the return of the function, the local object's 
+            destructor, if defined, is applied to it. 
+
     Return Value Initialization:
-        1. Add an additonal argument of type reference to the class object. This argument will hold the copy constructed
-            "return type".
-        2. Insert an invocation of copy constructor prior to the return statement to initialize the added arguement
-            with value of the object being returned.
-        3. A final transformation rewrites the function to have it not return a value.
+        X bar() {
+            X xx;
+            // process xx ...
+            return xx;
+        }
+        Stroustrup's solution in cfront is a two-fold transformation:
+            1. Add an additional argument of type reference to the class object. This argument will hold the copy 
+                constructed "return value."
+            2. Insert an invocation of the copy constructor prior to the return statement to initialize the added 
+                argument with the value of the object being returned.
+                
+        The codes are transformed to:
+        void bar( X& __result ) {
+            X xx;
+            // compiler generated invocation of default constructor
+            xx.X::X();
+            // ... process xx
+            // compiler generated invocation of copy constructor
+            __result.X::X( xx );
+            return; 
+        }
+
     Optimization at Compiler Level:
         All return statements return the same named value, it is possible for the compiler itself to optimize the
             function by substituting the result arguement for the named return value. This optimization referred to 
             as the Named Return Value(NRV) optimization.
+
 2.4 Member Initialization List:
     Member Initialization list is used in order for program to compile:
         1. When initialize a reference member
