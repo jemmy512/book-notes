@@ -78,7 +78,7 @@ Layout costs for Adding Encapsulation:
         4. Brace initialize the elements of an array or elements of aggregate class
 
     Default Memberwise Initializaion
-        If the class does not provide an explicit copy constructor? Each class object initialized with another object
+        If the class does not provide an explicit copy constructor. Each class object initialized with another object
         of its class is initialized by what is called default memberwise initialization.
 
         A class object can be copied in two way:
@@ -95,7 +95,7 @@ Layout costs for Adding Encapsulation:
             2. When the class is derived from a base class for which a copy constructor exists(either explicity declared
                 synthesized by compiler).
             3. When the class declares one or more virtual functions.
-            4. When the class is derived from an inheritance chain in which one or more base class are vitual.
+            4. When the class is derived from an inheritance chain in which one or more base class are virtual.
 
     Global objects are guaranteed to have their associated memory "zeroed out" at program start-up. Local objects 
     allocated on the program stack and heap objects allocated on the free-store do not have their associated memory 
@@ -118,7 +118,7 @@ Layout costs for Adding Encapsulation:
 
     The copy between objects of the same level of hierarchy is bitwise copy semantics
         The initialization of one ZooAnimal class object with another or one Bear class object with another is 
-        straightforward and could actually be im-plemented with bitwise copy semantics.
+        straightforward and could actually be implemented with bitwise copy semantics.
 
 
     Summary:
@@ -175,10 +175,24 @@ Layout costs for Adding Encapsulation:
             return; 
         }
 
+    Optimization at the User Level:
+
     Optimization at Compiler Level:
         All return statements return the same named value, it is possible for the compiler itself to optimize the
             function by substituting the result arguement for the named return value. This optimization referred to 
             as the Named Return Value(NRV) optimization.
+
+        X bar() {                   bar(X& _result) {
+            X xx;                       _result.X::XX();
+            // processing xx            // processing...
+            return xx;                  return;
+        }                           }  
+
+    The Copy Constructor: To Have or To Have Not?
+
+    Summary:
+        Also, the compiler optimizes away the copy constructor invocation where possible, replacing the NRV with and 
+        additional first argument within which the value is stored directly. 
 
 2.4 Member Initialization List:
     Member Initialization list is used in order for program to compile:
@@ -195,6 +209,9 @@ Layout costs for Adding Encapsulation:
             private:
                 int i, j;
             };
+
+    The compiler iterates over and possibly reorders the initialization list to reflect the declaration order of the 
+    members. It inserts the code within the body of the constructor prior to any explicit user code.
   
 ********************************************** 3. The Semantics of Data *******************************************
     class X {};
@@ -204,16 +221,25 @@ Layout costs for Adding Encapsulation:
     
     An empty class is never empty, it has an associated size of 1 byte -- a char member inserted by compiler in order
         to allocate unique address for object in memory.
+
     The size of class Y and class Z on any machine is the interplay of three factors:
         1. Language support overhead. Within the derived class, this overhead is reflect as some form of pointer,
             either virtual base class subojbect or to an associated table within which either the address or offset
             to the virutal base class suboject is stored.
         2. Compiler optimization of recognized special cases. 
         3. Alignment constraints.
+
+    Static data members are maintained within the global data segment of the program and do not affect the size of 
+    individual class objects.
+
 3.1 The Binding of A Data Member    
     The analysis of the member function's body is delayed until the entire class declaration is seen. Thus the binding
         of a data member within the body of an inline member function does not occur until the after the entire class
         declaration is seen.
+
+    When the subsequent declaration of the nested type is encountered, the Standard requires that the 
+    earlier bindings be flagged as illegal.
+
 3.2 Data Member Layout
     The Standard requires within an access section(private, public, protected) only that the member be set down such 
         that "later members have higher address within a class object".
