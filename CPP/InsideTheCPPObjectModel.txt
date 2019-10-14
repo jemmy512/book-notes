@@ -243,13 +243,23 @@ Layout costs for Adding Encapsulation:
 3.2 Data Member Layout
     The Standard requires within an access section(private, public, protected) only that the member be set down such 
         that "later members have higher address within a class object".
+
+    What might intervene between the declared members? 
+        1. Alignment constraints on the type of a succeeding member may require padding.
+        2. The compiler may synthesize one or more additional internal data members in support of the Object Model.
+            2.1 The standard allows the compiler the freedom to insert these internally generated members anywhere, 
+                even between those explicitly declared by the programmer.
+            2.2 The Standard also allows the compiler the freedom to order the data members within multiple access 
+                sections within a class in whatever order it sees fit.
+
 3.3 Access of Data Member
     Static Data Member:
         1. Each member's access permission and class association is maintained without incurring any space or runtime
             overhead either in the individual class object or in the static data member itself.
         2. A single instance of each class static data member is stored within the data segment of the program. Each
             reference to the static member is internally translated to be a direct reference of that single extern
-            instance.
+            instance, this is the only case in the language where the access of a member through a pointer and through 
+            an object are exactly equivalent in terms of the instructions actually executed.
         3. No mater static member is an inherited member of a complex inheritance hierarchy, there is still only a 
             single instance of the member within the program, an its access is direct.
         4. When static data member is invocated by a function, the Standard C++ explicitly require the function should
@@ -263,32 +273,104 @@ Layout costs for Adding Encapsulation:
             static data member [name-mangling] to yield a unique program identifier.
     NonStatic Data Member:
         1. Nonstatic data members are stored directly within each class obejct and cannot be accessed except through an 
-            explicit or implicit class object. An implicit class object is present whenever the programmer directly accesses
-            a nonstatic data member within a member function.
+            explicit or implicit class object. An implicit class object is present whenever the programmer directly 
+            accesses a nonstatic data member within a member function.
         2. Access of a nonstatic data member requires the addition of the begining address of the class object with
             the offset location of the data member.
                 origin._y = 0.0;
                 &origin._y == &origin + (&Point3d::_y - 1);
-            The offset of each nonstatic data member is known at compilr time, so access of a nonstatic data member is 
-                equivalent in performance to that of a C struct member or the member of a nonderived class.
+        3. The offset of each nonstatic data member is known at compile time, even if the member belongs to a base 
+            class subobject derived through a single or multiple inheritance chain. Access of a nonstatic data member, 
+            therefore, is equivalent in performance to that of a C struct member or the member of a nonderived class.
         3. Virtual inheritance introduces an additional level of indirection in the access of its member throuth a 
             base class suboject.
             Point3d *pt3d;  pt3d->_x = 0.0;
-            Performs equivalently if _x is a member of a struct, class, single inheritance hierarchy, or multiple inheritance
-            hierarchy, but it performs slower if it is a member of virutal base class.
-        4. Access a data member through a pointer or class object is significantly different when class is a derived class 
-            contianing a virutal base class within its inheritance hirarchy and the member being accesed is an inherited 
-            member of that virtual base class. In this case, with pointer, we cannot say with any certainty which class
-            type pt address (and therefore we cannot know at compile time the actual offset location of the member),
-            so the resolution of the access must be delayed until runtime through an additional indrection.
+            Performs equivalently if _x is a member of a struct, class, single inheritance hierarchy, or multiple 
+                inheritance hierarchy, but it performs slower if it is a member of virutal base class.
+        4. Access a data member through a pointer or class object is significantly different when class is a derived 
+            class contianing a virutal base class within its inheritance hierarchy and the member being accesed is an 
+            inherited member of that virtual base class. In this case, with pointer, we cannot say with any certainty 
+            which class type pt address (and therefore we cannot know at compile time the actual offset location of the 
+            member), so the resolution of the access must be delayed until runtime through an additional indrection.
             But this is not the case with class object, its type is clear, and the offset location of even inherited 
             virutal bases class member are fixed at compile time.
+
 3.4 Inheritance and the Data Member
+    The actual ordering of the derived and base class parts is left unspecified by the Standard. In theory, a compiler 
+        is free to place either the base or the derived part first in the derived class object. In practice, the base 
+        class members always appear first, except in the case of a virtual base class.
+
     Inheritance without Polymorphism
+        If the language were to pack the derived class members Concrete2::bit2 or Concrete3::bit3 into the Concrete1 
+        subobject, these language semantics could not be preserved. An assignment would overwrite the values of the 
+        packed inherited members.
+
+        Base *base1, *base2;
+        Drive *derive;
+
+        base1 = base2 = new Base();
+        base1 = derive;
+        *base1 = *base1; // inherited member in derive will overwrite
+
     Addind Polymorphism
+        Polymorphism introduce a number of space and access-time overheads:
+            1. Introduction of a virtual table to hold the address of each virtual function it declares. The size of 
+                this table in general is the number of virtual functions declared plus an additional one or two slots 
+                to support runtime type identification.
+            2. Introduction of the vptr within each class object. The vptr provides the runtime link for an object to 
+                efficiently find its associated virtual table.
+            3. Augmentation of the constructor to initialize the object's vptr to the virtual table of the class. 
+                Depending on the aggressiveness of the compiler's optimization, this may mean resetting the vptr within 
+                the derived and each base class constructor.
+            4. Augmentation of the destructor to reset the vptr to the associated virtual table of the class. (It is 
+                likely to have been set to address the virtual table of the derived class within the destructor of the 
+                derived class. Remember, the order of destructor calls is in reverse: derived class and then base 
+                class.) An aggressive optimizing compiler can suppress a great many of these assignments.
+
     Multiple Inheritance
+        Up/down cast:
+            The assignment of the address of a multiply derived object to a pointer of its leftmost (that is, first) 
+                base class is the same as that for single inheritance, since both point to the same beginning address. 
+            The cost is simply the assignment of that address. The assignment of the address of a second or subsequent 
+                base class, however, requires that that address be modified by the addition (or subtraction in the case 
+                of a downcast) of the size of the intervening base class subobject(s).
+
+        What about access of a data member of a second or subsequent base class?
+            The member's location is fixed at compile time. Hence its access is a simple offset the same as under 
+            single inheritance regardless of whether it is a pointer, reference, or object through which the member is 
+            being accessed.
+
     Virutal Inheritance
+        A class containing one or more virtual base class subobjects is divided into two regions: an 
+            invariant region and a shared region. Data within the invariant region remains at a fixed offset from the 
+            start of the object regardless of subsequent derivations. So members within the invariant region can be 
+            accessed directly. The shared region represents the virtual base class subobjects. The location of data 
+            within the shared region fluctuates with each derivation. So members within the shared region need to be 
+            accessed indirectly. What has varied among implementations is the method of indirect access. 
+
+        How is the implementation to gain access to the shared region of the class? 
+            A pointer to each virtual base class is inserted within each derived class object. Access of the inherited 
+            virtual base class members is achieved indirectly through the associated pointer.
+
+        There are two primary weaknesses with this implementation model:
+            1. An object of the class carries an additional pointer for each virtual base class. Ideally, we want a 
+                constant overhead for the class object that is independent of the number of virtual base classes within 
+                its inheritance hierarchy. Think of how you might solve this.
+            2. As the virtual inheritance chain lengthens, the level of indirection increases to that depth. This means 
+                that three levels of virtual derivation requires indirection through three virtual base class pointers. 
+                Ideally, we want a constant access time regardless of the depth of the virtual derivation.
+
+        There are two general solutions to the first problem. 
+            1. Microsoft's compiler introduced the virtual base class table. Each class object with one or more virtual 
+                base classes has a pointer to the virtual base class table inserted within it.
+            2. Bjarne's solution is to place not the address but the offset of the virtual base class within the virtual 
+                function table.
+
+        In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no 
+            associated data members.
+
         https://www.nowcoder.com/profile/3669004/note/detail/232803
+
 3.5 Object Member Efficiency
 3.6 Poiner to Data Member
     
