@@ -355,7 +355,7 @@ Layout costs for Adding Encapsulation:
         There are two primary weaknesses with this implementation model:
             1. An object of the class carries an additional pointer for each virtual base class. Ideally, we want a 
                 constant overhead for the class object that is independent of the number of virtual base classes within 
-                its inheritance hierarchy. Think of how you might solve this.
+                its inheritance hierarchy.
             2. As the virtual inheritance chain lengthens, the level of indirection increases to that depth. This means 
                 that three levels of virtual derivation requires indirection through three virtual base class pointers. 
                 Ideally, we want a constant access time regardless of the depth of the virtual derivation.
@@ -363,8 +363,8 @@ Layout costs for Adding Encapsulation:
         There are two general solutions to the first problem. 
             1. Microsoft's compiler introduced the virtual base class table. Each class object with one or more virtual 
                 base classes has a pointer to the virtual base class table inserted within it.
-            2. Bjarne's solution is to place not the address but the offset of the virtual base class within the virtual 
-                function table.
+            2. Bjarne's solution is to place not the address but the offset of the virtual base class within the 
+                virtual function table.
 
         In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no 
             associated data members.
@@ -372,8 +372,68 @@ Layout costs for Adding Encapsulation:
         https://www.nowcoder.com/profile/3669004/note/detail/232803
 
 3.5 Object Member Efficiency
+    In terms of actual program performance, the important point here is that with optimization turned on, no runtime 
+        performance cost for encapsulation and the use of inline access functions was exhibited.
+
+    Single inheritance should not affect the test performance, since the members are stored contiguously within the 
+        derived class object and their offsets are known at compile time.
+
+    The lesson again is that the programmer concerned with efficiency must actually measure the performance of his or 
+        her program and not leave the measurement of the program to speculation and assumption. It is also worth noting 
+        that optimizers don't always work.
+
+    The virtual inheritance performance is disappointing in that neither compiler recognized that the access of the 
+        inherited data member pt1d::_x is through a nonpolymorphic class object and that therefore indirect runtime 
+        access is unnecessary. Both
+
 3.6 Poiner to Data Member
+    class Point3d {
+    public:
+        virtual ~Point3d();
+        // ... protected:
+        static Point3d origin;
+        float x, y, z;
+    };
+
+    What does it mean, then, to take the address of one of the coordinate members?
+        auto offset = &3d_point::z;
+        It is going to yield the z-coordinate's offset within the class object. Minimally, this has to be the size of 
+        the x and y members, since the language requires the members within an access level be set down in the order of 
+        declaration.
+
+    The value returned from taking the member's address, however, is always bumped up by 1. Thus the actual values are 
+        1, 5, and 9, and so on. 
+    Do you see why Bjarne decided to do that?
+        The problem is distinguishing between a pointer to no data member and a pointer to the first data member.
+
+    Taking the address of a nonstatic data member yields its offset within the class, taking the address of a data 
+        member bound to an actual class object yields the member's actual address in memory. 
+
+3.7 Efficiency of Pointers to Members
+    Point3d pA, pB;
+                                                                        optimized           non-optmized
+    Direct Access:              int px = PA.x;                           0.8                 1.42
+    Point to bound member:      int* px = &pA.x;                         0.8                 3.04
+    Point to data member:       int Point3d::*px = &Point3d::x;          0.8                 5.34
+
+    The optimized results are same, but non-optimized results show:
+        1. The addition of one indirection per member access through the bound pointer more than doubles the execution 
+            time.
+        2. The pointer-to-member access again nearly doubles the execution time.
+            The binding of the pointer to data member to the class object requires the addition of the offset minus 1 
+            to the address of the object. 
+
+                Optimized                       Non-optimized
+                No Inheritance  0.80            5.34
+                SI (3 levels)   0.80            5.34
+                VI (1 level)    1.60            5.44
+                VI (2 level)    2.14            5.51
+                        SI:  Single Inheritance                 VI:  Virtual Inheritance
+    Inherited data members are stored directly within the class object, the introduction of inheritance does not affect 
+        the performance of the code at all. The major impact of introducing virtual inheritance is to impede the 
+        effectiveness of the optimizer.
     
+
   
 ********************************************** 4. The Semantics of Function ***************************************
 4.1 Varieties of Member Invocation
@@ -398,6 +458,20 @@ Layout costs for Adding Encapsulation:
                 extern magningtude_7Point3dFv(register Point3d *const this);
         3. Name Mangling
             In general, member names are made unique by concatenating the name of the member with that of the class.
+
+        Point3d Point3d::normalize() const
+        {
+            register float mag = magnitude();
+            return Point3d( _x/mag, _y/mag, _x/mag );
+        }
+        Is transformed into:
+        void normalize__7Point3dFv( register const Point3d *const this, Point3d &__result ) {
+            register float mag = this->magnitude();
+            // __result substituted for return value __result.Point3d::Point3d(
+            this->_x/mag, this->_y/mag, this->_z/mag );
+            return; 
+        }
+
     Virtual Member Function:
         1. ptr->normalize(); [ internally transformed to >>> (*ptr->vptr[1])(ptr);
         2. magnitude() were a virtual function, its invocation within normalize() would be transformed to:
@@ -405,47 +479,186 @@ Layout costs for Adding Encapsulation:
             register float mag = (*this->vptpr[2])(this);
             register float mag = Point3d::magnitude();
             register float mag = magnitude_7Point3dFv(this);
+
+        The invocation of a virtual function through a class object should always be resolved by 
+            your compiler as an ordinary nonstatic member function.
+        
     Static Member Function:
+        A static member function, both its invocations would be internally transformed into "ordinary" nonmember 
+            function calls such as:
+            obj.normalize();    // normalize__7Point3dSFv();
+            ptr->normalize();   // normalize__7Point3dSFv();
+ 
         1. Characteristics of static memeber function:
             1.1 without 'this' pointer
             1.2 Cannot directly access the nonstatic members of its class
             1.3 Cannot be declared const, volatitle, virutal
             1.4 Does not need to invoked throuth an object of its class.
-        2. Static member functions, by beging this-less and therefore of the same type as an equivalent nonmember
-            function.
+
+        If the class object is obtained as a side effect of some expression, such as a function call:
+            if ( foo().object_count() > 1 )     //The expression still needs to be evaluated:
+            (void) foo();                       // transformation to preserve side-effects 
+            if ( Point3d::object_count() > 1 )
+        
+        Taking the address of a static member function always yields the value of its location in memory.
+
+        Static member functions, by beging this-less and therefore of the same type as an equivalent nonmember function.
+
 4.2 Virtual Member Functions:
+
+    Virtual function implementation model: 
+        the class-specific virtual table that contains the addresses of the set of active virtual functions for the 
+        class and the vptr that addresses that table inserted within each class object.
+
+    To support a virtual function mechanism, some form of runtime type resolution applied to polymorphic objects must 
+        be supported. That is, if we have the call
+        ptr->z();
+        there needs to be some information associated with ptr available at runtime such that the
+        appropriate instance of z() can be identified, found, and invoked.   
+
     In C++ polymorphism "exhibits" itself as the potential addressing of a derived class object through a pointer
         or reference of a public base class.
+
+    What information is needed to invoke the correct runtime instance of z()? We need to know: 
+        1. the actual type of the object addressed by ptr. This allows us to choose the correct instance of z();
+        2. the location of that instance of z() in order to invoke it.
+
+    The virtual table is generated on a per-class basis. Each table holds the addresses of all the virtual function 
+        instances "active" for objects of the table's associated class. These active functions consist of the following:
+        1. An instance defined within the class, thus overriding a possible base class instance
+        2. An instance inherited from the base class, should the derived class choose not to override it
+        3. A pure_virtual_called() library instance that serves as both a placeholder for a pure virtual function and a 
+            runtime exception should the instance somehow be invoked.
+
+    What happens when a class is subsequently derived from calss having virutal funtions:
+        1. It can inherit the instance of the virtual function declared within the base class. Literally, the address 
+            of that instance is copied into the associated slot in the derived class's virtual table.
+        2. It can override the instance with one of its own.
+        3. It can introduce a new virtual function not present in the base class. In this case, the virtual table is 
+            grown by a slot and the address of the function is placed within that slot.
+
+    How do we know enough at compile time to set up the virtual function call?
+        1. In general, we don't know the exact type of the object ptr addresses at each invocation of z(). We do know, 
+            however, that through ptr we can access the virtual table associated with the object's class.
+        2. Although we again, in general, don't know which instance of z() to invoke, we know that each instance's 
+            address is contained in slot 4.
+
+
     Virtual Function Under MI:
-    Three cases that the presence of second or subsequent base class affect support of virtual functions:
-        1. Derived class virtual function is invoked through a pointer of second base classs.
-        2. invocation of the inherited virtual function of the second base class through a derived class pointer.
-        3. allows the return type of a virtual function to vary with regard to the base and publicly 
-            derived types of an inheritance hierarchy. <P 124 EN>
+        The complexity of virtual function support under multiple inheritance revolves around the second and 
+            subsequent base classes and the need to adjust the this pointer at runtime. 
+
+        Base2 *pbase2 = new Derived;
+        The address of the new Derived object must be adjusted to address its Base2 subobject. The code to accomplish 
+            this is generated at compile time:
+                Derived *temp = new Derived;    // transformation to support second base class 
+                Base2 *pbase2 = temp ? temp + sizeof( Base1 ) : 0;
+            Without this adjustment, any nonpolymorphic use of the pointer would fail.
+
+        When the programmer now wants to delete the object addressed by pbase2,
+            // must first invoke the correct virtual instance of the destructor, then apply operator delete
+            // pbase2 may required to be readjusted to address the beginning of the complete object
+            delete pbase2;
+            the pointer must be readjusted in order to again address the beginning of the Derived class object 
+            (presuming it still addresses the Derived class object). This offset addition, however, cannot directly be 
+            set up at compile time because the actual object that pbase2 addresses generally can be determined only at 
+            runtime.
+
+        The thunk is a small assembly stub that (a) adjusts the this pointer with the appropriate offset and then (b) 
+            jumps to the virtual function. 
+
+??      The general rule is that the this pointer adjustment of a derived class virtual function invocation through a 
+            pointer (or reference) of a second or subsequent base class must be accomplished at runtime.
+
+        Three cases that the presence of second or subsequent base class affect support of virtual functions:
+            1. Derived class virtual function is invoked through a pointer of second base classs.
+                Base2 *ptr = new Derived;
+                // invokes Derived::~Derived
+                // ptr must be adjusted backward by sizeof( Base1 ) 
+                delete ptr;
+            2. invocation of the inherited virtual function of the second base class through a derived class pointer.
+                Derived *pder = new Derived;
+                // invokes Base2::mumble()
+                // pder must be adjusted forward by sizeof( Base1 ) 
+                pder->mumble();
+            3. allows the return type of a virtual function to vary with regard to the base and publicly derived types 
+                of an inheritance hierarchy.
+                Base2 *pb1 = new Derived;
+                // invokes Derived* Derived::clone()
+                // return must be adjusted to address Base2 subobject 
+                Base2 *pb2 = pb1->clone();
+
+    Virtual Functions under Virtual Inheritance
+
+
 4.3 Function Efficiency
-    A nonmember, static member, and nonstatic member function are internally transformed into equivalent representations.
-        So there is no difference inperformance between these three forms.
+    A nonmember, static member, and nonstatic member function are internally transformed into equivalent 
+        representations. So there is no difference in performance between these three forms.
+    
     Inline expansion not only saves the overhead associated with a function call but also provides additional
         opportunities for program optimization.
+
+    Virtual invocation under both single and multiple inheritances share the same overhead. Under the thunk model, of 
+        course, the this pointer adjustment costs are localized to those calls requiring it.
+
+    With each additional level of inheritance I added, the performance time of the virtual function executable 
+        increased significantly, because each additional level of inheritance adds an additional setting of the vptr.
+
+    The language does not provide a mechanism by which to indicate that an invocation of a default constructor is 
+        unnecessary and should be elided. That is, the declaration of the local pC class object does not in our use of 
+        it require a constructor to be applied, but we can eliminate its invocation only by eliminating our use of 
+        the local object.
+
 4.4 Pointer to Member Functions
+
+    double          // return type
+    ( Point::*      // class the function is member
+    pmf )           // name of pointer to member
+    ();             // argument list
+
+    double (Point::*coord)() = &Point::x;   // define and initialize a pointer to class member
+    coord = &Point::y;                      // assign a value
+    ( origin.*coord )();                    // transfromed to ( coord )( & origin );
+    ( ptr->*coord )();                      // transformed to ( coord )( ptr );
+
     A pointer to member would be no more expensive than a nonmember pointer to function if it weren't for virutal 
         function and multiple inheritance, which complicate both the type and invocation of a pointer to member.
-    4.4.1 Supporting Pointer-to-Virtual-Member Functions
+
+    Supporting Pointer-to-Virtual-Member Functions
+        Virtual mechanism still work using pointer-to-member functions.
+
         Taking the address of a nonstatic member function yields its address in memory.
-        Taking the address of a virtual   member function yields its index into it's associated virtual table.
+        Taking the address of a virtual member function yields its index into it's associated virtual table.
         
         Evaluation of a pointer-to-member function is complicated by the dual values (nonvirutal and virutal)
-            it can hold and by the very different invocation strategies those value require. 
-            (((int)pmf) & 127) ? (*pmf)(ptr) : (*ptr->vptr[(int)pmf](ptr));
-    4.4.2 Pointer-to-Member Function Under MI
-        struct _mptr {                             (ptr->*pmf)();         
+            it can hold and by the very different invocation strategies those value require.
+        One yields an address in memory (a large number) and the other an index into the virtual table (a small number)
+            . Internally, the compiler must define pmf such that (a) it can hold both values and (b) more important, 
+            the type of the value can be distinguished.
+            (((int)pmf) & ~127) 
+                ? (*pmf)(ptr)                       // non-virtual invocation
+                : (*ptr->vptr[(int)pmf](ptr));      // virtual invocation
+            This implementation assumes a limit of 128 virtual functions to an inheritance graph. This is not desirable, 
+                but in practice it has proved viable.
+
+    Pointer-to-Member Function Under MI
+        // fully general structure to support pointer to member functions under MI
+        struct __mptr { //          
             int delta;  // offset of this pointer  (pmf.index < 0) ? (*pmf.addr)(ptr) : (*ptr->vptr[pmf.indx](ptr));
-            int index;
+            int index;  // index in the virtual table
             union {
-                ptrtofunc   faddr;
-                int         v_offset;
+                ptrtofunc  faddr;
+                int        v_offset; // holds the location of the vptr of a virtual(or second or subsequent)base class.
             };
         };
+        (ptr->*pmf)(); becames  ( pmf.index < 0 )
+                                    ? ( *pmf.faddr )( ptr )                 // non-virtual invocation 
+                                    : ( * ptr->vptr[ pmf.index ]( ptr );    // virtual invocation
+        Microsoft removed this check (and therefore the presence of the index member) by introducing what it terms a 
+            vcall thunk.
+
+    Pointer-to-Member Efficiency
+
 4.5 Inline Function
     There are two phases to the handling of an inline function:
         1. The analysis of the function definition to determine the "intrisic inline-ability" of the function.
@@ -455,21 +668,161 @@ Layout costs for Adding Encapsulation:
             management of temporaries.
     
     4.5.1 Formal Arguments
-        What happens during inline function expasion?
+        What happens during inline function expasion? Each formal argument is replaced with its corresponding actual 
+            argument
             1. If the actual arguments exhibits a side effect, there will be a tempory ojbect.
-            2. If the actual argument is a constant expression, we'd like to evaluated prior to its substitution.
-            3. If it is neither a constanct expression nor an expression with side effect, a straight substitution
+            2. If the actual argument is a constant expression, we'd like to evaluated prior to its substitution. 
+                subsequent constant folding may also be performed. 
+            3. If it is neither a constant expression nor an expression with side effect, a straight substitution
                 of each argument with associated formal argument is carried out.
           inline int min(int a, int b) {return a < b ? a : b; }
           min(va, vb);              // return va < vb ? va : vb;
-          min(12, 13);              // return 12 < 13 ? 12 : 13;         
+          min(12, 13);              // return 12;         
           min(foo(), bar() + 1);    // tmp1 = foo(), tmp2 = bar()+ 1; return tmp1 < tmp2 ? tmp1 : tmp2; 
+
     4.5.2 Local Variables
+        The combination of local variables within an inline function together with arguments to the call with side 
+            effects can result in a surprising number of internally generated temporaries within the site of the 
+            expansion, particularly if it is expanded multiple times within a single expression. 
+
+        Arguments with side effects, multiple calls within a single expression, and multiple local variables within the 
+            inline itself can all create temporaries that the compiler may or may not be able to remove.
         
         
 ********************************************** 5. Semantics of Construction, Destruction, and Copy ****************
-Presence of a Pure Virtual Function
+
+Presence of a Pure Virtual Destructor
+    Every derived class destructor is internally augmented to statically invoke each of its virtual base and immediate 
+        base class destructors.
+
     Pure virtual destructor must be defined by the class designer:
         Every derived class destructor is internally augmented to statically invoke each of its virtual base and
         immediate base class destructor. The absence of a definition of any of the base class destructor in general
         results in a link-time error.
+
+Presence of a Virtual Specification
+    It is still a bad design choice to declare all functions virtual and to depend on the compiler to optimize away 
+        unnecessary virtual invocations.
+
+Presence of const within a Virtual Specification
+
+A Reconsidered Class Declaration
+
+5.1 Object Construction without Inheritance
+    Abstract Data Type
+        There are three drawbacks of an explicit initialization list:
+            1. It can be used only if all the class members are public.
+            2. It can specify only constant expressions (those able to be evaluated at compile time).
+            3. Because it is not applied automatically by the compiler, the likelihood of failure to initialize an 
+                object is significantly heightened.
+
+    Preparing for Inheritance
+        The compiler, in an optimization, may copy contiguous chucks of one object into another rather than implement a 
+            strict memberwise assignment. 
+        
+        The Standard requires implementations to defer the actual synthesis of these nontrivial members until an actual use is encountered.
+
+        In general, if your design includes a number of functions requiring the definition and return of a local class 
+            object by value, then it makes good sense to provide a copy constructor even if the default memberwise 
+            semantics are sufficient. Its presence triggers the application of the NRV optimization.
+
+5.2 Object Construction under Inheritance
+    The general sequence of compiler augmentations is as follows:
+        1. The data members initialized in the member initialization list have to be entered within the body of the 
+            constructor in the order of member declaration.
+        2. If a member class object is not present in the member initialization list but has an associated default 
+            constructor, that default constructor must be invoked.
+        3. Prior to that, if there is a virtual table pointer (or pointers) contained within the class object, it (they) must be initialized with the address of the appropriate virtual table(s).
+        4. Prior to that, all immediate base class constructors must be invoked in the order of base class declaration 
+            (the order within the member initialization list is not relevant).
+            o If the base class is listed within the member initialization list, the explicit arguments, if any, must 
+                be passed.
+            o If the base class is not listed within the member initialization list, the default constructor (or 
+                default memberwise copy constructor) must be invoked, if present.
+            o If the base class is a second or subsequent base class, the this pointer must be adjusted.
+        5. Prior to that, all virtual base class constructors must be invoked in a left-to-right, depth-first search of 
+            the inheritance hierarchy defined by the derived class.
+            o If the class is listed within the member initialization list, the explicit arguments, if any, must be 
+                passed. Otherwise, if there is a default constructor associated with the class, it must be invoked.
+            o In addition, the offset of each virtual base class subobject within the class must somehow be made 
+                accessible at runtime.
+            o These constructors, however, may be invoked if, and only if, the class object represents the 
+                "most-derived class." Some mechanism supporting this must be put into place.
+        
+    When generating the copy operator, it does not condition the copy by a guard of the form
+        if ( this == &rhs ) return *this;
+
+    In the case of a compiler-synthesized copy operator, the duplication is safe but redundant, since no deallocation 
+        of resources is involved. Failure to check for an assignment to self in a user-supplied copy operator is a 
+        common pitfall of the beginner programmer.
+            String& String::operator=( const String &rhs ) {
+                // need guard here before deallocate resources delete [] str;
+                str = new char[ strlen( rhs.str ) + 1 ];
+                ...
+            }
+    
+    Virtual Inheritance
+        The conventional constructor augmentation does not work due to the shared nature of the virtual base class
+
+        The traditional strategy for supporting this sort of "now you initialize the virtual base class, now
+            you don't" is to introduce an additional argument in the constructor(s) indicating whether the virtual base 
+            class constructor(s) should be invoked.
+
+        Virtual base class constructors are invoked when a complete class object is being defined, they are not invoked 
+            when the object serves as a subobject of an object of a subsequently derived class.
+
+        Some newer implementations split each constructor into a complete object and a subobject instance. The complete 
+            object version unconditionally invokes the virtual base constructors, sets all vptrs, and so on. The 
+            subobject version does not invoke the virtual base class constructors, may possibly not set the vptrs, and 
+            so on.
+
+    The Semantics of the vptr Initialization
+        Within the constructors (and destructor) of a class, the invocation of a virtual function by the object under 
+            construction is limited to the virtual functions active within the class.
+
+        This is necessary because of the class order of constructor invocation: Classes are built from the bottom up 
+            and then the inside out. As a result, the derived instance is not yet constructed while the base class 
+            constructor executes. 
+
+        What actually determines the virtual function set active for a class: the virtual table. 
+        How is that virtual table accessed and thus the active set of virtual functions determined? 
+            By the address to which the vptr is set. So to control the set of active functions for a class, the 
+                compilation system need simply control the initialization and setting of the vptr. (It is the 
+                    compiler's responsibility to set the vptr, of course, not something the programmer need or should 
+                    worry about.)
+
+        If each constructor waits to set its object's vptr until after its base class constructors have executed, then 
+            the correct instance of the virtual function is invoked each time.
+
+        By having each base class constructor set its object's vptr to the virtual table associated with its class, the 
+            object under construction literally becomes an object of that class for the duration of the constructor. 
+            That is, a PVertex object in turn becomes a Point object, a Point3d object, a Vertex object, a Vertex3d 
+            object, and then a PVertex object.
+
+        The general algorithm of constructor execution is as follows:
+            1. Within the derived class constructor, all virtual base class and then immediate base class constructors 
+                are invoked.
+            2. That done, the object's vptr(s) are initialized to address the associated virtual table(s).
+            3. The member initialization list, if present, is expanded within the body of the constructor. This must be 
+                done after the vptr is set in case a virtual member function is called.
+            4. The explicit user-supplied code is executed.
+
+        Is it safe to invoke a virtual function of the class within its constructor's member initialization list?
+            It is always safe when the function is applied to the initialization of a data member of the class. This is 
+            because, as we've seen, the vptr is guaranteed to have been set by the compiler prior to the expansion of 
+            the member initialization list. It may not be semantically safe, however, because the function itself may 
+            depend on members that are not yet initialized. It is not an idiom I recommend. However, from the point of 
+            view of the integrity of the vptr, it is a safe operation.
+
+        When providing an argument for a base class constructor, it's not safe. The vptr is either not set or set to 
+            the wrong class. Further, any of the data members of the class that are accessed within the function are 
+            guaranteed to not yet be initialized.
+
+5.3 Object Copy Semantics
+
+
+********************************************** 6. Runtime Semantics ***********************************************
+
+
+********************************************** 7. On the Cusp of the Object Model *********************************
+
