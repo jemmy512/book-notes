@@ -819,10 +819,151 @@ A Reconsidered Class Declaration
             guaranteed to not yet be initialized.
 
 5.3 Object Copy Semantics
+    A copy assignment operator is necessary only if the default behavior results in semantics that are either unsafe or 
+        incorrect.
+
+    I recommend not permitting the copy operation of a virtual base class whenever possible. An even stronger 
+        recommendation: Do not declare data within any class that serves as a virtual base class.
+
+5.4 Object Efficiency
+    
+5.5 Semantics of Destructor
+    A user-defined destructor is augmented in much the same way as are the constructors, except in reverse order:
+        1. If the object contains a vptr, it is reset to the virtual table associated with the class.
+        2. The body of the destructor is then executed; that is, the vptr is reset prior to evaluating the 
+            user-supplied code.
+        3. If the class has member class objects with destructors, these are invoked in the reverse order of their 
+            declaration.
+        4. If there are any immediate nonvirtual base classes with destructors, these are invoked in the reverse order 
+            of their declaration.
+        5. If there are any virtual base classes with destructors and this class represents the most-derived class, 
+            these are invoked in the reverse order of their original construction.
+
+    As with constructors, current thinking on the best implementation strategy for the destructor is to maintain two 
+        destructor instances:
+        1. A complete object instance that always sets the vptr(s) and invokes the virtual base class destructors
+        2. A base class subobject instance that never invokes the virtual base class destructors and sets the vptr(s) 
+            only if a virtual function may be invoked from within the body of the destructor
 
 
 ********************************************** 6. Runtime Semantics ***********************************************
+6.1 Object Construction and Destruction
+    In general, place an object as close as possible to the code segment actually using it. Doing this can save you 
+        unnecessary object creation and destruction
 
+    Global Objects
+
+    Local Static Objects
+        const Matrix& identity() {
+            static Matrix mat_identity; // ...
+            return mat_identity;
+        }
+        What are the guaranteed semantics of the local static class object?
+            1. mat_identity must have its constructor applied only once, although the function may be invoked multiple 
+                times.
+            2. mat_identity must have its destructor applied only once, although again the function may be invoked 
+                multiple times.
+
+    Arrays of Objects
+        Point knots[ 10 ];
+        If Point defines neither a constructor nor a destructor, then we need do no more than what is done for an array 
+            of built-in types, that is, allocate memory sufficient to store ten contiguous elements of type Point.
+
+        Point, however, does define a default constructor, so it must be applied to each of the elements in turn. In 
+            general, this is accomplished through one or more runtime library functions.
+
+    Default Constructors and Arrays
+        Prior to cfront's Release 2.0, declaring an array of class objects meant the class had to declare either no 
+            constructors or a default constructor taking no arguments. A constructor taking one or more default 
+            arguments was not permitted.
+        The solution is to generate an internal stub constructor that takes no arguments. Within the body, the 
+            user-supplied constructor is invoked, with the default arguments made explicit. Of course, the stub 
+            instance is generated and used only if an array of class objects is actually created.
+
+6.2 Operators new and delete
+
+    new T[ 0 ];
+    The language requires that each invocation of operator new return a unique pointer. The conventional way of solving 
+        this is to return a pointer to a default 1-byte memory chunk (this is why size is set to 1). 
+
+    Operator new in practice has always been implemented in terms of the standard C malloc().
+
+    The Semantics of new Arrays
+            
+6.3 Temporary Objects
+    Whether a temporary results depends in part on the aggressiveness of the compiler and in part on the program 
+        context in which the expression occurs.    
+    
+    Any expression of the form
+        T c = a + b; where the addition operator is defined as either
+        T operator+( const T&, const T& ); or T T::operator+( const T& );
+        is implemented without the generation of a temporary.
+    However, that the equivalent assignment statement
+        c = a + b; cannot safely eliminate the temporary. Rather, this results in the following general sequence:
+        // Pseudo C++ code
+        // T temp = a + b;
+        T temp;
+        a.operator+( temp, b );
+        // c = temp
+        c.operator =( temp ); // 2 
+        temp.T::~T();
+    
+    A third form of the expression is without any target:
+        a + b; // no targeta
+        In this case, a temporary is necessarily generated to hold the expression.
+    
+    Temporary objects are destroyed as the last step in evaluating the full-expression that (lexically) contains the 
+        point where they were created.
+    The temporary that holds the result of the expression shall persist until the object's initialization is complete.
+
+    1. here is an initialization that is guaranteed to fail under the new lifetime of temporaries rule:
+        // Oops: not a good idea 
+        const char *progNameVersion = progName + progVersion;
+
+        // Pseudo C++ Code
+        String temp;
+        operator+( temp, progName, progVersion ); 
+        progNameVersion = temp.String::operator char*(); 
+        temp.String::~String();
+        progNameVersion now points into undefined heap memory.
+
+    2. The second exception to the lifetime of temporaries rule concerns when a temporary is bound to a reference.
+        const String &space = " ";
+       
+        // Pseudo C++ Code
+        String temp; 
+        temp.String::String( " " ); 
+        const String &space = temp;
+
+        A temporary bound to a reference persists for the lifetime of the reference initialized or until the end of the 
+            scope in which the temporary is created, whichever comes first.
+
+A Temporary Myth
+    The translation systems we tested are evidently able to eliminate local variables of built-in type, but not local 
+        variables of class type. This is a limitation of C back-ends, not of the C++ front-end, and it appears to be 
+        pervasive, since it appears in both [sic] Sun CC, GNU g++, and HP CC.
+
+    Disaggregation of structs is achievable with modest effort, but has not generally been recognized as an important 
+        optimization prior to the introduction of C++.
 
 ********************************************** 7. On the Cusp of the Object Model *********************************
+7.1 Templates
 
+7.2 Exception Handling
+
+7.3 Runtime Type Identification
+
+    Introducing a Type-Safe Downcast
+
+        A type-safe downcast requires a runtime query of the pointer as to the actual type of the object it addresses. 
+        Thus support for a type-safe downcast mechanism brings with it both space and execution time overhead:
+            1. It requires additional space to store type information, usually a pointer to some type information node.
+            2. It requires additional time to determine the runtime type, since, as the name makes explicit, the 
+            determination can be done only at runtime.
+
+        The C++ RTTI mechanism provides a type-safe downcast facility but only for those types exhibiting polymorphism 
+            (those that make use of inheritance and dynamic binding).
+
+    A Type-Safe Dynamic Cast
+
+    

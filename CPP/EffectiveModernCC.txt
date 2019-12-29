@@ -704,7 +704,7 @@ Item_35: Prefer task-based programming to thread-based
     The std::thread API offers no direct way to get return values from systemchronously run functions, and if thos functions 
     thrown the program is terminated
 
-    Thead-based programming calls for manual management of thread exhustion, oversubsrciption, load balancing, and adaption 
+    Thread-based programming calls for manual management of thread exhustion, oversubsrciption, load balancing, and adaption 
     to new platforms
 
     Taks-based programming via std::aysnc with the default launch policy handles most of these issues for you

@@ -637,6 +637,7 @@ Template programs should try to minimize the number of arguments placed on the a
 Function templates and member functions of class templates are ordinarily put into head file.
 It's up to the caller to guarantee that the arguments passed to the template support any operations that 
     template uses, and that those operations behave correctly in the context in which the template uses them. 
+
 Class Template
     A function of a class template is instantiated only if the program uses that function.
     There is one exception to the rule that when we use a class template we must supply the template arguments 
