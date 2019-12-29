@@ -1,15 +1,20 @@
-Item_1: View C++ as a federation of languages.
-    A multiparadigm programming language, one supporting a combination of procedural, object-oriented, functional
+### Item_1: View C++ as a federation of languages.
+```
+A multiparadigm programming language, one supporting a combination of procedural, object-oriented, functional
         generic and metaprogramming features.
-        
-Item_2: Prefer consts, enums, and inline to #defines.
-    When replacing #define with contants:
+```
+
+### Item_2: Prefer consts, enums, and inline to #defines.
+
+```
+When replacing #define with contants:
         1. Defining constant pointers.
         2. Class-specific constants. To limit the scope of a constant to a class, make it a member, and to ensuer there's at
             most one copy of the constant, make it a static member.
     For simple constants, prefer const object or enum to #define
     For function-like macros, prefer inline functions to #define
-            
+```
+
 Item_3: Use const whenever possible.
     Const Member Function:
         The purpose is to identify which member functions may be invoked on const objects.
