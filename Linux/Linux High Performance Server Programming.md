@@ -1,21 +1,24 @@
-********************************** 1. TCP/IP 协议族  *************************************************************
-四层协议：
-    应用层     ping telnet OSPF DNS(53) HTTP(80)    处理应用程序的逻辑
-    传输层     TCP  UDP                为两台主机上的应用程序提供端到端的通信
-    网络层     ICMP IP(0x800)          实现数据包的选路和转发
-    链路层     ARP(0x806)  RARP(0x835) 实现网卡接口的网络驱动程序，以处理数据在物理媒介的传输
+# 1. TCP/IP Protocos
+Four levle protocols:
+
+Layer | Protocols | Functions
+-- | --- | ---
+Application Layer | ping telnet OSPF DNS(53) HTTP(80) | processing application logic
+Transport Layer | TCP  UDP | support end to end communication for two endpoints
+Network Lyaer | ICMP IP(0x800) | route and forward data pakage
+Link Layer | ARP(0x806)  RARP(0x835) | implements the NIC interface to handle the transmission of data over the physical medium
     
-IP 头部的源IP和目的IP在传输过程中始终不变。
-链路层数据帧中的源MAC和目的MAC在传输过程中始终变化。
+The source IP and destination IP in the IP header are always the same during transmission.
 
+The source Mac and destinaion Mac in the link layer data frame always change during transmission.
 
-********************************** 2. IP 协议协议详解  ***********************************************************
+# 2. IP 协议协议详解
 IP协议特点：
     无状态：通信双方不同步彼此传输数据的状态信息
     无连接：通信双方不长久的维持对方信息
     不可靠：不保证IP数据包准确的到达接收端
 
-********************************** 3. TCP 协议协议详解  **********************************************************
+# 3. TCP 协议协议详解
 
 字节流：应用程序对数据的发送和接收没有边界限制
 UDP: 应用程序没有足够的接收缓冲区，UDP数据将会被截断
