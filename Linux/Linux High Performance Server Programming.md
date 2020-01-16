@@ -4,24 +4,44 @@ Four levle protocols:
 Layer | Protocols | Functions
 -- | --- | ---
 Application Layer | ping telnet OSPF DNS(53) HTTP(80) | processing application logic
-Transport Layer | TCP  UDP | support end to end communication for two endpoints
-Network Lyaer | ICMP IP(0x800) | route and forward data pakage
-Link Layer | ARP(0x806)  RARP(0x835) | implements the NIC interface to handle the transmission of data over the physical medium
-    
-The source IP and destination IP in the IP header are always the same during transmission.
+Transport Layer(message segement) | TCP  UDP SCTP | support end to end communication for two endpoint applications
+Network Lyaer(datagrame) | ICMP IP(0x800) | route and forward data pakcage
+Link Layer(frame) | ARP(0x806)  RARP(0x835) | implements the NIC driven program to handle the transmission of data over the physical medium
 
+The source IP and destination IP in the IP header are always the same during transmission.
 The source Mac and destinaion Mac in the link layer data frame always change during transmission.
 
-# 2. IP 协议协议详解
-IP协议特点：
-    无状态：通信双方不同步彼此传输数据的状态信息
-    无连接：通信双方不长久的维持对方信息
-    不可靠：不保证IP数据包准确的到达接收端
 
-# 3. TCP 协议协议详解
+### 1.5 ARP
 
-字节流：应用程序对数据的发送和接收没有边界限制
-UDP: 应用程序没有足够的接收缓冲区，UDP数据将会被截断
+Hardware Type | Protocol Type | Mac Length | Protocol Length | Operaiton | sender Mac | Receiver Mac | Destination Mac | Destination Port
+-- | -- | -- | -- | -- | -- | -- | -- | --
+2 byte | 2 | 1 | 1 | 2 | 6 | 4 | 6 | 4
+1(MAC) | 0x800(IP) | 6 | 4 | ARP(1, 2) RARP(3, 4)
+
+
+
+# 2. IP Protocol Details
+
+IP features:
+* Statless: communication potins don't sync state information about each other
+* Connectionless:
+* unstable:
+
+| 4 version     | 4 Head Length | 8 TOS | 16 total length
+| ---           | ---           | ---   |
+| 16                                  | 3 |   13
+| 8                           | 8     | 16
+| 32
+| 32
+
+
+
+# 3. TCP Protocol Details
+
+Byte Stream: there's no bourdary between data received or sent.    
+UDP: Data will be trucated if there's no buffer in app.
+
 
 连接停留在FIN_WAIT_2状态：客户端执行关闭连接后未等待服务器响应强行退出。此时客户端连接由内核管理，称之为孤儿连接，
     Linux定义了两个变量分别定义系统能接纳的最大孤儿连接数量和孤儿连接在内核中最大的生存时间。
@@ -41,3 +61,38 @@ TIME_WAIT:
         阻塞避免算法是的CWND按照线型方式增加。
         网络阻塞判断标准：传输超时，接收到重复的报文确认段。
     快速重传(fast retransmit)，快速回复(fast recovery):
+
+
+### 3.6 TCP interactive data stream
+
+There are two data type by length: interactive data and chunked data.
+
+### 3.8 OOB
+
+OOB: used to notify the important events to the peer, has the higer priority than normal data, shoutd be sent instantly nomatter the kernel buffer is empty or not. Can be transformed in stand alone connect or normal connection.
+
+### 3.9 Timeout Retrasmission
+
+In the cases of 5 failed retransmissions, the underlying *IP* and *ARP* begin to take over until the application layer gives up.
+
+/proc/sys/net/ipv4/tcp_retries1: minial retry times before *IP* takes over.    
+/proc/sys/net/ipv4/tcp_retries2:  maximal retry times before applicaiton gives up connection, 15 times default(13~30 minutes).
+
+### 3.10 Congestion Control
+
+SWND(min(CWND, RWND)) | Sender window
+--- | ---
+RWND | Receiver window
+CWND | Congestion window
+SMSS | Sender maximum segment size
+ssthresh | Slow start threshold
+
+*Four components:*
+1. slow start: CWND += min(N, SMSS)
+2. congestion avoidance: CWND = SMSS * SMSS / CWND
+3. fast retransmit: receive 3 reapeated ack, 
+4. fast recovery
+
+Congestion detection:
+1. timeout retransmission(slow start, congestion avoidance); ssthresh = max(FlightSize * 2, 2 * SMSS)
+2. repeated acknowledgment

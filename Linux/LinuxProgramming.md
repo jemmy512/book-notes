@@ -1,5 +1,5 @@
 
-**********************************************  Make File  ******************************************************
+# Make File
 
 1. syntax
     target: prerequisites...
@@ -63,7 +63,7 @@
         command...
         command...
     enddef
-13 Variable
+13. Variable
     13.1 define
         x = $(y) # current variable can use next defined varaible
         y = z    
@@ -98,7 +98,8 @@
 
 
 **********************************************  GDB  ************************************************************
-    
+
+ ```   
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 
 #define DEBUG
@@ -258,136 +259,163 @@ source path:
 define own enviroment variable int GDB:
     set $<varname> = <value> # enviromet var have no type
     show convenience # view all enviroment variable
+```
 
-**********************************************  File I/O ********************************************************
+# File I/O
 
 By convention: <unistd.h>
     0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stand for standard input, output and error, respectively.
     Range: 0 - (OPEN_MAX - 1)
         
 #include<fcntl.h>
-    int open(const char *path, int oflag, ... /*mode_t mode*/);
-    int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
-        // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, O_TTY_INIT, O_SYNC, O_DSYNC, O_RSYNC
-        // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK,  O_TRUNC
-    int create(const char *path, mode_t mode); // 
-    int close(int fd); <unistd.h> == [ open(path, O_WRONLY | O_CREATE | O_TRUNC, mode)]
-    off_t lseek(int fd, off_t offset, int whence);  // move the read/write offset
-        // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
-        // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
-            rather than testing whether it is less than 0. Because offset is possible a negative value.
-    off_t fseek(FILE *stream, long int offset, int whence;  <stdio.h>
-    off_t ftell(FILE *stream); <stdio.h> // return current offset
-    ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
-        // There are several cases actual bytes read less than amount requested:
-        // 1. Reading from a regular file, end of the file is reached before requested number of bytes has been read.
-        // 2. Reading from a terminal device. Normally, up to one line is read at a time.
-        // 3. Reading from a network. Buffering with network may cause less than request amount  to be return.
-        // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
-        // 5. Reading from a record-oritend device. 
-        // 6. Interrupted by a signal and partial data have been read.
+```C++
+int open(const char *path, int oflag, ... /*mode_t mode*/);
+int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
+    // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, O_TTY_INIT, O_SYNC, O_DSYNC, O_RSYNC
+    // O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_EXCL, O_NOCTTY, O_NOFOLLOW, O_NOBLOCK,  O_TRUNC
+int create(const char *path, mode_t mode); // 
+int close(int fd); <unistd.h> == [ open(path, O_WRONLY | O_CREATE | O_TRUNC, mode)]
+off_t lseek(int fd, off_t offset, int whence);  // move the read/write offset
+    // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
+    // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
+        rather than testing whether it is less than 0. Because offset is possible a negative value.
+off_t fseek(FILE *stream, long int offset, int whence;  <stdio.h>
+off_t ftell(FILE *stream); <stdio.h> // return current offset
+ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
+    // There are several cases actual bytes read less than amount requested:
+    // 1. Reading from a regular file, end of the file is reached before requested number of bytes has been read.
+    // 2. Reading from a terminal device. Normally, up to one line is read at a time.
+    // 3. Reading from a network. Buffering with network may cause less than request amount  to be return.
+    // 4. Reading from a fifo or PIPE. If fifo contain fewer bytes by requested, read return only what is available
+    // 5. Reading from a record-oritend device. 
+    // 6. Interrupted by a signal and partial data have been read.
+```
 FD Duplicate:
-    int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
-        // Always return the minum fd number of the system.
-    int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
-                                // fd2 shares the same file table as fd.
-        // new fd created by dup or dup2 doesn't inherit the property of the old fd such as close-on-exec, non-blcking
+```C++
+int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
+    // Always return the minum fd number of the system.
+int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
+                            // fd2 shares the same file table as fd.
+    // new fd created by dup or dup2 doesn't inherit the property of the old fd such as close-on-exec, non-blcking
+```
 Data sync between kernel buffer and disk:
-    void sync(void);            // Queues all the modified block buffers for writing and returns.
-    int fsync(int fd);      
-    int fdatasync(int fd);
+```C++
+void sync(void);            // Queues all the modified block buffers for writing and returns.
+int fsync(int fd);      
+int fdatasync(int fd);
+```
 Aotomic Operation: <unistd.h>
-    ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
-    ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
+```C++
+ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
+ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
+```
+
 sendfile:  <sys/sendfile.h>, designed to transfer file over internet
-    int sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
-    // out_fd can be any fd while in_fd must refer to real file, not socket or pipe.
-    // Operation is completed in kernel, so it's very efficient and is a 0 COPY.
+```C++
+int sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
+// out_fd can be any fd while in_fd must refer to real file, not socket or pipe.
+// Operation is completed in kernel, so it's very efficient and is a 0 COPY.
+```
+
 File property change: <fcntl.h>
-    int fcntl(int fd, int cmd, ... /*int arg*/); 
-        // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
-        // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
-        // F_GETFL{O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH} {O_APPEND, O_NONBLOCK, O_SYNC, O_DSYNC, O_RSYNC}
-            
-    int posix_fadvise(int fd, off_t offset, off_t len, int advise); // predeclare an access pattern for file data
-       // advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEED, *_DONTNEED
-    int fallocate(int fd, int mode, off_t offset, off_t len);       // allocate file space, nonportable
-    int posix_fallocate(int fd, int mode, off_t offset, off_t len);
-        // After a successful call, subsequent writes to the specified range guaranteed not to fail because of lock.
-        Allocating disk space:      0, FALLOC_FL_KEEP_SIZE, *_UNSHARE
-        Deallocating disk space:    FALLOC_FL_PUNCH_HOLE, 
-        Collapsing file space:      FALLOC_FL_COLLAPSE_RANGE
-        Zeroing file spece:         FALLOC_FL_ZERO_RANGE(nonportable)
-        Increasing file space:      FALLOC_FL_INSERT_RANGE
-    ioctl: <sys/ioctl.h>
-        int ioctl(int fd, int request, ...);
+```C++
+int fcntl(int fd, int cmd, ... /*int arg*/); 
+    // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
+    // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
+    // F_GETFL{O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH} {O_APPEND, O_NONBLOCK, O_SYNC, O_DSYNC, O_RSYNC}
+        
+int posix_fadvise(int fd, off_t offset, off_t len, int advise); // predeclare an access pattern for file data
+    // advise: POSIX_FADV_NORMAL, *_SEQUENTIAL, *_RANDOM, *_NOREUSE, *_WILLNEED, *_DONTNEED
+int fallocate(int fd, int mode, off_t offset, off_t len);       // allocate file space, nonportable
+int posix_fallocate(int fd, int mode, off_t offset, off_t len);
+    // After a successful call, subsequent writes to the specified range guaranteed not to fail because of lock.
+    Allocating disk space:      0, FALLOC_FL_KEEP_SIZE, *_UNSHARE
+    Deallocating disk space:    FALLOC_FL_PUNCH_HOLE, 
+    Collapsing file space:      FALLOC_FL_COLLAPSE_RANGE
+    Zeroing file spece:         FALLOC_FL_ZERO_RANGE(nonportable)
+    Increasing file space:      FALLOC_FL_INSERT_RANGE
+ioctl: <sys/ioctl.h>
+    int ioctl(int fd, int request, ...);
+```
+
 /dev/fd/:
     
 Parse Command Line Option: <unistd.h> <getopt.h>
-    int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
-        // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
-        // If an option followed by two colons(::), it's free to take or not take argument, but there must be 
-            no any space between option and arguement. eg: "a:b::c" --> -a aa -bbb -c / -a aa -b -c
-        // Encounters a invalid option, returs a question mark (?) instead of characters.
-        // If an option's missing, returns a question mark(?); if first character of options is colon, return colon(:)
-        // Pattern -- can stop getopt processing options and return -1
-        // optopt, optarg, opterr, optind
-    int getopt_long(int argc, char * const argv[], const char *optstring,
-           const struct option *longopts, int *longindex); <getopt.h> _GNU_SOURCE
-        // longopts' last element must be a zero array {0, 0, 0, 0}
-        struct option{              
-            const char  *name;      // long option name
-            int         has_flag;   // 1--has, 0--hasn't
-            int         *flag;      // specifies how results returned for long option
-            int         val;        // return value; flag is NULL, return 0;
-        };
+```C++
+int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
+    // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
+    // If an option followed by two colons(::), it's free to take or not take argument, but there must be 
+        no any space between option and arguement. eg: "a:b::c" --> -a aa -bbb -c / -a aa -b -c
+    // Encounters a invalid option, returs a question mark (?) instead of characters.
+    // If an option's missing, returns a question mark(?); if first character of options is colon, return colon(:)
+    // Pattern -- can stop getopt processing options and return -1
+    // optopt, optarg, opterr, optind
+int getopt_long(int argc, char * const argv[], const char *optstring,
+        const struct option *longopts, int *longindex); <getopt.h> _GNU_SOURCE
+    // longopts' last element must be a zero array {0, 0, 0, 0}
+    struct option{              
+        const char  *name;      // long option name
+        int         has_flag;   // 1--has, 0--hasn't
+        int         *flag;      // specifies how results returned for long option
+        int         val;        // return value; flag is NULL, return 0;
+    };
+```
+
 Syslog: <syslog.h>
-    void openlog(const char *ident, int logopt, int facility);
-    void syslog(int priority, const char *message, .../*arguments*/);
-    int  setlogmask(int maskpri);
-    void closelog(void);
-    // priority: LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
-    // logopt: LOG_PID, LOG_CONS, LOG_ODELAY, LOG_NDELAY
-    // facility: LOG_AUTH, LOG_DEAMON, LOG_KERN, LOG_LPR, LOG_LOCAL0~LOG_LOCAL7, LOG_MAIN, LOG_NEWS, LOG_USER
-    
-**********************************************  File and Directories  *******************************************
+```C++
+void openlog(const char *ident, int logopt, int facility);
+void syslog(int priority, const char *message, .../*arguments*/);
+int  setlogmask(int maskpri);
+void closelog(void);
+// priority: LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
+// logopt: LOG_PID, LOG_CONS, LOG_ODELAY, LOG_NDELAY
+// facility: LOG_AUTH, LOG_DEAMON, LOG_KERN, LOG_LPR, LOG_LOCAL0~LOG_LOCAL7, LOG_MAIN, LOG_NEWS, LOG_USER
+```
+
+# File and Directories
 
 TOCTTOU: time-of-check-to-time-of-use
     This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
     program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
     
 Stata Family function: <sys/stat.h>
-    int stat(const char *pathname, struct stat *buf); // get file stat
-    int fstat(int fd, struct stat *buf);
-    int lstat(const char *pathname, struct stat *buf);  // return symbolic infomation, not referenced file
-    int fstatat(int fd, consth char *pathname, struct stat *buf, int flag); // AT_SYMLINK_NOFOLLOW, AT_FDCWD
-    struct stat {
-        dev_t       st_dev;     // Id of device containing file nane and i-node
-        ino_t       st_ino;     // inode number
-        mode_t      st_mode;    // file type and mode (permission)
-        nlink_t     st_nlink;   // number of hard link
-        uid_t       st_uid;     // user id
-        gid_t       st_git;
-        dev_t       st_rdev;    // Device Id (if special file: character and block special file)
-        off_t       st_size;    // Total size, in bytes (files, directories, symbolic links)
-        blksize_t   st_blksize; // block size for filesystem I/O
-        blksize_t   st_blocks;  // Number of 512B blocks allocatd
-        
-        struct timespec st_atim;    // last access time
-        struct timespec st_mtim;    // last modification time
-        struct timespec st_ctim;    // last stat change  time
-    };
-    mode_t:
-        mode: S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
-    Macro to check file type: 
-        S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
-    Access permission: 
-        S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
+```C++
+int stat(const char *pathname, struct stat *buf); // get file stat
+int fstat(int fd, struct stat *buf);
+int lstat(const char *pathname, struct stat *buf);  // return symbolic infomation, not referenced file
+int fstatat(int fd, consth char *pathname, struct stat *buf, int flag); // AT_SYMLINK_NOFOLLOW, AT_FDCWD
+struct stat {
+    dev_t       st_dev;     // Id of device containing file nane and i-node
+    ino_t       st_ino;     // inode number
+    mode_t      st_mode;    // file type and mode (permission)
+    nlink_t     st_nlink;   // number of hard link
+    uid_t       st_uid;     // user id
+    gid_t       st_git;
+    dev_t       st_rdev;    // Device Id (if special file: character and block special file)
+    off_t       st_size;    // Total size, in bytes (files, directories, symbolic links)
+    blksize_t   st_blksize; // block size for filesystem I/O
+    blksize_t   st_blocks;  // Number of 512B blocks allocatd
+    
+    struct timespec st_atim;    // last access time
+    struct timespec st_mtim;    // last modification time
+    struct timespec st_ctim;    // last stat change  time
+};
+```
+mode_t:   
+> mode: S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
+
+Macro to check file type:      
+> S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+
+Access permission:   
+> S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
+
 File Type:
-    1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
-    functions to determine file type:
-        S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
-        S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
+> 1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
+
+Functions to determine file type:   
+>     S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
+>     S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
     
 File Access Permission:
     st_mode mask:
@@ -842,6 +870,7 @@ Procedure of socket:
         type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
         protocol: IPPROTO_TCP, IPPROTO_UDP, IPPROTO_SCTP
         // type can combine with SOCK_CLOEXEC: when create new socket by fork, close this socket in child socket.
+    
     2. bind (server) assigns a local protocal addr to socket
         int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
         struct sockaddr_in {    <netinet/in.h>
@@ -869,10 +898,12 @@ Procedure of socket:
         // Do no specify backlog to 0, different implementation interpret this different. If don't want any 
             client connecting to listening socket, just close the listening socket.
         // Berkeley-derived implementation add a fudge factor to backlog: it is multiplied by 1.5.(MacOS)    
+    
     4. accept (client and server) 
         // return the next completed connetion from the front of the completed conn queue, don't care the status
             of the socket(may be ESTABLISHED or CLOSE_WAIT) and the changes of the network.
         int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
+    
     5. read and write (client and server)
         ssize_t read(int fd, void *buf, size_t count);
             // The behavior of multi-thread read or write is undefined
@@ -897,6 +928,7 @@ Procedure of socket:
         
     5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
         // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
+
     6. close <unistd.h> 
         int close(int fd);
         // The default action of close with a TCP socket is to mark the socket as closed and return to the process
@@ -950,6 +982,7 @@ Out-of-Band data:
             OOB is remebered.
         If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying 
             MSG_OOB(EINVAL).
+
 Architecture of Server:
     1. IO communication unit
         1.1 Port multiplexing
@@ -977,6 +1010,7 @@ Two High-performance Event Handle Architectures:
 Two high-performance Concurrent Architectures:
     1. half-sync/half-async
     2. leader/follwer
+
 Network configuration information:
     #include<netdb.h>
     struct hostnet *gethostent(void);
@@ -1002,6 +1036,7 @@ Connection Abort befor 'accept' Returns:
         aborted connection completely within the kernel, and the server process never sees it. Most SVR4 
         implementations, return error to the process as the return from accept, and error depends on the
         implementation. SVR4 return an errno of EPROTO but POSIX return ECONNABORTED. 
+
 Termination of Server Process:
     1. Kill server process. All open fd in the process are closed, this cause a FIN to be sent to the client and 
         client TCP response with ACK.
@@ -1016,20 +1051,24 @@ Termination of Server Process:
     5. The client process will not see the RST because it calls readline immediately after the call to writen and 
         readline return 0(EOF) immediately because of the FIN that was received in Step 2. 
     6. When the client terminates, all its open descriptors are closed.
+
 "SIGPIPE":
     When a process writes to a socket that has received an RST, the SIGPIPE signal is sent to the process.
     The default action of this signal is to terminate the process.
+
 Crashing Server Host:
     1. When the server host crashed, nothing is sent out on the existing network connection.
     2. We type a  line of input to the client, it is written by writen, and is sent by the client TCP as data 
         segment. The client then blocks in the call to readline, waiting for the echoed rely.
     3. Client TCP continually retransmitting the data segment, trying to receive an ACK from the server. When the 
         client TCP finnaly gives up, an error is returned to client process. ETIMEDOUT, EHOSTUNREACH
+
 Crashing and Rebooting of Server Host:
     1. The server host crashed and reboots, its TCP loses all information about connection that existed befor the 
         crash. 
     2. Client sends data to server, server TCP responds to the received data segment from client with an RST.
     3. Client blocked in the call to readline when RST is received, causing readline to return the error ECONNRESET
+
 Shutdown of Server Host:
     Init process normally sends the SIGTERM signal to all processes, waits some fixed amount of time, and then send
         SIGKILL signal to any processes still running.
@@ -1119,6 +1158,7 @@ signal mask: // specify which signals can not be sent to the process
     // when a signal which is masked is sent to the process, the system set this signal as pending signal 
         in the process, when we unmask the pending signals, signals will  be received by the process immediately
     int sigpending(sigset_t *set); // get the current pending signals
+
 sigset_t: 
     sigemptyset(sigset_t *set);   sigaddset(sigset_t *set, int signum);  
     sigfillset(sigset_t *set);    sigdelset(sigset_t *set, int signum);
@@ -1496,6 +1536,7 @@ Process exit functions:
         2. When process receive certain signals.
         3. The last thread responds to the cancellation request.
     Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
+    
 pthread:
     pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);
