@@ -286,13 +286,14 @@ ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
     // 5. Reading from a record-oritend device. 
     // 6. Interrupted by a signal and partial data have been read.
 ```
+
 FD Duplicate:
 ```C++
 int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
-    // Always return the minum fd number of the system.
+    // Always return the minimum fd number of the system.
 int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
                             // fd2 shares the same file table as fd.
-    // new fd created by dup or dup2 doesn't inherit the property of the old fd such as close-on-exec, non-blcking
+    // new fd created by dup or dup2 doesn't inherit the property of the old fd such as close-on-exec, non-blocking
 ```
 Data sync between kernel buffer and disk:
 ```C++
@@ -317,7 +318,7 @@ File property change: <fcntl.h>
 ```C++
 int fcntl(int fd, int cmd, ... /*int arg*/); 
     // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
-    // F_DUPFD_CLOEXEC, F_<GETFD, SETFD>, F_SETFL, F_GETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
+    // F_DUPFD_CLOEXEC, F_{Get, SET}FD, F_{GET, SET}FL, F_GETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
     // F_GETFL{O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH} {O_APPEND, O_NONBLOCK, O_SYNC, O_DSYNC, O_RSYNC}
         
 int posix_fadvise(int fd, off_t offset, off_t len, int advise); // predeclare an access pattern for file data
@@ -402,21 +403,18 @@ mode_t:
 
 Macro to check file type:      
 > S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+> S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
 
 Access permission:   
-> S_ISUID, S_ISGID, S_IRWXU, S_IRUSR, S_IWUSR, S_IXUSR, S_IRWXG, S_IRWXO
+> S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
 
 File Type:
 > 1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
-
-Functions to determine file type:   
-> S_ISREG(st_mode) S_ISDIR() S_ISCHR() S_ISBLK() S_ISFIFO() S_ISLNK() S_ISSOCK() 
-> S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
-    
+   
 File Access Permission:
 
 > st_mode mask:   
->  S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+>  S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
 
 > * Whenever we open any type of file by name, we must have execute permission on each directory.
 > * The read permission determines whether we can open an existing file for reading.
@@ -756,7 +754,7 @@ void *mmap(void *addr, size_t len, int prot, int flag, int fd, off_t off);
     // protection: PROT_READ, PROT_WRITE, PROT_EXEC, PROT_NONE
     // flag: MAP_FIXED, MAP_SHARED, MAP_PRIVATE, 0, MAP_ANONYMOUS, MAP_HUGETLB
     // If file size is 12 bytes, system page size is 512bytes, system will provides 512 for mapped region, but 
-        any modification out of 12 bytes are not reflected in the file.
+    //    any modification out of 12 bytes are not reflected in the file.
     // A memory-mapped region is inherited by a child across a fork.
 int mprotec(void *addr, size_t len, int prot); // change the premission on an existing mapping.
 // When modify pages using MAP_SHARED, the changes aren't written back to the file immediately.
@@ -1042,7 +1040,10 @@ Data trasformation:
 
 
     
-5. shutdown(int socket, int how); // how: SHUT_RD, SHUT_WR, SHUT_RDWR, shutdown soket send and recv
+5. shutdown(int socket, int how); 
+    // how: SHUT_RD: close read peer, discard data in read buffer
+    // SHUT_WR: close write peer, send data in write buffer before real close
+    // SHUT_RDWR, shutdown soket send and recv
     // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
 
 6. close <unistd.h>
@@ -1089,6 +1090,18 @@ level:
     * Solution: set those options for the listening socket, sockets accepted will inherit those options.
     *  SO_DONTROUTE, SO_KEEPLIVE, SO_LINGER, SO_OOBINLINE, SO_RECVBUF, SO_RCVLOWAT,
     *  SO_SNDLOWAT, SO_SNDBUF, SO_RCVBUF, TCP_MAXSEG, TCP_NODELAY
+    */
+
+    strut linger {
+        int l_onoff;
+        int l_linger;
+    };
+    /*
+    * 1. l_onoff = 0: SO_LINGER doesn't work, close socket by default
+    * 2. l_onoff =1, l_linger = 0: close() return immediately, discard write buffer data, send RST to peer
+    * 3. l_onoff =1, l_linger > 0:
+    *   3.1 block socket: close() waits l_linger time and close, if data sent not finished, return -1, errno is EWOULDBLOCK
+    *   3.2 close() return immediately, detect whether residual data send finished by errno and return value
     */
 ```
 
@@ -1229,7 +1242,7 @@ Methods of Local Processes Communication:
     
 checking for the existence of a process:
 ```C++
-    wait(); semophore and exclusive file locks; IPC(pipes, FIFOs...); /proc/PID
+    wait(); semaphore and exclusive file locks; IPC(pipes, FIFOs...); /proc/PID
 ```
  
 Signal dispositions: Term, Ign, Core, Stop, Cont
@@ -1395,18 +1408,18 @@ POSIX Signal Semantics:
 4. It is possible to selectively block and unblock a set of signal using the sigprocmask function.
     
     
-**********************************************  IPC Programming  ************************************************
+# IPC Programming
 
 Unix inter-domain communication:
 ```C++
-    Unix communicatin:
-        soketpair, pipe(PIPE_BUF), FIFO, signal
-    System V:
-        semaphore, message queue, shared memory
+Unix communicatin:
+    soketpair, pipe(PIPE_BUF), FIFO, signal
+System V:
+    semaphore, message queue, shared memory
 ```
 
 Unix outer-domain communication:
-    sockets, STREAMS
+> sockets, STREAMS
 
 Advantages and Disabvantages of XSI IPC:
 1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
@@ -1416,12 +1429,13 @@ Pipe: PIPE_BUF
 ```C++
     <unistd.h>
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
-    flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCKf
+    // flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
     // when last process referred to it terminates, the pipe is completely removed. 
     // If the fd[1]'s reference is down to 0, the read() from fd[0] will return 0;
     // If the fd[0]'s reference is down to 0, the write() to fd[1] will fail, SIGPIPE will trigger.
     // The capacity of the pipe can be changed by fcntl funciton.
-    <sys/socket.h><sys/types.h>
+    <sys/types.h>
+    <sys/socket.h>
     int socketpair(int domain, int type, int proto, int fd[2]);
 ```
 
@@ -1505,11 +1519,13 @@ POXIS unamed semaphore:
     // pshard: zero[shared between threads within process], non-zero[shared between processes]
     // The behavior of initializing a initiazlied thread is undefined
     int sem_getvalue(sem_t *sem, int *sval);
+    int sem_destroy(sem_t*sem); // destory a semaphore waited by other threads is unfined
     int sem_wait(sem_t *sem);
     int sem_post(sem_t *sem);
     int sem_trywait(sem_t *sem);
 
 POSIX named semaphore:
+    int shm_open(const char*name,int oflag,mode_t mode);
     sem_t *open(const char *name, int oflag, mode_t mode, int value);
         oflag: O_CREAT, O_CREATE|O_EXCL
     int sem_wait(sem_t *sem);
@@ -1518,28 +1534,41 @@ POSIX named semaphore:
     int sem_unlink(const char *name); // destroy
 
 SYSTEM V semaphore:
+    struct ipc_perm {
+        key_t key;
+        uid_t uid;
+        gid_t gid;
+        uid_t cuid;
+        gid_t cgid;
+        mode_t mode;  
+    };
     struct semid_ds {
         struct ipc_perm sem_perm;
-        struct sem      *sem_base; // ptr to first sem in array 
-        ushort          sem_nsems; // num of the sem array
-        time_t          sem_otime;
-        time_t          sem_ctime;
+        struct sem      *sem_base;  // ptr to first sem in array 
+        ushort          sem_nsems;  // num of the sem array
+        time_t          sem_otime;  // last semop time
+        time_t          sem_ctime;  // last semctl time
         ...
     };
     struct sem {
         ushort  semval;
-        short   sempid;
-        ushort  semncnt;
-        ushort  semzcnt;
+        short   sempid;  // the last process id who executes semop
+        ushort  semncnt; // number of the processes  waiting for the semaphore to be incremented
+        ushort  semzcnt; // number of the processes waiting for the semaphore to be 0
         ...
     };
     struct sembuf {
-        short   sem_num;
-        short   sem_op;
+        short   sem_num;    // semaphore index in the the semaphore container
+        short   sem_op;     // PV operation: >0, =0, <0
         short   sem_flg;    // SEM_UNDO, IPC_NOWAIT
     };
-    int semget(key_t key, int nsems, int oflag);
-    int semop(int semid, struct sembuf *opsptr, size_t nops);
+    int semget(key_t key, int num_sems, int oflag);
+    int semop(int semid, struct sembuf *sem_ops, size_t nops);
+    /* if no IPC_NOWAIT flag, semop can return from 3 cases:
+    *   1. the op condition is satisfied(semval equels to 0, can be increment/decrement)
+    *   2. the semaphore container operating is removed, return -1, errno set to EIDRM
+    *   3. interuped, return -1, errno set to EINTR, decrement semzcnt/semncnt
+    */
     int semctl(int semid, int semnum, int cmd, ../*union semun arg*/);
         union semun {
             int             val;    // cmd == SETVAL
@@ -1553,22 +1582,24 @@ Shared memory: (fastest IPC)
 ```C++
     struct shmid_ds{
         struct ipc_perm shm_perm;
-        size_t          shm_segsz; // round up to system multiple page sizse
-        time_t          shm_ctime;
-        time_t          shm_atime;
-        time_t          shm_dtime;
-        pid_t           shm_cpid;
-        pid_t           shm_lpid;   
-        shmatt_t        shm_nattch;
+        size_t          shm_segsz;  // round up to system multiple page sizes
+        time_t          shm_ctime;  // last shmctl time
+        time_t          shm_atime;  // last shmat time
+        time_t          shm_dtime;  // last shmdt time
+        pid_t           shm_cpid;   // pid the of creator
+        pid_t           shm_lpid;   // pid execute last shmat/shmat
+        shmatt_t        shm_nattch; // reference count of process
         ...
     };
     int shmget(key_t key, size_t size, int shmflag);
         shmflag: SHM_R, SHM_W, 0
-    void *shmat(int shmid, const void *shmaddr, int shmfalg); // return addr of the shm in the process addr space
-        shmflag: SHM_EXEC, SHM_RDONLY, 0, SHM_RND
+    void *shmat(int shmid, const void *shmaddr, int shmfalg); 
+        // return addr of the shm in the process addr space
+        // shmflag: SHM_EXEC, SHM_RDONLY, 0, SHM_RND
     int shmctl(int shmid, int cmd, struct shmid_ds *buf);      
-        cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
-    int shmdt(const char *shmaddr); // shm remains in existence untill call shmctl with IPC_RMID flag
+        // cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
+    int shmdt(const char *shmaddr); 
+        // shm remains in existence untill call shmctl with IPC_RMID flag
 ```
 
 Summary:    
@@ -1615,28 +1646,40 @@ Handling Zombie process:
 The purpose of the zombie state:
 > is to maintain information about the child for the parent to fetch at some later time.
 
+Salient points of Zombie Processes
+1. All the memory and resources allocated to a process are deallocated when the process terminates using the exit() system call. But the process’s entry in the process table is still available. This process is now a zombie process.
+2. The exit status of the zombie process zombie process can be read by the parent process using the wait() system call. After that, the zombie process is removed from the system. Then the process ID and the process table entry of the zombie process can be reused.
+3. If the parent process does not use the wait() system call, the zombie process is left in the process table. This creates a resource leak.
+4. If the parent process is not running anymore, then the presence of a zombie process indicates an operating system bug. This may not be a serious problem if there are a few zombie processes but under heavier loads, this can create issues for the system such as running out of process table entries.
+5. The zombie processes can be removed from the system by sending the SIGCHLD signal to the parent, using the kill command. If the zombie process is still not eliminated from the process table by the parent process, then the parent process is terminated if that is acceptable.
+
 Handling Interrupted System Calls:
 * When a process is blocked in a slow system call and process catches a signal and the signal handler returns, the system call can return an error of EINTER. We should handle this error to restart system call.
 * Even if an implementation supports the SA_RESATRT flag, not all interrupted system call may automatically be restarted. 
 * We can recall accept, read write, select and open to handle those system call's interruption, but can't recall connect for which happen we must call select to wait for the connection to comlete.
 
 Session:
-    int setsid(void); // <unistd.h>
-    // if the calling process is not the process grop leader:
-        1. The process becomes the session leader and the only process of this session.
-        2. Create a new process group and the process becomes the new group leader, and the process group ID is the
-            calling process ID.
-        3. The process has no controling terminal.
-        getsid(pid_t pid); the same as the getpgid(pid_t pid);
-    // The function returns an error is the process is already a process leader.
+```C++
+int setsid(void); // <unistd.h>
+// if the calling process is not the process grop leader:
+// 1. The process becomes the session leader and the only process of this session.
+// 2. Create a new process group and the process becomes the new group leader, and the process group ID is the
+//     calling process ID.
+// 3. The process has no controling terminal.
+getsid(pid_t pid); //the same as the getpgid(pid_t pid);
+// The function returns an error is the process is already a process leader.
+```
 
 Enviroment List: <stdlib.h>
+```C++
     Global variable: environ;
     char* getenv(const char *name);
     int putenv(char *str); //form: "name=value"; already exited one will be remvoed
     int setenv(const char *name, const char *value, int rewrite); 
     int unsetenv(const chart *name);
-Consists of Program:
+```
+Memory layout of Program:
+```C++
                     |---------------------------------------------------------------------------------
                     |                               |
     high  address   |                               | command-line arguments and environment variables
@@ -1664,8 +1707,10 @@ Memory Allocation: <stdlib.h>
     Implemented with sbrk() system call.
     Freed space is not returned to the kernel, instead, it's kept in the malloc pool and can be use for next call.
     Writing past of the end or before the begining of a allocated block is fatal.
-    
+```
+
 Process Enviroment:
+```C++
     Exit Function:
         _exit(...), _Exit(...)  // return to the kernel immediately
         exit(...)               // performs certain cleanup processing then returns to kernel
@@ -1676,8 +1721,8 @@ Process Enviroment:
             // call on registered func in reverse order and as many times as registered
             // register at leat 32 exit handlers that are automatically called by exit.
     fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
-        // child process copys parent's data, head and stack but shares text segment and file descriptors including 
-            server's listenfd, and connectfds.
+        // child process copys parent's data, head and stack but shares text segment and file descriptors including server's listenfd, and connectfds.
+        // After the fork, the fds opened in the parent process are still open, and reference counts incremented by 1.
         // There are two ways to handling descriptors after fork:
            1. Parent waits for child to complete.
            2. Both parent and child go their way(close descriptors don't need, respectively) 
@@ -1701,14 +1746,18 @@ Process Enviroment:
             all its child processes.
         // Resource information includes such  statistics as the amount of the user CPU time, amount of the system
             CPU time, number of page faults, number of signals received...
+```
+
 Memory Allocation:
+```C++
     void *malloc(size_t size);  // initial value of the memory is indeterminate.
     void *calloc(size_t nobj, size_t size);     // initial value is 0.
     void *reallocc(void *ptr, size_t newsize);  // contents in newly increased space is indeterminate
         // Because old erea may move, we shouldn't have any pointers into this area.
     void free(void *ptr);
         // The freed space is usually not return to kernel but put into a pool of available memory(malloc pool)and
-            can be used again by call to one of the three alloc functions.
+        // can be used again by call to one of the three alloc functions.
+```
 Process Scheduling: <unistd.h>
     nice value range: 0 - 2 * NZERO - 1
     modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
