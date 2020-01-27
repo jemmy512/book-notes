@@ -1217,7 +1217,7 @@ Crashing and Rebooting of Server Host:
 Shutdown of Server Host:
 * Init process normally sends the SIGTERM signal to all processes, waits some fixed amount of time, and then send SIGKILL signal to any processes still running.
     
-**********************************************  Signal Programming  *********************************************
+# Signal Programming  
 
 Methods of Local Processes Communication:
 1. Messaging (pipeline, FIFO, message queue)
@@ -1775,6 +1775,7 @@ Process exit functions:
 Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
     
 pthread:
+```C++
     pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);
     pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
@@ -1808,6 +1809,7 @@ pthread:
     atexit(void (*function)(void));
 process completion status:
     int WIFEXITED(int)-WEXITSTATUS, WIFSIGNALED-WTERMSIG, WCOREDUMP, WIFSTOPED, WSTOPSIG
+
 pthread_attr:
     typedef struct {
         int     detachstate;    // PTHREAD_CREATE_<JOINABLE, DETACHED>, td ID, rsc can be reused; join not reuse
@@ -1820,6 +1822,7 @@ pthread_attr:
         void *  stackaddr;      // PTHREAD_STACK_SIZE
         size_t  stacksize;      // with JOINABLE attr, can't free untill pthread_join() called.
     }pthread_attr_t;
+
     pthread_attr_init(struct pthread_attr_t *attr);
         scope           PTHREAD_SCOPE_PROCESS
         detachstate     PTTHREAD_CREATE_JOINABLE
@@ -1834,11 +1837,13 @@ pthread_attr:
     pthread_attr_getstacksize(pthread_attr_t *attr, size_t *size);  // get mim stack size
     pthread_attr_setguardsize(pthread_attr_t *attr, size_t size);   // 0[no guard], round up to multiple PAGESIZE
     pthread_attr_getguardsize(pthread_attr_t *attr, size_t *size);
+
 pthread_key:
     pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
     pthread_key_delete(pthread_key_t key);
     pthread_setspecific(pthread_key_t key, const void *pointer);
     void *pthread_getspecific(pthread_key_t key);
+
 pthread_mutex:
     pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);   
         // initialization will not execute immediately until first call
@@ -1855,9 +1860,10 @@ pthread_mutex:
     // pshared: PTHREAD_PROCESS_PRIVATE PTHREAD_PROCESS_SHARED
     pthread_mutexattr_gettype(const phread_mutexattr_t *attr, int *type);
     pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
-    // type: 
-        PTHREAD_MUTEX_NORMAL        PTHREAD_MUTEX_ERRORCHECK
-        PTHREAD_MUTEX_RECURSIVE     PTHREAD_MUTEX_DEFAULT        
+    /* Type: 
+    *    PTHREAD_MUTEX_NORMAL        PTHREAD_MUTEX_ERRORCHECK
+    *    PTHREAD_MUTEX_RECURSIVE     PTHREAD_MUTEX_DEFAULT        
+    */
     
 phtread_cond:
     pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
@@ -1867,6 +1873,7 @@ phtread_cond:
     pthread_cond_broadcast(pthread_cond_t *cond);
     pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // Boolean predicate
     pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
+
 pthread_rwlock:
     pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr);
     pthread_rwlock_destroy(pthread_rwlock_t *rwlock);
@@ -1876,10 +1883,12 @@ pthread_rwlock:
     pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
     pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
     pthread_rwlock_timed***(...);
+
 pthread asynchronous:
     pthread_kill(pthread_t thread, int sig); // 0: test the existence of thread
     phread_sigmask(int how, const sigset_t *set, sigset_t *oldset); // sigprocmaks(...);
         how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
+
 Spin Block:
         //pshared: PTHREAD_PROCESS_SHARED(can be access by threads from different process)
         //         PTHREAD_PROCESS_PRIVATE(can be access only by threads within same process)
@@ -1890,29 +1899,32 @@ Spin Block:
         // Doesn't spin. Return EBUSY if not acquired immediately.
     int pthread_spin_unlock(pthread_spin_lock_t *lock); // unlock the lock doesn't locked, behavior is undefined.
     // A spin lock like a mutex, it blocks a process by busy-waiting(spinnig) rather that sleeping(mutex);
-    // Used in situation where locks are held for a short periods of times and threads don't want to incur the cost
-            of being descheduled.
-    // They are useful in nonpreemptive kernel: providing a mutual exclusion mechanism, interrupt handler can't 
-        deadlock system by trying to acquire a spin lock that is already locked.
+    // Used in situation where locks are held for a short periods of times and threads don't want to incur the cost of being descheduled.
+    // They are useful in nonpreemptive kernel: providing a mutual exclusion mechanism, 
+    // interrupt handler can't deadlock system by trying to acquire a spin lock that is already locked.
     // At user level they aren't as useful unless running in a real-time-sharing shceduling not allow preemption
+```
+
 Barriers:
-    It's a synchronization mechanism that can be used to coordinate multiple threads working in parallel.
-    A barrier allows each thread to wait unitl all cooperrating threads have reached the same point, and then
-        continue executing from there.
+* It's a synchronization mechanism that can be used to coordinate multiple threads working in parallel.
+* A barrier allows each thread to wait unitl all cooperrating threads have reached the same point, and then continue executing from there.
+```C++
     int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count);
     int pthread_barrier_destroy(pthread_barrier_t *barreir);
     int pthread_barrier_wait(pthread_barrier_t *barrier);
         // The thread calling this is put to sleep if the barrier count is not yet staisfied.
-        // To one arbitary thread, it will appear as this return PTHREAD_BARRIER_SERIAL_THREAD, the remaining 
-            threads see a return value of 0. This allows this thread to continue as the master to act the results
-            of the work done by all of the other threads.
-        // Once barrier count is reached and all threads is unblocked, barrier can be used aggain. But barrier 
-            count can be changed.
+        /* To one arbitary thread, it will appear as this return PTHREAD_BARRIER_SERIAL_THREAD, the remaining 
+        *    threads see a return value of 0. This allows this thread to continue as the master to act the results
+        *    of the work done by all of the other threads.
+        */
+        // Once barrier count is reached and all threads is unblocked, barrier can be used aggain. 
+        // But barrier count can be changed.
+```
     
 xinetd:
     
  
-**********************************************  HTTPS Programming   *********************************************
+# HTTPS Programming   
 
 SSL:    
 Consists of two layers of protocol:
@@ -1960,7 +1972,7 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
     void SSL_CTX_free(SSL_CTX *);
 ```
 
-**********************************************  MYSQL Programming  **********************************************
+# MYSQL Programming
 
 Direct Exexute:
 ```C++
@@ -1993,29 +2005,34 @@ unsigned int mysql_errno(MYSQL *connection);
 char *mysql_error(MYSQL *connection);
 ```
 
-**********************************************  Kernel Programming  *********************************************
+# Kernel Programming
 
 Advantages:
-    1. Don' have to rebuild kernel as often.
-    2. Help diagnose system problems.
-    3. Save memory.
-    4. Much faster to maintain and debug.
+1. Don' have to rebuild kernel as often.
+2. Help diagnose system problems.
+3. Save memory.
+4. Much faster to maintain and debug.
+
 Used for:
-    1. Device drivers   2. Filesystem drivers   3. System calls   
-    4. Network drivers  5. TTY line disciplines 6. Executeable interpreters
+```
+1. Device drivers   2. Filesystem drivers   3. System calls   
+4. Network drivers  5. TTY line disciplines 6. Executeable interpreters
+```
+
 LKM utilities:
-    insmod  rmmod   depmod  kerneld  ksyms  lsmod(/proc/modules)   modinfo   modprobe
+* insmod  rmmod   depmod  kerneld  ksyms  lsmod(/proc/modules)   modinfo   modprobe
+
 What happen when An LKM loads:
-    1. Search system for device it is know how to drive.
-    2. Register itself as the driver for particular major number /proc/devices
-    3. May register itself as the handler for the interrupt level that device uses / proc/interrupts
-    4. May send setup commands to the device
-    5. A nice device driver issuses kernel msg (/var/log/message) telling what devices if found and is prepared to
-        drive. (dmesg can display recent kernel message)
-    6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) 
-        rather than major number. /proc/net/dev
-    7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
+1. Search system for device it is know how to drive.
+2. Register itself as the driver for particular major number /proc/devices
+3. May register itself as the handler for the interrupt level that device uses / proc/interrupts
+4. May send setup commands to the device
+5. A nice device driver issuses kernel msg (/var/log/message) telling what devices if found and is prepared to drive. (dmesg can display recent kernel message)
+6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) rather than major number. /proc/net/dev
+7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
+
 LKM procedure:
+```C++
     1. create, init and add struct file_operatiosn, cdev, custom LKM object.
         /*-- create object --*/
         dev_t MKDEV(ma, mi); // make a device
@@ -2045,10 +2062,12 @@ LKM procedure:
         module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
         MODULE_LICENSE("GPL v2");
     2. Hijack System call
+
 Process Managemenet:
     struct task_struct {
    
     };
+
 File System:
     struct file {
         unsigned short f_mode;      // file type and property
@@ -2079,10 +2098,10 @@ Kernel Network:
        };
    };
    TUN/TAP: virtual network device:
-   
+```
    
 
-**********************************************  Utility  ********************************************************
+# Utility
 ```C++
 <cstdarg>:
     void my_err(char *msg, ...) { // my_err("Error connecting to tun/tap interface %s!\n", if_name)
