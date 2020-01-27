@@ -399,33 +399,33 @@ struct stat {
 };
 ```
 mode_t:   
-> mode: S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
+* mode: S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
 
 Macro to check file type:      
-> S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
-> S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
+* S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+* S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
 
 Access permission:   
-> S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
+* S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
 
 File Type:
-> 1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
+* 1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
    
 File Access Permission:
 
-> st_mode mask:   
->  S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
+st_mode mask:   
+* S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
 
-> * Whenever we open any type of file by name, we must have execute permission on each directory.
-> * The read permission determines whether we can open an existing file for reading.
-> * We must have write permission for a file to specify the O_TRUNC flag in the open function
-> * We can only create/delete new file in a directory when we have write permission and execute permission
-> * Execute permission for a file must be on if we use exec function and file also has to be a regular file.
+* Whenever we open any type of file by name, we must have execute permission on each directory.
+* The read permission determines whether we can open an existing file for reading.
+* We must have write permission for a file to specify the O_TRUNC flag in the open function
+* We can only create/delete new file in a directory when we have write permission and execute permission
+* Execute permission for a file must be on if we use exec function and file also has to be a regular file.
 
 Ownership of New Files and Directory:
-> The user ID of the file is set to the effective user ID of the process, group ID can be following rules:
-> 1. Can be the effective group ID of the process.
-> 2. Can be the group ID of the directory in which the file is being created.
+The user ID of the file is set to the effective user ID of the process, group ID can be following rules:
+1. Can be the effective group ID of the process.
+2. Can be the group ID of the directory in which the file is being created.
 
 access and faccessat: <unistd.h> determine accessibility based on real user and group id
 ```C++
@@ -468,9 +468,9 @@ int lchown(const char *pathname, uit_t owner, git_t group);
 ```
 
 File size:
-> 1. Regular file size 0 is allowed.
-> 2. Directory size is usually a multiple of a number, such as 16 or 512.
-> 3. Symbolic link size is the number of byts in filename. (Symbolic link don't contain normal c null byte)
+1. Regular file size 0 is allowed.
+2. Directory size is usually a multiple of a number, such as 16 or 512.
+3. Symbolic link size is the number of byts in filename. (Symbolic link don't contain normal c null byte)
 
 File Truncation:    <unistd.h> truncate a file to specified length
 ```C++
@@ -495,11 +495,11 @@ rename, renameat: <stdio.h>
 int rename(const char *oldname, const char *name);
 int renameat(int oldfd, const char *oldname, int newfd, const char *newname); // AT_FDCWD
 ```
-> 1. If oldname specifies a file, if newname is exists, it can't refer to a directory, it is remvoed, and oldname renamed to newname
-> 2. If oldname specifies a directory, newname must refer to a directory. If newname exits, it must be empty, then it is removed. newname can't contain a path prefix that names oldname, because oldname cant removed.
-> 3. If either oldname or newname refers to a symbolic link, then the link itself is proceessed, not the file to which it resolves.
-> 4. Can't rename dot or dot-dot.
-> 5. As a special case, if oldname and newname refer to the same file, the function return success and without changing anything.
+1. If oldname specifies a file, if newname is exists, it can't refer to a directory, it is remvoed, and oldname renamed to newname
+2. If oldname specifies a directory, newname must refer to a directory. If newname exits, it must be empty, then it is removed. newname can't contain a path prefix that names oldname, because oldname cant removed.
+3. If either oldname or newname refers to a symbolic link, then the link itself is proceessed, not the file to which it resolves.
+4. Can't rename dot or dot-dot.
+5. As a special case, if oldname and newname refer to the same file, the function return success and without changing anything.
 
 Symbolic Links: <unistd.h>
 
@@ -518,10 +518,10 @@ ssize_t readlinkat(int fd, const char *pathname, char *buf, size_t bufsize);
 ```
 
 File Time:
-> st_atim, st_mtim(contents change time), st_ctim(i-node change time)    
+* st_atim, st_mtim(contents change time), st_ctim(i-node change time)    
 
-> Action changes i-node:
->   * change access permission, change uid, change number of links
+Action changes i-node:
+* change access permission, change uid, change number of links
 
 futimens, utimensat, utimes: <sys/stat.h> change the access time and modification time of a file
 ```C++
@@ -618,8 +618,8 @@ FILE *freopen(const char *pathname, const char *type,FILE *fp); // clear stream'
 ```
 
 Standard input, output, error:
-> File descriptor: STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
-> File pointer: stdin, stdout, stderr
+* File descriptor: STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
+* File pointer: stdin, stdout, stderr
 
 Buffering: <stdio.h>
 ```C++
@@ -716,17 +716,18 @@ I/O Moudles:
     asynchronous I/O(aio_)
 
 FD ready conditions:    
-> Readable condition:    
->   1. The size of socket buffer in kernel is not less than SO_RECLOWAT
->   2. The peer of socket close connection, read return 0
->   3. There is a new connection in the scoket
->   4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
 
-> Writeble condition:    
->   1. The size of socket buffer in kernel is not big that SO_SNDLOWAT
->   2. The write of socket is closed, write to such socket will trigger SIGPIPE
->   3. Using non-blocking connect connect success or fail
->   4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
+Readable condition:    
+1. The size of socket buffer in kernel is not less than SO_RECLOWAT
+2. The peer of socket close connection, read return 0
+3. There is a new connection in the scoket
+4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
+
+Writeble condition:    
+1. The size of socket buffer in kernel is not big that SO_SNDLOWAT
+2. The write of socket is closed, write to such socket will trigger SIGPIPE
+3. Using non-blocking connect connect success or fail
+4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
 
 Nonblocking I/O:    
 Two ways to specify nonblocking I/O for a given descriptor:
@@ -1106,11 +1107,11 @@ level:
 ```
 
 Out-of-Band data:
-> int sockatmark(int fd);       
-> OOB data is only supported on AF_INET and AF_INET6, the data can be sent by specifying the MSG_OOB fly on send function.      
-> The SIOCATMARK ioctl() request determine if the read pointer is pointing to the last OOB byte.        
-> If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final OOB data occurrence.   
-> SIGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
+* int sockatmark(int fd);       
+* OOB data is only supported on AF_INET and AF_INET6, the data can be sent by specifying the MSG_OOB fly on send function.      
+* The SIOCATMARK ioctl() request determine if the read pointer is pointing to the last OOB byte.        
+* If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final OOB data occurrence.   
+* SIGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
 
 Two method to detect OOB data's arrival:
 * SIGURG will be triggered.
@@ -1128,28 +1129,30 @@ Reciev OOB data:
         MSG_OOB(EINVAL).
 
 Architecture of Server:
-```
-    1. IO communication unit
-        1.1 Port multiplexing
-            select 1000, poll, epoll 30W
-        1.2 Synchronization 
-            http https 
-        1.3 asynchroniztion
-            signal, sigaction
-        1.4 asynchronous IO
-            aio_read, aio_write
-    2. Data Process Unit    
-        2.1 Multiple Thread 
-            Thread Mutext: mutex, spin, atomic
-            Thread Synchronization: PV, semaphore
-            Thread Communication
-        2.2 Multiple Prcesses
-            IPC pip, fifo, socketpair
-        2.3 Multiple Thread + Multiple Process
-            Thread Pool
-            Process Pool
-    3. Date Storage
-```
+1. IO communication unit
+
+    1. Port multiplexing   
+        select 1000, poll, epoll 30W
+    2. Synchronization     
+        http https 
+    3. asynchroniztion 
+        signal, sigaction
+    4. asynchronous IO 
+        aio_read, aio_write
+
+2. Data Process Unit    
+
+    1. Multiple Thread 
+        Thread Mutext: mutex, spin, atomic  
+        Thread Synchronization: PV, semaphore   
+        Thread Communication    
+    2. Multiple Prcesses   
+        IPC pip, fifo, socketpair   
+    3. Multiple Thread + Multiple Process  
+        Thread Pool 
+        Process Pool   
+
+3. Date Storage
 
 Two High-performance Event Handle Architectures:
 1. Reactor: implemented by synchronize I/O
@@ -1179,18 +1182,10 @@ Network configuration information:
 ```
 
 Connection Abort befor 'accept' Returns:
-```
-When client call connect, three-way handshake completes, the connection established, and then client TCP
-    send an RST. On server side, the connection is queued by its TCP, waiting for the server process to call
-    accept when the RST arrives. Sometime later, ther server process calls accept.
-What happens to the aborted connection is implementation-dependent. Berkeley-derived implementation handle the 
-    aborted connection completely within the kernel, and the server process never sees it. Most SVR4 
-    implementations, return error to the process as the return from accept, and error depends on the
-    implementation. SVR4 return an errno of EPROTO but POSIX return ECONNABORTED. 
-```
+1. When client call connect, three-way handshake completes, the connection established, and then client TCP send an RST. On server side, the connection is queued by its TCP, waiting for the server process to call accept when the RST arrives. Sometime later, ther server process calls accept.
+2. What happens to the aborted connection is implementation-dependent. Berkeley-derived implementation handle the aborted connection completely within the kernel, and the server process never sees it. Most SVR4 implementations, return error to the process as the return from accept, and error depends on the implementation. SVR4 return an errno of EPROTO but POSIX return ECONNABORTED. 
 
 Termination of Server Process:
-```
 1. Kill server process. All open fd in the process are closed, this cause a FIN to be sent to the client and 
     client TCP response with ACK.
 2. Nothing happens at the client. The TCP receives the FIN from the server TCP and responds with an ACK, but
@@ -1204,22 +1199,15 @@ Termination of Server Process:
 5. The client process will not see the RST because it calls readline immediately after the call to writen and 
     readline return 0(EOF) immediately because of the FIN that was received in Step 2. 
 6. When the client terminates, all its open descriptors are closed.
-```
 
 "SIGPIPE":
-```
-When a process writes to a socket that has received an RST, the SIGPIPE signal is sent to the process.
-The default action of this signal is to terminate the process.
-```
+* When a process writes to a socket that has received an RST, the SIGPIPE signal is sent to the process.
+* The default action of this signal is to terminate the process.
 
 Crashing Server Host:
-```
 1. When the server host crashed, nothing is sent out on the existing network connection.
-2. We type a  line of input to the client, it is written by writen, and is sent by the client TCP as data 
-    segment. The client then blocks in the call to readline, waiting for the echoed rely.
-3. Client TCP continually retransmitting the data segment, trying to receive an ACK from the server. When the 
-        client TCP finnaly gives up, an error is returned to client process. ETIMEDOUT, EHOSTUNREACH
-```
+2. We type a  line of input to the client, it is written by writen, and is sent by the client TCP as data segment. The client then blocks in the call to readline, waiting for the echoed rely.
+3. Client TCP continually retransmitting the data segment, trying to receive an ACK from the server. When the client TCP finnaly gives up, an error is returned to client process. ETIMEDOUT, EHOSTUNREACH
 
 Crashing and Rebooting of Server Host:
 1. The server host crashed and reboots, its TCP loses all information about connection that existed befor the crash. 
@@ -1227,10 +1215,7 @@ Crashing and Rebooting of Server Host:
 3. Client blocked in the call to readline when RST is received, causing readline to return the error ECONNRESET
 
 Shutdown of Server Host:
-```
-Init process normally sends the SIGTERM signal to all processes, waits some fixed amount of time, and then send
-    SIGKILL signal to any processes still running.
-```
+* Init process normally sends the SIGTERM signal to all processes, waits some fixed amount of time, and then send SIGKILL signal to any processes still running.
     
 **********************************************  Signal Programming  *********************************************
 
@@ -1370,16 +1355,12 @@ struct siginfo_t {
 ```
 
 signaltstack():
-> int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1) 
+* int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1) 
 
-signal handler:
-```
+signal handler: 
 reentrant function:
-    A function is one, whose effect, when called by two or more threads, is guaranted to be
-    as if threads each executed the function one after the other in undefined order, 
-    even if the actual execution is interleaved.
-    
-    use global or static data structure is nonreentrant function.
+* A function is one, whose effect, when called by two or more threads, is guaranted to be as if threads each executed the function one after the other in undefined order, even if the actual execution is interleaved.
+* use global or static data structure is nonreentrant function.
     
 async-signal-safe function:
     implementation guarantees to be safe when called form a signal handler, either it is
@@ -1395,11 +1376,12 @@ global variable should be declared by using volatile:   volatile sig_atomic_t fl
     in order to prevent compiler from performing optimizations that result in varaible being stored in register
 
 terminating a signal handler:
+```C++
     _exit(); kill(); raise(); nonlocal goto; abort();
 ```
 
 performing a nonlocal goto from a signal handler: <setjmp.h> 
-> int sigsetjmp(sigjump_buf env, int savesigs);    void siglongjmp(sigjmp_buf env, int val);
+* int sigsetjmp(sigjump_buf env, int savesigs);    void siglongjmp(sigjmp_buf env, int val);
 
 POSIX Signal Semantics:
 1. Once a signal handler is installed, it remains installed.
@@ -1419,7 +1401,7 @@ System V:
 ```
 
 Unix outer-domain communication:
-> sockets, STREAMS
+* sockets, STREAMS
 
 Advantages and Disabvantages of XSI IPC:
 1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
@@ -1603,8 +1585,8 @@ Shared memory: (fastest IPC)
 ```
 
 Summary:    
-> Learn pipe and FIFOs avoid using message queue and semaphore, Full-duplex pipes and record locking should be 
-> considered instead as they are far simpler. Shared memory still has its use.
+* Learn pipe and FIFOs avoid using message queue and semaphore, Full-duplex pipes and record locking should be 
+* considered instead as they are far simpler. Shared memory still has its use.
     
 # Thread Process Programming
 
@@ -1644,7 +1626,7 @@ Handling Zombie process:
 3. Ignore the SIGCHLD signal. (only works under System V and Unix 98, unspecified in POSIX)
 
 The purpose of the zombie state:
-> is to maintain information about the child for the parent to fetch at some later time.
+*  is to maintain information about the child for the parent to fetch at some later time.
 
 Salient points of Zombie Processes
 1. All the memory and resources allocated to a process are deallocated when the process terminates using the exit() system call. But the process’s entry in the process table is still available. This process is now a zombie process.
@@ -1660,14 +1642,14 @@ Handling Interrupted System Calls:
 
 Session:
 ```C++
-int setsid(void); // <unistd.h>
-// if the calling process is not the process grop leader:
-// 1. The process becomes the session leader and the only process of this session.
-// 2. Create a new process group and the process becomes the new group leader, and the process group ID is the
-//     calling process ID.
-// 3. The process has no controling terminal.
-getsid(pid_t pid); //the same as the getpgid(pid_t pid);
-// The function returns an error is the process is already a process leader.
+    int setsid(void); // <unistd.h>
+    // if the calling process is not the process grop leader:
+    // 1. The process becomes the session leader and the only process of this session.
+    // 2. Create a new process group and the process becomes the new group leader, and the process group ID is the
+    //     calling process ID.
+    // 3. The process has no controling terminal.
+    getsid(pid_t pid); //the same as the getpgid(pid_t pid);
+    // The function returns an error is the process is already a process leader.
 ```
 
 Enviroment List: <stdlib.h>
@@ -1682,9 +1664,9 @@ Memory layout of Program:
 ```C++
                     |---------------------------------------------------------------------------------
                     |                               |
-    high  address   |                               | command-line arguments and environment variables
+                    |                               | command-line arguments and environment variables
                     |                               |
-                    |-------------------------------|------------------------------------------------- 0xC0000000
+        0xC0000000  |-------------------------------|-------------------------------------------------
                     |   stack                       | automatic variable, function called  info
                     |- - - - - - - - - - - - - - - -| - - - - - - - - - - - - - - - -  
                     |                               |
@@ -1700,7 +1682,7 @@ Memory layout of Program:
                     |-------------------------------|--------- read from program file by exec
                     |      .rodata                  | (machine instructions, sharable, read only)
                     |      .text                    |
-    low addresss    |-------------------------------|-------------------------------------------------- 0x08048000
+        0x08048000  |-------------------------------|--------------------------------------------------
     notes:
         Only initialized data and text segment are stored in the program file on disk
 Memory Allocation: <stdlib.h>
@@ -1724,8 +1706,9 @@ Process Enviroment:
         // child process copys parent's data, head and stack but shares text segment and file descriptors including server's listenfd, and connectfds.
         // After the fork, the fds opened in the parent process are still open, and reference counts incremented by 1.
         // There are two ways to handling descriptors after fork:
-           1. Parent waits for child to complete.
-           2. Both parent and child go their way(close descriptors don't need, respectively) 
+        //   1. Parent waits for child to complete.
+        //   2. Both parent and child go their way(close descriptors don't need, respectively) 
+
     pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)); // clean up lock status
         // child process can inherits parent's lock, but don't know whether it is locked or unlocked 
     pid_t wait(int *stat_loc);  <sys/wait.h>
@@ -1739,13 +1722,11 @@ Process Enviroment:
     int waittid(idtype_t idtype, id_t id, siginfo_t *infop, int options);
         // idtype: P_PID, P_PGID, P_ALL
         // options: WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTOPED
-    #include<sys/types.h> <sys//wait.h> <sys/time.h> <sys/resource.h>
+    #include<sys/types.h> <sys/wait.h> <sys/time.h> <sys/resource.h>
     pid_t wait3(int *statloc, int options, struct rusage *rusage);
     pid_t wait4(pid_t pid, int *statloc, int options, struct rusage *rusage);
-        // Additional feature is allow kernel to return a summary of resources used by the terminated process and   
-            all its child processes.
-        // Resource information includes such  statistics as the amount of the user CPU time, amount of the system
-            CPU time, number of page faults, number of signals received...
+        // Additional feature is allow kernel to return a summary of resources used by the terminated process and   all its child processes.
+        // Resource information includes such  statistics as the amount of the user CPU time, amount of the system CPU time, number of page faults, number of signals received...
 ```
 
 Memory Allocation:
@@ -1769,6 +1750,7 @@ Process Scheduling: <unistd.h>
             // The value is added to NZERO and this becomes new nice value
             // Return: 0 if ok, -1 on error
 Process Time: <sys/times.h>
+```C++
     struct tms {
         clock_t tms_utime;  // user CPU time
         clock_t tms_stime;  // system CPU time
@@ -1776,19 +1758,21 @@ Process Time: <sys/times.h>
         clock_t tms_cstime; // system CPU time, terminated children
     };
     clock_t times(struct tms *buf); // return wall clock time
-    
-Process exit functions:
-    Five normal terminations:
-        1. Executing return from the main function.
-        2. Executing return from the start routine of the last thread in the process.
-        3. Calling the exit(...) function.
-        4. Calling the _exit(...), _Exit(...) function.
-        5. Calling the pthread_exit(...) from the last thread in the process.
-    Three abnormal terminations:
-        1. Calling the abort(...) function. SIGABRT will generate.
-        2. When process receive certain signals.
-        3. The last thread responds to the cancellation request.
-    Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
+```
+
+Process exit functions: 
+* Five normal terminations:
+    1. Executing return from the main function.
+    2. Executing return from the start routine of the last thread in the process.
+    3. Calling the exit(...) function.
+    4. Calling the _exit(...), _Exit(...) function.
+    5. Calling the pthread_exit(...) from the last thread in the process.
+* Three abnormal terminations:
+    1. Calling the abort(...) function. SIGABRT will generate.
+    2. When process receive certain signals.
+    3. The last thread responds to the cancellation request.
+
+Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
     
 pthread:
     pthread_t pthread_self(void); // get current thread ID
@@ -1930,51 +1914,56 @@ xinetd:
  
 **********************************************  HTTPS Programming   *********************************************
 
-SSL:
-    Consists of two layers of protocol:
-        High-level protocol: 
-            SSL HandShake Protocol: Algorithm negotiation, identity authentication, private key determination
-                categories: Full HandShake, Resume session HandShake, <Server, Client> Re-nogotiation HandShake
-            Change Cipher Spec Protocol
-            AlertProtocol
-        Low-level protocol: 
-            SSL Record Protocol(certificate information, test data is tampered or not)
-                | type(1 byte) | version(2 byte) | length(2)byte | data | HMAC | Filling 0 | Fill length | 
-Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
-    1. init
-        SSL_library_init();
-        OpenSSL_add_all_algorithms();
-        SSL_load_error_strings();       // void ERR_print_errors_fp(FILE *fp);
-    2. Specify method
-        SSL_METHOD* method = SSLv23_server_method(void); // server method must is the same as the client
-    3. Set CTX
-        SSL_CTX *ctx = SSL_CTX_new(SSL_METHOD*);
-            // set the verify method
-        void SSL_set_verify(SSL_CTX *, int, int *(int, X509_STORE_CTX *)); // SSL_VERIFY_<PEER, NONE>
-            // load certificate
-        void SSL_CTX_load_verify_locations(SSL_CTS *, const char *file, const char *path);
-            // load local certificate
-        int SSL_CTX_use_certificate_file(SSL_CTX *, const char *file, int type);
-            // load private key
-        int SSL_CTX_use_PrivateKey_file(SSL_CTX *, const char *file, int type);
-            // validata private key and certificate
-        BOOL SSL_CTX_check_private_key(SSL_CTX *);
-    4. Attach to a connected socket
-        SSL *SSL_new(SSL_CTX *);
-        int SSL_set_fd(SSL *ssl, int fd); int SSL_set_rfd(SSL *, int); int SSL_set_wfd(SSL *, int); 
-    5. SSL connect and communication
-        int SSL_connect(SSL *ssl); int SSL_accept(SSL *ssl);
-        int SSL_read(SSL *ssl, char *buf, int len);
-        int SSL_write(SSL *ssl, char *buf, int len);
-    6. Free
-        int SSL_shutdown(SSL *ssl);
-        void SSL_free(SSL *ssl);
-        void SSL_CTX_free(SSL_CTX *);
+SSL:    
+Consists of two layers of protocol:
+1. High-level protocol: 
 
+    * SSL HandShake Protocol: Algorithm negotiation, identity authentication, private key determination 
+        > categories: Full HandShake, Resume session HandShake, <Server, Client> Re-nogotiation HandShake
+    * Change Cipher Spec Protocol
+    * AlertProtocol
+
+2. Low-level protocol:   
+    SSL Record Protocol(certificate information, test data is tampered or not)
+            | type(1 byte) | version(2 byte) | length(2)byte | data | HMAC | Filling 0 | Fill length | 
+
+Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
+```C++
+1. init
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();       // void ERR_print_errors_fp(FILE *fp);
+2. Specify method
+    SSL_METHOD* method = SSLv23_server_method(void); // server method must is the same as the client
+3. Set CTX
+    SSL_CTX *ctx = SSL_CTX_new(SSL_METHOD*);
+        // set the verify method
+    void SSL_set_verify(SSL_CTX *, int, int *(int, X509_STORE_CTX *)); // SSL_VERIFY_<PEER, NONE>
+        // load certificate
+    void SSL_CTX_load_verify_locations(SSL_CTS *, const char *file, const char *path);
+        // load local certificate
+    int SSL_CTX_use_certificate_file(SSL_CTX *, const char *file, int type);
+        // load private key
+    int SSL_CTX_use_PrivateKey_file(SSL_CTX *, const char *file, int type);
+        // validata private key and certificate
+    BOOL SSL_CTX_check_private_key(SSL_CTX *);
+4. Attach to a connected socket
+    SSL *SSL_new(SSL_CTX *);
+    int SSL_set_fd(SSL *ssl, int fd); int SSL_set_rfd(SSL *, int); int SSL_set_wfd(SSL *, int); 
+5. SSL connect and communication
+    int SSL_connect(SSL *ssl); int SSL_accept(SSL *ssl);
+    int SSL_read(SSL *ssl, char *buf, int len);
+    int SSL_write(SSL *ssl, char *buf, int len);
+6. Free
+    int SSL_shutdown(SSL *ssl);
+    void SSL_free(SSL *ssl);
+    void SSL_CTX_free(SSL_CTX *);
+```
 
 **********************************************  MYSQL Programming  **********************************************
 
 Direct Exexute:
+```C++
     MYSQL *mysql_init(MYSQL *mysql);                        // init MYSQL struct
     MYSQL *mysql_real_connect(MYSQL *mysql, const char *host, const char *user, const char *pwd, const char *db, 
         unsigned int port, const char *unix_socket, unsigned long client_flag); // connect to mysql server
@@ -1986,8 +1975,10 @@ Direct Exexute:
     MYSQL_ROW mysql_fetch_row(MYSQL_RES *result);           // get next data from result
     void mysql_free_result(MYSQL_RES *result);              // free MYSQL_RES struct
     void mysql_close(MYSQL *connection);  
+```
 
 Prepared Statment:
+```C++
     MYSQL_STMT *mysql_stmt_init(); 
     mysql_stmt_prepare();       // prepare stmt on server
     mysql_stmt_bind_param();    // set the values of any parameters
@@ -2000,6 +1991,7 @@ Prepared Statment:
 
 unsigned int mysql_errno(MYSQL *connection);  
 char *mysql_error(MYSQL *connection);
+```
 
 **********************************************  Kernel Programming  *********************************************
 
@@ -2091,6 +2083,7 @@ Kernel Network:
    
 
 **********************************************  Utility  ********************************************************
+```C++
 <cstdarg>:
     void my_err(char *msg, ...) { // my_err("Error connecting to tun/tap interface %s!\n", if_name)
         va_list argp;
@@ -2098,3 +2091,4 @@ Kernel Network:
         vfprintf(stderr, msg, argp);
         va_end(argp);
     }
+```
