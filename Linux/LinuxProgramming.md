@@ -1740,6 +1740,7 @@ Memory Allocation:
         // can be used again by call to one of the three alloc functions.
 ```
 Process Scheduling: <unistd.h>
+```C++
     nice value range: 0 - 2 * NZERO - 1
     modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
     priority: <sys/resource.h>
@@ -1749,6 +1750,8 @@ Process Scheduling: <unistd.h>
         int setpriority(int which, id_t who, int value);
             // The value is added to NZERO and this becomes new nice value
             // Return: 0 if ok, -1 on error
+```
+
 Process Time: <sys/times.h>
 ```C++
     struct tms {
