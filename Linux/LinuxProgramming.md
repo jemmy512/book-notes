@@ -1395,7 +1395,7 @@ POSIX Signal Semantics:
 Unix inter-domain communication:
 ```C++
 Unix communicatin:
-    soketpair, pipe(PIPE_BUF), FIFO, signal
+    socketpair, pipe(PIPE_BUF), FIFO, signal
 System V:
     semaphore, message queue, shared memory
 ```
@@ -1702,8 +1702,10 @@ Process Enviroment:
         int atexit(void *(func)(void)); 
             // call on registered func in reverse order and as many times as registered
             // register at leat 32 exit handlers that are automatically called by exit.
-    fork(); // PID, memory locks, record locks, CPU time counter, pending signals, semaphore adjustments, async I/O
-        // child process copys parent's data, head and stack but shares text segment and file descriptors including server's listenfd, and connectfds.
+    fork(); 
+        // Unique: PID, memory locks, record locks, CPU time counter, pending signals, 
+        // semaphore adjustments, outstanding async I/O operations, timer
+        // Child process copys parent's data, head and stack but shares text segment and file descriptors including server's listenfd, and connectfds.
         // After the fork, the fds opened in the parent process are still open, and reference counts incremented by 1.
         // There are two ways to handling descriptors after fork:
         //   1. Parent waits for child to complete.
@@ -1741,7 +1743,7 @@ Memory Allocation:
 ```
 Process Scheduling: <unistd.h>
 ```C++
-    nice value range: 0 - 2 * NZERO - 1
+    nice value range: 0 ~ 2 * NZERO - 1
     modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
     priority: <sys/resource.h>
         int getpriority(int which, id_t who);  
