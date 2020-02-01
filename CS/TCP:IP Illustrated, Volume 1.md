@@ -67,7 +67,7 @@ Once a connection is established, every TCP segment that contains data flowing i
     3           3       |   WSCALE/WSOPT
     4           2       |   SACK
     5           N*8 + 2 |   [,]...[,]
-    8           10      |   TSOPT
+    8           10      |   TSOPT: TSV(4) TSER(4)
     -----------------------------------------------------------------
 ```
 
@@ -268,9 +268,13 @@ The duplicate ACKs sent immediately when out-of-order data arrives are not delay
 
 Duplicate ACKs can also appear when there is packet reordering in the network—if a receiver receives a packet for a sequence number beyond the one it is expecting next, the expected packet could be either missing or merely delayed. Because we generally do not know which one, TCP waits for a small number of duplicate ACKs (called the duplicate ACK threshold or dupthresh) to be received before concluding that a packet has been lost and initiating a fast retransmit. 
 
+#### 14.5.1 Example
+
+The ACK at time 0.853 is not considered a duplicate ACK because it contains a window update.
+
 The second retransmission is somewhat different from the first. When the first retransmission takes place, the sending TCP notes the highest sequence number it had sent just before it performed the retransmission (43401 + 1400 = 44801). This is called the **recovery point**.
 
-TCP is considered to be recovering from loss after a retransmission until it receives an ACK that matches or exceeds the sequence number of the recovery point.
+TCP is considered to be **recovering from loss** after a retransmission until it receives an ACK that matches or exceeds the sequence number of the recovery point.
 
 When **partial ACKs** arrive, the sending TCP immediately sends the segment that appears to be missing (26601 in this case) and continues this way until the recovery point is matched or exceeded by an arriving ACK. If permitted by congestion control procedures, it may also send new data it has not yet sent.
 
@@ -288,8 +292,7 @@ Behavior:
 1. The receiver places in the first SACK block the sequence number range contained in the segment it has most recently received.
 2. **???** Other SACK blocks are listed in the order in which they appeared as first blocks in previous SACK options. That is, they are filled in by repeating the most recently sent SACK blocks (in other segments) that are not subsets of another block about to be placed in the option being constructed.
 
-
-
+[RFC6675]Note that an ACK which carries new SACK data is counted as a duplicate acknowledgment under this definition even if it carries new data, changes the advertised window, or moves the cumulative acknowledgment point, which is different from the definition of duplicate acknowledgment in [RFC5681].
 
 #### 14.6.2 SACK Sender Behavior
 The SACK sender keeps track of any cumulative ACK information it receives (like any TCP sender), plus any SACK information it receives.
@@ -303,6 +306,66 @@ When a SACK-capable sender has the opportunity to perform a retransmission, usua
 The SACK information provides the sequence number ranges present at the receiver, so the sender can infer what segments likely need to be retransmitted to fill the receiver’s holes. The simplest approach is to have the sender first fill the holes at the receiver and then move on to send more new data [RFC3517] if the congestion control procedures allow. This is the most common approach.
 
 #### 14.6.3 Example
-The ACK for 23801 contains a SACK block of [25201,26601], indicating a hole at the receiver. The receiver is missing the sequence number range [23801,25200], which corresponds to the single 1400-byte packet starting with sequence number 23801.Note that this SACK is a window update and is not counted as a duplicate ACK for the reasons discussed earlier. It does not trigger fast retransmit.
+The ACK for 23801 contains a SACK block of [25201,26601], indicating a hole at the receiver. The receiver is missing the sequence number range [23801,25200], which corresponds to the single 1400-byte packet starting with sequence number 23801. Note that this SACK is a window update and is not counted as a duplicate ACK for the reasons discussed earlier. It does not trigger fast retransmit.
 
-The SACK arriving at time 0.967 contains two SACK blocks: [28001,29401] and [25201,26601]. Recall that the first SACK blocks from previous SACKs are repeated in later positions in subsequent SACKs for robustness against ACK loss. This SACK is a duplicate ACK for sequence number 23801 and suggests that the receiver now requires two full-size segments starting with sequence numbers 23801 and 26601. The sender reacts immediately by initiating fast retransmit, but because of congestion control procedures (see Chapter 16), the sender sends only one retransmission, for segment 23801. With the arrival of two additional ACKs, the sender is permitted to send its second retransmission, for segment 26601.
+The SACK arriving at time 0.967 contains two SACK blocks: [28001,29401] and [25201,26601]. Recall that the first SACK blocks from previous SACKs are repeated in later positions in subsequent SACKs for robustness against ACK loss. This SACK is a duplicate ACK for sequence number 23801 and suggests that the receiver now requires two full-size segments starting with sequence numbers 23801 and 26601. The sender reacts immediately by initiating fast retransmit, but because of congestion control procedures, the sender sends only one retransmission, for segment 23801. With the arrival of two additional ACKs, the sender is permitted to send its second retransmission, for segment 26601.
+
+### 14.7 Spurious Tiemouts and Retransmission
+Caused by:
+1. spurious timeouts (timeouts firing too early) 
+
+    * **Detection algorithm** attempts to determine whether a timeout or timer-based retransmission was spurious.
+    * **Response algorithm** is invoked once a timeout or retransmission is deemed spurious. Its purpose is to undo or mitigate some action that is otherwise normally performed by TCP when a retransmission timer expires. 
+2. packet reordering, packet duplication
+3. lost ACKs
+4. when the real RTT has recently increased significantly beyond the RTO
+
+#### 14.7.1 Duplicate SACK(DSACK) Extension
+With a non-SACK TCP, an ACK can indicate only the highest in-sequence segment back to the sender. With SACK, it can signal other (out-of-order) segments as well.
+
+A receiver receives duplicate data segments can be the result of spurious retransmissions, duplication within the network, or other reasons.
+
+D-SACK is a rule, applied at the SACK receiver and interoperable with conventional SACK senders, that causes the first SACK block to indicate the sequence numbers of a duplicate segment that has arrived at the receiver. 
+
+Purpose:	
+to determine when a retransmission was not necessary and to learn additional facts about the network. With it, a sender has at least the possibility of inferring whether packet reordering, loss of ACKs, packet replication, and/or spurious retransmissions are taking place.
+
+Usage:  
+1. A change is made to the content of SACKs sent from the receiver and a corresponding change to the logic at the sender.
+2. The change to the SACK receiver is to allow a SACK block to be included even if it covers sequence numbers below (or equal to) the cumulative ACK Number field.
+
+DSACK information is included in only a single ACK, and such an ACK is called a DSACK. DSACK information is not repeated across multiple SACKs as conventional SACK information is. As a consequence, DSACKs are less robust to ACK loss than regular SACKs.
+
+DSACKs, conversely, are able to be sent only after a duplicate segment has arrived at the receiver and able to be acted upon only after the DSACK is returned to the sender.
+
+How to identify a DSACK block within an ACK segment:
+1. if the first SACK block number < ACK number, it's DSACK
+2. else if the 2nd SACK number contains the 1st SACK number, the 1st SACK block is DSACK
+3. else it's normal SACK
+
+Reference:
+* https://www.cnblogs.com/lshs/p/6038617.html
+
+#### 14.7.2 The Eifel Detection Algorithem
+The experimental Eifel Detection Algorithm [RFC3522] deals with this problem using the TCP TSOPT to detect spurious retransmissions. 
+
+After a retransmission timeout occurs, Eifel awaits the next acceptable ACK. If the next acceptable ACK indicates that the first copy of a retransmitted packet (called the original transmit) was the cause for the ACK, the retransmission is considered to be spurious.
+
+The Eifel Detection Algorithm is able to detect spurious behavior earlier than the approach using only DSACK because it relies on ACKs generated as a result of packets arriving before loss recovery is initiated.
+
+DSACKs, conversely, are able to be sent only after a duplicate segment has arrived at the receiver and able to be acted upon only after the DSACK is returned to the sender.
+
+Mechanism:   
+* When a retransmission is sent (either a timer-based retransmission or a fast retransmit), the TSV value is stored. When the first acceptable ACK covering its sequence number is received, the incoming ACK’s TSER is examined. If it is smaller than the stored value, the ACK corresponds to the original transmission of the packet and not the retransmission, implying that the retransmission must have been spurious.
+* This approach is fairly robust to ACK loss as well. If an ACK is lost, any subsequent ACKs still have TSER values less than the stored TSV of the retransmitted segment. Thus, a retransmission can be deemed spurious as a result of any of the window’s worth of ACKs arriving, so a loss of any single ACK is not likely to cause a problem.
+* The Eifel Detection Algorithm can be combined with DSACKs. This can be beneficial in the situation where an entire window’s worth of ACKs are lost but both the original transmit and retransmission have arrived at the receiver.
+
+#### 14.7.3 Foward-RTO(FRTO)
+It does not require any TCP options, so when it is implemented in a sender. It attempts to detect only spurious retransmissions caused by expiration of the retransmission timer.
+
+Mechanism:
+1. F-RTO modifies the ordinary behavior of TCP by having TCP send new (so far unsent) data after the timeout-based retransmission when the first ACK arrives. It then inspects the second arriving ACK.
+2. If either of the first two ACKs arriv- ing after the retransmission was sent are duplicate ACKs, the retransmission is deemed OK
+3. If they are both acceptable ACKs that advance the sender’s window, the retransmission is deemed to have been spurious. 
+
+#### 14.7.4 The Eifel Response Algorithem
