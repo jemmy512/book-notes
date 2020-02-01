@@ -436,7 +436,7 @@ Copy elision:
     4. In the initialization of an object, when the source object is a nameless temporary and is of the
         same class type (ignoring cv-qualification) as the target object. When the nameless temporary is
         the operand of a return statement, this variant of copy elision is known as 
-        RVO, "return value optimization".   (until C++17)
+        RVO, "return value optimization".
 
     5. In a throw-expression, when the operand is the name of a non-volatile object with automatic storage duration,
         which isn't a function parameter or a catch clause parameter, and whose scope does not extend past
@@ -487,7 +487,17 @@ Good pattern to write assignment operator:
             return *this;
         }
 
-LVALUE REFERENCE:
+        HasPtr& operator=(HasPtr& rhs) {
+            if (this != &rhs) {
+                delete this->ps;
+                this->ps = string(*rhs.ps);
+                this->num = rhs.num;
+            }
+
+            return *this;
+        }
+
+lvalue/rvalue reference:
     1. Rvalue reference may  be bound only to an object that is about to be destroyed.
     2. Lvalue reference refers to an object's identity whereas rvalue refers to an object' value.
     3. Functions that return lvalue references, along with assignment, subscript, dereference and prefix
@@ -497,6 +507,8 @@ LVALUE REFERENCE:
 
         We can bind either lvalue to const or rvalue to these expressions, and its lifetime is extended.
             int &&x = 2 + 3; // x itself a lvalue, bug it binds to a rvalue
+        Const reference can accept both lvaue reference and rvalue reference.
+        Rvalue bind to a const reference, it's lifetime is extended.
             
     5. Because rvalue reference can only be bound to temporaries, so:
         1. There can be no other users of that object
@@ -1084,7 +1096,3 @@ http://blog.csdn.net/haoel/article/details/1948051
     3. To access class's staic variable.
     4. In case of the multiple Inheritance.
 3. Single, multiple and virtual inheritance:
-    
- 
-        
-        
