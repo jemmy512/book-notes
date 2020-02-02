@@ -365,7 +365,38 @@ It does not require any TCP options, so when it is implemented in a sender. It a
 
 Mechanism:
 1. F-RTO modifies the ordinary behavior of TCP by having TCP send new (so far unsent) data after the timeout-based retransmission when the first ACK arrives. It then inspects the second arriving ACK.
-2. If either of the first two ACKs arriv- ing after the retransmission was sent are duplicate ACKs, the retransmission is deemed OK
+2. If either of the first two ACKs arriving after the retransmission was sent are duplicate ACKs, the retransmission is deemed OK
 3. If they are both acceptable ACKs that advance the sender’s window, the retransmission is deemed to have been spurious. 
 
 #### 14.7.4 The Eifel Response Algorithem
+
+
+### 14.8 Packet Reodering and Duplication
+#### 14.8.1 Reordering
+1. If reordering takes place in the *reverse (ACK) direction*, it causes the sending TCP to receive some ACKs that move the window significantly forward followed by some evidently old redundant ACKs that are discarded. This can lead to an unwanted burstiness (instantaneous high-speed sending) behavior in the sending pattern of TCP and also trouble in taking advantage of available network bandwidth, because of the behavior of TCP’s congestion control (see Chapter 16).
+2. If reordering occurs in the *forward direction*, TCP may have trouble distinguishing this condition from loss. Both loss and reordering result in the receiver receiving out-of-order packets that create holes between the next expected packet and the other packets received so far. When reordering is moderate (e.g., two adjacent packets switch order), the situation can be handled fairly quickly. When reorderings are more severe, TCP can be tricked into believing that data has been lost even though it has not. This can result in spurious retransmissions, primarily from the fast retransmit algorithm
+
+#### 14.8.2 Duplicaton
+Although rare, the IP protocol may deliver a single packet more than one time. This can happen, for example, when a link-layer network protocol performs a retransmission and creates two copies of the same packet. 
+
+### 14.9 Destination Metrics
+
+### 14.10 Repacketization
+When TCP times out and retransmits, it does not have to retransmit the identical segment. Instead, TCP is allowed to perform repacketization, sending a bigger segment, which can increase performance. 
+
+# 15 Data Flow and Window Management
+
+### 15.3 Delayed Ackowledgements
+### 15.4 Nagle Algorithm
+When a TCP connection has outstanding data that has not yet been acknowledged, small segments (those smaller than the SMSS) cannot be sent until all outstanding data is acknowledged.
+
+Instead, small amounts of data are collected by TCP and sent in a single segment when an acknowledgment arrives. 
+
+This procedure effectively forces TCP into stop-and-wait behavior—it stops sending until an ACK is received for any outstanding data.
+
+The trade-off the Nagle algorithm makes: fewer and larger packets are used, but the required delay is higher.
+
+### 15.5 Flow Control and Window Management
+The Window Size field in each TCP header indicates the amount of empty space, in bytes, remaining in the receive buffer. The field is 16 bits in TCP, but with the Window Scale option, values larger than 65,535 can be used.
+
+#### 15.5.1 Sliding Window
