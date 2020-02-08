@@ -400,3 +400,141 @@ The trade-off the Nagle algorithm makes: fewer and larger packets are used, but 
 The Window Size field in each TCP header indicates the amount of empty space, in bytes, remaining in the receive buffer. The field is 16 bits in TCP, but with the Window Scale option, values larger than 65,535 can be used.
 
 #### 15.5.1 Sliding Window
+Sending Window
+![Img: sending window](../Images/sendingWindow.png)
+Sliding Process:
+1. The window closes as the left edge advances to the right. This happens when data that has been sent is acknowledged and the window size gets smaller.
+2. The window opens when the right edge moves to the right, allowing more data to be sent. This happens when the receiving process on the other end reads acknowledged data, freeing up space in its TCP receive buffer.
+3. The window shrinks when the right edge moves to the left. The Host Requirements RFC [RFC1122] strongly discourages this, but TCP must be able to cope with it. Section 15.5.3 on silly window syndrome shows an example where one side would like to shrink the window by moving the right edge to the left but cannot.
+
+TCP sender adjusts the window structure based on both values of Ack number and window advertisement whenever an incoming segment arrives
+
+Receving Window
+![Img: receving window](../Images/recevingWindow.png)
+Note that the ACK number generated at the receiver may be advanced only when segments fill in directly at the left window edge because of TCP’s cumulative ACK structure. 
+
+With selective ACKs, other in-window segments can be acknowledged using the TCP SACK option, but ultimately the ACK number itself is advanced only when data contiguous to the left window edge is received.
+
+#### 15.5.2 Zero Windows and TCP Pesist Timer
+The sender uses a persist timer to query the receiver periodically, to find out if the window size has increased. The persist timer triggers the transmission of window probes. Window probes are segments that force the receiver to provide an ACK, which also necessarily contains a Window Size field.
+
+The first probe should happen after one RTO and subsequent problems should occur at exponentially spaced intervals.
+
+A normal TCP never gives up sending window probes, whereas it may eventually give up trying to perform retransmissions. This can lead to a certain resource exhaustion vulnerability
+
+##### 15.5.2.1 Example
+There are numerous points that we can summarize using Figures 15-11 and 15-12:
+1. The sender does not have to transmit a full window’s worth of data.
+2. A single segment from the receiver acknowledges data and slides the window to the right at the same time. This is because the window advertisement is relative to the ACK number in the same segment.
+3. The size of the window can decrease, as shown by the series of ACKs in Figure 15-11, but the right edge of the window does not move left, so as to avoid window shrinkage.
+4. The receiver does not have to wait for the window to fill before sending an ACK.
+
+### 15.5.3 Silly Window Syndrome(SWS)
+Definition:  
+Small data segments are exchanged across the connection instead of full-size segments [RFC0813]. This leads to undesirable inefficiency because each segment has relatively high overhead—a small number of data bytes relative to the number of bytes in the headers.
+
+Solution:   
+1. When operating as a receiver, small windows are not advertised. The receive algorithm specified by [RFC1122] is to not send a segment advertising a larger window than is currently being advertised (which can be 0) until the window can be increased by either one full-size segment (i.e., the receive MSS) or by one-half of the receiver’s buffer space, whichever is smaller. Note that there are two cases where this rule can come into play: when buffer space has become available because of an application consuming data from the network, and when TCP must respond to a window probe.
+2. When sending, small segments are not sent and the Nagle algorithm governs when to send. Senders avoid SWS by not transmitting a segment unless at least one of the following conditions is true:
+
+    * A full-size (send MSS bytes) segment can be sent.
+    * TCP can send at least one-half of the maximum-size window that the other end has ever advertised on this connection.
+    * TCP can send everything it has to send and either (i) an ACK is not currently expected (i.e., we have no outstanding unacknowledged data) or (ii) the Nagle algorithm is disabled for this connection.
+
+??? Figure 15-14, P749. Doese window probe segement break the normal data?
+
+
+### 15.5.4 Large Buffers and Auto-Tuning
+With auto-tuning, the amount of data that can be outstanding in the connection (its bandwidth-delay product, an important concept we discuss in Chapter 16) is continuously estimated, and the advertised window is arranged to always be at least this large (provided enough buffer space remains to do so). This has the advantage of allowing TCP to achieve its maximum available throughput rate (subject to the available network capacity) without having to allocate excessively large buffers at the sender or receiver ahead of time. 
+
+```C++
+net.core.rmem_max = 131071 
+net.core.wmem_max = 131071 
+net.core.rmem_default = 110592 
+net.core.wmem_default = 110592
+
+net.ipv4.tcp_rmem = 4096 87380 174760 // minimum, default, maximum
+net.ipv4.tcp_wmem = 4096 16384 131072
+```
+
+### 15.6 Urgent Mechanism
+// TODO
+### 15.7 Attack Involving Window Management
+// TODO
+
+
+# TCP Congestion Control
+#### 16.1.1 Dection of Congestion in TCP
+In TCP, an assumption is made that a lost packet is an indicator of congestion, and that some response (i.e., slowing down in some way) is required.
+
+#### 16.1.2 Slowing Down a TCP Sender
+```
+W = min(cwnd, awnd)
+```
+The TCP sender is not permitted to have more than W unacknowledged packets or bytes outstanding in the network.
+
+The total amount of data a sender has introduced into the network for which it has not yet received an acknowledgment is sometimes called the **flight size**, which is always less than or equal to W. 
+
+When TCP does not make use of selective acknowledgment, the restriction on W means that the sender is not permitted to send a segment with a sequence number greater than the sum of the highest acknowledged sequence number and the value of W.
+
+**Bandwidth-delay Product** This is the amount of data that can be stored in the network in transit to the receiver. It is equal to the product of the RTT and the capacity of the lowest capacity (“bottleneck”) link on the path from sender to receiver. 
+
+### 16.2 The Classic Algorithm
+
+#### 16.2.1 Slow Start
+Time:
+1. when a new TCP connection is created
+2. when a loss has been detected due to a retransmission timeout (RTO)
+
+Purpose:
+1. help TCP find a value for cwnd before probing for more available bandwidth using congestion avoidance
+2. to establish the ACK clock.
+
+[RFC5681]:
+> Beginning transmission into a network with unknown conditions requires TCP to slowly probe the network to determine the available capacity, in order to avoid congesting the network with an inappropriately large burst of data. The slow start algorithm is used for this purpose at the beginning of a transfer, or after repairing loss detected by the retransmission timer.
+
+```
+IW = 2*(SMSS) and not more than 2 segments (if SMSS > 2190 bytes)
+IW = 3*(SMSS) and not more than 3 segments (if 2190 ≥ SMSS > 1095 bytes) IW = 4*(SMSS) and not more than 4 segments (otherwise)
+```
+
+#### 16.2.2 Congestion Avoidance
+```
+cwndt+1 = cwndt + SMSS * SMSS/cwndt
+
+cwnd0 = k*SMSS
+cwnd1 = cwnd0 + (1/k)*SMSS
+```
+
+#### 16.2.3 Selecting Between Slow Start and Congestion Control
+The initial value of ssthresh may be set arbitrarily high (e.g., to awnd or higher), which causes TCP to always start with slow start. When a retransmission occurs, caused by either a retransmission timeout or the execution of fast retransmit, ssthresh is updated as follows:
+```
+ssthresh = max(flight size/2, 2*SMSS)
+```
+
+#### 16.2.4 Tahoe, Reno, and Fast Recovery
+Any ACKs that are received, even while recovering after a loss, still represent opportunities to inject new packets into the network. This became the basis of the **fast recovery** procedure. Fast recovery allows cwnd to (temporarily) grow by 1 SMSS for each ACK received while recovering. 
+
+#### 16.2.5 Standard TCP
+TCP begins a connection in slow start (cwnd = IW) with a large value of ssthresh, generally at least the value of awnd. Upon receiving a good ACK (one that acknowledges new data), TCP updates the value of cwnd as follows:
+```
+cwnd += SMSS (if cwnd < ssthresh) Slow start
+cwnd += SMSS*SMSS/cwnd (if cwnd > ssthresh) Congestion avoidance
+```
+
+When fast retransmit is invoked because of receipt of a third duplicate ACK, the following actions are performed:
+1. ssthresh is updated to no more than the value given in equation [1].
+2. The fast retransmit algorithm is performed, and cwnd is set to (ssthresh +
+3*SMSS).
+3. cwnd is temporarily increased by SMSS for each duplicate ACK received. 
+4. When a good ACK is received, cwnd is reset back to ssthresh. (deflation)
+
+The actions in steps 2 and 3 constitute fast recovery.
+
+### 16.3 Evolution of the Standard Algorithms
+#### 16.3.1 NewReno
+NewReno modifies fast recovery by keeping track of the highest sequence number from the last transmitted window of data (recovery point). Only when an ACK with an ACK number at least as large as the recovery point is received is the inflation of fast recovery removed. 
+
+This allows a TCP to continue sending one segment for each ACK it receives while recovering and reduces the occurrence of retransmission timeouts, especially when multiple packets are dropped in a single window of data.
+
+#### 16.3.2 TCP Congestion Control with SACK
