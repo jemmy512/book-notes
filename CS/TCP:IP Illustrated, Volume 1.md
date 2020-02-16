@@ -463,7 +463,7 @@ net.ipv4.tcp_wmem = 4096 16384 131072
 // TODO
 
 
-# TCP Congestion Control
+# 16 TCP Congestion Control
 #### 16.1.1 Dection of Congestion in TCP
 In TCP, an assumption is made that a lost packet is an indicator of congestion, and that some response (i.e., slowing down in some way) is required.
 
@@ -483,19 +483,35 @@ When TCP does not make use of selective acknowledgment, the restriction on W mea
 
 #### 16.2.1 Slow Start
 Time:
-1. when a new TCP connection is created
-2. when a loss has been detected due to a retransmission timeout (RTO)
+1. When a new TCP connection is created
+2. When a loss has been detected due to a retransmission timeout (RTO)
 
 Purpose:
-1. help TCP find a value for cwnd before probing for more available bandwidth using congestion avoidance
-2. to establish the ACK clock.
+
+1. Help TCP find a value for cwnd before probing for more available bandwidth using congestion avoidance
+2. Establish the ACK clock.
 
 [RFC5681]:
-> Beginning transmission into a network with unknown conditions requires TCP to slowly probe the network to determine the available capacity, in order to avoid congesting the network with an inappropriately large burst of data. The slow start algorithm is used for this purpose at the beginning of a transfer, or after repairing loss detected by the retransmission timer.
+
+>  Beginning transmission into a network with unknown conditions requires TCP to slowly probe the network to determine the available capacity, in order to avoid congesting the network with an inappropriately large burst of data. The slow start algorithm is used for this purpose at the beginning of a transfer, or after repairing loss detected by the retransmission timer.
 
 ```
+cwnd = min(N, SMSS)
+
+IW = 1 SMSS
 IW = 2*(SMSS) and not more than 2 segments (if SMSS > 2190 bytes)
-IW = 3*(SMSS) and not more than 3 segments (if 2190 ≥ SMSS > 1095 bytes) IW = 4*(SMSS) and not more than 4 segments (otherwise)
+IW = 3*(SMSS) and not more than 3 segments (if 2190 ≥ SMSS > 1095 bytes) 
+IW = 4*(SMSS) and not more than 4 segments (otherwise)
+
+cwnd = min(N, SMSS) 
+// N is the number of previously unacknowledged bytes ACKed by the received "good ACK".
+```
+
+Some TCPs arrange to delay ACKs only after the connection has completed slow start. In Linux, this is called quick acknowledgments ("quickack mode").
+
+When Congestion happens, *cwnd* is reduced substantially (to half of its former value):
+```
+cwnd = cwnd / 2
 ```
 
 #### 16.2.2 Congestion Avoidance
@@ -506,16 +522,34 @@ cwnd0 = k*SMSS
 cwnd1 = cwnd0 + (1/k)*SMSS
 ```
 
-#### 16.2.3 Selecting Between Slow Start and Congestion Control
-The initial value of ssthresh may be set arbitrarily high (e.g., to awnd or higher), which causes TCP to always start with slow start. When a retransmission occurs, caused by either a retransmission timeout or the execution of fast retransmit, ssthresh is updated as follows:
+#### 16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens)
+
+The initial value of ssthresh may be set arbitrarily high (e.g., to awnd or higher), which causes TCP to always start with slow start. When a retransmission occurs(J: congestion happens), caused by either a retransmission timeout or the execution of fast retransmit, ssthresh is updated as follows:
 ```
-ssthresh = max(flight size/2, 2*SMSS)
+ssthreh = cwnd / 2 | ssthresh = max(flight size/2, 2*SMSS)
+cwnd = SMSS
 ```
+
+Here we seen that if a retransmission is required, TCP assumes that the operating window must have been too large for the network to handle. Reducing the estimate of the optimal window size is accompanied by altering *ssthresh* to be about half of what the current window size is (but not ever below twice the SMSS).
+
 
 #### 16.2.4 Tahoe, Reno, and Fast Recovery
+
+Tahoe:	
+When congestion happens caused by either RTO or fast retransmit:    
+
+1. sshthresh =  cwnd /2
+2. cwnd = MSS
+3. slow start unitl cwnd > ssthresh
+
+Ultimately, if packet loss is detected by duplicate ACKs (invoking fast retransmit), *cwnd* is instead reset to the last value of *ssthresh* instead of only 1 SMSS. 
+
+Fast Recovery:  
 Any ACKs that are received, even while recovering after a loss, still represent opportunities to inject new packets into the network. This became the basis of the **fast recovery** procedure. Fast recovery allows cwnd to (temporarily) grow by 1 SMSS for each ACK received while recovering. 
 
-#### 16.2.5 Standard TCP
+ Any nonduplicate (“good”) ACK causes TCP to exit recovery and reduces the congestion back to its pre-inflated value.
+
+#### 16.2.5 Standard TCP(Reno)
 TCP begins a connection in slow start (cwnd = IW) with a large value of ssthresh, generally at least the value of awnd. Upon receiving a good ACK (one that acknowledges new data), TCP updates the value of cwnd as follows:
 ```
 cwnd += SMSS (if cwnd < ssthresh) Slow start
@@ -523,18 +557,118 @@ cwnd += SMSS*SMSS/cwnd (if cwnd > ssthresh) Congestion avoidance
 ```
 
 When fast retransmit is invoked because of receipt of a third duplicate ACK, the following actions are performed:
-1. ssthresh is updated to no more than the value given in equation [1].
-2. The fast retransmit algorithm is performed, and cwnd is set to (ssthresh +
-3*SMSS).
+1. ssthresh is updated to no more than the value
+    ```
+    ssthresh = cwnd / 2 ｜ ssthresh = max(flight size/2, 2*SMSS)
+    ```
+2. The fast retransmit algorithm is performed, and cwnd is set to
+
+    ``` 
+    cwnd = ssthresh + 3*SMSS
+    ```
 3. cwnd is temporarily increased by SMSS for each duplicate ACK received. 
-4. When a good ACK is received, cwnd is reset back to ssthresh. (deflation)
+4. When a good ACK is received, set
+    ```
+    cwnd = ssthresh (deflation)
+    ```
 
 The actions in steps 2 and 3 constitute fast recovery.
 
+Refer: https://coolshell.cn/articles/11609.html
+
 ### 16.3 Evolution of the Standard Algorithms
 #### 16.3.1 NewReno
+One problem with fast recovery is that when multiple packets are dropped in a window of data, once one packet is recovered, a good ACK can be received at the sender that causes the temporary window inflation in fast recovery to be erased before all the packets that were lost have been retransmitted.
+
 NewReno modifies fast recovery by keeping track of the highest sequence number from the last transmitted window of data (recovery point). Only when an ACK with an ACK number at least as large as the recovery point is received is the inflation of fast recovery removed. 
 
 This allows a TCP to continue sending one segment for each ACK it receives while recovering and reduces the occurrence of retransmission timeouts, especially when multiple packets are dropped in a single window of data.
 
 #### 16.3.2 TCP Congestion Control with SACK
+In the case of fast retransmit/recovery, when a packet is lost, the sending TCP transmits only the segment it believes is lost and is able to send new data if the window W allows.
+
+Using only cwnd as a bound on the sender’s sliding window to indicate how many (and which) packets to send during recovery periods is not sufficient.
+
+SACK TCP underscores the need to separate the congestion management from the selection and mechanism of packet retransmission.
+
+One way to implement this decoupling is to have a TCP keep track of how much data it has injected into the network separately from the maintenance of the window. This is called **pipe variable**, an estimate of the flight size.
+
+Pipe variable, an estimate of the flight size, counts bytes (or packets, depending on the implementation) of transmissions and retransmissions, provided they are not known to be lost. 
+
+A SACK TCP is permitted to send a segment anytime the following relationship holds true: cwnd pipe ≥ SMSS.
+
+#### 16.3.3 Forward Acknowledgment (FACK) and Rate Halving
+When cwnd is reduced after a fast retransmit, ACKs for at least one-half of the current window’s outstanding data must be received before the sending TCP is allowed to continue transmitting. This is an expected consequence of reducing the congestion window by half immediately when a loss is detected.
+??? It causes the sending TCP to wait for about half of an RTT and then send any new data during the second half of the same RTT, a more bursty behavior than is really required.
+
+In an effort to avoid the initial pause after loss but not violate the convention of emerging from recovery with a congestion window set to half of its size on entry, **forward acknowledgment (FACK)** was described in [MM96].
+
+The basic operation of **Rate-Havling with Boudning Parameter(RHBP)** allows the TCP sender to send one packet for every two duplicate ACKs it receives during one RTT. This causes the recovering TCP to have sent the appropriate amount of data by the end of the recovery period, but it spaces or paces this data evenly, rather than bunching all the transmissions into the second half of the RTT period. Avoiding the bunching or burstiness is advantageous because bursts tend to persist across multiple RTTs, stressing router buffers more than required.
+
+To keep an accurate estimate of the flight size, RHBP uses information from SACKs to determine the FACK: the highest sequence number known to have reached the receiver, plus 1. Taking the difference between the highest sequence number about to be sent by the sender (SND.NXT) and the FACK gives an estimate of the flight size*,* not including retransmissions.
+
+With RHBP, a distinction is made between the adjustment interval (the period when cwnd is modified) and the repair interval (when some segments are retransmitted).     
+The adjustment interval is entered immediately upon a loss or congestion indicator.     
+The final value for cwnd when the interval completes is half of the correctly delivered portion of the window of data in the network at the time of detection. The following expression allows the RHBP sender to transmit, if satisfied:
+```
+(SND.NXT – fack + retran_data + len) < cwnd
+```
+Rate halving is one of several ways of pacing TCP’s sending procedure to avoid or limit burstiness
+
+#### 16.3.4 Limited Transmit
+It's a small modification to TCP designed to help it perform better when the usable window is small.
+
+#### 16.3.5 Congestion Window Validation (CWV)
+The sender’s current value of cwnd decays over a period of nonuse, and ssthresh maintains the “memory” of it prior to the initiation of the decay. 
+
+The **idle sender** has stopped producing data it wants to send into the network; ACKs for all the data it has sent so far have been received.
+
+The **application-limited sender** does have more data to send but has been unable to for some reason. Because:
+1. the sending computer is busy doing other tasks.
+2. some mechanism or protocol layer below TCP is preventing data from being sent. 
+
+The CWV algorithm work as follows: Whenever a new packet is to be sent, the time since the last send event is measured to determine if it exceeds one RTO. If so:
+1. ssthresh is modified but not reduced—it is set to max(ssthresh, (3/4)*cwnd).
+2. cwnd is reduced by half for each RTT of idle time but is always at least 1 SMSS.
+```
+cwnd = cwnd / 2; // each RTT
+```
+
+For application-limited periods that are not idle, the following similar behavior is used:
+1. TheamountofwindowactuallyusedisstoredinW_used.
+2. ssthresh is modified but not reduced—it is set to max(ssthresh, (3/4)*cwnd).
+3. cwnd is set to the average of cwnd and W_used
+```
+cwnd = (cwnd + W_used) / 2;
+```
+
+### 16.4 Handling Spurious RTOs-the Eifel Response Algorithm
+Such spurious retransmissions arise in a number of circumstances relating to changes in the underlying link layer (such as cellular handoff) or sudden onset of severe congestion contributing to a large increase in RTT.
+
+The Eifel Response Algorithm is aimed at handling the retransmission timer and congestion control state after a retransmission timer has expired
+
+It is initiated after the first timeout-based retransmission is sent. 
+
+Its purpose is to undo a change to ssthresh when a retransmission is deemed to be spurious.
+
+In all cases, before ssthresh is modified as a result of the RTO, it is captured in a special variable as follows: pipe_prev = min(flight size, ssthresh). Once this has been accomplished, a dectecton algorithme is invoked to determine if the RTO is spurious, if it is, the following steps are executed when an ACK arrives after the retransmission:
+1. If a received good ACK includes an ECN-Echo flag, stop (see Section 16.11).
+2. cwnd = flight size + min(bytes_acked, IW) (assuming cwnd is measured in bytes).
+3. ssthresh = pipe_prev.
+
+### 16.5 An Extended Example
+
+#### 16.5.2 Sender Pause and Local Congestion (Event1)
+Local congestion is one of several reasons the Linux TCP implementation may be placed in the **Congestion Window Reducing (CWR)** state [SK02]. It starts by setting ssthresh to cwnd/2, and by setting cwnd to min(cwnd, flight size + 1).
+```
+ssthresh = cwnd / 2;
+cwnd = min(cwnd, flight size + 1);
+```
+
+In the CWR state, the sender reduces cwnd by one packet for every two ACKs received until cwnd reaches the new ssthresh or the CWR state is exited for some other reason such as a loss event.
+
+### 16.7 Sharing Congestion State
+
+### 16.8 TCP in High-speed Enviroments
+
+In high-speed networks with large BDPs (e.g., WANs of 1Gb/s or more), conventional TCP may not perform well because its window increase algorithm (the congestion avoidance algorithm, in particular) takes a long time to grow the window large enough to saturate the network path.
