@@ -31,7 +31,7 @@
 7. Static Mode:
     <target...> : <target-pattern> : <prereq-pattern>
         <command>
-  eg:
+    eg:
     objects = foo.o bar.o
     all: $(objects)
     $(objects): %.o: %.c   
@@ -76,7 +76,7 @@
         
         foo := a.o b.o c.o
         bar := $(foo:%.o=%.c) # static mode
-
+        
         first_second = Hello
         a = first
         b = second
@@ -255,7 +255,7 @@ source path:
 define own enviroment variable int GDB:
     set $<varname> = <value> # enviromet var have no type
     show convenience # view all enviroment variable
-```
+ ```
 
 # File I/O
 
@@ -263,6 +263,7 @@ By convention: <unistd.h>
 * 0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stand for standard input, output and error, respectively.  
 * Range: 0 - (OPEN_MAX - 1)
         
+
 #include<fcntl.h>
 ```C++
 int open(const char *path, int oflag, ... /*mode_t mode*/);
@@ -374,7 +375,8 @@ void closelog(void);
 TOCTTOU: time-of-check-to-time-of-use   
 * This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
 * program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
-    
+  
+
 Stata Family function: <sys/stat.h>
 ```C++
 int stat(const char *pathname, struct stat *buf); // get file stat
@@ -410,7 +412,8 @@ Access permission:
 
 File Type:
 * 1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
-   
+  
+
 File Access Permission:
 
 st_mode mask:   
@@ -889,14 +892,15 @@ struct utsname {
 Time and Data Rountine:
 ```C++
                 string              formatted string
-                    \                   /
+                   \                     /
                      \                 /
-                  struct tm(broken-down time)                 \
+                  struct tm(broken-down time)
                                |
                                |
         timeval ---> time_t(calendar time) <--- timespec
-                          \    |     /
+                         \     |      /
                            \   |    /
+                    	         |
                              kernel
            
     time_t              --------------> time
@@ -932,7 +936,7 @@ Time and Data Rountine:
     size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr);
     size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr, local_t local);
     char *strptime(const char *buf, const char *format, struct tm *tmptr);
- ```
+```
 
 # Network Programming
 
@@ -1216,7 +1220,7 @@ Crashing and Rebooting of Server Host:
 
 Shutdown of Server Host:
 * Init process normally sends the SIGTERM signal to all processes, waits some fixed amount of time, and then send SIGKILL signal to any processes still running.
-    
+  
 # Signal Programming  
 
 Methods of Local Processes Communication:
@@ -1224,12 +1228,13 @@ Methods of Local Processes Communication:
 2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
 3. Shared memory (anonymous and named)
 4. Remote procedure Call (Solaris gate and sun RPC)
-    
+   
+
 checking for the existence of a process:
 ```C++
     wait(); semaphore and exclusive file locks; IPC(pipes, FIFOs...); /proc/PID
 ```
- 
+
 Signal dispositions: Term, Ign, Core, Stop, Cont
 
 Linux Signals are:
@@ -1361,7 +1366,8 @@ signal handler:
 reentrant function:
 * A function is one, whose effect, when called by two or more threads, is guaranted to be as if threads each executed the function one after the other in undefined order, even if the actual execution is interleaved.
 * use global or static data structure is nonreentrant function.
-    
+  
+
 async-signal-safe function:
     implementation guarantees to be safe when called form a signal handler, either it is
     reentrant or is not interruptible by a signal handler.
@@ -1388,7 +1394,7 @@ POSIX Signal Semantics:
 2. While a signal handler is executing, the signal being delivered is blocked.
 3. If the signal is generated one or more times while it is blocked, it is normally delivered only one time after the signal is unlocked. By default, Unix signal are not queued.
 4. It is possible to selectively block and unblock a set of signal using the sigprocmask function.
-    
+   
     
 # IPC Programming
 
@@ -1406,6 +1412,10 @@ Unix outer-domain communication:
 Advantages and Disabvantages of XSI IPC:
 1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
 2. They are not known by names in the file system
+3. Compare this with a pipe, which is completely removed when the last process to reference it terminates. With a FIFO, although the name stays in the file system until explicitly removed, any data left in a FIFO is removed when the last process to reference the FIFO terminates.
+4. We can't use **ls** **rm** **chmod** to access them, rather than **ipcs, ipcrm**
+5. Since these forms of IPC don’t use file descriptors, we can’t use the multiplexed I/O functions (select and poll) with them. 
+
 
 Pipe: PIPE_BUF
 ```C++
@@ -1507,8 +1517,8 @@ POXIS unamed semaphore:
     int sem_trywait(sem_t *sem);
 
 POSIX named semaphore:
-    int shm_open(const char*name,int oflag,mode_t mode);
-    sem_t *open(const char *name, int oflag, mode_t mode, int value);
+    sem_t* sem_open(const char* name,int oflag,mode_t mode);
+    sem_t *sem_open(const char *name, int oflag, mode_t mode, int value);
         oflag: O_CREAT, O_CREATE|O_EXCL
     int sem_wait(sem_t *sem);
     int sem_post(sem_t *sem);
@@ -1587,7 +1597,7 @@ Shared memory: (fastest IPC)
 Summary:    
 * Learn pipe and FIFOs avoid using message queue and semaphore, Full-duplex pipes and record locking should be 
 * considered instead as they are far simpler. Shared memory still has its use.
-    
+  
 # Thread Process Programming
 
 Thread & Signal:
@@ -1609,7 +1619,8 @@ Methods of Local Processes Communication:
 2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
 3. Shared memory (anonymous and named)
 4. Remote procedure Call (Solaris gate and sun RPC)
-    
+   
+
 Main function:
 1. When a C program is executed by the kernal-by one of the exec functions, a special start-up routine is called before the main is called.
 2. The executable program file specifies this routine as the starting address for the program. This is set by the link editor when it is invoked by the C compiler.
@@ -1925,10 +1936,10 @@ Barriers:
         // Once barrier count is reached and all threads is unblocked, barrier can be used aggain. 
         // But barrier count can be changed.
 ```
-    
+
 xinetd:
     
- 
+
 # HTTPS Programming   
 
 SSL:    
@@ -1936,6 +1947,7 @@ Consists of two layers of protocol:
 1. High-level protocol: 
 
     * SSL HandShake Protocol: Algorithm negotiation, identity authentication, private key determination 
+      
         > categories: Full HandShake, Resume session HandShake, <Server, Client> Re-nogotiation HandShake
     * Change Cipher Spec Protocol
     * AlertProtocol
@@ -2104,7 +2116,7 @@ Kernel Network:
    };
    TUN/TAP: virtual network device:
 ```
-   
+
 
 # Utility
 ```C++
