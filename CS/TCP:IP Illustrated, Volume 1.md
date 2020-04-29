@@ -136,6 +136,8 @@ The final ACK is resent not because the TCP retransmits ACKs (they do not consum
 
 Any delayed segments that arrive for a connection while it is in the 2MSL wait state are discarded. 
 
+**tcp_tw_reuse**(tcp_timestamps)    **tcp_tw_recycle**     **tcp_max_tw_buckets**
+
 ### 13.5.3 Quiet Time Concept
 [RFC0793] states that TCP should wait an amount of time equal to the MSL before creating any new connections after a reboot or crash. This is called the **quiet time**. Few implementations abide by this because most hosts take longer than the MSL to reboot after a crash.
 
@@ -469,7 +471,7 @@ In TCP, an assumption is made that a lost packet is an indicator of congestion, 
 
 #### 16.1.2 Slowing Down a TCP Sender
 ```
-W = min(cwnd, awnd)
+W = min(cwnd, awnd) // awnd: actual quantity of data outstanding in the network
 ```
 The TCP sender is not permitted to have more than W unacknowledged packets or bytes outstanding in the network.
 
@@ -605,15 +607,24 @@ In an effort to avoid the initial pause after loss but not violate the conventio
 
 The basic operation of **Rate-Havling with Boudning Parameter(RHBP)** allows the TCP sender to send one packet for every two duplicate ACKs it receives during one RTT. This causes the recovering TCP to have sent the appropriate amount of data by the end of the recovery period, but it spaces or paces this data evenly, rather than bunching all the transmissions into the second half of the RTT period. Avoiding the bunching or burstiness is advantageous because bursts tend to persist across multiple RTTs, stressing router buffers more than required.
 
-To keep an accurate estimate of the flight size, RHBP uses information from SACKs to determine the FACK: the highest sequence number known to have reached the receiver, plus 1. Taking the difference between the highest sequence number about to be sent by the sender (SND.NXT) and the FACK gives an estimate of the flight size*,* not including retransmissions.
+To keep an accurate estimate of the flight size, RHBP uses information from SACKs to determine the **FACK**: the highest sequence number known to have reached the receiver, plus 1. Taking the difference between the highest sequence number about to be sent by the sender (SND.NXT) and the FACK gives an estimate of the flight size*,* not including retransmissions.
 
 With RHBP, a distinction is made between the adjustment interval (the period when cwnd is modified) and the repair interval (when some segments are retransmitted).     
 The adjustment interval is entered immediately upon a loss or congestion indicator.     
-The final value for cwnd when the interval completes is half of the correctly delivered portion of the window of data in the network at the time of detection. The following expression allows the RHBP sender to transmit, if satisfied:
+The final value for cwnd when the interval completes is half of the correctly delivered portion of the window of data in the network at the time of detection. 
+
+The following expression allows the RHBP sender to transmit, if satisfied:
+
 ```
-(SND.NXT – fack + retran_data + len) < cwnd
+(snd.nxt – snd.fack + retran_data) < cwnd
 ```
-Rate halving is one of several ways of pacing TCP’s sending procedure to avoid or limit burstiness
+Rate halving is one of several ways of pacing TCP’s sending procedure to avoid or limit burstiness.
+
+Triggering Recovery:
+
+```
+snd.fack - snd.una > 3 * MSS || dupacks == 3
+```
 
 #### 16.3.4 Limited Transmit
 It's a small modification to TCP designed to help it perform better when the usable window is small.
