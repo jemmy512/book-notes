@@ -127,15 +127,81 @@ movsbl  %dh %eax;   // %eax = FFFFFFCD
 movzbl  %dh %eax;   // %eax = 000000CD
 ```
 
-
+As with the movl instruction, however, the two operands cannot both be memory locations.
 
 #### 3.4.3
 
 ### 3.5 Arithmatic and Logic Operations
+![integer-arithmetic-operations.png](../Images/integer-arithmetic-operations.png)
 ### 3.5.1 Load Affect Address
 
+#### 3.5.5 Special Arithmetic Operations
+One argument must be in register %eax, and the other is given as the instruction source operand. The product is then stored in registers %edx (high-order 32 bits) and %eax (low-order 32 bits).
 
+#### 3.6.1 Condition Codes
+* CF: Carry Flag. The most recent operation generated a carry out of the most significant bit. Used to detect overflow for unsigned operations.
+* ZF: Zero Flag. The most recent operation yielded zero.
+* SF: Sign Flag. The most recent operation yielded a negative value.
+* OF: Overflow Flag. The most recent operation caused a two’s-complement overflow—either negative or positive.
+
+#### 3.6.2 Accessing the Condition Codes”
+Rather than reading the condition codes directly, there are three common ways of using the condition codes:
+* we can set a single byte to 0 or 1 depending on some combination of the condition codes
+* we can conditionally jump to some other part of the program
+* we can conditionally transfer data.
+
+A SET instruction has either one of the eight single-byte register elements (Figure 3.2) or a single-byte memory location as its destination, setting this byte to either 0 or 1.
+
+
+#### 3.6.1 Condition Codes
+#### 3.6.3 Jump Instructions and Their Encoding
+In assembly code, jump targets are written using symbolic labels. The assembler, and later the linker, generate the proper encodings of the jump targets. There are several different encodings for jumps:
+* The most commonly used ones are PC relative. That is, they encode the difference between the address of the target instruction and the address of the instruction immediately following the jump. These offsets can be encoded using 1, 2, or 4 bytes.
+* A second encoding method is to give an “absolute” address, using 4 bytes to directly specify the target.
+
+### 3.7 Procedures
+#### 3.7.3 Register Usage Conventions
+Registers %eax, %edx, and %ecx are classified as **caller-save registers**. When procedure Q is called by P, it can overwrite these registers without destroying any data required by P.
+
+On the other hand, registers %ebx, %esi, and %edi are classified as **callee-save registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
+
+#### 3.8.2 Pointer Arithmetic
+![Pointer Arithemtic](../Images/pointer-arithmetic.png)
+
+### 3.9 Heterogeneous Data Structures
+
+#### 3.12.1 Thwarting Buffer Overflow Attack
+**Statck Randomization**
+
+    In order to insert exploit code into a system, the attacker needs to inject both the code as well as a pointer to this code as part of the attack string.
+
+    The idea of stack randomization is to make the position of the stack vary from one run of a program to another.
+
+    This is implemented by allocating a random amount of space between 0 and n bytes on the stack at the start of a program.
+
+**Stack Corruption Detection**
+
+**Limiting Executable Code Regions**
+
+# Chapter 9 Virtual Memory
+Virtual memory is an elegant interaction of hardware exceptions, hardware address translation, main memory, disk files, and kernel software that provides each process with a large, uniform, and private address space.
+
+virtual memory provides three important capabilities:
+* It uses main memory efficiently by treating it as a cache for an address space stored on disk, keeping only the active areas in main memory, and transferring data back and forth between disk and memory as needed.
+* It simplifies memory management by providing each process with a uniform address space.
+* It protects the address space of each process from corruption by other processes.
+
+### 9.4 VM as a Tool for Memory Management
+VM simplifies linking and loading, the sharing of code and data, and allocating memory to applications.
 
 # Chapter 10 System-Level I/O
 
 ### Unix I/O
+
+
+
+```
+Questions:
+1. Hoe does Optimizing address translation work? Page-1119
+2.
+```
