@@ -571,10 +571,8 @@ When fast retransmit is invoked because of receipt of a third duplicate ACK, the
 3. cwnd is temporarily increased by SMSS for each duplicate ACK received. 
 4. When a good ACK is received, set
     ```
-    cwnd = ssthresh (deflation)
+    cwnd = ssthresh (deflation)The actions in steps 2 and 3 constitute fast recovery.
     ```
-
-The actions in steps 2 and 3 constitute fast recovery.
 
 Refer: https://coolshell.cn/articles/11609.html
 
