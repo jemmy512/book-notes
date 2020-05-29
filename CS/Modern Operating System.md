@@ -346,3 +346,343 @@ As a consequence of this strategy, as long as there is a steady supply of reader
 To avoid this situation, the program could be written slightly differently: when a reader arrives and a writer is waiting, the reader is suspended behind the writer instead of being admitted immediately.
 
 The disadvantage of this solution is that it achieves less concurrency and thus lower performance.
+
+# Chapter 4 File Systems
+
+The three essential requirements for long-term information storage:
+1. It must be possible to store a very large amount of information.
+2. The information must survive the termination of the process using it.
+3. Multiple processes must be able to access the information at once.
+
+**Files** are logical units of information created by processes.
+
+#### 4.1 FILES
+#### 4.1.1 File Naming
+#### 4.1.2 File Structure
+1. Byte sequence
+2. Record sequence
+3. Tree
+
+#### 4.1.3 File Types
+
+1. **Regular files** are the ones that contain user information.
+2. **Directories** are system files for maintaining the structure of the file system.
+3. **Character special files** are related to input/output and used to model serial I/O devices, such as terminals, printers, and networks.
+4. **Block special files** are used to model disks.
+Executable File: has five sections: header, text, data, relocation bits, and symbol table. The header starts with a so-called magic number, identifying the file as an executable file (to prevent the accidental execution of a file not in this format).
+
+![](../Images/executable-file.png)
+
+#### 4.1.4 File Access
+1. Sequentail access
+2. Random access
+
+#### 4.1.5 File Attributes
+ Attribute | Meaning
+ ---- | ----
+ Protection          | Who can access the file and in what way
+ Password            | Password needed to access the file
+ Creator             | ID of the person who created the file
+ Owner               | Current owner
+ Read-only flag      | 0 for read/write; 1 for read only
+ Hidden flag         | 0 for normal; 1 for do not display in listings
+ System flag         | 0 for normal files; 1 for system file
+ Archive flag        | 0 for has been backed up; 1 for needs to be backed up
+ ASCII/binary flag   | 0 for ASCII file; 1 for binary file
+ Random access flag  | 0 for sequential access only; 1 for random access
+ Temporar y flag     | 0 for normal; 1 for delete file on process exit
+ Lock flags          | 0 for unlocked; nonzero for locked
+ Record length       | Number of bytes in a record
+ Key position        | Offset of the key within each record
+ Key length          | Number of bytes in the key field
+ Creation time       | Date and time the file was created
+ Time of last access | Date and time the file was last accessed
+ Time of last change | Date and time the file was last changed
+ Current size        | Number of bytes in the file
+ Maximum size        | Number of bytes the file may grow to
+
+#### 4.1.6 File Operations
+
+### 4.2 DIRECTORIES
+### 4.3 FILE-SYSTEM IMPLEMENTATION
+#### 4.3.1 File-System Layout
+![File System Layout](../Images/file-system-layout.png)
+
+Partition table: gives the starting and ending addresses of each partition.
+
+Super block: includes a magic number to identify the file-system type, the number of blocks in the file system, and other key administrative information.
+
+System boost:
+> BIOS -> MBR -> active partion -> boot block -> operating system
+
+#### 4.3.2 Implementing Files
+##### Contiguous Allocation
+Contiguous disk-space allocation has two significant advantages:
+1. it is simple to implement because keeping track of where a file’s blocks are is reduced
+2. the read performance is excellent because the entire file can be read from the disk in a single operation
+
+Drawback:
+1. over the course of time, the disk becomes fragmented.
+2. when a new file is to be created, it is necessary to know its final size in order to choose a hole of the correct size to place it in.
+
+##### Linked-List Allocation
+Drawback:
+1. random access is extremely slow
+2. the amount of data storage in a block is no longer a power of two, reads of the full block size require acquiring and concatenating information from two disk blocks, which generates extra overhead due to the copying.
+
+
+##### Linked-List Allocation Using a Table in Memory
+Both disadvantages of the linked-list allocation can be eliminated by taking the pointer word from each disk block and putting it in a table(FAT-File Allocation Table) in memory.
+
+The primary disadvantage of this method is that the entire table must be in memory all the time to make it work.
+
+##### I-nodes
+Our last method for keeping track of which blocks belong to which file is to associate with each file a data structure called an i-node (index-node), which lists the attributes and disk addresses of the file’s blocks.
+
+Infomation: file type, access rights, owners, timestamps, size, pointers to data blocks.
+
+![i-node](../Images/i-node.png)
+
+#### 4.3.3 Implementing Directories
+![File Directory](../Images/file-directory.png)
+
+#### 4.3.4 Shared Files
+If directories really do contain disk addresses, then a copy of the disk addresses will have to be made in B’s directory when the file is linked.
+
+Solution:
+1. disk blocks are not listed in directories, but in a little data structure associated with the file itself. The directories would then point just to the little data structure.
+2. symbolic linking: B links to one of C’s files by having the system create a new file, of type LINK, and entering that file in B’s directory. The new file contains just the path name of the file to which it is linked. When B reads from the linked file, the operating system sees that the file being read from is of type LINK, looks up the name of the file, and reads that file.
+
+#### 4.3.5 Log-Structured File Systems
+
+#### 4.3.6 Journaling File Systems
+The basic idea here is to keep a log of what the file system is going to do before it does it, so that if the system crashes before it can do its planned work, upon rebooting the system can look in the log to see what was going on at the time of the crash and finish the job. Such file systems, called **journaling file systems**, are actually in use.
+
+#### 4.3.7 Virtual File Systems
+![VFS](../Images/vfs.png)
+
+Example: open("/usr/include/unistd.h", O RDONLY):
+1. While parsing the path, the VFS sees that a new file system has been mounted on /usr and locates its superblock by searching the list of superblocks of mounted file systems
+2. VFS finds the root directory of the mounted file system and look up the path include/unistd.h there.
+3. VFS creates a v-node and makes a call to the concrete file system to return all the information in the file’s i-node.
+4. VFS makes an entry in the file-descriptor table for the calling process and sets it to point to the new v-node.
+5. VFS returns the file descriptor to the caller so it can use it to read, write, and close the file.
+
+### 4.4 FILE-SYSTEM MANAGEMENT AND OPTIMIZATION
+#### 4.4.1 Disk-Space Management
+##### Block Size
+Historically, file systems have chosen sizes in the 1-KB to 4-KB range, but with disks now exceeding 1 TB, it might be better to increase the block size to 64 KB and accept the wasted disk space. Disk space is hardly in short supply any more.
+
+##### Keeping Track of Free Blocks
+##### Disk Quotas
+![Disk Quotas](../Images/disk-quotas.png)
+
+#### 4.4.2 File-System Backups
+Issuses:
+1. Should the entire file system be backed up or only part of it?
+2. It is wasteful to back up files that have not changed since the previous backup, which leads to the idea of incremental dumps.
+3. Since immense amounts of data are typically dumped, it may be desirable to compress the data before writing them to tape.
+4. it is difficult to perform a backup on an active file system.
+5. making backups introduces many nontechnical problems into an organization.
+
+1. A **physical dump** starts at block 0 of the disk, writes all the disk blocks onto the output disk in order, and stops when it has copied the last one.
+2. A **logical dump** starts at one or more specified directories and recursively dumps all files and directories found there that have changed since some given base date
+
+#### 4.4.3 File-System Consistency
+Two kinds of consistency checks can be made:
+1. blocks: buid two tables, each one containing a counter for each block.
+    The counters in the first table keep track of how many times each block is present in a file.
+
+    The counters in the second table record how often each block is present in the free list.
+
+    If the file system is consistent, each block will have a 1 either in the first table or in the second table.
+
+    The solution to **missing blocks** is straightforward: the file system checker just adds them to the free list.
+
+    The worst thing that can happen is that the same data block is present in two or more files:
+        Solution: allocate a free block, copy the contents of block 5 into it, and insert the copy into one of the files.
+
+2. files:
+    Build a table containing counter for each file.
+
+    The link count in the i-node can be too high or it can be too low.
+
+    Furthermore, each i-node has a mode, some of which are legal but strange, such as 0007
+
+#### 4.4.4 File-System Performance
+##### Caching
+1. Is the block likely to be needed again soon?
+    Blocks that will probably not be needed again soon go on the front, rather than the rear of the LRU list, so their buffers will be reused quickly.
+
+    Blocks that might be needed again soon, such as a partly full block that is being written, go on the end of the list, so they will stay around for a long time.
+
+2. Is the block essential to the consistency of the file system?
+    If the block is essential to the file-system consistency, and it has been modified, it should be written to disk immediately, regardless of which end of the LRU list it is put on.
+
+For both questions, blocks can be divided into categories such as i-node blocks, indirect blocks, directory blocks, full data blocks, and partially full data blocks.
+
+When the system is started up, a program, usually called update, is started up in the background to sit in an endless loop issuing sync calls, sleeping for 30 sec between calls. As a result, no more than 30 seconds of work is lost due to a crash.
+
+##### Block Read Ahead
+A second technique for improving perceived file-system performance is to try to get blocks into the cache before they are needed to increase the hit rate.
+
+To see whether read ahead is worth doing, the file system can keep track of the access patterns to each open file.
+
+##### Reducing Disk-Arm Motion
+Putting blocks that are likely to be accessed in sequence close to each other, preferably in the same cylinder.
+
+#### 4.4.5 Defragmenting Disks
+As a consequence, when a new file is created, the blocks used for it may be spread all over the disk, giving poor performance.
+
+The performance can be restored by moving files around to make them contiguous and to put all (or at least most) of the free space in one or more large contiguous regions on the disk.
+
+Some files cannot be moved, including the paging file, the hibernation file, and the journaling log, because the administration that would be required to do this is more trouble than it is worth.
+
+### 4.5 EXAMPLE FILE SYSTEM
+#### 4.5.2 The UNIX V7 File System
+i-node attributes: file size, three times, owner, group, protection information, and a count of the number of directory entries that point to the i-node.
+
+![Unix i-node](../Images/unix-i-node.png)
+
+Example: /usr/ast/mbox
+1. file system locates the root directory. In UNIX its i-node is located at a fixed place on the disk. From this i-node, it locates the root directory, which can be anywhere on the disk, but say block 1.
+2. it reads the root directory and looks up the first component of the path, usr, in the root directory to find the i-node number of the file /usr.
+3. find the entry for ast and its i-node
+4. find mbox's i-node from ast's i-node
+![Unix File System Example](../Images/unix-file-system-example.png)
+
+# Chapter 10 Case Study 1: Unix, Linux, and Android
+
+### 10.3 PROCESSES IN LINUX
+#### 10.3.1 Fundamental Concepts
+A process can send signals only to members of its process group.
+
+#### 10.3.3 Implementation of Processes and Threads in Linux
+
+When one of process' threads makes a system call, it traps to kernel mode and begins running in kernel context, with a different memory map and full access to all machine resources.
+
+A single-threaded process will be represented with one task_struct and a multithreaded process will have one task_struct for each of the user-level threads.
+
+The kernel itself is multithreaded, and has kernel-level threads which are not associated with any user process and are executing kernel code.
+
+The information in the process descriptor:
+1. Scheduling parameters. Process priority, amount of CPU time consumed recently, amount of time spent sleeping recently.
+2. Memory image. Pointers to the text, data, and stack segments, or page tables. If the text segment is shared, the text pointer points to the shared text table. When the process is not in memory, information about how to find its parts on disk is here too.
+3. Signals. Masks showing which signals are being ignored, which are being caught, which are being temporarily blocked, and which are in the process of being delivered.
+4. Machine registers. When a trap to the kernel occurs, the machine registers (including the floating-point ones, if used) are saved here.
+5. System call state. Information about the current system call, including the parameters, and results.
+6. File descriptor table. When a system call involving a file descriptor is invoked, the file descriptor is used as an index into this table to locate the in-core data structure (i-node) corresponding to this file.
+7. Accounting. Pointer to a table that keeps track of the user and system CPU time used by the process.
+8. Kernel stack. A fixed stack for use by the kernel part of the process.
+9. Miscellaneous. Current process state, event being waited for, if any, time until alarm clock goes off, PID, PID of the parent process, and user and group identification.
+
+![Linux Process](../Images/linux-process.png)
+
+##### Threads in Linux
+Some of the challenging decisions present in multithreaded systems:
+1. maintaining the correct traditional UNIX semantics.
+    If fork the parent's threads, a parent thread blocked in the keyboard, a child process's thread blocked either.
+
+    If not fork the parent's threads, a parent thread holds the mutex, the child process's thread will be blocked on the mutex forever.
+
+2. File I/O is another problem area. E.g., a parent process' thread blocked in reading a file, what happen if a child process' thread close the file or lseek?
+3. Signal handling is another thorny issue. Should signals be directed at a specific thread or just at the process?
+
+Processes were resource containers and threads were the units of execution.
+
+In particular, file descriptors for open files, signal handlers, alarms, and other global properties were per process, not per thread.
+
+```
+pid = clone(function, stack ptr, sharing flags, arg);
+```
+
+| Flag | Meaning when set | Meaning when cleared |
+| --- | ---- | --- |
+| CLONE VM      | Create a new thread                      | Create a new process          |
+| CLONE FS      | Share umask, root, and working dirs      | Do not share them             |
+| CLONE FILES   | Share the file descriptors                | Copy the file descriptors      |
+| CLONE SIGHAND | Share the signal handler table           | Copy the table                |
+| CLONE PARENT  | New thread has same parent as the caller | New thread’s parent is caller |
+
+In UNIX, a call to chdir by a thread always changes the working directory for other threads in its process, but never for threads in another process.
+
+When clone is used to create a new process that shares nothing with its creator, PID is set to a new value; otherwise, the task receives a new TID, but inherits the PID.
+
+### 10.3.4 Scheduling in Linux
+Linux distinguishes three classes of threads for scheduling purposes:
+1. Real-time FIFO.
+2. Real-time round robin.
+3. Timesharing.
+
+Real-time threads have priority levels from 0 to 99, non-real-time threads have levels from 100 to 139.
+
+In Linux, time is measured as the number of clock ticks.
+
+In order to avoid wasting CPU cycles for servicing the timer interrupt, the kernel can even be configured in ‘‘tickless’’ mode.
+
+Historically, a popular Linux scheduler was the Linux **O(1) scheduler**.
+
+![Linux RunQueue](../Images/linux-runqueue.png)
+1. selects a task from the highest-priority list in the active array
+2. If that task’s timeslice (quantum) expires, it is moved to the expired list (potentially at a different priority level).
+3. If the task blocks, for instance to wait on an I/O event, before its timeslice expires, once the event occurs and its execution can resume, it is placed back on the original active array, and its timeslice is decremented to reflect the CPU time it already used.
+4. Once its timeslice is fully exhausted, it, too, will be placed on the expired array.
+5. When there are no more tasks in the active array, the scheduler simply swaps the pointers, so the expired arrays now become active, and vice versa.
+
+This method ensures that low-priority tasks will not starve.
+
+The idea behind this scheme is to get processes out of the kernel fast.
+
+In this light, CPU-bound processes basically get any service that is left over when all the I/O bound and interactive processes are blocked.
+
+Linux relies on continuously maintaining interactivity heuristics to know a priori whether a task is I/O- or CPU-bound, it distinguishes between static and dynamic priority.
+
+The threads’ dynamic priority is continuously recalculated, so as to (1) reward interactive threads, and (2) punish CPU-hogging threads.
+
+The scheduler maintains a `sleep_avg` variable associated with each task. Whenever a task is awakened, this variable is incremented. Whenever a task is preempted or when its quantum ex- pires, this variable is decremented by the corresponding value. This value is used to dynamically map the task’s bonus to values from −5 to +5.
+
+The scheduler recalculates the new priority level as a thread is moved from the active to the expired list.
+
+
+### 10.6 THE LINUX FILE SYSTEM
+
+#### 10.6.1 Fundamental Concepts
+keyboard: /dev/tty              printer: /dev/lp
+
+Block special files, often with names like /dev/hd1, can be used to read and write raw disk partitions without regard to the file system.
+
+#### 10.6.3 Implementation of the Linux File System
+##### The Linux Virtual File System
+
+Object | Description| Operation
+--- |  --- | ---
+Superblock | specific file-system                        | read inode, sync fs
+Dentry     | directory entry, single component of a path | create, link
+I-node     | specific file                               | d compare, d delete
+File       | open file associated with a process         | read, write
+
+##### The Linux Ext2 File System
+![Ext2 File System](../Images/ext2-file-system.png)
+
+ When new file blocks are allocated, ext2 also preallocates a number (eight) of additional blocks for that file, so as to minimize the file fragmentation due to future write operations.
+
+![Ext2 Directories](../Images/ext2-directories.png)
+
+Just putting a pointer to the i-node in the file-descriptor table doesn't work:
+
+![File Descriptor Open File I-Node Table](../Images/file-descriptor-open-file-i-node-table.png)
+
+##### The Linux Ext4 File System
+Ext4 changes the block addressing scheme used by its predecessors, thereby supporting both larger files and larger overall file-system sizes.
+
+JBD(Journaling Block Device) supports three main data structures:
+1. log record: describes a low-level file-system operation, typically resulting in changes within a block.
+2. atomic operation handle: related log records are grouped in atomic operations, e.g., write system call includes changes at multiple places—i-nodes, existing file blocks, new file blocks, list of free blocks, etc.
+3. transaction.
+
+##### The /proc File System
+The basic concept is that for every process in the system, a directory is created in /proc, which is named by PID.
+
+In this directory are files that appear to contain information about the process, such as its command line, environment strings, and signal masks. In fact, these files do not exist on the disk.
+
+Many of the Linux extensions relate to other files and directories located in /proc, including a wide variety of information about the CPU, disk partitions, devices, interrupt vectors, kernel counters, file systems, loaded modules, and much more.
