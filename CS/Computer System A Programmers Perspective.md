@@ -6,7 +6,7 @@ Compilation System:
 2. Compiler
     Each statement in an assembly-language program exactly describes one low-level machine-language instruction in a standard text form.
     Assembly language is useful because it provides a common output language for different compilers for different high-level languages.
-3. Sssembler
+3. Assembler
     Assembler (as) translates hello.s into machine-language instructions, packages them in a form known as a relocatable object program, and stores the result in the object file.
 4. Linker
 
@@ -94,9 +94,9 @@ For an unsigned number x, the result of truncating it to k bits is equivalent to
 
 #### 3.2.1 Machine-Level Code
 * The program counter (commonly referred to as the “PC,” and called %eip in IA32) indicates the address in memory of the next instruction to be executed.
-* *The integer register file contains eight named locations storing 32-bit values. These registers can hold addresses (corresponding to C pointers) or integer data. Some registers are used to keep track of critical parts of the program state, while others are used to hold temporary data, such as the local variables of a procedure, and the value to be returned by a function.
-* *The condition code registers hold status information about the most recently executed arithmetic or logical instruction. These are used to implement conditional changes in the control or data flow, such as is required to implement if and while statements.
-* *A set of floating-point registers store floating-point data.
+* The integer register file contains eight named locations storing 32-bit values. These registers can hold addresses (corresponding to C pointers) or integer data. Some registers are used to keep track of critical parts of the program state, while others are used to hold temporary data, such as the local variables of a procedure, and the value to be returned by a function.
+* The condition code registers hold status information about the most recently executed arithmetic or logical instruction. These are used to implement conditional changes in the control or data flow, such as is required to implement if and while statements.
+* A set of floating-point registers store floating-point data.
 
 #### 3.2.3 Code Example
 Several features about machine code and its disassembled representation are worth noting:
@@ -332,7 +332,9 @@ Each free list is associated with a size class and is organized as some kind of 
 
 Search times are reduced because searches are limited to particular parts of the heap instead of the entire heap. Memory utilization can improve because of the interesting fact that a simple first-fit search of a segregated free list approximates a best-fit search of the entire heap.
 
+#### Reference
 
+https://mp.weixin.qq.com/s/dOgpcRiu3F18EpFWcnv5XQ
 
 
 # Chapter 10 System-Level I/O
