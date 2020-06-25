@@ -770,6 +770,36 @@ int munmap(void *adrr, size_t len); // automatically unmapped when process termi
     // It's determined by the kernel's virual memory algorithm sometime after we store into the region.
 ```
 
+```C++
+// Linux mmap implementation
+ksys_mmap_pgoff(); // mm/mmap.c
+    vm_mmap_pgoff();
+        do_mmap_pgoff();
+            do_mmap();
+                get_unmapped_area();
+                mmap_region();
+```
+```C++
+// page fault exception
+do_page_fault();
+    __do_page_fault();
+        vmalloc_fault(address); // fault in kernel
+        handle_mm_fault(vma, address, flags); // fault in usr space
+            handle_pte_fault(&vmf);
+                do_anonymous_page(vmf); // 1. map phsyic memory
+                    pte_alloc();
+                    alloc_zeroed_user_highpage_movable();
+                        alloc_pages_vma();
+                        __alloc_pages_nodemask();
+                    mk_pte();
+                    set_pte_at();
+                do_fault(vmf);          // 2. map to a file
+                    __do_fault();
+                        vma->vm_ops->fault(vmf);
+                            ext4_filemap_fault();
+                do_swap_page(vmf);      // 3. map to swap
+```
+
 I/O Multiplexing:
 ```C++
 1. select: <sys/select.h> <sys/time.h>
@@ -1348,7 +1378,7 @@ struct sigaction {
     int       sa_flags; // set the behavior when program receives a signal
     void (*sa_restorer)(void);
 };
-sa_mask: SA_NOCLDSTOP, SA_NOCLDWAIT, SA_NODEFER, SA_ONSTACK, SA_RESETHAND, SA_RESETORE, SA_SIGINFO
+sa_flags: SA_NOCLDSTOP, SA_NOCLDWAIT(SIGCHLD), SA_NODEFER, SA_ONSTACK/SA_RESETHAND, SA_RESETORE, SA_SIGINFO, SA_ONESHOT
     SA_RESTART: a system call interrupted by this signal will be automatically restarted by the kernel.
 struct siginfo_t {
     int     si_signo;   // signal number
@@ -1573,7 +1603,16 @@ SYSTEM V semaphore:
         cmd: IPC_RMID, IPC_INFO, GETALL, GETNCNT, GETPID, GETVAL
 ```
 
-Shared memory: (fastest IPC)
+POSIX Shared Memory:
+```C++
+    #include <sys/mman.h>
+    #include <sys/stat.h>        /* For mode constants */
+    #include <fcntl.h>           /* For O_* constants */
+    int shm_open(const char *name, int oflag, mode_t mode);
+    int shm_unlink(const char *name);
+```
+
+System V Shared memory: (fastest IPC)
 ```C++
     struct shmid_ds{
         struct ipc_perm shm_perm;
@@ -1751,6 +1790,20 @@ Process Enviroment:
         // Additional feature is allow kernel to return a summary of resources used by the terminated process and   all its child processes.
         // Resource information includes such  statistics as the amount of the user CPU time, amount of the system CPU time, number of page faults, number of signals received...
 ```
+##### exec
+```C++
+do_execve(getname(filename), argv, envp);
+    do_execveat_common
+        exec_binprm
+            search_binary_handler // fs/exec.c
+                load_elf_binary // fs/binfmt_elf.c
+                    setup_new_exec(); // set mmap_base
+                    setup_arg_pages();
+                    elf_map(); // map the code in elf file to memory
+                    set_brk(); // setup heap area
+                    load_elf_interp(); // load dependent *.so
+                    start_thread(regs, elf_entry, bprm->p); // arch/x86/kernel/process_32.c
+```
 
 Memory Allocation:
 ```C++
@@ -1761,7 +1814,51 @@ Memory Allocation:
     void free(void *ptr);
         // The freed space is usually not return to kernel but put into a pool of available memory(malloc pool)and
         // can be used again by call to one of the three alloc functions.
+
+// Linux implementation, mm/mmap.c
+SYSCALL_DEFINE1(brk, unsigned long, brk)
+{
+    unsigned long retval;
+    unsigned long newbrk, oldbrk;
+    struct mm_struct *mm = current->mm;
+    struct vm_area_struct *next;
+    // ......
+    newbrk = PAGE_ALIGN(brk);
+    oldbrk = PAGE_ALIGN(mm->brk);
+    if (oldbrk == newbrk)
+        goto set_brk;
+
+    /* Always allow shrinking brk. */
+    if (brk <= mm->brk) {
+        if (!do_munmap(mm, newbrk, oldbrk-newbrk, &uf))
+            goto set_brk;
+        goto out;
+    }
+
+    /* Check against existing mmap mappings. */
+    next = find_vma(mm, oldbrk);
+    if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
+        goto out;
+
+    /* Ok, looks good - let it rip. */
+    if (do_brk(oldbrk, newbrk-oldbrk, &uf) < 0)
+        do_brk_flags();
+            find_vma_links();
+            vma_merge();
+            kmem_cache_zalloc();
+            INIT_LIST_HEAD(&vma->anon_vma_chain);
+            vma_link(mm, vma, prev, rb_link, rb_parent); // insert mm_struct rb_mm;
+        goto out;
+
+set_brk:
+  mm->brk = brk;
+// ......
+  return brk;
+out:
+  retval = mm->brk;
+  return retval
 ```
+
 Process Scheduling: <unistd.h>
 ```C++
     nice value range: 0 ~ 2 * NZERO - 1
@@ -1801,6 +1898,27 @@ Process exit functions:
 Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
 
 pthread:
+```C++
+// Linux pthread implementation
+__pthread_create_2_1 // binfmt_elf.c
+    ALLOCATE_STACK (iattr, &pd); // allocatestack.c
+        /* Adjust the stack size for alignment. */
+        /* call mmap to alloc thread statck in process heap*/
+        /* set protection of this thread stack memory */
+        /* populate member: stackblock、stackblock_size、guardsize、specific */
+        /* And add to the list of stacks in use. */
+    // start thread
+    create_thread (pd, iattr, stackaddr, stacksize); // sysdeps/pthread/createthread.c
+    do_clone (pd, attr, clone_flags, start_thread/*pthread func*/, stackaddr, stacksize, 1);
+        ARCH_CLONE (start_thread, stackaddr, stacksize,, clone_flags, pd, &pd->tid, TLS_VALUE, &pd->tid);
+            _do_fork();
+    start_thread // pthread_creat.c
+        THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
+        // pd->result = pd->start_routine(pd->arg);
+    __free_tcb
+        __deallocate_stack
+            queue_stack
+```
 ```C++
     pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);

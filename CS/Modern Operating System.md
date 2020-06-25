@@ -1,4 +1,4 @@
-# Chapter 2 Processes and Theads
+#  Chapter 2 Processes and Theads
 ### 2.1 Processes
 #### 2.1.2 Process Creation
 Four principal events cause processes to be created:
@@ -551,6 +551,66 @@ Example: /usr/ast/mbox
 4. find mbox's i-node from ast's i-node
 ![Unix File System Example](../Images/unix-file-system-example.png)
 
+# Chapter 5 INPUT/OUTPUT
+### 5.1 PRINCIPLES OF I/O HARDWARE
+#### 5.1.1 I/O Devices
+A `block device` is one that stores information in fixed-size blocks, each one with its own address, it is possible to read or write each block independently of all the other ones. All transfers are in units of one or more entire (consecutive) blocks.
+
+A `character device` delivers or accepts a stream of characters, it is not addressable and does not have any seek operation.
+
+### 5.1.2 Device Controllers
+### 5.1.3 Memory-Mapped I/O
+Each controller has a few registers that are used for communicating with the CPU.
+
+In addition to the control registers, many devices have a data buffer that the op- erating system can read and write.
+
+How the CPU communicates with the control registers and also with the device data buffers:
+1. Each control register is assigned an I/O port number, the set of all the I/O ports form the I/O port space.
+2. Map all the control registers into the memory space, each control register is assigned a unique memory address to which no memory is assigned.
+3. A hybrid scheme, with memory-mapped I/O data buffers and separate I/O ports for the control registers.
+
+The x86 uses hybrid scheme architecture, with addresses 640K to 1M − 1 being reserved for device data buffers in IBM PC compatibles, in addition to I/O ports 0 to 64K − 1.
+
+Work flow:
+1. In all cases, when the CPU wants to read a word, either from memory or from an I/O port, it puts the address it needs on the bus’ address lines and then asserts a READ signal on a bus’ control line.
+2. A second signal line is used to tell whether I/O space or memory space is needed.
+
+##### Strengths and weaknesses:
+Advantages for memory-mapped IO:
+1. With memory-mapped IO, controller registers are just variables in memory, it's easy to add special IO instructions. Device drive can be written entirely in C, otherwise assembly code is needed.
+2. No special protection mechanism is needed to keep user processes from performing I/O. All the operating system has to do is refrain from putting that portion of the address space containing the control regis- ters in any user’s virtual address space.
+3. Every instruction that can reference memory can also reference control registers.
+
+Disadvantages for memory-mapped IO:
+1. Caching a device control register would be disastrous.
+2. if there is only one address space, then all memory modules and all I/O devices must examine all memory references to see which ones to respond to.
+
+The trouble with having a separate memory bus on memory-mapped machines is that the I/O devices have no way of seeing memory addresses as they go by on the memory bus, so they have no way of responding to them.
+Solution:
+1. Send all memory references to the memory. If the memory fails to respond, then the CPU tries the other buses. This design can be made to work but requires additional hardware complexity.
+2. Put a snooping device on the memory bus to pass all addresses presented to potentially interested I/O devices. The problem here is that I/O devices may not be able to process requests at the speed the memory can.
+3. Filter addresses in the memory controller. In that case, the memory controller chip contains range registers that are preloaded at boot time. The disadvantage of this scheme is the need for figuring out at boot time which memory addresses are not really memory addresses.
+
+#### 5.1.4 Direct Memory Access
+No matter whether there is memory-mapped I/O, CPU needs to address the device controllers to exchange data with them. The CPU can request data from an I/O controller one byte at a time, but doing so wastes the CPU’s time, so DMA (Direct Memory Access) is often used.
+
+The operating system can use only DMA if the hardware has a DMA controller.
+
+A single DMA controller is available (e.g., on the parentboard) for regulating transfers to multiple devices, often concurrently.
+
+DMA registers:
+1. A memory address register
+2. A byte count register
+3. One or more control registers, specify the I/O port to use, the direction of the transfer (reading from the I/O device or writing to the I/O device), the transfer unit (byte at a time or word at a time), and the number of bytes to transfer in one burst.
+
+![DMA Transfer](../Images/dma-transfer.png)
+1. The CPU programs the DMA controller by setting its registers so it knows what to transfer where (step 1). It also issues a command to the disk controller telling it to read data from the disk into its internal buffer and verify the checksum. When valid data are in the disk controller’s buffer, DMA can begin.
+2. The DMA controller initiates the transfer by issuing a read request over the bus to the disk controller (step 2).
+3. Typically, the memory address to write to is on the bus’ address lines, so when the disk controller fetches the next word from its internal buffer, it knows where to write it. The write to memory is another standard bus cycle (step 3).
+4. When the write is complete, the disk controller sends an acknowl- edgement signal to the DMA controller, also over the bus (step 4).
+5. The DMA con- troller then increments the memory address to use and decrements the byte count. If the byte count is still greater than 0, steps 2 through 4 are repeated until the count reaches 0.
+6. At that time, the DMA controller interrupts the CPU to let it know that the transfer is now complete.
+
 # Chapter 10 Case Study 1: Unix, Linux, and Android
 
 ### 10.3 PROCESSES IN LINUX
@@ -606,13 +666,15 @@ pid = clone(function, stack ptr, sharing flags, arg);
 
 In UNIX, a call to chdir by a thread always changes the working directory for other threads in its process, but never for threads in another process.
 
-When clone is used to create a new process that shares nothing with its creator, PID is set to a new value; otherwise, the task receives a new TID, but inherits the PID.
+When clone is used to create a new process that shares nothing with its creator, PID is set to a new value; otherwise, the task receives a new TID, but inherits the PID.P
 
 ### 10.3.4 Scheduling in Linux
 Linux distinguishes three classes of threads for scheduling purposes:
 1. Real-time FIFO.
 2. Real-time round robin.
 3. Timesharing.
+
+Real-time FIFO threads are the highest priority and are not preemptable except by a newly readied real-time FIFO thread with even higher priority. Real-time round-robin threads are the same as real-time FIFO threads except that they have time quanta associated with them, and are preemptable by the clock.
 
 Real-time threads have priority levels from 0 to 99, non-real-time threads have levels from 100 to 139.
 
@@ -623,7 +685,7 @@ In order to avoid wasting CPU cycles for servicing the timer interrupt, the kern
 Historically, a popular Linux scheduler was the Linux **O(1) scheduler**.
 
 ![Linux RunQueue](../Images/linux-runqueue.png)
-1. selects a task from the highest-priority list in the active array
+1. Selects a task from the highest-priority list in the active array
 2. If that task’s timeslice (quantum) expires, it is moved to the expired list (potentially at a different priority level).
 3. If the task blocks, for instance to wait on an I/O event, before its timeslice expires, once the event occurs and its execution can resume, it is placed back on the original active array, and its timeslice is decremented to reflect the CPU time it already used.
 4. Once its timeslice is fully exhausted, it, too, will be placed on the expired array.
@@ -635,14 +697,369 @@ The idea behind this scheme is to get processes out of the kernel fast.
 
 In this light, CPU-bound processes basically get any service that is left over when all the I/O bound and interactive processes are blocked.
 
-Linux relies on continuously maintaining interactivity heuristics to know a priori whether a task is I/O- or CPU-bound, it distinguishes between static and dynamic priority.
+Linux relies on continuously maintaining interactivity heuristics to know a priori whether a task is I/Oor CPU-bound, it distinguishes between static and dynamic priority.
 
 The threads’ dynamic priority is continuously recalculated, so as to (1) reward interactive threads, and (2) punish CPU-hogging threads.
 
-The scheduler maintains a `sleep_avg` variable associated with each task. Whenever a task is awakened, this variable is incremented. Whenever a task is preempted or when its quantum ex- pires, this variable is decremented by the corresponding value. This value is used to dynamically map the task’s bonus to values from −5 to +5.
+The scheduler maintains a `sleep_avg` variable associated with each task. Whenever a task is awakened, this variable is incremented. Whenever a task is preempted or when its quantum expires, this variable is decremented by the corresponding value. This value is used to dynamically map the task’s bonus to values from −5 to +5.
 
 The scheduler recalculates the new priority level as a thread is moved from the active to the expired list.
 
+Prior algorithms exhibited poor performance in multiprocessor settings and did not scale well with an increased number of tasks.
+
+O(1) schedulare has shortcomings the heuristics used to determine the interactivity of a task, and therefore its priority level, were complex and imperfect and resulted in poor performance for interactive tasks.
+
+To address O(1) issue, **CFS(Completely Fair Scheduler)** which used red-balck tree as runqueue data structure is created and it's the default non-real-time scheduler.
+1. CFS always schedules the task which has had least amount of time on the CPU, typically the leftmost node in the tree.
+2. CFS increments the task’s `vruntime` value based on the time it has already run, and compares this to the current leftmost node in the tree.
+3. If the running task still has smaller vruntime, it will continue to run.
+4. Otherwise, it will be inserted at the appropriate place in the red-black tree, and the CPU will be given to task corresponding to the new leftmost node.
+
+To account for differences in task priorities and ‘‘niceness,’’ CFS changes the effective rate at which a task’s virtual time passes when it is running on the CPU. In this manner, CFS avoids using separate runqueue structures for different priority levels.
+
+Linux scheduler includes special features particularly useful for multiprocessor or multicore platforms:
+1. the runqueue structure is associated with each CPU in the multiprocessing platform.
+2. a set of system calls is available to further specify or modify the affinity requirements of a select thread.
+3. the scheduler performs periodic load balancing across runqueues of different CPUs to ensure that the system load is well balanced, while still meeting certain performance or affinity requirements.
+
+Tasks which are not runnable and are waiting on various I/O operations or other kernel events are placed on another data structure, **waitqueue**. A waitqueue is associated with each event that tasks may wait on.
+
+##### Synchronization in Linux
+1. hardware-supported atomic instructions, aotmic_set, aotmic_read
+2. memory barriers, rmb, wmb
+3. ‘‘ticket-based’’ spinlock
+4. mutexes and semaphores
+5. futexes, completions, ‘‘read- copy-update’’ (RCU) locks
+
+### 10.3.5 Booting Linux
+1. When the computer starts, the BIOS performs Power-On-Self-Test (POST) and initial device discovery and initialization
+2. The first sector of the boot disk, the MBR (Master Boot Record), is read into a fixed memory location and executed.
+3. This sector contains a small (512-byte) program that loads a standalone program called boot from the boot device, such as a SATA or SCSI disk.
+4. The boot program first copies itself to a fixed high-memory address to free up low memory for the operating system.
+5. Boot reads the root directory of the boot device
+6. Then boot reads in the operating system kernel and jumps to it, kernel is running now.
+7. Kernel starts its works, includes setting up the kernel stack, identifying the CPU type, calculating the amount of RAM present, disabling interrupts, enabling the MMU, and finally calling the C-language main procedure to start the main part of the operating system.
+8. The C code starts out by allocating a message buffer to help debug boot problems.
+9. The kernel data structures are allocated. Most are of fixed size, but a few, such as the page cache and certain page table structures, depend on the amount of RAM available.
+10. At this point the system begins autoconfiguration. Using configuration files telling what kinds of I/O devices might be present, it begins probing the devices.
+11. Once all the hardware has been configured, then to handcraft process 0, set up its stack, and run it which doing things like programming the real-time clock, mounting the root file system, and creating `init` (process 1) and the page daemon (process 2).
+12. `Init` checks its flags to see if it is supposed to come up single user or multiuser.
+    In the former case, it forks off a process that executes the shell and waits for this process to exit.
+
+    In the latter case, it forks off a process that executes the system initialization shell script, /etc/rc, which can do file system consistency checks, mount additional file systems, start daemon processes, and so on.
+
+    Then it reads /etc/ttys, which lists the terminals and some of their properties. For each enabled terminal, it forks off a copy of itself, which does some housekeeping and then executes a program called `getty`.
+13. When user provides a login name, getty terminates by executing /bin/login, the login program.
+14. Login then asks for a password, encrypts it, and verifies it against the encrypted password stored in the password file, /etc/passwd.
+15. If it is correct, login replaces itself with the user’s shell, which then waits for the first command.
+
+### Extend Implementation
+Reference: https://time.geekbang.org/column/article/93396
+
+##### fork
+![Linux fork](../Images/linux-fork.jpg)
+
+##### Schedule
+###### Voluntary Schedule:
+```c++
+schedule(void)
+    __schedule(false), // kernel/sched/core.c
+        pick_next_task(rq, prev, &rf);
+        context_switch(rq, prev, next, &rf);
+            switch_mm_irqs_off(prev->active_mm, next->mm, next);
+            switch_to(prev, next, prev);
+                __switch_to_asm(); // switch registers, but not EIP [arch/x86/entry/entry_64.S]
+                    __switch_to(); // switch stack [arch/x86/kernel/process_32.c]
+                        this_cpu_write(current_task, next_p); //
+            barrier();
+            return finish_task_switch(prev);
+```
+
+###### Involuntary shcedule(preempty):
+```C++
+// 1. mark TIF_NEED_RESCHED
+// no time slice
+scheduler_tick(); // kernel/sched/core.c
+    task_tick_fair(rq, curr, 0);
+        entity_tick(cfs_rq, se, queued);
+            check_preempt_tick(cfs_rq, curr);
+                resched_curr(rq_of(cfs_rq));
+                    set_tsk_need_resched();
+
+// wake up
+try_to_wake_up(); // kernel/sched/core.c
+    ttwu_queue
+        ttwu_do_activate
+            ttwu_do_wakeup
+                check_preempt_curr
+                    resched_curr
+                        --->
+
+// 2. real time shceudle
+// real user space preempty time: 1. return from system call
+do_syscall_64
+    syscall_return_slowpath
+        prepare_exit_to_usermode
+            exit_to_usermode_loop
+
+// real user space preempty time: 2. return from interrupt
+do_IRQ
+    retint_user //arch/x86/entry/entry_64.S
+        prepare_exit_to_usermode
+            exit_to_usermode_loop
+                --->
+
+
+// real kernel preempty time: 1. preempty_enble
+preempt_enable
+    preempt_count_dec_and_test
+        preempt_schedule
+            preempt_schedule_common
+                __schedule
+                    --->
+
+// real kernel preempty time: 2. return from interrupt
+do_IRQ
+    retint_kernel
+        prepare_exit_to_usermode
+            --->
+
+```
+
+### 10.4 MEMORY MANAGEMENT IN LINUX
+#### 10.4.1 Fundamental Concepts
+![linux adress space](../Images/linux-address-space.png)
+All the variables in the BSS(Block Stared By Symbol) part are initialized to zero after loading.
+
+When a program starts up, its stack is not empty. Instead, it contains all the environment (shell) variables as well as the command line typed to the shell to invoke it.
+
+#### 10.4.3 Implementation of Memory Management in Linux
+The kernel memory typically resides in low physical memory but it is mapped in the top 1 GB of each process virtual address space, between addresses 0xC0000000 and 0xFFFFFFFF (3–4 GB).
+
+##### Physical Memory Management
+![UNMA Node](../Images/numa-node.jpg)
+
+![Linux Memory Zone](../Images/linux-memory-zone.png)
+
+1. ZONE_DMA and ZONE_DMA32: pages that can be used for DMA.
+2. ZONE_NORMAL: normal, regularly mapped pages.
+3. ZONE_HIGHMEM: pages with high-memory addresses, which are not permanently mapped.
+
+Linux maintains an array of `page descriptors`, of type page one for each physical page frame in the system, called `mem_map`.
+
+The size of the page descriptor is 32 bytes, therefore the entire mem map can consume less than 1% of the physical memory (for a page frame of 4 KB).
+
+Each zone Linux maintains a `zone descriptor`, which contains information about the memory utilization within each zone, such as number of active or inactive pages, low and high watermarks to be used by the page-replacement algorithm, and it also contains an array of free areas.
+
+
+##### Memory-Allocation Mechanisms
+![buddy slab system](../Images/buddy-slab-system.jpg)
+1. buddy algorithm
+2. slab algorithm, is to alleviate the internal fragmentation problem of buddy algorithm, which takes chunks using the buddy algorithm but then carves slabs (smaller units) from them and manages the smaller units separately.
+```C++
+// Linux buddy system
+alloc_pages();
+    alloc_pages_current(gfp_mask, order);
+        struct mempolicy *pol = &default_policy;
+        struct page *page;
+        // ......
+        page = __alloc_pages_nodemask(gfp, order, policy_node(gfp, pol, numa_node_id()), policy_nodemask(gfp, pol));
+            get_page_from_freelist();
+                //......
+                for_next_zone_zonelist_nodemask(zone, z, ac->zonelist, ac->high_zoneidx, ac->nodemask) {
+                    struct page *page;
+                    // ......
+                    page = rmqueue(ac->preferred_zoneref->zone, zone, order, gfp_mask, alloc_flags, ac->migratetype);
+                        __rmqueue();
+                            rmqueue_smallest();
+                                /* Find a page of the appropriate size in the preferred list */
+                                for (current_order = order; current_order < MAX_ORDER; ++current_order) {
+                                    area = &(zone->free_area[current_order]);
+                                    page = list_first_entry_or_null(&area->free_list[migratetype], struct page, lru);
+                                    if (!page)
+                                        continue;
+                                    list_del(&page->lru);
+                                    rmv_page_order(page);
+                                    area->nr_free--;
+                                    expand(zone, page, order, current_order, area, migratetype) {
+                                        unsigned long size = 1 << high;
+                                        while (high > low) {
+                                            area--;
+                                            high--;
+                                            size >>= 1;
+                                            //......
+                                            list_add(&page[size].lru, &area->free_list[migratetype]);
+                                            area->nr_free++;
+                                            set_page_order(&page[size], high);
+                                        }
+                                    }
+
+                                    set_pcppage_migratetype(page, migratetype); return page;
+                                }
+                                return NULL;
+                            }
+                    // ......
+                }
+        //......
+        return page;
+```
+```C++
+struct kmem_cache {
+  struct kmem_cache_cpu __percpu *cpu_slab;
+  /* Used for retriving partial slabs etc */
+  unsigned long flags;
+  unsigned long min_partial;
+  int size;    /* The size of an object including meta data */
+  int object_size;  /* The size of an object without meta data */
+  int offset;    /* Free pointer offset. */
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+  int cpu_partial;  /* Number of per cpu partial objects to keep around */
+#endif
+  struct kmem_cache_order_objects oo;
+  /* Allocation and freeing of slabs */
+  struct kmem_cache_order_objects max;
+  struct kmem_cache_order_objects min;
+  gfp_t allocflags;  /* gfp flags to use on each alloc */
+  int refcount;    /* Refcount for slab cache destroy */
+  void (*ctor)(void *);
+......
+  const char *name;  /* Name (only for display!) */
+  struct list_head list;  /* List of slab caches */
+......
+  struct kmem_cache_node *node[MAX_NUMNODES];
+};
+
+
+struct kmem_cache_cpu {
+  void **freelist;  /* Pointer to next available object */
+  unsigned long tid;  /* Globally unique transaction id */
+  struct page *page;  /* The slab from which we are allocating */
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+  struct page *partial;  /* Partially allocated frozen slabs */
+#endif
+......
+};
+
+
+struct kmem_cache_node {
+  spinlock_t list_lock;
+......
+#ifdef CONFIG_SLUB
+  unsigned long nr_partial;
+  struct list_head partial;
+......
+#endif
+};
+```
+![kmem_cache_cpu_node](../Images/kmem-cache-cpu-node.jpg)
+
+```C++
+// Linux slab/slub/slob system
+static struct kmem_cache *task_struct_cachep;
+
+static inline struct task_struct *alloc_task_struct_node(int node)
+{
+    return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+}
+
+static inline void free_task_struct(struct task_struct *tsk)
+{
+    kmem_cache_free(task_struct_cachep, tsk);
+}
+
+
+alloc_task_struct_node();
+    kmem_cache_alloc_node();
+        slab_alloc_node();
+            __slab_alloc() {
+                // 1. try freelist again in case of cpu migration or IRQ
+                freelist = get_freelist(s, page);
+
+                // 2. replace cpu page with partial
+                if (slub_percpu_partial(c)) {
+                    page = c->page = slub_percpu_partial(c);
+                    slub_set_percpu_partial(c, page);
+                    stat(s, CPU_PARTIAL_ALLOC);
+                    goto redo;
+                }
+
+                // 3. need alloc new slak objects
+                freelist = new_slab_objects(s, gfpflags, node, &c);
+            }
+
+
+```
+
+##### Virtual Address-Space Representation
+`vm_area_struct`: protection mode, pinned, group up direction, private or shared between processes, backing storage on disk assigned
+
+copy on write: The areas are marked as read/write, but the pages themselves are marked as read only. If either process tries to write on a page, a protection fault occurs and the kernel sees that the area is logically writable but the page is not writeable, so it gives the process a copy of the page and marks it read/write.
+
+
+#### 10.4.4 Paging in Linux
+Paging is implemented partly by the kernel and partly by a new process called the page daemon.
+
+Paging to a separate partition, accessed as a raw device, is more efficient than paging to a file for several reasons:
+1. the mapping between file blocks and disk blocks is not needed
+2. the physical writes can be of any size, not just the file block size.
+3. page is always written contiguously to disk; with a paging file, it may or may not be.
+
+
+##### The Page Replacement Algorithm
+1. Linux distinguishes between four different types of pages: unreclaimable, swappable, syncable, and discardable.
+2. At boot time, init starts up a `page daemon, kswapd`, for each memory node, and configures them to run periodically.
+3. Each time kswapd awakens, it checks to see if there are enough free pages available, by comparing the low and high watermarks with the current memory usage for each memory zone.
+
+Linux maintains efficient tree-like data structures to easily find all users of a shared page.
+
+PFRA uses a clock-like algorithm to select old pages for eviction within a certain category. At the core of this algorithm is a loop which scans through each zone’s active and inactive lists, trying to reclaim different kinds of pages, with different urgencies
+
+During PFRA, pages are moved between the active and inactive list in the manner.
+```C++
+//1. actice page out when alloc
+get_page_from_freelist();
+    node_reclaim();
+        __node_reclaim();
+            shrink_node();
+
+// 2. positive page out by kswapd
+static int kswapd(void *p)
+{
+  unsigned int alloc_order, reclaim_order;
+  unsigned int classzone_idx = MAX_NR_ZONES - 1;
+  pg_data_t *pgdat = (pg_data_t*)p;
+  struct task_struct *tsk = current;
+
+    for ( ; ; ) {
+    ......
+        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
+            classzone_idx);
+    ......
+        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
+    ......
+    }
+}
+
+balance_pgdat();
+    kswapd_shrink_node();
+        shrink_node();
+            shrink_node_memcg();
+
+```
+
+![Linux Page State](../Images/linux-page-state.png)
+
+The `pdflush` threads either (1) wake up periodically, typically every 500 msec, to write back to disk very old dirty pages, or (2) are explicitly awakened by the kernel when available memory levels fall below a certain threshold, to write back dirty pages from the page cache to disk.
+
+#### Reference:
+https://mp.weixin.qq.com/s/dOgpcRiu3F18EpFWcnv5XQ
+
+
+### 10.5 INPUT/OUTPUT IN LINUX
+#### 10.5.1 Fundamental Concepts
+Each I/O device is assigned a path name, usually in /dev.
+
+A `block special file` is one consisting of a sequence of numbered blocks, each block can be individually addressed and accessed.
 
 ### 10.6 THE LINUX FILE SYSTEM
 

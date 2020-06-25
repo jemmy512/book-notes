@@ -332,7 +332,26 @@ Each free list is associated with a size class and is organized as some kind of 
 
 Search times are reduced because searches are limited to particular parts of the heap instead of the entire heap. Memory utilization can improve because of the interesting fact that a simple first-fit search of a segregated free list approximates a best-fit search of the entire heap.
 
-#### Reference
+### Extensiong: Linux Implementation
+```C++
+// arch/x86/kernel/cpu/common.c
+DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
+    [GDT_ENTRY_KERNEL32_CS]		= GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
+    [GDT_ENTRY_KERNEL_CS]		= GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
+    [GDT_ENTRY_KERNEL_DS]		= GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
+    [GDT_ENTRY_DEFAULT_USER32_CS]	= GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
+    [GDT_ENTRY_DEFAULT_USER_DS]	= GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
+    [GDT_ENTRY_DEFAULT_USER_CS]	= GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
+}};
+
+#define __KERNEL_CS (GDT_ENTRY_KERNEL_CS*8)
+#define __KERNEL_DS (GDT_ENTRY_KERNEL_DS*8)
+#define __USER_DS (GDT_ENTRY_DEFAULT_USER_DS*8 + 3)
+#define __USER_CS (GDT_ENTRY_DEFAULT_USER_CS*8 + 3)
+
+```
+
+### Reference
 
 https://mp.weixin.qq.com/s/dOgpcRiu3F18EpFWcnv5XQ
 
