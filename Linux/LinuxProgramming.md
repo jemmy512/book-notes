@@ -770,36 +770,6 @@ int munmap(void *adrr, size_t len); // automatically unmapped when process termi
     // It's determined by the kernel's virual memory algorithm sometime after we store into the region.
 ```
 
-```C++
-// Linux mmap implementation
-ksys_mmap_pgoff(); // mm/mmap.c
-    vm_mmap_pgoff();
-        do_mmap_pgoff();
-            do_mmap();
-                get_unmapped_area();
-                mmap_region();
-```
-```C++
-// page fault exception
-do_page_fault();
-    __do_page_fault();
-        vmalloc_fault(address); // fault in kernel
-        handle_mm_fault(vma, address, flags); // fault in usr space
-            handle_pte_fault(&vmf);
-                do_anonymous_page(vmf); // 1. map phsyic memory
-                    pte_alloc();
-                    alloc_zeroed_user_highpage_movable();
-                        alloc_pages_vma();
-                        __alloc_pages_nodemask();
-                    mk_pte();
-                    set_pte_at();
-                do_fault(vmf);          // 2. map to a file
-                    __do_fault();
-                        vma->vm_ops->fault(vmf);
-                            ext4_filemap_fault();
-                do_swap_page(vmf);      // 3. map to swap
-```
-
 I/O Multiplexing:
 ```C++
 1. select: <sys/select.h> <sys/time.h>
@@ -905,7 +875,7 @@ ssize_t writen(int fd, void *buf, size_t nbytes);
 -- P524 -- review code
 ```
 
-# system Data Files and Information
+# System Data Files and Information
 
 System Identification:
 ```C++
@@ -930,7 +900,7 @@ Time and Data Rountine:
         timeval ---> time_t(calendar time) <--- timespec
                          \     |      /
                            \   |    /
-                    	         |
+                                 |
                              kernel
 
     time_t              --------------> time
@@ -1253,7 +1223,7 @@ Shutdown of Server Host:
 
 # Signal Programming
 
-Methods of Local Processes Communication(IPC):
+### Methods of Local Processes Communication(IPC):
 1. Messaging (pipeline, FIFO, message queue)
 2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
 3. Shared memory (anonymous and named)
@@ -1262,7 +1232,10 @@ Methods of Local Processes Communication(IPC):
 
 checking for the existence of a process:
 ```C++
-    wait(); semaphore and exclusive file locks; IPC(pipes, FIFOs...); /proc/PID
+    wait();
+    semaphore and exclusive file locks;
+    IPC(pipes, FIFOs...);
+    /proc/PID
 ```
 
 Signal dispositions: Term, Ign, Core, Stop, Cont
@@ -1327,7 +1300,7 @@ sighandler_t signal(int signum, sighandler_t handler);
             goto to unwind the stack and return control to a predetermined location in the main program;
 ```
 
-sending a signal:
+### sending a signal:
 ```C++
     raise(int sig); kill(getpid(), int sig); killpg(pid_t pgrp , int sig);
     pthread_kill(); tgkill(); sigqueue();
@@ -1428,7 +1401,6 @@ POSIX Signal Semantics:
 3. If the signal is generated one or more times while it is blocked, it is normally delivered only one time after the signal is unlocked. By default, Unix signal are not queued.
 4. It is possible to selectively block and unblock a set of signal using the sigprocmask function.
 
-
 # IPC Programming
 
 Unix inter-domain communication:
@@ -1450,7 +1422,7 @@ Advantages and Disabvantages of XSI IPC:
 5. Since these forms of IPC don’t use file descriptors, we can’t use the multiplexed I/O functions (select and poll) with them.
 
 
-Pipe: PIPE_BUF
+### Pipe: PIPE_BUF
 ```C++
     <unistd.h>
     int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
@@ -1462,9 +1434,8 @@ Pipe: PIPE_BUF
     <sys/types.h>
     <sys/socket.h>
     int socketpair(int domain, int type, int proto, int fd[2]);
-```
 
-FIFO:
+### FIFO:
 ```C++
     mkfifo(const char *path, mode_t mode);              // absolute path, mode same to open
     mkfifoat(int fd, const char *path, mode_t mode);    // path relative to the directory of fd
@@ -1481,13 +1452,13 @@ popen: pipe stream to or from a process
     int pclose(FILE *stream);
 ```
 
-Identifiers and Keys:
+### Identifiers and Keys:
 ```C++
     key_t ftok(const char *pathname, int proj_id);
     key: 31-24(proj_id low 8 bits), 23-16(st_dev low 8 bits), 15-0(st_ino low 16 bits)
 ```
 
-msg_queue: a linked list of messages
+### msg_queue
 ```C++
 struct msqid_ds {
     struct ipc_perm msg_perm;
@@ -1533,7 +1504,8 @@ ssize_t msgrcv(int msgid, void *msgbuf, size_t msgsz, long msgtyp, int msgflag);
     type: 0, >0, <0(the first msg whose type is the lowest value less than or euqal to absolute value of type)
 ```
 
-semaphore: is a counter used to provide access to the shared object for multiple processes
+### semaphore:
+is a counter used to provide access to the shared object for multiple processes
 ```C++
 category:
     1. kernel semaphore
@@ -1603,7 +1575,7 @@ SYSTEM V semaphore:
         cmd: IPC_RMID, IPC_INFO, GETALL, GETNCNT, GETPID, GETVAL
 ```
 
-POSIX Shared Memory:
+### POSIX Shared Memory:
 ```C++
     #include <sys/mman.h>
     #include <sys/stat.h>        /* For mode constants */
@@ -1612,7 +1584,7 @@ POSIX Shared Memory:
     int shm_unlink(const char *name);
 ```
 
-System V Shared memory: (fastest IPC)
+### System V Shared memory: (fastest IPC)
 ```C++
     struct shmid_ds{
         struct ipc_perm shm_perm;
@@ -1636,13 +1608,13 @@ System V Shared memory: (fastest IPC)
         // shm remains in existence untill call shmctl with IPC_RMID flag
 ```
 
-Summary:
+### Summary:
 * Learn pipe and FIFOs avoid using message queue and semaphore, Full-duplex pipes and record locking should be
 * considered instead as they are far simpler. Shared memory still has its use.
 
 # Thread Process Programming
 
-Thread & Signal:
+### Thread & Signal:
 ```C++
 pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset); //how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
 pthread_kill(pthread_t pthread, int sig); // send a signal to a specific pthread
@@ -1790,20 +1762,6 @@ Process Enviroment:
         // Additional feature is allow kernel to return a summary of resources used by the terminated process and   all its child processes.
         // Resource information includes such  statistics as the amount of the user CPU time, amount of the system CPU time, number of page faults, number of signals received...
 ```
-##### exec
-```C++
-do_execve(getname(filename), argv, envp);
-    do_execveat_common
-        exec_binprm
-            search_binary_handler // fs/exec.c
-                load_elf_binary // fs/binfmt_elf.c
-                    setup_new_exec(); // set mmap_base
-                    setup_arg_pages();
-                    elf_map(); // map the code in elf file to memory
-                    set_brk(); // setup heap area
-                    load_elf_interp(); // load dependent *.so
-                    start_thread(regs, elf_entry, bprm->p); // arch/x86/kernel/process_32.c
-```
 
 Memory Allocation:
 ```C++
@@ -1814,50 +1772,6 @@ Memory Allocation:
     void free(void *ptr);
         // The freed space is usually not return to kernel but put into a pool of available memory(malloc pool)and
         // can be used again by call to one of the three alloc functions.
-
-// Linux implementation, mm/mmap.c
-SYSCALL_DEFINE1(brk, unsigned long, brk)
-{
-    unsigned long retval;
-    unsigned long newbrk, oldbrk;
-    struct mm_struct *mm = current->mm;
-    struct vm_area_struct *next;
-    // ......
-    newbrk = PAGE_ALIGN(brk);
-    oldbrk = PAGE_ALIGN(mm->brk);
-    if (oldbrk == newbrk)
-        goto set_brk;
-
-    /* Always allow shrinking brk. */
-    if (brk <= mm->brk) {
-        if (!do_munmap(mm, newbrk, oldbrk-newbrk, &uf))
-            goto set_brk;
-        goto out;
-    }
-
-    /* Check against existing mmap mappings. */
-    next = find_vma(mm, oldbrk);
-    if (next && newbrk + PAGE_SIZE > vm_start_gap(next))
-        goto out;
-
-    /* Ok, looks good - let it rip. */
-    if (do_brk(oldbrk, newbrk-oldbrk, &uf) < 0)
-        do_brk_flags();
-            find_vma_links();
-            vma_merge();
-            kmem_cache_zalloc();
-            INIT_LIST_HEAD(&vma->anon_vma_chain);
-            vma_link(mm, vma, prev, rb_link, rb_parent); // insert mm_struct rb_mm;
-        goto out;
-
-set_brk:
-  mm->brk = brk;
-// ......
-  return brk;
-out:
-  retval = mm->brk;
-  return retval
-```
 
 Process Scheduling: <unistd.h>
 ```C++
@@ -1895,30 +1809,8 @@ Process exit functions:
     2. When process receive certain signals.
     3. The last thread responds to the cancellation request.
 
-Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent.
+Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent
 
-pthread:
-```C++
-// Linux pthread implementation
-__pthread_create_2_1 // binfmt_elf.c
-    ALLOCATE_STACK (iattr, &pd); // allocatestack.c
-        /* Adjust the stack size for alignment. */
-        /* call mmap to alloc thread statck in process heap*/
-        /* set protection of this thread stack memory */
-        /* populate member: stackblock、stackblock_size、guardsize、specific */
-        /* And add to the list of stacks in use. */
-    // start thread
-    create_thread (pd, iattr, stackaddr, stacksize); // sysdeps/pthread/createthread.c
-    do_clone (pd, attr, clone_flags, start_thread/*pthread func*/, stackaddr, stacksize, 1);
-        ARCH_CLONE (start_thread, stackaddr, stacksize,, clone_flags, pd, &pd->tid, TLS_VALUE, &pd->tid);
-            _do_fork();
-    start_thread // pthread_creat.c
-        THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
-        // pd->result = pd->start_routine(pd->arg);
-    __free_tcb
-        __deallocate_stack
-            queue_stack
-```
 ```C++
     pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);
