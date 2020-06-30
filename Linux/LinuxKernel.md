@@ -1275,3 +1275,188 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
 }
 ```
 ![sem-shm-msg.png](../Images/sem-shm-msg.png)
+
+
+# File Management
+### inode, extents
+```C++
+struct ext4_inode {
+  __le16  i_mode;    /* File mode */
+  __le16  i_uid;    /* Low 16 bits of Owner Uid */
+  __le32  i_size_lo;  /* Size in bytes */
+  __le32  i_atime;  /* Access time */
+  __le32  i_ctime;  /* Inode Change time */
+  __le32  i_mtime;  /* Modification time */
+  __le32  i_dtime;  /* Deletion Time */
+  __le16  i_gid;    /* Low 16 bits of Group Id */
+  __le16  i_links_count;  /* Links count */
+  __le32  i_blocks_lo;  /* Blocks count */
+  __le32  i_flags;  /* File flags */
+
+  __le32  i_block[EXT4_N_BLOCKS];/* Pointers to blocks */
+  __le32  i_generation;  /* File version (for NFS) */
+  __le32  i_file_acl_lo;  /* File ACL */
+  __le32  i_size_high;
+
+};
+
+// Each block (leaves and indexes), even inode-stored has header.
+struct ext4_extent_header {
+  __le16  eh_magic;  /* probably will support different formats */
+  __le16  eh_entries;  /* number of valid entries */
+  __le16  eh_max;    /* capacity of store in entries */
+  __le16  eh_depth;  /* has tree real underlying blocks? */
+  __le32  eh_generation;  /* generation of the tree */
+};
+
+struct ext4_extent_idx {
+  __le32  ei_block;  /* index covers logical blocks from 'block' */
+  __le32  ei_leaf_lo;  /* pointer to the physical block of the next *
+         * level. leaf or next index could be there */
+  __le16  ei_leaf_hi;  /* high 16 bits of physical block */
+  __u16  ei_unused;
+};
+
+struct ext4_extent {
+  __le32  ee_block;  /* first logical block extent covers */
+  // the most significant bit used as a flag to identify whether
+  // this entent is initialized, 15 bits can present max 128MB data
+  __le16  ee_len;    /* number of blocks covered by extent */
+  __le16  ee_start_hi;  /* high 16 bits of physical block */
+  __le32  ee_start_lo;  /* low 32 bits of physical block */
+};
+```
+![linux-extents.jpg](../Images/linux-extents.jpg)
+
+![linux-ext4-extents.png](../Images/linux-ext4-extents.png)
+
+### open
+```C++
+SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+{
+  if (force_o_largefile())
+    flags |= O_LARGEFILE;
+
+
+  return do_sys_open(AT_FDCWD, filename, flags, mode);
+}
+
+// do_sys_open-> do_filp_open->path_openat->do_last->lookup_open
+static int lookup_open(struct nameidata *nd, struct path *path,
+      struct file *file,
+      const struct open_flags *op,
+      bool got_write, int *opened)
+{
+
+  if (!dentry->d_inode && (open_flag & O_CREAT)) {
+    error = dir_inode->i_op->create(dir_inode, dentry, mode,
+            open_flag & O_EXCL);
+  }
+}
+
+const struct inode_operations ext4_dir_inode_operations = {
+  .create    = ext4_create,
+  .lookup    = ext4_lookup,
+  .link    = ext4_link,
+  .unlink    = ext4_unlink,
+  .symlink  = ext4_symlink,
+  .mkdir    = ext4_mkdir,
+  .rmdir    = ext4_rmdir,
+  .mknod    = ext4_mknod,
+  .tmpfile  = ext4_tmpfile,
+  .rename    = ext4_rename2,
+  .setattr  = ext4_setattr,
+  .getattr  = ext4_getattr,
+  .listxattr  = ext4_listxattr,
+  .get_acl  = ext4_get_acl,
+  .set_acl  = ext4_set_acl,
+  .fiemap         = ext4_fiemap,
+};
+
+// ext4_create->ext4_new_inode_start_handle->__ext4_new_inode
+struct inode *__ext4_new_inode(handle_t *handle, struct inode *dir,
+             umode_t mode, const struct qstr *qstr,
+             __u32 goal, uid_t *owner, __u32 i_flags,
+             int handle_type, unsigned int line_no,
+             int nblocks)
+{
+inode_bitmap_bh = ext4_read_inode_bitmap(sb, group);
+ino = ext4_find_next_zero_bit((unsigned long *)
+                inode_bitmap_bh->b_data,
+                EXT4_INODES_PER_GROUP(sb), ino);
+}
+```
+
+### block group
+```C++
+struct ext4_group_desc
+{
+    __le32	bg_block_bitmap_lo;	/* Blocks bitmap block */
+    __le32	bg_inode_bitmap_lo;	/* Inodes bitmap block */
+    __le32	bg_inode_table_lo;	/* Inodes table block */
+};
+```
+![linux-block-group.jpg](../Images/linux-block-group.jpg)
+
+```C++
+struct ext4_super_block {
+  __le32  s_blocks_count_lo;  /* Blocks count */
+  __le32  s_r_blocks_count_lo;  /* Reserved blocks count */
+  __le32  s_free_blocks_count_lo;  /* Free blocks count */
+
+  __le32  s_blocks_count_hi;  /* Blocks count */
+  __le32  s_r_blocks_count_hi;  /* Reserved blocks count */
+  __le32  s_free_blocks_count_hi;  /* Free blocks count */
+}
+```
+![linux-meta-block-group.jpg](../Images/linux-meta-block-group.jpg)
+
+### Directory
+```C++
+struct ext4_dir_entry {
+  __le32  inode;      /* Inode number */
+  __le16  rec_len;    /* Directory entry length */
+  __le16  name_len;    /* Name length */
+  char  name[EXT4_NAME_LEN];  /* File name */
+};
+struct ext4_dir_entry_2 {
+  __le32  inode;      /* Inode number */
+  __le16  rec_len;    /* Directory entry length */
+  __u8  name_len;    /* Name length */
+  __u8  file_type;
+  char  name[EXT4_NAME_LEN];  /* File name */
+};
+
+struct dx_root
+{
+  struct fake_dirent dot;
+  char dot_name[4];
+  struct fake_dirent dotdot;
+  char dotdot_name[4];
+  struct dx_root_info
+  {
+    __le32 reserved_zero;
+    u8 hash_version;
+    u8 info_length; /* 8 */
+    u8 indirect_levels;
+    u8 unused_flags;
+  }
+  info;
+  struct dx_entry  entries[0];
+};
+
+struct dx_entry
+{
+  __le32 hash;
+  __le32 block;
+};
+```
+![linux-directory.jpg](../Images/linux-directory.jpg)
+
+### hard/symbolic link
+```C++
+ ln [args] [dst] [src]
+```
+![linux-link.jpg](../Images/linux-link.jpg)
+
+![linux-file-system.png](../Images/linux-file-system.png)
