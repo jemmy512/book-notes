@@ -1,4 +1,5 @@
 # Process Management
+
 ### fork
 ![Linux fork](../Images/linux-fork.jpg)
 
@@ -215,7 +216,6 @@ do_IRQ
 ```
 
 # Signal
-Linux signal implementation:
 ```C++
 struct task_struct {
     /* Signal handlers: */
@@ -1261,23 +1261,22 @@ static int shmem_fault(struct vm_fault *vmf)
 
   error = shmem_getpage_gfp(inode, vmf->pgoff, &vmf->page, sgp,
           gfp, vma, vmf, &ret);
-
 }
 
 static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
   struct page **pagep, enum sgp_type sgp, gfp_t gfp,
   struct vm_area_struct *vma, struct vm_fault *vmf, int *fault_type)
 {
-
-    page = shmem_alloc_and_acct_page(gfp, info, sbinfo,
-          index, false);
-
+  page = shmem_alloc_and_acct_page(gfp, info, sbinfo,
+        index, false);
 }
 ```
 ![sem-shm-msg.png](../Images/sem-shm-msg.png)
 
 
 # File Management
+![linux-vfs-system.png](../Images/linux-vfs-system.png)
+
 ### inode, extents
 ```C++
 struct ext4_inode {
@@ -1330,30 +1329,7 @@ struct ext4_extent {
 
 ![linux-ext4-extents.png](../Images/linux-ext4-extents.png)
 
-### open
 ```C++
-SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
-{
-  if (force_o_largefile())
-    flags |= O_LARGEFILE;
-
-
-  return do_sys_open(AT_FDCWD, filename, flags, mode);
-}
-
-// do_sys_open-> do_filp_open->path_openat->do_last->lookup_open
-static int lookup_open(struct nameidata *nd, struct path *path,
-      struct file *file,
-      const struct open_flags *op,
-      bool got_write, int *opened)
-{
-
-  if (!dentry->d_inode && (open_flag & O_CREAT)) {
-    error = dir_inode->i_op->create(dir_inode, dentry, mode,
-            open_flag & O_EXCL);
-  }
-}
-
 const struct inode_operations ext4_dir_inode_operations = {
   .create    = ext4_create,
   .lookup    = ext4_lookup,
@@ -1387,13 +1363,13 @@ ino = ext4_find_next_zero_bit((unsigned long *)
 }
 ```
 
-### block group
+### Meta Block Group
 ```C++
 struct ext4_group_desc
 {
-    __le32	bg_block_bitmap_lo;	/* Blocks bitmap block */
-    __le32	bg_inode_bitmap_lo;	/* Inodes bitmap block */
-    __le32	bg_inode_table_lo;	/* Inodes table block */
+  __le32	bg_block_bitmap_lo;	/* Blocks bitmap block */
+  __le32	bg_inode_bitmap_lo;	/* Inodes bitmap block */
+  __le32	bg_inode_table_lo;	/* Inodes table block */
 };
 ```
 ![linux-block-group.jpg](../Images/linux-block-group.jpg)
@@ -1460,3 +1436,258 @@ struct dx_entry
 ![linux-link.jpg](../Images/linux-link.jpg)
 
 ![linux-file-system.png](../Images/linux-file-system.png)
+
+### vfs
+![linux-vfs.jpg](../Images/linux-vfs.jpg)
+```C++
+register_filesystem(&ext4_fs_type);
+
+static struct file_system_type ext4_fs_type = {
+  .owner    = THIS_MODULE,
+  .name    = "ext4",
+  .mount    = ext4_mount,
+  .kill_sb  = kill_block_super,
+  .fs_flags  = FS_REQUIRES_DEV,
+};
+```
+
+#### mount
+```C++
+
+SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name, char __user *, type, unsigned long, flags, void __user *, data)
+{
+  ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
+}
+// do_mount->do_new_mount->vfs_kern_mount
+
+struct vfsmount *
+vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void *data)
+{
+  mnt = alloc_vfsmnt(name);
+  root = mount_fs(type, flags, name, data);
+
+  mnt->mnt.mnt_root = root;
+  mnt->mnt.mnt_sb = root->d_sb;
+  mnt->mnt_mountpoint = mnt->mnt.mnt_root;
+  mnt->mnt_parent = mnt;
+  list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+  return &mnt->mnt;
+}
+
+struct mount {
+  struct hlist_node mnt_hash;
+  struct mount *mnt_parent;
+  struct dentry *mnt_mountpoint;
+  struct vfsmount mnt;
+  union {
+    struct rcu_head mnt_rcu;
+    struct llist_node mnt_llist;
+  };
+  struct list_head mnt_mounts;  /* list of children, anchored here */
+  struct list_head mnt_child;  /* and going through their mnt_child */
+  struct list_head mnt_instance;  /* mount instance on sb->s_mounts */
+  const char *mnt_devname;  /* Name of device e.g. /dev/dsk/hda1 */
+  struct list_head mnt_list;
+} __randomize_layout;
+
+struct vfsmount {
+  struct dentry *mnt_root;  /* root of the mounted tree */
+  struct super_block *mnt_sb;  /* pointer to superblock */
+  int mnt_flags;
+} __randomize_layout;
+
+struct dentry *
+mount_fs(struct file_system_type *type, int flags, const char *name, void *data)
+{
+  struct dentry *root;
+  struct super_block *sb;
+  root = type->mount(type, flags, name, data);
+  sb = root->d_sb;
+}
+```
+![linux-mount-example.jpg](../Images/linux-mount-example.jpg)
+
+```C++
+struct file {
+  union {
+      struct llist_node	fu_llist;
+      struct rcu_head 	fu_rcuhead;
+  } f_u;
+  struct path		f_path;
+  struct inode		*f_inode;	/* cached value */
+  const struct file_operations	*f_op;
+
+  spinlock_t		                f_lock;
+  enum rw_hint		              f_write_hint;
+  atomic_long_t		              f_count;
+  unsigned int 		              f_flags;
+  fmode_t			                  f_mode;
+  loff_t                          f_pos;
+  struct mutex		              f_pos_lock;
+  struct fown_struct	          f_owner;
+
+#endif /* #ifdef CONFIG_EPOLL */
+  struct address_space	*f_mapping;
+  errseq_t		f_wb_err;
+};
+
+struct path {
+  struct vfsmount *mnt;
+  struct dentry *dentry;
+};
+
+// memroy chache of dirctories and files
+struct dentry {
+  unsigned int d_flags;		/* protected by d_lock */
+  struct dentry *d_parent;	/* parent directory */
+  struct qstr d_name;
+  struct inode *d_inode;		/* Where the name belongs to - NULL is
+           * negative */
+  unsigned char d_iname[DNAME_INLINE_LEN];	/* small names */
+
+  const struct dentry_operations *d_op;
+  struct super_block *d_sb;	/* The root of the dentry tree */
+
+  struct hlist_bl_node d_hash;	/* lookup hash list */
+  union {
+    struct list_head d_lru;		/* LRU list */
+    wait_queue_head_t *d_wait;	/* in-lookup ones only */
+  };
+  struct list_head d_child;	/* child of parent list */
+  struct list_head d_subdirs;	/* our children */
+} __randomize_layout;
+```
+
+### open
+```C++
+struct task_struct {
+  struct fs_struct    *fs;
+  struct files_struct *files;
+  struct nsproxy  *nsproxy;
+}
+
+struct files_struct {
+  struct file __rcu * fd_array[NR_OPEN_DEFAULT];
+};
+
+SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+{
+  return do_sys_open(AT_FDCWD, filename, flags, mode);
+}
+
+long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
+{
+  fd = get_unused_fd_flags(flags);
+  if (fd >= 0) {
+    struct file *f = do_filp_open(dfd, tmp, &op);
+    if (IS_ERR(f)) {
+      put_unused_fd(fd);
+      fd = PTR_ERR(f);
+    } else {
+      fsnotify_open(f);
+      fd_install(fd, f);
+    }
+  }
+  putname(tmp);
+  return fd;
+}
+
+struct file *do_filp_open(int dfd, struct filename *pathname,
+    const struct open_flags *op)
+{
+  set_nameidata(&nd, dfd, pathname);
+  filp = path_openat(&nd, op, flags | LOOKUP_RCU);
+  restore_nameidata();
+  return filp;
+}
+
+
+static struct file *path_openat(struct nameidata *nd,
+      const struct open_flags *op, unsigned flags)
+{
+  file = get_empty_filp();
+  s = path_init(nd, flags);
+  while (!(error = link_path_walk(s, nd)) &&
+    (error = do_last(nd, file, op, &opened)) > 0) {
+  }
+  terminate_walk(nd);
+  return file;
+}
+
+static int do_last(struct nameidata *nd,
+       struct file *file, const struct open_flags *op,
+       int *opened)
+{
+  error = lookup_fast(nd, &path, &inode, &seq); // loopup in dcache
+  error = lookup_open(nd, &path, file, op, got_write, opened);
+  error = vfs_open(&nd->path, file, current_cred());
+}
+
+static int lookup_open(struct nameidata *nd, struct path *path,
+  struct file *file,
+  const struct open_flags *op,
+  bool got_write, int *opened)
+{
+
+  if (!dentry->d_inode && (open_flag & O_CREAT)) {
+    error = dir_inode->i_op->create(dir_inode, dentry, mode,
+            open_flag & O_EXCL);
+  }
+}
+
+
+static int lookup_open(struct nameidata *nd, struct path *path,
+      struct file *file,
+      const struct open_flags *op,
+      bool got_write, int *opened)
+{
+
+    dentry = d_alloc_parallel(dir, &nd->last, &wq);
+    struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
+                   nd->flags);
+    path->dentry = dentry;
+  path->mnt = nd->path.mnt;
+}
+
+const struct inode_operations ext4_dir_inode_operations = {
+  .create    = ext4_create,
+  .lookup    = ext4_lookup
+}
+
+int vfs_open(const struct path *path, struct file *file,
+  const struct cred *cred)
+{
+  struct dentry *dentry = d_real(path->dentry, NULL, file->f_flags, 0);
+  file->f_path = *path;
+  return do_dentry_open(file, d_backing_inode(dentry), NULL, cred);
+}
+
+static int do_dentry_open(struct file *f,
+  struct inode *inode,
+  int (*open)(struct inode *, struct file *),
+  const struct cred *cred)
+{
+  f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK |
+        FMODE_PREAD | FMODE_PWRITE;
+  path_get(&f->f_path);
+  f->f_inode = inode;
+  f->f_mapping = inode->i_mapping;
+  f->f_op = fops_get(inode->i_fop);
+  open = f->f_op->open;
+  error = open(inode, f);
+  f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
+  file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
+  return 0;
+}
+
+
+const struct file_operations ext4_file_operations = {
+  .open    = ext4_file_open,
+};
+
+```
+![linux-dcache.jpg](../Images/linux-dcache.jpg)
+
+### Question:
+1. How to use inode bit map present all inodes?
+2. Does system alloc a block for a dirctory or a file?
