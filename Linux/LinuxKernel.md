@@ -219,16 +219,16 @@ do_IRQ
 ```C++
 struct task_struct {
     /* Signal handlers: */
-    struct signal_struct		*signal;
-    struct sighand_struct __rcu		*sighand;
-    sigset_t			blocked;
-    sigset_t			real_blocked;
+    struct signal_struct    *signal;
+    struct sighand_struct __rcu    *sighand;
+    sigset_t      blocked;
+    sigset_t      real_blocked;
     /* Restored if set_restore_sigmask() was used: */
-    sigset_t			saved_sigmask;
-    struct sigpending		pending;
-    unsigned long			sas_ss_sp;
-    size_t				sas_ss_size;
-    unsigned int			sas_ss_flags;
+    sigset_t      saved_sigmask;
+    struct sigpending    pending;
+    unsigned long      sas_ss_sp;
+    size_t        sas_ss_size;
+    unsigned int      sas_ss_flags;
 };
 /*
 kill->kill_something_info->kill_pid_info->group_send_sig_info->do_send_sig_info
@@ -432,8 +432,29 @@ ksys_mmap_pgoff(); // mm/mmap.c
                     }
                 }
 ```
+### page fault
+
 ```C++
 // page fault exception
+struct address_space {
+  struct inode    *host;
+  struct xarray    i_pages;
+  struct rb_root_cached  i_mmap;
+  atomic_t    i_mmap_writable;
+  const struct address_space_operations *a_ops;
+
+  gfp_t      gfp_mask;
+  struct rw_semaphore  i_mmap_rwsem;
+  unsigned long    nrpages;
+  unsigned long    nrexceptional;
+  pgoff_t      writeback_index;
+  unsigned long    flags;
+  errseq_t    wb_err;
+  spinlock_t    private_lock;
+  struct list_head  private_list;
+  void      *private_data;
+};
+
 do_page_fault() {
     __do_page_fault();
         vmalloc_fault(address) { // fault in kernel
@@ -831,12 +852,12 @@ balance_pgdat();
 ```C++
 // arch/x86/kernel/cpu/common.c
 DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
-    [GDT_ENTRY_KERNEL32_CS]		= GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
-    [GDT_ENTRY_KERNEL_CS]		= GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
-    [GDT_ENTRY_KERNEL_DS]		= GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
-    [GDT_ENTRY_DEFAULT_USER32_CS]	= GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
-    [GDT_ENTRY_DEFAULT_USER_DS]	= GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
-    [GDT_ENTRY_DEFAULT_USER_CS]	= GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
+    [GDT_ENTRY_KERNEL32_CS]    = GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
+    [GDT_ENTRY_KERNEL_CS]    = GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
+    [GDT_ENTRY_KERNEL_DS]    = GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
+    [GDT_ENTRY_DEFAULT_USER32_CS]  = GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
+    [GDT_ENTRY_DEFAULT_USER_DS]  = GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
+    [GDT_ENTRY_DEFAULT_USER_CS]  = GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
 }};
 
 #define __KERNEL_CS (GDT_ENTRY_KERNEL_CS*8)
@@ -1279,6 +1300,33 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
 
 ### inode, extents
 ```C++
+struct inode {
+  const struct inode_operations  *i_op;
+  struct super_block  *i_sb;
+  struct address_space  *i_mapping;
+
+  union {
+    const struct file_operations  *i_fop;  /* former ->i_op->default_file_ops */
+    void (*free_inode)(struct inode *);
+  };
+
+  umode_t      i_mode;
+  unsigned short    i_opflags;
+  kuid_t      i_uid;
+  kgid_t      i_gid;
+  unsigned int    i_flags;
+
+  unsigned long    dirtied_when;  /* jiffies of first dirtying */
+  unsigned long    dirtied_time_when;
+
+  struct hlist_node  i_hash;
+  struct list_head  i_io_list;  /* backing dev IO list */
+  struct bdi_writeback  *i_wb;    /* the associated cgroup wb */
+
+  struct file_lock_context  *i_flctx;
+  struct address_space  i_data;
+};
+
 struct ext4_inode {
   __le16  i_mode;    /* File mode */
   __le16  i_uid;    /* Low 16 bits of Owner Uid */
@@ -1367,9 +1415,9 @@ ino = ext4_find_next_zero_bit((unsigned long *)
 ```C++
 struct ext4_group_desc
 {
-  __le32	bg_block_bitmap_lo;	/* Blocks bitmap block */
-  __le32	bg_inode_bitmap_lo;	/* Inodes bitmap block */
-  __le32	bg_inode_table_lo;	/* Inodes table block */
+  __le32  bg_block_bitmap_lo;  /* Blocks bitmap block */
+  __le32  bg_inode_bitmap_lo;  /* Inodes bitmap block */
+  __le32  bg_inode_table_lo;  /* Inodes table block */
 };
 ```
 ![linux-block-group.jpg](../Images/linux-block-group.jpg)
@@ -1429,13 +1477,13 @@ struct dx_entry
 ```
 ![linux-directory.jpg](../Images/linux-directory.jpg)
 
+![linux-dir-file-inode.png](../Images/linux-dir-file-inode.png)
+
 ### hard/symbolic link
 ```C++
  ln [args] [dst] [src]
 ```
 ![linux-link.jpg](../Images/linux-link.jpg)
-
-![linux-file-system.png](../Images/linux-file-system.png)
 
 ### vfs
 ![linux-vfs.jpg](../Images/linux-vfs.jpg)
@@ -1451,7 +1499,8 @@ static struct file_system_type ext4_fs_type = {
 };
 ```
 
-#### mount
+### mount
+
 ```C++
 
 SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name, char __user *, type, unsigned long, flags, void __user *, data)
@@ -1479,6 +1528,7 @@ struct mount {
   struct mount *mnt_parent;
   struct dentry *mnt_mountpoint;
   struct vfsmount mnt;
+
   union {
     struct rcu_head mnt_rcu;
     struct llist_node mnt_llist;
@@ -1509,26 +1559,25 @@ mount_fs(struct file_system_type *type, int flags, const char *name, void *data)
 
 ```C++
 struct file {
+  struct path    f_path;
+  struct inode    *f_inode;  /* cached value */
+  const struct file_operations  *f_op;
+  struct address_space  *f_mapping;
+
+  spinlock_t                    f_lock;
+  enum rw_hint                  f_write_hint;
+  atomic_long_t                 f_count;
+  unsigned int                  f_flags;
+  fmode_t                       f_mode;
+  loff_t                         f_pos;
+  struct mutex                  f_pos_lock;
+  struct fown_struct            f_owner;
+
+  errseq_t    f_wb_err;
   union {
-      struct llist_node	fu_llist;
-      struct rcu_head 	fu_rcuhead;
+      struct llist_node  fu_llist;
+      struct rcu_head   fu_rcuhead;
   } f_u;
-  struct path		f_path;
-  struct inode		*f_inode;	/* cached value */
-  const struct file_operations	*f_op;
-
-  spinlock_t		                f_lock;
-  enum rw_hint		              f_write_hint;
-  atomic_long_t		              f_count;
-  unsigned int 		              f_flags;
-  fmode_t			                  f_mode;
-  loff_t                          f_pos;
-  struct mutex		              f_pos_lock;
-  struct fown_struct	          f_owner;
-
-#endif /* #ifdef CONFIG_EPOLL */
-  struct address_space	*f_mapping;
-  errseq_t		f_wb_err;
 };
 
 struct path {
@@ -1538,23 +1587,22 @@ struct path {
 
 // memroy chache of dirctories and files
 struct dentry {
-  unsigned int d_flags;		/* protected by d_lock */
-  struct dentry *d_parent;	/* parent directory */
-  struct qstr d_name;
-  struct inode *d_inode;		/* Where the name belongs to - NULL is
+  unsigned int d_flags;    /* protected by d_lock */
+  struct dentry *d_parent;  /* parent directory */
+  struct inode *d_inode;    /* Where the name belongs to - NULL is
            * negative */
-  unsigned char d_iname[DNAME_INLINE_LEN];	/* small names */
-
   const struct dentry_operations *d_op;
-  struct super_block *d_sb;	/* The root of the dentry tree */
+  struct super_block *d_sb;  /* The root of the dentry tree */
 
-  struct hlist_bl_node d_hash;	/* lookup hash list */
+  struct hlist_bl_node d_hash;  /* lookup hash list */
   union {
-    struct list_head d_lru;		/* LRU list */
-    wait_queue_head_t *d_wait;	/* in-lookup ones only */
+    struct list_head d_lru;    /* LRU list */
+    wait_queue_head_t *d_wait;  /* in-lookup ones only */
   };
-  struct list_head d_child;	/* child of parent list */
-  struct list_head d_subdirs;	/* our children */
+  struct qstr d_name;
+  unsigned char d_iname[DNAME_INLINE_LEN];  /* small names */
+  struct list_head d_child;  /* child of parent list */
+  struct list_head d_subdirs;  /* our children */
 } __randomize_layout;
 ```
 
@@ -1628,24 +1676,16 @@ static int lookup_open(struct nameidata *nd, struct path *path,
   const struct open_flags *op,
   bool got_write, int *opened)
 {
-
+  // open with O_CREAT flag
   if (!dentry->d_inode && (open_flag & O_CREAT)) {
     error = dir_inode->i_op->create(dir_inode, dentry, mode,
             open_flag & O_EXCL);
   }
-}
 
-
-static int lookup_open(struct nameidata *nd, struct path *path,
-      struct file *file,
-      const struct open_flags *op,
-      bool got_write, int *opened)
-{
-
-    dentry = d_alloc_parallel(dir, &nd->last, &wq);
-    struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
-                   nd->flags);
-    path->dentry = dentry;
+  dentry = d_alloc_parallel(dir, &nd->last, &wq);
+  struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
+                  nd->flags);
+  path->dentry = dentry;
   path->mnt = nd->path.mnt;
 }
 
@@ -1688,6 +1728,293 @@ const struct file_operations ext4_file_operations = {
 ```
 ![linux-dcache.jpg](../Images/linux-dcache.jpg)
 
+### read/write
+```C++
+SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+  struct fd f = fdget_pos(fd);
+  loff_t pos = file_pos_read(f.file);
+  ret = vfs_read(f.file, buf, count, &pos);
+
+}
+
+SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
+    size_t, count)
+{
+  struct fd f = fdget_pos(fd);
+  loff_t pos = file_pos_read(f.file);
+    ret = vfs_write(f.file, buf, count, &pos);
+}
+
+ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
+       loff_t *pos)
+{
+  if (file->f_op->read)
+    return file->f_op->read(file, buf, count, pos);
+  else if (file->f_op->read_iter)
+    return new_sync_read(file, buf, count, pos);
+  else
+    return -EINVAL;
+}
+
+
+ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
+        loff_t *pos)
+{
+  if (file->f_op->write)
+    return file->f_op->write(file, p, count, pos);
+  else if (file->f_op->write_iter)
+    return new_sync_write(file, p, count, pos);
+  else
+    return -EINVAL;
+}
+
+const struct file_operations ext4_file_operations = {
+  .read_iter  = ext4_file_read_iter,
+  .write_iter  = ext4_file_write_iter,
+  .write_begin = ext4_write_begin,
+  .write_end = ext4_write_end
+}
+// ext4_file_{read, write}_iter->generic_file_{read, write}_iter
+ssize_t
+generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+    if (iocb->ki_flags & IOCB_DIRECT) {
+        struct address_space *mapping = file->f_mapping;
+        retval = mapping->a_ops->direct_IO(iocb, iter);
+    }
+    retval = generic_file_buffered_read(iocb, iter, retval);
+}
+
+ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+    if (iocb->ki_flags & IOCB_DIRECT) {
+        written = generic_file_direct_write(iocb, from);
+    } else {
+        written = generic_perform_write(file, from, iocb->ki_pos);
+    }
+}
+```
+
+#### direct IO
+```C++
+static const struct address_space_operations ext4_aops = {
+  .direct_IO    = ext4_direct_IO,
+};
+// __blockdev_direct_IO->do_blockdev_direct_IO
+
+static inline ssize_t
+do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
+          struct block_device *bdev, struct iov_iter *iter,
+          get_block_t get_block, dio_iodone_t end_io,
+          dio_submit_t submit_io, int flags)
+{}
+```
+
+#### buffered write
+```C++
+ssize_t generic_perform_write(struct file *file,
+        struct iov_iter *i, loff_t pos)
+{
+  struct address_space *mapping = file->f_mapping;
+  const struct address_space_operations *a_ops = mapping->a_ops;
+  do {
+    struct page *page;
+    unsigned long offset;  /* Offset into pagecache page */
+    unsigned long bytes;  /* Bytes to write to page */
+    status = a_ops->write_begin(file, mapping, pos, bytes, flags,
+            &page, &fsdata) {
+                grab_cache_page_write_begin();
+                ext4_journal_start();
+            }
+    copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
+    flush_dcache_page(page);
+    status = a_ops->write_end(file, mapping, pos, bytes, copied,
+            page, fsdata) {
+                ext4_journal_stop() {
+                    // block_write_end->__block_commit_write->mark_buffer_dirty
+                }
+            }
+    pos += copied;
+    written += copied;
+
+    balance_dirty_pages_ratelimited(mapping);
+  } while (iov_iter_count(i));
+}
+
+struct page *grab_cache_page_write_begin(struct address_space *mapping,
+          pgoff_t index, unsigned flags)
+{
+  struct page *page;
+  int fgp_flags = FGP_LOCK|FGP_WRITE|FGP_CREAT;
+  page = pagecache_get_page(mapping, index, fgp_flags,
+      mapping_gfp_mask(mapping));
+  if (page)
+    wait_for_stable_page(page);
+  return page;
+}
+
+size_t iov_iter_copy_from_user_atomic(struct page *page,
+    struct iov_iter *i, unsigned long offset, size_t bytes)
+{
+  char *kaddr = kmap_atomic(page), *p = kaddr + offset;
+  iterate_all_kinds(i, bytes, v,
+    copyin((p += v.iov_len) - v.iov_len, v.iov_base, v.iov_len),
+    memcpy_from_page((p += v.bv_len) - v.bv_len, v.bv_page,
+         v.bv_offset, v.bv_len),
+    memcpy((p += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
+  )
+  kunmap_atomic(kaddr);
+  return bytes;
+}
+
+void balance_dirty_pages_ratelimited(struct address_space *mapping)
+{
+  struct inode *inode = mapping->host;
+  struct backing_dev_info *bdi = inode_to_bdi(inode);
+  struct bdi_writeback *wb = NULL;
+  int ratelimit;
+  if (unlikely(current->nr_dirtied >= ratelimit))
+    balance_dirty_pages(mapping, wb, current->nr_dirtied);
+}
+// balance_dirty_pages->wb_start_background_writebac->wb_wakeup
+struct backing_dev_info {
+  struct bdi_writeback wb;  /* the root writeback info for this bdi */
+}
+
+struct bdi_writeback {
+  struct delayed_work dwork;	/* work item used for writeback */
+}
+
+struct delayed_work {
+	struct work_struct work;
+	struct timer_list timer;
+
+	/* target workqueue and CPU ->timer uses to queue ->work */
+	struct workqueue_struct *wq;
+	int cpu;
+};
+
+typedef void (*work_func_t)(struct work_struct *work);
+struct work_struct {
+	atomic_long_t data;
+	struct list_head entry;
+	work_func_t func;
+};
+
+static void wb_wakeup(struct bdi_writeback *wb)
+{
+  spin_lock_bh(&wb->work_lock);
+  if (test_bit(WB_registered, &wb->state))
+    mod_delayed_work(bdi_wq, &wb->dwork, 0);
+  spin_unlock_bh(&wb->work_lock);
+}
+
+/* global variable, all backing task stored here */
+/* bdi_wq serves all asynchronous writeback tasks */
+struct workqueue_struct *bdi_wq;
+
+static inline bool mod_delayed_work(struct workqueue_struct *wq,
+            struct delayed_work *dwork,
+            unsigned long delay)
+{ }
+
+static int wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi,
+       int blkcg_id, gfp_t gfp)
+{
+  wb->bdi = bdi;
+  wb->last_old_flush = jiffies;
+  INIT_LIST_HEAD(&wb->b_dirty);
+  INIT_LIST_HEAD(&wb->b_io);
+  INIT_LIST_HEAD(&wb->b_more_io);
+  INIT_LIST_HEAD(&wb->b_dirty_time);
+  wb->bw_time_stamp = jiffies;
+  wb->balanced_dirty_ratelimit = INIT_BW;
+  wb->dirty_ratelimit = INIT_BW;
+  wb->write_bandwidth = INIT_BW;
+  wb->avg_write_bandwidth = INIT_BW;
+  spin_lock_init(&wb->work_lock);
+  INIT_LIST_HEAD(&wb->work_list);
+  INIT_DELAYED_WORK(&wb->dwork, wb_workfn);
+  wb->dirty_sleep = jiffies;
+}
+
+
+#define __INIT_DELAYED_WORK(_work, _func, _tflags)      \
+  do {                \
+    INIT_WORK(&(_work)->work, (_func));      \
+    __setup_timer(&(_work)->timer, delayed_work_timer_fn,  \
+            (unsigned long)(_work),      \
+
+// wb_workfn->wb_do_writeback->wb_writeback->writeback_sb_inodes
+// ->__writeback_single_inode->do_writepages
+```
+#### cached read
+```C++
+static ssize_t generic_file_buffered_read(struct kiocb *iocb,
+    struct iov_iter *iter, ssize_t written)
+{
+  struct file *filp = iocb->ki_filp;
+  struct address_space *mapping = filp->f_mapping;
+  struct inode *inode = mapping->host;
+  for (;;) {
+    struct page *page;
+    pgoff_t end_index;
+    loff_t isize;
+    page = find_get_page(mapping, index);
+    if (!page) {
+      if (iocb->ki_flags & IOCB_NOWAIT)
+        goto would_block;
+      page_cache_sync_readahead(mapping,
+          ra, filp,
+          index, last_index - index);
+      page = find_get_page(mapping, index);
+      if (unlikely(page == NULL))
+        goto no_cached_page;
+    }
+    if (PageReadahead(page)) {
+      page_cache_async_readahead(mapping,
+          ra, filp, page,
+          index, last_index - index);
+    }
+    /*
+     * Ok, we have the page, and it's up-to-date, so
+     * now we can copy it to user space...
+     */
+    ret = copy_page_to_iter(page, offset, nr, iter);
+    }
+}
+```
+![linux-read-write.png](../Images/linux-read-write.png)
+
 ### Question:
 1. How to use inode bit map present all inodes?
 2. Does system alloc a block for a dirctory or a file?
+3. What does ext4_file_open do?
+
+### TODO
+1. xarray
+
+# IO
+![linux-io-irq.jpg](../Images/linux-io-irq.jpg)
+
+All devices have the corresponding device file in /dev, which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
+
+```c++
+lsmod           // list installed modes
+insmod *.ko     // install mode
+mknod filename type major minor  // create dev file in /dev/
+
+/*
+/sys has following directories
+/sys/devices represent all kernel devices in layer
+/sys/dev has a char directory and block directory, maintain symbolic link files linked to real devices
+/sys/block all block devices
+/sys/module all modes information
+*/
+```
+![linux-io-sysfs.jpg](../Images/linux-io-sysfs.jpg)
+
+
+### Questions:
+1. How to implement the IO port of dev register, and mmap of IO dev cache?
