@@ -767,7 +767,7 @@ When a program starts up, its stack is not empty. Instead, it contains all the e
 The kernel memory typically resides in low physical memory but it is mapped in the top 1 GB of each process virtual address space, between addresses 0xC0000000 and 0xFFFFFFFF (3–4 GB).
 
 ##### Physical Memory Management
-![UNMA Node](../Images/numa-node.jpg)
+![UNMA Node](../Images/linux-mem-numa-node.jpg)
 
 ![Linux Memory Zone](../Images/linux-memory-zone.png)
 
@@ -783,7 +783,7 @@ Each zone Linux maintains a `zone descriptor`, which contains information about 
 
 
 ##### Memory-Allocation Mechanisms
-![buddy slab system](../Images/buddy-slab-system.jpg)
+![linux-mem-buddy-slab-system.jpg](../Images/linux-mem-buddy-slab-system.jpg)
 1. buddy algorithm
 2. slab algorithm, is to alleviate the internal fragmentation problem of buddy algorithm, which takes chunks using the buddy algorithm but then carves slabs (smaller units) from them and manages the smaller units separately.
 

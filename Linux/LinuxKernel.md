@@ -815,7 +815,10 @@ alloc_task_struct_node();
                 }
 ```
 
+![linux-mem-buddy-slab-system.jpg](../Images/linux-mem-buddy-slab-system.jpg)
+
 ### kswapd
+
 ```C++
 //1. actice page out when alloc
 get_page_from_freelist();
@@ -998,7 +1001,7 @@ struct idr {
   unsigned int    idr_next;
 };
 ```
-![ipc_ids](../Images/ipc_ids.png)
+![ipc_ids](../Images/linux-ipc-ipc_ids.png)
 ```C++
 struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 {
@@ -1292,11 +1295,11 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
         index, false);
 }
 ```
-![sem-shm-msg.png](../Images/sem-shm-msg.png)
+![linux-ipc-sem-shm-msg.png](../Images/linux-ipc-sem-shm-msg.png)
 
 
 # File Management
-![linux-vfs-system.png](../Images/linux-vfs-system.png)
+![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
 
 ### inode, extents
 ```C++
@@ -1309,6 +1312,16 @@ struct inode {
     const struct file_operations  *i_fop;  /* former ->i_op->default_file_ops */
     void (*free_inode)(struct inode *);
   };
+
+  dev_t			i_rdev;
+  struct list_head	i_devices;
+  union {
+		struct pipe_inode_info	*i_pipe;
+		struct block_device	*i_bdev;
+		struct cdev		*i_cdev;
+		char			*i_link;
+		unsigned		i_dir_seq;
+	};
 
   umode_t      i_mode;
   unsigned short    i_opflags;
@@ -1373,7 +1386,7 @@ struct ext4_extent {
   __le32  ee_start_lo;  /* low 32 bits of physical block */
 };
 ```
-![linux-extents.jpg](../Images/linux-extents.jpg)
+![linux-mem-extents.jpg](../Images/linux-mem-extents.jpg)
 
 ![linux-ext4-extents.png](../Images/linux-ext4-extents.png)
 
@@ -1433,7 +1446,7 @@ struct ext4_super_block {
   __le32  s_free_blocks_count_hi;  /* Free blocks count */
 }
 ```
-![linux-meta-block-group.jpg](../Images/linux-meta-block-group.jpg)
+![linux-mem-meta-block-group.jpg](../Images/linux-mem-meta-block-group.jpg)
 
 ### Directory
 ```C++
@@ -1483,10 +1496,10 @@ struct dx_entry
 ```C++
  ln [args] [dst] [src]
 ```
-![linux-link.jpg](../Images/linux-link.jpg)
+![linux-file-link.jpg](../Images/linux-file-link.jpg)
 
 ### vfs
-![linux-vfs.jpg](../Images/linux-vfs.jpg)
+![linux-file-arche.jpg](../Images/linux-file-arche.jpg)
 ```C++
 register_filesystem(&ext4_fs_type);
 
@@ -1555,7 +1568,7 @@ mount_fs(struct file_system_type *type, int flags, const char *name, void *data)
   sb = root->d_sb;
 }
 ```
-![linux-mount-example.jpg](../Images/linux-mount-example.jpg)
+![linux-io-mount-example.jpg](../Images/linux-io-mount-example.jpg)
 
 ```C++
 struct file {
@@ -1985,7 +1998,7 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
     }
 }
 ```
-![linux-read-write.png](../Images/linux-read-write.png)
+![linux-file-read-write.png](../Images/linux-file-read-write.png)
 
 ### Question:
 1. How to use inode bit map present all inodes?
@@ -1998,7 +2011,7 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 # IO
 ![linux-io-irq.jpg](../Images/linux-io-irq.jpg)
 
-All devices have the corresponding device file in /dev, which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
+All devices have the corresponding device file in /dev(is devtmpfs file system), which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
 
 ```c++
 lsmod           // list installed modes
@@ -2015,6 +2028,555 @@ mknod filename type major minor  // create dev file in /dev/
 ```
 ![linux-io-sysfs.jpg](../Images/linux-io-sysfs.jpg)
 
+### Char dev
+#### kernal module
+```C++
+module_init(logibm_init);
+module_exit(logibm_exit);
+```
+
+A kernel module consists:
+1. header
+  ```C++
+  #include <linux/module.h>
+  #include <linux/init.h>
+  ```
+2. define functions, handling kernel module main logic
+3. Implement a file_operation interface
+  ```C++
+  static const struct file_operations lp_fops = {
+    .owner    = THIS_MODULE,
+    .write    = lp_write,
+    .unlocked_ioctl  = lp_ioctl,
+    #ifdef CONFIG_COMPAT
+    .compat_ioctl  = lp_compat_ioctl,
+    #endif
+    .open    = lp_open,
+    .release  = lp_release,
+    #ifdef CONFIG_PARPORT_1284
+    .read    = lp_read,
+    #endif
+    .llseek    = noop_llseek,
+  };
+  ```
+4. define init and exit functions
+5. invoke `module_init` and `moudle_exit`
+6. declare lisence, invoke MODULE_LICENSE
+
+#### register dev
+![linux-io-char-dev-install-open.jpg](../Images/linux-io-char-dev-install-open.jpg)
+```C++
+static int __init lp_init (void)
+{
+  if (register_chrdev (LP_MAJOR, "lp", &lp_fops)) {
+    printk (KERN_ERR "lp: unable to get major %d\n", LP_MAJOR);
+    return -EIO;
+  }
+}
+
+int __register_chrdev(unsigned int major, unsigned int baseminor,
+  unsigned int count, const char *name,
+  const struct file_operations *fops)
+{
+  struct char_device_struct *cd;
+  struct cdev *cdev;
+  int err = -ENOMEM;
+
+  cd = __register_chrdev_region(major, baseminor, count, name);
+  cdev = cdev_alloc();
+  cdev->owner = fops->owner;
+  cdev->ops = fops;
+  kobject_set_name(&cdev->kobj, "%s", name);
+  err = cdev_add(cdev, MKDEV(cd->major, baseminor), count);
+  cd->cdev = cdev;
+  return major ? 0 : cd->major;
+}
+
+int cdev_add(struct cdev *p, dev_t dev, unsigned count)
+{
+  int error;
+  p->dev = dev;
+  p->count = count;
+
+  error = kobj_map(cdev_map, dev, count, NULL,
+       exact_match, exact_lock, p);
+  kobject_get(p->kobj.parent);
+
+  return 0;
+}
+```
+
+#### make node at /dev
+```C++
+SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
+{
+  return sys_mknodat(AT_FDCWD, filename, mode, dev);
+}
+
+SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, umode_t, mode,
+    unsigned, dev)
+{
+  struct dentry *dentry;
+  struct path path;
+  dentry = user_path_create(dfd, filename, &path, lookup_flags);
+  switch (mode & S_IFMT) {
+    case S_IFCHR:
+    case S_IFBLK:
+      error = vfs_mknod(path.dentry->d_inode,dentry,mode,
+          new_decode_dev(dev));
+      break;
+  }
+}
+
+int vfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
+{
+  error = dir->i_op->mknod(dir, dentry, mode, dev);
+}
+
+// the file system of /dev is devtmpfs
+static struct file_system_type dev_fs_type = {
+  .name = "devtmpfs",
+  .mount = dev_mount,
+  .kill_sb = kill_litter_super,
+};
+
+static struct dentry *dev_mount(struct file_system_type *fs_type, int flags,
+          const char *dev_name, void *data)
+{
+#ifdef CONFIG_TMPFS
+  return mount_single(fs_type, flags, data, shmem_fill_super);
+#else
+  return mount_single(fs_type, flags, data, ramfs_fill_super);
+#endif
+}
+
+static const struct inode_operations ramfs_dir_inode_operations = {
+  .mknod    = ramfs_mknod,
+};
+
+static const struct inode_operations shmem_dir_inode_operations = {
+#ifdef CONFIG_TMPFS
+  .mknod    = shmem_mknod,
+};
+
+void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
+{
+  inode->i_mode = mode;
+  if (S_ISCHR(mode)) {
+    inode->i_fop = &def_chr_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISBLK(mode)) {
+    inode->i_fop = &def_blk_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISFIFO(mode))
+    inode->i_fop = &pipefifo_fops;
+  else if (S_ISSOCK(mode))
+    ;  /* leave it no_open_fops */
+}
+```
+
+#### open dev
+```C++
+const struct file_operations def_chr_fops = {
+  .open = chrdev_open,
+};
+
+static int chrdev_open(struct inode *inode, struct file *filp)
+{
+  const struct file_operations *fops;
+  struct cdev *p;
+  struct cdev *new = NULL;
+  int ret = 0;
+
+  p = inode->i_cdev;
+  if (!p) {
+    struct kobject *kobj;
+    int idx;
+    kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);
+    new = container_of(kobj, struct cdev, kobj);
+    p = inode->i_cdev;
+    if (!p) {
+      inode->i_cdev = p = new;
+      list_add(&inode->i_devices, &p->list);
+      new = NULL;
+    }
+  }
+  fops = fops_get(p->ops);
+
+  replace_fops(filp, fops);
+  if (filp->f_op->open) {
+    ret = filp->f_op->open(inode, filp);
+  }
+}
+```
+
+#### write char dev
+```C++
+ssize_t __vfs_write(struct file *file, const char __user *p, size_t count, loff_t *pos)
+{
+  if (file->f_op->write)
+    return file->f_op->write(file, p, count, pos);
+  else if (file->f_op->write_iter)
+    return new_sync_write(file, p, count, pos);
+  else
+    return -EINVAL;
+}
+
+static ssize_t lp_write(struct file * file, const char __user * buf,
+            size_t count, loff_t *ppos)
+{
+  unsigned int minor = iminor(file_inode(file));
+  struct parport *port = lp_table[minor].dev->port;
+  char *kbuf = lp_table[minor].lp_buffer;
+  ssize_t retv = 0;
+  ssize_t written;
+  size_t copy_size = count;
+
+  /* Need to copy the data from user-space. */
+  if (copy_size > LP_BUFFER_SIZE)
+    copy_size = LP_BUFFER_SIZE;
+
+  if (copy_from_user (kbuf, buf, copy_size)) {
+    retv = -EFAULT;
+    goto out_unlock;
+  }
+
+  do {
+    /* Write the data. */
+    written = parport_write (port, kbuf, copy_size);
+    if (written > 0) {
+      copy_size -= written;
+      count -= written;
+      buf  += written;
+      retv += written;
+    }
+
+        if (need_resched())
+      schedule ();
+
+
+    if (count) {
+      copy_size = count;
+      if (copy_size > LP_BUFFER_SIZE)
+        copy_size = LP_BUFFER_SIZE;
+
+      if (copy_from_user(kbuf, buf, copy_size)) {
+        if (retv == 0)
+          retv = -EFAULT;
+        break;
+      }
+    }
+  } while (count > 0);
+```
+![linux-io-char-dev-write.jpg](../Images/linux-io-char-dev-write.jpg)
+
+#### ioctl
+```C++
+SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
+{
+  int error;
+  struct fd f = fdget(fd);
+  error = do_vfs_ioctl(f.file, fd, cmd, arg);
+  fdput(f);
+  return error;
+}
+
+int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
+       unsigned long arg)
+{
+  int error = 0;
+  int __user *argp = (int __user *)arg;
+  struct inode *inode = file_inode(filp);
+
+  switch (cmd) {
+  case FIONBIO:
+    error = ioctl_fionbio(filp, argp);
+    break;
+
+  case FIOASYNC:
+    error = ioctl_fioasync(fd, filp, argp);
+    break;
+
+  case FICLONE:
+    return ioctl_file_clone(filp, arg, 0, 0, 0);
+
+  default:
+    if (S_ISREG(inode->i_mode))
+      error = file_ioctl(filp, cmd, arg);
+    else
+      error = vfs_ioctl(filp, cmd, arg);
+    break;
+  }
+  return error;
+}
+
+long vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+  int error = -ENOTTY;
+  if (!filp->f_op->unlocked_ioctl)
+    goto out;
+
+  error = filp->f_op->unlocked_ioctl(filp, cmd, arg);
+  if (error == -ENOIOCTLCMD)
+    error = -ENOTTY;
+ out:
+  return error;
+}
+
+static long lp_ioctl(struct file *file, unsigned int cmd,
+      unsigned long arg)
+{
+  unsigned int minor;
+  struct timeval par_timeout;
+  int ret;
+
+  minor = iminor(file_inode(file));
+  mutex_lock(&lp_mutex);
+  switch (cmd) {
+  default:
+    ret = lp_do_ioctl(minor, cmd, arg, (void __user *)arg);
+    break;
+  }
+  mutex_unlock(&lp_mutex);
+  return ret;
+}
+
+
+static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
+  unsigned long arg, void __user *argp)
+{
+  int status;
+  int retval = 0;
+
+  switch ( cmd ) {
+    case LPTIME:
+      if (arg > UINT_MAX / HZ)
+        return -EINVAL;
+      LP_TIME(minor) = arg * HZ/100;
+      break;
+    case LPCHAR:
+      LP_CHAR(minor) = arg;
+      break;
+    case LPABORT:
+      if (arg)
+        LP_F(minor) |= LP_ABORT;
+      else
+        LP_F(minor) &= ~LP_ABORT;
+      break;
+    case LPABORTOPEN:
+      if (arg)
+        LP_F(minor) |= LP_ABORTOPEN;
+      else
+        LP_F(minor) &= ~LP_ABORTOPEN;
+      break;
+    case LPCAREFUL:
+      if (arg)
+        LP_F(minor) |= LP_CAREFUL;
+      else
+        LP_F(minor) &= ~LP_CAREFUL;
+      break;
+    case LPWAIT:
+      LP_WAIT(minor) = arg;
+      break;
+    case LPSETIRQ:
+      return -EINVAL;
+      break;
+    case LPGETIRQ:
+      if (copy_to_user(argp, &LP_IRQ(minor),
+          sizeof(int)))
+        return -EFAULT;
+      break;
+    case LPGETSTATUS:
+      if (mutex_lock_interruptible(&lp_table[minor].port_mutex))
+        return -EINTR;
+      lp_claim_parport_or_block (&lp_table[minor]);
+      status = r_str(minor);
+      lp_release_parport (&lp_table[minor]);
+      mutex_unlock(&lp_table[minor].port_mutex);
+
+      if (copy_to_user(argp, &status, sizeof(int)))
+        return -EFAULT;
+      break;
+    case LPRESET:
+      lp_reset(minor);
+      break;
+     case LPGETFLAGS:
+       status = LP_F(minor);
+      if (copy_to_user(argp, &status, sizeof(int)))
+        return -EFAULT;
+      break;
+    default:
+      retval = -EINVAL;
+  }
+  return retval
+}
+```
+![linux-io-ioctl.jpg](../Images/linux-io-ioctl.jpg)
+
+### intrruption
+```C++
+static int logibm_open(struct input_dev *dev)
+{
+  if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
+    printk(KERN_ERR "logibm.c: Can't allocate irq %d\n", logibm_irq);
+    return -EBUSY;
+  }
+  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
+  return 0;
+}
+
+
+static irqreturn_t logibm_interrupt(int irq, void *dev_id)
+{
+  char dx, dy;
+  unsigned char buttons;
+
+  outb(LOGIBM_READ_X_LOW, LOGIBM_CONTROL_PORT);
+  dx = (inb(LOGIBM_DATA_PORT) & 0xf);
+  outb(LOGIBM_READ_X_HIGH, LOGIBM_CONTROL_PORT);
+  dx |= (inb(LOGIBM_DATA_PORT) & 0xf) << 4;
+  outb(LOGIBM_READ_Y_LOW, LOGIBM_CONTROL_PORT);
+  dy = (inb(LOGIBM_DATA_PORT) & 0xf);
+  outb(LOGIBM_READ_Y_HIGH, LOGIBM_CONTROL_PORT);
+  buttons = inb(LOGIBM_DATA_PORT);
+  dy |= (buttons & 0xf) << 4;
+  buttons = ~buttons >> 5;
+
+  input_report_rel(logibm_dev, REL_X, dx);
+  input_report_rel(logibm_dev, REL_Y, dy);
+  input_report_key(logibm_dev, BTN_RIGHT,  buttons & 1);
+  input_report_key(logibm_dev, BTN_MIDDLE, buttons & 2);
+  input_report_key(logibm_dev, BTN_LEFT,   buttons & 4);
+  input_sync(logibm_dev);
+
+
+  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
+  return IRQ_HANDLED
+}
+
+irqreturn_t (*irq_handler_t)(int irq, void * dev_id);
+enum irqreturn {
+  IRQ_NONE    = (0 << 0),
+  IRQ_HANDLED    = (1 << 0),
+  IRQ_WAKE_THREAD    = (1 << 1),
+};
+
+static inline int __must_check
+request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags, const char *name, void *dev)
+{
+  return request_threaded_irq(irq, handler, NULL, flags, name, dev);
+}
+
+int request_threaded_irq(unsigned int irq, irq_handler_t handler,
+  irq_handler_t thread_fn, unsigned long irqflags,
+  const char *devname, void *dev_id)
+{
+  struct irqaction *action;
+  struct irq_desc *desc;
+  int retval;
+
+  desc = irq_to_desc(irq);
+
+  action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+  action->handler = handler;
+  action->thread_fn = thread_fn;
+  action->flags = irqflags;
+  action->name = devname;
+  action->dev_id = dev_id;
+  retval = __setup_irq(irq, desc, action);
+}
+
+struct irq_desc {
+  struct irqaction  *action;  /* IRQ action list */
+  struct module    *owner;
+  const char    *name;
+};
+
+struct irqaction {
+  irq_handler_t    handler;
+  void      *dev_id;
+  void __percpu    *percpu_dev_id;
+  struct irqaction  *next;
+  irq_handler_t    thread_fn;
+  struct task_struct  *thread;
+  struct irqaction  *secondary;
+  unsigned int    irq;
+  unsigned int    flags;
+  unsigned long    thread_flags;
+  unsigned long    thread_mask;
+  const char    *name;
+  struct proc_dir_entry  *dir;
+};
+
+#ifdef CONFIG_SPARSE_IRQ
+static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
+struct irq_desc *irq_to_desc(unsigned int irq)
+{
+  return radix_tree_lookup(&irq_desc_tree, irq);
+}
+#else /* !CONFIG_SPARSE_IRQ */
+struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
+  [0 ... NR_IRQS-1] = {
+  }
+};
+struct irq_desc *irq_to_desc(unsigned int irq)
+{
+  return (irq < NR_IRQS) ? irq_desc + irq : NULL;
+}
+#endif /* !CONFIG_SPARSE_IRQ */
+
+static int
+__setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
+{
+  struct irqaction *old, **old_ptr;
+  unsigned long flags, thread_mask = 0;
+  int ret, nested, shared = 0;
+
+  new->irq = irq;
+
+  if (new->thread_fn && !nested) {
+    ret = setup_irq_thread(new, irq, false);
+  }
+
+  old_ptr = &desc->action;
+  old = *old_ptr;
+  if (old) {
+    /* add new interrupt at end of irq queue */
+    do {
+      thread_mask |= old->thread_mask;
+      old_ptr = &old->next;
+      old = *old_ptr;
+    } while (old);
+  }
+  *old_ptr = new;
+  if (new->thread)
+    wake_up_process(new->thread);
+}
+
+static int
+setup_irq_thread(struct irqaction *new, unsigned int irq, bool secondary)
+{
+  struct task_struct *t;
+  struct sched_param param = {
+    .sched_priority = MAX_USER_RT_PRIO/2,
+  };
+
+  t = kthread_create(irq_thread, new, "irq/%d-%s", irq, new->name);
+  sched_setscheduler_nocheck(t, SCHED_FIFO, &param);
+  get_task_struct(t);
+  new->thread = t;
+
+  return 0;
+}
+/* How interrupt happens:
+ * 1. extern dev sends physic interrupt to interrupt controller
+ * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
+ * 3. cpu call IRQ hanlder according to interrupt vector
+ * 4. IRQ handler converts interrupt vector to abtract interrupt signal, handle it with irq_handler_t */
+```
+ ![linux-io-interrupt-vector.png](../Images/linux-io-interrupt-vector.png)
+
+ ![linux-io-interrupt.png](../Images/linux-io-interrupt.png)
 
 ### Questions:
 1. How to implement the IO port of dev register, and mmap of IO dev cache?
