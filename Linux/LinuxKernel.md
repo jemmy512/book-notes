@@ -1313,15 +1313,15 @@ struct inode {
     void (*free_inode)(struct inode *);
   };
 
-  dev_t			i_rdev;
-  struct list_head	i_devices;
+  dev_t      i_rdev;
+  struct list_head  i_devices;
   union {
-		struct pipe_inode_info	*i_pipe;
-		struct block_device	*i_bdev;
-		struct cdev		*i_cdev;
-		char			*i_link;
-		unsigned		i_dir_seq;
-	};
+    struct pipe_inode_info  *i_pipe;
+    struct block_device  *i_bdev;
+    struct cdev    *i_cdev;
+    char      *i_link;
+    unsigned    i_dir_seq;
+  };
 
   umode_t      i_mode;
   unsigned short    i_opflags;
@@ -1896,23 +1896,23 @@ struct backing_dev_info {
 }
 
 struct bdi_writeback {
-  struct delayed_work dwork;	/* work item used for writeback */
+  struct delayed_work dwork;  /* work item used for writeback */
 }
 
 struct delayed_work {
-	struct work_struct work;
-	struct timer_list timer;
+  struct work_struct work;
+  struct timer_list timer;
 
-	/* target workqueue and CPU ->timer uses to queue ->work */
-	struct workqueue_struct *wq;
-	int cpu;
+  /* target workqueue and CPU ->timer uses to queue ->work */
+  struct workqueue_struct *wq;
+  int cpu;
 };
 
 typedef void (*work_func_t)(struct work_struct *work);
 struct work_struct {
-	atomic_long_t data;
-	struct list_head entry;
-	work_func_t func;
+  atomic_long_t data;
+  struct list_head entry;
+  work_func_t func;
 };
 
 static void wb_wakeup(struct bdi_writeback *wb)
@@ -2413,7 +2413,7 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
 ```
 ![linux-io-ioctl.jpg](../Images/linux-io-ioctl.jpg)
 
-### intrruption
+### interruption
 ```C++
 static int logibm_open(struct input_dev *dev)
 {
@@ -2460,7 +2460,10 @@ enum irqreturn {
   IRQ_HANDLED    = (1 << 0),
   IRQ_WAKE_THREAD    = (1 << 1),
 };
+```
 
+#### dev register irq handler
+```C++
 static inline int __must_check
 request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags, const char *name, void *dev)
 {
@@ -2486,9 +2489,23 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
   retval = __setup_irq(irq, desc, action);
 }
 
+struct irq_data {
+  u32      mask;
+  unsigned int    irq;
+  unsigned long    hwirq;
+  struct irq_common_data  *common;
+  struct irq_chip    *chip;
+  struct irq_domain  *domain;
+#ifdef  CONFIG_IRQ_DOMAIN_HIERARCHY
+  struct irq_data    *parent_data;
+#endif
+  void      *chip_data;
+};
+
 struct irq_desc {
   struct irqaction  *action;  /* IRQ action list */
   struct module    *owner;
+  struct irq_data    irq_data;
   const char    *name;
 };
 
@@ -2510,14 +2527,14 @@ struct irqaction {
 
 #ifdef CONFIG_SPARSE_IRQ
 static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
+
 struct irq_desc *irq_to_desc(unsigned int irq)
 {
   return radix_tree_lookup(&irq_desc_tree, irq);
 }
 #else /* !CONFIG_SPARSE_IRQ */
 struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
-  [0 ... NR_IRQS-1] = {
-  }
+  [0 ... NR_IRQS-1] = { }
 };
 struct irq_desc *irq_to_desc(unsigned int irq)
 {
@@ -2568,15 +2585,430 @@ setup_irq_thread(struct irqaction *new, unsigned int irq, bool secondary)
 
   return 0;
 }
+
 /* How interrupt happens:
  * 1. extern dev sends physic interrupt to interrupt controller
  * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
  * 3. cpu call IRQ hanlder according to interrupt vector
- * 4. IRQ handler converts interrupt vector to abtract interrupt signal, handle it with irq_handler_t */
+ * 4. IRQ handler converts interrupt vector to abstract interrupt signal, handle it with irq_handler_t */
+
+
+/* arch/x86/include/asm/irq_vectors.h
+ * Linux IRQ vector layout.
+ *
+ * There are 256 IDT entries (per CPU - each entry is 8 bytes) which can
+ * be defined by Linux. They are used as a jump table by the CPU when a
+ * given vector is triggered - by a CPU-external, CPU-internal or
+ * software-triggered event.
+ *
+ * Linux sets the kernel code address each entry jumps to early during
+ * bootup, and never changes them. This is the general layout of the
+ * IDT entries:
+ *
+ *  Vectors   0 ...  31 : system traps and exceptions - hardcoded events
+ *  Vectors  32 ... 127 : device interrupts
+ *  Vector  128         : legacy int80 syscall interface
+ *  Vectors 129 ... INVALIDATE_TLB_VECTOR_START-1 except 204 : device interrupts
+ *  Vectors INVALIDATE_TLB_VECTOR_START ... 255 : special interrupts
+ *
+ * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
+ *
+ * This file enumerates the exact layout of them: */
+#define FIRST_EXTERNAL_VECTOR    0x20 // 32
+#define IA32_SYSCALL_VECTOR    0x80   // 128
+#define NR_VECTORS       256
+#define FIRST_SYSTEM_VECTOR    NR_VECTORS
+
+// arch/x86/kernel/traps.c, per cpu
+struct gate_struct {
+  u16    offset_low; // system irq hanlder addr
+  u16    segment;   // KERNEL_CS
+  struct idt_bits  bits;
+  u16    offset_middle;  // addr >> 16
+#ifdef CONFIG_X86_64
+  u32    offset_high;    // adr >> 32
+  u32    reserved;      // 0
+#endif
+};
+struct idt_bits {
+  u16 ist  : 3,   // DEFAULT_STACK
+      zero  : 5,
+      type  : 5,  // GATE_{INTERRUPT, TRAP, CALL, TASK}
+      dpl  : 2,   // DPL (Descriptor privilege level), DLP0, DLP3
+                  // RPL (Requested privilege level)
+      p  : 1;
+};
+```
+
+#### init idt_table
+```C++
+gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
+
+void __init trap_init(void)
+{
+  int i;
+  set_intr_gate(X86_TRAP_DE, divide_error);
+  // ...
+  set_intr_gate(X86_TRAP_XF, simd_coprocessor_error);
+
+  /* Reserve all the builtin and the syscall vector: */
+  for (i = 0; i < FIRST_EXTERNAL_VECTOR; i++)
+    set_bit(i, used_vectors);
+
+#ifdef CONFIG_X86_32
+  set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
+  set_bit(IA32_SYSCALL_VECTOR, used_vectors);
+#endif
+  __set_fixmap(FIX_RO_IDT, __pa_symbol(idt_table), PAGE_KERNEL_RO);
+  idt_descr.address = fix_to_virt(FIX_RO_IDT);
+}
+
+// set_intr_gate -> _set_gate
+static inline void _set_gate(int gate, unsigned type, void *addr,
+           unsigned dpl, unsigned ist, unsigned seg)
+{
+  gate_desc s;
+  pack_gate(&s, type, (unsigned long)addr, dpl, ist, seg);
+  write_idt_entry(idt_table, gate, &s);
+}
+
+// arch/x86/include/asm/traps.h
+enum {
+  X86_TRAP_DE = 0,  /*  0, Divide-by-zero */
+  X86_TRAP_DB,    /*  1, Debug */
+  X86_TRAP_NMI,    /*  2, Non-maskable Interrupt */
+  X86_TRAP_BP,    /*  3, Breakpoint */
+  X86_TRAP_OF,    /*  4, Overflow */
+  X86_TRAP_BR,    /*  5, Bound Range Exceeded */
+  X86_TRAP_UD,    /*  6, Invalid Opcode */
+  X86_TRAP_NM,    /*  7, Device Not Available */
+  X86_TRAP_DF,    /*  8, Double Fault */
+  X86_TRAP_OLD_MF,  /*  9, Coprocessor Segment Overrun */
+  X86_TRAP_TS,    /* 10, Invalid TSS */
+  X86_TRAP_NP,    /* 11, Segment Not Present */
+  X86_TRAP_SS,    /* 12, Stack Segment Fault */
+  X86_TRAP_GP,    /* 13, General Protection Fault */
+  X86_TRAP_PF,    /* 14, Page Fault */
+  X86_TRAP_SPURIOUS,  /* 15, Spurious Interrupt */
+  X86_TRAP_MF,    /* 16, x87 Floating-Point Exception */
+  X86_TRAP_AC,    /* 17, Alignment Check */
+  X86_TRAP_MC,    /* 18, Machine Check */
+  X86_TRAP_XF,    /* 19, SIMD Floating-Point Exception */
+  X86_TRAP_IRET = 32,  /* 32, IRET Exception */
+};
+```
+#### init_IRQ
+```C++
+// after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
+void __init native_init_IRQ(void)
+{
+  int i;
+  i = FIRST_EXTERNAL_VECTOR;
+#ifndef CONFIG_X86_LOCAL_APIC
+#define first_system_vector NR_VECTORS
+#endif
+  for_each_clear_bit_from(i, used_vectors, first_system_vector) {
+    /* IA32_SYSCALL_VECTOR could be used in trap_init already. */
+    set_intr_gate(i, irq_entries_start +
+        8 * (i - FIRST_EXTERNAL_VECTOR));
+  }
+}
+
+// irq_entries_start defined in arch\x86\entry\entry_{32, 64}
+ENTRY(irq_entries_start)
+    vector=FIRST_EXTERNAL_VECTOR
+    .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
+  pushl  $(~vector+0x80)      /* Note: always in signed byte range */
+    vector=vector+1
+  jmp  common_interrupt /* invoke do_IRQ */
+  .align  8
+    .endr
+END(irq_entries_start)
+
+
+common_interrupt:
+  ASM_CLAC
+  addq  $-0x80, (%rsp)      /* Adjust vector to [-256, -1] range */
+  interrupt do_IRQ
+  /* 0(%rsp): old RSP */
+ret_from_intr:
+
+  /* Interrupt came from user space */
+GLOBAL(retint_user)
+
+/* Returning to kernel space */
+retint_kernel:
+
+
+/* Note: the interrupt vector interrupt controller sent to
+ * each cpu is per cpu local variable, but the abstract
+ * layer's virtual signal irq and it's handler is global. */
+
+__visible unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
+{
+  struct pt_regs *old_regs = set_irq_regs(regs);
+  struct irq_desc * desc;
+  /* high bit used in ret_from_ code  */
+  unsigned vector = ~regs->orig_ax;
+
+  desc = __this_cpu_read(vector_irq[vector]);
+  if (!handle_irq(desc, regs)) {
+
+  }
+
+  set_irq_regs(old_regs);
+  return 1;
+}
+```
+
+#### init vector_irq
+```C++
+typedef struct irq_desc* vector_irq_t[NR_VECTORS];
+DECLARE_PER_CPU(vector_irq_t, vector_irq);
+
+// assign virtual irq to a cpu
+static int __assign_irq_vector(int irq, struct apic_chip_data *d,
+  const struct cpumask *mask,
+  struct irq_data *irqdata)
+{
+  static int current_vector = FIRST_EXTERNAL_VECTOR + VECTOR_OFFSET_START;
+  static int current_offset = VECTOR_OFFSET_START % 16;
+  int cpu, vector;
+
+  while (cpu < nr_cpu_ids) {
+    int new_cpu, offset;
+
+    vector = current_vector;
+    offset = current_offset;
+next:
+    vector += 16;
+    if (vector >= first_system_vector) {
+      offset = (offset + 1) % 16;
+      vector = FIRST_EXTERNAL_VECTOR + offset;
+    }
+    /* If the search wrapped around, try the next cpu */
+    if (unlikely(current_vector == vector))
+      goto next_cpu;
+
+    if (test_bit(vector, used_vectors))
+      goto next;
+
+    /* Found one! */
+    current_vector = vector;
+    current_offset = offset;
+    /* Schedule the old vector for cleanup on all cpus */
+    if (d->cfg.vector)
+      cpumask_copy(d->old_domain, d->domain);
+    for_each_cpu(new_cpu, vector_searchmask)
+      per_cpu(vector_irq, new_cpu)[vector] = irq_to_desc(irq);
+    goto update;
+
+next_cpu:
+    cpumask_or(searched_cpumask, searched_cpumask, vector_cpumask);
+    cpumask_andnot(vector_cpumask, mask, searched_cpumask);
+    cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
+    continue;
+}
+
+static inline void generic_handle_irq_desc(struct irq_desc *desc)
+{
+  desc->handle_irq(desc);
+}
+
+irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
+{
+  irqreturn_t retval = IRQ_NONE;
+  unsigned int irq = desc->irq_data.irq;
+  struct irqaction *action;
+
+  record_irq_time(desc);
+
+  for_each_action_of_desc(desc, action) {
+    irqreturn_t res;
+    res = action->handler(irq, action->dev_id);
+    switch (res) {
+    case IRQ_WAKE_THREAD:
+      __irq_wake_thread(desc, action);
+    case IRQ_HANDLED:
+      *flags |= action->flags;
+      break;
+    default:
+      break;
+    }
+    retval |= res;
+  }
+  return retval;
+}
 ```
  ![linux-io-interrupt-vector.png](../Images/linux-io-interrupt-vector.png)
 
  ![linux-io-interrupt.png](../Images/linux-io-interrupt.png)
 
+### block dev
+```C++
+void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
+{
+  inode->i_mode = mode;
+  if (S_ISCHR(mode)) {
+    inode->i_fop = &def_chr_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISBLK(mode)) {
+    inode->i_fop = &def_blk_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISFIFO(mode))
+    inode->i_fop = &pipefifo_fops;
+  else if (S_ISSOCK(mode))
+    ;  /* leave it no_open_fops */
+}
+
+const struct file_operations def_blk_fops = {
+  .open           = blkdev_open,
+  .release        = blkdev_close,
+  .llseek         = block_llseek,
+  .read_iter      = blkdev_read_iter,
+  .write_iter     = blkdev_write_iter,
+  .mmap           = generic_file_mmap,
+  .fsync          = blkdev_fsync,
+  .unlocked_ioctl = block_ioctl,
+  .splice_read    = generic_file_splice_read,
+  .splice_write   = iter_file_splice_write,
+  .fallocate      = blkdev_fallocate,
+};
+
+static struct file_system_type ext4_fs_type = {
+  .owner    = THIS_MODULE,
+  .name    = "ext4",
+  .mount    = ext4_mount,
+  .kill_sb  = kill_block_super,
+  .fs_flags  = FS_REQUIRES_DEV,
+};
+
+static struct dentry *ext4_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data)
+{
+  return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
+}
+
+struct dentry *mount_bdev(struct file_system_type *fs_type,
+  int flags, const char *dev_name, void *data,
+  int (*fill_super)(struct super_block *, void *, int))
+{
+  struct block_device *bdev;
+  struct super_block *s;
+  fmode_t mode = FMODE_READ | FMODE_EXCL;
+  int error = 0;
+
+  if (!(flags & MS_RDONLY))
+    mode |= FMODE_WRITE;
+
+  bdev = blkdev_get_by_path(dev_name, mode, fs_type);
+  s = sget(fs_type, test_bdev_super, set_bdev_super, flags | MS_NOSEC, bdev);
+  return dget(s->s_root);
+}
+
+struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
+  void *holder)
+{
+  struct block_device *bdev;
+  int err;
+
+  bdev = lookup_bdev(path);             // find blk device
+  err = blkdev_get(bdev, mode, holder); // open blk device
+  return bdev;
+}
+
+struct block_device *lookup_bdev(const char *pathname)
+{
+  struct block_device *bdev;
+  struct inode *inode;
+  struct path path;
+  int error;
+
+  if (!pathname || !*pathname)
+    return ERR_PTR(-EINVAL);
+
+  error = kern_path(pathname, LOOKUP_FOLLOW, &path);
+  if (error)
+    return ERR_PTR(error);
+
+  inode = d_backing_inode(path.dentry);
+  bdev = bd_acquire(inode);
+  goto out;
+}
+
+static struct block_device *bd_acquire(struct inode *inode)
+{
+  struct block_device *bdev;
+  bdev = bdget(inode->i_rdev);
+  if (bdev) {
+    spin_lock(&bdev_lock);
+    if (!inode->i_bdev) {
+      bdgrab(bdev);
+      inode->i_bdev = bdev;
+      inode->i_mapping = bdev->bd_inode->i_mapping;
+    }
+  }
+  return bdev;
+}
+struct block_device {
+  dev_t      bd_dev;  /* not a kdev_t - it's a search key */
+  int      bd_openers;
+  struct inode *    bd_inode;  /* will die */
+  struct super_block *  bd_super;
+  struct mutex    bd_mutex;  /* open/close mutex */
+  void *      bd_claiming;
+  void *      bd_holder;
+  int      bd_holders;
+  bool      bd_write_holder;
+#ifdef CONFIG_SYSFS
+  struct list_head  bd_holder_disks;
+#endif
+  struct block_device *  bd_contains;
+  unsigned    bd_block_size;
+  u8      bd_partno;
+  struct hd_struct *  bd_part;
+  unsigned    bd_part_count;
+  int      bd_invalidated;
+  struct gendisk *  bd_disk;
+  struct request_queue *  bd_queue;
+  struct backing_dev_info *bd_bdi;
+  struct list_head  bd_list;
+}
+
+
+struct block_device *bdget(dev_t dev)
+{
+  struct block_device *bdev;
+  struct inode *inode;
+
+  inode = iget5_locked(blockdev_superblock, hash(dev),
+                  bdev_test, bdev_set, &dev);
+  bdev = &BDEV_I(inode)->bdev;
+
+  if (inode->i_state & I_NEW) {
+    bdev->bd_contains = NULL;
+    bdev->bd_super = NULL;
+    bdev->bd_inode = inode;
+    bdev->bd_block_size = i_blocksize(inode);
+    bdev->bd_part_count = 0;
+    bdev->bd_invalidated = 0;
+    inode->i_mode = S_IFBLK;
+    inode->i_rdev = dev;
+    inode->i_bdev = bdev;
+    inode->i_data.a_ops = &def_blk_aops;
+    mapping_set_gfp_mask(&inode->i_data, GFP_USER);
+    spin_lock(&bdev_lock);
+    list_add(&bdev->bd_list, &all_bdevs);
+    spin_unlock(&bdev_lock);
+    unlock_new_inode(inode);
+  }
+  return bdev;
+}
+```
+![linux-io-bd.png](../Images/linux-io-bd.png)
+
 ### Questions:
 1. How to implement the IO port of dev register, and mmap of IO dev cache?
+2. How to assign virutal irq to a cpu?
+3. The interrupt controller sends interrupt to each cpu, which one will handle it?
+4. How interrupt controller converts pthysical irq to interrupt vector?
+5. Will first 32 interrupt call do_IRQ?
