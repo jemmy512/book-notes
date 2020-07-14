@@ -432,10 +432,9 @@ ksys_mmap_pgoff(); // mm/mmap.c
                     }
                 }
 ```
-### page fault
 
+### page fault
 ```C++
-// page fault exception
 struct address_space {
   struct inode    *host;
   struct xarray    i_pages;
@@ -1814,14 +1813,332 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 static const struct address_space_operations ext4_aops = {
   .direct_IO    = ext4_direct_IO,
 };
-// __blockdev_direct_IO->do_blockdev_direct_IO
 
+static ssize_t ext4_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
+{
+  struct file *file = iocb->ki_filp;
+  struct inode *inode = file->f_mapping->host;
+  size_t count = iov_iter_count(iter);
+  loff_t offset = iocb->ki_pos;
+  ssize_t ret;
+  ret = ext4_direct_IO_write(iocb, iter);
+}
+
+static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
+{
+  struct file *file = iocb->ki_filp;
+  struct inode *inode = file->f_mapping->host;
+  struct ext4_inode_info *ei = EXT4_I(inode);
+  ssize_t ret;
+  loff_t offset = iocb->ki_pos;
+  size_t count = iov_iter_count(iter);
+
+  ret = __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev, iter,
+           get_block_func, ext4_end_io_dio, NULL,
+           dio_flags);
+}
+
+// __blockdev_direct_IO->do_blockdev_direct_IO
 static inline ssize_t
 do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
-          struct block_device *bdev, struct iov_iter *iter,
-          get_block_t get_block, dio_iodone_t end_io,
-          dio_submit_t submit_io, int flags)
-{}
+  struct block_device *bdev, struct iov_iter *iter,
+  get_block_t get_block, dio_iodone_t end_io,
+  dio_submit_t submit_io, int flags)
+{
+  unsigned i_blkbits = ACCESS_ONCE(inode->i_blkbits);
+  unsigned blkbits = i_blkbits;
+  unsigned blocksize_mask = (1 << blkbits) - 1;
+  ssize_t retval = -EINVAL;
+  size_t count = iov_iter_count(iter);
+  loff_t offset = iocb->ki_pos;
+  loff_t end = offset + count;
+  struct dio *dio;
+  struct dio_submit sdio = { 0, };
+  struct buffer_head map_bh = { 0, };
+
+  dio = kmem_cache_alloc(dio_cache, GFP_KERNEL);
+  dio->flags = flags;
+  dio->i_size = i_size_read(inode);
+  dio->inode = inode;
+  if (iov_iter_rw(iter) == WRITE) {
+    dio->op = REQ_OP_WRITE;
+    dio->op_flags = REQ_SYNC | REQ_IDLE;
+    if (iocb->ki_flags & IOCB_NOWAIT)
+      dio->op_flags |= REQ_NOWAIT;
+  } else {
+    dio->op = REQ_OP_READ;
+  }
+  sdio.blkbits = blkbits;
+  sdio.blkfactor = i_blkbits - blkbits;
+  sdio.block_in_file = offset >> blkbits;
+
+  sdio.get_block = get_block;
+  dio->end_io = end_io;
+  sdio.submit_io = submit_io;
+  sdio.final_block_in_bio = -1;
+  sdio.next_block_for_io = -1;
+
+  dio->iocb = iocb;
+  dio->refcount = 1;
+
+  sdio.iter = iter;
+  sdio.final_block_in_request =
+    (offset + iov_iter_count(iter)) >> blkbits;
+
+  sdio.pages_in_io += iov_iter_npages(iter, INT_MAX);
+
+  retval = do_direct_IO(dio, &sdio, &map_bh);
+}
+
+static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
+      struct buffer_head *map_bh)
+{
+  const unsigned blkbits = sdio->blkbits;
+  const unsigned i_blkbits = blkbits + sdio->blkfactor;
+  int ret = 0;
+
+  while (sdio->block_in_file < sdio->final_block_in_request) {
+    struct page *page;
+    size_t from, to;
+
+    page = dio_get_page(dio, sdio);
+        from = sdio->head ? 0 : sdio->from;
+    to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE;
+    sdio->head++;
+
+    while (from < to) {
+      unsigned this_chunk_bytes;  /* # of bytes mapped */
+      unsigned this_chunk_blocks;  /* # of blocks */
+            ret = submit_page_section(dio, sdio, page,
+              from,
+              this_chunk_bytes,
+              sdio->next_block_for_io,
+              map_bh);
+
+      sdio->next_block_for_io += this_chunk_blocks;
+      sdio->block_in_file += this_chunk_blocks;
+      from += this_chunk_bytes;
+      dio->result += this_chunk_bytes;
+      sdio->blocks_available -= this_chunk_blocks;
+      if (sdio->block_in_file == sdio->final_block_in_request)
+        break;
+      }
+  }
+}
+
+blk_qc_t submit_bio(struct bio *bio)
+{
+  return generic_make_request(bio);
+}
+
+blk_qc_t generic_make_request(struct bio *bio)
+{
+  /*
+   * bio_list_on_stack[0] contains bios submitted by the current
+   * make_request_fn.
+   * bio_list_on_stack[1] contains bios that were submitted before
+   * the current make_request_fn, but that haven't been processed
+   * yet.
+   */
+  struct bio_list bio_list_on_stack[2];
+  blk_qc_t ret = BLK_QC_T_NONE;
+
+  if (current->bio_list) {
+    bio_list_add(&current->bio_list[0], bio);
+    goto out;
+  }
+
+  bio_list_init(&bio_list_on_stack[0]);
+  current->bio_list = bio_list_on_stack;
+  do {
+    struct request_queue *q = bdev_get_queue(bio->bi_bdev);
+
+    if (likely(blk_queue_enter(q, bio->bi_opf & REQ_NOWAIT) == 0)) {
+      struct bio_list lower, same;
+
+      /* Create a fresh bio_list for all subordinate requests */
+      bio_list_on_stack[1] = bio_list_on_stack[0];
+      bio_list_init(&bio_list_on_stack[0]);
+      ret = q->make_request_fn(q, bio);
+
+      blk_queue_exit(q);
+
+      /* sort new bios into those for a lower level
+       * and those for the same level
+       */
+      bio_list_init(&lower);
+      bio_list_init(&same);
+      while ((bio = bio_list_pop(&bio_list_on_stack[0])) != NULL)
+        if (q == bdev_get_queue(bio->bi_bdev))
+          bio_list_add(&same, bio);
+        else
+          bio_list_add(&lower, bio);
+      /* now assemble so we handle the lowest level first */
+      bio_list_merge(&bio_list_on_stack[0], &lower);
+      bio_list_merge(&bio_list_on_stack[0], &same);
+      bio_list_merge(&bio_list_on_stack[0], &bio_list_on_stack[1]);
+    }
+
+    bio = bio_list_pop(&bio_list_on_stack[0]);
+  } while (bio);
+  current->bio_list = NULL; /* deactivate */
+out:
+  return ret;
+}
+
+struct request_queue {
+  // Together with queue_head for cacheline sharing
+  struct list_head  queue_head;
+  struct request    *last_merge;
+  struct elevator_queue  *elevator;
+  request_fn_proc    *request_fn;
+  make_request_fn    *make_request_fn;
+}
+
+struct request {
+  struct list_head queuelist;
+  struct request_queue *q;
+  struct bio *bio;
+  struct bio *biotail;
+}
+
+struct bio {
+  struct bio    *bi_next;  /* request queue link */
+  struct block_device  *bi_bdev;
+  blk_status_t    bi_status;
+  struct bvec_iter  bi_iter;
+  unsigned short    bi_vcnt;  /* how many bio_vec's */
+  unsigned short    bi_max_vecs;  /* max bvl_vecs we can hold */
+  atomic_t    __bi_cnt;  /* pin count */
+  struct bio_vec    *bi_io_vec;  /* the actual vec list */
+
+};
+
+struct bio_vec {
+  struct page  *bv_page;
+  unsigned int  bv_len;
+  unsigned int  bv_offset;
+}
+```
+![linux-io-bio.jpg](../Images/linux-io-bio.jpg)
+
+
+##### init block device
+```C++
+static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
+             u64 lun, void *hostdata)
+{
+  struct scsi_device *sdev;
+  sdev = kzalloc(sizeof(*sdev) + shost->transportt->device_size,
+           GFP_ATOMIC);
+  sdev->request_queue = scsi_alloc_queue(sdev);
+}
+
+struct request_queue *scsi_alloc_queue(struct scsi_device *sdev)
+{
+  struct Scsi_Host *shost = sdev->host;
+  struct request_queue *q;
+
+  q = blk_alloc_queue_node(GFP_KERNEL, NUMA_NO_NODE);
+  if (!q)
+    return NULL;
+  q->cmd_size = sizeof(struct scsi_cmnd) + shost->hostt->cmd_size;
+  q->rq_alloc_data = shost;
+  q->request_fn = scsi_request_fn;
+  q->init_rq_fn = scsi_init_rq;
+  q->exit_rq_fn = scsi_exit_rq;
+  q->initialize_rq_fn = scsi_initialize_rq;
+
+  if (blk_init_allocated_queue(q) < 0) {
+    blk_cleanup_queue(q);
+    return NULL;
+  }
+  __scsi_init_queue(shost, q);
+  return q
+}
+
+int blk_init_allocated_queue(struct request_queue *q)
+{
+  q->fq = blk_alloc_flush_queue(q, NUMA_NO_NODE, q->cmd_size);
+  blk_queue_make_request(q, blk_queue_bio);
+  /* init elevator */
+  if (elevator_init(q, NULL)) {
+    // struct elevator_type elevator_noop
+    // struct elevator_type iosched_deadline
+    // struct elevator_type iosched_cfq
+  }
+}
+
+// make_request_fn -> blk_queue_bio
+static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
+{
+  struct request *req, *free;
+  unsigned int request_count = 0;
+
+  switch (elv_merge(q, &req, bio)) {
+  case ELEVATOR_BACK_MERGE:
+    if (!bio_attempt_back_merge(q, req, bio))
+      break;
+    elv_bio_merged(q, req, bio);
+    free = attempt_back_merge(q, req);
+    if (free)
+      __blk_put_request(q, free);
+    else
+      elv_merged_request(q, req, ELEVATOR_BACK_MERGE);
+    goto out_unlock;
+  case ELEVATOR_FRONT_MERGE:
+    if (!bio_attempt_front_merge(q, req, bio))
+      break;
+    elv_bio_merged(q, req, bio);
+    free = attempt_front_merge(q, req);
+    if (free)
+      __blk_put_request(q, free);
+    else
+      elv_merged_request(q, req, ELEVATOR_FRONT_MERGE);
+    goto out_unlock;
+  default:
+    break;
+  }
+
+get_rq:
+  req = get_request(q, bio->bi_opf, bio, GFP_NOIO);
+  blk_init_request_from_bio(req, bio);
+  add_acct_request(q, req, where);
+  __blk_run_queue(q);
+out_unlock:
+
+  return BLK_QC_T_NONE;
+}
+
+enum elv_merge elv_merge(struct request_queue *q, struct request **req,
+    struct bio *bio)
+{
+  struct elevator_queue *e = q->elevator;
+  struct request *__rq;
+
+  if (q->last_merge && elv_bio_merge_ok(q->last_merge, bio)) {
+    enum elv_merge ret = blk_try_merge(q->last_merge, bio);
+
+
+    if (ret != ELEVATOR_NO_MERGE) {
+      *req = q->last_merge;
+      return ret;
+    }
+  }
+
+  __rq = elv_rqhash_find(q, bio->bi_iter.bi_sector);
+  if (__rq && elv_bio_merge_ok(__rq, bio)) {
+    *req = __rq;
+    return ELEVATOR_BACK_MERGE;
+  }
+
+  if (e->uses_mq && e->type->ops.mq.request_merge)
+    return e->type->ops.mq.request_merge(q, req, bio);
+  else if (!e->uses_mq && e->type->ops.sq.elevator_merge_fn)
+    return e->type->ops.sq.elevator_merge_fn(q, req, bio);
+
+  return ELEVATOR_NO_MERGE;
+}
 ```
 
 #### buffered write
@@ -1960,9 +2277,71 @@ static int wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi,
             (unsigned long)(_work),      \
 
 // wb_workfn->wb_do_writeback->wb_writeback->writeback_sb_inodes
-// ->__writeback_single_inode->do_writepages
+// ->__writeback_single_inode->do_writepages->ext4_writepages
+static int ext4_writepages(struct address_space *mapping,
+         struct writeback_control *wbc)
+{
+  struct mpage_da_data mpd;
+  struct inode *inode = mapping->host;
+  struct ext4_sb_info *sbi = EXT4_SB(mapping->host->i_sb);
+
+  mpd.do_map = 0;
+  mpd.io_submit.io_end = ext4_init_io_end(inode, GFP_KERNEL);
+  ret = mpage_prepare_extent_to_map(&mpd);
+  /* Submit prepared bio */
+  ext4_io_submit(&mpd.io_submit);
+}
+
+struct mpage_da_data {
+  struct inode *inode;
+  pgoff_t first_page;  /* The first page to write */
+  pgoff_t next_page;  /* Current page to examine */
+  pgoff_t last_page;  /* Last page to examine */
+  struct ext4_map_blocks map;
+  struct ext4_io_submit io_submit;  /* IO submission data */
+  unsigned int do_map:1;
+};
+
+struct ext4_io_submit {
+  struct bio    *io_bio;
+  ext4_io_end_t    *io_end;
+  sector_t    io_next_block;
+};
+
+// mpage_prepare_extent_to_map->mpage_process_page_bufs->
+// mpage_submit_page->ext4_bio_write_page->io_submit_add_bh
+static int io_submit_init_bio(struct ext4_io_submit *io,
+            struct buffer_head *bh)
+{
+  struct bio *bio;
+  bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
+  if (!bio)
+    return -ENOMEM;
+  wbc_init_bio(io->io_wbc, bio);
+  bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+  bio->bi_bdev = bh->b_bdev;
+  bio->bi_end_io = ext4_end_bio;
+  bio->bi_private = ext4_get_io_end(io->io_end);
+  io->io_bio = bio;
+  io->io_next_block = bh->b_blocknr;
+  return 0;
+}
+
+void ext4_io_submit(struct ext4_io_submit *io)
+{
+  struct bio *bio = io->io_bio;
+  if (bio) {
+    int io_op_flags = io->io_wbc->sync_mode == WB_SYNC_ALL ?
+          REQ_SYNC : 0;
+    io->io_bio->bi_write_hint = io->io_end->inode->i_write_hint;
+    bio_set_op_attrs(io->io_bio, REQ_OP_WRITE, io_op_flags);
+    submit_bio(io->io_bio);
+  }
+  io->io_bio = NULL;
+}
+// --->
 ```
-#### cached read
+#### Buffered read
 ```C++
 static ssize_t generic_file_buffered_read(struct kiocb *iocb,
     struct iov_iter *iter, ssize_t written)
@@ -2009,8 +2388,6 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 1. xarray
 
 # IO
-![linux-io-irq.jpg](../Images/linux-io-irq.jpg)
-
 All devices have the corresponding device file in /dev(is devtmpfs file system), which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
 
 ```c++
@@ -2414,6 +2791,9 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
 ![linux-io-ioctl.jpg](../Images/linux-io-ioctl.jpg)
 
 ### interruption
+
+![linux-io-irq.jpg](../Images/linux-io-irq.jpg)
+
 ```C++
 static int logibm_open(struct input_dev *dev)
 {
@@ -2424,7 +2804,6 @@ static int logibm_open(struct input_dev *dev)
   outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
   return 0;
 }
-
 
 static irqreturn_t logibm_interrupt(int irq, void *dev_id)
 {
@@ -2862,7 +3241,7 @@ void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 }
 
 const struct file_operations def_blk_fops = {
-  .open           = blkdev_open,
+  .open           = blkdev_open, // call blkdev_get
   .release        = blkdev_close,
   .llseek         = block_llseek,
   .read_iter      = blkdev_read_iter,
@@ -2882,7 +3261,10 @@ static struct file_system_type ext4_fs_type = {
   .kill_sb  = kill_block_super,
   .fs_flags  = FS_REQUIRES_DEV,
 };
+```
 
+#### mount block device
+```C++
 static struct dentry *ext4_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data)
 {
   return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
@@ -2904,7 +3286,10 @@ struct dentry *mount_bdev(struct file_system_type *fs_type,
   s = sget(fs_type, test_bdev_super, set_bdev_super, flags | MS_NOSEC, bdev);
   return dget(s->s_root);
 }
+```
+##### blkdev_get_by_path
 
+```C++
 struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
   void *holder)
 {
@@ -2916,6 +3301,7 @@ struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
   return bdev;
 }
 
+// 1. find the block device file under /dev which is devtmpfs file system
 struct block_device *lookup_bdev(const char *pathname)
 {
   struct block_device *bdev;
@@ -2935,6 +3321,7 @@ struct block_device *lookup_bdev(const char *pathname)
   goto out;
 }
 
+// 2. find the block device in bdev file system by its key: dev_t
 static struct block_device *bd_acquire(struct inode *inode)
 {
   struct block_device *bdev;
@@ -2949,31 +3336,6 @@ static struct block_device *bd_acquire(struct inode *inode)
   }
   return bdev;
 }
-struct block_device {
-  dev_t      bd_dev;  /* not a kdev_t - it's a search key */
-  int      bd_openers;
-  struct inode *    bd_inode;  /* will die */
-  struct super_block *  bd_super;
-  struct mutex    bd_mutex;  /* open/close mutex */
-  void *      bd_claiming;
-  void *      bd_holder;
-  int      bd_holders;
-  bool      bd_write_holder;
-#ifdef CONFIG_SYSFS
-  struct list_head  bd_holder_disks;
-#endif
-  struct block_device *  bd_contains;
-  unsigned    bd_block_size;
-  u8      bd_partno;
-  struct hd_struct *  bd_part;
-  unsigned    bd_part_count;
-  int      bd_invalidated;
-  struct gendisk *  bd_disk;
-  struct request_queue *  bd_queue;
-  struct backing_dev_info *bd_bdi;
-  struct list_head  bd_list;
-}
-
 
 struct block_device *bdget(dev_t dev)
 {
@@ -3003,7 +3365,248 @@ struct block_device *bdget(dev_t dev)
   }
   return bdev;
 }
+
+// 3rd file system
+struct super_block *blockdev_superblock;
+static struct file_system_type bd_type = {
+  .name           = "bdev",
+  .mount          = bd_mount,
+  .kill_sb        = kill_anon_super,
+};
+/* All block device inodes stored in bdev file system for convenient management.
+ * Linux associates block_device with inode of bdev with bdev_inode */
+struct bdev_inode {
+  struct block_device bdev;
+  struct inode vfs_inode;
+};
+
+// init blockdev_superblock
+void __init bdev_cache_init(void)
+{
+  static struct vfsmount *bd_mnt;
+
+  bdev_cachep = kmem_cache_create("bdev_cache", sizeof(struct bdev_inode), 0,
+    (SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|SLAB_ACCOUNT|SLAB_PANIC),
+    init_once);
+  err = register_filesystem(&bd_type);
+  if (err)
+    panic("Cannot register bdev pseudo-fs");
+  bd_mnt = kern_mount(&bd_type);
+  if (IS_ERR(bd_mnt))
+    panic("Cannot create bdev pseudo-fs");
+  blockdev_superblock = bd_mnt->mnt_sb;   /* For writeback */
+}
+
+struct block_device {
+  dev_t      bd_dev;  /* not a kdev_t - it's a search key */
+  int      bd_openers;
+  struct super_block *  bd_super;
+
+  struct block_device *  bd_contains;
+  unsigned    bd_block_size;
+  struct hd_struct *  bd_part;
+  unsigned    bd_part_count;
+  int      bd_invalidated;
+  struct gendisk *  bd_disk;
+  struct request_queue *  bd_queue;
+  struct backing_dev_info *bd_bdi;
+  struct list_head  bd_list;
+};
+
+struct gendisk {
+  int major;      /* major number of driver */
+  int first_minor;
+  int minors; /* maximum number of minors, =1 for disks that can't be partitioned. */
+  char disk_name[DISK_NAME_LEN]; /* name of major driver */
+  char *(*devnode)(struct gendisk *gd, umode_t *mode);
+
+  struct disk_part_tbl __rcu *part_tbl;
+  struct hd_struct part0;
+
+  const struct block_device_operations *fops;
+  struct request_queue *queue;
+  void *private_data;
+
+  int flags;
+  struct kobject *slave_dir;
+};
+
+struct hd_struct {
+  sector_t start_sect;
+  sector_t nr_sects;
+
+  struct device __dev;
+  struct kobject *holder_dir;
+  int policy, partno;
+  struct partition_meta_info *info;
+
+  struct disk_stats dkstats;
+  struct percpu_ref ref;
+  struct rcu_head rcu_head;
+};
+
+// blkdev_get -> __blkdev_get
+static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
+{
+  struct gendisk *disk;
+  struct module *owner;
+  int ret;
+  int partno;
+  int perm = 0;
+
+  if (mode & FMODE_READ)
+    perm |= MAY_READ;
+  if (mode & FMODE_WRITE)
+    perm |= MAY_WRITE;
+
+  disk = get_gendisk(bdev->bd_dev, &partno);
+
+  owner = disk->fops->owner;
+
+  if (!bdev->bd_openers) {
+    bdev->bd_disk = disk;
+    bdev->bd_queue = disk->queue;
+    bdev->bd_contains = bdev;
+
+    if (!partno) { // 1. open whole disk
+      ret = -ENXIO;
+      bdev->bd_part = disk_get_part(disk, partno);
+
+      if (disk->fops->open) {
+        ret = disk->fops->open(bdev, mode);
+      }
+
+      if (!ret)
+        bd_set_size(bdev,(loff_t)get_capacity(disk)<<9);
+
+      if (bdev->bd_invalidated) {
+        if (!ret)
+          rescan_partitions(disk, bdev);
+      }
+
+    } else {  // 2. open a partition
+      struct block_device *whole;
+      whole = bdget_disk(disk, 0);
+      ret = __blkdev_get(whole, mode, 1);
+      bdev->bd_contains = whole;
+      bdev->bd_part = disk_get_part(disk, partno);
+      bd_set_size(bdev, (loff_t)bdev->bd_part->nr_sects << 9);
+    }
+  }
+
+  bdev->bd_openers++;
+  if (for_part)
+    bdev->bd_part_count++;
+}
+
+struct gendisk *get_gendisk(dev_t devt, int *partno)
+{
+  struct gendisk *disk = NULL;
+
+  if (MAJOR(devt) != BLOCK_EXT_MAJOR) { // 1. get the whole device
+    struct kobject *kobj;
+    kobj = kobj_lookup(bdev_map, devt, partno);
+    if (kobj)
+      disk = dev_to_disk(kobj_to_dev(kobj));
+  } else { // 2. get a partition
+    struct hd_struct *part;
+    part = idr_find(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
+    if (part && get_disk(part_to_disk(part))) {
+      *partno = part->partno;
+      disk = part_to_disk(part);
+    }
+  }
+  return disk;
+}
 ```
+
+```C++
+static struct kobj_map *bdev_map;
+// map a dev_t with a gendisk
+static inline void add_disk(struct gendisk *disk)
+{
+  device_add_disk(NULL, disk);
+}
+
+void device_add_disk(struct device *parent, struct gendisk *disk)
+{
+  blk_register_region(disk_devt(disk), disk->minors, NULL,
+          exact_match, exact_lock, disk);
+}
+
+void blk_register_region(dev_t devt, unsigned long range, struct module *module,
+       struct kobject *(*probe)(dev_t, int *, void *),
+       int (*lock)(dev_t, void *), void *data)
+{
+  kobj_map(bdev_map, devt, range, module, probe, lock, data);
+}
+```
+
+##### sget
+```C++
+// drivers/scsi/sd.c
+static const struct block_device_operations sd_fops = {
+  .owner      = THIS_MODULE,
+  .open      = sd_open,
+  .release    = sd_release,
+  .ioctl      = sd_ioctl,
+  .getgeo      = sd_getgeo,
+#ifdef CONFIG_COMPAT
+  .compat_ioctl    = sd_compat_ioctl,
+#endif
+  .check_events    = sd_check_events,
+  .revalidate_disk  = sd_revalidate_disk,
+  .unlock_native_capacity  = sd_unlock_native_capacity,
+  .pr_ops      = &sd_pr_ops,
+};
+
+static int sd_open(struct block_device *bdev, fmode_t mode)
+{ }
+
+static int set_bdev_super(struct super_block *s, void *data)
+{
+  s->s_bdev = data;
+  s->s_dev = s->s_bdev->bd_dev;
+  s->s_bdi = bdi_get(s->s_bdev->bd_bdi);
+  return 0;
+}
+
+struct super_block *sget(struct file_system_type *type,
+  int (*test)(struct super_block *,void *),
+  int (*set)(struct super_block *,void *),
+  int flags,
+  void *data)
+{
+  return sget_userns(type, test, set, flags, user_ns, data);
+}
+
+struct super_block *sget_userns(struct file_system_type *type,
+  int (*test)(struct super_block *,void *),
+  int (*set)(struct super_block *,void *),
+  int flags, struct user_namespace *user_ns,
+  void *data)
+{
+  struct super_block *s = NULL;
+  struct super_block *old;
+  int err;
+
+  if (!s) {
+    s = alloc_super(type, (flags & ~MS_SUBMOUNT), user_ns);
+  }
+  err = set(s, data);
+
+  s->s_type = type;
+  strlcpy(s->s_id, type->name, sizeof(s->s_id));
+  list_add_tail(&s->s_list, &super_blocks);
+  hlist_add_head(&s->s_instances, &type->fs_supers);
+  spin_unlock(&sb_lock);
+  get_filesystem(type);
+  register_shrinker(&s->s_shrink);
+  return s;
+}
+```
+![linux-io-gendisk.png](../Images/linux-io-gendisk.png)
+
 ![linux-io-bd.png](../Images/linux-io-bd.png)
 
 ### Questions:
