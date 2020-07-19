@@ -1298,6 +1298,8 @@ sighandler_t signal(int signum, sighandler_t handler);
         1. set a global flag and exits;
         2. perform some type of cleanup and then either teriminates the process or uses a nonlocal
             goto to unwind the stack and return control to a predetermined location in the main program;
+    // Linux doesn't recommand to use signal func directly,
+    // since it set some default flags: SA_ONESHOT | SA_NOMASK | SA_INTERRUPT;
 ```
 
 ### sending a signal:
@@ -1434,6 +1436,7 @@ Advantages and Disabvantages of XSI IPC:
     <sys/types.h>
     <sys/socket.h>
     int socketpair(int domain, int type, int proto, int fd[2]);
+```
 
 ### FIFO:
 ```C++
