@@ -385,7 +385,7 @@ static struct mm_struct *dup_mm(struct task_struct *tsk)
 }
 ```
 
-### buddy System
+### buddy system
 ```C++
 typedef struct pglist_data {
   struct zone node_zones[MAX_NR_ZONES];
@@ -503,7 +503,7 @@ struct kmem_cache_node {
 ```
 ![kmem_cache_cpu_node](../Images/kmem-cache-cpu-node.jpg)
 
-### slab/slub/slob System
+### slab/slub/slob system
 ```C++
 // Linux slab/slub/slob system
 static struct kmem_cache *task_struct_cachep;
@@ -685,14 +685,14 @@ struct inode {
     void (*free_inode)(struct inode *);
   };
 
-  dev_t      i_rdev;
+  dev_t             i_rdev;
   struct list_head  i_devices;
   union {
     struct pipe_inode_info  *i_pipe;
-    struct block_device  *i_bdev;
-    struct cdev    *i_cdev;
-    char      *i_link;
-    unsigned    i_dir_seq;
+    struct block_device     *i_bdev;
+    struct cdev             *i_cdev;
+    char                    *i_link;
+    unsigned                i_dir_seq;
   };
 
   umode_t      i_mode;
@@ -822,15 +822,19 @@ struct super_block {
   struct dentry    *s_root;
   struct file_system_type  *s_type;
   const struct super_operations  *s_op;
+
+  dev_t      s_dev;    /* search index; _not_ kdev_t */
   struct block_device  *s_bdev;
 
   struct list_head  s_list;    /* Keep this first */
-  dev_t      s_dev;    /* search index; _not_ kdev_t */
   unsigned char    s_blocksize_bits;
   unsigned long    s_blocksize;
   loff_t      s_maxbytes;  /* Max file size */
   struct backing_dev_info *s_bdi;
   struct hlist_node  s_instances;
+
+  struct list_head  s_inodes;  /* all inodes */
+  struct list_head  s_inodes_wb;  /* writeback inodes */
 }
 ```
 ![linux-mem-meta-block-group.jpg](../Images/linux-mem-meta-block-group.jpg)
@@ -969,6 +973,7 @@ struct file {
   struct inode    *f_inode;  /* cached value */
   const struct file_operations  *f_op;
   struct address_space  *f_mapping;
+  void* private_data; // used for tty, pipe
 
   spinlock_t                    f_lock;
   enum rw_hint                  f_write_hint;
@@ -1540,10 +1545,17 @@ SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, umode_t, mode,
   struct path path;
   dentry = user_path_create(dfd, filename, &path, lookup_flags);
   switch (mode & S_IFMT) {
-    case S_IFCHR:
-    case S_IFBLK:
+    case 0: case S_IFREG:
+      error = vfs_create(path.dentry->d_inode,dentry,mode,true);
+      if (!error)
+        ima_post_path_mknod(dentry);
+      break;
+    case S_IFCHR: case S_IFBLK:
       error = vfs_mknod(path.dentry->d_inode,dentry,mode,
           new_decode_dev(dev));
+      break;
+    case S_IFIFO: case S_IFSOCK:
+      error = vfs_mknod(path.dentry->d_inode,dentry,mode,0);
       break;
   }
 }
@@ -3211,7 +3223,6 @@ static int __do_pipe_flags(int *fd, struct file **files, int flags)
     return 0;
 }
 
-
 int create_pipe_files(struct file **res, int flags)
 {
     int err;
@@ -3226,12 +3237,12 @@ int create_pipe_files(struct file **res, int flags)
     f = alloc_file(&path, FMODE_WRITE, &pipefifo_fops);
     f->f_flags = O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT));
     f->private_data = inode->i_pipe;
+    res[1] = f;
 
     res[0] = alloc_file(&path, FMODE_READ, &pipefifo_fops);
     path_get(&path);
     res[0]->private_data = inode->i_pipe;
     res[0]->f_flags = O_RDONLY | (flags & O_NONBLOCK);
-    res[1] = f;
     return 0;
 }
 
@@ -3268,14 +3279,39 @@ static struct inode * get_pipe_inode(void)
 
   return inode;
 }
-```
-![linux-ipc-pipe.png](../Images/linux-ipc-pipe.png)
 
+struct pipe_inode_info {
+  struct mutex mutex;
+  wait_queue_head_t rd_wait, wr_wait;
+  unsigned int head;
+  unsigned int tail;
+  unsigned int max_usage;
+  unsigned int ring_size;
+  unsigned int readers;
+  unsigned int writers;
+  unsigned int files;
+  unsigned int r_counter;
+  unsigned int w_counter;
+  struct page *tmp_page;
+  struct fasync_struct *fasync_readers;
+  struct fasync_struct *fasync_writers;
+  struct pipe_buffer *bufs;
+  struct user_struct *user;
+};
+
+struct pipe_buffer {
+  struct page *page;
+  unsigned int offset, len;
+  const struct pipe_buf_operations *ops;
+  unsigned int flags;
+  unsigned long private;
+};
+```
 ![linux-ipc-pipe-2.png](../Images/linux-ipc-pipe-2.png)
 
 ### fifo
 ```C++
-/* mkfifo is Glic function */
+/* mkfifo is Glibc function */
 int
 mkfifo (const char *path, mode_t mode)
 {
@@ -3292,6 +3328,33 @@ __xmknod (int vers, const char *path, mode_t mode, dev_t *dev)
   k_dev = (*dev) & ((1ULL << 32) - 1);
   return INLINE_SYSCALL (mknodat, 4, AT_FDCWD, path, mode,
                          (unsigned int) k_dev);
+}
+
+SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, umode_t, mode,
+    unsigned, dev)
+{
+  struct dentry *dentry;
+  struct path path;
+  dentry = user_path_create(dfd, filename, &path, lookup_flags);
+  switch (mode & S_IFMT) {
+    case 0: case S_IFREG:
+      error = vfs_create(path.dentry->d_inode,dentry,mode,true);
+      if (!error)
+        ima_post_path_mknod(dentry);
+      break;
+    case S_IFCHR: case S_IFBLK:
+      error = vfs_mknod(path.dentry->d_inode,dentry,mode,
+          new_decode_dev(dev));
+      break;
+    case S_IFIFO: case S_IFSOCK:
+      error = vfs_mknod(path.dentry->d_inode,dentry,mode,0);
+      break;
+  }
+}
+
+int vfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
+{
+  error = dir->i_op->mknod(dir, dentry, mode, dev);
 }
 
 const struct inode_operations ext4_dir_inode_operations = {
@@ -3850,6 +3913,76 @@ static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, i
   return container_of(ipcp, struct shmid_kernel, shm_perm);
 }
 
+struct kern_ipc_perm {
+  spinlock_t  lock;
+  bool      deleted;
+  int       id;
+  key_t     key;
+  kuid_t    uid;
+  kgid_t    gid;
+  kuid_t    cuid;
+  kgid_t    cgid;
+  umode_t    mode;
+  unsigned long  seq;
+  void    *security;
+
+  struct rhash_head khtnode;
+  struct rcu_head rcu;
+  refcount_t refcount;
+};
+
+struct sem_array {
+  struct kern_ipc_perm  sem_perm;  /* permissions .. see ipc.h */
+  time_t      sem_ctime;  /* create/last semctl() time */
+  struct list_head  pending_alter;  /* pending operations */
+                            /* that alter the array */
+  struct list_head  pending_const;  /* pending complex operations */
+            /* that do not alter semvals */
+  struct list_head  list_id;  /* undo requests on this array */
+  int      sem_nsems;  /* no. of semaphores in array */
+  int      complex_count;  /* pending complex operations */
+  unsigned int    use_global_lock;/* >0: global lock required */
+
+  struct sem    sems[];
+} __randomize_layout;
+
+struct shmid_kernel /* private to the kernel */
+{
+  struct kern_ipc_perm  shm_perm;
+  struct file    *shm_file;
+  unsigned long    shm_nattch;
+  unsigned long    shm_segsz;
+  time_t      shm_atim;
+  time_t      shm_dtim;
+  time_t      shm_ctim;
+  pid_t      shm_cprid;
+  pid_t      shm_lprid;
+  struct user_struct  *mlock_user;
+
+  /* The task created the shm object.  NULL if the task is dead. */
+  struct task_struct  *shm_creator;
+  struct list_head  shm_clist;  /* list by creator */
+} __randomize_layout;
+
+struct msg_queue {
+  struct kern_ipc_perm q_perm;
+  time_t q_stime;      /* last msgsnd time */
+  time_t q_rtime;      /* last msgrcv time */
+  time_t q_ctime;      /* last change time */
+  unsigned long q_cbytes;    /* current number of bytes on queue */
+  unsigned long q_qnum;    /* number of messages in queue */
+  unsigned long q_qbytes;    /* max number of bytes on queue */
+  pid_t q_lspid;      /* pid of last msgsnd */
+  pid_t q_lrpid;      /* last receive pid */
+
+  struct list_head q_messages;
+  struct list_head q_receivers;
+  struct list_head q_senders;
+} __randomize_layout;
+```
+
+#### shmget
+```C++
 SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 {
   struct ipc_namespace *ns;
@@ -3900,7 +4033,6 @@ static int ipcget_public(struct ipc_namespace *ns, struct ipc_ids *ids,
   return err;
 }
 
-
 static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 {
   key_t key = params->key;
@@ -3941,7 +4073,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 int __init shmem_init(void)
 {
   int error;
-  error = shmem_init_inodecache();
+  error = shmem_init_inodecache(); // shmem means shmem fs
   error = register_filesystem(&shmem_fs_type);
   shm_mnt = kern_mount(&shmem_fs_type);
   return 0;
@@ -3957,34 +4089,102 @@ static struct file_system_type shmem_fs_type = {
 
 struct file *shmem_kernel_file_setup(const char *name, loff_t size, unsigned long flags)
 {
-  return __shmem_file_setup(name, size, flags, S_PRIVATE);
+  return __shmem_file_setup(shm_mnt, name, size, flags, S_PRIVATE);
 }
 
-static struct file *__shmem_file_setup(const char *name, loff_t size,
+static struct file *__shmem_file_setup(struct vfsmount *mnt, const char *name, loff_t size,
                unsigned long flags, unsigned int i_flags)
 {
-  struct file *res;
   struct inode *inode;
-  struct path path;
-  struct super_block *sb;
-  struct qstr this;
+  struct file *res;
 
-  this.name = name;
-  this.len = strlen(name);
-  this.hash = 0; /* will go */
-  sb = shm_mnt->mnt_sb;
-  path.mnt = mntget(shm_mnt);
-  path.dentry = d_alloc_pseudo(sb, &this);
-  d_set_d_op(path.dentry, &anon_ops);
+  if (IS_ERR(mnt))
+    return ERR_CAST(mnt);
 
-  inode = shmem_get_inode(sb, NULL, S_IFREG | S_IRWXUGO, 0, flags);
+  if (size < 0 || size > MAX_LFS_FILESIZE)
+    return ERR_PTR(-EINVAL);
+
+  if (shmem_acct_size(flags, size))
+    return ERR_PTR(-ENOMEM);
+
+  inode = shmem_get_inode(mnt->mnt_sb, NULL, S_IFREG | S_IRWXUGO, 0,
+        flags);
+  if (unlikely(!inode)) {
+    shmem_unacct_size(flags, size);
+    return ERR_PTR(-ENOSPC);
+  }
   inode->i_flags |= i_flags;
-  d_instantiate(path.dentry, inode);
   inode->i_size = size;
-
-  res = alloc_file(&path, FMODE_WRITE | FMODE_READ,
-      &shmem_file_operations);
+  clear_nlink(inode);  /* It is unlinked */
+  res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size));
+  if (!IS_ERR(res))
+    res = alloc_file_pseudo(inode, mnt, name, O_RDWR,
+        &shmem_file_operations);
+  if (IS_ERR(res))
+    iput(inode);
   return res;
+}
+
+int ramfs_nommu_expand_for_mapping(struct inode *inode, size_t newsize)
+{
+  unsigned long npages, xpages, loop;
+  struct page *pages;
+  unsigned order;
+  void *data;
+  int ret;
+  gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+
+  /* make various checks */
+  order = get_order(newsize);
+  if (unlikely(order >= MAX_ORDER))
+    return -EFBIG;
+
+  ret = inode_newsize_ok(inode, newsize);
+  if (ret)
+    return ret;
+
+  i_size_write(inode, newsize);
+
+  pages = alloc_pages(gfp, order);
+  if (!pages)
+    return -ENOMEM;
+
+  xpages = 1UL << order;
+  npages = (newsize + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+  split_page(pages, order);
+
+  for (loop = npages; loop < xpages; loop++)
+    __free_page(pages + loop);
+
+  /* clear the memory we allocated */
+  newsize = PAGE_SIZE * npages;
+  data = page_address(pages);
+  memset(data, 0, newsize);
+
+  /* attach all the pages to the inode's address space */
+  for (loop = 0; loop < npages; loop++) {
+    struct page *page = pages + loop;
+
+    ret = add_to_page_cache_lru(page, inode->i_mapping, loop,
+          gfp);
+    if (ret < 0)
+      goto add_error;
+
+    /* prevent the page from being discarded on memory pressure */
+    SetPageDirty(page);
+    SetPageUptodate(page);
+
+    unlock_page(page);
+    put_page(page);
+  }
+
+  return 0;
+
+add_error:
+  while (loop < npages)
+    __free_page(pages + loop++);
+  return ret;
 }
 
 static const struct file_operations shmem_file_operations = {
@@ -4000,8 +4200,10 @@ static const struct file_operations shmem_file_operations = {
   .fallocate  = shmem_fallocate,
 #endif
 };
+```
 
-
+#### shmat
+```C++
 SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
 {
     unsigned long ret;
@@ -4061,6 +4263,14 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
   return err;
 }
 
+static const struct file_operations shm_file_operations = {
+  .mmap    = shm_mmap,
+  .fsync    = shm_fsync,
+  .release  = shm_release,
+  .get_unmapped_area  = shm_get_unmapped_area,
+  .llseek    = noop_llseek,
+  .fallocate  = shm_fallocate,
+};
 
 static int shm_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -4116,9 +4326,611 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
         index, false);
 }
 ```
-![linux-ipc-sem-shm-msg.png](../Images/linux-ipc-sem-shm-msg.png)
+![linux-ipc-shm.png](../Images/linux-ipc-shm.png)
+
+#### semget
+```C++
+SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
+{
+  struct ipc_namespace *ns;
+  static const struct ipc_ops sem_ops = {
+    .getnew = newary,
+    .associate = sem_security,
+    .more_checks = sem_more_checks,
+  };
+
+  struct ipc_params sem_params;
+  ns = current->nsproxy->ipc_ns;
+  sem_params.key = key;
+  sem_params.flg = semflg;
+  sem_params.u.nsems = nsems;
+  return ipcget(ns, &sem_ids(ns), &sem_ops, &sem_params);
+}
+
+static int newary(struct ipc_namespace *ns, struct ipc_params *params)
+{
+  int retval;
+  struct sem_array *sma;
+  key_t key = params->key;
+  int nsems = params->u.nsems;
+  int semflg = params->flg;
+  int i;
+
+  sma = sem_alloc(nsems);
+  sma->sem_perm.mode = (semflg & S_IRWXUGO);
+  sma->sem_perm.key = key;
+  sma->sem_perm.security = NULL;
+
+  for (i = 0; i < nsems; i++) {
+    INIT_LIST_HEAD(&sma->sems[i].pending_alter);
+    INIT_LIST_HEAD(&sma->sems[i].pending_const);
+    spin_lock_init(&sma->sems[i].lock);
+  }
+
+  sma->complex_count = 0;
+  sma->use_global_lock = USE_GLOBAL_LOCK_HYSTERESIS;
+  INIT_LIST_HEAD(&sma->pending_alter);
+  INIT_LIST_HEAD(&sma->pending_const);
+  INIT_LIST_HEAD(&sma->list_id);
+  sma->sem_nsems = nsems;
+  sma->sem_ctime = get_seconds();
+  retval = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
+
+  ns->used_sems += nsems;
+
+  return sma->sem_perm.id;
+}
+
+struct sem {
+  int  semval;    /* current value */
+  /*
+   * PID of the process that last modified the semaphore. For
+   * Linux, specifically these are:
+   *  - semop
+   *  - semctl, via SETVAL and SETALL.
+   *  - at task exit when performing undo adjustments (see exit_sem).
+   */
+  int  sempid;
+  spinlock_t  lock;  /* spinlock for fine-grained semtimedop */
+  struct list_head pending_alter; /* pending single-sop operations that alter the semaphore */
+  struct list_head pending_const; /* pending single-sop operations that do not alter the semaphore*/
+  time_t  sem_otime;  /* candidate for sem_otime */
+} ____cacheline_aligned_in_smp;
+```
+
+#### semctl
+```C++
+SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
+{
+  int version;
+  struct ipc_namespace *ns;
+  void __user *p = (void __user *)arg;
+  ns = current->nsproxy->ipc_ns;
+  switch (cmd) {
+    case IPC_INFO:
+    case SEM_INFO:
+    case IPC_STAT:
+    case SEM_STAT:
+      return semctl_nolock(ns, semid, cmd, version, p);
+    case GETALL:
+    case GETVAL:
+    case GETPID:
+    case GETNCNT:
+    case GETZCNT:
+    case SETALL:
+      return semctl_main(ns, semid, semnum, cmd, p);
+    case SETVAL:
+      return semctl_setval(ns, semid, semnum, arg);
+    case IPC_RMID:
+    case IPC_SET:
+      return semctl_down(ns, semid, cmd, version, p);
+    default:
+      return -EINVAL;
+  }
+}
+
+static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
+    int cmd, void __user *p)
+{
+  struct sem_array *sma;
+  struct sem *curr;
+  int err, nsems;
+  ushort fast_sem_io[SEMMSL_FAST];
+  ushort *sem_io = fast_sem_io;
+  DEFINE_WAKE_Q(wake_q);
+  sma = sem_obtain_object_check(ns, semid);
+  nsems = sma->sem_nsems;
+
+  switch (cmd) {
+    case SETALL:
+    {
+      int i;
+      struct sem_undo *un;
+
+      if (copy_from_user(sem_io, p, nsems*sizeof(ushort))) {
+
+      }
+
+      for (i = 0; i < nsems; i++) {
+        sma->sems[i].semval = sem_io[i];
+        sma->sems[i].sempid = task_tgid_vnr(current);
+      }
+
+      sma->sem_ctime = get_seconds();
+      /* maybe some queued-up processes were waiting for this */
+      do_smart_update(sma, NULL, 0, 0, &wake_q);
+      err = 0;
+      goto out_unlock;
+    }
+  }
+  wake_up_q(&wake_q);
+}
+
+static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
+    unsigned long arg)
+{
+  struct sem_undo *un;
+  struct sem_array *sma;
+  struct sem *curr;
+  int err, val;
+  DEFINE_WAKE_Q(wake_q);
+
+  sma = sem_obtain_object_check(ns, semid);
+
+  curr = &sma->sems[semnum];
+
+  curr->semval = val;
+  curr->sempid = task_tgid_vnr(current);
+  sma->sem_ctime = get_seconds();
+  /* maybe some queued-up processes were waiting for this */
+  do_smart_update(sma, NULL, 0, 0, &wake_q);
+
+  wake_up_q(&wake_q);
+  return 0;
+}
+```
+
+#### semop
+```C++
+SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
+    unsigned, nsops)
+{
+  return sys_semtimedop(semid, tsops, nsops, NULL);
+}
+
+SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
+    unsigned, nsops, const struct timespec __user *, timeout)
+{
+  int error = -EINVAL;
+  struct sem_array *sma;
+  struct sembuf fast_sops[SEMOPM_FAST];
+  struct sembuf *sops = fast_sops, *sop;
+  struct sem_undo *un;
+  int max, locknum;
+  bool undos = false, alter = false, dupsop = false;
+  struct sem_queue queue;
+  unsigned long dup = 0, jiffies_left = 0;
+  struct ipc_namespace *ns;
+
+  ns = current->nsproxy->ipc_ns;
+
+  if (copy_from_user(sops, tsops, nsops * sizeof(*tsops))) {
+    error =  -EFAULT;
+    goto out_free;
+  }
+
+  if (timeout) {
+    struct timespec _timeout;
+    if (copy_from_user(&_timeout, timeout, sizeof(*timeout))) {
+    }
+    jiffies_left = timespec_to_jiffies(&_timeout);
+  }
+
+  /* On success, find_alloc_undo takes the rcu_read_lock */
+  un = find_alloc_undo(ns, semid);
+  sma = sem_obtain_object_check(ns, semid);
+
+  queue.sops = sops;
+  queue.nsops = nsops;
+  queue.undo = un;
+  queue.pid = task_tgid_vnr(current);
+  queue.alter = alter;
+  queue.dupsop = dupsop;
+
+  error = perform_atomic_semop(sma, &queue);
+  if (error == 0) { /* non-blocking succesfull path */
+    DEFINE_WAKE_Q(wake_q);
+
+    do_smart_update(sma, sops, nsops, 1, &wake_q);
+
+    wake_up_q(&wake_q);
+    goto out_free;
+  }
+  /*
+   * We need to sleep on this operation, so we put the current
+   * task into the pending queue and go to sleep.
+   */
+  if (nsops == 1) {
+    struct sem *curr;
+    curr = &sma->sems[sops->sem_num];
+
+    list_add_tail(&queue.list,
+            &curr->pending_alter);
+  } else {
+    list_add_tail(&queue.list, &sma->pending_alter);
+  }
+
+  do {
+    queue.status = -EINTR;
+    queue.sleeper = current;
+
+    __set_current_state(TASK_INTERRUPTIBLE);
+    if (timeout)
+      jiffies_left = schedule_timeout(jiffies_left);
+    else
+      schedule();
+
+    /*
+     * If an interrupt occurred we have to clean up the queue.
+     */
+    if (timeout && jiffies_left == 0)
+      error = -EAGAIN;
+  } while (error == -EINTR && !signal_pending(current)); /* spurious */
+
+}
+
+static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
+{
+  int result, sem_op, nsops;
+  struct sembuf *sop;
+  struct sem *curr;
+  struct sembuf *sops;
+  struct sem_undo *un;
+
+  sops = q->sops;
+  nsops = q->nsops;
+  un = q->undo;
+
+  for (sop = sops; sop < sops + nsops; sop++) {
+    curr = &sma->sems[sop->sem_num];
+    sem_op = sop->sem_op;
+    result = curr->semval;
+
+    result += sem_op;
+    if (result < 0)
+      goto would_block;
+
+    if (sop->sem_flg & SEM_UNDO) {
+      int undo = un->semadj[sop->sem_num] - sem_op;
+    }
+  }
+
+  for (sop = sops; sop < sops + nsops; sop++) {
+    curr = &sma->sems[sop->sem_num];
+    sem_op = sop->sem_op;
+    result = curr->semval;
+
+    if (sop->sem_flg & SEM_UNDO) {
+      int undo = un->semadj[sop->sem_num] - sem_op;
+      un->semadj[sop->sem_num] = undo;
+    }
+    curr->semval += sem_op;
+    curr->sempid = q->pid;
+  }
+  return 0;
+
+would_block:
+  q->blocking = sop;
+  return sop->sem_flg & IPC_NOWAIT ? -EAGAIN : 1;
+}
+
+static int update_queue(struct sem_array *sma, int semnum, struct wake_q_head *wake_q)
+{
+  struct sem_queue *q, *tmp;
+  struct list_head *pending_list;
+  int semop_completed = 0;
+
+  if (semnum == -1)
+    pending_list = &sma->pending_alter;
+  else
+    pending_list = &sma->sems[semnum].pending_alter;
+
+again:
+  list_for_each_entry_safe(q, tmp, pending_list, list) {
+    int error, restart;
+
+    error = perform_atomic_semop(sma, q);
+
+    /* Does q->sleeper still need to sleep? */
+    if (error > 0)
+      continue;
+
+    unlink_queue(sma, q);
+
+    wake_up_sem_queue_prepare(q, error, wake_q);
+
+  }
+  return semop_completed;
+}
+
+static inline void wake_up_sem_queue_prepare(struct sem_queue *q, int error,
+               struct wake_q_head *wake_q)
+{
+  wake_q_add(wake_q, q->sleeper);
+}
+
+void wake_up_q(struct wake_q_head *head)
+{
+  struct wake_q_node *node = head->first;
+
+  while (node != WAKE_Q_TAIL) {
+    struct task_struct *task;
+
+    task = container_of(node, struct task_struct, wake_q);
+
+    node = node->next;
+    task->wake_q.next = NULL;
+
+    wake_up_process(task);
+    put_task_struct(task);
+  }
+}
+
+struct sem_queue {
+  struct list_head  list;   /* queue of pending operations */
+  struct task_struct  *sleeper; /* this process */
+  struct sem_undo    *undo;   /* undo structure */
+  int      pid;   /* process id of requesting process */
+  int      status;   /* completion status of operation */
+  struct sembuf    *sops;   /* array of pending operations */
+  struct sembuf    *blocking; /* the operation that blocked */
+  int      nsops;   /* number of operations */
+  bool      alter;   /* does *sops alter the array? */
+  bool                    dupsop;   /* sops on more than one sem_num */
+};
+
+struct task_struct {
+  struct sysv_sem sysvsem;
+}
+
+struct sysv_sem {
+  struct sem_undo_list *undo_list;
+};
+
+struct sem_undo {
+  struct list_head  list_proc;  /* per-process list: *
+             * all undos from one process
+             * rcu protected */
+  struct rcu_head    rcu;    /* rcu struct for sem_undo */
+  struct sem_undo_list  *ulp;    /* back ptr to sem_undo_list */
+  struct list_head  list_id;  /* per semaphore array list:
+             * all undos for one array */
+  int      semid;    /* semaphore set identifier */
+  short      *semadj;  /* array of adjustments */
+            /* one per semaphore */
+};
+
+struct sem_undo_list {
+  atomic_t    refcnt;
+  spinlock_t    lock;
+  struct list_head  list_proc;
+};
+```
+![linux-ipc-sem-2.png](../Images/linux-ipc-sem-2.png)
+
+![linux-ipc-sem.png](../Images/linux-ipc-sem.png)
 
 # network
+### socket
+```C++
+SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
+{
+  int retval;
+  struct socket *sock;
+  int flags;
+
+  if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
+    flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
+
+  retval = sock_create(family, type, protocol, &sock);
+  retval = sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
+
+  return retval;
+}
+
+int __sock_create(struct net *net, int family, int type, int protocol,
+       struct socket **res, int kern)
+{
+  int err;
+  struct socket *sock;
+  const struct net_proto_family *pf;
+
+  sock = sock_alloc();
+  sock->type = type;
+
+  pf = rcu_dereference(net_families[family]);
+  err = pf->create(net, sock, protocol, kern);
+
+  *res = sock;
+
+  return 0;
+}
+
+/* Supported address families. */
+#define AF_UNSPEC  0
+#define AF_UNIX    1  /* Unix domain sockets     */
+#define AF_LOCAL  1  /* POSIX name for AF_UNIX  */
+#define AF_INET    2  /* Internet IP Protocol   */
+#define AF_INET6  10  /* IP version 6      */
+#define AF_MPLS    28  /* MPLS */
+#define AF_MAX    44  /* For now.. */
+#define NPROTO    AF_MAX
+struct net_proto_family __rcu *net_families[NPROTO] __read_mostly;
+
+//net/ipv4/af_inet.c
+static const struct net_proto_family inet_family_ops = {
+  .family = PF_INET,
+  .create = inet_create
+}
+
+static int inet_create(struct net *net, struct socket *sock, int protocol, int kern)
+{
+  struct sock *sk;
+  struct inet_protosw *answer;
+  struct inet_sock *inet;
+  struct proto *answer_prot;
+  unsigned char answer_flags;
+  int try_loading_module = 0;
+  int err;
+
+  /* Look for the requested type/protocol pair. */
+lookup_protocol:
+  list_for_each_entry_rcu(answer, &inetsw[sock->type], list) {
+    err = 0;
+    /* Check the non-wild match. */
+    if (protocol == answer->protocol) {
+      if (protocol != IPPROTO_IP)
+        break;
+    } else {
+      /* Check for the two wild cases. */
+      if (IPPROTO_IP == protocol) {
+        protocol = answer->protocol;
+        break;
+      }
+      if (IPPROTO_IP == answer->protocol)
+        break;
+    }
+    err = -EPROTONOSUPPORT;
+  }
+
+  sock->ops = answer->ops;
+  answer_prot = answer->prot;
+  answer_flags = answer->flags;
+
+  sk = sk_alloc(net, PF_INET, GFP_KERNEL, answer_prot, kern);
+
+  inet = inet_sk(sk);
+  inet->nodefrag = 0;
+  if (SOCK_RAW == sock->type) {
+    inet->inet_num = protocol;
+    if (IPPROTO_RAW == protocol)
+      inet->hdrincl = 1;
+  }
+  inet->inet_id = 0;
+  sock_init_data(sock, sk);
+
+  sk->sk_destruct     = inet_sock_destruct;
+  sk->sk_protocol     = protocol;
+  sk->sk_backlog_rcv = sk->sk_prot->backlog_rcv;
+
+  inet->uc_ttl  = -1;
+  inet->mc_loop  = 1;
+  inet->mc_ttl  = 1;
+  inet->mc_all  = 1;
+  inet->mc_index  = 0;
+  inet->mc_list  = NULL;
+  inet->rcv_tos  = 0;
+
+  if (inet->inet_num) {
+    inet->inet_sport = htons(inet->inet_num);
+    /* Add to protocol hash chains. */
+    err = sk->sk_prot->hash(sk);
+  }
+
+  if (sk->sk_prot->init) {
+    err = sk->sk_prot->init(sk);
+  }
+}
+
+static struct list_head inetsw[SOCK_MAX];
+static int __init inet_init(void)
+{
+  /* Register the socket-side information for inet_create. */
+  for (r = &inetsw[0]; r < &inetsw[SOCK_MAX]; ++r)
+    INIT_LIST_HEAD(r);
+  for (q = inetsw_array; q < &inetsw_array[INETSW_ARRAY_LEN]; ++q)
+    inet_register_protosw(q);
+}
+
+static struct inet_protosw inetsw_array[] =
+{
+  {
+    .type =       SOCK_STREAM,
+    .protocol =   IPPROTO_TCP,
+    .prot =       &tcp_prot,
+    .ops =        &inet_stream_ops,
+    .flags =      INET_PROTOSW_PERMANENT |
+            INET_PROTOSW_ICSK,
+  },
+  {
+    .type =       SOCK_DGRAM,
+    .protocol =   IPPROTO_UDP,
+    .prot =       &udp_prot,
+    .ops =        &inet_dgram_ops,
+    .flags =      INET_PROTOSW_PERMANENT,
+  },
+  {
+    .type =       SOCK_DGRAM,
+    .protocol =   IPPROTO_ICMP,
+    .prot =       &ping_prot,
+    .ops =        &inet_sockraw_ops,
+    .flags =      INET_PROTOSW_REUSE,
+  },
+  {
+    .type =       SOCK_RAW,
+    .protocol =   IPPROTO_IP,  /* wild card */
+    .prot =       &raw_prot,
+    .ops =        &inet_sockraw_ops,
+    .flags =      INET_PROTOSW_REUSE,
+  }
+}
+
+struct proto tcp_prot = {
+  .name      = "TCP",
+  .owner      = THIS_MODULE,
+  .close      = tcp_close,
+  .connect    = tcp_v4_connect,
+  .disconnect    = tcp_disconnect,
+  .accept      = inet_csk_accept,
+  .ioctl      = tcp_ioctl,
+  .init      = tcp_v4_init_sock,
+  .destroy    = tcp_v4_destroy_sock,
+  .shutdown    = tcp_shutdown,
+  .setsockopt    = tcp_setsockopt,
+  .getsockopt    = tcp_getsockopt,
+  .keepalive    = tcp_set_keepalive,
+  .recvmsg    = tcp_recvmsg,
+  .sendmsg    = tcp_sendmsg,
+  .sendpage    = tcp_sendpage,
+  .backlog_rcv    = tcp_v4_do_rcv,
+  .release_cb    = tcp_release_cb,
+  .hash      = inet_hash,
+  .get_port    = inet_csk_get_port,
+}
+```
+
+### bind
+```C++
+SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
+{
+  struct socket *sock;
+  struct sockaddr_storage address;
+  int err, fput_needed;
+
+  sock = sockfd_lookup_light(fd, &err, &fput_needed);
+  if (sock) {
+    err = move_addr_to_kernel(umyaddr, addrlen, &address);
+    if (err >= 0) {
+      err = sock->ops->bind(sock,
+                  (struct sockaddr *)
+                  &address, addrlen);
+    }
+    fput_light(sock->file, fput_needed);
+  }
+  return err;
+}
+```
+![linux-net-socket.png](../Images/linux-net-socket.png)
 
 # virtualization
 
