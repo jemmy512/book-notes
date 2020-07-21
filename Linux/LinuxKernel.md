@@ -14,7 +14,7 @@ do_execve(getname(filename), argv, envp);
                     setup_arg_pages();
                     elf_map(); // map the code in elf file to memory
                     set_brk(); // setup heap area
-                    load_elf_interp(); // load dependent *.so
+              load_elf_interp(); // load dependent *.so
                     start_thread(regs, elf_entry, bprm->p); // arch/x86/kernel/process_32.c
 ```
 
@@ -121,6 +121,27 @@ do_IRQ
 ```
 
 # Memory Management
+### segment, page
+![linux-mem-segment.png](../Images/linux-mem-segment.png)
+
+![linux-mem-segment-page.png](../Images/linux-mem-segment-page.png)
+
+![linux-mem-page-table.png](../Images/linux-mem-page-table.png)
+
+![linux-mem-vm.png](../Images/linux-mem-vm.png)
+
+### kernel
+![linux-mem-kernel.png](../Images/linux-mem-kernel.png)
+
+![linux-mem-kernel-2.png](../Images/linux-mem-kernel-2.png)
+
+![linux-mem-user-kernel-32.png](../Images/linux-mem-user-kernel-32.png)
+
+![linux-mem-user-kernel-64.png](../Images/linux-mem-user-kernel-64.png)
+
+### physic
+![linux-mem-physic-numa.png](../Images/linux-mem-physic-numa.png)
+
 ### malloc
 ```C++
 // mm/mmap.c
@@ -232,6 +253,7 @@ ksys_mmap_pgoff(); // mm/mmap.c
                     }
                 }
 ```
+![linux-mem-ptb.png](../Images/linux-mem-ptb.png)
 
 ### page fault
 ```C++
@@ -384,6 +406,7 @@ static struct mm_struct *dup_mm(struct task_struct *tsk)
   return mm;
 }
 ```
+![linux-mem-page-fault.png](../Images/linux-mem-page-fault.png)
 
 ### buddy system
 ```C++
@@ -614,11 +637,9 @@ alloc_task_struct_node();
                     return freelis
                 }
 ```
-
-![linux-mem-buddy-slab-system.jpg](../Images/linux-mem-buddy-slab-system.jpg)
+![linux-mem-mng.png](../Images/linux-mem-mng.png)
 
 ### kswapd
-
 ```C++
 //1. actice page out when alloc
 get_page_from_freelist();
@@ -4206,11 +4227,11 @@ static const struct file_operations shmem_file_operations = {
 ```C++
 SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
 {
-    unsigned long ret;
-    long err;
-    err = do_shmat(shmid, shmaddr, shmflg, &ret, SHMLBA);
-    force_successful_syscall_return();
-    return (long)ret;
+  unsigned long ret;
+  long err;
+  err = do_shmat(shmid, shmaddr, shmflg, &ret, SHMLBA);
+  force_successful_syscall_return();
+  return (long)ret;
 }
 
 long do_shmat(int shmid, char __user *shmaddr, int shmflg,
@@ -4243,14 +4264,14 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
   size = i_size_read(d_inode(path.dentry));
 
   sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
-
   file = alloc_file(&path, f_mode,
-        is_file_hugepages(shp->shm_file) ?
-        &shm_file_operations_huge :
-        &shm_file_operations);
+        is_file_hugepages(shp->shm_file)
+          ? &shm_file_operations_huge
+          : &shm_file_operations);
 
   file->private_data = sfd;
   file->f_mapping = shp->shm_file->f_mapping;
+
   sfd->id = shp->shm_perm.id;
   sfd->ns = get_ipc_ns(ns);
   sfd->file = shp->shm_file;
@@ -4383,13 +4404,6 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 
 struct sem {
   int  semval;    /* current value */
-  /*
-   * PID of the process that last modified the semaphore. For
-   * Linux, specifically these are:
-   *  - semop
-   *  - semctl, via SETVAL and SETALL.
-   *  - at task exit when performing undo adjustments (see exit_sem).
-   */
   int  sempid;
   spinlock_t  lock;  /* spinlock for fine-grained semtimedop */
   struct list_head pending_alter; /* pending single-sop operations that alter the semaphore */
@@ -4530,6 +4544,8 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
   un = find_alloc_undo(ns, semid);
   sma = sem_obtain_object_check(ns, semid);
 
+  locknum = sem_lock(sma, sops, nsops);
+
   queue.sops = sops;
   queue.nsops = nsops;
   queue.undo = un;
@@ -4543,6 +4559,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 
     do_smart_update(sma, sops, nsops, 1, &wake_q);
 
+    sem_unlock(sma, locknum);
     wake_up_q(&wake_q);
     goto out_free;
   }
@@ -4565,18 +4582,29 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
     queue.sleeper = current;
 
     __set_current_state(TASK_INTERRUPTIBLE);
+    sem_unlock(sma, locknum);
     if (timeout)
       jiffies_left = schedule_timeout(jiffies_left);
     else
       schedule();
 
-    /*
-     * If an interrupt occurred we have to clean up the queue.
-     */
+    locknum = sem_lock(sma, sops, nsops);
+
+    error = READ_ONCE(queue.status);
+    if (error != -EINTR)
+      goto out_unlock_free;
+
     if (timeout && jiffies_left == 0)
       error = -EAGAIN;
   } while (error == -EINTR && !signal_pending(current)); /* spurious */
 
+out_unlock_free:
+  sem_unlock(sma, locknum);
+  rcu_read_unlock();
+out_free:
+  if (sops != fast_sops)
+    kvfree(sops);
+  return error;
 }
 
 static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
@@ -4622,6 +4650,29 @@ static int perform_atomic_semop(struct sem_array *sma, struct sem_queue *q)
 would_block:
   q->blocking = sop;
   return sop->sem_flg & IPC_NOWAIT ? -EAGAIN : 1;
+}
+
+static void do_smart_update(struct sem_array *sma, struct sembuf *sops, int nsops,
+          int otime, struct wake_q_head *wake_q)
+{
+  int i;
+  otime |= do_smart_wakeup_zero(sma, sops, nsops, wake_q);
+  if (!list_empty(&sma->pending_alter)) {
+    otime |= update_queue(sma, -1, wake_q);
+  } else {
+    if (!sops) {
+      for (i = 0; i < sma->sem_nsems; i++)
+        otime |= update_queue(sma, i, wake_q);
+    } else {
+      for (i = 0; i < nsops; i++) {
+        if (sops[i].sem_op > 0) {
+          otime |= update_queue(sma, sops[i].sem_num, wake_q);
+        }
+      }
+    }
+  }
+  if (otime)
+    set_semotime(sma, sops);
 }
 
 static int update_queue(struct sem_array *sma, int semnum, struct wake_q_head *wake_q)
@@ -4719,6 +4770,9 @@ struct sem_undo_list {
 ![linux-ipc-sem-2.png](../Images/linux-ipc-sem-2.png)
 
 ![linux-ipc-sem.png](../Images/linux-ipc-sem.png)
+
+### Q:
+1. How access shm by a vm address?
 
 # network
 ### socket
