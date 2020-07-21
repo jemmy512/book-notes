@@ -1558,7 +1558,7 @@ SYSTEM V semaphore:
         ...
     };
     struct sembuf {
-        short   sem_num;    // semaphore index in the the semaphore container
+        short   sem_num;    // semaphore index in the semaphore container
         short   sem_op;     // PV operation: >0, =0, <0
         short   sem_flg;    // SEM_UNDO, IPC_NOWAIT
     };
