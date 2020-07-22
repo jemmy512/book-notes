@@ -783,7 +783,7 @@ Each zone Linux maintains a `zone descriptor`, which contains information about 
 
 
 ##### Memory-Allocation Mechanisms
-![linux-mem-buddy-slab-system.jpg](../Images/linux-mem-buddy-slab-system.jpg)
+![linux-mem-buddy-slab-system.png](../Images/linux-mem-buddy-slab-system.png)
 1. buddy algorithm
 2. slab algorithm, is to alleviate the internal fragmentation problem of buddy algorithm, which takes chunks using the buddy algorithm but then carves slabs (smaller units) from them and manages the smaller units separately.
 

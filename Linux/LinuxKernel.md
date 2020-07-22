@@ -42,7 +42,7 @@ __pthread_create_2_1 // binfmt_elf.c
 ```
 
 ### schedule
-#### Voluntary Schedule
+#### voluntary schedule
 
 ```c++
 schedule(void)
@@ -58,7 +58,7 @@ schedule(void)
             return finish_task_switch(prev);
 ```
 
-#### Involuntary Shcedule(preempty)
+#### involuntary shcedule(preempty)
 ```C++
 // 1. mark TIF_NEED_RESCHED
 // no time slice
@@ -117,20 +117,140 @@ do_IRQ
     retint_kernel
         prepare_exit_to_usermode
             --->
-
 ```
 
 # Memory Management
-### segment, page
+### segment
+```C++
+#define GDT_ENTRY_INIT(flags, base, limit) { { { \
+    .a = ((limit) & 0xffff) | (((base) & 0xffff) << 16), \
+    .b = (((base) & 0xff0000) >> 16) | (((flags) & 0xf0ff) << 8) | \
+      ((limit) & 0xf0000) | ((base) & 0xff000000), \
+  } } }
+
+DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
+#ifdef CONFIG_X86_64
+  [GDT_ENTRY_KERNEL32_CS]    = GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_CS]    = GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_DS]    = GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER32_CS]  = GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_DS]  = GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_CS]  = GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
+#else
+  [GDT_ENTRY_KERNEL_CS]    = GDT_ENTRY_INIT(0xc09a, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_DS]    = GDT_ENTRY_INIT(0xc092, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_CS]  = GDT_ENTRY_INIT(0xc0fa, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_DS]  = GDT_ENTRY_INIT(0xc0f2, 0, 0xfffff),
+
+#endif
+} };
+EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
+
+#define __KERNEL_CS      (GDT_ENTRY_KERNEL_CS*8)
+#define __KERNEL_DS      (GDT_ENTRY_KERNEL_DS*8)
+#define __USER_DS      (GDT_ENTRY_DEFAULT_USER_DS*8 + 3)
+#define __USER_CS      (GDT_ENTRY_DEFAULT_USER_CS*8 + 3)
+```
 ![linux-mem-segment.png](../Images/linux-mem-segment.png)
 
+### paging
 ![linux-mem-segment-page.png](../Images/linux-mem-segment-page.png)
 
 ![linux-mem-page-table.png](../Images/linux-mem-page-table.png)
 
 ![linux-mem-vm.png](../Images/linux-mem-vm.png)
 
+### user space
+```C++
+
+#ifdef CONFIG_X86_32
+/*
+ * User space process size: 3GB (default).
+ */
+#define TASK_SIZE    PAGE_OFFSET
+#define TASK_SIZE_MAX    TASK_SIZE
+/*
+config PAGE_OFFSET
+        hex
+        default 0xC0000000
+        depends on X86_32
+*/
+#else
+/*
+ * User space process size. 47bits minus one guard page.
+*/
+#define TASK_SIZE_MAX  ((1UL << 47) - PAGE_SIZE)
+#define TASK_SIZE    (test_thread_flag(TIF_ADDR32) ? \
+          IA32_PAGE_OFFSET : TASK_SIZE_MAX)
+// mm_struct
+unsigned long mmap_base;  /* base of mmap area */
+unsigned long total_vm;    /* Total pages mapped */
+unsigned long locked_vm;  /* Pages that have PG_mlocked set */
+unsigned long pinned_vm;  /* Refcount permanently increased */
+unsigned long data_vm;    /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
+unsigned long exec_vm;    /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
+unsigned long stack_vm;    /* VM_STACK */
+unsigned long start_code, end_code, start_data, end_data;
+unsigned long start_brk, brk, start_stack;
+unsigned long arg_start, arg_end, env_start, env_end;
+
+struct vm_area_struct *mmap;    /* list of VMAs */
+struct rb_root mm_rb;
+
+struct vm_area_struct {
+  /* The first cache line has the info for VMA tree walking. */
+  unsigned long vm_start;    /* Our start address within vm_mm. */
+  unsigned long vm_end;    /* The first byte after our end address within vm_mm. */
+  /* linked list of VM areas per task, sorted by address */
+  struct vm_area_struct *vm_next, *vm_prev;
+  struct rb_node vm_rb;
+
+  struct mm_struct *vm_mm;  /* The address space we belong to. */
+  struct list_head anon_vma_chain; /* Serialized by mmap_sem &
+            * page_table_lock */
+  const struct vm_operations_struct *vm_ops;
+
+  struct anon_vma *anon_vma;  /* Serialized by page_table_lock */
+  /* Function pointers to deal with this struct. */
+  struct file * vm_file;    /* File we map to (can be NULL). */
+  void * vm_private_data;    /* was vm_pte (shared mem) */
+} __randomize_layout;
+
+
+static int load_elf_binary(struct linux_binprm *bprm)
+{
+
+  setup_new_exec(bprm);
+
+  retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
+         executable_stack);
+
+  error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
+        elf_prot, elf_flags, total_size);
+
+  retval = set_brk(elf_bss, elf_brk, bss_prot);
+
+  elf_entry = load_elf_interp(&loc->interp_elf_ex,
+              interpreter,
+              &interp_map_addr,
+              load_bias, interp_elf_phdata);
+
+  current->mm->end_code = end_code;
+  current->mm->start_code = start_code;
+  current->mm->start_data = start_data;
+  current->mm->end_data = end_data;
+  current->mm->start_stack = bprm->p;
+}
+```
+
 ### kernel
+```C++
+/* PKMAP_BASE:
+ * use alloc_pages() get struct page, user kmap() map the page to this area */
+
+/* FIXADDR_START:
+ * use kmap_atomic() to map a file to write it back to physic disk */
+```
 ![linux-mem-kernel.png](../Images/linux-mem-kernel.png)
 
 ![linux-mem-kernel-2.png](../Images/linux-mem-kernel-2.png)
@@ -140,7 +260,596 @@ do_IRQ
 ![linux-mem-user-kernel-64.png](../Images/linux-mem-user-kernel-64.png)
 
 ### physic
+#### numa node
+```C++
+struct pglist_data *node_data[MAX_NUMNODES];
+
+typedef struct pglist_data {
+  struct zone node_zones[MAX_NR_ZONES];
+  struct zonelist node_zonelists[MAX_ZONELISTS];
+  int nr_zones;
+  struct page *node_mem_map;
+  unsigned long node_start_pfn;
+  unsigned long node_present_pages; /* total number of physical pages */
+  unsigned long node_spanned_pages; /* total size of physical page range, including holes */
+  int node_id;
+} pg_data_t;
+
+enum zone_type {
+#ifdef CONFIG_ZONE_DMA
+  ZONE_DMA,
+#endif
+#ifdef CONFIG_ZONE_DMA32
+  ZONE_DMA32,
+#endif
+  ZONE_NORMAL,
+#ifdef CONFIG_HIGHMEM
+  ZONE_HIGHMEM,
+#endif
+  ZONE_MOVABLE,
+  __MAX_NR_ZONES
+};
+```
+#### zone
+```C++
+struct zone {
+  struct pglist_data  *zone_pgdat;
+  struct per_cpu_pageset *pageset; // hot/cold page
+
+  unsigned long    zone_start_pfn;
+  unsigned long    managed_pages; // managed_pages = present_pages - reserved_pages
+  unsigned long    spanned_pages; // spanned_pages = zone_end_pfn - zone_start_pfn
+  unsigned long    present_pages; // present_pages = spanned_pages - absent_pages(pages in holes)
+
+  const char    *name;
+  /* free areas of different sizes */
+  struct free_area  free_area[MAX_ORDER];
+  /* zone flags, see below */
+  unsigned long    flags;
+
+  /* Primarily protects free_area */
+  spinlock_t    lock;
+};
+```
+
+#### page
+```C++
+struct page {
+  unsigned long flags;    /* Atomic flags, some possibly
+           * updated asynchronously */
+  union {
+    struct {  /* Page cache and anonymous pages */
+      struct list_head lru; /* See page-flags.h for PAGE_MAPPING_FLAGS */
+      struct address_space *mapping;
+      pgoff_t index;    /* Our offset within mapping. */
+      unsigned long private;
+    };
+
+    struct {  /* page_pool used by netstack */
+      dma_addr_t dma_addr;
+    };
+
+    struct {  /* slab, slob and slub */
+      union {
+        struct list_head slab_list;
+        struct {  /* Partial pages */
+          struct page *next;
+          int pages;  /* Nr of pages left */
+          int pobjects;  /* Approximate count */
+        };
+      };
+
+      struct kmem_cache *slab_cache; /* not slob */
+      void *freelist;    /* first free object */
+      union {
+        void *s_mem;  /* slab: first object */
+        unsigned long counters;    /* SLUB */
+        struct {      /* SLUB */
+          unsigned inuse:16;
+          unsigned objects:15;
+          unsigned frozen:1;
+        };
+      };
+    };
+
+    struct {  /* Tail pages of compound page */
+      unsigned long compound_head;  /* Bit zero is set */
+      unsigned char compound_dtor; /* First tail page only */
+      unsigned char compound_order;
+      atomic_t compound_mapcount;
+    };
+
+    struct {  /* Second tail page of compound page */
+      unsigned long _compound_pad_1;  /* compound_head */
+      unsigned long _compound_pad_2;
+      struct list_head deferred_list; /* For both global and memcg */
+    };
+
+    struct {  /* Page table pages */
+      unsigned long _pt_pad_1;  /* compound_head */
+      pgtable_t pmd_huge_pte; /* protected by page->ptl */
+      unsigned long _pt_pad_2;  /* mapping */
+      union {
+        struct mm_struct *pt_mm; /* x86 pgds only */
+        atomic_t pt_frag_refcount; /* powerpc */
+      };
+      spinlock_t *ptl;
+    };
+
+    struct {  /* ZONE_DEVICE pages */
+      struct dev_pagemap *pgmap;
+      void *zone_device_data;
+    };
+
+    struct rcu_head rcu_head;
+  };
+
+  union {    /* This union is 4 bytes in size. */
+    atomic_t _mapcount;
+    unsigned int page_type;
+    unsigned int active;  /* SLAB */
+    int units;            /* SLOB */
+  };
+  atomic_t _refcount;
+
+#ifdef CONFIG_MEMCG
+  struct mem_cgroup *mem_cgroup;
+#endif
+
+#if defined(WANT_PAGE_VIRTUAL)
+  void *virtual;      /* Kernel virtual address (NULL if
+             not kmapped, ie. highmem) */
+#endif /* WANT_PAGE_VIRTUAL */
+
+#ifdef LAST_CPUPID_NOT_IN_PAGE_FLAGS
+  int _last_cpupid;
+#endif
+} _struct_page_alignment;
+```
 ![linux-mem-physic-numa.png](../Images/linux-mem-physic-numa.png)
+
+### buddy system
+```C++
+struct free_area  free_area[MAX_ORDER];
+#define MAX_ORDER 11
+```
+![linux-mem-buddy-freepages.png](../Images/linux-mem-buddy-freepages.png)
+
+```C++
+static inline struct page *
+alloc_pages(gfp_t gfp_mask, unsigned int order)
+{
+  return alloc_pages_current(gfp_mask, order);
+}
+
+/*  %GFP_USER     user allocation,
+ *  %GFP_KERNEL   kernel allocation,
+ *  %GFP_HIGHMEM  highmem allocation,
+ *  %GFP_FS       don't call back into a file system.
+ *  %GFP_ATOMIC   don't sleep.
+ *  @order: Power of two of allocation size in pages. 0 is a single page. */
+struct page *alloc_pages_current(gfp_t gfp, unsigned order)
+{
+  struct mempolicy *pol = &default_policy;
+  struct page *page;
+
+  page = __alloc_pages_nodemask(gfp, order,
+          policy_node(gfp, pol, numa_node_id()),
+          policy_nodemask(gfp, pol));
+  return page;
+}
+
+// __alloc_pages_nodemask ->
+static struct page *
+get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
+            const struct alloc_context *ac)
+{
+  for_next_zone_zonelist_nodemask(zone, z, ac->zonelist, ac->high_zoneidx, ac->nodemask) {
+    struct page *page;
+    page = rmqueue(ac->preferred_zoneref->zone, zone, order,
+        gfp_mask, alloc_flags, ac->migratetype);
+  }
+}
+
+// rmqueue->__rmqueue->__rmqueue_smallest
+static inline
+struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
+            int migratetype)
+{
+  unsigned int current_order;
+  struct free_area *area;
+  struct page *page;
+
+  /* Find a page of the appropriate size in the preferred list */
+  for (current_order = order; current_order < MAX_ORDER; ++current_order) {
+    area = &(zone->free_area[current_order]);
+    page = list_first_entry_or_null(&area->free_list[migratetype],
+              struct page, lru);
+    if (!page)
+      continue;
+    list_del(&page->lru);
+    rmv_page_order(page);
+    area->nr_free--;
+    expand(zone, page, order, current_order, area, migratetype);
+    set_pcppage_migratetype(page, migratetype);
+    return page;
+  }
+  return NULL;
+}
+
+static inline void expand(struct zone *zone, struct page *page,
+  int low, int high, struct free_area *area,
+  int migratetype)
+{
+  unsigned long size = 1 << high;
+
+  while (high > low) {
+    area--;
+    high--;
+    size >>= 1;
+
+    list_add(&page[size].lru, &area->free_list[migratetype]);
+    area->nr_free++;
+    set_page_order(&page[size], high);
+  }
+}
+```
+
+### slab/slub/slob system
+```C++
+static struct kmem_cache *task_struct_cachep;
+
+task_struct_cachep = kmem_cache_create("task_struct",
+      arch_task_struct_size, align,
+      SLAB_PANIC|SLAB_NOTRACK|SLAB_ACCOUNT, NULL);
+
+static inline struct task_struct *alloc_task_struct_node(int node)
+{
+  return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+}
+
+static inline void free_task_struct(struct task_struct *tsk)
+{
+  kmem_cache_free(task_struct_cachep, tsk);
+}
+
+// all caches will listed into LIST_HEAD(slab_caches)
+struct kmem_cache {
+  struct kmem_cache_cpu *cpu_slab;
+  struct kmem_cache_node *node[MAX_NUMNODES];
+  /* Used for retriving partial slabs etc */
+  unsigned long flags;
+  unsigned long min_partial;
+  int size;         /* The size of an object including meta data */
+  int object_size;  /* The size of an object without meta data */
+  int offset;       /* Free pointer offset. */
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+  int cpu_partial;  /* Number of per cpu partial objects to keep around */
+#endif
+  struct kmem_cache_order_objects oo;
+  /* Allocation and freeing of slabs */
+  struct kmem_cache_order_objects max;
+  struct kmem_cache_order_objects min;
+  gfp_t allocflags;  /* gfp flags to use on each alloc */
+  int refcount;      /* Refcount for slab cache destroy */
+  void (*ctor)(void *);
+  const char *name;       /* Name (only for display!) */
+  struct list_head list;  /* List of slab caches */
+};
+
+struct kmem_cache_cpu {
+  void **freelist;    /* Pointer to next available object */
+  struct page *page;  /* The slab from which we are allocating */
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+  struct page *partial;  /* Partially allocated frozen slabs */
+#endif
+  unsigned long tid;     /* Globally unique transaction id */
+};
+
+struct kmem_cache_node {
+  spinlock_t list_lock;
+#ifdef CONFIG_SLUB
+  unsigned long nr_partial;
+  struct list_head partial;
+#endif
+};
+```
+![linux-mem-kmem-cache.png](../Images/linux-mem-kmem-cache.png)
+
+```C++
+// alloc_task_struct_node -> kmem_cache_alloc_node
+static void *slab_alloc_node(struct kmem_cache *s,
+    gfp_t gfpflags, int node, unsigned long addr)
+{
+  void *object;
+  struct kmem_cache_cpu *c;
+  struct page *page;
+  unsigned long tid;
+
+  tid = this_cpu_read(s->cpu_slab->tid);
+  c = raw_cpu_ptr(s->cpu_slab);
+
+  object = c->freelist;
+  page = c->page;
+  if (unlikely(!object || !node_match(page, node))) {
+    object = __slab_alloc(s, gfpflags, node, addr, c);
+    stat(s, ALLOC_SLOWPATH);
+  } else {
+    /* update the freelist and tid to new values */
+    void *next_object = get_freepointer_safe(s, object);
+    if (unlikely(!this_cpu_cmpxchg_double(
+        s->cpu_slab->freelist, s->cpu_slab->tid,
+        object, tid,
+        next_object, next_tid(tid)))) {
+      note_cmpxchg_failure("slab_alloc", s, tid);
+      goto redo;
+    }
+    prefetch_freepointer(s, next_object);
+    stat(s, ALLOC_FASTPATH);
+  }
+  return object;
+}
+
+static void *__slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
+        unsigned long addr, struct kmem_cache_cpu *c)
+{
+  void *freelist;
+  struct page *page;
+redo:
+  // 1. try freelist again in case of cpu migration or IRQ
+  freelist = c->freelist;
+  if (freelist)
+    goto load_freelist;
+
+  freelist = get_freelist(s, page);
+  if (!freelist) {
+    c->page = NULL;
+    stat(s, DEACTIVATE_BYPASS);
+    goto new_slab;
+  }
+
+load_freelist:
+  c->freelist = get_freepointer(s, freelist);
+  c->tid = next_tid(c->tid);
+  return freelist;
+
+new_slab:
+  // 2. replace cpu page with partial
+  if (slub_percpu_partial(c)) {
+    page = c->page = slub_percpu_partial(c);
+    slub_set_percpu_partial(c, page);
+    stat(s, CPU_PARTIAL_ALLOC);
+    goto redo;
+  }
+
+  // 3. need alloc new slak objects
+  freelist = new_slab_objects(s, gfpflags, node, &c);
+  return freeli
+}
+
+static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
+      int node, struct kmem_cache_cpu **pc)
+{
+  void *freelist;
+  struct kmem_cache_cpu *c = *pc;
+  struct page *page;
+
+  // 3.1. get partial from kmem_cache_node indexed by node
+  freelist = get_partial(s, flags, node, c); // -> get_partial_node()
+  if (freelist)
+    return freelist;
+
+  // 3.2. no memory in kmem_cache_node, alloc new
+  page = new_slab(s, flags, node);
+  if (page) {
+    c = raw_cpu_ptr(s->cpu_slab);
+    if (c->page)
+      flush_slab(s, c);
+
+    freelist = page->freelist;
+    page->freelist = NULL;
+
+    stat(s, ALLOC_SLAB);
+    c->page = page;
+    *pc = c;
+  } else
+    freelist = NULL;
+
+  return freelis
+}
+
+static void *get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
+        struct kmem_cache_cpu *c, gfp_t flags)
+{
+  struct page *page, *page2;
+  void *object = NULL;
+  int available = 0;
+  int objects;
+
+  list_for_each_entry_safe(page, page2, &n->partial, lru) {
+    void *t;
+    t = acquire_slab(s, n, page, object == NULL, &objects);
+    if (!t)
+      break;
+
+    available += objects;
+    if (!object) {
+      c->page = page;
+      stat(s, ALLOC_FROM_PARTIAL);
+      object = t;
+    } else {
+      put_cpu_partial(s, page, 0);
+      stat(s, CPU_PARTIAL_NODE);
+    }
+    if (!kmem_cache_has_cpu_partial(s)
+      || available > slub_cpu_partial(s) / 2)
+      break;
+  }
+
+  return object;
+}
+
+static inline void *acquire_slab(struct kmem_cache *s,
+    struct kmem_cache_node *n, struct page *page,
+    int mode, int *objects)
+{
+  void *freelist;
+  unsigned long counters;
+  struct page new;
+
+  freelist = page->freelist;
+  counters = page->counters;
+  new.counters = counters;
+  *objects = new.objects - new.inuse;
+  if (mode) {
+    new.inuse = page->objects;
+    new.freelist = NULL;
+  } else {
+    new.freelist = freelist;
+  }
+
+  new.frozen = 1;
+
+  if (!__cmpxchg_double_slab(s, page,
+      freelist, counters,
+      new.freelist, new.counters,
+      "acquire_slab"))
+    return NULL;
+
+  remove_partial(n, page);
+  return freelist;
+}
+
+// new_slab_objects -> new_slab, no memory in kmem_cache_node
+static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
+{
+  struct page *page;
+  struct kmem_cache_order_objects oo = s->oo;
+  gfp_t alloc_gfp;
+  void *start, *p;
+  int idx, order;
+  bool shuffle;
+
+  flags &= gfp_allowed_mask;
+
+  page = alloc_slab_page(s, alloc_gfp, node, oo);
+  if (unlikely(!page)) {
+    oo = s->min;
+    alloc_gfp = flags;
+
+    page = alloc_slab_page(s, alloc_gfp, node, oo);
+    if (unlikely(!page))
+      goto out;
+    stat(s, ORDER_FALLBACK);
+  }
+  return page;
+}
+
+static inline struct page *alloc_slab_page(struct kmem_cache *s,
+    gfp_t flags, int node, struct kmem_cache_order_objects oo)
+{
+  struct page *page;
+  unsigned int order = oo_order(oo);
+
+  if (node == NUMA_NO_NODE)
+    page = alloc_pages(flags, order);
+  else
+    page = __alloc_pages_node(node, flags, order);
+
+  if (page && charge_slab_page(page, flags, order, s)) {
+    __free_pages(page, order);
+    page = NULL;
+  }
+
+  return page;
+}
+```
+![linux-mem-slub-structure.png](../Images/linux-mem-slub-structure.png)
+
+![linux-mem-mng.png](../Images/linux-mem-mng.png)
+### Reference:
+[slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
+
+### kswapd
+```C++
+//1. actice page out when alloc
+get_page_from_freelist();
+    node_reclaim();
+        __node_reclaim();
+            shrink_node();
+
+// 2. positive page out by kswapd
+static int kswapd(void *p)
+{
+  unsigned int alloc_order, reclaim_order;
+  unsigned int classzone_idx = MAX_NR_ZONES - 1;
+  pg_data_t *pgdat = (pg_data_t*)p;
+  struct task_struct *tsk = current;
+
+  for ( ; ; ) {
+    kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
+        classzone_idx);
+    reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
+  }
+}
+// balance_pgdat->kswapd_shrink_node->shrink_node
+
+/* This is a basic per-node page freer.  Used by both kswapd and direct reclaim. */
+static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memcg,
+            struct scan_control *sc, unsigned long *lru_pages)
+{
+  unsigned long nr[NR_LRU_LISTS];
+  enum lru_list lru;
+
+  while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
+          nr[LRU_INACTIVE_FILE]) {
+    unsigned long nr_anon, nr_file, percentage;
+    unsigned long nr_scanned;
+
+    for_each_evictable_lru(lru) {
+      if (nr[lru]) {
+        nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
+        nr[lru] -= nr_to_scan;
+
+        nr_reclaimed += shrink_list(lru, nr_to_scan,
+                  lruvec, memcg, sc);
+      }
+    }
+  }
+}
+
+/* There are two kinds pages:
+ * Anonynmous page: mapped to virtual address space
+ * File mapped page: mapped to both virtual address space and a file.
+ *
+ * Each kind page has active and inactive queues. */
+enum lru_list {
+  LRU_INACTIVE_ANON = LRU_BASE,
+  LRU_ACTIVE_ANON   = LRU_BASE + LRU_ACTIVE,
+
+  LRU_INACTIVE_FILE = LRU_BASE + LRU_FILE,
+  LRU_ACTIVE_FILE   = LRU_BASE + LRU_FILE + LRU_ACTIVE,
+
+  LRU_UNEVICTABLE,
+  NR_LRU_LISTS
+};
+
+#define for_each_evictable_lru(lru) for (lru = 0; lru <= LRU_ACTIVE_FILE; lru++)
+
+static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
+         struct lruvec *lruvec, struct mem_cgroup *memcg,
+         struct scan_control *sc)
+{
+  if (is_active_lru(lru)) {
+    if (inactive_list_is_low(lruvec, is_file_lru(lru),
+           memcg, sc, true))
+      shrink_active_list(nr_to_scan, lruvec, sc, lru);
+    return 0;
+  }
+
+  return shrink_inactive_list(nr_to_scan, lruvec, sc, lru);
+}
+```
 
 ### malloc
 ```C++
@@ -186,72 +895,156 @@ set_brk:
 out:
   retval = mm->brk;
   return retval
+}
 ```
 
 ### mmap
 ```C++
-// Linux mmap implementation
-ksys_mmap_pgoff(); // mm/mmap.c
-    vm_mmap_pgoff();
-        do_mmap_pgoff();
-            do_mmap();
-                get_unmapped_area() {
-                    unsigned long (*get_area)(struct file *, unsigned long, unsigned long,
-                        unsigned long, unsigned long);
-                    get_area = current->mm->get_unmapped_area;   // 1. anonymous mapping
-                    if (file) {
-                        get_area = file->f_op->get_unmapped_area; // 2. file mapping
-                    } else if (flags & MAP_SHARED) {
-                        get_area = shmem_get_unmapped_area;      // 3. shmem mapping
-                    }
-                    addr = get_area(file, addr, len, pgoff, flags);
-                }
-                mmap_region() {
-                    vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
-                            NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX);
-                    if (vma)
-                        goto out;
+struct mm_struct {
+  struct vm_area_struct *mmap;    /* list of VMAs */
+  pgd_t * pgd;
+}
 
-                    vma = vm_area_alloc(mm);
-                    if (!vma) {
-                        error = -ENOMEM;
-                        goto unacct_error;
-                    }
+struct vm_area_struct {
+  /* For areas with an address space and backing store,
+   * linkage into the address_space->i_mmap interval tree. */
+  struct {
+    struct rb_node rb;
+    unsigned long rb_subtree_last;
+  } shared;
 
-                    vma->vm_start = addr;
-                    vma->vm_end = addr + len;
-                    vma->vm_flags = vm_flags;
-                    vma->vm_page_prot = vm_get_page_prot(vm_flags);
-                    vma->vm_pgoff = pgoff;
+  /* A file's MAP_PRIVATE vma can be in both i_mmap tree and anon_vma list
+   * An anonymous MAP_PRIVATE, stack or brk vma can only be in an anon_vma list.
+   * A MAP_SHARED vma can only be in the i_mmap tree. */
+  struct list_head anon_vma_chain;
+  struct anon_vma *anon_vma;
 
-                    if (file) {
-                        if (vm_flags & VM_DENYWRITE) {
-                            error = deny_write_access(file);
-                        }
-                        if (vm_flags & VM_SHARED) {
-                            error = mapping_map_writable(file->f_mapping);
-                        }
-                        vma->vm_file = get_file(file); // map file to vma
-                        error = call_mmap(file, vma) {
-                            file->f_op->mmap(file, vma) {
-                                ext4_file_mmap() {
-                                    vma->vm_ops = &ext4_file_vm_ops; // map file ops to vma ops
-                                }
-                            }
-                        }
-                    } else if (vm_flags & VM_SHARED) {
-                        error = shmem_zero_setup(vma);
-                    } else {
-                        vma_set_anonymous(vma);
-                    }
+  const struct vm_operations_struct *vm_ops;
 
-                    vma_link(mm, vma, prev, rb_link, rb_parent) {
-                        __vma_link(mm, vma, prev, rb_link, rb_parent);
-                        __vma_link_file(vma) {
-                            vma_interval_tree_insert(vma, &mapping->i_mmap); // map file to vma
-                        }
-                    }
-                }
+  unsigned long vm_pgoff;  /* Offset (within vm_file) in PAGE_SIZE units */
+  struct file * vm_file;    /* File we map to (can be NULL). */
+  void * vm_private_data; /* was vm_pte (shared mem) */
+}
+
+SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
+                unsigned long, prot, unsigned long, flags,
+                unsigned long, fd, unsigned long, off)
+{
+  error = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
+}
+
+SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
+    unsigned long, prot, unsigned long, flags,
+    unsigned long, fd, unsigned long, pgoff)
+{
+  struct file *file = NULL;
+
+  file = fget(fd);
+
+  retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
+  return retval;
+}
+
+//  vm_mmap_pgoff->do_mmap_pgoff->do_mmap
+// 1. get_unmapped_area
+unsigned long
+get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
+    unsigned long pgoff, unsigned long flags)
+{
+  unsigned long (*get_area)(struct file *, unsigned long,
+          unsigned long, unsigned long, unsigned long);
+  get_area = current->mm->get_unmapped_area;
+  if (file) {
+    if (file->f_op->get_unmapped_area)
+      get_area = file->f_op->get_unmapped_area;
+  }
+}
+
+const struct file_operations ext4_file_operations = {
+  .mmap           = ext4_file_mmap
+  .get_unmapped_area = thp_get_unmapped_area,
+};
+
+unsigned long __thp_get_unmapped_area(struct file *filp, unsigned long len,
+                loff_t off, unsigned long flags, unsigned long size)
+{
+  unsigned long addr;
+  loff_t off_end = off + len;
+  loff_t off_align = round_up(off, size);
+  unsigned long len_pad;
+  len_pad = len + size;
+
+  addr = current->mm->get_unmapped_area(filp, 0, len_pad,
+                                        off >> PAGE_SHIFT, flags);
+  addr += (off - addr) & (size - 1);
+  return addr;
+}
+
+// 2. mmap_region
+unsigned long mmap_region(struct file *file, unsigned long addr,
+    unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
+    struct list_head *uf)
+{
+  struct mm_struct *mm = current->mm;
+  struct vm_area_struct *vma, *prev;
+  struct rb_node **rb_link, *rb_parent;
+
+  vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
+      NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX);
+  if (vma)
+    goto out;
+
+  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
+  if (!vma) {
+    error = -ENOMEM;
+    goto unacct_error;
+  }
+
+  vma->vm_mm = mm;
+  vma->vm_start = addr;
+  vma->vm_end = addr + len;
+  vma->vm_flags = vm_flags;
+  vma->vm_page_prot = vm_get_page_prot(vm_flags);
+  vma->vm_pgoff = pgoff;
+  INIT_LIST_HEAD(&vma->anon_vma_chain);
+
+  if (file) {
+    vma->vm_file = get_file(file);
+    error = call_mmap(file, vma);
+    addr = vma->vm_start;
+    vm_flags = vma->vm_flags;
+  }
+  vma_link(mm, vma, prev, rb_link, rb_parent);
+  return addr;
+}
+
+static inline int call_mmap(struct file *file, struct vm_area_struct *vma)
+{
+  return file->f_op->mmap(file, vma);
+}
+
+static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
+{
+  vma->vm_ops = &ext4_file_vm_ops;
+}
+
+struct address_space {
+  struct inode    *host;
+  /* tree of private and shared mappings. e.g., vm_area_struct */
+  struct rb_root    i_mmap;
+  const struct address_space_operations *a_ops;
+}
+
+static void __vma_link_file(struct vm_area_struct *vma)
+{
+  struct file *file;
+
+  file = vma->vm_file;
+  if (file) {
+    struct address_space *mapping = file->f_mapping;
+    vma_interval_tree_insert(vma, &mapping->i_mmap);
+  }
+}
 ```
 ![linux-mem-ptb.png](../Images/linux-mem-ptb.png)
 
@@ -277,419 +1070,248 @@ struct address_space {
   void      *private_data;
 };
 
-do_page_fault() {
-    __do_page_fault();
-        vmalloc_fault(address) { // fault in kernel
+dotraplinkage void notrace
+do_page_fault(struct pt_regs *regs, unsigned long error_code)
+{
+  unsigned long address = read_cr2(); /* Get the faulting address */
+  __do_page_fault(regs, error_code, address);
 
-        }
-
-        handle_mm_fault(vma, address, flags); // fault in usr space
-            handle_pte_fault(&vmf);
-                do_anonymous_page(vmf) { // 1. map physical memory
-                    pte_alloc(); // alloc a page table item
-                    alloc_zeroed_user_highpage_movable() {
-                        alloc_pages_vma();
-                        __alloc_pages_nodemask(); // alloc psyhic memory
-                            --->
-                    }
-                    mk_pte(page, vma->vm_page_prot);
-                    set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
-                }
-
-                do_fault(vmf) {          // 2. map to a file
-                    __do_fault() {
-                        vma->vm_ops->fault(vmf) {
-                            ext4_filemap_fault() {
-                                struct inode *inode = file_inode(vmf->vma->vm_file);
-                                filemap_fault(vmf) {
-                                    struct file *file = vmf->vma->vm_file;
-                                    struct address_space *mapping = file->f_mapping;
-                                    struct inode *inode = mapping->host;
-                                    pgoff_t offset = vmf->pgoff;
-                                    struct page *page; // page cache in physic of the file
-                                    int ret = 0;
-
-                                    page = find_get_page(mapping, offset);
-                                    if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
-                                        do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
-                                    } else if (!page) {
-                                        goto no_cached_page;
-                                    }
-
-                                    vmf->page = page;
-                                    return ret | VM_FAULT_LOCKED;
-
-                                    no_cached_page:
-                                    page_cache_read(file, offset, vmf->gfp_mask) {
-                                        struct address_space *mapping = file->f_mapping;
-                                        struct page *page;
-                                        page = __page_cache_alloc(gfp_mask|__GFP_COLD);
-                                        ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
-                                        ret = mapping->a_ops->readpage(file, page) {
-                                            struct address_space *mapping = file->f_mapping;
-                                            struct page *page;
-                                            page = __page_cache_alloc(gfp_mask|__GFP_COLD);
-                                            ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
-                                            ret = mapping->a_ops->readpage(file, page) {
-                                                ext4_read_inline_page(inode, page) {
-                                                    void *kaddr = kmap_atomic(page);
-                                                    ret = ext4_read_inline_data(inode, kaddr, len, &iloc);
-                                                    flush_dcache_page(page);
-                                                    kunmap_atomic(kaddr);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                do_swap_page(vmf) {      // 3. map to swap
-                    struct vm_area_struct *vma = vmf->vma;
-                    struct page *page, *swapcache;
-                    struct mem_cgroup *memcg;
-                    swp_entry_t entry;
-                    pte_t pte;
-                    entry = pte_to_swp_entry(vmf->orig_pte);
-                    page = lookup_swap_cache(entry);
-                    if (!page) {
-                        page = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE, vma, vmf->address) {
-                            int swap_readpage(struct page *page, bool do_poll) {
-                                struct bio *bio;
-                                int ret = 0;
-                                struct swap_info_struct *sis = page_swap_info(page);
-                                blk_qc_t qc;
-                                struct block_device *bdev;
-                                if (sis->flags & SWP_FILE) {
-                                    struct file *swap_file = sis->swap_file;
-                                    struct address_space *mapping = swap_file->f_mapping;
-                                    ret = mapping->a_ops->readpage(swap_file, page);
-                                    return ret;
-                                }
-                            }
-                        }
-                    }
-                    swapcache = page;
-                    pte = mk_pte(page, vma->vm_page_prot);
-                    set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
-                    vmf->orig_pte = pte;
-                    swap_free(entry);
-                }
 }
 
-
-static struct mm_struct *dup_mm(struct task_struct *tsk)
+static noinline void
+__do_page_fault(struct pt_regs *regs, unsigned long error_code,
+    unsigned long address)
 {
-  struct mm_struct *mm, *oldmm = current->mm;
-  mm = allocate_mm() {
-      kmem_cache_alloc(mm_cachep, GFP_KERNEL);
+  struct vm_area_struct *vma;
+  struct task_struct *tsk;
+  struct mm_struct *mm;
+  tsk = current;
+  mm = tsk->mm;
+
+  if (unlikely(fault_in_kernel_space(address))) {
+    if (vmalloc_fault(address) >= 0)
+      return;
   }
-  memcpy(mm, oldmm, sizeof(*mm));
-  mm_init(mm, tsk, mm->usr_ns) {
-        mm_alloc_pgd(mm) {
-            mm->pdg = pgd_alloc() { // arch/x86/mm/pgtable.c
-                pgd_t *pgd = _pgd_alloc();
-                pgd_ctor(mm, pgd) {
-                    if (CONFIG_PGTABLE_LEVELS == 2 ||
-                        (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD) ||
-                        CONFIG_PGTABLE_LEVELS >= 4) {
-                        clone_pgd_range(pgd + KERNEL_PGD_BOUNDARY,
-                            swapper_pg_dir + KERNEL_PGD_BOUNDARY,
-                            KERNEL_PGD_PTRS);
-                    }
-                }
-            }
-        }
+
+  /* vmalloc_fault if fault in kernel */
+
+  vma = find_vma(mm, address);
+  fault = handle_mm_fault(vma, address, flags);
+}
+
+static int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
+    unsigned int flags)
+{
+  struct vm_fault vmf = {
+    .vma = vma,
+    .address = address & PAGE_MASK,
+    .flags = flags,
+    .pgoff = linear_page_index(vma, address),
+    .gfp_mask = __get_fault_gfp_mask(vma),
+  };
+
+  struct mm_struct *mm = vma->vm_mm;
+  pgd_t *pgd;
+  p4d_t *p4d;
+  int ret;
+
+  pgd = pgd_offset(mm, address);
+  p4d = p4d_alloc(mm, pgd, address);
+
+  vmf.pud = pud_alloc(mm, p4d, address);
+  vmf.pmd = pmd_alloc(mm, vmf.pud, address);
+
+  return handle_pte_fault(&vmf);
+}
+
+static int handle_pte_fault(struct vm_fault *vmf)
+{
+  pte_t entry;
+  vmf->pte = pte_offset_map(vmf->pmd, vmf->address);
+  vmf->orig_pte = *vmf->pte;
+
+  if (!vmf->pte) {
+    if (vma_is_anonymous(vmf->vma))
+      return do_anonymous_page(vmf);
+    else
+      return do_fault(vmf);
   }
-  err = dup_mmap(mm, oldmm);
-  return mm;
+
+  if (!pte_present(vmf->orig_pte))
+    return do_swap_page(vmf);
+}
+
+// 1. map to anonymouse page
+static int do_anonymous_page(struct vm_fault *vmf)
+{
+  struct vm_area_struct *vma = vmf->vma;
+  struct mem_cgroup *memcg;
+  struct page *page;
+  int ret = 0;
+  pte_t entry;
+
+  if (pte_alloc(vma->vm_mm, vmf->pmd, vmf->address))
+    return VM_FAULT_OOM;
+
+  page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+  entry = mk_pte(page, vma->vm_page_prot);
+  if (vma->vm_flags & VM_WRITE)
+    entry = pte_mkwrite(pte_mkdirty(entry));
+
+  vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
+      &vmf->ptl);
+  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+}
+
+// 2. map to a file
+static int __do_fault(struct vm_fault *vmf)
+{
+  struct vm_area_struct *vma = vmf->vma;
+  int ret;
+  ret = vma->vm_ops->fault(vmf);
+  return ret;
+}
+
+static const struct vm_operations_struct ext4_file_vm_ops = {
+  .fault    = ext4_filemap_fault,
+  .map_pages  = filemap_map_pages,
+  .page_mkwrite   = ext4_page_mkwrite,
+};
+
+int ext4_filemap_fault(struct vm_fault *vmf)
+{
+  struct inode *inode = file_inode(vmf->vma->vm_file);
+  err = filemap_fault(vmf);
+  return err;
+}
+
+int filemap_fault(struct vm_fault *vmf)
+{
+  int error;
+  struct file *file = vmf->vma->vm_file;
+  struct address_space *mapping = file->f_mapping;
+  struct inode *inode = mapping->host;
+  pgoff_t offset = vmf->pgoff;
+  struct page *page;
+  int ret = 0;
+
+  page = find_get_page(mapping, offset);
+  if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
+    do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
+  } else if (!page) {
+    goto no_cached_page;
+  }
+
+  vmf->page = page;
+  return ret | VM_FAULT_LOCKED;
+no_cached_page:
+  error = page_cache_read(file, offset, vmf->gfp_mask);
+}
+
+static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
+{
+  struct address_space *mapping = file->f_mapping;
+  struct page *page;
+
+  page = __page_cache_alloc(gfp_mask|__GFP_COLD);
+  ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
+  ret = mapping->a_ops->readpage(file, page);
+}
+
+static const struct address_space_operations ext4_aops = {
+  .readpage    = ext4_readpage,
+  .readpages    = ext4_readpages,
+};
+
+static int ext4_read_inline_page(struct inode *inode, struct page *page)
+{
+  void *kaddr;
+
+  kaddr = kmap_atomic(page);
+  ret = ext4_read_inline_data(inode, kaddr, len, &iloc);
+  flush_dcache_page(page);
+  kunmap_atomic(kaddr);
+}
+
+// 3. map to a swap
+int do_swap_page(struct vm_fault *vmf)
+{
+  struct vm_area_struct *vma = vmf->vma;
+  struct page *page, *swapcache;
+  struct mem_cgroup *memcg;
+  swp_entry_t entry;
+  pte_t pte;
+
+  entry = pte_to_swp_entry(vmf->orig_pte);
+  page = lookup_swap_cache(entry);
+  if (!page) {
+    page = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE, vma,
+          vmf->address);
+  }
+
+  swapcache = page;
+  pte = mk_pte(page, vma->vm_page_prot);
+  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
+  vmf->orig_pte = pte;
+  swap_free(entry);
+}
+
+int swap_readpage(struct page *page, bool do_poll)
+{
+  struct bio *bio;
+  int ret = 0;
+  struct swap_info_struct *sis = page_swap_info(page);
+  blk_qc_t qc;
+  struct block_device *bdev;
+
+  if (sis->flags & SWP_FILE) {
+    struct file *swap_file = sis->swap_file;
+    struct address_space *mapping = swap_file->f_mapping;
+    ret = mapping->a_ops->readpage(swap_file, page);
+    return ret;
+  }
 }
 ```
 ![linux-mem-page-fault.png](../Images/linux-mem-page-fault.png)
 
-### buddy system
+### pgd
 ```C++
-typedef struct pglist_data {
-  struct zone node_zones[MAX_NR_ZONES];
-  struct zonelist node_zonelists[MAX_ZONELISTS];
-  int nr_zones;
-  struct page *node_mem_map;
-  unsigned long node_start_pfn;
-  unsigned long node_present_pages; /* total number of physical pages */
-  unsigned long node_spanned_pages; /* total size of physical page range, including holes */
-  int node_id;
-} pg_data_t;
-
-
-struct zone {
-  struct pglist_data  *zone_pgdat;
-  struct per_cpu_pageset __percpu *pageset;
-
-  unsigned long    zone_start_pfn;
-
-  unsigned long    managed_pages;
-  unsigned long    spanned_pages;
-  unsigned long    present_pages;
-
-  const char    *name;
-  struct free_area  free_area[MAX_ORDER];
-  unsigned long    flags;
-  spinlock_t    lock;
-} ____cacheline_internodealigned_in_
-
-// Linux buddy system
-alloc_pages();
-    alloc_pages_current(gfp_mask, order);
-        struct mempolicy *pol = &default_policy;
-        struct page *page;
-        //
-        page = __alloc_pages_nodemask(gfp, order, policy_node(gfp, pol, numa_node_id()), policy_nodemask(gfp, pol));
-            get_page_from_freelist();
-                //
-                for_next_zone_zonelist_nodemask(zone, z, ac->zonelist, ac->high_zoneidx, ac->nodemask) {
-                    struct page *page;
-                    page = rmqueue(ac->preferred_zoneref->zone, zone, order, gfp_mask, alloc_flags, ac->migratetype);
-                        __rmqueue();
-                            rmqueue_smallest() {
-                                /* Find a page of the appropriate size in the preferred list */
-                                for (current_order = order; current_order < MAX_ORDER; ++current_order) {
-                                    area = &(zone->free_area[current_order]);
-                                    page = list_first_entry_or_null(&area->free_list[migratetype], struct page, lru);
-                                    if (!page)
-                                        continue;
-                                    list_del(&page->lru);
-                                    rmv_page_order(page);
-                                    area->nr_free--;
-                                    expand(zone, page, order, current_order, area, migratetype) {
-                                        unsigned long size = 1 << high;
-                                        while (high > low) {
-                                            area--;
-                                            high--;
-                                            size >>= 1;
-                                            list_add(&page[size].lru, &area->free_list[migratetype]);
-                                            area->nr_free++;
-                                            set_page_order(&page[size], high);
-                                        }
-                                    }
-
-                                    set_pcppage_migratetype(page, migratetype); return page;
-                                }
-                                return NULL;
-                            }
-                }
-        return page;
-```
-```C++
-struct kmem_cache {
-  struct kmem_cache_cpu __percpu *cpu_slab;
-  /* Used for retriving partial slabs etc */
-  unsigned long flags;
-  unsigned long min_partial;
-  int size;    /* The size of an object including meta data */
-  int object_size;  /* The size of an object without meta data */
-  int offset;    /* Free pointer offset. */
-#ifdef CONFIG_SLUB_CPU_PARTIAL
-  int cpu_partial;  /* Number of per cpu partial objects to keep around */
-#endif
-  struct kmem_cache_order_objects oo;
-  /* Allocation and freeing of slabs */
-  struct kmem_cache_order_objects max;
-  struct kmem_cache_order_objects min;
-  gfp_t allocflags;  /* gfp flags to use on each alloc */
-  int refcount;    /* Refcount for slab cache destroy */
-  void (*ctor)(void *);
-  const char *name;  /* Name (only for display!) */
-  struct list_head list;  /* List of slab caches */
-  struct kmem_cache_node *node[MAX_NUMNODES];
-};
-
-// all chches will put into LIST_HEAD(slab_caches)
-
-struct kmem_cache_cpu {
-  void **freelist;  /* Pointer to next available object */
-  unsigned long tid;  /* Globally unique transaction id */
-  struct page *page;  /* The slab from which we are allocating */
-#ifdef CONFIG_SLUB_CPU_PARTIAL
-  struct page *partial;  /* Partially allocated frozen slabs */
-#endif
-};
-
-
-struct kmem_cache_node {
-  spinlock_t list_lock;
-#ifdef CONFIG_SLUB
-  unsigned long nr_partial;
-  struct list_head partial;
-#endif
-};
-```
-![kmem_cache_cpu_node](../Images/kmem-cache-cpu-node.jpg)
-
-### slab/slub/slob system
-```C++
-// Linux slab/slub/slob system
-static struct kmem_cache *task_struct_cachep;
-
-static inline struct task_struct *alloc_task_struct_node(int node)
+/* alloc pgd in mm_struct when forking */
+static struct mm_struct *dup_mm(struct task_struct *tsk)
 {
-    return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+  struct mm_struct *mm, *oldmm = current->mm;
+  mm = allocate_mm();
+  memcpy(mm, oldmm, sizeof(*mm));
+  if (!mm_init(mm, tsk, mm->user_ns))
+    goto fail_nomem;
+  err = dup_mmap(mm, oldmm);
+  return mm;
+}
+// mm_init->
+static inline int mm_alloc_pgd(struct mm_struct *mm)
+{
+  mm->pgd = pgd_alloc(mm);
+  return 0;
 }
 
-static inline void free_task_struct(struct task_struct *tsk)
+static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 {
-    kmem_cache_free(task_struct_cachep, tsk);
+  /* If the pgd points to a shared pagetable level (either the
+     ptes in non-PAE, or shared PMD in PAE), then just copy the
+     references from swapper_pg_dir. */
+  if (CONFIG_PGTABLE_LEVELS == 2 ||
+      (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD) ||
+      CONFIG_PGTABLE_LEVELS >= 4) {
+    clone_pgd_range(pgd + KERNEL_PGD_BOUNDARY,
+        swapper_pg_dir + KERNEL_PGD_BOUNDARY,
+        KERNEL_PGD_PTRS);
+  }
 }
-
-
-alloc_task_struct_node();
-    kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
-        slab_alloc_node();
-            __slab_alloc() {
-                // 1. try freelist again in case of cpu migration or IRQ
-                freelist = get_freelist(s, page);
-
-                // 2. replace cpu page with partial
-                if (slub_percpu_partial(c)) {
-                    page = c->page = slub_percpu_partial(c); // c->partial
-                    slub_set_percpu_partial(c, page); // c->partical = page->next
-                    stat(s, CPU_PARTIAL_ALLOC);
-                    goto redo;
-                }
-
-                // 3. need alloc new slak objects
-               freelist = new_slab_objects(struct kmem_cache *s, gfp_t flags,
-                    int node, struct kmem_cache_cpu **pc)
-                {
-                    // 3.1. get partial from kmem_cache_node indexed by node
-                    freelist = get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
-                            struct kmem_cache_cpu *c, gfp_t flags)
-                    {
-                        struct page *page, *page2;
-                        void *object = NULL;
-                        int available = 0;
-                        int objects;
-                        list_for_each_entry_safe(page, page2, &n->partial, lru) {
-                            // get a page memory from kmem_cache_node, return its freelist
-                            void *t = acquire_slab(s, n, page, object == NULL, &objects);
-                            if (!t)
-                            break;
-
-                            available += objects;
-                            if (!object) {
-                                c->page = page;
-                                stat(s, ALLOC_FROM_PARTIAL);
-                                object = t;
-                            } else {
-                                put_cpu_partial(s, page, 0);
-                                stat(s, CPU_PARTIAL_NODE);
-                            }
-                            if (!kmem_cache_has_cpu_partial(s)
-                                || available > slub_cpu_partial(s) / 2)
-                                break;
-                        }
-                        return object;
-                    }
-                    if (freelist)
-                        return freelist;
-
-                    // 3.2. no memory in kmem_cache_node, alloc new
-                    page = new_slab(s, flags, node) {
-                        page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
-                        {
-                            struct page *page;
-                            struct kmem_cache_order_objects oo = s->oo;
-                            gfp_t alloc_gfp;
-                            void *start, *p;
-                            int idx, order;
-                            bool shuffle;
-                            flags &= gfp_allowed_mask;
-                            page = alloc_slab_page(s, alloc_gfp, node, oo);
-                            if (unlikely(!page)) {
-                                oo = s->min;
-                                alloc_gfp = flags;
-                                page = alloc_slab_page(s, alloc_gfp, node, oo);
-                                    __alloc_pages_node();
-                                        __alloc_pages(gfp_mask, order, nid);
-                                            __alloc_pages_nodemask();
-                                                --->
-
-                                if (unlikely(!page))
-                                    goto out;
-                                stat(s, ORDER_FALLBACK);
-                            }
-                            return page;
-                        }
-                    }
-                    if (page) {
-                        c = raw_cpu_ptr(s->cpu_slab);
-                        if (c->page)
-                            flush_slab(s, c);
-
-                        freelist = page->freelist;
-                        page->freelist = NULL;
-
-                        stat(s, ALLOC_SLAB);
-                        c->page = page;
-                        *pc = c;
-                    } else
-                        freelist = NULL;
-                    return freelis
-                }
 ```
-![linux-mem-mng.png](../Images/linux-mem-mng.png)
 
-### kswapd
-```C++
-//1. actice page out when alloc
-get_page_from_freelist();
-    node_reclaim();
-        __node_reclaim();
-            shrink_node();
-
-// 2. positive page out by kswapd
-static int kswapd(void *p)
-{
-  unsigned int alloc_order, reclaim_order;
-  unsigned int classzone_idx = MAX_NR_ZONES - 1;
-  pg_data_t *pgdat = (pg_data_t*)p;
-  struct task_struct *tsk = current;
-
-    for ( ; ; ) {
-
-        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
-            classzone_idx);
-
-        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
-
-    }
-}
-
-balance_pgdat();
-    kswapd_shrink_node();
-        shrink_node();
-            shrink_node_memcg();
-
-```
-![Linux Page State](../Images/linux-page-state.png)
-
-```C++
-// arch/x86/kernel/cpu/common.c
-DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
-    [GDT_ENTRY_KERNEL32_CS]    = GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
-    [GDT_ENTRY_KERNEL_CS]    = GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
-    [GDT_ENTRY_KERNEL_DS]    = GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
-    [GDT_ENTRY_DEFAULT_USER32_CS]  = GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
-    [GDT_ENTRY_DEFAULT_USER_DS]  = GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
-    [GDT_ENTRY_DEFAULT_USER_CS]  = GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
-}};
-
-#define __KERNEL_CS (GDT_ENTRY_KERNEL_CS*8)
-#define __KERNEL_DS (GDT_ENTRY_KERNEL_DS*8)
-#define __USER_DS (GDT_ENTRY_DEFAULT_USER_DS*8 + 3)
-#define __USER_CS (GDT_ENTRY_DEFAULT_USER_CS*8 + 3)
-
-```
+### Q:
+1. Does different kmem_cache share the same kmem_cache_cpu?
+2. Where does `struct kmem_cache_cpu __percpu *cpu_slab;` stored in each cpu?
 
 # File Management
 ![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
