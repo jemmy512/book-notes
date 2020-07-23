@@ -49,7 +49,9 @@ schedule(void)
     __schedule(false), // kernel/sched/core.c
         pick_next_task(rq, prev, &rf);
         context_switch(rq, prev, next, &rf);
-            switch_mm_irqs_off(prev->active_mm, next->mm, next);
+            switch_mm_irqs_off(prev->active_mm, next->mm, next) {
+              load_new_mm_cr3()
+            }
             switch_to(prev, next, prev);
                 __switch_to_asm(); // switch registers, but not EIP [arch/x86/entry/entry_64.S]
                     __switch_to(); // switch stack [arch/x86/kernel/process_32.c]
@@ -158,8 +160,6 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 
 ![linux-mem-page-table.png](../Images/linux-mem-page-table.png)
 
-![linux-mem-vm.png](../Images/linux-mem-vm.png)
-
 ### user space
 ```C++
 
@@ -182,20 +182,21 @@ config PAGE_OFFSET
 #define TASK_SIZE_MAX  ((1UL << 47) - PAGE_SIZE)
 #define TASK_SIZE    (test_thread_flag(TIF_ADDR32) ? \
           IA32_PAGE_OFFSET : TASK_SIZE_MAX)
-// mm_struct
-unsigned long mmap_base;  /* base of mmap area */
-unsigned long total_vm;    /* Total pages mapped */
-unsigned long locked_vm;  /* Pages that have PG_mlocked set */
-unsigned long pinned_vm;  /* Refcount permanently increased */
-unsigned long data_vm;    /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
-unsigned long exec_vm;    /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
-unsigned long stack_vm;    /* VM_STACK */
-unsigned long start_code, end_code, start_data, end_data;
-unsigned long start_brk, brk, start_stack;
-unsigned long arg_start, arg_end, env_start, env_end;
+struct mm_struct {
+  unsigned long mmap_base;  /* base of mmap area */
+  unsigned long total_vm;   /* Total pages mapped */
+  unsigned long locked_vm;  /* Pages that have PG_mlocked set */
+  unsigned long pinned_vm;  /* Refcount permanently increased */
+  unsigned long data_vm;    /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
+  unsigned long exec_vm;    /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
+  unsigned long stack_vm;   /* VM_STACK */
+  unsigned long start_code, end_code, start_data, end_data;
+  unsigned long start_brk, brk, start_stack;
+  unsigned long arg_start, arg_end, env_start, env_end;
 
-struct vm_area_struct *mmap;    /* list of VMAs */
-struct rb_root mm_rb;
+  struct vm_area_struct *mmap;    /* list of VMAs */
+  struct rb_root mm_rb;
+};
 
 struct vm_area_struct {
   /* The first cache line has the info for VMA tree walking. */
@@ -242,6 +243,8 @@ static int load_elf_binary(struct linux_binprm *bprm)
   current->mm->start_stack = bprm->p;
 }
 ```
+![linux-mem-vm.png](../Images/linux-mem-vm.png)
+
 
 ### kernel
 ```C++
@@ -880,12 +883,6 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
 
     /* Ok, looks good - let it rip. */
     if (do_brk(oldbrk, newbrk-oldbrk, &uf) < 0)
-        do_brk_flags();
-            find_vma_links();
-            vma_merge();
-            kmem_cache_zalloc();
-            INIT_LIST_HEAD(&vma->anon_vma_chain);
-            vma_link(mm, vma, prev, rb_link, rb_parent); // insert mm_struct rb_mm;
         goto out;
 
 set_brk:
@@ -895,6 +892,50 @@ set_brk:
 out:
   retval = mm->brk;
   return retval
+}
+
+static int do_brk(unsigned long addr, unsigned long len, struct list_head *uf)
+{
+  return do_brk_flags(addr, len, 0, uf);
+}
+
+static int do_brk_flags(unsigned long addr, unsigned long request,
+  unsigned long flags, struct list_head *uf)
+{
+  struct mm_struct *mm = current->mm;
+  struct vm_area_struct *vma, *prev;
+  unsigned long len;
+  struct rb_node **rb_link, *rb_parent;
+  pgoff_t pgoff = addr >> PAGE_SHIFT;
+  int error;
+
+  len = PAGE_ALIGN(request);
+
+  find_vma_links(mm, addr, addr + len, &prev, &rb_link,
+            &rb_parent);
+
+  vma = vma_merge(mm, prev, addr, addr + len, flags,
+      NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
+  if (vma)
+    goto out;
+
+  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
+  INIT_LIST_HEAD(&vma->anon_vma_chain);
+  vma->vm_mm = mm;
+  vma->vm_start = addr;
+  vma->vm_end = addr + len;
+  vma->vm_pgoff = pgoff;
+  vma->vm_flags = flags;
+  vma->vm_page_prot = vm_get_page_prot(flags);
+  vma_link(mm, vma, prev, rb_link, rb_parent);
+out:
+  perf_event_mmap(vma);
+  mm->total_vm += len >> PAGE_SHIFT;
+  mm->data_vm += len >> PAGE_SHIFT;
+  if (flags & VM_LOCKED)
+    mm->locked_vm += (len >> PAGE_SHIFT);
+  vma->vm_flags |= VM_SOFTDIRTY;
+  return 0;
 }
 ```
 
@@ -946,6 +987,20 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
 }
 
 //  vm_mmap_pgoff->do_mmap_pgoff->do_mmap
+unsigned long do_mmap(struct file *file, unsigned long addr,
+      unsigned long len, unsigned long prot,
+      unsigned long flags, vm_flags_t vm_flags,
+      unsigned long pgoff, unsigned long *populate,
+      struct list_head *uf)
+{
+  addr = get_unmapped_area(file, addr, len, pgoff, flags);
+  if (IS_ERR_VALUE(addr))
+    return addr;
+
+  addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
+  return addr;
+}
+
 // 1. get_unmapped_area
 unsigned long
 get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
@@ -1031,7 +1086,7 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 struct address_space {
   struct inode    *host;
   /* tree of private and shared mappings. e.g., vm_area_struct */
-  struct rb_root    i_mmap;
+  struct rb_root    i_mmap; // link the vma to the file
   const struct address_space_operations *a_ops;
 }
 
@@ -1070,12 +1125,31 @@ struct address_space {
   void      *private_data;
 };
 
-dotraplinkage void notrace
-do_page_fault(struct pt_regs *regs, unsigned long error_code)
+dotraplinkage void
+do_page_fault(struct pt_regs *regs, unsigned long hw_error_code,
+    unsigned long address)
 {
-  unsigned long address = read_cr2(); /* Get the faulting address */
-  __do_page_fault(regs, error_code, address);
+  if (unlikely(fault_in_kernel_space(address)))
+    do_kern_addr_fault(regs, hw_error_code, address);
+  else
+    do_user_addr_fault(regs, hw_error_code, address);
+}
 
+static inline
+void do_user_addr_fault(struct pt_regs *regs,
+      unsigned long hw_error_code,
+      unsigned long address)
+{
+  struct vm_area_struct *vma;
+  struct task_struct *tsk;
+  struct mm_struct *mm;
+  vm_fault_t fault, major = 0;
+  unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+
+  tsk = current;
+  mm = tsk->mm;
+
+  __do_page_fault(regs, error_code, address);
 }
 
 static noinline void
@@ -1092,8 +1166,6 @@ __do_page_fault(struct pt_regs *regs, unsigned long error_code,
     if (vmalloc_fault(address) >= 0)
       return;
   }
-
-  /* vmalloc_fault if fault in kernel */
 
   vma = find_vma(mm, address);
   fault = handle_mm_fault(vma, address, flags);
@@ -1142,6 +1214,8 @@ static int handle_pte_fault(struct vm_fault *vmf)
 }
 
 // 1. map to anonymouse page
+/* do_anonymous_page -> pte_alloc -> alloc_zeroed_user_highpage_movable ->
+ * alloc_pages_vma -> __alloc_pages_nodemask */
 static int do_anonymous_page(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
@@ -1167,6 +1241,12 @@ static int do_anonymous_page(struct vm_fault *vmf)
 static int __do_fault(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
+  if (pmd_none(*vmf->pmd) && !vmf->prealloc_pte) {
+    vmf->prealloc_pte = pte_alloc_one(vmf->vma->vm_mm);
+    if (!vmf->prealloc_pte)
+      return VM_FAULT_OOM;
+    smp_wmb(); /* See comment in __pte_alloc() */
+  }
   int ret;
   ret = vma->vm_ops->fault(vmf);
   return ret;
@@ -1256,6 +1336,7 @@ int do_swap_page(struct vm_fault *vmf)
   swap_free(entry);
 }
 
+// swapin_readahead ->
 int swap_readpage(struct page *page, bool do_poll)
 {
   struct bio *bio;
@@ -1275,6 +1356,7 @@ int swap_readpage(struct page *page, bool do_poll)
 ![linux-mem-page-fault.png](../Images/linux-mem-page-fault.png)
 
 ### pgd
+`cr3` register points to current process's `pgd`, which is set by `load_new_mm_cr3`.
 ```C++
 /* alloc pgd in mm_struct when forking */
 static struct mm_struct *dup_mm(struct task_struct *tsk)
@@ -1309,9 +1391,226 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 }
 ```
 
+### kernel mapping
+```C++
+// arch/x86/include/asm/pgtable_64.h
+extern pud_t level3_kernel_pgt[512];
+extern pud_t level3_ident_pgt[512];
+
+extern pmd_t level2_kernel_pgt[512];
+extern pmd_t level2_fixmap_pgt[512];
+extern pmd_t level2_ident_pgt[512];
+
+extern pte_t level1_fixmap_pgt[512];
+extern pgd_t init_top_pgt[];
+
+#define swapper_pg_dir init_top_pgt
+
+// arch\x86\kernel\head_64.S
+__INITDATA
+NEXT_PAGE(init_top_pgt)
+  .quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
+  .org    init_top_pgt + PGD_PAGE_OFFSET*8, 0
+  .quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
+  .org    init_top_pgt + PGD_START_KERNEL*8, 0
+  /* (2^48-(2*1024*1024*1024))/(2^39) = 511 */
+  .quad   level3_kernel_pgt - __START_KERNEL_map + _PAGE_TABLE
+
+NEXT_PAGE(level3_ident_pgt)
+  .quad  level2_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
+  .fill  511, 8, 0
+NEXT_PAGE(level2_ident_pgt)
+  /* Since I easily can, map the first 1G.
+   * Don't set NX because code runs from these pages.
+   */
+  PMDS(0, __PAGE_KERNEL_IDENT_LARGE_EXEC, PTRS_PER_PMD)
+
+
+NEXT_PAGE(level3_kernel_pgt)
+  .fill  L3_START_KERNEL,8,0
+  /* (2^48-(2*1024*1024*1024)-((2^39)*511))/(2^30) = 510 */
+  .quad  level2_kernel_pgt - __START_KERNEL_map + _KERNPG_TABLE
+  .quad  level2_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE
+
+
+NEXT_PAGE(level2_kernel_pgt)
+  /*
+   * 512 MB kernel mapping. We spend a full page on this pagetable
+   * anyway.
+   *
+   * The kernel code+data+bss must not be bigger than that.
+   *
+   * (NOTE: at +512MB starts the module area, see MODULES_VADDR.
+   *  If you want to increase this then increase MODULES_VADDR
+   *  too.)
+   */
+  PMDS(0, __PAGE_KERNEL_LARGE_EXEC,
+    KERNEL_IMAGE_SIZE/PMD_SIZE)
+
+
+NEXT_PAGE(level2_fixmap_pgt)
+  .fill  506,8,0
+  .quad  level1_fixmap_pgt - __START_KERNEL_map + _PAGE_TABLE
+  /* 8MB reserved for vsyscalls + a 2MB hole = 4 + 1 entries */
+  .fill  5,8,0
+
+
+NEXT_PAGE(level1_fixmap_pgt)
+  .fill  51
+
+
+PGD_PAGE_OFFSET = pgd_index(__PAGE_OFFSET_BASE)
+PGD_START_KERNEL = pgd_index(__START_KERNEL_map)
+L3_START_KERNEL = pud_index(__START_KERNEL_map)
+```
+![linux-mem-kernel-page-table.png](../Images/linux-mem-kernel-page-table.png)
+
+```C++
+// kernel mm_struct
+struct mm_struct init_mm = {
+  .mm_rb    = RB_ROOT,
+  .pgd    = swapper_pg_dir,
+  .mm_users  = ATOMIC_INIT(2),
+  .mm_count  = ATOMIC_INIT(1),
+  .mmap_sem  = __RWSEM_INITIALIZER(init_mm.mmap_sem),
+  .page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
+  .mmlist    = LIST_HEAD_INIT(init_mm.mmlist),
+  .user_ns  = &init_user_ns,
+  INIT_MM_CONTEXT(init_mm)
+};
+
+// init kernel mm_struct
+void __init setup_arch(char **cmdline_p)
+{
+  clone_pgd_range(swapper_pg_dir     + KERNEL_PGD_BOUNDARY,
+      initial_page_table + KERNEL_PGD_BOUNDARY,
+      KERNEL_PGD_PTRS);
+
+  load_cr3(swapper_pg_dir);
+  __flush_tlb_all();
+
+  init_mm.start_code = (unsigned long) _text;
+  init_mm.end_code = (unsigned long) _etext;
+  init_mm.end_data = (unsigned long) _edata;
+  init_mm.brk = _brk_end;
+  init_mem_mapping();
+}
+
+// init_mem_mapping ->
+unsigned long __meminit
+kernel_physical_mapping_init(
+  unsigned long paddr_start,
+  unsigned long paddr_end,
+  unsigned long page_size_mask)
+{
+  unsigned long vaddr, vaddr_start, vaddr_end, vaddr_next, paddr_last;
+
+  paddr_last = paddr_end;
+  vaddr = (unsigned long)__va(paddr_start);
+  vaddr_end = (unsigned long)__va(paddr_end);
+  vaddr_start = vaddr;
+
+  for (; vaddr < vaddr_end; vaddr = vaddr_next) {
+    pgd_t *pgd = pgd_offset_k(vaddr);
+    p4d_t *p4d;
+
+    vaddr_next = (vaddr & PGDIR_MASK) + PGDIR_SIZE;
+
+    if (pgd_val(*pgd)) {
+      p4d = (p4d_t *)pgd_page_vaddr(*pgd);
+      paddr_last = phys_p4d_init(p4d, __pa(vaddr),
+               __pa(vaddr_end),
+               page_size_mask);
+      continue;
+    }
+
+    p4d = alloc_low_page();
+    paddr_last = phys_p4d_init(p4d, __pa(vaddr), __pa(vaddr_end),
+             page_size_mask);
+
+    p4d_populate(&init_mm, p4d_offset(pgd, vaddr), (pud_t *) p4d);
+  }
+  __flush_tlb_all();
+
+  return paddr_l
+```
+
+### vmalloc
+```C++
+void *vmalloc(unsigned long size)
+{
+  return __vmalloc_node_flags(size, NUMA_NO_NODE,
+            GFP_KERNEL);
+}
+
+static void *__vmalloc_node(unsigned long size, unsigned long align,
+          gfp_t gfp_mask, pgprot_t prot,
+          int node, const void *caller)
+{
+  return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
+        gfp_mask, prot, 0, node, caller);
+}
+```
+
+### kmap_atomic
+```C++
+void *kmap_atomic(struct page *page)
+{
+  return kmap_atomic_prot(page, kmap_prot);
+}
+
+void *kmap_atomic_prot(struct page *page, pgprot_t prot)
+{
+  // on 64 bit machine doesn't have high memory
+  if (!PageHighMem(page))
+    // get virtual address of a page from `page_address_htable`
+    return page_address(page);
+
+  // on 32 bit machine
+  vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
+  set_pte(kmap_pte-idx, mk_pte(page, prot));
+
+  return (void *)vaddr;
+}
+
+// page_address ->
+static __always_inline void *lowmem_page_address(const struct page *page)
+{
+  return page_to_virt(page);
+}
+
+#define page_to_virt(x)  __va(PFN_PHYS(page_to_pfn(x)
+```
+
+### kernel page fault
+```C++
+static noinline int vmalloc_fault(unsigned long address)
+{
+  unsigned long pgd_paddr;
+  pmd_t *pmd_k;
+  pte_t *pte_k;
+
+  if (!(address >= VMALLOC_START && address < VMALLOC_END))
+    return -1;
+
+  pgd_paddr = read_cr3_pa();
+  pmd_k = vmalloc_sync_one(__va(pgd_paddr), address);
+  if (!pmd_k)
+    return -1;
+
+  pte_k = pte_offset_kernel(pmd_k, address);
+  if (!pte_present(*pte_k))
+    return -1;
+
+  return 0
+}
+```
+
 ### Q:
 1. Does different kmem_cache share the same kmem_cache_cpu?
 2. Where does `struct kmem_cache_cpu __percpu *cpu_slab;` stored in each cpu?
+3. How `swapper_pg_dir` is initialized?
+4. Does  `alloc_zeroed_user_highpage_movable` alloc a page each time for each anonymous mapping?
 
 # File Management
 ![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
@@ -1401,7 +1700,7 @@ struct ext4_extent {
   __le32  ee_start_lo;  /* low 32 bits of physical block */
 };
 ```
-![linux-mem-extents.jpg](../Images/linux-mem-extents.jpg)
+![linux-mem-extents.png](../Images/linux-mem-extents.png)
 
 ![linux-ext4-extents.png](../Images/linux-ext4-extents.png)
 
@@ -1480,7 +1779,7 @@ struct super_block {
   struct list_head  s_inodes_wb;  /* writeback inodes */
 }
 ```
-![linux-mem-meta-block-group.jpg](../Images/linux-mem-meta-block-group.jpg)
+![linux-mem-meta-block-group.png](../Images/linux-mem-meta-block-group.png)
 
 ### directory
 ```C++
@@ -1522,7 +1821,7 @@ struct dx_entry
   __le32 block;
 };
 ```
-![linux-directory.jpg](../Images/linux-directory.jpg)
+![linux-file-directory.png](../Images/linux-file-directory.png)
 
 ![linux-dir-file-inode.png](../Images/linux-dir-file-inode.png)
 
@@ -4802,6 +5101,7 @@ int ramfs_nommu_expand_for_mapping(struct inode *inode, size_t newsize)
 
   /* clear the memory we allocated */
   newsize = PAGE_SIZE * npages;
+  // get virtual address of a page from `page_address_htable`
   data = page_address(pages);
   memset(data, 0, newsize);
 
