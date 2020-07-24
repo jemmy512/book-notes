@@ -5699,6 +5699,22 @@ struct sem_undo_list {
 # network
 ### socket
 ```C++
+struct socket_alloc {
+  struct socket socket;
+  struct inode vfs_inode;
+};
+
+struct socket {
+  socket_state    state;
+  short      type;
+  unsigned long    flags;
+
+  struct file    *file;
+  struct sock    *sk;
+  const struct proto_ops  *ops;
+  struct socket_wq  wq;
+};
+
 SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 {
   int retval;
@@ -5732,14 +5748,20 @@ int __sock_create(struct net *net, int family, int type, int protocol,
   return 0;
 }
 
+enum sock_type {
+  SOCK_STREAM = 1,
+  SOCK_DGRAM = 2,
+  SOCK_RAW = 3,
+}
+
 /* Supported address families. */
-#define AF_UNSPEC  0
-#define AF_UNIX    1  /* Unix domain sockets     */
-#define AF_LOCAL  1  /* POSIX name for AF_UNIX  */
-#define AF_INET    2  /* Internet IP Protocol   */
-#define AF_INET6  10  /* IP version 6      */
-#define AF_MPLS    28  /* MPLS */
-#define AF_MAX    44  /* For now.. */
+#define AF_UNSPEC 0
+#define AF_UNIX   1   /* Unix domain sockets */
+#define AF_LOCAL  1   /* POSIX name for AF_UNIX */
+#define AF_INET   2   /* Internet IP Protocol */
+#define AF_INET6  10  /* IP version 6 */
+#define AF_MPLS   28  /* MPLS */
+#define AF_MAX    44  /* For now */
 #define NPROTO    AF_MAX
 struct net_proto_family __rcu *net_families[NPROTO] __read_mostly;
 
@@ -5861,6 +5883,27 @@ static struct inet_protosw inetsw_array[] =
   }
 }
 
+const struct proto_ops inet_stream_ops = {
+  .family       = PF_INET,
+  .owner       = THIS_MODULE,
+  .release     = inet_release,
+  .bind       = inet_bind,
+  .connect     = inet_stream_connect,
+  .socketpair     = sock_no_socketpair,
+  .accept       = inet_accept,
+  .getname     = inet_getname,
+  .poll       = tcp_poll,
+  .ioctl       = inet_ioctl,
+  .gettstamp     = sock_gettstamp,
+  .listen       = inet_listen,
+  .shutdown     = inet_shutdown,
+  .setsockopt     = sock_common_setsockopt,
+  .getsockopt     = sock_common_getsockopt,
+  .sendmsg     = inet_sendmsg,
+  .recvmsg     = inet_recvmsg,
+  .mmap       = tcp_mmap,
+};
+
 struct proto tcp_prot = {
   .name      = "TCP",
   .owner      = THIS_MODULE,
@@ -5904,6 +5947,407 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
     fput_light(sock->file, fput_needed);
   }
   return err;
+}
+
+// inet_stream_ops.bind
+int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
+{
+  struct sockaddr_in *addr = (struct sockaddr_in *)uaddr;
+  struct sock *sk = sock->sk;
+  struct inet_sock *inet = inet_sk(sk);
+  struct net *net = sock_net(sk);
+  unsigned short snum;
+  snum = ntohs(addr->sin_port);
+
+  inet->inet_rcv_saddr = inet->inet_saddr = addr->sin_addr.s_addr;
+  /* Make sure we are allowed to bind here. */
+  if (snum || !(inet->bind_address_no_port ||
+          force_bind_address_no_port)) {
+    if (sk->sk_prot->get_port(sk, snum)) { // inet_csk_get_port
+      inet->inet_saddr = inet->inet_rcv_saddr = 0;
+      err = -EADDRINUSE;
+      goto out_release_sock;
+    }
+    err = BPF_CGROUP_RUN_PROG_INET4_POST_BIND(sk);
+    if (err) {
+      inet->inet_saddr = inet->inet_rcv_saddr = 0;
+      goto out_release_sock;
+    }
+  }
+  inet->inet_sport = htons(inet->inet_num);
+  inet->inet_daddr = 0;
+  inet->inet_dport = 0;
+  sk_dst_reset(sk);
+}
+```
+
+### listen
+```C++
+SYSCALL_DEFINE2(listen, int, fd, int, backlog)
+{
+  struct socket *sock;
+  int err, fput_needed;
+  int somaxconn;
+
+  sock = sockfd_lookup_light(fd, &err, &fput_needed);
+  if (sock) {
+    somaxconn = sock_net(sock->sk)->core.sysctl_somaxconn;
+    if ((unsigned int)backlog > somaxconn)
+      backlog = somaxconn;
+    err = sock->ops->listen(sock, backlog);
+    fput_light(sock->file, fput_needed);
+  }
+  return err;
+}
+
+// inet_stream_ops.listen
+int inet_listen(struct socket *sock, int backlog)
+{
+  struct sock *sk = sock->sk;
+  unsigned char old_state;
+  int err;
+  old_state = sk->sk_state;
+
+  if (old_state != TCP_LISTEN) {
+    err = inet_csk_listen_start(sk, backlog);
+  }
+  sk->sk_max_ack_backlog = backlog;
+}
+
+int inet_csk_listen_start(struct sock *sk, int backlog)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct inet_sock *inet = inet_sk(sk);
+  int err = -EADDRINUSE;
+
+  reqsk_queue_alloc(&icsk->icsk_accept_queue);
+
+  sk->sk_max_ack_backlog = backlog;
+  sk->sk_ack_backlog = 0;
+  inet_csk_delack_init(sk);
+
+  sk_state_store(sk, TCP_LISTEN);
+  if (!sk->sk_prot->get_port(sk, inet->inet_num)) {
+
+  }
+}
+```
+
+### accept
+```C++
+SYSCALL_DEFINE3(accept, int, fd, struct sockaddr __user *, upeer_sockaddr,
+    int __user *, upeer_addrlen)
+{
+  return sys_accept4(fd, upeer_sockaddr, upeer_addrlen, 0);
+}
+
+SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
+    int __user *, upeer_addrlen, int, flags)
+{
+  struct socket *sock, *newsock;
+  struct file *newfile;
+  int err, len, newfd, fput_needed;
+  struct sockaddr_storage address;
+
+  // listen socket
+  sock = sockfd_lookup_light(fd, &err, &fput_needed);
+  newsock = sock_alloc();
+  newsock->type = sock->type;
+  newsock->ops = sock->ops;
+  newfd = get_unused_fd_flags(flags);
+  newfile = sock_alloc_file(newsock, flags, sock->sk->sk_prot_creator->name);
+  err = sock->ops->accept(sock, newsock, sock->file->f_flags, false);
+  if (upeer_sockaddr) {
+    if (newsock->ops->getname(newsock, (struct sockaddr *)&address, &len, 2) < 0) {
+    }
+    err = move_addr_to_user(&address,
+          len, upeer_sockaddr, upeer_addrlen);
+  }
+  fd_install(newfd, newfile);
+}
+
+// inet_stream_ops.accept
+int inet_accept(struct socket *sock, struct socket *newsock, int flags, bool kern)
+{
+  struct sock *sk1 = sock->sk;
+  int err = -EINVAL;
+  struct sock *sk2 = sk1->sk_prot->accept(sk1, flags, &err, kern);
+  sock_rps_record_flow(sk2);
+  sock_graft(sk2, newsock);
+  newsock->state = SS_CONNECTED;
+}
+
+// tcp_prot.accept
+struct sock *inet_csk_accept(struct sock *sk, int flags, int *err, bool kern)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct request_sock_queue *queue = &icsk->icsk_accept_queue;
+  struct request_sock *req;
+  struct sock *newsk;
+  int error;
+
+  if (sk->sk_state != TCP_LISTEN)
+    goto out_err;
+
+  /* Find already established connection */
+  if (reqsk_queue_empty(queue)) {
+    long timeo = sock_rcvtimeo(sk, flags & O_NONBLOCK);
+    error = inet_csk_wait_for_connect(sk, timeo);
+  }
+  req = reqsk_queue_remove(queue, sk);
+  newsk = req->sk;
+}
+
+static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  DEFINE_WAIT(wait);
+  int err;
+  for (;;) {
+    prepare_to_wait_exclusive(sk_sleep(sk), &wait,
+            TASK_INTERRUPTIBLE);
+    release_sock(sk);
+    if (reqsk_queue_empty(&icsk->icsk_accept_queue))
+      timeo = schedule_timeout(timeo);
+    sched_annotate_sleep();
+    lock_sock(sk);
+    err = 0;
+    if (!reqsk_queue_empty(&icsk->icsk_accept_queue))
+      break;
+    err = -EINVAL;
+    if (sk->sk_state != TCP_LISTEN)
+      break;
+    err = sock_intr_errno(timeo);
+    if (signal_pending(current))
+      break;
+    err = -EAGAIN;
+    if (!timeo)
+      break;
+  }
+  finish_wait(sk_sleep(sk), &wait);
+  return err;
+}
+```
+
+### connect
+![linux-network-hand-shake.png](../Images/linux-network-hand-shake.png)
+```C++
+SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
+    int, addrlen)
+{
+  struct socket *sock;
+  struct sockaddr_storage address;
+  int err, fput_needed;
+  sock = sockfd_lookup_light(fd, &err, &fput_needed);
+  err = move_addr_to_kernel(uservaddr, addrlen, &address);
+  err = sock->ops->connect(sock, (struct sockaddr *)&address, addrlen, sock->file->f_flags);
+}
+
+int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
+        int addr_len, int flags, int is_sendmsg)
+{
+  struct sock *sk = sock->sk;
+  int err;
+  long timeo;
+
+  switch (sock->state) {
+    case SS_UNCONNECTED:
+      err = -EISCONN;
+      if (sk->sk_state != TCP_CLOSE)
+        goto out;
+
+      err = sk->sk_prot->connect(sk, uaddr, addr_len);
+      sock->state = SS_CONNECTING;
+      break;
+  }
+
+  timeo = sock_sndtimeo(sk, flags & O_NONBLOCK);
+
+  if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+    if (!timeo || !inet_wait_for_connect(sk, timeo, writebias))
+      goto out;
+    err = sock_intr_errno(timeo);
+    if (signal_pending(current))
+      goto out;
+  }
+  sock->state = SS_CONNECTED;
+}
+
+int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
+{
+  struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;
+  struct inet_sock *inet = inet_sk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+  __be16 orig_sport, orig_dport;
+  __be32 daddr, nexthop;
+  struct flowi4 *fl4;
+  struct rtable *rt;
+
+  orig_sport = inet->inet_sport;
+  orig_dport = usin->sin_port;
+  rt = ip_route_connect(fl4, nexthop, inet->inet_saddr,
+            RT_CONN_FLAGS(sk), sk->sk_bound_dev_if,
+            IPPROTO_TCP,
+            orig_sport, orig_dport, sk);
+
+  tcp_set_state(sk, TCP_SYN_SENT);
+  err = inet_hash_connect(tcp_death_row, sk);
+  sk_set_txhash(sk);
+  rt = ip_route_newports(fl4, rt, orig_sport, orig_dport,
+             inet->inet_sport, inet->inet_dport, sk);
+  /* OK, now commit destination to socket.  */
+  sk->sk_gso_type = SKB_GSO_TCPV4;
+  sk_setup_caps(sk, &rt->dst);
+    if (likely(!tp->repair)) {
+    if (!tp->write_seq)
+      tp->write_seq = secure_tcp_seq(inet->inet_saddr,
+                   inet->inet_daddr,
+                   inet->inet_sport,
+                   usin->sin_port);
+    tp->tsoffset = secure_tcp_ts_off(sock_net(sk),
+             inet->inet_saddr,
+             inet->inet_daddr);
+  }
+  rt = NULL;
+
+  err = tcp_connect(sk);
+}
+
+/* Build a SYN and send it off. */
+int tcp_connect(struct sock *sk)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  struct sk_buff *buff;
+  int err;
+
+  tcp_connect_init(sk);
+
+  buff = sk_stream_alloc_skb(sk, 0, sk->sk_allocation, true);
+
+  tcp_init_nondata_skb(buff, tp->write_seq++, TCPHDR_SYN);
+  tcp_mstamp_refresh(tp);
+  tp->retrans_stamp = tcp_time_stamp(tp);
+  tcp_connect_queue_skb(sk, buff);
+  tcp_ecn_send_syn(sk, buff);
+
+  /* Send off SYN; include data in Fast Open. */
+  err = tp->fastopen_req ? tcp_send_syn_data(sk, buff) :
+        tcp_transmit_skb(sk, buff, 1, sk->sk_allocation);
+
+  tp->snd_nxt = tp->write_seq;
+  tp->pushed_seq = tp->write_seq;
+  buff = tcp_send_head(sk);
+  if (unlikely(buff)) {
+    tp->snd_nxt  = TCP_SKB_CB(buff)->seq;
+    tp->pushed_seq  = TCP_SKB_CB(buff)->seq;
+  }
+
+  /* Timer for repeating the SYN until an answer. */
+  inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
+          inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
+  return 0;
+}
+
+static struct net_protocol tcp_protocol = {
+  .early_demux  =  tcp_v4_early_demux,
+  .early_demux_handler =  tcp_v4_early_demux,
+  .handler  =  tcp_v4_rcv,
+  .err_handler  =  tcp_v4_err,
+  .no_policy  =  1,
+  .netns_ok  =  1,
+  .icmp_strict_tag_validation = 1,
+}
+// tcp_v4_rcv->tcp_v4_do_rcv->tcp_rcv_state_process
+int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  const struct tcphdr *th = tcp_hdr(skb);
+  struct request_sock *req;
+  int queued = 0;
+  bool acceptable;
+
+  switch (sk->sk_state) {
+    case TCP_LISTEN:
+      if (th->syn) {
+        acceptable = icsk->icsk_af_ops->conn_request(sk, skb) >= 0;
+        if (!acceptable)
+          return 1;
+        consume_skb(skb);
+        return 0;
+      }
+
+    case TCP_SYN_SENT:
+      tp->rx_opt.saw_tstamp = 0;
+      tcp_mstamp_refresh(tp);
+      queued = tcp_rcv_synsent_state_process(sk, skb, th);
+      if (queued >= 0)
+        return queued;
+      /* Do step6 onward by hand. */
+      tcp_urg(sk, skb, th);
+      __kfree_skb(skb);
+      tcp_data_snd_check(sk);
+      return 0;
+
+    case TCP_SYN_RECV:
+      if (req) {
+        inet_csk(sk)->icsk_retransmits = 0;
+        reqsk_fastopen_remove(sk, req, false);
+      } else {
+        /* Make sure socket is routed, for correct metrics. */
+        icsk->icsk_af_ops->rebuild_header(sk);
+        tcp_call_bpf(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB);
+        tcp_init_congestion_control(sk);
+
+        tcp_mtup_init(sk);
+        tp->copied_seq = tp->rcv_nxt;
+        tcp_init_buffer_space(sk);
+      }
+      smp_mb();
+      tcp_set_state(sk, TCP_ESTABLISHED);
+      sk->sk_state_change(sk);
+      if (sk->sk_socket)
+        sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
+      tp->snd_una = TCP_SKB_CB(skb)->ack_seq;
+      tp->snd_wnd = ntohs(th->window) << tp->rx_opt.snd_wscale;
+      tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
+      break;
+  }
+}
+
+const struct inet_connection_sock_af_ops ipv4_specific = {
+  .queue_xmit        = ip_queue_xmit,
+  .send_check        = tcp_v4_send_check,
+  .rebuild_header    = inet_sk_rebuild_header,
+  .sk_rx_dst_set     = inet_sk_rx_dst_set,
+  .conn_request      = tcp_v4_conn_request,
+  .syn_recv_sock     = tcp_v4_syn_recv_sock,
+  .net_header_len    = sizeof(struct iphdr),
+  .setsockopt        = ip_setsockopt,
+  .getsockopt        = ip_getsockopt,
+  .addr2sockaddr     = inet_csk_addr2sockaddr,
+  .sockaddr_len      = sizeof(struct sockaddr_in),
+  .mtu_reduced       = tcp_v4_mtu_reduced,
+};
+// tcp_v4_conn_request ->
+int tcp_conn_request(
+  struct request_sock_ops *rsk_ops,
+  const struct tcp_request_sock_ops *af_ops,
+  struct sock *sk, struct sk_buff *skb)
+{
+af_ops->send_synack(sk, dst, &fl, req, &foc,
+            !want_cookie ? TCP_SYNACK_NORMAL :
+               TCP_SYNACK_COOKIE);
+}
+
+// send_synack ->
+static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
+            struct flowi *fl,
+            struct request_sock *req,
+            struct tcp_fastopen_cookie *foc,
+            enum tcp_synack_type synack_type)
+{
+
 }
 ```
 ![linux-net-socket.png](../Images/linux-net-socket.png)
