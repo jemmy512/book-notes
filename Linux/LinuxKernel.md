@@ -1,7 +1,7 @@
 # Process Management
 
 ### fork
-![Linux fork](../Images/linux-fork.jpg)
+![linux-fork.jpg](../Images/linux-fork.png)
 
 ### exec
 ```C++
@@ -2393,7 +2393,7 @@ mknod filename type major minor  // create dev file in /dev/
 /sys/module all modes information
 */
 ```
-![linux-io-sysfs.jpg](../Images/linux-io-sysfs.jpg)
+![linux-io-sysfs.png](../Images/linux-io-sysfs.png)
 
 ### char dev
 #### kernal module
@@ -2785,7 +2785,7 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
   return retval
 }
 ```
-![linux-io-ioctl.jpg](../Images/linux-io-ioctl.jpg)
+![linux-io-ioctl.png](../Images/linux-io-ioctl.png)
 
 ### interruption
 
@@ -3900,7 +3900,7 @@ struct bio_vec {
   unsigned int  bv_offset;
 }
 ```
-![linux-io-bio.jpg](../Images/linux-io-bio.jpg)
+![linux-io-bio.png](../Images/linux-io-bio.png)
 
 #### make_request_fn
 ```C++
@@ -4797,7 +4797,7 @@ asmlinkage long sys_rt_sigreturn(void)
   return regs->ax;
 }
 ```
-![Linux signal handling](../Images/linux-signal-handling.png)
+![linux-sig-handle.png](../Images/linux-sig-handle.png)
 
 ### sem, shm, msg
 ```C++
@@ -5700,7 +5700,7 @@ struct sem_undo_list {
 ### socket
 ```C++
 struct socket_alloc {
-  struct socket socket;
+  struct socket sock et;
   struct inode vfs_inode;
 };
 
@@ -6130,7 +6130,7 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 ```
 
 ### connect
-![linux-network-hand-shake.png](../Images/linux-network-hand-shake.png)
+![linux-net-hand-shake.png  ](../Images/linux-net-hand-shake.png  )
 ```C++
 SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
     int, addrlen)
@@ -6351,6 +6351,993 @@ static int tcp_v4_send_synack(const struct sock *sk, struct dst_entry *dst,
 }
 ```
 ![linux-net-socket.png](../Images/linux-net-socket.png)
+
+### write
+#### vfs layer
+```C++
+static const struct file_operations socket_file_ops = {
+  .owner =  THIS_MODULE,
+  .llseek =  no_llseek,
+  .read_iter =  sock_read_iter,
+  .write_iter =  sock_write_iter,
+  .poll =    sock_poll,
+  .unlocked_ioctl = sock_ioctl,
+  .mmap =    sock_mmap,
+  .release =  sock_close,
+  .fasync =  sock_fasync,
+  .sendpage =  sock_sendpage,
+  .splice_write = generic_splice_sendpage,
+  .splice_read =  sock_splice_read,
+};
+```
+
+#### socket layer
+```C++
+static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+  struct file *file = iocb->ki_filp;
+  struct socket *sock = file->private_data;
+  struct msghdrg = {.msg_iter = *from,
+           .msg_iocb = iocb};
+  ssize_t res;
+
+  res = sock_sendmsg(sock, &msg);
+  *from = msg.msg_iter;
+  return res;
+}
+// sock_sendmsg ->
+static inline int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
+{
+  int ret = sock->ops->sendmsg(sock, msg, msg_data_left(msg));
+}
+
+// inet_stream_ops.sendmsg
+int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
+{
+  struct sock *sk = sock->sk;
+  return sk->sk_prot->sendmsg(sk, msg, size);
+}
+```
+
+#### tcp layer
+```C++
+// tcp_prot.sendmsg
+int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  struct sk_buff *skb;
+  int flags, err, copied = 0;
+  int mss_now = 0, size_goal, copied_syn = 0;
+  long timeo;
+
+  if (flags & MSG_ZEROCOPY && size && sock_flag(sk, SOCK_ZEROCOPY)) {
+    skb = tcp_write_queue_tail(sk);
+    uarg = sock_zerocopy_realloc(sk, size, skb_zcopy(skb));
+  }
+
+  if (unlikely(flags & MSG_FASTOPEN || inet_sk(sk)->defer_connect) &&
+      !tp->repair) {
+    err = tcp_sendmsg_fastopen(sk, msg, &copied_syn, size, uarg);
+  }
+
+  timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
+
+  if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) &&
+      !tcp_passive_fastopen(sk)) {
+    err = sk_stream_wait_connect(sk, &timeo);
+    if (err != 0)
+      goto do_error;
+  }
+
+  sockcm_init(&sockc, sk);
+  if (msg->msg_controllen) {
+    err = sock_cmsg_send(sk, msg, &sockc);
+    if (unlikely(err)) {
+      err = -EINVAL;
+      goto out_err;
+    }
+  }
+
+  /* Ok commence sending. */
+  copied = 0;
+restart:
+  mss_now = tcp_send_mss(sk, &size_goal, flags);
+
+  while (msg_data_left(msg)) {
+    int copy = 0;
+    int max = size_goal;
+
+    skb = tcp_write_queue_tail(sk);
+    if (tcp_send_head(sk)) {
+      if (skb->ip_summed == CHECKSUM_NONE)
+        max = mss_now;
+      copy = max - skb->len;
+    }
+
+    if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) {
+      bool first_skb;
+
+new_segment:
+      if (!sk_stream_memory_free(sk))
+        goto wait_for_sndbuf;
+
+      first_skb = skb_queue_empty(&sk->sk_write_queue);
+      // __alloc_skb
+      skb = sk_stream_alloc_skb(sk,
+              select_size(sk, sg, first_skb),
+              sk->sk_allocation,
+              first_skb);
+
+      skb_entail(sk, skb);
+      copy = size_goal;
+      max = size_goal;
+
+    }
+
+    /* Try to append data to the end of skb. */
+    if (copy > msg_data_left(msg))
+      copy = msg_data_left(msg);
+
+    /* Where to copy to? */
+    if (skb_availroom(skb) > 0) {
+      /* We have some space in skb head. Superb! */
+      copy = min_t(int, copy, skb_availroom(skb));
+      err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
+    } else {
+      bool merge = true;
+      int i = skb_shinfo(skb)->nr_frags;
+      struct page_frag *pfrag = sk_page_frag(sk);
+
+      copy = min_t(int, copy, pfrag->size - pfrag->offset);
+
+      err = skb_copy_to_page_nocache(sk, &msg->msg_iter, skb,
+                   pfrag->page, pfrag->offset, copy);
+      pfrag->offset += copy;
+    }
+
+    tp->write_seq += copy;
+    TCP_SKB_CB(skb)->end_seq += copy;
+    tcp_skb_pcount_set(skb, 0);
+
+    copied += copy;
+    if (!msg_data_left(msg)) {
+      if (unlikely(flags & MSG_EOR))
+        TCP_SKB_CB(skb)->eor = 1;
+      goto out;
+    }
+
+    if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
+      continue;
+
+    if (forced_push(tp)) {
+      tcp_mark_push(tp, skb);
+      __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
+    } else if (skb == tcp_send_head(sk))
+      tcp_push_one(sk, mss_now);
+    continue;
+
+  }
+}
+// __tcp_push_pending_frames -> | tcp_push_one ->
+static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle, int push_one, gfp_t gfp)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  struct sk_buff *skb;
+  unsigned int tso_segs, sent_pkts;
+  int cwnd_quota;
+
+  max_segs = tcp_tso_segs(sk, mss_now);
+  while ((skb = tcp_send_head(sk))) {
+    unsigned int limit;
+    // tso(TCP Segmentation Offload)
+    tso_segs = tcp_init_tso_segs(skb, mss_now); // DIV_ROUND_UP(skb->len, mss_now)
+
+    cwnd_quota = tcp_cwnd_test(tp, skb);
+
+    if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
+      is_rwnd_limited = true;
+      break;
+    }
+
+    limit = mss_now;
+    if (tso_segs > 1 && !tcp_urg_mode(tp))
+        limit = tcp_mss_split_point(sk, skb, mss_now, min_t(unsigned int, cwnd_quota, max_segs), nonagle);
+
+    if (skb->len > limit &&
+        unlikely(tso_fragment(sk, skb, limit, mss_now, gfp)))
+      break;
+
+    if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
+      break;
+
+repair:
+    /* Advance the send_head.  This one is sent out.
+     * This call will increment packets_out.
+     */
+    tcp_event_new_data_sent(sk, skb);
+
+    tcp_minshall_update(tp, mss_now, skb);
+    sent_pkts += tcp_skb_pcount(skb);
+
+    if (push_one)
+      break;
+  }
+}
+
+static unsigned int
+tcp_mss_split_point(
+  const struct sock *sk,
+  const struct sk_buff *skb,
+  unsigned int mss_now,
+  unsigned int max_segs,
+  int nonagle)
+{
+  const struct tcp_sock *tp = tcp_sk(sk);
+  u32 partial, needed, window, max_len;
+
+  window = tcp_wnd_end(tp) - TCP_SKB_CB(skb)->seq;
+  max_len = mss_now * max_segs;
+
+  if (likely(max_len <= window && skb != tcp_write_queue_tail(sk)))
+          return max_len;
+
+  needed = min(skb->len, window);
+
+  if (max_len <= needed)
+          return max_len;
+
+  return needed;
+}
+
+static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
+                gfp_t gfp_mask)
+{
+  const struct inet_connection_sock *icsk = inet_csk(sk);
+  struct inet_sock *inet;
+  struct tcp_sock *tp;
+  struct tcp_skb_cb *tcb;
+  struct tcphdr *th;
+  int err;
+
+  tp = tcp_sk(sk);
+
+  skb->skb_mstamp = tp->tcp_mstamp;
+  inet = inet_sk(sk);
+  tcb = TCP_SKB_CB(skb);
+  memset(&opts, 0, sizeof(opts));
+
+  tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
+  skb_push(skb, tcp_header_size);
+
+  /* Build TCP header and checksum it. */
+  th = (struct tcphdr *)skb->data;
+  th->source      = inet->inet_sport;
+  th->dest        = inet->inet_dport;
+  th->seq         = htonl(tcb->seq);
+  th->ack_seq     = htonl(tp->rcv_nxt);
+  *(((__be16 *)th) + 6)   = htons(((tcp_header_size >> 2) << 12) |
+                  tcb->tcp_flags);
+
+  th->check       = 0;
+  th->urg_ptr     = 0;
+
+  tcp_options_write((__be32 *)(th + 1), tp, &opts);
+  th->window  = htons(min(tp->rcv_wnd, 65535U));
+
+  err = icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+}
+
+const struct inet_connection_sock_af_ops ipv4_specific = {
+  .queue_xmit        = ip_queue_xmit,
+  .send_check        = tcp_v4_send_check,
+  .rebuild_header    = inet_sk_rebuild_header,
+  .sk_rx_dst_set     = inet_sk_rx_dst_set,
+  .conn_request      = tcp_v4_conn_request,
+  .syn_recv_sock     = tcp_v4_syn_recv_sock,
+  .net_header_len    = sizeof(struct iphdr),
+  .setsockopt        = ip_setsockopt,
+  .getsockopt        = ip_getsockopt,
+  .addr2sockaddr     = inet_csk_addr2sockaddr,
+  .sockaddr_len      = sizeof(struct sockaddr_in),
+  .mtu_reduced       = tcp_v4_mtu_reduced,
+};
+```
+
+#### ip layer
+```C++
+int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
+{
+  struct inet_sock *inet = inet_sk(sk);
+  struct net *net = sock_net(sk);
+  struct ip_options_rcu *inet_opt;
+  struct flowi4 *fl4;
+  struct rtable *rt;
+  struct iphdr *iph;
+  int res;
+
+  inet_opt = rcu_dereference(inet->inet_opt);
+  fl4 = &fl->u.ip4;
+  rt = skb_rtable(skb);
+  /* Make sure we can route this packet. */
+  rt = (struct rtable *)__sk_dst_check(sk, 0);
+  if (!rt) {
+      __be32 daddr;
+      /* Use correct destination address if we have options. */
+      daddr = inet->inet_daddr;
+      rt = ip_route_output_ports(net, fl4, sk,
+                      daddr, inet->inet_saddr,
+                      inet->inet_dport,
+                      inet->inet_sport,
+                      sk->sk_protocol,
+                      RT_CONN_FLAGS(sk),
+                      sk->sk_bound_dev_if);
+      if (IS_ERR(rt))
+          goto no_route;
+      sk_setup_caps(sk, &rt->dst);
+  }
+  skb_dst_set_noref(skb, &rt->dst);
+
+packet_routed:
+  /* OK, we know where to send it, allocate and build IP header. */
+  skb_push(skb, sizeof(struct iphdr) + (inet_opt ? inet_opt->opt.optlen : 0));
+  skb_reset_network_header(skb);
+  iph = ip_hdr(skb);
+  *((__be16 *)iph) = htons((4 << 12) | (5 << 8) | (inet->tos & 0xff));
+  if (ip_dont_fragment(sk, &rt->dst) && !skb->ignore_df)
+      iph->frag_off = htons(IP_DF);
+  else
+      iph->frag_off = 0;
+  iph->ttl      = ip_select_ttl(inet, &rt->dst);
+  iph->protocol = sk->sk_protocol;
+  ip_copy_addrs(iph, fl4);
+
+  /* Transport layer set skb->h.foo itself. */
+  if (inet_opt && inet_opt->opt.optlen) {
+      iph->ihl += inet_opt->opt.optlen >> 2;
+      ip_options_build(skb, &inet_opt->opt, inet->inet_daddr, rt, 0);
+  }
+
+  ip_select_ident_segs(net, skb, sk, skb_shinfo(skb)->gso_segs ?: 1);
+
+  /* TODO : should we use skb->sk here instead of sk ? */
+  skb->priority = sk->sk_priority;
+  skb->mark = sk->sk_mark;
+
+  res = ip_local_out(net, sk, skb);
+}
+```
+
+##### route
+```C++
+// ip_route_output_ports -> ip_route_output_flow ->
+// __ip_route_output_key -> ip_route_output_key_hash ->
+// ip_route_output_key_hash_rcu ->
+struct rtable *ip_route_output_key_hash_rcu(struct net *net, struct flowi4 *fl4,
+  struct fib_result *res, const struct sk_buff *skb)
+{
+  struct net_device *dev_out = NULL;
+  int orig_oif = fl4->flowi4_oif;
+  unsigned int flags = 0;
+  struct rtable *rth;
+
+    err = fib_lookup(net, fl4, res, 0); // Forwarding Information Base
+
+make_route:
+  rth = __mkroute_output(res, fl4, orig_oif, dev_out, flags);
+}
+
+static inline int fib_lookup(struct net *net, const struct flowi4 *flp,
+  struct fib_result *res, unsigned int flags)
+{
+  struct fib_table *tb;
+  tb = fib_get_table(net, RT_TABLE_MAIN);
+  if (tb)
+    err = fib_table_lookup(tb, flp, res, flags | FIB_LOOKUP_NOREF);
+}
+```
+![linux-net-forwarding-table.png](../Images/linux-net-forwarding-table.png)
+
+```C++
+# Linux Server A
+default via 192.168.1.1 dev eth0
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.100 metric 100
+
+# Linux router
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.1
+192.168.2.0/24 dev eth1 proto kernel scope link src 192.168.2.1
+
+# Linux Server B
+default via 192.168.2.1 dev eth0
+192.168.2.0/24 dev eth0 proto kernel scope link src 192.168.2.100 metric 100
+```
+
+```C++
+// __mkroute_output ->
+struct rtable *rt_dst_alloc(struct net_device *dev,
+          unsigned int flags, u16 type,
+          bool nopolicy, bool noxfrm, bool will_cache)
+{
+  struct rtable *rt;
+
+  rt = dst_alloc(&ipv4_dst_ops, dev, 1, DST_OBSOLETE_FORCE_CHK,
+        (will_cache ? 0 : DST_HOST)
+        | (nopolicy ? DST_NOPOLICY : 0)
+        | (noxfrm ? DST_NOXFRM : 0));
+
+  if (rt) {
+    rt->rt_genid = rt_genid_ipv4(dev_net(dev));
+    rt->rt_flags = flags;
+    rt->rt_type = type;
+    rt->rt_is_input = 0;
+    rt->rt_iif = 0;
+    rt->rt_pmtu = 0;
+    rt->rt_gateway = 0;
+    rt->rt_uses_gateway = 0;
+    rt->rt_table_id = 0;
+    INIT_LIST_HEAD(&rt->rt_uncached);
+
+    rt->dst.output = ip_output;
+    if (flags & RTCF_LOCAL)
+      rt->dst.input = ip_local_deliver;
+  }
+
+  return rt;
+}
+```
+
+##### prepare ip header
+![linux-net-ip-header.png](../Images/linux-net-ip-header.png)
+
+##### send package
+```C++
+int ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  int err;
+
+  err = __ip_local_out(net, sk, skb);
+  if (likely(err == 1))
+    err = dst_output(net, sk, skb);
+
+  return err;
+}
+
+int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  struct iphdr *iph = ip_hdr(skb);
+  iph->tot_len = htons(skb->len);
+  skb->protocol = htons(ETH_P_IP);
+
+  // net filter
+  return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
+           net, sk, skb, NULL, skb_dst(skb)->dev,
+           dst_output);
+}
+```
+![linux-net-ip-filter.png](../Images/linux-net-ip-filter.png)
+![linux-net-ip-filter-2.png](../Images/linux-net-ip-filter-2.png)
+```C++
+static inline int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  return skb_dst(skb)->output(net, sk, skb);
+}
+
+// ipv4_dst_ops.output
+int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  struct net_device *dev = skb_dst(skb)->dev;
+  skb->dev = dev;
+  skb->protocol = htons(ETH_P_IP);
+
+  return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
+          net, sk, skb, NULL, dev,
+          ip_finish_output,
+          !(IPCB(skb)->flags & IPSKB_REROUTED));
+}
+```
+
+#### mac layer
+```C++
+// ip_finish_output ->
+static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  struct dst_entry *dst = skb_dst(skb);
+  struct rtable *rt = (struct rtable *)dst;
+  struct net_device *dev = dst->dev;
+  unsigned int hh_len = LL_RESERVED_SPACE(dev);
+  struct neighbour *neigh;
+  u32 nexthop;
+
+  nexthop = (__force u32) rt_nexthop(rt, ip_hdr(skb)->daddr);
+  neigh = __ipv4_neigh_lookup_noref(dev, nexthop);
+  if (unlikely(!neigh))
+    neigh = __neigh_create(&arp_tbl, &nexthop, dev, false);
+  if (!IS_ERR(neigh)) {
+    int res;
+    sock_confirm_neigh(skb, neigh);
+    res = neigh_output(neigh, skb);
+    return res;
+  }
+}
+
+static inline struct neighbour *__ipv4_neigh_lookup_noref(struct net_device *dev, u32 key)
+{
+  return ___neigh_lookup_noref(&arp_tbl, neigh_key_eq32, arp_hashfn, &key, dev);
+}
+
+struct neigh_table arp_tbl = {
+  .family     = AF_INET,
+  .key_len    = 4,
+  .protocol   = cpu_to_be16(ETH_P_IP),
+  .hash       = arp_hash,
+  .key_eq     = arp_key_eq,
+  .constructor    = arp_constructor,
+  .proxy_redo = parp_redo,
+  .id     = "arp_cache",
+
+  .gc_interval    = 30 * HZ,
+  .gc_thresh1 = 128,
+  .gc_thresh2 = 512,
+  .gc_thresh3 = 1024,
+};
+```
+
+##### neighbour
+```C++
+struct neighbour *__neigh_create(struct neigh_table *tbl,
+  const void *pkey, struct net_device *dev, bool want_ref)
+{
+    u32 hash_val;
+    int key_len = tbl->key_len;
+    int error;
+    struct neighbour *n1, *rc, *n = neigh_alloc(tbl, dev);
+    struct neigh_hash_table *nht;
+
+    memcpy(n->primary_key, pkey, key_len);
+    n->dev = dev;
+    dev_hold(dev);
+
+    /* Protocol specific setup. */
+    if (tbl->constructor && (error = tbl->constructor(n)) < 0) {
+
+    }
+
+    if (atomic_read(&tbl->entries) > (1 << nht->hash_shift))
+        nht = neigh_hash_grow(tbl, nht->hash_shift + 1);
+
+    hash_val = tbl->hash(pkey, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
+
+    for (n1 = rcu_dereference_protected(nht->hash_buckets[hash_val],
+                        lockdep_is_held(&tbl->lock));
+         n1 != NULL;
+         n1 = rcu_dereference_protected(n1->next,
+            lockdep_is_held(&tbl->lock))) {
+        if (dev == n1->dev && !memcmp(n1->primary_key, pkey, key_len)) {
+            if (want_ref)
+                neigh_hold(n1);
+            rc = n1;
+            goto out_tbl_unlock;
+        }
+    }
+
+    rcu_assign_pointer(n->next,
+               rcu_dereference_protected(nht->hash_buckets[hash_val],
+                             lockdep_is_held(&tbl->lock)));
+    rcu_assign_pointer(nht->hash_buckets[hash_val], n);
+}
+
+static struct neighbour *neigh_alloc(struct neigh_table *tbl, struct net_device *dev)
+{
+  struct neighbour *n = NULL;
+  unsigned long now = jiffies;
+  int entries;
+
+  n = kzalloc(tbl->entry_size + dev->neigh_priv_len, GFP_ATOMIC);
+  if (!n)
+    goto out_entries;
+
+  __skb_queue_head_init(&n->arp_queue);
+  rwlock_init(&n->lock);
+  seqlock_init(&n->ha_lock);
+  n->updated    = n->used = now;
+  n->nud_state    = NUD_NONE;
+  n->output    = neigh_blackhole;
+  seqlock_init(&n->hh.hh_lock);
+  n->parms    = neigh_parms_clone(&tbl->parms);
+  setup_timer(&n->timer, neigh_timer_handler, (unsigned long)n);
+
+  NEIGH_CACHE_STAT_INC(tbl, allocs);
+  n->tbl      = tbl;
+  refcount_set(&n->refcnt, 1);
+  n->dead      = 1;
+}
+
+// __neigh_create -> arp_tbl.constructor ->
+static int arp_constructor(struct neighbour *neigh)
+{
+  __be32 addr = *(__be32 *)neigh->primary_key;
+  struct net_device *dev = neigh->dev;
+  struct in_device *in_dev;
+  struct neigh_parms *parms;
+
+  neigh->type = inet_addr_type_dev_table(dev_net(dev), dev, addr);
+
+  parms = in_dev->arp_parms;
+  __neigh_parms_put(neigh->parms);
+  neigh->parms = neigh_parms_clone(parms);
+
+  neigh->ops = &arp_hh_ops;
+
+  neigh->output = neigh->ops->output;
+}
+
+static const struct neigh_ops arp_hh_ops = {
+  .family =    AF_INET,
+  .solicit =    arp_solicit,
+  .error_report =    arp_error_report,
+  .output =    neigh_resolve_output,
+  .connected_output =  neigh_resolve_output,
+};
+```
+
+```C++
+static inline int neigh_output(struct neighbour *n, struct sk_buff *skb)
+{
+  return n->output(n, skb);
+}
+// arp_hh_ops.output ->
+int neigh_resolve_output(struct neighbour *neigh, struct sk_buff *skb)
+{
+  if (!neigh_event_send(neigh, skb)) {
+    rc = dev_queue_xmit(skb);
+  }
+}
+
+int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
+{
+  int rc;
+  bool immediate_probe = false;
+
+  if (!(neigh->nud_state & (NUD_STALE | NUD_INCOMPLETE))) {
+    if (NEIGH_VAR(neigh->parms, MCAST_PROBES) +
+        NEIGH_VAR(neigh->parms, APP_PROBES)) {
+      unsigned long next, now = jiffies;
+
+      atomic_set(&neigh->probes,
+           NEIGH_VAR(neigh->parms, UCAST_PROBES));
+      neigh->nud_state     = NUD_INCOMPLETE;
+      neigh->updated = now;
+      next = now + max(NEIGH_VAR(neigh->parms, RETRANS_TIME),
+           HZ/2);
+      neigh_add_timer(neigh, next);
+      immediate_probe = true;
+    }
+
+  } else if (neigh->nud_state & NUD_STALE) {
+    neigh_dbg(2, "neigh %p is delayed\n", neigh);
+    neigh->nud_state = NUD_DELAY;
+    neigh->updated = jiffies;
+    neigh_add_timer(neigh, jiffies +
+        NEIGH_VAR(neigh->parms, DELAY_PROBE_TIME));
+  }
+
+  if (neigh->nud_state == NUD_INCOMPLETE) {
+    if (skb) {
+      __skb_queue_tail(&neigh->arp_queue, skb);
+      neigh->arp_queue_len_Bytes += skb->truesize;
+    }
+    rc = 1;
+  }
+out_unlock_bh:
+  if (immediate_probe)
+    neigh_probe(neigh);
+}
+
+static void neigh_probe(struct neighbour *neigh)
+{
+  struct sk_buff *skb = skb_peek_tail(&neigh->arp_queue);
+
+  if (neigh->ops->solicit)
+          neigh->ops->solicit(neigh, skb);
+}
+// arp_solicit ->
+static void arp_send_dst(
+  int type, int ptype, __be32 dest_ip,
+  struct net_device *dev, __be32 src_ip,
+  const unsigned char *dest_hw,
+  const unsigned char *src_hw,
+  const unsigned char *target_hw,
+  struct dst_entry *dst)
+{
+  struct sk_buff *skb;
+
+  skb = arp_create(type, ptype, dest_ip, dev, src_ip,
+                    dest_hw, src_hw, target_hw);
+
+  skb_dst_set(skb, dst_clone(dst));
+  arp_xmit(skb);
+}
+```
+
+#### dev layer
+```C++
+// dev_queue_xmit ->
+static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
+{
+  struct net_device *dev = skb->dev;
+  struct netdev_queue *txq;
+  struct Qdisc *q; // queueing discipline
+
+  txq = netdev_pick_tx(dev, skb, accel_priv);
+  q = rcu_dereference_bh(txq->qdisc);
+
+  if (q->enqueue) {
+    rc = __dev_xmit_skb(skb, q, dev, txq);
+    goto out;
+  }
+}
+
+# ip addr
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400 qdisc pfifo_fast state UP group default qlen 1000
+    link/ether fa:16:3e:75:99:08 brd ff:ff:ff:ff:ff:ff
+    inet 10.173.32.47/21 brd 10.173.39.255 scope global noprefixroute dynamic eth0
+       valid_lft 67104sec preferred_lft 67104sec
+    inet6 fe80::f816:3eff:fe75:9908/64 scope link
+       valid_lft forever preferred_lft forever
+```
+![linux-net-queue-displine.png](../Images/linux-net-queue-displine.png)
+
+```C++
+static inline int __dev_xmit_skb(
+  struct sk_buff *skb,
+  struct Qdisc *q,
+  struct net_device *dev,
+  struct netdev_queue *txq)
+{
+  rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
+  if (qdisc_run_begin(q)) {
+      __qdisc_run(q);
+  }
+}
+
+void __qdisc_run(struct Qdisc *q)
+{
+  int quota = dev_tx_weight;
+  int packets;
+    while (qdisc_restart(q, &packets)) {
+      /* Ordered by possible occurrence: Postpone processing if
+       * 1. we've exceeded packet quota
+       * 2. another process needs the CPU */
+      quota -= packets;
+      if (quota <= 0 || need_resched()) {
+          __netif_schedule(q);
+          break;
+      }
+    }
+    qdisc_run_end(q);
+}
+
+void __netif_schedule(struct Qdisc *q)
+{
+  if (!test_and_set_bit(__QDISC_STATE_SCHED, &q->state))
+    __netif_reschedule(q);
+}
+
+static void __netif_reschedule(struct Qdisc *q)
+{
+  struct softnet_data *sd;
+  unsigned long flags;
+
+  local_irq_save(flags);
+  sd = this_cpu_ptr(&softnet_data);
+  q->next_sched = NULL;
+  *sd->output_queue_tailp = q;
+  sd->output_queue_tailp = &q->next_sched;
+  raise_softirq_irqoff(NET_TX_SOFTIRQ);
+  local_irq_restore(flags);
+}
+
+/* register soft irq when boot */
+open_softirq(NET_TX_SOFTIRQ, net_tx_action);
+open_softirq(NET_RX_SOFTIRQ, net_rx_action);
+
+static __latent_entropy void net_tx_action(struct softirq_action *h)
+{
+  struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+
+  if (sd->output_queue) {
+      struct Qdisc *head;
+      local_irq_disable();
+      head = sd->output_queue;
+      sd->output_queue = NULL;
+      sd->output_queue_tailp = &sd->output_queue;
+      local_irq_enable();
+
+      while (head) {
+          struct Qdisc *q = head;
+          spinlock_t *root_lock;
+          head = head->next_sched;
+          qdisc_run(q);
+      }
+  }
+}
+
+// net_tx_action -> qdisc_run -> __qdisc_run ->
+static inline int qdisc_restart(struct Qdisc *q, int *packets)
+{
+  struct netdev_queue *txq;
+  struct net_device *dev;
+  spinlock_t *root_lock;
+  struct sk_buff *skb;
+  bool validate;
+
+  /* Dequeue packet */
+  skb = dequeue_skb(q, &validate, packets);
+  if (unlikely(!skb))
+          return 0;
+
+  root_lock = qdisc_lock(q);
+  dev = qdisc_dev(q);
+  txq = skb_get_tx_queue(dev, skb);
+
+  return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
+}
+
+int sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
+            struct net_device *dev, struct netdev_queue *txq,
+            spinlock_t *root_lock, bool validate)
+{
+  int ret = NETDEV_TX_BUSY;
+
+  if (likely(skb)) {
+      if (!netif_xmit_frozen_or_stopped(txq))
+          skb = dev_hard_start_xmit(skb, dev, txq, &ret);
+  }
+
+  if (dev_xmit_complete(ret)) {
+      /* Driver sent out skb successfully or skb was consumed */
+      ret = qdisc_qlen(q);
+  } else {
+      /* Driver returned NETDEV_TX_BUSY - requeue skb */
+      ret = dev_requeue_skb(skb, q);
+  }
+}
+
+struct sk_buff *dev_hard_start_xmit(
+  struct sk_buff *first,
+  struct net_device *dev,
+  struct netdev_queue *txq,
+  int *ret)
+{
+  struct sk_buff *skb = first;
+  int rc = NETDEV_TX_OK;
+
+  while (skb) {
+      struct sk_buff *next = skb->next;
+      rc = xmit_one(skb, dev, txq, next != NULL);
+      skb = next;
+      if (netif_xmit_stopped(txq) && skb) {
+          rc = NETDEV_TX_BUSY;
+          break;
+      }
+  }
+}
+// xmit_one -> netdev_start_xmit -> __netdev_start_xmit
+static inline netdev_tx_t __netdev_start_xmit(
+  const struct net_device_ops *ops,
+  struct sk_buff *skb,
+  struct net_device *dev, bool more)
+{
+    skb->xmit_more = more ? 1 : 0;
+    return ops->ndo_start_xmit(skb, dev);
+}
+```
+
+#### driver layer
+```C++
+// internet trasaction gigabit
+// drivers/net/ethernet/intel/ixgb/ixgb_main.c
+static const struct net_device_ops ixgb_netdev_ops = {
+  .ndo_open               = ixgb_open,
+  .ndo_stop               = ixgb_close,
+  .ndo_start_xmit         = ixgb_xmit_frame,
+  .ndo_set_rx_mode        = ixgb_set_multi,
+  .ndo_validate_addr      = eth_validate_addr,
+  .ndo_set_mac_address    = ixgb_set_mac,
+  .ndo_change_mtu         = ixgb_change_mtu,
+  .ndo_tx_timeout         = ixgb_tx_timeout,
+  .ndo_vlan_rx_add_vid    = ixgb_vlan_rx_add_vid,
+  .ndo_vlan_rx_kill_vid   = ixgb_vlan_rx_kill_vid,
+  .ndo_fix_features       = ixgb_fix_features,
+  .ndo_set_features       = ixgb_set_features,
+};
+
+static netdev_tx_t
+ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
+{
+  struct ixgb_adapter *adapter = netdev_priv(netdev);
+
+  if (count) {
+      ixgb_tx_queue(adapter, count, vlan_id, tx_flags);
+      /* Make sure there is space in the ring for the next send. */
+      ixgb_maybe_stop_tx(netdev, &adapter->tx_ring, DESC_NEEDED);
+  }
+
+  return NETDEV_TX_OK;
+}
+```
+![linux-net-write.png](../Images/linux-net-write.png)
+
+```C++
+struct sk_buff {
+  union {
+    struct {
+      struct sk_buff    *next;
+      struct sk_buff    *prev;
+    };
+    struct rb_node  rbnode; /* used in netem & tcp stack */
+  };
+
+  /* private: */
+  __u32      headers_start[0];
+  /* public: */
+
+  __u32      priority;
+  int      skb_iif;
+  __u32      hash;
+  __be16      vlan_proto;
+  __u16      vlan_tci;
+
+  union {
+    __u32    mark;
+    __u32    reserved_tailroom;
+  };
+
+  union {
+    __be16    inner_protocol;
+    __u8    inner_ipproto;
+  };
+
+  __u16      inner_transport_header;
+  __u16      inner_network_header;
+  __u16      inner_mac_header;
+
+  __be16      protocol;
+  __u16      transport_header;
+  __u16      network_header;
+  __u16      mac_header;
+
+  /* private: */
+  __u32      headers_end[0];
+  /* public: */
+
+  /* These elements must be at the end, see alloc_skb() for details.  */
+  sk_buff_data_t    tail;
+  sk_buff_data_t    end;
+  unsigned char    *head,
+        *data;
+  unsigned int    truesize;
+  refcount_t    users;
+};
+```
+![linux-net-sk_buf.png](../Images/linux-net-sk_buf.png)
+
+![linux-net-write-2.png](../Images/linux-net-write-2.png)
+
+### read
+```C++
+
+```
+
+### Q:
+
+1. alloc 0 sized sk_buff in `sk_stream_alloc_skb` from `tcp_sendmsg_locked`when there is not enough space for the new data?
+2. the segementation deails in tcp and ip layers?
 
 # virtualization
 
