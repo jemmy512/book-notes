@@ -7271,7 +7271,7 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
   return NETDEV_TX_OK;
 }
 ```
-![linux-net-write.png](../Images/linux-net-write.png)
+![linux-net-write-2.png](../Images/linux-net-write-2.png)
 
 ```C++
 struct sk_buff {
@@ -7327,7 +7327,7 @@ struct sk_buff {
 ```
 ![linux-net-sk_buf.png](../Images/linux-net-sk_buf.png)
 
-![linux-net-write-2.png](../Images/linux-net-write-2.png)
+![linux-net-write.png](../Images/linux-net-write.png)
 
 ### read
 ```C++
