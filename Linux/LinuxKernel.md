@@ -5700,19 +5700,19 @@ struct sem_undo_list {
 ### socket
 ```C++
 struct socket_alloc {
-  struct socket sock et;
+  struct socket socket;
   struct inode vfs_inode;
 };
 
 struct socket {
   socket_state    state;
-  short      type;
-  unsigned long    flags;
+  short           type;
+  unsigned long   flags;
 
-  struct file    *file;
+  struct file     *file;
   struct sock    *sk;
+  struct socket_wq        wq;
   const struct proto_ops  *ops;
-  struct socket_wq  wq;
 };
 
 struct sock {
@@ -7379,6 +7379,20 @@ struct sk_buff {
   };
 
   char            cb[48] __aligned(8);
+
+  unsigned int    len, data_len;
+  __u16           mac_len, hdr_len;
+
+  __be16     protocol;
+  __u16      transport_header;
+  __u16      network_header;
+  __u16      mac_header;
+
+  sk_buff_data_t     tail;
+  sk_buff_data_t     end;
+  unsigned char     *head, *data;
+  unsigned int      truesize;
+  refcount_t        users;
 };
 ```
 ![linux-net-sk_buf.png](../Images/linux-net-sk_buf.png)
@@ -7616,7 +7630,7 @@ struct softnet_data {
   struct Qdisc    **output_queue_tailp;
 }
 
-// polling net request: ixgb_clean ->
+// polling net request: napi_poll -> ixgb_clean ->
 static bool
 ixgb_clean_rx_irq(struct ixgb_adapter *adapter, int *work_done, int work_to_do)
 {
@@ -7779,7 +7793,7 @@ static inline void deliver_ptype_list_skb(
   *pt = pt_prev;
 }
 
-// inet_init -> dev_add_pack(&ip_packet_type)
+// if_ether.h inet_init -> dev_add_pack(&ip_packet_type)
 void dev_add_pack(struct packet_type *pt)
 {
   struct list_head *head = ptype_head(pt);
@@ -7816,14 +7830,42 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, 
 
 static int ip_rcv_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-  const struct iphdr *iph = ip_hdr(skb);
   struct net_device *dev = skb->dev;
+  int ret;
+
+  ret = ip_rcv_finish_core(net, sk, skb, dev, NULL);
+  if (ret != NET_RX_DROP)
+    ret = dst_input(skb);
+  return ret;
+}
+
+static int ip_rcv_finish_core(struct net *net, struct sock *sk,
+  struct sk_buff *skb, struct net_device *dev,
+  const struct sk_buff *hint)
+{
+  const struct iphdr *iph = ip_hdr(skb);
+  int (*edemux)(struct sk_buff *skb);
   struct rtable *rt;
   int err;
 
   rt = skb_rtable(skb);
+  if (rt->rt_type == RTN_MULTICAST) {
+    __IP_UPD_PO_STATS(net, IPSTATS_MIB_INMCAST, skb->len);
+  } else if (rt->rt_type == RTN_BROADCAST) {
+    __IP_UPD_PO_STATS(net, IPSTATS_MIB_INBCAST, skb->len);
+  } else if (skb->pkt_type == PACKET_BROADCAST ||
+       skb->pkt_type == PACKET_MULTICAST) {
+    struct in_device *in_dev = __in_dev_get_rcu(dev);
+    if (in_dev &&
+        IN_DEV_ORCONF(in_dev, DROP_UNICAST_IN_L2_MULTICAST))
+      goto drop;
+  }
 
-  return dst_input(skb);
+  return NET_RX_SUCCESS;
+
+drop:
+  kfree_skb(skb);
+  return NET_RX_DROP;
 }
 
 static inline int dst_input(struct sk_buff *skb)
@@ -7831,7 +7873,7 @@ static inline int dst_input(struct sk_buff *skb)
   return skb_dst(skb)->input(skb);
 }
 
-// rt.dst.input ->
+// see at rt_dst_alloc(), rt.dst.input ->
 int ip_local_deliver(struct sk_buff *skb)
 {
   struct net *net = dev_net(skb->dev);
@@ -8047,7 +8089,7 @@ queue_and_out:
     return;
   }
 
-  /* 2. end_seq > rcv_nxt */
+  /* 2. end_seq < rcv_nxt */
   if (!after(TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt)) {
     /* A retransmit, 2nd most common case.  Force an immediate ack. */
     tcp_dsack_set(sk, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq);
@@ -8064,11 +8106,8 @@ drop:
   if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt + tcp_receive_window(tp)))
     goto out_of_window;
 
-  tcp_enter_quickack_mode(sk);
-
-  /* 4. seq < rcv_next */
+  /* 4. seq < rcv_next < end_seq */
   if (before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) {
-    /* Partial packet, seq < rcv_next < end_seq */
     tcp_dsack_set(sk, TCP_SKB_CB(skb)->seq, tp->rcv_nxt);
     /* If window is closed, drop tail of packet. But after
      * remembering D-SACK for its head made in previous line.
@@ -8082,13 +8121,16 @@ drop:
 }
 ```
 
-#### socket layer
+#### vfs layer
 ```C++
 static const struct file_operations socket_file_ops = {
   .read_iter =  sock_read_iter,
   .write_iter =  sock_write_iter,
 };
+```
 
+#### socket layer
+```C++
 static ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
   struct file *file = iocb->ki_filp;
@@ -8140,7 +8182,7 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
   do {
     u32 offset;
 
-    seq = &tp->copied_seq;
+    seq = &tp->copied_seq; /* Head of yet unread data */
 
     /* Next get a buffer. */
     last = skb_peek_tail(&sk->sk_receive_queue);
@@ -8253,7 +8295,732 @@ static void __release_sock(struct sock *sk)
 2. The segementation deails in tcp and ip layers?
 3. What's the tcp header and data memory layout?
 4. When rcv, how does mutil-core cpu work?
+5. How does napi works, What does net card do when cpu polling?
+6. Where does net driver put new data in when cpu polling?
 
 # virtualization
 
 # containerization
+![linux-container-vir-arch.png](../Images/linux-container-vir-arch.png)
+
+### ns
+```C++
+# nsenter --target 58212 --mount --uts --ipc --net --pid -- env --ignore-environment -- /bin/bash
+
+root@f604f0e34bc2:/# ip addr
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+23: eth0@if24: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default
+    link/ether 02:42:ac:11:00:03 brd ff:ff:ff:ff:ff:ff
+    inet 172.17.0.3/16 brd 172.17.255.255 scope global eth0
+       valid_lft forever preferred_lft forever
+```
+```C++
+unshare --mount --ipc --pid --net --mount-proc=/proc --fork /bin/bash
+```
+
+```C++
+int clone(int (*fn)(void *), void *child_stack, int flags, void *arg);
+/* CLONE_NEWUTS, CLONE_NEWUSER, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWIPC, CLONE_NEWNET */
+
+/* nsenter, ip netns exec, docker exec */
+int setns(int fd, int nstype);
+
+int unshare(int flags);
+```
+
+```C++
+struct task_struct {
+  struct nsproxy      *nsproxy;
+}
+
+struct nsproxy {
+  atomic_t count;
+  struct uts_namespace    *uts_ns;
+  struct ipc_namespace    *ipc_ns;
+  struct mnt_namespace    *mnt_ns;
+  struct pid_namespace    *pid_ns_for_children;
+  struct net              *net_ns;
+  struct cgroup_namespace *cgroup_ns;
+};
+
+struct nsproxy init_nsproxy = {
+  .count      = ATOMIC_INIT(1),
+  .uts_ns      = &init_uts_ns,
+#if defined(CONFIG_POSIX_MQUEUE) || defined(CONFIG_SYSVIPC)
+  .ipc_ns      = &init_ipc_ns,
+#endif
+  .mnt_ns      = NULL,
+  .pid_ns_for_children  = &init_pid_ns,
+#ifdef CONFIG_NET
+  .net_ns      = &init_net,
+#endif
+#ifdef CONFIG_CGROUPS
+  .cgroup_ns    = &init_cgroup_ns,
+#endif
+};
+
+// _do_fork -> copy_process -> copy_namespaces
+int copy_namespaces(unsigned long flags, struct task_struct *tsk)
+{
+  struct nsproxy *old_ns = tsk->nsproxy;
+  struct user_namespace *user_ns = task_cred_xxx(tsk, user_ns);
+  struct nsproxy *new_ns;
+
+  if (likely(!(flags & (CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC |
+            CLONE_NEWPID | CLONE_NEWNET |
+            CLONE_NEWCGROUP)))) {
+    get_nsproxy(old_ns);
+    return 0;
+  }
+
+  if (!ns_capable(user_ns, CAP_SYS_ADMIN))
+    return -EPERM;
+
+  new_ns = create_new_namespaces(flags, tsk, user_ns, tsk->fs);
+
+  tsk->nsproxy = new_ns;
+  return 0;
+}
+
+static struct nsproxy *create_new_namespaces(unsigned long flags,
+  struct task_struct *tsk, struct user_namespace *user_ns,
+  struct fs_struct *new_fs)
+{
+  struct nsproxy *new_nsp;
+
+  new_nsp = create_nsproxy();
+  new_nsp->mnt_ns = copy_mnt_ns(flags, tsk->nsproxy->mnt_ns, user_ns, new_fs);
+  new_nsp->uts_ns = copy_utsname(flags, user_ns, tsk->nsproxy->uts_ns);
+  new_nsp->ipc_ns = copy_ipcs(flags, user_ns, tsk->nsproxy->ipc_ns);
+  new_nsp->pid_ns_for_children =
+    copy_pid_ns(flags, user_ns, tsk->nsproxy->pid_ns_for_children);
+  new_nsp->cgroup_ns = copy_cgroup_ns(flags, user_ns,
+              tsk->nsproxy->cgroup_ns);
+  new_nsp->net_ns = copy_net_ns(flags, user_ns, tsk->nsproxy->net_ns);
+
+  return new_nsp;
+}
+
+struct pid_namespace *copy_pid_ns(unsigned long flags,
+  struct user_namespace *user_ns, struct pid_namespace *old_ns)
+{
+  if (!(flags & CLONE_NEWPID))
+    return get_pid_ns(old_ns);
+  if (task_active_pid_ns(current) != old_ns)
+    return ERR_PTR(-EINVAL);
+  return create_pid_namespace(user_ns, old_ns);
+}
+
+struct net *copy_net_ns(unsigned long flags,
+      struct user_namespace *user_ns, struct net *old_net)
+{
+  struct ucounts *ucounts;
+  struct net *net;
+  int rv;
+
+  if (!(flags & CLONE_NEWNET))
+    return get_net(old_net);
+
+  ucounts = inc_net_namespaces(user_ns);
+  net = net_alloc();
+  get_user_ns(user_ns);
+  net->ucounts = ucounts;
+  rv = setup_net(net, user_ns);
+
+  return net;
+}
+
+static __net_init int setup_net(struct net *net, struct user_namespace *user_ns)
+{
+  /* Must be called with net_mutex held */
+  const struct pernet_operations *ops, *saved_ops;
+  LIST_HEAD(net_exit_list);
+
+  atomic_set(&net->count, 1);
+  refcount_set(&net->passive, 1);
+  net->dev_base_seq = 1;
+  net->user_ns = user_ns;
+  idr_init(&net->netns_ids);
+  spin_lock_init(&net->nsid_lock);
+
+  list_for_each_entry(ops, &pernet_list, list) {
+    error = ops_init(ops, net);
+  }
+}
+
+register_pernet_device(&loopback_net_ops)
+
+int register_pernet_device(struct pernet_operations *ops)
+{
+  int error;
+  mutex_lock(&net_mutex);
+  error = register_pernet_operations(&pernet_list, ops);
+  if (!error && (first_device == &pernet_list))
+    first_device = &ops->list;
+  mutex_unlock(&net_mutex);
+  return error;
+}
+
+struct pernet_operations __net_initdata loopback_net_ops = {
+        .init = loopback_net_init,
+};
+
+static __net_init int loopback_net_init(struct net *net)
+{
+  struct net_device *dev;
+  dev = alloc_netdev(0, "lo", NET_NAME_UNKNOWN, loopback_setup);
+
+  dev_net_set(dev, net);
+  err = register_netdev(dev);
+
+  net->loopback_dev = dev;
+
+  return 0;
+}
+```
+![linux-container-namespace.png](../Images/linux-container-namespace.png)
+
+### cgroup
+cgrup subsystem:
+  cpu, cpuacct, cpuset, memory, blkio, devices, net_cls(tc), freezer
+
+```C++
+docker run -d --cpu-shares 513 --cpus 2 --cpuset-cpus 1,3 --memory 1024M --memory-swap 1234M --memory-swappiness 7 -p 8081:80 testnginx:1
+
+# docker ps
+CONTAINER ID        IMAGE               COMMAND                  CREATED              STATUS              PORTS                  NAMES
+3dc0601189dd        testnginx:1         "/bin/sh -c 'nginx -…"   About a minute ago   Up About a minute   0.0.0.0:8081->80/tcp   boring_cohen
+
+
+# mount -t cgroup
+cgroup on /sys/fs/cgroup/systemd type cgroup (rw,nosuid,nodev,noexec,relatime,xattr,release_agent=/usr/lib/systemd/systemd-cgroups-agent,name=systemd)
+cgroup on /sys/fs/cgroup/net_cls,net_prio type cgroup (rw,nosuid,nodev,noexec,relatime,net_prio,net_cls)
+cgroup on /sys/fs/cgroup/perf_event type cgroup (rw,nosuid,nodev,noexec,relatime,perf_event)
+cgroup on /sys/fs/cgroup/devices type cgroup (rw,nosuid,nodev,noexec,relatime,devices)
+cgroup on /sys/fs/cgroup/blkio type cgroup (rw,nosuid,nodev,noexec,relatime,blkio)
+cgroup on /sys/fs/cgroup/cpu,cpuacct type cgroup (rw,nosuid,nodev,noexec,relatime,cpuacct,cpu)
+cgroup on /sys/fs/cgroup/memory type cgroup (rw,nosuid,nodev,noexec,relatime,memory)
+cgroup on /sys/fs/cgroup/cpuset type cgroup (rw,nosuid,nodev,noexec,relatime,cpuset)
+cgroup on /sys/fs/cgroup/hugetlb type cgroup (rw,nosuid,nodev,noexec,relatime,hugetlb)
+cgroup on /sys/fs/cgroup/freezer type cgroup (rw,nosuid,nodev,noexec,relatime,freezer)
+cgroup on /sys/fs/cgroup/pids type cgroup (rw,nosuid,nodev,noexec,relatime,pids)
+```
+```C++
+// sys/fs/cgroup
+drwxr-xr-x 5 root root  0 May 30 17:00 blkio
+lrwxrwxrwx 1 root root 11 May 30 17:00 cpu -> cpu,cpuacct
+lrwxrwxrwx 1 root root 11 May 30 17:00 cpuacct -> cpu,cpuacct
+drwxr-xr-x 5 root root  0 May 30 17:00 cpu,cpuacct
+drwxr-xr-x 3 root root  0 May 30 17:00 cpuset
+drwxr-xr-x 5 root root  0 May 30 17:00 devices
+drwxr-xr-x 3 root root  0 May 30 17:00 freezer
+drwxr-xr-x 3 root root  0 May 30 17:00 hugetlb
+drwxr-xr-x 5 root root  0 May 30 17:00 memory
+lrwxrwxrwx 1 root root 16 May 30 17:00 net_cls -> net_cls,net_prio
+drwxr-xr-x 3 root root  0 May 30 17:00 net_cls,net_prio
+lrwxrwxrwx 1 root root 16 May 30 17:00 net_prio -> net_cls,net_prio
+drwxr-xr-x 3 root root  0 May 30 17:00 perf_event
+drwxr-xr-x 5 root root  0 May 30 17:00 pids
+drwxr-xr-x 5 root root  0 May 30 17:00 systemd
+
+// cpu, cpuacct
+# ls
+cgroup.clone_children  cpu.cfs_period_us  notify_on_release
+cgroup.event_control   cpu.cfs_quota_us   release_agent
+cgroup.procs           cpu.rt_period_us   system.slice
+cgroup.sane_behavior   cpu.rt_runtime_us  tasks
+cpuacct.stat           cpu.shares         user.slice
+cpuacct.usage          cpu.stat
+cpuacct.usage_percpu   docker
+
+[docker]# ls
+cgroup.clone_children
+cgroup.event_control
+cgroup.procs
+cpuacct.stat
+cpuacct.usage
+cpuacct.usage_percpu
+cpu.cfs_period_us
+cpu.cfs_quota_us
+cpu.rt_period_us
+cpu.rt_runtime_us
+cpu.shares
+cpu.stat
+3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd
+notify_on_release
+tasks
+
+[3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd]# ls
+cgroup.clone_children  cpuacct.usage_percpu  cpu.shares
+cgroup.event_control   cpu.cfs_period_us     cpu.stat
+cgroup.procs           cpu.cfs_quota_us      notify_on_release
+cpuacct.stat           cpu.rt_period_us      tasks
+cpuacct.usage          cpu.rt_runtime_us
+
+[3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd]# cat tasks
+39487
+39520
+39526
+39527
+39528
+39529
+
+[3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd]# cat cpu.shares
+513
+
+[3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd]# cat cpu.cfs_period_us
+100000
+
+[3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd]# cat cpu.cfs_quota_us
+200000
+
+[3dc0601189dd218898f31f9526a6cfae83913763a4da59f95ec789c6e030ecfd]# cat cpuset.cpus
+1,3
+
+[root@deployer memory]# ls
+cgroup.clone_children               memory.memsw.failcnt
+cgroup.event_control                memory.memsw.limit_in_bytes
+cgroup.procs                        memory.memsw.max_usage_in_bytes
+cgroup.sane_behavior                memory.memsw.usage_in_bytes
+docker                              memory.move_charge_at_immigrate
+memory.failcnt                      memory.numa_stat
+memory.force_empty                  memory.oom_control
+memory.kmem.failcnt                 memory.pressure_level
+memory.kmem.limit_in_bytes          memory.soft_limit_in_bytes
+memory.kmem.max_usage_in_bytes      memory.stat
+memory.kmem.slabinfo                memory.swappiness
+memory.kmem.tcp.failcnt             memory.usage_in_bytes
+memory.kmem.tcp.limit_in_bytes      memory.use_hierarchy
+memory.kmem.tcp.max_usage_in_bytes  notify_on_release
+memory.kmem.tcp.usage_in_bytes      release_agent
+memory.kmem.usage_in_bytes          system.slice
+memory.limit_in_bytes               tasks
+memory.max_usage_in_bytes           user.slice
+
+```
+![linux-container-cgroup.png](../Images/linux-container-cgroup.png)
+
+```C++
+asmlinkage __visible void __init start_kernel(void)
+{
+  cgroup_init_early();
+  cgroup_init();
+}
+
+for_each_subsys(ss, i) {
+  ss->id = i;
+  ss->name = cgroup_subsys_name[i];
+  cgroup_init_subsys(ss, true);
+}
+
+#define for_each_subsys(ss, ssid)          \
+  for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT &&    \
+       (((ss) = cgroup_subsys[ssid]) || true); (ssid)++)
+
+#define SUBSYS(_x) [_x ## _cgrp_id] = &_x ## _cgrp_subsys,
+struct cgroup_subsys *cgroup_subsys[] = {
+#include <linux/cgroup_subsys.h>
+};
+#undef SUBSYS
+
+#if IS_ENABLED(CONFIG_CPUSETS)
+SUBSYS(cpuset)
+#endif
+
+#if IS_ENABLED(CONFIG_CGROUP_SCHED)
+SUBSYS(cpu)
+#endif
+
+#if IS_ENABLED(CONFIG_CGROUP_CPUACCT)
+SUBSYS(cpuacct)
+#endif
+
+#if IS_ENABLED(CONFIG_MEMCG)
+SUBSYS(memory)
+#endif
+
+struct cgroup_subsys cpuset_cgrp_subsys = {
+  .css_alloc  = cpuset_css_alloc,
+  .css_online  = cpuset_css_online,
+  .css_offline  = cpuset_css_offline,
+  .css_free  = cpuset_css_free,
+  .can_attach  = cpuset_can_attach,
+  .cancel_attach  = cpuset_cancel_attach,
+  .attach    = cpuset_attach,
+  .post_attach  = cpuset_post_attach,
+  .bind    = cpuset_bind,
+  .fork    = cpuset_fork,
+  .legacy_cftypes  = files,
+  .early_init  = true,
+};
+
+struct cgroup_subsys cpu_cgrp_subsys = {
+  .css_alloc  = cpu_cgroup_css_alloc,
+  .css_online  = cpu_cgroup_css_online,
+  .css_released  = cpu_cgroup_css_released,
+  .css_free  = cpu_cgroup_css_free,
+  .fork    = cpu_cgroup_fork,
+  .can_attach  = cpu_cgroup_can_attach,
+  .attach    = cpu_cgroup_attach,
+  .legacy_cftypes  = cpu_files,
+  .early_init  = true,
+};
+
+struct cgroup_subsys memory_cgrp_subsys = {
+  .css_alloc = mem_cgroup_css_alloc,
+  .css_online = mem_cgroup_css_online,
+  .css_offline = mem_cgroup_css_offline,
+  .css_released = mem_cgroup_css_released,
+  .css_free = mem_cgroup_css_free,
+  .css_reset = mem_cgroup_css_reset,
+  .can_attach = mem_cgroup_can_attach,
+  .cancel_attach = mem_cgroup_cancel_attach,
+  .post_attach = mem_cgroup_move_task,
+  .bind = mem_cgroup_bind,
+  .dfl_cftypes = memory_files,
+  .legacy_cftypes = mem_cgroup_legacy_files,
+  .early_init = 0,
+};
+
+static void __init cgroup_init_subsys(struct cgroup_subsys *ss, bool early)
+{
+  struct cgroup_subsys_state *css;
+
+  idr_init(&ss->css_idr);
+  INIT_LIST_HEAD(&ss->cfts);
+
+  /* Create the root cgroup state for this subsystem */
+  ss->root = &cgrp_dfl_root;
+  css = ss->css_alloc(cgroup_css(&cgrp_dfl_root.cgrp, ss));
+
+  init_and_link_css(css, ss, &cgrp_dfl_root.cgrp);
+
+  css->id = cgroup_idr_alloc(&ss->css_idr, css, 1, 2, GFP_KERNEL);
+  init_css_set.subsys[ss->id] = css;
+
+  BUG_ON(online_css(css));
+}
+
+struct task_group {
+  struct cgroup_subsys_state css;
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+  /* schedulable entities of this group on each cpu */
+  struct sched_entity **se;
+  /* runqueue "owned" by this group on each cpu */
+  struct cfs_rq **cfs_rq;
+  unsigned long shares;
+
+#ifdef  CONFIG_SMP
+  atomic_long_t load_avg ____cacheline_aligned;
+#endif
+#endif
+
+  struct rcu_head rcu;
+  struct list_head list;
+
+  struct task_group *parent;
+  struct list_head siblings;
+  struct list_head children;
+
+  struct cfs_bandwidth cfs_bandwidth;
+};
+
+// online_css -> cpu_cgroup_css_online -> sched_online_group -> online_fair_sched_group
+void online_fair_sched_group(struct task_group *tg)
+{
+  struct sched_entity *se;
+  struct rq *rq;
+  int i;
+
+  for_each_possible_cpu(i) {
+    rq = cpu_rq(i);
+    se = tg->se[i];
+    update_rq_clock(rq);
+    attach_entity_cfs_rq(se);
+    sync_throttle(tg, i);
+  }
+}
+
+// css_alloc -> mem_cgroup_css_alloc -> mem_cgroup_alloc
+struct mem_cgroup {
+  struct cgroup_subsys_state css;
+
+  struct mem_cgroup_id id;
+
+  struct page_counter memory;
+  struct page_counter swap;
+
+  struct page_counter memsw;
+  struct page_counter kmem;
+  struct page_counter tcpmem;
+
+  unsigned long low;
+  unsigned long high;
+
+  struct work_struct high_work;
+
+  unsigned long soft_limit;
+  int  swappiness;
+
+  struct mem_cgroup_stat_cpu __percpu *stat;
+
+  int last_scanned_node;
+
+  struct list_head event_list;
+  spinlock_t event_list_lock;
+
+  struct mem_cgroup_per_node *nodeinfo[0];
+};
+
+struct cftype cgroup1_base_files[] = {
+  {
+      .name = "tasks",
+      .seq_start = cgroup_pidlist_start,
+      .seq_next = cgroup_pidlist_next,
+      .seq_stop = cgroup_pidlist_stop,
+      .seq_show = cgroup_pidlist_show,
+      .private = CGROUP_FILE_TASKS,
+      .write = cgroup_tasks_write,
+  }
+}
+
+static struct kernfs_ops cgroup_kf_ops = {
+  .atomic_write_len  = PAGE_SIZE,
+  .open      = cgroup_file_open,
+  .release    = cgroup_file_release,
+  .write      = cgroup_file_write,
+  .seq_start    = cgroup_seqfile_start,
+  .seq_next    = cgroup_seqfile_next,
+  .seq_stop    = cgroup_seqfile_stop,
+  .seq_show    = cgroup_seqfile_show,
+};
+
+struct file_system_type cgroup_fs_type = {
+  .name = "cgroup",
+  .mount = cgroup_mount,
+  .kill_sb = cgroup_kill_sb,
+  .fs_flags = FS_USERNS_MOUNT,
+};
+
+// mount -> cgroup_mount -> cgroup1_mount
+struct dentry *cgroup1_mount(struct file_system_type *fs_type, int flags,
+           void *data, unsigned long magic,
+           struct cgroup_namespace *ns)
+{
+  struct super_block *pinned_sb = NULL;
+  struct cgroup_sb_opts opts;
+  struct cgroup_root *root;
+  struct cgroup_subsys *ss;
+  struct dentry *dentry;
+  int i, ret;
+  bool new_root = false;
+
+  root = kzalloc(sizeof(*root), GFP_KERNEL);
+  new_root = true;
+
+  init_cgroup_root(root, &opts);
+
+  ret = cgroup_setup_root(root, opts.subsys_mask, PERCPU_REF_INIT_DEAD);
+
+  dentry = cgroup_do_mount(&cgroup_fs_type, flags, root,
+         CGROUP_SUPER_MAGIC, ns);
+
+  return dentry;
+}
+
+int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask, int ref_flags)
+{
+  LIST_HEAD(tmp_links);
+  struct cgroup *root_cgrp = &root->cgrp;
+  struct kernfs_syscall_ops *kf_sops;
+  struct css_set *cset;
+  int i, ret;
+
+  root->kf_root = kernfs_create_root(kf_sops,
+             KERNFS_ROOT_CREATE_DEACTIVATED,
+             root_cgrp);
+  root_cgrp->kn = root->kf_root->kn;
+
+  ret = css_populate_dir(&root_cgrp->self);
+  ret = rebind_subsystems(root, ss_mask);
+
+  list_add(&root->root_list, &cgroup_roots);
+  cgroup_root_count++;
+
+  kernfs_activate(root_cgrp->kn);
+}
+
+/* create file tree, and kernfs_node for each file, set file ops to kf_ops(cgroup_kf_ops)
+ * css_populate_dir -> cgroup_addrm_files -> cgroup_add_file */
+static int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
+         struct cftype *cft)
+{
+  char name[CGROUP_FILE_NAME_MAX];
+  struct kernfs_node *kn;
+
+  kn = __kernfs_create_file(cgrp->kn, cgroup_file_name(cgrp, cft, name),
+          cgroup_file_mode(cft), 0, cft->kf_ops, cft,
+          NULL, key);
+}
+
+struct kernfs_node *__kernfs_create_file(
+  struct kernfs_node *parent,
+  const char *name,
+  umode_t mode, loff_t size,
+  const struct kernfs_ops *ops,
+  void *priv, const void *ns,
+  struct lock_class_key *key)
+{
+  struct kernfs_node *kn;
+  unsigned flags;
+  int rc;
+
+  flags = KERNFS_FILE;
+
+  kn = kernfs_new_node(parent, name, (mode & S_IALLUGO) | S_IFREG, flags);
+
+  kn->attr.ops = ops;
+  kn->attr.size = size;
+  kn->ns = ns;
+  kn->priv = priv;
+
+  rc = kernfs_add_one(kn);
+
+  return kn;
+}
+
+// cgroup1_mount -> cgroup_do_mount -> kernfs_mount
+const struct file_operations kernfs_file_fops = {
+  .read    = kernfs_fop_read,
+  .write    = kernfs_fop_write,
+  .llseek    = generic_file_llseek,
+  .mmap    = kernfs_fop_mmap,
+  .open    = kernfs_fop_open,
+  .release  = kernfs_fop_release,
+  .poll    = kernfs_fop_poll,
+  .fsync    = noop_fsync,
+};
+
+static struct cftype cpu_files[] = {
+#ifdef CONFIG_FAIR_GROUP_SCHED
+  {
+    .name = "shares",
+    .read_u64 = cpu_shares_read_u64,
+    .write_u64 = cpu_shares_write_u64,
+  },
+#endif
+#ifdef CONFIG_CFS_BANDWIDTH
+  {
+    .name = "cfs_quota_us",
+    .read_s64 = cpu_cfs_quota_read_s64,
+    .write_s64 = cpu_cfs_quota_write_s64,
+  },
+  {
+    .name = "cfs_period_us",
+    .read_u64 = cpu_cfs_period_read_u64,
+    .write_u64 = cpu_cfs_period_write_u64,
+  }
+}
+
+static struct cftype mem_cgroup_legacy_files[] = {
+    {
+        .name = "usage_in_bytes",
+        .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
+        .read_u64 = mem_cgroup_read_u64,
+    },
+    {
+        .name = "max_usage_in_bytes",
+        .private = MEMFILE_PRIVATE(_MEM, RES_MAX_USAGE),
+        .write = mem_cgroup_reset,
+        .read_u64 = mem_cgroup_read_u64,
+    },
+    {
+        .name = "limit_in_bytes",
+        .private = MEMFILE_PRIVATE(_MEM, RES_LIMIT),
+        .write = mem_cgroup_write,
+        .read_u64 = mem_cgroup_read_u64,
+    },
+    {
+        .name = "soft_limit_in_bytes",
+        .private = MEMFILE_PRIVATE(_MEM, RES_SOFT_LIMIT),
+        .write = mem_cgroup_write,
+        .read_u64 = mem_cgroup_read_u64,
+    },
+}
+
+int sched_group_set_shares(struct task_group *tg, unsigned long shares)
+{
+  int i;
+
+  shares = clamp(shares, scale_load(MIN_SHARES), scale_load(MAX_SHARES));
+
+  tg->shares = shares;
+  for_each_possible_cpu(i) {
+    struct rq *rq = cpu_rq(i);
+    struct sched_entity *se = tg->se[i];
+    struct rq_flags rf;
+
+    update_rq_clock(rq);
+    for_each_sched_entity(se) {
+      update_load_avg(se, UPDATE_TG);
+      update_cfs_shares(se);
+    }
+  }
+}
+
+// cgroup_tasks_write -> __cgroup_procs_write ->
+// cgroup_attach_task -> cgroup_migrate->cgroup_migrate_execute
+static int cgroup_migrate_execute(struct cgroup_mgctx *mgctx)
+{
+  struct cgroup_taskset *tset = &mgctx->tset;
+  struct cgroup_subsys *ss;
+  struct task_struct *task, *tmp_task;
+  struct css_set *cset, *tmp_cset;
+
+  if (tset->nr_tasks) {
+    do_each_subsys_mask(ss, ssid, mgctx->ss_mask) {
+      if (ss->attach) {
+        tset->ssid = ssid;
+        ss->attach(tset);
+      }
+    } while_each_subsys_mask();
+  }
+}
+
+// cpu_cgroup_attach -> sched_move_task -> sched_change_group
+
+static void sched_change_group(struct task_struct *tsk, int type)
+{
+  struct task_group *tg;
+
+  tg = container_of(task_css_check(tsk, cpu_cgrp_id, true),
+        struct task_group, css);
+  tg = autogroup_task_group(tsk, tg);
+  tsk->sched_task_group = tg;
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+  if (tsk->sched_class->task_change_group)
+    tsk->sched_class->task_change_group(tsk, type);
+  else
+#endif
+    set_task_rq(tsk, task_cpu(tsk));
+}
+
+// handle_pte_fault -> do_anonymous_page() -> mem_cgroup_try_charge
+int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
+        gfp_t gfp_mask, struct mem_cgroup **memcgp,
+        bool compound)
+{
+  struct mem_cgroup *memcg = NULL;
+
+  if (!memcg)
+    memcg = get_mem_cgroup_from_mm(mm);
+
+  ret = try_charge(memcg, gfp_mask, nr_pages);
+}
+```
+![linux-container-cgroup-arch.png](../Images/linux-container-cgroup-arch.png)
