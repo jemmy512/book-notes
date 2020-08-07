@@ -1775,8 +1775,9 @@ struct super_block {
   struct backing_dev_info *s_bdi;
   struct hlist_node  s_instances;
 
-  struct list_head  s_inodes;  /* all inodes */
-  struct list_head  s_inodes_wb;  /* writeback inodes */
+  struct list_head  s_mounts; /* list of mounts; _not_ for fs use */
+  struct list_head  s_inodes; /* all inodes */
+  struct list_head  s_inodes_wb; /* writeback inodes */
 }
 ```
 ![linux-mem-meta-block-group.png](../Images/linux-mem-meta-block-group.png)
@@ -1853,13 +1854,13 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name, char __
 {
   ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 }
-// do_mount->do_new_mount->vfs_kern_mount
 
+/* ksys_mount -> do_mount -> do_new_mount -> */
 struct vfsmount *
 vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void *data)
 {
   mnt = alloc_vfsmnt(name);
-  root = mount_fs(type, flags, name, data);
+  struct dentry* root = mount_fs(type, flags, name, data); /* super_lock.s_root */
 
   mnt->mnt.mnt_root = root;
   mnt->mnt.mnt_sb = root->d_sb;
@@ -8333,7 +8334,8 @@ int unshare(int flags);
 
 ```C++
 struct task_struct {
-  struct nsproxy      *nsproxy;
+  struct nsproxy  *nsproxy;
+  struct css_set  *cgroups;
 }
 
 struct nsproxy {
@@ -8362,7 +8364,7 @@ struct nsproxy init_nsproxy = {
 #endif
 };
 
-// _do_fork -> copy_process -> copy_namespaces
+// clone -> _do_fork -> copy_process -> copy_namespaces
 int copy_namespaces(unsigned long flags, struct task_struct *tsk)
 {
   struct nsproxy *old_ns = tsk->nsproxy;
@@ -8526,8 +8528,7 @@ drwxr-xr-x 3 root root  0 May 30 17:00 perf_event
 drwxr-xr-x 5 root root  0 May 30 17:00 pids
 drwxr-xr-x 5 root root  0 May 30 17:00 systemd
 
-// cpu, cpuacct
-# ls
+[cpu, cpuacct]# ls
 cgroup.clone_children  cpu.cfs_period_us  notify_on_release
 cgroup.event_control   cpu.cfs_quota_us   release_agent
 cgroup.procs           cpu.rt_period_us   system.slice
@@ -8599,23 +8600,125 @@ memory.kmem.tcp.usage_in_bytes      release_agent
 memory.kmem.usage_in_bytes          system.slice
 memory.limit_in_bytes               tasks
 memory.max_usage_in_bytes           user.slice
-
 ```
 ![linux-container-cgroup.png](../Images/linux-container-cgroup.png)
 
 ```C++
-asmlinkage __visible void __init start_kernel(void)
+void __init start_kernel(void)
 {
-  cgroup_init_early();
   cgroup_init();
 }
 
-for_each_subsys(ss, i) {
-  ss->id = i;
-  ss->name = cgroup_subsys_name[i];
-  cgroup_init_subsys(ss, true);
+int cgroup_init(void)
+{
+  struct cgroup_subsys *ss;
+  int ssid;
+
+  cgroup_init_cftypes(NULL, cgroup1_base_files);
+
+  for_each_subsys(ss, ssid) {
+    cgroup_init_subsys(ss, false);
+
+    list_add_tail(&init_css_set.e_cset_node[ssid],
+            &cgrp_dfl_root.cgrp.e_csets[ssid]);
+  }
+
+  sysfs_create_mount_point(fs_kobj, "cgroup"));
+  register_filesystem(&cgroup_fs_type);
+  register_filesystem(&cgroup2_fs_type);
+}
+```
+
+#### cgroup_init_cftypes
+```C++
+/* set the cftype's kf_ops to cgroup_kf_ops */
+static int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+  struct cftype *cft;
+
+  for (cft = cfts; cft->name[0] != '\0'; cft++) {
+    struct kernfs_ops *kf_ops;
+    if (cft->seq_start)
+      kf_ops = &cgroup_kf_ops;
+    else
+      kf_ops = &cgroup_kf_single_ops;
+
+    cft->kf_ops = kf_ops;
+    cft->ss = ss;
+  }
 }
 
+struct cftype cgroup1_base_files[] = {
+  {
+    .name = "cgroup.procs",
+    .seq_start = cgroup_pidlist_start,
+    .seq_next = cgroup_pidlist_next,
+    .seq_stop = cgroup_pidlist_stop,
+    .seq_show = cgroup_pidlist_show,
+    .private = CGROUP_FILE_PROCS,
+    .write = cgroup1_procs_write,
+  },
+  {
+    .name = "cgroup.clone_children",
+    .read_u64 = cgroup_clone_children_read,
+    .write_u64 = cgroup_clone_children_write,
+  },
+  {
+    .name = "cgroup.sane_behavior",
+    .flags = CFTYPE_ONLY_ON_ROOT,
+    .seq_show = cgroup_sane_behavior_show,
+  },
+  {
+    .name = "tasks",
+    .seq_start = cgroup_pidlist_start,
+    .seq_next = cgroup_pidlist_next,
+    .seq_stop = cgroup_pidlist_stop,
+    .seq_show = cgroup_pidlist_show,
+    .private = CGROUP_FILE_TASKS,
+    .write = cgroup1_tasks_write,
+  },
+  {
+    .name = "notify_on_release",
+    .read_u64 = cgroup_read_notify_on_release,
+    .write_u64 = cgroup_write_notify_on_release,
+  },
+  {
+    .name = "release_agent",
+    .flags = CFTYPE_ONLY_ON_ROOT,
+    .seq_show = cgroup_release_agent_show,
+    .write = cgroup_release_agent_write,
+    .max_write_len = PATH_MAX - 1,
+  },
+  { }  /* terminate */
+}
+
+struct cftype {
+  struct kernfs_ops *kf_ops;
+
+  char name[MAX_CFTYPE_NAME];
+  unsigned long private;
+
+  size_t max_write_len;
+  unsigned int flags;
+
+  unsigned int file_offset;
+
+  struct cgroup_subsys *ss;  /* NULL for cgroup core files */
+  struct list_head node;     /* anchored at ss->cfts */
+
+  int (*open)(struct kernfs_open_file *of);
+  void (*release)(struct kernfs_open_file *of);
+  u64 (*read_u64)(struct cgroup_subsys_state *css, struct cftype *cft);
+  int (*seq_show)(struct seq_file *sf, void *v);
+  ssize_t (*write)(struct kernfs_open_file *of,
+      char *buf, size_t nbytes, loff_t off);
+  __poll_t (*poll)(struct kernfs_open_file *of,
+      struct poll_table_struct *pt);
+};
+```
+
+#### cgroup_init_subsys
+```C++
 #define for_each_subsys(ss, ssid)          \
   for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT &&    \
        (((ss) = cgroup_subsys[ssid]) || true); (ssid)++)
@@ -8641,6 +8744,36 @@ SUBSYS(cpuacct)
 #if IS_ENABLED(CONFIG_MEMCG)
 SUBSYS(memory)
 #endif
+
+struct cgroup_subsys {
+  struct cgroup_subsys_state *(*css_alloc)(struct cgroup_subsys_state *parent_css);
+  int (*css_online)(struct cgroup_subsys_state *css);
+  void (*attach)(struct cgroup_taskset *tset);
+  void (*fork)(struct task_struct *task);
+  void (*exit)(struct task_struct *task);
+  void (*release)(struct task_struct *task);
+  void (*bind)(struct cgroup_subsys_state *root_css);
+
+  bool early_init:1;
+  bool implicit_on_dfl:1;
+  bool threaded:1;
+  bool broken_hierarchy:1;
+  bool warned_broken_hierarchy:1;
+
+  int id;
+  const char *name;
+  const char *legacy_name;
+
+  struct cgroup_root *root;
+
+  struct idr css_idr;
+
+  struct list_head cfts;
+
+  struct cftype *dfl_cftypes;  /* for the default hierarchy */
+  struct cftype *legacy_cftypes;  /* for the legacy hierarchies */
+  unsigned int depends_on;
+};
 
 struct cgroup_subsys cpuset_cgrp_subsys = {
   .css_alloc  = cpuset_css_alloc,
@@ -8704,20 +8837,29 @@ static void __init cgroup_init_subsys(struct cgroup_subsys *ss, bool early)
   BUG_ON(online_css(css));
 }
 
+struct cgroup_subsys_state {
+  struct cgroup *cgroup;
+  struct cgroup_subsys *ss;
+  struct list_head rstat_css_node;
+
+  int id;
+  unsigned int flags;
+
+  struct work_struct destroy_work;
+  struct rcu_work destroy_rwork;
+
+  struct cgroup_subsys_state *parent;
+};
+
+/* cpu_cgroup_css_alloc -> sched_create_group create a struct task_group */
 struct task_group {
   struct cgroup_subsys_state css;
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
   /* schedulable entities of this group on each cpu */
   struct sched_entity **se;
   /* runqueue "owned" by this group on each cpu */
   struct cfs_rq **cfs_rq;
   unsigned long shares;
-
-#ifdef  CONFIG_SMP
-  atomic_long_t load_avg ____cacheline_aligned;
-#endif
-#endif
 
   struct rcu_head rcu;
   struct list_head list;
@@ -8729,7 +8871,7 @@ struct task_group {
   struct cfs_bandwidth cfs_bandwidth;
 };
 
-// online_css -> cpu_cgroup_css_online -> sched_online_group -> online_fair_sched_group
+/* online_css -> cpu_cgroup_css_online -> sched_online_group -> online_fair_sched_group */
 void online_fair_sched_group(struct task_group *tg)
 {
   struct sched_entity *se;
@@ -8745,7 +8887,7 @@ void online_fair_sched_group(struct task_group *tg)
   }
 }
 
-// css_alloc -> mem_cgroup_css_alloc -> mem_cgroup_alloc
+/* css_alloc -> mem_cgroup_css_alloc -> mem_cgroup_alloc */
 struct mem_cgroup {
   struct cgroup_subsys_state css;
 
@@ -8776,40 +8918,76 @@ struct mem_cgroup {
   struct mem_cgroup_per_node *nodeinfo[0];
 };
 
-struct cftype cgroup1_base_files[] = {
-  {
-      .name = "tasks",
-      .seq_start = cgroup_pidlist_start,
-      .seq_next = cgroup_pidlist_next,
-      .seq_stop = cgroup_pidlist_stop,
-      .seq_show = cgroup_pidlist_show,
-      .private = CGROUP_FILE_TASKS,
-      .write = cgroup_tasks_write,
-  }
-}
-
-static struct kernfs_ops cgroup_kf_ops = {
-  .atomic_write_len  = PAGE_SIZE,
-  .open      = cgroup_file_open,
-  .release    = cgroup_file_release,
-  .write      = cgroup_file_write,
-  .seq_start    = cgroup_seqfile_start,
-  .seq_next    = cgroup_seqfile_next,
-  .seq_stop    = cgroup_seqfile_stop,
-  .seq_show    = cgroup_seqfile_show,
+struct cgroup {
+  struct cgroup_subsys_state self;
+  struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT];
+  struct kernfs_node *kn;
+  struct cgroup_root *root;
+  struct cgroup_file  procs_file;  /* handle for "cgroup.procs" */
+  struct cgroup_file  events_file; /* handle for "cgroup.events" */
 };
 
-struct file_system_type cgroup_fs_type = {
-  .name = "cgroup",
-  .mount = cgroup_mount,
-  .kill_sb = cgroup_kill_sb,
-  .fs_flags = FS_USERNS_MOUNT,
+struct cgroup_root {
+  struct cgroup       cgrp;
+  struct kernfs_root  *kf_root;
+  struct list_head    root_list;
+  unsigned int        subsys_mask;
+  int                 hierarchy_id;
 };
 
-// mount -> cgroup_mount -> cgroup1_mount
-struct dentry *cgroup1_mount(struct file_system_type *fs_type, int flags,
-           void *data, unsigned long magic,
-           struct cgroup_namespace *ns)
+/* The list of hierarchy roots */
+LIST_HEAD(cgroup_roots);
+static int cgroup_root_count;
+
+struct kernfs_root {
+  struct kernfs_node  *kn;
+  unsigned int        flags;  /* KERNFS_ROOT_* flags */
+  struct idr          ino_idr;
+  u32                 last_id_lowbits;
+  u32                 id_highbits;
+  struct kernfs_syscall_ops *syscall_ops;
+  /* list of kernfs_super_info of this root, protected by kernfs_mutex */
+  struct list_head    supers;
+  wait_queue_head_t   deactivate_waitq;
+};
+
+struct kernfs_node {
+  struct rb_node  rb;
+
+  atomic_t            count;
+  atomic_t            active;
+  struct lockdep_map  dep_map;
+  struct kernfs_node  *parent;
+  const char          *name;
+
+  const void      *ns;  /* namespace tag */
+  unsigned int    hash; /* ns + name hash */
+  union {
+    struct kernfs_elem_dir      dir;
+    struct kernfs_elem_symlink  symlink;
+    struct kernfs_elem_attr     attr;
+  };
+
+  void                  *priv; /* struct cftype */
+  struct kernfs_iattrs  *iattr;
+};
+
+struct kernfs_elem_attr {
+  const struct kernfs_ops  *ops;
+  struct kernfs_open_node  *open;
+  loff_t                    size;
+  struct kernfs_node       *notify_next; /* for kernfs_notify() */
+};
+```
+
+#### mnt cgroup_fs_type
+```C++
+/* mount -> ksys_mount -> do_mount -> do_new_mount ->
+ * vfs_kern_mount -> mount_fs -> cgroup_mount -> cgroup1_mount */
+struct dentry *cgroup1_mount(
+  struct file_system_type *fs_type, int flags,
+  void *data, unsigned long magic,
+  struct cgroup_namespace *ns)
 {
   struct super_block *pinned_sb = NULL;
   struct cgroup_sb_opts opts;
@@ -8831,7 +9009,9 @@ struct dentry *cgroup1_mount(struct file_system_type *fs_type, int flags,
 
   return dentry;
 }
+```
 
+```C++
 int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask, int ref_flags)
 {
   LIST_HEAD(tmp_links);
@@ -8854,10 +9034,12 @@ int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask, int ref_flags)
   kernfs_activate(root_cgrp->kn);
 }
 
-/* create file tree, and kernfs_node for each file, set file ops to kf_ops(cgroup_kf_ops)
+/* create file tree and kernfs_node for each file, set file ops to kf_ops(cgroup_kf_ops)
  * css_populate_dir -> cgroup_addrm_files -> cgroup_add_file */
-static int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
-         struct cftype *cft)
+static int cgroup_add_file(
+  struct cgroup_subsys_state *css,
+  struct cgroup *cgrp,
+  struct cftype *cft)
 {
   char name[CGROUP_FILE_NAME_MAX];
   struct kernfs_node *kn;
@@ -8871,7 +9053,7 @@ struct kernfs_node *__kernfs_create_file(
   struct kernfs_node *parent,
   const char *name,
   umode_t mode, loff_t size,
-  const struct kernfs_ops *ops,
+  const struct kernfs_ops *ops, // cgroup_kf_ops
   void *priv, const void *ns,
   struct lock_class_key *key)
 {
@@ -8893,7 +9075,14 @@ struct kernfs_node *__kernfs_create_file(
   return kn;
 }
 
-// cgroup1_mount -> cgroup_do_mount -> kernfs_mount
+struct file_system_type cgroup_fs_type = {
+  .name = "cgroup",
+  .mount = cgroup_mount,
+  .kill_sb = cgroup_kill_sb,
+  .fs_flags = FS_USERNS_MOUNT,
+};
+
+/* file.read -> kernfs_file_fops.read -> cftype.kernfs_ops.read */
 const struct file_operations kernfs_file_fops = {
   .read    = kernfs_fop_read,
   .write    = kernfs_fop_write,
@@ -8905,15 +9094,23 @@ const struct file_operations kernfs_file_fops = {
   .fsync    = noop_fsync,
 };
 
+static struct kernfs_ops cgroup_kf_ops = {
+  .atomic_write_len  = PAGE_SIZE,
+  .open      = cgroup_file_open,
+  .release    = cgroup_file_release,
+  .write      = cgroup_file_write,
+  .seq_start    = cgroup_seqfile_start,
+  .seq_next    = cgroup_seqfile_next,
+  .seq_stop    = cgroup_seqfile_stop,
+  .seq_show    = cgroup_seqfile_show,
+};
+
 static struct cftype cpu_files[] = {
-#ifdef CONFIG_FAIR_GROUP_SCHED
   {
     .name = "shares",
     .read_u64 = cpu_shares_read_u64,
     .write_u64 = cpu_shares_write_u64,
   },
-#endif
-#ifdef CONFIG_CFS_BANDWIDTH
   {
     .name = "cfs_quota_us",
     .read_s64 = cpu_cfs_quota_read_s64,
@@ -8927,31 +9124,114 @@ static struct cftype cpu_files[] = {
 }
 
 static struct cftype mem_cgroup_legacy_files[] = {
-    {
-        .name = "usage_in_bytes",
-        .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
-        .read_u64 = mem_cgroup_read_u64,
-    },
-    {
-        .name = "max_usage_in_bytes",
-        .private = MEMFILE_PRIVATE(_MEM, RES_MAX_USAGE),
-        .write = mem_cgroup_reset,
-        .read_u64 = mem_cgroup_read_u64,
-    },
-    {
-        .name = "limit_in_bytes",
-        .private = MEMFILE_PRIVATE(_MEM, RES_LIMIT),
-        .write = mem_cgroup_write,
-        .read_u64 = mem_cgroup_read_u64,
-    },
-    {
-        .name = "soft_limit_in_bytes",
-        .private = MEMFILE_PRIVATE(_MEM, RES_SOFT_LIMIT),
-        .write = mem_cgroup_write,
-        .read_u64 = mem_cgroup_read_u64,
-    },
+  {
+    .name = "usage_in_bytes",
+    .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
+    .read_u64 = mem_cgroup_read_u64,
+  },
+  {
+    .name = "max_usage_in_bytes",
+    .private = MEMFILE_PRIVATE(_MEM, RES_MAX_USAGE),
+    .write = mem_cgroup_reset,
+    .read_u64 = mem_cgroup_read_u64,
+  },
+  {
+    .name = "limit_in_bytes",
+    .private = MEMFILE_PRIVATE(_MEM, RES_LIMIT),
+    .write = mem_cgroup_write,
+    .read_u64 = mem_cgroup_read_u64,
+  },
+  {
+    .name = "soft_limit_in_bytes",
+    .private = MEMFILE_PRIVATE(_MEM, RES_SOFT_LIMIT),
+    .write = mem_cgroup_write,
+    .read_u64 = mem_cgroup_read_u64,
+  }
+}
+```
+
+```C++
+/* mount -> ksys_mount -> do_mount -> do_new_mount ->
+ * vfs_kern_mount -> mount_fs -> cgroup_mount -> cgroup1_mount */
+struct dentry *cgroup_do_mount(
+  struct file_system_type *fs_type, int flags,
+  struct cgroup_root *root, unsigned long magic,
+  struct cgroup_namespace *ns)
+{
+  struct dentry *dentry;
+  bool new_sb = false;
+
+  dentry = kernfs_mount(fs_type, flags, root->kf_root, magic, &new_sb);
+
+  if (!IS_ERR(dentry) && ns != &init_cgroup_ns) {
+    struct dentry *nsdentry;
+    struct super_block *sb = dentry->d_sb;
+    struct cgroup *cgrp;
+
+    cgrp = cset_cgroup_from_root(ns->root_cset, root);
+
+    nsdentry = kernfs_node_dentry(cgrp->kn, sb);
+    dput(dentry);
+    if (IS_ERR(nsdentry))
+      deactivate_locked_super(sb);
+    dentry = nsdentry;
+  }
+
+  if (!new_sb)
+    cgroup_put(&root->cgrp);
+
+  return dentry;
 }
 
+static inline struct dentry*
+kernfs_mount(struct file_system_type *fs_type, int flags,
+    struct kernfs_root *root, unsigned long magic,
+    bool *new_sb_created)
+{
+  return kernfs_mount_ns(fs_type, flags, root,
+        magic, new_sb_created, NULL);
+}
+
+struct dentry *kernfs_mount_ns(
+  struct file_system_type *fs_type, int flags,
+  struct kernfs_root *root, unsigned long magic,
+  bool *new_sb_created, const void *ns)
+{
+  struct super_block *sb;
+  struct kernfs_super_info *info;
+  int error;
+
+  info = kzalloc(sizeof(*info), GFP_KERNEL);
+  if (!info)
+    return ERR_PTR(-ENOMEM);
+
+  info->root = root;
+  info->ns = ns;
+  INIT_LIST_HEAD(&info->node);
+
+  sb = sget_userns(fs_type, kernfs_test_super, kernfs_set_super, flags,
+       &init_user_ns, info);
+
+  if (new_sb_created)
+    *new_sb_created = !sb->s_root;
+
+  if (!sb->s_root) {
+    struct kernfs_super_info *info = kernfs_info(sb);
+
+    error = kernfs_fill_super(sb, magic);
+
+    sb->s_flags |= SB_ACTIVE;
+
+    list_add(&info->node, &root->supers);
+  }
+
+  return dget(sb->s_root);
+}
+
+```
+#### e.g. cpu.shares
+```C++
+// cpu.shares -> cpu_shares_write_u64
 int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 {
   int i;
@@ -8971,9 +9251,14 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
     }
   }
 }
+```
 
-// cgroup_tasks_write -> __cgroup_procs_write ->
-// cgroup_attach_task -> cgroup_migrate->cgroup_migrate_execute
+#### attach
+```C++
+/* write id to /sys/fs/cgroup/cpu,cpuacct/tasks file
+ *
+ * cgroup1_base_files.cgroup_tasks_write -> __cgroup_procs_write ->
+ * cgroup_attach_task -> cgroup_migrate -> cgroup_migrate_execute */
 static int cgroup_migrate_execute(struct cgroup_mgctx *mgctx)
 {
   struct cgroup_taskset *tset = &mgctx->tset;
@@ -8992,7 +9277,6 @@ static int cgroup_migrate_execute(struct cgroup_mgctx *mgctx)
 }
 
 // cpu_cgroup_attach -> sched_move_task -> sched_change_group
-
 static void sched_change_group(struct task_struct *tsk, int type)
 {
   struct task_group *tg;
@@ -9024,3 +9308,7 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 }
 ```
 ![linux-container-cgroup-arch.png](../Images/linux-container-cgroup-arch.png)
+
+### Q:
+1. What do `cgroup_roots` and `cgroup_dlt_root` for?
+2. The hierarchy of cgroup file system?
