@@ -509,6 +509,7 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
   if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
     rq_clock_skip_update(rq);
 }
+
 void resched_curr(struct rq *rq)
 {
   struct task_struct *curr = rq->curr;
@@ -6204,7 +6205,7 @@ struct sem_undo_list {
 ### Q:
 1. How access shm by a vm address?
 
-# net
+# Net
 ### socket
 ```C++
 struct socket_alloc {
@@ -8806,9 +8807,9 @@ static void __release_sock(struct sock *sk)
 5. How does napi works, What does net card do when cpu polling?
 6. Where does net driver put new data in when cpu polling?
 
-# virtualization
+# Virtualization
 
-# containerization
+# Containerization
 ![linux-container-vir-arch.png](../Images/linux-container-vir-arch.png)
 
 ### ns
@@ -8871,7 +8872,7 @@ struct nsproxy init_nsproxy = {
 #endif
 };
 
-// clone -> _do_fork -> copy_process -> copy_namespaces
+/* clone -> _do_fork -> copy_process -> copy_namespaces */
 int copy_namespaces(unsigned long flags, struct task_struct *tsk)
 {
   struct nsproxy *old_ns = tsk->nsproxy;
