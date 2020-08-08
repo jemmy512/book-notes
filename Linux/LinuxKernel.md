@@ -1,5 +1,75 @@
 # Process Management
 
+### process
+![linux-proc-compile.png](../Images/linux-proc-compile.png)
+```C++
+/* compile */
+gcc -c -fPIC process.c
+gcc -c -fPIC createprocess.c
+
+/* staic lib */
+ar cr libstaticprocess.a process.o
+/* static link */
+gcc -o staticcreateprocess createprocess.o -L. -lstaticprocess
+
+/* dynamic lib */
+gcc -shared -fPIC -o libdynamicprocess.so process.o
+/* dynamic link LD_LIBRARY_PATH /lib /usr/lib */
+gcc -o dynamiccreateprocess createprocess.o -L. -ldynamicprocess
+export LD_LIBRARY_PATH=.
+```
+
+1. elf: relocatable file
+![linux-proc-elf-relocatable.png](../Images/linux-proc-elf-relocatable.png)
+
+2. elf: executable file
+![linux-proc-elf-executable.png](../Images/linux-proc-elf-executable.png)
+
+3. elf: shared object
+![linux-proc-elf-sharedobj.png](../Images/linux-proc-elf-sharedobj.png)
+
+#### Q:
+1. How does PLT[x], GOT[y] work together to dynamic link?
+
+```C++
+struct linux_binfmt {
+  struct list_head lh;
+  struct module *module;
+  int (*load_binary)(struct linux_binprm *);
+  int (*load_shlib)(struct file *);
+  int (*core_dump)(struct coredump_params *cprm);
+  unsigned long min_coredump;     /* minimal dump size */
+} __randomize_layout;
+
+static struct linux_binfmt elf_format = {
+  .module         = THIS_MODULE,
+  .load_binary    = load_elf_binary,
+  .load_shlib     = load_elf_library,
+  .core_dump      = elf_core_dump,
+  .min_coredump   = ELF_EXEC_PAGESIZE,
+};
+
+/* do_execve->do_execveat_common->exec_binprm->search_binary_handler */
+SYSCALL_DEFINE3(execve,
+  const char __user *, filename,
+  const char __user *const __user *, argv,
+  const char __user *const __user *, envp)
+{
+  return do_execve(getname(filename), argv, envp);
+}
+```
+![linux-proc-tree.png](../Images/linux-proc-tree.png)
+
+![linux-proc-elf-compile-exec.png](../Images/linux-proc-elf-compile-exec.png)
+
+### thread
+![linux-proc-thread.png](../Images/linux-proc-thread.png)
+
+### task_struct
+![linux-proc-task-1.png](../Images/linux-proc-task-1.png)
+
+![linux-proc-task-2.png](../Images/linux-proc-task-2.png)
+
 ### fork
 ![linux-fork.jpg](../Images/linux-fork.png)
 
@@ -42,9 +112,296 @@ __pthread_create_2_1 // binfmt_elf.c
 ```
 
 ### schedule
-#### voluntary schedule
+```C++
+/* Real time shceduel: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
+ * Normal shcedul: SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE */
+#define SCHED_NORMAL    0
+#define SCHED_FIFO      1
+#define SCHED_RR        2
+#define SCHED_BATCH     3
+#define SCHED_IDLE      5
+#define SCHED_DEADLINE  6
 
+struct task {
+  int           on_rq;
+
+  int           prio;
+  int           static_prio;
+  int           normal_prio;
+  unsigned int  rt_priority;
+
+  const struct sched_class  *sched_class;
+  struct sched_entity       se;
+  struct sched_rt_entity    rt;
+  struct sched_dl_entity    dl;
+  struct task_group         *sched_task_group;
+};
+
+struct sched_entity {
+  struct load_weight  load;
+  struct rb_node      run_node; /* in {cfs, rt, dl}_rq */
+  struct list_head    group_node;
+  unsigned int      on_rq;
+  u64        exec_start;
+  u64        sum_exec_runtime;
+  u64        vruntime;
+  u64        prev_sum_exec_runtime;
+  u64        nr_migrations;
+  struct sched_statistics    statistics;
+};
+
+struct rq {
+  raw_spinlock_t  lock;
+  unsigned int    nr_running;
+  unsigned long   cpu_load[CPU_LOAD_IDX_MAX];
+
+  struct load_weight  load;
+  unsigned long       nr_load_updates;
+  u64                 nr_switches;
+
+  struct cfs_rq cfs;
+  struct rt_rq  rt;
+  struct dl_rq  dl;
+  struct task_struct *curr, *idle, *stop;
+};
+
+struct cfs_rq {
+  struct load_weight load;
+  unsigned int nr_running, h_nr_running;
+
+  u64 exec_clock;
+  u64 min_vruntime;
+#ifndef CONFIG_64BIT
+  u64 min_vruntime_copy;
+#endif
+  struct rb_root tasks_timeline;
+  struct rb_node *rb_leftmost;
+
+  struct sched_entity *curr, *next, *last, *skip;
+};
+```
+![linux-proc-sched-entity-rq.png](../Images/linux-proc-sched-entity-rq.png)
+
+```C++
+struct sched_class {
+  const struct sched_class *next;
+
+  void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
+  void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
+  void (*yield_task) (struct rq *rq);
+  bool (*yield_to_task) (struct rq *rq, struct task_struct *p, bool preempt);
+
+  void (*check_preempt_curr) (struct rq *rq, struct task_struct *p, int flags);
+
+  struct task_struct * (*pick_next_task) (struct rq *rq,
+            struct task_struct *prev,
+            struct rq_flags *rf);
+  void (*put_prev_task) (struct rq *rq, struct task_struct *p);
+
+  void (*set_curr_task) (struct rq *rq);
+  void (*task_tick) (struct rq *rq, struct task_struct *p, int queued);
+  void (*task_fork) (struct task_struct *p);
+  void (*task_dead) (struct task_struct *p);
+
+  void (*switched_from) (struct rq *this_rq, struct task_struct *task);
+  void (*switched_to) (struct rq *this_rq, struct task_struct *task);
+  void (*prio_changed) (struct rq *this_rq, struct task_struct *task, int oldprio);
+  unsigned int (*get_rr_interval) (struct rq *rq,
+           struct task_struct *task);
+  void (*update_curr) (struct rq *rq);
+};
+
+extern const struct sched_class stop_sched_class;
+extern const struct sched_class dl_sched_class;
+extern const struct sched_class rt_sched_class;
+extern const struct sched_class fair_sched_class;
+extern const struct sched_class idle_sched_class;
+/* stop_sched_class: highest priority process, will interrupt others
+ * dl_sched_class: for deadline
+ * rt_sched_class: for RR or FIFO, depend on task_struct->policy
+ * fair_sched_class: for normal processes
+ * idle_sched_class: idle */
+
+const struct sched_class fair_sched_class = {
+  .next               = &idle_sched_class,
+  .enqueue_task       = enqueue_task_fair,
+  .dequeue_task       = dequeue_task_fair,
+  .yield_task         = yield_task_fair,
+  .yield_to_task      = yield_to_task_fair,
+  .check_preempt_curr = check_preempt_wakeup,
+  .pick_next_task     = pick_next_task_fair
+};
+```
+![linux-proc-shced-cpu-rq-class-entity-task.png](../Images/linux-proc-shced-cpu-rq-class-entity-task.png)
+
+#### voluntary schedule
 ```c++
+asmlinkage __visible void __sched schedule(void)
+{
+  struct task_struct *tsk = current;
+
+  sched_submit_work(tsk);
+  do {
+    preempt_disable();
+    __schedule(false);
+    sched_preempt_enable_no_resched();
+  } while (need_resched());
+}
+
+static void __sched notrace __schedule(bool preempt)
+{
+  struct task_struct *prev, *next;
+  unsigned long *switch_count;
+  struct rq_flags rf;
+  struct rq *rq;
+  int cpu;
+
+  cpu = smp_processor_id();
+  rq = cpu_rq(cpu);
+  prev = rq->curr;
+
+  next = pick_next_task(rq, prev, &rf);
+  clear_tsk_need_resched(prev);
+  clear_preempt_need_resched();
+
+  if (likely(prev != next)) {
+    rq->nr_switches++;
+    rq->curr = next;
+    ++*switch_count;
+
+    rq = context_switch(rq, prev, next, &rf);
+  }
+}
+
+static inline struct task_struct *
+pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+  const struct sched_class *class;
+  struct task_struct *p;
+
+  if (likely((prev->sched_class == &idle_sched_class ||
+        prev->sched_class == &fair_sched_class) &&
+       rq->nr_running == rq->cfs.h_nr_running)) {
+
+    p = fair_sched_class.pick_next_task(rq, prev, rf);
+    if (unlikely(p == RETRY_TASK))
+      goto again;
+    /* Assumes fair_sched_class->next == idle_sched_class */
+    if (unlikely(!p))
+      p = idle_sched_class.pick_next_task(rq, prev, rf);
+    return p;
+  }
+
+again:
+  for_each_class(class) {
+    p = class->pick_next_task(rq, prev, rf);
+    if (p) {
+      if (unlikely(p == RETRY_TASK))
+        goto again;
+      return p;
+    }
+  }
+}
+
+/* fair_sched_class */
+static struct task_struct *
+pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+  struct cfs_rq *cfs_rq = &rq->cfs;
+  struct sched_entity *se;
+  struct task_struct *p;
+  int new_tasks;
+
+  struct sched_entity *curr = cfs_rq->curr;
+  if (curr) {
+    if (curr->on_rq)
+      update_curr(cfs_rq);
+    else
+      curr = NULL;
+  }
+
+  se = pick_next_entity(cfs_rq, curr);
+  p = task_of(se);
+  if (prev != p) {
+    struct sched_entity *pse = &prev->se;
+    put_prev_entity(cfs_rq, pse);
+    set_next_entity(cfs_rq, se);
+  }
+
+  return p
+}
+
+static struct rq* context_switch(
+  struct rq *rq, struct task_struct *prev,
+  struct task_struct *next, struct rq_flags *rf)
+{
+  struct mm_struct *mm, *oldmm;
+  mm = next->mm;
+  oldmm = prev->active_mm;
+  /* 1. swtich user stack
+   * user esp, eip switched when returning from kernel */
+  switch_mm_irqs_off(oldmm, mm, next);
+
+  /* Here we just switch the register state and the stack. */
+  switch_to(prev, next, prev);
+  barrier();
+  return finish_task_switch(prev);
+}
+
+#define switch_to(prev, next, last) \
+do {                  \
+  prepare_switch_to(prev, next);  \
+  /* 2. switch kernel eip */
+  ((last) = __switch_to_asm((prev), (next))); \
+} while (0)
+
+/* %eax: prev task
+ * %edx: next task */
+ENTRY(__switch_to_asm)
+  movl  %esp, TASK_threadsp(%eax)
+  movl  TASK_threadsp(%edx), %esp
+  jmp  __switch_to
+END(__switch_to_asm)
+
+struct task_struct * __switch_to(
+  struct task_struct *prev_p, struct task_struct *next_p)
+{
+  struct thread_struct *prev = &prev_p->thread;
+  struct thread_struct *next = &next_p->thread;
+  int cpu = smp_processor_id();
+
+  load_TLS(next, cpu);
+
+  /* 3. swtich kernel stack */
+  this_cpu_write(current_task, next_p);
+
+  /* 4. switch kernel esp
+   * TSS(Task State Segment) TR(Task Register) */
+  struct tss_struct *tss = &per_cpu(cpu_tss, cpu);
+  /* Reload esp0 and ss1.  This changes current_thread_info(). */
+  load_sp0(tss, next);
+
+  return prev_p;
+}
+
+void cpu_init(void)
+{
+  int cpu = smp_processor_id();
+  struct task_struct *curr = current;
+  struct tss_struct *tss = &per_cpu(cpu_tss, cpu);
+  load_sp0(tss, thread);
+  set_tss_desc(cpu, tss);
+  load_TR_desc();
+}
+
+struct tss_struct {
+  struct x86_hw_tss  x86_tss;
+  unsigned long    io_bitmap[IO_BITMAP_LONGS + 1];
+}
+```
+![linux-proc-tss.png](../Images/linux-proc-tss.png)
+
+```C++
 schedule(void)
     __schedule(false), // kernel/sched/core.c
         pick_next_task(rq, prev, &rf);
@@ -59,67 +416,217 @@ schedule(void)
             barrier();
             return finish_task_switch(prev);
 ```
+![linux-proc-sched-voluntary.png](../Images/linux-proc-sched-voluntary.png)
 
-#### involuntary shcedule(preempty)
+#### preempty shcedule
+##### preempt time
+1. Clock interrupt
 ```C++
-// 1. mark TIF_NEED_RESCHED
-// no time slice
-scheduler_tick(); // kernel/sched/core.c
-    task_tick_fair(rq, curr, 0);
-        entity_tick(cfs_rq, se, queued);
-            check_preempt_tick(cfs_rq, curr);
-                resched_curr(rq_of(cfs_rq));
-                    set_tsk_need_resched();
+void scheduler_tick(void)
+{
+  int cpu = smp_processor_id();
+  struct rq *rq = cpu_rq(cpu);
+  struct task_struct *curr = rq->curr;
 
-// wake up
-try_to_wake_up(); // kernel/sched/core.c
-    ttwu_queue
-        ttwu_do_activate
-            ttwu_do_wakeup
-                check_preempt_curr
-                    resched_curr
-                        --->
+  curr->sched_class->task_tick(rq, curr, 0);
+  cpu_load_update_active(rq);
+  calc_global_load_tick(rq);
+}
 
-// 2. real time shceudle
-// real user space preempty time: 1. return from system call
-do_syscall_64();
-    syscall_return_slowpath();
-        prepare_exit_to_usermode();
-            exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags) {
-                while (true) {
-                    if (cached_flags & _TIF_NEED_RESCHED)
-                        schedule();
+static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
+{
+  struct cfs_rq *cfs_rq;
+  struct sched_entity *se = &curr->se;
 
-                    if (cached_flags & _TIF_SIGPENDING)
-                      do_signal(regs); // --->
+  for_each_sched_entity(se) {
+    cfs_rq = cfs_rq_of(se);
+    entity_tick(cfs_rq, se, queued);
+  }
+}
 
-                    if (!(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
-                        break;
-                }
-            }
+static void
+entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
+{
+  update_curr(cfs_rq);
+  update_load_avg(curr, UPDATE_TG);
+  update_cfs_shares(curr);
 
-// real user space preempty time: 2. return from interrupt
-do_IRQ
-    retint_user //arch/x86/entry/entry_64.S
-        prepare_exit_to_usermode
-            exit_to_usermode_loop
-                --->
+  if (cfs_rq->nr_running > 1)
+    check_preempt_tick(cfs_rq, curr);
+}
 
+static void
+check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+{
+  unsigned long ideal_runtime, delta_exec;
+  struct sched_entity *se;
+  s64 delta;
 
-// real kernel preempty time: 1. preempty_enble
-preempt_enable
-    preempt_count_dec_and_test
-        preempt_schedule
-            preempt_schedule_common
-                __schedule
-                    --->
+  ideal_runtime = sched_slice(cfs_rq, curr);
+  delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
+  if (delta_exec > ideal_runtime) {
+    resched_curr(rq_of(cfs_rq));
+    return;
+  }
 
-// real kernel preempty time: 2. return from interrupt
-do_IRQ
-    retint_kernel
-        prepare_exit_to_usermode
-            --->
+  se = __pick_first_entity(cfs_rq);
+  delta = curr->vruntime - se->vruntime;
+  if (delta < 0)
+    return;
+  if (delta > ideal_runtime)
+    resched_curr(rq_of(cfs_rq));
+}
+
+/* resched_curr -> */
+static inline void set_tsk_need_resched(struct task_struct *tsk)
+{
+  /* just mark thread with TIF_NEED_RESCHED */
+  set_tsk_thread_flag(tsk,TIF_NEED_RESCHED);
+}
 ```
+
+2. Waked up
+```C++
+/* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
+* -> check_preempt_curr -> resched_curr */
+void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+{
+  const struct sched_class *class;
+
+  if (p->sched_class == rq->curr->sched_class) {
+    rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+  } else {
+    for_each_class(class) {
+      if (class == rq->curr->sched_class)
+        break;
+      if (class == p->sched_class) {
+        resched_curr(rq);
+        break;
+      }
+    }
+  }
+
+  if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
+    rq_clock_skip_update(rq);
+}
+void resched_curr(struct rq *rq)
+{
+  struct task_struct *curr = rq->curr;
+  int cpu;
+
+  if (test_tsk_need_resched(curr))
+    return;
+
+  cpu = cpu_of(rq);
+
+  if (cpu == smp_processor_id()) {
+    set_tsk_need_resched(curr);
+    set_preempt_need_resched();
+    return;
+  }
+
+  if (set_nr_and_not_polling(curr))
+    smp_send_reschedule(cpu);
+  else
+    trace_sched_wake_idle_without_ipi(cpu);
+}
+```
+
+##### real user preempt time
+1. return from system call
+```C++
+/* do_syscall_64 -> syscall_return_slowpath
+ * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
+static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
+{
+  while (true) {
+    local_irq_enable();
+
+    if (cached_flags & _TIF_NEED_RESCHED)
+      schedule();
+
+    if (cached_flags & _TIF_SIGPENDING)
+      do_signal(regs);
+  }
+}
+```
+
+2. return from interrupt
+```C++
+/* do_IRQ -> retint_user -> prepare_exit_to_usermode -> exit_to_usermode_loop */
+common_interrupt:
+        ASM_CLAC
+        addq    $-0x80, (%rsp)
+        interrupt do_IRQ
+ret_from_intr:
+        popq    %rsp
+        testb   $3, CS(%rsp)
+        jz      retint_kernel
+
+/* Interrupt came from user space */
+GLOBAL(retint_user)
+        mov     %rsp,%rdi
+        call    prepare_exit_to_usermode
+        TRACE_IRQS_IRETQ
+        SWAPGS
+        jmp     restore_regs_and_iret
+
+/* Returning to kernel space */
+retint_kernel:
+#ifdef CONFIG_PREEMPT
+        bt      $9, EFLAGS(%rsp)
+        jnc     1f
+0:      cmpl    $0, PER_CPU_VAR(__preempt_count)
+        jnz     1f
+        call    preempt_schedule_irq
+        jmp     0b
+```
+
+##### real kernel preempt time
+1. preempty_enble
+```C++
+#define preempt_enable() \
+do { \
+  if (unlikely(preempt_count_dec_and_test())) \
+    __preempt_schedule(); \
+} while (0)
+
+#define preempt_count_dec_and_test() \
+  ({ preempt_count_sub(1); should_resched(0); })
+
+static __always_inline bool should_resched(int preempt_offset)
+{
+  return unlikely(preempt_count() == preempt_offset &&
+      tif_need_resched());
+}
+
+#define tif_need_resched() test_thread_flag(TIF_NEED_RESCHED)
+
+/* __preempt_schedule -> */
+static void __sched notrace preempt_schedule_common(void)
+{
+  do {
+    __schedule(true);
+  } while (need_resched());
+}
+```
+
+2. return from interrupt
+```C++
+/* do_IRQ -> retint_kernel */
+asmlinkage __visible void __sched preempt_schedule_irq(void)
+{
+  do {
+    preempt_disable();
+    local_irq_enable();
+    __schedule(true);
+    local_irq_disable();
+    sched_preempt_enable_no_resched();
+  } while (need_resched());
+}
+```
+![linux-proc-sched.png](../Images/linux-proc-sched.png)
+
 
 # Memory Management
 ### segment
