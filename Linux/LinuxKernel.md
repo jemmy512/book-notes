@@ -1,5 +1,144 @@
-# Process Management
+# Init
+### cpu
 
+### bios
+
+### syscall
+#### 32
+```C++
+/* Linux takes system call arguments in registers:
+  syscall number  %eax       call-clobbered
+  arg 1    %ebx       call-saved
+  arg 2    %ecx       call-clobbered
+  arg 3    %edx       call-clobbered
+  arg 4    %esi       call-saved
+  arg 5    %edi       call-saved
+  arg 6    %ebp       call-saved */
+#define DO_CALL(syscall_name, args) \
+    PUSHARGS_##args                \
+    DOARGS_##args                  \
+    movl $SYS_ify (syscall_name), %eax; \
+    ENTER_KERNEL                        \
+    POPARGS_##args
+
+# define ENTER_KERNEL int $0x80
+
+/* trap_init */
+set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
+
+ENTRY(entry_INT80_32)
+        ASM_CLAC
+        pushl   %eax  /* pt_regs->orig_ax */
+        SAVE_ALL pt_regs_ax=$-ENOSYS /* save rest */
+        movl    %esp, %eax
+        call    do_syscall_32_irqs_on
+.Lsyscall_32_done:
+
+.Lirq_return:
+  INTERRUPT_RETURN /* iret */
+
+ENDPROC(entry_INT80_32)
+
+static __always_inline void do_syscall_32_irqs_on(struct pt_regs *regs)
+{
+  struct thread_info *ti = current_thread_info();
+  unsigned int nr = (unsigned int)regs->orig_ax;
+
+  if (likely(nr < IA32_NR_syscalls)) {
+    regs->ax = ia32_sys_call_table[nr](
+      (unsigned int)regs->bx, (unsigned int)regs->cx,
+      (unsigned int)regs->dx, (unsigned int)regs->si,
+      (unsigned int)regs->di, (unsigned int)regs->bp);
+  }
+  syscall_return_slowpath(regs);
+}
+```
+![linux-init-syscall-32.png](../Images/linux-init-syscall-32.png)
+
+#### 64
+```C++
+
+/* The Linux/x86-64 kernel expects the system call parameters in
+  registers according to the following table:
+    syscall number  rax
+    arg 1    rdi
+    arg 2    rsi
+    arg 3    rdx
+    arg 4    r10
+    arg 5    r8
+    arg 6    r9 */
+#define DO_CALL(syscall_name, args)  \
+  lea SYS_ify (syscall_name), %rax; \
+  syscall
+
+/* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
+wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+
+
+ENTRY(entry_SYSCALL_64)
+  /* Construct struct pt_regs on stack */
+  pushq   $__USER_DS                /* pt_regs->ss */
+  pushq   PER_CPU_VAR(rsp_scratch)  /* pt_regs->sp */
+  pushq   %r11                      /* pt_regs->flags */
+  pushq   $__USER_CS                /* pt_regs->cs */
+  pushq   %rcx                      /* pt_regs->ip */
+  pushq   %rax                      /* pt_regs->orig_ax */
+  pushq   %rdi                      /* pt_regs->di */
+  pushq   %rsi                      /* pt_regs->si */
+  pushq   %rdx                      /* pt_regs->dx */
+  pushq   %rcx                      /* pt_regs->cx */
+  pushq   $-ENOSYS                  /* pt_regs->ax */
+  pushq   %r8                       /* pt_regs->r8 */
+  pushq   %r9                       /* pt_regs->r9 */
+  pushq   %r10                      /* pt_regs->r10 */
+  pushq   %r11                      /* pt_regs->r11 */
+  sub     $(6*8), %rsp              /* pt_regs->bp, bx, r12-15 not saved */
+  movq    PER_CPU_VAR(current_task), %r11
+  testl   $_TIF_WORK_SYSCALL_ENTRY|_TIF_ALLWORK_MASK, TASK_TI_flags(%r11)
+  jnz     entry_SYSCALL64_slow_path
+
+entry_SYSCALL64_slow_path:
+  /* IRQs are off. */
+  SAVE_EXTRA_REGS
+  movq    %rsp, %rdi
+  call    do_syscall_64           /* returns with IRQs disabled */
+
+return_from_SYSCALL_64:
+  RESTORE_EXTRA_REGS
+  TRACE_IRQS_IRETQ
+  movq  RCX(%rsp), %rcx
+  movq  RIP(%rsp), %r11
+  movq  R11(%rsp), %r11
+
+syscall_return_via_sysret:
+  /* rcx and r11 are already restored (see code above) */
+  RESTORE_C_REGS_EXCEPT_RCX_R11
+  movq  RSP(%rsp), %rsp
+  USERGS_SYSRET64
+
+#define USERGS_SYSRET64 \
+  swapgs;              \
+  sysretq;
+
+/* entry_SYSCALL64_slow_pat -> do_syscall_64 */
+void do_syscall_64(struct pt_regs *regs)
+{
+  struct thread_info *ti = current_thread_info();
+  unsigned long nr = regs->orig_ax;
+
+  if (likely((nr & __SYSCALL_MASK) < NR_syscalls)) {
+    regs->ax = sys_call_table[nr & __SYSCALL_MASK](
+      regs->di, regs->si, regs->dx,
+      regs->r10, regs->r8, regs->r9);
+  }
+
+  syscall_return_slowpath(regs);
+}
+```
+![linux-init-syscall-64.png](../Images/linux-init-syscall-64.png)
+
+
+# Process Management
 ### process
 ![linux-proc-compile.png](../Images/linux-proc-compile.png)
 ```C++
@@ -29,7 +168,7 @@ export LD_LIBRARY_PATH=.
 ![linux-proc-elf-sharedobj.png](../Images/linux-proc-elf-sharedobj.png)
 
 #### Q:
-1. How does PLT[x], GOT[y] work together to dynamic link?
+* How does PLT[x], GOT[y] work together to dynamic link?
 
 ```C++
 struct linux_binfmt {
@@ -49,7 +188,7 @@ static struct linux_binfmt elf_format = {
   .min_coredump   = ELF_EXEC_PAGESIZE,
 };
 
-/* do_execve->do_execveat_common->exec_binprm->search_binary_handler */
+/* do_execve -> do_execveat_common -> exec_binprm -> search_binary_handler */
 SYSCALL_DEFINE3(execve,
   const char __user *, filename,
   const char __user *const __user *, argv,
@@ -69,47 +208,6 @@ SYSCALL_DEFINE3(execve,
 ![linux-proc-task-1.png](../Images/linux-proc-task-1.png)
 
 ![linux-proc-task-2.png](../Images/linux-proc-task-2.png)
-
-### fork
-![linux-fork.jpg](../Images/linux-fork.png)
-
-### exec
-```C++
-do_execve(getname(filename), argv, envp);
-    do_execveat_common
-        exec_binprm
-            search_binary_handler // fs/exec.c
-                load_elf_binary // fs/binfmt_elf.c
-                    setup_new_exec(); // set mmap_base
-                    setup_arg_pages();
-                    elf_map(); // map the code in elf file to memory
-                    set_brk(); // setup heap area
-              load_elf_interp(); // load dependent *.so
-                    start_thread(regs, elf_entry, bprm->p); // arch/x86/kernel/process_32.c
-```
-
-### pthread
-```C++
-// Linux pthread implementation
-__pthread_create_2_1 // binfmt_elf.c
-    ALLOCATE_STACK (iattr, &pd); // allocatestack.c
-        /* Adjust the stack size for alignment. */
-        /* call mmap to alloc thread statck in process heap*/
-        /* set protection of this thread stack memory */
-        /* populate member: stackblock、stackblock_size、guardsize、specific */
-        /* And add to the list of stacks in use. */
-    // start thread
-    create_thread (pd, iattr, stackaddr, stacksize); // sysdeps/pthread/createthread.c
-    do_clone (pd, attr, clone_flags, start_thread/*pthread func*/, stackaddr, stacksize, 1);
-        ARCH_CLONE (start_thread, stackaddr, stacksize,, clone_flags, pd, &pd->tid, TLS_VALUE, &pd->tid);
-            _do_fork();
-    start_thread // pthread_creat.c
-        THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
-        // pd->result = pd->start_routine(pd->arg);
-    __free_tcb
-        __deallocate_stack
-            queue_stack
-```
 
 ### schedule
 ```C++
@@ -248,6 +346,14 @@ asmlinkage __visible void __sched schedule(void)
   } while (need_resched());
 }
 
+/* __schedule() is the main scheduler function.
+ *
+ * The main means of driving the scheduler and thus entering this function are:
+ *   1. Explicit blocking: mutex, semaphore, waitqueue, etc.
+ *   2. TIF_NEED_RESCHED flag is checked on interrupt and userspace return paths.
+ *   3. Wakeups don't really cause entry into schedule(). They add a
+ *      task to the run-queue and that's it.
+ * WARNING: must be called with preemption disabled! */
 static void __sched notrace __schedule(bool preempt)
 {
   struct task_struct *prev, *next;
@@ -339,7 +445,7 @@ static struct rq* context_switch(
   mm = next->mm;
   oldmm = prev->active_mm;
   /* 1. swtich user stack
-   * user esp, eip switched when returning from kernel */
+   * user esp, eip switched when returning to user space */
   switch_mm_irqs_off(oldmm, mm, next);
 
   /* Here we just switch the register state and the stack. */
@@ -489,6 +595,71 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
 * -> check_preempt_curr -> resched_curr */
+static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
+{
+  struct rq *rq = cpu_rq(cpu);
+  struct rq_flags rf;
+
+  rq_lock(rq, &rf);
+  update_rq_clock(rq);
+  ttwu_do_activate(rq, p, wake_flags, &rf);
+  rq_unlock(rq, &rf);
+}
+
+static void ttwu_do_activate(
+  struct rq *rq, struct task_struct *p,
+  int wake_flags, struct rq_flags *rf)
+{
+  int en_flags = ENQUEUE_WAKEUP | ENQUEUE_NOCLOCK;
+
+  lockdep_assert_held(&rq->lock);
+
+  ttwu_activate(rq, p, en_flags);
+  ttwu_do_wakeup(rq, p, wake_flags, rf);
+}
+
+static inline void ttwu_activate(
+  struct rq *rq, struct task_struct *p, int en_flags)
+{
+  activate_task(rq, p, en_flags);
+  p->on_rq = TASK_ON_RQ_QUEUED;
+
+  /* If a worker is waking up, notify the workqueue: */
+  if (p->flags & PF_WQ_WORKER)
+    wq_worker_waking_up(p, cpu_of(rq));
+}
+```
+##### Q: Why enqueue_task, where is the task which is not running?
+```C++
+void activate_task(struct rq *rq, struct task_struct *p, int flags)
+{
+  if (task_contributes_to_load(p))
+    rq->nr_uninterruptible--;
+
+  enqueue_task(rq, p, flags);
+}
+
+static inline void enqueue_task(
+  struct rq *rq, struct task_struct *p, int flags)
+{
+  if (!(flags & ENQUEUE_NOCLOCK))
+    update_rq_clock(rq);
+
+  if (!(flags & ENQUEUE_RESTORE))
+    sched_info_queued(rq, p);
+
+  p->sched_class->enqueue_task(rq, p, flags);
+}
+
+static void ttwu_do_wakeup(
+  struct rq *rq, struct task_struct *p,
+  int wake_flags, struct rq_flags *rf)
+{
+  check_preempt_curr(rq, p, wake_flags);
+  p->state = TASK_RUNNING;
+  trace_sched_wakeup(p);
+}
+
 void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
   const struct sched_class *class;
@@ -628,6 +799,328 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 ```
 ![linux-proc-sched.png](../Images/linux-proc-sched.png)
 
+### fork
+```C++
+SYSCALL_DEFINE0(fork)
+{
+  return _do_fork(SIGCHLD, 0, 0, NULL, NULL, 0);
+}
+
+long _do_fork(
+  unsigned long clone_flags,
+  unsigned long stack_start,
+  unsigned long stack_size,
+  int __user *parent_tidptr,
+  int __user *child_tidptr,
+  unsigned long tls)
+{
+  struct task_struct *p;
+  int trace = 0;
+  long nr;
+
+  p = copy_process(clone_flags, stack_start, stack_size,
+    child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
+
+  if (IS_ERR(p))
+		return PTR_ERR(p);
+
+  struct pid *pid;
+  pid = get_task_pid(p, PIDTYPE_PID);
+  nr = pid_vnr(pid);
+
+  if (clone_flags & CLONE_PARENT_SETTID)
+    put_user(nr, parent_tidptr);
+
+  wake_up_new_task(p);
+
+  put_pid(pid);
+
+  return nr;
+}
+
+/* copy_process -> sched_fork -> task_fork -> */
+static void task_fork_fair(struct task_struct *p)
+{
+  /* default off, for bash bug and better use TLB and cache */
+	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+		swap(curr->vruntime, se->vruntime);
+		resched_curr(rq);
+	}
+
+	se->vruntime -= cfs_rq->min_vruntime;
+}
+
+void wake_up_new_task(struct task_struct *p)
+{
+  struct rq_flags rf;
+  struct rq *rq;
+
+  p->state = TASK_RUNNING;
+
+  activate_task(rq, p, ENQUEUE_NOCLOCK);
+  p->on_rq = TASK_ON_RQ_QUEUED;
+  trace_sched_wakeup_new(p);
+  check_preempt_curr(rq, p, WF_FORK);
+}
+
+void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+{
+  const struct sched_class *class;
+
+  if (p->sched_class == rq->curr->sched_class) {
+    rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+  } else {
+    for_each_class(class) {
+      if (class == rq->curr->sched_class)
+        break;
+      if (class == p->sched_class) {
+        resched_curr(rq);
+        break;
+      }
+    }
+  }
+
+  if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
+    rq_clock_skip_update(rq);
+}
+
+/* fair_sched_class.check_preempt_wakeup */
+static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
+{
+  struct task_struct *curr = rq->curr;
+  struct sched_entity *se = &curr->se, *pse = &p->se;
+  struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+
+  if (test_tsk_need_resched(curr))
+    return;
+
+  find_matching_se(&se, &pse);
+  update_curr(cfs_rq_of(se));
+  if (wakeup_preempt_entity(se, pse) == 1) {
+    goto preempt;
+  }
+  return;
+preempt:
+  resched_curr(rq);
+}
+
+```
+![linux-fork.jpg](../Images/linux-fork.png)
+
+### exec
+```C++
+do_execve(getname(filename), argv, envp);
+    do_execveat_common
+        exec_binprm
+            search_binary_handler // fs/exec.c
+                load_elf_binary // fs/binfmt_elf.c
+                    setup_new_exec(); // set mmap_base
+                    setup_arg_pages();
+                    elf_map(); // map the code in elf file to memory
+                    set_brk(); // setup heap area
+              load_elf_interp(); // load dependent *.so
+                    start_thread(regs, elf_entry, bprm->p); // arch/x86/kernel/process_32.c
+```
+
+### pthread_create
+```C++
+int __pthread_create_2_1 (
+  pthread_t *newthread, const pthread_attr_t *attr,
+  void *(*start_routine) (void *), void *arg)
+{
+  const struct pthread_attr *iattr = (struct pthread_attr *) attr;
+  struct pthread_attr default_attr;
+  if (iattr == NULL)
+  {
+    iattr = &default_attr;
+  }
+
+  struct pthread *pd = NULL;
+  int err = ALLOCATE_STACK (iattr, &pd);
+
+  pd->start_routine = start_routine;
+  pd->arg = arg;
+  pd->schedpolicy = self->schedpolicy;
+  pd->schedparam = self->schedparam;
+
+  *newthread = (pthread_t) pd;
+  atomic_increment (&__nptl_nthreads);
+
+  return create_thread(pd, iattr, &stopped_start,
+    STACK_VARIABLES_ARGS, &thread_ran);
+}
+versioned_symbol(libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);
+
+# define ALLOCATE_STACK_PARMS void **stack, size_t *stacksize
+
+# define ALLOCATE_STACK(attr, pd) allocate_stack (attr, pd, &stackaddr)
+
+static int allocate_stack (
+  const struct pthread_attr *attr,
+  struct pthread **pdp, ALLOCATE_STACK_PARMS)
+{
+  struct pthread *pd;
+  size_t size;
+  size_t pagesize_m1 = __getpagesize () - 1;
+
+  size = attr->stacksize;
+
+  /* Allocate some anonymous memory.  If possible use the cache.  */
+  size_t guardsize;
+  void *mem;
+  const int prot = (PROT_READ | PROT_WRITE
+                   | ((GL(dl_stack_flags) & PF_X) ? PROT_EXEC : 0));
+  /* Adjust the stack size for alignment.  */
+  size &= ~__static_tls_align_m1;
+  /* Make sure the size of the stack is enough for the guard and
+  eventually the thread descriptor.  */
+  guardsize = (attr->guardsize + pagesize_m1) & ~pagesize_m1;
+  size += guardsize;
+  pd = get_cached_stack (&size, &mem);
+  if (pd == NULL)
+  {
+    /* If a guard page is required, avoid committing memory by first
+    allocate with PROT_NONE and then reserve with required permission
+    excluding the guard page.  */
+    mem = __mmap (NULL, size, (guardsize == 0) ? prot : PROT_NONE,
+      MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    /* Place the thread descriptor at the end of the stack.  */
+#if TLS_TCB_AT_TP
+    pd = (struct pthread *) ((char *) mem + size) - 1;
+#elif TLS_DTV_AT_TP
+    pd = (struct pthread *) ((((uintptr_t) mem + size - __static_tls_size)
+      & ~__static_tls_align_m1) - TLS_PRE_TCB_SIZE);
+#endif
+    /* Now mprotect the required region excluding the guard area. */
+    char *guard = guard_position(mem, size, guardsize, pd, pagesize_m1);
+    setup_stack_prot(mem, size, guard, guardsize, prot);
+
+    pd->stackblock = mem;
+    pd->stackblock_size = size;
+    pd->guardsize = guardsize;
+    pd->specific[0] = pd->specific_1stblock;
+
+    stack_list_add (&pd->list, &stack_used);
+  }
+
+  *pdp = pd;
+  void *stacktop;
+# if TLS_TCB_AT_TP
+  /* The stack begins before the TCB and the static TLS block.  */
+  stacktop = ((char *) (pd + 1) - __static_tls_size);
+# elif TLS_DTV_AT_TP
+  stacktop = (char *) (pd - 1);
+# endif
+  *stack = stacktop;
+}
+
+# define STACK_VARIABLES_PARMS void *stackaddr, size_t stacksize
+# define STACK_VARIABLES_ARGS stackaddr, stacksize
+
+static int create_thread (
+  struct pthread *pd, const struct pthread_attr *attr,
+  bool *stopped_start, STACK_VARIABLES_PARMS, bool *thread_ran)
+{
+  const int clone_flags = (CLONE_VM | CLONE_FS | CLONE_FILES
+    | CLONE_SYSVSEM | CLONE_SIGHAND | CLONE_THREAD | CLONE_SETTLS
+    | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | 0);
+
+  ARCH_CLONE (&start_thread, STACK_VARIABLES_ARGS, clone_flags, pd, &pd->tid, tp, &pd->tid)；
+  /* It's started now, so if we fail below, we'll have to cancel it
+and let it clean itself up.  */
+  *thread_ran = true;
+}
+
+
+# define ARCH_CLONE __clone
+/* The userland implementation is:
+   int clone (int (*fn)(void *arg), void *child_stack, int flags, void *arg),
+   the kernel entry is:
+   int clone (long flags, void *child_stack).
+
+   The parameters are passed in register and on the stack from userland:
+   rdi: fn
+   rsi: child_stack
+   rdx: flags
+   rcx: arg
+   r8d: TID field in parent
+   r9d: thread pointer
+%esp+8: TID field in child
+
+   The kernel expects:
+   rax: system call number
+   rdi: flags
+   rsi: child_stack
+   rdx: TID field in parent
+   r10: TID field in child
+   r8:  thread pointer  */
+
+ENTRY (__clone)
+  movq    $-EINVAL,%rax
+  /* Insert the argument onto the new stack.  */
+  subq    $16,%rsi
+  movq    %rcx,8(%rsi)
+
+  /* Save the function pointer.  It will be popped off in the
+      child in the ebx frobbing below. */
+  movq    %rdi,0(%rsi)
+
+  /* Do the system call.  */
+  movq    %rdx, %rdi
+  movq    %r8, %rdx
+  movq    %r9, %r8
+  mov     8(%rsp), %R10_LP
+  movl    $SYS_ify(clone),%eax
+
+  syscall
+PSEUDO_END (__clone)
+
+SYSCALL_DEFINE5(clone, unsigned long, clone_flags,
+  unsigned long, newsp,
+  int __user *, parent_tidptr,
+  int __user *, child_tidptr,
+  unsigned long, tls)
+{
+  return _do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr, tls);
+}
+
+#define START_THREAD_DEFN \
+  static int __attribute__ ((noreturn)) start_thread (void *arg)
+START_THREAD_DEFN
+{
+    struct pthread *pd = START_THREAD_SELF;
+    /* Run the code the user provided.  */
+    THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
+    /* Call destructors for the thread_local TLS variables.  */
+    /* Run the destructor for the thread-local data.  */
+    __nptl_deallocate_tsd ();
+    if (__glibc_unlikely (atomic_decrement_and_test (&__nptl_nthreads)))
+        /* This was the last thread.  */
+        exit (0);
+    __free_tcb (pd);
+    __exit_thread ();
+}
+
+void __free_tcb (struct pthread *pd)
+{
+  __deallocate_stack (pd);
+}
+
+void __deallocate_stack (struct pthread *pd)
+{
+  /* Remove the thread from the list of threads with user defined
+     stacks.  */
+  stack_list_del (&pd->list);
+  /* Not much to do.  Just free the mmap()ed memory.  Note that we do
+     not reset the 'used' flag in the 'tid' field.  This is done by
+     the kernel.  If no thread has been created yet this field is
+     still zero.  */
+  if (__glibc_likely (! pd->user_stack))
+    (void) queue_stack (pd);
+}
+```
+![linux-proc-fork-pthread-create.png](../Images/linux-proc-fork-pthread-create.png)
+
 
 # Memory Management
 ### segment
@@ -640,17 +1133,17 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 
 DEFINE_PER_CPU_PAGE_ALIGNED(struct gdt_page, gdt_page) = { .gdt = {
 #ifdef CONFIG_X86_64
-  [GDT_ENTRY_KERNEL32_CS]    = GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
-  [GDT_ENTRY_KERNEL_CS]    = GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
-  [GDT_ENTRY_KERNEL_DS]    = GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
-  [GDT_ENTRY_DEFAULT_USER32_CS]  = GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
-  [GDT_ENTRY_DEFAULT_USER_DS]  = GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
-  [GDT_ENTRY_DEFAULT_USER_CS]  = GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL32_CS]       = GDT_ENTRY_INIT(0xc09b, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_CS]         = GDT_ENTRY_INIT(0xa09b, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_DS]         = GDT_ENTRY_INIT(0xc093, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER32_CS] = GDT_ENTRY_INIT(0xc0fb, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_DS]   = GDT_ENTRY_INIT(0xc0f3, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_CS]   = GDT_ENTRY_INIT(0xa0fb, 0, 0xfffff),
 #else
-  [GDT_ENTRY_KERNEL_CS]    = GDT_ENTRY_INIT(0xc09a, 0, 0xfffff),
-  [GDT_ENTRY_KERNEL_DS]    = GDT_ENTRY_INIT(0xc092, 0, 0xfffff),
-  [GDT_ENTRY_DEFAULT_USER_CS]  = GDT_ENTRY_INIT(0xc0fa, 0, 0xfffff),
-  [GDT_ENTRY_DEFAULT_USER_DS]  = GDT_ENTRY_INIT(0xc0f2, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_CS]         = GDT_ENTRY_INIT(0xc09a, 0, 0xfffff),
+  [GDT_ENTRY_KERNEL_DS]         = GDT_ENTRY_INIT(0xc092, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_CS]   = GDT_ENTRY_INIT(0xc0fa, 0, 0xfffff),
+  [GDT_ENTRY_DEFAULT_USER_DS]   = GDT_ENTRY_INIT(0xc0f2, 0, 0xfffff),
 
 #endif
 } };
