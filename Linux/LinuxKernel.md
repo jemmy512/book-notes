@@ -1,7 +1,89 @@
 # Init
 ### cpu
+![linux-init-cpu.png](../Images/linux-init-cpu.png)
+
+![linux-init-cpu-process-program.png](../Images/linux-init-cpu-process-program.png)
 
 ### bios
+
+### init kernel
+```C++
+void start_kernel(void)
+{
+  /* struct task_struct init_task = INIT_TASK(init_task)
+   * #0 process, the only one doesn't created by fork or kernel_thread */
+  set_task_stack_end_magic(&init_task);
+
+  /* set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32) */
+  trap_init();
+
+  /* mnt_init()->init_rootfs() register_filesystem(&rootfs_fs_type) */
+  vfs_caches_init()
+
+  mm_init();
+  sched_init();
+  init_IRQ();
+  softirq_init();
+  signals_init();
+  cpuset_init();
+  cgroup_init();
+
+  rest_init()
+}
+
+static noinline void __ref rest_init(void)
+{
+  struct task_struct *tsk;
+  int pid;
+
+  pid = kernel_thread(kernel_init, NULL, CLONE_FS);
+
+  pid = kernel_thread(kthreadd, NULL, CLONE_FS | CLONE_FILES);
+
+  complete(&kthreadd_done);
+
+  cpu_startup_entry(CPUHP_ONLINE);
+}
+
+pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
+{
+  return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
+    (unsigned long)arg, NULL, NULL, 0);
+}
+
+/* return from kernel to user space */
+static int __ref kernel_init(void *unused)
+{
+  if (ramdisk_execute_command) {
+    ret = run_init_process(ramdisk_execute_command);
+    if (!ret)
+      return 0;
+  }
+
+  if (execute_command) {
+    ret = run_init_process(execute_command);
+    if (!ret)
+      return 0;
+  }
+
+  if (!try_to_run_init_process("/sbin/init") ||
+      !try_to_run_init_process("/etc/init") ||
+      !try_to_run_init_process("/bin/init") ||
+      !try_to_run_init_process("/bin/sh"))
+    return 0;
+}
+
+static int run_init_process(const char *init_filename)
+{
+  argv_init[0] = init_filename;
+  return do_execve(getname_kernel(init_filename),
+    (const char __user *const __user *)argv_init,
+    (const char __user *const __user *)envp_init);
+}
+```
+![linux-init-kernel.png](../Images/linux-init-kernel.png)
+
+![linux-init-cpu-arch.png](../Images/linux-init-cpu-arch.png)
 
 ### syscall
 #### 32
@@ -167,9 +249,7 @@ export LD_LIBRARY_PATH=.
 3. elf: shared object
 ![linux-proc-elf-sharedobj.png](../Images/linux-proc-elf-sharedobj.png)
 
-#### Q:
-* How does PLT[x], GOT[y] work together to dynamic link?
-
+#### Q: How does PLT[x], GOT[y] work together to dynamic link?
 ```C++
 struct linux_binfmt {
   struct list_head lh;
@@ -628,9 +708,7 @@ static inline void ttwu_activate(
   if (p->flags & PF_WQ_WORKER)
     wq_worker_waking_up(p, cpu_of(rq));
 }
-```
-##### Q: Why enqueue_task, where is the task which is not running?
-```C++
+
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
   if (task_contributes_to_load(p))
@@ -822,7 +900,7 @@ long _do_fork(
     child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
 
   if (IS_ERR(p))
-		return PTR_ERR(p);
+    return PTR_ERR(p);
 
   struct pid *pid;
   pid = get_task_pid(p, PIDTYPE_PID);
@@ -842,12 +920,12 @@ long _do_fork(
 static void task_fork_fair(struct task_struct *p)
 {
   /* default off, for bash bug and better use TLB and cache */
-	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-		swap(curr->vruntime, se->vruntime);
-		resched_curr(rq);
-	}
+  if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+    swap(curr->vruntime, se->vruntime);
+    resched_curr(rq);
+  }
 
-	se->vruntime -= cfs_rq->min_vruntime;
+  se->vruntime -= cfs_rq->min_vruntime;
 }
 
 void wake_up_new_task(struct task_struct *p)
@@ -909,17 +987,168 @@ preempt:
 
 ### exec
 ```C++
-do_execve(getname(filename), argv, envp);
-    do_execveat_common
-        exec_binprm
-            search_binary_handler // fs/exec.c
-                load_elf_binary // fs/binfmt_elf.c
-                    setup_new_exec(); // set mmap_base
-                    setup_arg_pages();
-                    elf_map(); // map the code in elf file to memory
-                    set_brk(); // setup heap area
-              load_elf_interp(); // load dependent *.so
-                    start_thread(regs, elf_entry, bprm->p); // arch/x86/kernel/process_32.c
+int do_execve(struct filename *filename,
+  const char __user *const __user *__argv,
+  const char __user *const __user *__envp)
+{
+  struct user_arg_ptr argv = { .ptr.native = __argv };
+  struct user_arg_ptr envp = { .ptr.native = __envp };
+  return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+}
+
+static int do_execveat_common(
+  int fd, struct filename *filename,
+  struct user_arg_ptr argv,
+  struct user_arg_ptr envp, int flags)
+{
+  return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+}
+
+static int __do_execve_file(
+  int fd, struct filename *filename,
+  struct user_arg_ptr argv,
+  struct user_arg_ptr envp,
+  int flags, struct file *file)
+{
+  char *pathbuf = NULL;
+  struct linux_binprm *bprm;
+  struct files_struct *displaced;
+  int retval;
+
+  retval = -ENOMEM;
+  bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
+  retval = prepare_bprm_creds(bprm);
+
+  if (!file)
+    file = do_open_execat(fd, filename, flags);
+
+  sched_exec();
+
+  bprm->file = file;
+  if (!filename) {
+    bprm->filename = "none";
+  } else if (fd == AT_FDCWD || filename->name[0] == '/') {
+    bprm->filename = filename->name;
+  } else {
+    if (filename->name[0] == '\0')
+      pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
+    else
+      pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s",
+              fd, filename->name);
+    if (close_on_exec(fd, rcu_dereference_raw(current->files->fdt)))
+      bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+
+    bprm->filename = pathbuf;
+  }
+
+  bprm->interp = bprm->filename;
+
+  bprm_mm_init(bprm);
+
+  bprm->argc = count(argv, MAX_ARG_STRINGS);
+  bprm->envc = count(envp, MAX_ARG_STRINGS);
+
+  prepare_binprm(bprm);
+
+  bprm->exec = bprm->p;
+
+  retval = exec_binprm(bprm);
+
+  /* execve succeeded */
+  current->fs->in_exec = 0;
+  current->in_execve = 0;
+  membarrier_execve(current);
+  rseq_execve(current);
+  acct_update_integrals(current);
+  task_numa_free(current, false);
+  free_bprm(bprm);
+  kfree(pathbuf);
+  if (filename)
+    putname(filename);
+  if (displaced)
+    put_files_struct(displaced);
+
+  return retval;
+}
+
+static int exec_binprm(struct linux_binprm *bprm)
+{
+  pid_t old_pid, old_vpid;
+  int ret;
+
+  /* Need to fetch pid before load_binary changes it */
+  old_pid = current->pid;
+  rcu_read_lock();
+  old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
+  rcu_read_unlock();
+
+  ret = search_binary_handler(bprm);
+  if (ret >= 0) {
+    audit_bprm(bprm);
+    trace_sched_process_exec(current, old_pid, bprm);
+    ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
+    proc_exec_connector(current);
+  }
+
+  return ret;
+}
+
+int search_binary_handler(struct linux_binprm *bprm)
+{
+  bool need_retry = IS_ENABLED(CONFIG_MODULES);
+  struct linux_binfmt *fmt;
+  int retval;
+  retval = -ENOENT;
+
+ retry:
+  read_lock(&binfmt_lock);
+  list_for_each_entry(fmt, &formats, lh) {
+    if (!try_module_get(fmt->module))
+      continue;
+    read_unlock(&binfmt_lock);
+    retval = fmt->load_binary(bprm);
+  }
+  read_unlock(&binfmt_lock);
+
+  return retval;
+}
+
+static struct linux_binfmt elf_format = {
+  .module  = THIS_MODULE,
+  .load_binary  = load_elf_binary,
+  .load_shlib  = load_elf_library,
+  .core_dump  = elf_core_dump,
+  .min_coredump  = ELF_EXEC_PAGESIZE,
+};
+
+static int load_elf_binary(struct linux_binprm *bprm)
+{
+  struct pt_regs *regs = current_pt_regs();
+
+  load_elf_interp(); // load dependent *.so
+  setup_new_exec(); // set mmap_base
+  setup_arg_pages();
+  elf_map(); // map the code in elf file to memory
+  set_brk(); // setup heap area
+
+  start_thread(regs, elf_entry, bprm->p);
+}
+
+void start_thread(
+  struct pt_regs *regs,
+  unsigned long new_ip, unsigned long new_sp)
+{
+  set_user_gs(regs, 0);
+  regs->fs  = 0;
+  regs->ds  = __USER_DS;
+  regs->es  = __USER_DS;
+  regs->ss  = __USER_DS;
+  regs->cs  = __USER_CS;
+  regs->ip  = new_ip;
+  regs->sp  = new_sp;
+  regs->flags  = X86_EFLAGS_IF;
+  force_iret(); /* restore the saved registers */
+}
 ```
 
 ### pthread_create
@@ -1083,6 +1312,9 @@ SYSCALL_DEFINE5(clone, unsigned long, clone_flags,
 {
   return _do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr, tls);
 }
+
+#define THREAD_SETMEM(descr, member, value) \
+  descr->member = (value)
 
 #define START_THREAD_DEFN \
   static int __attribute__ ((noreturn)) start_thread (void *arg)
@@ -3433,7 +3665,7 @@ A kernel module consists:
 6. declare lisence, invoke MODULE_LICENSE
 
 #### insmod
-![linux-io-char-dev-install-open.jpg](../Images/linux-io-char-dev-install-open.jpg)
+![linux-io-char-dev-install-open.png](../Images/linux-io-char-dev-install-open.png)
 ```C++
 static int __init lp_init (void)
 {
@@ -3644,7 +3876,7 @@ static ssize_t lp_write(struct file * file, const char __user * buf,
     }
   } while (count > 0);
 ```
-![linux-io-char-dev-write.jpg](../Images/linux-io-char-dev-write.jpg)
+![linux-io-char-dev-write.png](../Images/linux-io-char-dev-write.png)
 
 #### ioctl
 ```C++
@@ -10313,3 +10545,43 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 ### Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
 2. The hierarchy of cgroup file system?
+
+# Pthread
+### pthread_mutex
+#### lock
+```C++
+SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
+    struct timespec __user *, utime, u32 __user *, uaddr2,
+    u32, val3)
+{
+  struct timespec ts;
+  ktime_t t, *tp = NULL;
+  u32 val2 = 0;
+  int cmd = op & FUTEX_CMD_MASK;
+
+  if (utime && (cmd == FUTEX_WAIT || cmd == FUTEX_LOCK_PI ||
+          cmd == FUTEX_WAIT_BITSET ||
+          cmd == FUTEX_WAIT_REQUEUE_PI)) {
+    if (unlikely(should_fail_futex(!(op & FUTEX_PRIVATE_FLAG))))
+      return -EFAULT;
+    if (copy_from_user(&ts, utime, sizeof(ts)) != 0)
+      return -EFAULT;
+    if (!timespec_valid(&ts))
+      return -EINVAL;
+
+    t = timespec_to_ktime(ts);
+    if (cmd == FUTEX_WAIT)
+      t = ktime_add_safe(ktime_get(), t);
+    tp = &t;
+  }
+  /*
+   * requeue parameter in 'utime' if cmd == FUTEX_*_REQUEUE_*.
+   * number of waiters to wake in 'utime' if cmd == FUTEX_WAKE_OP.
+   */
+  if (cmd == FUTEX_REQUEUE || cmd == FUTEX_CMP_REQUEUE ||
+      cmd == FUTEX_CMP_REQUEUE_PI || cmd == FUTEX_WAKE_OP)
+    val2 = (u32) (unsigned long) utime;
+
+  return do_futex(uaddr, op, val, tp, uaddr2, val2, val3);
+}
+```
