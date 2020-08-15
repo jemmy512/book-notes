@@ -44,7 +44,9 @@ static noinline void __ref rest_init(void)
 
   cpu_startup_entry(CPUHP_ONLINE);
 }
-
+```
+## Q: sp points to `kernel_init` fn, should't it be ip?
+```c++
 pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 {
   return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
@@ -197,6 +199,7 @@ syscall_return_via_sysret:
   RESTORE_C_REGS_EXCEPT_RCX_R11
   movq  RSP(%rsp), %rsp
   USERGS_SYSRET64
+END(entry_SYSCALL_64)
 
 #define USERGS_SYSRET64 \
   swapgs;              \
@@ -249,7 +252,7 @@ export LD_LIBRARY_PATH=.
 3. elf: shared object
 ![linux-proc-elf-sharedobj.png](../Images/linux-proc-elf-sharedobj.png)
 
-#### Q: How does PLT[x], GOT[y] work together to dynamic link?
+## Q: How does PLT[x], GOT[y] work together to dynamic link?
 ```C++
 struct linux_binfmt {
   struct list_head lh;
@@ -291,8 +294,8 @@ SYSCALL_DEFINE3(execve,
 
 ### schedule
 ```C++
-/* Real time shceduel: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
- * Normal shcedul: SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE */
+/* Real time shcedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
+ * Normal schedule: SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE */
 #define SCHED_NORMAL    0
 #define SCHED_FIFO      1
 #define SCHED_RR        2
@@ -300,8 +303,16 @@ SYSCALL_DEFINE3(execve,
 #define SCHED_IDLE      5
 #define SCHED_DEADLINE  6
 
-struct task {
-  int           on_rq;
+#define MAX_NICE  19
+#define MIN_NICE  -20
+#define NICE_WIDTH        (MAX_NICE - MIN_NICE + 1)
+#define MAX_USER_RT_PRIO  100
+#define MAX_RT_PRIO        MAX_USER_RT_PRIO
+#define MAX_PRIO          (MAX_RT_PRIO + NICE_WIDTH)
+#define DEFAULT_PRIO      (MAX_RT_PRIO + NICE_WIDTH / 2)
+
+struct task_struct {
+  int           on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
 
   int           prio;
   int           static_prio;
@@ -1107,6 +1118,8 @@ int search_binary_handler(struct linux_binprm *bprm)
       continue;
     read_unlock(&binfmt_lock);
     retval = fmt->load_binary(bprm);
+    if (retval < 0 && !bprm->mm)
+      return retval;
   }
   read_unlock(&binfmt_lock);
 
@@ -1124,12 +1137,33 @@ static struct linux_binfmt elf_format = {
 static int load_elf_binary(struct linux_binprm *bprm)
 {
   struct pt_regs *regs = current_pt_regs();
+  loc->elf_ex = *((struct elfhdr *)bprm->buf);
 
-  load_elf_interp(); // load dependent *.so
-  setup_new_exec(); // set mmap_base
-  setup_arg_pages();
-  elf_map(); // map the code in elf file to memory
-  set_brk(); // setup heap area
+  if (memcmp(loc->elf_ex.e_ident, ELFMAG, SELFMAG) != 0)
+    goto out;
+  if (loc->elf_ex.e_type != ET_EXEC && loc->elf_ex.e_type != ET_DYN)
+    goto out;
+
+  setup_new_exec(bprm);
+
+  retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
+         executable_stack);
+
+  error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
+        elf_prot, elf_flags, total_size);
+
+  retval = set_brk(elf_bss, elf_brk, bss_prot);
+
+  elf_entry = load_elf_interp(&loc->interp_elf_ex,
+              interpreter,
+              &interp_map_addr,
+              load_bias, interp_elf_phdata);
+
+  current->mm->end_code = end_code;
+  current->mm->start_code = start_code;
+  current->mm->start_data = start_data;
+  current->mm->end_data = end_data;
+  current->mm->start_stack = bprm->p;
 
   start_thread(regs, elf_entry, bprm->p);
 }
@@ -1427,6 +1461,8 @@ struct mm_struct {
   unsigned long start_brk, brk, start_stack;
   unsigned long arg_start, arg_end, env_start, env_end;
 
+  unsigned long task_size; /* size of task vm space */
+
   struct vm_area_struct *mmap;    /* list of VMAs */
   struct rb_root mm_rb;
 };
@@ -1449,37 +1485,10 @@ struct vm_area_struct {
   struct file * vm_file;    /* File we map to (can be NULL). */
   void * vm_private_data;    /* was vm_pte (shared mem) */
 } __randomize_layout;
-
-
-static int load_elf_binary(struct linux_binprm *bprm)
-{
-
-  setup_new_exec(bprm);
-
-  retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
-         executable_stack);
-
-  error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
-        elf_prot, elf_flags, total_size);
-
-  retval = set_brk(elf_bss, elf_brk, bss_prot);
-
-  elf_entry = load_elf_interp(&loc->interp_elf_ex,
-              interpreter,
-              &interp_map_addr,
-              load_bias, interp_elf_phdata);
-
-  current->mm->end_code = end_code;
-  current->mm->start_code = start_code;
-  current->mm->start_data = start_data;
-  current->mm->end_data = end_data;
-  current->mm->start_stack = bprm->p;
-}
 ```
 ![linux-mem-vm.png](../Images/linux-mem-vm.png)
 
-
-### kernel
+### kernel space
 ```C++
 /* PKMAP_BASE:
  * use alloc_pages() get struct page, user kmap() map the page to this area */
@@ -1497,31 +1506,27 @@ static int load_elf_binary(struct linux_binprm *bprm)
 
 ### physic
 #### numa node
+## Q: relationship of each numa node and global mem layout?
 ```C++
 struct pglist_data *node_data[MAX_NUMNODES];
 
 typedef struct pglist_data {
   struct zone node_zones[MAX_NR_ZONES];
+  /* backup area if current node run out */
   struct zonelist node_zonelists[MAX_ZONELISTS];
   int nr_zones;
   struct page *node_mem_map;
-  unsigned long node_start_pfn;
+  unsigned long node_start_pfn;     /* start page number of this node */
   unsigned long node_present_pages; /* total number of physical pages */
   unsigned long node_spanned_pages; /* total size of physical page range, including holes */
   int node_id;
 } pg_data_t;
 
 enum zone_type {
-#ifdef CONFIG_ZONE_DMA
   ZONE_DMA,
-#endif
-#ifdef CONFIG_ZONE_DMA32
   ZONE_DMA32,
-#endif
-  ZONE_NORMAL,
-#ifdef CONFIG_HIGHMEM
+  ZONE_NORMAL, /* direct mmapping area */
   ZONE_HIGHMEM,
-#endif
   ZONE_MOVABLE,
   __MAX_NR_ZONES
 };
@@ -1546,6 +1551,31 @@ struct zone {
   /* Primarily protects free_area */
   spinlock_t    lock;
 };
+
+struct per_cpu_pageset {
+  struct per_cpu_pages pcp;
+  s8 expire;
+  u16 vm_numa_stat_diff[NR_VM_NUMA_STAT_ITEMS];
+}
+struct per_cpu_pages {
+  int count; /* number of pages in the list */
+  int high;  /* high watermark, emptying needed */
+  int batch; /* chunk size for buddy add/remove */
+
+  /* Lists of pages, one per migrate type stored on the pcp-lists */
+  struct list_head lists[MIGRATE_PCPTYPES];
+};
+
+enum migratetype {
+  MIGRATE_UNMOVABLE,
+  MIGRATE_MOVABLE,
+  MIGRATE_RECLAIMABLE,
+  MIGRATE_PCPTYPES,  /* the number of types on the pcp lists */
+  MIGRATE_HIGHATOMIC = MIGRATE_PCPTYPES,
+  MIGRATE_CMA,
+  MIGRATE_ISOLATE,
+  MIGRATE_TYPES
+};
 ```
 
 #### page
@@ -1556,6 +1586,7 @@ struct page {
   union {
     struct {  /* Page cache and anonymous pages */
       struct list_head lru; /* See page-flags.h for PAGE_MAPPING_FLAGS */
+      /* lowest bit is 1 for anonymous mapping, 0 for file mapping */
       struct address_space *mapping;
       pgoff_t index;    /* Our offset within mapping. */
       unsigned long private;
@@ -1651,15 +1682,15 @@ struct free_area  free_area[MAX_ORDER];
 ```
 ![linux-mem-buddy-freepages.png](../Images/linux-mem-buddy-freepages.png)
 
+#### alloc_pages
 ```C++
-static inline struct page *
-alloc_pages(gfp_t gfp_mask, unsigned int order)
+static inline struct page* alloc_pages(gfp_t gfp_mask, unsigned int order)
 {
   return alloc_pages_current(gfp_mask, order);
 }
 
 /*  %GFP_USER     user allocation,
- *  %GFP_KERNEL   kernel allocation,
+ *  %GFP_KERNEL   kernel allocation, direct mapping area
  *  %GFP_HIGHMEM  highmem allocation,
  *  %GFP_FS       don't call back into a file system.
  *  %GFP_ATOMIC   don't sleep.
@@ -1676,9 +1707,9 @@ struct page *alloc_pages_current(gfp_t gfp, unsigned order)
 }
 
 // __alloc_pages_nodemask ->
-static struct page *
-get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
-            const struct alloc_context *ac)
+static struct page* get_page_from_freelist(
+  gfp_t gfp_mask, unsigned int order,
+  int alloc_flags, const struct alloc_context *ac)
 {
   for_next_zone_zonelist_nodemask(zone, z, ac->zonelist, ac->high_zoneidx, ac->nodemask) {
     struct page *page;
@@ -1687,10 +1718,10 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
   }
 }
 
-// rmqueue->__rmqueue->__rmqueue_smallest
+/* rmqueue -> __rmqueue -> __rmqueue_smallest */
 static inline
-struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
-            int migratetype)
+struct page *__rmqueue_smallest(
+  struct zone *zone, unsigned int order, int migratetype)
 {
   unsigned int current_order;
   struct free_area *area;
@@ -1732,6 +1763,7 @@ static inline void expand(struct zone *zone, struct page *page,
 ```
 
 ### slab/slub/slob system
+#### kmem_cache_create
 ```C++
 static struct kmem_cache *task_struct_cachep;
 
@@ -1739,6 +1771,183 @@ task_struct_cachep = kmem_cache_create("task_struct",
       arch_task_struct_size, align,
       SLAB_PANIC|SLAB_NOTRACK|SLAB_ACCOUNT, NULL);
 
+struct kmem_cache *kmem_cache_create(
+  const char *name, unsigned int size, unsigned int align,
+  slab_flags_t flags, void (*ctor)(void *))
+{
+  return kmem_cache_create_usercopy(name, size, align, flags, 0, 0, ctor);
+}
+
+struct kmem_cache *kmem_cache_create_usercopy(
+  const char *name, /* name in /proc/slabinfo to identify this cache */
+  unsigned int size, unsigned int align,
+  slab_flags_t flags, unsigned int useroffset, unsigned int usersize,
+  void (*ctor)(void *))
+{
+  struct kmem_cache *s = NULL;
+  const char *cache_name;
+  int err;
+
+  get_online_cpus();
+  get_online_mems();
+  memcg_get_cache_ids();
+
+  mutex_lock(&slab_mutex);
+
+  if (!usersize)
+    s = __kmem_cache_alias(name, size, align, flags, ctor);
+
+  cache_name = kstrdup_const(name, GFP_KERNEL);
+
+  s = create_cache(cache_name, size,
+       calculate_alignment(flags, align, size),
+       flags, useroffset, usersize, ctor, NULL, NULL);
+
+out_unlock:
+  mutex_unlock(&slab_mutex);
+
+  memcg_put_cache_ids();
+  put_online_mems();
+  put_online_cpus();
+
+  return s;
+}
+
+static struct kmem_cache *create_cache(
+  const char *name,
+  unsigned int object_size, unsigned int align,
+  slab_flags_t flags, unsigned int useroffset,
+  unsigned int usersize, void (*ctor)(void *),
+  struct mem_cgroup *memcg, struct kmem_cache *root_cache)
+{
+  struct kmem_cache *s;
+  int err;
+
+  /* 1. alloc */
+  s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
+
+  s->name = name;
+  s->size = s->object_size = object_size;
+  s->align = align;
+  s->ctor = ctor;
+  s->useroffset = useroffset;
+  s->usersize = usersize;
+
+  /* 2. init */
+  err = init_memcg_params(s, memcg, root_cache);
+  err = __kmem_cache_create(s, flags);
+
+  /* 3. link */
+  s->refcount = 1;
+  list_add(&s->list, &slab_caches);
+  memcg_link_cache(s);
+
+  return s;
+}
+
+/* 1. alloc */
+static inline void *kmem_cache_zalloc(struct kmem_cache *k, gfp_t flags)
+{
+  return kmem_cache_alloc(k, flags | __GFP_ZERO);
+}
+
+void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
+{
+  void *ret = slab_alloc(cachep, flags, _RET_IP_);
+
+  kasan_slab_alloc(cachep, ret, flags);
+  trace_kmem_cache_alloc(_RET_IP_, ret,
+             cachep->object_size, cachep->size, flags);
+
+  return ret;
+}
+
+/* 2. init */
+int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
+{
+  int err;
+
+  err = kmem_cache_open(s, flags);
+
+  memcg_propagate_slab_attrs(s);
+  err = sysfs_slab_add(s);
+  if (err)
+    __kmem_cache_release(s);
+
+  return err;
+}
+
+static int kmem_cache_open(struct kmem_cache *s, slab_flags_t flags)
+{
+  if (!calculate_sizes(s, -1))
+    goto error;
+  if (disable_higher_order_debug) {
+    if (get_order(s->size) > get_order(s->object_size)) {
+      s->flags &= ~DEBUG_METADATA_FLAGS;
+      s->offset = 0;
+      if (!calculate_sizes(s, -1))
+        goto error;
+    }
+  }
+
+  set_min_partial(s, ilog2(s->size) / 2);
+  set_cpu_partial(s);
+
+  if (slab_state >= UP) {
+    if (init_cache_random_seq(s))
+      goto error;
+  }
+
+  if (!init_kmem_cache_nodes(s))
+    goto error;
+
+  if (alloc_kmem_cache_cpus(s))
+    return 0;
+}
+
+static inline int alloc_kmem_cache_cpus(struct kmem_cache *s)
+{
+  s->cpu_slab = __alloc_percpu(sizeof(struct kmem_cache_cpu),
+             2 * sizeof(void *));
+
+  init_kmem_cache_cpus(s);
+
+  return 1;
+}
+
+static void init_kmem_cache_cpus(struct kmem_cache *s)
+{
+  int cpu;
+
+  for_each_possible_cpu(cpu)
+    per_cpu_ptr(s->cpu_slab, cpu)->tid = init_tid(cpu);
+}
+```
+
+```c++
+kmem_cache_create();
+    __kmem_cache_alias();
+        find_mergable();
+    create_cache();
+        kmem_cache_zalloc();
+           kmem_cache_alloc();
+        __kmem_cache_create();
+            kmem_cache_open();
+                caculate_size();
+                    caculate_order();
+                    oo_make();
+                set_min_partial();
+                set_cpu_partial();
+                init_kmem_cache_nodes();
+                    kmem_alloc_cache_node();
+                    init_keme_cache_node();
+                alloc_kmem_cache_cpus();
+                    init_keme_cache_cpu();
+        list_add();
+```
+
+#### kmem_cache_alloc_node
+```c++
 static inline struct task_struct *alloc_task_struct_node(int node)
 {
   return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
@@ -1751,17 +1960,16 @@ static inline void free_task_struct(struct task_struct *tsk)
 
 // all caches will listed into LIST_HEAD(slab_caches)
 struct kmem_cache {
-  struct kmem_cache_cpu *cpu_slab;
+  struct kmem_cache_cpu  *cpu_slab;
   struct kmem_cache_node *node[MAX_NUMNODES];
   /* Used for retriving partial slabs etc */
   unsigned long flags;
   unsigned long min_partial;
   int size;         /* The size of an object including meta data */
   int object_size;  /* The size of an object without meta data */
-  int offset;       /* Free pointer offset. */
-#ifdef CONFIG_SLUB_CPU_PARTIAL
+  int offset;        /* Free pointer offset. */
   int cpu_partial;  /* Number of per cpu partial objects to keep around */
-#endif
+
   struct kmem_cache_order_objects oo;
   /* Allocation and freeing of slabs */
   struct kmem_cache_order_objects max;
@@ -1776,20 +1984,17 @@ struct kmem_cache {
 struct kmem_cache_cpu {
   void **freelist;    /* Pointer to next available object */
   struct page *page;  /* The slab from which we are allocating */
-#ifdef CONFIG_SLUB_CPU_PARTIAL
   struct page *partial;  /* Partially allocated frozen slabs */
-#endif
   unsigned long tid;     /* Globally unique transaction id */
 };
 
 struct kmem_cache_node {
-  spinlock_t list_lock;
-#ifdef CONFIG_SLUB
-  unsigned long nr_partial;
-  struct list_head partial;
-#endif
+  unsigned long     nr_partial;
+  struct list_head  partial;
 };
 ```
+![linux-mem-kmem-cache-cpu-node.png](../Images/linux-mem-kmem-cache-cpu-node.png)
+
 ![linux-mem-kmem-cache.png](../Images/linux-mem-kmem-cache.png)
 
 ```C++
@@ -1813,6 +2018,7 @@ static void *slab_alloc_node(struct kmem_cache *s,
   } else {
     /* update the freelist and tid to new values */
     void *next_object = get_freepointer_safe(s, object);
+
     if (unlikely(!this_cpu_cmpxchg_double(
         s->cpu_slab->freelist, s->cpu_slab->tid,
         object, tid,
@@ -1820,14 +2026,16 @@ static void *slab_alloc_node(struct kmem_cache *s,
       note_cmpxchg_failure("slab_alloc", s, tid);
       goto redo;
     }
+
     prefetch_freepointer(s, next_object);
     stat(s, ALLOC_FASTPATH);
   }
   return object;
 }
 
-static void *__slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
-        unsigned long addr, struct kmem_cache_cpu *c)
+static void *__slab_alloc(
+  struct kmem_cache *s, gfp_t gfpflags, int node,
+  unsigned long addr, struct kmem_cache_cpu *c)
 {
   void *freelist;
   struct page *page;
@@ -1863,8 +2071,9 @@ new_slab:
   return freeli
 }
 
-static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
-      int node, struct kmem_cache_cpu **pc)
+static inline void *new_slab_objects(
+  struct kmem_cache *s, gfp_t flags,
+  int node, struct kmem_cache_cpu **pc)
 {
   void *freelist;
   struct kmem_cache_cpu *c = *pc;
@@ -1894,8 +2103,10 @@ static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
   return freelis
 }
 
-static void *get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
-        struct kmem_cache_cpu *c, gfp_t flags)
+/* 3.1. get_partial -> */
+static void *get_partial_node(
+  struct kmem_cache *s, struct kmem_cache_node *n,
+  struct kmem_cache_cpu *c, gfp_t flags)
 {
   struct page *page, *page2;
   void *object = NULL;
@@ -1956,7 +2167,7 @@ static inline void *acquire_slab(struct kmem_cache *s,
   return freelist;
 }
 
-// new_slab_objects -> new_slab, no memory in kmem_cache_node
+// 3.2. new_slab_objects -> new_slab, no memory in kmem_cache_node
 static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 {
   struct page *page;
@@ -2000,15 +2211,19 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
   return page;
 }
 ```
+![linux-mem-kmem-cache-alloc.png](../Images/linux-mem-kmem-cache-alloc.png)
+
 ![linux-mem-slub-structure.png](../Images/linux-mem-slub-structure.png)
 
 ![linux-mem-mng.png](../Images/linux-mem-mng.png)
+
 ### Reference:
 [slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
+[Slub allocator](https://www.cnblogs.com/LoyenWang/p/11922887.html)
 
 ### kswapd
 ```C++
-//1. actice page out when alloc
+//1. active page out when alloc
 get_page_from_freelist();
     node_reclaim();
         __node_reclaim();
@@ -2096,7 +2311,7 @@ SYSCALL_DEFINE1(brk, unsigned long, brk)
     unsigned long newbrk, oldbrk;
     struct mm_struct *mm = current->mm;
     struct vm_area_struct *next;
-    //
+
     newbrk = PAGE_ALIGN(brk);
     oldbrk = PAGE_ALIGN(mm->brk);
     if (oldbrk == newbrk)
@@ -2245,7 +2460,10 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
   if (file) {
     if (file->f_op->get_unmapped_area)
       get_area = file->f_op->get_unmapped_area;
+  } else if (flags & MAP_SHARED) {
+    get_area = shmem_get_unmapped_area;
   }
+  addr = get_area(file, addr, len, pgoff, flags);
 }
 
 const struct file_operations ext4_file_operations = {
@@ -2262,8 +2480,8 @@ unsigned long __thp_get_unmapped_area(struct file *filp, unsigned long len,
   unsigned long len_pad;
   len_pad = len + size;
 
-  addr = current->mm->get_unmapped_area(filp, 0, len_pad,
-                                        off >> PAGE_SHIFT, flags);
+  addr = current->mm->get_unmapped_area(
+    filp, 0, len_pad, off >> PAGE_SHIFT, flags);
   addr += (off - addr) & (size - 1);
   return addr;
 }
@@ -2283,10 +2501,6 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
     goto out;
 
   vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
-  if (!vma) {
-    error = -ENOMEM;
-    goto unacct_error;
-  }
 
   vma->vm_mm = mm;
   vma->vm_start = addr;
@@ -2298,9 +2512,13 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 
   if (file) {
     vma->vm_file = get_file(file);
-    error = call_mmap(file, vma);
+    call_mmap(file, vma);
     addr = vma->vm_start;
     vm_flags = vma->vm_flags;
+  } else if (vm_flags & VM_SHARED) {
+    shmem_zero_setup(vma);
+  } else {
+    vma_set_anonymous(vma);
   }
   vma_link(mm, vma, prev, rb_link, rb_parent);
   return addr;
@@ -2311,11 +2529,13 @@ static inline int call_mmap(struct file *file, struct vm_area_struct *vma)
   return file->f_op->mmap(file, vma);
 }
 
+/* 1. connection from `file -> vma` */
 static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
   vma->vm_ops = &ext4_file_vm_ops;
 }
 
+/* 2. connection from `vam -> file` */
 struct address_space {
   struct inode    *host;
   /* tree of private and shared mappings. e.g., vm_area_struct */
@@ -2334,7 +2554,6 @@ static void __vma_link_file(struct vm_area_struct *vma)
   }
 }
 ```
-![linux-mem-ptb.png](../Images/linux-mem-ptb.png)
 
 ### page fault
 ```C++
@@ -2358,30 +2577,35 @@ struct address_space {
   void      *private_data;
 };
 
-dotraplinkage void
-do_page_fault(struct pt_regs *regs, unsigned long hw_error_code,
-    unsigned long address)
+static void __init kvm_apf_trap_init(void)
 {
-  if (unlikely(fault_in_kernel_space(address)))
-    do_kern_addr_fault(regs, hw_error_code, address);
-  else
-    do_user_addr_fault(regs, hw_error_code, address);
+  update_intr_gate(X86_TRAP_PF, async_page_fault);
 }
 
-static inline
-void do_user_addr_fault(struct pt_regs *regs,
-      unsigned long hw_error_code,
-      unsigned long address)
+ENTRY(async_page_fault)
+  ASM_CLAC
+  pushl $do_async_page_fault
+  jmp   common_exception
+END(async_page_fault)
+
+do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
-  struct vm_area_struct *vma;
-  struct task_struct *tsk;
-  struct mm_struct *mm;
-  vm_fault_t fault, major = 0;
-  unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+  enum ctx_state prev_state;
 
-  tsk = current;
-  mm = tsk->mm;
+  switch (kvm_read_and_reset_pf_reason()) {
+  default:
+    do_page_fault(regs, error_code);
+    break;
+  }
+}
 
+void do_page_fault(
+  struct pt_regs *regs,
+  unsigned long hw_error_code,
+  unsigned long address)
+{
+  /* Get the faulting address */
+  unsigned long address = read_cr2();
   __do_page_fault(regs, error_code, address);
 }
 
@@ -2404,8 +2628,10 @@ __do_page_fault(struct pt_regs *regs, unsigned long error_code,
   fault = handle_mm_fault(vma, address, flags);
 }
 
-static int __handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
-    unsigned int flags)
+static int __handle_mm_fault(
+  struct vm_area_struct *vma,
+  unsigned long address,
+  unsigned int flags)
 {
   struct vm_fault vmf = {
     .vma = vma,
@@ -2586,6 +2812,35 @@ int swap_readpage(struct page *page, bool do_poll)
   }
 }
 ```
+
+```c++
+do_async_page_fault();
+do_page_fault();
+  __do_page_fault();
+    vmalloc_fault(); /* kernel fault */
+    handel_mm_fault();
+      handle_pte_fault();
+
+        do_anonymous_page();
+          pte_alloc();
+            alloc_zeroed_user_highpage_movable();
+              alloc_pages_vma();
+                  __alloc_pages_nodemask();
+
+        __do_fault();
+          vma->vm_ops->fault(); // ext4_filemap_fault
+            filemap_fault();
+              find_get_page();
+              do_async_mmap_readahead();
+              page_cache_read();
+                address_space.a_ops.readpage();
+                  ext4_read_inline_page();
+                    kmap_atomic();
+                    ext4_read_inline_data();
+                    kumap_atomic();
+
+        do_swap_page();
+```
 ![linux-mem-page-fault.png](../Images/linux-mem-page-fault.png)
 
 ### pgd
@@ -2613,7 +2868,8 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 {
   /* If the pgd points to a shared pagetable level (either the
      ptes in non-PAE, or shared PMD in PAE), then just copy the
-     references from swapper_pg_dir. */
+     references from swapper_pg_dir.
+     swapper_pg_dir: kernel's pgd */
   if (CONFIG_PGTABLE_LEVELS == 2 ||
       (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD) ||
       CONFIG_PGTABLE_LEVELS >= 4) {
@@ -2715,7 +2971,7 @@ struct mm_struct init_mm = {
 // init kernel mm_struct
 void __init setup_arch(char **cmdline_p)
 {
-  clone_pgd_range(swapper_pg_dir     + KERNEL_PGD_BOUNDARY,
+  clone_pgd_range(swapper_pg_dir + KERNEL_PGD_BOUNDARY,
       initial_page_table + KERNEL_PGD_BOUNDARY,
       KERNEL_PGD_PTRS);
 
@@ -2765,20 +3021,22 @@ kernel_physical_mapping_init(
   }
   __flush_tlb_all();
 
-  return paddr_l
+  return paddr_last;
+}
 ```
 
 ### vmalloc
 ```C++
 void *vmalloc(unsigned long size)
 {
-  return __vmalloc_node_flags(size, NUMA_NO_NODE,
-            GFP_KERNEL);
+  return __vmalloc_node_flags(
+    size, NUMA_NO_NODE, GFP_KERNEL);
 }
 
-static void *__vmalloc_node(unsigned long size, unsigned long align,
-          gfp_t gfp_mask, pgprot_t prot,
-          int node, const void *caller)
+static void *__vmalloc_node(
+  unsigned long size, unsigned long align,
+  gfp_t gfp_mask, pgprot_t prot,
+  int node, const void *caller)
 {
   return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
         gfp_mask, prot, 0, node, caller);
@@ -2839,11 +3097,10 @@ static noinline int vmalloc_fault(unsigned long address)
 }
 ```
 
-### Q:
+## Q:
 1. Does different kmem_cache share the same kmem_cache_cpu?
 2. Where does `struct kmem_cache_cpu __percpu *cpu_slab;` stored in each cpu?
-3. How `swapper_pg_dir` is initialized?
-4. Does  `alloc_zeroed_user_highpage_movable` alloc a page each time for each anonymous mapping?
+3. Does  `alloc_zeroed_user_highpage_movable` alloc a page each time for each anonymous mapping?
 
 # File Management
 ![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
@@ -4954,7 +5211,7 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
       sdio->blocks_available -= this_chunk_blocks;
       if (sdio->block_in_file == sdio->final_block_in_request)
         break;
-      }
+    }
   }
 }
 // bmit_page_section -> dio_bio_submit -> submit_bio
@@ -6927,7 +7184,7 @@ struct sem_undo_list {
 
 ![linux-ipc-sem.png](../Images/linux-ipc-sem.png)
 
-### Q:
+## Q:
 1. How access shm by a vm address?
 
 # Net
@@ -9524,7 +9781,7 @@ static void __release_sock(struct sock *sk)
 ```
 ![linux-net-read.png](../Images/linux-net-read.png)
 
-### Q:
+## Q:
 1. Alloc 0 sized sk_buff in `sk_stream_alloc_skb` from `tcp_sendmsg_locked` when there is not enough space for the new data?
 2. The segementation deails in tcp and ip layers?
 3. What's the tcp header and data memory layout?
@@ -10542,7 +10799,7 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 ```
 ![linux-container-cgroup-arch.png](../Images/linux-container-cgroup-arch.png)
 
-### Q:
+## Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
 2. The hierarchy of cgroup file system?
 
