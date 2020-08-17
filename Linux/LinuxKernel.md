@@ -123,7 +123,7 @@ ENTRY(entry_INT80_32)
 
 ENDPROC(entry_INT80_32)
 
-static __always_inline void do_syscall_32_irqs_on(struct pt_regs *regs)
+static  void do_syscall_32_irqs_on(struct pt_regs *regs)
 {
   struct thread_info *ti = current_thread_info();
   unsigned int nr = (unsigned int)regs->orig_ax;
@@ -855,7 +855,7 @@ do { \
 #define preempt_count_dec_and_test() \
   ({ preempt_count_sub(1); should_resched(0); })
 
-static __always_inline bool should_resched(int preempt_offset)
+static  bool should_resched(int preempt_offset)
 {
   return unlikely(preempt_count() == preempt_offset &&
       tif_need_resched());
@@ -3065,7 +3065,7 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 }
 
 // page_address ->
-static __always_inline void *lowmem_page_address(const struct page *page)
+static  void *lowmem_page_address(const struct page *page)
 {
   return page_to_virt(page);
 }
@@ -3105,12 +3105,12 @@ static noinline int vmalloc_fault(unsigned long address)
 # File Management
 ![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
 
-### inode, extents
+### inode
 ```C++
 struct inode {
-  const struct inode_operations  *i_op;
-  struct super_block  *i_sb;
-  struct address_space  *i_mapping;
+  const struct inode_operations   *i_op;
+  struct super_block              *i_sb;
+  struct address_space            *i_mapping;
 
   union {
     const struct file_operations  *i_fop;  /* former ->i_op->default_file_ops */
@@ -3127,22 +3127,28 @@ struct inode {
     unsigned                i_dir_seq;
   };
 
-  umode_t      i_mode;
+  umode_t           i_mode;
   unsigned short    i_opflags;
-  kuid_t      i_uid;
-  kgid_t      i_gid;
-  unsigned int    i_flags;
+  kuid_t            i_uid;
+  kgid_t            i_gid;
+  unsigned int      i_flags;
 
-  unsigned long    dirtied_when;  /* jiffies of first dirtying */
-  unsigned long    dirtied_time_when;
+  unsigned long     dirtied_when;  /* jiffies of first dirtying */
+  unsigned long     dirtied_time_when;
 
-  struct hlist_node  i_hash;
-  struct list_head  i_io_list;  /* backing dev IO list */
-  struct bdi_writeback  *i_wb;    /* the associated cgroup wb */
+  struct hlist_node     i_hash;
+  struct list_head      i_io_list; /* backing dev IO list */
+  struct bdi_writeback  *i_wb;     /* the associated cgroup wb */
 
   struct file_lock_context  *i_flctx;
-  struct address_space  i_data;
+  struct address_space     i_data;
 };
+
+#define  EXT4_NDIR_BLOCKS    12
+#define  EXT4_IND_BLOCK      EXT4_NDIR_BLOCKS
+#define  EXT4_DIND_BLOCK     (EXT4_IND_BLOCK + 1)
+#define  EXT4_TIND_BLOCK     (EXT4_DIND_BLOCK + 1)
+#define  EXT4_N_BLOCKS       (EXT4_TIND_BLOCK + 1)
 
 struct ext4_inode {
   __le16  i_mode;    /* File mode */
@@ -3163,7 +3169,9 @@ struct ext4_inode {
   __le32  i_size_high;
 
 };
-
+```
+### extent
+```c++
 // Each block (leaves and indexes), even inode-stored has header.
 struct ext4_extent_header {
   __le16  eh_magic;  /* probably will support different formats */
@@ -3183,8 +3191,8 @@ struct ext4_extent_idx {
 
 struct ext4_extent {
   __le32  ee_block;  /* first logical block extent covers */
-  // the most significant bit used as a flag to identify whether
-  // this entent is initialized, 15 bits can present max 128MB data
+  /* the most significant bit used as a flag to identify whether
+   * this entent is initialized, 15 bits can present max 128MB data */
   __le16  ee_len;    /* number of blocks covered by extent */
   __le16  ee_start_hi;  /* high 16 bits of physical block */
   __le32  ee_start_lo;  /* low 32 bits of physical block */
@@ -3251,8 +3259,8 @@ struct ext4_super_block {
 }
 
 struct super_block {
-  struct dentry    *s_root;
-  struct file_system_type  *s_type;
+  struct dentry                  *s_root;
+  struct file_system_type         *s_type;
   const struct super_operations  *s_op;
 
   dev_t      s_dev;    /* search index; _not_ kdev_t */
@@ -3288,6 +3296,7 @@ struct ext4_dir_entry_2 {
   char  name[EXT4_NAME_LEN];  /* File name */
 };
 
+/* EXT4_INDEX_FL */
 struct dx_root
 {
   struct fake_dirent dot;
@@ -3337,10 +3346,10 @@ static struct file_system_type ext4_fs_type = {
 ```
 
 ### mount
-
 ```C++
-
-SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name, char __user *, type, unsigned long, flags, void __user *, data)
+SYSCALL_DEFINE5(mount, char __user *, dev_name,
+  char __user *, dir_name, char __user *, type,
+  unsigned long, flags, void __user *, data)
 {
   ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 }
@@ -3362,29 +3371,30 @@ vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void 
 
 struct mount {
   struct hlist_node mnt_hash;
-  struct mount *mnt_parent;
-  struct dentry *mnt_mountpoint;
-  struct vfsmount mnt;
+  struct mount      *mnt_parent;
+  struct dentry     *mnt_mountpoint;
+  struct vfsmount   mnt;
 
   union {
     struct rcu_head mnt_rcu;
     struct llist_node mnt_llist;
   };
   struct list_head mnt_mounts;  /* list of children, anchored here */
-  struct list_head mnt_child;  /* and going through their mnt_child */
-  struct list_head mnt_instance;  /* mount instance on sb->s_mounts */
-  const char *mnt_devname;  /* Name of device e.g. /dev/dsk/hda1 */
+  struct list_head mnt_child;   /* and going through their mnt_child */
+  struct list_head mnt_instance;/* mount instance on sb->s_mounts */
+  const char *mnt_devname;      /* Name of device e.g. /dev/dsk/hda1 */
   struct list_head mnt_list;
 } __randomize_layout;
 
 struct vfsmount {
-  struct dentry *mnt_root;  /* root of the mounted tree */
-  struct super_block *mnt_sb;  /* pointer to superblock */
+  struct dentry *mnt_root;    /* root of the mounted tree */
+  struct super_block *mnt_sb; /* pointer to superblock */
   int mnt_flags;
 } __randomize_layout;
 
-struct dentry *
-mount_fs(struct file_system_type *type, int flags, const char *name, void *data)
+struct dentry *mount_fs(
+  struct file_system_type *type, int flags,
+  const char *name, void *data)
 {
   struct dentry *root;
   struct super_block *sb;
@@ -3392,7 +3402,9 @@ mount_fs(struct file_system_type *type, int flags, const char *name, void *data)
   sb = root->d_sb;
 }
 
-static struct dentry *ext4_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data)
+static struct dentry *ext4_mount(
+  struct file_system_type *fs_type,
+  int flags, const char *dev_name, void *data)
 {
   return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
 }
@@ -3402,10 +3414,10 @@ static struct dentry *ext4_mount(struct file_system_type *fs_type, int flags, co
 
 ```C++
 struct file {
-  struct path    f_path;
+  struct path     f_path;
   struct inode    *f_inode;  /* cached value */
   const struct file_operations  *f_op;
-  struct address_space  *f_mapping;
+  struct address_space         *f_mapping;
   void* private_data; // used for tty, pipe
 
   spinlock_t                    f_lock;
@@ -3432,22 +3444,21 @@ struct path {
 // memroy chache of dirctories and files
 // associate inode and file
 struct dentry {
-  unsigned int d_flags;    /* protected by d_lock */
-  struct dentry *d_parent;  /* parent directory */
-  struct inode *d_inode;    /* Where the name belongs to - NULL is
-           * negative */
+  unsigned int        d_flags;
+  struct dentry       *d_parent;
+  struct inode        *d_inode;
+  struct super_block  *d_sb;
   const struct dentry_operations *d_op;
-  struct super_block *d_sb;  /* The root of the dentry tree */
 
   struct hlist_bl_node d_hash;  /* lookup hash list */
   union {
-    struct list_head d_lru;    /* LRU list */
+    struct list_head  d_lru;    /* LRU list */
     wait_queue_head_t *d_wait;  /* in-lookup ones only */
   };
-  struct qstr d_name;
-  unsigned char d_iname[DNAME_INLINE_LEN];  /* small names */
-  struct list_head d_child;  /* child of parent list */
-  struct list_head d_subdirs;  /* our children */
+  struct qstr       d_name;
+  unsigned char     d_iname[DNAME_INLINE_LEN];
+  struct list_head  d_child;
+  struct list_head  d_subdirs;
 } __randomize_layout;
 ```
 
@@ -3455,8 +3466,8 @@ struct dentry {
 ```C++
 struct task_struct {
   struct fs_struct    *fs;
-  struct files_struct *files;
-  struct nsproxy  *nsproxy;
+  struct files_struct  *files;
+  struct nsproxy      *nsproxy;
 }
 
 struct files_struct {
@@ -3528,8 +3539,8 @@ static int lookup_open(struct nameidata *nd, struct path *path,
   }
 
   dentry = d_alloc_parallel(dir, &nd->last, &wq);
-  struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry,
-                  nd->flags);
+  struct dentry *res = dir_inode->i_op->lookup(
+    dir_inode, dentry, nd->flags); /* ext4_lookup */
   path->dentry = dentry;
   path->mnt = nd->path.mnt;
 }
@@ -3565,12 +3576,36 @@ static int do_dentry_open(struct file *f,
   return 0;
 }
 
-
 const struct file_operations ext4_file_operations = {
   .open    = ext4_file_open,
 };
-
 ```
+
+```c++
+do_sys_open();
+  get_unused_fd_flags();
+  do_filp_open();
+    path_openat();
+      get_empty_filp();
+      link_path_walk();
+      do_last();
+        lookup_fast(); /* search in dcache */
+
+        lookup_open(); /* not found in dcache */
+          dir_inode->i_op->create(); /* O_CREAT */
+            ext4_create();
+
+          d_alloc_parallel(); /* alloc a dentry */
+          dir_inode->i_op->lookup(); /* ext4_lookup */
+
+        vfs_open();
+          do_dentry_open();
+            f->f_op->open();
+              ext4_file_open();
+  fd_install();
+  putname();
+```
+
 ![linux-dcache.jpg](../Images/linux-dcache.jpg)
 
 ### read/write
@@ -3692,19 +3727,23 @@ ssize_t generic_perform_write(struct file *file,
     struct page *page;
     unsigned long offset;  /* Offset into pagecache page */
     unsigned long bytes;  /* Bytes to write to page */
-    status = a_ops->write_begin(file, mapping, pos, bytes, flags,
-            &page, &fsdata) {
-                grab_cache_page_write_begin();
-                ext4_journal_start();
-            }
+
+    status = a_ops->write_begin(
+      file, mapping, pos, bytes, flags, &page, &fsdata) {
+        grab_cache_page_write_begin();
+        ext4_journal_start();
+      }
+
     copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
+
     flush_dcache_page(page);
-    status = a_ops->write_end(file, mapping, pos, bytes, copied,
-            page, fsdata) {
-                ext4_journal_stop() {
-                    // block_write_end->__block_commit_write->mark_buffer_dirty
-                }
-            }
+    status = a_ops->write_end(
+      file, mapping, pos, bytes, copied, page, fsdata) {
+        ext4_journal_stop() {
+          // block_write_end->__block_commit_write->mark_buffer_dirty
+        }
+      }
+
     pos += copied;
     written += copied;
 
@@ -3712,8 +3751,8 @@ ssize_t generic_perform_write(struct file *file,
   } while (iov_iter_count(i));
 }
 
-struct page *grab_cache_page_write_begin(struct address_space *mapping,
-          pgoff_t index, unsigned flags)
+struct page *grab_cache_page_write_begin(
+  struct address_space *mapping, pgoff_t index, unsigned flags)
 {
   struct page *page;
   int fgp_flags = FGP_LOCK|FGP_WRITE|FGP_CREAT;
@@ -3742,18 +3781,24 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 {
   struct inode *inode = mapping->host;
   struct backing_dev_info *bdi = inode_to_bdi(inode);
-  struct bdi_writeback *wb = NULL;
+  struct bdi_writeback *wb = &bdi->wb;
   int ratelimit;
   if (unlikely(current->nr_dirtied >= ratelimit))
     balance_dirty_pages(mapping, wb, current->nr_dirtied);
 }
-// balance_dirty_pages->wb_start_background_writebac->wb_wakeup
+// balance_dirty_pages -> wb_start_background_writeback -> wb_wakeup
 struct backing_dev_info {
   struct bdi_writeback wb;  /* the root writeback info for this bdi */
 }
 
 struct bdi_writeback {
-  struct delayed_work dwork;  /* work item used for writeback */
+  struct delayed_work dwork;    /* work item used for writeback */
+
+  struct list_head b_dirty;     /* dirty inodes */
+  struct list_head b_io;        /* parked for writeback */
+  struct list_head b_more_io;   /* parked for more writeback */
+  struct list_head b_dirty_time; /* time stamps are dirty */
+
 }
 
 struct delayed_work {
@@ -3784,13 +3829,52 @@ static void wb_wakeup(struct bdi_writeback *wb)
 /* bdi_wq serves all asynchronous writeback tasks */
 struct workqueue_struct *bdi_wq;
 
-static inline bool mod_delayed_work(struct workqueue_struct *wq,
-            struct delayed_work *dwork,
-            unsigned long delay)
+/* insert a delayed work in bdi_wq */
+static inline bool mod_delayed_work(
+  struct workqueue_struct *wq,
+  struct delayed_work *dwork,
+  unsigned long delay)
 { }
 
-static int wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi,
-       int blkcg_id, gfp_t gfp)
+static int bdi_init(struct backing_dev_info *bdi)
+{
+    int ret;
+
+    bdi->dev = NULL;
+
+    kref_init(&bdi->refcnt);
+    bdi->min_ratio = 0;
+    bdi->max_ratio = 100;
+    bdi->max_prop_frac = FPROP_FRAC_BASE;
+    INIT_LIST_HEAD(&bdi->bdi_list);
+    INIT_LIST_HEAD(&bdi->wb_list);
+    init_waitqueue_head(&bdi->wb_waitq);
+
+    ret = cgwb_bdi_init(bdi);
+
+    return ret;
+}
+
+static int cgwb_bdi_init(struct backing_dev_info *bdi)
+{
+    int err;
+
+    bdi->wb_congested = kzalloc(sizeof(*bdi->wb_congested), GFP_KERNEL);
+
+    refcount_set(&bdi->wb_congested->refcnt, 1);
+
+    err = wb_init(&bdi->wb, bdi, 1, GFP_KERNEL);
+    if (err) {
+        wb_congested_put(bdi->wb_congested);
+        return err;
+    }
+    return 0;
+}
+
+static int wb_init(
+  struct bdi_writeback *wb,
+  struct backing_dev_info *bdi,
+  int blkcg_id, gfp_t gfp)
 {
   wb->bdi = bdi;
   wb->last_old_flush = jiffies;
@@ -3798,11 +3882,13 @@ static int wb_init(struct bdi_writeback *wb, struct backing_dev_info *bdi,
   INIT_LIST_HEAD(&wb->b_io);
   INIT_LIST_HEAD(&wb->b_more_io);
   INIT_LIST_HEAD(&wb->b_dirty_time);
+
   wb->bw_time_stamp = jiffies;
   wb->balanced_dirty_ratelimit = INIT_BW;
   wb->dirty_ratelimit = INIT_BW;
   wb->write_bandwidth = INIT_BW;
   wb->avg_write_bandwidth = INIT_BW;
+
   spin_lock_init(&wb->work_lock);
   INIT_LIST_HEAD(&wb->work_list);
   INIT_DELAYED_WORK(&wb->dwork, wb_workfn);
@@ -3864,6 +3950,7 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 1. How to use inode bit map present all inodes?
 2. Does system alloc a block for a dirctory or a file?
 3. What does ext4_file_open do?
+4. What happend when inserting data in a file?
 
 ### TODO
 1. xarray
@@ -3932,7 +4019,8 @@ static int __init lp_init (void)
   }
 }
 
-int __register_chrdev(unsigned int major, unsigned int baseminor,
+int __register_chrdev(
+  unsigned int major, unsigned int baseminor,
   unsigned int count, const char *name,
   const struct file_operations *fops)
 {
@@ -3962,6 +4050,216 @@ int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 
   return 0;
 }
+```
+
+#### dev_fs_type
+```C++
+rest_init();
+  kernel_init();
+    kernel_init_freeable();
+      do_basic_setup();
+        driver_init();
+          devtmpfs_init();
+            devtmpfs_init();
+
+int __init devtmpfs_init(void)
+{
+	int err = register_filesystem(&dev_fs_type);
+
+	thread = kthread_run(devtmpfsd, &err, "kdevtmpfs");
+	if (!IS_ERR(thread)) {
+		wait_for_completion(&setup_done);
+	} else {
+		err = PTR_ERR(thread);
+		thread = NULL;
+	}
+  return 0;
+}
+
+static int devtmpfsd(void *p)
+{
+	char options[] = "mode=0755";
+	int *err = p;
+	*err = ksys_unshare(CLONE_NEWNS);
+	if (*err)
+		goto out;
+	*err = ksys_mount("devtmpfs", "/", "devtmpfs", MS_SILENT, options);
+	if (*err)
+		goto out;
+	ksys_chdir("/.."); /* will traverse into overmounted root */
+	ksys_chroot(".");
+	complete(&setup_done);
+	while (1) {
+		spin_lock(&req_lock);
+		while (requests) {
+			struct req *req = requests;
+			requests = NULL;
+			spin_unlock(&req_lock);
+			while (req) {
+				struct req *next = req->next;
+				req->err = handle(req->name, req->mode,
+						  req->uid, req->gid, req->dev);
+				complete(&req->done);
+				req = next;
+			}
+			spin_lock(&req_lock);
+		}
+		__set_current_state(TASK_INTERRUPTIBLE);
+		spin_unlock(&req_lock);
+		schedule();
+	}
+	return 0;
+out:
+	complete(&setup_done);
+	return *err;
+}
+```
+
+#### mount
+```C++
+/* mount -> ksys_mount -> do_mount -> do_new_mount ->
+ * vfs_kern_mount -> mount_fs -> fs_type.mount */
+static struct file_system_type dev_fs_type = {
+  .name = "devtmpfs",
+  .mount = dev_mount,
+  .kill_sb = kill_litter_super,
+};
+
+static struct dentry *dev_mount(
+  struct file_system_type *fs_type, int flags,
+  const char *dev_name, void *data)
+{
+#ifdef CONFIG_TMPFS
+  return mount_single(fs_type, flags, data, shmem_fill_super);
+#else
+  return mount_single(fs_type, flags, data, ramfs_fill_super);
+#endif
+}
+
+struct dentry *mount_single(
+  struct file_system_type *fs_type,
+  int flags, void *data,
+  int (*fill_super)(struct super_block *, void *, int))
+{
+  struct super_block *s;
+  int error;
+
+  s = sget(fs_type, compare_single, set_anon_super, flags, NULL);
+
+  if (!s->s_root) {
+    error = fill_super(s, data, flags & SB_SILENT ? 1 : 0);
+    if (error) {
+      deactivate_locked_super(s);
+      return ERR_PTR(error);
+    }
+    s->s_flags |= SB_ACTIVE;
+  } else {
+    do_remount_sb(s, flags, data, 0);
+  }
+
+  return dget(s->s_root);
+}
+
+// int ramfs_fill_super(struct super_block *sb, void *data, int silent)
+int shmem_fill_super(struct super_block *sb, void *data, int silent)
+{
+  struct inode *inode;
+  struct shmem_sb_info *sbinfo;
+  int err = -ENOMEM;
+
+  /* Round up to L1_CACHE_BYTES to resist false sharing */
+  sbinfo = kzalloc(max((int)sizeof(struct shmem_sb_info),
+        L1_CACHE_BYTES), GFP_KERNEL);
+
+  if (!(sb->s_flags & SB_KERNMOUNT)) {
+    sbinfo->max_blocks = shmem_default_max_blocks();
+    sbinfo->max_inodes = shmem_default_max_inodes();
+    if (shmem_parse_options(data, sbinfo, false)) {
+      err = -EINVAL;
+      goto failed;
+    }
+  } else {
+    sb->s_flags |= SB_NOUSER;
+  }
+
+  sb->s_magic = TMPFS_MAGIC;
+  sb->s_op = &shmem_ops;
+
+  inode = shmem_get_inode(sb, NULL, S_IFDIR | sbinfo->mode, 0, VM_NORESERVE);
+  sb->s_root = d_make_root(inode);
+
+  return err;
+}
+
+static struct inode *shmem_get_inode(
+  struct super_block *sb, const struct inode *dir,
+  umode_t mode, dev_t dev, unsigned long flags)
+{
+  struct inode *inode;
+  struct shmem_inode_info *info;
+  struct shmem_sb_info *sbinfo = SHMEM_SB(sb);
+
+  inode = new_inode(sb);
+  if (inode) {
+    switch (mode & S_IFMT) {
+    default:
+      inode->i_op = &shmem_special_inode_operations;
+      init_special_inode(inode, mode, dev);
+      break;
+    case S_IFREG:
+      inode->i_mapping->a_ops = &shmem_aops;
+      inode->i_op = &shmem_inode_operations;
+      inode->i_fop = &shmem_file_operations;
+      break;
+    case S_IFDIR:
+      inode->i_op = &shmem_dir_inode_operations;
+      inode->i_fop = &simple_dir_operations;
+      break;
+    case S_IFLNK:
+      mpol_shared_policy_init(&info->policy, NULL);
+      break;
+    }
+
+    lockdep_annotate_inode_mutex_key(inode);
+  } else
+    shmem_free_inode(sb);
+  return inode;
+}
+
+void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
+{
+  inode->i_mode = mode;
+  if (S_ISCHR(mode)) {
+    inode->i_fop = &def_chr_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISBLK(mode)) {
+    inode->i_fop = &def_blk_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISFIFO(mode))
+    inode->i_fop = &pipefifo_fops;
+  else if (S_ISSOCK(mode))
+    ; /* leave it no_open_fops */
+}
+```
+
+```C++
+mount();
+  ksys_mount(); /* copy type, dev_name, data to kernel */
+    do_mount(); /* get path by name */
+      do_new_mount(); /* get fs_type by type */
+        vfs_kern_mount();
+          alloc_vfsmnt();
+          mount_fs();
+            fs_type.mount();
+              dev_mount();
+                mount_single();
+                  sget();
+                  fill_super(); /* shmem_fill_super */
+                    shmem_get_inode();
+                      new_inode();
+                      init_special_inode();
+                    d_make_root();
+          list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
 
 #### mknod
@@ -3998,23 +4296,6 @@ int vfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
   error = dir->i_op->mknod(dir, dentry, mode, dev);
 }
 
-// the file system of /dev is devtmpfs
-static struct file_system_type dev_fs_type = {
-  .name = "devtmpfs",
-  .mount = dev_mount,
-  .kill_sb = kill_litter_super,
-};
-
-static struct dentry *dev_mount(struct file_system_type *fs_type, int flags,
-          const char *dev_name, void *data)
-{
-#ifdef CONFIG_TMPFS
-  return mount_single(fs_type, flags, data, shmem_fill_super);
-#else
-  return mount_single(fs_type, flags, data, ramfs_fill_super);
-#endif
-}
-
 static const struct inode_operations ramfs_dir_inode_operations = {
   .mknod    = ramfs_mknod,
 };
@@ -4024,19 +4305,21 @@ static const struct inode_operations shmem_dir_inode_operations = {
   .mknod    = shmem_mknod,
 };
 
-void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
+static int shmem_mknod(
+  struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 {
-  inode->i_mode = mode;
-  if (S_ISCHR(mode)) {
-    inode->i_fop = &def_chr_fops;
-    inode->i_rdev = rdev;
-  } else if (S_ISBLK(mode)) {
-    inode->i_fop = &def_blk_fops;
-    inode->i_rdev = rdev;
-  } else if (S_ISFIFO(mode))
-    inode->i_fop = &pipefifo_fops;
-  else if (S_ISSOCK(mode))
-    ;  /* leave it no_open_fops */
+	struct inode *inode;
+	int error = -ENOSPC;
+
+	inode = shmem_get_inode(dir->i_sb, dir, mode, dev, VM_NORESERVE);
+	if (inode) {
+
+		dir->i_size += BOGO_DIRENT_SIZE;
+		dir->i_ctime = dir->i_mtime = current_time(dir);
+		d_instantiate(dentry, inode);
+		dget(dentry); /* Extra count - pin the dentry in core */
+	}
+	return error;
 }
 ```
 
@@ -4087,8 +4370,9 @@ ssize_t __vfs_write(struct file *file, const char __user *p, size_t count, loff_
     return -EINVAL;
 }
 
-static ssize_t lp_write(struct file * file, const char __user * buf,
-            size_t count, loff_t *ppos)
+static ssize_t lp_write(
+  struct file * file, const char __user * buf,
+  size_t count, loff_t *ppos)
 {
   unsigned int minor = iminor(file_inode(file));
   struct parport *port = lp_table[minor].dev->port;
@@ -4116,9 +4400,8 @@ static ssize_t lp_write(struct file * file, const char __user * buf,
       retv += written;
     }
 
-        if (need_resched())
+    if (need_resched())
       schedule ();
-
 
     if (count) {
       copy_size = count;
@@ -4132,6 +4415,7 @@ static ssize_t lp_write(struct file * file, const char __user * buf,
       }
     }
   } while (count > 0);
+}
 ```
 ![linux-io-char-dev-write.png](../Images/linux-io-char-dev-write.png)
 
@@ -4146,8 +4430,9 @@ SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
   return error;
 }
 
-int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
-       unsigned long arg)
+int do_vfs_ioctl(
+  struct file *filp, unsigned int fd,
+  unsigned int cmd, unsigned long arg)
 {
   int error = 0;
   int __user *argp = (int __user *)arg;
@@ -4188,8 +4473,9 @@ long vfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
   return error;
 }
 
-static long lp_ioctl(struct file *file, unsigned int cmd,
-      unsigned long arg)
+static long lp_ioctl(
+  struct file *file, unsigned int cmd,
+  unsigned long arg)
 {
   unsigned int minor;
   struct timeval par_timeout;
@@ -4286,7 +4572,6 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
 static int logibm_open(struct input_dev *dev)
 {
   if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
-    printk(KERN_ERR "logibm.c: Can't allocate irq %d\n", logibm_irq);
     return -EBUSY;
   }
   outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
@@ -4329,15 +4614,17 @@ enum irqreturn {
 };
 ```
 
-#### dev register irq handler
+#### request_irq
 ```C++
-static inline int __must_check
-request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags, const char *name, void *dev)
+static inline int request_irq(
+  unsigned int irq, irq_handler_t handler,
+  unsigned long flags, const char *name, void *dev)
 {
   return request_threaded_irq(irq, handler, NULL, flags, name, dev);
 }
 
-int request_threaded_irq(unsigned int irq, irq_handler_t handler,
+int request_threaded_irq(
+  unsigned int irq, irq_handler_t handler,
   irq_handler_t thread_fn, unsigned long irqflags,
   const char *devname, void *dev_id)
 {
@@ -4377,18 +4664,18 @@ struct irq_desc {
 };
 
 struct irqaction {
-  irq_handler_t    handler;
-  void      *dev_id;
-  void __percpu    *percpu_dev_id;
-  struct irqaction  *next;
-  irq_handler_t    thread_fn;
+  irq_handler_t       handler;
+  void                *dev_id;
+  void __percpu       *percpu_dev_id;
+  struct irqaction    *next;
+  irq_handler_t       thread_fn;
   struct task_struct  *thread;
-  struct irqaction  *secondary;
-  unsigned int    irq;
-  unsigned int    flags;
-  unsigned long    thread_flags;
-  unsigned long    thread_mask;
-  const char    *name;
+  struct irqaction    *secondary;
+  unsigned int        irq;
+  unsigned int        flags;
+  unsigned long       thread_flags;
+  unsigned long       thread_mask;
+  const char          *name;
   struct proc_dir_entry  *dir;
 };
 
@@ -4437,8 +4724,8 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
     wake_up_process(new->thread);
 }
 
-static int
-setup_irq_thread(struct irqaction *new, unsigned int irq, bool secondary)
+static int setup_irq_thread(
+  struct irqaction *new, unsigned int irq, bool secondary)
 {
   struct task_struct *t;
   struct sched_param param = {
@@ -4498,18 +4785,18 @@ struct gate_struct {
 #endif
 };
 struct idt_bits {
-  u16 ist  : 3,   // DEFAULT_STACK
+  u16 ist   : 3,   // DEFAULT_STACK
       zero  : 5,
-      type  : 5,  // GATE_{INTERRUPT, TRAP, CALL, TASK}
-      dpl  : 2,   // DPL (Descriptor privilege level), DLP0, DLP3
-                  // RPL (Requested privilege level)
-      p  : 1;
+      type  : 5,   // GATE_{INTERRUPT, TRAP, CALL, TASK}
+      dpl   : 2,   // DPL (Descriptor privilege level), DLP0, DLP3
+                   // RPL (Requested privilege level)
+      p     : 1;
 };
 ```
 
 #### init idt_table
 ```C++
-gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
+struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
 
 void __init trap_init(void)
 {
@@ -4526,13 +4813,16 @@ void __init trap_init(void)
   set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
   set_bit(IA32_SYSCALL_VECTOR, used_vectors);
 #endif
+
+  /* place at a fixed address */
   __set_fixmap(FIX_RO_IDT, __pa_symbol(idt_table), PAGE_KERNEL_RO);
   idt_descr.address = fix_to_virt(FIX_RO_IDT);
 }
 
 // set_intr_gate -> _set_gate
-static inline void _set_gate(int gate, unsigned type, void *addr,
-           unsigned dpl, unsigned ist, unsigned seg)
+static inline void _set_gate(
+  int gate, unsigned type, void *addr,
+  unsigned dpl, unsigned ist, unsigned seg)
 {
   gate_desc s;
   pack_gate(&s, type, (unsigned long)addr, dpl, ist, seg);
@@ -4564,6 +4854,7 @@ enum {
   X86_TRAP_IRET = 32,  /* 32, IRET Exception */
 };
 ```
+
 #### init_IRQ
 ```C++
 // after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
@@ -4574,6 +4865,7 @@ void __init native_init_IRQ(void)
 #ifndef CONFIG_X86_LOCAL_APIC
 #define first_system_vector NR_VECTORS
 #endif
+
   for_each_clear_bit_from(i, used_vectors, first_system_vector) {
     /* IA32_SYSCALL_VECTOR could be used in trap_init already. */
     set_intr_gate(i, irq_entries_start +
@@ -4581,7 +4873,8 @@ void __init native_init_IRQ(void)
   }
 }
 
-// irq_entries_start defined in arch\x86\entry\entry_{32, 64}
+/* set `FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR` handler to do_IRQ
+ * irq_entries_start defined in arch\x86\entry\entry_{32, 64} */
 ENTRY(irq_entries_start)
     vector=FIRST_EXTERNAL_VECTOR
     .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
@@ -4606,12 +4899,7 @@ GLOBAL(retint_user)
 /* Returning to kernel space */
 retint_kernel:
 
-
-/* Note: the interrupt vector interrupt controller sent to
- * each cpu is per cpu local variable, but the abstract
- * layer's virtual signal irq and it's handler is global. */
-
-__visible unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
+unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
 {
   struct pt_regs *old_regs = set_irq_regs(regs);
   struct irq_desc * desc;
@@ -4626,15 +4914,51 @@ __visible unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
   set_irq_regs(old_regs);
   return 1;
 }
+
+/* do_IRQ -> handle_irq -> */
+static inline void generic_handle_irq_desc(struct irq_desc *desc)
+{
+  desc->handle_irq(desc);
+}
+
+irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
+{
+  irqreturn_t retval = IRQ_NONE;
+  unsigned int irq = desc->irq_data.irq;
+  struct irqaction *action;
+
+  record_irq_time(desc);
+
+  for_each_action_of_desc(desc, action) {
+    irqreturn_t res;
+    res = action->handler(irq, action->dev_id);
+    switch (res) {
+    case IRQ_WAKE_THREAD:
+      __irq_wake_thread(desc, action);
+    case IRQ_HANDLED:
+      *flags |= action->flags;
+      break;
+    default:
+      break;
+    }
+    retval |= res;
+  }
+  return retval;
+}
 ```
 
 #### init vector_irq
 ```C++
+/* The interrupt vector interrupt controller sent to
+ * each cpu is per cpu local variable, but the abstract
+ * layer's virtual signal irq and it's irq_desc is global.
+ * So per cpu needs its own mapping from vector to irq_desc */
 typedef struct irq_desc* vector_irq_t[NR_VECTORS];
 DECLARE_PER_CPU(vector_irq_t, vector_irq);
 
 // assign virtual irq to a cpu
-static int __assign_irq_vector(int irq, struct apic_chip_data *d,
+static int __assign_irq_vector(
+  int irq, struct apic_chip_data *d,
   const struct cpumask *mask,
   struct irq_data *irqdata)
 {
@@ -4676,40 +5000,11 @@ next_cpu:
     cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
     continue;
 }
-
-static inline void generic_handle_irq_desc(struct irq_desc *desc)
-{
-  desc->handle_irq(desc);
-}
-
-irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
-{
-  irqreturn_t retval = IRQ_NONE;
-  unsigned int irq = desc->irq_data.irq;
-  struct irqaction *action;
-
-  record_irq_time(desc);
-
-  for_each_action_of_desc(desc, action) {
-    irqreturn_t res;
-    res = action->handler(irq, action->dev_id);
-    switch (res) {
-    case IRQ_WAKE_THREAD:
-      __irq_wake_thread(desc, action);
-    case IRQ_HANDLED:
-      *flags |= action->flags;
-      break;
-    default:
-      break;
-    }
-    retval |= res;
-  }
-  return retval;
-}
 ```
- ![linux-io-interrupt-vector.png](../Images/linux-io-interrupt-vector.png)
 
- ![linux-io-interrupt.png](../Images/linux-io-interrupt.png)
+![linux-io-interrupt-vector.png](../Images/linux-io-interrupt-vector.png)
+
+![linux-io-interrupt.png](../Images/linux-io-interrupt.png)
 
 ### block dev
 ```C++
@@ -4753,12 +5048,17 @@ static struct file_system_type ext4_fs_type = {
 
 #### mount
 ```C++
-static struct dentry *ext4_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data)
+/* mont -> ksys_mount -> do_mount -> do_new_mount ->
+ * vfs_kern_mount -> mount_fs -> fs_type.mount */
+static struct dentry *ext4_mount(
+  struct file_system_type *fs_type, int flags,
+  const char *dev_name, void *data)
 {
   return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
 }
 
-struct dentry *mount_bdev(struct file_system_type *fs_type,
+struct dentry *mount_bdev(
+  struct file_system_type *fs_type,
   int flags, const char *dev_name, void *data,
   int (*fill_super)(struct super_block *, void *, int))
 {
@@ -4778,8 +5078,8 @@ struct dentry *mount_bdev(struct file_system_type *fs_type,
 ##### blkdev_get_by_path
 
 ```C++
-struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
-  void *holder)
+struct block_device *blkdev_get_by_path(
+  const char *path, fmode_t mode, void *holder)
 {
   struct block_device *bdev;
   int err;
@@ -5022,9 +5322,10 @@ void device_add_disk(struct device *parent, struct gendisk *disk)
           exact_match, exact_lock, disk);
 }
 
-void blk_register_region(dev_t devt, unsigned long range, struct module *module,
-       struct kobject *(*probe)(dev_t, int *, void *),
-       int (*lock)(dev_t, void *), void *data)
+void blk_register_region(
+  dev_t devt, unsigned long range, struct module *module,
+  struct kobject *(*probe)(dev_t, int *, void *),
+  int (*lock)(dev_t, void *), void *data)
 {
   kobj_map(bdev_map, devt, range, module, probe, lock, data);
 }
@@ -5093,6 +5394,35 @@ struct super_block *sget_userns(struct file_system_type *type,
   return s;
 }
 ```
+
+```C++
+mount();
+  ksys_mount(); /* copy type, dev_name, data to kernel */
+    do_mount(); /* get path by name */
+      do_new_mount(); /* get fs_type by type */
+        vfs_kern_mount();
+          alloc_vfsmnt();
+          mount_fs();
+            fs_type.mount();
+              ext4_mount();
+                mount_bdev();
+                  blkdev_get_by_path();
+                    lookup_bdev(); /* find blk device */
+                      kern_path();
+                      d_backing_inode();
+                      bd_acquire();
+                        bdget();
+                          iget5_locked(); /* blk dev fs */
+                    blkdev_get();  /* open blk device */
+                      __blkdev_get();
+                        get_gendisk();
+                          kobj_lookup(); /* bdev_map */
+                  sget();
+                    sget_userns();
+                      alloc_super();
+          list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+```
+
 ![linux-io-gendisk.png](../Images/linux-io-gendisk.png)
 
 ![linux-io-bd.png](../Images/linux-io-bd.png)
@@ -6525,8 +6855,9 @@ struct file *shmem_kernel_file_setup(const char *name, loff_t size, unsigned lon
   return __shmem_file_setup(shm_mnt, name, size, flags, S_PRIVATE);
 }
 
-static struct file *__shmem_file_setup(struct vfsmount *mnt, const char *name, loff_t size,
-               unsigned long flags, unsigned int i_flags)
+static struct file *__shmem_file_setup(
+  struct vfsmount *mnt, const char *name, loff_t size,
+  unsigned long flags, unsigned int i_flags)
 {
   struct inode *inode;
   struct file *res;
@@ -9781,6 +10112,59 @@ static void __release_sock(struct sock *sk)
 ```
 ![linux-net-read.png](../Images/linux-net-read.png)
 
+### epoll
+```c++
+typedef union epoll_data {
+  void    *ptr;
+  int      fd;
+  uint32_t u32;
+  uint64_t u64;
+} epoll_data_t;
+
+struct epoll_event {
+  uint32_t     events;    /* Epoll events */
+  epoll_data_t data;      /* User data variable */
+};
+
+int epoll_create(int size);
+int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
+int epoll_wait(int epfd, struct epoll_event *events,
+                 int maxevents, int timeout);
+
+struct epitem {
+  union {
+    struct rb_node rbn;
+    struct rcu_head rcu;
+  };
+
+  struct list_head    rdllink;
+  struct epitem       *next;
+  struct epoll_filefd  ffd;
+  int nwait;
+  struct list_head     pwqlist;
+  struct eventpoll     *ep;
+  struct list_head     fllink;
+  struct wakeup_source __rcu *ws;
+  struct epoll_event   event;
+};
+
+struct eventpoll {
+  struct mutex mtx;
+  wait_queue_head_t wq;
+  wait_queue_head_t poll_wait;
+
+  struct list_head      rdllist;
+  struct rb_root_cached rbr;
+  struct epitem         *ovflist;
+  struct wakeup_source  *ws;
+  struct user_struct    *user;
+  struct file            *file;
+  int visited;
+  struct list_head      visited_list_link;
+  unsigned int          napi_id;
+};
+```
+
 ## Q:
 1. Alloc 0 sized sk_buff in `sk_stream_alloc_skb` from `tcp_sendmsg_locked` when there is not enough space for the new data?
 2. The segementation deails in tcp and ip layers?
@@ -10673,10 +11057,10 @@ struct dentry *cgroup_do_mount(
   return dentry;
 }
 
-static inline struct dentry*
-kernfs_mount(struct file_system_type *fs_type, int flags,
-    struct kernfs_root *root, unsigned long magic,
-    bool *new_sb_created)
+static inline struct dentry* kernfs_mount(
+  struct file_system_type *fs_type, int flags,
+  struct kernfs_root *root, unsigned long magic,
+  bool *new_sb_created)
 {
   return kernfs_mount_ns(fs_type, flags, root,
         magic, new_sb_created, NULL);
@@ -10802,6 +11186,195 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 ## Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
 2. The hierarchy of cgroup file system?
+
+# Lock
+### spin lock
+```C++
+typedef struct spinlock {
+  union {
+    struct raw_spinlock rlock;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+# define LOCK_PADSIZE (offsetof(struct raw_spinlock, dep_map))
+    struct {
+      u8 __padding[LOCK_PADSIZE];
+      struct lockdep_map dep_map;
+    };
+#endif
+  };
+} spinlock_t;
+
+
+typedef struct raw_spinlock {
+  arch_spinlock_t raw_lock;
+
+#ifdef CONFIG_DEBUG_SPINLOCK
+  unsigned int magic, owner_cpu;
+  void *owner;
+#endif
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+  struct lockdep_map dep_map;
+#endif
+} raw_spinlock_t;
+
+
+typedef struct {
+  volatile unsigned int slock;
+} arch_spinlock_t;
+
+typedef struct {
+  union {
+    u32 slock;
+    struct __raw_tickets {
+#ifdef __ARMEB__
+      u16 next;
+      u16 owner;
+#else
+      u16 owner;
+      u16 next;
+#endif
+    } tickets;
+  };
+} arch_spinlock_t;
+
+/* include/asm-generic/qspinlock_types.h */
+typedef struct qspinlock {
+  union {
+    atomic_t val;
+
+    /*
+     * By using the whole 2nd least significant byte for the
+     * pending bit, we can allow better optimization of the lock
+     * acquisition for the pending bit holder.
+     */
+#ifdef __LITTLE_ENDIAN
+    struct {
+      u8  locked;
+      u8  pending;
+    };
+    struct {
+      u16  locked_pending;
+      u16  tail;
+    };
+#else
+    struct {
+      u16  tail;
+      u16  locked_pending;
+    };
+    struct {
+      u8  reserved[2];
+      u8  pending;
+      u8  locked;
+    };
+#endif
+  };
+} arch_spinlock_t;
+
+/* include/linux/spinlock.h */
+static  void spin_lock(spinlock_t *lock)
+{
+  raw_spin_lock(&lock->rlock);
+}
+
+#define raw_spin_lock(lock)  _raw_spin_lock(lock)
+#define raw_spin_trylock(lock)  __cond_lock(lock, _raw_spin_trylock(lock))
+
+/* include/linux/spinlock_api_smp.h */
+#define _raw_spin_lock(lock) __raw_spin_lock(lock)
+
+static inline void __raw_spin_lock(raw_spinlock_t *lock)
+{
+  preempt_disable();
+  /* for lockdep debug */
+  spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
+
+  LOCK_CONTENDED(lock, do_raw_spin_trylock, do_raw_spin_lock);
+}
+
+/*include/linux/lockdep.h */
+#define spin_acquire(l, s, t, i) lock_acquire_exclusive(l, s, t, NULL, i)
+#define lock_acquire_exclusive(l, s, t, n, i) lock_acquire(l, s, t, 0, 1, n, i)
+#define lock_acquire(l, s, t, r, c, n, i)  do { } while (0)
+
+
+/* include/linux/lockdep.h */
+#define LOCK_CONTENDED(_lock, try, lock)      \
+do {                \
+  if (!try(_lock)) {          \
+    lock_contended(&(_lock)->dep_map, _RET_IP_);  \
+    lock(_lock);          \
+  }              \
+  lock_acquired(&(_lock)->dep_map, _RET_IP_);      \
+} while (0)
+
+
+/* include/linux/spinlock.h */
+static inline int do_raw_spin_trylock(raw_spinlock_t *lock)
+{
+  return arch_spin_trylock(&(lock)->raw_lock);
+}
+
+/* kernel/locking/spinlock_debug.c */
+void do_raw_spin_lock(raw_spinlock_t *lock)
+{
+  debug_spin_lock_before(lock);
+  arch_spin_lock(&lock->raw_lock);
+  debug_spin_lock_after(lock);
+}
+
+#define arch_spin_lock(l)    queued_spin_lock(l)
+
+static  void queued_spin_lock(struct qspinlock *lock)
+{
+  u32 val;
+
+  val = atomic_cmpxchg_acquire(&lock->val, 0, _Q_LOCKED_VAL);
+  if (likely(val == 0))
+    return;
+  queued_spin_lock_slowpath(lock, val);
+}
+
+#define  atomic_cmpxchg_acquire    atomic_cmpxchg
+
+static  int atomic_cmpxchg(atomic_t *v, int old, int new)
+{
+  kasan_check_write(v, sizeof(*v));
+  return arch_atomic_cmpxchg(v, old, new);
+}
+
+static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
+{
+  return arch_cmpxchg(&v->counter, old, new);
+}
+
+/* arch/x86/include/asm/cmpxchg.h */
+#define arch_cmpxchg(ptr, old, new)          \
+  __cmpxchg(ptr, old, new, sizeof(*(ptr)))
+
+#define __cmpxchg(ptr, old, new, size)          \
+  __raw_cmpxchg((ptr), (old), (new), (size), LOCK_PREFIX)
+
+#define __raw_cmpxchg(ptr, old, new, size, lock)      \
+({                  \
+  __typeof__(*(ptr)) __ret;          \
+  __typeof__(*(ptr)) __old = (old);        \
+  __typeof__(*(ptr)) __new = (new);        \
+  switch (size) {              \
+  case __X86_CASE_W:            \
+  {                \
+    volatile u16 *__ptr = (volatile u16 *)(ptr);    \
+    asm volatile(lock "cmpxchgw %2,%1"      \
+           : "=a" (__ret), "+m" (*__ptr)    \
+           : "r" (__new), "0" (__old)      \
+           : "memory");        \
+    break;              \
+  }                \
+  default:              \
+    __cmpxchg_wrong_size();          \
+  }                \
+  __ret;                \
+})
+```
 
 # Pthread
 ### pthread_mutex
