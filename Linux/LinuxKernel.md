@@ -3259,6 +3259,7 @@ struct ext4_super_block {
 }
 
 struct super_block {
+  struct list_head  s_list; /* Keep this first */
   struct dentry                  *s_root;
   struct file_system_type         *s_type;
   const struct super_operations  *s_op;
@@ -3266,7 +3267,6 @@ struct super_block {
   dev_t      s_dev;    /* search index; _not_ kdev_t */
   struct block_device  *s_bdev;
 
-  struct list_head  s_list;    /* Keep this first */
   unsigned char    s_blocksize_bits;
   unsigned long    s_blocksize;
   loff_t      s_maxbytes;  /* Max file size */
@@ -3648,6 +3648,24 @@ ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
     return -EINVAL;
 }
 
+static ssize_t new_sync_read(
+  struct file *filp, char __user *buf, size_t len, loff_t *ppos)
+{
+  struct iovec iov = { .iov_base = buf, .iov_len = len };
+  struct kiocb kiocb;
+  struct iov_iter iter;
+  ssize_t ret;
+
+  init_sync_kiocb(&kiocb, filp);
+  kiocb.ki_pos = *ppos;
+  iov_iter_init(&iter, READ, &iov, 1, len);
+
+  ret = call_read_iter(filp, &kiocb, &iter);
+  BUG_ON(ret == -EIOCBQUEUED);
+  *ppos = kiocb.ki_pos;
+  return ret;
+}
+
 const struct file_operations ext4_file_operations = {
   .read_iter  = ext4_file_read_iter,
   .write_iter  = ext4_file_write_iter,
@@ -3718,8 +3736,8 @@ do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
 
 #### buffered write
 ```C++
-ssize_t generic_perform_write(struct file *file,
-        struct iov_iter *i, loff_t pos)
+ssize_t generic_perform_write(
+  struct file *file, struct iov_iter *i, loff_t pos)
 {
   struct address_space *mapping = file->f_mapping;
   const struct address_space_operations *a_ops = mapping->a_ops;
@@ -3751,6 +3769,8 @@ ssize_t generic_perform_write(struct file *file,
   } while (iov_iter_count(i));
 }
 
+/* get mapping page from address_space page cache radix tree,
+ * if not exits, alloc a new page */
 struct page *grab_cache_page_write_begin(
   struct address_space *mapping, pgoff_t index, unsigned flags)
 {
@@ -3788,7 +3808,16 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 }
 // balance_dirty_pages -> wb_start_background_writeback -> wb_wakeup
 struct backing_dev_info {
-  struct bdi_writeback wb;  /* the root writeback info for this bdi */
+  struct list_head      bdi_list;
+  struct bdi_writeback  wb; /* the root writeback info for this bdi */
+  struct list_head      wb_list; /* list of all wbs */
+
+  wait_queue_head_t wb_waitq;
+
+  struct device *dev;
+  struct device *owner;
+
+  struct timer_list laptop_mode_wb_timer;
 }
 
 struct bdi_writeback {
@@ -3798,7 +3827,6 @@ struct bdi_writeback {
   struct list_head b_io;        /* parked for writeback */
   struct list_head b_more_io;   /* parked for more writeback */
   struct list_head b_dirty_time; /* time stamps are dirty */
-
 }
 
 struct delayed_work {
@@ -3811,6 +3839,7 @@ struct delayed_work {
 };
 
 typedef void (*work_func_t)(struct work_struct *work);
+
 struct work_struct {
   atomic_long_t data;
   struct list_head entry;
@@ -3825,16 +3854,22 @@ static void wb_wakeup(struct bdi_writeback *wb)
   spin_unlock_bh(&wb->work_lock);
 }
 
-/* global variable, all backing task stored here */
-/* bdi_wq serves all asynchronous writeback tasks */
-struct workqueue_struct *bdi_wq;
-
 /* insert a delayed work in bdi_wq */
 static inline bool mod_delayed_work(
   struct workqueue_struct *wq,
   struct delayed_work *dwork,
   unsigned long delay)
-{ }
+{
+
+}
+```
+![linux-io-bdi.png](../Images/linux-io-bdi.png)
+
+##### bdi_wq
+```C++
+/* global variable, all backing task stored here */
+/* bdi_wq serves all asynchronous writeback tasks */
+struct workqueue_struct *bdi_wq;
 
 static int bdi_init(struct backing_dev_info *bdi)
 {
@@ -4055,69 +4090,87 @@ int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 #### dev_fs_type
 ```C++
 rest_init();
-  kernel_init();
+  kernel_thread(kernel_init);
     kernel_init_freeable();
       do_basic_setup();
         driver_init();
           devtmpfs_init();
-            devtmpfs_init();
+          devices_init();
+          buses_init();
+          classes_init();
+          firmware_init();
+          hypervisor_init();
+
+        shmem_init();
+          register_filesystem(&shmem_fs_type);
+            kern_mount(&shmem_fs_type);
+
+        init_irq_proc();
+        do_initcalls();
+
+      workqueue_init();
+      load_default_modules();
+    run_init_process();
+  kernel_thread(kthreadd);
 
 int __init devtmpfs_init(void)
 {
-	int err = register_filesystem(&dev_fs_type);
+  int err = register_filesystem(&dev_fs_type);
 
-	thread = kthread_run(devtmpfsd, &err, "kdevtmpfs");
-	if (!IS_ERR(thread)) {
-		wait_for_completion(&setup_done);
-	} else {
-		err = PTR_ERR(thread);
-		thread = NULL;
-	}
+  thread = kthread_run(devtmpfsd, &err, "kdevtmpfs");
+  if (!IS_ERR(thread)) {
+    wait_for_completion(&setup_done);
+  } else {
+    err = PTR_ERR(thread);
+    thread = NULL;
+  }
   return 0;
 }
 
 static int devtmpfsd(void *p)
 {
-	char options[] = "mode=0755";
-	int *err = p;
-	*err = ksys_unshare(CLONE_NEWNS);
-	if (*err)
-		goto out;
-	*err = ksys_mount("devtmpfs", "/", "devtmpfs", MS_SILENT, options);
-	if (*err)
-		goto out;
-	ksys_chdir("/.."); /* will traverse into overmounted root */
-	ksys_chroot(".");
-	complete(&setup_done);
-	while (1) {
-		spin_lock(&req_lock);
-		while (requests) {
-			struct req *req = requests;
-			requests = NULL;
-			spin_unlock(&req_lock);
-			while (req) {
-				struct req *next = req->next;
-				req->err = handle(req->name, req->mode,
-						  req->uid, req->gid, req->dev);
-				complete(&req->done);
-				req = next;
-			}
-			spin_lock(&req_lock);
-		}
-		__set_current_state(TASK_INTERRUPTIBLE);
-		spin_unlock(&req_lock);
-		schedule();
-	}
-	return 0;
+  char options[] = "mode=0755";
+  int *err = p;
+  *err = ksys_unshare(CLONE_NEWNS);
+  if (*err)
+    goto out;
+  *err = ksys_mount("devtmpfs", "/", "devtmpfs", MS_SILENT, options);
+  if (*err)
+    goto out;
+  ksys_chdir("/.."); /* will traverse into overmounted root */
+  ksys_chroot(".");
+  complete(&setup_done);
+  while (1) {
+    spin_lock(&req_lock);
+    while (requests) {
+      struct req *req = requests;
+      requests = NULL;
+      spin_unlock(&req_lock);
+      while (req) {
+        struct req *next = req->next;
+        req->err = handle(req->name, req->mode,
+              req->uid, req->gid, req->dev);
+        complete(&req->done);
+        req = next;
+      }
+      spin_lock(&req_lock);
+    }
+    __set_current_state(TASK_INTERRUPTIBLE);
+    spin_unlock(&req_lock);
+    schedule();
+  }
+  return 0;
 out:
-	complete(&setup_done);
-	return *err;
+  complete(&setup_done);
+  return *err;
 }
 ```
 
 #### mount
 ```C++
-/* mount -> ksys_mount -> do_mount -> do_new_mount ->
+/* mount -t type device destination_dir
+ *
+ * mount -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> fs_type.mount */
 static struct file_system_type dev_fs_type = {
   .name = "devtmpfs",
@@ -4264,27 +4317,33 @@ mount();
 
 #### mknod
 ```C++
+/* mknod /dev/ttyS0 c 4 64 */
 SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
 {
   return sys_mknodat(AT_FDCWD, filename, mode, dev);
 }
 
-SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, umode_t, mode,
-    unsigned, dev)
+SYSCALL_DEFINE4(
+  mknodat, int, dfd, const char __user *,
+  filename, umode_t, mode, unsigned, dev)
 {
   struct dentry *dentry;
   struct path path;
   dentry = user_path_create(dfd, filename, &path, lookup_flags);
   switch (mode & S_IFMT) {
-    case 0: case S_IFREG:
+    case 0:
+    case S_IFREG:
       error = vfs_create(path.dentry->d_inode,dentry,mode,true);
       if (!error)
         ima_post_path_mknod(dentry);
       break;
-    case S_IFCHR: case S_IFBLK:
+
+    case S_IFCHR:
+    case S_IFBLK:
       error = vfs_mknod(path.dentry->d_inode,dentry,mode,
           new_decode_dev(dev));
       break;
+
     case S_IFIFO: case S_IFSOCK:
       error = vfs_mknod(path.dentry->d_inode,dentry,mode,0);
       break;
@@ -4308,19 +4367,33 @@ static const struct inode_operations shmem_dir_inode_operations = {
 static int shmem_mknod(
   struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 {
-	struct inode *inode;
-	int error = -ENOSPC;
+  struct inode *inode;
+  int error = -ENOSPC;
 
-	inode = shmem_get_inode(dir->i_sb, dir, mode, dev, VM_NORESERVE);
-	if (inode) {
-
-		dir->i_size += BOGO_DIRENT_SIZE;
-		dir->i_ctime = dir->i_mtime = current_time(dir);
-		d_instantiate(dentry, inode);
-		dget(dentry); /* Extra count - pin the dentry in core */
-	}
-	return error;
+  inode = shmem_get_inode(dir->i_sb, dir, mode, dev, VM_NORESERVE);
+  if (inode) {
+    dir->i_size += BOGO_DIRENT_SIZE;
+    dir->i_ctime = dir->i_mtime = current_time(dir);
+    d_instantiate(dentry, inode);
+    dget(dentry); /* Extra count - pin the dentry in core */
+  }
+  return error;
 }
+```
+
+```C++
+mknod();
+  sys_mknodat();
+    user_path_create();
+    vfs_create(); /* S_IFREG*/
+    vfs_mknod();  /* S_IFCHR, S_IFBLK, S_IFPIPE, S_IFSOCK */
+      dir->i_op->mknod();
+        shmem_mknod();
+          shmem_get_inode();
+          d_instantiate();
+            __d_instantiate();
+              __d_set_inode_and_type();
+          dget();
 ```
 
 #### open dev
@@ -5001,7 +5074,6 @@ next_cpu:
     continue;
 }
 ```
-
 ![linux-io-interrupt-vector.png](../Images/linux-io-interrupt-vector.png)
 
 ![linux-io-interrupt.png](../Images/linux-io-interrupt.png)
@@ -5071,12 +5143,15 @@ struct dentry *mount_bdev(
     mode |= FMODE_WRITE;
 
   bdev = blkdev_get_by_path(dev_name, mode, fs_type);
+
   s = sget(fs_type, test_bdev_super, set_bdev_super, flags | MS_NOSEC, bdev);
+  fill_super(s, data, flags & SB_SILENT ? 1 : 0);
+
   return dget(s->s_root);
 }
 ```
-##### blkdev_get_by_path
 
+##### blkdev_get_by_path
 ```C++
 struct block_device *blkdev_get_by_path(
   const char *path, fmode_t mode, void *holder)
@@ -5088,7 +5163,9 @@ struct block_device *blkdev_get_by_path(
   err = blkdev_get(bdev, mode, holder); // open blk device
   return bdev;
 }
-
+```
+###### lookup_bdev
+```C++
 // 1. find the block device file under /dev which is devtmpfs file system
 struct block_device *lookup_bdev(const char *pathname)
 {
@@ -5130,8 +5207,8 @@ struct block_device *bdget(dev_t dev)
   struct block_device *bdev;
   struct inode *inode;
 
-  inode = iget5_locked(blockdev_superblock, hash(dev),
-                  bdev_test, bdev_set, &dev);
+  inode = iget5_locked(
+    blockdev_superblock, hash(dev), bdev_test, bdev_set, &dev);
   bdev = &BDEV_I(inode)->bdev;
 
   if (inode->i_state & I_NEW) {
@@ -5154,7 +5231,7 @@ struct block_device *bdget(dev_t dev)
   return bdev;
 }
 
-// 3rd file system
+// 3rd file system, save all blk device
 struct super_block *blockdev_superblock;
 static struct file_system_type bd_type = {
   .name           = "bdev",
@@ -5186,25 +5263,25 @@ void __init bdev_cache_init(void)
 }
 
 struct block_device {
-  dev_t      bd_dev;  /* not a kdev_t - it's a search key */
-  int      bd_openers;
-  struct super_block *  bd_super;
+  dev_t                 bd_dev;
+  int                   bd_openers;
+  struct super_block    *bd_super;
+  struct block_device   *bd_contains;
+  struct gendisk        *bd_disk;
+  struct hd_struct      *bd_part;
 
-  struct block_device *  bd_contains;
-  unsigned    bd_block_size;
-  struct hd_struct *  bd_part;
-  unsigned    bd_part_count;
-  int      bd_invalidated;
-  struct gendisk *  bd_disk;
-  struct request_queue *  bd_queue;
+  unsigned              bd_block_size;
+  unsigned              bd_part_count;
+  int                   bd_invalidated;
+  struct request_queue  *bd_queue;
   struct backing_dev_info *bd_bdi;
-  struct list_head  bd_list;
+  struct list_head        bd_list;
 };
 
 struct gendisk {
   int major;      /* major number of driver */
   int first_minor;
-  int minors; /* maximum number of minors, =1 for disks that can't be partitioned. */
+  int minors;     /* partition numbers */
   char disk_name[DISK_NAME_LEN]; /* name of major driver */
   char *(*devnode)(struct gendisk *gd, umode_t *mode);
 
@@ -5223,17 +5300,19 @@ struct hd_struct {
   sector_t start_sect;
   sector_t nr_sects;
 
-  struct device __dev;
+  struct device   __dev;
   struct kobject *holder_dir;
   int policy, partno;
   struct partition_meta_info *info;
 
   struct disk_stats dkstats;
   struct percpu_ref ref;
-  struct rcu_head rcu_head;
+  struct rcu_head   rcu_head;
 };
+```
 
-// blkdev_get -> __blkdev_get
+###### blkdev_get
+```C++
 static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
 {
   struct gendisk *disk;
@@ -5255,6 +5334,7 @@ static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
     bdev->bd_disk = disk;
     bdev->bd_queue = disk->queue;
     bdev->bd_contains = bdev;
+    bdev->bd_partno = partno;
 
     if (!partno) { // 1. open whole disk
       ret = -ENXIO;
@@ -5280,6 +5360,18 @@ static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
       bdev->bd_part = disk_get_part(disk, partno);
       bd_set_size(bdev, (loff_t)bdev->bd_part->nr_sects << 9);
     }
+  } else {
+    if (bdev->bd_contains == bdev) {
+      ret = 0;
+      if (bdev->bd_disk->fops->open)
+        ret = bdev->bd_disk->fops->open(bdev, mode);
+      /* the same as first opener case, read comment there */
+      if (bdev->bd_invalidated &&
+          (!ret || ret == -ENOMEDIUM))
+        bdev_disk_changed(bdev, ret == -ENOMEDIUM);
+      if (ret)
+        goto out_unlock_bdev;
+    }
   }
 
   bdev->bd_openers++;
@@ -5296,7 +5388,7 @@ struct gendisk *get_gendisk(dev_t devt, int *partno)
     kobj = kobj_lookup(bdev_map, devt, partno);
     if (kobj)
       disk = dev_to_disk(kobj_to_dev(kobj));
-  } else { // 2. get a partition
+  } else {                              // 2. get a partition
     struct hd_struct *part;
     part = idr_find(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
     if (part && get_disk(part_to_disk(part))) {
@@ -5306,8 +5398,39 @@ struct gendisk *get_gendisk(dev_t devt, int *partno)
   }
   return disk;
 }
+
+#define dev_to_disk(device) container_of((device), struct gendisk, part0.__dev)
+#define dev_to_part(device) container_of((device), struct hd_struct, __dev)
+#define disk_to_dev(disk)   (&(disk)->part0.__dev)
+#define part_to_dev(part)   (&((part)->__dev))
+
+static inline struct gendisk *part_to_disk(struct hd_struct *part)
+{
+  if (likely(part)) {
+    if (part->partno)
+      return dev_to_disk(part_to_dev(part)->parent);
+    else
+      return dev_to_disk(part_to_dev(part));
+  }
+  return NULL;
+}
+
+static const struct block_device_operations sd_fops = {
+  .owner          = THIS_MODULE,
+  .open           = sd_open,
+  .release        = sd_release,
+  .ioctl          = sd_ioctl,
+  .getgeo         = sd_getgeo,
+  .compat_ioctl   = sd_compat_ioctl,
+};
+
+static int sd_open(struct block_device *bdev, fmode_t mode)
+{
+
+}
 ```
 
+##### bdev_map
 ```C++
 static struct kobj_map *bdev_map;
 // map a dev_t with a gendisk
@@ -5403,23 +5526,32 @@ mount();
         vfs_kern_mount();
           alloc_vfsmnt();
           mount_fs();
+
             fs_type.mount();
               ext4_mount();
                 mount_bdev();
                   blkdev_get_by_path();
-                    lookup_bdev(); /* find blk device */
+                    lookup_bdev(); /* 1. find blk inode in /dev/xxx by name*/
                       kern_path();
-                      d_backing_inode();
-                      bd_acquire();
+                      d_backing_inode(); /* get inode of devtmpfs */
+                      bd_acquire(); /* find blkdev by dev_t in blkdev fs */
                         bdget();
-                          iget5_locked(); /* blk dev fs */
-                    blkdev_get();  /* open blk device */
+                          iget5_locked(blockdev_superblock, ...); /* blk dev fs */
+                    blkdev_get();  /* 2. open blk device */
                       __blkdev_get();
                         get_gendisk();
-                          kobj_lookup(); /* bdev_map */
+                          kobj_lookup();          /* 1. open whole gisk */
+                            dev_to_disk(kobj_to_dev(kobj));
+
+                          idr_find(&ext_devt_idr); /* 2. open a partition */
+                            part_to_disk(part);
+                              dev_to_disk(part_to_dev(part));
+                        disk->fops->open(bdev, mode);
                   sget();
                     sget_userns();
                       alloc_super();
+                      set_bdev_super();
+                  dget();
           list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
 
@@ -5429,6 +5561,13 @@ mount();
 
 ### direct IO
 ```C++
+read();
+  vfs_read();
+    file->f_op->write_iter(); /* ext4_file_read_iter */
+      generic_file_read_iter();
+        file->f_mapping->a_ops->direct_IO();
+        generic_file_buffered_read();
+
 static const struct address_space_operations ext4_aops = {
   .direct_IO    = ext4_direct_IO,
 };
@@ -5452,14 +5591,76 @@ static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
   loff_t offset = iocb->ki_pos;
   size_t count = iov_iter_count(iter);
 
-  ret = __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev, iter,
-           get_block_func, ext4_end_io_dio, NULL,
-           dio_flags);
+  ret = __blockdev_direct_IO(
+    iocb, inode, inode->i_sb->s_bdev, iter,
+    get_block_func, ext4_end_io_dio, NULL, dio_flags);
 }
 
-// __blockdev_direct_IO->do_blockdev_direct_IO
-static inline ssize_t
-do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
+struct dio_submit {
+  struct bio    *bio;
+  unsigned      blkbits;
+  unsigned      blkfactor;
+
+  unsigned      start_zero_done;
+  int           pages_in_io;
+  sector_t      block_in_file;
+  unsigned      blocks_available;
+
+  sector_t final_block_in_request;
+
+  get_block_t   *get_block;  /* block mapping function */
+  dio_submit_t  *submit_io;  /* IO submition function */
+
+  loff_t    logical_offset_in_bio;
+  sector_t final_block_in_bio;
+  sector_t next_block_for_io;
+
+  struct page *cur_page;        /* The page */
+  unsigned    cur_page_offset;
+  unsigned    cur_page_len;
+  sector_t    cur_page_block;   /* Where it starts */
+  loff_t       cur_page_fs_offset;/* Offset in file */
+
+  struct iov_iter *iter;
+
+  unsigned head;      /* next page to process */
+  unsigned tail;      /* last valid page + 1 */
+  size_t from, to;
+};
+
+/* dio_state communicated between submission path and end_io */
+struct dio {
+  int             flags;
+  int             op;
+  int             op_flags;
+
+  struct gendisk *bio_disk;
+  struct inode   *inode;
+  loff_t          i_size;  /* i_size when submitted */
+  dio_iodone_t   *end_io; /* IO completion function */
+
+  void *private;  /* copy from map_bh.b_private */
+
+  /* BIO completion state */
+  int   is_async;
+  bool  defer_completion;
+  bool  should_dirty;
+  int   io_error;
+  struct bio          *bio_list;
+  struct task_struct  *waiter;
+
+  struct kiocb *iocb;    /* kiocb */
+  ssize_t result;        /* IO result */
+
+  union {
+    struct page *pages[DIO_PAGES];  /* page buffer */
+    struct work_struct complete_work;/* deferred AIO completion */
+  };
+};
+
+/* __blockdev_direct_IO -> do_blockdev_direct_IO */
+static inline ssize_t do_blockdev_direct_IO(
+  struct kiocb *iocb, struct inode *inode,
   struct block_device *bdev, struct iov_iter *iter,
   get_block_t get_block, dio_iodone_t end_io,
   dio_submit_t submit_io, int flags)
@@ -5521,7 +5722,7 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
     size_t from, to;
 
     page = dio_get_page(dio, sdio);
-        from = sdio->head ? 0 : sdio->from;
+    from = sdio->head ? 0 : sdio->from;
     to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE;
     sdio->head++;
 
@@ -5544,15 +5745,17 @@ static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
     }
   }
 }
-// bmit_page_section -> dio_bio_submit -> submit_bio
+// submit_page_section -> dio_bio_submit -> submit_bio
 ```
 
 ### buffered IO write
 ```C++
-// wb_workfn->wb_do_writeback->wb_writeback->writeback_sb_inodes
-// ->__writeback_single_inode->do_writepages->ext4_writepages
-static int ext4_writepages(struct address_space *mapping,
-         struct writeback_control *wbc)
+/* wb_workfn -> wb_do_writeback -> wb_writeback
+ * -> writeback_sb_inodes -> __writeback_single_inode
+ * -> do_writepages -> ext4_writepages */
+static int ext4_writepages(
+  struct address_space *mapping,
+  struct writeback_control *wbc)
 {
   struct mpage_da_data mpd;
   struct inode *inode = mapping->host;
@@ -5616,7 +5819,6 @@ void ext4_io_submit(struct ext4_io_submit *io)
 ```
 
 ### submit_bio
-
 ```C++
 // direct IO and buffered IO will come to here:
 blk_qc_t submit_bio(struct bio *bio)
@@ -5626,13 +5828,11 @@ blk_qc_t submit_bio(struct bio *bio)
 
 blk_qc_t generic_make_request(struct bio *bio)
 {
-  /*
-   * bio_list_on_stack[0] contains bios submitted by the current
+  /* bio_list_on_stack[0] contains bios submitted by the current
    * make_request_fn.
    * bio_list_on_stack[1] contains bios that were submitted before
    * the current make_request_fn, but that haven't been processed
-   * yet.
-   */
+   * yet. */
   struct bio_list bio_list_on_stack[2];
   blk_qc_t ret = BLK_QC_T_NONE;
 
@@ -5695,20 +5895,19 @@ struct request {
 }
 
 struct bio {
-  struct bio    *bi_next;  /* request queue link */
+  struct bio        *bi_next;  /* request queue link */
   struct block_device  *bi_bdev;
-  blk_status_t    bi_status;
+  blk_status_t      bi_status;
   struct bvec_iter  bi_iter;
   unsigned short    bi_vcnt;  /* how many bio_vec's */
   unsigned short    bi_max_vecs;  /* max bvl_vecs we can hold */
-  atomic_t    __bi_cnt;  /* pin count */
+  atomic_t          __bi_cnt;  /* pin count */
   struct bio_vec    *bi_io_vec;  /* the actual vec list */
 
 };
 
 struct bvec_iter {
-  sector_t    bi_sector;  /* device address in 512 byte
-               sectors */
+  sector_t    bi_sector;  /* device address in 512 byte sectors */
   unsigned int    bi_size;  /* residual I/O count */
   unsigned int    bi_idx;    /* current index into bvl_vec */
   unsigned int    bi_bvec_done;  /* number of bytes completed in
@@ -5766,8 +5965,10 @@ out_unlock:
   return BLK_QC_T_NONE;
 }
 
-enum elv_merge elv_merge(struct request_queue *q, struct request **req,
-    struct bio *bio)
+enum elv_merge elv_merge(
+  struct request_queue *q,
+  struct request **req,
+  struct bio *bio)
 {
   struct elevator_queue *e = q->elevator;
   struct request *__rq;
@@ -5818,23 +6019,20 @@ static enum elv_merge cfq_merge(struct request_queue *q, struct request **req,
   return ELEVATOR_NO_MERGE;
 }
 
-static struct request *
-cfq_find_rq_fmerge(struct cfq_data *cfqd, struct bio *bio)
+static struct request *cfq_find_rq_fmerge(
+  struct cfq_data *cfqd, struct bio *bio)
 {
   struct task_struct *tsk = current;
   struct cfq_io_cq *cic;
   struct cfq_queue *cfqq;
 
-
   cic = cfq_cic_lookup(cfqd, tsk->io_context);
   if (!cic)
     return NULL;
 
-
   cfqq = cic_to_cfqq(cic, op_is_sync(bio->bi_opf));
   if (cfqq)
     return elv_rb_find(&cfqq->sort_list, bio_end_sector(bio));
-
 
   return NUL
 }
@@ -5851,31 +6049,23 @@ static void scsi_request_fn(struct request_queue *q)
   struct scsi_cmnd *cmd;
   struct request *req;
 
-  /*
-   * To start with, we keep looping until the queue is empty, or until
-   * the host is no longer able to accept any more requests.
-   */
+  /* To start with, we keep looping until the queue is empty, or until
+   * the host is no longer able to accept any more requests. */
   shost = sdev->host;
   for (;;) {
     int rtn;
-    /*
-     * get next queueable request.  We do this early to make sure
+    /* get next queueable request.  We do this early to make sure
      * that the request is fully prepared even if we cannot
-     * accept it.
-     */
+     * accept it. */
     req = blk_peek_request(q);
 
-    /*
-     * Remove the request from the request list.
-     */
+    /* Remove the request from the request list. */
     if (!(blk_queue_tagged(q) && !blk_queue_start_tag(q, req)))
       blk_start_request(req);
 
     cmd = req->special;
 
-    /*
-     * Dispatch the command to the low-level driver.
-     */
+    /* Dispatch the command to the low-level driver. */
     cmd->scsi_done = scsi_done;
     rtn = scsi_dispatch_cmd(cmd);
 
@@ -5888,8 +6078,9 @@ static void scsi_request_fn(struct request_queue *q)
 ### init block device
 ```C++
 // Small computer system interface
-static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
-             u64 lun, void *hostdata)
+static struct scsi_device *scsi_alloc_sdev(
+  struct scsi_target *starget,
+  u64 lun, void *hostdata)
 {
   struct scsi_device *sdev;
   sdev = kzalloc(sizeof(*sdev) + shost->transportt->device_size,
@@ -5926,13 +6117,96 @@ int blk_init_allocated_queue(struct request_queue *q)
   blk_queue_make_request(q, blk_queue_bio);
   /* init elevator */
   if (elevator_init(q, NULL)) {
-    // struct elevator_type elevator_noop
-    // struct elevator_type iosched_deadline
-    // struct elevator_type iosched_cfq
+    /* struct elevator_type elevator_noop // fifo
+     * struct elevator_type iosched_deadline
+     * struct elevator_type iosched_cfq */
   }
 }
 ```
 
+```C++
+ext4_direct_IO();
+  ext4_direct_IO_write();
+    do_blockdev_direct_IO(); /* dio, dio_submit */
+      do_direct_IO();
+
+        dio_get_page();
+          dio_refill_pages();
+            get_user_pages_fast();
+              get_user_pages_unlocked();
+                own_read(&mm->mmap_sem);
+                  __get_user_pages_locked();
+                up_read(&mm->mmap_sem);
+
+        get_more_blocks();
+          ext4_dio_get_block();
+            _ext4_get_block();
+              ext4_map_blocks();
+                ext4_es_lookup_extent();
+                  ext4_ext_map_blocks();
+
+        submit_page_section();
+          dio_send_cur_page(); /* prepare bio data */
+            dio_new_bio();
+              dio_bio_alloc();
+            dio_bio_add_page();
+
+          dio_bio_submit();
+            submit_bio();
+
+wb_workfn();
+  wb_do_writeback();
+    wb_writeback();
+      writeback_sb_inodes();
+        __writeback_single_inode();
+          do_writepages();
+            ext4_writepages();
+              /* 1. find io data */
+              mpage_prepare_extent_to_map();
+                /* 1.1 find dirty pages */
+                pagevec_lookup_range_tag();
+                  find_get_pages_range_tag();
+                    radix_tree_for_each_tagged();
+                /* 1.2. process dirty pages */
+                mpage_process_page_bufs();
+                  mpage_add_bh_to_extent();
+                  mpage_submit_page();
+                    ext4_bio_write_page();
+                      io_submit_add_bh();
+                        io_submit_init_bio(); /* init bio */
+                          bio_alloc();
+                          wbc_init_bio();
+              /* 2. submit io data */
+              ext4_io_submit();
+                submit_bio();
+
+submit_bio();
+  generic_make_request();
+    make_request_fn(); /* blk_queue_bio */
+      blk_queue_bio();
+        elv_merge();
+          blk_try_merge();
+          elv_rqhash_find();
+          elevator_merge_fn();
+            cfq_merge();
+        bio_attempt_back_merge();
+
+        get_request(); /* can't merge */
+        blk_init_request_from_bio();
+        add_acct_request(); /* add req to queue */
+          __elv_add_request();
+            __elv_add_request();
+
+        __blk_run_queue();
+          __blk_run_queue_uncond();
+            q->request_fn(q)();
+
+      bio_list_pop();
+      bio_list_add(); /* same or lower layer */
+      bio_list_merge();
+
+scsi_request_fn();
+```
 ![linux-io-bio-request.png](../Images/linux-io-bio-request.png)
 
 ### Questions:
@@ -5943,6 +6217,7 @@ int blk_init_allocated_queue(struct request_queue *q)
 5. Will first 32 interrupt call do_IRQ?
 6. RAID, VLM
 7. When to create block_device in bdev file system
+8. Details of `dio_get_page()` and `get_more_blocks()`?
 
 # IPC
 ### pipe
@@ -9295,6 +9570,7 @@ struct device {
   struct bus_type  *bus;
   void    *platform_data;
   void    *driver_data;  /* dev_set_drvdata/dev_get_drvdata */
+  int     numa_node;
 };
 
 struct net_device {
