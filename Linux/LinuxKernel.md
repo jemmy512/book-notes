@@ -686,6 +686,38 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
 * -> check_preempt_curr -> resched_curr */
+static int try_to_wake_up(
+  struct task_struct *p, unsigned int state, int wake_flags)
+{
+  unsigned long flags;
+  int cpu, success = 0;
+
+  success = 1;
+  cpu = task_cpu(p);
+
+  p->sched_contributes_to_load = !!task_contributes_to_load(p);
+  p->state = TASK_WAKING;
+
+  if (p->in_iowait) {
+    delayacct_blkio_end(p);
+    atomic_dec(&task_rq(p)->nr_iowait);
+  }
+
+  cpu = select_task_rq(p, p->wake_cpu, SD_BALANCE_WAKE, wake_flags);
+  if (task_cpu(p) != cpu) {
+    wake_flags |= WF_MIGRATED;
+    set_task_cpu(p, cpu);
+  }
+
+  ttwu_queue(p, cpu, wake_flags);
+stat:
+  ttwu_stat(p, cpu, wake_flags);
+out:
+  raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+
+  return success;
+}
+
 static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
 {
   struct rq *rq = cpu_rq(cpu);
@@ -705,7 +737,9 @@ static void ttwu_do_activate(
 
   lockdep_assert_held(&rq->lock);
 
+  /* 1. insert p into rq */
   ttwu_activate(rq, p, en_flags);
+  /* 2. check schedule curr */
   ttwu_do_wakeup(rq, p, wake_flags, rf);
 }
 
@@ -3422,7 +3456,7 @@ struct file {
   struct inode    *f_inode;  /* cached value */
   const struct file_operations  *f_op;
   struct address_space         *f_mapping;
-  void* private_data; // used for tty, pipe
+  void* private_data; /* for special inode */
 
   spinlock_t                    f_lock;
   enum rw_hint                  f_write_hint;
@@ -4849,6 +4883,11 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
   *old_ptr = new;
   if (new->thread)
     wake_up_process(new->thread);
+}
+
+int wake_up_process(struct task_struct *p)
+{
+  return try_to_wake_up(p, TASK_NORMAL, 0);
 }
 
 static int setup_irq_thread(
@@ -6842,15 +6881,15 @@ ext4_direct_IO();
             submit_bio();
 
 wb_workfn();
-  wb_do_writeback(); /* traverse wb_writeback_work */
+  wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
     wb_writeback();
-      /* traverse wb->b_io */
-      writeback_sb_inodes(); /* work to writeback_control */
+      /* traverse wb->b_io, which is inode list */
+      writeback_sb_inodes(); /* Struct.2.writeback_control */
         __writeback_single_inode();
           do_writepages();
 
-            ext4_writepages(); /* mpage_da_data */
-              /* 1. find io data, wbc to mpage_da_data*/
+            ext4_writepages(); /* Struct.3.mpage_da_data */
+              /* 1. find io data */
               mpage_prepare_extent_to_map();
                 /* 1.1 find dirty pages */
                 pagevec_lookup_range_tag();
@@ -6861,10 +6900,11 @@ wb_workfn();
                   mpage_add_bh_to_extent();
                   mpage_submit_page();
                     ext4_bio_write_page();
-                      io_submit_add_bh();
+                      io_submit_add_bh(); /* Struct.4.buffer_head */
                         io_submit_init_bio(); /* init bio */
                           bio_alloc();
                           wbc_init_bio();
+                        bio_add_page();
               /* 2. submit io data */
               ext4_io_submit();
                 submit_bio();
@@ -6872,6 +6912,7 @@ wb_workfn();
       __writeback_inodes_wb();
   wb_wakeup();
     mod_delayed_work();
+
 
 writeback_inodes_sb();
   writeback_inodes_sb_nr();
@@ -6884,7 +6925,12 @@ writeback_inodes_sb();
         wb_queue_work();
           list_add_tail(&work->list, &wb->work_list);
           mod_delayed_work(bdi_wq, &wb->dwork, 0);
+            mod_delayed_work_on();
+              __queue_delayed_work();
+                __queue_work(cpu, wq, &dwork->work);
+                add_timer();
       wb_wait_for_completion();
+
 
 submit_bio();
   generic_make_request();
@@ -6925,6 +6971,7 @@ scsi_request_fn();
 7. When to create block_device in bdev file system
 8. Details of `dio_get_page()` and `get_more_blocks()`?
 9. Who will call `delayed_work_timer_fn` and `wb_workfn`?
+10. How data flow: `wb_writeback_work` -> `writeback_control` -> `mpage_da_data` -> `buffer_head` -> `bio` works?
 
 # IPC
 ### pipe
@@ -6954,41 +7001,41 @@ SYSCALL_DEFINE2(pipe2, int __user *, fildes, int, flags)
 
 static int __do_pipe_flags(int *fd, struct file **files, int flags)
 {
-    int error;
-    int fdw, fdr;
-    error = create_pipe_files(files, flags);
-    error = get_unused_fd_flags(flags);
-    fdr = error;
+  int error;
+  int fdw, fdr;
+  error = create_pipe_files(files, flags);
+  error = get_unused_fd_flags(flags);
+  fdr = error;
 
-    error = get_unused_fd_flags(flags);
-    fdw = error;
+  error = get_unused_fd_flags(flags);
+  fdw = error;
 
-    fd[0] = fdr;
-    fd[1] = fdw;
-    return 0;
+  fd[0] = fdr;
+  fd[1] = fdw;
+  return 0;
 }
 
 int create_pipe_files(struct file **res, int flags)
 {
-    int err;
-    struct inode *inode = get_pipe_inode();
-    struct file *f;
-    struct path path;
-    path.dentry = d_alloc_pseudo(pipe_mnt->mnt_sb, &empty_name);
-    path.mnt = mntget(pipe_mnt);
+  int err;
+  struct inode *inode = get_pipe_inode();
+  struct file *f;
+  struct path path;
+  path.dentry = d_alloc_pseudo(pipe_mnt->mnt_sb, &empty_name);
+  path.mnt = mntget(pipe_mnt);
 
-    d_instantiate(path.dentry, inode);
+  d_instantiate(path.dentry, inode);
 
-    f = alloc_file(&path, FMODE_WRITE, &pipefifo_fops);
-    f->f_flags = O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT));
-    f->private_data = inode->i_pipe;
-    res[1] = f;
+  f = alloc_file(&path, FMODE_WRITE, &pipefifo_fops);
+  f->f_flags = O_WRONLY | (flags & (O_NONBLOCK | O_DIRECT));
+  f->private_data = inode->i_pipe;
+  res[1] = f;
 
-    res[0] = alloc_file(&path, FMODE_READ, &pipefifo_fops);
-    path_get(&path);
-    res[0]->private_data = inode->i_pipe;
-    res[0]->f_flags = O_RDONLY | (flags & O_NONBLOCK);
-    return 0;
+  res[0] = alloc_file(&path, FMODE_READ, &pipefifo_fops);
+  path_get(&path);
+  res[0]->private_data = inode->i_pipe;
+  res[0]->f_flags = O_RDONLY | (flags & O_NONBLOCK);
+  return 0;
 }
 
 static struct file_system_type pipe_fs_type = {
@@ -7082,16 +7129,21 @@ SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, umode_t, mode,
   struct path path;
   dentry = user_path_create(dfd, filename, &path, lookup_flags);
   switch (mode & S_IFMT) {
-    case 0: case S_IFREG:
+    case 0:
+    case S_IFREG:
       error = vfs_create(path.dentry->d_inode,dentry,mode,true);
       if (!error)
         ima_post_path_mknod(dentry);
       break;
-    case S_IFCHR: case S_IFBLK:
+
+    case S_IFCHR:
+    case S_IFBLK:
       error = vfs_mknod(path.dentry->d_inode,dentry,mode,
           new_decode_dev(dev));
       break;
-    case S_IFIFO: case S_IFSOCK:
+
+    case S_IFIFO:
+    case S_IFSOCK:
       error = vfs_mknod(path.dentry->d_inode,dentry,mode,0);
       break;
   }
@@ -7208,15 +7260,20 @@ static int fifo_open(struct inode *inode, struct file *filp)
 struct task_struct {
     /* Signal handlers: */
     struct signal_struct    *signal;
-    struct sighand_struct __rcu    *sighand;
-    sigset_t      blocked;
-    sigset_t      real_blocked;
+    struct sighand_struct   *sighand;
+    sigset_t                blocked;
+    sigset_t                real_blocked;
     /* Restored if set_restore_sigmask() was used: */
-    sigset_t      saved_sigmask;
-    struct sigpending    pending;
-    unsigned long      sas_ss_sp;
-    size_t        sas_ss_size;
-    unsigned int      sas_ss_flags;
+    sigset_t                saved_sigmask;
+    struct sigpending       pending;
+    unsigned long           sas_ss_sp;
+    size_t                  sas_ss_size;
+    unsigned int            sas_ss_flags;
+};
+
+struct sigpending {
+  struct list_head list;
+  sigset_t signal;
 };
 
 typedef void (*sighandler_t)(int);
@@ -7252,7 +7309,6 @@ __sigaction (int sig, const struct sigaction *act, struct sigaction *oact)
 {
   return __libc_sigaction (sig, act, oact);
 }
-
 
 int
 __libc_sigaction (int sig, const struct sigaction *act, struct sigaction *oact)
@@ -7663,10 +7719,7 @@ struct kern_ipc_perm {
   bool      deleted;
   int       id;
   key_t     key;
-  kuid_t    uid;
-  kgid_t    gid;
-  kuid_t    cuid;
-  kgid_t    cgid;
+  kuid_t    uid;, gid;, cuid;, cgid;
   umode_t    mode;
   unsigned long  seq;
   void    *security;
@@ -7694,19 +7747,16 @@ struct sem_array {
 struct shmid_kernel /* private to the kernel */
 {
   struct kern_ipc_perm  shm_perm;
-  struct file    *shm_file;
-  unsigned long    shm_nattch;
-  unsigned long    shm_segsz;
-  time_t      shm_atim;
-  time_t      shm_dtim;
-  time_t      shm_ctim;
-  pid_t      shm_cprid;
-  pid_t      shm_lprid;
-  struct user_struct  *mlock_user;
+  struct file            *shm_file;
+  unsigned long         shm_nattch;
+  unsigned long         shm_segsz;
+  time_t                shm_atim, shm_dtim, shm_ctim;
+  pid_t                 shm_cprid, shm_lprid;
+  struct user_struct    *mlock_user;
 
   /* The task created the shm object.  NULL if the task is dead. */
-  struct task_struct  *shm_creator;
-  struct list_head  shm_clist;  /* list by creator */
+  struct task_struct    *shm_creator;
+  struct list_head      shm_clist;  /* list by creator */
 } __randomize_layout;
 
 struct msg_queue {
@@ -7736,11 +7786,13 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
     .associate = shm_security,
     .more_checks = shm_more_checks,
   };
+
   struct ipc_params shm_params;
   ns = current->nsproxy->ipc_ns;
   shm_params.key = key;
   shm_params.flg = shmflg;
   shm_params.u.size = size;
+
   return ipcget(ns, &shm_ids(ns), &shm_ops, &shm_params);
 }
 
@@ -7794,24 +7846,25 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
   shp->shm_perm.key = key;
   shp->shm_perm.mode = (shmflg & S_IRWXUGO);
   shp->mlock_user = NULL;
-
   shp->shm_perm.security = NULL;
-  file = shmem_kernel_file_setup(name, size, acctflag);
   shp->shm_cprid = task_tgid_vnr(current);
   shp->shm_lprid = 0;
   shp->shm_atim = shp->shm_dtim = 0;
   shp->shm_ctim = get_seconds();
   shp->shm_segsz = size;
   shp->shm_nattch = 0;
-  shp->shm_file = file;
   shp->shm_creator = current;
+
+  file = shmem_kernel_file_setup(name, size, acctflag);
+  file_inode(file)->i_ino = shp->shm_perm.id;
+  shp->shm_file = file;
 
   error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
   list_add(&shp->shm_clist, &current->sysvshm.shm_clist);
-  file_inode(file)->i_ino = shp->shm_perm.id;
 
   ns->shm_tot += numpages;
   error = shp->shm_perm.id;
+
   return error;
 }
 
@@ -7844,30 +7897,24 @@ static struct file *__shmem_file_setup(
   struct inode *inode;
   struct file *res;
 
-  if (IS_ERR(mnt))
-    return ERR_CAST(mnt);
-
-  if (size < 0 || size > MAX_LFS_FILESIZE)
-    return ERR_PTR(-EINVAL);
-
-  if (shmem_acct_size(flags, size))
-    return ERR_PTR(-ENOMEM);
-
   inode = shmem_get_inode(mnt->mnt_sb, NULL, S_IFREG | S_IRWXUGO, 0,
         flags);
   if (unlikely(!inode)) {
     shmem_unacct_size(flags, size);
     return ERR_PTR(-ENOSPC);
   }
+
   inode->i_flags |= i_flags;
   inode->i_size = size;
   clear_nlink(inode);  /* It is unlinked */
+
   res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size));
   if (!IS_ERR(res))
     res = alloc_file_pseudo(inode, mnt, name, O_RDWR,
         &shmem_file_operations);
   if (IS_ERR(res))
     iput(inode);
+
   return res;
 }
 
@@ -7935,17 +7982,15 @@ add_error:
 }
 
 static const struct file_operations shmem_file_operations = {
-  .mmap    = shmem_mmap,
-  .get_unmapped_area = shmem_get_unmapped_area,
-#ifdef CONFIG_TMPFS
-  .llseek    = shmem_file_llseek,
-  .read_iter  = shmem_file_read_iter,
-  .write_iter  = generic_file_write_iter,
-  .fsync    = noop_fsync,
-  .splice_read  = generic_file_splice_read,
-  .splice_write  = iter_file_splice_write,
-  .fallocate  = shmem_fallocate,
-#endif
+  .mmap               = shmem_mmap,
+  .get_unmapped_area  = shmem_get_unmapped_area,
+  .llseek             = shmem_file_llseek,
+  .read_iter          = shmem_file_read_iter,
+  .write_iter         = generic_file_write_iter,
+  .fsync              = noop_fsync,
+  .splice_read        = generic_file_splice_read,
+  .splice_write       = iter_file_splice_write,
+  .fallocate          = shmem_fallocate,
 };
 ```
 
@@ -7990,18 +8035,17 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
   size = i_size_read(d_inode(path.dentry));
 
   sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
-  file = alloc_file(&path, f_mode,
-        is_file_hugepages(shp->shm_file)
-          ? &shm_file_operations_huge
-          : &shm_file_operations);
-
-  file->private_data = sfd;
-  file->f_mapping = shp->shm_file->f_mapping;
-
   sfd->id = shp->shm_perm.id;
   sfd->ns = get_ipc_ns(ns);
   sfd->file = shp->shm_file;
   sfd->vm_ops = NULL;
+
+  file = alloc_file(&path, f_mode,
+        is_file_hugepages(shp->shm_file)
+          ? &shm_file_operations_huge
+          : &shm_file_operations);
+  file->private_data = sfd;
+  file->f_mapping = shp->shm_file->f_mapping;
 
   addr = do_mmap_pgoff(file, addr, size, prot, flags, 0, &populate, NULL);
   *raddr = addr;
@@ -8011,11 +8055,11 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 }
 
 static const struct file_operations shm_file_operations = {
-  .mmap    = shm_mmap,
-  .fsync    = shm_fsync,
-  .release  = shm_release,
+  .mmap       = shm_mmap,
+  .fsync      = shm_fsync,
+  .release    = shm_release,
   .get_unmapped_area  = shm_get_unmapped_area,
-  .llseek    = noop_llseek,
+  .llseek     = noop_llseek,
   .fallocate  = shm_fallocate,
 };
 
@@ -8024,11 +8068,32 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
   struct shm_file_data *sfd = shm_file_data(file);
   int ret;
   ret = __shm_open(vma);
-  ret = call_mmap(sfd->file, vma);
-  sfd->vm_ops = vma->vm_ops;
+  ret = call_mmap(sfd->file, vma); /* shmem_mmap */
+
+  sfd->vm_ops = vma->vm_ops; /* shmem_vm_ops */
   vma->vm_ops = &shm_vm_ops;
+
   return 0;
 }
+
+struct shm_file_data {
+  int                     id;
+  struct ipc_namespace    *ns;
+  struct file              *file;
+  const struct vm_operations_struct *vm_ops;
+};
+
+static const struct vm_operations_struct shm_vm_ops = {
+  .open   = shm_open,  /* callback for a new vm-area open */
+  .close  = shm_close,  /* callback for when the vm-area is released */
+  .fault  = shm_fault,
+};
+
+static const struct file_operations shmem_file_operations = {
+  .mmap               = shmem_mmap,
+  .get_unmapped_area  = shmem_get_unmapped_area,
+  .llseek             = shmem_file_llseek,
+};
 
 static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -8037,17 +8102,14 @@ static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
   return 0;
 }
 
-static const struct vm_operations_struct shm_vm_ops = {
-  .open  = shm_open,  /* callback for a new vm-area open */
-  .close  = shm_close,  /* callback for when the vm-area is released */
-  .fault  = shm_fault,
-};
-
 static const struct vm_operations_struct shmem_vm_ops = {
-  .fault    = shmem_fault,
+  .fault      = shmem_fault,
   .map_pages  = filemap_map_pages,
 };
+```
 
+#### shm_fault
+```C++
 static int shm_fault(struct vm_fault *vmf)
 {
   struct file *file = vmf->vma->vm_file;
@@ -8073,6 +8135,37 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
         index, false);
 }
 ```
+
+```C++
+shmget();
+  ipcget();
+    ipcget_private();
+    ipcget_public();
+      newseg();
+        shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
+        file = shmem_kernel_file_setup(name, size, acctflag);
+          __shmem_file_setup();
+            shmem_get_inode();
+            alloc_file_pseudo();
+        shp->shm_file = file;
+        ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+
+shmat();
+  do_shmat();
+    shm_obtain_object_check();
+    sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
+    file = alloc_file();
+    do_mmap_pgoff();
+      shm_mmap();
+        shmem_mmap();
+
+shm_fault();
+  shmem_fault();
+    shmem_getpage_gfp();
+      shmem_getpage_gfp();
+        shmem_alloc_and_acct_page();
+```
+
 ![linux-ipc-shm.png](../Images/linux-ipc-shm.png)
 
 #### semget
@@ -8091,6 +8184,7 @@ SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
   sem_params.key = key;
   sem_params.flg = semflg;
   sem_params.u.nsems = nsems;
+
   return ipcget(ns, &sem_ids(ns), &sem_ops, &sem_params);
 }
 
@@ -8121,21 +8215,21 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
   INIT_LIST_HEAD(&sma->list_id);
   sma->sem_nsems = nsems;
   sma->sem_ctime = get_seconds();
-  retval = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
 
+  retval = ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
   ns->used_sems += nsems;
 
   return sma->sem_perm.id;
 }
 
 struct sem {
-  int  semval;    /* current value */
-  int  sempid;
-  spinlock_t  lock;  /* spinlock for fine-grained semtimedop */
-  struct list_head pending_alter; /* pending single-sop operations that alter the semaphore */
-  struct list_head pending_const; /* pending single-sop operations that do not alter the semaphore*/
-  time_t  sem_otime;  /* candidate for sem_otime */
-} ____cacheline_aligned_in_smp;
+  int               semval;
+  int               sempid;
+  spinlock_t        lock;
+  struct list_head  pending_alter;
+  struct list_head  pending_const;
+  time_t            sem_otime;  /* candidate for sem_otime */
+};
 ```
 
 #### semctl
@@ -8152,6 +8246,7 @@ SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
     case IPC_STAT:
     case SEM_STAT:
       return semctl_nolock(ns, semid, cmd, version, p);
+
     case GETALL:
     case GETVAL:
     case GETPID:
@@ -8159,11 +8254,14 @@ SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
     case GETZCNT:
     case SETALL:
       return semctl_main(ns, semid, semnum, cmd, p);
+
     case SETVAL:
       return semctl_setval(ns, semid, semnum, arg);
+
     case IPC_RMID:
     case IPC_SET:
       return semctl_down(ns, semid, cmd, version, p);
+
     default:
       return -EINVAL;
   }
@@ -8177,7 +8275,9 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
   int err, nsems;
   ushort fast_sem_io[SEMMSL_FAST];
   ushort *sem_io = fast_sem_io;
+
   DEFINE_WAKE_Q(wake_q);
+
   sma = sem_obtain_object_check(ns, semid);
   nsems = sma->sem_nsems;
 
@@ -8187,9 +8287,7 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
       int i;
       struct sem_undo *un;
 
-      if (copy_from_user(sem_io, p, nsems*sizeof(ushort))) {
-
-      }
+      copy_from_user(sem_io, p, nsems*sizeof(ushort));
 
       for (i = 0; i < nsems; i++) {
         sma->sems[i].semval = sem_io[i];
@@ -8213,12 +8311,12 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
   struct sem_array *sma;
   struct sem *curr;
   int err, val;
+
   DEFINE_WAKE_Q(wake_q);
 
   sma = sem_obtain_object_check(ns, semid);
 
   curr = &sma->sems[semnum];
-
   curr->semval = val;
   curr->sempid = task_tgid_vnr(current);
   sma->sem_ctime = get_seconds();
@@ -8254,15 +8352,11 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 
   ns = current->nsproxy->ipc_ns;
 
-  if (copy_from_user(sops, tsops, nsops * sizeof(*tsops))) {
-    error =  -EFAULT;
-    goto out_free;
-  }
+  copy_from_user(sops, tsops, nsops * sizeof(*tsops));
 
   if (timeout) {
     struct timespec _timeout;
-    if (copy_from_user(&_timeout, timeout, sizeof(*timeout))) {
-    }
+    copy_from_user(&_timeout, timeout, sizeof(*timeout));
     jiffies_left = timespec_to_jiffies(&_timeout);
   }
 
@@ -8289,16 +8383,12 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
     wake_up_q(&wake_q);
     goto out_free;
   }
-  /*
-   * We need to sleep on this operation, so we put the current
-   * task into the pending queue and go to sleep.
-   */
+
+  /* ops not finished, add the remaining to list */
   if (nsops == 1) {
     struct sem *curr;
     curr = &sma->sems[sops->sem_num];
-
-    list_add_tail(&queue.list,
-            &curr->pending_alter);
+    list_add_tail(&queue.list, &curr->pending_alter);
   } else {
     list_add_tail(&queue.list, &sma->pending_alter);
   }
@@ -8309,6 +8399,7 @@ SYSCALL_DEFINE4(semtimedop, int, semid, struct sembuf __user *, tsops,
 
     __set_current_state(TASK_INTERRUPTIBLE);
     sem_unlock(sma, locknum);
+
     if (timeout)
       jiffies_left = schedule_timeout(jiffies_left);
     else
@@ -8378,8 +8469,9 @@ would_block:
   return sop->sem_flg & IPC_NOWAIT ? -EAGAIN : 1;
 }
 
-static void do_smart_update(struct sem_array *sma, struct sembuf *sops, int nsops,
-          int otime, struct wake_q_head *wake_q)
+static void do_smart_update(
+  struct sem_array *sma, struct sembuf *sops, int nsops,
+  int otime, struct wake_q_head *wake_q)
 {
   int i;
   otime |= do_smart_wakeup_zero(sma, sops, nsops, wake_q);
@@ -8425,13 +8517,13 @@ again:
     unlink_queue(sma, q);
 
     wake_up_sem_queue_prepare(q, error, wake_q);
-
   }
   return semop_completed;
 }
 
-static inline void wake_up_sem_queue_prepare(struct sem_queue *q, int error,
-               struct wake_q_head *wake_q)
+static inline void wake_up_sem_queue_prepare(
+  struct sem_queue *q, int error,
+  struct wake_q_head *wake_q)
 {
   wake_q_add(wake_q, q->sleeper);
 }
@@ -8454,16 +8546,16 @@ void wake_up_q(struct wake_q_head *head)
 }
 
 struct sem_queue {
-  struct list_head  list;   /* queue of pending operations */
+  struct list_head    list;   /* queue of pending operations */
   struct task_struct  *sleeper; /* this process */
-  struct sem_undo    *undo;   /* undo structure */
-  int      pid;   /* process id of requesting process */
-  int      status;   /* completion status of operation */
-  struct sembuf    *sops;   /* array of pending operations */
-  struct sembuf    *blocking; /* the operation that blocked */
-  int      nsops;   /* number of operations */
-  bool      alter;   /* does *sops alter the array? */
-  bool                    dupsop;   /* sops on more than one sem_num */
+  struct sem_undo     *undo;   /* undo structure */
+  int                 pid;
+  int                 status;
+  struct sembuf       *sops;
+  struct sembuf       *blocking;
+  int                 nsops;
+  bool                alter;
+  bool                dupsop;
 };
 
 struct task_struct {
@@ -8493,8 +8585,47 @@ struct sem_undo_list {
   struct list_head  list_proc;
 };
 ```
+
 ![linux-ipc-sem-2.png](../Images/linux-ipc-sem-2.png)
 
+```C++
+semget();
+  ipcget();
+    newary();
+      ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
+
+semctl();
+  semctl_main();
+    sem_obtain_object_check();
+    copy_from_user();
+    sma->sems[i].semval = sem_io[i];
+    do_smart_update();
+      do_smart_wakeup_zero();
+      update_queue();
+        perform_atomic_semop();
+        wake_up_sem_queue_prepare();
+          wake_q_add(wake_q, q->sleeper);
+    wake_up_q();
+      wake_up_process(task);
+        try_to_wake_up(p, TASK_NORMAL, 0);
+
+  semctl_setval();
+    sem_obtain_object_check();
+    curr->semval = val;
+    do_smart_update();
+    wake_up_q();
+
+semop();
+  sys_semtimedop();
+    copy_from_user();
+    sem_obtain_object_check();
+    perform_atomic_semop();
+    do_smart_update();
+    wake_up_q();
+
+    list_add_tail(&queue.list, &sma->pending_alter);
+    schedule();
+```
 ![linux-ipc-sem.png](../Images/linux-ipc-sem.png)
 
 ## Q:
@@ -8521,8 +8652,9 @@ struct socket {
 
 struct sock {
   struct sock_common  __sk_common;
-  struct sk_buff      *sk_rx_skb_cache;
+  struct sk_buff       *sk_rx_skb_cache;
   struct sk_buff_head  sk_receive_queue;
+  struct sk_buff_head  sk_write_queue;
 
   struct {
     atomic_t        rmem_alloc;
@@ -8570,8 +8702,14 @@ SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
   return retval;
 }
 
-int __sock_create(struct net *net, int family, int type, int protocol,
-       struct socket **res, int kern)
+int sock_create(int family, int type, int protocol, struct socket **res)
+{
+  return __sock_create(current->nsproxy->net_ns, family, type, protocol, res, 0);
+}
+
+int __sock_create(
+  struct net *net, int family, int type, int protocol,
+  struct socket **res, int kern)
 {
   int err;
   struct socket *sock;
@@ -8590,9 +8728,9 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 
 enum sock_type {
   SOCK_STREAM = 1,
-  SOCK_DGRAM = 2,
-  SOCK_RAW = 3,
-}
+  SOCK_DGRAM  = 2,
+  SOCK_RAW    = 3,
+};
 
 /* Supported address families. */
 #define AF_UNSPEC 0
@@ -8603,15 +8741,16 @@ enum sock_type {
 #define AF_MPLS   28  /* MPLS */
 #define AF_MAX    44  /* For now */
 #define NPROTO    AF_MAX
-struct net_proto_family __rcu *net_families[NPROTO] __read_mostly;
 
+struct net_proto_family *net_families[NPROTO];
 //net/ipv4/af_inet.c
 static const struct net_proto_family inet_family_ops = {
   .family = PF_INET,
   .create = inet_create
 }
 
-static int inet_create(struct net *net, struct socket *sock, int protocol, int kern)
+static int inet_create(
+  struct net *net, struct socket *sock, int protocol, int kern)
 {
   struct sock *sk;
   struct inet_protosw *answer;
@@ -8680,6 +8819,7 @@ lookup_protocol:
   }
 }
 
+/* sw: switch */
 static struct list_head inetsw[SOCK_MAX];
 static int __init inet_init(void)
 {
@@ -8721,51 +8861,43 @@ static struct inet_protosw inetsw_array[] =
     .ops =        &inet_sockraw_ops,
     .flags =      INET_PROTOSW_REUSE,
   }
-}
+};
 
+/* sock_ops is better, sock_{steam, dgram, raw}_ops */
 const struct proto_ops inet_stream_ops = {
   .family       = PF_INET,
   .owner       = THIS_MODULE,
-  .release     = inet_release,
   .bind       = inet_bind,
   .connect     = inet_stream_connect,
-  .socketpair     = sock_no_socketpair,
   .accept       = inet_accept,
-  .getname     = inet_getname,
-  .poll       = tcp_poll,
-  .ioctl       = inet_ioctl,
-  .gettstamp     = sock_gettstamp,
-  .listen       = inet_listen,
-  .shutdown     = inet_shutdown,
-  .setsockopt     = sock_common_setsockopt,
-  .getsockopt     = sock_common_getsockopt,
+  .listen       = inet_listen
   .sendmsg     = inet_sendmsg,
-  .recvmsg     = inet_recvmsg,
-  .mmap       = tcp_mmap,
+  .recvmsg     = inet_recvmsg
 };
 
 struct proto tcp_prot = {
   .name      = "TCP",
   .owner      = THIS_MODULE,
-  .close      = tcp_close,
   .connect    = tcp_v4_connect,
-  .disconnect    = tcp_disconnect,
-  .accept      = inet_csk_accept,
-  .ioctl      = tcp_ioctl,
-  .init      = tcp_v4_init_sock,
-  .destroy    = tcp_v4_destroy_sock,
-  .shutdown    = tcp_shutdown,
-  .setsockopt    = tcp_setsockopt,
-  .getsockopt    = tcp_getsockopt,
-  .keepalive    = tcp_set_keepalive,
   .recvmsg    = tcp_recvmsg,
   .sendmsg    = tcp_sendmsg,
-  .sendpage    = tcp_sendpage,
-  .backlog_rcv    = tcp_v4_do_rcv,
-  .release_cb    = tcp_release_cb,
-  .hash      = inet_hash,
   .get_port    = inet_csk_get_port,
 }
+```
+
+```C++
+socket();
+  sock_create();
+    _sock_create();
+      sock = sock_alloc();
+      pf = net_families[family]; /* get AF */
+      pf->create(); // inet_family_ops.inet_create
+        inet_create();
+          inet_protosw *answer = inetsw[sock->type]; /* get socket */
+          sk = sk_alloc();
+          inet = inet_sk(sk);
+          sock_init_data(sock, sk);
+  sock_map_fd();
 ```
 
 ### bind
@@ -8780,9 +8912,8 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
   if (sock) {
     err = move_addr_to_kernel(umyaddr, addrlen, &address);
     if (err >= 0) {
-      err = sock->ops->bind(sock,
-                  (struct sockaddr *)
-                  &address, addrlen);
+      err = sock->ops->bind(
+        sock, (struct sockaddr *)&address, addrlen);
     }
     fput_light(sock->file, fput_needed);
   }
@@ -8803,7 +8934,8 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
   /* Make sure we are allowed to bind here. */
   if (snum || !(inet->bind_address_no_port ||
           force_bind_address_no_port)) {
-    if (sk->sk_prot->get_port(sk, snum)) { // inet_csk_get_port
+    /* use inet_csk_get_port to check confilct of port */
+    if (sk->sk_prot->get_port(sk, snum)) {
       inet->inet_saddr = inet->inet_rcv_saddr = 0;
       err = -EADDRINUSE;
       goto out_release_sock;
@@ -8868,9 +9000,19 @@ int inet_csk_listen_start(struct sock *sk, int backlog)
 
   sk_state_store(sk, TCP_LISTEN);
   if (!sk->sk_prot->get_port(sk, inet->inet_num)) {
-
+    /* check port conflict again */
   }
 }
+```
+
+```C++
+listen();
+  sockfd_lookup_light();
+  sock->ops->listen(); /*inet_stream_ops.listen */
+    inet_listen();
+      inet_csk_listen_start();
+        reqsk_queue_alloc();
+        sk->sk_prot->get_port();
 ```
 
 ### accept
@@ -8898,8 +9040,8 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
   newfile = sock_alloc_file(newsock, flags, sock->sk->sk_prot_creator->name);
   err = sock->ops->accept(sock, newsock, sock->file->f_flags, false);
   if (upeer_sockaddr) {
-    if (newsock->ops->getname(newsock, (struct sockaddr *)&address, &len, 2) < 0) {
-    }
+    newsock->ops->getname(newsock, (struct sockaddr *)&address, &len, 2);
+
     err = move_addr_to_user(&address,
           len, upeer_sockaddr, upeer_addrlen);
   }
@@ -8936,6 +9078,8 @@ struct sock *inet_csk_accept(struct sock *sk, int flags, int *err, bool kern)
   }
   req = reqsk_queue_remove(queue, sk);
   newsk = req->sk;
+
+  return newsk;
 }
 
 static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
@@ -8969,9 +9113,31 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 }
 ```
 
-### connect
-![linux-net-hand-shake.png  ](../Images/linux-net-hand-shake.png  )
+```C++
+accpet();
+  __sys_accept4();
+    sockfd_lookup_light();
+    newsock = sock_alloc();
+    newfd = get_unused_fd_flags();
+    newfile = sock_alloc_file(sock);
+      alloc_file_pseudo(SOCK_INODE(sock), sock_mnt, dname);
 
+    sock->ops->accept(); /* inet_stream_ops.accept */
+      inet_accept();
+        sk1->sk_prot->accept(); /* tcp_prot.accept */
+          inet_csk_accept();
+            reqsk_queue_empty();
+              inet_csk_wait_for_connect();
+                schedule_timeout();
+            reqsk_queue_remove();
+        sock_graft(sk2, newsock);
+        newsock->state = SS_CONNECTED;
+    move_addr_to_user();
+    fd_install(newfd, newfile);
+```
+![linux-net-socket.png](../Images/linux-net-socket.png)
+
+### connect
 #### snd
 ```C++
 SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
@@ -9004,10 +9170,10 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
   }
 
   timeo = sock_sndtimeo(sk, flags & O_NONBLOCK);
-
   if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
     if (!timeo || !inet_wait_for_connect(sk, timeo, writebias))
       goto out;
+
     err = sock_intr_errno(timeo);
     if (signal_pending(current))
       goto out;
@@ -9015,6 +9181,7 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
   sock->state = SS_CONNECTED;
 }
 
+/* initiate an outgoing connection */
 int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 {
   struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;
@@ -9040,15 +9207,14 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
   /* OK, now commit destination to socket.  */
   sk->sk_gso_type = SKB_GSO_TCPV4;
   sk_setup_caps(sk, &rt->dst);
-    if (likely(!tp->repair)) {
+  if (likely(!tp->repair)) {
     if (!tp->write_seq)
-      tp->write_seq = secure_tcp_seq(inet->inet_saddr,
-                   inet->inet_daddr,
-                   inet->inet_sport,
-                   usin->sin_port);
-    tp->tsoffset = secure_tcp_ts_off(sock_net(sk),
-             inet->inet_saddr,
-             inet->inet_daddr);
+      tp->write_seq = secure_tcp_seq(
+        inet->inet_saddr, inet->inet_daddr,
+        inet->inet_sport, usin->sin_port);
+
+    tp->tsoffset = secure_tcp_ts_off(
+      sock_net(sk), inet->inet_saddr, inet->inet_daddr);
   }
   rt = NULL;
 
@@ -9094,15 +9260,16 @@ int tcp_connect(struct sock *sk)
 #### rcv
 ```C++
 static struct net_protocol tcp_protocol = {
-  .early_demux  =  tcp_v4_early_demux,
-  .early_demux_handler =  tcp_v4_early_demux,
-  .handler  =  tcp_v4_rcv,
-  .err_handler  =  tcp_v4_err,
-  .no_policy  =  1,
-  .netns_ok  =  1,
+  .early_demux          =  tcp_v4_early_demux,
+  .early_demux_handler  =  tcp_v4_early_demux,
+  .handler              =  tcp_v4_rcv,
+  .err_handler          =  tcp_v4_err,
+  .no_policy            =  1,
+  .netns_ok             =  1,
   .icmp_strict_tag_validation = 1,
 }
-// tcp_v4_rcv->tcp_v4_do_rcv->tcp_rcv_state_process
+
+/* tcp_v4_rcv -> tcp_v4_do_rcv -> tcp_rcv_state_process */
 int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -9196,7 +9363,44 @@ static int tcp_v4_send_synack(
 
 }
 ```
-![linux-net-socket.png](../Images/linux-net-socket.png)
+```C++
+send:
+connect();
+  sockfd_lookup_light();
+    sock->ops->connect();
+      __inet_stream_connect();
+        sk->sk_prot->connect(); /* SS_UNCONNECTED */
+          tcp_v4_connect();
+            ip_route_connect();
+            secure_tcp_seq();
+            secure_tcp_ts_off();
+            tcp_set_state(sk, TCP_SYN_SENT);
+            tcp_connect();
+              sk_stream_alloc_skb();
+              tcp_transmit_skb();
+              tcp_send_head();
+              inet_csk_reset_xmit_timer();
+
+receive:
+tcp_v4_rcv();
+  tcp_v4_do_rcv();
+    tcp_rcv_state_process();
+      /* TCP_LISTEN: */
+      icsk->icsk_af_ops->conn_request(); /*ipv4_specific.conn_request */
+        tcp_v4_conn_request();
+          tcp_conn_request();
+            inet_reqsk_alloc();
+            af_ops->send_synack();
+              tcp_v4_send_synack();
+
+      /* TCP_SYN_SENT: */
+      tcp_rcv_synsent_state_process();
+        tcp_finish_connect(sk, skb);
+        tcp_send_ack(sk);
+        tcp_set_state(sk, TCP_ESTABLISHED);
+```
+![linux-net-hand-shake.png  ](../Images/linux-net-hand-shake.png  )
+
 
 ### write
 #### vfs layer
@@ -9223,8 +9427,7 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
   struct file *file = iocb->ki_filp;
   struct socket *sock = file->private_data;
-  struct msghdrg = {.msg_iter = *from,
-           .msg_iocb = iocb};
+  struct msghdrg = {.msg_iter = *from, .msg_iocb = iocb};
   ssize_t res;
 
   res = sock_sendmsg(sock, &msg);
