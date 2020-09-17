@@ -252,7 +252,7 @@ export LD_LIBRARY_PATH=.
 3. elf: shared object
 ![linux-proc-elf-sharedobj.png](../Images/linux-proc-elf-sharedobj.png)
 
-## Q: How does PLT[x], GOT[y] work together to dynamic link?
+### Q: How does PLT[x], GOT[y] work together to dynamic link?
 ```C++
 struct linux_binfmt {
   struct list_head lh;
@@ -261,7 +261,7 @@ struct linux_binfmt {
   int (*load_shlib)(struct file *);
   int (*core_dump)(struct coredump_params *cprm);
   unsigned long min_coredump;     /* minimal dump size */
-} __randomize_layout;
+};
 
 static struct linux_binfmt elf_format = {
   .module         = THIS_MODULE,
@@ -269,6 +269,39 @@ static struct linux_binfmt elf_format = {
   .load_shlib     = load_elf_library,
   .core_dump      = elf_core_dump,
   .min_coredump   = ELF_EXEC_PAGESIZE,
+};
+
+struct linux_binprm {
+  char buf[BINPRM_BUF_SIZE];
+#ifdef CONFIG_MMU
+  struct vm_area_struct *vma;
+  unsigned long vma_pages;
+#else
+# define MAX_ARG_PAGES  32
+  struct page *page[MAX_ARG_PAGES];
+#endif
+  struct mm_struct *mm;
+  unsigned long p; /* current top of mem */
+  unsigned int
+    called_set_creds:1,
+    cap_elevated:1,
+    secureexec:1;
+
+  unsigned int recursion_depth; /* only for search_binary_handler() */
+  struct file * file;
+  struct cred *cred;  /* new credentials */
+  int unsafe;    /* how unsafe this exec is (mask of LSM_UNSAFE_*) */
+  unsigned int per_clear;  /* bits to clear in current->personality */
+  int argc, envc;
+  const char * filename;  /* Name of binary as seen by procps */
+  const char * interp;  /* Name of the binary really executed. Most
+           of the time same as filename, but could be
+           different for binfmt_{misc,script} */
+  unsigned interp_flags;
+  unsigned interp_data;
+  unsigned long loader, exec;
+
+  struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
 };
 
 /* do_execve -> do_execveat_common -> exec_binprm -> search_binary_handler */
@@ -312,6 +345,8 @@ SYSCALL_DEFINE3(execve,
 #define DEFAULT_PRIO      (MAX_RT_PRIO + NICE_WIDTH / 2)
 
 struct task_struct {
+  struct thread_info thread_info;
+
   int           on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
 
   int           prio;
@@ -324,6 +359,29 @@ struct task_struct {
   struct sched_rt_entity    rt;
   struct sched_dl_entity    dl;
   struct task_group         *sched_task_group;
+
+  /* CPU-specific state of this task: */
+  struct thread_struct      thread;
+};
+
+struct thread_struct {
+  /* Cached TLS descriptors: */
+  struct desc_struct  tls_array[GDT_ENTRY_TLS_ENTRIES];
+#ifdef CONFIG_X86_32
+  unsigned long    sp0;
+#endif
+  unsigned long    sp;
+#ifdef CONFIG_X86_32
+  unsigned long    sysenter_cs;
+#else
+  unsigned short    es;
+  unsigned short    ds;
+  unsigned short    fsindex;
+  unsigned short    gsindex;
+#endif
+
+  /* Floating point and extended processor state */
+  struct fpu    fpu;
 };
 
 struct sched_entity {
@@ -470,8 +528,8 @@ static void __sched notrace __schedule(bool preempt)
   }
 }
 
-static inline struct task_struct *
-pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+static inline struct task_struct* pick_next_task(
+  struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
   const struct sched_class *class;
   struct task_struct *p;
@@ -501,8 +559,8 @@ again:
 }
 
 /* fair_sched_class */
-static struct task_struct *
-pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+static struct task_struct* pick_next_task_fair(
+  struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 {
   struct cfs_rq *cfs_rq = &rq->cfs;
   struct sched_entity *se;
@@ -525,7 +583,7 @@ pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf
     set_next_entity(cfs_rq, se);
   }
 
-  return p
+  return p;
 }
 
 static struct rq* context_switch(
@@ -548,16 +606,35 @@ static struct rq* context_switch(
 #define switch_to(prev, next, last) \
 do {                  \
   prepare_switch_to(prev, next);  \
-  /* 2. switch kernel eip */
+  /* 2. switch kernel esp, stack */
   ((last) = __switch_to_asm((prev), (next))); \
 } while (0)
 
 /* %eax: prev task
  * %edx: next task */
 ENTRY(__switch_to_asm)
+  /* Save callee-saved registers
+   * This must match the order in struct inactive_task_frame */
+  pushl  %ebp
+  pushl  %ebx
+  pushl  %edi
+  pushl  %esi
+  pushfl
+
+  /* 2.1 switch kernel sp */
   movl  %esp, TASK_threadsp(%eax)
   movl  TASK_threadsp(%edx), %esp
+
+  /* restore callee-saved registers */
+  popfl
+  popl  %esi
+  popl  %edi
+  popl  %ebx
+  popl  %ebp
+
+  /* 2.2. switch kernel stack */
   jmp  __switch_to
+
 END(__switch_to_asm)
 
 struct task_struct * __switch_to(
@@ -579,6 +656,93 @@ struct task_struct * __switch_to(
   load_sp0(tss, next);
 
   return prev_p;
+}
+
+/* switch tasks from x to y */
+struct task_struct * __switch_to(
+  struct task_struct *prev_p, struct task_struct *next_p)
+{
+  struct thread_struct *prev = &prev_p->thread;
+  struct thread_struct *next = &next_p->thread;
+  struct fpu *prev_fpu = &prev->fpu;
+  struct fpu *next_fpu = &next->fpu;
+  int cpu = smp_processor_id();
+
+  switch_fpu_prepare(prev_fpu, cpu);
+
+  /* We must save %fs and %gs before load_TLS() because
+   * %fs and %gs may be cleared by load_TLS().
+   *
+   * (e.g. xen_load_tls()) */
+  save_fsgs(prev_p);
+
+  /* Load TLS before restoring any segments so that segment loads
+   * reference the correct GDT entries. */
+  load_TLS(next, cpu);
+
+  /* Leave lazy mode, flushing any hypercalls made here.  This
+   * must be done after loading TLS entries in the GDT but before
+   * loading segments that might reference them, and and it must
+   * be done before fpu__restore(), so the TS bit is up to
+   * date. */
+  arch_end_context_switch(next_p);
+
+  /* Switch DS and ES.
+   *
+   * Reading them only returns the selectors, but writing them (if
+   * nonzero) loads the full descriptor from the GDT or LDT.  The
+   * LDT for next is loaded in switch_mm, and the GDT is loaded
+   * above.
+   *
+   * We therefore need to write new values to the segment
+   * registers on every context switch unless both the new and old
+   * values are zero.
+   *
+   * Note that we don't need to do anything for CS and SS, as
+   * those are saved and restored as part of pt_regs. */
+  savesegment(es, prev->es);
+  if (unlikely(next->es | prev->es))
+    loadsegment(es, next->es);
+
+  savesegment(ds, prev->ds);
+  if (unlikely(next->ds | prev->ds))
+    loadsegment(ds, next->ds);
+
+  load_seg_legacy(prev->fsindex, prev->fsbase,
+      next->fsindex, next->fsbase, FS);
+  load_seg_legacy(prev->gsindex, prev->gsbase,
+      next->gsindex, next->gsbase, GS);
+
+  switch_fpu_finish(next_fpu, cpu);
+
+  /* Switch the PDA and FPU contexts. */
+  this_cpu_write(current_task, next_p);
+  this_cpu_write(cpu_current_top_of_stack, task_top_of_stack(next_p));
+
+  /* Reload sp0. */
+  update_task_stack(next_p);
+
+  switch_to_extra(prev_p, next_p);
+
+  /* Load the Intel cache allocation PQR MSR. */
+  intel_rdt_sched_in();
+
+  return prev_p;
+}
+
+/* This is used when switching tasks or entering/exiting vm86 mode. */
+static inline void update_task_stack(struct task_struct *task)
+{
+  /* sp0 always points to the entry trampoline stack, which is constant: */
+#ifdef CONFIG_X86_32
+  if (static_cpu_has(X86_FEATURE_XENPV))
+    load_sp0(task->thread.sp0);
+  else
+    this_cpu_write(cpu_tss_rw.x86_tss.sp1, task->thread.sp0);
+#else
+  if (static_cpu_has(X86_FEATURE_XENPV))
+    load_sp0(task_top_of_stack(task));
+#endif
 }
 
 void cpu_init(void)
@@ -1093,6 +1257,7 @@ static int __do_execve_file(
   bprm->argc = count(argv, MAX_ARG_STRINGS);
   bprm->envc = count(envp, MAX_ARG_STRINGS);
 
+  /* Fill the binprm structure from the inode */
   prepare_binprm(bprm);
 
   bprm->exec = bprm->p;
@@ -1161,22 +1326,30 @@ int search_binary_handler(struct linux_binprm *bprm)
 }
 
 static struct linux_binfmt elf_format = {
-  .module  = THIS_MODULE,
+  .module       = THIS_MODULE,
   .load_binary  = load_elf_binary,
-  .load_shlib  = load_elf_library,
-  .core_dump  = elf_core_dump,
-  .min_coredump  = ELF_EXEC_PAGESIZE,
+  .load_shlib   = load_elf_library,
+  .core_dump    = elf_core_dump,
+  .min_coredump = ELF_EXEC_PAGESIZE,
 };
 
 static int load_elf_binary(struct linux_binprm *bprm)
 {
+  struct {
+    struct elfhdr elf_ex;
+    struct elfhdr interp_elf_ex;
+  } *loc;
+
   struct pt_regs *regs = current_pt_regs();
+  loc = kmalloc(sizeof(*loc), GFP_KERNEL);
   loc->elf_ex = *((struct elfhdr *)bprm->buf);
 
   if (memcmp(loc->elf_ex.e_ident, ELFMAG, SELFMAG) != 0)
     goto out;
   if (loc->elf_ex.e_type != ET_EXEC && loc->elf_ex.e_type != ET_DYN)
     goto out;
+
+  elf_phdata = load_elf_phdrs(&loc->elf_ex, bprm->file);
 
   setup_new_exec(bprm);
 
@@ -1540,7 +1713,7 @@ struct vm_area_struct {
 
 ### physic
 #### numa node
-## Q: relationship of each numa node and global mem layout?
+#### Q: relationship of each numa node and global mem layout?
 ```C++
 struct pglist_data *node_data[MAX_NUMNODES];
 
@@ -2454,7 +2627,7 @@ struct vm_area_struct {
   unsigned long vm_pgoff;  /* Offset (within vm_file) in PAGE_SIZE units */
   struct file * vm_file;    /* File we map to (can be NULL). */
   void * vm_private_data; /* was vm_pte (shared mem) */
-}
+};
 
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
                 unsigned long, prot, unsigned long, flags,
@@ -2475,7 +2648,7 @@ SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
   return retval;
 }
 
-//  vm_mmap_pgoff->do_mmap_pgoff->do_mmap
+/*  vm_mmap_pgoff -> do_mmap_pgoff -> do_mmap */
 unsigned long do_mmap(struct file *file, unsigned long addr,
       unsigned long len, unsigned long prot,
       unsigned long flags, vm_flags_t vm_flags,
@@ -2490,10 +2663,10 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
   return addr;
 }
 
-// 1. get_unmapped_area
-unsigned long
-get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
-    unsigned long pgoff, unsigned long flags)
+/* 1. get_unmapped_area */
+unsigned long get_unmapped_area(
+  struct file *file, unsigned long addr, unsigned long len,
+  unsigned long pgoff, unsigned long flags)
 {
   unsigned long (*get_area)(struct file *, unsigned long,
           unsigned long, unsigned long, unsigned long);
@@ -2508,12 +2681,13 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
 }
 
 const struct file_operations ext4_file_operations = {
-  .mmap           = ext4_file_mmap
-  .get_unmapped_area = thp_get_unmapped_area,
+  .mmap               = ext4_file_mmap
+  .get_unmapped_area  = thp_get_unmapped_area,
 };
 
-unsigned long __thp_get_unmapped_area(struct file *filp, unsigned long len,
-                loff_t off, unsigned long flags, unsigned long size)
+unsigned long __thp_get_unmapped_area(
+  struct file *filp, unsigned long len,
+  loff_t off, unsigned long flags, unsigned long size)
 {
   unsigned long addr;
   loff_t off_end = off + len;
@@ -2527,7 +2701,7 @@ unsigned long __thp_get_unmapped_area(struct file *filp, unsigned long len,
   return addr;
 }
 
-// 2. mmap_region
+/* 2. mmap_region */
 unsigned long mmap_region(struct file *file, unsigned long addr,
     unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
     struct list_head *uf)
@@ -2561,7 +2735,9 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
   } else {
     vma_set_anonymous(vma);
   }
+
   vma_link(mm, vma, prev, rb_link, rb_parent);
+
   return addr;
 }
 
@@ -2584,6 +2760,27 @@ struct address_space {
   const struct address_space_operations *a_ops;
 }
 
+static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
+      struct vm_area_struct *prev, struct rb_node **rb_link,
+      struct rb_node *rb_parent)
+{
+  struct address_space *mapping = NULL;
+
+  if (vma->vm_file) {
+    mapping = vma->vm_file->f_mapping;
+    i_mmap_lock_write(mapping);
+  }
+
+  __vma_link(mm, vma, prev, rb_link, rb_parent);
+  __vma_link_file(vma);
+
+  if (mapping)
+    i_mmap_unlock_write(mapping);
+
+  mm->map_count++;
+  validate_mm(mm);
+}
+
 static void __vma_link_file(struct vm_area_struct *vma)
 {
   struct file *file;
@@ -2594,6 +2791,53 @@ static void __vma_link_file(struct vm_area_struct *vma)
     vma_interval_tree_insert(vma, &mapping->i_mmap);
   }
 }
+
+static void __vma_link(
+  struct mm_struct *mm, struct vm_area_struct *vma,
+  struct vm_area_struct *prev, struct rb_node **rb_link,
+  struct rb_node *rb_parent)
+{
+  __vma_link_list(mm, vma, prev, rb_parent);
+  __vma_link_rb(mm, vma, rb_link, rb_parent);
+}
+```
+```C++
+mmap();
+  sys_mmap_pgoff();
+    vm_mmap_pgoff();
+      do_mmap_pgoff()p
+        do_mmap();
+
+          get_unmapped_area();
+            get_area = current->mm->get_unmapped_area;
+            if (file) {
+              if (file->f_op->get_unmapped_area)
+                get_area = file->f_op->get_unmapped_area;
+                  __thp_get_unmapped_area();
+                    current->mm->get_unmapped_area();
+            } else if (flags & MAP_SHARED) {
+              get_area = shmem_get_unmapped_area;
+            }
+            addr = get_area(file, addr, len, pgoff, flags);
+
+          map_region();
+            vma_merge();
+            kmem_cache_zalloc();
+
+            if (file) {
+              vma->vm_file = get_file(file);
+              call_mmap(file, vma);
+                file->f_op->mmap(file, vma);
+                  ext4_file_mmap();
+                    vma->vm_ops = &ext4_file_vm_ops;
+            } else if (vm_flags & VM_SHARED) {
+              shmem_zero_setup(vma);
+            } else {
+              vma_set_anonymous(vma);
+            }
+
+            vma_link(mm, vma, prev, rb_link, rb_parent);
+              vma_interval_tree_insert(vma, &mapping->i_mmap);
 ```
 
 ### page fault
@@ -2647,9 +2891,9 @@ void do_page_fault(
   __do_page_fault(regs, error_code, address);
 }
 
-static noinline void
-__do_page_fault(struct pt_regs *regs, unsigned long error_code,
-    unsigned long address)
+static noinline void __do_page_fault(
+  struct pt_regs *regs, unsigned long error_code,
+  unsigned long address)
 {
   struct vm_area_struct *vma;
   struct task_struct *tsk;
@@ -2700,7 +2944,7 @@ static int handle_pte_fault(struct vm_fault *vmf)
   vmf->orig_pte = *vmf->pte;
 
   if (!vmf->pte) {
-    if (vma_is_anonymous(vmf->vma))
+    if (vma_is_anonymous(vmf->vma)) /* return !vma->vm_ops; */
       return do_anonymous_page(vmf);
     else
       return do_fault(vmf);
@@ -2710,9 +2954,7 @@ static int handle_pte_fault(struct vm_fault *vmf)
     return do_swap_page(vmf);
 }
 
-// 1. map to anonymouse page
-/* do_anonymous_page -> pte_alloc -> alloc_zeroed_user_highpage_movable ->
- * alloc_pages_vma -> __alloc_pages_nodemask */
+/* 1. map to anonymouse page */
 static int do_anonymous_page(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
@@ -2733,8 +2975,11 @@ static int do_anonymous_page(struct vm_fault *vmf)
       &vmf->ptl);
   set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 }
+```
+### Q: how to hanlde the size when `alloc_zeroed_user_highpage_movable`?
 
-// 2. map to a file
+```C++
+/* 2. map to a file */
 static int __do_fault(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
@@ -2742,26 +2987,32 @@ static int __do_fault(struct vm_fault *vmf)
     vmf->prealloc_pte = pte_alloc_one(vmf->vma->vm_mm);
     if (!vmf->prealloc_pte)
       return VM_FAULT_OOM;
-    smp_wmb(); /* See comment in __pte_alloc() */
   }
+
   int ret;
   ret = vma->vm_ops->fault(vmf);
   return ret;
 }
 
 static const struct vm_operations_struct ext4_file_vm_ops = {
-  .fault    = ext4_filemap_fault,
-  .map_pages  = filemap_map_pages,
-  .page_mkwrite   = ext4_page_mkwrite,
+  .fault        = ext4_filemap_fault,
+  .map_pages    = filemap_map_pages,
+  .page_mkwrite = ext4_page_mkwrite,
 };
 
 int ext4_filemap_fault(struct vm_fault *vmf)
 {
+  int err;
   struct inode *inode = file_inode(vmf->vma->vm_file);
+
+  down_read(&EXT4_I(inode)->i_mmap_sem);
   err = filemap_fault(vmf);
+  up_read(&EXT4_I(inode)->i_mmap_sem);
+
   return err;
 }
 
+/* read in file data for page fault handling */
 int filemap_fault(struct vm_fault *vmf)
 {
   int error;
@@ -2776,7 +3027,11 @@ int filemap_fault(struct vm_fault *vmf)
   if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
     do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
   } else if (!page) {
-    goto no_cached_page;
+    do_sync_mmap_readahead(vmf->vma, ra, file, offset);
+retry_find:
+    page = find_get_page(mapping, offset);
+    if (!page)
+      goto no_cached_page;
   }
 
   vmf->page = page;
@@ -2796,8 +3051,8 @@ static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
 }
 
 static const struct address_space_operations ext4_aops = {
-  .readpage    = ext4_readpage,
-  .readpages    = ext4_readpages,
+  .readpage   = ext4_readpage,
+  .readpages  = ext4_readpages,
 };
 
 static int ext4_read_inline_page(struct inode *inode, struct page *page)
@@ -2814,8 +3069,8 @@ static int ext4_read_inline_page(struct inode *inode, struct page *page)
 int do_swap_page(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
-  struct page *page, *swapcache;
-  struct mem_cgroup *memcg;
+  struct page *page, *swapcahe;
+  struct mem_cgroup *memcg;c
   swp_entry_t entry;
   pte_t pte;
 
@@ -2859,13 +3114,13 @@ do_page_fault();
     handel_mm_fault();
       handle_pte_fault();
 
-        do_anonymous_page();
+        do_anonymous_page();  /* 1. anonymous fault */
           pte_alloc();
             alloc_zeroed_user_highpage_movable();
               alloc_pages_vma();
                   __alloc_pages_nodemask();
 
-        __do_fault();
+        __do_fault();         /* 2. file fault */
           vma->vm_ops->fault(); // ext4_filemap_fault
             filemap_fault();
               find_get_page();
@@ -2877,7 +3132,7 @@ do_page_fault();
                     ext4_read_inline_data();
                     kumap_atomic();
 
-        do_swap_page();
+        do_swap_page();     /* 3. swap fault */
 ```
 ![linux-mem-page-fault.png](../Images/linux-mem-page-fault.png)
 
@@ -2908,9 +3163,9 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
      ptes in non-PAE, or shared PMD in PAE), then just copy the
      references from swapper_pg_dir.
      swapper_pg_dir: kernel's pgd */
-  if (CONFIG_PGTABLE_LEVELS == 2 ||
-      (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD) ||
-      CONFIG_PGTABLE_LEVELS >= 4) {
+  if (CONFIG_PGTABLE_LEVELS == 2
+    || (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD)
+    || CONFIG_PGTABLE_LEVELS >= 4) {
     clone_pgd_range(pgd + KERNEL_PGD_BOUNDARY,
         swapper_pg_dir + KERNEL_PGD_BOUNDARY,
         KERNEL_PGD_PTRS);
@@ -3242,30 +3497,32 @@ struct ext4_extent {
 
 ```C++
 const struct inode_operations ext4_dir_inode_operations = {
-  .create    = ext4_create,
-  .lookup    = ext4_lookup,
-  .link    = ext4_link,
-  .unlink    = ext4_unlink,
-  .symlink  = ext4_symlink,
-  .mkdir    = ext4_mkdir,
-  .rmdir    = ext4_rmdir,
-  .mknod    = ext4_mknod,
-  .tmpfile  = ext4_tmpfile,
-  .rename    = ext4_rename2,
-  .setattr  = ext4_setattr,
-  .getattr  = ext4_getattr,
+  .create     = ext4_create,
+  .lookup     = ext4_lookup,
+  .link       = ext4_link,
+  .unlink     = ext4_unlink,
+  .symlink    = ext4_symlink,
+  .mkdir      = ext4_mkdir,
+  .rmdir      = ext4_rmdir,
+  .mknod      = ext4_mknod,
+  .tmpfile     = ext4_tmpfile,
+  .rename     = ext4_rename2,
+  .setattr    = ext4_setattr,
+  .getattr    = ext4_getattr,
   .listxattr  = ext4_listxattr,
-  .get_acl  = ext4_get_acl,
-  .set_acl  = ext4_set_acl,
-  .fiemap         = ext4_fiemap,
+  .get_acl    = ext4_get_acl,
+  .set_acl    = ext4_set_acl,
+  .fiemap      = ext4_fiemap,
 };
 
-// ext4_create->ext4_new_inode_start_handle->__ext4_new_inode
-struct inode *__ext4_new_inode(handle_t *handle, struct inode *dir,
-             umode_t mode, const struct qstr *qstr,
-             __u32 goal, uid_t *owner, __u32 i_flags,
-             int handle_type, unsigned int line_no,
-             int nblocks)
+/* ext4_create -> ext4_new_inode_start_handle
+ * -> __ext4_new_inode */
+struct inode *__ext4_new_inode(
+  handle_t *handle, struct inode *dir,
+  umode_t mode, const struct qstr *qstr,
+  __u32 goal, uid_t *owner, __u32 i_flags,
+  int handle_type, unsigned int line_no,
+  int nblocks)
 {
 inode_bitmap_bh = ext4_read_inode_bitmap(sb, group);
 ino = ext4_find_next_zero_bit((unsigned long *)
@@ -3376,7 +3633,7 @@ register_filesystem(&ext4_fs_type);
 
 static struct file_system_type ext4_fs_type = {
   .owner    = THIS_MODULE,
-  .name    = "ext4",
+  .name     = "ext4",
   .mount    = ext4_mount,
   .kill_sb  = kill_block_super,
   .fs_flags  = FS_REQUIRES_DEV,
@@ -3389,24 +3646,96 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name,
   char __user *, dir_name, char __user *, type,
   unsigned long, flags, void __user *, data)
 {
-  ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
+  return ksys_mount(dev_name, dir_name, type, flags, data);
 }
 
-/* ksys_mount -> do_mount -> do_new_mount -> */
-struct vfsmount *
-vfs_kern_mount(struct file_system_type *type, int flags, const char *name, void *data)
+int ksys_mount(
+  char __user *dev_name, char __user *dir_name,
+  char __user *type, unsigned long flags, void __user *data)
 {
+  int ret;
+  char *kernel_type;
+  char *kernel_dev;
+  void *options;
+
+  kernel_type = copy_mount_string(type);
+  kernel_dev = copy_mount_string(dev_name);
+  options = copy_mount_options(data);
+  ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
+
+  return ret;
+}
+
+long do_mount(const char *dev_name, const char __user *dir_name,
+    const char *type_page, unsigned long flags, void *data_page)
+{
+  struct path path;
+  unsigned int mnt_flags = 0, sb_flags;
+  int retval = 0;
+
+  /* get the mountpoint */
+  retval = user_path(dir_name, &path);
+
+  if (flags & MS_REMOUNT)
+    retval = do_remount(&path, flags, sb_flags, mnt_flags, data_page);
+  else if (flags & MS_BIND)
+    retval = do_loopback(&path, dev_name, flags & MS_REC);
+  else if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
+    retval = do_change_type(&path, flags);
+  else if (flags & MS_MOVE)
+    retval = do_move_mount(&path, dev_name);
+  else
+    retval = do_new_mount(&path, type_page, sb_flags, mnt_flags,
+              dev_name, data_page);
+dput_out:
+  path_put(&path);
+  return retval;
+}
+
+static int do_new_mount(
+  struct path *path, const char *fstype, int sb_flags,
+  int mnt_flags, const char *name, void *data)
+{
+  struct file_system_type *type;
+  struct vfsmount *mnt;
+  int err;
+
+  type = get_fs_type(fstype);
+  mnt = vfs_kern_mount(type, sb_flags, name, data);
+  if (!IS_ERR(mnt) && (type->fs_flags & FS_HAS_SUBTYPE) &&
+      !mnt->mnt_sb->s_subtype)
+    mnt = fs_set_subtype(mnt, fstype);
+
+  put_filesystem(type);
+
+  /* add a mount into a namespace's mount tree */
+  err = do_add_mount(real_mount(mnt), path, mnt_flags);
+  if (err)
+    mntput(mnt);
+  return err;
+}
+
+struct vfsmount *vfs_kern_mount(
+  struct file_system_type *type, int flags, const char *name, void *data)
+{
+  struct mount *mnt;
+  struct dentry *root;
+
   mnt = alloc_vfsmnt(name);
-  struct dentry* root = mount_fs(type, flags, name, data); /* super_lock.s_root */
+  root = mount_fs(type, flags, name, data);
 
   mnt->mnt.mnt_root = root;
   mnt->mnt.mnt_sb = root->d_sb;
   mnt->mnt_mountpoint = mnt->mnt.mnt_root;
   mnt->mnt_parent = mnt;
+  lock_mount_hash();
   list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+  unlock_mount_hash();
   return &mnt->mnt;
 }
+```
 
+```C++
 struct mount {
   struct hlist_node mnt_hash;
   struct mount      *mnt_parent;
@@ -3429,7 +3758,9 @@ struct vfsmount {
   struct super_block *mnt_sb; /* pointer to superblock */
   int mnt_flags;
 } __randomize_layout;
+```
 
+```C++
 struct dentry *mount_fs(
   struct file_system_type *type, int flags,
   const char *name, void *data)
@@ -3446,7 +3777,7 @@ static struct dentry *ext4_mount(
 {
   return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
 }
-// ---> see mount block device in IO part
+/* ---> see mount block device in IO part */
 ```
 ![linux-io-mount-example.jpg](../Images/linux-io-mount-example.jpg)
 
@@ -3500,6 +3831,17 @@ struct dentry {
 } __randomize_layout;
 ```
 
+```C++
+mount();
+  ksys_mount(); /* copy type, dev_name, data to kernel */
+    do_mount(); /* get path by name */
+      do_new_mount(); /* get fs_type by type */
+        vfs_kern_mount();
+          alloc_vfsmnt();
+          mount_fs();
+            fs_type.mount(); /* dev_fs_type, {dev, ext4}_mount */
+```
+
 ### open
 ```C++
 struct task_struct {
@@ -3519,7 +3861,8 @@ SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
 
 long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 {
-  fd = get_unused_fd_flags(flags);
+  struct filename *tmp = getname(filename);
+  int fd = get_unused_fd_flags(flags);
   if (fd >= 0) {
     struct file *f = do_filp_open(dfd, tmp, &op);
     if (IS_ERR(f)) {
@@ -3699,18 +4042,17 @@ static ssize_t new_sync_read(
   iov_iter_init(&iter, READ, &iov, 1, len);
 
   ret = call_read_iter(filp, &kiocb, &iter);
-  BUG_ON(ret == -EIOCBQUEUED);
   *ppos = kiocb.ki_pos;
   return ret;
 }
 
 const struct file_operations ext4_file_operations = {
-  .read_iter  = ext4_file_read_iter,
-  .write_iter  = ext4_file_write_iter,
-  .write_begin = ext4_write_begin,
-  .write_end = ext4_write_end
+  .read_iter    = ext4_file_read_iter,
+  .write_iter   = ext4_file_write_iter,
+  .write_begin  = ext4_write_begin,
+  .write_end    = ext4_write_end
 }
-// ext4_file_{read, write}_iter->generic_file_{read, write}_iter
+/* ext4_file_{read, write}_iter -> generic_file_{read, write}_iter */
 ssize_t
 generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
@@ -3744,7 +4086,10 @@ static ssize_t ext4_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
   size_t count = iov_iter_count(iter);
   loff_t offset = iocb->ki_pos;
   ssize_t ret;
-  ret = ext4_direct_IO_write(iocb, iter);
+  if (iov_iter_rw(iter) == READ)
+    ret = ext4_direct_IO_read(iocb, iter);
+  else
+    ret = ext4_direct_IO_write(iocb, iter);
 }
 
 static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
@@ -3757,18 +4102,17 @@ static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
   size_t count = iov_iter_count(iter);
 
   ret = __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev, iter,
-           get_block_func, ext4_end_io_dio, NULL,
-           dio_flags);
+           get_block_func, ext4_end_io_dio, NULL, dio_flags);
 }
 
-// __blockdev_direct_IO->do_blockdev_direct_IO
+/* __blockdev_direct_IO -> do_blockdev_direct_IO */
 static inline ssize_t
 do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
   struct block_device *bdev, struct iov_iter *iter,
   get_block_t get_block, dio_iodone_t end_io,
   dio_submit_t submit_io, int flags)
 {
-  // see do_blockdev_direct_IO in IO management part
+  /* see do_blockdev_direct_IO in IO management part */
 }
 ```
 
@@ -4285,8 +4629,8 @@ struct dentry *mount_single(
   struct super_block *s;
   int error;
 
+  /* find or create a superblock */
   s = sget(fs_type, compare_single, set_anon_super, flags, NULL);
-
   if (!s->s_root) {
     error = fill_super(s, data, flags & SB_SILENT ? 1 : 0);
     if (error) {
@@ -4391,7 +4735,7 @@ mount();
         vfs_kern_mount();
           alloc_vfsmnt();
           mount_fs();
-            fs_type.mount();
+            fs_type.mount(); /* dev_fs_type */
               dev_mount();
                 mount_single();
                   sget();
@@ -5582,6 +5926,7 @@ struct super_block *sget(struct file_system_type *type,
   int flags,
   void *data)
 {
+  struct user_namespace *user_ns = current_user_ns();
   return sget_userns(type, test, set, flags, user_ns, data);
 }
 
@@ -5644,6 +5989,8 @@ mount();
                     sget_userns();
                       alloc_super();
                       set_bdev_super();
+                  fill_super();
+                    ext4_fill_super();
                   dget();
           list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
@@ -5803,8 +6150,9 @@ static inline ssize_t do_blockdev_direct_IO(
   retval = do_direct_IO(dio, &sdio, &map_bh);
 }
 
-static int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
-      struct buffer_head *map_bh)
+static int do_direct_IO(
+  struct dio *dio, struct dio_submit *sdio,
+  struct buffer_head *map_bh)
 {
   const unsigned blkbits = sdio->blkbits;
   const unsigned i_blkbits = blkbits + sdio->blkfactor;
