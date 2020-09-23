@@ -7401,7 +7401,7 @@ static int __init init_pipe_fs(void)
   }
 }
 
-static struct inode * get_pipe_inode(void)
+static struct inode* get_pipe_inode(void)
 {
   struct pipe_inode_info *pipe = alloc_pipe_info();
   pipe->files = 2;
@@ -7435,7 +7435,8 @@ struct pipe_inode_info {
   struct page *tmp_page;
   struct fasync_struct *fasync_readers;
   struct fasync_struct *fasync_writers;
-  struct pipe_buffer *bufs;
+  unsigned int nrbufs, curbuf, buffers;
+  struct pipe_buffer *bufs; /* the circular array of pipe buffers */
   struct user_struct *user;
 };
 
@@ -7573,7 +7574,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
       wake_up_partner(pipe);
     if (!is_pipe && !pipe->writers) {
       if ((filp->f_flags & O_NONBLOCK)) {
-      filp->f_version = pipe->w_counter;
+        filp->f_version = pipe->w_counter;
       } else {
         if (wait_for_partner(pipe, &pipe->w_counter))
           goto err_rd;
@@ -7606,7 +7607,6 @@ static int fifo_open(struct inode *inode, struct file *filp)
 #### resigter a sighand
 ```C++
 struct task_struct {
-    /* Signal handlers: */
     struct signal_struct    *signal;
     struct sighand_struct   *sighand;
     sigset_t                blocked;
@@ -7797,7 +7797,6 @@ static int __send_signal(int sig, struct siginfo *info, struct task_struct *t,
     }
 
     userns_fixup_signal_uid(&q->info, t);
-
   }
 
 out_set:
@@ -7840,10 +7839,8 @@ static void complete_signal(int sig, struct task_struct *p, int group)
     signal->curr_target = t;
   }
 
-  /*
-   * The signal is already in the shared-pending queue.
-   * Tell the chosen thread to wake up and dequeue it.
-   */
+  /* The signal is already in the shared-pending queue.
+   * Tell the chosen thread to wake up and dequeue it */
   signal_wake_up(t, sig == SIGKILL);
   return;
 }
@@ -7854,6 +7851,11 @@ void signal_wake_up_state(struct task_struct *t, unsigned int state)
 
   if (!wake_up_state(t, state | TASK_INTERRUPTIBLE))
     kick_process(t);
+}
+
+int wake_up_state(struct task_struct *p, unsigned int state)
+{
+  return try_to_wake_up(p, state, 0);
 }
 ```
 
@@ -7953,6 +7955,7 @@ static int __setup_rt_frame(int sig, struct ksignal *ksig,
     }
   } put_user_catch(err);
 
+  /* set return addr to sa_restor in frame->pretcode after finish sig handle */
   err |= setup_sigcontext(&frame->uc.uc_mcontext, fp, regs, set->sig[0]);
   err |= __copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set));
 
@@ -8067,7 +8070,7 @@ struct kern_ipc_perm {
   bool      deleted;
   int       id;
   key_t     key;
-  kuid_t    uid;, gid;, cuid;, cgid;
+  kuid_t    uid, gid, cuid, cgid;
   umode_t    mode;
   unsigned long  seq;
   void    *security;
@@ -8266,6 +8269,60 @@ static struct file *__shmem_file_setup(
   return res;
 }
 
+struct file *alloc_file_pseudo(
+  struct inode *inode, struct vfsmount *mnt,
+  const char *name, int flags,
+  const struct file_operations *fops)
+{
+  static const struct dentry_operations anon_ops = {
+    .d_dname = simple_dname
+  };
+  struct qstr this = QSTR_INIT(name, strlen(name));
+  struct path path;
+  struct file *file;
+
+  path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this);
+
+  if (!mnt->mnt_sb->s_d_op)
+    d_set_d_op(path.dentry, &anon_ops);
+
+  path.mnt = mntget(mnt);
+  d_instantiate(path.dentry, inode);
+
+  file = alloc_file(&path, flags, fops);
+  if (IS_ERR(file)) {
+    ihold(inode);
+    path_put(&path);
+  }
+  return file;
+}
+
+static struct file *alloc_file(
+  const struct path *path, int flags,
+  const struct file_operations *fop)
+{
+  struct file *file = alloc_empty_file(flags, current_cred());
+  file->f_path = *path;
+  file->f_inode = path->dentry->d_inode;
+  file->f_mapping = path->dentry->d_inode->i_mapping;
+  file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
+
+  if ((file->f_mode & FMODE_READ)
+    && likely(fop->read || fop->read_iter))
+    file->f_mode |= FMODE_CAN_READ;
+  if ((file->f_mode & FMODE_WRITE)
+    && likely(fop->write || fop->write_iter))
+    file->f_mode |= FMODE_CAN_WRITE;
+
+  file->f_mode |= FMODE_OPENED;
+  file->f_op = fop;
+  if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
+    i_readcount_inc(path->dentry->d_inode);
+
+  return file;
+}
+
+
 int ramfs_nommu_expand_for_mapping(struct inode *inode, size_t newsize)
 {
   unsigned long npages, xpages, loop;
@@ -8411,6 +8468,7 @@ static const struct file_operations shm_file_operations = {
   .fallocate  = shm_fallocate,
 };
 
+/* do_mmap_pgoff -> do_mmap -> mmap_region -> call_map -> file.f_op.mmap */
 static int shm_mmap(struct file *file, struct vm_area_struct *vma)
 {
   struct shm_file_data *sfd = shm_file_data(file);
@@ -8422,6 +8480,11 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
   vma->vm_ops = &shm_vm_ops;
 
   return 0;
+}
+
+int call_mmap(struct file *file, struct vm_area_struct *vma)
+{
+  return file->f_op->mmap(file, vma);
 }
 
 struct shm_file_data {
@@ -8510,8 +8573,7 @@ shmat();
 shm_fault();
   shmem_fault();
     shmem_getpage_gfp();
-      shmem_getpage_gfp();
-        shmem_alloc_and_acct_page();
+      shmem_alloc_and_acct_page();
 ```
 
 ![linux-ipc-shm.png](../Images/linux-ipc-shm.png)
