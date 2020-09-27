@@ -3347,7 +3347,6 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 {
   // on 64 bit machine doesn't have high memory
   if (!PageHighMem(page))
-    // get virtual address of a page from `page_address_htable`
     return page_address(page);
 
   // on 32 bit machine
@@ -3355,6 +3354,33 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
   set_pte(kmap_pte-idx, mk_pte(page, prot));
 
   return (void *)vaddr;
+}
+/* get the mapped virtual address of a page */
+void *page_address(const struct page *page)
+{
+  unsigned long flags;
+  void *ret;
+  struct page_address_slot *pas;
+
+  if (!PageHighMem(page))
+    return lowmem_page_address(page);
+
+  pas = page_slot(page);
+  ret = NULL;
+  spin_lock_irqsave(&pas->lock, flags);
+  if (!list_empty(&pas->lh)) {
+    struct page_address_map *pam;
+
+    list_for_each_entry(pam, &pas->lh, list) {
+      if (pam->page == page) {
+        ret = pam->virtual;
+        goto done;
+      }
+    }
+  }
+done:
+  spin_unlock_irqrestore(&pas->lock, flags);
+  return ret;
 }
 
 // page_address ->
@@ -3366,7 +3392,7 @@ static  void *lowmem_page_address(const struct page *page)
 #define page_to_virt(x)  __va(PFN_PHYS(page_to_pfn(x)
 ```
 
-### kernel page fault
+### vmalloc_fault
 ```C++
 static noinline int vmalloc_fault(unsigned long address)
 {
@@ -3394,6 +3420,7 @@ static noinline int vmalloc_fault(unsigned long address)
 1. Does different kmem_cache share the same kmem_cache_cpu?
 2. Where does `struct kmem_cache_cpu __percpu *cpu_slab;` stored in each cpu?
 3. Does  `alloc_zeroed_user_highpage_movable` alloc a page each time for each anonymous mapping?
+4. Does it vitual addr or physical addr when user writing a file in write sys call?
 
 # File Management
 ![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
@@ -9042,7 +9069,6 @@ semop();
 1. How access shm by a vm address?
 
 # Net
-### socket
 ```C++
 struct socket_alloc {
   struct socket socket;
@@ -9099,6 +9125,7 @@ struct inet_sock {
 ```
 ![linux-net-socket-sock.png](../Images/linux-net-socket-sock.png)
 
+### socket
 ```C++
 SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 {
@@ -9137,6 +9164,59 @@ int __sock_create(
   *res = sock;
 
   return 0;
+}
+
+struct socket *sock_alloc(void)
+{
+  struct inode *inode;
+  struct socket *sock;
+
+  inode = new_inode_pseudo(sock_mnt->mnt_sb);
+  sock = SOCKET_I(inode);
+
+  inode->i_ino = get_next_ino();
+  inode->i_mode = S_IFSOCK | S_IRWXUGO;
+  inode->i_uid = current_fsuid();
+  inode->i_gid = current_fsgid();
+  inode->i_op = &sockfs_inode_ops;
+
+  return sock;
+}
+
+struct inode *new_inode_pseudo(struct super_block *sb)
+{
+  struct inode *inode = alloc_inode(sb);
+
+  if (inode) {
+    spin_lock(&inode->i_lock);
+    inode->i_state = 0;
+    spin_unlock(&inode->i_lock);
+    INIT_LIST_HEAD(&inode->i_sb_list);
+  }
+  return inode;
+}
+
+static struct inode *alloc_inode(struct super_block *sb)
+{
+  struct inode *inode;
+
+  if (sb->s_op->alloc_inode)
+    inode = sb->s_op->alloc_inode(sb);
+  else
+    inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);
+
+  if (!inode)
+    return NULL;
+
+  if (unlikely(inode_init_always(sb, inode))) {
+    if (inode->i_sb->s_op->destroy_inode)
+      inode->i_sb->s_op->destroy_inode(inode);
+    else
+      kmem_cache_free(inode_cachep, inode);
+    return NULL;
+  }
+
+  return inode;
 }
 
 enum sock_type {
@@ -9617,6 +9697,8 @@ int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
             orig_sport, orig_dport, sk);
 
   tcp_set_state(sk, TCP_SYN_SENT);
+
+  /* add sock to hash table */
   err = inet_hash_connect(tcp_death_row, sk);
   sk_set_txhash(sk);
   rt = ip_route_newports(fl4, rt, orig_sport, orig_dport,
@@ -9656,8 +9738,9 @@ int tcp_connect(struct sock *sk)
   tcp_ecn_send_syn(sk, buff);
 
   /* Send off SYN; include data in Fast Open. */
-  err = tp->fastopen_req ? tcp_send_syn_data(sk, buff) :
-        tcp_transmit_skb(sk, buff, 1, sk->sk_allocation);
+  err = tp->fastopen_req
+    ? tcp_send_syn_data(sk, buff)
+    : tcp_transmit_skb(sk, buff, 1, sk->sk_allocation);
 
   tp->snd_nxt = tp->write_seq;
   tp->pushed_seq = tp->write_seq;
@@ -9976,6 +10059,40 @@ new_segment:
     if (skb_availroom(skb) > 0) {
       copy = min_t(int, copy, skb_availroom(skb));
       err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
+    } else if (!zc) {
+      bool merge = true;
+      int i = skb_shinfo(skb)->nr_frags;
+      struct page_frag *pfrag = sk_page_frag(sk);
+
+      if (!sk_page_frag_refill(sk, pfrag))
+        goto wait_for_memory;
+
+      if (!skb_can_coalesce(skb, i, pfrag->page, pfrag->offset)) {
+        if (i >= sysctl_max_skb_frags) {
+          tcp_mark_push(tp, skb);
+          goto new_segment;
+        }
+        merge = false;
+      }
+
+      copy = min_t(int, copy, pfrag->size - pfrag->offset);
+      if (!sk_wmem_schedule(sk, copy))
+        goto wait_for_memory;
+
+      err = skb_copy_to_page_nocache(sk,
+        &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
+      if (err)
+        goto do_error;
+
+      /* Update the skb. */
+      if (merge) {
+        skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
+      } else {
+        skb_fill_page_desc(skb, i, pfrag->page,
+              pfrag->offset, copy);
+        page_ref_inc(pfrag->page);
+      }
+      pfrag->offset += copy;
     } else {
       bool merge = true;
       int i = skb_shinfo(skb)->nr_frags;
@@ -10014,7 +10131,7 @@ new_segment:
 
 /* __tcp_push_pending_frames | tcp_push_one ->
  * 1. frage segment
- * 2. congestron control
+ * 2. congestion control
  * 3. slide window */
 static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle, int push_one, gfp_t gfp)
 {
@@ -10964,7 +11081,7 @@ __dev_queue_xmit();
       __netif_schdule(q);
         __netif_reschedule(q);
           *this_cpu_ptr(&softnet_data)->output_queue_tailp = q;
-          raise_softirq_irqoff(NET_TX_SOFTIRQ);
+          raise_softirq_irqoff(NET_TX_SOFTIRQ); /* return to user space */
 
           net_tx_action();
             qdisc_run(q);
@@ -11920,13 +12037,88 @@ int __sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 
   return ret;
 }
+
+int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
+{
+  DEFINE_WAIT_FUNC(wait, woken_wake_function);
+  int rc;
+
+  add_wait_queue(sk_sleep(sk), &wait);
+  sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
+  rc = sk_wait_event(sk, timeo, skb_peek_tail(&sk->sk_receive_queue) != skb, &wait);
+  sk_clear_bit(SOCKWQ_ASYNC_WAITDATA, sk);å
+  remove_wait_queue(sk_sleep(sk), &wait);
+  return rc;
+}
+
+#define sk_wait_event(__sk, __timeo, __condition, __wait)    \
+  ({  int __rc;            \
+    release_sock(__sk);          \
+    __rc = __condition;          \
+    if (!__rc) {            \
+      *(__timeo) = wait_woken(__wait, TASK_INTERRUPTIBLE, *(__timeo));\
+    }              \
+    sched_annotate_sleep();          \
+    lock_sock(__sk);          \
+    __rc = __condition;          \
+    __rc;              \
+  })
+
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
+{
+  /* The below executes an smp_mb(), which matches with the full barrier
+   * executed by the try_to_wake_up() in woken_wake_function() such that
+   * either we see the store to wq_entry->flags in woken_wake_function()
+   * or woken_wake_function() sees our store to current->state. */
+  set_current_state(mode); /* A */
+  if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
+    timeout = schedule_timeout(timeout);
+  __set_current_state(TASK_RUNNING);
+
+  /* The below executes an smp_mb(), which matches with the smp_mb() (C)
+   * in woken_wake_function() such that either we see the wait condition
+   * being true or the store to wq_entry->flags in woken_wake_function()
+   * follows ours in the coherence order. */
+  smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
+
+  return timeout;
+}
+
+int woken_wake_function(
+  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
+{
+  /* Pairs with the smp_store_mb() in wait_woken(). */
+  smp_mb(); /* C */
+  wq_entry->flags |= WQ_FLAG_WOKEN;
+
+  return default_wake_function(wq_entry, mode, sync, key);
+}
+
+int default_wake_function(
+  wait_queue_entry_t *curr, unsigned mode, int wake_flags, void *key)
+{
+  return try_to_wake_up(curr->private, mode, wake_flags);
+}
+
+/* wait_queue_entry::flags */
+#define WQ_FLAG_EXCLUSIVE  0x01
+#define WQ_FLAG_WOKEN      0x02
+#define WQ_FLAG_BOOKMARK   0x04
+
+struct wait_queue_entry {
+  unsigned int      flags;
+  void              *private;
+  wait_queue_func_t func;
+  struct list_head  entry;
+};
+
 ```
 ![linux-net-read.png](../Images/linux-net-read.png)
 
 ### epoll
 ```c++
 typedef union epoll_data {
-  void    *ptr;
+  void     *ptr;
   int      fd;
   uint32_t u32;
   uint64_t u64;
