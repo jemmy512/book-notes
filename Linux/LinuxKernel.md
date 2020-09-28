@@ -1,8 +1,8 @@
 # Init
 ### cpu
-![linux-init-cpu.png](../Images/linux-init-cpu.png)
+![linux-init-cpu.png](../Images/LinuxKernel/kernel-init-cpu.png)
 
-![linux-init-cpu-process-program.png](../Images/linux-init-cpu-process-program.png)
+![linux-init-cpu-process-program.png](../Images/LinuxKernel/kernel-init-cpu-process-program.png)
 
 ### bios
 
@@ -83,9 +83,9 @@ static int run_init_process(const char *init_filename)
     (const char __user *const __user *)envp_init);
 }
 ```
-![linux-init-kernel.png](../Images/linux-init-kernel.png)
+![linux-init-kernel.png](../Images/LinuxKernel/kernel-init-kernel.png)
 
-![linux-init-cpu-arch.png](../Images/linux-init-cpu-arch.png)
+![linux-init-cpu-arch.png](../Images/LinuxKernel/kernel-init-cpu-arch.png)
 
 ### syscall
 #### 32
@@ -137,7 +137,7 @@ static  void do_syscall_32_irqs_on(struct pt_regs *regs)
   syscall_return_slowpath(regs);
 }
 ```
-![linux-init-syscall-32.png](../Images/linux-init-syscall-32.png)
+![linux-init-syscall-32.png](../Images/LinuxKernel/kernel-init-syscall-32.png)
 
 #### 64
 ```C++
@@ -220,12 +220,12 @@ void do_syscall_64(struct pt_regs *regs)
   syscall_return_slowpath(regs);
 }
 ```
-![linux-init-syscall-64.png](../Images/linux-init-syscall-64.png)
+![linux-init-syscall-64.png](../Images/LinuxKernel/kernel-init-syscall-64.png)
 
 
 # Process Management
 ### process
-![linux-proc-compile.png](../Images/linux-proc-compile.png)
+![linux-proc-compile.png](../Images/LinuxKernel/kernel-proc-compile.png)
 ```C++
 /* compile */
 gcc -c -fPIC process.c
@@ -244,13 +244,13 @@ export LD_LIBRARY_PATH=.
 ```
 
 1. elf: relocatable file
-![linux-proc-elf-relocatable.png](../Images/linux-proc-elf-relocatable.png)
+![linux-proc-elf-relocatable.png](../Images/LinuxKernel/kernel-proc-elf-relocatable.png)
 
 2. elf: executable file
-![linux-proc-elf-executable.png](../Images/linux-proc-elf-executable.png)
+![linux-proc-elf-executable.png](../Images/LinuxKernel/kernel-proc-elf-executable.png)
 
 3. elf: shared object
-![linux-proc-elf-sharedobj.png](../Images/linux-proc-elf-sharedobj.png)
+![linux-proc-elf-sharedobj.png](../Images/LinuxKernel/kernel-proc-elf-sharedobj.png)
 
 ### Q: How does PLT[x], GOT[y] work together to dynamic link?
 ```C++
@@ -313,17 +313,17 @@ SYSCALL_DEFINE3(execve,
   return do_execve(getname(filename), argv, envp);
 }
 ```
-![linux-proc-tree.png](../Images/linux-proc-tree.png)
+![linux-proc-tree.png](../Images/LinuxKernel/kernel-proc-tree.png)
 
-![linux-proc-elf-compile-exec.png](../Images/linux-proc-elf-compile-exec.png)
+![linux-proc-elf-compile-exec.png](../Images/LinuxKernel/kernel-proc-elf-compile-exec.png)
 
 ### thread
-![linux-proc-thread.png](../Images/linux-proc-thread.png)
+![linux-proc-thread.png](../Images/LinuxKernel/kernel-proc-thread.png)
 
 ### task_struct
-![linux-proc-task-1.png](../Images/linux-proc-task-1.png)
+![linux-proc-task-1.png](../Images/LinuxKernel/kernel-proc-task-1.png)
 
-![linux-proc-task-2.png](../Images/linux-proc-task-2.png)
+![linux-proc-task-2.png](../Images/LinuxKernel/kernel-proc-task-2.png)
 
 ### schedule
 ```C++
@@ -427,7 +427,7 @@ struct cfs_rq {
   struct sched_entity *curr, *next, *last, *skip;
 };
 ```
-![linux-proc-sched-entity-rq.png](../Images/linux-proc-sched-entity-rq.png)
+![linux-proc-sched-entity-rq.png](../Images/LinuxKernel/kernel-proc-sched-entity-rq.png)
 
 ```C++
 struct sched_class {
@@ -479,7 +479,7 @@ const struct sched_class fair_sched_class = {
   .pick_next_task     = pick_next_task_fair
 };
 ```
-![linux-proc-shced-cpu-rq-class-entity-task.png](../Images/linux-proc-shced-cpu-rq-class-entity-task.png)
+![linux-proc-shced-cpu-rq-class-entity-task.png](../Images/LinuxKernel/kernel-proc-shced-cpu-rq-class-entity-task.png)
 
 #### voluntary schedule
 ```c++
@@ -760,7 +760,7 @@ struct tss_struct {
   unsigned long    io_bitmap[IO_BITMAP_LONGS + 1];
 }
 ```
-![linux-proc-tss.png](../Images/linux-proc-tss.png)
+![linux-proc-tss.png](../Images/LinuxKernel/kernel-proc-tss.png)
 
 ```C++
 schedule(void)
@@ -777,11 +777,11 @@ schedule(void)
             barrier();
             return finish_task_switch(prev);
 ```
-![linux-proc-sched-voluntary.png](../Images/linux-proc-sched-voluntary.png)
+![linux-proc-sched-voluntary.png](../Images/LinuxKernel/kernel-proc-sched-voluntary.png)
 
 #### preempty shcedule
 ##### preempt time
-1. Clock interrupt
+###### 1. Clock interrupt
 ```C++
 void scheduler_tick(void)
 {
@@ -846,7 +846,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-2. Waked up
+###### 2. Waked up
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
 * -> check_preempt_curr -> resched_curr */
@@ -992,7 +992,7 @@ void resched_curr(struct rq *rq)
 ```
 
 ##### real user preempt time
-1. return from system call
+###### 1. return from system call
 ```C++
 /* do_syscall_64 -> syscall_return_slowpath
  * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
@@ -1010,7 +1010,7 @@ static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 }
 ```
 
-2. return from interrupt
+###### 2. return from interrupt
 ```C++
 /* do_IRQ -> retint_user -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 common_interrupt:
@@ -1041,8 +1041,107 @@ retint_kernel:
         jmp     0b
 ```
 
+###### 3. Sleep
+```C++
+/* E.g. */
+int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
+{
+  DEFINE_WAIT_FUNC(wait, woken_wake_function);
+  int rc;
+
+  add_wait_queue(sk_sleep(sk), &wait);
+  sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
+  rc = sk_wait_event(sk, timeo, skb_peek_tail(&sk->sk_receive_queue) != skb, &wait);
+  sk_clear_bit(SOCKWQ_ASYNC_WAITDATA, sk);å
+  remove_wait_queue(sk_sleep(sk), &wait);
+  return rc;
+}
+
+#define sk_wait_event(__sk, __timeo, __condition, __wait)    \
+  ({  int __rc;            \
+    release_sock(__sk);          \
+    __rc = __condition;          \
+    if (!__rc) {            \
+      *(__timeo) = wait_woken(__wait, TASK_INTERRUPTIBLE, *(__timeo));\
+    }              \
+    sched_annotate_sleep();          \
+    lock_sock(__sk);          \
+    __rc = __condition;          \
+    __rc;              \
+  })
+
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
+{
+  set_current_state(mode); /* A */
+  if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
+    timeout = schedule_timeout(timeout);
+  __set_current_state(TASK_RUNNING);
+  smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
+
+  return timeout;
+}
+
+signed long schedule_timeout(signed long timeout)
+{
+  struct process_timer timer;
+  unsigned long expire;
+
+  switch (timeout)
+  {
+  case MAX_SCHEDULE_TIMEOUT:
+    schedule();
+    goto out;
+  default:
+    if (timeout < 0) {
+      dump_stack();
+      current->state = TASK_RUNNING;
+      goto out;
+    }
+  }
+
+  expire = timeout + jiffies;
+
+  timer.task = current;
+  timer_setup_on_stack(&timer.timer, process_timeout, 0);
+  __mod_timer(&timer.timer, expire, 0);
+  schedule();
+  del_singleshot_timer_sync(&timer.timer);
+
+  /* Remove the timer from the object tracker */
+  destroy_timer_on_stack(&timer.timer);
+
+  timeout = expire - jiffies;
+
+ out:
+  return timeout < 0 ? 0 : timeout;
+}
+
+static void process_timeout(struct timer_list *t)
+{
+  struct process_timer *timeout = from_timer(timeout, t, timer);
+
+  wake_up_process(timeout->task);
+}
+
+int woken_wake_function(
+  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
+{
+  /* Pairs with the smp_store_mb() in wait_woken(). */
+  smp_mb(); /* C */
+  wq_entry->flags |= WQ_FLAG_WOKEN;
+
+  return default_wake_function(wq_entry, mode, sync, key);
+}
+
+int default_wake_function(
+  wait_queue_entry_t *curr, unsigned mode, int wake_flags, void *key)
+{
+  return try_to_wake_up(curr->private, mode, wake_flags);
+}
+```
+
 ##### real kernel preempt time
-1. preempty_enble
+###### 1. preempty_enble
 ```C++
 #define preempt_enable() \
 do { \
@@ -1070,7 +1169,7 @@ static void __sched notrace preempt_schedule_common(void)
 }
 ```
 
-2. return from interrupt
+###### 2. return from interrupt
 ```C++
 /* do_IRQ -> retint_kernel */
 asmlinkage __visible void __sched preempt_schedule_irq(void)
@@ -1084,7 +1183,7 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
   } while (need_resched());
 }
 ```
-![linux-proc-sched.png](../Images/linux-proc-sched.png)
+![linux-proc-sched.png](../Images/LinuxKernel/kernel-proc-sched.png)
 
 ### fork
 ```C++
@@ -1192,7 +1291,7 @@ preempt:
 }
 
 ```
-![linux-fork.jpg](../Images/linux-fork.png)
+![linux-fork.png](../Images/LinuxKernel/kernel-fork.png)
 
 ### exec
 ```C++
@@ -1592,7 +1691,7 @@ void __deallocate_stack (struct pthread *pd)
     (void) queue_stack (pd);
 }
 ```
-![linux-proc-fork-pthread-create.png](../Images/linux-proc-fork-pthread-create.png)
+![linux-proc-fork-pthread-create.png](../Images/LinuxKernel/kernel-proc-fork-pthread-create.png)
 
 
 # Memory Management
@@ -1627,12 +1726,12 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 #define __USER_DS      (GDT_ENTRY_DEFAULT_USER_DS*8 + 3)
 #define __USER_CS      (GDT_ENTRY_DEFAULT_USER_CS*8 + 3)
 ```
-![linux-mem-segment.png](../Images/linux-mem-segment.png)
+![linux-mem-segment.png](../Images/LinuxKernel/kernel-mem-segment.png)
 
 ### paging
-![linux-mem-segment-page.png](../Images/linux-mem-segment-page.png)
+![linux-mem-segment-page.png](../Images/LinuxKernel/kernel-mem-segment-page.png)
 
-![linux-mem-page-table.png](../Images/linux-mem-page-table.png)
+![linux-mem-page-table.png](../Images/LinuxKernel/kernel-mem-page-table.png)
 
 ### user space
 ```C++
@@ -1693,7 +1792,7 @@ struct vm_area_struct {
   void * vm_private_data;    /* was vm_pte (shared mem) */
 } __randomize_layout;
 ```
-![linux-mem-vm.png](../Images/linux-mem-vm.png)
+![linux-mem-vm.png](../Images/LinuxKernel/kernel-mem-vm.png)
 
 ### kernel space
 ```C++
@@ -1703,13 +1802,13 @@ struct vm_area_struct {
 /* FIXADDR_START:
  * use kmap_atomic() to map a file to write it back to physic disk */
 ```
-![linux-mem-kernel.png](../Images/linux-mem-kernel.png)
+![linux-mem-kernel.png](../Images/LinuxKernel/kernel-mem-kernel.png)
 
-![linux-mem-kernel-2.png](../Images/linux-mem-kernel-2.png)
+![linux-mem-kernel-2.png](../Images/LinuxKernel/kernel-mem-kernel-2.png)
 
-![linux-mem-user-kernel-32.png](../Images/linux-mem-user-kernel-32.png)
+![linux-mem-user-kernel-32.png](../Images/LinuxKernel/kernel-mem-user-kernel-32.png)
 
-![linux-mem-user-kernel-64.png](../Images/linux-mem-user-kernel-64.png)
+![linux-mem-user-kernel-64.png](../Images/LinuxKernel/kernel-mem-user-kernel-64.png)
 
 ### physic
 #### numa node
@@ -1887,14 +1986,14 @@ struct page {
   int _last_cpupid;
 };
 ```
-![linux-mem-physic-numa.png](../Images/linux-mem-physic-numa.png)
+![linux-mem-physic-numa.png](../Images/LinuxKernel/kernel-mem-physic-numa.png)
 
 ### buddy system
 ```C++
 struct free_area  free_area[MAX_ORDER];
 #define MAX_ORDER 11
 ```
-![linux-mem-buddy-freepages.png](../Images/linux-mem-buddy-freepages.png)
+![linux-mem-buddy-freepages.png](../Images/LinuxKernel/kernel-mem-buddy-freepages.png)
 
 #### alloc_pages
 ```C++
@@ -2207,9 +2306,9 @@ struct kmem_cache_node {
   struct list_head  partial;
 };
 ```
-![linux-mem-kmem-cache-cpu-node.png](../Images/linux-mem-kmem-cache-cpu-node.png)
+![linux-mem-kmem-cache-cpu-node.png](../Images/LinuxKernel/kernel-mem-kmem-cache-cpu-node.png)
 
-![linux-mem-kmem-cache.png](../Images/linux-mem-kmem-cache.png)
+![linux-mem-kmem-cache.png](../Images/LinuxKernel/kernel-mem-kmem-cache.png)
 
 ```C++
 // alloc_task_struct_node -> kmem_cache_alloc_node
@@ -2425,11 +2524,11 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
   return page;
 }
 ```
-![linux-mem-kmem-cache-alloc.png](../Images/linux-mem-kmem-cache-alloc.png)
+![linux-mem-kmem-cache-alloc.png](../Images/LinuxKernel/kernel-mem-kmem-cache-alloc.png)
 
-![linux-mem-slub-structure.png](../Images/linux-mem-slub-structure.png)
+![linux-mem-slub-structure.png](../Images/LinuxKernel/kernel-mem-slub-structure.png)
 
-![linux-mem-mng.png](../Images/linux-mem-mng.png)
+![linux-mem-mng.png](../Images/LinuxKernel/kernel-mem-mng.png)
 
 ### Reference:
 [slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
@@ -3134,7 +3233,7 @@ do_page_fault();
 
         do_swap_page();     /* 3. swap fault */
 ```
-![linux-mem-page-fault.png](../Images/linux-mem-page-fault.png)
+![linux-mem-page-fault.png](../Images/LinuxKernel/kernel-mem-page-fault.png)
 
 ### pgd
 `cr3` register points to current process's `pgd`, which is set by `load_new_mm_cr3`.
@@ -3245,7 +3344,7 @@ PGD_PAGE_OFFSET = pgd_index(__PAGE_OFFSET_BASE)
 PGD_START_KERNEL = pgd_index(__START_KERNEL_map)
 L3_START_KERNEL = pud_index(__START_KERNEL_map)
 ```
-![linux-mem-kernel-page-table.png](../Images/linux-mem-kernel-page-table.png)
+![linux-mem-kernel-page-table.png](../Images/LinuxKernel/kernel-mem-kernel-page-table.png)
 
 ```C++
 // kernel mm_struct
@@ -3423,7 +3522,7 @@ static noinline int vmalloc_fault(unsigned long address)
 4. Does it vitual addr or physical addr when user writing a file in write sys call?
 
 # File Management
-![linux-file-vfs-system.png](../Images/linux-file-vfs-system.png)
+![linux-file-vfs-system.png](../Images/LinuxKernel/kernel-file-vfs-system.png)
 
 ### inode
 ```C++
@@ -3518,9 +3617,9 @@ struct ext4_extent {
   __le32  ee_start_lo;  /* low 32 bits of physical block */
 };
 ```
-![linux-mem-extents.png](../Images/linux-mem-extents.png)
+![linux-mem-extents.png](../Images/LinuxKernel/kernel-mem-extents.png)
 
-![linux-ext4-extents.png](../Images/linux-ext4-extents.png)
+![linux-ext4-extents.png](../Images/LinuxKernel/kernel-ext4-extents.png)
 
 ```C++
 const struct inode_operations ext4_dir_inode_operations = {
@@ -3567,7 +3666,7 @@ struct ext4_group_desc
   __le32  bg_inode_table_lo;  /* Inodes table block */
 };
 ```
-![linux-block-group.jpg](../Images/linux-block-group.jpg)
+![linux-block-group.png](../Images/LinuxKernel/kernel-block-group.png)
 
 ```C++
 struct ext4_super_block {
@@ -3600,7 +3699,7 @@ struct super_block {
   struct list_head  s_inodes_wb; /* writeback inodes */
 };
 ```
-![linux-mem-meta-block-group.png](../Images/linux-mem-meta-block-group.png)
+![linux-mem-meta-block-group.png](../Images/LinuxKernel/kernel-mem-meta-block-group.png)
 
 ### directory
 ```C++
@@ -3643,18 +3742,18 @@ struct dx_entry
   __le32 block;
 };
 ```
-![linux-file-directory.png](../Images/linux-file-directory.png)
+![linux-file-directory.png](../Images/LinuxKernel/kernel-file-directory.png)
 
-![linux-dir-file-inode.png](../Images/linux-dir-file-inode.png)
+![linux-dir-file-inode.png](../Images/LinuxKernel/kernel-dir-file-inode.png)
 
 ### hard/symbolic link
 ```C++
  ln [args] [dst] [src]
 ```
-![linux-file-link.jpg](../Images/linux-file-link.jpg)
+![linux-file-link.png](../Images/LinuxKernel/kernel-file-link.png)
 
 ### vfs
-![linux-file-arche.jpg](../Images/linux-file-arche.jpg)
+![linux-file-arche.png](../Images/LinuxKernel/kernel-file-arche.png)
 ```C++
 register_filesystem(&ext4_fs_type);
 
@@ -3806,7 +3905,7 @@ static struct dentry *ext4_mount(
 }
 /* ---> see mount block device in IO part */
 ```
-![linux-io-mount-example.jpg](../Images/linux-io-mount-example.jpg)
+![linux-io-mount-example.png](../Images/LinuxKernel/kernel-io-mount-example.png)
 
 ```C++
 struct file {
@@ -4014,7 +4113,7 @@ do_sys_open();
   putname();
 ```
 
-![linux-dcache.jpg](../Images/linux-dcache.jpg)
+![linux-dcache.png](../Images/LinuxKernel/kernel-dcache.png)
 
 ### read/write
 ```C++
@@ -4303,7 +4402,7 @@ static inline bool mod_delayed_work(
 
 }
 ```
-![linux-file-bdi.png](../Images/linux-file-bdi.png)
+![linux-file-bdi.png](../Images/LinuxKernel/kernel-file-bdi.png)
 
 ##### bdi_wq
 ```C++
@@ -4438,7 +4537,7 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 
 Direct IO and buffered IO will eventally call `submit_bio`.
 
-![linux-file-read-write.png](../Images/linux-file-read-write.png)
+![linux-file-read-write.png](../Images/LinuxKernel/kernel-file-read-write.png)
 
 ### Question:
 1. How to use inode bit map present all inodes?
@@ -4465,7 +4564,7 @@ mknod filename type major minor  // create dev file in /dev/
 /sys/module all modes information
 */
 ```
-![linux-io-sysfs.png](../Images/linux-io-sysfs.png)
+![linux-io-sysfs.png](../Images/LinuxKernel/kernel-io-sysfs.png)
 
 ### char dev
 #### kernal module
@@ -4503,7 +4602,7 @@ A kernel module consists:
 6. declare lisence, invoke MODULE_LICENSE
 
 #### insmod
-![linux-io-char-dev-install-open.png](../Images/linux-io-char-dev-install-open.png)
+![linux-io-char-dev-install-open.png](../Images/LinuxKernel/kernel-io-char-dev-install-open.png)
 ```C++
 static int __init lp_init (void)
 {
@@ -4949,7 +5048,7 @@ static ssize_t lp_write(
   } while (count > 0);
 }
 ```
-![linux-io-char-dev-write.png](../Images/linux-io-char-dev-write.png)
+![linux-io-char-dev-write.png](../Images/LinuxKernel/kernel-io-char-dev-write.png)
 
 #### ioctl
 ```C++
@@ -5094,11 +5193,11 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
   return retval
 }
 ```
-![linux-io-ioctl.png](../Images/linux-io-ioctl.png)
+![linux-io-ioctl.png](../Images/LinuxKernel/kernel-io-ioctl.png)
 
 ### interruption
 
-![linux-io-irq.jpg](../Images/linux-io-irq.jpg)
+![linux-io-irq.png](../Images/LinuxKernel/kernel-io-irq.png)
 
 ```C++
 static int logibm_open(struct input_dev *dev)
@@ -5538,9 +5637,9 @@ next_cpu:
     continue;
 }
 ```
-![linux-io-interrupt-vector.png](../Images/linux-io-interrupt-vector.png)
+![linux-io-interrupt-vector.png](../Images/LinuxKernel/kernel-io-interrupt-vector.png)
 
-![linux-io-interrupt.png](../Images/linux-io-interrupt.png)
+![linux-io-interrupt.png](../Images/LinuxKernel/kernel-io-interrupt.png)
 
 ### block dev
 ```C++
@@ -6022,9 +6121,9 @@ mount();
           list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
 
-![linux-io-gendisk.png](../Images/linux-io-gendisk.png)
+![linux-io-gendisk.png](../Images/LinuxKernel/kernel-io-gendisk.png)
 
-![linux-io-bd.png](../Images/linux-io-bd.png)
+![linux-io-bd.png](../Images/LinuxKernel/kernel-io-bd.png)
 
 ### direct IO
 ```C++
@@ -7021,7 +7120,7 @@ struct bio_vec {
   unsigned int  bv_offset;
 }
 ```
-![linux-io-bio.png](../Images/linux-io-bio.png)
+![linux-io-bio.png](../Images/LinuxKernel/kernel-io-bio.png)
 
 #### make_request_fn
 ```C++
@@ -7334,7 +7433,7 @@ submit_bio();
 
 scsi_request_fn();
 ```
-![linux-io-bio-request.png](../Images/linux-io-bio-request.png)
+![linux-io-bio-request.png](../Images/LinuxKernel/kernel-io-bio-request.png)
 
 ### Questions:
 1. How to implement the IO port of dev register, and mmap of IO dev cache?
@@ -7475,7 +7574,7 @@ struct pipe_buffer {
   unsigned long private;
 };
 ```
-![linux-ipc-pipe-2.png](../Images/linux-ipc-pipe-2.png)
+![linux-ipc-pipe-2.png](../Images/LinuxKernel/kernel-ipc-pipe-2.png)
 
 ### fifo
 ```C++
@@ -7628,7 +7727,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
   }
 }
 ```
-![linux-ipc-fifo.png](../Images/linux-ipc-fifo.png)
+![linux-ipc-fifo.png](../Images/LinuxKernel/kernel-ipc-fifo.png)
 
 ### signal
 #### resigter a sighand
@@ -7755,7 +7854,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
   return 0;
 }
 ```
-![linux-ipc-signal-register-handler.png](../Images/linux-ipc-signal-register-handler.png)
+![linux-ipc-signal-register-handler.png](../Images/LinuxKernel/kernel-ipc-signal-register-handler.png)
 
 #### send a signal
 ```C++
@@ -8034,7 +8133,7 @@ asmlinkage long sys_rt_sigreturn(void)
   return regs->ax;
 }
 ```
-![linux-sig-handle.png](../Images/linux-sig-handle.png)
+![linux-sig-handle.png](../Images/LinuxKernel/kernel-sig-handle.png)
 
 ### sem, shm, msg
 ```C++
@@ -8064,7 +8163,7 @@ struct idr {
   unsigned int    idr_next;
 };
 ```
-![ipc_ids](../Images/linux-ipc-ipc_ids.png)
+![ipc_ids](../Images/LinuxKernel/kernel-ipc-ipc_ids.png)
 ```C++
 struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 {
@@ -8603,7 +8702,7 @@ shm_fault();
       shmem_alloc_and_acct_page();
 ```
 
-![linux-ipc-shm.png](../Images/linux-ipc-shm.png)
+![linux-ipc-shm.png](../Images/LinuxKernel/kernel-ipc-shm.png)
 
 #### semget
 ```C++
@@ -9023,7 +9122,7 @@ struct sem_undo_list {
 };
 ```
 
-![linux-ipc-sem-2.png](../Images/linux-ipc-sem-2.png)
+![linux-ipc-sem-2.png](../Images/LinuxKernel/kernel-ipc-sem-2.png)
 
 ```C++
 semget();
@@ -9063,7 +9162,7 @@ semop();
     list_add_tail(&queue.list, &sma->pending_alter);
     schedule();
 ```
-![linux-ipc-sem.png](../Images/linux-ipc-sem.png)
+![linux-ipc-sem.png](../Images/LinuxKernel/kernel-ipc-sem.png)
 
 ## Q:
 1. How access shm by a vm address?
@@ -9123,7 +9222,7 @@ struct inet_sock {
   struct ipv6_pinfo  *pinet6;
 };
 ```
-![linux-net-socket-sock.png](../Images/linux-net-socket-sock.png)
+![linux-net-socket-sock.png](../Images/LinuxKernel/kernel-net-socket-sock.png)
 
 ### socket
 ```C++
@@ -9632,7 +9731,7 @@ accpet();
     move_addr_to_user();
     fd_install(newfd, newfile);
 ```
-![linux-net-socket.png](../Images/linux-net-socket.png)
+![linux-net-socket.png](../Images/LinuxKernel/kernel-net-socket.png)
 
 ### connect
 #### snd
@@ -9955,7 +10054,7 @@ tcp_v4_rcv();
         tcp_send_ack(sk);
         tcp_set_state(sk, TCP_ESTABLISHED);
 ```
-![linux-net-hand-shake.png  ](../Images/linux-net-hand-shake.png  )
+![linux-net-hand-shake.png  ](../Images/LinuxKernel/kernel-net-hand-shake.png  )
 
 
 ### write
@@ -9985,13 +10084,13 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
   *from = msg.msg_iter;
   return res;
 }
-// sock_sendmsg ->
+/* sock_sendmsg -> */
 static inline int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
 {
   int ret = sock->ops->sendmsg(sock, msg, msg_data_left(msg));
 }
 
-// inet_stream_ops.sendmsg
+/* inet_stream_ops.sendmsg */
 int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 {
   struct sock *sk = sock->sk;
@@ -10356,7 +10455,7 @@ static inline int fib_lookup(struct net *net, const struct flowi4 *flp,
     err = fib_table_lookup(tb, flp, res, flags | FIB_LOOKUP_NOREF);
 }
 ```
-![linux-net-forwarding-table.png](../Images/linux-net-forwarding-table.png)
+![linux-net-forwarding-table.png](../Images/LinuxKernel/kernel-net-forwarding-table.png)
 
 ```C++
 # Linux Server A
@@ -10451,7 +10550,7 @@ static struct dst_ops ipv4_dst_ops = {
 ```
 
 ##### prepare ip header
-![linux-net-ip-header.png](../Images/linux-net-ip-header.png)
+![linux-net-ip-header.png](../Images/LinuxKernel/kernel-net-ip-header.png)
 
 ##### send package
 ```C++
@@ -10480,8 +10579,8 @@ int __ip_local_out(
            dst_output);
 }
 ```
-![linux-net-ip-filter.png](../Images/linux-net-ip-filter.png)
-![linux-net-ip-filter-2.png](../Images/linux-net-ip-filter-2.png)
+![linux-net-ip-filter.png](../Images/LinuxKernel/kernel-net-ip-filter.png)
+![linux-net-ip-filter-2.png](../Images/LinuxKernel/kernel-net-ip-filter-2.png)
 ```C++
 static inline int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
@@ -10760,7 +10859,7 @@ static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
     inet6 fe80::f816:3eff:fe75:9908/64 scope link
        valid_lft forever preferred_lft forever
 ```
-![linux-net-queue-displine.png](../Images/linux-net-queue-displine.png)
+![linux-net-queue-displine.png](../Images/LinuxKernel/kernel-net-queue-displine.png)
 
 ```C++
 static inline int __dev_xmit_skb(
@@ -10942,7 +11041,7 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
   return NETDEV_TX_OK;
 }
 ```
-![linux-net-write-2.png](../Images/linux-net-write-2.png)
+![linux-net-write-2.png](../Images/LinuxKernel/kernel-net-write-2.png)
 
 ```C++
 struct sk_buff {
@@ -11087,9 +11186,9 @@ __dev_queue_xmit();
             qdisc_run(q);
 ```
 
-![linux-net-sk_buf.png](../Images/linux-net-sk_buf.png)
+![linux-net-sk_buf.png](../Images/LinuxKernel/kernel-net-sk_buf.png)
 
-![linux-net-write.png](../Images/linux-net-write.png)
+![linux-net-write.png](../Images/LinuxKernel/kernel-net-write.png)
 
 ### read
 #### driver layer
@@ -11234,7 +11333,7 @@ struct napi_struct {
   unsigned int      napi_id;
 };
 ```
-![linux-net-dev-pci](../Images/linux-net-dev-pci.png)
+![linux-net-dev-pci](../Images/LinuxKernel/kernel-net-dev-pci.png)
 
 ```C++
 // internet trasaction gigabyte
@@ -11315,10 +11414,15 @@ static void net_rx_action(struct softirq_action *h)
 }
 
 struct softnet_data {
-  struct list_head  poll_list;
+  struct list_head    poll_list;
 
-  struct Qdisc    *output_queue;
-  struct Qdisc    **output_queue_tailp;
+  struct Qdisc        *output_queue; /* send out */
+  struct Qdisc        **output_queue_tailp;
+
+  struct sk_buff       *completion_queue;
+  struct sk_buff_head  process_queue;
+  struct sk_buff_head  input_pkt_queue;
+  struct napi_struct  backlog;
 };
 
 /* napi_poll -> ixgb_clean -> */
@@ -11441,7 +11545,7 @@ struct ixgb_rx_desc {
   __le16 special;
 };
 ```
-![linux-net-rx_ring.png](../Images/linux-net-rx_ring.png)
+![linux-net-rx_ring.png](../Images/LinuxKernel/kernel-net-rx_ring.png)
 
 #### mac layer
 ```C++
@@ -11743,8 +11847,8 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 
 /* tcp_rcv_established ->
  * Queues:
- * 1. backlog, push back when user not reading
- * 2. sk_receive_queue, push back when user reading
+ * 1. backlog, push back when user reading
+ * 2. sk_receive_queue, push back when user not reading
  * 3. out_of_order_queue */
 static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 {
@@ -12107,13 +12211,13 @@ int default_wake_function(
 
 struct wait_queue_entry {
   unsigned int      flags;
-  void              *private;
+  void              *private; /* struct_task */
   wait_queue_func_t func;
   struct list_head  entry;
 };
 
 ```
-![linux-net-read.png](../Images/linux-net-read.png)
+![linux-net-read.png](../Images/LinuxKernel/kernel-net-read.png)
 
 ### epoll
 ```c++
@@ -12182,7 +12286,7 @@ struct eventpoll {
 # Virtualization
 
 # Containerization
-![linux-container-vir-arch.png](../Images/linux-container-vir-arch.png)
+![linux-container-vir-arch.png](../Images/LinuxKernel/kernel-container-vir-arch.png)
 
 ### ns
 ```C++
@@ -12363,7 +12467,7 @@ static __net_init int loopback_net_init(struct net *net)
   return 0;
 }
 ```
-![linux-container-namespace.png](../Images/linux-container-namespace.png)
+![linux-container-namespace.png](../Images/LinuxKernel/kernel-container-namespace.png)
 
 ### cgroup
 cgrup subsystem:
@@ -12481,7 +12585,7 @@ memory.kmem.usage_in_bytes          system.slice
 memory.limit_in_bytes               tasks
 memory.max_usage_in_bytes           user.slice
 ```
-![linux-container-cgroup.png](../Images/linux-container-cgroup.png)
+![linux-container-cgroup.png](../Images/LinuxKernel/kernel-container-cgroup.png)
 
 ```C++
 void __init start_kernel(void)
@@ -13187,7 +13291,7 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
   ret = try_charge(memcg, gfp_mask, nr_pages);
 }
 ```
-![linux-container-cgroup-arch.png](../Images/linux-container-cgroup-arch.png)
+![linux-container-cgroup-arch.png](../Images/LinuxKernel/kernel-container-cgroup-arch.png)
 
 ## Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
@@ -13419,5 +13523,64 @@ SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
     val2 = (u32) (unsigned long) utime;
 
   return do_futex(uaddr, op, val, tp, uaddr2, val2, val3);
+}
+
+long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
+		u32 __user *uaddr2, u32 val2, u32 val3)
+{
+	int cmd = op & FUTEX_CMD_MASK;
+	unsigned int flags = 0;
+
+	if (!(op & FUTEX_PRIVATE_FLAG))
+		flags |= FLAGS_SHARED;
+
+	if (op & FUTEX_CLOCK_REALTIME) {
+		flags |= FLAGS_CLOCKRT;
+		if (cmd != FUTEX_WAIT && cmd != FUTEX_WAIT_BITSET && \
+		    cmd != FUTEX_WAIT_REQUEUE_PI)
+			return -ENOSYS;
+	}
+
+	switch (cmd) {
+	case FUTEX_LOCK_PI:
+	case FUTEX_UNLOCK_PI:
+	case FUTEX_TRYLOCK_PI:
+	case FUTEX_WAIT_REQUEUE_PI:
+	case FUTEX_CMP_REQUEUE_PI:
+		if (!futex_cmpxchg_enabled)
+			return -ENOSYS;
+	}
+
+	switch (cmd) {
+	case FUTEX_WAIT:
+		val3 = FUTEX_BITSET_MATCH_ANY;
+		/* fall through */
+	case FUTEX_WAIT_BITSET:
+		return futex_wait(uaddr, flags, val, timeout, val3);
+	case FUTEX_WAKE:
+		val3 = FUTEX_BITSET_MATCH_ANY;
+		/* fall through */
+	case FUTEX_WAKE_BITSET:
+		return futex_wake(uaddr, flags, val, val3);
+	case FUTEX_REQUEUE:
+		return futex_requeue(uaddr, flags, uaddr2, val, val2, NULL, 0);
+	case FUTEX_CMP_REQUEUE:
+		return futex_requeue(uaddr, flags, uaddr2, val, val2, &val3, 0);
+	case FUTEX_WAKE_OP:
+		return futex_wake_op(uaddr, flags, uaddr2, val, val2, val3);
+	case FUTEX_LOCK_PI:
+		return futex_lock_pi(uaddr, flags, timeout, 0);
+	case FUTEX_UNLOCK_PI:
+		return futex_unlock_pi(uaddr, flags);
+	case FUTEX_TRYLOCK_PI:
+		return futex_lock_pi(uaddr, flags, NULL, 1);
+	case FUTEX_WAIT_REQUEUE_PI:
+		val3 = FUTEX_BITSET_MATCH_ANY;
+		return futex_wait_requeue_pi(uaddr, flags, val, timeout, val3,
+					     uaddr2);
+	case FUTEX_CMP_REQUEUE_PI:
+		return futex_requeue(uaddr, flags, uaddr2, val, val2, &val3, 1);
+	}
+	return -ENOSYS;
 }
 ```
