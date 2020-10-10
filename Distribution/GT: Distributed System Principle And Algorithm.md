@@ -77,5 +77,24 @@
 
   3. Mutex basd on ZooKeeper
 
+# Distributed High Avaialibity
+## Load Banlance
 
+## Flow Control
 
+## Fault Isolation
+
+## Recovery
+
+avaialbility-load-balance.png           coord-sync-distributed-election.png
+availability-fault-isolation.png        coord-sync-distributed-lock.png
+availability-fault-recovery.png         coord-sync-distributed-mutex.png
+availability-flow-control.png            coord-sync-distributed-transaction.png
+communication-msq.png                   res-mag-sched-master-master.png
+communication-pub-sub.png               res-mag-sched-master-slave.png
+communication-rpc.png                   res-mag-sched-share-state-sched.png
+computer-actor.png                      res-mag-sched-single-sched.png
+computer-assembly-line.png              res-mag-sched-two-level-sched.png
+computer-mr.png                         store-cap.png
+computer-stream.png                     store-data-fragmentation.png
+coord-sync-distributed-consensus.png    store-producer-consumer-index-store.png
