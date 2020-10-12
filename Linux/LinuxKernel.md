@@ -843,8 +843,7 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
   }
 }
 
-static void
-entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
+static void entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 {
   update_curr(cfs_rq);
   update_load_avg(curr, UPDATE_TG);
@@ -854,8 +853,7 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
     check_preempt_tick(cfs_rq, curr);
 }
 
-static void
-check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
+static void check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 {
   unsigned long ideal_runtime, delta_exec;
   struct sched_entity *se;
@@ -1775,21 +1773,15 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 ```C++
 
 #ifdef CONFIG_X86_32
-/*
- * User space process size: 3GB (default).
- */
+/* User space process size: 3GB (default). */
 #define TASK_SIZE    PAGE_OFFSET
 #define TASK_SIZE_MAX    TASK_SIZE
-/*
-config PAGE_OFFSET
+/* config PAGE_OFFSET
         hex
         default 0xC0000000
-        depends on X86_32
-*/
+        depends on X86_32 */
 #else
-/*
- * User space process size. 47bits minus one guard page.
-*/
+/* User space process size. 47bits minus one guard page. */
 #define TASK_SIZE_MAX  ((1UL << 47) - PAGE_SIZE)
 #define TASK_SIZE    (test_thread_flag(TIF_ADDR32) ? \
           IA32_PAGE_OFFSET : TASK_SIZE_MAX)
@@ -7792,6 +7784,34 @@ struct sigpending {
   sigset_t signal;
 };
 
+struct signal_struct {
+  struct list_head  thread_head;
+
+  wait_queue_head_t    wait_chldexit;  /* for wait4() */
+  struct task_struct  *curr_target;
+  struct sigpending    shared_pending;
+  struct hlist_head    multiprocess;
+
+  int                  posix_timer_id;
+  struct list_head    posix_timers;
+  struct hrtimer      real_timer;
+  ktime_t             it_real_incr;
+  struct cpu_itimer   it[2];
+  struct thread_group_cputimer  cputimer;
+  struct task_cputime           cputime_expires;
+
+  struct list_head  cpu_timers[3];
+  struct pid        *pids[PIDTYPE_MAX];
+
+  struct tty_struct *tty; /* NULL if no tty */
+
+  struct prev_cputime prev_cputime;
+  struct task_io_accounting ioac;
+  unsigned long long sum_sched_runtime;
+  struct rlimit rlim[RLIM_NLIMITS];
+  struct mm_struct *oom_mm;
+};
+
 typedef void (*sighandler_t)(int);
 sighandler_t signal(int signum, sighandler_t handler);
 
@@ -9247,6 +9267,10 @@ struct sock {
 
   struct dst_entry  *sk_rx_dst;
   struct dst_entry  *sk_dst_cache;
+
+  unsigned int      sk_ll_usec;
+  /* ===== mostly read cache line ===== */
+  unsigned int      sk_napi_id; /* set by sk_mark_napi_id */
 };
 
 struct socket_wq {
@@ -11849,6 +11873,7 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
   struct sock *rsk;
 
   if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
+    sk_mark_napi_id(sk, skb);
     struct dst_entry *dst = sk->sk_rx_dst;
     tcp_rcv_established(sk, skb, tcp_hdr(skb), skb->len);
     return 0;
@@ -12295,13 +12320,18 @@ struct epoll_event {
 
 int epoll_create(int size);
 int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
-int epoll_wait(int epfd, struct epoll_event *events,
-                 int maxevents, int timeout);
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout);
 
 struct file {
   struct list_head  f_ep_links;
   struct list_head  f_tfile_llink;
 };
+
+/* List of files with newly added links, where we may need to limit the number
+ * of emanating paths. Protected by the epmutex.
+ *
+ * list_add(&tf.file->f_tfile_llink, &tfile_check_list); */
+static LIST_HEAD(tfile_check_list);
 
 struct epitem {
   union {
@@ -12571,7 +12601,7 @@ static int ep_insert(
   /* We have to drop the new item inside our item list to keep track of it */
   spin_lock_irq(&ep->wq.lock);
 
-  /* record NAPI ID of new item if present */
+  /* Set epoll busy poll NAPI ID from sk. */
   ep_set_busy_poll_napi_id(epi);
 
   /* If the file is already "ready" we drop it inside the ready list */
@@ -12903,8 +12933,7 @@ static __poll_t ep_scan_ready_list(
 
   spin_lock_irq(&ep->wq.lock);
 
-  for (nepi = ep->ovflist; (epi = nepi) != NULL;
-    nepi = epi->next, epi->next = EP_UNACTIVE_PTR)
+  for (nepi = ep->ovflist; (epi = nepi) != NULL; nepi = epi->next, epi->next = EP_UNACTIVE_PTR)
   {
     /* We need to check if the item is already in the list.
      * During the "sproc" callback execution time, items are
@@ -12951,10 +12980,8 @@ static __poll_t ep_send_events_proc(
   poll_table pt;
 
   init_poll_funcptr(&pt, NULL);
-  for (esed->res = 0, uevent = esed->events;
-       !list_empty(head) && esed->res < esed->maxevents;) {
+  for (esed->res = 0, uevent = esed->events; !list_empty(head) && esed->res < esed->maxevents;) {
     epi = list_first_entry(head, struct epitem, rdllink);
-
     ws = ep_wakeup_source(epi);
     if (ws) {
       if (ws->active)
@@ -12966,10 +12993,10 @@ static __poll_t ep_send_events_proc(
 
     /* ensure the user registered event(s) are still available */
     revents = ep_item_poll(epi, &pt, 1);
-
     if (revents) {
-      if (__put_user(revents, &uevent->events) ||
-          __put_user(epi->event.data, &uevent->data)) {
+      if (__put_user(revents, &uevent->events)
+        || __put_user(epi->event.data, &uevent->data))
+      {
         list_add(&epi->rdllink, head);
         ep_pm_stay_awake(epi);
         if (!esed->res)
@@ -13028,8 +13055,8 @@ static void sock_def_readable(struct sock *sk)
   rcu_read_lock();
   wq = rcu_dereference(sk->sk_wq);
   if (skwq_has_sleeper(wq))
-    wake_up_interruptible_sync_poll(&wq->wait, EPOLLIN | EPOLLPRI |
-            EPOLLRDNORM | EPOLLRDBAND);
+    wake_up_interruptible_sync_poll(
+      &wq->wait, EPOLLIN | EPOLLPRI | EPOLLRDNORM | EPOLLRDBAND);
   sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN);
   rcu_read_unlock();
 }
@@ -14216,6 +14243,1200 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 ## Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
 2. The hierarchy of cgroup file system?
+
+# Time & Timer
+## init
+```C++
+void start_kernel(void)
+{
+  tick_init();
+  init_timers();
+  hrtimers_init();
+  timekeeping_init();
+  time_init();
+
+  if (late_time_init)
+    late_time_init();
+}
+
+void __init tick_init(void)
+{
+  tick_broadcast_init();
+  tick_nohz_init();
+}
+
+void __init init_timers(void)
+{
+  /* init each cpu timer_bases */
+  init_timer_cpus();
+  open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+}
+
+void __init hrtimers_init(void)
+{
+  hrtimers_prepare_cpu(smp_processor_id());
+  open_softirq(HRTIMER_SOFTIRQ, hrtimer_run_softirq);
+}
+
+void __init timekeeping_init(void)
+{
+  struct timespec64 wall_time, boot_offset, wall_to_mono;
+  struct timekeeper *tk = &tk_core.timekeeper;
+  struct clocksource *clock;
+  unsigned long flags;
+
+  read_persistent_wall_and_boot_offset(&wall_time, &boot_offset);
+  if (timespec64_valid_settod(&wall_time) &&
+      timespec64_to_ns(&wall_time) > 0) {
+    persistent_clock_exists = true;
+  } else if (timespec64_to_ns(&wall_time) != 0) {
+    pr_warn("Persistent clock returned invalid value");
+    wall_time = (struct timespec64){0};
+  }
+
+  if (timespec64_compare(&wall_time, &boot_offset) < 0)
+    boot_offset = (struct timespec64){0};
+
+  /* We want set wall_to_mono, so the following is true:
+   * wall time + wall_to_mono = boot time */
+  wall_to_mono = timespec64_sub(boot_offset, wall_time);
+
+  raw_spin_lock_irqsave(&timekeeper_lock, flags);
+  write_seqcount_begin(&tk_core.seq);
+  ntp_init();
+
+  clock = clocksource_default_clock();
+  if (clock->enable)
+    clock->enable(clock);
+  tk_setup_internals(tk, clock);
+
+  tk_set_xtime(tk, &wall_time);
+  tk->raw_sec = 0;
+
+  tk_set_wall_to_mono(tk, wall_to_mono);
+
+  timekeeping_update(tk, TK_MIRROR | TK_CLOCK_WAS_SET);
+
+  write_seqcount_end(&tk_core.seq);
+  raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
+}
+
+
+/* Initialize TSC and delay the periodic timer init to
+ * late x86_late_time_init() so ioremap works. */
+void __init time_init(void)
+{
+  late_time_init = x86_late_time_init;
+}
+
+
+struct x86_init_ops x86_init = {
+  .irqs = {
+    .pre_vector_init        = init_ISA_irqs,
+    .intr_init              = native_init_IRQ,
+    .trap_init              = x86_init_noop,
+    .intr_mode_init         = apic_intr_mode_init
+  },
+  .timers = {
+    .setup_percpu_clockev  = setup_boot_APIC_clock,
+    .timer_init            = hpet_time_init,
+    .wallclock_init        = x86_init_noop,
+  }
+};
+
+static __init void x86_late_time_init(void)
+{
+  x86_init.timers.timer_init();
+  /* After PIT/HPET timers init, select and setup
+   * the final interrupt mode for delivering IRQs. */
+
+  /* x86_init.irqs.intr_mode_init  = x86_init_noop; */
+  x86_init.irqs.intr_mode_init();
+  tsc_init();
+}
+```
+
+## hpet_time_init
+```C++
+void __init hpet_time_init(void)
+{
+  if (!hpet_enable())
+    setup_pit_timer(); /* global_clock_event = &i8253_clockevent; */
+  setup_default_timer_irq();
+}
+
+int __init hpet_enable(void)
+{
+  u32 hpet_period, cfg, id;
+  u64 freq;
+  unsigned int i, last;
+
+  if (!is_hpet_capable())
+    return 0;
+
+  hpet_set_mapping();
+  if (!hpet_virt_address)
+    return 0;
+
+  /* Read the period and check for a sane value: */
+  hpet_period = hpet_readl(HPET_PERIOD);
+
+  for (i = 0; hpet_readl(HPET_CFG) == 0xFFFFFFFF; i++) {
+    if (i == 1000) {
+      printk(KERN_WARNING
+             "HPET config register value = 0xFFFFFFFF. "
+             "Disabling HPET\n");
+      goto out_nohpet;
+    }
+  }
+
+  if (hpet_period < HPET_MIN_PERIOD || hpet_period > HPET_MAX_PERIOD)
+    goto out_nohpet;
+
+  /*
+   * The period is a femto seconds value. Convert it to a
+   * frequency.
+   */
+  freq = FSEC_PER_SEC;
+  do_div(freq, hpet_period);
+  hpet_freq = freq;
+
+  /*
+   * Read the HPET ID register to retrieve the IRQ routing
+   * information and the number of channels
+   */
+  id = hpet_readl(HPET_ID);
+  hpet_print_config();
+
+  last = (id & HPET_ID_NUMBER) >> HPET_ID_NUMBER_SHIFT;
+
+  cfg = hpet_readl(HPET_CFG);
+  hpet_boot_cfg = kmalloc_array(last + 2, sizeof(*hpet_boot_cfg),
+              GFP_KERNEL);
+  if (hpet_boot_cfg)
+    *hpet_boot_cfg = cfg;
+  else
+    pr_warn("HPET initial state will not be saved\n");
+  cfg &= ~(HPET_CFG_ENABLE | HPET_CFG_LEGACY);
+  hpet_writel(cfg, HPET_CFG);
+  if (cfg)
+    pr_warn("Unrecognized bits %#x set in global cfg\n", cfg);
+
+  for (i = 0; i <= last; ++i) {
+    cfg = hpet_readl(HPET_Tn_CFG(i));
+    if (hpet_boot_cfg)
+      hpet_boot_cfg[i + 1] = cfg;
+    cfg &= ~(HPET_TN_ENABLE | HPET_TN_LEVEL | HPET_TN_FSB);
+    hpet_writel(cfg, HPET_Tn_CFG(i));
+    cfg &= ~(HPET_TN_PERIODIC | HPET_TN_PERIODIC_CAP
+       | HPET_TN_64BIT_CAP | HPET_TN_32BIT | HPET_TN_ROUTE
+       | HPET_TN_FSB | HPET_TN_FSB_CAP);
+    if (cfg)
+      pr_warn("Unrecognized bits %#x set in cfg#%u\n",
+        cfg, i);
+  }
+  hpet_print_config();
+
+  if (hpet_clocksource_register())
+    goto out_nohpet;
+
+  if (id & HPET_ID_LEGSUP) {
+    hpet_legacy_clockevent_register();
+    return 1;
+  }
+  return 0;
+
+out_nohpet:
+  hpet_clear_mapping();
+  hpet_address = 0;
+  return 0;
+}
+
+struct clocksource {
+  u64 (*read)(struct clocksource *cs);
+  u64 mask;
+  u32 mult;
+  u32 shift;
+  u64 max_idle_ns;
+  u32 maxadj;
+  struct arch_clocksource_data  archdata;
+  u64                           max_cycles;
+  int                           rating;
+  const char                    *name;
+  unsigned long                 flags;
+  struct list_head              list;
+
+  int  (*enable)(struct clocksource *cs);
+  void (*disable)(struct clocksource *cs);
+  void (*suspend)(struct clocksource *cs);
+  void (*resume)(struct clocksource *cs);
+  void (*mark_unstable)(struct clocksource *cs);
+  void (*tick_stable)(struct clocksource *cs);
+
+  struct module *owner;
+};
+
+static int hpet_clocksource_register(void)
+{
+  u64 start, now;
+  u64 t1;
+
+  /* Start the counter */
+  hpet_restart_counter();
+
+  /* Verify whether hpet counter works */
+  t1 = hpet_readl(HPET_COUNTER);
+  start = rdtsc();
+
+  /* We don't know the TSC frequency yet, but waiting for
+   * 200000 TSC cycles is safe:
+   * 4 GHz == 50us
+   * 1 GHz == 200us */
+  do {
+    rep_nop();
+    now = rdtsc();
+  } while ((now - start) < 200000UL);
+
+  if (t1 == hpet_readl(HPET_COUNTER)) {
+    return -ENODEV;
+  }
+
+  clocksource_register_hz(&clocksource_hpet, (u32)hpet_freq);
+  return 0;
+}
+
+/* hardware abstraction for a free running counter */
+static struct clocksource clocksource_hpet = {
+  .name    = "hpet",
+  .rating  = 250,
+  .read    = read_hpet,
+  .mask    = HPET_MASK,
+  .flags    = CLOCK_SOURCE_IS_CONTINUOUS,
+  .resume  = hpet_resume_counter,
+};
+
+static void __iomem      *hpet_virt_address;
+
+static u64 read_hpet(struct clocksource *cs)
+{
+  return (u64)hpet_readl(HPET_COUNTER);
+}
+
+inline unsigned int hpet_readl(unsigned int a)
+{
+  return readl(hpet_virt_address + a);
+}
+```
+
+## clocksource_register_hz
+```C++
+static inline int clocksource_register_hz(struct clocksource *cs, u32 hz)
+{
+  return __clocksource_register_scale(cs, 1, hz);
+}
+
+int __clocksource_register_scale(struct clocksource *cs, u32 scale, u32 freq)
+{
+  unsigned long flags;
+
+  /* Initialize mult/shift and max_idle_ns */
+  __clocksource_update_freq_scale(cs, scale, freq);
+
+  /* Add clocksource to the clocksource list */
+  mutex_lock(&clocksource_mutex);
+
+  clocksource_watchdog_lock(&flags);
+  /* enqueue the clocksource sorted by rating */
+  clocksource_enqueue(cs);
+  clocksource_enqueue_watchdog(cs);
+  clocksource_watchdog_unlock(&flags);
+
+  /* select highest rating clocksource */
+  clocksource_select();
+  clocksource_select_watchdog(false);
+  __clocksource_suspend_select(cs);
+  mutex_unlock(&clocksource_mutex);
+  return 0;
+}
+```
+
+## setup irq0 timer irq
+```C++
+static struct irqaction irq0  = {
+  .handler = timer_interrupt,
+  .flags = IRQF_NOBALANCING | IRQF_IRQPOLL | IRQF_TIMER,
+  .name = "timer"
+};
+
+static void setup_default_timer_irq(void)
+{
+  if (setup_irq(0, &irq0))
+    pr_info("Failed to register legacy timer interrupt\n");
+}
+
+static irqreturn_t timer_interrupt(int irq, void *dev_id)
+{
+  /* global_clock_event = &i8253_clockevent
+   * global_clock_event = &hpet_clockevent;
+   * dev->event_handler = tick_handle_periodic; */
+  global_clock_event->event_handler(global_clock_event);
+  return IRQ_HANDLED;
+}
+
+/* On UP the PIT can serve all of the possible timer functions. On SMP systems
+ * it can be solely used for the global tick. */
+struct clock_event_device i8253_clockevent = {
+  .name                 = "pit",
+  .features             = CLOCK_EVT_FEAT_PERIODIC,
+  .set_state_shutdown   = pit_shutdown,
+  .set_state_periodic   = pit_set_periodic,
+  .set_next_event       = pit_next_event,
+};
+
+static struct clock_event_device hpet_clockevent = {
+  .name       = "hpet",
+  .features    = CLOCK_EVT_FEAT_PERIODIC |  CLOCK_EVT_FEAT_ONESHOT,
+  .set_state_periodic   = hpet_legacy_set_periodic,
+  .set_state_oneshot    = hpet_legacy_set_oneshot,
+  .set_state_shutdown   = hpet_legacy_shutdown,
+  .tick_resume          = hpet_legacy_resume,
+  .set_next_event       = hpet_legacy_next_event,
+  .irq                  = 0,
+  .rating               = 50,
+};
+
+void __init tsc_init(void)
+{
+  /* native_calibrate_cpu_early can only calibrate using methods that are
+   * available early in boot. */
+  if (x86_platform.calibrate_cpu == native_calibrate_cpu_early)
+    x86_platform.calibrate_cpu = native_calibrate_cpu;
+
+  if (!boot_cpu_has(X86_FEATURE_TSC)) {
+    setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE_TIMER);
+    return;
+  }
+
+  if (!tsc_khz) {
+    /* We failed to determine frequencies earlier, try again */
+    if (!determine_cpu_tsc_frequencies(false)) {
+      mark_tsc_unstable("could not calculate TSC khz");
+      setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE_TIMER);
+      return;
+    }
+    tsc_enable_sched_clock();
+  }
+
+  cyc2ns_init_secondary_cpus();
+
+  if (!no_sched_irq_time)
+    enable_sched_clock_irqtime();
+
+  lpj_fine = get_loops_per_jiffy();
+  use_tsc_delay();
+
+  check_system_tsc_reliable();
+
+  if (unsynchronized_tsc()) {
+    mark_tsc_unstable("TSCs unsynchronized");
+    return;
+  }
+
+  clocksource_register_khz(&clocksource_tsc_early, tsc_khz);
+  detect_art();
+}
+```
+
+## setup_APIC_timer
+```C++
+static void setup_APIC_timer(void)
+{
+  struct clock_event_device *levt = this_cpu_ptr(&lapic_events);
+
+  if (this_cpu_has(X86_FEATURE_ARAT)) {
+    lapic_clockevent.features &= ~CLOCK_EVT_FEAT_C3STOP;
+    /* Make LAPIC timer preferrable over percpu HPET */
+    lapic_clockevent.rating = 150;
+  }
+
+  memcpy(levt, &lapic_clockevent, sizeof(*levt));
+  levt->cpumask = cpumask_of(smp_processor_id());
+
+  if (this_cpu_has(X86_FEATURE_TSC_DEADLINE_TIMER)) {
+    levt->name = "lapic-deadline";
+    levt->features &= ~(CLOCK_EVT_FEAT_PERIODIC |
+            CLOCK_EVT_FEAT_DUMMY);
+    levt->set_next_event = lapic_next_deadline;
+    clockevents_config_and_register(levt,
+            tsc_khz * (1000 / TSC_DIVISOR),
+            0xF, ~0UL);
+  } else
+    clockevents_register_device(levt);
+}
+```
+
+## clockevents_register_device
+```C++
+void clockevents_register_device(struct clock_event_device *dev)
+{
+  unsigned long flags;
+
+  /* Initialize state to DETACHED */
+  clockevent_set_state(dev, CLOCK_EVT_STATE_DETACHED);
+
+  if (!dev->cpumask) {
+    WARN_ON(num_possible_cpus() > 1);
+    dev->cpumask = cpumask_of(smp_processor_id());
+  }
+
+  if (dev->cpumask == cpu_all_mask) {
+    dev->cpumask = cpu_possible_mask;
+  }
+
+  raw_spin_lock_irqsave(&clockevents_lock, flags);
+
+  list_add(&dev->list, &clockevent_devices);
+  tick_check_new_device(dev);
+  clockevents_notify_released();
+
+  raw_spin_unlock_irqrestore(&clockevents_lock, flags);
+}
+
+void tick_check_new_device(struct clock_event_device *newdev)
+{
+  struct clock_event_device *curdev;
+  struct tick_device *td;
+  int cpu;
+
+  cpu = smp_processor_id();
+  td = &per_cpu(tick_cpu_device, cpu);
+  curdev = td->evtdev;
+
+  /* cpu local device ? */
+  if (!tick_check_percpu(curdev, newdev, cpu))
+    goto out_bc;
+
+  /* Preference decision */
+  if (!tick_check_preferred(curdev, newdev))
+    goto out_bc;
+
+  if (!try_module_get(newdev->owner))
+    return;
+
+  /*
+   * Replace the eventually existing device by the new
+   * device. If the current device is the broadcast device, do
+   * not give it back to the clockevents layer !
+   */
+  if (tick_is_broadcast_device(curdev)) {
+    clockevents_shutdown(curdev);
+    curdev = NULL;
+  }
+  clockevents_exchange_device(curdev, newdev);
+  tick_setup_device(td, newdev, cpu, cpumask_of(cpu));
+  if (newdev->features & CLOCK_EVT_FEAT_ONESHOT)
+    tick_oneshot_notify();
+  return;
+
+out_bc:
+  tick_install_broadcast_device(newdev);
+}
+
+struct tick_device {
+  struct clock_event_device *evtdev;
+  enum tick_device_mode mode;
+};
+
+enum tick_device_mode {
+  TICKDEV_MODE_PERIODIC,
+  TICKDEV_MODE_ONESHOT,
+};
+
+struct clock_event_device {
+  void     (*event_handler)(struct clock_event_device *);
+  int      (*set_next_event)(unsigned long evt, struct clock_event_device *);
+  int      (*set_next_ktime)(ktime_t expires, struct clock_event_device *);
+
+  int      rating;
+  int      irq;
+  int      bound_on;
+  const struct cpumask  *cpumask;
+  struct list_head      list;
+  struct module         *owner;
+};
+
+static void tick_setup_device(
+  struct tick_device *td, struct clock_event_device *newdev,
+  int cpu, const struct cpumask *cpumask)
+{
+  void (*handler)(struct clock_event_device *) = NULL;
+  ktime_t next_event = 0;
+
+  if (!td->evtdev) {
+    /* If no cpu took the do_timer update, assign it to
+     * this cpu: */
+    if (tick_do_timer_cpu == TICK_DO_TIMER_BOOT) {
+      if (!tick_nohz_full_cpu(cpu))
+        tick_do_timer_cpu = cpu;
+      else
+        tick_do_timer_cpu = TICK_DO_TIMER_NONE;
+      tick_next_period = ktime_get();
+      tick_period = NSEC_PER_SEC / HZ;
+    }
+
+    /*Startup in periodic mode first. */
+    td->mode = TICKDEV_MODE_PERIODIC;
+  } else {
+    handler = td->evtdev->event_handler;
+    next_event = td->evtdev->next_event;
+    td->evtdev->event_handler = clockevents_handle_noop;
+  }
+
+  td->evtdev = newdev;
+
+  /* When the device is not per cpu, pin the interrupt to the
+   * current cpu: */
+  if (!cpumask_equal(newdev->cpumask, cpumask))
+    irq_set_affinity(newdev->irq, cpumask);
+
+  /*
+   * When global broadcasting is active, check if the current
+   * device is registered as a placeholder for broadcast mode.
+   * This allows us to handle this x86 misfeature in a generic
+   * way. This function also returns !=0 when we keep the
+   * current active broadcast state for this CPU.
+   */
+  if (tick_device_uses_broadcast(newdev, cpu))
+    return;
+
+  if (td->mode == TICKDEV_MODE_PERIODIC)
+    tick_setup_periodic(newdev, 0);
+  else
+    tick_setup_oneshot(newdev, handler, next_event);
+}
+
+void tick_setup_periodic(struct clock_event_device *dev, int broadcast)
+{
+  tick_set_periodic_handler(dev, broadcast);
+
+  /* Broadcast setup ? */
+  if (!tick_device_is_functional(dev))
+    return;
+
+  if ((dev->features & CLOCK_EVT_FEAT_PERIODIC)
+    && !tick_broadcast_oneshot_active()) {
+    clockevents_switch_state(dev, CLOCK_EVT_STATE_PERIODIC);
+  } else {
+    unsigned long seq;
+    ktime_t next;
+
+    do {
+      seq = read_seqbegin(&jiffies_lock);
+      next = tick_next_period;
+    } while (read_seqretry(&jiffies_lock, seq));
+
+    clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT);
+
+    for (;;) {
+      /* Reprogram the clock event device */
+      if (!clockevents_program_event(dev, next, false))
+        return;
+      next = ktime_add(next, tick_period);
+    }
+  }
+}
+
+void tick_set_periodic_handler(struct clock_event_device *dev, int broadcast)
+{
+  if (!broadcast)
+    dev->event_handler = tick_handle_periodic;
+  else
+    dev->event_handler = tick_handle_periodic_broadcast;
+}
+```
+
+## handle irq0 timer irq
+```C++
+void tick_handle_periodic(struct clock_event_device *dev)
+{
+  int cpu = smp_processor_id();
+  ktime_t next = dev->next_event;
+
+  tick_periodic(cpu);
+
+  if (!clockevent_state_oneshot(dev))
+    return;
+  for (;;) {
+    /* Setup the next period for devices, which do not have
+     * periodic mode: */
+    next = ktime_add(next, tick_period);
+
+    if (!clockevents_program_event(dev, next, false))
+      return;
+
+    if (timekeeping_valid_for_hres())
+      tick_periodic(cpu);
+  }
+}
+
+static void tick_periodic(int cpu)
+{
+  if (tick_do_timer_cpu == cpu) {
+    write_seqlock(&jiffies_lock);
+
+    /* Keep track of the next tick event */
+    tick_next_period = ktime_add(tick_next_period, tick_period);
+
+    do_timer(1);
+    write_sequnlock(&jiffies_lock);
+    update_wall_time();
+  }
+
+  update_process_times(user_mode(get_irq_regs()));
+  profile_tick(CPU_PROFILING);
+}
+
+void do_timer(unsigned long ticks)
+{
+  jiffies_64 += ticks;
+  calc_global_load(ticks);
+}
+
+void update_wall_time(void)
+{
+  timekeeping_advance(TK_ADV_TICK);
+}
+
+void update_process_times(int user_tick)
+{
+  struct task_struct *p = current;
+
+  /* Note: this timer irq context must be accounted for as well. */
+  account_process_tick(p, user_tick);
+  run_local_timers();
+  rcu_check_callbacks(user_tick);
+  if (in_irq())
+    irq_work_tick();
+  scheduler_tick();
+  if (IS_ENABLED(CONFIG_POSIX_TIMERS))
+    run_posix_cpu_timers(p);
+}
+
+void run_local_timers(void)
+{
+  struct timer_base *base = this_cpu_ptr(&timer_bases[BASE_STD]);
+
+  hrtimer_run_queues();
+  /* Raise the softirq only if required. */
+  if (time_before(jiffies, base->clk)) {
+    if (!IS_ENABLED(CONFIG_NO_HZ_COMMON))
+      return;
+    /* CPU is awake, so check the deferrable base. */
+    base++;
+    if (time_before(jiffies, base->clk))
+      return;
+  }
+  raise_softirq(TIMER_SOFTIRQ); /* run_timer_softirq */
+}
+
+struct timer_base {
+  raw_spinlock_t     lock;
+  struct timer_list  *running_timer;
+  unsigned long      clk;
+  unsigned long      next_expiry;
+  unsigned int       cpu;
+  bool               is_idle;
+  bool               must_forward_clk;
+  DECLARE_BITMAP(pending_map, WHEEL_SIZE);
+  struct hlist_head  vectors[WHEEL_SIZE];
+}
+```
+
+## HRTIMER_SOFTIRQ
+```C++
+void hrtimer_run_queues(void)
+{
+  struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
+  unsigned long flags;
+  ktime_t now;
+
+  if (__hrtimer_hres_active(cpu_base))
+    return;
+
+  /*
+   * This _is_ ugly: We have to check periodically, whether we
+   * can switch to highres and / or nohz mode. The clocksource
+   * switch happens with xtime_lock held. Notification from
+   * there only sets the check bit in the tick_oneshot code,
+   * otherwise we might deadlock vs. xtime_lock.
+   */
+  if (tick_check_oneshot_change(!hrtimer_is_hres_enabled())) {
+    hrtimer_switch_to_hres();
+    return;
+  }
+
+  raw_spin_lock_irqsave(&cpu_base->lock, flags);
+  now = hrtimer_update_base(cpu_base);
+
+  if (!ktime_before(now, cpu_base->softirq_expires_next)) {
+    cpu_base->softirq_expires_next = KTIME_MAX;
+    cpu_base->softirq_activated = 1;
+    raise_softirq_irqoff(HRTIMER_SOFTIRQ);
+  }
+
+  __hrtimer_run_queues(cpu_base, now, flags, HRTIMER_ACTIVE_HARD);
+  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
+}
+
+DEFINE_PER_CPU(struct hrtimer_cpu_base, hrtimer_bases) =
+{
+  .lock = __RAW_SPIN_LOCK_UNLOCKED(hrtimer_bases.lock),
+  .clock_base =
+  {
+    {
+      .index = HRTIMER_BASE_MONOTONIC,
+      .clockid = CLOCK_MONOTONIC,
+      .get_time = &ktime_get,
+    },
+    {
+      .index = HRTIMER_BASE_REALTIME,
+      .clockid = CLOCK_REALTIME,
+      .get_time = &ktime_get_real,
+    },
+    {
+      .index = HRTIMER_BASE_BOOTTIME,
+      .clockid = CLOCK_BOOTTIME,
+      .get_time = &ktime_get_boottime,
+    }
+  }
+};
+
+/* open_softirq(HRTIMER_SOFTIRQ, hrtimer_run_softirq); */
+static __latent_entropy void hrtimer_run_softirq(struct softirq_action *h)
+{
+  struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
+  unsigned long flags;
+  ktime_t now;
+
+  raw_spin_lock_irqsave(&cpu_base->lock, flags);
+
+  now = hrtimer_update_base(cpu_base);
+  __hrtimer_run_queues(cpu_base, now, flags, HRTIMER_ACTIVE_SOFT);
+
+  cpu_base->softirq_activated = 0;
+  hrtimer_update_softirq_timer(cpu_base, true);
+
+  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
+}
+
+static void __hrtimer_run_queues(struct hrtimer_cpu_base *cpu_base, ktime_t now,
+         unsigned long flags, unsigned int active_mask)
+{
+  struct hrtimer_clock_base *base;
+  unsigned int active = cpu_base->active_bases & active_mask;
+
+  for_each_active_base(base, cpu_base, active) {
+    struct timerqueue_node *node;
+    ktime_t basenow;
+
+    basenow = ktime_add(now, base->offset);
+
+    while ((node = timerqueue_getnext(&base->active))) {
+      struct hrtimer *timer;
+
+      timer = container_of(node, struct hrtimer, node);
+
+      /*
+       * The immediate goal for using the softexpires is
+       * minimizing wakeups, not running timers at the
+       * earliest interrupt after their soft expiration.
+       * This allows us to avoid using a Priority Search
+       * Tree, which can answer a stabbing querry for
+       * overlapping intervals and instead use the simple
+       * BST we already have.
+       * We don't add extra wakeups by delaying timers that
+       * are right-of a not yet expired timer, because that
+       * timer will have to trigger a wakeup anyway.
+       */
+      if (basenow < hrtimer_get_softexpires_tv64(timer))
+        break;
+
+      __run_hrtimer(cpu_base, base, timer, &basenow, flags);
+    }
+  }
+}
+
+static void __run_hrtimer(struct hrtimer_cpu_base *cpu_base,
+        struct hrtimer_clock_base *base,
+        struct hrtimer *timer, ktime_t *now,
+        unsigned long flags)
+{
+  enum hrtimer_restart (*fn)(struct hrtimer *);
+  int restart;
+
+  lockdep_assert_held(&cpu_base->lock);
+
+  debug_deactivate(timer);
+  base->running = timer;
+
+  /*
+   * Separate the ->running assignment from the ->state assignment.
+   *
+   * As with a regular write barrier, this ensures the read side in
+   * hrtimer_active() cannot observe base->running == NULL &&
+   * timer->state == INACTIVE.
+   */
+  raw_write_seqcount_barrier(&base->seq);
+
+  __remove_hrtimer(timer, base, HRTIMER_STATE_INACTIVE, 0);
+  fn = timer->function;
+
+  /*
+   * Clear the 'is relative' flag for the TIME_LOW_RES case. If the
+   * timer is restarted with a period then it becomes an absolute
+   * timer. If its not restarted it does not matter.
+   */
+  if (IS_ENABLED(CONFIG_TIME_LOW_RES))
+    timer->is_rel = false;
+
+  /*
+   * The timer is marked as running in the CPU base, so it is
+   * protected against migration to a different CPU even if the lock
+   * is dropped.
+   */
+  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
+  trace_hrtimer_expire_entry(timer, now);
+  restart = fn(timer);
+  trace_hrtimer_expire_exit(timer);
+  raw_spin_lock_irq(&cpu_base->lock);
+
+  /*
+   * Note: We clear the running state after enqueue_hrtimer and
+   * we do not reprogram the event hardware. Happens either in
+   * hrtimer_start_range_ns() or in hrtimer_interrupt()
+   *
+   * Note: Because we dropped the cpu_base->lock above,
+   * hrtimer_start_range_ns() can have popped in and enqueued the timer
+   * for us already.
+   */
+  if (restart != HRTIMER_NORESTART &&
+      !(timer->state & HRTIMER_STATE_ENQUEUED))
+    enqueue_hrtimer(timer, base, HRTIMER_MODE_ABS);
+
+  /*
+   * Separate the ->running assignment from the ->state assignment.
+   *
+   * As with a regular write barrier, this ensures the read side in
+   * hrtimer_active() cannot observe base->running.timer == NULL &&
+   * timer->state == INACTIVE.
+   */
+  raw_write_seqcount_barrier(&base->seq);
+
+  WARN_ON_ONCE(base->running != timer);
+  base->running = NULL;
+}
+```
+
+## TIMER_SOFTIRQ
+```C++
+void run_timer_softirq(struct softirq_action *h)
+{
+  struct timer_base *base = this_cpu_ptr(&timer_bases[BASE_STD]);
+
+  __run_timers(base);
+  if (IS_ENABLED(CONFIG_NO_HZ_COMMON))
+    __run_timers(this_cpu_ptr(&timer_bases[BASE_DEF]));
+}
+
+static inline void __run_timers(struct timer_base *base)
+{
+  struct hlist_head heads[LVL_DEPTH];
+  int levels;
+
+  if (!time_after_eq(jiffies, base->clk))
+    return;
+
+  raw_spin_lock_irq(&base->lock);
+
+  /*
+   * timer_base::must_forward_clk must be cleared before running
+   * timers so that any timer functions that call mod_timer() will
+   * not try to forward the base. Idle tracking / clock forwarding
+   * logic is only used with BASE_STD timers.
+   *
+   * The must_forward_clk flag is cleared unconditionally also for
+   * the deferrable base. The deferrable base is not affected by idle
+   * tracking and never forwarded, so clearing the flag is a NOOP.
+   *
+   * The fact that the deferrable base is never forwarded can cause
+   * large variations in granularity for deferrable timers, but they
+   * can be deferred for long periods due to idle anyway.
+   */
+  base->must_forward_clk = false;
+
+  while (time_after_eq(jiffies, base->clk)) {
+
+    levels = collect_expired_timers(base, heads);
+    base->clk++;
+
+    while (levels--)
+      expire_timers(base, heads + levels);
+  }
+  base->running_timer = NULL;
+  raw_spin_unlock_irq(&base->lock);
+}
+
+static void expire_timers(struct timer_base *base, struct hlist_head *head)
+{
+  while (!hlist_empty(head)) {
+    struct timer_list *timer;
+    void (*fn)(struct timer_list *);
+
+    timer = hlist_entry(head->first, struct timer_list, entry);
+
+    base->running_timer = timer;
+    detach_timer(timer, true);
+
+    fn = timer->function;
+
+    if (timer->flags & TIMER_IRQSAFE) {
+      raw_spin_unlock(&base->lock);
+      call_timer_fn(timer, fn);
+      raw_spin_lock(&base->lock);
+    } else {
+      raw_spin_unlock_irq(&base->lock);
+      call_timer_fn(timer, fn);
+      raw_spin_lock_irq(&base->lock);
+    }
+  }
+}
+
+static void call_timer_fn(struct timer_list *timer, void (*fn)(struct timer_list *))
+{
+  int count = preempt_count();
+
+#ifdef CONFIG_LOCKDEP
+  /*
+   * It is permissible to free the timer from inside the
+   * function that is called from it, this we need to take into
+   * account for lockdep too. To avoid bogus "held lock freed"
+   * warnings as well as problems when looking into
+   * timer->lockdep_map, make a copy and use that here.
+   */
+  struct lockdep_map lockdep_map;
+
+  lockdep_copy_map(&lockdep_map, &timer->lockdep_map);
+#endif
+  /*
+   * Couple the lock chain with the lock chain at
+   * del_timer_sync() by acquiring the lock_map around the fn()
+   * call here and in del_timer_sync().
+   */
+  lock_map_acquire(&lockdep_map);
+
+  trace_timer_expire_entry(timer);
+  fn(timer);
+  trace_timer_expire_exit(timer);
+
+  lock_map_release(&lockdep_map);
+
+  if (count != preempt_count()) {
+    WARN_ONCE(1, "timer: %pF preempt leak: %08x -> %08x\n",
+        fn, count, preempt_count());
+    /*
+     * Restore the preempt count. That gives us a decent
+     * chance to survive and extract information. If the
+     * callback kept a lock held, bad luck, but not worse
+     * than the BUG() we had.
+     */
+    preempt_count_set(count);
+  }
+}
+
+
+void profile_tick(int type)
+{
+  struct pt_regs *regs = get_irq_regs();
+
+  if (!user_mode(regs) && prof_cpu_mask != NULL &&
+      cpumask_test_cpu(smp_processor_id(), prof_cpu_mask))
+    profile_hit(type, (void *)profile_pc(regs));
+}
+```
+
+## gettimeofday
+```C++
+SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
+    struct timezone __user *, tz)
+{
+  if (likely(tv != NULL)) {
+    struct timespec64 ts;
+
+    ktime_get_real_ts64(&ts);
+    if (put_user(ts.tv_sec, &tv->tv_sec) ||
+        put_user(ts.tv_nsec / 1000, &tv->tv_usec))
+      return -EFAULT;
+  }
+  if (unlikely(tz != NULL)) {
+    if (copy_to_user(tz, &sys_tz, sizeof(sys_tz)))
+      return -EFAULT;
+  }
+  return 0;
+}
+
+void ktime_get_real_ts64(struct timespec64 *ts)
+{
+  struct timekeeper *tk = &tk_core.timekeeper;
+  unsigned long seq;
+  u64 nsecs;
+
+  WARN_ON(timekeeping_suspended);
+
+  do {
+    seq = read_seqcount_begin(&tk_core.seq);
+
+    ts->tv_sec = tk->xtime_sec;
+    nsecs = timekeeping_get_ns(&tk->tkr_mono);
+
+  } while (read_seqcount_retry(&tk_core.seq, seq));
+
+  ts->tv_nsec = 0;
+  timespec64_add_ns(ts, nsecs);
+}
+
+static struct {
+  seqcount_t          seq;
+  struct timekeeper   timekeeper;
+} tk_core ____cacheline_aligned = {
+  .seq = SEQCNT_ZERO(tk_core.seq),
+};
+
+typedef struct seqcount {
+  unsigned sequence;
+} seqcount_t;
+
+struct timekeeper {
+  struct tk_read_base  tkr_mono; /* Current CLOCK_REALTIME time in seconds */
+  struct tk_read_base  tkr_raw; /* Current CLOCK_MONOTONIC time in seconds */
+  u64                  xtime_sec;
+  unsigned long        ktime_sec;
+  struct timespec64    wall_to_monotonic;
+  ktime_t      offs_real;
+  ktime_t      offs_boot;
+  ktime_t      offs_tai;
+  s32          tai_offset;
+  unsigned int    clock_was_set_seq;
+  u8              cs_was_changed_seq;
+  ktime_t         next_leap_ktime;
+  u64             raw_sec;
+
+  u64      cycle_interval;
+  u64      xtime_interval;
+  s64      xtime_remainder;
+  u64      raw_interval;
+
+  u64      ntp_tick;
+  s64      ntp_error;
+  u32      ntp_error_shift;
+  u32      ntp_err_mult;
+  u32      skip_second_overflow;
+};
+```
+
+## timer_create
+```C++
+SYSCALL_DEFINE3(timer_create, const clockid_t, which_clock,
+    struct sigevent __user *, timer_event_spec,
+    timer_t __user *, created_timer_id)
+{
+  if (timer_event_spec) {
+    sigevent_t event;
+
+    if (copy_from_user(&event, timer_event_spec, sizeof (event)))
+      return -EFAULT;
+    return do_timer_create(which_clock, &event, created_timer_id);
+  }
+  return do_timer_create(which_clock, NULL, created_timer_id);
+}
+
+static int do_timer_create(clockid_t which_clock, struct sigevent *event,
+         timer_t __user *created_timer_id)
+{
+  const struct k_clock *kc = clockid_to_kclock(which_clock);
+  struct k_itimer *new_timer;
+  int error, new_timer_id;
+  int it_id_set = IT_ID_NOT_SET;
+
+  if (!kc)
+    return -EINVAL;
+  if (!kc->timer_create)
+    return -EOPNOTSUPP;
+
+  new_timer = alloc_posix_timer();
+  if (unlikely(!new_timer))
+    return -EAGAIN;
+
+  spin_lock_init(&new_timer->it_lock);
+  new_timer_id = posix_timer_add(new_timer);
+
+  it_id_set = IT_ID_SET;
+  new_timer->it_id = (timer_t) new_timer_id;
+  new_timer->it_clock = which_clock;
+  new_timer->kclock = kc;
+  new_timer->it_overrun = -1LL;
+
+  if (event) {
+    rcu_read_lock();
+    new_timer->it_pid = get_pid(good_sigevent(event));
+    rcu_read_unlock();
+    if (!new_timer->it_pid) {
+      error = -EINVAL;
+      goto out;
+    }
+    new_timer->it_sigev_notify     = event->sigev_notify;
+    new_timer->sigq->info.si_signo = event->sigev_signo;
+    new_timer->sigq->info.si_value = event->sigev_value;
+  } else {
+    new_timer->it_sigev_notify     = SIGEV_SIGNAL;
+    new_timer->sigq->info.si_signo = SIGALRM;
+    memset(&new_timer->sigq->info.si_value, 0, sizeof(sigval_t));
+    new_timer->sigq->info.si_value.sival_int = new_timer->it_id;
+    new_timer->it_pid = get_pid(task_tgid(current));
+  }
+
+  new_timer->sigq->info.si_tid   = new_timer->it_id;
+  new_timer->sigq->info.si_code  = SI_TIMER;
+
+  if (copy_to_user(created_timer_id, &new_timer_id, sizeof (new_timer_id))) {
+    error = -EFAULT;
+    goto out;
+  }
+
+  error = kc->timer_create(new_timer);
+  if (error)
+    goto out;
+
+  spin_lock_irq(&current->sighand->siglock);
+  new_timer->it_signal = current->signal;
+  list_add(&new_timer->list, &current->signal->posix_timers);
+  spin_unlock_irq(&current->sighand->siglock);
+
+  return 0;
+  /*
+   * In the case of the timer belonging to another task, after
+   * the task is unlocked, the timer is owned by the other task
+   * and may cease to exist at any time.  Don't use or modify
+   * new_timer after the unlock call.
+   */
+out:
+  release_posix_timer(new_timer, it_id_set);
+  return error;
+}
+
+```
+
+## Refence:
+[hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
 
 # Lock
 ### spin lock
