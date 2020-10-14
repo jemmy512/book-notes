@@ -14383,9 +14383,6 @@ int __init hpet_enable(void)
 
   for (i = 0; hpet_readl(HPET_CFG) == 0xFFFFFFFF; i++) {
     if (i == 1000) {
-      printk(KERN_WARNING
-             "HPET config register value = 0xFFFFFFFF. "
-             "Disabling HPET\n");
       goto out_nohpet;
     }
   }
@@ -14393,18 +14390,10 @@ int __init hpet_enable(void)
   if (hpet_period < HPET_MIN_PERIOD || hpet_period > HPET_MAX_PERIOD)
     goto out_nohpet;
 
-  /*
-   * The period is a femto seconds value. Convert it to a
-   * frequency.
-   */
   freq = FSEC_PER_SEC;
   do_div(freq, hpet_period);
   hpet_freq = freq;
 
-  /*
-   * Read the HPET ID register to retrieve the IRQ routing
-   * information and the number of channels
-   */
   id = hpet_readl(HPET_ID);
   hpet_print_config();
 
@@ -14723,15 +14712,11 @@ void tick_check_new_device(struct clock_event_device *newdev)
   if (!try_module_get(newdev->owner))
     return;
 
-  /*
-   * Replace the eventually existing device by the new
-   * device. If the current device is the broadcast device, do
-   * not give it back to the clockevents layer !
-   */
   if (tick_is_broadcast_device(curdev)) {
     clockevents_shutdown(curdev);
     curdev = NULL;
   }
+
   clockevents_exchange_device(curdev, newdev);
   tick_setup_device(td, newdev, cpu, cpumask_of(cpu));
   if (newdev->features & CLOCK_EVT_FEAT_ONESHOT)
@@ -14743,8 +14728,8 @@ out_bc:
 }
 
 struct tick_device {
-  struct clock_event_device *evtdev;
-  enum tick_device_mode mode;
+  struct clock_event_device   *evtdev;
+  enum tick_device_mode       mode;
 };
 
 enum tick_device_mode {
@@ -14773,8 +14758,6 @@ static void tick_setup_device(
   ktime_t next_event = 0;
 
   if (!td->evtdev) {
-    /* If no cpu took the do_timer update, assign it to
-     * this cpu: */
     if (tick_do_timer_cpu == TICK_DO_TIMER_BOOT) {
       if (!tick_nohz_full_cpu(cpu))
         tick_do_timer_cpu = cpu;
@@ -14853,6 +14836,15 @@ void tick_set_periodic_handler(struct clock_event_device *dev, int broadcast)
   else
     dev->event_handler = tick_handle_periodic_broadcast;
 }
+
+void tick_setup_oneshot(struct clock_event_device *newdev,
+      void (*handler)(struct clock_event_device *),
+      ktime_t next_event)
+{
+  newdev->event_handler = handler;
+  clockevents_switch_state(newdev, CLOCK_EVT_STATE_ONESHOT);
+  clockevents_program_event(newdev, next_event, true);
+}
 ```
 
 ## handle irq0 timer irq
@@ -14913,10 +14905,12 @@ void update_process_times(int user_tick)
 
   /* Note: this timer irq context must be accounted for as well. */
   account_process_tick(p, user_tick);
+
   run_local_timers();
   rcu_check_callbacks(user_tick);
   if (in_irq())
     irq_work_tick();
+
   scheduler_tick();
   if (IS_ENABLED(CONFIG_POSIX_TIMERS))
     run_posix_cpu_timers(p);
@@ -14971,6 +14965,7 @@ void hrtimer_run_queues(void)
    * otherwise we might deadlock vs. xtime_lock.
    */
   if (tick_check_oneshot_change(!hrtimer_is_hres_enabled())) {
+    /* change event_handler to hrtimer_interrupt */
     hrtimer_switch_to_hres();
     return;
   }
@@ -15137,6 +15132,124 @@ static void __run_hrtimer(struct hrtimer_cpu_base *cpu_base,
 }
 ```
 
+### tick_check_oneshot_change
+```C++
+int tick_check_oneshot_change(int allow_nohz)
+{
+  struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
+
+  if (!test_and_clear_bit(0, &ts->check_clocks))
+    return 0;
+
+  if (ts->nohz_mode != NOHZ_MODE_INACTIVE)
+    return 0;
+
+  if (!timekeeping_valid_for_hres() || !tick_is_oneshot_available())
+    return 0;
+
+  if (!allow_nohz)
+    return 1;
+
+  tick_nohz_switch_to_nohz();
+  return 0;
+}
+
+static void tick_nohz_switch_to_nohz(void)
+{
+  struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
+  ktime_t next;
+
+  if (!tick_nohz_enabled)
+    return;
+
+  if (tick_switch_to_oneshot(tick_nohz_handler))
+    return;
+
+  /* Recycle the hrtimer in ts, so we can share the
+   * hrtimer_forward with the highres code. */
+  hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+  /* Get the next period */
+  next = tick_init_jiffy_update();
+
+  hrtimer_set_expires(&ts->sched_timer, next);
+  hrtimer_forward_now(&ts->sched_timer, tick_period);
+  tick_program_event(hrtimer_get_expires(&ts->sched_timer), 1);
+  tick_nohz_activate(ts, NOHZ_MODE_LOWRES);
+}
+
+int tick_switch_to_oneshot(void (*handler)(struct clock_event_device *))
+{
+  struct tick_device *td = this_cpu_ptr(&tick_cpu_device);
+  struct clock_event_device *dev = td->evtdev;
+
+  td->mode = TICKDEV_MODE_ONESHOT;
+  dev->event_handler = handler;
+  clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT);
+  tick_broadcast_switch_to_oneshot();
+  return 0;
+}
+
+int tick_program_event(ktime_t expires, int force)
+{
+  struct clock_event_device *dev = __this_cpu_read(tick_cpu_device.evtdev);
+
+  if (unlikely(clockevent_state_oneshot_stopped(dev))) {
+    clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT);
+  }
+
+  return clockevents_program_event(dev, expires, force);
+}
+```
+
+### hrtimer_switch_to_hres
+```C++
+static void hrtimer_switch_to_hres(void)
+{
+	struct hrtimer_cpu_base *base = this_cpu_ptr(&hrtimer_bases);
+
+	if (tick_init_highres()) {
+		return;
+	}
+
+	base->hres_active = 1;
+	hrtimer_resolution = HIGH_RES_NSEC;
+
+	tick_setup_sched_timer();
+	/* "Retrigger" the interrupt to get things going */
+	retrigger_next_event(NULL);
+}
+
+int tick_init_highres(void)
+{
+	return tick_switch_to_oneshot(hrtimer_interrupt);
+}
+
+/* setup the tick emulation timer */
+void tick_setup_sched_timer(void)
+{
+	struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
+	ktime_t now = ktime_get();
+
+	hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+	ts->sched_timer.function = tick_sched_timer;
+
+	/* Get the next period (per-CPU) */
+	hrtimer_set_expires(&ts->sched_timer, tick_init_jiffy_update());
+
+	/* Offset the tick to avert jiffies_lock contention. */
+	if (sched_skew_tick) {
+		u64 offset = ktime_to_ns(tick_period) >> 1;
+		do_div(offset, num_possible_cpus());
+		offset *= smp_processor_id();
+		hrtimer_add_expires_ns(&ts->sched_timer, offset);
+	}
+
+	hrtimer_forward(&ts->sched_timer, now, tick_period);
+	hrtimer_start_expires(&ts->sched_timer, HRTIMER_MODE_ABS_PINNED);
+	tick_nohz_activate(ts, NOHZ_MODE_HIGHRES);
+}
+```
+
 ## TIMER_SOFTIRQ
 ```C++
 void run_timer_softirq(struct softirq_action *h)
@@ -15158,27 +15271,11 @@ static inline void __run_timers(struct timer_base *base)
 
   raw_spin_lock_irq(&base->lock);
 
-  /*
-   * timer_base::must_forward_clk must be cleared before running
-   * timers so that any timer functions that call mod_timer() will
-   * not try to forward the base. Idle tracking / clock forwarding
-   * logic is only used with BASE_STD timers.
-   *
-   * The must_forward_clk flag is cleared unconditionally also for
-   * the deferrable base. The deferrable base is not affected by idle
-   * tracking and never forwarded, so clearing the flag is a NOOP.
-   *
-   * The fact that the deferrable base is never forwarded can cause
-   * large variations in granularity for deferrable timers, but they
-   * can be deferred for long periods due to idle anyway.
-   */
   base->must_forward_clk = false;
 
   while (time_after_eq(jiffies, base->clk)) {
-
     levels = collect_expired_timers(base, heads);
     base->clk++;
-
     while (levels--)
       expire_timers(base, heads + levels);
   }
@@ -15216,22 +15313,10 @@ static void call_timer_fn(struct timer_list *timer, void (*fn)(struct timer_list
   int count = preempt_count();
 
 #ifdef CONFIG_LOCKDEP
-  /*
-   * It is permissible to free the timer from inside the
-   * function that is called from it, this we need to take into
-   * account for lockdep too. To avoid bogus "held lock freed"
-   * warnings as well as problems when looking into
-   * timer->lockdep_map, make a copy and use that here.
-   */
   struct lockdep_map lockdep_map;
-
   lockdep_copy_map(&lockdep_map, &timer->lockdep_map);
 #endif
-  /*
-   * Couple the lock chain with the lock chain at
-   * del_timer_sync() by acquiring the lock_map around the fn()
-   * call here and in del_timer_sync().
-   */
+
   lock_map_acquire(&lockdep_map);
 
   trace_timer_expire_entry(timer);
@@ -15243,16 +15328,9 @@ static void call_timer_fn(struct timer_list *timer, void (*fn)(struct timer_list
   if (count != preempt_count()) {
     WARN_ONCE(1, "timer: %pF preempt leak: %08x -> %08x\n",
         fn, count, preempt_count());
-    /*
-     * Restore the preempt count. That gives us a decent
-     * chance to survive and extract information. If the
-     * callback kept a lock held, bad luck, but not worse
-     * than the BUG() we had.
-     */
     preempt_count_set(count);
   }
 }
-
 
 void profile_tick(int type)
 {
@@ -15261,6 +15339,82 @@ void profile_tick(int type)
   if (!user_mode(regs) && prof_cpu_mask != NULL &&
       cpumask_test_cpu(smp_processor_id(), prof_cpu_mask))
     profile_hit(type, (void *)profile_pc(regs));
+}
+```
+
+## hrtimer_interrupt
+```C++
+void hrtimer_interrupt(struct clock_event_device *dev)
+{
+  struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
+  ktime_t expires_next, now, entry_time, delta;
+  unsigned long flags;
+  int retries = 0;
+
+  cpu_base->nr_events++;
+  dev->next_event = KTIME_MAX;
+
+  raw_spin_lock_irqsave(&cpu_base->lock, flags);
+  entry_time = now = hrtimer_update_base(cpu_base);
+retry:
+  cpu_base->in_hrtirq = 1;
+  cpu_base->expires_next = KTIME_MAX;
+
+  if (!ktime_before(now, cpu_base->softirq_expires_next)) {
+    cpu_base->softirq_expires_next = KTIME_MAX;
+    cpu_base->softirq_activated = 1;
+    raise_softirq_irqoff(HRTIMER_SOFTIRQ);
+  }
+
+  __hrtimer_run_queues(cpu_base, now, flags, HRTIMER_ACTIVE_HARD);
+
+  /* Reevaluate the clock bases for the next expiry */
+  expires_next = __hrtimer_get_next_event(cpu_base, HRTIMER_ACTIVE_ALL);
+
+  cpu_base->expires_next = expires_next;
+  cpu_base->in_hrtirq = 0;
+  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
+
+  /* Reprogramming necessary ? */
+  if (!tick_program_event(expires_next, 0)) {
+    cpu_base->hang_detected = 0;
+    return;
+  }
+
+  /* The next timer was already expired due to:
+   * - tracing
+   * - long lasting callbacks
+   * - being scheduled away when running in a VM
+   *
+   * We need to prevent that we loop forever in the hrtimer
+   * interrupt routine. We give it 3 attempts to avoid
+   * overreacting on some spurious event.
+   *
+   * Acquire base lock for updating the offsets and retrieving
+   * the current time. */
+  raw_spin_lock_irqsave(&cpu_base->lock, flags);
+  now = hrtimer_update_base(cpu_base);
+  cpu_base->nr_retries++;
+  if (++retries < 3)
+    goto retry;
+  /* Give the system a chance to do something else than looping
+   * here. We stored the entry time, so we know exactly how long
+   * we spent here. We schedule the next event this amount of
+   * time away. */
+  cpu_base->nr_hangs++;
+  cpu_base->hang_detected = 1;
+  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
+
+  delta = ktime_sub(now, entry_time);
+  if ((unsigned int)delta > cpu_base->max_hang_time)
+    cpu_base->max_hang_time = (unsigned int) delta;
+  /* Limit it to a sensible value as we enforce a longer
+   * delay. Give the CPU at least 100ms to catch up. */
+  if (delta > 100 * NSEC_PER_MSEC)
+    expires_next = ktime_add_ns(now, 100 * NSEC_PER_MSEC);
+  else
+    expires_next = ktime_add(now, delta);
+  tick_program_event(expires_next, 1);
 }
 ```
 
@@ -15432,11 +15586,27 @@ out:
   release_posix_timer(new_timer, it_id_set);
   return error;
 }
-
 ```
+![kernel-time-timer.png](../Images/LinuxKernel/kernel-time-timer.png)
+
+![kernel-time-timer-arch.png](../Images/LinuxKernel/kernel-time-timer-arch.png)
+
+![kernel-time-tiemer-origin.png](../Images/LinuxKernel/kernel-time-tiemer-origin.png)
+
+![kernel-time-timer-hrtimer.png](../Images/LinuxKernel/kernel-time-timer-hrtimer.png)
+
+![kernel-time-timer-hrtimer-gtod.png](../Images/LinuxKernel/kernel-time-timer-hrtimer-gtod.png)
+
+![kernel-time-timer-hrtimer-gtod-clockevent.png](../Images/LinuxKernel/kernel-time-timer-hrtimer-gtod-clockevent.png)
+
+![kernel-time-timer-hrtimer-gtod-clockevent-tick-emulation.png](../Images/LinuxKernel/kernel-time-timer-hrtimer-gtod-clockevent-tick-emulation.png)
+
+
 
 ## Refence:
 [hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
+
+https://www.cnblogs.com/alantu2018/p/8448297.html
 
 # Lock
 ### spin lock
