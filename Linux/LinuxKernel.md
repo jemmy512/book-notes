@@ -7812,22 +7812,30 @@ struct signal_struct {
   struct mm_struct *oom_mm;
 };
 
-typedef void (*sighandler_t)(int);
-sighandler_t signal(int signum, sighandler_t handler);
-
-int sigaction(int signum, const struct sigaction *act,
-    struct sigaction *oldact);
-
-struct sigaction {
-  __sighandler_t sa_handler;
-  unsigned long sa_flags;
-  __sigrestore_t sa_restorer;
-  sigset_t sa_mask;    /* mask last for extensibility */
+struct sighand_struct {
+  atomic_t              count;
+  struct k_sigaction    action[_NSIG];
+  spinlock_t            siglock;
+  wait_queue_head_t     signalfd_wqh;
 };
 
+struct k_sigaction {
+  struct sigaction sa;
+};
+
+struct sigaction {
+  unsigned int    sa_flags;
+  __sighandler_t  sa_handler;
+  __sigrestore_t  sa_restorer;
+  sigset_t        sa_mask;  /* mask last for extensibility */
+};
+
+typedef void (*sighandler_t)(int);
+sighandler_t signal(int signum, sighandler_t handler);
+int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+
 #define signal __sysv_signal
-__sighandler_t
-__sysv_signal (int sig, __sighandler_t handler)
+__sighandler_t __sysv_signal (int sig, __sighandler_t handler)
 {
   struct sigaction act, oact;
   act.sa_handler = handler;
@@ -7840,14 +7848,12 @@ __sysv_signal (int sig, __sighandler_t handler)
 }
 weak_alias (__sysv_signal, sysv_signal)
 
-int
-__sigaction (int sig, const struct sigaction *act, struct sigaction *oact)
+int __sigaction (int sig, const struct sigaction *act, struct sigaction *oact)
 {
   return __libc_sigaction (sig, act, oact);
 }
 
-int
-__libc_sigaction (int sig, const struct sigaction *act, struct sigaction *oact)
+int __libc_sigaction (int sig, const struct sigaction *act, struct sigaction *oact)
 {
   int result;
   struct kernel_sigaction kact, koact;
@@ -8000,24 +8006,18 @@ static void complete_signal(int sig, struct task_struct *p, int group)
   struct signal_struct *signal = p->signal;
   struct task_struct *t;
 
-  /*
-   * Now find a thread we can wake up to take the signal off the queue.
+  /* Now find a thread we can wake up to take the signal off the queue.
    *
    * If the main thread wants the signal, it gets first crack.
-   * Probably the least surprising to the average bear.
-   */
+   * Probably the least surprising to the average bear. */
   if (wants_signal(sig, p))
     t = p;
   else if (!group || thread_group_empty(p))
-    /*
-     * There is just one thread and it does not need to be woken.
-     * It will dequeue unblocked signals before it runs again.
-     */
+    /* There is just one thread and it does not need to be woken.
+     * It will dequeue unblocked signals before it runs again. */
     return;
   else {
-    /*
-     * Otherwise try to find a suitable thread.
-     */
+    /* Otherwise try to find a suitable thread. */
     t = signal->curr_target;
     while (!wants_signal(sig, t)) {
       t = next_thread(t);
@@ -14517,7 +14517,7 @@ inline unsigned int hpet_readl(unsigned int a)
 }
 ```
 
-## clocksource_register_hz
+### clocksource_register_hz
 ```C++
 static inline int clocksource_register_hz(struct clocksource *cs, u32 hz)
 {
@@ -14549,128 +14549,33 @@ int __clocksource_register_scale(struct clocksource *cs, u32 scale, u32 freq)
 }
 ```
 
-## setup irq0 timer irq
+### clockevents_config_and_register
 ```C++
-static struct irqaction irq0  = {
-  .handler = timer_interrupt,
-  .flags = IRQF_NOBALANCING | IRQF_IRQPOLL | IRQF_TIMER,
-  .name = "timer"
-};
-
-static void setup_default_timer_irq(void)
+static void hpet_legacy_clockevent_register(void)
 {
-  if (setup_irq(0, &irq0))
-    pr_info("Failed to register legacy timer interrupt\n");
+  hpet_enable_legacy_int();
+
+  hpet_clockevent.cpumask = cpumask_of(boot_cpu_data.cpu_index);
+  clockevents_config_and_register(&hpet_clockevent, hpet_freq,
+          HPET_MIN_PROG_DELTA, 0x7FFFFFFF);
+  global_clock_event = &hpet_clockevent;
+  printk(KERN_DEBUG "hpet clockevent registered\n");
 }
 
-static irqreturn_t timer_interrupt(int irq, void *dev_id)
+void clockevents_config_and_register(struct clock_event_device *dev,
+             u32 freq, unsigned long min_delta,
+             unsigned long max_delta)
 {
-  /* global_clock_event = &i8253_clockevent
-   * global_clock_event = &hpet_clockevent;
-   * dev->event_handler = tick_handle_periodic; */
-  global_clock_event->event_handler(global_clock_event);
-  return IRQ_HANDLED;
+  dev->min_delta_ticks = min_delta;
+  dev->max_delta_ticks = max_delta;
+  clockevents_config(dev, freq);
+  clockevents_register_device(dev);
 }
 
-/* On UP the PIT can serve all of the possible timer functions. On SMP systems
- * it can be solely used for the global tick. */
-struct clock_event_device i8253_clockevent = {
-  .name                 = "pit",
-  .features             = CLOCK_EVT_FEAT_PERIODIC,
-  .set_state_shutdown   = pit_shutdown,
-  .set_state_periodic   = pit_set_periodic,
-  .set_next_event       = pit_next_event,
-};
-
-static struct clock_event_device hpet_clockevent = {
-  .name       = "hpet",
-  .features    = CLOCK_EVT_FEAT_PERIODIC |  CLOCK_EVT_FEAT_ONESHOT,
-  .set_state_periodic   = hpet_legacy_set_periodic,
-  .set_state_oneshot    = hpet_legacy_set_oneshot,
-  .set_state_shutdown   = hpet_legacy_shutdown,
-  .tick_resume          = hpet_legacy_resume,
-  .set_next_event       = hpet_legacy_next_event,
-  .irq                  = 0,
-  .rating               = 50,
-};
-
-void __init tsc_init(void)
-{
-  /* native_calibrate_cpu_early can only calibrate using methods that are
-   * available early in boot. */
-  if (x86_platform.calibrate_cpu == native_calibrate_cpu_early)
-    x86_platform.calibrate_cpu = native_calibrate_cpu;
-
-  if (!boot_cpu_has(X86_FEATURE_TSC)) {
-    setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE_TIMER);
-    return;
-  }
-
-  if (!tsc_khz) {
-    /* We failed to determine frequencies earlier, try again */
-    if (!determine_cpu_tsc_frequencies(false)) {
-      mark_tsc_unstable("could not calculate TSC khz");
-      setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE_TIMER);
-      return;
-    }
-    tsc_enable_sched_clock();
-  }
-
-  cyc2ns_init_secondary_cpus();
-
-  if (!no_sched_irq_time)
-    enable_sched_clock_irqtime();
-
-  lpj_fine = get_loops_per_jiffy();
-  use_tsc_delay();
-
-  check_system_tsc_reliable();
-
-  if (unsynchronized_tsc()) {
-    mark_tsc_unstable("TSCs unsynchronized");
-    return;
-  }
-
-  clocksource_register_khz(&clocksource_tsc_early, tsc_khz);
-  detect_art();
-}
-```
-
-## setup_APIC_timer
-```C++
-static void setup_APIC_timer(void)
-{
-  struct clock_event_device *levt = this_cpu_ptr(&lapic_events);
-
-  if (this_cpu_has(X86_FEATURE_ARAT)) {
-    lapic_clockevent.features &= ~CLOCK_EVT_FEAT_C3STOP;
-    /* Make LAPIC timer preferrable over percpu HPET */
-    lapic_clockevent.rating = 150;
-  }
-
-  memcpy(levt, &lapic_clockevent, sizeof(*levt));
-  levt->cpumask = cpumask_of(smp_processor_id());
-
-  if (this_cpu_has(X86_FEATURE_TSC_DEADLINE_TIMER)) {
-    levt->name = "lapic-deadline";
-    levt->features &= ~(CLOCK_EVT_FEAT_PERIODIC |
-            CLOCK_EVT_FEAT_DUMMY);
-    levt->set_next_event = lapic_next_deadline;
-    clockevents_config_and_register(levt,
-            tsc_khz * (1000 / TSC_DIVISOR),
-            0xF, ~0UL);
-  } else
-    clockevents_register_device(levt);
-}
-```
-
-## clockevents_register_device
-```C++
 void clockevents_register_device(struct clock_event_device *dev)
 {
   unsigned long flags;
 
-  /* Initialize state to DETACHED */
   clockevent_set_state(dev, CLOCK_EVT_STATE_DETACHED);
 
   if (!dev->cpumask) {
@@ -14847,6 +14752,93 @@ void tick_setup_oneshot(struct clock_event_device *newdev,
 }
 ```
 
+## setup irq0 timer irq
+```C++
+static struct irqaction irq0  = {
+  .handler = timer_interrupt,
+  .flags = IRQF_NOBALANCING | IRQF_IRQPOLL | IRQF_TIMER,
+  .name = "timer"
+};
+
+static void setup_default_timer_irq(void)
+{
+  if (setup_irq(0, &irq0))
+    pr_info("Failed to register legacy timer interrupt\n");
+}
+
+static irqreturn_t timer_interrupt(int irq, void *dev_id)
+{
+  /* global_clock_event = &i8253_clockevent
+   * global_clock_event = &hpet_clockevent;
+   * dev->event_handler = tick_handle_periodic; */
+  global_clock_event->event_handler(global_clock_event);
+  return IRQ_HANDLED;
+}
+
+/* On UP the PIT can serve all of the possible timer functions. On SMP systems
+ * it can be solely used for the global tick. */
+struct clock_event_device i8253_clockevent = {
+  .name                 = "pit",
+  .features             = CLOCK_EVT_FEAT_PERIODIC,
+  .set_state_shutdown   = pit_shutdown,
+  .set_state_periodic   = pit_set_periodic,
+  .set_next_event       = pit_next_event,
+};
+
+static struct clock_event_device hpet_clockevent = {
+  .name       = "hpet",
+  .features    = CLOCK_EVT_FEAT_PERIODIC |  CLOCK_EVT_FEAT_ONESHOT,
+  .set_state_periodic   = hpet_legacy_set_periodic,
+  .set_state_oneshot    = hpet_legacy_set_oneshot,
+  .set_state_shutdown   = hpet_legacy_shutdown,
+  .tick_resume          = hpet_legacy_resume,
+  .set_next_event       = hpet_legacy_next_event,
+  .irq                  = 0,
+  .rating               = 50,
+};
+
+void __init tsc_init(void)
+{
+  /* native_calibrate_cpu_early can only calibrate using methods that are
+   * available early in boot. */
+  if (x86_platform.calibrate_cpu == native_calibrate_cpu_early)
+    x86_platform.calibrate_cpu = native_calibrate_cpu;
+
+  if (!boot_cpu_has(X86_FEATURE_TSC)) {
+    setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE_TIMER);
+    return;
+  }
+
+  if (!tsc_khz) {
+    /* We failed to determine frequencies earlier, try again */
+    if (!determine_cpu_tsc_frequencies(false)) {
+      mark_tsc_unstable("could not calculate TSC khz");
+      setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE_TIMER);
+      return;
+    }
+    tsc_enable_sched_clock();
+  }
+
+  cyc2ns_init_secondary_cpus();
+
+  if (!no_sched_irq_time)
+    enable_sched_clock_irqtime();
+
+  lpj_fine = get_loops_per_jiffy();
+  use_tsc_delay();
+
+  check_system_tsc_reliable();
+
+  if (unsynchronized_tsc()) {
+    mark_tsc_unstable("TSCs unsynchronized");
+    return;
+  }
+
+  clocksource_register_khz(&clocksource_tsc_early, tsc_khz);
+  detect_art();
+}
+```
+
 ## handle irq0 timer irq
 ```C++
 void tick_handle_periodic(struct clock_event_device *dev)
@@ -14946,7 +14938,35 @@ struct timer_base {
 }
 ```
 
-## HRTIMER_SOFTIRQ
+## setup_APIC_timer
+```C++
+static void setup_APIC_timer(void)
+{
+  struct clock_event_device *levt = this_cpu_ptr(&lapic_events);
+
+  if (this_cpu_has(X86_FEATURE_ARAT)) {
+    lapic_clockevent.features &= ~CLOCK_EVT_FEAT_C3STOP;
+    /* Make LAPIC timer preferrable over percpu HPET */
+    lapic_clockevent.rating = 150;
+  }
+
+  memcpy(levt, &lapic_clockevent, sizeof(*levt));
+  levt->cpumask = cpumask_of(smp_processor_id());
+
+  if (this_cpu_has(X86_FEATURE_TSC_DEADLINE_TIMER)) {
+    levt->name = "lapic-deadline";
+    levt->features &= ~(CLOCK_EVT_FEAT_PERIODIC |
+            CLOCK_EVT_FEAT_DUMMY);
+    levt->set_next_event = lapic_next_deadline;
+    clockevents_config_and_register(levt,
+            tsc_khz * (1000 / TSC_DIVISOR),
+            0xF, ~0UL);
+  } else
+    clockevents_register_device(levt);
+}
+```
+
+## hrtimer_run_queues
 ```C++
 void hrtimer_run_queues(void)
 {
@@ -14957,13 +14977,6 @@ void hrtimer_run_queues(void)
   if (__hrtimer_hres_active(cpu_base))
     return;
 
-  /*
-   * This _is_ ugly: We have to check periodically, whether we
-   * can switch to highres and / or nohz mode. The clocksource
-   * switch happens with xtime_lock held. Notification from
-   * there only sets the check bit in the tick_oneshot code,
-   * otherwise we might deadlock vs. xtime_lock.
-   */
   if (tick_check_oneshot_change(!hrtimer_is_hres_enabled())) {
     /* change event_handler to hrtimer_interrupt */
     hrtimer_switch_to_hres();
@@ -14983,46 +14996,6 @@ void hrtimer_run_queues(void)
   raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
 }
 
-DEFINE_PER_CPU(struct hrtimer_cpu_base, hrtimer_bases) =
-{
-  .lock = __RAW_SPIN_LOCK_UNLOCKED(hrtimer_bases.lock),
-  .clock_base =
-  {
-    {
-      .index = HRTIMER_BASE_MONOTONIC,
-      .clockid = CLOCK_MONOTONIC,
-      .get_time = &ktime_get,
-    },
-    {
-      .index = HRTIMER_BASE_REALTIME,
-      .clockid = CLOCK_REALTIME,
-      .get_time = &ktime_get_real,
-    },
-    {
-      .index = HRTIMER_BASE_BOOTTIME,
-      .clockid = CLOCK_BOOTTIME,
-      .get_time = &ktime_get_boottime,
-    }
-  }
-};
-
-/* open_softirq(HRTIMER_SOFTIRQ, hrtimer_run_softirq); */
-static __latent_entropy void hrtimer_run_softirq(struct softirq_action *h)
-{
-  struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
-  unsigned long flags;
-  ktime_t now;
-
-  raw_spin_lock_irqsave(&cpu_base->lock, flags);
-
-  now = hrtimer_update_base(cpu_base);
-  __hrtimer_run_queues(cpu_base, now, flags, HRTIMER_ACTIVE_SOFT);
-
-  cpu_base->softirq_activated = 0;
-  hrtimer_update_softirq_timer(cpu_base, true);
-
-  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
-}
 
 static void __hrtimer_run_queues(struct hrtimer_cpu_base *cpu_base, ktime_t now,
          unsigned long flags, unsigned int active_mask)
@@ -15038,24 +15011,9 @@ static void __hrtimer_run_queues(struct hrtimer_cpu_base *cpu_base, ktime_t now,
 
     while ((node = timerqueue_getnext(&base->active))) {
       struct hrtimer *timer;
-
       timer = container_of(node, struct hrtimer, node);
-
-      /*
-       * The immediate goal for using the softexpires is
-       * minimizing wakeups, not running timers at the
-       * earliest interrupt after their soft expiration.
-       * This allows us to avoid using a Priority Search
-       * Tree, which can answer a stabbing querry for
-       * overlapping intervals and instead use the simple
-       * BST we already have.
-       * We don't add extra wakeups by delaying timers that
-       * are right-of a not yet expired timer, because that
-       * timer will have to trigger a wakeup anyway.
-       */
       if (basenow < hrtimer_get_softexpires_tv64(timer))
         break;
-
       __run_hrtimer(cpu_base, base, timer, &basenow, flags);
     }
   }
@@ -15205,48 +15163,136 @@ int tick_program_event(ktime_t expires, int force)
 ```C++
 static void hrtimer_switch_to_hres(void)
 {
-	struct hrtimer_cpu_base *base = this_cpu_ptr(&hrtimer_bases);
+  struct hrtimer_cpu_base *base = this_cpu_ptr(&hrtimer_bases);
 
-	if (tick_init_highres()) {
-		return;
-	}
+  if (tick_init_highres()) {
+    return;
+  }
 
-	base->hres_active = 1;
-	hrtimer_resolution = HIGH_RES_NSEC;
+  base->hres_active = 1;
+  hrtimer_resolution = HIGH_RES_NSEC;
 
-	tick_setup_sched_timer();
-	/* "Retrigger" the interrupt to get things going */
-	retrigger_next_event(NULL);
+  tick_setup_sched_timer();
+  /* "Retrigger" the interrupt to get things going */
+  retrigger_next_event(NULL);
 }
 
 int tick_init_highres(void)
 {
-	return tick_switch_to_oneshot(hrtimer_interrupt);
+  return tick_switch_to_oneshot(hrtimer_interrupt);
 }
+```
 
+### hrtimer tick emulation
+```C++
 /* setup the tick emulation timer */
 void tick_setup_sched_timer(void)
 {
-	struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
-	ktime_t now = ktime_get();
+  struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
+  ktime_t now = ktime_get();
 
-	hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	ts->sched_timer.function = tick_sched_timer;
+  hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+  ts->sched_timer.function = tick_sched_timer;
 
-	/* Get the next period (per-CPU) */
-	hrtimer_set_expires(&ts->sched_timer, tick_init_jiffy_update());
+  /* Get the next period (per-CPU) */
+  hrtimer_set_expires(&ts->sched_timer, tick_init_jiffy_update());
 
-	/* Offset the tick to avert jiffies_lock contention. */
-	if (sched_skew_tick) {
-		u64 offset = ktime_to_ns(tick_period) >> 1;
-		do_div(offset, num_possible_cpus());
-		offset *= smp_processor_id();
-		hrtimer_add_expires_ns(&ts->sched_timer, offset);
-	}
+  /* Offset the tick to avert jiffies_lock contention. */
+  if (sched_skew_tick) {
+    u64 offset = ktime_to_ns(tick_period) >> 1;
+    do_div(offset, num_possible_cpus());
+    offset *= smp_processor_id();
+    hrtimer_add_expires_ns(&ts->sched_timer, offset);
+  }
 
-	hrtimer_forward(&ts->sched_timer, now, tick_period);
-	hrtimer_start_expires(&ts->sched_timer, HRTIMER_MODE_ABS_PINNED);
-	tick_nohz_activate(ts, NOHZ_MODE_HIGHRES);
+  hrtimer_forward(&ts->sched_timer, now, tick_period);
+  hrtimer_start_expires(&ts->sched_timer, HRTIMER_MODE_ABS_PINNED);
+  tick_nohz_activate(ts, NOHZ_MODE_HIGHRES);
+}
+
+static enum hrtimer_restart tick_sched_timer(struct hrtimer *timer)
+{
+  struct tick_sched *ts = container_of(timer, struct tick_sched, sched_timer);
+  struct pt_regs *regs = get_irq_regs();
+  ktime_t now = ktime_get();
+
+  tick_sched_do_timer(ts, now);
+
+  /* Do not call, when we are not in irq context and have
+   * no valid regs pointer */
+  if (regs)
+    tick_sched_handle(ts, regs);
+  else
+    ts->next_tick = 0;
+
+  /* No need to reprogram if we are in idle or full dynticks mode */
+  if (unlikely(ts->tick_stopped))
+    return HRTIMER_NORESTART;
+
+  hrtimer_forward(timer, now, tick_period);
+
+  return HRTIMER_RESTART;
+}
+
+static void tick_sched_do_timer(struct tick_sched *ts, ktime_t now)
+{
+  int cpu = smp_processor_id();
+
+  if (tick_do_timer_cpu == cpu)
+    tick_do_update_jiffies64(now);
+
+  if (ts->inidle)
+    ts->got_idle_tick = 1;
+}
+
+static void tick_sched_handle(struct tick_sched *ts, struct pt_regs *regs)
+{
+  update_process_times(user_mode(regs));
+  profile_tick(CPU_PROFILING);
+}
+```
+
+## HRTIMER_SOFTIRQ
+```C++
+DEFINE_PER_CPU(struct hrtimer_cpu_base, hrtimer_bases) =
+{
+  .lock = __RAW_SPIN_LOCK_UNLOCKED(hrtimer_bases.lock),
+  .clock_base =
+  {
+    {
+      .index = HRTIMER_BASE_MONOTONIC,
+      .clockid = CLOCK_MONOTONIC,
+      .get_time = &ktime_get,
+    },
+    {
+      .index = HRTIMER_BASE_REALTIME,
+      .clockid = CLOCK_REALTIME,
+      .get_time = &ktime_get_real,
+    },
+    {
+      .index = HRTIMER_BASE_BOOTTIME,
+      .clockid = CLOCK_BOOTTIME,
+      .get_time = &ktime_get_boottime,
+    }
+  }
+};
+
+/* open_softirq(HRTIMER_SOFTIRQ, hrtimer_run_softirq); */
+static __latent_entropy void hrtimer_run_softirq(struct softirq_action *h)
+{
+  struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
+  unsigned long flags;
+  ktime_t now;
+
+  raw_spin_lock_irqsave(&cpu_base->lock, flags);
+
+  now = hrtimer_update_base(cpu_base);
+  __hrtimer_run_queues(cpu_base, now, flags, HRTIMER_ACTIVE_SOFT);
+
+  cpu_base->softirq_activated = 0;
+  hrtimer_update_softirq_timer(cpu_base, true);
+
+  raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
 }
 ```
 
@@ -15417,8 +15463,8 @@ retry:
   tick_program_event(expires_next, 1);
 }
 ```
-
-## gettimeofday
+## API
+### gettimeofday
 ```C++
 SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
     struct timezone __user *, tz)
@@ -15497,7 +15543,7 @@ struct timekeeper {
 };
 ```
 
-## timer_create
+### timer_create
 ```C++
 SYSCALL_DEFINE3(timer_create, const clockid_t, which_clock,
     struct sigevent __user *, timer_event_spec,
@@ -15587,6 +15633,326 @@ out:
   return error;
 }
 ```
+
+### timer_settime
+```C++
+SYSCALL_DEFINE4(timer_settime, timer_t, timer_id, int, flags,
+    const struct __kernel_itimerspec __user *, new_setting,
+    struct __kernel_itimerspec __user *, old_setting)
+{
+  struct itimerspec64 new_spec, old_spec;
+  struct itimerspec64 *rtn = old_setting ? &old_spec : NULL;
+  int error = 0;
+
+  get_itimerspec64(&new_spec, new_setting);
+
+  error = do_timer_settime(timer_id, flags, &new_spec, rtn);
+  if (!error && old_setting) {
+    if (put_itimerspec64(&old_spec, old_setting))
+      error = -EFAULT;
+  }
+  return error;
+}
+
+static int do_timer_settime(timer_t timer_id, int flags,
+          struct itimerspec64 *new_spec64,
+          struct itimerspec64 *old_spec64)
+{
+  const struct k_clock *kc;
+  struct k_itimer *timr;
+  unsigned long flag;
+  int error = 0;
+
+retry:
+  timr = lock_timer(timer_id, &flag);
+
+  kc = timr->kclock;
+  if (WARN_ON_ONCE(!kc || !kc->timer_set))
+    error = -EINVAL;
+  else
+    error = kc->timer_set(timr, flags, new_spec64, old_spec64);
+
+  unlock_timer(timr, flag);
+  if (error == TIMER_RETRY) {
+    old_spec64 = NULL;  // We already got the old time...
+    goto retry;
+  }
+
+  return error;
+}
+
+static const struct k_clock * const posix_clocks[] = {
+  [CLOCK_REALTIME]            = &clock_realtime,
+  [CLOCK_MONOTONIC]           = &clock_monotonic,
+  [CLOCK_PROCESS_CPUTIME_ID]  = &clock_process,
+  [CLOCK_THREAD_CPUTIME_ID]   = &clock_thread,
+  [CLOCK_MONOTONIC_RAW]       = &clock_monotonic_raw,
+  [CLOCK_REALTIME_COARSE]     = &clock_realtime_coarse,
+  [CLOCK_MONOTONIC_COARSE]    = &clock_monotonic_coarse,
+  [CLOCK_BOOTTIME]            = &clock_boottime,
+  [CLOCK_REALTIME_ALARM]      = &alarm_clock,
+  [CLOCK_BOOTTIME_ALARM]      = &alarm_clock,
+  [CLOCK_TAI]                 = &clock_tai,
+};
+
+static const struct k_clock clock_realtime = {
+  .timer_set    = common_timer_set,
+  .timer_arm    = common_hrtimer_arm,
+};
+
+int common_timer_set(struct k_itimer *timr, int flags,
+         struct itimerspec64 *new_setting,
+         struct itimerspec64 *old_setting)
+{
+  const struct k_clock *kc = timr->kclock;
+  bool sigev_none;
+  ktime_t expires;
+
+  if (old_setting)
+    common_timer_get(timr, old_setting);
+
+  /* Prevent rearming by clearing the interval */
+  timr->it_interval = 0;
+  /* Careful here. On SMP systems the timer expiry function could be
+   * active and spinning on timr->it_lock. */
+  if (kc->timer_try_to_cancel(timr) < 0)
+    return TIMER_RETRY;
+
+  timr->it_active = 0;
+  timr->it_requeue_pending = (timr->it_requeue_pending + 2) &
+    ~REQUEUE_PENDING;
+  timr->it_overrun_last = 0;
+
+  /* Switch off the timer when it_value is zero */
+  if (!new_setting->it_value.tv_sec && !new_setting->it_value.tv_nsec)
+    return 0;
+
+  timr->it_interval = timespec64_to_ktime(new_setting->it_interval);
+  expires = timespec64_to_ktime(new_setting->it_value);
+  sigev_none = timr->it_sigev_notify == SIGEV_NONE;
+
+  kc->timer_arm(timr, expires, flags & TIMER_ABSTIME, sigev_none);
+  timr->it_active = !sigev_none;
+  return 0;
+}
+
+static void common_hrtimer_arm(struct k_itimer *timr, ktime_t expires,
+             bool absolute, bool sigev_none)
+{
+  struct hrtimer *timer = &timr->it.real.timer;
+  enum hrtimer_mode mode;
+
+  mode = absolute ? HRTIMER_MODE_ABS : HRTIMER_MODE_REL;
+
+  if (timr->it_clock == CLOCK_REALTIME)
+    timr->kclock = absolute ? &clock_realtime : &clock_monotonic;
+
+  hrtimer_init(&timr->it.real.timer, timr->it_clock, mode);
+  timr->it.real.timer.function = posix_timer_fn;
+
+  if (!absolute)
+    expires = ktime_add_safe(expires, timer->base->get_time());
+  hrtimer_set_expires(timer, expires);
+
+  if (!sigev_none)
+    hrtimer_start_expires(timer, HRTIMER_MODE_ABS);
+}
+```
+
+### posix_timer_fn
+```C++
+static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
+{
+  struct k_itimer *timr;
+  unsigned long flags;
+  int si_private = 0;
+  enum hrtimer_restart ret = HRTIMER_NORESTART;
+
+  timr = container_of(timer, struct k_itimer, it.real.timer);
+  spin_lock_irqsave(&timr->it_lock, flags);
+
+  timr->it_active = 0;
+  if (timr->it_interval != 0)
+    si_private = ++timr->it_requeue_pending;
+
+  if (posix_timer_event(timr, si_private)) {
+    /* signal was not sent because of sig_ignor
+     * we will not get a call back to restart it AND
+     * it should be restarted. */
+    if (timr->it_interval != 0) {
+      ktime_t now = hrtimer_cb_get_time(timer);
+#ifdef CONFIG_HIGH_RES_TIMERS
+      {
+        ktime_t kj = NSEC_PER_SEC / HZ;
+
+        if (timr->it_interval < kj)
+          now = ktime_add(now, kj);
+      }
+#endif
+      timr->it_overrun += hrtimer_forward(timer, now,
+                  timr->it_interval);
+      ret = HRTIMER_RESTART;
+      ++timr->it_requeue_pending;
+      timr->it_active = 1;
+    }
+  }
+
+  unlock_timer(timr, flags);
+  return ret;
+}
+
+int posix_timer_event(struct k_itimer *timr, int si_private)
+{
+  enum pid_type type;
+  int ret = -1;
+
+  timr->sigq->info.si_sys_private = si_private;
+
+  type = !(timr->it_sigev_notify & SIGEV_THREAD_ID) ? PIDTYPE_TGID : PIDTYPE_PID;
+  ret = send_sigqueue(timr->sigq, timr->it_pid, type);
+  return ret > 0;
+}
+
+int send_sigqueue(struct sigqueue *q, struct pid *pid, enum pid_type type)
+{
+  int sig = q->info.si_signo;
+  struct sigpending *pending;
+  struct task_struct *t;
+  unsigned long flags;
+  int ret, result;
+
+  ret = -1;
+  rcu_read_lock();
+  t = pid_task(pid, type);
+
+  ret = 1; /* the signal is ignored */
+  result = TRACE_SIGNAL_IGNORED;
+  if (!prepare_signal(sig, t, false))
+    goto out;
+
+  ret = 0;
+  if (unlikely(!list_empty(&q->list))) {
+    BUG_ON(q->info.si_code != SI_TIMER);
+    q->info.si_overrun++;
+    result = TRACE_SIGNAL_ALREADY_PENDING;
+    goto out;
+  }
+  q->info.si_overrun = 0;
+
+  signalfd_notify(t, sig);
+  pending = (type != PIDTYPE_PID) ? &t->signal->shared_pending : &t->pending;
+  list_add_tail(&q->list, &pending->list);
+  sigaddset(&pending->signal, sig);
+  complete_signal(sig, t, type);
+  result = TRACE_SIGNAL_DELIVERED;
+out:
+  trace_signal_generate(sig, &q->info, t, type != PIDTYPE_PID, result);
+  unlock_task_sighand(t, &flags);
+ret:
+  rcu_read_unlock();
+  return ret;
+}
+```
+
+## Call Stack
+```C++
+start_kernel();
+  tick_init();
+    tick_broadcast_init();
+    tick_nohz_init();
+
+  init_timers();
+    init_timer_cpus();
+    open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+
+  hrtimers_init();
+    hrtimers_prepare_cpu(smp_processor_id());
+    open_softirq(HRTIMER_SOFTIRQ, hrtimer_run_softirq);
+
+  timekeeping_init();
+
+  time_init();
+    x86_late_time_init();
+      x86_init.timers.timer_init(); /* hpet_time_init */
+      x86_init.irqs.intr_mode_init();
+      tsc_init();
+
+hpet_time_init();
+  hpet_enable();
+    hpet_set_mapping();
+
+    hpet_clocksource_register();
+      clocksource_register_hz();
+        __clocksource_register_scale();
+          clocksource_enqueue();
+          clocksource_select();
+
+    hpet_legacy_clockevent_register();
+      clockevents_config_and_register();
+        clockevents_config();
+        clockevents_register_device();
+          list_add(&dev->list, &clockevent_devices);
+          tick_check_new_device();
+            tick_setup_device();
+              tick_setup_periodic();
+                tick_set_periodic_handler();
+                  dev->event_handler = tick_handle_periodic;
+                tick_setup_oneshot();
+                  clockevents_program_event(newdev, next_event, true);
+
+  setup_default_timer_irq();
+    setup_irq(0, &irq0);
+
+setup_APIC_timer();
+  clockevents_config_and_register();
+
+tick_handle_periodic();
+  tick_periodic();
+    do_timer();
+      jiffies_64 += ticks;
+
+    update_wall_time();
+      timekeeping_advance();
+
+    update_process_times();
+      run_local_timers();
+
+        hrtimer_run_queues();
+          tick_check_oneshot_change();
+            hrtimer_switch_to_hres();
+              tick_setup_sched_timer(); /* hrtimer tick emulation */
+                hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
+                ts->sched_timer.function = tick_sched_timer;
+                  tick_sched_timer();
+                    tick_sched_do_timer();
+                      tick_do_update_jiffies64(now)
+                        do_timer();
+                        update_wall_time();
+                    tick_sched_handle();
+                      update_process_times();
+          !ktime_before(now, cpu_base->softirq_expires_next)
+            raise_softirq_irqoff(HRTIMER_SOFTIRQ);
+              hrtimer_run_softirq();
+                __hrtimer_run_queues();
+          __hrtimer_run_queues();
+            __run_hrtimer();
+
+        raise_softirq(TIMER_SOFTIRQ);
+          run_timer_softirq();
+            __run_timers();
+              collect_expired_timers();
+              expire_timers();
+                call_timer_fn();
+
+      scheduler_tick();
+        curr->sched_class->task_tick(rq, curr, 0);
+
+hrtimer_interrupt();
+  __hrtimer_run_queues();
+  __hrtimer_get_next_event();
+  tick_program_event();
+```
+
 ![kernel-time-timer.png](../Images/LinuxKernel/kernel-time-timer.png)
 
 ![kernel-time-timer-arch.png](../Images/LinuxKernel/kernel-time-timer-arch.png)
@@ -15601,12 +15967,10 @@ out:
 
 ![kernel-time-timer-hrtimer-gtod-clockevent-tick-emulation.png](../Images/LinuxKernel/kernel-time-timer-hrtimer-gtod-clockevent-tick-emulation.png)
 
-
-
 ## Refence:
 [hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
 
-https://www.cnblogs.com/alantu2018/p/8448297.html
+http://www.wowotech.net/timer_subsystem/time-subsyste-architecture.html
 
 # Lock
 ### spin lock
