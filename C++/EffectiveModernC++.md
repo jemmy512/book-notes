@@ -4,6 +4,7 @@ template<typename T>
 void foo(ParamType param);
 foo(expr);
 ```
+
 Type of T depends on both types of ParamType and expr:
 1. ParamType is a pointer or reference, but not a universal reference
     * If expr's type is a reference, ignore the reference part, also const
@@ -34,51 +35,52 @@ Type of T depends on both types of ParamType and expr:
     ```
 3. ParamType is neigher a pointer nor a reference
     In this case, we are dealing with pass-by-value, and ignore expr's reference-ness, constness and volatile.
-    
     ```C++
     template<typename T>
-void foo(T param);    // param is now passed by value
-    
+    void foo(T param);    // param is now passed by value
+
     int x = 27;
     const int cx = x;
-const int &rx = x;
-    
+    const int &rx = x;
+
     foo(x);     // both types of T and ParamType are int
     foo(cx);    // both types of T and ParamType are int
     foo(rx);    // both types of T and ParamType are int
-foo(27);    // both types of T and ParamType are int
-    
+    foo(27);    // both types of T and ParamType are int
+
     const char * const ptr = "Hello World";
-foo(ptr);   // T is const char *, constess of what ptr points is preversed, but not the constness of ptr itself
-    
+    foo(ptr);   // T is const char *, constess of what ptr points is preversed, but not the constness of ptr itself
+
     // Array Arguments:
-const char name[] = "Jemmy";
-    
+    const char name[] = "Jemmy";
+
     template<typename T>
     void foo(T name_);
-    foo(name);  // name is array, but T deduced as const char *
-            // array decay to pointer
-    
+    foo(name);  // name is array, but T deduced as const char * array decay to pointer
+
     void foo(T& name_);
-foo(name);  // T is deduced const char[5] while argument type is const char (&)[5]
-    
+    foo(name);  // T is deduced const char[5] while argument type is const char (&)[5]
+
     // Function Arguments:
-void foo(int, double);
-    
+    void foo(int, double);
+
     template<typename T>
     void f1(T param);
-void f2(T &param);
-    
+
+    void f2(T &param);
+
     f1(foo);    // param is deduced to ptr-to-func: void (*) (int, double)
                 // function decay to pointer to function
     f2(foo);    // param is deduced to ref-to-func: void (&) (int, double)
-```
-    Summary:
+    ```
+
+Summary:
 1. During template type deduction, referenceness, constness and volatileness are ignored
 2. Array and function decay to pointers, unless they're used to initialize references
 
 # Item_02: Understand auto type deduction
-Auto type deduction is template type deduction
+Auto type deduction is template type deduction.
+
 ```C++
 auto x = 27;
 
@@ -87,13 +89,15 @@ auto x(27); // both type is int
 auto x = {27};
 auto x{27}; // both type is std::initializer_list<int>
 ```
+
 The treatment of braced initializers is the only way where auto type deduction and template type deduction differ.
 
 Auto in a function return type or a labmda parameter implies template type deduction not auto type deduction.
+
 ```C++
 auto foo() { return {1, 2, 3}; }    // error: cant't deduct type
 auto lambda = [&v](const auto & newValue) { v = newValue; }
-lambda({1, 2, 3});  // error: can't detect type
+lambda({1, 2, 3});                  // error: can't detect type
 
 /* new rules of direct initialization in C++17:
  * For a braced-init-list with only a single element, auto deduction will deduce from that entry;
@@ -104,7 +108,7 @@ auto x3{ 1, 2 };        // error: not a single element
 auto x4 = { 3 };        // decltype(x4) is std::initializer_list<int>
 auto x5{ 3 };           // decltype(x5) is int
 
-auto& and auto* versus auto
+// auto& and auto* versus auto
 // always be explicit and use the form auto& as well as auto* even if auto is able to deduce a pointer type.
 Foo* GetFoo() { ... }
 
@@ -326,7 +330,7 @@ Member function reference qualifiers make it possible to treat lvalue and rvalue
 # Item_14: Declare functions noexcept if they won't emit exceptions
 With c++11 noexcept specification, at runtime the stack is only possible unwound before program execution is terminated
 
-So optimizers need not keep the runtime statck in an unwindable state if an exception would propagate out of the function, nor must they ensure that object in an noexcept function are destroyed in the inverse order of construction should an exception leave the function.
+So optimizers need not keep the runtime statck in an unwindable state if an exception would propagate out of the function, nor must they ensure that object in an noexcept function are destroyed in the inverse order of construction should an exception leave the function.
 
 noexcept is particularly valualbe for the move operations, swap, memory deallocation functions, and destructors.
 
@@ -388,14 +392,14 @@ The existence of the reference count has performance implications:
 3. Increments and decrements of the reference count must be atomic
 
 std::make_shared is an alternative to std::shared_ptr<T>(new T(args…). The trade-offs are:
-1. std::shared_ptr performs at least two allocations while std::make_shared typically performs only one allocation
-2. If any std::weak_ptr references the control block created by std::make_shared after the lifetime of all owners ended, the memory occupied by T persists until all weak owners get destroyed as well, which may be undesirable if sizeof(T) is large
-3. std::shared_ptr may call a non-public constructor of T if executed in context where it is accessible,
+1. std::shared_ptr performs at least _two allocations_ while std::make_shared typically performs only one allocation
+2. If any std::weak_ptr references the control block created by std::make_shared after the lifetime of all owners ended, the _memory occupied by T persists_ until all weak owners get destroyed as well, which may be undesirable if sizeof(T) is large
+3. std::shared_ptr may call a _non-public constructor_ of T if executed in context where it is accessible,
     while std::make_shared requires public access to the selected constructor
-4. Unlike the std::shared_ptr constructor, std::make_shared does not allowed a custom deleter
-5. std::make_shared use ::new, so if any special behavior has been set up using a class specific operator new, it will differ from std::shared_ptr
-6. std:shared_ptr supports array type, but std::make_shared does not
-7. Code such as f(shared_ptr<int>(new int(42), g()) can cause a memory leak if g gets called after new int(42) and throws an exception, while std::make_shared is safe
+4. Unlike the std::shared_ptr constructor, std::make_shared does not allowed a _custom deleter_
+5. std::make_shared use _::new_, so if any special behavior has been set up using a class specific operator new, it will differ from std::shared_ptr
+6. std:shared_ptr supports _array type_, but std::make_shared does not
+7. Code such as f(shared_ptr<int>(new int(42), g()) can cause a _memory leak_ if g gets called after new int(42) and throws an exception, while std::make_shared is safe
 
 Control block:
 1. An object's control block is set up by the function creating the first std::shared_ptr to the object
@@ -440,8 +444,7 @@ For std::unique_ptr pImpl pointers, declare special member functions in the clas
 The above advice applies to std::unique_ptr, but not to std::shared_ptr.
 
 The difference in behavior between std::unique_ptr and std::shared_ptr for Pimpl Idiom:
-
-The way these smart pointers support custom delter.
+* The way these smart pointers support custom delter.
 
 std::unique_ptr:
 * Deleter is part of the smart pointer. Compilers can genereate smaller and faster runtime code.
@@ -451,7 +454,7 @@ std::shared_ptr:
 * All features are reversed to std::unique_ptr.
 
 # Item_23: Understand std::move and std::forward
-lvalue-reference-to-const is permitted to bind to a const rvalue.
+lvalue-reference-to-const(const T&) is permitted to bind to a const rvalue(const T&&).
 
 Move requests on const objects are silently transformed into copy operations.
 
@@ -464,7 +467,7 @@ std::forward casts its argument to an rvalue only if that arguments is bound to 
 Neither std::move and std::forward do anything at runtime.
 
 # Item_24: Distinguish universal reference from rvalue reference
-If a function template parameter has type T&& for a deduced type T, or if an object is declared using auto&&, the parameter or object is a universal reference.
+If a function template parameter has type `T&&` for a deduced type T, or if an object is declared using `auto&&`, the parameter or object is a universal reference.
 
 If the form of the type declaration isn't precisely type&&, or if type deduction does not occur, type&& denotes an rvalue reference.
 
@@ -648,7 +651,9 @@ For lvalue argument, the corresponding object in the bind object is copy constru
 While for rvalue arguemnt is move constructed.
 
 ```C++
-auto func = [pw = std::move(widgets)] { return pw->isValidated() && pw->isArchived(); }; // C++14 init capture
+auto func = [pw = std::move(widgets)] {
+  return pw->isValidated() && pw->isArchived();
+}; // C++14 init capture
 auto func = std::bind([](const std::vector<Widget>& widgets){ ... }, std::move(widgets));// C++11 emulation of move capture
 ```
 
@@ -662,7 +667,9 @@ C++14 support generic lambds: lambds that use auto in their paramter specificati
 # Item_34: Prefer lambds to std::bind
 ```C++
 void setAlarm(Time t, Sound s, Duration d);
-auto setSoundL = [](Sound s) { setAlarm(steady_clock::now() + hours(1), s, seconds(30)); };
+auto setSoundL = [](Sound s) {
+  setAlarm(steady_clock::now() + hours(1), s, seconds(30));
+};
 auto setSoundB = std::bind(setAlarm, steady_clock::now() +1h, _1, 30s);
 ```
 
