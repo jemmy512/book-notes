@@ -14968,6 +14968,65 @@ static void setup_APIC_timer(void)
 
 ## hrtimer_run_queues
 ```C++
+struct hrtimer_cpu_base {
+  raw_spinlock_t      lock;
+  unsigned int        cpu;
+  unsigned int        active_bases;
+  unsigned int        clock_was_set_seq;
+  unsigned int        hres_active: 1,
+                      in_hrtirq: 1,
+                      hang_detected: 1,
+                      softirq_activated: 1;
+  ktime_t             expires_next;
+  struct hrtimer      *next_timer;
+  ktime_t             softirq_expires_next;
+  struct hrtimer      *softirq_next_timer;
+  struct hrtimer_clock_base  clock_base[HRTIMER_MAX_CLOCK_BASES];
+};
+
+enum  hrtimer_base_type {
+  HRTIMER_BASE_MONOTONIC,
+  HRTIMER_BASE_REALTIME,
+  HRTIMER_BASE_BOOTTIME,
+  HRTIMER_BASE_TAI,
+  HRTIMER_BASE_MONOTONIC_SOFT,
+  HRTIMER_BASE_REALTIME_SOFT,
+  HRTIMER_BASE_BOOTTIME_SOFT,
+  HRTIMER_BASE_TAI_SOFT,
+  HRTIMER_MAX_CLOCK_BASES,
+};
+
+struct hrtimer_clock_base {
+  struct hrtimer_cpu_base  *cpu_base;
+  unsigned int    index;
+  clockid_t    clockid;
+  seqcount_t    seq;
+  struct hrtimer    *running;
+  struct timerqueue_head  active;
+  ktime_t      (*get_time)(void);
+  ktime_t      offset;
+};
+
+struct timerqueue_head {
+  struct rb_root          head;
+  struct timerqueue_node  *next;
+};
+
+struct timerqueue_node {
+  struct rb_node  node;
+  ktime_t         expires;
+};
+
+struct hrtimer {
+  struct timerqueue_node    node;
+  ktime_t                   _softexpires;
+  enum hrtimer_restart      (*function)(struct hrtimer *);
+  struct hrtimer_clock_base  *base;
+  u8  state;
+  u8  is_rel;  /* timer was armed relative */
+  u8  is_soft; /* expired in soft interrupt context */
+};
+
 void hrtimer_run_queues(void)
 {
   struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
@@ -15632,6 +15691,12 @@ out:
   release_posix_timer(new_timer, it_id_set);
   return error;
 }
+
+static int common_timer_create(struct k_itimer *new_timer)
+{
+  hrtimer_init(&new_timer->it.real.timer, new_timer->it_clock, 0);
+  return 0;
+}
 ```
 
 ### timer_settime
@@ -15665,18 +15730,8 @@ static int do_timer_settime(timer_t timer_id, int flags,
 
 retry:
   timr = lock_timer(timer_id, &flag);
-
   kc = timr->kclock;
-  if (WARN_ON_ONCE(!kc || !kc->timer_set))
-    error = -EINVAL;
-  else
-    error = kc->timer_set(timr, flags, new_spec64, old_spec64);
-
-  unlock_timer(timr, flag);
-  if (error == TIMER_RETRY) {
-    old_spec64 = NULL;  // We already got the old time...
-    goto retry;
-  }
+  error = kc->timer_set(timr, flags, new_spec64, old_spec64);
 
   return error;
 }
@@ -15756,6 +15811,94 @@ static void common_hrtimer_arm(struct k_itimer *timr, ktime_t expires,
 
   if (!sigev_none)
     hrtimer_start_expires(timer, HRTIMER_MODE_ABS);
+}
+```
+
+### timer cancel
+```C++
+static int common_hrtimer_try_to_cancel(struct k_itimer *timr)
+{
+  return hrtimer_try_to_cancel(&timr->it.real.timer);
+}
+
+/* Returns:
+ *  0 when the timer was not active
+ *  1 when the timer was active
+ * -1 when the timer is currently executing the callback function and
+ *    cannot be stopped */
+int hrtimer_try_to_cancel(struct hrtimer *timer)
+{
+  struct hrtimer_clock_base *base;
+  unsigned long flags;
+  int ret = -1;
+
+  if (!hrtimer_active(timer))
+    return 0;
+
+  base = lock_hrtimer_base(timer, &flags);
+
+  if (!hrtimer_callback_running(timer)) /* timer->base->running == timer; */
+    ret = remove_hrtimer(timer, base, false);
+
+  unlock_hrtimer_base(timer, &flags);
+
+  return ret;
+}
+
+/*
+ * A timer is active, when it is enqueued into the rbtree or the
+ * callback function is running or it's in the state of being migrated
+ * to another cpu.
+ *
+ * It is important for this function to not return a false negative. */
+bool hrtimer_active(const struct hrtimer *timer)
+{
+  struct hrtimer_clock_base *base;
+  unsigned int seq;
+
+  do {
+    base = READ_ONCE(timer->base);
+    seq = raw_read_seqcount_begin(&base->seq);
+
+    if (timer->state != HRTIMER_STATE_INACTIVE || base->running == timer)
+      return true;
+
+  } while (read_seqcount_retry(&base->seq, seq) || base != READ_ONCE(timer->base));
+
+  return false;
+}
+
+int remove_hrtimer(struct hrtimer *timer, struct hrtimer_clock_base *base, bool restart)
+{
+  u8 state = timer->state;
+  if (state & HRTIMER_STATE_ENQUEUED) {
+    int reprogram = base->cpu_base == this_cpu_ptr(&hrtimer_bases);
+    if (!restart)
+      state = HRTIMER_STATE_INACTIVE;
+
+    __remove_hrtimer(timer, base, state, reprogram);
+    return 1;
+  }
+  return 0;
+}
+
+static void __remove_hrtimer(struct hrtimer *timer,
+           struct hrtimer_clock_base *base,
+           u8 newstate, int reprogram)
+{
+  struct hrtimer_cpu_base *cpu_base = base->cpu_base;
+  u8 state = timer->state;
+
+  /* Pairs with the lockless read in hrtimer_is_queued() */
+  WRITE_ONCE(timer->state, newstate);
+  if (!(state & HRTIMER_STATE_ENQUEUED))
+    return;
+
+  if (!timerqueue_del(&base->active, &timer->node))
+    cpu_base->active_bases &= ~(1 << base->index);
+
+  if (reprogram && timer == cpu_base->next_timer)
+    hrtimer_force_reprogram(cpu_base, 1);
 }
 ```
 
@@ -15951,6 +16094,40 @@ hrtimer_interrupt();
   __hrtimer_run_queues();
   __hrtimer_get_next_event();
   tick_program_event();
+
+
+timer_create();
+  do_timer_create();
+    clockid_to_kclock();
+    alloc_posix_timer();
+    posix_timer_add();
+    kc->timer_create();
+      common_timer_create();
+        hrtimer_init()
+    list_add(&new_timer->list, &current->signal->posix_timers);
+
+
+timer_settime();
+  do_timer_settime();
+    kc->timer_set();
+      common_timer_set();
+        timer_try_to_cancel();
+        kc->timer_arm();
+          common_hrtimer_arm();
+            hrtimer_init(&timr->it.real.timer, timr->it_clock, mode);
+            timr->it.real.timer.function = posix_timer_fn;
+            hrtimer_set_expires();
+
+posix_timer_fn();
+  posix_timer_event();
+    send_sigqueue();
+      signalfd_notify();
+      list_add_tail(&q->list, &pending->list);
+      complete_signal(sig, t, type);
+        signal_wake_up();
+          signal_wake_up_state();
+            wake_up_state();
+              try_to_wake_up();
 ```
 
 ![kernel-time-timer.png](../Images/LinuxKernel/kernel-time-timer.png)
