@@ -276,7 +276,7 @@ off_t lseek(int fd, off_t offset, int whence);  // move the read/write offset
     // whence: SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
     // We should be careful to compare the return value from lseek as being equal to or not equals to -1,
         rather than testing whether it is less than 0. Because offset is possible a negative value.
-off_t fseek(FILE *stream, long int offset, int whence;  <stdio.h>
+off_t fseek(FILE *stream, long int offset, int whence);  <stdio.h>
 off_t ftell(FILE *stream); <stdio.h> // return current offset
 ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
     // There are several cases actual bytes read less than amount requested:
@@ -712,21 +712,19 @@ FILE *fmemopen(void *buf, size_t size, const char *type); // type: r, w, a, b, +
 # Advanced I/O
 
 I/O Moudles:
-    blocking I/O
-    nonblocing I/O
-    I/O multiplexing(select, poll, epoll)
-    signal driven I/O(SIGIO)
-    asynchronous I/O(aio_)
+1. blocking I/O
+2. nonblocing I/O
+3. I/O multiplexing(select, poll, epoll)
+4. signal driven I/O(SIGIO)
+5. asynchronous I/O(aio_)
 
-FD ready conditions:
-
-Readable condition:
+FD Readable condition:
 1. The size of socket buffer in kernel is not less than SO_RECLOWAT
 2. The peer of socket close connection, read return 0
 3. There is a new connection in the scoket
 4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
 
-Writeble condition:
+FD Writeble condition:
 1. The size of socket buffer in kernel is not big that SO_SNDLOWAT
 2. The write of socket is closed, write to such socket will trigger SIGPIPE
 3. Using non-blocking connect connect success or fail
