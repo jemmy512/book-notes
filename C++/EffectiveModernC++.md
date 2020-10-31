@@ -79,7 +79,12 @@ Summary:
 2. Array and function decay to pointers, unless they're used to initialize references
 
 # Item_02: Understand auto type deduction
-Auto type deduction is template type deduction.
+1. Auto type deduction is template type deduction.
+2. The treatment of braced initializers is the only way where auto type deduction and template type deduction differ.
+3. Auto in a function __return type__ or a __labmda parameter__ implies __template type deduction__ not auto type deduction.
+4. Auto ordinarily __ignores the top-level consts__.
+5. When use reference, we are really using the object to which it refers.
+6. When we ask for a reference to auto-deduced type, top-level consts in the initializer are not ignored.
 
 ```C++
 auto x = 27;
@@ -88,13 +93,7 @@ auto x(27); // both type is int
 
 auto x = {27};
 auto x{27}; // both type is std::initializer_list<int>
-```
 
-The treatment of braced initializers is the only way where auto type deduction and template type deduction differ.
-
-Auto in a function return type or a labmda parameter implies template type deduction not auto type deduction.
-
-```C++
 auto foo() { return {1, 2, 3}; }    // error: cant't deduct type
 auto lambda = [&v](const auto & newValue) { v = newValue; }
 lambda({1, 2, 3});                  // error: can't detect type
