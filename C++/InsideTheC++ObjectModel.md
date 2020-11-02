@@ -613,7 +613,7 @@ coord = &Point::y;                     // assign a value
     1. The conventional constructor augmentation does not work due to the shared nature of the virtual base class
     2. The traditional strategy for supporting this sort of "now you initialize the virtual base class, now you don't" is to introduce an additional argument in the constructor(s) indicating whether the virtual base class constructor(s) should be invoked.
     3. Virtual base class constructors are invoked when a complete class object is being defined, they are not invoked when the object serves as a subobject of an object of a subsequently derived class.
-    4. Some newer implementations split each constructor into a complete object and a subobject instance. The complete object version unconditionally invokes the virtual base constructors, sets all vptrs, and so on. The subobject version does not invoke the virtual base class constructors, may possibly not set the vptrs, and so on.
+    4. Some newer implementations split each constructor into a complete object and a subobject instance. The `complete object` version unconditionally invokes the `virtual base constructors`, `sets all vptrs`, and so on. The `subobject` version does `not invoke the virtual base class constructors`, may possibly not set the `vptrs`, and so on.
 
 5. The Semantics of the vptr Initialization
     1. Within the constructors (and destructor) of a class, the invocation of a virtual function by the object under construction is limited to the virtual functions active within the class.
