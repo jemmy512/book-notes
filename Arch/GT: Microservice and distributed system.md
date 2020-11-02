@@ -1,9 +1,10 @@
 # Microservice
+![Microservice Architecture](../Images/Microservice/microservice-architecture.png)
+
 ## Service Description
 RESTfull API, XML, IDL
 
 ## Service Registry
-
 1. Registry API
     1. Registor API
     2. Anti-Registor API
@@ -29,7 +30,7 @@ RESTfull API, XML, IDL
     3. Failure Rate
 
 3. Data Collection
-    1. Servcie Activaly Report
+    1. Servcie Activly Report
     2. Agent Collection
     3. Smapling Rate
 4. Data Transmition
@@ -54,7 +55,7 @@ RESTfull API, XML, IDL
 1. Nodes Management
     1. Remove by registry
     2. Remove by service consumer
-2. Load banlance
+2. Load balance
     1. Round-robin
     2. Weighted round-robin
     3. Least Active
@@ -79,6 +80,13 @@ RESTfull API, XML, IDL
         1. Resource Servicing
         2. Business dynamic degradation
         3. Packet traffic switching
+
+## Service Spliting
+1. Service Granularity
+    1. Split by business logic
+    2. Split by extensibility: stable and unstable
+    3. Split by avilability
+    4. Split by performance
 
 # High-Performance Design
 1. Read and write separation
@@ -115,6 +123,39 @@ RESTfull API, XML, IDL
     1. DNS Load Balance: geographic-level
     2. Hardware Load Balance: cluster-level
     3. Software Load Balance: machine-level
+
 # High Availability Design
+1. High availability Storage Architecture
+    1. Double Machine
+        1. How master copys data to slave
+        2. How slave detects health status of master
+        3. How switch off when master down
+    2. Cluster and Partition
+        1. Need to consider data's: balance, fault tolerence, scalibility
+        2. Data partition Ruls: by address location: state, country
+        3. Data duplicaton: Centralized, mutual backup, independent
+2. Live more in different places
+    1. Key business first
+    2. Make sure key data BASE
+    3. Multiple sync methods: MSQ, read again, sync by storage system, back to source read, regenerate data
+    4. Guarantee most user
+3. Practice: Live more in different places
+    1. Classify Business: highly visited business, core business, profitable business
+    2. Classify Data: amount, uniqueness, lossability, recoverablity,
+    3. Data sync: storage system sync, MSQ, regenerate
+    4. Handle exception: multil-channel sync, log record, compensate user
+4. Handle interface-level failure
+    1. System degradation
+    2. Circute break
+    3. Flow limite
+    4. Queue
 
 # Extensible Design
+1. Split System
+    1. Process-oriented split: split the entire business process into several stages, with each stage as a part.
+    2. Service-oriented split: split the services provided by the system, each as a part.
+    3. Function-oriented split: split the functions provided by the system, and each function as a part.
+2. Architecture:
+    1. Process-oriented split: layered architecture.
+    2. Service-oriented split: SOA, microservices.
+    3. Function-oriented split: microkernel architecture.
