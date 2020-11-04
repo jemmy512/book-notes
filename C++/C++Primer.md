@@ -437,6 +437,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
 5. Why Copy construct first parameter must be a reference:
     * To call copy constructor, we’d need to call copy constructor to copy the arguments, to copy the arguments,
         we’d need to call copy constructor and indefinitely.
+6. [C.67: A polymorphic class should suppress copying](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rc-copy-virtual)
 
 ### Copy-assignment operator:
 1. Assignment operators ordinarily should return a reference to their left-hand operand.
@@ -540,10 +541,10 @@ Sales_data(string s): Sales_data(s, 0, 0);
         2. if the class has a member whose move members are deleted or inaccessible.
         3. if the `destructor` of the class is defined as deleted or inaccessible
         4. if the class has members that are `const` or `reference member`.
-        5. if ask compiler to generate a move operation by using =default, then the operation will be defined as deleted.
-    9. Class has define its own move constructor or move-assignment operator must define its own copy operations. Otherwise, those members are deleted as default.
+        5. if ask compiler to generate a move operation by using =default, then the copy operation will be defined as deleted.
+        6. Declaring a destructor has a potentially significant side effect: it prevents the move operations from being generated.
+    9. Class has define its own `move constructor` or move-assignment operator `must define` its own `copy operations`. Otherwise, those members are `deleted` as default.
     10. Lvalues are moved, lvalues are copied but r values are copied when there is no move constructor.
-    11. __Compiler synthesizes either move control members or copy control members, but not both__.
 
 14. Move Iterator:
     * Return rvalue reference by calling library `make_move_iterator` function which takes a normal iterator and returns a rvalue reference rather than normal iterator which return lvalue reference.
