@@ -46,7 +46,7 @@
 
 ## Function definition rules:
 
-* F.1: “Package" meaningful operations as carefully named functions
+* F.1: "Package" meaningful operations as carefully named functions
 
 * F.2: A function should perform a single logical operation
 
@@ -68,25 +68,25 @@
 
 * F.15: Prefer simple and conventional ways of passing information
 
-* F.16: For “in" parameters, pass cheaply-copied types by value and others by reference to const
+* F.16: For "in" parameters, pass cheaply-copied types by value and others by reference to const
 
-* F.17: For “in-out" parameters, pass by reference to non-const
+* F.17: For "in-out" parameters, pass by reference to non-const
 
-* F.18: For “will-move-from" parameters, pass by X&& and std::move the parameter
+* F.18: For "will-move-from" parameters, pass by X&& and std::move the parameter
 
-* F.19: For “forward" parameters, pass by TP&& and only std::forward the parameter
+* F.19: For "forward" parameters, pass by TP&& and only std::forward the parameter
 
-* F.20: For “out" output values, prefer return values to output parameters
+* F.20: For "out" output values, prefer return values to output parameters
 
-* F.21: To return multiple “out" values, prefer returning a struct or tuple
+* F.21: To return multiple "out" values, prefer returning a struct or tuple
 
-* F.60: Prefer T* over T& when “no argument" is a valid option
+* F.60: Prefer T* over T& when "no argument" is a valid option
 
 ## Parameter passing semantic rules:
 
 * F.22: Use T* or owner<T*> to designate a single object
 
-* F.23: Use a not_null<T> to indicate that “null" is not a valid value
+* F.23: Use a not_null<T> to indicate that "null" is not a valid value
 
 * F.24: Use a span<T> or a span_p<T> to designate a half-open sequence
 
@@ -102,7 +102,7 @@
 
 * F.43: Never (directly or indirectly) return a pointer or a reference to a local object
 
-* F.44: Return a T& when copy is undesirable and “returning no object" isn’t needed
+* F.44: Return a T& when copy is undesirable and "returning no object" isn’t needed
 
 * F.45: Don’t return a T&&
 
@@ -410,11 +410,11 @@
 
 * C.127: A class with a virtual function should have a virtual or protected destructor
 
-* C.128: Virtual functions should specify exactly one of virtual, override, or final
+* C.128: Virtual functions should specify exactly one of `virtual, override, or final`
 
-* C.129: When designing a class hierarchy, distinguish between implementation inheritance and interface inheritance
+* C.129: When designing a class hierarchy, distinguish between `implementation inheritance` and `interface inheritance`
 
-* C.130: For making deep copies of polymorphic classes prefer a virtual clone function instead of copy construction/assignment
+* C.130: For making deep copies of polymorphic classes prefer a `virtual clone function` instead of copy construction/assignment
 
 * C.131: Avoid trivial getters and setters
 
@@ -422,7 +422,7 @@
 
 * C.133: Avoid protected data
 
-* C.134: Ensure all non-const data members have the same access level
+* C.134: Ensure all `non-const data members` have the `same access level`
 
 * C.135: Use multiple inheritance to represent multiple distinct interfaces
 
@@ -455,6 +455,88 @@
 * C.152: Never assign a pointer to an array of derived class objects to a pointer to its base
 
 * C.153: Prefer virtual function to casting
+    * A virtual function call is safe, whereas casting is error-prone.
+    * A virtual function call reaches the most derived function, whereas a cast may reach an intermediate class and therefore give a wrong result
+
+## C.over: Overloading and overloaded operators
+
+* C.160: Define operators primarily to mimic conventional usage
+
+* C.161: Use non-member functions for symmetric operators
+
+* C.162: Overload operations that are roughly equivalent
+    * Having different names for logically equivalent operations on different argument types is confusing, leads to encoding type information in function names, and inhibits generic programming.
+    ```C++
+    void print(int a);
+    void print(int a, int base);
+    void print(const string&);
+
+    void print_int(int a);
+    void print_based(int a, int base);
+    void print_string(const string&);
+    ```
+
+* C.163: Overload only for operations that are roughly equivalent
+    * Having the same name for logically different functions is confusing and leads to errors when using generic programming.
+    ```C++
+    void open_gate(Gate& g);   // remove obstacle from garage exit lane
+    void fopen(const char* name, const char* mode);   // open file
+
+    // functions have different purpose, but same name, confusing
+    void open(Gate& g);   // remove obstacle from garage exit lane
+    void open(const char* name, const char* mode ="r");   // open file
+    ```
+
+* C.164: Avoid implicit conversion operators
+
+* C.165: Use using for customization points
+    ```C++
+    namespace N {
+        My_type X { /* ... */ };
+        void swap(X&, X&); // optimized swap for N::X
+    }
+
+    void f1(N::X& a, N::X& b) {
+        std::swap(a, b);   // probably not what we wanted: calls std::swap()
+    }
+
+    void f2(N::X& a, N::X& b) {
+        swap(a, b);        // calls N::swap
+    }
+
+    void f3(N::X& a, N::X& b) {
+        using std::swap;  // make std::swap available
+        swap(a, b);       // calls N::swap if it exists, otherwise std::swap
+    }
+    ```
+
+* C.166: Overload unary & only as part of a system of smart pointers and references
+
+* C.167: Use an operator for an operation with its conventional meaning
+
+* C.168: Define overloaded operators in the namespace of their operands
+
+* C.170: If you feel like overloading a lambda, use a generic lambda
+    ```C++
+    void f(int);
+    void f(double);
+    auto f = [](char);   // error: cannot overload variable and function
+
+    auto g = [](int) { /* ... */ };
+    auto g = [](double) { /* ... */ };   // error: cannot overload variables
+
+    auto h = [](auto) { /* ... */ };   // OK
+    ```
+
+## C.union: Unions
+
+* C.180: Use unions to save Memory
+
+* C.181: Avoid "naked” unions
+
+* C.182: Use anonymous unions to implement tagged unions
+
+* C.183: Don’t use a union for type punning
 
 # Enum: Enumerations
 [:link:](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-enum)
@@ -463,17 +545,37 @@
 
 * Enum.2: Use enumerations to represent sets of related named constants
 
-* Enum.3: Prefer enum classes over “plain" enums
+* Enum.3: Prefer enum classes over "plain" enums
 
 * Enum.4: Define operations on enumerations for safe and simple use
+    ```C++
+    enum class Day { mon, tue, wed, thu, fri, sat, sun };
+
+    Day& operator++(Day& d) {
+        return d = (d == Day::sun) ? Day::mon : static_cast<Day>(static_cast<int>(d)+1);
+    }
+
+    Day today = Day::sat;
+    Day tomorrow = ++today;
+
+    /* The use of a static_cast is not pretty, but is an infinite recursion,
+    * and writing it without a cast, using a switch on all cases is long-winded. */
+    Day& operator++(Day& d) {
+        return d = (d == Day::sun) ? Day::mon : Day{++d};    // error
+    }
+    ```
 
 * Enum.5: Don’t use ALL_CAPS for enumerators
 
 * Enum.6: Avoid unnamed enumerations
+    * If you can’t name an enumeration, the values are not related
 
 * Enum.7: Specify the underlying type of an enumeration only when necessary
+    * int is the default integer type. int is compatible with C enums.
+    * Specifying the underlying type is necessary in forward declarations of enumerations
 
 * Enum.8: Specify enumerator values only when necessary
+    * The default gives a consecutive set of values that is good for switch-statement implementations.
 
 # R: Resource management
 [:link:](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-resource)
@@ -502,7 +604,7 @@
 
 * R.13: Perform at most one explicit resource allocation in a single expression statement
 
-* R.14: Avoid  parameters, prefer span
+* R.14: Avoid [] parameters, prefer span
 
 * R.15: Always overload matched allocation/deallocation pairs
 
@@ -522,15 +624,15 @@
 
 * R.31: If you have non-std smart pointers, follow the basic pattern from std
 
-* R.32: Take a unique_ptr<widget> parameter to express that a function assumes ownership of a widget
+* R.32: Take a unique_ptr<T> parameter to express that a function assumes ownership of a T
 
-* R.33: Take a unique_ptr<widget>& parameter to express that a function reseats the widget
+* R.33: Take a `unique_ptr<T>&` parameter to express that a function `reseats` the T
 
-* R.34: Take a shared_ptr<widget> parameter to express that a function is part owner
+* R.34: Take a shared_ptr<T> parameter to express that a function is part owner
 
-* R.35: Take a shared_ptr<widget>& parameter to express that a function might reseat the shared pointer
+* R.35: Take a `shared_ptr<T>&` parameter to express that a function might `reseat` the shared pointer
 
-* R.36: Take a const shared_ptr<widget>& parameter to express that it might retain a reference count to the object ???
+* R.36: Take a const shared_ptr<T>& parameter to express that it might retain a reference count to the object
 
 * R.37: Do not pass a pointer or reference obtained from an aliased smart pointer
 
@@ -539,7 +641,7 @@
 
 ## General rules:
 
-* ES.1: Prefer the standard library to other libraries and to “handcrafted code"
+* ES.1: Prefer the standard library to other libraries and to "handcrafted code"
 
 * ES.2: Prefer suitable abstractions to direct use of language features
 
@@ -558,6 +660,7 @@
 * ES.10: Declare one name (only) per declaration
 
 * ES.11: Use auto to avoid redundant repetition of type names
+    * Avoid auto for initializer lists and in cases where you know exactly which type you want and where an initializer might require conversion.
 
 * ES.12: Do not reuse names in nested scopes
 
@@ -568,6 +671,9 @@
 * ES.22: Don’t declare a variable until you have a value to initialize it with
 
 * ES.23: Prefer the {}-initializer syntax
+    * {}-initializers do not allow narrowing conversions
+    * {} initialization can be used for nearly all initialization; other forms of initialization can’t
+    * `={}` gives copy initialization whereas `{}` gives direct initialization.
 
 * ES.24: Use a unique_ptr<T> to hold pointers
 
@@ -577,17 +683,18 @@
 
 * ES.27: Use std::array or stack_array for arrays on the stack
 
-* ES.28: Use lambdas for complex initialization, especially of const variables
+* ES.28: __Use lambdas for complex initialization, especially of const variables__
 
 * ES.30: Don’t use macros for program text manipulation
 
-* ES.31: Don’t use macros for constants or “functions"
+* ES.31: Don’t use macros for constants or "functions"
 
 * ES.32: Use ALL_CAPS for all macro names
 
 * ES.33: If you must use macros, give them unique names
 
 * ES.34: Don’t define a (C-style) variadic function
+    * Not type safe. Requires messy cast-and-macro-laden code to get working right.
 
 ## Expression rules:
 
@@ -601,7 +708,7 @@
 
 * ES.44: Don’t depend on order of evaluation of function arguments
 
-* ES.45: Avoid “magic constants"; use symbolic constants
+* ES.45: Avoid "magic constants"; use symbolic constants
 
 * ES.46: Avoid narrowing conversions
 
@@ -818,7 +925,7 @@
 
 ## Concept definition rule summary:
 
-* T.20: Avoid “concepts" without meaningful semantics
+* T.20: Avoid "concepts" without meaningful semantics
 
 * T.21: Require a complete set of operations for a concept
 
