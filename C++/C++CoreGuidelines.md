@@ -735,12 +735,24 @@
 * ES.64: Use the T{e}notation for construction
 
 * ES.65: Don’t dereference an invalid pointer
+    * Dereferencing an invalid pointer, such as nullptr, is undefined behavior, typically leading to immediate crashes, wrong results, or memory corruption.
 
 ## Statement rules:
 
 * ES.70: Prefer a switch-statement to an if-statement when there is a choice
 
 * ES.71: Prefer a range-for-statement to a for-statement when there is a choice
+    ```C++
+    // Note Don’t use expensive copies of the loop variable of a range-for loop:
+    // This will copy each elements of vs into s.
+    for (string s : vs)
+
+    //Better:
+    for (string& s : vs)
+
+    // Better still, if the loop variable isn’t modified or copied:
+    for (const string& s : vs)
+    ```
 
 * ES.72: Prefer a for-statement to a while-statement when there is an obvious loop variable
 
@@ -753,6 +765,33 @@
 * ES.76: Avoid goto
 
 * ES.77: Minimize the use of break and continue in loops
+    * Often, a loop that requires a break is a good candidate for a function (algorithm), in which case the break becomes a return.
+    ```C++
+    //Original code: break inside loop
+    void use1() {
+        std::vector<T> vec = {/* initialized with some values */};
+        T value;
+        for (const T item : vec) {
+            if (/* some condition*/) {
+                value = item;
+                break;
+            }
+        }
+    }
+
+    //BETTER: create a function and return inside loop
+    T search(const std::vector<T> &vec) {
+        for (const T &item : vec) {
+            if (/* some condition*/) return item;
+        }
+        return T(); //default value
+    }
+
+    void use2() {
+        std::vector<T> vec = {/* initialized with some values */};
+        T value = search(vec);
+    }
+    ```
 
 * ES.78: Don’t rely on implicit fallthrough in switch statements
 
@@ -761,14 +800,35 @@
 * ES.84: Don’t try to declare a local variable with no name
 
 * ES.85: Make empty statements visible
+    ```C++
+    for (i = 0; i < max; ++i);   // BAD: the empty statement is easily overlooked
+    v[i] = f(v[i]);
+
+    for (auto x : v) {           // better
+        // nothing
+    }
+    v[i] = f(v[i]);
+    ```
 
 * ES.86: Avoid modifying loop control variables inside the body of raw for-loops
 
 * ES.87: Don’t add redundant == or != to conditions
+    ```C++
+    // These all mean "if `p` is not `nullptr`"
+    if (p) { ... }            // good
+    if (p != 0) { ... }       // redundant `!=0`; bad: don't use 0 for pointers
+    if (p != nullptr) { ... } // redundant `!=nullptr`, not recommended
+
+    // Prefer
+    if (auto pc = dynamic_cast<Circle>(ps)) { ... } // execute if ps points to a kind of Circle, good
+
+    if (auto pc = dynamic_cast<Circle>(ps); pc != nullptr) { ... } // not recommended
+    ```
 
 ## Arithmetic rules:
 
 * ES.100: Don’t mix signed and unsigned arithmetic
+    * Unfortunately, C++ uses signed integers for array subscripts and the standard library uses unsigned integers for container subscripts.
 
 * ES.101: Use unsigned types for bit manipulation
 
@@ -783,6 +843,7 @@
 * ES.106: Don’t try to avoid negative values by using unsigned
 
 * ES.107: Don’t use unsigned for subscripts, prefer gsl::index
+    * To avoid signed/unsigned confusion. To enable better optimization. To enable better error detection. To avoid the pitfalls with auto and int.
 
 # Per: Performance
 [:link:](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#S-performance)
@@ -790,8 +851,10 @@
 * Per.1: Don’t optimize without reason
 
 * Per.2: Don’t optimize prematurely
+    * Elaborately optimized code is usually larger and harder to change than unoptimized code.
 
 * Per.3: Don’t optimize something that’s not performance critical
+    * Optimizing a non-performance-critical part of a program has no effect on system performance.
 
 * Per.4: Don’t assume that complicated code is necessarily faster than simple code
 
