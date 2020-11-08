@@ -359,5 +359,136 @@
     * Phrasal verbs are phrases that indicate actions. They are generally used in spoken English and informal texts. E.g., turn down, come across and run into.
 
 ## Prepostions
+1. Definition
+    *  a preposition is a word which is used before a noun, a noun phrase or a pronoun, connecting it to another word.
+
+2. Preposition of Place:
+    * `in`: inside
+    * `at`:
+        1. used to show an exact position or particular place
+        2. table
+        3. events
+            * at a concert, at the party
+        4. place where you are to do something typical (watch a film, study, work)
+            * at the movies, at university, at work
+    * `on`:
+        1. attached
+            * Look at the picture on the wall
+        2. next to or along the side of (river)
+            * Cambridge is on the River Cam.
+        3. used to show that something is in a position above something else and touching it.
+            * The book is on the desk
+            * A smile on his face
+        4. left, right
+            * The shop is on the left
+        5. a floor in a house
+            * My apartment is on the first floor
+        6. used for showing some methods of traveling
+            * I love traveling on trains /on the bus / on a plane
+        7. television, radio
+            * My favorite program on TV, on the radio
+    * `by, next to, beside, near`: not far away in distance
+        * The girl who is by / next to / beside the house.
+    * `between`: in or into the space which separates two places, people or objects
+        * The town lies halfway between Rome and Florence.
+    * `behind`: at the back (of)
+    * `in front of`: further forward than someone or something else
+    * `under`: lower than (or covered by) something else
+    * `below`: lower than something else.
+    * `over`:
+        1. above or higher than something else, sometimes so that one thing covers the other.
+            * She held the umbrella over both of us.
+        2. more than.
+            * Most of the carpets are over $100.
+        3. across from one side to the other.
+            * I walked over the bridge
+        4. overcoming an obstacle
+            * She jumped over the gate
+    * `above`: higher than something else, but not directly over it
+    * `across`: from one side to the other of something with clear limits / getting to the other side
+    * `through`: from one end or side of something to the other
+        * They walked slowly through the woods.
+    * `into`: towards the inside or middle of something and about to be contained, surrounded or enclosed by it
+        * Shall we go into the garden?
+    * `towards`: in the direction of, or closer to someone or something
+        * She stood up and walked towards him.
+    * `onto`: used to show movement into or on a particular place
+        * I slipped as I stepped onto the platform.
+    * `from`: used to show the place where someone or something starts:
+        * What time does the flight from Amsterdam arrive?
+
+2. Prepositions of time
+    * `on`:
+        1. days
+        2. weekend (American English)
+    * `in`:
+        1. months / seasons / year
+        2. morning / evening / afternoon
+        3. period of time
+    * `at`:
+        1. night
+        2. weekend (British English)
+        3. used to show an exact or a particular time
+            * There's a meeting at 2.30 this afternoon / at lunch time.
+    * `since`: from a particular time in the past until a later time, or until now
+    * `for`: used to show an amount of time.
+        * I'm just going to bed for an hour or so.
+    * `ago`: back in the past; back in time from the present:
+        * The dinosaurs died out 65 million years ago.
+    * `before`: at or during a time earlier than
+        * She's always up before dawn.
+    * `to`: used when saying the time, to mean before the stated hour
+        * It's twenty to six.
+    * `past`: telling the time
+        * five past ten
+    * `to`: until a particular time, marking end of a period of time
+        * It's only two weeks to Christmas.
+    * `from`: used to show the time when something starts
+        * The museum is open from 9.30 to 6.00 Tuesday to Sunday.
+    * `till / until`: up to (the time that)
+        * We waited till / until half past six for you.
+    * `by`: not later than; at or before
+        * She had promised to be back by five o'clock.
+
+3. Other Prepositions:
+    * `from`:
+        * used to show the origin of something or someone
+            * "Where are you from?" "I'm from Italy."
+        * used to show the material of which something is made
+            * The desk is made from pine.
+        * used to show a change in the state of someone or something
+            * Things went from bad to worse.
+    * `of`:
+        * used to show possession, belonging or origin
+            * a friend of mine
+        * used after words or phrases expressing amount, number or particular unit
+            * a kilo of apples
+    * `by`: used to show the person or thing that does something:
+        * I'm reading some short stories (written) by Chekhov.
+    * `on`:
+        * used for showing some methods of travelling
+        * entering a public transport vehicle
+    * `in`: entering a car / Taxi
+        * She got in the car and drove fast.
+    * `off`: leaving a public transport vehicle
+    * `out of`: leaving a closed vehicle, building...
+    * `by`:
+        * used to show measurements or amounts
+            * Their wages were increased by 12%.
+        * travelling (other than walking or horseriding)
+            * She went by car, by bus, by train
+    * `at`: age
+        * In theory, women can still have children at the age of 50.
+    * `about`: on the subject of; connected with
+        * What's that book about?
+
 
 ## Conjunction and Interjection
+1. Definition
+    * A conjunction is a part of speech that joins two words, phrases or clauses together.
+2. Coordinating conjunctions
+    * Coordinating conjunctions, also called coordinators, are conjunctions that connect two or more equal items.
+3. Correlative conjunctions
+    * Correlative conjunctions are used in pairs.They work in pairs to coordinate two items. Examples of correlative conjunctions include both...and..., either...or, not only... but also...
+4. Subordinating conjunctions
+    * Subordinating conjunctions, also called subordinators, are conjunctions that join a dependent (or subordinating) clause to an independent (or main) clause.
