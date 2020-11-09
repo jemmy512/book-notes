@@ -492,3 +492,8 @@
     * Correlative conjunctions are used in pairs.They work in pairs to coordinate two items. Examples of correlative conjunctions include both...and..., either...or, not only... but also...
 4. Subordinating conjunctions
     * Subordinating conjunctions, also called subordinators, are conjunctions that join a dependent (or subordinating) clause to an independent (or main) clause.
+
+# Modal
+Modals (also called modal verbs, modal auxiliary verbs, modal auxiliaries) are special verbs which behave irregularly in English.
+
+They are different from normal verbs like "work, play, visit..." They give additional information about the function of the main verb that follows it. They have a great variety of communicative functions.
