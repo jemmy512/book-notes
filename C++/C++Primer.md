@@ -517,6 +517,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
             ```
         2. Const reference can accept both lvaue reference and rvalue reference.
         3. Rvalue bind to a const reference, it's lifetime is extended.
+        4. __Named rvalue is a lvalue__: the variable bind to rvalue itself is lvalue.
 
     5. Because rvalue reference can only be bound to temporaries, so:
         1. There can be no other users of that object
