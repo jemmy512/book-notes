@@ -507,26 +507,26 @@ They are different from normal verbs like "work, play, visit..." They give addit
         * I do __know__ him
         * I do __like__ you.
         * I can __do__ it .
-    * Several common verbs of perception, including `see, watch, hear, feel`, and sense take a direct object and a bare infinitive.
+    * Several common `verbs of perception`, including `see, watch, hear, feel, and sense` take a direct object and a bare infinitive.
         * I saw it __happen__
         * I watched it __happen__
-    * The bare infinitive is also used with several common verbs of permission or causation, including `make, bid, let, and have.`
+    * The bare infinitive is also used with several common `verbs of permission or causation`, including `make, bid, let, and have.`
         * I made/bade/let/had him __do__ it.
         * I was made to do it. (However, make takes a to-infinitive in the passive voice.
     * The bare infinitive is also used after `had better`.
         * You had better leave now
     * The verb `help` is followed by the bare infinitive.
         * He helped them do it. ("He helped them to do" is also possible)
-    * With the word why.
+    * With the word `why`.
         * Why say it?
 3. The infinitive with to is called __full infinitive__ ('to do', 'to be')
-    * The full infinitive can function as a noun phrase. In this case it is used as follows.
+    * The full infinitive can function as a `noun phrase`. In this case it is used as follows.
         * as a subject.
             * __To err__ is human, __to forgive__ is divine.
         * as an object.
             * I intended __to marry__ her.
             * He wanted __to know__ the whole trut.
-    * It can also be used like an adjective or adverb.
+    * It can also be used like an `adjective or adverb`.
         * This is the game __to watch__. (to watch functions as an adjective, modifying the noun game)
         * This is the problem __to think about__. (to think about functions as an adjective modifying the noun 'the problem')
         * He went to his friend's house __to study__. (to study functions as an adverb answering the question why he went to his friend's house)
