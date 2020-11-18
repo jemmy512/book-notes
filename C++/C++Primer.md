@@ -853,7 +853,7 @@ template int compare(const int&, const int&);   // instantiation definition
 
 ## Template Argument Deduction
 ### Conversion and Template Type Parameter
-A very limited number of conversions are supplied :
+A very limited number of conversions are supplied:
 * const conversion: A parameter that is a reference or pointer to const can be passed a reference or
     pointer to non-const object.
 * Array- or function-to-pointer conversion.
@@ -1150,9 +1150,22 @@ namespace primer  = cplusplus_primer;
 ```
 
 1. using Declaration
-    * introduce _namespace members_ into other namespaces and block scopes
-    * introduce _base class members_ into derived class definitions
-    * introduce _enumerators_ into namespaces, block, and class scopes (since C++20)
+    * introduce __namespace members__ into other namespaces and block scopes
+    * introduce __base class members__ into derived class definitions
+        * Introduces a `member of a base class` into the derived class definition, such as to expose a protected member of base as public member of derived.
+        * If the name is the name of an `overloaded member function` of the base class, all base class member functions with that name are introduced
+        * If the derived class already has a member with the same name, parameter list, and qualifications, the derived class member `hides or overrides` (doesn't conflict with) the member that is introduced from the base class.
+    * Inheriting __constructors__
+        * If the using-declaration refers to a constructor of a direct base of the class being defined (e.g. using Base::Base;), `all constructors` of that base (ignoring member access) are made visible to overload resolution when initializing the derived class.
+        * If overload resolution selects one of the inherited constructors when initializing an object of such derived class:
+            * Then the Base subobject from which the constructor was inherited is initialized using the inherited constructor
+            * And all other bases and members of Derived are initialized as if by the defaulted default constructor (default member initializers are used if provided, otherwise default initialization takes place).
+            * The entire initialization is treated as a single function call: initialization of the parameters of the inherited constructor is sequenced-before initialization of any base or member of the derived object.
+        * If the constructor was inherited from `multiple base class` subobjects of type B, the program is ill-formed, similar to multiply-inherited non-static member functions
+        * If an inherited constructor matches the signature of one of the constructors of Derived, it is `hidden` from lookup by the version found in Derived
+        * If one of the inherited constructors of Base happens to have the signature that matches a `copy/move` constructor of the Derived, it does not prevent implicit generation of Derived copy/move constructor (which then hides the inherited version, similar to using operator=).
+    * introduce __enumerators__ into namespaces, block, and class scopes (since C++20)
+        * A using-declaration can also be used with unscoped enumerators.
 2. using Directives
     * Allows us to use the unqualied form of a namespace name. Unlike a using declaration, we retain no control over which names are made visile---- they all are.
     ```C++
@@ -1189,3 +1202,33 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
     * To access class's staic variable.
     * In case of the multiple Inheritance.
 3. Single, multiple and virtual inheritance:
+
+
+# Atomic
+
+## std::memory_order
+### memory_order_relaxed
+*  There are no synchronization or ordering constraints imposed on other reads or writes, only this operation's atomicity is guaranteed
+
+### memory_order_consume
+* A `load operation` with this memory order performs a consume operation on the affected memory location:
+    * no reads or writes in the current thread dependent on the value currently loaded can be reordered `before` this load.
+* Writes to data-dependent variables in other threads that release the same atomic variable are visible in the current thread. On most platforms, this affects compiler optimizations only.
+
+### memory_order_acquire
+* A `load operation` with this memory order performs the acquire operation on the affected memory location:
+    * no reads or writes in the current thread can be reordered `before` this load.
+* All writes in other threads that release the same atomic variable are visible in the current thread
+
+### memory_order_release
+* A `store operation` with this memory order performs the release operation:
+    * no reads or writes in the current thread can be reordered `after` this store.
+* All writes in the current thread are visible in other threads that acquire the same atomic variable and writes that carry a dependency into the atomic variable become visible in other threads that consume the same atomic
+
+### memory_order_acq_rel
+* A `read-modify-write` operation with this memory order is both an acquire operation and a release operation.
+* No memory reads or writes in the current thread can be reordered before or after this store.
+* All writes in other threads that release the same atomic variable are visible before the modification and the modification is visible in other threads that acquire the same atomic variable.
+
+### memory_order_seq_cst
+* A `load operation` with this memory order performs an acquire operation, a `store performs` a release operation, and `read-modify-write` performs both an acquire operation and a release operation, plus a single total order exists in which all threads observe all modifications in the same order
