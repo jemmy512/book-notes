@@ -1219,11 +1219,13 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 * A `load operation` with this memory order performs the acquire operation on the affected memory location:
     * no reads or writes in the current thread can be reordered `before` this load.
 * All writes in other threads that release the same atomic variable are visible in the current thread
+* Acquire semantics prevent memory reordering of the read-acquire with any read or write operation that follows it in program order.
 
 ### memory_order_release
 * A `store operation` with this memory order performs the release operation:
     * no reads or writes in the current thread can be reordered `after` this store.
 * All writes in the current thread are visible in other threads that acquire the same atomic variable and writes that carry a dependency into the atomic variable become visible in other threads that consume the same atomic
+* Release semantics prevent memory reordering of the write-release with any read or write operation that precedes it in program order.
 
 ### memory_order_acq_rel
 * A `read-modify-write` operation with this memory order is both an acquire operation and a release operation.
@@ -1232,3 +1234,21 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 
 ### memory_order_seq_cst
 * A `load operation` with this memory order performs an acquire operation, a `store performs` a release operation, and `read-modify-write` performs both an acquire operation and a release operation, plus a single total order exists in which all threads observe all modifications in the same order
+
+### Reference:
+* [Weak vs. Strong Memory Models](https://preshing.com/20120930/weak-vs-strong-memory-models/)
+* [This Is Why They Call It a Weakly-Ordered CPU](https://preshing.com/20121019/this-is-why-they-call-it-a-weakly-ordered-cpu/)
+* [Memory Barriers Are Like Source Control Operations](https://preshing.com/20120710/memory-barriers-are-like-source-control-operations/)
+* [Acquire and Release Semantics](https://preshing.com/20120913/acquire-and-release-semantics/)
+* [Memory Ordering at Compile Time](https://preshing.com/20120625/memory-ordering-at-compile-time/)
+* [The Happens-Before Relation](https://preshing.com/20130702/the-happens-before-relation)
+* [The Synchronizes-With Relation](https://preshing.com/20130823/the-synchronizes-with-relation/)
+* [An Introduction to Lock-Free Programming](https://preshing.com/20120612/an-introduction-to-lock-free-programming/)
+* [Acquire and Release Fences](https://preshing.com/20130922/acquire-and-release-fences)
+* [Acquire and Release Fences Don't Work the Way You'd Expect](https://preshing.com/20131125/acquire-and-release-fences-dont-work-the-way-youd-expect/)
+* [Roll Your Own Lightweight Mutex](https://preshing.com/20120226/roll-your-own-lightweight-mutex/)
+* [Can Reordering of Release/Acquire Operations Introduce Deadlock?](https://preshing.com/20170612/can-reordering-of-release-acquire-operations-introduce-deadlock/)
+* [You Can Do Any Kind of Atomic Read-Modify-Write Operation](https://preshing.com/20150402/you-can-do-any-kind-of-atomic-read-modify-write-operation/)
+* [Atomic vs. Non-Atomic Operations](https://preshing.com/20130618/atomic-vs-non-atomic-operations)
+* [Memory Reordering Caught in the Act](https://preshing.com/20120515/memory-reordering-caught-in-the-act)
+* [Implementing a Recursive Mutex](https://preshing.com/20120305/implementing-a-recursive-mutex)
