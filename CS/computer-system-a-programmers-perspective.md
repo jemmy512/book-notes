@@ -329,16 +329,13 @@ Because block allocation time is linear in the total number of heap blocks, the 
 Using a doubly linked list instead of an implicit free list reduces the first fit allocation time from linear in the total number of blocks to linear in the number of free blocks.
 
 ### 9.9.14 Segregated Free Lists
-
 Segregated Fits
 Each free list is associated with a size class and is organized as some kind of explicit or implicit list.
 
 Search times are reduced because searches are limited to particular parts of the heap instead of the entire heap. Memory utilization can improve because of the interesting fact that a simple first-fit search of a segregated free list approximates a best-fit search of the entire heap.
 
 ## Reference
-
-https://mp.weixin.qq.com/s/dOgpcRiu3F18EpFWcnv5XQ
-
+https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=77785597cd937db3013ad6c395b557a3&source=41#wechat_redirect
 
 # Chapter 10 System-Level I/O
 
