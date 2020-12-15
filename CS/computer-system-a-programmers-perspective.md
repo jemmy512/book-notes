@@ -316,12 +316,22 @@ A practical allocator that strikes a better balance between throughput and utili
 4. Coalescing: What do we do with a block that has just been freed?
 
 ### 9.9.6 Implicit Free Lists
+![9.9.6-format-heap-block.png](../Images/CSAPP/9.9.6-format-heap-block.png)
+
+![9.9.6-implicit-free-list.png](../Images/CSAPP/9.9.6-implicit-free-list.png)
+
 ### 9.9.7 Placing Allocated Blocks
 Placement policy: first fit, next fit, and best fit.
 
 ### 9.9.10 Coalescing Free Blocks
 ### 9.9.11 Coalescing with Boundary Tags
+It's easy to coalesce next blocks with implicit format, but hard for previous blocks. To address this issues, blocks with boundary tags come.
+
 There is one somewhat subtle aspect. The free list format we have chosen—with its prologue and epilogue blocks that are always marked as allocated—allows us to ignore the potentially troublesome edge conditions where the requested block bp is at the beginning or end of the heap.
+
+![9.9.11-format-heap-block-boundary-tag](../Images/CSAPP/9.9.11-format-heap-block-boundary-tag.png)
+
+![9.9.11-colaescing-with-boundary-tags.png](../Images/CSAPP/9.9.11-colaescing-with-boundary-tags.png)
 
 ### 9.9.13 Explicit Free Lists
 Because block allocation time is linear in the total number of heap blocks, the implicit free list is not appropriate for a general-purpose allocator.
