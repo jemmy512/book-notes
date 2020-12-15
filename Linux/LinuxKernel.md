@@ -1769,7 +1769,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 
 ![linux-mem-page-table.png](../Images/LinuxKernel/kernel-mem-page-table.png)
 
-### user space
+### user virtual space
 ```C++
 
 #ifdef CONFIG_X86_32
@@ -1824,7 +1824,7 @@ struct vm_area_struct {
 ```
 ![linux-mem-vm.png](../Images/LinuxKernel/kernel-mem-vm.png)
 
-### kernel space
+### kernel virtual space
 ```C++
 /* PKMAP_BASE:
  * use alloc_pages() get struct page, user kmap() map the page to this area */
@@ -1840,7 +1840,7 @@ struct vm_area_struct {
 
 ![linux-mem-user-kernel-64.png](../Images/LinuxKernel/kernel-mem-user-kernel-64.png)
 
-### physic
+### physic memory
 #### numa node
 #### Q: relationship of each numa node and global mem layout?
 ```C++
@@ -2025,7 +2025,6 @@ struct free_area  free_area[MAX_ORDER];
 ```
 ![linux-mem-buddy-freepages.png](../Images/LinuxKernel/kernel-mem-buddy-freepages.png)
 
-#### alloc_pages
 ```C++
 static inline struct page* alloc_pages(gfp_t gfp_mask, unsigned int order)
 {
