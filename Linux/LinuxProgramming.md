@@ -1,6 +1,5 @@
 
 # Make File
-
 1. syntax
     target: prerequisites...
         command # command line must must start with tab
@@ -9,11 +8,14 @@
 2. file name rules: Makefile / makefile / GNUmakefile
 
 3. Five parts of makefile:
-    1. explicit rules 2. implicit rules 3. comments 4. variable defination
+    1. explicit rules
+    2. implicit rules
+    3. comments
+    4. variable defination
     5. file instruction:
-        5.1 include other makefile
-        5.2 specify valid parts of makefile according to cases
-        5.3 define a mutil-line command
+        * include other makefile
+        * specify valid parts of makefile according to cases
+        * define a mutil-line command
 4. wildcards: *, ? [...]
     object = *.o # value of variable object is '*.o' not all .o suffix files
     objects := $(wildcard *.o) # value of variable object is all .o suffix files
@@ -21,7 +23,7 @@
 5. File Search:
     1. makefile special variable:
         VPATH = <path1> : <path2> : <path3> ...
-    2.makefile vpath keyword
+    2. makefile vpath keyword
         vapth <pattern> <directories> # vpath %.h ../header
         vpath <path>    # clear search directories for files that match pattern <pattern>
         vpath           # clear all file search directories that have been set up
@@ -49,7 +51,7 @@
 9. ; # if two next instruction dependent on previous instruction, thems should write in one line, sperate by ;
     exec:
         cd /home/hchen; pwd # result is: pwd = /home/hchen
-10 clean
+10. clean
     .PHONE clean
     clean:
         rm -i -f -k # -i(-ignore-errors) -k(-keep-going) -f(-force)
@@ -108,14 +110,17 @@ __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 #else
  #define BEG_PRINT(...) do {} while (FALSE)
 #endif
+ ```
 
-core dump:
+* core dump:
     1. suffix with pid
-        echo "1" > /proc/sys/kernel/core_uses_pid  # 0 without suffix, 1 with pid suffix
+        * echo "1" > /proc/sys/kernel/core_uses_pid  # 0 without suffix, 1 with pid suffix
     2. name form and path
-        echo "/corefile/core-%e-%p-%t" > proc/sys/kernel/core_pattern
-        %e(name) %p(pid) %u(uid) %g(gid) %s(signal) %t(time) %h(host name)
-Gdb:
+        * echo "/corefile/core-%e-%p-%t" > proc/sys/kernel/core_pattern
+        * %e(name) %p(pid) %u(uid) %g(gid) %s(signal) %t(time) %h(host name)
+
+* Gdb:
+    ```C++
     file <program>
     kill <program>
     make source file to be debug:
@@ -244,28 +249,30 @@ Gdb:
         print *<array>@<len>
         int a[10]-> p *a@10
     run shell in gdb: shell <command>
+    ```
+
 Search:
     forward-search <regexp>
     search <regexp>
     reverse-search <regexp>
+
 source path:
         directory <dirname...> # :(unix), ;(window)
         directory # clear path info
         show directories
+
 define own enviroment variable int GDB:
     set $<varname> = <value> # enviromet var have no type
     show convenience # view all enviroment variable
- ```
 
 # File I/O
 
-By convention: <unistd.h>
-* 0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stand for standard input, output and error, respectively.
-* Range: 0 - (OPEN_MAX - 1)
+* By convention: <unistd.h>
+    * 0, 1, 2(<STDIN, STDOUT, STDERR>_FILENO): stand for standard input, output and error, respectively.
+    * Range: 0 - (OPEN_MAX - 1)
 
-
-#include<fcntl.h>
 ```C++
+#include <fcntl.h>
 int open(const char *path, int oflag, ... /*mode_t mode*/);
 int openat(int fd, const char *path , int oflag, ... /*mode_t mode*/);
     // oflag: O_RDONLY, O_WRONLY, O_RDWR, O_EXEC, O_SEARCH, O_TTY_INIT, O_SYNC, O_DSYNC, O_RSYNC
@@ -288,7 +295,7 @@ ssize_t read(int fd, void *buf, size_t nbytes); <unistd.h>
     // 6. Interrupted by a signal and partial data have been read.
 ```
 
-FD Duplicate:
+## FD Duplicate:
 ```C++
 int dup(int fd);            // equal to fcntl(fd, F_DUPFD, 0);
     // Always return the minimum fd number of the system.
@@ -296,27 +303,32 @@ int dup2(int fd, int fd2);  // equal to close(fd2); fcntl(fd, F_DUPFD, fd2);
                             // fd2 shares the same file table as fd.
     // new fd created by dup or dup2 doesn't inherit the property of the old fd such as close-on-exec, non-blocking
 ```
-Data sync between kernel buffer and disk:
+
+## Data sync between kernel buffer and disk:
 ```C++
-void sync(void);            // Queues all the modified block buffers for writing and returns.
+void sync(void);    // Queues all the modified block buffers for writing and returns.
 int fsync(int fd);
 int fdatasync(int fd);
 ```
-Aotomic Operation: <unistd.h>
+
+## Aotomic Operation
 ```C++
+#include <unistd.h>
 ssize_t pread(int fd, void *buf, size_t nbytes, off_t offset);
 ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
 ```
 
-sendfile:  <sys/sendfile.h>, designed to transfer file over internet
+## sendfile
 ```C++
+#include <sys/sendfile.h> // designed to transfer file over internet
 int sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
 // out_fd can be any fd while in_fd must refer to real file, not socket or pipe.
 // Operation is completed in kernel, so it's very efficient and is a 0 COPY.
 ```
 
-File property change: <fcntl.h>
+## File property change
 ```C++
+#include <fcntl.h>
 int fcntl(int fd, int cmd, ... /*int arg*/);
     // cmd: F_DUPFD (the new fd shares the same file table entry, new has its own FL and FD_CLOEXEC is cleared)
     // F_DUPFD_CLOEXEC, F_{Get, SET}FD, F_{GET, SET}FL, F_GETOWN, F_GETLK, F_GETLK, F_SETLKW, F_RDLCK, F_UNLCK
@@ -336,10 +348,10 @@ ioctl: <sys/ioctl.h>
     int ioctl(int fd, int request, ...);
 ```
 
-/dev/fd/:
-
-Parse Command Line Option: <unistd.h> <getopt.h>
+## Parse Command Line Option
 ```C++
+#include <unistd.h>
+#include <getopt.h>
 int getopt(int argc, char *const argvp[], const char *optstring); <unistd.h>
     // If an option followed by a colon (:) it takes an argument, otherwise it exits by itself.
     // If an option followed by two colons(::), it's free to take or not take argument, but there must be
@@ -359,8 +371,9 @@ int getopt_long(int argc, char * const argv[], const char *optstring,
     };
 ```
 
-Syslog: <syslog.h>
+## Syslog
 ```C++
+#include <syslog.h>
 void openlog(const char *ident, int logopt, int facility);
 void syslog(int priority, const char *message, .../*arguments*/);
 int  setlogmask(int maskpri);
@@ -372,13 +385,13 @@ void closelog(void);
 
 # File and Directories
 
-TOCTTOU: time-of-check-to-time-of-use
-* This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
-* program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
+* TOCTTOU: time-of-check-to-time-of-use
+    * This error in file system namespace generally deal with attempts to subvert file permission by tricking privileged
+    * program into either reducing permissions on privileged file or modifying privileged file to open up a secure hole.
 
-
-Stata Family function: <sys/stat.h>
+## Stata
 ```C++
+#include <sys/stat.h>
 int stat(const char *pathname, struct stat *buf); // get file stat
 int fstat(int fd, struct stat *buf);
 int lstat(const char *pathname, struct stat *buf);  // return symbolic infomation, not referenced file
@@ -403,21 +416,26 @@ struct stat {
 mode_t:
 * mode: S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO
 
-Macro to check file type:
-* S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
-* S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
+* Macro to check file type:
+    * S_ISERG(m); S_ISDIR(m); S_ISCHR(m); S_ISBLK(m); S_ISFIFO(m); S_IFLNK(M), S_ISSOCK(m)
+    * S_TYPEISMQ(struct stat *) S_TYPEISSEM() S_TYPEISSHM()
 
-Access permission:
-* S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
+* Access permission:
+    * S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
 
-File Type:
-* 1. Regular  2. Directory  3. Block special file 4. Character special file 5. FIFO 6. Socket 7. Symbolic link
+##  File Type:
+    1. Regular
+    2. Directory
+    3. Block special file
+    4. Character special file
+    5. FIFO
+    6. Socket
+    7. Symbolic link
 
 
-File Access Permission:
-
-st_mode mask:
-* S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
+## File Access Permission:
+* st_mode mask:
+    * S_ISUID, S_ISGID, S_IRWXU, S_I{R, W, X}USR, S_I{R, W, X}GRP, S_I{R, W, X}OTH
 
 * Whenever we open any type of file by name, we must have execute permission on each directory.
 * The read permission determines whether we can open an existing file for reading.
@@ -425,27 +443,29 @@ st_mode mask:
 * We can only create/delete new file in a directory when we have write permission and execute permission
 * Execute permission for a file must be on if we use exec function and file also has to be a regular file.
 
-Ownership of New Files and Directory:
-The user ID of the file is set to the effective user ID of the process, group ID can be following rules:
-1. Can be the effective group ID of the process.
-2. Can be the group ID of the directory in which the file is being created.
+* Ownership of New Files and Directory:
+    * The user ID of the file is set to the effective user ID of the process, group ID can be following rules:
+        1. Can be the effective group ID of the process.
+        2. Can be the group ID of the directory in which the file is being created.
 
-access and faccessat: <unistd.h> determine accessibility based on real user and group id
+* access and faccessat: <unistd.h> determine accessibility based on real user and group id
 ```C++
     int access(const chat *pathname, int mode);
     int faccessat(int fd, const chatr *pathname, int mode, int flag);
     // mode: F_OK, R_OK, W_OK, X_OK; flag: AR_EACCESS
 ```
 
-umask: <sys/stat.h>  // set and get file mode creation mask
+## umask
 ```C++
-     mode_t umask(mode_t cmask);
-     // any bits that are on in the file mode creation mask are tured off in the file's mode
-     // return previous value of the file mode creation mask
+#include <sys/stat.h>  // set and get file mode creation mask
+mode_t umask(mode_t cmask);
+// any bits that are on in the file mode creation mask are tured off in the file's mode
+// return previous value of the file mode creation mask
 ```
 
-chmod, fchmod, fchmodat: <sys/stat.h>
+## chmod, fchmod, fchmodat
 ```C++
+#include <sys/stat.h>
 int chmod(const char *pathname, mode_t mode);
 int fchmod(int fd, mode_t mode);
 int fchmodat(int fd, const char *pathname, mode_t mode, int flag);
@@ -460,8 +480,9 @@ int fchmodat(int fd, const char *pathname, mode_t mode, int flag);
 //    supplementary group IDs and if process doesn't have superuser privileges,set-group-id bit is removed.
 ```
 
-chown, fchown, fchownat, lchown:    <unistd.h>
+## chown, fchown, fchownat, lchown
 ```C++
+#include <unistd.h>
 int chown(const char *pathname, uid_t owner, git_t group);
     // can't used to change ownership of symbolic link
 int fchown(int fd, uit_t owner, git_t group);
@@ -470,30 +491,40 @@ int lchown(const char *pathname, uit_t owner, git_t group);
 // with _POSIX_CHOWN_RESTRICTED, you can only change the group ID of the files you own, superuser can change UID
 ```
 
-File size:
+## File size:
 1. Regular file size 0 is allowed.
 2. Directory size is usually a multiple of a number, such as 16 or 512.
 3. Symbolic link size is the number of byts in filename. (Symbolic link don't contain normal c null byte)
 
-File Truncation:    <unistd.h> truncate a file to specified length
-```C++
+* File Truncation:    <unistd.h> truncate a file to specified length
+    ```C++
     int truncate(const char *pathname, off_t length);
     int ftruncate(int fd, off_t length);
     // if previous file size is less than length, file size will increases, a hole probably created
-```
+    ```
 
-File system:
-
-link, linkat, unlink, unlinkat, remove: <unistd.h>
-```C++
+## link
+* link, linkat, unlink, unlinkat, remove: <unistd.h>
+    ```C++
     int link(const char *existingpath, const char *newpath);
     int linkat(const efd, const char *existingpath, int nfd, const char newpath, int flag); // AT_SYMLINK_NOFOLLOW
     int unlink(const char *pathname);
     int unlinkat(int fd, const char *pathname, int flag); // AT_REMOVEDIR
     int remove(const char *pathname);
-```
+    int symlink(const char *actualpath, const char *sympath);
+    int symlinkat(const char *actualpath, int fd, const char *sympath);
+    // actualpath and sympath need not reside in the same file system.
+    ssize_t readlink(const char *pathname, char *buf, size_t bufsize);
+    ssize_t readlinkat(int fd, const char *pathname, char *buf, size_t bufsize);
+    // combine the action of the open, read and close, return the number of bytes placed into buf. Contents returned
+    // in the buf are not null terminated.
+    ```
 
-rename, renameat: <stdio.h>
+* limitation of hard link:
+    1. Hard links normally require that link and the file reside in the same file system.
+    2. Only the superuser can create a hard link to a directory
+
+## rename, renameat: <stdio.h>
 ```C++
 int rename(const char *oldname, const char *name);
 int renameat(int oldfd, const char *oldname, int newfd, const char *newname); // AT_FDCWD
@@ -504,50 +535,38 @@ int renameat(int oldfd, const char *oldname, int newfd, const char *newname); //
 4. Can't rename dot or dot-dot.
 5. As a special case, if oldname and newname refer to the same file, the function return success and without changing anything.
 
-Symbolic Links: <unistd.h>
-
-* limitation of hard link:
-    1. Hard links normally require that link and the file reside in the same file system.
-    2. Only the superuser can create a hard link to a directory
-
-```C++
-int symlink(const char *actualpath, const char *sympath);
-int symlinkat(const char *actualpath, int fd, const char *sympath);
-// actualpath and sympath need not reside in the same file system.
-ssize_t readlink(const char *pathname, char *buf, size_t bufsize);
-ssize_t readlinkat(int fd, const char *pathname, char *buf, size_t bufsize);
-// combine the action of the open, read and close, return the number of bytes placed into buf. Contents returned
-// in the buf are not null terminated.
-```
-
-File Time:
+## File Time:
 * st_atim, st_mtim(contents change time), st_ctim(i-node change time)
 
-Action changes i-node:
+* Action changes i-node:
+
 * change access permission, change uid, change number of links
 
-futimens, utimensat, utimes: <sys/stat.h> change the access time and modification time of a file
-```C++
-int futimens(int fd, const struct timespec times[2]); // calendar times
-int utimensat(int fd, const char *path, const struct timespec times[2], int flag);
-// First element of times array contain the access time and second contains the modification time.
-//                  Timestamps can be specified in four forms:
-// 1. If times[2] Null pointer. The times are set to the current time.
-// 2. Pointer to an timespec structure array. If tv_nsec is UTIME_NOW, time set to current time, tv_sec ignored.
-// 3. Pointer to an timespec structure array. If tv_nsec is UTIME_OMIT, time unchange, tv_sec ignored.
-// 4. Pointer to an timespec structure array. If tv_nsec is not UTIME_OMIT|UTIME_NOW, timestamp is set to the
-//    value specified by the corresponding tv_sec and tv_nsec fields.
-```
+* futimens, utimensat, utimes
+    ```C++
+    #include <sys/stat.h> // change the access time and modification time of a file
+    int futimens(int fd, const struct timespec times[2]); // calendar times
+    int utimensat(int fd, const char *path, const struct timespec times[2], int flag);
+    // First element of times array contain the access time and second contains the modification time.
+    //                  Timestamps can be specified in four forms:
+    // 1. If times[2] Null pointer. The times are set to the current time.
+    // 2. Pointer to an timespec structure array. If tv_nsec is UTIME_NOW, time set to current time, tv_sec ignored.
+    // 3. Pointer to an timespec structure array. If tv_nsec is UTIME_OMIT, time unchange, tv_sec ignored.
+    // 4. Pointer to an timespec structure array. If tv_nsec is not UTIME_OMIT|UTIME_NOW, timestamp is set to the
+    //    value specified by the corresponding tv_sec and tv_nsec fields.
+    ```
 
-mkdir, mkdirat, rmdir: <sys/stat.h>
+## mkdir, mkdirat, rmdir
 ```C++
+#include <sys/stat.h>
 int mkdir(const char *pathname, mode_t mode);
 int mkdirat(int fd, const char *pathname, mode_t mode);
 int rmdir(const char *pathname);<unistd.h>
 ```
 
-Directories: <dirent.h>
+## Directories
 ```C++
+#include <dirent.h>
 struct dirent { // incomplete type
     inot_t  d_ino;          // file serial number;
     char    d_name[];       // filename string of entry
@@ -564,8 +583,9 @@ void seekdir(DIR *dp, long loc);    // set the position of a directory stream
 // Ordering of entries within the directory is implementation dependent and usually not alphabetical.
 ```
 
-chdir, fchdir, getcwd: <unistd.h>
+## chdir, fchdir, getcwd
 ```C++
+#include <unistd.h>
 int chdir(const char *pathname);
 int chroot(const char *pathname);   // change process root directory
 int fchdir(int fd);
@@ -574,8 +594,9 @@ char *getwd(char *buf);
 char *get_current_dir_name(void);
 ```
 
-File Tree walk: <ftw.h>
+## File Tree walk
 ```C++
+#include <ftw.h>
 int nftw(
     const char *dirpath,
     int (*fn)(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf),
@@ -595,8 +616,9 @@ ssize_t pwrite(int fildes, const void *buf, size_t nbyte, off_t offset);;
 ssize_t write(int fildes, const void *buf, size_t nbyte);
 ```
 
-#include<sys/resource.h>
+## rlimit
 ```C++
+#include<sys/resource.h>
 struct rlimit {
     rlim_t rlim_cur;  /* Soft limit */
     rlim_t rlim_max;  /* Hard limit (ceiling for rlim_cur) */
@@ -609,44 +631,41 @@ getrusage(int who, struct rusage *r_usgage); // get information about resource u
 ```
 
 # Standard I/O Library
+* Standard input, output, error:
+    * File descriptor: STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
+    * File pointer: stdin, stdout, stderr
 
-Stream's Oritention: <stdio.h> <wchar.h>
+## Buffering
 ```C++
-int fwide(FILE *fd, int mode); // set a stream's oritention
-    // Not change the orientation of stream that has already oriented.
-    // If mode is negtive, make stream byte oriented, return negtive;
-    // If mode is positive, make stream wide oriented, return positive;
-    // If mode is zero, return a value specifing the stream's oriention
-FILE *freopen(const char *pathname, const char *type,FILE *fp); // clear stream's orientation.
-```
-
-Standard input, output, error:
-* File descriptor: STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO
-* File pointer: stdin, stdout, stderr
-
-Buffering: <stdio.h>
-```C++
-Full buffered. (File in disk) Actual I/O takes place when buffer is filled.
-Line bufferd. (Terminal) Actual I/O takes place when newline character encountered on input and output.
-unbuffered. (error msg)
+#include <stdio.h>
+// Full buffered. (File in disk) Actual I/O takes place when buffer is filled.
+// Line bufferd. (Terminal) Actual I/O takes place when newline character encountered on input and output.
+// unbuffered. (error msg)
 
 void setbuf(FILE *fp, char *buf); //  BUFSIZE; turn buffering on or off
 int setvbuf(FILE *fp, char *buf, int mode, size_t size); // mode: _IOFBF, _IOLBF, _IONBF
 int fflush(FILE *fp);
 ```
 
-Opening a Stream:
+## Opening a Stream:
 ```C++
+#include <stdio.h>
+#include <wchar.h>
+int fwide(FILE *fd, int mode); // set a stream's oritention
+    // Not change the orientation of stream that has already oriented.
+    // If mode is negtive, make stream byte oriented, return negtive;
+    // If mode is positive, make stream wide oriented, return positive;
+    // If mode is zero, return a value specifing the stream's oriention
+
 FILE *fopen(const char *pathname, const char *type);
 FILE *freopen(const char *pathname, const char *type, FILE *fp);
-FILE *fdopen(int fd, const char *type);
-    // type: r, w, a, b, +
+FILE *fdopen(int fd, const char *type); // type: r, w, a, b, +
 int fclose(FILE *fp);
 ```
 
-Reading and Writing a Stream:
-```C++
+## Reading and Writing a Stream:
 1. Character-at-a-time I/O:
+    ```C++
     int getc(FILE *fp); // can be implementated as a macro
     int fgetc(FILE *fp);
     int getchar(void);
@@ -659,7 +678,9 @@ Reading and Writing a Stream:
     int ferror(FILE *fp);
     int feof(FILE *fp);     // return nonzero if condition is true, 0 otherwise
     void clearerr(FILE *fp);
+    ```
 2. Line-at-a-time I/O
+    ```C++
     char *gets(char *buf);                  // reads from standard input
         // unsafe, may cause data overwritten.
     char *fgets(char *buf, int n, FILE *fp); // buf if ok, NULL on error
@@ -669,20 +690,20 @@ Reading and Writing a Stream:
         // writes the null terminated string to stream, but null null bytes and the end is not written.
         // This need not be line-at-a-time ouput. Last non-null character is newline is not required.
     int puts(const char *str); // unsage as gets(...);
-```
+    ```
 
-Binary I/O:
+## Binary I/O:
 ```C++
-size_t fread(void *ptr, size_t size, size_t nobj, FILE *fp);        // return number of obj read/write
+size_t fread(void *ptr, size_t size, size_t nobj, FILE *fp);    // return number of obj read/write
 size_t fwrite(const void *ptr, size_t size, size_t nojb, FILE *fp);
 ```
 
-Position a Stream:
-```C++
+## Position a Stream:
 1. ftell, fseek: file's position can be stored in a long integer.
 2. ftello, fseeko: replace the long integer with off_t data type. SUS
 3. fgetpos, fsetpos: fpot_t, can be made as big as necessary to record a file's position. ISO C
 
+```C++
 long ftell(FILE *fp);
 int fseek(FILE *fp, long offset, int whence); // SEEK_SET, SEEK_CUR, SEEK_END
 void rewind(FILE *fp);
@@ -691,7 +712,7 @@ int fgetpos(FILE *fp, fpost_t *pos);
 int fsetpos(FILE *fp, const fpot_t *post);
 ```
 
-Formatted I/O:
+## Formatted I/O:
 ```C++
 int printf(const char *format, ...);
 int fprintf(FILE *fp, const char *format, ...);
@@ -704,38 +725,39 @@ int fscanf(FILE *fp, const char *format, ...);
 int sscanf(const char *buf, const char *format, ...);
 ```
 
-Memory Stream:
+## Memory Stream:
 ```C++
 FILE *fmemopen(void *buf, size_t size, const char *type); // type: r, w, a, b, +
     // If buf is NULL, fmemopen allocates a buffer of size bytes, and will be freed when stream is closed.
 ```
-# Advanced I/O
 
-I/O Moudles:
+
+# Advanced I/O
+## I/O Moudles:
 1. blocking I/O
 2. nonblocing I/O
 3. I/O multiplexing(select, poll, epoll)
 4. signal driven I/O(SIGIO)
 5. asynchronous I/O(aio_)
 
-FD Readable condition:
+## FD Readable condition:
 1. The size of socket buffer in kernel is not less than SO_RECLOWAT
 2. The peer of socket close connection, read return 0
 3. There is a new connection in the scoket
 4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
 
-FD Writeble condition:
+## FD Writeble condition:
 1. The size of socket buffer in kernel is not big that SO_SNDLOWAT
 2. The write of socket is closed, write to such socket will trigger SIGPIPE
 3. Using non-blocking connect connect success or fail
 4. There are errors to be handled in the socket, getsockopt() can get and clear the errors
 
-Nonblocking I/O:
-Two ways to specify nonblocking I/O for a given descriptor:
-1. Specify O_NONBLOCK when call open.
-2. Call fcntl to turn on O_NONBLOCK file status flag on a opened file descriptor.
+## Nonblocking I/O:
+* Two ways to specify nonblocking I/O for a given descriptor:
+    1. Specify O_NONBLOCK when call open.
+    2. Call fcntl to turn on O_NONBLOCK file status flag on a opened file descriptor.
 
-Record Locking:
+## Record Locking:
 ```C++
 int fcntl(int fd, int cmd, ... /*struct flock *flockptr*/);
     // cmd: F_SETLK, F_SETLKW(wait), F_GETLK
@@ -746,12 +768,13 @@ struct flock {
     off_t   l_len;      // length, in bytes; 0 means lock to EOF
     pid_t   l_pid;      // returned with F_GETLK
 };
-    // Lokcs can start and extend beyond the current end of file, but can't start extend before the beginning.
-    // When setting or releasing a lock on a file, the system combines or splits adjacent areas as required.
+// Lokcs can start and extend beyond the current end of file, but can't start extend before the beginning.
+// When setting or releasing a lock on a file, the system combines or splits adjacent areas as required.
 ```
 
-Meory-Mapped I/O: <sys/mman.h>
+## Memory-Mapped I/O
 ```C++
+// <sys/mman.h>
 void *mmap(void *addr, size_t len, int prot, int flag, int fd, off_t off);
     // protection: PROT_READ, PROT_WRITE, PROT_EXEC, PROT_NONE
     // flag: MAP_FIXED, MAP_SHARED, MAP_PRIVATE, 0, MAP_ANONYMOUS, MAP_HUGETLB
@@ -768,9 +791,9 @@ int munmap(void *adrr, size_t len); // automatically unmapped when process termi
     // It's determined by the kernel's virual memory algorithm sometime after we store into the region.
 ```
 
-I/O Multiplexing:
-```C++
+## I/O Multiplexing:
 1. select: <sys/select.h> <sys/time.h>
+    ```C++
     int select(int nfd, fd_set *readfds, fd_set *writefds, fd_set *errorfds, const struct timeval *timeout)
     // nfds is the value of max fd plus one
     // timeout and every fs_set needs clean up first and then init at each time select execute
@@ -785,8 +808,10 @@ I/O Multiplexing:
         long tv_sec;   //seconds
         long tv_usec;  //microseconds
     };
+    ```
 
 2. poll: <poll.h>
+    ```C++
     int poll(struct pollfd *fds, unsigned int nfds, int timeout);
     // timeout == -1(wait forever), timeout == 0(no wait) ; milliseconds
     struct pollfd {
@@ -794,13 +819,15 @@ I/O Multiplexing:
         short events;       // request event
         short revents;      // return event
     } ;
-    Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM,
-            POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
+    Event: POLLIN, POLLRDNORM, POLLBAND, POLLPRI, POLLOUT, POLLWRNORM, POLLWRBAND, POLLMSGSIGPOLL, POLLER, POLLHUP, POLLNVAL
+    ```
 
 3. epoll: <sys/epoll.h>
+    ```C++
     int epoll_create(int size);
     int epoll_ctl(int epfd, int op, int fd, struct epoll_event *event);
-        op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
+        // op: EPOLL_CTL_ADD, EPOLL_CTL_MOD, EPOLL_CTL_DEL
+        // Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP, EPOLLRDHUP, EPOLLONESHOT, EPOLLEXCLUSIVE
         struct epoll_event {
             uint32_t        events; /* Epoll events */
             epoll_data_t    data;   /* User data variable */
@@ -811,13 +838,10 @@ I/O Multiplexing:
             uint32_t    u32;
             uint64_t    u64;
         } epoll_data_t;
-        Event: EPOLLIN, EPOLLOUT, EPOLLPRI, EPOLLET, EPOLLERR, EPOLLHUP, EPOLLRDHUP
-            EPOLLONESHOT:// once the socket is handled by thread, the thread should register the
-                EPOLLONESHOT again to insure the event can be captured again.
     int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
-```
+    ```
 
-Asynchronous I/O:
+## Asynchronous I/O:
 ```C++
 struct aiocb {
     int             aio_fildes;     // file descriptor
@@ -837,26 +861,27 @@ struct sigevent {
     pthread_attr_t  *sigev_notify_attributes;       // notify attrs
 };
 
-// This I/O interfaces doesn't affect file offset maintained by operating system.
-operation:
-    // simultaneous aio_read or aio_write using same aiocb yield undefined result
-    // errno: EINPROGRESS, ENOSYS, EINTER, ECANCELED
-    aio_read();     aio_write();    aio_fsync();   aio_error(); aio_return();
-    aio_suspend();     lio_listio();
+/* This I/O interfaces doesn't affect file offset maintained by operating system.
+ * operation:
+ * simultaneous aio_read or aio_write using same aiocb yield undefined result
+ * errno: EINPROGRESS, ENOSYS, EINTER, ECANCELED */
+aio_read();     aio_write();    aio_fsync();    aio_error();    aio_return();
+aio_suspend();  lio_listio();
 
-    int aio_suspend(const struct aiocb *const aiocb_list[], // don't forget const
-                        int  nitems, const struct timespec *timeout);
-        // block until an operation complete.
-        // aio_suspend && lio_listio --> 0:ok, else: -1
-    int aio_cancel(int fd, struct aiocb *aiocb);
-        // if aiocb is NULL, cancel all opt on the fd.
-        // return value: AIO_ALLOWED, AIO_CANCELED, AIO_NOTCANCELED, -1
-    int lio_listio(int mode, struct aiocb *const aiocb_list[], int nitems, struct sigevent *sevp);
-        //mode: LIO_WAIT, LIO_NOWAIT
+int aio_suspend(const struct aiocb *const aiocb_list[], // don't forget const
+            int  nitems, const struct timespec *timeout);
+    // block until an operation complete.
+    // aio_suspend && lio_listio --> 0:ok, else: -1
+int aio_cancel(int fd, struct aiocb *aiocb);
+    // if aiocb is NULL, cancel all opt on the fd.
+    // return value: AIO_ALLOWED, AIO_CANCELED, AIO_NOTCANCELED, -1
+int lio_listio(int mode, struct aiocb *const aiocb_list[], int nitems, struct sigevent *sevp);
+    //mode: LIO_WAIT, LIO_NOWAIT
 ```
 
-Scatter Read and Gather Write: <sys/uio.h>
+## Scatter Read and Gather Write
 ```C++
+// <sys/uio.h>
 ssize_t readv(int fd, const struct iovec *iov, int iovcnt);
 ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
 struct iovec {
@@ -865,7 +890,7 @@ struct iovec {
 };
 ```
 
-readn and writen:
+## readn and writen:
 ```C++
 ssize_t readn(int fd, void *buf, size_t nbytes);
 ssize_t writen(int fd, void *buf, size_t nbytes);
@@ -875,7 +900,7 @@ ssize_t writen(int fd, void *buf, size_t nbytes);
 
 # System Data Files and Information
 
-System Identification:
+## System Identification:
 ```C++
 int uname(struct utsname *name); // return information on the current host and operating system.
 struct utsname {
@@ -887,81 +912,82 @@ struct utsname {
 };
 ```
 
-Time and Data Rountine:
+## Time and Data Rountine:
 ```C++
-                string              formatted string
-                   \                     /
-                     \                 /
-                  struct tm(broken-down time)
-                               |
-                               |
-        timeval ---> time_t(calendar time) <--- timespec
-                         \     |      /
-                           \   |    /
-                                 |
-                             kernel
+            string              formatted string
+                \                     /
+                    \                 /
+                struct tm(broken-down time)
+                            |
+                            |
+    timeval ---> time_t(calendar time) <--- timespec
+                        \     |      /
+                        \   |    /
+                                |
+                            kernel
 
-    time_t              --------------> time
-    struct timespec {   --------------> clock_gettime
-        time_t  tv_sec;
-        long    tv_nsec;
-    };
-    struct timeval{     --------------> gettimeofday
-        long tv_sec;   //seconds
-        long tv_usec;  //microseconds 999999 20bits
-    };
-    struct tm { broken-down time
-        int tm_sec;     // second after minues: [0-60]
-        int tm_min;     // minutes after hours: [0-59]
-        int tm_hour;    // hours after midnight: [0-23]
-        int tm_mday;    // day of the month: [1-31]
-        int tm_mon;     // months since January: [0-11]
-        int tm_year;    // year since 1900
-        int tm_wday;    // day since Sunday:[0-6]
-        int tm_yday;    // day since January: [0-365]
-        int tm_isdst;   // daylight saving time flag: 0 and positive value
-    };
-    time_t time(time_t *calptr); // <time.h>
-    int clock_gettime(clokid_t clock_id, struct timespec *tsp); // <sys/time.h>
-        // clock_id: CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THRAD_CPUTIME_ID
-    int clock_getres(clockid_t clock_id, struct timespec *tsp); // determine the resolution of given system clock
-    int clock_settime(clock_id clock_id, const struct timespec *tsp);
-    int gettimeofday(struct timeval *tp, void *tzp);
+time_t              --------------> time
+struct timespec {   --------------> clock_gettime
+    time_t  tv_sec;
+    long    tv_nsec;
+};
+struct timeval{     --------------> gettimeofday
+    long tv_sec;   //seconds
+    long tv_usec;  //microseconds 999999 20bits
+};
+struct tm { broken-down time
+    int tm_sec;     // second after minues: [0-60]
+    int tm_min;     // minutes after hours: [0-59]
+    int tm_hour;    // hours after midnight: [0-23]
+    int tm_mday;    // day of the month: [1-31]
+    int tm_mon;     // months since January: [0-11]
+    int tm_year;    // year since 1900
+    int tm_wday;    // day since Sunday:[0-6]
+    int tm_yday;    // day since January: [0-365]
+    int tm_isdst;   // daylight saving time flag: 0 and positive value
+};
+time_t time(time_t *calptr); // <time.h>
+int clock_gettime(clokid_t clock_id, struct timespec *tsp); // <sys/time.h>
+    // clock_id: CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THRAD_CPUTIME_ID
+int clock_getres(clockid_t clock_id, struct timespec *tsp); // determine the resolution of given system clock
+int clock_settime(clock_id clock_id, const struct timespec *tsp);
+int gettimeofday(struct timeval *tp, void *tzp);
 
-    struct tm *gmtime(const time_t *calptr);
-    struct tm *localtime(const time_t *calptr);
-    time_t mktime(struct tm *tmptr);
-    size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr);
-    size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr, local_t local);
-    char *strptime(const char *buf, const char *format, struct tm *tmptr);
+struct tm *gmtime(const time_t *calptr);
+struct tm *localtime(const time_t *calptr);
+time_t mktime(struct tm *tmptr);
+size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr);
+size_t strftime(char *buf, size_t maxsize, const char *format, const struct tm *tmptr, local_t local);
+char *strptime(const char *buf, const char *format, struct tm *tmptr);
 ```
 
 # Network Programming
-
-Procedure of socket:
+## Data trasformation:
 ```C++
-Data trasformation:
-    #include <netinet/in.h>
-    uint32_t htonl(uint32_t hostlong);
-    uint16_t htons(uint16_t hostshort);
-    uint32_t ntohl(uint32_t netlong);
-    uint16_t ntohs(uint16_t netshort);
+#include <netinet/in.h>
+uint32_t htonl(uint32_t hostlong);
+uint16_t htons(uint16_t hostshort);
+uint32_t ntohl(uint32_t netlong);
+uint16_t ntohs(uint16_t netshort);
 
-    #include <arpa/inet.h>
-    in_addr_t       inet_addr(const char *cp);
-    int             inet_aton(const char *cp, struct in_addr *inp);
-    char           *inet_ntoa(struct in_addr in);
-        // return a pointer to a static variable in funciton which store the rst, func can't reenter.
+#include <arpa/inet.h>
+in_addr_t       inet_addr(const char *cp);
+int             inet_aton(const char *cp, struct in_addr *inp);
+char           *inet_ntoa(struct in_addr in);
+    // return a pointer to a static variable in funciton which store the rst, func can't reenter.
 
-    const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
-    int             inet_pton(int af, const char *src, void *dst);  // convert IP from text to binary form
+const char     *inet_ntop(int af, const void *src, char *dst, socklen_t len); // len: INET_ADDRSTRLEN
+int             inet_pton(int af, const char *src, void *dst);  // convert IP from text to binary form
 
-    in_addr_t       inet_network(const char *cp);
-    struct in_addr  inet_makeaddr(int net, int host);
-    in_addr_t       inet_lnaof(struct in_addr in);
-    in_addr_t       inet_netof(struct in_addr in);
+in_addr_t       inet_network(const char *cp);
+struct in_addr  inet_makeaddr(int net, int host);
+in_addr_t       inet_lnaof(struct in_addr in);
+in_addr_t       inet_netof(struct in_addr in);
+```
 
+## socket
 1. Create Soket (client and server)
+    ```C++
     int socket(int domain, int type, int protocol);
     // doamin: AF_INET, AF_INET6, AF_LOCAL(AF_UNIX), AF_ROUTE
     // type: SOCK_STREAM, SOCK_DGRAM, SOCK_RAW, SOCK_PACKET, SOCK_SEQPACKET, SOCK_NONBLOCK
@@ -990,8 +1016,10 @@ Data trasformation:
     // If a TCP server do not bind and IP addr to its socket, the kernel uses the destination IP addr of the
         client's SYN as the server's source IP address.
     // INADDR_ANY(0), INADDR_XXX defined by the <netinet/in.h> header are defined in host byte order.
+    ```
 
-3. listen(sever) and connect(client)
+2. listen(sever) and connect(client)
+    ```C++
     int listen (int sockfd, int backlog);
     int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
     // Three conditions generate RST:
@@ -1001,13 +1029,21 @@ Data trasformation:
     // Do no specify backlog to 0, different implementation interpret this different. If don't want any
         client connecting to listening socket, just close the listening socket.
     // Berkeley-derived implementation add a fudge factor to backlog: it is multiplied by 1.5.(MacOS)
+    ```
 
-4. accept (client and server)
+3. accept (client and server)
+    ```C++
     // return the next completed connetion from the front of the completed conn queue, don't care the status
     // of the socket(may be ESTABLISHED or CLOSE_WAIT) and the changes of the network.
     int accept(int sockfd, struct sockaddr* addr, socklen_t *addrlen);
+    ```
+    * Connection Abort befor 'accept' Returns:
+        1. When client call connect, three-way handshake completes, the connection established, and then client TCP send an RST. On server side, the connection is queued by its TCP, waiting for the server process to call accept when the RST arrives. Sometime later, ther server process calls accept.
+        2. What happens to the aborted connection is implementation-dependent. Berkeley-derived implementation handle the aborted connection completely within the kernel, and the server process never sees it. Most SVR4 implementations, return error to the process as the return from accept, and error depends on the implementation. SVR4 return an errno of EPROTO but POSIX return ECONNABORTED.
 
-5. read and write (client and server)
+
+4. read and write (client and server)
+    ```C++
     ssize_t read(int fd, void *buf, size_t count);
         // The behavior of multi-thread read or write is undefined
     ssize_t write(int fd, const void *buf, size_t count);
@@ -1040,158 +1076,144 @@ Data trasformation:
 
         int msg_flags;
     };
-
-
+    ```
 
 5. shutdown(int socket, int how);
+    ```C++
     // how: SHUT_RD: close read peer, discard data in read buffer
     // SHUT_WR: close write peer, send data in write buffer before real close
     // SHUT_RDWR, shutdown soket send and recv
     // In multi-threads one thread calls shutdown will affect other threads' action to the same socket
-
+    ```
 6. close <unistd.h>
+    ```C++
     int close(int fd);
-    // decrement the reference by one, if the refrence count is 0, close the socket.
-    // The default action of close with a TCP socket is to mark the socket as closed and return to the process
-        immediately. The scoket descriptor is no longer usable by the process: It can not be used as argument
-        to read or write. But, TCP try to send any data that is already queued to be sent to the other end, and
-        after this occurs, the normal TCP connection termination sequence takes palce.
-    // In multi-thread one thread close socket just decrement its reference count, not affect
-        other threads action to the same socket. Once all threads call close() to the same socket,
-        socket will close at the end that is the reference count is down to 0.
-int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
-int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
-```
+    /* decrement the reference by one, if the refrence count is 0, close the socket.
+     * The default action of close with a TCP socket is to mark the socket as closed
+     * and return to the process immediately. The scoket descriptor is no longer usable by the process:
+     * It can not be used as argument to read or write. But, TCP try to send any data that
+     * is already queued to be sent to the other end, and after this occurs,
+     * the normal TCP connection termination sequence takes palce.
+     * In multi-thread one thread close socket just decrement its reference count,
+     * not affect other threads action to the same socket. Once all threads call close() to the same socket,
+     * socket will close at the end that is the reference count is down to 0. */
+    int getsockname(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
+    int getpeername(int sockfd, struct sockaddr *restrict addr, socklen_t *alenp);
+    ```
 
-Raw-socket:
+## Raw-socket:
 ```C++
 int setsockopt (int socket, int level, int optname, const void *optvalue, socklen_t optlen);  // ok:0
 int getsockopt (int sockfd, int level, int optname, void *optval, socklen_t *optlen);
-level:
-    SOL_SOKCET:
-        SO_BROADCASE(bool)  SO_RCVTIMEO(struct timeval) SO_SNDTIMEO(struct timeval)
-        SO_OOBINLINE    SO_LINGER   SO_TYPE     SO_RCBLOWAT     SO_SNDLOWAT
-        SO_DONTROUTE    SO_ERROR    SO_DEBUG
-        SO_KEEPALIVE(only have meaning for stream sockets)
-        SO_RCVBUF [/proc/sys/net/ipv4/tcp_rmem]
-        SO_SNDBUF [/proc/sys/net/ipv4/tcp_wmem]
-        SO_BROADCASE(have no meaning for stream sockets)
-        SO_REUSEADDR [/proc/sys/net/ipv4/tcp_tw_recycle]
-    IPPROTO_IP:
-        IP_HDRINCL(bool)    IP_TOS  IP_TTL
-        IP_MULTICAST_LOOP   IP_MULTICAST_TTL
-        IP_ADD_MEMBERSHIP(struct ip_mreq)
-        IP_DROP_MEMBERSHIP  IP_MULTICAST_IF(DWORD)
-    IPPROTO_IPV6:
-        IPV6_NEXTHOP IPV6_RECVPKTINFO IPV6_DONTFRAG IPV6_RECVTCLASS
-    IPPROTO_TCP:
-        TCP_MAXSEG  TCP_NODELAY
+/* level:
+SOL_SOKCET:
+    SO_BROADCASE(bool)  SO_RCVTIMEO(struct timeval) SO_SNDTIMEO(struct timeval)
+    SO_OOBINLINE    SO_LINGER   SO_TYPE     SO_RCBLOWAT     SO_SNDLOWAT
+    SO_DONTROUTE    SO_ERROR    SO_DEBUG
+    SO_KEEPALIVE(only have meaning for stream sockets)
+    SO_RCVBUF [/proc/sys/net/ipv4/tcp_rmem]
+    SO_SNDBUF [/proc/sys/net/ipv4/tcp_wmem]
+    SO_BROADCASE(have no meaning for stream sockets)
+    SO_REUSEADDR [/proc/sys/net/ipv4/tcp_tw_recycle]
+IPPROTO_IP:
+    IP_HDRINCL(bool)    IP_TOS  IP_TTL
+    IP_MULTICAST_LOOP   IP_MULTICAST_TTL
+    IP_ADD_MEMBERSHIP(struct ip_mreq)
+    IP_DROP_MEMBERSHIP  IP_MULTICAST_IF(DWORD)
+IPPROTO_IPV6:
+    IPV6_NEXTHOP IPV6_RECVPKTINFO IPV6_DONTFRAG IPV6_RECVTCLASS
+IPPROTO_TCP:
+    TCP_MAXSEG  TCP_NODELAY */
 
-    /*
-    * For server programming: some options should set before listening since the socket
-    * accepted has at least finished two steps of handshake with the client(SYN_RECV).
-    * Solution: set those options for the listening socket, sockets accepted will inherit those options.
-    *  SO_DONTROUTE, SO_KEEPLIVE, SO_LINGER, SO_OOBINLINE, SO_RECVBUF, SO_RCVLOWAT,
-    *  SO_SNDLOWAT, SO_SNDBUF, SO_RCVBUF, TCP_MAXSEG, TCP_NODELAY
-    */
+/* For server programming: some options should set before listening since the socket
+ * accepted has at least finished two steps of handshake with the client(SYN_RECV).
+ * Solution: set those options for the listening socket, sockets accepted will inherit those options.
+ * SO_DONTROUTE, SO_KEEPLIVE, SO_LINGER, SO_OOBINLINE, SO_RECVBUF, SO_RCVLOWAT,
+ * SO_SNDLOWAT, SO_SNDBUF, SO_RCVBUF, TCP_MAXSEG, TCP_NODELAY */
 
-    strut linger {
-        int l_onoff;
-        int l_linger;
-    };
-    /*
-    * 1. l_onoff = 0: SO_LINGER doesn't work, close socket by default
-    * 2. l_onoff =1, l_linger = 0: close() return immediately, discard write buffer data, send RST to peer
-    * 3. l_onoff =1, l_linger > 0:
-    *   3.1 block socket: close() waits l_linger time and close, if data sent not finished, return -1, errno is EWOULDBLOCK
-    *   3.2 close() return immediately, detect whether residual data send finished by errno and return value
-    */
+struct linger {
+    int l_onoff;
+    int l_linger;
+};
+/* 1. l_onoff = 0: SO_LINGER doesn't work, close socket by default
+ * 2. l_onoff =1, l_linger = 0: close() return immediately, discard write buffer data, send RST to peer
+ * 3. l_onoff =1, l_linger > 0:
+ *   3.1 block socket: close() waits l_linger time and close, if data sent not finished, return -1, errno is EWOULDBLOCK
+ *   3.2 close() return immediately, detect whether residual data send finished by errno and return value */
 ```
 
-Out-of-Band data:
+## Out-of-Band data:
 * int sockatmark(int fd);
 * OOB data is only supported on AF_INET and AF_INET6, the data can be sent by specifying the MSG_OOB fly on send function.
 * The SIOCATMARK ioctl() request determine if the read pointer is pointing to the last OOB byte.
 * If multiple occurrences of OOB data are sent, the OOB marker pointes to the last OOB byte of the final OOB data occurrence.
 * SIGURG donesn't indicate the actual arrival of the OOB data, but only notification that is pending.
 
-Two method to detect OOB data's arrival:
-* SIGURG will be triggered.
-* I/O multiplexing return exception event.
+* Two method to detect OOB data's arrival:
+    * SIGURG will be triggered.
+    * I/O multiplexing return exception event.
 
-Reciev OOB data:
-* The socket API keeps track of recieved OOB data by using OOB marker witch points to the last byte of
-        the OOB data.
-* Independent of the OOB data is recieved inline, an input operation processes data up to OOB marker,
-        if OOB data sent.
-* If SO_OOBINLINE is not set:
-        if MSG_OOB is specified the data will be recieved, otherwise not. if multi-data sent, only final
-        OOB is remebered.
-* If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying
-        MSG_OOB(EINVAL).
+* Reciev OOB data:
+    * The socket API keeps track of recieved OOB data by using OOB marker witch points to the last byte of
+            the OOB data.
+    * Independent of the OOB data is recieved inline, an input operation processes data up to OOB marker,
+            if OOB data sent.
+    * If SO_OOBINLINE is not set:
+            if MSG_OOB is specified the data will be recieved, otherwise not. if multi-data sent, only final
+            OOB is remebered.
+    * If SO_OOBINLINE is set: all OOB data sent is valid, read function must read them without specifying
+            MSG_OOB(EINVAL).
 
-Architecture of Server:
+## Architecture of Server:
 1. IO communication unit
-
-    1. Port multiplexing
-        select 1000, poll, epoll 30W
-    2. Synchronization
-        http https
-    3. asynchroniztion
-        signal, sigaction
-    4. asynchronous IO
-        aio_read, aio_write
-
+    1. Port multiplexing: select 1000, poll, epoll 30W
+    2. Synchronization: http https
+    3. asynchroniztion: signal, sigaction
+    4. asynchronous IO: aio_read, aio_write
 2. Data Process Unit
-
     1. Multiple Thread
-        Thread Mutext: mutex, spin, atomic
-        Thread Synchronization: PV, semaphore
-        Thread Communication
+        * Thread Mutext: mutex, spin, atomic
+        * Thread Synchronization: PV, semaphore
+        * Thread Communication
     2. Multiple Prcesses
-        IPC pip, fifo, socketpair
+        * IPC pip, fifo, socketpair
     3. Multiple Thread + Multiple Process
-        Thread Pool
-        Process Pool
-
+        * Thread Pool
+        * Process Pool
 3. Date Storage
 
-Two High-performance Event Handle Architectures:
-1. Reactor: implemented by synchronize I/O
-2. Proactor: implemented by asynchronize I/O
+* Two High-performance Event Handle Architectures:
+    1. Reactor: implemented by synchronize I/O
+    2. Proactor: implemented by asynchronize I/O
 
-Two high-performance Concurrent Architectures:
-1. half-sync/half-async
-2. leader/follwer
+* Two high-performance Concurrent Architectures:
+    1. half-sync/half-async
+    2. leader/follwer
 
-Network configuration information:
+## Network configuration information:
 ```C++
-    #include<netdb.h>
-    struct hostnet *gethostent(void);
-    void sethostent(int stayopen);
-    void endhostent(void);
-    struct hostent {
-        char     *h_name;       // "offical" name
-        char    **h_aliases;    //
-        int       h_addrtype;   // AF_INET, AF_INET6
-        int       h_length;
-        char    **h_addr_list;
-        char    *h_addr;        // h_addr_list[0]
-        ...
-    };
-    struct hostent * gethostbyname (const char *name);
-    struct hostent * gethostbyaddr (const void *addr, socklen_t length, int format); AF_INET, AF_INET6
+#include <netdb.h>
+struct hostnet *gethostent(void);
+void sethostent(int stayopen);
+void endhostent(void);
+struct hostent {
+    char     *h_name;       // "offical" name
+    char    **h_aliases;    //
+    int       h_addrtype;   // AF_INET, AF_INET6
+    int       h_length;
+    char    **h_addr_list;
+    char    *h_addr;        // h_addr_list[0]
+    ...
+};
+struct hostent* gethostbyname (const char *name);
+struct hostent* gethostbyaddr (const void *addr, socklen_t length, int format); AF_INET, AF_INET6
 ```
 
-Connection Abort befor 'accept' Returns:
-1. When client call connect, three-way handshake completes, the connection established, and then client TCP send an RST. On server side, the connection is queued by its TCP, waiting for the server process to call accept when the RST arrives. Sometime later, ther server process calls accept.
-2. What happens to the aborted connection is implementation-dependent. Berkeley-derived implementation handle the aborted connection completely within the kernel, and the server process never sees it. Most SVR4 implementations, return error to the process as the return from accept, and error depends on the implementation. SVR4 return an errno of EPROTO but POSIX return ECONNABORTED.
-
-Termination of Server Process:
+## Termination of Server Process:
 1. Kill server process. All open fd in the process are closed, this cause a FIN to be sent to the client and
     client TCP response with ACK.
 2. Nothing happens at the client. The TCP receives the FIN from the server TCP and responds with an ACK, but
-    client process is blocked in the call to fgets waiting for a line from the terminal.
+    client process is blocked in the call to `fgets` waiting for a line from the terminal.
 3. When we type "another line", client TCP sents the data to the server. This is allowed by TCP because the
     receipt of the FIN by the client TCP only indicates that the server process has closed its end of the
     connection and will not be sending any more data. The receipt of the FIN doesn't tell the client TCP that
@@ -1202,75 +1224,74 @@ Termination of Server Process:
     readline return 0(EOF) immediately because of the FIN that was received in Step 2.
 6. When the client terminates, all its open descriptors are closed.
 
-"SIGPIPE":
+## SIGPIPE
 * When a process writes to a socket that has received an RST, the SIGPIPE signal is sent to the process.
 * The default action of this signal is to terminate the process.
 
-Crashing Server Host:
+## Crashing Server Host
 1. When the server host crashed, nothing is sent out on the existing network connection.
-2. We type a  line of input to the client, it is written by writen, and is sent by the client TCP as data segment. The client then blocks in the call to readline, waiting for the echoed rely.
-3. Client TCP continually retransmitting the data segment, trying to receive an ACK from the server. When the client TCP finnaly gives up, an error is returned to client process. ETIMEDOUT, EHOSTUNREACH
+2. We type a line of input to the client, it is written by writen, and is sent by the client TCP as data segment. The client then blocks in the call to readline, waiting for the echoed rely.
+3. Client TCP continually retransmitting the data segment, trying to receive an ACK from the server. When the client TCP finnaly gives up, an error is returned to client process. `ETIMEDOUT, EHOSTUNREACH`
 
-Crashing and Rebooting of Server Host:
+## Crashing and Rebooting of Server Host:
 1. The server host crashed and reboots, its TCP loses all information about connection that existed befor the crash.
 2. Client sends data to server, server TCP responds to the received data segment from client with an RST.
 3. Client blocked in the call to readline when RST is received, causing readline to return the error ECONNRESET
 
-Shutdown of Server Host:
+## Shutdown of Server Host:
 * Init process normally sends the SIGTERM signal to all processes, waits some fixed amount of time, and then send SIGKILL signal to any processes still running.
 
 # Signal Programming
-
-### Methods of Local Processes Communication(IPC):
+## Methods of Local Processes Communication(IPC):
 1. Messaging (pipeline, FIFO, message queue)
 2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
 3. Shared memory (anonymous and named)
 4. Remote procedure Call (Solaris gate and sun RPC)
 
 
-checking for the existence of a process:
-```C++
+* checking for the existence of a process:
+    ```C++
     wait();
     semaphore and exclusive file locks;
     IPC(pipes, FIFOs...);
     /proc/PID
-```
+    ```
 
 Signal dispositions: Term, Ign, Core, Stop, Cont
 
-Linux Signals are:
+## Linux Signals
 ```C++
-    Name    Number  Description
-    SIGHUP  1       Hangup (POSIX)
-    SIGINT  2       Terminal interrupt (ANSI)
-    SIGQUIT 3       Terminal quit (POSIX)
-    SIGILL  4       Illegal instruction (ANSI)
-    SIGTRAP 5       Trace trap (POSIX)
-    SIGIOT  6       IOT Trap (4.2 BSD)
-    SIGBUS  7       BUS error (4.2 BSD)
-    SIGFPE  8       Floating point exception (ANSI)
-    SIGKILL 9       Kill(can't be caught or ignored) (POSIX)
-    SIGUSR1 10      User defined signal 1 (POSIX)
-    SIGSEGV 11      Invalid memory segment access (ANSI)
-    SIGUSR2 12      User defined signal 2 (POSIX)
-    SIGPIPE 13      Write on a pipe with no reader, Broken pipe (POSIX)
-    SIGALRM 14      Alarm clock (POSIX)
-    SIGTERM 15      Termination (ANSI)
-    SIGSTKFLT   16  Stack fault
-    SIGCHLD 17      Child process has stopped or exited, changed (POSIX)
-    SIGCONT 18      Continue executing, if stopped (POSIX)
-    SIGSTOP 19      Stop executing(can't be caught or ignored) (POSIX)
-    SIGTSTP 20      Terminal stop signal (POSIX)
-    SIGTTIN 21      Background process trying to read, from TTY (POSIX)
-    SIGTTOU 22      Background process trying to write, to TTY (POSIX)
-    SIGURG  23      Urgent condition on socket (4.2 BSD)
-    SIGXCPU 24      CPU limit exceeded (4.2 BSD)
-    SIGXFSZ 25      File size limit exceeded (4.2 BSD)
-    SIGVTALRM       26  Virtual alarm clock (4.2 BSD)
-    SIGPROF 27      Profiling alarm clock (4.2 BSD)
-    SIGWINCH    28  Window size change (4.3 BSD, Sun)
-    SIGIO   29      I/O now possible (4.2 BSD)
-    SIGPWR  30      Power failure restart (System V)
+Name    Number  Description
+SIGHUP  1       Hangup (POSIX)
+SIGINT  2       Terminal interrupt (ANSI)
+SIGQUIT 3       Terminal quit (POSIX)
+SIGILL  4       Illegal instruction (ANSI)
+SIGTRAP 5       Trace trap (POSIX)
+SIGIOT  6       IOT Trap (4.2 BSD)
+SIGBUS  7       BUS error (4.2 BSD)
+SIGFPE  8       Floating point exception (ANSI)
+SIGKILL 9       Kill(can't be caught or ignored) (POSIX)
+SIGUSR1 10      User defined signal 1 (POSIX)
+SIGSEGV 11      Invalid memory segment access (ANSI)
+SIGUSR2 12      User defined signal 2 (POSIX)
+SIGPIPE 13      Write on a pipe with no reader, Broken pipe (POSIX)
+SIGALRM 14      Alarm clock (POSIX)
+SIGTERM 15      Termination (ANSI)
+SIGSTKFLT   16  Stack fault
+SIGCHLD 17      Child process has stopped or exited, changed (POSIX)
+SIGCONT 18      Continue executing, if stopped (POSIX)
+SIGSTOP 19      Stop executing(can't be caught or ignored) (POSIX)
+SIGTSTP 20      Terminal stop signal (POSIX)
+SIGTTIN 21      Background process trying to read, from TTY (POSIX)
+SIGTTOU 22      Background process trying to write, to TTY (POSIX)
+SIGURG  23      Urgent condition on socket (4.2 BSD)
+SIGXCPU 24      CPU limit exceeded (4.2 BSD)
+SIGXFSZ 25      File size limit exceeded (4.2 BSD)
+SIGVTALRM       26  Virtual alarm clock (4.2 BSD)
+SIGPROF 27      Profiling alarm clock (4.2 BSD)
+SIGWINCH    28  Window size change (4.3 BSD, Sun)
+SIGIO   29      I/O now possible (4.2 BSD)
+SIGPWR  30      Power failure restart (System V)
 
 // SIGSTOP and SIGKILL default actions cannot be changed.
 
@@ -1290,176 +1311,181 @@ struct sigevent {
 
 typedef void(*sighandler_t)(int)
 sighandler_t signal(int signum, sighandler_t handler);
-    // multi-process is unspecified
-    // behavior is undefined if a process ignores SIGFPE, SIGKILL, SIGSEGV
-    Two common design:
-        1. set a global flag and exits;
-        2. perform some type of cleanup and then either teriminates the process or uses a nonlocal
-            goto to unwind the stack and return control to a predetermined location in the main program;
-    // Linux doesn't recommand to use signal func directly,
-    // since it set some default flags: SA_ONESHOT | SA_NOMASK | SA_INTERRUPT;
+/* multi-process is unspecified behavior is undefined
+ * if a process ignores SIGFPE, SIGKILL, SIGSEGV
+ *
+ * Two common design:
+ * 1. set a global flag and exits;
+ * 2. perform some type of cleanup and then either teriminates the process
+ *
+ * or uses a nonlocal goto to unwind the stack and return control to a predetermined location in the main program;
+ * Linux doesn't recommand to use signal func directly, since it set some
+ * default flags: SA_ONESHOT | SA_NOMASK | SA_INTERRUPT;
 ```
 
-### sending a signal:
-```C++
+* sending a signal:
+    ```C++
     raise(int sig); kill(getpid(), int sig); killpg(pid_t pgrp , int sig);
     pthread_kill(); tgkill(); sigqueue();
-```
+    ```
 
-signal description:
-```C++
+* signal description:
+    ```C++
     sys_siglist[SIGPIPE]; strsignal(int sig); psignal(int sig, const char *msg);
-```
+    ```
 
-waiting for a signal to be caught:
-```C++
+* waiting for a signal to be caught:
+    ```C++
     sigsuspend();  pause(); // -1
-```
+    ```
 
-syschronously accepting a signal:
-```C++
+* syschronously accepting a signal:
+    ```C++
     sigwaitinfo(); sigtimedwait(); sigwait(const sigset_t *set, int *sig);
     signalfd();
-```
+    ```
 
-signal mask: // specify which signals can not be sent to the process
-```C++
-pthread_sigmask(); int sigprocmask (int how, const sigset_t *restrict set, sigset_t *restrict oldset);
-how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
-// when a signal which is masked is sent to the process, the system set this signal as pending signal
-    in the process, when we unmask the pending signals, signals will  be received by the process immediately
-int sigpending(sigset_t *set); // get the current pending signals
-```
+* signal mask:
+    ```C++
+    // specify which signals can not be sent to the process
+    pthread_sigmask();
+    int sigpending(sigset_t *set); // get the current pending signals
+    int sigprocmask (int how, const sigset_t *restrict set, sigset_t *restrict oldset);
+    /* how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
+     * when a signal which is masked is sent to the process,
+     * the system set this signal as pending signal in the process,
+     * when we unmask the pending signals, signals will be received by the process immediately */
+    ```
 
-sigset_t:
-```C++
-sigemptyset(sigset_t *set);   sigaddset(sigset_t *set, int signum);
-sigfillset(sigset_t *set);    sigdelset(sigset_t *set, int signum);
-sigismember(const sigset_t *set, int signum); // ok: 1
+* sigset_t:
+    ```C++
+    sigemptyset(sigset_t *set); sigaddset(sigset_t *set, int signum);
+    sigfillset(sigset_t *set);   sigdelset(sigset_t *set, int signum);
+    sigismember(const sigset_t *set, int signum); // ok: 1
+    sigaltstack();
+    ```
 
-sigaltstack();
-```
+* sigaction:
+    ```C++
+    int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
 
-sigaction:
-```C++
-int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+    struct sigaction {
+        void (*sa_handler)(int); // SIG_IGN, SIG_DFL
+        void (*sa_sigaction)(int, siginfo_t *, void *);   // si_code, si_signo, si_value
+        sigset_t  sa_mask;
+        int       sa_flags; // set the behavior when program receives a signal
+        void (*sa_restorer)(void);
+    };
+    /* sa_flags: SA_NOCLDSTOP, SA_NOCLDWAIT(SIGCHLD),
+     * SA_NODEFER, SA_ONSTACK/SA_RESETHAND, SA_RESETORE, SA_SIGINFO, SA_ONESHOT
+     * SA_RESTART: a system call interrupted by this signal will be automatically restarted by the kernel. */
+    struct siginfo_t {
+        int     si_signo;   // signal number
+        int     si_code;    // signal code
+        pid_t   si_pid;     // sending process ID
+        pid_t   si_uid;     // real user ID of sending process
+        void   *si_addr;    // address of faulting instruction
+        int     si_status;  // exit value of signal
+        long    si_band;    // band event for SIGPOLL
+        union sigval si_val;// signal value
+    }
+    ```
 
-struct sigaction {
-    void (*sa_handler)(int); // SIG_IGN, SIG_DFL
-    void (*sa_sigaction)(int, siginfo_t *, void *);   // si_code, si_signo, si_value
-    sigset_t  sa_mask;
-    int       sa_flags; // set the behavior when program receives a signal
-    void (*sa_restorer)(void);
-};
-sa_flags: SA_NOCLDSTOP, SA_NOCLDWAIT(SIGCHLD), SA_NODEFER, SA_ONSTACK/SA_RESETHAND, SA_RESETORE, SA_SIGINFO, SA_ONESHOT
-    SA_RESTART: a system call interrupted by this signal will be automatically restarted by the kernel.
-struct siginfo_t {
-    int     si_signo;   // signal number
-    int     si_code;    // signal code
-    pid_t   si_pid;     // sending process ID
-    pid_t   si_uid;     // real user ID of sending process
-    void   *si_addr;    // address of faulting instruction
-    int     si_status;  // exit value of signal
-    long    si_band;    // band event for SIGPOLL
-    union sigval si_val;// signal value
-}
-```
+* signaltstack():
 
-signaltstack():
 * int kill(pid_t pid , int sig ); // (> 0), (0), (-1), (< -1)
 
-signal handler:
-reentrant function:
-* A function is one, whose effect, when called by two or more threads, is guaranted to be as if threads each executed the function one after the other in undefined order, even if the actual execution is interleaved.
-* use global or static data structure is nonreentrant function.
+* signal handler:
+* reentrant function:
+    * A function is one, whose effect, when called by two or more threads, is guaranted to be as if threads each executed the function one after the other in undefined order, even if the actual execution is interleaved.
+    * use global or static data structure is nonreentrant function.
 
+* async-signal-safe function:
 
-async-signal-safe function:
-    implementation guarantees to be safe when called form a signal handler, either it is
-    reentrant or is not interruptible by a signal handler.
+* implementation guarantees to be safe when called form a signal handler, either it is reentrant or is not interruptible by a signal handler.
 
-tips for writing async-signal-safe functions:
+* tips for writing async-signal-safe functions:
     1. ensure reentrant and call only async-signal-safe function inside;
-    2. block delivery of signal while executing code in main program that calls unsafe functions
-        or work with global data structures also updata by signal handler
-use erro inside the signal handler
+    2. block delivery of signal while executing code in main program that calls unsafe functions or work with global data structures also updata by signal handler
 
-global variable should be declared by using volatile:   volatile sig_atomic_t flag;
-    in order to prevent compiler from performing optimizations that result in varaible being stored in register
+* use erro inside the signal handler
 
-terminating a signal handler:
-```C++
+* global variable should be declared by using volatile: `volatile sig_atomic_t flag;` in order to prevent compiler from performing optimizations that result in varaible being stored in register
+
+* terminating a signal handler:
+    ```C++
     _exit(); kill(); raise(); nonlocal goto; abort();
-```
+    ```
 
-performing a nonlocal goto from a signal handler: <setjmp.h>
+* performing a nonlocal goto from a signal handler: <setjmp.h>
+
 * int sigsetjmp(sigjump_buf env, int savesigs);    void siglongjmp(sigjmp_buf env, int val);
 
-POSIX Signal Semantics:
-1. Once a signal handler is installed, it remains installed.
-2. While a signal handler is executing, the signal being delivered is blocked.
-3. If the signal is generated one or more times while it is blocked, it is normally delivered only one time after the signal is unlocked. By default, Unix signal are not queued.
-4. It is possible to selectively block and unblock a set of signal using the sigprocmask function.
+* POSIX Signal Semantics:
+    1. Once a signal handler is installed, it remains installed.
+    2. While a signal handler is executing, the signal being delivered is blocked.
+    3. If the signal is generated one or more times while it is blocked, it is normally delivered only one time after the signal is unlocked. By default, Unix signal are not queued.
+    4. It is possible to selectively block and unblock a set of signal using the sigprocmask function.
 
 # IPC Programming
 
-Unix inter-domain communication:
-```C++
-Unix communicatin:
+* Unix inter-domain communication:
+    ```C++
+    // Unix communicatin:
     socketpair, pipe(PIPE_BUF), FIFO, signal
-System V:
+    // System V:
     semaphore, message queue, shared memory
-```
+    ```
 
-Unix outer-domain communication:
+* Unix outer-domain communication:
+
 * sockets, STREAMS
 
-Advantages and Disabvantages of XSI IPC:
-1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
-2. They are not known by names in the file system
-3. Compare this with a pipe, which is completely removed when the last process to reference it terminates. With a FIFO, although the name stays in the file system until explicitly removed, any data left in a FIFO is removed when the last process to reference the FIFO terminates.
-4. We can't use **ls** **rm** **chmod** to access them, rather than **ipcs, ipcrm**
-5. Since these forms of IPC don’t use file descriptors, we can’t use the multiplexed I/O functions (select and poll) with them.
+* Advantages and Disabvantages of XSI IPC:
+    1. They are systemwide have no reference count, once created they'll exite unless deleted explicitly
+    2. They are not known by names in the file system
+    3. Compare this with a pipe, which is completely removed when the last process to reference it terminates. With a FIFO, although the name stays in the file system until explicitly removed, any data left in a FIFO is removed when the last process to reference the FIFO terminates.
+    4. We can't use **ls** **rm** **chmod** to access them, rather than **ipcs, ipcrm**
+    5. Since these forms of IPC don’t use file descriptors, we can’t use the multiplexed I/O functions (select and poll) with them.
 
-
-### Pipe: PIPE_BUF
+## Pipe
 ```C++
-    <unistd.h>
-    int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
-    // flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
-    // when last process referred to it terminates, the pipe is completely removed.
-    // If the fd[1]'s reference is down to 0, the read() from fd[0] will return 0;
-    // If the fd[0]'s reference is down to 0, the write() to fd[1] will fail, SIGPIPE will trigger.
-    // The capacity of the pipe can be changed by fcntl funciton.
-    <sys/types.h>
-    <sys/socket.h>
-    int socketpair(int domain, int type, int proto, int fd[2]);
+<unistd.h>
+int pipe(int pipefd[2]);    int pipe2(int pipefd[2], int flag);
+// flag:   0, O_CLOSEXEC, O_DIRECT, O_NONBLOCK
+// when last process referred to it terminates, the pipe is completely removed.
+// If the fd[1]'s reference is down to 0, the read() from fd[0] will return 0;
+// If the fd[0]'s reference is down to 0, the write() to fd[1] will fail, SIGPIPE will trigger.
+// The capacity of the pipe can be changed by fcntl funciton.
+<sys/types.h>
+<sys/socket.h>
+int socketpair(int domain, int type, int proto, int fd[2]);
 ```
 
-### FIFO:
+## FIFO:
 ```C++
-    mkfifo(const char *path, mode_t mode);              // absolute path, mode same to open
-    mkfifoat(int fd, const char *path, mode_t mode);    // path relative to the directory of fd
-    // Once created, FIFO file exites in the file system
-    // without O_NONBLOCK: read block untill other process write, the same to write;
-    // O_NONBLOCK: read return immediately if no write, but write return -1 with errno  ENXIO if no read
-    // As with pipe if write to a FIFO without reader SIGPIPE is generated
-    // When last process referred to it terminates, the FIFO name remains in system, but any data removed.
+mkfifo(const char *path, mode_t mode);              // absolute path, mode same to open
+mkfifoat(int fd, const char *path, mode_t mode);    // path relative to the directory of fd
+// Once created, FIFO file exites in the file system
+// without O_NONBLOCK: read block untill other process write, the same to write;
+// O_NONBLOCK: read return immediately if no write, but write return -1 with errno  ENXIO if no read
+// As with pipe if write to a FIFO without reader SIGPIPE is generated
+// When last process referred to it terminates, the FIFO name remains in system, but any data removed.
 ```
 
-popen: pipe stream to or from a process
+## popen: pipe stream to or from a process
 ```C++
-    FILE *popen(const char *command, const char *type); // type: "r", "w","e"
-    int pclose(FILE *stream);
+FILE *popen(const char *command, const char *type); // type: "r", "w","e"
+int pclose(FILE *stream);
 ```
 
-### Identifiers and Keys:
+## Identifiers and Keys:
 ```C++
-    key_t ftok(const char *pathname, int proj_id);
-    key: 31-24(proj_id low 8 bits), 23-16(st_dev low 8 bits), 15-0(st_ino low 16 bits)
+key_t ftok(const char *pathname, int proj_id);
+key: 31-24(proj_id low 8 bits), 23-16(st_dev low 8 bits), 15-0(st_ino low 16 bits)
 ```
 
-### msg_queue
+## msg_queue
 ```C++
 struct msqid_ds {
     struct ipc_perm msg_perm;
@@ -1505,14 +1531,14 @@ ssize_t msgrcv(int msgid, void *msgbuf, size_t msgsz, long msgtyp, int msgflag);
     type: 0, >0, <0(the first msg whose type is the lowest value less than or euqal to absolute value of type)
 ```
 
-### semaphore:
+## Semaphore:
 is a counter used to provide access to the shared object for multiple processes
-```C++
-category:
+* category:
     1. kernel semaphore
     2. user semaphore: POXIS, SYSTEM V
 
-POXIS unamed semaphore:
+1. POXIS unamed semaphore:
+    ```C++
     int sem_init(sem_t *sem, int pshared, unsigned int value);
     // pshard: zero[shared between threads within process], non-zero[shared between processes]
     // The behavior of initializing a initiazlied thread is undefined
@@ -1521,8 +1547,10 @@ POXIS unamed semaphore:
     int sem_wait(sem_t *sem);
     int sem_post(sem_t *sem);
     int sem_trywait(sem_t *sem);
+    ```
 
-POSIX named semaphore:
+2. POSIX named semaphore:
+    ```C++
     sem_t* sem_open(const char* name,int oflag,mode_t mode);
     sem_t *sem_open(const char *name, int oflag, mode_t mode, int value);
         oflag: O_CREAT, O_CREATE|O_EXCL
@@ -1530,8 +1558,10 @@ POSIX named semaphore:
     int sem_post(sem_t *sem);
     int sem_close(sem_t *sem); // system will auto close if forget call
     int sem_unlink(const char *name); // destroy
+    ```
 
-SYSTEM V semaphore:
+3. SYSTEM V semaphore:
+    ```C++
     struct ipc_perm {
         key_t key;
         uid_t uid;
@@ -1574,119 +1604,120 @@ SYSTEM V semaphore:
             ushort          *array; // cmd == SETALL, GETALL
         };
         cmd: IPC_RMID, IPC_INFO, GETALL, GETNCNT, GETPID, GETVAL
-```
+    ```
 
-### POSIX Shared Memory:
+## POSIX Shared Memory:
 ```C++
-    #include <sys/mman.h>
-    #include <sys/stat.h>        /* For mode constants */
-    #include <fcntl.h>           /* For O_* constants */
-    int shm_open(const char *name, int oflag, mode_t mode);
-    int shm_unlink(const char *name);
+#include <sys/mman.h>
+#include <sys/stat.h>        /* For mode constants */
+#include <fcntl.h>           /* For O_* constants */
+int shm_open(const char *name, int oflag, mode_t mode);
+int shm_unlink(const char *name);
 ```
 
-### System V Shared memory: (fastest IPC)
+## System V Shared memory: (fastest IPC)
 ```C++
-    struct shmid_ds{
-        struct ipc_perm shm_perm;
-        size_t          shm_segsz;  // round up to system multiple page sizes
-        time_t          shm_ctime;  // last shmctl time
-        time_t          shm_atime;  // last shmat time
-        time_t          shm_dtime;  // last shmdt time
-        pid_t           shm_cpid;   // pid the of creator
-        pid_t           shm_lpid;   // pid execute last shmat/shmat
-        shmatt_t        shm_nattch; // reference count of process
-        ...
-    };
-    int shmget(key_t key, size_t size, int shmflag);
-        shmflag: SHM_R, SHM_W, 0
-    void *shmat(int shmid, const void *shmaddr, int shmfalg);
-        // return addr of the shm in the process addr space
-        // shmflag: SHM_EXEC, SHM_RDONLY, 0, SHM_RND
-    int shmctl(int shmid, int cmd, struct shmid_ds *buf);
-        // cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
-    int shmdt(const char *shmaddr);
-        // shm remains in existence untill call shmctl with IPC_RMID flag
+struct shmid_ds{
+    struct ipc_perm shm_perm;
+    size_t          shm_segsz;  // round up to system multiple page sizes
+    time_t          shm_ctime;  // last shmctl time
+    time_t          shm_atime;  // last shmat time
+    time_t          shm_dtime;  // last shmdt time
+    pid_t           shm_cpid;   // pid the of creator
+    pid_t           shm_lpid;   // pid execute last shmat/shmat
+    shmatt_t        shm_nattch; // reference count of process
+    ...
+};
+int shmget(key_t key, size_t size, int shmflag);
+    shmflag: SHM_R, SHM_W, 0
+void *shmat(int shmid, const void *shmaddr, int shmfalg);
+    // return addr of the shm in the process addr space
+    // shmflag: SHM_EXEC, SHM_RDONLY, 0, SHM_RND
+int shmctl(int shmid, int cmd, struct shmid_ds *buf);
+    // cmd: <IPC/SHM>_STAT, IPC_SET, IPC_RMID,  SHM_LOCK, SHM_UNLOCK
+int shmdt(const char *shmaddr);
+    // shm remains in existence untill call shmctl with IPC_RMID flag
 ```
 
-### Summary:
+## Summary:
 * Learn pipe and FIFOs avoid using message queue and semaphore, Full-duplex pipes and record locking should be
 * considered instead as they are far simpler. Shared memory still has its use.
 
-# Thread Process Programming
 
-### Thread & Signal:
+# Thread Process Programming
+## Thread & Signal
 ```C++
 pthread_sigmask(int how, const sigset_t *set, sigset_t *oldset); //how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
 pthread_kill(pthread_t pthread, int sig); // send a signal to a specific pthread
 ```
 
-All threads share the signals and sigHandler of the process which they belong to,
-    system sends process signal to thread according to the thread signal mask.
+* All threads share the signals and sigHandler of the process which they belong to, system sends process signal to thread according to the thread signal mask.
 
-When we set a new sigHandler in a thread, it will overwrite all other threads sigHandler for this signal.
-We should define a dedicated thread to handle all signals:
-1. Set signals mask before main thread creates any thread, the new thread will inherite this sigmask.
-2. Call sigwait(const sigset_t *set, int *sig) in one thread to handle all signals.
+* When we set a new sigHandler in a thread, it will overwrite all other threads sigHandler for this signal.
 
-Methods of Local Processes Communication:
+* We should define a dedicated thread to handle all signals:
+    1. Set signals mask before main thread creates any thread, the new thread will inherite this sigmask.
+    2. Call sigwait(const sigset_t *set, int *sig) in one thread to handle all signals.
+
+## Methods of Local Processes Communication:
 1. Messaging (pipeline, FIFO, message queue)
 2. Synchronization (mutex, conditional variable, read and write lock, file and wirte and lock lock, semaphore)
 3. Shared memory (anonymous and named)
 4. Remote procedure Call (Solaris gate and sun RPC)
 
-
-Main function:
+## Main function
 1. When a C program is executed by the kernal-by one of the exec functions, a special start-up routine is called before the main is called.
 2. The executable program file specifies this routine as the starting address for the program. This is set by the link editor when it is invoked by the C compiler.
 3. This start-up routine takes up values from the kernel and sets things up so that the main functions is called.
 
-Results of different order of parent and child process exit:
-1. parent exit before child process: child process becomes orphan process, init process takes over it.
-2. parent exit after child without call wait or waitpid, child becomes zombie process.
-3. parent exit after child with call wait, both parent and child exit normally.
+    3. parent exit after child with call wait, both parent and child exit normally.
 
-Handling Zombie process:
-1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate zombie while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);
+## Handling Zombie process
+1. When child exit it will send SIGCHLD to parent, parent can call wait in SIGCHLD's handler to terminate zombie `while ((pid = waitpid(-1, &stat, WNOHANG)) >0)  printf("child %d terminated.\n", pid);`
 2. fork twice.
 3. Ignore the SIGCHLD signal. (only works under System V and Unix 98, unspecified in POSIX)
 
-The purpose of the zombie state:
-*  is to maintain information about the child for the parent to fetch at some later time.
+* The purpose of the zombie state:
+    * is to maintain information about the child for the parent to fetch at some later time.
 
-Salient points of Zombie Processes
-1. All the memory and resources allocated to a process are deallocated when the process terminates using the exit() system call. But the process’s entry in the process table is still available. This process is now a zombie process.
-2. The exit status of the zombie process zombie process can be read by the parent process using the wait() system call. After that, the zombie process is removed from the system. Then the process ID and the process table entry of the zombie process can be reused.
-3. If the parent process does not use the wait() system call, the zombie process is left in the process table. This creates a resource leak.
-4. If the parent process is not running anymore, then the presence of a zombie process indicates an operating system bug. This may not be a serious problem if there are a few zombie processes but under heavier loads, this can create issues for the system such as running out of process table entries.
-5. The zombie processes can be removed from the system by sending the SIGCHLD signal to the parent, using the kill command. If the zombie process is still not eliminated from the process table by the parent process, then the parent process is terminated if that is acceptable.
+* Results of different order of parent and child process exit:
+    1. parent exit before child process: child process becomes orphan process, init process takes over it.
+    2. parent exit after child without call wait or waitpid, child becomes zombie process.
 
-Handling Interrupted System Calls:
+* Salient points of Zombie Processes
+    1. All the memory and resources allocated to a process are deallocated when the process terminates using the exit() system call. But the process’s entry in the process table is still available. This process is now a zombie process.
+    2. The exit status of the zombie process zombie process can be read by the parent process using the wait() system call. After that, the zombie process is removed from the system. Then the process ID and the process table entry of the zombie process can be reused.
+    3. If the parent process does not use the wait() system call, the zombie process is left in the process table. This creates a resource leak.
+    4. If the parent process is not running anymore, then the presence of a zombie process indicates an operating system bug. This may not be a serious problem if there are a few zombie processes but under heavier loads, this can create issues for the system such as running out of process table entries.
+    5. The zombie processes can be removed from the system by sending the SIGCHLD signal to the parent, using the kill command. If the zombie process is still not eliminated from the process table by the parent process, then the parent process is terminated if that is acceptable.
+
+## Handling Interrupted System Calls
 * When a process is blocked in a slow system call and process catches a signal and the signal handler returns, the system call can return an error of EINTER. We should handle this error to restart system call.
-* Even if an implementation supports the SA_RESATRT flag, not all interrupted system call may automatically be restarted.
+* Even if an implementation supports the `SA_RESATRT` flag, not all interrupted system call may automatically be restarted.
 * We can recall accept, read write, select and open to handle those system call's interruption, but can't recall connect for which happen we must call select to wait for the connection to comlete.
 
-Session:
+## Session:
 ```C++
-    int setsid(void); // <unistd.h>
-    // if the calling process is not the process grop leader:
-    // 1. The process becomes the session leader and the only process of this session.
-    // 2. Create a new process group and the process becomes the new group leader, and the process group ID is the
-    //     calling process ID.
-    // 3. The process has no controling terminal.
-    getsid(pid_t pid); //the same as the getpgid(pid_t pid);
-    // The function returns an error is the process is already a process leader.
+int setsid(void); // <unistd.h>
+// if the calling process is not the process grop leader:
+// 1. The process becomes the session leader and the only process of this session.
+// 2. Create a new process group and the process becomes the new group leader, and the process group ID is the
+//     calling process ID.
+// 3. The process has no controling terminal.
+getsid(pid_t pid); //the same as the getpgid(pid_t pid);
+// The function returns an error is the process is already a process leader.
 ```
 
-Enviroment List: <stdlib.h>
+## Enviroment List
 ```C++
-    Global variable: environ;
-    char* getenv(const char *name);
-    int putenv(char *str); //form: "name=value"; already exited one will be remvoed
-    int setenv(const char *name, const char *value, int rewrite);
-    int unsetenv(const chart *name);
+#include <stdlib.h> // Global variable: environ;
+char* getenv(const char *name);
+int putenv(char *str); //form: "name=value"; already exited one will be remvoed
+int setenv(const char *name, const char *value, int rewrite);
+int unsetenv(const chart *name);
 ```
-Memory layout of Program:
+
+## Memory layout of Program:
 ```C++
                     |---------------------------------------------------------------------------------
                     |                               |
@@ -1717,102 +1748,112 @@ Memory Allocation: <stdlib.h>
     Writing past of the end or before the begining of a allocated block is fatal.
 ```
 
-Process Enviroment:
+## Process Enviroment:
 ```C++
-    Exit Function:
-        _exit(...), _Exit(...)  // return to the kernel immediately
-        exit(...)               // performs certain cleanup processing then returns to kernel
-        pthread_exit();
-        returns of the last thread from its start routine
-        response of the last thread to the cancellation request
-        int atexit(void *(func)(void));
-            // call on registered func in reverse order and as many times as registered
-            // register at leat 32 exit handlers that are automatically called by exit.
-    fork();
-        // Unique: PID, memory locks, record locks, CPU time counter, pending signals,
-        // semaphore adjustments, outstanding async I/O operations, timer
-        // Child process copys parent's data, head and stack but shares text segment and file descriptors including server's listenfd, and connectfds.
-        // After the fork, the fds opened in the parent process are still open, and reference counts incremented by 1.
-        // There are two ways to handling descriptors after fork:
-        //   1. Parent waits for child to complete.
-        //   2. Both parent and child go their way(close descriptors don't need, respectively)
+// Exit Function:
+_exit(...), _Exit(...)  // return to the kernel immediately
+exit(...)               // performs certain cleanup processing then returns to kernel
+pthread_exit();
+returns of the last thread from its start routine
+response of the last thread to the cancellation request
+int atexit(void *(func)(void));
+    // call on registered func in reverse order and as many times as registered
+    // register at leat 32 exit handlers that are automatically called by exit.
 
-    pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)); // clean up lock status
-        // child process can inherits parent's lock, but don't know whether it is locked or unlocked
+fork();
+// Unique: PID, memory locks, record locks, CPU time counter, pending signals,
+// semaphore adjustments, outstanding async I/O operations, timer
+// Child process copys parent's data, head and stack but shares text segment and file descriptors including server's listenfd, and connectfds.
+// After the fork, the fds opened in the parent process are still open, and reference counts incremented by 1.
+// There are two ways to handling descriptors after fork:
+//   1. Parent waits for child to complete.
+//   2. Both parent and child go their way(close descriptors don't need, respectively)
 
-    int execve(const char *path, char *const argv[], char *const envp[]);
-    //The new program still has the same PID, and it inherits all of the file descriptors that were open at the time of the call to the execve function.
+pthread_atfork(void (*prepare)(void), void (*parent)(void), void (*child)(void)); // clean up lock status
+// child process can inherits parent's lock, but don't know whether it is locked or unlocked
 
-    pid_t wait(int *stat_loc);  <sys/wait.h>
-        WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
-        // return immediately with terminate status if one child is zombie.
-    pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
-        // pid > 0; wait the process whose process ID equals pid
-        // pid == 0; wait the process whose process group ID equals calling process group ID
-        // pid == -1; wait for any process
-        // pid < -1; wait the process whose process group ID equals absolute value of pid
-        // If the calling process has no children, returns −1 and sets errno to ECHILD
-        // If the waitpid function was interrupted by a signal, returns −1 and sets errno to EINTR
+int execve(const char *path, char *const argv[], char *const envp[]);
+//The new program still has the same PID, and it inherits all of the file descriptors that
+// were open at the time of the call to the execve function.
 
-    int waittid(idtype_t idtype, id_t id, siginfo_t *infop, int options);
-        // idtype: P_PID, P_PGID, P_ALL
-        // options: WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTOPED
-    #include<sys/types.h> <sys/wait.h> <sys/time.h> <sys/resource.h>
-    pid_t wait3(int *statloc, int options, struct rusage *rusage);
-    pid_t wait4(pid_t pid, int *statloc, int options, struct rusage *rusage);
-        // Additional feature is allow kernel to return a summary of resources used by the terminated process and   all its child processes.
-        // Resource information includes such  statistics as the amount of the user CPU time, amount of the system CPU time, number of page faults, number of signals received...
+pid_t wait(int *stat_loc);  <sys/wait.h>
+    WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
+    // return immediately with terminate status if one child is zombie.
+
+pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
+// pid > 0; wait the process whose process ID equals pid
+// pid == 0; wait the process whose process group ID equals calling process group ID
+// pid == -1; wait for any process
+// pid < -1; wait the process whose process group ID equals absolute value of pid
+// If the calling process has no children, returns −1 and sets errno to ECHILD
+// If the waitpid function was interrupted by a signal, returns −1 and sets errno to EINTR
+
+int waittid(idtype_t idtype, id_t id, siginfo_t *infop, int options);
+// idtype: P_PID, P_PGID, P_ALL
+// options: WCONTINUED, WEXITED, WNOHANG, WNOWAIT, WSTOPED
+
+#include<sys/types.h> <sys/wait.h> <sys/time.h> <sys/resource.h>
+pid_t wait3(int *statloc, int options, struct rusage *rusage);
+pid_t wait4(pid_t pid, int *statloc, int options, struct rusage *rusage);
+// Additional feature is allow kernel to return a summary of resources used by the terminated
+// process and all its child processes.
+// Resource information includes such  statistics as the amount of the user CPU time,
+// amount of the system CPU time, number of page faults, number of signals received...
 ```
 
-Memory Allocation:
+## Memory Allocation:
 ```C++
-    void *malloc(size_t size);  // initial value of the memory is indeterminate.
-    void *calloc(size_t nobj, size_t size);     // initial value is 0.
-    void *reallocc(void *ptr, size_t newsize);  // contents in newly increased space is indeterminate
-        // Because old erea may move, we shouldn't have any pointers into this area.
-    void free(void *ptr);
-        // The freed space is usually not return to kernel but put into a pool of available memory(malloc pool)and
-        // can be used again by call to one of the three alloc functions.
-
-Process Scheduling: <unistd.h>
-```C++
-    nice value range: 0 ~ 2 * NZERO - 1
-    modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
-    priority: <sys/resource.h>
-        int getpriority(int which, id_t who);
-            // which: PRIO_PROCESS, PRIO_PGRP, PRIO_USER
-            // Return: nice value between -NZERO and NZERO - 1 if ok, -1 on error
-        int setpriority(int which, id_t who, int value);
-            // The value is added to NZERO and this becomes new nice value
-            // Return: 0 if ok, -1 on error
+void *malloc(size_t size);  // initial value of the memory is indeterminate.
+void *calloc(size_t nobj, size_t size);     // initial value is 0.
+void *reallocc(void *ptr, size_t newsize);  // contents in newly increased space is indeterminate
+    // Because old erea may move, we shouldn't have any pointers into this area.
+void free(void *ptr);
+    // The freed space is usually not return to kernel but put into a pool of available memory(malloc pool)and
+    // can be used again by call to one of the three alloc functions.
 ```
 
-Process Time: <sys/times.h>
+## Process Scheduling: <unistd.h>
 ```C++
-    struct tms {
-        clock_t tms_utime;  // user CPU time
-        clock_t tms_stime;  // system CPU time
-        clock_t tms_cutime; // user CPU time, terminated children
-        clock_t tms_cstime; // system CPU time, terminated children
-    };
-    clock_t times(struct tms *buf); // return wall clock time
+// nice value range: 0 ~ 2 * NZERO - 1
+// modify priority: int nice(incr); // new nice value - NZERO if ok,-1 on error
+// priority: <sys/resource.h>
+int getpriority(int which, id_t who);
+    // which: PRIO_PROCESS, PRIO_PGRP, PRIO_USER
+    // Return: nice value between -NZERO and NZERO - 1 if ok, -1 on error
+int setpriority(int which, id_t who, int value);
+    // The value is added to NZERO and this becomes new nice value
+    // Return: 0 if ok, -1 on error
 ```
 
-Process exit functions:
+## Process Time: <sys/times.h>
+```C++
+struct tms {
+    clock_t tms_utime;  // user CPU time
+    clock_t tms_stime;  // system CPU time
+    clock_t tms_cutime; // user CPU time, terminated children
+    clock_t tms_cstime; // system CPU time, terminated children
+};
+clock_t times(struct tms *buf); // return wall clock time
+```
+
+## Process exit functions:
 * Five normal terminations:
     1. Executing return from the main function.
     2. Executing return from the start routine of the last thread in the process.
     3. Calling the exit(...) function.
     4. Calling the _exit(...), _Exit(...) function.
     5. Calling the pthread_exit(...) from the last thread in the process.
+
 * Three abnormal terminations:
     1. Calling the abort(...) function. SIGABRT will generate.
     2. When process receive certain signals.
     3. The last thread responds to the cancellation request.
 
-Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent
+* Whenever a process terminates, either normally or abnormally, SIGCHLD will send to parent
 
-```C++
+## pthread
+1. Basic
+    ```C++
     pthread_t pthread_self(void); // get current thread ID
     int pthread_equal(pthread_t tid1, pthread_t ti2);
     pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_rountin)(void *), void *arg);
@@ -1823,31 +1864,35 @@ Whenever a process terminates, either normally or abnormally, SIGCHLD will send 
     pthread_join(pthread_t thread, void **retval);
     pthread_exit(void *retval);
     pthread_detach(pthread_t thread);
-        pthread_attr_setdetachstate(pthread_att_t *attr, int detachstate); // PTHREAD_CREATE_<DETACHED, JOINABLE>
-        pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate); //
+
+    pthread_attr_setdetachstate(pthread_att_t *attr, int detachstate); // PTHREAD_CREATE_<DETACHED, JOINABLE>
+    pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate); //
         // A thread's termination status is retained until we call pthread_join for the thread.
         // A thread underlying storage can be reclaimed immediately on termination if the thread has been detached.
     pthread_cancel(pthread_t); //re-acquire mutex before acting cancle and ensure it not consume any condtion signal
         // This fun doesn't wait for the thread to terminate, it merely makes a request.
         // Calling on the detached thread rereults in undefined behavior.
-        pthread_setcancelstate(int state, int *oldstate);   // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
-        pthread_setcanceltype(int type, int *oldtype);      // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
-        pthread_testcancel(void); // create a cancellation point
-        pthread_cleanup_push(void (*routine)(void *), void *arg);
-        pthread_cleanup_pop (int execute);
-            // execute: wether execute the clean up handler routines when pop them.
-            // Cleanup handler are recorded in the stack which means they are executed in a reverse order.
-            // Cleanup functions can be called when:
-                a. a call to pthread_exit
-                b. response to a cancellation request
-                c. pthread_cleanup_pop with nonzero execute argument.
-            // Those functions can be implemented as macros and must be used in matched paires within
-                same scop in the thread.
-    atexit(void (*function)(void));
-process completion status:
-    int WIFEXITED(int)-WEXITSTATUS, WIFSIGNALED-WTERMSIG, WCOREDUMP, WIFSTOPED, WSTOPSIG
+    pthread_setcancelstate(int state, int *oldstate);   // PTHREAD_CANCEL_ENABLE, PTHREAD_CANEL_DISABLE
+    pthread_setcanceltype(int type, int *oldtype);      // PTREAD_CANCEL_<ASYNCHRONOUS, DEFERRED>
+    pthread_testcancel(void); // create a cancellation point
 
-pthread_attr:
+    pthread_cleanup_push(void (*routine)(void *), void *arg);
+    pthread_cleanup_pop (int execute);
+        // execute: wether execute the clean up handler routines when pop them.
+        // Cleanup handler are recorded in the stack which means they are executed in a reverse order.
+        // Cleanup functions can be called when:
+            a. a call to pthread_exit
+            b. response to a cancellation request
+            c. pthread_cleanup_pop with nonzero execute argument.
+        // Those functions can be implemented as macros and must be used in matched paires within
+            same scop in the thread.
+    atexit(void (*function)(void));
+    // process completion status:
+    int WIFEXITED(int)-WEXITSTATUS, WIFSIGNALED-WTERMSIG, WCOREDUMP, WIFSTOPED, WSTOPSIG
+    ```
+
+2. pthread_attr:
+    ```C++
     typedef struct {
         int     detachstate;    // PTHREAD_CREATE_<JOINABLE, DETACHED>, td ID, rsc can be reused; join not reuse
         int     schedpolicy;    // SCHED_<FIFO,RR,OTHER>,determine which thread to proceed not the ordering rule
@@ -1858,7 +1903,7 @@ pthread_attr:
         int     stackaddr_set;
         void *  stackaddr;      // PTHREAD_STACK_SIZE
         size_t  stacksize;      // with JOINABLE attr, can't free untill pthread_join() called.
-    }pthread_attr_t;
+    } pthread_attr_t;
 
     pthread_attr_init(struct pthread_attr_t *attr);
         scope           PTHREAD_SCOPE_PROCESS
@@ -1874,14 +1919,18 @@ pthread_attr:
     pthread_attr_getstacksize(pthread_attr_t *attr, size_t *size);  // get mim stack size
     pthread_attr_setguardsize(pthread_attr_t *attr, size_t size);   // 0[no guard], round up to multiple PAGESIZE
     pthread_attr_getguardsize(pthread_attr_t *attr, size_t *size);
+    ```
 
-pthread_key:
+3. pthread_key:
+    ```C++
     pthread_key_create(pthread_key_t *key, void (*destructor)(void *));
     pthread_key_delete(pthread_key_t key);
     pthread_setspecific(pthread_key_t key, const void *pointer);
     void *pthread_getspecific(pthread_key_t key);
+    ```
 
-pthread_mutex:
+3. pthread_mutex:
+    ```C++
     pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr);
         // initialization will not execute immediately until first call
     pthread_mutex_t lock = PTHREAD_MUTEXT_INITIALIZER;
@@ -1901,8 +1950,10 @@ pthread_mutex:
     *    PTHREAD_MUTEX_NORMAL        PTHREAD_MUTEX_ERRORCHECK
     *    PTHREAD_MUTEX_RECURSIVE     PTHREAD_MUTEX_DEFAULT
     */
+    ```
 
-phtread_cond:
+4. phtread_cond:
+    ```C++
     pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr);
     pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
     pthread_cond_destroy(pthread_cond_t *cond);
@@ -1910,8 +1961,10 @@ phtread_cond:
     pthread_cond_broadcast(pthread_cond_t *cond);
     pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // Boolean predicate
     pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
+    ```
 
-pthread_rwlock:
+5. pthread_rwlock:
+    ```C++
     pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr);
     pthread_rwlock_destroy(pthread_rwlock_t *rwlock);
     pthread_rwlock_rdlock(pthread_rwlock_t *rwlock);
@@ -1920,15 +1973,19 @@ pthread_rwlock:
     pthread_rwlock_trywrlock(pthread_rwlock_t *rwlock);
     pthread_rwlock_unlock(pthread_rwlock_t *rwlock);
     pthread_rwlock_timed***(...);
+    ```
 
-pthread asynchronous:
+6. pthread asynchronous:
+    ```C++
     pthread_kill(pthread_t thread, int sig); // 0: test the existence of thread
     phread_sigmask(int how, const sigset_t *set, sigset_t *oldset); // sigprocmaks(...);
         how: SIG_BLOCK, SIG_UNBLOCK, SIG_SETMASK
+    ```
 
-Spin Block:
-        //pshared: PTHREAD_PROCESS_SHARED(can be access by threads from different process)
-        //         PTHREAD_PROCESS_PRIVATE(can be access only by threads within same process)
+7. Spin Block:
+    ```C++
+    //pshared: PTHREAD_PROCESS_SHARED(can be access by threads from different process)
+    //         PTHREAD_PROCESS_PRIVATE(can be access only by threads within same process)
     int pthread_spin_init(pthread_spinlock_t *lock, int pshared);
     int pthread_spin_destroy(pthread_psinlock_t *lock);
     int pthread_spin_lock(pthread_spinlock_t *lock);    // lock the lock already locked, behavior is undefined.
@@ -1940,12 +1997,13 @@ Spin Block:
     // They are useful in nonpreemptive kernel: providing a mutual exclusion mechanism,
     // interrupt handler can't deadlock system by trying to acquire a spin lock that is already locked.
     // At user level they aren't as useful unless running in a real-time-sharing shceduling not allow preemption
-```
+    ```
 
-Barriers:
-* It's a synchronization mechanism that can be used to coordinate multiple threads working in parallel.
-* A barrier allows each thread to wait unitl all cooperrating threads have reached the same point, and then continue executing from there.
-```C++
+8. Barriers:
+    * It's a synchronization mechanism that can be used to coordinate multiple threads working in parallel.
+    * A barrier allows each thread to wait unitl all cooperrating threads have reached the same point, and then continue executing from there.
+
+    ```C++
     int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count);
     int pthread_barrier_destroy(pthread_barrier_t *barreir);
     int pthread_barrier_wait(pthread_barrier_t *barrier);
@@ -1956,36 +2014,35 @@ Barriers:
         */
         // Once barrier count is reached and all threads is unblocked, barrier can be used aggain.
         // But barrier count can be changed.
-```
-
-xinetd:
-
+    ```
 
 # HTTPS Programming
 
-SSL:
-Consists of two layers of protocol:
-1. High-level protocol:
+## SSL:
+* Consists of two layers of protocol:
+    1. High-level protocol:
+        * SSL HandShake Protocol: Algorithm negotiation, identity authentication, private key determination
 
-    * SSL HandShake Protocol: Algorithm negotiation, identity authentication, private key determination
-
-        > categories: Full HandShake, Resume session HandShake, <Server, Client> Re-nogotiation HandShake
-    * Change Cipher Spec Protocol
-    * AlertProtocol
-
-2. Low-level protocol:
-    SSL Record Protocol(certificate information, test data is tampered or not)
-            | type(1 byte) | version(2 byte) | length(2)byte | data | HMAC | Filling 0 | Fill length |
+            > categories: Full HandShake, Resume session HandShake, <Server, Client> Re-nogotiation HandShake
+        * Change Cipher Spec Protocol
+        * AlertProtocol
+    2. Low-level protocol:
+        > SSL Record Protocol(certificate information, test data is tampered or not)
+        >        | type(1 byte) | version(2 byte) | length(2)byte | data | HMAC | Filling 0 | Fill length |
 
 Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
-```C++
 1. init
+    ```C++
     SSL_library_init();
     OpenSSL_add_all_algorithms();
     SSL_load_error_strings();       // void ERR_print_errors_fp(FILE *fp);
+    ```
 2. Specify method
+    ```C++
     SSL_METHOD* method = SSLv23_server_method(void); // server method must is the same as the client
+    ```
 3. Set CTX
+    ```C++
     SSL_CTX *ctx = SSL_CTX_new(SSL_METHOD*);
         // set the verify method
     void SSL_set_verify(SSL_CTX *, int, int *(int, X509_STORE_CTX *)); // SSL_VERIFY_<PEER, NONE>
@@ -1997,38 +2054,43 @@ Connection Process: https://www.cnblogs.com/yuweifeng/p/5641280.html
     int SSL_CTX_use_PrivateKey_file(SSL_CTX *, const char *file, int type);
         // validata private key and certificate
     BOOL SSL_CTX_check_private_key(SSL_CTX *);
+    ```
 4. Attach to a connected socket
+    ```C++
     SSL *SSL_new(SSL_CTX *);
     int SSL_set_fd(SSL *ssl, int fd); int SSL_set_rfd(SSL *, int); int SSL_set_wfd(SSL *, int);
+    ```
 5. SSL connect and communication
+    ```C++
     int SSL_connect(SSL *ssl); int SSL_accept(SSL *ssl);
     int SSL_read(SSL *ssl, char *buf, int len);
     int SSL_write(SSL *ssl, char *buf, int len);
+    ```
 6. Free
+    ```C++
     int SSL_shutdown(SSL *ssl);
     void SSL_free(SSL *ssl);
     void SSL_CTX_free(SSL_CTX *);
-```
+    ```
 
 # MYSQL Programming
-
-Direct Exexute:
-```C++
+1. Direct Execute:
+    ```C++
     MYSQL *mysql_init(MYSQL *mysql);                        // init MYSQL struct
     MYSQL *mysql_real_connect(MYSQL *mysql, const char *host, const char *user, const char *pwd, const char *db,
         unsigned int port, const char *unix_socket, unsigned long client_flag); // connect to mysql server
     int mysql_query(MYSQL *mysql, const char *stmt_str);    // execute query
     MYSQL_RES *mysql_store_result(MYSQL *mysql);            // store query result
-    unsigned int mysql_field_count(MYSQL *mysql);           // get last result column amount
-    unsigned int mysq_num_field(MYSQl_RES *result);         // get result column amount
+    unsigned int mysql_field_count(MYSQL *mysql);            // get last result column amount
+    unsigned int mysq_num_field(MYSQl_RES *result);          // get result column amount
     my_ulonglong mysql_num_row(MYSQL_RES *result);          // get result row amount
     MYSQL_ROW mysql_fetch_row(MYSQL_RES *result);           // get next data from result
     void mysql_free_result(MYSQL_RES *result);              // free MYSQL_RES struct
     void mysql_close(MYSQL *connection);
-```
+    ```
 
-Prepared Statment:
-```C++
+2. Prepared Statment:
+    ```C++
     MYSQL_STMT *mysql_stmt_init();
     mysql_stmt_prepare();       // prepare stmt on server
     mysql_stmt_bind_param();    // set the values of any parameters
@@ -2038,40 +2100,40 @@ Prepared Statment:
     mysql_stmt_fetch();         // fetch data row by row
     mysql_stmt_next_result();   // more result: -1 = no, >0 = error, 0 = yes
 
-
-unsigned int mysql_errno(MYSQL *connection);
-char *mysql_error(MYSQL *connection);
-```
+    unsigned int mysql_errno(MYSQL *connection);
+    char *mysql_error(MYSQL *connection);
+    ```
 
 # Kernel Programming
+* Advantages:
+    1. Don' have to rebuild kernel as often.
+    2. Help diagnose system problems.
+    3. Save memory.
+    4. Much faster to maintain and debug.
 
-Advantages:
-1. Don' have to rebuild kernel as often.
-2. Help diagnose system problems.
-3. Save memory.
-4. Much faster to maintain and debug.
-
-Used for:
-```
-1. Device drivers   2. Filesystem drivers   3. System calls
-4. Network drivers  5. TTY line disciplines 6. Executeable interpreters
-```
+* Used for:
+    1. Device drivers
+    2. Filesystem drivers
+    3. System calls
+    4. Network drivers
+    5. TTY line disciplines
+    6. Executeable interpreters
 
 LKM utilities:
 * insmod  rmmod   depmod  kerneld  ksyms  lsmod(/proc/modules)   modinfo   modprobe
 
-What happen when An LKM loads:
-1. Search system for device it is know how to drive.
-2. Register itself as the driver for particular major number /proc/devices
-3. May register itself as the handler for the interrupt level that device uses / proc/interrupts
-4. May send setup commands to the device
-5. A nice device driver issuses kernel msg (/var/log/message) telling what devices if found and is prepared to drive. (dmesg can display recent kernel message)
-6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) rather than major number. /proc/net/dev
-7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
+* What happen when An LKM loads:
+    1. Search system for device it is know how to drive.
+    2. Register itself as the driver for particular major number /proc/devices
+    3. May register itself as the handler for the interrupt level that device uses / proc/interrupts
+    4. May send setup commands to the device
+    5. A nice device driver issuses kernel msg (/var/log/message) telling what devices if found and is prepared to drive. (dmesg can display recent kernel message)
+    6. A network device driver works similarly, except that the LKM registers a device name of its choosing (eth0) rather than major number. /proc/net/dev
+    7. A filesystem driver, upon loading, register itself as the driver for a filesystem type of a certain name.
 
-LKM procedure:
-```C++
+* LKM procedure:
     1. create, init and add struct file_operatiosn, cdev, custom LKM object.
+        ```C++
         /*-- create object --*/
         dev_t MKDEV(ma, mi); // make a device
         int register_chrdev_region (dev_t from, unsigned count, const char *name); // register a range of devide num
@@ -2099,14 +2161,18 @@ LKM procedure:
         moduel_init(...);
         module_exit(...); // if a module not define exit handler this means this modules is not allowed to remove.
         MODULE_LICENSE("GPL v2");
+        ```
     2. Hijack System call
 
-Process Managemenet:
+* Process Managemenet:
+    ```C++
     struct task_struct {
 
     };
+    ```
 
-File System:
+* File System:
+    ```C++
     struct file {
         unsigned short f_mode;      // file type and property
         unsigned short f_flags;     // file flag
@@ -2116,7 +2182,10 @@ File System:
     };
     1. Process to find a file:
         fd -> struct file -> struct m_inode -> i_zone -> position in the disk
-Kernel Network:
+    ```
+
+* Kernel Network:
+    ```C++
     struct ifreq {  //<net/if.h>
        char ifr_name[IFNAMSIZ]; /* Interface name */
        union {
@@ -2136,16 +2205,16 @@ Kernel Network:
        };
    };
    TUN/TAP: virtual network device:
-```
+   ```
 
 
 # Utility
 ```C++
 <cstdarg>:
-    void my_err(char *msg, ...) { // my_err("Error connecting to tun/tap interface %s!\n", if_name)
-        va_list argp;
-        va_start(argp, msg);
-        vfprintf(stderr, msg, argp);
-        va_end(argp);
-    }
+void my_err(char *msg, ...) { // my_err("Error connecting to tun/tap interface %s!\n", if_name)
+    va_list argp;
+    va_start(argp, msg);
+    vfprintf(stderr, msg, argp);
+    va_end(argp);
+}
 ```
