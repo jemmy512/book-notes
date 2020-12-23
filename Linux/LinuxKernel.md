@@ -9562,6 +9562,47 @@ struct proto tcp_prot = {
 ```
 
 ```C++
+int sock_map_fd(struct socket *sock, int flags)
+{
+  struct file *newfile;
+  int fd = get_unused_fd_flags(flags);
+  if (unlikely(fd < 0)) {
+    sock_release(sock);
+    return fd;
+  }
+
+  newfile = sock_alloc_file(sock, flags, NULL);
+  if (likely(!IS_ERR(newfile))) {
+    fd_install(fd, newfile);
+    return fd;
+  }
+
+  put_unused_fd(fd);
+  return PTR_ERR(newfile);
+}
+
+struct file *sock_alloc_file(struct socket *sock, int flags, const char *dname)
+{
+  struct file *file;
+
+  if (!dname)
+    dname = sock->sk ? sock->sk->sk_prot_creator->name : "";
+
+  file = alloc_file_pseudo(SOCK_INODE(sock), sock_mnt, dname,
+        O_RDWR | (flags & O_NONBLOCK),
+        &socket_file_ops);
+  if (IS_ERR(file)) {
+    sock_release(sock);
+    return file;
+  }
+
+  sock->file = file;
+  file->private_data = sock;
+  return file;
+}
+```
+
+```C++
 socket();
   sock_create();
     _sock_create();
@@ -12334,7 +12375,7 @@ static LIST_HEAD(tfile_check_list);
 
 struct epitem {
   union {
-    struct rb_node rbn;
+    struct rb_node  rbn;
     struct rcu_head rcu;
   };
 
@@ -12342,12 +12383,17 @@ struct epitem {
   struct epitem       *next;
   struct epoll_filefd  ffd;
   /* Number of active wait queue attached to poll operations */
-  int nwait;
-  struct list_head     pwqlist; /* List containing poll wait queues */
-  struct eventpoll     *ep;
-  struct list_head     fllink;
-  struct wakeup_source __rcu *ws;
-  struct epoll_event   event;
+  int                 nwait;
+  struct list_head    pwqlist; /* List containing poll wait queues */
+  struct eventpoll    *ep;
+  struct list_head    fllink;
+  struct wakeup_source *ws;
+  struct epoll_event  event;
+};
+
+struct epoll_filefd {
+  struct file  *file;
+  int         fd;
 };
 
 struct eventpoll {
