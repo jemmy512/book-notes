@@ -841,6 +841,34 @@ int munmap(void *adrr, size_t len); // automatically unmapped when process termi
     int epoll_wait(int epfd, struct epoll_event * events, int maxevents, int timeout);
     ```
 
+* Most of the epoll critique is based on two fundamental design issues:
+    1. Sometimes it is desirable to scale application by using multi-threading. This was not supported by early implementations of epoll and was fixed by `EPOLLONESHOT` and `EPOLLEXCLUSIVE` flags.
+    2. Epoll registers the file description, the kernel data structure, not file descriptor, the userspace handler pointing to it.
+        * Epoll is broken because it mistakes the "file descriptor" with the underlying kernel object (the "file description"). The issue shows up when relying on the close() semantics to clean up the epoll subscriptions.
+        * You always must always explicitly call `epoll_ctl(EPOLL_CTL_DEL)` before calling close().
+
+* The debate is heated because it's technically possible to avoid both pitfalls with careful defensive programming:
+    * Avoid using epoll for load balancing across threads.
+    * Avoid sharing epoll file descriptor across threads.
+    * Avoid sharing epoll-registered file descriptors.
+    * Avoid forking, and if you must: close all epoll-registered file descriptors before calling execve.
+    * Explicitly deregister affected file descriptors from epoll set before calling dup/dup2/dup3 or close.
+
+## Epoll Load balancing
+1. Scaling out accept()
+    * Solution 1: The best and the only scalable approach is to use recent Kernel 4.5+ and use `level-triggered` events with `EPOLLEXCLUSIVE` flag. This will ensure only one thread is woken for an event, avoid "thundering herd" issue and scale properly across multiple CPU's.
+    * Solution 2: Without EPOLLEXCLUSIVE, similar behavior it can be emulated with `edge-triggered` and `EPOLLONESHOT`, at a cost of one extra epoll_ctl() syscall after each event.
+    * Solution 3 (without epoll): Use `SO_REUSEPORT` and create multiple listen sockets sharing the same port number. This approach has problems though - when one of the file descriptors is closed, the sockets already waiting in the accept queue will be dropped. Read more in this [Yelp blog post](https://engineeringblog.yelp.com/2015/04/true-zero-downtime-haproxy-reloads.html) and this [LWN comment](https://lwn.net/Articles/542866/).
+        * Kernel 4.5 introduced `SO_ATTACH_REUSEPORT_CBPF` and `SO_ATTACH_REUSEPORT_EBP`F socket options. When used properly, with a bit of magic, it should be possible to substitute `SO_INCOMING_CPU` and overcome the usual `SO_REUSEPORT` dropped connections on rebalancing problem.
+2. Scaling out read()
+    * The correct solution is to use `EPOLLONESHOT` and `re-arm` the file descriptor manually. This is the only way to guarantee that the data will be delivered to only one thread and avoid race conditions.
+    * One thread one epoll.
+
+[Epoll is fundamentally broken 1/2](https://idea.popcount.org/2017-02-20-epoll-is-fundamentally-broken-12)
+
+[Epoll is fundamentally broken 2/2](https://idea.popcount.org/2017-03-20-epoll-is-fundamentally-broken-22)
+
+
 ## Asynchronous I/O:
 ```C++
 struct aiocb {
