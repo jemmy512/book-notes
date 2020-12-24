@@ -51,7 +51,7 @@ RESTfull API, XML, IDL
 ## Service Track
 [Dapper, a Large-Scale Distributed Systems Tracing Infrastructure](https://research.google/pubs/pub36356/)
 
-## Service Governacne
+## Service Governance
 1. Nodes Management
     1. Remove by registry
     2. Remove by service consumer
@@ -61,7 +61,27 @@ RESTfull API, XML, IDL
     3. Least Active
     4. Consistent Hash
     5. Random
+
 3. Service Routing
+    1. Use case:
+        * Nearby access
+        * Grayscale release
+        * Trafic switching
+        * Read write separation
+    2. Routing Rules:
+        * Condition Routing:
+            ```
+            condition://0.0.0.0/dubbo.test.interfaces.TestService?category=routers&dynamic=true&priority=2&enabled=true&rule=" + URL.encode(" host = 10.20.153.10=> host = 10.20.153.11")
+            ```
+            * Exclude some service nodes
+            * Whitelise and blacklist
+            * IDC separation
+            * Read write separation
+        * Script Routing:
+    3. Get Rule files:
+        * Local configuration files
+        * Configuration center
+        * Dynamic delivery
 
 4. Service Fault Tolerance
     1. FailOver: Automatic switching on failure
@@ -88,7 +108,7 @@ RESTfull API, XML, IDL
     3. Split by avilability
     4. Split by performance
 
-# High-Performance Design
+# High Performance Design
 1. Read and write separation
     1. Duplication Delay
         1. After writing, the read operation routed to the master server
@@ -150,7 +170,7 @@ RESTfull API, XML, IDL
     3. Flow limite
     4. Queue
 
-# Extensible Design
+# High Scalability Design
 1. Split System
     1. Process-oriented split: split the entire business process into several stages, with each stage as a part.
     2. Service-oriented split: split the services provided by the system, each as a part.
