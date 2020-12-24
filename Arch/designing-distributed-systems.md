@@ -1,3 +1,5 @@
+[:link:](https://azure.microsoft.com/en-us/resources/designing-distributed-systems/)
+
 # PART I Single-Node Patterns
 
 ## CHAPTER 2 The Sidecar Pattern
