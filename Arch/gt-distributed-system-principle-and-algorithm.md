@@ -1,6 +1,93 @@
+# Distributed System Architecture
+![](../Images/DistributedSystem/0-distributed-system.png)
+
+# Distributed Coordination and Synchronization
+## Consensus
+![](../Images/DistributedSystem/1-coord-sync-distributed-consensus.png)
+
+## Election
+![](../Images/DistributedSystem/1-coord-sync-distributed-election.png)
+
+## Mutex
+![](../Images/DistributedSystem/1-coord-sync-distributed-lock.png)
+
+## Mutex
+![](../Images/DistributedSystem/1-coord-sync-distributed-mutex.png)
+
+## Transaction
+![](../Images/DistributedSystem/1-coord-sync-distributed-transaction.png)
+
+# Distributed Resource Management & Load Balance
+## Distributed Centralized Arch
+![](../Images/DistributedSystem/2-sched-arch-centralized.png)
+
+## Distributed Non-centralized Arch
+![](../Images/DistributedSystem/2-sched-arch-non-centralized.png)
+
+## Distributed Shared-state Schedule
+![](../Images/DistributedSystem/2-sched-share-state-sched.png)
+
+## Distributed Single Schedule
+![](../Images/DistributedSystem/2-sched-single-sched.png)
+
+## Distributed Two Level Schedule
+![](../Images/DistributedSystem/2-sched-two-level-sched.png)
+
+# Distributed Computing
+## Actor
+![](../Images/DistributedSystem/3-computer-actor.png )
+
+## Assembly Line
+![](../Images/DistributedSystem/3-computer-assembly-line.png)
+
+## Map Reduce
+![](../Images/DistributedSystem/3-computer-mr.png)
+
+## Stream
+![](../Images/DistributedSystem/3-computer-stream.png)
+
+# Distributed Communication
+## Message Queue
+![](../Images/DistributedSystem/4-communication-msq.png)
+
+## Publish Subscribe
+![](../Images/DistributedSystem/4-communication-pub-sub.png)
+
+## Remote Procedure Call
+![](../Images/DistributedSystem/4-communication-rpc.png)
+
+# Distributed Storage
+## Cache
+![](../Images/DistributedSystem/5-store-cache.png)
+
+## CAP
+![](../Images/DistributedSystem/5-store-cap.png)
+
+## Duplication
+![](../Images/DistributedSystem/5-store-data-duplication.png)
+
+## Fragmentation
+![](../Images/DistributedSystem/5-store-data-fragmentation.png)
+
+## Producer Cosumer Index Store
+![](../Images/DistributedSystem/5-store-producer-consumer-index-store.png)
+
+# Distributed High Avilability
+## Fault Isolation
+![](../Images/DistributedSystem/6-availability-fault-isolation.png)
+
+## Fault Recoverty
+![](../Images/DistributedSystem/6-availability-fault-recovery.png)
+
+## Flow Control
+![](../Images/DistributedSystem/6-availability-flow-control.png)
+
+## Load Balance
+![](../Images/DistributedSystem/6-availability-load-balance.png)
+
 # Distributed Coordination and Synchronization
 
-### Distributed Mutex
+## Distributed Mutex
 
 1. **Centralized Algorithm**
   Centralized algorithms are simple and easy to implement, but availability and performance are easily affected by coordinators.
@@ -13,7 +100,7 @@
 
 3. **Token Ring Algorithm**
 
-### Distributed Election
+## Distributed Election
 
 1. **Bully Algorithm**
   Priciple: select the node with maximum id as master node.
@@ -50,10 +137,10 @@
 3. **ZAB(ZooKeeper Atomic Broadcast) Algorithm**
   Compared with Raft, ZAB adds data ID and node ID as reference to select the master node, the larger the data ID and node Data, the new the data and priority to become the master.
 
-### Distributed Consensus
+## Distributed Consensus
   Distributed Consensus is a process making all nodes agree on a certain state when each node can operate and record independently.
 
-### Distributed Transaction
+## Distributed Transaction
 1. Two-phase commit protocol
   Disadvantage:
   * Synchronization blocking problem
@@ -69,7 +156,7 @@
 3. Eventual consistency based on messages
   Asynchronously execute the distributed transactions through messages or logs. Messages or logs can be stored in local files, databases, or message queues, and then retry failures through business rules.
 
-### Distributed Mutual Exclusion
+## Distributed Mutual Exclusion
   1. Mutex based on database
     Use scenario: low concurrence, low performance, because of expensive IO operations.
 
@@ -85,16 +172,3 @@
 ## Fault Isolation
 
 ## Recovery
-
-avaialbility-load-balance.png           coord-sync-distributed-election.png
-availability-fault-isolation.png        coord-sync-distributed-lock.png
-availability-fault-recovery.png         coord-sync-distributed-mutex.png
-availability-flow-control.png            coord-sync-distributed-transaction.png
-communication-msq.png                   res-mag-sched-master-master.png
-communication-pub-sub.png               res-mag-sched-master-slave.png
-communication-rpc.png                   res-mag-sched-share-state-sched.png
-computer-actor.png                      res-mag-sched-single-sched.png
-computer-assembly-line.png              res-mag-sched-two-level-sched.png
-computer-mr.png                         store-cap.png
-computer-stream.png                     store-data-fragmentation.png
-coord-sync-distributed-consensus.png    store-producer-consumer-index-store.png
