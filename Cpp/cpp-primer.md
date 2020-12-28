@@ -1252,3 +1252,25 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 * [Atomic vs. Non-Atomic Operations](https://preshing.com/20130618/atomic-vs-non-atomic-operations)
 * [Memory Reordering Caught in the Act](https://preshing.com/20120515/memory-reordering-caught-in-the-act)
 * [Implementing a Recursive Mutex](https://preshing.com/20120305/implementing-a-recursive-mutex)
+
+## std::atomic_flag
+* Two very interesting properties:
+    * the only lock-free atomic.
+    * the building block for higher thread abstractions.
+
+# Condition Variable
+[Synchronization with Atomics in C++20](http://www.modernescpp.com/index.php/synchronization-with-atomics-in-c-20)
+
+## Cons
+The receiver could be awakened without notification or could lose the notification. The first issue is known as `spurious wakeup` and the second as `lost wakeup`.
+
+The predicate protects against both flaws. The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
+
+[C++ Core Guidelines: Be Aware of the Traps of Condition Variables](http://www.modernescpp.com/index.php/c-core-guidelines-be-aware-of-the-traps-of-condition-variables)
+
+When you only need a one-time notification such as in the previous program, promises and futures are a better choice than condition variables. Promise and futures cannot be victims of spurious or lost wakeups.
+
+
+# Promises and Futures
+## Cons
+There is only one downside to using promises and futures: they can only be used once. If you want to communicate more than once, you have to use condition variables or atomics.
