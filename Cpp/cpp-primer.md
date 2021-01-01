@@ -663,6 +663,12 @@ Process of new and delete:
 * delete: call destructor destruct object, free memory
 
 # 15 Object-Oriented Programming
+* what makes virtual calls slower [:link: Ref](https://eli.thegreenplace.net/2013/12/05/the-cost-of-dynamic-virtual-calls-vs-static-crtp-dispatch-in-c)
+    * Extra indirection (pointer dereference) for each call to a virtual method.
+    * Virtual methods usually can’t be inlined, which may be a significant cost hit for some small methods.
+    * Additional pointer per object. On 64-bit systems which are prevalent these days, this is 8 bytes per object. For small objects that carry little data this may be a serious overhead.
+        * This can definitely play a role in some scenarios (i.e. a lot of small objects where the additional memory means less of them fit into L1 data cache).
+
 
 # Chapter 16 Template
 1. Template arguments used for non type template parameters must be constant expression.
@@ -938,8 +944,7 @@ When the address of a function-template instantiation is taken, the content must
 5. Writing Template Functions with Rvalue Reference Parameters
 
 Reference collapse apper in following context:
-
-instantiation of template; generation of auto; typedef with class type; decltype
+ > instantiation of template; generation of auto; typedef with class type; decltype
 
 For Mod<T>, where Mod is | If T is | Then Mod<T>::type is
 --- | --- | ---
@@ -954,22 +959,23 @@ make_unsigned | [signed type] [otherwise] | [unsigned T] [T]
 remove_extent | X[n] otherwise | X T
 remove_all_extents | X[n1][n2]... otherwise | X T
 
-Writing Template Functions with Rvalue Reference Parameter
-* Rvalue reference are used in one of the two contexts: either the template is forwarding it parameters
+* Writing Template Functions with Rvalue Reference Parameter
+    * Rvalue reference are used in one of the two contexts: either the template is forwarding it parameters
         or the template is overloaded.
 
 ### UnderStanding std::move
 ```C++
 template <typename T>
-typename remove_reference<T>::type&& move(T&& t) {// reference collapsing may happen
+remove_reference_t<T>&& move(T&& t) {// reference collapsing may happen
     // static_cast covered in § 4.11.3 (p. 163)
-    return static_cast<typename remove_reference<T>::type&&>(t);
+    return static_cast<remove_reference_t<T>&&>(t);
 }
 ```
 
 ### Forwarding: <utility>
 ```C++
-template<typename T> T&& forward(typename remove_reference<T>::type& param) {
+template<typename T>
+T&& forward(remove_reference_t<T>& param) {
     return static_cast<T&&>(param);
 }
 ```
@@ -1205,6 +1211,11 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 
 
 # Atomic
+[Synchronization with Atomics in C++20](http://www.modernescpp.com/index.php/synchronization-with-atomics-in-c-20)
+
+* Atomics guarantee two characteristics:[:link: Ref](https://www.modernescpp.com/index.php/the-atomic-flag)
+    * they are atomic
+    * they provide synchronisation and order constraints on the program execution.
 
 ## std::memory_order
 ### memory_order_relaxed
@@ -1214,6 +1225,9 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 * A `load operation` with this memory order performs a consume operation on the affected memory location:
     * no reads or writes in the current thread dependent on the value currently loaded can be reordered `before` this load.
 * Writes to data-dependent variables in other threads that release the same atomic variable are visible in the current thread. On most platforms, this affects compiler optimizations only.
+* The std::memory_order_consume is about data dependencies on atomics. Both dependencies introduce a happens-before relation. [:link: Ref](https://www.modernescpp.com/index.php/memory-order-consume)
+    * `carries-a-dependency-to`: If the result of an operation A is used as an operand of an operation B, then: A carries-a-dependency-to B.
+    * `dependecy-ordered-before`: A store operation (with std::memory_order_release, std::memory_order_acq_rel or std::memory_order_seq_cst), is dependency-ordered-before a load operation B (with std::memory_order_consume), if the result of the load operation B is used in a further operation C in the same thread. The operations B and C have to be in the same thread.
 
 ### memory_order_acquire
 * A `load operation` with this memory order performs the acquire operation on the affected memory location:
@@ -1231,9 +1245,16 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 * A `read-modify-write` operation with this memory order is both an acquire operation and a release operation.
 * No memory reads or writes in the current thread can be reordered before or after this store.
 * All writes in other threads that release the same atomic variable are visible before the modification and the modification is visible in other threads that acquire the same atomic variable.
+* The acquire-release semantic is the key for a deeper understanding of the multithreading programming because the threads will be synchronised at specific synchronisation points in the code. Without these synchronisation points, there is no well-defined behaviour of threads, tasks or condition variables possible. [:link: Ref](https://www.modernescpp.com/index.php/sequential-consistency)
+* The acquire-release semantic is based on one key idea: [:link: Ref](https://www.modernescpp.com/index.php/acquire-release-semantic)
+    * A release operation synchronises with an acquire operation on the same atomic and establishes an ordering constraint.
+    * So, all read and write operations can not be moved before an acquire operation, all read and write operations can not be move behind a release operation.
 
 ### memory_order_seq_cst
 * A `load operation` with this memory order performs an acquire operation, a `store performs` a release operation, and `read-modify-write` performs both an acquire operation and a release operation, plus a single total order exists in which all threads observe all modifications in the same order
+* Sequential consistency provides two guarantees. [:link: Ref](https://www.modernescpp.com/index.php/sequential-consistency)
+    * The instructions of a program are executed in source code order.
+    * There is a global order of all operations on all threads.
 
 ### Reference:
 * [Weak vs. Strong Memory Models](https://preshing.com/20120930/weak-vs-strong-memory-models/)
@@ -1262,7 +1283,9 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 [Synchronization with Atomics in C++20](http://www.modernescpp.com/index.php/synchronization-with-atomics-in-c-20)
 
 ## Cons
-The receiver could be awakened without notification or could lose the notification. The first issue is known as `spurious wakeup` and the second as `lost wakeup`.
+`Lost wakeup`: The phenomenon of the lost wakeup is that the sender sends its notification before the receiver gets to its wait state. The consequence is that the notification is lost. The C++ standard describes condition variables as a simultaneous synchronisation mechanism: "The condition_variable class is a synchronisation primitive that can be used to block a thread, or multiple threads at the same time, ...". So the notification gets lost, and the receiver is waiting and waiting and ... .
+
+`Spurious wakeup`: usually happen because, in between the time when the condition variable was signaled and when the waiting thread finally ran, another thread ran and changed the condition. There was a race condition between the threads, with the typical result that sometimes, the thread waking up on the condition variable runs first, winning the race, and sometimes it runs second, losing the race.
 
 The predicate protects against both flaws. The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
 
@@ -1272,5 +1295,20 @@ When you only need a one-time notification such as in the previous program, prom
 
 
 # Promises and Futures
+[Synchronization with Atomics in C++20](http://www.modernescpp.com/index.php/synchronization-with-atomics-in-c-20)
+
+[Thread Synchronization with Condition Variables or Tasks](https://www.modernescpp.com/index.php/thread-synchronization-with-condition-variables-or-tasks)
+
+Criteria | Condition Variables | Task (Promise - Future)
+--- | --- | ---
+Multiple synchronization Possible | Y | N
+Critical region | Y | N
+Exception handling in receiver | N | Y
+Spurious wakeup | Y | N
+Lost wakeup | Y | N
+
+The benefit of a condition variable to a promise and future is, that you can use condition variables to synchronize threads multiple times. In opposite to that, a promise can send its notification only once.
+
+
 ## Cons
 There is only one downside to using promises and futures: they can only be used once. If you want to communicate more than once, you have to use condition variables or atomics.
