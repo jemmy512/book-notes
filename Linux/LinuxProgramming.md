@@ -1991,6 +1991,18 @@ clock_t times(struct tms *buf); // return wall clock time
     pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
     ```
 
+    [Synchronization with Atomics in C++20](http://www.modernescpp.com/index.php/synchronization-with-atomics-in-c-20)
+    * Condition variable has two cons:
+        1. `Lost wakeup`: The phenomenon of the lost wakeup is that the sender sends its notification before the receiver gets to its wait state. The consequence is that the notification is lost. The C++ standard describes condition variables as a simultaneous synchronisation mechanism: "The condition_variable class is a synchronisation primitive that can be used to block a thread, or multiple threads at the same time, ...". So the notification gets lost, and the receiver is waiting and waiting and ... .
+
+        2. `Spurious wakeup`: usually happen because, in between the time when the condition variable was signaled and when the waiting thread finally ran, another thread ran and changed the condition. There was a race condition between the threads, with the typical result that sometimes, the thread waking up on the condition variable runs first, winning the race, and sometimes it runs second, losing the race.
+
+    * The predicate protects against both flaws. The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
+
+    * [C++ Core Guidelines: Be Aware of the Traps of Condition Variables](http://www.modernescpp.com/index.php/c-core-guidelines-be-aware-of-the-traps-of-condition-variables)
+
+    * When you only need a one-time notification such as in the previous program, promises and futures are a better choice than condition variables. Promise and futures cannot be victims of spurious or lost wakeups.
+
 5. pthread_rwlock:
     ```C++
     pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr);
