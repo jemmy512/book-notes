@@ -101,46 +101,31 @@ If you haven’t used tinyurl.com before, please try creating a new shortened UR
 
 1. Traffic estimates:
     * Assuming, we will have 500M new URL shortenings per month, with 100:1 read/write ratio, we can expect 50B redirections during the same period:
-
-> 100 * 500M => 50B
-
+        > 100 * 500M => 50B
     * What would be Queries Per Second (QPS) for our system? New URLs shortenings per second:
-
-    > 500 million / (30 days * 24 hours * 3600 seconds) = ~200 URLs/s
-
-* Considering 100:1 read/write ratio, URLs redirections per second will be:
-
+        > 500 million / (30 days * 24 hours * 3600 seconds) = ~200 URLs/s
+    * Considering 100:1 read/write ratio, URLs redirections per second will be:
         > 100 * 200 URLs/s = 20K/s
 
 2. Storage estimates:
     * Let’s assume we store every URL shortening request (and associated shortened link) for 5 years. Since we expect to have 500M new URLs every month, the total number of objects we expect to store will be 30 billion:
-
-> 500 million * 5 years * 12 months = 30 billion
-
+        > 500 million * 5 years * 12 months = 30 billion
     * Let’s assume that each stored object will be approximately 500 bytes (just a ballpark estimate–we will dig into it later). We will need 15TB of total storage:
-
         > 30 billion * 500 bytes = 15 TB
 
 3. Bandwidth estimates:
     * For write requests, since we expect 200 new URLs every second, total incoming data for our service will be 100KB per second:
-
-> 200 * 500 bytes = 100 KB/s
-
+        > 200 * 500 bytes = 100 KB/s
     * For read requests, since every second we expect ~20K URLs redirections, total outgoing data for our service would be 10MB per second:
-
         > 20K * 500 bytes = ~10 MB/s
 
 4. Memory estimates:
     * If we want to cache some of the hot URLs that are frequently accessed, how much memory will we need to store them? If we follow the 80-20 rule, meaning 20% of URLs generate 80% of traffic, we would like to cache these 20% hot URLs.
 
     * Since we have 20K requests per second, we will be getting 1.7 billion requests per day:
-
-> 20K * 3600 seconds * 24 hours = ~1.7 billion
-
+        > 20K * 3600 seconds * 24 hours = ~1.7 billion
     * To cache 20% of these requests, we will need 170GB of memory.
-
-    > 0.2 * 1.7 billion * 500 bytes = ~170GB
-
+        > 0.2 * 1.7 billion * 500 bytes = ~170GB
     * One thing to note here is that since there will be many duplicate requests (of the same URL), our actual memory usage will be less than 170GB.
 
 5. High-level estimates:
@@ -403,7 +388,8 @@ Let’s estimate how much data will be going into each table and how much total 
     * If 2M new photos get uploaded every day, we will need 0.5GB of storage for one day:
 
     > 2M * 284 bytes ~= 0.5GB per day
-    * For 10 years we will need 1.88TB of storage.
+
+* For 10 years we will need 1.88TB of storage.
 
 2. UserFollow:
     * Each row in the UserFollow table will consist of 8 bytes. If we have 500 million users and on average each user follows 500 users. We would need 1.82TB of storage for the UserFollow table:
@@ -548,16 +534,26 @@ How can we build a more intelligent cache?
     * Moments.
 
 ## Designing Youtube or Netflix
+
 ## Designing Typeahead Suggestion
+
 ## Designing an API Rate Limiter
+
 ## Designing Twitter Search
+
 ## Designing a Web Crawler
+
 ## Designing Facebook’s Newsfeed
+
 ## Designing Yelp or Nearby Friends
+
 ## Designing Uber backend
+
 ## Design Ticketmaster
 
 # Glossary of System Design Basics
+
+## System Design Basics
 Whenever we are designing a large system, we need to consider a few things:
 * What are the **different architectural pieces** that can be used?
 * How do these pieces work with each other?
@@ -567,7 +563,7 @@ Investing in scaling before it is needed is generally not a smart business propo
 
 Let’s start with the Key Characteristics of Distributed Systems.
 
-## System Design Basics
+## Key Characteristics of Distributed Systems
 
 ### Scalability
 Scalability: _is the capability of a system, process, or a network to grow and manage increased demand_.
@@ -616,9 +612,7 @@ Another important consideration while designing a distributed system is how easy
 
 Early detection of faults can decrease or avoid system downtime. For example, some enterprise systems can automatically call a service center (without human intervention) when the system experiences a system fault.
 
-## Key Characteristics of Distributed Systems
-
-### Load Balancing
+## Load Balancing
 Load Balancer (LB) is another critical component of any distributed system. It helps to spread the traffic across a cluster of servers to improve responsiveness and availability of applications, websites or databases. LB also keeps track of the status of all the resources while distributing requests. If a server is not available to take new requests or is not responding or has elevated error rate, LB will stop sending traffic to such a server.
 
 ![](../Images/SystemDesign/load-balancing-1.png)
@@ -717,62 +711,271 @@ Data partitioning is a technique to break up a big database (DB) into many small
 There are many different schemes one could use to decide how to break up an application database into multiple smaller DBs. Below are three of the most popular schemes used by various large scale applications.
 
 1. Horizontal partitioning
-
-    In this scheme, we put different rows into different tables. For example, if we are storing different places in a table, we can decide that locations with ZIP codes less than 10000 are stored in one table and places with ZIP codes greater than 10000 are stored in a separate table. This is also called a **range based partitioning** as we are storing different ranges of data in separate tables. Horizontal partitioning is also called as **Data Sharding**.
-
-    The key problem with this approach is that if the value whose range is used for partitioning isn’t chosen carefully, then the partitioning scheme will _lead to unbalanced servers_. In the previous example, splitting location based on their zip codes assumes that places will be evenly distributed across the different zip codes. This assumption is not valid as there will be a lot of places in a thickly populated area like Manhattan as compared to its suburb cities.
+    * In this scheme, we put different rows into different tables.
+    * For example, if we are storing different places in a table, we can decide that locations with ZIP codes less than 10000 are stored in one table and places with ZIP codes greater than 10000 are stored in a separate table. This is also called a **range based partitioning** as we are storing different ranges of data in separate tables. Horizontal partitioning is also called as **Data Sharding**.
+    * **Cons**: if the value whose range is used for partitioning isn’t chosen carefully, then the partitioning scheme will **lead to unbalanced servers**. In the previous example, splitting location based on their zip codes assumes that places will be evenly distributed across the different zip codes. This assumption is not valid as there will be a lot of places in a thickly populated area like Manhattan as compared to its suburb cities.
 
 2. Vertical Partitioning
-
-    In this scheme, we divide our data to store tables related to a specific feature in their own server. For example, if we are building Instagram like application - where we need to store data related to users, photos they upload, and people they follow - we can decide to place user profile information on one DB server, friend lists on another, and photos on a third server.
-
-    Vertical partitioning is straightforward to implement and has a low impact on the application. The main problem with this approach is that if our application experiences additional growth, then _it may be necessary to further partition a feature specific DB across various servers_ (e.g. it would not be possible for a single server to handle all the metadata queries for 10 billion photos by 140 million users).
+    * In this scheme, we divide our data to store tables related to a specific feature in their own server.
+    * For example, if we are building Instagram like application - where we need to store data related to users, photos they upload, and people they follow - we can decide to place user profile information on one DB server, friend lists on another, and photos on a third server.
+    * **Pros**: Vertical partitioning is straightforward to implement and has a low impact on the application.
+    * **Cons**: If our application experiences additional growth, then _it may be necessary to further partition a feature specific DB across various servers_ (e.g. it would not be possible for a single server to handle all the metadata queries for 10 billion photos by 140 million users).
 
 3. Directory Based Partitioning
-
-    A loosely coupled approach to work around issues mentioned in the above schemes is to create a lookup service which knows your current partitioning scheme and abstracts it away from the DB access code. So, to find out where a particular data entity resides, we query the directory server that holds the mapping between each tuple key to its DB server. This loosely coupled approach means we can perform tasks like adding servers to the DB pool or changing our partitioning scheme without having an impact on the application.
+    * A loosely coupled approach to work around issues mentioned in the above schemes is to create a lookup service which knows your current partitioning scheme and abstracts it away from the DB access code. So, to find out where a particular data entity resides, we query the directory server that holds the mapping between each tuple key to its DB server. This loosely coupled approach means we can perform tasks like adding servers to the DB pool or changing our partitioning scheme without having an impact on the application.
 
 ### Partitioning Criteria
 1. Key or Hash-based partitioning
-
-    Under this scheme, we apply a hash function to some key attributes of the entity we are storing; that yields the partition number. For example, if we have 100 DB servers and our ID is a numeric value that gets incremented by one each time a new record is inserted. In this example, the hash function could be ‘ID % 100’, which will give us the server number where we can store/read that record. This approach should ensure a uniform allocation of data among servers. The fundamental problem with this approach is that it effectively fixes the total number of DB servers, since adding new servers means changing the hash function which would require redistribution of data and downtime for the service. A workaround for this problem is to use Consistent Hashing.
+    * Under this scheme, we apply a hash function to some key attributes of the entity we are storing; that yields the partition number.
+    * For example, if we have 100 DB servers and our ID is a numeric value that gets incremented by one each time a new record is inserted. In this example, the hash function could be ‘ID % 100’, which will give us the server number where we can store/read that record.
+    * **Pros**: This approach should ensure a uniform allocation of data among servers.
+    * **Cons**: The fundamental problem with this approach is that it effectively fixes the total number of DB servers, since adding new servers means changing the hash function which would require redistribution of data and downtime for the service.
+    * **Workaround**: **Consistent Hashing**.
 
 2. List partitioning
-
-    In this scheme, each partition is assigned a list of values, so whenever we want to insert a new record, we will see which partition contains our key and then store it there. For example, we can decide all users living in Iceland, Norway, Sweden, Finland, or Denmark will be stored in a partition for the Nordic countries.
+    * In this scheme, each partition is assigned a list of values, so whenever we want to insert a new record, we will see which partition contains our key and then store it there.
+    * For example, we can decide all users living in Iceland, Norway, Sweden, Finland, or Denmark will be stored in a partition for the Nordic countries.
 
 3. Round-robin partitioning
-
-    This is a very simple strategy that ensures uniform data distribution. With ‘n’ partitions, the ‘i’ tuple is assigned to partition (i mod n).
+    * This is a very simple strategy that ensures uniform data distribution. With ‘n’ partitions, the ‘i’ tuple is assigned to partition (i mod n).
 
 4. Composite partitioning
-
-    Under this scheme, we combine any of the above partitioning schemes to devise a new scheme. For example, first applying a list partitioning scheme and then a hash based partitioning. Consistent hashing could be considered a composite of hash and list partitioning where the hash reduces the key space to a size that can be listed.
+    * Under this scheme, we combine any of the above partitioning schemes to devise a new scheme.
+    * For example, first applying a list partitioning scheme and then a hash based partitioning. Consistent hashing could be considered a composite of hash and list partitioning where the hash reduces the key space to a size that can be listed.
 
 ### Common Problems of Data Partitioning
 On a partitioned database, there are certain extra constraints on the different operations that can be performed. Most of these constraints are due to the fact that operations across multiple tables or multiple rows in the same table will no longer run on the same server. Below are some of the constraints and additional complexities introduced by partitioning:
 
 1. Joins and Denormalization
-
-    Performing joins on a database which is running on one server is straightforward, but once a database is partitioned and spread across multiple machines it is often not feasible to perform joins that span database partitions. Such joins will not be performance efficient since data has to be compiled from multiple servers. A common workaround for this problem is to denormalize the database so that queries that previously required joins can be performed from a single table. Of course, the service now has to deal with all the perils of denormalization such as data inconsistency.
+    * Performing joins on a database which is running on one server is straightforward, but once a database is partitioned and spread across multiple machines it is often not feasible to perform joins that span database partitions.
+    * Such joins will not be performance efficient since data has to be compiled from multiple servers.
+    * **Workaround**: denormalize the database so that queries that previously required joins can be performed from a single table. Of course, the service now has to deal with all the perils of denormalization such as data inconsistency.
 
 2. Referential integrity
-
-    As we saw that performing a cross-partition query on a partitioned database is not feasible, similarly, trying to enforce data integrity constraints such as foreign keys in a partitioned database can be extremely difficult.
-
-    Most of RDBMS do not support foreign keys constraints across databases on different database servers. Which means that applications that require referential integrity on partitioned databases often have to enforce it in application code. Often in such cases, applications have to run regular SQL jobs to clean up dangling references.
+    * As we saw that performing a cross-partition query on a partitioned database is not feasible, similarly, trying to enforce data integrity constraints such as foreign keys in a partitioned database can be extremely difficult.
+    * Most of RDBMS do not support foreign keys constraints across databases on different database servers. Which means that applications that require referential integrity on partitioned databases often have to enforce it in application code. Often in such cases, applications have to run regular SQL jobs to clean up dangling references.
 
 3. Rebalancing
-
     * There could be many reasons we have to change our partitioning scheme:
         * The data distribution is not uniform, e.g., there are a lot of places for a particular ZIP code that cannot fit into one database partition.
         * There is a lot of load on a partition, e.g., there are too many requests being handled by the DB partition dedicated to user photos.
+    * In such cases, either we have to create more DB partitions or have to rebalance existing partitions, which means the partitioning scheme changed and all existing data moved to new locations. Doing this without incurring downtime is extremely difficult. Using a scheme like directory based partitioning does make rebalancing a more palatable experience at the cost of increasing the complexity of the system and creating a new single point of failure (i.e. the lookup service/database).
 
-In such cases, either we have to create more DB partitions or have to rebalance existing partitions, which means the partitioning scheme changed and all existing data moved to new locations. Doing this without incurring downtime is extremely difficult. Using a scheme like directory based partitioning does make rebalancing a more palatable experience at the cost of increasing the complexity of the system and creating a new single point of failure (i.e. the lookup service/database).
 ## Indexes
+Indexes are well known when it comes to databases. Sooner or later there comes a time when database performance is no longer satisfactory. One of the very first things you should turn to when that happens is database indexing.
+
+The goal of creating an index on a particular table in a database is to make it faster to search through the table and find the row or rows that we want. Indexes can be created using one or more columns of a database table, providing the basis for both rapid random lookups and efficient access of ordered records.
+
+### Example: A library catalog
+A library catalog is a register that contains the list of books found in a library. The catalog is organized like a database table generally with four columns: book title, writer, subject, and date of publication.
+
+There are usually two such catalogs: one sorted by the book title and one sorted by the writer name. That way, you can either think of a writer you want to read and then look through their books or look up a specific book title you know you want to read in case you don’t know the writer’s name. These catalogs are like indexes for the database of books. They provide a sorted list of data that is easily searchable by relevant information.
+
+Simply saying, an index is a data structure that can be perceived as a table of contents that points us to the location where actual data lives. So when we create an index on a column of a table, we store that column and a pointer to the whole row in the index. Let’s assume a table containing a list of books, the following diagram shows how an index on the ‘Title’ column looks like:
+
+![](../Images/SystemDesign/indexes.png)
+
+Just like a traditional relational data store, we can also apply this concept to larger datasets. The trick with indexes is that we must carefully consider how users will access the data. In the case of data sets that are many terabytes in size, but have very small payloads (e.g., 1 KB), indexes are a necessity for optimizing data access. Finding a small payload in such a large dataset can be a real challenge, since we can’t possibly iterate over that much data in any reasonable time. Furthermore, it is very likely that such a large data set is spread over several physical devices—this means we need some way to find the correct physical location of the desired data. Indexes are the best way to do this.
+
+### How do Indexes decrease write performance?
+An index can dramatically speed up data retrieval but may itself be large due to the additional keys, which slow down data insertion & update.
+
+When adding rows or making updates to existing rows for a table with an active index, we not only have to write the data but also have to update the index. This will decrease the write performance. This performance degradation applies to all insert, update, and delete operations for the table. For this reason, adding unnecessary indexes on tables should be avoided and indexes that are no longer used should be removed. To reiterate, adding indexes is about improving the performance of search queries. If the goal of the database is to provide a data store that is often written to and rarely read from, in that case, decreasing the performance of the more common operation, which is writing, is probably not worth the increase in performance we get from reading.
+
+For more details, see [Database Indexes](https://en.wikipedia.org/wiki/Database_index).
+
 ## Proxies
+A proxy server is an intermediate server between the client and the back-end server. Clients connect to proxy servers to make a request for a service like a web page, file, connection, etc.
+
+In short, _a proxy server is a piece of software or hardware that acts as an intermediary for requests from clients seeking resources from other servers_.
+
+Typically, proxies are used to filter requests, log requests, or sometimes transform requests (by adding/removing headers, encrypting/decrypting, or compressing a resource). Another advantage of a proxy server is that its cache can serve a lot of requests. If multiple clients access a particular resource, the proxy server can cache it and serve it to all the clients without going to the remote server.
+
+![](../Images/SystemDesign/proxy.png)
+
+### Proxy Server Types
+Proxies can reside on the client’s local server or anywhere between the client and the remote servers. Here are a few famous types of proxy servers:
+
+#### Open Proxy
+An [open proxy](https://en.wikipedia.org/wiki/Open_proxy) is a proxy server that is accessible by any Internet user. Generally, a proxy server only allows users within a network group (i.e. a closed proxy) to store and forward Internet services such as DNS or web pages to reduce and control the bandwidth used by the group. With an open proxy, however, any user on the Internet is able to use this forwarding service.
+
+There two famous open proxy types:
+1. **Anonymous Proxy** - Thіs proxy reveals іts іdentіty аs а server but does not dіsclose the іnіtіаl IP аddress. Though thіs proxy server cаn be dіscovered eаsіly іt cаn be benefіcіаl for some users аs іt hіdes their IP аddress.
+2. **Trasparent Proxy** – Thіs proxy server аgаіn іdentіfіes іtself, аnd wіth the support of HTTP heаders, the fіrst IP аddress cаn be vіewed. The mаіn benefіt of usіng thіs sort of server іs іts аbіlіty to cаche the websіtes.
+
+#### Reverse Proxy
+A reverse proxy retrieves resources on behalf of a client from one or more servers. These resources are then returned to the client, appearing as if they originated from the proxy server itself
+
 ## Redundancy and Replication
+[Redundancy](https://en.wikipedia.org/wiki/Redundancy_(engineering)) is the duplication of critical components or functions of a system with the intention of increasing the reliability of the system, usually in the form of a backup or fail-safe, or to improve actual system performance.
+
+For example, if there is only one copy of a file stored on a single server, then losing that server means losing the file. Since losing data is seldom a good thing, we can create duplicate or redundant copies of the file to solve this problem.
+
+Redundancy plays a key role in removing the single points of failure in the system and provides backups if needed in a crisis. For example, if we have two instances of a service running in production and one fails, the system can failover to the other one.
+
+![](../Images/SystemDesign/redundancy-replication.png)
+
+Replication means sharing information to ensure consistency between redundant resources, such as software or hardware components, to improve reliability, fault-tolerance, or accessibility.
+
+Replication is widely used in many database management systems (DBMS), usually with a primary-replica relationship between the original and the copies. The primary server gets all the updates, which then ripple through to the replica servers. Each replica outputs a message stating that it has received the update successfully, thus allowing the sending of subsequent updates.
+
 ## SQL vs. NoSQL
+In the world of databases, there are two main types of solutions: SQL and NoSQL (or relational databases and non-relational databases). Both of them differ in the way they were built, the kind of information they store, and the storage method they use.
+
+Relational databases are structured and have predefined schemas like phone books that store phone numbers and addresses.
+
+Non-relational databases are unstructured, distributed, and have a dynamic schema like file folders that hold everything from a person’s address and phone number to their Facebook ‘likes’ and online shopping preferences.
+
+### SQL
+Relational databases store data in rows and columns. Each row contains all the information about one entity and each column contains all the separate data points. Some of the most popular relational databases are MySQL, Oracle, MS SQL Server, SQLite, Postgres, and MariaDB.
+
+### NoSQL
+Following are the most common types of NoSQL:
+
+**Key-Value Stores**: Data is stored in an array of key-value pairs. The ‘key’ is an attribute name which is linked to a ‘value’. Well-known key-value stores include Redis, Voldemort, and Dynamo.
+
+**Document Databases**: In these databases, data is stored in documents (instead of rows and columns in a table) and these documents are grouped together in collections. Each document can have an entirely different structure. Document databases include the CouchDB and MongoDB.
+
+**Wide-Column Databases**: Instead of ‘tables,’ in columnar databases we have column families, which are containers for rows. Unlike relational databases, we don’t need to know all the columns up front and each row doesn’t have to have the same number of columns. Columnar databases are best suited for analyzing large datasets - big names include Cassandra and HBase.
+
+**Graph Databases**: These databases are used to store data whose relations are best represented in a graph. Data is saved in graph structures with nodes (entities), properties (information about the entities), and lines (connections between the entities). Examples of graph database include Neo4J and InfiniteGraph.
+
+### High level differences between SQL and NoSQL
+1. **Storage**
+    * SQL stores data in tables where each row represents an entity and each column represents a data point about that entity; for example, if we are storing a car entity in a table, different columns could be ‘Color’, ‘Make’, ‘Model’, and so on.
+    * NoSQL databases have different data storage models. The main ones are key-value, document, graph, and columnar. We will discuss differences between these databases below.
+
+2. **Schema**
+    * In SQL, each record conforms to a fixed schema, meaning the columns must be decided and chosen before data entry and each row must have data for each column. The schema can be altered later, but it involves modifying the whole database and going offline.
+    * In NoSQL, schemas are dynamic. Columns can be added on the fly and each ‘row’ (or equivalent) doesn’t have to contain data for each ‘column.’
+
+3. **Querying**
+    * SQL databases use SQL (structured query language) for defining and manipulating the data, which is very powerful.
+    * In a NoSQL database, queries are focused on a collection of documents. Sometimes it is also called UnQL (Unstructured Query Language). Different databases have different syntax for using UnQL.
+
+4. **Scalability**
+    * In most common situations, SQL databases are vertically scalable, i.e., by increasing the horsepower (higher Memory, CPU, etc.) of the hardware, which can get very expensive. It is possible to scale a relational database across multiple servers, but this is a challenging and time-consuming process.
+    * On the other hand, NoSQL databases are horizontally scalable, meaning we can add more servers easily in our NoSQL database infrastructure to handle a lot of traffic. Any cheap commodity hardware or cloud instances can host NoSQL databases, thus making it a lot more cost-effective than vertical scaling. A lot of NoSQL technologies also distribute data across servers automatically.
+
+5. **Reliability or ACID Compliancy** (Atomicity, Consistency, Isolation, Durability)
+    * The vast majority of relational databases are ACID compliant. So, when it comes to data reliability and safe guarantee of performing transactions, SQL databases are still the better bet.
+    * Most of the NoSQL solutions sacrifice ACID compliance for performance and scalability.
+
+### SQL VS. NoSQL - Which one to use?
+When it comes to database technology, there’s no one-size-fits-all solution. That’s why many businesses rely on both relational and non-relational databases for different needs. Even as NoSQL databases are gaining popularity for their speed and scalability, there are still situations where a highly structured SQL database may perform better; choosing the right technology hinges on the use case.
+
+### Reasons to use SQL database
+**Ensure ACID compliance**. ACID compliance reduces anomalies and protects the integrity of your database by prescribing exactly how transactions interact with the database. Generally, NoSQL databases sacrifice ACID compliance for scalability and processing speed, but for many e-commerce and financial applications, an ACID-compliant database remains the preferred option.
+
+**Data is structured and unchanging**. If your business is not experiencing massive growth that would require more servers and if you’re only working with data that is consistent, then there may be no reason to use a system designed to support a variety of data types and high traffic volume.
+
+### Reasons to use NoSQL database
+When all the other components of our application are fast and seamless, NoSQL databases prevent data from being the bottleneck. Big data is contributing to a large success for NoSQL databases, mainly because it handles data differently than the traditional relational databases. A few popular examples of NoSQL databases are MongoDB, CouchDB, Cassandra, and HBase.
+
+1. Storing large volumes of data that often have little to no structure. A NoSQL database sets no limits on the types of data we can store together and allows us to add new types as the need changes. With document-based databases, you can store data in one place without having to define what “types” of data those are in advance.
+2. Making the most of cloud computing and storage. Cloud-based storage is an excellent cost-saving solution but requires data to be easily spread across multiple servers to scale up. Using commodity (affordable, smaller) hardware on-site or in the cloud saves you the hassle of additional software and NoSQL databases like Cassandra are designed to be scaled across multiple data centers out of the box, without a lot of headaches.
+3. Rapid development. NoSQL is extremely useful for rapid development as it doesn’t need to be prepped ahead of time. If you’re working on quick iterations of your system which require making frequent updates to the data structure without a lot of downtime between versions, a relational database will slow you down.
+
 ## CAP Theorem
+CAP theorem states that it is impossible for a distributed software system to simultaneously provide more than two out of three of the following guarantees (CAP): Consistency, Availability, and Partition tolerance. When we design a distributed system, trading off among CAP is almost the first thing we want to consider.
+
+CAP theorem says while designing a distributed system we can pick only two of the following three options:
+1. **Consistency**: Every read receives the most recent write or an error. Consistency is achieved by updating several nodes before allowing further reads.
+2. **Availability**: Every request receives a (non-error) response, without the guarantee that it contains the most recent write. Availability is achieved by replicating the data across different servers.
+3. **Partition tolerance**: The system continues to work despite message loss or partial failure. A system that is partition-tolerant can sustain any amount of network failure that doesn’t result in a failure of the entire network. Data is sufficiently replicated across combinations of nodes and networks to keep the system up through intermittent outages.
+
+![](../Images/SystemDesign/cap.png)
+
+We cannot build a general data store that is continually available, sequentially consistent, and tolerant to any partition failures. We can only build a system that has any two of these three properties. Because, to be consistent, all nodes should see the same set of updates in the same order. But if the network loses a partition, updates in one partition might not make it to the other partitions before a client reads from the out-of-date partition after having read from the up-to-date one. The only thing that can be done to cope with this possibility is to stop serving requests from the out-of-date partition, but then the service is no longer 100% available.
+
 ## Consistent Hashing
+Distributed Hash Table (DHT) is one of the fundamental components used in distributed scalable systems. Hash Tables need a key, a value, and a hash function where hash function maps the key to a location where the value is stored.
+> index = hash_function(key)
+
+Suppose we are designing a distributed caching system. Given ‘n’ cache servers, an intuitive hash function would be ‘key % n’. It is simple and commonly used.
+
+But it has two major drawbacks:
+1. It is NOT horizontally scalable. Whenever a new cache host is added to the system, all existing mappings are broken. It will be a pain point in maintenance if the caching system contains lots of data. Practically, it becomes difficult to schedule a downtime to update all caching mappings.
+2. It may NOT be load balanced, especially for non-uniformly distributed data. In practice, it can be easily assumed that the data will not be distributed uniformly. For the caching system, it translates into some caches becoming hot and saturated while the others idle and are almost empty.
+
+In such situations, consistent hashing is a good way to improve the caching system.
+
+### What is Consistent Hashing?
+Consistent hashing is a very useful strategy for distributed caching systems and DHTs. It allows us to distribute data across a cluster in such a way that will minimize reorganization when nodes are added or removed. Hence, the caching system will be easier to scale up or scale down.
+
+In Consistent Hashing, when the hash table is resized (e.g. a new cache host is added to the system), only ‘k/n’ keys need to be remapped where ‘k’ is the total number of keys and ‘n’ is the total number of servers. Recall that in a caching system using the ‘mod’ as the hash function, all keys need to be remapped.
+
+In Consistent Hashing, objects are mapped to the same host if possible. When a host is removed from the system, the objects on that host are shared by other hosts; when a new host is added, it takes its share from a few hosts without touching other’s shares.
+
+### How does it work?
+As a typical hash function, consistent hashing maps a key to an integer. Suppose the output of the hash function is in the range of [0, 256]. Imagine that the integers in the range are placed on a ring such that the values are wrapped around.
+
+Here’s how consistent hashing works:
+1. Given a list of cache servers, hash them to integers in the range.
+2. To map a key to a server,
+    * Hash it to a single integer.
+    * Move clockwise on the ring until finding the first cache it encounters.
+    * That cache is the one that contains the key. See animation below as an example: key1 maps to cache A; key2 maps to cache C.
+
+![](../Images/SystemDesign/consistent-hashing.png)
+
+To add a new server, say D, keys that were originally residing at C will be split. Some of them will be shifted to D, while other keys will not be touched.
+
+To remove a cache or, if a cache fails, say A, all keys that were originally mapped to A will fall into B, and only those keys need to be moved to B; other keys will not be affected.
+
+* For load balancing, as we discussed in the beginning, the real data is essentially randomly distributed and thus may not be uniform. It may make the keys on caches unbalanced.
+    * To handle this issue, we add **virtual replicas** for caches. Instead of mapping each cache to a single point on the ring, we map it to multiple points on the ring, i.e. replicas. This way, each cache is associated with multiple portions of the ring.
+
+If the hash function “mixes well,” as the number of replicas increases, the keys will be more balanced.
+
 ## Long-Polling vs WebSockets vs Server-Sent Events
+
+Long-Polling, WebSockets, and Server-Sent Events are popular communication protocols between a client like a web browser and a web server. First, let’s start with understanding what a standard HTTP web request looks like. Following are a sequence of events for regular HTTP request:
+1. The client opens a connection and requests data from the server.
+2. The server calculates the response.
+3. The server sends the response back to the client on the opened request.
+
+### Ajax Polling
+Polling is a standard technique used by the vast majority of AJAX applications. The basic idea is that the client repeatedly polls (or requests) a server for data. The client makes a request and waits for the server to respond with data. If no data is available, an empty response is returned.
+
+1. The client opens a connection and requests data from the server using regular HTTP.
+2. The requested webpage sends requests to the server at regular intervals (e.g., 0.5 seconds).
+2. The server calculates the response and sends it back, just like regular HTTP traffic.
+3. The client repeats the above three steps periodically to get updates from the server.
+
+![](../Images/SystemDesign/poll-wss-sse-ajax-poll.png)
+
+The problem with Polling is that the client has to keep asking the server for any new data. As a result, a lot of responses are empty, creating HTTP overhead.
+
+### HTTP Long-Polling
+This is a variation of the traditional polling technique that allows the server to push information to a client whenever the data is available. With Long-Polling, the client requests information from the server exactly as in normal polling, but with the expectation that the server may not respond immediately. That’s why this technique is sometimes referred to as a “Hanging GET”.
+
+* If the server does not have any data available for the client, instead of sending an empty response, the server holds the request and waits until some data becomes available.
+* Once the data becomes available, a full response is sent to the client. The client then immediately re-request information from the server so that the server will almost always have an available waiting request that it can use to deliver data in response to an event.
+
+The basic life cycle of an application using HTTP Long-Polling is as follows:
+1. The client makes an initial request using regular HTTP and then waits for a response.
+2. The server delays its response until an update is available or a timeout has occurred.
+3. When an update is available, the server sends a full response to the client.
+4. The client typically sends a new long-poll request, either immediately upon receiving a response or after a pause to allow an acceptable latency period.
+5. Each Long-Poll request has a timeout. The client has to reconnect periodically after the connection is closed due to timeouts.
+
+![](../Images/SystemDesign/poll-wss-sse-long-poll.png)
+
+### WebSockets
+WebSocket provides [Full duplex](https://en.wikipedia.org/wiki/Duplex_(telecommunications)#Full_duplex) communication channels over a single TCP connection. It provides a persistent connection between a client and a server that both parties can use to start sending data at any time.
+
+The client establishes a WebSocket connection through a process known as the WebSocket handshake. If the process succeeds, then the server and client can exchange data in both directions at any time. The WebSocket protocol enables communication between a client and a server with lower overheads, facilitating real-time data transfer from and to the server. This is made possible by providing a standardized way for the server to send content to the browser without being asked by the client and allowing for messages to be passed back and forth while keeping the connection open. In this way, a two-way (bi-directional) ongoing conversation can take place between a client and a server.
+
+![](../Images/SystemDesign/poll-wss-sse-wss.png)
+
+### Server-Sent Events (SSEs)
+Under SSEs the client establishes a persistent and long-term connection with the server. The server uses this connection to send data to a client. If the client wants to send data to the server, it would require the use of another technology/protocol to do so.
+
+1. Client requests data from a server using regular HTTP.
+2. The requested webpage opens a connection to the server.
+3. The server sends the data to the client whenever there’s new information available.
+
+SSEs are best when we need real-time traffic from the server to the client or if the server is generating data in a loop and will be sending multiple events to the client.
+
+![](../Images/SystemDesign/poll-wss-sse-sse.png)
