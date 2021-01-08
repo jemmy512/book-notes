@@ -108,6 +108,50 @@ RESTfull API, XML, IDL
     3. Split by avilability
     4. Split by performance
 
+
+## Service Communication
+### API Gateway
+API Gateway is the single point of entry for the all the client requests. It acts like a reverse proxy that serves all the client traffic to the microservices in the cluster.
+
+* Functionalities of API Gateway: [:link: Ref](https://medium.com/dev-genius/microservices-design-api-gateway-pattern-980e8d02bdd5)
+    * Routing
+        > Encapsulating the underlying system and decoupling from the clients, the gateway provides a single entry point for the client to communicate with the microservice system.
+    * Offloading
+        > API gateway consolidates the edge functionalities rather than making every microservices implementing them. Some of the functionalities are:
+        * Identity Provider, Authentication and Authorization
+        * Service discovery integration
+        * Response caching
+        * Retry policies, circuit breaker, and QoS
+        * Rate limiting and throttling
+        * Load balancing
+        * Logging, tracing, correlation
+        * Headers, query strings, and claims transformation
+        * IP whitelisting
+        * IAM
+        * Centralized Logging (transaction ID across the servers, error logging)
+
+* Advantages of the modified architecture with API Gateway: [:link: Ref](https://contextswitch.dev/microservices-patterns-1/)
+    1. Every client is not required to be **aware of all the microservices** and the endpoints it needs to talk to. This gives the application team **flexibility** to eventually migrate out of a microservice , make modifications to existing services or create a new microservice.
+    2. We can offload any **cross cutting concerns** like Authentication, Logging and Caching to this gateway layer. For instance, by allowing only Authenticated and Trusted client traffic to flow through the gateway to microservices. Also internal communication between the services can happen over a trusted private network without worrying about handling additional overhead like Authenticating the request and securing communications over SSL.
+    3. It can also help with **API Composition** by querying multiple microservices and joining on the results to produce the final aggregated response.
+    4. It can also act as a **Rate Limiter** by throttling requests coming from a client that has gone into a bad state, this helps in making the cluster more fault tolerant.
+
+* Service Mesh and API Gateway
+    * It appears as though API gateways and service meshes solve the same problem and are therefore redundant. They do solve the same problem but in different contexts.
+    * API gateway is deployed as a part of a business solution that is discoverable by the external clients handling north-south traffic(face external client).
+    * Service mesh handles east-west traffic (among different microservices).
+
+![](../Images/Microservice/api-getway-integration-service-service-mesh.png)
+
+### Message Bus
+* Advantages:
+    1. Enables **decoupling** of the request producer from the request consumer giving them the flexibility to process requests at their own scale.
+    2. Gives the **flexibility** for each microservice to **scale up and down** based on the bursts in traffic. Neither the producer nor the consumer need to worry about request throttling.
+    3. Improves the overall **availability** and **fault tolerance** of the system as the producer is less concerned with handling failures from the consumer. Consumers can be rest assured that as long as the proper message payload is published to the Message Bus it will be processed eventually.
+
+### Circuit Breaker
+### CQRS ( Command Query Response Segregation )
+
 # High Performance Design
 1. Read and write separation
     1. Duplication Delay
@@ -182,3 +226,17 @@ RESTfull API, XML, IDL
     1. Process-oriented split: layered architecture.
     2. Service-oriented split: SOA, microservices.
     3. Function-oriented split: microkernel architecture.
+
+# Resilience Design
+**Resilience** in microservices is the hability of recover from failures and return to the fully functional state. [:link: Ref](https://kellerwilliam.medium.com/introduction-fd326099e993)
+
+It’s not about avoiding failures but responding to failures in a way that avoids downtime and data loss.
+
+## Circuit Breaker
+The initial state of a CB is **Closed**, what means that information is flowing from one service to another².
+
+After an specific event occurrence (usually a certain amount of tries that result in error) the circuit goes to **OPEN** state, which means that the information flow is interrupted². It stays there for a certain amount of time or even until another criteria is reached². Thus, during this period every call to the function returns a circuit break error².
+
+After this, the circuit goes to a **Half Open State**, when the function is called again it tries to contact the other service one more time². If it succeeds the CB goes to Closed state, otherwise it goes back to OPEN².
+
+![](../Images/Microservice/circuit-breaker.png)
