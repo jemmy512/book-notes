@@ -113,6 +113,8 @@ RESTfull API, XML, IDL
 ### API Gateway
 API Gateway is the single point of entry for the all the client requests. It acts like a reverse proxy that serves all the client traffic to the microservices in the cluster.
 
+An API gateway takes all API calls from clients, then routes them to the appropriate microservice with request routing, composition, and protocol translation. Typically it handles a request by invoking multiple microservices and aggregating the results, to determine the best path. It can translate between web protocols and web‑unfriendly protocols that are used internally.
+
 * Functionalities of API Gateway: [:link: Ref](https://medium.com/dev-genius/microservices-design-api-gateway-pattern-980e8d02bdd5)
     * Routing
         > Encapsulating the underlying system and decoupling from the clients, the gateway provides a single entry point for the client to communicate with the microservice system.
@@ -150,7 +152,63 @@ API Gateway is the single point of entry for the all the client requests. It act
     3. Improves the overall **availability** and **fault tolerance** of the system as the producer is less concerned with handling failures from the consumer. Consumers can be rest assured that as long as the proper message payload is published to the Message Bus it will be processed eventually.
 
 ### Circuit Breaker
-### CQRS ( Command Query Response Segregation )
+### CQRS (Command Query Response Segregation)
+
+### Protocols of Asynchronous
+* [MQTT](https://en.wikipedia.org/wiki/MQTT) — Message Queue Telemetry Transport (MQTT) is an ISO standard pub-sub based lightweight messaging protocol used widely in the [Internet Of Things](https://www.integrasources.com/blog/mqtt-protocol-iot-devices/).
+* AMQP — Advanced Message Queuing Protocol (AMQP) is an open standard application layer protocol for message-oriented middleware.
+* [STOMP](http://stomp.github.io/) — Simple Text Oriented Messaging Protocol, (STOMP), is a text-based protocol modeled on HTTP for interchanging data between services.
+
+### References
+* [Microservice Architecture — Communication & Design Patterns](https://medium.com/dev-genius/microservice-architecture-communication-design-patterns-70b37beec294)
+
+## Microservices Design Pattern
+### Saga Pattern — Maintaining Atomicity Across Multiple Services
+A saga is a sequence of local transactions that updates each service and publishes a message/event to trigger the next local transaction. In case of failure of any of the local transactions, saga executes series of compensating transactions that undo changes made by preceding local transactions thereby preserving atomicity.
+
+* Choreography Based saga — participants exchange events without a centralized point of control.
+* Orchestration Based saga — a centralized controller tells the saga participants what local transactions to execute.
+* ![](../Images/Microservice/saga-choreography-orchestration.png)
+* [Microsoft Safa](https://docs.microsoft.com/en-us/azure/architecture/reference-architectures/saga/saga)
+
+### Event Sourcing — Alternative to State Oriented Persistence
+
+### CQRS — Command Query Responsibility Segregation
+
+### Transactional Outbox Pattern
+
+### Change Data Capture (CDC)
+
+### Considerations for Microservice Design
+1. Idempotent Transactions
+2. Eventual Consistency
+3. Distributed Tracing
+4. Service Mesh
+
+## Authentication & Authorization
+### Token Validation Microservice
+[Token Validation Microservice](https://backstage.forgerock.com/docs/tvm/1/user-guide/)
+
+* The Token Validation Microservice is to introspect and validate OAuth 2.0 access_tokens that adhere to either of the following IETF specifications:
+    * [OAuth 2.0 Bearer Token Usage](https://tools.ietf.org/html/rfc6750)
+    * [JSON Web Token (JWT) Profile for OAuth 2.0 Client Authentication and Authorization Grants](https://tools.ietf.org/html/rfc7523.txt)
+* The Token Validation Microservice uses the introspection endpoint defined in RFC-7662, [OAuth 2.0 Token Introspection](https://tools.ietf.org/html/rfc7662).
+
+![](../Images/Microservice/token-validation-microservice.png)
+1. A client requests access to Secured Microservice A, providing a stateful OAuth 2.0 access_token as credentials.
+2. Secured Microservice A passes the access_token for validation to the Token Validation Microservice, using the /introspect endpoint.
+3. The Token Validation Microservice requests the Authorization Server to validate the token.
+4. The Authorization Server introspects the token, and sends the introspection result to the Token Validation Microservice.
+5. The Token Validation Microservice caches the introspection result, and sends it to Secured Microservice A.
+6. Secured Microservice A uses the introspection result to decide how to process the request. In this case it continues processing the request. Secured Microservice A asks for additional information from Secured Microservice B, providing the validated token as credentials.
+7. Secured Microservice B passes the access_token to the Token Validation Microservice for validation, using the /introspect endpoint.
+8. The Token Validation Microservice retrieves the introspection result from the cache, and sends it to Secured Microservice B.
+9. Secured Microservice B uses the introspection result to decide how to process the request. In this case it passes its response to Secured Microservice A.
+10. Secured Microservice A passes its response to the client.
+
+* [Bringing Token state consistency to the Edge](https://charan-mann.medium.com/bringing-token-state-consistency-to-the-edge-eeaffc911b08)
+* [ForgeRock: Identity Gateway](https://backstage.forgerock.com/docs/ig/7/gateway-guide/index.html#preface)
+
 
 # High Performance Design
 1. Read and write separation
