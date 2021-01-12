@@ -1,35 +1,122 @@
 # Chapter 1 A Tour of Computer System
 ## 1.1 Information Is Bits + Context
+The source program is a sequence of bits, each with a value of 0 or 1, organized in 8-bit chunks called bytes. Each byte represents some text character in the program.
+
+All information in a system—including disk files, programs stored in memory, user data stored in memory, and data transferred across a network—is represented as a bunch of bits.
+
+The only thing that distinguishes different data objects is the context in which we view them.
+
 ## 1.2 Programs Are Translated by Other Programs into Different Forms
-Compilation System:
-1. Preprocessor
-2. Compiler
-    Each statement in an assembly-language program exactly describes one low-level machine-language instruction in a standard text form.
-    Assembly language is useful because it provides a common output language for different compilers for different high-level languages.
-3. Assembler
-    Assembler (as) translates hello.s into machine-language instructions, packages them in a form known as a relocatable object program, and stores the result in the object file.
-4. Linker
+![](../Images/CSAPP/1.2-compilation-system.png)
+
+* Compilation System:
+    1. Preprocessor Phase:
+        * modifies the original C program according to directives that begin with the # character.
+    2. Compiler Phase:
+        * Each statement in an assembly-language program exactly describes one low-level machine-language instruction in a standard text form.
+        * Assembly language is useful because it provides a common output language for different compilers for different high-level languages.
+    3. Assembler Phase:
+        * Assembler (as) translates hello.s into machine-language instructions, packages them in a form known as a **relocatable object program**, and stores the result in the object file.
+    4. Linker
+
+## 1.3 It Pays to Understand How Compilation Systems Work
+* Optimizing program performance
+    * Is a switch statement always more efficient than a sequence of if-else statements?
+    * How much overhead is incurred by a function call?
+    * Is a while loop more efficient than a for loop?
+    * Are pointer references more efficient than array indexes?
+    * Why does our loop run so much faster if we sum into a local variable instead of an argument that is passed by reference?
+    * How can a function run faster when we simply rearrange the parentheses in an arithmetic expression?
+
+* Understanding link-time errors.
+* Avoiding security holes.
+
+## 1.4 Processors Read and Interpret Instructions Stored in Memory
 
 ### 1.4.1 Hardware Organization of a System
-![Hadrware](../Images/CSAPP/1.4-hardware-organization-of-a-typical-system.png)
-    CPU: Central Processing Unit
-    ALU: Arithmetic/Logic Unit
-    PC: Program counter
-    USB: Universal Serial Bus.
+* ![Hadrware](../Images/CSAPP/1.4-hardware-organization-of-a-typical-system.png)
+    * CPU: Central Processing Unit
+    * ALU: Arithmetic/Logic Unit
+    * PC: Program counter
+    * USB: Universal Serial Bus.
+
+* Buses
+    * carry bytes of information back and forth between the components.
+    * Buses are typically designed to transfer fixed-sized chunks of bytes known as **words**.
+    * The number of bytes in a word (the word size) is a fundamental system parameter that varies across systems.
+
+* I/O Devices
+    * Each I/O device is connected to the I/O bus by either a **controller** or an **adapter**.
+    * Controllers are chip sets in the device itself or on the system’s main printed circuit board (often called the motherboard).
+    * An adapter is a card that plugs into a slot on the motherboard.
+
+* Main Memory
+    * memory is organized as a linear array of bytes, each with its own unique address (array index) starting at zero.
+
+* Processor
+    * At its core is a word-sized storage device (or register) called the program counter (PC).
+    * A processor appears to operate according to a very simple instruction execution model, defined by its **instruction set architecture**.
+    * The processor **reads** the instruction from memory pointed at by the program counter (PC), **interprets** the bits in the instruction, **performs** some simple operation dictated by the instruction, and then updates the PC to point to the next instruction, which may or may not be contiguous in memory to the instruction that was just executed.
+    * The **register file** is a small storage device that consists of a collection of word-sized registers, each with its own unique name.
+    * The **arithmetic/logic unit (ALU)** computes new data and address values.
+    * Examples of the simple operations that the CPU might carry out at the request of an instruction:
+        * **Load**: Copy a byte or a word from main memory into a register, overwriting the previous contents of the register.
+        * **Store**: Copy a byte or a word from a register to a location in main memory, overwriting the previous contents of that location.
+        * **Operate**: Copy the contents of two registers to the ALU, perform an arithmetic operation on the two words, and store the result in a register, overwriting the previous contents of that register.
+        * **Jump**: Extract a word from the instruction itself and copy that word into the program counter (PC), overwriting the previous value of the PC.
+
+### 1.4.2 Running the hello Program
+1.  Read Command
+    * Initially, the shell program is executing its instructions, waiting for us to type a command. As we type the characters “./hello” at the keyboard, the shell program reads each one into a register, and then stores it in memory
+    * ![](../Images/CSAPP/1.4.2-1-read-command-from-keyboard.png)
+2. Execute command
+    * When we hit the enter key on the keyboard, the shell knows that we have finished typing the command.
+    * The shell then loads the executable hello file by executing a sequence of instructions that copies the code and data in the hello object file from disk to main memory.
+    * ![](../Images/CSAPP/1.4.2-2-load-exe-from-disk.png)
+3. Execute Programe
+    * Using a technique known as direct memory access (DMA, discussed in Chap- ter 6), the data travels directly from disk to main memory, without passing through the processor
+    * Once the code and data in the hello object file are loaded into memory, the processor begins executing the machine-language instructions in the hello pro- gram’s main routine.
+    * These instructions copy the bytes in the “hello, world\n” string from memory to the register file, and from there to the display device, where they are displayed on the screen.
+    * ![](../Images/CSAPP/1.4.2-3-write-output-to-display.png)
+
+## 1.5 Caches Matter
+* An important lesson from this simple example is that a system spends a lot of time moving information from one place to another.
+
+* The disk drive on a typical system might be 1000 times larger than the main memory, but it might take the processor 10,000,000 times longer to read a word from disk than from memory.
+
+* The processor can read data from the register file almost 100 times faster than from memory.
+
+* It might take 5 times longer for the process to access the L2 cache than the L1 cache, but this is still 5 to 10 times faster than accessing the main memory.
+
+![](../Images/CSAPP/1.5-caches.png)
+
+## 1.6 Storage Devices Form a Hierarchy
+The main idea of a memory hierarchy is that storage at one level serves as a cache for storage at the next lower level.
+
+![](../Images/CSAPP/1.6-memory-hierachy.png)
 
 ## 1.7 The Operating System Manages the Hardware
-The operating system has two primary purposes:
-1. to protect the hardware from misuse by runaway applications
-2. to provide applications with simple and uniform mechanisms for manipulating complicated and often wildly different low-level hardware devices.
+* The operating system has two primary purposes:
+    1. to protect the hardware from misuse by runaway applications
+    2. to provide applications with simple and uniform mechanisms for manipulating complicated and often wildly different low-level hardware devices.
 
-**Files** are abstractions for I/O devices, **virtual memory** is an abstraction for both the main memory and disk I/O devices, and **processes** are abstractions for the processor, main memory, and I/O devices. The **virtual machine** provids an abstraction of the entire computer, including the operating system, the processor, and the programs.
+![](../Images/CSAPP/1.7-computer-system-layer.png)
+
+![](../Images/CSAPP/1.7-computer-system-abstraction.png)
+
+* **Files** are abstractions for I/O devices
+* **virtual memory** is an abstraction for both the main memory and disk I/O devices
+* **processes** are abstractions for the processor, main memory, and I/O devices.
+* **virtual machine** provids an abstraction of the entire computer, including the operating system, the processor, and the programs.
 
 Posix standards, that cover such issues as the C language interface for Unix system calls, shell programs and utilities, threads, and network programming.
 
 ### 1.7.1 Processes
-A process is the operating system’s abstraction for a running program. Multiple processes can run concurrently on the same system, and each process appears to have exclusive use of the hardware.
+A **process** is the operating system’s abstraction for a running program. Multiple processes can run concurrently on the same system, and each process appears to have exclusive use of the hardware.
 
-Context, includes information such as the current values of the PC, the register file, and the contents of main memory.
+**Context**, includes information such as the current values of the PC, the register file, and the contents of main memory.
+
+![](../Images/CSAPP/1.7.1-process-context-switch.png)
 
 ### 1.7.2 Threads
 A process can actually consist of multiple execution units, called threads, each running in the context of the process and sharing the same code and global data.
@@ -38,31 +125,124 @@ It is easier to share data between multiple threads than between multiple proces
 
 ### 1.7.3 Virutal Memory
 Virtual memory is an abstraction that provides each process with the illusion that it has exclusive use of the main memory.
+![](../Images/CSAPP/1.7.3-process-virtual-address-space.png)
+
+### 1.7.4 Files
+A **file** is a sequence of bytes, nothing more and nothing less. Every I/O device, including disks, keyboards, displays, and even networks, is modeled as a file.
+
+```email
+From: torvalds@klaava.Helsinki.FI (Linus Benedict Torvalds)
+Newsgroups: comp.os.minix
+Subject: What would you like to see most in minix?
+Summary: small poll for my new operating system
+Date: 25 Aug 91 20:57:08 GMT
+
+Hello everybody out there using minix -
+I’m doing a (free) operating system (just a hobby, won’t be big and
+professional like gnu) for 386(486) AT clones. This has been brewing
+since April, and is starting to get ready. I’d like any feedback on
+things people like/dislike in minix, as my OS resembles it somewhat
+(same physical layout of the file-system (due to practical reasons)
+among other things).
+I’ve currently ported bash(1.08) and gcc(1.40), and things seem to work.
+This implies that I’ll get something practical within a few months, and
+I’d like to know what features most people would want. Any suggestions
+are welcome, but I won’t promise I’ll implement them :-)
+
+Linus (torvalds@kruuna.helsinki.fi)
+```
+
+## 1.8 Systems Communicate with Other Systems Using Networks
 
 ## 1.9 Important Themes
 ### 1.9.1 Concurrency and Parallelism
-We use the term concurrency to refer to the general concept of a system with multiple, simultaneous activities, and the term parallelism to refer to the use of concurrency to make a system run faster.
+* **concurrency** refers to the general concept of a system with multiple, simultaneous activities,
+* **parallelism** refers to the use of concurrency to make a system run faster.
 
-#### Thread-Level Concurrency
-The use of multiprocessing can improve system performance in two ways:
-1. It reduces the need to simulate concurrency when performing multiple tasks.
-2. It can run a single application program faster, but only if that program is expressed in terms of multiple threads that can effectively execute in parallel.
+![](../Images/CSAPP/1.9-inter-corei7-organization.png)
 
-#### Instruction-Level Parallelism
+* **Thread-Level Concurrency**
+    * **Hyperthreading**, sometimes called simultaneous multi-threading, is a technique that allows a single CPU to execute multiple flows of control.
+        * It involves having multiple copies of some of the CPU hardware, such as program counters and register files, while having only single copies of other parts of the hardware, such as the units that perform floating-point arithmetic.
+        * Whereas a conventional processor requires around 20,000 clock cycles to shift between different threads, a hyperthreaded processor decides which of its threads to execute on a cycle-by-cycle basis.
+    * The use of multiprocessing can improve system performance in two ways:
+        1. It reduces the need to simulate concurrency when performing multiple tasks.
+        2. It can run a single application program faster, but only if that program is expressed in terms of multiple threads that can effectively execute in parallel.
 
-#### Single-Instruction, Multiple-Data (SIMD) Parallelism
+* **Instruction-Level Parallelism**
+    * Early microprocessors, such as the 1978-vintage Intel 8086 required multiple (typically, **3–10) clock cycles** to execute a single instruction. More recent processors can sustain execution rates of **2–4 instructions per clock cycle**.
+    * In Chapter 4, we will explore the use of **pipelining**, where the actions required to execute an instruction are partitioned into different steps and the processor hardware is organized as a series of stages, each performing one of these steps.
+    * The stages can operate in parallel, working on different parts of different instructions.
+    * Processors that can sustain execution rates faster than one instruction per cycle are known as **superscalar processors**.
+
+* **Single-Instruction, Multiple-Data (SIMD) Parallelism**
+    * At the lowest level, many modern processors have special hardware that allows a single instruction to cause multiple operations to be performed in parallel, a mode known as single-instruction, multiple-data, or **“SIMD”** parallelism.
+
+### 1.9.2 The Importance of Abstractions in Computer Systems
+* One aspect of good programming practice is to formulate a simple application-program interface (API) for a set of functions that allow programmers to use the code without having to delve into its inner workings.
 
 # Chapter 2 Representing and Manipulating Information
+* **Unsigned encodings** are based on traditional binary notation, representing numbers greater than or equal to 0.
+* **Two’s-complement encodings** are the most common way to represent signed integers, that is, numbers that may be either positive or negative.
+* **Floating-point encodings** are a base-two version of scientific notation for representing real numbers.
+    * Floating-point arithmetic has altogether different mathematical properties. The product of a set of positive numbers will always be positive, although over- flow will yield the special value +∞.
+    * Floating-point arithmetic is not associative, due to the finite precision of the representation.
+    * The different mathematical properties of integer vs. floating-point arithmetic stem from the difference in how they handle the finiteness of their representations — integer representations can encode a comparatively small range of values, but do so precisely, while floating-point representations can encode a wide range of values, but only approximately.
+
 ## 2.1 Information Storage
+Rather than accessing individual bits in memory, most computers use blocks of eight bits, or bytes, as the smallest addressable unit of memory.
+
+The actual **virtual address space** implementation (presented in Chapter 9) uses a combination of random-access memory (RAM), disk storage, special hardware, and operating system software to provide the program with what appears to be a monolithic byte array.
+
+The value of a **pointer** in C—whether it points to an integer, a structure, or some other program object—is the virtual address of the first byte of some block of storage.
+
+### 2.1.1 Hexadecimal Notation
+
+### 2.1.2 Words
+Since a virtual address is encoded by such a word, the most important system parameter determined by the word size is the maximum size of the virtual address space.
+
+### 2.1.3 Data Sizes
+![](../Images/CSAPP/2.1.3-c-data-size.png)
+
 ### 2.1.4 Addressing and Byte Ordering
-Byte ordering becomes an issue:
-1. The first is when binary data are communicated over a network between different machines.
-2. A second case where byte ordering becomes important is when looking at the byte sequences representing integer data.
-3. A third case where byte ordering becomes visible is when programs are written that circumvent the normal type system.
+* For program objects that span multiple bytes, we must establish two conventions:
+    * what the address of the object will be
+    * how we will order the bytes in memory
+
+* little endian: the least significant byte comes first
+
+* Byte ordering becomes an issue:
+    1. The first is when binary data are communicated over a network between different machines.
+    2. A second case where byte ordering becomes important is when looking at the byte sequences representing integer data.
+    3. A third case where byte ordering becomes visible is when programs are written that circumvent the normal type system.
+
+### 2.1.5 Representing Strings
+A **string** in C is encoded by an array of characters terminated by the null (having value 0) character.
+
+### 2.1.7 Introduction to Boolean Algebra
+Boole observed that by encoding logic values True and False as binary values 1 and 0, he could formulate an algebra that captures the basic principles of logical reasoning.
+
+### 2.1.8 Bit-Level Operations in C
+
+### 2.1.9 Logical Operations in C
+
+### 2.1.10 Shift Operations in C
+
+## 2.2 Integer Representations
+
+### 2.2.3 Two’s-Complement Encodings
+* This is defined by interpreting the most significant bit (sign bit) of the word to have negative weight.
+
+* The two’s-complement range is asymmetric: |TMin| = |TMax| + 1
+    * This asymmetry arises, because half the bit pat- terns (those with the sign bit set to 1) represent negative numbers, while half (those with the sign bit set to 0) represent nonnegative numbers. Since 0 is nonnegative, this means that it can represent one less positive number than negative.
+* The maximum unsigned value is just over twice the maximum two’s-complement value: UMax = 2TMax + 1
 
 ### 2.2.4 Conversions between Signed and Unsigned
-
 The effect of casting is to keep the bit values identical but change how these bits are interpreted.
+
+In casting from unsigned int to int, the underlying bit representa- tion stays the same.
+
+This is a general rule for how most C implementations handle conversions between signed and unsigned numbers with the same word size—the numeric values might change, but the bit patterns do not.
 
 ### 2.2.5 Signed vs. Unsigned in C
 
@@ -90,8 +270,10 @@ For an unsigned number x, the result of truncating it to k bits is equivalent to
 ## 2.4 Floating Point
 ### 2.4.1 Fractional Binary Number
 
+
 # Chapter 3 Machine-Level Representation of Programs
 
+## 3.2 Program Encodings
 ### 3.2.1 Machine-Level Code
 * The program counter (commonly referred to as the “PC,” and called %eip in IA32) indicates the address in memory of the next instruction to be executed.
 * The integer register file contains eight named locations storing 32-bit values. These registers can hold addresses (corresponding to C pointers) or integer data. Some registers are used to keep track of critical parts of the program state, while others are used to hold temporary data, such as the local variables of a procedure, and the value to be returned by a function.
