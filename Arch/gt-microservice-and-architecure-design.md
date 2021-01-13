@@ -110,6 +110,12 @@ RESTfull API, XML, IDL
 
 
 ## Service Communication
+### Direct Client‑to‑Microservice Communication
+* Cons: [:link: Ref](https://www.nginx.com/blog/building-microservices-using-an-api-gateway/)
+    * One problem is the mismatch between the needs of the client and the fine‑grained APIs exposed by each of the microservices.
+    * Some services might use protocols that are not web‑friendly. One service might use Thrift binary RPC while another service might use the AMQP messaging protocol. Neither protocol is particularly browser‑ or firewall‑friendly and is best used internally.
+    * It makes it difficult to refactor the microservices.
+
 ### API Gateway
 API Gateway is the single point of entry for the all the client requests. It acts like a reverse proxy that serves all the client traffic to the microservices in the cluster.
 
@@ -137,6 +143,12 @@ An API gateway takes all API calls from clients, then routes them to the appropr
     2. We can offload any **cross cutting concerns** like Authentication, Logging and Caching to this gateway layer. For instance, by allowing only Authenticated and Trusted client traffic to flow through the gateway to microservices. Also internal communication between the services can happen over a trusted private network without worrying about handling additional overhead like Authenticating the request and securing communications over SSL.
     3. It can also help with **API Composition** by querying multiple microservices and joining on the results to produce the final aggregated response.
     4. It can also act as a **Rate Limiter** by throttling requests coming from a client that has gone into a bad state, this helps in making the cluster more fault tolerant.
+
+* Drawbacks of API Gateway [:link: Ref](https://www.nginx.com/blog/building-microservices-using-an-api-gateway/)
+    * It is yet another highly available component that must be developed, deployed, and managed.
+    * There is also a risk that the API Gateway becomes a development bottleneck.
+    * Developers must update the API Gateway in order to expose each microservice’s endpoints.
+    * It is important that the process for updating the API Gateway be as lightweight as possible. Otherwise, developers will be forced to wait in line in order to update the gateway.
 
 * Service Mesh and API Gateway
     * It appears as though API gateways and service meshes solve the same problem and are therefore redundant. They do solve the same problem but in different contexts.
