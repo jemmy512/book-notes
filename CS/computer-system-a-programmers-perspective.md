@@ -74,8 +74,8 @@ The only thing that distinguishes different data objects is the context in which
     * The shell then loads the executable hello file by executing a sequence of instructions that copies the code and data in the hello object file from disk to main memory.
     * ![](../Images/CSAPP/1.4.2-2-load-exe-from-disk.png)
 3. Execute Programe
-    * Using a technique known as direct memory access (DMA, discussed in Chap- ter 6), the data travels directly from disk to main memory, without passing through the processor
-    * Once the code and data in the hello object file are loaded into memory, the processor begins executing the machine-language instructions in the hello pro- gram’s main routine.
+    * Using a technique known as direct memory access (DMA, discussed in Chapter 6), the data travels directly from disk to main memory, without passing through the processor
+    * Once the code and data in the hello object file are loaded into memory, the processor begins executing the machine-language instructions in the hello program’s main routine.
     * These instructions copy the bytes in the “hello, world\n” string from memory to the register file, and from there to the display device, where they are displayed on the screen.
     * ![](../Images/CSAPP/1.4.2-3-write-output-to-display.png)
 
@@ -185,7 +185,7 @@ Linus (torvalds@kruuna.helsinki.fi)
 * **Unsigned encodings** are based on traditional binary notation, representing numbers greater than or equal to 0.
 * **Two’s-complement encodings** are the most common way to represent signed integers, that is, numbers that may be either positive or negative.
 * **Floating-point encodings** are a base-two version of scientific notation for representing real numbers.
-    * Floating-point arithmetic has altogether different mathematical properties. The product of a set of positive numbers will always be positive, although over- flow will yield the special value +∞.
+    * Floating-point arithmetic has altogether different mathematical properties. The product of a set of positive numbers will always be positive, although overflow will yield the special value +∞.
     * Floating-point arithmetic is not associative, due to the finite precision of the representation.
     * The different mathematical properties of integer vs. floating-point arithmetic stem from the difference in how they handle the finiteness of their representations — integer representations can encode a comparatively small range of values, but do so precisely, while floating-point representations can encode a wide range of values, but only approximately.
 
@@ -234,13 +234,13 @@ Boole observed that by encoding logic values True and False as binary values 1 a
 * This is defined by interpreting the most significant bit (sign bit) of the word to have negative weight.
 
 * The two’s-complement range is asymmetric: |TMin| = |TMax| + 1
-    * This asymmetry arises, because half the bit pat- terns (those with the sign bit set to 1) represent negative numbers, while half (those with the sign bit set to 0) represent nonnegative numbers. Since 0 is nonnegative, this means that it can represent one less positive number than negative.
+    * This asymmetry arises, because half the bit patterns (those with the sign bit set to 1) represent negative numbers, while half (those with the sign bit set to 0) represent nonnegative numbers. Since 0 is nonnegative, this means that it can represent one less positive number than negative.
 * The maximum unsigned value is just over twice the maximum two’s-complement value: UMax = 2TMax + 1
 
 ### 2.2.4 Conversions between Signed and Unsigned
 The effect of casting is to keep the bit values identical but change how these bits are interpreted.
 
-In casting from unsigned int to int, the underlying bit representa- tion stays the same.
+In casting from unsigned int to int, the underlying bit representation stays the same.
 
 This is a general rule for how most C implementations handle conversions between signed and unsigned numbers with the same word size—the numeric values might change, but the bit patterns do not.
 
@@ -275,23 +275,33 @@ For an unsigned number x, the result of truncating it to k bits is equivalent to
 
 ## 3.2 Program Encodings
 ### 3.2.1 Machine-Level Code
-* The program counter (commonly referred to as the “PC,” and called %eip in IA32) indicates the address in memory of the next instruction to be executed.
-* The integer register file contains eight named locations storing 32-bit values. These registers can hold addresses (corresponding to C pointers) or integer data. Some registers are used to keep track of critical parts of the program state, while others are used to hold temporary data, such as the local variables of a procedure, and the value to be returned by a function.
-* The condition code registers hold status information about the most recently executed arithmetic or logical instruction. These are used to implement conditional changes in the control or data flow, such as is required to implement if and while statements.
-* A set of floating-point registers store floating-point data.
+* Registers:
+    * The **program counter** (commonly referred to as the “PC,” and called %eip in IA32) indicates the address in memory of the next instruction to be executed.
+    * The **integer register file** contains eight named locations storing 32-bit values. These registers can hold addresses (corresponding to C pointers) or integer data. Some registers are used to keep track of critical parts of the program state, while others are used to hold temporary data, such as the local variables of a procedure, and the value to be returned by a function.
+    * The **condition code registers** hold status information about the most recently executed arithmetic or logical instruction. These are used to implement conditional changes in the control or data flow, such as is required to implement if and while statements.
+    * A set of **floating-point registers** store floating-point data.
 
 ### 3.2.3 Code Example
-Several features about machine code and its disassembled representation are worth noting:
-* IA32 instructions can range in length from 1 to 15 bytes. The instruction encoding is designed so that commonly used instructions and those with fewer operands require a smaller number of bytes than do less common ones or ones with more operands.
-* The instruction format is designed in such a way that from a given starting position, there is a unique decoding of the bytes into machine instructions. For example, only the instruction pushl %ebp can start with byte value 55.
-* The disassembler determines the assembly code based purely on the byte sequences in the machine-code file. It does not require access to the source or assembly-code versions of the program.
-* The disassembler uses a slightly different naming convention for the instructions than does the assembly code generated by GCC. In our example, it has omitted the suffix ‘1’ from many of the instructions. These suffixes are size designators and can be omitted in most cases.
+* Several features about machine code:
+    * IA32 instructions can range in length from 1 to 15 bytes. The instruction encoding is designed so that commonly used instructions and those with fewer operands require a smaller number of bytes than do less common ones or ones with more operands.
+    * The instruction format is designed in such a way that from a given starting position, there is a unique decoding of the bytes into machine instructions. For example, only the instruction pushl %ebp can start with byte value 55.
+    * The disassembler determines the assembly code based purely on the byte sequences in the machine-code file. It does not require access to the source or assembly-code versions of the program.
+    * The disassembler uses a slightly different naming convention for the instructions than does the assembly code generated by GCC. In our example, it has omitted the suffix ‘1’ from many of the instructions. These suffixes are size designators and can be omitted in most cases.
 
 ## 3.3 Data Formts
+Due to its origins as a 16-bit architecture that expanded into a 32-bit one, Intel uses the term **word** to refer to a 16-bit data type. Based on this, they refer to 32bit quantities as **double words**. They refer to 64-bit quantities as **quad words**.
+
 ![C Data Formats](../Images/CSAPP/3.1-Sizes-of-C-data-types-in-IA32.png)
 
 ## 3.4 Accessing Information
 ![Accessing Information](../Images/CSAPP/3.2-IA32-integer-registers.png)
+
+* Some instructions use fixed registers as sources and/or destinations.
+
+* Within procedures there are different conventions for saving and restoring the first three registers (%eax, %ecx, and %edx) than for the next three (%ebx, %edi, and %esi).
+* The low-order 2 bytes of the first four registers can be independently read or written by the byte operation instructions.
+
+* When a byte instruction updates one of these single-byte “register elements,” the remaining 3 bytes of the register do not change.
 
 ### 3.4.1 Operand Specifiers
 ![Operand Forms](../Images/CSAPP/3.3-Operand-forms.png)
@@ -299,45 +309,246 @@ Several features about machine code and its disassembled representation are wort
 ### 3.4.2 Data Movement Instructions
 ![Data Movement Instructions](../Images/CSAPP/3.4-Data-movement-instructions.png)
 
-With sign expansion, the upper bits of the destination are filled in with copies of the most significant bit of the source value. With zero expansion, the upper bits are filled with zeros.
-```assembly
-// %dh = CD, %eax = 98765432
-movb    %dh %eax;   // %eax = 987654CD
-movsbl  %dh %eax;   // %eax = FFFFFFCD
-movzbl  %dh %eax;   // %eax = 000000CD
+* IA32 imposes the restriction that a move instruction cannot have both operands refer to memory locations.
+    * Copying a value from one memory location to another requires two instructions:
+        * the first to load the source value into a register
+        * the second to write this register value to the destination.
+
+* Both the movs and the movz instruction classes serve to copy a smaller amount of source data to a larger data location, filling in the upper bits by either sign expansion (movs) or by zero expansion (movz).
+    * With sign expansion, the upper bits of the destination are filled in with copies of the most significant bit of the source value.
+    * With zero expansion, the upper bits are filled with zeros.
+
+    ```assembly
+    // %dh = CD, %eax = 98765432
+    movb    %dh %eax;   // %eax = 987654CD
+    movsbl  %dh %eax;   // %eax = FFFFFFCD
+    movzbl  %dh %eax;   // %eax = 000000CD
+    ```
+* `pushl %ebp` equals to
+    ```
+    subl $4, %esp       // decrement stack pointer
+    movl %ebp, (%esp)   // store %ebp on stack
+    ```
+* `popl %eax` equals to
+    ```
+    movl (%esp), %eax   // read %eax from stack
+    subl $4, %esp       // increment stack pointer
+    ```
+
+Question:
+```
+movb $0xF, (%bl)    // Cannot use %bl as address register
 ```
 
-As with the movl instruction, however, the two operands cannot both be memory locations.
-
-### 3.4.3
+* Example:
+    ```C++
+    int exchange(int *xp, int y) {
+        int x = *xp;                movl 8(%ebp),   %edx
+                                    movl (%edx),    %eax
+        *xp = y;                    movl 12(%ebp),  %ecx
+        return x;                   movl %ecx,      (%edx)
+    }
+    ```
+    * Two features about this assembly code are worth noting.
+        * We see that what we call “pointers” in C are simply addresses. Dereferencing a pointer involves copying that pointer into a register, and then using this register in a memory reference.
+        * Local variables such as x are often kept in registers rather than stored in memory locations. Register access is much faster than memory access.
 
 ## 3.5 Arithmatic and Logic Operations
+
+### 3.5.1 Load Affect Address
 ![integer-arithmetic-operations.png](../Images/CSAPP/3.7-integer-arithmetic-operations.png)
-## 3.5.1 Load Affect Address
+
+* The load effective address instruction leal is actually a variant of the movl instruction. It has the form of an instruction that reads from memory to a register, but it does not reference memory at all.
+
+### 3.5.2 Unary and Binary Operations
+* Unary operations, with the single operand serving as both source and destination. This operand can be either a register or a memory location.
+
+* Binary operations, where the second operand is used as both a source and a destination.
+    * The first operand can be either an immediate value, a register, or a memory location.
+    * The second can be either a register or a memory location.
+    * As with the movl instruction, two operands cannot both be memory locations.
+
+### 3.5.3 Shift Operations
+* The shift amount is encoded as a **single byte**, since only shift amounts between 0 and 31 are possible (only the low-order 5 bits of the shift amount are considered).
+* The shift amount is given either as an immediate or in the singlebyte register element %cl. (These instructions are unusual in only allowing this specific register as operand.)
+* The destination operand of a shift operation can be either a register or a memory location.
+* The left shift instruction: sal and shl. Both have the same effect, filling from the right with zeros.
+* The right shift instructions differ in that sar performs an arithmetic shift (fill with copies of the **sign bit**), whereas shr performs a logical shift (fill with **zeros**).
+
+
+### 3.5.4 Discussion
+* Only right shifting requires instructions that differentiate between signed versus unsigned data. This is one of the features that makes two’s-complement arithmetic the preferred way to implement signed integer arithmetic.
 
 ### 3.5.5 Special Arithmetic Operations
-One argument must be in register %eax, and the other is given as the instruction source operand. The product is then stored in registers %edx (high-order 32 bits) and %eax (low-order 32 bits).
+The table describes instructions that support generating the full 64-bit product of two 32-bit numbers, as well as integer division.
+![](../Images/CSAPP/3.5.5-apecial-arithmetic-operations.png)
+
+* For both of these, one argument must be in register %eax, and the other is given as the instruction source operand.
+* mul
+    * The product is then stored in registers %edx (high-order 32 bits) and %eax (low-order 32 bits).
+    * Example:
+        * we have signed numbers x and y stored at positions 8 and 12 relative to %ebp, and we want to store their full 64-bit product as 8 bytes on top of the stack.
+        ```
+        movl    12(%ebp),   %eax    // put y int eax
+        imull   8(%ebp)             // multiply by x
+        movl    %eax,       (%esp)  // store low-order 32 bits
+        movl    %ebx,       4(%esp) // store high-order 32 bits
+        ```
+* div
+    * The signed division instruction idivl takes as dividend the 64-bit quantity in registers %edx (high-order 32 bits) and %eax (low-order 32 bits).
+    * The divisor is given as the instruction operand. The instruction stores the quotient in register %eax and the remainder in register %edx.
+    * Example
+        * we have signed numbers x and y stored at positions 8 and 12 relative to %ebp, and we want to store values x/y and x mod y on the stack.
+        ```
+        movl    8(%ebp),    %edx    // put x in edx
+        movl    %edx,       %eax    // copy x to eax
+        sarl    $31,        %edx    // sign extend x in edx // Q?: why need this extend?
+        idivl   12(%ebp)            // divid by y
+        movl    %eax,       4(%esp) // store x / y
+        movl    %edx,       (%esp)  // store x % y
+        ```
+        * The move instruction on line 1 and the arithmetic shift on line 3 have the combined effect of setting register %edx to either all zeros or all ones depending on the sign of x, while the move instruction on line 2 copies x into %eax. Thus, we have the combined registers %edx and %eax storing a 64-bit, sign-extended version of x.
+* cltd
+    * A more conventional method of setting up the divisor makes use of the cltd1 instruction. This instruction sign extends %eax into %edx.
+    ```
+    movl    8(%ebp),    %eax    // put x in eax
+    cltd                        // sign extend into edx
+    idivl   12(%ebp)            // divid by y
+    movl    %eax,       4(%esp) // store x / y
+    movl    %edx,       (%esp)  // store x % y
+    ```
+    * The first two instructions have the same overall effect as the first three instructions in our earlier code sequence.
+
+## 3.6 Control
 
 ### 3.6.1 Condition Codes
-* CF: Carry Flag. The most recent operation generated a carry out of the most significant bit. Used to detect overflow for unsigned operations.
-* ZF: Zero Flag. The most recent operation yielded zero.
-* SF: Sign Flag. The most recent operation yielded a negative value.
-* OF: Overflow Flag. The most recent operation caused a two’s-complement overflow—either negative or positive.
+* The CPU maintains a set of **single-bit** condition code registers describing attributes of the most recent arithmetic or logical operation.
 
-### 3.6.2 Accessing the Condition Codes”
-Rather than reading the condition codes directly, there are three common ways of using the condition codes:
-* we can set a single byte to 0 or 1 depending on some combination of the condition codes
-* we can conditionally jump to some other part of the program
-* we can conditionally transfer data.
+* **CF**: Carry Flag. The most recent operation generated a carry out of the most significant bit. Used to detect overflow for unsigned operations.
+* **ZF**: Zero Flag. The most recent operation yielded zero.
+* **SF**: Sign Flag. The most recent operation yielded a negative value.
+* **OF**: Overflow Flag. The most recent operation caused a two’s-complement overflow—either negative or positive.
 
-A SET instruction has either one of the eight single-byte register elements (Figure 3.2) or a single-byte memory location as its destination, setting this byte to either 0 or 1.
+![](../Images/CSAPP/3.6.1-comp-test-instructions.png)
 
+### 3.6.2 Accessing the Condition Codes
+* There are three common ways of using the condition codes:
+    * we can set a single byte to 0 or 1 depending on some combination of the condition codes
+        * ![](../Images/CSAPP/3.6.1-set-instructions.png)
+        * It is important to recognize that the suffixes for these instructions denote different conditions and not different operand sizes. For example, instructions setl and setb denote “set less” and “set below,” not “set long word” or “set byte.”
+    * we can conditionally jump to some other part of the program
+    * we can conditionally transfer data.
+* A SET instruction has either one of the eight single-byte register elements or a single-byte memory location as its destination, setting this byte to either 0 or 1.
+* Although all arithmetic and logical operations set the condition codes, the de- scriptions of the different set instructions apply to the case where a comparison instruction has been executed, setting the condition codes according to the com- putation t = a-b.
 
-### 3.6.1 Condition Codes
 ### 3.6.3 Jump Instructions and Their Encoding
-In assembly code, jump targets are written using symbolic labels. The assembler, and later the linker, generate the proper encodings of the jump targets. There are several different encodings for jumps:
-* The most commonly used ones are PC relative. That is, they encode the difference between the address of the target instruction and the address of the instruction immediately following the jump. These offsets can be encoded using 1, 2, or 4 bytes.
-* A second encoding method is to give an “absolute” address, using 4 bytes to directly specify the target.
+![](../Images/CSAPP/3.6.3-jump-instruction.png)
+
+* In generating the object-code file, the assembler determines the addresses of all labeled instruc- tions and encodes the jump targets (the addresses of the destination instructions) as part of the jump instructions.
+* In assembly code, jump targets are written using symbolic labels. The assembler, and later the linker, generate the proper encodings of the jump targets.
+* There are several different encodings for jumps:
+    * The most commonly used ones are PC relative. That is, they encode the difference between the address of the target instruction and the address of the instruction immediately following the jump. These offsets can be encoded using 1, 2, or 4 bytes.
+    * A second encoding method is to give an “absolute” address, using 4 bytes to directly specify the target.
+
+### 3.6.4 Translating Conditional Branches
+```c++
+void cond(int a, int *p) {
+    if (p && a > 0)
+        *p += a;
+}
+
+movl    8(%ebp),    %edx
+movl    12(%ebp),   %eax
+testl   %eax,       %eax
+je      .L3
+testl   %edx,       %edx
+jle     .L3
+.L3:
+```
+```c++
+int test(int x, int y) {
+    int val = x^y;
+    if (x < -3) {
+        if (y < x) {
+            val = x*y;
+        } else {
+            val = x+y;
+        }
+    } else if (x > 2) {
+        val = x-y;
+    }
+
+    return val;
+}
+
+    movl    8(%ebp),    %eax // x
+    movl    12(%ebp),   %edx // y
+    cmpl    $-3,        %eax
+    jge     .L2
+    cmpl    %edx,       %eax
+    jle     .L3
+    imull   %edx,       %eax
+    jmp     .L4
+.L3:
+    leal    (%edx, %eax), %eax
+    jmp     .L4
+.L2:
+    cmpl    $2,     %eax
+    jg      .L5
+    xorl    %edx,   %eax
+    jmp     .L4
+.L5:
+    subl    %edx,   %eax
+.L4:
+```
+
+### 3.6.5 Loops
+* Most compilers generate loop code based on the do-while form of a loop, even though this form is relatively uncommon in actual programs. Other loops are transformed into do- while form and then compiled into machine code.
+
+* do-while
+    ```c++
+    do
+        statement;
+    while (test-expr);
+    /**********************/
+    loop:
+        statment;
+        t = test-expr;
+        if (t)
+            goto loop;
+    ```
+* while
+    ```c++
+    while (!test-expr) {
+        statment;
+    }
+    /**********************/
+    if (!test-expr)
+        goto done;
+    do {
+        statment;
+    } while (test-expr);
+    done:
+    ```
+* for
+    ```c++
+    for (init-expr; test-expr; update-expr)
+        statment;
+    /**********************/
+    init-expr;
+    if (!test-expr)
+        goto done;
+    do {
+        statment;
+        update-expr;
+    } while (test-expr);
+    done:
+    ```
+
+### 3.6.6 Conditional Move Instructions
+![](../Images/CSAPP/3.6.6-condition-move-instruction.png)
+
+### 3.6.7 Switch Statements
 
 ## 3.7 Procedures
 ### 3.7.3 Register Usage Conventions
