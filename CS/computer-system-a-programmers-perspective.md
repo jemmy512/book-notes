@@ -439,12 +439,12 @@ The table describes instructions that support generating the full 64-bit product
     * we can conditionally jump to some other part of the program
     * we can conditionally transfer data.
 * A SET instruction has either one of the eight single-byte register elements or a single-byte memory location as its destination, setting this byte to either 0 or 1.
-* Although all arithmetic and logical operations set the condition codes, the de- scriptions of the different set instructions apply to the case where a comparison instruction has been executed, setting the condition codes according to the com- putation t = a-b.
+* Although all arithmetic and logical operations set the condition codes, the descriptions of the different set instructions apply to the case where a comparison instruction has been executed, setting the condition codes according to the computation t = a-b.
 
 ### 3.6.3 Jump Instructions and Their Encoding
 ![](../Images/CSAPP/3.6.3-jump-instruction.png)
 
-* In generating the object-code file, the assembler determines the addresses of all labeled instruc- tions and encodes the jump targets (the addresses of the destination instructions) as part of the jump instructions.
+* In generating the object-code file, the assembler determines the addresses of all labeled instructions and encodes the jump targets (the addresses of the destination instructions) as part of the jump instructions.
 * In assembly code, jump targets are written using symbolic labels. The assembler, and later the linker, generate the proper encodings of the jump targets.
 * There are several different encodings for jumps:
     * The most commonly used ones are PC relative. That is, they encode the difference between the address of the target instruction and the address of the instruction immediately following the jump. These offsets can be encoded using 1, 2, or 4 bytes.
@@ -503,7 +503,7 @@ int test(int x, int y) {
 ```
 
 ### 3.6.5 Loops
-* Most compilers generate loop code based on the do-while form of a loop, even though this form is relatively uncommon in actual programs. Other loops are transformed into do- while form and then compiled into machine code.
+* Most compilers generate loop code based on the do-while form of a loop, even though this form is relatively uncommon in actual programs. Other loops are transformed into dowhile form and then compiled into machine code.
 
 * do-while
     ```c++
@@ -546,20 +546,156 @@ int test(int x, int y) {
     ```
 
 ### 3.6.6 Conditional Move Instructions
+* The conventional way to implement conditional operations is through a **conditional transfer of control**, where the program follows one execution path when a condition holds and another when it does not. This mechanism is simple and general, but it can be very inefficient on modern processors.
+* An alternate strategy is through a **conditional transfer of data**. This approach computes both outcomes of a conditional operation, and then selects one based on whether or not the condition holds.
+* To understand why code based on `conditional data transfers` can outperform code based on `conditional control transfers`, we must understand something about how modern processors operate.
+    * processors achieve high performance through pipelining, where an instruction is processed via a sequence of stages, each performing one small portion of the required operations
+        1. fetching the instruction from memory
+        2. determining the instruction type
+        3. reading from memory
+        4. performing an arithmetic operation
+        5. writing to memory
+        6. updating the program counter.
+    * This approach achieves high performance by overlapping the steps of the successive instructions, such as fetching one instruction while performing the arithmetic operations for a previous instruction.
+    * To do this requires being able to determine the sequence of instructions to be executed well ahead of time in order to keep the pipeline full of instructions to be executed.
+    * When the machine encounters a conditional jump (branch), it often cannot determine yet whether or not the jump will be followed.
+    * Processors employ sophisticated branch prediction logic to try to guess whether or not each jump instruction will be followed.
+    * As long as it can guess reliably (modern microprocessor designs try to achieve success rates on the order of 90%), the instruction pipeline will be kept full of instructions.
+    * Mispredicting a jump, on the other hand, requires that the processor discard much of the work it has already done on future instructions and then begin filling the pipeline with instructions starting at the correct location.
+    * As we will see, such a misprediction can incur a serious penalty, say, 20–40 clock cycles of wasted effort, causing a serious degradation of program performance.
+* Conlustion:
+    * That means time required by the function ranges between around 13 and 57 cycles, depending on whether or not the branch is predicted correctly.
+    * On the other hand, the code compiled using conditional moves requires around 14 clock cycles regardless of the data being tested. The flow of control does not depend on data, and this makes it easier for the processor to keep its pipeline full.
+
 ![](../Images/CSAPP/3.6.6-condition-move-instruction.png)
 
+* As with the different `set` and `jump` instructions, the outcome of these instructions depends on the values of the condition codes. The source value is read from either memory or the source register, but it is copied to the destination only if the specified condition holds.
+* Implementation Deails:
+    ```c++
+    v = text-expr ? then-expr : else-expr;
+    ```
+    ```c++
+    /* conditinal control tranform */
+        if (!test-expr)
+            goto False;
+        v = then-expr;
+    .Flase:
+        v = else-expr;
+    .Done:
+    ```
+    ```c++
+    /* conditinal data tranform */
+    vt = then-expr;
+    v = else-expr;
+    t = test-expr;
+    if (t)
+        v = vt;
+    ```
+* Not all conditional expressions can be compiled using conditional moves.
+    * If one of those *then-expr, else-expr* could possibly generate an error condition or a side effect, this could lead to invalid behavior.
+        ```c++
+        int cread(int* xp) {
+            return xp ? *xp : 0;
+        }
+        ```
+        ```c++
+        // xp in %edx
+        movl    $0,     %eax    // set 0 as return value
+        testl   %edx,   %edx    // test xp
+        cmovne  (%edx), %eax    // if !0, dereference xp to get return value
+        ```
+        * This implementation is invalid, however, since the dereferencing of xp by the cmovne instruction occurs even when the test fails, causing a null pointer dereferencing error.
+    * A similar case holds when either of the two branches causes a side effect:
+        ```c++
+        int count = 0;
+        int foo(int x, int y) {
+            return x < y (count++, y-x) : x-y;
+        }
+        ```
+        * This function increments global variable lcount as part of then-expr. Thus, branching code must be used to ensure this side effect only occurs when the test condition holds.
+* Using conditional moves also does not always improve code efficiency.
+
+    * If either the then-expr or the else-expr evaluation requires a significant computation, then this effort is wasted when the corresponding condition does not hold.
+* Compilers must take into account the relative performance of wasted computation versus the potential for performance penalty due to branch misprediction.
+    * In truth, they do not really have enough information to make this decision reliably; for example, they do not know how well the branches will follow predictable patterns.
+    * Our experiments with gcc indicate that it only uses conditional moves when the two expressions can be computed very easily, for example, with single add instructions.
+
 ### 3.6.7 Switch Statements
+* A switch statement provides a multi-way branching capability based on the value of an integer index.
+* Switch efficient implementation using a data structure called a jump table. A jump table is an array where entry i is the address of a code segment implementing the action the program should take when the switch index equals i.
+* The advantage of using a jump table over a long sequence of if-else statements is that the time taken to perform the switch is independent of the number of switch cases.
 
 ## 3.7 Procedures
-### 3.7.3 Register Usage Conventions
-Registers %eax, %edx, and %ecx are classified as **caller-save registers**. When procedure Q is called by P, it can overwrite these registers without destroying any data required by P.
+A procedure call involves passing both data (in the form of procedure parame- ters and return values) and control from one part of a program to another.
 
-On the other hand, registers %ebx, %esi, and %edi are classified as **callee-save registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
+In addition, it must allocate space for the local variables of the procedure on entry and deallocate them on exit.
+
+### 3.7.1 Stack Frame Structure
+* The portion of the stack allocated for a single procedure call is called a stack frame.
+* Procedure Q also uses the stack for any local variables that cannot be stored in registers. This can occur for the following reasons:
+    * There are not enough registers to hold all of the local data.
+    * Some of the local variables are arrays or structures and hence must be accessed
+    by array or structure references.
+    * The address operator ‘&’ is applied to a local variable, and hence we must be able to generate an address for it.
+
+![](../Images/CSAPP/3.7.1-stack-frame.png)
+
+### 3.7.2 Transferring Control
+Instruction | Description
+--- | ---
+call Label | Procedure call
+call *Operand | Procedure call
+leave | Prepare stack for return
+ret | Return from call
+
+* leave
+    ```
+    movl %ebp,  %esp    // Set stack pointer to beginning of frame
+    popl %ebp           // Restore saved %ebp and set stack ptr to end of caller’s frame
+    ```
+
+* The effect of a **call instruction** is to push a return address on the stack and jump to the start of the called procedure.
+    * The **return address** is the address of the instruction immediately following the call in the program, so that execution will resume at this location when the called procedure returns.
+
+* ![](../Images/CSAPP/3.7.2-instruction-of-call-ret.png)
+    * The effect of the call is to push the return address 0x080483e1 onto the stack and to jump to the first instruction in function sum, at address 0x08048394 (Figure 3.22(b)). The execution of function sum continues until it hits the ret instruction at address 0x080483a4. This instruction pops the value 0x080483e1 from the stack and jumps to this address, resuming the execution of main just after the call instruction in sum (Figure 3.22(c)).
+
+### 3.7.3 Register Usage Conventions
+* Although only one procedure can be active at a given time, we must make sure that when one procedure (the caller) calls another (the callee), the callee does not overwrite some register value that the caller planned to use later.
+* Registers `%eax, %edx, and %ecx` are classified as **caller-save registers**. When procedure Q is called by P, it can overwrite these registers without destroying any data required by P.
+* On the other hand, registers `%ebx, %esi, and %edi` are classified as **callee-save registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
+
+### 3.7.4 Procedure Example
+![](../Images/CSAPP/3.7.4-procedure-example.png)
+
+### 3.7.5 Recursive Procedures
+
+## 3.8 Array Allocation and Access
+
+### 3.8.1 Basic Principles
 
 ### 3.8.2 Pointer Arithmetic
 ![Pointer Arithemtic](../Images/CSAPP/3.8.2-pointer-arithmetic.png)
 
+### 3.8.3 Nested Arrays
+
+### 3.8.4 Fixed-Size Arrays
+
+### 3.8.5 Variable-Size Arrays
+
 ## 3.9 Heterogeneous Data Structures
+
+### 3.9.1 Structures
+
+### 3.9.2 Unions
+
+### 3.9.3 Data Alignment
+
+## 3.10 Putting It Together: Understanding Pointers
+
+## 3.11 Life in the Real World: Using the gdb Debugger
+
+## 3.12 Out-of-Bounds Memory References and Buffer Overflow
 
 ### 3.12.1 Thwarting Buffer Overflow Attack
 **Statck Randomization**
@@ -574,6 +710,22 @@ On the other hand, registers %ebx, %esi, and %edi are classified as **callee-sav
 
 **Limiting Executable Code Regions**
 
+## 3.13 x86-64: Extending IA32 to 64 Bits
+
+### 3.13.2 An Overview of x86-64
+
+### 3.13.3 Accessing Information
+
+### 3.13.4 Control
+
+### 3.13.5 Data Structures
+
+### 3.13.6 Concluding Observations about x86-64
+
+## 3.14 Machine-Level Representations of Floating-Point Programs
+
+## 3.15 Summary
+
 # Chapter 4 Processor Arthitecture
 The instructions supported by a particular processor and their byte-level encodings are known as its instruction-set architecture (ISA).
 
@@ -582,9 +734,52 @@ The instructions supported by a particular processor and their byte-level encodi
 1. Program registers: %eax, %ebx %ecx, %edx, %edi, %esi, %ebp, %esp
 2. Condition codes: ZF, SF, OF
 
+## 4.2 Logic Design and the Hardware Control Language HCL
+
+## 4.3 Sequential Y86 Implementations
+
+## 4.4 General Principles of Pipelining
+
+## 4.5 Pipelined Y86 Implementations
+
+## 4.6 Summary
+
+# Chapter 5 Optimizing Program Performance
+
+## 5.1 Capabilities and Limitations of Optimizing Compilers
+
+## 5.2 Expressing Program Performance
+
+## 5.3 Program Example
+
+## 5.4 Eliminating Loop Inefficiencies
+
+## 5.5 Reducing Procedure Calls
+
+## 5.6 Eliminating Unneeded Memory References
+
+## 5.7 Understanding Modern Processors
+
+## 5.8 Loop Unrolling
+
+## 5.9 Enhancing Parallelism
+
+## 5.10 Summary of Results for Optimizing Combining Code
+
+## 5.11 Some Limiting Factors
+
+## 5.12 Understanding Memory Performance
+
+## 5.13 Life in the Real World: Performance Improvement Techniques
+
+## 5.14 Identifying and Eliminating Performance Bottlenecks
 
 
 # Chapter 6 The Memory Hierarchy
+## 6.1 Storage Technologies
+## 6.2 Locality
+## 6.3 The Memory Hierarchy
+
 ## 6.4 Cache Memories
 ### 6.4.1 Generic Cache Memory Organization
 ![Cache Organization](../Images/CSAPP/6.27-General-organization-of-cache.png)
@@ -604,6 +799,7 @@ As a rule, caches at lower levels of the memory hierarchy are more likely to use
 ## 6.5 Writing Cache-friendly Code
 Programs with better locality will tend to have lower miss rates, and programs with lower miss rates will tend to run faster than programs with higher miss rates.
 
+## 6.6 Putting It Together: The Impact of Caches on Program Performance
 
 
 # Chapter 8 Exceptional Control Flow
@@ -648,6 +844,8 @@ context switch that:
 
 If the system call blocks because it is waiting for some event to occur, then the kernel can put the current process to sleep and switch to another process.
 
+## 8.3 System Call Error Handling
+
 ## 8.4 Process Control
 ### 8.4.3 Reaping Child Process
 If the parent process terminates without reaping its zombie children, the kernel arranges for the init process to reap them.
@@ -674,6 +872,10 @@ Instead, they return prematurely to the calling application with an error condit
 
 ![Linux Signal handling](../Images/CSAPP/csapp-linux-sig-handle.png)
 
+## 8.6 Nonlocal Jumps
+
+## 8.7 Tools for Manipulating Processes
+
 # Chapter 9 Virtual Memory
 Virtual memory is an elegant interaction of hardware exceptions, hardware address translation, main memory, disk files, and kernel software that provides each process with a large, uniform, and private address space.
 
@@ -682,8 +884,18 @@ virtual memory provides three important capabilities:
 * It simplifies memory management by providing each process with a uniform address space.
 * It protects the address space of each process from corruption by other processes.
 
+## 9.1 Physical and Virtual Addressing
+
+## 9.2 Address Spaces
+
+## 9.3 VM as a Tool for Caching
+
 ## 9.4 VM as a Tool for Memory Management
 VM simplifies linking and loading, the sharing of code and data, and allocating memory to applications.
+
+## 9.5 VM as a Tool for Memory Protection
+
+## 9.6 Address Translation
 
 ## 9.7 Case Study: The Intel Core i7/Linux Memory System
 The TLBs are virtually addressed, and four-way set associative. The L1, L2, and L3 caches are physically addressed, and eight-way set associative, with a block size of 64 bytes. The page size can be configured at start-up time as either 4 KB or 4 MB. Linux uses 4-KB pages.
@@ -740,11 +952,38 @@ Search times are reduced because searches are limited to particular parts of the
 ## Reference
 https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=77785597cd937db3013ad6c395b557a3&source=41#wechat_redirect
 
+## 9.10 Garbage Collection
+
+## 9.11 Common Memory-Related Bugs in C Programs
+
 # Chapter 10 System-Level I/O
+## 10.1 Unix I/O
+## 10.2 Opening and Closing Files
+## 10.3 Reading and Writing Files
+## 10.4 Robust Reading and Writing with the Rio Package
+## 10.5 Reading File Metadata
+## 10.6 Sharing Files
+## 10.7 I/O Redirection
+## 10.8 Standard I/O
+## 10.9 Putting It Together: Which I/O Functions Should I Use?
 
-## Unix I/O
+# Chapter 11 Network Programming
+## 11.1 The Client-Server Programming Model
+## 11.2 Networks
+## 11.3 The Global IP Internet
+## 11.4 The Sockets Interface
+## 11.5 Web Servers
+## 11.6 Putting It Together: The Tiny Web Server
 
 
+# Chapter 12 Concurrent Programming
+## 12.1 Concurrent Programming with Processes
+## 12.2 Concurrent Programming with I/O Multiplexing
+## 12.3 Concurrent Programming with Threads
+## 12.4 Shared Variables in Threaded Programs
+## 12.5 Synchronizing Threads with Semaphores
+## 12.6 Using Threads for Parallelism
+## 12.7 Other Concurrency Issues
 
 ```
 Questions:
