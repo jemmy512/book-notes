@@ -626,7 +626,7 @@ int test(int x, int y) {
 * The advantage of using a jump table over a long sequence of if-else statements is that the time taken to perform the switch is independent of the number of switch cases.
 
 ## 3.7 Procedures
-A procedure call involves passing both data (in the form of procedure parame- ters and return values) and control from one part of a program to another.
+A procedure call involves passing both data (in the form of procedure parameters and return values) and control from one part of a program to another.
 
 In addition, it must allocate space for the local variables of the procedure on entry and deallocate them on exit.
 
@@ -642,7 +642,7 @@ In addition, it must allocate space for the local variables of the procedure on 
 
 ### 3.7.2 Transferring Control
 Instruction | Description
---- | ---
+--| ---
 call Label | Procedure call
 call *Operand | Procedure call
 leave | Prepare stack for return
@@ -655,9 +655,11 @@ ret | Return from call
     ```
 
 * The effect of a **call instruction** is to push a return address on the stack and jump to the start of the called procedure.
-    * The **return address** is the address of the instruction immediately following the call in the program, so that execution will resume at this location when the called procedure returns.
+
+* The **return address** is the address of the instruction immediately following the call in the program, so that execution will resume at this location when the called procedure returns.
 
 * ![](../Images/CSAPP/3.7.2-instruction-of-call-ret.png)
+
     * The effect of the call is to push the return address 0x080483e1 onto the stack and to jump to the first instruction in function sum, at address 0x08048394 (Figure 3.22(b)). The execution of function sum continues until it hits the ret instruction at address 0x080483a4. This instruction pops the value 0x080483e1 from the stack and jumps to this address, resuming the execution of main just after the call instruction in sum (Figure 3.22(c)).
 
 ### 3.7.3 Register Usage Conventions
@@ -666,51 +668,165 @@ ret | Return from call
 * On the other hand, registers `%ebx, %esi, and %edi` are classified as **callee-save registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
 
 ### 3.7.4 Procedure Example
+```c++
+int swap_add(int* xp, int* yp) {
+    int x = *xp;
+    int y = *yp;
+
+    *xp = y;
+    *yp = x;
+
+    return x + y;
+}
+
+int caller() {
+    int arg1 = 534;
+    int arg2 = 1057;
+    int sum = swap_add(&arg1, &arg2);
+    int diff = arg1 arg2;
+
+    return sum * diff;
+}
+```
 ![](../Images/CSAPP/3.7.4-procedure-example.png)
+
+```c++
+caller:
+    pushl   %ebp                    // save old %ebp
+    movl    %esp,       %ebp        // set %ebp as frame pointer
+    subl    $24,        %esp        // allocate 24 bytes on stack
+    movl    $534,       -4(%ebp)    // set arg1 to 534
+    movl    $1057,      -8(%ebp)    // set arg3 to 1057
+    leal    -8(%ebp),   %eax        // compute &arg2
+    movl    %eax,       4(%esp)     // store on stack
+    leal    -4(%ebp),   %eax        // comput &arg2
+    movl    %eax,       (%esp)      // store on stack
+    call    swap_add                // call the swap_add function
+    movl    -4(%ebp),   %edx
+    subl    -8(%ebp),   %edx
+    imull   %edx,       %eax
+    leave
+    ret
+
+
+/* before reaching this part of the code, the call instruction will have
+ * pushed the return address onto the stack.*/
+swap_add:
+    pushl   %ebp
+    movl    %esp,       %ebp
+    pushl   %ebx                    // save ebx, it calee-saved register
+
+    movl    8(%ebp),    %edx        // get xy
+    movl    12(%ebp),   %ecx        // get yp
+    movl    (%edx),     %edx        // get x
+    movl    (%ecx),     %eax        // get y
+    movl    %eax,       (%edx)      // store y at xp
+    movl    %edx,       (%ecx)      // store x at yp
+    addl    %edx,       %eax        // reutrn x+y
+
+    popl    %ebp                    // restore %ebx
+    popl    %ebp                    // restore %ebp
+    ret                             // return
+```
+* We can see from this example that the compiler generates code to manage the stack structure according to a simple set of conventions:
+    * Arguments are passed to a function on the stack, where they can be retrieved using positive offsets (+8, +12, . . .) relative to %ebp
+    * Space can be allocated on the stack either by using push instructions or by subtracting offsets from the stack pointer
+    * Before returning, a function must restore the stack to its original condition by restoring any callee-saved registers and %ebp, and by resetting %esp so that it points to the return address
+
+* Why does gcc allocate space that never gets used?
+    * gcc adheres to an x86 programming guideline that the total stack space used by the function should be a multiple of 16 bytes.
+    * Including the 4 bytes for the saved value of %ebp and the 4 bytes for the return address, caller uses a total of 32 bytes. The motivation for this convention is to ensure a proper alignment for accessing data.
+    * We will explain the reason for having alignment conventions and how they are implemented in Section 3.9.3.
 
 ### 3.7.5 Recursive Procedures
 
 ## 3.8 Array Allocation and Access
 
 ### 3.8.1 Basic Principles
+* The memory referencing instructions of IA32 are designed to simplify array access.
+    ```
+    movl (%edx,%ecx,4),%eax
+    ```
 
 ### 3.8.2 Pointer Arithmetic
 ![Pointer Arithemtic](../Images/CSAPP/3.8.2-pointer-arithmetic.png)
 
+* The array subscripting operation can be applied to both arrays and pointers. The array reference A[i] is identical to the expression *(A+i). It computes the address of the ith array element and then accesses this memory location.
+
 ### 3.8.3 Nested Arrays
+```
+T D[R][C];
+&D[i][j] = AddrD + L(C*i +j) // L is the size of data type T in bytes
+```
+
+```
+// int[5][3]
+movl    12(%ebp),           %eax    // get i
+leal    (%eax, %eax, 2),    %eax    // comput 3*i
+movl    16(%ebp),           %edx    // get j
+sall    $2,                 %edx    // comput j*4
+addl    8(%ebp),            %edx    // comput Xa + 4*j
+movl    (%edx, %eax, 4),    %eax    // read from M[Xa + 4*j + 12*i]
+```
 
 ### 3.8.4 Fixed-Size Arrays
 
 ### 3.8.5 Variable-Size Arrays
 
 ## 3.9 Heterogeneous Data Structures
+* The implementation of structures is similar to that of arrays in that
+    * all of the components of a structure are stored in a contiguous region of memory,
+    * and a pointer to a structure is the address of its first byte.
+    * The compiler maintains information about each structure type indicating the byte offset of each field.
+    * It generates references to structure elements using these offsets as displacements in memory referencing instructions.
 
 ### 3.9.1 Structures
 
 ### 3.9.2 Unions
 
 ### 3.9.3 Data Alignment
+* Such alignment restrictions simplify the design of the hardware forming the interface between the processor and the memory system.
 
 ## 3.10 Putting It Together: Understanding Pointers
+* Pointers are a central feature of the C programming language. They serve as a uniform way to generate references to elements within different data structures.
+* Every pointer has an associated type.
+* Every pointer has a value.
+* Pointers are created with the & operator.
+* Pointers are dereferenced with the * operator.
+* Arrays and pointers are closely related.
+* Casting from one type of pointer to another changes its type but not its value.
+* Pointers can also point to functions.
 
 ## 3.11 Life in the Real World: Using the gdb Debugger
 
 ## 3.12 Out-of-Bounds Memory References and Buffer Overflow
+![](../Images/CSAPP/3.12-stack-overflow.png)
+
+* Depending on which portions of the state are affected, the program can misbehave in several different ways:
+    * If the stored value of **%ebx** is corrupted, then this register will not be restored properly, and so the caller will not be able to rely on the integrity of this register, even though it should be callee-saved.
+    * If the stored value of **%ebp** is corrupted, then this register will not be restored properly, and so the caller will not be able to reference its local variables or parameters properly.
+    * If the stored value of the **return address** is corrupted, then the ret instruction will cause the program to jump to a totally unexpected location.
+
+* A number of commonly used library functions, including `strcpy`, `strcat`, and `sprintf`, have the property that they can generate a byte sequence without being given any indication of the size of the destination buffer. Such conditions can lead to vulnerabilities to buffer overflow.
+* This is one of the most common methods to attack the security of a system over a computer network. Typically, the program is fed with a string that contains the byte encoding of some executable code, called the **exploit code**, plus some extra bytes that overwrite the return address with a pointer to the exploit code. The effect of executing the ret instruction is then to jump to the exploit code.
 
 ### 3.12.1 Thwarting Buffer Overflow Attack
-**Statck Randomization**
+1. **Statck Randomization**
+    * In order to insert exploit code into a system, the attacker needs to inject both the code as well as a pointer to this code as part of the attack string.
+    * The idea of stack randomization is to make the position of the stack vary from one run of a program to another.
+    * This is implemented by allocating a random amount of space between 0 and n bytes on the stack at the start of a program.
+    * Stack randomization has become standard practice in Linux systems. It is one of a larger class of techniques known as address-space layout randomization, or **ASLR**.
 
-    In order to insert exploit code into a system, the attacker needs to inject both the code as well as a pointer to this code as part of the attack string.
+2. **Stack Corruption Detection**
+    * Recent versions of gcc incorporate a mechanism known as stack protector into the generated code to detect buffer overruns. The idea is to store a special canary value4 in the stack frame between any local buffer and the rest of the stack state.
+    * This canary value, also referred to as a guard value, is generated randomly each time the program is run, and so there is no easy way for an attacker to determine what it is.
+    * Before restoring the register state and returning from the function, the program checks if the canary has been altered by some operation of this function or one that it has called. If so, the program aborts with an error.
+    * It incurs only a small performance penalty, especially because gcc only inserts it when there is a local buffer of type char in the function.
 
-    The idea of stack randomization is to make the position of the stack vary from one run of a program to another.
+3. **Limiting Executable Code Regions**
+    * The stack can be marked as being readable and writable, but not executable, and the checking of whether a page is executable is performed in hardware, with no penalty in efficiency.
 
-    This is implemented by allocating a random amount of space between 0 and n bytes on the stack at the start of a program.
-
-**Stack Corruption Detection**
-
-**Limiting Executable Code Regions**
-
-## 3.13 x86-64: Extending IA32 to 64 Bits
+## 3.13 x86-64: Extending IA32 to 64 Bits (TODO)
 
 ### 3.13.2 An Overview of x86-64
 
@@ -727,20 +843,227 @@ ret | Return from call
 ## 3.15 Summary
 
 # Chapter 4 Processor Arthitecture
-The instructions supported by a particular processor and their byte-level encodings are known as its instruction-set architecture (ISA).
+* The instructions supported by a particular processor and their byte-level encodings are known as its **instruction-set architecture (ISA)**.
+* The ISA provides a conceptual layer of abstraction between compiler writers, who need only know what instructions are permitted and how they are encoded, and processor designers, who must build machines that execute those instructions.
+* Why should you learn about processor design?
+    * It is intellectually interesting and important. There is an intrinsic value in learning how things work. It is especially interesting to learn the inner workings of a system that is such a part of the daily lives of computer scientists and engineers and yet remains a mystery to many.
+    * Understanding how the processor works aids in understanding how the overall computer system works.
+    * Although few people design processors, many design hardware systems that contain processors.
+    * You just might work on a processor design.
 
 ## 4.1 The Y86 Instruction Set Architecture
+* Defining an instruction set architecture, such as Y86, includes:
+    1. defining the different state elements
+    2. the set of instructions and their encodings
+    3. a set of programming conventions
+    4. the handling of exceptional events
+
 ### 4.1.1 Programmer-Visible State
 1. Program registers: %eax, %ebx %ecx, %edx, %edi, %esi, %ebp, %esp
 2. Condition codes: ZF, SF, OF
+3. status code Stat: some sort of exception has occurred, such as when an instruction attempts to read from an invalid memory address.
+
+![](../Images/CSAPP/4.1.1-y86-programmer-visible-state.png)
+
+### 4.1.2 Y86 Instructions
+![](../Images/CSAPP/4.1.2-y86-instruction-set.png)
+* The IA32 movl instruction is split into four different instructions: irmovl, rrmovl, mrmovl, and rmmovl, explicitly indicating the form of the source and destination. The source is either immediate (i), register (r), or memory (m).
+* There are four integer operation instructions as OPl: addl, subl, andl, and xorl. They operate only on register data.
+* The seven jump instructions: mp, jle, jl, je, jne, jge, and jg.
+* There are six conditional move instructions: cmovle, cmovl, cmove, cmovne, cmovge, and cmovg.
+* The call instruction pushes the return address on the stack and jumps to the destination address. The ret instruction returns from such a call.
+* The pushl and popl instructions implement push and pop, just as they do in IA32.
+* The halt instruction stops instruction execution. IA32 has a comparable instruction, called hlt.
+
+### 4.1.3 Instruction Encoding
+* Each instruction requires between 1 and 6 bytes, depending on which fields are required. Every instruction has an initial byte identifying the instruction type.
+* This byte is split into two 4-bit parts: the high-order, or code, part, and the low-order, or function, part.
+
+![](../Images/CSAPP/4.1.3-y86-program-register-indentifiers.png)
+
+![](../Images/CSAPP/4.1.3-function-codes-for-y86-instruction-set.png)
+* Each of the eight program registers has an associated register identifier (ID) ranging from 0 to 7. The numbering of registers in Y86 matches what is used in IA32.
+* The program registers are stored within the CPU in a register file, a small random-access memory where the register IDs serve as addresses.
+
+* One important property of any instruction set is that the byte encodings must have a unique interpretation.
+* Some instructions are just 1 byte long, but those that require operands have longer encodings.
+    *  There can be an additional **register specifier byte**, specifying either one or two registers. These register fields are called rA and rB.
+    * Instructions that have no register operands, such as branches and call, do not have a register specifier byte.
+    * Those that require just one register operand (irmovl, pushl, and popl) have the other register specifier set to value 0xF.
+    * Some instructions require an additional 4-byte constant word. This word can serve as the immediate data for irmovl, the displacement for rmmovl and mrmovl address specifiers, and the destination of branches and calls.
+
+### 4.1.4 Y86 Exceptions
+Value | Name | Meaning
+-- | --- | ---
+1 | AOK | Normal operation
+2 | HLT | halt instruction encountered
+3 | ADR | invalied address encontered
+4 | INS | invalied instruction encountered
+
+* status code **Stat** describing the overall state of the executing program.
+
+### 4.1.5 Y86 Programs
+
 
 ## 4.2 Logic Design and the Hardware Control Language HCL
+* Three major components are required to implement a digital system:
+    * combinational logic to compute functions on the bits
+    * memory elements to store bits
+    * clock signals to regulate the updating of the memory elements
+
+### 4.2.1 Logic Gates
+![](../Images/CSAPP/4.2.1-logic-gate-types.png)
+* Logic gates operate on single-bit quantities, not entire words.
+* Logic gates are always active. If some input to a gate changes, then within some small amount of time, the output will change accordingly.
+
+### 4.2.2 Combinational Circuits and HCL Boolean Expressions
+* Since a combinational circuit consists of a series of logic gates, it has the property that the outputs continually respond to changes in the inputs. If some input to the circuit changes, then after some delay, the outputs will change accordingly. In contrast, a C expression is only evaluated when it is encountered during the execution of a program.
+* Logical expressions in C allow arguments to be arbitrary integers, interpreting 0 as false and anything else as true. In contrast, our logic gates only operate over the bit values 0 and 1.
+* Logical expressions in C have the property that they might only be partially evaluated. If the outcome of an And or Or operation can be determined by just evaluating the first argument, then the second argument will not be evaluated. In contrast, combinational logic does not have any partial evaluation rules.
+
+### 4.2.3 Word-Level Combinational Circuits and HCL Integer Expressions
+![](../Images/CSAPP/4.2.3-work-level-combinational-circuits.png)
+
+![](../Images/CSAPP/4.2.3-word-level-multiplexor.png)
+
+![](../Images/CSAPP/4.2.3-alu.png)
+* **Arithmetic/logic unit (ALU)** circuit has three inputs: two data inputs labeled A and B, and a control input. Depending on the setting of the control input, the circuit will perform different arithmetic or logical operations on the data inputs.
+
+### 4.2.4 Set Membership
+
+### 4.2.5 Memory and Clocking
+* Combinational circuits, by their very nature, do not store any information. Instead, they simply react to the signals at their inputs, generating outputs equal to some function of the inputs. To create sequential circuits, that is, systems that have state and perform computations on that state, we must introduce devices that store information represented as bits. Our storage devices are all controlled by a single clock, a periodic signal that determines when new values are to be loaded into the devices.
+* We consider two classes of memory devices:
+    * **Clocked registers (or simply registers)** store individual bits or words. The clock signal controls the loading of the register with the value at its input.
+    * **Random-access memories (or simply memories)** store multiple words, using an address to select which word should be read or written. Examples of random-access memories include
+        * the virtual memory system of a processor, where a combination of hardware and operating system software make it appear to a processor that it can access any word within a large address space
+        * the register file, where register identifiers serve as the addresses. In an IA32 or Y86 processor, the register file holds the eight program registers (%eax, %ecx, etc.).
+* As we can see, the word “register” means two slightly different things when speaking of hardware versus machine-language programming.
+    * **Hardware registers**: In hardware, a register is directly connected to the rest of the circuit by its input and output wires.
+    * **Promgram register**: In machine-level programming, the registers represent a small collection of addressable words in the CPU, where the addresses consist of register IDs.
+
+* Hardware Register Operation
+    * ![](../Images/CSAPP/4.2.5-register-operation.png)
+    * For most of the time, the register remains in a fixed state (shown as x), generating an output equal to its current state.
+    * Signals propagate through the combinational logic preceding the register, creating a new value for the register input (shown as y), but the register output remains fixed as long as the clock is low.
+    * As the clock rises, the input signals are loaded into the register as its next state (y), and this becomes the new register output until the next rising clock edge.
+    * A key point is that the registers serve as barriers between the combinational logic in different parts of the circuit. Values only propagate from a register input to its output once every clock cycle at the rising clock edge.
+
+* Register File
+    * ![](../Images/CSAPP/4.2.5-register-file.png)
+    * This register file has two read ports, named A and B, and one write port, named W.
+    * Such a multiported random-access memory allows multiple read and write operations to take place simultaneou
+    * In the register file diagrammed, the circuit can read the values of two program registers and update the state of a third.
+    * Each port has an address input, indicating which program register should be selected, and a data output or input giving a value for that program register. The addresses are register identifiers.
+    * The two read ports have address inputs srcA and srcB (short for “source A” and “source B”) and data outputs valA and valB (short for “value A” and “value B”).
+    * The register file is not a combinational circuit, since it has internal storage.
+    * The writing of words to the register file is controlled by the clock signal in a manner similar to the loading of values into a clocked register.
+    * What happens if we attempt to read and write the same register simultaneously?”
+        * If we update a register while using the same register ID on the read port, we would observe a transition from the old value to the new.
+
+* Data Memory
+    * ![](../Images/CSAPP/5.2.5-data-memory.png)
+    * This memory has a single address input, a data input for writing, and a data output for reading.
+    * Like the register file, **reading** from our memory operates in a manner similar to combinational logic: If we provide an address on the address input and set the write control signal to 0, then after some delay, the value stored at that address will appear on data out. The error signal will be set to 1 if the address is out of range and to 0 otherwise.
+    * **Writing** to the memory is controlled by the clock: we set address to the desired address, data in to the desired value, and write to 1. When we then operate the clock, the specified location in the memory will be updated, as long as the address is valid.
+    * As with the read operation, the error signal will be set to 1 if the address is invalid. This signal is generated by combinational logic, since the required bounds checking is purely a function of the address input and does not involve saving any state.
 
 ## 4.3 Sequential Y86 Implementations
+### 4.3.1 Organizing Processing into Stages
+* **Fetch**: The fetch stage reads the bytes of an instruction from memory, using the program counter (PC) as the memory address.
+    * From the instruction it extracts the two 4-bit portions of the instruction specifier byte, referred to as `icode` (the instruction code) and `ifun` (the instruction function).
+    * It possibly fetches a register specifier byte, giving one or both of the register operand specifiers `rA` and `rB`.
+    * It also possibly fetches a 4-byte constant word `valC`. It computes `valP` to be the address of the instruction following the current one in sequential order. That is, valP equals the value of the PC plus the length of the fetched instruction.
+* **Decode**: The decode stage reads up to two operands from the register file, giving values ``valA`` and/or ``valB``. Typically, it reads the registers designated by instruction fields rA and rB, but for some instructions it reads register %esp.
+* **Execute**: In the execute stage, the arithmetic/logic unit (ALU) either performs the operation specified by the instruction (according to the value of ifun), `computes the effective address` of a memory reference, or `increments or decrements the stack pointer`. We refer to the resulting value as `valE`. The `condition codes` are possibly set. For a jump instruction, the stage tests the condition codes and branch condition (given by ifun) to see whether or not the branch should be taken.
+* **Memory**: The memory stage may write data to memory, or it may read data from memory. We refer to the value read as `valM`.
+* **Write back**: The write-back stage writes up to two results to the register file.
+* **PC update**: The PC is set to the address of the next instruction.
+
+* opl, rrmovl, irmolv implementation
+    * ![](../Images/CSAPP/4.3.1-opl-rrmovl-irmolv-imp.png)
+    * ![](../Images/CSAPP/4.3.1-opl-rrmovl-irmolv-imp-empl.png)
+
+* rmmovl, mrmovl implementation
+    * ![](../Images/CSAPP/4.3.1-rmmovl-mrmovl-imp.png)
+    * ![](../Images/CSAPP/4.3.1-rmmovl-mrmovl-imp-empl.png)
+* push, pop implementation
+    * ![](../Images/CSAPP/4.3.1-push-pop-impl.png)
+    * ![](../Images/CSAPP/4.3.1-push-pop-impl-empl.png)
+* jmp, call, ret implementation
+    * ![](../Images/CSAPP/4.3.1-jmp-call-ret-impl.png)
+    * ![](../Images/CSAPP/4.3.1-jmp-call-ret-impl-empl.png)
+    * ![](../Images/CSAPP/4.3.1-jmp-call-ret-impl-empl-2.png)
+
+### 4.3.2 SEQ Hardware Structure
+![](../Images/CSAPP/4.3.2-abstract-view-seq-sequential-impl.png)
+
+![](../Images/CSAPP/4.3.2-detailed-view-seq-sequential-impl.png)
+
+
+### 4.3.3 SEQ Timing
+* Our implementation of SEQ consists of combinational logic and two forms of memory devices:
+    * clocked registers (the program counter and condition code register)
+    * random-access memories (the register file, the instruction memory, and the data memory)
+    * combinational logic does not require any sequencing or control—values propagate through a network of logic gates whenever the inputs change.
+
+* We are left with just four hardware units that require an explicit control over their sequencing—the program counter, the condition code register, the data memory, and the register file. These are controlled via a single clock signal that triggers the loading of new values into the registers and the writing of values to the random-access memories.
+    * The `program counter` is loaded with a new instruction address every clock cycle.
+    * The `condition code register` is loaded only when an integer operation instruction is executed
+    * The `data memory` is written only when an rmmovl, pushl, or call instruction is executed
+    * The two write ports of the `register file` allow two program registers to be updated on every cycle, but we can use the special register ID 0xF as a port address to indicate that no write should be performed for this port.
+* This clocking of the registers and memories is all that is required to control the sequencing of activities in our processor. Our hardware achieves the same effect as would a sequential execution of the assignments shown in the tables of Figures 4.18 through 4.21, even though all of the state updates actually occur simultaneously and only as the clock rises to start the next cycle. This equivalence holds because of the nature of the Y86 instruction set, and because we have organized the computations in such a way that our design obeys the following principle:
+    > The processor never needs to read back the state updated by an instruction in order to complete the processing of this instruction.
+
+* E.g., we can see that some instructions (the integer operations) set the condition codes, and some instructions (the jump instructions) read these condition codes, but no instruction must both set and then read the condition codes. Even though the condition codes are not set until the clock rises to begin the next clock cycle, they will be updated before any instruction attempts to read them.
+
+* ![](../Images/CSAPP/4.3.3-tracing-two-cycyles-exec-by-seq.png)
+    * We assume the processing starts with the condition codes, listed in the order ZF, SF, and OF, set to 100.
+    * At the beginning of clock cycle 3 (point 1), the state elements hold the state as updated by the second irmovl instruction (line 2 of the listing), shown in light gray. The combinational logic is shown in white, indicating that it has not yet had time to react to the changed state.
+    * The clock cycle begins with address 0x00c loaded into the program counter. This causes the addl instruction (line 3 of the listing), shown in blue, to be fetched and processed. Values flow through the combinational logic, including the reading of the random-access memories.
+    * By the end of the cycle (point 2), the combinational logic has generated new values (000) for the condition codes, an update for program register %ebx, and a new value (0x00e) for the program counter.
+    * At this point, the combinational logic has been updated according to the addl instruction (shown in blue), but the state still holds the values set by the second irmovl instruction (shown in light gray).
+    * As the clock rises to begin cycle 4 (point 3), the updates to the program counter, the register file, and the condition code register occur, and so we show these in blue, but the combinational logic has not yet reacted to these changes, and so we show this in white.
+    * In this cycle, the je instruction (line 4 in the listing), shown in dark gray, is fetched and executed. Since condition code ZF is 0, the branch is not taken.
+    * By the end of the cycle (point 4), a new value of 0x013 has been generated for the program counter. The combinational logic has been updated according to the je instruction (shown in dark gray), but the state still holds the values set by the addl instruction (shown in blue) until the next cycle begins.
+
+### 4.3.4 SEQ Stage Implementations
 
 ## 4.4 General Principles of Pipelining
 
+### 4.4.1 Computational Pipelines
+
+### 4.4.2 A Detailed Look at Pipeline Operation
+
+### 4.4.3 Limitations of Pipelining
+
+### 4.4.4 Pipelining a System with Feedback
+
 ## 4.5 Pipelined Y86 Implementations
+
+### 4.5.1 SEQ+: Rearranging the Computation Stages
+
+### 4.5.2 Inserting Pipeline Registers
+
+### 4.5.3 Rearranging and Relabeling Signals
+
+### 4.5.4 Next PC Prediction
+
+### 4.5.5 Pipeline Hazards
+
+### 4.5.6 Avoiding Data Hazards by Stalling
+
+### 4.5.7 Avoiding Data Hazards by Forwarding
+
+### 4.5.8 Load/Use Data Hazards
+
+### 4.5.10 PIPE Stage Implementations
+
+### 4.5.11 Pipeline Control Logic
+
+### 4.5.12 Performance Analysis
+
+### 4.5.13 Unfinished Business
 
 ## 4.6 Summary
 
