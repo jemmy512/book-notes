@@ -894,7 +894,7 @@ movl    (%edx, %eax, 4),    %eax    // read from M[Xa + 4*j + 12*i]
 
 ### 4.1.4 Y86 Exceptions
 Value | Name | Meaning
--- | --- | ---
+--- | --- | ---
 1 | AOK | Normal operation
 2 | HLT | halt instruction encountered
 3 | ADR | invalied address encontered
@@ -903,7 +903,6 @@ Value | Name | Meaning
 * status code **Stat** describing the overall state of the executing program.
 
 ### 4.1.5 Y86 Programs
-
 
 ## 4.2 Logic Design and the Hardware Control Language HCL
 * Three major components are required to implement a digital system:
@@ -1013,7 +1012,8 @@ Value | Name | Meaning
     * The `data memory` is written only when an rmmovl, pushl, or call instruction is executed
     * The two write ports of the `register file` allow two program registers to be updated on every cycle, but we can use the special register ID 0xF as a port address to indicate that no write should be performed for this port.
 * This clocking of the registers and memories is all that is required to control the sequencing of activities in our processor. Our hardware achieves the same effect as would a sequential execution of the assignments shown in the tables of Figures 4.18 through 4.21, even though all of the state updates actually occur simultaneously and only as the clock rises to start the next cycle. This equivalence holds because of the nature of the Y86 instruction set, and because we have organized the computations in such a way that our design obeys the following principle:
-    > The processor never needs to read back the state updated by an instruction in order to complete the processing of this instruction.
+
+> The processor never needs to read back the state updated by an instruction in order to complete the processing of this instruction.
 
 * E.g., we can see that some instructions (the integer operations) set the condition codes, and some instructions (the jump instructions) read these condition codes, but no instruction must both set and then read the condition codes. Even though the condition codes are not set until the clock rises to begin the next clock cycle, they will be updated before any instruction attempts to read them.
 
@@ -1026,40 +1026,447 @@ Value | Name | Meaning
     * As the clock rises to begin cycle 4 (point 3), the updates to the program counter, the register file, and the condition code register occur, and so we show these in blue, but the combinational logic has not yet reacted to these changes, and so we show this in white.
     * In this cycle, the je instruction (line 4 in the listing), shown in dark gray, is fetched and executed. Since condition code ZF is 0, the branch is not taken.
     * By the end of the cycle (point 4), a new value of 0x013 has been generated for the program counter. The combinational logic has been updated according to the je instruction (shown in dark gray), but the state still holds the values set by the addl instruction (shown in blue) until the next cycle begins.
+* Every time the clock transitions from low to high, the processor begins executing a new instruction.
 
 ### 4.3.4 SEQ Stage Implementations
+* ![](../Images/CSAPP/4.3.4-state-code.png)
+
+* Fetch Stage
+    * ![](../Images/CSAPP/4.3.4-fetch-stage.png)
+    *   ```
+        bool need_regids = icode in {
+            IRRMOVL, IOPL, IPUSHL, IPOPL,
+            IIRMOVL, IRMMOVL, IMRMOVL };
+        ```
+    * This unit reads 6 bytes from memory at a time, using the PC as the address of the first byte (byte 0).
+* Decode and Write-Back Stages
+    * ![](../Images/CSAPP/4.3.4-decode-write-back-stage.png)
+    *   ```
+        # Code from SEQ
+        int srcA = [
+            icode in { IRRMOVL, IRMMOVL, IOPL, IPUSHL  } : rA;
+            icode in { IPOPL, IRET } : RESP;
+            1 : RNONE; # Don’t need register
+        ];
+
+        int srcB = [
+            icode in { IOPL, IRMMOVL, IMRMOVL  } : rB;
+            icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
+            1 : RNONE;  # Don’t need register
+        ];
+
+        int dstE = [
+            icode in { IRRMOVL } : rB;
+            icode in { IIRMOVL, IOPL} : rB;
+            icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
+            1 : RNONE;  # Don’t write any register
+        ];
+
+        int dstM = [
+            icode in { IMRMOVL, IPOPL } : rA;
+            1 : RNONE;  # Don’t write any register
+        ];
+        ```
+    * The register file has four ports. It supports up to two simultaneous reads (on ports A and B) and two simultaneous writes (on ports E and M). Each port has both an address connection and a data connection, where the address connection is a register ID, and the data connection is a set of 32 wires serving as either an output word (for a read port) or an input word (for a write port) of the register file.
+* Execute Stage
+    * ![](../Images/CSAPP/4.3.4-execute-stage.png)
+    * ```
+        int aluA = [
+            icode in { IRRMOVL, IOPL } : valA;
+            icode in { IIRMOVL, IRMMOVL, IMRMOVL } : valC;
+            icode in { ICALL, IPUSHL } : -4;
+            icode in { IRET, IPOPL } : 4;
+            # Other instructions don’t need ALU
+        ];
+
+        int aluB = [
+            icode in { IRMMOVL, IMRMOVL, IOPL, ICALL,
+        ];
+
+        int alufun = [
+            icode == IOPL : ifun;
+            1 : ALUADD;
+        ];
+
+        bool set_cc = icode in { IOPL };
+        ```
+* Memory Stage
+    * ![](../Images/CSAPP/4.3.4-memory-stage.png)
+    *   ```
+        int mem_addr = [
+            icode in { IRMMOVL, IPUSHL, ICALL, IMRMOVL } : valE;
+            icode in { IPOPL, IRET } : valA;
+            # Other instructions don’t need address
+        ];
+
+        int mem_data = [
+            # Value from register
+            icode in { IRMMOVL, IPUSHL } : valA;
+            # Return PC
+            icode == ICALL : valP;
+            # Default: Don’t write anything
+        ];
+
+        bool mem_read = icode in { IMRMOVL, IPOPL, IRET };
+
+        bool mem_write = icode in { IRMMOVL, IPUSHL, ICALL };
+
+        ## Determine instruction status
+        int Stat = [
+            imem_error || dmem_error : SADR;
+            !instr_valid: SINS;
+            icode == IHALT : SHLT;
+            1 : SAOK;
+        ];
+        ```
+* PC Update
+    * ![](../Images/CSAPP/4.3.4-pc-update-stage.png)
+    *   ```
+        int new_pc = [
+            # Call.  Use instruction constant
+            icode == ICALL : valC;
+            # Taken branch.  Use instruction constant
+            icode == IJXX && Cnd : valC;
+            # Completion of RET instruction.  Use value from stack
+            icode == IRET : valM;
+            # Default: Use incremented PC
+            1 : valP;
+        ];
+        ```
+
 
 ## 4.4 General Principles of Pipelining
-
+* A key feature of pipelining is that it increases the throughput of the system, but it may also slightly increase the latency.
 ### 4.4.1 Computational Pipelines
 
 ### 4.4.2 A Detailed Look at Pipeline Operation
+![](../Images/CSAPP/4.4.2-three-way-pipeline.png)
+![](../Images/CSAPP/4.4.2-three-way-pipeline-details.png)
+* Just before the rising clock at time 240 (point 1), the values computed in stage A for instruction I2 have reached the input of the first pipeline register, but its state and output remain set to those computed during stage A for instruction I1.
+* The values computed in stage B for instruction I1 have reached the input of the second pipeline register.
+* As the clock rises, these inputs are loaded into the pipeline registers, becoming the register outputs (point 2). In addition, the input to stage A is set to initiate the computation of instruction I3. The signals then propagate through the combinational logic for the different stages (point 3).
+* As the curved wavefronts in the diagram at point 3 suggest, signals can propagate through different sections at different rates. Before time 360, the result values reach the inputs of the pipeline registers (point 4).
+* When the clock rises at time 360, each of the instructions will have progressed through one pipeline stage.
 
 ### 4.4.3 Limitations of Pipelining
+* 1. Nonuniform Partitioning
+    * ![](../Images/CSAPP/4.4.3-pipeline-limitation-nonuniform-partitioning.png)
+    * The system throughput is limited by the speed of the slowest stage.
+* 2. Diminishing Returns of Deep Pipelining
+    * ![](../Images/CSAPP/4.4.3-pipeline-limitations-deep-pipeline.png)
+    * In this example, we have divided the computation into six stages, in doubling the number of pipeline stages, we improve the performance by a factor of 14.29/8.33 = 1.71. Even though we have cut the time required for each computation block by a factor of 2, we do not get a doubling of the throughput, due to the delay through the pipeline registers.
+    * This delay becomes a limiting factor in the throughput of the pipeline. In our new design, this delay consumes 28.6% of the total clock period.
+    * Modern processors employ very deep (15 or more stages) pipelines in an attempt to maximize the processor clock rate. The processor architects divide the instruction execution into a large number of very simple steps so that each stage can have a very small delay.
 
 ### 4.4.4 Pipelining a System with Feedback
+* 3. Pipeline Limistations Logic Dependencies
+    * ![](../Images/CSAPP/4.4.4-pipeline-limitations-logic-denpendency.png)
+    * It would be unacceptable to alter the system behavior as occurred in the example of Figure 4.38. Somehow we must deal with the data and control dependencies between instructions so that the resulting behavior matches the model defined by the ISA.
 
 ## 4.5 Pipelined Y86 Implementations
 
 ### 4.5.1 SEQ+: Rearranging the Computation Stages
+* As a transitional step toward a pipelined design, we must slightly rearrange the order of the five stages in SEQ so that the PC update stage comes at the beginning of the clock cycle, rather than at the end.
+* ![](../Images/CSAPP/4.5.1-rearranging-pc.png)
+    * With SEQ (Figure 4.39(a)), the PC computation takes place at the end of the clock cycle, computing the new value for the PC register based on the values of signals computed during the current clock cycle.
+    * With SEQ+ (Figure 4.39(b)), we create state registers to hold the signals computed during an instruction. Then, as a new clock cycle begins, the values propagate through the exact same logic to compute the PC for the now-current instruction. We label the registers “pIcode,” “pCnd,” and so on, to indicate that on any given cycle, they hold the control signals generated during the previous cycle.
+* ![](../Images/CSAPP/4.5.1-seq+-hardware-structure.png)
+* One curious feature of SEQ+ is that there is no hardware register storing the program counter. Instead, the PC is computed dynamically based on some state information stored from the previous instruction. This is a small illustration of the fact that we can implement a processor in a way that differs from the conceptual model implied by the ISA, as long as the processor correctly executes arbitrary machinelanguage programs.
 
 ### 4.5.2 Inserting Pipeline Registers
+* PIPE(final pipeline see 4.5.7)
+    ![](../Images/CSAPP/4.5.2-inserting-pipeline-registers.png)
+* The pipeline registers are labeled as follows:
+    * **F** holds a predicted value of the program counter, as will be discussed shortly.
+    * **D** sitsbetweenthefetchanddecodestages.Itholdsinformationaboutthemost recently fetched instruction for processing by the decode stage.
+    * **E** sits between the decode and execute stages. It holds information about the most recently decoded instruction and the values read from the register file for processing by the execute stage.
+    * **M** sits between the execute and memory stages. It holds the results of the most recently executed instruction for processing by the memory stage. It also holds information about branch conditions and branch targets for processing conditional jumps.
+    * **W**sits between the memory stage and the feedback paths that supply the computed results to the register file for writing and the return address to the PC selection logic when completing a ret instruction.
+* Example of instruction flow through pipeline.
+    * ```
+        irmovl  $1, %eax    # I1
+        irmovl  $2, %ebx    # I2
+        irmolv  $3, %ecx    # I3
+        irmovl  $4, $edx    # I4
+        halt                # I5
+        ```
+    * ![](../Images/CSAPP/4.5.2-empl-instruction-flow-throuhg-pipeline.png)
 
 ### 4.5.3 Rearranging and Relabeling Signals
+* In the detailed structure of PIPE–, there are four white boxes labeled “stat” that hold the status codes for four different instructions.
+* We adopt a naming scheme where a signal stored in a pipeline register can be uniquely identified by prefixing its name with that of the pipe register written in uppercase. E.g., D_stat, E_stat, M_stat, and W_stat.
+* **M** refers pipeline registers, **M_stat** refers to the status code field of pipeline register M, **m_stat** refers to the status signal generated in the memory stage by a control logic block.
+* **Select A** block generates the value valA for the pipeline register E by choosing either valP from pipeline register D or the value read from the A port of the register file. This block is included to reduce the amount of state that must be carried forward to pipeline registers E and M.
+    * Only the call requires valP in the memory stage.
+    * Only the jump instructions require the value of valP in the execute stage (in the event the jump is not taken).
+    * None of these instructions requires a value read from the register file.
+    * Therefore, we can reduce the amount of pipeline register state by merging these two signals and carrying them through the pipeline as a single signal valA.
+    * In hardware design, it is common to carefully identify how signals get used and then reduce the amount of register state and wiring by merging signals such as these.
 
 ### 4.5.4 Next PC Prediction
+* If the fetched instruction is a conditional branch, we will not know whether or not the branch should be taken until several cycles later, after the instruction has passed through the execute stage.
+* If the fetched instruction is a ret, we cannot determine the return location until the instruction has passed through the memory stage.
+* With the exception of conditional jump instructions and ret, we can determine the address of the next instruction based on information computed during the fetch stage.
+    * For call and jmp (unconditional jump), it will be valC, the constant word in the instruction, while for all others it will be valP, the address of the next instruction.
+* Predicting
+    * For most instruction types, our prediction will be completely reliable.
+    * For conditional jumps, we can predict either that a jump will be taken, so that the new PC value would be valC, or we can predict that it will not be taken, so that the new PC value would be valP. In either case, we must somehow deal with the case where our prediction was incorrect and therefore we have fetched and partially executed the wrong instructions.
+* Return address prediction with a stack
+    * Procedure calls and returns occur in matched pairs. Most of the time that a procedure is called, it returns to the instruction following the call.
+    * This property is exploited in high-performance processors by including a hardware stack within the instruction fetch unit that holds the return address generated by procedure call instructions.
+    * Every time a procedure call instruction is executed, its return address is pushed onto the stack. When a return instruction is fetched, the top value is popped from this stack and used as the predicted return address.
+    * A mechanism must be provided to recover when the prediction was incorrect.
+* We will return to the handling of jump and return instructions when we complete the pipeline control logic in Section 4.5.11.
 
 ### 4.5.5 Pipeline Hazards
+* Dependencies can take two forms:
+    * data dependencies, where the results computed by one instruction are used as the data for a following instruction
+    * control dependencies, where one instruction determines the location of the following instruction, such as when executing a jump, call, or return.
+* When such dependencies have the potential to cause an erroneous computation by the pipeline, they are called hazards, **data hazards** or **control hazards**.
+
+* Example:
+    * ![](../Images/CSAPP/4.5.5-pipeline-hazard-prog-1.png)
+        * After the start of cycle 7, both of the irmovl instructions have passed through the write-back stage, and so the register file holds the updated values of %edx and %eax.
+        * As the addl instruction passes through the decode stage during cycle 7, it will therefore read the correct values for its source operands. The data dependencies between the two irmovl instructions and the addl instruction have not created data hazards in this example.
+        * Prog1 will flow through our pipeline and get the correct results, because the three nop instructions create a delay between instructions with data dependencies
+    * ![](../Images/CSAPP/4.5.5-pipeline-hazard-prog-2.png)
+        * In this case, the crucial step occurs in cycle 6, when the addl instruction reads its operands from the register file.
+        * The first irmovl instruction has passed through the write-back stage, and so program register %edx has been updated in the register file.
+        * The second irmovl instruction is in the writeback stage during this cycle, and so the write to program register %eax only occurs at the start of cycle 7 as the clock rises.
+        * As a result, the incorrect value zero would be read for register %eax (recall that we assume all registers are initially 0), since the pending write for this register has not yet occurred.
+        * Clearly we will have to adapt our pipeline to handle this hazard properly.
+    * ![](../Images/CSAPP/4.5.5-pipeline-hazard-prog-3.png)
+        * We must examine the behavior of the pipeline during cycle 5 as the addl instruction passes through the decode stage.
+        * Unfortunately, the pending write to register %edx is still in the write-back stage, and the pending write to %eax is still in the memory stage.
+        * Therefore, the addl instruction would get the incorrect values for both operands.
+    * ![](../Images/CSAPP/4.5.5-pipeline-hazard-prog-4.png)
+        * We must examine the behavior of the pipeline during cycle 4 as the addl instruction passes through the decode stage.
+        * Unfortunately, the pending write to register %edx is still in the memory stage, and the new value for %eax is just being computed in the execute stage.
+        * Therefore, the addl instruction would get the incorrect values for both operands.
+* Enumerating classes of data hazards
+    * Hazards can potentially occur when one instruction updates part of the program state that will be read by a later instruction.
+    * **Program registers**: These are the hazards we have already identified. They arise because the register file is read in one stage and written in another, leading to possible unintended interactions between different instructions.
+    * **Program counter**: Conflicts between updating and reading the program counter give rise to control hazards. No hazard arises when our fetch-stage logic correctly predicts the new value of the program counter before fetching the next instruction. Mispredicted branches and ret instructions require special handling, as will be discussed in Section 4.5.11.
+    * **Memory**: Writes and reads of the data memory both occur in the memory stage. By the time an instruction reading memory reaches this stage, any preceding instructions writing memory will have already done so. On the other hand, there can be interference between instructions writing data in the memory stage and the reading of instructions in the fetch stage, since the instruction and data memories reference a single address space. This can only happen with programs containing self-modifying code, where instructions write to a portion of memory from which instructions are later fetched. Some systems have complex mechanisms to detect and avoid such hazards, while others simply mandate that programs should not use selfmodifying code. We will assume for simplicity that programs do not modify themselves, and therefore we do not need to take special measures to update the instruction memory based on updates to the data memory during program execution.
+    * **Condition code register**: These are written by integeroperations in the execute stage.They are read by conditional moves in the execute stage and by conditional jumps in the memory stage. By the time a conditional move or jump reaches the execute stage, any preceding integer operation will have already completed this stage. No hazards can arise.
+    * **Status register**: The program status can be affected by instructions as they flow through the pipeline. Our mechanism of associating a status code with each instruction in the pipeline enables the processor to come to an orderly halt when an exception occurs, as will be discussed in Section 4.5.9.
 
 ### 4.5.6 Avoiding Data Hazards by Stalling
+* **Stalling**, where the processor holds back one or more instructions in the pipeline until the hazard condition no longer holds.
+* Our processor can avoid data hazards by holding back an instruction in the decode stage until the instructions generating its source operands have passed through the write-back stage. The details of this mechanism will be discussed in Section 4.5.11.
+* ![](../Images/CSAPP/4.5.6-stalling-prog-2.png)
+    * After decoding the addl instruction in cycle 6, the stall control logic detects a data hazard due to the pending write to register %eax in the write-back stage. It injects a bubble into execute stage and repeats the decoding of the addl instruction in cycle 7. In effect, the machine has dynamically inserted a nop instruction, giving a flow similar to that shown for prog1.
+* ![](../Images/CSAPP/4.5.6-stalling-prog-4.png)
+* This mechanism can be implemented fairly easily (see Problem 4.51), but the resulting performance is not very good. There are numerous cases in which one instruction updates a register and a closely following instruction uses the same register. This will cause the pipeline to stall for up to three cycles, reducing the overall throughput significantly.
 
 ### 4.5.7 Avoiding Data Hazards by Forwarding
+* Our design for PIPE– reads source operands from the register file in the decode stage, but there can also be a pending write to one of these source registers in the write-back stage. Rather than stalling until the write has completed, it can simply pass the value that is about to be written to pipeline register E as the source operand.
+* ![](../Images/CSAPP/4.5.7-forwarding-prog-2.png)
+    * In cycle 6, the decode-stage logic detects that register %eax is the source register for operand valB, and that there is also a pending write to %eax on write port E. It can therefore avoid stalling by simply using the data word supplied to port E (signal W_valE) as the value for operand valB. This technique of passing a result value directly from one pipeline stage to an earlier one is commonly known as data **forwarding**.
+* ![](../Images/CSAPP/4.5.7-forwarding-prog-3.png)
+    *  In cycle 5, the decodestage logic detects a pending write to register %edx in the write-back stage and to register %eax in the memory stage. It uses these as the values for valA and valB rather than the values read from the register file.
+* ![](../Images/CSAPP/4.5.7-forwarding-prog-4.png)
+    * In cycle 4, the decodestage logic detects a pending write to register %edx in the memory stage. It also detects that a new value is being computed for register %eax in the execute stage. It uses these as the values for valA and valB rather than the values read from the register file.
+* Data forwarding requires adding additional data connections and control logic to the basic hardware structure.
+* Forwarding can also be used:
+    * with values generated by the ALU and destined for write port E.
+    * with values read from the memory and destined for write port M.
+    * From the memory stage, we can forward the value that has just been read from the data memory (signal m_valM).
+    * From the write-back stage, we can forward the pending write to port M (signal W_valM).
+    * This gives a total of five different forwarding sources (e_valE, m_valM, M_valE, W_valM, and W_valE) and two different forwarding destinations (valA and valB).
+* Decode-stage logic can determine whether to use a value from the register file or to use a forwarded value.
+* Pipeline Final Implementation
+    ![](../Images/CSAPP/4.5.8-pipelne-final-imp.png)
 
 ### 4.5.8 Load/Use Data Hazards
+* One class of data hazards cannot be handled purely by forwarding, because memory reads occur late in the pipeline.
+* ![](../Images/CSAPP/4.5.8-prog-5.png)
+    * The addl instruction requires the value of the register in cycle 7, but it is not generated by the mrmovl instruction until cycle 8. In order to “forward” from the mrmovl to the addl, the forwarding logic would have to make the value go backward in time! But this is clearly impossible,
+    * We can avoid a load/use data hazard with a combination of stalling and forwarding. This requires modifications of the control logic, but it can use existing bypass paths.
+* ![](../Images/CSAPP/4.5.8-prog-5-solution.png)
+    * By stalling the addl instruction for one cycle in the decode stage, the value for valB can be forwarded from the mrmovl instruction in the memory stage to the addl instruction in the decode stage.
+* This use of a stall to handle a load/use hazard is called a **load interlock**. Load interlocks combined with forwarding suffice to handle all possible forms of data hazards. Since only load interlocks reduce the pipeline throughput, we can nearly achieve our throughput goal of issuing one new instruction on every clock cycle.
+
+### 4.5.9 Exception Handling
+* Exceptions can be generated either internally, by the executing program, or externally, by some outside signal.
+* Three different internally generated exceptions:
+    * a halt instruction
+    * an instruction with an invalid combination of instruction and function code
+    * an attempt to access an invalid address, either for instruction fetch or data read or write
+*  In a pipelined system, exception handling involves several subtleties:
+    * First, it is possible to have exceptions triggered by multiple instructions simultaneously.
+        * E.g., during one cycle of pipeline operation, we could have a halt instruction in the fetch stage, and the data memory could report an out-of-bounds data address for the instruction in the memory stage.
+        * We must determine which of these exceptions the processor should report to the operating system.
+        * The basic rule is to put priority on the exception triggered by the instruction that is furthest along the pipeline.
+    * A second subtlety occurs when an instruction is first fetched and begins execution, causes an exception, and later is canceled due to a mispredicted branch.
+    * A third subtlety arises because a pipelined processor updates different parts of the system state in different stages. It is possible for an instruction following one causing an exception to alter some part of the state before the excepting instruction completes.
+        * E.g.,
+            * ```
+                irmovl  $1,     %eax
+                xorl    %esp,   %esp    # set stack pointer to 0 and CC to 100
+                pushl   %eax            # attemp to write to 0xffffffc
+                addl    %eax,   %eax    # (shold not be executed) would set CC to 000
+                ```
+            * we assume that user programs are not allowed to access addresses greater than 0xc0000000 (as is the case for 32-bit versions of Linux)
+            * The pushl instruction causes an address exception, because decrementing the stack pointer causes it to wrap around to 0xfffffffc. This exception is detected in the memory stage. On the same cycle, the addl instruction is in the execute stage, and it will cause the condition codes to be set to new values.
+            * This would violate our requirement that none of the instructions following the excepting instruction should have had any effect on the system state.
+* In general, we can both correctly choose among the different exceptions and avoid raising exceptions for instructions that are fetched due to mispredicted branches by **merging the exception-handling logic into the pipeline structure**. That is the motivation for us to include a status code Stat in each of our pipeline registers
+* If an instruction generates an exception at some stage in its processing, the status field is set to indicate the nature of the exception. The exception status propagates through the pipeline with the rest of the information for that instruction, until it reaches the write-back stage. At this point, the pipeline control logic detects the occurrence of the exception and stops execution.
+* To avoid having any updating of the programmer-visible state by instructions beyond the excepting instruction, the pipeline control logic must disable any updating of the condition code register or the data memory when an instruction in the memory or write-back stages has caused an exception.
+* How method (merging the exception-handling logic into the pipeline structure) deals with the above subtleties:
+    * When an exception occurs in one or more stages of a pipeline, the information is simply stored in the status fields of the pipeline registers.
+    * (Third subtlety) The event has no effect on the flow of instructions in the pipeline until an excepting instruction reaches the final pipeline stage, except to disable any updating of the programmer-visible state (the condition code register and the memory) by later instructions in the pipeline.
+    * (First subtlety) Since instructions reach the write-back stage in the same order as they would be executed in a nonpipelined processor, we are guaranteed that the first instruction encountering an exception will arrive first in the write-back stage, at which point program execution can stop and the status code in pipeline register W can be recorded as the program status.
+    * (Second subtlety) If some instruction is fetched but later canceled, any exception status information about the instruction gets canceled as well. No instruction following one that causes an exception can alter the programmer-visible state.
+    * The simple rule of carrying the exception status together with all other information about an instruction through the pipeline provides a simple and reliable mechanism for handling exceptions.
 
 ### 4.5.10 PIPE Stage Implementations
+* PC Selection and Fetch Stage
+    * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-fetch.png)
+    *   ```
+        int f_pc = [
+            M_icode == IJXX && !M_Cnd : M_valA; # Mispredicted branch.  Fetch at incremented PC
+            W_icode == IRET : W_valM;           # Completion of RET instruction.
+            1 : F_predPC;                       # Default: Use predicted value of PC
+        ];
+
+        int f_predPC = [
+            f_icode in { IJXX, ICALL } : f_valC;
+            1 : f_valP;
+        ];
+
+        # Determine status code for fetched instruction
+        int f_stat = [
+            imem_error: SADR;
+            !instr_valid : SINS;
+            f_icode == IHALT : SHLT;
+            1 : SAOK;
+        ];
+        ```
+* Decode and Write-Back Stages
+    * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-decode.png)
+    * No instruction requires both valP and the value read from register port A, and so these two can be merged to form the signal valA for later stages. The block labeled “Sel+Fwd A” performs this task and also implements the forwarding logic for source operand valA.
+    * The block labeled “Fwd B” implements the forwarding logic for source operand valB.
+    * The register write locations are specified by the dstE and dstM signals from the write-back stage rather than from the decode stage, since it is writing the results of the instruction currently in the write-back stage.
+    * There are five different forwarding sources, each with a data word and a destination register ID:
+        Data word | Register ID | Source description
+        --- | --- | ---
+        e_valE | e_dstE | ALU output
+        m_valM | M_dstM | Memory output
+        M_valE | M_dstE | Pending write to port E in memory stage
+        W_valM | W_dstM | Pending write to port M in write-back stage
+        W_valE | W_dstE | Pending write to port E in write-back stage
+
+    * ```
+        int d_dstE = [
+            D_icode in { IRRMOVL, IIRMOVL, IOPL} : D_rB;
+            D_icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
+            1 : RNONE;  # Don’t write any register
+        ];
+
+        int d_valA = [
+            D_icode in { ICALL, IJXX } : D_valP;    # use incremented PC
+            d_srcA == e_dstE : e_valE;              # forward valE from execute
+            d_srcA == M_dstM : m_valM;              # forward valM from memory
+            d_srcA == M_dstE : M_valE;              # forward valE from memory
+            d_srcA == W_dstM : W_valM;              # forward valM from write back
+            d_srcA == W_dstE : W_valE;              # forward valE from write back
+            1 : d_rvalA;                            # use value read from register file
+        ];
+
+        int d_valB = [
+            d_srcB == e_dstE : e_valE;  # Forward valE from execute
+            d_srcB == M_dstM : m_valM;  # Forward valM from memory
+            d_srcB == M_dstE : M_valE;  # Forward valE from memory
+            d_srcB == W_dstM : W_valM;  # Forward valM from write back
+            d_srcB == W_dstE : W_valE;  # Forward valE from write back
+            1 : d_rvalB;  # Use value read from register file
+        ];
+
+        int Stat = [
+            W_stat == SBUB : SAOK;
+            1 : W_stat;
+        ];
+        ```
+    * The priority given to the five forwarding sources in the above HCL code is very important. The forwarding logic should choose the one in the most recent pipeline stage, since it represents the most recently generated value for this register.
+
+* Execute Stage
+    * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-exec.png)
+
+* Memory Stage
+    * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-memory.png)
 
 ### 4.5.11 Pipeline Control Logic
+* Pipeline control logic must handle the following four control cases for which other mechanisms, such as data forwarding and branch prediction, do not suffice:
+    * **Processing ret**: The pipeline must stall until the ret instruction reaches the write-back stage.
+    * **Load/use hazards**: The pipeline must stall for one cycle between an instruction that reads a value from memory and an instruction that uses this value.
+    * **Mispredicted branches**: By the time the branch logic detects that a jump should not have been taken, several instructions at the branch target will have started down the pipeline. These instructions must be removed from the pipeline.
+    * **Exceptions**: When an instruction causes an exception, we want to disable the updating of the programmer-visible state by later instructions and halt execution once the excepting instruction reaches the write-back stage.
+
+* Desired Handling of Special Control Cases
+    * Processing ret
+        * ```
+            0x000:    irmovl Stack,%esp     # Initialize stack pointer
+            0x006:    call Proc             # procedure call
+            0x00b:    irmovl $10,%edx       # return point
+            0x011:    halt
+            0x020: .pos 0x20
+            0x020: Proc:                    # Proc:
+            0x020:    ret                   # return immediately
+            0x021:    rrmovl %edx,%ebx      # not executed
+            0x030: .pos 0x30
+            0x030: Stack:                   # Stack: Stack pointer
+            ```
+        * ![](../Images/CSAPP/4.5.11-prog-7.png)
+            * The pipeline should stall while the ret passes through the decode, execute, and memory stages, injecting three bubbles in the process. The PC selection logic will choose the return address as the instruction fetch address once the ret reaches the write-back stage (cycle 7).
+        * ![](../Images/CSAPP/4.5.11-prog-7-2.png)
+            *  The fetch stage repeatedly fetches the rrmovl instruction following the ret instruction, but then the pipeline control logic injects a bubble into the decode stage rather than allowing the rrmovl instruction to proceed. The resulting behavior is equivalent to that shown in Figure 4.60.
+            * The key observation here is that there is no way to inject a bubble into the fetch stage of our pipeline. On every cycle, the fetch stage reads some instruction from the instruction memory.
+
+    * Load/use hazard
+        * For a load/use hazard, we have already described the desired pipeline opera- tion in Section 4.5.8.
+
+    * Mispredicted branches
+        *   ```
+            0x000:    xorl %eax,%eax
+            0x002:    jne  target       # Not taken
+            0x007:    irmovl $1, %eax   # Fall through
+            0x00d:    halt
+            0x00e: target:
+            0x00e:    irmovl $2, %edx   # Target
+            0x014:    irmovl $3, %ebx   # Target+1
+            0x01a:    halt
+            ```
+        *  As before, the instructions are listed in the order they enter the pipeline, rather than the order they occur in the program.
+        * ![](../Images/CSAPP/4.5.11-prog-8.png)
+        * We can simply cancel (sometimes called instruction squashing) the two misfetched in- structions by injecting bubbles into the decode and execute instructions on the following cycle while also fetching the instruction following the jump instruction.
+
+    * Exception
+        * ![](../Images/CSAPP/4.5.11-prog-10.png)
+            * On cycle 6, the invalid memory reference by the pushl instruction causes the updating of the condition codes to be disabled. The pipeline starts injecting bubbles into the memory stage and stalling the excepting instruction in the write-back stage.
+        * Achieving excpetion handling effects is complicated by the facts that
+            * exceptions are detected during two different stages (fetch and memory) of program execution
+            * the program state is updated in three different stages (execute, memory, and write-back)
+        * As the excepting instruction reaches the memory stage, we take steps to pre- vent later instructions from modifying programmer-visible state by
+            * disabling the setting of condition codes by instructions in the execute stage
+            * injecting bubbles into the memory stage to disable any writing to the data memory
+            * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
+        *   Condition | Trigger
+            --- | ---
+            Processing ret | IRET ∈ {D icode, E icode, M icode}
+            Load/use hazard | E icode ∈ {IMRMOVL, IPOPL} && E dstM ∈ {d srcA, d srcB}
+            Mispredicted branch | E icode = IJXX && !e Cnd
+            Exception | m stat ∈ {SADR, SINS, SHLT} || W stat ∈ {SADR, SINS, SHLT}
+            * Four different conditions require altering the pipeline flow by either stalling the pipeline or canceling partially executed instructions.
+
+
+* Detecting Special Control Conditions
+
+* Pipeline Control Mechanisms
+
+* Combinations of Control Conditions
+
+* Control Logic Implementation
 
 ### 4.5.12 Performance Analysis
 
@@ -1096,7 +1503,6 @@ Value | Name | Meaning
 ## 5.13 Life in the Real World: Performance Improvement Techniques
 
 ## 5.14 Identifying and Eliminating Performance Bottlenecks
-
 
 # Chapter 6 The Memory Hierarchy
 ## 6.1 Storage Technologies
