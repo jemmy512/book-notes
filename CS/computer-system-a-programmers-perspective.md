@@ -1391,9 +1391,11 @@ Value | Name | Meaning
     * The priority given to the five forwarding sources in the above HCL code is very important. The forwarding logic should choose the one in the most recent pipeline stage, since it represents the most recently generated value for this register.
 
 * Execute Stage
-    * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-exec.png)
+
+* ![](../Images/CSAPP/4.5.10-pipe-stage-impl-exec.png)
 
 * Memory Stage
+
     * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-memory.png)
 
 ### 4.5.11 Pipeline Control Logic
@@ -1418,13 +1420,16 @@ Value | Name | Meaning
             0x030: Stack:                   # Stack: Stack pointer
             ```
         * ![](../Images/CSAPP/4.5.11-prog-7.png)
+
             * The pipeline should stall while the ret passes through the decode, execute, and memory stages, injecting three bubbles in the process. The PC selection logic will choose the return address as the instruction fetch address once the ret reaches the write-back stage (cycle 7).
         * ![](../Images/CSAPP/4.5.11-prog-7-2.png)
             *  The fetch stage repeatedly fetches the rrmovl instruction following the ret instruction, but then the pipeline control logic injects a bubble into the decode stage rather than allowing the rrmovl instruction to proceed. The resulting behavior is equivalent to that shown in Figure 4.60.
             * The key observation here is that there is no way to inject a bubble into the fetch stage of our pipeline. On every cycle, the fetch stage reads some instruction from the instruction memory.
+* Looking at the HCL code for implementing the PC prediction logic in Section 4.5.10, we can see that for the ret instruction the new value of the PC is predicted to be valP, the address of the following instruction. In our example program, this would be 0x021, the address of the rrmovl instruction following the ret. This prediction is not correct for this example, nor would it be for most cases.
 
     * Load/use hazard
-        * For a load/use hazard, we have already described the desired pipeline opera- tion in Section 4.5.8.
+        * For a load/use hazard, we have already described the desired pipeline operation in Section 4.5.8.
+    * The pipeline can `hold back` an instruction in the decode stage by keeping pipeline register D in a fixed state. In doing so, it should also keep pipeline register F in a fixed state, so that the next instruction will be fetched a second time.
 
     * Mispredicted branches
         *   ```
@@ -1439,60 +1444,291 @@ Value | Name | Meaning
             ```
         *  As before, the instructions are listed in the order they enter the pipeline, rather than the order they occur in the program.
         * ![](../Images/CSAPP/4.5.11-prog-8.png)
-        * We can simply cancel (sometimes called instruction squashing) the two misfetched in- structions by injecting bubbles into the decode and execute instructions on the following cycle while also fetching the instruction following the jump instruction.
+
+        * The pipeline predicts branches will be taken and so starts fetching instructions at the jump target. Two instructions are fetched before the misprediction is detected in cycle 4 when the jump instruction flows through the execute stage. In cycle 5, the pipeline cancels the two target instructions by injecting bubbles into the decode and execute stages, and it also fetches the instruction following the jump.
+    * We can simply cancel (sometimes called instruction squashing) the two misfetched instructions by `injecting bubbles` into the decode and execute instructions on the following cycle while also fetching the instruction following the jump instruction. The two misfetched instructions will then simply disappear from the pipeline.
 
     * Exception
         * ![](../Images/CSAPP/4.5.11-prog-10.png)
             * On cycle 6, the invalid memory reference by the pushl instruction causes the updating of the condition codes to be disabled. The pipeline starts injecting bubbles into the memory stage and stalling the excepting instruction in the write-back stage.
         * Achieving excpetion handling effects is complicated by the facts that
-            * exceptions are detected during two different stages (fetch and memory) of program execution
-            * the program state is updated in three different stages (execute, memory, and write-back)
-        * As the excepting instruction reaches the memory stage, we take steps to pre- vent later instructions from modifying programmer-visible state by
+            * exceptions are **detected** during two different stages (**fetch and memory**) of program execution
+            * the **program state** is updated in three different stages (**execute, memory, and write-back**)
+        * When an exception occurs, we record that information as part of the instruction’s status and continue fetching, decoding, and executing instructions as if nothing were amiss. As the excepting instruction reaches the memory stage, we take steps to prevent later instructions from modifying programmer-visible state by
             * disabling the setting of condition codes by instructions in the execute stage
-            * injecting bubbles into the memory stage to disable any writing to the data memory
+        * injecting bubbles into the memory stage to disable any writing to the data memory
             * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
-        *   Condition | Trigger
+
+* Detecting Special Control Conditions
+    *   Condition | Trigger
             --- | ---
             Processing ret | IRET ∈ {D icode, E icode, M icode}
             Load/use hazard | E icode ∈ {IMRMOVL, IPOPL} && E dstM ∈ {d srcA, d srcB}
             Mispredicted branch | E icode = IJXX && !e Cnd
             Exception | m stat ∈ {SADR, SINS, SHLT} || W stat ∈ {SADR, SINS, SHLT}
-            * Four different conditions require altering the pipeline flow by either stalling the pipeline or canceling partially executed instructions.
-
-
-* Detecting Special Control Conditions
+        * Four different conditions require altering the pipeline flow by either stalling the pipeline or canceling partially executed instructions.
+    * Detecting a `ret` instruction as it passes through the pipeline simply involves checking the instruction codes of the instructions in the decode, execute, and memory stages
+    * Detecting a `load/use hazard` involves checking the instruction type (mrmovl or popl) of the instruction in the execute stage and comparing its destination register with the source registers of the instruction in the decode stage.
+    * The pipeline control logic should detect a `mispredicted branch` while the jump instruction is in the execute stage, so that it can set up the conditions required to recover from the misprediction as the instruction enters the memory stage. When a jump instruction is in the execute stage, the signal e_Cnd indicates whether or not the jump should be taken.
+    * We detect an `excepting` instruction by examining the instruction status values in the memory and write-back stages. For the memory stage, we use the signal m_stat, computed within the stage, rather than M_stat from the pipeline register. This internal signal incorporates the possibility of a data memory address error.
 
 * Pipeline Control Mechanisms
+    * Low-level mechanisms that allow the pipeline control logic to hold back an instruction in a pipeline register or to inject a bubble into the pipeline.
+    * ![](../Images/CSAPP/4.5.11-additional-pipeline-reg-ops.png)
+        * (a) Under normal conditions, the state and output of the register are set to the value at the input when the clock rises.
+        * (b) When operated in stall mode, the state is held fixed at its previous value.
+        * (c) When operated in bubble mode, the state is overwritten with that of a nop operation.
+
+    * The particular pattern of ones and zeros for a pipeline register’s reset configuration depends on the set of fields in the pipeline register:
+        * To inject a bubble into pipeline register D, we want the icode field to be set to the constant value INOP
+        * To inject a bubble into pipeline register E, we want the icode field to be set to INOP and the dstE, dstM, srcA, and srcB fields to be set to the constant RNONE
+    * Determining the reset configuration is one of the tasks for the hardware designer in designing a pipeline register.
+    * The actions the different pipeline stages should take for each of the three special conditions.
+        * Condition | F | D| E | M | W
+        --- | --- | --- | --- | --- | ---
+        Processing ret | stall | bubble | normal | normal | normal
+        Load/use hazard | stall | stall | bubble | normal | normal
+        Mispredicted branch | normal | bubble | bubble | normal | normal
 
 * Combinations of Control Conditions
+    * Condition | F | D| E | M | W
+        --- | --- | --- | --- | --- | ---
+        Processing ret | stall | bubble | normal | normal | normal
+        Mispredicted branch | normal | bubble | bubble | normal | normal
+        Combination | stall | bubble | bubble | normal | normal
+
+    * Condition | F | D| E | M | W
+        --- | --- | --- | --- | --- | ---
+        Processing ret | stall | bubble | normal | normal | normal
+        Load/use hazard | stall | stall | bubble | normal | normal
+        Combination | stall | bubble + stall | bubble | normal | normal
+        Desired | stall | stall | bubble | normal | normal
 
 * Control Logic Implementation
+    * ![](../Images/CSAPP/4.5.11-pipeline-control-logic.png)
+    * Based on signals from the pipeline registers and pipeline stages, the control logic generates stall and bubble control signals for the pipeline registers, and also determines whether the condition code registers should be updated.
+    ```
+    bool F_stall =
+        E_icode in { IMRMOVL, IPOPL } &&     # Conditions for a load/use hazard
+        E_dstM in { d_srcA, d_srcB } ||
+        IRET in { D_icode, E_icode, M_icode }; # Stalling at fetch while ret passes through pipeline
 
-### 4.5.12 Performance Analysis
+    bool D_stall =
+        E_icode in { IMRMOVL, IPOPL } &&    # Conditions for a load/use hazard
+        E_dstM in { d_srcA, d_srcB };
 
-### 4.5.13 Unfinished Business
+    bool D_bubble =
+        (E_icode == IJXX && !e_Cnd) ||      # Mispredicted branch
+            # Stalling at fetch while ret passes through pipeline but not condition for a load/use hazard
+        !(E_icode in { IMRMOVL, IPOPL } && E_dstM in { d_srcA, d_srcB })
+        && IRET in { D_icode, E_icode, M_icode };
+
+    bool E_bubble =
+        (E_icode == IJXX && !e_Cnd) ||      # Mispredicted branch
+        E_icode in { IMRMOVL, IPOPL } &&    # Conditions for a load/use hazard
+        E_dstM in { d_srcA, d_srcB};
+
+    ## Should the condition codes be updated?
+    bool set_cc =
+        E_icode == IOPL &&
+        !m_stat in { SADR, SINS, SHLT } && !W_stat in { SADR, SINS, SHLT }; # State changes only during normal operation
+    ```
+
+
+    # Start injecting bubbles as soon as exception passes through memory stage
+    bool M_bubble = m_stat in { SADR, SINS, SHLT } || W_stat in { SADR, SINS, SHLT };
+
+    bool W_stall = W_stat in { SADR, SINS, SHLT };
+    ```
+
+### 4.5.12 Performance Analysis [TODO]
+
+### 4.5.13 Unfinished Business [TODO]
 
 ## 4.6 Summary
+* Pipelining improves the throughput performance of a system by letting the different stages operate concurrently.
+* In introducing this concurrency, we must be careful to provide the same program-level behavior as would a sequential execution of the program.
+* We have learned several important lessons about processor design:
+    * Managing complexity is a top priority.
+    * We do not need to implement the ISA directly.
+    * Hardware designers must be meticulous.
 
 # Chapter 5 Optimizing Program Performance
+* Writing an efficient program requires several types of activities:
+    * select an appropriate set of algorithms and data structures.
+    * write source code that the compiler can effectively optimize to turn into efficient executable code.
+    * divide a task into portions that can be computed in parallel, on some combination of multiple cores and multiple processors.
+
+* In approaching program development and optimization, we must consider how the code will be used and what critical factors affect it.
+    * In general, programmers must make a trade-off between how easy a program is to implement and maintain, and how fast it runs.
+        * At an algorithmic level, a simple insertion sort can be programmed in a matter of minutes, whereas a highly efficient sort routine may take a day or more to implement and optimize.
+        * At the coding level, many low-level optimizations tend to reduce code readability and modularity, making the programs more susceptible to bugs and more difficult to modify or extend.
+    * For code that will be executed repeatedly in a performance-critical environment, extensive optimization may be appropriate.
+    * One challenge is to maintain some degree of elegance and readability in the code despite extensive transformations.
+
+* Optimizing a program
+    * Eliminate unnecessary work: unnecessary function calls, conditional tests, and memory references
+        * To maximize the performance of a program, both the programmer and the compiler require a model of the target machine, specifying how instructions are processed and the timing characteristics of the different operations
+        * Programmers must understand how these processors work to be able to tune their programs for maximum speed.
+    * Exploiting the capability of processors to provide instruction-level parallelism, executing multiple instructions simultaneously.
+* Studying the assembly-code representation of a program is one of the most effective means for gaining an understanding of the compiler and how the gen- erated code will run.
 
 ## 5.1 Capabilities and Limitations of Optimizing Compilers
+* Different pointers aliased or not leads to one of the major optimization blockers, aspects of programs that can severely limit the opportunities for a compiler to generate optimized code.
+    * ```c++
+        // requires six (two reads of *xp, two reads of *yp, and two writes of *xp)
+        void twiddle1(int *xp, int *yp) {
+            *xp += *yp;
+            *xp += *yp;
+        }
+
+        // if yp is an alies of xp, code can be optimized to twiddle2
+
+        // requires only three memory references (read *xp, read *yp, write *xp)
+        void twiddle2(int *xp, int *yp) {
+            *xp += 2 * *yp;
+        }
+        ```
+* A second optimization blocker is due to function calls.
+    * ```c++
+        int f();
+
+        int fun1() {
+            return f() + f() + f() + f();
+        }
+
+        int func2() {
+            return 4 * f();
+        }
+        ```
+    * ```c++
+        int counter = 0;
+
+        int f() {
+            return counter++;
+        }
+        ```
+    * Most compilers do not try to determine whether a function is free of **side effects** and hence is a candidate for optimizations such as those attempted in func2. Instead, the compiler assumes the worst case and leaves function calls intact.
 
 ## 5.2 Expressing Program Performance
+* The sequencing of activities by a processor is controlled by a clock providing a regular signal of some frequency, usually expressed in gigahertz (**GHz**), billions of cycles per second.
+    * E.g., “4 GHz” processor, it means that the processor clock runs at 4.0 × 109 cycles per second.
 
 ## 5.3 Program Example
 
 ## 5.4 Eliminating Loop Inefficiencies
+* **code motion** involves identifying a computation that is performed multiple times (e.g., within a loop), but such that the result of the computation will not change. We can therefore move the computation to an earlier section of the code that does not get evaluated as often.
+    * Optimizing compilers cannot reliably detect whether or not a function will have side effects, and so they assume that it might. To improve the code, the programmer must often help the compiler by explicitly performing code motion.
 
 ## 5.5 Reducing Procedure Calls
 
 ## 5.6 Eliminating Unneeded Memory References
 
 ## 5.7 Understanding Modern Processors
+* One of the remarkable feats of modern microprocessors: they employ complex and exotic microarchitectures, in which multiple instructions can be executed in parallel, while presenting an operational view of simple sequential instruction execution.
+* Two different lower bounds characterize the maximum performance of a program.
+    * The **latency bound** is encountered when a series of operations must be performed in strict sequence, because the result of one operation is required before the next one can begin. This bound can limit program performance when the data dependencies in the code limit the ability of the processor to exploit instruction-level parallelism.
+    * The **throughput bound** characterizes the raw computing capacity of the processor’s functional units. This bound becomes the ultimate limit on program performance.
+### 5.7.1 Overall Operation
+* ![](../Images/CSAPP/5.7-block-diagram-modern-processor.png)
+* It is described in the industry as being `superscalar`, which means it can perform multiple operations on every clock cycle, and `out-of-order`, meaning that the order in which instructions execute need not correspond to their ordering in the machine-level program.
+* The overall design has two main parts:
+    * the instruction control unit (ICU), which is responsible for reading a sequence of instructions from memory and generating from these a set of primitive operations to perform on program data
+    * the execution unit (EU), which then executes these operations.
+* The ICU reads the instructions from an instruction cache—a special high- speed memory containing the most recently accessed instructions. In general, the ICU fetches well ahead of the currently executing instructions, so that it has enough time to decode these and send operations down to the EU.
+* Modern processors employ a technique known as **branch prediction**, in which they guess whether or not a branch will be taken and also predict the target address for the branch. Using a technique known as **speculative execution**, the processor begins fetching and decoding instructions at where it predicts the branch will go, and even begins executing these operations before it has been determined whether or not the branch prediction was correct.
+    * Branch operations are sent to the EU, not to determine where the branch should go, but rather to determine whether or not they were predicted correctly.
+    * With speculative execution, the operations are evaluated, but the final results are not stored in the program registers or data memory until the processor can be certain that these instructions should actually have been executed.
+* The `instruction decoding logic` takes the actual program instructions and con- verts them into a set of primitive operations (sometimes referred to as micro- operations). Each of these operations performs some simple computational task such as adding two numbers, reading data from memory, or writing data to memory.
+* The `EU` receives operations from the instruction fetch unit. Typically, it can receive a number of them on each clock cycle. These operations are dispatched to a set of functional units that perform the actual operations. These functional units are specialized to handle specific types of operations.
+* The `retirement unit` keeps track of the ongoing processing and makes sure that it obeys the sequential semantics of the machine-level program.
+* Any updates to the `program registers` occur only as instructions are being retired, and this takes place only after the processor can be certain that any branches leading to this instruction have been correctly predicted.
+* To expedite the communication of results from one instruction to another, much of this information is exchanged among the execution units, shown as `Operation results`. As the arrows in the figure show, the execution units can send results directly to each other. This is a more elaborate form of the data forwarding techniques.
+* The most common mechanism for controlling the communication of operands among the execution units is called **register renaming**.
+
+### 5.7.2 Functional Unit Performance
+
+### 5.7.3 An Abstract Model of Processor Operation
+
+* From Machine-Level Code to Data-Flow Graphs
+    * ```c++
+        void combine4(vec_ptr v, data_t *dest) {
+            long int i;
+            long int length = vec_length(v);
+            data_t* data = get_vec_start(v);
+            data_t acc = IDENT;
+
+            for (i = 0; i < length; ++i) {
+                acc = acc OP data[i];
+            }
+            *dest = acc;
+        }
+        ```
+        ```c++
+        // combine4: data_t float, OP = *
+        // i in %rdx, data in %rax, limit in %rbp, acc in %xmm0
+        .L488:                                  loop:
+            mulss   (%rax, %rdx, 4),    %xmm0   // multiply acc by data[i]
+            addq    %1,                 %rdx    // increment i
+            cmpq    %rdx,               %rbp    // compare limit: i
+            jg      .L488                       // if >, goto loop
+        ```
+    * ![](../Images/CSAPP/5.7.3-inner-loop.png)
+        * we can classify the registers that are accessed into four categories:
+            * Read-only: These are used as source values, either as data or to compute memory addresses, but they are not modified within the loop. The read- only registers for the loop combine4 are %rax and %rcx.
+            * Write-only: These are used as the destinations of data-movement operations. There are no such registers in this loop.
+            * Local: Theseareupdatedandusedwithintheloop,butthereisnodependency from one iteration to another. The condition code registers are examples for this loop: they are updated by the cmp operation and used by the jg operation, but this dependency is contained within individual iterations.
+            * Loop: These are both used as source values and as destinations for the loop, with the value generated in one iteration being used in another. We can see that %rdx and %xmm0 are loop registers for combine4, corresponding to program values i and acc.
+        * As we will see, the chains of operations between loop registers determine the performance-limiting data dependencies.
+    * ![](../Images/CSAPP/5.7.3-inner-loop-data-flow-1.png)
+        * (a) We rearrange the operators to more clearly show the data dependencies
+        * (b) show only those operations that use values from one iteration to produce new values for the next.
+
+    * ![](../Images/CSAPP/5.7.3-inner-loop-data-flow-2.png)
+        * Given that single-precision multiplication has a latency of 4 cycles, while integer addition has latency 1, we can see that the chain on the left will form a critical path, requiring 4n cycles to execute. The chain on the left would require only n cycles to execute, and so it does not limit the program performance.
+
+* Other Performance Factors
+    * Including the total number of functional units available and the number of data values that can be passed among the functional units on any given step.
 
 ## 5.8 Loop Unrolling
+* Loop unrolling is a program transformation that reduces the number of iterations for a loop by increasing the number of elements computed on each iteration.
+* Loop unrolling can improve performance in two ways.
+    1. it reduces the number of operations that do not contribute directly to the program result, such as loop indexing and conditional branching.
+    2. it exposes ways in which we can further transform the code to reduce the number of operations in the critical paths of the overall computation.
+* ```c++
+    void combine4(vec_ptr v, data_t *dest) {
+        long int i;
+        long int length = vec_length(v);
+        int limit = length - 1;
+        data_t* data = get_vec_start(v);
+        data_t acc = IDENT;
+
+        // combine 2 elements at a time
+        for (i = 0; i < limit; i += 2) {
+            acc = (acc OP data[i]) OP data[i+1];
+        }
+
+        // finish any remaining elements
+        for (; i < length; ++i) {
+            acc = acc OP data[i];
+        }
+        *dest = acc;
+    }
+    ```
+* why the three floating-point cases do not improve by loop unrolling?
+    * ![](../Images/CSAPP/5.8-three-float-point-op-1.png)
+        * mulss instructions each get translated into two operations: one to load an array element from memory, and one to multiply this value by the accumulated value. We see here that register %xmm0 gets read and written twice in each execution of the loop.
+    * ![](../Images/CSAPP/5.8-three-float-point-op-2.png)
+    * ![](../Images/CSAPP/5.8-three-float-point-op-3.png)
+        * Even though the loop has been unrolled by a factor of 2, there are still n mul operations along the critical path.
 
 ## 5.9 Enhancing Parallelism
+* At this point, our functions have hit the bounds imposed by the latencies of the arithmetic units. As we have noted, however, the functional units performing addition and multiplication are all fully pipelined, meaning that they can start new operations every clock cycle.
+
+### 5.9.1 Multiple Accumulators
+
+### 5.9.2 Reassociation Transformation
+
 
 ## 5.10 Summary of Results for Optimizing Combining Code
 
