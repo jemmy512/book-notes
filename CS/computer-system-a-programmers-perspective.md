@@ -1428,6 +1428,7 @@ Value | Name | Meaning
 * Looking at the HCL code for implementing the PC prediction logic in Section 4.5.10, we can see that for the ret instruction the new value of the PC is predicted to be valP, the address of the following instruction. In our example program, this would be 0x021, the address of the rrmovl instruction following the ret. This prediction is not correct for this example, nor would it be for most cases.
 
     * Load/use hazard
+
         * For a load/use hazard, we have already described the desired pipeline operation in Section 4.5.8.
     * The pipeline can `hold back` an instruction in the decode stage by keeping pipeline register D in a fixed state. In doing so, it should also keep pipeline register F in a fixed state, so that the next instruction will be fetched a second time.
 
@@ -1635,11 +1636,11 @@ Value | Name | Meaning
 * The overall design has two main parts:
     * the instruction control unit (ICU), which is responsible for reading a sequence of instructions from memory and generating from these a set of primitive operations to perform on program data
     * the execution unit (EU), which then executes these operations.
-* The ICU reads the instructions from an instruction cache—a special high- speed memory containing the most recently accessed instructions. In general, the ICU fetches well ahead of the currently executing instructions, so that it has enough time to decode these and send operations down to the EU.
+* The ICU reads the instructions from an instruction cache—a special highspeed memory containing the most recently accessed instructions. In general, the ICU fetches well ahead of the currently executing instructions, so that it has enough time to decode these and send operations down to the EU.
 * Modern processors employ a technique known as **branch prediction**, in which they guess whether or not a branch will be taken and also predict the target address for the branch. Using a technique known as **speculative execution**, the processor begins fetching and decoding instructions at where it predicts the branch will go, and even begins executing these operations before it has been determined whether or not the branch prediction was correct.
     * Branch operations are sent to the EU, not to determine where the branch should go, but rather to determine whether or not they were predicted correctly.
     * With speculative execution, the operations are evaluated, but the final results are not stored in the program registers or data memory until the processor can be certain that these instructions should actually have been executed.
-* The `instruction decoding logic` takes the actual program instructions and con- verts them into a set of primitive operations (sometimes referred to as micro- operations). Each of these operations performs some simple computational task such as adding two numbers, reading data from memory, or writing data to memory.
+* The `instruction decoding logic` takes the actual program instructions and converts them into a set of primitive operations (sometimes referred to as microoperations). Each of these operations performs some simple computational task such as adding two numbers, reading data from memory, or writing data to memory.
 * The `EU` receives operations from the instruction fetch unit. Typically, it can receive a number of them on each clock cycle. These operations are dispatched to a set of functional units that perform the actual operations. These functional units are specialized to handle specific types of operations.
 * The `retirement unit` keeps track of the ongoing processing and makes sure that it obeys the sequential semantics of the machine-level program.
 * Any updates to the `program registers` occur only as instructions are being retired, and this takes place only after the processor can be certain that any branches leading to this instruction have been correctly predicted.
@@ -1675,7 +1676,7 @@ Value | Name | Meaning
         ```
     * ![](../Images/CSAPP/5.7.3-inner-loop.png)
         * we can classify the registers that are accessed into four categories:
-            * Read-only: These are used as source values, either as data or to compute memory addresses, but they are not modified within the loop. The read- only registers for the loop combine4 are %rax and %rcx.
+            * Read-only: These are used as source values, either as data or to compute memory addresses, but they are not modified within the loop. The readonly registers for the loop combine4 are %rax and %rcx.
             * Write-only: These are used as the destinations of data-movement operations. There are no such registers in this loop.
             * Local: Theseareupdatedandusedwithintheloop,butthereisnodependency from one iteration to another. The condition code registers are examples for this loop: they are updated by the cmp operation and used by the jg operation, but this dependency is contained within individual iterations.
             * Loop: These are both used as source values and as destinations for the loop, with the value generated in one iteration being used in another. We can see that %rdx and %xmm0 are loop registers for combine4, corresponding to program values i and acc.
@@ -1685,7 +1686,8 @@ Value | Name | Meaning
         * (b) show only those operations that use values from one iteration to produce new values for the next.
 
     * ![](../Images/CSAPP/5.7.3-inner-loop-data-flow-2.png)
-        * Given that single-precision multiplication has a latency of 4 cycles, while integer addition has latency 1, we can see that the chain on the left will form a critical path, requiring 4n cycles to execute. The chain on the left would require only n cycles to execute, and so it does not limit the program performance.
+
+    * Given that single-precision multiplication has a latency of 4 cycles, while integer addition has latency 1, we can see that the chain on the left will form a critical path, requiring 4n cycles to execute. The chain on the left would require only n cycles to execute, and so it does not limit the program performance.
 
 * Other Performance Factors
     * Including the total number of functional units available and the number of data values that can be passed among the functional units on any given step.
@@ -1696,7 +1698,7 @@ Value | Name | Meaning
     1. it reduces the number of operations that do not contribute directly to the program result, such as loop indexing and conditional branching.
     2. it exposes ways in which we can further transform the code to reduce the number of operations in the critical paths of the overall computation.
 * ```c++
-    void combine4(vec_ptr v, data_t *dest) {
+    void combine5(vec_ptr v, data_t *dest) {
         long int i;
         long int length = vec_length(v);
         int limit = length - 1;
@@ -1715,26 +1717,165 @@ Value | Name | Meaning
         *dest = acc;
     }
     ```
+* ![](../Images/CSAPP/5.8-three-float-point-op-1.png)
+    * mulss instructions each get translated into two operations: one to load an array element from memory, and one to multiply this value by the accumulated value. We see here that register %xmm0 gets read and written twice in each execution of the loop.
+* ![](../Images/CSAPP/5.8-three-float-point-op-2.png)
+* ![](../Images/CSAPP/5.8-three-float-point-op-3.png)
+    * Even though the loop has been unrolled by a factor of 2, there are still n mul operations along the critical path.
+
 * why the three floating-point cases do not improve by loop unrolling?
-    * ![](../Images/CSAPP/5.8-three-float-point-op-1.png)
-        * mulss instructions each get translated into two operations: one to load an array element from memory, and one to multiply this value by the accumulated value. We see here that register %xmm0 gets read and written twice in each execution of the loop.
-    * ![](../Images/CSAPP/5.8-three-float-point-op-2.png)
-    * ![](../Images/CSAPP/5.8-three-float-point-op-3.png)
-        * Even though the loop has been unrolled by a factor of 2, there are still n mul operations along the critical path.
+    * gcc recognizes that it can safely perform this transformation for integer operations, but it also recognizes that it cannot transform the floating-point cases due to the lack of associativity
+    * Most compilers will not attempt any reassociations of floating-point operations, since these operations are not guaranteed to be associative.
+    * See [5.9.2 Reassociation Transformation](### 5.9.2 Reassociation Transformation)
 
 ## 5.9 Enhancing Parallelism
 * At this point, our functions have hit the bounds imposed by the latencies of the arithmetic units. As we have noted, however, the functional units performing addition and multiplication are all fully pipelined, meaning that they can start new operations every clock cycle.
 
 ### 5.9.1 Multiple Accumulators
+* For a combining operation that is associative and commutative, such as integer addition or multiplication, we can improve performance by splitting the set of combining operations into two or more parts and combining the results at the end.
+    * ```c++
+        void combine6(vec_ptr v, data_t *dest) {
+            long int i;
+            long int length = vec_length(v);
+            int limit = length - 1;
+            data_t* data = get_vec_start(v);
+            data_t acc0 = IDENT;
+            data_t acc1 = IDENT;
+
+            // combine 2 elements at a time
+            for (i = 0; i < limit; i += 2) {
+                acc0 = acc0 OP data[i];
+                acc1 = acc1 OP data[i+1];
+            }
+
+            // finish any remaining elements
+            for (; i < length; ++i) {
+                acc0 = acc0 OP data[i];
+            }
+            *dest = acc0 OP acc1;
+        }
+        ```
+* ![](../Images/CSAPP/5.9.1-multiple-accumulator-1.png)
+* ![](../Images/CSAPP/5.9.1-multiple-accumulator-2.png)
+* ![](../Images/CSAPP/5.9.1-multiple-accumulator-3.png)
+
+* Understand the performance of combine6
+    * As with combine5, the inner loop contains two mulss operations, but these instructions translate into mul operations that read and write separate registers, with no data dependency between them(Figure b). We then replicate this template n/2 times (Figure a), modeling the execution of the function on a vector of length n.
+    * We see that we now have two critical paths, one corresponding to computing the product of even-numbered elements (program value acc0) and one for the odd-numbered elements (program value acc1). Each of these critical paths contain only n/2 operations, thus leading to a CPE of 4.00/2.
+
+* An optimizing compiler could potentially convert the code shown in combine4 first to a two-way unrolled variant of combine5 by loop unrolling, and then to that of combine6 by introducing parallelism.
 
 ### 5.9.2 Reassociation Transformation
+* The reassociation transformation to achieve k-way loop unrolling with reassociation
+    * ```c++
+        void combine7(vec_ptr v, data_t *dest) {
+            long int i;
+            long int length = vec_length(v);
+            int limit = length - 1;
+            data_t* data = get_vec_start(v);
+            data_t acc = IDENT;
 
+            // combine 2 elements at a time
+            for (i = 0; i < limit; i += 2) {
+                acc = acc OP (data[i] OP data[i+1]);
+            }
+
+            // finish any remaining elements
+            for (; i < length; ++i) {
+                acc = acc OP data[i];
+            }
+            *dest = acc;
+        }
+        ```
+
+* Function | Page | Method | Integer \+ | Integer \* | Floating point \+ | F\* | D\*
+    --- | --- | --- | --- | --- | --- | --- | ---
+    combine4 | 493 | Accumulate in temporary | 2.00 | 3.00 | 3.00 | 4.50 | 5.00
+    combine5 | 510 | Unroll by ×2 | 2.00 | 1.50 | 3.00 | 4.00 | 5.00
+    combine6 | 515 | Unroll by ×2, parallelism ×2 | 1.50 | 1.50 | 1.50 | 2.00 | 2.50
+    combine7 | 519 | Unroll ×2 and reassociate | 2.00 | 1.51 | 1.50 | 2.00 | 2.97
+    Latency bound |  |  | 2.00 | 1.51 | 1.50 | 2.00 | 2.97
+    Throughput bound |  |  | 2.00 | 1.51 | 1.50 | 2.00 | 2.97
+
+* ![](../Images/CSAPP/5.9.2-reassociatation-4.png)
+
+    * CPE performance for k-way loop unrolling with reassociation. All of the 4.00 CPEs improve with this transformation, up to the limiting value of 1.00.
+* ![](../Images/CSAPP/5.9.2-reassociatation-1.png)
+    * The load operations resulting from the movss and the first mulss instructions load vector elements i and i + 1 from memory, and the first mul operation multiplies them together.
+    * The second mul operation then multiples this result by the accumulated value acc.
+* ![](../Images/CSAPP/5.9.2-reassociatation-2.png)
+
+* ![](../Images/CSAPP/5.9.2-reassociatation-3.png)
+
+* Explain the surprising improvement we saw with simple loop unrolling (combine5) for the case of integer multiplication:
+    *  In compiling this code, gcc performed the reassociation that we have shown in combine7, and hence it achieved the same performance.
+    * It also performed the transformation for code with higher degrees of unrolling.
+    * gcc recognizes that it can safely perform this transformation for integer operations, but it also recognizes that it cannot transform the floating-point cases due to the lack of associativity.
+    * It would be gratifying to find that gcc performed this transformation recognizing that the resulting code would run faster, but unfortunately this seems not to be the case.
+* Optimizing compilers must choose which factors they try to optimize, and it appears that gcc does not use maximizing instructionlevel parallelism as one of its optimization criteria when selecting how to associate integer operations.
+* A reassociation transformation can reduce the number of operations along the critical path in a computation, resulting in better performance by better utilizing the pipelining capabilities of the functional units.
+* Most compilers will not attempt any reassociations of floating-point operations, since these operations are not guaranteed to be associative.
+
+* Achieving greater parallelism with **SIMD** instructions
+    * Intel introduced the **SSE** instructions in 1999, where SSE is the acronym for “Streaming SIMD Extensions,”.
+    * The idea behind the SIMD execution model is that each 16-byte XMM register can hold multiple values.
+    * In our examples, we consider the cases where they can hold either four integer or single-precision values, or two double-precision values.
+    * SSE instructions can then perform vector operations on these registers, such as adding or multiplying four or two sets of values in parallel.
 
 ## 5.10 Summary of Results for Optimizing Combining Code
+* Several factors limit our performance for this computation to a CPE of 1.00 when using scalar instructions, and a CPE of either 0.25 (32-bit data) or 0.50 (64-bit data) when using SIMD instructions:
+    * First, the processor can only read 16 bytes from the data cache on each cycle, and then only by reading into an XMM register.
+    * Second, the multiplier and adder units can only start a new operation every clock cycle
 
 ## 5.11 Some Limiting Factors
+### 5.11.1 Register Spilling
+* If we have a degree of parallelism p that exceeds the number of available registers, then the compiler will resort to spilling, storing some of the temporary values on the stack. Once this happens, the performance can drop significantly.
+
+### 5.11.2 Branch Prediction and Misprediction Penalties
+* In a processor that employs speculative execution, the processor begins executing the instructions at the predicted branch target. It does this in a way that avoids modifying any actual register or memory locations until the actual outcome has been determined.
+    * If the prediction is correct, the processor can then “commit” the results of the speculatively executed instructions by storing them in registers or memory.
+    * If the prediction is incorrect, the processor must discard all of the speculatively executed results and restart the instruction fetch process at the correct location.
+
+* The misprediction penalty is incurred in doing this, because the instruction pipeline must be refilled before useful results are generated.
+
+* **Conditional move** instructions can be implemented as part of the pipelined processing of ordinary instructions. There is no need to guess whether or not the condition will hold, and hence no penalty for guessing incorrectly.
+
+* Do Not Be Overly Concerned about Predictable Branches
+
+* Write Code Suitable for Implementation with Conditional Moves
+    * For inherently unpredictable cases, program performance can be greatly enhanced if the compiler is able to generate code using `conditional data transfers` rather than conditional control transfers.
+    * We have found that gcc is able to generate conditional moves for code written in a more **functional** style, where we use conditional operations to compute values and then update the program state with these values, as opposed to a more **imperative** style, where we use conditionals to selectively update program state.
+    * functional style
+        ```c++
+        void minMax(int a[], int b[], int n) {
+            for (int i = 0; i < n; ++i) {
+                int min = a[i] < b[i] ? a[i] : b[i];
+                int max = a[i] < b[i] ? b[i] : a[i];
+                a[i] = min;
+                b[i] = max;
+            }
+        }
+        ```
+    * imperative style
+        ```c++
+        void minMax(int a[], int b[], int n) {
+            for (int i = 0; i < n; ++i) {
+                if (a[i] > b[i]) {
+                    int i = a[i];
+                    a[i] = b[i];
+                    b[i] = t;
+                }
+            }
+        }
+        ```
 
 ## 5.12 Understanding Memory Performance
+* Modern processors have dedicated functional units to perform load and store operations, and these units have internal buffers to hold sets of outstanding requests for memory operations.
+
+### 5.12.1 Load Performance
+* The performance of a program containing load operations depends on both the pipelining capability and the latency of the load unit.
+* One factor limiting the CPE for our examples is that they all require reading one value from memory for each element computed. Since the load unit can only initiate one load operation every clock cycle, the CPE cannot be less than 1.00. For applications where we must load k values for every element computed, we can never achieve a CPE lower than k.
+
 
 ## 5.13 Life in the Real World: Performance Improvement Techniques
 
