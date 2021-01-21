@@ -1533,8 +1533,6 @@ Value | Name | Meaning
     bool set_cc =
         E_icode == IOPL &&
         !m_stat in { SADR, SINS, SHLT } && !W_stat in { SADR, SINS, SHLT }; # State changes only during normal operation
-    ```
-
 
     # Start injecting bubbles as soon as exception passes through memory stage
     bool M_bubble = m_stat in { SADR, SINS, SHLT } || W_stat in { SADR, SINS, SHLT };
@@ -1876,6 +1874,48 @@ Value | Name | Meaning
 * The performance of a program containing load operations depends on both the pipelining capability and the latency of the load unit.
 * One factor limiting the CPE for our examples is that they all require reading one value from memory for each element computed. Since the load unit can only initiate one load operation every clock cycle, the CPE cannot be less than 1.00. For applications where we must load k values for every element computed, we can never achieve a CPE lower than k.
 
+### 5.12.2 Store Performance
+* The performance of Store operation, particularly in relation to its interactions with load operations, involves several subtle issues.
+* As with the load operation, in most cases, the store operation can operate in a fully pipelined mode, beginning a new store on every cycle.
+*   ```c++
+    void clear_array(int* dest, int n) {
+        for (int i = 0; i < n; ++i) {
+            dest[i] = 0;
+        }
+    }
+
+    void clear_array4(int* dest, int n) {
+        int i = 0;
+        for (; i < n-3; i += 4) {
+            dest[i] = 0;
+            dest[i+1] = 0;
+            dest[i+2] = 0;
+            dest[i+3] = 0;
+        }
+
+        while (i < n-3) {
+            dest[i] = 0;
+            ++i;
+        }
+    }
+    ```
+    * Our measurements for the first version show a CPE of 2.00. By unrolling the loop four times, as shown in the code for clear_array_4, we achieve a CPE of 1.00. Thus, we have achieved the optimum of one new store operation per cycle.
+* The store operation does not affect any register values. Thus, by their very nature a series of store operations cannot create a data dependency. Only a load operation is affected by the result of a store operation, since only a load can read back the memory value that has been written by the store.
+
+* ![](../Images/CSAPP/5.12.2-read-store-operation.png)
+    * The write/read dependency causes a slowdown in the processing.
+
+* ![](../Images/CSAPP/5.12.2-load-store-units.png)
+    * The store unit maintains a buffer of pending writes. The load unit must check its address with those in the store unit to detect a write/read dependency.
+    * The store unit contains a store buffer containing the addresses and data of the store operations that have been issued to the store unit, but have not yet been completed, where completion involves updating the data cache. This buffer is provided so that a series of store operations can be executed without having to wait for each one to update the cache.
+    * When a load operation occurs, it must check the entries in the store buffer for matching addresses. If it finds a match (meaning that any of the bytes being written have the same address as any of the bytes being read), it retrieves the corresponding data entry as the result of the load operation.
+
+* ![](../Images/CSAPP/5.12.2-load-store-asm-1.png)
+    * The **s_addr** instruction computes the address for the store operation, creates an entry in the store buffer, and sets the address field for that entry. The **s_data** operation sets the data field for the entry. As we will see, the fact that these two computations are performed independently can be important to program performance.
+    * In addition to the data dependencies between the operations caused by the writing and reading of registers, the arcs on the right of the operators denote a set of implicit dependencies for these operations.
+
+* ![](../Images/CSAPP/5.12.2-load-store-asm-2.png)
+* ![](../Images/CSAPP/5.12.2-load-store-asm-3.png)
 
 ## 5.13 Life in the Real World: Performance Improvement Techniques
 
