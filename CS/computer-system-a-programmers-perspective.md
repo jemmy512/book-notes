@@ -1,4 +1,4 @@
-# Chapter 1 A Tour of Computer System
+# 1 A Tour of Computer System
 ## 1.1 Information Is Bits + Context
 The source program is a sequence of bits, each with a value of 0 or 1, organized in 8-bit chunks called bytes. Each byte represents some text character in the program.
 
@@ -181,7 +181,7 @@ Linus (torvalds@kruuna.helsinki.fi)
 ### 1.9.2 The Importance of Abstractions in Computer Systems
 * One aspect of good programming practice is to formulate a simple application-program interface (API) for a set of functions that allow programmers to use the code without having to delve into its inner workings.
 
-# Chapter 2 Representing and Manipulating Information
+# 2 Representing and Manipulating Information
 * **Unsigned encodings** are based on traditional binary notation, representing numbers greater than or equal to 0.
 * **Two’s-complement encodings** are the most common way to represent signed integers, that is, numbers that may be either positive or negative.
 * **Floating-point encodings** are a base-two version of scientific notation for representing real numbers.
@@ -271,7 +271,7 @@ For an unsigned number x, the result of truncating it to k bits is equivalent to
 ### 2.4.1 Fractional Binary Number
 
 
-# Chapter 3 Machine-Level Representation of Programs
+# 3 Machine-Level Representation of Programs
 
 ## 3.2 Program Encodings
 ### 3.2.1 Machine-Level Code
@@ -842,7 +842,7 @@ movl    (%edx, %eax, 4),    %eax    // read from M[Xa + 4*j + 12*i]
 
 ## 3.15 Summary
 
-# Chapter 4 Processor Arthitecture
+# 4 Processor Arthitecture
 * The instructions supported by a particular processor and their byte-level encodings are known as its **instruction-set architecture (ISA)**.
 * The ISA provides a conceptual layer of abstraction between compiler writers, who need only know what instructions are permitted and how they are encoded, and processor designers, who must build machines that execute those instructions.
 * Why should you learn about processor design?
@@ -1552,7 +1552,7 @@ Value | Name | Meaning
     * We do not need to implement the ISA directly.
     * Hardware designers must be meticulous.
 
-# Chapter 5 Optimizing Program Performance
+# 5 Optimizing Program Performance
 * Writing an efficient program requires several types of activities:
     * select an appropriate set of algorithms and data structures.
     * write source code that the compiler can effectively optimize to turn into efficient executable code.
@@ -1688,6 +1688,7 @@ Value | Name | Meaning
     * Given that single-precision multiplication has a latency of 4 cycles, while integer addition has latency 1, we can see that the chain on the left will form a critical path, requiring 4n cycles to execute. The chain on the left would require only n cycles to execute, and so it does not limit the program performance.
 
 * Other Performance Factors
+
     * Including the total number of functional units available and the number of data values that can be passed among the functional units on any given step.
 
 ## 5.8 Loop Unrolling
@@ -1716,10 +1717,12 @@ Value | Name | Meaning
     }
     ```
 * ![](../Images/CSAPP/5.8-three-float-point-op-1.png)
+
     * mulss instructions each get translated into two operations: one to load an array element from memory, and one to multiply this value by the accumulated value. We see here that register %xmm0 gets read and written twice in each execution of the loop.
 * ![](../Images/CSAPP/5.8-three-float-point-op-2.png)
 * ![](../Images/CSAPP/5.8-three-float-point-op-3.png)
-    * Even though the loop has been unrolled by a factor of 2, there are still n mul operations along the critical path.
+
+* Even though the loop has been unrolled by a factor of 2, there are still n mul operations along the critical path.
 
 * why the three floating-point cases do not improve by loop unrolling?
     * gcc recognizes that it can safely perform this transformation for integer operations, but it also recognizes that it cannot transform the floating-point cases due to the lack of associativity
@@ -1902,8 +1905,19 @@ Value | Name | Meaning
     * Our measurements for the first version show a CPE of 2.00. By unrolling the loop four times, as shown in the code for clear_array_4, we achieve a CPE of 1.00. Thus, we have achieved the optimum of one new store operation per cycle.
 * The store operation does not affect any register values. Thus, by their very nature a series of store operations cannot create a data dependency. Only a load operation is affected by the result of a store operation, since only a load can read back the memory value that has been written by the store.
 
+*   ```c++
+    void read_write(int* src, int* dest, int n) {
+        int val = 0;
+        while (n--) {
+            *dest = val;
+            val = (*src) + 1;
+        }
+    }
+    ```
+
 * ![](../Images/CSAPP/5.12.2-read-store-operation.png)
-    * The write/read dependency causes a slowdown in the processing.
+
+* The **write/read dependency** causes a slowdown in the processing.
 
 * ![](../Images/CSAPP/5.12.2-load-store-units.png)
     * The store unit maintains a buffer of pending writes. The load unit must check its address with those in the store unit to detect a write/read dependency.
@@ -1911,44 +1925,340 @@ Value | Name | Meaning
     * When a load operation occurs, it must check the entries in the store buffer for matching addresses. If it finds a match (meaning that any of the bytes being written have the same address as any of the bytes being read), it retrieves the corresponding data entry as the result of the load operation.
 
 * ![](../Images/CSAPP/5.12.2-load-store-asm-1.png)
-    * The **s_addr** instruction computes the address for the store operation, creates an entry in the store buffer, and sets the address field for that entry. The **s_data** operation sets the data field for the entry. As we will see, the fact that these two computations are performed independently can be important to program performance.
-    * In addition to the data dependencies between the operations caused by the writing and reading of registers, the arcs on the right of the operators denote a set of implicit dependencies for these operations.
-
+    * The instruction `movl %eax,(%ecx)` is translated into two operations:
+        * The **s_addr** instruction computes the address for the store operation, creates an entry in the store buffer, and sets the address field for that entry.
+        * The **s_data** operation sets the data field for the entry.
+    * As we will see, the fact that these two computations are performed independently can be important to program performance.
+    * In addition to the data dependencies between the operations caused by the writing and reading of registers, the arcs on the right of the operators denote a set of implicit dependencies for these operations:
+        * the address computation of the s_addr operation must clearly precede the s_data operation
+        * the load operation generated by decoding the instruction `movl (%ebx), %eax` must check the addresses of any pending store operations, creating a data dependency between it and the s_addr operation
+        * The figure shows a dashed arc between the s_data and load operations. This dependency is conditional:
+            * if the two addresses match, the load operation must wait until the s_data has deposited its result into the store buffer
+            * if the two addresses differ, the two operations can proceed independently.
 * ![](../Images/CSAPP/5.12.2-load-store-asm-2.png)
+    *  The arc labeled :one: represents the requirement that the store address must be computed before the data can be stored.
+    * The arc labeled :two: represents the need for the load operation to compare its address with that for any pending store operations.
+    * The dashed arc labeled :three: represents the conditional data dependency that arises when the load and store addresses match.
+    * (b) The data-flow graph shows just two chains of dependencies: the one on the left, with data values being stored, loaded, and incremented (only for the case of matching addresses), and the one on the right, decrementing variable cnt.
+
 * ![](../Images/CSAPP/5.12.2-load-store-asm-3.png)
+    * When the two addresses do not match, the only critical path is formed by the decrementing of cnt (Example A). When they do match, the chain of data being stored, loaded, and incremented forms the critical path (Example B).
+    * Example A, with differing source and destination addresses, the load and store operations can proceed independently, and hence the only critical path is formed by the decrementing of variable cnt. This would lead us to predict a CPE of just 1.00, rather than the measured CPE of 2.00.
+    * Example B, with matching source and destination addresses, the data dependency between the s_data and load instructions causes a critical path to form involving data being stored, loaded, and incremented. We found that these three operations in sequence require a total of 6 clock cycles.
+
+* With operations on registers, the processor can determine which instructions will affect which others as they are being decoded into operations.
+* With memory operations, on the other hand, the processor cannot predict which will affect which others until the load and store addresses have been computed.
+* Efficient handling of memory operations is critical to the performance of many programs. The memory subsystem makes use of many optimizations, such as the potential parallelism when operations can proceed independently.
+
+###  Practice Problem 5.10 [TODO]
 
 ## 5.13 Life in the Real World: Performance Improvement Techniques
+1. **High-level design**. Choose appropriate algorithms and data structures for the problem at hand. Be especially vigilant to avoid algorithms or coding techniques that yield asymptotically poor performance.
+2. **Basic coding principles**. Avoid optimization blockers so that a compiler can generate efficient code.
+    * Eliminate excessive function calls. Move computations out of loops when possible. Consider selective compromises of program modularity to gain greater efficiency.
+    * Eliminate unnecessary memory references. Introduce temporary variables to hold intermediate results. Store a result in an array or global variable only when the final value has been computed.
+3. **Low-level optimizations**.
+    * Unroll loops to reduce overhead and to enable further optimizations. Find ways to increase instruction-level parallelism by techniques such as multiple accumulators and reassociation.
+    * Rewrite conditional operations in a functional style to enable compilation via conditional data transfers.
 
 ## 5.14 Identifying and Eliminating Performance Bottlenecks
+### 5.14.1 Program Profiling
+* Program profiling involves running a version of a program in which instrumentation code has been incorporated to determine how much time the different parts of the program require.
 
-# Chapter 6 The Memory Hierarchy
+## 5.15 Summary
+* We have studied a series of techniques, including loop unrolling, creating multiple accumulators, and reassociation, that can exploit the instruction-level parallelism provided by modern processors.
+* Try to make branches more predictable or make them amenable to implementation using conditional data transfers
+* We must also watch out for the interactions between store and load operations. Keeping values in local variables, allowing them to be stored in registers, can often be helpful.
+* Code profilers and related tools can help us systematically evaluate and improve program performance.
+* Amdahl’s law provides a simple but powerful insight into the performance gains obtained by improving just one part of the system.
+
+# 6 The Memory Hierarchy
 ## 6.1 Storage Technologies
+
 ## 6.2 Locality
+* A tendency, they tend to reference data items that are near other recently referenced data items, or that were recently referenced themselves.
+* Locality is typically described as having two distinct forms:
+    * In a program with good **temporal locality**, a memory location that is referenced once is likely to be referenced again multiple times in the near future.
+    * In a program with good **spatial locality**, if a memory location is referenced once, then the program is likely to reference a nearby memory location in the near future.
+
+### 6.2.1 Locality of References to Program Data
+
+### 6.2.2 Locality of Instruction Fetches
+
+### 6.2.3 Summary of Locality
+* Programs that repeatedly reference the same variables enjoy good temporal locality.
+* For programs with **stride-k reference patterns**, the smaller the stride the better the spatial locality. Programs with stride-1 reference patterns have good spatial locality. Programs that hop around memory with large strides have poor spatial locality.
+* Loops have good temporal and spatial locality with respect to instruction fetches. The smaller the loop body and the greater the number of loop iterations, the better the locality.
+
+
 ## 6.3 The Memory Hierarchy
+* **Storage technology**: Different storage technologies have widely different access times. Faster technologies cost more per byte than slower ones and have less capacity. The gap between CPU and main memory speed is widening.
+* **Computer software**: Well-written programs tend to exhibit good locality.
+
+* ![](../Images/CSAPP/1.6-memory-hierachy.png)
+    * At the highest level (L0) are a small number of fast CPU registers that the CPU can access in a `single clock cycle`.
+    * Next are one or more small to moderate-sized SRAM-based cache memories that can be accessed in a `few CPU clock cycles`.
+    * These are followed by a large DRAM-based main memory that can be accessed in tens to `hundreds of clock cycles`.
+    * Next are slow but enormous local disks.
+    * Finally, some systems even include an additional level of disks on remote servers that can be accessed over a network.
+
+### 6.3.1 Caching in the Memory Hierarchy
+* The central idea of a `memory hierarchy` is that for each k, the faster and smaller storage device at level k serves as a cache for the larger and slower storage device at level k + 1
+* It is important to realize that while the block size is fixed between any particular pair of adjacent levels in the hierarchy, other pairs of levels can have different block sizes.
+
+* **Cache Hits**
+* **Cache Misses**
+    * This process of overwriting an existing block is known as **replacing** or **evicting** the block.
+* Kinds of Cache Misses
+    * An empty cache is sometimes referred to as a `cold cache`, and misses of this kind are called compulsory misses or **cold misses**. Cold misses are important because they are often transient events that might not occur in steady state, after the cache has been warmed up by repeated memory accesses.
+    * Because randomly placed blocks are expensive to locate, thus, hardware caches typically implement a more restricted `placement policy` that restricts a particular block at level k + 1 to a small subset (sometimes a singleton) of the blocks at level k.
+    * Restrictive placement policies of this kind lead to a type of miss known as a **conflict miss**, in which the cache is large enough to hold the referenced data objects, but because they map to the same cache block, the cache keeps missing.
+    * Programs often run as a sequence of phases (e.g., loops) where each phase accesses some reasonably constant set of cache blocks. For example, a nested loop might access the elements of the same array over and over again. This set of blocks is called the `working set` of the phase. When the size of the working set exceeds the size of the cache, the cache will experience what are known as **capacity misses**. In other words, the cache is just too small to handle this particular working set.
+
+* Cache Management
+    * partition the cache storage into blocks
+    * transfer blocks between different levels
+    * decide when there are hits and misses, and then deal with them
+
+### 6.3.2 Summary of Memory Hierarchy Concepts
+* **Exploiting temporal locality**. Because of temporal locality, the same data objects are likely to be reused multiple times. Once a data object has been copied into the cache on the first miss, we can expect a number of subsequent hits on that object. Since the cache is faster than the storage at the next lower level, these subsequent hits can be served much faster than the original miss.
+* **Exploiting spatial locality**. Blocks usually contain multiple data objects. Because of spatial locality, we can expect that the cost of copying a block after a miss will be amortized by subsequent references to other objects within that block.
+* ![](../Images/CSAPP/6.3.2-the-ubiquity-of-caching.png)
+
 
 ## 6.4 Cache Memories
-### 6.4.1 Generic Cache Memory Organization
-![Cache Organization](../Images/CSAPP/6.27-General-organization-of-cache.png)
+* ![](../Images/CSAPP/6.4-cache-memories.png)
 
-Why index with the middle bits?
-> If the high-order bits are used as an index, then some contiguous memory blocks will map to the same cache set.
+### 6.4.1 Generic Cache Memory Organization
+* ![](../Images/CSAPP/6.4.1-general-organization-of-cache.png)
+* How does the cache know whether it contains a copy of the word at address A?
+    * The cache is organized so that it can find the requested word by simply inspecting the bits of the address, similar to a hash table with an extremely simple hash function.
+    * The parameters S and B induce a partitioning of the m address bits into the three fields (b). The `s set index` bits in A form an index into the array of S sets. The first set is set 0, the second set is set 1, and so on. When interpreted as an unsigned integer, the set index bits tell us which set the word must be stored in.
+    * Once we know which set the word must be contained in, the `t tag bits` in A tell us which line (if any) in the set contains the word. A line in the set contains the word if and only if the valid bit is set and the tag bits in the line match the tag bits in the address A.
+    * Once we have located the line identified by the tag in the set identified by the set index, then the `b block offset bits` give us the offset of the word in the B-byte data block.
+* ![](../Images/CSAPP/6.4.1-cache-paramters.png)
+
+### 6.4.2 Direct-Mapped Caches
+* Caches are grouped into different classes based on E, the number of cache lines per set. A cache with exactly one line per set (E = 1) is known as a **direct-mapped cache**.
+
+* The process that a cache goes through of determining whether a request is a hit or a miss and then extracting the requested word consists of three steps:
+    1. Set Selection in Direct-Mapped Caches
+        * ![](../Images/CSAPP/6.4.2-set-selection.png)
+    2. Line Matching in Direct-Mapped Caches
+        * ![](../Images/CSAPP/6.4.2-line-matching.png)
+    3. Word Selection in Direct-Mapped Caches
+    4. Line Replacement on Misses in Direct-Mapped
+        * If the cache misses, then it needs to retrieve the requested block from the next level in the memory hierarchy and store the new block in one of the cache lines of the set indicated by the set index bits.
+        * In general, if the set is full of valid cache lines, then one of the existing lines must be evicted.
+        * For a direct-mapped cache, where each set contains exactly one line, the replacement policy is trivial: the current line is replaced by the newly fetched line.
+* Putting It Together: A Direct-Mapped Cache in Action
+    * Suppose we have a direct-mapped cache described by (S,E,B,m)=(4,1,2,4)
+    * The concatenation of the tag and index bits uniquely identifies each block in memory.
+    * Since there are eight memory blocks but only four cache sets, multiple blocks map to the same cache set (i.e., they have the same set index).
+    * Blocks that map to the same cache set are uniquely identified by the tag.
+
+* Conflict Misses in Direct-Mapped Caches
+    * ```c++
+        float dotprod(float x[8], float y[8]) {
+            float sum = 0.0;
+
+            for (int i = 0; i < 8; ++i) {
+                sum += x[i] * y[i];
+            }
+
+            return sum;
+        }
+        ```
+    *  a block is 16 bytes, the cache consists of two sets, a total cache size of 32 bytes
+    * ![](../Images/CSAPP/6.4.2-conflict-miss-1.png)
+    * In fact each subsequent reference to x and y will result in a conflict miss as we thrash back and forth between blocks of x and y. The term **thrashing** describes any situation where a cache is repeatedly loading and evicting the same sets of cache blocks.
+    * Thrashing is easy for programmers to fix once they recognize what is going on. One easy solution is to put B bytes of padding at the end of each array. For example, instead of defining x to be float x[8], we define it to be float x[12].
+    * ![](../Images/CSAPP/6.4.2-conflict-miss-2.png)
+
+* Why index with the middle bits?
+    * If the high-order bits are used as an index, then some contiguous memory blocks will map to the same cache set.
+    * ![](../Images/CSAPP/6.4.2-cache-index-with-middle-bits.png)
+
+### 6.4.3 Set Associative Caches
+* The problem with conflict misses in direct-mapped caches stems from the constraint that each set has exactly one line (or in our terminology, E = 1). A set associative cache relaxes this constraint so each set holds more than one cache line. A cache with 1 < E < C/B is often called an **E-way set associative cache**.
+
+* Set Selection in Set Associative Caches
+    * ![](../Images/CSAPP/6.4.3-set-selection.png)
+
+* Line Matching and Word Selection in Set Associative Caches
+    ![](../Images/CSAPP/6.4.3-line-matching.png)
+    * An associative memory is an array of (key, value) pairs that takes as input the key and returns a value from one of the (key, value) pairs that matches the input key. Thus, we can think of each set in a set associative cache as a small associative memory where the keys are the concatenation of the tag and valid bits, and the values are the contents of a block.
+    * Any line in the set can contain any of the memory blocks that map to that set. So the cache must search each line in the set, searching for a valid line whose tag matches the tag in the address.
+
+* Line Replacement on Misses in Set Associative Caches
+    * The simplest replacement policy is to choose the line to replace at random. Other more sophisticated policies draw on the principle of locality to try to minimize the probability that the replaced line will be referenced in the near future.
+
+### 6.4.4 Fully Associative Caches
+* A fully associative cache consists of a single set (i.e., E = C/B) that contains all of the cache lines.
+
+* Set Selection in Fully Associative Caches
+    * ![](../Images/CSAPP/6.4.4-set-selection.png)
+
+* Line Matching and Word Selection in Fully Associative Caches
+    * ![](../Images/CSAPP/6.4.4-line-matching.png)
+    * The cache circuitry must search for many matching tags in parallel, it is difficult and expensive to build an associative cache that is both large and fast. As a result, fully associative caches are only appropriate for small caches, such as the translation lookaside buffers (TLBs).
 
 ### 6.4.5 Issues with Writes
-As a rule, caches at lower levels of the memory hierarchy are more likely to use write-back instead of write-through because of the larger transfer times.
+* If write hit
+    * **Write-through**, is to immediately write w’s cache block to the next lower level. While simple, write-through has the disadvantage of causing bus traffic with every write.
+
+    * **Write-back**, defers the update as long as possible by writing the updated block to the next lower level only when it is evicted from the cache by the replacement algorithm. Because of locality, write-back can significantly reduce the amount of bus traffic, but it has the disadvantage of additional complexity. The cache must maintain an additional dirty bit for each cache line that indicates whether or not the cache block has been modified.
+* If wite miss
+    * **Write-allocate**, loads the corresponding block from the next lower level into the cache and then updates the cache block. Write-allocate tries to exploit spatial locality of writes, but it has the disadvantage that every miss results in a block transfer from the next lower level to cache.
+    * **No-write-allocate**, bypasses the cache and writes the word directly to the next lower level. Writethrough caches are typically no-write-allocate. Write-back caches are typically write-allocate.
+
+* As a rule, caches at lower levels of the memory hierarchy are more likely to use write-back instead of write-through because of the larger transfer times.
+
+### 6.4.6 Anatomy of a Real Cache Hierarchy
+* Inter Core i7
+    * ![](../Images/CSAPP/6.4.6-intel-core-i7-cache-hierarchy.png)
+    * ![](../Images/CSAPP/6.4.6-intel-core-i7-cache-characteristic.png)
+* The two caches are often optimized to different access patterns and can have different block sizes, associativities, and capacities. Also, having separate caches ensures that data accesses do not create conflict misses with instruction accesses, and vice versa, at the cost of a potential increase in capacity misses.
 
 ### 6.4.7 Performance Impact of Cache Parameters
-1. Hit rate
-2. Hit time
-3. Miss rate
-4. Miss penalty
+* Cache performance is evaluated with a number of metrics:
+    * **Miss rate**. The fraction of memory references during the execution of a program, or a part of a program, that miss. It is computed as #misses/#references.
+    * **Hit rate**. The fraction of memory references that hit. It is computed as 1 − miss rate.
+    * **Hit time**. The time to deliver a word in the cache to the CPU, including the time for set selection, line identification, and word selection. Hit time is on the order of several clock cycles for L1 caches.
+    * **Miss penalty**. Any additional time required because of a miss. The penalty for L1 misses served from L2 is on the order of 10 cycles; from L3, 40 cycles; and from main memory, 100 cycles.
+* Impact of Cache Size
+    * A larger cache will tend to increase the `hit rate`, but it tend to increase the `hit time`
+
+* Impact of Block Size
+    * Larger blocks can help increase the `hit rate` by exploiting any spatial locality that might exist in a program. However, for a given cache size, larger blocks imply a smaller number of `cache lines`, which can hurt the `hit rate` in programs with more temporal locality than spatial locality.
+    * Larger blocks also have a negative impact on the `miss penalty`, since larger blocks cause larger transfer times. Modern systems usually compromise with cache blocks that contain 32 to 64 bytes.
+
+* Impact of Associativity
+    * The advantage of higher associativity (i.e., larger values of E) is that it decreases the vulnerability of the cache to `thrashing` due to conflict misses.
+    * But it comes at a significant cost, it's `expensive` to implement and hard to make fast. It requires more tag bits per line, additional LRU state bits per line, and additional control logic. Higher associativity can increase `hit time`, because of the increased complexity, and it can also increase the `miss penalty` because of the increased complexity of choosing a victim line.
+    * The choice of associativity ultimately boils down to a trade-off between the hit time and the miss penalty.
+
+* Impact of Write Strategy
 
 ## 6.5 Writing Cache-friendly Code
-Programs with better locality will tend to have lower miss rates, and programs with lower miss rates will tend to run faster than programs with higher miss rates.
+* Programs with better locality will tend to have lower miss rates, and programs with lower miss rates will tend to run faster than programs with higher miss rates.
+* Basic approach:
+    1. Make the common case go fast.
+    2. Minimize the number of cache misses in each inner loop
 
 ## 6.6 Putting It Together: The Impact of Caches on Program Performance
+* The rate that a program reads data from the memory system is called the **read throughput/bandwidth**.
+
+### 6.6.1 The Memory Mountain
+* Every computer has a unique memory mountain that characterizes the capabilities of its memory system.
+* ![](../Images/CSAPP/6.6.1-intel-core-i7-memory-mountain.png)
+
+### 6.6.2 Rearranging Loops to Increase Spatial Locality
+* ![](../Images/CSAPP/6.6.2.png)
+* Assumptions:
+    * Each array is an n × n array of double, with sizeof(double) == 8.
+    * There is a single cache with a 32-byte block size (B = 32).
+    * The array size n is so large that a single matrix row does not fit in the L1 cache.
+    * The compiler stores local variables in registers, and thus references to local variables inside loops do not require any load or store instructions.
+* ![](../Images/CSAPP/6.6.2-2.png)
+* ![](../Images/CSAPP/6.6.2-3.png)
+
+* Using blocking to increase temporal locality
+    * The general idea of blocking is to organize the data structures in a program into large chunks called **blocks**. (In this context, “block” refers to an application-level chunk of data, not to a cache block.) The program is structured so that it loads a chunk into the L1 cache, does all the reads and writes that it needs to on that chunk, then discards the chunk, loads in the next chunk, and so on.
+    * Unlike the simple loop transformations for improving spatial locality, blocking makes the code harder to read and understand. For this reason, it is best suited for optimizing compilers or frequently executed library routines.
+
+### 6.6.3 Exploiting Locality in Your Programs
+* Focus your attention on the `inner loops`, where the bulk of the computations and memory accesses occur.
+* Try to maximize the spatial locality in your programs by `reading data objects sequentially`, with stride 1, in the order they are stored in memory.
+* Try to maximize the temporal locality in your programs by `using a data object` as often as possible once it has been read from memory.
+
+## 6.7 Summary
+* **Static RAM (SRAM)** is faster and more expensive, and is used for cache memories both on and off the CPU chip. **Dynamic RAM (DRAM)** is slower and less expensive, and is used for the main memory and graphics frame buffers. **Read-only memories (ROMs)** retain their information even if the supply voltage is turned off, and they are used to store firmware.
+
+# 7 Linking
+* **Linking** is the process of collecting and combining various pieces of code and data into a single file that can be loaded (copied) into memory and executed.
+* Linking can be performed
+    * at **compile time**, when the source code is translated into machine code;
+    * at **load time**, when the program is loaded into memory and executed by the loader; and even
+    * at **run time**, by application programs.
+
+## 7.1 Compiler Drivers
+```
+/* 1. Preprocess
+ * runs the C preprocessor (cpp),
+ * which translates the C source file main.c into an ASCII intermediate file main.i: */
+
+cpp [other arguments] main.c /tmp/main.i
 
 
-# Chapter 8 Exceptional Control Flow
+/* 2. Compile
+ * runs the C compiler (cc1), which translates main.i into an ASCII assembly language file main.s. */
+
+cc1 /tmp/main.i main.c -O2 [other arguments] -o /tmp/main.s
+
+
+/* 3. Assembly
+ * runs the assembler (as), which translates main.s into a relocatable object file main.o: */
+
+as [other arguments] -o /tmp/main.o /tmp/main.s
+
+/* 4. Link
+ * it runs the linker program ld, which combines main.o and swap.o,
+ * along with the necessary system object files, to create the executable object file p: */
+
+ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
+```
+
+## 7.2 Static Linking
+* To build the executable, the linker must perform two main tasks:
+    * **Symbol resolution**. Object files define and reference symbols. The purpose of symbol resolution is to associate each symbol reference with exactly one symbol definition.
+    * **Relocation**. Compilers and assemblers generate code and data sections that start at address 0. The linker relocates these sections by associating a memory location with each symbol definition, and then modifying all of the references to those symbols so that they point to this memory location.
+* Object files are merely collections of blocks of bytes. Some of these blocks contain program code, others contain program data, and others contain data structures that guide the linker and loader.
+* A linker concatenates blocks together, decides on run-time locations for the concatenated blocks, and modifies various locations within the code and data blocks. Linkers have minimal understanding of the target machine. The compilers and assemblers that generate the object files have already done most of the work.
+
+
+## 7.3 Object Files
+* Object files come in three forms:
+    * **Relocatable object file**. Contains binary code and data in a form that can be combined with other relocatable object files at compile time to create an executable object file.
+    * **Executable object file**. Contains binary code and data in a form that can be copied directly into memory and executed.
+    * **Shared object file**. A special type of relocatable object file that can be loaded into memory and linked dynamically, at either load time or run time.
+
+## 7.4 Relocatable Object Files
+* ![](../Images/CSAPP/7.4-relocatable-file.png)
+* The **ELF header** begins with a 16-byte sequence that describes the `word size` and `byte ordering` of the system that generated the file.
+    * The rest of the ELF header contains `size of the ELF header`, the `object file type` (e.g., relocatable, executable, or shared), the `machine type` (e.g., IA32), the `file offset` of the section header table, and the `size and number of entries` in the section header table.
+    * The locations and sizes of the various sections are described by the **section header table**, which contains a fixed sized entry for each section in the object file.
+* **.rodata**: the format strings in printf statements, jump tables for switch statements
+* **.data**: Initialized global C variables
+* **.bss**: Uninitialized global C variables. It is merely a place holder. Object file formats distinguish between initialized and uninitialized variables for space efficiency: uninitialized variables do not have to occupy any actual disk space in the object file.
+* **.symtab**: A symbol table with information about functions and global variables that are defined and referenced in the program. It does not contain entries for local variables.
+* **.rel.text**: A list of locations in the text section that will need to be modified when the linker combines this object file with others.
+    * In general, any instruction that calls an external function or references a global variable will need to be modified. On the other hand, instructions that call local functions do not need to be modified.
+* **.rel.data**: Relocation information for any global variables that are referenced or defined by the module
+    * In general, any initialized global variable whose initial value is the address of a global variable or externally defined function will need to be modified
+* **.debug**: A debugging symbol table with entries for local variables and typedefs defined in the program, global variables defined and referenced in the program, and the original C source file. It is only present if the compiler driver is invoked with the -g option.
+* **.line**: A mapping between line numbers in the original C source program and machine code instructions in the .text section.
+* **.strtab**: A string table for the symbol tables in the .symtab and .debug sections, and for the section names in the section headers. A string table is a sequence of null-terminated character strings.
+
+## 7.5 Symbols and Symbol Tables
+*  In the context of a linker, there are three different kinds of symbols:
+    * **Global symbols** that are **defined** by module m and that can be referenced by other modules. Global linker symbols correspond to nonstatic C functions and global variables that are defined without the C static attribute.
+    * **Global symbols** that are **referenced** by module m but defined by some other module. Such symbols are called externals and correspond to C functions and variables that are defined in other modules.
+    * **Local symbols** that are **defined and referenced** exclusively by module m. Some local linker symbols correspond to C functions and global variables that are defined with the static attribute. These symbols are visible anywhere within module m, but cannot be referenced by other modules. The sections in an object file and the name of the source file that corresponds to module m also get local symbols.
+* It is important to realize that `local linker symbols` are not the same as `local program variables`.
+* The compiler allocates space in .data or .bss for each definition and creates a local linker symbol in the symbol table with a unique name.
+
+## 7.6 Symbol Resolution
+## 7.7 Relocation
+## 7.8 Executable Object Files
+## 7.9 Loading Executable Object Files
+## 7.10 Dynamic Linking with Shared Libraries
+## 7.11 Loading and Linking Shared Libraries from Applications
+## 7.12 Position-Independent Code (PIC)
+## 7.13 Tools for Manipulating Object Files
+## 7.14 Summary
+
+# 8 Exceptional Control Flow
 ## 8.1 Exception
 When the exception handler finishes processing, one of three things happens, depending on the type of event that caused the exception:
 1. The handler returns control to the current instruction Icurr, the instruction that was executing when the event occurred.
@@ -2022,7 +2332,7 @@ Instead, they return prematurely to the calling application with an error condit
 
 ## 8.7 Tools for Manipulating Processes
 
-# Chapter 9 Virtual Memory
+# 9 Virtual Memory
 Virtual memory is an elegant interaction of hardware exceptions, hardware address translation, main memory, disk files, and kernel software that provides each process with a large, uniform, and private address space.
 
 virtual memory provides three important capabilities:
@@ -2102,7 +2412,7 @@ https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=777855
 
 ## 9.11 Common Memory-Related Bugs in C Programs
 
-# Chapter 10 System-Level I/O
+# 10 System-Level I/O
 ## 10.1 Unix I/O
 ## 10.2 Opening and Closing Files
 ## 10.3 Reading and Writing Files
@@ -2113,7 +2423,7 @@ https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=777855
 ## 10.8 Standard I/O
 ## 10.9 Putting It Together: Which I/O Functions Should I Use?
 
-# Chapter 11 Network Programming
+# 11 Network Programming
 ## 11.1 The Client-Server Programming Model
 ## 11.2 Networks
 ## 11.3 The Global IP Internet
@@ -2122,7 +2432,7 @@ https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=777855
 ## 11.6 Putting It Together: The Tiny Web Server
 
 
-# Chapter 12 Concurrent Programming
+# 12 Concurrent Programming
 ## 12.1 Concurrent Programming with Processes
 ## 12.2 Concurrent Programming with I/O Multiplexing
 ## 12.3 Concurrent Programming with Threads
