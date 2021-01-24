@@ -2215,7 +2215,9 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
     * **Relocation**. Compilers and assemblers generate code and data sections that start at address 0. The linker relocates these sections by associating a memory location with each symbol definition, and then modifying all of the references to those symbols so that they point to this memory location.
 * Object files are merely collections of blocks of bytes. Some of these blocks contain program code, others contain program data, and others contain data structures that guide the linker and loader.
 * A linker concatenates blocks together, decides on run-time locations for the concatenated blocks, and modifies various locations within the code and data blocks. Linkers have minimal understanding of the target machine. The compilers and assemblers that generate the object files have already done most of the work.
-
+* Disadvantages:
+    * Static libraries, like all software, need to be maintained and updated periodically.
+    * At run time, the code of static libraries is duplicated in the text segment of each running process.
 
 ## 7.3 Object Files
 * Object files come in three forms:
@@ -2247,15 +2249,200 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
     * **Local symbols** that are **defined and referenced** exclusively by module m. Some local linker symbols correspond to C functions and global variables that are defined with the static attribute. These symbols are visible anywhere within module m, but cannot be referenced by other modules. The sections in an object file and the name of the source file that corresponds to module m also get local symbols.
 * It is important to realize that `local linker symbols` are not the same as `local program variables`.
 * The compiler allocates space in .data or .bss for each definition and creates a local linker symbol in the symbol table with a unique name.
+* Symbol tables are built by assemblers, using symbols exported by the compiler into the assembly-language .s file.
+* Symbol Table Entry
+    ```c++
+    typedef struct {
+        int name;       /* String table offset */
+        int value;      /* Section offset, or VM address */
+        int size;       /* Object size in bytes */
+        char type:4,    /* Data, func, section, or src file name (4 bits) */
+            binding:4;  /* Local or global (4 bits) */
+        char reserved;  /* Unused */
+        char section;   /* Section header index, ABS, UNDEF, or CMMOM */
+    } Elf_Symbol;
+    ```
 
 ## 7.6 Symbol Resolution
+* The linker resolves symbol references by associating each reference with exactly one symbol definition from the symbol tables of its input relocatable object files.
+* Symbol resolution is straightforward for references to `local symbols` that are defined in the same module as the reference. The compiler allows only one definition of each local symbol per module. The compiler also ensures that static local variables, which get local linker symbols, have unique names.
+* When the compiler encounters a `global symbol` (either a variable or function name) that is not defined in the current module, it assumes that it is defined in some other module, generates a linker symbol table entry, and leaves it for the linker to handle. If the linker is unable to find a definition for the referenced symbol in any of its input modules, it prints an (often cryptic) error message and terminates.
+* Symbol resolution for `global symbols` is also tricky because the same symbol might be defined by multiple object files. In this case, the linker must either flag an error or somehow choose one of the definitions and discard the rest.
+
+### 7.6.1 How Linkers Resolve Multiply Defined Global Symbols
+* Functions and initialized global variables get **strong symbols**. Uninitialized global variables get **weak symbols**.
+* Rules:
+    1. Multiple strong symbols are not allowed.
+    2. Given a strong symbol and multiple weak symbols, choose the strong symbol.
+    3. Given multiple weak symbols, choose any of the weak symbols.
+
+* The application of rules 2 and 3 can introduce some insidious run-time bugs:
+    *   ```c++
+        double x;
+        void f() {
+            x = -0.0;
+        }
+        ```
+
+        ```c++
+        int x = 10;
+        int y = 20;
+
+        int main() {
+            f();
+        }
+        ```
+    * doubles are 8 bytes and ints are 4 bytes, the assignment x = -0.0 in will overwrite the memory locations for x and y with the double-precision floating-point representation of negative zero
+    * gcc `-fno-common` flag triggers an error if it encounters multiply defined global symbols.
+
+### 7.6.2 Linking with Static Libraries
+* static libraries are stored on disk in a particular file format known as an archive. An archive is a collection of concatenated relocatable object files, with a header that describes the size and location of each member object file.
+*   ```
+    gcc -c addvec.c multvec.c
+    ar rcs libvector.a addvec.o multvec.o
+    gcc -O2 -c main2.c
+    gcc -static -o p2 main2.o ./libvector.a
+    ```
+* ![](../Images/CSAPP/7.6.2-linking-static-libraries.png)
+
+### 7.6.3 How Linkers Use Static Libraries to Resolve References
+* During the symbol resolution phase, the linker scans the relocatable object files and archives left to right in the same sequential order that they appear on the compiler driver’s command line. (The driver automatically translates any .c files on the command line into .o files.) During this scan, the linker maintains a set E of relocatable object files that will be merged to form the executable, a set U of unresolved symbols (i.e., symbols referred to, but not yet defined), and a set D of symbols that have been defined in previous input files. Initially, E, U, and D are empty.
+    * For each input file f on the command line, the linker determines if f is an object file or an archive. If f is an object file, the linker adds f to E, updates U and D to reflect the symbol definitions and references in f, and proceeds to the next input file.
+    * If f is an archive, the linker attempts to match the unresolved symbols in U against the symbols defined by the members of the archive. If some archive member, m, defines a symbol that resolves a reference in U , then m is added to E, and the linker updates U and D to reflect the symbol definitions and references in m. This process iterates over the member object files in the archive until a fixed point is reached where U and D no longer change. At this point, any member object files not contained in E are simply discarded and the linker proceeds to the next input file.
+    * If U is nonempty when the linker finishes scanning the input files on the command line, it prints an error and terminates. Otherwise, it merges and relocates the object files in E to build the output executable file.
+* Unfortunately, this algorithm can result in some baffling link-time errors because the ordering of libraries and object files on the command line is significant. If the library that defines a symbol appears on the command line before the object file that references that symbol, then the reference will not be resolved and linking will fail.
+    * The general rule for libraries is to place them at the end of the command line.
+
 ## 7.7 Relocation
+* Once the linker has completed the symbol resolution step, it has associated each symbol reference in the code with exactly one symbol definition (i.e., a symbol table entry in one of its input object modules). At this point, the linker knows the exact sizes of the code and data sections in its input object modules.
+
+* Relocation consists of two steps:
+    * Relocating sections and symbol definitions. In this step, the linker merges all sections of the same type into a new aggregate section of the same type. For example, the .data sections from the input modules are all merged into one section that will become the .data section for the output executable object file. The linker then assigns run-time memory addresses to the new aggregate sections, to each section defined by the input modules, and to each symbol defined by the input modules. When this step is complete, every instruction and global variable in the program has a unique run-time memory address.
+    * Relocating symbol references within sections. In this step, the linker modifies every symbol reference in the bodies of the code and data sections so that they point to the correct run-time addresses. To perform this step, the linker relies on data structures in the relocatable object modules known as relocation entries, which we describe next.
+
+### 7.7.1 Relocation Entries
+* When an assembler generates an object module, it does not know where the code and data will ultimately be stored in memory. Nor does it know the locations of any externally defined functions or global variables that are referenced by the module.
+* So whenever the assembler encounters a reference to an object whose ultimate location is unknown, it generates a **relocation entry** that tells the linker how to modify the reference when it merges the object file into an executable. Relocation entries for code are placed in .rel.text. Relocation entries for initialized data are placed in .rel.data.
+*   ```c++
+    typedef struct {
+        int offset;      /* Offset of the reference to relocate */
+        int symbol:24,  /* Symbol the reference should point to */
+            type:8;     /* Relocation type */
+    } Elf32_Rel;
+
+### 7.7.2 Relocating Symbol References
+*   ```c++
+    foreach section s {
+        foreach relocation entry r {
+            refptr = s + r.offset;   /* ptr to reference to be relocated */
+
+            if (r.type == R_386_PC32) { /* Relocate a PC-relative reference */
+                refaddr = ADDR(s) + r.offset; /* ref’s run-time address */
+                *refptr = (unsigned) (ADDR(r.symbol) + *refptr - refaddr);
+            }
+
+            if (r.type == R_386_32) /* Relocate an absolute reference */
+                *refptr = (unsigned) (ADDR(r.symbol) + *refptr);
+        }
+    }
+
+    ```
+* Relocating PC-Relative References
+* Relocating Absolute References
+
 ## 7.8 Executable Object Files
+* ![](../Images/CSAPP/7.8-executable-object-file.png)
+* The **ELF header** describes the overall format of the file. It also includes the program’s `entry point`, which is the address of the first instruction to execute when the program runs.
+* The **.init** section defines a small function, called `_init`, that will be called by the program’s initialization code. Since the executable is fully linked (relocated), it needs no .rel sections.
+* ELF executables are designed to be easy to load into memory, with contigu- ous chunks of the executable file mapped to contiguous memory segments. This mapping is described by the **segment header table**.
+
 ## 7.9 Loading Executable Object Files
+* After input ./p, the shell assumes that p is an executable object file, which it runs for us by invoking some memory-resident operating system code known as the **loader**. Any Unix program can invoke the loader by calling the execve function which we will describe in detail in Section 8.4.5.
+* The **loader** copies the code and data in the executable object file from disk into memory, and then runs the program by jumping to its first instruction, or `entry point`. This process of copying the program into memory and then running it is known as **loading**.
+* ![](../Images/CSAPP/7.9-linux-run-time-memory-image.png)
+* When the loader runs, it creates the memory image. Guided by the `segment header table` in the executable, it copies chunks of the executable into the code and data segments. Next, the loader jumps to the program’s entry point, which is always the address of the **_start symbol**. The startup code at the _start address is defined in the object file crt1.o and is the same for all C programs.
+* Start up code
+    ```c++
+    0x080480c0 <_start>         // entry point in .text
+        call __libc_init_first   // startup code in .text
+        call _init              // startup code in .init
+        call atexit             // startup code in .text
+        call main               // application main routine
+        call _exit              // returns control to OS
+    ```
+* **atexit** routine appends a list of routines that should be called when the application terminates normally.
+
 ## 7.10 Dynamic Linking with Shared Libraries
+* **Shared libraries** are modern innovations that address the disadvantages of static libraries. A shared library is an object module that, at run time, can be loaded at an arbitrary memory address and linked with a program in memory. This process is known as **dynamic linking** and is performed by a program called a **dynamic linker**.
+* Shared libraries are “shared” in two different ways:
+    1. In any given file system, there is exactly one .so file for a particular library. The code and data in this .so file are shared by all of the executable object files that reference the library, as opposed to the contents of static libraries, which are copied and embedded in the executables that reference them.
+    2. A single copy of the .text section of a shared library in memory can be shared by different running processes. We will explore this in more detail when we study virtual memory in Chapter 9.
+*   ```c++
+    gcc -shared -fPIC -o libvector.so addvec.c multvec.c
+    gcc -o p2 main2.c ./libvector.so
+    ```
+    * It is important to realize that none of the code or data sections from libvector.so are actually copied into the executable p2 at this point. Instead, the linker copies some relocation and symbol table information that will allow references to code and data in libvector.so to be resolved at run time.
+
+* ![](../Images/CSAPP/7.10-dynamic-linking-with-shared-libraries.png)
+* It notices that p2 contains a `.interp` section, which contains the path name of the **dynamic linker**, which is itself a shared object (e.g., ld-linux.so on Linux systems)
+* The loader loads and runs the dynamic linker. The dynamic linker then finishes the linking task by performing the following relocations:
+    * Relocating the text and data of libc.so into some memory segment.
+    * Relocating the text and data of libvector.so into another memory segment.
+    * Relocating any references in p2 to symbols defined by libc.so and libvector.so.
+
 ## 7.11 Loading and Linking Shared Libraries from Applications
+*   ```c++
+    #include <dlfcn.h>
+    void *dlopen(const char *filename, int flag); // RTLD_GLOBAL, RTLD_NOW, RTLD_LAZY
+    void *dlsym(void *handle, char *symbol);
+    int dlclose (void *handle);
+    const char *dlerror(void);
+    ```
+
 ## 7.12 Position-Independent Code (PIC)
+* PIC Data References
+    * Compilers generate PIC references to global variables by exploiting the following interesting fact:
+        * No matter where we load an object module (including shared object modules) in memory, the data segment is always allocated immediately after the code segment. Thus, the `distance` between any instruction in the code segment and any variable in the data segment is a run-time constant, independent of the absolute memory locations of the code and data segments.
+    * To exploit this fact, the compiler creates a table called the **global offset table (GOT)** at the beginning of the `.data segment`. The global offset table (GOT) contains an entry for each global data object that is referenced by the object module. The compiler also generates a relocation record for each entry in the GOT. At load time, the dynamic linker relocates each entry in the GOT so that it contains the appropriate absolute address. Each object module that references global data has its own GOT.
+    * At run time, each global variable is referenced indirectly through the GOT using code of the form
+        *   ```c++
+                call L1
+            L1: popl %ebx           // ebx contains the current PC
+                addl $VAROFF, %ebx  // ebx points to the GOT entry for var
+                movl (%ebx), %eax   // reference indirect through the GOT
+                movl (%eax), %eax
+            ```
+    * Disadvantages:
+        * PIC code has performance disadvantages. Each global variable reference now requires five instructions instead of one, with an additional memory reference to the GOT.
+        * PIC code uses an additional register to hold the address of the GOT entry.
+
+* PIC Function Calls
+    *   It would certainly be possible for PIC code to use the same approach for resolving external procedure calls:
+        ```c++
+            call L1
+        L1: popl %ebx           // ebx contains the current PC
+            addl $PROCOFF, %ebx // ebx points to GOT entry for proc
+            call *(%ebx)        // call indirect through the GOT
+        ```
+    *  **lazy binding** defers the binding of procedure addresses until the first time the procedure is called
+    * If an object module calls any functions that are defined in shared libraries, then it has its own **GOT** and **procedure linkage table (PLT)**. The GOT is part of the `.data section`. The PLT is part of the `.text section`.
+    * ![](../Images/CSAPP/7.12-got-example.png)
+        * GOT[0] contains the address of the .dynamic segment, which contains information that the dynamic linker uses to bind procedure addresses, such as the location of the `symbol table` and `relocation information`.
+        * GOT[1] contains some information that defines this module.
+        * GOT[2] contains an entry point into the lazy binding code of the `dynamic linker`.
+    * ![](../Images/CSAPP/7.12-plt-example.png)
+        * PLT[0], is a special entry that jumps into the dynamic linker.
+        * When addvec is called the first time, control passes to the first instruction in PLT[2], which does an indirect jump through GOT[4]. Initially, each GOT entry contains the address of the pushl entry in the corresponding PLT entry. So the indirect jump in the PLT simply transfers control back to the next instruction in PLT[2]. This instruction pushes an ID for the addvec symbol onto the stack. The last instruction jumps to PLT[0], which pushes another word of identifying information on the stack from GOT[1], and then jumps into the dynamic linker indirectly through GOT[2]. The dynamic linker uses the two stack entries to determine the location of addvec, overwrites GOT[4] with this address, and passes control to addvec.
+        * The next time addvec is called in the program, control passes to PLT[2] as before. However, this time the indirect jump through GOT[4] transfers control to addvec. The only additional overhead from this point on is the memory reference for the indirect jump.
+
+
 ## 7.13 Tools for Manipulating Object Files
+* **ar**: Creates static libraries, and inserts, deletes, lists, and extracts members. strings: Lists all of the printable strings contained in an object file.
+* **strip**: Deletes symbol table information from an object file.
+* **nm**: Lists the symbols defined in the symbol table of an object file.
+* **size**: Lists the names and sizes of the sections in an object file.
+* **readelf**: Displays the complete structure of an object file, including all of the information encoded in the ELF header; subsumes the functionality of size and nm.
+* **objdump**: Themotherofallbinarytools.Candisplayalloftheinformationinan object file. Its most useful function is disassembling the binary instructions in the .text section.
 ## 7.14 Summary
 
 # 8 Exceptional Control Flow
