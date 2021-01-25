@@ -2306,7 +2306,7 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 * ![](../Images/CSAPP/7.6.2-linking-static-libraries.png)
 
 ### 7.6.3 How Linkers Use Static Libraries to Resolve References
-* During the symbol resolution phase, the linker scans the relocatable object files and archives left to right in the same sequential order that they appear on the compiler driver’s command line. (The driver automatically translates any .c files on the command line into .o files.) During this scan, the linker maintains a set E of relocatable object files that will be merged to form the executable, a set U of unresolved symbols (i.e., symbols referred to, but not yet defined), and a set D of symbols that have been defined in previous input files. Initially, E, U, and D are empty.
+* During the symbol resolution phase, the linker scans the relocatable object files and archives left to right in the same sequential order that they appear on the compiler driver’s command line. (The driver automatically translates any .c files on the command line into .o files.) During this scan, the linker maintains a **set E** of relocatable object files that will be merged to form the executable, a **set U** of unresolved symbols (i.e., symbols referred to, but not yet defined), and a **set D** of symbols that have been defined in previous input files. Initially, E, U, and D are empty.
     * For each input file f on the command line, the linker determines if f is an object file or an archive. If f is an object file, the linker adds f to E, updates U and D to reflect the symbol definitions and references in f, and proceeds to the next input file.
     * If f is an archive, the linker attempts to match the unresolved symbols in U against the symbols defined by the members of the archive. If some archive member, m, defines a symbol that resolves a reference in U , then m is added to E, and the linker updates U and D to reflect the symbol definitions and references in m. This process iterates over the member object files in the archive until a fixed point is reached where U and D no longer change. At this point, any member object files not contained in E are simply discarded and the linker proceeds to the next input file.
     * If U is nonempty when the linker finishes scanning the input files on the command line, it prints an error and terminates. Otherwise, it merges and relocates the object files in E to build the output executable file.
@@ -2317,8 +2317,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 * Once the linker has completed the symbol resolution step, it has associated each symbol reference in the code with exactly one symbol definition (i.e., a symbol table entry in one of its input object modules). At this point, the linker knows the exact sizes of the code and data sections in its input object modules.
 
 * Relocation consists of two steps:
-    * Relocating sections and symbol definitions. In this step, the linker merges all sections of the same type into a new aggregate section of the same type. For example, the .data sections from the input modules are all merged into one section that will become the .data section for the output executable object file. The linker then assigns run-time memory addresses to the new aggregate sections, to each section defined by the input modules, and to each symbol defined by the input modules. When this step is complete, every instruction and global variable in the program has a unique run-time memory address.
-    * Relocating symbol references within sections. In this step, the linker modifies every symbol reference in the bodies of the code and data sections so that they point to the correct run-time addresses. To perform this step, the linker relies on data structures in the relocatable object modules known as relocation entries, which we describe next.
+    * **Relocating sections and symbol definitions**. In this step, the linker merges all sections of the same type into a new aggregate section of the same type. For example, the .data sections from the input modules are all merged into one section that will become the .data section for the output executable object file. The linker then assigns run-time memory addresses to the new aggregate sections, to each section defined by the input modules, and to each symbol defined by the input modules. When this step is complete, every instruction and global variable in the program has a unique run-time memory address.
+    * **Relocating symbol references within sections**. In this step, the linker modifies every symbol reference in the bodies of the code and data sections so that they point to the correct run-time addresses. To perform this step, the linker relies on data structures in the relocatable object modules known as **relocation entries**, which we describe next.
 
 ### 7.7.1 Relocation Entries
 * When an assembler generates an object module, it does not know where the code and data will ultimately be stored in memory. Nor does it know the locations of any externally defined functions or global variables that are referenced by the module.
@@ -2329,6 +2329,7 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
         int symbol:24,  /* Symbol the reference should point to */
             type:8;     /* Relocation type */
     } Elf32_Rel;
+    ```
 
 ### 7.7.2 Relocating Symbol References
 *   ```c++
@@ -2354,13 +2355,17 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 * ![](../Images/CSAPP/7.8-executable-object-file.png)
 * The **ELF header** describes the overall format of the file. It also includes the program’s `entry point`, which is the address of the first instruction to execute when the program runs.
 * The **.init** section defines a small function, called `_init`, that will be called by the program’s initialization code. Since the executable is fully linked (relocated), it needs no .rel sections.
-* ELF executables are designed to be easy to load into memory, with contigu- ous chunks of the executable file mapped to contiguous memory segments. This mapping is described by the **segment header table**.
+* ELF executables are designed to be easy to load into memory, with contiguous chunks of the executable file mapped to contiguous memory segments. This mapping is described by the **segment header table**.
+* Stack orgnization when a program starts
+    * ![](../Images/CSAPP/8.4.5-stack-orgnization-when-program-start.png)
 
 ## 7.9 Loading Executable Object Files
 * After input ./p, the shell assumes that p is an executable object file, which it runs for us by invoking some memory-resident operating system code known as the **loader**. Any Unix program can invoke the loader by calling the execve function which we will describe in detail in Section 8.4.5.
+
+    * The interesting point is that the loader never actually copies any data from disk into memory. The data is paged in automatically and on demand by the virtual memory system the first time each page is referenced, either by the CPU when it fetches an instruction, or by an executing instruction when it references a memory location. [Chapter 9.4]
 * The **loader** copies the code and data in the executable object file from disk into memory, and then runs the program by jumping to its first instruction, or `entry point`. This process of copying the program into memory and then running it is known as **loading**.
 * ![](../Images/CSAPP/7.9-linux-run-time-memory-image.png)
-* When the loader runs, it creates the memory image. Guided by the `segment header table` in the executable, it copies chunks of the executable into the code and data segments. Next, the loader jumps to the program’s entry point, which is always the address of the **_start symbol**. The startup code at the _start address is defined in the object file crt1.o and is the same for all C programs.
+* When the loader runs, it creates the memory image. Guided by the `segment header table` in the executable, it copies chunks of the executable into the code and data segments. Next, the loader jumps to the program’s entry point, which is always the address of the **_start symbol**. The startup code at the _start address is defined in the object file **crt1.o** and is the same for all C programs.
 * Start up code
     ```c++
     0x080480c0 <_start>         // entry point in .text
@@ -2370,6 +2375,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
         call main               // application main routine
         call _exit              // returns control to OS
     ```
+    * The startup code sets up the stack and passes control to the main routine of the new program.
+
 * **atexit** routine appends a list of routines that should be called when the application terminates normally.
 
 ## 7.10 Dynamic Linking with Shared Libraries
@@ -2402,6 +2409,7 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 ## 7.12 Position-Independent Code (PIC)
 * PIC Data References
     * Compilers generate PIC references to global variables by exploiting the following interesting fact:
+
         * No matter where we load an object module (including shared object modules) in memory, the data segment is always allocated immediately after the code segment. Thus, the `distance` between any instruction in the code segment and any variable in the data segment is a run-time constant, independent of the absolute memory locations of the code and data segments.
     * To exploit this fact, the compiler creates a table called the **global offset table (GOT)** at the beginning of the `.data segment`. The global offset table (GOT) contains an entry for each global data object that is referenced by the object module. The compiler also generates a relocation record for each entry in the GOT. At load time, the dynamic linker relocates each entry in the GOT so that it contains the appropriate absolute address. Each object module that references global data has its own GOT.
     * At run time, each global variable is referenced indirectly through the GOT using code of the form
@@ -2413,8 +2421,9 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
                 movl (%eax), %eax
             ```
     * Disadvantages:
+
         * PIC code has performance disadvantages. Each global variable reference now requires five instructions instead of one, with an additional memory reference to the GOT.
-        * PIC code uses an additional register to hold the address of the GOT entry.
+* PIC code uses an additional register to hold the address of the GOT entry.
 
 * PIC Function Calls
     *   It would certainly be possible for PIC code to use the same approach for resolving external procedure calls:
@@ -2493,6 +2502,19 @@ If the system call blocks because it is waiting for some event to occur, then th
 ### 8.4.3 Reaping Child Process
 If the parent process terminates without reaping its zombie children, the kernel arranges for the init process to reap them.
 
+### 8.4.5 Loading and Running Programs
+*   ```c++
+    #include <unistd.h>
+    int execve(const char *filename, const char *argv[], const char *envp[]);
+    ```
+* Unlike fork, which is called once but returns twice, execve is called once and never returns.
+* Stack orgnization when a program starts
+
+    * ![](../Images/CSAPP/8.4.5-stack-orgnization-when-program-start.png)
+
+
+### 8.4.6 Using fork and execve to Run Programs
+
 ## 8.5 Signals
 ### 8.5.1 Signal Terminology
 A signal that has been sent but not yet received is called a **pending signal**.
@@ -2528,20 +2550,125 @@ virtual memory provides three important capabilities:
 * It protects the address space of each process from corruption by other processes.
 
 ## 9.1 Physical and Virtual Addressing
+* ![](../Images/CSAPP/9.1-virtual-addressing.png)
 
 ## 9.2 Address Spaces
+* If the integers in the address space are consecutive, then we say that it is a **linear address space**.
 
 ## 9.3 VM as a Tool for Caching
+* virtual pages
+    * **Unallocated**: Pages that have not yet been allocated (or created) by the VM system. Unallocated blocks do not have any data associated with them, and thus do not occupy any space on disk.
+    * **Cached**: Allocated pages that are currently cached in physical memory.
+    * **Uncached**: Allocated pages that are not cached in physical memory.
+
+### 9.3.1 DRAM Cache Organization
+* we will use the term **SRAM** cache to denote the L1, L2, and L3 cache memories between the CPU and main memory, and the term **DRAM** cache to denote the VM system’s cache that caches virtual pages in main memory.
+* A DRAM is at least `10` times slower than an SRAM and that disk is about `100,000` times slower than a DRAM.
+* Because of the large miss penalty and the expense of accessing the first byte, virtual pages tend to be large, typically `4 KB` to `2 MB`.
+* Due to the large miss penalty, DRAM caches are `fully associative`, that is, any virtual page can be placed in any physical page.
+
+### 9.3.2 Page Tables
+* ![](../Images/CSAPP/9.3.2-page-table.png)
+
+### 9.3.3 Page Hits
+
+### 9.3.4 Page Faults
+
+### 9.3.5 Allocating Pages
+
+### 9.3.6 Locality to the Rescue Again
+* Although the total number of distinct pages that programs reference during an entire run might exceed the total size of physical memory, the principle of locality promises that at any point in time they will tend to work on a smaller set of active pages known as the **working set** or **resident set**. After an initial overhead where the working set is paged into memory, subsequent references to the working set result in hits, with no additional disk traffic.
+
+* If the working set size exceeds the size of physical memory, then the program can produce an unfortunate situation known as `thrashing`, where pages are swapped in and out continuously.
 
 ## 9.4 VM as a Tool for Memory Management
-VM simplifies linking and loading, the sharing of code and data, and allocating memory to applications.
+* ![](../Images/CSAPP/9.4.-process-virtual-space.png)
+* **Simplifying linking**. A separate address space allows each process to use the same basic format for its memory image, regardless of where the code and data actually reside in physical memory. Such uniformity greatly simplifies the design and implementation of linkers, allowing them to produce fully linked executables that are independent of the ultimate location of the code and data in physical memory.
+* **Simplifying loading**. Virtual memory also makes it easy to load executable and shared object files into memory.
+* **Simplifying sharing**. Separate address spaces provide the operating system with a consistent mechanism for managing sharing between user processes and the operating system itself.
+* **Simplifying memory allocation**. When a program running in a user process requests additional heap space (e.g., as a result of calling malloc), the operating system allocates an appropriate number, say, k, of contiguous virtual memory pages, and maps them to k arbitrary physical pages located anywhere in physical memory. Because of the way page tables work, there is no need for the operating system to locate k contiguous pages of physical memory. The pages can be scattered randomly in physical memory.
 
 ## 9.5 VM as a Tool for Memory Protection
+* ![](../Images/CSAPP/9.5-memory-protection.png)
 
 ## 9.6 Address Translation
+* ![](../Images/CSAPP/9.6-address-translation-symbols.png)
+* ![](../Images/CSAPP/9.6-address-translation.png)
+
+* Page Hit ![](../Images/CSAPP/9.6-page-hit.png)
+    1. The processor generates a virtual address and sends it to the MMU.
+    2. The MMU generates the PTE address and requests it from the cache/main memory.
+    3. The cache/main memory returns the PTE to the MMU.
+    4. The MMU constructs the physical address and sends it to cache/main memory.
+    5. The cache/main memory returns the requested data word to the processor.
+
+* Page Fault ![](../Images/CSAPP/9.6-page-fault.png)
+    1. The same as Steps 1 to 3 in Page Hit.
+    2. The same as Steps 1 to 3 in Page Hit.
+    3. The same as Steps 1 to 3 in Page Hit.
+    4. The valid bit in the PTE is zero, so the MMU triggers an exception, which transfers control in the CPU to a page fault exception handler in the operating system kernel.
+    5. The fault handler identifies a victim page in physical memory, and if that page has been modified, pages it out to disk.
+    6. The fault handler pages in the new page and updates the PTE in memory.
+    7. The fault handler returns to the original process, causing the faulting instruction to be restarted. The CPU resends the offending virtual address to the MMU. Because the virtual page is now cached in physical memory, there is a hit, and after the MMU performs the steps, the main memory returns the requested word to the processor.
+
+### 9.6.1 Integrating Caches and VM
+* ![](../Images/CSAPP/9.6.1-cahches-vm.png)
+* Most systems use `physical addresses` to access the SRAM cache. With physical addressing, it is straightforward for multiple processes to have blocks in the cache at the same time and to share blocks from the same virtual pages. Further, the cache does not have to deal with protection issues because access rights are checked as part of the address translation process.
+* The main idea is that the address translation occurs before the cache lookup. Notice that page table entries can be cached, just like any other data words.
+
+### 9.6.2 Speeding up Address Translation with a TLB
+* A TLB is a small, virtually addressed cache where each line holds a block consisting of a single PTE. A TLB usually has a high degree of associativity.
+* TLB has T = 2^t sets, then the TLB index (TLBI) consists of the t least significant bits of the VPN, and the TLB tag (TLBT) consists of the remaining bits in the VPN.
+    * ![](../Images/CSAPP/9.6.2-tlb.png)
+* TLB Hit ![](../Images/CSAPP/9.6.2-tlb-hit.png)
+    1. The CPU generates a virtual address.
+    2. The MMU fetches the appropriate PTE from the TLB.
+    3. The MMU fetches the appropriate PTE from the TLB.
+    4. The MMU translates the virtual address to a physical address and sends it to the cache/main memory.
+    5. The cache/main memory returns the requested data word to the CPU.
+
+* TLB Miss ![](../Images/CSAPP/9.6.2-tlb-miss.png)
+    * When there is a TLB miss, then the MMU must fetch the PTE from the L1 cache. The newly fetched PTE is stored in the TLB, possibly overwriting an existing entry.
+
+### 9.6.3 Multi-Level Page Tables
+* If we had a 32-bit address space, 4 KB pages, and a 4-byte PTE, then we would need a 4 MB page table resident in memory at all times, even if the application referenced only a small chunk of the virtual address space.
+* The common approach for compacting the page table is to use a hierarchy of page tables instead.
+* ![](../Images/CSAPP/9.6.3-two-level-page-table-hierarchy.png)
+    * This scheme reduces memory requirements in two ways:
+        * If a PTE in the level 1 table is null, then the corresponding level 2 page table does not even have to exist. This represents a significant potential savings, since most of the 4 GB virtual address space for a typical program is unallocated.
+        * Only the level 1 table needs to be in main memory at all times. The level 2 page tables can be created and paged in and out by the VM system as they are needed, which reduces pressure on main memory.
+* ![](../Images/CSAPP/9.6.3-two-level-page-table-hierarchy.png)
+    * Accessing k PTEs may seem expensive and impractical at first glance. However, the TLB comes to the rescue here by caching PTEs from the page tables at the different levels. In practice, address translation with multi-level page tables is not significantly slower than with single-level page tables.
+
+### 9.6.4 Putting It Together: End-to-end Address Translation
+* ![](../Images/CSAPP/9.6.4-virtual-physical-address.png)
+    * Assume 14-bit virtual addresses (n = 14), 12-bit physical addresses (m = 12), and 64-byte pages (P = 64), 1-byte word.
+* ![](../Images/CSAPP/9.6.4-tlb.png)
+    * TLB: Four sets, 16 entries, four-way set associative
+* ![](../Images/CSAPP/9.6.4-page-table.png)
+    * Page table: Only the first 16 PTEs are shown
+* ![](../Images/CSAPP/9.6.4-cache.png)
+    * Cache: Sixteen sets, 4-byte blocks, direct mapped
+
 
 ## 9.7 Case Study: The Intel Core i7/Linux Memory System
-The TLBs are virtually addressed, and four-way set associative. The L1, L2, and L3 caches are physically addressed, and eight-way set associative, with a block size of 64 bytes. The page size can be configured at start-up time as either 4 KB or 4 MB. Linux uses 4-KB pages.
+* ![](../Images/CSAPP/9.7-intel-core-i7-memory-system.png)
+    * The TLBs are `virtually addressed`, and four-way set associative.
+    * The L1, L2, and L3 caches are `physically addressed`, and eight-way set associative, with a block size of 64 bytes.
+
+### 9.7.1 Core i7 Address Translation
+* Summary of Core i7 address translation ![](../Images/CSAPP/9.7.1-core-i7-address-translation.png)
+    * The **CR3** control register points to the beginning of the level 1 (L1) page table. The value of CR3 is part of each process context, and is restored during each context switch.
+* Format of level 1, level 2, and level 3 page table entries ![](../Images/CSAPP/9.7.1-format-level-1-2-3-page-table-entries.png)
+    * Each entry references a 4 KB child page table.
+* Format of level 4 page table entries ![](../Images/CSAPP/9.7.1-format-level-4-page-table-entry.png)
+    * The XD (execute disable) bit, which was introduced in 64-bit systems, can be used to disable instruction fetches from individual memory pages. This is an important new feature that allows the operating system kernel to reduce the risk of buffer overflow attacks by restricting execution to the read-only text segment.
+* Core i7 page table translation ![](../Images/CSAPP/9.7.1-page-table-translation.png)
+
+### 9.7.2 Linux Virtual Memory System
+* ![](../Images/CSAPP/9.7.2-linux-virtual-memory-1.png)
+* ![](../Images/CSAPP/9.7.2-linux-virtual-memory-2.png)
+* ![](../Images/CSAPP/9.7.2-linux-page-fault.png)
 
 ## 9.8 Memory Mapping
 Areas can be mapped to one of two types of objects:
