@@ -465,6 +465,7 @@ testl   %edx,       %edx
 jle     .L3
 .L3:
 ```
+
 ```c++
 int test(int x, int y) {
     int val = x^y;
@@ -574,6 +575,7 @@ int test(int x, int y) {
     ```c++
     v = text-expr ? then-expr : else-expr;
     ```
+
     ```c++
     /* conditinal control tranform */
         if (!test-expr)
@@ -583,6 +585,7 @@ int test(int x, int y) {
         v = else-expr;
     .Done:
     ```
+
     ```c++
     /* conditinal data tranform */
     vt = then-expr;
@@ -598,6 +601,7 @@ int test(int x, int y) {
             return xp ? *xp : 0;
         }
         ```
+
         ```c++
         // xp in %edx
         movl    $0,     %eax    // set 0 as return value
@@ -1033,7 +1037,8 @@ Value | Name | Meaning
 
 * Fetch Stage
     * ![](../Images/CSAPP/4.3.4-fetch-stage.png)
-    *   ```
+    * Code
+        ```
         bool need_regids = icode in {
             IRRMOVL, IOPL, IPUSHL, IPOPL,
             IIRMOVL, IRMMOVL, IMRMOVL };
@@ -1041,8 +1046,9 @@ Value | Name | Meaning
     * This unit reads 6 bytes from memory at a time, using the PC as the address of the first byte (byte 0).
 * Decode and Write-Back Stages
     * ![](../Images/CSAPP/4.3.4-decode-write-back-stage.png)
-    *   ```
-        # Code from SEQ
+    * Code
+        ```c++
+        \# Code from SEQ
         int srcA = [
             icode in { IRRMOVL, IRMMOVL, IOPL, IPUSHL  } : rA;
             icode in { IPOPL, IRET } : RESP;
@@ -1070,7 +1076,8 @@ Value | Name | Meaning
     * The register file has four ports. It supports up to two simultaneous reads (on ports A and B) and two simultaneous writes (on ports E and M). Each port has both an address connection and a data connection, where the address connection is a register ID, and the data connection is a set of 32 wires serving as either an output word (for a read port) or an input word (for a write port) of the register file.
 * Execute Stage
     * ![](../Images/CSAPP/4.3.4-execute-stage.png)
-    * ```
+    * Code
+        ```
         int aluA = [
             icode in { IRRMOVL, IOPL } : valA;
             icode in { IIRMOVL, IRMMOVL, IMRMOVL } : valC;
@@ -1092,7 +1099,8 @@ Value | Name | Meaning
         ```
 * Memory Stage
     * ![](../Images/CSAPP/4.3.4-memory-stage.png)
-    *   ```
+    *   Code
+        ```
         int mem_addr = [
             icode in { IRMMOVL, IPUSHL, ICALL, IMRMOVL } : valE;
             icode in { IPOPL, IRET } : valA;
@@ -1121,7 +1129,8 @@ Value | Name | Meaning
         ```
 * PC Update
     * ![](../Images/CSAPP/4.3.4-pc-update-stage.png)
-    *   ```
+    * Code
+        ```
         int new_pc = [
             # Call.  Use instruction constant
             icode == ICALL : valC;
@@ -1183,7 +1192,8 @@ Value | Name | Meaning
     * **M** sits between the execute and memory stages. It holds the results of the most recently executed instruction for processing by the memory stage. It also holds information about branch conditions and branch targets for processing conditional jumps.
     * **W**sits between the memory stage and the feedback paths that supply the computed results to the register file for writing and the return address to the PC selection logic when completing a ret instruction.
 * Example of instruction flow through pipeline.
-    * ```
+    * Code
+        ```
         irmovl  $1, %eax    # I1
         irmovl  $2, %ebx    # I2
         irmolv  $3, %ecx    # I3
@@ -1301,7 +1311,8 @@ Value | Name | Meaning
     * A second subtlety occurs when an instruction is first fetched and begins execution, causes an exception, and later is canceled due to a mispredicted branch.
     * A third subtlety arises because a pipelined processor updates different parts of the system state in different stages. It is possible for an instruction following one causing an exception to alter some part of the state before the excepting instruction completes.
         * E.g.,
-            * ```
+            * Code
+                ```
                 irmovl  $1,     %eax
                 xorl    %esp,   %esp    # set stack pointer to 0 and CC to 100
                 pushl   %eax            # attemp to write to 0xffffffc
@@ -1323,7 +1334,8 @@ Value | Name | Meaning
 ### 4.5.10 PIPE Stage Implementations
 * PC Selection and Fetch Stage
     * ![](../Images/CSAPP/4.5.10-pipe-stage-impl-fetch.png)
-    *   ```
+    * Code
+        ```
         int f_pc = [
             M_icode == IJXX && !M_Cnd : M_valA; # Mispredicted branch.  Fetch at incremented PC
             W_icode == IRET : W_valM;           # Completion of RET instruction.
@@ -1357,7 +1369,8 @@ Value | Name | Meaning
         W_valM | W_dstM | Pending write to port M in write-back stage
         W_valE | W_dstE | Pending write to port E in write-back stage
 
-    * ```
+    * Code
+        ```
         int d_dstE = [
             D_icode in { IRRMOVL, IIRMOVL, IOPL} : D_rB;
             D_icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
@@ -1407,7 +1420,8 @@ Value | Name | Meaning
 
 * Desired Handling of Special Control Cases
     * Processing ret
-        * ```
+        * Code
+            ```
             0x000:    irmovl Stack,%esp     # Initialize stack pointer
             0x006:    call Proc             # procedure call
             0x00b:    irmovl $10,%edx       # return point
@@ -1433,7 +1447,8 @@ Value | Name | Meaning
     * The pipeline can `hold back` an instruction in the decode stage by keeping pipeline register D in a fixed state. In doing so, it should also keep pipeline register F in a fixed state, so that the next instruction will be fetched a second time.
 
     * Mispredicted branches
-        *   ```
+        * Code
+            ```
             0x000:    xorl %eax,%eax
             0x002:    jne  target       # Not taken
             0x007:    irmovl $1, %eax   # Fall through
@@ -1574,7 +1589,8 @@ Value | Name | Meaning
 
 ## 5.1 Capabilities and Limitations of Optimizing Compilers
 * Different pointers aliased or not leads to one of the major optimization blockers, aspects of programs that can severely limit the opportunities for a compiler to generate optimized code.
-    * ```c++
+    * Code
+        ```c++
         // requires six (two reads of *xp, two reads of *yp, and two writes of *xp)
         void twiddle1(int *xp, int *yp) {
             *xp += *yp;
@@ -1589,7 +1605,8 @@ Value | Name | Meaning
         }
         ```
 * A second optimization blocker is due to function calls.
-    * ```c++
+    * Code
+        ```c++
         int f();
 
         int fun1() {
@@ -1600,7 +1617,8 @@ Value | Name | Meaning
             return 4 * f();
         }
         ```
-    * ```c++
+    * Code
+        ```c++
         int counter = 0;
 
         int f() {
@@ -1650,7 +1668,8 @@ Value | Name | Meaning
 ### 5.7.3 An Abstract Model of Processor Operation
 
 * From Machine-Level Code to Data-Flow Graphs
-    * ```c++
+    * Code
+        ```c++
         void combine4(vec_ptr v, data_t *dest) {
             long int i;
             long int length = vec_length(v);
@@ -1663,6 +1682,7 @@ Value | Name | Meaning
             *dest = acc;
         }
         ```
+
         ```c++
         // combine4: data_t float, OP = *
         // i in %rdx, data in %rax, limit in %rbp, acc in %xmm0
@@ -1696,7 +1716,8 @@ Value | Name | Meaning
 * Loop unrolling can improve performance in two ways.
     1. it reduces the number of operations that do not contribute directly to the program result, such as loop indexing and conditional branching.
     2. it exposes ways in which we can further transform the code to reduce the number of operations in the critical paths of the overall computation.
-* ```c++
+*   Code
+    ```c++
     void combine5(vec_ptr v, data_t *dest) {
         long int i;
         long int length = vec_length(v);
@@ -1727,14 +1748,15 @@ Value | Name | Meaning
 * why the three floating-point cases do not improve by loop unrolling?
     * gcc recognizes that it can safely perform this transformation for integer operations, but it also recognizes that it cannot transform the floating-point cases due to the lack of associativity
     * Most compilers will not attempt any reassociations of floating-point operations, since these operations are not guaranteed to be associative.
-    * See [5.9.2 Reassociation Transformation](### 5.9.2 Reassociation Transformation)
+    * See [5.9.2 Reassociation Transformation]( 5.9.2 Reassociation Transformation)
 
 ## 5.9 Enhancing Parallelism
 * At this point, our functions have hit the bounds imposed by the latencies of the arithmetic units. As we have noted, however, the functional units performing addition and multiplication are all fully pipelined, meaning that they can start new operations every clock cycle.
 
 ### 5.9.1 Multiple Accumulators
 * For a combining operation that is associative and commutative, such as integer addition or multiplication, we can improve performance by splitting the set of combining operations into two or more parts and combining the results at the end.
-    * ```c++
+    * Code
+        ```c++
         void combine6(vec_ptr v, data_t *dest) {
             long int i;
             long int length = vec_length(v);
@@ -1768,7 +1790,8 @@ Value | Name | Meaning
 
 ### 5.9.2 Reassociation Transformation
 * The reassociation transformation to achieve k-way loop unrolling with reassociation
-    * ```c++
+    * Code
+        ```c++
         void combine7(vec_ptr v, data_t *dest) {
             long int i;
             long int length = vec_length(v);
@@ -1880,7 +1903,8 @@ Value | Name | Meaning
 ### 5.12.2 Store Performance
 * The performance of Store operation, particularly in relation to its interactions with load operations, involves several subtle issues.
 * As with the load operation, in most cases, the store operation can operate in a fully pipelined mode, beginning a new store on every cycle.
-*   ```c++
+* Code
+    ```c++
     void clear_array(int* dest, int n) {
         for (int i = 0; i < n; ++i) {
             dest[i] = 0;
@@ -1905,7 +1929,8 @@ Value | Name | Meaning
     * Our measurements for the first version show a CPE of 2.00. By unrolling the loop four times, as shown in the code for clear_array_4, we achieve a CPE of 1.00. Thus, we have achieved the optimum of one new store operation per cycle.
 * The store operation does not affect any register values. Thus, by their very nature a series of store operations cannot create a data dependency. Only a load operation is affected by the result of a store operation, since only a load can read back the memory value that has been written by the store.
 
-*   ```c++
+* Code
+    ```c++
     void read_write(int* src, int* dest, int n) {
         int val = 0;
         while (n--) {
@@ -2058,7 +2083,8 @@ Value | Name | Meaning
     * Blocks that map to the same cache set are uniquely identified by the tag.
 
 * Conflict Misses in Direct-Mapped Caches
-    * ```c++
+    * Code
+        ```c++
         float dotprod(float x[8], float y[8]) {
             float sum = 0.0;
 
@@ -2277,7 +2303,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
     3. Given multiple weak symbols, choose any of the weak symbols.
 
 * The application of rules 2 and 3 can introduce some insidious run-time bugs:
-    *   ```c++
+    * Code
+        ```c++
         double x;
         void f() {
             x = -0.0;
@@ -2297,7 +2324,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 
 ### 7.6.2 Linking with Static Libraries
 * static libraries are stored on disk in a particular file format known as an archive. An archive is a collection of concatenated relocatable object files, with a header that describes the size and location of each member object file.
-*   ```
+* Code
+    ```
     gcc -c addvec.c multvec.c
     ar rcs libvector.a addvec.o multvec.o
     gcc -O2 -c main2.c
@@ -2323,7 +2351,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 ### 7.7.1 Relocation Entries
 * When an assembler generates an object module, it does not know where the code and data will ultimately be stored in memory. Nor does it know the locations of any externally defined functions or global variables that are referenced by the module.
 * So whenever the assembler encounters a reference to an object whose ultimate location is unknown, it generates a **relocation entry** that tells the linker how to modify the reference when it merges the object file into an executable. Relocation entries for code are placed in .rel.text. Relocation entries for initialized data are placed in .rel.data.
-*   ```c++
+* Code
+    ```c++
     typedef struct {
         int offset;      /* Offset of the reference to relocate */
         int symbol:24,  /* Symbol the reference should point to */
@@ -2332,9 +2361,10 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
     ```
 
 ### 7.7.2 Relocating Symbol References
-*   ```c++
-    foreach section s {
-        foreach relocation entry r {
+* Code
+    ```c++
+    void foreach_section_s() {
+        void foreach_relocation_entry_r() {
             refptr = s + r.offset;   /* ptr to reference to be relocated */
 
             if (r.type == R_386_PC32) { /* Relocate a PC-relative reference */
@@ -2346,7 +2376,6 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
                 *refptr = (unsigned) (ADDR(r.symbol) + *refptr);
         }
     }
-
     ```
 * Relocating PC-Relative References
 * Relocating Absolute References
@@ -2384,7 +2413,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 * Shared libraries are “shared” in two different ways:
     1. In any given file system, there is exactly one .so file for a particular library. The code and data in this .so file are shared by all of the executable object files that reference the library, as opposed to the contents of static libraries, which are copied and embedded in the executables that reference them.
     2. A single copy of the .text section of a shared library in memory can be shared by different running processes. We will explore this in more detail when we study virtual memory in Chapter 9.
-*   ```c++
+* Code
+    ```c++
     gcc -shared -fPIC -o libvector.so addvec.c multvec.c
     gcc -o p2 main2.c ./libvector.so
     ```
@@ -2398,8 +2428,9 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
     * Relocating any references in p2 to symbols defined by libc.so and libvector.so.
 
 ## 7.11 Loading and Linking Shared Libraries from Applications
-*   ```c++
-    #include <dlfcn.h>
+* Code
+    ```c++
+    \#include <dlfcn.h>
     void *dlopen(const char *filename, int flag); // RTLD_GLOBAL, RTLD_NOW, RTLD_LAZY
     void *dlsym(void *handle, char *symbol);
     int dlclose (void *handle);
@@ -2413,7 +2444,8 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
         * No matter where we load an object module (including shared object modules) in memory, the data segment is always allocated immediately after the code segment. Thus, the `distance` between any instruction in the code segment and any variable in the data segment is a run-time constant, independent of the absolute memory locations of the code and data segments.
     * To exploit this fact, the compiler creates a table called the **global offset table (GOT)** at the beginning of the `.data segment`. The global offset table (GOT) contains an entry for each global data object that is referenced by the object module. The compiler also generates a relocation record for each entry in the GOT. At load time, the dynamic linker relocates each entry in the GOT so that it contains the appropriate absolute address. Each object module that references global data has its own GOT.
     * At run time, each global variable is referenced indirectly through the GOT using code of the form
-        *   ```c++
+        * Code
+            ```c++
                 call L1
             L1: popl %ebx           // ebx contains the current PC
                 addl $VAROFF, %ebx  // ebx points to the GOT entry for var
@@ -2456,25 +2488,44 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 
 # 8 Exceptional Control Flow
 ## 8.1 Exception
-When the exception handler finishes processing, one of three things happens, depending on the type of event that caused the exception:
-1. The handler returns control to the current instruction Icurr, the instruction that was executing when the event occurred.
-2. The handler returns control to Inext, the instruction that would have executed next had the exception not occurred.
-3. The handler aborts the interrupted program.
+* When the exception handler finishes processing, one of three things happens, depending on the type of event that caused the exception:
+    1. The handler returns control to the current instruction Icurr, the instruction that was executing when the event occurred.
+    2. The handler returns control to Inext, the instruction that would have executed next had the exception not occurred.
+    3. The handler aborts the interrupted program.
+
+### 8.1.1 Exception Handling
+* The exception number is an index into the ex- ception table, whose starting address is contained in a special CPU register called the **exception table base register**.
+    * ![](../Images/CSAPP/8.1.1-exception-table-base-register.png)
+
+* An exception is akin to a procedure call, but with some important differences:
+    * As with a procedure call, the processor `pushes a return address` on the stack before branching to the handler. However, depending on the class of exception, the return address is either the current instruction or the next instruction.
+    * The processor also pushes some additional processor state onto the stack that will be necessary to `restart` the interrupted program when the handler returns.
+    * If control is being transferred from a user program to the kernel, all of these items are pushed onto the `kernel’s stack` rather than onto the user’s stack.
+    * Exception handlers run in `kernel mode` (Section 8.2.4), which means they have complete access to all system resources.
 
 ### 8.1.2 Classes of Exceptions
 1. Interrupt
 2. Trapping System Call
 3. Fatal
-    If the handler is able to correct the error condition, it returns control to the faulting instruction, thereby reexecuting it. Otherwise, the handler returns to an abort routine in the kernel that terminates the application program that caused the fault.
+    * If the handler is able to correct the error condition, it returns control to the faulting instruction, thereby reexecuting it. Otherwise, the handler returns to an abort routine in the kernel that terminates the application program that caused the fault.
 4. Abort
+
+Class | Cause | Async/Sync | Return behavior
+--- | --- | ---| ---
+Interrupt | Signal from I/O device | Async | Always returns to next instruction
+Trap | Intentional exception | Sync | Always returns to next instruction
+Fault | Potentially recoverable error | Sync | Might return to current instruction
+Abort | Nonrecoverable error | Sync | Never returns
+
 
 ## 8.1.3 Exceptions in Linux/IA32 Systems
 All parameters to Linux system calls are passed through general purpose registers rather than the stack. **rdi, rsi, rbx, rcx, rdx, ebp**
 
 ## 8.2 Processes
-The process abstractions that provided to the application:
-1. An independent logical control flow that provides the illusion that our program has exclusive use of the processor.
-2. A private address space that provides the illusion that our program has exclusive use of the memory system.
+* A **process** is an instance of a program in execution.
+* The key abstractions that process provides to the application:
+    1. An independent `logical control flow` that provides the illusion that our program has exclusive use of the `processor`.
+    2. A private `address space` that provides the illusion that our program has exclusive use of the `memory` system.
 
 ### 8.2.2 Concurrent Flows
 A logical flow whose execution overlaps in time with another flow is called a **concurrent flow**, and the two flows are said to run concurrently.
@@ -2503,8 +2554,9 @@ If the system call blocks because it is waiting for some event to occur, then th
 If the parent process terminates without reaping its zombie children, the kernel arranges for the init process to reap them.
 
 ### 8.4.5 Loading and Running Programs
-*   ```c++
-    #include <unistd.h>
+* Code
+    ```c++
+    \#include <unistd.h>
     int execve(const char *filename, const char *argv[], const char *envp[]);
     ```
 * Unlike fork, which is called once but returns twice, execve is called once and never returns.
@@ -2667,42 +2719,118 @@ virtual memory provides three important capabilities:
 
 ### 9.7.2 Linux Virtual Memory System
 * ![](../Images/CSAPP/9.7.2-linux-virtual-memory-1.png)
-* ![](../Images/CSAPP/9.7.2-linux-virtual-memory-2.png)
-* ![](../Images/CSAPP/9.7.2-linux-page-fault.png)
+* Linux Virtual Memory Areas
+    * ![](../Images/CSAPP/9.7.2-linux-virtual-memory-2.png)
+    * **pgd** points to the base of the level 1 table (the page global directory)
+    * **mmap** points to a list of vm_area_structs (area structs), each of which characterizes an area of the current virtual address space.
+    * When the kernel runs this process, it stores pgd in the **CR3** control register.
+* Linux Page Fault Exception Handling
+    * ![](../Images/CSAPP/9.7.2-linux-page-fault.png)
+    1. Is virtual address A legal, does A lie within an area defined by some area struct?
+        * The fault handler searches the list of area structs, comparing A with the vm_start and vm_end in each area struct. If the instruction is not legal, then the fault handler triggers a segmentation fault, which terminates the process.
+    2. Is the attempted memory access legal, does the process have permission to read, write, or execute the pages in this area?
+        * E.g., was the page fault the result of a store instruction trying to write to a read-only page in the text segment? Is the page fault the result of a process running in user mode that is attempting to read a word from kernel virtual memory? If the attempted access is not legal, then the fault handler triggers a protection exception, which terminates the process.
+    3. At this point, the kernel knows that the page fault resulted from a legal operation on a legal virtual address.
+        * It handles the fault by selecting a victim page, swapping out the victim page if it is dirty, swapping in the new page, and updating the page table.
+        * When the page fault handler returns, the CPU restarts the faulting instruction, which sends A to the MMU again. This time, the MMU translates A normally, without generating a page fault.
+
 
 ## 9.8 Memory Mapping
-Areas can be mapped to one of two types of objects:
-1. Regular file in the Unix file system:
-2. Anonymous file. Pages in areas that are mapped to anonymous files are sometimes called demand-zero pages.
+* Areas can be mapped to one of two types of objects:
+    1. **Regular file** in the Unix file system.
+        * An area can be mapped to a contiguous section of a regular disk file, such as an executable object file. The file section is divided into page-sized pieces, with each piece containing the initial contents of a virtual page. Because of demand paging, none of these virtual pages is actually swapped into physical memory until the CPU first touches the page (i.e., issues a virtual address that falls within that page’s region of the address space). If the area is larger than the file section, then the area is padded with zeros.
+    2. **Anonymous file**. Pages in areas that are mapped to anonymous files are sometimes called demand-zero pages.
+
+### 9.8.1 Shared Objects Revisited
+* An object can be mapped into an area of virtual memory as either a **shared object** or a **private object**.
+* Private objects are mapped into virtual memory using a clever technique known as **copy-on-write**.
+    * ![](../Images/CSAPP/9.8.1-copy-on-write.png)
+
+### 9.8.2 The fork Function Revisited
+1. When the fork function is called by the current process, the kernel creates various data structures for the new process and assigns it a unique `PID`.
+2. To create the virtual memory for the new process, it creates exact copies of the current process’s `mm_struct`, `area structs`, and `page tables`. It flags each page in both processes as `read-only`, and flags each area struct in both processes as `private copy-on-write`.
+3. When the fork returns in the new process, the new process now has an exact copy of the virtual memory as it existed when the fork was called.
+4. When either of the processes performs any subsequent writes, the copy-on-write mechanism creates new pages, thus preserving the abstraction of a private address space for each process.
 
 ### 9.8.3 The execve Function Revisited
-Loading and running a.out requires the following steps
-1. Delete existing user areas.
-2. Map private areas. text, data, bss, and stack areas of the new program. All of these new areas are private copy-on-write.
-3. Map shared areas.
-4. Set the program counter (PC).
+* Loading and running a.out requires the following steps:
+    1. Delete existing user areas.
+    2. Map private areas. text, data, bss, and stack areas of the new program. All of these new areas are private copy-on-write.
+    3. Map shared areas.
+    4. Set the program counter (PC).
+
+### 9.8.4 User-level Memory Mapping with the mmap Function
 
 ## 9.9 Dynamic Memory Allocation
+### 9.9.2 Why Dynamic Memory Allocation?
+* The most important reason that programs use dynamic memory allocation is that often they do not know the sizes of certain data structures until the program actually runs.
+
+### 9.9.3 Allocator Requirements and Goals
+* Requirements
+    * Handling arbitrary request sequences.
+    * Making immediate responses to requests.
+    * Using only the heap. In order for the allocator to be scalable, any non-scalar data structures used by the allocator must be stored in the heap itself.
+    * Aligning blocks (alignment requirement).
+    * Not modifying allocated blocks
+
+* Goals
+    * Maximizing throughput.
+    * Maximizing memory utilization.
+        * The total amount of virtual memory allocated by all of the processes in a system is limited by the amount of swap space on disk.
+
+### 9.9.4 Fragmentation
+* **fragmentation**, which occurs when otherwise unused memory is not available to satisfy allocate requests.
+* Two forms of fragmentation:
+    * **Internal fragmentation** occurs when an allocated block is larger than the payload. Reasons:
+        * the implementation of an allocator might impose a minimum size on allocated blocks that is greater than some requested payload.
+        * the allocator might increase the block size in order to satisfy alignment constraints
+    * **External fragmentation** occurs when there is enough aggregate free memory to satisfy an allocate request, but no single free block is large enough to handle the request.
+
+
 ### 9.9.5 Implementation Issues
-A practical allocator that strikes a better balance between throughput and utilization must consider the following issues:
-1. Free block organization: How do we keep track of free blocks?
-2. Placement: How do we choose an appropriate free block in which to place a newly allocated block?
-3. Splitting: After we place a newly allocated block in some free block, what do we do with the remainder of the free block?
-4. Coalescing: What do we do with a block that has just been freed?
+* A practical allocator that strikes a better balance between throughput and utilization must consider the following issues:
+    1. **Free block organization**: How do we keep track of free blocks?
+    2. **Placement**: How do we choose an appropriate free block in which to place a newly allocated block?
+    3. **Splitting**: After we place a newly allocated block in some free block, what do we do with the remainder of the free block?
+    4. **Coalescing**: What do we do with a block that has just been freed?
 
 ### 9.9.6 Implicit Free Lists
-![9.9.6-format-heap-block.png](../Images/CSAPP/9.9.6-format-heap-block.png)
+* ![9.9.6-format-heap-block.png](../Images/CSAPP/9.9.6-format-heap-block.png)
 
-![9.9.6-implicit-free-list.png](../Images/CSAPP/9.9.6-implicit-free-list.png)
+* ![9.9.6-implicit-free-list.png](../Images/CSAPP/9.9.6-implicit-free-list.png)
+
+* A significant disadvantage
+    * is that the cost of any operation, such as placing allocated blocks, that requires a search of the free list will be linear in the total number of allocated and free blocks in the heap.
 
 ### 9.9.7 Placing Allocated Blocks
-Placement policy: first fit, next fit, and best fit.
+* Placement policy:
+    * **First fit** searches the free list from the beginning and chooses the first free block that fits.
+        * Advantage: it tends to retain large free blocks at the end of the list
+        * Disadvantage: it tends to leave “splinters” of small free blocks toward the beginning of the list, which will increase the search time for larger blocks.
+    * **Next fit** is similar to first fit, but instead of starting each search at the beginning of the list, it starts each search where the previous search left off.
+        * Pros: runs significantly faster than first fit, especially if the front of the list becomes littered with many small splinters.
+        * Cos: suffers from worse memory utilization than first fit
+    * **Best fit** examines every free block and chooses the free block with the smallest size that fits.
+        * Pros: enjoys better memory utilization than either first fit or next fit
+        * Cos: requires an exhaustive search of the heap
+
+### 9.9.8 Splitting Free Blocks
+
+### 9.9.9 Getting Additional Heap Memory
+* What happens if the allocator is unable to find a fit for the requested block?
+    * try to create some larger free blocks by merging (coalescing) free blocks that are physically adjacent in memory (next section).
+    * if this does not yield a sufficiently large block, or if the free blocks are already maximally coalesced, then the allocator asks the kernel for additional heap memory by calling the `sbrk` function. The allocator transforms the additional memory into one large free block, inserts the block into the free list, and then places the requested block in this new free block.
 
 ### 9.9.10 Coalescing Free Blocks
-### 9.9.11 Coalescing with Boundary Tags
-It's easy to coalesce next blocks with implicit format, but hard for previous blocks. To address this issues, blocks with boundary tags come.
+* When to perform coalescing:
+    * The allocator can opt for immediate coalescing by merging any adjacent blocks each time a block is freed.
+        * It is straightforward and can be performed in constant time, but with some request patterns it can introduce a form of `thrashing` where a block is repeatedly coalesced and then split soon thereafter.
+    * Or it can opt for deferred coalescing by waiting to coalesce free blocks at some later time.
 
-There is one somewhat subtle aspect. The free list format we have chosen—with its prologue and epilogue blocks that are always marked as allocated—allows us to ignore the potentially troublesome edge conditions where the requested block bp is at the beginning or end of the heap.
+### 9.9.11 Coalescing with Boundary Tags
+* It's easy to coalesce next blocks with implicit format, but hard for previous blocks. To address this issues, blocks with boundary tags come.
+
+* The idea of boundary tags is a simple and elegant one that generalizes to many different types of allocators and free list organizations. However, there is a potential disadvantage. Requiring each block to contain both a header and a footer can introduce significant memory overhead if an application manipulates many small blocks.
 
 ![9.9.11-format-heap-block-boundary-tag](../Images/CSAPP/9.9.11-format-heap-block-boundary-tag.png)
 
@@ -2711,13 +2839,44 @@ There is one somewhat subtle aspect. The free list format we have chosen—with 
 ### 9.9.13 Explicit Free Lists
 Because block allocation time is linear in the total number of heap blocks, the implicit free list is not appropriate for a general-purpose allocator.
 
-Using a doubly linked list instead of an implicit free list reduces the first fit allocation time from linear in the total number of blocks to linear in the number of free blocks.
+* Using a doubly linked list instead of an implicit free list reduces the `first fit` allocation time from linear in the total number of blocks to linear in the number of free blocks. However, the time to `free a block` can be either linear or constant, depending on the policy we choose for ordering the blocks in the free list.
+
+* There is one somewhat subtle aspect. The free list format we have chosen—with its prologue and epilogue blocks that are always marked as allocated—allows us to ignore the potentially troublesome edge conditions where the requested block bp is at the beginning or end of the heap.
+* ![](../Images/CSAPP/9.9.13-doubly-linked-free-list.png)
 
 ### 9.9.14 Segregated Free Lists
-Segregated Fits
-Each free list is associated with a size class and is organized as some kind of explicit or implicit list.
+* Simple Segregated Storage
+    * Steps:
+        * If the list is not empty, we simply allocate the first block in its entirety. Free blocks are never split to satisfy allocation requests.
+        * If the list is empty, the allocator requests a fixed-sized chunk of additional memory from the operating system (typically a multiple of the page size), divides the chunk into equal-sized blocks, and links the blocks together to form the new free list.
+        * To free a block, the allocator simply inserts the block at the front of the appropriate free list.
+    * Advantages:
+        * Allocating and freeing blocks are both fast `constant-time operations`
+        * The combination of the same-sized blocks in each chunk, no splitting, and no coalescing means that there is very little per-block memory `overhead`
+        * Since each chunk has only same-sized blocks, the size of an allocated block can be `inferred` from its address
+        * Since there is no coalescing, allocated blocks do not need an `allocated/free flag` in the header
+        * Allocated blocks require no `headers`, and since there is no coalescing, they do not require any `footers` either.
+        * Since allocate and free operations insert and delete blocks at the beginning of the free list, the list need only be `singly linked` instead of doubly linked
+    * Disadvantages:
+        * It is susceptible to internal and external fragmentation. Internal fragmentation is possible because free blocks are never split. Worse, certain reference patterns can cause extreme external fragmentation because free blocks are never coalesced
 
-Search times are reduced because searches are limited to particular parts of the heap instead of the entire heap. Memory utilization can improve because of the interesting fact that a simple first-fit search of a segregated free list approximates a best-fit search of the entire heap.
+* Segregated Fits
+    * Steps:
+        * To allocate a block, we determine the size class of the request and do a first- fit search of the appropriate free list for a block that fits.
+        * If we find one, then we (optionally) split it and insert the fragment in the appropriate free list.
+        * If we cannot find a block that fits, then we search the free list for the next larger size class.
+            * We repeat until we find a block that fits.
+            * If none of the free lists yields a block that fits, then we request additional heap memory from the operating system, allocate the block out of this new heap memory, and place the remainder in the appropriate size class.
+        * To free a block, we coalesce and place the result on the appropriate free list.
+    * Each free list is associated with a size class and is organized as some kind of explicit or implicit list.
+    * Advantages:
+        * Search times are reduced because searches are limited to `particular parts` of the heap instead of the entire heap.
+        * Memory utilization can improve because of the interesting fact that a simple first-fit search of a segregated free list approximates a `best-fit` search of the entire heap.
+
+* Buddy Systems
+    * A buddy system is a special case of segregated fits where each size class is a power of two.
+    * A key fact about buddy systems is that given the address and size of a block, it is easy to compute the address of its buddy.
+    * The major advantage of a buddy system allocator is its fast searching and coalescing. The major disadvantage is that the power-of-two requirement on the block size can cause significant internal fragmentation.
 
 ## Reference
 https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=77785597cd937db3013ad6c395b557a3&source=41#wechat_redirect
@@ -2725,15 +2884,93 @@ https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=777855
 ## 9.10 Garbage Collection
 
 ## 9.11 Common Memory-Related Bugs in C Programs
+1. Dereferencing Bad Pointers
+2. Reading Uninitialized Memory
+    * While bss memory locations (such as uninitialized global C variables) are always initialized to zeros by the loader, this is not true for heap memory.
+3. Allowing Stack Buffer Overflows
+4. Assuming that Pointers and the Objects They Point to Are the Same Size
+5. Making Off-by-One Errors
+6. Referencing a Pointer Instead of the Object It Points to
+7. Misunderstanding Pointer Arithmetic
+8. Referencing Nonexistent Variables
+9. Referencing Data in Free Heap Blocks
+10. Introducing Memory Leaks
 
 # 10 System-Level I/O
 ## 10.1 Unix I/O
+* A Unix file is a sequence of m bytes.
+
 ## 10.2 Opening and Closing Files
+
 ## 10.3 Reading and Writing Files
+* In some situations, read and write transfer fewer bytes (short counts) than the application requests:
+    * Encountering EOF on reads
+    * Reading text lines from a terminal
+    * Reading and writing network sockets
+* In practice, you will never encounter short counts when you read from `disk files` except on EOF, and you will never encounter short counts when you write to disk files.
+
 ## 10.4 Robust Reading and Writing with the Rio Package
+### 10.4.1 Rio Unbuffered Input and Output Functions
+```c++
+ssize_t rio_readn(int fd, vodi* userbuf, size_t n) {
+    size_t nleft = n;
+    ssizet_t nread;
+    char* bufp = userbuf;
+
+    while (nleft > 0) {
+        if ((nread = read(fd, bufp, nleft)) < 0) {
+            if (errno == EINTR)
+                nread = 0;
+            else
+                return -1;
+        } else if (nread == 0) {
+            break;
+        }
+
+        nleft -= nread;
+        bufp += nread;
+    }
+
+    return (n - nleft);
+}
+```
+
+```c++
+ssize_t rio_writen(int fd, void* userbuf, size_t n) {
+    size_t nleft = n;
+    ssize_t nwrite;
+    char* bufp = userbuf;
+
+    while (nleft > 0) {
+        if ((nwrite = write(fd, bufp, nleft)) <= 0) {
+            if (errno == EINTR) {
+                nwrite = 0;
+            } else {
+                return -1;
+            }
+        }
+
+        nleft -= nwrite;
+        bufp += nwrite;
+    }
+
+    return n;
+}
+```
+
+### 10.4.2 Rio Buffered Input Functions
+
 ## 10.5 Reading File Metadata
 ## 10.6 Sharing Files
+* The kernel represents open files using three related data structures:
+    * **Descriptor table**. Each process has its own separate descriptor table whose entries are indexed by the process’s open file descriptors. Each open descriptor entry points to an entry in the file table.
+    * **File table**. The set of open files is represented by a file table that is shared by all processes. Each file table entry consists of (for our purposes) the current file position, a reference count of the number of descriptor entries that currently point to it, and a pointer to an entry in the v-node table. Closing a descriptor decrements the reference count in the associated file table entry. The kernel will not delete the file table entry until its reference count is zero.
+    * **v-node table**. Like the file table, the v-node table is shared by all processes. Each entry contains most of the information in the stat structure, including the st_mode and st_size members.
+* ![](../Images/CSAPP/10.6-kernel-data-structures-for-open-files.png)
+
 ## 10.7 I/O Redirection
+* ![](../Images/CSAPP/10.7-io-redirection.png)
+
 ## 10.8 Standard I/O
 ## 10.9 Putting It Together: Which I/O Functions Should I Use?
 
@@ -2748,12 +2985,80 @@ https://mp.weixin.qq.com/s?__biz=MzkwOTE2OTY1Nw==&mid=2247486881&idx=2&sn=777855
 
 # 12 Concurrent Programming
 ## 12.1 Concurrent Programming with Processes
+### 12.1.1 A Concurrent Server Based on Processes
+1. servers typically run for long periods of time, so we must include a SIGCHLD handler that reaps zombie children (lines 4–9). Since SIGCHLD signals are blocked while the SIGCHLD handler is executing, and since Unix signals are not queued, the `SIGCHLD handler` must be prepared to reap `multiple zombie children`.
+2. the parent and the child must close their respective copies of connfd (lines 33 and 30, respectively). As we have mentioned, this is especially important for the parent, which must close its copy of the connected descriptor to avoid a memory leak.
+3. because of the reference count in the socket’s file table entry, the connection to the client will not be terminated until both the parent’s and child’s copies of connfd are closed.
+
 ## 12.2 Concurrent Programming with I/O Multiplexing
 ## 12.3 Concurrent Programming with Threads
+### 12.3.4 Terminating Threads
+* A thread terminates in one of the following ways:
+    * The thread terminates `implicitly` when its top-level thread routine returns.
+    * The thread terminates `explicitly` by calling the `pthread_exit` function.
+        * [Wrong] If the main thread calls pthread_exit, it **waits for all other peer threads to terminate**, and then terminates the main thread and the entire process with a return value of thread_return.
+        * When main thread exit, all other threads are killed.
+    * Some peer thread calls the Unix `exit` function, which terminates the process and all threads associated with the process.
+    * Another peer thread terminates the current thread by calling the `pthread_cancel` function with the ID of the current thread.
+* If main thread exits before child thread:
+    * Kill all child threads nomater child threads are joinable, detachable or not.
+* If child threads exit before main thread:
+    * If child threads are unjoinable (main thead called join), no memory leak.
+    * If child threads are joinalble (main thread didn't call join), they become [zombie thread](https://man7.org/linux/man-pages/man3/pthread_join.3.html), cause memory leak.
+
+### 12.3.5 Reaping Terminated Threads
+* Threads wait for other threads to terminate by calling the `pthread_join` function
+
+### 12.3.6 Detaching Threads
+* At any point in time, a thread is joinable or detached.
+    * A **joinable** thread can be reaped and killed by other threads. Its memory resources (such as the stack) are not freed until it is reaped by another thread.
+    * A **detached** thread cannot be reaped or killed by other threads. Its memory resources are freed automatically by the system when it terminates.
+* By default, threads are created joinable. In order to avoid memory leaks, each joinable thread should either be explicitly reaped by another thread, or detached by a call to the pthread_detach function.
+
+### 12.3.7 Initializing Threads
+* Code
+    ```c++
+    \#include <pthread.h>
+    pthread_once_t once_control = PTHREAD_ONCE_INIT;
+    int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
+    ```
+
 ## 12.4 Shared Variables in Threaded Programs
+### 12.4.1 Threads Memory Model
+* A pool of concurrent threads runs in the context of a process.
+* Each thread has its own separate thread context, which includes a **thread ID**, **stack**, **stack pointer**, **program counter**, **condition codes**, and **general-purpose register values**.
+* Each thread shares the rest of the process context with the other threads. This includes the e**ntire user virtual address space**, which consists of `read-only text (code)`, `read/write data`, the `heap`, and `any shared library code` and `data areas`. The threads also share the same set of `open files`.
+* The memory model for the separate thread stacks is not as clean. These stacks are contained in the `stack area` of the virtual address space, and are usually accessed independently by their respective threads.
+* We say usually rather than always, because different thread stacks are not protected from other threads. So if a thread somehow manages to acquire a pointer to another thread’s stack, then it can read and write any part of that stack.
+
+### 12.4.2 Mapping Variables to Memory
+* **Global variables**: At run time, the read/write area of virtual memory contains exactly `one instance` of each global variable that can be referenced by any thread.
+* **Local automatic varibles**: At run time, each thread’s stack contains `its own instances` of any local automatic variables. This is true even if multiple threads execute the same thread routine.
+* **Local static variables**: As with global variables, the read/write area of virtual memory contains exactly `one instance` of each local static variable declared in a program.
+
 ## 12.5 Synchronizing Threads with Semaphores
+
 ## 12.6 Using Threads for Parallelism
+
 ## 12.7 Other Concurrency Issues
+1. Thread Safety
+    * A function is said to be thread-safe if and only if it will always produce correct results when called repeatedly from multiple concurrent threads.
+    * Four (nondisjoint) classes of thread-unsafe functions:
+        1. Functions that do `not protect` shared variables
+        2. Functions that keep `state across` multiple invocations: `rand`, `strtok`
+        3. Functions that return a pointer to a `static variable`: `ctime`, `gethostby{name, addr}`, `asctime`, `inet_ntoa`, `localtime`
+            * Solutions:
+                * Caller passes the address of the variable in which to store the results. This eliminates all shared data, but it requires the programmer to have access to the function source code.
+                * **lock-and-copy**. The basic idea is to associate a mutex with the thread-unsafe function. At each call site, lock the mutex, call the thread-unsafe function, copy the result returned by the function to a private memory location, and then unlock the mutex.
+        4. Functions that `call thread-unsafe functions`.
+
+2. Reentrancy
+    * Reentrant functions are typically more efficient than nonreentrant thread- safe functions because they require no synchronization operations.
+3. Using Existing Library Functions in Threaded Programs
+    * Most Unix functions, including the functions defined in the standard C library (such as malloc, free, realloc, printf, and scanf), are thread-safe, with only a few exceptions.
+4. Races
+5. Deadlocks
+
 
 ```
 Questions:
