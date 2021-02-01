@@ -1,7 +1,7 @@
 # 1 Introduction
 
-### 1.1 Architecture Priciples
-#### 1.1.1 Packets, Connections, and Datagrams
+## 1.1 Architecture Priciples
+### 1.1.1 Packets, Connections, and Datagrams
 
 In **statistical multiplexing**, traffic is mixed together based on the arrival statistics or timing pattern of the traffic.
 
@@ -12,25 +12,25 @@ Note that while circuits are straightforwardly implemented using TDM techniques,
 
 The per-flow state is established prior to the exchange of data on a VC using a signaling protocol that supports connection establishment, clearing, and status information. Such networks are consequently called **connection-oriented**.
 
-#### 1.1.2 The End-to-End Argument and Fate Sharing
+### 1.1.2 The End-to-End Argument and Fate Sharing
 
 The function in question can completely and correctly be implemented only with the knowledge and help of the application standing at the end points of the communication system.
 
 Fate sharing suggests placing all the necessary state to maintain an active communication association (e.g., virtual connection) at the same location with the communicating endpoints.
 
-#### 1.1.3 Error Control and Flow Control
+### 1.1.3 Error Control and Flow Control
 
-### 1.2 Design and Implementation
+## 1.2 Design and Implementation
 
 # 12 TCP: The Transmisssion Control Protocol(Premilinary)
 
-### 12.2 Introduction to TCP
+## 12.2 Introduction to TCP
 
-#### 12.2.1 The TCP Service Model
+### 12.2.1 The TCP Service Model
 
 TCP provides a connection-oriented, reliable, byte stream service.
 
-#### 12.2.2 Reliability in TCP
+### 12.2.2 Reliability in TCP
 
 If a segment arrives with an invalid checksum, TCP discards it without sending any acknowledgment for the discarded packet.
 
@@ -42,7 +42,7 @@ This provides some robustness against ACK loss—if an ACK is lost, it is very l
 
 Once a connection is established, every TCP segment that contains data flowing in one direction of the connection also includes an ACK for segments flowing in the opposite direction.
 
-### 12.3 Tcp Header and Encapsulation
+## 12.3 Tcp Header and Encapsulation
 
 ```C++
     0                             15 16                            31
@@ -87,37 +87,37 @@ Once a connection is established, every TCP segment that contains data flowing i
 
  # 13 Connection Management
 
-### 13.2 Tcp Connection Establishment and Termination
-#### 13.2.1 Tcp half-close
-#### 13.2.2 Simultaneous Open and Close
+## 13.2 Tcp Connection Establishment and Termination
+### 13.2.1 Tcp half-close
+### 13.2.2 Simultaneous Open and Close
 
 A simultaneous open requires the exchange of four segments, one more than the normal three-way handshake.
 
 With a simultaneous close the same number of segments are exchanged as in the normal close. The only real difference is that the segment sequence is interleaved instead of sequential.
 
-#### 13.2.3 Initial Sequence Number
+### 13.2.3 Initial Sequence Number
 [RFC0793] specifies that the ISN should be viewed as a 32-bit counter that increments by 1 every 4μs. The purpose of doing this is to arrange for the sequence numbers for segments on one connection to not overlap with sequence numbers on a another (new) identical connection.
 
-#### 13.2.6 Connections and Translator
+### 13.2.6 Connections and Translator
 By implementing a portion of the TCP state machine in a NAT (see, for example, Sections 3.5.2.1 and 3.5.2.2 of [RFC6146]), the connection can be tracked, including the current states, sequence numbers in each direction, and corresponding ACK numbers. Such state tracking is typical for NAT implementations.
 
-### 13.3 Tcp Options
+## 13.3 Tcp Options
 Note that the MSS option is not a negotiation between one TCP and its peer; it is a limit. When one TCP gives its MSS option to the other, it is indicating its unwillingness to accept any segments larger than that size for the duration of the connection.
 
-#### 13.3.2 Selective Ackownledgment(SACK)
+### 13.3.2 Selective Ackownledgment(SACK)
 Once this has taken place, the TCP receiving out-of-sequence data may provide a SACK option that describes the out-of-sequence data to help its peer perform retransmissions more efficiently. SACK information contained in a SACK option consists of a range of sequence numbers representing data blocks the receiver has successfully received. Each range is called a SACK block and is represented by a pair of 32-bit sequence numbers. Thus, a SACK option containing n SACK blocks is (8n + 2) bytes long. Two bytes are used to hold the kind and length of the SACK option.
 
-#### 13.3.3 WSCALE/WSOPT
+### 13.3.3 WSCALE/WSOPT
 1. This option can appear only in a SYN segment.
 2. The 1-byte shift count is between 0 and 14 (inclusive). A shift count of 0 indicates no scaling. The maximum scale value of 14 provides for a maximum window of 1,073,725,440 bytes (65,535 × 214), close to 1,073,741,823 (230 −1), effectively 1GB. TCP then maintains the "real" window size internally as a 32-bit value.
 3. To enable window scaling, both ends must send the option in their SYN segments.
 
-#### 13.3.4 Timestamp Option and Protection Against Wrapped Sequence Number
+### 13.3.4 Timestamp Option and Protection Against Wrapped Sequence Number
 The main reason for wishing to calculate a good estimate of the connection’s RTT is to set the retransmission timeout.
 
 The PAWS algorithm does not require any form of time synchronization between the sender and the receiver. All the receiver needs is for the timestamp values to be monotonically increasing, and to increase by at least 1 per window of data.
 
-#### 13.3.5 User Timeout(UTO) Option
+### 13.3.5 User Timeout(UTO) Option
 The UTO value (USER_TIMEOUT) specifies the amount of time a TCP sender is willing to wait for an ACK of outstanding data before concluding that the remote end has failed.
 
 The UTO option allows one TCP to signal its USER_TIMEOUT value to its connection peer.
@@ -126,34 +126,34 @@ NAT devices could also interpret such information to help set their connection a
 ```C++
 USER_TIMEOUT = min(U_LIMIT, max(ADV_UTO, REMOTE_UTO, L_LIMIT))
 ```
-#### 13.3.6 Authentication Option
+### 13.3.6 Authentication Option
 
-### 13.4 Path MTU Discovery with TCP
+## 13.4 Path MTU Discovery with TCP
 
-### 13.5 Tcp State Transition
-#### 13.5.2 TIME_WAIT(2 MSL)
+## 13.5 Tcp State Transition
+### 13.5.2 TIME_WAIT(2 MSL)
 The final ACK is resent not because the TCP retransmits ACKs (they do not consume sequence numbers and are not retransmitted by TCP), but because the other side will retransmit its FIN (which does consume a sequence number).
 
 Any delayed segments that arrive for a connection while it is in the 2MSL wait state are discarded.
 
 **tcp_tw_reuse**(tcp_timestamps)    **tcp_tw_recycle**     **tcp_max_tw_buckets**
 
-### 13.5.3 Quiet Time Concept
+## 13.5.3 Quiet Time Concept
 [RFC0793] states that TCP should wait an amount of time equal to the MSL before creating any new connections after a reboot or crash. This is called the **quiet time**. Few implementations abide by this because most hosts take longer than the MSL to reboot after a crash.
 
-#### 13.5.4 FIN_WAIT_2 State
+### 13.5.4 FIN_WAIT_2 State
 One end of the connection can remain in this state forever. The other end is still in the CLOSE_WAIT state and can remain there forever, until the application decides to issue its close.
 
 Solution: If the application that does the active close does a complete close, not a half-close indicating that it expects to receive data, a timer is set. If the connection is idle when the timer expires, TCP moves the connection into the CLOSED state.
 
-#### 13.5.5 Simultaneous Open and Close Transitions
+### 13.5.5 Simultaneous Open and Close Transitions
 
 ![Img: tcp state](../Images/tcp-state.png)
 
 Both ends go from ESTABLISHED to FIN_WAIT_1 when the application issues the close. This causes both FINs to be sent, and they probably pass each other somewhere in the network. When its peer’s FIN arrives, each end transitions from FIN_WAIT_1 to the CLOSING state, and each endpoint sends its final ACK. Upon receiving a final ACK, each endpoint’s state changes to TIME_WAIT, and the 2MSL wait is initiated.
 
 
-### 13.6 RESET Segments
+## 13.6 RESET Segments
 
 A reset is sent by TCP whenever a segment arrives that does not appear to be correct for the referenced connection.
 
@@ -177,8 +177,8 @@ Circumstances:
 
 For a reset segment to be accepted by a TCP, the ACK bit field must be set and the ACK Number field must be within the valid window (see Chapter 12). This helps to prevent a simple attack in which anyone able to generate a reset.
 
-### 13.7 TCP Server Operation
-#### 13.7.4 Incomming Connection Queue
+## 13.7 TCP Server Operation
+### 13.7.4 Incomming Connection Queue
 
 
 Operating system ordinarily has two distinct connection queues:
@@ -192,7 +192,7 @@ Linux rules on Connection Queue:
 3. If there is room on this listening endpoint’s queue for this new connection, the TCP module ACKs the SYN and completes the connection. The server application with the listening endpoint does not see this new connection until the third segment of the three-way handshake is received. Also, the client may think the server is ready to receive data when the client’s active open completes successfully, before the server application has been notified of the new connection. If this happens, the server’s TCP just queues the incoming data.
 4. If there is not enough room on the queue for the new connection, the TCP delays responding to the SYN, to give the application a chance to catch up.
 
-### 13.8 Attacks Involing TCP Connection Management
+## 13.8 Attacks Involing TCP Connection Management
 
 **SYN floods attack**
 > The main insight with SYN cookies is that most of the information that would be stored for a connection when a SYN arrives could be encoded inside the Sequence Number field supplied with the SYN + ACK.
@@ -224,19 +224,19 @@ Mitigation techniques:
 4. using other forms of cookies in which otherwise noncritical data values are arranged to depend on more exact knowledge of the connection or a secret value.
 
 # 14 TCP Timeout and Retransmission
-### 14.1 Introduction
+## 14.1 Introduction
 **Fast retransmit** is based on inferring losses by noticing when TCP’s cumulative acknowledgment fails to advance in the ACKs received over time, or when ACKs carrying selective acknowledgment information (SACKs) indicate that out-of-order segments are present at the receiver.
 
 TCP has two thresholds:
 1. Threshold R1 indicates the number of tries TCP will make (or the amount of time it will wait) to resend a segment before passing "negative advice" to the IP layer (e.g., causing it to reevaluate the IP route it is using). **net.ipv4.tcp_retries1** default is 15(roughly 15~30minutes)
 2. Threshold R2 (larger than R1) dictates the point at which TCP should abandon the connection. **net.ipv4.tcp_retries2** default is 3.
 
-### 14.3 Setting the Retransmisstion Timeout(RTO)
+## 14.3 Setting the Retransmisstion Timeout(RTO)
 TCP sends acknowledgments when it receives data, it is possible to send a byte with a particular sequence number and measure the time required to receive an acknowledgment that covers that sequence number.
 
 The RTT is estimated for each TCP connection separately, and one retransmission timer is pending whenever any data is in flight that consumes a sequence number (including SYN and FIN segments).
 
-#### 14.3.1 The Classical Method
+### 14.3.1 The Classical Method
 ```C++
 SRTT ← α(SRTT) + (1 − α) RTTs
 RTO = min(ubound, max(lbound,(SRTT)β))
@@ -245,32 +245,32 @@ RTO = min(ubound, max(lbound,(SRTT)β))
 Problems with the classic method:
 > the timer specified by [RFC0793] cannot keep up with wide fluctuations in the RTT (and in particular, it causes unnecessary retransmissions when the real RTT is much larger than expected).
 
-#### 14.3.2 The Standard Method
+### 14.3.2 The Standard Method
 > * TODO
 
-#### 14.3.3 The Linux Method
+### 14.3.3 The Linux Method
 It uses a clock granularity of 1ms, which is finer than that of many other implementations, along with the TSOPT.
 > * TODO
 
-#### 14.3.4 RTT Estimator Behaviors
+### 14.3.4 RTT Estimator Behaviors
 > * TODO
 
-#### 14.3.5 RTTM Robustness to Loss and Reordering
+### 14.3.5 RTTM Robustness to Loss and Reordering
 > * TODO
 
-### 14.4 Timer-based Retransmission
+## 14.4 Timer-based Retransmission
 When retransmission happens Tcp quickly reducing the rate at which it sends data into the network in two ways:
  1. reduce its sending window size based on congestion control procedures.
  2. keep increasing a multiplicative backoff factor applied to the RTO each time a retransmitted segment is again retransmitted.
 
-### 14.5 Fast Retransmit
+## 14.5 Fast Retransmit
 It is important to realize that TCP is required to generate an immediate acknowledgment (a "duplicate ACK") when an out-of-order segment is received, and that the loss of a segment implies out-of-order arrivals at the receiver when subsequent data arrives.
 
 The duplicate ACKs sent immediately when out-of-order data arrives are not delayed.
 
 Duplicate ACKs can also appear when there is packet reordering in the network—if a receiver receives a packet for a sequence number beyond the one it is expecting next, the expected packet could be either missing or merely delayed. Because we generally do not know which one, TCP waits for a small number of duplicate ACKs (called the duplicate ACK threshold or dupthresh) to be received before concluding that a packet has been lost and initiating a fast retransmit.
 
-#### 14.5.1 Example
+### 14.5.1 Example
 
 The ACK at time 0.853 is not considered a duplicate ACK because it contains a window update.
 
@@ -280,12 +280,12 @@ TCP is considered to be **recovering from loss** after a retransmission until it
 
 When **partial ACKs** arrive, the sending TCP immediately sends the segment that appears to be missing (26601 in this case) and continues this way until the recovery point is matched or exceeded by an arriving ACK. If permitted by congestion control procedures, it may also send new data it has not yet sent.
 
-### 14.6 Retransmission with Selective Acknowledgments
+## 14.6 Retransmission with Selective Acknowledgments
 A SACK-capable TCP receiver is able to describe data it has received with sequence numbers beyond the cumulative ACK Number field it sends in the primary portion of the TCP header.
 
 A SACK option that specifies n blocks has a length of 8n + 2 bytes, so the 40 bytes available to hold TCP options can specify a maximum of four blocks. It is expected that SACK will often be used in conjunction with the TSOPT, which takes an additional 10 bytes (plus 2 bytes of padding), meaning that SACK is typically able to include only three blocks per ACK.
 
-#### 14.6.1 SACK Receiver Behavior
+### 14.6.1 SACK Receiver Behavior
 A receiver generates SACKs whenever there is any out-oforder data in its buffer in two cases:
 1. data was lost in transit
 2. it has been reordered and newer data has arrived at the receiver before older data
@@ -296,7 +296,7 @@ Behavior:
 
 [RFC6675]Note that an ACK which carries new SACK data is counted as a duplicate acknowledgment under this definition even if it carries new data, changes the advertised window, or moves the cumulative acknowledgment point, which is different from the definition of duplicate acknowledgment in [RFC5681].
 
-#### 14.6.2 SACK Sender Behavior
+### 14.6.2 SACK Sender Behavior
 The SACK sender keeps track of any cumulative ACK information it receives (like any TCP sender), plus any SACK information it receives.
 
 It uses the SACK information it receives in ACKs generated at the receiver to avoid retransmitting data the receiver reports that it already has.
@@ -307,12 +307,12 @@ When a SACK-capable sender has the opportunity to perform a retransmission, usua
 
 The SACK information provides the sequence number ranges present at the receiver, so the sender can infer what segments likely need to be retransmitted to fill the receiver’s holes. The simplest approach is to have the sender first fill the holes at the receiver and then move on to send more new data [RFC3517] if the congestion control procedures allow. This is the most common approach.
 
-#### 14.6.3 Example
+### 14.6.3 Example
 The ACK for 23801 contains a SACK block of [25201,26601], indicating a hole at the receiver. The receiver is missing the sequence number range [23801,25200], which corresponds to the single 1400-byte packet starting with sequence number 23801. Note that this SACK is a window update and is not counted as a duplicate ACK for the reasons discussed earlier. It does not trigger fast retransmit.
 
 The SACK arriving at time 0.967 contains two SACK blocks: [28001,29401] and [25201,26601]. Recall that the first SACK blocks from previous SACKs are repeated in later positions in subsequent SACKs for robustness against ACK loss. This SACK is a duplicate ACK for sequence number 23801 and suggests that the receiver now requires two full-size segments starting with sequence numbers 23801 and 26601. The sender reacts immediately by initiating fast retransmit, but because of congestion control procedures, the sender sends only one retransmission, for segment 23801. With the arrival of two additional ACKs, the sender is permitted to send its second retransmission, for segment 26601.
 
-### 14.7 Spurious Tiemouts and Retransmission
+## 14.7 Spurious Tiemouts and Retransmission
 Caused by:
 1. spurious timeouts (timeouts firing too early)
 
@@ -322,7 +322,7 @@ Caused by:
 3. lost ACKs
 4. when the real RTT has recently increased significantly beyond the RTO
 
-#### 14.7.1 Duplicate SACK(DSACK) Extension
+### 14.7.1 Duplicate SACK(DSACK) Extension
 With a non-SACK TCP, an ACK can indicate only the highest in-sequence segment back to the sender. With SACK, it can signal other (out-of-order) segments as well.
 
 A receiver receives duplicate data segments can be the result of spurious retransmissions, duplication within the network, or other reasons.
@@ -348,7 +348,7 @@ How to identify a DSACK block within an ACK segment:
 Reference:
 * https://www.cnblogs.com/lshs/p/6038617.html
 
-#### 14.7.2 The Eifel Detection Algorithem
+### 14.7.2 The Eifel Detection Algorithem
 The experimental Eifel Detection Algorithm [RFC3522] deals with this problem using the TCP TSOPT to detect spurious retransmissions.
 
 After a retransmission timeout occurs, Eifel awaits the next acceptable ACK. If the next acceptable ACK indicates that the first copy of a retransmitted packet (called the original transmit) was the cause for the ACK, the retransmission is considered to be spurious.
@@ -362,7 +362,7 @@ Mechanism:
 * This approach is fairly robust to ACK loss as well. If an ACK is lost, any subsequent ACKs still have TSER values less than the stored TSV of the retransmitted segment. Thus, a retransmission can be deemed spurious as a result of any of the window’s worth of ACKs arriving, so a loss of any single ACK is not likely to cause a problem.
 * The Eifel Detection Algorithm can be combined with DSACKs. This can be beneficial in the situation where an entire window’s worth of ACKs are lost but both the original transmit and retransmission have arrived at the receiver.
 
-#### 14.7.3 Foward-RTO(FRTO)
+### 14.7.3 Foward-RTO(FRTO)
 It does not require any TCP options, so when it is implemented in a sender. It attempts to detect only spurious retransmissions caused by expiration of the retransmission timer.
 
 Mechanism:
@@ -370,26 +370,26 @@ Mechanism:
 2. If either of the first two ACKs arriving after the retransmission was sent are duplicate ACKs, the retransmission is deemed OK
 3. If they are both acceptable ACKs that advance the sender’s window, the retransmission is deemed to have been spurious.
 
-#### 14.7.4 The Eifel Response Algorithem
+### 14.7.4 The Eifel Response Algorithem
 
 
-### 14.8 Packet Reodering and Duplication
-#### 14.8.1 Reordering
+## 14.8 Packet Reodering and Duplication
+### 14.8.1 Reordering
 1. If reordering takes place in the *reverse (ACK) direction*, it causes the sending TCP to receive some ACKs that move the window significantly forward followed by some evidently old redundant ACKs that are discarded. This can lead to an unwanted burstiness (instantaneous high-speed sending) behavior in the sending pattern of TCP and also trouble in taking advantage of available network bandwidth, because of the behavior of TCP’s congestion control (see Chapter 16).
 2. If reordering occurs in the *forward direction*, TCP may have trouble distinguishing this condition from loss. Both loss and reordering result in the receiver receiving out-of-order packets that create holes between the next expected packet and the other packets received so far. When reordering is moderate (e.g., two adjacent packets switch order), the situation can be handled fairly quickly. When reorderings are more severe, TCP can be tricked into believing that data has been lost even though it has not. This can result in spurious retransmissions, primarily from the fast retransmit algorithm
 
-#### 14.8.2 Duplicaton
+### 14.8.2 Duplicaton
 Although rare, the IP protocol may deliver a single packet more than one time. This can happen, for example, when a link-layer network protocol performs a retransmission and creates two copies of the same packet.
 
-### 14.9 Destination Metrics
+## 14.9 Destination Metrics
 
-### 14.10 Repacketization
+## 14.10 Repacketization
 When TCP times out and retransmits, it does not have to retransmit the identical segment. Instead, TCP is allowed to perform repacketization, sending a bigger segment, which can increase performance.
 
 # 15 Data Flow and Window Management
 
-### 15.3 Delayed Ackowledgements
-### 15.4 Nagle Algorithm
+## 15.3 Delayed Ackowledgements
+## 15.4 Nagle Algorithm
 When a TCP connection has outstanding data that has not yet been acknowledged, small segments (those smaller than the SMSS) cannot be sent until all outstanding data is acknowledged.
 
 Instead, small amounts of data are collected by TCP and sent in a single segment when an acknowledgment arrives.
@@ -398,10 +398,10 @@ This procedure effectively forces TCP into stop-and-wait behavior—it stops sen
 
 The trade-off the Nagle algorithm makes: fewer and larger packets are used, but the required delay is higher.
 
-### 15.5 Flow Control and Window Management
+## 15.5 Flow Control and Window Management
 The Window Size field in each TCP header indicates the amount of empty space, in bytes, remaining in the receive buffer. The field is 16 bits in TCP, but with the Window Scale option, values larger than 65,535 can be used.
 
-#### 15.5.1 Sliding Window
+### 15.5.1 Sliding Window
 Sending Window
 ![Img: sending window](../Images/sendingWindow.png)
 Sliding Process:
@@ -417,21 +417,21 @@ Note that the ACK number generated at the receiver may be advanced only when seg
 
 With selective ACKs, other in-window segments can be acknowledged using the TCP SACK option, but ultimately the ACK number itself is advanced only when data contiguous to the left window edge is received.
 
-#### 15.5.2 Zero Windows and TCP Pesist Timer
+### 15.5.2 Zero Windows and TCP Pesist Timer
 The sender uses a persist timer to query the receiver periodically, to find out if the window size has increased. The persist timer triggers the transmission of window probes. Window probes are segments that force the receiver to provide an ACK, which also necessarily contains a Window Size field.
 
 The first probe should happen after one RTO and subsequent problems should occur at exponentially spaced intervals.
 
 A normal TCP never gives up sending window probes, whereas it may eventually give up trying to perform retransmissions. This can lead to a certain resource exhaustion vulnerability
 
-##### 15.5.2.1 Example
+#### 15.5.2.1 Example
 There are numerous points that we can summarize using Figures 15-11 and 15-12:
 1. The sender does not have to transmit a full window’s worth of data.
 2. A single segment from the receiver acknowledges data and slides the window to the right at the same time. This is because the window advertisement is relative to the ACK number in the same segment.
 3. The size of the window can decrease, as shown by the series of ACKs in Figure 15-11, but the right edge of the window does not move left, so as to avoid window shrinkage.
 4. The receiver does not have to wait for the window to fill before sending an ACK.
 
-### 15.5.3 Silly Window Syndrome(SWS)
+## 15.5.3 Silly Window Syndrome(SWS)
 Definition:
 Small data segments are exchanged across the connection instead of full-size segments [RFC0813]. This leads to undesirable inefficiency because each segment has relatively high overhead—a small number of data bytes relative to the number of bytes in the headers.
 
@@ -446,7 +446,7 @@ Solution:
 ??? Figure 15-14, P749. Doese window probe segement break the normal data?
 
 
-### 15.5.4 Large Buffers and Auto-Tuning
+## 15.5.4 Large Buffers and Auto-Tuning
 With auto-tuning, the amount of data that can be outstanding in the connection (its bandwidth-delay product, an important concept we discuss in Chapter 16) is continuously estimated, and the advertised window is arranged to always be at least this large (provided enough buffer space remains to do so). This has the advantage of allowing TCP to achieve its maximum available throughput rate (subject to the available network capacity) without having to allocate excessively large buffers at the sender or receiver ahead of time.
 
 ```C++
@@ -459,17 +459,17 @@ net.ipv4.tcp_rmem = 4096 87380 174760 // minimum, default, maximum
 net.ipv4.tcp_wmem = 4096 16384 131072
 ```
 
-### 15.6 Urgent Mechanism
+## 15.6 Urgent Mechanism
 // TODO
-### 15.7 Attack Involving Window Management
+## 15.7 Attack Involving Window Management
 // TODO
 
 
 # 16 TCP Congestion Control
-#### 16.1.1 Dection of Congestion in TCP
+### 16.1.1 Dection of Congestion in TCP
 In TCP, an assumption is made that a lost packet is an indicator of congestion, and that some response (i.e., slowing down in some way) is required.
 
-#### 16.1.2 Slowing Down a TCP Sender
+### 16.1.2 Slowing Down a TCP Sender
 ```
 W = min(cwnd, awnd) // awnd: actual quantity of data outstanding in the network
 ```
@@ -481,9 +481,9 @@ When TCP does not make use of selective acknowledgment, the restriction on W mea
 
 **Bandwidth-delay Product** This is the amount of data that can be stored in the network in transit to the receiver. It is equal to the product of the RTT and the capacity of the lowest capacity (“bottleneck”) link on the path from sender to receiver.
 
-### 16.2 The Classic Algorithm
+## 16.2 The Classic Algorithm
 
-#### 16.2.1 Slow Start
+### 16.2.1 Slow Start
 Time:
 1. When a new TCP connection is created
 2. When a loss has been detected due to a retransmission timeout (RTO)
@@ -516,7 +516,7 @@ When Congestion happens, *cwnd* is reduced substantially (to half of its former 
 cwnd = cwnd / 2
 ```
 
-#### 16.2.2 Congestion Avoidance
+### 16.2.2 Congestion Avoidance
 ```
 cwndt+1 = cwndt + SMSS * SMSS/cwndt
 
@@ -524,7 +524,7 @@ cwnd0 = k*SMSS
 cwnd1 = cwnd0 + (1/k)*SMSS
 ```
 
-#### 16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens)
+### 16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens)
 
 The initial value of ssthresh may be set arbitrarily high (e.g., to awnd or higher), which causes TCP to always start with slow start. When a retransmission occurs(J: congestion happens), caused by either a retransmission timeout or the execution of fast retransmit, ssthresh is updated as follows:
 ```
@@ -535,7 +535,7 @@ cwnd = SMSS
 Here we seen that if a retransmission is required, TCP assumes that the operating window must have been too large for the network to handle. Reducing the estimate of the optimal window size is accompanied by altering *ssthresh* to be about half of what the current window size is (but not ever below twice the SMSS).
 
 
-#### 16.2.4 Tahoe, Reno, and Fast Recovery
+### 16.2.4 Tahoe, Reno, and Fast Recovery
 
 Tahoe:
 When congestion happens caused by either RTO or fast retransmit:
@@ -551,7 +551,7 @@ Any ACKs that are received, even while recovering after a loss, still represent 
 
  Any nonduplicate (“good”) ACK causes TCP to exit recovery and reduces the congestion back to its pre-inflated value.
 
-#### 16.2.5 Standard TCP(Reno)
+### 16.2.5 Standard TCP(Reno)
 TCP begins a connection in slow start (cwnd = IW) with a large value of ssthresh, generally at least the value of awnd. Upon receiving a good ACK (one that acknowledges new data), TCP updates the value of cwnd as follows:
 ```
 cwnd += SMSS (if cwnd < ssthresh) Slow start
@@ -576,15 +576,15 @@ When fast retransmit is invoked because of receipt of a third duplicate ACK, the
 
 Refer: https://coolshell.cn/articles/11609.html
 
-### 16.3 Evolution of the Standard Algorithms
-#### 16.3.1 NewReno
+## 16.3 Evolution of the Standard Algorithms
+### 16.3.1 NewReno
 One problem with fast recovery is that when multiple packets are dropped in a window of data, once one packet is recovered, a good ACK can be received at the sender that causes the temporary window inflation in fast recovery to be erased before all the packets that were lost have been retransmitted.
 
 NewReno modifies fast recovery by keeping track of the highest sequence number from the last transmitted window of data (recovery point). Only when an ACK with an ACK number at least as large as the recovery point is received is the inflation of fast recovery removed.
 
 This allows a TCP to continue sending one segment for each ACK it receives while recovering and reduces the occurrence of retransmission timeouts, especially when multiple packets are dropped in a single window of data.
 
-#### 16.3.2 TCP Congestion Control with SACK
+### 16.3.2 TCP Congestion Control with SACK
 In the case of fast retransmit/recovery, when a packet is lost, the sending TCP transmits only the segment it believes is lost and is able to send new data if the window W allows.
 
 Using only cwnd as a bound on the sender’s sliding window to indicate how many (and which) packets to send during recovery periods is not sufficient.
@@ -597,7 +597,7 @@ Pipe variable, an estimate of the flight size, counts bytes (or packets, dependi
 
 A SACK TCP is permitted to send a segment anytime the following relationship holds true: cwnd pipe ≥ SMSS.
 
-#### 16.3.3 Forward Acknowledgment (FACK) and Rate Halving
+### 16.3.3 Forward Acknowledgment (FACK) and Rate Halving
 When cwnd is reduced after a fast retransmit, ACKs for at least one-half of the current window’s outstanding data must be received before the sending TCP is allowed to continue transmitting. This is an expected consequence of reducing the congestion window by half immediately when a loss is detected.
 ??? It causes the sending TCP to wait for about half of an RTT and then send any new data during the second half of the same RTT, a more bursty behavior than is really required.
 
@@ -624,10 +624,10 @@ Triggering Recovery:
 snd.fack - snd.una > 3 * MSS || dupacks == 3
 ```
 
-#### 16.3.4 Limited Transmit
+### 16.3.4 Limited Transmit
 It's a small modification to TCP designed to help it perform better when the usable window is small.
 
-#### 16.3.5 Congestion Window Validation (CWV)
+### 16.3.5 Congestion Window Validation (CWV)
 The sender’s current value of cwnd decays over a period of nonuse, and ssthresh maintains the “memory” of it prior to the initiation of the decay.
 
 The **idle sender** has stopped producing data it wants to send into the network; ACKs for all the data it has sent so far have been received.
@@ -651,7 +651,7 @@ For application-limited periods that are not idle, the following similar behavio
 cwnd = (cwnd + W_used) / 2;
 ```
 
-### 16.4 Handling Spurious RTOs-the Eifel Response Algorithm
+## 16.4 Handling Spurious RTOs-the Eifel Response Algorithm
 Such spurious retransmissions arise in a number of circumstances relating to changes in the underlying link layer (such as cellular handoff) or sudden onset of severe congestion contributing to a large increase in RTT.
 
 The Eifel Response Algorithm is aimed at handling the retransmission timer and congestion control state after a retransmission timer has expired
@@ -665,9 +665,9 @@ In all cases, before ssthresh is modified as a result of the RTO, it is captured
 2. cwnd = flight size + min(bytes_acked, IW) (assuming cwnd is measured in bytes).
 3. ssthresh = pipe_prev.
 
-### 16.5 An Extended Example
+## 16.5 An Extended Example
 
-#### 16.5.2 Sender Pause and Local Congestion (Event1)
+### 16.5.2 Sender Pause and Local Congestion (Event1)
 Local congestion is one of several reasons the Linux TCP implementation may be placed in the **Congestion Window Reducing (CWR)** state [SK02]. It starts by setting ssthresh to cwnd/2, and by setting cwnd to min(cwnd, flight size + 1).
 ```
 ssthresh = cwnd / 2;
@@ -676,8 +676,8 @@ cwnd = min(cwnd, flight size + 1);
 
 In the CWR state, the sender reduces cwnd by one packet for every two ACKs received until cwnd reaches the new ssthresh or the CWR state is exited for some other reason such as a loss event.
 
-### 16.7 Sharing Congestion State
+## 16.7 Sharing Congestion State
 
-### 16.8 TCP in High-speed Enviroments
+## 16.8 TCP in High-speed Enviroments
 
 In high-speed networks with large BDPs (e.g., WANs of 1Gb/s or more), conventional TCP may not perform well because its window increase algorithm (the congestion avoidance algorithm, in particular) takes a long time to grow the window large enough to saturate the network path.
