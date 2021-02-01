@@ -704,6 +704,22 @@ Following links have some good discussion about caching:
 * [[1] Cache](https://en.wikipedia.org/wiki/Cache_(computing))
 * [[2] Introduction to architecting systems](https://lethain.com/introduction-to-architecting-systems-for-scale/)
 
+### Cache Problems & Mitigation
+1. **Cache Penetration**: the data to be searched doesn't exist at DB and the returned empty result set is not cached as well and hence every search for the key will hit the DB eventually.
+    1. Cache empty/null result
+    2. Bloom filter
+
+2. **Cache breakdown**: the cached data expires and at the same time there are lots of search on the expired data which suddenly cause the searches to hit DB directly and increase the load to the DB layer dramatically.
+    1. Use lock
+    2. Asynchronous update
+
+3. **Cache avalanche**: lots of cached data expire at the same time or the cache service is down and all of a sudden all searches of these data will hit DB and cause high load to the DB layer and impact the performance.
+    1. Using clusters to ensure that some cache server instance is in service at any point of time.
+    2. Some other approaches like hystrix circuit breaker and rate limit can be configured so that the underlying system can still serve traffic and avoid high load
+    3. Can adjust the expiration time for different keys so that they will not expire at the same time.
+
+4. **Cache hotspot**
+
 ## Data Partitioning
 Data partitioning is a technique to break up a big database (DB) into many smaller parts. It is the process of splitting up a DB/table across multiple machines to improve the manageability, performance, availability, and load balancing of an application. The justification for data partitioning is that, after a certain scale point, it is cheaper and more feasible to scale horizontally by adding more machines than to grow it vertically by adding beefier servers.
 
@@ -886,7 +902,11 @@ CAP theorem says while designing a distributed system we can pick only two of th
 
 ![](../Images/SystemDesign/cap.png)
 
-We cannot build a general data store that is continually available, sequentially consistent, and tolerant to any partition failures. We can only build a system that has any two of these three properties. Because, to be consistent, all nodes should see the same set of updates in the same order. But if the network loses a partition, updates in one partition might not make it to the other partitions before a client reads from the out-of-date partition after having read from the up-to-date one. The only thing that can be done to cope with this possibility is to stop serving requests from the out-of-date partition, but then the service is no longer 100% available.
+* When a network partition failure happens should we decide to
+    * Cancel the operation and thus decrease the availability but ensure consistency
+    * Proceed with the operation and thus provide availability but risk inconsistency
+
+The CAP theorem implies that in the presence of a network partition, one has to choose between consistency and availability. Because, to be consistent, all nodes should see the same set of updates in the same order. But if the network loses a partition, updates in one partition might not make it to the other partitions before a client reads from the out-of-date partition after having read from the up-to-date one. The only thing that can be done to cope with this possibility is to stop serving requests from the out-of-date partition, but then the service is no longer 100% available.
 
 ## Consistent Hashing
 Distributed Hash Table (DHT) is one of the fundamental components used in distributed scalable systems. Hash Tables need a key, a value, and a hash function where hash function maps the key to a location where the value is stored.
