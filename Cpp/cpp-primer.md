@@ -1,5 +1,5 @@
 
-# Chapter 0 Key Words
+# 0 Key Words
 constexpr:
 * Specifies that the value of a variable or function can apper in constant expression.
 
@@ -12,7 +12,7 @@ constexpr:
     2. Its return type must be LiteralType
     3. each of its parameters must be LiteralType.
 
-# Chapter 2: Variables and Basic Type
+# 2 Variables and Basic Type
 ## std::function: <functional>
 1. Syntax:
     ```C++
@@ -133,7 +133,7 @@ If the name of an object is parenthesized, it is treated as an ordinary lvalue e
     decltype(variable);  // reference only when variable is a reference
     ```
 
-# Chapter 3: string, vector and array
+# 3: string, vector and array
 Array:
 1. Dimension of arrays must be a constant expression.
 2. A default-initialized array have undefined values. Random value given by compiler. eg: int arr[10];
@@ -151,7 +151,7 @@ Array:
     must be references. (As with any array, when we use the name of a multidimensional array, it’s automatically
     converted to pointer to the first element of that array.)
 
-# Chapter 6: Functions
+# 6: Functions
 
 ## Overloaded Functions
 1. Default Arguements:
@@ -169,7 +169,7 @@ Array:
     * Inorder to expand function immediately, constexpr functions are implicitly inline.
     * Inline function bans to use __loop(for, while), switch, exception interface declaration and recursive function__.
 
-# Chapter 7: class
+# 7: class
 Some classes can’t rely on synthesized default constructor:
 1. Compiler generate default constructor only if we do not define any other constructors.
 2. Synthesized default initialization may do wrong things. Build-in or compound types can be initialized by undefined values.
@@ -307,7 +307,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
 3. Static members should be initialized outside the class body. We can provide in-class initializers for static members that have `const integer` type and must do so for static members that are `constexpr of literal` type. If there is an initializer inside the class there shouldn’t be another one outside the class.
 4. Even if a const static data member is initialized in the class body, the members ordinarily should be defined outside the class definition.
 
-# Chapter 8: IO Library
+# 8: IO Library
 
 ## 8.1 The IO Class
 ### 8.1.1 No copy or assign for IO Object
@@ -343,7 +343,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
     * fstream::binary trunc(truncate the file)
 4. The only way to preserve existing date in a file opened by an ofstream is specify app or in mode explicitly.
 
-# Chapter 12 Dynamic Memory
+# 12 Dynamic Memory
 1. Common operation on shared_ptr and unique_prt
     ```C++
     shared_prt<T> p; p->get(); p->man(); swap(m, n); unique_ptr<T> q;
@@ -418,7 +418,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
         uninitialized_fill(b, e, t);   uninitialized_fill_n(b, n, t);
         ```
 
-# Chapter 13: Copy Control
+# 13: Copy Control
 
 ## Copy, Assign and Destroy
 ### The Copy constructor
@@ -670,7 +670,7 @@ Process of new and delete:
         * This can definitely play a role in some scenarios (i.e. a lot of small objects where the additional memory means less of them fit into L1 data cache).
 
 
-# Chapter 16 Template
+# 16 Template
 1. Template arguments used for non type template parameters must be constant expression.
 2. Template programs should try to minimize the number of arguments placed on the arg types.
 3. Function templates and member functions of class templates are ordinarily put into head file.
@@ -747,7 +747,7 @@ public:
     ```C++
     // Syntax:
     using identifier attr(optional) = type-id ;
-    template < template-parameter-list >
+    template <template-parameter-list >
     using identifier attr(optional) = type-id ;
     ```
 13. static Members of Class Templates
@@ -1116,7 +1116,405 @@ A specialization is a separate definition of template in which one or more templ
     fi.Bar();       // "partial", uses specialization of Foo<int>::Bar()
     ```
 
-# Chapter 17
+# 16 Temaplte Plus (cppreference.com)
+
+## Parameters
+```c++
+template <parameter-list > declaration;
+```
+
+### Non-type template parameter
+* Syntax
+    ```c++
+    type name(optional)
+    type name(optional) = default
+    type ... name(optional) (since C++11)
+    placeholder name (since C++17)
+    ```
+* `Array` and `function` types may be written in a template declaration, but they are automatically replaced by `pointer to object` and `pointer to function` as appropriate.
+
+### Type template parameters
+* Syntax
+    ```c++
+    type-parameter-key name(optional)               (1)
+    type-parameter-key name(optional) = default     (2)
+    type-parameter-key ... name(optional)           (3) (since C++11)
+    type-constraint name(optional)                  (4) (since C++20)
+    type-constraint name(optional) = default        (5) (since C++20)
+    type-constraint ... name(optional)              (6) (since C++20)
+    ```
+
+### Template template parameter
+* Syntax
+    ```c++
+    template <parameter-list > typename(C++17)|class name(optional)            (1)
+    template <parameter-list > typename(C++17)|class name(optional) = default  (2)
+    template <parameter-list > typename(C++17)|class ... name(optional)        (3) (since C++11)
+    ```
+
+### Name resolution for template parameters
+* The name of a template parameter is not allowed to be redeclared within its scope (including nested scopes)
+* In the definition of a member of a class template that appears outside of the class template definition, the `name of a member` of the class template `hides` the `name of a template parameter` of any enclosing class templates, but not a template parameter of the member if the member is a class or function template.
+* In the definition of a member of a class template that appears outside of the namespace containing the class template definition, the name of a template parameter hides the name of a member of this namespace.
+
+
+## Arguments
+
+### Non-type arguments
+
+### Type arguments
+
+### Template template arguments
+
+### Default template arguments
+
+### Template argument equivalence
+* Template argument equivalence is used to determine whether two template-ids are same.
+
+## Class templates
+* Syntax
+    ```c++
+    template <parameter-list > class-declaration        // (1) Explicit instantiation definition
+    export template <parameter-list > class-declaration // (2) Explicit instantiation declaration (until C++11)
+    ```
+* A class template by itself is not a type, or an object, or any other entity. No code is generated from a source file that contains only template definitions. In order for any code to appear, a template must be instantiated: the template arguments must be provided so that the compiler can generate an actual class (or function, from a function template).
+
+### Explicit Instatiation
+* Syntax
+    ```c++
+    template class-key template-name < argument-list > ;
+    extern template class-key template-name < argument-list > ;
+    ```
+* Classes, functions, variables, and member template specializations can be explicitly instantiated from their templates. Member functions, member classes, and static data members of class templates can be explicitly instantiated from their member definitions.
+* An explicit instantiation declaration (an extern template) skips implicit instantiation step. This can be used to reduce compilation times by explicitly declaring a template instantiation in all but one of the source files using it, and explicitly defining it in the remaining file.
+* Explicit instantiation can only appear in the enclosing namespace of the template, unless it uses qualified-id
+* Explicit instantiation has no effect if an explicit specialization appeared before for the same set of template arguments
+* Only the `declaration is required` to be visible when `explicitly instantiating` a `function template`, a `variable template`, a `member function` or `static data member` of a class template, or a `member function template`.
+* The `complete definition` must appear before the `explicit instantiation` of a `class template`, a `member class` of a class template, or a `member class template`, unless an explicit specialization with the same template arguments appeared before.
+* When an explicit instantiation names a class template specialization, it serves as an explicit instantiation of the same kind (declaration or definition) of each of its non-inherited non-template members that has not been previously explicitly specialized in the translation unit. If this explicit instantiation is a definition, it is also an explicit instantiation definition only for the members that have been defined at this point.
+* Explicit instantiation definitions ignore member access specifiers: parameter types and return types may be private.
+
+### Implicit Instantiation
+* When code refers to a template in context that requires a completely defined type, or when the completeness of the type affects the code, and this particular type has not been explicitly instantiated, implicit instantiation occurs.
+* E.g., when an object of this type is constructed, but not when a pointer to this type is constructed.
+* This applies to the members of the class template: unless the member is used in the program, it is not instantiated, and does not require a definition.
+
+## Function template
+
+## Member template
+* Template declarations (class, function, and variables (since C++14)) can appear inside a member specification of any class, struct, or union that aren't local classes.
+* `Partial specializations` of member template may appear both at `class scope` and at `enclosing namespace scope`, but `explicit specializations` may only appear at `enclosing namespace scope`.
+* If the enclosing class declaration is, in turn, a class template, when a member template is defined outside of the class body, it takes two sets of template parameters: one for the enclosing class, and another one for itself.
+
+### Member function templates
+* :link: [Ref](https://en.cppreference.com/w/cpp/language/member_template)
+* Destructors and copy constructors cannot be templates.
+* A member function template `cannot be virtual`, and a member function template in a derived class `cannot override` a virtual member function from the base class.
+* A non-template member function and a template member function with the same name may be declared. In case of conflict (when some template specialization matches the non-template function signature exactly), the use of that name and type refers to the non-template member unless an explicit template argument list is supplied.
+    ```c++
+    template<typename T>
+    struct A {
+        void f(int); // non-template member
+
+        template<typename T2>
+        void f(T2); // member template
+    };
+
+    int main() {
+        A<char> ac;
+        ac.f('c'); // calls template function A<char>::f<char>(int)
+        ac.f(1);   // calls non-template function A<char>::f(int)
+        ac.f<>(1); // calls template function A<char>::f<int>(int)
+    }
+    ```
+* An out-of-class definition of a member function template must be equivalent to the declaration inside the class (see function template overloading for the definition of equivalency), otherwise it is considered to be an overload.
+### Member class  templates
+
+
+### Conversion function templates
+* A user-defined conversion function can be a template.
+* A user-defined conversion function template cannot have a deduced return type. (Since C++14)
+
+### Member variable templates
+* A variable template declaration may appear at class scope, in which case it declares a static data member template. (Since C++14)
+
+## Variable templates (C++14)
+* Syntax
+    ```c++
+    template <parameter-list > variable-declaration
+    ```
+
+## Template argument deduction
+
+## Class template argument deduction (C++17)
+
+## Explicit (full) specialization
+* Syntax
+    ```c++
+    template <> declaration
+    ```
+* Any of the following can be fully specialized:
+    1. function template
+    2. class template
+    3. (since C++14)variable template
+    4. member function of a class template
+    5. member function template of a class or class template
+    6. static data member of a class template
+    7. member class of a class template
+    8. member class template of a class or class template
+    9. member enumeration of a class template
+
+### In detail
+* Explicit specialization may be declared in any scope where its primary template may be defined (which may be different from the scope where the primary template is defined; such as with out-of-class specialization of a member template) . Explicit specialization has to appear after the non-specialized template declaration.
+* Specialization must be declared before the first use that would cause implicit instantiation, in every translation unit where such use occurs
+* A template specialization that was declared but not defined can be used just like any other incomplete type (e.g. pointers and references to it may be used)
+
+### Explicit specializations of function templates
+* When specializing a function template, its `template arguments can be omitted` if template argument deduction can provide them from the function arguments
+* A function with the same name and the same argument list as a specialization is not a specialization (see template overloading in [function template](https://en.cppreference.com/w/cpp/language/function_template))
+* An explicit specialization of a function template is `inline` only if it is declared with the inline specifier (or defined as deleted), it doesn't matter if the primary template is inline.
+* `Default function arguments` cannot be specified in explicit specializations of function templates, member function templates, and member functions of class templates when the class is implicitly instantiated.
+* An explicit specialization cannot be a `friend declaration`.
+* If the primary template has a `exception` specification that isn't noexcept(false), the explicit specializations must have a compatible exception specification.
+
+### Members of specializations
+* When defining a member of an explicitly specialized class template outside the body of the class, the syntax `template <>` is not used, except if it's a member of an explicitly specialized `member class template`, which is specialized as a class template, because otherwise, the syntax would require such definition to begin with template<parameters> required by the nested template
+    ```c++
+    template< typename T>
+    struct A {
+        struct B {};  // member class
+        template<class U> struct C { }; // member class template
+    };
+
+    template<> // 1. specialization of a member function
+    struct A<int> {
+        void f(int); // member function of a specialization
+    };
+    // template<> not used for a member of a specialization
+    void A<int>::f(int) { /* ... */ }
+
+    template<> // 2. specialization of a member class
+    struct A<char>::B {
+        void f();
+    };
+    // template<> not used for a member of a specialized member class either
+    void A<char>::B::f() { /* ... */ }
+
+    template<> // 3. specialization of a member class template
+    template<class U> struct A<char>::C {
+        void f();
+    };
+
+    // template<> is used when defining a member of an explicitly
+    // specialized member class template specialized as a class template
+    template<>
+    template<class U> void A<char>::C<U>::f() { /* ... */ }
+    ```
+
+* An explicit specialization of a `static data member` of a template is a definition if the declaration includes an `initializer`; otherwise, it is a declaration. These definitions must use braces for default initialization:
+    ```c++
+    template<> X Q<int>::x; // declaration of a static member
+    template<> X Q<int>::x (); // error: function declaration
+    template<> X Q<int>::x {}; // definition of a default-initialized static member
+    ```
+* A member or a member template of a class template may be explicitly specialized for a given implicit instantiation of the class template, even if the member or member template is defined in the class template definition.
+    ```c++
+    template<typename T>
+    struct A {
+        void f(T); // member, declared in the primary template
+        void h(T) {} // member, defined in the primary template
+        template<class X1> void g1(T, X1); // member template
+        template<class X2> void g2(T, X2); // member template
+    };
+
+    // specialization of a member
+    template<> void A<int>::f(int);
+    // member specialization OK even if defined in-class
+    template<> void A<int>::h(int) {}
+
+    // out of class member template definition
+    template<class T>
+    template<class X1> void A<T>::g1(T, X1) { }
+
+    // member template specialization
+    template<>
+    template<class X1> void A<int>::g1(int, X1);
+
+    // member template specialization
+    template<>
+    template<> void A<int>::g2<char>(int, char); // for X2 = char
+    // same, using template argument deduction (X1 = char)
+    template<>
+    template<> void A<int>::g1(int, char);
+    ```
+* Member or a member template may be `nested` within many enclosing class templates. In an explicit specialization for such a member, there's a template<> for every enclosing class template that is explicitly specialized.
+    ```c++
+    template<class T1> struct A {
+        template<class T2> struct B {
+        template<class T3>
+            void mf();
+        };
+    };
+    template<> struct A<int>;
+    template<> template<> struct A<char>::B<double>;
+    template<> template<> template<> void A<char>::B<char>::mf<double>();
+    ```
+* In such a nested declaration, some of the levels may `remain unspecialized` (except that it can't specialize a class member template if its enclosing class is unspecialized). For each of those levels, the declaration needs template<arguments>, because such specializations are themselves templates.
+    ```c++
+    template <class T1> class A {
+        template<class T2> class B {
+            template<class T3> void mf1(T3); // member template
+            void mf2(); // non-template member
+        };
+    };
+
+    // specialization
+    template<> // for the specialized A
+    template<class X> // for the unspecialized B
+    class A<int>::B {
+        template <class T> void mf1(T);
+    };
+
+    // specialization
+    template<> // for the specialized A
+    template<> // for the specialized B
+    template<class T> // for the unspecialized mf1
+    void A<int>::B<double>::mf1(T t) { }
+
+    // ERROR: B<double> is specialized and is a member template, so its enclosing A
+    // must be specialized also
+    template<class Y>
+    template<> void A<Y>::B<double>::mf2() { }
+    ```
+
+## Partial specialization
+* Syntax
+    ```c++
+    template <parameter-list> class-key class-head-name <argument-list> declaration                (1)
+    template <parameter-list> decl-specifier-seq declarator <argument-list> initializer(optional)   (2) (since C++14)
+    ```
+* Allows customizing `class` and `variable` (since C++14) templates for a given category of template arguments.
+
+### The argument list
+* The following restrictions apply to the argument-list of a partial template specialization:
+    * The argument list `cannot be identical` to the non-specialized argument list (it must specialize something)
+    * `Default arguments` cannot appear in the argument list
+    * If any argument is a `pack expansion`, it must be the last argument in the list
+    * `Non-type argument` expressions can use template parameters as long as the parameter appears at least once outside a non-deduced context (note that only clang supports this feature currently)
+    * Non-type template argument cannot specialize a template parameter whose `type depends` on a parameter of the specialization
+        ```c++
+        template <class T, T t> struct C {}; // primary template
+        template <class T> struct C<T, 1>;   // error: type of the argument 1 is T, which depends on the parameter T
+        ```
+
+### Name lookup
+* Partial template specializations are not found by name lookup. Only if the primary template is found by name lookup, its partial specializations are considered. In particular, a using declaration that makes a primary template visible, makes partial specializations visible as well.
+
+### Partial ordering
+* When a class or variable (since C++14) template is instantiated, and there are partial specializations available, the compiler has to decide if the primary template is going to be used or one of its partial specializations.
+    * If only one specialization matches the template arguments, that specialization is used
+    * If more than one specialization matches, partial order rules are used to determine which specialization is more specialized. The most specialized specialization is used, if it is unique (if it is not unique, the program cannot be compiled)
+    * If no specializations match, the primary template is used
+
+### Members of partial specializations
+1. The `template parameter list` and the `template argument list` of a member of a partial specialization must `match` the parameter list and the argument list of the `partial specialization`.
+2. Just like with members of primary templates, they only need to be `defined if used` in the program.
+3. **Members of partial specializations are not related to the members of the primary template**.
+4. Explicit (full) specialization of a member of a partial specialization is declared the same way as an explicit specialization of the primary template.
+    ```c++
+    template<class T, int I>  // primary template
+    struct A {
+        void f(); // member declaration
+    };
+
+    template<class T, int I>
+    void A<T,I>::f() { } // primary template member definition
+
+    // partial specialization
+    template<class T>
+    struct A<T,2> {
+        void f();
+        void g(); // Rule 3
+        void h(); // Rule 3
+    };
+
+    // member of partial specialization
+    template<class T>
+    void A<T,2>::g() { }
+
+    // explicit (full) specialization
+    // of a member of partial specialization
+    template<>
+    void A<char,2>::h() {}
+
+    int main() {
+        A<char,0> a0;
+        A<char,2> a2;
+        a0.f(); // OK, uses primary template’s member definition
+        a2.g(); // OK, uses partial specialization's member definition
+        a2.h(); // OK, uses fully-specialized definition of
+                // the member of a partial specialization
+        a2.f(); // error: no definition of f() in the partial
+                // specialization A<T,2> (the primary template is not used)
+    }
+    ````
+5. If a primary template is a member of another class template, its partial specializations are members of the enclosing class template.
+    * If the enclosing template is instantiated, the declaration of each member partial specialization is instantiated as well (the same way declarations, but not definitions, of all other members of a template are instantiated).
+6. If a partial specialization of the member template is explicitly specialized for a given (implicit) specialization of the enclosing class template, the primary member template and its other partial specializations are still considered for this specialization of the enclosing class template.
+    ```c++
+    template<class T> struct A { // enclosing class template
+        template<class T2>
+        struct B {};            // primary member template
+
+        template<class T2>
+        struct B<T2*> {};       // partial specialization of member template
+    };
+
+    template<>
+    template<class T2>
+    struct A<short>::B {};      // full specialization of primary member template
+                                // (will ignore the partial)
+
+    A<char>::B<int*> abcip;     // uses partial specialization T2=int
+    A<short>::B<int*> absip;    // uses full specialization of the primary (ignores partial)
+    A<char>::B<int> abci;       // uses primary
+    ```
+
+## Dependent names
+
+## Parameter packs (C++11)
+* Syntax
+    ```c++
+    type ... Args(optional)                     // (1) non-type template parameter pack
+    typename|class ... Args(optional)           // (2) type template parameter pack
+    template <parameter-list> typename(C++17)|class ... Args(optional) // (3) template template parameter pack
+    Args ... args(optional)                     // (4) function parameter pack
+    pattern ...	                                // (5) Parameter pack expansion
+    ```
+* In a `primary class template`, the template parameter pack must be the `final parameter` in the template parameter list. In a `function template`, the template parameter pack may `appear earlier` in the list provided that all following parameters can be deduced from the function arguments, or have default arguments:
+    ```c++
+    template<typename... Ts, typename U> struct Invalid; // Error: Ts.. not at the end
+
+    template<typename ...Ts, typename U, typename=void>
+    void valid(U, Ts...);     // OK: can deduce U
+    // void valid(Ts..., U);  // Can't be used: Ts... is a non-deduced context in this position
+
+    valid(1.0, 1, 2, 3);      // OK: deduces U as double, Ts as {int,int,int}
+    ```
+### Pack expansion
+* A pattern followed by an ellipsis, in which the name of at least one parameter pack appears at least once, is expanded into zero or more comma-separated instantiations of the pattern, where the name of the parameter pack is replaced by each of the elements from the pack, in order.
+* If the names of `two parameter packs` appear in the same pattern, they are expanded simultaneously, and they must have the same length:
+
+### sizeof... (C++11)
+### Fold-expressions (C++17)
+
+## SFINAE
+
+## Constraints and concepts (C++20)
+
+
+
+# 17
 A tuple can be thought of as a "quick and dirty" data struct.
 
 Tuple type:
@@ -1137,7 +1535,7 @@ Regex  regex_match  regex_search  regex_replace  regex_iterator  smatch ssub_mat
 (seq, m, r, mfg)  (seq, r, mft)
 ```
 
-# Chapter 18
+# 18
 ## 18.2 Namespace
 ### 18.2.1 Namespace Definition
 1. Each namespace is scope
