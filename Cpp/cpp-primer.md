@@ -107,6 +107,7 @@ If the name of an object is parenthesized, it is treated as an ordinary lvalue e
     * Variables declared as constexpr are implicitly const and must be initialized by const expression.
     * It's good idea to use constexpr for variable that intend to use it as constant expression.
 9. pointer and constexpr:
+
     * constexpr specifier applies to pointer, not the type to which the pointer points.
 
 ## Dealing with Types:
@@ -187,12 +188,16 @@ Benefits of Encapsulation:
     using pos = std::string::size_type; // type alias
     ```
 2. Making Members inline
+
     * It’s legal to specify inline on both the declaration and definition that both inside or outside the class body.
 3. Overloading Functions
+
     * Overloading functions differ by numbers and/or types of parameters
 4. Mutable Data Member
+
     * A mutable data member is never const, even it’s a member of a const object, we can modify a mutable data member inside a const function.
 5. Initializers for Data Member of Class Type
+
     * In-class initializer followed by an = sign or curly brace
 
 ### Functions That Return *this
@@ -257,6 +262,7 @@ Scope and Member Defined outside the Class
 ## Constructor Revisited
 ### 7.5.1 Constructor Initializer List
 1. Constructor Initializers Sometimes Are Required
+
     * We must use constructor initializer list to provide values for members that are `const` or `references` or that are of a Class type that `does not define a default constructor`
 2. Order of Members Initialization
     * A constructor that supplies default arguments for all its parameters also defines the default constructor
@@ -362,7 +368,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
    ```C++
     weak_ptr<T> w;          weak_ptr<T> w(sp);      w = p;      w.reset();
     w.use_count();          w.expired();            w.lock();
-    ```
+   ```
 5. Programs tend to use dynamic memory for three purpose:
     1. They don’t know how many objects they need
     2. They don’t know the precise type of the objects they need
@@ -374,6 +380,7 @@ Sales_data(string s): Sales_data(s, 0, 0);
     std::shared_prt<int> p(new int (1024));      // ok: user direct initialization
     ```
 8. Don’t mix ordinary pointer and smart pointer
+
     * It’s dangerous to use built-in pointer to access the object owned by smart pointer, because we may not know when the object is destroyed.
 9. Don’t use get to initialize or assign another smart pointer
 10. Use `get()` to pass access to the pointer to the code that will not delete the pointer.
@@ -386,7 +393,8 @@ Sales_data(string s): Sales_data(s, 0, 0);
     5. If use sp manage resource other than memory allocated by new, pass a deleter.
     6. Passing and returning unique_ptr
 13. There is one exception for the rule that we cannot copy or assign a unique_ptr:
-    * we do those when a unique_ptr is about to be destroyed.
+
+* we do those when a unique_ptr is about to be destroyed.
 
 15. Dynamic Arrays
     1. We can use empty parentheses to value initialize elements of a dynamic array but not the initializer inside the parentheses which means that we cannot use auto to allocate an array.
@@ -469,7 +477,8 @@ Sales_data(string s): Sales_data(s, 0, 0);
     * =delete must appear on the first declaration of the deleted function.
     * We can specify =delete on any function.
 8. The destructor should not be deleted
-    * The compiler won’t let us define variables or temporaries of type that has deleted destructor.
+
+* The compiler won’t let us define variables or temporaries of type that has deleted destructor.
 
 9. The Copy-control members may be synthesized as deleted
     1. Deleted destructor:  the class has `member` whose own destructor is `deleted or inaccessible`.
@@ -548,7 +557,8 @@ Sales_data(string s): Sales_data(s, 0, 0);
     10. Lvalues are moved, lvalues are copied but r values are copied when there is no move constructor.
 
 14. Move Iterator:
-    * Return rvalue reference by calling library `make_move_iterator` function which takes a normal iterator and returns a rvalue reference rather than normal iterator which return lvalue reference.
+
+* Return rvalue reference by calling library `make_move_iterator` function which takes a normal iterator and returns a rvalue reference rather than normal iterator which return lvalue reference.
 
 15. Rvalue LValue reference member function:
     * In order to maintain backward compatibility, the library continue allow assignment to rvalue. However, we can prevent this feature by indicating rvlaue/lvalue reference in the same way that we define const member functions, we place a reference qualifier (& or &&) after the parameter list.
@@ -1182,8 +1192,8 @@ template <parameter-list > declaration;
 ### Explicit Instatiation
 * Syntax
     ```c++
-    template class-key template-name < argument-list > ;
-    extern template class-key template-name < argument-list > ;
+    template class-key template-name <argument-list>;
+    extern template class-key template-name <argument-list>;
     ```
 * Classes, functions, variables, and member template specializations can be explicitly instantiated from their templates. Member functions, member classes, and static data members of class templates can be explicitly instantiated from their member definitions.
 * An explicit instantiation declaration (an extern template) skips implicit instantiation step. This can be used to reduce compilation times by explicitly declaring a template instantiation in all but one of the source files using it, and explicitly defining it in the remaining file.
@@ -1200,6 +1210,232 @@ template <parameter-list > declaration;
 * This applies to the members of the class template: unless the member is used in the program, it is not instantiated, and does not require a definition.
 
 ## Function template
+* Syntax
+    ```c++
+    template < parameter-list > function-declaration                        (1)
+    template < parameter-list > requires constraint function-declaration    (2) (since C++20)
+    function-declaration-with-placeholders                                  (3) (since C++20)
+    ```
+
+### Explicit instantiation
+* Syntax
+    ```c++
+    template return-type name <argument-list> (parameter-list);         // (1)
+    template return-type name (parameter-list);                         // (2) with template argument deduction
+    extern template return-type name <argument-list> (parameter-list);	// (3) (since C++11)
+    extern template return-type name (parameter-list);	                // (4) (since C++11)
+    ```
+
+* A `trailing template-argument` can be left unspecified in an explicit instantiation of a function template specialization or of a member function template specialization if it can be deduced from the function parameter
+    ```c++
+    template<typename T>
+    void f(T s) {
+        std::cout << s << '\n';
+    }
+
+    template void f<double>(double);    // instantiates f<double>(double)
+    template void f<>(char);            // instantiates f<char>(char), template argument deduced
+    template void f(int);               // instantiates f<int>(int), template argument deduced
+    ```
+
+* Explicit instantiation of a function template or of a member function of a class template cannot use `inline` or `constexpr`. If the declaration of the explicit instantiation names an implicitly-declared special member function, the program is ill-formed.
+* Explicit instantiation of a `constructor` cannot use a template parameter list (syntax (1)), which is also never necessary because they can be deduced (syntax (2)).
+* Explicit instantiation of a `prospective destructor` must name the selected destructor of the class. (since C++20)
+* Explicit instantiation declarations do not suppress the implicit instantiation of `inline functions`, `auto-declarations`, `references`, and `class template specializations`. (thus, when the inline function that is a subject of explicit instantiation declaration is ODR-used, it is implicitly instantiated for inlining, but its out-of-line copy is not generated in this translation unit)
+* Explicit instantiation definition of a function template with `default arguments` is not a use of the arguments, and does not attempt to initialize them:
+    ```c++
+    char* p = 0;
+    template<class T> T g(T x = &p) { return x; }
+    template int g<int>(int);   // OK even though &p isn’t an int.
+    ```
+
+### Implicit instantiation
+* When code refers to a function in context that requires the function definition to exist, [or if the existence of the definition affects the semantics of the program (since C++11)], and this particular function has not been explicitly instantiated, implicit instantiation occurs. The list of template arguments does not have to be supplied if it can be deduced from context.
+* Note: omitting <> entirely allows [overload resolution](https://en.cppreference.com/w/cpp/language/overload_resolution) to examine both template and non-template overloads.
+
+### Template argument deduction
+* Template argument deduction takes place after the function template name lookup (which may involve argument-dependent lookup) and before overload resolution.
+
+### Explicit template arguments
+* Template arguments of a function template may be obtained from
+    * template argument `deduction`
+    * `default` template arguments
+    * `specified` explicitly, which can be done in the following contexts:
+        * in a function call expression
+        * when an address of a function is taken
+        * when a reference to function is initialized
+        * when a pointer to member function is formed
+        * in an explicit specialization
+        * in an explicit instantiation
+        * in a friend declaration
+* There is no way to explicitly specify template arguments to `overloaded operators`, `conversion functions`, and `constructors`, because they are called without the use of the function name.
+* The specified `non-type arguments` must either match the types of the corresponding non-type template parameters, or `be convertible` to them.
+* The function `parameters` that `do not participate` in template argument deduction (e.g. if the corresponding template arguments are explicitly specified) `are subject` to `implicit conversions` to the type of the corresponding function parameter (as in the usual [overload resolution](https://en.cppreference.com/w/cpp/language/overload_resolution)).
+* A template `parameter pack` that is explicitly specified may be extended by template argument deduction if there are additional arguments:
+    ```c++
+    template<class ... Types> void f(Types ... values);
+    void g() {
+        f<int*, float*>(0, 0, 0); // Types = {int*, float*, int}
+    }
+    ```
+
+### Template argument substitution
+* When all template arguments have been specified, deduced or obtained from default template arguments, every use of a template parameter in the function parameter list is replaced with the corresponding template arguments.
+* After substitution, all `function parameters` of `array` and `function type` are adjusted to pointers and all `top-level cv-qualifiers` are dropped from function parameters (as in a regular function declaration).
+* The removal of the top-level cv-qualifiers does not affect the type of the parameter as it appears within the function:
+    ```c++
+    template <class T> void f(T t);
+    template <class X> void g(const X x);
+    template <class Z> void h(Z z, Z* zp);
+
+    // two different functions with the same type, but
+    // within the function, t has different cv qualifications
+    f<int>(1);       // function type is void(int), t is int
+    f<const int>(1); // function type is void(int), t is const int
+
+    // two different functions with the same type and the same x
+    // (pointers to these two functions are not equal,
+    //  and function-local statics would have different addresses)
+    g<int>(1);       // function type is void(int), x is const int
+    g<const int>(1); // function type is void(int), x is const int
+
+    // only top-level cv-qualifiers are dropped:
+    h<const int>(1, NULL); // function type is void(int, const int*)
+                           // z is const int, zp is const int*
+    ```
+
+### Function template overloading
+* Function distinctions:
+    * A `non-template function` is always distinct from a `template specialization` with the same type.
+    * Specializations of different function templates are always distinct from each other even if they have the same type.
+    * Two function templates with the same return type and the same parameter list are distinct and can be distinguished with explicit template argument list.
+* When an expression that uses type or non-type template parameters appears in the function parameter list or in the return type, that expression remains a part of the function template signature for the purpose of overloading:
+    ```c++
+    template<int I, int J> A<I+J> f(A<I>, A<J>); // overload #1
+    template<int K, int L> A<K+L> f(A<K>, A<L>); // same as #1
+    template<int I, int J> A<I-J> f(A<I>, A<J>); // overload #2
+    ```
+
+* Equivalence
+    * Two expressions involving template parameters are called **equivalent** if two function definitions that contain these expressions would be the same under [ODR rules](https://en.cppreference.com/w/cpp/language/definition#One_Definition_Rule), that is, the two expressions contain the same sequence of tokens whose names are resolved to same entities via name lookup, except template parameters may be differently named.
+        ```c++
+        template <int I, int J> void f(A<I+J>);  // template overload #1
+        template <int K, int L> void f(A<K+L>);  // equivalent to #1
+        ```
+    * Two lambda expressions are never equivalent. (since C++20)
+    * When determining if two [dependent expressions](https://en.cppreference.com/w/cpp/language/dependent_name) are equivalent, only the `dependent names` involved are considered, not the results of name lookup. If multiple declarations of the same template differ in the result of name lookup, the first such declaration is used:
+        ```c++
+        template <class T> decltype(g(T())) h();  // decltype(g(T())) is a dependent type
+        int g(int);
+        template <class T> decltype(g(T())) h() { // redeclaration of h() uses earlier lookup
+            return g(T());                        // ...although the lookup here does find g(int)
+        }
+        int i = h<int>();   // template argument substitution fails; g(int)
+                            // was not in scope at the first declaration of h()
+        ```
+    * Two expressions involving template parameters are called **functionally equivalent** if they are not equivalent, but for any given set of template arguments, the evaluation of the two expressions results in the same value.
+    * Two function templates are considered functionally equivalent if they are equivalent, except that one or more expressions that involve template parameters in their return types and parameter lists are functionally equivalent.
+    * If a program contains declarations of function templates that are functionally equivalent but not equivalent, the program is ill-formed; no diagnostic is required.
+        ```c++
+        // equivalent
+        template <int I> void f(A<I>, A<I+10>); // overload #1
+        template <int I> void f(A<I>, A<I+10>); // redeclaration of overload #1
+
+        // not equivalent
+        template <int I> void f(A<I>, A<I+10>); // overload #1
+        template <int I> void f(A<I>, A<I+11>); // overload #2
+
+        // functionally-equivalent but not equivalent
+        // This program is ill-formed, no diagnostic required
+        template <int I> void f(A<I>, A<I+10>); // overload #1
+        template <int I> void f(A<I>, A<I+1+2+3+4>); // functionally equivalent
+        ```
+* Partial ordering
+    * When the same function template specialization matches more than one overloaded function template (this often results from template argument deduction), partial ordering of overloaded function templates is performed to select the best match.
+    * **Partial ordering** happens in:
+        * 1) overload resolution for a call to a function template specialization
+        * 2) when the address of a function template specialization is taken
+        * 3) when a [placement operator delete](https://en.cppreference.com/w/cpp/memory/new/operator_delete) that is a function template specialization is selected to match a placement operator new
+        * 4) when a [friend function declaration](https://en.cppreference.com/w/cpp/language/friend#Template_friends), an `explicit instantiation`, or an `explicit specialization` refers to a function template specialization
+            ```c++
+            template<class X> void f(X a);  // first template f
+            template<class X> void f(X* a); // second template f
+            template<> void f<>(int *a) {}  // explicit specialization
+            // template argument deduction comes up with two candidates:
+            // f<int*>(int*) and f<int>(int*)
+            // partial ordering selects f<int>(int*) as more specialized
+            ```
+    * To determine which of any two function templates is more specialized, `partial ordering work flow`:
+        1. transforms one of the two templates as follows:
+            * For each type, non-type, and template parameter, including parameter packs, a unique fictitious type, value, or template is generated and substituted into function type of the template
+            * If only one of the two function templates being compared is a member function, and that function template is a non-static member of some class A, a new first parameter is inserted into its parameter list, whose type is cv A&& if the member function template is &&-qualified and cv A& otherwise (cv is the cv-qualification of the member function template) -- this helps the ordering of operators, which are looked up both as member and as non-member functions:
+                ```c++
+                struct A {};
+                    template<class T> struct B {
+                    template<class R> int operator*(R&);                // #1
+                };
+                template<class T, class R> int operator*(T&, R&);       // #2
+
+                int main() {
+                    A a;
+                    B<A> b;
+                    b * a; // template argument deduction for int B<A>::operator*(R&) gives R=A
+                        //                             for int operator*(T&, R&), T=B<A>, R=A
+                    // For the purpose of partial ordering, the member template B<A>::operator*
+                    // is transformed into template<class R> int operator*(B<A>&, R&);
+                    // partial ordering between
+                    //     int operator*(   T&, R&)  T=B<A>, R=A
+                    // and int operator*(B<A>&, R&)  R=A
+                    // selects int operator*(B<A>&, A&) as more specialized
+                }
+                ```
+        2. After one of the two templates was transformed as described above, `template argument deduction` is executed using the transformed template as the `argument template` and the original template type of the other template as the `parameter template`. The process is then repeated using the second template (after transformations) as the argument and the first template in its original form as the parameter.
+
+        3. The types used to determine the order depend on the context:
+            * in the context of a `function call`, the types are those `function parameter types` for which the function call has arguments (default function arguments, parameter packs, and ellipsis parameters are not considered -- see examples below)
+            * in the context of `a call to a user-defined conversion function`, the `return types` of the conversion function templates are used
+            * in `other contexts`, the `function template type` is used
+
+        4. (`Arguments-Parameters Adjust`) Each type from the list above from the parameter template is deduced. Before deduction begins, each parameter P of the parameter template and the corresponding argument A of the argument template is adjusted as follows:
+            * If both P and A are `reference types` before, determine which is more cv-qualified (in all other cases, cv-qualificiations are ignored for partial ordering purposes)
+            * If `P is a reference` type, it is replaced by the type referred to, `ignore reference`
+            * If `A is a reference` type, it is replaced by the type referred to, `ignore reference`
+            * If `P is cv-qualified`, P is replaced with cv-unqualified version of itself, `ignore cv-qualifier`
+            * If `A is cv-qualified`, A is replaced with cv-unqualified version of itself, `ignore cv-qualifier`
+        5. After these adjustments, deduction of P from A is done following `template argument deduction from a type`.
+
+    * If the argument A of the transformed template-1 can be used to deduce the corresponding parameter P of template-2, but not vice versa, then this A is more specialized than P with regards to the type(s) that are deduced by this P/A pair.
+
+    * If deduction succeeds in both directions, and the original P and A were reference types, then additional tests are made:
+        * If A was lvalue reference and P was rvalue reference, A is considered to be more specialized than P
+        * If A was more cv-qualified than P, A is considered to be more specialized than P
+
+    * In all other cases, neither template is more specialized than the other with regards to the type(s) deduced by this P/A pair.
+
+    * After considering every P and A in both directions, if, for each type that was considered,
+        * template-1 is at least as specialized as template-2 for all types
+        * template-1 is more specialized than template-2 for some types
+        * template-2 is not more specialized than template-1 for any types OR is not at least as specialized for any types
+        * Then template-1 is more specialized than template-2
+
+
+### Function overloads vs function specializations
+
+### Abbreviated function template (Since C++20)
+* When placeholder types (either auto or Concept auto) appear in the parameter list of a function declaration or of a function template declaration, the declaration declares a function template, and one invented template parameter for each placeholder is appended to the template parameter list
+    ```c++
+    void f1(auto); // same as template<class T> void f(T)
+    void f2(C1 auto); // same as template<C1 T> void f2(T), if C1 is a concept
+    void f3(C2 auto...); // same as template<C2... Ts> void f3(Ts...), if C2 is a concept
+    void f4(const C3 auto*, C4 auto&); // same as template<C3 T, C4 U> void f4(const T*, U&);
+    template <class T, C U>
+    void g(T x, U y, C auto z); // same as template<class T, C U, C W> void g(T x, U y, W z);
+    ```
+* Abbreviated function templates can be specialized like all function templates.
+    ```c++
+    template<>
+    void f4<int>(const int*, const double&); // specialization of f4<int, const double>
+    ```
 
 ## Member template
 * Template declarations (class, function, and variables (since C++14)) can appear inside a member specification of any class, struct, or union that aren't local classes.
@@ -1244,7 +1480,372 @@ template <parameter-list > declaration;
     template <parameter-list > variable-declaration
     ```
 
-## Template argument deduction
+## Function template argument deduction
+* This mechanism makes it possible to use template operators, since there is no syntax to specify template arguments for an operator other than by re-writing it as a function call expression
+* Template argument deduction takes place after the function template [name lookup](https://en.cppreference.com/w/cpp/language/lookup) (which may involve [argument-dependent lookup](https://en.cppreference.com/w/cpp/language/adl)) and before [template argument substitution](https://en.cppreference.com/w/cpp/language/function_template#Template_argument_substitution) (which may involve [SFINAE](https://en.cppreference.com/w/cpp/language/sfinae)) and [overload resolution](https://en.cppreference.com/w/cpp/language/overload_resolution).
+
+### Deduced contexts
+#### A function call is attempted
+* Template argument deduction attempts to determine template arguments (types for type template parameters **Ti**, templates for template template parameters **TTi**, and values for non-type template parameters **Ii**), which can be substituted into each parameter **P** to produce the type deduced **A**, which is the same as the type of the argument A, after adjustments listed below.
+* If removing `references` and `cv-qualifiers` from P gives `std::initializer_list<P'>` and A is a braced-init-list, then deduction is performed for every element of the initializer list, taking P' as the parameter and the list element A' as the argument
+* If removing `references` and `cv-qualifiers` from P gives `P'[N]`, and A is a non-empty braced-init-list, then deduction is performed as above, except if N is a non-type template parameter, it is deduced from the `length` of the initializer list:
+    ```c++
+    template<class T, int N> void h(T const(&)[N]);
+    h({1, 2, 3}); // deduced T = int, deduced N = 3
+
+    template<class T> void j(T const(&)[3]);
+    j({42}); // deduced T = int, array bound is not a parameter, not considered
+
+    struct Aggr { int i; int j; };
+    template<int N> void k(Aggr const(&)[N]);
+    k({1, 2, 3});       // error: deduction fails, no conversion from int to Aggr
+    k({{1}, {2}, {3}}); // OK: deduced N = 3
+
+    template<int M, int N> void m(int const(&)[M][N]);
+    m({{1, 2}, {3, 4}}); // deduced M = 2, deduced N = 2
+
+    template<class T, int N> void n(T const(&)[N], T);
+    n({{1}, {2}, {3}}, Aggr()); // deduced T = Aggr, deduced N = 3
+    ```
+* If a `parameter pack` appears as the last P, then the type P is matched against the type A of each remaining argument of the call. Each match deduces the template arguments for the next position in the pack expansion:
+    ```c++
+    template<class... Types> void f(Types&...);
+    void h(int x, float& y) {
+        const int z = x;
+        f(x, y, z); // P = Types&..., A1 = x: deduced first member of Types... = int
+                    // P = Types&..., A2 = y: deduced second member of Types... = float
+                    // P = Types&..., A3 = z: deduced third member of Types... = const int
+                    // calls f<int, float, const int>
+    }
+    ```
+* If P is a `function type`, pointer to function type, or pointer to member function type and if A is a [set of overloaded functions](https://en.cppreference.com/w/cpp/language/overloaded_address) not containing function templates, template argument deduction is attempted with each overload. If only one succeeds, that successful deduction is used. If none or more than one succeeds, the template parameter is non-deduced context (see below):
+    ```c++
+    template<class T> int f(T(*p)(T));
+    int g(int);
+    int g(char);
+    f(g);   // P = T(*)(T), A = overload set
+            // P = T(*)(T), A1 = int(int): deduced T = int
+            // P = T(*)(T), A2 = int(char): fails to deduce T
+            // only one overload works, deduction succeeds
+    ```
+* Before deduction begins, the following **adjustments** to P and A are made:
+    1. If P is `not a reference type`:
+        * if A is an `array type`, A is replaced by the `pointer type` obtained from array-to-pointer conversion;
+        * otherwise, if A is a `function type`, A is replaced by the pointer type obtained from function-to-pointer conversion;
+        * otherwise, if A is a `cv-qualified type`, the top-level cv-qualifiers are ignored for deduction:
+    2. If P is a `cv-qualified type`, the top-level cv-qualifiers are ignored for deduction.
+    3. If P is a `reference type`, the type referred to by P is used for deduction, ignore the reference.
+    4. If P is an `rvalue reference` to a cv-unqualified template parameter (so-called `forwarding reference`), and the corresponding function call argument is an lvalue, the type lvalue reference to A is used in place of A for deduction (Note: this is the basis for the action of std::forward [Note: in class template argument deduction, template parameter of a class template is never a forwarding reference (since C++17)]):
+        ```c++
+        template<class T>
+        int f(T&&);       // P is an rvalue reference to cv-unqualified T (forwarding reference)
+
+        template<class T>
+        int g(const T&&); // P is an rvalue reference to cv-qualified T (not special)
+
+        int main() {
+            int i;
+            int n1 = f(i);  // argument is lvalue: calls f<int&>(int&) (special case)
+            int n2 = f(0);  // argument is not lvalue: calls f<int>(int&&)
+
+        //  int n3 = g(i);  // error: deduces to g<int>(const int&&), which
+                            // cannot bind an rvalue reference to an lvalue
+        }
+        ```
+* If the usual deduction from P and A fails, the following alternatives are additionally considered:
+    1. If P is a reference type, the deduced A (i.e., the type referred to by the reference) `can be more cv-qualified` than the transformed A:
+        ```c++
+        template<typename T> void f(const T& t);
+        bool a = false;
+        f(a);   // P = const T&, adjusted to const T, A = bool:
+                // deduced T = bool, deduced A = const bool
+                // deduced A is more cv-qualified than A
+        ```
+    2. The transformed A can be another pointer or pointer to member type that `can be converted` to the deduced A via a qualification conversions [or a function pointer conversion (since C++17)]:
+        ```c++
+        template<typename T> void f(const T*);
+        int* p;
+        f(p);   // P = const T*, A = int*:
+                // deduced T = int, deduced A = const int*
+                // qualification conversion applies (from int* to const int*)
+        ```
+    3. If P is a class and P has the form [simple-template-id](https://en.cppreference.com/w/cpp/language/templates#template-id), then the transformed A `can be a derived class` of the deduced A. Likewise, if P is a pointer to a class of the form simple-template-id, the transformed A can be a pointer to a derived class pointed to by the deduced A:
+        ```c++
+        template<class T> struct B { };
+        template<class T> struct D : public B<T> { };
+        template<class T> void f(B<T>&) { }
+
+        void f() {
+            D<int> d;
+            f(d); // P = B<T>&, adjusted to P = B<T> (a simple-template-id), A = D<int>:
+                // deduced T = int, deduced A = B<int>
+                // A is derived from deduced A
+        }
+        ```
+
+#### An address of a function template is taken
+
+#### auto type deduction
+* The parameter P is obtained as follows:
+    * in T, the declared type of the variable that includes auto, every occurrence of auto is replaced with an imaginary type template parameter U or,
+    * if the initialization is copy-list-initialization, with std::initializer_list<U>. The argument A is the initializer expression.
+    * After deduction of U from P and A following the rules described above, the deduced U is substituted into P to get the actual variable type:
+    ```c++
+    const auto& x = 1 + 2;  // P = const U&, A = 1 + 2:
+                            // same rules as for calling f(1 + 2) where f is
+                            // template<class U> void f(const U& u)
+                            // deduced U = int, the type of x is const int&
+    auto l = {13};  // P = std::initializer_list<U>, A = {13}:
+                    // deduced U = int, the type of l is std::initializer_list<int>
+    ```
+* In `direct-list-initialization` (but not in copy-list-initalization), when deducing the meaning of the auto from a braced-init-list, the braced-init-list must contain `only one element`, and the type of auto will be the type of that element:
+    ```c++
+    auto x1 = {3};  // x1 is std::initializer_list<int>
+    auto x2{1, 2};  // error: not a single element
+    auto x3{3};     // x3 is int
+                    // (before N3922 x2 and x3 were both std::initializer_list<int>)
+    ```
+
+#### auto-returning functions
+* For auto-returning functions, the parameter P is obtained as follows:
+    * in T, the declared return type of the function that includes auto, every occurrence of auto is replaced with an imaginary type template parameter U.
+    * The argument A is the expression of the return statement, and if the return statement has no operand, A is void().
+    * After deduction of U from P and A following the rules described above, the deduced U is substituted into T to get the actual return type:
+    ```c++
+    auto f() { return 42; } // P = auto, A = 42:
+                            // deduced U = int, the return type of f is int
+    ```
+* If such function has `multiple return statements`, the deduction is performed for each return statement. All the resulting types must be the same and become the actual return type.
+* If such function has `no return statement`, A is void() when deducing.
+* Note: the meaning of `decltype(auto)` placeholder in variable and function declarations does not use template argument deduction.
+
+#### Overload resolution
+* Template argument deduction is used during overload resolution, when generating specializations from a candidate template function. P and A are the same as in a regular function call
+
+#### Address of an overload set
+* Template argument deduction is used when taking an address of a overload set, which includes function templates. The function type of the function template is P. The target type is the type of A
+* An additional rule is applied to the deduction in this case: when comparing function parameters Pi and Ai, if any Pi is an rvalue reference to cv-unqualified template parameter (a `forwarding reference`) and the corresponding Ai is an `lvalue reference`, then Pi is adjusted to the template parameter type (T&& becomes T).
+* If the return type of the function template is a placeholder (auto or decltype(auto)), that return type is a non-deduced context and is determined from the instantiation. (Since C++14)
+
+#### Partial ordering
+* Template argument deduction is used during [partial ordering of overloaded function templates](https://en.cppreference.com/w/cpp/language/function_template)
+
+#### Conversion function template
+* Template argument deduction is used when selecting [user-defined conversion function](https://en.cppreference.com/w/cpp/language/cast_operator) template arguments.
+* A is the type that is required as the result of the conversion. P is the return type of the conversion function template, except that
+    * a) if the return type is a `reference type` then P is the referred type;
+    * b) if the return type is an `array type` and A is not a reference type, then P is the pointer type obtained by array-to-pointer conversion;
+    * c) if the return type is a `function type` and A is not a reference type, then P is the function pointer type obtained by function-to-pointer conversion;
+    * d) if P is `cv-qualified`, the top-level cv-qualifiers are ignored.
+* If A is `cv-qualified`, the top-level cv-qualifiers are ignored. If A is a reference type, the referred type is used by deduction.
+* If the usual deduction from P and A (as described above) fails, the following alternatives are additionally considered:
+    * a) if A is a reference type, A `can be more cv-qualified` than the deduced A;
+    * b) if A is a pointer or pointer to member type, the deduced A is allowed to be any pointer that `can be converted` to A by qualification conversion:
+        ```c++
+        struct A { template<class T> operator T***(); };
+        A a;
+        const int* const* const* p1 = a; // P = T***, A = const int* const* const*
+        // regular function-call deduction for
+        // template<class T> void f(T*** p) as if called with the argument
+        // of type const int* const* const* fails
+        // additional deduction for conversion functions determines T = int
+        // (deduced A is int***, convertible to const int* const* const*)
+        ```
+    * c) if A is a `function pointer type`, the deduced A is allowed to be pointer to noexcept function, convertible to A by function pointer conversion; (Since C++17)
+    * d) if A is a `pointer to member function`, the deduced A is allowed to be a pointer to noexcept member function, convertible to A by function pointer conversion. (Since C++17)
+
+#### Explicit instantiation
+* Template argument deduction is used in `explicit instantiations`, `explicit (full) specializations`, and those `friend declarations` where the declarator-id happens to refer to a specialization of a function template (for example, friend ostream& operator<< <> (...)), if not all template arguments are explicitly specified or defaulted, template argument deduction is used to determine which template's specialization is referred to.
+* P is the type of the function template that is being considered as a potential match, and A is the function type from the declaration. If there are no matches or more than one match (after partial ordering), the function declaration is ill-formed:
+    ```c++
+    template<class X> void f(X a);  // 1st template f
+    template<class X> void f(X* a); // 2nd template f
+    template<> void f<>(int* a) { } // explicit specialization of f
+    // P1 = void(X), A1 = void(int*): deduced X = int*, f<int*>(int*)
+    // P2 = void(X*), A2 = void(int*): deduced X = int, f<int>(int*)
+    // f<int*>(int*) and f<int>(int*) are then submitted to partial ordering
+    // which selects f<int>(int*) as the more specialized template
+    ```
+* An additional rule is applied to the deduction in this case: when comparing function parameters Pi and Ai, if any Pi is an rvalue reference to cv-unqualified template parameter (a `forwarding reference`) and the corresponding Ai is an lvalue reference, then Pi is adjusted to the template parameter type (`T&& becomes T`).
+
+#### Deallocation function template
+* Template argument deduction is used when determining if a deallocation function template specialization matches a given placement form of operator new.
+* P is the type of the function template that is being considered as a potential match, and A is the function type of the deallocation function that would be the match for the placement operator new under consideration. If there is no match or more than one match (after overload resolution), the placement deallocation function is not called (memory leak may occur):
+    ```c++
+    struct X {
+        X() { throw std::runtime_error(""); }
+        static void* operator new(std::size_t sz, bool b) { return ::operator new(sz); }
+        static void* operator new(std::size_t sz, double f) { return ::operator new(sz); }
+        template<typename T> static void operator delete(void* ptr, T arg) {
+            ::operator delete(ptr);
+        }
+    };
+
+    int main() {
+        try {
+            X* p1 = new (true) X;   // when X() throws, operator delete is looked up
+                                    // P1 = void(void*, T), A1 = void(void*, bool): deduced T = bool
+                                    // P2 = void(void*, T), A2 = void(void*, double): deduced T = double
+                                    // overload resolution picks operator delete<bool>
+        } catch(const std::exception&) { }
+
+        try {
+            X* p1 = new (13.2) X;   // same lookup, picks operator delete<double>
+        } catch(const std::exception&) { }
+    }
+    ```
+
+
+#### Implicit conversions
+* Type deduction does not consider implicit conversions (other than type adjustments listed above): that's the job for overload resolution, which happens later.
+* However, if deduction succeeds for all parameters that participate in template argument deduction, and all template arguments that aren't deduced are explicitly specified or defaulted, then the remaining function parameters are compared with the corresponding function arguments. For each remaining parameter P with a type that was non-dependent before substitution of any explicitly-specified template arguments, if the corresponding argument A cannot be implicitly converted to P, deduction fails.
+
+* Parameters with dependent types in which no template-parameters participate in template argument deduction, and parameters that became non-dependent due to substitution of explicitly-specified template arguments will be checked during overload resolution:
+    ```c++
+    template<class T> struct Z { typedef typename T::x xx; };
+    template<class T> typename Z<T>::xx f(void*, T); // #1
+    template<class T> void f(int, T);                // #2
+    struct A { } a;
+
+    int main()
+    {
+        f(1, a); // for #1, deduction determines T = struct A, but the remaining argument 1
+                // cannot be implicitly converted to its parameter void*: deduction fails
+                // instantiation of the return type is not requested
+                // for #2, deduction determines T = struct A, and the remaining argument 1
+                // can be implicitly converted to its parameter int: deduction succeeds
+                // the function call compiles as a call to #2 (deduction failure is SFINAE)
+    }
+    ```
+
+#### Alias templates
+* Alias templates are never deduced:
+    ```c++
+    template<class T> struct Alloc { };
+    template<class T> using Vec = vector<T, Alloc<T>>;
+    Vec<int> v;
+
+    template<template<class, class> class TT> void g(TT<int, Alloc<int>>);
+    g(v); // OK: deduced TT = vector
+
+    template<template<class> class TT> void f(TT<int>);
+    f(v); // error: TT cannot be deduced as "Vec" because Vec is an alias template
+    ```
+
+### Non-deduced contexts
+* 1) The `nested-name-specifier` (everything to the left of the scope resolution operator ::) of a type that was specified using a qualified-id:
+    ```c++
+    // the identity template, often used to exclude specific arguments from deduction
+    // (available as std::type_identity as of C++20)
+    template<typename T> struct identity { typedef T type; };
+    template<typename T> void bad(std::vector<T> x, T value = 1);
+    template<typename T> void good(std::vector<T> x, typename identity<T>::type value = 1);
+    std::vector<std::complex<double>> x;
+    bad(x, 1.2);  // P1 = std::vector<T>, A1 = std::vector<std::complex<double>>
+                // P1/A1: deduced T = std::complex<double>
+                // P2 = T, A2 = double
+                // P2/A2: deduced T = double
+                // error: deduction fails, T is ambiguous
+    good(x, 1.2); // P1 = std::vector<T>, A1 = std::vector<std::complex<double>>
+                // P1/A1: deduced T = std::complex<double>
+                // P2 = identity<T>::type, A2 = double
+                // P2/A2: uses T deduced by P1/A1 because T is to the left of :: in P2
+                // OK: T = std::complex<double>
+    ```
+
+* 2) The expression of a `decltype`-specifier:
+    ```c++
+    template<typename T> void f(decltype(*std::declval<T>()) arg);
+    int n;
+    f<int*>(n); // P = decltype(*declval<T>()), A = int: T is in non-deduced context
+    ```
+
+* 3) A `non-type template argument` or an array bound in which a subexpression references a template parameter:
+    ```c++
+    template<std::size_t N> void f(std::array<int, 2 * N> a);
+    std::array<int, 10> a;
+    f(a);   // P = std::array<int, 2 * N>, A = std::array<int, 10>:
+            // 2 * N is non-deduced context, N cannot be deduced
+            // note: f(std::array<int, N> a) would be able to deduce N
+    ```
+
+* 4) A template parameter used in the parameter type of a function parameter that has a `default argument` that is being used in the call for which argument deduction is being done:
+    ```c++
+    template<typename T, typename F>
+    void f(const std::vector<T>& v, const F& comp = std::less<T>());
+    std::vector<std::string> v(3);
+    f(v); // P1 = const std::vector<T>&, A1 = std::vector<std::string> lvalue
+        // P1/A1 deduced T = std::string
+        // P2 = const F&, A2 = std::less<std::string> rvalue
+        // P2 is non-deduced context for F (template parameter) used in the
+        // parameter type (const F&) of the function parameter comp,
+        // that has a default argument that is being used in the call f(v)
+    ```
+
+* 5) The parameter P, whose A is a function or a set of overloads such that more than one function matches P or no function matches P or the set of overloads includes one or more function templates:
+    ```c++
+    template<typename T> void out(const T& value) { std::cout << value; }
+    out("123");     // P = const T&, A = const char[4] lvalue: deduced T = char[4]
+    out(std::endl); // P = const T&, A = function template: T is in non-deduced context
+    ```
+
+* 6) The parameter P, whose A is a braced-init-list, but P is not std::initializer_list, a reference to one (possibly cv-qualified), or a reference to an array:
+    ```c++
+    template<class T> void g1(std::vector<T>);
+    template<class T> void g2(std::vector<T>, T x);
+    g1({1, 2, 3});     // P = std::vector<T>, A = {1, 2, 3}: T is in non-deduced context
+                    // error: T is not explicitly specified or deduced from another P/A
+    g2({1, 2, 3}, 10); // P1 = std::vector<T>, A1 = {1, 2, 3}: T is in non-deduced context
+                    // P2 = T, A2 = int: deduced T = int
+    ```
+
+* 7) The parameter P which is a `parameter pack` and does not occur at the end of the parameter list:
+    ```c++
+    template<class... Ts, class T> void f1(T n, Ts... args);
+    template<class... Ts, class T> void f2(Ts... args, T n);
+    f1(1, 2, 3, 4); // P1 = T, A1 = 1: deduced T = int
+                    // P2 = Ts..., A2 = 2, A3 = 3, A4 = 4: deduced Ts = [int, int, int]
+    f2(1, 2, 3, 4); // P1 = Ts...: Ts is non-deduced context
+    ```
+
+* 8) The template parameter list that appears within the parameter P, and which includes a `pack expansion` that is not at the very end of the template parameter list:
+    ```c++
+    template<int...> struct T { };
+
+    template<int... Ts1, int N, int... Ts2>
+    void good(const T<N, Ts1...>& arg1, const T<N, Ts2...>&);
+
+    template<int... Ts1, int N, int... Ts2>
+    void bad(const T<Ts1..., N>& arg1, const T<Ts2..., N>&);
+
+    T<1, 2> t1;
+    T<1, -1, 0> t2;
+    good(t1, t2); // P1 = const T<N, Ts1...>&, A1 = T<1, 2>:
+                // deduced N = 1, deduced Ts1 = [2]
+                // P2 = const T<N, Ts2...>&, A2 = T<1, -1, 0>:
+                // deduced N = 1, deduced Ts2 = [-1, 0]
+    bad(t1, t2);  // P1 = const T<Ts1..., N>&, A1 = T<1, 2>:
+                // <Ts1..., N> is non-deduced context
+                // P2 = const T<Ts2..., N>&, A2 = T<1, -1, 0>:
+                // <Ts2..., N> is non-deduced context
+    ```
+* 9) For P of `array type` (but not reference to array or pointer to array), the major array bound:
+    ```c++
+    template<int i> void f1(int a[10][i]);
+    template<int i> void f2(int a[i][20]);    // P = int[i][20], array type
+    template<int i> void f3(int (&a)[i][20]); // P = int(&)[i][20], reference to array
+
+    void g()
+    {
+        int a[10][20];
+        f1(a);     // OK: deduced i = 20
+        f1<20>(a); // OK
+        f2(a);     // error: i is non-deduced context
+        f2<10>(a); // OK
+        f3(a);     // OK: deduced i = 10
+        f3<10>(a); // OK
+    }
+    ```
 
 ## Class template argument deduction (C++17)
 
@@ -1459,6 +2060,7 @@ template <parameter-list > declaration;
     }
     ````
 5. If a primary template is a member of another class template, its partial specializations are members of the enclosing class template.
+
     * If the enclosing template is instantiated, the declaration of each member partial specialization is instantiated as well (the same way declarations, but not definitions, of all other members of a template are instantiated).
 6. If a partial specialization of the member template is explicitly specialized for a given (implicit) specialization of the enclosing class template, the primary member template and its other partial specializations are still considered for this specialization of the enclosing class template.
     ```c++
@@ -1504,14 +2106,46 @@ template <parameter-list > declaration;
 ### Pack expansion
 * A pattern followed by an ellipsis, in which the name of at least one parameter pack appears at least once, is expanded into zero or more comma-separated instantiations of the pattern, where the name of the parameter pack is replaced by each of the elements from the pack, in order.
 * If the names of `two parameter packs` appear in the same pattern, they are expanded simultaneously, and they must have the same length:
+* If a pack expansion is nested within another pack expansion, the parameter packs that appear inside the innermost pack expansion are expanded by it, and there must be another pack mentioned in the enclosing pack expansion, but not in the innermost one:
+    ```c++
+    template<class ...Args>
+        void g(Args... args) {
+            f(const_cast<const Args*>(&args)...);
+    // const_cast<const Args*>(&args) is the pattern, it expands two packs
+    // (Args and args) simultaneously
 
-### sizeof... (C++11)
+            f(h(args...) + args...); // Nested pack expansion:
+    // inner pack expansion is "args...", it is expanded first
+    // outer pack expansion is h(E1, E2, E3) + args..., it is expanded
+    // second (as h(E1,E2,E3) + E1, h(E1,E2,E3) + E2, h(E1,E2,E3) + E3)
+    }
+    ```
+
+### Expansion loci
+* Function argument lists
+* Function parameter list
+* Template parameter list
+* Template argument lists
+* Parenthesized initializers
+* Brace-enclosed initializers
+* Lambda captures
+* The sizeof... operator
+* Dynamic exception specifications
+* Base specifiers and member initializer lists
+
 ### Fold-expressions (C++17)
+* Syntax
+    ```c++
+    ( pack op ... )         // (1) unary right fold
+    ( ... op pack )         // (2) unary left fold
+    ( pack op ... op init ) // (3) binary right fold
+    ( init op ... op pack ) // (4) binary left fold
+    ```
 
 ## SFINAE
+* "Substitution Failure Is Not An Error"
 
 ## Constraints and concepts (C++20)
-
 
 
 # 17
