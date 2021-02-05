@@ -2161,7 +2161,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     auto y = new A{1,2}; // allocated type is A<int>
     ```
 
-* function-style cast expressions
+* [function-style cast](https://en.cppreference.com/w/cpp/language/explicit_cast) expressions
     ```c++
     auto lck = std::lock_guard(mtx);    // deduces to std::lock_guard<std::mutex>
     std::copy_n(vi1, 3,
@@ -2184,7 +2184,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     Y<0> y; // OK, Y<X<int>(0)>
     ```
 
-### Implicitly-generated deduction guides
+### Implicit deduction guides
 * When a `function-style cast` or `declaration of a variable` uses the name of a primary class template C without an argument list as the type specifier, deduction will proceed as follows:
     * If C is defined, for each constructor (or constructor template) Ci declared in the named primary template (if it is defined), a `fictional function template` Fi, is constructed, such that
         * `template parameters` of Fi are the template parameters of C followed (if Ci is a constructor template) by the template parameters of Ci (default template arguments are included too)
@@ -2196,42 +2196,12 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
             Base(T a, T b) {}
         };
 
-        Base base(1, 2);
-
-        // fictional function template
-        template<>
-        Base(int a, int b) -> Base<int>;
+        template<T> Base<T> F(T a, T b); // fictional function template
         ```
     * If C is not defined or does not declare any constructors, an additional fictional function template is added, derived as above from a `hypothetical constructor` C()
     * In any case, an additional fictional function template derived as above from a hypothetical constructor C(C) is added, called the `copy deduction candidate`.
-    * In addition, if (C++20)
-        * C is defined and satisfies the requirements of an aggregate type with the assumption that any dependent base class has no virtual functions or virtual base classes,
-        * there are no user-defined deduction guides for C, and
-        * the variable is initialized from a non-empty list of initializers arg1, arg2, ..., argn (which may use designated initializer),
-        * an aggregate deduction candidate may be added. The parameter list of the aggregate deduction candidate is produced from the aggregate element types, as follows:
-            * Let ei be the (possibly recursive) aggregate element (public base/class member/array element) that would be initialized from argi, where
-                * brace elision is only considered for members with non-dependent type or with array type of non-dependent bound,
-                * if C (or its element that is itself an aggregate) has a base that is a pack expansion:
-                    * if the pack expansion is a trailing aggregate element, it is considered to match all remaining elements of the initializer list;
-                    * otherwise, the pack is considered to be empty.
-            * If there's no such ei, the aggregate deduction candidate is not added.
-            * Otherwise, determine the parameter list T1, T2, ..., Tn of the aggregate deduction candidate as follows:
-                * If ei is an array and argi is either a braced-init-list or a string literal, Ti is rvalue reference to the type of ei.
-                * Otherwise, Ti is the type of ei.
-                * If a pack was skipped because it is a non-trailing aggregate element, an additional parameter pack of the form Pj ... is inserted in its original aggregate element position. (This will generally cause deduction to fail.)
-                * If a pack is a trailing aggregate element, the trailing sequence of parameters corresponding to it is replaced by a single parameter of the form Tn ....
-        * The aggregate deduction candidate is a fictional function template derived as above from a hypothetical constructor C(T1, T2, ..., Tn).
-        * During template argument deduction for the aggregate deduction candidate, the number of elements in a trailing parameter pack is only deduced from the number of remaining function arguments if it is not otherwise deduced.
         ```c++
-        template<class T> struct A { T t; struct { long a, b; } u; };
-        A a{1, 2, 3}; // aggregate deduction candidate: template<class T> A<T> F(T, long, long);
-
-        template<class... Args>
-        struct B : std::tuple<Args...>, Args... {};
-        B b{ std::tuple<std::any, std::string>{}, std::any{} };
-        // aggregate deduction candidate:
-        //   template<class... Args> B<Args...> F(std::tuple<Args...>, Args...);
-        // type of b is deduced as B<std::any, std::string>
+        template<T> Base<T> F(Base<T>); // copy deduction candidate
         ```
 
 * `Template argument deduction` and `overload resolution` is then performed for initialization of a fictional object of `hypothetical class type`, whose constructor signatures match the guides (except for return type) for the purpose of forming an overload set, and the initializer is provided by the context in which class template argument deduction was performed, except that the first phase of list-initialization (considering initializer-list constructors) is omitted if the initializer list consists of a single expression of type (possibly cv-qualified) U, where U is a specialization of C or a class derived from a specialization of C.
@@ -2244,6 +2214,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     // Set of implicitly-generated deduction guides:
     // F1: template<class T> UniquePtr<T> F(T *p);
     // F2: template<class T> UniquePtr<T> F(UniquePtr<T>); // copy deduction candidate
+
     // imaginary class to initialize:
     // struct X {
     //     template<class T> X(T *p);          // from F1
@@ -2279,8 +2250,39 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     // S<int>::N<int> x{2.0, 1}; [TODO:? shouldn't be N<double>]
     ```
 
+* Aggregate deduction candidate (C++20)
+    * An `aggregate deduction candidate` may be added, if
+        * C is defined and satisfies the requirements of an `aggregate type` with the assumption that any dependent base class has no virtual functions or virtual base classes,
+        * there are no user-defined deduction guides for C, and
+        * the variable is initialized from a non-empty list of initializers arg1, arg2, ..., argn (which may use designated initializer)
+    * The parameter list of the aggregate deduction candidate is produced from the aggregate element types, as follows:
+        * Let ei be the (possibly recursive) aggregate element (public base/class member/array element) that would be initialized from argi, where
+            * brace elision is only considered for members with non-dependent type or with array type of non-dependent bound,
+            * if C (or its element that is itself an aggregate) has a base that is a pack expansion:
+                * if the pack expansion is a trailing aggregate element, it is considered to match all remaining elements of the initializer list;
+                * otherwise, the pack is considered to be empty.
+        * If there's no such ei, the aggregate deduction candidate is not added.
+        * Otherwise, determine the parameter list T1, T2, ..., Tn of the aggregate deduction candidate as follows:
+            * If ei is an array and argi is either a braced-init-list or a string literal, Ti is rvalue reference to the type of ei.
+            * Otherwise, Ti is the type of ei.
+            * If a pack was skipped because it is a non-trailing aggregate element, an additional parameter pack of the form Pj ... is inserted in its original aggregate element position. (This will generally cause deduction to fail.)
+            * If a pack is a trailing aggregate element, the trailing sequence of parameters corresponding to it is replaced by a single parameter of the form Tn ....
+    * The aggregate deduction candidate is a fictional function template derived as above from a hypothetical constructor C(T1, T2, ..., Tn).
+    * During template argument deduction for the aggregate deduction candidate, the number of elements in a trailing parameter pack is only deduced from the number of remaining function arguments if it is not otherwise deduced.
+    ```c++
+    template<class T> struct A { T t; struct { long a, b; } u; };
+    A a{1, 2, 3}; // aggregate deduction candidate: template<class T> A<T> F(T, long, long);
+
+    template<class... Args>
+    struct B : std::tuple<Args...>, Args... {};
+    B b{ std::tuple<std::any, std::string>{}, std::any{} };
+    // aggregate deduction candidate:
+    //   template<class... Args> B<Args...> F(std::tuple<Args...>, Args...);
+    // type of b is deduced as B<std::any, std::string>
+    ```
+
 ### User-defined deduction guides
-* The syntax of a user-defined deduction guide is the syntax of a function declaration with a trailing return type, except that it uses the name of a class template as the function name:
+* The syntax of a user-defined deduction guide is the syntax of a `function declaration` with a trailing return type, except that it uses the name of a class template as the function name:
     ```c++
     explicit-specifier(optional) template-name ( parameter-declaration-clause ) -> simple-template-id;
     ```
@@ -2302,7 +2304,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     auto d = container(v.begin(), v.end()); // OK: deduces T=double
     container e{5, 6}; // Error: there is no std::iterator_traits<int>::value_type
     ```
-* The fictional constructors for the purpose of overload resolution (described above) are explicit if they correspond to an implicitly-generated deduction guide formed from an explicit constructor or to a user-defined deduction guide that is declared explicit. As always, such constructors are ignored in copy-initialization context:
+* The fictional constructors for the purpose of overload resolution (described above) are `explicit` if they correspond to an implicitly-generated deduction guide formed from an explicit constructor or to a user-defined deduction guide that is declared explicit. As always, such constructors are ignored in copy-initialization context:
     ```c++
     template<class T> struct A {
         explicit A(const T&, ...) noexcept; // #1
@@ -2325,7 +2327,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     A a7 = {0, i};   // error: #3 deduces to A<int&>
     A a8{0,i};       // error: #3 deduces to A<int&>
     ```
-* Using a member typedef or alias template in a constructor or constructor template's parameter list does not, by itself, render the corresponding parameter of the implicitly generated guide a non-deduced context.
+* Using a member `typedef` or alias template in a constructor or constructor template's parameter list does not, by itself, render the corresponding parameter of the implicitly generated guide a non-deduced context.
     ```c++
     template<class T> struct B {
         template<class U> using TA = T;
@@ -2342,8 +2344,139 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
     ```
 
 ### Deduction for alias templates (C++20)
+[TODO]
 
 ### Notes
+* Class template argument deduction is only performed if `no template argument list` is present. If a template argument list is specified, deduction does not take place.
+    ```c++
+    std::tuple t1(1, 2, 3);              // OK: deduction
+    std::tuple<int,int,int> t2(1, 2, 3); // OK: all arguments are provided
+    std::tuple<> t3(1, 2, 3);            // Error: no matching constructor in tuple<>. No deduction performed.
+    std::tuple<int> t4(1, 2, 3);         // Error
+    ```
+
+* Class template argument deduction of `aggregates` typically requires `user-defined deduction guides`: (C++20)
+    ```c++
+    template<class A, class B> struct Agg { A a; B b; };
+    // implicitly-generated guides are formed from default, copy, and move constructors
+    template<class A, class B> Agg(A a, B b) -> Agg<A, B>;
+    // ^ This deduction guide can be implicitly generated in C++20
+    Agg agg{1, 2.0}; // deduced to Agg<int, double> from the user-defined guide
+
+    template <class... T>
+    array(T&&... t) -> array<std::common_type_t<T...>, sizeof...(T)>;
+    auto a = array{1, 2, 5u}; // deduced to array<unsigned, 3> from the user-defined guide
+    ```
+
+* User-defined deduction guides do not have to be templates:
+    ```c++
+    template<class T> struct S { S(T); };
+    S(char const*) -> S<std::string>;
+    S s{"hello"}; // deduced to S<std::string>
+    ```
+
+* Within the scope of a class template, the name of the template without a parameter list is an `injected class name`, and can be used as a type. In that case, class argument deduction does not happen and template `parameters must be supplied` explicitly:
+    ```c++
+    template<class T>
+    struct X {
+        X(T) { }
+        template<class Iter> X(Iter b, Iter e) { }
+
+        template<class Iter>
+        auto foo(Iter b, Iter e) {
+            return X(b, e); // no deduction: X is the current X<T>
+        }
+
+        template<class Iter>
+        auto bar(Iter b, Iter e) {
+            return X<typename Iter::value_type>(b, e); // must specify what we want
+        }
+
+        auto baz() {
+            return ::X(0); // not the injected-class-name; deduced to be X<int>
+        }
+    };
+    ```
+
+* In overload resolution, `partial ordering` takes `precedence` over whether a function template is generated from a `user-defined deduction guide`: if the function template generated from the constructor is more specialized than the one generated from the user-defined deduction guide, the one generated from the constructor is chosen. Because the `copy deduction candidate` is typically more specialized than a wrapping constructor, this rule means that `copying` is generally `preferred` over `wrapping`.
+    ```c++
+    template<class T> struct A {
+        A(T, int*);     // #1
+        A(A<T>&, int*); // #2
+        enum { value };
+    };
+    template<class T, int N = T::value> A(T&&, int*) -> A<T>; //#3
+
+    A a{1,0}; // uses #1 to deduce A<int> and initializes with #1
+    A b{a,0}; // uses #2 (more specialized than #3) to deduce A<int> and initializes with #2
+    ```
+
+* When earlier tiebreakers, including partial ordering, failed to distinguish between two candidate function templates, the following rules apply:
+    * A function template generated from a `user-defined deduction guide` is `preferred` over one `implicitly generated` from a constructor or constructor template.
+    * The `copy deduction candidate` is `preferred` over all other function templates implicitly generated from a constructor or constructor template.
+    * A function template implicitly generated from a `non-template constructor` is `preferred` over a function template implicitly generated from a constructor template.
+    ```c++
+    template <class T> struct A {
+        using value_type = T;
+        A(value_type);          // #1
+        A(const A&);            // #2
+        A(T, T, int);           // #3
+        template<class U>
+        A(int, T, U);           // #4
+    };                          // A(A); #5, the copy deduction candidate
+
+    A x (1, 2, 3);              // uses #3, generated from a non-template constructor
+
+    template <class T> A(T) -> A<T>;  // #6, less specialized than #5
+
+    A a (42); // uses #6 to deduce A<int> and #1 to initialize
+    A b = a;  // uses #5 to deduce A<int> and #2 to initialize
+
+    template <class T> A(A<T>) -> A<A<T>>;  // #7, as specialized as #5
+
+    A b2 = a;  // uses #7 to deduce A<A<int>> and #1 to initialize
+    ```
+
+* An rvalue reference to a cv-unqualified template parameter is not a `forwarding reference` if that parameter is a `class template parameter`:
+    ```c++
+    template<class T> struct A {
+        template<class U>
+        A(T&&, U&&, int*);      // #1: T&& is not a forwarding reference, T&& can't collapse
+                                //     U&& is a forwarding reference
+        A(T&&, int*);           // #2: T&& is not a forwarding reference
+    };
+
+    template<class T> A(T&&, int*) -> A<T>; // #3: T&& is a forwarding reference, T&& can collapse
+
+    int i, *ip;
+    A a{i, 0, ip};  // error, cannot deduce from #1
+    A a0{0, 0, ip}; // uses #1 to deduce A<int> and #1 to initialize
+    A a2{i, ip};    // uses #3 to deduce A<int&> and #2 to initialize
+    ```
+
+* When initializing from a `single argument` of a type that is a specialization of the class template at issue, `copying deduction` is generally preferred over wrapping by default:
+    ```c++
+    std::tuple t1{1};   //std::tuple<int>
+    std::tuple t2{t1};  //std::tuple<int>, not std::tuple<std::tuple<int>>
+
+    std::vector v1{1, 2};   // std::vector<int>
+    std::vector v2{v1};     // std::vector<int>, not std::vector<std::vector<int>> (P0702R1)
+    std::vector v3{v1, v2}; // std::vector<std::vector<int>>
+    ```
+
+* Outside the special case for copying vs. wrapping, the strong preference for `initializer-list constructors` in `list-initialization` remains intact.
+    ```c++
+    std::vector v1{1, 2}; // std::vector<int>
+
+    std::vector v2(v1.begin(), v1.end());  // std::vector<int>
+    std::vector v3{v1.begin(), v1.end()};  // std::vector<std::vector<int>::iterator>
+    ```
+
+* Before class template argument deduction was introduced, a common approach to avoiding explicitly specifying arguments is to use a `function template`:
+    ```c++
+    std::tuple p1{1, 1.0};             //std::tuple<int, double>, using deduction
+    auto p2 = std::make_tuple(1, 1.0); //std::tuple<int, double>, pre-C++17
+    ```
 
 ## Explicit (full) specialization
 * Syntax
@@ -2368,7 +2501,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
 
 ### Explicit specializations of function templates
 * When specializing a function template, its `template arguments can be omitted` if template argument deduction can provide them from the function arguments
-* A function with the same name and the same argument list as a specialization is not a specialization (see template overloading in [function template](https://en.cppreference.com/w/cpp/language/function_template))
+* A function with the same name and the same argument list as a specialization is not a specialization (see template overloading in function template)
 * An explicit specialization of a function template is `inline` only if it is declared with the inline specifier (or defined as deleted), it doesn't matter if the primary template is inline.
 * `Default function arguments` cannot be specified in explicit specializations of function templates, member function templates, and member functions of class templates when the class is implicitly instantiated.
 * An explicit specialization cannot be a `friend declaration`.
