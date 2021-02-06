@@ -2041,31 +2041,31 @@ int main() {
 
 #### Deduction from a type
 * Given a function parameter **P** that depends on one or more type template parameters **Ti**, template template parameters **TTi**, or non-type template parameters **Ii**, and the corresponding argument **A**, deduction takes place if P has one of the following forms:
-    * T;
-    * cv-list T;
-    * T*;
-    * T&;
-    * T&&;
-    * T[integer-constant];
-    * class-template-name<T>;
-    * type(T);
-    * T();
-    * T(T);
-    * T type::*;
-    * type T::*;
-    * T T::*;
-    * T(type::*)();
-    * type(T::*)();
-    * type(type::*)(T);
-    * type(T::*)(T);
-    * T (type::*)(T);
-    * T (T::*)();
-    * T (T::*)(T);
-    * type[i];
-    * class-template-name<I>;
-    * TT<T>;
-    * TT<I>;
-    * TT<>;
+    - T;
+    - cv-list T;
+    - T*;
+    - T&;
+    - T&&;
+    - T[integer-constant];
+    - class-template-name<T>;
+    - type(T);
+    - T();
+    - T(T);
+    - T type::*;
+    - type T::*;
+    - T T::*;
+    - T(type::*)();
+    - type(T::*)();
+    - type(type::*)(T);
+    - type(T::*)(T);
+    - T (type::*)(T);
+    - T (T::*)();
+    - T (T::*)(T);
+    - type[i];
+    - class-template-name<I>;
+    - TT<T>;
+    - TT<I>;
+    - TT<>;
 
 * If P has one of the forms that include a `template parameter list <T> or <I>`, then each element Pi of that template argument list is matched against the corresponding `template argument` Ai of its A. If the last Pi is a pack expansion, then its pattern is compared against each remaining argument in the template argument list of A. A trailing parameter pack that is not otherwise deduced, is deduced to an empty parameter pack.
 * If P has one of the forms that include a `function parameter list (T)`, then each parameter Pi from that list is compared with the corresponding argument Ai from A's function parameter list. If the last Pi is a pack expansion, then its declarator is compared with each remaining Ai in the parameter type list of A.
