@@ -82,7 +82,7 @@ Summary:
 1. Auto type deduction is template type deduction.
 2. The treatment of `braced initializers` is the only way where auto type deduction and template type deduction differ.
 3. Auto in a function __return type__ or a __labmda parameter__ implies __template type deduction__ not auto type deduction.
-4. Auto ordinarily __ignores the top-level consts__.
+4. Auto ordinarily __ignores the top-level cv-qualifiers__.
 5. When use reference, we are really using the object to which it refers, ignore the reference.
 6. When we ask for a reference to auto-deduced type, top-level consts in the initializer are not ignored.
 
@@ -331,14 +331,14 @@ With c++11 noexcept specification, at runtime the stack is only possible unwound
 
 So optimizers need not keep the runtime statck in an unwindable state if an exception would propagate out of the function, nor must they ensure that object in an noexcept function are destroyed in the inverse order of construction should an exception leave the function.
 
-noexcept is particularly valualbe for the move operations, swap, memory deallocation functions, and destructors.
+noexcept is particularly valuable for the `move operations`, `swap`, memory `deallocation` functions, and `destructors`.
 
-Most functions are exceptio-neutral rather than noexcept.
+Most functions are exception-neutral rather than noexcept.
 
 # Item_15: Use constexpr whenever possible
 constexpr functions:
 1. Can be used in contexts that demand compile-time constants. If any of the arugments's values is not known during compilation, code will rejected.
-2. When called with on or more values that are not known during compilation, it acts like a normal function, computing the result at runtime.
+2. When called with one or more values that are not known during compilation, it acts like a normal function, computing the result at runtime.
 
 constexpr objects are const and are initialized with values known during compilaiton. But consts are not constexpr
 
