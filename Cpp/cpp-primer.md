@@ -1964,10 +1964,12 @@ int main() {
         ```
 
 ### Deduced contexts
+* Template argument deduction attempts to determine template arguments (types for type template parameters **Ti**, templates for template template parameters **TTi**, and values for non-type template parameters **Ii**), which can be substituted into each parameter **P** to produce the type **deduced A**, which is the same as the type of the argument A, after adjustments listed above.
+
 #### A function call is attempted
-* Template argument deduction attempts to determine template arguments (types for type template parameters **Ti**, templates for template template parameters **TTi**, and values for non-type template parameters **Ii**), which can be substituted into each parameter **P** to produce the type **deduced A**, which is the same as the type of the argument A, after adjustments listed below.
-* If removing `references` and `cv-qualifiers` from P gives `std::initializer_list<P'>` and A is a braced-init-list, then deduction is performed for every element of the initializer list, taking P' as the parameter and the list element A' as the argument
-* If removing `references` and `cv-qualifiers` from P gives `P'[N]`, and A is a non-empty braced-init-list, then deduction is performed as above, except if N is a non-type template parameter, it is deduced from the `length` of the initializer list:
+* If removing `references` and `cv-qualifiers` from P gives `std::initializer_list<P'>` and A is a braced-init-list, then deduction is performed for every element of the initializer list, taking P' as the parameter and the list element A' as the argument (C++11)
+
+* If removing `references` and `cv-qualifiers` from P gives `P'[N]`, and A is a non-empty braced-init-list, then deduction is performed as above, except if N is a non-type template parameter, it is deduced from the `length` of the initializer list: (C++11)
     ```c++
     template<class T, int N> void h(T const(&)[N]);
     h({1, 2, 3}); // deduced T = int, deduced N = 3
@@ -1986,7 +1988,8 @@ int main() {
     template<class T, int N> void n(T const(&)[N], T);
     n({{1}, {2}, {3}}, Aggr()); // deduced T = Aggr, deduced N = 3
     ```
-* If a `parameter pack` appears as the last P, then the type P is matched against the type A of each remaining argument of the call. Each match deduces the template arguments for the next position in the pack expansion:
+
+* If a `parameter pack` appears as the last P, then the type P is matched against the type A of each remaining argument of the call. Each match deduces the template arguments for the next position in the pack expansion: (C++11)
     ```c++
     template<class... Types> void f(Types&...);
     void h(int x, float& y) {
@@ -1997,7 +2000,8 @@ int main() {
                     // calls f<int, float, const int>
     }
     ```
-* If P is a `function type`, pointer to function type, or pointer to member function type and if A is a [set of overloaded functions](https://en.cppreference.com/w/cpp/language/overloaded_address) not containing function templates, template argument deduction is attempted with each overload. If only one succeeds, that successful deduction is used. If none or more than one succeeds, the template parameter is non-deduced context (see below):
+
+* If P is a `function type`, pointer to function type, or pointer to member function type and if A is a set of overloaded functions not containing function templates, template argument `deduction` is attempted with `each overload`. If only one succeeds, that successful deduction is used. If none or more than one succeeds, the template parameter is non-deduced context (see below):
     ```c++
     template<class T> int f(T(*p)(T));
     int g(int);
@@ -2008,8 +2012,10 @@ int main() {
             // only one overload works, deduction succeeds
     ```
 
+* After these transformations, the deduction processes as described below (cf. section `Deduction from type`) and attempts to find such template arguments that would make the **deduced A** (that is, P after adjustments listed above and the substitution of the deduced template parameters) `identical` to the **transformed A** (that is, A after the adjustments listed above).
+
 * If the usual deduction from P and A fails, the following alternatives are additionally considered:
-    1. If P is a reference type, the **deduced A** (i.e., the type referred to by the reference) `can be more cv-qualified` than the **transformed A**:
+    1. If P is a reference type, the `deduced A` (i.e., the type referred to by the reference) `can be more cv-qualified` than the `transformed A`:
         ```c++
         template<typename T> void f(const T& t);
         bool a = false;
@@ -2017,7 +2023,8 @@ int main() {
                 // deduced T = bool, deduced A = const bool
                 // deduced A is more cv-qualified than A
         ```
-    2. The transformed A can be another pointer or pointer to member type that `can be converted` to the deduced A via a qualification conversions [or a function pointer conversion (C++17)]:
+
+    2. The `transformed A` can be another pointer or pointer to member type that `can be converted` to the `deduced A` via a [qualification conversions](https://en.cppreference.com/w/cpp/language/implicit_conversion#Qualification_conversions) [or a function pointer conversion (C++17)]:
         ```c++
         template<typename T> void f(const T*);
         int* p;
@@ -2025,7 +2032,8 @@ int main() {
                 // deduced T = int, deduced A = const int*
                 // qualification conversion applies (from int* to const int*)
         ```
-    3. If P is a class and P has the form [simple-template-id](https://en.cppreference.com/w/cpp/language/templates#template-id), then the transformed A `can be a derived class` of the deduced A. Likewise, if P is a pointer to a class of the form simple-template-id, the transformed A can be a pointer to a derived class pointed to by the deduced A:
+
+    3. If P is a class and P has the form [simple-template-id](https://en.cppreference.com/w/cpp/language/templates#template-id), then the `transformed A` `can be a derived class` of the `deduced A`. Likewise, if P is a pointer to a class of the form simple-template-id, the transformed A can be a pointer to a derived class pointed to by the deduced A:
         ```c++
         template<class T> struct B { };
         template<class T> struct D : public B<T> { };
@@ -2041,31 +2049,33 @@ int main() {
 
 #### Deduction from a type
 * Given a function parameter **P** that depends on one or more type template parameters **Ti**, template template parameters **TTi**, or non-type template parameters **Ii**, and the corresponding argument **A**, deduction takes place if P has one of the following forms:
-    - T;
-    - cv-list T;
-    - T*;
-    - T&;
-    - T&&;
-    - T[integer-constant];
-    - class-template-name<T>;
-    - type(T);
-    - T();
-    - T(T);
-    - T type::*;
-    - type T::*;
-    - T T::*;
-    - T(type::*)();
-    - type(T::*)();
-    - type(type::*)(T);
-    - type(T::*)(T);
-    - T (type::*)(T);
-    - T (T::*)();
-    - T (T::*)(T);
-    - type[i];
-    - class-template-name<I>;
-    - TT<T>;
-    - TT<I>;
-    - TT<>;
+    ```c++
+    T
+    cv>list T
+    T*
+    T&
+    T&&
+    T[integer>constant]
+    class>template>name<T>
+    type(T)
+    T()
+    T(T)
+    T type::*
+    type T::*
+    T T::*
+    T(type::*)()
+    type(T::*)()
+    type(type::*)(T)
+    type(T::*)(T)
+    T (type::*)(T)
+    T (T::*)()
+    T (T::*)(T)
+    type[i]
+    class>template>name<I>
+    TT<T>
+    TT<I>
+    TT<>
+    ```
 
 * If P has one of the forms that include a `template parameter list <T> or <I>`, then each element Pi of that template argument list is matched against the corresponding `template argument` Ai of its A. If the last Pi is a pack expansion, then its pattern is compared against each remaining argument in the template argument list of A. A trailing parameter pack that is not otherwise deduced, is deduced to an empty parameter pack.
 * If P has one of the forms that include a `function parameter list (T)`, then each parameter Pi from that list is compared with the corresponding argument Ai from A's function parameter list. If the last Pi is a pack expansion, then its declarator is compared with each remaining Ai in the parameter type list of A.
@@ -2143,7 +2153,7 @@ int main() {
 #### auto type deduction
 * The parameter P is obtained as follows:
     * in T, the declared type of the variable that includes auto, every occurrence of auto is replaced with an imaginary type template parameter U or,
-    * if the initialization is copy-list-initialization, with std::initializer_list<U>. The argument A is the initializer expression.
+    * if the initialization is copy-list-initialization, with `std::initializer_list<U>`. The argument A is the initializer expression.
     * After deduction of U from P and A following the rules described above, the deduced U is substituted into P to get the actual variable type:
     ```c++
     const auto& x = 1 + 2;  // P = const U&, A = 1 + 2:
