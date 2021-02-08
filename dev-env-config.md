@@ -18,6 +18,11 @@
         proxy = socks5://127.0.0.1:7890
     ```
 
+    ```c
+    # ~/.curlrc
+    proxy = socks5://127.0.0.1:7890
+    ```
+
 * Python
     ```s
     # Do I have a Python 2 problem?
