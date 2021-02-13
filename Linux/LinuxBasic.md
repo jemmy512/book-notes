@@ -465,3 +465,12 @@ sending window | tcp_window_scaling
 sending/receive buffer | tcp_{w, r}mem
 dynamic tunning sending/receve buffer | tcp_moderate_{rcv, w}buf, SO_{SND, WRT}BUF will close dynamic tunning
 Tcp memory | tcp_mem(unit: page)
+
+#### SYN Flood
+1. tcp_syncookies
+2. tcp_synack_retries + tcp_max_syn_backlog + tcp_abort_on_overflow
+
+### TIME_WAIT
+1. tcp_tw_reuse + tcp_timestamps
+2. tcp_tw_recycle
+3. tcp_max_tw_buckets
