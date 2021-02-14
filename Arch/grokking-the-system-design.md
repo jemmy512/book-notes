@@ -691,6 +691,23 @@ Solving this problem is known as cache invalidation; there are three main scheme
 * **Write-back cache**: Under this scheme, data is written to cache alone and completion is immediately confirmed to the client. The write to the permanent storage is done after specified intervals or under certain conditions.
     * **Pros**: This results in low latency and high throughput for write-intensive applications
     * **Cons**: this speed comes with the risk of data loss in case of a crash or other adverse event because the only copy of the written data is in the cache.
+    * ![](../Images/SystemDesign/cache-write-back.png)
+
+Some other patterns:
+* **Cache Aside**
+    * Invalidate: get data from cache, if not, get data from DB, upate cache
+    * Hit:  get data from cache, return
+    * Update: write data to DB, invalidate cache
+    * Pros: applications need to matains two data structures: one for cache, the other for repository.
+    * Refer:
+        * https://www.usenix.org/system/files/conference/nsdi13/nsdi13-final170_update.pdf
+        * https://www.quora.com/Why-does-Facebook-use-delete-to-remove-the-key-value-pair-in-Memcached-instead-of-updating-the-Memcached-during-write-request-to-the-backend
+* **Read/write through**
+    * resolves the problems of Cache aside by putting the functionality of repository into the cache layer.
+    * Read through: when cache invalided, cache layer update the cache
+    * Write through: write data to cache, cache layer updates the data into repository
+    * ![](../Images/SystemDesign/cache-read-write-through.png)
+* **Write behind**
 
 ### Cache eviction policies
 1. **First In First Out (FIFO)**: The cache evicts the first block accessed first without any regard to how often or how many times it was accessed before.
