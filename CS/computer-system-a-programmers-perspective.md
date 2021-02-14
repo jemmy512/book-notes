@@ -1434,15 +1434,16 @@ Value | Name | Meaning
             0x030: Stack:                   # Stack: Stack pointer
             ```
         * ![](../Images/CSAPP/4.5.11-prog-7.png)
+
             * The pipeline should stall while the ret passes through the decode, execute, and memory stages, injecting three bubbles in the process. The PC selection logic will choose the return address as the instruction fetch address once the ret reaches the write-back stage (cycle 7).
         * ![](../Images/CSAPP/4.5.11-prog-7-2.png)
             * The fetch stage repeatedly fetches the rrmovl instruction following the ret instruction, but then the pipeline control logic injects a bubble into the decode stage rather than allowing the rrmovl instruction to proceed. The resulting behavior is equivalent to that shown in Figure 4.60.
             * The key observation here is that there is no way to inject a bubble into the fetch stage of our pipeline. On every cycle, the fetch stage reads some instruction from the instruction memory.
-        * Looking at the HCL code for implementing the PC prediction logic in Section 4.5.10, we can see that for the ret instruction the new value of the PC is predicted to be valP, the address of the following instruction. In our example program, this would be 0x021, the address of the rrmovl instruction following the ret. This prediction is not correct for this example, nor would it be for most cases.
+* Looking at the HCL code for implementing the PC prediction logic in Section 4.5.10, we can see that for the ret instruction the new value of the PC is predicted to be valP, the address of the following instruction. In our example program, this would be 0x021, the address of the rrmovl instruction following the ret. This prediction is not correct for this example, nor would it be for most cases.
 
     * Load/use hazard
         * For a load/use hazard, we have already described the desired pipeline operation in Section 4.5.8.
-        * The pipeline can `hold back` an instruction in the decode stage by keeping pipeline register D in a fixed state. In doing so, it should also keep pipeline register F in a fixed state, so that the next instruction will be fetched a second time.
+    * The pipeline can `hold back` an instruction in the decode stage by keeping pipeline register D in a fixed state. In doing so, it should also keep pipeline register F in a fixed state, so that the next instruction will be fetched a second time.
 
     * Mispredicted branches
         * Code
@@ -1457,10 +1458,10 @@ Value | Name | Meaning
             0x01a:    halt
             ```
         *  As before, the instructions are listed in the order they enter the pipeline, rather than the order they occur in the program.
-        * ![](../Images/CSAPP/4.5.11-prog-8.png)
+    * ![](../Images/CSAPP/4.5.11-prog-8.png)
 
         * The pipeline predicts branches will be taken and so starts fetching instructions at the jump target. Two instructions are fetched before the misprediction is detected in cycle 4 when the jump instruction flows through the execute stage. In cycle 5, the pipeline cancels the two target instructions by injecting bubbles into the decode and execute stages, and it also fetches the instruction following the jump.
-        * We can simply cancel (sometimes called instruction squashing) the two misfetched instructions by `injecting bubbles` into the decode and execute instructions on the following cycle while also fetching the instruction following the jump instruction. The two misfetched instructions will then simply disappear from the pipeline.
+    * We can simply cancel (sometimes called instruction squashing) the two misfetched instructions by `injecting bubbles` into the decode and execute instructions on the following cycle while also fetching the instruction following the jump instruction. The two misfetched instructions will then simply disappear from the pipeline.
 
     * Exception
         * ![](../Images/CSAPP/4.5.11-prog-10.png)
@@ -1471,7 +1472,7 @@ Value | Name | Meaning
         * When an exception occurs, we record that information as part of the instruction’s status and continue fetching, decoding, and executing instructions as if nothing were amiss. As the excepting instruction reaches the memory stage, we take steps to prevent later instructions from modifying programmer-visible state by
             * disabling the setting of condition codes by instructions in the execute stage
         * injecting bubbles into the memory stage to disable any writing to the data memory
-            * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
+        * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
 
 * Detecting Special Control Conditions
     *   Condition | Trigger
@@ -2198,6 +2199,31 @@ Value | Name | Meaning
 
 ## 6.7 Summary
 * **Static RAM (SRAM)** is faster and more expensive, and is used for cache memories both on and off the CPU chip. **Dynamic RAM (DRAM)** is slower and less expensive, and is used for the main memory and graphics frame buffers. **Read-only memories (ROMs)** retain their information even if the supply voltage is turned off, and they are used to store firmware.
+
+## Appendix: Cache Consistent
+* Two requirements for cache consistent:
+    1. Write Propage: if one cpu updates it's cache, it muest propagets this update to other cores
+    2. Transaction Serialization: if two cpu update the same cache, other cpus see the same update sequence
+* Two protocols:
+    * **Write Invalidate**: one cpu core updates it's cache, and sync a "invalidate" info to other cores to invalidate their cache
+    * **Write Broadcast**: the writing cpu update it's cache and sync the new data to other cpu cores to let them updat their cache.
+
+### MESI
+* **M** (Modified): The cache line is present only in the current cache, and is dirty - it has been modified (M state) from the value in main memory. The cache is required to write the data back to main memory at some time in the future, before permitting any other read of the (no longer valid) main memory state. The write-back changes the line to the Shared state(S).
+* **E** (Exclusive): The cache line is present only in the current cache, but is clean - it matches main memory. It may be changed to the Shared state at any time, in response to a read request. Alternatively, it may be changed to the Modified state when writing to it.
+* **S** (Shared): Indicates that this cache line may be stored in other caches of the machine and is clean - it matches the main memory. The line may be discarded (changed to the Invalid state) at any time.
+* **I** (Invalidated): Indicates that this cache line is invalid (unused).
+* **Read/request For Ownership**:  The operation is issued by a processor trying to write into a cache line that is in the shared (S) or invalid (I) states of the MESI protocol. The operation causes all other caches to set the state of such a line to I. A read for ownership transaction is a read operation with intent to write to that memory address. Therefore, this operation is exclusive. It brings data to the cache and invalidates all other processor caches which hold this memory line. This is termed "BusRdX" in tables above.
+* ![](../Images/SystemDesign/cache-mesi.png)
+    * Processor Requests to Cache includes the following operations:
+        * PrRd: The processor requests to read a Cache block.
+        * PrWr: The processor requests to write a Cache block
+    * Bus side requests are the following:
+        * BusRd: Snooped request that indicates there is a read request to a Cache block requested by another processor
+        * BusRdX: Snooped request that indicates there is a write request to a Cache block requested by another processor which doesn't already have the block.
+        * BusUpgr: Snooped request that indicates that there is a write request to a Cache block requested by another processor but that processor already has that Cache block residing in its own Cache.
+        * Flush: Snooped request that indicates that an entire cache block is written back to the main memory by another processor.
+        * FlushOpt: Snooped request that indicates that an entire cache block is posted on the bus in order to supply it to another processor(Cache to Cache transfers).
 
 # 7 Linking
 * **Linking** is the process of collecting and combining various pieces of code and data into a single file that can be loaded (copied) into memory and executed.
