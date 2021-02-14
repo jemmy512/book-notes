@@ -252,7 +252,6 @@ export LD_LIBRARY_PATH=.
 3. elf: shared object
 ![linux-proc-elf-sharedobj.png](../Images/LinuxKernel/kernel-proc-elf-sharedobj.png)
 
-### Q: How does PLT[x], GOT[y] work together to dynamic link?
 ```C++
 struct linux_binfmt {
   struct list_head lh;
