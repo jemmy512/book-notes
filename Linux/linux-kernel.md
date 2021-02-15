@@ -12840,10 +12840,12 @@ struct wait_queue_entry {
 
 ##### ep_modify
 ```C++
+
 ```
 
 ##### ep_delete
 ```C++
+
 ```
 
 #### epoll_wait
@@ -15947,6 +15949,7 @@ static void __remove_hrtimer(struct hrtimer *timer,
 ```
 
 ### posix_timer_fn
+
 ```C++
 static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
 {
@@ -16385,6 +16388,7 @@ static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
 # Pthread
 ### pthread_mutex
 #### lock
+
 ```C++
 SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
     struct timespec __user *, utime, u32 __user *, uaddr2,
