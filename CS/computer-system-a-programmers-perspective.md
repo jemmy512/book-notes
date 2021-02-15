@@ -2529,6 +2529,7 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 
 ### 8.1.2 Classes of Exceptions
 1. Interrupt
+    * Interrupts are essentially a form of hardware polling. The interrupt mechanism removes the burden of polling devices from software, but adding hardware to the CPU to check I/O device flags during every instruction cycle. Generally, the only role played by the interrupt hardware is detecting when I/O devices are ready. Once an event is detected, it is up to software to actually perform the I/O transaction. [Reference](http://www.cs.uwm.edu/classes/cs315/Bacon/Lecture/HTML/ch15s04.html)
 2. Trapping System Call
 3. Fatal
     * If the handler is able to correct the error condition, it returns control to the faulting instruction, thereby reexecuting it. Otherwise, the handler returns to an abort routine in the kernel that terminates the application program that caused the fault.
@@ -2731,6 +2732,7 @@ virtual memory provides three important capabilities:
 * ![](../Images/CSAPP/9.7-intel-core-i7-memory-system.png)
     * The TLBs are `virtually addressed`, and four-way set associative.
     * The L1, L2, and L3 caches are `physically addressed`, and eight-way set associative, with a block size of 64 bytes.
+    * Reference: [Intel QuickPath Interconnect](https://en.wikipedia.org/wiki/Intel_QuickPath_Interconnect)
 
 ### 9.7.1 Core i7 Address Translation
 * Summary of Core i7 address translation ![](../Images/CSAPP/9.7.1-core-i7-address-translation.png)
@@ -2998,6 +3000,49 @@ ssize_t rio_writen(int fd, void* userbuf, size_t n) {
 ## 10.8 Standard I/O
 ## 10.9 Putting It Together: Which I/O Functions Should I Use?
 
+# 10+ Input/Output
+* :link:[University of Wisconsin-Milwaukee: Computer Science 315 Lecture Notes](http://www.cs.uwm.edu/classes/cs315/Bacon/Lecture/HTML/index.html)
+
+## I/O Devices
+I/O devices include human interface devices (HIDs), network interfaces, and storage devices such as disks.
+
+## Memory-Mapped I/O
+### Introduction
+* From the CPU's perspective, an I/O device appears as a set of special-purpose registers, of three general types:
+    * **Status registers** provide status information to the CPU about the I/O device. These registers are often read-only, i.e. the CPU can only read their bits, and cannot change them.
+    * **Control registers** are used by the CPU to configure and control the device. Bits in these configuration registers may be write-only, so the CPU can alter them, but not read them back. Most bits in control registers can be both read and written.
+    * **Data registers** are used to read data from or send data to the I/O device.
+* The logic circuit that contains these registers is called the **device controller**, and the software that communicates with the controller is called a **device driver**.
+    ```
+				            +-------------------+           +-----------+
+				            | Device controller |           |           |
+	    +-------+           |                   |           |           |
+	    |       |---------->| Control register  |<--------->|  Device   |
+	    |  CPU  |<----------| Status register   |           |           |
+	    |       |<--------->| Data register     |           |           |
+	    +-------+           |                   |           |           |
+				            +-------------------+           +-----------+
+    ```
+
+* Each of the I/O registers, like memory, must have an address so that the CPU can read or write specific registers.
+* Other architectures, like the MIPS, use **memory-mapped I/O**. When using memory-mapped I/O, the same address space is shared by memory and I/O devices. Some addresses represent memory cells, while others represent registers in I/O devices. No separate I/O instructions are needed in a CPU that uses memory-mapped I/O. Instead, we can perform I/O operations using any instruction that can reference memory.
+    ```
+			            +---------------+
+                        | Address space |
+                        |   +-------+   |
+                        |   |  ROM  |   |
+			            |   +-------+   |
+	    +-------+address|   |       |   |
+	    |       |------>|   |  RAM  |   |
+	    |  CPU  |       |   |       |   |
+	    |       |<----->|   +-------+   |
+	    +-------+ data  |   |       |   |
+                        |   |  I/O  |   |
+                        |   +-------+   |
+                        +---------------+
+    ```
+
+
 # 11 Network Programming
 ## 11.1 The Client-Server Programming Model
 ## 11.2 Networks
@@ -3089,3 +3134,10 @@ Questions:
 1. Hoe does Optimizing address translation work? Page-1119
 2.
 ```
+
+# Appendix: Bus
+* [Bus](https://en.wikipedia.org/wiki/Bus_(computing))
+* [System Bus](https://en.wikipedia.org/wiki/System_bus)
+* [Local Bus](https://en.wikipedia.org/wiki/Local_bus)
+* [Expansin Bus/card](https://en.wikipedia.org/wiki/Expansion_card)
+* ![](../Images/CSAPP/bus-1.png) ![](../Images/CSAPP/bus-2.png)
