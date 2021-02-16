@@ -2,12 +2,54 @@
 ### cpu
 ![linux-init-cpu.png](../Images/LinuxKernel/kernel-init-cpu.png)
 
+![](../Images/LinuxKernel/kernel-init-cpu-2.png)
+
 ![linux-init-cpu-process-program.png](../Images/LinuxKernel/kernel-init-cpu-process-program.png)
 
 ### bios
+* ![](../Images/LinuxKernel/kernel-init-bios.png)
+* When power on, set CS to 0xFFFF, IP to 0x0000, the first instruction points to 0xFFFF0 within ROM, a JMP comamand will jump to ROM do init work, BIOS starts.
+* Then BIOS checks the health state of each hardware.
+* Grub2 (Grand Unified Bootloader Version 2)
+  * grub2-mkconfig -o /boot/grub2/grub.cfg
+    ```
+    menuentry 'CentOS Linux (3.10.0-862.el7.x86_64) 7 (Core)' --class centos --class gnu-linux --class gnu --class os --unrestricted $menuentry_id_option 'gnulinux-3.10.0-862.el7.x86_64-advanced-b1aceb95-6b9e-464a-a589-bed66220ebee' {
+      load_video
+      set gfxpayload=keep
+      insmod gzio
+      insmod part_msdos
+      insmod ext2 set root='hd0,msdos1'
+      if [ x$feature_platform_search_hint = xy ]; then
+        search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
+      else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
+      fi
+
+      linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
+      initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
+    }
+    ```
+  * grub2-install /dev/sda
+    * install boot.img into MBR（Master Boot Record), and load boot.img into memory at 0x7c00 to run
+    * core.img: diskboot.img, lzma_decompress.img, kernel.img
+
+* ```
+  boot.img
+    core.img
+      diskboot.img // load other modules of grub into memory
+        real_to_prot// enable segement, page, open Gate A20
+        lzma_decompress.img
+        kernel.img // grub's kernel img not Linux kernel
+          grub_main // grub's main func
+            grub_load_config()
+            grub_command_execute ("normal", 0, 0)
+              grub_normal_execute()
+                grub_show_menu() // show which OS want to run
+                  grub_menu_execute_entry()
+  ```
 
 ### init kernel
 ```C++
+// init/main.c
 void start_kernel(void)
 {
   /* struct task_struct init_task = INIT_TASK(init_task)
@@ -31,7 +73,7 @@ void start_kernel(void)
   rest_init()
 }
 
-static noinline void __ref rest_init(void)
+static void rest_init(void)
 {
   struct task_struct *tsk;
   int pid;
@@ -54,7 +96,7 @@ pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 }
 
 /* return from kernel to user space */
-static int __ref kernel_init(void *unused)
+static int kernel_init(void *unused)
 {
   if (ramdisk_execute_command) {
     ret = run_init_process(ramdisk_execute_command);
@@ -881,7 +923,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-###### 2. Waked up
+###### 2. ttwu
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
 * -> check_preempt_curr -> resched_curr */
@@ -1485,16 +1527,21 @@ static int load_elf_binary(struct linux_binprm *bprm)
 
   elf_phdata = load_elf_phdrs(&loc->elf_ex, bprm->file);
 
+  /* set mmap_base */
   setup_new_exec(bprm);
 
+  /*set stack vm_area_struct */
   retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
          executable_stack);
 
+  /* mmap part code into memory */
   error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
         elf_prot, elf_flags, total_size);
 
+  /* set heap vm_area_struct */
   retval = set_brk(elf_bss, elf_brk, bss_prot);
 
+  /* load shared objects into memory */
   elf_entry = load_elf_interp(&loc->interp_elf_ex,
               interpreter,
               &interp_map_addr,
@@ -2024,6 +2071,7 @@ struct free_area  free_area[MAX_ORDER];
 ```
 ![linux-mem-buddy-freepages.png](../Images/LinuxKernel/kernel-mem-buddy-freepages.png)
 
+### alloc_pages
 ```C++
 static inline struct page* alloc_pages(gfp_t gfp_mask, unsigned int order)
 {
@@ -2301,8 +2349,10 @@ static inline void free_task_struct(struct task_struct *tsk)
 
 // all caches will listed into LIST_HEAD(slab_caches)
 struct kmem_cache {
+  /* each NUMA node has one kmem_cache_cpu kmem_cache_node */
   struct kmem_cache_cpu  *cpu_slab;
   struct kmem_cache_node *node[MAX_NUMNODES];
+
   /* Used for retriving partial slabs etc */
   unsigned long flags;
   unsigned long min_partial;
@@ -3018,7 +3068,7 @@ void do_page_fault(
   __do_page_fault(regs, error_code, address);
 }
 
-static noinline void __do_page_fault(
+static void __do_page_fault(
   struct pt_regs *regs, unsigned long error_code,
   unsigned long address)
 {
@@ -3521,7 +3571,7 @@ static  void *lowmem_page_address(const struct page *page)
 
 ### vmalloc_fault
 ```C++
-static noinline int vmalloc_fault(unsigned long address)
+static int vmalloc_fault(unsigned long address)
 {
   unsigned long pgd_paddr;
   pmd_t *pmd_k;
