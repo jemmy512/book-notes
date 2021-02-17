@@ -7,11 +7,11 @@
 
 # Computer Science
 * [Clean Code](./CS/clean-code.md)
-* [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md) [PDF](./CS/computer-system-a-programmers-perspective.pdf)
+* [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)  :orange_book:[PDF](./CS/computer-system-a-programmers-perspective.pdf)
 * [Computer Organization and Design: The Hardware/Sofeware Interface](./CS/computer-organization-and-design.md)
 * [Modern Operating System](./CS/modern-operating-system.md)
 * [Refactor v2](./CS/refactoring-2.md)
-* [TCP/IP Illustrated, Volume 1](./CS/tcp-ip-illustrated-volume-1.md) [PDF](./CS/tcp-ip-illustrated-volume-1.pdf)
+* [TCP/IP Illustrated, Volume 1](./CS/tcp-ip-illustrated-volume-1.md)  :orange_book:[PDF](./CS/tcp-ip-illustrated-volume-1.pdf)
 
 
 # C++
@@ -28,7 +28,7 @@
 * [STL](./Cpp/stl.txt)
 
 # Linux
-* [Linux Kernel 4.19](./Linux/linux-kernel.md) [PDF](./Linux/linux-kernel.pdf)
+* [Linux Kernel 4.19](./Linux/linux-kernel.md)  :orange_book:[PDF](./Linux/linux-kernel.pdf)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
 * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
