@@ -539,7 +539,7 @@ asmlinkage __visible void __sched schedule(void)
 /* __schedule() is the main scheduler function.
  *
  * The main means of driving the scheduler and thus entering this function are:
- *   1. Explicit blocking: mutex, semaphore, waitqueue, etc.
+ *   1. Explicit blocking: mutex, semaphore, waitqueue, sleep(sk_wait_data), etc.
  *   2. TIF_NEED_RESCHED flag is checked on interrupt and userspace return paths.
  *   3. Wakeups don't really cause entry into schedule(). They add a
  *      task to the run-queue and that's it.
@@ -1118,105 +1118,6 @@ retint_kernel:
         jmp     0b
 ```
 
-###### 3. Sleep
-```C++
-/* E.g. */
-int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
-{
-  DEFINE_WAIT_FUNC(wait, woken_wake_function);
-  int rc;
-
-  add_wait_queue(sk_sleep(sk), &wait);
-  sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
-  rc = sk_wait_event(sk, timeo, skb_peek_tail(&sk->sk_receive_queue) != skb, &wait);
-  sk_clear_bit(SOCKWQ_ASYNC_WAITDATA, sk);å
-  remove_wait_queue(sk_sleep(sk), &wait);
-  return rc;
-}
-
-#define sk_wait_event(__sk, __timeo, __condition, __wait)    \
-  ({  int __rc;            \
-    release_sock(__sk);          \
-    __rc = __condition;          \
-    if (!__rc) {            \
-      *(__timeo) = wait_woken(__wait, TASK_INTERRUPTIBLE, *(__timeo));\
-    }              \
-    sched_annotate_sleep();          \
-    lock_sock(__sk);          \
-    __rc = __condition;          \
-    __rc;              \
-  })
-
-long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
-{
-  set_current_state(mode); /* A */
-  if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
-    timeout = schedule_timeout(timeout);
-  __set_current_state(TASK_RUNNING);
-  smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
-
-  return timeout;
-}
-
-signed long schedule_timeout(signed long timeout)
-{
-  struct process_timer timer;
-  unsigned long expire;
-
-  switch (timeout)
-  {
-  case MAX_SCHEDULE_TIMEOUT:
-    schedule();
-    goto out;
-  default:
-    if (timeout < 0) {
-      dump_stack();
-      current->state = TASK_RUNNING;
-      goto out;
-    }
-  }
-
-  expire = timeout + jiffies;
-
-  timer.task = current;
-  timer_setup_on_stack(&timer.timer, process_timeout, 0);
-  __mod_timer(&timer.timer, expire, 0);
-  schedule();
-  del_singleshot_timer_sync(&timer.timer);
-
-  /* Remove the timer from the object tracker */
-  destroy_timer_on_stack(&timer.timer);
-
-  timeout = expire - jiffies;
-
- out:
-  return timeout < 0 ? 0 : timeout;
-}
-
-static void process_timeout(struct timer_list *t)
-{
-  struct process_timer *timeout = from_timer(timeout, t, timer);
-
-  wake_up_process(timeout->task);
-}
-
-int woken_wake_function(
-  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
-{
-  /* Pairs with the smp_store_mb() in wait_woken(). */
-  smp_mb(); /* C */
-  wq_entry->flags |= WQ_FLAG_WOKEN;
-
-  return default_wake_function(wq_entry, mode, sync, key);
-}
-
-int default_wake_function(
-  wait_queue_entry_t *curr, unsigned mode, int wake_flags, void *key)
-{
-  return try_to_wake_up(curr->private, mode, wake_flags);
-}
-```
-
 ##### real kernel preempt time
 ###### 1. preempty_enble
 ```C++
@@ -1261,6 +1162,10 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 }
 ```
 ![linux-proc-sched.png](../Images/LinuxKernel/kernel-proc-sched.png)
+
+#### Q
+1. A process waits on a block operation (mutex, semphore, waitqueue), it calls schedule(). Will it be removed from rq, and add to rq when block operation wakeups?
+2. What's difference between contex_switch and sleep_wakeup?
 
 ### fork
 ```C++
@@ -2459,7 +2364,7 @@ new_slab:
 
   // 3. need alloc new slak objects
   freelist = new_slab_objects(s, gfpflags, node, &c);
-  return freeli
+  return freelist;
 }
 
 static inline void *new_slab_objects(
@@ -2929,7 +2834,6 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
   vma->vm_ops = &ext4_file_vm_ops;
 }
 
-/* 2. connection from `vam -> file` */
 struct address_space {
   struct inode    *host;
   /* tree of private and shared mappings. e.g., vm_area_struct */
@@ -2958,6 +2862,7 @@ static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
   validate_mm(mm);
 }
 
+/* 2. connection from `vam -> file` */
 static void __vma_link_file(struct vm_area_struct *vma)
 {
   struct file *file;
@@ -3019,21 +2924,24 @@ mmap();
 
 ### page fault
 ```C++
+struct file {
+  struct address_space* f_mapping;
+};
+
 // page cache in memory
 struct address_space {
   struct inode            *host;
-  struct radix_tree_root  i_pages; /* cached pages */
+  struct radix_tree_root  i_pages; /* cached physical pages */
+  struct rb_root_cached   i_mmap; /* tree of private and shared vma mappings */
+  const struct address_space_operations *a_ops;  /* methods */
   atomic_t                i_mmap_writable;/* count VM_SHARED mappings */
-  struct rb_root_cached   i_mmap; /* tree of private and shared mappings */
-  struct rw_semaphore     i_mmap_rwsem;
+  void                    *private_data;
 
   unsigned long      nrpages;
   unsigned long      nrexceptional;
   pgoff_t             writeback_index;/* writeback starts here */
-  const struct address_space_operations *a_ops;  /* methods */
-
+  struct rw_semaphore     i_mmap_rwsem;
   struct list_head  private_list;  /* for use by the address_space */
-  void              *private_data;
 };
 
 static void __init kvm_apf_trap_init(void)
@@ -3200,7 +3108,7 @@ int filemap_fault(struct vm_fault *vmf)
   struct page *page;
   int ret = 0;
 
-  page = find_get_page(mapping, offset);
+  page = find_get_page(mapping, offset); // find the physical cache page
   if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
     do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
   } else if (!page) {
@@ -3222,7 +3130,7 @@ static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
   struct address_space *mapping = file->f_mapping;
   struct page *page;
 
-  page = __page_cache_alloc(gfp_mask|__GFP_COLD);
+  page = __page_cache_alloc(gfp_mask|__GFP_COLD); // invoke buddy system to alloc physical page
   ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
   ret = mapping->a_ops->readpage(file, page);
 }
@@ -3522,11 +3430,11 @@ void *kmap_atomic(struct page *page)
 
 void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 {
-  // on 64 bit machine doesn't have high memory
+  // 64 bit machine doesn't have high memory
   if (!PageHighMem(page))
     return page_address(page);
 
-  // on 32 bit machine
+  // 32 bit machine
   vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
   set_pte(kmap_pte-idx, mk_pte(page, prot));
 
@@ -3667,6 +3575,8 @@ struct ext4_inode {
 
 };
 ```
+![](../Images/LinuxKernel/kernel-file-inode-blocks.png)
+
 ### extent
 ```c++
 // Each block (leaves and indexes), even inode-stored has header.
@@ -3695,6 +3605,8 @@ struct ext4_extent {
   __le32  ee_start_lo;  /* low 32 bits of physical block */
 };
 ```
+* the `ee_len` is 16 bits, one bit indicates validation, so one ext4_extent can represent 2^15 blocks data, each block is 4k, the total data is 2^15 * 2^12 = 2^27 bits = 128MB.
+
 ![linux-mem-extents.png](../Images/LinuxKernel/kernel-mem-extents.png)
 
 ![linux-ext4-extents.png](../Images/LinuxKernel/kernel-ext4-extents.png)
@@ -3719,8 +3631,8 @@ const struct inode_operations ext4_dir_inode_operations = {
   .fiemap      = ext4_fiemap,
 };
 
-/* ext4_create -> ext4_new_inode_start_handle
- * -> __ext4_new_inode */
+/* open -> do_sys_open -> do_filp_open -> path_openat -> do_last -> lookup_open
+ * ext4_create -> ext4_new_inode_start_handle -> __ext4_new_inode */
 struct inode *__ext4_new_inode(
   handle_t *handle, struct inode *dir,
   umode_t mode, const struct qstr *qstr,
@@ -3735,7 +3647,11 @@ ino = ext4_find_next_zero_bit((unsigned long *)
 }
 ```
 
-### Meta Block Group
+### Block Group
+* One block group contains:
+  * one block representing block bit info + several block representing data blocks
+  * one block representing inode bit info + several block representing inode blocks
+
 ```C++
 struct ext4_group_desc
 {
@@ -4481,8 +4397,36 @@ static inline bool mod_delayed_work(
   struct delayed_work *dwork,
   unsigned long delay)
 {
-
+  __queue_delayed_work(cpu, wq, dwork, delay);
 }
+
+
+static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
+  struct delayed_work *dwork, unsigned long delay)
+{
+  struct timer_list *timer = &dwork->timer;
+  struct work_struct *work = &dwork->work;
+
+  WARN_ON_ONCE(!wq);
+  WARN_ON_ONCE(timer->function != delayed_work_timer_fn);
+  WARN_ON_ONCE(timer_pending(timer));
+  WARN_ON_ONCE(!list_empty(&work->entry));
+
+  if (!delay) {
+    __queue_work(cpu, wq, &dwork->work);
+    return;
+  }
+
+  dwork->wq = wq;
+  dwork->cpu = cpu;
+  timer->expires = jiffies + delay;
+
+  if (unlikely(cpu != WORK_CPU_UNBOUND))
+    add_timer_on(timer, cpu);
+  else
+    add_timer(timer);
+}
+
 ```
 ![linux-file-bdi.png](../Images/LinuxKernel/kernel-file-bdi.png)
 
@@ -4491,6 +4435,19 @@ static inline bool mod_delayed_work(
 /* global variable, all backing task stored here */
 /* bdi_wq serves all asynchronous writeback tasks */
 struct workqueue_struct *bdi_wq;
+
+struct workqueue_struct {
+  struct list_head pwqs;  /* WR: all pwqs of this wq */
+  struct list_head list;  /* PR: list of all workqueues */
+
+  struct list_head      maydays; /* MD: pwqs requesting rescue */
+  struct worker         *rescuer; /* I: rescue worker */
+
+  struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
+
+  struct pool_workqueue __percpu  *cpu_pwqs; /* I: per-cpu pwqs */
+  struct pool_workqueue __rcu     *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
+};
 
 struct backing_dev_info noop_backing_dev_info = {
   .name           = "noop",
@@ -9298,8 +9255,13 @@ struct socket {
 struct sock {
   struct sock_common  __sk_common;
   struct sk_buff       *sk_rx_skb_cache;
-  struct sk_buff_head  sk_receive_queue;
-  struct sk_buff_head  sk_write_queue;
+
+  struct sk_buff_head  sk_receive_queue;  /* incoming packets */
+  struct sk_buff_head  sk_write_queue;    /* Packet sending queue */
+  union {
+    struct sk_buff	  *sk_send_head;
+    struct rb_root	  tcp_rtx_queue; /* outgoing packets, ordered by seq */
+  };
 
   struct {
     atomic_t        rmem_alloc;
@@ -9309,7 +9271,7 @@ struct sock {
   } sk_backlog;
 
   union {
-    struct socket_wq  *sk_wq; /* private: */
+    struct socket_wq  *sk_wq;     /* private: */
     struct socket_wq  *sk_wq_raw; /* public: */
   };
 
@@ -9339,16 +9301,23 @@ struct tcp_sock {
 
 /* INET connection oriented sock */
 struct inet_connection_sock {
-  struct inet_sock  icsk_inet;
+  struct inet_sock            icsk_inet;
+  struct inet_bind_bucket	    *icsk_bind_hash;   /* Bind node */
+  struct request_sock_queue   icsk_accept_queue; /* FIFO of established children */
+  struct tcp_congestion_ops           *icsk_ca_ops;
+  struct inet_connection_sock_af_ops  *icsk_af_ops; /* Operations which are AF_INET{4,6} specific */
+  struct timer_list           icsk_retransmit_timer;
+ 	struct timer_list	          icsk_delack_timer;
 };
 
 /* representation of INET sockets */
 struct inet_sock {
   struct sock         sk;
-  struct ipv6_pinfo  *pinet6;
+  struct ipv6_pinfo   *pinet6;
 };
 ```
 ![linux-net-socket-sock.png](../Images/LinuxKernel/kernel-net-socket-sock.png)
+![](../Images/LinuxKernel/kernel-net-send-data-flow.png)
 
 ### socket
 ```C++
@@ -9557,56 +9526,55 @@ static int __init inet_init(void)
 static struct inet_protosw inetsw_array[] =
 {
   {
-    .type =       SOCK_STREAM,
-    .protocol =   IPPROTO_TCP,
-    .prot =       &tcp_prot,
-    .ops =        &inet_stream_ops,
-    .flags =      INET_PROTOSW_PERMANENT |
-            INET_PROTOSW_ICSK,
+    .type       = SOCK_STREAM,
+    .protocol   = IPPROTO_TCP,
+    .prot       = &tcp_prot,
+    .ops        = &inet_stream_ops,
+    .flags       = INET_PROTOSW_PERMANENT | INET_PROTOSW_ICSK,
   },
   {
-    .type =       SOCK_DGRAM,
-    .protocol =   IPPROTO_UDP,
-    .prot =       &udp_prot,
-    .ops =        &inet_dgram_ops,
-    .flags =      INET_PROTOSW_PERMANENT,
+    .type       = SOCK_DGRAM,
+    .protocol   = IPPROTO_UDP,
+    .prot       = &udp_prot,
+    .ops        = &inet_dgram_ops,
+    .flags       = INET_PROTOSW_PERMANENT,
   },
   {
-    .type =       SOCK_DGRAM,
-    .protocol =   IPPROTO_ICMP,
-    .prot =       &ping_prot,
-    .ops =        &inet_sockraw_ops,
-    .flags =      INET_PROTOSW_REUSE,
+    .type       = SOCK_DGRAM,
+    .protocol   = IPPROTO_ICMP,
+    .prot       = &ping_prot,
+    .ops        = &inet_sockraw_ops,
+    .flags       = INET_PROTOSW_REUSE,
   },
   {
-    .type =       SOCK_RAW,
-    .protocol =   IPPROTO_IP,  /* wild card */
-    .prot =       &raw_prot,
-    .ops =        &inet_sockraw_ops,
-    .flags =      INET_PROTOSW_REUSE,
+    .type       = SOCK_RAW,
+    .protocol   = IPPROTO_IP,  /* wild card */
+    .prot       = &raw_prot,
+    .ops        = &inet_sockraw_ops,
+    .flags       = INET_PROTOSW_REUSE,
   }
 };
 
 /* sock_ops is better, sock_{steam, dgram, raw}_ops */
 const struct proto_ops inet_stream_ops = {
   .family       = PF_INET,
-  .owner       = THIS_MODULE,
-  .bind       = inet_bind,
-  .connect     = inet_stream_connect,
+  .owner        = THIS_MODULE,
+  .bind         = inet_bind,
+  .connect      = inet_stream_connect,
   .accept       = inet_accept,
   .listen       = inet_listen
-  .sendmsg     = inet_sendmsg,
-  .recvmsg     = inet_recvmsg
+  .sendmsg      = inet_sendmsg,
+  .recvmsg      = inet_recvmsg
 };
 
 struct proto tcp_prot = {
-  .name      = "TCP",
-  .owner      = THIS_MODULE,
-  .connect    = tcp_v4_connect,
-  .recvmsg    = tcp_recvmsg,
-  .sendmsg    = tcp_sendmsg,
-  .get_port    = inet_csk_get_port,
-  .backlog_rcv = tcp_v4_do_rcv
+  .name         = "TCP",
+  .owner        = THIS_MODULE,
+  .connect      = tcp_v4_connect,
+  .recvmsg      = tcp_recvmsg,
+  .sendmsg      = tcp_sendmsg,
+  .get_port     = inet_csk_get_port,
+  .backlog_rcv  = tcp_v4_do_rcv
 }
 ```
 
@@ -9667,6 +9635,9 @@ socket();
           inet = inet_sk(sk);
           sock_init_data(sock, sk);
   sock_map_fd();
+    sock_alloc_file();
+      sock->file = file;
+      file->private_data = sock;
 ```
 
 ### bind
@@ -9749,6 +9720,8 @@ int inet_listen(struct socket *sock, int backlog)
   int err;
   old_state = sk->sk_state;
 
+  /* Really, if the socket is already in listen state
+   * we can only allow the backlog to be adjusted. */
   if (old_state != TCP_LISTEN) {
     err = inet_csk_listen_start(sk, backlog);
   }
@@ -9761,16 +9734,38 @@ int inet_csk_listen_start(struct sock *sk, int backlog)
   struct inet_sock *inet = inet_sk(sk);
   int err = -EADDRINUSE;
 
-  reqsk_queue_alloc(&icsk->icsk_accept_queue);
+  reqsk_queue_alloc(&icsk->icsk_accept_queue); /* FIFO of established children */
 
   sk->sk_max_ack_backlog = backlog;
-  sk->sk_ack_backlog = 0;
+  sk->sk_ack_backlog = 0;                      /* current listen backlog */
   inet_csk_delack_init(sk);
 
   sk_state_store(sk, TCP_LISTEN);
+  /* socket enters to hash table only after validation is complete */
   if (!sk->sk_prot->get_port(sk, inet->inet_num)) {
-    /* check port conflict again */
+    inet->inet_sport = htons(inet->inet_num);
+
+    sk_dst_reset(sk);
+    err = sk->sk_prot->hash(sk);
+
+    if (likely(!err))
+      return 0;
   }
+
+  inet_sk_set_state(sk, TCP_CLOSE);
+  return err;
+}
+
+void reqsk_queue_alloc(struct request_sock_queue *queue)
+{
+  spin_lock_init(&queue->rskq_lock);
+
+  spin_lock_init(&queue->fastopenq.lock);
+  queue->fastopenq.rskq_rst_head = NULL;
+  queue->fastopenq.rskq_rst_tail = NULL;
+  queue->fastopenq.qlen = 0;
+
+  queue->rskq_accept_head = NULL;
 }
 ```
 
@@ -9782,6 +9777,7 @@ listen();
       inet_csk_listen_start();
         reqsk_queue_alloc();
         sk->sk_prot->get_port();
+          sk->sk_prot->hash(sk);
 ```
 
 ### accept
@@ -10008,6 +10004,8 @@ int tcp_connect(struct sock *sk)
   tp->retrans_stamp = tcp_time_stamp(tp);
   tcp_connect_queue_skb(sk, buff);
   tcp_ecn_send_syn(sk, buff);
+  /* Insert skb into rb tree, ordered by TCP_SKB_CB(skb)->seq */
+  tcp_rbtree_insert(&sk->tcp_rtx_queue, buff);
 
   /* Send off SYN; include data in Fast Open. */
   err = tp->fastopen_req
@@ -10119,6 +10117,21 @@ int tcp_conn_request(
   const struct tcp_request_sock_ops *af_ops,
   struct sock *sk, struct sk_buff *skb)
 {
+  /* return reqsk_queue_len(&inet_csk(sk)->icsk_accept_queue) >= sk->sk_max_ack_backlog;
+   * icsk_accept_queue: FIFO of established children */
+  if ((inet_csk_reqsk_queue_is_full(sk)) ||
+      net->ipv4.sysctl_tcp_syncookies == 2 && !isn) {
+    want_cookie = tcp_syn_flood_action(sk, skb, rsk_ops->slab_name);
+    if (!want_cookie)
+      goto drop;
+  }
+
+  /* return sk->sk_ack_backlog > sk->sk_max_ack_backlog; */
+  if (sk_acceptq_is_full(sk)) {
+    NET_INC_STATS(sock_net(sk), LINUX_MIB_LISTENOVERFLOWS);
+    goto drop;
+  }
+
   if (!want_cookie)
     inet_csk_reqsk_queue_hash_add(
       sk, req, tcp_timeout_init((struct sock *)req));
@@ -10227,7 +10240,7 @@ tcp_v4_rcv();
         tcp_send_ack(sk);
         tcp_set_state(sk, TCP_ESTABLISHED);
 ```
-![linux-net-hand-shake.png  ](../Images/LinuxKernel/kernel-net-hand-shake.png  )
+![linux-net-hand-shake.png](../Images/LinuxKernel/kernel-net-hand-shake.png  )
 
 
 ### write
@@ -10365,7 +10378,7 @@ new_segment:
         page_ref_inc(pfrag->page);
       }
       pfrag->offset += copy;
-    } else {
+    } else { /* zero copy */
       bool merge = true;
       int i = skb_shinfo(skb)->nr_frags;
       struct page_frag *pfrag = sk_page_frag(sk);
@@ -10402,27 +10415,43 @@ new_segment:
 }
 
 /* __tcp_push_pending_frames | tcp_push_one ->
- * 1. frage segment
+ * 1. fragment segment
  * 2. congestion control
- * 3. slide window */
-static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle, int push_one, gfp_t gfp)
+ * 3. slide window
+ *
+ * TSO: TCP Segmentation Offload */
+static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
+  int nonagle, int push_one, gfp_t gfp)
 {
   struct tcp_sock *tp = tcp_sk(sk);
   struct sk_buff *skb;
-  unsigned int tso_segs, sent_pkts;
+  unsigned int sent_pkts, tso_segs /* number of segments fragmented */;
   int cwnd_quota;
 
   max_segs = tcp_tso_segs(sk, mss_now);
+  /* continualy send data if sk is not empty */
   while ((skb = tcp_send_head(sk))) {
     unsigned int limit;
-    // tso(TCP Segmentation Offload)
+    // tso: TCP Segmentation Offload
     tso_segs = tcp_init_tso_segs(skb, mss_now); // DIV_ROUND_UP(skb->len, mss_now)
 
     cwnd_quota = tcp_cwnd_test(tp, skb);
 
+    /* Does the end_seq exceeds the cwnd? */
     if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
       is_rwnd_limited = true;
       break;
+    }
+
+    if (tso_segs == 1) {
+      if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
+          (tcp_skb_is_last(sk, skb) ? nonagle : TCP_NAGLE_PUSH))))
+        break;
+    } else {
+      if (!push_one &&
+          tcp_tso_should_defer(sk, skb, &is_cwnd_limited,
+              &is_rwnd_limited, max_segs))
+        break;
     }
 
     limit = mss_now;
@@ -10452,6 +10481,7 @@ repair:
   }
 }
 
+/* Returns the portion of skb which can be sent right away */
 static unsigned int tcp_mss_split_point(
   const struct sock *sk,
   const struct sk_buff *skb,
@@ -10466,12 +10496,12 @@ static unsigned int tcp_mss_split_point(
   max_len = mss_now * max_segs;
 
   if (likely(max_len <= window && skb != tcp_write_queue_tail(sk)))
-          return max_len;
+    return max_len;
 
   needed = min(skb->len, window);
 
   if (max_len <= needed)
-          return max_len;
+    return max_len;
 
   return needed;
 }
@@ -10534,6 +10564,9 @@ const struct inet_connection_sock_af_ops ipv4_specific = {
 
 #### ip layer
 ```C++
+/* 1. select route
+ * 2. populate IP header
+ * 3. send packet */
 int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
 {
   struct inet_sock *inet = inet_sk(sk);
@@ -10646,9 +10679,9 @@ default via 192.168.2.1 dev eth0
 
 ```C++
 // __mkroute_output ->
-struct rtable *rt_dst_alloc(struct net_device *dev,
-          unsigned int flags, u16 type,
-          bool nopolicy, bool noxfrm, bool will_cache)
+struct rtable *rt_dst_alloc(
+  struct net_device *dev, unsigned int flags, u16 type,
+  bool nopolicy, bool noxfrm, bool will_cache)
 {
   struct rtable *rt;
 
@@ -10746,7 +10779,7 @@ int __ip_local_out(
   iph->tot_len = htons(skb->len);
   skb->protocol = htons(ETH_P_IP);
 
-  // net filter
+  /* nf: net filter */
   return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
            net, sk, skb, NULL, skb_dst(skb)->dev,
            dst_output);
@@ -11056,6 +11089,7 @@ void __qdisc_run(struct Qdisc *q)
        * 1. we've exceeded packet quota
        * 2. another process needs the CPU */
       quota -= packets;
+      /* control transmit speed */
       if (quota <= 0 || need_resched()) {
           __netif_schedule(q);
           break;
@@ -11278,6 +11312,7 @@ struct skb_frag_struct {
   __u32 size;
 };
 ```
+
 ```C++
 /* socket layer */
 sock_write_iter();
@@ -11286,13 +11321,14 @@ sock_write_iter();
       sock->ops->sendmsg();
         inet_stream_ops.sendmsg();
           sk->sk_prot->sendmsg();/* tcp_prot.sendmsg */
+
 /* tcp layer */
 tcp_sendmsg();
   skb = tcp_write_queue_tail(sk); /* alloc new one if null */
 
   skb_add_data_nocache(); /* skb_availroom(skb) > 0 && !zc */
   skb_copy_to_page_nocache(); /* !zc */
-  skb_zerocopy_iter_stream(); /* else */
+  skb_zerocopy_iter_stream(); /* zero copy */
 
   __tcp_push_pending_frames(); tcp_push_one();
     tcp_write_xmit();
@@ -11307,22 +11343,26 @@ tcp_sendmsg();
       tcp_transmit_skb();
         /* fill TCP header */
         icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+
 /* ip layer */
 ipv4_specific.ip_queue_xmit();
+    /* 1. get route table */
     rt = ip_route_output_ports();
       ip_route_output_key_hash_rcu();
         fib_lookup();
         __mkroute_output();
           rt_dst_alloc();
     skb_dst_set_noref(skb, &rt->dst);
-    /* fill IP header */
+    /* 2. fill IP header */
     ip_local_out();
+      /* 3. netfilter */
       nf_hook();            /* NF_INET_LOCAL_OUT */
       dst_out();
         skb_dst(skb)->output();
           ip_output(); /* ipv4_dst_ops.output() */
             NF_HOOK_COND(); /* NF_INET_POST_ROUTING */
             ip_finish_output();
+
 /* mac layer */
 ip_finish_output();
   exthop = rt_nexthop(rt, ip_hdr(skb)->daddr);
@@ -11332,11 +11372,12 @@ ip_finish_output();
       neigh_resolve_output(); /* arp_hh_ops.output */
         neigh_event_send();   /* send arp packet */
         dev_queue_xmit(skb);
+
 /* dev layer */
 __dev_queue_xmit();
   struct netdev_queue *txq = netdev_pick_tx();
   struct Qdisc *q = rcu_derefence_bh(txq->qdisc);
-  __dev_xmit_sbk(skb, q, dev, txq);
+  __dev_xmit_skb(skb, q, dev, txq);
     q->enqueue(skb, q, &to_free);
     __qdisc_run(q);
       qdisc_restart(q, &pakcets);
@@ -11348,7 +11389,7 @@ __dev_queue_xmit();
                 __netdev_start_xmit();
                   net_device_ops->ndo_start_xmit(skb, dev);
                     ixgb_xmit_frame();
-          dev_requeue_skb(skb, q);
+          dev_requeue_skb(skb, q); /* NIC is busy, re-enqueue */
 
       __netif_schdule(q);
         __netif_reschedule(q);
@@ -11357,6 +11398,8 @@ __dev_queue_xmit();
 
           net_tx_action();
             qdisc_run(q);
+
+/* driver layer */
 ```
 
 ![linux-net-sk_buf.png](../Images/LinuxKernel/kernel-net-sk_buf.png)
@@ -11377,11 +11420,11 @@ static int ixgb_init_module(void)
 }
 
 static struct pci_driver ixgb_driver = {
-  .name     = ixgb_driver_name,
-  .id_table = ixgb_pci_tbl,
-  .probe    = ixgb_probe,
-  .remove   = ixgb_remove,
-  .err_handler = &ixgb_err_handler
+  .name         = ixgb_driver_name,
+  .id_table     = ixgb_pci_tbl,
+  .probe        = ixgb_probe,
+  .remove       = ixgb_remove,
+  .err_handler  = &ixgb_err_handler
 };
 
 module_init(ixgb_init_module);
@@ -11420,7 +11463,7 @@ static int ixgb_probe(
 }
 
 struct pci_dev {
-  struct device  dev;
+  struct device  dev; /* Generic device interface */
 };
 
 struct device {
@@ -11439,9 +11482,9 @@ struct device {
 };
 
 struct net_device {
-  struct device    dev;
+  struct device               dev;
   const struct net_device_ops *netdev_ops;
-  const struct ethtool_ops *ethtool_ops;
+  const struct ethtool_ops    *ethtool_ops;
 }
 
 struct ixgb_adapter {
@@ -11549,13 +11592,11 @@ static irqreturn_t ixgb_intr(int irq, void *data)
   return IRQ_HANDLED;
 }
 
-/**
- * __napi_schedule - schedule for receive
+/* __napi_schedule - schedule for receive
  * @n: entry to schedule
  *
  * The entry's receive function will be scheduled to run.
- * Consider using __napi_schedule_irqoff() if hard irqs are masked.
- */
+ * Consider using __napi_schedule_irqoff() if hard irqs are masked. */
 void __napi_schedule(struct napi_struct *n)
 {
   unsigned long flags;
@@ -11587,9 +11628,9 @@ static void net_rx_action(struct softirq_action *h)
 }
 
 struct softnet_data {
-  struct list_head    poll_list;
+  struct list_head    poll_list;     /* receive queue */
 
-  struct Qdisc        *output_queue; /* send out */
+  struct Qdisc        *output_queue; /* send queue */
   struct Qdisc        **output_queue_tailp;
 
   struct sk_buff       *completion_queue;
@@ -11691,7 +11732,7 @@ static inline void skb_copy_to_linear_data_offset(
 }
 
 struct ixgb_desc_ring {
-  void *desc; /* pointer to ring array of ixgb_rx_desc */
+  void *desc; /* pointer to ring array of ixgb_{rx, tx}_desc */
   dma_addr_t dma; /* physical address of the descriptor ring */
   unsigned int size; /* length of descriptor ring in bytes */
   unsigned int count; /* number of descriptors in the ring */
@@ -11701,24 +11742,36 @@ struct ixgb_desc_ring {
 };
 /* ixgb_alloc_rx_buffers maps skb to dma */
 struct ixgb_buffer {
-  struct sk_buff *skb;
-  dma_addr_t dma;
-  unsigned long time_stamp;
-  u16 length;
-  u16 next_to_watch;
-  u16 mapped_as_page;
+  struct sk_buff   *skb;
+  dma_addr_t      dma;
+  unsigned long   time_stamp;
+  u16             length;
+  u16             next_to_watch;
+  u16             mapped_as_page;
 };
 
 struct ixgb_rx_desc {
-  __le64 buff_addr;
-  __le16 length;
-  __le16 reserved;
-  u8 status;
-  u8 errors;
-  __le16 special;
+  __le64        buff_addr;
+  __le16        length;
+  __le16        reserved;
+  u8            status;
+  u8            errors;
+  __le16        special;
+};
+
+struct ixgb_tx_desc {
+  __le64    buff_addr;
+  __le32    cmd_type_len;
+  u8        status;
+  u8        popts;
+  __le16    vlan;
 };
 ```
 ![linux-net-rx_ring.png](../Images/LinuxKernel/kernel-net-rx_ring.png)
+
+![](../Images/LinuxKernel/kernel-net-desc-ring-1.png)
+
+![](../Images/LinuxKernel/kernel-net-desc-ring-2.png)
 
 #### mac layer
 ```C++
@@ -12129,8 +12182,8 @@ static int tcp_queue_rcv(struct sock *sk, struct sk_buff *skb, int hdrlen,
 #### vfs layer
 ```C++
 static const struct file_operations socket_file_ops = {
-  .read_iter =  sock_read_iter,
-  .write_iter =  sock_write_iter,
+  .read_iter    = sock_read_iter,
+  .write_iter   = sock_write_iter,
 };
 ```
 
@@ -12140,8 +12193,7 @@ static ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
   struct file *file = iocb->ki_filp;
   struct socket *sock = file->private_data;
-  struct msghdr msg = {.msg_iter = *to,
-           .msg_iocb = iocb};
+  struct msghdr msg = {.msg_iter = *to, .msg_iocb = iocb};
   ssize_t res;
 
   if (file->f_flags & O_NONBLOCK)
