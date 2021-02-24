@@ -9259,8 +9259,8 @@ struct sock {
   struct sk_buff_head  sk_receive_queue;  /* incoming packets */
   struct sk_buff_head  sk_write_queue;    /* outgoing Packets */
   union {
-    struct sk_buff	  *sk_send_head;
-    struct rb_root	  tcp_rtx_queue; /* outgoing packets, ordered by seq */
+    struct sk_buff   *sk_send_head;
+    struct rb_root   tcp_rtx_queue; /* re-transmit queue */
   };
 
   struct {
@@ -9297,17 +9297,20 @@ typedef struct wait_queue_head {
 
 struct tcp_sock {
   struct inet_connection_sock  inet_conn;
+
+  struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
+  struct list_head tsorted_sent_queue; /* time-sorted sent but un-SACKed skbs */
 };
 
 /* INET connection oriented sock */
 struct inet_connection_sock {
   struct inet_sock            icsk_inet;
-  struct inet_bind_bucket	    *icsk_bind_hash;   /* Bind node */
+  struct inet_bind_bucket     *icsk_bind_hash;   /* Bind node */
   struct request_sock_queue   icsk_accept_queue; /* FIFO of established children */
   struct tcp_congestion_ops           *icsk_ca_ops;
   struct inet_connection_sock_af_ops  *icsk_af_ops; /* Operations which are AF_INET{4,6} specific */
   struct timer_list           icsk_retransmit_timer;
- 	struct timer_list	          icsk_delack_timer;
+  struct timer_list           icsk_delack_timer;
 };
 
 /* representation of INET sockets */
@@ -10457,10 +10460,10 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
 
     limit = mss_now;
     if (tso_segs > 1 && !tcp_urg_mode(tp))
-      limit = tcp_mss_split_point(
-        sk, skb, mss_now,
-        min_t(unsigned int, cwnd_quota, max_segs),
-        nonagle);
+      /* Returns the portion of skb which can be sent right away */
+      limit = tcp_mss_split_point(sk, skb, mss_now,
+          min_t(unsigned int, cwnd_quota, max_segs),
+          nonagle);
 
     if (skb->len > limit &&
         unlikely(tso_fragment(sk, skb, limit, mss_now, gfp)))
@@ -10481,7 +10484,9 @@ repair:
       break;
   }
 }
+```
 
+```c++
 /* Returns the portion of skb which can be sent right away */
 static unsigned int tcp_mss_split_point(
   const struct sock *sk,
@@ -10507,7 +10512,146 @@ static unsigned int tcp_mss_split_point(
   return needed;
 }
 
-/* fill TCP header */
+/* Trim TSO SKB to LEN bytes, put the remaining data into a new packet
+ * which is put after SKB on the list.  It is very much like
+ * tcp_fragment() except that it may make several kinds of assumptions
+ * in order to speed up the splitting operation.  In particular, we
+ * know that all the data is in scatter-gather pages, and that the
+ * packet has never been sent out before (and thus is not cloned). */
+static int tso_fragment(
+  struct sock *sk, enum tcp_queue tcp_queue,
+  struct sk_buff *skb, unsigned int len,
+  unsigned int mss_now, gfp_t gfp)
+{
+  struct sk_buff *buff;
+  int nlen = skb->len - len;
+  u8 flags;
+
+  /* All of a TSO frame must be composed of paged data.  */
+  if (skb->len != skb->data_len)
+    return tcp_fragment(sk, tcp_queue, skb, len, mss_now, gfp);
+
+  buff = sk_stream_alloc_skb(sk, 0, gfp, true);
+
+  sk->sk_wmem_queued += buff->truesize;
+  sk_mem_charge(sk, buff->truesize);
+  buff->truesize += nlen;
+  skb->truesize -= nlen;
+
+  /* Correct the sequence numbers. */
+  TCP_SKB_CB(buff)->seq = TCP_SKB_CB(skb)->seq + len;
+  TCP_SKB_CB(buff)->end_seq = TCP_SKB_CB(skb)->end_seq;
+  TCP_SKB_CB(skb)->end_seq = TCP_SKB_CB(buff)->seq;
+
+  /* PSH and FIN should only be set in the second packet. */
+  flags = TCP_SKB_CB(skb)->tcp_flags;
+  TCP_SKB_CB(skb)->tcp_flags = flags & ~(TCPHDR_FIN | TCPHDR_PSH);
+  TCP_SKB_CB(buff)->tcp_flags = flags;
+
+  /* This packet was never sent out yet, so no SACK bits. */
+  TCP_SKB_CB(buff)->sacked = 0;
+
+  tcp_skb_fragment_eor(skb, buff);
+
+  buff->ip_summed = CHECKSUM_PARTIAL;
+  skb_split(skb, buff, len);
+  tcp_fragment_tstamp(skb, buff);
+
+  /* Fix up tso_factor for both original and new SKB.  */
+  tcp_set_skb_tso_segs(skb, mss_now);
+  tcp_set_skb_tso_segs(buff, mss_now);
+
+  /* Link BUFF into the send queue. */
+  __skb_header_release(buff);
+  tcp_insert_write_queue_after(skb, buff, sk, tcp_queue);
+
+  return 0;
+}
+
+void skb_split(struct sk_buff *skb, struct sk_buff *skb1, const u32 len)
+{
+  int pos = skb_headlen(skb);
+
+  skb_shinfo(skb1)->tx_flags |= skb_shinfo(skb)->tx_flags &
+              SKBTX_SHARED_FRAG;
+  skb_zerocopy_clone(skb1, skb, 0);
+  if (len < pos)   /* Split line is inside header. */
+    skb_split_inside_header(skb, skb1, len, pos);
+  else      /* Second chunk has no header, nothing to copy. */
+    skb_split_no_header(skb, skb1, len, pos);
+}
+
+void skb_split_inside_header(struct sk_buff *skb,
+  struct sk_buff* skb1, const u32 len, const int pos)
+{
+  int i;
+
+  skb_copy_from_linear_data_offset(skb, len, skb_put(skb1, pos - len),
+           pos - len);
+  /* And move data appendix as is. */
+  for (i = 0; i < skb_shinfo(skb)->nr_frags; i++)
+    skb_shinfo(skb1)->frags[i] = skb_shinfo(skb)->frags[i];
+
+  skb_shinfo(skb1)->nr_frags = skb_shinfo(skb)->nr_frags;
+  skb_shinfo(skb)->nr_frags  = 0;
+  skb1->data_len  = skb->data_len;
+  skb1->len       += skb1->data_len;
+  skb->data_len   = 0;
+  skb->len        = len;
+  skb_set_tail_pointer(skb, len);
+}
+
+void skb_split_no_header(
+  struct sk_buff *skb, struct sk_buff* skb1,
+  const u32 len, int pos)
+{
+  int i, k = 0;
+  const int nfrags = skb_shinfo(skb)->nr_frags;
+
+  skb_shinfo(skb)->nr_frags = 0;
+  skb1->len       = skb1->data_len = skb->len - len;
+  skb->len        = len;
+  skb->data_len   = len - pos;
+
+  for (i = 0; i < nfrags; i++) {
+    int size = skb_frag_size(&skb_shinfo(skb)->frags[i]);
+    if (pos + size > len) {
+      skb_shinfo(skb1)->frags[k] = skb_shinfo(skb)->frags[i];
+
+      if (pos < len) {
+        /* Split frag.
+         * We have two variants in this case:
+         * 1. Move all the frag to the second
+         *    part, if it is possible. F.e.
+         *    this approach is mandatory for TUX,
+         *    where splitting is expensive.
+         * 2. Split is accurately. We make this. */
+        skb_frag_ref(skb, i);
+        skb_shinfo(skb1)->frags[0].page_offset += len - pos;
+        skb_frag_size_sub(&skb_shinfo(skb1)->frags[0], len - pos);
+        skb_frag_size_set(&skb_shinfo(skb)->frags[i], len - pos);
+        skb_shinfo(skb)->nr_frags++;
+      }
+      k++;
+    } else
+      skb_shinfo(skb)->nr_frags++;
+    pos += size;
+  }
+  skb_shinfo(skb1)->nr_frags = k;
+}
+```
+
+```c++
+/* This routine actually transmits TCP packets queued in by
+ * tcp_do_sendmsg().  This is used by both the initial
+ * transmission and possible later retransmissions.
+ * All SKB's seen here are completely headerless.  It is our
+ * job to build the TCP header, and pass the packet down to
+ * IP so it can do the same plus pass the packet off to the
+ * device.
+ *
+ * We are working here with either a clone of the original
+ * SKB, or a fresh unique copy made by the retransmit engine. */
 static int tcp_transmit_skb(
   struct sock *sk, struct sk_buff *skb,
   int clone_it, gfp_t gfp_mask)
@@ -10516,37 +10660,161 @@ static int tcp_transmit_skb(
   struct inet_sock *inet;
   struct tcp_sock *tp;
   struct tcp_skb_cb *tcb;
+  struct tcp_out_options opts;
+  unsigned int tcp_options_size, tcp_header_size;
+  struct sk_buff *oskb = NULL;
+  struct tcp_md5sig_key *md5;
   struct tcphdr *th;
   int err;
 
   tp = tcp_sk(sk);
+  if (clone_it) {
+    TCP_SKB_CB(skb)->tx.in_flight = TCP_SKB_CB(skb)->end_seq - tp->snd_una;
+    oskb = skb;
+
+    tcp_skb_tsorted_save(oskb) {
+      if (unlikely(skb_cloned(oskb)))
+        skb = pskb_copy(oskb, gfp_mask);
+      else
+        skb = skb_clone(oskb, gfp_mask);
+    } tcp_skb_tsorted_restore(oskb);
+
+    if (unlikely(!skb))
+      return -ENOBUFS;
+  }
 
   skb->skb_mstamp = tp->tcp_mstamp;
   inet = inet_sk(sk);
   tcb = TCP_SKB_CB(skb);
   memset(&opts, 0, sizeof(opts));
 
+  if (unlikely(tcb->tcp_flags & TCPHDR_SYN))
+    tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
+  else
+    tcp_options_size = tcp_established_options(sk, skb, &opts,
+                &md5);
   tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
+
   skb_push(skb, tcp_header_size);
 
-  /* Build TCP header and checksum it. */
+  skb_orphan(skb);
+  skb->sk = sk;
+  skb->destructor = skb_is_tcp_pure_ack(skb) ? __sock_wfree : tcp_wfree;
+  skb_set_hash_from_sk(skb, sk);
+  refcount_add(skb->truesize, &sk->sk_wmem_alloc);
+
+  skb_set_dst_pending_confirm(skb, sk->sk_dst_pending_confirm);
+
+  /* build TCP header and checksum it. */
   th = (struct tcphdr *)skb->data;
   th->source      = inet->inet_sport;
   th->dest        = inet->inet_dport;
   th->seq         = htonl(tcb->seq);
   th->ack_seq     = htonl(tp->rcv_nxt);
-  *(((__be16 *)th) + 6)   = htons(((tcp_header_size >> 2) << 12) |
-                  tcb->tcp_flags);
+  *(((__be16 *)th) + 6) = htons(((tcp_header_size >> 2) << 12) | tcb->tcp_flags);
 
   th->check       = 0;
   th->urg_ptr     = 0;
 
   tcp_options_write((__be32 *)(th + 1), tp, &opts);
-  th->window  = htons(min(tp->rcv_wnd, 65535U));
+  skb_shinfo(skb)->gso_type = sk->sk_gso_type;
+
+  /* build advertise window */
+  if (likely(!(tcb->tcp_flags & TCPHDR_SYN))) {
+    th->window      = htons(tcp_select_window(sk));
+    tcp_ecn_send(sk, skb, th, tcp_header_size);
+  } else {
+    /* RFC1323: The window in SYN & SYN/ACK segments
+     * is never scaled. */
+    th->window  = htons(min(tp->rcv_wnd, 65535U));
+  }
+
+  icsk->icsk_af_ops->send_check(sk, skb);
 
   err = icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+
+  if (unlikely(err > 0)) {
+    tcp_enter_cwr(sk);
+    err = net_xmit_eval(err);
+  }
+  if (!err && oskb) {
+    /* move oskb to tp->tsorted_sent_queue for re-transmit */
+    tcp_update_skb_after_send(tp, oskb);
+    tcp_rate_skb_sent(sk, oskb);
+  }
+
+  return err;
 }
 
+/* Duplicate an &sk_buff. The new one is not owned by a socket. Both
+ * copies share the same packet data but not structure. The new
+ * buffer has a reference count of 1. If the allocation fails the
+ * function returns %NULL otherwise the new buffer is returned.
+ *
+ * If this function is called from an interrupt gfp_mask() must be
+ * %GFP_ATOMIC */
+struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
+{
+  struct sk_buff_fclones *fclones =
+    container_of(skb, struct sk_buff_fclones, skb1);
+  struct sk_buff *n;
+
+  if (skb_orphan_frags(skb, gfp_mask))
+    return NULL;
+
+  if (skb->fclone == SKB_FCLONE_ORIG &&
+      refcount_read(&fclones->fclone_ref) == 1) {
+    n = &fclones->skb2;
+    refcount_set(&fclones->fclone_ref, 2);
+  } else {
+    if (skb_pfmemalloc(skb))
+      gfp_mask |= __GFP_MEMALLOC;
+
+    n = kmem_cache_alloc(skbuff_head_cache, gfp_mask);
+    if (!n)
+      return NULL;
+
+    n->fclone = SKB_FCLONE_UNAVAILABLE;
+  }
+
+  return __skb_clone(n, skb);
+}
+
+static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
+{
+#define C(x) n->x = skb->x
+
+  n->next = n->prev = NULL;
+  n->sk = NULL;
+  __copy_skb_header(n, skb);
+
+  C(len);
+  C(data_len);
+  C(mac_len);
+  n->hdr_len = skb->nohdr ? skb_headroom(skb) : skb->hdr_len;
+  n->cloned = 1;
+  n->nohdr = 0;
+  n->peeked = 0;
+  C(pfmemalloc);
+  n->destructor = NULL;
+  C(tail);
+  C(end);
+  C(head);
+  C(head_frag);
+  C(data);
+  C(truesize);
+  refcount_set(&n->users, 1);
+
+  atomic_inc(&(skb_shinfo(skb)->dataref));
+  skb->cloned = 1;
+
+  return n;
+#undef C
+}
+```
+
+#### ip layer
+```C++
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
   .send_check        = tcp_v4_send_check,
@@ -10561,10 +10829,7 @@ const struct inet_connection_sock_af_ops ipv4_specific = {
   .sockaddr_len      = sizeof(struct sockaddr_in),
   .mtu_reduced       = tcp_v4_mtu_reduced,
 };
-```
 
-#### ip layer
-```C++
 /* 1. select route
  * 2. populate IP header
  * 3. send packet */
@@ -10635,9 +10900,9 @@ packet_routed:
 
 ##### route
 ```C++
-// ip_route_output_ports -> ip_route_output_flow ->
-// __ip_route_output_key -> ip_route_output_key_hash ->
-// ip_route_output_key_hash_rcu ->
+/* ip_route_output_ports -> ip_route_output_flow ->
+ * __ip_route_output_key -> ip_route_output_key_hash ->
+ * ip_route_output_key_hash_rcu -> */
 struct rtable *ip_route_output_key_hash_rcu(struct net *net, struct flowi4 *fl4,
   struct fib_result *res, const struct sk_buff *skb)
 {
@@ -11341,6 +11606,8 @@ __dev_queue_xmit();
 ```
 ![linux-net-write.png](../Images/LinuxKernel/kernel-net-write.png)
 
+* [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
+
 ### sk_buff
 ```C++
 struct sk_buff {
@@ -11455,11 +11722,11 @@ struct sk_buff *alloc_skb_fclone(
 }
 
 /* Allocate a new &sk_buff. The returned buffer has no headroom and a
- *	tail room of at least size bytes. The object has a reference count
- *	of one. The return is the buffer. On a failure the return is %NULL.
+ * tail room of at least size bytes. The object has a reference count
+ * of one. The return is the buffer. On a failure the return is %NULL.
  *
- *	Buffers may only be allocated from interrupts using a @gfp_mask of
- *	%GFP_ATOMIC. */
+ * Buffers may only be allocated from interrupts using a @gfp_mask of
+ * %GFP_ATOMIC. */
 struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
           int flags, int node)
 {
@@ -12633,6 +12900,12 @@ struct wait_queue_entry {
 
 ```
 ![linux-net-read.png](../Images/LinuxKernel/kernel-net-read.png)
+
+### tcp_ack
+
+### tcp_send_fin
+
+### tcp_send_synack
 
 ### epoll
 ```c++
