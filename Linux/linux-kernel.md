@@ -9257,7 +9257,7 @@ struct sock {
   struct sk_buff       *sk_rx_skb_cache;
 
   struct sk_buff_head  sk_receive_queue;  /* incoming packets */
-  struct sk_buff_head  sk_write_queue;    /* Packet sending queue */
+  struct sk_buff_head  sk_write_queue;    /* outgoing Packets */
   union {
     struct sk_buff	  *sk_send_head;
     struct rb_root	  tcp_rtx_queue; /* outgoing packets, ordered by seq */
@@ -10253,7 +10253,8 @@ static const struct file_operations socket_file_ops = {
   .write_iter     =  sock_write_iter,
   .poll           =  sock_poll,
   .unlocked_ioctl =  sock_ioctl,
-  .mmap           =  sock_mmap
+  .mmap           =  sock_mmap,
+  .release        =  sock_close,
 };
 ```
 
@@ -11251,69 +11252,6 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 ![linux-net-write-2.png](../Images/LinuxKernel/kernel-net-write-2.png)
 
 ```C++
-struct sk_buff {
-  union {
-    struct {
-      struct sk_buff    *next;
-      struct sk_buff    *prev;
-      union {
-        struct net_device *dev;
-        unsigned long     dev_scratch;
-      };
-    };
-    struct rb_node  rbnode; /* used in netem & tcp stack */
-  };
-
-  union {
-    struct sock    *sk;
-    int            ip_defrag_offset;
-  };
-
-  char            cb[48] __aligned(8);
-
-  unsigned int    len, data_len;
-  __u16           mac_len, hdr_len;
-
-  __be16     protocol;
-  __u16      transport_header;
-  __u16      network_header;
-  __u16      mac_header;
-
-  sk_buff_data_t     tail;
-  sk_buff_data_t     end;
-  unsigned char     *head, *data;
-  unsigned int      truesize;
-  refcount_t        users;
-};
-
-struct skb_shared_info {
-  __u8    __unused, meta_len;
-  __u8    nr_frags, tx_flags;
-  unsigned short  gso_size;
-
-  unsigned short                gso_segs;
-  struct sk_buff                 *frag_list;
-  struct skb_shared_hwtstamps   hwtstamps;
-  unsigned int  gso_type;
-  u32    tskey;
-
-  /* must be last field, see pskb_expand_head() */
-  skb_frag_t  frags[MAX_SKB_FRAGS];
-};
-
-typedef struct skb_frag_struct skb_frag_t;
-
-struct skb_frag_struct {
-  struct {
-    struct page *p;
-  } page;
-
-  __u32 page_offset;
-  __u32 size;
-};
-```
-
-```C++
 /* socket layer */
 sock_write_iter();
   sock_sendmsg();
@@ -11401,10 +11339,260 @@ __dev_queue_xmit();
 
 /* driver layer */
 ```
+![linux-net-write.png](../Images/LinuxKernel/kernel-net-write.png)
 
+### sk_buff
+```C++
+struct sk_buff {
+  union {
+    struct {
+      struct sk_buff    *next;
+      struct sk_buff    *prev;
+      union {
+        struct net_device *dev;
+        unsigned long     dev_scratch;
+      };
+    };
+    struct rb_node  rbnode; /* used in netem & tcp stack */
+  };
+
+  union {
+    struct sock    *sk;
+    int            ip_defrag_offset;
+  };
+
+  char            cb[48] __aligned(8);
+
+  unsigned int    len,
+                  data_len; /* bytes of paged data len */
+  __u16           mac_len, hdr_len;
+
+  __be16          protocol;
+  __u16           transport_header;
+  __u16           network_header;
+  __u16           mac_header;
+
+  /* typedef unsigned char *sk_buff_data_t; */
+  sk_buff_data_t     tail;
+  sk_buff_data_t     end;
+  unsigned char     *head, *data;
+  unsigned int      truesize;
+  refcount_t        users;
+};
+
+struct skb_shared_info {
+  __u8    __unused, meta_len;
+  __u8    nr_frags, tx_flags;
+  unsigned short  gso_size;
+
+  unsigned short                gso_segs;
+  struct sk_buff                 *frag_list;
+  struct skb_shared_hwtstamps   hwtstamps;
+  unsigned int  gso_type;
+  u32    tskey;
+
+  /* must be last field, see pskb_expand_head() */
+  skb_frag_t  frags[MAX_SKB_FRAGS];
+};
+
+typedef struct skb_frag_struct skb_frag_t;
+
+struct skb_frag_struct {
+  struct {
+    struct page *p;
+  } page;
+
+  __u32 page_offset;
+  __u32 size;
+};
+```
 ![linux-net-sk_buf.png](../Images/LinuxKernel/kernel-net-sk_buf.png)
 
-![linux-net-write.png](../Images/LinuxKernel/kernel-net-write.png)
+```c++
+struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
+            bool force_schedule)
+{
+  struct sk_buff *skb;
+
+  /* The TCP header must be at least 32-bit aligned.  */
+  size = ALIGN(size, 4);
+
+  if (unlikely(tcp_under_memory_pressure(sk)))
+    sk_mem_reclaim_partial(sk);
+
+  skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
+  if (likely(skb)) {
+    bool mem_scheduled;
+
+    if (force_schedule) {
+      mem_scheduled = true;
+      sk_forced_mem_schedule(sk, skb->truesize);
+    } else {
+      mem_scheduled = sk_wmem_schedule(sk, skb->truesize);
+    }
+    if (likely(mem_scheduled)) {
+      skb_reserve(skb, sk->sk_prot->max_header);
+      /*
+      * Make sure that we have exactly size bytes
+      * available to the caller, no more, no less.
+      */
+      skb->reserved_tailroom = skb->end - skb->tail - size;
+      INIT_LIST_HEAD(&skb->tcp_tsorted_anchor);
+      return skb;
+    }
+    __kfree_skb(skb);
+  } else {
+    sk->sk_prot->enter_memory_pressure(sk);
+    sk_stream_moderate_sndbuf(sk);
+  }
+  return NULL;
+}
+
+struct sk_buff *alloc_skb_fclone(
+  unsigned int size, gfp_t priority)
+{
+  return __alloc_skb(size, priority, SKB_ALLOC_FCLONE, NUMA_NO_NODE);
+}
+
+/* Allocate a new &sk_buff. The returned buffer has no headroom and a
+ *	tail room of at least size bytes. The object has a reference count
+ *	of one. The return is the buffer. On a failure the return is %NULL.
+ *
+ *	Buffers may only be allocated from interrupts using a @gfp_mask of
+ *	%GFP_ATOMIC. */
+struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+          int flags, int node)
+{
+  struct kmem_cache *cache;
+  struct skb_shared_info *shinfo;
+  struct sk_buff *skb;
+  u8 *data;
+  bool pfmemalloc;
+
+  cache = (flags & SKB_ALLOC_FCLONE)
+    ? skbuff_fclone_cache : skbuff_head_cache;
+
+  if (sk_memalloc_socks() && (flags & SKB_ALLOC_RX))
+    gfp_mask |= __GFP_MEMALLOC;
+
+  /* Get the HEAD */
+  skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
+  if (!skb)
+    goto out;
+  prefetchw(skb);
+
+  /* We do our best to align skb_shared_info on a separate cache
+   * line. It usually works because kmalloc(X > SMP_CACHE_BYTES) gives
+   * aligned memory blocks, unless SLUB/SLAB debug is enabled.
+   * Both skb->head and skb_shared_info are cache line aligned. */
+  size = SKB_DATA_ALIGN(size);
+  size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+  data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
+  if (!data)
+    goto nodata;
+
+  /* kmalloc(size) might give us more room than requested.
+   * Put skb_shared_info exactly at the end of allocated zone,
+   * to allow max possible filling before reallocation. */
+  size = SKB_WITH_OVERHEAD(ksize(data));
+  prefetchw(data + size);
+
+  /* Only clear those fields we need to clear, not those that we will
+   * actually initialise below. Hence, don't put any more fields after
+   * the tail pointer in struct sk_buff! */
+  memset(skb, 0, offsetof(struct sk_buff, tail));
+  /* Account for allocated memory : skb + skb->head */
+  skb->truesize = SKB_TRUESIZE(size);
+  skb->pfmemalloc = pfmemalloc;
+  refcount_set(&skb->users, 1);
+  skb->head = data;
+  skb->data = data;
+  skb_reset_tail_pointer(skb);
+  skb->end = skb->tail + size;
+  skb->mac_header = (typeof(skb->mac_header))~0U;
+  skb->transport_header = (typeof(skb->transport_header))~0U;
+
+  /* make sure we initialize shinfo sequentially */
+  shinfo = skb_shinfo(skb);
+  memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+  atomic_set(&shinfo->dataref, 1);
+
+  if (flags & SKB_ALLOC_FCLONE) {
+    struct sk_buff_fclones *fclones;
+
+    fclones = container_of(skb, struct sk_buff_fclones, skb1);
+
+    skb->fclone = SKB_FCLONE_ORIG;
+    refcount_set(&fclones->fclone_ref, 1);
+
+    fclones->skb2.fclone = SKB_FCLONE_CLONE;
+  }
+out:
+  return skb;
+nodata:
+  kmem_cache_free(cache, skb);
+  skb = NULL;
+  goto out;
+}
+
+/* kmalloc_reserve is a wrapper around kmalloc_node_track_caller that tells
+ * the caller if emergency pfmemalloc reserves are being used. If it is and
+ * the socket is later found to be SOCK_MEMALLOC then PFMEMALLOC reserves
+ * may be used. Otherwise, the packet data may be discarded until enough
+ * memory is free */
+#define kmalloc_reserve(size, gfp, node, pfmemalloc) \
+  __kmalloc_reserve(size, gfp, node, _RET_IP_, pfmemalloc)
+
+static void *__kmalloc_reserve(size_t size, gfp_t flags, int node,
+            unsigned long ip, bool *pfmemalloc)
+{
+  void *obj;
+  bool ret_pfmemalloc = false;
+
+  /* Try a regular allocation, when that fails and we're not entitled
+   * to the reserves, fail. */
+  obj = kmalloc_node_track_caller(size,
+          flags | __GFP_NOMEMALLOC | __GFP_NOWARN,
+          node);
+  if (obj || !(gfp_pfmemalloc_allowed(flags)))
+    goto out;
+
+  /* Try again but now we are using pfmemalloc reserves */
+  ret_pfmemalloc = true;
+  obj = kmalloc_node_track_caller(size, flags, node);
+
+out:
+  if (pfmemalloc)
+    *pfmemalloc = ret_pfmemalloc;
+
+  return obj;
+}
+
+/* slub.c */
+void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
+{
+  struct kmem_cache *s;
+  void *ret;
+
+  if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
+    return kmalloc_large(size, gfpflags);
+
+  s = kmalloc_slab(size, gfpflags);
+
+  if (unlikely(ZERO_OR_NULL_PTR(s)))
+    return s;
+
+  ret = slab_alloc(s, gfpflags, caller);
+
+  /* Honor the call site pointer we received. */
+  trace_kmalloc(caller, ret, size, s->size, gfpflags);
+
+  return ret;
+}
+```
+
+* [How SKBs work](http://vger.kernel.org/~davem/skb_data.html)
+
 
 ### read
 #### driver layer
@@ -11569,7 +11757,8 @@ static const struct net_device_ops ixgb_netdev_ops = {
   .ndo_set_features       = ixgb_set_features,
 };
 
-// activate device: ixgb_open ->
+/* activate device: ixgb_open ->
+ * register interrupt */
 int ixgb_up(struct ixgb_adapter *adapter)
 {
   struct net_device *netdev = adapter->netdev;
