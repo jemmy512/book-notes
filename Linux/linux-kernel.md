@@ -10437,7 +10437,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
   while ((skb = tcp_send_head(sk))) {
     unsigned int limit;
     // tso: TCP Segmentation Offload
-    tso_segs = tcp_init_tso_segs(skb, mss_now); // DIV_ROUND_UP(skb->len, mss_now)
+    tso_segs = tcp_init_tso_segs(skb, mss_now); /* DIV_ROUND_UP(skb->len, mss_now) */
 
     cwnd_quota = tcp_cwnd_test(tp, skb);
 
@@ -10639,6 +10639,28 @@ void skb_split_no_header(
   }
   skb_shinfo(skb1)->nr_frags = k;
 }
+
+void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+  unsigned int prior_packets = tp->packets_out;
+
+  tp->snd_nxt = TCP_SKB_CB(skb)->end_seq;
+
+  __skb_unlink(skb, &sk->sk_write_queue);
+  tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
+
+  if (tp->highest_sack == NULL)
+    tp->highest_sack = skb;
+
+  tp->packets_out += tcp_skb_pcount(skb);
+  if (!prior_packets || icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
+    tcp_rearm_rto(sk);
+
+  NET_ADD_STATS(sock_net(sk), LINUX_MIB_TCPORIGDATASENT,
+          tcp_skb_pcount(skb));
+}
 ```
 
 ```c++
@@ -10695,7 +10717,7 @@ static int tcp_transmit_skb(
                 &md5);
   tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
 
-  skb_push(skb, tcp_header_size);
+  skb_push(skb, tcp_header_size); /* decrement the 'skb->data' pointer */
 
   skb_orphan(skb);
   skb->sk = sk;
@@ -10868,17 +10890,15 @@ int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
 
 /*2. fill IP header */
 packet_routed:
-  /* OK, we know where to send it, allocate and build IP header. */
+  /* OK, we know where to send it, allocate and build IP header.
+   * skb_push decrements the 'skb->data' pointer */
   skb_push(skb, sizeof(struct iphdr) + (inet_opt ? inet_opt->opt.optlen : 0));
   skb_reset_network_header(skb);
-  iph = ip_hdr(skb);
-  *((__be16 *)iph) = htons((4 << 12) | (5 << 8) | (inet->tos & 0xff));
-  if (ip_dont_fragment(sk, &rt->dst) && !skb->ignore_df)
-      iph->frag_off = htons(IP_DF);
-  else
-      iph->frag_off = 0;
-  iph->ttl      = ip_select_ttl(inet, &rt->dst);
-  iph->protocol = sk->sk_protocol;
+  iph               = ip_hdr(skb);
+  *((__be16 *)iph)  = htons((4 << 12) | (5 << 8) | (inet->tos & 0xff));
+  iph->frag_off      = (ip_dont_fragment(sk, &rt->dst) && !skb->ignore_df) ? htons(IP_DF) : 0;
+  iph->ttl          = ip_select_ttl(inet, &rt->dst);
+  iph->protocol     = sk->sk_protocol;
   ip_copy_addrs(iph, fl4);
 
   /* Transport layer set skb->h.foo itself. */
@@ -11333,6 +11353,8 @@ static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
 ```
 ![linux-net-queue-displine.png](../Images/LinuxKernel/kernel-net-queue-displine.png)
 
+![linux-net-dev-pci](../Images/LinuxKernel/kernel-net-dev-pci.png)
+
 ```C++
 static inline int __dev_xmit_skb(
   struct sk_buff *skb,
@@ -11421,7 +11443,7 @@ static inline int qdisc_restart(struct Qdisc *q, int *packets)
   /* Dequeue packet */
   skb = dequeue_skb(q, &validate, packets);
   if (unlikely(!skb))
-          return 0;
+    return 0;
 
   root_lock = qdisc_lock(q);
   dev = qdisc_dev(q);
@@ -11541,7 +11563,13 @@ tcp_sendmsg();
       tcp_snd_wnd_test(tp, skb, mss_now);
       limit = tcp_mss_split_point();
       tso_fragment();
+        skb_split();
+          skb_split_inside_header();
+          skb_split_no_header();
       tcp_event_new_data_sent();
+        __skb_unlink(skb, &sk->sk_write_queue);
+        tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
+        tcp_rearm_rto(sk);
 
       tcp_transmit_skb();
         /* fill TCP header */
@@ -11650,13 +11678,14 @@ struct sk_buff {
 struct skb_shared_info {
   __u8    __unused, meta_len;
   __u8    nr_frags, tx_flags;
-  unsigned short  gso_size;
 
-  unsigned short                gso_segs;
+  unsigned short  gso_size; /* generic segmentation size */
+  unsigned int    gso_type; /* SKB_GSO_TCPV4 or SKB_GSO_TCPV6 */
+  unsigned short  gso_segs;
+
   struct sk_buff                 *frag_list;
   struct skb_shared_hwtstamps   hwtstamps;
-  unsigned int  gso_type;
-  u32    tskey;
+  u32           tskey;
 
   /* must be last field, see pskb_expand_head() */
   skb_frag_t  frags[MAX_SKB_FRAGS];
@@ -11699,10 +11728,8 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
     }
     if (likely(mem_scheduled)) {
       skb_reserve(skb, sk->sk_prot->max_header);
-      /*
-      * Make sure that we have exactly size bytes
-      * available to the caller, no more, no less.
-      */
+      /* Make sure that we have exactly size bytes
+       * available to the caller, no more, no less. */
       skb->reserved_tailroom = skb->end - skb->tail - size;
       INIT_LIST_HEAD(&skb->tcp_tsorted_anchor);
       return skb;
@@ -11858,8 +11885,8 @@ void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
 }
 ```
 
-* [How SKBs work](http://vger.kernel.org/~davem/skb_data.html)
-
+* [How sk_buffs alloc work](http://vger.kernel.org/~davem/skb_data.html)
+* [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
 
 ### read
 #### driver layer
@@ -11940,6 +11967,16 @@ struct net_device {
   struct device               dev;
   const struct net_device_ops *netdev_ops;
   const struct ethtool_ops    *ethtool_ops;
+
+  struct netdev_rx_queue      *_rx;
+  unsigned int                num_rx_queues;
+  unsigned int                real_num_rx_queues;
+
+  struct netdev_queue         *_tx;
+  unsigned int                num_tx_queues;
+  unsigned int                real_num_tx_queues;
+
+  struct Qdisc                *qdisc;
 }
 
 struct ixgb_adapter {
@@ -12141,7 +12178,7 @@ static bool ixgb_clean_rx_irq(
 
     ixgb_check_copybreak(&adapter->napi, buffer_info, length, &skb);
 
-    /* Good Receive */
+    /* Good Receive, increment skb->tail */
     skb_put(skb, length);
 
     /* Receive Checksum Offload */
@@ -12538,13 +12575,13 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
   struct tcp_sock *tp = tcp_sk(sk);
   bool fragstolen = false;
 
-  /* 1. In sequence. In window. */
   if (TCP_SKB_CB(skb)->seq == tp->rcv_nxt) {
     if (tcp_receive_window(tp) == 0) {
       NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPZEROWINDOWDROP);
       goto out_of_window;
     }
 
+/* 1. [seq = rcv_next < end_seq < win] */
 queue_and_out:
     if (skb_queue_len(&sk->sk_receive_queue) == 0)
       sk_forced_mem_schedule(sk, skb->truesize);
@@ -12560,7 +12597,8 @@ queue_and_out:
     if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN)
       tcp_fin(sk);
 
-    /* handle out of skb */
+    /* checks to see if we can put data from the
+     * out_of_order queue into the receive_queue */
     if (!RB_EMPTY_ROOT(&tp->out_of_order_queue)) {
       tcp_ofo_queue(sk);
 
@@ -12582,7 +12620,7 @@ queue_and_out:
     return;
   }
 
-  /* 2. end_seq < rcv_nxt */
+/* 2. [seq < end_seq < rcv_next < win] */
   if (!after(TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt)) {
     /* A retransmit, 2nd most common case.  Force an immediate ack. */
     NET_INC_STATS(sock_net(sk), LINUX_MIB_DELAYEDACKLOST);
@@ -12596,11 +12634,11 @@ drop:
     return;
   }
 
-  /* 3. Out of window. F.e. zero window probe. */
+/* 3. [rcv_next < win < seq < end_seq] */
   if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt + tcp_receive_window(tp)))
     goto out_of_window;
 
-  /* 4. seq < rcv_next < end_seq */
+/* 4. [seq < rcv_next < end_seq < win] */
   if (before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) {
     /* Partial packet, seq < rcv_next < end_seq */
     tcp_dsack_set(sk, TCP_SKB_CB(skb)->seq, tp->rcv_nxt);
@@ -12614,6 +12652,7 @@ drop:
     goto queue_and_out;
   }
 
+/* 5. [rcv_next < seq < end_seq < win] */
   tcp_data_queue_ofo(sk, skb);
 }
 
@@ -12899,13 +12938,87 @@ struct wait_queue_entry {
 };
 
 ```
+
+```c++
+/* driver layer */
+ixgb_intr()
+  __napi_schedule()
+    __raise_softirq_irqoff(NET_RX_SOFTIRQ)
+      net_rx_action()
+        napi_poll()
+          ixgb_clean_rx_irq()
+
+/* mac layer */
+netif_receive_skb()
+  __netif_receive_skb_core()
+    packet_type->func()
+
+/* ip layer */
+ip_rcv()
+  NF_HOOK(NF_INET_PRE_ROUTING)
+    ip_rcv_finish()
+      ip_rcv_finish_core()
+      dst_input()
+        ip_local_deliver()
+          ip_defrag()
+          NF_HOOK(NF_INET_LOCAL_IN)
+            ip_local_deliver_finish()
+              inet_protos[protocol]->handler()
+                net_protocol->handler()
+
+/* tcp layer */
+tcp_v4_rcv()
+  /* fil TCP header */
+  __inet_lookup_skb()
+  tcp_v4_do_rcv()
+    tcp_rcv_established()
+      tcp_rcv_established()
+        tcp_data_queue()
+          /* 1. [seq = rcv_next < end_seq < win] ACK  */
+          /* 2. [seq < end_seq < rcv_next < win] DACK */
+          /* 3. [rcv_next < win < seq < end_seq] DROP */
+          /* 4. [seq < rcv_next < end_seq < win] OFO  */
+          /* 5. [rcv_next < seq < end_seq < win] DACK */
+    tcp_rcv_state_process()
+  tcp_add_backlog()
+
+/* vfs layer */
+sock_read_iter()
+  sock_recvmsg()
+    sock->ops->recvmsg()
+      inet_recvmsg()
+        skb_queue_walk(&sk->sk_receive_queue, skb)
+          skb_copy_datagram_msg() /* copy data to user space */
+          sk_wait_data()
+            sk_wait_event()
+              wait_woken()
+                schedule_timeout()
+```
 ![linux-net-read.png](../Images/LinuxKernel/kernel-net-read.png)
 
-### tcp_ack
+### ACK, SYN, FIN
 
-### tcp_send_fin
+#### tcp_ack
+```c++
+tcp_rcv_established();
 
-### tcp_send_synack
+tcp_rcv_synsent_state_process();
+
+tcp_rcv_state_process();
+```
+
+#### tcp_send_delayed_ack
+```c++
+tcp_v4_do_rcv();
+  tcp_rcv_established();
+    __tcp_ack_snd_check();
+      tcp_send_delayed_ack();
+```
+
+#### tcp_send_synack
+
+#### tcp_send_fin
+
 
 ### epoll
 ```c++
@@ -13828,6 +13941,9 @@ out_unlock:
 }
 ```
 ![kernel-net-epoll.png](../Images/LinuxKernel/kernel-net-epoll.png)
+
+## Reference:
+* [Segmentation Offloads](https://www.kernel.org/doc/html/latest/networking/segmentation-offloads.html)
 
 ## Q:
 1. Alloc 0 sized sk_buff in `sk_stream_alloc_skb` from `tcp_sendmsg_locked` when there is not enough space for the new data?
