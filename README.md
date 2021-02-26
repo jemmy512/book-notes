@@ -31,6 +31,7 @@
 * [Linux Kernel 4.19](./Linux/linux-kernel.md)  :orange_book:[PDF](./Linux/linux-kernel.pdf)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
+* [Linux Kernel Development](./linux-kernel-development.md)
 * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
 * [UNP](./Linux/UNP.txt)
 * [Linux Basic](./Linux/linux-basic.md)
