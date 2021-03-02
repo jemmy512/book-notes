@@ -307,6 +307,7 @@ Customer paying for parking ticket: Any customer can perform this activity. Here
 * **Notification**: This class will take care of sending notifications to customers.
 * **Payment**: This class will encapsulate the payment for an order. Members can pay through credit card or electronic bank transfer.
 ![](../Images/OOD/shopping-class-diagram.png)
+
 ### Activity Diagram
 Following is the activity diagram for a user performing online shopping:
 
