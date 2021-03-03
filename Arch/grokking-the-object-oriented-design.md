@@ -1,7 +1,7 @@
 # Object-Oriented Design and UML
 
 ## Object-Oriented Basics
-Object-oriented programming (OOP) is a style of programming that focuses on using objects to design and build applications. Contrary to procedure-oriented programming where programs are designed as blocks of statements to manipulate data, OOP organizes the program to combine data and functionality and wrap it inside something called an “Object”.
+Object-oriented programming (OOP) is a style of programming that focuses on using objects to design and build applications. Contrary to procedure-oriented programming where programs are designed as blocks of statements to manipulate data, OOP organizes the program to combine data and functionality and wrap it inside something called an "Object".
 
 If you have never used an object-oriented programming language before, you will need to learn a few basic concepts before you can begin writing any code. This chapter will introduce some basic concepts of OOP:
 
@@ -17,7 +17,7 @@ The four principles of object-oriented programming are encapsulation, abstractio
 
 **Inheritance**: Inheritance is the mechanism of creating new classes from existing ones.
 
-**Polymorphism**: Polymorphism (from Greek, meaning “many forms”) is the ability of an object to take different forms and thus, depending upon the context, to respond to the same message in different ways. Take the example of a chess game; a chess piece can take many forms, like bishop, castle, or knight and all these pieces will respond differently to the ‘move’ message.
+**Polymorphism**: Polymorphism (from Greek, meaning "many forms") is the ability of an object to take different forms and thus, depending upon the context, to respond to the same message in different ways. Take the example of a chess game; a chess piece can take many forms, like bishop, castle, or knight and all these pieces will respond differently to the ‘move’ message.
 
 ## OO Analysis and Design
 OO Analysis and Design is a structured method for analyzing and designing a system by applying object-oriented concepts. This design process consists of an investigation into the objects constituting the system. It starts by first identifying the objects of the system and then figuring out the interactions between various objects.
@@ -76,7 +76,7 @@ Use case diagrams describe a set of actions (called use cases) that a system sho
 * It answers what system does from the user point of view.
 * Use case answers ‘What will the system do?’ and at the same time tells us ‘What will the system NOT do?’.
 
-A use case illustrates a unit of functionality provided by the system. The primary purpose of the use case diagram is to help development teams visualize the functional requirements of a system, including the relationship of “actors” to the essential processes, as well as the relationships among different use cases.
+A use case illustrates a unit of functionality provided by the system. The primary purpose of the use case diagram is to help development teams visualize the functional requirements of a system, including the relationship of "actors" to the essential processes, as well as the relationships among different use cases.
 
 To illustrate a use case on a use case diagram, we draw an oval in the middle of the diagram and put the name of the use case in the center of the oval. To show an actor (indicating a system user) on a use-case diagram, we draw a stick figure to the left or right of the diagram.
 
@@ -100,7 +100,7 @@ A class diagram describes the attributes and operations of a class and also the 
     * To provide a base for component and deployment diagrams; and,
     * Forward and reverse engineering.
 
-A class is depicted in the class diagram as a rectangle with three horizontal sections, as shown in the figure below. The upper section shows the class’s name (Flight), the middle section contains the properties of the class, and the lower section contains the class’s operations (or “methods”).
+A class is depicted in the class diagram as a rectangle with three horizontal sections, as shown in the figure below. The upper section shows the class’s name (Flight), the middle section contains the properties of the class, and the lower section contains the class’s operations (or "methods").
 
 ![](../Images/OOD/class-diagram-1.png)
 
@@ -108,9 +108,9 @@ A class is depicted in the class diagram as a rectangle with three horizontal se
     * **Association**: If two classes in a model need to communicate with each other, there must be a link between them. This link can be represented by an association. Associations can be represented in a class diagram by a line between these classes with an arrow indicating the navigation direction.
         * By default, associations are always assumed to be bi-directional; this means that both classes are aware of each other and their relationship. In the diagram below, the association between Pilot and FlightInstance is bi-directional, as both classes know each other.
         * By contrast, in a uni-directional association, two classes are related - but only one class knows that the relationship exists. In the below example, only Flight class knows about Aircraft; hence it is a uni-directional association
-    * **Multiplicity**: Multiplicity indicates how many instances of a class participate in the relationship. It is a constraint that specifies the range of permitted cardinalities between two classes. For example, in the diagram below, one FlightInstance will have two Pilots, while a Pilot can have many FlightInstances. A ranged multiplicity can be expressed as “0…*” which means “zero to many" or as “2…4” which means “two to four”.
+    * **Multiplicity**: Multiplicity indicates how many instances of a class participate in the relationship. It is a constraint that specifies the range of permitted cardinalities between two classes. For example, in the diagram below, one FlightInstance will have two Pilots, while a Pilot can have many FlightInstances. A ranged multiplicity can be expressed as "0…*" which means "zero to many" or as "2…4" which means "two to four".
         * We can indicate the multiplicity of an association by adding multiplicity adornments to the line denoting the association. The below diagram, demonstrates that a FlightInstance has exactly two Pilots but a Pilot can have many FlightInstances.
-    * **Aggregation**: Aggregation is a special type of association used to model a “whole to its parts” relationship. In a basic aggregation relationship, the lifecycle of a PART class is independent of the WHOLE class’s lifecycle. In other words, aggregation implies a relationship where the child can exist independently of the parent. In the above diagram, Aircraft can exist without Airline.
+    * **Aggregation**: Aggregation is a special type of association used to model a "whole to its parts" relationship. In a basic aggregation relationship, the lifecycle of a PART class is independent of the WHOLE class’s lifecycle. In other words, aggregation implies a relationship where the child can exist independently of the parent. In the above diagram, Aircraft can exist without Airline.
     * **Composition**: The composition aggregation relationship is just another form of the aggregation relationship, but the child class’s instance lifecycle is dependent on the parent class’s instance lifecycle. In other words, Composition implies a relationship where the child cannot exist independent of the parent. In the above example, WeeklySchedule is composed in Flight which means when Flight lifecycle ends, WeeklySchedule automatically gets destroyed.
     * **Generalization**: Generalization is the mechanism for combining similar classes of objects into a single, more general class. Generalization identifies commonalities among a set of entities. In the above diagram, Crew, Pilot, and Admin, all are Person.
     * **Dependency**: A dependency relationship is a relationship in which one class, the client, uses or depends on another class, the supplier. In the above diagram, FlightReservation depends on Payment.
@@ -509,12 +509,527 @@ Here is the sequence diagram for balance inquiry transaction:
 ![](../Images/OOD/atm-sequence-diagram.png)
 
 ## Design an Airline Management System
+### System Requirements
+* Customers should be able to search for flights for a given date and source/destination airport.
+* Customers should be able to reserve a ticket for any scheduled flight. Customers can also build a multi-flight itinerary.
+* Users of the system can check flight schedules, their departure time, available seats, arrival time, and other flight details.
+* Customers can make reservations for multiple passengers under one itinerary.
+* Only the admin of the system can add new aircrafts, flights, and flight schedules. Admin can cancel any pre-scheduled flight (all stakeholders will be notified).
+* Customers can cancel their reservation and itinerary.
+* The system should be able to handle the assignment of pilots and crew members to flights.
+* The system should be able to handle payments for reservations.
+* The system should be able to send notifications to customers whenever a reservation is made/modified or there is an update for their flights.
+
+### Use case diagram
+* We have five main Actors in our system:
+    * **Admin** Responsible for adding new flights and their schedules, canceling any flight, maintaining staff-related work, etc.
+    * **Front desk officer** Will be able to reserve/cancel tickets.
+    * **Customer** Can view flight schedule, reserve and cancel tickets.
+    * **Pilot/Crew** Can view their assigned flights and their schedules.
+    * **System** Mainly responsible for sending notifications regarding itinerary changes, flight status updates, etc.
+
+* Here are the top use cases of the Airline Management System:
+    * **Search Flights**: To search the flight schedule to find flights for a suitable date and time.
+    * **Create/Modify/View reservation**: To reserve a ticket, cancel it, or view details about the flight or ticket.
+    * **Assign seats to passengers**: To assign seats to passengers for a flight instance with their reservation.
+    * **Make payment for a reservation**: To pay for the reservation.
+    * **Update flight schedule**: To make changes in the flight schedule, and to add or remove any flight.
+    * **Assign pilots and crew**: To assign pilots and crews to flights.
+![](../Images/OOD/airline-use-case-diagram.svg)
+
+### Class diagram
+* **Airline**: The main part of the organization for which this software has been designed. It has attributes like ‘name’ and an airline code to distinguish the airline from other airlines.
+* **Airport**: Each airline operates out of different airports. Each airport has a name, address, and a unique code.
+* **Aircraft**: Airlines own or hire aircraft to carry out their flights. Each aircraft has attributes like name, model, manufacturing year, etc.
+* **Flight**: The main entity of the system. Each flight will have a flight number, departure and arrival airport, assigned aircraft, etc.
+* **FlightInstance**: Each flight can have multiple occurrences; each occurrence will be considered a flight instance in our system. For example, if a British Airways flight from London to Tokyo (flight number**: BA212) occurs twice a week, each of these occurrences will be considered a separate flight instance in our system.
+* **WeeklySchedule and CustomSchedule**: Flights can have multiple schedules and each schedule will create a flight instance.
+* **FlightReservation**: A reservation is made against a flight instance and has attributes like a unique reservation number, list of passengers and their assigned seats, reservation status, etc.
+* **Itinerary**: An itinerary can have multiple flights.
+* **FlightSeat**: This class will represent all seats of an aircraft assigned to a specific flight instance. All reservations of this flight instance will assign seats to passengers through this class.
+* **Payment**: Will be responsible for collecting payments from customers.
+* **Notification**: This class will be responsible for sending notifications for flight reservations, flight status update, etc.
+![](../Images/OOD/airline-class-diagram.png)
+
+### Activity diagrams
+* Reserve a ticket: Any customer can perform this activity. Here are the steps to reserve a ticket:
+    * ![](../Images/OOD/airline-activity-diagram-1.svg)
+* Cancel a reservation: Any customer can perform this activity. Here are the set of steps to cancel a reservation:
+    * ![](../Images/OOD/airline-activity-diagram-2.svg)
+
 ## Design Blackjack and a Deck of Cards
+### System Requirements
+Blackjack is played with one or more standard 52-card decks. The standard deck has 13 ranks in 4 suits.
+
+* Background
+    * To start with, the players and the dealer are dealt separate hands. Each hand has two cards in it.
+    * The dealer has one card exposed (the up card) and one card concealed (the hole card), leaving the player with incomplete information about the state of the game.
+    * The player’s objective is to make a hand that has more points than the dealer, but less than or equal to 21 points.
+    * The player is responsible for placing bets when they are offered, and taking additional cards to complete their hand.
+    * The dealer will draw additional cards according to a simple rule: when the dealer’s hand is 16 or less, they will draw cards (called a hit), when it is 17 or more, they will not draw additional cards (or stand pat).
+
+* Points calculation
+    * Blackjack has different point values for each of the cards:
+    * The number cards (2-10) have the expected point values.
+    * The face cards (Jack, Queen, and King) all have a value of 10 points.
+    * The Ace can count as one point or eleven points. Because of this, an Ace and a 10 or face card totals 21. This two-card winner is called "blackjack".
+    * When the points include an ace counting as 11, the total is called soft-total; when the ace counts as 1, the total is called hard-total. For example, A+5 can be considered a soft 16 or a hard 6.
+
+* Gameplay
+    * The player places an initial bet.
+    * The player and dealer are each dealt a pair of cards.
+    * Both of the player’s cards are face up, the dealer has one card up and one card down.
+    * If the dealer’s card is an ace, the player is offered insurance.
+
+* Initially, the player has a number of choices:
+    * If the two cards are the same rank, the player can elect to split into two hands.
+    * The player can double their bet and take just one more card.
+    * The more typical scenario is for the player to take additional cards (a hit ) until either their hand totals more than 21 (they bust ), or their hand totals exactly 21, or they elect to stand.
+
+If the player’s hand is over 21, their bet is resolved immediately as a loss. If the player’s hand is 21 or less, it will be compared to the dealer’s hand for resolution.
+
+**Dealer has an Ace**. If the dealer’s up card is an ace, the player is offered an insurance bet. This is an additional proposition that pays 2:1 if the dealer’s hand is exactly 21. If this insurance bet wins, it will, in effect, cancel the loss of the initial bet. After offering insurance to the player, the dealer will check their hole card and resolve the insurance bets. If the hole card is a 10-point card, the dealer has blackjack, the card is revealed, and insurance bets are paid. If the hole card is not a 10-point card, the insurance bets are lost, but the card is not revealed.
+
+**Split Hands**. When dealt two cards of the same rank, the player can split the cards to create two hands. This requires an additional bet on the new hand. The dealer will deal an additional card to each new hand, and the hands are played independently. Generally, the typical scenario described above applies to each of these hands.
+
+* Bets
+    * Ante: This is the initial bet and is mandatory to play.
+    * Insurance: This bet is offered only when the dealer shows an ace. The amount must be half the ante.
+    * Split: This can be thought of as a bet that is offered only when the player’s hand has two cards of equal rank. The amount of the bet must match the original ante.
+    * Double: This can be thought of as a bet that is offered instead of taking an ordinary hit. The amount of the bet must match the original ante.
+
+### Use case diagram
+* We have two main Actors in our system:
+    * Dealer: Mainly responsible for dealing cards and game resolution.
+    * Player: Places the initial bets, accepts or declines additional bets - including insurance, and splits hands. Accepts or rejects the offered resolution, including even money. Chooses among hit, double and stand pat options.
+
+* Here are the top use cases of the Blackjack game:
+    * **Create Hands**: Initially both the player and the dealer are given two cards each. The player has both cards visible whereas only one card of the dealer’s hand is visible to the player.
+    * **Place Bet**: To start the game, the player has to place a bet.
+    * **Player plays the hand**: If the hand is under 21 points, the player has three options**:
+        * **Hit**: The hand gets an additional card and this process repeats.
+        * **Double Down**: The player creates an additional bet, and the hand gets one more card and play is done.
+        * **Stands Pat**: If the hand is 21 points or over, or the player chooses to stand pat, the game is over.
+        * **Resolve Bust**. If a hand is over 21, it is resolved as a loser.
+    * **Dealer plays the hand**: The dealer keeps getting a new card if the total point value of the hand is 16 or less, and stops dealing cards at the point value of 17 or more.
+        * **Dealer Bust**: If the dealer’s hand is over 21, the player’s wins the game. Player Hands with two cards totaling 21 ( "blackjack" ) are paid 3**:2, all other hands are paid 1**:1.
+    * **Insurance**: If the dealer’s up card is an Ace, then the player is offered insurance**:
+        * **Offer Even Money**: If the player’s hand totals to a soft 21, a blackjack; the player is offered an even money resolution. If the player accepts, the entire game is resolved at this point. The ante is paid at even money; there is no insurance bet.
+        * **Offer Insurance**: The player is offered insurance, which they can accept by creating a bet. For players with blackjack, this is the second offer after even money is declined. If the player declines, there are no further insurance considerations.
+        * **Examine Hole Card**: The dealer’s hole card is examined. If it has a 10-point value, the insurance bet is resolved as a winner, and the game is over. Otherwise, the insurance is resolved as a loser, the hole card is not revealed, and play continues.
+    * **Split**: If the player’s hand has both cards of equal rank, the player is offered a split. The player accepts by creating an additional Bet. The original hand is removed; The two original cards are split and then the dealer deals two extra cards to create two new Hands. There will not be any further splitting.
+    * **Game Resolution**: The Player’s Hand is compared against the Dealer’s Hand, and the hand with the higher point value wins. In the case of a tie, the bet is returned. When the player wins, a winning hand with two cards totaling 21 ("blackjack") is paid 3:2, any other winning hand is paid 1:1.
+![](../Images/OOD/blackjack-use-case-diagram.svg)
+
+### Class diagram
+* **Card**: A standard playing card has a suit and point value from 1 to 11.
+* **BlackjackCard**: In blackjack, cards have different face values. For example, jack, queen, and king, all have a face value of 10. An ace can be counted as either 1 or 11.
+* **Deck**: A standard playing card deck has 52 cards and 4 suits.
+* **Shoe**: Contains a set of decks. In casinos, a dealer’s shoe is a gaming device to hold multiple decks of playing cards.
+* **Hand**: A collection of cards with one or two point values: a hard value (when an ace counts as 1) and a soft value (when an ace counts as 11).
+* **Player**: Places the initial bets, updates the stake with amounts won and lost. Accepts or declines offered additional bets - including insurance, and split hands. Accepts or declines offered resolution, including even money. Chooses between hit, double and stand options.
+* **Game**: This class encapsulates the basic sequence of play. It runs the game, offers bets to players, deals the cards from the shoe to hands, updates the state of the game, collects losing bets, pays winning bets, splits hands, and responds to player choices of a hit, double or stand.
+![](../Images/OOD/balckjack-class-diagram.svg)
+
+### Activity diagrams
+Blackjack hit or stand: Here are the set of steps to play blackjack with hit or stand:
+![](../Images/OOD/blackjack-use-case-diagram.svg)
+
 ## Design a Hotel Management System
+### System Requirements
+* The system should support the booking of different room types like standard, deluxe, family suite, etc.
+* Guests should be able to search the room inventory and book any available room.
+* The system should be able to retrieve information, such as who booked a particular room, or what rooms were booked by a specific customer.
+* The system should allow customers to cancel their booking - and provide them with a full refund if the cancelation occurs before 24 hours of the check-in date.
+* The system should be able to send notifications whenever the booking is nearing the check-in or check-out date.
+* The system should maintain a room housekeeping log to keep track of all housekeeping tasks.
+* Any customer should be able to add room services and food items.
+* Customers can ask for different amenities.
+* The customers should be able to pay their bills through credit card, check or cash.
+
+### Use case diagram
+* Here are the main Actors in our system:
+    * **Guest**: All guests can search the available rooms, as well as make a booking.
+    * **Receptionist**: Mainly responsible for adding and modifying rooms, creating room bookings, check-in, and check-out customers.
+    * **System**: Mainly responsible for sending notifications for room booking, cancellation, etc.
+    * **Manager**: Mainly responsible for adding new workers.
+    * **Housekeeper**: To add/modify housekeeping record of rooms.
+    * **Server**: To add/modify room service record of rooms.
+
+* Here are the top use cases of the Hotel Management System:
+    * **Add/Remove/Edit room**: To add, remove, or modify a room in the system.
+    * **Search room**: To search for rooms by type and availability.
+    * **Register or cancel an account**: To add a new member or cancel the membership of an existing member.
+    * **Book room**: To book a room.
+    * **Check-in**: To let the guest check-in for their booking.
+    * **Check-out**: To track the end of the booking and the return of the room keys.
+    * **Add room charge**: To add a room service charge to the customer’s bill.
+    * **Update housekeeping log**: To add or update the housekeeping entry of a room.
+![](../Images/OOD/hotel-use-case-diagram.svg)
+
+### Class diagram
+* **Hotel and HotelLocation**: Our system will support multiple locations of a hotel.
+* **Room**: The basic building block of the system. Every room will be uniquely identified by the room number. Each Room will have attributes like Room Style, Booking Price, etc.
+* **Account**: We will have different types of accounts in the system: one will be a guest to search and book rooms, another will be a receptionist. Housekeeping will keep track of the housekeeping records of a room, and a Server will handle room service.
+* **RoomBooking**: This class will be responsible for managing bookings for a room.
+* **Notification**: Will take care of sending notifications to guests.
+* **RoomHouseKeeping**: To keep track of all housekeeping records for rooms.
+* **RoomCharge**: Encapsulates the details about different types of room services that guests have requested.
+* **Invoice**: Contains different invoice-items for every charge against the room.
+* **RoomKey**: Each room can be assigned an electronic key card. Keys will have a barcode and will be uniquely identified by a key-ID.
+![](../Images/OOD/hotel-class-diagram.png)
+
+### Activity diagrams
+* Make a room booking: Any guest or receptionist can perform this activity. Here are the set of steps to book a room:
+    * ![](../Images/OOD/hotel-activity-diagram-1.svg)
+* Check in: Guest will check in for their booking. The Receptionist can also perform this activity. Here are the steps:
+    * ![](../Images/OOD/hotel-activity-diagram-2.svg)
+* Cancel a booking: Guest can cancel their booking. Receptionist can perform this activity. Here are the different steps of this activity:
+    * ![](../Images/OOD/hotel-activity-diagram-3.svg)
+
 ## Design a Restaurant Management system
+### System Requirements
+* The restaurant will have different branches.
+* Each restaurant branch will have a menu.
+* The menu will have different menu sections, containing different menu items.
+* The waiter should be able to create an order for a table and add meals for each seat.
+* Each meal can have multiple meal items. Each meal item corresponds to a menu item.
+* The system should be able to retrieve information about tables currently available to seat walk-in customers.
+* The system should support the reservation of tables.
+* The receptionist should be able to search for available tables by date/time and reserve a table.
+* The system should allow customers to cancel their reservation.
+* The system should be able to send notifications whenever the reservation time is approaching.
+* The customers should be able to pay their bills through credit card, check or cash.
+* Each restaurant branch can have multiple seating arrangements of tables.
+
+### Use case diagram
+* * Here are the main Actors in our system:
+    * **Receptionist**: Mainly responsible for adding and modifying tables and their layout, and creating and canceling table reservations.
+    * **Waiter**: To take/modify orders.
+    * **Manager**: Mainly responsible for adding new workers and modifying the menu.
+    * **Chef**: To view and work on an order.
+    * **Cashier**: To generate checks and process payments.
+    * **System**: Mainly responsible for sending notifications about table reservations, cancellations, etc.
+
+* Here are the top use cases of the Restaurant Management System:
+    * **Add/Modify tables**: To add, remove, or modify a table in the system.
+    * **Search tables**: To search for available tables for reservation.
+    * **Place order**: Add a new order in the system for a table.
+    * **Update order**: Modify an already placed order, which can include adding/modifying meals or meal items.
+    * **Create a reservation**: To create a table reservation for a certain date/time for an available table.
+    * **Cancel reservation**: To cancel an existing reservation.
+    * **Check-in**: To let the guest check in for their reservation.
+    * **Make payment**: Pay the check for the food.
+![](../Images/OOD/restaurant-use-case-diagram.svg)
+
+### Class diagram
+* **Restaurant**: This class represents a restaurant. Each restaurant has registered employees. The employees are part of the restaurant because if the restaurant becomes inactive, all its employees will automatically be deactivated.
+* **Branch**: Any restaurants can have multiple branches. Each branch will have its own set of employees and menus.
+* **Menu**: All branches will have their own menu.
+* **MenuSection and MenuItem**: A menu has zero or more menu sections. Each menu section consists of zero or more menu items.
+* **Table and TableSeat**: The basic building block of the system. Every table will have a unique identifier, maximum sitting capacity, etc. Each table will have multiple seats.
+* **Order**: This class encapsulates the order placed by a customer.
+* **Meal**: Each order will consist of separate meals for each table seat.
+* **Meal Item**: Each Meal will consist of one or more meal items corresponding to a menu item.
+* **Account**: We’ll have different types of accounts in the system, one will be a receptionist to search and reserve tables and the other, the waiter will place orders in the system.
+* **Notification**: Will take care of sending notifications to customers.
+* **Bill**: Contains different bill-items for every meal item.
+![](../Images/OOD/restaurant-class-diagram.png)
+
+### Activity diagrams
+* **Place order**: Any waiter can perform this activity. Here are the steps to place an order:
+    * ![](../Images/OOD/restaurant-activity-diagram-1.svg)
+* **Make a reservation**: Any receptionist can perform this activity. Here are the steps to make a reservation:
+    * ![](../Images/OOD/restaurant-activity-diagram-2.svg)
+
+* **Cancel a reservation**: Any receptionist can perform this activity. Here are the steps to cancel a reservation:
+    * ![](../Images/OOD/restaurant-activity-diagram-3.svg)
+
 ## Design Chess
+### System Requirements
+* We’ll focus on the following set of requirements while designing the game of chess:
+* The system should support two online players to play a game of chess.
+* All rules of international chess will be followed.
+* Each player will be randomly assigned a side, black or white.
+* Both players will play their moves one after the other. The white side plays the first move.
+* Players can’t cancel or roll back their moves.
+* The system should maintain a log of all moves by both players.
+* Each side will start with 8 pawns, 2 rooks, 2 bishops, 2 knights, 1 queen, and 1 king.
+* The game can finish either in a checkmate from one side, forfeit or stalemate (a draw), or resignation.
+
+### Use case diagram
+* We have two actors in our system:
+    * Player: A registered account in the system, who will play the game. The player will play chess moves.
+    * Admin: To ban/modify players.
+
+* Here are the top use cases for chess:
+    * Player moves a piece: To make a valid move of any chess piece.
+    * Resign or forfeit a game: A player resigns from/forfeits the game.
+    * Register new account/Cancel membership: To add a new member or cancel an existing member.
+    * Update game log: To add a move to the game log.
+![](../Images/OOD/chess-use-case-diagram.png)
+
+### Class diagram
+* **Player**: Player class represents one of the participants playing the game. It keeps track of which side (black or white) the player is playing.
+* **Account**: We’ll have two types of accounts in the system**: one will be a player, and the other will be an admin.
+* **Game**: This class controls the flow of a game. It keeps track of all the game moves, which player has the current turn, and the final result of the game.
+* **Box**: A box represents one block of the 8x8 grid and an optional piece.
+* **Board**: Board is an 8x8 set of boxes containing all active chess pieces.
+* **Piece**: The basic building block of the system, every piece will be placed on a box. This class contains the color the piece represents and the status of the piece (that is, if the piece is currently in play or not). This would be an abstract class and all game pieces will extend it.
+* **Move**: Represents a game move, containing the starting and ending box. The Move class will also keep track of the player who made the move, if it is a castling move, or if the move resulted in the capture of a piece.
+* **GameController**: Player class uses GameController to make moves.
+* **GameView**: Game class updates the GameView to show changes to the players.
+![](../Images/OOD/chess-class-diagram.png)
+
+### Activity diagrams
+* Make move: Any Player can perform this activity. Here are the set of steps to make a move:
+    * ![](../Images/OOD/chess-activity-diagram.svg)
+
 ## Design an Online Stock Brokerage System
+### System Requirements
+* Any user of our system should be able to buy and sell stocks.
+* Any user can have multiple watchlists containing multiple stock quotes.
+* Users should be able to place stock trade orders of the following types**: 1) market, 2) limit, 3) stop loss and, 4) stop limit.
+* Users can have multiple ‘lots’ of a stock. This means that if a user has bought a stock multiple times, the system should be able to differentiate between different lots of the same stock.
+* The system should be able to generate reports for quarterly updates and yearly tax statements.
+* Users should be able to deposit and withdraw money either via check, wire, or electronic bank transfer.
+* The system should be able to send notifications whenever trade orders are executed.
+
+### Usecase diagram
+* We have three main Actors in our system:
+    * **Admin**: Mainly responsible for administrative functions like blocking or unblocking members.
+    * **Member**: All members can search the stock inventory, as well as buy and sell stocks. Members can have multiple watchlists containing multiple stock quotes.
+    * **System**: Mainly responsible for sending notifications for stock orders and periodically fetching stock quotes from the stock exchange.
+
+* Here are the top use cases of the Stock Brokerage System:
+    * **Register new account/Cancel membership**: To add a new member or cancel the membership of an existing member.
+    * **Add/Remove/Edit watchlist**: To add, remove or modify a watchlist.
+    * **Search stock inventory**: To search for stocks by their symbols.
+    * **Place order**: To place a buy or sell order on the stock exchange.
+    * **Cancel order**: Cancel an already placed order.
+    * **Deposit/Withdraw money**: Members can deposit or withdraw money via check, wire or electronic bank transfer.
+![](../Images/OOD/stock-use-case-diagram.svg)
+
+### Class diagram
+* **Account**: Consists of the member’s name, address, e-mail, phone, total funds, funds that are available for trading, etc. We’ll have two types of accounts in the system**: one will be a general member, and the other will be an Admin. The Account class will also contain all the stocks the member is holding.
+* **StockExchange**: The stockbroker system will fetch all stocks and their current prices from the stock exchange. StockExchange will be a singleton class encapsulating all interactions with the stock exchange. This class will also be used to place stock trading orders on the stock exchange.
+* **Stock**: The basic building block of the system. Every stock will have a symbol, current trading price, etc.
+* **StockInventory**: This class will fetch and maintain the latest stock prices from the StockExchange. All system components will read the most recent stock prices from this class.
+* **Watchlist**: A watchlist will contain a list of stocks that the member wants to follow.
+* **Order**: Members can place stock trading orders whenever they would like to sell or buy stock positions. The system would support multiple types of orders:
+    * **Market Order**: Market order will enable users to buy or sell stocks immediately at the current market price.
+    * **Limit Order**: Limit orders will allow a user to set a price at which they want to buy or sell a stock.
+    * **Stop Loss Order**: An order to buy or sell once the stock reaches a certain price.
+    * **Stop Limit Order**: The stop-limit order will be executed at a specified price or better after a given stop price has been reached. Once the stop price is reached, the stop-limit order becomes a limit order to buy or sell at the limit price or better.
+* **OrderPart**: An order could be fulfilled in multiple parts. For example, a market order to buy 100 stocks could have one part containing 70 stocks at $10 and another part with 30 stocks at $10.05.
+* **StockLot**: Any member can buy multiple lots of the same stock at different times. This class will represent these individual lots. For example, the user could have purchased 100 shares of AAPL yesterday and 50 more stocks of AAPL today. While selling, users will be able to select which lot they want to sell first.
+* **StockPosition**: This class will contain all the stocks that the user holds.
+* **Statement**: All members will have reports for quarterly updates and yearly tax statements.
+* **DepositMoney & WithdrawMoney**: Members will be able to move money through check, wire or electronic bank transfers.
+* **Notification**: Will take care of sending notifications to members.
+![](../Images/OOD/stock-class-diagram.png)
+
+### Activity diagrams
+* **Place a buy order**: Any system user can perform this activity. Here are the steps to place a buy order:
+    * ![](../Images/OOD/stock-activity-diagram-1.svg)
+* **Place a sell order**: Any system user can perform this activity. Here are the steps to place a buy order:
+    * ![](../Images/OOD/stock-activity-diagram-2.svg)
+
 ## Design a Car Rental System
+A Car Rental System is a software built to handle the renting of automobiles for a short period of time, generally ranging from a few hours to a few weeks. A car rental system often has numerous local branches (to allow its user to return a vehicle to a different location), and primarily located near airports or busy city areas.
+
+### System Requirements
+* We will focus on the following set of requirements while designing our Car Rental System:
+* The system will support the renting of different automobiles like cars, trucks, SUVs, vans, and motorcycles.
+* Each vehicle should be added with a unique barcode and other details, including a parking stall number which helps to locate the vehicle.
+* The system should be able to retrieve information like which member took a particular vehicle or what vehicles have been rented out by a specific member.
+* The system should collect a late-fee for vehicles returned after the due date.
+* Members should be able to search the vehicle inventory and reserve any available vehicle.
+* The system should be able to send notifications whenever the reservation is approaching the pick-up date, as well as when the vehicle is nearing the due date or has not been returned within the due date.
+* The system will be able to read barcodes from vehicles.
+* Members should be able to cancel their reservations.
+* The system should maintain a vehicle log to track all events related to the vehicles.
+* Members can add rental insurance to their reservation.
+* Members can rent additional equipment, like navigation, child seat, ski rack, etc.
+* Members can add additional services to their reservation, such as roadside assistance, additional driver, wifi, etc.
+
+### Use case diagram
+* We have four main Actors in our system:
+    * **Receptionist**: Mainly responsible for adding and modifying vehicles and workers. Receptionists can also reserve vehicles.
+    * **Member**: All members can search the catalog, as well as reserve, pick-up, and return a vehicle.
+    * **System**: Mainly responsible for sending notifications about overdue vehicles, canceled reservation, etc.
+    * **Worker**: Mainly responsible for taking care of a returned vehicle and updating the vehicle log.
+
+* Here are the top use cases of the Car Rental System:
+    * **Add/Remove/Edit vehicle**: To add, remove or modify a vehicle.
+    * **Search catalog**: To search for vehicles by type and availability.
+    * **Register new account/Cancel membership**: To add a new member or cancel an existing membership.
+    * **Reserve vehicle**: To reserve a vehicle.
+    * **Check-out vehicle**: To rent a vehicle.
+    * **Return a vehicle**: To return a vehicle which was checked-out to a member.
+    * **Add equipment**: To add an equipment to a reservation like navigation, child seat, etc.
+    * **Update car log**: To add or update a car log entry, such as refueling, cleaning, damage, etc.
+![](../Images/OOD/hotel-use-case-diagram.svg)
+
+### Class diagram
+* **CarRentalSystem**: The main part of the organization for which this software has been designed.
+* **CarRentalLocation**: The car rental system will have multiple locations, each location will have attributes like ‘Name’ to distinguish it from any other locations and ‘Address’ which defines the address of the rental location.
+* **Vehicle**: The basic building block of the system. Every vehicle will have a barcode, license plate number, passenger capacity, model, make, mileage, etc. Vehicles can be of multiple types, like car, truck, SUV, etc.
+* **Account**: Mainly, we will have two types of accounts in the system, one will be a general member and the other will be a receptionist. Another account can be of the worker taking care of the returned vehicle.
+* **VehicleReservation**: This class will be responsible for managing reservations for a vehicle.
+* **Notification**: Will take care of sending notifications to members.
+* **VehicleLog**: To keep track of all the events related to a vehicle.
+* **RentalInsurance**: Stores details about the various rental insurances that members can add to their reservation.
+* **Equipment**: Stores details about the various types of equipment that members can add to their reservation.
+* **Service**: Stores details about the various types of service that members can add to their reservation, such as additional drivers, roadside assistance, etc.
+* **Bill**: Contains different bill-items for every charge for the reservation.
+![](../Images/OOD/chess-class-diagram.png)
+
+### Activity diagrams
+* Pick up a vehicle: Any member can perform this activity. Here are the steps to pick up a vehicle:
+    * ![](../Images/OOD/car-activity-diagram-1.svg)
+* Return a vehicle: Any worker can perform this activity. While returning a vehicle, the system must collect a late fee from the member if the return date is after the due date. Here are the steps for returning a vehicle:
+    * ![](../Images/OOD/car-activity-diagram-2.svg)
+
 ## Design LinkedIn
+### System Requirements
+* Each member should be able to add information about their basic profile, experiences, education, skills, and accomplishments.
+* Any user of our system should be able to search for other members or companies by their name.
+* Members should be able to send or accept connection requests from other members.
+* Any member will be able to request a recommendation from other members.
+* The system should be able to show basic stats about a profile, like the number of profile views, the total number of connections, and the total number of search appearances of the profile.
+* Members should be able to create new posts to share with their connections.
+* Members should be able to add comments to posts, as well as like or share a post or comment.
+* Any member should be able to send messages to other members.
+* The system should send a notification to a member whenever there is a new message, connection invitation or a comment on their post.
+* Members will be able to create a page for a Company and add job postings.
+* Members should be able to create groups and join any group they like.
+* Members should be able to follow other members or companies.
+
+### Use case diagram
+* We have three main Actors in our system:
+    * **Member**: All members can search for other members, companies or jobs, as well as send requests for connection, create posts, etc.
+    * **Admin**: Mainly responsible for admin functions such as blocking and unblocking a member, etc.
+    * **System**: Mainly responsible for sending notifications for new messages, connections invites, etc.
+
+* Here are the top use cases of our system:
+* **Add/update profile**: Any member should be able to create their profile to reflect their experiences, education, skills, and accomplishments.
+* **Search**: Members can search other members, companies or jobs. Members can send a connection request to other members.
+* **Follow or Unfollow member or company**: Any member can follow or unfollow any other member or a company.
+* **Send message**: Any member can send a message to any of their connections.
+* **Create post**: Any member can create a post to share with their connections, as well as like other posts or add comments to any post.
+* **Send notifications**: The system will be able to send notifications for new messages, connection invites, etc.
+![](../Images/OOD/linkedin-use-case-diagram.svg)
+
+### Class diagram
+* **Member**: This will be the main component of our system. Each member will have a profile which includes their Experiences, Education, Skills, Accomplishments, and Recommendations. Members will be connected to other members and they can follow companies and members. Members will also have suggestions to make connections with other members.
+* **Search**: Our system will support searching for other members and companies by their names, and jobs by their titles.
+* **Message**: Members can send messages to other members with text and media.
+* **Post**: Members can create posts containing text and media.
+* **Comment**: Members can add comments to posts as well as like them.
+* **Group**: Members can create and join groups.
+* **Company**: Company will store all the information about a company’s page.
+* **JobPosting**: Companies can create a job posting. This class will handle all information about a job.
+* **Notification**: Will take care of sending notifications to members.
+![](../Images/OOD/restaurant-class-diagram.png)
+
+### Activity diagrams
+* Add experience to profile: Any LinkedIn member can perform this activity. Here are the steps to add experience to a member profile:
+    * ![](../Images/OOD/linkedin-activity-diagram-1.svg)
+* Send message: Any Member can perform this activity. After sending a message, the system needs to send a notification to all the requested members. Here are the steps for sending a message:
+    * ![](../Images/OOD/linkedin-activity-diagram-2.svg)
+
 ## Design Cricinfo
+### System Requirements
+* The system should keep track of all cricket-playing teams and their matches.
+* The system should show live ball-by-ball commentary of cricket matches.
+* All international cricket rules should be followed.
+* Any team playing a tournament will announce a squad (a set of players) for the tournament.
+* For each match, both teams will announce their playing-eleven from the tournament squad.
+* The system should be able to record stats about players, matches, and tournaments.
+* The system should be able to answer global stats queries like, "Who is the highest wicket taker of all time?", "Who has scored maximum numbers of 100s in test matches?", etc.
+* The system should keep track of all ODI, Test and T20 matches.
+
+### Use case diagram
+* We have two main Actors in our system:
+    * **Admin**: An Admin will be able to add/modify players, teams, tournaments, and matches, and will also record ball-by-ball details of each match.
+    * **Commentator**: Commentators will be responsible for adding ball-by-ball commentary for matches.
+
+* Here are the top use cases of our system:
+    * **Add/modify teams and players**: An Admin will add players to teams and keeps up-to-date information about them in the system.
+    * **Add tournaments and matches**: Admins will add tournaments and matches in the system.
+    * **Add ball**: Admins will record ball-by-ball details of a match.
+    * **Add stadium, umpire, and referee**: The system will keep track of stadiums as well as of the umpires and referees managing the matches.
+    * **Add/update stats**: Admins will add stats about matches and tournaments. The system will generate certain stats.
+    * **Add commentary**: Add ball-by-ball commentary of matches.
+![](../Images/OOD/cricinfo-use-case-diagram.svg)
+
+### Class diagram
+* **Player**: Keeps a record of a cricket player, their basic profile and contracts.
+* **Team**: This class manages cricket teams.
+* **Tournament**: Manages cricket tournaments and keeps track of the points table for all playing teams.
+* **TournamentSquad**: Each team playing a tournament will announce a set of players who will be playing the tournament. TournamentSquad will encapsulate that.
+* **Playing11**: Each team playing a match will select 11 players from their announced tournaments squad.
+* **Match**: Encapsulates all information of a cricket match. Our system will support three match types**: 1) ODI, 2) T20, and 3) Test
+* **Innings**: Records all innings of a match.
+* **Over**: Records details about an Over.
+* **Ball**: Records every detail of a ball, such as the number of runs scored, if it was a wicket-taking ball, etc.
+* **Run**: Records the number and type of runs scored on a ball. The different run types are**: Wide, LegBy, Four, Six, etc.
+* **Commentator and Commentary**: The commentator adds ball-by-ball commentary.
+* **Umpire and Referee**: These classes will store details about umpires and referees, respectively.
+* **Stat**: Our system will keep track of the stats for every player, match and tournament.
+* **StatQuery**: This class will encapsulate general stat queries and their answers, like "Who has scored the maximum number of 100s in ODIs?" or, "Which bowler has taken the most wickets in test matches?", etc.
+![](../Images/OOD/cricinfo-class-diagram.png)
+
+### Activity diagrams
+* Record a Ball of an Over: Here are the steps to record a ball of an over in the system:
+    * ![](../Images/OOD/cricinfo-activity-diagram.svg)
+
 ## Design Facebook - a social network
+### System Requirements
+* Each member should be able to add information about their basic profile, work experience, education, etc.
+* Any user of our system should be able to search other members, groups or pages by their name.
+* Members should be able to send and accept/reject friend requests from other members.
+* Members should be able to follow other members without becoming their friend.
+* Members should be able to create groups and pages, as well as join already created groups, and follow pages.
+* Members should be able to create new posts to share with their friends.
+* Members should be able to add comments to posts, as well as like or share a post or comment.
+* Members should be able to create privacy lists containing their friends. Members can link any post with a privacy list to make the post visible only to the members of that list.
+* Any member should be able to send messages to other members.
+* Any member should be able to add a recommendation for any page.
+* The system should send a notification to a member whenever there is a new message or friend request or comment on their post.
+* Members should be able to search through posts for a word.
+* Extended Requirement: Write a function to find a connection suggestion for a member.
+
+### Use case diagram
+* We have three main Actors in our system:
+    * **Member**: All members can search for other members, groups, pages, or posts, as well as send friend requests, create posts, etc.
+    * **Admin**: Mainly responsible for admin functions like blocking and unblocking a member, etc.
+    * **System**: Mainly responsible for sending notifications for new messages, friend requests, etc.
+
+Here are the top use cases of our system:
+* **Add/update profile**: Any member should be able to create their profile to reflect their work experiences, education, etc.
+* **Search**: Members can search for other members, groups or pages. Members can send a friend request to other members.
+* **Follow or Unfollow a member or a page**: Any member can follow or unfollow any other member or page.
+* **Send message** Any member can send a message to any of their friends.
+* **Create post** Any member can create a post to share with their friends, as well as like or add comments to any post visible to them.
+* **Send notification** The system will be able to send notifications for new messages, friend requests, etc.
+![](../Images/OOD/facebook-use-case-diagram.svg)
+
+### Class diagram
+ * **Member**: This will be the main component of our system. Each member will have a profile which includes their Work Experiences, Education, etc. Members will be connected to other members and they can follow other members and pages. Members will also have suggestions to send friend requests to other members.
+ * **Search**: Our system will support searching for other members, groups and pages by their names, and through posts for any word.
+ * **Message**: Members can send messages to other members with text, photos, and videos.
+ * **Post**: Members can create posts containing text and media, as well as like and share a post.
+ * **Comment**: Members can add comments to posts as well as like any comment.
+ * **Group**: Members can create and join groups.
+ * **PrivacyList**: Members can create privacy lists containing their friends. Members can link any post with a privacy list, to make the post visible only to the members of that list.
+ * **Page**: Members can create pages that other members can follow, and share messages there.
+ * **Notification**: This class will take care of sending notifications to members. The system will be able to send a push notification or an email.
+![](../Images/OOD/facebook-class-diagram.png)
+
+### Activity diagrams
+* Add work experience to profile: Any Facebook member can perform this activity. Here are the steps to add work experience to a member’s profile:
+    * ![](../Images/OOD/hotel-activity-diagram-1.svg)
+* Create a new post: Any Member can perform this activity. Here are the steps for creating a post:
+    * ![](../Images/OOD/hotel-activity-diagram-2.svg)
