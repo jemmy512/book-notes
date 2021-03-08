@@ -56,7 +56,7 @@
 
 * F.5: If a function is very small and time-critical, declare it inline
 
-* F.6: If your function may not throw, declare it noexcept
+* F.6: If your function must not throw, declare it noexcept
 
 * F.7: For general use, take T* or T& arguments rather than smart pointers
 
