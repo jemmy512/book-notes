@@ -2,6 +2,25 @@
     ifconfig
     sudo ifconfig eth0 192.168.1.212 netmask 255.255.255.0
 
+## 100W Connenction Config
+```
+# 1. port config
+    echo "5000 65000" > /proc/sys/net/ipv4/ip_local_port_range
+
+# 2. Config multiple ip addresses
+
+# 3. max opened file
+    echo 200000 > /proc/sys/fs/file-max
+
+# vi /etc/sysctl.conf
+    fs.nr_open=210000
+# sysctl -p
+
+# vi /etc/security/limits.conf
+    soft  nofile  200000
+    hard  nofile  200000
+```
+
 # FTP service：
     check service: lsof -i :21
     Install service: apt-get install vsftpd
