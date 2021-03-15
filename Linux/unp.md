@@ -58,6 +58,9 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
 ### TCP Output
 * The successful return from a write to a TCP socket only tells us that we can reuse our application buffer. It does not tell us that either the peer TCP has received the data or that the peer application has received the data.
 
+# 3 Sockets Introduction
+
+
 # 4 Elementary TCP Sockets
 ![](../Images/Unp/4-tcp-client-server.png)
 
@@ -345,5 +348,51 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
 * ![](../Images/Unp/7.11-fcntl-vs-ioctl.png)
 
 # 16 Nonblocking I/O
+## 16.1 Introduction
+* We can divide the socket calls that may block into four categories:
+    1. **Input operations** — These include the read, readv, recv, recvfrom, and recvmsg functions.
+        * If we want to wait until some fixed amount of data is available, we can call our own function readn or specify the `MSG_WAITALL` flag.
+        * With a nonblocking socket, it the operation cannot be satisfied, return `EWOULDBLOCK`
+    2. **Output operations** — These include the write, writev, send, sendto, and sendmsg functions.
+        * Kernel copies data from the application’s buffer into the socket send buffer. If there is no room in the socket send buffer for a blocking socket, the process is put to sleep until there is room.
+        * With a nonblocking socket, it the operation cannot be satisfied, return `EWOULDBLOCK`
+    3. **Accepting incoming connections** — This is the accept function. If accept is called for a blocking socket and a new connection is not available, the process is put to sleep.
+        * With a nonblocking socket, it the operation cannot be satisfied, return `EWOULDBLOCK`
+    4. **Initiating outgoing connections** — This is the connect function for TCP.
+        * connect can be used with UDP, but it does not cause a ‘‘real’’ connection to be established; it just causes the kernel to store the peer’s IP address and port number.
+        * With a nonblocking socket, it the operation cannot be satisfied, return `EINPROGRESS`
+
+## 16.2 Nonblocking Reads and Writes
+
+## 16.3 Nonblocking connect
+* There are three uses for a nonblocking connect:
+    1. We can overlap other processing with the three-way handshake.
+    2. We can establish multiple connections at the same time using this technique.
+    3. Since we wait for the connection to be established using select, we can specify a time limit for select, allowing us to shorten the timeout for the connect.
+
+* There are other details we must handle:
+    * Even though the socket is nonblocking, if the server to which we are connecting is on the same host, the connection is normally established immediately when we call connect. We must handle this scenario.
+    * Berkeley-derived implementations (and POSIX) have the following two rules regarding select and nonblocking connects:
+        1. When the connection completes successfully, the descriptor becomes writable
+        2. When the connection establishment encounters an error, the descriptor becomes both readable and writable (p. 530 of TCPv2).
+
+* Interrupted connect
+    * What happens if our call to connect on a normal blocking socket is interrupted:
+        * Assuming the connect is not automatically restarted, it returns `EINTR`. But, we cannot call connect again to wait for the connection to complete. Doing so will return `EADDRINUSE`.
+        * We should call select. select returns when the connection completes successfully (making the socket writable) or when the connection fails (making the socket readable and writable).
+
+## 16.6 Nonblocking accept
+* if we are using select to wait for incoming connections, we should not need to set the listening socket to non- blocking because if select tells us that the connection is ready, accept should not block.
+* Unfortunately, there is a timing problem that can trip us up here:
+* When the client aborts the connection before the server calls accept, Berkeley-derived implementations do not return the aborted connection to the server, while other implementations should return ECONNABORTED but often return EPROTO instead.
+    * The client establishes the connection and then aborts it.
+    * select returns readable to the server process, but it takes the server a short time to call accept.
+    * Between the server’s return from select and its calling accept, the RST is received from the client.
+    * The completed connection is removed from the queue and we assume that no other completed connections exist.
+    * The server calls accept, but since there are no completed connections, it blocks.
+
+* The fix for this problem is as follows:
+    1. Always set a listening socket to nonblocking when you use select to indicate when a connection is ready to be accepted.
+    2. Ignore the following errors on the subsequent call to accept: EWOULDBLOCK (Berkeley-derived), ECONNABORTED (POSIX), EPROTO (SVR4), and EINTR (if signals are being caught).
 
 # 17 ioctl Operations
