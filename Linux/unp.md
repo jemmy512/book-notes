@@ -60,6 +60,37 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
 
 # 3 Sockets Introduction
 
+## 3.4 Byte Ordering Functions
+* with the low-order byte at the starting address, known as **little-endian byte order**, or with the high-order byte at the starting address, known as **big-endian byte order**.
+* ```c++
+    #include <netinet/in.h>
+    uint16_t htons(uint16_t host16bitvalue);
+    uint32_t htonl(uint32_t host32bitvalue);
+    uint16_t ntohs(uint16_t net16bitvalue);
+    uint32_t ntohl(uint32_t net32bitvalue);
+    ```
+* ```c++
+    union {
+        short s;
+        char c[sizeof(short)]
+    } un;
+
+    un.s = 0x0102;
+    printf("%s", CPU_VENDOR_OS);
+    if (sizeof(short) == 2) {
+        if (un.c[0] == 1 && un.c[1] == 2) {
+            printf("big endian\n");
+        } else if (un.c[0] == 2 && un.c[1] == 1) {
+            pritnf("little endian\n");
+        } else {
+            printf("unkown\n");
+        }
+    } else {
+        printf("sizeof(short) = %d\n", sizeof(short));
+    }
+    ```
+
+## 3.5 ByteManipulationFunctions
 
 # 4 Elementary TCP Sockets
 ![](../Images/Unp/4-tcp-client-server.png)
@@ -347,6 +378,70 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
 
 * ![](../Images/Unp/7.11-fcntl-vs-ioctl.png)
 
+
+# 14 Advanced I/O Functions
+## 14.2 Socket Timeouts
+* There are three ways to place a timeout on an I/O operation involving a socket:
+    1. Call `alarm`, which generates the SIGALRM signal when the specified time has expired.
+    2. Block waiting for I/O in `select`, which has a time limit built-in, instead of blocking in a call to read or write.
+    3. Use the newer `SO_RCVTIMEO` and `SO_SNDTIMEO` socket options.
+
+
+## 14.3 recv and send
+* ```c++
+    #include <sys/socket.h>
+    ssize_t recv(int sockfd, void *buff, size_t nbytes, int flags);
+    ssize_t send(int sockfd, const void *buff, size_t nbytes, int flags);
+    ```
+* Flags
+    flags | Description | recv | send
+    --- | --- | --- | --- | ---
+    MSG_DONTROUTE | Bypass routing table lookup | | Y
+    MSG_DONTWAIT | Only this operation is nonblocking | Y | Y
+    MSG_OOB | Send or receive out-of-band data | Y | Y
+    MSG_PEEK | Peek at incoming message | Y |
+    MSG_WAITALL | Wait for all the data | Y |
+* **MSG_WAITALL** It tells the ker- nel not to return from a read operation until the requested number of bytes have been read. The function can stillreturn fewer than the requested number of bytes if
+    1. a signal is caught
+    2. the connection is terminated
+    3. an error is pending for the socket
+
+## 14.4 readv and writev
+* ```c++
+    #include <sys/uio.h>
+    ssize_t readv(int filedes, const struct iovec *iov, int iovcnt);
+    ssize_t writev(int filedes, const struct iovec *iov, int iovcnt);
+
+    struct iovec {
+        void   *iov_base;  /* starting address of buffer */
+        size_t  iov_len;   /* size of buffer */
+    };
+    ```
+* There is some limit (`IOV_MAX`) to the number of elements in the array of iovec structures that an implementation allows.
+
+## 14.5 recvmsg and sendmsg
+* These two functions are the most general of all the I/O functions. Indeed, we could replace all calls to read, readv, recv, and recvfrom with calls to recvmsg.
+* ```c++
+    #include <sys/socket.h>
+    ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+    ssize_t sendmsg(int sockfd, struct msghdr *msg, int flags);
+
+    struct msghdr {
+        void            *msg_name;      /* protocol address */
+        socklen_t       msg_namelen;    /* size of protocol address */
+        struct iovec    *msg_iov;       /* scatter/gather array */
+        int             msg_iovlen;     /* # elements in msg_iov */
+        void            *msg_control;   /* ancillary data (cmsghdr struct) */
+        socklen_t       msg_controllen; /* length of ancillary data */
+        int             msg_flags;       /* flags returned by recvmsg() */
+    };
+    ```
+
+## 14.7 How Much Data Is Queued?
+1. If the goal is not to block in the kernel because we have something else to do when nothing is ready to be read, nonblocking I/O can be used. We will describe this in Chapter 16.
+2. If we want to examine the data but still leave it on the receive queue for some other part of our process to read, we can use the `MSG_PEEK` flag. If we want to do this, but we are not sure that something is ready to be read, we can use this flag with a nonblocking socket or combine this flag with the `MSG_DONTWAIT` flag.
+3. Some implementations support the `FIONREAD` command of ioctl.
+
 # 16 Nonblocking I/O
 ## 16.1 Introduction
 * We can divide the socket calls that may block into four categories:
@@ -382,7 +477,7 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
         * We should call select. select returns when the connection completes successfully (making the socket writable) or when the connection fails (making the socket readable and writable).
 
 ## 16.6 Nonblocking accept
-* if we are using select to wait for incoming connections, we should not need to set the listening socket to non- blocking because if select tells us that the connection is ready, accept should not block.
+* If we are using select to wait for incoming connections, we should not need to set the listening socket to non- blocking because if select tells us that the connection is ready, accept should not block.
 * Unfortunately, there is a timing problem that can trip us up here:
 * When the client aborts the connection before the server calls accept, Berkeley-derived implementations do not return the aborted connection to the server, while other implementations should return ECONNABORTED but often return EPROTO instead.
     * The client establishes the connection and then aborts it.
@@ -396,3 +491,102 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
     2. Ignore the following errors on the subsequent call to accept: EWOULDBLOCK (Berkeley-derived), ECONNABORTED (POSIX), EPROTO (SVR4), and EINTR (if signals are being caught).
 
 # 17 ioctl Operations
+## 17.1 Introduction
+The ioctl function has traditionally been the system interface used for everything that didn’t fit into some other nicely defined category. POSIX is getting rid of ioctl for certain functionality by creating specific wrapper functions to replace ioctls whose func- tionality is being standardized by POSIX.
+
+## 17.2 ioctl Function
+* ```c++
+    #include <unistd.h>
+    int ioctl(int fd, int request, ... /* void *arg */ );
+    ```
+* We can divide the requests related to networking into six categories:
+    * Socket operations
+    * File operations
+    * Interface operations
+    * ARP cache operations
+    * Routing table operations
+    * STREAMS system (Chapter 31)
+
+* ![](../Images/Unp/17.2-ioctl-categories.png)
+
+## 17.3 Socket Operations
+* **SIOCATMARK** Return through the integer pointed to by the third argument a nonzero value if the socket’s read pointer is currently at the out-of-band mark, or a zero value if the read pointer is not at the out-of-band mark.
+* **SIOCGPGRP** Return through the integer pointed to by the third argument either the process ID or the process group ID that is set to receive the SIGIO or SIGURG signal for this socket. This request is identical to an fcntl of F_GETOWN
+* **SIOCSGPGRP** Set either the process ID or process group ID to receive the SIGIO or SIGURG signal for this socket from the integer pointed to by the third argument. This request is identical to an fcntl of F_SETOWN
+
+## 17.4 File Operations
+* **FIONREAD** Return in the integer pointed to by the third argument to ioctl the number of bytes currently in the socket receive buffer. This feature also works for files, pipes, and terminals. We said more about this request in Section 14.7.
+
+## 17.5 Interface Configuration
+```c++
+struct ifconf {
+    int  ifc_len;                   /* size of buffer, value-result */
+    union {
+        caddr_t ifcu_buf;           /* input from user -> kernel */
+        struct  ifreq *ifcu_req;    /* return from kernel -> user */
+    } ifc_ifcu;
+};
+
+#define  ifc_buf  ifc_ifcu.ifcu_buf /* buffer address */
+#define  ifc_req  ifc_ifcu.ifcu_req /* array of structures returned */
+#define  IFNAMSIZ    16
+
+struct ifreq {
+    char    ifr_name[IFNAMSIZ];     /* interface name, e.g., "le0" */
+    union {
+        struct  sockaddr ifru_addr;
+        struct  sockaddr ifru_dstaddr;
+        struct  sockaddr ifru_broadaddr;
+        short   ifru_flags;
+        int     ifru_metric;
+        caddr_t ifru_data;
+    } ifr_ifru;
+};
+
+#define  ifr_addr       ifr_ifru.ifru_addr
+#define  ifr_dstaddr    ifr_ifru.ifru_dstaddr
+#define  ifr_broadaddr  ifr_ifru.ifru_broadaddr
+#define  ifr_flags       ifr_ifru.ifru_flags
+#define  ifr_metric     ifr_ifru.ifru_metric
+#define  ifr_data       ifr_ifru.ifru_data
+```
+
+## 17.6 get_ifi_info Function
+
+## 17.8 ARP Cache Operations
+```c++
+#include <net/if_arp.h>
+struct arpreq {
+    struct  sockaddr  arp_pa;     /* protocol address */
+    struct  sockaddr  arp_ha;     /* hardware address */
+    int               arp_flags;   /* flags */
+};
+
+#define  ATF_INUSE  0x01  /* entry in use */
+#define  ATF_COM    0x02  /* completed entry (hardware addr valid) */
+#define  ATF_PERM   0x04  /* permanent entry */
+#define  ATF_PUBL   0x08  /* published entry (respond for other host) */
+```
+
+# 29 Datalink Access
+## 29.1 Introduction
+* Providing access to the datalink layer for an application provides the following capabilities:
+    * The ability to watch the packets received by the datalink layer, allowing pro- grams such as tcpdump to be run on normal computer systems (as opposed to dedicated hardware devices to watch packets).
+    * The ability to run certain programs as normal applications instead of as part of the kernel.
+* The three common methods to access the datalink layer under Unix are:
+    * the BSD Packet Filter (BPF)
+    * the SVR4 Datalink Provider Interface (DLPI)
+    * the Linux SOCK_PACKET interface
+
+## 29.2 BSD Packet Filter (BPF)
+* Each datalink driver calls BPF right before a packet is transmitted and right after a packet is received
+    * ![](../Images/Unp/29.2-bpf.png)
+* Three techniques are used by BPF to reduce its overhead:
+    * The BPF filtering is within the kernel, which minimizes the amount of data copied from BPF to the application. This copy, from kernel space to user space, is expensive. If every packet was copied, BPF could have trouble keeping up with fast datalinks.
+    * Only a portion of each packet is passed by BPF to the application. This is called the snapshot length, or snaplen.
+        * This also reduces the amount of data copied by BPF to the application.
+    * BPF buffers the data destined for an application and this buffer is copied to the application only when the buffer is full, or when the read timeout expires.
+        * The purpose of the buffering is to reduce the number of system calls. The same number of packets are still copied between BPF and the application, but each system call has an overhead, and reducing the number of system calls always reduces the overhead.
+        * BPF maintains two buffers for each application and fills one while the other is being copied to the application. This is the standard **double-buffering** technique.
+
+## 29.4 Linux:SOCK_PACKET and PF_PACKET
