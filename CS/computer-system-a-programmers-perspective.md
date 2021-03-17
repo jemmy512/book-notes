@@ -3132,7 +3132,6 @@ I/O devices include human interface devices (HIDs), network interfaces, and stor
 ```
 Questions:
 1. Hoe does Optimizing address translation work? Page-1119
-2.
 ```
 
 # Appendix: Bus
@@ -3141,3 +3140,6 @@ Questions:
 * [Local Bus](https://en.wikipedia.org/wiki/Local_bus)
 * [Expansin Bus/card](https://en.wikipedia.org/wiki/Expansion_card)
 * ![](../Images/CSAPP/bus-1.png) ![](../Images/CSAPP/bus-2.png)
+
+# Appendix
+* [CMU Lab](http://csapp.cs.cmu.edu/3e/labs.html)
