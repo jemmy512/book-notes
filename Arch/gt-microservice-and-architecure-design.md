@@ -260,6 +260,8 @@ A saga is a sequence of local transactions that updates each service and publish
     1. DNS Load Balance: geographic-level
     2. Hardware Load Balance: cluster-level
     3. Software Load Balance: machine-level
+        * [LVS: IP, TCP Layer](https://en.wikipedia.org/wiki/Linux_Virtual_Server)
+        * [Nginx: Application Layer]()
 
 # High Availability Design
 1. High availability Storage Architecture
