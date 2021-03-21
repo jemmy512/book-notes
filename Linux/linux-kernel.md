@@ -1967,7 +1967,8 @@ struct page {
   int _last_cpupid;
 };
 ```
-![linux-mem-physic-numa.png](../Images/LinuxKernel/kernel-mem-physic-numa.png)
+![linux-mem-physic-numa.png](../Images/LinuxKernel/kernel-mem-physic-numa-1.png)
+![linux-mem-physic-numa.png](../Images/LinuxKernel/kernel-mem-physic-numa-2.png)
 
 ### buddy system
 ```C++
