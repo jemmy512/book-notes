@@ -24,6 +24,7 @@
 * [More Effective C++](./Cpp/more-effective-cpp.md)
 * [Effective Modern C++](./Cpp/effective-modern-cpp.md)
 * [C++ Templates the Complete Guid](./Cpp/cpp-templates-the-complete-guid.md)
+* [Modern C++ Design](./Cpp/modern-cpp-design.md)
 * [C++ 17](./Cpp/cpp17.md)
 * [MySQL](./Cpp/mysql.txt)
 * [STL](./Cpp/stl.txt)
