@@ -237,6 +237,24 @@ int bind(int sockfd, const struct sockaddr *myaddr, socklen_t addrlen);
     * A synchronous I/O operation causes the requesting process to be blocked until that I/O operation completes.
     * An asynchronous I/O operation does not cause the requesting process to be blocked.
 
+## 6.3 select Function
+### Under What Conditions Is a Descriptor Ready?
+1. A socket is **ready for reading** if any of the following four conditions is true:
+    * The number of bytes of data in the socket receive buffer is greater than or equal to the current size of the `low-water mark` for the socket receive buffer. A read operation on the socket will not block and will return a value greater than 0 (i.e., the data that is ready to be read). We can set this low-water mark using the SO_RCVLOWAT socket option. It defaults to 1 for TCP and UDP sockets.
+    * The read half of the connection is `closed` (i.e., a TCP connection that has received a FIN). A read operation on the socket will not block and will return 0 (i.e., EOF).
+    * The socket is a listening socket and the number of completed connections is nonzero. An `accept` on the listening socket will normally not block, although we will describe a timing condition in Section 16.6 under which the accept can block.
+    * A socket `error` is pending. A read operation on the socket will not block and will return an error (−1) with errno set to the specific error condition. These pending errors can also be fetched and cleared by calling getsockopt and specifying the SO_ERROR socket option.
+
+2. A socket is **ready for writing** if any of the following four conditions is true:
+    * The number of bytes of available space in the socket send buffer is greater than or equal to the current size of the `low-water mark` for the socket send buffer and either: (i) the socket is connected, or (ii) the socket does not require a connection (e.g., UDP). This means that if we set the socket to non- blocking (Chapter 16), a write operation will not block and will return a pos- itive value (e.g., the number of bytes accepted by the transport layer). We can set this low-water mark using the SO_SNDLOWAT socket option. This low-water mark normally defaults to 2048 for TCP and UDP sockets.
+    * The write half of the connection is `closed`. A write operation on the socket will generate SIGPIPE (Section 5.12).
+    * A socket using a non-blocking connect has completed the connection, or the connect has failed.
+    * A socket `error` is pending. A write operation on the socket will not block and will return an error (−1) with errno set to the specific error condition. These pending errors can also be fetched and cleared by calling getsockopt with the SO_ERROR socket option.
+
+* Notice that when an error occurs on a socket, it is marked as both readable and writable by select.
+
+* ![](../Images/Unp/6.3-socket-readable-writable.png)
+
 ## 6.5 Batch Input and Buffering
 * If we consider the network between the client and server as a full-duplex pipe, with requests going from the client to the server and replies in the reverse direction, then Figure shows our stop-and-wait mode.
     * ![](../Images/Unp/6.5-stop-wait-mode.png)
