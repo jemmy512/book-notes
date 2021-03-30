@@ -47,14 +47,14 @@ TODO:
 3. The Four conditions that default constructor is `nontrivial`:
     1. Member Class Object with Default Constructor.
         * Compiler will generate default constructor for Class object which has ojbect member and without any constructor.
-        * Compiler will expand user defined contructor which not initialized the ojbect member
+        * Compiler will expand user defined contructor which not initialized the object member
     2. Base class with constructor
     3. Class with virutal function
         * The class ethier declares(or inherits) a virtual function
         * The class is derived from an inheritance chain in which one or more base classes are virtual.
         * The following two class `augmentation` occur during compilation:
             1. A virtual function table(`vtbl`) is generated and populated with the address of the active virtual functions for that class.
-            2. Within each class object, an additional pointer member(`vptr`) is synthesized to hold the address of the associated clas vtbl.
+            2. Within each class object, an additional pointer member(`vptr`) is synthesized to hold the address of the associated class vtbl.
     4. Class with a virutal Base class
 
 4. Summary:
@@ -62,6 +62,7 @@ TODO:
     2. The synthesized constructor fulfills only an implementation need.
 
 ## 2.2 Copy Constructor Construction
+
 1. Copy constructor happens:
     1. When we use =
     2. Pass an object as an argument to parameter of non-reference type
@@ -77,8 +78,8 @@ TODO:
 
 3. Bitwise Copy Semantics -- Not！
     1. When are bitwise copy semantics not exhibited by a class. There are four instances:
-        1. When the class contains a `member object of a class` for which a copy constructor exists (either declared by class designer or synthesized by compiler).
-        2. When the class is derived from a `base class` for which a copy constructor exists(either explicity declared synthesized by compiler).
+        1. When the class contains a `member object of a class` for which a `copy constructor` exists (either declared by class designer or synthesized by compiler).
+        2. When the class is derived from a `base class` for which a `copy constructor` exists(either explicity declared synthesized by compiler).
         3. When the class declares one or more `virtual functions`.
         4. When the class is derived from an inheritance chain in which one or more `base class are virtual`.
 
@@ -162,9 +163,11 @@ TODO:
 6. The Copy Constructor: To Have or To Have Not?
 
 7. Summary:
+
     * Also, the compiler optimizes away the copy constructor invocation where possible, replacing the NRV with and additional first argument within which the value is stored directly.
 
 ## 2.4 Member Initialization List:
+
 1. Member Initialization list is used in order for program to compile:
     1. When initialize a reference member
     2. When initialize a const member
@@ -209,7 +212,7 @@ class A : public virtual Y, public virtual Z {};
 ## 3.3 Access of Data Member
 1. Static Data Member:
     1. Each member's access permission and class association is maintained without incurring any space or runtime overhead either in the individual class object or in the static data member itself.
-    2. A single instance of each class static data member is stored within the data segment of the program. Each reference to the static member is internally translated to be a direct reference of that single extern instance, this is the only case in the language where the access of a member through a pointer and through an object are exactly equivalent in terms of the instructions actually executed.
+    2. A single instance of each class static data member is stored within the data segment of the program. Each reference to the static member is internally translated to be a direct reference of that single extern instance, **this is the only case in the language where the access of a member through a pointer and through an object are exactly equivalent in terms of the instructions actually executed**.
     3. No mater static member is an inherited member of a complex inheritance hierarchy, there is still only a single instance of the member within the program, an its access is direct.
     4. When static data member is invocated by a function, the Standard C++ explicitly require the function should be evaluated, although no use is made of its result.
         ```C++
@@ -271,13 +274,14 @@ class A : public virtual Y, public virtual Z {};
         2. The `shared region` represents the virtual base class subobjects. The location of data within the shared region fluctuates with each derivation. So members within the shared region need to be accessed indirectly. What has varied among implementations is the method of indirect access.
     2. How is the implementation to gain access to the shared region of the class?
         * A pointer to each virtual base class is inserted within each derived class object. Access of the inherited virtual base class members is achieved indirectly through the associated pointer.
-        * ![c++-virtual-inheritance.png](../Images/c++-virtual-inheritance.png)
     3. There are two primary weaknesses with this implementation model:
         1. An object of the class carries an additional pointer for each virtual base class. Ideally, we want a constant overhead for the class object that is independent of the number of virtual base classes within its inheritance hierarchy.
         2. As the virtual inheritance chain lengthens, the level of indirection increases to that depth. This means that three levels of virtual derivation requires indirection through three virtual base class pointers. Ideally, we want a constant access time regardless of the depth of the virtual derivation.
     4. There are two general solutions to the first problem.
         1. Microsoft's compiler introduced the `virtual base class table`. Each class object with one or more virtual base classes has a pointer to the virtual base class table inserted within it.
         2. Bjarne's solution is to `place not the address but the offset` of the virtual base class within the virtual function table.
+            * ![cpp-virtual-inheritance.png](../Images/cpp-virtual-inheritance.png)
+
     5. In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no associated data members.
     6. Ref:
         1. https://www.nowcoder.com/profile/3669004/note/detail/232803
@@ -307,6 +311,7 @@ public:
     * It is going to yield the z-coordinate's `offset` within the class object. Minimally, this has to be the size of the x and y members, since the language requires the members within an access level be set down in the order of declaration.
 2. The value returned from taking the member's address, however, is always bumped up by 1. Thus the actual values are 1, 5, and 9, and so on.
 3. Do you see why Bjarne decided to do that?
+
     * The problem is distinguishing between a pointer to no data member and a pointer to the first data member.
 4. Taking the address of a nonstatic data member yields its `offset within the class`, taking the address of a data member bound to an actual class object yields the `member's actual address` in memory.
 
@@ -410,11 +415,10 @@ Point to data member:       int Point3d::px = &Point3d::x;          0.8         
 
 ## 4.2 Virtual Member Functions:
 1. Virtual function implementation model:
-    * The class-specific virtual table that contains the addresses of the set of active virtual functions for the
-    class and the vptr that addresses that table inserted within each class object.
+    
+    * The class-specific virtual table that contains the addresses of the set of active virtual functions for the class and the vptr that addresses that table inserted within each class object.
 2. To support a virtual function mechanism, some form of runtime type resolution applied to polymorphic objects must be supported. That is, if we have the call _ptr->z();_ there needs to be some information associated with ptr available at runtime such that the appropriate instance of z() can be identified, found, and invoked.
-3. In C++ polymorphism `exhibits` itself as the potential addressing of a derived class object through a pointer
-    or reference of a public base class.
+3. In C++ polymorphism `exhibits` itself as the potential addressing of a derived class object through a `pointer` or `reference` of a public base class.
 4. What information is needed to invoke the correct runtime instance of z()? We need to know:
     1. the actual `type` of the object addressed by ptr. This allows us to choose the correct instance of z();
     2. the `location` of that instance of z() in order to invoke it.
@@ -481,7 +485,8 @@ Point to data member:       int Point3d::px = &Point3d::x;          0.8         
             ```
 
 9. Virtual Functions under Virtual Inheritance
-
+    
+    * TODO
 ## 4.3 Function Efficiency
 1. A nonmember, static member, and nonstatic member function are internally transformed into equivalent representations. So there is no difference in performance between these three forms.
 2. Inline expansion not only saves the overhead associated with a function call but also provides additional opportunities for program optimization.
@@ -492,8 +497,8 @@ Point to data member:       int Point3d::px = &Point3d::x;          0.8         
 ## 4.4 Pointer to Member Functions
 ```C++
 double          // return type
-( Point::      // class the function is member
-pmf )           // name of pointer to member
+(Point::        // class the function is member
+pmf)            // name of pointer to member
 ();             // argument list
 
 double (Point::coord)() = &Point::x;   // define and initialize a pointer to class member
@@ -573,9 +578,8 @@ coord = &Point::y;                     // assign a value
     * There are three drawbacks of an explicit initialization list:
         1. It can be used only if all the class members are public.
         2. It can specify only constant expressions (those able to be evaluated at compile time).
-        3. Because it is not applied automatically by the compiler, the likelihood of failure to initialize an
-            object is significantly heightened.
-
+        3. Because it is not applied automatically by the compiler, the likelihood of failure to initialize an object is significantly heightened.
+    
 2. Preparing for Inheritance
     1. The compiler, in an optimization, may copy contiguous chucks of one object into another rather than implement a strict memberwise assignment.
     2. The Standard requires implementations to defer the actual synthesis of these nontrivial members until an actual use is encountered.
