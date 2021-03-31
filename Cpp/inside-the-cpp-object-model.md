@@ -1,8 +1,9 @@
 TODO:
     1. 3.4, 3.5, 3.6 look back
-    2. 4.2 look back
+        2. 4.2 look back
 
 # 1. Object Lessons
+
 * Layout costs for Adding Encapsulation:
     1. `Data members` are directly contained within each class object;
     2. `Function members`:
@@ -415,7 +416,7 @@ Point to data member:       int Point3d::px = &Point3d::x;          0.8         
 
 ## 4.2 Virtual Member Functions:
 1. Virtual function implementation model:
-    
+
     * The class-specific virtual table that contains the addresses of the set of active virtual functions for the class and the vptr that addresses that table inserted within each class object.
 2. To support a virtual function mechanism, some form of runtime type resolution applied to polymorphic objects must be supported. That is, if we have the call _ptr->z();_ there needs to be some information associated with ptr available at runtime such that the appropriate instance of z() can be identified, found, and invoked.
 3. In C++ polymorphism `exhibits` itself as the potential addressing of a derived class object through a `pointer` or `reference` of a public base class.
@@ -485,7 +486,7 @@ Point to data member:       int Point3d::px = &Point3d::x;          0.8         
             ```
 
 9. Virtual Functions under Virtual Inheritance
-    
+
     * TODO
 ## 4.3 Function Efficiency
 1. A nonmember, static member, and nonstatic member function are internally transformed into equivalent representations. So there is no difference in performance between these three forms.
@@ -579,14 +580,14 @@ coord = &Point::y;                     // assign a value
         1. It can be used only if all the class members are public.
         2. It can specify only constant expressions (those able to be evaluated at compile time).
         3. Because it is not applied automatically by the compiler, the likelihood of failure to initialize an object is significantly heightened.
-    
+
 2. Preparing for Inheritance
     1. The compiler, in an optimization, may copy contiguous chucks of one object into another rather than implement a strict memberwise assignment.
     2. The Standard requires implementations to defer the actual synthesis of these nontrivial members until an actual use is encountered.
-    3. In general, if your design includes a number of `functions` requiring the definition and `return of a local class object by value`, then it makes good sense to `provide a copy constructor` even if the default memberwise semantics are sufficient. Its presence triggers the application of the `NRV optimization`.
+    3. In general, if your design includes a number of `functions` requiring the definition and `return of a local class object by value`, then it makes good sense to `provide a copy constructor` even if the default memberwise semantics are sufficient. Its presence triggers the application of the `NRV optimization`. (Copy elision is mandatory since C++17)
 
 ## 5.2 Object Construction under Inheritance
-1. The general sequence of compiler augmentations is as follows:
+1. The general sequence of **compiler augmentations** is as follows:
     1. The data members initialized `in the member initialization list` have to be entered within the body of the constructor in the order of member declaration.
     2. If a member class object is `not` present in the `member initialization list` but has an associated default constructor, that `default constructor` must be invoked.
     3. Prior to that, if there is a virtual table pointer `vtbl` (or pointers) contained within the class object, i (they) must be initialized with the address of the appropriate virtual table(s).
@@ -608,7 +609,8 @@ coord = &Point::y;                     // assign a value
 3. In the case of a compiler-synthesized copy operator, the duplication is safe but redundant, since no deallocation of resources is involved. Failure to check for an `assignment to self` in a user-supplied copy operator is a common pitfall of the beginner programmer.
     ```C++
     String& String::operator=( const String &rhs ) {
-        // need guard here before deallocate resources delete [] str;
+        // need guard here before deallocate resources
+      	delete [] str;
         str = new char[ strlen( rhs.str ) + 1 ];
     }
     ```
@@ -617,6 +619,47 @@ coord = &Point::y;                     // assign a value
     1. The conventional constructor augmentation does not work due to the shared nature of the virtual base class
     2. The traditional strategy for supporting this sort of "now you initialize the virtual base class, now you don't" is to introduce an additional argument in the constructor(s) indicating whether the virtual base class constructor(s) should be invoked.
     3. Virtual base class constructors are invoked when a complete class object is being defined, they are not invoked when the object serves as a subobject of an object of a subsequently derived class.
+        ```c++
+        class Vertex   : virtual public Point { };
+        class Point3d  : virtual public Point { };
+        class Vertex3d : public Point3d, public Vertex { };
+        class PVertex  : public Vertex3d { };
+
+        Point3d* Point3d::Point3d(Point3d *this, bool __most_derived, float x, float y, float z ) {
+            if ( __most_derived != false )
+                    this->Point::Point( x, y);
+
+            this->__vptr__Point3d = __vtbl__Point3d;
+            this->__vptr__Point3d__Point = __vtbl__Point3d__Point;
+            this->_z = rhs._z;
+
+            return this;
+        }
+
+        PVertex* PVertex::PVertex( Pvertex* this, bool __most_derived, float x, float y, float z ) {
+            // 1. conditionally invoke the virtual base constructor
+            if ( __most_derived != false ) {
+                __most_derived = false;
+                this->Point::Point( x, y );
+            }
+            // 2. unconditional invocation of immediate base
+            this->Vertex3d::Vertex3d( x, y, z );
+            // 3. initialize associated vptrs
+            this->__vptr__PVertex = __vtbl__PVertex;
+            this->__vptr__Point__PVertex = __vtbl__Point__PVertex;
+            // 4. member initialization list
+            // 5. explicit user code
+            if ( spyOn )
+                cerr << "within Point3d::Point3d()"
+                    << " size: "
+                    // invocation through virtual mechanism
+                    << (*this->__vptr__PVertex[ 3 ].faddr)(this)
+                    << endl;
+            // return constructed object
+            return this;
+        }
+
+        ```
     4. Some newer implementations split each constructor into a complete object and a subobject instance. The `complete object` version unconditionally invokes the `virtual base constructors`, `sets all vptrs`, and so on. The `subobject` version does `not invoke the virtual base class constructors`, may possibly not set the `vptrs`, and so on.
 
 5. The Semantics of the vptr Initialization
@@ -636,10 +679,14 @@ coord = &Point::y;                     // assign a value
         3. The `member initialization list`, if present, is expanded within the body of the constructor. This must be done after the vptr is set in case a virtual member function is called.
         4. The explicit `user-supplied code` is executed.
 
-    8. __Is it safe to invoke a virtual function of the class within its constructor's member initialization list?__
+    8. There are two conditions under which the vptr must be set:
+        1. When a complete object is being constructed. If we declare a Point object, the Point constructor must set its vptr.
+        2. When, within the construction of a subobject, a virtual function call is made either directly or indirectly
+
+    9. __Is it safe to invoke a virtual function of the class within its constructor's member initialization list?__
         1. It is always safe when the function is applied to the initialization of a data member of the class. This is because, as we've seen, the vptr is guaranteed to have been set by the compiler prior to the expansion of the member initialization list.
         2. It may not be semantically safe, however, because the function itself may depend on members that are not yet initialized. It is not an idiom I recommend. However, from the point of view of the integrity of the vptr, it is a safe operation.
-        3. When providing an argument for a base class constructor, it's not safe. The vptr is either not set or set to the wrong class. Further, any of the data members of the class that are accessed within the function are guaranteed to not yet be initialized.
+        3. When providing an argument for a base class constructor, it's not safe. The vptr is either not set or set to the wrong class. Further, any of the data members of the class that are accessed within the function are guaranteed to not yet be initialized. [TODO: why]()
 
 ## 5.3 Object Copy Semantics
 1. A copy assignment operator is necessary only if the default behavior results in semantics that are either unsafe or incorrect.
