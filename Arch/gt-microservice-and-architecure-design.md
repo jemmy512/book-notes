@@ -123,6 +123,7 @@ An API gateway takes all API calls from clients, then routes them to the appropr
 
 * Functionalities of API Gateway: [:link: Ref](https://medium.com/dev-genius/microservices-design-api-gateway-pattern-980e8d02bdd5)
     * Routing
+        
         > Encapsulating the underlying system and decoupling from the clients, the gateway provides a single entry point for the client to communicate with the microservice system.
     * Offloading
         > API gateway consolidates the edge functionalities rather than making every microservices implementing them. Some of the functionalities are:
@@ -136,8 +137,8 @@ An API gateway takes all API calls from clients, then routes them to the appropr
         * Headers, query strings, and claims transformation
         * IP whitelisting
         * IAM
-        * Centralized Logging (transaction ID across the servers, error logging)
-
+    * Centralized Logging (transaction ID across the servers, error logging)
+    
 * Advantages of the modified architecture with API Gateway: [:link: Ref](https://contextswitch.dev/microservices-patterns-1/)
     1. Every client is not required to be **aware of all the microservices** and the endpoints it needs to talk to. This gives the application team **flexibility** to eventually migrate out of a microservice , make modifications to existing services or create a new microservice.
     2. We can offload any **cross cutting concerns** like Authentication, Logging and Caching to this gateway layer. For instance, by allowing only Authenticated and Trusted client traffic to flow through the gateway to microservices. Also internal communication between the services can happen over a trusted private network without worrying about handling additional overhead like Authenticating the request and securing communications over SSL.
@@ -198,6 +199,7 @@ A saga is a sequence of local transactions that updates each service and publish
 4. Service Mesh
 
 ## Authentication & Authorization
+
 ### Token Validation Microservice
 [Token Validation Microservice](https://backstage.forgerock.com/docs/tvm/1/user-guide/)
 
@@ -300,7 +302,7 @@ A saga is a sequence of local transactions that updates each service and publish
     3. Function-oriented split: microkernel architecture.
 
 # Resilience Design
-**Resilience** in microservices is the hability of recover from failures and return to the fully functional state. [:link: Ref](https://kellerwilliam.medium.com/introduction-fd326099e993)
+**Resilience** in microservices is the ability of recover from failures and return to the fully functional state. [:link: Ref](https://kellerwilliam.medium.com/introduction-fd326099e993)
 
 It’s not about avoiding failures but responding to failures in a way that avoids downtime and data loss.
 
