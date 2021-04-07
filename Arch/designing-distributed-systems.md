@@ -300,6 +300,14 @@
 * As was true with the work queue source implementation, most of the worker containers will be special-purpose container images built for specific work queue applications, but there are also generic workers that can be applied to multiple different work queue applications.
 
 #### The Shared Work Queue Infrastructure
+* The basic algorithm for the work queue is fairly straightforward:
+    1. Load the available work by calling into source container interface.
+    2. Consult with work queue state to determine which work items have been pro‐ cessed or are being processed currently.
+    3. For these items, spawn jobs that use the worker container interface to process the work item.
+    4. When one of these worker containers finishes successfully, record that the work item has been completed.
+
+### Dynamic Scaling of the Workers
+
 
 ## 11 Event-Driven Batch Processing
 
