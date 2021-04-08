@@ -1,70 +1,82 @@
 
-# Item_1: Distinguish between pointers and references.
+# 1: Distinguish between pointers and references.
 
-# Item_2: Prefer C++-style casts.
+# 2: Prefer C++-style casts.
+* static_cast
+    * has basically the same power and meaning as the gen- eral-purpose C-style cast
+* const_cast
+    *  is used to cast away the constness or volatileness of an expression
+* dynamic_cast
+    * is used to perform safe casts down or across an inheritance hierarchy
+    * you use dynamic_cast to cast pointers or references to base class objects into pointers or references to derived or sibling base class objects in such a way that you can determine whether the casts succeeded
+    * cannot be applied to types lacking virtual functions
+* reinterpret_cast
+    * is used to perform type conversions whose result is nearly al- ways implementation-defined
+    * As a result, reinterpret_casts are rarely portable
 
-# Item_3: Never treat arrays polymorphically.
 
-# Item_4: Avoid gratuitous default constructors.
+# 3: Never treat arrays polymorphically.
 
-# Item_5: Be wary of user-defined conversion functions.
+# 4: Avoid gratuitous default constructors.
 
-# Item_6: Distinguish between prefix and postfix forms of increment and decrement operators.
+# 5: Be wary of user-defined conversion functions.
 
-# Item_7: Never overload &&, ||, or ,.
+# 6: Distinguish between prefix and postfix forms of increment and decrement operators.
 
-# Item_8: Understand the different meanings of new and delete.
+# 7: Never overload &&, ||, or ,.
 
-# Item_9: Use destructors to prevent resource leaks.
+# 8: Understand the different meanings of new and delete.
 
-# Item_10: Prevent resource leaks in constructors.
+# 9: Use destructors to prevent resource leaks.
 
-# Item_11: Prevent exceptions from leaving destructors.
+# 10: Prevent resource leaks in constructors.
 
-# Item_12: Understand how throwing an exception differs from passing a parameter or calling a virtual function.
+# 11: Prevent exceptions from leaving destructors.
 
-# Item_13: Catch exceptions by reference.
+# 12: Understand how throwing an exception differs from passing a parameter or calling a virtual function.
 
-# Item_14: Use exception specifications judiciously.
+# 13: Catch exceptions by reference.
 
-# Item_15: Understand the costs of exception handling.
+# 14: Use exception specifications judiciously.
 
-# Item_16: Remember the 80-20 rule.
+# 15: Understand the costs of exception handling.
 
-# Item_17: Consider using lazy evaluation.
+# 16: Remember the 80-20 rule.
 
-# Item_18: Amortize the cost of expected computations.
+# 17: Consider using lazy evaluation.
 
-# Item_19: Understand the origin of temporary objects.
+# 18: Amortize the cost of expected computations.
 
-# Item_20: Facilitate the return value optimization.
+# 19: Understand the origin of temporary objects.
 
-# Item_21: Overload to avoid implicit type conversions.
+# 20: Facilitate the return value optimization.
 
-# Item_22: Consider using op= instead of stand-alone op.
+# 21: Overload to avoid implicit type conversions.
 
-# Item_23: Consider alternative libraries.
+# 22: Consider using op= instead of stand-alone op.
 
-# Item_24: Understand the costs of virtual functions, multiple inheritance, virtual base classes, and RTTI.
+# 23: Consider alternative libraries.
 
-# Item_25: Virtualizing constructors and non-member functions.
+# 24: Understand the costs of virtual functions, multiple inheritance, virtual base classes, and RTTI.
 
-# Item_26: Limiting the number of objects of a class.
+# 25: Virtualizing constructors and non-member functions.
 
-# Item_27: Requiring or prohibiting heap-based objects.
+# 26: Limiting the number of objects of a class.
 
-# Item_28: Smart pointers.
+# 27: Requiring or prohibiting heap-based objects.
 
-# Item_29: Reference counting.
+# 28: Smart pointers.
 
-# Item_30: Proxy classes.
+# 29: Reference counting.
 
-# Item_31: Making functions virtual with respect to more than one object.
+# 30: Proxy classes.
 
-# Item_32: Program in the future tense.
+# 31: Making functions virtual with respect to more than one object.
 
-# Item_33: Make non-leaf classes abstract.
+# 32: Program in the future tense.
 
-# Item_34: Understand how to combine C++ and C in the same program.
+# 33: Make non-leaf classes abstract.
 
-# Item_35: Familiarize yourself with the language standard.
+# 34: Understand how to combine C++ and C in the same program.
+
+# 35: Familiarize yourself with the language standard.
