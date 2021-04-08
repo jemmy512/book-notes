@@ -3328,11 +3328,20 @@ Arguemnt-Dependent Lookup and Parameter of Class Type
 [Synchronization with Atomics in C++20](http://www.modernescpp.com/index.php/synchronization-with-atomics-in-c-20)
 
 ## Cons
-`Lost wakeup`: The phenomenon of the lost wakeup is that the sender sends its notification before the receiver gets to its wait state. The consequence is that the notification is lost. The C++ standard describes condition variables as a simultaneous synchronisation mechanism: "The condition_variable class is a synchronisation primitive that can be used to block a thread, or multiple threads at the same time, ...". So the notification gets lost, and the receiver is waiting and waiting and ... .
+* `Lost wakeup`:
+    * The sender sends its notification before the receiver gets to its wait state. The consequence is that the notification is lost.
+    * The C++ standard describes condition variables as a simultaneous synchronisation mechanism: "The condition_variable class is a synchronisation primitive that can be used to block a thread, or multiple threads at the same time, ...". So the notification gets lost, and the receiver is waiting and waiting and ... .
 
-`Spurious wakeup`: usually happen because, in between the time when the condition variable was signaled and when the waiting thread finally ran, another thread ran and changed the condition. There was a race condition between the threads, with the typical result that sometimes, the thread waking up on the condition variable runs first, winning the race, and sometimes it runs second, losing the race.
+* `Spurious wakeup`:
+    * Usually happen because, in between the time when the condition variable was signaled and when the waiting thread finally ran, another thread ran and changed the condition. There was a race condition between the threads, with the typical result that sometimes, the thread waking up on the condition variable runs first, winning the race, and sometimes it runs second, losing the race. At a minimum POSIX Threads and the Windows API can be victims of these phenomena.
+    * Some implementations (in particular many implementations of pthreads) recognize this situation and avoid this "hurry up and wait" scenario by transferring the waiting thread from the condition variable's queue directly to the queue of the mutex within the notify call, without waking it up
 
-The predicate protects against both flaws. The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
+
+* The predicate protects against both flaws:
+    * Lost wakeup: the thread checks the predicate when it is going to sleep. If it's ture, will not go to sleep.
+    * Spurious wakeup: if the predicate is false, continue waiting.
+
+The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
 
 [C++ Core Guidelines: Be Aware of the Traps of Condition Variables](http://www.modernescpp.com/index.php/c-core-guidelines-be-aware-of-the-traps-of-condition-variables)
 
