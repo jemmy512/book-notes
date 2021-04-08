@@ -1974,10 +1974,7 @@ clock_t times(struct tms *buf); // return wall clock time
     // pshared: PTHREAD_PROCESS_PRIVATE PTHREAD_PROCESS_SHARED
     pthread_mutexattr_gettype(const phread_mutexattr_t *attr, int *type);
     pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
-    /* Type:
-    *    PTHREAD_MUTEX_NORMAL        PTHREAD_MUTEX_ERRORCHECK
-    *    PTHREAD_MUTEX_RECURSIVE     PTHREAD_MUTEX_DEFAULT
-    */
+    // Type: PTHREAD_MUTEX_NORMAL PTHREAD_MUTEX_ERRORCHECK PTHREAD_MUTEX_RECURSIVE PTHREAD_MUTEX_DEFAULT
     ```
 
 4. phtread_cond:
@@ -1987,7 +1984,7 @@ clock_t times(struct tms *buf); // return wall clock time
     pthread_cond_destroy(pthread_cond_t *cond);
     pthread_cond_signal(pthread_cond_t *cond);
     pthread_cond_broadcast(pthread_cond_t *cond);
-    pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // Boolean predicate
+    pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex); // use predicate to avoid lost wakeup and spurious wakeup
     pthread_cond_timewait(pthread_cond_t *cond, pthread_mutex_t *mutex); // cancelation point
     ```
 
@@ -1997,7 +1994,10 @@ clock_t times(struct tms *buf); // return wall clock time
 
         2. `Spurious wakeup`: usually happen because, in between the time when the condition variable was signaled and when the waiting thread finally ran, another thread ran and changed the condition. There was a race condition between the threads, with the typical result that sometimes, the thread waking up on the condition variable runs first, winning the race, and sometimes it runs second, losing the race.
 
-    * The predicate protects against both flaws. The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
+    * The predicate protects against both flaws:
+        * Lost wakeup: the thread checks the predicate when it is going to sleep. If it's ture, will not go to sleep.
+        * Spurious wakeup: if the predicate is false, continue waiting.
+    *  The notification would be lost when the sender sends its notification before the receiver is in the wait state and does not use a predicate. Consequently, the receiver waits for something that never happens. This is a deadlock.
 
     * [C++ Core Guidelines: Be Aware of the Traps of Condition Variables](http://www.modernescpp.com/index.php/c-core-guidelines-be-aware-of-the-traps-of-condition-variables)
 
