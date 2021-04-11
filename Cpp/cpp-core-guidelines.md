@@ -148,8 +148,10 @@
 ## Default Operation Ruls
 
 * C.20: If you can avoid defining any default operations, do
+    * The rule of zero
 
 * C.21: If you define or =delete any copy, move, or destructor function, define or =delete them all
+    * The rule of five
 
 * C.22: Make default operations consistent
 
@@ -254,6 +256,7 @@
 
 * C.67: __A polymorphic class should suppress copying__
     * If it base class accidentally passed by value, with the implicitly generated copy constructor and assignment, we risk slicing: only the base portion of a derived object will be copied, and the polymorphic behavior will be corrupted.
+    * If you need to create deep copies of polymorphic objects, use `clone()` functions: see C.130.
 
 ## Other Default Operations Rules
 
