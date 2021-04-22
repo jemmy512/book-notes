@@ -1806,6 +1806,7 @@ int execve(const char *path, char *const argv[], char *const envp[]);
 
 pid_t wait(int *stat_loc);  <sys/wait.h>
     WIFEXITED(sta)--WEXITSTATUS()   WIFSIGNALED()-WTERMSIG()    WIFSTOPED()--WSTOPSIG() WIFCONTINUED(sta)
+    // suspends execution of the calling thread until one of its children terminates.
     // return immediately with terminate status if one child is zombie.
 
 pid_t waitpid(pid_t pid, int *stat_loc, int options); // options: WCONTINUED, WNOHANG, WUNTRACED
