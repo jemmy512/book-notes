@@ -418,6 +418,7 @@
 * C.130: For making deep copies of polymorphic classes prefer a `virtual clone function` instead of copy construction/assignment
 
 * C.131: Avoid trivial getters and setters
+    * A trivial getter or setter adds no semantic value; the data item could just as well be public
 
 * C.132: Don’t make a function virtual without reason
 
