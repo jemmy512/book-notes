@@ -546,15 +546,15 @@ I often make changes that will cause the program to run slower. This is an impor
 The secret to fast software, in all but hard real-time contexts, is to write tunable software first and then tune it for sufficient speed.
 
 * I’ve seen three general approaches to writing fast software.
-  1. The most serious of these is time budgeting, often used in hard real-time systems. As you decompose the design, you give each component a budget for resources—time and footprint.
-  2. The second approach is the constant attention approach.
-      * The performance improvements are spread all around the program; each improvement is made with a narrow perspective of the program’s behavior, and often with a misunderstanding of how a compiler, runtime, and hardware behaves.
-      * The interesting thing about performance is that in most programs, most of their time is spent in a small fraction of the code.
-  3. The third approach to performance improvement takes advantage of this 90-percent statistic. I follow a specific process to tune the program:
-      * I begin by running the program under a profiler that monitors the program and tells me where it is consuming time and space.
-      * This way I can find that small part of the program where the performance hot spots lie.
-      * I then focus on those performance hot spots using the same optimizations I would use in the constant-attention approach
-      * But since I’m focusing my attention on a hot spot, I’m getting much more effect with less work.
+    1. The most serious of these is time budgeting, often used in hard real-time systems. As you decompose the design, you give each component a budget for resources—time and footprint.
+    2. The second approach is the constant attention approach.
+        * The performance improvements are spread all around the program; each improvement is made with a narrow perspective of the program’s behavior, and often with a misunderstanding of how a compiler, runtime, and hardware behaves.
+        * The interesting thing about performance is that in most programs, most of their time is spent in a small fraction of the code.
+    3. The third approach to performance improvement takes advantage of this 90-percent statistic. I follow a specific process to tune the program:
+        * I begin by running the program under a profiler that monitors the program and tells me where it is consuming time and space.
+        * This way I can find that small part of the program where the performance hot spots lie.
+        * I then focus on those performance hot spots using the same optimizations I would use in the constant-attention approach
+        * But since I’m focusing my attention on a hot spot, I’m getting much more effect with less work.
 
 * Having a well-factored program helps with this style of optimization in two ways.
     * First, it gives me time to spend on performance tuning. With well-factored code, I can add functionality more quickly. This gives me more time to focus on performance. (Profiling ensures I spend that time on the right place.)
@@ -648,15 +648,15 @@ Michael Feathers’s Working Effectively with Legacy Code [Feathers], which is p
 
 ## Format of the Refactorings
 * As I describe the refactorings in the catalog, I use a standard format. Each refactoring has five parts, as follows:
-  * I begin with a `name`. The name is important to building a vocabulary of refactorings. This is the name I use elsewhere in the book. Refactorings often go by different names now, so I also list any aliases that seem to be common.
+    * I begin with a `name`. The name is important to building a vocabulary of refactorings. This is the name I use elsewhere in the book. Refactorings often go by different names now, so I also list any aliases that seem to be common.
 
-  * I follow the name with a short `sketch` of the refactoring. This helps you find a refactoring more quickly.
+    * I follow the name with a short `sketch` of the refactoring. This helps you find a refactoring more quickly.
 
-  * The `motivation` describes why the refactoring should be done and describes circumstances in which it shouldn’t be done.
+    * The `motivation` describes why the refactoring should be done and describes circumstances in which it shouldn’t be done.
 
-  * The `mechanics` are a concise, step-by-step description of how to carry out the refactoring.
+    * The `mechanics` are a concise, step-by-step description of how to carry out the refactoring.
 
-  * The `examples` show a very simple use of the refactoring to illustrate how it works.
+    * The `examples` show a very simple use of the refactoring to illustrate how it works.
 
 ## The Choice of Refactorings
 
@@ -679,13 +679,196 @@ Extraction is all about giving names, and I often need to change the names as I 
   I’ve heard many arguments about when to enclose code in its own function. The argument that makes most sense to me, however, is the separation between intention and implementation. If you have to spend effort looking at a fragment of code and figuring out what it’s doing, then you should extract it into a function and name the function after the “what.”
 
 * Mechanics
+    1. Create a new function, and name it after the intent of the function (name it by what it does, not by how it does it).
+        
+        If I can’t come up with a more meaningful name, that’s a sign that I shouldn’t extract the code.
+        
+    2. Copy the extracted code from the source function into the new target function.
 
+    3. Scan the extracted code for references to any variables that are local in scope to the source function and will not be in scope for the extracted function. Pass them as parameters.
+    
+        I find that too many local variables are being assigned by the extracted code. It’s better to abandon the extraction at this point. When this happens, I consider other refactorings such as Split Variable (240) or Replace Temp with Query (178) to simplify variable usage and revisit the extraction later.
+        
+    4. Compile after all variables are dealt with.
+    
+    5. Replace the extracted code in the source function with a call to the target function.
 
+    6. Test.
 
+    7. Look for other code that’s the same or similar to the code just extracted, and consider using Replace Inline Code with Function Call (222) to call the new function.
+
+* Example
+    ```js
+    function printOwing(invoice) {
+        let outstanding = 0;
+
+        console.log("***********************");
+        console.log("**** Customer Owes ****");
+        console.log("***********************");
+
+        // calculate outstanding
+        for (const o of invoice.orders) {
+            outstanding += o.amount;
+        }
+
+        // record due date
+        const today = Clock.today;
+        invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
+
+        //print details
+        console.log(`name: ${invoice.customer}`);
+        console.log(`amount: ${outstanding}`);
+        console.log(`due: ${invoice.dueDate.toLocaleDateString()}`);
+    }
+    ```
+    ```js
+    function printOwing(invoice) {
+        printBanner();
+        recordDueDate(invoice);
+        printDetails(invoice, calculateOutstanding(invoice));
+    }
+    
+    function printBanner() {
+        console.log("***********************");
+        console.log("**** Customer Owes ****");
+        console.log("***********************");
+    }
+    
+    // Example: Using Local Variables
+    function recordDueDate(invoice) {
+        const today = Clock.today;
+        invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
+    }
+    
+    function printDetails(invoice, outstanding) {
+        console.log(`name: ${invoice.customer}`);
+        console.log(`amount: ${outstanding}`);
+        console.log(`due: ${invoice.dueDate.toLocaleDateString()}`);
+    }
+    
+    // Example: Reassigning a Local Variable
+    function calculateOutstanding(invoice) {
+        let outstanding = 0;
+        for (const o of invoice.orders) {
+            outstanding += o.amount;
+        }
+        return outstanding;
+    }
+    ```
 
 ## Inline Function
 
+![](../Images/Refactor/6-inline-function.jpg)
+
+* Motivation
+    One of the themes of this book is using short functions named to show their intent, because these functions lead to clearer and easier to read code. 
+    
+* Mechanics
+    1. Check that this isn’t a polymorphic method.
+
+    2. Find all the callers of the function.
+
+    3. Replace each call with the function’s body.
+
+    4. Test after each replacement.
+
+    5. Remove the function definition.
+
+* Example
+    ```js
+    function reportLines(aCustomer) {
+        const lines = [];
+        gatherCustomerData(lines, aCustomer);
+        return lines;
+    }
+    
+    function gatherCustomerData(out, aCustomer) {
+        out.push(["name", aCustomer.name]);
+        out.push(["location", aCustomer.location]);
+    }
+    ```
+    
+    ```js
+    function reportLines(aCustomer) {
+        const lines = [];
+        lines.push(["name", aCustomer.name]);
+        lines.push(["location", aCustomer.location]);
+        return lines;
+    }
+    ```
+
 ## Extract Variable
+
+![](../Images/Refactor/6-extract-variable.jpg)
+
+* Motivation
+    
+    Expressions can become very complex and hard to read. In such situations, local variables may help break the expression down into something more manageable
+    
+    Such variables are also handy for debugging, since they provide an easy hook for a debugger or print statement to capture.
+    
+    I also think about the context of that name. If it’s only meaningful within the function I’m working on, then Extract Variable is a good choice—but if it makes sense in a broader context, I’ll consider making the name available in that broader context, usually as a function.
+    
+    The downside of promoting the name to a broader context is extra effort. If it’s significantly more effort, I’m likely to leave it till later when I can use Replace Temp with Query (178). 
+    
+* Mechanics
+    1. Ensure that the expression you want to extract does not have side effects.
+
+    2. Declare an immutable variable. Set it to a copy of the expression you want to name.
+
+    3. Replace the original expression with the new variable.
+
+    4. Test.
+  
+* Example
+    ```js
+    function price(order) {
+        //price is base price - quantity discount + shipping
+        return order.quantity * order.itemPrice -
+        Math.max(0, order.quantity - 500) * order.itemPrice * 0.05 +
+        Math.min(order.quantity * order.itemPrice * 0.1, 100);
+    }
+    ```
+    ```js
+    function price(order) {
+        const basePrice = order.quantity * order.itemPrice;
+        const quantityDiscount = Math.max(0, order.quantity - 500) * order.itemPrice * 0.05;
+        const shipping = Math.min(basePrice * 0.1, 100);
+        return basePrice - quantityDiscount + shipping;
+    }
+    ```
+    
+* Example: With a Class
+    ```js
+    class Order {
+        constructor(aRecord) {
+            this._data = aRecord;
+        }
+        
+        get quantity()  {return this._data.quantity;}
+        get itemPrice() {return this._data.itemPrice;}
+        get price() {
+            return this.quantity * this.itemPrice -
+                Math.max(0, this.quantity - 500) * this.itemPrice * 0.05 +
+                Math.min(this.quantity * this.itemPrice * 0.1, 100);
+        }
+    }
+    ```
+    ```js
+    class Order {
+        constructor(aRecord) {
+            this._data = aRecord;
+        }
+        get quantity()  {return this._data.quantity;}
+        get itemPrice() {return this._data.itemPrice;}
+        get price() {
+            return this.basePrice - this.quantityDiscount + this.shipping;
+        }
+        get basePrice()        {return this.quantity * this.itemPrice;}
+        get quantityDiscount() {return Math.max(0, this.quantity - 500) * this.itemPrice * 0.05;}
+        get shipping()         {return Math.min(this.basePrice * 0.1, 100);}
+    }
+    ```
 
 ## Inline Variable
 
