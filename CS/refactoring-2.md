@@ -680,17 +680,17 @@ Extraction is all about giving names, and I often need to change the names as I 
 
 * Mechanics
     1. Create a new function, and name it after the intent of the function (name it by what it does, not by how it does it).
-        
+
         If I can’t come up with a more meaningful name, that’s a sign that I shouldn’t extract the code.
-        
+
     2. Copy the extracted code from the source function into the new target function.
 
     3. Scan the extracted code for references to any variables that are local in scope to the source function and will not be in scope for the extracted function. Pass them as parameters.
-    
+
         I find that too many local variables are being assigned by the extracted code. It’s better to abandon the extraction at this point. When this happens, I consider other refactorings such as Split Variable (240) or Replace Temp with Query (178) to simplify variable usage and revisit the extraction later.
-        
+
     4. Compile after all variables are dealt with.
-    
+
     5. Replace the extracted code in the source function with a call to the target function.
 
     6. Test.
@@ -727,25 +727,25 @@ Extraction is all about giving names, and I often need to change the names as I 
         recordDueDate(invoice);
         printDetails(invoice, calculateOutstanding(invoice));
     }
-    
+
     function printBanner() {
         console.log("***********************");
         console.log("**** Customer Owes ****");
         console.log("***********************");
     }
-    
+
     // Example: Using Local Variables
     function recordDueDate(invoice) {
         const today = Clock.today;
         invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
     }
-    
+
     function printDetails(invoice, outstanding) {
         console.log(`name: ${invoice.customer}`);
         console.log(`amount: ${outstanding}`);
         console.log(`due: ${invoice.dueDate.toLocaleDateString()}`);
     }
-    
+
     // Example: Reassigning a Local Variable
     function calculateOutstanding(invoice) {
         let outstanding = 0;
@@ -761,8 +761,9 @@ Extraction is all about giving names, and I often need to change the names as I 
 ![](../Images/Refactor/6-inline-function.jpg)
 
 * Motivation
-    One of the themes of this book is using short functions named to show their intent, because these functions lead to clearer and easier to read code. 
-    
+
+    One of the themes of this book is using short functions named to show their intent, because these functions lead to clearer and easier to read code.
+
 * Mechanics
     1. Check that this isn’t a polymorphic method.
 
@@ -781,13 +782,13 @@ Extraction is all about giving names, and I often need to change the names as I 
         gatherCustomerData(lines, aCustomer);
         return lines;
     }
-    
+
     function gatherCustomerData(out, aCustomer) {
         out.push(["name", aCustomer.name]);
         out.push(["location", aCustomer.location]);
     }
     ```
-    
+
     ```js
     function reportLines(aCustomer) {
         const lines = [];
@@ -802,15 +803,15 @@ Extraction is all about giving names, and I often need to change the names as I 
 ![](../Images/Refactor/6-extract-variable.jpg)
 
 * Motivation
-    
+
     Expressions can become very complex and hard to read. In such situations, local variables may help break the expression down into something more manageable
-    
+
     Such variables are also handy for debugging, since they provide an easy hook for a debugger or print statement to capture.
-    
+
     I also think about the context of that name. If it’s only meaningful within the function I’m working on, then Extract Variable is a good choice—but if it makes sense in a broader context, I’ll consider making the name available in that broader context, usually as a function.
-    
-    The downside of promoting the name to a broader context is extra effort. If it’s significantly more effort, I’m likely to leave it till later when I can use Replace Temp with Query (178). 
-    
+
+    The downside of promoting the name to a broader context is extra effort. If it’s significantly more effort, I’m likely to leave it till later when I can use Replace Temp with Query (178).
+
 * Mechanics
     1. Ensure that the expression you want to extract does not have side effects.
 
@@ -819,7 +820,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     3. Replace the original expression with the new variable.
 
     4. Test.
-  
+
 * Example
     ```js
     function price(order) {
@@ -837,14 +838,14 @@ Extraction is all about giving names, and I often need to change the names as I 
         return basePrice - quantityDiscount + shipping;
     }
     ```
-    
+
 * Example: With a Class
     ```js
     class Order {
         constructor(aRecord) {
             this._data = aRecord;
         }
-        
+
         get quantity()  {return this._data.quantity;}
         get itemPrice() {return this._data.itemPrice;}
         get price() {
@@ -872,15 +873,400 @@ Extraction is all about giving names, and I often need to change the names as I 
 
 ## Inline Variable
 
+![](../Images/Refactor/6-inline-variable.jpg)
+
+* Motivation
+
+    Variables provide names for expressions within a function, and as such they are usually a Good Thing. But sometimes, the name doesn’t really communicate more than the expression itself.
+
+* Mechanics
+    1. Check that the right-hand side of the assignment is free of side effects.
+
+    2. If the variable isn’t already declared immutable, do so and test.
+
+    3. Find the first reference to the variable and replace it with the right-hand side of the assignment.
+
+    4. Test.
+
+    5. Repeat replacing references to the variable until you’ve replaced all of them.
+
+    6. Remove the declaration and assignment of the variable.
+
+    7. Test.
+
 ## Change Function Declaration
+
+![](../Images/Refactor/6-change-function-declaration.jpg)
+
+* Motivation
+
+    Functions represent the joints in our software systems. And, as with any construction, much depends on those joints. Good joints allow me to add new parts to the system easily, but bad ones are a constant source of difficulty, making it harder to figure out what the software does and how to modify it as my needs change.
+
+    A good name allows me to understand what the function does when I see it called, without seeing the code that defines its implementation.
+
+* Mechanics
+    * Simple Mechanics
+        1. If you’re removing a parameter, ensure it isn’t referenced in the body of the function.
+        2. Change the method declaration to the desired declaration.
+            * It’s often best to separate changes, so if you want to both change the name and add a parameter, do these as separate steps.
+        3. Find all references to the old method declaration, update them to the new one.
+        4. Test.
+
+    * Migration Mechanics
+        1. If necessary, refactor the body of the function to make it easy to do the following extraction step.
+        2. Use Extract Function (106) on the function body to create the new function.
+            * If the new function will have the same name as the old one, give the new function a temporary name that’s easy to search for.
+        3. If the extracted function needs additional parameters, use the simple mechanics to add them.
+        4. Test.
+        5. Apply Inline Function (115) to the old function.
+        6. If you used a temporary name, use Change Function Declaration (124) again to restore it to the original name.
+        7. Test
+
+* Example: Renaming a Function (Simple Mechanics)
+    ```js
+    function circum(radius) {
+        return 2 * Math.PI * radius;
+    }
+    ```
+    ```js
+    function circumference(radius) {
+        return 2 * Math.PI * radius;
+    }
+    ```
+
+    If I’m both renaming the function and adding a parameter, I first do the rename, test, then add the parameter, and test again.
+
+* Example: Renaming a Function (Migration Mechanics)
+    ```js
+    function circum(radius) {
+        return 2 * Math.PI * radius;
+    }
+    ```
+    ```js
+    // Extract Function (106) to the entire function body.
+    function circum(radius) {
+        return circumference(radius);
+    }
+
+    function circumference(radius) {
+        return 2 * Math.PI * radius;
+    }
+    ```
+
+* Example: Adding a Parameter
+    ```js
+    addReservation(customer) {
+        this._reservations.push(customer);
+    }
+    ```
+    ```js
+    // Extract Function (106)
+    addReservation(customer) {
+        this.zz_addReservation(customer);
+    }
+
+    zz_addReservation(customer) {
+        this._reservations.push(customer);
+    }
+    ```
+    ```js
+    // add the parameter to the new declaration and its call
+    addReservation(customer) {
+        this.zz_addReservation(customer, false);
+    }
+
+    zz_addReservation(customer, isPriority) {
+        this._reservations.push(customer);
+    }
+    ```
+    ```js
+    // Introduce Assertion (302) to check the new parameter is used by the caller.
+    zz_addReservation(customer, isPriority) {
+        assert(isPriority === true || isPriority === false);
+        this._reservations.push(customer);
+    }
+    ```
+    ```js
+    // Inline Function (115) on the original function
+    addReservation(customer, isPriority) {
+        assert(isPriority === true || isPriority === false);
+        this._reservations.push(customer);
+    }
+    ```
+
+* Example: Changing a Parameter to One of Its Properties
+    ```js
+    function inNewEngland(aCustomer) {
+        return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(aCustomer.address.state);
+    }
+
+    const newEnglanders = someCustomers.filter(c => inNewEngland(c));
+    ```
+    inNewEngland only uses the customer’s home state to determine if it’s in New England. I’d prefer to refactor inNewEngland so that it takes a state code as a parameter, making it usable in more contexts by removing the dependency on the customer.
+    ```js
+    //  Extract Variable (119)
+    function inNewEngland(aCustomer) {
+        const stateCode = aCustomer.address.state;
+        return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
+    }
+    ```
+    ```js
+    // use Extract Function (106) to create that new function
+    function inNewEngland(aCustomer) {
+        const stateCode = aCustomer.address.state;
+        return xxNEWinNewEngland(stateCode);
+    }
+
+    function xxNEWinNewEngland(stateCode) {
+        return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
+    }
+    ```
+    ```js
+    // apply Inline Variable (123) on the input parameter in the original function.
+    function inNewEngland(aCustomer) {
+        return xxNEWinNewEngland(aCustomer.address.state);
+    }
+    ```
+    ```js
+    // I use Inline Function (115) to fold the old function into its callers,
+    // effectively replacing the call to the old function with a call to the new one.
+    const newEnglanders = someCustomers.filter(c => xxNEWinNewEngland(c.address.state));
+    ```
+    ```js
+    // Once I’ve inlined the old function into every caller,
+    // I use Change Function Declaration again to change the name of the new function to that of the original.
+    const newEnglanders = someCustomers.filter(c => inNewEngland(c.address.state));
+
+    function inNewEngland(stateCode) {
+        return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
+    }
+    ```
+
+
 
 ## Encapsulate Variable
 
+* Motivation
+
+    Refactoring is all about manipulating the elements of our programs. Data is more awkward to manipulate than functions.
+
+    Data is more awkward because I can’t do that. If I move data around, I have to change all the references to the data in a single cycle to keep the code working. For data with a very small scope of access, such as a temporary variable in a small function, this isn’t a problem. But as the scope grows, so does the difficulty, which is why global data is such a pain.
+
+    So if I want to move widely accessed data, often the best approach is to first encapsulate it by routing all its access through functions. That way, I turn the difficult task of reorganizing data into the simpler task of reorganizing functions.
+
+    The greater the scope of the data, the more important it is to encapsulate. My approach with legacy code is that whenever I need to change or add a new reference to such a variable, I should take the opportunity to encapsulate it. That way I prevent the increase of coupling to commonly used data.
+
+    Keeping data encapsulated is much less important for immutable data.
+
+* Mechanics
+    1. Create encapsulating functions to access and update the variable.
+    2. Run static checks.
+    3. For each reference to the variable, replace with a call to the appropriate encapsulating function. Test after each replacement.
+    4. Restrict the visibility of the variable.
+        * Sometimes it’s not possible to prevent access to the variable. If so, it may be useful to detect any remaining references by renaming the variable and testing.
+    5. Test.
+    6. If the value of the variable is a record, consider Encapsulate Record (162).
+
+* Example
+    ```js
+    // global variable
+    let defaultOwner = {firstName: "Martin", lastName: "Fowler"};
+
+    // usage
+    spaceship.owner = defaultOwner;
+    defaultOwner = {firstName: "Rebecca", lastName: "Parsons"};
+    ```
+
+    ```js
+    // defining functions to read and write the data.
+    function getDefaultOwner()    {return defaultOwner;}
+    function setDefaultOwner(arg) {defaultOwner = arg;}
+    ```
+
+    ```js
+    // replace the global variable usage with functions
+    spaceship.owner = getDefaultOwner();
+    setDefaultOwner({firstName: "Rebecca", lastName: "Parsons"});
+    ```
+    ```js
+    // restrict the visibility of the variable.
+    // This both checks that there aren’t any references that I’ve missed,
+    // and ensures that future changes to the code won’t access the variable directly
+    let defaultOwner = {firstName: "Martin", lastName: "Fowler"};
+    export function getDefaultOwner()    {return defaultOwner;}
+    export function setDefaultOwner(arg) {defaultOwner = arg;}
+    ```
+
+* Example: Encapsulating the Value
+
+    The basic refactoring I’ve outlined here encapsulates a reference to some data structure, allowing me to control its access and reassignment. But it doesn’t control changes to that structure.
+    ```js
+    const owner1 = defaultOwner();
+    assert.equal("Fowler", owner1.lastName, "when set");
+    const owner2 = defaultOwner();
+    owner2.lastName = "Parsons";
+    assert.equal("Parsons", owner1.lastName, "after change owner2"); // is this ok?
+    ```
+
+    The basic refactoring encapsulates the reference to the data item. In many cases, this is all I want to do for the moment. But I often want to take the encapsulation deeper to control not just changes to the variable but also to its contents.
+
+    An alternative is to prevent changes—and a good way of doing that is Encapsulate Record (162).
+
+    ```js
+    let defaultOwnerData = {firstName: "Martin", lastName: "Fowler"};
+    export function defaultOwner()       {return new Person(defaultOwnerData);}
+    export function setDefaultOwner(arg) {defaultOwnerData = arg;}
+
+    class Person {
+        constructor(data) {
+            this._lastName = data.lastName;
+            this._firstName = data.firstName
+        }
+
+        get lastName() {return this._lastName;}
+        get firstName() {return this._firstName;}
+        // and so on for other properties
+    }
+    ```
+
 ## Rename Variable
 
+![](../Images/Refactor/6-rename-variable.jpg)
+
+* Motivation
+
+    Naming things well is the heart of clear programming. Variables can do a lot to explain what I’m up to—if I name them well.
+
+    Even more than most program elements, the importance of a name depends on how widely it’s used.
+
+* Mechanics
+    1. If the variable is used widely, consider Encapsulate Variable (132).
+    2. Find all references to the variable, and change every one.
+        * If there are references from another code base, the variable is a published variable, and you cannot do this refactoring.
+        * If the variable does not change, you can copy it to one with the new name, then change gradually, testing after each change.
+    3. Test.
+
+* Example
+    ```js
+    let tpHd = "untitled";
+
+    result += `<h1>${tpHd}</h1>`;
+    tpHd = obj['articleTitle'];
+    ```
+
+    ```js
+    // Encapsulate Variable (132)
+    result += `<h1>${title()}</h1>`;
+
+    setTitle(obj['articleTitle']);
+
+    function title()       {return tpHd;}
+    function setTitle(arg) {tpHd = arg;}
+    ```
+    ```js
+    // rename variable
+    let _title = "untitled";
+
+    function title()       {return _title;}
+    function setTitle(arg) {_title = arg;}
+    ```
+
+* Example: Renaming a Constant
+
+    ```js
+    const cpyNm = "Acme Gooseberries";
+    ```
+    ```js
+    const companyName = "Acme Gooseberries";
+    const cpyNm = companyName;
+    ```
+
 ## Introduce Parameter Object
+![](../Images/Refactor/6-introduce-paramter-object.jpg)
+
+* Motivation
+
+    Grouping data into a structure is valuable because it makes explicit the relationship between the data items. It reduces the size of parameter lists for any function that uses the new structure. It helps consistency since all functions that use the structure will use the same names to get at its elements.
+
+    But the real power of this refactoring is how it enables deeper changes to the code. This process can change the conceptual picture of the code, raising these structures as new abstractions that can greatly simplify my understanding of the domain.
+
+* Mechanics
+    1. If there isn’t a suitable structure already, create one.
+    2. I prefer to use a class, as that makes it easier to group behavior later on. I usually like to ensure these structures are value objects [mf-vo].
+    3. Test.
+    4. Use Change Function Declaration (124) to add a parameter for the new structure.
+    5. Test.
+    6. Adjust each caller to pass in the correct instance of the new structure. Test after each one.
+    7. For each element of the new structure, replace the use of the original parameter with the element of the structure. Remove the parameter.
+    8. Test.
+
+* Example
+    ```js
+    const station = {
+        name: "ZB1",
+        readings: [
+            {temp: 47, time: "2016-11-10 09:10"},
+            {temp: 53, time: "2016-11-10 09:20"},
+            {temp: 58, time: "2016-11-10 09:30"},
+            {temp: 53, time: "2016-11-10 09:40"},
+            {temp: 51, time: "2016-11-10 09:50"},
+        ]
+    };
+
+    function readingsOutsideRange(station, min, max) {
+        return station.readings.filter(r => r.temp < min || r.temp > max);
+    }
+
+    alerts = readingsOutsideRange(station, operatingPlan.temperatureFloor, peratingPlan.temperatureCeiling);
+    ```
+
+    ```js
+    class NumberRange {
+        constructor(min, max) {
+            this._data = {min: min, max: max};
+        }
+        get min() {return this._data.min;}
+        get max() {return this._data.max;}
+    }
+    ```
+    ```js
+    // Change Function Declaration
+    function readingsOutsideRange(station, min, max, range) {
+        return station.readings .filter(r => r.temp < min || r.temp > max);
+    }
+
+    // caller
+    alerts = readingsOutsideRange(
+        station,
+        operatingPlan.temperatureFloor,
+        operatingPlan.temperatureCeiling,
+        null);
+    ```
+
+    ```js
+    // replacing the usage of the parameters
+    function readingsOutsideRange(station, range) {
+        return station.readings.filter(r => r.temp < range.min || r.temp > range.max);
+    }
+
+    // caller
+    const range = new NumberRange(operatingPlan.temperatureFloor, operatingPlan.temperatureCeiling);
+    alerts = readingsOutsideRange(station,  range);
+    ```
+
+    However, replacing a clump of parameters with a real object is just the setup for the really good stuff. The great benefits of making a class like this is that I can then move behavior into the new class.
+
+    ```js
+    function readingsOutsideRange(station, range) {
+        return station.readings.filter(r => !range.contains(r.temp));
+    }
+
+    contains(arg) {return (arg >= this.min && arg <= this.max);}
+    ```
 
 ## Combine Functions into Class
+
+![](../Images/Refactor/6-combine-functions-into-class.jpg)
 
 ## Combine Functions into Transform
 
