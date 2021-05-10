@@ -109,7 +109,7 @@ So, my overall advice on performance with refactoring is: Most of the time you s
     1. Split Loop (227) to isolate the accumulation
     2. Slide Statements (223) to bring the initializing code next to the accumulation
     3. Extract Function (106) to create a function for calculating the total
-    4. Inline Variable (123) to remove the variable completely
+    4. `Inline Variable` to remove the variable completely
 
 In particular, should a test fail during a refactoring, if I can’t immediately see and fix the problem, I’ll revert to my last good commit and redo what I just did with smaller steps.
 
@@ -701,20 +701,20 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```js
     function printOwing(invoice) {
         let outstanding = 0;
-
+    
         console.log("***********************");
         console.log("**** Customer Owes ****");
         console.log("***********************");
-
+    
         // calculate outstanding
         for (const o of invoice.orders) {
             outstanding += o.amount;
         }
-
+    
         // record due date
         const today = Clock.today;
         invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
-
+    
         //print details
         console.log(`name: ${invoice.customer}`);
         console.log(`amount: ${outstanding}`);
@@ -727,25 +727,25 @@ Extraction is all about giving names, and I often need to change the names as I 
         recordDueDate(invoice);
         printDetails(invoice, calculateOutstanding(invoice));
     }
-
+    
     function printBanner() {
         console.log("***********************");
         console.log("**** Customer Owes ****");
         console.log("***********************");
     }
-
+    
     // Example: Using Local Variables
     function recordDueDate(invoice) {
         const today = Clock.today;
         invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
     }
-
+    
     function printDetails(invoice, outstanding) {
         console.log(`name: ${invoice.customer}`);
         console.log(`amount: ${outstanding}`);
         console.log(`due: ${invoice.dueDate.toLocaleDateString()}`);
     }
-
+    
     // Example: Reassigning a Local Variable
     function calculateOutstanding(invoice) {
         let outstanding = 0;
@@ -782,7 +782,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         gatherCustomerData(lines, aCustomer);
         return lines;
     }
-
+    
     function gatherCustomerData(out, aCustomer) {
         out.push(["name", aCustomer.name]);
         out.push(["location", aCustomer.location]);
@@ -845,7 +845,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         constructor(aRecord) {
             this._data = aRecord;
         }
-
+    
         get quantity()  {return this._data.quantity;}
         get itemPrice() {return this._data.itemPrice;}
         get price() {
@@ -947,7 +947,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function circum(radius) {
         return circumference(radius);
     }
-
+    
     function circumference(radius) {
         return 2 * Math.PI * radius;
     }
@@ -964,7 +964,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     addReservation(customer) {
         this.zz_addReservation(customer);
     }
-
+    
     zz_addReservation(customer) {
         this._reservations.push(customer);
     }
@@ -974,7 +974,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     addReservation(customer) {
         this.zz_addReservation(customer, false);
     }
-
+    
     zz_addReservation(customer, isPriority) {
         this._reservations.push(customer);
     }
@@ -999,7 +999,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function inNewEngland(aCustomer) {
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(aCustomer.address.state);
     }
-
+    
     const newEnglanders = someCustomers.filter(c => inNewEngland(c));
     ```
     inNewEngland only uses the customer’s home state to determine if it’s in New England. I’d prefer to refactor inNewEngland so that it takes a state code as a parameter, making it usable in more contexts by removing the dependency on the customer.
@@ -1016,13 +1016,13 @@ Extraction is all about giving names, and I often need to change the names as I 
         const stateCode = aCustomer.address.state;
         return xxNEWinNewEngland(stateCode);
     }
-
+    
     function xxNEWinNewEngland(stateCode) {
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
     }
     ```
     ```js
-    // apply Inline Variable (123) on the input parameter in the original function.
+    // apply `Inline Variable` on the input parameter in the original function.
     function inNewEngland(aCustomer) {
         return xxNEWinNewEngland(aCustomer.address.state);
     }
@@ -1036,7 +1036,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     // Once I’ve inlined the old function into every caller,
     // I use Change Function Declaration again to change the name of the new function to that of the original.
     const newEnglanders = someCustomers.filter(c => inNewEngland(c.address.state));
-
+    
     function inNewEngland(stateCode) {
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
     }
@@ -1071,7 +1071,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```js
     // global variable
     let defaultOwner = {firstName: "Martin", lastName: "Fowler"};
-
+    
     // usage
     spaceship.owner = defaultOwner;
     defaultOwner = {firstName: "Rebecca", lastName: "Parsons"};
@@ -1116,13 +1116,13 @@ Extraction is all about giving names, and I often need to change the names as I 
     let defaultOwnerData = {firstName: "Martin", lastName: "Fowler"};
     export function defaultOwner()       {return new Person(defaultOwnerData);}
     export function setDefaultOwner(arg) {defaultOwnerData = arg;}
-
+    
     class Person {
         constructor(data) {
             this._lastName = data.lastName;
             this._firstName = data.firstName
         }
-
+    
         get lastName() {return this._lastName;}
         get firstName() {return this._firstName;}
         // and so on for other properties
@@ -1140,7 +1140,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     Even more than most program elements, the importance of a name depends on how widely it’s used.
 
 * Mechanics
-    1. If the variable is used widely, consider Encapsulate Variable (132).
+    1. If the variable is used widely, consider `Encapsulate Variable`.
     2. Find all references to the variable, and change every one.
         * If there are references from another code base, the variable is a published variable, and you cannot do this refactoring.
         * If the variable does not change, you can copy it to one with the new name, then change gradually, testing after each change.
@@ -1149,24 +1149,24 @@ Extraction is all about giving names, and I often need to change the names as I 
 * Example
     ```js
     let tpHd = "untitled";
-
+    
     result += `<h1>${tpHd}</h1>`;
     tpHd = obj['articleTitle'];
     ```
 
     ```js
-    // Encapsulate Variable (132)
+    // `Encapsulate Variable`
     result += `<h1>${title()}</h1>`;
-
+    
     setTitle(obj['articleTitle']);
-
+    
     function title()       {return tpHd;}
     function setTitle(arg) {tpHd = arg;}
     ```
     ```js
     // rename variable
     let _title = "untitled";
-
+    
     function title()       {return _title;}
     function setTitle(arg) {_title = arg;}
     ```
@@ -1212,11 +1212,11 @@ Extraction is all about giving names, and I often need to change the names as I 
             {temp: 51, time: "2016-11-10 09:50"},
         ]
     };
-
+    
     function readingsOutsideRange(station, min, max) {
         return station.readings.filter(r => r.temp < min || r.temp > max);
     }
-
+    
     alerts = readingsOutsideRange(station, operatingPlan.temperatureFloor, peratingPlan.temperatureCeiling);
     ```
 
@@ -1234,7 +1234,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function readingsOutsideRange(station, min, max, range) {
         return station.readings .filter(r => r.temp < min || r.temp > max);
     }
-
+    
     // caller
     alerts = readingsOutsideRange(
         station,
@@ -1248,7 +1248,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function readingsOutsideRange(station, range) {
         return station.readings.filter(r => r.temp < range.min || r.temp > range.max);
     }
-
+    
     // caller
     const range = new NumberRange(operatingPlan.temperatureFloor, operatingPlan.temperatureCeiling);
     alerts = readingsOutsideRange(station,  range);
@@ -1260,7 +1260,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function readingsOutsideRange(station, range) {
         return station.readings.filter(r => !range.contains(r.temp));
     }
-
+    
     contains(arg) {return (arg >= this.min && arg <= this.max);}
     ```
 
@@ -1268,22 +1268,809 @@ Extraction is all about giving names, and I often need to change the names as I 
 
 ![](../Images/Refactor/6-combine-functions-into-class.jpg)
 
+* Motivation
+
+    Classes are a fundamental construct in most modern programming languages. They bind together data and functions into a shared environment, exposing some of that data and function to other program elements for collaboration. They are the primary construct in object-oriented languages, but are also useful with other approaches too.
+
+    When I see a group of functions that operate closely together on a common body of data (usually passed as arguments to the function call), I see an opportunity to form a class.
+
+    One significant advantage of using a class is that it allows clients to mutate the core data of the object, and the derivations remain consistent.
+
+* Mechanics
+    1. Apply Encapsulate Record (162) to the common data record that the functions share.
+        * If the data that is common between the functions isn’t already grouped into a record structure, use Introduce Parameter Object (140) to create a record to group it together.
+    2. Take each function that uses the common record and use Move Function (198) to move it into the new class.
+        * Any arguments to the function call that are members can be removed from the argument list.
+    3. Each bit of logic that manipulates the data can be extracted with Extract Function (106) and then moved into the new class.
+
+* Example
+    ```js
+    reading = {customer: "ivan", quantity: 10, month: 5, year: 2017};
+    ```
+    ```js
+    // client 1
+    const aReading = acquireReading();
+    const baseCharge = baseRate(aReading.month, aReading.year) * aReading.quantity;
+    
+    // client 2
+    const aReading = acquireReading();
+    const base = (baseRate(aReading.month, aReading.year) * aReading.quantity);
+    const taxableCharge = Math.max(0, base - taxThreshold(aReading.year));
+    
+    // client 3
+    const aReading = acquireReading();
+    const basicChargeAmount = calculateBaseCharge(aReading);
+    
+    function calculateBaseCharge(aReading) {
+        return baseRate(aReading.month, aReading.year) * aReading.quantity;
+    }
+    ```
+
+    ```js
+    // Encapsulate Record (162)
+    class Reading {
+        constructor(data) {
+            this._customer = data.customer;
+            this._quantity = data.quantity;
+            this._month = data.month;
+            this._year = data.year;
+        }
+        get customer() {return this._customer;}
+        get quantity() {return this._quantity;}
+        get month()    {return this._month;}
+        get year()     {return this._year;}
+    }
+    ```
+
+    ```js
+    //  Move Function (198) to move calculateBaseCharge into the new class
+    class Reading {
+        constructor(data) {
+            this._customer = data.customer;
+            this._quantity = data.quantity;
+            this._month = data.month;
+            this._year = data.year;
+        }
+        get customer() {return this._customer;}
+        get quantity() {return this._quantity;}
+        get month()    {return this._month;}
+        get year()     {return this._year;}
+        get calculateBaseCharge() {
+            return baseRate(this.month, this.year) * this.quantity;
+        }
+    }
+    
+    // client 3
+    const rawReading = acquireReading();
+    const aReading = new Reading(rawReading);
+    const basicChargeAmount = aReading.calculateBaseCharge();
+    ```
+
+    ```js
+    // `Rename Function` to make it something more to my liking.
+    class Reading {
+        constructor(data) {
+            this._customer = data.customer;
+            this._quantity = data.quantity;
+            this._month = data.month;
+            this._year = data.year;
+        }
+        get customer() {return this._customer;}
+        get quantity() {return this._quantity;}
+        get month()    {return this._month;}
+        get year()     {return this._year;}
+        get baseCharge() {
+            return baseRate(this.month, this.year) * this.quantity;
+        }
+    }
+    
+    // client 3
+    const rawReading = acquireReading();
+    const aReading = new Reading(rawReading);
+    const basicChargeAmount = aReading.baseCharge();
+    ```
+
+    With this naming, the client of the reading class can’t tell whether the base charge is a field or a derived value. This is a Good Thing—the Uniform Access Principle [mf-ua].
+
+    ```js
+    // client 1
+    const rawReading = acquireReading();
+    const aReading = new Reading(rawReading);
+    const baseCharge = aReading.baseCharge();
+    
+    // client 2
+    const rawReading = acquireReading();
+    const aReading = new Reading(rawReading);
+    const taxableCharge = Math.max(0, aReading.baseCharge() - taxThreshold(aReading.year));
+    
+    // Extract Function
+    function taxableChargeFn(aReading) {
+        return Math.max(0, aReading.baseCharge() - taxThreshold(aReading.year));
+    }
+    
+    // client 3
+    const rawReading = acquireReading();
+    const aReading = new Reading(rawReading);
+    const taxableCharge = taxableChargeFn(aReading);
+    
+    // Move Function taxableChargeFn to Reading Class
+    class Reading {
+        constructor(data) {
+            this._customer = data.customer;
+            this._quantity = data.quantity;
+            this._month = data.month;
+            this._year = data.year;
+        }
+        get customer() {return this._customer;}
+        get quantity() {return this._quantity;}
+        get month()    {return this._month;}
+        get year()     {return this._year;}
+        get baseCharge() {
+            return baseRate(this.month, this.year) * this.quantity;
+        }
+        function taxableCharge(aReading) {
+            return Math.max(0, aReading.baseCharge() - taxThreshold(aReading.year));
+        }
+    }
+    // client 3
+    const aReading = new Reading(acquireReading());
+    const taxableCharge = aReading.taxableCharge();
+    ```
+
 ## Combine Functions into Transform
+
+![](../Images/Refactor/6-combine-funtions-into-transform.jpg)
+
+* Motivation
+
+    Software often involves feeding data into programs that calculate various derived information from it. These derived values may be needed in several places, and those calculations are often repeated wherever the derived data is used.
+
+    One way to do this is to use a data transformation function that takes the source data as input and calculates all the derivations, putting each derived value as a field in the output data. Then, to examine the derivations, all I need do is look at the transform function.
+
+    Using a class is much better if the source data gets updated within the code. Using a transform stores derived data in the new record, so if the source data changes, I will run into inconsistencies.
+
+* Mechanics
+    1. Create a transformation function that takes the record to be transformed and returns the same values.
+        * This will usually involve a deep copy of the record. It is often worthwhile to write a test to ensure the transform does not alter the original record.
+    2. Pick some logic and move its body into the transform to create a new field in the record. Change the client code to access the new field.
+        * If the logic is complex, use Extract Function (106) first.
+    3. Test.
+    4. Repeat for the other relevant functions.
+
+* Example
+    ```js
+    reading = {customer: "ivan", quantity: 10, month: 5, year: 2017};
+    ```
+    ```js
+    // client 1
+    const aReading = acquireReading();
+    const baseCharge = baseRate(aReading.month, aReading.year) * aReading.quantity;
+    
+    // client 2
+    const aReading = acquireReading();
+    const base = (baseRate(aReading.month, aReading.year) * aReading.quantity);
+    const taxableCharge = Math.max(0, base - taxThreshold(aReading.year));
+    
+    // client 3
+    const aReading = acquireReading();
+    const basicChargeAmount = calculateBaseCharge(aReading);
+    
+    function calculateBaseCharge(aReading) {
+        return  baseRate(aReading.month, aReading.year) * aReading.quantity;
+    }
+    ```
+    ```js
+    function enrichReading(original) { // transformReading(original);
+        const result = _.cloneDeep(original);
+        return result;
+    }
+    
+    // client 3
+    const rawReading = acquireReading();
+    const aReading = enrichReading(rawReading);
+    const basicChargeAmount = calculateBaseCharge(aReading);
+    ```
+    ```js
+    // Move Function
+    function enrichReading(original) {
+        const result = _.cloneDeep(original);
+        result.baseCharge = calculateBaseCharge(result);
+        return result;
+    }
+    
+    // client 3
+    const rawReading = acquireReading();
+    const aReading = enrichReading(rawReading);
+    const basicChargeAmount = aReading.baseCharge;
+    ```
+    One trap to beware of here. When I write enrichReading like this, to return the enriched reading, I’m implying that the original reading record isn’t changed. So it’s wise for me to add a test.
+    ```js
+    it('check reading unchanged', function() {
+        const baseReading = {customer: "ivan", quantity: 15, month: 5, year: 2017};
+        const oracle = _.cloneDeep(baseReading);
+        enrichReading(baseReading);
+        assert.deepEqual(baseReading, oracle);
+    });
+    ```
+    ```js
+    const rawReading = acquireReading();
+    const aReading = enrichReading(rawReading);
+    const base = aReading.baseCharge;
+    const taxableCharge = Math.max(0, base - taxThreshold(aReading.year));
+    
+    // inline variable
+    const rawReading = acquireReading();
+    const aReading = enrichReading(rawReading);
+    const taxableCharge = Math.max(0, aReading.baseCharge; - taxThreshold(aReading.year));
+    ```
+    ```js
+    // move that computation into the transformer
+    function enrichReading(original) {
+        const result = _.cloneDeep(original);
+        result.baseCharge = calculateBaseCharge(result);
+        result.taxableCharge = Math.max(0, result.baseCharge - taxThreshold(result.year));
+        return result;
+    }
+    
+    const rawReading = acquireReading();
+    const aReading = enrichReading(rawReading);
+    const taxableCharge = aReading.taxableCharge;
+    ```
 
 ## Split Phase
 
+![](../Images/Refactor/6-split-phase.jpg)
+
+* Motivation
+
+    The best clue is when different stages of the fragment use different sets of data and functions. By turning them into separate modules I can make this difference explicit, revealing the difference in the code.
+
+* Mechanics
+    1. Extract the second phase code into its own function.
+    2. Test.
+    3. Introduce an intermediate data structure as an additional argument to the extracted function.
+    4. Test.
+    5. Examine each parameter of the extracted second phase. If it is used by first phase, move it to the intermediate data structure. Test after each move.
+        * Sometimes, a parameter should not be used by the second phase. In this case, extract the results of each usage of the parameter into a field of the intermediate data structure and use Move Statements to Callers (217) on the line that populates it.
+    6. Apply Extract Function (106) on the first-phase code, returning the intermediate data structure.
+        * It’s also reasonable to extract the first phase into a transformer object.
+
+* Example
+    ```js
+    function priceOrder(product, quantity, shippingMethod) {
+        const basePrice = product.basePrice * quantity;
+        const discount = Math.max(quantity - product.discountThreshold, 0)
+                * product.basePrice * product.discountRate;
+    
+        const shippingPerCase = (basePrice > shippingMethod.discountThreshold)
+                ? shippingMethod.discountedFee : shippingMethod.feePerCase;
+        const shippingCost = quantity * shippingPerCase;
+        const price =  basePrice - discount + shippingCost;
+        return price;
+    }
+    ```
+    There is a sense of two phases going on here. The first couple of lines of code use the product information to calculate the product-oriented price of the order, while the later code uses shipping information to determine the shipping cost.
+    ```js
+    // Extract Function
+    function priceOrder(product, quantity, shippingMethod) {
+        const basePrice = product.basePrice * quantity;
+        const discount = Math.max(quantity - product.discountThreshold, 0)
+                * product.basePrice * product.discountRate;
+        const price =  applyShipping(basePrice, shippingMethod, quantity, discount);
+        return price;
+    }
+    
+    function applyShipping(basePrice, shippingMethod, quantity, discount) {
+        const shippingPerCase = (basePrice > shippingMethod.discountThreshold)
+                ? shippingMethod.discountedFee : shippingMethod.feePerCase;
+        const shippingCost = quantity * shippingPerCase;
+        const price =  basePrice - discount + shippingCost;
+        return price;
+    }
+    ```
+
+    ```js
+    // introduce the intermediate data structure that will communicate between the two phases.
+    function priceOrder(product, quantity, shippingMethod) {
+        const basePrice = product.basePrice * quantity;
+        const discount = Math.max(quantity - product.discountThreshold, 0)
+            * product.basePrice * product.discountRate;
+    
+        // basePrice, quantity, discount are created by the first-phase code.
+        // shippingMethod isn’t used by the first-phase code, leave as is.
+        const priceData = {basePrice: basePrice, quantity: quantity, discount: discount};
+    
+        const price =  applyShipping(priceData, shippingMethod);
+        return price;
+    }
+    
+    function applyShipping(priceData, shippingMethod) {
+        const shippingPerCase =
+            (priceData.basePrice > shippingMethod.discountThreshold)
+            ? shippingMethod.discountedFee
+            : shippingMethod.feePerCase;
+        const shippingCost = priceData.quantity * shippingPerCase;
+        const price =  priceData.basePrice - priceData.discount + shippingCost;
+        return price;
+    }
+    ```
+    ```js
+    // extract the first-phase code into its own function, returning intermedia data.
+    function priceOrder(product, quantity, shippingMethod) {
+        const priceData = calculatePricingData(product, quantity);
+        return applyShipping(priceData, shippingMethod);
+    }
+    
+    function calculatePricingData(product, quantity) {
+        const basePrice = product.basePrice * quantity;
+        const discount = Math.max(quantity - product.discountThreshold, 0) * product.basePrice * product.discountRate;
+        return {basePrice: basePrice, quantity: quantity, discount:discount};
+    }
+    
+    function applyShipping(priceData, shippingMethod) {
+        const shippingPerCase =
+            (priceData.basePrice > shippingMethod.discountThreshold)
+            ? shippingMethod.discountedFee
+            : shippingMethod.feePerCase;
+        const shippingCost = priceData.quantity * shippingPerCase;
+        return priceData.basePrice - priceData.discount + shippingCost;
+    }
+    ```
 
 # 7 Encapsulation
 
+Perhaps the most important criteria to be used in decomposing modules is to identify secrets that modules should hide from the rest of the system [Parnas]. Data structures are the most common secrets, and I can hide data structures by encapsulating them with **Encapsulate Record** (162) and **Encapsulate Collection** (170). Even primitive data values can be encapsulated with **Replace Primitive with Object** (174)
+
+Using `Replace Temp with Query` (178) is a great help here, particularly when splitting up an overly long function.
+
+Classes and modules are the largest forms of encapsulation, but functions also encapsulate their implementation.
+
 ## Encapsulate Record
+
+![](../Images/Refactor/7-encapsulate-record.jpg)
+
+* Motivation
+
+    This is why I often favor objects over records for mutable data. With objects, I can hide what is stored and provide methods for all three values. The user of the object doesn’t need to know or care which is stored and which is calculated. This encapsulation also helps with renaming.
+
+    I just said I favor objects for mutable data. If I have an immutable value, I can just have all three values in my record, using an enrichment step if necessary.
+
+    I can have two kinds of record structures: those where I declare the legal field names and those that allow me to use whatever I like. The latter are often implemented through a library class called something like hash, map, hashmap, dictionary, or associative array.
+
+* Mechanics
+    * Use `Encapsulate Variable` on the variable holding the record.
+        * Give the functions that encapsulate the record names that are easily searchable.
+    * Replace the content of the variable with a simple class that wraps the record. Define an accessor inside this class that returns the raw record. Modify the functions that encapsulate the variable to use this accessor.
+    * Test.
+    * Provide new functions that return the object rather than the raw record.
+    * For each user of the record, replace its use of a function that returns the record with a function that returns the object. Use an accessor on the object to get at the field data, creating that accessor if needed. Test after each change.
+        * If it’s a complex record, such as one with a nested structure, focus on clients that update the data first. Consider returning a copy or read-only proxy of the data for clients that only read the data.
+    * Remove the class’s raw data accessor and the easily searchable functions that returned the raw record.
+    * Test.
+    * If the fields of the record are themselves structures, consider using Encapsulate Record and Encapsulate Collection (170) recursively.
+
+* Example
+    ```js
+    const organization = {name: "Acme Gooseberries", country: "GB"};
+    
+    result += `<h1>${organization.name}</h1>`;
+    organization.name = newName;
+    ```
+
+    ```js
+    // encapsulate variable
+    function getRawDataOfOrganization() {return organization;}
+    result += `<h1>${getRawDataOfOrganization().name}</h1>`;
+    getRawDataOfOrganization().name = newName;
+    ```
+
+    ```js
+    // replacing the record with a class
+    class Organization {
+        constructor(data) {
+            this._data = data;
+        }
+    
+        set name(aString)   {this._data.name = aString;}
+        get name()          {return this._data.name;}
+    }
+    
+    const organization = new Organization({name: "Acme Gooseberries", country: "GB"});
+    function getOrganization() {return organization;}
+    
+    // client
+    result += `<h1>${getOrganization().name}</h1>`;
+    getOrganization().name = newName;
+    ```
+    ```js
+    // I’d also be inclined to fold the _data field directly into the object.
+    class Organization {
+        constructor(data) {
+            this._name = data.name;
+            this._country = data.country;
+        }
+        get name()    {return this._name;}
+        set name(aString) {this._name = aString;}
+        get country()    {return this._country;}
+        set country(aCountryCode) {this._country = aCountryCode;}
+    }
+    ```
+
+* Example: Encapsulating a Nested Record
+    ```json
+    1920": {
+        name: "martin",
+        id: "1920",
+        usages: {
+            "2016": {
+            "1": 50,
+            "2": 55,
+            // remaining months of the year
+            },
+            "2015": {
+            "1": 70,
+            "2": 63,
+            // remaining months of the year
+            }
+        }
+    },
+    "38673": {
+        name: "neal",
+        id: "38673",
+        // more customers in a similar form
+    }
+    ```
+
+    ```js
+    // client
+    customerData[customerID].usages[year][month] = amount;
+    
+    function compareUsage (customerID, laterYear, month) {
+        const later   = customerData[customerID].usages[laterYear][month];
+        const earlier = customerData[customerID].usages[laterYear - 1][month];
+        return {laterAmount: later, change: later - earlier};
+    }
+    ```
+    ```js
+    // start with `Encapsulate Variable`
+    function getRawDataOfCustomers()    {return customerData;}
+    function setRawDataOfCustomers(arg) {customerData = arg;}
+    
+    // client
+    getRawDataOfCustomers()[customerID].usages[year][month] = amount;
+    
+    function compareUsage (customerID, laterYear, month) {
+        const later   = getRawDataOfCustomers()[customerID].usages[laterYear][month];
+        const earlier = getRawDataOfCustomers()[customerID].usages[laterYear - 1][month];
+        return {laterAmount: later, change: later - earlier};
+    }
+    ```
+    ```js
+    //  make a class for the overall data structure
+    class CustomerData {
+        constructor(data) {
+            this._data = data;
+        }
+    }
+    
+    function getCustomerData() {return customerData;}
+    function getRawDataOfCustomers()    {return customerData._data;}
+    function setRawDataOfCustomers(arg) {customerData = new CustomerData(arg);}
+    ```
 
 ## Encapsulate Collection
 
+![](../Images/Refactor/7-encapsulate-collection.jpg)
+
+* Motivation
+
+    I like encapsulating any mutable data in my programs. This makes it easier to see when and how data structures are modified, which then makes it easier to change those data structures when I need to.
+    
+    Access to a collection variable may be encapsulated, but if the getter returns the collection itself, then that collection’s membership can be altered without the enclosing class being able to intervene.
+    
+    To avoid this, I provide collection modifier methods—usually add and remove—on the class itself.
+    
+    A better approach is to ensure that the getter for the collection does not return the raw collection, so that clients cannot accidentally change it.
+    
+    One way to prevent modification of the underlying collection is by never returning a collection value. Another way is to allow some form of read-only access to a collection. 
+    
+* Mechanics
+    1. Apply `Encapsulate Variable` if the reference to the collection isn’t already encapsulated.
+    2. Add functions to add and remove elements from the collection.
+        * If there is a setter for the collection, use Remove Setting Method (331) if possible. If not, make it take a copy of the provided collection.
+    3. Run static checks.
+    4. Find all references to the collection. If anyone calls modifiers on the collection, change them to use the new add/remove functions. Test after each change.
+    5. Modify the getter for the collection to return a protected view on it, using a read-only proxy or a copy.
+    6. Test.
+
+* Example
+    ```js
+    class Person {
+        constructor (name) {
+            this._name = name;
+            this._courses = [];
+        }
+        get name() {return this._name;}
+        get courses() {return this._courses;}
+        set courses(aList) {this._courses = aList;}
+    }
+    
+    class Course {
+        constructor(name, isAdvanced) {
+            this._name = name;
+            this._isAdvanced = isAdvanced;
+        }
+        get name()       {return this._name;}
+        get isAdvanced() {return this._isAdvanced;}
+    }
+    
+    // client 
+    numAdvancedCourses = aPerson.courses.filter(c => c.isAdvanced).length;
+    
+    const basicCourseNames = readBasicCourseNames(filename);
+    aPerson.courses = basicCourseNames.map(name => new Course(name, false));
+    
+    for (const name of readBasicCourseNames(filename)) {
+        aPerson.courses.push(new Course(name, false));
+    }
+    ```
+    This violates encapsulating because the person class has no ability to take control when the list is updated in this way. While the reference to the field is encapsulated, the content of the field is not.
+    ```js
+    class Person {
+        constructor (name) {
+            this._name = name;
+            this._courses = [];
+        }
+        get name() {return this._name;}
+        get courses() {return this._courses;}
+        set courses(aList) {this._courses = aList;}
+        
+        addCourse(aCourse) {
+            this._courses.push(aCourse);
+        }
+        removeCourse(aCourse, fnIfAbsent = () => {throw new RangeError();}) {
+            const index = this._courses.indexOf(aCourse);
+            if (index === -1) 
+                fnIfAbsent();
+            else 
+                this._courses.splice(index, 1);
+        }
+    }
+    
+    // client 
+    for(const name of readBasicCourseNames(filename)) {
+        aPerson.addCourse(new Course(name, false));
+    }
+    ```
+    ```js
+    // Remove Setting Method
+    class Person {
+        constructor (name) {
+            this._name = name;
+            this._courses = [];
+        }
+        const& get name() {return this._name;}
+        const& get courses() {return this._courses;}
+    
+        addCourse(aCourse) {
+            this._courses.push(aCourse);
+        }
+        removeCourse(aCourse, fnIfAbsent = () => {throw new RangeError();}) {
+            const index = this._courses.indexOf(aCourse);
+            if (index === -1) 
+                fnIfAbsent();
+            else 
+                this._courses.splice(index, 1);
+        }
+    }
+    ```
+
 ## Replace Primitive with Object
+
+formerly: Replace Data Value with Object, Replace Type Code with Class
+
+![](../Images/Refactor/7-replace-primitive-with-object.jpg)
+
+* Motivation
+
+    At first, such a class does little more than wrap the primitive—but once I have that class, I have a place to put behavior specific to its needs.
+    
+* Mechanics
+    * Apply `Encapsulate Variable` if it isn’t already.
+    * Create a simple value class for the data value. It should take the existing value in its constructor and provide a getter for that value.
+    * Run static checks.
+    * Change the setter to create a new instance of the value class and store that in the field, changing the type of the field if present.
+    * Change the getter to return the result of invoking the getter of the new class.
+    * Test.
+    * Consider using `Rename Function` on the original accessors to better reflect what they do.
+    * Consider clarifying the role of the new object as a value or reference object by applying Change Reference to Value (252) or Change Value to Reference (256).
+
+* Example
+    ```js
+    class Order {
+        constructor(data) {
+            this.priority = data.priority; // string value
+            // more initialization
+        }
+    }
+    
+    // client
+    highPriorityCount = orders.filter(o => "high" === o.priority|| "rush" === o.priority).length;
+    ```
+    Whenever I’m fiddling with a data value, the first thing I do is use `Encapsulate Variable` on it
+    ```js
+    class Order {
+        constructor(data) {
+            this.priority = data.priority;
+            // more initialization
+        }
+        get priority()        {return this._priority;}
+        set priority(aString) {this._priority = aString;}
+    }
+    ```
+    ```js
+    class Priority {
+        constructor(value) {this._value = value;}
+        toString() {return this._value;}
+    }
+    
+    class Order {
+        constructor(data) {
+            this.priority = data.priority;
+            // more initialization
+        }
+        get priority()        {return this._priority.toString();}
+        set priority(aString) {this._priority = new Priority(aString);}
+    }
+    ```
+    the current getter on the order to be misleading, so `Rename Function`.
+    ```js
+    get priorityString()  {return this._priority.toString();}
+    set priority(aString) {this._priority = new Priority(aString);}
+    
+    // client
+    highPriorityCount = orders.filter(o => "high" === o.priorityString || "rush" === o.priorityString).length;
+    ```
+    As I look at who uses the priority, I consider whether they should use the priority class themselves. As a result, I provide a getter on order that provides the new priority object directly.
+    ```js
+    class Order {
+        get priority()        {return this._priority;}
+        get priorityString()  {return this._priority.toString();}
+        set priority(aString) {this._priority = new Priority(aString);}
+    }
+    
+    // client
+    highPriorityCount = orders.filter(o => "high" === o.priority.toString() || "rush" === o.priority.toString()).length;
+    ```
+    As the priority class becomes useful elsewhere, I would allow clients of the order to use the setter with a priority instance, which I do by adjusting the priority constructor.
+    ```js
+    class Priority {
+        constructor(value) {
+            if (value instanceof Priority) return value;
+            if (Priority.legalValues().includes(value))
+                this._value = value;
+            else
+                throw new Error(`<${value}> is invalid for Priority`);
+        }
+        toString() {return this._value;}
+        get _index() {return Priority.legalValues().findIndex(s => s === this._value);}
+        static legalValues() {return ['low', 'normal', 'high', 'rush'];}
+    
+        equals(other) {return this._index === other._index;}
+        higherThan(other) {return this._index > other._index;}
+        lowerThan(other) {return this._index < other._index;}
+    }
+    
+    // client
+    highPriorityCount = orders.filter(o => o.priority.higherThan(new Priority("normal"))).length;
+    ```
 
 ## Replace Temp with Query
 
+![](../Images/Refactor/7-replace-temp-with-query.jpg)
+
+* Motivation
+
+    One use of temporary variables is to capture the value of some code in order to refer to it later in a function. Using a temp allows me to refer to the value while explaining its meaning and avoiding repeating the code that calculates it. But while using a variable is handy, it can often be worthwhile to go a step further and use a function instead.
+    
+    Putting variable logic into functions often also sets up a stronger boundary between the extracted logic and the original function, which helps me spot and avoid awkward dependencies and side effects.
+    
+    Using functions instead of variables also allows me to avoid duplicating the calculation logic in similar functions. 
+    
+    This refactoring works best if I’m inside a class, since the class provides a shared context for the methods I’m extracting.  Outside of a class, I’m liable to have too many parameters in a top-level function which negates much of the benefit of using a function.
+    
+* Mechanics
+    * Check that the variable is determined entirely before it’s used, and the code that calculates it does not yield a different value whenever it is used.
+    * If the variable isn’t read-only, and can be made read-only, do so.
+    * Test.
+    * Extract the assignment of the variable into a function.
+        * If the variable and the function cannot share a name, use a temporary name for the function.
+        * Ensure the extracted function is free of side effects. If not, use `Separate Query from Modifier`.
+    * Test.
+    * Use `Inline Variable` to remove the temp.
+
+* Example
+    ```js
+    class Order {
+        constructor(quantity, item) {
+            this._quantity = quantity;
+            this._item = item;
+        }
+    
+        get price() {
+            var basePrice = this._quantity * this._item.price;
+            var discountFactor = 0.98;
+            if (basePrice > 1000) discountFactor -= 0.03;
+            return basePrice * discountFactor;
+        }
+    }
+    ```
+    ```js
+    // encapsulate basePrice into a function
+    class Order {
+        constructor(quantity, item) {
+            this._quantity = quantity;
+            this._item = item;
+        }
+    
+        get price() {
+            const basePrice = this.basePrice;
+            var discountFactor = 0.98;
+            if (basePrice > 1000) discountFactor -= 0.03;
+            return basePrice * discountFactor;
+        }
+        
+        get basePrice() {
+            return this._quantity * this._item.price;
+        }
+    }
+    ```
+    ```js
+    // Inline Variable
+    class Order {
+        constructor(quantity, item) {
+            this._quantity = quantity;
+            this._item = item;
+        }
+    
+        get price() {
+            var discountFactor = 0.98;
+            if (this.basePrice > 1000) discountFactor -= 0.03;
+            return this.basePrice * discountFactor;
+        }
+        
+        get basePrice() {
+            return this._quantity * this._item.price;
+        }
+    }
+    ```
+    ```js
+    // Extract Funciton for discountFactor
+    class Order {
+        constructor(quantity, item) {
+            this._quantity = quantity;
+            this._item = item;
+        }
+    
+        get price() {
+            return this.basePrice * this.discountFactor;
+        }
+
+        get discountFactor() {
+            var discountFactor = 0.98;
+            if (this.basePrice > 1000) discountFactor -= 0.03;
+            return discountFactor;
+        }
+        
+        get basePrice() {
+            return this._quantity * this._item.price;
+        }
+    }
+    ```
+
 ## Extract Class
+
+![](../Images/Refactor/7-extract-class.jpg)
 
 ## Inline Class
 
