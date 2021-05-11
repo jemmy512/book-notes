@@ -91,7 +91,7 @@ When refactoring a long function like this, I mentally try to identify points th
 
 First, I need to look in the fragment for any variables that will no longer be in scope once I’ve extracted the code into its own function.
 
-Once I’ve used Extract Function (106), I take a look at what I’ve extracted to see if there are any quick and easy things I can do to clarify the extracted function. The first thing I do is rename some of the variables to make them clearer, such as changing thisAmount to result.
+Once I’ve used `Extract Function`, I take a look at what I’ve extracted to see if there are any quick and easy things I can do to clarify the extracted function. The first thing I do is rename some of the variables to make them clearer, such as changing thisAmount to result.
 
 When I’m breaking down a long function, I like to get rid of variables like play, because temporary variables create a lot of locally scoped names that complicate extractions. The refactoring I will use here is Replace Temp with Query (178).
 
@@ -108,7 +108,7 @@ So, my overall advice on performance with refactoring is: Most of the time you s
 * The second aspect I want to call your attention to is how small the steps were to remove volumeCredits:
     1. Split Loop (227) to isolate the accumulation
     2. Slide Statements (223) to bring the initializing code next to the accumulation
-    3. Extract Function (106) to create a function for calculating the total
+    3. `Extract Function` to create a function for calculating the total
     4. `Inline Variable` to remove the variable completely
 
 In particular, should a test fail during a refactoring, if I can’t immediately see and fix the problem, I’ll revert to my last good commit and redo what I just did with smaller steps.
@@ -914,7 +914,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     * Migration Mechanics
         1. If necessary, refactor the body of the function to make it easy to do the following extraction step.
-        2. Use Extract Function (106) on the function body to create the new function.
+        2. Use `Extract Function` on the function body to create the new function.
             * If the new function will have the same name as the old one, give the new function a temporary name that’s easy to search for.
         3. If the extracted function needs additional parameters, use the simple mechanics to add them.
         4. Test.
@@ -943,7 +943,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     }
     ```
     ```js
-    // Extract Function (106) to the entire function body.
+    // `Extract Function` to the entire function body.
     function circum(radius) {
         return circumference(radius);
     }
@@ -960,7 +960,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     }
     ```
     ```js
-    // Extract Function (106)
+    // `Extract Function`
     addReservation(customer) {
         this.zz_addReservation(customer);
     }
@@ -1011,7 +1011,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     }
     ```
     ```js
-    // use Extract Function (106) to create that new function
+    // use `Extract Function` to create that new function
     function inNewEngland(aCustomer) {
         const stateCode = aCustomer.address.state;
         return xxNEWinNewEngland(stateCode);
@@ -1281,7 +1281,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         * If the data that is common between the functions isn’t already grouped into a record structure, use Introduce Parameter Object (140) to create a record to group it together.
     2. Take each function that uses the common record and use `Move Function` to move it into the new class.
         * Any arguments to the function call that are members can be removed from the argument list.
-    3. Each bit of logic that manipulates the data can be extracted with Extract Function (106) and then moved into the new class.
+    3. Each bit of logic that manipulates the data can be extracted with `Extract Function` and then moved into the new class.
 
 * Example
     ```js
@@ -1433,7 +1433,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     1. Create a transformation function that takes the record to be transformed and returns the same values.
         * This will usually involve a deep copy of the record. It is often worthwhile to write a test to ensure the transform does not alter the original record.
     2. Pick some logic and move its body into the transform to create a new field in the record. Change the client code to access the new field.
-        * If the logic is complex, use Extract Function (106) first.
+        * If the logic is complex, use `Extract Function` first.
     3. Test.
     4. Repeat for the other relevant functions.
 
@@ -1532,7 +1532,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     4. Test.
     5. Examine each parameter of the extracted second phase. If it is used by first phase, move it to the intermediate data structure. Test after each move.
         * Sometimes, a parameter should not be used by the second phase. In this case, extract the results of each usage of the parameter into a field of the intermediate data structure and use Move Statements to Callers (217) on the line that populates it.
-    6. Apply Extract Function (106) on the first-phase code, returning the intermediate data structure.
+    6. Apply `Extract Function` on the first-phase code, returning the intermediate data structure.
         * It’s also reasonable to extract the first phase into a transformer object.
 
 * Example
@@ -2257,8 +2257,6 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
         set trackingNumber(arg) {this._trackingNumber = arg;}
     }
     ```
-    ```js
-    ```
 
 ## Hide Delegate
 
@@ -2323,16 +2321,44 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 * Example
     ```js
+    class Person {
+        get manager() {return this._department.manager;}
+    }
+
+    class Department {
+        get manager() {return this._manager;}
+    }
+
+    // client
+    manager = aPerson.manager;
     ```
     ```js
+    class Person {
+        get department() {return this._department;}
+        get manager() {return this.department.manager;}
+    }
+
+    // client
+    manager = aPerson.department.manager;
     ```
-    ```js
-    ```
-    ```js
-    ```
+    There is no absolute reason why I should either hide a delegate or remove a middle man—particular circumstances suggest which approach to take, and reasonable people can differ on what works best.
 
 ## Substitute Algorithm
 
+![](../Images/Refactor/7-substitute-algorithm.jpg)
+
+* Motivation
+
+    Sometimes, when I want to change the algorithm to work slightly differently, it’s easier to start by replacing it with something that would make my change more straightforward to make.
+
+    When I have to take this step, I have to be sure I’ve decomposed the method as much as I can. Replacing a large, complex algorithm is very difficult; only by making it simple can I make the substitution tractable.
+
+* Mechanics
+    * Arrange the code to be replaced so that it fills a complete function.
+    * Prepare tests using this function only, to capture its behavior.
+    * Prepare your alternative algorithm.
+    * Run static checks.
+    * Run tests to compare the output of the old algorithm to the new one. If they are the same, you’re done. Otherwise, use the old algorithm for comparison in testing and debugging.
 
 # 8 Moving Features
 
@@ -2370,13 +2396,389 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 # 10 Simplifying Conditional Logic
 
+I regularly apply `Decompose Conditional` to complicated conditionals, and I use `Consolidate Conditional Expression` to make logical combinations clearer. I use `Replace Nested Conditional with Guard Clauses` to clarify cases where I want to run some pre-checks before my main processing. If I see several conditions using the same switching logic, it’s a good time to pull `Replace Conditional with Polymorphism` out the box.
+
+A lot of conditionals are used to handle special cases, such as nulls; if that logic is mostly the same, then `Introduce Special Case`(often referred to as Introduce Null Object (289)) can remove a lot of duplicate code. And, although I like to remove conditions a lot, if I want to communicate (and check) a program’s state, I find `Introduce Assertion` a worthwhile addition.
+
+
 ## Decompose Conditional
+
+![](../Images/Refactor/10-decompose-conditional.jpg)
+
+* Motivation
+
+    One of the most common sources of complexity in a program is complex conditional logic.
+
+    The problem usually lies in the fact that the code, both in the condition checks and in the actions, tells me what happens but can easily obscure why it happens.
+
+    As with any large block of code, I can make my intention clearer by decomposing it and replacing each chunk of code with a function call named after the intention of that chunk.
+
+* Mechanics
+    * Apply `Extract Function` on the condition and each leg of the conditional.
+
+* Example
+    ```js
+    // Suppose I’m calculating the charge for something that has separate rates for winter and summer:
+    if (!aDate.isBefore(plan.summerStart) && !aDate.isAfter(plan.summerEnd))
+        charge = quantity * plan.summerRate;
+    else
+        charge = quantity * plan.regularRate + plan.regularServiceCharge;
+    ```
+    ```js
+    // extract functions
+    if (isSummer())
+        charge = quantity * plan.summerRate;
+    else
+        charge = quantity * plan.regularRate + plan.regularServiceCharge;
+
+    function isSummer() {
+        return !aDate.isBefore(plan.summerStart) && !aDate.isAfter(plan.summerEnd);
+    }
+    ```
+    ```js
+    // continue extract function
+    if (isSummer())
+        charge = doSummerCharge();
+    else
+        charge = doRegularCharge();
+
+    function isSummer() {
+        return !aDate.isBefore(plan.summerStart) && !aDate.isAfter(plan.summerEnd);
+    }
+
+    function doSummerCharge() {
+        return quantity * plan.summerRate;
+    }
+
+    function doRegularCharge() {
+        return quantity * plan.regularRate + plan.regularServiceCharge;
+    }
+    ```
+    ```js
+    // reformat the conditional using the ternary operator
+    charge = isSummer() ? doSummerCharge() : doRegularCharge();
+
+    function isSummer() {
+        return !aDate.isBefore(plan.summerStart) && !aDate.isAfter(plan.summerEnd);
+    }
+
+    function doSummerCharge() {
+        return quantity * plan.summerRate;
+    }
+
+    function doRegularCharge() {
+        return quantity * plan.regularRate + plan.regularServiceCharge;
+    }
+    ```
+
 ## Consolidate Conditional Expression
+
+![](../Images/Refactor/10-consolidate-conditional-expression.jpg)
+
+* Motivation
+
+    Sometimes, I run into a series of conditional checks where each check is different yet the resulting action is the same. When I see this, I use and and or operators to consolidate them into a single conditional check with a single result.
+    Consolidating the conditional code is important for two reasons. 1. it makes it clearer by showing that I’m really making a single check that combines other checks. 2. it often sets me up for `Extract Function`.
+
+* Mechanics
+    * Ensure that none of the conditionals have any side effects.
+        * If any do, use `Separate Query from Modifier` on them first.
+    * Take two of the conditional statements and combine their conditions using a logical operator.
+        * Sequences combine with or, nested if statements combine with and.
+    * Test.
+    * Repeat combining conditionals until they are all in a single condition.
+    * Consider using `Extract Function` on the resulting condition.
+
+* Example
+    ```js
+    function disabilityAmount(anEmployee) {
+        if (anEmployee.seniority < 2) return 0;
+        if (anEmployee.monthsDisabled > 12) return 0;
+        if (anEmployee.isPartTime) return 0;
+        // compute the disability amount
+    }
+    ```
+    ```js
+    function disabilityAmount(anEmployee) {
+        if (isNotEligableForDisability())
+            return 0;
+        // compute the disability amount
+
+        function isNotEligableForDisability() {
+            return ((anEmployee.seniority < 2)
+                || (anEmployee.monthsDisabled > 12)
+                || (anEmployee.isPartTime));
+        }
+    }
+    ```
+* Example: Using ands
+    ```js
+    if (anEmployee.onVacation)
+        if (anEmployee.seniority > 10)
+            return 1;
+    return 0.5;
+    ```
+    ```js
+    if ((anEmployee.onVacation) && (anEmployee.seniority > 10))
+        return 1;
+    return 0.5;
+    ```
 
 ## Replace Nested Conditional with Guard Clauses
 
+![](../Images/Refactor/10-replace-nested-conditional-with-guard-clauses.jpg)
+
+* Motivation
+
+    Conditional expressions come in two styles. In the first style, both legs of the conditional are part of normal behavior, while in the second style, one leg is normal and the other indicates an unusual condition.
+
+    If both are part of normal behavior, I use a condition with an if and an else leg. If the condition is an unusual condition, I check the condition and return if it’s true. This kind of check is often called a **guard clause**.
+
+    The key point of Replace Nested Conditional with Guard Clauses is emphasis. If I’m using an if-then-else construct, I’m giving equal weight to the if leg and the else leg. This communicates to the reader that the legs are equally likely and important. Instead, the guard clause says, “This isn’t the core to this function, and if it happens, do something and get out.”
+
+* Mechanics
+    * Select outermost condition that needs to be replaced, and change it into a guard clause.
+    * Test.
+    * Repeat as needed.
+    * If all the guard clauses return the same result, use `Consolidate Conditional Expression`.
+
+* Example
+    ```js
+    function payAmount(employee) {
+        let result;
+        if (employee.isSeparated) {
+            result = {amount: 0, reasonCode: "SEP"};
+        } else {
+            if (employee.isRetired) {
+                result = {amount: 0, reasonCode: "RET"};
+            } else {
+                // logic to compute amount
+                lorem.ipsum(dolor.sitAmet);
+                consectetur(adipiscing).elit();
+                sed.do.eiusmod = tempor.incididunt.ut(labore) && dolore(magna.aliqua);
+                ut.enim.ad(minim.veniam);
+                result = someFinalComputation();
+            }
+        }
+        return result;
+    }
+    ```
+    ```js
+    function payAmount(employee) {
+        if (employee.isSeparated)
+            return {amount: 0, reasonCode: "SEP"};
+        if (employee.isRetired)
+            return {amount: 0, reasonCode: "RET"};
+
+        // logic to compute amount
+        lorem.ipsum(dolor.sitAmet);
+        consectetur(adipiscing).elit();
+        sed.do.eiusmod = tempor.incididunt.ut(labore) && dolore(magna.aliqua);
+        ut.enim.ad(minim.veniam);
+        return someFinalComputation();
+    }
+    ```
+
+* Example: Reversing the Conditions
+    ```js
+    function adjustedCapital(anInstrument) {
+        let result = 0;
+        if (anInstrument.capital > 0) {
+            if (anInstrument.interestRate > 0 && anInstrument.duration > 0) {
+                result = (anInstrument.income / anInstrument.duration) * anInstrument.adjustmentFactor;
+            }
+        }
+        return result;
+    }
+    ```
+    ```js
+    function adjustedCapital(anInstrument) {
+        if (anInstrument.capital <= 0
+            || anInstrument.interestRate <= 0
+            || anInstrument.duration <= 0)
+        {
+            return 0;
+        }
+        return (anInstrument.income / anInstrument.duration) * anInstrument.adjustmentFactor;
+    }
+    ```
+
 ## Replace Conditional with Polymorphism
 
+![](../Images/Refactor/10-replace-conditional-with-polymorphism.jpg)
+
+* Motivation
+
+    Complex conditional logic is one of the hardest things to reason about in programming, so I always look for ways to add structure to conditional logic.
+
+    A common case for this is where I can form a set of types, each handling the conditional logic differently.
+
+    Another situation is where I can think of the logic as a base case with variants. The base case may be the most common or most straightforward. I can put this logic into a superclass, I then put each variant case into a subclass, which I express with code that emphasizes its difference from the base case.
+
+    Most of my conditional logic uses basic conditional statements—if/else and switch/case. But when I see complex conditional logic that can be improved as discussed above, I find polymorphism a powerful tool.
+
+* Mechanics
+    * If classes do not exist for polymorphic behavior, create them together with a factory function to return the correct instance.
+    * Use the factory function in calling code.
+    * Move the conditional function to the superclass.
+        * If the conditional logic is not a self-contained function, use Extract Function (106) to make it so.
+    * Pick one of the subclasses. Create a subclass method that overrides the conditional statement method. Copy the body of that leg of the conditional statement into the subclass method and adjust it to fit.
+    * Repeat for each leg of the conditional.
+    * Leave a default case for the superclass method. Or, if superclass should be abstract, declare that method as abstract or throw an error to show it should be the responsibility of a subclass.
+
+* Example
+    ```js
+    function plumages(birds) {
+        return new Map(birds.map(b => [b.name, plumage(b)]));
+    }
+
+    function speeds(birds) {
+        return new Map(birds.map(b => [b.name, airSpeedVelocity(b)]));
+    }
+
+    function plumage(bird) {
+        switch (bird.type) {
+        case 'EuropeanSwallow':
+            return "average";
+        case 'AfricanSwallow':
+            return (bird.numberOfCoconuts > 2) ? "tired" : "average";
+        case 'NorwegianBlueParrot':
+            return (bird.voltage > 100) ? "scorched" : "beautiful";
+        default:
+            return "unknown";
+        }
+    }
+
+    function airSpeedVelocity(bird) {
+        switch (bird.type) {
+        case 'EuropeanSwallow':
+            return 35;
+        case 'AfricanSwallow':
+            return 40 - 2 * bird.numberOfCoconuts;
+        case 'NorwegianBlueParrot':
+            return (bird.isNailed) ? 0 : 10 + bird.voltage / 10;
+        default:
+            return null;
+        }
+    }
+    ```
+    ```js
+    //  Combine Functions into Class
+    function plumage(bird) {
+        return new Bird(bird).plumage;
+    }
+
+    function airSpeedVelocity(bird) {
+        return new Bird(bird).airSpeedVelocity;
+    }
+
+    class Bird {
+        constructor(birdObject) {
+            Object.assign(this, birdObject);
+        }
+        get plumage() {
+            switch (this.type) {
+            case 'EuropeanSwallow':
+                return "average";
+            case 'AfricanSwallow':
+                return (this.numberOfCoconuts > 2) ? "tired" : "average";
+            case 'NorwegianBlueParrot':
+                return (this.voltage > 100) ? "scorched" : "beautiful";
+            default:
+                return "unknown";
+            }
+        }
+        get airSpeedVelocity() {
+            switch (this.type) {
+            case 'EuropeanSwallow':
+                return 35;
+            case 'AfricanSwallow':
+                return 40 - 2 * this.numberOfCoconuts;
+            case 'NorwegianBlueParrot':
+                return (this.isNailed) ? 0 : 10 + this.voltage / 10;
+            default:
+                return null;
+            }
+        }
+    }
+    ```
+    ```js
+    // add subclasses for each kind of bird, together with a factory function
+    function plumages(birds) {
+        return new Map(birds
+            .map(b => createBird(b))
+            .map(bird => [bird.name, bird.plumage]));
+    }
+    function speeds(birds) {
+        return new Map(birds
+            .map(b => createBird(b))
+            .map(bird => [bird.name, bird.airSpeedVelocity]));
+    }
+
+    function createBird(bird) {
+        Map<Bird> birdMap = {
+            {'EuropeanSwallow', new EuropeanSwallow(bird)},
+            {'AfricanSwallow', new AfricanSwallow(bird)},
+            {'NorweigianBlueParrot', new NorwegianBlueParrot(bird)}
+        };
+
+        return birdMap[bird.type];
+    }
+
+    class Bird {
+        get plumage() {
+            return "unknow";
+        }
+
+        get airSpeedVelocity() {
+            return null;
+        }
+    }
+
+    class EuropeanSwallow extends Bird {
+        get plumage() {
+            return "average";
+        }
+
+        get airSpeedVelocity() {
+            return 35;
+        }
+    }
+
+    class AfricanSwallow extends Bird {
+        get plumage() {
+            return (this.numberOfCoconuts > 2) ? "tired" : "average";
+        }
+
+        get airSpeedVelocity() {
+            return 40 - 2 * this.numberOfCoconuts;
+        }
+    }
+
+    class NorwegianBlueParrot extends Bird {
+        get plumage() {
+            return (this.voltage > 100) ? "scorched" : "beautiful";
+        }
+
+        get airSpeedVelocity() {
+            return (this.isNailed) ? 0 : 10 + this.voltage / 10;
+        }
+    }
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
 ## Introduce Special Case
 
 ## Introduce Assertion
