@@ -701,20 +701,20 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```js
     function printOwing(invoice) {
         let outstanding = 0;
-    
+
         console.log("***********************");
         console.log("**** Customer Owes ****");
         console.log("***********************");
-    
+
         // calculate outstanding
         for (const o of invoice.orders) {
             outstanding += o.amount;
         }
-    
+
         // record due date
         const today = Clock.today;
         invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
-    
+
         //print details
         console.log(`name: ${invoice.customer}`);
         console.log(`amount: ${outstanding}`);
@@ -727,25 +727,25 @@ Extraction is all about giving names, and I often need to change the names as I 
         recordDueDate(invoice);
         printDetails(invoice, calculateOutstanding(invoice));
     }
-    
+
     function printBanner() {
         console.log("***********************");
         console.log("**** Customer Owes ****");
         console.log("***********************");
     }
-    
+
     // Example: Using Local Variables
     function recordDueDate(invoice) {
         const today = Clock.today;
         invoice.dueDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 30);
     }
-    
+
     function printDetails(invoice, outstanding) {
         console.log(`name: ${invoice.customer}`);
         console.log(`amount: ${outstanding}`);
         console.log(`due: ${invoice.dueDate.toLocaleDateString()}`);
     }
-    
+
     // Example: Reassigning a Local Variable
     function calculateOutstanding(invoice) {
         let outstanding = 0;
@@ -782,7 +782,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         gatherCustomerData(lines, aCustomer);
         return lines;
     }
-    
+
     function gatherCustomerData(out, aCustomer) {
         out.push(["name", aCustomer.name]);
         out.push(["location", aCustomer.location]);
@@ -845,7 +845,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         constructor(aRecord) {
             this._data = aRecord;
         }
-    
+
         get quantity()  {return this._data.quantity;}
         get itemPrice() {return this._data.itemPrice;}
         get price() {
@@ -947,7 +947,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function circum(radius) {
         return circumference(radius);
     }
-    
+
     function circumference(radius) {
         return 2 * Math.PI * radius;
     }
@@ -964,7 +964,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     addReservation(customer) {
         this.zz_addReservation(customer);
     }
-    
+
     zz_addReservation(customer) {
         this._reservations.push(customer);
     }
@@ -974,7 +974,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     addReservation(customer) {
         this.zz_addReservation(customer, false);
     }
-    
+
     zz_addReservation(customer, isPriority) {
         this._reservations.push(customer);
     }
@@ -999,7 +999,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function inNewEngland(aCustomer) {
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(aCustomer.address.state);
     }
-    
+
     const newEnglanders = someCustomers.filter(c => inNewEngland(c));
     ```
     inNewEngland only uses the customer’s home state to determine if it’s in New England. I’d prefer to refactor inNewEngland so that it takes a state code as a parameter, making it usable in more contexts by removing the dependency on the customer.
@@ -1016,7 +1016,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         const stateCode = aCustomer.address.state;
         return xxNEWinNewEngland(stateCode);
     }
-    
+
     function xxNEWinNewEngland(stateCode) {
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
     }
@@ -1036,7 +1036,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     // Once I’ve inlined the old function into every caller,
     // I use Change Function Declaration again to change the name of the new function to that of the original.
     const newEnglanders = someCustomers.filter(c => inNewEngland(c.address.state));
-    
+
     function inNewEngland(stateCode) {
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
     }
@@ -1071,7 +1071,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```js
     // global variable
     let defaultOwner = {firstName: "Martin", lastName: "Fowler"};
-    
+
     // usage
     spaceship.owner = defaultOwner;
     defaultOwner = {firstName: "Rebecca", lastName: "Parsons"};
@@ -1116,13 +1116,13 @@ Extraction is all about giving names, and I often need to change the names as I 
     let defaultOwnerData = {firstName: "Martin", lastName: "Fowler"};
     export function defaultOwner()       {return new Person(defaultOwnerData);}
     export function setDefaultOwner(arg) {defaultOwnerData = arg;}
-    
+
     class Person {
         constructor(data) {
             this._lastName = data.lastName;
             this._firstName = data.firstName
         }
-    
+
         get lastName() {return this._lastName;}
         get firstName() {return this._firstName;}
         // and so on for other properties
@@ -1149,7 +1149,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 * Example
     ```js
     let tpHd = "untitled";
-    
+
     result += `<h1>${tpHd}</h1>`;
     tpHd = obj['articleTitle'];
     ```
@@ -1157,16 +1157,16 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```js
     // `Encapsulate Variable`
     result += `<h1>${title()}</h1>`;
-    
+
     setTitle(obj['articleTitle']);
-    
+
     function title()       {return tpHd;}
     function setTitle(arg) {tpHd = arg;}
     ```
     ```js
     // rename variable
     let _title = "untitled";
-    
+
     function title()       {return _title;}
     function setTitle(arg) {_title = arg;}
     ```
@@ -1212,11 +1212,11 @@ Extraction is all about giving names, and I often need to change the names as I 
             {temp: 51, time: "2016-11-10 09:50"},
         ]
     };
-    
+
     function readingsOutsideRange(station, min, max) {
         return station.readings.filter(r => r.temp < min || r.temp > max);
     }
-    
+
     alerts = readingsOutsideRange(station, operatingPlan.temperatureFloor, peratingPlan.temperatureCeiling);
     ```
 
@@ -1234,7 +1234,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function readingsOutsideRange(station, min, max, range) {
         return station.readings .filter(r => r.temp < min || r.temp > max);
     }
-    
+
     // caller
     alerts = readingsOutsideRange(
         station,
@@ -1248,7 +1248,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function readingsOutsideRange(station, range) {
         return station.readings.filter(r => r.temp < range.min || r.temp > range.max);
     }
-    
+
     // caller
     const range = new NumberRange(operatingPlan.temperatureFloor, operatingPlan.temperatureCeiling);
     alerts = readingsOutsideRange(station,  range);
@@ -1260,7 +1260,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     function readingsOutsideRange(station, range) {
         return station.readings.filter(r => !range.contains(r.temp));
     }
-    
+
     contains(arg) {return (arg >= this.min && arg <= this.max);}
     ```
 
@@ -1279,7 +1279,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 * Mechanics
     1. Apply Encapsulate Record (162) to the common data record that the functions share.
         * If the data that is common between the functions isn’t already grouped into a record structure, use Introduce Parameter Object (140) to create a record to group it together.
-    2. Take each function that uses the common record and use Move Function (198) to move it into the new class.
+    2. Take each function that uses the common record and use `Move Function` to move it into the new class.
         * Any arguments to the function call that are members can be removed from the argument list.
     3. Each bit of logic that manipulates the data can be extracted with Extract Function (106) and then moved into the new class.
 
@@ -1291,16 +1291,16 @@ Extraction is all about giving names, and I often need to change the names as I 
     // client 1
     const aReading = acquireReading();
     const baseCharge = baseRate(aReading.month, aReading.year) * aReading.quantity;
-    
+
     // client 2
     const aReading = acquireReading();
     const base = (baseRate(aReading.month, aReading.year) * aReading.quantity);
     const taxableCharge = Math.max(0, base - taxThreshold(aReading.year));
-    
+
     // client 3
     const aReading = acquireReading();
     const basicChargeAmount = calculateBaseCharge(aReading);
-    
+
     function calculateBaseCharge(aReading) {
         return baseRate(aReading.month, aReading.year) * aReading.quantity;
     }
@@ -1323,7 +1323,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```
 
     ```js
-    //  Move Function (198) to move calculateBaseCharge into the new class
+    //  `Move Function` to move calculateBaseCharge into the new class
     class Reading {
         constructor(data) {
             this._customer = data.customer;
@@ -1339,7 +1339,7 @@ Extraction is all about giving names, and I often need to change the names as I 
             return baseRate(this.month, this.year) * this.quantity;
         }
     }
-    
+
     // client 3
     const rawReading = acquireReading();
     const aReading = new Reading(rawReading);
@@ -1363,7 +1363,7 @@ Extraction is all about giving names, and I often need to change the names as I 
             return baseRate(this.month, this.year) * this.quantity;
         }
     }
-    
+
     // client 3
     const rawReading = acquireReading();
     const aReading = new Reading(rawReading);
@@ -1377,22 +1377,22 @@ Extraction is all about giving names, and I often need to change the names as I 
     const rawReading = acquireReading();
     const aReading = new Reading(rawReading);
     const baseCharge = aReading.baseCharge();
-    
+
     // client 2
     const rawReading = acquireReading();
     const aReading = new Reading(rawReading);
     const taxableCharge = Math.max(0, aReading.baseCharge() - taxThreshold(aReading.year));
-    
+
     // Extract Function
     function taxableChargeFn(aReading) {
         return Math.max(0, aReading.baseCharge() - taxThreshold(aReading.year));
     }
-    
+
     // client 3
     const rawReading = acquireReading();
     const aReading = new Reading(rawReading);
     const taxableCharge = taxableChargeFn(aReading);
-    
+
     // Move Function taxableChargeFn to Reading Class
     class Reading {
         constructor(data) {
@@ -1445,16 +1445,16 @@ Extraction is all about giving names, and I often need to change the names as I 
     // client 1
     const aReading = acquireReading();
     const baseCharge = baseRate(aReading.month, aReading.year) * aReading.quantity;
-    
+
     // client 2
     const aReading = acquireReading();
     const base = (baseRate(aReading.month, aReading.year) * aReading.quantity);
     const taxableCharge = Math.max(0, base - taxThreshold(aReading.year));
-    
+
     // client 3
     const aReading = acquireReading();
     const basicChargeAmount = calculateBaseCharge(aReading);
-    
+
     function calculateBaseCharge(aReading) {
         return  baseRate(aReading.month, aReading.year) * aReading.quantity;
     }
@@ -1464,7 +1464,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         const result = _.cloneDeep(original);
         return result;
     }
-    
+
     // client 3
     const rawReading = acquireReading();
     const aReading = enrichReading(rawReading);
@@ -1477,7 +1477,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         result.baseCharge = calculateBaseCharge(result);
         return result;
     }
-    
+
     // client 3
     const rawReading = acquireReading();
     const aReading = enrichReading(rawReading);
@@ -1497,7 +1497,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     const aReading = enrichReading(rawReading);
     const base = aReading.baseCharge;
     const taxableCharge = Math.max(0, base - taxThreshold(aReading.year));
-    
+
     // inline variable
     const rawReading = acquireReading();
     const aReading = enrichReading(rawReading);
@@ -1511,7 +1511,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         result.taxableCharge = Math.max(0, result.baseCharge - taxThreshold(result.year));
         return result;
     }
-    
+
     const rawReading = acquireReading();
     const aReading = enrichReading(rawReading);
     const taxableCharge = aReading.taxableCharge;
@@ -1541,7 +1541,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         const basePrice = product.basePrice * quantity;
         const discount = Math.max(quantity - product.discountThreshold, 0)
                 * product.basePrice * product.discountRate;
-    
+
         const shippingPerCase = (basePrice > shippingMethod.discountThreshold)
                 ? shippingMethod.discountedFee : shippingMethod.feePerCase;
         const shippingCost = quantity * shippingPerCase;
@@ -1559,7 +1559,7 @@ Extraction is all about giving names, and I often need to change the names as I 
         const price =  applyShipping(basePrice, shippingMethod, quantity, discount);
         return price;
     }
-    
+
     function applyShipping(basePrice, shippingMethod, quantity, discount) {
         const shippingPerCase = (basePrice > shippingMethod.discountThreshold)
                 ? shippingMethod.discountedFee : shippingMethod.feePerCase;
@@ -1575,15 +1575,15 @@ Extraction is all about giving names, and I often need to change the names as I 
         const basePrice = product.basePrice * quantity;
         const discount = Math.max(quantity - product.discountThreshold, 0)
             * product.basePrice * product.discountRate;
-    
+
         // basePrice, quantity, discount are created by the first-phase code.
         // shippingMethod isn’t used by the first-phase code, leave as is.
         const priceData = {basePrice: basePrice, quantity: quantity, discount: discount};
-    
+
         const price =  applyShipping(priceData, shippingMethod);
         return price;
     }
-    
+
     function applyShipping(priceData, shippingMethod) {
         const shippingPerCase =
             (priceData.basePrice > shippingMethod.discountThreshold)
@@ -1600,13 +1600,13 @@ Extraction is all about giving names, and I often need to change the names as I 
         const priceData = calculatePricingData(product, quantity);
         return applyShipping(priceData, shippingMethod);
     }
-    
+
     function calculatePricingData(product, quantity) {
         const basePrice = product.basePrice * quantity;
         const discount = Math.max(quantity - product.discountThreshold, 0) * product.basePrice * product.discountRate;
         return {basePrice: basePrice, quantity: quantity, discount:discount};
     }
-    
+
     function applyShipping(priceData, shippingMethod) {
         const shippingPerCase =
             (priceData.basePrice > shippingMethod.discountThreshold)
@@ -1652,7 +1652,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
 * Example
     ```js
     const organization = {name: "Acme Gooseberries", country: "GB"};
-    
+
     result += `<h1>${organization.name}</h1>`;
     organization.name = newName;
     ```
@@ -1670,14 +1670,14 @@ Classes and modules are the largest forms of encapsulation, but functions also e
         constructor(data) {
             this._data = data;
         }
-    
+
         set name(aString)   {this._data.name = aString;}
         get name()          {return this._data.name;}
     }
-    
+
     const organization = new Organization({name: "Acme Gooseberries", country: "GB"});
     function getOrganization() {return organization;}
-    
+
     // client
     result += `<h1>${getOrganization().name}</h1>`;
     getOrganization().name = newName;
@@ -1724,7 +1724,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
     ```js
     // client
     customerData[customerID].usages[year][month] = amount;
-    
+
     function compareUsage (customerID, laterYear, month) {
         const later   = customerData[customerID].usages[laterYear][month];
         const earlier = customerData[customerID].usages[laterYear - 1][month];
@@ -1735,10 +1735,10 @@ Classes and modules are the largest forms of encapsulation, but functions also e
     // start with `Encapsulate Variable`
     function getRawDataOfCustomers()    {return customerData;}
     function setRawDataOfCustomers(arg) {customerData = arg;}
-    
+
     // client
     getRawDataOfCustomers()[customerID].usages[year][month] = amount;
-    
+
     function compareUsage (customerID, laterYear, month) {
         const later   = getRawDataOfCustomers()[customerID].usages[laterYear][month];
         const earlier = getRawDataOfCustomers()[customerID].usages[laterYear - 1][month];
@@ -1752,7 +1752,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
             this._data = data;
         }
     }
-    
+
     function getCustomerData() {return customerData;}
     function getRawDataOfCustomers()    {return customerData._data;}
     function setRawDataOfCustomers(arg) {customerData = new CustomerData(arg);}
@@ -1765,15 +1765,15 @@ Classes and modules are the largest forms of encapsulation, but functions also e
 * Motivation
 
     I like encapsulating any mutable data in my programs. This makes it easier to see when and how data structures are modified, which then makes it easier to change those data structures when I need to.
-    
+
     Access to a collection variable may be encapsulated, but if the getter returns the collection itself, then that collection’s membership can be altered without the enclosing class being able to intervene.
-    
+
     To avoid this, I provide collection modifier methods—usually add and remove—on the class itself.
-    
+
     A better approach is to ensure that the getter for the collection does not return the raw collection, so that clients cannot accidentally change it.
-    
-    One way to prevent modification of the underlying collection is by never returning a collection value. Another way is to allow some form of read-only access to a collection. 
-    
+
+    One way to prevent modification of the underlying collection is by never returning a collection value. Another way is to allow some form of read-only access to a collection.
+
 * Mechanics
     1. Apply `Encapsulate Variable` if the reference to the collection isn’t already encapsulated.
     2. Add functions to add and remove elements from the collection.
@@ -1794,7 +1794,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
         get courses() {return this._courses;}
         set courses(aList) {this._courses = aList;}
     }
-    
+
     class Course {
         constructor(name, isAdvanced) {
             this._name = name;
@@ -1803,13 +1803,13 @@ Classes and modules are the largest forms of encapsulation, but functions also e
         get name()       {return this._name;}
         get isAdvanced() {return this._isAdvanced;}
     }
-    
-    // client 
+
+    // client
     numAdvancedCourses = aPerson.courses.filter(c => c.isAdvanced).length;
-    
+
     const basicCourseNames = readBasicCourseNames(filename);
     aPerson.courses = basicCourseNames.map(name => new Course(name, false));
-    
+
     for (const name of readBasicCourseNames(filename)) {
         aPerson.courses.push(new Course(name, false));
     }
@@ -1824,20 +1824,20 @@ Classes and modules are the largest forms of encapsulation, but functions also e
         get name() {return this._name;}
         get courses() {return this._courses;}
         set courses(aList) {this._courses = aList;}
-        
+
         addCourse(aCourse) {
             this._courses.push(aCourse);
         }
         removeCourse(aCourse, fnIfAbsent = () => {throw new RangeError();}) {
             const index = this._courses.indexOf(aCourse);
-            if (index === -1) 
+            if (index === -1)
                 fnIfAbsent();
-            else 
+            else
                 this._courses.splice(index, 1);
         }
     }
-    
-    // client 
+
+    // client
     for(const name of readBasicCourseNames(filename)) {
         aPerson.addCourse(new Course(name, false));
     }
@@ -1851,15 +1851,15 @@ Classes and modules are the largest forms of encapsulation, but functions also e
         }
         const& get name() {return this._name;}
         const& get courses() {return this._courses;}
-    
+
         addCourse(aCourse) {
             this._courses.push(aCourse);
         }
         removeCourse(aCourse, fnIfAbsent = () => {throw new RangeError();}) {
             const index = this._courses.indexOf(aCourse);
-            if (index === -1) 
+            if (index === -1)
                 fnIfAbsent();
-            else 
+            else
                 this._courses.splice(index, 1);
         }
     }
@@ -1874,7 +1874,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 * Motivation
 
     At first, such a class does little more than wrap the primitive—but once I have that class, I have a place to put behavior specific to its needs.
-    
+
 * Mechanics
     * Apply `Encapsulate Variable` if it isn’t already.
     * Create a simple value class for the data value. It should take the existing value in its constructor and provide a getter for that value.
@@ -1883,7 +1883,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
     * Change the getter to return the result of invoking the getter of the new class.
     * Test.
     * Consider using `Rename Function` on the original accessors to better reflect what they do.
-    * Consider clarifying the role of the new object as a value or reference object by applying Change Reference to Value (252) or Change Value to Reference (256).
+    * Consider clarifying the role of the new object as a value or reference object by applying `Change Reference to Value` or Change Value to Reference (256).
 
 * Example
     ```js
@@ -1893,7 +1893,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
             // more initialization
         }
     }
-    
+
     // client
     highPriorityCount = orders.filter(o => "high" === o.priority|| "rush" === o.priority).length;
     ```
@@ -1913,7 +1913,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
         constructor(value) {this._value = value;}
         toString() {return this._value;}
     }
-    
+
     class Order {
         constructor(data) {
             this.priority = data.priority;
@@ -1927,7 +1927,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
     ```js
     get priorityString()  {return this._priority.toString();}
     set priority(aString) {this._priority = new Priority(aString);}
-    
+
     // client
     highPriorityCount = orders.filter(o => "high" === o.priorityString || "rush" === o.priorityString).length;
     ```
@@ -1938,7 +1938,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
         get priorityString()  {return this._priority.toString();}
         set priority(aString) {this._priority = new Priority(aString);}
     }
-    
+
     // client
     highPriorityCount = orders.filter(o => "high" === o.priority.toString() || "rush" === o.priority.toString()).length;
     ```
@@ -1955,12 +1955,12 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
         toString() {return this._value;}
         get _index() {return Priority.legalValues().findIndex(s => s === this._value);}
         static legalValues() {return ['low', 'normal', 'high', 'rush'];}
-    
+
         equals(other) {return this._index === other._index;}
         higherThan(other) {return this._index > other._index;}
         lowerThan(other) {return this._index < other._index;}
     }
-    
+
     // client
     highPriorityCount = orders.filter(o => o.priority.higherThan(new Priority("normal"))).length;
     ```
@@ -1972,13 +1972,13 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 * Motivation
 
     One use of temporary variables is to capture the value of some code in order to refer to it later in a function. Using a temp allows me to refer to the value while explaining its meaning and avoiding repeating the code that calculates it. But while using a variable is handy, it can often be worthwhile to go a step further and use a function instead.
-    
+
     Putting variable logic into functions often also sets up a stronger boundary between the extracted logic and the original function, which helps me spot and avoid awkward dependencies and side effects.
-    
-    Using functions instead of variables also allows me to avoid duplicating the calculation logic in similar functions. 
-    
+
+    Using functions instead of variables also allows me to avoid duplicating the calculation logic in similar functions.
+
     This refactoring works best if I’m inside a class, since the class provides a shared context for the methods I’m extracting.  Outside of a class, I’m liable to have too many parameters in a top-level function which negates much of the benefit of using a function.
-    
+
 * Mechanics
     * Check that the variable is determined entirely before it’s used, and the code that calculates it does not yield a different value whenever it is used.
     * If the variable isn’t read-only, and can be made read-only, do so.
@@ -1996,7 +1996,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
             this._quantity = quantity;
             this._item = item;
         }
-    
+
         get price() {
             var basePrice = this._quantity * this._item.price;
             var discountFactor = 0.98;
@@ -2012,14 +2012,14 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
             this._quantity = quantity;
             this._item = item;
         }
-    
+
         get price() {
             const basePrice = this.basePrice;
             var discountFactor = 0.98;
             if (basePrice > 1000) discountFactor -= 0.03;
             return basePrice * discountFactor;
         }
-        
+
         get basePrice() {
             return this._quantity * this._item.price;
         }
@@ -2032,13 +2032,13 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
             this._quantity = quantity;
             this._item = item;
         }
-    
+
         get price() {
             var discountFactor = 0.98;
             if (this.basePrice > 1000) discountFactor -= 0.03;
             return this.basePrice * discountFactor;
         }
-        
+
         get basePrice() {
             return this._quantity * this._item.price;
         }
@@ -2051,7 +2051,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
             this._quantity = quantity;
             this._item = item;
         }
-    
+
         get price() {
             return this.basePrice * this.discountFactor;
         }
@@ -2061,7 +2061,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
             if (this.basePrice > 1000) discountFactor -= 0.03;
             return discountFactor;
         }
-        
+
         get basePrice() {
             return this._quantity * this._item.price;
         }
@@ -2072,11 +2072,264 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 ![](../Images/Refactor/7-extract-class.jpg)
 
+* Motivation
+
+    You need to consider where it can be split—and split it. A good sign is when a subset of the data and a subset of the methods seem to go together. Other good signs are subsets of data that usually change together or are particularly dependent on each other. A useful test is to ask yourself what would happen if you remove a piece of data or a method. What other fields and methods would become nonsense?
+
+* Mechanics
+    * Decide how to split the responsibilities of the class.
+    * Create a new child class to express the split-off responsibilities.
+        * If the responsibilities of the original parent class no longer match its name, rename the parent.
+    * Create an instance of the child class when constructing the parent and add a link from parent to child.
+    * Use `Move Field` on each field you wish to move. Test after each move.
+    * Use `Move Function` to move methods to the new child. Start with lower-level methods (those being called rather than calling). Test after each move.
+    * Review the interfaces of both classes, remove unneeded methods, change names to better fit the new circumstances.
+    * Decide whether to expose the new child. If so, consider applying `Change Reference to Value` to the child class.
+
+* Example
+    ```js
+    class Person {
+        get name()    {return this._name;}
+        set name(arg) {this._name = arg;}
+        get telephoneNumber() {return `(${this.officeAreaCode}) ${this.officeNumber}`;}
+        get officeAreaCode()    {return this._officeAreaCode;}
+        set officeAreaCode(arg) {this._officeAreaCode = arg;}
+        get officeNumber() {return this._officeNumber;}
+        set officeNumber(arg) {this._officeNumber = arg;}
+    }
+    ```
+    ```js
+    // separate the telephone number behavior into its own class
+    // I start by defining an empty telephone number class
+    class TelephoneNumber {
+
+    }
+    ```
+    ```js
+    // create an instance of telephone number when constructing the person
+    constructor() {
+        this._telephoneNumber = new TelephoneNumber();
+    }
+    ```
+
+    ```js
+    // use `Move Field` on _officeAreaCode
+    class TelephoneNumber {
+        get officeAreaCode()    {return this._officeAreaCode;}
+        set officeAreaCode(arg) {this._officeAreaCode = arg;}
+    }
+
+    class Persion {
+        get officeAreaCode()    {return this._telephoneNumber.officeAreaCode;}
+        set officeAreaCode(arg) {this._telephoneNumber.officeAreaCode = arg;}
+    }
+
+    // use `Move Field` on _officeNumber
+    class TelephoneNumber {
+        get officeNumber() {return this._officeNumber;}
+        set officeNumber(arg) {this._officeNumber = arg;}
+    }
+
+    class Persion {
+        get officeNumber() {return this._telephoneNumber._officeNumber;}
+        set officeNumber(arg) {this._telephoneNumber._officeNumber = arg;}
+    }
+    ```
+    ```js
+    // move the telephone number method
+    class TelephoneNumber {
+        get telephoneNumber() {return `(${this.officeAreaCode}) ${this.officeNumber}`;}
+    }
+
+    class Person {
+        get telephoneNumber() {return this._telephoneNumber.telephoneNumber;}
+    }
+
+    // move the area code, number methods
+    class TelephoneNumber {
+        get areaCode()    {return this._areaCode;}
+        set areaCode(arg) {this._areaCode = arg;}
+        get number()    {return this._number;}
+        set number(arg) {this._number = arg;}
+    }
+
+    class Person {
+        get officeAreaCode()    {return this._telephoneNumber.areaCode;}
+        set officeAreaCode(arg) {this._telephoneNumber.areaCode = arg;}
+        get officeNumber()    {return this._telephoneNumber.number;}
+        set officeNumber(arg) {this._telephoneNumber.number = arg;}
+    }
+    ```
+    ```js
+    // move the telephone number method.
+    class TelephoneNumber {
+        get telephoneNumber() {return `(${this.officeAreaCode}) ${this.officeNumber}`;}
+    }
+
+    class Person {
+        get telephoneNumber() {return this._telephoneNumber.telephoneNumber;}
+    }
+    ```
+    ```js
+    // `Rename Function`:  telephone number method on the telephone number class also doesn’t make much sense
+    class TelephoneNumber {
+        toString() {return `(${this.areaCode}) ${this.number}`;}
+    }
+
+    class Person {
+        get telephoneNumber() {return this._telephoneNumber.toString();}
+    }
+    ```
+
 ## Inline Class
+
+![](../Images/Refactor/7-inline-class.jpg)
+
+* Motivation
+
+    I use Inline Class if a class is no longer pulling its weight and shouldn’t be around any more. Often, this is the result of refactoring that moves other responsibilities out of the class so there is little left. At that point, I fold the class into another—one that makes most use of the runt class.
+
+    Another reason to use Inline Class is if I have two classes that I want to refactor into a pair of classes with a different allocation of features. I may find it easier to first use Inline Class to combine them into a single class, then `Extract Class` to make the new separation. This is a general approach when reorganizing things: Sometimes, it’s easier to move elements one at a time from one context to another, but sometimes it’s better to use an inline refactoring to collapse the contexts together, then use an extract refactoring to separate them into different elements.
+
+* Mechanics
+    * In the target class, create functions for all the public functions of the source class. These functions should just delegate to the source class.
+    * Change all references to source class methods so they use the target class’s delegators instead. Test after each change.
+    * Move all the functions and data from the source class into the target, testing after each move, until the source class is empty.
+    * Delete the source class and hold a short, simple funeral service.
+
+* Example
+    ```js
+    class TrackingInformation {
+        get shippingCompany()       {return this._shippingCompany;}
+        set shippingCompany(arg)    {this._shippingCompany = arg;}
+        get trackingNumber()        {return this._trackingNumber;}
+        set trackingNumber(arg)     {this._trackingNumber = arg;}
+        get display()               {
+            return `${this.shippingCompany}: ${this.trackingNumber}`;
+        }
+    }
+
+    class shipment {
+        get trackingInfo() {
+            return this._trackingInformation.display;
+        }
+        get trackingInformation()    {return this._trackingInformation;}
+        set trackingInformation(aTrackingInformation) {
+            this._trackingInformation = aTrackingInformation;
+        }
+    }
+    ```
+    ```js
+    // putting a delegating method into the shipment, and adjusting the client to call that.
+    class Shipment {
+        set shippingCompany(arg) {this._trackingInformation.shippingCompany = arg;}
+    }
+
+    // client old
+    aShipment.trackingInformation.shippingCompany = request.vendor;
+
+    // client new
+    aShipment.shippingCompany = request.vendor;
+    ```
+    ```js
+    // applying Inline Function (115) to the display method
+    class Shipment {
+        get trackingInfo() {
+            return `${this.shippingCompany}: ${this.trackingNumber}`;
+        }
+    }
+    ```
+    ```js
+    // move the shipping company field
+    class Shipment {
+        get shippingCompany()    {return this._shippingCompany;}
+        set shippingCompany(arg) {this._shippingCompany = arg;}
+    }
+    ```
+    ```js
+    class Shipment {
+        get trackingInfo() {
+            return `${this.shippingCompany}: ${this.trackingNumber}`;
+        }
+        get shippingCompany()    {return this._shippingCompany;}
+        set shippingCompany(arg) {this._shippingCompany = arg;}
+        get trackingNumber()    {return this._trackingNumber;}
+        set trackingNumber(arg) {this._trackingNumber = arg;}
+    }
+    ```
+    ```js
+    ```
 
 ## Hide Delegate
 
+![](../Images/Refactor/7-hide-delegate.jpg)
+
+* Motivation
+
+    One of the keys—if not the key—to good modular design is encapsulation. Encapsulation means that modules need to know less about other parts of the system. Then, when things change, fewer modules need to be told about the change—which makes the change easier to make.
+
+    When we are first taught about object orientation, we are told that encapsulation means hiding our fields. As we become more sophisticated, we realize there is more that we can encapsulate.
+
+* Mechanics
+    * For each method on the delegate, create a simple delegating method on the server.
+    * Adjust the client to call the server. Test after each change.
+    * If no client needs to access the delegate anymore, remove the server’s accessor for the delegate.
+    * Test.
+
+* Example
+    ```js
+    class Person {
+        constructor(name) {
+            this._name = name;
+        }
+        get name() {return this._name;}
+        get department()    {return this._department;}
+        set department(arg) {this._department = arg;}
+    }
+
+    class Departmen {
+        get chargeCode()    {return this._chargeCode;}
+        set chargeCode(arg) {this._chargeCode = arg;}
+        get manager()    {return this._manager;}
+        set manager(arg) {this._manager = arg;}
+    }
+
+    // client
+    manager = aPerson.department.manager;
+    ```
+    ```js
+    // creating a simple delegating method on person for department
+    class Person {
+        get manager() {return this._department.manager;}
+    }
+
+    // client
+    manager = aPerson.manager;
+    ```
+
 ## Remove Middle Man
+
+![](../Images/Refactor/7-remove-middle-man.jpg)
+
+* Motivation
+
+    Every time the client wants to use a new feature of the delegate, I have to add a simple delegating method to the server. After adding features for a while, I get irritated with all this forwarding. The server class is just a middle man (`Middle Man`), and perhaps it’s time for the client to call the delegate directly.
+
+* Mechanics
+    * Create a getter for the delegate.
+    * For each client use of a delegating method, replace the call to the delegating method by chaining through the accessor. Test after each replacement.
+        * If all calls to a delegating method are replaced, you can delete the delegating method.
+        * With automated refactorings, you can use `Encapsulate Variable` on the delegate field and then `Inline Function` on all the methods that use it.
+
+* Example
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
 
 ## Substitute Algorithm
 
