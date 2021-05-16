@@ -2362,21 +2362,738 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 # 8 Moving Features
 
+I use Move Function (198) to move functions between classes and other modules. Fields can move too, with Move Field (207).
+
+I also move individual statements around. I use Move Statements into Function (213) and Move Statements to Callers (217) to move them in or out of functions, as well as Slide Statements (223) to move them within a function. Sometimes, I can take some statements that match an existing function and use Replace Inline Code with Function Call (222) to remove the duplication.
+
+Two refactorings I often do with loops are Split Loop (227), to ensure a loop does only one thing, and Replace Loop with Pipeline (231) to get rid of a loop entirely.
+
+And then there’s the favorite refactoring of many a fine programmer: Remove Dead Code (237). Nothing is as satisfying as applying the digital flamethrower to superfluous statements.
+
 ## Move Function
+
+![](../Images/Refactor/8-moe-function.jpg)
+
+* Motivation
+
+    The heart of a good software design is its modularity—which is my ability to make most modifications to a program while only having to understand a small part of it.
+
+    One of the most straightforward reasons to move a function is when it references elements in other contexts more than the one it currently resides in. Moving it together with those elements often improves encapsulation, allowing other parts of the software to be less dependent on the details of this module.
+
+    I may move a function because of where its callers live, or where I need to call it from in my next enhancement. A function defined as a helper inside another function may have value on its own, so it’s worth moving it to somewhere more accessible. A method on a class may be easier for me to use if shifted to another.
+
+* Mechanics
+    * Examine all the program elements used by the chosen function in its current context. Consider whether they should move too.
+        * If I find a called function that should also move, I usually move it first. That way, moving a clusters of functions begins with the one that has the least dependency on the others in the group.
+        * If a high-level function is the only caller of subfunctions, then you can inline those functions into the high-level method, move, and reextract at the destination.
+    * Check if the chosen function is a polymorphic method.
+        * If I’m in an object-oriented language, I have to take account of super- and subclass declarations.
+    * Copy the function to the target context. Adjust it to fit in its new home.
+        * If the body uses elements in the source context, I need to either pass those elements as parameters or pass a reference to that source context.
+        * Moving a function often means I need to come up with a different name that works better in the new context.
+    * Perform static analysis.
+    * Figure out how to reference the target function from the source context.
+    * Turn the source function into a delegating function.
+    * Test.
+    * Consider Inline Function (115) on the source function.
+        * The source function can stay indefinitely as a delegating function. But if its callers can just as easily reach the target directly, then it’s better to remove the middle man.
+
+* Example: Moving a Nested Function to Top Level
+    ```js
+    function trackSummary(points) {
+        const totalTime = calculateTime();
+        const totalDistance = calculateDistance();
+        const pace = totalTime / 60 /  totalDistance ;
+        return {
+            time: totalTime,
+            distance: totalDistance,
+            pace: pace
+        };
+
+        function calculateDistance() {
+            let result = 0;
+            for (let i = 1; i < points.length; i++) {
+            result += distance(points[i-1], points[i]);
+            }
+            return result;
+        }
+
+        function distance(p1,p2) { ... }
+        function radians(degrees) { ... }
+        function calculateTime() { ... }
+    }
+    ```
+    I’d like to move calculateDistance to the top level so I can calculate distances for tracks without all the other parts of the summary.
+    ```js
+    // move calculateDistance to the top level
+    function top_calculateDistance() {
+        let result = 0;
+        for (let i = 1; i < points.length; i++) {
+            result += distance(points[i-1], points[i]);
+        }
+        return result;
+    }
+
+    function trackSummary(points) {
+        const totalTime = calculateTime();
+        const totalDistance = calculateDistance();
+        const pace = totalTime / 60 /  totalDistance ;
+        return {
+            time: totalTime,
+            distance: totalDistance,
+            pace: pace
+        };
+
+        function calculateDistance() {
+            let result = 0;
+            for (let i = 1; i < points.length; i++) {
+            result += distance(points[i-1], points[i]);
+            }
+            return result;
+        }
+        ...
+
+        function distance(p1,p2) { ... }
+        function radians(degrees) { ... }
+        function calculateTime() { ... }
+
+    }
+    ```
+    ```js
+    // move dependencies
+    function top_calculateDistance(points) {
+        let result = 0;
+        for (let i = 1; i < points.length; i++) {
+            result += distance(points[i-1], points[i]);
+        }
+        return result;
+
+        function distance(p1,p2) { ... }
+        function radians(degrees) { ... }
+    }
+
+    function trackSummary(points) {
+        const totalTime = calculateTime();
+        const totalDistance = calculateDistance();
+        const pace = totalTime / 60 /  totalDistance ;
+        return {
+            time: totalTime,
+            distance: totalDistance,
+            pace: pace
+        };
+
+        function calculateDistance() {
+            return top_calculateDistance(points);
+        }
+    }
+    ```
+    ```js
+    // Since the functions for distance and radians don’t depend on anything inside totalDistance,
+    // I prefer to move them to top level too, putting all four functions at the top level.
+    function trackSummary(points) { ... }
+    function totalDistance(points) { ... }
+    function distance(p1,p2) { ... }
+    function radians(degrees) { ... }
+    ```
+
+* Example: Moving between Classes
+    ```js
+    class Account {
+        get bankCharge() {
+            let result = 4.5;
+            if (this._daysOverdrawn > 0)
+                result += this.overdraftCharge;
+            return result;
+        }
+
+        get overdraftCharge() {
+            if (this.type.isPremium) {
+                const baseCharge = 10;
+                if (this.daysOverdrawn <= 7)
+                    return baseCharge;
+                else
+                    return baseCharge + (this.daysOverdrawn - 7) * 0.85;
+            }
+            else
+                return this.daysOverdrawn * 1.75;
+        }
+    }
+    ```
+    Coming up are changes that lead to different types of account having different algorithms for determining the charge. Thus it seems natural to move overdraftCharge to the account type class.
+    ```js
+    class AccountType {
+        overdraftCharge(daysOverdrawn) {
+            if (this.isPremium) {
+                const baseCharge = 10;
+                if (daysOverdrawn <= 7)
+                    return baseCharge;
+                else
+                    return baseCharge + (daysOverdrawn - 7) * 0.85;
+            }
+            else
+                return daysOverdrawn * 1.75;
+        }
+    }
+
+    class Account {
+        get bankCharge() {
+            let result = 4.5;
+            if (this._daysOverdrawn > 0)
+                result += this.overdraftCharge;
+            return result;
+        }
+
+        get overdraftCharge() {
+            return this.type.overdraftCharge(this.daysOverdrawn);
+        }
+    }
+    ```
+    ```js
+    // ineline function: overdraftCharge
+    class Account {
+        get bankCharge() {
+            let result = 4.5;
+            if (this._daysOverdrawn > 0)
+                result += this.type.overdraftCharge(this.daysOverdrawn);
+            return result;
+        }
+    }
+    ```
+    ```js
+    // modify parameters
+    // if there’s a lot of data from the account to pass, I might prefer to pass the account itself.
+    class Account {
+        get bankCharge() {
+        let result = 4.5;
+            if (this._daysOverdrawn > 0)
+                result += this.type.overdraftCharge(this);
+            return result;
+        }
+    }
+
+    class AccountType {
+        overdraftCharge(account) {
+            if (this.isPremium) {
+                const baseCharge = 10;
+                if (account.daysOverdrawn <= 7)
+                    return baseCharge;
+                else
+                    return baseCharge + (account.daysOverdrawn - 7) * 0.85;
+            }
+            else
+                return account.daysOverdrawn * 1.75;
+        }
+    }
+    ```
 
 ## Move Field
 
+![](../Images/Refactor/8-move-field.jpg)
+
+* Motivation
+
+    * Programming involves writing a lot of code that implements behavior—but the strength of a program is really founded on its data structures. If I have a good set of data structures that match the problem, then my behavior code is simple and straightforward. But poor data structures lead to lots of code whose job is merely dealing with the poor data.
+
+    * As soon as I realize that a data structure isn’t right, it’s vital to change it. If I leave my data structures with their blemishes, those blemishes will confuse my thinking and complicate my code far into the future.
+
+    * Pieces of data that are always passed to functions together are usually best put in a single record in order to clarify their relationship.
+
+    * Change is also a factor:
+        1. If a change in one record causes a field in another record to change too, that’s a sign of a field in the wrong place.
+        2. If I have to update the same field in multiple structures, that’s a sign that it should move to another place where it only needs to be updated once.
+
+* Mechanics
+    1. Ensure the source field is encapsulated.
+    2. Test.
+    3. Create a field (and accessors) in the target.
+    4. Run static checks.
+    5. Ensure there is a reference from the source object to the target object.
+        * An existing field or method may give you the target. If not, see if you can easily create a method that will do so. Failing that, you may need to create a new field in the source object that can store the target. This may be a permanent change, but you can also do it temporarily until you have done enough refactoring in the broader context.
+    6. Adjust accessors to use the target field.
+        * If the target is shared between source objects, consider first updating the setter to modify both target and source fields, followed by Introduce Assertion (302) to detect inconsistent updates. Once you determine all is well, finish changing the accessors to use the target field.
+    7. Test.
+    8. Remove the source field.
+    9. Test.
+
+* Example
+    ```js
+    class Customer {
+        constructor(name, discountRate) {
+            this._name = name;
+            this._discountRate = discountRate;
+            this._contract = new CustomerContract(dateToday());
+        }
+        get discountRate() {return this._discountRate;}
+        becomePreferred() {
+            this._discountRate += 0.03;
+            // other nice things
+        }
+        applyDiscount(amount) {
+            return amount.subtract(amount.multiply(this._discountRate));
+        }
+    }
+
+    class CustomerContract {
+        constructor(startDate) {
+            this._startDate = startDate;
+        }
+    }
+    ```
+    I want to move the discount rate field from the customer to the customer contract.
+    ```js
+    // 1. Encapsulate Variable: discountRate, add _setDiscountRate function
+    class Customer {
+        constructor(name, discountRate) {
+            this._name = name;
+            this._setDiscountRate(discountRate);
+            this._contract = new CustomerContract(dateToday());
+        }
+
+        get discountRate() {return this._discountRate;}
+
+        _setDiscountRate(aNumber) {this._discountRate = aNumber;}
+
+        becomePreferred() {
+            this._setDiscountRate(this.discountRate + 0.03);
+            // other nice things
+        }
+
+        applyDiscount(amount) {
+            return amount.subtract(amount.multiply(this.discountRate));
+        }
+    }
+    ```
+    ```js
+    // 3. add a field and accessors to the customer contract
+    class CustomerContract {
+        constructor(startDate, discountRate) {
+            this._startDate = startDate;
+            this._discountRate = discountRate;
+        }
+        get discountRate()    {return this._discountRate;}
+        set discountRate(arg) {this._discountRate = arg;}
+    }
+    ```
+    ```js
+    // 5. Ensure there is a reference from the source object to the target object
+    // Customer already has discountRate() to get the target object this._contract.discountRate
+    ```
+    ```js
+    // 6. Adjust accessors to use the target field
+    class Customer {
+        get discountRate() {return this._contract.discountRate;}
+        _setDiscountRate(aNumber) {this._contract.discountRate = aNumber;}
+    }
+    ```
+
+* Example: Moving to a Shared Object
+    ```js
+    class Account {
+        constructor(number, type, interestRate) {
+            this._number = number;
+            this._type = type;
+            this._interestRate = interestRate;
+        }
+        get interestRate() {return this._interestRate;}
+    }
+
+    class AccountType {
+        constructor(nameString) {
+            this._name = nameString;
+        }
+    }
+    ```
+    I want to change things so that an account’s interest rate is determined from its account type.
+    ```js
+    // 1. the filed is already encapsulated
+    // 3. Create a field (and accessors) in the target.
+    class AccountType {
+        constructor(nameString, interestRate) {
+            this._name = nameString;
+            this._interestRate = interestRate;
+        }
+        get interestRate() {return this._interestRate;}
+    }
+    ```
+    ```js
+    // 6. Adjust accessors to use the target field
+    class Account {
+        constructor(number, type) {
+            this._number = number;
+            this._type = type;
+        }
+        get interestRate() {return this._type.interestRate;}
+    }
+    ```
+
 ## Move Statements into Function
 
+![](../Images/Refactor/8-move-statements-into-function.jpg)
+
+* Motivation
+
+    Removing duplication is one of the best rules of thumb of healthy code. If I see the same code executed every time I call a particular function, I look to combine that repeating code into the function itself. That way, any future modifications to the repeating code can be done in one place and used by all the callers. Should the code vary in the future, I can easily move it (or some of it) out again with Move Statements to Callers (217).
+
+    If they don’t make sense as part of the called function, but still should be called with it, I’ll simply use `Extract Function` on the statements and the called function.
+
+* Mechanics
+    1. If the repetitive code isn’t adjacent to the call of the target function, use `Slide Statements` to get it adjacent.
+    2. If the target function is only called by the source function, just cut the code from the source, paste it into the target, test, and ignore the rest of these mechanics.
+    3. If you have more callers, use `Extract Function` on one of the call sites to extract both the call to the target function and the statements you wish to move into it. Give it a name that’s transient, but easy to grep.
+    4. Convert every other call to use the new function. Test after each conversion.
+    5. When all the original calls use the new function, use `Inline Function` to inline the original function completely into the new function, removing the original function.
+    6. `Rename Function` to change the name of the new function to the same name as the original function. Or to a better name, if there is one.
+
+* Example
+    ```js
+    function renderPerson(outStream, person) {
+        const result = [];
+        result.push(`<p>${person.name}</p>`);
+        result.push(renderPhoto(person.photo));
+        result.push(`<p>title: ${person.photo.title}</p>`);
+        result.push(emitPhotoData(person.photo));
+        return result.join("\n");
+    }
+
+    function photoDiv(p) {
+        return [
+            "<div>",
+            `<p>title: ${p.title}</p>`,
+            emitPhotoData(p),
+            "</div>",
+        ].join("\n");
+    }
+
+    function emitPhotoData(aPhoto) {
+        const result = [];
+        result.push(`<p>location: ${aPhoto.location}</p>`);
+        result.push(`<p>date: ${aPhoto.date.toDateString()}</p>`);
+        return result.join("\n");
+    }
+    ```
+    This code shows two calls to emitPhotoData. I’d like to remove this duplication by moving the title printing into emitPhotoData.
+    ```js
+    // 3. Extract Function on one of the callers.
+    function photoDiv(p) {
+        return [
+            "<div>",
+            zznew(p),
+            "</div>",
+        ].join("\n");
+    }
+
+    function zznew(p) {
+        return [
+            `<p>title: ${p.title}</p>`,
+            emitPhotoData(p),
+        ].join("\n");
+    }
+    ```
+    ```js
+    // 4. Convert every other call to use the new function
+    function renderPerson(outStream, person) {
+        const result = [];
+        result.push(`<p>${person.name}</p>`);
+        result.push(renderPhoto(person.photo));
+        result.push(zznew(person.photo));
+        return result.join("\n");
+    }
+    ```
+    ```js
+    // 5. use Inline Function on emitPhotoData
+    function zznew(p) {
+        return [
+            `<p>title: ${p.title}</p>`,
+            `<p>location: ${p.location}</p>`,
+            `<p>date: ${p.date.toDateString()}</p>`,
+        ].join("\n");
+    }
+    ```
+    ```js
+    // 6. finish with Rename Function
+    function renderPerson(outStream, person) {
+        const result = [];
+        result.push(`<p>${person.name}</p>`);
+        result.push(renderPhoto(person.photo));
+        result.push(emitPhotoData(person.photo));
+        return result.join("\n");
+    }
+
+    function photoDiv(aPhoto) {
+        return [
+            "<div>",
+            emitPhotoData(aPhoto),
+            "</div>",
+        ].join("\n");
+    }
+
+    function emitPhotoData(aPhoto) {
+        return [
+            `<p>title: ${aPhoto.title}</p>`,
+            `<p>location: ${aPhoto.location}</p>`,
+            `<p>date: ${aPhoto.date.toDateString()}</p>`,
+        ].join("\n");
+    }
+    ```
 ## Move Statements to Callers
+
+![](../Images/Refactor/8-move-statements-to-callers.jpg)
+
+* Motivation
+
+    Functions are the basic building block of the abstractions we build as programmers. And, as with any abstraction, we don’t always get the boundaries right. As a code base changes its capabilities—as most useful software does—we often find our abstraction boundaries shift. For functions, that means that what might once have been a cohesive, atomic unit of behavior becomes a mix of two or more different things.
+
+    One trigger for this is when common behavior used in several places needs to vary in some of its calls. Now, we need to move the varying behavior out of the function to its callers.
+
+* Mechanics
+    1. In simple circumstances, where you have only one or two callers and a simple function to call from, just cut the first line from the called function and paste (and perhaps fit) it into the callers. Test and you’re done.
+    2. Otherwise, apply `Extract Function` to all the statements that you don’t wish to move; give it a temporary but easily searchable name.
+        * If the function is a method that is overridden by subclasses, do the extraction on all of them so that the remaining method is identical in all classes. Then remove the subclass methods.
+    3. Use Inline Function (115) on the original function.
+    4. Apply Change Function Declaration (124) on the extracted function to rename it to the original name. Or to a better name, if you can think of one.
+
+* Example
+    ```js
+    function renderPerson(outStream, person) {
+        outStream.write(`<p>${person.name}</p>\n`);
+        renderPhoto(outStream, person.photo);
+        emitPhotoData(outStream, person.photo);
+    }
+
+    function listRecentPhotos(outStream, photos) {
+        photos
+            .filter(p => p.date > recentDateCutoff())
+            .forEach(p => {
+                outStream.write("<div>\n");
+                emitPhotoData(outStream, p);
+                outStream.write("</div>\n");
+            });
+    }
+
+    function emitPhotoData(outStream, photo) {
+        outStream.write(`<p>title: ${photo.title}</p>\n`);
+        outStream.write(`<p>date: ${photo.date.toDateString()}</p>\n`);
+        outStream.write(`<p>location: ${photo.location}</p>\n`);
+    }
+    ```
+    I need to modify the software so that listRecentPhotos renders the location information differently while renderPerson stays the same. To make this change easier, I’ll use Move Statements to Callers on the final line.
+    ```js
+    // 2. `Extract Function` on the code that will remain in emitPhotoData.
+    function emitPhotoData(outStream, photo) {
+        zztmp(outStream, photo);
+        outStream.write(`<p>location: ${photo.location}</p>\n`);
+    }
+
+    function zztmp(outStream, photo) {
+        outStream.write(`<p>title: ${photo.title}</p>\n`);
+        outStream.write(`<p>date: ${photo.date.toDateString()}</p>\n`);
+    }
+    ```
+    ```js
+    // 3.1 Inline Function
+    function renderPerson(outStream, person) {
+        outStream.write(`<p>${person.name}</p>\n`);
+        renderPhoto(outStream, person.photo);
+        zztmp(outStream, person.photo);
+        outStream.write(`<p>location: ${person.photo.location}</p>\n`);
+    }
+
+    function listRecentPhotos(outStream, photos) {
+        photos
+            .filter(p => p.date > recentDateCutoff())
+            .forEach(p => {
+                outStream.write("<div>\n");
+                zztmp(outStream, p);
+                outStream.write(`<p>location: ${p.location}</p>\n`);
+                outStream.write("</div>\n");
+            });
+    }
+
+    // 3.2 delete the outer emitPhotoData function, completing Inline Function
+    ```
+    ```js
+    // 4. rename zztmp back to the original emitPhotoData name
+    function renderPerson(outStream, person) {
+        outStream.write(`<p>${person.name}</p>\n`);
+        renderPhoto(outStream, person.photo);
+        emitPhotoData(outStream, person.photo);
+        outStream.write(`<p>location: ${person.photo.location}</p>\n`);
+    }
+
+    function listRecentPhotos(outStream, photos) {
+        photos
+            .filter(p => p.date > recentDateCutoff())
+            .forEach(p => {
+                outStream.write("<div>\n");
+                emitPhotoData(outStream, p);
+                outStream.write(`<p>location: ${p.location}</p>\n`);
+                outStream.write("</div>\n");
+            });
+    }
+
+    function emitPhotoData(outStream, photo) {
+        outStream.write(`<p>title: ${photo.title}</p>\n`);
+        outStream.write(`<p>date: ${photo.date.toDateString()}</p>\n`);
+    }
+    ```
 
 ## Replace Inline Code with Function Call
 
+![](../Images/Refactor/8-replace-inline-code-with-function-call.jpg)
+
+* Motivation
+
+    Functions allow me to package up bits of behavior. This is useful for understanding—a named function can explain the purpose of the code rather than its mechanics. It’s also valuable to remove duplication
+
+* Mechanics
+    * Replace the inline code with a call to the existing function.
+    * Test.
+
 ## Slide Statements
+
+![](../Images/Refactor/8-slide-statements.jpg)
+
+* Motivation
+
+    Code is easier to understand when things that are related to each other appear together. If several lines of code access the same data structure, it’s best for them to be together rather than intermingled with code accessing other data structures.
+
+    Usually, I move related code together as a preparatory step for another refactoring, often an `Extract Function`.
+
+    In this case, I’m also helped by the fact that the code I’m moving over doesn’t have side effects either. Indeed, I can freely rearrange code that lacks side effects to my heart’s content, which is one of the reasons why wise programmers prefer to use side-effect-free code as much as possible.
+
+* Mechanics
+    1. Identify the target position to move the fragment to. Examine statements between source and target to see if there is interference for the candidate fragment. Abandon action if there is any interference.
+        * A fragment cannot slide backwards earlier than any element it references is declared.
+        * A fragment cannot slide forwards beyond any element that references it.
+        * A fragment cannot slide over any statement that modifies an element it references.
+        * A fragment that modifies an element cannot slide over any other element that references the modified element.
+    2. Cut the fragment from the source and paste into the target position.
+    3. Test.
 
 ## Split Loop
 
+![](../Images/Refactor/8-split-loop.jpg)
+
+* Motivation
+
+    You often see loops that are doing two different things at once just because they can do that with one pass through a loop. But if you’re doing two different things in the same loop, then whenever you need to modify the loop you have to understand both things. By splitting the loop, you ensure you only need to understand the behavior you need to modify.
+
+    Many programmers are uncomfortable with this refactoring, as it forces you to execute the loop twice. My reminder, as usual, is to separate refactoring from optimization (`Refactoring and Performance`).
+
+* Mechanics
+    1. Copy the loop.
+    2. Identify and eliminate duplicate side effects.
+    3. Test. When done, consider `Extract Function` on each loop.
+
+* Example
+    ```js
+    //  calculates the total salary and youngest age
+    let youngest = people[0] ? people[0].age : Infinity;
+    let totalSalary = 0;
+    for (const p of people) {
+        if (p.age < youngest)
+            youngest = p.age;
+        totalSalary += p.salary;
+    }
+
+    return `youngestAge: ${youngest}, totalSalary: ${totalSalary}`;
+    ```
+    ```js
+    // 1. Copy the loop.
+    let youngest = people[0] ? people[0].age : Infinity;
+    let totalSalary = 0;
+    for (const p of people) {
+        if (p.age < youngest)
+            youngest = p.age;
+        totalSalary += p.salary;
+    }
+
+    for (const p of people) {
+        if (p.age < youngest)
+            youngest = p.age;
+        totalSalary += p.salary;
+    }
+
+    return `youngestAge: ${youngest}, totalSalary: ${totalSalary}`;
+    ```
+    ```js
+    // 2. Identify and eliminate duplicate side effects.
+    let youngest = people[0] ? people[0].age : Infinity;
+    let totalSalary = 0;
+
+    for (const p of people) {
+        totalSalary += p.salary;
+    }
+
+    for (const p of people) {
+        if (p.age < youngest)
+            youngest = p.age;
+    }
+
+    return `youngestAge: ${youngest}, totalSalary: ${totalSalary}`;
+    ```
+    The point of Split Loop isn’t what it does on its own but what it sets up for the next move—and I’m usually looking to extract the loops into their own functions.
+    ```js
+    // 3.1 Slide Statements (223) to reorganize the code a bit first
+    let totalSalary = 0;
+    for (const p of people) {
+        totalSalary += p.salary;
+    }
+
+    let youngest = people[0] ? people[0].age : Infinity;
+    for (const p of people) {
+        if (p.age < youngest)
+            youngest = p.age;
+    }
+
+    return `youngestAge: ${youngest}, totalSalary: ${totalSalary}`;
+    ```
+    ```js
+    // 3.2 Extract Function
+    return `youngestAge: ${youngestAge()}, totalSalary: ${totalSalary()}`;
+
+    function totalSalary() {
+    let totalSalary = 0;
+        for (const p of people) {
+            totalSalary += p.salary;
+        }
+        return totalSalary;
+    }
+
+    function youngestAge() {
+        let youngest = people[0] ? people[0].age : Infinity;
+        for (const p of people) {
+            if (p.age < youngest)
+                youngest = p.age;
+        }
+        return youngest;
+    }
+    ```
+    ```js
+    // 4. `Replace Loop with Pipeline` for the total salary,
+    //  `Substitute Algorithm` for the youngest age.
+    return `youngestAge: ${youngestAge()}, totalSalary: ${totalSalary()}`;
+
+    function totalSalary() {
+        return people.reduce((total,p) => total + p.salary, 0);
+    }
+
+    function youngestAge() {
+        return Math.min(...people.map(p => p.age));
+    }
+    ```
+
 ## Replace Loop with Pipeline
+
+![](../Images/Refactor/8-replace-loop-with-pipeline.jpg)
+
+* Example
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
 
 ## Remove Dead Code
 
@@ -2621,7 +3338,7 @@ A lot of conditionals are used to handle special cases, such as nulls; if that l
     * If classes do not exist for polymorphic behavior, create them together with a factory function to return the correct instance.
     * Use the factory function in calling code.
     * Move the conditional function to the superclass.
-        * If the conditional logic is not a self-contained function, use Extract Function (106) to make it so.
+        * If the conditional logic is not a self-contained function, use `Extract Function` to make it so.
     * Pick one of the subclasses. Create a subclass method that overrides the conditional statement method. Copy the body of that leg of the conditional statement into the subclass method and adjust it to fit.
     * Repeat for each leg of the conditional.
     * Leave a default case for the superclass method. Or, if superclass should be abstract, declare that method as abstract or throw an error to show it should be the responsibility of a subclass.
@@ -2765,24 +3482,141 @@ A lot of conditionals are used to handle special cases, such as nulls; if that l
         }
     }
     ```
-    ```js
-    ```
-    ```js
-    ```
-    ```js
-    ```
-    ```js
-    ```
-    ```js
-    ```
-    ```js
-    ```
-    ```js
-    ```
 ## Introduce Special Case
+
+* Motivation
+
+    A common case of duplicated code is when many users of a data structure check a specific value, and then most of them do the same thing.
+    A good mechanism for this is the Special Case pattern where I create a special-case element that captures all the common behavior. This allows me to replace most of the special-case checks with simple calls.
+
+    If I need more behavior than simple values, I can create a special object with methods for all the common behavior. The special-case object can be returned by an encapsulating class, or inserted into a data structure with a transform.
+
+* Mechanics
+    1. Add a special-case check property to the subject, returning false.
+    2. Create a special-case object with only the special-case check property, returning true.
+    3. Apply `Extract Function` to the special-case comparison code. Ensure that all clients use the new function instead of directly comparing it.
+    4. Introduce the new special-case subject into the code, either by returning it from a function call or by applying a transform function.
+    5. Change the body of the special-case comparison function so that it uses the special-case check property.
+    6. Test.
+    7. Use `Combine Functions into Class` or `Combine Functions into Transform` to move all of the common special-case behavior into the new element.
+        * Since the special-case class usually returns fixed values to simple requests, these may be handled by making the special case a literal record.
+    8. Use `Inline Function` on the special-case comparison function for the places where it’s still needed.
+
+* Example
+    ```js
+    class Site {
+        get customer() {return this._customer;}
+    }
+
+    class Customer {
+        get name()           {...}
+        get billingPlan()    {...}
+        set billingPlan(arg) {...}
+        get paymentHistory() {...}
+    }
+
+    // client 1
+    const aCustomer = site.customer;
+    let customerName = (aCustomer === "unknown") ? "occupant" : aCustomer.name;
+
+    // client 2
+    const plan = (aCustomer === "unknown")
+        ? registry.billingPlans.basic
+        : aCustomer.billingPlan;
+
+    // client 3
+    if (aCustomer !== "unknown")
+        aCustomer.billingPlan = newPlan;
+
+    // client 4
+    const weeksDelinquent = (aCustomer === "unknown")
+        ? 0
+        : aCustomer.paymentHistory.weeksDelinquentInLastYear;
+    ```
+    ```js
+    // 1. Add a special-case check property to the subject, returning false.
+    class Customer {
+        get isUnknown() {return false;}
+    }
+    ```
+    ```js
+    // 2. Create a special-case object with only the special-case check property, returning true.
+    class UnknownCustomer {
+        get isUnknown() {return true;}
+    }
+    ```
+    ```js
+    // 3. Apply `Extract Function` to the special-case comparison code
+    function isUnknown(arg) {
+        if (!((arg instanceof Customer) || (arg === "unknown")))
+            throw new Error(`investigate bad value: <${arg}>`);
+        return (arg === "unknown");
+    }
+    ```
+    ```js
+    // 4. Introduce the new special-case subject into the code
+    class Site {
+        get customer() {
+            return (this._customer === "unknown") ? new UnknownCustomer() : this._customer;
+        }
+    }
+    ```
+    ```js
+    // 5. Change the body of the special-case comparison function so that it uses the special-case check property.
+    function isUnknown(arg) {
+        if (!(arg instanceof Customer || arg instanceof UnknownCustomer))
+            throw new Error(`investigate bad value: <${arg}>`);
+        return arg.isUnknown;
+    }
+    ```
+    ```js
+    // 7. `Combine Functions into Class` to take each client’s special-case
+    class class UnknownCustomer {
+        get name() {return "occupant";}
+        get billingPlan()    {return registry.billingPlans.basic;}
+        set billingPlan(arg) { /* ignore */ }
+        get paymentHistory() {return new NullPaymentHistory();}
+    }
+
+    class NullPaymentHistory {
+        get weeksDelinquentInLastYear() {return 0;}
+    }
+
+    // client 1
+    const aCustomer = site.customer;
+    const customerName = aCustomer.name;
+
+    // client 2
+    const plan = (isUnknown(aCustomer))
+        ? registry.billingPlans.basic
+        : aCustomer.billingPlan;
+
+    // client 3
+    if (!isUnknown(aCustomer))
+        aCustomer.billingPlan = newPlan;
+
+    ```
+    ```js
+    // 8. Use `Inline Function` on the special-case comparison function for the places where it’s still needed.
+    // I may have 23 clients that use “occupant” for the name of an unknown customer,
+    // but there’s always one that needs something different - "unknown occupant".
+    const name = aCustomer.isUnknown ? "unknown occupant" : aCustomer.name;
+    ```
 
 ## Introduce Assertion
 
+![](../Images/Refactor/10-introduce-assertion.jpg)
+
+
+* Motivation
+
+    Often, sections of code work only if certain conditions are true.
+
+    I find assertions to be a valuable form of communication—they tell the reader something about the assumed state of the program at this point of execution. I also find them handy for debugging, and their communication value means I’m inclined to leave them in once I’ve fixed the error I’m chasing.
+
+* Mechanics
+
+    When you see that a condition is assumed to be true, add an assertion to state it.
 
 # 11 Refactoring APIs
 
