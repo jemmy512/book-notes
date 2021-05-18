@@ -106,8 +106,8 @@ The great benefit of removing local variables is that it makes it much easier to
 So, my overall advice on performance with refactoring is: Most of the time you should ignore it. If your refactoring introduces performance slow-downs, finish refactoring first and do performance tuning afterwards.
 
 * The second aspect I want to call your attention to is how small the steps were to remove volumeCredits:
-    1. Split Loop (227) to isolate the accumulation
-    2. Slide Statements (223) to bring the initializing code next to the accumulation
+    1. `Split Loop` to isolate the accumulation
+    2. `Slide Statements` to bring the initializing code next to the accumulation
     3. `Extract Function` to create a function for calculating the total
     4. `Inline Variable` to remove the variable completely
 
@@ -687,7 +687,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     3. Scan the extracted code for references to any variables that are local in scope to the source function and will not be in scope for the extracted function. Pass them as parameters.
 
-        I find that too many local variables are being assigned by the extracted code. It’s better to abandon the extraction at this point. When this happens, I consider other refactorings such as Split Variable (240) or Replace Temp with Query (178) to simplify variable usage and revisit the extraction later.
+        I find that too many local variables are being assigned by the extracted code. It’s better to abandon the extraction at this point. When this happens, I consider other refactorings such as `Split Variable` or Replace Temp with Query (178) to simplify variable usage and revisit the extraction later.
 
     4. Compile after all variables are dealt with.
 
@@ -695,7 +695,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     6. Test.
 
-    7. Look for other code that’s the same or similar to the code just extracted, and consider using Replace Inline Code with Function Call (222) to call the new function.
+    7. Look for other code that’s the same or similar to the code just extracted, and consider using `Replace Inline Code with Function Call` to call the new function.
 
 * Example
     ```js
@@ -980,7 +980,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     }
     ```
     ```js
-    // Introduce Assertion (302) to check the new parameter is used by the caller.
+    // `Introduce Assertion` to check the new parameter is used by the caller.
     zz_addReservation(customer, isPriority) {
         assert(isPriority === true || isPriority === false);
         this._reservations.push(customer);
@@ -1531,7 +1531,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     3. Introduce an intermediate data structure as an additional argument to the extracted function.
     4. Test.
     5. Examine each parameter of the extracted second phase. If it is used by first phase, move it to the intermediate data structure. Test after each move.
-        * Sometimes, a parameter should not be used by the second phase. In this case, extract the results of each usage of the parameter into a field of the intermediate data structure and use Move Statements to Callers (217) on the line that populates it.
+        * Sometimes, a parameter should not be used by the second phase. In this case, extract the results of each usage of the parameter into a field of the intermediate data structure and use `Move Statements to Callers` on the line that populates it.
     6. Apply `Extract Function` on the first-phase code, returning the intermediate data structure.
         * It’s also reasonable to extract the first phase into a transformer object.
 
@@ -2362,13 +2362,13 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 # 8 Moving Features
 
-I use Move Function (198) to move functions between classes and other modules. Fields can move too, with Move Field (207).
+I use `Move Function` to move functions between classes and other modules. Fields can move too, with `Move Field`.
 
-I also move individual statements around. I use Move Statements into Function (213) and Move Statements to Callers (217) to move them in or out of functions, as well as Slide Statements (223) to move them within a function. Sometimes, I can take some statements that match an existing function and use Replace Inline Code with Function Call (222) to remove the duplication.
+I also move individual statements around. I use `Move Statements into Function` and `Move Statements to Callers` to move them in or out of functions, as well as `Slide Statements` to move them within a function. Sometimes, I can take some statements that match an existing function and use `Replace Inline Code with Function Call` to remove the duplication.
 
-Two refactorings I often do with loops are Split Loop (227), to ensure a loop does only one thing, and Replace Loop with Pipeline (231) to get rid of a loop entirely.
+Two refactorings I often do with loops are `Split Loop`, to ensure a loop does only one thing, and `Replace Loop with Pipeline` to get rid of a loop entirely.
 
-And then there’s the favorite refactoring of many a fine programmer: Remove Dead Code (237). Nothing is as satisfying as applying the digital flamethrower to superfluous statements.
+And then there’s the favorite refactoring of many a fine programmer: `Remove Dead Code`. Nothing is as satisfying as applying the digital flamethrower to superfluous statements.
 
 ## Move Function
 
@@ -2610,7 +2610,7 @@ And then there’s the favorite refactoring of many a fine programmer: Remove De
     5. Ensure there is a reference from the source object to the target object.
         * An existing field or method may give you the target. If not, see if you can easily create a method that will do so. Failing that, you may need to create a new field in the source object that can store the target. This may be a permanent change, but you can also do it temporarily until you have done enough refactoring in the broader context.
     6. Adjust accessors to use the target field.
-        * If the target is shared between source objects, consider first updating the setter to modify both target and source fields, followed by Introduce Assertion (302) to detect inconsistent updates. Once you determine all is well, finish changing the accessors to use the target field.
+        * If the target is shared between source objects, consider first updating the setter to modify both target and source fields, followed by `Introduce Assertion` to detect inconsistent updates. Once you determine all is well, finish changing the accessors to use the target field.
     7. Test.
     8. Remove the source field.
     9. Test.
@@ -2732,7 +2732,7 @@ And then there’s the favorite refactoring of many a fine programmer: Remove De
 
 * Motivation
 
-    Removing duplication is one of the best rules of thumb of healthy code. If I see the same code executed every time I call a particular function, I look to combine that repeating code into the function itself. That way, any future modifications to the repeating code can be done in one place and used by all the callers. Should the code vary in the future, I can easily move it (or some of it) out again with Move Statements to Callers (217).
+    Removing duplication is one of the best rules of thumb of healthy code. If I see the same code executed every time I call a particular function, I look to combine that repeating code into the function itself. That way, any future modifications to the repeating code can be done in one place and used by all the callers. Should the code vary in the future, I can easily move it (or some of it) out again with `Move Statements to Callers`.
 
     If they don’t make sense as part of the called function, but still should be called with it, I’ll simply use `Extract Function` on the statements and the called function.
 
@@ -3034,7 +3034,7 @@ And then there’s the favorite refactoring of many a fine programmer: Remove De
     ```
     The point of Split Loop isn’t what it does on its own but what it sets up for the next move—and I’m usually looking to extract the loops into their own functions.
     ```js
-    // 3.1 Slide Statements (223) to reorganize the code a bit first
+    // 3.1 `Slide Statements` to reorganize the code a bit first
     let totalSalary = 0;
     for (const p of people) {
         totalSalary += p.salary;
@@ -3087,29 +3087,364 @@ And then there’s the favorite refactoring of many a fine programmer: Remove De
 
 ![](../Images/Refactor/8-replace-loop-with-pipeline.jpg)
 
-* Example
-    ```js
-    ```
-    ```js
-    ```
-    ```js
-    ```
 
 ## Remove Dead Code
 
+![](../Images/Refactor/8-remove-dead-code.jpg)
+
+* Motivation
+
+    When we put code into production, even on people’s devices, we aren’t charged by weight. A few unused lines of code don’t slow down our systems nor take up significant memory; indeed, decent compilers will instinctively remove them. But unused code is still a significant burden when trying to understand how the software works. It doesn’t carry any warning signs telling programmers that they can ignore this function as it’s never called any more, so they still have to spend time understanding what it’s doing and why changing it doesn’t seem to alter the output as they expected.
+
+    I don’t worry that I may need it sometime in the future; should that happen, I have my version control system so I can always dig it out again.
+
+    Commenting out dead code was once a common habit. This was useful in the days before version control systems were widely used, or when they were inconvenient.
 
 # 9 Organizing Data
 
+A value that’s used for different purposes is a breeding ground for confusion and bugs—so, when I see one, I use `Split Variable` to separate the usages. As with any program element, getting a variable’s name right is tricky and important, so Rename Variable (137) is often my friend. But sometimes the best thing I can do with a variable is to get rid of it completely—with Replace Derived Variable with Query (248).
+
+I often find problems in a code base due to a confusion between references and values, so I use Change Reference to Value (252) and Change Value to Reference (256) to change between these styles.
+
 ## Split Variable
+
+* Motivation
+
+    * Variables have various uses.
+        * Some of these uses naturally lead to the variable being assigned to several times.
+        * Loop variables change for each run of a loop.
+        * Collecting variables store a value that is built up during the method.
+        * Many other variables are used to hold the result of a long-winded bit of code for easy reference later.
+
+    * These kinds of variables should be set only once. If they are set more than once, it is a sign that they have more than one responsibility within the method. Any variable with more than one responsibility should be replaced with multiple variables, one for each responsibility. Using a variable for two different things is very confusing for the reader.
+
+*  Mechanics
+    1. Change the name of the variable at its declaration and first assignment.
+        * If the later assignments are of the form i = i + something, that is a collecting variable, so don’t split it. A collecting variable is often used for calculating sums, string concatenation, writing to a stream, or adding to a collection.
+    2. If possible, declare the new variable as immutable.
+    3. Change all references of the variable up to its second assignment.
+    4. Test.
+    5. Repeat in stages, at each stage renaming the variable at the declaration and changing references until the next assignment, until you reach the final assignment.
+
+* Example
+    ```js
+    function distanceTravelled (scenario, time) {
+        let result;
+        let acc = scenario.primaryForce / scenario.mass;
+        let primaryTime = Math.min(time, scenario.delay);
+        result = 0.5 * acc * primaryTime * primaryTime;
+        let secondaryTime = time - scenario.delay;
+        if (secondaryTime > 0) {
+            let primaryVelocity = acc * scenario.delay;
+            acc = (scenario.primaryForce + scenario.secondaryForce) / scenario.mass;
+            result += primaryVelocity * secondaryTime + 0.5 * acc * secondaryTime * secondaryTime;
+        }
+        return result;
+    }
+    ```
+    acc has two responsibilities: one to hold the initial acceleration from the first force and another later to hold the acceleration from both forces. I want to split this variable.
+    ```js
+    // 1 & 2. changing the name of the variable and declaring the new name as const
+    function distanceTravelled (scenario, time) {
+        let result;
+        const primaryAcceleration = scenario.primaryForce / scenario.mass;
+        let primaryTime = Math.min(time, scenario.delay);
+        result = 0.5 * primaryAcceleration * primaryTime * primaryTime;
+        let secondaryTime = time - scenario.delay;
+        if (secondaryTime > 0) {
+            let primaryVelocity = primaryAcceleration * scenario.delay;
+            let acc = (scenario.primaryForce + scenario.secondaryForce) / scenario.mass;
+            result += primaryVelocity * secondaryTime + 0.5 * acc * secondaryTime * secondaryTime;
+        }
+        return result;
+    }
+    ```
+    ```js
+    // continue on the second assignment of the variable
+    function distanceTravelled (scenario, time) {
+        let result;
+        const primaryAcceleration = scenario.primaryForce / scenario.mass;
+        let primaryTime = Math.min(time, scenario.delay);
+        result = 0.5 * primaryAcceleration * primaryTime * primaryTime;
+
+        let secondaryTime = time - scenario.delay;
+        if (secondaryTime > 0) {
+            let primaryVelocity = primaryAcceleration * scenario.delay;
+            const secondaryAcceleration = (scenario.primaryForce + scenario.secondaryForce) / scenario.mass;
+            result += primaryVelocity * secondaryTime + 0.5 * secondaryAcceleration * secondaryTime * secondaryTime;
+        }
+        return result;
+    }
+    ```
+
+* Example: Assigning to an Input Parameter
+    ```js
+    function discount (inputValue, quantity) {
+        if (inputValue > 50) inputValue = inputValue - 2;
+        if (quantity > 100) inputValue = inputValue - 1;
+        return inputValue;
+    }
+    ```
+    Here inputValue is used both to supply an input to the function and to hold the result for the caller.
+    ```js
+    function discount (inputValue, quantity) {
+        let result = inputValue;
+        if (inputValue > 50) result = result - 2;
+        if (quantity > 100) result = result - 1;
+        return result;
+    }
+    ```
 
 ## Rename Field
 
+![](../Images/Refactor/9-split-variable.jpg)
+
+* Motivation
+
+    Names are important, and field names in record structures can be especially important when those record structures are widely used across a program.
+
+    Data structures are the key to understanding what’s going on.
+
+* Mechanics
+    1. If the record has limited scope, rename all accesses to the field and test; no need to do the rest of the mechanics.
+    2. If the record isn’t already encapsulated, apply `Encapsulate Record`.
+    3. Rename the private field inside the object, adjust internal methods to fit.
+    4. Test.
+    5. If the constructor uses the name, apply `Change Function Declaration` to rename it.
+    6. Apply `Rename Function` to the accessors.
+
+
+* Example: Renaming a Field
+    ```js
+    const organization = {name: "Acme Gooseberries", country: "GB"};
+    ```
+    I want to change “name” to “title”.
+    ```js
+    // 2. `Encapsulate Record`
+    class Organization {
+        constructor(data) {
+            this._name = data.name;
+            this._country = data.country;
+        }
+        get name()    {return this._name;}
+        set name(aString) {this._name = aString;}
+        get country()    {return this._country;}
+        set country(aCountryCode) {this._country = aCountryCode;}
+    }
+
+    const organization = new Organization({name: "Acme Gooseberries", country: "GB"});
+    ```
+    ```js
+    // 3.1 defining a separate field `_title` and adjusting the constructor and accessors to use it.
+    class Organization {
+        constructor(data) {
+            this._title = data.name;
+            this._country = data.country;
+        }
+        get name()    {return this._title;}
+        set name(aString) {this._title = aString;}
+        get country()    {return this._country;}
+        set country(aCountryCode) {this._country = aCountryCode;}
+    }
+    ```
+    ```js
+    // 3.2. add support for using “title” in the constructor
+    class Organization {
+        constructor(data) {
+            this._title = (data.title !== undefined) ? data.title : data.name;
+            this._country = data.country;
+        }
+        get name()    {return this._title;}
+        set name(aString) {this._title = aString;}
+        get country()    {return this._country;}
+        set country(aCountryCode) {this._country = aCountryCode;}
+    }
+    ```
+    ```js
+    // change all constructor callers one-by-one to use the new name
+    const organization = new Organization({title: "Acme Gooseberries", country: "GB"});
+    ```
+    ```js
+    // 6. Rename Function name to title()
+    class Organization {
+        constructor(data) {
+            this._title = data.title;
+            this._country = data.country;
+        }
+        get title()    {return this._title;}
+        set title(aString) {this._title = aString;}
+        get country()    {return this._country;}
+        set country(aCountryCode) {this._country = aCountryCode;}
+    }
+    ```
+
 ## Replace Derived Variable with Query
+
+![](../Images/Refactor/9-replace-derived-variable-with-query.jpg)
+
+
+* Motivation
+
+    One of the biggest sources of problems in software is mutable data. Data changes can often couple together parts of code in awkward ways, with changes in one part leading to knock-on effects that are hard to spot.
+
+    One way I can make a big impact is by removing any variables that I could just as easily calculate. A calculation often makes it clearer what the meaning of the data is, and it is protected from being corrupted when you fail to update the variable as the source data changes.
+
+* Mechanics
+    1. Identify all points of update for the variable. If necessary, use `Split Variable` to separate each point of update.
+    2. Create a function that calculates the value of the variable.
+    3. Use `Introduce Assertion` to assert that the variable and the calculation give the same result whenever the variable is used.
+        * If necessary, use `Encapsulate Variable` to provide a home for the assertion.
+    4. Test.
+    5. Replace any reader of the variable with a call to the new function.
+    6. Test.
+    7. Apply `Remove Dead Code` to the declaration and updates to the variable.
+
+* Example
+    ```js
+    class ProductionPlan {
+        get production() {return this._production;}
+
+        applyAdjustment(anAdjustment) {
+            this._adjustments.push(anAdjustment);
+            this._production += anAdjustment.amount;
+        }
+    }
+    ```
+    ```js
+    // 3. Insert Assertion to insure the update
+    get production() {
+        assert(this._production === this.calculatedProduction);
+        return this._production;
+    }
+
+    get calculatedProduction() {
+        return this._adjustments.reduce((sum, a) => sum + a.amount, 0);
+    }
+    ```
+    ```js
+    // inline function
+    get production() {
+        return this._adjustments.reduce((sum, a) => sum + a.amount, 0);
+    }
+
+    applyAdjustment(anAdjustment) {
+        this._adjustments.push(anAdjustment);
+    }
+    ```
+
+* Example: More Than One Source
+    ```js
+    class ProductionPlan {
+        constructor (production) {
+            this._production = production;
+            this._adjustments = [];
+        }
+
+        get production() {return this._production;}
+
+        applyAdjustment(anAdjustment) {
+            this._adjustments.push(anAdjustment);
+            this._production += anAdjustment.amount;
+        }
+    }
+    ```
+    ```js
+    // split variable
+    class ProductionPlan {
+        constructor (production) {
+            this._initialProduction = production;
+            this._productionAccumulator = 0;
+            this._adjustments = [];
+        }
+
+        get production() {
+            return this._initialProduction + this._productionAccumulator;
+        }
+    }
+    ```
+    ```js
+    // insert assertion
+    class ProductionPlan {
+        get production() {
+            assert(this._productionAccumulator === this.calculatedProductionAccumulator);
+            return this._initialProduction + this._productionAccumulator;
+        }
+
+        get calculatedProductionAccumulator() {
+            return this._adjustments.reduce((sum, a) => sum + a.amount, 0);
+        }
+
+        applyAdjustment(anAdjustment) {
+            this._adjustments.push(anAdjustment);
+            this._productionAccumulator += anAdjustment.amount;
+        }
+    }
+    }
+    ```
 
 ## Change Reference to Value
 
+![](../Images/Refactor/9-change-reference-to-value.jpg)
+
+* Motivation
+
+    When I nest an object, or data structure, within another I can treat the inner object as a reference or as a value. The difference is most obviously visible in how I handle updates of the inner object’s properties. If I treat it as a reference, I’ll update the inner object’s property keeping the same inner object. If I treat it as a value, I will replace the entire inner object with a new one that has the desired property.
+
+    If I treat a field as a value, I can change the class of the inner object to make it a Value Object [mf-vo]. Value objects are generally easier to reason about, particularly because they are immutable. In general, immutable data structures are easier to deal with.
+
+* Mechanics
+    1. Check that the candidate class is immutable or can become immutable.
+    2. For each setter, apply `Remove Setting Method`.
+    3. Provide a value-based equality method that uses the fields of the value object.
+    4. Most language environments provide an overridable equality function for this purpose. Usually you must override a hashcode generator method as well.
+
+* Example
+    ```js
+    class Person {
+        constructor() {
+            this._telephoneNumber = new TelephoneNumber();
+        }
+
+        get officeAreaCode()    {return this._telephoneNumber.areaCode;}
+        set officeAreaCode(arg) {this._telephoneNumber.areaCode = arg;}
+        get officeNumber()    {return this._telephoneNumber.number;}
+        set officeNumber(arg) {this._telephoneNumber.number = arg;}
+    }
+
+    class TelephoneNumber {
+        get areaCode()    {return this._areaCode;}
+        set areaCode(arg) {this._areaCode = arg;}
+
+        get number()    {return this._number;}
+        set number(arg) {this._number = arg;}
+    }
+    ```
+    ```js
+    // 2. Remove Setting Method
+    // add the two fields to the constructor and enhance the constructor to call the setters
+    class TelephoneNumber {
+        constructor(areaCode, number) {
+            this._areaCode = areaCode;
+            this._number = number;
+        }
+    }
+
+    class Person {
+        get officeAreaCode()    {return this._telephoneNumber.areaCode;}
+        set officeAreaCode(arg) {
+            this._telephoneNumber = new TelephoneNumber(arg, this.officeNumber);
+        }
+
+        get officeNumber()    {return this._telephoneNumber.number;}
+        set officeNumber(arg) {
+            this._telephoneNumber = new TelephoneNumber(this.officeAreaCode, arg);
+        }
+    }
+    ```
+
 ## Change Value to Reference
 
+![](../Images/Refactor/9-change-value-to-reference.jpg)
 
 # 10 Simplifying Conditional Logic
 
