@@ -93,7 +93,7 @@ First, I need to look in the fragment for any variables that will no longer be i
 
 Once I’ve used `Extract Function`, I take a look at what I’ve extracted to see if there are any quick and easy things I can do to clarify the extracted function. The first thing I do is rename some of the variables to make them clearer, such as changing thisAmount to result.
 
-When I’m breaking down a long function, I like to get rid of variables like play, because temporary variables create a lot of locally scoped names that complicate extractions. The refactoring I will use here is Replace Temp with Query (178).
+When I’m breaking down a long function, I like to get rid of variables like play, because temporary variables create a lot of locally scoped names that complicate extractions. The refactoring I will use here is `Replace Temp with Query`.
 
 Temporary variables can be a problem. They are only useful within their own routine, and therefore they encourage long, complex routines.
 
@@ -663,11 +663,11 @@ Michael Feathers’s Working Effectively with Legacy Code [Feathers], which is p
 
 # 6 A First Set of Refactorings
 
-Probably the most common refactoring I do is extracting code into a function (`Extract Function` (106)) or a variable (`Extract Variable` (119)). Since refactoring is all about change, it’s no surprise that I also frequently use the inverses of those two (`Inline Function` (115) and `Inline Variable` (123)).
+Probably the most common refactoring I do is extracting code into a function (`Extract Function`) or a variable (`Extract Variable`). Since refactoring is all about change, it’s no surprise that I also frequently use the inverses of those two (`Inline Function` and `Inline Variable`).
 
-Extraction is all about giving names, and I often need to change the names as I learn. `Change Function Declaration` (124) changes names of functions; I also use that refactoring to add or remove a function’s arguments. For variables, I use `Rename Variable` (137), which relies on `Encapsulate Variable` (132). When changing function arguments, I often find it useful to combine a common clump of arguments into a single object with `Introduce Parameter Object` (140).
+Extraction is all about giving names, and I often need to change the names as I learn. `Change Function Declaration` changes names of functions; I also use that refactoring to add or remove a function’s arguments. For variables, I use `Rename Variable`, which relies on `Encapsulate Variable`. When changing function arguments, I often find it useful to combine a common clump of arguments into a single object with `Introduce Parameter Object`.
 
- I use `Combine Functions into Class` (144) to group functions, together with the data they operate on, into a class. Another path I take is to combine them into a transform (`Combine Functions into Transform` (149)), which is particularly handy with read-only data. At a step further in scale, I can often form these modules into distinct processing phases using `Split Phase` (154).
+ I use `Combine Functions into Class` to group functions, together with the data they operate on, into a class. Another path I take is to combine them into a transform (`Combine Functions into Transform`), which is particularly handy with read-only data. At a step further in scale, I can often form these modules into distinct processing phases using `Split Phase`.
 
 ## Extract Function
 
@@ -687,7 +687,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     3. Scan the extracted code for references to any variables that are local in scope to the source function and will not be in scope for the extracted function. Pass them as parameters.
 
-        I find that too many local variables are being assigned by the extracted code. It’s better to abandon the extraction at this point. When this happens, I consider other refactorings such as `Split Variable` or Replace Temp with Query (178) to simplify variable usage and revisit the extraction later.
+        I find that too many local variables are being assigned by the extracted code. It’s better to abandon the extraction at this point. When this happens, I consider other refactorings such as `Split Variable` or `Replace Temp with Query` to simplify variable usage and revisit the extraction later.
 
     4. Compile after all variables are dealt with.
 
@@ -810,7 +810,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     I also think about the context of that name. If it’s only meaningful within the function I’m working on, then Extract Variable is a good choice—but if it makes sense in a broader context, I’ll consider making the name available in that broader context, usually as a function.
 
-    The downside of promoting the name to a broader context is extra effort. If it’s significantly more effort, I’m likely to leave it till later when I can use Replace Temp with Query (178).
+    The downside of promoting the name to a broader context is extra effort. If it’s significantly more effort, I’m likely to leave it till later when I can use `Replace Temp with Query`.
 
 * Mechanics
     1. Ensure that the expression you want to extract does not have side effects.
@@ -918,8 +918,8 @@ Extraction is all about giving names, and I often need to change the names as I 
             * If the new function will have the same name as the old one, give the new function a temporary name that’s easy to search for.
         3. If the extracted function needs additional parameters, use the simple mechanics to add them.
         4. Test.
-        5. Apply Inline Function (115) to the old function.
-        6. If you used a temporary name, use Change Function Declaration (124) again to restore it to the original name.
+        5. `Apply Inline Function` to the old function.
+        6. If you used a temporary name, use `Change Function Declaration` again to restore it to the original name.
         7. Test
 
 * Example: Renaming a Function (Simple Mechanics)
@@ -987,7 +987,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     }
     ```
     ```js
-    // Inline Function (115) on the original function
+    // Inline Function on the original function
     addReservation(customer, isPriority) {
         assert(isPriority === true || isPriority === false);
         this._reservations.push(customer);
@@ -1004,7 +1004,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```
     inNewEngland only uses the customer’s home state to determine if it’s in New England. I’d prefer to refactor inNewEngland so that it takes a state code as a parameter, making it usable in more contexts by removing the dependency on the customer.
     ```js
-    //  Extract Variable (119)
+    //  Extract Variable
     function inNewEngland(aCustomer) {
         const stateCode = aCustomer.address.state;
         return ["MA", "CT", "ME", "VT", "NH", "RI"].includes(stateCode);
@@ -1028,7 +1028,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     }
     ```
     ```js
-    // I use Inline Function (115) to fold the old function into its callers,
+    // I use Inline Function to fold the old function into its callers,
     // effectively replacing the call to the old function with a call to the new one.
     const newEnglanders = someCustomers.filter(c => xxNEWinNewEngland(c.address.state));
     ```
@@ -1065,7 +1065,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     4. Restrict the visibility of the variable.
         * Sometimes it’s not possible to prevent access to the variable. If so, it may be useful to detect any remaining references by renaming the variable and testing.
     5. Test.
-    6. If the value of the variable is a record, consider Encapsulate Record (162).
+    6. If the value of the variable is a record, consider `Encapsulate Record`.
 
 * Example
     ```js
@@ -1110,7 +1110,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     The basic refactoring encapsulates the reference to the data item. In many cases, this is all I want to do for the moment. But I often want to take the encapsulation deeper to control not just changes to the variable but also to its contents.
 
-    An alternative is to prevent changes—and a good way of doing that is Encapsulate Record (162).
+    An alternative is to prevent changes—and a good way of doing that is `Encapsulate Record`.
 
     ```js
     let defaultOwnerData = {firstName: "Martin", lastName: "Fowler"};
@@ -1194,7 +1194,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     1. If there isn’t a suitable structure already, create one.
     2. I prefer to use a class, as that makes it easier to group behavior later on. I usually like to ensure these structures are value objects [mf-vo].
     3. Test.
-    4. Use Change Function Declaration (124) to add a parameter for the new structure.
+    4. Use `Change Function Declaration` to add a parameter for the new structure.
     5. Test.
     6. Adjust each caller to pass in the correct instance of the new structure. Test after each one.
     7. For each element of the new structure, replace the use of the original parameter with the element of the structure. Remove the parameter.
@@ -1277,8 +1277,8 @@ Extraction is all about giving names, and I often need to change the names as I 
     One significant advantage of using a class is that it allows clients to mutate the core data of the object, and the derivations remain consistent.
 
 * Mechanics
-    1. Apply Encapsulate Record (162) to the common data record that the functions share.
-        * If the data that is common between the functions isn’t already grouped into a record structure, use Introduce Parameter Object (140) to create a record to group it together.
+    1. Apply `Encapsulate Record` to the common data record that the functions share.
+        * If the data that is common between the functions isn’t already grouped into a record structure, use `Introduce Parameter Object` to create a record to group it together.
     2. Take each function that uses the common record and use `Move Function` to move it into the new class.
         * Any arguments to the function call that are members can be removed from the argument list.
     3. Each bit of logic that manipulates the data can be extracted with `Extract Function` and then moved into the new class.
@@ -1307,7 +1307,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     ```
 
     ```js
-    // Encapsulate Record (162)
+    // Encapsulate Record
     class Reading {
         constructor(data) {
             this._customer = data.customer;
@@ -1619,9 +1619,9 @@ Extraction is all about giving names, and I often need to change the names as I 
 
 # 7 Encapsulation
 
-Perhaps the most important criteria to be used in decomposing modules is to identify secrets that modules should hide from the rest of the system [Parnas]. Data structures are the most common secrets, and I can hide data structures by encapsulating them with **Encapsulate Record** (162) and **Encapsulate Collection** (170). Even primitive data values can be encapsulated with **Replace Primitive with Object** (174)
+Perhaps the most important criteria to be used in decomposing modules is to identify secrets that modules should hide from the rest of the system [Parnas]. Data structures are the most common secrets, and I can hide data structures by encapsulating them with **Encapsulate Record** and **Encapsulate Collection**. Even primitive data values can be encapsulated with **Replace Primitive with Object**
 
-Using `Replace Temp with Query` (178) is a great help here, particularly when splitting up an overly long function.
+Using `Replace Temp with Query` is a great help here, particularly when splitting up an overly long function.
 
 Classes and modules are the largest forms of encapsulation, but functions also encapsulate their implementation.
 
@@ -1647,7 +1647,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
         * If it’s a complex record, such as one with a nested structure, focus on clients that update the data first. Consider returning a copy or read-only proxy of the data for clients that only read the data.
     * Remove the class’s raw data accessor and the easily searchable functions that returned the raw record.
     * Test.
-    * If the fields of the record are themselves structures, consider using Encapsulate Record and Encapsulate Collection (170) recursively.
+    * If the fields of the record are themselves structures, consider using `Encapsulate Record` and `Encapsulate Collection` recursively.
 
 * Example
     ```js
@@ -1777,7 +1777,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
 * Mechanics
     1. Apply `Encapsulate Variable` if the reference to the collection isn’t already encapsulated.
     2. Add functions to add and remove elements from the collection.
-        * If there is a setter for the collection, use Remove Setting Method (331) if possible. If not, make it take a copy of the provided collection.
+        * If there is a setter for the collection, use `Remove Setting Method` if possible. If not, make it take a copy of the provided collection.
     3. Run static checks.
     4. Find all references to the collection. If anyone calls modifiers on the collection, change them to use the new add/remove functions. Test after each change.
     5. Modify the getter for the collection to return a protected view on it, using a read-only proxy or a copy.
@@ -1883,7 +1883,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
     * Change the getter to return the result of invoking the getter of the new class.
     * Test.
     * Consider using `Rename Function` on the original accessors to better reflect what they do.
-    * Consider clarifying the role of the new object as a value or reference object by applying `Change Reference to Value` or Change Value to Reference (256).
+    * Consider clarifying the role of the new object as a value or reference object by applying `Change Reference to Value` or `Change Value to Reference`.
 
 * Example
     ```js
@@ -2232,7 +2232,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
     aShipment.shippingCompany = request.vendor;
     ```
     ```js
-    // applying Inline Function (115) to the display method
+    // applying Inline Function to the display method
     class Shipment {
         get trackingInfo() {
             return `${this.shippingCompany}: ${this.trackingNumber}`;
@@ -2395,7 +2395,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
     * Figure out how to reference the target function from the source context.
     * Turn the source function into a delegating function.
     * Test.
-    * Consider Inline Function (115) on the source function.
+    * Consider `Inline Function` on the source function.
         * The source function can stay indefinitely as a delegating function. But if its callers can just as easily reach the target directly, then it’s better to remove the middle man.
 
 * Example: Moving a Nested Function to Top Level
@@ -2849,8 +2849,8 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
     1. In simple circumstances, where you have only one or two callers and a simple function to call from, just cut the first line from the called function and paste (and perhaps fit) it into the callers. Test and you’re done.
     2. Otherwise, apply `Extract Function` to all the statements that you don’t wish to move; give it a temporary but easily searchable name.
         * If the function is a method that is overridden by subclasses, do the extraction on all of them so that the remaining method is identical in all classes. Then remove the subclass methods.
-    3. Use Inline Function (115) on the original function.
-    4. Apply Change Function Declaration (124) on the extracted function to rename it to the original name. Or to a better name, if you can think of one.
+    3. Use `Inline Function` on the original function.
+    4. Apply `Change Function Declaration` on the extracted function to rename it to the original name. Or to a better name, if you can think of one.
 
 * Example
     ```js
@@ -3102,9 +3102,9 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
 # 9 Organizing Data
 
-A value that’s used for different purposes is a breeding ground for confusion and bugs—so, when I see one, I use `Split Variable` to separate the usages. As with any program element, getting a variable’s name right is tricky and important, so Rename Variable (137) is often my friend. But sometimes the best thing I can do with a variable is to get rid of it completely—with Replace Derived Variable with Query (248).
+A value that’s used for different purposes is a breeding ground for confusion and bugs—so, when I see one, I use `Split Variable` to separate the usages. As with any program element, getting a variable’s name right is tricky and important, so `Rename Variable` is often my friend. But sometimes the best thing I can do with a variable is to get rid of it completely—with `Replace Derived Variable with Query`.
 
-I often find problems in a code base due to a confusion between references and values, so I use Change Reference to Value (252) and Change Value to Reference (256) to change between these styles.
+I often find problems in a code base due to a confusion between references and values, so I use `Change Reference to Value` and `Change Value to Reference` to change between these styles.
 
 ## Split Variable
 
@@ -3446,11 +3446,15 @@ I often find problems in a code base due to a confusion between references and v
 
 ![](../Images/Refactor/9-change-value-to-reference.jpg)
 
+* Motivation
+
+    The biggest difficulty in having physical copies of the same logical data occurs when I need to update the shared data. I then have to find all the copies and update them all. If I miss one, I’ll get a troubling inconsistency in my data. In this case, it’s often worthwhile to change the copied data into a single reference
+
 # 10 Simplifying Conditional Logic
 
 I regularly apply `Decompose Conditional` to complicated conditionals, and I use `Consolidate Conditional Expression` to make logical combinations clearer. I use `Replace Nested Conditional with Guard Clauses` to clarify cases where I want to run some pre-checks before my main processing. If I see several conditions using the same switching logic, it’s a good time to pull `Replace Conditional with Polymorphism` out the box.
 
-A lot of conditionals are used to handle special cases, such as nulls; if that logic is mostly the same, then `Introduce Special Case`(often referred to as Introduce Null Object (289)) can remove a lot of duplicate code. And, although I like to remove conditions a lot, if I want to communicate (and check) a program’s state, I find `Introduce Assertion` a worthwhile addition.
+A lot of conditionals are used to handle special cases, such as nulls; if that logic is mostly the same, then `Introduce Special Case`(often referred to as `Introduce Null Object`) can remove a lot of duplicate code. And, although I like to remove conditions a lot, if I want to communicate (and check) a program’s state, I find `Introduce Assertion` a worthwhile addition.
 
 
 ## Decompose Conditional
@@ -3955,11 +3959,203 @@ A lot of conditionals are used to handle special cases, such as nulls; if that l
 
 # 11 Refactoring APIs
 
+Modules and their functions are the building blocks of our software. APIs are the joints that we use to plug them together. Making these APIs easy to understand and use is important but also difficult: I need to refactor them as I learn how to improve them.
+
+If I see them combined, I use `Separate Query from Modifier` to tease them apart. I can unify functions that only vary due to a value with `Parameterize Function`. Some parameters, however, are really just a signal of an entirely different behavior and are best excised with `Remove Flag Argument`.
+
+Data structures are often unpacked unnecessarily when passed between functions; I prefer to keep them together with `Preserve Whole Object`. Decisions on what should be passed as a parameter, and what can be resolved by the called function, are ones I often need to revisit with `Replace Parameter with Query` and `Replace Query with Parameter`.
+
+A class is a common form of module. I prefer my objects to be as immutable as possible, so I use `Remove Setting Method` whenever I can. Often, when a caller asks for a new object, I need more flexibility than a simple constructor gives, which I can get by using `Replace Constructor with Factory Function`.
+
+The last two refactorings address the difficulty of breaking down a particularly complex function that passes a lot of data around. I can turn that function into an object with `Replace Function with Command`, which makes it easier to use `Extract Function` on the function’s body. If I later simplify the function and no longer need it as a command object, I turn it back into a function with `Replace Command with Function`.
+
 ## Separate Query from Modifier
+
+![](../Images/Refactor/11-separate-query-from-modifier.jpg)
+
+* Motivation
+
+    It is a good idea to clearly signal the difference between functions with side effects and those without. A good rule to follow is that any function that returns a value should not have observable side effects—the command-query separation.
+    
+    Note that I use the **phrase observable side effects**. A common optimization is to cache the value of a query in a field so that repeated calls go quicker. Although this changes the state of the object with the cache, the change is not observable. Any sequence of queries will always return the same results for each query.
+
+* Mechanics
+    1. Copy the function, name it as a query.
+        * Look into the function to see what is returned. If the query is used to populate a variable, the variable’s name should provide a good clue.
+    2. Remove any side effects from the new query function.
+    3. Run static checks.
+    4. Find each call of the original method. If that call uses the return value, replace the original call with a call to the query and insert a call to the original method below it. Test after each change.
+    5. Remove return values from original.
+    6. Test.
+
+* Example
+    ```js
+    function alertForMiscreant (people) {
+        for (const p of people) {
+            if (p === "Don") {
+                setOffAlarms();
+                return "Don";
+            }
+            if (p === "John") {
+                setOffAlarms();
+                return "John";
+            }
+        }
+        return "";
+    }
+    ```
+    ```js
+    // 1. copy the function, name it after the query aspect of the function.
+    function findMiscreant (people) {
+        for (const p of people) {
+            if (p === "Don") {
+                setOffAlarms();
+                return "Don";
+            }
+            if (p === "John") {
+                setOffAlarms();
+                return "John";
+            }
+        }
+        return "";
+    }
+    ```
+    ```js
+    // 2. remove the side effects from this new query.
+    function findMiscreant (people) {
+        for (const p of people) {
+            if (p === "Don") {
+                return "Don";
+            }
+            if (p === "John") {
+                return "John";
+            }
+        }
+        return "";
+    }
+    ```
+    ```js
+    // 4. Find each call of the original method
+    const found = alertForMiscreant(people);
+    
+    // changed to
+    const found = findMiscreant(people);
+    alertForMiscreant(people);
+    ```
+    ```js
+    // 5. Remove return values from original.
+    function alertForMiscreant (people) {
+        for (const p of people) {
+            if (p === "Don") {
+                setOffAlarms();
+                return;
+            }
+            if (p === "John") {
+                setOffAlarms();
+                return;
+            }
+        }
+        return;
+    }
+    ```
+    Now I have a lot of duplication between the original modifier and the new query, so I can use `Substitute Algorithm` so that the modifier uses the query.
+    ```js
+    function alertForMiscreant (people) {
+        if (findMiscreant(people) !== "") 
+            setOffAlarms();
+    }
+    ```
 
 ## Parameterize Function
 
+![](../Images/Refactor/11-parameterize-function.jpg)
+
+* Motivation
+
+    If I see two functions that carry out very similar logic with different literal values, I can remove the duplication by using a single function with parameters for the different values.
+
+* Mechanics
+    1. Select one of the similar methods.
+    2. Use `Change Function Declaration` to add any literals that need to turn into parameters.
+    3. For each caller of the function, add the literal value.
+    4. Test.
+    5. Change the body of the function to use the new parameters. Test after each change.
+    6. For each similar function, replace the call with a call to the parameterized function. Test after each one.
+    
+* Example
+    ```js
+    function tenPercentRaise(aPerson) {
+        aPerson.salary = aPerson.salary.multiply(1.1);
+    }
+    function fivePercentRaise(aPerson) {
+        aPerson.salary = aPerson.salary.multiply(1.05);
+    }
+    ```
+    ```js
+    function raise(aPerson, factor) {
+        aPerson.salary = aPerson.salary.multiply(1 + factor);
+    }
+    ```
+    ```js
+    function baseCharge(usage) {
+        if (usage < 0) return usd(0);
+        const amount =
+            bottomBand(usage) * 0.03
+            + middleBand(usage) * 0.05
+            + topBand(usage) * 0.07;
+        return usd(amount);
+    }
+
+    function bottomBand(usage) {
+        return Math.min(usage, 100);
+    }
+
+    function middleBand(usage) {
+        return usage > 100 ? Math.min(usage, 200) - 100 : 0;
+    }
+
+    function topBand(usage) {
+        return usage > 200 ? usage - 200 : 0;
+    }
+    ```
+    ```js
+    function baseCharge(usage) {
+        if (usage < 0) return usd(0);
+        const amount =
+            bottomBand(usage) * 0.03
+            + withinBand(usage, 100, 200) * 0.05
+            + topBand(usage) * 0.07;
+        return usd(amount);
+    }
+    
+    function withinBand(usage, bottom, top) {
+        return usage > bottom ? Math.min(usage, 200) - bottom : 0;
+    }
+    ```
+    ```js
+    function baseCharge(usage) {
+        if (usage < 0) return usd(0);
+        const amount =
+            withinBand(usage, 0, 100) * 0.03
+            + withinBand(usage, 100, 200) * 0.05
+            + withinBand(usage, 200, Infinity) * 0.07;
+        return usd(amount);
+    }
+    ```
+    
 ## Remove Flag Argument
+
+![](../Images/Refactor/11-remove-flag-argument.jpg)
+
+* Motivation
+
+    I dislike flag arguments because they complicate the process of understanding what function calls are available and how to call them. My first route into an API is usually the list of available functions, and flag arguments hide the differences in the function calls that are available. Once I select a function, I have to figure out what values are available for the flag arguments. Boolean flags are even worse since they don’t convey their meaning to the reader—in a function call, I can’t figure out what true means. It’s clearer to provide an explicit function for the task I want to do.
+    
+* Example
+    ```js
+    ```
+    ```js
+    ```
 
 ## Preserve Whole Object
 
