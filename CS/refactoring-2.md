@@ -4784,7 +4784,7 @@ The last two refactorings address the difficulty of breaking down a particularly
     }
     ```
     ```js
-    // 4. Inline Function
+    // 5. Inline Function
     function charge(customer, usage, provider) {
         const baseCharge = customer.baseRate * usage;
         return baseCharge + provider.connectionCharge;
@@ -4793,7 +4793,40 @@ The last two refactorings address the difficulty of breaking down a particularly
 
 # 12 Dealing with Inheritance
 
+Features need to move up or down the inheritance hierarchy: `Pull Up Method`, `Pull Up Field`, `Pull Up Constructor Body`, `Push Down Method`, and `Push Down Field`. I can add and remove classes from the hierarchy with `Extract Superclass`, `Remove Subclass`, and `Collapse Hierarchy`. I may want to add a subclass to replace a field that I’m using to trigger different behavior based on its value; I do this with `Replace Type Code with Subclasses`.
+
+I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to turn inheritance into delegation.
+
 ## Pull Up Method
+
+![](../Images/Refactor/12-pull-up-method.jpg)
+
+* Motivation
+
+    Eliminating duplicate code is important. Whenever there is duplication, there is risk that an alteration to one copy will not be made to the other. Usually, it is difficult to find the duplicates.
+
+    I see two methods in different classes that can be parameterized in such a way that they end up as essentially the same method. In that case, the smallest step is for me to apply `Parameterize Function separately` and then `Pull Up Method`.
+
+    The most awkward complication with `Pull Up Method`is if the body of the method refers to features that are on the subclass but not on the superclass. When that happens, I need to use `Pull Up Field` and `Pull Up Method` on those elements first.
+
+    If I have two methods with a similar overall flow, but differing in details, I’ll consider the `Form Template Method`.
+
+* Mechanics
+    1. Inspect methods to ensure they are identical.
+        * If they do the same thing, but are not identical, refactor them until they have identical bodies.
+    2. Check that all method calls and field references inside the method body refer to features that can be called from the superclass.
+    3. If the methods have different signatures, use Change `Function Declaration` to get them to the one you want to use on the superclass.
+    4. Create a new method in the superclass. Copy the body of one of the methods over to it.
+    5. Run static checks.
+    6. Delete one subclass method.
+    7. Test.
+    8. Keep deleting subclass methods until they are all gone.
+
+## Pull Up Field
+
+![](../Images/Refactor/12-pull-up-field.jpg)
+
+
 
 * Exmaple
     ```js
@@ -4806,22 +4839,820 @@ The last two refactorings address the difficulty of breaking down a particularly
     ```
     ```js
     ```
-## Pull Up Field
 
 ## Pull Up Constructor Body
 
+![](../Images/Refactor/12-pull-up-constructor-body.jpg)
+
+* Mechanics
+    1. Define a superclass constructor, if one doesn’t already exist. Ensure it’s called by subclass constructors.
+    2. Use `Slide Statements` to move any common statements to just after the super call.
+    3. Remove the common code from each subclass and put it in the superclass. Add to the super call any constructor parameters referenced in the common code.
+    4. Test.
+    5. If there is any common code that cannot move to the start of the constructor, use `Extract Function` followed by `Pull Up Method`.
+
+* Example
+    ```js
+    class Employee {
+        constructor (name) {...}
+
+        get isPrivileged() {...}
+
+        assignCar() {...}
+    }
+
+    class Manager extends Employee {
+        constructor(name, grade) {
+            super(name);
+            this._grade = grade;
+            if (this.isPrivileged) this.assignCar(); // every subclass does this
+        }
+
+        get isPrivileged() {
+            return this._grade > 4;
+        }
+    }
+    ```
+    isPrivileged can’t be made until after the grade field is assigned, and that can only be done in the subclass.
+    ```js
+    // Extract Function
+    class Manager extends Employee {
+        constructor(name, grade) {
+            super(name);
+            this._grade = grade;
+            this.finishConstruction();
+        }
+
+        finishConstruction() {
+            if (this.isPrivileged) this.assignCar();
+        }
+    }
+    ```
+    ```js
+    // Pull Up Method to move it to the superclass
+    class Employee {
+        constructor (name) {...}
+
+        get isPrivileged() {...}
+
+        assignCar() {...}
+
+        finishConstruction() {
+            if (this.isPrivileged) this.assignCar();
+        }
+    }
+    ```
+
 ## Push Down Method
+
+![](../Images/Refactor/12-push-down-method.jpg)
+
+* Motivation
+
+    If a method is only relevant to one subclass (or a small proportion of subclasses), removing it from the superclass and putting it only on the subclass(es) makes that clearer. I can only do this refactoring if the caller knows it’s working with a particular subclass—otherwise, I should use `Replace Conditional with Polymorphism` with some placebo behavior on the superclass.
 
 ## Push Down Field
 
+![](../Images/Refactor/12-push-down-field.jpg)
+
 ## Replace Type Code with Subclasses
+
+![](../Images/Refactor/12-replace-type-code-with-subclass.jpg)
+
+* Motivation
+
+    Software systems often need to represent different kinds of a similar thing. My first tool for handling this is some kind of type code field—depending on the language, that might be an enum, symbol, string, or number. Often, this type code will come from an external service that provides me with the data I’m working on.
+
+    * There are a couple of situations where I could do with something more, and that something more are subclasses. There are two things that are particularly enticing about subclasses.
+        1. they allow me to use polymorphism to handle conditional logic. I find this most helpful when I have several functions that invoke different behavior depending on the value of the type code. With subclasses, I can apply `Replace Conditional with Polymorphism` to these functions.
+        2. I have fields or methods that are only valid for particular values of a type code, such as a sales quota that’s only applicable to the “salesman” type code
+
+* Mechanics
+    1. Self-encapsulate the type code field.
+    2. Pick one type code value. Create a subclass for that type code. Override the type code getter to return the literal type code value.
+    3. Create selector logic to map from the type code parameter to the new subclass.
+        * With direct inheritance, use `Replace Constructor with Factory Function` and put the selector logic in the factory. With indirect inheritance, the selector logic may stay in the constructor.
+    4. Test.
+    5. Repeat creating the subclass and adding to the selector logic for each type code value. Test after each change.
+    6. Remove the type code field.
+    7. Test.
+    8. Use `Push Down Method` and `Replace Conditional with Polymorphism` on any methods that use the type code accessors. Once all are replaced, you can remove the type code accessors.Mechanics
+
+* Example
+    ```js
+    class Employee {
+        constructor(name, type){
+            this.validateType(type);
+            this._name = name;
+            this._type = type;
+        }
+        validateType(arg) {
+            if (!["engineer", "manager", "salesman"].includes(arg))
+                throw new Error(`Employee cannot be of type ${arg}`);
+            }
+            toString() {return `${this._name} (${this._type})`;
+        }
+    }
+    ```
+    ```js
+    // 1. Encapsulate Variable
+    class Employee {
+        get type() {return this._type;}
+        toString() {return `${this._name} (${this.type})`;}
+    }
+    ```
+    ```js
+    // 2. create subclasses
+    class Engineer extends Employee {
+        get type() {return "engineer";}
+    }
+    ```
+    ```js
+    // 3. Replace Constructor with Factory Function
+    function createEmployee(name, type) {
+        return new Employee(name, type);
+    }
+
+    function createEmployee(name, type) {
+        switch (type) {
+            case "engineer": return new Engineer(name, type);
+            case "salesman": return new Salesman(name, type);
+            case "manager":  return new Manager (name, type);
+        }
+        return new Employee(name, type);
+    }
+    ```
+    ```js
+    // 6. Remove the type code field.
+    class Employee {
+        constructor(name){
+            this._name = name;
+        }
+
+        function createEmployee(name, type) {
+            switch (type) {
+                case "engineer": return new Engineer(name);
+                case "salesman": return new Salesman(name);
+                case "manager":  return new Manager (name);
+                default: throw new Error(`Employee cannot be of type ${type}`);
+            }
+        }
+    }
+    ```
+
+* Example: Using Indirect Inheritance
+    ```js
+    class Employee {
+        constructor(name, type){
+            this.validateType(type);
+            this._name = name;
+            this._type = type;
+        }
+        validateType(arg) {
+            if (!["engineer", "manager", "salesman"].includes(arg))
+                throw new Error(`Employee cannot be of type ${arg}`);
+        }
+        get type()    {return this._type;}
+        set type(arg) {this._type = arg;}
+
+        get capitalizedType() {
+            return this._type.charAt(0).toUpperCase() + this._type.substr(1).toLowerCase();
+        }
+        toString() {
+            return `${this._name} (${this.capitalizedType})`;
+        }
+    }
+    ```
+    ```js
+    // Replace Primitive with Object
+    class EmployeeType {
+        constructor(aString) {
+            this._value = aString;
+        }
+        toString() {return this._value;}
+    }
+    ```
+    ```js
+    // Encapsulte type code
+    class Employee {
+        set type(arg) {this._type = Employee.createEmployeeType(arg);}
+        toString() {
+            return `${this._name} (${this.type.capitalizedName})`;
+        }
+
+        static createEmployeeType(aString) {
+            switch(aString) {
+            case "engineer": return new Engineer();
+            case "manager": return new Manager ();
+            case "salesman": return new Salesman();
+            default: throw new Error(`Employee cannot be of type ${aString}`);
+            }
+        }
+
+        class EmployeeType {
+        }
+        class Engineer extends EmployeeType {
+            toString() {return "engineer";}
+        }
+        class Manager extends EmployeeType {
+            toString() {return "manager";}
+        }
+        class Salesman extends EmployeeType {
+            toString() {return "salesman";}
+        }
+    }
+
+    ```
+    ```js
+    // Move Function
+    class Employee {
+        constructor(name, type){
+            this._name = name;
+            this.type = Employee.createEmployeeType(arg);
+        }
+
+        toString() {
+            return `${this._name} (${this.type.capitalizedName})`;
+        }
+
+        static createEmployeeType(aString) {
+            switch(aString) {
+            case "engineer": return new Engineer();
+            case "manager": return new Manager ();
+            case "salesman": return new Salesman();
+            default: throw new Error(`Employee cannot be of type ${aString}`);
+            }
+        }
+
+        class EmployeeType {
+            get capitalizedName() {
+                return this.toString().charAt(0).toUpperCase()
+                    + this.toString().substr(1).toLowerCase();
+            }
+        }
+
+        class Engineer extends EmployeeType {
+            toString() {return "engineer";}
+        }
+
+        class Manager extends EmployeeType {
+            toString() {return "manager";}
+        }
+
+        class Salesman extends EmployeeType {
+            toString() {return "salesman";}
+        }
+    }
+    ```
 
 ## Remove Subclass
 
+![](../Images/Refactor/12-remove-subclass.jpg)
+
+* Motivation
+
+    Subclasses are useful. They support variations in data structure and polymorphic behavior. They are a good way to program by difference. But as a software system evolves, subclasses can lose their value as the variations they support are moved to other places or removed altogether. Sometimes, subclasses are added in anticipation of features that never end up being built, or end up being built in a way that doesn’t need the subclasses.
+
+* Mechanics
+    1. Use `Replace Constructor with Factory Function` on the subclass constructor.
+        * If the clients of the constructors use a data field to decide which subclass to create, put that decision logic into a superclass factory method.
+    2. If any code tests against the subclass’s types, use `Extract Function` on the type test and `Move Function` to move it to the superclass. Test after each change.
+    3. Create a field to represent the subclass type.
+    4. Change the methods that refer to the subclass to use the new type field.
+    5. Delete the subclass.
+    6. Test.
+
+* Example
+    ```js
+    class Person {
+        constructor(name) {
+            this._name = name;
+        }
+        get name()    {return this._name;}
+        get genderCode() {return "X";}
+
+        class Male extends Person {
+            get genderCode() {return "M";}
+        }
+
+        class Female extends Person {
+            get genderCode() {return "F";}
+        }
+    }
+    ```
+    ```js
+    // 1. Replace Constructor with Factory Function
+    function createPerson(name) {
+        return new Person(name);
+    }
+    function createMale(name) {
+        return new Male(name);
+    }
+    function createFemale(name) {
+        return new Female(name);
+    }
+    ```
+    ```js
+    // 2.  Extract Function
+    function loadFromInput(data) {
+        const result = [];
+        data.forEach(aRecord => {
+            let p;
+            switch (aRecord.gender) {
+            case 'M': p = new Male(aRecord.name); break;
+            case 'F': p = new Female(aRecord.name); break;
+            default: p = new Person(aRecord.name);
+            }
+            result.push(p);
+        });
+        return result;
+    }
+
+    //
+    function createPerson(aRecord) {
+        let p;
+        switch (aRecord.gender) {
+            case 'M': p = new Male(aRecord.name); break;
+            case 'F': p = new Female(aRecord.name); break;
+            default: p = new Person(aRecord.name);
+        }
+        return p;
+    }
+
+    function loadFromInput(data) {
+        const result = [];
+        data.forEach(aRecord => {
+            result.push(createPerson(aRecord));
+        });
+        return result;
+    }
+    ```
+    ```js
+    // inline function
+    function createPerson(aRecord) {
+        switch (aRecord.gender) {
+            case 'M': return new Male  (aRecord.name);
+            case 'F': return new Female(aRecord.name);
+            default:  return new Person(aRecord.name);
+        }
+    }
+    ```
+    ```js
+    //  Replace Loop with Pipeline
+    function loadFromInput(data) {
+        return data.map(aRecord => createPerson(aRecord));
+    }
+    ```
+    ```js
+    // Extract Function on the type check
+    // client
+    const numberOfMales = people.filter(p => isMale(p)).length;
+
+    function isMale(aPerson) {return aPerson instanceof Male;}
+
+    // move function to Person
+    class Person {
+        get isMale() {return this instanceof Male;}
+    }
+
+    // client
+    const numberOfMales = people.filter(p => p.isMale).length;
+    ```
+    ```js
+    // 3. add a field _genderCode to represent the difference between the subclasses
+    class Person {
+        constructor(name, genderCode) {
+            this._name = name;
+            this._genderCode = genderCode || "X";
+        }
+
+        get genderCode() {return this._genderCode;}
+    }
+    ```
+    I then take the male case and fold its logic into the superclass. This involves modifying the factory to return a Person and modifying any instanceof tests to use the gender code field.
+    ```js
+    class Person {
+        constructor(name, genderCode) {
+            this._name = name;
+            this._genderCode = genderCode;
+        }
+
+        get name()       {return this._name;}
+        get genderCode() {return this._genderCode;}
+
+        // factory method
+        static function createPerson(aRecord) {
+            switch (aRecord.gender) {
+                case 'M': return new Person(aRecord.name, "M");
+                case 'F': return new Person(aRecord.name, "F");
+                default:  return new Person(aRecord.name, "X");
+            }
+        }
+    }
+    ```
+
 ## Extract Superclass
+
+![](../Images/Refactor/12-extract-superclass.jpg)
+
+* Motivation
+
+    If I see two classes doing similar things, I can take advantage of the basic mechanism of inheritance to pull their similarities together into a superclass. I can use `Pull Up Field` to move common data into the superclass, and `Pull Up Method` to move the common behavior.
+
+* Mechanics
+    1. Create an empty superclass. Make the original classes its subclasses.
+        * If needed, use `Change Function Declaration` on the constructors.
+    2. Test.
+    3. One by one, use `Pull Up Constructor Body`, `Pull Up Method`, and P`ull Up Field` to move common elements to the superclass.
+    4. Examine remaining methods on the subclasses. See if there are common parts. If so, use `Extract Function` followed by `Pull Up Method`.
+    5. Check clients of the original classes. Consider adjusting them to use the superclass interface.
+
+* Example
+    ```js
+    class Employee {
+        constructor(name, id, monthlyCost) {
+            this._id = id;
+            this._name = name;
+            this._monthlyCost = monthlyCost;
+        }
+        get monthlyCost() {return this._monthlyCost;}
+        get name() {return this._name;}
+        get id() {return this._id;}
+
+        get annualCost() {
+            return this.monthlyCost * 12;
+        }
+    }
+
+    class Department {
+        constructor(name, staff){
+            this._name = name;
+            this._staff = staff;
+        }
+        get staff() {return this._staff.slice();}
+        get name() {return this._name;}
+
+        get totalMonthlyCost() {
+            return this.staff
+                .map(e => e.monthlyCost)
+                .reduce((sum, cost) => sum + cost);
+        }
+        get headCount() {
+            return this.staff.length;
+        }
+        get totalAnnualCost() {
+            return this.totalMonthlyCost * 12;
+        }
+    }
+    ```
+    ```js
+    // 1. creating an empty superclass
+    class Party {}
+
+    class Employee extends Party {
+        constructor(name, id, monthlyCost) {
+            super();
+            this._id = id;
+            this._name = name;
+            this._monthlyCost = monthlyCost;
+        }
+        // rest of class...
+    }
+
+    class Department extends Party {
+        constructor(name, staff){
+            super();
+            this._name = name;
+            this._staff = staff;
+        }
+        // rest of class...
+    }
+    ```
+    ```js
+    // 3. Pull up constructor body, methods, fields
+    class Party {
+        constructor(name){
+            this._name = name;
+        }
+
+        get name() {return this._name;}
+
+        get annualCost() {
+            return this.monthlyCost * 12;
+        }
+    }
+
+    class Employee extends Party {
+        constructor(name, id, monthlyCost) {
+            super(name);
+            this._id = id;
+            this._monthlyCost = monthlyCost;
+        }
+        get id() {return this._id;}
+        get monthlyCost() {return this._monthlyCost;}
+    }
+
+    class Department extends Party {
+        constructor(name, staff) {
+            super(name);
+            this._staff = staff;
+        }
+        get staff() {return this._staff.slice();}
+
+        get monthlyCost() {
+            return this.staff
+                .map(e => e.monthlyCost)
+                .reduce((sum, cost) => sum + cost);
+        }
+
+        get headCount() {
+            return this.staff.length;
+        }
+    }
+    ```
 
 ## Collapse Hierarchy
 
+![](../Images/Refactor/12-collapse-hierarchy.jpg)
+
+* Motivation
+
+    When I’m refactoring a class hierarchy, I’m often pulling and pushing features around. As the hierarchy evolves, I sometimes find that a class and its parent are no longer different enough to be worth keeping separate. At this point, I’ll merge them together.
+
+* Mechanics
+    1. Choose which one to remove.
+    2. I choose based on which name makes most sense in the future. If neither name is best, I’ll pick one arbitrarily.
+    3. Use `Pull Up Field`, `Push Down Field`, `Pull Up Method`, and `Push Down Method` to move all the elements into a single class.
+    4. Adjust any references to the victim to change them to the class that will stay.
+    5. Remove the empty class.
+    6. Test.
+
 ## Replace Subclass with Delegate
+![](../Images/Refactor/12-replace-subclass-with-delegate.jpg)
+
+* Motivation
+
+    If I have some objects whose behavior varies from category to category, the natural mechanism to express this is inheritance. I put all the common data and behavior in the superclass, and let each subclass add and override features as needed. Object-oriented languages make this simple to implement and thus a familiar mechanism.
+
+    * But inheritance has its downsides:
+        1. It’s a card that can only be played once. If I have more than one reason to vary something, I can only use inheritance for a single axis of variation. If I want to vary behavior of people by their age category and by their income level, I can either have subclasses for young and senior, or for well-off and poor—I can’t have both.
+        2. Inheritance introduces a very close relationship between classes. Any change I want to make to the parent can easily break children, so I have to be careful and understand how children derive from the superclass. This problem is made worse when the logic of the two classes resides in different modules and is looked after by different teams.
+
+    Delegation handles both of these problems. I can delegate to many different classes for different reasons. Delegation is a regular relationship between objects—so I can have a clear interface to work with, which is much less coupling than subclassing. It’s therefore common to run into the problems with subclassing and apply Replace Subclass with Delegate.
+
+    There is a popular principle: “Favor object composition over class inheritance” (where composition is effectively the same as delegation).
+
+    Inheritance is a valuable mechanism that does the job most of the time without problems. So I reach for it first, and move onto delegation when it starts to rub badly.
+
+    Those who are familiar with the Gang of Four book may find it helpful to think of this refactoring as replacing subclasses with the State or Strategy patterns.
+
+* Mechanics
+    1. If there are many callers for the constructors, apply `Replace Constructor with Factory Function`.
+    2. Create an empty class for the delegate. Its constructor should take any subclass-specific data as well as, usually, a back-reference to the superclass.
+    3. Add a field to the superclass to hold the delegate.
+    4. Modify the creation of the subclass so that it initializes the delegate field with an instance of the delegate.
+        * This can be done in the factory function, or in the constructor if the constructor can reliably tell whether to create the correct delegate.
+    5. Choose a subclass method to move to the delegate class.
+    6. Use `Move Function` to move it to the delegate class. Don’t remove the source’s delegating code.
+         * If the method needs elements that should move to the delegate, move them. If it needs elements that should stay in the superclass, add a field to the delegate that refers to the superclass.
+    7. If the source method has callers outside the class, move the source’s delegating code from the subclass to the superclass, guarding it with a check for the presence of the delegate. If not, apply `Remove Dead Code`.
+        * If there’s more than one subclass, and you start duplicating code within them, use `Extract Superclass`. In this case, any delegating methods on the source super-class no longer need a guard if the default behavior is moved to the delegate superclass.
+    8. Test.
+    9. Repeat until all the methods of the subclass are moved.
+    10. Find all callers of the subclasses’s constructor and change them to use the superclass constructor.
+    11. Test.
+    12. Use `Remove Dead Code` on the subclass.
+
+* Example
+    ```js
+    class Booking {
+        constructor(show, date) {
+            this._show = show;
+            this._date = date;
+        }
+
+        get hasTalkback() {
+            return this._show.hasOwnProperty('talkback') && !this.isPeakDay;
+        }
+
+        get basePrice() {
+            let result = this._show.price;
+            if (this.isPeakDay) result += Math.round(result * 0.15);
+            return result;
+        }
+    }
+
+    class PremiumBooking extends Booking {
+        constructor(show, date, extras) {
+            super(show, date);
+            this._extras = extras;
+        }
+
+        get hasTalkback() {
+            return this._show.hasOwnProperty('talkback');
+        }
+
+        get basePrice() {
+            return Math.round(super.basePrice + this._extras.premiumFee);
+        }
+
+        // only for subclass
+        get hasDinner() {
+            return this._extras.hasOwnProperty('dinner') && !this.isPeakDay;
+        }
+    }
+    ```
+    Most of the time I can modify the base class without having to understand subclasses, there are occasions where such mindful ignorance of the subclasses will lead me to breaking a subclass by modifying the superclass.
+
+    Inheritance is a tool that can only be used once—so if I have another reason to use inheritance, and I think it will benefit me more than the premium booking subclass, I’ll need to handle premium bookings a different way. Also, I may need to change from the default booking to the premium booking dynamically—i.e., support a method like aBooking.bePremium(). In some cases, I can avoid this by creating a whole new object (a common example is where an HTTP request loads new data from the server). But sometimes, I need to modify a data structure and not rebuild it from scratch, and it is difficult to just replace a single booking that’s referred to from many different places. In such situations, it can be useful to allow a booking to switch from default to premium and back again.
+
+    ```js
+    // 1. Replace Constructor with Factory Function
+    function createBooking(show, date) {
+        return new Booking(show, date);
+    }
+    function createPremiumBooking(show, date, extras) {
+        return new PremiumBooking (show, date, extras);
+    }
+    ```
+    ```js
+    // 2. Create an empty class for the delegate
+    class PremiumBookingDelegate {
+        constructor(hostBooking, extras) {
+            this._host = hostBooking;
+            this._extras = extras;
+        }
+    }
+    // 3. Add a field to the superclass to hold the delegate
+    class Booking {
+        _bePremium(extras) {
+            this._premiumDelegate = new PremiumBookingDelegate(this, extras);
+        }
+    }
+
+    // 4. Modify the subclass so that it initializes the delegate field with an instance of the delegate.
+    function createPremiumBooking(show, date, extras) {
+        const result = new PremiumBooking (show, date, extras);
+        result._bePremium(extras);
+        return result;
+    }
+
+    ```
+    ```js
+    // 5.1 Choose `hasTalkback` subclass method to move to the delegate class.
+    // 6. Use `Move Function` to move it to the delegate class.
+    class PremiumBookingDelegate {
+        constructor(hostBooking, extras) {
+            this._host = hostBooking;
+            this._extras = extras;
+        }
+
+        get hasTalkback() {
+            return this._host._show.hasOwnProperty('talkback');
+        }
+    }
+
+    class Booking {
+        get hasTalkback() {
+            return (this._premiumDelegate)
+                ? this._premiumDelegate.hasTalkback
+                : this._show.hasOwnProperty('talkback') && !this.isPeakDay;
+        }
+    }
+    ```
+    When I move the subclass code to the delegate, I’ll need to call the parent case—but I can’t just call `this._host._basePrice` without getting into an endless recursion.
+
+    I have a couple of options here. One is to apply `Extract Function` on the base calculation to allow me to separate the dispatch logic from price calculation.
+    ```js
+    // 5.2 Choose `hasTalkback` subclass method to move to the delegate class.
+    class Booking {
+        get basePrice() {
+            return (this._premiumDelegate)
+                ? this._premiumDelegate.basePrice
+                : this._privateBasePrice;
+        }
+
+        get _privateBasePrice() {
+            let result = this._show.price;
+            if (this.isPeakDay) result += Math.round(result * 0.15);
+            return result;
+        }
+    }
+
+    class PremiumBookingDelegate {
+        get basePrice() {
+            return Math.round(this._host._privateBasePrice + this._extras.premiumFee);
+        }
+    }
+
+    // recast the delegate’s method as an extension of the base method.
+    class Booking {
+        get basePrice() {
+            let result = this._show.price;
+            if (this.isPeakDay) result += Math.round(result * 0.15);
+            return (this._premiumDelegate)
+                ? this._premiumDelegate.extendBasePrice(result)
+                : result;
+        }
+    }
+
+    class PremiumBookingDelegate {
+        extendBasePrice(base) {
+            return Math.round(base + this._extras.premiumFee);
+        }
+    }
+    ```
+    ```js
+    // 5.2 Choose `hasDinner` subclass method to move to the delegate class.
+    class PremiumBookingDelegate {
+        get hasDinner() {
+            return this._extras.hasOwnProperty('dinner') && !this._host.isPeakDay;
+        }
+    }
+    class Booking {
+        get hasDinner() {
+            return (this._premiumDelegate)
+                ? this._premiumDelegate.hasDinner
+                : undefined;
+        }
+    }
+    ```
+    ```js
+    // 9. Repeat until all the methods of the subclass are moved
+    // 10. Find all callers of the subclasses’s constructor and change them to use the superclass constructor.
+    // 11. Delete dead code subclass
+    function createPremiumBooking(show, date, extras) {
+        const result = new PremiumBooking (show, date, extras);
+        result._bePremium(extras);
+        return result;
+    }
+    ```
+
+* Example: Replacing a Hierarchy
+    ```js
+    function createBird(data) {
+        switch (data.type) {
+            case 'EuropeanSwallow':         return new EuropeanSwallow(data);
+            case 'AfricanSwallow':          return new AfricanSwallow(data);
+            case 'NorweigianBlueParrot':    return new NorwegianBlueParrot(data);
+            default:                        return new Bird(data);
+        }
+    }
+
+    class Bird {
+        constructor(data) {
+            this._name = data.name;
+            this._plumage = data.plumage;
+        }
+        get name()    {return this._name;}
+
+        get plumage() {
+            return this._plumage || "average";
+        }
+        get airSpeedVelocity() {return null;}
+    }
+
+    class EuropeanSwallow extends Bird {
+        get airSpeedVelocity() {return 35;}
+    }
+
+    class AfricanSwallow extends Bird {
+        constructor(data) {
+            super (data);
+            this._numberOfCoconuts = data.numberOfCoconuts;
+        }
+        get airSpeedVelocity() {
+            return 40 - 2 * this._numberOfCoconuts;
+        }
+    }
+
+    class NorwegianBlueParrot extends Bird {
+        constructor(data) {
+            super (data);
+            this._voltage = data.voltage;
+            this._isNailed = data.isNailed;
+        }
+
+        get plumage() {
+            if (this._voltage > 100) return "scorched";
+            else return this._plumage || "beautiful";
+        }
+        get airSpeedVelocity() {
+            return (this._isNailed) ? 0 : 10 + this._voltage / 10;
+        }
+    }
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
 
 ## Replace Superclass with Delegate
+
+![](../Images/Refactor/12-replace-superclass-with-delegate.jpg)
