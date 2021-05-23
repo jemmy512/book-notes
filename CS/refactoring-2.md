@@ -3976,7 +3976,7 @@ The last two refactorings address the difficulty of breaking down a particularly
 * Motivation
 
     It is a good idea to clearly signal the difference between functions with side effects and those without. A good rule to follow is that any function that returns a value should not have observable side effects—the command-query separation.
-    
+
     Note that I use the **phrase observable side effects**. A common optimization is to cache the value of a query in a field so that repeated calls go quicker. Although this changes the state of the object with the cache, the change is not observable. Any sequence of queries will always return the same results for each query.
 
 * Mechanics
@@ -4037,7 +4037,7 @@ The last two refactorings address the difficulty of breaking down a particularly
     ```js
     // 4. Find each call of the original method
     const found = alertForMiscreant(people);
-    
+
     // changed to
     const found = findMiscreant(people);
     alertForMiscreant(people);
@@ -4061,7 +4061,7 @@ The last two refactorings address the difficulty of breaking down a particularly
     Now I have a lot of duplication between the original modifier and the new query, so I can use `Substitute Algorithm` so that the modifier uses the query.
     ```js
     function alertForMiscreant (people) {
-        if (findMiscreant(people) !== "") 
+        if (findMiscreant(people) !== "")
             setOffAlarms();
     }
     ```
@@ -4081,7 +4081,7 @@ The last two refactorings address the difficulty of breaking down a particularly
     4. Test.
     5. Change the body of the function to use the new parameters. Test after each change.
     6. For each similar function, replace the call with a call to the parameterized function. Test after each one.
-    
+
 * Example
     ```js
     function tenPercentRaise(aPerson) {
@@ -4127,7 +4127,7 @@ The last two refactorings address the difficulty of breaking down a particularly
             + topBand(usage) * 0.07;
         return usd(amount);
     }
-    
+
     function withinBand(usage, bottom, top) {
         return usage > bottom ? Math.min(usage, 200) - bottom : 0;
     }
@@ -4142,7 +4142,7 @@ The last two refactorings address the difficulty of breaking down a particularly
         return usd(amount);
     }
     ```
-    
+
 ## Remove Flag Argument
 
 ![](../Images/Refactor/11-remove-flag-argument.jpg)
@@ -4150,31 +4150,662 @@ The last two refactorings address the difficulty of breaking down a particularly
 * Motivation
 
     I dislike flag arguments because they complicate the process of understanding what function calls are available and how to call them. My first route into an API is usually the list of available functions, and flag arguments hide the differences in the function calls that are available. Once I select a function, I have to figure out what values are available for the flag arguments. Boolean flags are even worse since they don’t convey their meaning to the reader—in a function call, I can’t figure out what true means. It’s clearer to provide an explicit function for the task I want to do.
-    
+
+    Removing flag arguments doesn’t just make the code clearer—it also helps my tooling. Code analysis tools can now more easily see the difference between calling the premium logic and calling regular logic.
+
+    Flag arguments can have a place if there’s more than one of them in the function, since otherwise I would need explicit functions for every combination of their values. But that’s also a signal of a function doing too much, and I should look for a way to create simpler functions that I can compose for this logic.
+
+* Mechanics
+    1. Create an explicit function for each value of the parameter.
+        * If the main function has a clear dispatch conditional, use `Decompose Conditional` to create the explicit functions. Otherwise, create wrapping functions.
+    2. For each caller that uses a literal value for the parameter, replace it with a call to the explicit function.
+
 * Example
     ```js
+    function deliveryDate(anOrder, isRush) {
+        if (isRush) {
+            let deliveryTime;
+            if (["MA", "CT"]     .includes(anOrder.deliveryState)) deliveryTime = 1;
+            else if (["NY", "NH"].includes(anOrder.deliveryState)) deliveryTime = 2;
+            else deliveryTime = 3;
+            return anOrder.placedOn.plusDays(1 + deliveryTime);
+        }
+        else {
+            let deliveryTime;
+            if (["MA", "CT", "NY"].includes(anOrder.deliveryState)) deliveryTime = 2;
+            else if (["ME", "NH"] .includes(anOrder.deliveryState)) deliveryTime = 3;
+            else deliveryTime = 4;
+            return anOrder.placedOn.plusDays(2 + deliveryTime);
+        }
+    }
     ```
     ```js
+    // 1. Decompose Conditional
+    function deliveryDate(anOrder, isRush) {
+        if (isRush) return rushDeliveryDate(anOrder);
+        else        return regularDeliveryDate(anOrder);
+    }
+    function rushDeliveryDate(anOrder) {
+        let deliveryTime;
+        if (["MA", "CT"]     .includes(anOrder.deliveryState)) deliveryTime = 1;
+        else if (["NY", "NH"].includes(anOrder.deliveryState)) deliveryTime = 2;
+        else deliveryTime = 3;
+        return anOrder.placedOn.plusDays(1 + deliveryTime);
+    }
+    function regularDeliveryDate(anOrder) {
+        let deliveryTime;
+        if (["MA", "CT", "NY"].includes(anOrder.deliveryState)) deliveryTime = 2;
+        else if (["ME", "NH"] .includes(anOrder.deliveryState)) deliveryTime = 3;
+        else deliveryTime = 4;
+        return anOrder.placedOn.plusDays(2 + deliveryTime);
+    }
+    ```
+
+* Example
+    ```js
+    function deliveryDate(anOrder, isRush) {
+        let result;
+        let deliveryTime;
+        if (anOrder.deliveryState === "MA" || anOrder.deliveryState === "CT")
+            deliveryTime = isRush? 1 : 2;
+        else if (anOrder.deliveryState === "NY" || anOrder.deliveryState === "NH") {
+            deliveryTime = 2;
+            if (anOrder.deliveryState === "NH" && !isRush)
+            deliveryTime = 3;
+        }
+        else if (isRush)
+            deliveryTime = 3;
+        else if (anOrder.deliveryState === "ME")
+            deliveryTime = 3;
+        else
+            deliveryTime = 4;
+        result = anOrder.placedOn.plusDays(2 + deliveryTime);
+        if (isRush) result = result.minusDays(1);
+        return result;
+    }
+    ```
+    In this case, teasing out isRush into a top-level dispatch conditional is likely more work than I fancy. So instead, I can layer functions over the deliveryDate:
+    ```js
+    function rushDeliveryDate   (anOrder) {return deliveryDate(anOrder, true);}
+    function regularDeliveryDate(anOrder) {return deliveryDate(anOrder, false);}
     ```
 
 ## Preserve Whole Object
 
+![](../Images/Refactor/11-preserve-whole-object.jpg)
+
+* Motivation
+
+    If I see code that derives a couple of values from a record and then passes these values into a function, I like to replace those values with the whole record itself, letting the function body derive the values it needs.
+
+    1. Passing the whole record handles change better should the called function need more data from the whole in the future—that change would not require me to alter the parameter list.
+    2. It also reduces the size of the parameter list, which usually makes the function call easier to understand.
+    3. If many functions are called with the parts, they often duplicate the logic that manipulates these parts—logic that can often be moved to the whole.
+
+    The main reason I wouldn’t do this is if I don’t want the called function to have a dependency on the whole—which typically occurs when they are in different modules.
+
+* Mechanics
+    1. Create an empty function with the desired parameters.
+    2. Give the function an easily searchable name so it can be replaced at the end.
+    3. Fill the body of the new function with a call to the old function, mapping from the new parameters to the old ones.
+    4. Run static checks.
+    5. Adjust each caller to use the new function, testing after each change.
+    6. This may mean that some code that derives the parameter isn’t needed, so can fall to `Remove Dead Code`.
+    7. Once all original callers have been changed, use `Inline Function` on the original function.
+    8. Change the name of the new function and all its callers.
+
+* Example
+    ```js
+    const low = aRoom.daysTempRange.low;
+    const high = aRoom.daysTempRange.high;
+    if (!aPlan.withinRange(low, high))
+        alerts.push("room temperature went outside range");
+
+    class HeatingPlane {
+        withinRange(bottom, top) {
+            return (bottom >= this._temperatureRange.low) && (top <= this._temperatureRange.high);
+        }
+    }
+    ```
+    ```js
+    // 1. create a new function with desired parameters
+    // 2. naming the new function
+    class HeatingPlan {
+        xxNEWwithinRange(aNumberRange) {
+        }
+
+        withinRange(bottom, top) {
+            return (bottom >= this._temperatureRange.low) && (top <= this._temperatureRange.high);
+        }
+    }
+    ```
+    ```js
+    // 3. fill the body of the new function, mapping new and old parameters
+    class HeatingPlan {
+        xxNEWwithinRange(aNumberRange) {
+            return this.withinRange(aNumberRange.low, aNumberRange.high);
+        }
+
+        withinRange(bottom, top) {
+            return (bottom >= this._temperatureRange.low) && (top <= this._temperatureRange.high);
+        }
+    }
+    ```
+    ```js
+    // 5. replace the callers wiht new function
+    // 6. remove dead code of the caller
+    // 7. inline new function
+    class HeatingPlan {
+        xxNEWwithinRange(aNumberRange) {
+            return (aNumberRange.low >= this._temperatureRange.low) &&
+                (aNumberRange.high <= this._temperatureRange.high);
+        }
+
+        withinRange(bottom, top) {
+            return (bottom >= this._temperatureRange.low) && (top <= this._temperatureRange.high);
+        }
+    }
+    ```
+    ```js
+    // 8. change the new function name, and remove the dead code
+    class HeatingPlan {
+        withinRange(aNumberRange) {
+            return (aNumberRange.low >= this._temperatureRange.low) &&
+                (aNumberRange.high <= this._temperatureRange.high);
+        }
+    }
+    ```
+
+* Example: A Variation to Create the New Function
+    ```js
+    const low = aRoom.daysTempRange.low;
+    const high = aRoom.daysTempRange.high;
+    if (!aPlan.withinRange(low, high))
+        alerts.push("room temperature went outside range");
+    ```
+    I want to rearrange the code so I can create the new function by using `Extract Function` on some existing code. The caller code isn’t quite there yet, but I can get there by using `Extract Variable` a few times.
+    ```js
+    // disentangle the call to the old function from the conditional.
+    const low = aRoom.daysTempRange.low;
+    const high = aRoom.daysTempRange.high;
+    const isWithinRange = aPlan.withinRange(low, high);
+    if (!isWithinRange)
+        alerts.push("room temperature went outside range");
+    ```
+    ```js
+    // extract input parameters
+    const tempRange = aRoom.daysTempRange;
+    const low = tempRange.low;
+    const high = tempRange.high;
+    const isWithinRange = aPlan.withinRange(low, high);
+    if (!isWithinRange)
+        alerts.push("room temperature went outside range");
+    ```
+    ```js
+    // extract function
+    const tempRange = aRoom.daysTempRange;
+    const isWithinRange = xxNEWwithinRange(aPlan, tempRange);
+    if (!isWithinRange)
+        alerts.push("room temperature went outside range");
+
+    function xxNEWwithinRange(aPlan, tempRange) {
+        const low = tempRange.low;
+        const high = tempRange.high;
+        const isWithinRange = aPlan.withinRange(low, high);
+        return isWithinRange;
+    }
+    ```
+    ```js
+    // move function
+    const tempRange = aRoom.daysTempRange;
+    const isWithinRange = aPlan.xxNEWwithinRange(tempRange);
+    if (!isWithinRange)
+        alerts.push("room temperature went outside range");
+    ```
+    ```js
+    class HeatingPlan {
+        xxNEWwithinRange(tempRange) {
+            const low = tempRange.low;
+            const high = tempRange.high;
+            const isWithinRange = this.withinRange(low, high);
+            return isWithinRange;
+        }
+    }
+    ```
+
 ## Replace Parameter with Query
+
+![](../Images/Refactor/11-replace-parameter-with-query.jpg)
+
+* Motivation
+
+    The parameter list to a function should summarize the points of variability of that function, indicating the primary ways in which that function may behave differently. As with any statement in code, it’s good to avoid any duplication, and it’s easier to understand if the parameter list is short.
+
+    By removing the parameter, I’m shifting the responsibility for determining the parameter value. When the parameter is present, determining its value is the caller’s responsibility; otherwise, that responsibility shifts to the function body.
+
+    The most common reason to avoid Replace Parameter with Query is if removing the parameter adds an unwanted dependency to the function body—forcing it to access a program element that I’d rather it remained ignorant of.
+
+    One thing to watch out for is if the function I’m looking at has referential transparency—that is, if I can be sure that it will behave the same way whenever it’s called with the same parameter values. Such functions are much easier to reason about and test, and I don’t want to alter them to lose that property. So I wouldn’t replace a parameter with an access to a mutable global variable.
+
+* Mechanics
+    1. If necessary, use `Extract Function` on the calculation of the parameter.
+    2. Replace references to the parameter in the function body with references to the expression that yields the parameter. Test after each change.
+    3. Use `Change Function Declaration` to remove the parameter.
+
+* Example
+    ```js
+    get finalPrice() {
+        const basePrice = this.quantity * this.itemPrice;
+        let discountLevel;
+        if (this.quantity > 100) discountLevel = 2;
+        else discountLevel = 1;
+        return this.discountedPrice(basePrice, discountLevel);
+    }
+
+    discountedPrice(basePrice, discountLevel) {
+        switch (discountLevel) {
+            case 1: return basePrice * 0.95;
+            case 2: return basePrice * 0.9;
+        }
+    }
+    ```
+    ```js
+    get finalPrice() {
+        const basePrice = this.quantity * this.itemPrice;
+        return this.discountedPrice(basePrice, this.discountLevel);
+    }
+
+    get discountLevel() {
+        return (this.quantity > 100) ? 2 : 1;
+    }
+    ```
+    ```js
+    get finalPrice() {
+        const basePrice = this.quantity * this.itemPrice;
+        return this.discountedPrice(basePrice);
+    }
+
+    discountedPrice(basePrice) {
+        switch (this.discountLevel) {
+            case 1: return basePrice * 0.95;
+            case 2: return basePrice * 0.9;
+        }
+    }
+    ```
 
 ## Replace Query with Parameter
 
+![](../Images/Refactor/11-replace-query-with-parameter.jpg)
+
+* Motivation
+    When looking through a function’s body, I sometimes see references to something in the function’s scope that I’m not happy with. This might be a reference to a global variable, or to an element in the same module that I intend to move away. To resolve this, I need to replace the internal reference with a parameter, shifting the responsibility of resolving the reference to the caller of the function.
+
+    Most of these cases are due to my wish to alter the dependency relationships in the code—to make the target function no longer dependent on the element I want to parameterize.
+
+    It’s easier to reason about a function that will always give the same result when called with same parameter values—this is called **referential transparency**. If a function accesses some element in its scope that isn’t referentially transparent, then the containing function also lacks referential transparency.
+
+    But Replace Query with Parameter isn’t just a bag of benefits. By moving a query to a parameter, I force my caller to figure out how to provide this value. This complicates life for callers of the functions, and my usual bias is to design interfaces that make life easier for their consumers. In the end, it boils down to allocation of responsibility around the program, and that’s a decision that’s neither easy nor immutable—which is why this refactoring (and its inverse) is one that I need to be very familiar with.
+
+* Mechanics
+    1. Use `Extract Variable` on the query code to separate it from the rest of the function body.
+    2. Apply `Extract Function` to the body code that isn’t the call to the query.
+    3. Give the new function an easily searchable name, for later renaming.
+    4. Use `Inline Variable` to get rid of the variable you just created.
+    5. Apply `Inline Function` to the original function.
+    6. Rename the new function to that of the original.
+
+* Example
+    ```js
+    class HeatingPlan {
+        get targetTemperature() {
+            if      (thermostat.selectedTemperature >  this._max) return this._max;
+            else if (thermostat.selectedTemperature <  this._min) return this._min;
+            else return thermostat.selectedTemperature;
+        }
+    }
+
+    // client
+    if      (thePlan.targetTemperature > thermostat.currentTemperature) setToHeat();
+    else if (thePlan.targetTemperature < thermostat.currentTemperature) setToCool();
+    else setOff();
+    ```
+    I might be more concerned about how the targetTemperature function has a dependency on a global thermostat object. I can break this dependency by moving it to a parameter.
+    ```js
+    // 1. Extract Variable
+    get targetTemperature() {
+        const selectedTemperature = thermostat.selectedTemperature;
+        if      (selectedTemperature >  this._max) return this._max;
+        else if (selectedTemperature <  this._min) return this._min;
+        else return selectedTemperature;
+    }
+    ```
+    ```js
+    // 2. Extract Function
+    get targetTemperature() {
+        const selectedTemperature = thermostat.selectedTemperature;
+        return this.xxNEWtargetTemperature(selectedTemperature);
+    }
+
+    xxNEWtargetTemperature(selectedTemperature) {
+        if      (selectedTemperature >  this._max) return this._max;
+        else if (selectedTemperature <  this._min) return this._min;
+        else return selectedTemperature;
+    }
+    ```
+    ```js
+    // 4. Inline Variable
+    get targetTemperature() {
+        return this.xxNEWtargetTemperature(thermostat.selectedTemperature);
+    }
+    ```
+    ```js
+    // 5. Inline Function
+    if (thePlan.xxNEWtargetTemperature(thermostat.selectedTemperature) > thermostat.currentTemperature)
+        setToHeat();
+    else if (thePlan.xxNEWtargetTemperature(thermostat.selectedTemperature) < thermostat.currentTemperature)
+        setToCool();
+    else
+        setOff();
+    ```
+    ```js
+    // 6. Rename Function
+    if (thePlan.targetTemperature(thermostat.selectedTemperature) > thermostat.currentTemperature)
+        setToHeat();
+    else if (thePlan.targetTemperature(thermostat.selectedTemperature) < thermostat.currentTemperature)
+        setToCool();
+    else
+        setOff();
+    ```
+    ```js
+    class HeatingPlan {
+        targetTemperature(selectedTemperature) {
+            if      (selectedTemperature >  this._max) return this._max;
+            else if (selectedTemperature <  this._min) return this._min;
+            else return selectedTemperature;
+        }
+    }
+    ```
+
+
 ## Remove Setting Method
 
+![](../Images/Refactor/11-remove-setting-method.jpg)
+
+* Motivation
+
+    Providing a setting method indicates that a field may be changed. If I don’t want that field to change once the object is created, I don’t provide a setting method.
+
+    * There’s a couple of common cases where this comes up.
+        1. One is where people always use accessor methods to manipulate a field, even within constructors.
+        2. Object is created by clients using creation script rather than by a simple constructor call.
+
+* Mechanics
+    1. If the value that’s being set isn’t provided to the constructor, use `Change Function Declaration` to add it. Add a call to the setting method within the constructor.
+        * If you wish to remove several setting methods, add all their values to the constructor at once. This simplifies the later steps.
+    2. Remove each call of a setting method outside of the constructor, using the new constructor value instead. Test after each one.
+        * If you can’t replace the call to the setter by creating a new object (because you are updating a shared reference object), abandon the refactoring.
+    3. Use `Inline Function` on the setting method. Make the field immutable if possible.
+    4. Test.
+
 ## Replace Constructor with Factory Function
+
+![](../Images/Refactor/11-replace-constructor-with-factory-function.jpg)
+
+* Motivation
+    * Constructors often come with awkward limitations that aren’t there for more general functions:
+        1. A Java constructor must return an instance of the class it was called with, which means I can’t replace it with a subclass or proxy depending on the environment or parameters.
+        2. Constructor naming is fixed, which makes it impossible for me to use a name that is clearer than the default
+        3. Constructors often require a special operator to invoke (“new” in many languages) which makes them difficult to use in contexts that expect normal functions.
+    * A factory function suffers from no such limitations. It will likely call the constructor as part of its implementation, but I can freely substitute something else.
+
+* Mechanics
+    1. Create a factory function, its body being a call to the constructor.
+    2. Replace each call to the constructor with a call to the factory function.
+    3. Test after each change.
+    4. Limit the constructor’s visibility as much as possible.
+
+* Example
+    ```js
+    class Employee {
+        constructor (name, typeCode) {
+            this._name = name;
+            this._typeCode = typeCode;
+        }
+        get name() {return this._name;}
+        get type() {
+            return Employee.legalTypeCodes[this._typeCode];
+        }
+        static get legalTypeCodes() {
+            return {"E": "Engineer", "M": "Manager", "S": "Salesman"};
+        }
+    }
+    ```
+    ```js
+    // 1. create factory methods
+    function createEmployee(name, typeCode) {
+        return new Employee(name, typeCode);
+    }
+    ```
 ## Replace Function with Command
+
+![](../Images/Refactor/11-replace-function-with-command.jpg)
+
+* Motivation
+
+    A command offers a greater flexibility for the control and expression of a function than the plain function mechanism. Commands can have complimentary operations, such as undo. I can provide methods to build up their parameters to support a richer lifecycle. I can build in customizations using inheritance and hooks.
+
+    We must not forget that this flexibility, as ever, comes at a price paid in complexity. So, given the choice between a first-class function and a command, I’ll pick the function 95% of the time. I only use a command when I specifically need a facility that simpler approaches can’t provide.
+
+    There are still times when a command is the right tool for the job. One of these cases is breaking up a complex function so I can better understand and modify it.
+
+* Mechanics
+    1. Create an empty class for the function. Name it based on the function.
+    2. Use `Move Function` to move the function to the empty class.
+        * Keep the original function as a forwarding function until at least the end of the refactoring.
+        * Follow any convention the language has for naming commands. If there is no convention, choose a generic name for the command’s execute function, such as “execute” or “call”.
+    3. Consider making a field for each argument, and move these arguments to the constructor.
+
+* Example
+    ```js
+    function score(candidate, medicalExam, scoringGuide) {
+        let result = 0;
+        let healthLevel = 0;
+        let highMedicalRiskFlag = false;
+
+        if (medicalExam.isSmoker) {
+            healthLevel += 10;
+            highMedicalRiskFlag = true;
+        }
+        let certificationGrade = "regular";
+        if (scoringGuide.stateWithLowCertification(candidate.originState)) {
+            certificationGrade = "low";
+            result -= 5;
+        }
+        // lots more code like this
+        result -= Math.max(healthLevel - 5, 0);
+        return result;
+    }
+    ```
+    ```js
+    // 1. create a calss
+    // 2. Move Function
+    function score(candidate, medicalExam, scoringGuide) {
+        return new Scorer().execute(candidate, medicalExam, scoringGuide);
+    }
+
+    class Scorer {
+        execute (candidate, medicalExam, scoringGuide) {
+            let result = 0;
+            let healthLevel = 0;
+            let highMedicalRiskFlag = false;
+
+            if (medicalExam.isSmoker) {
+                healthLevel += 10;
+                highMedicalRiskFlag = true;
+            }
+            let certificationGrade = "regular";
+            if (scoringGuide.stateWithLowCertification(candidate.originState)) {
+                certificationGrade = "low";
+                result -= 5;
+            }
+            // lots more code like this
+            result -= Math.max(healthLevel - 5, 0);
+            return result;
+        }
+    }
+    ```
+    ```js
+    // move paramter to constructor
+    class Scorer {
+        constructor(candidate, medicalExam, scoringGuide){
+            this._candidate = candidate;
+            this._medicalExam = medicalExam;
+            this._scoringGuide = scoringGuide;
+
+            this._result = 0;
+            this._healthLevel = 0;
+            this._highMedicalRiskFlag = false;
+        }
+
+        execute () {
+            if (this._medicalExam.isSmoker) {
+                this._healthLevel += 10;
+                this._highMedicalRiskFlag = true;
+            }
+            this._certificationGrade = "regular";
+            if (this._scoringGuide.stateWithLowCertification(this._candidate.originState)) {
+                this._certificationGrade = "low";
+                this._result -= 5;
+            }
+            // lots more code like this
+            this._result -= Math.max(this._healthLevel - 5, 0);
+            return this._result;
+        }
+    }
+    ```
+    ```js
+    // Extract Function: scoreSmoking()
+    // move all the function’s state to the command object
+    execute () {
+        this._result = 0;
+        this._healthLevel = 0;
+        this._highMedicalRiskFlag = false;
+
+        this.scoreSmoking();
+        this._certificationGrade = "regular";
+        if (this._scoringGuide.stateWithLowCertification(this._candidate.originState)) {
+            this._certificationGrade = "low";
+            this._result -= 5;
+        }
+        // lots more code like this
+        this._result -= Math.max(this._healthLevel - 5, 0);
+        return this._result;
+    }
+
+    scoreSmoking() {
+        if (this._medicalExam.isSmoker) {
+            this._healthLevel += 10;
+            this._highMedicalRiskFlag = true;
+        }
+    }
+
 
 ## Replace Command with Function
 
+![](../Images/Refactor/11-replace-command-with-function.jpg)
+
+* Motivation
+
+    Command objects provide a powerful mechanism for handling complex computations. They can easily be broken down into separate methods sharing common state through the fields; they can be invoked via different methods for different effects; they can have their data built up in stages. But that power comes at a cost. Most of the time, I just want to invoke a function and have it do its thing. If that’s the case, and the function isn’t too complex, then a command object is more trouble than its worth and should be turned into a regular function.
+* Mechanics
+    1. Apply `Extract Function` to the creation of the command and the call to the command’s execution method.
+        * This creates the new function that will replace the command in due course.
+    2. For each method called by the command’s execution method, apply `Inline Function`.
+        * If the supporting function returns a value, use `Extract Variable` on the call first and then `Inline Function`.
+    3. Use `Change Function Declaration` to put all the parameters of the constructor into the command’s execution method instead.
+    4. For each field, alter the references in the command’s execution method to use the parameter instead. Test after each change.
+    5. Inline the constructor call and command’s execution method call into the caller (which is the replacement function).
+    6. Test.
+    7. Apply `Remove Dead Code` to the command class.
+
+* Example
+    ```js
+    class ChargeCalculator {
+        constructor (customer, usage, provider){
+            this._customer = customer;
+            this._usage = usage;
+            this._provider = provider;
+        }
+        get baseCharge() {
+            return this._customer.baseRate * this._usage;
+        }
+        get charge() {
+            return this.baseCharge + this._provider.connectionCharge;
+        }
+    }
+    ```
+    ```js
+    // 1. Extract Function
+    function charge(customer, usage, provider) {
+        return new ChargeCalculator(customer, usage, provider).charge;
+    }
+    ```
+    ```js
+    // 2.1 Inline Variable: baseCharge
+    class ChargeCalculator {
+        get baseCharge() {
+            return this._customer.baseRate * this._usage;
+        }
+        get charge() {
+            const baseCharge = this.baseCharge;
+            return baseCharge + this._provider.connectionCharge;
+        }
+    }
+
+    // 2.2 Inline Function
+    class ChargeCalculator {
+        get charge() {
+            const baseCharge = this._customer.baseRate * this._usage;
+            return baseCharge + this._provider.connectionCharge;
+        }
+    }
+    ```
+    ```js
+    // 3. Change Funciton Declaration: move parameters from contructor to function
+    class ChargeCalculator {
+        constructor() {
+
+        }
+
+        function charge(customer, usage, provider) {
+            const baseCharge = customer.baseRate * usage;
+            return baseCharge + provider.connectionCharge;
+        }
+    }
+    ```
+    ```js
+    // 4. Inline Function
+    function charge(customer, usage, provider) {
+        const baseCharge = customer.baseRate * usage;
+        return baseCharge + provider.connectionCharge;
+    }
+    ```
 
 # 12 Dealing with Inheritance
 
 ## Pull Up Method
 
+* Exmaple
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
+    ```js
+    ```
 ## Pull Up Field
 
 ## Pull Up Constructor Body
