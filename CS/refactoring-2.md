@@ -578,7 +578,13 @@ Michael Feathers’s Working Effectively with Legacy Code [Feathers], which is p
 
 # 3 Bad Smells in Code
 
+But just because you know how doesn’t mean you know when. Deciding when to start refactoring—and when to stop—is just as important to refactoring as knowing how to operate the mechanics of it.
+
 ## Mysterious Name
+
+naming is one of the two hard things [mf-2h] in programming. So, perhaps the most common refactorings we do are the renames: `Change Function Declaration` (to rename a function), `Rename Variable`, and R`ename Field`.
+
+Renaming is not just an exercise in changing names. When you can’t think of a good name for something, it’s often a sign of a deeper design malaise.
 
 ## Duplicated Code
 
@@ -5398,7 +5404,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
         1. It’s a card that can only be played once. If I have more than one reason to vary something, I can only use inheritance for a single axis of variation. If I want to vary behavior of people by their age category and by their income level, I can either have subclasses for young and senior, or for well-off and poor—I can’t have both.
         2. Inheritance introduces a very close relationship between classes. Any change I want to make to the parent can easily break children, so I have to be careful and understand how children derive from the superclass. This problem is made worse when the logic of the two classes resides in different modules and is looked after by different teams.
 
-    Delegation handles both of these problems. I can delegate to many different classes for different reasons. Delegation is a regular relationship between objects—so I can have a clear interface to work with, which is much less coupling than subclassing. It’s therefore common to run into the problems with subclassing and apply Replace Subclass with Delegate.
+    Delegation handles both of these problems. I can delegate to many different classes for different reasons. Delegation is a regular relationship between objects—so I can have a clear interface to work with, which is much less coupling than subclassing. It’s therefore common to run into the problems with subclassing and apply `Replace Subclass with Delegate`.
 
     There is a popular principle: “Favor object composition over class inheritance” (where composition is effectively the same as delegation).
 
@@ -5524,7 +5530,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
 
     I have a couple of options here. One is to apply `Extract Function` on the base calculation to allow me to separate the dispatch logic from price calculation.
     ```js
-    // 5.2 Choose `hasTalkback` subclass method to move to the delegate class.
+    // 5.2 Choose `basePrice` subclass method to move to the delegate class.
     class Booking {
         get basePrice() {
             return (this._premiumDelegate)
@@ -5589,6 +5595,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
     ```
 
 * Example: Replacing a Hierarchy
+    The previous example showed using Replace Subclass with Delegate on a single subclass, but I can do the same thing with an entire hierarchy.
     ```js
     function createBird(data) {
         switch (data.type) {
@@ -5643,16 +5650,181 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
     }
     ```
     ```js
+    // decide where to handle the initialization of the delegate field
+    class Bird {
+        constructor(data) {
+            this._name = data.name;
+            this._plumage = data.plumage;
+            this._speciesDelegate = this.selectSpeciesDelegate(data);
+        }
+
+        selectSpeciesDelegate(data) {
+            switch(data.type) {
+            case 'EuropeanSwallow':
+                return new EuropeanSwallowDelegate();
+            default: return null;
+            }
+        }
+    }
     ```
     ```js
+    // Move Function: move European swallow’s air speed velocity to it's delegate
+    class EuropeanSwallowDelegat {
+        get airSpeedVelocity() {return 35;}
+    }
+
+    class EuropeanSwallow {
+        get airSpeedVelocity() {return this._speciesDelegate.airSpeedVelocity;}
+    }
+
+    class Bird {
+        get airSpeedVelocity() {
+            return this._speciesDelegate ? this._speciesDelegate.airSpeedVelocity : null;
+        }
+    }
+
+    // remove the subclass EuropeanSwallow
     ```
     ```js
+    function createBird(data) {
+        return new Bird(data);
+    }
+
+    class Bird {
+        constructor(data) {
+            this._name = data.name;
+            this._plumage = data.plumage;
+            this._speciesDelegate = this.selectSpeciesDelegate(data);
+        }
+        get name()    {return this._name;}
+        get plumage() {return this._speciesDelegate.plumage;}
+        get airSpeedVelocity() {return this._speciesDelegate.airSpeedVelocity;}
+
+        selectSpeciesDelegate(data) {
+            switch(data.type) {
+            case 'EuropeanSwallow': return new EuropeanSwallowDelegate(data, this);
+            case 'AfricanSwallow': return new AfricanSwallowDelegate(data, this);
+            case 'NorweigianBlueParrot': return new NorwegianBlueParrotDelegate(data, this);
+            default: return new SpeciesDelegate(data, this);
+            }
+        }
+        // rest of bird's code...
+    }
+
+    class SpeciesDelegate {
+        constructor(data, bird) {
+            this._bird = bird;
+        }
+        get plumage() {
+            return this._bird._plumage || "average";
+        }
+        get airSpeedVelocity() {return null;}
+    }
+
+    class EuropeanSwallowDelegate extends SpeciesDelegate {
+        get airSpeedVelocity() {return 35;}
+    }
+
+    class AfricanSwallowDelegate extends SpeciesDelegate {
+        constructor(data, bird) {
+            super(data,bird);
+            this._numberOfCoconuts = data.numberOfCoconuts;
+        }
+        get airSpeedVelocity() {
+            return 40 - 2 * this._numberOfCoconuts;
+        }
+    }
+
+    class NorwegianBlueParrotDelegate extends SpeciesDelegate {
+        constructor(data, bird) {
+            super(data, bird);
+            this._voltage = data.voltage;
+            this._isNailed = data.isNailed;
+        }
+        get airSpeedVelocity() {
+            return (this._isNailed) ? 0 : 10 + this._voltage / 10;
+        }
+        get plumage() {
+            if (this._voltage > 100) return "scorched";
+            else return this._bird._plumage || "beautiful";
+        }
+    }
     ```
-    ```js
-    ```
-    ```js
-    ```
+    These examples illustrate that the phrase “Favor object composition over class inheritance” might better be said as “Favor a judicious mixture of composition and inheritance over either alone”—but I fear that is not as catchy.
 
 ## Replace Superclass with Delegate
 
 ![](../Images/Refactor/12-replace-superclass-with-delegate.jpg)
+
+* Motivation
+
+    One of the classic examples of mis-inheritance from the early days of objects was making a stack be a subclass of list. The idea that led to this was reusing of list’s data storage and operations to manipulate it. While it’s good to reuse, this inheritance had a problem: All the operations of the list were present on the interface of the stack, although most of them were not applicable to a stack. A better approach is to make the list into a field of the stack and delegate the necessary operations to it.
+
+    * When to use delegate rather than inheritance?
+        1. If functions of the superclass don’t make sense on the subclass, that’s a sign that I shouldn’t be using inheritance to use the superclass’s functionality.
+        2. Every instance of the subclass is an instance of the superclass and a valid object in all cases where we’re using the superclass.
+
+    Using delegation makes it clear that it is a separate thing—one where only some of the functions carry over.
+
+    Even in cases where the subclass is reasonable modeling, I use Replace Super-class with Delegate because the relationship between a sub- and superclass is highly coupled, with the subclass easily broken by changes in the superclass.
+
+    Provided the appropriate semantic conditions apply (every method on the supertype applies to the subtype, every instance of the subtype is an instance of the supertype), inheritance is a simple and effective mechanism.
+
+* Mechanics
+    1. Create a field in the subclass that refers to the superclass object. Initialize this delegate reference to a new instance.
+    2. For each element of the superclass, create a forwarding function in the subclass that forwards to the delegate reference. Test after forwarding each consistent group.
+        * Most of the time you can test after each function that’s forwarded, but, for example, get/set pairs can only be tested once both have been moved.
+    3. When all superclass elements have been overridden with forwarders, remove the inheritance link.
+
+* Example
+    ```js
+    class CatalogItem {
+        constructor(id, title, tags) {
+            this._id = id;
+            this._title = title;
+            this._tags = tags;
+        }
+
+        get id() {return this._id;}
+        get title() {return this._title;}
+        hasTag(arg) {return this._tags.includes(arg);}
+    }
+
+    class Scroll extends CatalogItem {
+       constructor(id, title, tags, dateLastCleaned) {
+            super(id, title, tags);
+            this._lastCleaned = dateLastCleaned;
+        }
+
+        needsCleaning(targetDate) {
+        const threshold = this.hasTag("revered") ? 700 : 1500;
+            return this.daysSinceLastCleaning(targetDate) > threshold ;
+        }
+        daysSinceLastCleaning(targetDate) {
+            return this._lastCleaned.until(targetDate, ChronoUnit.DAYS);
+        }
+    }
+    ```
+    ```js
+    class Scroll {
+        constructor(id, title, tags, dateLastCleaned) {
+            this._catalogItem = new CatalogItem(id, title, tags);
+            this._lastCleaned = dateLastCleaned;
+        }
+
+        get id() {return this._catalogItem.id;}
+        get title() {return this._catalogItem.title;}
+        hasTag(aString) {return this._catalogItem.hasTag(aString);}
+    }
+    ```
+    ```js
+    class Scroll {
+        constructor(id, title, tags, dateLastCleaned) {
+            this._id = id;
+            this._catalogItem = new CatalogItem(null, title, tags);
+            this._lastCleaned = dateLastCleaned;
+        }
+
+        get id() {return this._id;}
+    }
+    ```
