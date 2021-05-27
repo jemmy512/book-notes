@@ -67,7 +67,7 @@ function statement (invoice, plays) {
     if ("comedy" === play.type) volumeCredits += Math.floor(perf.audience / 5);
 
     // print line for this order
-    result += `  ${play.name}: ${format(thisAmount/100)} (${perf.audience} seats)\n`;
+    result += ` ${play.name}: ${format(thisAmount/100)} (${perf.audience} seats)\n`;
     totalAmount += thisAmount;
   }
   result += `Amount owed is ${format(totalAmount/100)}\n`;
@@ -118,7 +118,7 @@ In particular, should a test fail during a refactoring, if I can’t immediately
 function statement (invoice, plays) {
   let result = `Statement for ${invoice.customer}\n`;
   for (let perf of invoice.performances) {
-    result += `  ${playFor(perf).name}: ${usd(amountFor(perf))} (${perf.audience} seats)\n`;
+    result += ` ${playFor(perf).name}: ${usd(amountFor(perf))} (${perf.audience} seats)\n`;
   }
   result += `Amount owed is ${usd(totalAmount())}\n`;
   result += `You earned ${totalVolumeCredits()} credits\n`;
@@ -191,7 +191,7 @@ function statement (invoice, plays) {
 function renderPlainText(data, plays) {
   let result = `Statement for ${data.customer}\n`;
   for (let perf of data.performances) {
-    result += `  ${perf.play.name}: ${usd(perf.amount)} (${perf.audience} seats)\n`;
+    result += ` ${perf.play.name}: ${usd(perf.amount)} (${perf.audience} seats)\n`;
   }
   result += `Amount owed is ${usd(data.totalAmount)}\n`;
   result += `You earned ${data.totalVolumeCredits} credits\n`;
@@ -207,7 +207,7 @@ function renderHtml (data) {
   result += "<table>\n";
   result += "<tr><th>play</th><th>seats</th><th>cost</th></tr>";
   for (let perf of data.performances) {
-    result += `  <tr><td>${perf.play.name}</td><td>${perf.audience}</td>`;
+    result += ` <tr><td>${perf.play.name}</td><td>${perf.audience}</td>`;
     result += `<td>${usd(perf.amount)}</td></tr>\n`;
   }
   result += "</table>\n";
@@ -582,23 +582,57 @@ But just because you know how doesn’t mean you know when. Deciding when to sta
 
 ## Mysterious Name
 
-naming is one of the two hard things [mf-2h] in programming. So, perhaps the most common refactorings we do are the renames: `Change Function Declaration` (to rename a function), `Rename Variable`, and R`ename Field`.
+Naming is one of the two hard things [mf-2h] in programming. So, perhaps the most common refactorings we do are the renames: `Change Function Declaration` (to rename a function), `Rename Variable`, and `Rename Field`.
 
 Renaming is not just an exercise in changing names. When you can’t think of a good name for something, it’s often a sign of a deeper design malaise.
 
 ## Duplicated Code
 
+ Then all you have to do is `Extract Function` and invoke the code from both places. If you have code that’s similar, but not quite identical, see if you can use `Slide Statements` to arrange the code so the similar items are all together for easy extraction. If the duplicate fragments are in subclasses of a common base class, you can use `Pull Up Method` to avoid calling one from another.
+
 ## Long Function
+
+In our experience, the programs that live best and longest are those with short functions.
+
+A heuristic we follow is that whenever we feel the need to comment something, we write a function instead. Such a function contains the code that we wanted to comment but is named after the intention of the code rather than the way it works.
+
+If you’ve tried that and you still have too many temps and parameters, it’s time to get out the heavy artillery: `Replace Function with Command`.
+
+If you have a function with lots of parameters and temporary variables, they get in the way of extracting. `Extract Function`, `Replace Temp with Query`, `Introduce Parameter Object` and `Preserve Whole Object`
+
+How do you identify the clumps of code to extract? A good technique is to look for comments. They often signal this kind of semantic distance. A block of code with a comment that tells you what it is doing can be replaced by a method whose name is based on the comment. Even a single line is worth extracting if it needs explanation.
+
+Conditionals and loops also give signs for extractions. Use `Decompose Conditional` to deal with conditional expressions. A big switch statement should have its legs turned into single function calls with `Extract Function`. If there’s more than one switch statement switching on the same condition, you should apply `Replace Conditional with Polymorphism`.
 
 ## Long Parameter List
 
+If you can obtain one parameter by asking another parameter for it, you can use `Replace Parameter with Query` to remove the second parameter. Rather than pulling lots of data out of an existing data structure, you can use` Preserve Whole Object` to pass the original data structure instead. If several parameters always fit together, combine them with `Introduce Parameter Object`. If a parameter is used as a flag to dispatch different behavior, use `Remove Flag Argument`.
+
 ## Global Data
+
+The problem with global data is that it can be modified from anywhere in the code base, and there’s no mechanism to discover which bit of code touched it.
+
+Our key defense here is `Encapsulate Variable`, which is always our first move when confronted with data that is open to contamination by any part of a program. 
 
 ## Mutable Data
 
+You can use `Encapsulate Variable` to ensure that all updates occur through narrow functions that can be easier to monitor and evolve. If a variable is being updated to store different things, use `Split Variable` both to keep them separate and avoid the risky update. Try as much as possible to move logic out of code that processes the update by using `Slide Statements` and `Extract Function` to separate the side-effect-free code from anything that performs the update. In APIs, use `Separate Query from Modifier` to ensure callers don’t need to call code that has side effects unless they really need to. We like to use `Remove Setting Method` as soon as we can—sometimes, just trying to find clients of a setter helps spot opportunities to reduce the scope of a variable.
+
 ## Divergent Change
 
+We structure our software to make change easier; after all, software is meant to be soft. When we make a change, we want to be able to jump to a single clear point in the system and make the change. When you can’t do this, you are smelling one of two closely related pungencies.
+
+Divergent change occurs when one module is often changed in different ways for different reasons
+
+If the two aspects naturally form a sequence—for example, you get data from the database and then apply your financial processing on it—then `Split Phase` separates the two with a clear data structure between them. If there’s more back-and-forth in the calls, then create appropriate modules and use `Move Function` to divide the processing up. If functions mix the two types of processing within themselves, use `Extract Function` to separate them before moving. If the modules are classes, then `Extract Class` helps formalize how to do the split.
+
 ## Shotgun Surgery
+
+Shotgun surgery is similar to divergent change but is the opposite. You whiff this when, every time you make a change, you have to make a lot of little edits to a lot of different classes. When the changes are all over the place, they are hard to find, and it’s easy to miss an important change.
+
+In this case, you want to use `Move Function` and `Move Field` to put all the changes into a single module. If you have a bunch of functions operating on similar data, use `Combine Functions into Class`. If you have functions that are transforming or enriching a data structure, use `Combine Functions into Transform`. `Split Phase` is often useful here if the common functions can combine their output for a consuming phase of logic.
+
+A useful tactic for shotgun surgery is to use inlining refactorings, such as `Inline Function` or `Inline Class`, to pull together poorly separated logic. You’ll end up with a Long Method or a Large Class, but can then use extractions to break it up into more sensible pieces. Even though we are inordinately fond of small functions and classes in our code, we aren’t afraid of creating something large as an intermediate step to reorganization.
 
 ## Feature Envy
 
@@ -624,14 +658,33 @@ Renaming is not just an exercise in changing names. When you can’t think of a 
 
 ## Large Class
 
+When a class is trying to do too much, it often shows up as too many fields. When a class has too many fields, duplicated code cannot be far behind.
+
+You can `Extract Class` to bundle a number of the variables. If the component makes sense with inheritance, you’ll find `Extract Superclass` or `Replace Type Code with Subclasses` (which essentially is extracting a subclass) are often easier.
+
 ## Alternative Classes with Different Interfaces
+
+One of the great benefits of using classes is the support for substitution, allowing one class to swap in for another in times of need. But this only works if their interfaces are the same. Use `Change Function Declaration` to make functions match up. Often, this doesn’t go far enough; keep using `Move Function` to move behavior into classes until the protocols match. If this leads to duplication, you may be able to use `Extract Superclass` to atone.
 
 ## Data Class
 
+In some stages, these classes may have public fields. If so, you should immediately apply `Encapsulate Record` before anyone notices. Use `Remove Setting Method` on any field that should not be changed.
+
+Look for where these getting and setting methods are used by other classes. Try to use `Move Function` to move behavior into the data class. If you can’t move a whole function, use `Extract Function` to create a function that can be moved.
+
 ## Refused Bequest
+
+The traditional story is that this means the hierarchy is wrong. You need to create a new sibling class and use `Push Down Method` and `Push Down Field` to push all the unused code to the sibling. That way the parent holds only what is common. Often, you’ll hear advice that all superclasses should be abstract.
+
+If the refused bequest is causing confusion and problems, follow the traditional advice. However, don’t feel you have to do it all the time. Nine times out of ten this smell is too faint to be worth cleaning.
+
+The smell of refused bequest is much stronger if the subclass is reusing behavior but does not want to support the interface of the superclass. We don’t mind refusing implementations—but refusing interface gets us on our high horses. In this case, however, don’t fiddle with the hierarchy; you want to gut it by applying `Replace Subclass with Delegate` or `Replace Superclass with Delegate` .
 
 ## Comments
 
+If you need a comment to explain what a block of code does, try `Extract Function` . If the method is already extracted but you still need a comment to explain what it does, use `Change Function Declaration` to rename it. If you need to state some rules about the required state of the system, use `Introduce Assertion` .
+
+:blub: When you feel the need to write a comment, first try to refactor the code so that any comment becomes superfluous.
 
 # 4 Building Tests
 
