@@ -612,7 +612,7 @@ If you can obtain one parameter by asking another parameter for it, you can use 
 
 The problem with global data is that it can be modified from anywhere in the code base, and there’s no mechanism to discover which bit of code touched it.
 
-Our key defense here is `Encapsulate Variable`, which is always our first move when confronted with data that is open to contamination by any part of a program. 
+Our key defense here is `Encapsulate Variable`, which is always our first move when confronted with data that is open to contamination by any part of a program.
 
 ## Mutable Data
 
@@ -636,25 +636,64 @@ A useful tactic for shotgun surgery is to use inlining refactorings, such as `In
 
 ## Feature Envy
 
+A classic case of Feature Envy occurs when a function in one module spends more time communicating with functions or data inside another module than it does within its own module.
+
+The cure for that case is obvious: The function clearly wants to be with the data, so use `Move Function` to get it there. Sometimes, only a part of a function suffers from envy, in which case use `Extract Function` on the jealous bit, and `Move Function` to give it a dream home.
+
+A function uses features of several modules, so which one should it live with? The heuristic we use is to determine which module has most of the data and put the function with that data.
+
+Of course, there are several sophisticated patterns that break this rule. From the Gang of Four [gof], `Strategy` and `Visitor` immediately leap to mind. Kent Beck’s `Self Delegation` [Beck SBPP] is another.
+
 ## Data Clumps
+
+Bunches of data that hang around together really ought to find a home together. The first step is to look for where the clumps appear as fields. Use `Extract Class` on the fields to turn the clumps into an object. Then turn your attention to method signatures using `Introduce Parameter Object` or `Preserve Whole Object` to slim them down.
 
 ## Primitive Obsession
 
+You can move out of the primitive cave into the centrally heated world of meaningful types by using `Replace Primitive with Object`. If the primitive is a type code controlling conditional behavior, use `Replace Type Code with Subclasses` followed by `Replace Conditional with Polymorphism`.
+
+Groups of primitives that commonly appear together are data clumps and should be civilized with `Extract Class` and `Introduce Parameter Object`.
+
 ## Repeated Switches
+
+The problem with such duplicate switches is that, whenever you add a clause, you have to find all the switches and update them. Against the dark forces of such repetition, polymorphism provides an elegant weapon for a more civilized codebase.
 
 ## Loops
 
+We can use `Replace Loop with Pipeline` to retire those anachronisms. We find that pipeline operations, such as filter and map, help us quickly see the elements that are included in the processing and what is done with them.
+
 ## Lazy Element
+
+Such program elements need to die with dignity. Usually this means using `Inline Function` or `Inline Class`. With inheritance, you can use `Collapse Hierarchy`.
 
 ## Speculative Generality
 
+You get it when people say, “Oh, I think we’ll need the ability to do this kind of thing someday” and thus add all sorts of hooks and special cases to handle things that aren’t required. The result is often harder to understand and maintain. If all this machinery were being used, it would be worth it. But if it isn’t, it isn’t. The machinery just gets in the way, so get rid of it.
+
+If you have abstract classes that aren’t doing much, use `Collapse Hierarchy`. Unnecessary delegation can be removed with `Inline Function` and `Inline Class`. Functions with unused parameters should be subject to `Change Function Declaration` to remove those parameters. You should also apply `Change Function Declaration` to remove any unneeded parameters, which often get tossed in for future variations that never come to pass.
+
+
 ## Temporary Field
+
+Use `Extract Class` to create a home for the poor orphan variables. Use `Move Function` to put all the code that concerns the fields into this new class. You may also be able to eliminate conditional code by using `Introduce Special Case` to create an alternative class for when the variables aren’t valid.
 
 ## Message Chains
 
+You see message chains when a client asks one object for another object, which the client then asks for yet another object, which the client then asks for yet another another object, and so on.
+
+Navigating this way means the client is coupled to the structure of the navigation. Any change to the intermediate relationships causes the client to have to change.
+
+The move to use here is `Hide Delegate`. You can do this at various points in the chain. In principle, you can do this to every object in the chain, but doing this often turns every intermediate object into a middle man. Often, a better alternative is to see what the resulting object is used for. See whether you can use `Extract Function` to take a piece of the code that uses it and then `Move Function` to push it down the chain. If several clients of one of the objects in the chain want to navigate the rest of the way, add a method to do that.
+
 ## Middle Man
 
+You look at a class’s interface and find half the methods are delegating to this other class. After a while, it is time to use `Remove Middle Man` and talk to the object that really knows what’s going on. If only a few methods aren’t doing much, use `Inline Function` to inline them into the caller. If there is additional behavior, you can use `Replace Superclass with Delegate` or `Replace Subclass with Delegate` to fold the middle man into the real object. That allows you to extend behavior without chasing all that delegation.s
+
 ## Insider Trading
+
+Modules that whisper to each other by the coffee machine need to be separated by using `Move Function` and `Move Field` to reduce the need to chat. If modules have common interests, try to create a third module to keep that commonality in a well-regulated vehicle, or use `Hide Delegate` to make another module act as an intermediary.
+
+Inheritance can often lead to collusion. Subclasses are always going to know more about their parents than their parents would like them to know. If it’s time to leave home, apply `Replace Subclass with Delegate` or `Replace Superclass with Delegate`.
 
 ## Large Class
 
@@ -684,11 +723,19 @@ The smell of refused bequest is much stronger if the subclass is reusing behavio
 
 If you need a comment to explain what a block of code does, try `Extract Function` . If the method is already extracted but you still need a comment to explain what it does, use `Change Function Declaration` to rename it. If you need to state some rules about the required state of the system, use `Introduce Assertion` .
 
-:blub: When you feel the need to write a comment, first try to refactor the code so that any comment becomes superfluous.
+:bulb: When you feel the need to write a comment, first try to refactor the code so that any comment becomes superfluous.
 
 # 4 Building Tests
 
 ## The Value of Self-Testing Code
+
+Fixing the bug is usually pretty quick, but finding it is a nightmare.
+
+When you do fix a bug, there’s always a chance that another one will appear and that you might not even notice it till much later.
+
+:bulb: Make sure all tests are fully automatic and that they check their own results.
+
+:bulb: A suite of tests is a powerful bug detector that decapitates the time it takes to find bugs.
 
 ## Sample Code to Test
 
@@ -1104,6 +1151,8 @@ Extraction is all about giving names, and I often need to change the names as I 
 
 
 ## Encapsulate Variable
+
+![](../Images/Refactor/6-encapsulate-variable.jpg)
 
 * Motivation
 
@@ -3167,6 +3216,8 @@ I often find problems in a code base due to a confusion between references and v
 
 ## Split Variable
 
+![](../Images/Refactor/9-split-variable.jpg)
+
 * Motivation
 
     * Variables have various uses.
@@ -3881,6 +3932,8 @@ A lot of conditionals are used to handle special cases, such as nulls; if that l
     }
     ```
 ## Introduce Special Case
+
+![](../Images/Refactor/10-introduce-special-case.jpg)
 
 * Motivation
 
