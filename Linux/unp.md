@@ -51,9 +51,9 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
 * Many networks have an **MTU** which can be dictated by the hardware. For example, the Ethernet MTU is 1,500 bytes.
 * The smallest MTU in the path between two hosts is called the **path MTU**. Today, the Ethernet MTU of 1,500 bytes is often the path MTU.
 * When an IP datagram is to be sent out an interface, if the size of the datagram exceeds the link MTU, **fragmentation** is performed by both IPv4 and IPv6. The fragments are not normally reassembled until they reach the final destination. IPv4 hosts perform fragmentation on datagrams that they generate and IPv4 routers perform fragmentation on datagrams that they forward.
-* If the ‘‘**don’t fragment**’’ (DF) bit is set in the IPv4 header (Figure A.1), it specifies that this datagram must not be fragmented, either by the sending host or by any router. A router that receives an IPv4 datagram with the DF bit set whose size exceeds the outgoing link’s MTU generates an ICMPv4 ‘‘destination unreach- able, fragmentation needed but DF bit set’’ error message
+* If the ‘‘**don’t fragment**’’ (DF) bit is set in the IPv4 header (Figure A.1), it specifies that this datagram must not be fragmented, either by the sending host or by any router. A router that receives an IPv4 datagram with the DF bit set whose size exceeds the outgoing link’s MTU generates an ICMPv4 ‘‘destination unreachable, fragmentation needed but DF bit set’’ error message
 * IPv4 and IPv6 define a **minimum reassembly buffer size**, the minimum datagram size that we are guaranteed any implementation must support. For IPv4, this is 576 bytes.
-* TCP has a **maximum segment size (MSS)** that announces to the peer TCP the maxi- mum amount of TCP data that the peer can send per segment.
+* TCP has a **maximum segment size (MSS)** that announces to the peer TCP the maximum amount of TCP data that the peer can send per segment.
 
 ### TCP Output
 * The successful return from a write to a TCP socket only tells us that we can reuse our application buffer. It does not tell us that either the peer TCP has received the data or that the peer application has received the data.
@@ -112,7 +112,7 @@ int connect(int sockfd, const struct sockaddr *servaddr, socklen_t addrlen);
 * The connect function initiates TCP’s three-way handshake (Section 2.6). The function returns only when the connection is established or an error occurs. There are several different error returns possible.
     * If the client TCP receives no response to its SYN segment, `ETIMEDOUT` is returned.
     * If the server’s response to the client’s SYN is a reset (RST), this indicates that no process is waiting for connections on the server host at the port specified. `ECONNREFUSED` is returned to the client as soon as the RST is received.
-    * If the client’s SYN elicits an ICMP ‘‘destination unreachable’’ from some intermediate router, this is considered a soft error. The client kernel saves the mes- sage but keeps sending SYNs with the same time between each SYN as in the first scenario. If no response is received after some fixed amount of time (75 sec- onds for 4.4BSD), the saved ICMP error is returned to the process as either `EHOSTUNREACH` or `ENETUNREACH`.
+    * If the client’s SYN elicits an ICMP ‘‘destination unreachable’’ from some intermediate router, this is considered a soft error. The client kernel saves the message but keeps sending SYNs with the same time between each SYN as in the first scenario. If no response is received after some fixed amount of time (75 seconds for 4.4BSD), the saved ICMP error is returned to the process as either `EHOSTUNREACH` or `ENETUNREACH`.
 
 * Three conditions that generate an RST are:
     * when a SYN arrives for a port that has no listening server (what we just described)
@@ -141,7 +141,7 @@ int bind(int sockfd, const struct sockaddr *myaddr, socklen_t addrlen);
     struct sockaddr_in6    serv;
     serv.sin6_addr = in6addr_any;    /* wildcard */
     ```
-* If we tell the kernel to choose an ephemeral port number for our socket, notice that bind does not return the chosen value. Indeed, it cannot return this value since the sec- ond argument to bind has the const qualifier. To obtain the value of the ephemeral port assigned by the kernel, we must call getsockname to return the protocol address.
+* If we tell the kernel to choose an ephemeral port number for our socket, notice that bind does not return the chosen value. Indeed, it cannot return this value since the second argument to bind has the const qualifier. To obtain the value of the ephemeral port assigned by the kernel, we must call getsockname to return the protocol address.
 
 ## 4.5 listen
 * There are several points to consider regarding the handling of these two queues.
@@ -209,7 +209,7 @@ int bind(int sockfd, const struct sockaddr *myaddr, socklen_t addrlen);
 * ![](../Images/Unp/6.2-blocking-io.png)
 
 ### Nonblocking I/O Model
-* When we set a socket to be nonblocking, we are telling the kernel when an I/O opera- tion that I request cannot be completed without putting the process to sleep, do not put the process to sleep, but return an error instead.
+* When we set a socket to be nonblocking, we are telling the kernel when an I/O operation that I request cannot be completed without putting the process to sleep, do not put the process to sleep, but return an error instead.
 * ![](../Images/Unp/6.2-non-blocking-io.png)
 
 ### I/O Multiplexing
@@ -246,7 +246,7 @@ int bind(int sockfd, const struct sockaddr *myaddr, socklen_t addrlen);
     * A socket `error` is pending. A read operation on the socket will not block and will return an error (−1) with errno set to the specific error condition. These pending errors can also be fetched and cleared by calling getsockopt and specifying the SO_ERROR socket option.
 
 2. A socket is **ready for writing** if any of the following four conditions is true:
-    * The number of bytes of available space in the socket send buffer is greater than or equal to the current size of the `low-water mark` for the socket send buffer and either: (i) the socket is connected, or (ii) the socket does not require a connection (e.g., UDP). This means that if we set the socket to non- blocking (Chapter 16), a write operation will not block and will return a pos- itive value (e.g., the number of bytes accepted by the transport layer). We can set this low-water mark using the SO_SNDLOWAT socket option. This low-water mark normally defaults to 2048 for TCP and UDP sockets.
+    * The number of bytes of available space in the socket send buffer is greater than or equal to the current size of the `low-water mark` for the socket send buffer and either: (i) the socket is connected, or (ii) the socket does not require a connection (e.g., UDP). This means that if we set the socket to nonblocking (Chapter 16), a write operation will not block and will return a positive value (e.g., the number of bytes accepted by the transport layer). We can set this low-water mark using the SO_SNDLOWAT socket option. This low-water mark normally defaults to 2048 for TCP and UDP sockets.
     * The write half of the connection is `closed`. A write operation on the socket will generate SIGPIPE (Section 5.12).
     * A socket using a non-blocking connect has completed the connection, or the connect has failed.
     * A socket `error` is pending. A write operation on the socket will not block and will return an error (−1) with errno set to the specific error condition. These pending errors can also be fetched and cleared by calling getsockopt with the SO_ERROR socket option.
@@ -419,7 +419,7 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
     MSG_OOB | Send or receive out-of-band data | Y | Y
     MSG_PEEK | Peek at incoming message | Y |
     MSG_WAITALL | Wait for all the data | Y |
-* **MSG_WAITALL** It tells the ker- nel not to return from a read operation until the requested number of bytes have been read. The function can stillreturn fewer than the requested number of bytes if
+* **MSG_WAITALL** It tells the kernel not to return from a read operation until the requested number of bytes have been read. The function can stillreturn fewer than the requested number of bytes if
     1. a signal is caught
     2. the connection is terminated
     3. an error is pending for the socket
@@ -495,7 +495,7 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
         * We should call select. select returns when the connection completes successfully (making the socket writable) or when the connection fails (making the socket readable and writable).
 
 ## 16.6 Nonblocking accept
-* If we are using select to wait for incoming connections, we should not need to set the listening socket to non- blocking because if select tells us that the connection is ready, accept should not block.
+* If we are using select to wait for incoming connections, we should not need to set the listening socket to nonblocking because if select tells us that the connection is ready, accept should not block.
 * Unfortunately, there is a timing problem that can trip us up here:
 * When the client aborts the connection before the server calls accept, Berkeley-derived implementations do not return the aborted connection to the server, while other implementations should return ECONNABORTED but often return EPROTO instead.
     * The client establishes the connection and then aborts it.
@@ -510,7 +510,7 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
 
 # 17 ioctl Operations
 ## 17.1 Introduction
-The ioctl function has traditionally been the system interface used for everything that didn’t fit into some other nicely defined category. POSIX is getting rid of ioctl for certain functionality by creating specific wrapper functions to replace ioctls whose func- tionality is being standardized by POSIX.
+The ioctl function has traditionally been the system interface used for everything that didn’t fit into some other nicely defined category. POSIX is getting rid of ioctl for certain functionality by creating specific wrapper functions to replace ioctls whose functionality is being standardized by POSIX.
 
 ## 17.2 ioctl Function
 * ```c++
@@ -589,7 +589,7 @@ struct arpreq {
 # 29 Datalink Access
 ## 29.1 Introduction
 * Providing access to the datalink layer for an application provides the following capabilities:
-    * The ability to watch the packets received by the datalink layer, allowing pro- grams such as tcpdump to be run on normal computer systems (as opposed to dedicated hardware devices to watch packets).
+    * The ability to watch the packets received by the datalink layer, allowing programs such as tcpdump to be run on normal computer systems (as opposed to dedicated hardware devices to watch packets).
     * The ability to run certain programs as normal applications instead of as part of the kernel.
 * The three common methods to access the datalink layer under Unix are:
     * the BSD Packet Filter (BPF)
