@@ -60,6 +60,72 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
 
 # 3 Sockets Introduction
 
+## 3.2 Socket Address Structures
+* IPv4 Socket Address Structure
+
+    ```c++
+    struct in_addr {
+        in_addr_t   s_addr; /* 32-bit IPv4 address */
+    };                      /* network byte ordered */
+
+    struct sockaddr_in {
+        uint8_t         sin_len;    /* length of structure (16) */
+        sa_family_t     sin_family; /* AF_INET */
+        in_port_t       sin_port;   /* 16-bit TCP or UDP port number */
+                                    /* network byte ordered */
+        struct in_addr  sin_addr;   /* 32-bit IPv4 address */
+                                    /* network byte ordered */
+        char            sin_zero[8];/* unused */
+    };
+    ```
+
+* Generic Socket Address Structure
+
+    ```c++
+    struct sockaddr {
+        uint8_t      sa_len;
+        sa_family_t  sa_family;    /* address family: AF_xxx value */
+        char         sa_data[14];  /* protocol-specific address */
+    };
+    ```
+
+* IPv6 Socket Address Structure
+
+    ```c++
+    struct in6_addr {
+        uint8_t  s6_addr[16];   /* 128-bit IPv6 address */
+                                /* network byte ordered */
+    };
+
+    #define SIN6_LEN      /* required for compile-time tests */
+
+    struct sockaddr_in6 {
+        uint8_t         sin6_len;       /* length of this struct (28) */
+        sa_family_t     sin6_family;    /* AF_INET6 */
+        in_port_t       sin6_port;      /* transport layer port# */
+                                        /* network byte ordered */
+        uint32_t        sin6_flowinfo;  /* flow information, undefined */
+        struct in6_addr sin6_addr;      /* IPv6 address */
+        uint32_t        sin6_scope_id;  /* set of interfaces for a scope */
+    };
+    ```
+
+* New Generic Socket Address Structure
+
+    ```c++
+    struct sockaddr_storage {
+    uint8_t ss_len;         /* length of this struct (implementation dependent) */
+    sa_family_t ss_family;  /* address family: AF_xxx value */
+        /* implementation-dependent elements to provide:
+        * a) alignment sufficient to fulfill the alignment requirements of
+        *    all socket address types that the system supports.
+        * b) enough storage to hold any type of socket address that the
+        *    system supports. */
+    };
+    ```
+
+![](../Images/Unp/3.2-socket-address-structures.png)
+
 ## 3.4 Byte Ordering Functions
 * with the low-order byte at the starting address, known as **little-endian byte order**, or with the high-order byte at the starting address, known as **big-endian byte order**.
 * ```c++
@@ -91,6 +157,47 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
     ```
 
 ## 3.5 ByteManipulationFunctions
+```c++
+#include <strings.h>
+void bzero(void *dest, size_t nbytes);
+void bcopy(const void *src, void *dest, size_t nbytes);
+int bcmp(const void *ptr1, const void *ptr2, size_t nbytes);
+```
+```c++
+#include <string.h>
+void *memset(void *dest, int c, size_t len);
+void *memcpy(void *dest, const void *src, size_t nbytes);
+int memcmp(const void *ptr1, const void *ptr2, size_t nbytes);
+```
+
+## 3.6 inet_aton, inet_addr, and inet_ntoa
+```c++
+#include <arpa/inet.h>
+int inet_aton(const char *strptr, struct in_addr *addrptr);
+// Returns: 1 if string was valid, 0 on error
+
+in_addr_t inet_addr(const char *strptr);
+// Returns: 32-bit binary network byte ordered IPv4 address; INADDR_NONE if error
+
+char *inet_ntoa(struct in_addr inaddr);
+// Returns: pointer to dotted-decimal string
+```
+
+## 3.7 inet_pton and inet_ntop
+The letters ‘‘p’’ and ‘‘n’’ stand for presentation and numeric.
+```c++
+#include <arpa/inet.h>
+int inet_pton(int family, const char *strptr, void *addrptr);
+// Returns: 1 if OK, 0 if input not a valid presentation format, −1 on error
+
+const char *inet_ntop(int family, const void *addrptr, char *strptr, size_t len);
+// Returns: pointer to result if OK, NULL on error
+```
+![](../Images/Unp/3.7-address-conversion.png)
+
+## 3.8 sock_ntop and Related Functions
+
+
 
 # 4 Elementary TCP Sockets
 ![](../Images/Unp/4-tcp-client-server.png)
