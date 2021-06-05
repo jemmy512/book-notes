@@ -61,6 +61,16 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
 # 3 Sockets Introduction
 
 ## 3.2 Socket Address Structures
+* Generic Socket Address Structure
+
+    ```c++
+    struct sockaddr {
+        uint8_t      sa_len;
+        sa_family_t  sa_family;    /* address family: AF_xxx value */
+        char         sa_data[14];  /* protocol-specific address */
+    };
+    ```
+
 * IPv4 Socket Address Structure
 
     ```c++
@@ -76,16 +86,6 @@ Each UDP datagram has a length while TCP is a bytes-stream protocol without any 
         struct in_addr  sin_addr;   /* 32-bit IPv4 address */
                                     /* network byte ordered */
         char            sin_zero[8];/* unused */
-    };
-    ```
-
-* Generic Socket Address Structure
-
-    ```c++
-    struct sockaddr {
-        uint8_t      sa_len;
-        sa_family_t  sa_family;    /* address family: AF_xxx value */
-        char         sa_data[14];  /* protocol-specific address */
     };
     ```
 
@@ -419,10 +419,10 @@ This option is normally used by servers, although clients can also use the optio
 
 Scenario | Peer process crashes | Peer host crashes | Peer host is unreachable
 --- | --- | --- | ---
-Our TCP is actively receiving data | Peer TCP will send a FIN, which we will read as a (possibly premature) EOF. | We will stop receiving data. | We will stop receiving data.
-Our TCP is actively sending data | Peer TCP sends a FIN, which we can detect immediately using select for readability. If TCP sends another segment, peer TCP responds with an RST. If the application attempts to write to the socket after TCP has received an RST, our socket implementation sends us SIGPIPE. | Our TCP will time out and our socket’s pending error will be set to `ETIMEDOUT`. | Our TCP will time out and our socket’s pending error will be set to `EHOSTUNREACH`.
-Connection is idle, keep-alive set | Peer TCP sends a FIN, which we can detect immediately using select for readability. | Nine keep-alive probes are sent after two hours of inactivity and then our socket’s pending error is set to `ETIMEDOUT`. | Nine keep-alive probes are sent after two hours of inactivity and then our socket’s pending error is set to `EHOSTUNREACH`.
-Connection is idle, keep-alive not set | Peer TCP sends a FIN, which we can detect immediately using select for readability. | (Nothing) | (Nothing)
+Our TCP is actively receiving data | Peer TCP will send a `FIN`, which we will read as a (possibly premature) `EOF`. | We will stop receiving data. | We will stop receiving data.
+Our TCP is actively sending data | Peer TCP sends a `FIN`, which we can detect immediately using select for readability. If TCP sends another segment, peer TCP responds with an RST. If the application attempts to write to the socket after TCP has received an RST, our socket implementation sends us `SIGPIPE`. | Our TCP will time out and our socket’s pending error will be set to `ETIMEDOUT`. | Our TCP will time out and our socket’s pending error will be set to `EHOSTUNREACH`.
+Connection is idle, keep-alive set | Peer TCP sends a `FIN`, which we can detect immediately using select for readability. | Nine keep-alive probes are sent after two hours of inactivity and then our socket’s pending error is set to `ETIMEDOUT`. | Nine keep-alive probes are sent after two hours of inactivity and then our socket’s pending error is set to `EHOSTUNREACH`.
+Connection is idle, keep-alive not set | Peer TCP sends a `FIN`, which we can detect immediately using select for readability. | (Nothing) | (Nothing)
 
 ### SO_LINGER
 * By default, close returns immediately, but if there is any data still remaining in the socket send buffer, the system will try to deliver the data to the peer.
@@ -430,7 +430,9 @@ Connection is idle, keep-alive not set | Peer TCP sends a FIN, which we can dete
 * Three scenarios of SO_LINGER:
     1. If `l_onoff is 0`, the option is turned off. The value of l_linger is ignored and the previously discussed TCP default applies: close returns immediately.
     2. If `l_onoff is nonzero` and `l_linger is zero`, TCP aborts the connection when it is closed (pp. 1019–1020 of TCPv2). That is, TCP discards any data still remaining in the socket send buffer and sends an `RST` to the peer, not the normal four-packet connection termination sequence. This avoids TCP’s `TIME_WAIT` state, but in doing so, leaves open the possibility of another incarnation of this connection being created within 2MSL seconds (Section 2.7) and having old duplicate segments from the just-terminated connection being incorrectly delivered to the new incarnation.
-    3. If `l_onoff is nonzero` and `l_linger is nonzero`, then the kernel will linger when the socket is closed (p. 472 of TCPv2). That is, if there is any data still remaining in the socket send buffer, the process is put to sleep until either: (i) all the data is sent and acknowledged by the peer TCP, or (ii) the linger time expires. If the socket has been set to nonblocking (Chapter 16), it will not wait for the close to complete, even if the linger time is nonzero. When using this feature of the SO_LINGER option, it is important for the application to check the return value from close, because if the linger time expires before the remaining data is sent and acknowledged, close returns EWOULDBLOCK and any remaining data in the send buffer is discarded.
+    3. If `l_onoff is nonzero` and `l_linger is nonzero`, then the kernel will linger when the socket is closed (p. 472 of TCPv2). That is, if there is any data still remaining in the socket send buffer, the process is put to sleep until either:
+        * (i) all the data is sent and acknowledged by the peer TCP, or
+        * (ii) the linger time expires. If the socket has been set to nonblocking (Chapter 16), it will not wait for the close to complete, even if the linger time is nonzero. When using this feature of the SO_LINGER option, it is important for the application to check the return value from close, because if the linger time expires before the remaining data is sent and acknowledged, close returns `EWOULDBLOCK` and any remaining data in the send buffer is discarded.
 
  * The client’s close can return before the server reads the remaining data in its socket receive buffer. Therefore, it is possible for the server host to crash before the server application reads this remaining data, and the client application will never know.
 
@@ -572,15 +574,15 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
 * We can divide the socket calls that may block into four categories:
     1. **Input operations** — These include the read, readv, recv, recvfrom, and recvmsg functions.
         * If we want to wait until some fixed amount of data is available, we can call our own function readn or specify the `MSG_WAITALL` flag.
-        * With a nonblocking socket, it the operation cannot be satisfied, return `EWOULDBLOCK`
+        * With a nonblocking socket, if the operation cannot be satisfied, return `EWOULDBLOCK`
     2. **Output operations** — These include the write, writev, send, sendto, and sendmsg functions.
         * Kernel copies data from the application’s buffer into the socket send buffer. If there is no room in the socket send buffer for a blocking socket, the process is put to sleep until there is room.
-        * With a nonblocking socket, it the operation cannot be satisfied, return `EWOULDBLOCK`
+        * With a nonblocking socket, if the operation cannot be satisfied, return `EWOULDBLOCK`
     3. **Accepting incoming connections** — This is the accept function. If accept is called for a blocking socket and a new connection is not available, the process is put to sleep.
-        * With a nonblocking socket, it the operation cannot be satisfied, return `EWOULDBLOCK`
+        * With a nonblocking socket, if the operation cannot be satisfied, return `EWOULDBLOCK`
     4. **Initiating outgoing connections** — This is the connect function for TCP.
         * connect can be used with UDP, but it does not cause a ‘‘real’’ connection to be established; it just causes the kernel to store the peer’s IP address and port number.
-        * With a nonblocking socket, it the operation cannot be satisfied, return `EINPROGRESS`
+        * With a nonblocking socket, if the operation cannot be satisfied, return `EINPROGRESS`
 
 ## 16.2 Nonblocking Reads and Writes
 
@@ -591,8 +593,8 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
     3. Since we wait for the connection to be established using select, we can specify a time limit for select, allowing us to shorten the timeout for the connect.
 
 * There are other details we must handle:
-    * Even though the socket is nonblocking, if the server to which we are connecting is on the same host, the connection is normally established immediately when we call connect. We must handle this scenario.
-    * Berkeley-derived implementations (and POSIX) have the following two rules regarding select and nonblocking connects:
+    * **Connect to self** Even though the socket is nonblocking, if the server to which we are connecting is on the same host, the connection is normally established immediately when we call connect. We must handle this scenario.
+    * **Readable writable** Berkeley-derived implementations (and POSIX) have the following two rules regarding select and nonblocking connects:
         1. When the connection completes successfully, the descriptor becomes writable
         2. When the connection establishment encounters an error, the descriptor becomes both readable and writable (p. 530 of TCPv2).
 
@@ -613,7 +615,7 @@ int fcntl(int fd, int cmd, ... /* int arg */ );
 
 * The fix for this problem is as follows:
     1. Always set a listening socket to nonblocking when you use select to indicate when a connection is ready to be accepted.
-    2. Ignore the following errors on the subsequent call to accept: EWOULDBLOCK (Berkeley-derived), ECONNABORTED (POSIX), EPROTO (SVR4), and EINTR (if signals are being caught).
+    2. Ignore the following errors on the subsequent call to accept: `EWOULDBLOCK` (Berkeley-derived), `ECONNABORTED` (POSIX), `EPROTO` (SVR4), and `EINTR` (if signals are being caught).
 
 # 17 ioctl Operations
 ## 17.1 Introduction
@@ -633,6 +635,12 @@ The ioctl function has traditionally been the system interface used for everythi
     * STREAMS system (Chapter 31)
 
 * ![](../Images/Unp/17.2-ioctl-categories.png)
+    * Socket: SIOC\_{ATMASK, {S, G}_SPGRP}
+    * File: FIO\_{NBIO, ASYNC, NREAD, {SET, GET}_OWN}
+    * Interface: SIOCIF\_{CONF, FLAG, ADDR, DSTADDR, BRDADDR, NETMASK, METRIC, MTU}
+    * ARP: SIOC\_{S, G, D}_ARP
+    * Routing: SIOC\_{ADD, DEL}_RT
+    * STREAM:
 
 ## 17.3 Socket Operations
 * **SIOCATMARK** Return through the integer pointed to by the third argument a nonzero value if the socket’s read pointer is currently at the out-of-band mark, or a zero value if the read pointer is not at the out-of-band mark.
