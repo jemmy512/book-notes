@@ -11072,8 +11072,10 @@ int __ip_local_out(
            dst_output);
 }
 ```
-![linux-net-ip-filter.png](../Images/LinuxKernel/kernel-net-ip-filter.png)
-![linux-net-ip-filter-2.png](../Images/LinuxKernel/kernel-net-ip-filter-2.png)
+* ![linux-net-filter.png](../Images/LinuxKernel/kernel-net-filter.png)
+* ![linux-net-filter-2.png](../Images/LinuxKernel/kernel-net-filter-2.png)
+* ![linux-net-filter-3.png](../Images/LinuxKernel/kernel-net-filter-3.png)
+
 ```C++
 static inline int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
