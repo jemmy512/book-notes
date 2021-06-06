@@ -225,6 +225,10 @@ Mitigation techniques:
 
 # 14 TCP Timeout and Retransmission
 ## 14.1 Introduction
+The TCP protocol provides a reliable data delivery service between two applications using an underlying network layer (IP) that may **lose**, **duplicate**, or **reorder** packets.
+
+TCP sets a timer when it sends data, and if the data is not acknowledged when the timer expires, a timeout or timer-based retransmission of data occurs. The timeout occurs after an interval called the retransmission timeout (**RTO**).
+
 **Fast retransmit** is based on inferring losses by noticing when TCP’s cumulative acknowledgment fails to advance in the ACKs received over time, or when ACKs carrying selective acknowledgment information (SACKs) indicate that out-of-order segments are present at the receiver.
 
 TCP has two thresholds:
@@ -329,7 +333,7 @@ A receiver receives duplicate data segments can be the result of spurious retran
 
 D-SACK is a rule, applied at the SACK receiver and interoperable with conventional SACK senders, that causes the **first SACK** block to indicate the sequence numbers of a duplicate segment that has arrived at the receiver.
 
-Purpose: to determine when a retransmission was not necessary and to learn additional facts about the network. With it, a sender has at least the possibility of inferring whether packet reordering, loss of ACKs, packet replication, and/or spurious retransmissions are taking place.
+Purpose: to determine when a retransmission was not necessary and to learn additional facts about the network. With it, a sender has at least the possibility of inferring whether **packet reordering**, **loss of ACKs**, **packet replication**, and/or **spurious retransmissions** are taking place.
 
 * Usage:
     1. A change is made to the content of SACKs sent from the receiver and a corresponding change to the logic at the sender.
@@ -385,7 +389,7 @@ This approach is fairly intuitive. If the transmission of new data results in th
     1. If reordering takes place in the **reverse (ACK) direction**, it causes the sending TCP to receive some ACKs that move the window significantly forward followed by some evidently old redundant ACKs that are discarded. This can lead to an unwanted burstiness (instantaneous high-speed sending) behavior in the sending pattern of TCP and also trouble in taking advantage of available network bandwidth, because of the behavior of TCP’s congestion control (see Chapter 16).
     2. If reordering occurs in the **forward direction**, TCP may have trouble distinguishing this condition from loss. Both **loss** and **reordering** result in the receiver receiving out-of-order packets that create holes between the next expected packet and the other packets received so far. When reordering is moderate (e.g., two adjacent packets switch order), the situation can be handled fairly quickly. When reorderings are more severe, TCP can be tricked into believing that data has been lost even though it has not. This can result in spurious retransmissions, primarily from the fast retransmit algorithm
 
-A TCP receiver is supposed to immediately ACK any out-of-sequence data it receives in order to help induce fast retrans- mit to be triggered on packet loss, any packet that is reordered within the network causes a receiver to produce a duplicate ACK.
+A TCP receiver is supposed to immediately ACK any out-of-sequence data it receives in order to help induce fast retransmit to be triggered on packet loss, any packet that is reordered within the network causes a receiver to produce a duplicate ACK.
 
 The problem of distinguishing loss from reordering is not trivial. Dealing with it involves trying to decide when a sender has waited long enough to try to fill apparent holes at the receiver. Fortunately, `severe reordering` on the Internet `is not common` [J03], so setting dupthresh to a relatively small number (such as the default of 3) handles most circumstances. That said, there are a number of research projects that modify TCP to handle more severe reordering [LLY07]. Some of these adjust dupthresh dynamically, as does the Linux TCP implementation.
 
@@ -705,7 +709,7 @@ In the CWR state, the sender reduces cwnd by one packet for every two ACKs recei
 ## 16.7 Sharing Congestion State
 
 ## 16.8 TCP in High-speed Enviroments
-In high-speed networks with large BDPs (e.g., WANs of 1Gb/s or more), conven- tional TCP may not perform well because its window increase algorithm (the congestion avoidance algorithm, in particular) takes a long time to grow the window large enough to saturate the network path.
+In high-speed networks with large BDPs (e.g., WANs of 1Gb/s or more), conventional TCP may not perform well because its window increase algorithm (the congestion avoidance algorithm, in particular) takes a long time to grow the window large enough to saturate the network path.
 
 ### 16.8.1 HighSpeed TCP (HSTCP) and Limited Slow Start
 The experimental HighSpeed TCP (HSTCP) specifications [RFC3649][RFC3742] propose to alter the standard TCP behavior when the congestion window is larger than a base value **Low_Window**, suggested to be 38 MSS-size segments.
