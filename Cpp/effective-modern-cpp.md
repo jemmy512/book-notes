@@ -1,4 +1,5 @@
-# 01: Understand template type deduction
+# Chapter 1 Deducing Types
+## 01: Understand template type deduction
 ```C++
 template<typename T>
 void foo(ParamType param);
@@ -78,7 +79,7 @@ Summary:
 1. During template type deduction, referenceness, constness and volatileness are ignored
 2. Array and function decay to pointers, unless they're used to initialize references
 
-# 02: Understand auto type deduction
+## 02: Understand auto type deduction
 1. Auto type deduction is template type deduction.
 2. The treatment of `braced initializers` is the only way where auto type deduction and template type deduction differ.
     * auto deduction treats {...} as initializer_list while template deduction doesn't
@@ -120,7 +121,7 @@ auto* const fp5 = GetFoo();         // Foo * const
 const auto* const fp6 = GetFoo();   // cosnt Foo * const
 ```
 
-# 03: Understand decltype
+## 03: Understand decltype
 Auto removes all top-level qulifiers while decltype doesn't.
 ```C++
 /* C++11
@@ -166,8 +167,8 @@ For lvalue expressions of type T other than names, decltype always reports a typ
 
 C++14 supports decltype(auto), which, like auto, deduces a type from its initializer, but it performs the type deduction using the decltype rules
 
-
-# 05: Prefer auto to explicit type declaration
+# Chapter 2 auto
+## 05: Prefer auto to explicit type declaration
 ```C++
 std::function<bool(const std::unique_ptr<Widget> &, const std::unique_ptr<Widget> &)>
 derefUPLess = [](const std::unique_ptr<Widget> &p1, const std::unique_ptr<Widget> &p2) {
@@ -195,9 +196,9 @@ for (const auto &p : mp);
 
 Auto variables must be initialzed, are generally immune to type mismatches that can lead to portability or efficiency problems, can ease the process of refactoring, and typically requires less typing than variables with explicitly specified types.
 
-auto-typed variables are subject to the pitfalls described in # 02 and 06.
+auto-typed variables are subject to the pitfalls described in ## 02 and 06.
 
-# 06: Use the explicit initializer idiom  when auto deduces undesired types
+## 06: Use the explicit initializer idiom  when auto deduces undesired types
 ```C++
 vector<bool> features(const Widget &w);
 bool highPriority = features(w)[5]; // return type is vector<bool>::reference implicitly convert to bool
@@ -209,7 +210,8 @@ auto index = static_cast<int>(d * c.size());
 Invisible” proxy types can cause auto to deduce the “wrong” type for an ini‐ tializing expression.
 The explicitly typed initializer idiom forces auto to deduce the type you want it to have.
 
-# 07: Distinguish between () and {} when creating objects
+# Chapter 3 Moving to Modern C++
+## 07: Distinguish between () and {} when creating objects
 
 A novel feature of **braced initialization** is that it **prohibits implicit narrowing conversions** among built-in types.
 
@@ -262,17 +264,17 @@ Widget w4({});  // std::initializer_list ctor with empty list
 Widget w5{{}};  // ditto
 ```
 
-# 08: Prefer nullptr to 0 and NULL
+## 08: Prefer nullptr to 0 and NULL
 The fact that template type deduction deduce the wrong types for 0 and NULL (i.e, their true types, rather than their fallback meaning a representation for a nulll pointer) is the most compelling reason to use nullptr.
 
-# 09: Prefer alias declarations to typedefs
+## 09: Prefer alias declarations to typedefs
 Typedefs don’t support templatization, but alias declarations do.
 
 Alias templates avoid the “::type” suffix and, in templates, the “typename” prefix often required to refer to typedefs.
 
 C++14 offers alias templates for all the C++11 type traits transformations.
 
-# 10: Prefer scoped enums to unscoped enums
+## 10: Prefer scoped enums to unscoped enums
 C++98-style enums are now known as unscoped enums.
 
 Enumerators of scoped enums are visible only within the enum. They convert to other types only with a cast.
@@ -281,10 +283,10 @@ Both scoped and unscoped enums support specification of the underlying type. The
 
 Scoped enums may always be forward-declared. Unscoped enums may be forward-declared only if their declaration specifies an underlying type.
 
-# 11: Prefer deleted functions to private undefined ones
+## 11: Prefer deleted functions to private undefined ones
 Any function may be deleted, including non-member functions and template instantiations
 
-# 12: Declare overriding functions override
+## 12: Declare overriding functions override
 Declaring derived class overrides is important to get right, but easy to get wrong. So, c++11 introduce: override
 
 Overriding function requirements:
@@ -322,9 +324,9 @@ auto val2 = makeWidget().data();    // move-construct val2
 
 Member function reference qualifiers make it possible to treat lvalue and rvalue object(*this) differently
 
-# 13: Prefer const_iterator to iterator
+## 13: Prefer const_iterator to iterator
 
-# 14: Declare functions noexcept if they won't emit exceptions
+## 14: Declare functions noexcept if they won't emit exceptions
 With c++11 noexcept specification, at runtime the stack is only possible unwound before program execution is terminated
 
 So optimizers need not keep the runtime statck in an unwindable state if an exception would propagate out of the function, nor must they ensure that object in an noexcept function are destroyed in the inverse order of construction should an exception leave the function.
@@ -333,7 +335,7 @@ noexcept is particularly valuable for the `move operations`, `swap`, memory `dea
 
 Most functions are exception-neutral rather than noexcept.
 
-# 15: Use constexpr whenever possible
+## 15: Use constexpr whenever possible
 constexpr functions:
 1. Can be used in contexts that demand compile-time constants. If any of the arugments's values is not known during compilation, code will rejected.
 2. When called with one or more values that are not known during compilation, it acts like a normal function, computing the result at runtime.
@@ -346,13 +348,13 @@ constexpr objects and functions may be uesed in a wide range of contexts than no
 
 constexpr is part of an objects's or function's interface
 
-# 16: Make const member functions thread safe
+## 16: Make const member functions thread safe
 
 Make const member functions thread safe unless you're certain they'll never be used in a concurrent context
 
 Use of std::atomic variable may offer better performance than a mutex, but they're suited for manipulation of only a single variable or memory location.
 
-# 17: Understand special member functions generation
+## 17: Understand special member functions generation
 
 Generated special member functions are implicitly public, inline and nonvirtual unless the function in question is a destructor in a derived class inheriting from a base class with a virtual destructor
 
@@ -373,7 +375,8 @@ Move operations are generated only for classes lacking explicitly declared move 
 Member functions templates never suppress generation of special member functions.
 
 
-# 18: User std::unique_ptr for exclusive-ownership resources management
+# Chapter 4 Smart Pointers
+## 18: User std::unique_ptr for exclusive-ownership resources management
 Moving a std::unique_ptr transfers the owenership from the source pointer to the destination pointer, the source pointer is set to null, copy is not allowed.
 
 When using the default deleter std::unique_ptr objects are the same size as raw pointers, but custom deletes generally cause the size to grow from on word to two.
@@ -382,7 +385,7 @@ For deleters that are function objects, the changes in size depends on how much 
 
 For stateless functions objects(e.g., lambda without captures) incur no size penalty.
 
-# 19: User std::shared_ptr for shared-ownership resource management
+## 19: User std::shared_ptr for shared-ownership resource management
 The existence of the reference count has performance implications:
 1. std::shared_ptr are twice of the size of a raw pointer
 2. Memory for reference count must be dynamically allocated
@@ -407,10 +410,10 @@ Control block:
 pitfall:
 1. Avoid to creating std::shared_ptr from variable of raw pointer type
 
-# 20: Use std::weak_ptr for std::shared_ptr like pointers that dangle
+## 20: Use std::weak_ptr for std::shared_ptr like pointers that dangle
 Potential use cases for std::weak_ptr include caching, observer lists, and the prevention of std::shared_ptr cycles.
 
-# 21: Prefer std::make_unique and std::make_shared to direct use of new
+## 21: Prefer std::make_unique and std::make_shared to direct use of new
 * Advantages of make functions compared to direct use of new:
     1. eliminate source code duplication
     2. improve exception safety
@@ -433,7 +436,7 @@ Potential use cases for std::weak_ptr include caching, observer lists, and the p
         * very large object
         * std::weak_ptr that outlive the corresponding std::shared_ptrs
 
-# 22: When using the Pimpl Idiom, define special member functions in the implementation file
+## 22: When using the Pimpl Idiom, define special member functions in the implementation file
 The Pimpl Idiom decreases build times by reducing compilation dependencies between class clients and class implementations.
 
 For std::unique_ptr pImpl pointers, declare special member functions in the class header, but implement them in the implementaion file. Do this even if the default functions implementation are acceptable.
@@ -450,7 +453,8 @@ The above advice applies to std::unique_ptr, but not to std::shared_ptr.
 * std::shared_ptr:
     * All features are reversed to std::unique_ptr.
 
-# 23: Understand std::move and std::forward
+# Chapter 5 Rvalue References, Move Semantics, and Perfect Forwarding
+## 23: Understand std::move and std::forward
 lvalue-reference-to-const(const T&) is permitted to bind to a const rvalue(const T&&).
 
 Move requests on const objects are silently transformed into copy operations.
@@ -463,14 +467,14 @@ std::forward casts its argument to an rvalue only if that arguments is bound to 
 
 Neither std::move and std::forward do anything at runtime.
 
-# 24: Distinguish universal reference from rvalue reference
+## 24: Distinguish universal reference from rvalue reference
 If a function template parameter has type `T&&` for a deduced type T, or if an object is declared using `auto&&`, the parameter or object is a **universal reference**.
 
 If the form of the type declaration isn't precisely type&&, or if type deduction does not occur, type&& denotes an **rvalue reference**.
 
 Universal references correspond to rvalue references if they're initialized with rvalues. They correspond to lvalue reference if they're initialized with lvalues.
 
-# 25: Use std::move on rvalue references, std::forward on universal references
+## 25: Use std::move on rvalue references, std::forward on universal references
 Rvalue references bind only to objects that are candidates for moving.
 
 std::move on an object that doesn't support moving, its copy constructor will be called.
@@ -481,7 +485,7 @@ Do the same thing for rvalue references and universal references being retured f
 
 Never apply std::move or std::forward to local objects if they would otherwise be eligible for the return value optimization
 
-# 26: Avoid overloading on universal references
+## 26: Avoid overloading on universal references
 ```C++
 class Person {
 public:
@@ -515,7 +519,7 @@ public:
 
 Perfect-forwarding constructors are especially problematic, because they're typically better matches than copy constructor for non-const lvalues, and they can hijack derived class calls to base class copy and move constructors.
 
-# 27: Familiarize yourself with alternatives to overloading on universal reference
+## 27: Familiarize yourself with alternatives to overloading on universal reference
 1. tag dispatch
     ```C++
     template<typename T> void logAndAdd(T&& name) {
@@ -571,7 +575,7 @@ constraining tempaltes via std::enable_if permits the use of universal reference
 
 Universal reference parameters often have efficiency advantages, but they typically have usability disadvantages.
 
-# 28: Underdstand referece collapsing
+## 28: Underdstand referece collapsing
 * Reference collapsing occurs in four contexts:
     1. template instantiation
     2. auto type generation
@@ -584,17 +588,18 @@ if either of the original reference is an lvalue reference, the result is an lva
 
 Universal refenrences are rvalue references in contexts where type deduction distinguishes lvalues from rvalues and where reference collapsing occurs.
 
-# 29: Assume that move operations are not present, not cheap, and not used
+## 29: Assume that move operations are not present, not cheap, and not used
 In code with known types or support for move semantics, there is no need for assumptions.
 
-# 30: Familiarize yourself with perfect forwarding failure cases
+## 30: Familiarize yourself with perfect forwarding failure cases
 In the program's underlaying binary code pointers and references are essentially the same thing.
 
 Perfect forwarding fails when template type deduction fails or when it deduces the wrong type
 
 The kinds of arguments that lead to perfect forwarding failure are braced initializer, null pointers expressed as 0 or NULL, declaration-only intergral const static data members, template and overloaded functions names, and bitfields.
 
-# 31: Avoid default capture modes
+# Chapter 6 Lambda Expressions
+## 31: Avoid default capture modes
 
 The closure type associated with a lambda-expression has a deleted ([dcl.fct.def.delete]) default constructor and a deleted copy assignment operator.
 
@@ -633,7 +638,7 @@ int global = 2;
 [=]() { cout << global << endl;}();
 ```
 
-# 32: Use init capture to move objects into closures
+## 32: Use init capture to move objects into closures
 
 The scope on the left is different from the scope on the right:
 1. left: scope of the closure class
@@ -656,10 +661,10 @@ Use C++14's init capture to move objects into closures.
 
 In C++11 emulate init capture via band-written class or std::bind
 
-# 33: User decltype on auto&& parameters to std::forward them
+## 33: User decltype on auto&& parameters to std::forward them
 C++14 support generic lambds: lambds that use auto in their paramter specifications
 
-# 34: Prefer lambds to std::bind
+## 34: Prefer lambds to std::bind
 ```C++
 void setAlarm(Time t, Sound s, Duration d);
 auto setSoundL = [](Sound s) {
@@ -678,7 +683,8 @@ Lambdas are more readable, more expressive, and may be more efficient than using
 
 In C++11 only, std::bind may be useful for implementing move capture or for binding objects with templatized functions call
 
-# 35: Prefer task-based programming to thread-based
+# Chapter 7 The Concurrency API
+## 35: Prefer task-based programming to thread-based
 Three Type Threads:
 1. Hardware threads. one or more hardware threads per CPU core.
 2. Sofeware threads. are limited resource, if exceed the capability of the system, std::system_error is thrown
@@ -690,7 +696,7 @@ Thread-based programming calls for manual management of thread exhustion, oversu
 
 Taks-based programming via std::aysnc with the default launch policy handles most of these issues for you
 
-# 36: Specify std::launch::async if asynchronicity is essential
+## 36: Specify std::launch::async if asynchronicity is essential
 
 It's not possible to predict whether f will run concurrently with current thread t, because f might be scheduled to run deffered
 
@@ -704,7 +710,7 @@ This flexibility leads to uncertainty when accessing thread_locals, implies that
 
 Specify std::launch::async if asynchronous task execution is essential
 
-# 37: Make std::threads unjoinable on all paths
+## 37: Make std::threads unjoinable on all paths
 
 * The desctructor for a joinable thread is invoked, execution of the program is terminated. The reason for this is beacause two other obvious options are argubly worse:
     1. An implicit join which could lead to performance anomalies.
@@ -726,7 +732,7 @@ detach-on-destruciton can lead to difficult-to-debug undefined behaviour
 
 declare std::thread objects last in lists of data memberss
 
-# 38: Be aware of varying thread handle destructor behavior
+## 38: Be aware of varying thread handle destructor behavior
 
 * Normal behavior of the destruction of a futute:
     * It just destroys the future object, doesn't join with anything, doesn't detach from anthing, doesn't run anything, and decrements the reference count inside the shared state.
@@ -742,7 +748,7 @@ Future destructors normally just destroy the future's data member.
 
 The final future referring to a shared state of a non-deferred task launched via std::async blokcs until the task complets, while destructors for all other futures simply destroy the future objects.
 
-# 39: Consider void futures for one-shot event communication
+## 39: Consider void futures for one-shot event communication
 
 * Two problems of condvar-based communication:
     1. Lost notification: The detecting task notifies the condvar before the reacting task waits, the reacting task will hang
@@ -760,12 +766,13 @@ condvar-flag-based can be used together, but the resulting communications mechan
 
 std::promise and futures dodges these issues, but approach uses heap memory for shared states, and it's limited to one-shot communication.
 
-# 40: use std::atomic for concurrency, volatitle for sepcial memory
+## 40: use std::atomic for concurrency, volatitle for sepcial memory
 std::atomic is for data accessed from multiple threads without using mutexes. It's a tool for writing concurrent software.
 
 volatile is for memory where reads and writes should not be optimized. It's a tool for working with special memory.
 
-# 41: Consider pass by value for compable parameters that are cheap to move and always copied
+# Chapter 8 Tweaks
+## 41: Consider pass by value for compable parameters that are cheap to move and always copied
 
 For copyable, cheap-to-move parameters that are always copied, pass by value may be nearly as efficient as pass by reference, it’s easier to implement, and it can generate less object code.
 
@@ -773,7 +780,7 @@ Copying parameters via construction may be significantly more expensive than cop
 
 Pass by value is subject to the slicing problem, so it’s typically inappropriate for base class parameter types.
 
-# 42: Consider emplacement instead of insertion
+## 42: Consider emplacement instead of insertion
 
 If all the following are true, emplacement will almost certainly outperform insertion:
 1. The value being added is constructed into the container, not assigned
