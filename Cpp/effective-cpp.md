@@ -214,9 +214,9 @@ Store newed object in smart pointers in standalone statements. Failure to do thi
     * Leak no resources
     * Don't allow data structures to became corrupted
 * Exception-safe functions offer one of three guarantees:
-    * Functions offering the basic guarantee promise that if an exception is thrown, everything in the program remains in a valid state.
-    * Functions offering the strong gurantee promise that if an exceptions is thrown, the state of the program is unchanged
-    * Functions offering the nothrow guarantee promise never to thrown exceptions, because they do what they promise to do.
+    * Functions offering the **basic guarantee** promise that if an exception is thrown, everything in the program remains in a valid state.
+    * Functions offering the **strong gurantee** promise that if an exceptions is thrown, the state of the program is unchanged
+    * Functions offering the **nothrow guarantee** promise never to thrown exceptions, because they do what they promise to do.
 * The strong guarantee can ofen be implemented via copy-and-swap but the strong guarantee is not practical for all functions
 
 # 30: Understand the ins and outs of inlining
