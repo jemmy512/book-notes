@@ -281,6 +281,14 @@ class A : public virtual Y, public virtual Z {};
     4. There are two general solutions to the first problem.
         1. Microsoft's compiler introduced the `virtual base class table`. Each class object with one or more virtual base classes has a pointer to the virtual base class table inserted within it.
         2. Bjarne's solution is to `place not the address but the offset` of the virtual base class within the virtual function table.
+            * Obejct layout & vtb laytout
+                ```c++
+                // object layout
+                clang -Xclang -fdump-record-layouts -stdlib=libc++ -std=c++17 -c model.cc
+
+                // vtb layout
+                clang -Xclang -fdump-vtable-layouts -stdlib=libc++ -std=c++17 -c model.cc
+                ```
             * ![cpp-virtual-inheritance.png](../Images/cpp-virtual-inheritance.png)
 
     5. In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no associated data members.
@@ -544,6 +552,7 @@ coord = &Point::y;                     // assign a value
 4. Pointer-to-Member Efficiency
 
 ## 4.5 Inline Function
+
 * There are two phases to the handling of an inline function:
     1. The analysis of the function definition to determine the "intrisic inline-ability" of the function. If the function is judged non-inlineable, due either to its complexity or its construction, it is turned into a static function and definition is generated within the module being compiled.
     2. The actual inline expansion of the funtion at a point of call. This involves arguement evaluation and management of temporaries.
