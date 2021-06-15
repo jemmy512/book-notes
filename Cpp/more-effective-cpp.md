@@ -3,7 +3,7 @@
 
 # 2: Prefer C++-style casts.
 * static_cast
-    * has basically the same power and meaning as the gen- eral-purpose C-style cast
+    * has basically the same power and meaning as the general-purpose C-style cast
 * const_cast
     *  is used to cast away the constness or volatileness of an expression
 * dynamic_cast
@@ -11,7 +11,7 @@
     * you use dynamic_cast to cast pointers or references to base class objects into pointers or references to derived or sibling base class objects in such a way that you can determine whether the casts succeeded
     * cannot be applied to types lacking virtual functions
 * reinterpret_cast
-    * is used to perform type conversions whose result is nearly al- ways implementation-defined
+    * is used to perform type conversions whose result is nearly always implementation-defined
     * As a result, reinterpret_casts are rarely portable
 
 
