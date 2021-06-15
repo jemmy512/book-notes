@@ -1,5 +1,5 @@
-
 # 0 Key Words
+
 constexpr:
 * Specifies that the value of a variable or function can apper in constant expression.
 
@@ -1345,6 +1345,7 @@ template <parameter-list > declaration;
     ```
 
 * `Member access` for the names used in a default template parameter is `checked at the declaration`, not at the point of use:
+
     ```c++
     class B {};
 
@@ -1383,7 +1384,7 @@ template <parameter-list > declaration;
 * An explicit instantiation declaration (an extern template) skips implicit instantiation step. This can be used to reduce compilation times by explicitly declaring a template instantiation in all but one of the source files using it, and explicitly defining it in the remaining file.
 * Explicit instantiation can only appear in the enclosing namespace of the template, unless it uses qualified-id
 * Explicit instantiation has no effect if an explicit specialization appeared before for the same set of template arguments
-* Only the `declaration is required` to be visible when `explicitly instantiating` a `function template`, a `variable template`, a `member function` or `static data member` of a class template, or a `member function template`. [TODO:? which declaration?]()
+* Only the `declaration is required` to be visible when `explicitly instantiating` a `function template`, a `variable template`, a `member function` or `static data member` of a class template, or a `member function template`.
 * The `complete definition` must appear before the `explicit instantiation` of a `class template`, a `member class` of a class template, or a `member class template`, unless an explicit specialization with the same template arguments appeared before.
 * When an explicit instantiation names a class template specialization, it serves as an explicit instantiation of the same kind (declaration or definition) of each of its `non-inherited non-template members` that has not been previously explicitly specialized in the translation unit. If this explicit instantiation is a definition, it is also an explicit instantiation definition only for the members that have been defined at this point.
 * Explicit instantiation definitions `ignore member access` specifiers: parameter types and return types may be private.
@@ -1615,13 +1616,13 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
         4. (`Parameters-Arguments Adjustment`) Each type from the list above from the parameter template is deduced. Before deduction begins, each parameter P of the parameter template and the corresponding argument A of the argument template is adjusted as follows:
             * If both P and A are `reference types` before, determine which is `more cv-qualified` (in all other cases, cv-qualificiations are ignored for partial ordering purposes)
             * If `P/A is a reference` type, it is replaced by the type referred to, `ignore reference`
-            * If `P/A is cv-qualified`, P/A is replaced with cv-unqualified version of itself, `ignore top level cv-qualifier`
+            * If `P/A is cv-qualified`, P/A is replaced with cv-unqualified version of itself, `ignore cv-qualifier`
         5. After these adjustments, deduction of P from A is done following `template argument deduction from a type`.
 * More specialized
     * If the argument A of the transformed template-1 `can be used to deduce` the corresponding parameter P of template-2, but not vice versa, then this A is more specialized than P with regards to the type(s) that are deduced by this P/A pair.
 
     * If deduction succeeds in both directions, and the original P and A were reference types, then additional tests are made:
-        * If A was `lvalue reference` and P was rvalue reference, A is considered to be more specialized than P
+        * If A was `lvalue reference` and P was `rvalue reference`, A is considered to be more specialized than P
         * If A was `more cv-qualified` than P, A is considered to be more specialized than P
 
     * In all other cases, neither template is more specialized than the other with regards to the type(s) deduced by this P/A pair.
@@ -3032,6 +3033,7 @@ class A<X, T*, I> {};   // #4: partial specialization where T2 is a pointer
     ```
 
 ### Members of partial specializations
+
 1. The `template parameter list` and the `template argument list` of a member of a partial specialization must `match` the parameter list and the argument list of the `partial specialization`.
 2. Just like with members of primary templates, they only need to be `defined if used` in the program.
 3. **Members of partial specializations are not related to the members of the primary template**.
