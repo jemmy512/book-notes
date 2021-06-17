@@ -1,26 +1,41 @@
 # Chapter 1 Deducing Types
 ## 01: Understand template type deduction
+
+When deducing the template type, three entities come into play: T, ParameterType, and expression.
 ```C++
 template<typename T>
-void foo(ParamType param);
+void foo(ParamterType param);
 foo(expr);
 ```
 
-Type of T depends on both types of ParamType and expr:
-1. ParamType is a pointer or reference, but not a universal reference (forwarding reference)
-    * If expr's type is a reference, ignore the reference part, also const
-    * Then pattern-match expr's type against ParamType to determin T
+Type of T depends on both types of ParamterType and expr:
+1. ParameterType is a Reference(&) or Pointer (*), but not a universal reference(&&) (forwarding reference)
+    * When expr is a reference, the reference is ignored (but added at the end).
+    * The expr matches the ParameterType and the resulting type becomes a reference. This means,
+        * an expr of type `int` becomes an `int&`
+        * an expr of type `const int` becomes a `const int&`
+        * an expr of type `const int&` becomes a `const int&`
     ```C++
     template<typename T>
     void foo(T& param);
 
-    int x = 27;         // T is int, ParamType is int&
-    cosnt int x = x;    // T is int, ParamType is int&
-    const int &x = x;   // T is int, ParamType is int&
+    int a = 27;         // T is int,        ParamterType is int&
+    const int b = a;    // T is const int,  ParamterType is const int&
+    const int& c = a;   // T is const int,  ParamterType is const int&
     ```
-2. ParamType is a universal type
-    * If expr is a lvalue, both T and ParamType are lvalue reference
-    * If expr is a rvalue, case 1 rules apply
+
+    ```C++
+    template<typename T>
+    void foo(const T& param);
+
+    int a = 27;         // T is int, ParamterType is const int&
+    const int b = a;    // T is int, ParamterType is const int&
+    const int& c = a;   // T is int, ParamterType is const int&
+    ```
+
+2. ParamterType is a universal type
+    * When expr is an `lvalue`, the resulting type becomes an `lvalue reference`.
+    * When expr is an `rvalue`, the resulting type becomes an `rvalue reference`.
     ```C++
     template<typename T>
     void foo(T&& param);    // param is now a universal reference
@@ -29,13 +44,13 @@ Type of T depends on both types of ParamType and expr:
     const int cx = x;
     const int &rx = x;
 
-    foo(x);     // x is lvalue, both T and ParamType are int&
-    foo(cx);    // x is lvalue, both T and ParamType are const int&
-    foo(rx);    // x is lvalue, both T and ParamType are const int&
-    foo(27);    // 27 is rvalue, T is int, ParamType is int&&
+    foo(x);     // x is lvalue, both T and ParamterType are int&
+    foo(cx);    // x is lvalue, both T and ParamterType are const int&
+    foo(rx);    // x is lvalue, both T and ParamterType are const int&
+    foo(27);    // 27 is rvalue, T is int, ParamterType is int&&
     ```
-3. ParamType is neigher a pointer nor a reference
-    In this case, we are dealing with pass-by-value, and ignore expr's reference-ness, constness and volatile.
+3. ParamterType is neigher a pointer nor a reference
+    * In this case, we are dealing with pass-by-value, and ignore expr's reference-ness, constness and volatile.
     ```C++
     template<typename T>
     void foo(T param);    // param is now passed by value
@@ -44,10 +59,10 @@ Type of T depends on both types of ParamType and expr:
     const int cx = x;
     const int &rx = x;
 
-    foo(x);     // both types of T and ParamType are int
-    foo(cx);    // both types of T and ParamType are int
-    foo(rx);    // both types of T and ParamType are int
-    foo(27);    // both types of T and ParamType are int
+    foo(x);     // both types of T and ParamterType are int
+    foo(cx);    // both types of T and ParamterType are int
+    foo(rx);    // both types of T and ParamterType are int
+    foo(27);    // both types of T and ParamterType are int
 
     const char * const ptr = "Hello World";
     foo(ptr);   // T is const char *, constess of what ptr points is preversed, but not the constness of ptr itself
@@ -78,6 +93,9 @@ Type of T depends on both types of ParamType and expr:
 Summary:
 1. During template type deduction, referenceness, constness and volatileness are ignored
 2. Array and function decay to pointers, unless they're used to initialize references
+
+Reference:
+* [Template Arguments](http://www.modernescpp.com/index.php/template-arguments)
 
 ## 02: Understand auto type deduction
 1. Auto type deduction is template type deduction.
