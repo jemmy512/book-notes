@@ -1,4 +1,4 @@
-# Architect & Design
+# Architecture & Design
 * [Designing Distributed Systems](./Arch/designing-distributed-systems.md)
 * [Grokking the System Design](./Arch/system-design.md)
 * [Grokking Advanced System Design](./Arch/system-design-advanced.md)
@@ -17,8 +17,8 @@
 * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
 
 # Software Engineering
-* [Clean Code](./CS/clean-code.md)
-* [Refactor v2](./CS/refactoring-2.md)
+* [Clean Code](./SE/clean-code.md)
+* [Refactor v2](./SE/refactoring-2.md)
 
 # C++
 * [C++ Core Guildlines](./Cpp/cpp-core-guidelines.md)
