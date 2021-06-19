@@ -1970,7 +1970,7 @@ int main() {
 #### A function call is attempted
 * If removing references and cv-qualifiers from P gives `std::initializer_list<P'>` and A is a braced-init-list, then deduction is performed for every element of the initializer list, taking P' as the parameter and the list element A' as the argument (C++11)
 
-* If removing references and cv-qualifiers from P gives `P'[N]`, and A is a non-empty braced-init-list, then deduction is performed as above, except if N is a non-type template parameter, it is deduced from the `length` of the initializer list: (C++11)
+* If removing references and cv-qualifiers from P gives `P'[N]`, and A is a non-empty braced-init-list, then deduction is performed as above, except **if N is a non-type template parameter, it is deduced from the `length` of the initializer list: (C++11)**
     ```c++
     template<class T, int N> void h(T const(&)[N]);
     h({1, 2, 3}); // deduced T = int, deduced N = 3
