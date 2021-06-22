@@ -273,7 +273,10 @@ For an unsigned number x, the result of truncating it to k bits is equivalent to
 
 # 3 Machine-Level Representation of Programs
 
+## 3.1 A Historical Perspective
+
 ## 3.2 Program Encodings
+
 ### 3.2.1 Machine-Level Code
 * Registers:
     * The **program counter** (commonly referred to as the “PC,” and called %eip in IA32) indicates the address in memory of the next instruction to be executed.
@@ -298,7 +301,7 @@ Due to its origins as a 16-bit architecture that expanded into a 32-bit one, Int
 
 * Some instructions use fixed registers as sources and/or destinations.
 
-* Within procedures there are different conventions for saving and restoring the first three registers (%eax, %ecx, and %edx) than for the next three (%ebx, %edi, and %esi).
+* Within procedures there are different conventions for saving and restoring the first three registers (%eax, %ecx, and %edx) than for the next three (%ebx, %edi, and %esi). See Section 3.7.3 for this kind of conventions.
 * The low-order 2 bytes of the first four registers can be independently read or written by the byte operation instructions.
 
 * When a byte instruction updates one of these single-byte “register elements,” the remaining 3 bytes of the register do not change.
@@ -1649,8 +1652,8 @@ Value | Name | Meaning
 * ![](../Images/CSAPP/5.7-block-diagram-modern-processor.png)
 * It is described in the industry as being `superscalar`, which means it can perform multiple operations on every clock cycle, and `out-of-order`, meaning that the order in which instructions execute need not correspond to their ordering in the machine-level program.
 * The overall design has two main parts:
-    * the instruction control unit (ICU), which is responsible for reading a sequence of instructions from memory and generating from these a set of primitive operations to perform on program data
-    * the execution unit (EU), which then executes these operations.
+    * the **instruction control unit (ICU)**, which is responsible for reading a sequence of instructions from memory and generating from these a set of primitive operations to perform on program data
+    * the **execution unit (EU)**, which then executes these operations.
 * The ICU reads the instructions from an instruction cache—a special highspeed memory containing the most recently accessed instructions. In general, the ICU fetches well ahead of the currently executing instructions, so that it has enough time to decode these and send operations down to the EU.
 * Modern processors employ a technique known as **branch prediction**, in which they guess whether or not a branch will be taken and also predict the target address for the branch. Using a technique known as **speculative execution**, the processor begins fetching and decoding instructions at where it predicts the branch will go, and even begins executing these operations before it has been determined whether or not the branch prediction was correct.
     * Branch operations are sent to the EU, not to determine where the branch should go, but rather to determine whether or not they were predicted correctly.
@@ -1659,7 +1662,7 @@ Value | Name | Meaning
 * The `EU` receives operations from the instruction fetch unit. Typically, it can receive a number of them on each clock cycle. These operations are dispatched to a set of functional units that perform the actual operations. These functional units are specialized to handle specific types of operations.
 * The `retirement unit` keeps track of the ongoing processing and makes sure that it obeys the sequential semantics of the machine-level program.
 * Any updates to the `program registers` occur only as instructions are being retired, and this takes place only after the processor can be certain that any branches leading to this instruction have been correctly predicted.
-* To expedite the communication of results from one instruction to another, much of this information is exchanged among the execution units, shown as `Operation results`. As the arrows in the figure show, the execution units can send results directly to each other. This is a more elaborate form of the data forwarding techniques.
+* To expedite the communication of results from one instruction to another, much of this information is exchanged among the execution units, shown as `Operation results`. As the arrows in the figure show, the execution units can send results directly to each other. This is a more elaborate form of the **data forwarding techniques**.
 * The most common mechanism for controlling the communication of operands among the execution units is called **register renaming**.
 
 ### 5.7.2 Functional Unit Performance
@@ -1695,7 +1698,7 @@ Value | Name | Meaning
         * we can classify the registers that are accessed into four categories:
             * Read-only: These are used as source values, either as data or to compute memory addresses, but they are not modified within the loop. The readonly registers for the loop combine4 are %rax and %rcx.
             * Write-only: These are used as the destinations of data-movement operations. There are no such registers in this loop.
-            * Local: Theseareupdatedandusedwithintheloop,butthereisnodependency from one iteration to another. The condition code registers are examples for this loop: they are updated by the cmp operation and used by the jg operation, but this dependency is contained within individual iterations.
+            * Local: These are updated and used within the loop, but there is no dependency from one iteration to another. The condition code registers are examples for this loop: they are updated by the cmp operation and used by the jg operation, but this dependency is contained within individual iterations.
             * Loop: These are both used as source values and as destinations for the loop, with the value generated in one iteration being used in another. We can see that %rdx and %xmm0 are loop registers for combine4, corresponding to program values i and acc.
         * As we will see, the chains of operations between loop registers determine the performance-limiting data dependencies.
     * ![](../Images/CSAPP/5.7.3-inner-loop-data-flow-1.png)
@@ -1712,7 +1715,7 @@ Value | Name | Meaning
 
 ## 5.8 Loop Unrolling
 * Loop unrolling is a program transformation that reduces the number of iterations for a loop by increasing the number of elements computed on each iteration.
-* Loop unrolling can improve performance in two ways.
+* Loop unroelling can improve performance in two ways.
     1. it reduces the number of operations that do not contribute directly to the program result, such as loop indexing and conditional branching.
     2. it exposes ways in which we can further transform the code to reduce the number of operations in the critical paths of the overall computation.
 *   Code
@@ -1753,7 +1756,7 @@ Value | Name | Meaning
 * At this point, our functions have hit the bounds imposed by the latencies of the arithmetic units. As we have noted, however, the functional units performing addition and multiplication are all fully pipelined, meaning that they can start new operations every clock cycle.
 
 ### 5.9.1 Multiple Accumulators
-* For a combining operation that is associative and commutative, such as integer addition or multiplication, we can improve performance by splitting the set of combining operations into two or more parts and combining the results at the end.
+* For a combining operation that is **associative** and **commutative**, such as integer addition or multiplication, we can improve performance by splitting the set of combining operations into two or more parts and combining the results at the end.
     * Code
         ```c++
         void combine6(vec_ptr v, data_t *dest) {
@@ -1866,7 +1869,7 @@ Value | Name | Meaning
 * Do Not Be Overly Concerned about Predictable Branches
 
 * Write Code Suitable for Implementation with Conditional Moves
-    * For inherently unpredictable cases, program performance can be greatly enhanced if the compiler is able to generate code using `conditional data transfers` rather than conditional control transfers.
+    * For inherently unpredictable cases, program performance can be greatly enhanced if the compiler is able to generate code using **conditional data transfers** rather than **conditional control transfers**.
     * We have found that gcc is able to generate conditional moves for code written in a more **functional** style, where we use conditional operations to compute values and then update the program state with these values, as opposed to a more **imperative** style, where we use conditionals to selectively update program state.
     * functional style
         ```c++
@@ -1977,22 +1980,22 @@ Value | Name | Meaning
 ###  Practice Problem 5.10 [TODO]
 
 ## 5.13 Life in the Real World: Performance Improvement Techniques
-1. **High-level design**. Choose appropriate algorithms and data structures for the problem at hand. Be especially vigilant to avoid algorithms or coding techniques that yield asymptotically poor performance.
+1. **High-level design**. Choose appropriate `algorithms` and `data structures` for the problem at hand. Be especially vigilant to avoid algorithms or coding techniques that yield asymptotically poor performance.
 2. **Basic coding principles**. Avoid optimization blockers so that a compiler can generate efficient code.
-    * Eliminate excessive function calls. Move computations out of loops when possible. Consider selective compromises of program modularity to gain greater efficiency.
-    * Eliminate unnecessary memory references. Introduce temporary variables to hold intermediate results. Store a result in an array or global variable only when the final value has been computed.
+    * `Eliminate excessive function calls`. Move computations out of loops when possible. Consider selective compromises of program modularity to gain greater efficiency.
+    * `Eliminate unnecessary memory references`. Introduce temporary variables to hold intermediate results. Store a result in an array or global variable only when the final value has been computed.
 3. **Low-level optimizations**.
-    * Unroll loops to reduce overhead and to enable further optimizations. Find ways to increase instruction-level parallelism by techniques such as multiple accumulators and reassociation.
-    * Rewrite conditional operations in a functional style to enable compilation via conditional data transfers.
+    * `Unroll loops` to reduce overhead and to enable further optimizations. Find ways to increase instruction-level parallelism by techniques such as `multiple accumulators` and `reassociation`.
+    * Rewrite conditional operations in a functional style to enable compilation via `conditional data transfers`.
 
 ## 5.14 Identifying and Eliminating Performance Bottlenecks
 ### 5.14.1 Program Profiling
 * Program profiling involves running a version of a program in which instrumentation code has been incorporated to determine how much time the different parts of the program require.
 
 ## 5.15 Summary
-* We have studied a series of techniques, including loop unrolling, creating multiple accumulators, and reassociation, that can exploit the instruction-level parallelism provided by modern processors.
-* Try to make branches more predictable or make them amenable to implementation using conditional data transfers
-* We must also watch out for the interactions between store and load operations. Keeping values in local variables, allowing them to be stored in registers, can often be helpful.
+* We have studied a series of techniques, including `loop unrolling`, creating `multiple accumulators`, and `reassociation`, that can exploit the instruction-level parallelism provided by modern processors.
+* Try to make branches more predictable or make them amenable to implementation using `conditional data transfers`
+* We must also watch out for the interactions between `store and load operations`. Keeping values in local variables, allowing them to be stored in registers, can often be helpful.
 * Code profilers and related tools can help us systematically evaluate and improve program performance.
 * Amdahl’s law provides a simple but powerful insight into the performance gains obtained by improving just one part of the system.
 
