@@ -913,9 +913,9 @@ Value | Name | Meaning
 
 ## 4.2 Logic Design and the Hardware Control Language HCL
 * Three major components are required to implement a digital system:
-    * combinational logic to compute functions on the bits
-    * memory elements to store bits
-    * clock signals to regulate the updating of the memory elements
+    * combinational logic to **compute** functions on the bits
+    * memory elements to **store** bits
+    * clock signals to **regulate** the updating of the memory elements
 
 ### 4.2.1 Logic Gates
 ![](../Images/CSAPP/4.2.1-logic-gate-types.png)
@@ -925,7 +925,7 @@ Value | Name | Meaning
 ### 4.2.2 Combinational Circuits and HCL Boolean Expressions
 * Since a combinational circuit consists of a series of logic gates, it has the property that the outputs continually respond to changes in the inputs. If some input to the circuit changes, then after some delay, the outputs will change accordingly. In contrast, a C expression is only evaluated when it is encountered during the execution of a program.
 * Logical expressions in C allow arguments to be arbitrary integers, interpreting 0 as false and anything else as true. In contrast, our logic gates only operate over the bit values 0 and 1.
-* Logical expressions in C have the property that they might only be partially evaluated. If the outcome of an And or Or operation can be determined by just evaluating the first argument, then the second argument will not be evaluated. In contrast, combinational logic does not have any partial evaluation rules.
+* Logical expressions in C have the property that they might only be partially evaluated. If the outcome of an And or Or operation can be determined by just evaluating the first argument, then the second argument will not be evaluated. In contrast, combinational logic does not have any **partial evaluation rules**.
 
 ### 4.2.3 Word-Level Combinational Circuits and HCL Integer Expressions
 ![](../Images/CSAPP/4.2.3-work-level-combinational-circuits.png)
@@ -987,23 +987,17 @@ Value | Name | Meaning
 * **PC update**: The PC is set to the address of the next instruction.
 
 * opl, rrmovl, irmolv implementation
-    * ![](../Images/CSAPP/4.3.1-opl-rrmovl-irmolv-imp.png)
     * ![](../Images/CSAPP/4.3.1-opl-rrmovl-irmolv-imp-empl.png)
-
 * rmmovl, mrmovl implementation
-    * ![](../Images/CSAPP/4.3.1-rmmovl-mrmovl-imp.png)
     * ![](../Images/CSAPP/4.3.1-rmmovl-mrmovl-imp-empl.png)
 * push, pop implementation
-    * ![](../Images/CSAPP/4.3.1-push-pop-impl.png)
     * ![](../Images/CSAPP/4.3.1-push-pop-impl-empl.png)
 * jmp, call, ret implementation
-    * ![](../Images/CSAPP/4.3.1-jmp-call-ret-impl.png)
     * ![](../Images/CSAPP/4.3.1-jmp-call-ret-impl-empl.png)
     * ![](../Images/CSAPP/4.3.1-jmp-call-ret-impl-empl-2.png)
 
 ### 4.3.2 SEQ Hardware Structure
 ![](../Images/CSAPP/4.3.2-abstract-view-seq-sequential-impl.png)
-
 ![](../Images/CSAPP/4.3.2-detailed-view-seq-sequential-impl.png)
 
 
@@ -1051,7 +1045,7 @@ Value | Name | Meaning
     * ![](../Images/CSAPP/4.3.4-decode-write-back-stage.png)
     * Code
         ```c++
-        \# Code from SEQ
+        # Code from SEQ
         int srcA = [
             icode in { IRRMOVL, IRMMOVL, IOPL, IPUSHL  } : rA;
             icode in { IPOPL, IRET } : RESP;
@@ -1190,19 +1184,11 @@ Value | Name | Meaning
     ![](../Images/CSAPP/4.5.2-inserting-pipeline-registers.png)
 * The pipeline registers are labeled as follows:
     * **F** holds a predicted value of the program counter, as will be discussed shortly.
-    * **D** sitsbetweenthefetchanddecodestages.Itholdsinformationaboutthemost recently fetched instruction for processing by the decode stage.
+    * **D** sits between the fetch and decode stages. It holds information about the most recently fetched instruction for processing by the decode stage.
     * **E** sits between the decode and execute stages. It holds information about the most recently decoded instruction and the values read from the register file for processing by the execute stage.
     * **M** sits between the execute and memory stages. It holds the results of the most recently executed instruction for processing by the memory stage. It also holds information about branch conditions and branch targets for processing conditional jumps.
-    * **W**sits between the memory stage and the feedback paths that supply the computed results to the register file for writing and the return address to the PC selection logic when completing a ret instruction.
+    * **W** sits between the memory stage and the feedback paths that supply the computed results to the register file for writing and the return address to the PC selection logic when completing a ret instruction.
 * Example of instruction flow through pipeline.
-    * Code
-        ```
-        irmovl  $1, %eax    # I1
-        irmovl  $2, %ebx    # I2
-        irmolv  $3, %ecx    # I3
-        irmovl  $4, $edx    # I4
-        halt                # I5
-        ```
     * ![](../Images/CSAPP/4.5.2-empl-instruction-flow-throuhg-pipeline.png)
 
 ### 4.5.3 Rearranging and Relabeling Signals
@@ -1307,12 +1293,12 @@ Value | Name | Meaning
     * an instruction with an invalid combination of instruction and function code
     * an attempt to access an invalid address, either for instruction fetch or data read or write
 *  In a pipelined system, exception handling involves several subtleties:
-    * First, it is possible to have exceptions triggered by multiple instructions simultaneously.
+    * 1. it is possible to have exceptions triggered by multiple instructions **simultaneously**.
         * E.g., during one cycle of pipeline operation, we could have a halt instruction in the fetch stage, and the data memory could report an out-of-bounds data address for the instruction in the memory stage.
         * We must determine which of these exceptions the processor should report to the operating system.
         * The basic rule is to put priority on the exception triggered by the instruction that is furthest along the pipeline.
-    * A second subtlety occurs when an instruction is first fetched and begins execution, causes an exception, and later is canceled due to a mispredicted branch.
-    * A third subtlety arises because a pipelined processor updates different parts of the system state in different stages. It is possible for an instruction following one causing an exception to alter some part of the state before the excepting instruction completes.
+    * 2. subtlety occurs when an instruction is first fetched and begins execution, causes an exception, and later is canceled due to a **mispredicted** branch.
+    * 3. arises because a pipelined processor updates different parts of the system state in different stages. It is possible for an instruction following one causing an exception to **alter** some part of the state before the excepting instruction completes.
         * E.g.,
             * Code
                 ```
@@ -1474,8 +1460,8 @@ Value | Name | Meaning
             * the **program state** is updated in three different stages (**execute, memory, and write-back**)
         * When an exception occurs, we record that information as part of the instruction’s status and continue fetching, decoding, and executing instructions as if nothing were amiss. As the excepting instruction reaches the memory stage, we take steps to prevent later instructions from modifying programmer-visible state by
             * disabling the setting of condition codes by instructions in the execute stage
-        * injecting bubbles into the memory stage to disable any writing to the data memory
-        * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
+            * injecting bubbles into the memory stage to disable any writing to the data memory
+            * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
 
 * Detecting Special Control Conditions
     *   Condition | Trigger
@@ -1485,10 +1471,10 @@ Value | Name | Meaning
             Mispredicted branch | E icode = IJXX && !e Cnd
             Exception | m stat ∈ {SADR, SINS, SHLT} || W stat ∈ {SADR, SINS, SHLT}
         * Four different conditions require altering the pipeline flow by either stalling the pipeline or canceling partially executed instructions.
-    * Detecting a `ret` instruction as it passes through the pipeline simply involves checking the instruction codes of the instructions in the decode, execute, and memory stages
-    * Detecting a `load/use hazard` involves checking the instruction type (mrmovl or popl) of the instruction in the execute stage and comparing its destination register with the source registers of the instruction in the decode stage.
-    * The pipeline control logic should detect a `mispredicted branch` while the jump instruction is in the execute stage, so that it can set up the conditions required to recover from the misprediction as the instruction enters the memory stage. When a jump instruction is in the execute stage, the signal e_Cnd indicates whether or not the jump should be taken.
-    * We detect an `excepting` instruction by examining the instruction status values in the memory and write-back stages. For the memory stage, we use the signal m_stat, computed within the stage, rather than M_stat from the pipeline register. This internal signal incorporates the possibility of a data memory address error.
+    * Detecting a `ret` instruction as it passes through the pipeline simply involves checking the instruction codes of the instructions in the **decode**, **execute**, and **memory** stages
+    * Detecting a `load/use hazard` involves checking the instruction type (mrmovl or popl) of the instruction in the **execute** stage and comparing its destination register with the source registers of the instruction in the **decode** stage.
+    * The pipeline control logic should detect a `mispredicted branch` while the jump instruction is in the **execute** stage, so that it can set up the conditions required to recover from the misprediction as the instruction enters the **memory** stage. When a jump instruction is in the execute stage, the signal e_Cnd indicates whether or not the jump should be taken.
+    * We detect an `excepting` instruction by examining the instruction status values in the **memory** and **write-back** stages. For the memory stage, we use the signal m_stat, computed within the stage, rather than M_stat from the pipeline register. This internal signal incorporates the possibility of a data memory address error.
 
 * Pipeline Control Mechanisms
     * Low-level mechanisms that allow the pipeline control logic to hold back an instruction in a pipeline register or to inject a bubble into the pipeline.
@@ -2457,7 +2443,7 @@ ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
 ## 7.11 Loading and Linking Shared Libraries from Applications
 * Code
     ```c++
-    \#include <dlfcn.h>
+    #include <dlfcn.h>
     void *dlopen(const char *filename, int flag); // RTLD_GLOBAL, RTLD_NOW, RTLD_LAZY
     void *dlsym(void *handle, char *symbol);
     int dlclose (void *handle);
@@ -2584,7 +2570,7 @@ If the parent process terminates without reaping its zombie children, the kernel
 ### 8.4.5 Loading and Running Programs
 * Code
     ```c++
-    \#include <unistd.h>
+    #include <unistd.h>
     int execve(const char *filename, const char *argv[], const char *envp[]);
     ```
 * Unlike fork, which is called once but returns twice, execve is called once and never returns.
@@ -3090,7 +3076,7 @@ I/O devices include human interface devices (HIDs), network interfaces, and stor
 ### 12.3.7 Initializing Threads
 * Code
     ```c++
-    \#include <pthread.h>
+    #include <pthread.h>
     pthread_once_t once_control = PTHREAD_ONCE_INIT;
     int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
     ```
