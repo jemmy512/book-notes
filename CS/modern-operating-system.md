@@ -262,10 +262,10 @@ Processes may call the procedures in a monitor whenever they want to, but they c
 
 ##### Process Behavior
 ##### When to Schedule
-1. when a new process is created, a decision needs to be made whether to run the parent process or the child process.
-2. a scheduling decision must be made when a process exits.
-3. when a process blocks on I/O, on a semaphore, or for some other reason, another process has to be selected to run.
-4. when an I/O interrupt occurs, a scheduling decision may be made.
+1. when a new process is **created**, a decision needs to be made whether to run the parent process or the child process.
+2. a scheduling decision must be made when a process **exits**.
+3. when a process **blocks** on I/O, on a semaphore, or for some other reason, another process has to be selected to run.
+4. when an I/O **interrupt** occurs, a scheduling decision may be made.
 
 Scheduling algorithms can be divided into two categories with respect to how they deal with clock interrupts:
 1. A **nonpreemptive** scheduling algorithm picks a process to run and then just lets it run until it blocks or voluntarily releases the CPU. Even if it runs for many hours, it will not be forcibly suspended.
@@ -636,7 +636,7 @@ The information in the process descriptor:
 8. Kernel stack. A fixed stack for use by the kernel part of the process.
 9. Miscellaneous. Current process state, event being waited for, if any, time until alarm clock goes off, PID, PID of the parent process, and user and group identification.
 
-![Linux Process](../Images/linux-process.png)
+![Linux Process](../Images/LinuxKernel/kernel-process.png)
 
 ##### Threads in Linux
 Some of the challenging decisions present in multithreaded systems:
@@ -684,7 +684,7 @@ In order to avoid wasting CPU cycles for servicing the timer interrupt, the kern
 
 Historically, a popular Linux scheduler was the Linux **O(1) scheduler**.
 
-![Linux RunQueue](../Images/linux-runqueue.png)
+![Linux RunQueue](../Images/LinuxKernel/kernel-runqueue.png)
 1. Selects a task from the highest-priority list in the active array
 2. If that task’s timeslice (quantum) expires, it is moved to the expired list (potentially at a different priority level).
 3. If the task blocks, for instance to wait on an I/O event, before its timeslice expires, once the event occurs and its execution can resume, it is placed back on the original active array, and its timeslice is decremented to reflect the CPU time it already used.
@@ -758,7 +758,7 @@ Reference: https://time.geekbang.org/column/article/93396
 
 ### 10.4 MEMORY MANAGEMENT IN LINUX
 #### 10.4.1 Fundamental Concepts
-![linux adress space](../Images/linux-address-space.png)
+![linux adress space](../Images/LinuxKernel/kernel-address-space.png)
 All the variables in the BSS(Block Stared By Symbol) part are initialized to zero after loading.
 
 When a program starts up, its stack is not empty. Instead, it contains all the environment (shell) variables as well as the command line typed to the shell to invoke it.
@@ -767,9 +767,9 @@ When a program starts up, its stack is not empty. Instead, it contains all the e
 The kernel memory typically resides in low physical memory but it is mapped in the top 1 GB of each process virtual address space, between addresses 0xC0000000 and 0xFFFFFFFF (3–4 GB).
 
 ##### Physical Memory Management
-![UNMA Node](../Images/linux-mem-numa-node.jpg)
+![UNMA Node](../Images/LinuxKernel/kernel-mem-physic-numa-1.png)
 
-![Linux Memory Zone](../Images/linux-memory-zone.png)
+![Linux Memory Zone](../Images/LinuxKernel/kernel-memory-zone.png)
 
 1. ZONE_DMA and ZONE_DMA32: pages that can be used for DMA.
 2. ZONE_NORMAL: normal, regularly mapped pages.
@@ -783,7 +783,7 @@ Each zone Linux maintains a `zone descriptor`, which contains information about 
 
 
 ##### Memory-Allocation Mechanisms
-![linux-mem-buddy-slab-system.png](../Images/linux-mem-buddy-slab-system.png)
+![](../Images/LinuxKernel/kernel-mem-mng.png)
 1. buddy algorithm
 2. slab algorithm, is to alleviate the internal fragmentation problem of buddy algorithm, which takes chunks using the buddy algorithm but then carves slabs (smaller units) from them and manages the smaller units separately.
 
