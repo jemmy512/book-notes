@@ -1,4 +1,5 @@
 # 1 A Tour of Computer System
+
 ## 1.1 Information Is Bits + Context
 The source program is a sequence of bits, each with a value of 0 or 1, organized in 8-bit chunks called bytes. Each byte represents some text character in the program.
 
@@ -2246,6 +2247,20 @@ as [other arguments] -o /tmp/main.o /tmp/main.s
  * along with the necessary system object files, to create the executable object file p: */
 
 ld -o p [system object files and args] /tmp/main.o /tmp/swap.o
+```
+
+```
+// static link
+gcc -c addvec.c multvec.c
+ar rcs libvector.a addvec.o multvec.o
+gcc -O2 -c main2.c
+gcc -static -o p2 main2.o ./libvector.a
+```
+
+```c++
+// dynamic link
+gcc -shared -fPIC -o libvector.so addvec.c multvec.c
+gcc -o p2 main2.c ./libvector.so
 ```
 
 ## 7.2 Static Linking
