@@ -130,6 +130,31 @@ static int run_init_process(const char *init_filename)
 ![linux-init-cpu-arch.png](../Images/LinuxKernel/kernel-init-cpu-arch.png)
 
 ### syscall
+
+#### glibc
+```c++
+int open(const char *pathname, int flags, mode_t mode)
+
+// syscalls.list
+// File name Caller  Syscall name    Args    Strong name    Weak names
+      open    -        open          i:siv   __libc_open   __open open
+```
+```C++
+// syscall-template.S
+T_PSEUDO (SYSCALL_SYMBOL, SYSCALL_NAME, SYSCALL_NARGS)
+    ret
+T_PSEUDO_END (SYSCALL_SYMBOL)
+
+#define T_PSEUDO(SYMBOL, NAME, N)    PSEUDO (SYMBOL, NAME, N)
+
+#define PSEUDO(name, syscall_name, args)   \
+  .text;                                  \
+  ENTRY (name)                            \
+    DO_CALL (syscall_name, args);         \
+    cmpl $-4095, %eax;                    \
+    jae SYSCALL_ERROR_LABEL
+```
+
 #### 32
 ```C++
 /* Linux takes system call arguments in registers:
@@ -143,7 +168,7 @@ static int run_init_process(const char *init_filename)
 #define DO_CALL(syscall_name, args) \
     PUSHARGS_##args                \
     DOARGS_##args                  \
-    movl $SYS_ify (syscall_name), %eax; \
+    movl $SYS_ify (syscall_name), %eax; \ // get syscall id by syscall_name
     ENTER_KERNEL                        \
     POPARGS_##args
 
@@ -187,19 +212,18 @@ static  void do_syscall_32_irqs_on(struct pt_regs *regs)
 /* The Linux/x86-64 kernel expects the system call parameters in
   registers according to the following table:
     syscall number  rax
-    arg 1    rdi
-    arg 2    rsi
-    arg 3    rdx
-    arg 4    r10
-    arg 5    r8
-    arg 6    r9 */
+    arg 1           rdi
+    arg 2           rsi
+    arg 3           rdx
+    arg 4           r10
+    arg 5           r8
+    arg 6           r9 */
 #define DO_CALL(syscall_name, args)  \
   lea SYS_ify (syscall_name), %rax; \
   syscall
 
 /* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
 wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
-
 
 ENTRY(entry_SYSCALL_64)
   /* Construct struct pt_regs on stack */
@@ -247,16 +271,17 @@ END(entry_SYSCALL_64)
   swapgs;              \
   sysretq;
 
-/* entry_SYSCALL64_slow_pat -> do_syscall_64 */
+/* entry_SYSCALL_64 -> entry_SYSCALL64_slow_pat -> do_syscall_64 */
 void do_syscall_64(struct pt_regs *regs)
 {
   struct thread_info *ti = current_thread_info();
   unsigned long nr = regs->orig_ax;
 
   if (likely((nr & __SYSCALL_MASK) < NR_syscalls)) {
-    regs->ax = sys_call_table[nr & __SYSCALL_MASK](
+    regs->ax = sys_call_table[nr & __SYSCALL_MASK] (
       regs->di, regs->si, regs->dx,
-      regs->r10, regs->r8, regs->r9);
+      regs->r10, regs->r8, regs->r9
+    );
   }
 
   syscall_return_slowpath(regs);
@@ -292,7 +317,7 @@ export LD_LIBRARY_PATH=.
 ![linux-proc-elf-executable.png](../Images/LinuxKernel/kernel-proc-elf-executable.png)
 
 3. elf: shared object
-![linux-proc-elf-sharedobj.png](../Images/LinuxKernel/kernel-proc-elf-sharedobj.png)
+![linux-proc-elf-sharedobj.png]()
 
 ```C++
 struct linux_binfmt {
@@ -400,6 +425,7 @@ struct task_struct {
   struct sched_rt_entity    rt;
   struct sched_dl_entity    dl;
   struct task_group         *sched_task_group;
+  unsigned int              policy;
 
   /* CPU-specific state of this task: */
   struct thread_struct      thread;
@@ -669,7 +695,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
       load_new_mm_cr3(next->pgd, new_asid, true);
     } else {
       load_new_mm_cr3(next->pgd, new_asid, false);
-   }
+    }
 
     /* Make sure we write CR3 before loaded_mm. */
     barrier();
