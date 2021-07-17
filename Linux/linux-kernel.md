@@ -201,7 +201,80 @@ static  void do_syscall_32_irqs_on(struct pt_regs *regs)
       (unsigned int)regs->dx, (unsigned int)regs->si,
       (unsigned int)regs->di, (unsigned int)regs->bp);
   }
+  
   syscall_return_slowpath(regs);
+}
+
+inline void syscall_return_slowpath(struct pt_regs *regs)
+{
+  struct thread_info *ti = current_thread_info();
+  u32 cached_flags = READ_ONCE(ti->flags);
+
+  if (IS_ENABLED(CONFIG_PROVE_LOCKING) &&
+      WARN(irqs_disabled(), "syscall %ld left IRQs disabled", regs->orig_ax))
+    local_irq_enable();
+
+  rseq_syscall(regs);
+
+  if (unlikely(cached_flags & SYSCALL_EXIT_WORK_FLAGS))
+    syscall_slow_exit_work(regs, cached_flags);
+
+  local_irq_disable();
+  prepare_exit_to_usermode(regs);
+}
+
+inline void prepare_exit_to_usermode(struct pt_regs *regs)
+{
+  struct thread_info *ti = current_thread_info();
+  u32 cached_flags;
+
+  addr_limit_user_check();
+
+  cached_flags = READ_ONCE(ti->flags);
+
+  if (unlikely(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
+    exit_to_usermode_loop(regs, cached_flags);
+
+  user_enter_irqoff();
+
+  mds_user_clear_cpu_buffers();
+}
+
+void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
+{
+  while (true) {
+    local_irq_enable();
+
+    if (cached_flags & _TIF_NEED_RESCHED)
+      schedule();
+
+    if (cached_flags & _TIF_UPROBE)
+      uprobe_notify_resume(regs);
+
+    if (cached_flags & _TIF_PATCH_PENDING)
+      klp_update_patch_state(current);
+
+    /* deal with pending signal delivery */
+    if (cached_flags & _TIF_SIGPENDING)
+      do_signal(regs);
+
+    if (cached_flags & _TIF_NOTIFY_RESUME) {
+      clear_thread_flag(TIF_NOTIFY_RESUME);
+      tracehook_notify_resume(regs);
+      rseq_handle_notify_resume(NULL, regs);
+    }
+
+    if (cached_flags & _TIF_USER_RETURN_NOTIFY)
+      fire_user_return_notifiers();
+
+    /* Disable IRQs and retry */
+    local_irq_disable();
+
+    cached_flags = READ_ONCE(current_thread_info()->flags);
+
+    if (!(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
+      break;
+  }
 }
 ```
 ![linux-init-syscall-32.png](../Images/LinuxKernel/kernel-init-syscall-32.png)
@@ -455,12 +528,12 @@ struct sched_entity {
   struct load_weight  load;
   struct rb_node      run_node; /* in {cfs, rt, dl}_rq */
   struct list_head    group_node;
-  unsigned int      on_rq;
-  u64        exec_start;
-  u64        sum_exec_runtime;
-  u64        vruntime;
-  u64        prev_sum_exec_runtime;
-  u64        nr_migrations;
+  unsigned int        on_rq;
+  u64                 exec_start;
+  u64                 sum_exec_runtime;
+  u64                 vruntime;
+  u64                 prev_sum_exec_runtime;
+  u64                 nr_migrations;
   struct sched_statistics    statistics;
 };
 
@@ -550,7 +623,7 @@ const struct sched_class fair_sched_class = {
 
 #### voluntary schedule
 ```c++
-asmlinkage __visible void __sched schedule(void)
+void schedule(void)
 {
   struct task_struct *tsk = current;
 
@@ -726,7 +799,9 @@ ENTRY(__switch_to_asm)
   pushl  %esi
   pushfl
 
-  /* 2.1 switch kernel sp */
+  /* 2.1 switch kernel sp
+   * save old value from esp to prev task
+   * load new value from thread_struct of next task to esp */
   movl  %esp, TASK_threadsp(%eax)
   movl  TASK_threadsp(%edx), %esp
 
@@ -754,7 +829,7 @@ struct task_struct * __switch_to(
   /* 3. swtich kernel stack */
   this_cpu_write(current_task, next_p);
 
-  /* 4. switch kernel esp
+  /* 4. load new thread_stuct from next task
    * TSS(Task State Segment) TR(Task Register) */
   struct tss_struct *tss = &per_cpu(cpu_tss, cpu);
   /* Reload esp0 and ss1.  This changes current_thread_info(). */
@@ -2003,8 +2078,10 @@ struct free_area  free_area[MAX_ORDER];
 ```
 ![linux-mem-buddy-freepages.png](../Images/LinuxKernel/kernel-mem-buddy-freepages.png)
 
-### alloc_pages
+#### alloc_pages
 ```C++
+#define alloc_page(gfp_mask) alloc_pages(gfp_mask, 0)
+
 static inline struct page* alloc_pages(gfp_t gfp_mask, unsigned int order)
 {
   return alloc_pages_current(gfp_mask, order);
@@ -2320,7 +2397,15 @@ struct kmem_cache_node {
 
 ![linux-mem-kmem-cache.png](../Images/LinuxKernel/kernel-mem-kmem-cache.png)
 
+#### slab_alloc
+
 ```C++
+static __always_inline void *slab_alloc(
+  struct kmem_cache *s, gfp_t gfpflags, unsigned long addr)
+{
+  return slab_alloc_node(s, gfpflags, NUMA_NO_NODE, addr);
+}
+
 // alloc_task_struct_node -> kmem_cache_alloc_node
 static void *slab_alloc_node(struct kmem_cache *s,
     gfp_t gfpflags, int node, unsigned long addr)
@@ -2526,7 +2611,7 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
   else
     page = __alloc_pages_node(node, flags, order);
 
-  if (page && charge_slab_page(page, flags, order, s)) {
+  if (page && memcg_charge_slab(page, flags, order, s)) {
     __free_pages(page, order);
     page = NULL;
   }
@@ -2540,9 +2625,9 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 
 ![linux-mem-mng.png](../Images/LinuxKernel/kernel-mem-mng.png)
 
-### Reference:
-[slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
-[Slub allocator](https://www.cnblogs.com/LoyenWang/p/11922887.html)
+* Reference:
+  * [slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
+  * [Slub allocator](https://www.cnblogs.com/LoyenWang/p/11922887.html)
 
 ### kswapd
 ```C++
@@ -2627,7 +2712,7 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 
 ### malloc
 ```C++
-// mm/mmap.c
+/* mm/mmap.c */
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
     unsigned long retval;
@@ -2713,8 +2798,8 @@ out:
 ### mmap
 ```C++
 struct mm_struct {
-  struct vm_area_struct *mmap;    /* list of VMAs */
-  pgd_t * pgd;
+  pgd_t                 *pgd;
+  struct vm_area_struct *mmap;  /* list of VMAs */
 }
 
 struct vm_area_struct {
@@ -2738,9 +2823,27 @@ struct vm_area_struct {
   void * vm_private_data; /* was vm_pte (shared mem) */
 };
 
-SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
-                unsigned long, prot, unsigned long, flags,
-                unsigned long, fd, unsigned long, off)
+struct anon_vma_chain {
+  struct vm_area_struct *vma;
+  struct anon_vma *anon_vma;
+  struct list_head same_vma;  /* locked by mmap_sem & page_table_lock */
+  struct rb_node rb;          /* locked by anon_vma->rwsem */
+  unsigned long rb_subtree_last;
+};
+
+struct anon_vma {
+  struct anon_vma       *root;  /* Root of this anon_vma tree */
+  struct rw_semaphore   rwsem;  /* W: modification, R: walking the list */
+  atomic_t              refcount;
+  unsigned              degree;
+  struct anon_vma       *parent;  /* Parent of this anon_vma */
+  struct rb_root_cached rb_root;
+};
+
+SYSCALL_DEFINE6(
+  mmap, unsigned long, addr, unsigned long, len,
+  unsigned long, prot, unsigned long, flags,
+  unsigned long, fd, unsigned long, off)
 {
   error = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
 }
@@ -2836,6 +2939,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 
   if (file) {
     vma->vm_file = get_file(file);
+    /* 1. link the file to vma */
     call_mmap(file, vma);
     addr = vma->vm_start;
     vm_flags = vma->vm_flags;
@@ -2845,6 +2949,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
     vma_set_anonymous(vma);
   }
 
+  /* 2. link the vma to the file */
   vma_link(mm, vma, prev, rb_link, rb_parent);
 
   return addr;
@@ -2855,14 +2960,13 @@ static inline int call_mmap(struct file *file, struct vm_area_struct *vma)
   return file->f_op->mmap(file, vma);
 }
 
-/* 1. connection from `file -> vma` */
 static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
   vma->vm_ops = &ext4_file_vm_ops;
 }
 
 struct address_space {
-  struct inode    *host;
+  struct inode      *host;
   /* tree of private and shared mappings. e.g., vm_area_struct */
   struct rb_root    i_mmap; // link the vma to the file
   const struct address_space_operations *a_ops;
@@ -2889,7 +2993,6 @@ static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
   validate_mm(mm);
 }
 
-/* 2. connection from `vam -> file` */
 static void __vma_link_file(struct vm_area_struct *vma)
 {
   struct file *file;
@@ -2959,16 +3062,16 @@ struct file {
 struct address_space {
   struct inode            *host;
   struct radix_tree_root  i_pages; /* cached physical pages */
-  struct rb_root_cached   i_mmap; /* tree of private and shared vma mappings */
-  const struct address_space_operations *a_ops;  /* methods */
+  struct rb_root_cached   i_mmap;  /* tree of private and shared vma mappings */
+  struct rw_semaphore     i_mmap_rwsem;
   atomic_t                i_mmap_writable;/* count VM_SHARED mappings */
+  const struct address_space_operations *a_ops;  /* methods */
   void                    *private_data;
 
-  unsigned long      nrpages;
-  unsigned long      nrexceptional;
-  pgoff_t             writeback_index;/* writeback starts here */
-  struct rw_semaphore     i_mmap_rwsem;
-  struct list_head  private_list;  /* for use by the address_space */
+  unsigned long           nrpages;
+  unsigned long           nrexceptional;
+  pgoff_t                  writeback_index;/* writeback starts here */
+  struct list_head        private_list;  /* for use by the address_space */
 };
 
 static void __init kvm_apf_trap_init(void)
@@ -3065,7 +3168,10 @@ static int handle_pte_fault(struct vm_fault *vmf)
   if (!pte_present(vmf->orig_pte))
     return do_swap_page(vmf);
 }
+```
 
+#### do_anonymous_page
+```c++
 /* 1. map to anonymouse page */
 static int do_anonymous_page(struct vm_fault *vmf)
 {
@@ -3087,9 +3193,44 @@ static int do_anonymous_page(struct vm_fault *vmf)
       &vmf->ptl);
   set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 }
-```
-### Q: how to hanlde the size when `alloc_zeroed_user_highpage_movable`?
 
+void *alloc_zeroed_user_highpage(
+  gfp_t movableflags,
+  struct vm_area_struct *vma,
+  unsigned long vaddr)
+{
+  struct page *page = alloc_page_vma(GFP_HIGHUSER | movableflags,
+      vma, vaddr);
+
+  if (page)
+    clear_user_highpage(page, vaddr);
+
+  return page;
+}
+
+#define alloc_page_vma(gfp_mask, vma, addr)      \
+  alloc_pages_vma(gfp_mask, 0, vma, addr, numa_node_id(), false)
+
+struct page *alloc_pages_vma(gfp_t gfp, int order, struct vm_area_struct *vma,
+    unsigned long addr, int node, bool hugepage)
+{
+  struct mempolicy *pol;
+  struct page *page;
+  int preferred_nid;
+  nodemask_t *nmask;
+
+  pol = get_vma_policy(vma, addr);
+
+  nmask = policy_nodemask(gfp, pol);
+  preferred_nid = policy_node(gfp, pol, node);
+  page = __alloc_pages_nodemask(gfp, order, preferred_nid, nmask);
+  mpol_cond_put(pol);
+out:
+  return page;
+}
+```
+
+#### do_fault
 ```C++
 /* 2. map to a file */
 static int __do_fault(struct vm_fault *vmf)
@@ -3176,7 +3317,10 @@ static int ext4_read_inline_page(struct inode *inode, struct page *page)
   flush_dcache_page(page);
   kunmap_atomic(kaddr);
 }
+```
 
+#### do_swap_page
+```c++
 // 3. map to a swap
 int do_swap_page(struct vm_fault *vmf)
 {
@@ -3328,16 +3472,14 @@ NEXT_PAGE(level3_kernel_pgt)
 
 
 NEXT_PAGE(level2_kernel_pgt)
-  /*
-   * 512 MB kernel mapping. We spend a full page on this pagetable
+  /* 512 MB kernel mapping. We spend a full page on this pagetable
    * anyway.
    *
    * The kernel code+data+bss must not be bigger than that.
    *
    * (NOTE: at +512MB starts the module area, see MODULES_VADDR.
    *  If you want to increase this then increase MODULES_VADDR
-   *  too.)
-   */
+   *  too.) */
   PMDS(0, __PAGE_KERNEL_LARGE_EXEC,
     KERNEL_IMAGE_SIZE/PMD_SIZE)
 
@@ -3362,14 +3504,14 @@ L3_START_KERNEL = pud_index(__START_KERNEL_map)
 ```C++
 // kernel mm_struct
 struct mm_struct init_mm = {
-  .mm_rb    = RB_ROOT,
-  .pgd    = swapper_pg_dir,
-  .mm_users  = ATOMIC_INIT(2),
-  .mm_count  = ATOMIC_INIT(1),
-  .mmap_sem  = __RWSEM_INITIALIZER(init_mm.mmap_sem),
+  .mm_rb      = RB_ROOT,
+  .pgd        = swapper_pg_dir,
+  .mm_users   = ATOMIC_INIT(2),
+  .mm_count   = ATOMIC_INIT(1),
+  .mmap_sem   = __RWSEM_INITIALIZER(init_mm.mmap_sem),
   .page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
-  .mmlist    = LIST_HEAD_INIT(init_mm.mmlist),
-  .user_ns  = &init_user_ns,
+  .mmlist     = LIST_HEAD_INIT(init_mm.mmlist),
+  .user_ns    = &init_user_ns,
   INIT_MM_CONTEXT(init_mm)
 };
 
@@ -3391,8 +3533,7 @@ void __init setup_arch(char **cmdline_p)
 }
 
 // init_mem_mapping ->
-unsigned long __meminit
-kernel_physical_mapping_init(
+unsigned long kernel_physical_mapping_init(
   unsigned long paddr_start,
   unsigned long paddr_end,
   unsigned long page_size_mask)
@@ -3430,21 +3571,53 @@ kernel_physical_mapping_init(
 }
 ```
 
-### vmalloc
-```C++
-void *vmalloc(unsigned long size)
+### kmalloc
+```c++
+/* kmalloc is the normal method of allocating memory
+ * for objects smaller than page size in the kernel. */
+static void *kmalloc(size_t size, gfp_t flags)
 {
-  return __vmalloc_node_flags(
-    size, NUMA_NO_NODE, GFP_KERNEL);
+  if (__builtin_constant_p(size)) {
+    if (size > KMALLOC_MAX_CACHE_SIZE)
+      return kmalloc_large(size, flags);
+      
+#ifndef CONFIG_SLOB
+    if (!(flags & GFP_DMA)) {
+      unsigned int index = kmalloc_index(size);
+
+      if (!index)
+        return ZERO_SIZE_PTR;
+
+      return kmem_cache_alloc_trace(kmalloc_caches[index],
+          flags, size);
+    }
+#endif
+  }
+  
+  return __kmalloc(size, flags);
 }
 
-static void *__vmalloc_node(
-  unsigned long size, unsigned long align,
-  gfp_t gfp_mask, pgprot_t prot,
-  int node, const void *caller)
+/* slub.c */
+void *__kmalloc(size_t size, gfp_t flags)
 {
-  return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
-        gfp_mask, prot, 0, node, caller);
+  struct kmem_cache *s;
+  void *ret;
+
+  if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
+    return kmalloc_large(size, flags);
+
+  s = kmalloc_slab(size, flags);
+
+  if (unlikely(ZERO_OR_NULL_PTR(s)))
+    return s;
+
+  ret = slab_alloc(s, flags, _RET_IP_);
+
+  trace_kmalloc(_RET_IP_, ret, size, s->size, flags);
+
+  kasan_kmalloc(s, ret, size, flags);
+
+  return ret;
 }
 ```
 
@@ -3502,6 +3675,28 @@ static  void *lowmem_page_address(const struct page *page)
 }
 
 #define page_to_virt(x)  __va(PFN_PHYS(page_to_pfn(x)
+```
+
+### vmalloc
+```C++
+/* The kmalloc() function guarantees that the pages are 
+ * physically contiguous (and virtually contiguous).
+ * The vmalloc() function ensures only that the pages are 
+ * contiguous within the virtual address space. */
+void *vmalloc(unsigned long size)
+{
+  return __vmalloc_node_flags(
+    size, NUMA_NO_NODE, GFP_KERNEL);
+}
+
+static void *__vmalloc_node(
+  unsigned long size, unsigned long align,
+  gfp_t gfp_mask, pgprot_t prot,
+  int node, const void *caller)
+{
+  return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
+        gfp_mask, prot, 0, node, caller);
+}
 ```
 
 ### vmalloc_fault
