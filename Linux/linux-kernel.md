@@ -3920,23 +3920,22 @@ struct inode {
 #define  EXT4_N_BLOCKS       (EXT4_TIND_BLOCK + 1)
 
 struct ext4_inode {
-  __le16  i_mode;    /* File mode */
-  __le16  i_uid;    /* Low 16 bits of Owner Uid */
-  __le32  i_size_lo;  /* Size in bytes */
-  __le32  i_atime;  /* Access time */
-  __le32  i_ctime;  /* Inode Change time */
-  __le32  i_mtime;  /* Modification time */
-  __le32  i_dtime;  /* Deletion Time */
-  __le16  i_gid;    /* Low 16 bits of Group Id */
+  __le16  i_mode;         /* File mode */
+  __le16  i_uid;          /* Low 16 bits of Owner Uid */
+  __le32  i_size_lo;      /* Size in bytes */
+  __le32  i_atime;        /* Access time */
+  __le32  i_ctime;        /* Inode Change time */
+  __le32  i_mtime;        /* Modification time */
+  __le32  i_dtime;        /* Deletion Time */
+  __le16  i_gid;          /* Low 16 bits of Group Id */
   __le16  i_links_count;  /* Links count */
-  __le32  i_blocks_lo;  /* Blocks count */
-  __le32  i_flags;  /* File flags */
+  __le32  i_blocks_lo;    /* Blocks count */
+  __le32  i_flags;         /* File flags */
 
-  __le32  i_block[EXT4_N_BLOCKS];/* Pointers to blocks */
-  __le32  i_generation;  /* File version (for NFS) */
-  __le32  i_file_acl_lo;  /* File ACL */
+  __le32  i_block[EXT4_N_BLOCKS]  /* Pointers to blocks */
+  __le32  i_generation;           /* File version (for NFS) */
+  __le32  i_file_acl_lo;           /* File ACL */
   __le32  i_size_high;
-
 };
 ```
 ![](../Images/LinuxKernel/kernel-file-inode-blocks.png)
@@ -4541,8 +4540,7 @@ const struct file_operations ext4_file_operations = {
   .write_end    = ext4_write_end
 }
 /* ext4_file_{read, write}_iter -> generic_file_{read, write}_iter */
-ssize_t
-generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
     if (iocb->ki_flags & IOCB_DIRECT) {
         struct address_space *mapping = file->f_mapping;
@@ -4552,7 +4550,7 @@ generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 }
 
 ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
-{
+{ 
     if (iocb->ki_flags & IOCB_DIRECT) {
         written = generic_file_direct_write(iocb, from);
     } else {
@@ -4561,7 +4559,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 }
 ```
 
-#### direct IO
+#### direct_IO
 ```C++
 static const struct address_space_operations ext4_aops = {
   .direct_IO    = ext4_direct_IO,
@@ -4594,8 +4592,8 @@ static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
 }
 
 /* __blockdev_direct_IO -> do_blockdev_direct_IO */
-static inline ssize_t
-do_blockdev_direct_IO(struct kiocb *iocb, struct inode *inode,
+static inline ssize_t do_blockdev_direct_IO(
+  struct kiocb *iocb, struct inode *inode,
   struct block_device *bdev, struct iov_iter *iter,
   get_block_t get_block, dio_iodone_t end_io,
   dio_submit_t submit_io, int flags)
