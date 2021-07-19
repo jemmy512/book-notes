@@ -3217,25 +3217,94 @@ static int handle_pte_fault(struct vm_fault *vmf)
 #### do_anonymous_page
 ```c++
 /* 1. map to anonymouse page */
-static int do_anonymous_page(struct vm_fault *vmf)
+static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
   struct mem_cgroup *memcg;
   struct page *page;
-  int ret = 0;
+  vm_fault_t ret = 0;
   pte_t entry;
+
+  /* File mapping without ->vm_ops ? */
+  if (vma->vm_flags & VM_SHARED)
+    return VM_FAULT_SIGBUS;
 
   if (pte_alloc(vma->vm_mm, vmf->pmd, vmf->address))
     return VM_FAULT_OOM;
 
+  /* See the comment in pte_alloc_one_map() */
+  if (unlikely(pmd_trans_unstable(vmf->pmd)))
+    return 0;
+
+  /* Allocate our own private page. */
+  if (unlikely(anon_vma_prepare(vma)))
+    goto oom;
+    
   page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+  if (!page)
+    goto oom;
+
+  if (mem_cgroup_try_charge_delay(page, vma->vm_mm, GFP_KERNEL, &memcg,
+          false))
+    goto oom_free_page;
+    
+  __SetPageUptodate(page);
+
   entry = mk_pte(page, vma->vm_page_prot);
+  
+  /* if can write page, set the wr flag in pte */
   if (vma->vm_flags & VM_WRITE)
     entry = pte_mkwrite(pte_mkdirty(entry));
 
   vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
       &vmf->ptl);
+  if (!pte_none(*vmf->pte))
+    goto release;
+
+  /* add map from physic memory page to virtual address 
+   * add pte mapping to a new anonymous page */
+  page_add_new_anon_rmap(page, vma, vmf->address, false);
+  
+  mem_cgroup_commit_charge(page, memcg, false, false);
+  lru_cache_add_active_or_unevictable(page, vma);
+  
+setpte:
   set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+
+  /* No need to invalidate - it was non-present before */
+  update_mmu_cache(vma, vmf->address, vmf->pte);
+
+  return VM_FAULT_OOM;
+}
+
+static inline pte_t mk_pte(struct page *page, pgprot_t prot)
+{
+  return pfn_pte(page_to_pfn(page), prot);
+}
+
+void page_add_new_anon_rmap(struct page *page,
+  struct vm_area_struct *vma, unsigned long address, bool compound)
+{
+  int nr = compound ? hpage_nr_pages(page) : 1;
+
+  __mod_node_page_state(page_pgdat(page), NR_ANON_MAPPED, nr);
+  __page_set_anon_rmap(page, vma, address, 1);
+}
+
+static void __page_set_anon_rmap(struct page *page,
+  struct vm_area_struct *vma, unsigned long address, int exclusive)
+{
+  struct anon_vma *anon_vma = vma->anon_vma;
+
+  if (PageAnon(page))
+    return;
+  
+  if (!exclusive)
+    anon_vma = anon_vma->root;
+
+  anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
+  page->mapping = (struct address_space *) anon_vma;
+  page->index = linear_page_index(vma, address);
 }
 
 void *alloc_zeroed_user_highpage(
@@ -3277,6 +3346,138 @@ out:
 #### do_fault
 ```C++
 /* 2. map to a file */
+static vm_fault_t do_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct mm_struct *vm_mm = vma->vm_mm;
+	vm_fault_t ret;
+
+	if (!vma->vm_ops->fault) {
+		if (unlikely(!pmd_present(*vmf->pmd)))
+			ret = VM_FAULT_SIGBUS;
+		else {
+			vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm,
+						       vmf->pmd,
+						       vmf->address,
+						       &vmf->ptl);
+			if (unlikely(pte_none(*vmf->pte)))
+				ret = VM_FAULT_SIGBUS;
+			else
+				ret = VM_FAULT_NOPAGE;
+
+			pte_unmap_unlock(vmf->pte, vmf->ptl);
+		}
+	} else if (!(vmf->flags & FAULT_FLAG_WRITE))
+		ret = do_read_fault(vmf);
+	else if (!(vma->vm_flags & VM_SHARED))
+		ret = do_cow_fault(vmf);
+	else
+		ret = do_shared_fault(vmf);
+
+	/* preallocated pagetable is unused: free it */
+	if (vmf->prealloc_pte) {
+		pte_free(vm_mm, vmf->prealloc_pte);
+		vmf->prealloc_pte = NULL;
+	}
+	return ret;
+}
+
+static vm_fault_t do_read_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	vm_fault_t ret = 0;
+
+	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
+		ret = do_fault_around(vmf);
+		if (ret)
+			return ret;
+	}
+
+	ret = __do_fault(vmf);
+	
+	ret |= finish_fault(vmf);
+  
+	return ret;
+}
+
+/* finish page fault once we have prepared the page to fault */
+vm_fault_t finish_fault(struct vm_fault *vmf)
+{
+	struct page *page;
+	vm_fault_t ret = 0;
+
+	/* Did we COW the page? */
+	if ((vmf->flags & FAULT_FLAG_WRITE) &&
+	    !(vmf->vma->vm_flags & VM_SHARED))
+		page = vmf->cow_page;
+	else
+		page = vmf->page;
+
+	if (!(vmf->vma->vm_flags & VM_SHARED))
+		ret = check_stable_address_space(vmf->vma->vm_mm);
+	if (!ret)
+		ret = alloc_set_pte(vmf, vmf->memcg, page);
+	if (vmf->pte)
+		pte_unmap_unlock(vmf->pte, vmf->ptl);
+	return ret;
+}
+
+#define pte_unmap_unlock(pte, ptl)	do {		\
+	spin_unlock(ptl);				\
+	pte_unmap(pte);					\
+} while (0)
+
+/* setup new PTE entry for given page and add reverse page mapping */
+vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
+		struct page *page)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	bool write = vmf->flags & FAULT_FLAG_WRITE;
+	pte_t entry;
+	vm_fault_t ret;
+
+	if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
+			IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
+		
+		ret = do_set_pmd(vmf, page);
+		if (ret != VM_FAULT_FALLBACK)
+			return ret;
+	}
+
+	if (!vmf->pte) {
+		ret = pte_alloc_one_map(vmf);
+		if (ret)
+			return ret;
+	}
+
+	/* Re-check under ptl */
+	if (unlikely(!pte_none(*vmf->pte)))
+		return VM_FAULT_NOPAGE;
+
+	flush_icache_page(vma, page);
+	entry = mk_pte(page, vma->vm_page_prot);
+	if (write)
+		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+    
+	/* copy-on-write page */
+	if (write && !(vma->vm_flags & VM_SHARED)) {
+		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
+		page_add_new_anon_rmap(page, vma, vmf->address, false);
+		mem_cgroup_commit_charge(page, memcg, false, false);
+		lru_cache_add_active_or_unevictable(page, vma);
+	} else {
+		inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
+		page_add_file_rmap(page, false);
+	}
+  
+	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+
+	/* no need to invalidate: a not-present page won't be cached */
+	update_mmu_cache(vma, vmf->address, vmf->pte);
+
+	return 0;
+}
+
 static int __do_fault(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
@@ -3416,22 +3617,36 @@ do_page_fault();
 
         do_anonymous_page();  /* 1. anonymous fault */
           pte_alloc();
-            alloc_zeroed_user_highpage_movable();
-              alloc_pages_vma();
-                  __alloc_pages_nodemask();
+          alloc_zeroed_user_highpage_movable();
+            alloc_pages_vma();
+                __alloc_pages_nodemask();
+                  get_page_from_freelist();
+          page_add_new_anon_rmap()
+          set_pte_at()
+          update_mmu_cache()
 
-        __do_fault();         /* 2. file fault */
-          vma->vm_ops->fault(); // ext4_filemap_fault
-            filemap_fault();
-              find_get_page();
-              do_async_mmap_readahead();
-              page_cache_read();
-                address_space.a_ops.readpage();
-                  ext4_read_inline_page();
-                    kmap_atomic();
-                    ext4_read_inline_data();
-                    kumap_atomic();
-
+        do_fault()
+        
+          do_read_fault()
+            __do_fault();         /* 2. file fault */
+              vma->vm_ops->fault(); // ext4_filemap_fault
+                filemap_fault();
+                  find_get_page();
+                  do_async_mmap_readahead();
+                  page_cache_read();
+                    address_space.a_ops.readpage();
+                      ext4_read_inline_page();
+                        kmap_atomic();
+                        ext4_read_inline_data();
+                        kumap_atomic();
+            finish_fault()
+              alloc_set_pte()
+              pte_unmap_unlock()
+              
+          do_cow_fault()
+          
+          do_shared_fault()
+          
         do_swap_page();     /* 3. swap fault */
 ```
 ![linux-mem-page-fault.png](../Images/LinuxKernel/kernel-mem-page-fault.png)
@@ -3694,6 +3909,8 @@ void *kmap_atomic(struct page *page)
   return kmap_atomic_prot(page, kmap_prot);
 }
 
+#define __fix_to_virt(x)  (FIXADDR_TOP - ((x) << PAGE_SHIFT))
+
 void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 {
   // 64 bit machine doesn't have high memory
@@ -3701,6 +3918,8 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
     return page_address(page);
 
   // 32 bit machine
+  type = kmap_atomic_idx_push();
+  idx = type + KM_TYPE_NR*smp_processor_id();
   vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
   set_pte(kmap_pte-idx, mk_pte(page, prot));
 
