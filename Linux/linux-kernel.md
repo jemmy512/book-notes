@@ -2422,10 +2422,6 @@ void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 {
   void *ret = slab_alloc(cachep, flags, _RET_IP_);
 
-  kasan_slab_alloc(cachep, ret, flags);
-  trace_kmem_cache_alloc(_RET_IP_, ret,
-             cachep->object_size, cachep->size, flags);
-
   return ret;
 }
 ```
@@ -3348,134 +3344,134 @@ out:
 /* 2. map to a file */
 static vm_fault_t do_fault(struct vm_fault *vmf)
 {
-	struct vm_area_struct *vma = vmf->vma;
-	struct mm_struct *vm_mm = vma->vm_mm;
-	vm_fault_t ret;
+  struct vm_area_struct *vma = vmf->vma;
+  struct mm_struct *vm_mm = vma->vm_mm;
+  vm_fault_t ret;
 
-	if (!vma->vm_ops->fault) {
-		if (unlikely(!pmd_present(*vmf->pmd)))
-			ret = VM_FAULT_SIGBUS;
-		else {
-			vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm,
-						       vmf->pmd,
-						       vmf->address,
-						       &vmf->ptl);
-			if (unlikely(pte_none(*vmf->pte)))
-				ret = VM_FAULT_SIGBUS;
-			else
-				ret = VM_FAULT_NOPAGE;
+  if (!vma->vm_ops->fault) {
+    if (unlikely(!pmd_present(*vmf->pmd)))
+      ret = VM_FAULT_SIGBUS;
+    else {
+      vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm,
+                   vmf->pmd,
+                   vmf->address,
+                   &vmf->ptl);
+      if (unlikely(pte_none(*vmf->pte)))
+        ret = VM_FAULT_SIGBUS;
+      else
+        ret = VM_FAULT_NOPAGE;
 
-			pte_unmap_unlock(vmf->pte, vmf->ptl);
-		}
-	} else if (!(vmf->flags & FAULT_FLAG_WRITE))
-		ret = do_read_fault(vmf);
-	else if (!(vma->vm_flags & VM_SHARED))
-		ret = do_cow_fault(vmf);
-	else
-		ret = do_shared_fault(vmf);
+      pte_unmap_unlock(vmf->pte, vmf->ptl);
+    }
+  } else if (!(vmf->flags & FAULT_FLAG_WRITE))
+    ret = do_read_fault(vmf);
+  else if (!(vma->vm_flags & VM_SHARED))
+    ret = do_cow_fault(vmf);
+  else
+    ret = do_shared_fault(vmf);
 
-	/* preallocated pagetable is unused: free it */
-	if (vmf->prealloc_pte) {
-		pte_free(vm_mm, vmf->prealloc_pte);
-		vmf->prealloc_pte = NULL;
-	}
-	return ret;
+  /* preallocated pagetable is unused: free it */
+  if (vmf->prealloc_pte) {
+    pte_free(vm_mm, vmf->prealloc_pte);
+    vmf->prealloc_pte = NULL;
+  }
+  return ret;
 }
 
 static vm_fault_t do_read_fault(struct vm_fault *vmf)
 {
-	struct vm_area_struct *vma = vmf->vma;
-	vm_fault_t ret = 0;
+  struct vm_area_struct *vma = vmf->vma;
+  vm_fault_t ret = 0;
 
-	if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
-		ret = do_fault_around(vmf);
-		if (ret)
-			return ret;
-	}
+  if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
+    ret = do_fault_around(vmf);
+    if (ret)
+      return ret;
+  }
 
-	ret = __do_fault(vmf);
-	
-	ret |= finish_fault(vmf);
+  ret = __do_fault(vmf);
   
-	return ret;
+  ret |= finish_fault(vmf);
+  
+  return ret;
 }
 
 /* finish page fault once we have prepared the page to fault */
 vm_fault_t finish_fault(struct vm_fault *vmf)
 {
-	struct page *page;
-	vm_fault_t ret = 0;
+  struct page *page;
+  vm_fault_t ret = 0;
 
-	/* Did we COW the page? */
-	if ((vmf->flags & FAULT_FLAG_WRITE) &&
-	    !(vmf->vma->vm_flags & VM_SHARED))
-		page = vmf->cow_page;
-	else
-		page = vmf->page;
+  /* Did we COW the page? */
+  if ((vmf->flags & FAULT_FLAG_WRITE) &&
+      !(vmf->vma->vm_flags & VM_SHARED))
+    page = vmf->cow_page;
+  else
+    page = vmf->page;
 
-	if (!(vmf->vma->vm_flags & VM_SHARED))
-		ret = check_stable_address_space(vmf->vma->vm_mm);
-	if (!ret)
-		ret = alloc_set_pte(vmf, vmf->memcg, page);
-	if (vmf->pte)
-		pte_unmap_unlock(vmf->pte, vmf->ptl);
-	return ret;
+  if (!(vmf->vma->vm_flags & VM_SHARED))
+    ret = check_stable_address_space(vmf->vma->vm_mm);
+  if (!ret)
+    ret = alloc_set_pte(vmf, vmf->memcg, page);
+  if (vmf->pte)
+    pte_unmap_unlock(vmf->pte, vmf->ptl);
+  return ret;
 }
 
-#define pte_unmap_unlock(pte, ptl)	do {		\
-	spin_unlock(ptl);				\
-	pte_unmap(pte);					\
+#define pte_unmap_unlock(pte, ptl)  do {    \
+  spin_unlock(ptl);        \
+  pte_unmap(pte);          \
 } while (0)
 
 /* setup new PTE entry for given page and add reverse page mapping */
 vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
-		struct page *page)
+    struct page *page)
 {
-	struct vm_area_struct *vma = vmf->vma;
-	bool write = vmf->flags & FAULT_FLAG_WRITE;
-	pte_t entry;
-	vm_fault_t ret;
+  struct vm_area_struct *vma = vmf->vma;
+  bool write = vmf->flags & FAULT_FLAG_WRITE;
+  pte_t entry;
+  vm_fault_t ret;
 
-	if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
-			IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
-		
-		ret = do_set_pmd(vmf, page);
-		if (ret != VM_FAULT_FALLBACK)
-			return ret;
-	}
-
-	if (!vmf->pte) {
-		ret = pte_alloc_one_map(vmf);
-		if (ret)
-			return ret;
-	}
-
-	/* Re-check under ptl */
-	if (unlikely(!pte_none(*vmf->pte)))
-		return VM_FAULT_NOPAGE;
-
-	flush_icache_page(vma, page);
-	entry = mk_pte(page, vma->vm_page_prot);
-	if (write)
-		entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+  if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
+      IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
     
-	/* copy-on-write page */
-	if (write && !(vma->vm_flags & VM_SHARED)) {
-		inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
-		page_add_new_anon_rmap(page, vma, vmf->address, false);
-		mem_cgroup_commit_charge(page, memcg, false, false);
-		lru_cache_add_active_or_unevictable(page, vma);
-	} else {
-		inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
-		page_add_file_rmap(page, false);
-	}
+    ret = do_set_pmd(vmf, page);
+    if (ret != VM_FAULT_FALLBACK)
+      return ret;
+  }
+
+  if (!vmf->pte) {
+    ret = pte_alloc_one_map(vmf);
+    if (ret)
+      return ret;
+  }
+
+  /* Re-check under ptl */
+  if (unlikely(!pte_none(*vmf->pte)))
+    return VM_FAULT_NOPAGE;
+
+  flush_icache_page(vma, page);
+  entry = mk_pte(page, vma->vm_page_prot);
+  if (write)
+    entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+    
+  /* copy-on-write page */
+  if (write && !(vma->vm_flags & VM_SHARED)) {
+    inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
+    page_add_new_anon_rmap(page, vma, vmf->address, false);
+    mem_cgroup_commit_charge(page, memcg, false, false);
+    lru_cache_add_active_or_unevictable(page, vma);
+  } else {
+    inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
+    page_add_file_rmap(page, false);
+  }
   
-	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 
-	/* no need to invalidate: a not-present page won't be cached */
-	update_mmu_cache(vma, vmf->address, vmf->pte);
+  /* no need to invalidate: a not-present page won't be cached */
+  update_mmu_cache(vma, vmf->address, vmf->pte);
 
-	return 0;
+  return 0;
 }
 
 static int __do_fault(struct vm_fault *vmf)
@@ -3947,7 +3943,7 @@ void *page_address(const struct page *page)
 
     list_for_each_entry(pam, &pas->lh, list) {
       if (pam->page == page) {
-        ret = pam->virtual;
+        ret = pam->virtual; // set_page_address()
         goto done;
       }
     }
@@ -10436,9 +10432,10 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
   struct inet_connection_sock *icsk = inet_csk(sk);
   DEFINE_WAIT(wait);
   int err;
+  
   for (;;) {
-    prepare_to_wait_exclusive(sk_sleep(sk), &wait,
-            TASK_INTERRUPTIBLE);
+    prepare_to_wait_exclusive(
+      sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
     release_sock(sk);
     if (reqsk_queue_empty(&icsk->icsk_accept_queue))
       timeo = schedule_timeout(timeo);
@@ -10460,6 +10457,59 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
   finish_wait(sk_sleep(sk), &wait);
   return err;
 }
+
+wait_queue_head_t *sk_sleep(struct sock *sk)
+{
+  return &rcu_dereference_raw(sk->sk_wq)->wait;
+}
+
+void prepare_to_wait_exclusive(
+  struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry, int state)
+{
+  unsigned long flags;
+
+  wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+  spin_lock_irqsave(&wq_head->lock, flags);
+  if (list_empty(&wq_entry->entry))
+    __add_wait_queue_entry_tail(wq_head, wq_entry);
+  set_current_state(state);
+  spin_unlock_irqrestore(&wq_head->lock, flags);
+}
+
+#define DEFINE_WAIT(name) DEFINE_WAIT_FUNC(name, autoremove_wake_function)
+
+#define DEFINE_WAIT_FUNC(name, function)       \
+  struct wait_queue_entry name = {            \
+    .private  = current,                      \
+    .func     = function,                     \
+    .entry    = LIST_HEAD_INIT((name).entry), \
+  }
+
+int autoremove_wake_function(
+  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
+{
+  /* try_to_wake_up */
+  int ret = default_wake_function(wq_entry, mode, sync, key);
+
+  if (ret)
+    list_del_init(&wq_entry->entry);
+
+  return ret;
+}
+
+void finish_wait(
+  struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
+{
+  unsigned long flags;
+
+  __set_current_state(TASK_RUNNING);
+  
+  if (!list_empty_careful(&wq_entry->entry)) {
+    spin_lock_irqsave(&wq_head->lock, flags);
+    list_del_init(&wq_entry->entry);
+    spin_unlock_irqrestore(&wq_head->lock, flags);
+  }
+}
 ```
 
 ```C++
@@ -10477,7 +10527,11 @@ accpet();
           inet_csk_accept();
             reqsk_queue_empty();
               inet_csk_wait_for_connect();
+                prepare_to_wait_exclusive();
+                  __add_wait_queue_entry_tail(wq_head, wq_entry);
                 schedule_timeout();
+                finish_wait();
+                  list_del_init(&wq_entry->entry);
             reqsk_queue_remove();
         sock_graft(sk2, newsock);
         newsock->state = SS_CONNECTED;
@@ -10489,8 +10543,7 @@ accpet();
 ### connect
 #### snd
 ```C++
-SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr,
-    int, addrlen)
+SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr, int, addrlen)
 {
   struct socket *sock;
   struct sockaddr_storage address;
