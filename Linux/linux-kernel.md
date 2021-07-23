@@ -10434,6 +10434,7 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
   int err;
   
   for (;;) {
+    /* waked up by: sk->sk_state_change  =  sock_def_wakeup; */
     prepare_to_wait_exclusive(
       sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
     release_sock(sk);
@@ -10538,10 +10539,10 @@ accpet();
     move_addr_to_user();
     fd_install(newfd, newfile);
 ```
-![linux-net-socket.png](../Images/LinuxKernel/kernel-net-socket.png)
+![linux-net-socket.png](../Images/LinuxKernel/kernel-net-socket-sock.png)
 
 ### connect
-#### snd
+#### send
 ```C++
 SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr, int, addrlen)
 {
@@ -10573,6 +10574,7 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 
   timeo = sock_sndtimeo(sk, flags & O_NONBLOCK);
   if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+    /* waked up by sk->sk_state_change(sk) at tcp_rcv_synsent_state_process */
     if (!timeo || !inet_wait_for_connect(sk, timeo, writebias))
       goto out;
 
@@ -10662,9 +10664,26 @@ int tcp_connect(struct sock *sk)
           inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
   return 0;
 }
+
+long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
+{
+  DEFINE_WAIT_FUNC(wait, woken_wake_function);
+
+  add_wait_queue(sk_sleep(sk), &wait);
+  sk->sk_write_pending += writebias;
+
+  while ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+    timeo = wait_woken(&wait, TASK_INTERRUPTIBLE, timeo);
+    if (signal_pending(current) || !timeo)
+      break;
+  }
+  remove_wait_queue(sk_sleep(sk), &wait);
+  sk->sk_write_pending -= writebias;
+  return timeo;
+}
 ```
 
-#### rcv
+#### receive
 ```C++
 static struct net_protocol tcp_protocol = {
   .early_demux          =  tcp_v4_early_demux,
@@ -10724,7 +10743,9 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
       }
       smp_mb();
       tcp_set_state(sk, TCP_ESTABLISHED);
-      sk->sk_state_change(sk);
+      
+      /* wakeup `accept` slept at prepare_to_wait_exclusive */
+      sk->sk_state_change(sk); 
       if (sk->sk_socket)
         sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
       tp->snd_una = TCP_SKB_CB(skb)->ack_seq;
@@ -10834,6 +10855,18 @@ static inline void reqsk_queue_added(struct request_sock_queue *queue)
   atomic_inc(&queue->qlen);
 }
 
+/* wakeup `accept` slept at prepare_to_wait_exclusive */
+void sock_def_wakeup(struct sock *sk)
+{
+  struct socket_wq *wq;
+
+  wq = rcu_dereference(sk->sk_wq);
+  if (skwq_has_sleeper(wq))
+    wake_up_interruptible_all(&wq->wait);
+}
+
+#define wake_up_interruptible_all(x) __wake_up(x, TASK_INTERRUPTIBLE, 0, NULL)
+
 ```
 ```C++
 send:
@@ -10874,8 +10907,19 @@ tcp_v4_rcv();
       /* TCP_SYN_SENT: */
       tcp_rcv_synsent_state_process();
         tcp_finish_connect(sk, skb);
+        sk->sk_state_change(sk);
+          /* wakup `connect` slept at inet_wait_for_connect */
         tcp_send_ack(sk);
         tcp_set_state(sk, TCP_ESTABLISHED);
+        
+      /* TCP_SYN_RECV */
+        tcp_set_state(sk, TCP_ESTABLISHED);
+        sk->sk_state_change(sk);
+          sock_def_wakeup();
+            wake_up_interruptible_all()
+              __wake_up();
+                __wake_up_common_lock();
+                  __wake_up_common();
 ```
 ![linux-net-hand-shake.png](../Images/LinuxKernel/kernel-net-hand-shake.png  )
 
