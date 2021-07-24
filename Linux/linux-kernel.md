@@ -9834,18 +9834,19 @@ struct sock {
   struct sock_common  __sk_common;
   struct sk_buff       *sk_rx_skb_cache;
 
+  struct page_frag    sk_frag; /* copy user space data to this page */
   struct sk_buff_head  sk_receive_queue;  /* incoming packets */
   struct sk_buff_head  sk_write_queue;    /* outgoing Packets */
   union {
-    struct sk_buff   *sk_send_head;
+    struct sk_buff    *sk_send_head;
     struct rb_root   tcp_rtx_queue; /* re-transmit queue */
   };
 
   struct {
-    atomic_t        rmem_alloc;
-    int             len;
-    struct sk_buff  *head;
-    struct sk_buff  *tail;
+    atomic_t          rmem_alloc;
+    int               len;
+    struct sk_buff    *head;
+    struct sk_buff    *tail;
   } sk_backlog;
 
   union {
@@ -10938,10 +10939,7 @@ static const struct file_operations socket_file_ops = {
   .mmap           =  sock_mmap,
   .release        =  sock_close,
 };
-```
 
-#### socket layer
-```C++
 static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
   struct file *file = iocb->ki_filp;
@@ -10953,6 +10951,10 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
   *from = msg.msg_iter;
   return res;
 }
+```
+
+#### socket layer
+```C++
 /* sock_sendmsg -> */
 static inline int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
 {
@@ -10979,8 +10981,9 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
   long timeo;
 
   timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
-  if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) &&
-      !tcp_passive_fastopen(sk)) {
+  if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
+    && !tcp_passive_fastopen(sk)) 
+  {
     err = sk_stream_wait_connect(sk, &timeo);
     if (err != 0)
       goto do_error;
@@ -11003,7 +11006,7 @@ restart:
       copy = max - skb->len;
     }
 
-    if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) {
+    if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) { // !TCP_SKB_CB(skb)->eor
       bool first_skb;
 
 new_segment:
@@ -11024,7 +11027,7 @@ new_segment:
       copy = msg_data_left(msg);
 
 /*2. copy data */
-    if (skb_availroom(skb) > 0) {
+    if (skb_availroom(skb) > 0) { // skb->end - skb->tail - skb->reserved_tailroom;
       copy = min_t(int, copy, skb_availroom(skb));
       err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
     } else if (!zc) {
@@ -11032,6 +11035,7 @@ new_segment:
       int i = skb_shinfo(skb)->nr_frags;
       struct page_frag *pfrag = sk_page_frag(sk);
 
+      /* ensure sk->sk_frag have enought space, alloc_page if necessary */
       if (!sk_page_frag_refill(sk, pfrag))
         goto wait_for_memory;
 
@@ -11047,8 +11051,8 @@ new_segment:
       if (!sk_wmem_schedule(sk, copy))
         goto wait_for_memory;
 
-      err = skb_copy_to_page_nocache(sk,
-        &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
+      err = skb_copy_to_page_nocache(
+        sk, &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
       if (err)
         goto do_error;
 
@@ -11056,8 +11060,7 @@ new_segment:
       if (merge) {
         skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
       } else {
-        skb_fill_page_desc(skb, i, pfrag->page,
-              pfrag->offset, copy);
+        skb_fill_page_desc(skb, i, pfrag->page, pfrag->offset, copy);
         page_ref_inc(pfrag->page);
       }
       pfrag->offset += copy;
@@ -11249,10 +11252,9 @@ static int tso_fragment(
 
 void skb_split(struct sk_buff *skb, struct sk_buff *skb1, const u32 len)
 {
-  int pos = skb_headlen(skb);
+  int pos = skb_headlen(skb); // skb->len - skb->data_len
 
-  skb_shinfo(skb1)->tx_flags |= skb_shinfo(skb)->tx_flags &
-              SKBTX_SHARED_FRAG;
+  skb_shinfo(skb1)->tx_flags |= skb_shinfo(skb)->tx_flags & SKBTX_SHARED_FRAG;
   skb_zerocopy_clone(skb1, skb, 0);
   if (len < pos)   /* Split line is inside header. */
     skb_split_inside_header(skb, skb1, len, pos);
@@ -12397,6 +12399,7 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
   if (unlikely(tcp_under_memory_pressure(sk)))
     sk_mem_reclaim_partial(sk);
 
+  // max_header L1_CACHE_ALIGN(128 + MAX_HEADER)
   skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
   if (likely(skb)) {
     bool mem_scheduled;
@@ -12408,7 +12411,10 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
       mem_scheduled = sk_wmem_schedule(sk, skb->truesize);
     }
     if (likely(mem_scheduled)) {
-      skb_reserve(skb, sk->sk_prot->max_header);
+      skb_reserve(skb, sk->sk_prot->max_header) {
+        skb->data += len;
+        skb->tail += len;
+      }
       /* Make sure that we have exactly size bytes
        * available to the caller, no more, no less. */
       skb->reserved_tailroom = skb->end - skb->tail - size;
@@ -12482,7 +12488,7 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
   refcount_set(&skb->users, 1);
   skb->head = data;
   skb->data = data;
-  skb_reset_tail_pointer(skb);
+  skb_reset_tail_pointer(skb); /* skb->tail = skb->data; */
   skb->end = skb->tail + size;
   skb->mac_header = (typeof(skb->mac_header))~0U;
   skb->transport_header = (typeof(skb->transport_header))~0U;
