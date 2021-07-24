@@ -684,7 +684,7 @@ In order to avoid wasting CPU cycles for servicing the timer interrupt, the kern
 
 Historically, a popular Linux scheduler was the Linux **O(1) scheduler**.
 
-![Linux RunQueue](../Images/Kernel/runqueue.png)
+![Linux RunQueue](../Images/Kernel/proc-runqueue.png)
 1. Selects a task from the highest-priority list in the active array
 2. If that task’s timeslice (quantum) expires, it is moved to the expired list (potentially at a different priority level).
 3. If the task blocks, for instance to wait on an I/O event, before its timeslice expires, once the event occurs and its execution can resume, it is placed back on the original active array, and its timeslice is decremented to reflect the CPU time it already used.
