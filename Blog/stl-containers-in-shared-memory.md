@@ -265,6 +265,31 @@ shows the **Pool** class definition. **Pool**'s static member **shm_** is of typ
 
 Suppose process A places several STL containers in shared memory. How does process B find these containers in shared memory? One way is for process A to place the containers at fixed offsets in the shared memory. Process B then can go to the specified addresses to obtain the containers. A cleaner way is for process A to create an STL map in shared memory at a known address. Then process A can create containers anywhere in shared memory and store the pointers to the containers in the map using a name as a key to the map. Process B knows how to get to the map since it is at an agreed location in shared memory. Once process B obtains the map, it can use the containers' names to get the containers. Listing 3 shows a container factory. The Pool class method's setContainer places the map at a well-known address. The getContainer method returns the map. The factory's methods are used to create, retrieve, and remove containers from shared memory. The container types passed to the container factory should have SharedAllocator as their allocator.
 
+```c++
+struct keyComp {
+    bool operator()(const char* key1, const char* key2) {
+        return(strcmp(key1, key2) < 0);
+    }
+};
+
+class containerMap: public map<char*, void*, keyComp, SharedAllocator<char*>> {};
+
+class containerFactory {
+public:
+    containerFactory() : pool_(sizeof(containerMap)){}
+    ~containerFactory() {}
+    
+    template<class Container> Container* createContainer(char* key, Container* c=NULL);
+    template<class Container> Container* getContainer(char* key, Container* c=NULL);
+    template<class Container> int removeContainer(char* key, Container* c=NULL);
+    
+private:
+    Pool pool_;
+    int lock_();
+    int unlock_();
+};
+```
+
 #### Conclusion
 The scheme described here can be used to create STL containers in shared memory. The total size of shared memory (segs_* segSize_) should be large enough to accommodate the STL container's largest size, since Pool does not create new shared memory if it runs out of space.
 
