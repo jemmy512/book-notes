@@ -567,7 +567,8 @@ struct cfs_rq {
   struct sched_entity *curr, *next, *last, *skip;
 };
 ```
-![linux-proc-sched-entity-rq.png](../Images/Kernel/proc-sched-entity-rq.png)
+![](../Images/Kernel/proc-sched-entity-rq.png)
+![](../Images/Kernel/proc-runqueue.png)
 
 ```C++
 struct sched_class {
