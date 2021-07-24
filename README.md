@@ -8,10 +8,10 @@
 * [Web-application Software Architecture](./Arch/web-application-software-architecture.md)
 
 # Computer Science
-* [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)  :orange_book:[PDF](./CS/computer-system-a-programmers-perspective.pdf)
+* [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)
 * [Computer Organization and Design: The Hardware/Sofeware Interface](./CS/computer-organization-and-design.md)
 * [Modern Operating System](./CS/modern-operating-system.md)
-* [TCP/IP Illustrated, Volume 1](./CS/tcp-ip-illustrated-volume-1.md)  :orange_book:[PDF](./CS/tcp-ip-illustrated-volume-1.pdf)
+* [TCP/IP Illustrated, Volume 1](./CS/tcp-ip-illustrated-volume-1.md)
 * [UNIX Network Programming, Volume 1: The Sockets Networking API](./Linux/unp.md)
 * [Advanced Programming in Unix Environment](./Linux/apue.md)
 * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
@@ -35,7 +35,7 @@
 * [STL](./Cpp/stl.txt)
 
 # Linux
-* [Linux Kernel 4.19](./Linux/linux-kernel.md)  :orange_book:[PDF](./Linux/linux-kernel.pdf)
+* [Linux Kernel 4.19](./Linux/linux-kernel.md)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
 * [Linux Kernel Development](./linux-kernel-development.md)
