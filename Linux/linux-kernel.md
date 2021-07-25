@@ -2220,9 +2220,9 @@ struct kmem_cache *kmem_cache_create(
 
 struct kmem_cache *kmem_cache_create_usercopy(
   const char *name, /* name in /proc/slabinfo to identify this cache */
-  unsigned int size, 
+  unsigned int size,
   unsigned int align,
-  slab_flags_t flags, 
+  slab_flags_t flags,
   unsigned int useroffset, /* Usercopy region offset */
   unsigned int usersize,  /* Usercopy region size */
   void (*ctor)(void *))
