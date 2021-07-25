@@ -2243,7 +2243,7 @@ struct kmem_cache *kmem_cache_create_usercopy(
     goto out_unlock;
 
   cache_name = kstrdup_const(name, GFP_KERNEL);
-  
+
   s = create_cache(cache_name, size,
        calculate_alignment(flags, align, size),
        flags, useroffset, usersize, ctor, NULL, NULL);
@@ -3236,7 +3236,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
   /* Allocate our own private page. */
   if (unlikely(anon_vma_prepare(vma)))
     goto oom;
-    
+
   page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
   if (!page)
     goto oom;
@@ -3244,11 +3244,11 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
   if (mem_cgroup_try_charge_delay(page, vma->vm_mm, GFP_KERNEL, &memcg,
           false))
     goto oom_free_page;
-    
+
   __SetPageUptodate(page);
 
   entry = mk_pte(page, vma->vm_page_prot);
-  
+
   /* if can write page, set the wr flag in pte */
   if (vma->vm_flags & VM_WRITE)
     entry = pte_mkwrite(pte_mkdirty(entry));
@@ -3258,13 +3258,13 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
   if (!pte_none(*vmf->pte))
     goto release;
 
-  /* add map from physic memory page to virtual address 
+  /* add map from physic memory page to virtual address
    * add pte mapping to a new anonymous page */
   page_add_new_anon_rmap(page, vma, vmf->address, false);
-  
+
   mem_cgroup_commit_charge(page, memcg, false, false);
   lru_cache_add_active_or_unevictable(page, vma);
-  
+
 setpte:
   set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 
@@ -3295,7 +3295,7 @@ static void __page_set_anon_rmap(struct page *page,
 
   if (PageAnon(page))
     return;
-  
+
   if (!exclusive)
     anon_vma = anon_vma->root;
 
@@ -3391,9 +3391,9 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
   }
 
   ret = __do_fault(vmf);
-  
+
   ret |= finish_fault(vmf);
-  
+
   return ret;
 }
 
@@ -3435,7 +3435,7 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
 
   if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
       IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
-    
+
     ret = do_set_pmd(vmf, page);
     if (ret != VM_FAULT_FALLBACK)
       return ret;
@@ -3455,7 +3455,7 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
   entry = mk_pte(page, vma->vm_page_prot);
   if (write)
     entry = maybe_mkwrite(pte_mkdirty(entry), vma);
-    
+
   /* copy-on-write page */
   if (write && !(vma->vm_flags & VM_SHARED)) {
     inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
@@ -3466,7 +3466,7 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
     inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
     page_add_file_rmap(page, false);
   }
-  
+
   set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
 
   /* no need to invalidate: a not-present page won't be cached */
@@ -3623,7 +3623,7 @@ do_page_fault();
           update_mmu_cache()
 
         do_fault()
-        
+
           do_read_fault()
             __do_fault();         /* 2. file fault */
               vma->vm_ops->fault(); // ext4_filemap_fault
@@ -3639,11 +3639,11 @@ do_page_fault();
             finish_fault()
               alloc_set_pte()
               pte_unmap_unlock()
-              
+
           do_cow_fault()
-          
+
           do_shared_fault()
-          
+
         do_swap_page();     /* 3. swap fault */
 ```
 ![linux-mem-page-fault.png](../Images/Kernel/mem-page-fault.png)
@@ -3836,7 +3836,7 @@ static void *kmalloc(size_t size, gfp_t flags)
   if (__builtin_constant_p(size)) {
     if (size > KMALLOC_MAX_CACHE_SIZE)
       return kmalloc_large(size, flags);
-      
+
 #ifndef CONFIG_SLOB
     if (!(flags & GFP_DMA)) {
       unsigned int index = kmalloc_index(size);
@@ -3849,7 +3849,7 @@ static void *kmalloc(size_t size, gfp_t flags)
     }
 #endif
   }
-  
+
   return __kmalloc(size, flags);
 }
 
@@ -3965,9 +3965,9 @@ static  void *lowmem_page_address(const struct page *page)
 
 ### vmalloc
 ```C++
-/* The kmalloc() function guarantees that the pages are 
+/* The kmalloc() function guarantees that the pages are
  * physically contiguous (and virtually contiguous).
- * The vmalloc() function ensures only that the pages are 
+ * The vmalloc() function ensures only that the pages are
  * contiguous within the virtual address space. */
 void *vmalloc(unsigned long size)
 {
@@ -4766,7 +4766,7 @@ ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 }
 
 ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
-{ 
+{
     if (iocb->ki_flags & IOCB_DIRECT) {
         written = generic_file_direct_write(iocb, from);
     } else {
@@ -10434,7 +10434,7 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
   struct inet_connection_sock *icsk = inet_csk(sk);
   DEFINE_WAIT(wait);
   int err;
-  
+
   for (;;) {
     /* waked up by: sk->sk_state_change  =  sock_def_wakeup; */
     prepare_to_wait_exclusive(
@@ -10506,7 +10506,7 @@ void finish_wait(
   unsigned long flags;
 
   __set_current_state(TASK_RUNNING);
-  
+
   if (!list_empty_careful(&wq_entry->entry)) {
     spin_lock_irqsave(&wq_head->lock, flags);
     list_del_init(&wq_entry->entry);
@@ -10745,9 +10745,9 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
       }
       smp_mb();
       tcp_set_state(sk, TCP_ESTABLISHED);
-      
+
       /* wakeup `accept` slept at prepare_to_wait_exclusive */
-      sk->sk_state_change(sk); 
+      sk->sk_state_change(sk);
       if (sk->sk_socket)
         sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
       tp->snd_una = TCP_SKB_CB(skb)->ack_seq;
@@ -10913,7 +10913,7 @@ tcp_v4_rcv();
           /* wakup `connect` slept at inet_wait_for_connect */
         tcp_send_ack(sk);
         tcp_set_state(sk, TCP_ESTABLISHED);
-        
+
       /* TCP_SYN_RECV */
         tcp_set_state(sk, TCP_ESTABLISHED);
         sk->sk_state_change(sk);
@@ -10982,7 +10982,7 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 
   timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
   if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
-    && !tcp_passive_fastopen(sk)) 
+    && !tcp_passive_fastopen(sk))
   {
     err = sk_stream_wait_connect(sk, &timeo);
     if (err != 0)
@@ -11098,6 +11098,27 @@ new_segment:
       tcp_push_one(sk, mss_now);
     continue;
   }
+}
+
+static inline int skb_copy_to_page_nocache(
+  struct sock *sk, struct iov_iter *from,
+  struct sk_buff *skb,
+  struct page *page,
+  int off, int copy)
+{
+  int err;
+
+  err = skb_do_copy_data_nocache(
+      sk, skb, from, page_address(page) + off, copy, skb->len);
+  if (err)
+    return err;
+
+  skb->len            += copy;
+  skb->data_len       += copy;
+  skb->truesize       += copy;
+  sk->sk_wmem_queued  += copy;
+  sk_mem_charge(sk, copy);
+  return 0;
 }
 
 /* __tcp_push_pending_frames | tcp_push_one ->
@@ -11314,8 +11335,10 @@ void skb_split_no_header(
         skb_shinfo(skb)->nr_frags++;
       }
       k++;
-    } else
+    } else {
       skb_shinfo(skb)->nr_frags++;
+    }
+
     pos += size;
   }
   skb_shinfo(skb1)->nr_frags = k;
@@ -11335,7 +11358,7 @@ void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
   if (tp->highest_sack == NULL)
     tp->highest_sack = skb;
 
-  tp->packets_out += tcp_skb_pcount(skb);
+  tp->packets_out += tcp_skb_pcount(skb); // skb_shinfo(skb)->gso_segs
   if (!prior_packets || icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
     tcp_rearm_rto(sk);
 
@@ -11398,7 +11421,10 @@ static int tcp_transmit_skb(
                 &md5);
   tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
 
-  skb_push(skb, tcp_header_size); /* decrement the 'skb->data' pointer */
+  skb_push(skb, tcp_header_size) {
+    skb->data -= len;
+	  skb->len  += len;
+  }
 
   skb_orphan(skb);
   skb->sk = sk;
@@ -12411,6 +12437,7 @@ struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
       mem_scheduled = sk_wmem_schedule(sk, skb->truesize);
     }
     if (likely(mem_scheduled)) {
+      /* reserve spaces for headers */
       skb_reserve(skb, sk->sk_prot->max_header) {
         skb->data += len;
         skb->tail += len;
