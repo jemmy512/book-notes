@@ -201,7 +201,7 @@ static  void do_syscall_32_irqs_on(struct pt_regs *regs)
       (unsigned int)regs->dx, (unsigned int)regs->si,
       (unsigned int)regs->di, (unsigned int)regs->bp);
   }
-  
+
   syscall_return_slowpath(regs);
 }
 
@@ -1820,7 +1820,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 ### paging
 ![linux-mem-segment-page.png](../Images/Kernel/mem-segment-page.png)
 
-![linux-mem-page-table.png](../Images/Kernel/mem-page-table.png)
+![linux-mem-page-table.png](../Images/Kernel/mem-kernel-page-table.png)
 
 ### user virtual space
 ```C++
