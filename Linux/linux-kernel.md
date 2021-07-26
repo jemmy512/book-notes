@@ -11423,7 +11423,7 @@ static int tcp_transmit_skb(
 
   skb_push(skb, tcp_header_size) {
     skb->data -= len;
-	  skb->len  += len;
+    skb->len  += len;
   }
 
   skb_orphan(skb);
@@ -12615,6 +12615,24 @@ static int ixgb_init_module(void)
   return pci_register_driver(&ixgb_driver);
 }
 
+struct pci_driver {
+  struct list_head  node;
+  const char        *name;
+  const struct pci_device_id *id_table;
+  int  (*probe)(struct pci_dev *dev, const struct pci_device_id *id);
+  void (*remove)(struct pci_dev *dev);
+  int  (*suspend)(struct pci_dev *dev, pm_message_t state);
+  int  (*suspend_late)(struct pci_dev *dev, pm_message_t state);
+  int  (*resume_early)(struct pci_dev *dev);
+  int  (*resume) (struct pci_dev *dev);
+  void (*shutdown) (struct pci_dev *dev);
+  int  (*sriov_configure) (struct pci_dev *dev, int num_vfs);
+  const struct pci_error_handlers   *err_handler;
+  const struct attribute_group      **groups;
+  struct device_driver              driver;
+  struct pci_dynids                 dynids;
+};
+
 static struct pci_driver ixgb_driver = {
   .name         = ixgb_driver_name,
   .id_table     = ixgb_pci_tbl,
@@ -12635,7 +12653,7 @@ static int ixgb_probe(
   netdev = alloc_etherdev(sizeof(struct ixgb_adapter));
   SET_NETDEV_DEV(netdev, &pdev->dev);
 
-  pci_set_drvdata(pdev, netdev);
+  pci_set_drvdata(pdev, netdev); /* pdev->dev->driver_data = netdev;*/
   adapter = netdev_priv(netdev);
   adapter->netdev = netdev;
   adapter->pdev = pdev;
@@ -12659,22 +12677,46 @@ static int ixgb_probe(
 }
 
 struct pci_dev {
-  struct device  dev; /* Generic device interface */
+  struct device     dev;      /* Generic device interface */
+  struct pci_driver *driver;  /* Driver bound to this device */
 };
 
 struct device {
-  const char          *init_name;
-  struct kobject      kobj;
+  void                *driver_data;  /* dev_set_drvdata/dev_get_drvdata */
+
+  const char                *init_name;
+  struct kobject            kobj;
 
   struct device             *parent;
   const struct device_type  *type;
-  struct device_driver      *driver; // net_device
+  struct device_driver      *driver;
   struct device_private     *p;
 
-  struct bus_type  *bus;
-  void    *platform_data;
-  void    *driver_data;  /* dev_set_drvdata/dev_get_drvdata */
-  int     numa_node;
+  struct bus_type           *bus;
+  void                      *platform_data;
+  int                       numa_node;
+};
+
+struct device_driver {
+  const char          *name;
+  struct bus_type     *bus;
+
+  struct module       *owner;
+  const char          *mod_name;  /* used for built-in modules */
+
+  bool suppress_bind_attrs;  /* disables bind/unbind via sysfs */
+  enum probe_type probe_type;
+
+  const struct of_device_id     *of_match_table;
+  const struct acpi_device_id   *acpi_match_table;
+
+  int (*probe) (struct device *dev);
+  int (*remove) (struct device *dev);
+
+  void (*coredump) (struct device *dev);
+
+  struct driver_private         *p;
+  const struct dev_pm_ops       *pm;
 };
 
 struct net_device {
@@ -13021,6 +13063,11 @@ static struct packet_type ip_packet_type = {
   .func = ip_rcv,
 };
 
+static struct packet_type arp_packet_type = {
+  .type =  cpu_to_be16(ETH_P_ARP),
+  .func =  arp_rcv,
+};
+
 // if_ether.h inet_init -> dev_add_pack(&ip_packet_type)
 void dev_add_pack(struct packet_type *pt)
 {
@@ -13133,6 +13180,13 @@ static int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_b
 #### tcp layer
 ```C++
 struct net_protocol *inet_protos[MAX_INET_PROTOS];
+
+struct net_protocol {
+  int   (*early_demux)(struct sk_buff *skb);
+  int   (*early_demux_handler)(struct sk_buff *skb);
+  int   (*handler)(struct sk_buff *skb);
+  void  (*err_handler)(struct sk_buff *skb, u32 info);
+};
 
 int inet_add_protocol(const struct net_protocol *prot, unsigned char protocol)
 {
@@ -13330,6 +13384,7 @@ queue_and_out:
     if (eaten > 0)
       kfree_skb_partial(skb, fragstolen);
     if (!sock_flag(sk, SOCK_DEAD))
+      /* wake up user blokced and waiting for data at: sk_wait_event */
       tcp_data_ready(sk);
     return;
   }
@@ -13703,10 +13758,13 @@ sock_read_iter()
       inet_recvmsg()
         skb_queue_walk(&sk->sk_receive_queue, skb)
           skb_copy_datagram_msg() /* copy data to user space */
-          sk_wait_data()
+          sk_wait_data() /* waiting for data, waked up by `tcp_data_ready` */
             sk_wait_event()
               wait_woken()
                 schedule_timeout()
+            woken_wake_function()
+              default_wake_function()
+                try_to_wake_up()
 ```
 ![linux-net-read.png](../Images/Kernel/net-read.png)
 
@@ -14478,8 +14536,7 @@ void tcp_data_ready(struct sock *sk)
   const struct tcp_sock *tp = tcp_sk(sk);
   int avail = tp->rcv_nxt - tp->copied_seq;
 
-  if (avail < sk->sk_rcvlowat && !tcp_rmem_pressure(sk) &&
-      !sock_flag(sk, SOCK_DONE))
+  if (avail < sk->sk_rcvlowat && !tcp_rmem_pressure(sk) && !sock_flag(sk, SOCK_DONE))
     return;
 
   sk->sk_data_ready(sk);
@@ -14557,7 +14614,8 @@ static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
     if (flags & WQ_FLAG_BOOKMARK)
       continue;
 
-    ret = curr->func(curr, mode, wake_flags, key); /* ep_poll_callback, default_wake_func */
+    /* ep_poll_callback, default_wake_func, woken_wake_function */
+    ret = curr->func(curr, mode, wake_flags, key);
     if (ret < 0)
       break;
     if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
