@@ -14770,14 +14770,16 @@ epoll_wait();
       ep_send_events();
         ep_scan_ready_list();
           ep_send_events_proc();
-            init_poll_funcptr(&pt, NULL);
+            __put_user(epi->event.data, &uevent->data);
+            list_del_init(&epi->rdllink);
             
-          wake_up_locked(&ep->wq);
             if (!(epi->event.events & EPOLLET)) {
               /* re-insert in Level Trigger mode */
               list_add_tail(&epi->rdllink, &ep->rdllist);
               ep_pm_stay_awake(epi);
             }
+          
+          wake_up_locked(&ep->wq);
             
           ep_poll_safewake(&ep->poll_wait);
             __wake_up_common_lock();
@@ -14792,6 +14794,7 @@ tcp_data_ready();
             
             ret = curr->func(curr, mode, wake_flags, key);
               ep_poll_callback();
+                list_add_tail(&epi->rdllink, &ep->rdllist);
                 wake_up_locked(&ep->wq);
                   __wake_up_common();
                 ep_poll_safewake(&ep->poll_wait);
