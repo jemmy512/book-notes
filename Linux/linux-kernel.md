@@ -14073,7 +14073,10 @@ static int ep_insert(
   }
 
   epq.epi = epi;
-  init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
+  init_poll_funcptr(&epq.pt, ep_ptable_queue_proc) {
+    pt->_qproc  = qproc;
+    pt->_key    = ~(__poll_t)0; /* all events enabled */
+  }
 
   revents = ep_item_poll(epi, &epq.pt, 1);
 
@@ -14127,7 +14130,7 @@ static __poll_t ep_item_poll(
   bool locked;
 
   pt->_key = epi->event.events;
-  if (!is_file_epoll(epi->ffd.file))
+  if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; */
     return vfs_poll(epi->ffd.file, pt) & epi->event.events;
 
   ep = epi->ffd.file->private_data;
@@ -14269,10 +14272,8 @@ struct eppoll_entry {
   /* The "base" pointer is set to the container "struct epitem" */
   struct epitem *base;
 
-  /*
-   * Wait queue item that will be linked to the target file wait
-   * queue head.
-   */
+  /* Wait queue item that will be linked to the target file wait
+   * queue head. */
   wait_queue_entry_t wait;
 
   /* The wait queue head that linked the "wait" wait queue item */
@@ -14348,7 +14349,11 @@ fetch_events:
   if (!ep_events_available(ep)) {
     ep_reset_busy_poll_napi_id(ep);
 
-    init_waitqueue_entry(&wait, current);
+    init_waitqueue_entry(&wait, current) {
+      wq_entry->flags     = 0;
+      wq_entry->private  = p;
+      wq_entry->func     = default_wake_function;
+    }
     __add_wait_queue_exclusive(&ep->wq, &wait);
 
     for (;;) {
@@ -14407,6 +14412,12 @@ static int ep_send_events(struct eventpoll *ep,
   ep_scan_ready_list(ep, ep_send_events_proc, &esed, 0, false);
   return esed.res;
 }
+
+struct ep_send_events_data {
+  int                 res;
+  int                 maxevents;
+  struct epoll_event  *events __user;
+};
 
 static __poll_t ep_scan_ready_list(
   struct eventpoll *ep,
@@ -14712,6 +14723,81 @@ out_unlock:
   return ewake;
 }
 ```
+```c++
+/* epoll_create */
+epoll_create();
+  do_epoll_create();
+    ep_alloc();
+    get_unused_fd_flags();
+    anon_inode_getfile();
+    fd_install();
+
+/* epoll_ctl */
+epoll_ctl();
+  ep_insert();
+    kmem_cache_alloc(epi_cache);
+    init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
+    ep_item_poll();
+      vfs_poll();
+        sock_poll();
+          sock->ops->poll();
+            tcp_poll();
+              sock_poll_wait();
+                poll_wait();
+                  ep_ptable_queue_proc();
+                    init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
+                    add_wait_queue(whead, &pwq->wait);
+      poll_wait();
+      ep_scan_ready_list();
+    ep_rbtree_insert()
+    if (hasReadyEvents)
+      wake_up_locked(&ep->wq);
+      ep_poll_safewake(&ep->poll_wait);
+    
+  ep_remove();
+  
+  ep_modify();
+  
+/* epoll_wait */
+epoll_wait();
+  do_epoll_wait();
+    ep_poll();
+      init_waitqueue_entry(&wait, default_wake_function);
+      __add_wait_queue_exclusive(&ep->wq, &wait);
+      schedule_hrtimeout_range();
+       __remove_wait_queue(&ep->wq, &wait);
+       
+      ep_send_events();
+        ep_scan_ready_list();
+          ep_send_events_proc();
+            init_poll_funcptr(&pt, NULL);
+            
+          wake_up_locked(&ep->wq);
+            if (!(epi->event.events & EPOLLET)) {
+              /* re-insert in Level Trigger mode */
+              list_add_tail(&epi->rdllink, &ep->rdllist);
+              ep_pm_stay_awake(epi);
+            }
+            
+          ep_poll_safewake(&ep->poll_wait);
+            __wake_up_common_lock();
+          
+/* wake epoll_wait */
+tcp_data_ready();
+  sk->sk_data_ready(sk);
+    sock_def_readable();
+      if (skwq_has_sleeper(wq));
+        wake_up_interruptible_sync_poll();
+          __wake_up_common();
+            
+            ret = curr->func(curr, mode, wake_flags, key);
+              ep_poll_callback();
+                wake_up_locked(&ep->wq);
+                  __wake_up_common();
+                ep_poll_safewake(&ep->poll_wait);
+                  wake_up_poll();
+```
+
 ![kernel-net-epoll.png](../Images/Kernel/net-epoll.png)
 
 ## Reference:
