@@ -1967,7 +1967,7 @@ Value | Name | Meaning
 ###  Practice Problem 5.10 [TODO]
 
 ## 5.13 Life in the Real World: Performance Improvement Techniques
-1. **High-level design**. Choose appropriate `algorithms` and `data structures` for the problem at hand. Be especially vigilant to avoid algorithms or coding techniques that yield asymptotically poor performance.
+1. **High-level design**. Choose appropriate `algorithms` and `data structures` for the problem at hand. Be especially vigilant to avoid algorithms or coding techniques that yield asymptomatically poor performance.
 2. **Basic coding principles**. Avoid optimization blockers so that a compiler can generate efficient code.
     * `Eliminate excessive function calls`. Move computations out of loops when possible. Consider selective compromises of program modularity to gain greater efficiency.
     * `Eliminate unnecessary memory references`. Introduce temporary variables to hold intermediate results. Store a result in an array or global variable only when the final value has been computed.
