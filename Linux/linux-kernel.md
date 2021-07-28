@@ -1782,6 +1782,8 @@ void __deallocate_stack (struct pthread *pd)
 ```
 ![linux-proc-fork-pthread-create.png](../Images/Kernel/proc-fork-pthread-create.png)
 
+Reference:
+* [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 
 # Memory Management
 ### segment
@@ -10531,6 +10533,7 @@ accpet();
             reqsk_queue_empty();
               inet_csk_wait_for_connect();
                 prepare_to_wait_exclusive();
+                  wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
                   __add_wait_queue_entry_tail(wq_head, wq_entry);
                 schedule_timeout();
                 finish_wait();
@@ -14253,7 +14256,10 @@ static void ep_ptable_queue_proc(
     pwq->whead = whead;
     pwq->base = epi;
     if (epi->event.events & EPOLLEXCLUSIVE)
-      add_wait_queue_exclusive(whead, &pwq->wait);
+      add_wait_queue_exclusive(whead, &pwq->wait) {
+        wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+        __add_wait_queue_entry_tail(wq_head, wq_entry);
+      }
     else
       add_wait_queue(whead, &pwq->wait);
     list_add_tail(&pwq->llink, &epi->pwqlist);
@@ -14354,7 +14360,10 @@ fetch_events:
       wq_entry->private  = p;
       wq_entry->func     = default_wake_function;
     }
-    __add_wait_queue_exclusive(&ep->wq, &wait);
+    __add_wait_queue_exclusive(&ep->wq, &wait) {
+      wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+      __add_wait_queue(wq_head, wq_entry);
+    }
 
     for (;;) {
       set_current_state(TASK_INTERRUPTIBLE);
@@ -14629,6 +14638,7 @@ static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
     ret = curr->func(curr, mode, wake_flags, key);
     if (ret < 0)
       break;
+    /* WQ_FLAG_EXCLUSIVE : fix thunderbird problem */
     if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
       break;
 
@@ -14753,37 +14763,39 @@ epoll_ctl();
     if (hasReadyEvents)
       wake_up_locked(&ep->wq);
       ep_poll_safewake(&ep->poll_wait);
-    
+
   ep_remove();
-  
+
   ep_modify();
-  
+
 /* epoll_wait */
 epoll_wait();
   do_epoll_wait();
     ep_poll();
       init_waitqueue_entry(&wait, default_wake_function);
       __add_wait_queue_exclusive(&ep->wq, &wait);
+        wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+        __add_wait_queue(wq_head, wq_entry);
       schedule_hrtimeout_range();
        __remove_wait_queue(&ep->wq, &wait);
-       
+
       ep_send_events();
         ep_scan_ready_list();
           ep_send_events_proc();
             __put_user(epi->event.data, &uevent->data);
             list_del_init(&epi->rdllink);
-            
+
             if (!(epi->event.events & EPOLLET)) {
               /* re-insert in Level Trigger mode */
               list_add_tail(&epi->rdllink, &ep->rdllist);
               ep_pm_stay_awake(epi);
             }
-          
+
           wake_up_locked(&ep->wq);
-            
+
           ep_poll_safewake(&ep->poll_wait);
             __wake_up_common_lock();
-          
+
 /* wake epoll_wait */
 tcp_data_ready();
   sk->sk_data_ready(sk);
@@ -14791,7 +14803,7 @@ tcp_data_ready();
       if (skwq_has_sleeper(wq));
         wake_up_interruptible_sync_poll();
           __wake_up_common();
-            
+
             ret = curr->func(curr, mode, wake_flags, key);
               ep_poll_callback();
                 list_add_tail(&epi->rdllink, &ep->rdllist);
