@@ -14851,6 +14851,7 @@ tcp_data_ready();
 
 ## Reference:
 * [Segmentation Offloads](https://www.kernel.org/doc/html/latest/networking/segmentation-offloads.html)
+* Epoll is fundamentally broken [:link: 1 ](https://idea.popcount.org/2017-02-20-epoll-is-fundamentally-broken-12) [:link: 2 ](https://idea.popcount.org/2017-03-20-epoll-is-fundamentally-broken-22)
 * The implementation of epoll [:link: 1 ](https://idndx.com/the-implementation-of-epoll-1/) [:link: 2 ](https://idndx.com/the-implementation-of-epoll-2/) [:link: 3 ](https://idndx.com/the-implementation-of-epoll-3/) [:link: 4 ](https://idndx.com/the-implementation-of-epoll-4/)
 
 ## Q:
