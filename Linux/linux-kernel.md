@@ -14484,8 +14484,7 @@ check_events:
   spin_unlock_irq(&ep->wq.lock);
 
   /* Try to transfer events to user space. */
-  if (!res && eavail &&
-      !(res = ep_send_events(ep, events, maxevents)) && !timed_out)
+  if (!res && eavail && !(res = ep_send_events(ep, events, maxevents)) && !timed_out)
     goto fetch_events;
 
   return res;
@@ -14519,8 +14518,7 @@ struct ep_send_events_data {
 
 static __poll_t ep_scan_ready_list(
   struct eventpoll *ep,
-  __poll_t (*sproc)(struct eventpoll *,
-    struct list_head *, void *),
+  __poll_t (*sproc)(struct eventpoll *, struct list_head *, void *),
   void *priv, int depth, bool ep_locked)
 {
   __poll_t res;
@@ -14701,7 +14699,6 @@ static int ep_poll_callback(
     goto out_unlock;
 
   /* #define EP_UNACTIVE_PTR ((void *) -1L) */
-  
   if (ep->ovflist != EP_UNACTIVE_PTR) {
     if (epi->next == EP_UNACTIVE_PTR) {
       epi->next = ep->ovflist;
