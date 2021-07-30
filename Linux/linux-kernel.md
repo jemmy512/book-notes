@@ -1269,6 +1269,98 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 1. A process waits on a block operation (mutex, semphore, waitqueue), it calls schedule(). Will it be removed from rq, and add to rq when block operation wakeups?
 2. What's difference between contex_switch and sleep_wakeup?
 
+### wake_up
+```c++
+#define wake_up(x)                        __wake_up(x, TASK_NORMAL, 1, NULL)
+#define wake_up_nr(x, nr)                 __wake_up(x, TASK_NORMAL, nr, NULL)
+#define wake_up_all(x)                    __wake_up(x, TASK_NORMAL, 0, NULL)
+#define wake_up_locked(x)                 __wake_up_locked((x), TASK_NORMAL, 1)
+#define wake_up_all_locked(x)             __wake_up_locked((x), TASK_NORMAL, 0)
+
+#define wake_up_interruptible(x)          __wake_up(x, TASK_INTERRUPTIBLE, 1, NULL)
+#define wake_up_interruptible_nr(x, nr)   __wake_up(x, TASK_INTERRUPTIBLE, nr, NULL)
+#define wake_up_interruptible_all(x)      __wake_up(x, TASK_INTERRUPTIBLE, 0, NULL)
+#define wake_up_interruptible_sync(x)     __wake_up_sync((x), TASK_INTERRUPTIBLE, 1)
+
+void __wake_up(
+  struct wait_queue_head *wq_head, unsigned int mode,
+  int nr_exclusive, void *key)
+{
+  __wake_up_common_lock(wq_head, mode, nr_exclusive, 0, key);
+}
+
+static void __wake_up_common_lock(struct wait_queue_head *wq_head, unsigned int mode,
+      int nr_exclusive, int wake_flags, void *key)
+{
+  unsigned long flags;
+  wait_queue_entry_t bookmark;
+
+  bookmark.flags = 0;
+  bookmark.private = NULL;
+  bookmark.func = NULL;
+  INIT_LIST_HEAD(&bookmark.entry);
+
+  spin_lock_irqsave(&wq_head->lock, flags);
+  nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
+  spin_unlock_irqrestore(&wq_head->lock, flags);
+
+  while (bookmark.flags & WQ_FLAG_BOOKMARK) {
+    spin_lock_irqsave(&wq_head->lock, flags);
+    nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive,
+            wake_flags, key, &bookmark);
+    spin_unlock_irqrestore(&wq_head->lock, flags);
+  }
+}
+
+static int __wake_up_common(
+  struct wait_queue_head *wq_head, unsigned int mode,
+  int nr_exclusive, int wake_flags, void *key,
+  wait_queue_entry_t *bookmark)
+{
+  wait_queue_entry_t *curr, *next;
+  int cnt = 0;
+
+  lockdep_assert_held(&wq_head->lock);
+
+  if (bookmark && (bookmark->flags & WQ_FLAG_BOOKMARK)) {
+    curr = list_next_entry(bookmark, entry);
+
+    list_del(&bookmark->entry);
+    bookmark->flags = 0;
+  } else
+    curr = list_first_entry(&wq_head->head, wait_queue_entry_t, entry);
+
+  if (&curr->entry == &wq_head->head)
+    return nr_exclusive;
+
+  list_for_each_entry_safe_from(curr, next, &wq_head->head, entry) {
+    unsigned flags = curr->flags;
+    int ret;
+
+    if (flags & WQ_FLAG_BOOKMARK)
+      continue;
+
+    /* ep_poll_callback, default_wake_func, woken_wake_function */
+    ret = curr->func(curr, mode, wake_flags, key);
+    if (ret < 0)
+      break;
+    /* WQ_FLAG_EXCLUSIVE : fix thunderbird problem */
+    if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
+      break;
+
+    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT) &&
+        (&next->entry != &wq_head->head))
+    {
+      bookmark->flags = WQ_FLAG_BOOKMARK;
+      list_add_tail(&bookmark->entry, &next->entry);
+      break;
+    }
+  }
+
+  return nr_exclusive;
+}
+```
+
 ### fork
 ```C++
 SYSCALL_DEFINE0(fork)
@@ -10390,9 +10482,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
   err = sock->ops->accept(sock, newsock, sock->file->f_flags, false);
   if (upeer_sockaddr) {
     newsock->ops->getname(newsock, (struct sockaddr *)&address, &len, 2);
-
-    err = move_addr_to_user(&address,
-          len, upeer_sockaddr, upeer_addrlen);
+    err = move_addr_to_user(&address, len, upeer_sockaddr, upeer_addrlen);
   }
   fd_install(newfd, newfile);
 }
@@ -10439,8 +10529,7 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 
   for (;;) {
     /* waked up by: sk->sk_state_change  =  sock_def_wakeup; */
-    prepare_to_wait_exclusive(
-      sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
+    prepare_to_wait_exclusive(sk_sleep(sk), &wait, TASK_INTERRUPTIBLE);
     release_sock(sk);
     if (reqsk_queue_empty(&icsk->icsk_accept_queue))
       timeo = schedule_timeout(timeo);
@@ -14520,6 +14609,7 @@ static __poll_t ep_send_events_proc(
       }
       esed->res++;
       uevent++;
+      
       if (epi->event.events & EPOLLONESHOT)
         epi->event.events &= EP_PRIVATE_BITS;
       else if (!(epi->event.events & EPOLLET)) {
@@ -14584,75 +14674,6 @@ void __wake_up_sync_key(struct wait_queue_head *wq_head, unsigned int mode,
   __wake_up_common_lock(wq_head, mode, nr_exclusive, wake_flags, key);
 }
 
-static void __wake_up_common_lock(struct wait_queue_head *wq_head, unsigned int mode,
-      int nr_exclusive, int wake_flags, void *key)
-{
-  unsigned long flags;
-  wait_queue_entry_t bookmark;
-
-  bookmark.flags = 0;
-  bookmark.private = NULL;
-  bookmark.func = NULL;
-  INIT_LIST_HEAD(&bookmark.entry);
-
-  spin_lock_irqsave(&wq_head->lock, flags);
-  nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
-  spin_unlock_irqrestore(&wq_head->lock, flags);
-
-  while (bookmark.flags & WQ_FLAG_BOOKMARK) {
-    spin_lock_irqsave(&wq_head->lock, flags);
-    nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive,
-            wake_flags, key, &bookmark);
-    spin_unlock_irqrestore(&wq_head->lock, flags);
-  }
-}
-
-static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
-      int nr_exclusive, int wake_flags, void *key,
-      wait_queue_entry_t *bookmark)
-{
-  wait_queue_entry_t *curr, *next;
-  int cnt = 0;
-
-  lockdep_assert_held(&wq_head->lock);
-
-  if (bookmark && (bookmark->flags & WQ_FLAG_BOOKMARK)) {
-    curr = list_next_entry(bookmark, entry);
-
-    list_del(&bookmark->entry);
-    bookmark->flags = 0;
-  } else
-    curr = list_first_entry(&wq_head->head, wait_queue_entry_t, entry);
-
-  if (&curr->entry == &wq_head->head)
-    return nr_exclusive;
-
-  list_for_each_entry_safe_from(curr, next, &wq_head->head, entry) {
-    unsigned flags = curr->flags;
-    int ret;
-
-    if (flags & WQ_FLAG_BOOKMARK)
-      continue;
-
-    /* ep_poll_callback, default_wake_func, woken_wake_function */
-    ret = curr->func(curr, mode, wake_flags, key);
-    if (ret < 0)
-      break;
-    /* WQ_FLAG_EXCLUSIVE : fix thunderbird problem */
-    if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
-      break;
-
-    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT) &&
-        (&next->entry != &wq_head->head)) {
-      bookmark->flags = WQ_FLAG_BOOKMARK;
-      list_add_tail(&bookmark->entry, &next->entry);
-      break;
-    }
-  }
-
-  return nr_exclusive;
-}
-
 /* This is the callback that is passed to the wait queue wakeup
  * mechanism. It is called by the stored file descriptors when they
  * have events to report. */
@@ -14667,11 +14688,20 @@ static int ep_poll_callback(
   int ewake = 0;
 
   ep_set_busy_poll_napi_id(epi);
+  
+  /* If the event mask does not contain any poll(2) event, we consider the
+   * descriptor to be disabled. This condition is likely the effect of the
+   * EPOLLONESHOT bit that disables the descriptor when an event is received,
+   * until the next EPOLL_CTL_MOD will be issued. */
+  if (!(epi->event.events & ~EP_PRIVATE_BITS))
+    goto out_unlock;
 
   /* doesn't have events we are intrested */
   if (pollflags && !(pollflags & epi->event.events))
     goto out_unlock;
 
+  /* #define EP_UNACTIVE_PTR ((void *) -1L) */
+  
   if (ep->ovflist != EP_UNACTIVE_PTR) {
     if (epi->next == EP_UNACTIVE_PTR) {
       epi->next = ep->ovflist;
@@ -14693,8 +14723,7 @@ static int ep_poll_callback(
   /* Wake up ( if active ) both the eventpoll wait list and the ->poll()
    * wait list. */
   if (waitqueue_active(&ep->wq)) {
-    if ((epi->event.events & EPOLLEXCLUSIVE) &&
-          !(pollflags & POLLFREE)) {
+    if ((epi->event.events & EPOLLEXCLUSIVE) && !(pollflags & POLLFREE)) {
       switch (pollflags & EPOLLINOUT_BITS) {
       case EPOLLIN:
         if (epi->event.events & EPOLLIN)
@@ -14732,7 +14761,14 @@ out_unlock:
 
   return ewake;
 }
+
+void __wake_up_locked(
+  struct wait_queue_head *wq_head, unsigned int mode, int nr)
+{
+  __wake_up_common(wq_head, mode, nr, 0, NULL, NULL);
+}
 ```
+
 ```c++
 /* epoll_create */
 epoll_create();
@@ -14791,10 +14827,11 @@ epoll_wait();
               ep_pm_stay_awake(epi);
             }
 
-          wake_up_locked(&ep->wq);
-
-          ep_poll_safewake(&ep->poll_wait);
-            __wake_up_common_lock();
+          if (!list_empty(&ep->rdllist)) {
+            wake_up_locked(&ep->wq);
+            ep_poll_safewake(&ep->poll_wait);
+              __wake_up_common_lock();
+          }
 
 /* wake epoll_wait */
 tcp_data_ready();
@@ -14817,6 +14854,7 @@ tcp_data_ready();
 
 ## Reference:
 * [Segmentation Offloads](https://www.kernel.org/doc/html/latest/networking/segmentation-offloads.html)
+* The implementation of epoll [:link: 1 ](https://idndx.com/the-implementation-of-epoll-1/) [:link: 2 ](https://idndx.com/the-implementation-of-epoll-2/) [:link: 3 ](https://idndx.com/the-implementation-of-epoll-3/) [:link: 4 ](https://idndx.com/the-implementation-of-epoll-4/)
 
 ## Q:
 1. Alloc 0 sized sk_buff in `sk_stream_alloc_skb` from `tcp_sendmsg_locked` when there is not enough space for the new data?
