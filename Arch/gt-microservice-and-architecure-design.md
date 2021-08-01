@@ -244,20 +244,30 @@ A saga is a sequence of local transactions that updates each service and publish
             1. Suitable for very big tables, e.g., more than 50,000,000 rows
             2. Complexity: data routing(Range, Hash, Configuration), join, count, order by
 3. Cache
-    1. **Cache Penetration**: the data to be searched doesn't exist at DB and the returned empty result set is not cached as well and hence every search for the key will hit the DB eventually.
-        1. Cache empty/null result
-        2. Bloom filter
+    * Issues
+        1. **Cache Penetration**: the data to be searched doesn't exist at DB and the returned empty result set is not cached as well and hence every search for the key will hit the DB eventually.
+            1. Cache empty/null result
+            2. Bloom filter
 
-    2. **Cache breakdown**: the cached data expires and at the same time there are lots of search on the expired data which suddenly cause the searches to hit DB directly and increase the load to the DB layer dramatically.
-        1. Use lock
-        2. Asynchronous update
+        2. **Cache breakdown**: the cached data expires and at the same time there are lots of search on the expired data which suddenly cause the searches to hit DB directly and increase the load to the DB layer dramatically.
+            1. Use lock
+            2. Asynchronous update
 
-    3. **Cache avalanche**: lots of cached data expire at the same time or the cache service is down and all of a sudden all searches of these data will hit DB and cause high load to the DB layer and impact the performance.
-        1. Using clusters to ensure that some cache server instance is in service at any point of time.
-        2. Some other approaches like hystrix circuit breaker and rate limit can be configured so that the underlying system can still serve traffic and avoid high load
-        3. Can adjust the expiration time for different keys so that they will not expire at the same time.
+        3. **Cache avalanche**: lots of cached data expire at the same time or the cache service is down and all of a sudden all searches of these data will hit DB and cause high load to the DB layer and impact the performance.
+            1. Using clusters to ensure that some cache server instance is in service at any point of time.
+            2. Some other approaches like hystrix circuit breaker and rate limit can be configured so that the underlying system can still serve traffic and avoid high load
+            3. Can adjust the expiration time for different keys so that they will not expire at the same time.
 
-    4. **Cache hotspot**
+        4. **Cache hotspot**
+    * Policies
+        * Cache Aside
+            * Miss: The application first fetches the data from the Cache, if not, fetches the data from the database, and puts it in the cache after success. 
+            * Hit: The application fetches data from the Cache and returns after fetching it. 
+            * Update: First save the data in the database, and then invalidate the cache after success.
+        * Read/write Throught
+            * ![](../Images/cache-rw-through.png)
+        * Read/write Back
+            * ![](../Images/cache-rw-back.png)
 4. Load Balance
     1. DNS Load Balance: geographic-level
     2. Hardware Load Balance: cluster-level
