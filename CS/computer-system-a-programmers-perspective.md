@@ -2015,6 +2015,7 @@ Value | Name | Meaning
     * These are followed by a large DRAM-based main memory that can be accessed in tens to `hundreds of clock cycles`.
     * Next are slow but enormous local disks.
     * Finally, some systems even include an additional level of disks on remote servers that can be accessed over a network.
+* ![](../Images/CSAPP/1.6-memory-performance.png)
 
 ### 6.3.1 Caching in the Memory Hierarchy
 * The central idea of a `memory hierarchy` is that for each k, the faster and smaller storage device at level k serves as a cache for the larger and slower storage device at level k + 1
@@ -2121,8 +2122,11 @@ Value | Name | Meaning
 ### 6.4.5 Issues with Writes
 * If write hit
     * **Write-through**, is to immediately write w’s cache block to the next lower level. While simple, write-through has the disadvantage of causing bus traffic with every write.
+        * ![](../Images/CSAPP/cache-rw-through.png)
 
     * **Write-back**, defers the update as long as possible by writing the updated block to the next lower level only when it is evicted from the cache by the replacement algorithm. Because of locality, write-back can significantly reduce the amount of bus traffic, but it has the disadvantage of additional complexity. The cache must maintain an additional dirty bit for each cache line that indicates whether or not the cache block has been modified.
+        * ![](../Images/CSAPP/cache-rw-back.png)
+
 * If wite miss
     * **Write-allocate**, loads the corresponding block from the next lower level into the cache and then updates the cache block. Write-allocate tries to exploit spatial locality of writes, but it has the disadvantage that every miss results in a block transfer from the next lower level to cache.
     * **No-write-allocate**, bypasses the cache and writes the word directly to the next lower level. Writethrough caches are typically no-write-allocate. Write-back caches are typically write-allocate.
