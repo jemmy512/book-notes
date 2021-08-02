@@ -123,7 +123,7 @@ An API gateway takes all API calls from clients, then routes them to the appropr
 
 * Functionalities of API Gateway: [:link: Ref](https://medium.com/dev-genius/microservices-design-api-gateway-pattern-980e8d02bdd5)
     * Routing
-        
+
         > Encapsulating the underlying system and decoupling from the clients, the gateway provides a single entry point for the client to communicate with the microservice system.
     * Offloading
         > API gateway consolidates the edge functionalities rather than making every microservices implementing them. Some of the functionalities are:
@@ -138,7 +138,7 @@ An API gateway takes all API calls from clients, then routes them to the appropr
         * IP whitelisting
         * IAM
     * Centralized Logging (transaction ID across the servers, error logging)
-    
+
 * Advantages of the modified architecture with API Gateway: [:link: Ref](https://contextswitch.dev/microservices-patterns-1/)
     1. Every client is not required to be **aware of all the microservices** and the endpoints it needs to talk to. This gives the application team **flexibility** to eventually migrate out of a microservice , make modifications to existing services or create a new microservice.
     2. We can offload any **cross cutting concerns** like Authentication, Logging and Caching to this gateway layer. For instance, by allowing only Authenticated and Trusted client traffic to flow through the gateway to microservices. Also internal communication between the services can happen over a trusted private network without worrying about handling additional overhead like Authenticating the request and securing communications over SSL.
@@ -187,6 +187,7 @@ A saga is a sequence of local transactions that updates each service and publish
 ### Event Sourcing — Alternative to State Oriented Persistence
 
 ### CQRS — Command Query Responsibility Segregation
+* ![](../Images/Microservice/cqrs-event-sourcring.png)
 
 ### Transactional Outbox Pattern
 
@@ -194,6 +195,7 @@ A saga is a sequence of local transactions that updates each service and publish
 
 ### Considerations for Microservice Design
 1. Idempotent Transactions
+    * [PRG(Post/Redirect/Get)](https://en.wikipedia.org/wiki/Post/Redirect/Get)
 2. Eventual Consistency
 3. Distributed Tracing
 4. Service Mesh
@@ -261,19 +263,27 @@ A saga is a sequence of local transactions that updates each service and publish
         4. **Cache hotspot**
     * Policies
         * Cache Aside
-            * Miss: The application first fetches the data from the Cache, if not, fetches the data from the database, and puts it in the cache after success. 
-            * Hit: The application fetches data from the Cache and returns after fetching it. 
+            * Miss: The application first fetches the data from the Cache, if not, fetches the data from the database, and puts it in the cache after success.
+            * Hit: The application fetches data from the Cache and returns after fetching it.
             * Update: First save the data in the database, and then invalidate the cache after success.
+            * ![](../Images/cache-aside-read.png)
+            * ![](../Images/cache-aside-write.png)
         * Read/write Throught
             * ![](../Images/cache-rw-through.png)
         * Read/write Back
             * ![](../Images/cache-rw-back.png)
+    * Indexes
+        * Hit rate
+        * Live time
+        * Be careful with crawleres
+
 4. Load Balance
     1. DNS Load Balance: geographic-level
     2. Hardware Load Balance: cluster-level
     3. Software Load Balance: machine-level
         * [LVS: IP, TCP Layer](https://en.wikipedia.org/wiki/Linux_Virtual_Server)
         * [Nginx: Application Layer]()
+5. Async
 
 # High Availability Design
 1. High availability Storage Architecture
