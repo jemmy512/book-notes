@@ -283,7 +283,7 @@ A saga is a sequence of local transactions that updates each service and publish
     3. Software Load Balance: machine-level
         * [LVS: IP, TCP Layer](https://en.wikipedia.org/wiki/Linux_Virtual_Server)
         * [Nginx: Application Layer]()
-5. Async
+5. Async Handling
 
 # High Availability Design
 1. High availability Storage Architecture
@@ -323,8 +323,23 @@ A saga is a sequence of local transactions that updates each service and publish
 
 # Resilience Design
 **Resilience** in microservices is the ability of recover from failures and return to the fully functional state. [:link: Ref](https://kellerwilliam.medium.com/introduction-fd326099e993)
-
 It’s not about avoiding failures but responding to failures in a way that avoids downtime and data loss.
+
+* Source of fault
+    * ![](../Images/Microservice/source-of-fault-1.png) [High Availability Concepts and Best Practices](https://docs.oracle.com/cd/A91202_01/901_doc/rac.901/a89867/pshavdtl.htm)
+    * ![](../Images/Microservice/source-of-fault-2.png)
+
+## Fault Isolation
+    * Split by service
+    * Split by user
+## Asyncrounous Communication
+
+## Idempotence
+* [PRG(Post/Redirect/Get)](https://en.wikipedia.org/wiki/Post/Redirect/Get)
+
+## Affairs Compensation
+
+## Retry
 
 ## Circuit Breaker
 The initial state of a CB is **Closed**, what means that information is flowing from one service to another².
@@ -334,3 +349,8 @@ After an specific event occurrence (usually a certain amount of tries that resul
 After this, the circuit goes to a **Half Open State**, when the function is called again it tries to contact the other service one more time². If it succeeds the CB goes to Closed state, otherwise it goes back to OPEN².
 
 ![](../Images/Microservice/circuit-breaker.png)
+
+
+## Limiting
+
+## Downgrade
