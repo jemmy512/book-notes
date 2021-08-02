@@ -3,7 +3,8 @@
 
 # Distributed Coordination and Synchronization
 ## Consensus
-![](../Images/DistributedSystem/1-coord-sync-distributed-consensus.png)
+* [Paxos](https://en.wikipedia.org/wiki/Paxos_(computer_science))
+* ![](../Images/DistributedSystem/1-coord-sync-distributed-consensus.png)
 
 ## Election
 ![](../Images/DistributedSystem/1-coord-sync-distributed-election.png)
