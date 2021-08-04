@@ -330,16 +330,31 @@ It’s not about avoiding failures but responding to failures in a way that avoi
     * ![](../Images/Microservice/source-of-fault-2.png)
 
 ## Fault Isolation
+* Fault Split Policies
     * Split by service
     * Split by user
+* Key points design
+    * Well deinfed granularity
+    * Making trde-off between system complexity, cost, performance and resource usage.
+    * Needs of high-availability, retry, asynchronous, message middleware, flow control, fusing and other design modes
+    * Complexity of operation and maintenance
+
 ## Asyncrounous Communication
+* key points of design
+    * Decople the dependicies of servcies to make better isolation of services
+    * Better throughput, and the performance of each service is relatively independent without interference.
+    * Using the Broker or queue method can also achieve the jitter throughput into a uniform throughput, this is the so-called "peak clipping", which is a good protection for the back-end system.
+    * The services are relatively independent, and they can be independent from other services in terms of deployment, expansion, and operation and maintenance.
 
 ## Idempotence
 * [PRG(Post/Redirect/Get)](https://en.wikipedia.org/wiki/Post/Redirect/Get)
 
-## Affairs Compensation
+## Compensating Transaction
 
 ## Retry
+* Key points of the design
+    * The retry time and number of retries
+    * Consider the idemptence of the callees
 
 ## Circuit Breaker
 The initial state of a CB is **Closed**, what means that information is flowing from one service to another².
@@ -350,7 +365,26 @@ After this, the circuit goes to a **Half Open State**, when the function is call
 
 ![](../Images/Microservice/circuit-breaker.png)
 
+* Key points of the design
+    * The type of error
+    * Log monitoring
+    * Service health checking: the fuse can periodically pings the remote services
+    * Manual reset
+    * Concurrency issues
+    * Resouce partition
 
-## Limiting
+## Throttle
+* Policy
+    * Denial of Service
+    * Service Degradation
+    * Privilege Request
+    * Delay Processing
+    * Elastic Scaling
 
-## Downgrade
+## Degradation design
+* Degradation design is about sacrifice:
+    * Reduce consistency. From strong consistency to final consistency.Stop secondary functions.
+        * We should clearly realize that most systems in the world do not need strong consistency.
+    * Stop accessing unimportant functions, thus releasing more resources.
+    * Simplify the function. Simplify some functions, such as simplifying business processes, or no longer returning full data, only partial data.
+        * An API will have two versions, one version returns the full amount of data, and the other version only returns part or the smallest available data
