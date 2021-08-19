@@ -2521,12 +2521,12 @@ gcc -o p2 main2.c ./libvector.so
 # 8 Exceptional Control Flow
 ## 8.1 Exception
 * When the exception handler finishes processing, one of three things happens, depending on the type of event that caused the exception:
-    1. The handler returns control to the current instruction Icurr, the instruction that was executing when the event occurred.
-    2. The handler returns control to Inext, the instruction that would have executed next had the exception not occurred.
-    3. The handler aborts the interrupted program.
+    1. The handler returns control to the current instruction `Icurr`, the instruction that was executing when the event occurred.
+    2. The handler returns control to `Inext`, the instruction that would have executed next had the exception not occurred.
+    3. The handler `aborts` the interrupted program.
 
 ### 8.1.1 Exception Handling
-* The exception number is an index into the ex- ception table, whose starting address is contained in a special CPU register called the **exception table base register**.
+* The exception number is an index into the exception table, whose starting address is contained in a special CPU register called the **exception table base register**.
     * ![](../Images/CSAPP/8.1.1-exception-table-base-register.png)
 
 * An exception is akin to a procedure call, but with some important differences:
@@ -3076,6 +3076,11 @@ I/O devices include human interface devices (HIDs), network interfaces, and stor
         * [Wrong] If the main thread calls pthread_exit, it **waits for all other peer threads to terminate**, and then terminates the main thread and the entire process with a return value of thread_return.
         * When main thread exit, all other threads are killed.
     * Some peer thread calls the Unix `exit` function, which terminates the process and all threads associated with the process.
+        * [exit vs return](https://stackoverflow.com/questions/3463551/what-is-the-difference-between-exit-and-return)
+        * `return` returns from the current function; it's a language keyword like for or break.
+        * `exit` terminates the whole program, wherever you call it from. (After flushing stdio buffers and so on).
+            * `exit` (and return from main) calls functions registered using `atexit` or `on_exit` before really terminating the process
+            * `_exit` (from #include <unistd.h>, or its synonymous _Exit from #include <stdlib.h>) terminates the process immediately.
     * Another peer thread terminates the current thread by calling the `pthread_cancel` function with the ID of the current thread.
 * If main thread exits before child thread:
     * Kill all child threads nomater child threads are joinable, detachable or not.
