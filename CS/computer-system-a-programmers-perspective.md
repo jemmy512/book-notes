@@ -1465,12 +1465,14 @@ Value | Name | Meaning
             * stalling the write-back stage when it has an excepting instruction, thus bringing the pipeline to a halt.
 
 * Detecting Special Control Conditions
-    *   Condition | Trigger
-            --- | ---
-            Processing ret | IRET ∈ {D icode, E icode, M icode}
-            Load/use hazard | E icode ∈ {IMRMOVL, IPOPL} && E dstM ∈ {d srcA, d srcB}
-            Mispredicted branch | E icode = IJXX && !e Cnd
-            Exception | m stat ∈ {SADR, SINS, SHLT} || W stat ∈ {SADR, SINS, SHLT}
+    * ''
+        Condition | Trigger
+        --- | ---
+        Processing ret | IRET ∈ {D icode, E icode, M icode}
+        Load/use hazard | E icode ∈ {IMRMOVL, IPOPL} && E dstM ∈ {d srcA, d srcB}
+        Mispredicted branch | E icode = IJXX && !e Cnd
+        Exception | m stat ∈ {SADR, SINS, SHLT} || W stat ∈ {SADR, SINS, SHLT}
+
         * Four different conditions require altering the pipeline flow by either stalling the pipeline or canceling partially executed instructions.
     * Detecting a `ret` instruction as it passes through the pipeline simply involves checking the instruction codes of the instructions in the **decode**, **execute**, and **memory** stages
     * Detecting a `load/use hazard` involves checking the instruction type (mrmovl or popl) of the instruction in the **execute** stage and comparing its destination register with the source registers of the instruction in the **decode** stage.
@@ -1489,11 +1491,12 @@ Value | Name | Meaning
         * To inject a bubble into pipeline register E, we want the icode field to be set to INOP and the dstE, dstM, srcA, and srcB fields to be set to the constant RNONE
     * Determining the reset configuration is one of the tasks for the hardware designer in designing a pipeline register.
     * The actions the different pipeline stages should take for each of the three special conditions.
-        * Condition | F | D| E | M | W
-        --- | --- | --- | --- | --- | ---
-        Processing ret | stall | bubble | normal | normal | normal
-        Load/use hazard | stall | stall | bubble | normal | normal
-        Mispredicted branch | normal | bubble | bubble | normal | normal
+        * ''
+            Condition | F | D| E | M | W
+            --- | --- | --- | --- | --- | ---
+            Processing ret | stall | bubble | normal | normal | normal
+            Load/use hazard | stall | stall | bubble | normal | normal
+            Mispredicted branch | normal | bubble | bubble | normal | normal
 
 * Combinations of Control Conditions
     * Condition | F | D| E | M | W
