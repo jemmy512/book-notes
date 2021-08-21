@@ -41,3 +41,4 @@
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
 * [Linux Kernel Development](./linux-kernel-development.md)
 * [Linux Basic](./Linux/linux-basic.md)
+* [Linux Performance Tuning](./Linux/linux-performance-tuning.md)
