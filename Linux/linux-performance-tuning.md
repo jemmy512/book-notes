@@ -6,17 +6,18 @@
 
 # Network Performance Tunning
 
-* Three ways handeshake
+* Three-way handshake
 
     Parameter | Note
     --- | ---
     tcp_syn_retries | retry times of SYN
+    tcp_synack_retries | retry times of the SYN_ACK
     tcp_max_syn_backlog, somaxconn, backlog | the legnth of half accept queue
     min(backlog, somaxconn) | the length of the accpet queue
-    tcp_synack_retries | retry times of the SYN_ACK
     tcp_fastopen |
+    tcp_abort_on_overflow | drop or RST when accept queue is full
 
-* Four ways handeshake
+* Four-way handshake
 
     Paramter | Note
     --- | ---
