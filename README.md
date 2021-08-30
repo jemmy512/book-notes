@@ -18,6 +18,7 @@
 * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
 
 # Software Engineering
+* [Design Patterns](./SE/design-patterns.md)
 * [Clean Code](./SE/clean-code.md)
 * [Refactor v2](./SE/refactoring-2.md)
 
