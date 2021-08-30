@@ -282,27 +282,62 @@ Data d;   // default init
     ```
 
 # std::string_view
-1. Properties:
-    1. read only
-    2. not guaranteed to be null terminated byts stream
-    3. the value can be the nullptr(default constructor)
-    4. there is no allocator support
-2. Due to the possible nullptr value and possible missing null terminator, you should always use size() before accessing characters via operator[] or data()
-3. String views are in fact more dangerous than string references or smart pointers. They behave more like raw character pointers
-    * Do Not Assign Temporary Strings to String Views, it neither copies nor extends the lifetime of a return value
-    * Do Not Return String Views to Strings
-    * Function Templates Should Use Return Type auto
-    * Do Not Use String Views in Call Chains to Initialize Strings
-4. Summary of Safe Use of String Views
-    1. Do not use string views in APIs that pass the argument to a string
-        - Do not initialize string members from string view parameters.
-        - No string at the end of a string view chain.
-    2. Do not return a string view.
-    3. function templates should never return the type T of a passed generic argument.
-        * Return auto instead.
-    4. Never use a returned value to initialize a string view.
-    5. do not assign the return value of a function template that return a generic type to auto
+## Differences Compared to std::string
+* The underlying character sequence is read-only
+* The character sequence is not guaranteed to be null terminated.
+* The value returned by data() can be nullptr.
+* There is no allocator support.
 
+## Using String Views
+1. You might have allocated or mapped data with character sequences or strings and want to use this data without allocating more memory.
+2. You want to improve the performance for functions/operations that receive strings to simply process them read-only, without needing a trailing null terminator.
+
+## Using String Views as Parameters
+* Due to the possible nullptr value and possible missing null terminator, you should always use size() before accessing characters via operator[] or data()
+
+## String View Considered Harmful
+
+### Do Not Assign Temporary Strings to String Views
+
+### Do Not Return String Views to Strings
+
+### Function Templates Should Use Return Type auto
+
+### Do Not Use String Views in Call Chains to Initialize Strings
+```c++
+// define + for string views returning string:
+std::string operator+ (std::string_view sv1, std::string_view sv2) {
+    return std::string(sv1) + std::string(sv2);
+}
+
+// generic concatenation:
+template<typename T>
+T concat (const T& x, const T& y) {
+    return x + y;
+}
+
+std::string_view hi = "hi";
+auto xy = concat(hi, hi); // xy is std::string_view pointed to temp
+std::cout << xy << '\n'; // FATAL RUNTIME ERROR: referred string destroyed
+
+// improved generic concatenation:
+template<typename T>
+auto concat (const T& x, const T& y) {
+    return x + y;
+}
+```
+
+## Summary of Safe Use of String Views
+* Do not use string views in APIs that pass the argument to a string.
+    - Donotinitializestringmembersfromstringviewparameters.
+    - Nostringattheendofastringviewchain.
+* Do not return a string view.
+    - Unless it is just a forwarded input argument or you signal the danger by, for example, naming the function accordingly.
+* For this reason, function templates should never return the type T of a passed generic argument.
+    - Returnautoinstead.
+* Never use a returned value to initialize a string view.
+* For this reason, do not assign the return value of a function template that return a generic type to auto.
+    - ThismeanstheAAA(AlmostAlwaysAuto)patternisbrokenwithstringview.
 
 # Substring and Subsequence Searchers
 
