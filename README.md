@@ -35,8 +35,7 @@
 * [C++ 17](./Cpp/cpp17.md)
 * [MySQL](./Cpp/mysql.txt)
 * [STL](./Cpp/stl.txt)
-* [GCC: new allocator malloc](https://github.com/Jemmy512/software-engineer/blob/master/OpenSource/new-malloc-allocator.md)
-* [GCC: new allocator malloc](../OpenSource/new-malloc-allocator.md)
+* [GCC: new allocator malloc](https://github.com/Jemmy512/software-engineer/blob/master/OpenSource/new-allocator-malloc.md)
 
 # Linux
 * [Linux Kernel 4.19](./Linux/linux-kernel.md)
