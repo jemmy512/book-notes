@@ -2845,7 +2845,7 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 }
 ```
 
-### malloc
+### brk
 ```C++
 /* mm/mmap.c */
 SYSCALL_DEFINE1(brk, unsigned long, brk)
@@ -2890,29 +2890,39 @@ static int do_brk(unsigned long addr, unsigned long len, struct list_head *uf)
   return do_brk_flags(addr, len, 0, uf);
 }
 
-static int do_brk_flags(unsigned long addr, unsigned long request,
-  unsigned long flags, struct list_head *uf)
+int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, struct list_head *uf)
 {
   struct mm_struct *mm = current->mm;
   struct vm_area_struct *vma, *prev;
-  unsigned long len;
   struct rb_node **rb_link, *rb_parent;
   pgoff_t pgoff = addr >> PAGE_SHIFT;
   int error;
 
-  len = PAGE_ALIGN(request);
+  error = get_unmapped_area(NULL, addr, len, 0, MAP_FIXED);
+  if (offset_in_page(error))
+    return error;
+    
+  /* Clear old maps.  this also does some error checking for us */
+  while (find_vma_links(mm, addr, addr + len, &prev, &rb_link, &rb_parent)) {
+    if (do_munmap(mm, addr, len, uf))
+      return -ENOMEM;
+  }
 
-  find_vma_links(mm, addr, addr + len, &prev, &rb_link,
-            &rb_parent);
-
-  vma = vma_merge(mm, prev, addr, addr + len, flags,
-      NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
+  /* Can we just expand an old private anonymous mapping? */
+  vma = vma_merge(mm, prev, addr, addr + len, flags, NULL, NULL, pgoff, NULL, NULL_VM_UFFD_CTX);
   if (vma)
     goto out;
 
-  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
-  INIT_LIST_HEAD(&vma->anon_vma_chain);
-  vma->vm_mm = mm;
+  /*
+   * create a vma struct for an anonymous mapping
+   */
+  vma = vm_area_alloc(mm);
+  if (!vma) {
+    vm_unacct_memory(len >> PAGE_SHIFT);
+    return -ENOMEM;
+  }
+
+  vma_set_anonymous(vma);
   vma->vm_start = addr;
   vma->vm_end = addr + len;
   vma->vm_pgoff = pgoff;
