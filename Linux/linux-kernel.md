@@ -3267,7 +3267,29 @@ static void __do_page_fault(
   }
 
   vma = find_vma(mm, address);
-  fault = handle_mm_fault(vma, address, flags);
+  fault = VM_FAULT_BADMAP;
+  if (unlikely(!vma))
+    goto out;
+  if (unlikely(vma->vm_start > addr))
+    goto check_stack;
+  
+  /* Ok, we have a good vm_area for this
+   * memory access, so we can handle it. */
+good_area:
+  if (access_error(fsr, vma)) {
+    fault = VM_FAULT_BADACCESS;
+    goto out;
+  }
+
+  return handle_mm_fault(vma, addr & PAGE_MASK, flags);
+
+check_stack:
+  /* Don't allow expansion below FIRST_USER_ADDRESS */
+  if (vma->vm_flags & VM_GROWSDOWN &&
+      addr >= FIRST_USER_ADDRESS && !expand_stack(vma, addr))
+    goto good_area;
+out:
+  return fault;
 }
 
 static int __handle_mm_fault(
@@ -9952,6 +9974,8 @@ struct sock {
     struct sk_buff    *head;
     struct sk_buff    *tail;
   } sk_backlog;
+  
+  struct sk_filter    *sk_filter;
 
   union {
     struct socket_wq  *sk_wq;     /* private: */
@@ -10116,7 +10140,7 @@ enum sock_type {
 #define NPROTO    AF_MAX
 
 struct net_proto_family *net_families[NPROTO];
-//net/ipv4/af_inet.c
+// net/ipv4/af_inet.c
 static const struct net_proto_family inet_family_ops = {
   .family = PF_INET,
   .create = inet_create
@@ -10190,6 +10214,74 @@ lookup_protocol:
   if (sk->sk_prot->init) {
     err = sk->sk_prot->init(sk);
   }
+}
+
+struct sock *sk_alloc(
+  struct net *net, int family, gfp_t priority,
+  struct proto *prot, int kern)
+{
+  struct sock *sk;
+
+  sk = sk_prot_alloc(prot, priority | __GFP_ZERO, family);
+  if (sk) {
+    sk->sk_family = family;
+    sk->sk_prot = sk->sk_prot_creator = prot;
+    sk->sk_kern_sock = kern;
+    sock_lock_init(sk);
+    sk->sk_net_refcnt = kern ? 0 : 1;
+    if (likely(sk->sk_net_refcnt)) {
+      get_net(net);
+      sock_inuse_add(net, 1);
+    }
+
+    sock_net_set(sk, net);
+    refcount_set(&sk->sk_wmem_alloc, 1);
+
+    mem_cgroup_sk_alloc(sk);
+    cgroup_sk_alloc(&sk->sk_cgrp_data);
+    sock_update_classid(&sk->sk_cgrp_data);
+    sock_update_netprioidx(&sk->sk_cgrp_data);
+    sk_tx_queue_clear(sk);
+  }
+
+  return sk;
+}
+
+static struct sock *sk_prot_alloc(
+  struct proto *prot, gfp_t priority, int family)
+{
+  struct sock *sk;
+  struct kmem_cache *slab;
+
+  slab = prot->slab;
+  if (slab != NULL) {
+    sk = kmem_cache_alloc(slab, priority & ~__GFP_ZERO);
+    if (!sk)
+      return sk;
+    if (priority & __GFP_ZERO)
+      sk_prot_clear_nulls(sk, prot->obj_size);
+  } else
+    sk = kmalloc(prot->obj_size, priority);
+
+  if (sk != NULL) {
+    if (security_sk_alloc(sk, family, priority))
+      goto out_free;
+
+    if (!try_module_get(prot->owner))
+      goto out_free_sec;
+    sk_tx_queue_clear(sk);
+  }
+
+  return sk;
+
+out_free_sec:
+  security_sk_free(sk);
+out_free:
+  if (slab != NULL)
+    kmem_cache_free(slab, sk);
+  else
+    kfree(sk);
+  return NULL;
 }
 
 void sock_init_data(struct socket *sock, struct sock *sk)
@@ -13237,6 +13329,12 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
   struct packet_type *ptype, *pt_prev;
 
   type = skb->protocol;
+  
+  list_for_each_entry_rcu(ptype, &ptype_all, list) {
+  if (pt_prev)
+    ret = deliver_skb(skb, pt_prev, orig_dev);
+    pt_prev = ptype;
+  }
 
   deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type,
              &orig_dev->ptype_specific);
@@ -13973,6 +14071,348 @@ sock_read_iter()
                 try_to_wake_up()
 ```
 ![linux-net-read.png](../Images/Kernel/net-read.png)
+
+### tcpdump
+```c++
+// strace tcpdump -i eth0
+socket(AF_PACKET, SOCK_RAW, 768 /* ETH_P_ALL */)
+
+struct net_proto_family *net_families[NPROTO];
+// net/ipv4/af_inet.c
+static const struct net_proto_family packet_family_ops = {
+  .family =  PF_PACKET,
+  .create =  packet_create,
+  .owner  =  THIS_MODULE,
+};
+
+static const struct proto_ops packet_ops = {
+  .family =     PF_PACKET,
+  .bind =       packet_bind,
+  .connect =    sock_no_connect,
+  .accept =     sock_no_accept,
+  .poll =       packet_poll,
+  .ioctl =      packet_ioctl,
+  .listen =     sock_no_listen,
+  .shutdown =   sock_no_shutdown,
+  .setsockopt = packet_setsockopt,
+  .getsockopt = packet_getsockopt,
+  .sendmsg =    packet_sendmsg,
+  .recvmsg =    packet_recvmsg,
+  .mmap =       packet_mmap,
+  .sendpage =   sock_no_sendpage,
+};
+
+struct packet_sock {
+  /* struct sock has to be the first member of packet_sock */
+  struct sock                sk;
+  struct packet_fanout       *fanout;
+
+  struct packet_ring_buffer   rx_ring;
+  struct packet_ring_buffer   tx_ring;
+  
+  struct completion           skb_completion;
+  struct net_device           *cached_dev;
+  int      (*xmit)(struct sk_buff *skb);
+  struct packet_type          prot_hook; /* packet_rcv */
+};
+
+int packet_create(
+  struct net *net, struct socket *sock, int protocol, int kern)
+{
+  struct sock *sk;
+  struct packet_sock *po;
+  __be16 proto = (__force __be16)protocol; /* weird, but documented */
+  int err;
+
+  sock->state = SS_UNCONNECTED;
+
+  err = -ENOBUFS;
+  sk = sk_alloc(net, PF_PACKET, GFP_KERNEL, &packet_proto, kern);
+  if (sk == NULL)
+    goto out;
+
+  sock->ops = &packet_ops;
+  if (sock->type == SOCK_PACKET)
+    sock->ops = &packet_ops_spkt;
+
+  sock_init_data(sock, sk);
+
+  po = pkt_sk(sk); /* return (struct packet_sock *)sk; */
+  init_completion(&po->skb_completion);
+  sk->sk_family = PF_PACKET;
+  po->num = proto;
+  po->xmit = dev_queue_xmit;
+
+  err = packet_alloc_pending(po);
+  if (err)
+    goto out2;
+
+  packet_cached_dev_reset(po);
+
+  sk->sk_destruct = packet_sock_destruct;
+  sk_refcnt_debug_inc(sk);
+
+  /* Attach a protocol block */
+
+  spin_lock_init(&po->bind_lock);
+  mutex_init(&po->pg_vec_lock);
+  po->rollover = NULL;
+  po->prot_hook.func = packet_rcv;
+
+  if (sock->type == SOCK_PACKET)
+    po->prot_hook.func = packet_rcv_spkt;
+
+  po->prot_hook.af_packet_priv = sk;
+
+  if (proto) {
+    po->prot_hook.type = proto;
+    __register_prot_hook(sk);
+  }
+
+  sk_add_node_tail_rcu(sk, &net->packet.sklist);
+
+  preempt_disable();
+  sock_prot_inuse_add(net, &packet_proto, 1);
+  preempt_enable();
+
+  return 0;
+out2:
+  sk_free(sk);
+out:
+  return err;
+}
+
+static void __register_prot_hook(struct sock *sk)
+{
+  struct packet_sock *po = pkt_sk(sk);
+
+  if (!po->running) {
+    if (po->fanout)
+      __fanout_link(sk, po);
+    else
+      dev_add_pack(&po->prot_hook);
+
+    sock_hold(sk);
+    po->running = 1;
+  }
+}
+
+void dev_add_pack(struct packet_type *pt)
+{
+  struct list_head *head = ptype_head(pt);
+
+  list_add_rcu(&pt->list, head);
+}
+
+static inline struct list_head *ptype_head(const struct packet_type *pt)
+{
+  if (pt->type == htons(ETH_P_ALL))
+    return pt->dev ? &pt->dev->ptype_all : &ptype_all;
+  else
+    return pt->dev ? &pt->dev->ptype_specific :
+         &ptype_base[ntohs(pt->type) & PTYPE_HASH_MASK];
+}
+```
+
+```c++
+// net/core/dev.c
+static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
+{
+  list_for_each_entry_rcu(ptype, &ptype_all, list) {
+    if (!ptype->dev || ptype->dev == skb->dev) {
+      if (pt_prev)
+        ret = deliver_skb(skb, pt_prev, orig_dev);
+      pt_prev = ptype;
+    }
+  }
+}
+
+static inline int deliver_skb(...)
+{
+  return pt_prev->func(skb, skb->dev, pt_prev, orig_dev);
+}
+
+static int packet_rcv(
+  struct sk_buff *skb, struct net_device *dev,
+  struct packet_type *pt, struct net_device *orig_dev)
+{
+  struct sock *sk;
+  struct sockaddr_ll *sll;
+  struct packet_sock *po;
+  u8 *skb_head = skb->data;
+  int skb_len = skb->len;
+  unsigned int snaplen, res;
+  bool is_drop_n_account = false;
+
+  if (skb->pkt_type == PACKET_LOOPBACK)
+    goto drop;
+
+  sk = pt->af_packet_priv;
+  po = pkt_sk(sk);
+
+  if (!net_eq(dev_net(dev), sock_net(sk)))
+    goto drop;
+
+  skb->dev = dev;
+
+  if (dev->header_ops) {
+    /* The device has an explicit notion of ll header,
+     * exported to higher levels.
+     *
+     * Otherwise, the device hides details of its frame
+     * structure, so that corresponding packet head is
+     * never delivered to user. */
+    if (sk->sk_type != SOCK_DGRAM)
+      skb_push(skb, skb->data - skb_mac_header(skb));
+    else if (skb->pkt_type == PACKET_OUTGOING) {
+      /* Special case: outgoing packets have ll header at head */
+      skb_pull(skb, skb_network_offset(skb));
+    }
+  }
+
+  snaplen = skb->len;
+
+  res = run_filter(skb, sk, snaplen);
+  if (!res)
+    goto drop_n_restore;
+  if (snaplen > res)
+    snaplen = res;
+
+  if (atomic_read(&sk->sk_rmem_alloc) >= sk->sk_rcvbuf)
+    goto drop_n_acct;
+
+  if (skb_shared(skb)) {
+    struct sk_buff *nskb = skb_clone(skb, GFP_ATOMIC);
+    if (nskb == NULL)
+      goto drop_n_acct;
+
+    if (skb_head != skb->data) {
+      skb->data = skb_head;
+      skb->len = skb_len;
+    }
+    consume_skb(skb);
+    skb = nskb;
+  }
+
+  sock_skb_cb_check_size(sizeof(*PACKET_SKB_CB(skb)) + MAX_ADDR_LEN - 8);
+
+  sll = &PACKET_SKB_CB(skb)->sa.ll;
+  sll->sll_hatype = dev->type;
+  sll->sll_pkttype = skb->pkt_type;
+  if (unlikely(po->origdev))
+    sll->sll_ifindex = orig_dev->ifindex;
+  else
+    sll->sll_ifindex = dev->ifindex;
+
+  sll->sll_halen = dev_parse_header(skb, sll->sll_addr);
+
+  /* sll->sll_family and sll->sll_protocol are set in packet_recvmsg().
+   * Use their space for storing the original skb length. */
+  PACKET_SKB_CB(skb)->sa.origlen = skb->len;
+
+  if (pskb_trim(skb, snaplen))
+    goto drop_n_acct;
+
+  skb_set_owner_r(skb, sk);
+  skb->dev = NULL;
+  skb_dst_drop(skb);
+
+  /* drop conntrack reference */
+  nf_reset(skb);
+
+  spin_lock(&sk->sk_receive_queue.lock);
+  po->stats.stats1.tp_packets++;
+  sock_skb_set_dropcount(sk, skb);
+  
+  __skb_queue_tail(&sk->sk_receive_queue, skb);
+  
+  spin_unlock(&sk->sk_receive_queue.lock);
+  sk->sk_data_ready(sk);
+  return 0;
+
+drop_n_acct:
+  is_drop_n_account = true;
+  spin_lock(&sk->sk_receive_queue.lock);
+  po->stats.stats1.tp_drops++;
+  atomic_inc(&sk->sk_drops);
+  spin_unlock(&sk->sk_receive_queue.lock);
+
+drop_n_restore:
+  if (skb_head != skb->data && skb_shared(skb)) {
+    skb->data = skb_head;
+    skb->len = skb_len;
+  }
+drop:
+  if (!is_drop_n_account)
+    consume_skb(skb);
+  else
+    kfree_skb(skb);
+  return 0;
+}
+
+static unsigned int run_filter(
+  struct sk_buff *skb, const struct sock *sk, unsigned int res)
+{
+  struct sk_filter *filter;
+
+  filter = rcu_dereference(sk->sk_filter);
+  if (filter != NULL)
+    res = bpf_prog_run_clear_cb(filter->prog, skb);
+
+  return res;
+}
+
+static inline u32 bpf_prog_run_clear_cb(
+  const struct bpf_prog *prog, struct sk_buff *skb)
+{
+  u8 *cb_data = bpf_skb_cb(skb);
+
+  if (unlikely(prog->cb_access))
+    memset(cb_data, 0, BPF_SKB_CB_LEN);
+
+  return BPF_PROG_RUN(prog, skb);
+}
+
+#define BPF_PROG_RUN(filter, ctx)  (*(filter)->bpf_func)(ctx, (filter)->insnsi)
+```
+
+```c++
+socket();
+  sock_create();
+    _sock_create();
+      sock = sock_alloc();
+        inode = new_inode_pseudo(sock_mnt->mnt_sb);
+        sock = SOCKET_I(inode);
+        inode->i_op = &sockfs_inode_ops;
+      pf = net_families[family]; /* get AF */
+      pf->create(); // inet_family_ops.inet_create
+        packet_create()
+          struct sock *sk = sk_alloc();
+          sock->ops = &packet_ops;
+          struct packet_sock *po = pkt_sk(sk); /* return (struct packet_sock *)sk; */
+          po->prot_hook.func = packet_rcv;
+          
+          __register_prot_hook();
+            dev_add_pack(&po->prot_hook);
+              list_add_rcu(&pt->list, &ptype_all);
+
+  sock_map_fd();
+    sock_alloc_file();
+      sock->file = file;
+      file->private_data = sock;
+      
+  __netif_receive_skb_core();
+    list_for_each_entry_rcu(ptype, &ptype_all, list);
+      deliver_skb();
+        pt_prev->func();
+          packet_rcv();
+            run_filter();
+            __skb_queue_tail(&sk->sk_receive_queue, skb);
+            sk->sk_data_ready(sk);
+              sock_def_readable();
+                if (skwq_has_sleeper(wq));
+                  wake_up_interruptible_sync_poll();
+```
 
 ### ACK, SYN, FIN
 
