@@ -3523,83 +3523,6 @@ static vm_fault_t do_read_fault(struct vm_fault *vmf)
   return ret;
 }
 
-/* finish page fault once we have prepared the page to fault */
-vm_fault_t finish_fault(struct vm_fault *vmf)
-{
-  struct page *page;
-  vm_fault_t ret = 0;
-
-  /* Did we COW the page? */
-  if ((vmf->flags & FAULT_FLAG_WRITE) &&
-      !(vmf->vma->vm_flags & VM_SHARED))
-    page = vmf->cow_page;
-  else
-    page = vmf->page;
-
-  if (!(vmf->vma->vm_flags & VM_SHARED))
-    ret = check_stable_address_space(vmf->vma->vm_mm);
-  if (!ret)
-    ret = alloc_set_pte(vmf, vmf->memcg, page);
-  if (vmf->pte)
-    pte_unmap_unlock(vmf->pte, vmf->ptl);
-  return ret;
-}
-
-#define pte_unmap_unlock(pte, ptl)  do {    \
-  spin_unlock(ptl);        \
-  pte_unmap(pte);          \
-} while (0)
-
-/* setup new PTE entry for given page and add reverse page mapping */
-vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
-    struct page *page)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  bool write = vmf->flags & FAULT_FLAG_WRITE;
-  pte_t entry;
-  vm_fault_t ret;
-
-  if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
-      IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
-
-    ret = do_set_pmd(vmf, page);
-    if (ret != VM_FAULT_FALLBACK)
-      return ret;
-  }
-
-  if (!vmf->pte) {
-    ret = pte_alloc_one_map(vmf);
-    if (ret)
-      return ret;
-  }
-
-  /* Re-check under ptl */
-  if (unlikely(!pte_none(*vmf->pte)))
-    return VM_FAULT_NOPAGE;
-
-  flush_icache_page(vma, page);
-  entry = mk_pte(page, vma->vm_page_prot);
-  if (write)
-    entry = maybe_mkwrite(pte_mkdirty(entry), vma);
-
-  /* copy-on-write page */
-  if (write && !(vma->vm_flags & VM_SHARED)) {
-    inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
-    page_add_new_anon_rmap(page, vma, vmf->address, false);
-    mem_cgroup_commit_charge(page, memcg, false, false);
-    lru_cache_add_active_or_unevictable(page, vma);
-  } else {
-    inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
-    page_add_file_rmap(page, false);
-  }
-
-  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
-
-  /* no need to invalidate: a not-present page won't be cached */
-  update_mmu_cache(vma, vmf->address, vmf->pte);
-
-  return 0;
-}
 
 static int __do_fault(struct vm_fault *vmf)
 {
@@ -3684,6 +3607,84 @@ static int ext4_read_inline_page(struct inode *inode, struct page *page)
   ret = ext4_read_inline_data(inode, kaddr, len, &iloc);
   flush_dcache_page(page);
   kunmap_atomic(kaddr);
+}
+
+/* finish page fault once we have prepared the page to fault */
+vm_fault_t finish_fault(struct vm_fault *vmf)
+{
+  struct page *page;
+  vm_fault_t ret = 0;
+
+  /* Did we COW the page? */
+  if ((vmf->flags & FAULT_FLAG_WRITE) &&
+      !(vmf->vma->vm_flags & VM_SHARED))
+    page = vmf->cow_page;
+  else
+    page = vmf->page;
+
+  if (!(vmf->vma->vm_flags & VM_SHARED))
+    ret = check_stable_address_space(vmf->vma->vm_mm);
+  if (!ret)
+    ret = alloc_set_pte(vmf, vmf->memcg, page);
+  if (vmf->pte)
+    pte_unmap_unlock(vmf->pte, vmf->ptl);
+  return ret;
+}
+
+#define pte_unmap_unlock(pte, ptl)  do {    \
+  spin_unlock(ptl);        \
+  pte_unmap(pte);          \
+} while (0)
+
+/* setup new PTE entry for given page and add reverse page mapping */
+vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
+    struct page *page)
+{
+  struct vm_area_struct *vma = vmf->vma;
+  bool write = vmf->flags & FAULT_FLAG_WRITE;
+  pte_t entry;
+  vm_fault_t ret;
+
+  if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
+      IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
+
+    ret = do_set_pmd(vmf, page);
+    if (ret != VM_FAULT_FALLBACK)
+      return ret;
+  }
+
+  if (!vmf->pte) {
+    ret = pte_alloc_one_map(vmf);
+    if (ret)
+      return ret;
+  }
+
+  /* Re-check under ptl */
+  if (unlikely(!pte_none(*vmf->pte)))
+    return VM_FAULT_NOPAGE;
+
+  flush_icache_page(vma, page);
+  entry = mk_pte(page, vma->vm_page_prot);
+  if (write)
+    entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+
+  /* copy-on-write page */
+  if (write && !(vma->vm_flags & VM_SHARED)) {
+    inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
+    page_add_new_anon_rmap(page, vma, vmf->address, false);
+    mem_cgroup_commit_charge(page, memcg, false, false);
+    lru_cache_add_active_or_unevictable(page, vma);
+  } else {
+    inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
+    page_add_file_rmap(page, false);
+  }
+
+  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+
+  /* no need to invalidate: a not-present page won't be cached */
+  update_mmu_cache(vma, vmf->address, vmf->pte);
+
+  return 0;
 }
 ```
 
