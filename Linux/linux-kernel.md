@@ -1,3 +1,80 @@
+# Table of Contents
+* [Init](#Init)
+  * [CPU](#cpu)
+* [Process Management](#Process-Management)
+  * [process](#process)
+  * [thread](#thread)
+  * [task_struct](#task_struct)
+  * [schedule](#schedule)
+  * [voluntary schedule](#voluntary-schedule)
+  * [preempt schedule](#preempt-schedule)
+      * [preempt time](#preempt-time)
+          * [clock interrupt](#1.-clock-interrupt)
+          * [ttwu](#2.-ttwu)
+      * [real user preempt time](#real-user-preempt-time)
+          * [return from system call](#1.-return-from-system-call)
+          * [return from interrupt](#2.-return-from-interrupt)
+      * [real kernel preempt time](#real-kernel-preempt-time)
+          * [preempt_enable](#1.-preempt_enble)
+          * [return from interrupt](#2.-return-from-interrupt)
+  * [wake_up](#wake_up)
+  * [wait_woken](#wait_woken)
+  * [fork](#fork)
+  * [exec](#exec)
+  * [pthread_create](#pthread_create)
+* [Memory Management](#Memory-Management)
+* [File Management](#File-Management)
+* [IO](#IO)
+* [IPC](#IPC)
+* [Net](#Net)
+    * [socket](#socket)
+    * [bind](#bind)
+    * [listen](#listen)
+    * [accept](#accept)
+    * [connect](#connect)
+        * [send](#send)
+        * [receive](#receive)
+    * [write](#write)
+        * [vfs layer](#vfs-layer-WR)
+        * [socket layer](#socket-layer-WR)
+        * [tcp layer](#tcp-layer-WR)
+        * [ip layer](#ip-layer-WR)
+            * [route](#route)
+            * [prepare ip header](#prepare-ip-header)
+            * [send package](#send-package)
+        * [mac layer](#mac-layer-WR)
+            * [neighbour](#neighbour)
+        * [dev layer](#dev-layer-WR)
+        * [driver layer](#driver-layer-WR)
+    * [read](#read)
+        * [driver layer](#driver-layer)
+        * [mac layer](#mac-layer)
+        * [ip layer](#ip-layer)
+        * [tcp layer](#tcp-layer)
+        * [vfs layer](#vfs-layer)
+        * [socket layer](#socket-layer])
+    * [shutdown](#shutdown)
+    * [sk_buf](#sk_buff)
+    * [tcpdump](#tcpdump)
+    * [ACK, SYN, FIN](#ACK-SYN-FIN)
+        * [tcp_send_ack](#tcp_send_ack)
+        * [tcp_send_delayed_ack](#tcp_send_delayed_ack)
+        * [tcp_send_synack](#tcp_send_synack)
+        * [tcp_send_fin](#tcp_send_fin)
+        * [tcp_fin](#tcp_fin)
+    * [epoll](#epoll)
+        * [epoll_create](#epoll_create)
+        * [epoll_ctl](#epoll_ctl)
+            * [ep_insert](#ep_insert)
+            * [ep_modify](#ep_modify)
+            * [ep_delete](#ep_delete)
+        * [epoll_wait](#epoll_wait)
+        * [wake epoll_wait](#wake-epoll_wait)
+* [Virtualization](#Virtualization)
+* [Containerization](#Containerization)
+* [Lock](#Lock)
+* [Pthread](#Pthread)
+
 # Init
 ### cpu
 ![linux-init-cpu.png](../Images/Kernel/init-cpu.png)
@@ -960,7 +1037,7 @@ schedule(void)
 ```
 ![linux-proc-sched-voluntary.png](../Images/Kernel/proc-sched-voluntary.png)
 
-#### preempty shcedule
+#### preempt schedule
 ##### preempt time
 ###### 1. Clock interrupt
 ```C++
@@ -1221,7 +1298,7 @@ retint_kernel:
 ```
 
 ##### real kernel preempt time
-###### 1. preempty_enble
+###### 1. preempt_enble
 ```C++
 #define preempt_enable() \
 do { \
@@ -11316,7 +11393,7 @@ tcp_v4_rcv();
 
 
 ### write
-#### vfs layer
+#### vfs layer WR
 ```C++
 static const struct file_operations socket_file_ops = {
   .owner          =  THIS_MODULE,
@@ -11342,7 +11419,7 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 }
 ```
 
-#### socket layer
+#### socket layer WR
 ```C++
 /* sock_sendmsg -> */
 static inline int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
@@ -11358,7 +11435,7 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 }
 ```
 
-#### tcp layer
+#### tcp layer WR
 ```C++
 /* tcp_prot.sendmsg, copy data to skb */
 int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
@@ -11964,7 +12041,7 @@ static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 }
 ```
 
-#### ip layer
+#### ip layer WR
 ```C++
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
@@ -12224,7 +12301,7 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-#### mac layer
+#### mac layer WR
 ```C++
 /* ip_finish_output -> */
 static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -12450,7 +12527,7 @@ static void arp_send_dst(
 }
 ```
 
-#### dev layer
+#### dev layer WR
 ```C++
 // dev_queue_xmit ->
 static int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
@@ -12634,7 +12711,7 @@ static inline netdev_tx_t __netdev_start_xmit(
 }
 ```
 
-#### driver layer
+#### driver layer WR
 ```C++
 // internet trasaction gigabit
 // drivers/net/ethernet/intel/ixgb/ixgb_main.c
