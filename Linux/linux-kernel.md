@@ -9,14 +9,14 @@
   * [voluntary schedule](#voluntary-schedule)
   * [preempt schedule](#preempt-schedule)
       * [preempt time](#preempt-time)
-          * [clock interrupt](#1.-clock-interrupt)
-          * [ttwu](#2.-ttwu)
+          * [clock interrupt](#clock-interrupt)
+          * [ttwu](#ttwu)
       * [real user preempt time](#real-user-preempt-time)
-          * [return from system call](#1.-return-from-system-call)
-          * [return from interrupt](#2.-return-from-interrupt)
+          * [return from system call](#return-from-system-call)
+          * [return from interrupt](#return-from-interrupt)
       * [real kernel preempt time](#real-kernel-preempt-time)
-          * [preempt_enable](#1.-preempt_enble)
-          * [return from interrupt](#2.-return-from-interrupt)
+          * [preempt_enable](#preempt_enble)
+          * [return from interrupt](#return-from-interrupt)
   * [wake_up](#wake_up)
   * [wait_woken](#wait_woken)
   * [fork](#fork)
@@ -1039,7 +1039,7 @@ schedule(void)
 
 #### preempt schedule
 ##### preempt time
-###### 1. Clock interrupt
+###### Clock interrupt
 ```C++
 void scheduler_tick(void)
 {
@@ -1102,7 +1102,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-###### 2. ttwu
+###### ttwu
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
 * -> check_preempt_curr -> resched_curr */
@@ -1248,7 +1248,7 @@ void resched_curr(struct rq *rq)
 ```
 
 ##### real user preempt time
-###### 1. return from system call
+###### return from system call
 ```C++
 /* do_syscall_64 -> syscall_return_slowpath
  * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
@@ -1266,7 +1266,7 @@ static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 }
 ```
 
-###### 2. return from interrupt
+###### return from interrupt
 ```C++
 /* do_IRQ -> retint_user -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 common_interrupt:
@@ -1298,7 +1298,7 @@ retint_kernel:
 ```
 
 ##### real kernel preempt time
-###### 1. preempt_enble
+###### preempt_enble
 ```C++
 #define preempt_enable() \
 do { \
@@ -1326,7 +1326,7 @@ static void __sched notrace preempt_schedule_common(void)
 }
 ```
 
-###### 2. return from interrupt
+###### return from interrupt
 ```C++
 /* do_IRQ -> retint_kernel */
 asmlinkage __visible void __sched preempt_schedule_irq(void)
