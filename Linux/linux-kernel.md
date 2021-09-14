@@ -1306,8 +1306,7 @@ static void __wake_up_common_lock(struct wait_queue_head *wq_head, unsigned int 
 
   while (bookmark.flags & WQ_FLAG_BOOKMARK) {
     spin_lock_irqsave(&wq_head->lock, flags);
-    nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive,
-            wake_flags, key, &bookmark);
+    nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
     spin_unlock_irqrestore(&wq_head->lock, flags);
   }
 }
@@ -1348,8 +1347,8 @@ static int __wake_up_common(
     if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
       break;
 
-    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT) &&
-        (&next->entry != &wq_head->head))
+    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT) 
+      && (&next->entry != &wq_head->head))
     {
       bookmark->flags = WQ_FLAG_BOOKMARK;
       list_add_tail(&bookmark->entry, &next->entry);
@@ -1359,6 +1358,57 @@ static int __wake_up_common(
 
   return nr_exclusive;
 }
+```
+
+### wait_woken
+```c++
+long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
+{
+  /* The below executes an smp_mb(), which matches with the full barrier
+   * executed by the try_to_wake_up() in woken_wake_function() such that
+   * either we see the store to wq_entry->flags in woken_wake_function()
+   * or woken_wake_function() sees our store to current->state. */
+  set_current_state(mode); /* A */
+  if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
+    timeout = schedule_timeout(timeout);
+  __set_current_state(TASK_RUNNING);
+
+  /* The below executes an smp_mb(), which matches with the smp_mb() (C)
+   * in woken_wake_function() such that either we see the wait condition
+   * being true or the store to wq_entry->flags in woken_wake_function()
+   * follows ours in the coherence order. */
+  smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
+
+  return timeout;
+}
+
+int woken_wake_function(
+  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
+{
+  /* Pairs with the smp_store_mb() in wait_woken(). */
+  smp_mb(); /* C */
+  wq_entry->flags |= WQ_FLAG_WOKEN;
+
+  return default_wake_function(wq_entry, mode, sync, key);
+}
+
+int default_wake_function(
+  wait_queue_entry_t *curr, unsigned mode, int wake_flags, void *key)
+{
+  return try_to_wake_up(curr->private, mode, wake_flags);
+}
+
+/* wait_queue_entry::flags */
+#define WQ_FLAG_EXCLUSIVE  0x01
+#define WQ_FLAG_WOKEN      0x02
+#define WQ_FLAG_BOOKMARK   0x04
+
+struct wait_queue_entry {
+  unsigned int      flags;
+  void              *private; /* struct_task */
+  wait_queue_func_t func;
+  struct list_head  entry;
+};
 ```
 
 ### fork
@@ -10004,10 +10054,20 @@ typedef struct wait_queue_head {
 } wait_queue_head_t;
 
 struct tcp_sock {
-  struct inet_connection_sock  inet_conn;
+    struct inet_connection_sock  inet_conn;
 
-  struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
-  struct list_head tsorted_sent_queue; /* time-sorted sent but un-SACKed skbs */
+    struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
+    struct list_head tsorted_sent_queue; /* time-sorted sent but un-SACKed skbs */
+  
+    /* OOO segments go in this rbtree. Socket lock must be held. */
+    struct rb_root    out_of_order_queue;
+    struct sk_buff    *ooo_last_skb; /* cache rb_last(out_of_order_queue) */
+    
+    /* TCP fastopen related information */
+    struct tcp_fastopen_request *fastopen_req;
+    /* fastopen_rsk points to request_sock that resulted in this big
+     * socket. Used to retransmit SYNACKs etc. */
+    struct request_sock *fastopen_rsk;
 };
 
 /* INET connection oriented sock */
@@ -10287,6 +10347,7 @@ out_free:
 
 void sock_init_data(struct socket *sock, struct sock *sk)
 {
+  sk->sk_state_change	=	sock_def_wakeup;
   sk->sk_data_ready  = sock_def_readable;
   sk->sk_write_space = sock_def_write_space;
 }
@@ -10751,8 +10812,13 @@ SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr, int, addr
   err = sock->ops->connect(sock, (struct sockaddr *)&address, addrlen, sock->file->f_flags);
 }
 
-int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
-        int addr_len, int flags, int is_sendmsg)
+const struct proto_ops inet_stream_ops = {
+  .connect = inet_stream_connect,
+}
+
+int __inet_stream_connect(
+  struct socket *sock, struct sockaddr *uaddr,
+  int addr_len, int flags, int is_sendmsg)
 {
   struct sock *sk = sock->sk;
   int err;
@@ -10780,6 +10846,10 @@ int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
       goto out;
   }
   sock->state = SS_CONNECTED;
+}
+
+struct proto tcp_prot = {
+  .connect = tcp_v4_connect
 }
 
 /* initiate an outgoing connection */
@@ -10879,6 +10949,7 @@ long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
   return timeo;
 }
 ```
+* [wait_woken](#wait_woken)
 
 #### receive
 ```C++
@@ -10992,7 +11063,6 @@ int tcp_conn_request(
   }
 
   if (sk_acceptq_is_full(sk)) {
-    NET_INC_STATS(sock_net(sk), LINUX_MIB_LISTENOVERFLOWS);
     goto drop;
   }
 
@@ -11191,27 +11261,31 @@ receive:
 tcp_v4_rcv();
   tcp_v4_do_rcv();
     tcp_rcv_state_process();
+      
       /* TCP_LISTEN: */
-      icsk->icsk_af_ops->conn_request(); /*ipv4_specific.conn_request */
-        tcp_v4_conn_request();
-          tcp_conn_request();
-            inet_reqsk_alloc();
-            inet_csk_reqsk_queue_hash_add();
-              reqsk_queue_hash_req();
-                inet_ehash_insert();
-                  mod_timer(&req->rsk_timer, jiffies + timeout);
-                  inet_ehash_bucket(hashinfo, sk->sk_hash);
-              inet_csk_reqsk_queue_added();
-            af_ops->send_synack();
-              tcp_v4_send_synack();
+        icsk->icsk_af_ops->conn_request(); /*ipv4_specific.conn_request */
+          tcp_v4_conn_request();
+            tcp_conn_request();
+              inet_reqsk_alloc();
+              inet_csk_reqsk_queue_hash_add();
+                reqsk_queue_hash_req();
+                  inet_ehash_insert();
+                    mod_timer(&req->rsk_timer, jiffies + timeout);
+                    inet_ehash_bucket(hashinfo, sk->sk_hash);
+                inet_csk_reqsk_queue_added();
+              af_ops->send_synack();
+                tcp_v4_send_synack();
 
       /* TCP_SYN_SENT: */
-      tcp_rcv_synsent_state_process();
-        tcp_finish_connect(sk, skb);
-        sk->sk_state_change(sk);
-          /* wakup `connect` slept at inet_wait_for_connect */
-        tcp_send_ack(sk);
-        tcp_set_state(sk, TCP_ESTABLISHED);
+        tcp_rcv_synsent_state_process();
+          tcp_finish_connect(sk, skb);
+          sk->sk_state_change(sk);
+            /* wakup `connect` slept at inet_wait_for_connect */
+          tcp_send_ack(sk);
+          tcp_set_state(sk, TCP_ESTABLISHED);
+          
+      tcp_validate_incoming()
+      tcp_ack()
 
       /* TCP_SYN_RECV */
         tcp_set_state(sk, TCP_ESTABLISHED);
@@ -11221,6 +11295,22 @@ tcp_v4_rcv();
               __wake_up();
                 __wake_up_common_lock();
                   __wake_up_common();
+                  
+      /*  TCP_LAST_ACK */
+        tcp_done();
+      
+      /* TCP_FIN_WAIT1 */
+        tcp_set_state(sk, TCP_FIN_WAIT2)
+        tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+        sk->sk_state_change(sk); /* Wake up lingering close() */
+
+      /* TCP_FIN_WAIT2 */
+        if (sk->sk_shutdown & RCV_SHUTDOWN)
+          tcp_reset
+          
+      /* TCP_ESTABLISHED */
+        tcp_data_queue()
+      
 ```
 ![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
 
@@ -13337,8 +13427,7 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
     pt_prev = ptype;
   }
 
-  deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type,
-             &orig_dev->ptype_specific);
+  deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type, &orig_dev->ptype_specific);
   if (pt_prev) {
     ret = pt_prev->func(skb, skb->dev, pt_prev, orig_dev);
   }
@@ -13602,40 +13691,356 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
   int queued = 0;
   bool acceptable;
 
-  switch (sk->sk_state) {
-    case TCP_CLOSE:
-      goto discard;
-    case TCP_LISTEN:
-    case TCP_SYN_SENT:
-      tcp_rcv_synsent_state_process(sk, skb, th);
-  }
+    switch (sk->sk_state) {
+        case TCP_CLOSE: {
+            goto discard;
+        }
 
-  switch (sk->sk_state) {
-    case TCP_SYN_RECV:
-    case TCP_FIN_WAIT1:
-    case TCP_CLOSING:
-    case TCP_LAST_ACK:
-  }
+        case TCP_LISTEN: {
+            if (th->ack)
+                return 1;
 
-  /* step 7: process the segment text */
-  switch (sk->sk_state) {
-    case TCP_CLOSE_WAIT:
-    case TCP_CLOSING:
-    case TCP_LAST_ACK:
+            if (th->rst)
+                goto discard;
 
-    case TCP_FIN_WAIT1:
-    case TCP_FIN_WAIT2:
+            if (th->syn) {
+                if (th->fin)
+                    goto discard;
+                /* It is possible that we process SYN packets from backlog,
+                * so we need to make sure to disable BH and RCU right there. */
+                rcu_read_lock();
+                local_bh_disable();
+                acceptable = icsk->icsk_af_ops->conn_request(sk, skb) >= 0;
+                local_bh_enable();
+                rcu_read_unlock();
 
-    case TCP_ESTABLISHED:
-      tcp_data_queue(sk, skb);
-  }
+                if (!acceptable)
+                    return 1;
+                consume_skb(skb);
+                return 0;
+            }
+            goto discard;
+        }
 
-  if (!queued) {
-  discard:
+        case TCP_SYN_SENT: {
+            tp->rx_opt.saw_tstamp = 0;
+            tcp_mstamp_refresh(tp);
+            queued = tcp_rcv_synsent_state_process(sk, skb, th);
+            if (queued >= 0)
+                return queued;
+
+            /* Do step6 onward by hand. */
+            tcp_urg(sk, skb, th);
+            __kfree_skb(skb);
+            tcp_data_snd_check(sk);
+            return 0;
+        }
+    }
+
+    tcp_mstamp_refresh(tp);
+    tp->rx_opt.saw_tstamp = 0;
+    req = tp->fastopen_rsk;
+    if (req) {
+        bool req_stolen;
+
+        WARN_ON_ONCE(sk->sk_state != TCP_SYN_RECV &&
+            sk->sk_state != TCP_FIN_WAIT1);
+
+        if (!tcp_check_req(sk, skb, req, true, &req_stolen))
+            goto discard;
+    }
+
+    if (!th->ack && !th->rst && !th->syn)
+        goto discard;
+
+    /* Step 1 2 3 4 */
+    if (!tcp_validate_incoming(sk, skb, th, 0))
+        return 0;
+
+    /* Step 5: check the ACK field */
+    acceptable = tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT | FLAG_NO_CHALLENGE_ACK) > 0;
+
+    if (!acceptable) {
+        if (sk->sk_state == TCP_SYN_RECV)
+            return 1;  /* send one RST */
+        tcp_send_challenge_ack(sk, skb);
+        goto discard;
+    }
+
+    switch (sk->sk_state) {
+        case TCP_SYN_RECV: {
+            tp->delivered++; /* SYN-ACK delivery isn't tracked in tcp_ack */
+            if (!tp->srtt_us)
+                tcp_synack_rtt_meas(sk, req);
+
+            /* Once we leave TCP_SYN_RECV, we no longer need req
+            * so release it. */
+            if (req) {
+                inet_csk(sk)->icsk_retransmits = 0;
+                reqsk_fastopen_remove(sk, req, false);
+                /* Re-arm the timer because data may have been sent out.
+                * This is similar to the regular data transmission case
+                * when new data has just been ack'ed.
+                *
+                * (TFO) - we could try to be more aggressive and
+                * retransmitting any data sooner based on when they
+                * are sent out. */
+                tcp_rearm_rto(sk);
+            } else {
+                tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB);
+                tp->copied_seq = tp->rcv_nxt;
+            }
+            smp_mb();
+            tcp_set_state(sk, TCP_ESTABLISHED);
+            sk->sk_state_change(sk);
+
+            /* Note, that this wakeup is only for marginal crossed SYN case.
+            * Passively open sockets are not waked up, because
+            * sk->sk_sleep == NULL and sk->sk_socket == NULL.
+            */
+            if (sk->sk_socket)
+                sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
+
+            tp->snd_una = TCP_SKB_CB(skb)->ack_seq;
+            tp->snd_wnd = ntohs(th->window) << tp->rx_opt.snd_wscale;
+            tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
+
+            if (tp->rx_opt.tstamp_ok)
+                tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
+
+            if (!inet_csk(sk)->icsk_ca_ops->cong_control)
+                tcp_update_pacing_rate(sk);
+
+            /* Prevent spurious tcp_cwnd_restart() on first data packet */
+            tp->lsndtime = tcp_jiffies32;
+
+            tcp_initialize_rcv_mss(sk);
+            tcp_fast_path_on(tp);
+            break;
+        }
+
+        case TCP_FIN_WAIT1: {
+            int tmo;
+
+            /* If we enter the TCP_FIN_WAIT1 state and we are a
+            * Fast Open socket and this is the first acceptable
+            * ACK we have received, this would have acknowledged
+            * our SYNACK so stop the SYNACK timer.
+            */
+            if (req) {
+                /* We no longer need the request sock. */
+                reqsk_fastopen_remove(sk, req, false);
+                tcp_rearm_rto(sk);
+            }
+            if (tp->snd_una != tp->write_seq)
+                break;
+
+            tcp_set_state(sk, TCP_FIN_WAIT2);
+            sk->sk_shutdown |= SEND_SHUTDOWN;
+
+            sk_dst_confirm(sk);
+
+            if (!sock_flag(sk, SOCK_DEAD)) {
+                /* Wake up lingering close() */
+                sk->sk_state_change(sk);
+                break;
+            }
+
+            if (tp->linger2 < 0) {
+                tcp_done(sk);
+                return 1;
+            }
+            if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq 
+                && after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) 
+            {
+                /* Receive out of order FIN after close() */
+                if (tp->syn_fastopen && th->fin)
+                    tcp_fastopen_active_disable(sk);
+                tcp_done(sk);
+                return 1;
+            }
+
+            tmo = tcp_fin_time(sk);
+            if (tmo > TCP_TIMEWAIT_LEN) {
+                inet_csk_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
+            } else if (th->fin || sock_owned_by_user(sk)) {
+                /* Bad case. We could lose such FIN otherwise.
+                * It is not a big problem, but it looks confusing
+                * and not so rare event. We still can lose it now,
+                * if it spins in bh_lock_sock(), but it is really
+                * marginal case.
+                */
+                inet_csk_reset_keepalive_timer(sk, tmo);
+            } else {
+                tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+                goto discard;
+            }
+            break;
+        }
+
+        case TCP_CLOSING: {
+            if (tp->snd_una == tp->write_seq) {
+                tcp_time_wait(sk, TCP_TIME_WAIT, 0);
+                goto discard;
+            }
+            break;
+        }
+
+        case TCP_LAST_ACK: {
+            if (tp->snd_una == tp->write_seq) {
+                tcp_update_metrics(sk);
+                tcp_done(sk);
+                goto discard;
+            }
+            break;
+        }
+    }
+
+    /* Step 6: check the URG bit */
+    tcp_urg(sk, skb, th);
+
+    /* Step 7: process the segment text */
+    switch (sk->sk_state) {
+        case TCP_CLOSE_WAIT:
+        case TCP_CLOSING:
+        case TCP_LAST_ACK: {
+            if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt))
+            break;
+            /* fall through */
+        }
+        case TCP_FIN_WAIT1:
+        case TCP_FIN_WAIT2: {
+            /* RFC 793 says to queue data in these states,
+            * RFC 1122 says we MUST send a reset.
+            * BSD 4.4 also does reset */
+            if (sk->sk_shutdown & RCV_SHUTDOWN) {
+                if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq
+                    && after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) 
+                {
+                    tcp_reset(sk);
+                    return 1;
+                }
+            }
+        }
+        /* Fall through */
+        case TCP_ESTABLISHED: {
+            tcp_data_queue(sk, skb);
+            queued = 1;
+            break;
+        }
+    }
+
+    /* tcp_data could move socket to TIME-WAIT */
+    if (sk->sk_state != TCP_CLOSE) {
+        tcp_data_snd_check(sk);
+        tcp_ack_snd_check(sk);
+    }
+
+    if (!queued) {
+discard:
+        tcp_drop(sk, skb);
+    }
+    return 0;
+}
+
+static bool tcp_validate_incoming(
+    struct sock *sk, struct sk_buff *skb,
+    const struct tcphdr *th, int syn_inerr)
+{
+    struct tcp_sock *tp = tcp_sk(sk);
+    bool rst_seq_match = false;
+
+    /* RFC1323: H1. Apply PAWS check first. */
+    if (tcp_fast_parse_options(sock_net(sk), skb, th, tp) 
+        && tp->rx_opt.saw_tstamp 
+        && tcp_paws_discard(sk, skb)) 
+    {
+        if (!th->rst) {
+            if (!tcp_oow_rate_limited(sock_net(sk), skb,
+                          LINUX_MIB_TCPACKSKIPPEDPAWS,
+                          &tp->last_oow_ack_time))
+                tcp_send_dupack(sk, skb);
+            goto discard;
+        }
+        /* Reset is accepted even if it did not pass PAWS. */
+    }
+
+    /* Step 1: check sequence number */
+    if (!tcp_sequence(tp, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq)) {
+        /* RFC793, page 37: "In all states except SYN-SENT, all reset
+         * (RST) segments are validated by checking their SEQ-fields."
+         * And page 69: "If an incoming segment is not acceptable,
+         * an acknowledgment should be sent in reply (unless the RST
+         * bit is set, if so drop the segment and return)". */
+        if (!th->rst) {
+            if (th->syn)
+                goto syn_challenge;
+            if (!tcp_oow_rate_limited(sock_net(sk), skb,
+                          LINUX_MIB_TCPACKSKIPPEDSEQ,
+                          &tp->last_oow_ack_time))
+                tcp_send_dupack(sk, skb);
+        } else if (tcp_reset_check(sk, skb)) {
+            tcp_reset(sk);
+        }
+        goto discard;
+    }
+
+    /* Step 2: check RST bit */
+    if (th->rst) {
+        /* RFC 5961 3.2 (extend to match against (RCV.NXT - 1) after a
+         * FIN and SACK too if available):
+         * If seq num matches RCV.NXT or (RCV.NXT - 1) after a FIN, or
+         * the right-most SACK block,
+         * then
+         *     RESET the connection
+         * else
+         *     Send a challenge ACK */
+        if (TCP_SKB_CB(skb)->seq == tp->rcv_nxt || tcp_reset_check(sk, skb)) {
+            rst_seq_match = true;
+        } else if (tcp_is_sack(tp) && tp->rx_opt.num_sacks > 0) {
+            struct tcp_sack_block *sp = &tp->selective_acks[0];
+            int max_sack = sp[0].end_seq;
+            int this_sack;
+
+            for (this_sack = 1; this_sack < tp->rx_opt.num_sacks; ++this_sack) {
+                max_sack = after(sp[this_sack].end_seq, max_sack) ? sp[this_sack].end_seq : max_sack;
+            }
+
+            if (TCP_SKB_CB(skb)->seq == max_sack)
+                rst_seq_match = true;
+        }
+
+        if (rst_seq_match)
+            tcp_reset(sk);
+        else {
+            /* Disable TFO if RST is out-of-order
+             * and no data has been received
+             * for current active TFO socket
+             */
+            if (tp->syn_fastopen && !tp->data_segs_in && sk->sk_state == TCP_ESTABLISHED)
+                tcp_fastopen_active_disable(sk);
+            tcp_send_challenge_ack(sk, skb);
+        }
+        goto discard;
+    }
+
+    /* Step 3: check security and precedence [ignored] */
+
+    /* Step 4: Check for a SYN
+     * RFC 5961 4.2 : Send a challenge ack */
+    if (th->syn) {
+syn_challenge:
+        if (syn_inerr)
+            TCP_INC_STATS(sock_net(sk), TCP_MIB_INERRS);
+        tcp_send_challenge_ack(sk, skb);
+        goto discard;
+    }
+
+    return true;
+
+discard:
     tcp_drop(sk, skb);
-  }
-
-  return 0;
+    return false;
 }
 
 /* tcp_rcv_established ->
@@ -13650,7 +14055,6 @@ static void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 
   if (TCP_SKB_CB(skb)->seq == tp->rcv_nxt) {
     if (tcp_receive_window(tp) == 0) {
-      NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPZEROWINDOWDROP);
       goto out_of_window;
     }
 
@@ -13659,7 +14063,6 @@ queue_and_out:
     if (skb_queue_len(&sk->sk_receive_queue) == 0)
       sk_forced_mem_schedule(sk, skb->truesize);
     else if (tcp_try_rmem_schedule(sk, skb, skb->truesize)) {
-      NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPRCVQDROP);
       sk->sk_data_ready(sk);
       goto drop;
     }
@@ -13697,7 +14100,6 @@ queue_and_out:
 /* 2. [seq < end_seq < rcv_next < win] */
   if (!after(TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt)) {
     /* A retransmit, 2nd most common case.  Force an immediate ack. */
-    NET_INC_STATS(sock_net(sk), LINUX_MIB_DELAYEDACKLOST);
     tcp_dsack_set(sk, TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq);
 
 out_of_window:
@@ -13720,7 +14122,6 @@ drop:
     /* If window is closed, drop tail of packet. But after
      * remembering D-SACK for its head made in previous line. */
     if (!tcp_receive_window(tp)) {
-      NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPZEROWINDOWDROP);
       goto out_of_window;
     }
     goto queue_and_out;
@@ -13730,8 +14131,8 @@ drop:
   tcp_data_queue_ofo(sk, skb);
 }
 
-static int tcp_queue_rcv(struct sock *sk, struct sk_buff *skb, int hdrlen,
-      bool *fragstolen)
+static int tcp_queue_rcv(
+    struct sock *sk, struct sk_buff *skb, int hdrlen, bool *fragstolen)
 {
   int eaten;
   struct sk_buff *tail = skb_peek_tail(&sk->sk_receive_queue);
@@ -13745,6 +14146,179 @@ static int tcp_queue_rcv(struct sock *sk, struct sk_buff *skb, int hdrlen,
     skb_set_owner_r(skb, sk);
   }
   return eaten;
+}
+
+static void tcp_data_queue_ofo(struct sock *sk, struct sk_buff *skb)
+{
+    struct tcp_sock *tp = tcp_sk(sk);
+    struct rb_node **p, *parent;
+    struct sk_buff *skb1;
+    u32 seq, end_seq;
+    bool fragstolen;
+
+    tcp_ecn_check_ce(sk, skb);
+
+    if (unlikely(tcp_try_rmem_schedule(sk, skb, skb->truesize))) {
+        sk->sk_data_ready(sk);
+        tcp_drop(sk, skb);
+        return;
+    }
+
+    /* Disable header prediction. */
+    tp->pred_flags = 0;
+    inet_csk_schedule_ack(sk);
+
+
+    seq = TCP_SKB_CB(skb)->seq;
+    end_seq = TCP_SKB_CB(skb)->end_seq;
+
+    p = &tp->out_of_order_queue.rb_node;
+    if (RB_EMPTY_ROOT(&tp->out_of_order_queue)) {
+        /* Initial out of order segment, build 1 SACK. */
+        if (tcp_is_sack(tp)) {
+            tp->rx_opt.num_sacks = 1;
+            tp->selective_acks[0].start_seq = seq;
+            tp->selective_acks[0].end_seq = end_seq;
+        }
+        rb_link_node(&skb->rbnode, NULL, p);
+        rb_insert_color(&skb->rbnode, &tp->out_of_order_queue);
+        tp->ooo_last_skb = skb;
+        goto end;
+    }
+
+    /* In the typical case, we are adding an skb to the end of the list.
+     * Use of ooo_last_skb avoids the O(Log(N)) rbtree lookup. */
+    if (tcp_ooo_try_coalesce(sk, tp->ooo_last_skb, skb, &fragstolen)) {
+coalesce_done:
+        /* For non sack flows, do not grow window to force DUPACK
+         * and trigger fast retransmit. */
+        if (tcp_is_sack(tp))
+            tcp_grow_window(sk, skb);
+        kfree_skb_partial(skb, fragstolen);
+        skb = NULL;
+        goto add_sack;
+    }
+    /* Can avoid an rbtree lookup if we are adding skb after ooo_last_skb */
+    if (!before(seq, TCP_SKB_CB(tp->ooo_last_skb)->end_seq)) {
+        parent = &tp->ooo_last_skb->rbnode;
+        p = &parent->rb_right;
+        goto insert;
+    }
+
+    /* Find place to insert this segment. Handle overlaps on the way. */
+    parent = NULL;
+    while (*p) {
+        parent = *p;
+        skb1 = rb_to_skb(parent);
+        if (before(seq, TCP_SKB_CB(skb1)->seq)) {
+            p = &parent->rb_left;
+            continue;
+        }
+        if (before(seq, TCP_SKB_CB(skb1)->end_seq)) {
+            if (!after(end_seq, TCP_SKB_CB(skb1)->end_seq)) {
+                /* All the bits are present. Drop. */
+                tcp_drop(sk, skb);
+                skb = NULL;
+                tcp_dsack_set(sk, seq, end_seq);
+                goto add_sack;
+            }
+            if (after(seq, TCP_SKB_CB(skb1)->seq)) {
+                /* Partial overlap. */
+                tcp_dsack_set(sk, seq, TCP_SKB_CB(skb1)->end_seq);
+            } else {
+                /* skb's seq == skb1's seq and skb covers skb1.
+                 * Replace skb1 with skb. */
+                rb_replace_node(&skb1->rbnode, &skb->rbnode, &tp->out_of_order_queue);
+                tcp_dsack_extend(sk, TCP_SKB_CB(skb1)->seq, TCP_SKB_CB(skb1)->end_seq);
+                tcp_drop(sk, skb1);
+                goto merge_right;
+            }
+        } else if (tcp_ooo_try_coalesce(sk, skb1, skb, &fragstolen)) {
+            goto coalesce_done;
+        }
+        p = &parent->rb_right;
+    }
+insert:
+    /* Insert segment into RB tree. */
+    rb_link_node(&skb->rbnode, parent, p);
+    rb_insert_color(&skb->rbnode, &tp->out_of_order_queue);
+
+merge_right:
+    /* Remove other segments covered by skb. */
+    while ((skb1 = skb_rb_next(skb)) != NULL) {
+        if (!after(end_seq, TCP_SKB_CB(skb1)->seq))
+            break;
+        if (before(end_seq, TCP_SKB_CB(skb1)->end_seq)) {
+            tcp_dsack_extend(sk, TCP_SKB_CB(skb1)->seq, end_seq);
+            break;
+        }
+        rb_erase(&skb1->rbnode, &tp->out_of_order_queue);
+        tcp_dsack_extend(sk, TCP_SKB_CB(skb1)->seq, TCP_SKB_CB(skb1)->end_seq);
+        tcp_drop(sk, skb1);
+    }
+    /* If there is no skb after us, we are the last_skb ! */
+    if (!skb1)
+        tp->ooo_last_skb = skb;
+
+add_sack:
+    if (tcp_is_sack(tp))
+        tcp_sack_new_ofo_skb(sk, seq, end_seq);
+end:
+    if (skb) {
+        /* For non sack flows, do not grow window to force DUPACK
+         * and trigger fast retransmit. */
+        if (tcp_is_sack(tp))
+            tcp_grow_window(sk, skb);
+        skb_condense(skb);
+        skb_set_owner_r(skb, sk);
+    }
+}
+
+static void tcp_ofo_queue(struct sock *sk)
+{
+    struct tcp_sock *tp = tcp_sk(sk);
+    __u32 dsack_high = tp->rcv_nxt;
+    bool fin, fragstolen, eaten;
+    struct sk_buff *skb, *tail;
+    struct rb_node *p;
+
+    p = rb_first(&tp->out_of_order_queue);
+    while (p) {
+        skb = rb_to_skb(p);
+        if (after(TCP_SKB_CB(skb)->seq, tp->rcv_nxt))
+            break;
+
+        if (before(TCP_SKB_CB(skb)->seq, dsack_high)) {
+            __u32 dsack = dsack_high;
+            if (before(TCP_SKB_CB(skb)->end_seq, dsack_high))
+                dsack_high = TCP_SKB_CB(skb)->end_seq;
+            tcp_dsack_extend(sk, TCP_SKB_CB(skb)->seq, dsack);
+        }
+        p = rb_next(p);
+        rb_erase(&skb->rbnode, &tp->out_of_order_queue);
+
+        if (unlikely(!after(TCP_SKB_CB(skb)->end_seq, tp->rcv_nxt))) {
+            SOCK_DEBUG(sk, "ofo packet was already received\n");
+            tcp_drop(sk, skb);
+            continue;
+        }
+        
+        tail = skb_peek_tail(&sk->sk_receive_queue);
+        eaten = tail && tcp_try_coalesce(sk, tail, skb, &fragstolen);
+        tcp_rcv_nxt_update(tp, TCP_SKB_CB(skb)->end_seq);
+        fin = TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN;
+        if (!eaten)
+            __skb_queue_tail(&sk->sk_receive_queue, skb);
+        else
+            kfree_skb_partial(skb, fragstolen);
+
+        if (unlikely(fin)) {
+            tcp_fin(sk);
+            /* tcp_fin() purges tp->out_of_order_queue,
+             * so we must end this loop right now. */
+            break;
+        }
+    }
 }
 ```
 
@@ -13962,56 +14536,9 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
     __rc = __condition;          \
     __rc;              \
   })
-
-long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
-{
-  /* The below executes an smp_mb(), which matches with the full barrier
-   * executed by the try_to_wake_up() in woken_wake_function() such that
-   * either we see the store to wq_entry->flags in woken_wake_function()
-   * or woken_wake_function() sees our store to current->state. */
-  set_current_state(mode); /* A */
-  if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
-    timeout = schedule_timeout(timeout);
-  __set_current_state(TASK_RUNNING);
-
-  /* The below executes an smp_mb(), which matches with the smp_mb() (C)
-   * in woken_wake_function() such that either we see the wait condition
-   * being true or the store to wq_entry->flags in woken_wake_function()
-   * follows ours in the coherence order. */
-  smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
-
-  return timeout;
-}
-
-int woken_wake_function(
-  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
-{
-  /* Pairs with the smp_store_mb() in wait_woken(). */
-  smp_mb(); /* C */
-  wq_entry->flags |= WQ_FLAG_WOKEN;
-
-  return default_wake_function(wq_entry, mode, sync, key);
-}
-
-int default_wake_function(
-  wait_queue_entry_t *curr, unsigned mode, int wake_flags, void *key)
-{
-  return try_to_wake_up(curr->private, mode, wake_flags);
-}
-
-/* wait_queue_entry::flags */
-#define WQ_FLAG_EXCLUSIVE  0x01
-#define WQ_FLAG_WOKEN      0x02
-#define WQ_FLAG_BOOKMARK   0x04
-
-struct wait_queue_entry {
-  unsigned int      flags;
-  void              *private; /* struct_task */
-  wait_queue_func_t func;
-  struct list_head  entry;
-};
-
 ```
+* [wait_woken](#wait_woken)
+* [wake_up](#wake_up)
 
 ```c++
 /* driver layer */
@@ -14071,6 +14598,8 @@ sock_read_iter()
               default_wake_function()
                 try_to_wake_up()
 ```
+* [try_to_wake_up](#2-ttwu)
+
 ![linux-net-read.png](../Images/Kernel/net-read.png)
 
 ### tcpdump
@@ -14437,7 +14966,194 @@ tcp_v4_do_rcv();
 #### tcp_send_synack
 
 #### tcp_send_fin
+```c++
+void tcp_send_fin(struct sock *sk)
+{
+    struct sk_buff *skb, *tskb = tcp_write_queue_tail(sk);
+    struct tcp_sock *tp = tcp_sk(sk);
 
+    /* Optimization, tack on the FIN if we have one skb in write queue and
+     * this skb was not yet sent, or we are under memory pressure.
+     * Note: in the latter case, FIN packet will be sent after a timeout,
+     * as TCP stack thinks it has already been transmitted. */
+    if (!tskb && tcp_under_memory_pressure(sk))
+        tskb = skb_rb_last(&sk->tcp_rtx_queue);
+
+    if (tskb) {
+coalesce:
+        TCP_SKB_CB(tskb)->tcp_flags |= TCPHDR_FIN;
+        TCP_SKB_CB(tskb)->end_seq++;
+        tp->write_seq++;
+        if (tcp_write_queue_empty(sk)) {
+            /* This means tskb was already sent.
+             * Pretend we included the FIN on previous transmit.
+             * We need to set tp->snd_nxt to the value it would have
+             * if FIN had been sent. This is because retransmit path
+             * does not change tp->snd_nxt. */
+            tp->snd_nxt++;
+            return;
+        }
+    } else {
+        skb = alloc_skb_fclone(MAX_TCP_HEADER, sk->sk_allocation);
+        if (unlikely(!skb)) {
+            if (tskb)
+                goto coalesce;
+            return;
+        }
+        INIT_LIST_HEAD(&skb->tcp_tsorted_anchor);
+        skb_reserve(skb, MAX_TCP_HEADER);
+        sk_forced_mem_schedule(sk, skb->truesize);
+        /* FIN eats a sequence byte, write_seq advanced by tcp_queue_skb(). */
+        tcp_init_nondata_skb(skb, tp->write_seq, TCPHDR_ACK | TCPHDR_FIN);
+        tcp_queue_skb(sk, skb);
+    }
+    __tcp_push_pending_frames(sk, tcp_current_mss(sk), TCP_NAGLE_OFF);
+}
+
+void __tcp_push_pending_frames(
+    struct sock *sk, unsigned int cur_mss, int nonagle)
+{
+    /* If we are closed, the bytes will have to remain here.
+     * In time closedown will finish, we empty the write queue and
+     * all will be happy. */
+    if (unlikely(sk->sk_state == TCP_CLOSE))
+        return;
+
+    if (tcp_write_xmit(sk, cur_mss, nonagle, 0, sk_gfp_mask(sk, GFP_ATOMIC)))
+        tcp_check_probe_timer(sk);
+}
+```
+
+#### tcp_fin
+```c++
+void tcp_fin(struct sock *sk)
+{
+    struct tcp_sock *tp = tcp_sk(sk);
+
+    inet_csk_schedule_ack(sk);
+
+    sk->sk_shutdown |= RCV_SHUTDOWN;
+    sock_set_flag(sk, SOCK_DONE);
+
+    switch (sk->sk_state) {
+    case TCP_SYN_RECV:
+    case TCP_ESTABLISHED:
+        /* Move to CLOSE_WAIT */
+        tcp_set_state(sk, TCP_CLOSE_WAIT);
+        inet_csk(sk)->icsk_ack.pingpong = 1;
+        break;
+
+    case TCP_CLOSE_WAIT:
+    case TCP_CLOSING:
+        /* Received a retransmission of the FIN, do nothing.*/
+        break;
+    case TCP_LAST_ACK:
+        /* RFC793: Remain in the LAST-ACK state. */
+        break;
+
+    case TCP_FIN_WAIT1:
+        /* This case occurs when a simultaneous close
+         * happens, we must ack the received FIN and
+         * enter the CLOSING state. */
+        tcp_send_ack(sk);
+        tcp_set_state(sk, TCP_CLOSING);
+        break;
+    case TCP_FIN_WAIT2:
+        /* Received a FIN -- send ACK and enter TIME_WAIT. */
+        tcp_send_ack(sk);
+        tcp_time_wait(sk, TCP_TIME_WAIT, 0);
+        break;
+    default:
+        /* Only TCP_LISTEN and TCP_CLOSE are left, in these
+         * cases we should never reach this piece of code. */
+        break;
+    }
+
+    /* It _is_ possible, that we have something out-of-order _after_ FIN.
+     * Probably, we should reset in this case. For now drop them. */
+    skb_rbtree_purge(&tp->out_of_order_queue);
+    if (tcp_is_sack(tp))
+        tcp_sack_reset(&tp->rx_opt);
+    sk_mem_reclaim(sk);
+
+    if (!sock_flag(sk, SOCK_DEAD)) {
+        sk->sk_state_change(sk); /* sock_def_wakeup */
+
+        /* Do not send POLL_HUP for half duplex close. */
+        if (sk->sk_shutdown == SHUTDOWN_MASK || sk->sk_state == TCP_CLOSE)
+            sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_HUP);
+        else
+            sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN);
+    }
+}
+
+void sk_wake_async(const struct sock *sk, int how, int band)
+{
+    if (sock_flag(sk, SOCK_FASYNC)) {
+        rcu_read_lock();
+        sock_wake_async(rcu_dereference(sk->sk_wq), how, band);
+        rcu_read_unlock();
+    }
+}
+
+int sock_wake_async(struct socket_wq *wq, int how, int band)
+{
+    if (!wq || !wq->fasync_list)
+        return -1;
+
+    switch (how) {
+    case SOCK_WAKE_WAITD:
+        if (test_bit(SOCKWQ_ASYNC_WAITDATA, &wq->flags))
+            break;
+        goto call_kill;
+    case SOCK_WAKE_SPACE:
+        if (!test_and_clear_bit(SOCKWQ_ASYNC_NOSPACE, &wq->flags))
+            break;
+        /* fall through */
+    case SOCK_WAKE_IO:
+call_kill:
+        kill_fasync(&wq->fasync_list, SIGIO, band);
+        break;
+    case SOCK_WAKE_URG:
+        kill_fasync(&wq->fasync_list, SIGURG, band);
+    }
+
+    return 0;
+}
+
+void kill_fasync(struct fasync_struct **fp, int sig, int band)
+{
+    /* First a quick test without locking: usually
+     * the list is empty. */
+    if (*fp) {
+        rcu_read_lock();
+        kill_fasync_rcu(rcu_dereference(*fp), sig, band);
+        rcu_read_unlock();
+    }
+}
+
+static void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
+{
+    while (fa) {
+        struct fown_struct *fown;
+
+        if (fa->magic != FASYNC_MAGIC) {
+            return;
+        }
+        read_lock(&fa->fa_lock);
+        if (fa->fa_file) {
+            fown = &fa->fa_file->f_owner;
+            /* Don't send SIGURG to processes which have not set a
+               queued signum: SIGURG has its own default signalling
+               mechanism. */
+            if (!(sig == SIGURG && fown->signum == 0))
+                send_sigio(fown, fa->fa_fd, band);
+        }
+        read_unlock(&fa->fa_lock);
+        fa = rcu_dereference(fa->fa_next);
+    }
+}
+```
 
 ### epoll
 ```c++
