@@ -39,6 +39,8 @@
 
 # Linux
 * [Linux Kernel 4.19](./Linux/linux-kernel.md)
+    * [Memory](./Linux/linux-kernel-mem.md)
+    * [Network](./Linux/linux-kernel-net.md)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
 * [Linux Kernel Development](./linux-kernel-development.md)
