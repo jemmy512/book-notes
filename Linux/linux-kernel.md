@@ -25,6 +25,7 @@
     * [segment](#segment)
     * [paging](#paging)
     * [user virtual space](#user-virtual-space)
+    * [kernel virtual space](#kernel-virtual-space)
     * [numa](#numa)
         * [node](#node)
         * [zone](#zone)
@@ -80,6 +81,11 @@
         * [tcp layer](#tcp-layer)
         * [vfs layer](#vfs-layer)
         * [socket layer](#socket-layer])
+    * [retransmit](#retransmit)
+        * [tcp_write_timer](#tcp_write_timer)
+            * [tcp_retransmit_skb](#tcp_retransmit_skb)
+        * [tcp_delack_timer](#tcp_delack_timer)
+        * [tcp_keepalive_timer](#tcp_keepalive_timer)
     * [tcpdump](#tcpdump)
     * [ACK, SYN, FIN](#ACK-SYN-FIN)
         * [tcp_send_ack](#tcp_send_ack)
@@ -9981,6 +9987,8 @@ struct inet_connection_sock {
   struct request_sock_queue   icsk_accept_queue; /* FIFO of established children */
   struct tcp_congestion_ops           *icsk_ca_ops;
   struct inet_connection_sock_af_ops  *icsk_af_ops; /* Operations which are AF_INET{4,6} specific */
+  
+  struct timer_list           sk_timer;
   struct timer_list           icsk_retransmit_timer;
   struct timer_list           icsk_delack_timer;
 };
@@ -10363,25 +10371,98 @@ struct file *sock_alloc_file(struct socket *sock, int flags, const char *dname)
 }
 ```
 
+```c++
+// sk_prot->init(sk);
+static int tcp_v4_init_sock(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  tcp_init_sock(sk);
+
+  icsk->icsk_af_ops = &ipv4_specific;
+
+  tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
+
+  return 0;
+}
+
+void tcp_init_sock(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  tp->out_of_order_queue = RB_ROOT;
+  sk->tcp_rtx_queue = RB_ROOT;
+  tcp_init_xmit_timers(sk);
+  INIT_LIST_HEAD(&tp->tsq_node);
+  INIT_LIST_HEAD(&tp->tsorted_sent_queue);
+
+  icsk->icsk_rto = TCP_TIMEOUT_INIT;
+  tp->mdev_us = jiffies_to_usecs(TCP_TIMEOUT_INIT);
+  minmax_reset(&tp->rtt_min, tcp_jiffies32, ~0U);
+
+  /* So many TCP implementations out there (incorrectly) count the
+   * initial SYN frame in their delayed-ACK and congestion control
+   * algorithms that we must have the following bandaid to talk
+   * efficiently to them.  -DaveM */
+  tp->snd_cwnd = TCP_INIT_CWND;
+
+  /* There's a bubble in the pipe until at least the first ACK. */
+  tp->app_limited = ~0U;
+
+  /* See draft-stevens-tcpca-spec-01 for discussion of the
+   * initialization of these values. */
+  tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+  tp->snd_cwnd_clamp = ~0;
+  tp->mss_cache = TCP_MSS_DEFAULT;
+
+  tp->reordering = sock_net(sk)->ipv4.sysctl_tcp_reordering;
+  tcp_assign_congestion_control(sk);
+
+  tp->tsoffset = 0;
+  tp->rack.reo_wnd_steps = 1;
+
+  sk->sk_state = TCP_CLOSE;
+
+  sk->sk_write_space = sk_stream_write_space;
+  sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
+
+  icsk->icsk_sync_mss = tcp_sync_mss;
+
+  sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
+  sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
+
+  sk_sockets_allocated_inc(sk);
+  sk->sk_route_forced_caps = NETIF_F_GSO;
+}
+```
+
 ```C++
-socket();
-  sock_create();
-    _sock_create();
-      sock = sock_alloc();
-        inode = new_inode_pseudo(sock_mnt->mnt_sb);
-        sock = SOCKET_I(inode);
-        inode->i_op = &sockfs_inode_ops;
-      pf = net_families[family]; /* get AF */
-      pf->create(); // inet_family_ops.inet_create
-        inet_create();
-          inet_protosw *answer = inetsw[sock->type]; /* get socket */
-          sk = sk_alloc();
-          inet = inet_sk(sk);
-          sock_init_data(sock, sk);
-  sock_map_fd();
-    sock_alloc_file();
-      sock->file = file;
-      file->private_data = sock;
+socket()
+  sock_create()
+    _sock_create()
+      sock = sock_alloc()
+        inode = new_inode_pseudo(sock_mnt->mnt_sb)
+        sock = SOCKET_I(inode)
+        inode->i_op = &sockfs_inode_ops
+      pf = net_families[family] /* get AF */
+      pf->create() // inet_family_ops.inet_create
+        inet_create()
+          inet_protosw *answer = inetsw[sock->type] /* get socket */
+          sk = sk_alloc()
+          inet = inet_sk(sk)
+          sock_init_data(sock, sk)
+            sk->sk_state_change  =  sock_def_wakeup
+            sk->sk_data_ready  = sock_def_readable
+            sk->sk_write_space = sock_def_write_space
+          sk->sk_prot->init()
+            tcp_v4_init_sock()
+              tcp_init_sock()
+                tcp_init_xmit_timers()
+  sock_map_fd()
+    sock_alloc_file()
+      sock->file = file
+      file->private_data = sock
 ```
 
 ### bind
@@ -10831,8 +10912,7 @@ int tcp_connect(struct sock *sk)
   }
 
   /* Timer for repeating the SYN until an answer. */
-  inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
-          inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
+  inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS, inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
   return 0;
 }
 
@@ -14872,6 +14952,497 @@ sock_read_iter()
 * [try_to_wake_up](#ttwu)
 
 ![linux-net-read.png](../Images/Kernel/net-read.png)
+
+### retransmit
+```c++
+// sk->sk_prot->init(sk)
+static int tcp_v4_init_sock(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  tcp_init_sock(sk);
+
+  icsk->icsk_af_ops = &ipv4_specific;
+
+  tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
+
+  return 0;
+}
+
+void tcp_init_sock(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  tp->out_of_order_queue = RB_ROOT;
+  sk->tcp_rtx_queue = RB_ROOT;
+  tcp_init_xmit_timers(sk);
+  INIT_LIST_HEAD(&tp->tsq_node);
+  INIT_LIST_HEAD(&tp->tsorted_sent_queue);
+
+  icsk->icsk_rto = TCP_TIMEOUT_INIT;
+  tp->mdev_us = jiffies_to_usecs(TCP_TIMEOUT_INIT);
+  minmax_reset(&tp->rtt_min, tcp_jiffies32, ~0U);
+
+  /* So many TCP implementations out there (incorrectly) count the
+   * initial SYN frame in their delayed-ACK and congestion control
+   * algorithms that we must have the following bandaid to talk
+   * efficiently to them.  -DaveM */
+  tp->snd_cwnd = TCP_INIT_CWND;
+
+  /* There's a bubble in the pipe until at least the first ACK. */
+  tp->app_limited = ~0U;
+
+  /* See draft-stevens-tcpca-spec-01 for discussion of the
+   * initialization of these values. */
+  tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+  tp->snd_cwnd_clamp = ~0;
+  tp->mss_cache = TCP_MSS_DEFAULT;
+
+  tp->reordering = sock_net(sk)->ipv4.sysctl_tcp_reordering;
+  tcp_assign_congestion_control(sk);
+
+  tp->tsoffset = 0;
+  tp->rack.reo_wnd_steps = 1;
+
+  sk->sk_state = TCP_CLOSE;
+
+  sk->sk_write_space = sk_stream_write_space;
+  sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
+
+  icsk->icsk_sync_mss = tcp_sync_mss;
+
+  sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
+  sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
+
+  sk_sockets_allocated_inc(sk);
+  sk->sk_route_forced_caps = NETIF_F_GSO;
+}
+
+void tcp_init_xmit_timers(struct sock *sk)
+{
+  inet_csk_init_xmit_timers(sk, &tcp_write_timer, &tcp_delack_timer, &tcp_keepalive_timer);
+  hrtimer_init(&tcp_sk(sk)->pacing_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED_SOFT);
+  tcp_sk(sk)->pacing_timer.function = tcp_pace_kick;
+
+  hrtimer_init(&tcp_sk(sk)->compressed_ack_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED_SOFT);
+  tcp_sk(sk)->compressed_ack_timer.function = tcp_compressed_ack_kick;
+}
+
+void inet_csk_init_xmit_timers(struct sock *sk,
+  void (*retransmit_handler)(struct timer_list *t),
+  void (*delack_handler)(struct timer_list *t),
+  void (*keepalive_handler)(struct timer_list *t))
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  timer_setup(&icsk->icsk_retransmit_timer, retransmit_handler, 0);
+  timer_setup(&icsk->icsk_delack_timer, delack_handler, 0);
+  timer_setup(&sk->sk_timer, keepalive_handler, 0);
+  icsk->icsk_pending = icsk->icsk_ack.pending = 0;
+}
+
+void inet_csk_clear_xmit_timers(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  icsk->icsk_pending = icsk->icsk_ack.pending = icsk->icsk_ack.blocked = 0;
+
+  sk_stop_timer(sk, &icsk->icsk_retransmit_timer);
+  sk_stop_timer(sk, &icsk->icsk_delack_timer);
+  sk_stop_timer(sk, &sk->sk_timer);
+}
+
+void sk_stop_timer(struct sock *sk, struct timer_list* timer)
+{
+  if (del_timer(timer))
+    __sock_put(sk);
+}
+```
+
+#### tcp_write_timer
+```c++
+static void tcp_write_timer(struct timer_list *t)
+{
+  struct inet_connection_sock *icsk = from_timer(icsk, t, icsk_retransmit_timer);
+  struct sock *sk = &icsk->icsk_inet.sk;
+
+  bh_lock_sock(sk);
+  if (!sock_owned_by_user(sk)) {
+    tcp_write_timer_handler(sk);
+  } else {
+    /* delegate our work to tcp_release_cb() */
+    if (!test_and_set_bit(TCP_WRITE_TIMER_DEFERRED, &sk->sk_tsq_flags))
+      sock_hold(sk);
+  }
+  bh_unlock_sock(sk);
+  sock_put(sk);
+}
+
+void tcp_write_timer_handler(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  int event;
+
+  if (((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN)) || !icsk->icsk_pending)
+    goto out;
+
+  if (time_after(icsk->icsk_timeout, jiffies)) {
+    sk_reset_timer(sk, &icsk->icsk_retransmit_timer, icsk->icsk_timeout);
+    goto out;
+  }
+
+  tcp_mstamp_refresh(tcp_sk(sk));
+  event = icsk->icsk_pending;
+
+  switch (event) {
+  case ICSK_TIME_REO_TIMEOUT:
+    tcp_rack_reo_timeout(sk);
+    break;
+  case ICSK_TIME_LOSS_PROBE:
+    tcp_send_loss_probe(sk);
+    break;
+  case ICSK_TIME_RETRANS:
+    icsk->icsk_pending = 0;
+    tcp_retransmit_timer(sk);
+    break;
+  case ICSK_TIME_PROBE0:
+    icsk->icsk_pending = 0;
+    tcp_probe_timer(sk);
+    break;
+  }
+
+out:
+  sk_mem_reclaim(sk);
+}
+
+void tcp_retransmit_timer(struct sock *sk)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  struct net *net = sock_net(sk);
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  if (tp->fastopen_rsk) {
+    tcp_fastopen_synack_timer(sk);
+    /* Before we receive ACK to our SYN-ACK don't retransmit
+     * anything else (e.g., data or FIN segments). */
+    return;
+  }
+  
+  if (!tp->packets_out || WARN_ON_ONCE(tcp_rtx_queue_empty(sk)))
+    return;
+
+  tp->tlp_high_seq = 0;
+
+  if (!tp->snd_wnd && !sock_flag(sk, SOCK_DEAD) && !((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV))) {
+    /* Receiver dastardly shrinks window. Our retransmits
+     * become zero probes, but we should not timeout this
+     * connection. If the socket is an orphan, time it out,
+     * we cannot allow such beasts to hang infinitely. */
+    struct inet_sock *inet = inet_sk(sk);
+    if (sk->sk_family == AF_INET) {
+      net_dbg_ratelimited("Peer %pI4:%u/%u unexpectedly shrunk window %u:%u (repaired)\n",
+              &inet->inet_daddr,
+              ntohs(inet->inet_dport),
+              inet->inet_num,
+              tp->snd_una, tp->snd_nxt);
+    }
+    else if (sk->sk_family == AF_INET6) {
+      net_dbg_ratelimited("Peer %pI6:%u/%u unexpectedly shrunk window %u:%u (repaired)\n",
+              &sk->sk_v6_daddr,
+              ntohs(inet->inet_dport),
+              inet->inet_num,
+              tp->snd_una, tp->snd_nxt);
+    }
+
+    if (tcp_jiffies32 - tp->rcv_tstamp > TCP_RTO_MAX) {
+      tcp_write_err(sk);
+      goto out;
+    }
+    tcp_enter_loss(sk);
+    tcp_retransmit_skb(sk, tcp_rtx_queue_head(sk), 1);
+    __sk_dst_reset(sk);
+    goto out_reset_timer;
+  }
+
+  __NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPTIMEOUTS);
+  if (tcp_write_timeout(sk))
+    goto out;
+
+  if (icsk->icsk_retransmits == 0) {
+    int mib_idx = 0;
+
+    if (icsk->icsk_ca_state == TCP_CA_Recovery) {
+      if (tcp_is_sack(tp))
+        mib_idx = LINUX_MIB_TCPSACKRECOVERYFAIL;
+      else
+        mib_idx = LINUX_MIB_TCPRENORECOVERYFAIL;
+    } else if (icsk->icsk_ca_state == TCP_CA_Loss) {
+      mib_idx = LINUX_MIB_TCPLOSSFAILURES;
+    } else if ((icsk->icsk_ca_state == TCP_CA_Disorder) ||
+         tp->sacked_out) {
+      if (tcp_is_sack(tp))
+        mib_idx = LINUX_MIB_TCPSACKFAILURES;
+      else
+        mib_idx = LINUX_MIB_TCPRENOFAILURES;
+    }
+    if (mib_idx)
+      __NET_INC_STATS(sock_net(sk), mib_idx);
+  }
+
+  tcp_enter_loss(sk);
+
+  if (tcp_retransmit_skb(sk, tcp_rtx_queue_head(sk), 1) > 0) {
+    /* Retransmission failed because of local congestion,
+     * do not backoff.
+     */
+    if (!icsk->icsk_retransmits)
+      icsk->icsk_retransmits = 1;
+    inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
+            min(icsk->icsk_rto, TCP_RESOURCE_PROBE_INTERVAL),
+            TCP_RTO_MAX);
+    goto out;
+  }
+
+  /* Increase the timeout each time we retransmit.  Note that
+   * we do not increase the rtt estimate.  rto is initialized
+   * from rtt, but increases here.  Jacobson (SIGCOMM 88) suggests
+   * that doubling rto each time is the least we can get away with.
+   * In KA9Q, Karn uses this for the first few times, and then
+   * goes to quadratic.  netBSD doubles, but only goes up to *64,
+   * and clamps at 1 to 64 sec afterwards.  Note that 120 sec is
+   * defined in the protocol as the maximum possible RTT.  I guess
+   * we'll have to use something other than TCP to talk to the
+   * University of Mars.
+   *
+   * PAWS allows us longer timeouts and large windows, so once
+   * implemented ftp to mars will work nicely. We will have to fix
+   * the 120 second clamps though!
+   */
+  icsk->icsk_backoff++;
+  icsk->icsk_retransmits++;
+
+out_reset_timer:
+  /* If stream is thin, use linear timeouts. Since 'icsk_backoff' is
+   * used to reset timer, set to 0. Recalculate 'icsk_rto' as this
+   * might be increased if the stream oscillates between thin and thick,
+   * thus the old value might already be too high compared to the value
+   * set by 'tcp_set_rto' in tcp_input.c which resets the rto without
+   * backoff. Limit to TCP_THIN_LINEAR_RETRIES before initiating
+   * exponential backoff behaviour to avoid continue hammering
+   * linear-timeout retransmissions into a black hole
+   */
+  if (sk->sk_state == TCP_ESTABLISHED &&
+      (tp->thin_lto || net->ipv4.sysctl_tcp_thin_linear_timeouts) &&
+      tcp_stream_is_thin(tp) &&
+      icsk->icsk_retransmits <= TCP_THIN_LINEAR_RETRIES) {
+    icsk->icsk_backoff = 0;
+    icsk->icsk_rto = min(__tcp_set_rto(tp), TCP_RTO_MAX);
+  } else {
+    /* Use normal (exponential) backoff */
+    icsk->icsk_rto = min(icsk->icsk_rto << 1, TCP_RTO_MAX);
+  }
+  inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
+          tcp_clamp_rto_to_user_timeout(sk), TCP_RTO_MAX);
+  if (retransmits_timed_out(sk, net->ipv4.sysctl_tcp_retries1 + 1, 0))
+    __sk_dst_reset(sk);
+
+out:;
+}
+```
+
+##### tcp_retransmit_skb
+```c++
+int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  int err = __tcp_retransmit_skb(sk, skb, segs);
+
+  if (err == 0) {
+    TCP_SKB_CB(skb)->sacked |= TCPCB_RETRANS;
+    tp->retrans_out += tcp_skb_pcount(skb);
+
+    /* Save stamp of the first retransmit. */
+    if (!tp->retrans_stamp)
+      tp->retrans_stamp = tcp_skb_timestamp(skb);
+
+  }
+
+  if (tp->undo_retrans < 0)
+    tp->undo_retrans = 0;
+  tp->undo_retrans += tcp_skb_pcount(skb);
+  return err;
+}
+
+int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+  unsigned int cur_mss;
+  int diff, len, err;
+
+
+  /* Inconclusive MTU probe */
+  if (icsk->icsk_mtup.probe_size)
+    icsk->icsk_mtup.probe_size = 0;
+
+  /* Do not sent more than we queued. 1/4 is reserved for possible
+   * copying overhead: fragmentation, tunneling, mangling etc. */
+  if (refcount_read(&sk->sk_wmem_alloc) > min_t(u32, sk->sk_wmem_queued + (sk->sk_wmem_queued >> 2), sk->sk_sndbuf))
+    return -EAGAIN;
+
+  if (skb_still_in_host_queue(sk, skb))
+    return -EBUSY;
+
+  if (before(TCP_SKB_CB(skb)->seq, tp->snd_una)) {
+    if (unlikely(before(TCP_SKB_CB(skb)->end_seq, tp->snd_una))) {
+      WARN_ON_ONCE(1);
+      return -EINVAL;
+    }
+    if (tcp_trim_head(sk, skb, tp->snd_una - TCP_SKB_CB(skb)->seq))
+      return -ENOMEM;
+  }
+
+  if (inet_csk(sk)->icsk_af_ops->rebuild_header(sk))
+    return -EHOSTUNREACH; /* Routing failure or similar. */
+
+  cur_mss = tcp_current_mss(sk);
+
+  /* If receiver has shrunk his window, and skb is out of
+   * new window, do not retransmit it. The exception is the
+   * case, when window is shrunk to zero. In this case
+   * our retransmit serves as a zero window probe. */
+  if (!before(TCP_SKB_CB(skb)->seq, tcp_wnd_end(tp)) && TCP_SKB_CB(skb)->seq != tp->snd_una)
+    return -EAGAIN;
+
+  len = cur_mss * segs;
+  if (skb->len > len) {
+    if (tcp_fragment(sk, TCP_FRAG_IN_RTX_QUEUE, skb, len, cur_mss, GFP_ATOMIC))
+      return -ENOMEM; /* We'll try again later. */
+  } else {
+    if (skb_unclone(skb, GFP_ATOMIC))
+      return -ENOMEM;
+
+    diff = tcp_skb_pcount(skb);
+    tcp_set_skb_tso_segs(skb, cur_mss);
+    diff -= tcp_skb_pcount(skb);
+    if (diff)
+      tcp_adjust_pcount(sk, skb, diff);
+    if (skb->len < cur_mss)
+      tcp_retrans_try_collapse(sk, skb, cur_mss);
+  }
+
+  /* RFC3168, section 6.1.1.1. ECN fallback */
+  if ((TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN_ECN) == TCPHDR_SYN_ECN)
+    tcp_ecn_clear_syn(sk, skb);
+
+  /* Update global and local TCP statistics. */
+  segs = tcp_skb_pcount(skb);
+  TCP_ADD_STATS(sock_net(sk), TCP_MIB_RETRANSSEGS, segs);
+  if (TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN)
+    __NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPSYNRETRANS);
+  tp->total_retrans += segs;
+  tp->bytes_retrans += skb->len;
+
+  /* make sure skb->data is aligned on arches that require it
+   * and check if ack-trimming & collapsing extended the headroom
+   * beyond what csum_start can cover.
+   */
+  if (unlikely((NET_IP_ALIGN && ((unsigned long)skb->data & 3)) || skb_headroom(skb) >= 0xFFFF)) {
+    struct sk_buff *nskb;
+
+    tcp_skb_tsorted_save(skb) {
+      nskb = __pskb_copy(skb, MAX_TCP_HEADER, GFP_ATOMIC);
+      err = nskb ? tcp_transmit_skb(sk, nskb, 0, GFP_ATOMIC) : -ENOBUFS;
+    } tcp_skb_tsorted_restore(skb);
+
+    if (!err) {
+      tcp_update_skb_after_send(tp, skb);
+      tcp_rate_skb_sent(sk, skb);
+    }
+  } else {
+    err = tcp_transmit_skb(sk, skb, 1, GFP_ATOMIC);
+  }
+
+  if (BPF_SOCK_OPS_TEST_FLAG(tp, BPF_SOCK_OPS_RETRANS_CB_FLAG))
+    tcp_call_bpf_3arg(sk, BPF_SOCK_OPS_RETRANS_CB,
+          TCP_SKB_CB(skb)->seq, segs, err);
+
+  if (likely(!err)) {
+    TCP_SKB_CB(skb)->sacked |= TCPCB_EVER_RETRANS;
+    trace_tcp_retransmit_skb(sk, skb);
+  } else if (err != -EBUSY) {
+    NET_ADD_STATS(sock_net(sk), LINUX_MIB_TCPRETRANSFAIL, segs);
+  }
+  return err;
+}
+```
+
+#### tcp_delack_timer
+```c++
+static void tcp_delack_timer(struct timer_list *t)
+{
+  struct inet_connection_sock *icsk = from_timer(icsk, t, icsk_delack_timer);
+  struct sock *sk = &icsk->icsk_inet.sk;
+
+  bh_lock_sock(sk);
+  if (!sock_owned_by_user(sk)) {
+    tcp_delack_timer_handler(sk);
+  } else {
+    icsk->icsk_ack.blocked = 1;
+    __NET_INC_STATS(sock_net(sk), LINUX_MIB_DELAYEDACKLOCKED);
+    /* deleguate our work to tcp_release_cb() */
+    if (!test_and_set_bit(TCP_DELACK_TIMER_DEFERRED, &sk->sk_tsq_flags))
+      sock_hold(sk);
+  }
+  bh_unlock_sock(sk);
+  sock_put(sk);
+}
+
+void tcp_delack_timer_handler(struct sock *sk)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  sk_mem_reclaim_partial(sk);
+
+  if (((1 << sk->sk_state) & (TCPF_CLOSE | TCPF_LISTEN)) || !(icsk->icsk_ack.pending & ICSK_ACK_TIMER))
+    goto out;
+
+  if (time_after(icsk->icsk_ack.timeout, jiffies)) {
+    sk_reset_timer(sk, &icsk->icsk_delack_timer, icsk->icsk_ack.timeout);
+    goto out;
+  }
+  icsk->icsk_ack.pending &= ~ICSK_ACK_TIMER;
+
+  if (inet_csk_ack_scheduled(sk)) {
+    if (!icsk->icsk_ack.pingpong) {
+      /* Delayed ACK missed: inflate ATO. */
+      icsk->icsk_ack.ato = min(icsk->icsk_ack.ato << 1, icsk->icsk_rto);
+    } else {
+      /* Delayed ACK missed: leave pingpong mode and
+       * deflate ATO. */
+      icsk->icsk_ack.pingpong = 0;
+      icsk->icsk_ack.ato      = TCP_ATO_MIN;
+    }
+    tcp_mstamp_refresh(tcp_sk(sk));
+    tcp_send_ack(sk);
+    __NET_INC_STATS(sock_net(sk), LINUX_MIB_DELAYEDACKS);
+  }
+
+out:
+  if (tcp_under_memory_pressure(sk))
+    sk_mem_reclaim(sk);
+}
+
+static inline int inet_csk_ack_scheduled(const struct sock *sk)
+{
+  return inet_csk(sk)->icsk_ack.pending & ICSK_ACK_SCHED;
+}
+```
+
+#### tcp_keepalive_timer
+```c++
+```
 
 ### tcpdump
 ```c++
@@ -19139,7 +19710,6 @@ static void __remove_hrtimer(struct hrtimer *timer,
 ```
 
 ### posix_timer_fn
-
 ```C++
 static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
 {
@@ -19230,6 +19800,80 @@ out:
   unlock_task_sighand(t, &flags);
 ret:
   rcu_read_unlock();
+  return ret;
+}
+```
+
+## kernel timer api
+```c++
+#define timer_setup(timer, callback, flags) __init_timer((timer), (callback), (flags))
+#define __init_timer(_timer, _fn, _flags)   init_timer_key((_timer), (_fn), (_flags), NULL, NULL)
+
+void init_timer_key(struct timer_list *timer,
+  void (*func)(struct timer_list *), unsigned int flags,
+  const char *name, struct lock_class_key *key)
+{
+  debug_init(timer);
+  do_init_timer(timer, func, flags, name, key);
+}
+
+static void do_init_timer(struct timer_list *timer,
+  void (*func)(struct timer_list *),
+  unsigned int flags,
+  const char *name, struct lock_class_key *key)
+{
+  timer->entry.pprev = NULL;
+  timer->function = func;
+  timer->flags = flags | raw_smp_processor_id();
+  lockdep_init_map(&timer->lockdep_map, name, key, 0);
+}
+
+void hrtimer_init(struct hrtimer *timer, clockid_t clock_id,
+  enum hrtimer_mode mode)
+{
+  __hrtimer_init(timer, clock_id, mode);
+}
+
+static void __hrtimer_init(struct hrtimer *timer, clockid_t clock_id,
+  enum hrtimer_mode mode)
+{
+  bool softtimer = !!(mode & HRTIMER_MODE_SOFT);
+  int base = softtimer ? HRTIMER_MAX_CLOCK_BASES / 2 : 0;
+  struct hrtimer_cpu_base *cpu_base;
+
+  memset(timer, 0, sizeof(struct hrtimer));
+
+  cpu_base = raw_cpu_ptr(&hrtimer_bases);
+
+  /* POSIX magic: Relative CLOCK_REALTIME timers are not affected by
+   * clock modifications, so they needs to become CLOCK_MONOTONIC to
+   * ensure POSIX compliance. */
+  if (clock_id == CLOCK_REALTIME && mode & HRTIMER_MODE_REL)
+    clock_id = CLOCK_MONOTONIC;
+
+  base += hrtimer_clockid_to_base(clock_id);
+  timer->is_soft = softtimer;
+  timer->base = &cpu_base->clock_base[base];
+  timerqueue_init(&timer->node);
+}
+
+static inline void timerqueue_init(struct timerqueue_node *node)
+{
+  RB_CLEAR_NODE(&node->node);
+}
+
+int del_timer(struct timer_list *timer)
+{
+  struct timer_base *base;
+  unsigned long flags;
+  int ret = 0;
+
+  if (timer_pending(timer)) {
+    base = lock_timer_base(timer, &flags);
+    ret = detach_if_pending(timer, base, true);
+    raw_spin_unlock_irqrestore(&base->lock, flags);
+  }
+
   return ret;
 }
 ```
