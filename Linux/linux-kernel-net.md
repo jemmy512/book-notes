@@ -519,6 +519,58 @@ struct file *sock_alloc_file(struct socket *sock, int flags, const char *dname)
   file->private_data = sock;
   return file;
 }
+
+struct file *alloc_file_pseudo(
+  struct inode *inode, struct vfsmount *mnt,
+  const char *name, int flags,
+  const struct file_operations *fops)
+{
+  static const struct dentry_operations anon_ops = {
+    .d_dname = simple_dname
+  };
+
+  struct qstr this = QSTR_INIT(name, strlen(name));
+  struct path path;
+  struct file *file;
+
+  path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this);
+
+  if (!mnt->mnt_sb->s_d_op)
+    d_set_d_op(path.dentry, &anon_ops);
+
+  path.mnt = mntget(mnt);
+  d_instantiate(path.dentry, inode);
+
+  file = alloc_file(&path, flags, fops);
+  if (IS_ERR(file)) {
+    ihold(inode);
+    path_put(&path);
+  }
+  return file;
+}
+
+static struct file *alloc_file(
+  const struct path *path, int flags,
+  const struct file_operations *fop)
+{
+  struct file *file = alloc_empty_file(flags, current_cred());
+  file->f_path = *path;
+  file->f_inode = path->dentry->d_inode;
+  file->f_mapping = path->dentry->d_inode->i_mapping;
+  file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
+
+  if ((file->f_mode & FMODE_READ) && likely(fop->read || fop->read_iter))
+    file->f_mode |= FMODE_CAN_READ;
+  if ((file->f_mode & FMODE_WRITE) && likely(fop->write || fop->write_iter))
+    file->f_mode |= FMODE_CAN_WRITE;
+
+  file->f_mode |= FMODE_OPENED;
+  file->f_op = fop;
+  if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
+    i_readcount_inc(path->dentry->d_inode);
+
+  return file;
+}
 ```
 
 ```c++
@@ -611,6 +663,10 @@ socket()
                 tcp_init_xmit_timers()
   sock_map_fd()
     sock_alloc_file()
+      alloc_file_pseudo(&socket_file_ops)
+        d_alloc_pseudo()
+        d_set_d_op(&anon_ops)
+        alloc_file()
       sock->file = file
       file->private_data = sock
 ```
