@@ -1,31 +1,56 @@
 # Table of Contents
 * [Init](#Init)
-  * [CPU](#cpu)
+    * [CPU](#cpu)
 * [Process Management](#Process-Management)
-  * [process](#process)
-  * [thread](#thread)
-  * [task_struct](#task_struct)
-  * [schedule](#schedule)
-  * [voluntary schedule](#voluntary-schedule)
-  * [preempt schedule](#preempt-schedule)
-      * [preempt time](#preempt-time)
-          * [clock interrupt](#clock-interrupt)
-          * [ttwu](#ttwu)
-      * [real user preempt time](#real-user-preempt-time)
-          * [return from system call](#return-from-system-call)
-          * [return from interrupt](#return-from-interrupt)
-      * [real kernel preempt time](#real-kernel-preempt-time)
-          * [preempt_enable](#preempt_enble)
-          * [return from interrupt](#return-from-interrupt)
-  * [wake_up](#wake_up)
-  * [wait_woken](#wait_woken)
-  * [fork](#fork)
-  * [exec](#exec)
-  * [pthread_create](#pthread_create)
+    * [process](#process)
+    * [thread](#thread)
+    * [task_struct](#task_struct)
+    * [schedule](#schedule)
+    * [voluntary schedule](#voluntary-schedule)
+    * [preempt schedule](#preempt-schedule)
+        * [preempt time](#preempt-time)
+            * [clock interrupt](#clock-interrupt)
+            * [ttwu](#ttwu)
+        * [real user preempt time](#real-user-preempt-time)
+            * [return from system call](#return-from-system-call)
+            * [return from interrupt](#return-from-interrupt)
+        * [real kernel preempt time](#real-kernel-preempt-time)
+            * [preempt_enable](#preempt_enble)
+            * [return from interrupt](#return-from-interrupt)
+    * [wake_up](#wake_up)
+    * [wait_woken](#wait_woken)
+    * [fork](#fork)
+    * [exec](#exec)
 * [Memory Management](#Memory-Management)
+    * [segment](#segment)
+    * [paging](#paging)
+    * [user virtual space](#user-virtual-space)
+    * [numa](#numa)
+        * [node](#node)
+        * [zone](#zone)
+        * [page](#page)
+    * [buddy system](#buddy-system)
+    * [alloc_pages](#alloc_pages)
+    * [kmem_cache](#kmem_cache)
+        * [kmem_cache_create](#kmem_cache_create)
+        * [kmem_cache_alloc](#kmem_cache_alloc)
+        * [kmem_cache_alloc_node](#kmem_cache_alloc_node)
+    * [slab_alloc](#slab_alloc)
+    * [kswapd](#kswapd)
+    * [brk](#brk)
+    * [mmap](#mmap)
+    * [page fault](#page-fault)
+        * [do_anonymous_page](#do_anonymous_page)
+        * [do_fault](#do_fault)
+        * [do_swap_page](#do_swap_page)
+    * [pgd](#pgd)
+    * [kernel mapping](#kernel-mapping)
+    * [kmalloc](#kmalloc)
+    * [kmap_atomic](#kmap_atomic)
+    * [page_address](#page_address)
+    * [vmalloc](#vmalloc)
+    * [vmalloc_fault](#vmalloc_fault)
 * [File Management](#File-Management)
-* [IO](#IO)
-* [IPC](#IPC)
 * [Net](#Net)
     * [socket](#socket)
     * [bind](#bind)
@@ -34,13 +59,15 @@
     * [connect](#connect)
         * [send](#send)
         * [receive](#receive)
+    * [shutdown](#shutdown)
+    * [sk_buf](#sk_buff)
     * [write](#write)
         * [vfs layer](#vfs-layer-WR)
         * [socket layer](#socket-layer-WR)
         * [tcp layer](#tcp-layer-WR)
         * [ip layer](#ip-layer-WR)
             * [route](#route)
-            * [prepare ip header](#prepare-ip-header)
+            * [fill ip header](#fill-ip-header)
             * [send package](#send-package)
         * [mac layer](#mac-layer-WR)
             * [neighbour](#neighbour)
@@ -53,8 +80,6 @@
         * [tcp layer](#tcp-layer)
         * [vfs layer](#vfs-layer)
         * [socket layer](#socket-layer])
-    * [shutdown](#shutdown)
-    * [sk_buf](#sk_buff)
     * [tcpdump](#tcpdump)
     * [ACK, SYN, FIN](#ACK-SYN-FIN)
         * [tcp_send_ack](#tcp_send_ack)
@@ -70,10 +95,13 @@
             * [ep_delete](#ep_delete)
         * [epoll_wait](#epoll_wait)
         * [wake epoll_wait](#wake-epoll_wait)
+* [IO](#IO)
+* [IPC](#IPC)
 * [Virtualization](#Virtualization)
 * [Containerization](#Containerization)
 * [Lock](#Lock)
 * [Pthread](#Pthread)
+    * [pthread_create](#pthread_create)
 
 # Init
 ### cpu
@@ -1796,207 +1824,6 @@ void start_thread(
   regs->sp  = new_sp;
   regs->flags  = X86_EFLAGS_IF;
   force_iret(); /* restore the saved registers */
-}
-```
-
-### pthread_create
-```C++
-int __pthread_create_2_1 (
-  pthread_t *newthread, const pthread_attr_t *attr,
-  void *(*start_routine) (void *), void *arg)
-{
-  const struct pthread_attr *iattr = (struct pthread_attr *) attr;
-  struct pthread_attr default_attr;
-  if (iattr == NULL)
-  {
-    iattr = &default_attr;
-  }
-
-  struct pthread *pd = NULL;
-  int err = ALLOCATE_STACK (iattr, &pd);
-
-  pd->start_routine = start_routine;
-  pd->arg = arg;
-  pd->schedpolicy = self->schedpolicy;
-  pd->schedparam = self->schedparam;
-
-  *newthread = (pthread_t) pd;
-  atomic_increment (&__nptl_nthreads);
-
-  return create_thread(pd, iattr, &stopped_start,
-    STACK_VARIABLES_ARGS, &thread_ran);
-}
-versioned_symbol(libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);
-
-# define ALLOCATE_STACK_PARMS void **stack, size_t *stacksize
-
-# define ALLOCATE_STACK(attr, pd) allocate_stack (attr, pd, &stackaddr)
-
-static int allocate_stack (
-  const struct pthread_attr *attr,
-  struct pthread **pdp, ALLOCATE_STACK_PARMS)
-{
-  struct pthread *pd;
-  size_t size;
-  size_t pagesize_m1 = __getpagesize () - 1;
-
-  size = attr->stacksize;
-
-  /* Allocate some anonymous memory.  If possible use the cache.  */
-  size_t guardsize;
-  void *mem;
-  const int prot = (PROT_READ | PROT_WRITE
-                   | ((GL(dl_stack_flags) & PF_X) ? PROT_EXEC : 0));
-  /* Adjust the stack size for alignment.  */
-  size &= ~__static_tls_align_m1;
-  /* Make sure the size of the stack is enough for the guard and
-  eventually the thread descriptor.  */
-  guardsize = (attr->guardsize + pagesize_m1) & ~pagesize_m1;
-  size += guardsize;
-  pd = get_cached_stack (&size, &mem);
-  if (pd == NULL)
-  {
-    /* If a guard page is required, avoid committing memory by first
-    allocate with PROT_NONE and then reserve with required permission
-    excluding the guard page.  */
-    mem = __mmap (NULL, size, (guardsize == 0) ? prot : PROT_NONE,
-      MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-    /* Place the thread descriptor at the end of the stack.  */
-#if TLS_TCB_AT_TP
-    pd = (struct pthread *) ((char *) mem + size) - 1;
-#elif TLS_DTV_AT_TP
-    pd = (struct pthread *) ((((uintptr_t) mem + size - __static_tls_size)
-      & ~__static_tls_align_m1) - TLS_PRE_TCB_SIZE);
-#endif
-    /* Now mprotect the required region excluding the guard area. */
-    char *guard = guard_position(mem, size, guardsize, pd, pagesize_m1);
-    setup_stack_prot(mem, size, guard, guardsize, prot);
-
-    pd->stackblock = mem;
-    pd->stackblock_size = size;
-    pd->guardsize = guardsize;
-    pd->specific[0] = pd->specific_1stblock;
-
-    stack_list_add (&pd->list, &stack_used);
-  }
-
-  *pdp = pd;
-  void *stacktop;
-# if TLS_TCB_AT_TP
-  /* The stack begins before the TCB and the static TLS block.  */
-  stacktop = ((char *) (pd + 1) - __static_tls_size);
-# elif TLS_DTV_AT_TP
-  stacktop = (char *) (pd - 1);
-# endif
-  *stack = stacktop;
-}
-
-# define STACK_VARIABLES_PARMS void *stackaddr, size_t stacksize
-# define STACK_VARIABLES_ARGS stackaddr, stacksize
-
-static int create_thread (
-  struct pthread *pd, const struct pthread_attr *attr,
-  bool *stopped_start, STACK_VARIABLES_PARMS, bool *thread_ran)
-{
-  const int clone_flags = (CLONE_VM | CLONE_FS | CLONE_FILES
-    | CLONE_SYSVSEM | CLONE_SIGHAND | CLONE_THREAD | CLONE_SETTLS
-    | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | 0);
-
-  ARCH_CLONE (&start_thread, STACK_VARIABLES_ARGS, clone_flags, pd, &pd->tid, tp, &pd->tid)；
-  /* It's started now, so if we fail below, we'll have to cancel it
-and let it clean itself up.  */
-  *thread_ran = true;
-}
-
-
-# define ARCH_CLONE __clone
-/* The userland implementation is:
-   int clone (int (*fn)(void *arg), void *child_stack, int flags, void *arg),
-   the kernel entry is:
-   int clone (long flags, void *child_stack).
-
-   The parameters are passed in register and on the stack from userland:
-   rdi: fn
-   rsi: child_stack
-   rdx: flags
-   rcx: arg
-   r8d: TID field in parent
-   r9d: thread pointer
-%esp+8: TID field in child
-
-   The kernel expects:
-   rax: system call number
-   rdi: flags
-   rsi: child_stack
-   rdx: TID field in parent
-   r10: TID field in child
-   r8:  thread pointer  */
-
-ENTRY (__clone)
-  movq    $-EINVAL,%rax
-  /* Insert the argument onto the new stack.  */
-  subq    $16,%rsi
-  movq    %rcx,8(%rsi)
-
-  /* Save the function pointer.  It will be popped off in the
-      child in the ebx frobbing below. */
-  movq    %rdi,0(%rsi)
-
-  /* Do the system call.  */
-  movq    %rdx, %rdi
-  movq    %r8, %rdx
-  movq    %r9, %r8
-  mov     8(%rsp), %R10_LP
-  movl    $SYS_ify(clone),%eax
-
-  syscall
-PSEUDO_END (__clone)
-
-SYSCALL_DEFINE5(clone, unsigned long, clone_flags,
-  unsigned long, newsp,
-  int __user *, parent_tidptr,
-  int __user *, child_tidptr,
-  unsigned long, tls)
-{
-  return _do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr, tls);
-}
-
-#define THREAD_SETMEM(descr, member, value) \
-  descr->member = (value)
-
-#define START_THREAD_DEFN \
-  static int __attribute__ ((noreturn)) start_thread (void *arg)
-START_THREAD_DEFN
-{
-    struct pthread *pd = START_THREAD_SELF;
-    /* Run the code the user provided.  */
-    THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
-    /* Call destructors for the thread_local TLS variables.  */
-    /* Run the destructor for the thread-local data.  */
-    __nptl_deallocate_tsd ();
-    if (__glibc_unlikely (atomic_decrement_and_test (&__nptl_nthreads)))
-        /* This was the last thread.  */
-        exit (0);
-    __free_tcb (pd);
-    __exit_thread ();
-}
-
-void __free_tcb (struct pthread *pd)
-{
-  __deallocate_stack (pd);
-}
-
-void __deallocate_stack (struct pthread *pd)
-{
-  /* Remove the thread from the list of threads with user defined
-     stacks.  */
-  stack_list_del (&pd->list);
-  /* Not much to do.  Just free the mmap()ed memory.  Note that we do
-     not reset the 'used' flag in the 'tid' field.  This is done by
-     the kernel.  If no thread has been created yet this field is
-     still zero.  */
-  if (__glibc_likely (! pd->user_stack))
-    (void) queue_stack (pd);
 }
 ```
 ![linux-proc-fork-pthread-create.png](../Images/Kernel/proc-fork-pthread-create.png)
@@ -11391,6 +11218,389 @@ tcp_v4_rcv();
 ```
 ![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
 
+### shutdown
+```c++
+SYSCALL_DEFINE2(shutdown, int, fd, int, how)
+{
+  return __sys_shutdown(fd, how);
+}
+
+int __sys_shutdown(int fd, int how)
+{
+  int err, fput_needed;
+  struct socket *sock;
+
+  sock = sockfd_lookup_light(fd, &err, &fput_needed);
+  if (sock != NULL) {
+    err = security_socket_shutdown(sock, how);
+    if (!err)
+      err = sock->ops->shutdown(sock, how);
+    fput_light(sock->file, fput_needed);
+  }
+  return err;
+}
+
+const struct proto_ops inet_stream_ops = {
+  .shutdown = inet_shutdown,
+};
+
+int inet_shutdown(struct socket *sock, int how)
+{
+  struct sock *sk = sock->sk;
+  int err = 0;
+
+  /* This should really check to make sure
+   * the socket is a TCP socket. (WHY AC...) */
+  how++; /* maps 0->1 has the advantage of making bit 1 rcvs and
+           1->2 bit 2 snds.
+           2->3 */
+  if ((how & ~SHUTDOWN_MASK) || !how)  /* MAXINT->0 */
+    return -EINVAL;
+
+  lock_sock(sk);
+  if (sock->state == SS_CONNECTING) {
+    if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV | TCPF_CLOSE))
+      sock->state = SS_DISCONNECTING;
+    else
+      sock->state = SS_CONNECTED;
+  }
+
+  switch (sk->sk_state) {
+  case TCP_CLOSE:
+      err = -ENOTCONN;
+      /* Hack to wake up other listeners, who can poll for
+        EPOLLHUP, even on eg. unconnected UDP sockets -- RR */
+      /* fall through */
+  default:
+      sk->sk_shutdown |= how;
+      if (sk->sk_prot->shutdown)
+        sk->sk_prot->shutdown(sk, how);
+      break;
+
+  /* Remaining two branches are temporary solution for missing
+   * close() in multithreaded environment. It is _not_ a good idea,
+   * but we have no choice until close() is repaired at VFS level.
+   */
+  case TCP_LISTEN:
+      if (!(how & RCV_SHUTDOWN))
+        break;
+      /* fall through */
+  case TCP_SYN_SENT:
+      err = sk->sk_prot->disconnect(sk, O_NONBLOCK);
+      sock->state = err ? SS_DISCONNECTING : SS_UNCONNECTED;
+      break;
+  }
+
+  /* Wake up anyone sleeping in poll. */
+  sk->sk_state_change(sk);
+  release_sock(sk);
+  return err;
+}
+
+struct proto tcp_prot = {
+  .shutdown = tcp_shutdown,
+};
+
+/* shutdown the sending side of a connection. Much like close except
+ * that we don't receive shut down or sock_set_flag(sk, SOCK_DEAD). */
+void tcp_shutdown(struct sock *sk, int how)
+{
+  if (!(how & SEND_SHUTDOWN))
+    return;
+
+  /* If we've already sent a FIN, or it's a closed state, skip this. */
+  if ((1 << sk->sk_state) & (TCPF_ESTABLISHED | TCPF_SYN_SENT |TCPF_SYN_RECV | TCPF_CLOSE_WAIT)) {
+    /* Clear out any half completed packets.  FIN if needed. */
+    if (tcp_close_state(sk))
+      tcp_send_fin(sk);
+  }
+}
+
+static int tcp_close_state(struct sock *sk)
+{
+  int next = (int)new_state[sk->sk_state];
+  int ns = next & TCP_STATE_MASK;
+
+  tcp_set_state(sk, ns);
+
+  return next & TCP_ACTION_FIN;
+}
+
+static const unsigned char new_state[16] = {
+  /* current state:       new state:         action:  */
+  [0 /* (Invalid) */]   = TCP_CLOSE,
+  [TCP_ESTABLISHED]     = TCP_FIN_WAIT1 | TCP_ACTION_FIN,
+  [TCP_SYN_SENT]        = TCP_CLOSE,
+  [TCP_SYN_RECV]        = TCP_FIN_WAIT1 | TCP_ACTION_FIN,
+  [TCP_FIN_WAIT1]       = TCP_FIN_WAIT1,
+  [TCP_FIN_WAIT2]       = TCP_FIN_WAIT2,
+  [TCP_TIME_WAIT]       = TCP_CLOSE,
+  [TCP_CLOSE]           = TCP_CLOSE,
+  [TCP_CLOSE_WAIT]      = TCP_LAST_ACK  | TCP_ACTION_FIN,
+  [TCP_LAST_ACK]        = TCP_LAST_ACK,
+  [TCP_LISTEN]          = TCP_CLOSE,
+  [TCP_CLOSING]         = TCP_CLOSING,
+  [TCP_NEW_SYN_RECV]    = TCP_CLOSE,  /* should not happen ! */
+};
+```
+
+### sk_buff
+```C++
+struct sk_buff {
+  union {
+    struct {
+      struct sk_buff    *next;
+      struct sk_buff    *prev;
+      union {
+        struct net_device *dev;
+        unsigned long     dev_scratch;
+      };
+    };
+    struct rb_node  rbnode; /* used in netem & tcp stack */
+  };
+
+  union {
+    struct sock    *sk;
+    int            ip_defrag_offset;
+  };
+
+  char            cb[48] __aligned(8);
+
+  unsigned int    len,
+                  data_len; /* bytes of paged data len */
+  __u16           mac_len, hdr_len;
+
+  __be16          protocol;
+  __u16           transport_header;
+  __u16           network_header;
+  __u16           mac_header;
+
+  /* typedef unsigned char *sk_buff_data_t; */
+  sk_buff_data_t     tail;
+  sk_buff_data_t     end;
+  unsigned char     *head, *data;
+  unsigned int      truesize;
+  refcount_t        users;
+};
+
+struct skb_shared_info {
+  __u8    __unused, meta_len;
+  __u8    nr_frags, tx_flags;
+
+  unsigned short  gso_size; /* generic segmentation size */
+  unsigned int    gso_type; /* SKB_GSO_TCPV4 or SKB_GSO_TCPV6 */
+  unsigned short  gso_segs;
+
+  struct sk_buff                 *frag_list;
+  struct skb_shared_hwtstamps   hwtstamps;
+  u32           tskey;
+
+  /* must be last field, see pskb_expand_head() */
+  skb_frag_t  frags[MAX_SKB_FRAGS];
+};
+
+typedef struct skb_frag_struct skb_frag_t;
+
+struct skb_frag_struct {
+  struct {
+    struct page *p;
+  } page;
+
+  __u32 page_offset;
+  __u32 size;
+};
+```
+![linux-net-sk_buf.png](../Images/Kernel/net-sk_buf.png)
+
+```c++
+struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
+            bool force_schedule)
+{
+  struct sk_buff *skb;
+
+  /* The TCP header must be at least 32-bit aligned.  */
+  size = ALIGN(size, 4);
+
+  if (unlikely(tcp_under_memory_pressure(sk)))
+    sk_mem_reclaim_partial(sk);
+
+  // max_header L1_CACHE_ALIGN(128 + MAX_HEADER)
+  skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
+  if (likely(skb)) {
+    bool mem_scheduled;
+
+    if (force_schedule) {
+      mem_scheduled = true;
+      sk_forced_mem_schedule(sk, skb->truesize);
+    } else {
+      mem_scheduled = sk_wmem_schedule(sk, skb->truesize);
+    }
+    if (likely(mem_scheduled)) {
+      /* reserve spaces for headers */
+      skb_reserve(skb, sk->sk_prot->max_header) {
+        skb->data += len;
+        skb->tail += len;
+      }
+      /* Make sure that we have exactly size bytes
+       * available to the caller, no more, no less. */
+      skb->reserved_tailroom = skb->end - skb->tail - size;
+      INIT_LIST_HEAD(&skb->tcp_tsorted_anchor);
+      return skb;
+    }
+    __kfree_skb(skb);
+  } else {
+    sk->sk_prot->enter_memory_pressure(sk);
+    sk_stream_moderate_sndbuf(sk);
+  }
+  return NULL;
+}
+
+struct sk_buff *alloc_skb_fclone(
+  unsigned int size, gfp_t priority)
+{
+  return __alloc_skb(size, priority, SKB_ALLOC_FCLONE, NUMA_NO_NODE);
+}
+
+/* Allocate a new &sk_buff. The returned buffer has no headroom and a
+ * tail room of at least size bytes. The object has a reference count
+ * of one. The return is the buffer. On a failure the return is %NULL.
+ *
+ * Buffers may only be allocated from interrupts using a @gfp_mask of
+ * %GFP_ATOMIC. */
+struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+          int flags, int node)
+{
+  struct kmem_cache *cache;
+  struct skb_shared_info *shinfo;
+  struct sk_buff *skb;
+  u8 *data;
+  bool pfmemalloc;
+
+  cache = (flags & SKB_ALLOC_FCLONE)
+    ? skbuff_fclone_cache : skbuff_head_cache;
+
+  if (sk_memalloc_socks() && (flags & SKB_ALLOC_RX))
+    gfp_mask |= __GFP_MEMALLOC;
+
+  /* Get the HEAD */
+  skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
+  if (!skb)
+    goto out;
+  prefetchw(skb);
+
+  /* We do our best to align skb_shared_info on a separate cache
+   * line. It usually works because kmalloc(X > SMP_CACHE_BYTES) gives
+   * aligned memory blocks, unless SLUB/SLAB debug is enabled.
+   * Both skb->head and skb_shared_info are cache line aligned. */
+  size = SKB_DATA_ALIGN(size);
+  size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+  data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
+  if (!data)
+    goto nodata;
+
+  /* kmalloc(size) might give us more room than requested.
+   * Put skb_shared_info exactly at the end of allocated zone,
+   * to allow max possible filling before reallocation. */
+  size = SKB_WITH_OVERHEAD(ksize(data));
+  prefetchw(data + size);
+
+  /* Only clear those fields we need to clear, not those that we will
+   * actually initialise below. Hence, don't put any more fields after
+   * the tail pointer in struct sk_buff! */
+  memset(skb, 0, offsetof(struct sk_buff, tail));
+  /* Account for allocated memory : skb + skb->head */
+  skb->truesize = SKB_TRUESIZE(size);
+  skb->pfmemalloc = pfmemalloc;
+  refcount_set(&skb->users, 1);
+  skb->head = data;
+  skb->data = data;
+  skb_reset_tail_pointer(skb); /* skb->tail = skb->data; */
+  skb->end = skb->tail + size;
+  skb->mac_header = (typeof(skb->mac_header))~0U;
+  skb->transport_header = (typeof(skb->transport_header))~0U;
+
+  /* make sure we initialize shinfo sequentially */
+  shinfo = skb_shinfo(skb);
+  memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+  atomic_set(&shinfo->dataref, 1);
+
+  if (flags & SKB_ALLOC_FCLONE) {
+    struct sk_buff_fclones *fclones;
+
+    fclones = container_of(skb, struct sk_buff_fclones, skb1);
+
+    skb->fclone = SKB_FCLONE_ORIG;
+    refcount_set(&fclones->fclone_ref, 1);
+
+    fclones->skb2.fclone = SKB_FCLONE_CLONE;
+  }
+out:
+  return skb;
+nodata:
+  kmem_cache_free(cache, skb);
+  skb = NULL;
+  goto out;
+}
+
+/* kmalloc_reserve is a wrapper around kmalloc_node_track_caller that tells
+ * the caller if emergency pfmemalloc reserves are being used. If it is and
+ * the socket is later found to be SOCK_MEMALLOC then PFMEMALLOC reserves
+ * may be used. Otherwise, the packet data may be discarded until enough
+ * memory is free */
+#define kmalloc_reserve(size, gfp, node, pfmemalloc) \
+  __kmalloc_reserve(size, gfp, node, _RET_IP_, pfmemalloc)
+
+static void *__kmalloc_reserve(size_t size, gfp_t flags, int node,
+            unsigned long ip, bool *pfmemalloc)
+{
+  void *obj;
+  bool ret_pfmemalloc = false;
+
+  /* Try a regular allocation, when that fails and we're not entitled
+   * to the reserves, fail. */
+  obj = kmalloc_node_track_caller(size,
+          flags | __GFP_NOMEMALLOC | __GFP_NOWARN,
+          node);
+  if (obj || !(gfp_pfmemalloc_allowed(flags)))
+    goto out;
+
+  /* Try again but now we are using pfmemalloc reserves */
+  ret_pfmemalloc = true;
+  obj = kmalloc_node_track_caller(size, flags, node);
+
+out:
+  if (pfmemalloc)
+    *pfmemalloc = ret_pfmemalloc;
+
+  return obj;
+}
+
+/* slub.c */
+void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
+{
+  struct kmem_cache *s;
+  void *ret;
+
+  if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
+    return kmalloc_large(size, gfpflags);
+
+  s = kmalloc_slab(size, gfpflags);
+
+  if (unlikely(ZERO_OR_NULL_PTR(s)))
+    return s;
+
+  ret = slab_alloc(s, gfpflags, caller);
+
+  /* Honor the call site pointer we received. */
+  trace_kmalloc(caller, ret, size, s->size, gfpflags);
+
+  return ret;
+}
+```
+
+* [How sk_buffs alloc work](http://vger.kernel.org/~davem/skb_data.html)
+* [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
+
 
 ### write
 #### vfs layer WR
@@ -12247,7 +12457,7 @@ static struct dst_ops ipv4_dst_ops = {
 };
 ```
 
-##### prepare ip header
+##### fill ip header
 ![linux-net-ip-header.png](../Images/Kernel/net-ip-header.png)
 
 ##### send package
@@ -12843,263 +13053,6 @@ __dev_queue_xmit();
 ![linux-net-write.png](../Images/Kernel/net-write.png)
 
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
-
-### sk_buff
-```C++
-struct sk_buff {
-  union {
-    struct {
-      struct sk_buff    *next;
-      struct sk_buff    *prev;
-      union {
-        struct net_device *dev;
-        unsigned long     dev_scratch;
-      };
-    };
-    struct rb_node  rbnode; /* used in netem & tcp stack */
-  };
-
-  union {
-    struct sock    *sk;
-    int            ip_defrag_offset;
-  };
-
-  char            cb[48] __aligned(8);
-
-  unsigned int    len,
-                  data_len; /* bytes of paged data len */
-  __u16           mac_len, hdr_len;
-
-  __be16          protocol;
-  __u16           transport_header;
-  __u16           network_header;
-  __u16           mac_header;
-
-  /* typedef unsigned char *sk_buff_data_t; */
-  sk_buff_data_t     tail;
-  sk_buff_data_t     end;
-  unsigned char     *head, *data;
-  unsigned int      truesize;
-  refcount_t        users;
-};
-
-struct skb_shared_info {
-  __u8    __unused, meta_len;
-  __u8    nr_frags, tx_flags;
-
-  unsigned short  gso_size; /* generic segmentation size */
-  unsigned int    gso_type; /* SKB_GSO_TCPV4 or SKB_GSO_TCPV6 */
-  unsigned short  gso_segs;
-
-  struct sk_buff                 *frag_list;
-  struct skb_shared_hwtstamps   hwtstamps;
-  u32           tskey;
-
-  /* must be last field, see pskb_expand_head() */
-  skb_frag_t  frags[MAX_SKB_FRAGS];
-};
-
-typedef struct skb_frag_struct skb_frag_t;
-
-struct skb_frag_struct {
-  struct {
-    struct page *p;
-  } page;
-
-  __u32 page_offset;
-  __u32 size;
-};
-```
-![linux-net-sk_buf.png](../Images/Kernel/net-sk_buf.png)
-
-```c++
-struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp,
-            bool force_schedule)
-{
-  struct sk_buff *skb;
-
-  /* The TCP header must be at least 32-bit aligned.  */
-  size = ALIGN(size, 4);
-
-  if (unlikely(tcp_under_memory_pressure(sk)))
-    sk_mem_reclaim_partial(sk);
-
-  // max_header L1_CACHE_ALIGN(128 + MAX_HEADER)
-  skb = alloc_skb_fclone(size + sk->sk_prot->max_header, gfp);
-  if (likely(skb)) {
-    bool mem_scheduled;
-
-    if (force_schedule) {
-      mem_scheduled = true;
-      sk_forced_mem_schedule(sk, skb->truesize);
-    } else {
-      mem_scheduled = sk_wmem_schedule(sk, skb->truesize);
-    }
-    if (likely(mem_scheduled)) {
-      /* reserve spaces for headers */
-      skb_reserve(skb, sk->sk_prot->max_header) {
-        skb->data += len;
-        skb->tail += len;
-      }
-      /* Make sure that we have exactly size bytes
-       * available to the caller, no more, no less. */
-      skb->reserved_tailroom = skb->end - skb->tail - size;
-      INIT_LIST_HEAD(&skb->tcp_tsorted_anchor);
-      return skb;
-    }
-    __kfree_skb(skb);
-  } else {
-    sk->sk_prot->enter_memory_pressure(sk);
-    sk_stream_moderate_sndbuf(sk);
-  }
-  return NULL;
-}
-
-struct sk_buff *alloc_skb_fclone(
-  unsigned int size, gfp_t priority)
-{
-  return __alloc_skb(size, priority, SKB_ALLOC_FCLONE, NUMA_NO_NODE);
-}
-
-/* Allocate a new &sk_buff. The returned buffer has no headroom and a
- * tail room of at least size bytes. The object has a reference count
- * of one. The return is the buffer. On a failure the return is %NULL.
- *
- * Buffers may only be allocated from interrupts using a @gfp_mask of
- * %GFP_ATOMIC. */
-struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
-          int flags, int node)
-{
-  struct kmem_cache *cache;
-  struct skb_shared_info *shinfo;
-  struct sk_buff *skb;
-  u8 *data;
-  bool pfmemalloc;
-
-  cache = (flags & SKB_ALLOC_FCLONE)
-    ? skbuff_fclone_cache : skbuff_head_cache;
-
-  if (sk_memalloc_socks() && (flags & SKB_ALLOC_RX))
-    gfp_mask |= __GFP_MEMALLOC;
-
-  /* Get the HEAD */
-  skb = kmem_cache_alloc_node(cache, gfp_mask & ~__GFP_DMA, node);
-  if (!skb)
-    goto out;
-  prefetchw(skb);
-
-  /* We do our best to align skb_shared_info on a separate cache
-   * line. It usually works because kmalloc(X > SMP_CACHE_BYTES) gives
-   * aligned memory blocks, unless SLUB/SLAB debug is enabled.
-   * Both skb->head and skb_shared_info are cache line aligned. */
-  size = SKB_DATA_ALIGN(size);
-  size += SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-  data = kmalloc_reserve(size, gfp_mask, node, &pfmemalloc);
-  if (!data)
-    goto nodata;
-
-  /* kmalloc(size) might give us more room than requested.
-   * Put skb_shared_info exactly at the end of allocated zone,
-   * to allow max possible filling before reallocation. */
-  size = SKB_WITH_OVERHEAD(ksize(data));
-  prefetchw(data + size);
-
-  /* Only clear those fields we need to clear, not those that we will
-   * actually initialise below. Hence, don't put any more fields after
-   * the tail pointer in struct sk_buff! */
-  memset(skb, 0, offsetof(struct sk_buff, tail));
-  /* Account for allocated memory : skb + skb->head */
-  skb->truesize = SKB_TRUESIZE(size);
-  skb->pfmemalloc = pfmemalloc;
-  refcount_set(&skb->users, 1);
-  skb->head = data;
-  skb->data = data;
-  skb_reset_tail_pointer(skb); /* skb->tail = skb->data; */
-  skb->end = skb->tail + size;
-  skb->mac_header = (typeof(skb->mac_header))~0U;
-  skb->transport_header = (typeof(skb->transport_header))~0U;
-
-  /* make sure we initialize shinfo sequentially */
-  shinfo = skb_shinfo(skb);
-  memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
-  atomic_set(&shinfo->dataref, 1);
-
-  if (flags & SKB_ALLOC_FCLONE) {
-    struct sk_buff_fclones *fclones;
-
-    fclones = container_of(skb, struct sk_buff_fclones, skb1);
-
-    skb->fclone = SKB_FCLONE_ORIG;
-    refcount_set(&fclones->fclone_ref, 1);
-
-    fclones->skb2.fclone = SKB_FCLONE_CLONE;
-  }
-out:
-  return skb;
-nodata:
-  kmem_cache_free(cache, skb);
-  skb = NULL;
-  goto out;
-}
-
-/* kmalloc_reserve is a wrapper around kmalloc_node_track_caller that tells
- * the caller if emergency pfmemalloc reserves are being used. If it is and
- * the socket is later found to be SOCK_MEMALLOC then PFMEMALLOC reserves
- * may be used. Otherwise, the packet data may be discarded until enough
- * memory is free */
-#define kmalloc_reserve(size, gfp, node, pfmemalloc) \
-  __kmalloc_reserve(size, gfp, node, _RET_IP_, pfmemalloc)
-
-static void *__kmalloc_reserve(size_t size, gfp_t flags, int node,
-            unsigned long ip, bool *pfmemalloc)
-{
-  void *obj;
-  bool ret_pfmemalloc = false;
-
-  /* Try a regular allocation, when that fails and we're not entitled
-   * to the reserves, fail. */
-  obj = kmalloc_node_track_caller(size,
-          flags | __GFP_NOMEMALLOC | __GFP_NOWARN,
-          node);
-  if (obj || !(gfp_pfmemalloc_allowed(flags)))
-    goto out;
-
-  /* Try again but now we are using pfmemalloc reserves */
-  ret_pfmemalloc = true;
-  obj = kmalloc_node_track_caller(size, flags, node);
-
-out:
-  if (pfmemalloc)
-    *pfmemalloc = ret_pfmemalloc;
-
-  return obj;
-}
-
-/* slub.c */
-void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
-{
-  struct kmem_cache *s;
-  void *ret;
-
-  if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
-    return kmalloc_large(size, gfpflags);
-
-  s = kmalloc_slab(size, gfpflags);
-
-  if (unlikely(ZERO_OR_NULL_PTR(s)))
-    return s;
-
-  ret = slab_alloc(s, gfpflags, caller);
-
-  /* Honor the call site pointer we received. */
-  trace_kmalloc(caller, ret, size, s->size, gfpflags);
-
-  return ret;
-}
-```
-
-* [How sk_buffs alloc work](http://vger.kernel.org/~davem/skb_data.html)
-* [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
 
 ### read
 #### driver layer
@@ -14916,7 +14869,7 @@ sock_read_iter()
                   default_wake_function()
                     try_to_wake_up()
 ```
-* [try_to_wake_up](#2-ttwu)
+* [try_to_wake_up](#ttwu)
 
 ![linux-net-read.png](../Images/Kernel/net-read.png)
 
@@ -15529,132 +15482,6 @@ static void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
         fa = rcu_dereference(fa->fa_next);
     }
 }
-```
-
-### shutdown
-```c++
-SYSCALL_DEFINE2(shutdown, int, fd, int, how)
-{
-  return __sys_shutdown(fd, how);
-}
-
-int __sys_shutdown(int fd, int how)
-{
-  int err, fput_needed;
-  struct socket *sock;
-
-  sock = sockfd_lookup_light(fd, &err, &fput_needed);
-  if (sock != NULL) {
-    err = security_socket_shutdown(sock, how);
-    if (!err)
-      err = sock->ops->shutdown(sock, how);
-    fput_light(sock->file, fput_needed);
-  }
-  return err;
-}
-
-const struct proto_ops inet_stream_ops = {
-  .shutdown = inet_shutdown,
-};
-
-int inet_shutdown(struct socket *sock, int how)
-{
-  struct sock *sk = sock->sk;
-  int err = 0;
-
-  /* This should really check to make sure
-   * the socket is a TCP socket. (WHY AC...) */
-  how++; /* maps 0->1 has the advantage of making bit 1 rcvs and
-           1->2 bit 2 snds.
-           2->3 */
-  if ((how & ~SHUTDOWN_MASK) || !how)  /* MAXINT->0 */
-    return -EINVAL;
-
-  lock_sock(sk);
-  if (sock->state == SS_CONNECTING) {
-    if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV | TCPF_CLOSE))
-      sock->state = SS_DISCONNECTING;
-    else
-      sock->state = SS_CONNECTED;
-  }
-
-  switch (sk->sk_state) {
-  case TCP_CLOSE:
-      err = -ENOTCONN;
-      /* Hack to wake up other listeners, who can poll for
-        EPOLLHUP, even on eg. unconnected UDP sockets -- RR */
-      /* fall through */
-  default:
-      sk->sk_shutdown |= how;
-      if (sk->sk_prot->shutdown)
-        sk->sk_prot->shutdown(sk, how);
-      break;
-
-  /* Remaining two branches are temporary solution for missing
-   * close() in multithreaded environment. It is _not_ a good idea,
-   * but we have no choice until close() is repaired at VFS level.
-   */
-  case TCP_LISTEN:
-      if (!(how & RCV_SHUTDOWN))
-        break;
-      /* fall through */
-  case TCP_SYN_SENT:
-      err = sk->sk_prot->disconnect(sk, O_NONBLOCK);
-      sock->state = err ? SS_DISCONNECTING : SS_UNCONNECTED;
-      break;
-  }
-
-  /* Wake up anyone sleeping in poll. */
-  sk->sk_state_change(sk);
-  release_sock(sk);
-  return err;
-}
-
-struct proto tcp_prot = {
-  .shutdown = tcp_shutdown,
-};
-
-/* shutdown the sending side of a connection. Much like close except
- * that we don't receive shut down or sock_set_flag(sk, SOCK_DEAD). */
-void tcp_shutdown(struct sock *sk, int how)
-{
-  if (!(how & SEND_SHUTDOWN))
-    return;
-
-  /* If we've already sent a FIN, or it's a closed state, skip this. */
-  if ((1 << sk->sk_state) & (TCPF_ESTABLISHED | TCPF_SYN_SENT |TCPF_SYN_RECV | TCPF_CLOSE_WAIT)) {
-    /* Clear out any half completed packets.  FIN if needed. */
-    if (tcp_close_state(sk))
-      tcp_send_fin(sk);
-  }
-}
-
-static int tcp_close_state(struct sock *sk)
-{
-  int next = (int)new_state[sk->sk_state];
-  int ns = next & TCP_STATE_MASK;
-
-  tcp_set_state(sk, ns);
-
-  return next & TCP_ACTION_FIN;
-}
-
-static const unsigned char new_state[16] = {
-  /* current state:       new state:         action:  */
-  [0 /* (Invalid) */]   = TCP_CLOSE,
-  [TCP_ESTABLISHED]     = TCP_FIN_WAIT1 | TCP_ACTION_FIN,
-  [TCP_SYN_SENT]        = TCP_CLOSE,
-  [TCP_SYN_RECV]        = TCP_FIN_WAIT1 | TCP_ACTION_FIN,
-  [TCP_FIN_WAIT1]       = TCP_FIN_WAIT1,
-  [TCP_FIN_WAIT2]       = TCP_FIN_WAIT2,
-  [TCP_TIME_WAIT]       = TCP_CLOSE,
-  [TCP_CLOSE]           = TCP_CLOSE,
-  [TCP_CLOSE_WAIT]      = TCP_LAST_ACK  | TCP_ACTION_FIN,
-  [TCP_LAST_ACK]        = TCP_LAST_ACK,
-  [TCP_LISTEN]          = TCP_CLOSE,
-  [TCP_CLOSING]         = TCP_CLOSING,
-  [TCP_NEW_SYN_RECV]    = TCP_CLOSE,  /* should not happen ! */
-};
 ```
 
 ### epoll
@@ -19749,6 +19576,208 @@ static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
 ```
 
 # Pthread
+
+### pthread_create
+```C++
+int __pthread_create_2_1 (
+  pthread_t *newthread, const pthread_attr_t *attr,
+  void *(*start_routine) (void *), void *arg)
+{
+  const struct pthread_attr *iattr = (struct pthread_attr *) attr;
+  struct pthread_attr default_attr;
+  if (iattr == NULL)
+  {
+    iattr = &default_attr;
+  }
+
+  struct pthread *pd = NULL;
+  int err = ALLOCATE_STACK (iattr, &pd);
+
+  pd->start_routine = start_routine;
+  pd->arg = arg;
+  pd->schedpolicy = self->schedpolicy;
+  pd->schedparam = self->schedparam;
+
+  *newthread = (pthread_t) pd;
+  atomic_increment (&__nptl_nthreads);
+
+  return create_thread(pd, iattr, &stopped_start,
+    STACK_VARIABLES_ARGS, &thread_ran);
+}
+versioned_symbol(libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);
+
+# define ALLOCATE_STACK_PARMS void **stack, size_t *stacksize
+
+# define ALLOCATE_STACK(attr, pd) allocate_stack (attr, pd, &stackaddr)
+
+static int allocate_stack (
+  const struct pthread_attr *attr,
+  struct pthread **pdp, ALLOCATE_STACK_PARMS)
+{
+  struct pthread *pd;
+  size_t size;
+  size_t pagesize_m1 = __getpagesize () - 1;
+
+  size = attr->stacksize;
+
+  /* Allocate some anonymous memory.  If possible use the cache.  */
+  size_t guardsize;
+  void *mem;
+  const int prot = (PROT_READ | PROT_WRITE
+                   | ((GL(dl_stack_flags) & PF_X) ? PROT_EXEC : 0));
+  /* Adjust the stack size for alignment.  */
+  size &= ~__static_tls_align_m1;
+  /* Make sure the size of the stack is enough for the guard and
+  eventually the thread descriptor.  */
+  guardsize = (attr->guardsize + pagesize_m1) & ~pagesize_m1;
+  size += guardsize;
+  pd = get_cached_stack (&size, &mem);
+  if (pd == NULL)
+  {
+    /* If a guard page is required, avoid committing memory by first
+    allocate with PROT_NONE and then reserve with required permission
+    excluding the guard page.  */
+    mem = __mmap (NULL, size, (guardsize == 0) ? prot : PROT_NONE,
+      MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    /* Place the thread descriptor at the end of the stack.  */
+#if TLS_TCB_AT_TP
+    pd = (struct pthread *) ((char *) mem + size) - 1;
+#elif TLS_DTV_AT_TP
+    pd = (struct pthread *) ((((uintptr_t) mem + size - __static_tls_size)
+      & ~__static_tls_align_m1) - TLS_PRE_TCB_SIZE);
+#endif
+    /* Now mprotect the required region excluding the guard area. */
+    char *guard = guard_position(mem, size, guardsize, pd, pagesize_m1);
+    setup_stack_prot(mem, size, guard, guardsize, prot);
+
+    pd->stackblock = mem;
+    pd->stackblock_size = size;
+    pd->guardsize = guardsize;
+    pd->specific[0] = pd->specific_1stblock;
+
+    stack_list_add (&pd->list, &stack_used);
+  }
+
+  *pdp = pd;
+  void *stacktop;
+# if TLS_TCB_AT_TP
+  /* The stack begins before the TCB and the static TLS block.  */
+  stacktop = ((char *) (pd + 1) - __static_tls_size);
+# elif TLS_DTV_AT_TP
+  stacktop = (char *) (pd - 1);
+# endif
+  *stack = stacktop;
+}
+
+# define STACK_VARIABLES_PARMS void *stackaddr, size_t stacksize
+# define STACK_VARIABLES_ARGS stackaddr, stacksize
+
+static int create_thread (
+  struct pthread *pd, const struct pthread_attr *attr,
+  bool *stopped_start, STACK_VARIABLES_PARMS, bool *thread_ran)
+{
+  const int clone_flags = (CLONE_VM | CLONE_FS | CLONE_FILES
+    | CLONE_SYSVSEM | CLONE_SIGHAND | CLONE_THREAD | CLONE_SETTLS
+    | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | 0);
+
+  ARCH_CLONE (&start_thread, STACK_VARIABLES_ARGS, clone_flags, pd, &pd->tid, tp, &pd->tid)；
+  /* It's started now, so if we fail below, we'll have to cancel it
+and let it clean itself up.  */
+  *thread_ran = true;
+}
+
+
+# define ARCH_CLONE __clone
+/* The userland implementation is:
+   int clone (int (*fn)(void *arg), void *child_stack, int flags, void *arg),
+   the kernel entry is:
+   int clone (long flags, void *child_stack).
+
+   The parameters are passed in register and on the stack from userland:
+   rdi: fn
+   rsi: child_stack
+   rdx: flags
+   rcx: arg
+   r8d: TID field in parent
+   r9d: thread pointer
+%esp+8: TID field in child
+
+   The kernel expects:
+   rax: system call number
+   rdi: flags
+   rsi: child_stack
+   rdx: TID field in parent
+   r10: TID field in child
+   r8:  thread pointer  */
+
+ENTRY (__clone)
+  movq    $-EINVAL,%rax
+  /* Insert the argument onto the new stack.  */
+  subq    $16,%rsi
+  movq    %rcx,8(%rsi)
+
+  /* Save the function pointer.  It will be popped off in the
+      child in the ebx frobbing below. */
+  movq    %rdi,0(%rsi)
+
+  /* Do the system call.  */
+  movq    %rdx, %rdi
+  movq    %r8, %rdx
+  movq    %r9, %r8
+  mov     8(%rsp), %R10_LP
+  movl    $SYS_ify(clone),%eax
+
+  syscall
+PSEUDO_END (__clone)
+
+SYSCALL_DEFINE5(clone, unsigned long, clone_flags,
+  unsigned long, newsp,
+  int __user *, parent_tidptr,
+  int __user *, child_tidptr,
+  unsigned long, tls)
+{
+  return _do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr, tls);
+}
+
+#define THREAD_SETMEM(descr, member, value) \
+  descr->member = (value)
+
+#define START_THREAD_DEFN \
+  static int __attribute__ ((noreturn)) start_thread (void *arg)
+START_THREAD_DEFN
+{
+    struct pthread *pd = START_THREAD_SELF;
+    /* Run the code the user provided.  */
+    THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
+    /* Call destructors for the thread_local TLS variables.  */
+    /* Run the destructor for the thread-local data.  */
+    __nptl_deallocate_tsd ();
+    if (__glibc_unlikely (atomic_decrement_and_test (&__nptl_nthreads)))
+        /* This was the last thread.  */
+        exit (0);
+    __free_tcb (pd);
+    __exit_thread ();
+}
+
+void __free_tcb (struct pthread *pd)
+{
+  __deallocate_stack (pd);
+}
+
+void __deallocate_stack (struct pthread *pd)
+{
+  /* Remove the thread from the list of threads with user defined
+     stacks.  */
+  stack_list_del (&pd->list);
+  /* Not much to do.  Just free the mmap()ed memory.  Note that we do
+     not reset the 'used' flag in the 'tid' field.  This is done by
+     the kernel.  If no thread has been created yet this field is
+     still zero.  */
+  if (__glibc_likely (! pd->user_stack))
+    (void) queue_stack (pd);
+}
+```
+
 ### pthread_mutex
 #### lock
 
