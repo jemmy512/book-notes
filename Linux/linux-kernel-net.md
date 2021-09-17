@@ -10,12 +10,12 @@
             * [tcp_conn_request](#tcp_conn_request)
             * [tcp_rcv_synsent_state_process](#tcp_rcv_synsent_state_process)
             * [tcp_check_req](#tcp_check_req)
-    * [sock queue](#sock-queue)
-        * [LISTEN-SYN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
-        * [NEW_SYN_RCV-ACK inet_ehash_nolisten](#inet_ehash_nolisten)
-        * [NEW_SYN_RCV-ACK inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
-        * [NEW_SYN_RCV-ACK inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
-        * [Accept reqsk_queue_remove](#reqsk_queue_remove)
+    * [accept queue](#accept-queue)
+        * [\[LISTEN      SYN\] inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
+        * [\[NEW_SYN_RCV ACK\] inet_ehash_nolisten](#inet_ehash_nolisten)
+        * [\[NEW_SYN_RCV ACK\] inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
+        * [\[NEW_SYN_RCV ACK\] inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
+        * [\[Accept         \] reqsk_queue_remove](#reqsk_queue_remove)
         * [queue_is_full_len](#queue_is_full_len)
     * [shutdown](#shutdown)
     * [sk_buf](#sk_buff)
@@ -1317,7 +1317,7 @@ static void tcp_connect_init(struct sock *sk)
   tcp_clear_retrans(tp);
 }
 ```
-* [wait_woken](#wait_woken)
+* [wait_woken](./linux-kernel.md#wait_woken)
 
 #### receive
 ```C++
@@ -1786,7 +1786,7 @@ static int tcp_v4_send_synack(
 
 }
 
-/* wakeup `accept` slept at prepare_to_wait_exclusive */
+/* wakeup `accept` slept at inet_csk_wait_for_connect */
 void sock_def_wakeup(struct sock *sk)
 {
   struct socket_wq *wq;
@@ -1798,6 +1798,7 @@ void sock_def_wakeup(struct sock *sk)
 
 #define wake_up_interruptible_all(x) __wake_up(x, TASK_INTERRUPTIBLE, 0, NULL)
 ```
+* [wake_up](./linux-kernel.md#wake_up)
 
 ##### tcp_rcv_synsent_state_process
 ```c++
@@ -2560,7 +2561,7 @@ tcp_v4_rcv();
 ![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
 
 
-### sock queue
+### accept queue
 
 #### inet_csk_reqsk_queue_hash_add
 ```c++
@@ -2599,7 +2600,6 @@ bool inet_ehash_insert(struct sock *sk, struct sock *osk)
 
   spin_lock(lock);
   if (osk) {
-    WARN_ON_ONCE(sk->sk_hash != osk->sk_hash);
     ret = sk_nulls_del_node_init_rcu(osk);
   }
   if (ret)
