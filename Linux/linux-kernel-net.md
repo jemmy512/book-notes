@@ -11,6 +11,12 @@
             * [tcp_rcv_synsent_state_process](#tcp_rcv_synsent_state_process)
             * [tcp_check_req](#tcp_check_req)
     * [sock queue](#sock-queue)
+        * [LISTEN-SYN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
+        * [NEW_SYN_RCV-ACK inet_ehash_nolisten](#inet_ehash_nolisten)
+        * [NEW_SYN_RCV-ACK inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
+        * [NEW_SYN_RCV-ACK inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
+        * [Accept reqsk_queue_remove](#reqsk_queue_remove)
+        * [queue_is_full_len](#queue_is_full_len)
     * [shutdown](#shutdown)
     * [sk_buf](#sk_buff)
     * [write](#write)
@@ -829,6 +835,10 @@ void reqsk_queue_alloc(struct request_sock_queue *queue)
   queue->rskq_accept_head = NULL;
 }
 
+struct proto tcp_prot = {
+  .hahs = inet_hash;
+}
+
 int inet_hash(struct sock *sk)
 {
   int err = 0;
@@ -861,11 +871,11 @@ int __inet_hash(struct sock *sk, struct sock *osk)
     if (err)
       goto unlock;
   }
-  if (IS_ENABLED(CONFIG_IPV6) && sk->sk_reuseport &&
-    sk->sk_family == AF_INET6)
+  if (IS_ENABLED(CONFIG_IPV6) && sk->sk_reuseport && sk->sk_family == AF_INET6)
     __sk_nulls_add_node_tail_rcu(sk, &ilb->nulls_head);
   else
     __sk_nulls_add_node_rcu(sk, &ilb->nulls_head);
+
   inet_hash2(hashinfo, sk);
   ilb->count++;
   sock_set_flag(sk, SOCK_RCU_FREE);
@@ -1076,11 +1086,12 @@ accpet();
                   __add_wait_queue_entry_tail(wq_head, wq_entry);
                 schedule_timeout();
                 finish_wait();
-                  list_del_init(&wq_entry->entry);
+                  list_del_init(&wq_entry->entry)
+  
             reqsk_queue_remove();
               WRITE_ONCE(queue->rskq_accept_head, req->dl_next)
               sk_acceptq_removed()
-                sk->sk_ack_backlog--;
+                --sk->sk_ack_backlog
         sock_graft(sk2, newsock);
         newsock->state = SS_CONNECTED;
     move_addr_to_user();
@@ -2079,85 +2090,17 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
     }
     return NULL;
   }
-
-  /* Further reproduces section "SEGMENT ARRIVES"
-     for state SYN-RECEIVED of RFC793.
-     It is broken, however, it does not work only
-     when SYNs are crossed.
-
-     You would think that SYN crossing is impossible here, since
-     we should have a SYN_SENT socket (from connect()) on our end,
-     but this is not true if the crossed SYNs were sent to both
-     ends by a malicious third party.  We must defend against this,
-     and to do that we first verify the ACK (as per RFC793, page
-     36) and reset if it is invalid.  Is this a true full defense?
-     To convince ourselves, let us consider a way in which the ACK
-     test can still pass in this 'malicious crossed SYNs' case.
-     Malicious sender sends identical SYNs (and thus identical sequence
-     numbers) to both A and B:
-
-    A: gets SYN, seq=7
-    B: gets SYN, seq=7
-
-     By our good fortune, both A and B select the same initial
-     send sequence number of seven :-)
-
-    A: sends SYN|ACK, seq=7, ack_seq=8
-    B: sends SYN|ACK, seq=7, ack_seq=8
-
-     So we are now A eating this SYN|ACK, ACK test passes.  So
-     does sequence test, SYN is truncated, and thus we consider
-     it a bare ACK.
-
-     If icsk->icsk_accept_queue.rskq_defer_accept, we silently drop this
-     bare ACK.  Otherwise, we create an established connection.  Both
-     ends (listening sockets) accept the new incoming connection and try
-     to talk to each other. 8-)
-
-     Note: This case is both harmless, and rare.  Possibility is about the
-     same as us discovering intelligent life on another plant tomorrow.
-
-     But generally, we should (RFC lies!) to accept ACK
-     from SYNACK both here and in tcp_rcv_state_process().
-     tcp_rcv_state_process() does not, hence, we do not too.
-
-     Note that the case is absolutely generic:
-     we cannot optimize anything here without
-     violating protocol. All the checks must be made
-     before attempt to create socket.
-   */
-
-  /* RFC793 page 36: "If the connection is in any non-synchronized state ...
-   *                  and the incoming segment acknowledges something not yet
-   *                  sent (the segment carries an unacceptable ACK) ...
-   *                  a reset is sent."
-   *
-   * Invalid ACK: reset will be sent by listening socket.
-   * Note that the ACK validity check for a Fast Open socket is done
-   * elsewhere and is checked directly against the child socket rather
-   * than req because user data may have been sent out.
-   */
+  
   if ((flg & TCP_FLAG_ACK) && !fastopen && (TCP_SKB_CB(skb)->ack_seq != tcp_rsk(req)->snt_isn + 1))
     return sk;
-
-  /* Also, it would be not so bad idea to check rcv_tsecr, which
-   * is essentially ACK extension and too early or too late values
-   * should cause reset in unsynchronized states.
-   */
-
-  /* RFC793: "first check sequence number". */
 
   if (paws_reject 
     || !tcp_in_window(TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq, tcp_rsk(req)->rcv_nxt, tcp_rsk(req)->rcv_nxt + req->rsk_rcv_wnd))
   {
     /* Out of window: send ACK and drop. */
     if (!(flg & TCP_FLAG_RST) &&
-        !tcp_oow_rate_limited(sock_net(sk), skb,
-            LINUX_MIB_TCPACKSKIPPEDSYNRECV,
-            &tcp_rsk(req)->last_oow_ack_time))
+        !tcp_oow_rate_limited(sock_net(sk), skb, LINUX_MIB_TCPACKSKIPPEDSYNRECV, &tcp_rsk(req)->last_oow_ack_time))
       req->rsk_ops->send_ack(sk, skb, req);
-    if (paws_reject)
-      __NET_INC_STATS(sock_net(sk), LINUX_MIB_PAWSESTABREJECTED);
     return NULL;
   }
 
@@ -2171,34 +2114,21 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
     flg &= ~TCP_FLAG_SYN;
   }
 
-  /* RFC793: "second check the RST bit" and
-   *     "fourth, check the SYN bit"
-   */
   if (flg & (TCP_FLAG_RST|TCP_FLAG_SYN)) {
-    __TCP_INC_STATS(sock_net(sk), TCP_MIB_ATTEMPTFAILS);
     goto embryonic_reset;
   }
 
-  /* ACK sequence verified above, just make sure ACK is
-   * set.  If ACK not set, just silently drop the packet.
-   *
-   * XXX (TFO) - if we ever allow "data after SYN", the
-   * following check needs to be removed.
-   */
   if (!(flg & TCP_FLAG_ACK))
     return NULL;
 
-  /* For Fast Open no more processing is needed (sk is the
-   * child socket).
-   */
   if (fastopen)
     return sk;
 
   /* While TCP_DEFER_ACCEPT is active, drop bare ACK. */
   if (req->num_timeout < inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
-      TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1) {
+      TCP_SKB_CB(skb)->end_seq == tcp_rsk(req)->rcv_isn + 1)
+  {
     inet_rsk(req)->acked = 1;
-    __NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPDEFERACCEPTDROP);
     return NULL;
   }
 
@@ -2234,6 +2164,10 @@ embryonic_reset:
     __NET_INC_STATS(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
   }
   return NULL;
+}
+
+const struct inet_connection_sock_af_ops ipv4_specific = {
+  .syn_recv_sock = tcp_v4_syn_recv_sock;
 }
 
 /* The three way handshake has completed - we got a valid synack -
@@ -2338,6 +2272,127 @@ put_and_exit:
   goto exit;
 }
 
+struct sock *tcp_create_openreq_child(const struct sock *sk,
+  struct request_sock *req,
+  struct sk_buff *skb)
+{
+  struct sock *newsk = inet_csk_clone_lock(sk, req, GFP_ATOMIC);
+  const struct inet_request_sock *ireq = inet_rsk(req);
+  struct tcp_request_sock *treq = tcp_rsk(req);
+  struct inet_connection_sock *newicsk;
+  struct tcp_sock *oldtp, *newtp;
+  u32 seq;
+
+  if (!newsk)
+    return NULL;
+
+  newicsk = inet_csk(newsk);
+  newtp = tcp_sk(newsk);
+  oldtp = tcp_sk(sk);
+
+  /* Now setup tcp_sock */
+  newtp->pred_flags = 0;
+
+  seq = treq->rcv_isn + 1;
+  newtp->rcv_wup = seq;
+  newtp->copied_seq = seq;
+  WRITE_ONCE(newtp->rcv_nxt, seq);
+  newtp->segs_in = 1;
+
+  newtp->snd_sml = newtp->snd_una =
+  newtp->snd_nxt = newtp->snd_up = treq->snt_isn + 1;
+
+  INIT_LIST_HEAD(&newtp->tsq_node);
+  INIT_LIST_HEAD(&newtp->tsorted_sent_queue);
+
+  tcp_init_wl(newtp, treq->rcv_isn);
+
+  newtp->srtt_us = 0;
+  newtp->mdev_us = jiffies_to_usecs(TCP_TIMEOUT_INIT);
+  minmax_reset(&newtp->rtt_min, tcp_jiffies32, ~0U);
+  newicsk->icsk_rto = TCP_TIMEOUT_INIT;
+  newicsk->icsk_ack.lrcvtime = tcp_jiffies32;
+
+  newtp->packets_out = 0;
+  newtp->retrans_out = 0;
+  newtp->sacked_out = 0;
+  newtp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+  newtp->tlp_high_seq = 0;
+  newtp->lsndtime = tcp_jiffies32;
+  newsk->sk_txhash = treq->txhash;
+  newtp->last_oow_ack_time = 0;
+  newtp->total_retrans = req->num_retrans;
+
+  /* So many TCP implementations out there (incorrectly) count the
+   * initial SYN frame in their delayed-ACK and congestion control
+   * algorithms that we must have the following bandaid to talk
+   * efficiently to them.  -DaveM */
+  newtp->snd_cwnd = TCP_INIT_CWND;
+  newtp->snd_cwnd_cnt = 0;
+
+  /* There's a bubble in the pipe until at least the first ACK. */
+  newtp->app_limited = ~0U;
+
+  tcp_init_xmit_timers(newsk);
+  newtp->write_seq = newtp->pushed_seq = treq->snt_isn + 1;
+
+  newtp->rx_opt.saw_tstamp = 0;
+
+  newtp->rx_opt.dsack = 0;
+  newtp->rx_opt.num_sacks = 0;
+
+  newtp->urg_data = 0;
+
+  if (sock_flag(newsk, SOCK_KEEPOPEN))
+    inet_csk_reset_keepalive_timer(newsk, keepalive_time_when(newtp));
+
+  newtp->rx_opt.tstamp_ok = ireq->tstamp_ok;
+  newtp->rx_opt.sack_ok = ireq->sack_ok;
+  newtp->window_clamp = req->rsk_window_clamp;
+  newtp->rcv_ssthresh = req->rsk_rcv_wnd;
+  newtp->rcv_wnd = req->rsk_rcv_wnd;
+  newtp->rx_opt.wscale_ok = ireq->wscale_ok;
+  if (newtp->rx_opt.wscale_ok) {
+    newtp->rx_opt.snd_wscale = ireq->snd_wscale;
+    newtp->rx_opt.rcv_wscale = ireq->rcv_wscale;
+  } else {
+    newtp->rx_opt.snd_wscale = newtp->rx_opt.rcv_wscale = 0;
+    newtp->window_clamp = min(newtp->window_clamp, 65535U);
+  }
+  newtp->snd_wnd = ntohs(tcp_hdr(skb)->window) << newtp->rx_opt.snd_wscale;
+  newtp->max_window = newtp->snd_wnd;
+
+  if (newtp->rx_opt.tstamp_ok) {
+    newtp->rx_opt.ts_recent = req->ts_recent;
+    newtp->rx_opt.ts_recent_stamp = ktime_get_seconds();
+    newtp->tcp_header_len = sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED;
+  } else {
+    newtp->rx_opt.ts_recent_stamp = 0;
+    newtp->tcp_header_len = sizeof(struct tcphdr);
+  }
+  newtp->tsoffset = treq->ts_off;
+#ifdef CONFIG_TCP_MD5SIG
+  newtp->md5sig_info = NULL;  /*XXX*/
+  if (newtp->af_specific->md5_lookup(sk, newsk))
+    newtp->tcp_header_len += TCPOLEN_MD5SIG_ALIGNED;
+#endif
+  if (skb->len >= TCP_MSS_DEFAULT + newtp->tcp_header_len)
+    newicsk->icsk_ack.last_seg_size = skb->len - newtp->tcp_header_len;
+  newtp->rx_opt.mss_clamp = req->mss;
+  tcp_ecn_openreq_child(newtp, req);
+  newtp->fastopen_req = NULL;
+  newtp->fastopen_rsk = NULL;
+  newtp->syn_data_acked = 0;
+  newtp->rack.mstamp = 0;
+  newtp->rack.advanced = 0;
+  newtp->rack.reo_wnd_steps = 1;
+  newtp->rack.last_delivered = 0;
+  newtp->rack.reo_wnd_persist = 0;
+  newtp->rack.dsack_seen = 0;
+
+  return newsk;
+}
+
 sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
   struct request_sock *req, bool own_req)
 {
@@ -2381,15 +2436,38 @@ tcp_v4_rcv();
   
   if (sk->sk_state == TCP_NEW_SYN_RECV) {
     new_sk = tcp_check_req()
-      /* three way handshake has completed */
       child = inet_csk(sk)->icsk_af_ops->syn_recv_sock()
         tcp_v4_syn_recv_sock()
+          if (sk_acceptq_is_full())
+            goto drop
           newsk = tcp_create_openreq_child(sk, req, skb)
+            inet_csk_clone_lock()
+            tcp_init_xmit_timers()
           inet_ehash_nolisten()
+            inet_ehash_insert() // hash insert the new sk and remove the old resq sk
+              inet_ehash_bucket(hashinfo, sk->sk_hash);
+              __sk_nulls_add_node_rcu()
+                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list)
+              if (osk)
+                sk_nulls_del_node_init_rcu(osk)
+
       inet_csk_complete_hashdance(child)
         inet_csk_reqsk_queue_drop()
+          reqsk_queue_unlink()
+            __sk_nulls_del_node_init_rcu(sk)
+              hlist_nulls_del_init_rcu(&sk->sk_nulls_node)
+          reqsk_queue_removed()
+            --icsk_accept_queue.yong;
+            --icsk_accept_queue.qlen;
         reqsk_queue_removed()
+        
         inet_csk_reqsk_queue_add()
+          sk->rskq_accept_tail = reqst_sk
+          sk_acceptq_added()
+            icsk_accept_queue->rskq_accept_tail = req
+            sk_acceptq_added()
+              ++sk->sk_ack_backlog
+
     tcp_child_process()
       if (!sock_owned_by_user(child))
         tcp_rcv_state_process(child, skb)
@@ -2415,15 +2493,20 @@ tcp_v4_rcv();
                   inet_csk_reqsk_queue_add()
                     sk->rskq_accept_tail = reqst_sk
                     sk_acceptq_added()
-                      sk->sk_ack_backlog++;
+                      icsk_accept_queue->rskq_accept_tail = req
+                      sk_acceptq_added()
+                        ++sk->sk_ack_backlog
                 else
                   inet_csk_reqsk_queue_hash_add();
                     reqsk_queue_hash_req();
+                      timer_setup();
+                      mod_timer(&req->rsk_timer, jiffies + timeout);
                       inet_ehash_insert();
-                        mod_timer(&req->rsk_timer, jiffies + timeout);
                         inet_ehash_bucket(hashinfo, sk->sk_hash);
                         __sk_nulls_add_node_rcu()
                           hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list)
+                        if (osk)
+                          sk_nulls_del_node_init_rcu(osk)
                     inet_csk_reqsk_queue_added()
                       sk->icsk_accept_queue->young++
                       sk->icsk_accept_queue->qlen++
@@ -2474,9 +2557,15 @@ tcp_v4_rcv();
           tcp_data_queue()
       
 ```
+![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
+
 
 ### sock queue
+
+#### inet_csk_reqsk_queue_hash_add
 ```c++
+/* 1st handshake, invoked by tcp_conn_request, when first SYN arrives to server and fastopen is off
+ * add the request_sock into the half-accept queue */
 void inet_csk_reqsk_queue_hash_add(
   struct sock *sk, struct request_sock *req, unsigned long timeout)
 {
@@ -2484,8 +2573,7 @@ void inet_csk_reqsk_queue_hash_add(
   inet_csk_reqsk_queue_added(sk);
 }
 
-static void reqsk_queue_hash_req(struct request_sock *req,
-         unsigned long timeout)
+static void reqsk_queue_hash_req(struct request_sock *req, unsigned long timeout)
 {
   timer_setup(&req->rsk_timer, reqsk_timer_handler, TIMER_PINNED);
   mod_timer(&req->rsk_timer, jiffies + timeout);
@@ -2524,32 +2612,7 @@ void __sk_nulls_add_node_rcu(struct sock *sk, struct hlist_nulls_head *list)
 {
   hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
 }
-```
 
-```c++
-static inline bool sk_nulls_del_node_init_rcu(struct sock *sk)
-{
-  bool rc = __sk_nulls_del_node_init_rcu(sk);
-
-  if (rc) {
-    /* paranoid for a while -acme */
-    WARN_ON(refcount_read(&sk->sk_refcnt) == 1);
-    __sock_put(sk);
-  }
-  return rc;
-}
-
-static inline bool __sk_nulls_del_node_init_rcu(struct sock *sk)
-{
-  if (sk_hashed(sk)) {
-    hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
-    return true;
-  }
-  return false;
-}
-```
-
-```c++
 void inet_csk_reqsk_queue_added(struct sock *sk)
 {
   reqsk_queue_added(&inet_csk(sk)->icsk_accept_queue);
@@ -2560,59 +2623,32 @@ void reqsk_queue_added(struct request_sock_queue *queue)
   atomic_inc(&queue->young);
   atomic_inc(&queue->qlen);
 }
+```
 
-sock *inet_csk_reqsk_queue_add(struct sock *sk, struct request_sock *req, struct sock *child)
+#### inet_ehash_nolisten
+```c++
+/* 3rd handshake, invoked by tcp_v4_syn_recv_sock when thres-way handshake completed at server
+ * add socket hashinfo */
+bool inet_ehash_nolisten(struct sock *sk, struct sock *osk)
 {
-  struct request_sock_queue *queue = &inet_csk(sk)->icsk_accept_queue;
+  bool ok = inet_ehash_insert(sk, osk);
 
-  spin_lock(&queue->rskq_lock);
-  if (unlikely(sk->sk_state != TCP_LISTEN)) {
-    inet_child_forget(sk, req, child);
-    child = NULL;
+  if (ok) {
+    sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
   } else {
-    req->sk = child;
-    req->dl_next = NULL;
-    if (queue->rskq_accept_head == NULL)
-      WRITE_ONCE(queue->rskq_accept_head, req);
-    else
-      queue->rskq_accept_tail->dl_next = req;
-    queue->rskq_accept_tail = req;
-    sk_acceptq_added(sk);
+    percpu_counter_inc(sk->sk_prot->orphan_count);
+    inet_sk_set_state(sk, TCP_CLOSE);
+    sock_set_flag(sk, SOCK_DEAD);
+    inet_csk_destroy_sock(sk);
   }
-  spin_unlock(&queue->rskq_lock);
-  return child;
-}
-
-void sk_acceptq_added(struct sock *sk)
-{
-  sk->sk_ack_backlog++;
+  return ok;
 }
 ```
 
+#### inet_csk_reqsk_queue_drop
 ```c++
-request_sock *reqsk_queue_remove(struct request_sock_queue *queue, struct sock *parent)
-{
-  struct request_sock *req;
-
-  spin_lock_bh(&queue->rskq_lock);
-  req = queue->rskq_accept_head;
-  if (req) {
-    sk_acceptq_removed(parent);
-    WRITE_ONCE(queue->rskq_accept_head, req->dl_next);
-    if (queue->rskq_accept_head == NULL)
-      queue->rskq_accept_tail = NULL;
-  }
-  spin_unlock_bh(&queue->rskq_lock);
-  return req;
-}
-
-void sk_acceptq_removed(struct sock *sk)
-{
-  sk->sk_ack_backlog--;
-}
-```
-
-```c++
+/* 3rd handshake, invoked at inet_csk_complete_hashdance
+ * remove the request_sock from half-accept quque */
 void inet_csk_reqsk_queue_drop_and_put(struct sock *sk, struct request_sock *req)
 {
   inet_csk_reqsk_queue_drop(sk, req);
@@ -2645,6 +2681,27 @@ bool reqsk_queue_unlink(struct request_sock_queue *queue, struct request_sock *r
   return found;
 }
 
+static inline bool sk_nulls_del_node_init_rcu(struct sock *sk)
+{
+  bool rc = __sk_nulls_del_node_init_rcu(sk);
+
+  if (rc) {
+    /* paranoid for a while -acme */
+    WARN_ON(refcount_read(&sk->sk_refcnt) == 1);
+    __sock_put(sk);
+  }
+  return rc;
+}
+
+static inline bool __sk_nulls_del_node_init_rcu(struct sock *sk)
+{
+  if (sk_hashed(sk)) {
+    hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
+    return true;
+  }
+  return false;
+}
+
 void reqsk_queue_removed(struct request_sock_queue *queue, const struct request_sock *req)
 {
   if (req->num_timeout == 0)
@@ -2653,6 +2710,64 @@ void reqsk_queue_removed(struct request_sock_queue *queue, const struct request_
 }
 ```
 
+#### inet_csk_reqsk_queue_add
+```c++
+/* 3rd handshake, invoked by tcp_conn_request, when first SYN arrives to server and fastopen is on
+ * add the new connected sock into the accept queue */
+sock *inet_csk_reqsk_queue_add(struct sock *sk, struct request_sock *req, struct sock *child)
+{
+  struct request_sock_queue *queue = &inet_csk(sk)->icsk_accept_queue;
+
+  spin_lock(&queue->rskq_lock);
+  if (unlikely(sk->sk_state != TCP_LISTEN)) {
+    inet_child_forget(sk, req, child);
+    child = NULL;
+  } else {
+    req->sk = child;
+    req->dl_next = NULL;
+    if (queue->rskq_accept_head == NULL)
+      WRITE_ONCE(queue->rskq_accept_head, req);
+    else
+      queue->rskq_accept_tail->dl_next = req;
+    queue->rskq_accept_tail = req;
+    sk_acceptq_added(sk);
+  }
+  spin_unlock(&queue->rskq_lock);
+  return child;
+}
+
+void sk_acceptq_added(struct sock *sk)
+{
+  sk->sk_ack_backlog++;
+}
+```
+
+#### reqsk_queue_remove
+```c++
+// invoked by accept, remove the connected soket from accept queue
+request_sock *reqsk_queue_remove(struct request_sock_queue *queue, struct sock *parent)
+{
+  struct request_sock *req;
+
+  spin_lock_bh(&queue->rskq_lock);
+  req = queue->rskq_accept_head;
+  if (req) {
+    sk_acceptq_removed(parent);
+    WRITE_ONCE(queue->rskq_accept_head, req->dl_next);
+    if (queue->rskq_accept_head == NULL)
+      queue->rskq_accept_tail = NULL;
+  }
+  spin_unlock_bh(&queue->rskq_lock);
+  return req;
+}
+
+void sk_acceptq_removed(struct sock *sk)
+{
+  sk->sk_ack_backlog--;
+}
+```
+
+#### queue_is_full_len
 ```c++
 bool sk_acceptq_is_full(const struct sock *sk)
 {
@@ -2679,8 +2794,6 @@ int reqsk_queue_len_young(const struct request_sock_queue *queue)
   return atomic_read(&queue->young);
 }
 ```
-
-![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
 
 ### shutdown
 ```c++
