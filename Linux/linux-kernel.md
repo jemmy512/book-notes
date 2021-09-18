@@ -1457,6 +1457,7 @@ struct wait_queue_entry {
   struct list_head  entry;
 };
 ```
+* [try_to_wake_up](#ttwu)
 
 ### fork
 ```C++
