@@ -408,6 +408,9 @@ static inline void expand(struct zone *zone, struct page *page,
 ```
 
 ### kmem_cache
+![linux-mem-kmem-cache-cpu-node.png](../Images/Kernel/mem-kmem-cache-cpu-node.png)
+![linux-mem-kmem-cache.png](../Images/Kernel/mem-kmem-cache.png)
+
 ```c++
 // all caches will listed into LIST_HEAD(slab_caches)
 struct kmem_cache {
@@ -446,9 +449,6 @@ struct kmem_cache_node {
   struct list_head  partial;
 };
 ```
-![linux-mem-kmem-cache-cpu-node.png](../Images/Kernel/mem-kmem-cache-cpu-node.png)
-![linux-mem-kmem-cache.png](../Images/Kernel/mem-kmem-cache.png)
-
 
 #### kmem_cache_create
 ```C++
@@ -736,7 +736,7 @@ static void *__slab_alloc(
   void *freelist;
   struct page *page;
 redo:
-  // 1. try freelist again in case of cpu migration or IRQ
+  // 1. try kmem_cache_cpu freelist
   freelist = c->freelist;
   if (freelist)
     goto load_freelist;
@@ -754,15 +754,15 @@ load_freelist:
   return freelist;
 
 new_slab:
-  // 2. replace cpu page with partial
-  if (slub_percpu_partial(c)) {
+  // 2. try kmem_cache_cpu partial
+  if (slub_percpu_partial(c)) { /* (c)->partial */
     page = c->page = slub_percpu_partial(c);
-    slub_set_percpu_partial(c, page);
+    slub_set_percpu_partial(c, page); /* slub_percpu_partial(c) = (p)->next; */
     stat(s, CPU_PARTIAL_ALLOC);
     goto redo;
   }
 
-  // 3. need alloc new slak objects
+  // 3. try kmem_cache_node
   freelist = new_slab_objects(s, gfpflags, node, &c);
   return freelist;
 }
@@ -775,12 +775,12 @@ static inline void *new_slab_objects(
   struct kmem_cache_cpu *c = *pc;
   struct page *page;
 
-  // 3.1. get partial from kmem_cache_node indexed by node
+  // 3.1. try kmem_cache_node partial
   freelist = get_partial(s, flags, node, c); // -> get_partial_node()
   if (freelist)
     return freelist;
 
-  // 3.2. no memory in kmem_cache_node, alloc new
+  // 3.2. alloc_page
   page = new_slab(s, flags, node);
   if (page) {
     c = raw_cpu_ptr(s->cpu_slab);
@@ -907,6 +907,35 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
   return page;
 }
 ```
+```c++
+slab_alloc()
+  slab_alloc_node()
+    if (cpu_slab->freelist)
+      this_cpu_cmpxchg_double()
+    else
+      __slab_alloc()
+        redo:
+        // 1. try kmem_cache_cpu freelist
+
+        new_slab:
+        // 2. try kmem_cache_cpu partial
+          if (slub_percpu_partial(c))
+            goto redo
+
+        // 3. try kmem_cache_node
+          freelist = new_slab_objects()
+            // 3.1 try kmem_cache_node partial
+            get_partial()
+              get_partial_node()
+                list_for_each_entry_safe()
+                  acquire_slab()
+            // 3.2 alloc_page
+            new_slab()
+              allocate_slab()
+                alloc_slab_page()
+                  alloc_pages()
+```
+
 ![linux-mem-kmem-cache-alloc.png](../Images/Kernel/mem-kmem-cache-alloc.png)
 
 ![linux-mem-slub-structure.png](../Images/Kernel/mem-slub-structure.png)
@@ -1054,7 +1083,7 @@ int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, str
   error = get_unmapped_area(NULL, addr, len, 0, MAP_FIXED);
   if (offset_in_page(error))
     return error;
-    
+
   /* Clear old maps.  this also does some error checking for us */
   while (find_vma_links(mm, addr, addr + len, &prev, &rb_link, &rb_parent)) {
     if (do_munmap(mm, addr, len, uf))
@@ -1425,7 +1454,7 @@ static void __do_page_fault(
     goto out;
   if (unlikely(vma->vm_start > addr))
     goto check_stack;
-  
+
   /* Ok, we have a good vm_area for this
    * memory access, so we can handle it. */
 good_area:
