@@ -3421,13 +3421,13 @@ new_segment:
       copy = msg_data_left(msg);
 
 /*2. copy data */
-    if (skb_availroom(skb) > 0) { // skb->end - skb->tail - skb->reserved_tailroom;
+    if (skb_availroom(skb) > 0 && !zc) { // skb->end - skb->tail - skb->reserved_tailroom;
       copy = min_t(int, copy, skb_availroom(skb));
       err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
     } else if (!zc) {
       bool merge = true;
       int i = skb_shinfo(skb)->nr_frags;
-      struct page_frag *pfrag = sk_page_frag(sk);
+      struct page_frag *pfrag = sk_page_frag(sk); /* &sk->sk_frag */
 
       /* ensure sk->sk_frag have enought space, alloc_page if necessary */
       if (!sk_page_frag_refill(sk, pfrag))
@@ -3518,25 +3518,55 @@ int skb_copy_to_page_nocache(
 /* __tcp_push_pending_frames | tcp_push_one ->
  * 1. fragment segment
  * 2. congestion control
+ * 3. Nagle algorithm
  * 3. slide window
  *
  * TSO: TCP Segmentation Offload */
-static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
-  int nonagle, int push_one, gfp_t gfp)
+bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
+         int push_one, gfp_t gfp)
 {
   struct tcp_sock *tp = tcp_sk(sk);
   struct sk_buff *skb;
-  unsigned int sent_pkts, tso_segs /* number of segments fragmented */;
+  unsigned int tso_segs, sent_pkts;
   int cwnd_quota;
+  int result;
+  bool is_cwnd_limited = false, is_rwnd_limited = false;
+  u32 max_segs;
+
+  sent_pkts = 0;
+
+  tcp_mstamp_refresh(tp);
+  if (!push_one) {
+    result = tcp_mtu_probe(sk); /* Do MTU probing. */
+    if (!result) {
+      return false;
+    } else if (result > 0) {
+      sent_pkts = 1;
+    }
+  }
 
   max_segs = tcp_tso_segs(sk, mss_now);
-  /* continualy send data if sk is not empty */
   while ((skb = tcp_send_head(sk))) {
     unsigned int limit;
-    // tso: TCP Segmentation Offload
+
+    if (tcp_pacing_check(sk))
+      break;
+
     tso_segs = tcp_init_tso_segs(skb, mss_now); /* DIV_ROUND_UP(skb->len, mss_now) */
 
+    if (unlikely(tp->repair) && tp->repair_queue == TCP_SEND_QUEUE) {
+      /* "skb_mstamp" is used as a start point for the retransmit timer */
+      tcp_update_skb_after_send(tp, skb);
+      goto repair; /* Skip network transmission */
+    }
+
     cwnd_quota = tcp_cwnd_test(tp, skb);
+    if (!cwnd_quota) {
+      if (push_one == 2)
+        cwnd_quota = 1; /* Force out a loss probe pkt. */
+      else
+        break;
+    }
 
     /* Does the end_seq exceeds the cwnd? */
     if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
@@ -3545,13 +3575,10 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
     }
 
     if (tso_segs == 1) {
-      if (unlikely(!tcp_nagle_test(tp, skb, mss_now,
-          (tcp_skb_is_last(sk, skb) ? nonagle : TCP_NAGLE_PUSH))))
+      if (unlikely(!tcp_nagle_test(tp, skb, mss_now, (tcp_skb_is_last(sk, skb) ? nonagle : TCP_NAGLE_PUSH))))
         break;
     } else {
-      if (!push_one &&
-          tcp_tso_should_defer(sk, skb, &is_cwnd_limited,
-              &is_rwnd_limited, max_segs))
+      if (!push_one && tcp_tso_should_defer(sk, skb, &is_cwnd_limited, &is_rwnd_limited, max_segs))
         break;
     }
 
@@ -3559,11 +3586,21 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
     if (tso_segs > 1 && !tcp_urg_mode(tp))
       /* Returns the portion of skb which can be sent right away */
       limit = tcp_mss_split_point(sk, skb, mss_now,
-          min_t(unsigned int, cwnd_quota, max_segs),
-          nonagle);
+                min_t(unsigned int, cwnd_quota, max_segs),
+                nonagle);
 
-    if (skb->len > limit &&
-        unlikely(tso_fragment(sk, skb, limit, mss_now, gfp)))
+    if (skb->len > limit && unlikely(tso_fragment(sk, TCP_FRAG_IN_WRITE_QUEUE, skb, limit, mss_now, gfp)))
+      break;
+
+    if (tcp_small_queue_check(sk, skb, 0))
+      break;
+
+    /* Argh, we hit an empty skb(), presumably a thread
+     * is sleeping in sendmsg()/sk_stream_wait_memory().
+     * We do not want to send a pure-ack packet and have
+     * a strange looking rtx queue with empty packet(s).
+     */
+    if (TCP_SKB_CB(skb)->end_seq == TCP_SKB_CB(skb)->seq)
       break;
 
     if (unlikely(tcp_transmit_skb(sk, skb, 1, gfp)))
@@ -3571,7 +3608,8 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now,
 
 repair:
     /* Advance the send_head.  This one is sent out.
-     * This call will increment packets_out. */
+     * This call will increment packets_out.
+     */
     tcp_event_new_data_sent(sk, skb);
 
     tcp_minshall_update(tp, mss_now, skb);
@@ -3580,6 +3618,27 @@ repair:
     if (push_one)
       break;
   }
+
+  if (is_rwnd_limited)
+    tcp_chrono_start(sk, TCP_CHRONO_RWND_LIMITED);
+  else
+    tcp_chrono_stop(sk, TCP_CHRONO_RWND_LIMITED);
+
+  is_cwnd_limited |= (tcp_packets_in_flight(tp) >= tp->snd_cwnd);
+  if (likely(sent_pkts || is_cwnd_limited))
+    tcp_cwnd_validate(sk, is_cwnd_limited);
+
+  if (likely(sent_pkts)) {
+    if (tcp_in_cwnd_reduction(sk))
+      tp->prr_out += sent_pkts;
+
+    /* Send one loss probe per tail loss episode. */
+    if (push_one != 2)
+      tcp_schedule_loss_probe(sk, false);
+    return false;
+  }
+
+  return !tp->packets_out && !tcp_write_queue_empty(sk);
 }
 ```
 
@@ -4727,14 +4786,26 @@ sock_write_iter();
 
 /* tcp layer */
 tcp_sendmsg();
-  skb = tcp_write_queue_tail(sk); /* alloc new one if null */
+  /* 1. alloc skb */
+  skb = sk_stream_alloc_skb(); /* alloc new one if null */
 
-  skb_add_data_nocache(); /* skb_availroom(skb) > 0 && !zc */
-  skb_copy_to_page_nocache(); /* !zc */
-  skb_zerocopy_iter_stream(); /* zero copy */
+  /* 2. copy data */
+  skb_add_data_nocache();     /* 2.1 skb_availroom(skb) > 0 && !zc */
 
+  skb_copy_to_page_nocache(); /* 2.2 !zc */
+    struct page_frag *pfrag = sk_page_frag(sk);
+    sk_page_frag_refill(sk, pfrag);
+    skb_copy_to_page_nocache();
+
+  skb_zerocopy_iter_stream(); /* 2.3 zero copy */
+
+  /* 3. send data */
   __tcp_push_pending_frames(); tcp_push_one();
     tcp_write_xmit();
+      tcp_cwnd_test();
+      tcp_snd_wnd_test();
+      tcp_nagle_test();
+
       max_segs = tcp_tso_segs();
       tso_segs = tcp_init_tso_segs();
       cwnd_quota = tcp_cwnd_test();
@@ -4744,14 +4815,17 @@ tcp_sendmsg();
         skb_split();
           skb_split_inside_header();
           skb_split_no_header();
+
+      tcp_transmit_skb();
+        /* fill TCP header */
+        icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+
       tcp_event_new_data_sent();
         __skb_unlink(skb, &sk->sk_write_queue);
         tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
         tcp_rearm_rto(sk);
 
-      tcp_transmit_skb();
-        /* fill TCP header */
-        icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+      tcp_cwnd_validate();
 
 /* ip layer */
 ipv4_specific.ip_queue_xmit();
