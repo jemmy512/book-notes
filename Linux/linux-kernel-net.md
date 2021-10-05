@@ -3292,7 +3292,7 @@ sk_stream_alloc_skb()
   size = ALIGN(size, 4)
   skb = alloc_skb_fclone()
     __alloc_skb()
-      cache = (flags & SKB_ALLOC_FCLONE) ? skbuff_fclone_cache : skbuff_head_cache;
+      struct kmem_cache* cache = (flags & SKB_ALLOC_FCLONE) ? skbuff_fclone_cache : skbuff_head_cache;
       skb = kmem_cache_alloc_node(cache) /* Get the HEAD */
       data = kmalloc_reserve()
         __kmalloc_reserve()
@@ -4677,7 +4677,24 @@ struct sk_buff *dev_hard_start_xmit(
   }
 }
 
-// xmit_one -> netdev_start_xmit -> __netdev_start_xmit
+int xmit_one(struct sk_buff *skb, struct net_device *dev,
+        struct netdev_queue *txq, bool more)
+{
+  unsigned int len;
+  int rc;
+
+  if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+    dev_queue_xmit_nit(skb, dev);
+
+  len = skb->len;
+  trace_net_dev_start_xmit(skb, dev);
+  rc = netdev_start_xmit(skb, dev, txq, more);
+  trace_net_dev_xmit(skb, rc, dev, len);
+
+  return rc;
+}
+
+// netdev_start_xmit -> __netdev_start_xmit
 netdev_tx_t __netdev_start_xmit(
   const struct net_device_ops *ops,
   struct sk_buff *skb,
@@ -4786,6 +4803,9 @@ sock_write_iter();
 
 /* tcp layer */
 tcp_sendmsg();
+  if (!TCPF_ESTABLISHED)
+    sk_stream_wait_connect();
+
   /* 1. alloc skb */
   skb = sk_stream_alloc_skb(); /* alloc new one if null */
 
@@ -7413,7 +7433,8 @@ int inet_csk_ack_scheduled(const struct sock *sk)
 ### tcpdump
 ```c++
 // strace tcpdump -i eth0
-socket(AF_PACKET, SOCK_RAW, 768 /* ETH_P_ALL */)
+// pcap_can_set_rfmon_linux
+socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))
 
 struct net_proto_family *net_families[NPROTO];
 // net/ipv4/af_inet.c
@@ -7552,6 +7573,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
+#### receive
 ```c++
 // net/core/dev.c
 static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
@@ -7562,6 +7584,11 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
         ret = deliver_skb(skb, pt_prev, orig_dev);
       pt_prev = ptype;
     }
+  }
+
+  deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type, &orig_dev->ptype_specific);
+  if (pt_prev) {
+    ret = pt_prev->func(skb, skb->dev, pt_prev, orig_dev);
   }
 }
 
@@ -7714,6 +7741,86 @@ u32 bpf_prog_run_clear_cb(
 #define BPF_PROG_RUN(filter, ctx)  (*(filter)->bpf_func)(ctx, (filter)->insnsi)
 ```
 
+#### send
+```c++
+int xmit_one(struct sk_buff *skb, struct net_device *dev,
+        struct netdev_queue *txq, bool more)
+{
+  unsigned int len;
+  int rc;
+
+  if (!list_empty(&ptype_all) || !list_empty(&dev->ptype_all))
+    dev_queue_xmit_nit(skb, dev);
+
+  len = skb->len;
+  trace_net_dev_start_xmit(skb, dev);
+  rc = netdev_start_xmit(skb, dev, txq, more);
+  trace_net_dev_xmit(skb, rc, dev, len);
+
+  return rc;
+}
+
+void dev_queue_xmit_nit(struct sk_buff *skb, struct net_device *dev)
+{
+  struct packet_type *ptype;
+  struct sk_buff *skb2 = NULL;
+  struct packet_type *pt_prev = NULL;
+  struct list_head *ptype_list = &ptype_all;
+
+  rcu_read_lock();
+again:
+  list_for_each_entry_rcu(ptype, ptype_list, list) {
+    /* Never send packets back to the socket
+     * they originated from - MvS (miquels@drinkel.ow.org)
+     */
+    if (skb_loop_sk(ptype, skb))
+      continue;
+
+    if (pt_prev) {
+      deliver_skb(skb2, pt_prev, skb->dev);
+      pt_prev = ptype;
+      continue;
+    }
+
+    /* need to clone skb, done only once */
+    skb2 = skb_clone(skb, GFP_ATOMIC);
+    if (!skb2)
+      goto out_unlock;
+
+    net_timestamp_set(skb2);
+
+    /* skb->nh should be correctly
+     * set by sender, so that the second statement is
+     * just protection against buggy protocols.
+     */
+    skb_reset_mac_header(skb2);
+
+    if (skb_network_header(skb2) < skb2->data || skb_network_header(skb2) > skb_tail_pointer(skb2)) {
+      net_crit_ratelimited("protocol %04x is buggy, dev %s\n", ntohs(skb2->protocol), dev->name);
+      skb_reset_network_header(skb2);
+    }
+
+    skb2->transport_header = skb2->network_header;
+    skb2->pkt_type = PACKET_OUTGOING;
+    pt_prev = ptype;
+  }
+
+  if (ptype_list == &ptype_all) {
+    ptype_list = &dev->ptype_all;
+    goto again;
+  }
+
+out_unlock:
+  if (pt_prev) {
+    if (!skb_orphan_frags_rx(skb2, GFP_ATOMIC))
+      pt_prev->func(skb2, skb->dev, pt_prev, skb->dev);
+    else
+      kfree_skb(skb2);
+  }
+  rcu_read_unlock();
+}
+```
+
 ```c++
 socket();
   sock_create();
@@ -7739,6 +7846,7 @@ socket();
       sock->file = file;
       file->private_data = sock;
 
+/* receive packet */
   __netif_receive_skb_core();
     list_for_each_entry_rcu(ptype, &ptype_all, list);
       deliver_skb();
@@ -7750,6 +7858,11 @@ socket();
               sock_def_readable();
                 if (skwq_has_sleeper(wq));
                   wake_up_interruptible_sync_poll();
+
+/* send packet */
+xmit_one()
+  deliver_skb();
+    ->
 ```
 
 ### ACK, SYN, FIN
