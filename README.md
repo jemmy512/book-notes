@@ -1,5 +1,6 @@
 # Architecture & Design
-* [TODO: Domain Driven Design](./Arch/domain-driven-design.md)
+* [:x: Clean Architecture]()
+* [:x: Domain Driven Design](./Arch/domain-driven-design.md)
 * [Designing Distributed Systems](./Arch/designing-distributed-systems.md)
 * [Grokking the System Design](./Arch/system-design.md)
 * [Grokking Advanced System Design](./Arch/system-design-advanced.md)
@@ -10,17 +11,21 @@
 
 # Computer Science
 * [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)
-* [Computer Organization and Design: The Hardware/Sofeware Interface](./CS/computer-organization-and-design.md)
+* [:x: Computer Organization and Design: The Hardware/Sofeware Interface](./CS/computer-organization-and-design.md)
 * [Modern Operating System](./CS/modern-operating-system.md)
+* [:x: Computer Networking: A Top-Down Approach]()
 * [TCP/IP Illustrated, Volume 1](./CS/tcp-ip-illustrated-volume-1.md)
 * [UNIX Network Programming, Volume 1: The Sockets Networking API](./Linux/unp.md)
 * [Advanced Programming in Unix Environment](./Linux/apue.md)
 * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
+* [:x: Compilers: Principles, Techniques, and Tools]()
 
 # Software Engineering
 * [Design Patterns](./SE/design-patterns.md)
 * [Clean Code](./SE/clean-code.md)
-* [Refactor v2](./SE/refactoring-2.md)
+* [Refactor V2](./SE/refactoring-2.md)
+* [:x: Refactoring to Patterns](./SE/refactoring-to-patterns.md)
+* [:x: Working Effectively with Legacy Code](./SE/working-effectively-with-legacy-code.md)
 
 # C++
 * [C++ Core Guildlines](./Cpp/cpp-core-guidelines.md)
@@ -30,8 +35,10 @@
 * [Effective C++](./Cpp/effective-cpp.md)
 * [More Effective C++](./Cpp/more-effective-cpp.md)
 * [Effective Modern C++](./Cpp/effective-modern-cpp.md)
-* [C++ Templates the Complete Guid](./Cpp/cpp-templates-the-complete-guid.md)
-* [Modern C++ Design](./Cpp/modern-cpp-design.md)
+* [:x: C++ Templates the Complete Guid](./Cpp/cpp-templates-the-complete-guid.md)
+* [:x: Modern C++ Design](./Cpp/modern-cpp-design.md)
+* [:x: Professional C++ 2021]()
+* [:x: Software Architecture with C++]()
 * [C++ 17](./Cpp/cpp17.md)
 * [MySQL](./Cpp/mysql.txt)
 * [STL](./Cpp/stl.txt)
