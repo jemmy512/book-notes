@@ -11,11 +11,11 @@
             * [tcp_check_req](#tcp_check_req)
     * [accept](#accept)
     * [accept queue](#accept-queue)
-        * [\[LISTEN      SYN\] inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
-        * [\[NEW_SYN_RCV ACK\] inet_ehash_nolisten](#inet_ehash_nolisten)
-        * [\[NEW_SYN_RCV ACK\] inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
-        * [\[NEW_SYN_RCV ACK\] inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
-        * [\[Accept         \] reqsk_queue_remove](#reqsk_queue_remove)
+        * [TCP_LISTEN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
+        * [TCP_NEW_SYN_RECV inet_ehash_nolisten](#inet_ehash_nolisten)
+        * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
+        * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
+        * [Accept reqsk_queue_remove](#reqsk_queue_remove)
         * [queue_is_full_len](#queue_is_full_len)
     * [shutdown](#shutdown)
     * [sk_buf](#sk_buff)
@@ -44,6 +44,9 @@
         * [tcp_delack_timer](#tcp_delack_timer)
         * [tcp_keepalive_timer](#tcp_keepalive_timer)
     * [tcpdump](#tcpdump)
+      * [register_prot_hook](#register_prot_hook)
+      * [receive](#tcpdump_rcv)
+      * [send](#tcpdump_snd)
     * [ACK, SYN, FIN](#ACK-SYN-FIN)
         * [tcp_ack](#tcp_ack)
         * [tcp_send_ack](#tcp_send_ack)
@@ -848,7 +851,7 @@ void reqsk_queue_alloc(struct request_sock_queue *queue)
 }
 
 struct proto tcp_prot = {
-  .hahs = inet_hash;
+  .hash = inet_hash;
 }
 
 int inet_hash(struct sock *sk)
@@ -4703,6 +4706,12 @@ netdev_tx_t __netdev_start_xmit(
     skb->xmit_more = more ? 1 : 0;
     return ops->ndo_start_xmit(skb, dev);
 }
+// .ndo_start_xmit = ixgb_xmit_frame
+static netdev_tx_t
+ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
+{
+  
+}
 
 void __netif_schedule(struct Qdisc *q)
 {
@@ -7431,6 +7440,7 @@ int inet_csk_ack_scheduled(const struct sock *sk)
 ```
 
 ### tcpdump
+#### register_prot_hook
 ```c++
 // strace tcpdump -i eth0
 // pcap_can_set_rfmon_linux
@@ -7573,7 +7583,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
-#### receive
+#### tcpdump_rcv
 ```c++
 // net/core/dev.c
 static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
@@ -7727,8 +7737,7 @@ static unsigned int run_filter(
   return res;
 }
 
-u32 bpf_prog_run_clear_cb(
-  const struct bpf_prog *prog, struct sk_buff *skb)
+u32 bpf_prog_run_clear_cb(const struct bpf_prog *prog, struct sk_buff *skb)
 {
   u8 *cb_data = bpf_skb_cb(skb);
 
@@ -7741,7 +7750,7 @@ u32 bpf_prog_run_clear_cb(
 #define BPF_PROG_RUN(filter, ctx)  (*(filter)->bpf_func)(ctx, (filter)->insnsi)
 ```
 
-#### send
+#### tcpdump_snd
 ```c++
 int xmit_one(struct sk_buff *skb, struct net_device *dev,
         struct netdev_queue *txq, bool more)
