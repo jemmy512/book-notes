@@ -12,6 +12,7 @@
 # Computer Science
 * [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)
 * [:x: Computer Organization and Design: The Hardware/Sofeware Interface](./CS/computer-organization-and-design.md)
+* [Computer Architecture: A Quantitative Approach](./CS/computer-architecture.md)
 * [Modern Operating System](./CS/modern-operating-system.md)
 * [:x: Computer Networking: A Top-Down Approach]()
 * [TCP/IP Illustrated, Volume 1](./CS/tcp-ip-illustrated-volume-1.md)
