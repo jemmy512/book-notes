@@ -411,6 +411,9 @@ void do_syscall_64(struct pt_regs *regs)
 
 
 # Process Management
+
+![](../Images/Kernel/proc-management.png)
+
 ### process
 ![linux-proc-compile.png](../Images/Kernel/proc-compile.png)
 ```C++
@@ -531,14 +534,14 @@ SYSCALL_DEFINE3(execve,
 #define DEFAULT_PRIO      (MAX_RT_PRIO + NICE_WIDTH / 2)
 
 struct task_struct {
-  struct thread_info thread_info;
+  struct thread_info       thread_info;
 
-  int           on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
+  int                       on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
 
-  int           prio;
-  int           static_prio;
-  int           normal_prio;
-  unsigned int  rt_priority;
+  int                       prio;
+  int                       static_prio;
+  int                       normal_prio;
+  unsigned int              rt_priority;
 
   const struct sched_class  *sched_class;
   struct sched_entity       se;
@@ -546,6 +549,11 @@ struct task_struct {
   struct sched_dl_entity    dl;
   struct task_group         *sched_task_group;
   unsigned int              policy;
+
+  struct mm_struct          *mm;
+  struct mm_struct          *active_mm;
+
+  void                      *stack; /* kernel stack */
 
   /* CPU-specific state of this task: */
   struct thread_struct      thread;
@@ -1016,10 +1024,25 @@ void scheduler_tick(void)
   int cpu = smp_processor_id();
   struct rq *rq = cpu_rq(cpu);
   struct task_struct *curr = rq->curr;
+  struct rq_flags rf;
 
+  sched_clock_tick();
+
+  rq_lock(rq, &rf);
+
+  update_rq_clock(rq);
   curr->sched_class->task_tick(rq, curr, 0);
   cpu_load_update_active(rq);
   calc_global_load_tick(rq);
+
+  rq_unlock(rq, &rf);
+
+  perf_event_task_tick();
+
+#ifdef CONFIG_SMP
+  rq->idle_balance = idle_cpu(cpu);
+  trigger_load_balance(rq);
+#endif
 }
 
 static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
@@ -1394,7 +1417,7 @@ static int __wake_up_common(
     if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
       break;
 
-    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT) 
+    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT)
       && (&next->entry != &wq_head->head))
     {
       bookmark->flags = WQ_FLAG_BOOKMARK;
@@ -6316,6 +6339,7 @@ int wake_up_state(struct task_struct *p, unsigned int state)
   return try_to_wake_up(p, state, 0);
 }
 ```
+* [try_to_wake_up](#ttwu)
 
 #### handle signal
 ```C++
@@ -8514,6 +8538,10 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 2. The hierarchy of cgroup file system?
 
 # Time & Timer
+
+* PPI (Private Peripheral Interrupt)
+* SPI (Shared Peripheral Interrupt)
+
 ## init
 ```C++
 void start_kernel(void)
@@ -9208,6 +9236,8 @@ struct timer_base {
 ```
 
 ## setup_APIC_timer
+* Advance Programmable Interrupt Controller
+
 ```C++
 static void setup_APIC_timer(void)
 {
