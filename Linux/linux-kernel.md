@@ -8,9 +8,9 @@
     * [schedule](#schedule)
     * [voluntary schedule](#voluntary-schedule)
     * [preempt schedule](#preempt-schedule)
-        * [preempt time](#preempt-time)
-            * [clock interrupt](#clock-interrupt)
-            * [ttwu](#ttwu)
+        * [TIF_NEED_RESCHED](#TIF_NEED_RESCHED)
+            * [scheduler_tick](#scheduler_tick)
+            * [try_to_wake_up](#try_to_wake_up)
         * [real user preempt time](#real-user-preempt-time)
             * [return from system call](#return-from-system-call)
             * [return from interrupt](#return-from-interrupt)
@@ -70,7 +70,7 @@
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-
+    
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -512,8 +512,6 @@ SYSCALL_DEFINE3(execve,
 ### task_struct
 ![linux-proc-task-1.png](../Images/Kernel/proc-task-1.png)
 
-![linux-proc-task-2.png](../Images/Kernel/proc-task-2.png)
-
 ### schedule
 ```C++
 /* Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
@@ -844,8 +842,6 @@ do {                  \
   ((last) = __switch_to_asm((prev), (next))); \
 } while (0)
 
-/* %eax: prev task
- * %edx: next task */
 ENTRY(__switch_to_asm)
   /* Save callee-saved registers
    * This must match the order in struct inactive_task_frame */
@@ -858,8 +854,8 @@ ENTRY(__switch_to_asm)
   /* 2.1 switch kernel sp
    * save old value from esp to prev task
    * load new value from thread_struct of next task to esp */
-  movl  %esp, TASK_threadsp(%eax)
-  movl  TASK_threadsp(%edx), %esp
+  movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
+  movl  TASK_threadsp(%edx), %esp /* %edx: next task */
 
   /* restore callee-saved registers */
   popfl
@@ -992,11 +988,31 @@ void cpu_init(void)
 }
 
 struct tss_struct {
-  struct x86_hw_tss  x86_tss;
-  unsigned long    io_bitmap[IO_BITMAP_LONGS + 1];
+  struct x86_hw_tss   x86_tss;
+  unsigned long       io_bitmap[IO_BITMAP_LONGS + 1];
+}
+
+struct x86_hw_tss {
+	u32			reserved1;
+	u64			sp0;
+
+	/* We store cpu_current_top_of_stack in sp1 so it's always accessible.
+	 * Linux does not use ring 1, so sp1 is not otherwise needed. */
+	u64			sp1;
+
+	u64			sp2;
+	u64			reserved2;
+	u64			ist[7];
+	u32			reserved3;
+	u32			reserved4;
+	u16			reserved5;
+	u16			io_bitmap_base;
 }
 ```
-![linux-proc-tss.png](../Images/Kernel/proc-tss.png)
+![](../Images/Kernel/proc-cpu-tss.png)
+![](../Images/Kernel/proc-tss.png)
+![](../Images/Kernel/proc-sched-reg.png)
+![](../Images/Kernel/proc-sched-context-switch-flow.png)
 
 ```C++
 schedule(void)
@@ -1008,16 +1024,20 @@ schedule(void)
             }
             switch_to(prev, next, prev);
                 __switch_to_asm(); // switch registers, but not EIP [arch/x86/entry/entry_64.S]
+                    movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
+                    movl  TASK_threadsp(%edx), %esp /* %edx: next task */
+
                     __switch_to(); // switch stack [arch/x86/kernel/process_32.c]
                         this_cpu_write(current_task, next_p); //
+                        load_sp0(tss, next);
             barrier();
             return finish_task_switch(prev);
 ```
 ![linux-proc-sched-voluntary.png](../Images/Kernel/proc-sched-voluntary.png)
 
 #### preempt schedule
-##### preempt time
-###### Clock interrupt
+##### TIF_NEED_RESCHED
+###### scheduler_tick
 ```C++
 void scheduler_tick(void)
 {
@@ -1095,7 +1115,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-###### ttwu
+###### try_to_wake_up
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
 * -> check_preempt_curr -> resched_curr */
