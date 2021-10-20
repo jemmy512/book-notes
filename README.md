@@ -7,7 +7,7 @@
 * [Grokking the Object Oriented Design](./Arch/object-oriented-design.md)
 * [Distributed System Principle and Algorithm (GeekTime)](./Arch/gt-distributed-system-principle-and-algorithm.md)
 * [Microservice and Architecure Design (GeekTime)](./Arch/gt-microservice-and-architecure-design.md)
-* [Web-application Software Architecture](./Arch/web-application-software-architecture.md)
+* [Web-application Software Architecture :soon:](./Arch/web-application-software-architecture.md)
 
 # Computer Science
 
@@ -17,7 +17,7 @@
 
 * Computer Architecture
     * [Computer Organization and Design: The Hardware/Sofeware Interface :soon:](./CS/computer-organization-and-design.md)
-    * [Computer Architecture: A Quantitative Approach](./CS/computer-architecture.md)
+    * [Computer Architecture: A Quantitative Approach :soon:](./CS/computer-architecture.md)
 
 * Compiler
     * [Compilers: Principles, Techniques, and Tools :soon:](./CS/compilers-crinciples-techniques-and-tools.md)
@@ -29,10 +29,10 @@
 
 * System Programming
     * [Advanced Programming in Unix Environment](./Linux/apue.md)
-    * [The Art of Unix Programing](./Linux/the-art-of-unix-programing.md)
+    * [The Art of Unix Programing :soon:](./Linux/the-art-of-unix-programing.md)
 
 # Software Engineering
-* [Design Patterns](./SE/design-patterns.md)
+* [Design Patterns :soon:](./SE/design-patterns.md)
 * [Clean Code](./SE/clean-code.md)
 * [Refactor V2](./SE/refactoring-2.md)
 * [Refactoring to Patterns :soon:](./SE/refactoring-to-patterns.md)
@@ -61,6 +61,6 @@
     * [Network](./Linux/linux-kernel-net.md)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
-* [Linux Kernel Development](./linux-kernel-development.md)
+* [Linux Kernel Development :soon:](./linux-kernel-development.md)
 * [Linux Basic](./Linux/linux-basic.md)
 * [Linux Performance Tuning](./Linux/linux-performance-tuning.md)
