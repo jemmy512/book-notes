@@ -532,7 +532,11 @@ SYSCALL_DEFINE3(execve,
 #define DEFAULT_PRIO      (MAX_RT_PRIO + NICE_WIDTH / 2)
 
 struct task_struct {
-  struct thread_info       thread_info;
+  #ifdef CONFIG_THREAD_INFO_IN_TASK
+  /*  reasons of header soup (see current_thread_info()), this
+   * must be the first element of task_struct. */
+  struct thread_info        thread_info;
+#endif
 
   int                       on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
 
@@ -555,6 +559,11 @@ struct task_struct {
 
   /* CPU-specific state of this task: */
   struct thread_struct      thread;
+};
+
+struct thread_info {
+  unsigned long   flags;    /* low level flags */
+  u32             status;  /* thread synchronous flags */
 };
 
 struct thread_struct {
@@ -993,20 +1002,20 @@ struct tss_struct {
 }
 
 struct x86_hw_tss {
-	u32			reserved1;
-	u64			sp0;
+  u32      reserved1;
+  u64      sp0;
 
-	/* We store cpu_current_top_of_stack in sp1 so it's always accessible.
-	 * Linux does not use ring 1, so sp1 is not otherwise needed. */
-	u64			sp1;
+  /* We store cpu_current_top_of_stack in sp1 so it's always accessible.
+   * Linux does not use ring 1, so sp1 is not otherwise needed. */
+  u64      sp1;
 
-	u64			sp2;
-	u64			reserved2;
-	u64			ist[7];
-	u32			reserved3;
-	u32			reserved4;
-	u16			reserved5;
-	u16			io_bitmap_base;
+  u64      sp2;
+  u64      reserved2;
+  u64      ist[7];
+  u32      reserved3;
+  u32      reserved4;
+  u16      reserved5;
+  u16      io_bitmap_base;
 }
 ```
 ![](../Images/Kernel/proc-cpu-tss.png)
@@ -10779,8 +10788,7 @@ static int allocate_stack (
   /* Allocate some anonymous memory.  If possible use the cache.  */
   size_t guardsize;
   void *mem;
-  const int prot = (PROT_READ | PROT_WRITE
-                   | ((GL(dl_stack_flags) & PF_X) ? PROT_EXEC : 0));
+  const int prot = (PROT_READ | PROT_WRITE | ((GL(dl_stack_flags) & PF_X) ? PROT_EXEC : 0));
   /* Adjust the stack size for alignment.  */
   size &= ~__static_tls_align_m1;
   /* Make sure the size of the stack is enough for the guard and
