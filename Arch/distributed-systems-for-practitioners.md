@@ -4,12 +4,14 @@
 # 2. Introduction to Distributed Systems
 ## Getting Started
 * What is a distributed system?
+
     According to Coulouris et al., **"A distributed system is a system whose components are located on different networked computers, which communicate and coordinate their actions by passing messages to one another."**
 
     The components of this system can be thought of as software programs that run on physical hardware, such as computers. These components take many forms; e.g., they can be web servers, routers, web browsers, etc. To keep a generic view, we assume that each program runs on a separate machine. We refer to each of these machines as a **node**.
     ![](../Images/DistributedSystemForPractitioners/1.1.svg)
 
     * Parts of a distributed system
+
         There are two categories of the central parts that help distributed systems function:
         * The various parts that compose a distributed system: These are located remotely and are separated by a network
         * The network that separates the various parts of a distributed system: It acts as a communication mechanism that lets them exchange messages.
@@ -75,15 +77,19 @@
 
 * Fallacies
     * The network is reliable
+
         The abstractions developers learn from various technologies and protocols often enforce this common fallacy. As we will see in a later chapter, networking protocols like TCP can make us believe that the network is reliable and never fails. However, this is just an illusion with significant repercussions. Also, we build network connections on top of hardware that will also fail at some point. Hence, we should design our systems accordingly.
 
     * Latency is zero
+
         Libraries that attempt to model remote procedure calls as local calls, such as gRPC or Thrift, enforce this assumption. We should always remember that there’s a large difference (from milliseconds to nanoseconds) in latency between a call to a remote system and that to local memory access. This gets even worse when we consider calls between data centers on different continents. Thus, this is another thing to keep in mind when deciding how to geo-distribute our system.
 
     * Bandwidth is infinite
+
         This fallacy is weaker nowadays. This is because the bandwidth we can achieve has significantly improved in the last few decades. For instance, we can now build high-bandwidth connections in our own data centers. However, this does not mean we can use all of it if our traffic needs to cross the Internet. This is important to consider when we make decisions about our distributed system’s topology, and when requests travel through the Internet.
 
     * The network is secure
+
         This fallacy shows that the wider network used by two nodes to communicate is not necessarily under their control. Thus, we should consider it insecure.
 
         The course dedicates a portion to security, where it explains the various techniques we can use to securely utilize an insecure network. This network also comprises many different parts that different organizations may manage with different hardware. Moreover, failures in some parts of this network may require us to change its topology to keep it functional.
@@ -97,6 +103,7 @@
         The transportation of data between two points incurs financial costs. We should factor this in when we build a distributed system.
 
 * The global clock fallacy
+
     There’s one fallacy that’s not a part of the above set, but still often causes confusion amongst people new to distributed systems. If we follow the same style as above, we can phrase this fallacy as:
         > “Distributed systems have a global clock, which we can use to identify when events happen.”
 
@@ -108,6 +115,7 @@
 
 ## Difficulties Designing Distributed Systems
 * Why distributed systems are hard to design
+
     In general, distributed systems are hard to design, build, and reason about. This increases the risk of error.
 
     > This will become more evident later in this course when we explore some algorithms that solve fundamental problems in distributed systems.
@@ -117,13 +125,16 @@
 
     * Properties that make distributed systems challenging
         * Network asynchrony
+
             Network asynchrony is a property of communication networks that cannot provide strong guarantees around delivering events, e.g., a maximum amount of time a message requires for delivery. This can create a lot of counter-intuitive behaviors that are not present in non-distributed systems. This contrasts to memory operations that provide much [stricter guarantees](https://en.wikipedia.org/wiki/CAS_latency). For instance, messages might take extremely long to deliver in a distributed system. They may even deliver out of order—or not at all.
 
         * Partial failures
+
             Partial failures are the cases where only some components of a distributed system fail. This behavior can contrast with certain kinds of applications a single server deploys. These applications work under the assumption that either everything is working fine, or there has been a server crash. It introduces significant complexity when it requires atomicity across components in a distributed system. Thus, we must ensure that we either apply an operation to all the nodes of a system, or to none of them.
             ![](../Images/DistributedSystemForPractitioners/1.4.svg)
 
         * Concurrency
+
             Concurrency is the execution of multiple computations at the same time, and potentially on the same piece of data. These computations interleave with each other. This introduces additional complexity since these computations can interfere with each other and create unexpected behaviors. This is, again, in contrast to simplistic applications with no concurrency, where the program runs in the order the sequence of commands in the source code defined.
 
 ## Measures of Correctness in Distributed Systems
