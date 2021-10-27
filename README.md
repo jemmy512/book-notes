@@ -2,6 +2,7 @@
 * [Clean Architecture :soon:]()
 * [Domain Driven Design :soon:](./Arch/domain-driven-design.md)
 * [Designing Distributed Systems](./Arch/designing-distributed-systems.md)
+* [Distributed Systems for Practitioners](./Arch/distributed-systems-for-practitioners.md)
 * [Grokking the System Design](./Arch/system-design.md)
 * [Grokking Advanced System Design](./Arch/system-design-advanced.md)
 * [Grokking the Object Oriented Design](./Arch/object-oriented-design.md)
