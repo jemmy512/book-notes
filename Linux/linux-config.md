@@ -2,7 +2,7 @@
     ifconfig
     sudo ifconfig eth0 192.168.1.212 netmask 255.255.255.0
 
-## 100W Connenction Config
+## 1 Million Connenction Config
 ```
 # 1. port config
     echo "5000 65000" > /proc/sys/net/ipv4/ip_local_port_range
@@ -30,6 +30,18 @@
     Install service: apt-get install openssh-server
 Allow root login:
     vi /etc/ssh/sshd_config -> PermitRootLogin yes
+
+* max_user_watches
+    * /proc/sys/fs/inotify/max_user_watches
+    * /etc/sysctl.conf
+    * fs.inotify.max_user_watches=524288
+    * sudo sysctl -p
+
+* session timeout
+    * /etc/ssh/sshd_config
+    * ClientAliveInterval  1200
+    * ClientAliveCountMax 3
+    * sudo systemctl reload sshd
 
 # Statistic port traffic:
     iptables -A OUTPUT -p tcp --sport 8512  // add input port need statistic
@@ -91,6 +103,7 @@ Allow root login:
         iptables -A FORWARD -i eth0 -o eth1 -j ACCEPT   // interface forward
         iptables -t nat -A PREROUTING -p tcp -d 192.168.102.37 --dport 422 -j DNAT --to 192.168.102.37:22   // port forward
         iptables -A INPUT -p tcp --dport 80 -m limit --limit 25/minute --limit-burst 100 -j ACCEPT          // DDos
+
 # ifconfig:
     ifconfig eth0 up/down   // up or down a interface
     ifconfig eth0 mtu 1500
@@ -146,6 +159,27 @@ Allow root login:
 /proc/sys/net/ipv4/tcp_rmem // A socket TCP reade buffer's minmum, default adn maxmum size
 /proc/sys/net/ipv4/syncookies
 ```
+
+# Include path
+
+* Include Path
+    ```shell
+    # C
+    export C_INCLUDE_PATH=XXXX:$C_INCLUDE_PATH
+    # CPP
+    export CPLUS_INCLUDE_PATH=XXX:$CPLUS_INCLUDE_PATH
+
+    # /etc/profile
+    # /home/{user}/.bashrc/.bash_profile
+    ```
+
+* Link Path
+    ```shell
+    # .so
+    export LD_LIBRARY_PATH=XXX:$LD_LIBRARY_PATH
+    # .lib
+    export LIBRARY_PATH=XXX:$LIBRARY_PATH
+    ```
 
 # GCC 7.2.0 Install
 1. downlaod src code:
@@ -361,43 +395,43 @@ Allow root login:
 
 
 # Linux File System
-    硬链接：
-        文件有相同的 inode 及 data block；
-        只能对已存在的文件进行创建；
-        不能交叉文件系统进行硬链接的创建；
-        不能对目录进行创建，只可对文件创建；
-        删除一个硬链接文件并不影响其他有相同 inode 号的文件。
-    软链接：
-        软链接有自己的文件属性及权限等；
-        可对不存在的文件或目录创建软链接；
-        软链接可交叉文件系统；
-        软链接可对文件或目录创建；
-        创建软链接时，链接计数 i_nlink 不会增加；
-        删除软链接并不影响被指向的文件，但若被指向的原文件被删除，则相关软连接被称为
-            死链接（即 dangling link，若被指向路径文件被重新创建，死链接可恢复为正常的软链接）。
+
+* Hard Link
+    * Have same inode and data block
+    * Only can be created for existed files
+    * Can not cross file systems
+    * Only can be ceated for files not directories
+    * Delete a hard link doesn't affect other files with same inode
+
+* Sysmbol Link
+    * Has its owen file profile and cred
+    * Can be created for non-exited files
+    * Can cross files systems
+    * Can be creatd for both files and directories
+    * Doesn't increment i_nlink
+    * becomes danging link if orginal file is deleted
+
+* crontab:
+    /etc/cron.deny  # user in this file don't allow use crontab
+    /etc/cron.allow
+    /var/spool/cron/  # all user's crontab file reserved here and named with user name
+
+    /sbin/service cron [start, stop, restart, reload, status]
+    /etc/init.d/cron [start, stop, restart, reload, status]
+
+* File System:
+    chgrp [-R] dirname/filename...
+    chown [-R] owner:group dir/file
+    chmod [-R] xyz dir/file
+    chmod | u g o a | + - = | r w x | dir or file |
+
+    mkdir[-mp] # m:
+    rmdir [-P] # P, remove current directory and it's parent and empty directory
+    rm [-r] # delete all file include it's children
+    pwd [-P] # show real path(linked file)
 
 
-    crontab:
-        /etc/cron.deny  # user in this file don't allow use crontab
-        /etc/cron.allow
-        /var/spool/cron/  # all user's crontab file reserved here and named with user name
-
-        /sbin/service cron [start, stop, restart, reload, status]
-        /etc/init.d/cron [start, stop, restart, reload, status]
-
-    File System:
-        chgrp [-R] dirname/filename...
-        chown [-R] owner:group dir/file
-        chmod [-R] xyz dir/file
-        chmod | u g o a | + - = | r w x | dir or file |
-
-        mkdir[-mp] # m:
-        rmdir [-P] # P, remove current directory and it's parent and empty directory
-        rm [-r] # delete all file include it's children
-        pwd [-P] # show real path(linked file)
-
-
-    rpm:
+*  rpm:
         QUERYING AND VERIFYING PACKAGES:
             rpm {-q|--query} [select-options] [query-options]
             rpm {-V|--verify} [select-options] [verify-options]
@@ -448,22 +482,6 @@ Allow root login:
         [--repackage] [--replacefiles] [--replacepkgs]
         [--test]
 
-    aptitude:
-        aptitude 与 apt-get 一样，是 Debian 及其衍生系统中功能极其强大的包管理工具。
-        与 apt-get 不同的是，aptitude 在处理依赖问题上更佳一些。
-        举例来说，aptitude 在删除一个包时，会同时删除本身所依赖的包。
-        这样，系统中不会残留无用的包，整个系统更为干净。以下是笔者总结的一些常用 aptitude 命令，仅供参考。
-        命令	作用
-        aptitude update	更新可用的包列表
-        aptitude upgrade	升级可用的包
-        aptitude dist-upgrade	将系统升级到新的发行版
-        aptitude install pkgname	安装包
-        aptitude remove pkgname	删除包
-        aptitude purge pkgname	删除包及其配置文件
-        aptitude search string	搜索包
-        aptitude show pkgname	显示包的详细信息
-        aptitude clean	删除下载的包文件
-        aptitude autoclean	仅删除过期的包文件
 
 # Linux Performance Tunning
 ### Ipv4
