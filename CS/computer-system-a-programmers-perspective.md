@@ -258,7 +258,7 @@ For converting a two’s-complement number to a larger data type, the rule is to
     short sx = -1234;
     unsigned uy = sx;
     printf("uy = %u\n", uy); // 4294954951: ff ff cf c7
-    
+
     when converting from short to unsigned, we first change the size and then from signed to unsigned. That is, (unsigned) sx is equivalent to (unsigned) (int) sx, evaluating to 4,294,954,951, not (unsigned) (unsigned short) sx, which evaluates to 53,191. Indeed this convention is required by the C standards.
 
 ### 2.2.7 Truncating Numbers
@@ -1052,20 +1052,20 @@ Value | Name | Meaning
             icode in { IPOPL, IRET } : RESP;
             1 : RNONE; # Don’t need register
         ];
-        
+
         int srcB = [
             icode in { IOPL, IRMMOVL, IMRMOVL  } : rB;
             icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
             1 : RNONE;  # Don’t need register
         ];
-        
+
         int dstE = [
             icode in { IRRMOVL } : rB;
             icode in { IIRMOVL, IOPL} : rB;
             icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
             1 : RNONE;  # Don’t write any register
         ];
-        
+
         int dstM = [
             icode in { IMRMOVL, IPOPL } : rA;
             1 : RNONE;  # Don’t write any register
@@ -1083,16 +1083,16 @@ Value | Name | Meaning
             icode in { IRET, IPOPL } : 4;
             # Other instructions don’t need ALU
         ];
-        
+
         int aluB = [
             icode in { IRMMOVL, IMRMOVL, IOPL, ICALL,
         ];
-        
+
         int alufun = [
             icode == IOPL : ifun;
             1 : ALUADD;
         ];
-        
+
         bool set_cc = icode in { IOPL };
         ```
 * Memory Stage
@@ -1104,7 +1104,7 @@ Value | Name | Meaning
             icode in { IPOPL, IRET } : valA;
             # Other instructions don’t need address
         ];
-        
+
         int mem_data = [
             # Value from register
             icode in { IRMMOVL, IPUSHL } : valA;
@@ -1112,11 +1112,11 @@ Value | Name | Meaning
             icode == ICALL : valP;
             # Default: Don’t write anything
         ];
-        
+
         bool mem_read = icode in { IMRMOVL, IPOPL, IRET };
-        
+
         bool mem_write = icode in { IRMMOVL, IPUSHL, ICALL };
-        
+
         ## Determine instruction status
         int Stat = [
             imem_error || dmem_error : SADR;
@@ -1331,12 +1331,12 @@ Value | Name | Meaning
             W_icode == IRET : W_valM;           # Completion of RET instruction.
             1 : F_predPC;                       # Default: Use predicted value of PC
         ];
-        
+
         int f_predPC = [
             f_icode in { IJXX, ICALL } : f_valC;
             1 : f_valP;
         ];
-        
+
         # Determine status code for fetched instruction
         int f_stat = [
             imem_error: SADR;
@@ -1366,7 +1366,7 @@ Value | Name | Meaning
             D_icode in { IPUSHL, IPOPL, ICALL, IRET } : RESP;
             1 : RNONE;  # Don’t write any register
         ];
-        
+
         int d_valA = [
             D_icode in { ICALL, IJXX } : D_valP;    # use incremented PC
             d_srcA == e_dstE : e_valE;              # forward valE from execute
@@ -1376,7 +1376,7 @@ Value | Name | Meaning
             d_srcA == W_dstE : W_valE;              # forward valE from write back
             1 : d_rvalA;                            # use value read from register file
         ];
-        
+
         int d_valB = [
             d_srcB == e_dstE : e_valE;  # Forward valE from execute
             d_srcB == M_dstM : m_valM;  # Forward valM from memory
@@ -1385,7 +1385,7 @@ Value | Name | Meaning
             d_srcB == W_dstE : W_valE;  # Forward valE from write back
             1 : d_rvalB;  # Use value read from register file
         ];
-        
+
         int Stat = [
             W_stat == SBUB : SAOK;
             1 : W_stat;
@@ -1520,30 +1520,30 @@ Value | Name | Meaning
         E_icode in { IMRMOVL, IPOPL } &&     # Conditions for a load/use hazard
         E_dstM in { d_srcA, d_srcB } ||
         IRET in { D_icode, E_icode, M_icode }; # Stalling at fetch while ret passes through pipeline
-    
+
     bool D_stall =
         E_icode in { IMRMOVL, IPOPL } &&    # Conditions for a load/use hazard
         E_dstM in { d_srcA, d_srcB };
-    
+
     bool D_bubble =
         (E_icode == IJXX && !e_Cnd) ||      # Mispredicted branch
             # Stalling at fetch while ret passes through pipeline but not condition for a load/use hazard
         !(E_icode in { IMRMOVL, IPOPL } && E_dstM in { d_srcA, d_srcB })
         && IRET in { D_icode, E_icode, M_icode };
-    
+
     bool E_bubble =
         (E_icode == IJXX && !e_Cnd) ||      # Mispredicted branch
         E_icode in { IMRMOVL, IPOPL } &&    # Conditions for a load/use hazard
         E_dstM in { d_srcA, d_srcB};
-    
+
     ## Should the condition codes be updated?
     bool set_cc =
         E_icode == IOPL &&
         !m_stat in { SADR, SINS, SHLT } && !W_stat in { SADR, SINS, SHLT }; # State changes only during normal operation
-    
+
     # Start injecting bubbles as soon as exception passes through memory stage
     bool M_bubble = m_stat in { SADR, SINS, SHLT } || W_stat in { SADR, SINS, SHLT };
-    
+
     bool W_stall = W_stat in { SADR, SINS, SHLT };
     ```
 
@@ -1588,9 +1588,9 @@ Value | Name | Meaning
             *xp += *yp;
             *xp += *yp;
         }
-        
+
         // if yp is an alies of xp, code can be optimized to twiddle2
-        
+
         // requires only three memory references (read *xp, read *yp, write *xp)
         void twiddle2(int *xp, int *yp) {
             *xp += 2 * *yp;
@@ -1600,11 +1600,11 @@ Value | Name | Meaning
     * Code
         ```c++
         int f();
-        
+
         int fun1() {
             return f() + f() + f() + f();
         }
-        
+
         int func2() {
             return 4 * f();
         }
@@ -1612,7 +1612,7 @@ Value | Name | Meaning
     * Code
         ```c++
         int counter = 0;
-        
+
         int f() {
             return counter++;
         }
@@ -1667,7 +1667,7 @@ Value | Name | Meaning
             long int length = vec_length(v);
             data_t* data = get_vec_start(v);
             data_t acc = IDENT;
-        
+
             for (i = 0; i < length; ++i) {
                 acc = acc OP data[i];
             }
@@ -1716,12 +1716,12 @@ Value | Name | Meaning
         int limit = length - 1;
         data_t* data = get_vec_start(v);
         data_t acc = IDENT;
-    
+
         // combine 2 elements at a time
         for (i = 0; i < limit; i += 2) {
             acc = (acc OP data[i]) OP data[i+1];
         }
-    
+
         // finish any remaining elements
         for (; i < length; ++i) {
             acc = acc OP data[i];
@@ -1756,13 +1756,13 @@ Value | Name | Meaning
             data_t* data = get_vec_start(v);
             data_t acc0 = IDENT;
             data_t acc1 = IDENT;
-        
+
             // combine 2 elements at a time
             for (i = 0; i < limit; i += 2) {
                 acc0 = acc0 OP data[i];
                 acc1 = acc1 OP data[i+1];
             }
-        
+
             // finish any remaining elements
             for (; i < length; ++i) {
                 acc0 = acc0 OP data[i];
@@ -1790,12 +1790,12 @@ Value | Name | Meaning
             int limit = length - 1;
             data_t* data = get_vec_start(v);
             data_t acc = IDENT;
-        
+
             // combine 2 elements at a time
             for (i = 0; i < limit; i += 2) {
                 acc = acc OP (data[i] OP data[i+1]);
             }
-        
+
             // finish any remaining elements
             for (; i < length; ++i) {
                 acc = acc OP data[i];
@@ -1902,7 +1902,7 @@ Value | Name | Meaning
             dest[i] = 0;
         }
     }
-    
+
     void clear_array4(int* dest, int n) {
         int i = 0;
         for (; i < n-3; i += 4) {
@@ -1911,7 +1911,7 @@ Value | Name | Meaning
             dest[i+2] = 0;
             dest[i+3] = 0;
         }
-    
+
         while (i < n-3) {
             dest[i] = 0;
             ++i;
@@ -2080,11 +2080,11 @@ Value | Name | Meaning
         ```c++
         float dotprod(float x[8], float y[8]) {
             float sum = 0.0;
-        
+
             for (int i = 0; i < 8; ++i) {
                 sum += x[i] * y[i];
             }
-        
+
             return sum;
         }
         ```
@@ -2270,6 +2270,19 @@ gcc -shared -fPIC -o libvector.so addvec.c multvec.c
 gcc -o p2 main2.c ./libvector.so
 ```
 
+* Where to search a program to be run?
+    * $PATH
+* Include path
+    * current path
+    * path specified by `-I`
+    * `CPLUS_INCLUDE_PATH`, `C_INCLUDE_PATH`
+    * Default path: `/usr/include` `/usr/local/include`
+* Library path:
+    * path specified by `-L`
+    * `LIBRARY_PATH`, `LD_LIBRARY_PATH`
+    * /etc/ld.so.conf
+    * Default path: `/usr/lib` `/usr/local/lib`
+
 ## 7.2 Static Linking
 * To build the executable, the linker must perform two main tasks:
     * **Symbol resolution**. Object files define and reference symbols. The purpose of symbol resolution is to associate each symbol reference with exactly one symbol definition.
@@ -2285,6 +2298,7 @@ gcc -o p2 main2.c ./libvector.so
     * **Relocatable object file**. Contains binary code and data in a form that can be combined with other relocatable object files at compile time to create an executable object file.
     * **Executable object file**. Contains binary code and data in a form that can be copied directly into memory and executed.
     * **Shared object file**. A special type of relocatable object file that can be loaded into memory and linked dynamically, at either load time or run time.
+    * **Core dump file**.
 
 ## 7.4 Relocatable Object Files
 * ![](../Images/CSAPP/7.4-relocatable-file.png)
@@ -2349,7 +2363,7 @@ gcc -o p2 main2.c ./libvector.so
         ```c++
         int x = 10;
         int y = 20;
-        
+
         int main() {
             f();
         }
@@ -2401,12 +2415,12 @@ gcc -o p2 main2.c ./libvector.so
     void foreach_section_s() {
         void foreach_relocation_entry_r() {
             refptr = s + r.offset;   /* ptr to reference to be relocated */
-    
+
             if (r.type == R_386_PC32) { /* Relocate a PC-relative reference */
                 refaddr = ADDR(s) + r.offset; /* ref’s run-time address */
                 *refptr = (unsigned) (ADDR(r.symbol) + *refptr - refaddr);
             }
-    
+
             if (r.type == R_386_32) /* Relocate an absolute reference */
                 *refptr = (unsigned) (ADDR(r.symbol) + *refptr);
         }
