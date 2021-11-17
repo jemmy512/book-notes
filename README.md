@@ -14,11 +14,14 @@
 
 * Operation System
     * [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)
+    * [Operating Systems: Three Easy Pieces :soon:]()
+    * [Operating System Concepts :soon:]()
     * [Modern Operating System](./CS/modern-operating-system.md)
 
 * Computer Architecture
     * [Computer Organization and Design: The Hardware/Sofeware Interface :soon:](./CS/computer-organization-and-design.md)
     * [Computer Architecture: A Quantitative Approach :soon:](./CS/computer-architecture.md)
+    * [Structure and Interpretation of Computer Programs :soon:]()
 
 * Compiler
     * [Compilers: Principles, Techniques, and Tools :soon:](./CS/compilers-crinciples-techniques-and-tools.md)
@@ -31,6 +34,10 @@
 * System Programming
     * [Advanced Programming in Unix Environment](./Linux/apue.md)
     * [The Art of Unix Programing :soon:](./Linux/the-art-of-unix-programing.md)
+
+* Distributed System
+    * [Designing Data-Intensive Applications :soon:]()
+    * [Distributed Systems, 3rd Edition :soon:](https://www.distributed-systems.net/index.php/books/ds3/)
 
 # Software Engineering
 * [Design Patterns :soon:](./SE/design-patterns.md)
