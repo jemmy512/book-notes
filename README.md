@@ -36,7 +36,7 @@
     * [The Art of Unix Programing :soon:](./Linux/the-art-of-unix-programing.md)
 
 * Distributed System
-    * [Designing Data-Intensive Applications :soon:]()
+    * [Designing Data-Intensive Applications :soon:](./Arch/designing-data-intensive-applications.md)
     * [Distributed Systems, 3rd Edition :soon:](https://www.distributed-systems.net/index.php/books/ds3/)
 
 # Software Engineering
