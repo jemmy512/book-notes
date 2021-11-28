@@ -84,10 +84,27 @@ RESTfull API, XML, IDL
         * Dynamic delivery
 
 4. Service Fault Tolerance
-    1. FailOver: Automatic switching on failure
-    2. FailBack: Notification on failure
-    3. FailCache: Cache on failure
-    4. FailFast
+    1. Fail Over: Automatic switching on failure
+        * **Active-passive**
+
+            With active-passive fail-over, heartbeats are sent between the active and the passive server on standby. If the heartbeat is interrupted, the passive server takes over the active's IP address and resumes service.
+
+            The length of downtime is determined by whether the passive server is already running in 'hot' standby or whether it needs to start up from 'cold' standby. Only the active server handles traffic.
+
+            Active-passive failover can also be referred to as **master-slave** failover.
+
+        * **Active-active**
+
+            In active-active, both servers are managing traffic, spreading the load between them.
+
+            If the servers are public-facing, the DNS would need to know about the public IPs of both servers. If the servers are internal-facing, application logic would need to know about both servers.
+
+            Active-active failover can also be referred to as master-master failover.
+
+
+    2. Fail Back: Notification on failure
+    3. Fail Cache: Cache on failure
+    4. Fail Fast
 
 5. Service Health Management
     1. Heartbeat switch protection mechanism
@@ -163,6 +180,35 @@ An API gateway takes all API calls from clients, then routes them to the appropr
     1. Enables **decoupling** of the request producer from the request consumer giving them the flexibility to process requests at their own scale.
     2. Gives the **flexibility** for each microservice to **scale up and down** based on the bursts in traffic. Neither the producer nor the consumer need to worry about request throttling.
     3. Improves the overall **availability** and **fault tolerance** of the system as the producer is less concerned with handling failures from the consumer. Consumers can be rest assured that as long as the proper message payload is published to the Message Bus it will be processed eventually.
+
+### Representational state transfer (REST)
+
+REST is an architectural style enforcing a client/server model where the client acts on a set of resources managed by the server.  The server provides a representation of resources and actions that can either manipulate or get a new representation of resources. All communication must be stateless and cacheable.
+
+There are four qualities of a RESTful interface:
+
+* **Identify resources (URI in HTTP)** - use the same URI regardless of any operation.
+* **Change with representations (Verbs in HTTP)** - use verbs, headers, and body.
+* **Self-descriptive error message (status response in HTTP)** - Use status codes, don't reinvent the wheel.
+* **[HATEOAS](http://restcookbook.com/Basics/hateoas/) (HTML interface for HTTP)** - your web service should be fully accessible in a browser.
+
+Sample REST calls:
+
+```
+GET /someresources/anId
+
+PUT /someresources/anId
+{"anotherdata": "another value"}
+```
+
+REST is focused on exposing data.  It minimizes the coupling between client/server and is often used for public HTTP APIs.  REST uses a more generic and uniform method of exposing resources through URIs, [representation through headers](https://github.com/for-GET/know-your-http-well/blob/master/headers.md), and actions through verbs such as GET, POST, PUT, DELETE, and PATCH.  Being stateless, REST is great for horizontal scaling and partitioning.
+
+#### Disadvantage(s): REST
+
+* With REST being focused on exposing data, it might not be a good fit if resources are not naturally organized or accessed in a simple hierarchy.  For example, returning all updated records from the past hour matching a particular set of events is not easily expressed as a path.  With REST, it is likely to be implemented with a combination of URI path, query parameters, and possibly the request body.
+* REST typically relies on a few verbs (GET, POST, PUT, DELETE, and PATCH) which sometimes doesn't fit your use case.  For example, moving expired documents to the archive folder might not cleanly fit within these verbs.
+* Fetching complicated resources with nested hierarchies requires multiple round trips between the client and server to render single views, e.g. fetching content of a blog entry and the comments on that entry. For mobile applications operating in variable network conditions, these multiple roundtrips are highly undesirable.
+* Over time, more fields might be added to an API response and older clients will receive all new data fields, even those that they do not need, as a result, it bloats the payload size and leads to larger latencies.
 
 ### Circuit Breaker
 ### CQRS (Command Query Response Segregation)
@@ -272,6 +318,18 @@ A saga is a sequence of local transactions that updates each service and publish
             * ![](../Images/cache-rw-through.png)
         * Read/write Back
             * ![](../Images/cache-rw-back.png)
+        * E.g.,
+            ```js
+            def get_user(self, user_id):
+                user = cache.get("user.{0}", user_id)
+                if user is None:
+                    user = db.query("SELECT * FROM users WHERE user_id = {0}", user_id)
+                    if user is not None:
+                        key = "user.{0}".format(user_id)
+                        cache.set(key, json.dumps(user))
+                return user
+            ```
+
     * Indexes
         * Hit rate
         * Live time
