@@ -64,11 +64,11 @@
 ## CAP
 ![](../Images/DistributedSystem/5-store-cap.png)
 
-## Duplication
-![](../Images/DistributedSystem/5-store-data-duplication.png)
+## Replication
+![](../Images/DistributedSystem/5-store-data-replication.png)
 
-## Fragmentation
-![](../Images/DistributedSystem/5-store-data-fragmentation.png)
+## Partition
+![](../Images/DistributedSystem/5-store-data-partition.png)
 
 ## Producer Cosumer Index Store
 ![](../Images/DistributedSystem/5-store-producer-consumer-index-store.png)
