@@ -5,6 +5,7 @@
 * [Distributed Systems for Practitioners](./Arch/distributed-systems-for-practitioners.md)
 * [Grokking the System Design](./Arch/system-design.md)
 * [Grokking Advanced System Design](./Arch/system-design-advanced.md)
+* [Grokking the System Design DoorDash](./Arch/system-design-doordash.md)
 * [Grokking the Object Oriented Design](./Arch/object-oriented-design.md)
 * [Distributed System Principle and Algorithm (GeekTime)](./Arch/gt-distributed-system-principle-and-algorithm.md)
 * [Microservice and Architecure Design (GeekTime)](./Arch/gt-microservice-and-architecure-design.md)
