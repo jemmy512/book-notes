@@ -60,7 +60,7 @@ $ file /bin/bash
 $ file /lib/ld-2.6.1.so
 /lib/libc-2.6.1.so: ELF 32-bit LSB shared object, Intel 80386, version 1 (SYSV), for GNU/Linux 2.6.8, stripped
 
- ```
+```
 
 ## 3.2 What does the object file look like?
 ![](../Images/LinkLoadLibrary/3.2-object-file.png)
@@ -298,19 +298,257 @@ int swap(int* a, int *b) {
 
     ![](../Images/LinkLoadLibrary/4.1-load-vma.png)
 
-
+* **Symble Address Resolution**
 
 ## 4.2 Symbol resolution and relocation
 
-## 4.3 COMMON block
+* **Relocation**
+    ```c++
+    [root@VM-16-17-centos code]# objdump -d a.o
+    a.o:     file format elf64-x86-64
+    Disassembly of section .text:
+
+    0000000000000000 <main>:
+    0:   55                      push   %rbp
+    1:   48 89 e5                mov    %rsp,%rbp
+    4:   48 83 ec 10             sub    $0x10,%rsp
+    8:   c7 45 fc 64 00 00 00    movl   $0x64,-0x4(%rbp)    // 100
+    f:   48 8d 45 fc             lea    -0x4(%rbp),%rax
+    13:   be 00 00 00 00         mov    $0x0,%esi           // shared
+    18:   48 89 c7               mov    %rax,%rdi
+    1b:   e8 00 00 00 00         callq  20 <main+0x20>      // swap
+    20:   b8 00 00 00 00         mov    $0x0,%eax
+    25:   c9                     leaveq
+    26:   c3                     retq
+    ```
+
+    `callq` is a `call near, relative, displacement relative to next instruction`. The next 4 bytes (e8 `00`) are the offset of the called function relative to the next instruction of the calling instruction.
+
+* **Relocation Table**
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -r a.o
+
+    Relocation section '.rela.text' at offset 0x1f0 contains 2 entries:
+    Offset          Info           Type           Sym. Value    Sym. Name + Addend
+    000000000014  00090000000a R_X86_64_32       0000000000000000 shared + 0
+    00000000001c  000a00000004 R_X86_64_PLT32    0000000000000000 swap   - 4
+
+    Relocation section '.rela.eh_frame' at offset 0x220 contains 1 entry:
+    Offset          Info           Type           Sym. Value    Sym. Name + Addend
+    000000000020  000200000002 R_X86_64_PC32     0000000000000000 .text  + 0
+    ```
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -s ab
+    Symbol table '.symtab' contains 15 entries:
+
+    Num:    Value          Size Type    Bind   Vis      Ndx Name
+        0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+        1: 00000000004000e8     0 SECTION LOCAL  DEFAULT    1
+        2: 0000000000400160     0 SECTION LOCAL  DEFAULT    2
+        3: 0000000000601000     0 SECTION LOCAL  DEFAULT    3
+        4: 0000000000000000     0 SECTION LOCAL  DEFAULT    4
+        5: 0000000000000000     0 FILE    LOCAL  DEFAULT  ABS a.c
+        6: 0000000000000000     0 FILE    LOCAL  DEFAULT  ABS b.c
+        7: 0000000000000000     0 FILE    LOCAL  DEFAULT  ABS
+        8: 0000000000601000     0 OBJECT  LOCAL  DEFAULT    3 _GLOBAL_OFFSET_TABLE_
+        9: 000000000040010f    75 FUNC    GLOBAL DEFAULT    1 swap
+       10: 0000000000601000     4 OBJECT  GLOBAL DEFAULT    3 shared
+       11: 0000000000601004     0 NOTYPE  GLOBAL DEFAULT    3 __bss_start
+       12: 00000000004000e8    39 FUNC    GLOBAL DEFAULT    1 main
+       13: 0000000000601004     0 NOTYPE  GLOBAL DEFAULT    3 _edata
+       14: 0000000000601008     0 NOTYPE  GLOBAL DEFAULT    3 _end
+    ```
+
+    ```c++
+    [root@VM-16-17-centos code]# objdump -d ab
+    ab:     file format elf64-x86-64
+    Disassembly of section .text:
+
+    00000000004000e8 <main>:
+    4000e8:       55                      push   %rbp
+    4000e9:       48 89 e5                mov    %rsp,%rbp
+    4000ec:       48 83 ec 10             sub    $0x10,%rsp
+    4000f0:       c7 45 fc 64 00 00 00    movl   $0x64,-0x4(%rbp)   // 100
+    4000f7:       48 8d 45 fc             lea    -0x4(%rbp),%rax
+    4000fb:       be 00 10 60 00          mov    $0x601000,%esi     // shared
+    400100:       48 89 c7                mov    %rax,%rdi
+    400103:       e8 07 00 00 00          callq  40010f <swap>      // 07 = 40010f + (-4) - 400104 // (S + A - P)
+    400108:       b8 00 00 00 00          mov    $0x0,%eax
+    40010d:       c9                      leaveq
+    40010e:       c3                      retq
+
+    000000000040010f <swap>:
+    40010f:       55                      push   %rbp
+    ```
+
+* **Symble Resolution**
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -s a.o
+
+    Symbol table '.symtab' contains 11 entries:
+    Num:    Value          Size Type    Bind   Vis      Ndx Name
+        0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND
+        1: 0000000000000000     0 FILE    LOCAL  DEFAULT  ABS a.c
+        2: 0000000000000000     0 SECTION LOCAL  DEFAULT    1
+        3: 0000000000000000     0 SECTION LOCAL  DEFAULT    3
+        4: 0000000000000000     0 SECTION LOCAL  DEFAULT    4
+        5: 0000000000000000     0 SECTION LOCAL  DEFAULT    6
+        6: 0000000000000000     0 SECTION LOCAL  DEFAULT    7
+        7: 0000000000000000     0 SECTION LOCAL  DEFAULT    5
+        8: 0000000000000000    39 FUNC    GLOBAL DEFAULT    1 main
+        9: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND shared
+       10: 0000000000000000     0 NOTYPE  GLOBAL DEFAULT  UND swap
+    ```
+
+* **Intruction Modification**
+
+    * There are only two instruction addressing modes modified by the relocation entry of the ELF file under the 32-bit x86 platform:
+        * Absolute near address 32-bit addressing
+        * Relatively near address 32-bit addressing.
+
+    Macro | Value | Relocation Method
+    --- | --- | ---
+    R_386_32 | 1 | absolute address: S + A
+    R_386_PC32 | 2 | relative address: S + A - P
+    R_386_PLT32 | 4 | same as R_386_PC32
+
+    * **S** is the value of the symbol (st_value of Elf64_Sym)
+    * **A** is the addend
+    * **P** is the address of the memory location being relocated (the start of the address of the call to Other)
+
+    ```c++
+    void foreach_section_s() {
+        void foreach_relocation_entry_r() {
+            refptr = s + r.offset;   /* ptr to reference to be relocated */
+
+            if (r.type == R_386_PC32) { /* Relocate a PC-relative reference */
+                refaddr = ADDR(s) + r.offset; /* ref’s run-time address */
+                *refptr = (unsigned) (ADDR(r.symbol) + *refptr - refaddr);
+            }
+
+            if (r.type == R_386_32) /* Relocate an absolute reference */
+                *refptr = (unsigned) (ADDR(r.symbol) + *refptr);
+        }
+    }
+    ```
+
+    * The difference between absolute addressing correction and relative addressing correction is that
+        * the address after absolute addressing correction is the actual address of the symbol;
+        * the address after relative addressing correction is the address difference between the symbol and the corrected position.
+
+
+## 4.3 COMMON Block
+
+What if a weak symbol is defined in multiple object files and their types are different?
+
+The current linker itself does not support symbol types, that is, the variable type is transparent to the linker. It only knows the name of a symbol and does not know whether the types are consistent.
+
+So when we define multiple symbol definition types are inconsistent, how should the linker deal with it?
+
+Symbol definition types are inconsistent:
+* Two or more strong symbol types are inconsistent;
+    * error
+* There is a strong symbol, the others are weak symbols, and the types are inconsistent;
+    * the strong symbol previals. If the weak symbol size is big than strong symbol's, there's warning: ld: warning: alignment 4 of symbol `global’ in a.o is smaller than 8 in b.o
+* Two or more weak symbol types are inconsistent.
+    * the type requiring larger block shall prevail
+
+When the compiler compiles a compilation unit into an object file, if the compilation unit contains weak symbols (uninitialized global variables are typical weak symbols), then the size of the final space occupied by the weak symbols is unknown at this time, because it is possible that the space occupied by the symbol in other compilation units is larger than the space occupied by the symbol in this compilation unit.
+
+Therefore, the compiler cannot allocate space in the BSS segment for the weak symbol at this time, because the size of the required space is unknown. But the linker can determine the size of the weak symbol during the linking process, because after the linker reads all input object files, the final size of any weak symbol can be determined, so it can be set in the BSS section of the final output file. So overall, uninitialized global variables are ultimately placed in the BSS segment.
+
 
 ## 4.4 C++ related issues
+
+* **Duplicate code elimination**
+
+    A more effective way is to store the instance code of each template separately in a section, and each section contains only one template instance. For example, if a template function is add<T>(), a compilation unit instantiates the template function with int type and float type, then the object file of the compilation unit contains two sections of the template instance. For the sake of simplicity, we assume that the names of these two sections are called .temp.add<int> and .temp.add<float> respectively. In this way, when other compilation units also instantiate the template function with int or float type, they will also generate the same name, so that the linker can distinguish these same template instance segments when they are finally linked, and then merge them into the final Code snippet.
+
+    Although this method can basically solve the problem of code duplication, there are still some problems. For example, segments with the same name may have different contents. This may be because different compilation units use different compiler versions or compilation optimization options, resulting in different actual codes compiled by the same function.
+
+
+* **Global Contruction and Destruction**
+
+    **.init** This section saves executable instructions, which constitute the initialization code of the process. Therefore, when a program starts to run, before the main function is called, the initialization part of Glibc arranges to execute the code in this section.
+
+    **.fini** This section holds the process termination code instruction. Therefore, when the main function of a program exits normally, Glibc will arrange to execute the code in this section.
 
 ## 4.5 Static library link
 
 ## 4.6 Link process control
 
+* The methods cotroling link process:
+    * Use the command line to specify parameters to the linker
+    * Store the link instructions in the object file, and the compiler often passes instructions to the linker in this way.
+    * Use link control script
+
+* Link Control Script
+    * ld -verbose
+    * /usr/lib/ldscripts/
+    * elf_i386.x, elf_i386.xs
+    * ld –T my-link.script
+
+* The Tiny Program
+
+    ```c++
+    char* str = "Hello world!\n";
+
+    void print()
+    {
+        asm("movl $13, %%edx \n\t"
+            "movl %0, %%ecx  \n\t"
+            "movl $0, %%ebx  \n\t"
+            "movl $4, %%eax  \n\t"
+            "int $0x80      \n\t"
+            ::"r"(str):"edx", "ecx", "ebx");
+    }
+
+    void exit()
+    {
+        asm("movl $42, %ebx  \n\t"
+            "movl $1, %eax  \n\t"
+            "int $0x80
+            \n\t" );
+    }
+
+    void nomain()
+    {
+        print();
+        exit();
+    }
+    ```
+
+    ```c++
+    gcc -c -fno-builtin nomain.c
+
+    ld -static -e nomain -o nomain nomain.o
+    ```
+
+    ```c++
+    // nomain.lds
+
+    ENTRY(nomain)
+
+    SECTIONS
+    {
+        . = 0x08048000 + SIZEOF_HEADERS;
+        tinytext  : { *(.text) *(.data) *(.rodata) }
+        /DISCARD/ : { *(.comment) }
+    }
+    ```
+
+    ```
+    gcc –c –fno-builtin nomain.c
+    ld –static –T nomain.lds –o nomain nomain.o
+    ```
+
+* **Introduction to ld link script syntax**
+
 ## 4.7 BFD library
+http://sources.redhat.com/binutils/
 
 
 # 6 Executable file loading and process
