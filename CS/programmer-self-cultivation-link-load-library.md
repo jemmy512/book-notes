@@ -386,6 +386,14 @@ int swap(int* a, int *b) {
 * **Symble Resolution**
 
     ```c++
+    typedef struct {
+        int offset;      /* Offset of the reference to relocate */
+        int symbol:24,  /* Symbol the reference should point to */
+            type:8;     /* Relocation type */
+    } Elf32_Rel;
+    ```
+
+    ```c++
     [root@VM-16-17-centos code]# readelf -s a.o
 
     Symbol table '.symtab' contains 11 entries:
@@ -496,26 +504,22 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
     ```c++
     char* str = "Hello world!\n";
 
-    void print()
-    {
+    void print() {
         asm("movl $13, %%edx \n\t"
             "movl %0, %%ecx  \n\t"
             "movl $0, %%ebx  \n\t"
             "movl $4, %%eax  \n\t"
-            "int $0x80      \n\t"
+            "int $0x80       \n\t"
             ::"r"(str):"edx", "ecx", "ebx");
     }
 
-    void exit()
-    {
+    void exit() {
         asm("movl $42, %ebx  \n\t"
-            "movl $1, %eax  \n\t"
-            "int $0x80
-            \n\t" );
+            "movl $1, %eax   \n\t"
+            "int $0x80       \n\t" );
     }
 
-    void nomain()
-    {
+    void nomain() {
         print();
         exit();
     }
@@ -548,15 +552,192 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
 * **Introduction to ld link script syntax**
 
 ## 4.7 BFD library
-http://sources.redhat.com/binutils/
+* Binary File Descriptor library: handle different object file formats through a unified interface
+* http://sources.redhat.com/binutils/
 
 
 # 6 Executable file loading and process
 ## 6.1 Process virtual address space
+
 ## 6.2 Method of loading
-## 6.3 The loading from the operating system view
+
+* **Overlay**
+
+    The task of tapping the memory potential is handed over to the programmer. The programmer must manually divide the program into several blocks when writing the program, and then write a small auxiliary code to manage when these modules should reside in memory and when they should be Replace. This small auxiliary code is the so-called Overlay Manager
+
+    ![](../Images/LinkLoadLibrary/6.2-overlay.png)
+
+* **Paging**
+
+    The data and instructions in the memory and all disks are divided into several pages according to the unit of "Page", and the unit of all subsequent loading and operations is the page
+
+
+
+## 6.3 The loading from OS view
+* **Creat Process**
+    * Create an independent virtual address space.
+    * Read the executable file header, and establish the mapping relationship between the virtual space and the executable file.
+    * Set the instruction register of the CPU to the entry address of the executable file and start the operation.
+
+* **Page Fault**
+
 ## 6.4 Process virtual memory space distribution
+
+* ELF link view and execute view
+
+    When the number of segments increases, the problem of space waste will arise. Because we know that when the ELF file is mapped, the system page length is used as the unit, so the length of each segment during the mapping should be an integer multiple of the system page length; if not, the extra part will also occupy a page .
+
+    OS does not actually care about the actual content contained in each section of the executable file. The operating system only cares about some problems related to loading, the most important thing is the permissions of the section (readable, writable, executable)
+
+    For segments with the same authority, merge them together as a segment for mapping. For example, there are two sections called ".text" and ".init", they contain the executable code and initialization code of the program, and they have the same permissions, and they are both readable and executable. Assuming that .text is 4 097 bytes and .init is 512 bytes, these two segments will occupy three pages if they are mapped separately, but if they are merged together and mapped, only two pages will be occupied
+
+    ![](../Images/LinkLoadLibrary/6.4-merge-mapping.png)
+
+    ELF executable files introduce a concept called **Segment**. A "Segment" contains one or more **Sections** with similar attributes. As we have seen in the above example, if the ".text" section and the ".init" section are combined together as a "Segment", then they can be viewed as a whole and mapped together when loading. That is to say, after the mapping, there is only one corresponding VMA in the process virtual memory space, instead of two. The advantage of this is that it can obviously reduce the internal fragmentation of the page, thereby saving memory space.
+
+
+    ```c++
+    #include <stdlib.h>
+    #include <unistd.h>
+
+    int main() {
+        while (1) {
+            sleep(1000);
+        }
+        return 0;
+    }
+
+    gcc sleep.c -o sleep.elf
+    ```
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -S sleep.elf
+    There are 30 section headers, starting at offset 0x3c98:
+
+    Section Headers:
+    [Nr] Name              Type             Address           Offset
+        Size              EntSize          Flags  Link  Info  Align
+    [ 0]                   NULL             0000000000000000  00000000
+        0000000000000000  0000000000000000           0     0     0
+    [ 1] .interp           PROGBITS         0000000000400238  00000238
+        000000000000001c  0000000000000000   A       0     0     1
+    [ 2] .note.ABI-tag     NOTE             0000000000400254  00000254
+        0000000000000020  0000000000000000   A       0     0     4
+    [ 3] .note.gnu.build-i NOTE             0000000000400274  00000274
+        0000000000000024  0000000000000000   A       0     0     4
+    [ 4] .gnu.hash         GNU_HASH         0000000000400298  00000298
+        000000000000001c  0000000000000000   A       5     0     8
+    [ 5] .dynsym           DYNSYM           00000000004002b8  000002b8
+        0000000000000090  0000000000000018   A       6     1     8
+    [ 6] .dynstr           STRTAB           0000000000400348  00000348
+        0000000000000074  0000000000000000   A       0     0     1
+    [ 7] .gnu.version      VERSYM           00000000004003bc  000003bc
+        000000000000000c  0000000000000002   A       5     0     2
+    [ 8] .gnu.version_r    VERNEED          00000000004003c8  000003c8
+        0000000000000020  0000000000000000   A       6     1     8
+    [ 9] .rela.dyn         RELA             00000000004003e8  000003e8
+        0000000000000060  0000000000000018   A       5     0     8
+    [10] .rela.plt         RELA             0000000000400448  00000448
+        0000000000000018  0000000000000018  AI       5    22     8
+    [11] .init             PROGBITS         0000000000400460  00000460
+        000000000000001b  0000000000000000  AX       0     0     4
+    [12] .plt              PROGBITS         0000000000400480  00000480
+        0000000000000020  0000000000000010  AX       0     0     16
+    [13] .text             PROGBITS         00000000004004a0  000004a0
+        0000000000000175  0000000000000000  AX       0     0     16
+    [14] .fini             PROGBITS         0000000000400618  00000618
+        000000000000000d  0000000000000000  AX       0     0     4
+    [15] .rodata           PROGBITS         0000000000400628  00000628
+        0000000000000010  0000000000000000   A       0     0     8
+    [16] .eh_frame_hdr     PROGBITS         0000000000400638  00000638
+        000000000000003c  0000000000000000   A       0     0     4
+    [17] .eh_frame         PROGBITS         0000000000400678  00000678
+        00000000000000e8  0000000000000000   A       0     0     8
+    [18] .init_array       INIT_ARRAY       0000000000600e00  00000e00
+        0000000000000008  0000000000000008  WA       0     0     8
+    [19] .fini_array       FINI_ARRAY       0000000000600e08  00000e08
+        0000000000000008  0000000000000008  WA       0     0     8
+    [20] .dynamic          DYNAMIC          0000000000600e10  00000e10
+        00000000000001d0  0000000000000010  WA       6     0     8
+    [21] .got              PROGBITS         0000000000600fe0  00000fe0
+        0000000000000020  0000000000000008  WA       0     0     8
+    [22] .got.plt          PROGBITS         0000000000601000  00001000
+        0000000000000020  0000000000000008  WA       0     0     8
+    [23] .data             PROGBITS         0000000000601020  00001020
+        0000000000000004  0000000000000000  WA       0     0     1
+    [24] .bss              NOBITS           0000000000601024  00001024
+        0000000000000004  0000000000000000  WA       0     0     1
+    [25] .comment          PROGBITS         0000000000000000  00001024
+        000000000000002c  0000000000000001  MS       0     0     1
+    [26] .gnu.build.attrib NOTE             0000000000a01028  00001050
+        0000000000001b60  0000000000000000           0     0     4
+    [27] .symtab           SYMTAB           0000000000000000  00002bb0
+        0000000000000990  0000000000000018          28    82     8
+    [28] .strtab           STRTAB           0000000000000000  00003540
+        000000000000063c  0000000000000000           0     0     1
+    [29] .shstrtab         STRTAB           0000000000000000  00003b7c
+        0000000000000119  0000000000000000           0     0     1
+    Key to Flags:
+    W (write), A (alloc), X (execute), M (merge), S (strings), I (info),
+    L (link order), O (extra OS processing required), G (group), T (TLS),
+    C (compressed), x (unknown), o (OS specific), E (exclude),
+    l (large), p (processor specific)
+    ```
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -l sleep.elf
+
+    Elf file type is EXEC (Executable file)
+    Entry point 0x4004a0
+    There are 9 program headers, starting at offset 64
+
+    Program Headers:
+    Type            Offset             VirtAddr           PhysAddr
+                    FileSiz            MemSiz              Flags  Align
+    PHDR            0x0000000000000040 0x0000000000400040 0x0000000000400040
+                    0x00000000000001f8 0x00000000000001f8  R      0x8
+    INTERP          0x0000000000000238 0x0000000000400238 0x0000000000400238
+                    0x000000000000001c 0x000000000000001c  R      0x1
+        [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+    LOAD            0x0000000000000000 0x0000000000400000 0x0000000000400000
+                    0x0000000000000760 0x0000000000000760  R E    0x200000
+    LOAD            0x0000000000000e00 0x0000000000600e00 0x0000000000600e00
+                    0x0000000000000224 0x0000000000000228  RW     0x200000
+    DYNAMIC         0x0000000000000e10 0x0000000000600e10 0x0000000000600e10
+                    0x00000000000001d0 0x00000000000001d0  RW     0x8
+    NOTE            0x0000000000000254 0x0000000000400254 0x0000000000400254
+                    0x0000000000000044 0x0000000000000044  R      0x4
+    GNU_EH_FRAME    0x0000000000000638 0x0000000000400638 0x0000000000400638
+                    0x000000000000003c 0x000000000000003c  R      0x4
+    GNU_STACK       0x0000000000000000 0x0000000000000000 0x0000000000000000
+                    0x0000000000000000 0x0000000000000000  RW     0x10
+    GNU_RELRO       0x0000000000000e00 0x0000000000600e00 0x0000000000600e00
+                    0x0000000000000200 0x0000000000000200  R      0x1
+
+    Section to Segment mapping:
+    Segment Sections...
+    00
+    01     .interp
+    02     .interp .note.ABI-tag .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame_hdr .eh_frame
+    03     .init_array .fini_array .dynamic .got .got.plt .data .bss
+    04     .dynamic
+    05     .note.ABI-tag .note.gnu.build-id
+    06     .eh_frame_hdr
+    07
+    08     .init_array .fini_array .dynamic .got
+    [root@VM-16-17-centos code]#
+    [18] .init_array       INIT_ARRAY       0000000000600e00  00000e00
+        0000000000000008  0000000000000008  WA       0     0     8
+    [19] .fini_array       FINI_ARRAY       0000000000600e08  00000e08
+        0000000000000008  0000000000000008  WA       0     0     8
+    ```
+
+    ![](../Images/LinkLoadLibrary/6.4-segement-section.png)
+
+
+
 ## 6.5 Introduction to Linux Kernel Loading ELF Process
+
 ## 6.6 Loading of Windows PE
 
 # 7 Dynamic link
