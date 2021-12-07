@@ -585,11 +585,13 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
 
 ### 6.4.1 ELF Linking View and Execution View
 
-When the number of segments increases, the problem of space waste will arise. Because we know that when the ELF file is mapped, the system page length is used as the unit, so the length of each segment during the mapping should be an integer multiple of the system page length; if not, the extra part will also occupy a page .
+[Executable and Linkable Format (ELF)](www.skyfree.org/linux/references/ELF_Format.pdf)
+
+When the number of sections increases, the problem of space waste will arise. Because we know that when the ELF file is mapped, the system page size is used as the unit, so the size of each section during the mapping should be an integer multiple of the system page size; if not, the extra part will also occupy a page.
 
 OS does not actually care about the actual content contained in each section of the executable file. The operating system only cares about some problems related to loading, the most important thing is the permissions of the section (readable, writable, executable)
 
-For segments with the same authority, merge them together as a segment for mapping. For example, there are two sections called ".text" and ".init", they contain the executable code and initialization code of the program, and they have the same permissions, and they are both readable and executable. Assuming that .text is 4 097 bytes and .init is 512 bytes, these two segments will occupy three pages if they are mapped separately, but if they are merged together and mapped, only two pages will be occupied
+For segments with the same permissions, merge them together as a segment for mapping. For example, there are two sections called ".text" and ".init", they contain the executable code and initialization code of the program, and they have the same permissions, and they are both readable and executable. Assuming that .text is 4097 bytes and .init is 512 bytes, these two segments will occupy three pages if they are mapped separately, but if they are merged together and mapped, only two pages will be occupied.
 
 ![](../Images/LinkLoadLibrary/6.4-merge-mapping.png)
 
@@ -756,6 +758,7 @@ ffffffffff600000-ffffffffff601000   r-xp      00000000 00:00 0        [vsyscall]
 ![](../Images/LinkLoadLibrary/6.4-segement-section.png)
 
 ```c++
+// program header
 typedef struct elf32_phdr{
     Elf32_Word  p_type;
     Elf32_Off    p_offset; // offset in file
@@ -780,7 +783,7 @@ In the operating system, in addition to being used to map each "Segment" in the 
 
 We need to map a piece of physical memory and process virtual address space to establish a mapping relationship. The length of this memory space must be an integer multiple of 4 096, and the starting address of this space in the physical memory and process virtual address space must be It is an integer multiple of 4096.
 
-In one case, the length of each segment is not an integral multiple of the page length. One of the simplest mapping methods is to map each segment separately, and the part with a length of less than one page occupies one page.
+In one case, the length of each segment is not an integral multiple of the page size. One of the simplest mapping methods is to map each segment separately, and the part with a length of less than one page occupies one page.
 
 This alignment will have a lot of internal fragments in the file segment, wasting disk space.
 
@@ -804,8 +807,196 @@ $ prog 123
 
 # 7 Dynamic link
 ## 7.1 Why dynamic link
+
+* **Memory and Disk Space**
+
+    ![](../Images/LinkLoadLibrary/7.1-wast-memory-disk.png)
+
+* Program development and release
+
+    Once any modules in the program are updated, the entire program must be re-linked and released to users
+
 ## 7.2 Simple dynamic link example
+
+```c++
+#include "lib.h"
+
+int main() {
+    foo(1);
+    return 0;
+}
+```
+
+```c++
+#include "lib.h"
+
+int main() {
+    foo(2);
+    retur 0;
+}
+```
+
+```c++
+#include "lib.h"
+#include <stdio.h>
+
+void foo(int i) {
+    printf("Printing from Lib.so %d\n", i);
+}
+```
+```c++
+#ifndef LIB_H
+#define LIB_H
+
+void foo(int i);
+
+#endif
+```
+
+```c++
+gcc -fPIC -shared -o Lib.so lib.c
+
+gcc -o Alice alice.c ./Lib.so
+
+gcc -o Bob bob.c ./Lib.so
+```
+
+* Address space distribution during runtime of dynamic linker
+
+    ```c++
+    [root@VM-16-17-centos code]# bash: ./Bob &
+    [2] 3532186
+    [1]   Exit 127                ./bob
+    [root@VM-16-17-centos code]# Printing from Lib.so 3
+    [root@VM-16-17-centos code]# cat /proc/3532186/maps
+            00400000-00401000 r-xp 00000000 fd:01 665758        /root/code/Bob
+            00600000-00601000 r--p 00000000 fd:01 665758        /root/code/Bob
+            00601000-00602000 rw-p 00001000 fd:01 665758        /root/code/Bob
+            02141000-02162000 rw-p 00000000 00:00 0             [heap]
+    7f785c58c000-7f785c58f000 r-xp 00000000 fd:01 268307        /usr/lib64/libdl-2.28.so
+    7f785c58f000-7f785c78e000 ---p 00003000 fd:01 268307        /usr/lib64/libdl-2.28.so
+    7f785c78e000-7f785c78f000 r--p 00002000 fd:01 268307        /usr/lib64/libdl-2.28.so
+    7f785c78f000-7f785c790000 rw-p 00003000 fd:01 268307        /usr/lib64/libdl-2.28.so
+    7f785c790000-7f785c94c000 r-xp 00000000 fd:01 268071        /usr/lib64/libc-2.28.so
+    7f785c94c000-7f785cb4b000 ---p 001bc000 fd:01 268071        /usr/lib64/libc-2.28.so
+    7f785cb4b000-7f785cb4f000 r--p 001bb000 fd:01 268071        /usr/lib64/libc-2.28.so
+    7f785cb4f000-7f785cb51000 rw-p 001bf000 fd:01 268071        /usr/lib64/libc-2.28.so
+    7f785cb51000-7f785cb55000 rw-p 00000000 00:00 0
+    7f785cb55000-7f785cb56000 r-xp 00000000 fd:01 665756        /root/code/Lib.so
+    7f785cb56000-7f785cd55000 ---p 00001000 fd:01 665756        /root/code/Lib.so
+    7f785cd55000-7f785cd56000 r--p 00000000 fd:01 665756        /root/code/Lib.so
+    7f785cd56000-7f785cd57000 rw-p 00001000 fd:01 665756        /root/code/Lib.so
+    7f785cd57000-7f785cd83000 r-xp 00000000 fd:01 268057        /usr/lib64/ld-2.28.so
+    7f785ce72000-7f785ce74000 rw-p 00000000 00:00 0
+    7f785ce7a000-7f785ce7d000 r-xp 00000000 fd:01 270225        /usr/lib64/libonion_security.so.1.0.19
+    7f785ce7d000-7f785cf7d000 ---p 00003000 fd:01 270225        /usr/lib64/libonion_security.so.1.0.19
+    7f785cf7d000-7f785cf7e000 rw-p 00003000 fd:01 270225        /usr/lib64/libonion_security.so.1.0.19
+    7f785cf7e000-7f785cf80000 rw-p 00000000 00:00 0
+    7f785cf81000-7f785cf83000 rw-p 00000000 00:00 0
+    7f785cf83000-7f785cf84000 r--p 0002c000 fd:01 268057        /usr/lib64/ld-2.28.so
+    7f785cf84000-7f785cf86000 rw-p 0002d000 fd:01 268057        /usr/lib64/ld-2.28.so
+    7ffd9f23a000-7ffd9f25b000 rw-p 00000000 00:00 0                 [stack]
+    7ffd9f30c000-7ffd9f310000 r--p 00000000 00:00 0                 [vvar]
+    7ffd9f310000-7ffd9f312000 r-xp 00000000 00:00 0                 [vdso]
+    ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                 [vsyscall]
+    ```
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -l Lib.so
+
+    Elf file type is DYN (Shared object file)
+    Entry point 0x550
+    There are 7 program headers, starting at offset 64
+
+    Program Headers:
+    Type           Offset             VirtAddr           PhysAddr
+                    FileSiz            MemSiz              Flags  Align
+    LOAD            0x0000000000000000 0x0000000000000000 0x0000000000000000
+                    0x00000000000006e4 0x00000000000006e4  R E    0x200000
+    LOAD            0x0000000000000e08 0x0000000000200e08 0x0000000000200e08
+                    0x0000000000000228 0x0000000000000230  RW     0x200000
+    DYNAMIC         0x0000000000000e20 0x0000000000200e20 0x0000000000200e20
+                    0x00000000000001c0 0x00000000000001c0  RW     0x8
+    NOTE            0x00000000000001c8 0x00000000000001c8 0x00000000000001c8
+                    0x0000000000000024 0x0000000000000024  R      0x4
+    GNU_EH_FRAME    0x0000000000000660 0x0000000000000660 0x0000000000000660
+                    0x000000000000001c 0x000000000000001c  R      0x4
+    GNU_STACK       0x0000000000000000 0x0000000000000000 0x0000000000000000
+                    0x0000000000000000 0x0000000000000000  RW     0x10
+    GNU_RELRO       0x0000000000000e08 0x0000000000200e08 0x0000000000200e08
+                    0x00000000000001f8 0x00000000000001f8  R      0x1
+
+    Section to Segment mapping:
+    Segment Sections...
+    00     .note.gnu.build-id .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt .init .plt .text .fini .rodata .eh_frame_hdr .eh_frame
+    01     .init_array .fini_array .data.rel.ro .dynamic .got .got.plt .bss
+    02     .dynamic
+    03     .note.gnu.build-id
+    04     .eh_frame_hdr
+    05
+    06     .init_array .fini_array .data.rel.ro .dynamic .got
+    ```
+
 ## 7.3 Address independent code
+### 7.3.1 Trouble with fixed load address
+Shared objects cannot assume their position in the virtual address space of the process at compile time. The difference is that the executable file can basically determine its starting position in the process virtual space, because the executable file is often the first file to be loaded, and it can choose a fixed free address.
+
+### 7.3.2 Load Relocation
+When linking, all references to absolute addresses are not relocated, and this step is postponed until loading. Once the module loading address is determined, that is, the target address is determined, the system will relocate all absolute address references in the program.
+
+However, the method of relocation during loading is not suitable for solving the problems existing in the above shared objects. It is conceivable that after the dynamic link module is loaded and mapped to the virtual space, the instruction part is shared among multiple processes. Because the method of relocation during loading needs to modify the instruction, there is no way to share the same instruction by multiple processes. , Because the instructions are different for each process after being relocated. Of course, the modifiable data part of the dynamic link library has multiple copies for different processes, so they can be solved by relocation while loading.
+
+### 7.3.3 PIC
+Separate the part of the instruction that needs to be modified and put it together with the data part, so that the instruction part can remain unchanged, and the data part can have a copy in each process. This kind of scheme is the technology called Position-independent Code (PIC, Position-independent Code) at present.
+
+Address referece methods:
+* Inner-module data access
+    * The relative position between any instruction and the internal data of the module that it needs to access is fixed, so you only need to add a fixed offset relative to the current instruction to access the internal data of the module.
+
+* Inter-module data access
+    * The data access target address between modules will not be determined until the load. For example, the variable b in the above example is defined in other modules, and the address can be determined only when it is loaded. As we mentioned earlier, to make the code address irrelevant, the basic idea is to put the address-related part in the data segment. Obviously, the addresses of the global variables of these other modules are related to the module loading address.
+    * The ELF approach is to create an array of pointers to these variables in the data segment, also known as the Global Offset Table (GOT). When the code needs to refer to the global variable, it can use the corresponding item in the GOT Indirect reference
+
+* Inner-module call
+    * Because the called function and the caller are in the same module, the relative position between them is fixed, so this situation is relatively simple. For modern systems, the jumps and function calls inside the module can be relative address calls, or register-based relative calls, so there is no need to relocate this type of instruction.
+
+* Inter-module call
+    * The corresponding item in GOT saves the address of the target function. When the module needs to call the target function, it can jump indirectly through the item in GOT
+
+#### GOT
+Module can determine the offset of the module's internal variables relative to the current instruction at compile time, and then we can also determine the offset of the GOT relative to the current instruction at compile time. Determining the position of the GOT is basically the same as the method of accessing the variable a above. By obtaining the PC value and adding an offset, the position of the GOT can be obtained. Then we can get the address of the variable according to the offset of the variable address in GOT. Of course, which variable each address in GOT corresponds to is determined by the compiler. For example, the first address corresponds to variable b, and the second corresponds to variable c. Wait.
+
+* GOT Data
+    * ![](../Images/LinkLoadLibrary/7.3-got-data.png)
+
+* GOT Function
+    * ![](../Images/LinkLoadLibrary/7.3-got-func.png)
+
+```c++
+static int a;
+extern int b;
+extern void ext();
+
+void bar() {
+    a = 1;
+    b = 2;
+}
+
+void foo() {
+    bar();
+    ext();
+}
+```
+
+### 7.3.4 Global variables in shared modules
+TODO
+
+### 7.3.5 Data segment independent position
+```c++
+$gcc –shared pic.c –o pic.so
+```
+The above command will generate a shared object that does not use address-independent code but uses load-time relocation. But as we have analyzed before, if the code is not address-independent, it cannot be shared between multiple processes, so the advantage of saving memory is lost. However, shared objects that are relocated during loading run faster than shared objects that use address-independent code, because it eliminates the need to calculate the current address and indirect address addressing every time global data and functions are accessed in address-independent code.
+
 ## 7.4 Delayed binding (PLT)
 ## 7.5 Dynamic link related structure
 ## 7.6 Steps and implementation of dynamic linking
