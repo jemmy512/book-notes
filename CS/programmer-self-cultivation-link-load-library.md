@@ -819,6 +819,7 @@ $ prog 123
 ## 7.2 Simple dynamic link example
 
 ```c++
+// alice.c
 #include "lib.h"
 
 int main() {
@@ -828,6 +829,7 @@ int main() {
 ```
 
 ```c++
+// bob.c
 #include "lib.h"
 
 int main() {
@@ -837,6 +839,7 @@ int main() {
 ```
 
 ```c++
+// lib.c
 #include "lib.h"
 #include <stdio.h>
 
@@ -845,6 +848,7 @@ void foo(int i) {
 }
 ```
 ```c++
+// lib.h
 #ifndef LIB_H
 #define LIB_H
 
@@ -937,34 +941,43 @@ gcc -o Bob bob.c ./Lib.so
     06     .init_array .fini_array .data.rel.ro .dynamic .got
     ```
 
-## 7.3 Address independent code
+## 7.3 PIC
 ### 7.3.1 Trouble with fixed load address
 Shared objects cannot assume their position in the virtual address space of the process at compile time. The difference is that the executable file can basically determine its starting position in the process virtual space, because the executable file is often the first file to be loaded, and it can choose a fixed free address.
 
-### 7.3.2 Load Relocation
-When linking, all references to absolute addresses are not relocated, and this step is postponed until loading. Once the module loading address is determined, that is, the target address is determined, the system will relocate all absolute address references in the program.
+### 7.3.2 Load Time Relocation
+When linking, all references to `absolute addresses` are not relocated, and this step is postponed until loading. Once the module loading address is determined, that is, the target address is determined, the system will relocate all absolute address references in the program.
 
-However, the method of relocation during loading is not suitable for solving the problems existing in the above shared objects. It is conceivable that after the dynamic link module is loaded and mapped to the virtual space, the instruction part is shared among multiple processes. Because the method of relocation during loading needs to modify the instruction, there is no way to share the same instruction by multiple processes. , Because the instructions are different for each process after being relocated. Of course, the modifiable data part of the dynamic link library has multiple copies for different processes, so they can be solved by relocation while loading.
+* Issue with load time relocation
+    * It is conceivable that after the dynamic link module is loaded and mapped to the virtual space, the instruction part is shared among multiple processes. Because the method of relocation during loading needs to modify the instruction, there is no way to share the same instruction by multiple processes. Because the instructions are different for each process after being relocated. Of course, the modifiable data part of the dynamic link library has multiple copies for different processes, so they can be solved by relocation while loading.
+
+Loading-time relocation is one of the solutions to the absolute address reference in dynamic modules, but it has a big disadvantage that the instruction part cannot be shared among multiple processes, which loses the advantage of dynamic linking to save memory.
+
+Linux and GCC support this loading-time relocation method. We used two GCC parameters "-shared" and "-fPIC" when generating shared objects. If only "-shared" is used, then the output shared object It is to use the method of relocation while loading.
 
 ### 7.3.3 PIC
-Separate the part of the instruction that needs to be modified and put it together with the data part, so that the instruction part can remain unchanged, and the data part can have a copy in each process. This kind of scheme is the technology called Position-independent Code (PIC, Position-independent Code) at present.
+The shared instruction part of the program does not need to be changed due to the change of the load address when loading, so the basic idea is to separate the part of the instruction that needs to be modified and put it together with the data part, so that the instruction part can remain unchanged, and the data part can have a copy in each process. This kind of scheme is the technology called Position-independent Code (PIC).
 
 Address referece methods:
-* Inner-module data access
+1. Inner-module data access
     * The relative position between any instruction and the internal data of the module that it needs to access is fixed, so you only need to add a fixed offset relative to the current instruction to access the internal data of the module.
 
-* Inter-module data access
+2. Inter-module data access
     * The data access target address between modules will not be determined until the load. For example, the variable b in the above example is defined in other modules, and the address can be determined only when it is loaded. As we mentioned earlier, to make the code address irrelevant, the basic idea is to put the address-related part in the data segment. Obviously, the addresses of the global variables of these other modules are related to the module loading address.
     * The ELF approach is to create an array of pointers to these variables in the data segment, also known as the Global Offset Table (GOT). When the code needs to refer to the global variable, it can use the corresponding item in the GOT Indirect reference
 
-* Inner-module call
+3. Inner-module call
     * Because the called function and the caller are in the same module, the relative position between them is fixed, so this situation is relatively simple. For modern systems, the jumps and function calls inside the module can be relative address calls, or register-based relative calls, so there is no need to relocate this type of instruction.
 
-* Inter-module call
+4. Inter-module call
     * The corresponding item in GOT saves the address of the target function. When the module needs to call the target function, it can jump indirectly through the item in GOT
 
 #### GOT
-Module can determine the offset of the module's internal variables relative to the current instruction at compile time, and then we can also determine the offset of the GOT relative to the current instruction at compile time. Determining the position of the GOT is basically the same as the method of accessing the variable a above. By obtaining the PC value and adding an offset, the position of the GOT can be obtained. Then we can get the address of the variable according to the offset of the variable address in GOT. Of course, which variable each address in GOT corresponds to is determined by the compiler. For example, the first address corresponds to variable b, and the second corresponds to variable c. Wait.
+Module can determine the offset of the module's internal variables relative to the current instruction at compile time, and then we can also determine the offset of the GOT relative to the current instruction at compile time. Determining the position of the GOT is basically the same as the method of accessing a variable. By obtaining the PC value and adding an offset, the position of the GOT can be obtained. Then we can get the address of the variable according to the offset of the variable address in GOT. Of course, which variable each address in GOT corresponds to is determined by the compiler. For example, the first address corresponds to variable b, and the second corresponds to variable c. Wait.
+```c++
+GOT addr = (current instruction addr) + (GOT offset)
+variable addr = (GOT addr) + (variable offset)
+```
 
 * GOT Data
     * ![](../Images/LinkLoadLibrary/7.3-got-data.png)
@@ -973,6 +986,7 @@ Module can determine the offset of the module's internal variables relative to t
     * ![](../Images/LinkLoadLibrary/7.3-got-func.png)
 
 ```c++
+// pic.c
 static int a;
 extern int b;
 extern void ext();
@@ -986,21 +1000,392 @@ void foo() {
     bar();
     ext();
 }
+
+```
+
+```c++
+gcc -fPIC -shared pic.so pic.c
+
+[root@VM-16-17-centos code]# objdump -d pic.so
+
+pic.so:     file format elf64-x86-64
+
+0000000000000540 <.plt>:
+540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)        # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
+546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)       # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
+54c:   0f 1f 40 00            nopl   0x0(%rax)
+
+0000000000000550 <bar@plt>:
+550:   ff 25 c2 0a 20 00       jmpq   *0x200ac2(%rip)       # 201018 <bar@@Base+0x2009df>
+556:   68 00 00 00 00         pushq  $0x0
+55b:   e9 e0 ff ff ff            jmpq   540 <.plt>
+
+0000000000000639 <bar>:
+639:   55                      push   %rbp
+63a:   48 89 e5                mov    %rsp,%rbp
+63d:   c7 05 ed 09 20 00 01    movl   $0x1,0x2009ed(%rip)   # 201034 <a>
+644:   00 00 00
+647:   48 8b 05 92 09 20 00    mov    0x200992(%rip),%rax   # 200fe0 <b>
+64e:   c7 00 02 00 00 00       movl   $0x2,(%rax)
+654:   90                      nop
+655:   5d                      pop    %rbp
+656:   c3                      retq
+
+0000000000000657 <foo>:
+657:   55                      push   %rbp
+658:   48 89 e5                mov    %rsp,%rbp
+65b:   b8 00 00 00 00          mov    $0x0,%eax
+660:   e8 eb fe ff ff            callq  550 <bar@plt>
+665:   b8 00 00 00 00          mov    $0x0,%eax
+66a:   e8 f1 fe ff ff            callq  560 <ext@plt>
+66f:   90                      nop
+670:   5d                      pop    %rbp
+671:   c3                      retq
 ```
 
 ### 7.3.4 Global variables in shared modules
-TODO
 
-### 7.3.5 Data segment independent position
+Elf defines global variables in the module as external variables when it compiles the code.
+
+When the shared module is loaded, if a global variable has a copy in the executable file, the dynamic linker will point the corresponding address in the GOT to the copy, so that the variable will actually have only one instance at runtime. If the variable is initialized in the shared module, the dynamic linker also needs to copy the initialization value to the copy of the variable in the main module of the program; if the global variable does not have a copy in the main module of the program, then the corresponding address in the GOT points to internal copy of the variable in the module.
+
+Q: If a global variable G is defined in a lib.so, and both process A and process B use lib.so. When process A changes the value of G, does the G in process B will be affected?
+
+A: No. Because when lib.so is loaded by two processes, its data segment part has independent copies in each process. From this perspective, the global variables in the shared object are actually the same as the global variables defined in the program. Any process accesses only its own copy, and does not affect other processes.
+
+### 7.3.5 Data segment position independent
+```c++
+static int a;
+static int* p = &a;
+```
+
+If there is such a piece of code in a shared object, then the address of pointer p is an absolute address, which points to variable a, and the address of variable a will change as the load address of the shared object changes. So is there any way to solve this problem?
+
+We can use `Load Time Relocation` to solve the problem of absolute address reference in the data segment. For shared objects, if there is an absolute address reference in the data segment, the compiler and linker will generate a relocation table, which contains a relocation entry of type "R_386_RELATIVE" to solve the above problems. When the dynamic linker loads a shared object, if it finds that the shared object has such a relocation entry, the dynamic linker will relocate the shared object.
+
 ```c++
 $gcc –shared pic.c –o pic.so
 ```
-The above command will generate a shared object that does not use address-independent code but uses load-time relocation. But as we have analyzed before, if the code is not address-independent, it cannot be shared between multiple processes, so the advantage of saving memory is lost. However, shared objects that are relocated during loading run faster than shared objects that use address-independent code, because it eliminates the need to calculate the current address and indirect address addressing every time global data and functions are accessed in address-independent code.
+The above command will generate a shared object that does not use PIC but uses load-time relocation. But as we have analyzed before, if the code is not position-independent, it cannot be shared between multiple processes, so the advantage of saving memory is lost. However, shared objects that are relocated during loading run faster than shared objects that use PIC, because it eliminates the need to calculate the current address and indirect address addressing every time global data and functions are accessed in PIC.
 
 ## 7.4 Delayed binding (PLT)
+
+The main reason why dynamic link is slower than static link is that under dynamic link, global and static data access must be complicated GOT positioning, and then indirect addressing; for calls between modules, GOT must be located first, and then indirect jump.
+
+Another reason is that the link work of the dynamic link is completed at runtime, that is, when the program starts to execute, the dynamic linker must perform the link work. As we mentioned above, the dynamic linker will find and load the share objects, and then perform symbol resolution, address relocation, etc.
+
+When we call a function of an external module, the usual way should be to indirectly jump through the corresponding item in the GOT. In order to realize delayed binding, PLT adds another layer of indirect jump in the process. The calling function does not jump directly through GOT, but jumps through a structure called PLT item. Each external function has a corresponding item in the PLT, for example, the address of the item of the bar() function in the PLT is called bar@plt
+
+```c++
+// pic.c
+static int a;
+extern int b;
+extern void ext();
+
+void bar() {
+    a = 1;
+    b = 2;
+}
+
+void foo() {
+    bar();
+    ext();
+}
+
+```
+
+```c++
+gcc -fPIC -shared pic.so pic.c
+
+[root@VM-16-17-centos code]# objdump -d pic.so
+
+pic.so:     file format elf64-x86-64
+
+0000000000000540 <.plt>:
+540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)        # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
+546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)       # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
+54c:   0f 1f 40 00            nopl   0x0(%rax)
+
+0000000000000550 <bar@plt>:
+550:   ff 25 c2 0a 20 00       jmpq   *0x200ac2(%rip)       # 201018 <bar@@Base+0x2009df>
+556:   68 00 00 00 00         pushq  $0x0
+55b:   e9 e0 ff ff ff            jmpq   540 <.plt>
+
+0000000000000639 <bar>:
+639:   55                      push   %rbp
+63a:   48 89 e5                mov    %rsp,%rbp
+63d:   c7 05 ed 09 20 00 01    movl   $0x1,0x2009ed(%rip)   # 201034 <a>
+644:   00 00 00
+647:   48 8b 05 92 09 20 00    mov    0x200992(%rip),%rax   # 200fe0 <b>
+64e:   c7 00 02 00 00 00       movl   $0x2,(%rax)
+654:   90                      nop
+655:   5d                      pop    %rbp
+656:   c3                      retq
+```
+
+![](../Images/LinkLoadLibrary/7.4-got-plt.png)
+
 ## 7.5 Dynamic link related structure
-## 7.6 Steps and implementation of dynamic linking
+
+### 7.5.1 .interp
+```c++
+[root@VM-16-17-centos code]# objdump -s Alice
+
+Alice:     file format elf64-x86-64
+
+Contents of section .interp:
+400238 2f6c6962 36342f6c 642d6c69 6e75782d  /lib64/ld-linux-
+400248 7838362d 36342e73 6f2e3200           x86-64.so.2.
+```
+
+### 7.5.2 .dynamic
+
+.dynamic section stores depended shared objects, the location of the .dynsym (dynamic link symbol table), the .rel.dyn .rel.plt (location of the dynamic link relocation table), the address of the shared object initialization code, etc.
+
+```c++
+typedef struct dynamic{
+  Elf32_Sword d_tag;
+  union{
+    Elf32_Sword d_val;
+    Elf32_Addr  d_ptr;
+  } d_un;
+} Elf32_Dyn;
+```
+
+d_tag | val |
+--- | ---
+DT_SYMTAB | d_ptr the address of .dynsym
+DT_STRTAB | d_ptr the address of .dynstr
+DT_STRSZ | the size of .dynstr
+
+```c++
+// Display the dynamic section (if present)
+[root@VM-16-17-centos code]# readelf -d Alice
+
+Dynamic section at offset 0xe00 contains 25 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [./Lib.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x4004e0
+ 0x000000000000000d (FINI)               0x400698
+ 0x0000000000000019 (INIT_ARRAY)         0x600df0
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x600df8
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x400298
+ 0x0000000000000005 (STRTAB)             0x4003a0
+ 0x0000000000000006 (SYMTAB)             0x4002c8
+ 0x000000000000000a (STRSZ)              147 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x601000
+ 0x0000000000000002 (PLTRELSZ)           24 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0x4004c8
+ 0x0000000000000007 (RELA)               0x400468
+ 0x0000000000000008 (RELASZ)             96 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x000000006ffffffe (VERNEED)            0x400448
+ 0x000000006fffffff (VERNEEDNUM)         1
+ 0x000000006ffffff0 (VERSYM)             0x400434
+ 0x0000000000000000 (NULL)               0x0
+```
+
+### 7.5.3 .dynsym
+
+".Dynsym" only saves symbols related to dynamic linking, and does not save the symbols inside those modules, such as module private variables. In many cases, a dynamically linked module has two tables, ".dynsym" and ".symtab". ".symtab" often saves all symbols, including the symbols in ".dynsym".
+
+```c++
+[root@VM-16-17-centos code]# readelf -sD Lib.so
+Symbol table of `.gnu.hash' for image:
+  Num Buc:    Value          Size   Type   Bind Vis      Ndx Name
+    7   0: 0000000000201030     0 NOTYPE  GLOBAL DEFAULT  21 _edata
+    8   0: 0000000000000609    46 FUNC    GLOBAL DEFAULT  11 foo
+    9   0: 0000000000201038     0 NOTYPE  GLOBAL DEFAULT  22 _end
+   10   1: 0000000000201030     0 NOTYPE  GLOBAL DEFAULT  22 __bss_start
+```
+
+### 7.5.3 .rel.dyn .rel.plt
+
+The dynamically linked executable file uses the PIC method, but this cannot change the nature of its need for relocation. For dynamic linking, if a shared object is not compiled in PIC mode, then there is no doubt that it needs to be relocated at load time; if a shared object is compiled in PIC mode, then it also needs to be relocated at load time, but the load time can be delayed to run time.
+
+For executable files or shared objects using PIC technology, although their code section do not need to be relocated (because the address is irrelevant), the data section also contains references to absolute addresses, because the absolute address-related parts in the code section are being separated, it becomes GOT, and GOT is actually part of the data section. In addition to GOT, the data section may also contain absolute addresses reference.
+
+```c++
+[root@VM-16-17-centos code]# readelf -r Lib.so
+
+Relocation section '.rela.dyn' at offset 0x400 contains 7 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+000000200e08  000000000008 R_X86_64_RELATIVE                    600
+000000200e10  000000000008 R_X86_64_RELATIVE                    5c0
+000000200e18  000000000008 R_X86_64_RELATIVE                    200e18
+000000200fe0  000100000006 R_X86_64_GLOB_DAT 0000000000000000 _ITM_deregisterTMClone + 0
+000000200fe8  000300000006 R_X86_64_GLOB_DAT 0000000000000000 __gmon_start__ + 0
+000000200ff0  000400000006 R_X86_64_GLOB_DAT 0000000000000000 _ITM_registerTMCloneTa + 0
+000000200ff8  000600000006 R_X86_64_GLOB_DAT 0000000000000000 __cxa_finalize@GLIBC_2.2.5 + 0
+
+Relocation section '.rela.plt' at offset 0x4a8 contains 3 entries:
+  Offset          Info           Type           Sym. Value    Sym. Name + Addend
+000000201018  000200000007 R_X86_64_JUMP_SLO 0000000000000000 printf@GLIBC_2.2.5 + 0
+000000201020  000500000007 R_X86_64_JUMP_SLO 0000000000000000 sleep@GLIBC_2.2.5 + 0
+000000201028  000600000007 R_X86_64_JUMP_SLO 0000000000000000 __cxa_finalize@GLIBC_2.2.5 + 0
+```
+
+```c++
+[root@VM-16-17-centos code]# readelf -S Lib.so
+There are 28 section headers, starting at offset 0x1948:
+
+Section Headers:
+  [Nr] Name              Type             Address           Offset
+       Size              EntSize          Flags  Link  Info  Align
+  [ 3] .dynsym           DYNSYM           0000000000000228  00000228
+       0000000000000108  0000000000000018   A       4     1     8
+  [ 4] .dynstr           STRTAB           0000000000000330  00000330
+       0000000000000094  0000000000000000   A       0     0     1
+  [ 7] .rela.dyn         RELA             0000000000000400  00000400
+       00000000000000a8  0000000000000018   A       3     0     8
+  [ 8] .rela.plt         RELA             00000000000004a8  000004a8
+       0000000000000048  0000000000000018  AI       3    21     8
+  [10] .plt              PROGBITS         0000000000000510  00000510
+       0000000000000040  0000000000000010  AX       0     0     16
+  [19] .dynamic          DYNAMIC          0000000000200e20  00000e20
+       00000000000001c0  0000000000000010  WA       4     0     8
+  [20] .got              PROGBITS         0000000000200fe0  00000fe0
+       0000000000000020  0000000000000008  WA       0     0     8
+  [21] .got.plt          PROGBITS         0000000000201000  00001000
+       0000000000000030  0000000000000008  WA       0     0     8
+Key to Flags:
+  W (write), A (alloc), X (execute), M (merge), S (strings), I (info),
+  L (link order), O (extra OS processing required), G (group), T (TLS),
+  C (compressed), x (unknown), o (OS specific), E (exclude),
+  l (large), p (processor specific)
+```
+
+![](../Images/LinkLoadLibrary/7.5.3.png)
+
+If an ELF file is compiled in PIC mode (dynamically linked executable files are generally PIC), and an external function bar is called, bar will appear in ".rel.plt"; and if it is compiled not in PIC Mode, then bar will appear in ".rel.dyn"
+
+
+### 7.5.4 Headp Stack Initialization
+
+```c++
+typedef struct {
+    unint32_t       a_type;
+    union {
+        uint32_t    a_val;
+    } a_un;
+} Elf32_auxv_t;
+
+#define AT_NULL   0 /* end of vector */
+#define AT_IGNORE 1 /* entry should be ignored */
+#define AT_EXECFD 2 /* file descriptor of program */
+#define AT_PHDR   3 /* program headers for program */
+#define AT_PHENT  4 /* size of program header entry */
+#define AT_PHNUM  5 /* number of program headers */
+#define AT_PAGESZ 6 /* system page size */
+#define AT_BASE   7 /* base address of interpreter */
+#define AT_FLAGS  8 /* flags */
+#define AT_ENTRY  9 /* entry point of program */
+```
+
+![](../Images/LinkLoadLibrary/7.5.4-process-stack-in-dl.png)
+
+## 7.6 Implementation of dynamic linking
+
+### 7.6.1 Dynamic linker bootstrapping
+
+First, the dynamic linker itself cannot depend on any other shared objects; secondly, the relocation of global and static variables required by the dynamic linker itself is done by itself.
+
+For the first condition, we can control it artificially, and ensure that no system library or runtime library is used when writing the dynamic linker; for the second condition, the dynamic linker must have a very delicate code at startup to complete this Hard work without using global and static variables. This kind of boot code with certain restrictions is often called **Bootstrap**.
+
+### 7.6.2 Load shared objects
+
+```c++
+// -Xlinker -rpath ./ linker find the shared objects in pwd
+gcc main.c b1.so b2.so -o main -Xlinker -rpath ./
+```
+
+In the ".dynamic" section, one type of entry is **DT_NEEDED**, which refers to the shared object on which the executable file (or shared object) depends. As a result, the linker can list all the shared objects required by the executable file and put the names of these shared objects into a load set. Then the linker starts to take the name of a required shared object from the collection, opens the file after finding the corresponding file, reads the corresponding ELF file header and ".dynamic" section, and then transfers its corresponding code and data segments Mapped to the process space.
+
+The phenomenon that a global symbol in a shared object is covered by a global symbol of the same name in another shared object is called **Global Symbol Interpose**.
+
+Linux handles Global Symbol Interpose: When a symbol needs to be added to the global symbol table, if the same symbol name already exists, the added symbol will be ignored. As you can see from the loading sequence of the dynamic linker, it is loaded in breadth-first order
+
+### 7.6.3 Relocation and Initialization
+
+The dynamic linker starts to traverse the executable file and the relocation table of each shared object again, and relcoate their GOT/PLT that needs to be relocated. Because at this time the dynamic linker already has the global symbol table of the process.
+
+After the relocation, if a shared object has a ".init" section, the dynamic linker will execute the code in the ".init" section to implement the unique initialization process of the shared object, such as the most common, The construction of C++ global/static objects needs to be initialized by ".init". Correspondingly, there may be a ".finit" section in the shared object, and the code in the ".finit" section will be executed when the process exits, which can be used to implement operations like C++ global object destructuring.
+
+If the executable file of the process also has an ".init" section, the dynamic linker will not execute it, because the ".init" and ".finit" sections in the executable file are executed by the program initialization code.
+
+### 7.6.4 Linux Dynamic Linker
+
+Path: glibc-2.3.1/elf/rtld.c _dl_start (void *arg)
+_dl_start -> _dl_start_final -> _dl_sysdep_start -> _dl_main
+
+For dynamically linked executable files, the kernel will analyze its dynamic linker address (in the ".interp" section), map the dynamic linker to the process address space, and then transfer control to the dynamic linker.
+
+In fact, the Linux kernel does not care whether the target ELF file is executable when executing execve() (file header e_type is ET_EXEC or ET_DYN), it simply loads the file according to the description in the program header table and then transfers the control to the ELF entry Address (without ".interp" is the e_entry of the ELF file; if there is ".interp", it is the e_entry of the dynamic linker) For dynamically linked executable files, the kernel will analyze its dynamic linker address (in ".interp" Paragraph), map the dynamic linker to the process address space, and then transfer control to the dynamic linker
+
 ## 7.7 Explicit runtime linking
+```c++
+#include <dlfcn.h>
+void *dlopen(const char *filename, int flag); // RTLD_GLOBAL, RTLD_NOW, RTLD_LAZY
+void *dlsym(void *handle, char *symbol);
+int dlclose (void *handle);
+const char *dlerror(void);
+```
+
+Dynamic libraries find order:
+* LD_LIBRARY_PATH
+* /etc/ld.so.cache
+* /lib、/usr/lib
+
+If there is a dependency relationship between the loaded modules, such as module A and module B, the programmer needs to manually load the dependent modules, for example, load B first, then load A.
+
+The value returned by **dlsym** has different meanings for different types of symbols:
+* If the symbol is a function, then it returns the address of the function
+* If it is a variable, it returns the address of the variable
+* If the symbol is a constant, then it returns the value of the constant
+
+dlopen uses Load Ordering while dlsym uses Dependency Ordering:
+* When multiple symbols with the same name conflict, the symbol loaded first takes precedence. We call this priority method **Load Ordering**.
+* **Dependency Ordering**: take the shared object opened by dlopen() as the root node, and perform breadth-first traversal of all dependent shared objects until the symbol is found
+
+```c++
+// dlopen.c
+
+#include <stdio.h>
+#include <dlfcn.h>
+
+int main(int argc, char* argv[]) {
+    char* error;
+    double (*sinFn)(double);
+    void* handle = dlopen(argv[1], RTLD_NOW);
+
+    if (handle == NULL) {
+        printf("Open library %s error: %s\n", argv[1], dlerror());
+        return -1;
+    }
+
+    sinFn = dlsym(handle,"sin");
+    if ((error = dlerror()) != NULL ) {
+        printf("Symbol sin not found: %s\n", error);
+        goto exit_runso;
+    }
+
+    printf("%f\n", sinFn(3.1415926 / 2));
+
+    exit_runso:
+        dlclose(handle);
+}
+```
+
+```c++
+gcc -o dlopen dlopen.c -ldl
+./dlopen /lib64/libm.so.6
+```
 
 # 8 Organization of Linux shared libraries
 ## 8.1 Shared library version
