@@ -654,7 +654,7 @@ Instruction | Description
 call Label | Procedure call
 call *Operand | Procedure call
 leave | Prepare stack for return
-ret | Return from call
+ret | get return function address from stack and jump to
 
 * leave
     ```
@@ -2301,13 +2301,14 @@ gcc -o p2 main2.c ./libvector.so
     * **Core dump file**.
 
 ## 7.4 Relocatable Object Files
+* [Executable and Linkable Format (ELF)](http://www.skyfree.org/linux/references/ELF_Format.pdf)
 * ![](../Images/CSAPP/7.4-relocatable-file.png)
 * The **ELF header** begins with a 16-byte sequence that describes the `word size` and `byte ordering` of the system that generated the file.
     * The rest of the ELF header contains `size of the ELF header`, the `object file type` (e.g., relocatable, executable, or shared), the `machine type` (e.g., IA32), the `file offset` of the section header table, and the `size and number of entries` in the section header table.
     * The locations and sizes of the various sections are described by the **section header table**, which contains a fixed sized entry for each section in the object file.
 * **.rodata**: the format strings in printf statements, jump tables for switch statements
 * **.data**: Initialized global C variables
-* **.bss**: Uninitialized global C variables. It is merely a place holder. Object file formats distinguish between initialized and uninitialized variables for space efficiency: uninitialized variables do not have to occupy any actual disk space in the object file.
+* **.bss** (Block Started by Symbol): Uninitialized global C variables. It is merely a place holder. Object file formats distinguish between initialized and uninitialized variables for space efficiency: uninitialized variables do not have to occupy any actual disk space in the object file.
 * **.symtab**: A symbol table with information about functions and global variables that are defined and referenced in the program. It does not contain entries for local variables.
 * **.rel.text**: A list of locations in the text section that will need to be modified when the linker combines this object file with others.
     * In general, any instruction that calls an external function or references a global variable will need to be modified. On the other hand, instructions that call local functions do not need to be modified.
@@ -2327,15 +2328,14 @@ gcc -o p2 main2.c ./libvector.so
 * Symbol tables are built by assemblers, using symbols exported by the compiler into the assembly-language .s file.
 * Symbol Table Entry
     ```c++
-    typedef struct {
-        int name;       /* String table offset */
-        int value;      /* Section offset, or VM address */
-        int size;       /* Object size in bytes */
-        char type:4,    /* Data, func, section, or src file name (4 bits) */
-            binding:4;  /* Local or global (4 bits) */
-        char reserved;  /* Unused */
-        char section;   /* Section header index, ABS, UNDEF, or CMMOM */
-    } Elf_Symbol;
+    typedef struct elf64_sym {
+        Elf64_Word    st_name;  /* Symbol name, index in string tbl */
+        Elf64_Addr    st_value; /* Value of the symbol */
+        Elf64_Xword   st_size;  /* Associated symbol size */
+        unsigned char st_info;  /* Type and binding attributes: STB_LOCAL, STB_GLOBAL, STB_WEAK | STT_NOTYPE, STT_OBJECT, STT_FUNC */
+        Elf64_Half    st_shndx; /* Associated section index: SHN_ABS, SHN_COMMON, SHN_UNDEF */
+        unsigned char st_other; /* No defined meaning, 0 */
+    } Elf64_Sym;
     ```
 
 ## 7.6 Symbol Resolution
@@ -2456,6 +2456,112 @@ gcc -o p2 main2.c ./libvector.so
     * The startup code sets up the stack and passes control to the main routine of the new program.
 
 * **atexit** routine appends a list of routines that should be called when the application terminates normally.
+
+* _start
+    ```c++
+    // Glibc-2.3.1/sysdeps/x86_64/elf/start.S
+    _start:
+        xorq %rbp, %rbp
+
+        /* Extract the arguments as encoded on the stack and set up
+        the arguments for
+        __libc_start_main (int (*main) (int, char **, char **),
+            int argc, char *argv,
+            void (*init) (void), void (*fini) (void),
+            void (*rtld_fini) (void), void *stack_end).
+        The arguments are passed via registers and on the stack:
+        main:        %rdi
+        argc:        %rsi
+        argv:        %rdx
+        init:        %rcx
+        fini:        %r8
+        rtld_fini:    %r9
+        stack_end:    stack. */
+
+        movq %rdx, %r9  /* Address of the shared library termination function. */
+        popq %rsi       /* Pop the argument count. */
+        movq %rsp, %rdx /* argv starts just at the current stack top. */
+        andq  $~15, %rsp/* Align the stack to a 16 byte boundary to follow the ABI. */
+        pushq %rax      /* Push garbage because we push 8 more bytes. */
+        pushq %rsp      /* Provide the highest stack address to the user code (for stacks which grow downwards). */
+
+        movq $_fini, %r8/* Pass address of our own entry points to .fini and .init. */
+        movq $_init, %rcx
+
+        movq $BP_SYM (main), %rdi
+
+        /* Call the user's main function, and exit with its value. But let the libc call main.      */
+        call BP_SYM (__libc_start_main)
+
+        hlt            /* Crash if somehow `exit' does return. */
+
+    /* Define a symbol for the first piece of initialized data. */
+        .data
+        .globl __data_start
+    __data_start:
+        .long 0
+        .weak data_start
+        data_start = __data_start
+    ```
+
+* __libc_start_main
+    ```c++
+    // glibc-2.3.1/sysdeps/generic/libc-start.c
+    int BP_SYM (__libc_start_main) (
+        int (*main) (int, char **, char **),
+        int argc,
+        char ** ubp_av,
+        void (*init) (void),
+        void (*fini) (void),
+        void (*rtld_fini) (void),
+        void * stack_end)
+    {
+        char ** ubp_ev = &ubp_av[argc + 1];
+
+        /* Result of the 'main' function.  */
+        int result;
+        __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
+
+        INIT_ARGV_and_ENVIRON;
+
+        /* Store the lowest stack address.  */
+        __libc_stack_end = stack_end;
+
+        __pthread_initialize_minimal ();
+
+        /* Register the destructor of the dynamic linker if there is any.  */
+        if (__builtin_expect (rtld_fini != NULL, 1))
+            __cxa_atexit ((void (*) (void *)) rtld_fini, NULL, NULL);
+
+        /* Call the initializer of the libc.  This is only needed here if we
+            are compiling for the static library in which case we haven't
+            run the constructors in `_dl_start_user'.  */
+        __libc_init_first (argc, argv, __environ);
+
+        __cxa_atexit ((void (*) (void *)) fini, NULL, NULL);
+
+        (*init) ();
+
+        result = main (argc, argv, __environ);
+
+        exit(result);
+    }
+
+    void exit (int status)
+    {
+        while (__exit_funcs != NULL) {
+            __exit_funcs();
+            __exit_funcs = __exit_funcs->next;
+        }
+        _exit (status);
+    }
+
+    _exit:
+        movl    4(%esp), %ebx
+        movl    $__NR_exit, %eax
+        int     $0x80
+        hlt
+    ```
 
 * ![](../Images/CSAPP/7.9-linux-crt.png)
 
