@@ -497,7 +497,7 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
     * ld -verbose
     * /usr/lib/ldscripts/
     * elf_i386.x, elf_i386.xs
-    * ld –T my-link.script
+    * ld -T my-link.script
 
 * The Tiny Program
 
@@ -545,8 +545,8 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
     ```
 
     ```
-    gcc –c –fno-builtin nomain.c
-    ld –static –T nomain.lds –o nomain nomain.o
+    gcc -c -fno-builtin nomain.c
+    ld -static -T nomain.lds -o nomain nomain.o
     ```
 
 * **Introduction to ld link script syntax**
@@ -581,7 +581,7 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
 
 * **Page Fault**
 
-## 6.4 Process virtual memory space distribution
+## 6.4 Process virtual memory space layout
 
 ### 6.4.1 ELF Linking View and Execution View
 
@@ -735,24 +735,24 @@ Segment Sections...
 ```
 
 ```c++
-[root@VM-16-17-centos code]# ./sleep.elf &
-[1] 3255230
-[root@VM-16-17-centos code]# cat /proc/3255230/maps
-
-VStart      VEnd        Permission   OffSet  Device NodeNum         Path
-00400000-00401000         r-xp      00000000 fd:01 665751   /root/code/sleep.elf
-00600000-00601000         r--p      00000000 fd:01 665751   /root/code/sleep.elf
-00601000-00602000         rw-p      00001000 fd:01 665751   /root/code/sleep.elf
-7fec6396a000-7fec6396d000 r-xp      00000000 fd:01 268307   /usr/lib64/libdl-2.28.so
-7fec64159000-7fec6415a000 rw-p      00003000 fd:01 270225   /usr/lib64/libonion_security.so.1.0.19
-7fec6415a000-7fec6415c000 rw-p      00000000 00:00 0
-7fec6415d000-7fec6415f000 rw-p      00000000 00:00 0
-7fec6415f000-7fec64160000 r--p      0002c000 fd:01 268057   /usr/lib64/ld-2.28.so
-7fec64160000-7fec64162000 rw-p      0002d000 fd:01 268057   /usr/lib64/ld-2.28.so
-7fffa4e1c000-7fffa4e3d000   rw-p      00000000 00:00 0        [stack]
-7fffa4f7e000-7fffa4f82000   r--p      00000000 00:00 0        [vvar]
-7fffa4f82000-7fffa4f84000   r-xp      00000000 00:00 0        [vdso]
-ffffffffff600000-ffffffffff601000   r-xp      00000000 00:00 0        [vsyscall]
+[root@VM-16-17-centos code]# cat /proc/3983804/maps
+VStart      VEnd        Permission  OffSet  Device NodeNum         Path
+00400000    -00401000     r-xp      00000000 fd:01 665751       /root/code/sleep.elf
+00600000    -00601000     r--p      00000000 fd:01 665751       /root/code/sleep.elf
+00601000    -00602000     rw-p      00001000 fd:01 665751       /root/code/sleep.elf
+7fbdd30d3000-7fbdd30d6000 r-xp      00000000 fd:01 268307       /usr/lib64/libdl-2.28.so
+7fbdd32d7000-7fbdd3493000 r-xp      00000000 fd:01 268071       /usr/lib64/libc-2.28.so
+7fbdd3698000-7fbdd369c000 rw-p      00000000 00:00 0
+7fbdd369c000-7fbdd36c8000 r-xp      00000000 fd:01 268057       /usr/lib64/ld-2.28.so
+7fbdd37b6000-7fbdd37b9000 rw-p      00000000 00:00 0
+7fbdd37bf000-7fbdd37c2000 r-xp      00000000 fd:01 270225       /usr/lib64/libonion_security.so.1.0.19
+7fbdd38c3000-7fbdd38c5000 rw-p      00000000 00:00 0
+7fbdd38c6000-7fbdd38c8000 rw-p      00000000 00:00 0
+7fbdd38c8000-7fbdd38c9000 r--p      0002c000 fd:01 268057       /usr/lib64/ld-2.28.so
+7ffefd7ed000-7ffefd80e000 rw-p      00000000 00:00 0            [stack]
+7ffefd8b4000-7ffefd8b8000 r--p      00000000 00:00 0            [vvar]
+7ffefd8b8000-7ffefd8ba000 r-xp      00000000 00:00 0            [vdso]
+ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0         [vsyscall]
 ```
 
 ![](../Images/LinkLoadLibrary/6.4-segement-section.png)
@@ -865,7 +865,7 @@ gcc -o Alice alice.c ./Lib.so
 gcc -o Bob bob.c ./Lib.so
 ```
 
-* Address space distribution during runtime of dynamic linker
+* Address space layout during runtime of dynamic linker
 
     ```c++
     [root@VM-16-17-centos code]# bash: ./Bob &
@@ -873,18 +873,13 @@ gcc -o Bob bob.c ./Lib.so
     [1]   Exit 127                ./bob
     [root@VM-16-17-centos code]# Printing from Lib.so 3
     [root@VM-16-17-centos code]# cat /proc/3532186/maps
+    VStart          VEnd Permission OffSet Device NodeNum         Path
             00400000-00401000 r-xp 00000000 fd:01 665758        /root/code/Bob
             00600000-00601000 r--p 00000000 fd:01 665758        /root/code/Bob
             00601000-00602000 rw-p 00001000 fd:01 665758        /root/code/Bob
             02141000-02162000 rw-p 00000000 00:00 0             [heap]
     7f785c58c000-7f785c58f000 r-xp 00000000 fd:01 268307        /usr/lib64/libdl-2.28.so
-    7f785c58f000-7f785c78e000 ---p 00003000 fd:01 268307        /usr/lib64/libdl-2.28.so
-    7f785c78e000-7f785c78f000 r--p 00002000 fd:01 268307        /usr/lib64/libdl-2.28.so
-    7f785c78f000-7f785c790000 rw-p 00003000 fd:01 268307        /usr/lib64/libdl-2.28.so
     7f785c790000-7f785c94c000 r-xp 00000000 fd:01 268071        /usr/lib64/libc-2.28.so
-    7f785c94c000-7f785cb4b000 ---p 001bc000 fd:01 268071        /usr/lib64/libc-2.28.so
-    7f785cb4b000-7f785cb4f000 r--p 001bb000 fd:01 268071        /usr/lib64/libc-2.28.so
-    7f785cb4f000-7f785cb51000 rw-p 001bf000 fd:01 268071        /usr/lib64/libc-2.28.so
     7f785cb51000-7f785cb55000 rw-p 00000000 00:00 0
     7f785cb55000-7f785cb56000 r-xp 00000000 fd:01 665756        /root/code/Lib.so
     7f785cb56000-7f785cd55000 ---p 00001000 fd:01 665756        /root/code/Lib.so
@@ -893,16 +888,14 @@ gcc -o Bob bob.c ./Lib.so
     7f785cd57000-7f785cd83000 r-xp 00000000 fd:01 268057        /usr/lib64/ld-2.28.so
     7f785ce72000-7f785ce74000 rw-p 00000000 00:00 0
     7f785ce7a000-7f785ce7d000 r-xp 00000000 fd:01 270225        /usr/lib64/libonion_security.so.1.0.19
-    7f785ce7d000-7f785cf7d000 ---p 00003000 fd:01 270225        /usr/lib64/libonion_security.so.1.0.19
-    7f785cf7d000-7f785cf7e000 rw-p 00003000 fd:01 270225        /usr/lib64/libonion_security.so.1.0.19
     7f785cf7e000-7f785cf80000 rw-p 00000000 00:00 0
     7f785cf81000-7f785cf83000 rw-p 00000000 00:00 0
     7f785cf83000-7f785cf84000 r--p 0002c000 fd:01 268057        /usr/lib64/ld-2.28.so
     7f785cf84000-7f785cf86000 rw-p 0002d000 fd:01 268057        /usr/lib64/ld-2.28.so
-    7ffd9f23a000-7ffd9f25b000 rw-p 00000000 00:00 0                 [stack]
-    7ffd9f30c000-7ffd9f310000 r--p 00000000 00:00 0                 [vvar]
-    7ffd9f310000-7ffd9f312000 r-xp 00000000 00:00 0                 [vdso]
-    ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                 [vsyscall]
+    7ffd9f23a000-7ffd9f25b000 rw-p 00000000 00:00 0             [stack]
+    7ffd9f30c000-7ffd9f310000 r--p 00000000 00:00 0             [vvar]
+    7ffd9f310000-7ffd9f312000 r-xp 00000000 00:00 0             [vdso]
+    ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0     [vsyscall]
     ```
 
     ```c++
@@ -976,7 +969,7 @@ Address referece methods:
 Module can determine the offset of the module's internal variables relative to the current instruction at compile time, and then we can also determine the offset of the GOT relative to the current instruction at compile time. Determining the position of the GOT is basically the same as the method of accessing a variable. By obtaining the PC value and adding an offset, the position of the GOT can be obtained. Then we can get the address of the variable according to the offset of the variable address in GOT. Of course, which variable each address in GOT corresponds to is determined by the compiler. For example, the first address corresponds to variable b, and the second corresponds to variable c. Wait.
 ```c++
 GOT addr = (current instruction addr) + (GOT offset)
-variable addr = (GOT addr) + (variable offset)
+variable addr = (GOT addr) + (variable offset in GOT)
 ```
 
 * GOT Data
@@ -1010,37 +1003,42 @@ gcc -fPIC -shared pic.so pic.c
 
 pic.so:     file format elf64-x86-64
 
+Disassembly of section .init:
+
+0000000000000520 <_init>:
+ 520:   f3 0f 1e fa             endbr64
+ 524:   48 83 ec 08             sub    $0x8,%rsp
+ 528:   48 8b 05 b9 0a 20 00    mov    0x200ab9(%rip),%rax  # 200fe8 <__gmon_start__>
+ 52f:   48 85 c0                test   %rax,%rax
+ 532:   74 02                   je     536 <_init+0x16>
+ 534:   ff d0                   callq  *%rax
+ 536:   48 83 c4 08             add    $0x8,%rsp
+ 53a:   c3                      retq
+
+Disassembly of section .plt:
+
 0000000000000540 <.plt>:
-540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)        # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
-546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)       # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
-54c:   0f 1f 40 00            nopl   0x0(%rax)
+ 540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)       # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
+ 546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)      # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
+ 54c:   0f 1f 40 00             nopl   0x0(%rax)
 
 0000000000000550 <bar@plt>:
-550:   ff 25 c2 0a 20 00       jmpq   *0x200ac2(%rip)       # 201018 <bar@@Base+0x2009df>
-556:   68 00 00 00 00         pushq  $0x0
-55b:   e9 e0 ff ff ff            jmpq   540 <.plt>
+ 550:   ff 25 c2 0a 20 00       jmpq   *0x200ac2(%rip)      # 201018 <bar@@Base+0x2009df>
+ 556:   68 00 00 00 00          pushq  $0x0
+ 55b:   e9 e0 ff ff ff          jmpq   540 <.plt>
+
+Disassembly of section .text:
 
 0000000000000639 <bar>:
-639:   55                      push   %rbp
-63a:   48 89 e5                mov    %rsp,%rbp
-63d:   c7 05 ed 09 20 00 01    movl   $0x1,0x2009ed(%rip)   # 201034 <a>
-644:   00 00 00
-647:   48 8b 05 92 09 20 00    mov    0x200992(%rip),%rax   # 200fe0 <b>
-64e:   c7 00 02 00 00 00       movl   $0x2,(%rax)
-654:   90                      nop
-655:   5d                      pop    %rbp
-656:   c3                      retq
-
-0000000000000657 <foo>:
-657:   55                      push   %rbp
-658:   48 89 e5                mov    %rsp,%rbp
-65b:   b8 00 00 00 00          mov    $0x0,%eax
-660:   e8 eb fe ff ff            callq  550 <bar@plt>
-665:   b8 00 00 00 00          mov    $0x0,%eax
-66a:   e8 f1 fe ff ff            callq  560 <ext@plt>
-66f:   90                      nop
-670:   5d                      pop    %rbp
-671:   c3                      retq
+ 639:   55                      push   %rbp
+ 63a:   48 89 e5                mov    %rsp,%rbp
+ 63d:   c7 05 ed 09 20 00 01    movl   $0x1,0x2009ed(%rip)  # 201034 <a>
+ 644:   00 00 00
+ 647:   48 8b 05 92 09 20 00    mov    0x200992(%rip),%rax  # 200fe0 <b>
+ 64e:   c7 00 02 00 00 00       movl   $0x2,(%rax)
+ 654:   90                      nop
+ 655:   5d                      pop    %rbp
+ 656:   c3                      retq
 ```
 
 ### 7.3.4 Global variables in shared modules
@@ -1064,7 +1062,7 @@ If there is such a piece of code in a shared object, then the address of pointer
 We can use `Load Time Relocation` to solve the problem of absolute address reference in the data segment. For shared objects, if there is an absolute address reference in the data segment, the compiler and linker will generate a relocation table, which contains a relocation entry of type "R_386_RELATIVE" to solve the above problems. When the dynamic linker loads a shared object, if it finds that the shared object has such a relocation entry, the dynamic linker will relocate the shared object.
 
 ```c++
-$gcc –shared pic.c –o pic.so
+$gcc -shared pic.c -o pic.so
 ```
 The above command will generate a shared object that does not use PIC but uses load-time relocation. But as we have analyzed before, if the code is not position-independent, it cannot be shared between multiple processes, so the advantage of saving memory is lost. However, shared objects that are relocated during loading run faster than shared objects that use PIC, because it eliminates the need to calculate the current address and indirect address addressing every time global data and functions are accessed in PIC.
 
@@ -1101,26 +1099,42 @@ gcc -fPIC -shared pic.so pic.c
 
 pic.so:     file format elf64-x86-64
 
+Disassembly of section .init:
+
+0000000000000520 <_init>:
+ 520:   f3 0f 1e fa             endbr64
+ 524:   48 83 ec 08             sub    $0x8,%rsp
+ 528:   48 8b 05 b9 0a 20 00    mov    0x200ab9(%rip),%rax  # 200fe8 <__gmon_start__>
+ 52f:   48 85 c0                test   %rax,%rax
+ 532:   74 02                   je     536 <_init+0x16>
+ 534:   ff d0                   callq  *%rax
+ 536:   48 83 c4 08             add    $0x8,%rsp
+ 53a:   c3                      retq
+
+Disassembly of section .plt:
+
 0000000000000540 <.plt>:
-540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)        # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
-546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)       # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
-54c:   0f 1f 40 00            nopl   0x0(%rax)
+ 540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)       # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
+ 546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)      # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
+ 54c:   0f 1f 40 00             nopl   0x0(%rax)
 
 0000000000000550 <bar@plt>:
-550:   ff 25 c2 0a 20 00       jmpq   *0x200ac2(%rip)       # 201018 <bar@@Base+0x2009df>
-556:   68 00 00 00 00         pushq  $0x0
-55b:   e9 e0 ff ff ff            jmpq   540 <.plt>
+ 550:   ff 25 c2 0a 20 00       jmpq   *0x200ac2(%rip)      # 201018 <bar@@Base+0x2009df>
+ 556:   68 00 00 00 00          pushq  $0x0
+ 55b:   e9 e0 ff ff ff          jmpq   540 <.plt>
+
+Disassembly of section .text:
 
 0000000000000639 <bar>:
-639:   55                      push   %rbp
-63a:   48 89 e5                mov    %rsp,%rbp
-63d:   c7 05 ed 09 20 00 01    movl   $0x1,0x2009ed(%rip)   # 201034 <a>
-644:   00 00 00
-647:   48 8b 05 92 09 20 00    mov    0x200992(%rip),%rax   # 200fe0 <b>
-64e:   c7 00 02 00 00 00       movl   $0x2,(%rax)
-654:   90                      nop
-655:   5d                      pop    %rbp
-656:   c3                      retq
+ 639:   55                      push   %rbp
+ 63a:   48 89 e5                mov    %rsp,%rbp
+ 63d:   c7 05 ed 09 20 00 01    movl   $0x1,0x2009ed(%rip)  # 201034 <a>
+ 644:   00 00 00
+ 647:   48 8b 05 92 09 20 00    mov    0x200992(%rip),%rax  # 200fe0 <b>
+ 64e:   c7 00 02 00 00 00       movl   $0x2,(%rax)
+ 654:   90                      nop
+ 655:   5d                      pop    %rbp
+ 656:   c3                      retq
 ```
 
 ![](../Images/LinkLoadLibrary/7.4-got-plt.png)
@@ -1128,6 +1142,9 @@ pic.so:     file format elf64-x86-64
 ## 7.5 Dynamic link related structure
 
 ### 7.5.1 .interp
+
+The path of dynamic linker.
+
 ```c++
 [root@VM-16-17-centos code]# objdump -s Alice
 
@@ -1152,12 +1169,21 @@ typedef struct dynamic{
 } Elf32_Dyn;
 ```
 
-d_tag | val |
+d_tag | d_val/d_ptr |
 --- | ---
 DT_SYMTAB | d_ptr the address of .dynsym
 DT_STRTAB | d_ptr the address of .dynstr
 DT_STRSZ | the size of .dynstr
-
+DT_HASH | the address of hash table
+DT_SONAME | SO-NAME
+DT_RPATH | search path of shared objects
+DT_INIT | the address of .init
+DT_FINIT | the address of .finit
+DT_NEED | dependent shared objects
+DT_REL | the address of relocation table
+DT_RELA | the address of relocation table
+DT_RELENT | the number of relocation entry
+DT_RELAENT | the number of relocation entry
 ```c++
 // Display the dynamic section (if present)
 [root@VM-16-17-centos code]# readelf -d Alice
@@ -1207,7 +1233,7 @@ Symbol table of `.gnu.hash' for image:
 
 ### 7.5.3 .rel.dyn .rel.plt
 
-The dynamically linked executable file uses the PIC method, but this cannot change the nature of its need for relocation. For dynamic linking, if a shared object is not compiled in PIC mode, then there is no doubt that it needs to be relocated at load time; if a shared object is compiled in PIC mode, then it also needs to be relocated at load time, but the load time can be delayed to run time.
+The dynamically linked executable file uses the PIC method, but this cannot change the nature of its need for relocation. For dynamic linking, if a shared object is not compiled in PIC mode, then there is no doubt that it needs to be relocated at load time; if a shared object is compiled in PIC mode, then it also needs to be relocated at load time which is delayed to run time.
 
 For executable files or shared objects using PIC technology, although their code section do not need to be relocated (because the address is irrelevant), the data section also contains references to absolute addresses, because the absolute address-related parts in the code section are being separated, it becomes GOT, and GOT is actually part of the data section. In addition to GOT, the data section may also contain absolute addresses reference.
 
@@ -1302,6 +1328,7 @@ For the first condition, we can control it artificially, and ensure that no syst
 
 ```c++
 // -Xlinker -rpath ./ linker find the shared objects in pwd
+// -Xlinker <arg> Pass <arg> on to the linker.
 gcc main.c b1.so b2.so -o main -Xlinker -rpath ./
 ```
 
@@ -1337,10 +1364,12 @@ int dlclose (void *handle);
 const char *dlerror(void);
 ```
 
-Dynamic libraries find order:
+Linux Dynamic Linker path: /lib64/ld-linux-x86-64.so.2
+
+Dynamic libraries search order:
 * LD_LIBRARY_PATH
 * /etc/ld.so.cache
-* /lib、/usr/lib
+* /lib, /usr/lib
 
 If there is a dependency relationship between the loaded modules, such as module A and module B, the programmer needs to manually load the dependent modules, for example, load B first, then load A.
 
@@ -1349,12 +1378,12 @@ The value returned by **dlsym** has different meanings for different types of sy
 * If it is a variable, it returns the address of the variable
 * If the symbol is a constant, then it returns the value of the constant
 
-dlopen uses Load Ordering while dlsym uses Dependency Ordering:
+**Name Conflict**: dlopen uses Load Ordering while dlsym uses Dependency Ordering:
 * When multiple symbols with the same name conflict, the symbol loaded first takes precedence. We call this priority method **Load Ordering**.
 * **Dependency Ordering**: take the shared object opened by dlopen() as the root node, and perform breadth-first traversal of all dependent shared objects until the symbol is found
 
 ```c++
-// dlopen.c
+// dlapi.c
 
 #include <stdio.h>
 #include <dlfcn.h>
@@ -1383,28 +1412,369 @@ int main(int argc, char* argv[]) {
 ```
 
 ```c++
-gcc -o dlopen dlopen.c -ldl
-./dlopen /lib64/libm.so.6
+gcc -o dlapi dlapi.c -ldl
+./dlapi /lib64/libm.so.6
 ```
 
 # 8 Organization of Linux shared libraries
+
 ## 8.1 Shared library version
+
+* Version
+
+    For different languages, **ABI** (Application Binary Interface) mainly includes some memory layout such as function call heap stack structure, symbol naming, parameter rules, and data structure.
+
+* NAME
+
+    libname.so.x.y.z
+
+* SO-NAME
+
+    The purpose of establishing a soft link named SO-NAME is to make all modules that depend on a shared library use the SO-NAME of the shared library instead of the detailed version number when compiling, linking and running.
+
+    ```c++
+    [root@VM-16-17-centos code]# readelf -d Lib.so
+
+    Dynamic section at offset 0xe20 contains 24 entries:
+    Tag        Type                         Name/Value
+    0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+    ```
+
+    `ldconfig` can auto update shared library when system upgrade or install new shared library
+
+* Link Name
+    ```c++
+    gcc -o dlapi dlapi.c -ldl
+    ./dlapi /lib64/libm.so.6
+    ```
+
 ## 8.2 Symbol version
+
+Minor-revision Rendezvous Problem
+
+```c++
+asm(".symver old_printf, printf@VERS_1.1");
+asm(".symver new_printf, printf@VERS_1.2");
+
+int old_printf() {
+
+}
+
+int new_printf() {
+
+}
+```
+
+```c++
+// -Xlinker <arg> Pass <arg> on to the linker.
+gcc -shared -fPIC lib.c -Xlinker --version-script lib.ver -o lib.so
+
+VERS_1.2 {
+    global:
+        foo;
+    local:
+        *;
+};
+```
+
+
 ## 8.3 Shared library system path
+**/lib**, this location mainly stores the most critical and basic shared libraries of the system, such as dynamic linker, C language runtime library, mathematics library, etc. These libraries are mainly used by the programs under /bin and /sbin. There are also libraries that are needed when the system is started.
+
+**/usr/lib**, this directory mainly saves some key shared libraries that are not required by the system runtime, mainly some shared libraries used during development. These shared libraries are generally not used by user programs or shell scripts. Used directly. This directory also contains static libraries and object files that may be used during development.
+
+**/usr/local/lib**, this directory is used to store some libraries that are not very related to the operating system itself, mainly libraries for some third-party applications.
+
 ## 8.4 Shared library search process
+
+There is a program called **ldconfig** in the Linux system. The function of this program is to create, delete or update the corresponding SO-NAME (ie the corresponding symbolic link) for each shared library in the shared library directory, so that the SO-NAME of each shared library can point to the correct shared library file.
+
+This program will also collect these SO-NAMEs, store them centrally in the **/etc/ld.so.cache** file, and create a SO-NAME cache. When the dynamic linker wants to find a shared library, it can find it directly from /etc/ld.so.cache. The structure of /etc/ld.so.cache is specially designed and is very suitable for searching, so this design greatly speeds up the search process of shared libraries.
+
+Linux Dynamic Linker path: /lib64/ld-linux-x86-64.so.2
+
+Dynamic libraries search order:
+* LD_LIBRARY_PATH
+* /etc/ld.so.cache
+* /lib, /usr/lib
+
 ## 8.5 Environment variables
+
+* LD_PRELOAD
+    * etc/ld.so.preload
+    * Specify some preloaded shared libraries or object files
+
+* LD_LIBRARY_PATH
+
+* LD_DEBUG
+    Arg | Val
+    --- | ---
+    files | show load process
+    bindings | show symbol resolution
+    libs |  show search dependent libraries
+    versions | show version dependence
+    reloc | show symbol relocation
+    symbols | show search symbols
+    statistics |
+
+    ```c++
+    [root@VM-16-17-centos code]# LD_DEBUG=reloc ./Alice
+    4077263:     relocation processing: /lib64/libc.so.6
+    4077263:     relocation processing: /lib64/libdl.so.2
+    4077263:     relocation processing: ./Lib.so (lazy)
+    4077263:     relocation processing: /lib64/libonion.so (lazy)
+    4077263:     relocation processing: ./Alice (lazy)
+    4077263:     relocation processing: /lib64/ld-linux-x86-64.so.2
+    4077263:     calling init: /lib64/libc.so.6
+    4077263:     calling init: /lib64/libdl.so.2
+    4077263:     calling init: ./Lib.so
+    4077263:     calling init: /lib64/libonion.so
+    4077263:     initialize program: ./Alice
+    4077263:     transferring control: ./Alice
+    ```
+
 ## 8.6 Creation and installation of shared libraries
+```c++
+// -Wa,<options> Pass comma-separated <options> on to the assembler.
+// -Wp,<options> Pass comma-separated <options> on to the preprocessor.
+// -Wl,<options> Pass comma-separated <options> on to the linker.
+
+$gcc -shared -fPIC -Wl,-soname,libfoo.so.1 -o libfoo.so.1.0.0 \
+   libfoo1.c libfoo2.c \
+   -lbar1 -lbar2
+
+$gcc -c -g -Wall -o libfoo1.o libfoo1.c
+$gcc -c -g -Wall -o libfoo2.o libfoo2.c
+$ld -shared -soname libfoo.so.1 -o libfoo.so.1.0.0 libfoo1.o libfoo2.o -lbar1 -lbar2
+```
+
+If we do not use `-soname` to specify the `SO-NAME` of the shared library, then the shared library does not have an SO-NAME by default. Even if ldconfig is used to update the SO-NAME soft link, the shared library will have no effect.
+
+Tips:
+* Do not remove the symbols and debugging information in the output shared library, and do not use the "-fomit-frame-pointer" option of GCC
+* `-rpath PATH`   Set runtime shared library search path
+* `-rpath-link PATH`  Set link time shared library search path
+
+```c++
+// run init_function_1 first then init_function_2
+void __attribute__((constructor(1))) init_function_1(void);
+void __attribute__((constructor(2))) init_function_2(void);
+
+// run fini_function_2 first then fini_function_1
+void __attribute__((destructor(2)))  fini_function_2(void);
+void __attribute__((destructor(1)))  fini_function_1(void);
+```
 
 # 10 Memory
 ## 10.1 Program memory layout
+
 ## 10.2 Stack and calling convention
+
 ## 10.3 Heap and memory management
 
 # 11 Runtime library
 ## 11.1 Entry function and program initialization
+```c++
+// Glibc-2.3.1/sysdeps/x86_64/elf/start.S
+_start:
+    xorq %rbp, %rbp
+
+    /* int __libc_start_main (
+        int (*main) (int, char **, char **),
+        int argc,
+        char ** ubp_av,
+        void (*init) (void),
+        void (*fini) (void),
+        void (*rtld_fini) (void),
+        void * stack_end
+    )
+
+    The arguments are passed via registers and on the stack:
+    main:        %rdi
+    argc:        %rsi
+    argv:        %rdx
+    init:        %rcx
+    fini:        %r8
+    rtld_fini:    %r9
+    stack_end:    stack. */
+
+    movq %rdx, %r9  /* Address of the shared library termination function. */
+    popq %rsi       /* Pop the argument count. */
+    movq %rsp, %rdx /* argv starts just at the current stack top. */
+    andq  $~15, %rsp/* Align the stack to a 16 byte boundary to follow the ABI. */
+    pushq %rax      /* Push garbage because we push 8 more bytes. */
+    pushq %rsp      /* Provide the highest stack address to the user code (for stacks which grow downwards). */
+
+    movq $_fini, %r8/* Pass address of our own entry points to .fini and .init. */
+    movq $_init, %rcx
+
+    movq $BP_SYM (main), %rdi
+
+    /* Call the user's main function, and exit with its value. But let the libc call main.      */
+    call BP_SYM (__libc_start_main)
+
+    hlt            /* Crash if somehow `exit' does return. */
+
+/* Define a symbol for the first piece of initialized data. */
+    .data
+    .globl __data_start
+__data_start:
+    .long 0
+    .weak data_start
+    data_start = __data_start
+```
+
+```c++
+// glibc-2.3.1/sysdeps/generic/libc-start.c
+int BP_SYM (__libc_start_main) (
+    int (*main) (int, char **, char **),
+    int argc,
+    char ** ubp_av,
+    void (*init) (void),
+    void (*fini) (void),
+    void (*rtld_fini) (void),
+    void * stack_end)
+{
+    char ** ubp_ev = &ubp_av[argc + 1];
+
+    /* Result of the 'main' function.  */
+    int result;
+    __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
+
+    INIT_ARGV_and_ENVIRON;
+
+    /* Store the lowest stack address.  */
+    __libc_stack_end = stack_end;
+
+    __pthread_initialize_minimal ();
+
+    /* Register the destructor of the dynamic linker if there is any.  */
+    if (__builtin_expect (rtld_fini != NULL, 1))
+        __cxa_atexit ((void (*) (void *)) rtld_fini, NULL, NULL);
+
+    /* Call the initializer of the libc.  This is only needed here if we
+        are compiling for the static library in which case we haven't
+        run the constructors in `_dl_start_user'.  */
+    __libc_init_first(argc, argv, __environ);
+
+    __cxa_atexit ((void (*) (void *)) fini, NULL, NULL);
+
+    (*init) ();
+
+    result = main (argc, argv, __environ);
+
+    exit(result);
+}
+
+void exit (int status)
+{
+    while (__exit_funcs != NULL) {
+        __exit_funcs();
+        __exit_funcs = __exit_funcs->next;
+    }
+    _exit (status);
+}
+
+_exit:
+    movl    4(%esp), %ebx
+    movl    $__NR_exit, %eax
+    int     $0x80
+    hlt
+```
+
 ## 11.2 C/C++ runtime library
+
+glib c header: /usr/include
+glib c library: /lib64/libc.so.6, /usr/lib64/libc.a, /usr/lib64/crt1.o, /usr/lib64/crti.o, /usr/lib64/crtn.o
+
+A C language runtime roughly includes the following functions:
+* **Start and exit**: including entry function and other functions that the entry function depends on.
+* **Standard functions**: The functions owned by the C language standard library specified by the C language standard are implemented.
+* **I/O**: I/O function encapsulation and realization.
+* **Heap**: The encapsulation and implementation of the heap.
+* **Language realization**: the realization of some special functions in the language.
+* **Debugging**: the code that realizes the debugging function.
+
+```c++
+#define va_list char*
+#define va_start(ap,arg) (ap=(va_list)&arg+sizeof(arg))
+#define va_arg(ap,t) (*(t*)((ap+=sizeof(t))-sizeof(t)))
+#define va_end(ap) (ap=(va_list)0)
+```
+
+### crt1 crti crtn
+
+The code crti.o and crtn.o is actually the beginning and end of the _init() function and _finit() function, when these two files and other object files are linked in the order of installation, two complete functions _init() and _finit() are formed.
+* **crti.o**
+    ```c++
+    [root@VM-16-17-centos lib64]# objdump -dr /usr/lib64/crti.o
+
+    /usr/lib64/crti.o:     file format elf64-x86-64
+
+    Disassembly of section .init:
+
+    0000000000000000 <_init>:
+    0:   f3 0f 1e fa             endbr64
+    4:   48 83 ec 08             sub    $0x8,%rsp
+    8:   48 8b 05 00 00 00 00    mov    0x0(%rip),%rax        # f <_init+0xf>
+                            b: R_X86_64_REX_GOTPCRELX       __gmon_start__-0x4
+    f:   48 85 c0                test   %rax,%rax
+    12:   74 02                   je     16 <_init+0x16>
+    14:   ff d0                   callq  *%rax
+
+    Disassembly of section .fini:
+
+    0000000000000000 <_fini>:
+    0:   f3 0f 1e fa             endbr64
+    4:   48 83 ec 08             sub    $0x8,%rsp
+    ```
+* **crtn.0**
+    ```c++
+    [root@VM-16-17-centos lib64]# objdump -dr /usr/lib64/crtn.o
+
+    /usr/lib64/crtn.o:     file format elf64-x86-64
+
+    Disassembly of section .init:
+
+    0000000000000000 <.init>:
+    0:   48 83 c4 08             add    $0x8,%rsp
+    4:   c3                      retq
+
+    Disassembly of section .fini:
+
+    0000000000000000 <.fini>:
+    0:   48 83 c4 08             add    $0x8,%rsp
+    4:   c3                      retq
+    ```
+
+The ".init" section of the output object file contains only one function _init(). The beginning part of this function comes from the ".init" section of crti.o, and the end part comes from the ".init" section of crtn.o. part.
+
+In order to ensure the correctness of ".init" and ".finit" in the final output file, we must ensure that when linking, crti.o must be before the user object file and system library, and crtn.o must be in the user object file and system library. After the library. The input file sequence of the linker is generally:
+```c++
+ld crt1.o crti.o [user_objects] [system_libraries] crtn.o
+
+-nostartfile -nostdlib
+
+__ attribute__((section(".init")))
+```
+
+You can use "__ attribute__((section(".init")))" to put functions in the .init section, but it should be noted that putting ordinary functions in ".init" will destroy their structure, because the function of the return instruction causes the _init() function to return early. The assembly instruction must be used, and the compiler cannot generate a "ret" instruction.
+
+![](../Images/LinkLoadLibrary/11.2-crti-init.png)
+
+* C++ construct destruct object
+    * /usr/lib/gcc/x86_64-redhat-linux/8/crtbeginT.o
+    * /usr/lib/gcc/x86_64-redhat-linux/8/crtend.o
+
+/usr/lib/gcc/x86_64-redhat-linux/8/libgcc.a
+/usr/lib/gcc/x86_64-redhat-linux/8/libgcc_eh.a
+
+
+
 ## 11.3 Runtime library and multithreading
+
 ## 11.4 C++ global construction and destruction
+
 ## 11.5 fread implementation
 
 # 12 System calls and API
