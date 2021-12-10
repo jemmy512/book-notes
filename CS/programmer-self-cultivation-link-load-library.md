@@ -1,3 +1,5 @@
+* [GNU Compiler Collection (GCC) Internals](https://gcc.gnu.org/onlinedocs/gccint/index.html#SEC_Contents)
+
 # 2 Compiling and Linking
 ## 2.1 The process of being hidden
 ![](../Images/LinkLoadLibrary/2.1-compilation-process.png)
@@ -1569,118 +1571,227 @@ void __attribute__((destructor(1)))  fini_function_1(void);
 ## 10.1 Program memory layout
 
 ## 10.2 Stack and calling convention
+* The order and way of passing function parameters
+
+    ```c++
+    int __attribute__((cdecl) foo();
+    ```
+* Stack maintain
+
+* Name-mangling
+
+Call Convention | Pop Stack | Pass Parameters | Name-mangling
+-- | -- | -- | --
+cdecl | Caller | push stack from R -> L | <_> + <name>
+stdcall | Callee | push stack from R -> L | <_> + <name> + <@> + <name size>
+fastcall | Callee | push register and push remaining to stack from R -> L | <@> + <name> + <@> + <name size>
+
 
 ## 10.3 Heap and memory management
 
+The starting address and size of the space requested by **mmap()** must be an integer multiple of the size of the system page.
+
+
 # 11 Runtime library
 ## 11.1 Entry function and program initialization
-```c++
-// Glibc-2.3.1/sysdeps/x86_64/elf/start.S
-_start:
-    xorq %rbp, %rbp
+The code in .init and .finit sections will eventually be combined into two functions _init() and _finit(), these two functions will be executed before/after the main function.
 
-    /* int __libc_start_main (
+
+* [Linux x86 Program Start Up or How do we get to main?](http://www.dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html)
+
+    ![](../Images/LinkLoadLibrary/11.1-program-load.png)
+
+* _start
+    ```c++
+    // Glibc-2.3.1/sysdeps/x86_64/elf/start.S
+    _start:
+        xorq %rbp, %rbp
+
+        /* int __libc_start_main (
+            int (*main) (int, char **, char **),
+            int argc,
+            char ** ubp_av,
+            void (*init) (void),
+            void (*fini) (void),
+            void (*rtld_fini) (void),
+            void * stack_end
+        )
+
+        The arguments are passed via registers and on the stack:
+        main:        %rdi
+        argc:        %rsi
+        argv:        %rdx
+        init:        %rcx
+        fini:        %r8
+        rtld_fini:    %r9
+        stack_end:    stack. */
+
+        movq %rdx, %r9  /* Address of the shared library termination function. */
+        popq %rsi       /* Pop the argc into rsi. */
+        movq %rsp, %rdx /* argv starts just at the current stack top. */
+        andq  $~15, %rsp/* Align the stack to a 16 byte boundary to follow the ABI. */
+        pushq %rax      /* Push garbage because we push 8 more bytes. */
+        pushq %rsp      /* Provide the highest stack address to the user code (for stacks which grow downwards). */
+
+        movq $_fini, %r8/* Pass address of our own entry points to .fini and .init. */
+        movq $_init, %rcx
+
+        movq $BP_SYM (main), %rdi
+
+        /* Call the user's main function, and exit with its value. But let the libc call main.      */
+        call BP_SYM (__libc_start_main)
+
+        hlt            /* Crash if somehow `exit' does return. */
+
+    /* Define a symbol for the first piece of initialized data. */
+        .data
+        .globl __data_start
+    __data_start:
+        .long 0
+        .weak data_start
+        data_start = __data_start
+    ```
+
+    ```c++
+    // glibc-2.3.1/sysdeps/generic/libc-start.c
+    int BP_SYM (__libc_start_main) (
         int (*main) (int, char **, char **),
         int argc,
         char ** ubp_av,
         void (*init) (void),
         void (*fini) (void),
         void (*rtld_fini) (void),
-        void * stack_end
-    )
+        void * stack_end)
+    {
+        char ** ubp_ev = &ubp_av[argc + 1];
 
-    The arguments are passed via registers and on the stack:
-    main:        %rdi
-    argc:        %rsi
-    argv:        %rdx
-    init:        %rcx
-    fini:        %r8
-    rtld_fini:    %r9
-    stack_end:    stack. */
+        /* Result of the 'main' function.  */
+        int result;
+        __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
 
-    movq %rdx, %r9  /* Address of the shared library termination function. */
-    popq %rsi       /* Pop the argument count. */
-    movq %rsp, %rdx /* argv starts just at the current stack top. */
-    andq  $~15, %rsp/* Align the stack to a 16 byte boundary to follow the ABI. */
-    pushq %rax      /* Push garbage because we push 8 more bytes. */
-    pushq %rsp      /* Provide the highest stack address to the user code (for stacks which grow downwards). */
+        INIT_ARGV_and_ENVIRON;
 
-    movq $_fini, %r8/* Pass address of our own entry points to .fini and .init. */
-    movq $_init, %rcx
+        /* Store the lowest stack address.  */
+        __libc_stack_end = stack_end;
 
-    movq $BP_SYM (main), %rdi
+        __pthread_initialize_minimal ();
 
-    /* Call the user's main function, and exit with its value. But let the libc call main.      */
-    call BP_SYM (__libc_start_main)
+        /* Register the destructor of the dynamic linker if there is any.  */
+        if (__builtin_expect (rtld_fini != NULL, 1))
+            __cxa_atexit((void (*) (void *)) rtld_fini, NULL, NULL);
 
-    hlt            /* Crash if somehow `exit' does return. */
+        /* Call the initializer of the libc.  This is only needed here if we
+            are compiling for the static library in which case we haven't
+            run the constructors in `_dl_start_user'.  */
+        #ifndef SHARED
+        __libc_init_first (argc, argv, __environ);
+        #endif
 
-/* Define a symbol for the first piece of initialized data. */
-    .data
-    .globl __data_start
-__data_start:
-    .long 0
-    .weak data_start
-    data_start = __data_start
-```
+        __cxa_atexit((void (*) (void *)) fini, NULL, NULL);
 
-```c++
-// glibc-2.3.1/sysdeps/generic/libc-start.c
-int BP_SYM (__libc_start_main) (
-    int (*main) (int, char **, char **),
-    int argc,
-    char ** ubp_av,
-    void (*init) (void),
-    void (*fini) (void),
-    void (*rtld_fini) (void),
-    void * stack_end)
-{
-    char ** ubp_ev = &ubp_av[argc + 1];
+        (*init)();
 
-    /* Result of the 'main' function.  */
-    int result;
-    __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
+        result = main (argc, argv, __environ);
 
-    INIT_ARGV_and_ENVIRON;
-
-    /* Store the lowest stack address.  */
-    __libc_stack_end = stack_end;
-
-    __pthread_initialize_minimal ();
-
-    /* Register the destructor of the dynamic linker if there is any.  */
-    if (__builtin_expect (rtld_fini != NULL, 1))
-        __cxa_atexit ((void (*) (void *)) rtld_fini, NULL, NULL);
-
-    /* Call the initializer of the libc.  This is only needed here if we
-        are compiling for the static library in which case we haven't
-        run the constructors in `_dl_start_user'.  */
-    __libc_init_first(argc, argv, __environ);
-
-    __cxa_atexit ((void (*) (void *)) fini, NULL, NULL);
-
-    (*init) ();
-
-    result = main (argc, argv, __environ);
-
-    exit(result);
-}
-
-void exit (int status)
-{
-    while (__exit_funcs != NULL) {
-        __exit_funcs();
-        __exit_funcs = __exit_funcs->next;
+        exit(result);
     }
-    _exit (status);
-}
 
-_exit:
-    movl    4(%esp), %ebx
-    movl    $__NR_exit, %eax
-    int     $0x80
-    hlt
-```
+    void exit (int status)
+    {
+        while (__exit_funcs != NULL) {
+            __exit_funcs();
+            __exit_funcs = __exit_funcs->next;
+        }
+        _exit (status);
+    }
+
+    _exit:
+        movl    4(%esp), %ebx
+        movl    $__NR_exit, %eax
+        int     $0x80
+        hlt
+    ```
+* _libc_csu_init
+    ```c++
+    // _start -> _libc_init_start -> _libc_csu_init
+    void _libc_csu_init(int argc, char** argv, char** envp) {
+        _init();
+
+        const size_t size = _init_array_end - _init_array_start;
+        for (size_t i = 0; i < size; ++i) {
+            (*_init_array_start[i])(argc, argv, envp);
+        }
+    }
+    ```
+
+* _init
+    ```c++
+    // glibc-2.3.1/sysdeps/generic/initfini.c
+    SECTION (".init");
+    extern void _init (void);
+    void _init (void)
+    {
+    /* We cannot use the normal constructor mechanism in gcrt1.o because it
+        appears before crtbegin.o in the link, so the header elt of .ctors
+        would come after the elt for __gmon_start__.  One approach is for
+        gcrt1.o to reference a symbol which would be defined by some library
+        module which has a constructor; but then user code's constructors
+        would come first, and not be profiled.  */
+    call_gmon_start ();
+
+    asm ("ALIGN");
+    asm("END_INIT");
+    /* Now the epilog. */
+    asm ("\n/*@_init_PROLOG_ENDS*/");
+    asm ("\n/*@_init_EPILOG_BEGINS*/");
+    SECTION(".init");
+    }
+    asm ("END_INIT");
+
+    // glibc-2.3.1/sysdeps/generic/initfini.c
+    static void call_gmon_start(void)
+    {
+    extern void __gmon_start__ (void) __attribute__ ((weak)); /*weak_extern (__gmon_start__);*/
+    void (*gmon_start) (void) = __gmon_start__;
+
+    if (gmon_start)
+        gmon_start ();
+    }
+    ```
+
+* __libc_init_first
+    ```c++
+    void __libc_init_first(int argc, char *arg0, ...)
+    {
+    char **argv = &arg0, **envp = &argv[argc + 1];
+
+    __environ = envp;
+    __libc_init (argc, argv, envp);
+    }
+
+    void __libc_init (int argc, char **argv, char **envp)
+    {
+        /* These functions are defined in crti.o to run the .init and .fini
+        sections, which are used for initializers and finalizers.  */
+        extern void _init (void), _fini (void);
+        atexit (&_fini); /* Arrange for _fini to run at exit.  */
+        _init ();
+    }
+
+    _init (int argc, ...)
+    {
+    init (&argc);
+
+    __libc_global_ctors();
+    }
+
+    // glibc-2.3.1/elf/soinit.c
+    void __libc_global_ctors (void)
+    {
+    /* Call constructor functions.  */
+    run_hooks(__CTOR_LIST__);
+    }
+    ```
 
 ## 11.2 C/C++ runtime library
 
@@ -1728,7 +1839,8 @@ The code crti.o and crtn.o is actually the beginning and end of the _init() func
     0:   f3 0f 1e fa             endbr64
     4:   48 83 ec 08             sub    $0x8,%rsp
     ```
-* **crtn.0**
+
+* **crtn.o**
     ```c++
     [root@VM-16-17-centos lib64]# objdump -dr /usr/lib64/crtn.o
 
@@ -1751,7 +1863,7 @@ The ".init" section of the output object file contains only one function _init()
 
 In order to ensure the correctness of ".init" and ".finit" in the final output file, we must ensure that when linking, crti.o must be before the user object file and system library, and crtn.o must be in the user object file and system library. After the library. The input file sequence of the linker is generally:
 ```c++
-ld crt1.o crti.o [user_objects] [system_libraries] crtn.o
+ld crt1.o crti.o crtbegin.o [user_objects] [system_libraries] crtend.o crtn.o -lgcc
 
 -nostartfile -nostdlib
 
@@ -1763,7 +1875,7 @@ You can use "__ attribute__((section(".init")))" to put functions in the .init s
 ![](../Images/LinkLoadLibrary/11.2-crti-init.png)
 
 * C++ construct destruct object
-    * /usr/lib/gcc/x86_64-redhat-linux/8/crtbeginT.o
+    * /usr/lib/gcc/x86_64-redhat-linux/8/crtbegin.o
     * /usr/lib/gcc/x86_64-redhat-linux/8/crtend.o
 
 /usr/lib/gcc/x86_64-redhat-linux/8/libgcc.a
@@ -1774,12 +1886,149 @@ You can use "__ attribute__((section(".init")))" to put functions in the .init s
 ## 11.3 Runtime library and multithreading
 
 ## 11.4 C++ global construction and destruction
+[GCC: 18.20.5 How Initialization Functions Are Handled](https://gcc.gnu.org/onlinedocs/gccint/Initialization.html)
+
+```c++
+// gcc/libgcc/crtstuff.c
+//  _start –> __libc_start_main –> _libc_csu_init -> _init -> __do_global_ctors_aux:
+
+void __do_global_ctors_aux (void)       /* prologue goes in .init section */
+{
+  FORCE_CODE_SECTION_ALIGN              /* explicit align before switch to .text */
+  asm (__LIBGCC_TEXT_SECTION_ASM_OP__); /* don't put epilogue and body in .init */
+  DO_GLOBAL_CTORS_BODY;
+  atexit (__do_global_dtors);
+}
+
+#define DO_GLOBAL_CTORS_BODY                                \
+do {                                                        \
+  __SIZE_TYPE__ nptrs = (__SIZE_TYPE__) __CTOR_LIST__[0];   \
+  unsigned i;                                               \
+  if (nptrs == (__SIZE_TYPE__)-1)                           \
+    for (nptrs = 0; __CTOR_LIST__[nptrs + 1] != 0; nptrs++);\
+  for (i = nptrs; i >= 1; i--)                              \
+    __CTOR_LIST__[i] ();                                    \
+} while (0)
+#endif
+```
+
+For each compilation unit (.cpp), the GCC compiler will traverse all global objects in it and generate a special function. The purpose of this special function is to initialize all global objects in this compilation unit.
+
+When the linker links the user's target file, **crtbegin.o** is always in front of the user's target file, and **crtend.o** is always behind the user's target file
+
+Before and after the target file, you need to link crtbegin.o and crtend.o. These two glibc target files also have a .ctors section. When linking, the contents of the .ctors section of these two files will also be merged into the final executable file.
+
+The .ctor section of crtbegin.o is a 4-byte ?1 (0xFFFFFFFF), and the linker is responsible for changing this value to the number of global constructions. Then this section also defines the starting address as the symbol `__CTOR_LIST__`, so that in fact `__CTOR_LIST__` represents the starting address of all the .ctor sections that are finally merged.
+
+crtend.o: The content of .ctors in this file is even simpler, its content is a 0, and then a symbol `__CTOR_END__` is defined, pointing to the end of the .ctor section.
+
+```c++
+#include <stdio.h>
+
+void my_init(void) __attribute__ ((constructor));
+
+void my_init(void) {
+    printf("Hello ");
+}
+
+int main() {
+    printf("World!\n");
+    return 0;
+}
+```
+
+Since the construction and destruction of global objects are done by the runtime, when there are global objects in the program or shared library, remember that you cannot use the **-nonstartfiles** or **-nostdlib** option, otherwise, the construction and destructor will Can't execute normally
+
+* collect2
+
+    On some systems, the assembler and linker do not support the ".init" and ".ctor" mechanisms introduced in this section. Therefore, in order to execute the code before the main function, special processing must be performed during linking. The Collect2 program is used to achieve this function.
+
+    It will "collect" all the specially named symbols in the input target file. These special symbols indicate that they are global constructors or executed before main. Collect2 will generate one Temporary .c file, the addresses of these symbols are collected into an array, and then put into this .c file, after compilation, it is linked to the final output file together with other object files.
 
 ## 11.5 fread implementation
 
 # 12 System calls and API
 ## 12.1 Introduction to System Call
 ## 12.2 Principle of System Call
+
+```c++
+[root@VM-16-17-centos code]# ldd /bin/bash
+    linux-vdso.so.1 (0x00007fff1874d000)
+    /$LIB/libonion.so => /lib64/libonion.so (0x00007fbce09bb000)
+    libtinfo.so.6 => /lib64/libtinfo.so.6 (0x00007fbce034d000)
+    libdl.so.2 => /lib64/libdl.so.2 (0x00007fbce0149000)
+    libc.so.6 => /lib64/libc.so.6 (0x00007fbcdfd84000)
+    /lib64/ld-linux-x86-64.so.2 (0x00007fbce0898000)
+```
+
+```c++
+[root@VM-16-17-centos code]# cat /proc/106707/maps
+564e81db9000-564e81ec1000 r-xp 00000000 fd:01 268773                     /usr/bin/bash
+564e820c0000-564e820c4000 r--p 00107000 fd:01 268773                     /usr/bin/bash
+564e820c4000-564e820cd000 rw-p 0010b000 fd:01 268773                     /usr/bin/bash
+564e820cd000-564e820d7000 rw-p 00000000 00:00 0
+564e83987000-564e83b17000 rw-p 00000000 00:00 0                          [heap]
+7f7b522bb000-7f7b522c6000 r-xp 00000000 fd:01 268316                     /usr/lib64/libnss_files-2.28.so
+7f7b522c6000-7f7b524c6000 ---p 0000b000 fd:01 268316                     /usr/lib64/libnss_files-2.28.so
+7f7b524c6000-7f7b524c7000 r--p 0000b000 fd:01 268316                     /usr/lib64/libnss_files-2.28.so
+7f7b524c7000-7f7b524c8000 rw-p 0000c000 fd:01 268316                     /usr/lib64/libnss_files-2.28.so
+7f7b524c8000-7f7b524ce000 rw-p 00000000 00:00 0
+7f7b524ce000-7f7b52da2000 r--s 00000000 fd:01 394547                     /var/lib/sss/mc/passwd
+7f7b52da2000-7f7b52dac000 r-xp 00000000 fd:01 280182                     /usr/lib64/libnss_sss.so.2
+7f7b52dac000-7f7b52fab000 ---p 0000a000 fd:01 280182                     /usr/lib64/libnss_sss.so.2
+7f7b52fab000-7f7b52fac000 r--p 00009000 fd:01 280182                     /usr/lib64/libnss_sss.so.2
+7f7b52fac000-7f7b52fad000 rw-p 0000a000 fd:01 280182                     /usr/lib64/libnss_sss.so.2
+7f7b52fad000-7f7b53225000 r--p 00000000 fd:01 267823                     /usr/lib/locale/en_US.utf8/LC_COLLATE
+7f7b53225000-7f7b533e1000 r-xp 00000000 fd:01 268071                     /usr/lib64/libc-2.28.so
+7f7b533e1000-7f7b535e0000 ---p 001bc000 fd:01 268071                     /usr/lib64/libc-2.28.so
+7f7b535e0000-7f7b535e4000 r--p 001bb000 fd:01 268071                     /usr/lib64/libc-2.28.so
+7f7b535e4000-7f7b535e6000 rw-p 001bf000 fd:01 268071                     /usr/lib64/libc-2.28.so
+7f7b535e6000-7f7b535ea000 rw-p 00000000 00:00 0
+7f7b535ea000-7f7b535ed000 r-xp 00000000 fd:01 268307                     /usr/lib64/libdl-2.28.so
+7f7b535ed000-7f7b537ec000 ---p 00003000 fd:01 268307                     /usr/lib64/libdl-2.28.so
+7f7b537ec000-7f7b537ed000 r--p 00002000 fd:01 268307                     /usr/lib64/libdl-2.28.so
+7f7b537ed000-7f7b537ee000 rw-p 00003000 fd:01 268307                     /usr/lib64/libdl-2.28.so
+7f7b537ee000-7f7b53817000 r-xp 00000000 fd:01 267574                     /usr/lib64/libtinfo.so.6.1
+7f7b53817000-7f7b53a16000 ---p 00029000 fd:01 267574                     /usr/lib64/libtinfo.so.6.1
+7f7b53a16000-7f7b53a1a000 r--p 00028000 fd:01 267574                     /usr/lib64/libtinfo.so.6.1
+7f7b53a1a000-7f7b53a1b000 rw-p 0002c000 fd:01 267574                     /usr/lib64/libtinfo.so.6.1
+7f7b53a1b000-7f7b53a47000 r-xp 00000000 fd:01 268057                     /usr/lib64/ld-2.28.so
+7f7b53ab8000-7f7b53ad9000 rw-p 00000000 00:00 0
+7f7b53ad9000-7f7b53b2c000 r--p 00000000 fd:01 268271                     /usr/lib/locale/en_US.utf8/LC_CTYPE
+7f7b53b2c000-7f7b53b2d000 r--p 00000000 fd:01 268278                     /usr/lib/locale/en_US.utf8/LC_NUMERIC
+7f7b53b2d000-7f7b53b2e000 r--p 00000000 fd:01 268266                     /usr/lib/locale/en_US.utf8/LC_TIME
+7f7b53b2e000-7f7b53b2f000 r--p 00000000 fd:01 268262                     /usr/lib/locale/en_US.utf8/LC_MONETARY
+7f7b53b2f000-7f7b53b36000 r--s 00000000 fd:01 262182                     /usr/lib64/gconv/gconv-modules.cache
+7f7b53b36000-7f7b53b38000 rw-p 00000000 00:00 0
+7f7b53b38000-7f7b53b39000 r--p 00000000 fd:01 268274                     /usr/lib/locale/en_US.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+7f7b53b39000-7f7b53b3a000 r--p 00000000 fd:01 267843                     /usr/lib/locale/en_US.utf8/LC_PAPER
+7f7b53b3a000-7f7b53b3b000 r--p 00000000 fd:01 268276                     /usr/lib/locale/en_US.utf8/LC_NAME
+7f7b53b3b000-7f7b53b3c000 r--p 00000000 fd:01 267773                     /usr/lib/locale/en_US.utf8/LC_ADDRESS
+7f7b53b3c000-7f7b53b3d000 r--p 00000000 fd:01 268264                     /usr/lib/locale/en_US.utf8/LC_TELEPHONE
+7f7b53b3d000-7f7b53b3e000 r--p 00000000 fd:01 268261                     /usr/lib/locale/en_US.utf8/LC_MEASUREMENT
+7f7b53b3e000-7f7b53b41000 r-xp 00000000 fd:01 270225                     /usr/lib64/libonion_security.so.1.0.19
+7f7b53b41000-7f7b53c41000 ---p 00003000 fd:01 270225                     /usr/lib64/libonion_security.so.1.0.19
+7f7b53c41000-7f7b53c42000 rw-p 00003000 fd:01 270225                     /usr/lib64/libonion_security.so.1.0.19
+7f7b53c42000-7f7b53c44000 rw-p 00000000 00:00 0
+7f7b53c44000-7f7b53c45000 r--p 00000000 fd:01 268259                     /usr/lib/locale/en_US.utf8/LC_IDENTIFICATION
+7f7b53c45000-7f7b53c47000 rw-p 00000000 00:00 0
+7f7b53c47000-7f7b53c48000 r--p 0002c000 fd:01 268057                     /usr/lib64/ld-2.28.so
+7f7b53c48000-7f7b53c4a000 rw-p 0002d000 fd:01 268057                     /usr/lib64/ld-2.28.so
+7ffd93a44000-7ffd93a65000 rw-p 00000000 00:00 0                          [stack]
+7ffd93bdf000-7ffd93be3000 r--p 00000000 00:00 0                          [vvar]
+7ffd93be3000-7ffd93be5000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                  [vsyscall]
+```
+
+```c++
+dd if=/proc/162996/mem of=./linux-gate.dso bs=4096 skip=34358184247 count=1
+
+objdump -T linux-gate.dso
+
+objdump -d --start-address=0xffffe400 --stop-address=0xffffe408 linux-gate.dso
+
+objdump -d --start-address=0xffffe400 --stop-address=0xffffe414 linux-gate.dso
+```
 
 # 13 Runtime library implementation
 ## 13.1 C language runtime library
