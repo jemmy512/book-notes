@@ -672,8 +672,8 @@ ret | get return function address from stack and jump to
 
 ### 3.7.3 Register Usage Conventions
 * Although only one procedure can be active at a given time, we must make sure that when one procedure (the caller) calls another (the callee), the callee does not overwrite some register value that the caller planned to use later.
-* Registers `%eax, %edx, and %ecx` are classified as **caller-save registers**. When procedure Q is called by P, it can overwrite these registers without destroying any data required by P.
-* On the other hand, registers `%ebx, %esi, and %edi` are classified as **callee-save registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
+* Registers `%eax, %edx, and %ecx` are classified as **caller-save (volatile) registers**. When procedure Q is called by P, it can overwrite these registers without destroying any data required by P.
+* On the other hand, registers `%ebx, %esi, and %edi` are classified as **callee-save (non-volatile) registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
 
 ### 3.7.4 Procedure Example
 ```c++
@@ -2624,11 +2624,10 @@ gcc -o p2 main2.c ./libvector.so
         ```
     *  **lazy binding** defers the binding of procedure addresses until the first time the procedure is called
     * If an object module calls any functions that are defined in shared libraries, then it has its own **GOT** and **procedure linkage table (PLT)**. The GOT is part of the `.data section`. The PLT is part of the `.text section`.
-    * ![](../Images/CSAPP/7.12-got-example.png)
+    * ![](../Images/CSAPP/7.12-got-plt.png)
         * GOT[0] contains the address of the .dynamic segment, which contains information that the dynamic linker uses to bind procedure addresses, such as the location of the `symbol table` and `relocation information`.
         * GOT[1] contains some information that defines this module.
         * GOT[2] contains an entry point into the lazy binding code of the `dynamic linker`.
-    * ![](../Images/CSAPP/7.12-plt-example.png)
         * PLT[0], is a special entry that jumps into the dynamic linker.
         * When addvec is called the first time, control passes to the first instruction in PLT[2], which does an indirect jump through GOT[4]. Initially, each GOT entry contains the address of the pushl entry in the corresponding PLT entry. So the indirect jump in the PLT simply transfers control back to the next instruction in PLT[2]. This instruction pushes an ID for the addvec symbol onto the stack. The last instruction jumps to PLT[0], which pushes another word of identifying information on the stack from GOT[1], and then jumps into the dynamic linker indirectly through GOT[2]. The dynamic linker uses the two stack entries to determine the location of addvec, overwrites GOT[4] with this address, and passes control to addvec.
         * The next time addvec is called in the program, control passes to PLT[2] as before. However, this time the indirect jump through GOT[4] transfers control to addvec. The only additional overhead from this point on is the memory reference for the indirect jump.
