@@ -24,9 +24,9 @@
     * [Computer Architecture: A Quantitative Approach :soon:](./CS/computer-architecture.md)
     * [Structure and Interpretation of Computer Programs :soon:]()
 
-* Compiler
+* Compilation
     * [Compilers: Principles, Techniques, and Tools :soon:](./CS/compilers-crinciples-techniques-and-tools.md)
-    * [Programmer's self-cultivation-link, load and library (CN)](./CS/programmer-self-cultivation-link-load-library.md)
+    * [Programmer's Self-cultivation - Link, Load and Library (CN)](./CS/programmer-self-cultivation-link-load-library.md)
 
 * Network
     * [TCP/IP Illustrated, Volume 1: The Protocols](./CS/tcp-ip-illustrated-volume-1.md)
