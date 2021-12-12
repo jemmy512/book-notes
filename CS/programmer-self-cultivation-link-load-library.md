@@ -11,7 +11,7 @@
 
     First, the source code program is input to the scanner. It simply performs lexical analysis. Using an algorithm similar to a finite state machine (Finite State Machine) can easily convert the source code. The character sequence is divided into a series of tokens
 
-    Tokens includes: keywords, identifiers, literals (Including numbers, strings, etc.) and special symbols (such as plus signs, equal signs).
+    Tokens includes: `keywords`, `identifiers`, `literals` (Including numbers, strings, etc.) and special symbols (such as plus signs, equal signs).
 
 * **Grammar Parser**
 
@@ -25,7 +25,7 @@
 
     The semantics that the compiler can analyze is static semantics. The so-called static semantics refers to the semantics that can be determined at compile time, and the corresponding dynamic semantics is the semantics that can only be determined at runtime.
 
-    Static semantics usually include **declaration** and **type matching**, and **type conversion**. For example, when a floating-point expression is assigned to an integer expression, it implies a floating-point to integer conversion process. This step needs to be completed in the semantic analysis process. For example, when assigning a floating-point type to a pointer, the semantic analysis program will find that the type does not match, and the compiler will report an error. Dynamic semantics generally refers to semantic-related problems that occur at runtime. For example, using 0 as a divisor is a runtime semantic error.
+    **Static semantics** usually include `declaration` and `type matching`, and `type conversion`. For example, when a floating-point expression is assigned to an integer expression, it implies a floating-point to integer conversion process. This step needs to be completed in the semantic analysis process. For example, when assigning a floating-point type to a pointer, the semantic analysis program will find that the type does not match, and the compiler will report an error. **Dynamic semantics** generally refers to semantic-related problems that occur at runtime. For example, using 0 as a divisor is a runtime semantic error.
 
     After the semantic analysis stage, the expressions of the entire syntax tree are marked with types. If some types need to be implicitly converted, the semantic analysis program will insert the corresponding conversion nodes in the syntax tree.
 
@@ -70,9 +70,9 @@ $ file /lib/ld-2.6.1.so
 BSS(Block Started by Symbol), Unix FAQ section 1.3(http://www.faqs.org/faqs/unix-faq/faq/part1/section-3.html
 
 Separating data and instruction has many benefits:
-* On the one hand, when the program is loaded, the data and instructions are respectively mapped to two virtual memory areas. The permissions of these two virtual storage areas can be set to read-write and read-only respectively. This prevents program instructions from being rewritten intentionally or unintentionally.
-* Improving perform through data cache and instruction cache
-* When multiple copies of the program are running in the system, their instructions are the same, so only one copy of the program's instruction needs to be stored in the memory.
+* On the one hand, when the program is loaded, the data and instructions are respectively mapped to two virtual memory areas. The **permissions** of these two virtual storage areas can be set to read-write and read-only respectively. This prevents program instructions from being rewritten intentionally or unintentionally.
+* Improving perform through data **cache** and instruction cache
+* When multiple copies of the program are running in the system, their instructions are the same, so only **one copy** of the program's instruction needs to be stored in the memory.
 
 ## 3.3 Mining SimpleSection.o
 
@@ -100,7 +100,7 @@ typedef struct elf64_sym {
 ```c++
 __executable_start // the start address of the program, not entry
 __etext or etext or etext // the end address of .text
-edata or edata // the end address of .data
+_edata or edata // the end address of .data
 _end or end // the end address of the program
 ```
 
@@ -140,7 +140,7 @@ int main() {
 
 * **Strong Symbol and Weak Symbol**
 
-    For the C/C++ language, the compiler default functions and initialized global variables are strong symbols, and uninitialized global variables are weak symbols. We can also define any strong symbol as a weak symbol through GCC's "__attribute__((weak))". Note that both strong symbols and weak symbols are for definitions, not for symbol references.
+    For the C/C++ language, the compiler default functions and initialized global variables are **strong symbols**, and uninitialized global variables are **weak symbols**. We can also define any strong symbol as a weak symbol through GCC's "__attribute__((weak))". Note that both strong symbols and weak symbols are for definitions, not for symbol references.
 
     Rule processing and selection of global symbols that have been defined multiple times:
     1. Strong symbols are not allowed to be defined multiple times (that is, different object files cannot have strong symbols with the same name); if there are multiple strong symbol definitions, the linker reports a symbol duplication definition error.
@@ -227,7 +227,7 @@ int swap(int* a, int *b) {
     For sections with actual data, such as ".text" and ".data", they must allocate space in the file and in the virtual address space, because they exist in both; and for ".bss", the meaning of allocated space is limited to the virtual address space, because it has no content in the file.
 
     * Two-pass linking:
-        * **Space and address allocation**: scans all input object files, and obtains the length, attributes and positions of their respective sections, and collects all symbol definitions and symbol references in the symbol table in the input object file, and puts them together A global symbol table. In this step, the linker will be able to obtain the section lengths of all input object files, merge them, calculate the combined length and position of each section in the output file, and establish a mapping relationship.
+        * **Address space allocation**: scans all input object files, and obtains the length, attributes and positions of their respective sections, and collects all symbol definitions and symbol references in the symbol table in the input object file, and puts them together A global symbol table. In this step, the linker will be able to obtain the section lengths of all input object files, merge them, calculate the combined length and position of each section in the output file, and establish a mapping relationship.
 
         * **Symbol resolution and relocation**: Use all the information collected in the first step above to read the data and relocation information in the middle of the input file, and perform symbol resolution and relocation, and adjust the address in the code. In fact, the second step is the core of the linking process, especially the relocation process.
 
@@ -247,7 +247,7 @@ int swap(int* a, int *b) {
     a.o:     file format elf64-x86-64
 
     Sections:
-    Idx Name          Size      VMA               LMA               File off  Algn
+    Idx Name          Size      VMA               LMA             File off  Algn
     0 .text         00000027  0000000000000000  0000000000000000  00000040  2**0
                     CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
     1 .data         00000000  0000000000000000  0000000000000000  00000067  2**0
@@ -287,7 +287,7 @@ int swap(int* a, int *b) {
     ab:     file format elf64-x86-64
 
     Sections:
-    Idx Name          Size      VMA               LMA               File off  Algn
+    Idx Name          Size      VMA               LMA             File off  Algn
     0 .text         00000072  00000000004000e8  00000000004000e8  000000e8  2**0
                     CONTENTS, ALLOC, LOAD, READONLY, CODE
     1 .eh_frame     00000058  0000000000400160  0000000000400160  00000160  2**3
@@ -389,7 +389,7 @@ int swap(int* a, int *b) {
 
     ```c++
     typedef struct {
-        int offset;      /* Offset of the reference to relocate */
+        int offset;     /* Offset of the reference to relocate */
         int symbol:24,  /* Symbol the reference should point to */
             type:8;     /* Relocation type */
     } Elf32_Rel;
@@ -462,7 +462,7 @@ Symbol definition types are inconsistent:
 * Two or more strong symbol types are inconsistent;
     * error
 * There is a strong symbol, the others are weak symbols, and the types are inconsistent;
-    * the strong symbol previals. If the weak symbol size is big than strong symbol's, there's warning: ld: warning: alignment 4 of symbol `global’ in a.o is smaller than 8 in b.o
+    * the strong symbol prevails. If the weak symbol size is big than strong symbol's, there's warning: ld: warning: alignment 4 of symbol `global’ in a.o is smaller than 8 in b.o
 * Two or more weak symbol types are inconsistent.
     * the type requiring larger block shall prevail
 
@@ -565,14 +565,13 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
 
 * **Overlay**
 
-    The task of tapping the memory potential is handed over to the programmer. The programmer must manually divide the program into several blocks when writing the program, and then write a small auxiliary code to manage when these modules should reside in memory and when they should be Replace. This small auxiliary code is the so-called Overlay Manager
+    The task of tapping the memory potential is handed over to the programmer. The programmer must manually divide the program into several blocks when writing the program, and then write a small auxiliary code to manage when these modules should reside in memory and when they should be Replace. This small auxiliary code is the so-called Overlay Manager.
 
     ![](../Images/LinkLoadLibrary/6.2-overlay.png)
 
 * **Paging**
 
-    The data and instructions in the memory and all disks are divided into several pages according to the unit of "Page", and the unit of all subsequent loading and operations is the page
-
+    The data and instructions in the memory and all disks are divided into several pages according to the unit of "Page", and the unit of all subsequent loading and operations is the page.
 
 
 ## 6.3 The loading from OS view
@@ -587,7 +586,7 @@ Therefore, the compiler cannot allocate space in the BSS segment for the weak sy
 
 ### 6.4.1 ELF Linking View and Execution View
 
-[Executable and Linkable Format (ELF)](www.skyfree.org/linux/references/ELF_Format.pdf)
+[Executable and Linkable Format (ELF)](http://www.skyfree.org/linux/references/ELF_Format.pdf)
 
 When the number of sections increases, the problem of space waste will arise. Because we know that when the ELF file is mapped, the system page size is used as the unit, so the size of each section during the mapping should be an integer multiple of the system page size; if not, the extra part will also occupy a page.
 
@@ -763,12 +762,12 @@ ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0         [vsyscall]
 // program header
 typedef struct elf32_phdr{
     Elf32_Word  p_type;
-    Elf32_Off    p_offset; // offset in file
+    Elf32_Off   p_offset;   // offset in file
     Elf32_Addr  p_vaddr;
-    Elf32_Addr  p_paddr; // LMA (load memory address)
-    Elf32_Word  p_filesz; // size of file
-    Elf32_Word  p_memsz; // size of virtual memory
-    Elf32_Word  p_flags;  // R W E
+    Elf32_Addr  p_paddr;    // LMA (load memory address)
+    Elf32_Word  p_filesz;   // size of file
+    Elf32_Word  p_memsz;    // size of virtual memory
+    Elf32_Word  p_flags;    // R W E
     Elf32_Word  p_align;
 } Elf32_Phdr;
 ```
@@ -783,7 +782,7 @@ In the operating system, in addition to being used to map each "Segment" in the 
 
 ### 6.4.4 Segment Address Alignment
 
-We need to map a piece of physical memory and process virtual address space to establish a mapping relationship. The length of this memory space must be an integer multiple of 4 096, and the starting address of this space in the physical memory and process virtual address space must be It is an integer multiple of 4096.
+We need to map a piece of physical memory and process virtual address space to establish a mapping relationship. The length of this memory space, the starting address of this space in the physical memory and process virtual address space must be an integer multiple of 4096.
 
 In one case, the length of each segment is not an integral multiple of the page size. One of the simplest mapping methods is to map each segment separately, and the part with a length of less than one page occupies one page.
 
@@ -805,8 +804,6 @@ $ prog 123
 
 ## 6.5 Introduction to Linux Kernel Loading ELF Process
 
-## 6.6 Loading of Windows PE
-
 # 7 Dynamic link
 ## 7.1 Why dynamic link
 
@@ -814,7 +811,7 @@ $ prog 123
 
     ![](../Images/LinkLoadLibrary/7.1-wast-memory-disk.png)
 
-* Program development and release
+* **Program development and release**
 
     Once any modules in the program are updated, the entire program must be re-linked and released to users
 
@@ -841,15 +838,6 @@ int main() {
 ```
 
 ```c++
-// lib.c
-#include "lib.h"
-#include <stdio.h>
-
-void foo(int i) {
-    printf("Printing from Lib.so %d\n", i);
-}
-```
-```c++
 // lib.h
 #ifndef LIB_H
 #define LIB_H
@@ -857,6 +845,16 @@ void foo(int i) {
 void foo(int i);
 
 #endif
+```
+
+```c++
+// lib.c
+#include "lib.h"
+#include <stdio.h>
+
+void foo(int i) {
+    printf("Printing from Lib.so %d\n", i);
+}
 ```
 
 ```c++
@@ -944,31 +942,31 @@ Shared objects cannot assume their position in the virtual address space of the 
 When linking, all references to `absolute addresses` are not relocated, and this step is postponed until loading. Once the module loading address is determined, that is, the target address is determined, the system will relocate all absolute address references in the program.
 
 * Issue with load time relocation
-    * It is conceivable that after the dynamic link module is loaded and mapped to the virtual space, the instruction part is shared among multiple processes. Because the method of relocation during loading needs to modify the instruction, there is no way to share the same instruction by multiple processes. Because the instructions are different for each process after being relocated. Of course, the modifiable data part of the dynamic link library has multiple copies for different processes, so they can be solved by relocation while loading.
+    * It is conceivable that after the shared object module is loaded and mapped to the virtual space, the instruction part is shared among multiple processes. Because the method of relocation during loading needs to modify the instruction, there is no way to share the same instruction by multiple processes. Because the instructions are different for each process after being relocated. Of course, the modifiable data part of the dynamic link library has multiple copies for different processes, so they can be solved by relocation while loading.
 
 Loading-time relocation is one of the solutions to the absolute address reference in dynamic modules, but it has a big disadvantage that the instruction part cannot be shared among multiple processes, which loses the advantage of dynamic linking to save memory.
 
-Linux and GCC support this loading-time relocation method. We used two GCC parameters "-shared" and "-fPIC" when generating shared objects. If only "-shared" is used, then the output shared object It is to use the method of relocation while loading.
+Linux and GCC support this loading-time relocation method. We used two GCC parameters **-shared** and **-fPIC** when generating shared objects. If only "-shared" is used, then the output shared object is to use the method of loading-time relocation.
 
 ### 7.3.3 PIC
-The shared instruction part of the program does not need to be changed due to the change of the load address when loading, so the basic idea is to separate the part of the instruction that needs to be modified and put it together with the data part, so that the instruction part can remain unchanged, and the data part can have a copy in each process. This kind of scheme is the technology called Position-independent Code (PIC).
+The shared instruction part of the program does not need to be changed due to the change of the load address when loading, so the basic idea is to separate the part of the instruction that needs to be modified and put it together with the data part, so that the instruction part can remain unchanged, and the data part can have a copy in each process. This kind of scheme is the technology called Position-independent Code (**PIC**).
 
 Address referece methods:
 1. Inner-module data access
     * The relative position between any instruction and the internal data of the module that it needs to access is fixed, so you only need to add a fixed offset relative to the current instruction to access the internal data of the module.
 
 2. Inter-module data access
-    * The data access target address between modules will not be determined until the load. For example, the variable b in the above example is defined in other modules, and the address can be determined only when it is loaded. As we mentioned earlier, to make the code address irrelevant, the basic idea is to put the address-related part in the data segment. Obviously, the addresses of the global variables of these other modules are related to the module loading address.
-    * The ELF approach is to create an array of pointers to these variables in the data segment, also known as the Global Offset Table (GOT). When the code needs to refer to the global variable, it can use the corresponding item in the GOT Indirect reference
+    * The data access target address between modules will not be determined until the load. For example, the variable b in the above example is defined in other modules, and the address can be determined only when it is loaded. As we mentioned earlier, to make the code address irrelevant, the basic idea is to put the address-related part in the data section. Obviously, the addresses of the global variables of these other modules are related to the module loading address.
+    * The ELF approach is to create an array of pointers to these variables in the data section, also known as the **Global Offset Table (GOT)**. When the code needs to refer to the global variable, it can use the corresponding item in the GOT Indirect reference.
 
 3. Inner-module call
     * Because the called function and the caller are in the same module, the relative position between them is fixed, so this situation is relatively simple. For modern systems, the jumps and function calls inside the module can be relative address calls, or register-based relative calls, so there is no need to relocate this type of instruction.
 
 4. Inter-module call
-    * The corresponding item in GOT saves the address of the target function. When the module needs to call the target function, it can jump indirectly through the item in GOT
+    * The corresponding item in GOT saves the address of the target function. When the module needs to call the target function, it can jump indirectly through the item in GOT.
 
 #### GOT
-Module can determine the offset of the module's internal variables relative to the current instruction at compile time, and then we can also determine the offset of the GOT relative to the current instruction at compile time. Determining the position of the GOT is basically the same as the method of accessing a variable. By obtaining the PC value and adding an offset, the position of the GOT can be obtained. Then we can get the address of the variable according to the offset of the variable address in GOT. Of course, which variable each address in GOT corresponds to is determined by the compiler. For example, the first address corresponds to variable b, and the second corresponds to variable c. Wait.
+Module can determine the offset of the module's internal variables relative to the current instruction at compile time, and then we can also determine the offset of the GOT relative to the current instruction at compile time. Determining the position of the GOT is basically the same as the method of accessing a variable. By obtaining the PC value and adding an offset, the position of the GOT can be obtained. Then we can get the address of the variable according to the offset of the variable address in GOT. Of course, which variable each address in GOT corresponds to is determined by the compiler. For example, the first address corresponds to variable b, and the second corresponds to variable c.
 ```c++
 GOT addr = (current instruction addr) + (GOT offset)
 variable addr = (GOT addr) + (variable offset in GOT)
@@ -979,6 +977,9 @@ variable addr = (GOT addr) + (variable offset in GOT)
 
 * GOT Function
     * ![](../Images/LinkLoadLibrary/7.3-got-func.png)
+
+* Got PLT
+    * ![](../Images/LinkLoadLibrary/7.3-plt.png)
 
 ```c++
 // pic.c
@@ -1051,7 +1052,7 @@ When the shared module is loaded, if a global variable has a copy in the executa
 
 Q: If a global variable G is defined in a lib.so, and both process A and process B use lib.so. When process A changes the value of G, does the G in process B will be affected?
 
-A: No. Because when lib.so is loaded by two processes, its data segment part has independent copies in each process. From this perspective, the global variables in the shared object are actually the same as the global variables defined in the program. Any process accesses only its own copy, and does not affect other processes.
+A: No. Because when lib.so is loaded by two processes, its data section part has independent copies in each process. From this perspective, the global variables in the shared object are actually the same as the global variables defined in the program. Any process accesses only its own copy, and does not affect other processes.
 
 ### 7.3.5 Data segment position independent
 ```c++
@@ -1350,7 +1351,7 @@ If the executable file of the process also has an ".init" section, the dynamic l
 
 ### 7.6.4 Linux Dynamic Linker
 
-Path: glibc-2.3.1/elf/rtld.c _dl_start (void *arg)
+Path: glibc-2.15/elf/rtld.c _dl_start (void *arg)
 _dl_start -> _dl_start_final -> _dl_sysdep_start -> _dl_main
 
 For dynamically linked executable files, the kernel will analyze its dynamic linker address (in the ".interp" section), map the dynamic linker to the process address space, and then transfer control to the dynamic linker.
@@ -1580,11 +1581,16 @@ void __attribute__((destructor(1)))  fini_function_1(void);
 
 * Name-mangling
 
-Call Convention | Pop Stack | Pass Parameters | Name-mangling
--- | -- | -- | --
-cdecl | Caller | push stack from R -> L | <_> + <name>
-stdcall | Callee | push stack from R -> L | <_> + <name> + <@> + <name size>
-fastcall | Callee | push register and push remaining to stack from R -> L | <@> + <name> + <@> + <name size>
+* Calling Convention
+
+    [Wiki: x86 calling conventions](https://en.wikipedia.org/wiki/X86_calling_conventions)
+
+    Calling Convention | Stack cleanup | Stack order | Pass Parameters | Name-mangling
+    -- | -- | -- | -- | ---
+    cdecl | Caller | R -> L | <_> + <name>
+    thiscall | Caller | R -> L |
+    stdcall | Callee | R -> L | <_> + <name> + <@> + <name size>
+    fastcall | Callee | R -> L | <@> + <name> + <@> + <name size>
 
 
 ## 10.3 Heap and memory management
@@ -1596,207 +1602,447 @@ The starting address and size of the space requested by **mmap()** must be an in
 ## 11.1 Entry function and program initialization
 The code in .init and .finit sections will eventually be combined into two functions _init() and _finit(), these two functions will be executed before/after the main function.
 
-
+* [GCC: 18.20.5 How Initialization Functions Are Handled](https://gcc.gnu.org/onlinedocs/gccint/Initialization.html)
 * [Linux x86 Program Start Up or How do we get to main?](http://www.dbp-consulting.com/tutorials/debugging/linuxProgramStartup.html)
+* [How libc startup in a process works](https://www.gnu.org/software/hurd/glibc/startup.html)
 
-    ![](../Images/LinkLoadLibrary/11.1-program-load.png)
+![](../Images/LinkLoadLibrary/11.1-program-load.png)
 
-* _start
-    ```c++
-    // Glibc-2.3.1/sysdeps/x86_64/elf/start.S
-    _start:
-        xorq %rbp, %rbp
+---
 
-        /* int __libc_start_main (
-            int (*main) (int, char **, char **),
-            int argc,
-            char ** ubp_av,
-            void (*init) (void),
-            void (*fini) (void),
-            void (*rtld_fini) (void),
-            void * stack_end
-        )
+![](../Images/LinkLoadLibrary/11.1-crt.png)
 
-        The arguments are passed via registers and on the stack:
-        main:        %rdi
-        argc:        %rsi
-        argv:        %rdx
-        init:        %rcx
-        fini:        %r8
-        rtld_fini:    %r9
-        stack_end:    stack. */
+### Static Load
 
-        movq %rdx, %r9  /* Address of the shared library termination function. */
-        popq %rsi       /* Pop the argc into rsi. */
-        movq %rsp, %rdx /* argv starts just at the current stack top. */
-        andq  $~15, %rsp/* Align the stack to a 16 byte boundary to follow the ABI. */
-        pushq %rax      /* Push garbage because we push 8 more bytes. */
-        pushq %rsp      /* Provide the highest stack address to the user code (for stacks which grow downwards). */
+#### _start
+```c++
+// glibc-2.28/sysdeps/x86_64/elf/start.S
+_start:
+    /* Clear the frame pointer.  The ABI suggests this be done, to mark
+    the outermost frame obviously.  */
+    xorl %ebp, %ebp
 
-        movq $_fini, %r8/* Pass address of our own entry points to .fini and .init. */
-        movq $_init, %rcx
+    /* Extract the arguments as encoded on the stack and set up
+    the arguments for __libc_start_main (int (*main) (int, char **, char **),
+        int argc, char *argv,
+        void (*init) (void), void (*fini) (void),
+        void (*rtld_fini) (void), void *stack_end).
+    The arguments are passed via registers and on the stack:
+    main:        %rdi
+    argc:        %rsi
+    argv:        %rdx
+    init:        %rcx
+    fini:        %r8
+    rtld_fini:    %r9
+    stack_end:    stack.    */
 
-        movq $BP_SYM (main), %rdi
+    movq %rdx, %r9  /* Address of the shared library termination function.  */
+    popq %rsi       /* Pop the argument count.  */
+    movq %rsp, %rdx /* argv starts just at the current stack top.  */
+    /* Align the stack to a 16 byte boundary to follow the ABI.  */
+    andq  $~15, %rsp
 
-        /* Call the user's main function, and exit with its value. But let the libc call main.      */
-        call BP_SYM (__libc_start_main)
+    pushq %rax      /* Push garbage because we push 8 more bytes.  */
 
-        hlt            /* Crash if somehow `exit' does return. */
+    /* Provide the highest stack address to the user code (for stacks which grow downwards).  */
+    pushq %rsp
 
-    /* Define a symbol for the first piece of initialized data. */
-        .data
-        .globl __data_start
-    __data_start:
-        .long 0
-        .weak data_start
-        data_start = __data_start
-    ```
+#ifdef SHARED
+    /* Pass address of our own entry points to .fini and .init.  */
+    movq __libc_csu_fini@GOTPCREL(%rip), %r8
+    movq __libc_csu_init@GOTPCREL(%rip), %rcx
 
-    ```c++
-    // glibc-2.3.1/sysdeps/generic/libc-start.c
-    int BP_SYM (__libc_start_main) (
-        int (*main) (int, char **, char **),
-        int argc,
-        char ** ubp_av,
-        void (*init) (void),
-        void (*fini) (void),
-        void (*rtld_fini) (void),
-        void * stack_end)
+    movq BP_SYM (main)@GOTPCREL(%rip), %rdi
+
+    /* Call the user's main function, and exit with its value.
+    But let the libc call main.      */
+    call BP_SYM (__libc_start_main)@PLT
+#else
+    /* Pass address of our own entry points to .fini and .init.  */
+    movq $__libc_csu_fini, %r8
+    movq $__libc_csu_init, %rcx
+
+    movq $BP_SYM (main), %rdi
+
+    /* Call the user's main function, and exit with its value.
+    But let the libc call main.      */
+    call BP_SYM (__libc_start_main)
+#endif
+
+    hlt            /* Crash if somehow `exit' does return.     */
+
+/* Define a symbol for the first piece of initialized data.  */
+    .data
+    .globl __data_start
+__data_start:
+    .long 0
+    .weak data_start
+    data_start = __data_start
+
+```
+
+csu -> C start up
+
+#### __libc_start_main
+```c++
+// glibc-2.28/csu/libc-start.c
+
+int __libc_start_main (
+    int (*main) (int, char **, char ** MAIN_AUXVEC_DECL),
+    int argc,
+    char **argv,
+    __typeof (main) init,
+    void (*fini) (void),
+    void (*rtld_fini) (void),
+    void *stack_end)
+{
+    char ** ubp_ev = &ubp_av[argc + 1];
+
+    /* Result of the 'main' function.  */
+    int result;
+    __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
+
+    INIT_ARGV_and_ENVIRON;
+
+    /* Store the lowest stack address.  */
+    __libc_stack_end = stack_end;
+
+    __pthread_initialize_minimal ();
+
+    /* Register the destructor of the dynamic linker if there is any.  */
+    if (__builtin_expect (rtld_fini != NULL, 1))
+        __cxa_atexit((void (*) (void *)) rtld_fini, NULL, NULL);
+
+    /* Call the initializer of the libc.  This is only needed here if we
+        are compiling for the static library in which case we haven't
+        run the constructors in `_dl_start_user'.  */
+    #ifndef SHARED
+        __libc_init_first(argc, argv, __environ);
+    #endif
+
+    __cxa_atexit((void (*) (void *)) fini, NULL, NULL);
+
+    (*init) (argc, argv, __environ MAIN_AUXVEC_PARAM);
+
+    result = main (argc, argv, __environ);
+
+    exit(result);
+}
+
+void exit (int status)
+{
+    while (__exit_funcs != NULL) {
+        __exit_funcs();
+        __exit_funcs = __exit_funcs->next;
+    }
+    _exit (status);
+}
+
+_exit:
+    movl    4(%esp), %ebx
+    movl    $__NR_exit, %eax
+    int     $0x80
+    hlt
+```
+
+#### __libc_csu_init
+```c++
+// glibc-2.28/csu/elf-init.c
+
+/* These function symbols are provided for the .init/.fini section entry
+   points automagically by the linker.  */
+extern void _init (void);
+extern void _fini (void);
+
+void __libc_csu_init (int argc, char **argv, char **envp)
+{
+    /* For dynamically linked executables the preinit array is executed by
+        the dynamic linker (before initializing any shared object).  */
+
+    #ifndef LIBC_NONSHARED
+    /* For static executables, preinit happens right before init.  */
     {
-        char ** ubp_ev = &ubp_av[argc + 1];
-
-        /* Result of the 'main' function.  */
-        int result;
-        __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
-
-        INIT_ARGV_and_ENVIRON;
-
-        /* Store the lowest stack address.  */
-        __libc_stack_end = stack_end;
-
-        __pthread_initialize_minimal ();
-
-        /* Register the destructor of the dynamic linker if there is any.  */
-        if (__builtin_expect (rtld_fini != NULL, 1))
-            __cxa_atexit((void (*) (void *)) rtld_fini, NULL, NULL);
-
-        /* Call the initializer of the libc.  This is only needed here if we
-            are compiling for the static library in which case we haven't
-            run the constructors in `_dl_start_user'.  */
-        #ifndef SHARED
-        __libc_init_first (argc, argv, __environ);
-        #endif
-
-        __cxa_atexit((void (*) (void *)) fini, NULL, NULL);
-
-        (*init)();
-
-        result = main (argc, argv, __environ);
-
-        exit(result);
+        const size_t size = __preinit_array_end - __preinit_array_start;
+        size_t i;
+        for (i = 0; i < size; i++)
+            (*__preinit_array_start [i]) (argc, argv, envp);
     }
+    #endif
 
-    void exit (int status)
+    _init();
+
+    const size_t size = __init_array_end - __init_array_start;
+    for (size_t i = 0; i < size; i++)
+        (*__init_array_start [i]) (argc, argv, envp);
+}
+
+void __libc_csu_fini (void)
+{
+    #ifndef LIBC_NONSHARED
+    size_t i = __fini_array_end - __fini_array_start;
+    while (i-- > 0)
+        (*__fini_array_start [i]) ();
+
+    _fini();
+    #endif
+}
+```
+
+#### __libc_init_first
+```c++
+// glibc-2.28/csu/init-first.c
+void __libc_init_first(int argc, char *arg0, ...)
+{
+#ifdef SHARED
+  /* For DSOs we do not need __libc_init_first but instead _init.  */
+}
+
+void
+attribute_hidden
+_init (int argc, char **argv, char **envp)
+{
+#endif
+
+  __libc_multiple_libcs = &_dl_starting_up && !_dl_starting_up;
+
+  /* Save the command-line arguments. */
+  __libc_argc = argc;
+  __libc_argv = argv;
+  __environ = envp;
+
+  __init_misc (argc, argv, envp);
+
+  /* Initialize ctype data.  */
+  __ctype_init ();
+
+  __libc_global_ctors();
+}
+
+// glibc-2.28/elf/soinit.c
+void __libc_global_ctors(void)
+{
+    while (*++__CTOR_LIST__)
+        (**__CTOR_LIST__)();
+}
+```
+
+#### _init
+```c++
+08048274 <_init>:
+    8048274:       55                      push   %ebp
+    8048275:       89 e5                   mov    %esp,%ebp
+    8048277:       53                      push   %ebx
+    8048278:       83 ec 04                sub    $0x4,%esp
+    804827b:       e8 00 00 00 00          call   8048280 <_init+0xc>
+    8048280:       5b                      pop    %ebx
+    8048281:       81 c3 74 1d 00 00       add    $0x1d74,%ebx        (.got.plt)
+    8048287:       8b 93 fc ff ff ff       mov    -0x4(%ebx),%edx
+    804828d:       85 d2                   test   %edx,%edx
+    804828f:       74 05                   je     8048296 <_init+0x22>
+    8048291:       e8 1e 00 00 00          call   80482b4 <__gmon_start__@plt>
+    8048296:       e8 d5 00 00 00          call   8048370 <frame_dummy>
+    804829b:       e8 70 01 00 00          call   8048410 <__do_global_ctors_aux>
+    80482a0:       58                      pop    %eax
+    80482a1:       5b                      pop    %ebx
+    80482a2:       c9                      leave
+    80482a3:       c3                      ret
+```
+
+```c++
+// glibc-2.28/sysdeps/x86_64/crti.S
+
+#ifndef PREINIT_FUNCTION
+# define PREINIT_FUNCTION __gmon_start__
+#endif
+
+_init:
+    _CET_ENDBR
+    /* Maintain 16-byte stack alignment for called functions.  */
+    subq $8, %rsp
+#if PREINIT_FUNCTION_WEAK
+    movq PREINIT_FUNCTION@GOTPCREL(%rip), %rax
+    testq %rax, %rax
+    je .Lno_weak_fn
+    call *%rax
+.Lno_weak_fn:
+#else
+    call PREINIT_FUNCTION
+#endif
+```
+
+### Dynamic Load
+
+#### _start
+```c++
+// glibc-2.28/sysdeps/x86_64/dl-machine.h
+#define RTLD_START asm ("
+.text
+    .align 16
+.globl _start
+.globl _dl_start_user
+
+_start:
+    movq %rsp, %rdi
+    call _dl_start
+
+_dl_start_user:
+    # Save the user entry point address in %r12.
+    movq %rax, %r12
+
+    # See if we were run as a command with the executable file
+
+    # name as an extra leading argument.
+    movl _dl_skip_args(%rip), %eax
+
+    # Pop the original argument count.
+    popq %rdx
+
+    # Adjust the stack pointer to skip _dl_skip_args words.
+    leaq (%rsp,%rax,8), %rsp
+
+    # Subtract _dl_skip_args from argc.
+    subl %eax, %edx
+
+    # Push argc back on the stack.
+    pushq %rdx
+
+    # Call _dl_init (struct link_map *main_map, int argc, char **argv, char **env)
+
+    # argc -> rsi
+    movq %rdx, %rsi
+
+    # Save %rsp value in %r13.
+    movq %rsp, %r13
+
+    # And align stack for the _dl_init call.
+    andq $-16, %rsp
+
+    # _dl_loaded -> rdi
+    movq _rtld_local(%rip), %rdi
+
+    # env -> rcx
+    leaq 16(%r13,%rdx,8), %rcx
+
+    # argv -> rdx
+    leaq 8(%r13), %rdx
+
+    # Clear %rbp to mark outermost frame obviously even for constructors.
+    xorl %ebp, %ebp
+
+    # Call the function to run the initializers.
+    call _dl_init
+
+    # Pass our finalizer function to the user in %rdx, as per ELF ABI.
+    leaq _dl_fini(%rip), %rdx
+
+    # And make sure %rsp points to argc stored on the stack.
+    movq %r13, %rsp
+
+    # Jump to the user's entry point glibc-2.28/sysdeps/x86_64/elf/start.S
+    jmp *%r12 #
+
+.previous
+
+");
+```
+
+#### _dl_init
+```c++
+// glibc-2.28/elf/dl-init.c
+void _dl_init (struct link_map *main_map, int argc, char **argv, char **env)
+{
+  ElfW(Dyn) *preinit_array = main_map->l_info[DT_PREINIT_ARRAY];
+  ElfW(Dyn) *preinit_array_size = main_map->l_info[DT_PREINIT_ARRAYSZ];
+  unsigned int i;
+
+  if (__glibc_unlikely (GL(dl_initfirst) != NULL))
     {
-        while (__exit_funcs != NULL) {
-            __exit_funcs();
-            __exit_funcs = __exit_funcs->next;
-        }
-        _exit (status);
+      call_init (GL(dl_initfirst), argc, argv, env);
+      GL(dl_initfirst) = NULL;
     }
 
-    _exit:
-        movl    4(%esp), %ebx
-        movl    $__NR_exit, %eax
-        int     $0x80
-        hlt
-    ```
-* _libc_csu_init
-    ```c++
-    // _start -> _libc_init_start -> _libc_csu_init
-    void _libc_csu_init(int argc, char** argv, char** envp) {
-        _init();
-
-        const size_t size = _init_array_end - _init_array_start;
-        for (size_t i = 0; i < size; ++i) {
-            (*_init_array_start[i])(argc, argv, envp);
-        }
-    }
-    ```
-
-* _init
-    ```c++
-    // glibc-2.3.1/sysdeps/generic/initfini.c
-    SECTION (".init");
-    extern void _init (void);
-    void _init (void)
+  /* Don't do anything if there is no preinit array.  */
+  if (__builtin_expect (preinit_array != NULL, 0)
+      && preinit_array_size != NULL
+      && (i = preinit_array_size->d_un.d_val / sizeof (ElfW(Addr))) > 0)
     {
-    /* We cannot use the normal constructor mechanism in gcrt1.o because it
-        appears before crtbegin.o in the link, so the header elt of .ctors
-        would come after the elt for __gmon_start__.  One approach is for
-        gcrt1.o to reference a symbol which would be defined by some library
-        module which has a constructor; but then user code's constructors
-        would come first, and not be profiled.  */
-    call_gmon_start ();
+      ElfW(Addr) *addrs;
+      unsigned int cnt;
 
-    asm ("ALIGN");
-    asm("END_INIT");
-    /* Now the epilog. */
-    asm ("\n/*@_init_PROLOG_ENDS*/");
-    asm ("\n/*@_init_EPILOG_BEGINS*/");
-    SECTION(".init");
+      addrs = (ElfW(Addr) *) (preinit_array->d_un.d_ptr + main_map->l_addr);
+      for (cnt = 0; cnt < i; ++cnt)
+        ((init_t) addrs[cnt]) (argc, argv, env);
     }
-    asm ("END_INIT");
 
-    // glibc-2.3.1/sysdeps/generic/initfini.c
-    static void call_gmon_start(void)
+  /* Stupid users forced the ELF specification to be changed.  It now
+     says that the dynamic loader is responsible for determining the
+     order in which the constructors have to run.  The constructors
+     for all dependencies of an object must run before the constructor
+     for the object itself.  Circular dependencies are left unspecified.
+
+     This is highly questionable since it puts the burden on the dynamic
+     loader which has to find the dependencies at runtime instead of
+     letting the user do it right.  Stupidity rules!  */
+
+  i = main_map->l_searchlist.r_nlist;
+  while (i-- > 0)
+    call_init (main_map->l_initfini[i], argc, argv, env);
+
+#ifndef HAVE_INLINED_SYSCALLS
+  /* Finished starting up.  */
+  _dl_starting_up = 0;
+#endif
+}
+```
+
+```c++
+// glibc-2.28/elf/dl-init.c
+static void call_init (struct link_map *l, int argc, char **argv, char **env)
+{
+    if (l->l_init_called)
+        /* This object is all done.  */
+        return;
+
+    /* Avoid handling this constructor again in case we have a circular
+        dependency.  */
+    l->l_init_called = 1;
+
+    /* Check for object which constructors we do not run here.  */
+    if (__builtin_expect (l->l_name[0], 'a') == '\0' && l->l_type == lt_executable)
+        return;
+
+    /* Are there any constructors?  */
+    if (l->l_info[DT_INIT] == NULL && __builtin_expect (l->l_info[DT_INIT_ARRAY] == NULL, 1))
+        return;
+    /* Now run the local constructors.  There are two forms of them:
+        - the one named by DT_INIT
+        - the others in the DT_INIT_ARRAY.
+    */
+    if (l->l_info[DT_INIT] != NULL)
+        DL_CALL_DT_INIT(l, l->l_addr + l->l_info[DT_INIT]->d_un.d_ptr, argc, argv, env);
+
+    /* Next see whether there is an array with initialization functions.  */
+    ElfW(Dyn) *init_array = l->l_info[DT_INIT_ARRAY];
+    if (init_array != NULL)
     {
-    extern void __gmon_start__ (void) __attribute__ ((weak)); /*weak_extern (__gmon_start__);*/
-    void (*gmon_start) (void) = __gmon_start__;
+        unsigned int j;
+        unsigned int jm;
+        ElfW(Addr) *addrs;
 
-    if (gmon_start)
-        gmon_start ();
+        jm = l->l_info[DT_INIT_ARRAYSZ]->d_un.d_val / sizeof (ElfW(Addr));
+
+        addrs = (ElfW(Addr) *) (init_array->d_un.d_ptr + l->l_addr);
+        for (j = 0; j < jm; ++j)
+            ((init_t) addrs[j]) (argc, argv, env);
     }
-    ```
-
-* __libc_init_first
-    ```c++
-    void __libc_init_first(int argc, char *arg0, ...)
-    {
-    char **argv = &arg0, **envp = &argv[argc + 1];
-
-    __environ = envp;
-    __libc_init (argc, argv, envp);
-    }
-
-    void __libc_init (int argc, char **argv, char **envp)
-    {
-        /* These functions are defined in crti.o to run the .init and .fini
-        sections, which are used for initializers and finalizers.  */
-        extern void _init (void), _fini (void);
-        atexit (&_fini); /* Arrange for _fini to run at exit.  */
-        _init ();
-    }
-
-    _init (int argc, ...)
-    {
-    init (&argc);
-
-    __libc_global_ctors();
-    }
-
-    // glibc-2.3.1/elf/soinit.c
-    void __libc_global_ctors (void)
-    {
-    /* Call constructor functions.  */
-    run_hooks(__CTOR_LIST__);
-    }
-    ```
+}
+```
 
 ## 11.2 C/C++ runtime library
 
-glib c header: /usr/include
-glib c library: /lib64/libc.so.6, /usr/lib64/libc.a, /usr/lib64/crt1.o, /usr/lib64/crti.o, /usr/lib64/crtn.o
+glib c header: `/usr/include`
+
+glib c library: `/lib64/libc.so.6`, `/usr/lib64/libc.a`, `/usr/lib64/crt1.o`, `/usr/lib64/crti.o`, `/usr/lib64/crtn.o`
 
 A C language runtime roughly includes the following functions:
 * **Start and exit**: including entry function and other functions that the entry function depends on.
@@ -1813,6 +2059,30 @@ A C language runtime roughly includes the following functions:
 #define va_end(ap) (ap=(va_list)0)
 ```
 
+An easy way to see what's in there is to set the environment variable `LD_SHOW_AUXV=1` before running the program.
+```c++
+[root@VM-16-17-centos code]# LD_SHOW_AUXV=1 ./Alice
+AT_SYSINFO_EHDR: 0x7ffef9b39000
+AT_HWCAP:        f8bfbff
+AT_PAGESZ:       4096
+AT_CLKTCK:       100
+AT_PHDR:         0x400040
+AT_PHENT:        56
+AT_PHNUM:        9
+AT_BASE:         0x7f7196293000
+AT_FLAGS:        0x0
+AT_ENTRY:        0x400520
+AT_UID:          0
+AT_EUID:         0
+AT_GID:          0
+AT_EGID:         0
+AT_SECURE:       0
+AT_RANDOM:       0x7ffef9aa0a99
+AT_HWCAP2:       0x2
+AT_EXECFN:       ./Alice
+AT_PLATFORM:     x86_64
+```
+
 ### crt1 crti crtn
 
 The code crti.o and crtn.o is actually the beginning and end of the _init() function and _finit() function, when these two files and other object files are linked in the order of installation, two complete functions _init() and _finit() are formed.
@@ -1827,11 +2097,11 @@ The code crti.o and crtn.o is actually the beginning and end of the _init() func
     0000000000000000 <_init>:
     0:   f3 0f 1e fa             endbr64
     4:   48 83 ec 08             sub    $0x8,%rsp
-    8:   48 8b 05 00 00 00 00    mov    0x0(%rip),%rax        # f <_init+0xf>
-                            b: R_X86_64_REX_GOTPCRELX       __gmon_start__-0x4
+    8:   48 8b 05 00 00 00 00    mov    0x0(%rip),%rax  # f <_init+0xf>
+                            b: R_X86_64_REX_GOTPCRELX   __gmon_start__-0x4
     f:   48 85 c0                test   %rax,%rax
-    12:   74 02                   je     16 <_init+0x16>
-    14:   ff d0                   callq  *%rax
+    12:  74 02                   je     16 <_init+0x16>
+    14:  ff d0                   callq  *%rax
 
     Disassembly of section .fini:
 
@@ -1870,7 +2140,7 @@ ld crt1.o crti.o crtbegin.o [user_objects] [system_libraries] crtend.o crtn.o -l
 __ attribute__((section(".init")))
 ```
 
-You can use "__ attribute__((section(".init")))" to put functions in the .init section, but it should be noted that putting ordinary functions in ".init" will destroy their structure, because the function of the return instruction causes the _init() function to return early. The assembly instruction must be used, and the compiler cannot generate a "ret" instruction.
+You can use "\__attribute__((section(".init")))" to put functions in the .init section, but it should be noted that putting ordinary functions in ".init" will destroy their structure, because the function of the return instruction causes the _init() function to return early. The assembly instruction must be used, and the compiler cannot generate a "ret" instruction.
 
 ![](../Images/LinkLoadLibrary/11.2-crti-init.png)
 
@@ -1882,11 +2152,9 @@ You can use "__ attribute__((section(".init")))" to put functions in the .init s
 /usr/lib/gcc/x86_64-redhat-linux/8/libgcc_eh.a
 
 
-
 ## 11.3 Runtime library and multithreading
 
 ## 11.4 C++ global construction and destruction
-[GCC: 18.20.5 How Initialization Functions Are Handled](https://gcc.gnu.org/onlinedocs/gccint/Initialization.html)
 
 ```c++
 // gcc/libgcc/crtstuff.c
@@ -1924,17 +2192,57 @@ crtend.o: The content of .ctors in this file is even simpler, its content is a 0
 
 ```c++
 #include <stdio.h>
+#include <stdlib.h>
 
-void my_init(void) __attribute__ ((constructor));
+#define printf_func() printf("%s\n", __FUNCTION__)
 
-void my_init(void) {
-    printf("Hello ");
+#define SECTION(S) __attribute__((section(S)))
+
+void _preinit_arr(int argc, char **argv, char **envp) {
+    printf_func();
+}
+
+void _init(int argc, char **argv, char **envp) {
+    printf_func();
+}
+
+void _init_arr(int argc, char **argv, char **envp) {
+    printf_func();
+}
+
+void _fini_arr() {
+    printf_func();
+}
+
+SECTION(".preinit_array") typeof(_preinit_arr)* preinit_arr = _preinit_arr;
+SECTION(".preinit_array") typeof(_init)* init = _init;
+SECTION(".init_array") typeof(_init_arr)* init_arr = _init_arr;
+SECTION(".fini_array") typeof(_fini_arr)* fini_arr = _fini_arr;
+
+void  __attribute__ ((constructor)) constructor() {
+    printf_func();
+}
+
+void __attribute__ ((destructor)) destructor() {
+    printf_func();
+}
+
+void exit_1() {
+    printf_func();
+}
+
+void exit_2() {
+    printf_func();
 }
 
 int main() {
-    printf("World!\n");
-    return 0;
+    atexit(exit_1);
+    atexit(exit_2);
 }
+```
+
+```c++
+(gdb) set disassemble-next-line on
 ```
 
 Since the construction and destruction of global objects are done by the runtime, when there are global objects in the program or shared library, remember that you cannot use the **-nonstartfiles** or **-nostdlib** option, otherwise, the construction and destructor will Can't execute normally
