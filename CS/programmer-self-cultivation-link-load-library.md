@@ -978,8 +978,8 @@ variable addr = (GOT addr) + (variable offset in GOT)
 * GOT Function
     * ![](../Images/LinkLoadLibrary/7.3-got-func.png)
 
-* Got PLT
-    * ![](../Images/LinkLoadLibrary/7.3-plt.png)
+* GOT PLT
+    * ![](../Images/LinkLoadLibrary/7.3-got-plt.png)
 
 ```c++
 // pic.c
@@ -1021,8 +1021,8 @@ Disassembly of section .init:
 Disassembly of section .plt:
 
 0000000000000540 <.plt>:
- 540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)       # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>
- 546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)      # 201010 <_GLOBAL_OFFSET_TABLE_+0x10>
+ 540:   ff 35 c2 0a 20 00       pushq  0x200ac2(%rip)       # 201008 <_GLOBAL_OFFSET_TABLE_+0x8>  GOT[1]
+ 546:   ff 25 c4 0a 20 00       jmpq   *0x200ac4(%rip)      # 201010 <_GLOBAL_OFFSET_TABLE_+0x10> GOt[2]
  54c:   0f 1f 40 00             nopl   0x0(%rax)
 
 0000000000000550 <bar@plt>:
@@ -1048,7 +1048,9 @@ Disassembly of section .text:
 
 Elf defines global variables in the module as external variables when it compiles the code.
 
-When the shared module is loaded, if a global variable has a copy in the executable file, the dynamic linker will point the corresponding address in the GOT to the copy, so that the variable will actually have only one instance at runtime. If the variable is initialized in the shared module, the dynamic linker also needs to copy the initialization value to the copy of the variable in the main module of the program; if the global variable does not have a copy in the main module of the program, then the corresponding address in the GOT points to internal copy of the variable in the module.
+When the shared module is loaded, if a global variable has a copy in the executable file, the dynamic linker will point the corresponding address in the GOT to the copy, so that the variable will actually have only one instance at runtime. If the variable is initialized in the shared module, the dynamic linker also needs to copy the initialization value to the copy of the variable in the main module of the program; if the global variable does not have a copy in the main module of the program, then the corresponding address in the GOT points to internal copy of the variable in the shared module.
+
+Assuming that module.c is a part of a shared object, then the GCC compiler will generate code for calls to global in a cross-module mode in the case of -fPIC. The reason is also simple: the compiler cannot determine whether the reference to global is cross-module or internal. Even if it is inside a module, that is, a reference to a global variable inside a module, according to the above conclusion, cross-module code will still be generated, because global may be referenced by executable files, so that references to global in shared modules will execute executable files The global copy in.
 
 Q: If a global variable G is defined in a lib.so, and both process A and process B use lib.so. When process A changes the value of G, does the G in process B will be affected?
 
@@ -1062,7 +1064,7 @@ static int* p = &a;
 
 If there is such a piece of code in a shared object, then the address of pointer p is an absolute address, which points to variable a, and the address of variable a will change as the load address of the shared object changes. So is there any way to solve this problem?
 
-We can use `Load Time Relocation` to solve the problem of absolute address reference in the data segment. For shared objects, if there is an absolute address reference in the data segment, the compiler and linker will generate a relocation table, which contains a relocation entry of type "R_386_RELATIVE" to solve the above problems. When the dynamic linker loads a shared object, if it finds that the shared object has such a relocation entry, the dynamic linker will relocate the shared object.
+We can use `Load Time Relocation` to solve the problem of absolute address reference in the data section. For shared objects, if there is an absolute address reference in the data section, the compiler and linker will generate a relocation table, which contains a relocation entry of type "R_386_RELATIVE" to solve the above problems. When the dynamic linker loads a shared object, if it finds that the shared object has such a relocation entry, the dynamic linker will relocate the shared object.
 
 ```c++
 $gcc -shared pic.c -o pic.so
@@ -1140,7 +1142,7 @@ Disassembly of section .text:
  656:   c3                      retq
 ```
 
-![](../Images/LinkLoadLibrary/7.4-got-plt.png)
+![](../Images/LinkLoadLibrary/7.4-plt.png)
 
 ## 7.5 Dynamic link related structure
 
@@ -1160,15 +1162,15 @@ Contents of section .interp:
 
 ### 7.5.2 .dynamic
 
-.dynamic section stores depended shared objects, the location of the .dynsym (dynamic link symbol table), the .rel.dyn .rel.plt (location of the dynamic link relocation table), the address of the shared object initialization code, etc.
+.dynamic section stores depended shared objects, the location of the `.dynsym` (dynamic link symbol table), the `.rel.dyn` `.rel.plt` (location of the dynamic link relocation table), `.init` (the address of the shared object initialization code), etc.
 
 ```c++
 typedef struct dynamic{
-  Elf32_Sword d_tag;
-  union{
-    Elf32_Sword d_val;
-    Elf32_Addr  d_ptr;
-  } d_un;
+    Elf32_Sword d_tag;
+    union{
+        Elf32_Sword d_val;
+        Elf32_Addr  d_ptr;
+    } d_un;
 } Elf32_Dyn;
 ```
 
@@ -1222,7 +1224,7 @@ Dynamic section at offset 0xe00 contains 25 entries:
 
 ### 7.5.3 .dynsym
 
-".Dynsym" only saves symbols related to dynamic linking, and does not save the symbols inside those modules, such as module private variables. In many cases, a dynamically linked module has two tables, ".dynsym" and ".symtab". ".symtab" often saves all symbols, including the symbols in ".dynsym".
+".dynsym" only saves symbols related to dynamic linking, and does not save the symbols inside those modules, such as module private variables. In many cases, a dynamically linked module has two tables, ".dynsym" and ".symtab". ".symtab" often saves all symbols, including the symbols in ".dynsym".
 
 ```c++
 [root@VM-16-17-centos code]# readelf -sD Lib.so
