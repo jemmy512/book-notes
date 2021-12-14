@@ -852,6 +852,8 @@ void foo(int i);
 #include "lib.h"
 #include <stdio.h>
 
+int global_data = 4;
+
 void foo(int i) {
     printf("Printing from Lib.so %d\n", i);
 }
@@ -1048,13 +1050,54 @@ Disassembly of section .text:
 
 Elf defines global variables in the module as external variables when it compiles the code.
 
-When the shared module is loaded, if a global variable has a copy in the executable file, the dynamic linker will point the corresponding address in the GOT to the copy, so that the variable will actually have only one instance at runtime. If the variable is initialized in the shared module, the dynamic linker also needs to copy the initialization value to the copy of the variable in the main module of the program; if the global variable does not have a copy in the main module of the program, then the corresponding address in the GOT points to internal copy of the variable in the shared module.
+When the shared module is loaded,
+* case 1: if a global variable has a copy in the executable file (allocated in .bss), the dynamic linker will point the corresponding address in the GOT to the copy, so that the variable will actually have only one instance at runtime. If the variable is initialized in the shared module, the dynamic linker also needs to copy the initialization value to the copy of the variable in the main module of the program;
+* case 2: if the global variable does not have a copy in the main module of the program (explicit runtime linking), e.g., use dlsym to access the variable direclty, then the corresponding address in the GOT points to internal copy of the variable in the shared module (the variable is copied at mmap section).
 
-Assuming that module.c is a part of a shared object, then the GCC compiler will generate code for calls to global in a cross-module mode in the case of -fPIC. The reason is also simple: the compiler cannot determine whether the reference to global is cross-module or internal. Even if it is inside a module, that is, a reference to a global variable inside a module, according to the above conclusion, cross-module code will still be generated, because global may be referenced by executable files, so that references to global in shared modules will execute executable files The global copy in.
+Assuming that module.c is a part of a shared object, then the GCC compiler will generate code for calls to global variables in a cross-module mode in the case of -fPIC. The reason is also simple: the compiler cannot determine whether the reference to global is cross-module or internal. Even if it is inside a module, that is, a reference to a global variable inside a module, according to the above conclusion, cross-module code will still be generated, because global may be referenced by executable files, so that references to global variables in shared modules is the copy in executable files.
 
 Q: If a global variable G is defined in a lib.so, and both process A and process B use lib.so. When process A changes the value of G, does the G in process B will be affected?
 
 A: No. Because when lib.so is loaded by two processes, its data section part has independent copies in each process. From this perspective, the global variables in the shared object are actually the same as the global variables defined in the program. Any process accesses only its own copy, and does not affect other processes.
+
+```c++
+// global-case-1.c
+#include "lib.h"
+
+// the global_data is allocated in .bss when loading
+extern int global_data;
+
+int main() {
+    global_data = 12;
+    foo(1);
+    return 0;
+}
+```
+
+```c++
+// global-case-2.c
+int main(int argc, char* argv[]) {
+    char* error;
+    void* handle = dlopen("./Lib.so", RTLD_NOW);
+
+    if (handle == NULL) {
+        printf("Open library %s error: %s\n", argv[1], dlerror());
+        return -1;
+    }
+
+    // global_data_ptr points to the address at mmap section
+    int* global_data_ptr = sinFn = dlsym(handle,"sin");
+    if ((error = dlerror()) != NULL ) {
+        printf("Symbol sin not found: %s\n", error);
+        goto exit_runso;
+    }
+
+    printf("%d\n", *global_data_ptr);
+
+    exit_runso:
+        dlclose(handle);
+}
+```
 
 ### 7.3.5 Data segment position independent
 ```c++
@@ -1379,9 +1422,9 @@ Dynamic libraries search order:
 If there is a dependency relationship between the loaded modules, such as module A and module B, the programmer needs to manually load the dependent modules, for example, load B first, then load A.
 
 The value returned by **dlsym** has different meanings for different types of symbols:
-* If the symbol is a function, then it returns the address of the function
-* If it is a variable, it returns the address of the variable
-* If the symbol is a constant, then it returns the value of the constant
+* If the symbol is a **function**, then it returns the address of the function
+* If it is a **variable**, it returns the address of the variable
+* If the symbol is a **constant**, then it returns the value of the constant
 
 **Name Conflict**: dlopen uses Load Ordering while dlsym uses Dependency Ordering:
 * When multiple symbols with the same name conflict, the symbol loaded first takes precedence. We call this priority method **Load Ordering**.
@@ -1540,9 +1583,9 @@ Dynamic libraries search order:
 
 ## 8.6 Creation and installation of shared libraries
 ```c++
-// -Wa,<options> Pass comma-separated <options> on to the assembler.
-// -Wp,<options> Pass comma-separated <options> on to the preprocessor.
-// -Wl,<options> Pass comma-separated <options> on to the linker.
+// -Wa,<options> Pass comma-separated <options> to the assembler.
+// -Wp,<options> Pass comma-separated <options> to the preprocessor.
+// -Wl,<options> Pass comma-separated <options> to the linker.
 
 $gcc -shared -fPIC -Wl,-soname,libfoo.so.1 -o libfoo.so.1.0.0 \
    libfoo1.c libfoo2.c \
@@ -1587,8 +1630,8 @@ void __attribute__((destructor(1)))  fini_function_1(void);
 
     [Wiki: x86 calling conventions](https://en.wikipedia.org/wiki/X86_calling_conventions)
 
-    Calling Convention | Stack cleanup | Stack order | Pass Parameters | Name-mangling
-    -- | -- | -- | -- | ---
+    Calling Convention | Stack cleanup | Pass Parameters | Name-mangling
+    -- | -- | -- | ---
     cdecl | Caller | R -> L | <_> + <name>
     thiscall | Caller | R -> L |
     stdcall | Callee | R -> L | <_> + <name> + <@> + <name size>
@@ -2188,7 +2231,7 @@ When the linker links the user's target file, **crtbegin.o** is always in front 
 
 Before and after the target file, you need to link crtbegin.o and crtend.o. These two glibc target files also have a .ctors section. When linking, the contents of the .ctors section of these two files will also be merged into the final executable file.
 
-The .ctor section of crtbegin.o is a 4-byte ?1 (0xFFFFFFFF), and the linker is responsible for changing this value to the number of global constructions. Then this section also defines the starting address as the symbol `__CTOR_LIST__`, so that in fact `__CTOR_LIST__` represents the starting address of all the .ctor sections that are finally merged.
+The .ctor section of crtbegin.o is a 4-byte -1 (0xFFFFFFFF), and the linker is responsible for changing this value to the number of global constructions. Then this section also defines the starting address as the symbol `__CTOR_LIST__`, so that in fact `__CTOR_LIST__` represents the starting address of all the .ctor sections that are finally merged.
 
 crtend.o: The content of .ctors in this file is even simpler, its content is a 0, and then a symbol `__CTOR_END__` is defined, pointing to the end of the .ctor section.
 
