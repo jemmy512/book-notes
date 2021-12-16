@@ -76,12 +76,12 @@ function statement (invoice, plays) {
 }
 ```
 
-A poorly designed system is hard to change—because it is difficult to figure out what to change and how these changes will interact with the existing code to get the behavior I want. And if it is hard to figure out what to change, there is a good chance that I will make mistakes and introduce bugs.
+A poorly designed system is hard to change - because it is difficult to figure out what to change and how these changes will interact with the existing code to get the behavior I want. And if it is hard to figure out what to change, there is a good chance that I will make mistakes and introduce bugs.
 
 ## Comments on the Starting Program
 When you have to add a feature to a program but the code is not structured in a convenient way, first refactor the program to make it easy to add the feature, then add the feature.
 
-Making a copy may not seem too onerous a task, but it sets up all sorts of problems for the future. Any changes to the charging logic would force me to update both methods—and to ensure they are updated consistently.
+Making a copy may not seem too onerous a task, but it sets up all sorts of problems for the future. Any changes to the charging logic would force me to update both methods - and to ensure they are updated consistently.
 
 ## The First Step in Refactoring
 Before you start refactoring, make sure you have a solid suite of tests. These tests must be self­ checking.
@@ -386,7 +386,7 @@ As is often the case with refactoring, the early stages were mostly driven by tr
 
 Code should be obvious: When someone needs to make a change, they should be able to find the code to be changed easily and to make the change quickly without introducing any errors.
 
-The key to effective refactoring is recognizing that you go faster when you take tiny steps, the code is never broken, and you can compose those small steps into substantial changes. Remember that—and the rest is silence.
+The key to effective refactoring is recognizing that you go faster when you take tiny steps, the code is never broken, and you can compose those small steps into substantial changes. Remember that - and the rest is silence.
 
 # 2 Principles in Refactoring
 **Refactoring (noun)**: a change made to the internal structure of software to make it easier to understand and cheaper to modify without changing its observable behavior.
@@ -402,7 +402,7 @@ The key to effective refactoring is recognizing that you go faster when you take
   * When I **refactor**, I make a point of not adding functionality; I only restructure the code. I don’t add any tests (unless I find a case I missed earlier); I only change tests when I have to accommodate a change in an interface.
 
 ## Why Should We Refactor?
-I don’t want to claim refactoring is the cure for all software ills. It is no “silver bullet.” Yet it is a valuable tool—a pair of silver pliers that helps you keep a good grip on your code. Refactoring is a tool that can—and should—be used for several purposes.
+I don’t want to claim refactoring is the cure for all software ills. It is no “silver bullet.” Yet it is a valuable tool - a pair of silver pliers that helps you keep a good grip on your code. Refactoring is a tool that can - and should - be used for several purposes.
 
 1. Refactoring Improves the Design of Software
 2. Refactoring Makes Software Easier to Understand
@@ -429,13 +429,13 @@ I don’t want to claim refactoring is the cure for all software ills. It is no 
 
 * Planned and Opportunistic Refactoring
 
-  The examples above—preparatory, comprehension, litter-pickup refactoring—are all opportunistic.
+  The examples above - preparatory, comprehension, litter-pickup refactoring - are all opportunistic.
 
-  Refactoring isn’t an activity that’s separated from programming—any more than you set aside time to write if statements. I don’t put time on my plans to do refactoring; most refactoring happens while I’m doing other things.
+  Refactoring isn’t an activity that’s separated from programming - any more than you set aside time to write if statements. I don’t put time on my plans to do refactoring; most refactoring happens while I’m doing other things.
 
-  :bulb: You have to refactor when you run into ugly code—but excellent code needs plenty of refactoring too.
+  :bulb: You have to refactor when you run into ugly code - but excellent code needs plenty of refactoring too.
 
-  “for each desired change, make the change easy (warning: this may be hard), then make the easy change” — Kent Beck, https://twitter.com/kentbeck/status/250733358307500032
+  “for each desired change, make the change easy (warning: this may be hard), then make the easy change”  -  Kent Beck, https://twitter.com/kentbeck/status/250733358307500032
 
   Good developers know that, often, the fastest way to add a new feature is to change the code to make it easy to add. Software should thus be never thought of as “done.” As new capabilities are needed, the software changes to reflect that. Those changes can often be greater in the existing code than in the new code.
 
@@ -443,7 +443,7 @@ I don’t want to claim refactoring is the cure for all software ills. It is no 
 
   Even in such cases, I’m reluctant to have a team do dedicated refactoring. Often, a useful strategy is to agree to gradually work on the problem over the course of the next few weeks.
 
-  Whenever anyone goes near any code that’s in the refactoring zone, they move it a little way in the direction they want to improve. This takes advantage of the fact that refactoring doesn’t break the code—each small change leaves everything in a still-working state.
+  Whenever anyone goes near any code that’s in the refactoring zone, they move it a little way in the direction they want to improve. This takes advantage of the fact that refactoring doesn’t break the code - each small change leaves everything in a still-working state.
 
   To change from one library to another, start by introducing a new abstraction that can act as an interface to either library. Once the calling code uses this abstraction, it’s much easier to switch one library for another. (This tactic is called Branch By Abstraction [mf-bba].)
 
@@ -473,7 +473,7 @@ I don’t want to claim refactoring is the cure for all software ills. It is no 
 
   Still, the evidence I hear from my colleagues in the industry is that too little refactoring is far more prevalent than too much. In other words, most people should try to refactor more often.
 
-  The point of refactoring isn’t to show how sparkly a code base is—it is purely economic. We refactor because it makes us faster—faster to add features, faster to fix bugs.
+  The point of refactoring isn’t to show how sparkly a code base is - it is purely economic. We refactor because it makes us faster - faster to add features, faster to fix bugs.
 
 * Code Ownership
 
@@ -497,9 +497,9 @@ I don’t want to claim refactoring is the cure for all software ills. It is no 
 
   One of the key characteristics of refactoring is that it doesn’t change the observable behavior of the program.
 
-  Self-testing code not only enables refactoring—it also makes it much safer to add new features, since I can quickly find and kill any bugs I introduce
+  Self-testing code not only enables refactoring - it also makes it much safer to add new features, since I can quickly find and kill any bugs I introduce
 
-  Self-testing code is, unsurprisingly, closely associated with Continuous Integration—it is the mechanism that we use to catch semantic integration conflicts. Such testing practices are another component of Extreme Programming and a key part of Continuous Delivery.
+  Self-testing code is, unsurprisingly, closely associated with Continuous Integration - it is the mechanism that we use to catch semantic integration conflicts. Such testing practices are another component of Extreme Programming and a key part of Continuous Delivery.
 
 * Legacy Code
 
@@ -509,7 +509,7 @@ I don’t want to claim refactoring is the cure for all software ills. It is no 
 
   The obvious answer to this problem is that you add tests.
 
-  The best advice I can give is to get a copy of <Working Effectively with Legacy Code [Feathers]> and follow its guidance. Don’t be worried by the age of the book—its advice is just as true more than a decade later.
+  The best advice I can give is to get a copy of <Working Effectively with Legacy Code [Feathers]> and follow its guidance. Don’t be worried by the age of the book - its advice is just as true more than a decade later.
 
 * Databases
 
@@ -530,15 +530,15 @@ This approach to design goes under various names: simple design, incremental des
 
 ## Refactoring and the Wider Software Development Process
 
-To really operate in an agile way, a team has to be capable and enthusiastic refactorers—and for that, many aspects of their process have to align with making refactoring a regular part of their work.
+To really operate in an agile way, a team has to be capable and enthusiastic refactorers - and for that, many aspects of their process have to align with making refactoring a regular part of their work.
 
 The first foundation for refactoring is `self-testing code`.
 
 To refactor on a team, it’s important that each member can refactor when they need to without interfering with others’ work. This is why I encourage `Continuous Integration`. With CI, each member’s refactoring efforts are quickly shared with their colleagues.
 
-Refactoring and `yagni` positively reinforce each other: Not just is refactoring (and its prerequisites) a foundation for yagni—yagni makes it easier to do refactoring. This is because it’s easier to change a simple system than one that has lots of speculative flexibility included.
+Refactoring and `yagni` positively reinforce each other: Not just is refactoring (and its prerequisites) a foundation for yagni - yagni makes it easier to do refactoring. This is because it’s easier to change a simple system than one that has lots of speculative flexibility included.
 
-`Continuous Delivery` keeps our software in an always-releasable state. This is what allows many web organizations to release updates many times a day—but even if we don’t need that, it reduces risk and allows us to schedule our releases to satisfy business needs rather than technological constraints.
+`Continuous Delivery` keeps our software in an always-releasable state. This is what allows many web organizations to release updates many times a day - but even if we don’t need that, it reduces risk and allows us to schedule our releases to satisfy business needs rather than technological constraints.
 
 ## Refactoring and Performance
 I often make changes that will cause the program to run slower. This is an important issue. I don’t belong to the school of thought that ignores performance in favor of design purity or in hopes of faster hardware.
@@ -546,7 +546,7 @@ I often make changes that will cause the program to run slower. This is an impor
 The secret to fast software, in all but hard real-time contexts, is to write tunable software first and then tune it for sufficient speed.
 
 * I’ve seen three general approaches to writing fast software.
-    1. The most serious of these is time budgeting, often used in hard real-time systems. As you decompose the design, you give each component a budget for resources—time and footprint.
+    1. The most serious of these is time budgeting, often used in hard real-time systems. As you decompose the design, you give each component a budget for resources - time and footprint.
     2. The second approach is the constant attention approach.
         * The performance improvements are spread all around the program; each improvement is made with a narrow perspective of the program’s behavior, and often with a misunderstanding of how a compiler, runtime, and hardware behaves.
         * The interesting thing about performance is that in most programs, most of their time is spent in a small fraction of the code.
@@ -578,7 +578,7 @@ Michael Feathers’s Working Effectively with Legacy Code [Feathers], which is p
 
 # 3 Bad Smells in Code
 
-But just because you know how doesn’t mean you know when. Deciding when to start refactoring—and when to stop—is just as important to refactoring as knowing how to operate the mechanics of it.
+But just because you know how doesn’t mean you know when. Deciding when to start refactoring - and when to stop - is just as important to refactoring as knowing how to operate the mechanics of it.
 
 ## Mysterious Name
 
@@ -616,15 +616,15 @@ Our key defense here is `Encapsulate Variable`, which is always our first move w
 
 ## Mutable Data
 
-You can use `Encapsulate Variable` to ensure that all updates occur through narrow functions that can be easier to monitor and evolve. If a variable is being updated to store different things, use `Split Variable` both to keep them separate and avoid the risky update. Try as much as possible to move logic out of code that processes the update by using `Slide Statements` and `Extract Function` to separate the side-effect-free code from anything that performs the update. In APIs, use `Separate Query from Modifier` to ensure callers don’t need to call code that has side effects unless they really need to. We like to use `Remove Setting Method` as soon as we can—sometimes, just trying to find clients of a setter helps spot opportunities to reduce the scope of a variable.
+You can use `Encapsulate Variable` to ensure that all updates occur through narrow functions that can be easier to monitor and evolve. If a variable is being updated to store different things, use `Split Variable` both to keep them separate and avoid the risky update. Try as much as possible to move logic out of code that processes the update by using `Slide Statements` and `Extract Function` to separate the side-effect-free code from anything that performs the update. In APIs, use `Separate Query from Modifier` to ensure callers don’t need to call code that has side effects unless they really need to. We like to use `Remove Setting Method` as soon as we can - sometimes, just trying to find clients of a setter helps spot opportunities to reduce the scope of a variable.
 
 ## Divergent Change
 
 We structure our software to make change easier; after all, software is meant to be soft. When we make a change, we want to be able to jump to a single clear point in the system and make the change. When you can’t do this, you are smelling one of two closely related pungencies.
 
-Divergent change occurs when one module is often changed in different ways for different reasons
+Divergent change occurs when one module is often changed in different ways for different reasons. If you look at a module and say, “Well, I will have to change these three functions every time I get a new database; I have to change these four functions every time there is a new financial instrument,” this is an indication of divergent change. The database interaction and financial processing problems are separate contexts, and we can make our programming life better by moving such contexts into separate modules. That way, when we have a change to one context, we only have to understand that one context and ignore the other.
 
-If the two aspects naturally form a sequence—for example, you get data from the database and then apply your financial processing on it—then `Split Phase` separates the two with a clear data structure between them. If there’s more back-and-forth in the calls, then create appropriate modules and use `Move Function` to divide the processing up. If functions mix the two types of processing within themselves, use `Extract Function` to separate them before moving. If the modules are classes, then `Extract Class` helps formalize how to do the split.
+If the two aspects naturally form a sequence - for example, you get data from the database and then apply your financial processing on it - then `Split Phase` separates the two with a clear data structure between them. If there’s more back-and-forth in the calls, then create appropriate modules and use `Move Function` to divide the processing up. If functions mix the two types of processing within themselves, use `Extract Function` to separate them before moving. If the modules are classes, then `Extract Class` helps formalize how to do the split.
 
 ## Shotgun Surgery
 
@@ -717,7 +717,7 @@ The traditional story is that this means the hierarchy is wrong. You need to cre
 
 If the refused bequest is causing confusion and problems, follow the traditional advice. However, don’t feel you have to do it all the time. Nine times out of ten this smell is too faint to be worth cleaning.
 
-The smell of refused bequest is much stronger if the subclass is reusing behavior but does not want to support the interface of the superclass. We don’t mind refusing implementations—but refusing interface gets us on our high horses. In this case, however, don’t fiddle with the hierarchy; you want to gut it by applying `Replace Subclass with Delegate` or `Replace Superclass with Delegate` .
+The smell of refused bequest is much stronger if the subclass is reusing behavior but does not want to support the interface of the superclass. We don’t mind refusing implementations - but refusing interface gets us on our high horses. In this case, however, don’t fiddle with the hierarchy; you want to gut it by applying `Replace Subclass with Delegate` or `Replace Superclass with Delegate` .
 
 ## Comments
 
@@ -914,7 +914,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     Such variables are also handy for debugging, since they provide an easy hook for a debugger or print statement to capture.
 
-    I also think about the context of that name. If it’s only meaningful within the function I’m working on, then Extract Variable is a good choice—but if it makes sense in a broader context, I’ll consider making the name available in that broader context, usually as a function.
+    I also think about the context of that name. If it’s only meaningful within the function I’m working on, then Extract Variable is a good choice - but if it makes sense in a broader context, I’ll consider making the name available in that broader context, usually as a function.
 
     The downside of promoting the name to a broader context is extra effort. If it’s significantly more effort, I’m likely to leave it till later when I can use `Replace Temp with Query`.
 
@@ -1218,7 +1218,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
     The basic refactoring encapsulates the reference to the data item. In many cases, this is all I want to do for the moment. But I often want to take the encapsulation deeper to control not just changes to the variable but also to its contents.
 
-    An alternative is to prevent changes—and a good way of doing that is `Encapsulate Record`.
+    An alternative is to prevent changes - and a good way of doing that is `Encapsulate Record`.
 
     ```js
     let defaultOwnerData = {firstName: "Martin", lastName: "Fowler"};
@@ -1243,7 +1243,7 @@ Extraction is all about giving names, and I often need to change the names as I 
 
 * Motivation
 
-    Naming things well is the heart of clear programming. Variables can do a lot to explain what I’m up to—if I name them well.
+    Naming things well is the heart of clear programming. Variables can do a lot to explain what I’m up to - if I name them well.
 
     Even more than most program elements, the importance of a name depends on how widely it’s used.
 
@@ -1478,7 +1478,7 @@ Extraction is all about giving names, and I often need to change the names as I 
     const basicChargeAmount = aReading.baseCharge();
     ```
 
-    With this naming, the client of the reading class can’t tell whether the base charge is a field or a derived value. This is a Good Thing—the Uniform Access Principle [mf-ua].
+    With this naming, the client of the reading class can’t tell whether the base charge is a field or a derived value. This is a Good Thing - the Uniform Access Principle [mf-ua].
 
     ```js
     // client 1
@@ -1876,7 +1876,7 @@ Classes and modules are the largest forms of encapsulation, but functions also e
 
     Access to a collection variable may be encapsulated, but if the getter returns the collection itself, then that collection’s membership can be altered without the enclosing class being able to intervene.
 
-    To avoid this, I provide collection modifier methods—usually add and remove—on the class itself.
+    To avoid this, I provide collection modifier methods - usually add and remove - on the class itself.
 
     A better approach is to ensure that the getter for the collection does not return the raw collection, so that clients cannot accidentally change it.
 
@@ -1981,7 +1981,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 * Motivation
 
-    At first, such a class does little more than wrap the primitive—but once I have that class, I have a place to put behavior specific to its needs.
+    At first, such a class does little more than wrap the primitive - but once I have that class, I have a place to put behavior specific to its needs.
 
 * Mechanics
     * Apply `Encapsulate Variable` if it isn’t already.
@@ -2182,7 +2182,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 * Motivation
 
-    You need to consider where it can be split—and split it. A good sign is when a subset of the data and a subset of the methods seem to go together. Other good signs are subsets of data that usually change together or are particularly dependent on each other. A useful test is to ask yourself what would happen if you remove a piece of data or a method. What other fields and methods would become nonsense?
+    You need to consider where it can be split - and split it. A good sign is when a subset of the data and a subset of the methods seem to go together. Other good signs are subsets of data that usually change together or are particularly dependent on each other. A useful test is to ask yourself what would happen if you remove a piece of data or a method. What other fields and methods would become nonsense?
 
 * Mechanics
     * Decide how to split the responsibilities of the class.
@@ -2295,7 +2295,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 * Motivation
 
-    I use Inline Class if a class is no longer pulling its weight and shouldn’t be around any more. Often, this is the result of refactoring that moves other responsibilities out of the class so there is little left. At that point, I fold the class into another—one that makes most use of the runt class.
+    I use Inline Class if a class is no longer pulling its weight and shouldn’t be around any more. Often, this is the result of refactoring that moves other responsibilities out of the class so there is little left. At that point, I fold the class into another - one that makes most use of the runt class.
 
     Another reason to use Inline Class is if I have two classes that I want to refactor into a pair of classes with a different allocation of features. I may find it easier to first use Inline Class to combine them into a single class, then `Extract Class` to make the new separation. This is a general approach when reorganizing things: Sometimes, it’s easier to move elements one at a time from one context to another, but sometimes it’s better to use an inline refactoring to collapse the contexts together, then use an extract refactoring to separate them into different elements.
 
@@ -2372,7 +2372,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
 
 * Motivation
 
-    One of the keys—if not the key—to good modular design is encapsulation. Encapsulation means that modules need to know less about other parts of the system. Then, when things change, fewer modules need to be told about the change—which makes the change easier to make.
+    One of the keys - if not the key - to good modular design is encapsulation. Encapsulation means that modules need to know less about other parts of the system. Then, when things change, fewer modules need to be told about the change - which makes the change easier to make.
 
     When we are first taught about object orientation, we are told that encapsulation means hiding our fields. As we become more sophisticated, we realize there is more that we can encapsulate.
 
@@ -2449,7 +2449,7 @@ formerly: Replace Data Value with Object, Replace Type Code with Class
     // client
     manager = aPerson.department.manager;
     ```
-    There is no absolute reason why I should either hide a delegate or remove a middle man—particular circumstances suggest which approach to take, and reasonable people can differ on what works best.
+    There is no absolute reason why I should either hide a delegate or remove a middle man - particular circumstances suggest which approach to take, and reasonable people can differ on what works best.
 
 ## Substitute Algorithm
 
@@ -2484,7 +2484,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
 * Motivation
 
-    The heart of a good software design is its modularity—which is my ability to make most modifications to a program while only having to understand a small part of it.
+    The heart of a good software design is its modularity - which is my ability to make most modifications to a program while only having to understand a small part of it.
 
     One of the most straightforward reasons to move a function is when it references elements in other contexts more than the one it currently resides in. Moving it together with those elements often improves encapsulation, allowing other parts of the software to be less dependent on the details of this module.
 
@@ -2700,7 +2700,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
 * Motivation
 
-    * Programming involves writing a lot of code that implements behavior—but the strength of a program is really founded on its data structures. If I have a good set of data structures that match the problem, then my behavior code is simple and straightforward. But poor data structures lead to lots of code whose job is merely dealing with the poor data.
+    * Programming involves writing a lot of code that implements behavior - but the strength of a program is really founded on its data structures. If I have a good set of data structures that match the problem, then my behavior code is simple and straightforward. But poor data structures lead to lots of code whose job is merely dealing with the poor data.
 
     * As soon as I realize that a data structure isn’t right, it’s vital to change it. If I leave my data structures with their blemishes, those blemishes will confuse my thinking and complicate my code far into the future.
 
@@ -2949,7 +2949,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
 * Motivation
 
-    Functions are the basic building block of the abstractions we build as programmers. And, as with any abstraction, we don’t always get the boundaries right. As a code base changes its capabilities—as most useful software does—we often find our abstraction boundaries shift. For functions, that means that what might once have been a cohesive, atomic unit of behavior becomes a mix of two or more different things.
+    Functions are the basic building block of the abstractions we build as programmers. And, as with any abstraction, we don’t always get the boundaries right. As a code base changes its capabilities - as most useful software does - we often find our abstraction boundaries shift. For functions, that means that what might once have been a cohesive, atomic unit of behavior becomes a mix of two or more different things.
 
     One trigger for this is when common behavior used in several places needs to vary in some of its calls. Now, we need to move the varying behavior out of the function to its callers.
 
@@ -3051,7 +3051,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
 * Motivation
 
-    Functions allow me to package up bits of behavior. This is useful for understanding—a named function can explain the purpose of the code rather than its mechanics. It’s also valuable to remove duplication
+    Functions allow me to package up bits of behavior. This is useful for understanding - a named function can explain the purpose of the code rather than its mechanics. It’s also valuable to remove duplication
 
 * Mechanics
     * Replace the inline code with a call to the existing function.
@@ -3140,7 +3140,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
     return `youngestAge: ${youngest}, totalSalary: ${totalSalary}`;
     ```
-    The point of Split Loop isn’t what it does on its own but what it sets up for the next move—and I’m usually looking to extract the loops into their own functions.
+    The point of Split Loop isn’t what it does on its own but what it sets up for the next move - and I’m usually looking to extract the loops into their own functions.
     ```js
     // 3.1 `Slide Statements` to reorganize the code a bit first
     let totalSalary = 0;
@@ -3210,7 +3210,7 @@ And then there’s the favorite refactoring of many a fine programmer: `Remove D
 
 # 9 Organizing Data
 
-A value that’s used for different purposes is a breeding ground for confusion and bugs—so, when I see one, I use `Split Variable` to separate the usages. As with any program element, getting a variable’s name right is tricky and important, so `Rename Variable` is often my friend. But sometimes the best thing I can do with a variable is to get rid of it completely—with `Replace Derived Variable with Query`.
+A value that’s used for different purposes is a breeding ground for confusion and bugs - so, when I see one, I use `Split Variable` to separate the usages. As with any program element, getting a variable’s name right is tricky and important, so `Rename Variable` is often my friend. But sometimes the best thing I can do with a variable is to get rid of it completely - with `Replace Derived Variable with Query`.
 
 I often find problems in a code base due to a confusion between references and values, so I use `Change Reference to Value` and `Change Value to Reference` to change between these styles.
 
@@ -3781,7 +3781,7 @@ A lot of conditionals are used to handle special cases, such as nulls; if that l
 
     Another situation is where I can think of the logic as a base case with variants. The base case may be the most common or most straightforward. I can put this logic into a superclass, I then put each variant case into a subclass, which I express with code that emphasizes its difference from the base case.
 
-    Most of my conditional logic uses basic conditional statements—if/else and switch/case. But when I see complex conditional logic that can be improved as discussed above, I find polymorphism a powerful tool.
+    Most of my conditional logic uses basic conditional statements - if/else and switch/case. But when I see complex conditional logic that can be improved as discussed above, I find polymorphism a powerful tool.
 
 * Mechanics
     * If classes do not exist for polymorphic behavior, create them together with a factory function to return the correct instance.
@@ -4063,7 +4063,7 @@ A lot of conditionals are used to handle special cases, such as nulls; if that l
 
     Often, sections of code work only if certain conditions are true.
 
-    I find assertions to be a valuable form of communication—they tell the reader something about the assumed state of the program at this point of execution. I also find them handy for debugging, and their communication value means I’m inclined to leave them in once I’ve fixed the error I’m chasing.
+    I find assertions to be a valuable form of communication - they tell the reader something about the assumed state of the program at this point of execution. I also find them handy for debugging, and their communication value means I’m inclined to leave them in once I’ve fixed the error I’m chasing.
 
 * Mechanics
 
@@ -4087,7 +4087,7 @@ The last two refactorings address the difficulty of breaking down a particularly
 
 * Motivation
 
-    It is a good idea to clearly signal the difference between functions with side effects and those without. A good rule to follow is that any function that returns a value should not have observable side effects—the command-query separation.
+    It is a good idea to clearly signal the difference between functions with side effects and those without. A good rule to follow is that any function that returns a value should not have observable side effects - the command-query separation.
 
     Note that I use the **phrase observable side effects**. A common optimization is to cache the value of a query in a field so that repeated calls go quicker. Although this changes the state of the object with the cache, the change is not observable. Any sequence of queries will always return the same results for each query.
 
@@ -4261,9 +4261,9 @@ The last two refactorings address the difficulty of breaking down a particularly
 
 * Motivation
 
-    I dislike flag arguments because they complicate the process of understanding what function calls are available and how to call them. My first route into an API is usually the list of available functions, and flag arguments hide the differences in the function calls that are available. Once I select a function, I have to figure out what values are available for the flag arguments. Boolean flags are even worse since they don’t convey their meaning to the reader—in a function call, I can’t figure out what true means. It’s clearer to provide an explicit function for the task I want to do.
+    I dislike flag arguments because they complicate the process of understanding what function calls are available and how to call them. My first route into an API is usually the list of available functions, and flag arguments hide the differences in the function calls that are available. Once I select a function, I have to figure out what values are available for the flag arguments. Boolean flags are even worse since they don’t convey their meaning to the reader - in a function call, I can’t figure out what true means. It’s clearer to provide an explicit function for the task I want to do.
 
-    Removing flag arguments doesn’t just make the code clearer—it also helps my tooling. Code analysis tools can now more easily see the difference between calling the premium logic and calling regular logic.
+    Removing flag arguments doesn’t just make the code clearer - it also helps my tooling. Code analysis tools can now more easily see the difference between calling the premium logic and calling regular logic.
 
     Flag arguments can have a place if there’s more than one of them in the function, since otherwise I would need explicit functions for every combination of their values. But that’s also a signal of a function doing too much, and I should look for a way to create simpler functions that I can compose for this logic.
 
@@ -4350,11 +4350,11 @@ The last two refactorings address the difficulty of breaking down a particularly
 
     If I see code that derives a couple of values from a record and then passes these values into a function, I like to replace those values with the whole record itself, letting the function body derive the values it needs.
 
-    1. Passing the whole record handles change better should the called function need more data from the whole in the future—that change would not require me to alter the parameter list.
+    1. Passing the whole record handles change better should the called function need more data from the whole in the future - that change would not require me to alter the parameter list.
     2. It also reduces the size of the parameter list, which usually makes the function call easier to understand.
-    3. If many functions are called with the parts, they often duplicate the logic that manipulates these parts—logic that can often be moved to the whole.
+    3. If many functions are called with the parts, they often duplicate the logic that manipulates these parts - logic that can often be moved to the whole.
 
-    The main reason I wouldn’t do this is if I don’t want the called function to have a dependency on the whole—which typically occurs when they are in different modules.
+    The main reason I wouldn’t do this is if I don’t want the called function to have a dependency on the whole - which typically occurs when they are in different modules.
 
 * Mechanics
     1. Create an empty function with the desired parameters.
@@ -4495,9 +4495,9 @@ The last two refactorings address the difficulty of breaking down a particularly
 
     By removing the parameter, I’m shifting the responsibility for determining the parameter value. When the parameter is present, determining its value is the caller’s responsibility; otherwise, that responsibility shifts to the function body.
 
-    The most common reason to avoid Replace Parameter with Query is if removing the parameter adds an unwanted dependency to the function body—forcing it to access a program element that I’d rather it remained ignorant of.
+    The most common reason to avoid Replace Parameter with Query is if removing the parameter adds an unwanted dependency to the function body - forcing it to access a program element that I’d rather it remained ignorant of.
 
-    One thing to watch out for is if the function I’m looking at has referential transparency—that is, if I can be sure that it will behave the same way whenever it’s called with the same parameter values. Such functions are much easier to reason about and test, and I don’t want to alter them to lose that property. So I wouldn’t replace a parameter with an access to a mutable global variable.
+    One thing to watch out for is if the function I’m looking at has referential transparency - that is, if I can be sure that it will behave the same way whenever it’s called with the same parameter values. Such functions are much easier to reason about and test, and I don’t want to alter them to lose that property. So I wouldn’t replace a parameter with an access to a mutable global variable.
 
 * Mechanics
     1. If necessary, use `Extract Function` on the calculation of the parameter.
@@ -4552,11 +4552,11 @@ The last two refactorings address the difficulty of breaking down a particularly
 * Motivation
     When looking through a function’s body, I sometimes see references to something in the function’s scope that I’m not happy with. This might be a reference to a global variable, or to an element in the same module that I intend to move away. To resolve this, I need to replace the internal reference with a parameter, shifting the responsibility of resolving the reference to the caller of the function.
 
-    Most of these cases are due to my wish to alter the dependency relationships in the code—to make the target function no longer dependent on the element I want to parameterize.
+    Most of these cases are due to my wish to alter the dependency relationships in the code - to make the target function no longer dependent on the element I want to parameterize.
 
-    It’s easier to reason about a function that will always give the same result when called with same parameter values—this is called **referential transparency**. If a function accesses some element in its scope that isn’t referentially transparent, then the containing function also lacks referential transparency.
+    It’s easier to reason about a function that will always give the same result when called with same parameter values - this is called **referential transparency**. If a function accesses some element in its scope that isn’t referentially transparent, then the containing function also lacks referential transparency.
 
-    But Replace Query with Parameter isn’t just a bag of benefits. By moving a query to a parameter, I force my caller to figure out how to provide this value. This complicates life for callers of the functions, and my usual bias is to design interfaces that make life easier for their consumers. In the end, it boils down to allocation of responsibility around the program, and that’s a decision that’s neither easy nor immutable—which is why this refactoring (and its inverse) is one that I need to be very familiar with.
+    But Replace Query with Parameter isn’t just a bag of benefits. By moving a query to a parameter, I force my caller to figure out how to provide this value. This complicates life for callers of the functions, and my usual bias is to design interfaces that make life easier for their consumers. In the end, it boils down to allocation of responsibility around the program, and that’s a decision that’s neither easy nor immutable - which is why this refactoring (and its inverse) is one that I need to be very familiar with.
 
 * Mechanics
     1. Use `Extract Variable` on the query code to separate it from the rest of the function body.
@@ -5021,7 +5021,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
 
 * Motivation
 
-    If a method is only relevant to one subclass (or a small proportion of subclasses), removing it from the superclass and putting it only on the subclass(es) makes that clearer. I can only do this refactoring if the caller knows it’s working with a particular subclass—otherwise, I should use `Replace Conditional with Polymorphism` with some placebo behavior on the superclass.
+    If a method is only relevant to one subclass (or a small proportion of subclasses), removing it from the superclass and putting it only on the subclass(es) makes that clearer. I can only do this refactoring if the caller knows it’s working with a particular subclass - otherwise, I should use `Replace Conditional with Polymorphism` with some placebo behavior on the superclass.
 
 ## Push Down Field
 
@@ -5033,7 +5033,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
 
 * Motivation
 
-    Software systems often need to represent different kinds of a similar thing. My first tool for handling this is some kind of type code field—depending on the language, that might be an enum, symbol, string, or number. Often, this type code will come from an external service that provides me with the data I’m working on.
+    Software systems often need to represent different kinds of a similar thing. My first tool for handling this is some kind of type code field - depending on the language, that might be an enum, symbol, string, or number. Often, this type code will come from an external service that provides me with the data I’m working on.
 
     * There are a couple of situations where I could do with something more, and that something more are subclasses. There are two things that are particularly enticing about subclasses.
         1. they allow me to use polymorphism to handle conditional logic. I find this most helpful when I have several functions that invoke different behavior depending on the value of the type code. With subclasses, I can apply `Replace Conditional with Polymorphism` to these functions.
@@ -5507,10 +5507,10 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
     If I have some objects whose behavior varies from category to category, the natural mechanism to express this is inheritance. I put all the common data and behavior in the superclass, and let each subclass add and override features as needed. Object-oriented languages make this simple to implement and thus a familiar mechanism.
 
     * But inheritance has its downsides:
-        1. It’s a card that can only be played once. If I have more than one reason to vary something, I can only use inheritance for a single axis of variation. If I want to vary behavior of people by their age category and by their income level, I can either have subclasses for young and senior, or for well-off and poor—I can’t have both.
+        1. It’s a card that can only be played once. If I have more than one reason to vary something, I can only use inheritance for a single axis of variation. If I want to vary behavior of people by their age category and by their income level, I can either have subclasses for young and senior, or for well-off and poor - I can’t have both.
         2. Inheritance introduces a very close relationship between classes. Any change I want to make to the parent can easily break children, so I have to be careful and understand how children derive from the superclass. This problem is made worse when the logic of the two classes resides in different modules and is looked after by different teams.
 
-    Delegation handles both of these problems. I can delegate to many different classes for different reasons. Delegation is a regular relationship between objects—so I can have a clear interface to work with, which is much less coupling than subclassing. It’s therefore common to run into the problems with subclassing and apply `Replace Subclass with Delegate`.
+    Delegation handles both of these problems. I can delegate to many different classes for different reasons. Delegation is a regular relationship between objects - so I can have a clear interface to work with, which is much less coupling than subclassing. It’s therefore common to run into the problems with subclassing and apply `Replace Subclass with Delegate`.
 
     There is a popular principle: “Favor object composition over class inheritance” (where composition is effectively the same as delegation).
 
@@ -5576,7 +5576,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
     ```
     Most of the time I can modify the base class without having to understand subclasses, there are occasions where such mindful ignorance of the subclasses will lead me to breaking a subclass by modifying the superclass.
 
-    Inheritance is a tool that can only be used once—so if I have another reason to use inheritance, and I think it will benefit me more than the premium booking subclass, I’ll need to handle premium bookings a different way. Also, I may need to change from the default booking to the premium booking dynamically—i.e., support a method like aBooking.bePremium(). In some cases, I can avoid this by creating a whole new object (a common example is where an HTTP request loads new data from the server). But sometimes, I need to modify a data structure and not rebuild it from scratch, and it is difficult to just replace a single booking that’s referred to from many different places. In such situations, it can be useful to allow a booking to switch from default to premium and back again.
+    Inheritance is a tool that can only be used once - so if I have another reason to use inheritance, and I think it will benefit me more than the premium booking subclass, I’ll need to handle premium bookings a different way. Also, I may need to change from the default booking to the premium booking dynamically - i.e., support a method like aBooking.bePremium(). In some cases, I can avoid this by creating a whole new object (a common example is where an HTTP request loads new data from the server). But sometimes, I need to modify a data structure and not rebuild it from scratch, and it is difficult to just replace a single booking that’s referred to from many different places. In such situations, it can be useful to allow a booking to switch from default to premium and back again.
 
     ```js
     // 1. Replace Constructor with Factory Function
@@ -5632,7 +5632,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
         }
     }
     ```
-    When I move the subclass code to the delegate, I’ll need to call the parent case—but I can’t just call `this._host._basePrice` without getting into an endless recursion.
+    When I move the subclass code to the delegate, I’ll need to call the parent case - but I can’t just call `this._host._basePrice` without getting into an endless recursion.
 
     I have a couple of options here. One is to apply `Extract Function` on the base calculation to allow me to separate the dispatch logic from price calculation.
     ```js
@@ -5856,7 +5856,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
         }
     }
     ```
-    These examples illustrate that the phrase “Favor object composition over class inheritance” might better be said as “Favor a judicious mixture of composition and inheritance over either alone”—but I fear that is not as catchy.
+    These examples illustrate that the phrase “Favor object composition over class inheritance” might better be said as “Favor a judicious mixture of composition and inheritance over either alone” - but I fear that is not as catchy.
 
 ## Replace Superclass with Delegate
 
@@ -5870,7 +5870,7 @@ I use `Replace Subclass with Delegate` or `Replace Superclass with Delegate` to 
         1. If functions of the superclass don’t make sense on the subclass, that’s a sign that I shouldn’t be using inheritance to use the superclass’s functionality.
         2. Every instance of the subclass is an instance of the superclass and a valid object in all cases where we’re using the superclass.
 
-    Using delegation makes it clear that it is a separate thing—one where only some of the functions carry over.
+    Using delegation makes it clear that it is a separate thing - one where only some of the functions carry over.
 
     Even in cases where the subclass is reasonable modeling, I use Replace Super-class with Delegate because the relationship between a sub- and superclass is highly coupled, with the subclass easily broken by changes in the superclass.
 
