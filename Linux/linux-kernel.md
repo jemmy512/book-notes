@@ -1316,6 +1316,8 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 2. What's difference between contex_switch and sleep_wakeup?
 
 ### wake_up
+![](../Images/Kernel/proc-wake-up.png)
+
 ```c++
 #define wake_up(x)                        __wake_up(x, TASK_NORMAL, 1, NULL)
 #define wake_up_nr(x, nr)                 __wake_up(x, TASK_NORMAL, nr, NULL)
