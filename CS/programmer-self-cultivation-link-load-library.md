@@ -1232,6 +1232,9 @@ DT_REL | the address of relocation table
 DT_RELA | the address of relocation table
 DT_RELENT | the number of relocation entry
 DT_RELAENT | the number of relocation entry
+
+* Linux-4.19.y/include/uapi/linux/elf.h
+
 ```c++
 // Display the dynamic section (if present)
 [root@VM-16-17-centos code]# readelf -d Alice
@@ -1629,6 +1632,8 @@ void __attribute__((destructor(1)))  fini_function_1(void);
 * Calling Convention
 
     [Wiki: x86 calling conventions](https://en.wikipedia.org/wiki/X86_calling_conventions)
+
+    x86_64 and macOS follow the [System V AMD64 C ABI.pdf](https://raw.githubusercontent.com/wiki/hjl-tools/x86-psABI/x86-64-psABI-1.0.pdf)  and [Itanium C++ ABI](https://itanium-cxx-abi.github.io/cxx-abi/abi.html)
 
     Calling Convention | Stack cleanup | Pass Parameters | Name-mangling
     -- | -- | -- | ---
