@@ -97,6 +97,9 @@
         endef
 
 # GDB
+
+[gdb cheatsheet](https://cs.brown.edu/courses/cs033/docs/guides/gdb.pdf)
+
  ```C++
 __LINE__, __FILE__, __func__, __DATE__, __TIME__, __STDC__, __cplusplus__
 
