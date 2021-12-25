@@ -2237,6 +2237,39 @@ void start_thread(
 }
 ```
 
+```c++
+SYSCALL_DEFINE3(execve);
+    do_execve();
+        do_execveat_common();
+            __do_execve_file();
+                file = do_open_execat();
+                bprm_mm_init(bprm);
+                prepare_binprm(bprm);
+                exec_binprm(bprm);
+                    search_binary_handler();
+                        load_elf_binary();
+                            load_elf_phdrs();
+                            interpreter = open_exec(elf_interpreter);
+                            interp_elf_phdata = load_elf_phdrs();
+
+                            current->mm->start_stack = bprm->p;
+                            set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
+                            elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+
+                            if (elf_interpreter)
+                                elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
+                            else
+                                elf_entry = loc->elf_ex.e_entry;
+
+                            current->mm->end_code = end_code;
+                            current->mm->start_code = start_code;
+                            current->mm->start_data = start_data;
+                            current->mm->end_data = end_data;
+                            current->mm->start_stack = bprm->p;
+
+                            start_thread(regs, elf_entry, bprm->p);
+```
+
 Reference:
 * [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 
