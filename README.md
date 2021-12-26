@@ -13,7 +13,7 @@
 
 # Computer Science
 
-* Operation System
+* Operating System
     * [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)
     * [Operating Systems: Three Easy Pieces :soon:]()
     * [Operating System Concepts :soon:]()
@@ -22,7 +22,7 @@
 * Computer Architecture
     * [Computer Organization and Design: The Hardware/Sofeware Interface :soon:](./CS/computer-organization-and-design.md)
     * [Computer Architecture: A Quantitative Approach :soon:](./CS/computer-architecture.md)
-    * [Structure and Interpretation of Computer Programs :soon:]()
+    * [Structure and Interpretation of Computer Programs :soon:](./CS/structure-and-interpretation-of-computer-programs.md)
 
 * Compilation
     * [Compilers: Principles, Techniques, and Tools :soon:](./CS/compilers-crinciples-techniques-and-tools.md)
