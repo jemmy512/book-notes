@@ -2044,7 +2044,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
         ```
 ##### Partial ordering
 
-* When the same function template specialization matches more than one overloaded function template (this often results from template argument deduction), partial ordering of overloaded function templates is performed to select the best match.
+* When the same function template specialization matches more than one overloaded function template (this often results from template argument deduction), partial ordering of overloaded function templates is performed to select the best match. The ordering is partial because there can be some templates that are considered equally specialized.
 * **Partial ordering** happens in:
     * 1) overload resolution for a `call to a function` template specialization
     * 2) when the `address of a function` template specialization is taken
@@ -2279,7 +2279,7 @@ void (*ptr)(std::string) = f;   // instantiates f<string>(string)
 
     g(Tuple<>());                       // calls #1
     g(Tuple<int, float>());             // calls #2
-    g(Tuple<int, float&>());            // calls #3
+    g(Tuple<int, float&>());            // calls #3 [TODO:?]
     g(Tuple<int>());                    // calls #3 [TODO:?]
     ```
 
@@ -2355,85 +2355,6 @@ Z<char>* p;                 // nothing is instantiated here
 p->f();                     // implicit instantiation of Z<char> and Z<char>::f() occurs here.
 // Z<char>::g() is never needed and never instantiated: it does not have to be defined
 ```
-
-
-## Class Member template
-* Template declarations (class, function, and variables (C++14)) can appear inside a member specification of any class, struct, or union that aren't local classes.
-* `Partial specializations` of member template may appear both at `class scope` and at `enclosing namespace scope`, but `explicit (full) specializations` may only appear at `enclosing namespace scope`.
-* If the enclosing class declaration is, in turn, a class template, when a member template is defined outside of the class body, it takes two sets of template parameters: one for the enclosing class, and another one for itself.
-
-### Member function templates
-* `Destructors` and `copy constructors` cannot be templates. If a template constructor is declared which could be instantiated with the type signature of a copy constructor, the implicitly-declared copy constructor is used instead.
-* A member function template `cannot be virtual`, and a member function template in a derived class `cannot override` a virtual member function from the base class.
-* A `non-template` member function and a `template` member function with the `same name` may be declared. In case of conflict (when some template specialization matches the non-template function signature exactly), the use of that name and type `refers` to the `non-template member` unless an explicit template argument list is supplied.
-    ```c++
-    template<typename T>
-    struct A {
-        void f(int); // non-template member
-
-        template<typename T2>
-        void f(T2); // member template
-    };
-
-    int main() {
-        A<char> ac;
-        ac.f('c'); // calls template function A<char>::f<char>(int)
-        ac.f(1);   // calls non-template function A<char>::f(int)
-        ac.f<>(1); // calls template function A<char>::f<int>(int)
-    }
-    ```
-* An `out-of-class definition` of a member function template `must be equivalent` to the declaration inside the class (see function template overloading for the definition of equivalency), otherwise it is considered to be an `overload`.
-    ```c++
-    struct X {
-        template<class T> T good(T n);
-        template<class T> T bad(T n);
-    };
-
-    template<class T> struct identity { using type = T; };
-
-    // OK: equivalent declaration
-    template<class V>
-    V X::good(V n) { return n; }
-
-    // Error: not equivalent to any of the declarations inside X
-    template<class T>
-    T X::bad(typename identity<T>::type n) { return n; }
-    ```
-
-### Member class templates
-
-
-### Conversion function templates
-* A user-defined conversion function can be a template.
-* A user-defined conversion function template cannot have a deduced return type. (C++14)
-* During overload resolution, specializations of conversion function templates are not found by name lookup. Instead, all visible conversion function templates are considered, and every specialization produced by template argument deduction (which has special rules for conversion function templates) is used as if found by name lookup.
-* Using-declarations in derived classes cannot refer to specializations of template conversion functions from base classes.
-```c++
-struct A {
-    template<typename T>
-    operator T*(); // conversion to pointer to any type
-};
-
-// out-of-class definition
-template<typename T>
-A::operator T*() {return nullptr;}
-
-// explicit specialization for char*
-template<>
-A::operator char*() {return nullptr;}
-
-// explicit instantiation
-template A::operator void*();
-
-int main() {
-    A a;
-    int* ip = a.operator int*(); // explicit call to A::operator int*()
-}
-```
-
-### Member variable templates
-* A variable template declaration may appear at class scope, in which case it declares a static data member template. (C++14)
-
 
 ### Class template argument deduction (C++17)
 
@@ -2768,6 +2689,92 @@ int main() {
     auto p2 = std::make_tuple(1, 1.0); //std::tuple<int, double>, pre-C++17
     ```
 
+## Class Member template
+* Template declarations (class, function, and variables (C++14)) can appear inside a member specification of any class, struct, or union that aren't local classes.
+* `Partial specializations` of member template may appear both at `class scope` and at `enclosing namespace scope`, but `explicit (full) specializations` may only appear in any scope in which the primary template may appear.
+* If the enclosing class declaration is, in turn, a class template, when a member template is defined outside of the class body, it takes two sets of template parameters: one for the enclosing class, and another one for itself.
+
+### Member function templates
+* `Destructors` and `copy constructors` cannot be templates. If a template constructor is declared which could be instantiated with the type signature of a copy constructor, the implicitly-declared copy constructor is used instead.
+    * [635. Names of constructors and destructors of templates](http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2015/n4459.html)
+        ```c++
+        template <class> struct S { S(); ~S(); };
+        template <class T> S<T>::S<T>() { }        // error
+        template <class T> S<T>::~S<T>() { }       // okay
+        ```
+
+        The reason for this is that 3.4.3.1 [class.qual] paragraph 2 says that S::S is "considered to name the constructor," which is not a template and thus cannot accept a template argument list. On the other hand, the second S in S::~S finds the **injected-class-name**, which "can be used with or without a template-argument-list" (14.6.1 [temp.local] paragraph 1) and thus satisfies the requirement to name the destructor's class (12.4 [class.dtor] paragraph 1).
+
+* A member function template `cannot be virtual`, and a member function template in a derived class `cannot override` a virtual member function from the base class.
+* A `non-template` member function and a `template` member function with the `same name` may be declared. In case of conflict (when some template specialization matches the non-template function signature exactly), the use of that name and type `refers` to the `non-template member` unless an explicit template argument list is supplied.
+    ```c++
+    template<typename T>
+    struct A {
+        void f(int); // non-template member
+
+        template<typename T2>
+        void f(T2); // member template
+    };
+
+    int main() {
+        A<char> ac;
+        ac.f('c'); // calls template function A<char>::f<char>(int)
+        ac.f(1);   // calls non-template function A<char>::f(int)
+        ac.f<>(1); // calls template function A<char>::f<int>(int)
+    }
+    ```
+* An `out-of-class definition` of a member function template `must be equivalent` to the declaration inside the class (see function template overloading for the definition of equivalency), otherwise it is considered to be an `overload`.
+    ```c++
+    struct X {
+        template<class T> T good(T n);
+        template<class T> T bad(T n);
+    };
+
+    template<class T> struct identity { using type = T; };
+
+    // OK: equivalent declaration
+    template<class V>
+    V X::good(V n) { return n; }
+
+    // Error: not equivalent to any of the declarations inside X
+    template<class T>
+    T X::bad(typename identity<T>::type n) { return n; }
+    ```
+
+### Member class templates
+
+
+### Conversion function templates
+* A user-defined conversion function can be a template.
+* A user-defined conversion function template cannot have a deduced return type. (C++14)
+* During overload resolution, specializations of conversion function templates are not found by name lookup. Instead, all visible conversion function templates are considered, and every specialization produced by template argument deduction (which has special rules for conversion function templates) is used as if found by name lookup.
+* Using-declarations in derived classes cannot refer to specializations of template conversion functions from base classes.
+```c++
+struct A {
+    template<typename T>
+    operator T*(); // conversion to pointer to any type
+};
+
+// out-of-class definition
+template<typename T>
+A::operator T*() {return nullptr;}
+
+// explicit specialization for char*
+template<>
+A::operator char*() {return nullptr;}
+
+// explicit instantiation
+template A::operator void*();
+
+int main() {
+    A a;
+    int* ip = a.operator int*(); // explicit call to A::operator int*()
+}
+```
+
+### Member variable templates
+* A variable template declaration may appear at class scope, in which case it declares a static data member template. (C++14)
+
 ## Explicit (full) specialization
 * Syntax
     ```c++
@@ -2825,6 +2832,7 @@ int main() {
 
 ### Members of specializations
 * When `defining a member` of an explicitly specialized class template `outside the body of the class`, the syntax `template <>` is not used, except if it's a member of an explicitly specialized `member class template`, which is specialized as a class template, because otherwise, the syntax would require such definition to begin with template<parameters> required by the nested template
+
     ```c++
     template< typename T>
     struct A {
@@ -2832,21 +2840,24 @@ int main() {
         template<class U> struct C { }; // member class template
     };
 
-    template<>          // 1. specialization of a member function
+    // 1. specialization of a member function
+    template<>
     struct A<int> {
-        void af(int);            // member function of a specialization
+        void af(int);           // member function of a specialization
     };
 
-    void A<int>::af(int) { }     // template<> not used for a member of a specialization
+    void A<int>::af(int) { }    // template<> not used for a member of a specialization
 
-    template<>          // 2. specialization of a member class
+    // 2. specialization of a member class
+    template<>
     struct A<char>::B {
         void bf();
     };
 
-    void A<char>::B::bf() { }    // template<> not used for a member of a specialized member class either
+    void A<char>::B::bf() { }   // template<> not used for a member of a specialized member class either
 
-    template<>          // 3. specialization of a member class template
+    // 3. specialization of a member class template
+    template<>
     template<class U>
     struct A<char>::C {
         void cf();
@@ -2857,6 +2868,10 @@ int main() {
     template<>
     template<class U>
     void A<char>::C<U>::cf() { }
+
+    template<>
+    template<>
+    void A<char>::C<char>::cf() { }
     ```
 
 * An explicit specialization of a `static data member` of a template is a definition if the declaration includes an `initializer`; otherwise, it is a declaration. These definitions must use braces for default initialization:
@@ -2952,7 +2967,7 @@ int main() {
 ## Partial specialization
 * Syntax
     ```c++
-    template <parameter-list> class-key class-head-name <argument-list> declaration                (1)
+    template <parameter-list> class-key class-head-name <argument-list> declaration                 (1)
     template <parameter-list> decl-specifier-seq declarator <argument-list> initializer(optional)   (2) (C++14)
     ```
 * Allows customizing `class` and `variable` (C++14) templates for a given category of template arguments.
@@ -2986,6 +3001,7 @@ class A<X, T*, I> {};   // #4: partial specialization where T2 is a pointer
     * If any argument is a `pack expansion`, it must be the last argument in the list
     * `Non-type argument` expressions can use template parameters as long as the parameter appears at least once outside a non-deduced context (note that only clang supports this feature currently)
     * `Non-type template` argument cannot specialize a template parameter whose type `depends on` a parameter of the specialization
+
         ```c++
         template <class T, T t> struct C {}; // primary template
         template <class T> struct C<T, 1>;   // error: type of the argument 1 is T, which depends on the parameter T
@@ -3376,9 +3392,9 @@ There is only one downside to using promises and futures: they can only be used 
     * static interface
     * adding functionality to original class
 
-* In general, a class deriving from another class expresses that the derived class somehow conceptually “is a” base class. The purpose is to use the base class in generic code, and to redirect calls to the base class over to code in the derived class.
+* In general, a class deriving from another class expresses that the derived class somehow conceptually "is a" base class. The purpose is to use the base class in generic code, and to redirect calls to the base class over to code in the derived class.
 
-* With the CRTP the situation is radically different. The derived class does not express the fact it “is a” base class. Rather, it expands its interface by inherting from the base class, in order to add more functionality.
+* With the CRTP the situation is radically different. The derived class does not express the fact it "is a" base class. Rather, it expands its interface by inherting from the base class, in order to add more functionality.
 
 * Therefore the base class is not the interface, and the derived class is not the implementation
 
