@@ -2,6 +2,7 @@
 * [Memory Management](#Memory-Management)
     * [segment](#segment)
     * [paging](#paging)
+    * [mm_init](#mm_init)
     * [user virtual space](#user-virtual-space)
     * [kernel virtual space](#kernel-virtual-space)
     * [numa](#numa)
@@ -68,6 +69,25 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 ![linux-mem-segment-page.png](../Images/Kernel/mem-segment-page.png)
 
 ![linux-mem-page-table.png](../Images/Kernel/mem-kernel-page-table.png)
+
+### mm_init
+```c++
+void start_kernel(void) {
+  mm_init();
+}
+
+static void __init mm_init(void)
+{
+  page_ext_init_flatmem();
+  mem_init();
+  kmem_cache_init();
+  pgtable_init();
+  vmalloc_init();
+  ioremap_huge_init();
+  init_espfix_bsp();
+  pti_init();
+}
+```
 
 ### user virtual space
 ```C++
@@ -412,7 +432,26 @@ static inline void expand(struct zone *zone, struct page *page,
 ![linux-mem-kmem-cache.png](../Images/Kernel/mem-kmem-cache.png)
 
 ```c++
-// all caches will listed into LIST_HEAD(slab_caches)
+/* linux-4.19.y/mm/slab_common.c */
+enum slab_state slab_state;
+LIST_HEAD(slab_caches);
+DEFINE_MUTEX(slab_mutex);
+struct kmem_cache *kmem_cache;
+
+/* linux-4.19.y/mm/slab.c */
+struct kmem_cache kmem_cache_boot = {
+  .name   = "kmem_cache",
+  .size   = sizeof(struct kmem_cache),
+  .flags  = SLAB_PANIC,
+  .aligs  = ARCH_KMALLOC_MINALIGN,
+};
+
+void kmem_cache_init(void)
+{
+  kmem_cache = &kmem_cache_boot;
+  slab_state = UP;
+}
+
 struct kmem_cache {
   /* each NUMA node has one kmem_cache_cpu kmem_cache_node */
   struct kmem_cache_cpu  *cpu_slab;
@@ -423,7 +462,7 @@ struct kmem_cache {
   unsigned long min_partial;
   int size;         /* The size of an object including meta data */
   int object_size;  /* The size of an object without meta data */
-  int offset;        /* Free pointer offset. */
+  int offset;       /* Free pointer offset. */
   int cpu_partial;  /* Number of per cpu partial objects to keep around */
 
   struct kmem_cache_order_objects oo;
@@ -438,10 +477,10 @@ struct kmem_cache {
 };
 
 struct kmem_cache_cpu {
-  void **freelist;    /* Pointer to next available object */
-  struct page *page;  /* The slab from which we are allocating */
-  struct page *partial;  /* Partially allocated frozen slabs */
-  unsigned long tid;     /* Globally unique transaction id */
+  void **freelist;      /* Pointer to next available object */
+  struct page *page;    /* The slab from which we are allocating */
+  struct page *partial; /* Partially allocated frozen slabs */
+  unsigned long tid;    /* Globally unique transaction id */
 };
 
 struct kmem_cache_node {
@@ -504,13 +543,6 @@ out_unlock:
 
   return s;
 }
-
-struct kmem_cache kmem_cache_boot = {
-  .name  = "kmem_cache",
-  .size  = sizeof(struct kmem_cache),
-  .flags  = SLAB_PANIC,
-  .aligs = ARCH_KMALLOC_MINALIGN,
-};
 
 static struct kmem_cache *create_cache(
   const char *name,
@@ -640,6 +672,9 @@ static void init_kmem_cache_cpus(struct kmem_cache *s)
   for_each_possible_cpu(cpu)
     per_cpu_ptr(s->cpu_slab, cpu)->tid = init_tid(cpu);
 }
+
+#define per_cpu_ptr(ptr, cpu) \
+  ((typeof(ptr)) ((char *) (ptr) + PERCPU_OFFSET * cpu))
 ```
 
 ```c++
@@ -649,6 +684,7 @@ kmem_cache_create();
     create_cache();
         kmem_cache_zalloc();
            kmem_cache_alloc();
+
         __kmem_cache_create();
             kmem_cache_open();
                 caculate_size();
@@ -656,6 +692,7 @@ kmem_cache_create();
                     oo_make();
                 set_min_partial();
                 set_cpu_partial();
+
                 init_kmem_cache_nodes();
                     kmem_alloc_cache_node();
                     init_keme_cache_node();
@@ -679,6 +716,11 @@ void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 static inline struct task_struct *alloc_task_struct_node(int node)
 {
   return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+}
+
+void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t gfp, int node)
+{
+  return slab_alloc_node(cachep, gfp, node);
 }
 
 static inline void free_task_struct(struct task_struct *tsk)
@@ -718,7 +760,8 @@ static void *slab_alloc_node(struct kmem_cache *s,
     if (unlikely(!this_cpu_cmpxchg_double(
         s->cpu_slab->freelist, s->cpu_slab->tid,
         object, tid,
-        next_object, next_tid(tid)))) {
+        next_object, next_tid(tid))))
+    {
       note_cmpxchg_failure("slab_alloc", s, tid);
       goto redo;
     }
@@ -1095,9 +1138,7 @@ int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, str
   if (vma)
     goto out;
 
-  /*
-   * create a vma struct for an anonymous mapping
-   */
+  /* create a vma struct for an anonymous mapping */
   vma = vm_area_alloc(mm);
   if (!vma) {
     vm_unacct_memory(len >> PAGE_SHIFT);
@@ -1111,6 +1152,7 @@ int do_brk_flags(unsigned long addr, unsigned long len, unsigned long flags, str
   vma->vm_flags = flags;
   vma->vm_page_prot = vm_get_page_prot(flags);
   vma_link(mm, vma, prev, rb_link, rb_parent);
+
 out:
   perf_event_mmap(vma);
   mm->total_vm += len >> PAGE_SHIFT;
@@ -1120,9 +1162,50 @@ out:
   vma->vm_flags |= VM_SOFTDIRTY;
   return 0;
 }
+
+unsigned long
+get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
+    unsigned long pgoff, unsigned long flags)
+{
+  unsigned long (*get_area)(struct file *, unsigned long,
+          unsigned long, unsigned long, unsigned long);
+
+  unsigned long error = arch_mmap_check(addr, len, flags);
+  if (error)
+    return error;
+
+  /* Careful about overflows, 3G */
+  if (len > TASK_SIZE)
+    return -ENOMEM;
+
+  get_area = current->mm->get_unmapped_area;
+  if (file) {
+    if (file->f_op->get_unmapped_area)
+      get_area = file->f_op->get_unmapped_area;
+  } else if (flags & MAP_SHARED) {
+    /* mmap_region() will call shmem_zero_setup() to create a file,
+     * so use shmem's get_unmapped_area in case it can be huge.
+     * do_mmap_pgoff() will clear pgoff, so match alignment. */
+    pgoff = 0;
+    get_area = shmem_get_unmapped_area;
+  }
+
+  addr = get_area(file, addr, len, pgoff, flags);
+  if (IS_ERR_VALUE(addr))
+    return addr;
+
+  if (addr > TASK_SIZE - len)
+    return -ENOMEM;
+  if (offset_in_page(addr))
+    return -EINVAL;
+
+  error = security_mmap_addr(addr);
+  return error ? error : addr;
+}
 ```
 
 ### mmap
+![](../Images/Kernel/mem-mmap-vma-file-page.png)
 ```C++
 struct mm_struct {
   pgd_t                 *pgd;
@@ -1145,8 +1228,8 @@ struct vm_area_struct {
 
   const struct vm_operations_struct *vm_ops;
 
-  unsigned long vm_pgoff;  /* Offset (within vm_file) in PAGE_SIZE units */
-  struct file * vm_file;    /* File we map to (can be NULL). */
+  unsigned long vm_pgoff; /* Offset (within vm_file) in PAGE_SIZE units */
+  struct file * vm_file;  /* File we map to (can be NULL). */
   void * vm_private_data; /* was vm_pte (shared mem) */
 };
 
@@ -1266,7 +1349,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
 
   if (file) {
     vma->vm_file = get_file(file);
-    /* 1. link the file to vma */
+    /* 2.1. link the file to vma */
     call_mmap(file, vma);
     addr = vma->vm_start;
     vm_flags = vma->vm_flags;
@@ -1276,7 +1359,7 @@ unsigned long mmap_region(struct file *file, unsigned long addr,
     vma_set_anonymous(vma);
   }
 
-  /* 2. link the vma to the file */
+  /* 2.2. link the vma to the file */
   vma_link(mm, vma, prev, rb_link, rb_parent);
 
   return addr;
@@ -1299,6 +1382,7 @@ struct address_space {
   const struct address_space_operations *a_ops;
 }
 
+/* 2.2. link the vma to the file */
 static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
       struct vm_area_struct *prev, struct rb_node **rb_link,
       struct rb_node *rb_parent)
@@ -1361,10 +1445,12 @@ mmap();
 
           map_region();
             vma_merge();
-            kmem_cache_zalloc();
+
+            struct vm_area_struct *vma = kmem_cache_zalloc();
 
             if (file) {
               vma->vm_file = get_file(file);
+              /* 2.1. link the file to vma */
               call_mmap(file, vma);
                 file->f_op->mmap(file, vma);
                   ext4_file_mmap();
@@ -1375,6 +1461,7 @@ mmap();
               vma_set_anonymous(vma);
             }
 
+            /* 2.2. link the vma to the file */
             vma_link(mm, vma, prev, rb_link, rb_parent);
               vma_interval_tree_insert(vma, &mapping->i_mmap);
 ```
@@ -1382,7 +1469,8 @@ mmap();
 ### page fault
 ```C++
 struct file {
-  struct address_space* f_mapping;
+  struct file_operations* f_op;
+  struct address_space*   f_mapping;
 };
 
 // page cache in memory
@@ -1391,14 +1479,14 @@ struct address_space {
   struct radix_tree_root  i_pages; /* cached physical pages */
   struct rb_root_cached   i_mmap;  /* tree of private and shared vma mappings */
   struct rw_semaphore     i_mmap_rwsem;
-  atomic_t                i_mmap_writable;/* count VM_SHARED mappings */
-  const struct address_space_operations *a_ops;  /* methods */
+  atomic_t                i_mmap_writable;      /* count VM_SHARED mappings */
+  const struct address_space_operations *a_ops; /* methods */
   void                    *private_data;
 
   unsigned long           nrpages;
   unsigned long           nrexceptional;
-  pgoff_t                  writeback_index;/* writeback starts here */
-  struct list_head        private_list;  /* for use by the address_space */
+  pgoff_t                 writeback_index;/* writeback starts here */
+  struct list_head        private_list;   /* for use by the address_space */
 };
 
 static void __init kvm_apf_trap_init(void)
@@ -1412,7 +1500,47 @@ ENTRY(async_page_fault)
   jmp   common_exception
 END(async_page_fault)
 
-do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
+ENTRY(page_fault)
+  ASM_CLAC
+  pushl  $do_page_fault
+  ALIGN
+  jmp common_exception
+END(page_fault)
+
+common_exception:
+  /* the function address is in %gs's slot on the stack */
+  pushl  %fs
+  pushl  %es
+  pushl  %ds
+  pushl  %eax
+  movl   $(__USER_DS), %eax
+  movl  %eax, %ds
+  movl  %eax, %es
+  movl  $(__KERNEL_PERCPU), %eax
+  movl  %eax, %fs
+  pushl  %ebp
+  pushl  %edi
+  pushl  %esi
+  pushl  %edx
+  pushl  %ecx
+  pushl  %ebx
+  SWITCH_TO_KERNEL_STACK
+  ENCODE_FRAME_POINTER
+  cld
+  UNWIND_ESPFIX_STACK
+  GS_TO_REG %ecx
+  movl  PT_GS(%esp), %edi    # get the function address
+  movl  PT_ORIG_EAX(%esp), %edx    # get the error code
+  movl  $-1, PT_ORIG_EAX(%esp)    # no syscall to restart
+  REG_TO_PTGS %ecx
+  SET_KERNEL_GS %ecx
+  TRACE_IRQS_OFF
+  movl  %esp, %eax      # pt_regs pointer
+  CALL_NOSPEC %edi
+  jmp  ret_from_exception
+END(common_exception)
+
+void do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
   enum ctx_state prev_state;
 
@@ -1423,55 +1551,80 @@ do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
   }
 }
 
-void do_page_fault(
-  struct pt_regs *regs,
-  unsigned long hw_error_code,
-  unsigned long address)
+// linux-4.19.y/arch/x86/mm/fault.c
+
+void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
-  /* Get the faulting address */
   unsigned long address = read_cr2();
+  enum ctx_state prev_state;
+
+  prev_state = exception_enter();
+  if (trace_pagefault_enabled())
+    trace_page_fault_entries(address, regs, error_code);
+
   __do_page_fault(regs, error_code, address);
+  exception_exit(prev_state);
 }
 
-static void __do_page_fault(
-  struct pt_regs *regs, unsigned long error_code,
-  unsigned long address)
+void __do_page_fault(struct pt_regs *regs, unsigned long error_code,
+    unsigned long address)
 {
   struct vm_area_struct *vma;
   struct task_struct *tsk;
   struct mm_struct *mm;
+  vm_fault_t fault, major = 0;
+  unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+  u32 pkey;
+
   tsk = current;
   mm = tsk->mm;
 
   if (unlikely(fault_in_kernel_space(address))) {
-    if (vmalloc_fault(address) >= 0)
-      return;
+    if (!(error_code & (X86_PF_RSVD | X86_PF_USER | X86_PF_PROT))) {
+      if (vmalloc_fault(address) >= 0)
+        return;
+    }
+
+    return;
   }
 
+  /* It's safe to allow irq's after cr2 has been saved and the
+   * vmalloc fault has been handled.
+   *
+   * User-mode registers count as a user access even for any
+   * potential system fault or CPU buglet: */
+  if (user_mode(regs)) {
+    local_irq_enable();
+    error_code |= X86_PF_USER;
+    flags |= FAULT_FLAG_USER;
+  } else {
+    if (regs->flags & X86_EFLAGS_IF)
+      local_irq_enable();
+  }
+
+  if (error_code & X86_PF_WRITE)
+    flags |= FAULT_FLAG_WRITE;
+  if (error_code & X86_PF_INSTR)
+    flags |= FAULT_FLAG_INSTRUCTION;
+
+retry:
   vma = find_vma(mm, address);
-  fault = VM_FAULT_BADMAP;
-  if (unlikely(!vma))
-    goto out;
-  if (unlikely(vma->vm_start > addr))
-    goto check_stack;
-
-  /* Ok, we have a good vm_area for this
-   * memory access, so we can handle it. */
-good_area:
-  if (access_error(fsr, vma)) {
-    fault = VM_FAULT_BADACCESS;
-    goto out;
+  if (unlikely(!vma)) {
+    bad_area(regs, error_code, address);
+    return;
+  }
+  if (likely(vma->vm_start <= address))
+    goto good_area;
+  if (unlikely(!(vma->vm_flags & VM_GROWSDOWN))) {
+    bad_area(regs, error_code, address);
+    return;
   }
 
-  return handle_mm_fault(vma, addr & PAGE_MASK, flags);
+good_area:
 
-check_stack:
-  /* Don't allow expansion below FIRST_USER_ADDRESS */
-  if (vma->vm_flags & VM_GROWSDOWN &&
-      addr >= FIRST_USER_ADDRESS && !expand_stack(vma, addr))
-    goto good_area;
-out:
-  return fault;
+  pkey = vma_pkey(vma);
+  fault = handle_mm_fault(vma, address, flags);
+  major |= fault & VM_FAULT_MAJOR;
 }
 
 static int __handle_mm_fault(
@@ -1567,7 +1720,8 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
     goto release;
 
   /* add map from physic memory page to virtual address
-   * add pte mapping to a new anonymous page */
+   * add pte mapping to a new anonymous page
+   * rmap: Reverse Mapping */
   page_add_new_anon_rmap(page, vma, vmf->address, false);
 
   mem_cgroup_commit_charge(page, memcg, false, false);
@@ -1753,7 +1907,10 @@ int filemap_fault(struct vm_fault *vmf)
   if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
     do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
   } else if (!page) {
+    /* Synchronous readahead happens when we don't even find
+     * a page in the page cache at all.*/
     do_sync_mmap_readahead(vmf->vma, ra, file, offset);
+
 retry_find:
     page = find_get_page(mapping, offset);
     if (!page)
@@ -1766,6 +1923,8 @@ no_cached_page:
   error = page_cache_read(file, offset, vmf->gfp_mask);
 }
 
+/* This adds the requested page to the page cache if it isn't already there,
+ * and schedules an I/O to read in its contents from disk. */
 static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
 {
   struct address_space *mapping = file->f_mapping;
@@ -1914,37 +2073,52 @@ int swap_readpage(struct page *page, bool do_poll)
 ```
 
 ```c++
-do_async_page_fault();
 do_page_fault();
   __do_page_fault();
     vmalloc_fault(); /* kernel fault */
+
+    vma = find_vma(mm, address);
+
     handel_mm_fault();
       handle_pte_fault();
 
-        do_anonymous_page();  /* 1. anonymous fault */
+        /* 1. anonymous fault */
+        do_anonymous_page();
           pte_alloc();
           alloc_zeroed_user_highpage_movable();
             alloc_pages_vma();
                 __alloc_pages_nodemask();
                   get_page_from_freelist();
+          mk_pte();
           page_add_new_anon_rmap()
+            __page_set_anon_rmap();
+              anon_vma = vma->anon_vma;
+              page->mapping = (struct address_space *) anon_vma;
           set_pte_at()
           update_mmu_cache()
 
+        /* 2. file fault */
         do_fault()
 
           do_read_fault()
-            __do_fault();         /* 2. file fault */
-              vma->vm_ops->fault(); // ext4_filemap_fault
-                filemap_fault();
-                  find_get_page();
-                  do_async_mmap_readahead();
-                  page_cache_read();
-                    address_space.a_ops.readpage();
-                      ext4_read_inline_page();
-                        kmap_atomic();
-                        ext4_read_inline_data();
-                        kumap_atomic();
+            __do_fault();
+              vma->vm_ops->fault();
+                ext4_filemap_fault();
+                  filemap_fault();
+                    page = find_get_page();
+                    if (page) {
+                      do_async_mmap_readahead();
+                    } else if (!page) {
+                      do_async_mmap_readahead();
+                    }
+
+                    page_cache_read();
+                      page = __page_cache_alloc();
+                      address_space.a_ops.readpage();
+                        ext4_read_inline_page();
+                          kmap_atomic();
+                          ext4_read_inline_data();
+                          kumap_atomic();
             finish_fault()
               alloc_set_pte()
               pte_unmap_unlock()
@@ -1953,7 +2127,8 @@ do_page_fault();
 
           do_shared_fault()
 
-        do_swap_page();     /* 3. swap fault */
+        /* 3. swap fault */
+        do_swap_page();
 ```
 ![linux-mem-page-fault.png](../Images/Kernel/mem-page-fault.png)
 
