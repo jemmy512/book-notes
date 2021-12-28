@@ -1163,9 +1163,9 @@ out:
   return 0;
 }
 
-unsigned long
-get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
-    unsigned long pgoff, unsigned long flags)
+unsigned long get_unmapped_area(
+  struct file *file, unsigned long addr, unsigned long len,
+  unsigned long pgoff, unsigned long flags)
 {
   unsigned long (*get_area)(struct file *, unsigned long,
           unsigned long, unsigned long, unsigned long);
@@ -1424,11 +1424,266 @@ static void __vma_link(
   __vma_link_rb(mm, vma, rb_link, rb_parent);
 }
 ```
+
+#### get_unmapped_area
+```c++
+void setup_new_exec(struct linux_binprm * bprm)
+{
+  arch_pick_mmap_layout(current->mm, &bprm->rlim_stack);
+}
+
+void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
+{
+  if (mmap_is_legacy())
+    mm->get_unmapped_area = arch_get_unmapped_area;
+  else
+    mm->get_unmapped_area = arch_get_unmapped_area_topdown;
+
+  arch_pick_mmap_base(&mm->mmap_base, &mm->mmap_legacy_base,
+      arch_rnd(mmap64_rnd_bits), task_size_64bit(0),
+      rlim_stack);
+}
+
+static void arch_pick_mmap_base(unsigned long *base, unsigned long *legacy_base,
+    unsigned long random_factor, unsigned long task_size,
+    struct rlimit *rlim_stack)
+{
+  *legacy_base = mmap_legacy_base(random_factor, task_size);
+  if (mmap_is_legacy())
+    *base = *legacy_base;
+  else
+    *base = mmap_base(random_factor, task_size, rlim_stack);
+}
+
+unsigned long mmap_base(unsigned long rnd, unsigned long task_size,
+             struct rlimit *rlim_stack)
+{
+  unsigned long gap = rlim_stack->rlim_cur;
+  unsigned long pad = stack_maxrandom_size(task_size) + stack_guard_gap;
+  unsigned long gap_min, gap_max;
+
+  /* Values close to RLIM_INFINITY can overflow. */
+  if (gap + pad > gap)
+    gap += pad;
+
+  /* Top of mmap area (just below the process stack).
+   * Leave an at least ~128 MB hole with possible stack randomization. */
+  gap_min = SIZE_128M;
+  gap_max = (task_size / 6) * 5;
+
+  if (gap < gap_min)
+    gap = gap_min;
+  else if (gap > gap_max)
+    gap = gap_max;
+
+  return PAGE_ALIGN(task_size - gap - rnd);
+}
+```
+
+```c++
+unsigned long
+arch_get_unmapped_area(struct file *filp, unsigned long addr,
+    unsigned long len, unsigned long pgoff, unsigned long flags)
+{
+  struct mm_struct *mm = current->mm;
+  struct vm_area_struct *vma;
+  struct vm_unmapped_area_info info;
+  unsigned long begin, end;
+
+  addr = mpx_unmapped_area_check(addr, len, flags);
+  if (IS_ERR_VALUE(addr))
+    return addr;
+
+  if (flags & MAP_FIXED)
+    return addr;
+
+  find_start_end(addr, flags, &begin, &end);
+
+  if (len > end)
+    return -ENOMEM;
+
+  if (addr) {
+    addr = PAGE_ALIGN(addr);
+    vma = find_vma(mm, addr);
+    if (end - len >= addr &&
+        (!vma || addr + len <= vm_start_gap(vma)))
+      return addr;
+  }
+
+  info.flags = 0;
+  info.length = len;
+  info.low_limit = begin;
+  info.high_limit = end;
+  info.align_mask = 0;
+  info.align_offset = pgoff << PAGE_SHIFT;
+  if (filp) {
+    info.align_mask = get_align_mask();
+    info.align_offset += get_align_bits();
+  }
+  return vm_unmapped_area(&info);
+}
+
+static void find_start_end(unsigned long addr, unsigned long flags,
+    unsigned long *begin, unsigned long *end)
+{
+  if (!in_compat_syscall() && (flags & MAP_32BIT)) {
+    /* This is usually used needed to map code in small
+      model, so it needs to be in the first 31bit. Limit
+      it to that.  This means we need to move the
+      unmapped base down for this case. This can give
+      conflicts with the heap, but we assume that glibc
+      malloc knows how to fall back to mmap. Give it 1GB
+      of playground for now. -AK */
+    *begin = 0x40000000;
+    *end = 0x80000000;
+    if (current->flags & PF_RANDOMIZE) {
+      *begin = randomize_page(*begin, 0x02000000);
+    }
+    return;
+  }
+
+  *begin  = get_mmap_base(1);
+  if (in_compat_syscall())
+    *end = task_size_32bit();
+  else
+    *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
+
+  // TODO::?  shouldn't [begin, end) be [brk, mmap_base)
+}
+
+unsigned long get_mmap_base(int is_legacy)
+{
+  struct mm_struct *mm = current->mm;
+
+#ifdef CONFIG_HAVE_ARCH_COMPAT_MMAP_BASES
+  if (in_compat_syscall()) {
+    return is_legacy ? mm->mmap_compat_legacy_base
+         : mm->mmap_compat_base;
+  }
+#endif
+  return is_legacy ? mm->mmap_legacy_base : mm->mmap_base;
+}
+
+/* Search for an unmapped address range.
+ *
+ * We are looking for a range that:
+ * - does not intersect with any VMA;
+ * - is contained within the [low_limit, high_limit) interval;
+ * - is at least the desired size.
+ * - satisfies (begin_addr & align_mask) == (align_offset & align_mask) */
+unsigned long vm_unmapped_area(struct vm_unmapped_area_info *info)
+{
+  if (info->flags & VM_UNMAPPED_AREA_TOPDOWN)
+    return unmapped_area_topdown(info);
+  else
+    return unmapped_area(info);
+}
+
+unsigned long unmapped_area(struct vm_unmapped_area_info *info)
+{
+  /* We implement the search by looking for an rbtree node that
+   * immediately follows a suitable gap. That is,
+   * - gap_start = vma->vm_prev->vm_end <= info->high_limit - length;
+   * - gap_end   = vma->vm_start        >= info->low_limit  + length;
+   * - gap_end - gap_start >= length */
+
+  struct mm_struct *mm = current->mm;
+  struct vm_area_struct *vma;
+  unsigned long length, low_limit, high_limit, gap_start, gap_end;
+
+  /* Adjust search length to account for worst case alignment overhead */
+  length = info->length + info->align_mask;
+  if (length < info->length)
+    return -ENOMEM;
+
+  /* Adjust search limits by the desired length */
+  if (info->high_limit < length)
+    return -ENOMEM;
+  high_limit = info->high_limit - length;
+
+  if (info->low_limit > high_limit)
+    return -ENOMEM;
+  low_limit = info->low_limit + length;
+
+  /* Check if rbtree root looks promising */
+  if (RB_EMPTY_ROOT(&mm->mm_rb))
+    goto check_highest;
+  vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
+  if (vma->rb_subtree_gap < length)
+    goto check_highest;
+
+  while (true) {
+    /* Visit left subtree if it looks promising */
+    gap_end = vm_start_gap(vma);
+    if (gap_end >= low_limit && vma->vm_rb.rb_left) {
+      struct vm_area_struct *left =
+        rb_entry(vma->vm_rb.rb_left,
+           struct vm_area_struct, vm_rb);
+      if (left->rb_subtree_gap >= length) {
+        vma = left;
+        continue;
+      }
+    }
+
+    gap_start = vma->vm_prev ? vm_end_gap(vma->vm_prev) : 0;
+check_current:
+    /* Check if current node has a suitable gap */
+    if (gap_start > high_limit)
+      return -ENOMEM;
+    if (gap_end >= low_limit &&
+        gap_end > gap_start && gap_end - gap_start >= length)
+      goto found;
+
+    /* Visit right subtree if it looks promising */
+    if (vma->vm_rb.rb_right) {
+      struct vm_area_struct *right =
+        rb_entry(vma->vm_rb.rb_right,
+           struct vm_area_struct, vm_rb);
+      if (right->rb_subtree_gap >= length) {
+        vma = right;
+        continue;
+      }
+    }
+
+    /* Go back up the rbtree to find next candidate node */
+    while (true) {
+      struct rb_node *prev = &vma->vm_rb;
+      if (!rb_parent(prev))
+        goto check_highest;
+      vma = rb_entry(rb_parent(prev),
+               struct vm_area_struct, vm_rb);
+      if (prev == vma->vm_rb.rb_left) {
+        gap_start = vm_end_gap(vma->vm_prev);
+        gap_end = vm_start_gap(vma);
+        goto check_current;
+      }
+    }
+  }
+
+check_highest:
+  /* Check highest gap, which does not precede any rbtree node */
+  gap_start = mm->highest_vm_end;
+  gap_end = ULONG_MAX;  /* Only for VM_BUG_ON below */
+  if (gap_start > high_limit)
+    return -ENOMEM;
+
+found:
+  /* We found a suitable gap. Clip it with the original low_limit. */
+  if (gap_start < info->low_limit)
+    gap_start = info->low_limit;
+
+  /* Adjust gap address to the desired alignment */
+  gap_start += (info->align_offset - gap_start) & info->align_mask;
+
+  return gap_start;
+}
+```
+
 ```C++
 mmap();
   sys_mmap_pgoff();
     vm_mmap_pgoff();
-      do_mmap_pgoff()p
+      do_mmap_pgoff();
         do_mmap();
 
           get_unmapped_area();
@@ -1464,6 +1719,22 @@ mmap();
             /* 2.2. link the vma to the file */
             vma_link(mm, vma, prev, rb_link, rb_parent);
               vma_interval_tree_insert(vma, &mapping->i_mmap);
+
+
+setup_new_exec();
+  arch_pick_mmap_layout();
+    mm->get_unmapped_area = arch_get_unmapped_area;
+    arch_pick_mmap_base();
+      mmap_base();
+
+mm->get_unmapped_area();
+  arch_get_unmapped_area();
+    find_start_end();
+      *begin  = get_mmap_base(1);
+        return mm->mmap_base;
+      *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
+    vm_unmapped_area();
+      unmapped_area();
 ```
 
 ### page fault
