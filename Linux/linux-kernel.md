@@ -134,7 +134,7 @@ static void rest_init(void)
   cpu_startup_entry(CPUHP_ONLINE);
 }
 ```
-## Q: sp points to `kernel_init` fn, should't it be ip?
+### Q: sp points to `kernel_init` fn, should't it be ip?
 ```c++
 pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 {
@@ -226,12 +226,13 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 /* trap_init */
 set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
 
+/* linux-4.19.y/arch/x86/entry/entry_32.S */
 ENTRY(entry_INT80_32)
-        ASM_CLAC
-        pushl   %eax  /* pt_regs->orig_ax */
-        SAVE_ALL pt_regs_ax=$-ENOSYS /* save rest */
-        movl    %esp, %eax
-        call    do_syscall_32_irqs_on
+    ASM_CLAC
+    pushl   %eax                  /* pt_regs->orig_ax */
+    SAVE_ALL pt_regs_ax=$-ENOSYS  /* save rest */
+    movl    %esp, %eax
+    call    do_syscall_32_irqs_on
 .Lsyscall_32_done:
 
 .Lirq_return:
@@ -248,7 +249,8 @@ static  void do_syscall_32_irqs_on(struct pt_regs *regs)
     regs->ax = ia32_sys_call_table[nr](
       (unsigned int)regs->bx, (unsigned int)regs->cx,
       (unsigned int)regs->dx, (unsigned int)regs->si,
-      (unsigned int)regs->di, (unsigned int)regs->bp);
+      (unsigned int)regs->di, (unsigned int)regs->bp
+    );
   }
 
   syscall_return_slowpath(regs);
@@ -330,8 +332,8 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 
 #### 64
 ```C++
-
-/* The Linux/x86-64 kernel expects the system call parameters in
+/* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
+  The Linux/x86-64 kernel expects the system call parameters in
   registers according to the following table:
     syscall number  rax
     arg 1           rdi
@@ -1743,7 +1745,9 @@ struct linux_binprm {
 
   struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
 };
+```
 
+```c++
 /* do_execve -> do_execveat_common -> exec_binprm -> search_binary_handler */
 SYSCALL_DEFINE3(execve,
   const char __user *, filename,
@@ -1817,10 +1821,14 @@ static int __do_execve_file(
   bprm->argc = count(argv, MAX_ARG_STRINGS);
   bprm->envc = count(envp, MAX_ARG_STRINGS);
 
-  /* Fill the binprm structure from the inode */
+  /* Fill the binprm structure from the inode.
+   * Check permissions, then read the first 128 (BINPRM_BUF_SIZE) bytes */
   prepare_binprm(bprm);
 
+  retval = copy_strings_kernel(1, &bprm->filename, bprm);
   bprm->exec = bprm->p;
+  retval = copy_strings(bprm->envc, envp, bprm);
+  retval = copy_strings(bprm->argc, argv, bprm);
 
   retval = exec_binprm(bprm);
 
@@ -1840,7 +1848,99 @@ static int __do_execve_file(
 
   return retval;
 }
+```
 
+```c++
+int bprm_mm_init(struct linux_binprm *bprm)
+{
+  int err;
+  struct mm_struct *mm = NULL;
+
+  bprm->mm = mm = mm_alloc();
+  err = -ENOMEM;
+  if (!mm)
+    goto err;
+
+  /* Save current stack limit for all calculations made during exec. */
+  task_lock(current->group_leader);
+  bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+  task_unlock(current->group_leader);
+
+  err = __bprm_mm_init(bprm);
+  if (err)
+    goto err;
+
+  return 0;
+
+err:
+  if (mm) {
+    bprm->mm = NULL;
+    mmdrop(mm);
+  }
+
+  return err;
+}
+
+int __bprm_mm_init(struct linux_binprm *bprm)
+{
+  int err;
+  struct vm_area_struct *vma = NULL;
+  struct mm_struct *mm = bprm->mm;
+
+  bprm->vma = vma = vm_area_alloc(mm);
+
+  vma_set_anonymous(vma);
+
+  vma->vm_end = STACK_TOP_MAX;
+  vma->vm_start = vma->vm_end - PAGE_SIZE;
+  vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+  vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+
+  err = insert_vm_struct(mm, vma);
+
+  mm->stack_vm = mm->total_vm = 1;
+  arch_bprm_mm_init(mm, vma);
+  up_write(&mm->mmap_sem);
+  bprm->p = vma->vm_end - sizeof(void *);
+  return 0;
+}
+
+/* Fill the binprm structure from the inode.
+ * Check permissions, then read the first 128 (BINPRM_BUF_SIZE) bytes
+ *
+ * This may be called multiple times for binary chains (scripts for example). */
+int prepare_binprm(struct linux_binprm *bprm)
+{
+  int retval;
+  loff_t pos = 0;
+
+  bprm_fill_uid(bprm);
+
+  /* fill in binprm security blob */
+  retval = security_bprm_set_creds(bprm);
+  if (retval)
+    return retval;
+  bprm->called_set_creds = 1;
+
+  memset(bprm->buf, 0, BINPRM_BUF_SIZE);
+  return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+}
+
+ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
+{
+  mm_segment_t old_fs;
+  ssize_t result;
+
+  old_fs = get_fs();
+  set_fs(get_ds());
+  /* The cast to a user pointer is valid due to the set_fs() */
+  result = vfs_read(file, (void __user *)buf, count, pos);
+  set_fs(old_fs);
+  return result;
+}
+```
+
+```c++
 static int exec_binprm(struct linux_binprm *bprm)
 {
   pid_t old_pid, old_vpid;
@@ -2044,7 +2144,7 @@ int load_elf_binary(struct linux_binprm *bprm)
   setup_new_exec(bprm);
   install_exec_creds(bprm);
 
-  /*set stack vm_area_struct */
+  /* set stack vm_area_struct */
   retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack);
 
   current->mm->start_stack = bprm->p;
@@ -2074,8 +2174,7 @@ int load_elf_binary(struct linux_binprm *bprm)
         nbyte = ELF_MIN_ALIGN - nbyte;
         if (nbyte > elf_brk - elf_bss)
           nbyte = elf_brk - elf_bss;
-        if (clear_user((void __user *)elf_bss +
-              load_bias, nbyte)) {
+        if (clear_user((void __user *)elf_bss + load_bias, nbyte)) {
           /* This bss-zeroing can fail if the ELF
            * file specifies odd protections. So
            * we don't check the return value */
@@ -2112,7 +2211,6 @@ int load_elf_binary(struct linux_binprm *bprm)
       total_size = total_mapping_size(elf_phdata, loc->elf_ex.e_phnum);
     }
 
-    /* mmap partial code into memory */
     error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
         elf_prot, elf_flags, total_size);
 
@@ -2158,7 +2256,7 @@ int load_elf_binary(struct linux_binprm *bprm)
       bss_prot = elf_prot;
       elf_brk = k;
     }
-  }
+  } /* for (i = 0, elf_ppnt = elf_phdata; i < loc->elf_ex.e_phnum; */
 
   loc->elf_ex.e_entry += load_bias;
   elf_bss += load_bias;
@@ -2178,8 +2276,7 @@ int load_elf_binary(struct linux_binprm *bprm)
               &interp_map_addr,
               load_bias, interp_elf_phdata);
     if (!IS_ERR((void *)elf_entry)) {
-      /* load_elf_interp() returns relocation
-       * adjustment */
+      /* load_elf_interp() returns relocation adjustment */
       interp_load_addr = elf_entry;
       elf_entry += loc->interp_elf_ex.e_entry;
     }
@@ -2235,39 +2332,247 @@ void start_thread(
   regs->flags  = X86_EFLAGS_IF;
   force_iret(); /* restore the saved registers */
 }
+
+void setup_new_exec(struct linux_binprm * bprm)
+{
+  bprm->secureexec |= bprm->cap_elevated;
+
+  if (bprm->secureexec) {
+    /* Make sure parent cannot signal privileged process. */
+    current->pdeath_signal = 0;
+
+    if (bprm->rlim_stack.rlim_cur > _STK_LIM)
+      bprm->rlim_stack.rlim_cur = _STK_LIM;
+  }
+
+  arch_pick_mmap_layout(current->mm, &bprm->rlim_stack);
+
+  current->sas_ss_sp = current->sas_ss_size = 0;
+
+  arch_setup_new_exec();
+  perf_event_exec();
+  __set_task_comm(current, kbasename(bprm->filename), true);
+
+  current->mm->task_size = TASK_SIZE;
+
+  WRITE_ONCE(current->self_exec_id, current->self_exec_id + 1);
+  flush_signal_handlers(current, 0);
+}
+
+/* Finalizes the stack vm_area_struct. The flags and permissions are updated,
+ * the stack is optionally relocated, and some extra space is added. */
+int setup_arg_pages(struct linux_binprm *bprm,
+        unsigned long stack_top,
+        int executable_stack)
+{
+  unsigned long ret;
+  unsigned long stack_shift;
+  struct mm_struct *mm = current->mm;
+  struct vm_area_struct *vma = bprm->vma;
+  struct vm_area_struct *prev = NULL;
+  unsigned long vm_flags;
+  unsigned long stack_base;
+  unsigned long stack_size;
+  unsigned long stack_expand;
+  unsigned long rlim_stack;
+
+  stack_top = arch_align_stack(stack_top);
+  stack_top = PAGE_ALIGN(stack_top);
+
+  if (unlikely(stack_top < mmap_min_addr) ||
+      unlikely(vma->vm_end - vma->vm_start >= stack_top - mmap_min_addr))
+    return -ENOMEM;
+
+  stack_shift = vma->vm_end - stack_top;
+
+  bprm->p -= stack_shift;
+  mm->arg_start = bprm->p;
+
+  if (bprm->loader)
+    bprm->loader -= stack_shift;
+  bprm->exec -= stack_shift;
+
+  if (down_write_killable(&mm->mmap_sem))
+    return -EINTR;
+
+  vm_flags = VM_STACK_FLAGS;
+
+  /* Adjust stack execute permissions; explicitly enable for
+   * EXSTACK_ENABLE_X, disable for EXSTACK_DISABLE_X and leave alone
+   * (arch default) otherwise. */
+  if (unlikely(executable_stack == EXSTACK_ENABLE_X))
+    vm_flags |= VM_EXEC;
+  else if (executable_stack == EXSTACK_DISABLE_X)
+    vm_flags &= ~VM_EXEC;
+
+  vm_flags |= mm->def_flags;
+  vm_flags |= VM_STACK_INCOMPLETE_SETUP;
+
+  ret = mprotect_fixup(vma, &prev, vma->vm_start, vma->vm_end, vm_flags);
+  if (ret)
+    goto out_unlock;
+  BUG_ON(prev != vma);
+
+  /* Move stack pages down in memory. */
+  if (stack_shift) {
+    ret = shift_arg_pages(vma, stack_shift);
+    if (ret)
+      goto out_unlock;
+  }
+
+  /* mprotect_fixup is overkill to remove the temporary stack flags */
+  vma->vm_flags &= ~VM_STACK_INCOMPLETE_SETUP;
+
+  stack_expand = 131072UL; /* randomly 32*4k (or 2*64k) pages */
+  stack_size = vma->vm_end - vma->vm_start;
+
+  /* Align this down to a page boundary as expand_stack
+   * will align it up. */
+  rlim_stack = bprm->rlim_stack.rlim_cur & PAGE_MASK;
+
+  if (stack_size + stack_expand > rlim_stack)
+    stack_base = vma->vm_end - rlim_stack;
+  else
+    stack_base = vma->vm_start - stack_expand;
+
+  current->mm->start_stack = bprm->p;
+  ret = expand_stack(vma, stack_base);
+  if (ret)
+    ret = -EFAULT;
+
+out_unlock:
+  up_write(&mm->mmap_sem);
+  return ret;
+}
+
+/* During bprm_mm_init(), we create a temporary stack at STACK_TOP_MAX.  Once
+ * the binfmt code determines where the new stack should reside, we shift it to
+ * its final location.  The process proceeds as follows:
+ *
+ * 1) Use shift to calculate the new vma endpoints.
+ * 2) Extend vma to cover both the old and new ranges.  This ensures the
+ *    arguments passed to subsequent functions are consistent.
+ * 3) Move vma's page tables to the new range.
+ * 4) Free up any cleared pgd range.
+ * 5) Shrink the vma to cover only the new range. */
+static int shift_arg_pages(struct vm_area_struct *vma, unsigned long shift)
+{
+  struct mm_struct *mm = vma->vm_mm;
+  unsigned long old_start = vma->vm_start;
+  unsigned long old_end = vma->vm_end;
+  unsigned long length = old_end - old_start;
+  unsigned long new_start = old_start - shift;
+  unsigned long new_end = old_end - shift;
+  struct mmu_gather tlb;
+
+  /* ensure there are no vmas between where we want to go
+   * and where we are */
+  if (vma != find_vma(mm, new_start))
+    return -EFAULT;
+
+  /* over the whole range: [new_start, old_end) */
+  if (vma_adjust(vma, new_start, old_end, vma->vm_pgoff, NULL))
+    return -ENOMEM;
+
+  /* move the page tables downwards, on failure we rely on
+   * process cleanup to remove whatever mess we made. */
+  if (length != move_page_tables(vma, old_start,
+               vma, new_start, length, false))
+    return -ENOMEM;
+
+  lru_add_drain();
+  tlb_gather_mmu(&tlb, mm, old_start, old_end);
+  if (new_end > old_start) {
+    /* when the old and new regions overlap clear from new_end. */
+    free_pgd_range(&tlb, new_end, old_end, new_end,
+      vma->vm_next ? vma->vm_next->vm_start : USER_PGTABLES_CEILING);
+  } else {
+    /* otherwise, clean from old_start; this is done to not touch
+     * the address space in [new_end, old_start) some architectures
+     * have constraints on va-space that make this illegal (IA64) -
+     * for the others its just a little faster. */
+    free_pgd_range(&tlb, old_start, old_end, new_end,
+      vma->vm_next ? vma->vm_next->vm_start : USER_PGTABLES_CEILING);
+  }
+  tlb_finish_mmu(&tlb, old_start, old_end);
+
+  /* Shrink the vma to just the new range.  Always succeeds. */
+  vma_adjust(vma, new_start, new_end, vma->vm_pgoff, NULL);
+
+  return 0;
+}
 ```
 
 ```c++
 SYSCALL_DEFINE3(execve);
-    do_execve();
-        do_execveat_common();
-            __do_execve_file();
-                file = do_open_execat();
-                bprm_mm_init(bprm);
-                prepare_binprm(bprm);
-                exec_binprm(bprm);
-                    search_binary_handler();
-                        load_elf_binary();
-                            load_elf_phdrs();
-                            interpreter = open_exec(elf_interpreter);
-                            interp_elf_phdata = load_elf_phdrs();
+  do_execve();
+    do_execveat_common();
+        __do_execve_file();
+            file = do_open_execat();
 
-                            current->mm->start_stack = bprm->p;
-                            set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
-                            elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+            bprm_mm_init(bprm);
+              bprm->mm = mm = mm_alloc();
 
-                            if (elf_interpreter)
-                                elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
-                            else
-                                elf_entry = loc->elf_ex.e_entry;
+              bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+              bprm->vma = vma = vm_area_alloc(mm);
+              vma->vm_end = STACK_TOP_MAX;
+              vma->vm_start = vma->vm_end - PAGE_SIZE;
+              vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+              vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+              bprm->p = vma->vm_end - sizeof(void *);
 
-                            current->mm->end_code = end_code;
-                            current->mm->start_code = start_code;
-                            current->mm->start_data = start_data;
-                            current->mm->end_data = end_data;
-                            current->mm->start_stack = bprm->p;
+            prepare_binprm(bprm);
+              bprm_fill_uid();
+              kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
 
-                            start_thread(regs, elf_entry, bprm->p);
+            copy_strings(bprm->envc, envp, bprm);
+            copy_strings(bprm->argc, argv, bprm);
+
+            exec_binprm(bprm);
+              search_binary_handler();
+                load_elf_binary();
+                    elf_phdata = load_elf_phdrs();
+
+                    elf_interpreter = kmalloc();
+                    interpreter = open_exec(elf_interpreter);
+                    interp_elf_phdata = load_elf_phdrs();
+
+                    flush_old_exec();
+
+                    setup_new_exec();
+                      arch_pick_mmap_layout();
+                        mm->get_unmapped_area = arch_get_unmapped_area;
+                        arch_pick_mmap_base(&mm->mmap_base);
+                          mmap_base();
+                      current->mm->task_size = TASK_SIZE;
+
+                    setup_arg_pages();
+                      shift_arg_pages();
+                        vma_adjust(vma, new_start, old_end);
+                        move_page_tables();
+                        free_pgd_range();
+                        vma_adjust(vma, new_start, new_end);
+                      expand_stack();
+                    current->mm->start_stack = bprm->p;
+
+                    for (; i < loc->elf_ex.e_phnum; ) {
+                      elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+                    }
+
+                    set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
+
+                    if (elf_interpreter)
+                        elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
+                    else
+                        elf_entry = loc->elf_ex.e_entry;
+
+                    current->mm->end_code = end_code;
+                    current->mm->start_code = start_code;
+                    current->mm->start_data = start_data;
+                    current->mm->end_data = end_data;
+                    current->mm->start_stack = bprm->p;
+
+                    start_thread(regs, elf_entry, bprm->p);
 ```
 
 Reference:
@@ -2964,7 +3269,20 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 #### direct_IO
 ```C++
 static const struct address_space_operations ext4_aops = {
-  .direct_IO    = ext4_direct_IO,
+  .readpage               = ext4_readpage,
+  .readpages              = ext4_readpages,
+  .writepage              = ext4_writepage,
+  .writepages             = ext4_writepages,
+  .write_begin            = ext4_write_begin,
+  .write_end              = ext4_write_end,
+  .set_page_dirty         = ext4_set_page_dirty,
+  .bmap                   = ext4_bmap,
+  .invalidatepage         = ext4_invalidatepage,
+  .releasepage            = ext4_releasepage,
+  .direct_IO              = ext4_direct_IO,
+  .migratepage            = buffer_migrate_page,
+  .is_partially_uptodate  = block_is_partially_uptodate,
+  .error_remove_page      = generic_error_remove_page,
 };
 
 static ssize_t ext4_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
