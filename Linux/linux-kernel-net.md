@@ -70,36 +70,38 @@
 ```C++
 struct socket_alloc {
   struct socket socket;
-  struct inode vfs_inode;
+  struct inode  vfs_inode;
 };
 
 struct socket {
-  socket_state    state;
-  short           type;
-  unsigned long   flags;
+  socket_state            state;
+  short                   type;
+  unsigned long           flags;
 
-  struct file     *file;
-  struct sock    *sk;
+  struct file             *file;
+  struct sock             *sk;
   struct socket_wq        wq;
   const struct proto_ops  *ops;
 };
 
 struct sock {
-  struct sock_common  __sk_common;
-  struct sk_buff       *sk_rx_skb_cache;
+  struct sock_common    __sk_common;
+  struct sk_buff        *sk_rx_skb_cache;
 
-  struct page_frag    sk_frag; /* copy user space data to this page */
-  struct sk_buff_head  sk_receive_queue;  /* incoming packets */
-  struct sk_buff_head  sk_write_queue;    /* outgoing Packets */
+  struct page_frag      sk_frag; /* copy user space data to this page */
+  int                   sk_sndbuf; /* size of send buffer in bytes */
+  int                   sk_rcvbuf; /* size of receive buffer in bytes*/
+  struct sk_buff_head   sk_receive_queue;  /* incoming packets */
+  struct sk_buff_head   sk_write_queue;    /* outgoing Packets */
 
-  u32                 sk_ack_backlog;   /* current listen backlog */
-  u32                 sk_max_ack_backlog; /* listen backlog set in listen() */
-#define sk_nulls_node  __sk_common.skc_nulls_node; /* main hash linkage for TCP/UDP/UDP-Lite protocol */
+  u32                   sk_ack_backlog;   /* current listen backlog */
+  u32                   sk_max_ack_backlog; /* listen backlog set in listen() */
 
+#define sk_nulls_node   __sk_common.skc_nulls_node; /* main hash linkage for TCP/UDP/UDP-Lite protocol */
 
   union {
     struct sk_buff    *sk_send_head;
-    struct rb_root   tcp_rtx_queue; /* re-transmit queue */
+    struct rb_root    tcp_rtx_queue; /* re-transmit queue */
   };
 
   struct {
@@ -116,12 +118,12 @@ struct sock {
     struct socket_wq  *sk_wq_raw; /* public: */
   };
 
-  struct dst_entry  *sk_rx_dst;
-  struct dst_entry  *sk_dst_cache;
+  struct dst_entry    *sk_rx_dst;
+  struct dst_entry    *sk_dst_cache;
 
-  unsigned int      sk_ll_usec;
+  unsigned int        sk_ll_usec;
   /* ===== mostly read cache line ===== */
-  unsigned int      sk_napi_id; /* set by sk_mark_napi_id */
+  unsigned int        sk_napi_id; /* set by sk_mark_napi_id */
 };
 
 struct socket_wq {
@@ -132,7 +134,7 @@ struct socket_wq {
 };
 
 typedef struct wait_queue_head {
-  spinlock_t    lock;
+  spinlock_t        lock;
   struct list_head  head;
 } wait_queue_head_t;
 
@@ -260,6 +262,12 @@ struct inode *new_inode_pseudo(struct super_block *sb)
   return inode;
 }
 
+static const struct super_operations sockfs_ops = {
+  .alloc_inode    = sock_alloc_inode,
+  .destroy_inode  = sock_destroy_inode,
+  .statfs         = simple_statfs,
+};
+
 static struct inode *alloc_inode(struct super_block *sb)
 {
   struct inode *inode;
@@ -281,6 +289,35 @@ static struct inode *alloc_inode(struct super_block *sb)
   }
 
   return inode;
+}
+
+static struct kmem_cache *sock_inode_cachep __ro_after_init;
+
+static struct inode *sock_alloc_inode(struct super_block *sb)
+{
+  struct socket_alloc *ei;
+  struct socket_wq *wq;
+
+  ei = kmem_cache_alloc(sock_inode_cachep, GFP_KERNEL);
+  if (!ei)
+    return NULL;
+  wq = kmalloc(sizeof(*wq), GFP_KERNEL);
+  if (!wq) {
+    kmem_cache_free(sock_inode_cachep, ei);
+    return NULL;
+  }
+  init_waitqueue_head(&wq->wait);
+  wq->fasync_list = NULL;
+  wq->flags = 0;
+  ei->socket.wq = wq;
+
+  ei->socket.state = SS_UNCONNECTED;
+  ei->socket.flags = 0;
+  ei->socket.ops = NULL;
+  ei->socket.sk = NULL;
+  ei->socket.file = NULL;
+
+  return &ei->vfs_inode;
 }
 
 enum sock_type {
@@ -446,9 +483,83 @@ out_free:
 
 void sock_init_data(struct socket *sock, struct sock *sk)
 {
-  sk->sk_state_change = sock_def_wakeup;
-  sk->sk_data_ready   = sock_def_readable;
-  sk->sk_write_space  = sock_def_write_space;
+  sk_init_common(sk);
+  sk->sk_send_head  =  NULL;
+
+  timer_setup(&sk->sk_timer, NULL, 0);
+
+  sk->sk_allocation  =  GFP_KERNEL;
+  sk->sk_rcvbuf    =  sysctl_rmem_default;
+  sk->sk_sndbuf    =  sysctl_wmem_default;
+  sk->sk_state    =  TCP_CLOSE;
+
+  sk_set_socket(sk, sock);
+
+  sock_set_flag(sk, SOCK_ZAPPED);
+
+  if (sock) {
+    sk->sk_type  =  sock->type;
+    sk->sk_wq  =  sock->wq;
+    sock->sk  =  sk;
+    sk->sk_uid  =  SOCK_INODE(sock)->i_uid;
+  } else {
+    sk->sk_wq  =  NULL;
+    sk->sk_uid  =  make_kuid(sock_net(sk)->user_ns, 0);
+  }
+
+  rwlock_init(&sk->sk_callback_lock);
+  if (sk->sk_kern_sock)
+    lockdep_set_class_and_name(
+      &sk->sk_callback_lock,
+      af_kern_callback_keys + sk->sk_family,
+      af_family_kern_clock_key_strings[sk->sk_family]);
+  else
+    lockdep_set_class_and_name(
+      &sk->sk_callback_lock,
+      af_callback_keys + sk->sk_family,
+      af_family_clock_key_strings[sk->sk_family]);
+
+  sk->sk_state_change  =  sock_def_wakeup;
+  sk->sk_data_ready  =  sock_def_readable;
+  sk->sk_write_space  =  sock_def_write_space;
+  sk->sk_error_report  =  sock_def_error_report;
+  sk->sk_destruct    =  sock_def_destruct;
+
+  sk->sk_frag.page  =  NULL;
+  sk->sk_frag.offset  =  0;
+  sk->sk_peek_off    =  -1;
+
+  sk->sk_peer_pid   =  NULL;
+  sk->sk_peer_cred  =  NULL;
+  sk->sk_write_pending  =  0;
+  sk->sk_rcvlowat    =  1;
+  sk->sk_rcvtimeo    =  MAX_SCHEDULE_TIMEOUT;
+  sk->sk_sndtimeo    =  MAX_SCHEDULE_TIMEOUT;
+
+  sk->sk_stamp = SK_DEFAULT_STAMP;
+#if BITS_PER_LONG==32
+  seqlock_init(&sk->sk_stamp_seq);
+#endif
+  atomic_set(&sk->sk_zckey, 0);
+
+#ifdef CONFIG_NET_RX_BUSY_POLL
+  sk->sk_napi_id    =  0;
+  sk->sk_ll_usec    =  sysctl_net_busy_read;
+#endif
+
+  sk->sk_max_pacing_rate = ~0U;
+  sk->sk_pacing_rate = ~0U;
+  sk->sk_pacing_shift = 10;
+  sk->sk_incoming_cpu = -1;
+
+  sk_rx_queue_clear(sk);
+  /*
+   * Before updating sk_refcnt, we must commit prior changes to memory
+   * (Documentation/RCU/rculist_nulls.txt for details)
+   */
+  smp_wmb();
+  refcount_set(&sk->sk_refcnt, 1);
+  atomic_set(&sk->sk_drops, 0);
 }
 
 /* sw: switch */
@@ -594,6 +705,8 @@ static struct file *alloc_file(
   const struct file_operations *fop)
 {
   struct file *file = alloc_empty_file(flags, current_cred());
+
+  file->f_op = fop;
   file->f_path = *path;
   file->f_inode = path->dentry->d_inode;
   file->f_mapping = path->dentry->d_inode->i_mapping;
@@ -605,7 +718,7 @@ static struct file *alloc_file(
     file->f_mode |= FMODE_CAN_WRITE;
 
   file->f_mode |= FMODE_OPENED;
-  file->f_op = fop;
+
   if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
     i_readcount_inc(path->dentry->d_inode);
 
@@ -681,13 +794,16 @@ void tcp_init_sock(struct sock *sk)
 
 ```C++
 socket();
+  /* 1. create */
   sock_create();
-    _sock_create();
+    struct socket *sock = _sock_create();
       sock = sock_alloc();
         inode = new_inode_pseudo(sock_mnt->mnt_sb);
           alloc_inode();
             if (sb->s_op->alloc_inode)
               inode = sb->s_op->alloc_inode(sb);
+                sock_alloc_inode();
+                  struct socket_alloc *ei = kmem_cache_alloc(sock_inode_cachep);
             else
               inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);
         sock = SOCKET_I(inode);
@@ -698,17 +814,33 @@ socket();
         inet_create();
           inet_protosw *answer = inetsw[sock->type]; /* get socket */
           sock->ops = answer->ops;
-          sk = sk_alloc();
-          inet = inet_sk(sk);
+          struct sock *sk = sk_alloc();
+            sk_prot_alloc();
+              slab = prot->slab;
+              if (slab)
+                kmem_cache_alloc(slab);
+              else
+                kmalloc(prot->obj_size);
+
           sock_init_data(sock, sk);
-            sk->sk_state_change  =  sock_def_wakeup;
-            sk->sk_data_ready  = sock_def_readable;
+            sk_init_common(sk);
+            sk->sk_state_change = sock_def_wakeup;
+            sk->sk_data_ready = sock_def_readable;
             sk->sk_write_space = sock_def_write_space;
-          sk->sk_prot->init();
+
+            sock->sk = sk;
+            sk->sk_socket = sock;
+
+          sk->sk_prot->hash(sk);
+          sk->sk_prot->init(sk);
             tcp_v4_init_sock();
               tcp_init_sock();
                 tcp_init_xmit_timers();
                   inet_csk_init_xmit_timers(sk, &tcp_write_timer, &tcp_delack_timer, &tcp_keepalive_timer);
+                tcp_assign_congestion_control();
+                  icsk->icsk_ca_ops = rcu_dereference(net->ipv4.tcp_congestion_control);
+
+  /* 2. map */
   sock_map_fd();
     sock_alloc_file();
       alloc_file_pseudo(&socket_file_ops);
@@ -716,9 +848,11 @@ socket();
         d_set_d_op(&anon_ops);
         alloc_file();
           struct file *file = alloc_empty_file(flags, current_cred());
+            kmem_cache_zalloc(filp_cachep);
           file->f_path = *path;
           file->f_inode = path->dentry->d_inode;
           file->f_mapping = path->dentry->d_inode->i_mapping;
+          file->f_op = socket_file_ops;
       sock->file = file;
       file->private_data = sock;
 ```
@@ -866,6 +1000,9 @@ int inet_hash(struct sock *sk)
 
   return err;
 }
+
+/* linux-4.19.y/net/ipv4/tcp_ipv4.c */
+struct inet_hashinfo tcp_hashinfo;
 
 int __inet_hash(struct sock *sk, struct sock *osk)
 {
@@ -1159,6 +1296,19 @@ static void tcp_connect_init(struct sock *sk)
   inet_csk(sk)->icsk_retransmits = 0;
   tcp_clear_retrans(tp);
 }
+
+void tcp_connect_queue_skb(struct sock *sk, struct sk_buff *skb)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
+
+  tcb->end_seq += skb->len;
+  __skb_header_release(skb);
+  sk->sk_wmem_queued += skb->truesize;
+  sk_mem_charge(sk, skb->truesize);
+  WRITE_ONCE(tp->write_seq, tcb->end_seq);
+  tp->packets_out += tcp_skb_pcount(skb);
+}
 ```
 * [wait_woken](./linux-kernel.md#wait_woken)
 
@@ -1434,7 +1584,32 @@ const struct inet_connection_sock_af_ops ipv4_specific = {
   .sockaddr_len      = sizeof(struct sockaddr_in),
   .mtu_reduced       = tcp_v4_mtu_reduced,
 };
-// tcp_v4_conn_request ->
+
+static const struct tcp_request_sock_ops tcp_request_sock_ipv4_ops = {
+  .mss_clamp        =  TCP_MSS_DEFAULT,
+  .req_md5_lookup   =  tcp_v4_md5_lookup,
+  .calc_md5_hash    =  tcp_v4_md5_hash_skb,
+  .init_req         =  tcp_v4_init_req,
+  .cookie_init_seq  =  cookie_v4_init_sequence,
+  .route_req        =  tcp_v4_route_req,
+  .init_seq         =  tcp_v4_init_seq,
+  .init_ts_off      =  tcp_v4_init_ts_off,
+  .send_synack      =  tcp_v4_send_synack,
+};
+
+int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
+{
+  if (skb_rtable(skb)->rt_flags & (RTCF_BROADCAST | RTCF_MULTICAST))
+    goto drop;
+
+  return tcp_conn_request(&tcp_request_sock_ops,
+        &tcp_request_sock_ipv4_ops, sk, skb);
+
+drop:
+  tcp_listendrop(sk);
+  return 0;
+}
+
 int tcp_conn_request(
   struct request_sock_ops *rsk_ops,
   const struct tcp_request_sock_ops *af_ops,
@@ -1489,6 +1664,7 @@ int tcp_conn_request(
   /* Note: tcp_v6_init_req() might override ir_iif for link locals */
   inet_rsk(req)->ir_iif = inet_request_bound_dev_if(sk, skb);
 
+  /* tcp_v4_init_seq */
   af_ops->init_req(req, sk, skb);
 
   if (security_inet_conn_request(sk, skb, req))
@@ -1639,6 +1815,18 @@ void sock_def_wakeup(struct sock *sk)
 }
 
 #define wake_up_interruptible_all(x) __wake_up(x, TASK_INTERRUPTIBLE, 0, NULL)
+
+void tcp_v4_init_req(struct request_sock *req,
+  const struct sock *sk_listener,
+  struct sk_buff *skb)
+{
+  struct inet_request_sock *ireq = inet_rsk(req);
+  struct net *net = sock_net(sk_listener);
+
+  sk_rcv_saddr_set(req_to_sk(req), ip_hdr(skb)->daddr);
+  sk_daddr_set(req_to_sk(req), ip_hdr(skb)->saddr);
+  RCU_INIT_POINTER(ireq->ireq_opt, tcp_v4_save_options(net, skb));
+}
 ```
 * [wake_up](./linux-kernel.md#wake_up)
 
@@ -1700,14 +1888,12 @@ int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
     tcp_ack(sk, skb, FLAG_SLOWPATH);
 
     /* Ok.. it's good. Set up sequence numbers and
-     * move to established.
-     */
+     * move to established. */
     WRITE_ONCE(tp->rcv_nxt, TCP_SKB_CB(skb)->seq + 1);
     tp->rcv_wup = TCP_SKB_CB(skb)->seq + 1;
 
     /* RFC1323: The window in SYN & SYN/ACK segments is
-     * never scaled.
-     */
+     * never scaled. */
     tp->snd_wnd = ntohs(th->window);
 
     if (!tp->rx_opt.wscale_ok) {
@@ -1739,9 +1925,11 @@ int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
     fastopen_fail = (tp->syn_fastopen || tp->syn_data) && tcp_rcv_fastopen_synack(sk, skb, &foc);
 
     if (!sock_flag(sk, SOCK_DEAD)) {
+      /* wakup `connect` slept at inet_wait_for_connect */
       sk->sk_state_change(sk);
       sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
     }
+
     if (fastopen_fail)
       return -1;
     if (sk->sk_write_pending ||
@@ -1753,8 +1941,7 @@ int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
        *
        * It may be deleted, but with this feature tcpdumps
        * look so _wonderfully_ clever, that I was not able
-       * to stand against the temptation 8)     --ANK
-       */
+       * to stand against the temptation 8)     --ANK */
       inet_csk_schedule_ack(sk);
       tcp_enter_quickack_mode(sk, TCP_MAX_QUICKACKS);
       inet_csk_reset_xmit_timer(sk, ICSK_TIME_DACK, TCP_DELACK_MAX, TCP_RTO_MAX);
@@ -1774,9 +1961,7 @@ discard:
     /* rfc793:
      * "If the RST bit is set
      *
-     *      Otherwise (no ACK) drop the segment and return."
-     */
-
+     *      Otherwise (no ACK) drop the segment and return." */
     goto discard_and_undo;
   }
 
@@ -1788,8 +1973,7 @@ discard:
   if (th->syn) {
     /* We see SYN without ACK. It is attempt of
      * simultaneous connect with crossed SYNs.
-     * Particularly, it can be connect to self.
-     */
+     * Particularly, it can be connect to self. */
     tcp_set_state(sk, TCP_SYN_RECV);
 
     if (tp->rx_opt.saw_tstamp) {
@@ -1805,8 +1989,7 @@ discard:
     tp->rcv_wup = TCP_SKB_CB(skb)->seq + 1;
 
     /* RFC1323: The window in SYN & SYN/ACK segments is
-     * never scaled.
-     */
+     * never scaled. */
     tp->snd_wnd    = ntohs(th->window);
     tp->snd_wl1    = TCP_SKB_CB(skb)->seq;
     tp->max_window = tp->snd_wnd;
@@ -1867,8 +2050,7 @@ void tcp_finish_connect(struct sock *sk, struct sk_buff *skb)
   tcp_init_transfer(sk, BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB);
 
   /* Prevent spurious tcp_cwnd_restart() on first data
-   * packet.
-   */
+   * packet. */
   tp->lsndtime = tcp_jiffies32;
 
   if (sock_flag(sk, SOCK_KEEPOPEN))
@@ -2294,17 +2476,23 @@ connect();
         sk->sk_prot->connect(); /* SS_UNCONNECTED */
           tcp_v4_connect();
             ip_route_connect();
+            inet_hash_connect();
             secure_tcp_seq();
             secure_tcp_ts_off();
             tcp_set_state(sk, TCP_SYN_SENT);
+
             tcp_connect();
               tcp_connect_init();
+                tcp_select_initial_window();
+
               sk_stream_alloc_skb();
-              tcp_init_nondata_skb();
+              tcp_init_nondata_skb(TCPHDR_SYN);
               tcp_transmit_skb();
               tcp_send_head();
               inet_csk_reset_xmit_timer();
-        inet_wait_for_connect() /* woken up by sk->sk_state_change(sk) at tcp_rcv_synsent_state_process */
+
+        inet_wait_for_connect()
+          /* woken up by sk->sk_state_change(sk) at tcp_rcv_synsent_state_process */
 
 receive:
 tcp_v4_rcv();
@@ -2321,6 +2509,7 @@ tcp_v4_rcv();
               inet_sk_set_state(newsk, TCP_SYN_RECV);
                 sk->sk_state = TCP_SYN_RECV;
             tcp_init_xmit_timers();
+
           inet_ehash_nolisten();
             inet_ehash_insert(); // hash insert the new sk and remove the old request_sk
               inet_ehash_bucket(hashinfo, sk->sk_hash);
@@ -2358,7 +2547,7 @@ tcp_v4_rcv();
     tcp_v4_do_rcv();
       tcp_rcv_state_process();
         if (sk->sk_state == TCP_LISTEN) {
-          icsk->icsk_af_ops->conn_request(); /*ipv4_specific.conn_request */
+          icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
             tcp_v4_conn_request();
               tcp_conn_request();
                 if (inet_csk_reqsk_queue_is_full(sk));
@@ -2368,6 +2557,12 @@ tcp_v4_rcv();
 
                 inet_reqsk_alloc();
                   sk->sk_state = TCP_NEW_SYN_RECV;
+
+                f_ops->init_req(req, sk, skb);
+                  tcp_v4_init_req();
+                    sk_rcv_saddr_set();
+                    sk_daddr_set();
+
                 if (fastopen);
                   inet_csk_reqsk_queue_add();
                     sk->rskq_accept_tail = reqst_sk;
@@ -2389,6 +2584,7 @@ tcp_v4_rcv();
                     inet_csk_reqsk_queue_added();
                       ++icsk_accept_queue->young;
                       --icsk_accept_queue->qlen;
+
                 af_ops->send_synack();
                   tcp_v4_send_synack();
         }
@@ -2398,7 +2594,10 @@ tcp_v4_rcv();
             tcp_finish_connect(sk, skb);
               tcp_set_state(sk, TCP_ESTABLISHED);
               tcp_init_transfer();
+                tcp_init_buffer_space();
+                tcp_init_congestion_control(sk);
               inet_csk_reset_keepalive_timer();
+
             sk->sk_state_change(sk);
               /* wakup `connect` slept at inet_wait_for_connect */
               sock_def_wakeup();
@@ -2411,8 +2610,10 @@ tcp_v4_rcv();
 
         if (sk->sk_state == TCP_SYN_RECV) {
           tcp_init_transfer();
+            tcp_init_buffer_space();
             tcp_init_congestion_control(sk);
           tcp_set_state(sk, TCP_ESTABLISHED);
+
           sk->sk_state_change(sk);
             sock_def_wakeup();
               wake_up_interruptible_all();
@@ -4710,7 +4911,7 @@ netdev_tx_t __netdev_start_xmit(
 static netdev_tx_t
 ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 {
-  
+
 }
 
 void __netif_schedule(struct Qdisc *q)
@@ -6908,6 +7109,153 @@ sock_read_iter()
 
 ![linux-net-read.png](../Images/Kernel/net-read.png)
 
+### congestion control
+```c++
+struct tcp_congestion_ops {
+  struct list_head  list;
+  u32 key;
+  u32 flags;
+
+  /* return slow start threshold (required) */
+  u32 (*ssthresh)(struct sock *sk);
+  /* do new cwnd calculation (required) */
+  void (*cong_avoid)(struct sock *sk, u32 ack, u32 acked);
+  /* call before changing ca_state (optional) */
+  void (*set_state)(struct sock *sk, u8 new_state);
+  /* call when cwnd event occurs (optional) */
+  void (*cwnd_event)(struct sock *sk, enum tcp_ca_event ev);
+  /* call when packets are delivered to update cwnd and pacing rate,
+   * after all the ca_state processing. (optional)
+   */
+  void (*cong_control)(struct sock *sk, const struct rate_sample *rs);
+
+  char     name[TCP_CA_NAME_MAX];
+  struct module   *owner;
+};
+
+struct tcp_congestion_ops tcp_reno = {
+  .flags    = TCP_CONG_NON_RESTRICTED,
+  .name    = "reno",
+  .owner    = THIS_MODULE,
+  .ssthresh  = tcp_reno_ssthresh,
+  .cong_avoid  = tcp_reno_cong_avoid,
+  .undo_cwnd  = tcp_reno_undo_cwnd,
+};
+```
+
+```c++
+sk->sk_prot->init(sk)
+  tcp_init_sock(sk);
+    tcp_assign_congestion_control(sk);
+
+void tcp_assign_congestion_control(struct sock *sk)
+{
+  struct net *net = sock_net(sk);
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  const struct tcp_congestion_ops *ca;
+
+  rcu_read_lock();
+  ca = rcu_dereference(net->ipv4.tcp_congestion_control);
+  if (unlikely(!try_module_get(ca->owner)))
+    ca = &tcp_reno;
+  icsk->icsk_ca_ops = ca;
+  rcu_read_unlock();
+
+  memset(icsk->icsk_ca_priv, 0, sizeof(icsk->icsk_ca_priv));
+  if (ca->flags & TCP_CONG_NEEDS_ECN)
+    INET_ECN_xmit(sk);
+  else
+    INET_ECN_dontxmit(sk);
+}
+
+u32 tcp_slow_start(struct tcp_sock *tp, u32 acked)
+{
+  u32 cwnd = min(tp->snd_cwnd + acked, tp->snd_ssthresh);
+
+  acked -= cwnd - tp->snd_cwnd;
+  tp->snd_cwnd = min(cwnd, tp->snd_cwnd_clamp);
+
+  return acked;
+}
+
+/* In theory this is tp->snd_cwnd += 1 / tp->snd_cwnd (or alternative w),
+ * for every packet that was ACKed. */
+void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w, u32 acked)
+{
+  /* If credits accumulated at a higher w, apply them gently now. */
+  if (tp->snd_cwnd_cnt >= w) {
+    tp->snd_cwnd_cnt = 0;
+    tp->snd_cwnd++;
+  }
+
+  tp->snd_cwnd_cnt += acked;
+  if (tp->snd_cwnd_cnt >= w) {
+    u32 delta = tp->snd_cwnd_cnt / w;
+
+    tp->snd_cwnd_cnt -= delta * w;
+    tp->snd_cwnd += delta;
+  }
+  tp->snd_cwnd = min(tp->snd_cwnd, tp->snd_cwnd_clamp);
+}
+
+void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  if (!tcp_is_cwnd_limited(sk))
+    return;
+
+  /* In "safe" area, increase. */
+  if (tcp_in_slow_start(tp)) {
+    acked = tcp_slow_start(tp, acked);
+    if (!acked)
+      return;
+  }
+  /* In dangerous area, increase slowly. */
+  tcp_cong_avoid_ai(tp, tp->snd_cwnd, acked);
+}
+```
+
+```c++
+tcp_rcv_state_process();
+  if (!inet_csk(sk)->icsk_ca_ops->cong_control)
+    tcp_update_pacing_rate(sk);
+
+void tcp_update_pacing_rate(struct sock *sk)
+{
+  const struct tcp_sock *tp = tcp_sk(sk);
+  u64 rate;
+
+  /* set sk_pacing_rate to 200 % of current rate (mss * cwnd / srtt) */
+  rate = (u64)tp->mss_cache * ((USEC_PER_SEC / 100) << 3);
+
+  /* current rate is (cwnd * mss) / srtt
+   * In Slow Start [1], set sk_pacing_rate to 200 % the current rate.
+   * In Congestion Avoidance phase, set it to 120 % the current rate.
+   *
+   * [1] : Normal Slow Start condition is (tp->snd_cwnd < tp->snd_ssthresh)
+   *   If snd_cwnd >= (tp->snd_ssthresh / 2), we are approaching
+   *   end of slow start and should slow down.
+   */
+  if (tp->snd_cwnd < tp->snd_ssthresh / 2)
+    rate *= sock_net(sk)->ipv4.sysctl_tcp_pacing_ss_ratio;
+  else
+    rate *= sock_net(sk)->ipv4.sysctl_tcp_pacing_ca_ratio;
+
+  rate *= max(tp->snd_cwnd, tp->packets_out);
+
+  if (likely(tp->srtt_us))
+    do_div(rate, tp->srtt_us);
+
+  /* WRITE_ONCE() is needed because sch_fq fetches sk_pacing_rate
+   * without any lock. We want to make sure compiler wont store
+   * intermediate values in this location.
+   */
+  WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate,
+               sk->sk_max_pacing_rate));
+}
+```
+
 ### retransmit
 ```c++
 // sk->sk_prot->init(sk)
@@ -6956,6 +7304,7 @@ void tcp_init_sock(struct sock *sk)
 
   tp->reordering = sock_net(sk)->ipv4.sysctl_tcp_reordering;
   tcp_assign_congestion_control(sk);
+    /* ---> */
 
   tp->tsoffset = 0;
   tp->rack.reo_wnd_steps = 1;
