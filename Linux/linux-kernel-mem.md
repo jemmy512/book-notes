@@ -448,8 +448,36 @@ struct kmem_cache kmem_cache_boot = {
 
 void kmem_cache_init(void)
 {
-  kmem_cache = &kmem_cache_boot;
-  slab_state = UP;
+  static struct kmem_cache boot_kmem_cache, boot_kmem_cache_node;
+
+  kmem_cache_node = &boot_kmem_cache_node;
+  kmem_cache = &boot_kmem_cache;
+
+  create_boot_cache(kmem_cache_node, "kmem_cache_node",
+    sizeof(struct kmem_cache_node), SLAB_HWCACHE_ALIGN, 0, 0);
+
+  register_hotmemory_notifier(&slab_memory_callback_nb);
+
+  /* Able to allocate the per node structures */
+  slab_state = PARTIAL;
+
+  create_boot_cache(kmem_cache, "kmem_cache",
+      offsetof(struct kmem_cache, node) +
+        nr_node_ids * sizeof(struct kmem_cache_node *),
+           SLAB_HWCACHE_ALIGN, 0, 0);
+
+  kmem_cache = bootstrap(&boot_kmem_cache);
+  kmem_cache_node = bootstrap(&boot_kmem_cache_node);
+
+  /* Now we can use the kmem_cache to allocate kmalloc slabs */
+  setup_kmalloc_cache_index_table();
+  create_kmalloc_caches(0);
+
+  /* Setup random freelists for each cache */
+  init_freelist_randomization();
+
+  cpuhp_setup_state_nocalls(CPUHP_SLUB_DEAD, "slub:dead", NULL,
+          slub_cpu_dead);
 }
 
 struct kmem_cache {
@@ -555,7 +583,7 @@ static struct kmem_cache *create_cache(
   int err;
 
   /* 1. alloc */
-  /* kmem_cache = &kmem_cache_boot; */
+  /* kmem_cache = &boot_kmem_cache; */
   s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
 
   s->name = name;
@@ -698,6 +726,7 @@ kmem_cache_create();
                     init_keme_cache_node();
                 alloc_kmem_cache_cpus();
                     init_keme_cache_cpu();
+
         list_add();
 ```
 
@@ -1505,8 +1534,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
   if (addr) {
     addr = PAGE_ALIGN(addr);
     vma = find_vma(mm, addr);
-    if (end - len >= addr &&
-        (!vma || addr + len <= vm_start_gap(vma)))
+    if (end - len >= addr && (!vma || addr + len <= vm_start_gap(vma)))
       return addr;
   }
 
@@ -2839,5 +2867,81 @@ static int vmalloc_fault(unsigned long address)
     return -1;
 
   return 0
+}
+```
+
+### kmalloc_caches
+```c++
+void kmem_cache_init(void)
+{
+  setup_kmalloc_cache_index_table();
+  create_kmalloc_caches(0);
+}
+
+void create_kmalloc_caches(slab_flags_t flags)
+{
+  int i;
+
+  for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
+    if (!kmalloc_caches[i])
+      new_kmalloc_cache(i, flags);
+
+    if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6)
+      new_kmalloc_cache(1, flags);
+    if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7)
+      new_kmalloc_cache(2, flags);
+  }
+
+  /* Kmalloc array is now usable */
+  slab_state = UP;
+
+#ifdef CONFIG_ZONE_DMA
+  for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+    struct kmem_cache *s = kmalloc_caches[i];
+
+    if (s) {
+      unsigned int size = kmalloc_size(i);
+      kmalloc_dma_caches[i] = create_kmalloc_cache(n,
+        size, SLAB_CACHE_DMA | flags, 0, 0);
+    }
+  }
+#endif
+}
+
+void new_kmalloc_cache(int idx, slab_flags_t flags)
+{
+  kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
+          kmalloc_info[idx].size, flags, 0,
+          kmalloc_info[idx].size);
+}
+
+const struct kmalloc_info_struct kmalloc_info[] __initconst = {
+  {NULL,                      0},    {"kmalloc-96",             96},
+  {"kmalloc-192",           192},    {"kmalloc-8",               8},
+  {"kmalloc-16",             16},    {"kmalloc-32",             32},
+  {"kmalloc-64",             64},    {"kmalloc-128",           128},
+  {"kmalloc-256",           256},    {"kmalloc-512",           512},
+  {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
+  {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
+  {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
+  {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
+  {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
+  {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
+  {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
+  {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
+  {"kmalloc-67108864", 67108864}
+};
+
+struct kmem_cache* create_kmalloc_cache(const char *name,
+    unsigned int size, slab_flags_t flags,
+    unsigned int useroffset, unsigned int usersize)
+{
+  struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
+
+  create_boot_cache(s, name, size, flags, useroffset, usersize);
+  list_add(&s->list, &slab_caches);
+  memcg_link_cache(s);
+  s->refcount = 1;
+  return s;
 }
 ```
