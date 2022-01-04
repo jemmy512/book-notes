@@ -336,7 +336,7 @@ Due to its origins as a 16-bit architecture that expanded into a 32-bit one, Int
 * `popl %eax` equals to
     ```
     movl (%esp), %eax   // read %eax from stack
-    subl $4, %esp       // increment stack pointer
+    inc $4, %esp       // increment stack pointer
     ```
 
 Question:
@@ -617,7 +617,7 @@ int test(int x, int y) {
         ```c++
         int count = 0;
         int foo(int x, int y) {
-            return x < y (count++, y-x) : x-y;
+            return x < y ? (count++, y-x) : x-y;
         }
         ```
         * This function increments global variable lcount as part of then-expr. Thus, branching code must be used to ensure this side effect only occurs when the test condition holds.
@@ -630,7 +630,7 @@ int test(int x, int y) {
 
 ### 3.6.7 Switch Statements
 * A switch statement provides a multi-way branching capability based on the value of an integer index.
-* Switch efficient implementation using a data structure called a jump table. A jump table is an array where entry i is the address of a code segment implementing the action the program should take when the switch index equals i.
+* Switch efficient implementation using a data structure called a **jump table**. A jump table is an array where entry i is the address of a code segment implementing the action the program should take when the switch index equals i.
 * The advantage of using a jump table over a long sequence of if-else statements is that the time taken to perform the switch is independent of the number of switch cases.
 
 ## 3.7 Procedures
