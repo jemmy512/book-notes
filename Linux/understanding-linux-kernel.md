@@ -1,4 +1,4 @@
-# Chapter 6 Timing Measurements
+# 6 Timing Measurements
 Two main kinds of timing measurement that must be performed by the Linux kernel:
 1. Keeping the current time and date so they can be returned to user programs through the time(), ftime(), and gettimeofday() APIs and used by the kernel itself as timestamps for files and network packets
 2. Maintaining timers.
@@ -73,7 +73,7 @@ The kernel uses two basic timekeeping functions:
 #### The jiffies variable
 The jiffies variable is a counter that stores the number of elapsed ticks since the system was started.
 
-The kernel handles cleanly the overflow of jiffies thanks to the `time_after`, `time_after_eq`, `time_before`, and `time_before_eq` macros: they yield the cor- rect value even if a wraparound occurred.
+The kernel handles cleanly the overflow of jiffies thanks to the `time_after`, `time_after_eq`, `time_before`, and `time_before_eq` macros: they yield the correct value even if a wraparound occurred.
 
 ```C++
 u64 get_jiffies_64(void)
@@ -156,7 +156,7 @@ static inline void io_delay(void)
 ```
 
 
-# Chapter 8 Memory Management
+# 8 Memory Management
 ## Page Frame Management
 1. Linux adopts the smaller 4 KB page frame size as the standard memory allocation unit. This makes things simpler for two reasons:
     * The Page Fault exceptions issued by the paging circuitry are easily interpreted.
@@ -172,3 +172,16 @@ The kernel handles these architectures by assigning the contiguous subranges of 
 ### Memory Area Management
 
 ### Noncontiguous Memory Area Management
+
+# 20 Program Execution
+## 20.1 Executable Files
+## 20.2 Executable Formats
+## 20.3 Execution Domains
+## 20.4 The exec Functions
+
+* How dynamic linker works:
+  1. sets up a basic execution context for itself, starting from the information stored by the kernel in the User Mode stack between the array of pointers to environment strings and arg_start.
+  2. examines the program to be executed to identify which shared libraries must be loaded and which functions in each shared library are effectively requested.
+  3. issues several mmap() system calls to create memory regions mapping the pages that will hold the library functions (text and data) actually used by the program.
+  4. update all references to the symbols of the shared library, according to the linear addresses of the library’s memory regions.
+  5. terminates its execution by jumping to the main entry point of the program to be executed.
