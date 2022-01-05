@@ -604,6 +604,12 @@ Although our expected daily write load is 100 million and read load is 28 billio
 
 ## Design Ticketmaster
 
+## Designing WhatsApp
+* [Designing WhatsApp](http://highscalability.com/blog/2022/1/3/designing-whatsapp.html)
+
+## Designing Netflix
+* [Designing Netflix](http://highscalability.com/blog/2021/12/13/designing-netflix.html)
+
 # Glossary of System Design Basics
 
 ## System Design Basics
