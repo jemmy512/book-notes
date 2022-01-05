@@ -289,12 +289,121 @@ class A : public virtual Y, public virtual Z {};
                 // vtb layout
                 clang -Xclang -fdump-vtable-layouts -stdlib=libc++ -std=c++17 -c model.cc
                 ```
+
+                ```c++
+                struct Base {
+                    virtual ~Base() = defaul`t;
+
+                    virtual void FuncB() {  }
+
+                    int a;
+                    int b;
+                };
+
+                struct BaseA : virtual public Base {
+                    virtual ~BaseA() = default;
+
+                    virtual void FuncB() {  }
+
+                    int a;
+                    int b;
+                };
+
+                struct BaseB : virtual public Base {
+                    virtual ~BaseB() = default;
+
+                    virtual void FuncC() {  }
+
+                    int a;
+                    int b;
+                };
+
+                struct Derive : public BaseB, public BaseA {
+                    void FuncB() override {  }
+                    void FuncC() override {  }
+                };
+
+                int main() {
+                    BaseA a;
+                    Derive d;
+                    return 0;
+                }
+                ```
+                ```c++
+                Vtable for 'Derive' (20 entries).
+                 0 | vbase_offset (32)
+                 1 | offset_to_top (0)
+                 2 | Derive RTTI
+                     -- (BaseB, 0) vtable address --
+                     -- (Derive, 0) vtable address --
+                 3 | Derive::~Derive() [complete]
+                 4 | Derive::~Derive() [deleting]
+                 5 | void Derive::FuncC()
+                 6 | void Derive::FuncB()
+                 7 | vbase_offset (16)
+                 8 | offset_to_top (-16)
+                 9 | Derive RTTI
+                     -- (BaseA, 16) vtable address --
+                10 | Derive::~Derive() [complete]
+                     [this adjustment: -16 non-virtual] method: BaseA::~BaseA()
+                11 | Derive::~Derive() [deleting]
+                     [this adjustment: -16 non-virtual] method: BaseA::~BaseA()
+                12 | void Derive::FuncB()
+                     [this adjustment: -16 non-virtual] method: void BaseA::FuncB()
+                13 | vcall_offset (-32)
+                14 | vcall_offset (-32)
+                15 | offset_to_top (-32)
+                16 | Derive RTTI
+                     -- (Base, 32) vtable address --
+                17 | Derive::~Derive() [complete]
+                     [this adjustment: 0 non-virtual, -24 vcall offset offset] method: Base::~Base()
+                18 | Derive::~Derive() [deleting]
+                     [this adjustment: 0 non-virtual, -24 vcall offset offset] method: Base::~Base()
+                19 | void Derive::FuncB()
+                     [this adjustment: 0 non-virtual, -32 vcall offset offset] method: void Base::FuncB()
+
+                Virtual base offset offsets for 'Derive' (1 entry).
+                Base | -24
+
+                Thunks for 'Derive::~Derive()' (2 entries).
+                0 | this adjustment: -16 non-virtual
+                1 | this adjustment: 0 non-virtual, -24 vcall offset offset
+
+                Thunks for 'void Derive::FuncB()' (2 entries).
+                0 | this adjustment: -16 non-virtual
+                1 | this adjustment: 0 non-virtual, -32 vcall offset offset
+
+                VTable indices for 'Derive' (4 entries).
+                0 | Derive::~Derive() [complete]
+                1 | Derive::~Derive() [deleting]
+                2 | void Derive::FuncC()
+                3 | void Derive::FuncB()
+                ```
+                ```c++
+                *** Dumping AST Record Layout
+                         0 | struct Derive
+                         0 |   struct BaseB (primary base)
+                         0 |     (BaseB vtable pointer)
+                         8 |     int a
+                        12 |     int b
+                        16 |   struct BaseA (base)
+                        16 |     (BaseA vtable pointer)
+                        24 |     int a
+                        28 |     int b
+                        32 |   struct Base (virtual base)
+                        32 |     (Base vtable pointer)
+                        40 |     int a
+                        44 |     int b
+                           | [sizeof=48, dsize=48, align=8,
+                           |  nvsize=32, nvalign=8]
+                ```
             * ![cpp-virtual-inheritance.png](../Images/cpp-virtual-inheritance.png)
+                * BaseA has its own virtual `FunB`, Derive overrides it and adds it into vtable of both BaseA and BaseB.
 
     5. In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no associated data members.
     6. Ref:
         1. https://www.nowcoder.com/profile/3669004/note/detail/232803
-        2. https://mp.weixin.qq.com/s/I3mQAZAycd5KJnbfywYT8g
+        2. https://mp.weixin.qq.com/s?__biz=MzkyODE5NjU2Mw==&mid=2247484758&idx=1&sn=4e614430f666f63ab135c13a716d07c1&chksm=c21d37eaf56abefc8d2a1dc3e09a8146d242475cb0900ee5a94ab6a94a991168a887f7351821&scene=178&cur_album_id=1667018561883570181#rd
 
 ## 3.5 Object Member Efficiency
 1. In terms of actual program performance, the important point here is that with optimization turned on, no runtime performance cost for encapsulation and the use of inline access functions was exhibited.
@@ -695,7 +804,7 @@ coord = &Point::y;                     // assign a value
     9. __Is it safe to invoke a virtual function of the class within its constructor's member initialization list?__
         1. It is always safe when the function is applied to the initialization of a data member of the class. This is because, as we've seen, the vptr is guaranteed to have been set by the compiler prior to the expansion of the member initialization list.
         2. It may not be semantically safe, however, because the function itself may depend on members that are not yet initialized. It is not an idiom I recommend. However, from the point of view of the integrity of the vptr, it is a safe operation.
-        3. When providing an argument for a base class constructor, it's not safe. The vptr is either not set or set to the wrong class. Further, any of the data members of the class that are accessed within the function are guaranteed to not yet be initialized. [TODO: why]()
+        3. When providing an argument for a base class constructor, it's not safe. The vptr is either not set or set to the wrong class. Further, any of the data members of the class that are accessed within the function are guaranteed to not yet be initialized.
 
 ## 5.3 Object Copy Semantics
 1. A copy assignment operator is necessary only if the default behavior results in semantics that are either unsafe or incorrect.
