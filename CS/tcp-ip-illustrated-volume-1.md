@@ -1,3 +1,114 @@
+1 Introduction
+    1.1 Architecture Priciples
+        1.1.1 Packets, Connections, and Datagrams
+        1.1.2 The End-to-End Argument and Fate Sharing
+        1.1.3 Error Control and Flow Control
+    1.2 Design and Implementation
+
+12 TCP: The Transmisssion Control Protocol(Premilinary)
+    12.2 Introduction to TCP
+        12.2.1 The TCP Service Model
+        12.2.2 Reliability in TCP
+    12.3 Tcp Header and Encapsulation
+
+13 Connection Management
+    13.2 Tcp Connection Establishment and Termination
+        13.2.1 Tcp half-close
+        13.2.2 Simultaneous Open and Close
+        13.2.3 Initial Sequence Number
+        13.2.6 Connections and Translator
+    13.3 Tcp Options
+        13.3.2 Selective Ackownledgment(SACK)
+        13.3.3 WSCALE/WSOPT
+        13.3.4 Timestamp Option and Protection Against Wrapped Sequence Number
+        13.3.5 User Timeout(UTO) Option
+        13.3.6 Authentication Option
+    13.4 Path MTU Discovery with TCP
+    13.5 Tcp State Transition
+        13.5.2 TIME_WAIT(2 MSL)
+        13.5.3 Quiet Time Concept
+        13.5.4 FIN_WAIT_2 State
+        13.5.5 Simultaneous Open and Close Transitions
+    13.6 RESET Segments
+    13.7 TCP Server Operation
+        13.7.4 Incomming Connection Queue
+    13.8 Attacks Involing TCP Connection Management
+
+14 TCP Timeout and Retransmission
+    14.1 Introduction
+    14.3 Setting the Retransmisstion Timeout(RTO)
+        14.3.1 The Classical Method
+        14.3.2 The Standard Method
+        14.3.3 The Linux Method
+        14.3.4 RTT Estimator Behaviors
+        14.3.5 RTTM Robustness to Loss and Reordering
+    14.4 Timer-based Retransmission
+    14.5 Fast Retransmit
+        14.5.1 Example
+    14.6 Retransmission with Selective Acknowledgments
+        14.6.1 SACK Receiver Behavior
+        14.6.2 SACK Sender Behavior
+        14.6.3 Example
+    14.7 Spurious Tiemouts and Retransmission
+        14.7.1 Duplicate SACK(DSACK) Extension
+        14.7.2 The Eifel Detection Algorithem
+        14.7.3 Foward-RTO(FRTO)
+        14.7.4 The Eifel Response Algorithem
+    14.8 Packet Reodering and Duplication
+        14.8.1 Reordering
+        14.8.2 Duplicaton
+    14.9 Destination Metrics
+    14.10 Repacketization
+
+15 Data Flow and Window Management
+    15.3 Delayed Ackowledgements
+    15.4 Nagle Algorithm
+    15.5 Flow Control and Window Management
+        15.5.1 Sliding Window
+            Sending Window
+            Receving Window
+        15.5.2 Zero Windows and TCP Pesist Timer
+            15.5.2.1 Example
+        15.5.3 Silly Window Syndrome(SWS)
+        15.5.4 Large Buffers and Auto-Tuning
+    15.6 Urgent Mechanism
+    15.7 Attack Involving Window Management
+
+16 TCP Congestion Control
+        16.1.1 Dection of Congestion in TCP
+        16.1.2 Slowing Down a TCP Sender
+    16.2 The Classic Algorithm
+        16.2.1 Slow Start
+        16.2.2 Congestion Avoidance
+        16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens)
+        16.2.4 Tahoe, Reno, and Fast Recovery
+            Tahoe
+            Reno
+            Fast Recovery
+        16.2.5 Standard TCP(Reno)
+    16.3 Evolution of the Standard Algorithms
+        16.3.1 NewReno
+        16.3.2 TCP Congestion Control with SACK
+        16.3.3 Forward Acknowledgment (FACK) and Rate Halving
+        16.3.4 Limited Transmit
+        16.3.5 Congestion Window Validation (CWV)
+    16.4 Handling Spurious RTOs-the Eifel Response Algorithm
+    16.5 An Extended Example
+        16.5.2 Sender Pause and Local Congestion (Event1)
+    16.7 Sharing Congestion State
+    16.8 TCP in High-speed Enviroments
+        16.8.1 HighSpeed TCP (HSTCP) and Limited Slow Start
+        16.8.2 Binary Increase Congestion Control (BIC and CUBIC)
+        16.9 Delay-Based Congestion Control
+            16.9.1 Vegas
+            16.9.2 FAST
+            16.9.3 TCP Westwood and Westwood+
+            16.9.4 Compound TCP
+        16.10 Buffer Bloat
+        16.11 Active Queue Management and ECN
+        16.12 Attacks Involving TCP Congestion Control
+        16.12 Attacks Involving TCP Congestion Control
+
 # 1 Introduction
 
 ## 1.1 Architecture Priciples
@@ -85,7 +196,7 @@ Once a connection is established, every TCP segment that contains data flowing i
 
  To be more efficient, multiple packets must be injected into the network before an ACK is received. This approach is more efficient but also more complex. A typical approach to managing the complexity is to use sliding windows, whereby packets are marked with sequence numbers, and the window size bounds the number of such packets. When the window size varies based on either feedback from the receiver or other signals (such as dropped packets), both flow control and congestion control can be achieved.
 
- # 13 Connection Management
+# 13 Connection Management
 
 ## 13.2 Tcp Connection Establishment and Termination
 ### 13.2.1 Tcp half-close
@@ -674,11 +785,13 @@ cwnd = cwnd / 2; // each RTT
 ```
 
 For application-limited periods that are not idle, the following similar behavior is used:
-1. The amount of window actually used is stored in W_used.
+1. The amount of window actually used is stored in W_used (linux snd_cwnd_used).
 2. ssthresh is modified but not reduced—it is set to max(ssthresh, (3/4)*cwnd).
 3. cwnd is set to the average of cwnd and W_used
-```
-cwnd = (cwnd + W_used) / 2;
+```c++
+tcp_cwnd_validate()
+tcp_cwnd_application_limited()
+  cwnd = (cwnd + W_used) / 2;
 ```
 
 ## 16.4 Handling Spurious RTOs-the Eifel Response Algorithm
