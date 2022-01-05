@@ -1,222 +1,108 @@
 * [1 Introduction](#1-Introduction)
-    * [1.1 Architecture Priciples](#1.1-Architecture-Priciples)
-        * [1.1.1 Packets, Connections, and Datagrams](#1.1.1-Packets,-Connections,-and-Datagrams)
-        * [1.1.2 The End-to-End Argument and Fate Sharing](#1.1.2-The-End-to-End-Argument-and-Fate-Sharing)
-        * [1.1.3 Error Control and Flow Control](#1.1.3-Error-Control-and-Flow-Control)
-    * [1.2 Design and Implementation](#1.2-Design-and-Implementation)
+    * [1.1 Architecture Priciples](#11-Architecture-Priciples)
+        * [1.1.1 Packets, Connections, and Datagrams](#111-Packets,-Connections,-and-Datagrams)
+        * [1.1.2 The End-to-End Argument and Fate Sharing](#112-The-End-to-End-Argument-and-Fate-Sharing)
+        * [1.1.3 Error Control and Flow Control](#113-Error-Control-and-Flow-Control)
+    * [1.2 Design and Implementation](#12-Design-and-Implementation)
 
 * [12 TCP: The Transmisssion Control Protocol(Premilinary)](#12-TCP:-The-Transmisssion-Control-Protocol(Premilinary))
-    * [12.2 Introduction to TCP](#12.2-Introduction-to-TCP)
-        * [12.2.1 The TCP Service Model](#12.2.1-The-TCP-Service-Model)
-        * [12.2.2 Reliability in TCP](#12.2.2-Reliability-in-TCP)
-    * [12.3 Tcp Header and Encapsulation](#12.3-Tcp-Header-and-Encapsulation)
+    * [12.2 Introduction to TCP](#122-Introduction-to-TCP)
+        * [12.2.1 The TCP Service Model](#1221-The-TCP-Service-Model)
+        * [12.2.2 Reliability in TCP](#1222-Reliability-in-TCP)
+    * [12.3 Tcp Header and Encapsulation](#123-Tcp-Header-and-Encapsulation)
 
 * [13 Connection Management](#13-Connection-Management)
-    * [13.2 Tcp Connection Establishment and Termination](#13.2-Tcp-Connection-Establishment-and-Termination)
-        * [13.2.1 Tcp half-close](#13.2.1-Tcp-half-close)
-        * [13.2.2 Simultaneous Open and Close](#13.2.2-Simultaneous-Open-and-Close)
-        * [13.2.3 Initial Sequence Number](#13.2.3-Initial-Sequence-Number)
-        * [13.2.6 Connections and Translator](#13.2.6-Connections-and-Translator)
-    * [13.3 Tcp Options](#13.3-Tcp-Options)
-        * [13.3.2 Selective Ackownledgment(SACK)](#13.3.2-Selective-Ackownledgment(SACK))
-        * [13.3.3 WSCALE/WSOPT](#13.3.3-WSCALE/WSOPT)
-        * [13.3.4 Timestamp Option and Protection Against Wrapped Sequence Number](#13.3.4-Timestamp-Option-and-Protection-Against-Wrapped-Sequence-Number)
-        * [13.3.5 User Timeout(UTO) Option](#13.3.5-User-Timeout(UTO)-Option)
-        * [13.3.6 Authentication Option](#13.3.6-Authentication-Option)
-    * [13.4 Path MTU Discovery with TCP](#13.4-Path-MTU-Discovery-with-TCP)
-    * [13.5 Tcp State Transition](#13.5-Tcp-State-Transition)
-        * [13.5.2 TIME_WAIT(2 MSL)](#13.5.2-TIME_WAIT(2-MSL))
-        * [13.5.3 Quiet Time Concept](#13.5.3-Quiet-Time-Concept)
-        * [13.5.4 FIN_WAIT_2 State](#13.5.4-FIN_WAIT_2-State)
-        * [13.5.5 Simultaneous Open and Close Transitions](#13.5.5-Simultaneous-Open-and-Close-Transitions)
-    * [13.6 RESET Segments](#13.6-RESET-Segments)
-    * [13.7 TCP Server Operation](#13.7-TCP-Server-Operation)
-        * [13.7.4 Incomming Connection Queue](#13.7.4-Incomming-Connection-Queue)
-    * [13.8 Attacks Involing TCP Connection Management](#13.8-Attacks-Involing-TCP-Connection-Management)
+    * [13.2 Tcp Connection Establishment and Termination](#132-Tcp-Connection-Establishment-and-Termination)
+        * [13.2.1 Tcp half-close](#1321-Tcp-half-close)
+        * [13.2.2 Simultaneous Open and Close](#1322-Simultaneous-Open-and-Close)
+        * [13.2.3 Initial Sequence Number](#1323-Initial-Sequence-Number)
+        * [13.2.6 Connections and Translator](#1326-Connections-and-Translator)
+    * [13.3 Tcp Options](#133-Tcp-Options)
+        * [13.3.2 Selective Ackownledgment(SACK)](#1332-Selective-Ackownledgment(SACK))
+        * [13.3.3 WSCALE/WSOPT](#1333-WSCALE/WSOPT)
+        * [13.3.4 Timestamp Option and Protection Against Wrapped Sequence Number](#1334-Timestamp-Option-and-Protection-Against-Wrapped-Sequence-Number)
+        * [13.3.5 User Timeout(UTO) Option](#1335-User-Timeout(UTO)-Option)
+        * [13.3.6 Authentication Option](#1336-Authentication-Option)
+    * [13.4 Path MTU Discovery with TCP](#134-Path-MTU-Discovery-with-TCP)
+    * [13.5 Tcp State Transition](#135-Tcp-State-Transition)
+        * [13.5.2 TIME_WAIT(2 MSL)](#1352-TIME_WAIT(2-MSL))
+        * [13.5.3 Quiet Time Concept](#1353-Quiet-Time-Concept)
+        * [13.5.4 FIN_WAIT_2 State](#1354-FIN_WAIT_2-State)
+        * [13.5.5 Simultaneous Open and Close Transitions](#1355-Simultaneous-Open-and-Close-Transitions)
+    * [13.6 RESET Segments](#136-RESET-Segments)
+    * [13.7 TCP Server Operation](#137-TCP-Server-Operation)
+        * [13.7.4 Incomming Connection Queue](#1374-Incomming-Connection-Queue)
+    * [13.8 Attacks Involing TCP Connection Management](#138-Attacks-Involing-TCP-Connection-Management)
 
 * [14 TCP Timeout and Retransmission](#14-TCP-Timeout-and-Retransmission)
-    * [14.1 Introduction](#14.1-Introduction)
-    * [14.3 Setting the Retransmisstion Timeout(RTO)](#14.3-Setting-the-Retransmisstion-Timeout(RTO))
-        * [14.3.1 The Classical Method](#14.3.1-The-Classical-Method)
-        * [14.3.2 The Standard Method](#14.3.2-The-Standard-Method)
-        * [14.3.3 The Linux Method](#14.3.3-The-Linux-Method)
-        * [14.3.4 RTT Estimator Behaviors](#14.3.4-RTT-Estimator-Behaviors)
-        * [14.3.5 RTTM Robustness to Loss and Reordering](#14.3.5-RTTM-Robustness-to-Loss-and-Reordering)
-    * [14.4 Timer-based Retransmission](#14.4-Timer-based-Retransmission)
-    * [14.5 Fast Retransmit](#14.5-Fast-Retransmit)
-        * [14.5.1 Example](#14.5.1-Example)
-    * [14.6 Retransmission with Selective Acknowledgments](#14.6-Retransmission-with-Selective-Acknowledgments)
-        * [14.6.1 SACK Receiver Behavior](#14.6.1-SACK-Receiver-Behavior)
-        * [14.6.2 SACK Sender Behavior](#14.6.2-SACK-Sender-Behavior)
-        * [14.6.3 Example](#14.6.3-Example)
-    * [14.7 Spurious Tiemouts and Retransmission](#14.7-Spurious-Tiemouts-and-Retransmission)
-        * [14.7.1 Duplicate SACK(DSACK) Extension](#14.7.1-Duplicate-SACK(DSACK)-Extension)
-        * [14.7.2 The Eifel Detection Algorithem](#14.7.2-The-Eifel-Detection-Algorithem)
-        * [14.7.3 Foward-RTO(FRTO)](#14.7.3-Foward-RTO(FRTO))
-        * [14.7.4 The Eifel Response Algorithem](#14.7.4-The-Eifel-Response-Algorithem)
-    * [14.8 Packet Reodering and Duplication](#14.8-Packet-Reodering-and-Duplication)
-        * [14.8.1 Reordering](#14.8.1-Reordering)
-        * [14.8.2 Duplicaton](#14.8.2-Duplicaton)
-    * [14.9 Destination Metrics](#14.9-Destination-Metrics)
-    * [14.10 Repacketization](#14.10-Repacketization)
+    * [14.1 Introduction](#141-Introduction)
+    * [14.3 Setting the Retransmisstion Timeout(RTO)](#143-Setting-the-Retransmisstion-Timeout(RTO))
+        * [14.3.1 The Classical Method](#1431-The-Classical-Method)
+        * [14.3.2 The Standard Method](#1432-The-Standard-Method)
+        * [14.3.3 The Linux Method](#1433-The-Linux-Method)
+        * [14.3.4 RTT Estimator Behaviors](#1434-RTT-Estimator-Behaviors)
+        * [14.3.5 RTTM Robustness to Loss and Reordering](#1435-RTTM-Robustness-to-Loss-and-Reordering)
+    * [14.4 Timer-based Retransmission](#144-Timer-based-Retransmission)
+    * [14.5 Fast Retransmit](#145-Fast-Retransmit)
+        * [14.5.1 Example](#1451-Example)
+    * [14.6 Retransmission with Selective Acknowledgments](#146-Retransmission-with-Selective-Acknowledgments)
+        * [14.6.1 SACK Receiver Behavior](#1461-SACK-Receiver-Behavior)
+        * [14.6.2 SACK Sender Behavior](#1462-SACK-Sender-Behavior)
+        * [14.6.3 Example](#1463-Example)
+    * [14.7 Spurious Tiemouts and Retransmission](#147-Spurious-Tiemouts-and-Retransmission)
+        * [14.7.1 Duplicate SACK(DSACK) Extension](#1471-Duplicate-SACK(DSACK)-Extension)
+        * [14.7.2 The Eifel Detection Algorithem](#1472-The-Eifel-Detection-Algorithem)
+        * [14.7.3 Foward-RTO(FRTO)](#1473-Foward-RTO(FRTO))
+        * [14.7.4 The Eifel Response Algorithem](#1474-The-Eifel-Response-Algorithem)
+    * [14.8 Packet Reodering and Duplication](#148-Packet-Reodering-and-Duplication)
+        * [14.8.1 Reordering](#1481-Reordering)
+        * [14.8.2 Duplicaton](#1482-Duplicaton)
+    * [14.9 Destination Metrics](#149-Destination-Metrics)
+    * [14.10 Repacketization](#1410-Repacketization)
 
 * [15 Data Flow and Window Management](#15-Data-Flow-and-Window-Management)
-    * [15.3 Delayed Ackowledgements](#15.3-Delayed-Ackowledgements)
-    * [15.4 Nagle Algorithm](#15.4-Nagle-Algorithm)
-    * [15.5 Flow Control and Window Management](#15.5-Flow-Control-and-Window-Management)
-        * [15.5.1 Sliding Window](#15.5.1-Sliding-Window)
-        * [15.5.2 Zero Windows and TCP Pesist Timer](#15.5.2-Zero-Windows-and-TCP-Pesist-Timer)
-            * [15.5.2.1 Example](#15.5.2.1-Example)
-        * [15.5.3 Silly Window Syndrome(SWS)](#15.5.3-Silly-Window-Syndrome(SWS))
-        * [15.5.4 Large Buffers and Auto-Tuning](#15.5.4-Large-Buffers-and-Auto-Tuning)
-    * [15.6 Urgent Mechanism](#15.6-Urgent-Mechanism)
-    * [15.7 Attack Involving Window Management](#15.7-Attack-Involving-Window-Management)
+    * [15.3 Delayed Ackowledgements](#153-Delayed-Ackowledgements)
+    * [15.4 Nagle Algorithm](#154-Nagle-Algorithm)
+    * [15.5 Flow Control and Window Management](#155-Flow-Control-and-Window-Management)
+        * [15.5.1 Sliding Window](#1551-Sliding-Window)
+        * [15.5.2 Zero Windows and TCP Pesist Timer](#1552-Zero-Windows-and-TCP-Pesist-Timer)
+            * [15.5.2.1 Example](#15521-Example)
+        * [15.5.3 Silly Window Syndrome(SWS)](#1553-Silly-Window-Syndrome(SWS))
+        * [15.5.4 Large Buffers and Auto-Tuning](#1554-Large-Buffers-and-Auto-Tuning)
+    * [15.6 Urgent Mechanism](#156-Urgent-Mechanism)
+    * [15.7 Attack Involving Window Management](#157-Attack-Involving-Window-Management)
 
 * [16 TCP Congestion Control](#16-TCP-Congestion-Control)
     * [16.1]()
-        * [16.1.1 Dection of Congestion in TCP](#16.1.1-Dection-of-Congestion-in-TCP)
-        * [16.1.2 Slowing Down a TCP Sender](#16.1.2-Slowing-Down-a-TCP-Sender)
-    * [16.2 The Classic Algorithm](#16.2-The-Classic-Algorithm)
-        * [16.2.1 Slow Start](#16.2.1-Slow-Start)
-        * [16.2.2 Congestion Avoidance](#16.2.2-Congestion-Avoidance)
-        * [16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens](#16.2.3-Selecting-Between-Slow-Start-and-Congestion-Control(When-Congestion-Happens))
-        * [16.2.4 Tahoe, Reno, and Fast Recovery](#16.2.4-Tahoe,-Reno,-and-Fast-Recovery)
-        * [16.2.5 Standard TCP(Reno)](#16.2.5-Standard-TCP(Reno))
-    * [16.3 Evolution of the Standard Algorithms](#16.3-Evolution-of-the-Standard-Algorithms)
-        * [16.3.1 NewReno](#16.3.1-NewReno)
-        * [16.3.2 TCP Congestion Control with SACK](#16.3.2-TCP-Congestion-Control-with-SACK)
-        * [16.3.3 Forward Acknowledgment (FACK) and Rate Halving](#16.3.3-Forward-Acknowledgment-(FACK)-and-Rate-Halving)
-        * [16.3.4 Limited Transmit](#16.3.4-Limited-Transmit)
-        * [16.3.5 Congestion Window Validation (CWV)](#16.3.5-Congestion-Window-Validation-(CWV))
-    * [16.4 Handling Spurious RTOs-the Eifel Response Algorithm](#16.4-Handling-Spurious-RTOs-the-Eifel-Response-Algorithm)
-    * [16.5 An Extended Example](#16.5-An-Extended-Example)
-        * [16.5.2 Sender Pause and Local Congestion (Event1)](#16.5.2-Sender-Pause-and-Local-Congestion-(Event1))
-    * [16.7 Sharing Congestion State](#16.7-Sharing-Congestion-State)
-    * [16.8 TCP in High-speed Enviroments](#16.8-TCP-in-High-speed-Enviroments)
-        * [16.8.1 HighSpeed TCP (HSTCP) and Limited Slow Start](#16.8.1-HighSpeed-TCP-(HSTCP)-and-Limited-Slow-Start)
-        * [16.8.2 Binary Increase Congestion Control (BIC and CUBIC)](#16.8.2-Binary-Increase-Congestion-Control-(BIC-and-CUBIC))
-        * [16.9 Delay-Based Congestion Control](#16.9-Delay-Based-Congestion-Control)
-            * [16.9.1 Vegas](#16.9.1-Vegas)
-            * [16.9.2 FAST](#16.9.2-FAST)
-            * [16.9.3 TCP Westwood and Westwood](#16.9.3-TCP-Westwood-and-Westwood)
-            * [16.9.4 Compound TCP](#16.9.4-Compound-TCP)
-        * [16.10 Buffer Bloat](#16.10-Buffer-Bloat)
-        * [16.11 Active Queue Management and ECN](#16.11-Active-Queue-Management-and-ECN)
-        * [16.12 Attacks Involving TCP Congestion Control](#16.12-Attacks-Involving-TCP-Congestion-Control)
-        * [16.12 Attacks Involving TCP Congestion Control](#16.12-Attacks-Involving-TCP-Congestion-Control)
-
-```java
-1 Introduction
-    1.1 Architecture Priciples
-        1.1.1 Packets, Connections, and Datagrams
-        1.1.2 The End-to-End Argument and Fate Sharing
-        1.1.3 Error Control and Flow Control
-    1.2 Design and Implementation
-
-12 TCP: The Transmisssion Control Protocol(Premilinary)
-    12.2 Introduction to TCP
-        12.2.1 The TCP Service Model
-        12.2.2 Reliability in TCP
-    12.3 Tcp Header and Encapsulation
-
-13 Connection Management
-    13.2 Tcp Connection Establishment and Termination
-        13.2.1 Tcp half-close
-        13.2.2 Simultaneous Open and Close
-        13.2.3 Initial Sequence Number
-        13.2.6 Connections and Translator
-    13.3 Tcp Options
-        13.3.2 Selective Ackownledgment(SACK)
-        13.3.3 WSCALE/WSOPT
-        13.3.4 Timestamp Option and Protection Against Wrapped Sequence Number
-        13.3.5 User Timeout(UTO) Option
-        13.3.6 Authentication Option
-    13.4 Path MTU Discovery with TCP
-    13.5 Tcp State Transition
-        13.5.2 TIME_WAIT(2 MSL)
-        13.5.3 Quiet Time Concept
-        13.5.4 FIN_WAIT_2 State
-        13.5.5 Simultaneous Open and Close Transitions
-    13.6 RESET Segments
-    13.7 TCP Server Operation
-        13.7.4 Incomming Connection Queue
-    13.8 Attacks Involing TCP Connection Management
-
-14 TCP Timeout and Retransmission
-    14.1 Introduction
-    14.3 Setting the Retransmisstion Timeout(RTO)
-        14.3.1 The Classical Method
-        14.3.2 The Standard Method
-        14.3.3 The Linux Method
-        14.3.4 RTT Estimator Behaviors
-        14.3.5 RTTM Robustness to Loss and Reordering
-    14.4 Timer-based Retransmission
-    14.5 Fast Retransmit
-        14.5.1 Example
-    14.6 Retransmission with Selective Acknowledgments
-        14.6.1 SACK Receiver Behavior
-        14.6.2 SACK Sender Behavior
-        14.6.3 Example
-    14.7 Spurious Tiemouts and Retransmission
-        14.7.1 Duplicate SACK(DSACK) Extension
-        14.7.2 The Eifel Detection Algorithem
-        14.7.3 Foward-RTO(FRTO)
-        14.7.4 The Eifel Response Algorithem
-    14.8 Packet Reodering and Duplication
-        14.8.1 Reordering
-        14.8.2 Duplicaton
-    14.9 Destination Metrics
-    14.10 Repacketization
-
-15 Data Flow and Window Management
-    15.3 Delayed Ackowledgements
-    15.4 Nagle Algorithm
-    15.5 Flow Control and Window Management
-        15.5.1 Sliding Window
-            Sending Window
-            Receving Window
-        15.5.2 Zero Windows and TCP Pesist Timer
-            15.5.2.1 Example
-        15.5.3 Silly Window Syndrome(SWS)
-        15.5.4 Large Buffers and Auto-Tuning
-    15.6 Urgent Mechanism
-    15.7 Attack Involving Window Management
-
-16 TCP Congestion Control
-        16.1.1 Dection of Congestion in TCP
-        16.1.2 Slowing Down a TCP Sender
-    16.2 The Classic Algorithm
-        16.2.1 Slow Start
-        16.2.2 Congestion Avoidance
-        16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens)
-        16.2.4 Tahoe, Reno, and Fast Recovery
-            Tahoe
-            Reno
-            Fast Recovery
-        16.2.5 Standard TCP(Reno)
-    16.3 Evolution of the Standard Algorithms
-        16.3.1 NewReno
-        16.3.2 TCP Congestion Control with SACK
-        16.3.3 Forward Acknowledgment (FACK) and Rate Halving
-        16.3.4 Limited Transmit
-        16.3.5 Congestion Window Validation (CWV)
-    16.4 Handling Spurious RTOs-the Eifel Response Algorithm
-    16.5 An Extended Example
-        16.5.2 Sender Pause and Local Congestion (Event1)
-    16.7 Sharing Congestion State
-    16.8 TCP in High-speed Enviroments
-        16.8.1 HighSpeed TCP (HSTCP) and Limited Slow Start
-        16.8.2 Binary Increase Congestion Control (BIC and CUBIC)
-        16.9 Delay-Based Congestion Control
-            16.9.1 Vegas
-            16.9.2 FAST
-            16.9.3 TCP Westwood and Westwood+
-            16.9.4 Compound TCP
-        16.10 Buffer Bloat
-        16.11 Active Queue Management and ECN
-        16.12 Attacks Involving TCP Congestion Control
-        16.12 Attacks Involving TCP Congestion Control
-```
+        * [16.1.1 Dection of Congestion in TCP](#1611-Dection-of-Congestion-in-TCP)
+        * [16.1.2 Slowing Down a TCP Sender](#1612-Slowing-Down-a-TCP-Sender)
+    * [16.2 The Classic Algorithm](#162-The-Classic-Algorithm)
+        * [16.2.1 Slow Start](#1621-Slow-Start)
+        * [16.2.2 Congestion Avoidance](#1622-Congestion-Avoidance)
+        * [16.2.3 Selecting Between Slow Start and Congestion Control(When Congestion Happens](#1623-Selecting-Between-Slow-Start-and-Congestion-Control(When-Congestion-Happens))
+        * [16.2.4 Tahoe, Reno, and Fast Recovery](#1624-Tahoe,-Reno,-and-Fast-Recovery)
+        * [16.2.5 Standard TCP(Reno)](#1625-Standard-TCP(Reno))
+    * [16.3 Evolution of the Standard Algorithms](#163-Evolution-of-the-Standard-Algorithms)
+        * [16.3.1 NewReno](#1631-NewReno)
+        * [16.3.2 TCP Congestion Control with SACK](#1632-TCP-Congestion-Control-with-SACK)
+        * [16.3.3 Forward Acknowledgment (FACK) and Rate Halving](#1633-Forward-Acknowledgment-(FACK)-and-Rate-Halving)
+        * [16.3.4 Limited Transmit](#1634-Limited-Transmit)
+        * [16.3.5 Congestion Window Validation (CWV)](#1635-Congestion-Window-Validation-(CWV))
+    * [16.4 Handling Spurious RTOs-the Eifel Response Algorithm](#164-Handling-Spurious-RTOs-the-Eifel-Response-Algorithm)
+    * [16.5 An Extended Example](#165-An-Extended-Example)
+        * [16.5.2 Sender Pause and Local Congestion (Event1)](#1652-Sender-Pause-and-Local-Congestion-(Event1))
+    * [16.7 Sharing Congestion State](#167-Sharing-Congestion-State)
+    * [16.8 TCP in High-speed Enviroments](#168-TCP-in-High-speed-Enviroments)
+        * [16.8.1 HighSpeed TCP (HSTCP) and Limited Slow Start](#1681-HighSpeed-TCP-(HSTCP)-and-Limited-Slow-Start)
+        * [16.8.2 Binary Increase Congestion Control (BIC and CUBIC)](#1682-Binary-Increase-Congestion-Control-(BIC-and-CUBIC))
+        * [16.9 Delay-Based Congestion Control](#169-Delay-Based-Congestion-Control)
+            * [16.9.1 Vegas](#1691-Vegas)
+            * [16.9.2 FAST](#1692-FAST)
+            * [16.9.3 TCP Westwood and Westwood](#1693-TCP-Westwood-and-Westwood)
+            * [16.9.4 Compound TCP](#1694-Compound-TCP)
+        * [16.10 Buffer Bloat](#1610-Buffer-Bloat)
+        * [16.11 Active Queue Management and ECN](#1611-Active-Queue-Management-and-ECN)
+        * [16.12 Attacks Involving TCP Congestion Control](#1612-Attacks-Involving-TCP-Congestion-Control)
 
 # 1 Introduction
 
