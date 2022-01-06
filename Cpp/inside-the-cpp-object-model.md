@@ -291,76 +291,74 @@ class A : public virtual Y, public virtual Z {};
                 ```
 
                 ```c++
+                // layout.cc
                 struct Base {
-                    virtual ~Base() = defaul`t;
+                    virtual ~Base() = default;
 
-                    virtual void FuncB() {  }
+                    virtual void FnBase() {  }
 
                     int a;
                     int b;
                 };
 
                 struct BaseA : virtual public Base {
-                    virtual ~BaseA() = default;
-
-                    virtual void FuncB() {  }
+                    virtual void FnBaseA() {  }
 
                     int a;
                     int b;
                 };
 
                 struct BaseB : virtual public Base {
-                    virtual ~BaseB() = default;
-
-                    virtual void FuncC() {  }
+                    virtual void FnBaseB() {  }
 
                     int a;
                     int b;
                 };
 
                 struct Derive : public BaseB, public BaseA {
-                    void FuncB() override {  }
-                    void FuncC() override {  }
+                    void FnBase() override {  }
+                    void FnBaseA() override {  }
+                    void FnBaseB() override {  }
                 };
 
                 int main() {
-                    BaseA a;
                     Derive d;
                     return 0;
                 }
                 ```
                 ```c++
-                Vtable for 'Derive' (20 entries).
+                Vtable for 'Derive' (21 entries).
                  0 | vbase_offset (32)
                  1 | offset_to_top (0)
                  2 | Derive RTTI
                      -- (BaseB, 0) vtable address --
                      -- (Derive, 0) vtable address --
-                 3 | Derive::~Derive() [complete]
-                 4 | Derive::~Derive() [deleting]
-                 5 | void Derive::FuncC()
-                 6 | void Derive::FuncB()
-                 7 | vbase_offset (16)
-                 8 | offset_to_top (-16)
-                 9 | Derive RTTI
+                 3 | void Derive::FnBaseB()
+                 4 | Derive::~Derive() [complete]
+                 5 | Derive::~Derive() [deleting]
+                 6 | void Derive::FnBase()
+                 7 | void Derive::FnBaseA()
+                 8 | vbase_offset (16)
+                 9 | offset_to_top (-16)
+                10 | Derive RTTI
                      -- (BaseA, 16) vtable address --
-                10 | Derive::~Derive() [complete]
+                11 | void Derive::FnBaseA()
+                     [this adjustment: -16 non-virtual] method: void BaseA::FnBaseA()
+                12 | Derive::~Derive() [complete]
                      [this adjustment: -16 non-virtual] method: BaseA::~BaseA()
-                11 | Derive::~Derive() [deleting]
+                13 | Derive::~Derive() [deleting]
                      [this adjustment: -16 non-virtual] method: BaseA::~BaseA()
-                12 | void Derive::FuncB()
-                     [this adjustment: -16 non-virtual] method: void BaseA::FuncB()
-                13 | vcall_offset (-32)
                 14 | vcall_offset (-32)
-                15 | offset_to_top (-32)
-                16 | Derive RTTI
+                15 | vcall_offset (-32)
+                16 | offset_to_top (-32)
+                17 | Derive RTTI
                      -- (Base, 32) vtable address --
-                17 | Derive::~Derive() [complete]
+                18 | Derive::~Derive() [complete]
                      [this adjustment: 0 non-virtual, -24 vcall offset offset] method: Base::~Base()
-                18 | Derive::~Derive() [deleting]
+                19 | Derive::~Derive() [deleting]
                      [this adjustment: 0 non-virtual, -24 vcall offset offset] method: Base::~Base()
-                19 | void Derive::FuncB()
-                     [this adjustment: 0 non-virtual, -32 vcall offset offset] method: void Base::FuncB()
+                20 | void Derive::FnBase()
+                     [this adjustment: 0 non-virtual, -32 vcall offset offset] method: void Base::FnBase()
 
                 Virtual base offset offsets for 'Derive' (1 entry).
                 Base | -24
@@ -369,15 +367,18 @@ class A : public virtual Y, public virtual Z {};
                 0 | this adjustment: -16 non-virtual
                 1 | this adjustment: 0 non-virtual, -24 vcall offset offset
 
-                Thunks for 'void Derive::FuncB()' (2 entries).
-                0 | this adjustment: -16 non-virtual
-                1 | this adjustment: 0 non-virtual, -32 vcall offset offset
+                Thunks for 'void Derive::FnBase()' (1 entry).
+                0 | this adjustment: 0 non-virtual, -32 vcall offset offset
 
-                VTable indices for 'Derive' (4 entries).
-                0 | Derive::~Derive() [complete]
-                1 | Derive::~Derive() [deleting]
-                2 | void Derive::FuncC()
-                3 | void Derive::FuncB()
+                Thunks for 'void Derive::FnBaseA()' (1 entry).
+                0 | this adjustment: -16 non-virtual
+
+                VTable indices for 'Derive' (5 entries).
+                0 | void Derive::FnBaseB()
+                1 | Derive::~Derive() [complete]
+                2 | Derive::~Derive() [deleting]
+                3 | void Derive::FnBase()
+                4 | void Derive::FnBaseA()
                 ```
                 ```c++
                 *** Dumping AST Record Layout
