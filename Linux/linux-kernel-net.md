@@ -20,24 +20,27 @@
     * [shutdown](#shutdown)
     * [sk_buf](#sk_buff)
     * [write](#write)
-        * [vfs layer](#vfs-layer-WR)
-        * [socket layer](#socket-layer-WR)
-        * [tcp layer](#tcp-layer-WR)
-        * [ip layer](#ip-layer-WR)
+        * [vfs layer](#vfs-layer-tx)
+        * [socket layer](#socket-layer-tx)
+        * [tcp layer](#tcp-layer-tx)
+          * [copy data](#copy-data)
+          * [tso_fragment](#tso_fragment)
+          * [tcp_transmit_skb](#tcp_transmit_skb)
+        * [ip layer](#ip-layer-tx)
             * [route](#route)
             * [fill ip header](#fill-ip-header)
             * [send package](#send-package)
-        * [mac layer](#mac-layer-WR)
+        * [mac layer](#mac-layer-tx)
             * [neighbour](#neighbour)
-        * [dev layer](#dev-layer-WR)
-        * [driver layer](#driver-layer-WR)
+        * [dev layer](#dev-layer-tx)
+        * [driver layer](#driver-layer-tx)
     * [read](#read)
-        * [driver layer](#driver-layer)
-        * [mac layer](#mac-layer)
-        * [ip layer](#ip-layer)
-        * [tcp layer](#tcp-layer)
-        * [vfs layer](#vfs-layer)
-        * [socket layer](#socket-layer])
+        * [driver layer](#driver-layer-rx)
+        * [mac layer](#mac-layer-rx)
+        * [ip layer](#ip-layer-rx)
+        * [tcp layer](#tcp-layer-rx)
+        * [vfs layer](#vfs-layer-rx)
+        * [socket layer](#socket-layer-rx])
     * [retransmit](#retransmit)
         * [tcp_write_timer](#tcp_write_timer)
             * [tcp_retransmit_skb](#tcp_retransmit_skb)
@@ -62,6 +65,7 @@
             * [ep_delete](#ep_delete)
         * [epoll_wait](#epoll_wait)
         * [wake epoll_wait](#wake-epoll_wait)
+    * [inet_init](#inet_init)
 
 # Net
 ![](../Images/Kernel/net-socket-sock.png)
@@ -139,20 +143,52 @@ typedef struct wait_queue_head {
 } wait_queue_head_t;
 
 struct tcp_sock {
-    struct inet_connection_sock  inet_conn;
+  struct inet_connection_sock  inet_conn;
 
-    struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
-    struct list_head tsorted_sent_queue; /* time-sorted sent but un-SACKed skbs */
+  struct list_head tsq_node; /* anchor in tsq_tasklet.head list */
+  struct list_head tsorted_sent_queue; /* time-sorted sent but un-SACKed skbs */
 
-    /* OOO segments go in this rbtree. Socket lock must be held. */
-    struct rb_root    out_of_order_queue;
-    struct sk_buff    *ooo_last_skb; /* cache rb_last(out_of_order_queue) */
+  /* OOO segments go in this rbtree. Socket lock must be held. */
+  struct rb_root    out_of_order_queue;
+  struct sk_buff    *ooo_last_skb; /* cache rb_last(out_of_order_queue) */
 
-    /* TCP fastopen related information */
-    struct tcp_fastopen_request *fastopen_req;
-    /* fastopen_rsk points to request_sock that resulted in this big
-     * socket. Used to retransmit SYNACKs etc. */
-    struct request_sock *fastopen_rsk;
+  /* TCP fastopen related information */
+  struct tcp_fastopen_request *fastopen_req;
+  /* fastopen_rsk points to request_sock that resulted in this big
+    * socket. Used to retransmit SYNACKs etc. */
+  struct request_sock *fastopen_rsk;
+
+  u32  packets_out;  /* Packets which are "in flight"  */
+  u32  retrans_out;  /* Retransmitted packets out    */
+  u32  max_packets_out;  /* max packets_out in last window */
+  u32  max_packets_seq;  /* right edge of max_packets_out flight */
+
+  /* Slow start and congestion control (see also Nagle, and Karn & Partridge) */
+  u32  snd_ssthresh;  /* Slow start size threshold    */
+  u32  snd_cwnd;  /* Sending congestion window    */
+  u32  snd_cwnd_cnt;  /* Linear increase counter    */
+  u32  snd_cwnd_clamp; /* Do not allow snd_cwnd to grow above this */
+  u32  snd_cwnd_used;
+  u32  snd_cwnd_stamp;
+  u32  prior_cwnd;  /* cwnd right before starting loss recovery */
+  u32  prr_delivered;  /* Number of newly delivered packets to
+         * receiver in Recovery. */
+  u32  prr_out;  /* Total number of pkts sent during Recovery. */
+  u32  delivered;  /* Total data packets delivered incl. rexmits */
+  u32  delivered_ce;  /* Like the above but only ECE marked packets */
+  u32  lost;    /* Total data packets lost incl. rexmits */
+  u32  app_limited;  /* limited until "delivered" reaches this val */
+  u64  first_tx_mstamp;  /* start of window send phase */
+  u64  delivered_mstamp; /* time we reached "delivered" */
+  u32  rate_delivered;    /* saved rate sample: packets delivered */
+  u32  rate_interval_us;  /* saved rate sample: time elapsed */
+
+  u32  rcv_wnd;  /* Current receiver window    */
+  u32  write_seq;  /* Tail(+1) of data held in tcp send buffer */
+  u32  notsent_lowat;  /* TCP_NOTSENT_LOWAT */
+  u32  pushed_seq;  /* Last pushed seq, required to talk to windows */
+  u32  lost_out;  /* Lost packets      */
+  u32  sacked_out;  /* SACK'd packets      */
 };
 
 /* INET connection oriented sock */
@@ -273,7 +309,7 @@ static struct inode *alloc_inode(struct super_block *sb)
   struct inode *inode;
 
   if (sb->s_op->alloc_inode)
-    inode = sb->s_op->alloc_inode(sb);
+    inode = sb->s_op->alloc_inode(sb); /* sock_alloc_inode */
   else
     inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);
 
@@ -1324,7 +1360,8 @@ static struct net_protocol tcp_protocol = {
   .icmp_strict_tag_validation = 1,
 }
 
-/* tcp_v4_rcv -> tcp_v4_do_rcv -> tcp_rcv_state_process */
+/* tcp_v4_rcv -> tcp_v4_do_rcv -> tcp_rcv_state_process
+ * see process of `TCP_NEW_SYN_RECV` state in tcp_v4_rcv */
 int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -2065,6 +2102,9 @@ void tcp_finish_connect(struct sock *sk, struct sk_buff *skb)
 
 ##### tcp_check_req
 ```c++
+/* Process an incoming packet for SYN_RECV sockets represented as a
+ * request_sock. Normally sk is the listener socket but for
+ * TFO (TCP Fast Open) it points to the child socket. */
 struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
          struct request_sock *req,
          bool fastopen, bool *req_stolen)
@@ -2491,15 +2531,19 @@ connect();
               tcp_send_head();
               inet_csk_reset_xmit_timer();
 
-        inet_wait_for_connect()
-          /* woken up by sk->sk_state_change(sk) at tcp_rcv_synsent_state_process */
+        if (!(flags & O_NONBLOCK))
+          inet_wait_for_connect()
+            /* woken up by sk->sk_state_change(sk) at tcp_rcv_synsent_state_process */
 
 receive:
 tcp_v4_rcv();
   sk = __inet_lookup_skb();
 
   if (sk->sk_state == TCP_NEW_SYN_RECV) {
-    new_sk = tcp_check_req();
+    struct request_sock *req = inet_reqsk(sk);
+    sk = req->rsk_listener;
+
+    newsk = tcp_check_req();
       child = inet_csk(sk)->icsk_af_ops->syn_recv_sock();
         tcp_v4_syn_recv_sock();
           if (sk_acceptq_is_full());
@@ -3150,7 +3194,8 @@ int inet_shutdown(struct socket *sock, int how)
 }
 
 struct proto tcp_prot = {
-  .shutdown = tcp_shutdown,
+  .shutdown   = tcp_shutdown,
+  .disconnect = tcp_disconnect
 };
 
 /* shutdown the sending side of a connection. Much like close except
@@ -3525,7 +3570,7 @@ sk_stream_alloc_skb()
 
 
 ### write
-#### vfs layer WR
+#### vfs layer tx
 ```C++
 static const struct file_operations socket_file_ops = {
   .owner          =  THIS_MODULE,
@@ -3551,7 +3596,7 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 }
 ```
 
-#### socket layer WR
+#### socket layer tx
 ```C++
 /* sock_sendmsg -> */
 int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
@@ -3567,7 +3612,9 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 }
 ```
 
-#### tcp layer WR
+#### tcp layer tx
+
+##### copy data
 ```C++
 /* tcp_prot.sendmsg, copy data to skb */
 int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
@@ -3663,15 +3710,8 @@ new_segment:
       }
       pfrag->offset += copy;
     } else { /* zero copy */
-      bool merge = true;
-      int i = skb_shinfo(skb)->nr_frags;
-      struct page_frag *pfrag = sk_page_frag(sk);
-
-      copy = min_t(int, copy, pfrag->size - pfrag->offset);
-
-      err = skb_copy_to_page_nocache(
-        sk, &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
-      pfrag->offset += copy;
+      err = skb_zerocopy_iter_stream(sk, skb, msg, copy, uarg);
+      copy = err;
     }
 
     tp->write_seq += copy;
@@ -3846,6 +3886,7 @@ repair:
 }
 ```
 
+##### tso_fragment
 ```c++
 /* Returns the portion of skb which can be sent right away */
 static unsigned int tcp_mss_split_point(
@@ -3934,6 +3975,7 @@ void skb_split(struct sk_buff *skb, struct sk_buff *skb1, const u32 len)
 
   skb_shinfo(skb1)->tx_flags |= skb_shinfo(skb)->tx_flags & SKBTX_SHARED_FRAG;
   skb_zerocopy_clone(skb1, skb, 0);
+
   if (len < pos)   /* Split line is inside header. */
     skb_split_inside_header(skb, skb1, len, pos);
   else      /* Second chunk has no header, nothing to copy. */
@@ -4024,6 +4066,7 @@ void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 }
 ```
 
+##### tcp_transmit_skb
 ```c++
 /* This routine actually transmits TCP packets queued in by
  * tcp_do_sendmsg().  This is used by both the initial
@@ -4232,7 +4275,7 @@ static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 }
 ```
 
-#### ip layer WR
+#### ip layer tx
 ```C++
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
@@ -4469,7 +4512,13 @@ int __ip_local_out(
 }
 ```
 * ![linux-net-filter.png](../Images/Kernel/net-filter.png)
+
+---
+
 * ![linux-net-filter-2.png](../Images/Kernel/net-filter-2.png)
+
+---
+
 * ![linux-net-filter-3.png](../Images/Kernel/net-filter-3.png)
 
 ```C++
@@ -4492,7 +4541,7 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-#### mac layer WR
+#### mac layer tx
 ```C++
 /* ip_finish_output -> */
 static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -4715,7 +4764,7 @@ static void arp_send_dst(
 }
 ```
 
-#### dev layer WR
+#### dev layer tx
 ```C++
 struct net_device {
   struct netdev_rx_queue  *_rx;
@@ -4968,7 +5017,7 @@ void qdisc_run(struct Qdisc *q)
 }
 ```
 
-#### driver layer WR
+#### driver layer tx
 ```C++
 // internet trasaction gigabit
 // drivers/net/ethernet/intel/ixgb/ixgb_main.c
@@ -5020,26 +5069,28 @@ tcp_sendmsg();
   skb = sk_stream_alloc_skb(); /* alloc new one if null */
 
   /* 2. copy data */
-  skb_add_data_nocache();     /* 2.1 skb_availroom(skb) > 0 && !zc */
-
-  skb_copy_to_page_nocache(); /* 2.2 !zc */
-    struct page_frag *pfrag = sk_page_frag(sk);
-    sk_page_frag_refill(sk, pfrag);
-    skb_copy_to_page_nocache();
-
-  skb_zerocopy_iter_stream(); /* 2.3 zero copy */
+    if (skb_availroom(skb) > 0 && !zc) {
+      skb_add_data_nocache();
+    } else if (!zc) {
+      struct page_frag *pfrag = sk_page_frag(sk);
+      sk_page_frag_refill(sk, pfrag);
+      skb_copy_to_page_nocache();
+    } else { /* zero copy */
+      skb_zerocopy_iter_stream();
+    }
 
   /* 3. send data */
   __tcp_push_pending_frames(); tcp_push_one();
     tcp_write_xmit();
+      max_segs = tcp_tso_segs();
+      tso_segs = tcp_init_tso_segs();
+
       tcp_cwnd_test();
       tcp_snd_wnd_test();
       tcp_nagle_test();
 
-      max_segs = tcp_tso_segs();
-      tso_segs = tcp_init_tso_segs();
-      cwnd_quota = tcp_cwnd_test();
-      tcp_snd_wnd_test(tp, skb, mss_now);
+      tcp_tso_should_defer();
+
       limit = tcp_mss_split_point();
       tso_fragment();
         skb_split();
@@ -5056,6 +5107,7 @@ tcp_sendmsg();
         tcp_rearm_rto(sk);
 
       tcp_cwnd_validate();
+        tcp_cwnd_application_limited();
 
 /* ip layer */
 ipv4_specific.ip_queue_xmit();
@@ -5113,7 +5165,7 @@ __dev_queue_xmit();
             ret = dev_requeue_skb(skb, q);
           }
       {
-        if (__netif_schdule(q)) {
+        if (quota <= 0 || need_resched()) {
           __netif_reschedule(q);
             *this_cpu_ptr(&softnet_data)->output_queue_tailp = q;
             raise_softirq_irqoff(NET_TX_SOFTIRQ); /* return to user space */
@@ -5133,7 +5185,7 @@ ixgb_xmit_frame();
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
 ### read
-#### driver layer
+#### driver layer rx
 ```C++
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) PRO/10GbE Network Driver");
@@ -5552,7 +5604,7 @@ struct ixgb_tx_desc {
 
 ![](../Images/Kernel/net-desc-ring-2.png)
 
-#### mac layer
+#### mac layer rx
 ```C++
 /* netif_receive_skb -> netif_receive_skb_internal ->
  * __netif_receive_skb -> __netif_receive_skb_core */
@@ -5619,7 +5671,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
-#### ip layer
+#### ip layer rx
 ```C++
 int ip_rcv(struct sk_buff *skb, struct net_device *dev,
   struct packet_type *pt, struct net_device *orig_dev)
@@ -5712,7 +5764,7 @@ static int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_b
 }
 ```
 
-#### tcp layer
+#### tcp layer rx
 ```C++
 struct net_protocol *inet_protos[MAX_INET_PROTOS];
 
@@ -5785,7 +5837,7 @@ process:
   if (sk->sk_state == TCP_NEW_SYN_RECV) {
     struct request_sock *req = inet_reqsk(sk);
     bool req_stolen = false;
-    struct sock *nsk;
+    struct sock *newsk;
 
     sk = req->rsk_listener;
     if (unlikely(tcp_v4_inbound_md5_hash(sk, skb))) {
@@ -5805,15 +5857,15 @@ process:
      * as we might lose it too soon. */
     sock_hold(sk);
     refcounted = true;
-    nsk = NULL;
+    newsk = NULL;
     if (!tcp_filter(sk, skb)) {
       th = (const struct tcphdr *)skb->data;
       iph = ip_hdr(skb);
       tcp_v4_fill_cb(skb, iph, th);
-      nsk = tcp_check_req(sk, skb, req, false, &req_stolen);
+      newsk = tcp_check_req(sk, skb, req, false, &req_stolen);
     }
 
-    if (!nsk) {
+    if (!newsk) {
       reqsk_put(req);
       if (req_stolen) {
         /* Another cpu got exclusive access to req
@@ -5827,11 +5879,11 @@ process:
       goto discard_and_relse;
     }
 
-    if (nsk == sk) {
+    if (newsk == sk) {
       reqsk_put(req);
       tcp_v4_restore_cb(skb);
-    } else if (tcp_child_process(sk, nsk, skb)) {
-      tcp_v4_send_reset(nsk, skb);
+    } else if (tcp_child_process(sk, newsk, skb)) {
+      tcp_v4_send_reset(newsk, skb);
       goto discard_and_relse;
     } else {
       sock_put(sk);
@@ -5963,13 +6015,13 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
     goto csum_err;
 
   if (sk->sk_state == TCP_LISTEN) {
-    struct sock *nsk = tcp_v4_cookie_check(sk, skb);
+    struct sock *newsk = tcp_v4_cookie_check(sk, skb);
 
-    if (!nsk)
+    if (!newsk)
       goto discard;
-    if (nsk != sk) {
-      if (tcp_child_process(sk, nsk, skb)) {
-        rsk = nsk;
+    if (newsk != sk) {
+      if (tcp_child_process(sk, newsk, skb)) {
+        rsk = newsk;
         goto reset;
       }
       return 0;
@@ -6621,7 +6673,7 @@ static void tcp_ofo_queue(struct sock *sk)
 }
 ```
 
-#### vfs layer
+#### vfs layer rx
 ```C++
 static const struct file_operations socket_file_ops = {
   .read_iter    = sock_read_iter,
@@ -6629,7 +6681,7 @@ static const struct file_operations socket_file_ops = {
 };
 ```
 
-#### socket layer
+#### socket layer rx
 ```C++
 static ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
@@ -7111,6 +7163,30 @@ sock_read_iter()
 
 ### congestion control
 ```c++
+enum tcp_ca_state {
+  TCP_CA_Open = 0,
+#define TCPF_CA_Open  (1<<TCP_CA_Open)
+  TCP_CA_Disorder = 1,
+#define TCPF_CA_Disorder (1<<TCP_CA_Disorder)
+  TCP_CA_CWR = 2,
+#define TCPF_CA_CWR  (1<<TCP_CA_CWR)
+  TCP_CA_Recovery = 3,
+#define TCPF_CA_Recovery (1<<TCP_CA_Recovery)
+  TCP_CA_Loss = 4
+#define TCPF_CA_Loss  (1<<TCP_CA_Loss)
+};
+
+void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  if (icsk->icsk_ca_ops->set_state)
+    icsk->icsk_ca_ops->set_state(sk, ca_state);
+  icsk->icsk_ca_state = ca_state;
+}
+```
+
+```c++
 struct tcp_congestion_ops {
   struct list_head  list;
   u32 key;
@@ -7253,6 +7329,244 @@ void tcp_update_pacing_rate(struct sock *sk)
    */
   WRITE_ONCE(sk->sk_pacing_rate, min_t(u64, rate,
                sk->sk_max_pacing_rate));
+}
+```
+
+#### tcp_cwnd_test
+```c++
+/* Can at least one segment of SKB be sent right now, according to the
+ * congestion window rules?  If so, return how many segments are allowed. */
+unsigned int tcp_cwnd_test(const struct tcp_sock *tp,
+           const struct sk_buff *skb)
+{
+  u32 in_flight, cwnd, halfcwnd;
+
+  /* Don't be strict about the congestion window for the final FIN.  */
+  if ((TCP_SKB_CB(skb)->tcp_flags & TCPHDR_FIN) &&
+      tcp_skb_pcount(skb) == 1)
+    return 1;
+
+  in_flight = tcp_packets_in_flight(tp);
+  cwnd = tp->snd_cwnd;
+  if (in_flight >= cwnd)
+    return 0;
+
+  /* For better scheduling, ensure we have at least
+   * 2 GSO packets in flight. */
+  halfcwnd = max(cwnd >> 1, 1U);
+  return min(halfcwnd, cwnd - in_flight);
+}
+
+/* Read this equation as:
+ *
+ *  "Packets sent once on transmission queue" MINUS
+ *  "Packets left network, but not honestly ACKed yet" PLUS
+ *  "Packets fast retransmitted" */
+static inline unsigned int tcp_packets_in_flight(const struct tcp_sock *tp)
+{
+  return tp->packets_out - tcp_left_out(tp) + tp->retrans_out;
+}
+```
+
+#### tcp_cwnd_validate
+```c++
+void tcp_cwnd_validate(struct sock *sk, bool is_cwnd_limited)
+{
+  const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  /* Track the maximum number of outstanding packets in each
+   * window, and remember whether we were cwnd-limited then. */
+  if (!before(tp->snd_una, tp->max_packets_seq) ||
+      tp->packets_out > tp->max_packets_out ||
+      is_cwnd_limited)
+  {
+    tp->max_packets_out = tp->packets_out;
+    tp->max_packets_seq = tp->snd_nxt;
+    tp->is_cwnd_limited = is_cwnd_limited;
+  }
+
+  if (tcp_is_cwnd_limited(sk)) {
+    /* Network is feed fully. */
+    tp->snd_cwnd_used = 0;
+    tp->snd_cwnd_stamp = tcp_jiffies32;
+  } else {
+    /* Network starves. */
+    if (tp->packets_out > tp->snd_cwnd_used)
+      tp->snd_cwnd_used = tp->packets_out;
+
+    if (sock_net(sk)->ipv4.sysctl_tcp_slow_start_after_idle &&
+        (s32)(tcp_jiffies32 - tp->snd_cwnd_stamp) >= inet_csk(sk)->icsk_rto &&
+        !ca_ops->cong_control)
+      tcp_cwnd_application_limited(sk);
+
+    /* The following conditions together indicate the starvation
+     * is caused by insufficient sender buffer:
+     * 1) just sent some data (see tcp_write_xmit)
+     * 2) not cwnd limited (this else condition)
+     * 3) no more data to send (tcp_write_queue_empty())
+     * 4) application is hitting buffer limit (SOCK_NOSPACE) */
+    if (tcp_write_queue_empty(sk) && sk->sk_socket &&
+        test_bit(SOCK_NOSPACE, &sk->sk_socket->flags) &&
+        (1 << sk->sk_state) & (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
+      tcp_chrono_start(sk, TCP_CHRONO_SNDBUF_LIMITED);
+  }
+}
+```
+
+##### tcp_enter_recovery
+```c++
+void tcp_enter_recovery(struct sock *sk, bool ece_ack)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+  int mib_idx;
+
+  if (tcp_is_reno(tp))
+    mib_idx = LINUX_MIB_TCPRENORECOVERY;
+  else
+    mib_idx = LINUX_MIB_TCPSACKRECOVERY;
+
+  NET_INC_STATS(sock_net(sk), mib_idx);
+
+  tp->prior_ssthresh = 0;
+  tcp_init_undo(tp);
+
+  if (!tcp_in_cwnd_reduction(sk)) {
+    if (!ece_ack)
+      tp->prior_ssthresh = tcp_current_ssthresh(sk);
+    tcp_init_cwnd_reduction(sk);
+  }
+  tcp_set_ca_state(sk, TCP_CA_Recovery);
+}
+```
+
+##### tcp_fastretrans_alert
+```c++
+/* Process an event, which can update packets-in-flight not trivially.
+ * Main goal of this function is to calculate new estimate for left_out,
+ * taking into account both packets sitting in receiver's buffer and
+ * packets lost by network.
+ *
+ * Besides that it updates the congestion state when packet loss or ECN
+ * is detected. But it does not reduce the cwnd, it is done by the
+ * congestion control later.
+ *
+ * It does _not_ decide what to send, it is made in function
+ * tcp_xmit_retransmit_queue().
+ */
+static void tcp_fastretrans_alert(struct sock *sk, const u32 prior_snd_una,
+          bool is_dupack, int *ack_flag, int *rexmit)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+  int fast_rexmit = 0, flag = *ack_flag;
+  bool do_lost = is_dupack || ((flag & FLAG_DATA_SACKED) &&
+             tcp_force_fast_retransmit(sk));
+
+  if (!tp->packets_out && tp->sacked_out)
+    tp->sacked_out = 0;
+
+  /* Now state machine starts.
+   * A. ECE, hence prohibit cwnd undoing, the reduction is required. */
+  if (flag & FLAG_ECE)
+    tp->prior_ssthresh = 0;
+
+  /* B. In all the states check for reneging SACKs. */
+  if (tcp_check_sack_reneging(sk, flag))
+    return;
+
+  /* C. Check consistency of the current state. */
+  tcp_verify_left_out(tp);
+
+  /* D. Check state exit conditions. State can be terminated
+   *    when high_seq is ACKed. */
+  if (icsk->icsk_ca_state == TCP_CA_Open) {
+    WARN_ON(tp->retrans_out != 0);
+    tp->retrans_stamp = 0;
+  } else if (!before(tp->snd_una, tp->high_seq)) {
+    switch (icsk->icsk_ca_state) {
+    case TCP_CA_CWR:
+      /* CWR is to be held something *above* high_seq
+       * is ACKed for CWR bit to reach receiver. */
+      if (tp->snd_una != tp->high_seq) {
+        tcp_end_cwnd_reduction(sk);
+        tcp_set_ca_state(sk, TCP_CA_Open);
+      }
+      break;
+
+    case TCP_CA_Recovery:
+      if (tcp_is_reno(tp))
+        tcp_reset_reno_sack(tp);
+      if (tcp_try_undo_recovery(sk))
+        return;
+      tcp_end_cwnd_reduction(sk);
+      break;
+    }
+  }
+
+  /* E. Process state. */
+  switch (icsk->icsk_ca_state) {
+  case TCP_CA_Recovery:
+    if (!(flag & FLAG_SND_UNA_ADVANCED)) {
+      if (tcp_is_reno(tp) && is_dupack)
+        tcp_add_reno_sack(sk);
+    } else {
+      if (tcp_try_undo_partial(sk, prior_snd_una))
+        return;
+      /* Partial ACK arrived. Force fast retransmit. */
+      do_lost = tcp_is_reno(tp) ||
+          tcp_force_fast_retransmit(sk);
+    }
+    if (tcp_try_undo_dsack(sk)) {
+      tcp_try_keep_open(sk);
+      return;
+    }
+    tcp_identify_packet_loss(sk, ack_flag);
+    break;
+  case TCP_CA_Loss:
+    tcp_process_loss(sk, flag, is_dupack, rexmit);
+    tcp_identify_packet_loss(sk, ack_flag);
+    if (!(icsk->icsk_ca_state == TCP_CA_Open ||
+          (*ack_flag & FLAG_LOST_RETRANS)))
+      return;
+    /* Change state if cwnd is undone or retransmits are lost */
+    /* fall through */
+  default:
+    if (tcp_is_reno(tp)) {
+      if (flag & FLAG_SND_UNA_ADVANCED)
+        tcp_reset_reno_sack(tp);
+      if (is_dupack)
+        tcp_add_reno_sack(sk);
+    }
+
+    if (icsk->icsk_ca_state <= TCP_CA_Disorder)
+      tcp_try_undo_dsack(sk);
+
+    tcp_identify_packet_loss(sk, ack_flag);
+    if (!tcp_time_to_recover(sk, flag)) {
+      tcp_try_to_open(sk, flag);
+      return;
+    }
+
+    /* MTU probe failure: don't reduce cwnd */
+    if (icsk->icsk_ca_state < TCP_CA_CWR &&
+        icsk->icsk_mtup.probe_size &&
+        tp->snd_una == tp->mtu_probe.probe_seq_start) {
+      tcp_mtup_probe_failed(sk);
+      /* Restores the reduction we did in tcp_mtup_probe() */
+      tp->snd_cwnd++;
+      tcp_simple_retransmit(sk);
+      return;
+    }
+
+    /* Otherwise enter Recovery state */
+    tcp_enter_recovery(sk, (flag & FLAG_ECE));
+    fast_rexmit = 1;
+  }
+
+  if (!tcp_is_rack(sk) && do_lost)
+    tcp_update_scoreboard(sk, fast_rexmit);
+  *rexmit = REXMIT_LOST;
 }
 ```
 
@@ -7676,7 +7990,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
       tcp_retrans_try_collapse(sk, skb, cur_mss);
   }
 
-  /* RFC3168, section 6.1.1.1. ECN fallback */
+  /* RFC3168, section 6.1.1.1. ECN (Explicit Congestion Notification) fallback */
   if ((TCP_SKB_CB(skb)->tcp_flags & TCPHDR_SYN_ECN) == TCPHDR_SYN_ECN)
     tcp_ecn_clear_syn(sk, skb);
 
@@ -7787,6 +8101,8 @@ int inet_csk_ack_scheduled(const struct sock *sk)
 #### reqsk_timer_handler
 ```c++
 ```
+
+#### fast retransmit
 
 ### tcpdump
 #### register_prot_hook
@@ -8845,6 +9161,9 @@ void __tcp_push_pending_frames(
 ```
 
 ### epoll
+
+![kernel-net-epoll.png](../Images/Kernel/net-epoll.png)
+
 ```c++
 typedef union epoll_data {
   void     *ptr;
@@ -8892,42 +9211,30 @@ struct epitem {
 };
 
 struct epoll_filefd {
-  struct file  *file;
+  struct file *file;
   int         fd;
 };
 
 struct eventpoll {
   struct mutex mtx;
   /* Wait queue used by sys_epoll_wait() */
-  wait_queue_head_t wq;
+  wait_queue_head_t     wq;
 
   /* Wait queue used by file->poll() */
-  wait_queue_head_t poll_wait;
+  wait_queue_head_t     poll_wait;
 
   struct list_head      rdllist;
   struct rb_root_cached rbr;
   struct epitem         *ovflist;
   struct wakeup_source  *ws;
   struct user_struct    *user;
-  struct file            *file;
-  int visited;
+  struct file           *file;
+  int                   visited;
   struct list_head      visited_list_link;
   unsigned int          napi_id;
 };
-
-struct ep_pqueue {
-  poll_table pt;
-  struct epitem *epi;
-};
-
-typedef struct poll_table_struct {
-  poll_queue_proc _qproc; /* ep_ptable_queue_proc */
-  __poll_t _key;
-} poll_table;
-
-/* structures and helpers for f_op->poll implementations */
-typedef void (*poll_queue_proc)(struct file *, wait_queue_head_t *, struct poll_table_struct *);
 ```
+
 #### epoll_create
 ```C++
 SYSCALL_DEFINE1(epoll_create, int, size)
@@ -9095,6 +9402,19 @@ error_return:
 
 ##### ep_insert
 ```C++
+struct ep_pqueue {
+  poll_table      pt;
+  struct epitem   *epi;
+};
+
+typedef struct poll_table_struct {
+  poll_queue_proc _qproc; /* ep_ptable_queue_proc */
+  __poll_t        _key;
+} poll_table;
+
+/* structures and helpers for f_op->poll implementations */
+typedef void (*poll_queue_proc)(struct file *, wait_queue_head_t *, struct poll_table_struct *);
+
 static int ep_insert(
   struct eventpoll *ep, const struct epoll_event *event,
   struct file *tfile, int fd, int full_check)
@@ -9345,7 +9665,46 @@ struct wait_queue_entry {
 
 ##### ep_modify
 ```C++
+int ep_modify(struct eventpoll *ep, struct epitem *epi,
+         const struct epoll_event *event)
+{
+  int pwake = 0;
+  poll_table pt;
 
+  init_poll_funcptr(&pt, NULL);
+
+  epi->event.events = event->events; /* need barrier below */
+  epi->event.data = event->data; /* protected by mtx */
+  if (epi->event.events & EPOLLWAKEUP) {
+    if (!ep_has_wakeup_source(epi))
+      ep_create_wakeup_source(epi);
+  } else if (ep_has_wakeup_source(epi)) {
+    ep_destroy_wakeup_source(epi);
+  }
+
+  smp_mb();
+
+  if (ep_item_poll(epi, &pt, 1)) {
+    spin_lock_irq(&ep->wq.lock);
+    if (!ep_is_linked(epi)) {
+      list_add_tail(&epi->rdllink, &ep->rdllist);
+      ep_pm_stay_awake(epi);
+
+      /* Notify waiting tasks that events are available */
+      if (waitqueue_active(&ep->wq))
+        wake_up_locked(&ep->wq);
+      if (waitqueue_active(&ep->poll_wait))
+        pwake++;
+    }
+    spin_unlock_irq(&ep->wq.lock);
+  }
+
+  /* We have to call this outside the lock */
+  if (pwake)
+    ep_poll_safewake(&ep->poll_wait);
+
+  return 0;
+}
 ```
 
 ##### ep_delete
@@ -9730,85 +10089,119 @@ void __wake_up_locked(
 ```c++
 /* epoll_create */
 epoll_create();
-  do_epoll_create();
-    ep_alloc();
-    get_unused_fd_flags();
-    anon_inode_getfile();
-    fd_install();
+    do_epoll_create();
+        ep_alloc();
+        get_unused_fd_flags();
+        anon_inode_getfile();
+        fd_install();
 
 /* epoll_ctl */
 epoll_ctl();
-  ep_insert();
-    kmem_cache_alloc(epi_cache);
-    init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
-    ep_item_poll();
-      vfs_poll();
-        sock_poll();
-          sock->ops->poll();
-            tcp_poll();
-              sock_poll_wait();
-                poll_wait();
-                  ep_ptable_queue_proc();
-                    init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
-                    add_wait_queue(whead, &pwq->wait);
-      poll_wait();
-      ep_scan_ready_list();
-    ep_rbtree_insert()
+    ep_insert();
+        kmem_cache_alloc(epi_cache);
+        init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
+        ep_item_poll();
+            vfs_poll();
+                sock_poll();
+                    sock->ops->poll();
+                        tcp_poll();
+                            sock_poll_wait();
+                                if (!poll_does_not_wait(p))
+                                    poll_wait(filp, &sock->wq->wait, p);
+                                        ep_ptable_queue_proc();
+                                            init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
+                                            add_wait_queue(whead, &pwq->wait);
+
+                            if (tcp_stream_is_readable(tp, target, sk))
+                                mask |= EPOLLIN | EPOLLRDNORM;
+                            if (sk_stream_is_writeable(sk))
+                                mask |= EPOLLOUT | EPOLLWRNORM;
+                            return mask;
+
+        poll_wait();
+        ep_scan_ready_list();
+
+    list_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);
+    ep_rbtree_insert(ep, epi);
+
     if (hasReadyEvents)
-      wake_up_locked(&ep->wq);
-      ep_poll_safewake(&ep->poll_wait);
+        wake_up_locked(&ep->wq);
+        ep_poll_safewake(&ep->poll_wait);
 
-  ep_remove();
+ep_remove();
 
-  ep_modify();
+ep_modify();
+    if (ep_item_poll(epi, &pt, 1)) {
+        spin_lock_irq(&ep->wq.lock);
+        if (!ep_is_linked(epi)) {
+            list_add_tail(&epi->rdllink, &ep->rdllist);
+            ep_pm_stay_awake(epi);
+
+            if (waitqueue_active(&ep->wq))
+                wake_up_locked(&ep->wq);
+            if (waitqueue_active(&ep->poll_wait))
+                pwake++;
+        }
+        spin_unlock_irq(&ep->wq.lock);
+    }
 
 /* epoll_wait */
 epoll_wait();
-  do_epoll_wait();
-    ep_poll();
-      init_waitqueue_entry(&wait, default_wake_function);
-      __add_wait_queue_exclusive(&ep->wq, &wait);
-        wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
-        __add_wait_queue(wq_head, wq_entry);
-      schedule_hrtimeout_range();
-       __remove_wait_queue(&ep->wq, &wait);
+    do_epoll_wait();
+        ep_poll();
+            if (!ep_events_available(ep))
+                init_waitqueue_entry(&wait, default_wake_function);
+                __add_wait_queue_exclusive(&ep->wq, &wait);
+                    wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+                    __add_wait_queue(wq_head, wq_entry);
+                schedule_hrtimeout_range();
+                    __remove_wait_queue(&ep->wq, &wait);
 
-      ep_send_events();
-        ep_scan_ready_list();
-          ep_send_events_proc();
-            __put_user(epi->event.data, &uevent->data);
-            list_del_init(&epi->rdllink);
+            ep_send_events();
+                ep_scan_ready_list();
+                    ep_send_events_proc();
+                        revents = ep_item_poll(epi, &pt, 1);
+                            if (tcp_stream_is_readable(tp, target, sk))
+                                revents |= EPOLLIN | EPOLLRDNORM;
+                            if (sk_stream_is_writeable(sk))
+                                revents |= EPOLLOUT | EPOLLWRNORM;
+                            return revents & epi->event.events;
 
-            if (!(epi->event.events & EPOLLET)) {
-              /* re-insert in Level Trigger mode */
-              list_add_tail(&epi->rdllink, &ep->rdllist);
-              ep_pm_stay_awake(epi);
-            }
+                        if (revents) {
+                            if (__put_user(revents, &uevent->events);
+                                list_add(&epi->rdllink, head);
 
-          if (!list_empty(&ep->rdllist)) {
-            wake_up_locked(&ep->wq);
-            ep_poll_safewake(&ep->poll_wait);
-              __wake_up_common_lock();
-          }
+                            if (epi->event.events & EPOLLONESHOT)
+                                epi->event.events &= EP_PRIVATE_BITS;
+                            else if (!(epi->event.events & EPOLLET)) {
+                                list_add_tail(&epi->rdllink, &ep->rdllist);
+                                ep_pm_stay_awake(epi);
+                            }
+                        }
+
+                    if (!list_empty(&ep->rdllist)) {
+                        wake_up_locked(&ep->wq);
+                        ep_poll_safewake(&ep->poll_wait);
+                            __wake_up_common_lock();
+                    }
 
 /* wake epoll_wait */
 tcp_data_ready();
-  sk->sk_data_ready(sk);
-    sock_def_readable();
-      if (skwq_has_sleeper(wq));
-        wake_up_interruptible_sync_poll();
-          __wake_up_common();
+    sk->sk_data_ready(sk);
+        sock_def_readable();
+            if (skwq_has_sleeper(wq));
+                wake_up_interruptible_sync_poll();
+                    __wake_up_common();
 
-            ret = curr->func(curr, mode, wake_flags, key);
-              ep_poll_callback();
-                list_add_tail(&epi->rdllink, &ep->rdllist);
-                wake_up_locked(&ep->wq);
-                  __wake_up_common();
-                ep_poll_safewake(&ep->poll_wait);
-                  wake_up_poll();
+                        ret = curr->func(curr, mode, wake_flags, key);
+                            ep_poll_callback();
+                                if (!ep_is_linked(epi))
+                                    list_add_tail(&epi->rdllink, &ep->rdllist);
+                                wake_up_locked(&ep->wq);
+                                    __wake_up_common();
+                                ep_poll_safewake(&ep->poll_wait);
+                                    wake_up_poll();
 ```
-
-![kernel-net-epoll.png](../Images/Kernel/net-epoll.png)
 
 ## Reference:
 * [Segmentation Offloads](https://www.kernel.org/doc/html/latest/networking/segmentation-offloads.html)
@@ -9825,3 +10218,296 @@ tcp_data_ready();
 
 ## TODO:
 1. Trie tree implementaion to in FIB
+
+# inet_init
+```c++
+/* linux-4.19.y/include/linux/init.h */
+#define ___define_initcall(fn, id, __sec) \
+  static initcall_t __initcall_##fn##id __used \
+    __attribute__((__section__(#__sec ".init"))) = fn;
+#endif
+
+#define __define_initcall(fn, id) ___define_initcall(fn, id, .initcall##id)
+
+#define fs_initcall(fn)      __define_initcall(fn, 5)
+
+/* linux-4.19.y/net/ipv4/af_inet.c */
+fs_initcall(inet_init);
+
+static int __init inet_init(void)
+{
+  struct inet_protosw *q;
+  struct list_head *r;
+  int rc = -EINVAL;
+
+  sock_skb_cb_check_size(sizeof(struct inet_skb_parm));
+
+  rc = proto_register(&tcp_prot, 1);
+  rc = proto_register(&udp_prot, 1);
+  rc = proto_register(&raw_prot, 1);
+  rc = proto_register(&ping_prot, 1);
+
+  (void)sock_register(&inet_family_ops);
+
+#ifdef CONFIG_SYSCTL
+  ip_static_sysctl_init();
+#endif
+
+  if (inet_add_protocol(&icmp_protocol, IPPROTO_ICMP) < 0)
+    pr_crit("%s: Cannot add ICMP protocol\n", __func__);
+  if (inet_add_protocol(&udp_protocol, IPPROTO_UDP) < 0)
+    pr_crit("%s: Cannot add UDP protocol\n", __func__);
+  if (inet_add_protocol(&tcp_protocol, IPPROTO_TCP) < 0)
+    pr_crit("%s: Cannot add TCP protocol\n", __func__);
+#ifdef CONFIG_IP_MULTICAST
+  if (inet_add_protocol(&igmp_protocol, IPPROTO_IGMP) < 0)
+    pr_crit("%s: Cannot add IGMP protocol\n", __func__);
+#endif
+
+  /* Register the socket-side information for inet_create. */
+  for (r = &inetsw[0]; r < &inetsw[SOCK_MAX]; ++r)
+    INIT_LIST_HEAD(r);
+
+  for (q = inetsw_array; q < &inetsw_array[INETSW_ARRAY_LEN]; ++q)
+    inet_register_protosw(q);
+
+  arp_init();
+
+  ip_init();
+
+  /* Setup TCP slab cache for open requests. */
+  tcp_init();
+
+  /* Setup UDP memory threshold */
+  udp_init();
+
+  /* Add UDP-Lite (RFC 3828) */
+  udplite4_register();
+
+  ping_init();
+
+  if (icmp_init() < 0)
+    panic("Failed to create the ICMP control socket.\n");
+
+  /* Initialise the multicast router */
+#if defined(CONFIG_IP_MROUTE)
+  if (ip_mr_init())
+    pr_crit("%s: Cannot init ipv4 mroute\n", __func__);
+#endif
+
+  if (init_inet_pernet_ops())
+    pr_crit("%s: Cannot init ipv4 inet pernet ops\n", __func__);
+
+  /* Initialise per-cpu ipv4 mibs */
+  if (init_ipv4_mibs())
+    pr_crit("%s: Cannot init ipv4 mibs\n", __func__);
+
+  ipv4_proc_init();
+
+  ipfrag_init();
+
+  dev_add_pack(&ip_packet_type);
+
+  ip_tunnel_core_init();
+}
+
+void __init tcp_init(void)
+{
+  int max_rshare, max_wshare, cnt;
+  unsigned long limit;
+  unsigned int i;
+
+  percpu_counter_init(&tcp_sockets_allocated, 0, GFP_KERNEL);
+  percpu_counter_init(&tcp_orphan_count, 0, GFP_KERNEL);
+
+  inet_hashinfo_init(&tcp_hashinfo);
+  inet_hashinfo2_init(&tcp_hashinfo, "tcp_listen_portaddr_hash",
+          thash_entries, 21,  /* one slot per 2 MB*/
+          0, 64 * 1024);
+  tcp_hashinfo.bind_bucket_cachep =
+    kmem_cache_create("tcp_bind_bucket",
+          sizeof(struct inet_bind_bucket), 0,
+          SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
+
+  /* Size and allocate the main established and bind bucket
+   * hash tables.
+   *
+   * The methodology is similar to that of the buffer cache. */
+  tcp_hashinfo.ehash =
+    alloc_large_system_hash("TCP established",
+          sizeof(struct inet_ehash_bucket),
+          thash_entries,
+          17, /* one slot per 128 KB of memory */
+          0,
+          NULL,
+          &tcp_hashinfo.ehash_mask,
+          0,
+          thash_entries ? 0 : 512 * 1024);
+  for (i = 0; i <= tcp_hashinfo.ehash_mask; i++)
+    INIT_HLIST_NULLS_HEAD(&tcp_hashinfo.ehash[i].chain, i);
+
+  if (inet_ehash_locks_alloc(&tcp_hashinfo))
+    panic("TCP: failed to alloc ehash_locks");
+  tcp_hashinfo.bhash =
+    alloc_large_system_hash("TCP bind",
+          sizeof(struct inet_bind_hashbucket),
+          tcp_hashinfo.ehash_mask + 1,
+          17, /* one slot per 128 KB of memory */
+          0,
+          &tcp_hashinfo.bhash_size,
+          NULL,
+          0,
+          64 * 1024);
+  tcp_hashinfo.bhash_size = 1U << tcp_hashinfo.bhash_size;
+  for (i = 0; i < tcp_hashinfo.bhash_size; i++) {
+    spin_lock_init(&tcp_hashinfo.bhash[i].lock);
+    INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
+  }
+
+
+  cnt = tcp_hashinfo.ehash_mask + 1;
+  sysctl_tcp_max_orphans = cnt / 2;
+
+  tcp_init_mem();
+  /* Set per-socket limits to no more than 1/128 the pressure threshold */
+  limit = nr_free_buffer_pages() << (PAGE_SHIFT - 7);
+  max_wshare = min(4UL*1024*1024, limit);
+  max_rshare = min(6UL*1024*1024, limit);
+
+  init_net.ipv4.sysctl_tcp_wmem[0] = SK_MEM_QUANTUM;
+  init_net.ipv4.sysctl_tcp_wmem[1] = 16*1024;
+  init_net.ipv4.sysctl_tcp_wmem[2] = max(64*1024, max_wshare);
+
+  init_net.ipv4.sysctl_tcp_rmem[0] = SK_MEM_QUANTUM;
+  init_net.ipv4.sysctl_tcp_rmem[1] = 131072;
+  init_net.ipv4.sysctl_tcp_rmem[2] = max(131072, max_rshare);
+
+  pr_info("Hash tables configured (established %u bind %u)\n",
+    tcp_hashinfo.ehash_mask + 1, tcp_hashinfo.bhash_size);
+
+  tcp_v4_init();
+  tcp_metrics_init();
+  tcp_tasklet_init();
+}
+
+static struct pernet_operations __net_initdata tcp_sk_ops = {
+  .init         = tcp_sk_init,
+  .exit         = tcp_sk_exit,
+  .exit_batch   = tcp_sk_exit_batch,
+};
+
+void __init tcp_v4_init(void)
+{
+  if (register_pernet_subsys(&tcp_sk_ops))
+    panic("Failed to create the TCP control socket.\n");
+}
+
+static int __net_init tcp_sk_init(struct net *net)
+{
+  int res, cpu, cnt;
+
+  net->ipv4.tcp_sk = alloc_percpu(struct sock *);
+  if (!net->ipv4.tcp_sk)
+    return -ENOMEM;
+
+  for_each_possible_cpu(cpu) {
+    struct sock *sk;
+
+    res = inet_ctl_sock_create(&sk, PF_INET, SOCK_RAW, IPPROTO_TCP, net);
+    if (res)
+      goto fail;
+    sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
+
+    /* Please enforce IP_DF and IPID==0 for RST and
+     * ACK sent in SYN-RECV and TIME-WAIT state. */
+    inet_sk(sk)->pmtudisc = IP_PMTUDISC_DO;
+
+    *per_cpu_ptr(net->ipv4.tcp_sk, cpu) = sk;
+  }
+
+  net->ipv4.sysctl_tcp_ecn = 2;
+  net->ipv4.sysctl_tcp_ecn_fallback = 1;
+
+  net->ipv4.sysctl_tcp_base_mss = TCP_BASE_MSS;
+  net->ipv4.sysctl_tcp_min_snd_mss = TCP_MIN_SND_MSS;
+  net->ipv4.sysctl_tcp_probe_threshold = TCP_PROBE_THRESHOLD;
+  net->ipv4.sysctl_tcp_probe_interval = TCP_PROBE_INTERVAL;
+
+  net->ipv4.sysctl_tcp_keepalive_time = TCP_KEEPALIVE_TIME;
+  net->ipv4.sysctl_tcp_keepalive_probes = TCP_KEEPALIVE_PROBES;
+  net->ipv4.sysctl_tcp_keepalive_intvl = TCP_KEEPALIVE_INTVL;
+
+  net->ipv4.sysctl_tcp_syn_retries = TCP_SYN_RETRIES;
+  net->ipv4.sysctl_tcp_synack_retries = TCP_SYNACK_RETRIES;
+  net->ipv4.sysctl_tcp_syncookies = 1;
+  net->ipv4.sysctl_tcp_reordering = TCP_FASTRETRANS_THRESH;
+  net->ipv4.sysctl_tcp_retries1 = TCP_RETR1;
+  net->ipv4.sysctl_tcp_retries2 = TCP_RETR2;
+  net->ipv4.sysctl_tcp_orphan_retries = 0;
+  net->ipv4.sysctl_tcp_fin_timeout = TCP_FIN_TIMEOUT;
+  net->ipv4.sysctl_tcp_notsent_lowat = UINT_MAX;
+  net->ipv4.sysctl_tcp_tw_reuse = 2;
+
+  cnt = tcp_hashinfo.ehash_mask + 1;
+  net->ipv4.tcp_death_row.sysctl_max_tw_buckets = (cnt + 1) / 2;
+  net->ipv4.tcp_death_row.hashinfo = &tcp_hashinfo;
+
+  net->ipv4.sysctl_max_syn_backlog = max(128, cnt / 256);
+  net->ipv4.sysctl_tcp_sack = 1;
+  net->ipv4.sysctl_tcp_window_scaling = 1;
+  net->ipv4.sysctl_tcp_timestamps = 1;
+  net->ipv4.sysctl_tcp_early_retrans = 3;
+  net->ipv4.sysctl_tcp_recovery = TCP_RACK_LOSS_DETECTION;
+  net->ipv4.sysctl_tcp_slow_start_after_idle = 1; /* By default, RFC2861 behavior.  */
+  net->ipv4.sysctl_tcp_retrans_collapse = 1;
+  net->ipv4.sysctl_tcp_max_reordering = 300;
+  net->ipv4.sysctl_tcp_dsack = 1;
+  net->ipv4.sysctl_tcp_app_win = 31;
+  net->ipv4.sysctl_tcp_adv_win_scale = 1;
+  net->ipv4.sysctl_tcp_frto = 2;
+  net->ipv4.sysctl_tcp_moderate_rcvbuf = 1;
+  /* This limits the percentage of the congestion window which we
+   * will allow a single TSO frame to consume.  Building TSO frames
+   * which are too large can cause TCP streams to be bursty.
+   */
+  net->ipv4.sysctl_tcp_tso_win_divisor = 3;
+  /* Default TSQ limit of four TSO segments */
+  net->ipv4.sysctl_tcp_limit_output_bytes = 262144;
+  /* rfc5961 challenge ack rate limiting */
+  net->ipv4.sysctl_tcp_challenge_ack_limit = 1000;
+  net->ipv4.sysctl_tcp_min_tso_segs = 2;
+  net->ipv4.sysctl_tcp_min_rtt_wlen = 300;
+  net->ipv4.sysctl_tcp_autocorking = 1;
+  net->ipv4.sysctl_tcp_invalid_ratelimit = HZ/2;
+  net->ipv4.sysctl_tcp_pacing_ss_ratio = 200;
+  net->ipv4.sysctl_tcp_pacing_ca_ratio = 120;
+
+  if (net != &init_net) {
+    memcpy(net->ipv4.sysctl_tcp_rmem,
+           init_net.ipv4.sysctl_tcp_rmem,
+           sizeof(init_net.ipv4.sysctl_tcp_rmem));
+    memcpy(net->ipv4.sysctl_tcp_wmem,
+           init_net.ipv4.sysctl_tcp_wmem,
+           sizeof(init_net.ipv4.sysctl_tcp_wmem));
+  }
+  net->ipv4.sysctl_tcp_comp_sack_delay_ns = NSEC_PER_MSEC;
+  net->ipv4.sysctl_tcp_comp_sack_nr = 44;
+  net->ipv4.sysctl_tcp_fastopen = TFO_CLIENT_ENABLE;
+  spin_lock_init(&net->ipv4.tcp_fastopen_ctx_lock);
+  net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 60 * 60;
+  atomic_set(&net->ipv4.tfo_active_disable_times, 0);
+
+  /* Reno is always built in */
+  if (!net_eq(net, &init_net) &&
+      try_module_get(init_net.ipv4.tcp_congestion_control->owner))
+    net->ipv4.tcp_congestion_control = init_net.ipv4.tcp_congestion_control;
+  else
+    net->ipv4.tcp_congestion_control = &tcp_reno;
+
+  return 0;
+fail:
+  tcp_sk_exit(net);
+
+  return res;
+}
+```
