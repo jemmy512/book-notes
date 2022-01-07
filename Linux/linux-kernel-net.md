@@ -1,73 +1,73 @@
 # Table of Contents
-* [Net](#Net)
-    * [socket](#socket)
-    * [bind](#bind)
-    * [listen](#listen)
-    * [connect](#connect)
-        * [send](#send)
-        * [receive](#receive)
-            * [tcp_conn_request](#tcp_conn_request)
-            * [tcp_rcv_synsent_state_process](#tcp_rcv_synsent_state_process)
-            * [tcp_check_req](#tcp_check_req)
-    * [accept](#accept)
-    * [accept queue](#accept-queue)
-        * [TCP_LISTEN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
-        * [TCP_NEW_SYN_RECV inet_ehash_nolisten](#inet_ehash_nolisten)
-        * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
-        * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
-        * [Accept reqsk_queue_remove](#reqsk_queue_remove)
-        * [queue_is_full_len](#queue_is_full_len)
-    * [shutdown](#shutdown)
-    * [sk_buf](#sk_buff)
-    * [write](#write)
-        * [vfs layer](#vfs-layer-tx)
-        * [socket layer](#socket-layer-tx)
-        * [tcp layer](#tcp-layer-tx)
-          * [copy data](#copy-data)
-          * [tso_fragment](#tso_fragment)
-          * [tcp_transmit_skb](#tcp_transmit_skb)
-        * [ip layer](#ip-layer-tx)
-            * [route](#route)
-            * [fill ip header](#fill-ip-header)
-            * [send package](#send-package)
-        * [mac layer](#mac-layer-tx)
-            * [neighbour](#neighbour)
-        * [dev layer](#dev-layer-tx)
-        * [driver layer](#driver-layer-tx)
-    * [read](#read)
-        * [driver layer](#driver-layer-rx)
-        * [mac layer](#mac-layer-rx)
-        * [ip layer](#ip-layer-rx)
-        * [tcp layer](#tcp-layer-rx)
-        * [vfs layer](#vfs-layer-rx)
-        * [socket layer](#socket-layer-rx])
-    * [retransmit](#retransmit)
-        * [tcp_write_timer](#tcp_write_timer)
-            * [tcp_retransmit_skb](#tcp_retransmit_skb)
-        * [tcp_delack_timer](#tcp_delack_timer)
-        * [tcp_keepalive_timer](#tcp_keepalive_timer)
-    * [tcpdump](#tcpdump)
-      * [register_prot_hook](#register_prot_hook)
-      * [receive](#tcpdump_rcv)
-      * [send](#tcpdump_snd)
-    * [ACK, SYN, FIN](#ACK-SYN-FIN)
-        * [tcp_ack](#tcp_ack)
-        * [tcp_send_ack](#tcp_send_ack)
-        * [tcp_send_delayed_ack](#tcp_send_delayed_ack)
-        * [tcp_send_synack](#tcp_send_synack)
-        * [tcp_fin](#tcp_fin)
-        * [tcp_send_fin](#tcp_send_fin)
-    * [epoll](#epoll)
-        * [epoll_create](#epoll_create)
-        * [epoll_ctl](#epoll_ctl)
-            * [ep_insert](#ep_insert)
-            * [ep_modify](#ep_modify)
-            * [ep_delete](#ep_delete)
-        * [epoll_wait](#epoll_wait)
-        * [wake epoll_wait](#wake-epoll_wait)
-    * [inet_init](#inet_init)
 
-# Net
+* [socket](#socket)
+* [bind](#bind)
+* [listen](#listen)
+* [connect](#connect)
+    * [send](#send)
+    * [receive](#receive)
+        * [tcp_conn_request](#tcp_conn_request)
+        * [tcp_rcv_synsent_state_process](#tcp_rcv_synsent_state_process)
+        * [tcp_check_req](#tcp_check_req)
+* [accept](#accept)
+* [accept queue](#accept-queue)
+    * [TCP_LISTEN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
+    * [TCP_NEW_SYN_RECV inet_ehash_nolisten](#inet_ehash_nolisten)
+    * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
+    * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
+    * [Accept reqsk_queue_remove](#reqsk_queue_remove)
+    * [queue_is_full_len](#queue_is_full_len)
+* [shutdown](#shutdown)
+* [sk_buf](#sk_buff)
+* [write](#write)
+    * [vfs layer](#vfs-layer-tx)
+    * [socket layer](#socket-layer-tx)
+    * [tcp layer](#tcp-layer-tx)
+        * [copy data](#copy-data)
+        * [tso_fragment](#tso_fragment)
+        * [tcp_transmit_skb](#tcp_transmit_skb)
+    * [ip layer](#ip-layer-tx)
+        * [route](#route)
+        * [fill ip header](#fill-ip-header)
+        * [send package](#send-package)
+    * [mac layer](#mac-layer-tx)
+        * [neighbour](#neighbour)
+    * [dev layer](#dev-layer-tx)
+    * [driver layer](#driver-layer-tx)
+* [read](#read)
+    * [driver layer](#driver-layer-rx)
+    * [mac layer](#mac-layer-rx)
+    * [ip layer](#ip-layer-rx)
+    * [tcp layer](#tcp-layer-rx)
+    * [vfs layer](#vfs-layer-rx)
+    * [socket layer](#socket-layer-rx])
+* [retransmit](#retransmit)
+    * [tcp_write_timer](#tcp_write_timer)
+        * [tcp_retransmit_skb](#tcp_retransmit_skb)
+    * [tcp_delack_timer](#tcp_delack_timer)
+    * [tcp_keepalive_timer](#tcp_keepalive_timer)
+* [tcpdump](#tcpdump)
+    * [register_prot_hook](#register_prot_hook)
+    * [receive](#tcpdump_rcv)
+    * [send](#tcpdump_snd)
+* [ACK, SYN, FIN](#ACK-SYN-FIN)
+    * [tcp_ack](#tcp_ack)
+    * [tcp_send_ack](#tcp_send_ack)
+    * [tcp_send_delayed_ack](#tcp_send_delayed_ack)
+    * [tcp_send_synack](#tcp_send_synack)
+    * [tcp_fin](#tcp_fin)
+    * [tcp_send_fin](#tcp_send_fin)
+* [epoll](#epoll)
+    * [epoll_create](#epoll_create)
+    * [epoll_ctl](#epoll_ctl)
+        * [ep_insert](#ep_insert)
+        * [ep_modify](#ep_modify)
+        * [ep_delete](#ep_delete)
+    * [epoll_wait](#epoll_wait)
+    * [sock_def_readable](#sock_def_readable)
+    * [sock_def_write_space](#sock_def_write_space)
+* [inet_init](#inet_init)
+
 ![](../Images/Kernel/net-socket-sock.png)
 ![](../Images/Kernel/net-send-data-flow.png)
 
@@ -227,7 +227,7 @@ struct inet_sock {
 };
 ```
 
-### socket
+# socket
 ```C++
 SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 {
@@ -893,7 +893,7 @@ socket();
       file->private_data = sock;
 ```
 
-### bind
+# bind
 ```C++
 SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 {
@@ -945,7 +945,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 }
 ```
 
-### listen
+# listen
 ```C++
 SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 {
@@ -1115,8 +1115,8 @@ listen();
       sk->sk_max_ack_backlog = backlog;
 ```
 
-### connect
-#### send
+# connect
+## send
 ```C++
 SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr, int, addrlen)
 {
@@ -1348,7 +1348,7 @@ void tcp_connect_queue_skb(struct sock *sk, struct sk_buff *skb)
 ```
 * [wait_woken](./linux-kernel.md#wait_woken)
 
-#### receive
+## receive
 ```C++
 static struct net_protocol tcp_protocol = {
   .early_demux          =  tcp_v4_early_demux,
@@ -1605,7 +1605,7 @@ discard:
 }
 ```
 
-##### tcp_conn_request
+### tcp_conn_request
 ```c++
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
@@ -1867,7 +1867,7 @@ void tcp_v4_init_req(struct request_sock *req,
 ```
 * [wake_up](./linux-kernel.md#wake_up)
 
-##### tcp_rcv_synsent_state_process
+### tcp_rcv_synsent_state_process
 ```c++
 int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
   const struct tcphdr *th)
@@ -2100,7 +2100,7 @@ void tcp_finish_connect(struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-##### tcp_check_req
+### tcp_check_req
 ```c++
 /* Process an incoming packet for SYN_RECV sockets represented as a
  * request_sock. Normally sk is the listener socket but for
@@ -2683,7 +2683,7 @@ tcp_v4_rcv();
 ```
 ![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
 
-### accept
+# accept
 ```C++
 SYSCALL_DEFINE3(accept, int, fd, struct sockaddr __user *, upeer_sockaddr,
     int __user *, upeer_addrlen)
@@ -2880,9 +2880,9 @@ accpet();
     fd_install(newfd, newfile);
 ```
 
-### accept queue
+# accept queue
 
-#### inet_csk_reqsk_queue_hash_add
+## inet_csk_reqsk_queue_hash_add
 ```c++
 /* 1st handshake, invoked by tcp_conn_request, when first SYN arrives to server and fastopen is off
  * add the request_sock into the half-accept queue */
@@ -2944,7 +2944,7 @@ void reqsk_queue_added(struct request_sock_queue *queue)
 }
 ```
 
-#### inet_ehash_nolisten
+## inet_ehash_nolisten
 ```c++
 /* 3rd handshake, invoked by tcp_v4_syn_recv_sock when thres-way handshake completed at server
  * add socket hashinfo */
@@ -2964,7 +2964,7 @@ bool inet_ehash_nolisten(struct sock *sk, struct sock *osk)
 }
 ```
 
-#### inet_csk_reqsk_queue_drop
+## inet_csk_reqsk_queue_drop
 ```c++
 /* 3rd handshake, invoked at inet_csk_complete_hashdance
  * remove the request_sock from half-accept quque */
@@ -3029,7 +3029,7 @@ void reqsk_queue_removed(struct request_sock_queue *queue, const struct request_
 }
 ```
 
-#### inet_csk_reqsk_queue_add
+## inet_csk_reqsk_queue_add
 ```c++
 /* 3rd handshake, invoked by tcp_conn_request, when first SYN arrives to server and fastopen is on
  * add the new connected sock into the accept queue */
@@ -3061,7 +3061,7 @@ void sk_acceptq_added(struct sock *sk)
 }
 ```
 
-#### reqsk_queue_remove
+## reqsk_queue_remove
 ```c++
 // invoked by accept, remove the connected soket from accept queue
 request_sock *reqsk_queue_remove(struct request_sock_queue *queue, struct sock *parent)
@@ -3086,7 +3086,7 @@ void sk_acceptq_removed(struct sock *sk)
 }
 ```
 
-#### queue_is_full_len
+## queue_is_full_len
 ```c++
 bool sk_acceptq_is_full(const struct sock *sk)
 {
@@ -3114,7 +3114,7 @@ int reqsk_queue_len_young(const struct request_sock_queue *queue)
 }
 ```
 
-### shutdown
+# shutdown
 ```c++
 SYSCALL_DEFINE2(shutdown, int, fd, int, how)
 {
@@ -3254,7 +3254,7 @@ __sys_shutdown();
             tcp_send_fin();
 ```
 
-### sk_buff
+# sk_buff
 ![linux-net-sk_buf.png](../Images/Kernel/net-sk_buf.png)
 
 ```C++
@@ -3569,8 +3569,8 @@ sk_stream_alloc_skb()
 * [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
 
 
-### write
-#### vfs layer tx
+# write
+## vfs layer tx
 ```C++
 static const struct file_operations socket_file_ops = {
   .owner          =  THIS_MODULE,
@@ -3596,7 +3596,7 @@ static ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 }
 ```
 
-#### socket layer tx
+## socket layer tx
 ```C++
 /* sock_sendmsg -> */
 int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
@@ -3612,9 +3612,9 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 }
 ```
 
-#### tcp layer tx
+## tcp layer tx
 
-##### copy data
+### copy data
 ```C++
 /* tcp_prot.sendmsg, copy data to skb */
 int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
@@ -3886,7 +3886,7 @@ repair:
 }
 ```
 
-##### tso_fragment
+### tso_fragment
 ```c++
 /* Returns the portion of skb which can be sent right away */
 static unsigned int tcp_mss_split_point(
@@ -4066,7 +4066,7 @@ void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-##### tcp_transmit_skb
+### tcp_transmit_skb
 ```c++
 /* This routine actually transmits TCP packets queued in by
  * tcp_do_sendmsg().  This is used by both the initial
@@ -4275,7 +4275,7 @@ static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 }
 ```
 
-#### ip layer tx
+## ip layer tx
 ```C++
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
@@ -4358,7 +4358,7 @@ packet_routed:
 }
 ```
 
-##### route
+### route
 ```C++
 /* ip_route_output_ports -> ip_route_output_flow ->
  * __ip_route_output_key -> ip_route_output_key_hash ->
@@ -4481,10 +4481,10 @@ static struct dst_ops ipv4_dst_ops = {
 };
 ```
 
-##### fill ip header
+### fill ip header
 ![linux-net-ip-header.png](../Images/Kernel/net-ip-header.png)
 
-##### send package
+### send package
 ```C++
 int ip_local_out(
   struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -4541,7 +4541,7 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-#### mac layer tx
+## mac layer tx
 ```C++
 /* ip_finish_output -> */
 static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -4588,7 +4588,7 @@ struct neigh_table arp_tbl = {
 };
 ```
 
-##### neighbour
+### neighbour
 ```C++
 struct neighbour *__neigh_create(struct neigh_table *tbl,
   const void *pkey, struct net_device *dev, bool want_ref)
@@ -4764,7 +4764,7 @@ static void arp_send_dst(
 }
 ```
 
-#### dev layer tx
+## dev layer tx
 ```C++
 struct net_device {
   struct netdev_rx_queue  *_rx;
@@ -5017,7 +5017,7 @@ void qdisc_run(struct Qdisc *q)
 }
 ```
 
-#### driver layer tx
+## driver layer tx
 ```C++
 // internet trasaction gigabit
 // drivers/net/ethernet/intel/ixgb/ixgb_main.c
@@ -5184,8 +5184,8 @@ ixgb_xmit_frame();
 
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
-### read
-#### driver layer rx
+# read
+## driver layer rx
 ```C++
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) PRO/10GbE Network Driver");
@@ -5604,7 +5604,7 @@ struct ixgb_tx_desc {
 
 ![](../Images/Kernel/net-desc-ring-2.png)
 
-#### mac layer rx
+## mac layer rx
 ```C++
 /* netif_receive_skb -> netif_receive_skb_internal ->
  * __netif_receive_skb -> __netif_receive_skb_core */
@@ -5671,7 +5671,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
-#### ip layer rx
+## ip layer rx
 ```C++
 int ip_rcv(struct sk_buff *skb, struct net_device *dev,
   struct packet_type *pt, struct net_device *orig_dev)
@@ -5764,7 +5764,7 @@ static int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_b
 }
 ```
 
-#### tcp layer rx
+## tcp layer rx
 ```C++
 struct net_protocol *inet_protos[MAX_INET_PROTOS];
 
@@ -6673,7 +6673,7 @@ static void tcp_ofo_queue(struct sock *sk)
 }
 ```
 
-#### vfs layer rx
+## vfs layer rx
 ```C++
 static const struct file_operations socket_file_ops = {
   .read_iter    = sock_read_iter,
@@ -6681,7 +6681,7 @@ static const struct file_operations socket_file_ops = {
 };
 ```
 
-#### socket layer rx
+## socket layer rx
 ```C++
 static ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
@@ -7161,7 +7161,7 @@ sock_read_iter()
 
 ![linux-net-read.png](../Images/Kernel/net-read.png)
 
-### congestion control
+# congestion control
 ```c++
 enum tcp_ca_state {
   TCP_CA_Open = 0,
@@ -7332,7 +7332,7 @@ void tcp_update_pacing_rate(struct sock *sk)
 }
 ```
 
-#### tcp_cwnd_test
+## tcp_cwnd_test
 ```c++
 /* Can at least one segment of SKB be sent right now, according to the
  * congestion window rules?  If so, return how many segments are allowed. */
@@ -7368,7 +7368,7 @@ static inline unsigned int tcp_packets_in_flight(const struct tcp_sock *tp)
 }
 ```
 
-#### tcp_cwnd_validate
+## tcp_cwnd_validate
 ```c++
 void tcp_cwnd_validate(struct sock *sk, bool is_cwnd_limited)
 {
@@ -7414,7 +7414,7 @@ void tcp_cwnd_validate(struct sock *sk, bool is_cwnd_limited)
 }
 ```
 
-##### tcp_enter_recovery
+### tcp_enter_recovery
 ```c++
 void tcp_enter_recovery(struct sock *sk, bool ece_ack)
 {
@@ -7440,7 +7440,7 @@ void tcp_enter_recovery(struct sock *sk, bool ece_ack)
 }
 ```
 
-##### tcp_fastretrans_alert
+### tcp_fastretrans_alert
 ```c++
 /* Process an event, which can update packets-in-flight not trivially.
  * Main goal of this function is to calculate new estimate for left_out,
@@ -7570,7 +7570,7 @@ static void tcp_fastretrans_alert(struct sock *sk, const u32 prior_snd_una,
 }
 ```
 
-### retransmit
+# retransmit
 ```c++
 // sk->sk_prot->init(sk)
 static int tcp_v4_init_sock(struct sock *sk)
@@ -7678,7 +7678,7 @@ void sk_stop_timer(struct sock *sk, struct timer_list* timer)
 }
 ```
 
-#### tcp_write_timer
+## tcp_write_timer
 ```c++
 static void tcp_write_timer(struct timer_list *t)
 {
@@ -7909,7 +7909,7 @@ static int tcp_write_timeout(struct sock *sk)
 }
 ```
 
-##### tcp_retransmit_skb
+### tcp_retransmit_skb
 ```c++
 int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 {
@@ -8034,7 +8034,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 }
 ```
 
-#### tcp_delack_timer
+## tcp_delack_timer
 ```c++
 static void tcp_delack_timer(struct timer_list *t)
 {
@@ -8094,18 +8094,18 @@ int inet_csk_ack_scheduled(const struct sock *sk)
 }
 ```
 
-#### tcp_keepalive_timer
+## tcp_keepalive_timer
 ```c++
 ```
 
-#### reqsk_timer_handler
+## reqsk_timer_handler
 ```c++
 ```
 
-#### fast retransmit
+## fast retransmit
 
-### tcpdump
-#### register_prot_hook
+# tcpdump
+## register_prot_hook
 ```c++
 // strace tcpdump -i eth0
 // pcap_can_set_rfmon_linux
@@ -8248,7 +8248,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
-#### tcpdump_rcv
+## tcpdump_rcv
 ```c++
 // net/core/dev.c
 static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
@@ -8415,7 +8415,7 @@ u32 bpf_prog_run_clear_cb(const struct bpf_prog *prog, struct sk_buff *skb)
 #define BPF_PROG_RUN(filter, ctx)  (*(filter)->bpf_func)(ctx, (filter)->insnsi)
 ```
 
-#### tcpdump_snd
+## tcpdump_snd
 ```c++
 int xmit_one(struct sk_buff *skb, struct net_device *dev,
         struct netdev_queue *txq, bool more)
@@ -8539,9 +8539,9 @@ xmit_one()
     ->
 ```
 
-### ACK, SYN, FIN
+# ACK, SYN, FIN
 
-#### tcp_ack
+## tcp_ack
 ```c++
 static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 {
@@ -8893,7 +8893,7 @@ static int tcp_clean_rtx_queue(struct sock *sk, u32 prior_fack,
 }
 ```
 
-#### tcp_send_ack
+## tcp_send_ack
 ```c++
 void tcp_send_ack(struct sock *sk)
 {
@@ -8948,7 +8948,7 @@ static void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags)
 }
 ```
 
-#### tcp_send_delayed_ack
+## tcp_send_delayed_ack
 ```c++
 tcp_v4_do_rcv();
   tcp_rcv_established();
@@ -8956,9 +8956,9 @@ tcp_v4_do_rcv();
       tcp_send_delayed_ack();
 ```
 
-#### tcp_send_synack
+## tcp_send_synack
 
-#### tcp_fin
+## tcp_fin
 ```c++
 /* Process the FIN bit. This now behaves as it is supposed to work
  *  and the FIN takes effect when it is validly part of sequence
@@ -9101,7 +9101,7 @@ static void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
 }
 ```
 
-#### tcp_send_fin
+## tcp_send_fin
 ```c++
 void tcp_send_fin(struct sock *sk)
 {
@@ -9160,7 +9160,7 @@ void __tcp_push_pending_frames(
 }
 ```
 
-### epoll
+# epoll
 
 ![kernel-net-epoll.png](../Images/Kernel/net-epoll.png)
 
@@ -9235,7 +9235,7 @@ struct eventpoll {
 };
 ```
 
-#### epoll_create
+## epoll_create
 ```C++
 SYSCALL_DEFINE1(epoll_create, int, size)
 {
@@ -9299,7 +9299,7 @@ free_uid:
 }
 ```
 
-#### epoll_ctl
+## epoll_ctl
 ```C++
 SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
     struct epoll_event __user *, event)
@@ -9400,7 +9400,7 @@ error_return:
 }
 ```
 
-##### ep_insert
+### ep_insert
 ```C++
 struct ep_pqueue {
   poll_table      pt;
@@ -9663,7 +9663,7 @@ struct wait_queue_entry {
 };
 ```
 
-##### ep_modify
+### ep_modify
 ```C++
 int ep_modify(struct eventpoll *ep, struct epitem *epi,
          const struct epoll_event *event)
@@ -9707,12 +9707,12 @@ int ep_modify(struct eventpoll *ep, struct epitem *epi,
 }
 ```
 
-##### ep_delete
+### ep_delete
 ```C++
 
 ```
 
-#### epoll_wait
+## epoll_wait
 ```C++
 SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
     int, maxevents, int, timeout)
@@ -9955,9 +9955,9 @@ void __wake_up(struct wait_queue_head *wq_head, unsigned int mode,
 }
 ```
 
-#### wake epoll_wait
+## sock_def_readable
 ```C++
-/* tcp_rcv_established -> tcp_data_ready -> */
+/* tcp_rcv_established -> tcp_data_queue -> */
 void tcp_data_ready(struct sock *sk)
 {
   const struct tcp_sock *tp = tcp_sk(sk);
@@ -10201,6 +10201,69 @@ tcp_data_ready();
                                     __wake_up_common();
                                 ep_poll_safewake(&ep->poll_wait);
                                     wake_up_poll();
+```
+
+## sock_def_write_space
+```c++
+/* tcp_rcv_established -> */
+/* tcp_rcv_state_process -> */
+void tcp_data_snd_check(struct sock *sk)
+{
+  tcp_push_pending_frames(sk);
+  tcp_check_space(sk);
+}
+
+void tcp_check_space(struct sock *sk)
+{
+  if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
+    sock_reset_flag(sk, SOCK_QUEUE_SHRUNK);
+    /* pairs with tcp_poll() */
+    smp_mb();
+    if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
+      tcp_new_space(sk);
+      if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
+        tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
+    }
+  }
+}
+
+/* When incoming ACK allowed to free some skb from write_queue,
+ * we remember this event in flag SOCK_QUEUE_SHRUNK and wake up socket
+ * on the exit from tcp input handler.
+ *
+ * PROBLEM: sndbuf expansion does not work well with largesend. */
+static void tcp_new_space(struct sock *sk)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  if (tcp_should_expand_sndbuf(sk)) {
+    tcp_sndbuf_expand(sk);
+    tp->snd_cwnd_stamp = tcp_jiffies32;
+  }
+
+  sk->sk_write_space(sk); /* sock_def_write_space */
+}
+
+void sock_def_write_space(struct sock *sk)
+{
+  struct socket_wq *wq;
+
+  rcu_read_lock();
+
+  /* Do not wake up a writer until he can make "significant"
+   * progress.  --DaveM */
+  if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
+    wq = rcu_dereference(sk->sk_wq);
+    if (skwq_has_sleeper(wq))
+      wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+
+    /* Should agree with poll, otherwise some programs break */
+    if (sock_writeable(sk)) /* sk->sk_wmem_alloc < (sk->sk_sndbuf >> 1) */
+      sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
+  }
+
+  rcu_read_unlock();
+}
 ```
 
 ## Reference:
