@@ -2533,7 +2533,7 @@ connect();
 
         if (!(flags & O_NONBLOCK))
           inet_wait_for_connect()
-            /* woken up by sk->sk_state_change(sk) at tcp_rcv_synsent_state_process */
+            /* woken up by sk->sk_state_change() at tcp_rcv_synsent_state_process */
 
 receive:
 tcp_v4_rcv();
@@ -2582,104 +2582,103 @@ tcp_v4_rcv();
     tcp_child_process();
       if (!sock_owned_by_user(child))
         tcp_rcv_state_process(child, skb);
-        parent->sk_data_ready(parent) /* sock_def_readable */
+        sk_listener->sk_data_ready() /* sock_def_readable */
       else
         __sk_add_backlog(child, skb);
   }
 
-  if (sk->sk_state ==  TCP_LISTEN)
-    tcp_v4_do_rcv();
-      tcp_rcv_state_process();
-        if (sk->sk_state == TCP_LISTEN) {
-          icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
-            tcp_v4_conn_request();
-              tcp_conn_request();
-                if (inet_csk_reqsk_queue_is_full(sk));
-                  drop;
-                if (sk_acceptq_is_full(sk));
-                  drop;
+  tcp_filter(sk, skb);
+  tcp_v4_fill_cb(skb, iph, th);
 
-                inet_reqsk_alloc();
-                  sk->sk_state = TCP_NEW_SYN_RECV;
+  tcp_v4_do_rcv();
+    tcp_rcv_state_process();
+      if (sk->sk_state == TCP_LISTEN) {
+        icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
+          tcp_v4_conn_request();
+            tcp_conn_request();
+              if (inet_csk_reqsk_queue_is_full(sk));
+                drop;
+              if (sk_acceptq_is_full(sk));
+                drop;
 
-                f_ops->init_req(req, sk, skb);
-                  tcp_v4_init_req();
-                    sk_rcv_saddr_set();
-                    sk_daddr_set();
+              inet_reqsk_alloc();
+                sk->sk_state = TCP_NEW_SYN_RECV;
 
-                if (fastopen);
-                  inet_csk_reqsk_queue_add();
-                    sk->rskq_accept_tail = reqst_sk;
+              af_ops->init_req(req, sk, skb);
+                tcp_v4_init_req();
+                  sk_rcv_saddr_set();
+                  sk_daddr_set();
+
+              if (fastopen);
+                inet_csk_reqsk_queue_add();
+                  sk->rskq_accept_tail = reqst_sk;
+                  sk_acceptq_added();
+                    icsk_accept_queue->rskq_accept_tail = req;
                     sk_acceptq_added();
-                      icsk_accept_queue->rskq_accept_tail = req;
-                      sk_acceptq_added();
-                        ++sk->sk_ack_backlog
-                else
-                  inet_csk_reqsk_queue_hash_add();
-                    reqsk_queue_hash_req();
-                      timer_setup();
-                      mod_timer(&req->rsk_timer, jiffies + timeout);
-                      inet_ehash_insert();
-                        inet_ehash_bucket(hashinfo, sk->sk_hash);
-                        __sk_nulls_add_node_rcu();
-                          hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
-                        if (osk);
-                          sk_nulls_del_node_init_rcu(osk);
-                    inet_csk_reqsk_queue_added();
-                      ++icsk_accept_queue->young;
-                      --icsk_accept_queue->qlen;
+                      ++sk->sk_ack_backlog
+              else
+                inet_csk_reqsk_queue_hash_add();
+                  reqsk_queue_hash_req();
+                    timer_setup();
+                    mod_timer(&req->rsk_timer, jiffies + timeout);
+                    inet_ehash_insert();
+                      inet_ehash_bucket(hashinfo, sk->sk_hash);
+                      __sk_nulls_add_node_rcu();
+                        hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+                      if (osk);
+                        sk_nulls_del_node_init_rcu(osk);
+                  inet_csk_reqsk_queue_added();
+                    ++icsk_accept_queue->young;
+                    --icsk_accept_queue->qlen;
 
-                af_ops->send_synack();
-                  tcp_v4_send_synack();
-        }
+              af_ops->send_synack();
+                tcp_v4_send_synack();
+      }
 
-        if (sk->sk_state == TCP_SYN_SENT) {
-          tcp_rcv_synsent_state_process();
-            tcp_finish_connect(sk, skb);
-              tcp_set_state(sk, TCP_ESTABLISHED);
-              tcp_init_transfer();
-                tcp_init_buffer_space();
-                tcp_init_congestion_control(sk);
-              inet_csk_reset_keepalive_timer();
-
-            sk->sk_state_change(sk);
-              /* wakup `connect` slept at inet_wait_for_connect */
-              sock_def_wakeup();
-            tcp_send_ack(sk);
+      if (sk->sk_state == TCP_SYN_SENT) {
+        tcp_rcv_synsent_state_process();
+          tcp_finish_connect(sk, skb);
             tcp_set_state(sk, TCP_ESTABLISHED);
-        }
+            tcp_init_transfer();
+              tcp_init_buffer_space();
+              tcp_init_congestion_control(sk);
+            inet_csk_reset_keepalive_timer();
 
-        tcp_validate_incoming();
-        tcp_ack();
-
-        if (sk->sk_state == TCP_SYN_RECV) {
-          tcp_init_transfer();
-            tcp_init_buffer_space();
-            tcp_init_congestion_control(sk);
+          sk->sk_state_change();
+            /* wakup `connect` slept at inet_wait_for_connect */
+            sock_def_wakeup();
+          tcp_send_ack(sk);
           tcp_set_state(sk, TCP_ESTABLISHED);
 
-          sk->sk_state_change(sk);
-            sock_def_wakeup();
-              wake_up_interruptible_all();
-                __wake_up();
-                  __wake_up_common_lock();
-                    __wake_up_common();
-        }
+        tcp_data_snd_check(sk);
+      }
 
-        if (sk->sk_state == TCP_LAST_ACK)
-          tcp_done();
+      tcp_check_req(); /* tp->fastopen_rsk */
 
-        if (sk->sk_state == TCP_FIN_WAIT1)
-          tcp_set_state(sk, TCP_FIN_WAIT2);
-          tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
-          sk->sk_state_change(sk); /* Wake up lingering close() */
+      /* Step 1 2 3 4 */
+      tcp_validate_incoming();
+        /* RFC1323: H1. Apply PAWS check first. */
+        /* Step 1: check sequence number */
+        /* Step 2: check RST bit */
+        /* Step 3: check security and precedence [ignored] */
+        /* Step 4: Check for a SYN RFC 5961 4.2 : Send a challenge ack */
 
-        if (sk->sk_state == TCP_FIN_WAIT2);
-          if (sk->sk_shutdown & RCV_SHUTDOWN);
-            tcp_reset();
+      /* step 5: check the ACK field */
+      tcp_ack();
 
-        if (sk->sk_state == TCP_ESTABLISHED);
-          tcp_data_queue();
+      if (sk->sk_state == TCP_SYN_RECV) {
+        tcp_init_transfer();
+          tcp_init_buffer_space();
+          tcp_init_congestion_control(sk);
+        tcp_set_state(sk, TCP_ESTABLISHED);
+
+        sk->sk_state_change();
+          sock_def_wakeup();
+            wake_up_interruptible_all();
+              __wake_up();
+                __wake_up_common_lock();
+                  __wake_up_common();
+      }
 ```
 ![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
 
@@ -5085,12 +5084,14 @@ tcp_sendmsg();
       max_segs = tcp_tso_segs();
       tso_segs = tcp_init_tso_segs();
 
+      /* 3.1 check */
       tcp_cwnd_test();
       tcp_snd_wnd_test();
       tcp_nagle_test();
 
       tcp_tso_should_defer();
 
+      /* 3.2 split */
       limit = tcp_mss_split_point();
       tso_fragment();
         skb_split();
@@ -5098,9 +5099,10 @@ tcp_sendmsg();
           skb_split_no_header();
 
       tcp_transmit_skb();
-        /* fill TCP header */
+        /* 3.3 fill TCP header */
         icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
 
+      /* 3.4 add into retransmit */
       tcp_event_new_data_sent();
         __skb_unlink(skb, &sk->sk_write_queue);
         tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
@@ -5395,7 +5397,7 @@ static const struct net_device_ops ixgb_netdev_ops = {
   .ndo_tx_timeout         = ixgb_tx_timeout,
   .ndo_vlan_rx_add_vid    = ixgb_vlan_rx_add_vid,
   .ndo_vlan_rx_kill_vid   = ixgb_vlan_rx_kill_vid,
-  .ndo_fix_features        = ixgb_fix_features,
+  .ndo_fix_features       = ixgb_fix_features,
   .ndo_set_features       = ixgb_set_features,
 };
 
@@ -5409,14 +5411,23 @@ int ixgb_up(struct ixgb_adapter *adapter)
     ixgb_intr, irq_flags, netdev->name, netdev);
 }
 
-static irqreturn_t ixgb_intr(int irq, void *data)
+irqreturn_t ixgb_intr(int irq, void *data)
 {
   struct net_device *netdev = data;
   struct ixgb_adapter *adapter = netdev_priv(netdev);
   struct ixgb_hw *hw = &adapter->hw;
+  u32 icr = IXGB_READ_REG(hw, ICR);
+
+  if (unlikely(!icr))
+    return IRQ_NONE;  /* Not our interrupt */
+
+  if (unlikely(icr & (IXGB_INT_RXSEQ | IXGB_INT_LSC)))
+    if (!test_bit(__IXGB_DOWN, &adapter->flags))
+      mod_timer(&adapter->watchdog_timer, jiffies);
 
   if (napi_schedule_prep(&adapter->napi)) {
-    /* Disable interrupts and register for poll */
+    /* Disable interrupts and register for poll. The flush
+      of the posted write is intentionally left out. */
     IXGB_WRITE_REG(&adapter->hw, IMC, ~0);
     __napi_schedule(&adapter->napi);
   }
@@ -5445,34 +5456,67 @@ void ____napi_schedule(
   __raise_softirq_irqoff(NET_RX_SOFTIRQ);
 }
 
-static void net_rx_action(struct softirq_action *h)
+void net_rx_action(struct softirq_action *h)
 {
   struct softnet_data *sd = this_cpu_ptr(&softnet_data);
+  unsigned long time_limit = jiffies + usecs_to_jiffies(netdev_budget_usecs);
+  int budget = netdev_budget;
   LIST_HEAD(list);
+  LIST_HEAD(repoll);
+
+  local_irq_disable();
   list_splice_init(&sd->poll_list, &list);
+  local_irq_enable();
 
   for (;;) {
     struct napi_struct *n;
+
+    if (list_empty(&list)) {
+      /* Receive Packet Steering */
+      if (!sd_has_rps_ipi_waiting(sd) && list_empty(&repoll))
+        goto out;
+      break;
+    }
+
     n = list_first_entry(&list, struct napi_struct, poll_list);
     budget -= napi_poll(n, &repoll);
+
+    /* If softirq window is exhausted then punt.
+     * Allow this to run for 2 jiffies since which will allow
+     * an average latency of 1.5/HZ. */
+    if (unlikely(budget <= 0 || time_after_eq(jiffies, time_limit))) {
+      sd->time_squeeze++;
+      break;
+    }
   }
+
+  local_irq_disable();
+
+  list_splice_tail_init(&sd->poll_list, &list);
+  list_splice_tail(&repoll, &list);
+  list_splice(&list, &sd->poll_list);
+  if (!list_empty(&sd->poll_list))
+    __raise_softirq_irqoff(NET_RX_SOFTIRQ);
+
+  net_rps_action_and_irq_enable(sd);
+out:
+  __kfree_skb_flush();
 }
 
 struct softnet_data {
-  struct list_head    poll_list;     /* receive queue */
+  struct list_head      poll_list;     /* receive queue */
 
-  struct Qdisc        *output_queue; /* send queue */
-  struct Qdisc        **output_queue_tailp;
+  struct Qdisc          *output_queue; /* send queue */
+  struct Qdisc          **output_queue_tailp;
 
-  struct sk_buff       *completion_queue;
-  struct sk_buff_head  process_queue;
-  struct sk_buff_head  input_pkt_queue;
-  struct napi_struct  backlog;
+  struct sk_buff        *completion_queue;
+  struct sk_buff_head   process_queue;
+  struct sk_buff_head   input_pkt_queue;
+  struct napi_struct    backlog;
 };
 
 /* napi_poll -> ixgb_clean -> */
-static bool ixgb_clean_rx_irq(
-  struct ixgb_adapter *adapter, int *work_done, int work_to_do)
+bool ixgb_clean_rx_irq(struct ixgb_adapter *adapter, int *work_done, int work_to_do)
 {
   struct ixgb_desc_ring *rx_ring = &adapter->rx_ring;
   struct net_device *netdev = adapter->netdev;
@@ -5492,6 +5536,11 @@ static bool ixgb_clean_rx_irq(
     struct sk_buff *skb;
     u8 status;
 
+    if (*work_done >= work_to_do)
+      break;
+
+    (*work_done)++;
+    rmb();  /* read descriptor and rx_buffer_info after status DD */
     status = rx_desc->status;
     skb = buffer_info->skb;
     buffer_info->skb = NULL;
@@ -5511,20 +5560,50 @@ static bool ixgb_clean_rx_irq(
 
     next_buffer = &rx_ring->buffer_info[i];
 
+    cleaned = true;
+    cleaned_count++;
+
+    dma_unmap_single(&pdev->dev, buffer_info->dma, buffer_info->length, DMA_FROM_DEVICE);
+    buffer_info->dma = 0;
+
     length = le16_to_cpu(rx_desc->length);
     rx_desc->length = 0;
 
+    if (unlikely(!(status & IXGB_RX_DESC_STATUS_EOP))) {
+      dev_kfree_skb_irq(skb);
+      goto rxdesc_done;
+    }
+
+    if (unlikely(rx_desc->errors &
+        (IXGB_RX_DESC_ERRORS_CE | IXGB_RX_DESC_ERRORS_SE |
+         IXGB_RX_DESC_ERRORS_P | IXGB_RX_DESC_ERRORS_RXE))) {
+      dev_kfree_skb_irq(skb);
+      goto rxdesc_done;
+    }
+
     ixgb_check_copybreak(&adapter->napi, buffer_info, length, &skb);
 
-    /* Good Receive, increment skb->tail */
+    /* Good Receive */
     skb_put(skb, length);
 
     /* Receive Checksum Offload */
     ixgb_rx_checksum(adapter, rx_desc, skb);
 
     skb->protocol = eth_type_trans(skb, netdev);
+    if (status & IXGB_RX_DESC_STATUS_VP)
+      __vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), le16_to_cpu(rx_desc->special));
 
     netif_receive_skb(skb);
+
+rxdesc_done:
+    /* clean up descriptor, might be written over by hw */
+    rx_desc->status = 0;
+
+    /* return some buffers to hardware, one at a time is too slow */
+    if (unlikely(cleaned_count >= IXGB_RX_BUFFER_WRITE)) {
+      ixgb_alloc_rx_buffers(adapter, cleaned_count);
+      cleaned_count = 0;
+    }
 
     /* use prefetched values */
     rx_desc = next_rxd;
@@ -5532,6 +5611,12 @@ static bool ixgb_clean_rx_irq(
   }
 
   rx_ring->next_to_clean = i;
+
+  cleaned_count = IXGB_DESC_UNUSED(rx_ring);
+  if (cleaned_count)
+    ixgb_alloc_rx_buffers(adapter, cleaned_count);
+
+  return cleaned;
 }
 
 static void ixgb_check_copybreak(
@@ -5571,9 +5656,16 @@ struct ixgb_desc_ring {
   unsigned int next_to_clean; /* next descriptor to check for DD status bit */
   struct ixgb_buffer *buffer_info; /* array of buffer information structs */
 };
+
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+typedef u64 dma_addr_t;
+#else
+typedef u32 dma_addr_t;
+#endif
+
 /* ixgb_alloc_rx_buffers maps skb to dma */
 struct ixgb_buffer {
-  struct sk_buff   *skb;
+  struct sk_buff  *skb;
   dma_addr_t      dma;
   unsigned long   time_stamp;
   u16             length;
@@ -5714,11 +5806,9 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
     __IP_UPD_PO_STATS(net, IPSTATS_MIB_INMCAST, skb->len);
   } else if (rt->rt_type == RTN_BROADCAST) {
     __IP_UPD_PO_STATS(net, IPSTATS_MIB_INBCAST, skb->len);
-  } else if (skb->pkt_type == PACKET_BROADCAST ||
-       skb->pkt_type == PACKET_MULTICAST) {
+  } else if (skb->pkt_type == PACKET_BROADCAST || skb->pkt_type == PACKET_MULTICAST) {
     struct in_device *in_dev = __in_dev_get_rcu(dev);
-    if (in_dev &&
-        IN_DEV_ORCONF(in_dev, DROP_UNICAST_IN_L2_MULTICAST))
+    if (in_dev && IN_DEV_ORCONF(in_dev, DROP_UNICAST_IN_L2_MULTICAST))
       goto drop;
   }
 
@@ -5807,7 +5897,10 @@ static struct net_protocol udp_protocol = {
   .no_policy            =  1,
   .netns_ok             =  1,
 };
+```
 
+### tcp_v4_rcv-TCP_NEW_SYN_RECV
+```c++
 int tcp_v4_rcv(struct sk_buff *skb)
 {
   struct net *net = dev_net(skb->dev);
@@ -5909,6 +6002,7 @@ process:
 
   bh_lock_sock_nested(sk);
   tcp_segs_in(tcp_sk(sk), skb);
+
   ret = 0;
   if (!sock_owned_by_user(sk)) {
     ret = tcp_v4_do_rcv(sk, skb);
@@ -5991,7 +6085,10 @@ do_time_wait:
   }
   goto discard_it;
 }
+```
 
+### tcp_v4_do_rcv-TCP_ESTABLISHED
+```c++
 int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
   struct sock *rsk;
@@ -6052,6 +6149,179 @@ csum_err:
   goto discard;
 }
 
+void tcp_rcv_established(struct sock *sk, struct sk_buff *skb)
+{
+  const struct tcphdr *th = (const struct tcphdr *)skb->data;
+  struct tcp_sock *tp = tcp_sk(sk);
+  unsigned int len = skb->len;
+
+  /* TCP congestion window tracking */
+  trace_tcp_probe(sk, skb);
+
+  tcp_mstamp_refresh(tp);
+  if (unlikely(!sk->sk_rx_dst))
+    inet_csk(sk)->icsk_af_ops->sk_rx_dst_set(sk, skb);
+  /* Header prediction.
+   *  The code loosely follows the one in the famous
+   *  "30 instruction TCP receive" Van Jacobson mail.
+   *
+   *  Van's trick is to deposit buffers into socket queue
+   *  on a device interrupt, to call tcp_recv function
+   *  on the receive process context and checksum and copy
+   *  the buffer to user space. smart...
+   *
+   *  Our current scheme is not silly either but we take the
+   *  extra cost of the net_bh soft interrupt processing...
+   *  We do checksum and copy also but from device to kernel. */
+
+  tp->rx_opt.saw_tstamp = 0;
+
+  /*  pred_flags is 0xS?10 << 16 + snd_wnd
+   *  if header_prediction is to be made
+   *  'S' will always be tp->tcp_header_len >> 2
+   *  '?' will be 0 for the fast path, otherwise pred_flags is 0 to
+   *  turn it off  (when there are holes in the receive
+   *   space for instance)
+   *  PSH flag is ignored. */
+
+  if ((tcp_flag_word(th) & TCP_HP_BITS) == tp->pred_flags &&
+      TCP_SKB_CB(skb)->seq == tp->rcv_nxt &&
+      !after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt))
+  {
+    int tcp_header_len = tp->tcp_header_len;
+
+    /* Timestamp header prediction: tcp_header_len
+     * is automatically equal to th->doff*4 due to pred_flags
+     * match. */
+
+    /* Check timestamp */
+    if (tcp_header_len == sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED) {
+      /* No? Slow path! */
+      if (!tcp_parse_aligned_timestamp(tp, th))
+        goto slow_path;
+
+      /* If PAWS failed, check it more carefully in slow path */
+      if ((s32)(tp->rx_opt.rcv_tsval - tp->rx_opt.ts_recent) < 0)
+        goto slow_path;
+
+      /* DO NOT update ts_recent here, if checksum fails
+       * and timestamp was corrupted part, it will result
+       * in a hung connection since we will drop all
+       * future packets due to the PAWS test. */
+    }
+
+    if (len <= tcp_header_len) {
+      /* Bulk data transfer: sender */
+      if (len == tcp_header_len) {
+        /* Predicted packet is in window by definition.
+         * seq == rcv_nxt and rcv_wup <= rcv_nxt.
+         * Hence, check seq<=rcv_wup reduces to:
+         */
+        if (tcp_header_len == (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED)
+          && tp->rcv_nxt == tp->rcv_wup)
+        {
+          tcp_store_ts_recent(tp);
+        }
+
+        /* We know that such packets are checksummed
+         * on entry. */
+        tcp_ack(sk, skb, 0);
+        __kfree_skb(skb);
+        tcp_data_snd_check(sk);
+        /* When receiving pure ack in fast path, update
+         * last ts ecr directly instead of calling
+         * tcp_rcv_rtt_measure_ts() */
+        tp->rcv_rtt_last_tsecr = tp->rx_opt.rcv_tsecr;
+        return;
+      } else { /* Header too small */
+        TCP_INC_STATS(sock_net(sk), TCP_MIB_INERRS);
+        goto discard;
+      }
+    } else {
+      int eaten = 0;
+      bool fragstolen = false;
+
+      if (tcp_checksum_complete(skb))
+        goto csum_error;
+
+      if ((int)skb->truesize > sk->sk_forward_alloc)
+        goto step5;
+
+      /* Predicted packet is in window by definition.
+       * seq == rcv_nxt and rcv_wup <= rcv_nxt.
+       * Hence, check seq<=rcv_wup reduces to: */
+      if (tcp_header_len == (sizeof(struct tcphdr) + TCPOLEN_TSTAMP_ALIGNED)
+        && tp->rcv_nxt == tp->rcv_wup)
+      {
+        tcp_store_ts_recent(tp);
+      }
+
+      tcp_rcv_rtt_measure_ts(sk, skb);
+
+      NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPHPHITS);
+
+      /* Bulk data transfer: receiver */
+      eaten = tcp_queue_rcv(sk, skb, tcp_header_len, &fragstolen);
+
+      tcp_event_data_recv(sk, skb);
+
+      if (TCP_SKB_CB(skb)->ack_seq != tp->snd_una) {
+        /* Well, only one small jumplet in fast path... */
+        tcp_ack(sk, skb, FLAG_DATA);
+        tcp_data_snd_check(sk);
+        if (!inet_csk_ack_scheduled(sk))
+          goto no_ack;
+      } else {
+        tcp_update_wl(tp, TCP_SKB_CB(skb)->seq);
+      }
+
+      __tcp_ack_snd_check(sk, 0);
+no_ack:
+      if (eaten)
+        kfree_skb_partial(skb, fragstolen);
+      tcp_data_ready(sk);
+      return;
+    }
+  }
+
+slow_path:
+  if (len < (th->doff << 2) || tcp_checksum_complete(skb))
+    goto csum_error;
+
+  if (!th->ack && !th->rst && !th->syn)
+    goto discard;
+
+  /* Standard slow path. */
+  if (!tcp_validate_incoming(sk, skb, th, 1))
+    return;
+
+step5:
+  if (tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT) < 0)
+    goto discard;
+
+  tcp_rcv_rtt_measure_ts(sk, skb);
+
+  /* Process urgent data. */
+  tcp_urg(sk, skb, th);
+
+  /* step 7: process the segment text */
+  tcp_data_queue(sk, skb);
+
+  tcp_data_snd_check(sk);
+  tcp_ack_snd_check(sk);
+  return;
+
+csum_error:
+  TCP_INC_STATS(sock_net(sk), TCP_MIB_CSUMERRORS);
+  TCP_INC_STATS(sock_net(sk), TCP_MIB_INERRS);
+
+discard:
+  tcp_drop(sk, skb);
+}
+```
+
+### tcp_rcv_state_process
+```c++
 int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -6393,7 +6663,10 @@ discard:
     tcp_drop(sk, skb);
     return false;
 }
+```
 
+### tcp_data_queue
+```c++
 /* tcp_rcv_established ->
  * Queues:
  * 1. backlog, push back when user reading
@@ -7122,20 +7395,214 @@ ip_rcv()
                 net_protocol->handler()
 
 /* tcp layer */
-tcp_v4_rcv()
-  /* fil TCP header */
-  __inet_lookup_skb()
-  tcp_v4_do_rcv()
-    tcp_rcv_established()
-      tcp_rcv_established()
-        tcp_data_queue()
+tcp_v4_rcv();
+  sk = __inet_lookup_skb();
+
+  if (sk->sk_state == TCP_NEW_SYN_RECV) {
+    struct request_sock *req = inet_reqsk(sk);
+    sk = req->rsk_listener;
+
+    newsk = tcp_check_req();
+      child = inet_csk(sk)->icsk_af_ops->syn_recv_sock();
+        tcp_v4_syn_recv_sock();
+          if (sk_acceptq_is_full());
+            goto drop;
+          newsk = tcp_create_openreq_child(sk, req, skb);
+            inet_csk_clone_lock();
+              inet_sk_set_state(newsk, TCP_SYN_RECV);
+                sk->sk_state = TCP_SYN_RECV;
+            tcp_init_xmit_timers();
+
+          inet_ehash_nolisten();
+            inet_ehash_insert(); // hash insert the new sk and remove the old request_sk
+              inet_ehash_bucket(hashinfo, sk->sk_hash);
+              __sk_nulls_add_node_rcu();
+                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+              if (osk)
+                sk_nulls_del_node_init_rcu(osk);
+
+      inet_csk_complete_hashdance(child);
+        inet_csk_reqsk_queue_drop();
+          reqsk_queue_unlink();
+            __sk_nulls_del_node_init_rcu(sk);
+              hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
+          reqsk_queue_removed();
+            --icsk_accept_queue.yong;
+            --icsk_accept_queue.qlen;
+        reqsk_queue_removed();
+
+        inet_csk_reqsk_queue_add();
+          sk->rskq_accept_tail = reqst_sk;
+          sk_acceptq_added();
+            icsk_accept_queue->rskq_accept_tail = req;
+            sk_acceptq_added();
+              ++sk->sk_ack_backlog
+
+    tcp_child_process();
+      if (!sock_owned_by_user(child))
+        tcp_rcv_state_process(child, skb);
+        sk_listener->sk_data_ready() /* sock_def_readable */
+      else
+        __sk_add_backlog(child, skb);
+  }
+
+  tcp_filter(sk, skb);
+  tcp_v4_fill_cb(skb, iph, th);
+
+  tcp_v4_do_rcv();
+    if (sk->sk_state == TCP_ESTABLISHED) {
+      tcp_rcv_established();
+        trace_tcp_probe(sk, skb);
+        tcp_checksum_complete(skb);
+
+        tcp_data_queue(sk, skb);
           /* 1. [seq = rcv_next < end_seq < win] ACK  */
           /* 2. [seq < end_seq < rcv_next < win] DACK */
           /* 3. [rcv_next < win < seq < end_seq] DROP */
           /* 4. [seq < rcv_next < end_seq < win] OFO  */
           /* 5. [rcv_next < seq < end_seq < win] DACK */
-    tcp_rcv_state_process()
-  tcp_add_backlog()
+        tcp_data_snd_check(sk);
+        tcp_ack_snd_check(sk);
+    }
+
+    tcp_rcv_state_process();
+      if (sk->sk_state == TCP_LISTEN) {
+        icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
+          tcp_v4_conn_request();
+            tcp_conn_request();
+              if (inet_csk_reqsk_queue_is_full(sk));
+                drop;
+              if (sk_acceptq_is_full(sk));
+                drop;
+
+              inet_reqsk_alloc();
+                sk->sk_state = TCP_NEW_SYN_RECV;
+
+              af_ops->init_req(req, sk, skb);
+                tcp_v4_init_req();
+                  sk_rcv_saddr_set();
+                  sk_daddr_set();
+
+              if (fastopen);
+                inet_csk_reqsk_queue_add();
+                  sk->rskq_accept_tail = reqst_sk;
+                  sk_acceptq_added();
+                    icsk_accept_queue->rskq_accept_tail = req;
+                    sk_acceptq_added();
+                      ++sk->sk_ack_backlog
+              else
+                inet_csk_reqsk_queue_hash_add();
+                  reqsk_queue_hash_req();
+                    timer_setup();
+                    mod_timer(&req->rsk_timer, jiffies + timeout);
+                    inet_ehash_insert();
+                      inet_ehash_bucket(hashinfo, sk->sk_hash);
+                      __sk_nulls_add_node_rcu();
+                        hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+                      if (osk);
+                        sk_nulls_del_node_init_rcu(osk);
+                  inet_csk_reqsk_queue_added();
+                    ++icsk_accept_queue->young;
+                    --icsk_accept_queue->qlen;
+
+              af_ops->send_synack();
+                tcp_v4_send_synack();
+      } /* TCP_LISTEN */
+
+      if (sk->sk_state == TCP_SYN_SENT) {
+        tcp_rcv_synsent_state_process();
+          tcp_finish_connect(sk, skb);
+            tcp_set_state(sk, TCP_ESTABLISHED);
+            tcp_init_transfer();
+              tcp_init_buffer_space();
+              tcp_init_congestion_control(sk);
+            inet_csk_reset_keepalive_timer();
+
+          sk->sk_state_change();
+            /* wakup `connect` slept at inet_wait_for_connect */
+            sock_def_wakeup();
+          tcp_send_ack(sk);
+          tcp_set_state(sk, TCP_ESTABLISHED);
+
+        tcp_data_snd_check(sk);
+      } /* TCP_SYN_SENT */
+
+      tcp_check_req(); /* tp->fastopen_rsk */
+
+      /* Step 1 2 3 4 */
+      tcp_validate_incoming();
+        /* RFC1323: H1. Apply PAWS check first. */
+        /* Step 1: check sequence number */
+        /* Step 2: check RST bit */
+        /* Step 3: check security and precedence [ignored] */
+        /* Step 4: Check for a SYN RFC 5961 4.2 : Send a challenge ack */
+
+      /* step 5: check the ACK field */
+      tcp_ack();
+
+      if (sk->sk_state == TCP_SYN_RECV) {
+        tcp_init_transfer();
+          tcp_init_buffer_space();
+          tcp_init_congestion_control(sk);
+        tcp_set_state(sk, TCP_ESTABLISHED);
+
+        sk->sk_state_change();
+          sock_def_wakeup();
+            wake_up_interruptible_all();
+              __wake_up();
+                __wake_up_common_lock();
+                  __wake_up_common();
+      } /* TCP_SYN_RECV */
+
+      if (sk->sk_state == TCP_LAST_ACK)
+        tcp_done();
+
+      if (sk->sk_state == TCP_FIN_WAIT1)
+        tcp_set_state(sk, TCP_FIN_WAIT2);
+        sk->sk_shutdown |= SEND_SHUTDOWN;
+        tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+        sk->sk_state_change(); /* Wake up lingering close() */
+        tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+
+      if (sk->sk_state == TCP_FIN_WAIT2);
+        if (sk->sk_shutdown & RCV_SHUTDOWN);
+          tcp_reset();
+
+      if (sk->sk_state == TCP_ESTABLISHED);
+        tcp_data_queue();
+
+      if (sk->sk_state == TCP_CLOSING)
+        tcp_time_wait(sk, TCP_TIME_WAIT, 0);
+
+      /* Step 6: check the URG bit */
+      tcp_urg(sk, skb, th);
+
+  if (!sock_owned_by_user(sk)) {
+    ret = tcp_v4_do_rcv(sk, skb);
+  } else if (tcp_add_backlog(sk, skb)) {
+    goto discard_and_relse;
+  }
+
+  if (sk->sk_state == TCP_TIME_WAIT) {
+    tcp_v4_fill_cb(skb, iph, th);
+    switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
+      case TCP_TW_SYN: {
+        break;
+      }
+      case TCP_TW_ACK: {
+        tcp_v4_timewait_ack(sk, skb);
+        break;
+      }
+      case TCP_TW_RST: {
+        tcp_v4_send_reset(sk, skb);
+        inet_twsk_deschedule_put(inet_twsk(sk));
+        goto discard_it;
+      }
+      case TCP_TW_SUCCESS: {
+
+      }
+    }
+  }
 
 /* vfs layer */
 sock_read_iter()
