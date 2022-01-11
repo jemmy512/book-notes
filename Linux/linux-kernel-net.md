@@ -39,8 +39,17 @@
     * [mac layer](#mac-layer-rx)
     * [ip layer](#ip-layer-rx)
     * [tcp layer](#tcp-layer-rx)
+        * [tcp_v4_rcv-TCP_NEW_SYN_RECV](#tcp_v4_rcv-TCP_NEW_SYN_RECV)
+        * [tcp_v4_do_rcv-TCP_ESTABLISHED](#tcp_v4_do_rcv-TCP_ESTABLISHED)
+        * [tcp_rcv_state_process](#tcp_rcv_state_process)
+        * [tcp_data_queue](#tcp_data_queue)
     * [vfs layer](#vfs-layer-rx)
     * [socket layer](#socket-layer-rx])
+* [congestion control](#congestion-control)
+    * [tcp_cwnd_test](#tcp_cwnd_test)
+    * [tcp_cwnd_validate](#tcp_cwnd_validate)
+    * [tcp_enter_recovery](#tcp_enter_recovery)
+    * [tcp_fastretrans_alert](#tcp_fastretrans_alert)
 * [retransmit](#retransmit)
     * [tcp_write_timer](#tcp_write_timer)
         * [tcp_retransmit_skb](#tcp_retransmit_skb)
@@ -5516,6 +5525,24 @@ struct softnet_data {
 };
 
 /* napi_poll -> ixgb_clean -> */
+int ixgb_clean(struct napi_struct *napi, int budget)
+{
+  struct ixgb_adapter *adapter = container_of(napi, struct ixgb_adapter, napi);
+  int work_done = 0;
+
+  ixgb_clean_tx_irq(adapter);
+  ixgb_clean_rx_irq(adapter, &work_done, budget);
+
+  /* If budget not fully consumed, exit the polling mode */
+  if (work_done < budget) {
+    napi_complete_done(napi, work_done);
+    if (!test_bit(__IXGB_DOWN, &adapter->flags))
+      ixgb_irq_enable(adapter);
+  }
+
+  return work_done;
+}
+
 bool ixgb_clean_rx_irq(struct ixgb_adapter *adapter, int *work_done, int work_to_do)
 {
   struct ixgb_desc_ring *rx_ring = &adapter->rx_ring;
@@ -5716,6 +5743,177 @@ static int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
   if (pt_prev) {
     ret = pt_prev->func(skb, skb->dev, pt_prev, orig_dev);
   }
+}
+
+int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
+            struct packet_type **ppt_prev)
+{
+  struct packet_type *ptype, *pt_prev;
+  rx_handler_func_t *rx_handler;
+  struct sk_buff *skb = *pskb;
+  struct net_device *orig_dev;
+  bool deliver_exact = false;
+  int ret = NET_RX_DROP;
+  __be16 type;
+
+  net_timestamp_check(!netdev_tstamp_prequeue, skb);
+
+  trace_netif_receive_skb(skb);
+
+  orig_dev = skb->dev;
+
+  skb_reset_network_header(skb);
+  if (!skb_transport_header_was_set(skb))
+    skb_reset_transport_header(skb);
+  skb_reset_mac_len(skb);
+
+  pt_prev = NULL;
+
+another_round:
+  skb->skb_iif = skb->dev->ifindex;
+
+  __this_cpu_inc(softnet_data.processed);
+
+  if (static_branch_unlikely(&generic_xdp_needed_key)) {
+    int ret2;
+
+    preempt_disable();
+    ret2 = do_xdp_generic(rcu_dereference(skb->dev->xdp_prog), skb);
+    preempt_enable();
+
+    if (ret2 != XDP_PASS) {
+      ret = NET_RX_DROP;
+      goto out;
+    }
+    skb_reset_mac_len(skb);
+  }
+
+  if (skb->protocol == cpu_to_be16(ETH_P_8021Q) ||
+      skb->protocol == cpu_to_be16(ETH_P_8021AD)) {
+    skb = skb_vlan_untag(skb);
+    if (unlikely(!skb))
+      goto out;
+  }
+
+  if (skb_skip_tc_classify(skb))
+    goto skip_classify;
+
+  if (pfmemalloc)
+    goto skip_taps;
+
+  list_for_each_entry_rcu(ptype, &ptype_all, list) {
+    if (pt_prev)
+      ret = deliver_skb(skb, pt_prev, orig_dev);
+    pt_prev = ptype;
+  }
+
+  list_for_each_entry_rcu(ptype, &skb->dev->ptype_all, list) {
+    if (pt_prev)
+      ret = deliver_skb(skb, pt_prev, orig_dev);
+    pt_prev = ptype;
+  }
+
+skip_taps:
+#ifdef CONFIG_NET_INGRESS
+  if (static_branch_unlikely(&ingress_needed_key)) {
+    skb = sch_handle_ingress(skb, &pt_prev, &ret, orig_dev);
+    if (!skb)
+      goto out;
+
+    if (nf_ingress(skb, &pt_prev, &ret, orig_dev) < 0)
+      goto out;
+  }
+#endif
+  skb_reset_tc(skb);
+
+skip_classify:
+  if (pfmemalloc && !skb_pfmemalloc_protocol(skb))
+    goto drop;
+
+  if (skb_vlan_tag_present(skb)) {
+    if (pt_prev) {
+      ret = deliver_skb(skb, pt_prev, orig_dev);
+      pt_prev = NULL;
+    }
+    if (vlan_do_receive(&skb))
+      goto another_round;
+    else if (unlikely(!skb))
+      goto out;
+  }
+
+  rx_handler = rcu_dereference(skb->dev->rx_handler);
+  if (rx_handler) {
+    if (pt_prev) {
+      ret = deliver_skb(skb, pt_prev, orig_dev);
+      pt_prev = NULL;
+    }
+    switch (rx_handler(&skb)) {
+    case RX_HANDLER_CONSUMED:
+      ret = NET_RX_SUCCESS;
+      goto out;
+    case RX_HANDLER_ANOTHER:
+      goto another_round;
+    case RX_HANDLER_EXACT:
+      deliver_exact = true;
+    case RX_HANDLER_PASS:
+      break;
+    default:
+      BUG();
+    }
+  }
+
+  if (unlikely(skb_vlan_tag_present(skb))) {
+    if (skb_vlan_tag_get_id(skb))
+      skb->pkt_type = PACKET_OTHERHOST;
+    /* Note: we might in the future use prio bits
+     * and set skb->priority like in vlan_do_receive()
+     * For the time being, just ignore Priority Code Point
+     */
+    skb->vlan_tci = 0;
+  }
+
+  type = skb->protocol;
+
+  /* deliver only exact match when indicated */
+  if (likely(!deliver_exact)) {
+    deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type,
+               &ptype_base[ntohs(type) &
+               PTYPE_HASH_MASK]);
+  }
+
+  deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type,
+             &orig_dev->ptype_specific);
+
+  if (unlikely(skb->dev != orig_dev)) {
+    deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type,
+               &skb->dev->ptype_specific);
+  }
+
+  if (pt_prev) {
+    if (unlikely(skb_orphan_frags_rx(skb, GFP_ATOMIC)))
+      goto drop;
+    *ppt_prev = pt_prev;
+  } else {
+drop:
+    if (!deliver_exact)
+      atomic_long_inc(&skb->dev->rx_dropped);
+    else
+      atomic_long_inc(&skb->dev->rx_nohandler);
+    kfree_skb(skb);
+    /* Jamal, now you will not able to escape explaining
+     * me how you were going to use this. :-)
+     */
+    ret = NET_RX_DROP;
+  }
+
+out:
+  /* The invariant here is that if *ppt_prev is not NULL
+   * then skb should also be non-NULL.
+   *
+   * Apparently *ppt_prev assignment above holds this invariant due to
+   * skb dereferencing near it. */
+  *pskb = skb;
+  return ret;
 }
 
 void deliver_ptype_list_skb(
@@ -6762,8 +6960,7 @@ static int tcp_queue_rcv(
   struct sk_buff *tail = skb_peek_tail(&sk->sk_receive_queue);
 
   __skb_pull(skb, hdrlen);
-  eaten = (tail &&
-     tcp_try_coalesce(sk, tail, skb, fragstolen)) ? 1 : 0;
+  eaten = (tail && tcp_try_coalesce(sk, tail, skb, fragstolen)) ? 1 : 0;
   tcp_rcv_nxt_update(tcp_sk(sk), TCP_SKB_CB(skb)->end_seq);
   if (!eaten) {
     __skb_queue_tail(&sk->sk_receive_queue, skb);
@@ -7604,6 +7801,34 @@ tcp_v4_rcv();
     }
   }
 
+tcp_data_queue();
+  /* 1. [seq = rcv_next < end_seq < win] */
+    tcp_queue_rcv();
+    tcp_event_data_recv();
+    tcp_ofo_queue(sk);
+
+    kfree_skb_partial();
+    tcp_data_ready(); /* wakeup `sk_wait_data` */
+      sk->sk_data_ready();
+        sock_def_readable();
+
+  /* 2. [seq < end_seq < rcv_next < win] */
+    tcp_dsack_set();
+    tcp_enter_quickack_mode();
+    inet_csk_schedule_ack(sk);
+    tcp_drop();
+
+  /* 3. [rcv_next < win < seq < end_seq] */
+    tcp_enter_quickack_mode();
+    inet_csk_schedule_ack(sk);
+    tcp_drop();
+
+  /* 4. [seq < rcv_next < end_seq < win] */
+    tcp_dsack_set();
+
+  /* 5. [rcv_next < seq < end_seq < win] */
+    tcp_data_queue_ofo();
+
 /* vfs layer */
 sock_read_iter()
   sock_recvmsg()
@@ -7616,6 +7841,8 @@ sock_read_iter()
               if (sk->sk_shutdown & RCV_SHUTDOWN)
                 break;
               skb_copy_datagram_msg() /* copy data to user space */
+              tcp_rcv_space_adjust()  /* adjust receive buffer space */
+
               sk_wait_data() /* waiting for data, waked up by `tcp_data_ready` */
                 sk_wait_event()
                   wait_woken()
@@ -7623,6 +7850,14 @@ sock_read_iter()
                 woken_wake_function()
                   default_wake_function()
                     try_to_wake_up()
+
+            tcp_cleanup_rbuf()
+
+            /* process backlog */
+            release_sock(sk)
+              sk_backlog_rcv()
+                sk->sk_backlog_rcv()
+                  tcp_v4_do_rcv()
 ```
 * [try_to_wake_up](./linux-kernel.md#ttwu)
 
