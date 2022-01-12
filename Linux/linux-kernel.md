@@ -2593,8 +2593,9 @@ struct inode {
     void (*free_inode)(struct inode *);
   };
 
-  dev_t             i_rdev;
-  struct list_head  i_devices;
+  dev_t                     i_rdev;
+  struct list_head          i_devices;
+
   union {
     struct pipe_inode_info  *i_pipe;
     struct block_device     *i_bdev;
@@ -2617,7 +2618,7 @@ struct inode {
   struct bdi_writeback  *i_wb;     /* the associated cgroup wb */
 
   struct file_lock_context  *i_flctx;
-  struct address_space     i_data;
+  struct address_space      i_data;
 };
 
 #define  EXT4_NDIR_BLOCKS    12
@@ -2973,18 +2974,18 @@ static struct dentry *ext4_mount(
 
 ```C++
 struct file {
-  struct path     f_path;
-  struct inode    *f_inode;  /* cached value */
+  struct path                   f_path;
+  struct inode                  *f_inode;  /* cached value */
   const struct file_operations  *f_op;
-  struct address_space         *f_mapping;
-  void* private_data; /* for special inode */
+  struct address_space          *f_mapping;
+  void*                         private_data; /* for special inode */
 
   spinlock_t                    f_lock;
   enum rw_hint                  f_write_hint;
   atomic_long_t                 f_count;
   unsigned int                  f_flags;
   fmode_t                       f_mode;
-  loff_t                         f_pos;
+  loff_t                        f_pos;
   struct mutex                  f_pos_lock;
   struct fown_struct            f_owner;
 
@@ -3039,9 +3040,9 @@ mount();
 ### open
 ```C++
 struct task_struct {
-  struct fs_struct    *fs;
-  struct files_struct  *files;
-  struct nsproxy      *nsproxy;
+  struct fs_struct      *fs;
+  struct files_struct   *files;
+  struct nsproxy        *nsproxy;
 }
 
 struct files_struct {
@@ -3079,7 +3080,6 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
   restore_nameidata();
   return filp;
 }
-
 
 static struct file *path_openat(struct nameidata *nd,
       const struct open_flags *op, unsigned flags)
