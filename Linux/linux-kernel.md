@@ -3435,7 +3435,10 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
   if (unlikely(current->nr_dirtied >= ratelimit))
     balance_dirty_pages(mapping, wb, current->nr_dirtied);
 }
+```
 
+#### balance_dirty_pages
+```c++
 // balance_dirty_pages -> wb_start_background_writeback -> wb_wakeup
 /* start background writeback */
 void wb_start_background_writeback(struct bdi_writeback *wb)
@@ -3451,38 +3454,61 @@ static void wb_wakeup(struct bdi_writeback *wb)
   spin_unlock_bh(&wb->work_lock);
 }
 
-
 /* bdi_wq serves all asynchronous writeback tasks */
 struct workqueue_struct *bdi_wq;
 
-
 /* mod_delayed_work - modify delay of or queue a delayed work */
 static inline bool mod_delayed_work(struct workqueue_struct *wq,
-				    struct delayed_work *dwork,
-				    unsigned long delay)
+            struct delayed_work *dwork,
+            unsigned long delay)
 {
-	return mod_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
+  return mod_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
 }
 
+/* insert a delayed work in bdi_wq */
 bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
-			 struct delayed_work *dwork, unsigned long delay)
+       struct delayed_work *dwork, unsigned long delay)
 {
-	unsigned long flags;
-	int ret;
+  unsigned long flags;
+  int ret;
 
-	do {
-		ret = try_to_grab_pending(&dwork->work, true, &flags);
-	} while (unlikely(ret == -EAGAIN));
+  do {
+    ret = try_to_grab_pending(&dwork->work, true, &flags);
+  } while (unlikely(ret == -EAGAIN));
 
-	if (likely(ret >= 0)) {
-		__queue_delayed_work(cpu, wq, dwork, delay);
-		local_irq_restore(flags);
-	}
+  if (likely(ret >= 0)) {
+    __queue_delayed_work(cpu, wq, dwork, delay);
+    local_irq_restore(flags);
+  }
 
-	/* -ENOENT from try_to_grab_pending() becomes %true */
-	return ret;
+  /* -ENOENT from try_to_grab_pending() becomes %true */
+  return ret;
 }
 
+static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
+  struct delayed_work *dwork, unsigned long delay)
+{
+  struct timer_list *timer = &dwork->timer;
+  struct work_struct *work = &dwork->work;
+
+  if (!delay) {
+    __queue_work(cpu, wq, &dwork->work);
+    return;
+  }
+
+  dwork->wq = wq;
+  dwork->cpu = cpu;
+  timer->expires = jiffies + delay;
+
+  if (unlikely(cpu != WORK_CPU_UNBOUND))
+    add_timer_on(timer, cpu);
+  else
+    add_timer(timer);
+}
+```
+
+### backing_dev_info
+```c++
 struct backing_dev_info {
   struct list_head      bdi_list;
   struct bdi_writeback  wb; /* the root writeback info for this bdi */
@@ -3526,87 +3552,112 @@ struct work_struct {
 };
 
 struct wb_writeback_work {
-  long nr_pages;
-  struct super_block *sb;
-  unsigned long *older_than_this;
+  long                      nr_pages;
+  struct super_block        *sb;
+  unsigned long             *older_than_this;
   enum writeback_sync_modes sync_mode;
-  unsigned int tagged_writepages:1;
-  unsigned int for_kupdate:1;
-  unsigned int range_cyclic:1;
-  unsigned int for_background:1;
-  unsigned int for_sync:1;  /* sync(2) WB_SYNC_ALL writeback */
-  unsigned int auto_free:1; /* free on completion */
-  enum wb_reason reason;    /* why was writeback initiated? */
+  unsigned int              tagged_writepages:1;
+  unsigned int              for_kupdate:1;
+  unsigned int              range_cyclic:1;
+  unsigned int              for_background:1;
+  unsigned int              for_sync:1;   /* sync(2) WB_SYNC_ALL writeback */
+  unsigned int              auto_free:1;  /* free on completion */
+  enum wb_reason            reason;       /* why was writeback initiated? */
 
-  struct list_head list;    /* pending work list */
-  struct wb_completion *done;/* set if the caller waits */
+  struct list_head          list;         /* pending work list */
+  struct wb_completion      *done;        /* set if the caller waits */
 };
-
-static void wb_wakeup(struct bdi_writeback *wb)
-{
-  spin_lock_bh(&wb->work_lock);
-  if (test_bit(WB_registered, &wb->state))
-    mod_delayed_work(bdi_wq, &wb->dwork, 0);
-  spin_unlock_bh(&wb->work_lock);
-}
-
-/* insert a delayed work in bdi_wq */
-static inline bool mod_delayed_work(
-  struct workqueue_struct *wq,
-  struct delayed_work *dwork,
-  unsigned long delay)
-{
-  __queue_delayed_work(cpu, wq, dwork, delay);
-}
-
-
-static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
-  struct delayed_work *dwork, unsigned long delay)
-{
-  struct timer_list *timer = &dwork->timer;
-  struct work_struct *work = &dwork->work;
-
-  WARN_ON_ONCE(!wq);
-  WARN_ON_ONCE(timer->function != delayed_work_timer_fn);
-  WARN_ON_ONCE(timer_pending(timer));
-  WARN_ON_ONCE(!list_empty(&work->entry));
-
-  if (!delay) {
-    __queue_work(cpu, wq, &dwork->work);
-    return;
-  }
-
-  dwork->wq = wq;
-  dwork->cpu = cpu;
-  timer->expires = jiffies + delay;
-
-  if (unlikely(cpu != WORK_CPU_UNBOUND))
-    add_timer_on(timer, cpu);
-  else
-    add_timer(timer);
-}
-
 ```
-![linux-file-bdi.png](../Images/Kernel/file-bdi.png)
 
 ### bdi_wq
+![linux-file-bdi.png](../Images/Kernel/file-bdi.png)
+
 ```C++
 /* global variable, all backing task stored here */
 /* bdi_wq serves all asynchronous writeback tasks */
 struct workqueue_struct *bdi_wq;
 
 struct workqueue_struct {
-  struct list_head pwqs;  /* WR: all pwqs of this wq */
-  struct list_head list;  /* PR: list of all workqueues */
+  struct list_head      pwqs;  /* WR: all pwqs of this wq */
+  struct list_head      list;  /* PR: list of all workqueues */
 
   struct list_head      maydays; /* MD: pwqs requesting rescue */
   struct worker         *rescuer; /* I: rescue worker */
 
   struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
-
-  struct pool_workqueue __percpu  *cpu_pwqs; /* I: per-cpu pwqs */
-  struct pool_workqueue __rcu     *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
+  struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
+  struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
 };
+
+/* The per-pool workqueue. */
+struct pool_workqueue {
+  struct worker_pool      *pool;    /* I: the associated pool */
+  struct workqueue_struct *wq;    /* I: the owning workqueue */
+  int                     work_color;  /* L: current color */
+  int                     flush_color;  /* L: flushing color */
+  int                     refcnt;    /* L: reference count */
+  int                     nr_in_flight[WORK_NR_COLORS];/* L: nr of in_flight works */
+  int                     nr_active;  /* L: nr of active works */
+  int                     max_active;  /* L: max active works */
+  struct list_head        delayed_works;  /* L: delayed works */
+  struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
+  struct list_head        mayday_node;  /* MD: node on wq->maydays */
+
+  /*
+   * Release of unbound pwq is punted to system_wq.  See put_pwq()
+   * and pwq_unbound_release_workfn() for details.  pool_workqueue
+   * itself is also sched-RCU protected so that the first pwq can be
+   * determined without grabbing wq->mutex.
+   */
+  struct work_struct  unbound_release_work;
+  struct rcu_head    rcu;
+} __aligned(1 << WORK_STRUCT_FLAG_BITS);
+
+struct worker_pool {
+  spinlock_t          lock;   /* the pool lock */
+  int                 cpu;    /* I: the associated cpu */
+  int                 node;   /* I: the associated node ID */
+  int                 id;     /* I: pool ID */
+  unsigned int        flags;  /* X: flags */
+
+  unsigned long       watchdog_ts;  /* L: watchdog timestamp */
+
+  struct list_head    worklist;  /* L: list of pending works */
+
+  int                 nr_workers;  /* L: total number of workers */
+  int                 nr_idle;  /* L: currently idle workers */
+
+  struct list_head    idle_list;  /* X: list of idle workers */
+  struct timer_list   idle_timer;  /* L: worker idle timeout */
+  struct timer_list   mayday_timer;  /* L: SOS timer for workers */
+
+  /* a workers is either on busy_hash or idle_list, or the manager */
+  DECLARE_HASHTABLE(busy_hash, BUSY_WORKER_HASH_ORDER);
+            /* L: hash of busy workers */
+
+  struct worker       *manager;  /* L: purely informational */
+  struct list_head    workers;  /* A: attached workers */
+  struct completion   *detach_completion; /* all workers detached */
+
+  struct ida          worker_ida;  /* worker IDs for task name */
+
+  struct workqueue_attrs  *attrs;    /* I: worker attributes */
+  struct hlist_node       hash_node;  /* PL: unbound_pool_hash node */
+  int                     refcnt;    /* PL: refcnt for unbound pools */
+
+  /*
+   * The current concurrency level.  As it's likely to be accessed
+   * from other CPUs during try_to_wake_up(), put it in a separate
+   * cacheline.
+   */
+  atomic_t    nr_running ____cacheline_aligned_in_smp;
+
+  /*
+   * Destruction of pool is sched-RCU protected to allow dereferences
+   * from get_work_pool().
+   */
+  struct rcu_head    rcu;
+} ____cacheline_aligned_in_smp;
 
 struct backing_dev_info noop_backing_dev_info = {
   .name           = "noop",
@@ -3661,7 +3712,10 @@ static int cgwb_bdi_init(struct backing_dev_info *bdi)
     }
     return 0;
 }
+```
 
+### wb_init
+```c++
 static int wb_init(
   struct bdi_writeback *wb,
   struct backing_dev_info *bdi,
@@ -3694,6 +3748,143 @@ static int wb_init(
 // wb_workfn -> wb_do_writeback -> wb_writeback -> writeback_sb_inodes
 // -> __writeback_single_inode -> do_writepages -> ext4_writepages
 // ---> see ext4_writepages in IO management
+
+void delayed_work_timer_fn(struct timer_list *t)
+{
+  struct delayed_work *dwork = from_timer(dwork, t, timer);
+
+  /* should have been called from irqsafe timer with irq already off */
+  __queue_work(dwork->cpu, dwork->wq, &dwork->work);
+}
+```
+
+### queue_work
+```c++
+ void __queue_work(int cpu, struct workqueue_struct *wq,
+       struct work_struct *work)
+{
+  struct pool_workqueue *pwq;
+  struct worker_pool *last_pool;
+  struct list_head *worklist;
+  unsigned int work_flags;
+  unsigned int req_cpu = cpu;
+
+  /*
+   * While a work item is PENDING && off queue, a task trying to
+   * steal the PENDING will busy-loop waiting for it to either get
+   * queued or lose PENDING.  Grabbing PENDING and queueing should
+   * happen with IRQ disabled.
+   */
+  lockdep_assert_irqs_disabled();
+
+
+  /* if draining, only works from the same workqueue are allowed */
+  if (unlikely(wq->flags & __WQ_DRAINING) &&
+      WARN_ON_ONCE(!is_chained_work(wq)))
+    return;
+retry:
+  /* pwq which will be used unless @work is executing elsewhere */
+  if (wq->flags & WQ_UNBOUND) {
+    if (req_cpu == WORK_CPU_UNBOUND)
+      cpu = wq_select_unbound_cpu(raw_smp_processor_id());
+    pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
+  } else {
+    if (req_cpu == WORK_CPU_UNBOUND)
+      cpu = raw_smp_processor_id();
+    pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
+  }
+
+  /*
+   * If @work was previously on a different pool, it might still be
+   * running there, in which case the work needs to be queued on that
+   * pool to guarantee non-reentrancy.
+   */
+  last_pool = get_work_pool(work);
+  if (last_pool && last_pool != pwq->pool) {
+    struct worker *worker;
+
+    spin_lock(&last_pool->lock);
+
+    worker = find_worker_executing_work(last_pool, work);
+
+    if (worker && worker->current_pwq->wq == wq) {
+      pwq = worker->current_pwq;
+    } else {
+      /* meh... not running there, queue here */
+      spin_unlock(&last_pool->lock);
+      spin_lock(&pwq->pool->lock);
+    }
+  } else {
+    spin_lock(&pwq->pool->lock);
+  }
+
+  /*
+   * pwq is determined and locked.  For unbound pools, we could have
+   * raced with pwq release and it could already be dead.  If its
+   * refcnt is zero, repeat pwq selection.  Note that pwqs never die
+   * without another pwq replacing it in the numa_pwq_tbl or while
+   * work items are executing on it, so the retrying is guaranteed to
+   * make forward-progress.
+   */
+  if (unlikely(!pwq->refcnt)) {
+    if (wq->flags & WQ_UNBOUND) {
+      spin_unlock(&pwq->pool->lock);
+      cpu_relax();
+      goto retry;
+    }
+    /* oops */
+    WARN_ONCE(true, "workqueue: per-cpu pwq for %s on cpu%d has 0 refcnt",
+        wq->name, cpu);
+  }
+
+  /* pwq determined, queue */
+  trace_workqueue_queue_work(req_cpu, pwq, work);
+
+  if (WARN_ON(!list_empty(&work->entry))) {
+    spin_unlock(&pwq->pool->lock);
+    return;
+  }
+
+  pwq->nr_in_flight[pwq->work_color]++;
+  work_flags = work_color_to_flags(pwq->work_color);
+
+  if (likely(pwq->nr_active < pwq->max_active)) {
+    trace_workqueue_activate_work(work);
+    pwq->nr_active++;
+    worklist = &pwq->pool->worklist;
+    if (list_empty(worklist))
+      pwq->pool->watchdog_ts = jiffies;
+  } else {
+    work_flags |= WORK_STRUCT_DELAYED;
+    worklist = &pwq->delayed_works;
+  }
+
+  debug_work_activate(work);
+  insert_work(pwq, work, worklist, work_flags);
+
+  spin_unlock(&pwq->pool->lock);
+}
+
+static void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
+      struct list_head *head, unsigned int extra_flags)
+{
+  struct worker_pool *pool = pwq->pool;
+
+  /* we own @work, set data and link */
+  set_work_pwq(work, pwq, extra_flags);
+  list_add_tail(&work->entry, head);
+  get_pwq(pwq);
+
+  /*
+   * Ensure either wq_worker_sleeping() sees the above
+   * list_add_tail() or we see zero nr_running to avoid workers lying
+   * around lazily while there are works to be processed.
+   */
+  smp_mb();
+
+  if (__need_more_worker(pool))
+    wake_up_worker(pool);
+}
 ```
 
 ### buffered read
@@ -3704,32 +3895,47 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
   struct file *filp = iocb->ki_filp;
   struct address_space *mapping = filp->f_mapping;
   struct inode *inode = mapping->host;
+  struct file_ra_state *ra = &filp->f_ra;
+  loff_t *ppos = &iocb->ki_pos;
+  pgoff_t index;
+  pgoff_t last_index;
+  pgoff_t prev_index;
+  unsigned long offset;      /* offset into pagecache page */
+  unsigned int prev_offset;
+  int error = 0;
+
+  iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
+
+  index = *ppos >> PAGE_SHIFT;
+  prev_index = ra->prev_pos >> PAGE_SHIFT;
+  prev_offset = ra->prev_pos & (PAGE_SIZE-1);
+  last_index = (*ppos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT;
+  offset = *ppos & ~PAGE_MASK;
+
   for (;;) {
     struct page *page;
     pgoff_t end_index;
     loff_t isize;
     page = find_get_page(mapping, index);
+
     if (!page) {
       if (iocb->ki_flags & IOCB_NOWAIT)
         goto would_block;
-      page_cache_sync_readahead(mapping,
-          ra, filp,
-          index, last_index - index);
+
+      page_cache_sync_readahead(mapping, ra, filp,index, last_index - index);
       page = find_get_page(mapping, index);
       if (unlikely(page == NULL))
         goto no_cached_page;
     }
+
     if (PageReadahead(page)) {
-      page_cache_async_readahead(mapping,
-          ra, filp, page,
-          index, last_index - index);
+      page_cache_async_readahead(mapping, ra, filp, page, index, last_index - index);
     }
-    /*
-     * Ok, we have the page, and it's up-to-date, so
-     * now we can copy it to user space...
-     */
+
+    /* Ok, we have the page, and it's up-to-date, so
+     * now we can copy it to user space... */
     ret = copy_page_to_iter(page, offset, nr, iter);
-    }
+  }
 }
 ```
 
@@ -5526,14 +5732,13 @@ void wb_workfn(struct work_struct *work)
             struct bdi_writeback, dwork);
   long pages_written;
 
-  if (likely(!current_is_workqueue_rescuer()
-    || !test_bit(WB_registered, &wb->state))) {
+  if (likely(!current_is_workqueue_rescuer() || !test_bit(WB_registered, &wb->state)))
+  {
     do {
       pages_written = wb_do_writeback(wb);
     } while (!list_empty(&wb->work_list));
   } else {
-    pages_written =
-      writeback_inodes_wb(wb, 1024, WB_REASON_FORKER_THREAD);
+    pages_written = writeback_inodes_wb(wb, 1024, WB_REASON_FORKER_THREAD);
   }
 
   if (!list_empty(&wb->work_list))
@@ -5619,14 +5824,14 @@ static long writeback_sb_inodes(
   struct wb_writeback_work *work)
 {
   struct writeback_control wbc = {
-    .sync_mode    = work->sync_mode,
+    .sync_mode          = work->sync_mode,
     .tagged_writepages  = work->tagged_writepages,
-    .for_kupdate    = work->for_kupdate,
-    .for_background    = work->for_background,
-    .for_sync    = work->for_sync,
-    .range_cyclic    = work->range_cyclic,
-    .range_start    = 0,
-    .range_end    = LLONG_MAX,
+    .for_kupdate        = work->for_kupdate,
+    .for_background     = work->for_background,
+    .for_sync           = work->for_sync,
+    .range_cyclic       = work->range_cyclic,
+    .range_start        = 0,
+    .range_end          = LLONG_MAX,
   };
 
   unsigned long start_time = jiffies;
@@ -6295,27 +6500,26 @@ struct request {
 }
 
 struct bio {
-  struct bio        *bi_next;  /* request queue link */
-  struct block_device  *bi_bdev;
-  blk_status_t      bi_status;
-  struct bvec_iter  bi_iter;
-  unsigned short    bi_vcnt;  /* how many bio_vec's */
-  unsigned short    bi_max_vecs;  /* max bvl_vecs we can hold */
-  atomic_t          __bi_cnt;  /* pin count */
-  struct bio_vec    *bi_io_vec;  /* the actual vec list */
+  struct bio            *bi_next;  /* request queue link */
+  struct block_device   *bi_bdev;
+  blk_status_t          bi_status;
+  struct bvec_iter      bi_iter;
+  unsigned short        bi_vcnt;  /* how many bio_vec's */
+  unsigned short        bi_max_vecs;  /* max bvl_vecs we can hold */
+  atomic_t              __bi_cnt;  /* pin count */
+  struct bio_vec        *bi_io_vec;  /* the actual vec list */
 
 };
 
 struct bvec_iter {
-  sector_t    bi_sector;  /* device address in 512 byte sectors */
+  sector_t        bi_sector;  /* device address in 512 byte sectors */
   unsigned int    bi_size;  /* residual I/O count */
   unsigned int    bi_idx;    /* current index into bvl_vec */
-  unsigned int    bi_bvec_done;  /* number of bytes completed in
-               current bvec */
+  unsigned int    bi_bvec_done;  /* number of bytes completed in current bvec */
 };
 
 struct bio_vec {
-  struct page  *bv_page;
+  struct page   *bv_page;
   unsigned int  bv_len;
   unsigned int  bv_offset;
 }
