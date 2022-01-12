@@ -46,14 +46,14 @@
     * [pthread_create](#pthread_create)
 
 # Init
-### cpu
+## cpu
 ![linux-init-cpu.png](../Images/Kernel/init-cpu.png)
 
 ![](../Images/Kernel/init-cpu-2.png)
 
 ![linux-init-cpu-process-program.png](../Images/Kernel/init-cpu-process-program.png)
 
-### bios
+## bios
 * ![](../Images/Kernel/init-bios.png)
 * When power on, set CS to 0xFFFF, IP to 0x0000, the first instruction points to 0xFFFF0 within ROM, a JMP comamand will jump to ROM do init work, BIOS starts.
 * Then BIOS checks the health state of each hardware.
@@ -94,7 +94,7 @@
                   grub_menu_execute_entry()
   ```
 
-### init kernel
+## init kernel
 ```C++
 // init/main.c
 void start_kernel(void)
@@ -134,7 +134,7 @@ static void rest_init(void)
   cpu_startup_entry(CPUHP_ONLINE);
 }
 ```
-### Q: sp points to `kernel_init` fn, should't it be ip?
+## Q: sp points to `kernel_init` fn, should't it be ip?
 ```c++
 pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 {
@@ -176,9 +176,9 @@ static int run_init_process(const char *init_filename)
 
 ![linux-init-cpu-arch.png](../Images/Kernel/init-cpu-arch.png)
 
-### syscall
+## syscall
 
-#### glibc
+### glibc
 ```c++
 int open(const char *pathname, int flags, mode_t mode)
 
@@ -202,7 +202,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     jae SYSCALL_ERROR_LABEL
 ```
 
-#### 32
+### 32
 ```C++
 /* Linux takes system call arguments in registers:
   syscall number  %eax       call-clobbered
@@ -330,7 +330,7 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 ```
 ![linux-init-syscall-32.png](../Images/Kernel/init-syscall-32.png)
 
-#### 64
+### 64
 ```C++
 /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
   The Linux/x86-64 kernel expects the system call parameters in
@@ -418,7 +418,7 @@ void do_syscall_64(struct pt_regs *regs)
 
 ![](../Images/Kernel/proc-management.png)
 
-### process
+## process
 ![linux-proc-compile.png](../Images/Kernel/proc-compile.png)
 ```C++
 /* compile */
@@ -451,13 +451,13 @@ export LD_LIBRARY_PATH=
 
 ![linux-proc-elf-compile-exec.png](../Images/Kernel/proc-elf-compile-exec.png)
 
-### thread
+## thread
 ![linux-proc-thread.png](../Images/Kernel/proc-thread.png)
 
-### task_struct
+## task_struct
 ![linux-proc-task-1.png](../Images/Kernel/proc-task-1.png)
 
-### schedule
+## schedule
 ```C++
 /* Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
  * Normal schedule: SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE */
@@ -629,7 +629,7 @@ const struct sched_class fair_sched_class = {
 ```
 ![linux-proc-shced-cpu-rq-class-entity-task.png](../Images/Kernel/proc-shced-cpu-rq-class-entity-task.png)
 
-#### voluntary schedule
+### voluntary schedule
 ```c++
 void schedule(void)
 {
@@ -988,9 +988,9 @@ schedule(void)
 ```
 ![linux-proc-sched-voluntary.png](../Images/Kernel/proc-sched-voluntary.png)
 
-#### preempt schedule
-##### TIF_NEED_RESCHED
-###### scheduler_tick
+### preempt schedule
+### TIF_NEED_RESCHED
+#### scheduler_tick
 ```C++
 void scheduler_tick(void)
 {
@@ -1068,7 +1068,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-###### try_to_wake_up
+#### try_to_wake_up
 ```C++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
  * -> check_preempt_curr -> resched_curr */
@@ -1218,8 +1218,8 @@ void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-##### real user preempt time
-###### return from system call
+### real user preempt time
+#### return from system call
 ```C++
 /* do_syscall_64 -> syscall_return_slowpath
  * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
@@ -1237,7 +1237,7 @@ static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 }
 ```
 
-###### return from interrupt
+#### return from interrupt
 ```C++
 /* do_IRQ -> retint_user -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 common_interrupt:
@@ -1268,8 +1268,8 @@ retint_kernel:
         jmp     0b
 ```
 
-##### real kernel preempt time
-###### preempt_enble
+### real kernel preempt time
+#### preempt_enble
 ```C++
 #define preempt_enable() \
 do { \
@@ -1297,7 +1297,7 @@ static void __sched notrace preempt_schedule_common(void)
 }
 ```
 
-###### return from interrupt
+#### return from interrupt
 ```C++
 /* do_IRQ -> retint_kernel */
 asmlinkage __visible void __sched preempt_schedule_irq(void)
@@ -1313,11 +1313,11 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
 ```
 ![linux-proc-sched.png](../Images/Kernel/proc-sched.png)
 
-#### Q
+### Q
 1. A process waits on a block operation (mutex, semphore, waitqueue), it calls schedule(). Will it be removed from rq, and add to rq when block operation wakeups?
 2. What's difference between contex_switch and sleep_wakeup?
 
-### wake_up
+## wake_up
 ![](../Images/Kernel/proc-wake-up.png)
 
 ```c++
@@ -1410,7 +1410,7 @@ static int __wake_up_common(
 }
 ```
 
-### wait_woken
+## wait_woken
 ```c++
 long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
 {
@@ -1528,7 +1528,7 @@ struct wait_queue_entry {
 ```
 * [try_to_wake_up](#try_to_wake_up)
 
-### fork
+## fork
 ```C++
 SYSCALL_DEFINE0(fork)
 {
@@ -1638,7 +1638,7 @@ preempt:
 
 ![linux-proc-fork-pthread-create.png](../Images/Kernel/proc-fork-pthread-create.png)
 
-### exec
+## exec
 ```C++
 typedef struct elf64_hdr {
   unsigned char  e_ident[EI_NIDENT];  /* ELF "magic number" */
@@ -2579,9 +2579,97 @@ Reference:
 * [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 
 # File Management
+
 ![linux-file-vfs-system.png](../Images/Kernel/file-vfs-system.png)
 
-### inode
+```C++
+register_filesystem(&ext4_fs_type);
+
+static struct file_system_type ext4_fs_type = {
+  .owner    = THIS_MODULE,
+  .name     = "ext4",
+  .mount    = ext4_mount,
+  .kill_sb  = kill_block_super,
+  .fs_flags = FS_REQUIRES_DEV,
+};
+
+struct file {
+  struct path                   f_path;
+  struct inode                  *f_inode;  /* cached value */
+  const struct file_operations  *f_op;
+  struct address_space          *f_mapping;
+  void*                         private_data; /* for special inode */
+
+  spinlock_t                    f_lock;
+  enum rw_hint                  f_write_hint;
+  atomic_long_t                 f_count;
+  unsigned int                  f_flags;
+  fmode_t                       f_mode;
+  loff_t                        f_pos;
+  struct mutex                  f_pos_lock;
+  struct fown_struct            f_owner;
+
+  /* Used by fs/eventpoll.c to link all the hooks to this file */
+  struct list_head              f_ep_links;
+  struct list_head              f_tfile_llink;
+
+  errseq_t                      f_wb_err;
+  union {
+      struct llist_node         fu_llist;
+      struct rcu_head           fu_rcuhead;
+  } f_u;
+};
+
+struct path {
+  struct vfsmount               *mnt;
+  struct dentry                 *dentry;
+};
+
+struct vfsmount {
+  struct dentry                 *mnt_root;  /* root of the mounted tree */
+  struct super_block            *mnt_sb;    /* pointer to superblock */
+  int                           mnt_flags;
+};
+
+/* memroy chache of dirctories and files associated inode and file */
+struct dentry {
+  unsigned int                    d_flags;
+  struct dentry                   *d_parent;
+  struct inode                    *d_inode;
+  struct super_block              *d_sb;
+  const struct dentry_operations  *d_op;
+
+  struct hlist_bl_node            d_hash;  /* lookup hash list */
+  union {
+    struct list_head              d_lru;   /* LRU list */
+    wait_queue_head_t             *d_wait; /* in-lookup ones only */
+  };
+  struct qstr                     d_name;
+  unsigned char                   d_iname[DNAME_INLINE_LEN];
+  struct list_head                d_child;
+  struct list_head                d_subdirs;
+};
+
+struct mount {
+  struct hlist_node     mnt_hash;
+  struct mount          *mnt_parent;
+  struct dentry         *mnt_mountpoint;
+  struct vfsmount       mnt;
+
+  union {
+    struct rcu_head     mnt_rcu;
+    struct llist_node   mnt_llist;
+  };
+
+  struct list_head      mnt_mounts;  /* list of children, anchored here */
+  struct list_head      mnt_child;   /* and going through their mnt_child */
+  struct list_head      mnt_instance;/* mount instance on sb->s_mounts */
+  const char            *mnt_devname;/* Name of device e.g. /dev/dsk/hda1 */
+  struct list_head      mnt_list;
+};
+```
+
+## inode
 ```C++
 struct inode {
   const struct inode_operations   *i_op;
@@ -2648,7 +2736,7 @@ struct ext4_inode {
 ```
 ![](../Images/Kernel/file-inode-blocks.png)
 
-### extent
+## extent
 ```c++
 // Each block (leaves and indexes), even inode-stored has header.
 struct ext4_extent_header {
@@ -2718,7 +2806,7 @@ ino = ext4_find_next_zero_bit((unsigned long *)
 }
 ```
 
-### Block Group
+## block group
 * One block group contains:
   * one block representing block bit info + several block representing data blocks
   * one block representing inode bit info + several block representing inode blocks
@@ -2766,7 +2854,7 @@ struct super_block {
 ```
 ![linux-mem-meta-block-group.png](../Images/Kernel/mem-meta-block-group.png)
 
-### directory
+## directory
 ```C++
 struct ext4_dir_entry {
   __le32  inode;      /* Inode number */
@@ -2811,27 +2899,16 @@ struct dx_entry
 
 ![linux-dir-file-inode.png](../Images/Kernel/dir-file-inode.png)
 
-### hard/symbolic link
+## hard/symbolic link
 ```C++
  ln [args] [dst] [src]
 ```
 ![linux-file-link.png](../Images/Kernel/file-link.png)
 
-### vfs
+## vfs
 ![linux-file-arch.png](../Images/Kernel/file-arch.png)
-```C++
-register_filesystem(&ext4_fs_type);
 
-static struct file_system_type ext4_fs_type = {
-  .owner    = THIS_MODULE,
-  .name     = "ext4",
-  .mount    = ext4_mount,
-  .kill_sb  = kill_block_super,
-  .fs_flags  = FS_REQUIRES_DEV,
-};
-```
-
-### mount
+## mount
 ```C++
 SYSCALL_DEFINE5(mount, char __user *, dev_name,
   char __user *, dir_name, char __user *, type,
@@ -2927,31 +3004,6 @@ struct vfsmount *vfs_kern_mount(
 ```
 
 ```C++
-struct mount {
-  struct hlist_node mnt_hash;
-  struct mount      *mnt_parent;
-  struct dentry     *mnt_mountpoint;
-  struct vfsmount   mnt;
-
-  union {
-    struct rcu_head mnt_rcu;
-    struct llist_node mnt_llist;
-  };
-  struct list_head mnt_mounts;  /* list of children, anchored here */
-  struct list_head mnt_child;   /* and going through their mnt_child */
-  struct list_head mnt_instance;/* mount instance on sb->s_mounts */
-  const char *mnt_devname;      /* Name of device e.g. /dev/dsk/hda1 */
-  struct list_head mnt_list;
-} __randomize_layout;
-
-struct vfsmount {
-  struct dentry *mnt_root;    /* root of the mounted tree */
-  struct super_block *mnt_sb; /* pointer to superblock */
-  int mnt_flags;
-} __randomize_layout;
-```
-
-```C++
 struct dentry *mount_fs(
   struct file_system_type *type, int flags,
   const char *name, void *data)
@@ -2973,60 +3025,6 @@ static struct dentry *ext4_mount(
 ![linux-io-mount-example.png](../Images/Kernel/io-mount-example.png)
 
 ```C++
-struct file {
-  struct path                   f_path;
-  struct inode                  *f_inode;  /* cached value */
-  const struct file_operations  *f_op;
-  struct address_space          *f_mapping;
-  void*                         private_data; /* for special inode */
-
-  spinlock_t                    f_lock;
-  enum rw_hint                  f_write_hint;
-  atomic_long_t                 f_count;
-  unsigned int                  f_flags;
-  fmode_t                       f_mode;
-  loff_t                        f_pos;
-  struct mutex                  f_pos_lock;
-  struct fown_struct            f_owner;
-
-  /* Used by fs/eventpoll.c to link all the hooks to this file */
-  struct list_head              f_ep_links;
-  struct list_head              f_tfile_llink;
-
-  errseq_t                      f_wb_err;
-  union {
-      struct llist_node     fu_llist;
-      struct rcu_head       fu_rcuhead;
-  } f_u;
-};
-
-struct path {
-  struct vfsmount *mnt;
-  struct dentry *dentry;
-};
-
-// memroy chache of dirctories and files
-// associate inode and file
-struct dentry {
-  unsigned int        d_flags;
-  struct dentry       *d_parent;
-  struct inode        *d_inode;
-  struct super_block  *d_sb;
-  const struct dentry_operations *d_op;
-
-  struct hlist_bl_node d_hash;  /* lookup hash list */
-  union {
-    struct list_head  d_lru;    /* LRU list */
-    wait_queue_head_t *d_wait;  /* in-lookup ones only */
-  };
-  struct qstr       d_name;
-  unsigned char     d_iname[DNAME_INLINE_LEN];
-  struct list_head  d_child;
-  struct list_head  d_subdirs;
-} __randomize_layout;
-```
-
-```C++
 mount();
   ksys_mount(); /* copy type, dev_name, data to kernel */
     do_mount(); /* get path by name */
@@ -3037,7 +3035,7 @@ mount();
             fs_type.mount(); /* dev_fs_type, {dev, ext4}_mount */
 ```
 
-### open
+## open
 ```C++
 struct task_struct {
   struct fs_struct      *fs;
@@ -3075,30 +3073,69 @@ long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
 struct file *do_filp_open(int dfd, struct filename *pathname,
     const struct open_flags *op)
 {
+  struct nameidata nd;
+  int flags = op->lookup_flags;
+  struct file *filp;
+
   set_nameidata(&nd, dfd, pathname);
   filp = path_openat(&nd, op, flags | LOOKUP_RCU);
+  if (unlikely(filp == ERR_PTR(-ECHILD)))
+    filp = path_openat(&nd, op, flags);
+  if (unlikely(filp == ERR_PTR(-ESTALE)))
+    filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
   restore_nameidata();
   return filp;
 }
 
-static struct file *path_openat(struct nameidata *nd,
+struct file *path_openat(struct nameidata *nd,
       const struct open_flags *op, unsigned flags)
 {
-  file = get_empty_filp();
-  s = path_init(nd, flags);
-  while (!(error = link_path_walk(s, nd)) &&
-    (error = do_last(nd, file, op, &opened)) > 0) {
+  struct file *file;
+  int error;
+
+  file = alloc_empty_file(op->open_flag, current_cred());
+
+  if (unlikely(file->f_flags & __O_TMPFILE)) {
+    error = do_tmpfile(nd, flags, op, file);
+  } else if (unlikely(file->f_flags & O_PATH)) {
+    error = do_o_path(nd, flags, file);
+  } else {
+    const char *s = path_init(nd, flags);
+    while (!(error = link_path_walk(s, nd)) && (error = do_last(nd, file, op)) > 0) {
+      nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
+      s = trailing_symlink(nd);
+    }
+    terminate_walk(nd);
   }
-  terminate_walk(nd);
-  return file;
+
+  if (likely(!error)) {
+    if (likely(file->f_mode & FMODE_OPENED))
+      return file;
+    WARN_ON(1);
+    error = -EINVAL;
+  }
+
+  fput(file);
+
+  if (error == -EOPENSTALE) {
+    if (flags & LOOKUP_RCU)
+      error = -ECHILD;
+    else
+      error = -ESTALE;
+  }
+
+  return ERR_PTR(error);
 }
 
 static int do_last(struct nameidata *nd,
        struct file *file, const struct open_flags *op,
        int *opened)
 {
-  error = lookup_fast(nd, &path, &inode, &seq); // loopup in dcache
+  /* 1. loopup in dcache */
+  error = lookup_fast(nd, &path, &inode, &seq);
+  /* 2. loopup in file system */
   error = lookup_open(nd, &path, file, op, got_write, opened);
+  /* 3. open file */
   error = vfs_open(&nd->path, file, current_cred());
 }
 
@@ -3109,8 +3146,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
 {
   // open with O_CREAT flag
   if (!dentry->d_inode && (open_flag & O_CREAT)) {
-    error = dir_inode->i_op->create(dir_inode, dentry, mode,
-            open_flag & O_EXCL);
+    error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
   }
 
   dentry = d_alloc_parallel(dir, &nd->last, &wq);
@@ -3138,8 +3174,7 @@ static int do_dentry_open(struct file *f,
   int (*open)(struct inode *, struct file *),
   const struct cred *cred)
 {
-  f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK |
-        FMODE_PREAD | FMODE_PWRITE;
+  f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
   path_get(&f->f_path);
   f->f_inode = inode;
   f->f_mapping = inode->i_mapping;
@@ -3164,16 +3199,16 @@ do_sys_open();
       get_empty_filp();
       link_path_walk();
       do_last();
-        lookup_fast(); /* search in dcache */
+        lookup_fast(); /* 1. search in dcache */
 
-        lookup_open(); /* not found in dcache */
+        lookup_open(); /* 2. search in file system */
           dir_inode->i_op->create(); /* O_CREAT */
             ext4_create();
 
           d_alloc_parallel(); /* alloc a dentry */
           dir_inode->i_op->lookup(); /* ext4_lookup */
 
-        vfs_open();
+        vfs_open(); /* 3. open */
           do_dentry_open();
             f->f_op->open();
               ext4_file_open();
@@ -3183,7 +3218,7 @@ do_sys_open();
 
 ![linux-dcache.png](../Images/Kernel/dcache.png)
 
-### read/write
+## read/write
 ```C++
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
@@ -3250,8 +3285,8 @@ const struct file_operations ext4_file_operations = {
 ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
     if (iocb->ki_flags & IOCB_DIRECT) {
-        struct address_space *mapping = file->f_mapping;
-        retval = mapping->a_ops->direct_IO(iocb, iter);
+      struct address_space *mapping = file->f_mapping;
+      retval = mapping->a_ops->direct_IO(iocb, iter);
     }
     retval = generic_file_buffered_read(iocb, iter, retval);
 }
@@ -3266,7 +3301,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 }
 ```
 
-#### direct_IO
+### direct_io
 ```C++
 static const struct address_space_operations ext4_aops = {
   .readpage               = ext4_readpage,
@@ -3322,7 +3357,7 @@ static inline ssize_t do_blockdev_direct_IO(
 }
 ```
 
-#### buffered write
+### buffered write
 ```C++
 ssize_t generic_perform_write(
   struct file *file, struct iov_iter *i, loff_t pos)
@@ -3334,21 +3369,19 @@ ssize_t generic_perform_write(
     unsigned long offset;  /* Offset into pagecache page */
     unsigned long bytes;  /* Bytes to write to page */
 
-    status = a_ops->write_begin(
-      file, mapping, pos, bytes, flags, &page, &fsdata) {
-        grab_cache_page_write_begin();
-        ext4_journal_start();
-      }
+    status = a_ops->write_begin(file, mapping, pos, bytes, flags, &page, &fsdata) {
+      grab_cache_page_write_begin();
+      ext4_journal_start();
+    }
 
     copied = iov_iter_copy_from_user_atomic(page, i, offset, bytes);
 
     flush_dcache_page(page);
-    status = a_ops->write_end(
-      file, mapping, pos, bytes, copied, page, fsdata) {
-        ext4_journal_stop() {
-          // block_write_end->__block_commit_write->mark_buffer_dirty
-        }
+    status = a_ops->write_end(file, mapping, pos, bytes, copied, page, fsdata) {
+      ext4_journal_stop() {
+        // block_write_end->__block_commit_write->mark_buffer_dirty
       }
+    }
 
     pos += copied;
     written += copied;
@@ -3364,8 +3397,7 @@ struct page *grab_cache_page_write_begin(
 {
   struct page *page;
   int fgp_flags = FGP_LOCK|FGP_WRITE|FGP_CREAT;
-  page = pagecache_get_page(mapping, index, fgp_flags,
-      mapping_gfp_mask(mapping));
+  page = pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping));
   if (page)
     wait_for_stable_page(page);
   return page;
@@ -3377,8 +3409,7 @@ size_t iov_iter_copy_from_user_atomic(struct page *page,
   char *kaddr = kmap_atomic(page), *p = kaddr + offset;
   iterate_all_kinds(i, bytes, v,
     copyin((p += v.iov_len) - v.iov_len, v.iov_base, v.iov_len),
-    memcpy_from_page((p += v.bv_len) - v.bv_len, v.bv_page,
-         v.bv_offset, v.bv_len),
+    memcpy_from_page((p += v.bv_len) - v.bv_len, v.bv_page, v.bv_offset, v.bv_len),
     memcpy((p += v.iov_len) - v.iov_len, v.iov_base, v.iov_len)
   )
   kunmap_atomic(kaddr);
@@ -3406,46 +3437,92 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
 }
 
 // balance_dirty_pages -> wb_start_background_writeback -> wb_wakeup
+/* start background writeback */
+void wb_start_background_writeback(struct bdi_writeback *wb)
+{
+  wb_wakeup(wb);
+}
+
+static void wb_wakeup(struct bdi_writeback *wb)
+{
+  spin_lock_bh(&wb->work_lock);
+  if (test_bit(WB_registered, &wb->state))
+    mod_delayed_work(bdi_wq, &wb->dwork, 0);
+  spin_unlock_bh(&wb->work_lock);
+}
+
+
+/* bdi_wq serves all asynchronous writeback tasks */
+struct workqueue_struct *bdi_wq;
+
+
+/* mod_delayed_work - modify delay of or queue a delayed work */
+static inline bool mod_delayed_work(struct workqueue_struct *wq,
+				    struct delayed_work *dwork,
+				    unsigned long delay)
+{
+	return mod_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
+}
+
+bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
+			 struct delayed_work *dwork, unsigned long delay)
+{
+	unsigned long flags;
+	int ret;
+
+	do {
+		ret = try_to_grab_pending(&dwork->work, true, &flags);
+	} while (unlikely(ret == -EAGAIN));
+
+	if (likely(ret >= 0)) {
+		__queue_delayed_work(cpu, wq, dwork, delay);
+		local_irq_restore(flags);
+	}
+
+	/* -ENOENT from try_to_grab_pending() becomes %true */
+	return ret;
+}
+
 struct backing_dev_info {
   struct list_head      bdi_list;
   struct bdi_writeback  wb; /* the root writeback info for this bdi */
   struct list_head      wb_list; /* list of all wbs */
 
-  wait_queue_head_t wb_waitq;
+  wait_queue_head_t     wb_waitq;
 
-  struct device *dev;
-  struct device *owner;
+  struct device         *dev;
+  struct device         *owner;
 
-  struct timer_list laptop_mode_wb_timer;
+  struct timer_list     laptop_mode_wb_timer;
 };
 
 struct bdi_writeback {
   struct list_head    work_list;
   struct delayed_work dwork;    /* work item used for writeback */
 
-  struct list_head b_dirty;     /* dirty inodes */
-  struct list_head b_io;        /* parked for writeback */
-  struct list_head b_more_io;   /* parked for more writeback */
-  struct list_head b_dirty_time;/* time stamps are dirty */
+  struct list_head    b_dirty;     /* dirty inodes */
+  struct list_head    b_io;        /* parked for writeback */
+  struct list_head    b_more_io;   /* parked for more writeback */
+  struct list_head    b_dirty_time;/* time stamps are dirty */
 
-  struct list_head bdi_node;    /* anchored at bdi->wb_list */
+  struct list_head    bdi_node;    /* anchored at bdi->wb_list */
 };
 
 struct delayed_work {
-  struct work_struct work;
-  struct timer_list timer;
+  struct work_struct      work;
+  struct timer_list       timer;
 
   /* target workqueue and CPU ->timer uses to queue ->work */
   struct workqueue_struct *wq;
-  int cpu;
+  int                     cpu;
 };
 
 typedef void (*work_func_t)(struct work_struct *work);
 
 struct work_struct {
-  atomic_long_t data;
-  struct list_head entry;
-  work_func_t func;
+  atomic_long_t     data;
+  struct list_head  entry;
+  work_func_t       func;
 };
 
 struct wb_writeback_work {
@@ -3512,7 +3589,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 ```
 ![linux-file-bdi.png](../Images/Kernel/file-bdi.png)
 
-##### bdi_wq
+### bdi_wq
 ```C++
 /* global variable, all backing task stored here */
 /* bdi_wq serves all asynchronous writeback tasks */
@@ -3619,7 +3696,7 @@ static int wb_init(
 // ---> see ext4_writepages in IO management
 ```
 
-#### buffered read
+### buffered read
 ```C++
 static ssize_t generic_file_buffered_read(struct kiocb *iocb,
     struct iov_iter *iter, ssize_t written)
@@ -3660,13 +3737,13 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 
 ![linux-file-read-write.png](../Images/Kernel/file-read-write.png)
 
-### Question:
+## Question:
 1. How to use inode bit map present all inodes?
 2. Does system alloc a block for a dirctory or a file?
 3. What does ext4_file_open do?
 4. What happend when inserting data in a file?
 
-### TODO
+## TODO
 1. xarray
 
 # IO
@@ -3687,8 +3764,8 @@ mknod filename type major minor  // create dev file in /dev/
 ```
 ![linux-io-sysfs.png](../Images/Kernel/io-sysfs.png)
 
-### char dev
-#### kernal module
+## char dev
+### kernal module
 ```C++
 module_init(logibm_init);
 module_exit(logibm_exit);
@@ -3722,7 +3799,7 @@ A kernel module consists:
 5. invoke `module_init` and `moudle_exit`
 6. declare lisence, invoke MODULE_LICENSE
 
-#### insmod
+### insmod
 ![linux-io-char-dev-install-open.png](../Images/Kernel/io-char-dev-install-open.png)
 ```C++
 static int __init lp_init (void)
@@ -3766,7 +3843,7 @@ int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 }
 ```
 
-#### dev_fs_type
+### dev_fs_type
 ```C++
 rest_init();
   kernel_thread(kernel_init);
@@ -3845,7 +3922,7 @@ out:
 }
 ```
 
-#### mount
+### mount
 ```C++
 /* mount -t type device destination_dir
  *
@@ -3994,7 +4071,7 @@ mount();
           list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
 
-#### mknod
+### mknod
 ```C++
 /* mknod /dev/ttyS0 c 4 64 */
 SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
@@ -4075,7 +4152,7 @@ mknod();
           dget();
 ```
 
-#### open dev
+### open dev
 ```C++
 const struct file_operations def_chr_fops = {
   .open = chrdev_open,
@@ -4110,7 +4187,7 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 }
 ```
 
-#### write char dev
+### write char dev
 ```C++
 ssize_t __vfs_write(struct file *file, const char __user *p, size_t count, loff_t *pos)
 {
@@ -4171,7 +4248,7 @@ static ssize_t lp_write(
 ```
 ![linux-io-char-dev-write.png](../Images/Kernel/io-char-dev-write.png)
 
-#### ioctl
+### ioctl
 ```C++
 SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 {
@@ -4316,7 +4393,7 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
 ```
 ![linux-io-ioctl.png](../Images/Kernel/io-ioctl.png)
 
-### interruption
+## interruption
 
 ![linux-io-irq.png](../Images/Kernel/io-irq.png)
 
@@ -4366,7 +4443,7 @@ enum irqreturn {
 };
 ```
 
-#### request_irq
+### request_irq
 ```C++
 static inline int request_irq(
   unsigned int irq, irq_handler_t handler,
@@ -4551,7 +4628,7 @@ struct idt_bits {
 };
 ```
 
-#### init idt_table
+### init idt_table
 ```C++
 struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
 
@@ -4614,7 +4691,7 @@ enum {
 };
 ```
 
-#### init_IRQ
+### init_IRQ
 ```C++
 // after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
 void __init native_init_IRQ(void)
@@ -4706,7 +4783,7 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags
 }
 ```
 
-#### init vector_irq
+### init vector_irq
 ```C++
 /* The interrupt vector interrupt controller sent to
  * each cpu is per cpu local variable, but the abstract
@@ -4764,7 +4841,7 @@ next_cpu:
 
 ![linux-io-interrupt.png](../Images/Kernel/io-interrupt.png)
 
-### block dev
+## block dev
 ```C++
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
@@ -4804,7 +4881,7 @@ static struct file_system_type ext4_fs_type = {
 };
 ```
 
-#### mount
+### mount
 ```C++
 /* mont -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> fs_type.mount */
@@ -4837,7 +4914,7 @@ struct dentry *mount_bdev(
 }
 ```
 
-##### blkdev_get_by_path
+### blkdev_get_by_path
 ```C++
 struct block_device *blkdev_get_by_path(
   const char *path, fmode_t mode, void *holder)
@@ -4850,7 +4927,7 @@ struct block_device *blkdev_get_by_path(
   return bdev;
 }
 ```
-###### lookup_bdev
+#### lookup_bdev
 ```C++
 // 1. find the block device file under /dev which is devtmpfs file system
 struct block_device *lookup_bdev(const char *pathname)
@@ -4997,7 +5074,7 @@ struct hd_struct {
 };
 ```
 
-###### blkdev_get
+#### blkdev_get
 ```C++
 static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
 {
@@ -5116,7 +5193,7 @@ static int sd_open(struct block_device *bdev, fmode_t mode)
 }
 ```
 
-##### bdev_map
+### bdev_map
 ```C++
 static struct kobj_map *bdev_map;
 // map a dev_t with a gendisk
@@ -5140,7 +5217,7 @@ void blk_register_region(
 }
 ```
 
-##### sget
+### sget
 ```C++
 // drivers/scsi/sd.c
 static const struct block_device_operations sd_fops = {
@@ -5248,7 +5325,7 @@ mount();
 
 ![linux-io-bd.png](../Images/Kernel/io-bd.png)
 
-### direct IO
+## direct IO
 ```C++
 read();
   vfs_read();
@@ -5438,7 +5515,7 @@ static int do_direct_IO(
 // submit_page_section -> dio_bio_submit -> submit_bio
 ```
 
-### buffered IO write
+## buffered IO write
 ```C++
 /* wb_workfn -> wb_do_writeback -> wb_writeback
  * -> writeback_sb_inodes -> __writeback_single_inode
@@ -6141,7 +6218,7 @@ void ext4_io_submit(struct ext4_io_submit *io)
 // ---> submit_bio
 ```
 
-### submit_bio
+## submit_bio
 ```C++
 // direct IO and buffered IO will come to here:
 blk_qc_t submit_bio(struct bio *bio)
@@ -6245,7 +6322,7 @@ struct bio_vec {
 ```
 ![linux-io-bio.png](../Images/Kernel/io-bio.png)
 
-#### make_request_fn
+### make_request_fn
 ```C++
 // make_request_fn -> blk_queue_bio
 static blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
@@ -6361,7 +6438,7 @@ static struct request *cfq_find_rq_fmerge(
 }
 ```
 
-#### request_fn
+### request_fn
 ```C++
 static void scsi_request_fn(struct request_queue *q)
   __releases(q->queue_lock)
@@ -6398,7 +6475,7 @@ static void scsi_request_fn(struct request_queue *q)
 }
 ```
 
-### init block device
+## init block device
 ```C++
 // Small computer system interface
 static struct scsi_device *scsi_alloc_sdev(
@@ -6558,7 +6635,7 @@ scsi_request_fn();
 ```
 ![linux-io-bio-request.png](../Images/Kernel/io-bio-request.png)
 
-### Questions:
+## Questions:
 1. How to implement the IO port of dev register, and mmap of IO dev cache?
 2. How to assign virutal irq to a cpu?
 3. The interrupt controller sends interrupt to each cpu, which one will handle it?
@@ -6571,7 +6648,7 @@ scsi_request_fn();
 10. How data flow: `wb_writeback_work` -> `writeback_control` -> `mpage_da_data` -> `buffer_head` -> `bio` works?
 
 # IPC
-### pipe
+## pipe
 ```C++
 SYSCALL_DEFINE1(pipe, int __user *, fildes)
 {
@@ -6699,7 +6776,7 @@ struct pipe_buffer {
 ```
 ![linux-ipc-pipe-2.png](../Images/Kernel/ipc-pipe-2.png)
 
-### fifo
+## fifo
 ```C++
 /* mkfifo is Glibc function */
 int
@@ -6852,8 +6929,8 @@ static int fifo_open(struct inode *inode, struct file *filp)
 ```
 ![linux-ipc-fifo.png](../Images/Kernel/ipc-fifo.png)
 
-### signal
-#### resigter a sighand
+## signal
+### resigter a sighand
 ```C++
 struct task_struct {
     struct signal_struct    *signal;
@@ -7013,7 +7090,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
 ```
 ![linux-ipc-signal-register-handler.png](../Images/Kernel/ipc-signal-register-handler.png)
 
-#### send a signal
+### send a signal
 ```C++
 /* kill->kill_something_info->kill_pid_info->group_send_sig_info->do_send_sig_info
  * tkill->do_tkill->do_send_specific->do_send_sig_info
@@ -7137,7 +7214,7 @@ int wake_up_state(struct task_struct *p, unsigned int state)
 ```
 * [try_to_wake_up](#ttwu)
 
-#### handle signal
+### handle signal
 ```C++
 static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 {
@@ -7287,7 +7364,7 @@ asmlinkage long sys_rt_sigreturn(void)
 ```
 ![linux-sig-handle.png](../Images/Kernel/sig-handle.png)
 
-### sem, shm, msg
+## sem, shm, msg
 ```C++
 struct ipc_namespace {
   struct ipc_ids  ids[3];
@@ -7405,7 +7482,7 @@ struct msg_queue {
 } __randomize_layout;
 ```
 
-#### shmget
+### shmget
 ```C++
 SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 {
@@ -7677,7 +7754,7 @@ static const struct file_operations shmem_file_operations = {
 };
 ```
 
-#### shmat
+### shmat
 ```C++
 SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
 {
@@ -7797,7 +7874,7 @@ static const struct vm_operations_struct shmem_vm_ops = {
 };
 ```
 
-#### shm_fault
+### shm_fault
 ```C++
 static int shm_fault(struct vm_fault *vmf)
 {
@@ -7856,7 +7933,7 @@ shm_fault();
 
 ![linux-ipc-shm.png](../Images/Kernel/ipc-shm.png)
 
-#### semget
+### semget
 ```C++
 SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
 {
@@ -7920,7 +7997,7 @@ struct sem {
 };
 ```
 
-#### semctl
+### semctl
 ```C++
 SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
 {
@@ -8016,7 +8093,7 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 }
 ```
 
-#### semop
+### semop
 ```C++
 SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
     unsigned, nsops)
@@ -8324,7 +8401,7 @@ semop();
 # Containerization
 ![linux-container-vir-arch.png](../Images/Kernel/container-vir-arch.png)
 
-### ns
+## ns
 ```C++
 # nsenter --target 58212 --mount --uts --ipc --net --pid -- env --ignore-environment -- /bin/bash
 
@@ -8505,7 +8582,7 @@ static __net_init int loopback_net_init(struct net *net)
 ```
 ![linux-container-namespace.png](../Images/Kernel/container-namespace.png)
 
-### cgroup
+## cgroup
 cgrup subsystem:
   cpu, cpuacct, cpuset, memory, blkio, devices, net_cls(tc), freezer
 
@@ -8649,7 +8726,7 @@ int cgroup_init(void)
 }
 ```
 
-#### cgroup_init_cftypes
+### cgroup_init_cftypes
 ```C++
 /* set the cftype's kf_ops to cgroup_kf_ops */
 static int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
@@ -8737,7 +8814,7 @@ struct cftype {
 };
 ```
 
-#### cgroup_init_subsys
+### cgroup_init_subsys
 ```C++
 #define for_each_subsys(ss, ssid)          \
   for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT &&    \
@@ -9000,7 +9077,7 @@ struct kernfs_elem_attr {
 };
 ```
 
-#### mnt cgroup_fs_type
+### mnt cgroup_fs_type
 ```C++
 /* mount -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> cgroup_mount -> cgroup1_mount */
@@ -9249,7 +9326,7 @@ struct dentry *kernfs_mount_ns(
 }
 
 ```
-#### e.g. cpu.shares
+### e.g. cpu.shares
 ```C++
 // cpu.shares -> cpu_shares_write_u64
 int sched_group_set_shares(struct task_group *tg, unsigned long shares)
@@ -9273,7 +9350,7 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 }
 ```
 
-#### attach
+### attach
 ```C++
 /* write id to /sys/fs/cgroup/cpu,cpuacct/tasks file
  *
@@ -9610,7 +9687,7 @@ inline unsigned int hpet_readl(unsigned int a)
 }
 ```
 
-### clocksource_register_hz
+## clocksource_register_hz
 ```C++
 static inline int clocksource_register_hz(struct clocksource *cs, u32 hz)
 {
@@ -9642,7 +9719,7 @@ int __clocksource_register_scale(struct clocksource *cs, u32 scale, u32 freq)
 }
 ```
 
-### clockevents_config_and_register
+## clockevents_config_and_register
 ```C++
 static void hpet_legacy_clockevent_register(void)
 {
@@ -10244,7 +10321,7 @@ static void __run_hrtimer(struct hrtimer_cpu_base *cpu_base,
 }
 ```
 
-### tick_check_oneshot_change
+## tick_check_oneshot_change
 ```C++
 int tick_check_oneshot_change(int allow_nohz)
 {
@@ -10313,7 +10390,7 @@ int tick_program_event(ktime_t expires, int force)
 }
 ```
 
-### hrtimer_switch_to_hres
+## hrtimer_switch_to_hres
 ```C++
 static void hrtimer_switch_to_hres(void)
 {
@@ -10337,7 +10414,7 @@ int tick_init_highres(void)
 }
 ```
 
-### hrtimer tick emulation
+## hrtimer tick emulation
 ```C++
 /* setup the tick emulation timer */
 void tick_setup_sched_timer(void)
@@ -10618,7 +10695,7 @@ retry:
 }
 ```
 ## API
-### gettimeofday
+## gettimeofday
 ```C++
 SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
     struct timezone __user *, tz)
@@ -10697,7 +10774,7 @@ struct timekeeper {
 };
 ```
 
-### timer_create
+## timer_create
 ```C++
 SYSCALL_DEFINE3(timer_create, const clockid_t, which_clock,
     struct sigevent __user *, timer_event_spec,
@@ -10794,7 +10871,7 @@ static int common_timer_create(struct k_itimer *new_timer)
 }
 ```
 
-### timer_settime
+## timer_settime
 ```C++
 SYSCALL_DEFINE4(timer_settime, timer_t, timer_id, int, flags,
     const struct __kernel_itimerspec __user *, new_setting,
@@ -10909,7 +10986,7 @@ static void common_hrtimer_arm(struct k_itimer *timr, ktime_t expires,
 }
 ```
 
-### timer cancel
+## timer cancel
 ```C++
 static int common_hrtimer_try_to_cancel(struct k_itimer *timr)
 {
@@ -10997,7 +11074,7 @@ static void __remove_hrtimer(struct hrtimer *timer,
 }
 ```
 
-### posix_timer_fn
+## posix_timer_fn
 ```C++
 static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
 {
@@ -11319,7 +11396,7 @@ posix_timer_fn();
 http://www.wowotech.net/timer_subsystem/time-subsyste-architecture.html
 
 # Lock
-### spin lock
+## spin lock
 ```C++
 typedef struct spinlock {
   union {
@@ -11509,7 +11586,7 @@ static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
 
 # Pthread
 
-### pthread_create
+## pthread_create
 ```C++
 int __pthread_create_2_1 (
   pthread_t *newthread, const pthread_attr_t *attr,
@@ -11709,8 +11786,8 @@ void __deallocate_stack (struct pthread *pd)
 }
 ```
 
-### pthread_mutex
-#### lock
+## pthread_mutex
+### lock
 
 ```C++
 SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
