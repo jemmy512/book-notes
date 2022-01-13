@@ -18,6 +18,7 @@
     * [Operating Systems: Three Easy Pieces :soon:]()
     * [Operating System Concepts :soon:]()
     * [Modern Operating System](./CS/modern-operating-system.md)
+    * [Operating Systems Design and Implementation :soon:](./CS/computer-system-design-implementation.md)
 
 * Computer Architecture
     * [Computer Organization and Design: The Hardware/Sofeware Interface :soon:](./CS/computer-organization-and-design.md)
