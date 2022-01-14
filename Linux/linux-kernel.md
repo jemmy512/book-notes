@@ -21,7 +21,9 @@
     * [wait_woken](#wait_woken)
     * [fork](#fork)
     * [exec](#exec)
-* [Memory Management](./linux-kernel-mem.md)
+* [Memory Management :link:](./linux-kernel-mem.md)
+* [Net :link:](./linux-kernel-net.md)
+
 * [File Management](#File-Management)
     * [inode](#inode)
     * [extent](#extent)
@@ -36,8 +38,40 @@
         * [buffered write](#buffered-write)
             * [bdi_wq](#bdi_wq)
         * [buffered read](#buffered-read)
-* [Net](./linux-kernel-net.md)
+    * [writeback](#writeback)
+
 * [IO](#IO)
+    * [kobject](#kobject)
+    * [char dev](#char-dev)
+        * [insmod char dev](#insmod-char-dev)
+        * [dev_fs_type](#dev_fs_type)
+        * [mount char dev](#mount-char-dev)
+        * [mknod char dev](#mknod-char-dev)
+        * [open char dev](#open-char-dev)
+        * [write char dev](#write-char-dev)
+        * [ioctl](#ioctl)
+    * [block dev](#block-dev)
+        * [mount blk dev](#mount-blk-dev)
+            * [blkdev_get_by_path](#blkdev_get_by_path)
+                * [lookup_bdev](#lookup_bdev)
+                * [blkdev_get](#blkdev_get)
+                * [bdev_map](#bdev_map)
+            * [sget](#sget)
+    * [interruption](#interruption)
+        * [request_irq](#request_irq)
+        * [init idt_table](#init-idt_table)
+        * [init_IRQ](#init_IRQ)
+        * [init vector_irq](#init-vector_irq)
+    * [direct io](#direct-iO)
+        * [dio_get_page](#dio_get_page)
+        * [get_more_blocks](#get_more_blocks)
+        * [submit_page_section](#submit_page_section)
+    * [buffered io write](#buffered-IO-write)
+    * [submit_bio](#submit_bio)
+        * [make_request_fn](#make_request_fn)
+        * [request_fn](#request_fn)
+    * [init request_queue](#init-request_queue)
+
 * [IPC](#IPC)
 * [Virtualization](#Virtualization)
 * [Containerization](#Containerization)
@@ -47,11 +81,11 @@
 
 # Init
 ## cpu
-![linux-init-cpu.png](../Images/Kernel/init-cpu.png)
+![](../Images/Kernel/init-cpu.png)
 
 ![](../Images/Kernel/init-cpu-2.png)
 
-![linux-init-cpu-process-program.png](../Images/Kernel/init-cpu-process-program.png)
+![](../Images/Kernel/init-cpu-process-program.png)
 
 ## bios
 * ![](../Images/Kernel/init-bios.png)
@@ -172,9 +206,9 @@ static int run_init_process(const char *init_filename)
     (const char __user *const __user *)envp_init);
 }
 ```
-![linux-init-kernel.png](../Images/Kernel/init-kernel.png)
+![](../Images/Kernel/init-kernel.png)
 
-![linux-init-cpu-arch.png](../Images/Kernel/init-cpu-arch.png)
+![](../Images/Kernel/init-cpu-arch.png)
 
 ## syscall
 
@@ -328,7 +362,7 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
   }
 }
 ```
-![linux-init-syscall-32.png](../Images/Kernel/init-syscall-32.png)
+![](../Images/Kernel/init-syscall-32.png)
 
 ### 64
 ```C++
@@ -411,7 +445,7 @@ void do_syscall_64(struct pt_regs *regs)
   syscall_return_slowpath(regs);
 }
 ```
-![linux-init-syscall-64.png](../Images/Kernel/init-syscall-64.png)
+![](../Images/Kernel/init-syscall-64.png)
 
 
 # Process Management
@@ -419,7 +453,7 @@ void do_syscall_64(struct pt_regs *regs)
 ![](../Images/Kernel/proc-management.png)
 
 ## process
-![linux-proc-compile.png](../Images/Kernel/proc-compile.png)
+![](../Images/Kernel/proc-compile.png)
 ```C++
 /* compile */
 gcc -c -fPIC process.c
@@ -438,24 +472,24 @@ export LD_LIBRARY_PATH=
 ```
 
 1. elf: relocatable file
-![linux-proc-elf-relocatable.png](../Images/Kernel/proc-elf-relocatable.png)
+![](../Images/Kernel/proc-elf-relocatable.png)
 
 2. elf: executable file
-![linux-proc-elf-executable.png](../Images/Kernel/proc-elf-executable.png)
+![](../Images/Kernel/proc-elf-executable.png)
 
 3. elf: shared object
 
 4. elf: core dump
 
-![linux-proc-tree.png](../Images/Kernel/proc-tree.png)
+![](../Images/Kernel/proc-tree.png)
 
-![linux-proc-elf-compile-exec.png](../Images/Kernel/proc-elf-compile-exec.png)
+![](../Images/Kernel/proc-elf-compile-exec.png)
 
 ## thread
-![linux-proc-thread.png](../Images/Kernel/proc-thread.png)
+![](../Images/Kernel/proc-thread.png)
 
 ## task_struct
-![linux-proc-task-1.png](../Images/Kernel/proc-task-1.png)
+![](../Images/Kernel/proc-task-1.png)
 
 ## schedule
 ```C++
@@ -627,7 +661,7 @@ const struct sched_class fair_sched_class = {
   .pick_next_task     = pick_next_task_fair
 };
 ```
-![linux-proc-shced-cpu-rq-class-entity-task.png](../Images/Kernel/proc-shced-cpu-rq-class-entity-task.png)
+![](../Images/Kernel/proc-shced-cpu-rq-class-entity-task.png)
 
 ### voluntary schedule
 ```c++
@@ -986,7 +1020,7 @@ schedule(void)
             barrier();
             return finish_task_switch(prev);
 ```
-![linux-proc-sched-voluntary.png](../Images/Kernel/proc-sched-voluntary.png)
+![](../Images/Kernel/proc-sched-voluntary.png)
 
 ### preempt schedule
 ### TIF_NEED_RESCHED
@@ -1311,7 +1345,7 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
   } while (need_resched());
 }
 ```
-![linux-proc-sched.png](../Images/Kernel/proc-sched.png)
+![](../Images/Kernel/proc-sched.png)
 
 ### Q
 1. A process waits on a block operation (mutex, semphore, waitqueue), it calls schedule(). Will it be removed from rq, and add to rq when block operation wakeups?
@@ -1634,9 +1668,9 @@ preempt:
 }
 
 ```
-![linux-fork.png](../Images/Kernel/fork.png)
+![](../Images/Kernel/fork.png)
 
-![linux-proc-fork-pthread-create.png](../Images/Kernel/proc-fork-pthread-create.png)
+![](../Images/Kernel/proc-fork-pthread-create.png)
 
 ## exec
 ```C++
@@ -2580,7 +2614,7 @@ Reference:
 
 # File Management
 
-![linux-file-vfs-system.png](../Images/Kernel/file-vfs-system.png)
+![](../Images/Kernel/file-vfs-system.png)
 
 ```C++
 register_filesystem(&ext4_fs_type);
@@ -2766,9 +2800,9 @@ struct ext4_extent {
 ```
 * the `ee_len` is 16 bits, one bit indicates validation, so one ext4_extent can represent 2^15 blocks data, each block is 4k, the total data is 2^15 * 2^12 = 2^27 bits = 128MB.
 
-![linux-mem-extents.png](../Images/Kernel/mem-extents.png)
+![](../Images/Kernel/mem-extents.png)
 
-![linux-ext4-extents.png](../Images/Kernel/ext4-extents.png)
+![](../Images/Kernel/ext4-extents.png)
 
 ```C++
 const struct inode_operations ext4_dir_inode_operations = {
@@ -2819,7 +2853,7 @@ struct ext4_group_desc
   __le32  bg_inode_table_lo;  /* Inodes table block */
 };
 ```
-![linux-block-group.png](../Images/Kernel/block-group.png)
+![](../Images/Kernel/block-group.png)
 
 ```C++
 struct ext4_super_block {
@@ -2852,7 +2886,7 @@ struct super_block {
   struct list_head  s_inodes_wb; /* writeback inodes */
 };
 ```
-![linux-mem-meta-block-group.png](../Images/Kernel/mem-meta-block-group.png)
+![](../Images/Kernel/mem-meta-block-group.png)
 
 ## directory
 ```C++
@@ -2895,18 +2929,18 @@ struct dx_entry
   __le32 block;
 };
 ```
-![linux-file-directory.png](../Images/Kernel/file-directory.png)
+![](../Images/Kernel/file-directory.png)
 
-![linux-dir-file-inode.png](../Images/Kernel/dir-file-inode.png)
+![](../Images/Kernel/dir-file-inode.png)
 
 ## hard/symbolic link
 ```C++
  ln [args] [dst] [src]
 ```
-![linux-file-link.png](../Images/Kernel/file-link.png)
+![](../Images/Kernel/file-link.png)
 
 ## vfs
-![linux-file-arch.png](../Images/Kernel/file-arch.png)
+![](../Images/Kernel/file-arch.png)
 
 ## mount
 ```C++
@@ -3022,7 +3056,7 @@ static struct dentry *ext4_mount(
 }
 /* ---> see mount block device in IO part */
 ```
-![linux-io-mount-example.png](../Images/Kernel/io-mount-example.png)
+![](../Images/Kernel/io-mount-example.png)
 
 ```C++
 mount();
@@ -3216,7 +3250,7 @@ do_sys_open();
   putname();
 ```
 
-![linux-dcache.png](../Images/Kernel/dcache.png)
+![](../Images/Kernel/dcache.png)
 
 ## read/write
 ```C++
@@ -3357,6 +3391,58 @@ static inline ssize_t do_blockdev_direct_IO(
 }
 ```
 
+### buffered read
+```C++
+static ssize_t generic_file_buffered_read(struct kiocb *iocb,
+    struct iov_iter *iter, ssize_t written)
+{
+  struct file *filp = iocb->ki_filp;
+  struct address_space *mapping = filp->f_mapping;
+  struct inode *inode = mapping->host;
+  struct file_ra_state *ra = &filp->f_ra;
+  loff_t *ppos = &iocb->ki_pos;
+  pgoff_t index;
+  pgoff_t last_index;
+  pgoff_t prev_index;
+  unsigned long offset;      /* offset into pagecache page */
+  unsigned int prev_offset;
+  int error = 0;
+
+  iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
+
+  index = *ppos >> PAGE_SHIFT;
+  prev_index = ra->prev_pos >> PAGE_SHIFT;
+  prev_offset = ra->prev_pos & (PAGE_SIZE-1);
+  last_index = (*ppos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT;
+  offset = *ppos & ~PAGE_MASK;
+
+  for (;;) {
+    struct page *page;
+    pgoff_t end_index;
+    loff_t isize;
+    page = find_get_page(mapping, index);
+
+    if (!page) {
+      if (iocb->ki_flags & IOCB_NOWAIT)
+        goto would_block;
+
+      page_cache_sync_readahead(mapping, ra, filp,index, last_index - index);
+      page = find_get_page(mapping, index);
+      if (unlikely(page == NULL))
+        goto no_cached_page;
+    }
+
+    if (PageReadahead(page)) {
+      page_cache_async_readahead(mapping, ra, filp, page, index, last_index - index);
+    }
+
+    /* Ok, we have the page, and it's up-to-date, so
+     * now we can copy it to user space... */
+    ret = copy_page_to_iter(page, offset, nr, iter);
+  }
+}
+```
+
 ### buffered write
 ```C++
 ssize_t generic_perform_write(
@@ -3435,12 +3521,8 @@ void balance_dirty_pages_ratelimited(struct address_space *mapping)
   if (unlikely(current->nr_dirtied >= ratelimit))
     balance_dirty_pages(mapping, wb, current->nr_dirtied);
 }
-```
 
-#### balance_dirty_pages
-```c++
-// balance_dirty_pages -> wb_start_background_writeback -> wb_wakeup
-/* start background writeback */
+/* start background writeback, balance_dirty_pages -> */
 void wb_start_background_writeback(struct bdi_writeback *wb)
 {
   wb_wakeup(wb);
@@ -3506,12 +3588,19 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
     add_timer(timer);
 }
 ```
+## writeback
+
+![](../Images/Kernel/file-writeback.png)
 
 ### backing_dev_info
 ```c++
+extern spinlock_t               bdi_lock;
+extern struct list_head         bdi_list;
+extern struct workqueue_struct  *bdi_wq;
+
 struct backing_dev_info {
   struct list_head      bdi_list;
-  struct bdi_writeback  wb; /* the root writeback info for this bdi */
+  struct bdi_writeback  wb;      /* the root writeback info for this bdi */
   struct list_head      wb_list; /* list of all wbs */
 
   wait_queue_head_t     wb_waitq;
@@ -3557,8 +3646,8 @@ struct wb_writeback_work {
   unsigned long             *older_than_this;
   enum writeback_sync_modes sync_mode;
   unsigned int              tagged_writepages:1;
-  unsigned int              for_kupdate:1;
-  unsigned int              range_cyclic:1;
+  unsigned int              for_kupdate:1; /* periodic wb flag */
+  unsigned int              range_cyclic:1; /* range wb flag */
   unsigned int              for_background:1;
   unsigned int              for_sync:1;   /* sync(2) WB_SYNC_ALL writeback */
   unsigned int              auto_free:1;  /* free on completion */
@@ -3569,101 +3658,8 @@ struct wb_writeback_work {
 };
 ```
 
-### bdi_wq
-![linux-file-bdi.png](../Images/Kernel/file-bdi.png)
-
-```C++
-/* global variable, all backing task stored here */
-/* bdi_wq serves all asynchronous writeback tasks */
-struct workqueue_struct *bdi_wq;
-
-struct workqueue_struct {
-  struct list_head      pwqs;  /* WR: all pwqs of this wq */
-  struct list_head      list;  /* PR: list of all workqueues */
-
-  struct list_head      maydays; /* MD: pwqs requesting rescue */
-  struct worker         *rescuer; /* I: rescue worker */
-
-  struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
-  struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
-  struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
-};
-
-/* The per-pool workqueue. */
-struct pool_workqueue {
-  struct worker_pool      *pool;    /* I: the associated pool */
-  struct workqueue_struct *wq;    /* I: the owning workqueue */
-  int                     work_color;  /* L: current color */
-  int                     flush_color;  /* L: flushing color */
-  int                     refcnt;    /* L: reference count */
-  int                     nr_in_flight[WORK_NR_COLORS];/* L: nr of in_flight works */
-  int                     nr_active;  /* L: nr of active works */
-  int                     max_active;  /* L: max active works */
-  struct list_head        delayed_works;  /* L: delayed works */
-  struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
-  struct list_head        mayday_node;  /* MD: node on wq->maydays */
-
-  /*
-   * Release of unbound pwq is punted to system_wq.  See put_pwq()
-   * and pwq_unbound_release_workfn() for details.  pool_workqueue
-   * itself is also sched-RCU protected so that the first pwq can be
-   * determined without grabbing wq->mutex.
-   */
-  struct work_struct  unbound_release_work;
-  struct rcu_head    rcu;
-} __aligned(1 << WORK_STRUCT_FLAG_BITS);
-
-struct worker_pool {
-  spinlock_t          lock;   /* the pool lock */
-  int                 cpu;    /* I: the associated cpu */
-  int                 node;   /* I: the associated node ID */
-  int                 id;     /* I: pool ID */
-  unsigned int        flags;  /* X: flags */
-
-  unsigned long       watchdog_ts;  /* L: watchdog timestamp */
-
-  struct list_head    worklist;  /* L: list of pending works */
-
-  int                 nr_workers;  /* L: total number of workers */
-  int                 nr_idle;  /* L: currently idle workers */
-
-  struct list_head    idle_list;  /* X: list of idle workers */
-  struct timer_list   idle_timer;  /* L: worker idle timeout */
-  struct timer_list   mayday_timer;  /* L: SOS timer for workers */
-
-  /* a workers is either on busy_hash or idle_list, or the manager */
-  DECLARE_HASHTABLE(busy_hash, BUSY_WORKER_HASH_ORDER);
-            /* L: hash of busy workers */
-
-  struct worker       *manager;  /* L: purely informational */
-  struct list_head    workers;  /* A: attached workers */
-  struct completion   *detach_completion; /* all workers detached */
-
-  struct ida          worker_ida;  /* worker IDs for task name */
-
-  struct workqueue_attrs  *attrs;    /* I: worker attributes */
-  struct hlist_node       hash_node;  /* PL: unbound_pool_hash node */
-  int                     refcnt;    /* PL: refcnt for unbound pools */
-
-  /*
-   * The current concurrency level.  As it's likely to be accessed
-   * from other CPUs during try_to_wake_up(), put it in a separate
-   * cacheline.
-   */
-  atomic_t    nr_running ____cacheline_aligned_in_smp;
-
-  /*
-   * Destruction of pool is sched-RCU protected to allow dereferences
-   * from get_work_pool().
-   */
-  struct rcu_head    rcu;
-} ____cacheline_aligned_in_smp;
-
-struct backing_dev_info noop_backing_dev_info = {
-  .name           = "noop",
-  .capabilities   = BDI_CAP_NO_ACCT_AND_WRITEBACK,
-};
-
+### bdi_init
+```c++
 static int default_bdi_init(void)
 {
   int err;
@@ -3757,7 +3753,6 @@ void delayed_work_timer_fn(struct timer_list *t)
   __queue_work(dwork->cpu, dwork->wq, &dwork->work);
 }
 ```
-
 ### queue_work
 ```c++
  void __queue_work(int cpu, struct workqueue_struct *wq,
@@ -3887,61 +3882,103 @@ static void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
 }
 ```
 
-### buffered read
-```C++
-static ssize_t generic_file_buffered_read(struct kiocb *iocb,
-    struct iov_iter *iter, ssize_t written)
-{
-  struct file *filp = iocb->ki_filp;
-  struct address_space *mapping = filp->f_mapping;
-  struct inode *inode = mapping->host;
-  struct file_ra_state *ra = &filp->f_ra;
-  loff_t *ppos = &iocb->ki_pos;
-  pgoff_t index;
-  pgoff_t last_index;
-  pgoff_t prev_index;
-  unsigned long offset;      /* offset into pagecache page */
-  unsigned int prev_offset;
-  int error = 0;
-
-  iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
-
-  index = *ppos >> PAGE_SHIFT;
-  prev_index = ra->prev_pos >> PAGE_SHIFT;
-  prev_offset = ra->prev_pos & (PAGE_SIZE-1);
-  last_index = (*ppos + iter->count + PAGE_SIZE-1) >> PAGE_SHIFT;
-  offset = *ppos & ~PAGE_MASK;
-
-  for (;;) {
-    struct page *page;
-    pgoff_t end_index;
-    loff_t isize;
-    page = find_get_page(mapping, index);
-
-    if (!page) {
-      if (iocb->ki_flags & IOCB_NOWAIT)
-        goto would_block;
-
-      page_cache_sync_readahead(mapping, ra, filp,index, last_index - index);
-      page = find_get_page(mapping, index);
-      if (unlikely(page == NULL))
-        goto no_cached_page;
-    }
-
-    if (PageReadahead(page)) {
-      page_cache_async_readahead(mapping, ra, filp, page, index, last_index - index);
-    }
-
-    /* Ok, we have the page, and it's up-to-date, so
-     * now we can copy it to user space... */
-    ret = copy_page_to_iter(page, offset, nr, iter);
-  }
-}
-```
-
 Direct IO and buffered IO will eventally call `submit_bio`.
 
-![linux-file-read-write.png](../Images/Kernel/file-read-write.png)
+### bdi_wq
+
+```C++
+/* global variable, all backing task stored here */
+/* bdi_wq serves all asynchronous writeback tasks */
+struct workqueue_struct *bdi_wq;
+
+struct workqueue_struct {
+  struct list_head      pwqs;  /* WR: all pwqs of this wq */
+  struct list_head      list;  /* PR: list of all workqueues */
+
+  struct list_head      maydays; /* MD: pwqs requesting rescue */
+  struct worker         *rescuer; /* I: rescue worker */
+
+  struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
+  struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
+  struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
+};
+
+/* The per-pool workqueue. */
+struct pool_workqueue {
+  struct worker_pool      *pool;    /* I: the associated pool */
+  struct workqueue_struct *wq;    /* I: the owning workqueue */
+  int                     work_color;  /* L: current color */
+  int                     flush_color;  /* L: flushing color */
+  int                     refcnt;    /* L: reference count */
+  int                     nr_in_flight[WORK_NR_COLORS];/* L: nr of in_flight works */
+  int                     nr_active;  /* L: nr of active works */
+  int                     max_active;  /* L: max active works */
+  struct list_head        delayed_works;  /* L: delayed works */
+  struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
+  struct list_head        mayday_node;  /* MD: node on wq->maydays */
+
+  /*
+   * Release of unbound pwq is punted to system_wq.  See put_pwq()
+   * and pwq_unbound_release_workfn() for details.  pool_workqueue
+   * itself is also sched-RCU protected so that the first pwq can be
+   * determined without grabbing wq->mutex.
+   */
+  struct work_struct  unbound_release_work;
+  struct rcu_head    rcu;
+} __aligned(1 << WORK_STRUCT_FLAG_BITS);
+
+struct worker_pool {
+  spinlock_t          lock;   /* the pool lock */
+  int                 cpu;    /* I: the associated cpu */
+  int                 node;   /* I: the associated node ID */
+  int                 id;     /* I: pool ID */
+  unsigned int        flags;  /* X: flags */
+
+  unsigned long       watchdog_ts;  /* L: watchdog timestamp */
+
+  struct list_head    worklist;  /* L: list of pending works */
+
+  int                 nr_workers;  /* L: total number of workers */
+  int                 nr_idle;  /* L: currently idle workers */
+
+  struct list_head    idle_list;  /* X: list of idle workers */
+  struct timer_list   idle_timer;  /* L: worker idle timeout */
+  struct timer_list   mayday_timer;  /* L: SOS timer for workers */
+
+  /* a workers is either on busy_hash or idle_list, or the manager */
+  DECLARE_HASHTABLE(busy_hash, BUSY_WORKER_HASH_ORDER);
+            /* L: hash of busy workers */
+
+  struct worker       *manager;  /* L: purely informational */
+  struct list_head    workers;  /* A: attached workers */
+  struct completion   *detach_completion; /* all workers detached */
+
+  struct ida          worker_ida;  /* worker IDs for task name */
+
+  struct workqueue_attrs  *attrs;    /* I: worker attributes */
+  struct hlist_node       hash_node;  /* PL: unbound_pool_hash node */
+  int                     refcnt;    /* PL: refcnt for unbound pools */
+
+  /*
+   * The current concurrency level.  As it's likely to be accessed
+   * from other CPUs during try_to_wake_up(), put it in a separate
+   * cacheline.
+   */
+  atomic_t    nr_running ____cacheline_aligned_in_smp;
+
+  /*
+   * Destruction of pool is sched-RCU protected to allow dereferences
+   * from get_work_pool().
+   */
+  struct rcu_head    rcu;
+} ____cacheline_aligned_in_smp;
+
+struct backing_dev_info noop_backing_dev_info = {
+  .name           = "noop",
+  .capabilities   = BDI_CAP_NO_ACCT_AND_WRITEBACK,
+};
+```
+![](../Images/Kernel/file-read-write.png)
 
 ## Question:
 1. How to use inode bit map present all inodes?
@@ -3953,6 +3990,9 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 1. xarray
 
 # IO
+
+![](../Images/Kernel/file-read-write.png)
+
 All devices have the corresponding device file in /dev(is devtmpfs file system), which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
 
 ```c++
@@ -3968,10 +4008,9 @@ mknod filename type major minor  // create dev file in /dev/
 /sys/module all modes information
 */
 ```
-![linux-io-sysfs.png](../Images/Kernel/io-sysfs.png)
+![](../Images/Kernel/io-sysfs.png)
 
-## char dev
-### kernal module
+## kobject
 ```C++
 module_init(logibm_init);
 module_exit(logibm_exit);
@@ -4005,8 +4044,13 @@ A kernel module consists:
 5. invoke `module_init` and `moudle_exit`
 6. declare lisence, invoke MODULE_LICENSE
 
-### insmod
-![linux-io-char-dev-install-open.png](../Images/Kernel/io-char-dev-install-open.png)
+
+## char dev
+
+![](../Images/Kernel/io-char-dev-insmod-mknod-open.png)
+
+### insmod char dev
+
 ```C++
 static int __init lp_init (void)
 {
@@ -4128,7 +4172,7 @@ out:
 }
 ```
 
-### mount
+### mount char dev
 ```C++
 /* mount -t type device destination_dir
  *
@@ -4277,7 +4321,7 @@ mount();
           list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
 
-### mknod
+### mknod char dev
 ```C++
 /* mknod /dev/ttyS0 c 4 64 */
 SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
@@ -4358,7 +4402,7 @@ mknod();
           dget();
 ```
 
-### open dev
+### open char dev
 ```C++
 const struct file_operations def_chr_fops = {
   .open = chrdev_open,
@@ -4452,7 +4496,7 @@ static ssize_t lp_write(
   } while (count > 0);
 }
 ```
-![linux-io-char-dev-write.png](../Images/Kernel/io-char-dev-write.png)
+![](../Images/Kernel/io-char-dev-write.png)
 
 ### ioctl
 ```C++
@@ -4597,11 +4641,500 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
   return retval
 }
 ```
-![linux-io-ioctl.png](../Images/Kernel/io-ioctl.png)
+![](../Images/Kernel/io-ioctl.png)
+
+## block dev
+![](../Images/Kernel/io-gendisk.png)
+
+---
+
+![](../Images/Kernel/io-blk-dev-insmod-mknod-mount.png)
+
+```C++
+void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
+{
+  inode->i_mode = mode;
+  if (S_ISCHR(mode)) {
+    inode->i_fop = &def_chr_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISBLK(mode)) {
+    inode->i_fop = &def_blk_fops;
+    inode->i_rdev = rdev;
+  } else if (S_ISFIFO(mode))
+    inode->i_fop = &pipefifo_fops;
+  else if (S_ISSOCK(mode))
+    ;  /* leave it no_open_fops */
+}
+
+const struct file_operations def_blk_fops = {
+  .open           = blkdev_open, // call blkdev_get
+  .release        = blkdev_close,
+  .llseek         = block_llseek,
+  .read_iter      = blkdev_read_iter,
+  .write_iter     = blkdev_write_iter,
+  .mmap           = generic_file_mmap,
+  .fsync          = blkdev_fsync,
+  .unlocked_ioctl = block_ioctl,
+  .splice_read    = generic_file_splice_read,
+  .splice_write   = iter_file_splice_write,
+  .fallocate      = blkdev_fallocate,
+};
+
+static struct file_system_type ext4_fs_type = {
+  .owner    = THIS_MODULE,
+  .name     = "ext4",
+  .mount    = ext4_mount,
+  .kill_sb  = kill_block_super,
+  .fs_flags = FS_REQUIRES_DEV,
+};
+```
+
+### bdev_map
+```C++
+static struct kobj_map *bdev_map;
+// map a dev_t with a gendisk
+static inline void add_disk(struct gendisk *disk)
+{
+  device_add_disk(NULL, disk);
+}
+
+void device_add_disk(struct device *parent, struct gendisk *disk)
+{
+  blk_register_region(disk_devt(disk), disk->minors, NULL,
+          exact_match, exact_lock, disk);
+}
+
+void blk_register_region(
+  dev_t devt, unsigned long range, struct module *module,
+  struct kobject *(*probe)(dev_t, int *, void *),
+  int (*lock)(dev_t, void *), void *data)
+{
+  kobj_map(bdev_map, devt, range, module, probe, lock, data);
+}
+```
+
+### mount blk dev
+
+```C++
+/* mont -> ksys_mount -> do_mount -> do_new_mount ->
+ * vfs_kern_mount -> mount_fs -> fs_type.mount */
+static struct dentry *ext4_mount(
+  struct file_system_type *fs_type, int flags,
+  const char *dev_name, void *data)
+{
+  return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
+}
+
+struct dentry *mount_bdev(
+  struct file_system_type *fs_type,
+  int flags, const char *dev_name, void *data,
+  int (*fill_super)(struct super_block *, void *, int))
+{
+  struct block_device *bdev;
+  struct super_block *s;
+  fmode_t mode = FMODE_READ | FMODE_EXCL;
+  int error = 0;
+
+  if (!(flags & MS_RDONLY))
+    mode |= FMODE_WRITE;
+
+  bdev = blkdev_get_by_path(dev_name, mode, fs_type);
+
+  s = sget(fs_type, test_bdev_super, set_bdev_super, flags | MS_NOSEC, bdev);
+  fill_super(s, data, flags & SB_SILENT ? 1 : 0);
+
+  return dget(s->s_root);
+}
+```
+
+#### blkdev_get_by_path
+```C++
+struct block_device *blkdev_get_by_path(
+  const char *path, fmode_t mode, void *holder)
+{
+  struct block_device *bdev;
+  int err;
+
+  bdev = lookup_bdev(path);             // find blk device
+  err = blkdev_get(bdev, mode, holder); // open blk device
+  return bdev;
+}
+```
+##### lookup_bdev
+```C++
+// 1. find the block device file under /dev which is devtmpfs file system
+struct block_device *lookup_bdev(const char *pathname)
+{
+  struct block_device *bdev;
+  struct inode *inode;
+  struct path path;
+  int error;
+
+  error = kern_path(pathname, LOOKUP_FOLLOW, &path);
+  inode = d_backing_inode(path.dentry); /* dentry->d_inode, inode in /dev fs */
+  bdev = bd_acquire(inode);
+
+  return bdev;
+}
+
+// 2. find the block device in bdev file system by its key: dev_t
+static struct block_device *bd_acquire(struct inode *inode)
+{
+  struct block_device *bdev;
+  bdev = bdget(inode->i_rdev);
+  if (bdev) {
+    spin_lock(&bdev_lock);
+    if (!inode->i_bdev) {
+      bdgrab(bdev);
+      inode->i_bdev = bdev;
+      inode->i_mapping = bdev->bd_inode->i_mapping;
+    }
+  }
+  return bdev;
+}
+
+struct block_device *bdget(dev_t dev)
+{
+  struct block_device *bdev;
+  struct inode *inode;
+
+  /* get the inode from the blk fs by dev_t, create new one if absence */
+  inode = iget5_locked(blockdev_superblock, hash(dev), bdev_test, bdev_set, &dev);
+  bdev = &BDEV_I(inode)->bdev;
+
+  if (inode->i_state & I_NEW) {
+    bdev->bd_contains = NULL;
+    bdev->bd_super = NULL;
+    bdev->bd_inode = inode;
+    bdev->bd_block_size = i_blocksize(inode);
+    bdev->bd_part_count = 0;
+    bdev->bd_invalidated = 0;
+    inode->i_mode = S_IFBLK;
+    inode->i_rdev = dev;
+    inode->i_bdev = bdev;
+    inode->i_data.a_ops = &def_blk_aops;
+    mapping_set_gfp_mask(&inode->i_data, GFP_USER);
+    spin_lock(&bdev_lock);
+    list_add(&bdev->bd_list, &all_bdevs);
+    spin_unlock(&bdev_lock);
+    unlock_new_inode(inode);
+  }
+
+  return bdev;
+}
+
+// 3rd file system, save all blk device
+struct super_block *blockdev_superblock;
+
+static struct file_system_type bd_type = {
+  .name           = "bdev",
+  .mount          = bd_mount,
+  .kill_sb        = kill_anon_super,
+};
+
+void __init bdev_cache_init(void)
+{
+  static struct vfsmount *bd_mnt;
+
+  bdev_cachep = kmem_cache_create("bdev_cache", sizeof(struct bdev_inode), 0,
+    (SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|SLAB_ACCOUNT|SLAB_PANIC),
+    init_once);
+  err = register_filesystem(&bd_type);
+  if (err)
+    panic("Cannot register bdev pseudo-fs");
+  bd_mnt = kern_mount(&bd_type);
+  if (IS_ERR(bd_mnt))
+    panic("Cannot create bdev pseudo-fs");
+  blockdev_superblock = bd_mnt->mnt_sb;   /* For writeback */
+}
+
+/* All block device inodes stored in bdev file system for convenient management.
+ * Linux associates block_device with inode of bdev with bdev_inode */
+struct bdev_inode {
+  struct block_device   bdev;
+  struct inode          vfs_inode;
+};
+
+struct block_device {
+  dev_t                 bd_dev;
+  int                   bd_openers;
+  struct super_block    *bd_super;
+  struct block_device   *bd_contains;
+  struct gendisk        *bd_disk;
+  struct hd_struct      *bd_part;
+
+  unsigned              bd_block_size;
+  unsigned              bd_part_count;
+  int                   bd_invalidated;
+  struct request_queue  *bd_queue;
+  struct backing_dev_info *bd_bdi;
+  struct list_head        bd_list;
+};
+
+struct gendisk {
+  int                                   major; /* major number of driver */
+  int                                   first_minor;
+  int                                   minors; /* partition numbers */
+  char                                  disk_name[DISK_NAME_LEN]; /* name of major driver */
+
+  char *(*devnode)(struct gendisk *gd, umode_t *mode);
+
+  struct disk_part_tbl __rcu            *part_tbl;
+  struct hd_struct                      part0;
+
+  const struct block_device_operations  *fops;
+  struct request_queue                  *queue;
+  void                                  *private_data;
+
+  int                                   flags;
+  struct kobject                        *slave_dir;
+};
+
+struct hd_struct {
+  sector_t                    start_sect;
+  sector_t                    nr_sects;
+
+  struct device               __dev;
+  struct kobject              *holder_dir;
+  int                         policy, partno;
+  struct partition_meta_info  *info;
+
+  struct disk_stats           dkstats;
+  struct percpu_ref           ref;
+  struct rcu_head             rcu_head;
+};
+```
+
+##### blkdev_get
+```C++
+static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
+{
+  struct gendisk *disk;
+  struct module *owner;
+  int ret;
+  int partno;
+  int perm = 0;
+
+  if (mode & FMODE_READ)
+    perm |= MAY_READ;
+  if (mode & FMODE_WRITE)
+    perm |= MAY_WRITE;
+
+  disk = get_gendisk(bdev->bd_dev, &partno);
+
+  owner = disk->fops->owner;
+
+  if (!bdev->bd_openers) {
+    bdev->bd_disk = disk;
+    bdev->bd_queue = disk->queue;
+    bdev->bd_contains = bdev;
+    bdev->bd_partno = partno;
+
+    if (!partno) { // 1. open whole disk
+      ret = -ENXIO;
+      bdev->bd_part = disk_get_part(disk, partno);
+
+      if (disk->fops->open) {
+        ret = disk->fops->open(bdev, mode);
+      }
+
+      if (!ret)
+        bd_set_size(bdev,(loff_t)get_capacity(disk)<<9);
+
+      if (bdev->bd_invalidated) {
+        if (!ret)
+          rescan_partitions(disk, bdev);
+      }
+
+    } else {  // 2. open a partition
+      struct block_device *whole;
+      whole = bdget_disk(disk, 0);
+      ret = __blkdev_get(whole, mode, 1);
+      bdev->bd_contains = whole;
+      bdev->bd_part = disk_get_part(disk, partno);
+      bd_set_size(bdev, (loff_t)bdev->bd_part->nr_sects << 9);
+    }
+  } else {
+    if (bdev->bd_contains == bdev) {
+      ret = 0;
+      if (bdev->bd_disk->fops->open)
+        ret = bdev->bd_disk->fops->open(bdev, mode);
+      /* the same as first opener case, read comment there */
+      if (bdev->bd_invalidated && (!ret || ret == -ENOMEDIUM))
+        bdev_disk_changed(bdev, ret == -ENOMEDIUM);
+      if (ret)
+        goto out_unlock_bdev;
+    }
+  }
+
+  bdev->bd_openers++;
+  if (for_part)
+    bdev->bd_part_count++;
+}
+
+struct gendisk *get_gendisk(dev_t devt, int *partno)
+{
+  struct gendisk *disk = NULL;
+
+  if (MAJOR(devt) != BLOCK_EXT_MAJOR) { // 1. get the whole device
+    struct kobject *kobj = kobj_lookup(bdev_map, devt, partno);
+    if (kobj)
+      disk = dev_to_disk(kobj_to_dev(kobj));
+  } else {                              // 2. get a partition
+    struct hd_struct *part;
+    part = idr_find(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
+    if (part && get_disk(part_to_disk(part))) {
+      *partno = part->partno;
+      disk = part_to_disk(part);
+    }
+  }
+  return disk;
+}
+
+#define dev_to_disk(device) container_of((device), struct gendisk, part0.__dev)
+#define dev_to_part(device) container_of((device), struct hd_struct, __dev)
+#define disk_to_dev(disk)   (&(disk)->part0.__dev)
+#define part_to_dev(part)   (&((part)->__dev))
+
+static inline struct gendisk *part_to_disk(struct hd_struct *part)
+{
+  if (likely(part)) {
+    if (part->partno)
+      return dev_to_disk(part_to_dev(part)->parent);
+    else
+      return dev_to_disk(part_to_dev(part));
+  }
+  return NULL;
+}
+
+static const struct block_device_operations sd_fops = {
+  .owner          = THIS_MODULE,
+  .open           = sd_open,
+  .release        = sd_release,
+  .ioctl          = sd_ioctl,
+  .getgeo         = sd_getgeo,
+  .compat_ioctl   = sd_compat_ioctl,
+};
+
+static int sd_open(struct block_device *bdev, fmode_t mode)
+{
+
+}
+```
+
+#### sget
+```C++
+// drivers/scsi/sd.c
+static const struct block_device_operations sd_fops = {
+  .owner                    = THIS_MODULE,
+  .open                     = sd_open,
+  .release                  = sd_release,
+  .ioctl                    = sd_ioctl,
+  .getgeo                   = sd_getgeo,
+  .compat_ioctl             = sd_compat_ioctl,
+  .check_events             = sd_check_events,
+  .revalidate_disk          = sd_revalidate_disk,
+  .unlock_native_capacity   = sd_unlock_native_capacity,
+  .pr_ops                   = &sd_pr_ops,
+};
+
+static int sd_open(struct block_device *bdev, fmode_t mode)
+{ }
+
+static int set_bdev_super(struct super_block *s, void *data)
+{
+  s->s_bdev = data;
+  s->s_dev = s->s_bdev->bd_dev;
+  s->s_bdi = bdi_get(s->s_bdev->bd_bdi);
+  return 0;
+}
+
+struct super_block *sget(struct file_system_type *type,
+  int (*test)(struct super_block *,void *),
+  int (*set)(struct super_block *,void *),
+  int flags,
+  void *data)
+{
+  struct user_namespace *user_ns = current_user_ns();
+  return sget_userns(type, test, set, flags, user_ns, data);
+}
+
+struct super_block *sget_userns(struct file_system_type *type,
+  int (*test)(struct super_block *,void *),
+  int (*set)(struct super_block *,void *),
+  int flags, struct user_namespace *user_ns,
+  void *data)
+{
+  struct super_block *s = NULL;
+  struct super_block *old;
+  int err;
+
+  if (!s) {
+    s = alloc_super(type, (flags & ~MS_SUBMOUNT), user_ns);
+  }
+  err = set(s, data);
+
+  s->s_type = type;
+  strlcpy(s->s_id, type->name, sizeof(s->s_id));
+  list_add_tail(&s->s_list, &super_blocks);
+  hlist_add_head(&s->s_instances, &type->fs_supers);
+  spin_unlock(&sb_lock);
+  get_filesystem(type);
+  register_shrinker(&s->s_shrink);
+  return s;
+}
+```
+
+```C++
+mount();
+  ksys_mount(); /* copy type, dev_name, data to kernel */
+    do_mount(); /* get path by name */
+      do_new_mount(); /* get fs_type by type */
+        vfs_kern_mount();
+          alloc_vfsmnt();
+          mount_fs();
+
+            fs_type.mount();
+              ext4_mount();
+                mount_bdev();
+                  blkdev_get_by_path();
+                    lookup_bdev(); /* 1. find blk inode in /dev/xxx by name*/
+                      kern_path();
+                      d_backing_inode(); /* get inode of devtmpfs */
+                      bd_acquire(); /* find block_dev by dev_t in blkdev fs */
+                        bdget();
+                          iget5_locked(blockdev_superblock, ...); /* blk dev fs */
+                    blkdev_get();  /* 2. open blk device */
+                      __blkdev_get();
+                        get_gendisk();
+                          kobj_lookup();          /* 1. open whole gisk */
+                            dev_to_disk(kobj_to_dev(kobj));
+
+                          idr_find(&ext_devt_idr); /* 2. open a partition */
+                            part_to_disk(part);
+                              dev_to_disk(part_to_dev(part));
+                        disk->fops->open(bdev, mode);
+                  sget();
+                    sget_userns();
+                      alloc_super();
+                      set_bdev_super();
+                  fill_super();
+                    ext4_fill_super();
+                  dget();
+          list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+```
 
 ## interruption
 
-![linux-io-irq.png](../Images/Kernel/io-irq.png)
+![](../Images/Kernel/io-irq.png)
+
+---
+
+![](../Images/Kernel/io-interrupt-vector.png)
+
+---
+
+![](../Images/Kernel/io-interrupt.png)
 
 ```C++
 static int logibm_open(struct input_dev *dev)
@@ -5043,495 +5576,8 @@ next_cpu:
     continue;
 }
 ```
-![linux-io-interrupt-vector.png](../Images/Kernel/io-interrupt-vector.png)
 
-![linux-io-interrupt.png](../Images/Kernel/io-interrupt.png)
-
-## block dev
-```C++
-void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
-{
-  inode->i_mode = mode;
-  if (S_ISCHR(mode)) {
-    inode->i_fop = &def_chr_fops;
-    inode->i_rdev = rdev;
-  } else if (S_ISBLK(mode)) {
-    inode->i_fop = &def_blk_fops;
-    inode->i_rdev = rdev;
-  } else if (S_ISFIFO(mode))
-    inode->i_fop = &pipefifo_fops;
-  else if (S_ISSOCK(mode))
-    ;  /* leave it no_open_fops */
-}
-
-const struct file_operations def_blk_fops = {
-  .open           = blkdev_open, // call blkdev_get
-  .release        = blkdev_close,
-  .llseek         = block_llseek,
-  .read_iter      = blkdev_read_iter,
-  .write_iter     = blkdev_write_iter,
-  .mmap           = generic_file_mmap,
-  .fsync          = blkdev_fsync,
-  .unlocked_ioctl = block_ioctl,
-  .splice_read    = generic_file_splice_read,
-  .splice_write   = iter_file_splice_write,
-  .fallocate      = blkdev_fallocate,
-};
-
-static struct file_system_type ext4_fs_type = {
-  .owner    = THIS_MODULE,
-  .name    = "ext4",
-  .mount    = ext4_mount,
-  .kill_sb  = kill_block_super,
-  .fs_flags  = FS_REQUIRES_DEV,
-};
-```
-
-### mount
-```C++
-/* mont -> ksys_mount -> do_mount -> do_new_mount ->
- * vfs_kern_mount -> mount_fs -> fs_type.mount */
-static struct dentry *ext4_mount(
-  struct file_system_type *fs_type, int flags,
-  const char *dev_name, void *data)
-{
-  return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
-}
-
-struct dentry *mount_bdev(
-  struct file_system_type *fs_type,
-  int flags, const char *dev_name, void *data,
-  int (*fill_super)(struct super_block *, void *, int))
-{
-  struct block_device *bdev;
-  struct super_block *s;
-  fmode_t mode = FMODE_READ | FMODE_EXCL;
-  int error = 0;
-
-  if (!(flags & MS_RDONLY))
-    mode |= FMODE_WRITE;
-
-  bdev = blkdev_get_by_path(dev_name, mode, fs_type);
-
-  s = sget(fs_type, test_bdev_super, set_bdev_super, flags | MS_NOSEC, bdev);
-  fill_super(s, data, flags & SB_SILENT ? 1 : 0);
-
-  return dget(s->s_root);
-}
-```
-
-### blkdev_get_by_path
-```C++
-struct block_device *blkdev_get_by_path(
-  const char *path, fmode_t mode, void *holder)
-{
-  struct block_device *bdev;
-  int err;
-
-  bdev = lookup_bdev(path);             // find blk device
-  err = blkdev_get(bdev, mode, holder); // open blk device
-  return bdev;
-}
-```
-#### lookup_bdev
-```C++
-// 1. find the block device file under /dev which is devtmpfs file system
-struct block_device *lookup_bdev(const char *pathname)
-{
-  struct block_device *bdev;
-  struct inode *inode;
-  struct path path;
-  int error;
-
-  if (!pathname || !*pathname)
-    return ERR_PTR(-EINVAL);
-
-  error = kern_path(pathname, LOOKUP_FOLLOW, &path);
-  if (error)
-    return ERR_PTR(error);
-
-  inode = d_backing_inode(path.dentry);
-  bdev = bd_acquire(inode);
-  goto out;
-}
-
-// 2. find the block device in bdev file system by its key: dev_t
-static struct block_device *bd_acquire(struct inode *inode)
-{
-  struct block_device *bdev;
-  bdev = bdget(inode->i_rdev);
-  if (bdev) {
-    spin_lock(&bdev_lock);
-    if (!inode->i_bdev) {
-      bdgrab(bdev);
-      inode->i_bdev = bdev;
-      inode->i_mapping = bdev->bd_inode->i_mapping;
-    }
-  }
-  return bdev;
-}
-
-struct block_device *bdget(dev_t dev)
-{
-  struct block_device *bdev;
-  struct inode *inode;
-
-  inode = iget5_locked(
-    blockdev_superblock, hash(dev), bdev_test, bdev_set, &dev);
-  bdev = &BDEV_I(inode)->bdev;
-
-  if (inode->i_state & I_NEW) {
-    bdev->bd_contains = NULL;
-    bdev->bd_super = NULL;
-    bdev->bd_inode = inode;
-    bdev->bd_block_size = i_blocksize(inode);
-    bdev->bd_part_count = 0;
-    bdev->bd_invalidated = 0;
-    inode->i_mode = S_IFBLK;
-    inode->i_rdev = dev;
-    inode->i_bdev = bdev;
-    inode->i_data.a_ops = &def_blk_aops;
-    mapping_set_gfp_mask(&inode->i_data, GFP_USER);
-    spin_lock(&bdev_lock);
-    list_add(&bdev->bd_list, &all_bdevs);
-    spin_unlock(&bdev_lock);
-    unlock_new_inode(inode);
-  }
-  return bdev;
-}
-
-// 3rd file system, save all blk device
-struct super_block *blockdev_superblock;
-static struct file_system_type bd_type = {
-  .name           = "bdev",
-  .mount          = bd_mount,
-  .kill_sb        = kill_anon_super,
-};
-/* All block device inodes stored in bdev file system for convenient management.
- * Linux associates block_device with inode of bdev with bdev_inode */
-struct bdev_inode {
-  struct block_device bdev;
-  struct inode vfs_inode;
-};
-
-// init blockdev_superblock
-void __init bdev_cache_init(void)
-{
-  static struct vfsmount *bd_mnt;
-
-  bdev_cachep = kmem_cache_create("bdev_cache", sizeof(struct bdev_inode), 0,
-    (SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD|SLAB_ACCOUNT|SLAB_PANIC),
-    init_once);
-  err = register_filesystem(&bd_type);
-  if (err)
-    panic("Cannot register bdev pseudo-fs");
-  bd_mnt = kern_mount(&bd_type);
-  if (IS_ERR(bd_mnt))
-    panic("Cannot create bdev pseudo-fs");
-  blockdev_superblock = bd_mnt->mnt_sb;   /* For writeback */
-}
-
-struct block_device {
-  dev_t                 bd_dev;
-  int                   bd_openers;
-  struct super_block    *bd_super;
-  struct block_device   *bd_contains;
-  struct gendisk        *bd_disk;
-  struct hd_struct      *bd_part;
-
-  unsigned              bd_block_size;
-  unsigned              bd_part_count;
-  int                   bd_invalidated;
-  struct request_queue  *bd_queue;
-  struct backing_dev_info *bd_bdi;
-  struct list_head        bd_list;
-};
-
-struct gendisk {
-  int major;      /* major number of driver */
-  int first_minor;
-  int minors;     /* partition numbers */
-  char disk_name[DISK_NAME_LEN]; /* name of major driver */
-  char *(*devnode)(struct gendisk *gd, umode_t *mode);
-
-  struct disk_part_tbl __rcu *part_tbl;
-  struct hd_struct part0;
-
-  const struct block_device_operations *fops;
-  struct request_queue *queue;
-  void *private_data;
-
-  int flags;
-  struct kobject *slave_dir;
-};
-
-struct hd_struct {
-  sector_t start_sect;
-  sector_t nr_sects;
-
-  struct device   __dev;
-  struct kobject *holder_dir;
-  int policy, partno;
-  struct partition_meta_info *info;
-
-  struct disk_stats dkstats;
-  struct percpu_ref ref;
-  struct rcu_head   rcu_head;
-};
-```
-
-#### blkdev_get
-```C++
-static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
-{
-  struct gendisk *disk;
-  struct module *owner;
-  int ret;
-  int partno;
-  int perm = 0;
-
-  if (mode & FMODE_READ)
-    perm |= MAY_READ;
-  if (mode & FMODE_WRITE)
-    perm |= MAY_WRITE;
-
-  disk = get_gendisk(bdev->bd_dev, &partno);
-
-  owner = disk->fops->owner;
-
-  if (!bdev->bd_openers) {
-    bdev->bd_disk = disk;
-    bdev->bd_queue = disk->queue;
-    bdev->bd_contains = bdev;
-    bdev->bd_partno = partno;
-
-    if (!partno) { // 1. open whole disk
-      ret = -ENXIO;
-      bdev->bd_part = disk_get_part(disk, partno);
-
-      if (disk->fops->open) {
-        ret = disk->fops->open(bdev, mode);
-      }
-
-      if (!ret)
-        bd_set_size(bdev,(loff_t)get_capacity(disk)<<9);
-
-      if (bdev->bd_invalidated) {
-        if (!ret)
-          rescan_partitions(disk, bdev);
-      }
-
-    } else {  // 2. open a partition
-      struct block_device *whole;
-      whole = bdget_disk(disk, 0);
-      ret = __blkdev_get(whole, mode, 1);
-      bdev->bd_contains = whole;
-      bdev->bd_part = disk_get_part(disk, partno);
-      bd_set_size(bdev, (loff_t)bdev->bd_part->nr_sects << 9);
-    }
-  } else {
-    if (bdev->bd_contains == bdev) {
-      ret = 0;
-      if (bdev->bd_disk->fops->open)
-        ret = bdev->bd_disk->fops->open(bdev, mode);
-      /* the same as first opener case, read comment there */
-      if (bdev->bd_invalidated &&
-          (!ret || ret == -ENOMEDIUM))
-        bdev_disk_changed(bdev, ret == -ENOMEDIUM);
-      if (ret)
-        goto out_unlock_bdev;
-    }
-  }
-
-  bdev->bd_openers++;
-  if (for_part)
-    bdev->bd_part_count++;
-}
-
-struct gendisk *get_gendisk(dev_t devt, int *partno)
-{
-  struct gendisk *disk = NULL;
-
-  if (MAJOR(devt) != BLOCK_EXT_MAJOR) { // 1. get the whole device
-    struct kobject *kobj;
-    kobj = kobj_lookup(bdev_map, devt, partno);
-    if (kobj)
-      disk = dev_to_disk(kobj_to_dev(kobj));
-  } else {                              // 2. get a partition
-    struct hd_struct *part;
-    part = idr_find(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
-    if (part && get_disk(part_to_disk(part))) {
-      *partno = part->partno;
-      disk = part_to_disk(part);
-    }
-  }
-  return disk;
-}
-
-#define dev_to_disk(device) container_of((device), struct gendisk, part0.__dev)
-#define dev_to_part(device) container_of((device), struct hd_struct, __dev)
-#define disk_to_dev(disk)   (&(disk)->part0.__dev)
-#define part_to_dev(part)   (&((part)->__dev))
-
-static inline struct gendisk *part_to_disk(struct hd_struct *part)
-{
-  if (likely(part)) {
-    if (part->partno)
-      return dev_to_disk(part_to_dev(part)->parent);
-    else
-      return dev_to_disk(part_to_dev(part));
-  }
-  return NULL;
-}
-
-static const struct block_device_operations sd_fops = {
-  .owner          = THIS_MODULE,
-  .open           = sd_open,
-  .release        = sd_release,
-  .ioctl          = sd_ioctl,
-  .getgeo         = sd_getgeo,
-  .compat_ioctl   = sd_compat_ioctl,
-};
-
-static int sd_open(struct block_device *bdev, fmode_t mode)
-{
-
-}
-```
-
-### bdev_map
-```C++
-static struct kobj_map *bdev_map;
-// map a dev_t with a gendisk
-static inline void add_disk(struct gendisk *disk)
-{
-  device_add_disk(NULL, disk);
-}
-
-void device_add_disk(struct device *parent, struct gendisk *disk)
-{
-  blk_register_region(disk_devt(disk), disk->minors, NULL,
-          exact_match, exact_lock, disk);
-}
-
-void blk_register_region(
-  dev_t devt, unsigned long range, struct module *module,
-  struct kobject *(*probe)(dev_t, int *, void *),
-  int (*lock)(dev_t, void *), void *data)
-{
-  kobj_map(bdev_map, devt, range, module, probe, lock, data);
-}
-```
-
-### sget
-```C++
-// drivers/scsi/sd.c
-static const struct block_device_operations sd_fops = {
-  .owner      = THIS_MODULE,
-  .open      = sd_open,
-  .release    = sd_release,
-  .ioctl      = sd_ioctl,
-  .getgeo      = sd_getgeo,
-#ifdef CONFIG_COMPAT
-  .compat_ioctl    = sd_compat_ioctl,
-#endif
-  .check_events    = sd_check_events,
-  .revalidate_disk  = sd_revalidate_disk,
-  .unlock_native_capacity  = sd_unlock_native_capacity,
-  .pr_ops      = &sd_pr_ops,
-};
-
-static int sd_open(struct block_device *bdev, fmode_t mode)
-{ }
-
-static int set_bdev_super(struct super_block *s, void *data)
-{
-  s->s_bdev = data;
-  s->s_dev = s->s_bdev->bd_dev;
-  s->s_bdi = bdi_get(s->s_bdev->bd_bdi);
-  return 0;
-}
-
-struct super_block *sget(struct file_system_type *type,
-  int (*test)(struct super_block *,void *),
-  int (*set)(struct super_block *,void *),
-  int flags,
-  void *data)
-{
-  struct user_namespace *user_ns = current_user_ns();
-  return sget_userns(type, test, set, flags, user_ns, data);
-}
-
-struct super_block *sget_userns(struct file_system_type *type,
-  int (*test)(struct super_block *,void *),
-  int (*set)(struct super_block *,void *),
-  int flags, struct user_namespace *user_ns,
-  void *data)
-{
-  struct super_block *s = NULL;
-  struct super_block *old;
-  int err;
-
-  if (!s) {
-    s = alloc_super(type, (flags & ~MS_SUBMOUNT), user_ns);
-  }
-  err = set(s, data);
-
-  s->s_type = type;
-  strlcpy(s->s_id, type->name, sizeof(s->s_id));
-  list_add_tail(&s->s_list, &super_blocks);
-  hlist_add_head(&s->s_instances, &type->fs_supers);
-  spin_unlock(&sb_lock);
-  get_filesystem(type);
-  register_shrinker(&s->s_shrink);
-  return s;
-}
-```
-
-```C++
-mount();
-  ksys_mount(); /* copy type, dev_name, data to kernel */
-    do_mount(); /* get path by name */
-      do_new_mount(); /* get fs_type by type */
-        vfs_kern_mount();
-          alloc_vfsmnt();
-          mount_fs();
-
-            fs_type.mount();
-              ext4_mount();
-                mount_bdev();
-                  blkdev_get_by_path();
-                    lookup_bdev(); /* 1. find blk inode in /dev/xxx by name*/
-                      kern_path();
-                      d_backing_inode(); /* get inode of devtmpfs */
-                      bd_acquire(); /* find blkdev by dev_t in blkdev fs */
-                        bdget();
-                          iget5_locked(blockdev_superblock, ...); /* blk dev fs */
-                    blkdev_get();  /* 2. open blk device */
-                      __blkdev_get();
-                        get_gendisk();
-                          kobj_lookup();          /* 1. open whole gisk */
-                            dev_to_disk(kobj_to_dev(kobj));
-
-                          idr_find(&ext_devt_idr); /* 2. open a partition */
-                            part_to_disk(part);
-                              dev_to_disk(part_to_dev(part));
-                        disk->fops->open(bdev, mode);
-                  sget();
-                    sget_userns();
-                      alloc_super();
-                      set_bdev_super();
-                  fill_super();
-                    ext4_fill_super();
-                  dget();
-          list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
-```
-
-![linux-io-gendisk.png](../Images/Kernel/io-gendisk.png)
-
-![linux-io-bd.png](../Images/Kernel/io-bd.png)
-
-## direct IO
+## direct io
 ```C++
 read();
   vfs_read();
@@ -5551,7 +5597,11 @@ static ssize_t ext4_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
   size_t count = iov_iter_count(iter);
   loff_t offset = iocb->ki_pos;
   ssize_t ret;
-  ret = ext4_direct_IO_write(iocb, iter);
+
+  if (iov_iter_rw(iter) == READ)
+    ret = ext4_direct_IO_read(iocb, iter);
+  else
+    ret = ext4_direct_IO_write(iocb, iter);
 }
 
 static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
@@ -5568,38 +5618,6 @@ static ssize_t ext4_direct_IO_write(struct kiocb *iocb, struct iov_iter *iter)
     get_block_func, ext4_end_io_dio, NULL, dio_flags);
 }
 
-struct dio_submit {
-  struct bio    *bio;
-  unsigned      blkbits;
-  unsigned      blkfactor;
-
-  unsigned      start_zero_done;
-  int           pages_in_io;
-  sector_t      block_in_file;
-  unsigned      blocks_available;
-
-  sector_t final_block_in_request;
-
-  get_block_t   *get_block;  /* block mapping function */
-  dio_submit_t  *submit_io;  /* IO submition function */
-
-  loff_t    logical_offset_in_bio;
-  sector_t final_block_in_bio;
-  sector_t next_block_for_io;
-
-  struct page *cur_page;        /* The page */
-  unsigned    cur_page_offset;
-  unsigned    cur_page_len;
-  sector_t    cur_page_block;   /* Where it starts */
-  loff_t       cur_page_fs_offset;/* Offset in file */
-
-  struct iov_iter *iter;
-
-  unsigned head;      /* next page to process */
-  unsigned tail;      /* last valid page + 1 */
-  size_t from, to;
-};
-
 /* dio_state communicated between submission path and end_io */
 struct dio {
   int             flags;
@@ -5608,21 +5626,22 @@ struct dio {
 
   struct gendisk *bio_disk;
   struct inode   *inode;
-  loff_t          i_size;  /* i_size when submitted */
+  loff_t          i_size; /* i_size when submitted */
   dio_iodone_t   *end_io; /* IO completion function */
 
-  void *private;  /* copy from map_bh.b_private */
+  void            *private;  /* copy from map_bh.b_private */
 
   /* BIO completion state */
-  int   is_async;
-  bool  defer_completion;
-  bool  should_dirty;
-  int   io_error;
-  struct bio          *bio_list;
+  int             is_async;
+  bool            defer_completion;
+  bool            should_dirty;
+  int             io_error;
+  struct bio      *bio_list;
+
   struct task_struct  *waiter;
 
-  struct kiocb *iocb;    /* kiocb */
-  ssize_t result;        /* IO result */
+  struct kiocb        *iocb; /* kiocb */
+  ssize_t             result;/* IO result */
 
   union {
     struct page *pages[DIO_PAGES];  /* page buffer */
@@ -5630,27 +5649,125 @@ struct dio {
   };
 };
 
+struct dio_submit {
+  struct bio    *bio;           /* bio under assembly */
+  unsigned      blkbits;        /* doesn't change */
+  unsigned      blkfactor;      /* When we're using an alignment which is finer than the filesystem's soft
+                                  blocksize, this specifies how much finer.
+                                  blkfactor=2 means 1/4-block alignment.  Does not change */
+  unsigned      start_zero_done; /* flag: sub-blocksize zeroing has been performed at the start of a write */
+  int           pages_in_io;     /* approximate total IO pages */
+  sector_t      block_in_file;   /* Current offset into the underlying file in dio_block units. */
+  unsigned      blocks_available;/* At block_in_file.  changes */
+  int           reap_counter;    /* rate limit reaping */
+  sector_t      final_block_in_request;/* doesn't change */
+  int           boundary;        /* prev block is at a boundary */
+  get_block_t   *get_block;      /* block mapping function */
+  dio_submit_t  *submit_io;      /* IO submition function */
+
+  loff_t        logical_offset_in_bio;  /* current first logical block in bio */
+  sector_t      final_block_in_bio;     /* current final block in bio + 1 */
+  sector_t      next_block_for_io;      /* next block to be put under IO, in dio_blocks units */
+
+  /* Deferred addition of a page to the dio.  These variables are
+   * private to dio_send_cur_page(), submit_page_section() and
+   * dio_bio_add_page(). */
+  struct page   *cur_page;        /* The page */
+  unsigned      cur_page_offset;  /* Offset into it, in bytes */
+  unsigned      cur_page_len;     /* Nr of bytes at cur_page_offset */
+  sector_t      cur_page_block;   /* Where it starts */
+  loff_t        cur_page_fs_offset; /* Offset in file */
+
+  struct iov_iter *iter;
+
+  /* Page queue.  These variables belong to dio_refill_pages() and* dio_get_page(). */
+  unsigned      head;      /* next page to process */
+  unsigned      tail;      /* last valid page + 1 */
+  size_t        from, to;
+};
+
 /* __blockdev_direct_IO -> do_blockdev_direct_IO */
-static inline ssize_t do_blockdev_direct_IO(
+ssize_t do_blockdev_direct_IO(
   struct kiocb *iocb, struct inode *inode,
   struct block_device *bdev, struct iov_iter *iter,
   get_block_t get_block, dio_iodone_t end_io,
   dio_submit_t submit_io, int flags)
 {
-  unsigned i_blkbits = ACCESS_ONCE(inode->i_blkbits);
+  unsigned i_blkbits = READ_ONCE(inode->i_blkbits);
   unsigned blkbits = i_blkbits;
   unsigned blocksize_mask = (1 << blkbits) - 1;
   ssize_t retval = -EINVAL;
-  size_t count = iov_iter_count(iter);
+  const size_t count = iov_iter_count(iter);
   loff_t offset = iocb->ki_pos;
-  loff_t end = offset + count;
+  const loff_t end = offset + count;
+
   struct dio *dio;
   struct dio_submit sdio = { 0, };
   struct buffer_head map_bh = { 0, };
+  struct blk_plug plug;
+  unsigned long align = offset | iov_iter_alignment(iter);
+
+  if (align & blocksize_mask) {
+    if (bdev)
+      blkbits = blksize_bits(bdev_logical_block_size(bdev));
+    blocksize_mask = (1 << blkbits) - 1;
+    if (align & blocksize_mask)
+      goto out;
+  }
+
+  /* watch out for a 0 len io from a tricksy fs */
+  if (iov_iter_rw(iter) == READ && !count)
+    return 0;
 
   dio = kmem_cache_alloc(dio_cache, GFP_KERNEL);
+  retval = -ENOMEM;
+  if (!dio)
+    goto out;
+  /* Believe it or not, zeroing out the page array caused a .5%
+   * performance regression in a database benchmark.  So, we take
+   * care to only zero out what's needed. */
+  memset(dio, 0, offsetof(struct dio, pages));
+
   dio->flags = flags;
+  if (dio->flags & DIO_LOCKING) {
+    if (iov_iter_rw(iter) == READ) {
+      struct address_space *mapping = iocb->ki_filp->f_mapping;
+
+      /* will be released by direct_io_worker */
+      inode_lock(inode);
+
+      retval = filemap_write_and_wait_range(mapping, offset, end - 1);
+      if (retval) {
+        inode_unlock(inode);
+        kmem_cache_free(dio_cache, dio);
+        goto out;
+      }
+    }
+  }
+
+  /* Once we sampled i_size check for reads beyond EOF */
   dio->i_size = i_size_read(inode);
+  if (iov_iter_rw(iter) == READ && offset >= dio->i_size) {
+    if (dio->flags & DIO_LOCKING)
+      inode_unlock(inode);
+    kmem_cache_free(dio_cache, dio);
+    retval = 0;
+    goto out;
+  }
+
+  /*
+   * For file extending writes updating i_size before data writeouts
+   * complete can expose uninitialized blocks in dumb filesystems.
+   * In that case we need to wait for I/O completion even if asked
+   * for an asynchronous write.
+   */
+  if (is_sync_kiocb(iocb))
+    dio->is_async = false;
+  else if (iov_iter_rw(iter) == WRITE && end > i_size_read(inode))
+    dio->is_async = false;
+  else
+    dio->is_async = true;
+
   dio->inode = inode;
   if (iov_iter_rw(iter) == WRITE) {
     dio->op = REQ_OP_WRITE;
@@ -5660,6 +5777,33 @@ static inline ssize_t do_blockdev_direct_IO(
   } else {
     dio->op = REQ_OP_READ;
   }
+
+  /*
+   * For AIO O_(D)SYNC writes we need to defer completions to a workqueue
+   * so that we can call ->fsync.
+   */
+  if (dio->is_async && iov_iter_rw(iter) == WRITE) {
+    retval = 0;
+    if (iocb->ki_flags & IOCB_DSYNC)
+      retval = dio_set_defer_completion(dio);
+    else if (!dio->inode->i_sb->s_dio_done_wq) {
+      /* In case of AIO write racing with buffered read we
+       * need to defer completion. We can't decide this now,
+       * however the workqueue needs to be initialized here. */
+      retval = sb_init_dio_done_wq(dio->inode->i_sb);
+    }
+    if (retval) {
+      /* We grab i_mutex only for reads so we don't have
+       * to release it here */
+      kmem_cache_free(dio_cache, dio);
+      goto out;
+    }
+  }
+
+  /* Will be decremented at I/O completion time.c*/
+  inode_dio_begin(inode);
+
+  retval = 0;
   sdio.blkbits = blkbits;
   sdio.blkfactor = i_blkbits - blkbits;
   sdio.block_in_file = offset >> blkbits;
@@ -5671,20 +5815,93 @@ static inline ssize_t do_blockdev_direct_IO(
   sdio.next_block_for_io = -1;
 
   dio->iocb = iocb;
+
+  spin_lock_init(&dio->bio_lock);
   dio->refcount = 1;
 
+  dio->should_dirty = (iter->type == ITER_IOVEC);
   sdio.iter = iter;
-  sdio.final_block_in_request =
-    (offset + iov_iter_count(iter)) >> blkbits;
+  sdio.final_block_in_request = end >> blkbits;
+
+  /*
+   * In case of non-aligned buffers, we may need 2 more
+   * pages since we need to zero out first and last block.
+   */
+  if (unlikely(sdio.blkfactor))
+    sdio.pages_in_io = 2;
 
   sdio.pages_in_io += iov_iter_npages(iter, INT_MAX);
 
+  blk_start_plug(&plug);
+
   retval = do_direct_IO(dio, &sdio, &map_bh);
+  if (retval)
+    dio_cleanup(dio, &sdio);
+
+  if (retval == -ENOTBLK) {
+    /*
+     * The remaining part of the request will be
+     * be handled by buffered I/O when we return
+     */
+    retval = 0;
+  }
+  /*
+   * There may be some unwritten disk at the end of a part-written
+   * fs-block-sized block.  Go zero that now.
+   */
+  dio_zero_block(dio, &sdio, 1, &map_bh);
+
+  if (sdio.cur_page) {
+    ssize_t ret2;
+
+    ret2 = dio_send_cur_page(dio, &sdio, &map_bh);
+    if (retval == 0)
+      retval = ret2;
+    put_page(sdio.cur_page);
+    sdio.cur_page = NULL;
+  }
+  if (sdio.bio)
+    dio_bio_submit(dio, &sdio);
+
+  blk_finish_plug(&plug);
+
+  /*
+   * It is possible that, we return short IO due to end of file.
+   * In that case, we need to release all the pages we got hold on.
+   */
+  dio_cleanup(dio, &sdio);
+
+  /*
+   * All block lookups have been performed. For READ requests
+   * we can let i_mutex go now that its achieved its purpose
+   * of protecting us from looking up uninitialized blocks.
+   */
+  if (iov_iter_rw(iter) == READ && (dio->flags & DIO_LOCKING))
+    inode_unlock(dio->inode);
+
+  /* The only time we want to leave bios in flight is when a successful
+   * partial aio read or full aio write have been setup.  In that case
+   * bio completion will call aio_complete.  The only time it's safe to
+   * call aio_complete is when we return -EIOCBQUEUED, so we key on that.
+   * This had *better* be the only place that raises -EIOCBQUEUED. */
+
+  if (dio->is_async && retval == 0 && dio->result &&
+      (iov_iter_rw(iter) == READ || dio->result == count))
+    retval = -EIOCBQUEUED;
+  else
+    dio_await_completion(dio);
+
+  if (drop_refcount(dio) == 0) {
+    retval = dio_complete(dio, retval, DIO_COMPLETE_INVALIDATE);
+  } else
+    BUG_ON(retval != -EIOCBQUEUED);
+
+out:
+  return retval;
 }
 
-static int do_direct_IO(
-  struct dio *dio, struct dio_submit *sdio,
-  struct buffer_head *map_bh)
+int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
+      struct buffer_head *map_bh)
 {
   const unsigned blkbits = sdio->blkbits;
   const unsigned i_blkbits = blkbits + sdio->blkfactor;
@@ -5695,6 +5912,10 @@ static int do_direct_IO(
     size_t from, to;
 
     page = dio_get_page(dio, sdio);
+    if (IS_ERR(page)) {
+      ret = PTR_ERR(page);
+      goto out;
+    }
     from = sdio->head ? 0 : sdio->from;
     to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE;
     sdio->head++;
@@ -5702,26 +5923,455 @@ static int do_direct_IO(
     while (from < to) {
       unsigned this_chunk_bytes;  /* # of bytes mapped */
       unsigned this_chunk_blocks;  /* # of blocks */
-            ret = submit_page_section(dio, sdio, page,
+      unsigned u;
+
+      if (sdio->blocks_available == 0) {
+        /* Need to go and map some more disk */
+        unsigned long blkmask;
+        unsigned long dio_remainder;
+
+        ret = get_more_blocks(dio, sdio, map_bh);
+        if (ret) {
+          put_page(page);
+          goto out;
+        }
+
+        if (!buffer_mapped(map_bh))
+          goto do_holes;
+
+        sdio->blocks_available = map_bh->b_size >> blkbits;
+        sdio->next_block_for_io = map_bh->b_blocknr << sdio->blkfactor;
+
+        if (buffer_new(map_bh)) {
+          clean_bdev_aliases(
+            map_bh->b_bdev,
+            map_bh->b_blocknr,
+            map_bh->b_size >> i_blkbits);
+        }
+
+        if (!sdio->blkfactor)
+          goto do_holes;
+
+        blkmask = (1 << sdio->blkfactor) - 1;
+        dio_remainder = (sdio->block_in_file & blkmask);
+
+        if (!buffer_new(map_bh))
+          sdio->next_block_for_io += dio_remainder;
+
+        sdio->blocks_available -= dio_remainder;
+      }
+
+do_holes:
+      /* Handle holes */
+      if (!buffer_mapped(map_bh)) {
+        loff_t i_size_aligned;
+
+        /* AKPM: eargh, -ENOTBLK is a hack */
+        if (dio->op == REQ_OP_WRITE) {
+          put_page(page);
+          return -ENOTBLK;
+        }
+
+        /*
+         * Be sure to account for a partial block as the
+         * last block in the file */
+        i_size_aligned = ALIGN(i_size_read(dio->inode), 1 << blkbits);
+        if (sdio->block_in_file >= i_size_aligned >> blkbits) {
+          /* We hit eof */
+          put_page(page);
+          goto out;
+        }
+        zero_user(page, from, 1 << blkbits);
+        sdio->block_in_file++;
+        from += 1 << blkbits;
+        dio->result += 1 << blkbits;
+        goto next_block;
+      }
+
+      /* If we're performing IO which has an alignment which
+       * is finer than the underlying fs, go check to see if
+       * we must zero out the start of this block. */
+      if (unlikely(sdio->blkfactor && !sdio->start_zero_done))
+        dio_zero_block(dio, sdio, 0, map_bh);
+
+      /* Work out, in this_chunk_blocks, how much disk we
+       * can add to this page */
+      this_chunk_blocks = sdio->blocks_available;
+      u = (to - from) >> blkbits;
+      if (this_chunk_blocks > u)
+        this_chunk_blocks = u;
+      u = sdio->final_block_in_request - sdio->block_in_file;
+      if (this_chunk_blocks > u)
+        this_chunk_blocks = u;
+      this_chunk_bytes = this_chunk_blocks << blkbits;
+
+      if (this_chunk_blocks == sdio->blocks_available)
+        sdio->boundary = buffer_boundary(map_bh);
+
+      ret = submit_page_section(dio, sdio, page,
               from,
               this_chunk_bytes,
               sdio->next_block_for_io,
               map_bh);
-
+      if (ret) {
+        put_page(page);
+        goto out;
+      }
       sdio->next_block_for_io += this_chunk_blocks;
+
       sdio->block_in_file += this_chunk_blocks;
       from += this_chunk_bytes;
       dio->result += this_chunk_bytes;
       sdio->blocks_available -= this_chunk_blocks;
+
+next_block:
       if (sdio->block_in_file == sdio->final_block_in_request)
         break;
     }
+
+    /* Drop the ref which was taken in get_user_pages() */
+    put_page(page);
   }
+out:
+  return ret;
 }
-// submit_page_section -> dio_bio_submit -> submit_bio
 ```
 
-## buffered IO write
+### dio_get_page
+```c++
+struct page *dio_get_page(struct dio *dio, struct dio_submit *sdio)
+{
+  if (dio_pages_present(sdio) == 0) {
+    int ret;
+
+    ret = dio_refill_pages(dio, sdio);
+    if (ret)
+      return ERR_PTR(ret);
+  }
+
+  return dio->pages[sdio->head];
+}
+
+int dio_refill_pages(struct dio *dio, struct dio_submit *sdio)
+{
+  ssize_t ret;
+
+  ret = iov_iter_get_pages(sdio->iter, dio->pages, LONG_MAX, DIO_PAGES,
+        &sdio->from);
+
+  if (ret < 0 && sdio->blocks_available && (dio->op == REQ_OP_WRITE)) {
+    struct page *page = ZERO_PAGE(0);
+
+    if (dio->page_errors == 0)
+      dio->page_errors = ret;
+    get_page(page);
+    dio->pages[0] = page;
+    sdio->head = 0;
+    sdio->tail = 1;
+    sdio->from = 0;
+    sdio->to = PAGE_SIZE;
+    return 0;
+  }
+
+  if (ret >= 0) {
+    iov_iter_advance(sdio->iter, ret);
+    ret += sdio->from;
+    sdio->head = 0;
+    sdio->tail = (ret + PAGE_SIZE - 1) / PAGE_SIZE;
+    sdio->to = ((ret - 1) & (PAGE_SIZE - 1)) + 1;
+    return 0;
+  }
+  return ret;
+}
+
+ssize_t iov_iter_get_pages(struct iov_iter *i,
+       struct page **pages, size_t maxsize, unsigned maxpages,
+       size_t *start)
+{
+  if (maxsize > i->count)
+    maxsize = i->count;
+
+  if (unlikely(i->type & ITER_PIPE))
+    return pipe_get_pages(i, pages, maxsize, maxpages, start);
+
+  iterate_all_kinds(i, maxsize, v, ({
+      unsigned long addr = (unsigned long)v.iov_base;
+      size_t len = v.iov_len + (*start = addr & (PAGE_SIZE - 1));
+      int n;
+      int res;
+
+      if (len > maxpages * PAGE_SIZE)
+        len = maxpages * PAGE_SIZE;
+      addr &= ~(PAGE_SIZE - 1);
+      n = DIV_ROUND_UP(len, PAGE_SIZE);
+      res = get_user_pages_fast(addr, n, (i->type & WRITE) != WRITE, pages);
+      if (unlikely(res < 0))
+        return res;
+      return (res == n ? len : res * PAGE_SIZE) - *start;
+      0;
+    }),({
+      /* can't be more than PAGE_SIZE */
+      *start = v.bv_offset;
+      get_page(*pages = v.bv_page);
+      return v.bv_len;
+    }), ({
+      return -EFAULT;
+    })
+  )
+
+  return 0;
+}
+
+long __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
+          unsigned long start, unsigned long nr_pages,
+          unsigned int foll_flags, struct page **pages,
+          struct vm_area_struct **vmas, int *nonblocking)
+{
+  struct vm_area_struct *vma;
+  unsigned long vm_flags;
+  int i;
+
+  /* calculate required read or write permissions.
+   * If FOLL_FORCE is set, we only require the "MAY" flags. */
+  vm_flags  = (foll_flags & FOLL_WRITE) ? (VM_WRITE | VM_MAYWRITE) : (VM_READ | VM_MAYREAD);
+  vm_flags &= (foll_flags & FOLL_FORCE) ? (VM_MAYREAD | VM_MAYWRITE) : (VM_READ | VM_WRITE);
+
+  for (i = 0; i < nr_pages; i++) {
+    vma = find_vma(mm, start);
+    if (!vma)
+      goto finish_or_fault;
+
+    /* protect what we can, including chardevs */
+    if ((vma->vm_flags & (VM_IO | VM_PFNMAP)) || !(vm_flags & vma->vm_flags))
+      goto finish_or_fault;
+
+    if (pages) {
+      pages[i] = virt_to_page(start);
+      if (pages[i])
+        get_page(pages[i]);
+    }
+    if (vmas)
+      vmas[i] = vma;
+    start = (start + PAGE_SIZE) & PAGE_MASK;
+  }
+
+  return i;
+
+finish_or_fault:
+  return i ? : -EFAULT;
+}
+```
+
+### get_more_blocks
+```c++
+int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
+         struct buffer_head *map_bh)
+{
+  int ret;
+  sector_t fs_startblk;  /* Into file, in filesystem-sized blocks */
+  sector_t fs_endblk;  /* Into file, in filesystem-sized blocks */
+  unsigned long fs_count;  /* Number of filesystem-sized blocks */
+  int create;
+  unsigned int i_blkbits = sdio->blkbits + sdio->blkfactor;
+  loff_t i_size;
+
+  /*
+   * If there was a memory error and we've overwritten all the
+   * mapped blocks then we can now return that memory error
+   */
+  ret = dio->page_errors;
+  if (ret == 0) {
+    BUG_ON(sdio->block_in_file >= sdio->final_block_in_request);
+    fs_startblk = sdio->block_in_file >> sdio->blkfactor;
+    fs_endblk = (sdio->final_block_in_request - 1) >>
+          sdio->blkfactor;
+    fs_count = fs_endblk - fs_startblk + 1;
+
+    map_bh->b_state = 0;
+    map_bh->b_size = fs_count << i_blkbits;
+
+    /*
+     * For writes that could fill holes inside i_size on a
+     * DIO_SKIP_HOLES filesystem we forbid block creations: only
+     * overwrites are permitted. We will return early to the caller
+     * once we see an unmapped buffer head returned, and the caller
+     * will fall back to buffered I/O.
+     *
+     * Otherwise the decision is left to the get_blocks method,
+     * which may decide to handle it or also return an unmapped
+     * buffer head.
+     */
+    create = dio->op == REQ_OP_WRITE;
+    if (dio->flags & DIO_SKIP_HOLES) {
+      i_size = i_size_read(dio->inode);
+      if (i_size && fs_startblk <= (i_size - 1) >> i_blkbits)
+        create = 0;
+    }
+
+    ret = (*sdio->get_block)(dio->inode, fs_startblk,
+            map_bh, create);
+
+    /* Store for completion */
+    dio->private = map_bh->b_private;
+
+    if (ret == 0 && buffer_defer_completion(map_bh))
+      ret = dio_set_defer_completion(dio);
+  }
+  return ret;
+}
+```
+
+### submit_page_section
+```c++
+int submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
+        unsigned offset, unsigned len, sector_t blocknr,
+        struct buffer_head *map_bh)
+{
+  int ret = 0;
+  int boundary = sdio->boundary;  /* dio_send_cur_page may clear it */
+
+  if (dio->op == REQ_OP_WRITE) {
+    task_io_account_write(len);
+  }
+
+  /* Can we just grow the current page's presence in the dio? */
+  if (sdio->cur_page == page &&
+      sdio->cur_page_offset + sdio->cur_page_len == offset &&
+      sdio->cur_page_block + (sdio->cur_page_len >> sdio->blkbits) == blocknr)
+  {
+    sdio->cur_page_len += len;
+    goto out;
+  }
+
+  /* If there's a deferred page already there then send it. */
+  if (sdio->cur_page) {
+    ret = dio_send_cur_page(dio, sdio, map_bh);
+    put_page(sdio->cur_page);
+    sdio->cur_page = NULL;
+    if (ret)
+      return ret;
+  }
+
+  get_page(page);    /* It is in dio */
+  sdio->cur_page = page;
+  sdio->cur_page_offset = offset;
+  sdio->cur_page_len = len;
+  sdio->cur_page_block = blocknr;
+  sdio->cur_page_fs_offset = sdio->block_in_file << sdio->blkbits;
+
+out:
+  /* If boundary then we want to schedule the IO now to avoid metadata seeks. */
+  if (boundary) {
+    ret = dio_send_cur_page(dio, sdio, map_bh);
+    if (sdio->bio)
+      dio_bio_submit(dio, sdio);
+    put_page(sdio->cur_page);
+    sdio->cur_page = NULL;
+  }
+  return ret;
+}
+
+int dio_send_cur_page(struct dio *dio, struct dio_submit *sdio,
+    struct buffer_head *map_bh)
+{
+  int ret = 0;
+
+  if (sdio->bio) {
+    loff_t cur_offset = sdio->cur_page_fs_offset;
+    loff_t bio_next_offset = sdio->logical_offset_in_bio + sdio->bio->bi_iter.bi_size;
+
+    if (sdio->final_block_in_bio != sdio->cur_page_block || cur_offset != bio_next_offset)
+      dio_bio_submit(dio, sdio);
+  }
+
+  if (sdio->bio == NULL) {
+    ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
+    if (ret)
+      goto out;
+  }
+
+  if (dio_bio_add_page(sdio) != 0) {
+    dio_bio_submit(dio, sdio);
+    ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
+    if (ret == 0) {
+      ret = dio_bio_add_page(sdio);
+      BUG_ON(ret != 0);
+    }
+  }
+out:
+  return ret;
+}
+
+int dio_new_bio(struct dio *dio, struct dio_submit *sdio,
+    sector_t start_sector, struct buffer_head *map_bh)
+{
+  sector_t sector;
+  int ret, nr_pages;
+
+  ret = dio_bio_reap(dio, sdio);
+  if (ret)
+    goto out;
+  sector = start_sector << (sdio->blkbits - 9);
+  nr_pages = min(sdio->pages_in_io, BIO_MAX_PAGES);
+  BUG_ON(nr_pages <= 0);
+  dio_bio_alloc(dio, sdio, map_bh->b_bdev, sector, nr_pages);
+  sdio->boundary = 0;
+out:
+  return ret;
+}
+
+void dio_bio_alloc(struct dio *dio, struct dio_submit *sdio,
+        struct block_device *bdev,
+        sector_t first_sector, int nr_vecs)
+{
+  struct bio *bio;
+
+  bio = bio_alloc(GFP_KERNEL, nr_vecs);
+
+  bio_set_dev(bio, bdev);
+  bio->bi_iter.bi_sector = first_sector;
+  bio_set_op_attrs(bio, dio->op, dio->op_flags);
+
+  if (dio->is_async)
+    bio->bi_end_io = dio_bio_end_aio;
+  else
+    bio->bi_end_io = dio_bio_end_io;
+
+  bio->bi_write_hint = dio->iocb->ki_hint;
+
+  sdio->bio = bio;
+  sdio->logical_offset_in_bio = sdio->cur_page_fs_offset;
+}
+
+void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
+{
+  struct bio *bio = sdio->bio;
+  unsigned long flags;
+
+  bio->bi_private = dio;
+
+  spin_lock_irqsave(&dio->bio_lock, flags);
+  dio->refcount++;
+  spin_unlock_irqrestore(&dio->bio_lock, flags);
+
+  if (dio->is_async && dio->op == REQ_OP_READ && dio->should_dirty)
+    bio_set_pages_dirty(bio);
+
+  dio->bio_disk = bio->bi_disk;
+
+  if (sdio->submit_io) {
+    sdio->submit_io(bio, dio->inode, sdio->logical_offset_in_bio);
+    dio->bio_cookie = BLK_QC_T_NONE;
+  } else
+    dio->bio_cookie = submit_bio(bio);
+
+  sdio->bio = NULL;
+  sdio->boundary = 0;
+  sdio->logical_offset_in_bio = 0;
+}
+```
+
+## buffered io write
 ```C++
 /* wb_workfn -> wb_do_writeback -> wb_writeback
  * -> writeback_sb_inodes -> __writeback_single_inode
@@ -6051,8 +6701,7 @@ struct ext4_io_submit {
   sector_t                  io_next_block;
 };
 
-/* find & lock contiguous range of dirty pages
-* and underlying extent to map */
+/* find & lock contiguous range of dirty pages and underlying extent to map */
 // mpage_prepare_extent_to_map -> mpage_process_page_bufs ->
 // mpage_submit_page -> ext4_bio_write_page -> io_submit_add_bh
 static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
@@ -6077,9 +6726,9 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
   pagevec_init(&pvec);
   mpd->map.m_len = 0;
   mpd->next_page = index;
+
   while (index <= end) {
-    nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end,
-        tag);
+    nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end, tag);
 
     for (i = 0; i < nr_pages; i++) {
       struct page *page = pvec.pages[i];
@@ -6106,21 +6755,20 @@ out:
 }
 
 struct buffer_head {
-  unsigned long b_state;         /* buffer state bitmap (see above) */
-  struct buffer_head *b_this_page;/* circular list of page's buffers */
-  struct page       *b_page;     /* the page this bh is mapped to */
+  unsigned long       b_state;      /* buffer state bitmap (see above) */
+  struct buffer_head  *b_this_page; /* circular list of page's buffers */
+  struct page         *b_page;      /* the page this bh is mapped to */
 
-  sector_t  b_blocknr; /* start block number */
-  size_t    b_size;    /* size of mapping */
-  char      *b_data;   /* pointer to data within the page */
+  sector_t            b_blocknr; /* start block number */
+  size_t              b_size;    /* size of mapping */
+  char                *b_data;   /* pointer to data within the page */
 
-  struct block_device *b_bdev;
-  bh_end_io_t         *b_end_io;     /* I/O completion */
-   void               *b_private;    /* reserved for b_end_io */
-  struct list_head    b_assoc_buffers;/* associated with another mapping */
-  struct address_space *b_assoc_map; /* mapping this buffer is
-               associated with */
-  atomic_t b_count;    /* users using this buffer_head */
+  struct block_device   *b_bdev;
+  bh_end_io_t           *b_end_io; /* I/O completion */
+   void                 *b_private;/* reserved for b_end_io */
+  struct list_head      b_assoc_buffers;/* associated with another mapping */
+  struct address_space  *b_assoc_map;   /* mapping this buffer is associated with */
+  atomic_t              b_count;        /* users using this buffer_head */
 };
 
 /* submit page buffers for IO or add them to extent */
@@ -6132,8 +6780,7 @@ static int mpage_process_page_bufs(
 {
   struct inode *inode = mpd->inode;
   int err;
-  ext4_lblk_t blocks =
-    (i_size_read(inode) + i_blocksize(inode) - 1) >> inode->i_blkbits;
+  ext4_lblk_t blocks = (i_size_read(inode) + i_blocksize(inode) - 1) >> inode->i_blkbits;
 
   do {
     if (lblk >= blocks || !mpage_add_bh_to_extent(mpd, lblk, bh)) {
@@ -6424,6 +7071,10 @@ void ext4_io_submit(struct ext4_io_submit *io)
 ```
 
 ## submit_bio
+![](../Images/Kernel/io-bio.png)
+
+![](../Images/Kernel/io-bio-request.png)
+
 ```C++
 // direct IO and buffered IO will come to here:
 blk_qc_t submit_bio(struct bio *bio)
@@ -6431,91 +7082,335 @@ blk_qc_t submit_bio(struct bio *bio)
   return generic_make_request(bio);
 }
 
+/* main entry point of the generic block layer
+ * The caller of generic_make_request must make sure that `bi_io_vec`
+ * are set to describe the memory buffer, and that `bi_dev` and `bi_sector` are
+ * set to describe the device address, and the
+ * bi_end_io and optionally bi_private are set to describe how
+ * completion notification should be signaled. */
 blk_qc_t generic_make_request(struct bio *bio)
 {
-  /* bio_list_on_stack[0] contains bios submitted by the current
-   * make_request_fn.
+  /* bio_list_on_stack[0] contains bios submitted by the current make_request_fn.
    * bio_list_on_stack[1] contains bios that were submitted before
-   * the current make_request_fn, but that haven't been processed
-   * yet. */
+   * the current make_request_fn, but that haven't been processed yet. */
   struct bio_list bio_list_on_stack[2];
+  blk_mq_req_flags_t flags = 0;
+  struct request_queue *q = bio->bi_disk->queue;
   blk_qc_t ret = BLK_QC_T_NONE;
 
+  if (bio->bi_opf & REQ_NOWAIT)
+    flags = BLK_MQ_REQ_NOWAIT;
+
+  if (bio_flagged(bio, BIO_QUEUE_ENTERED))
+    blk_queue_enter_live(q);
+  else if (blk_queue_enter(q, flags) < 0) {
+    if (!blk_queue_dying(q) && (bio->bi_opf & REQ_NOWAIT))
+      bio_wouldblock_error(bio);
+    else
+      bio_io_error(bio);
+    return ret;
+  }
+
+  if (!generic_make_request_checks(bio))
+    goto out;
+
+  /* We only want one ->make_request_fn to be active at a time, else
+   * stack usage with stacked devices could be a problem.  So use
+   * current->bio_list to keep a list of requests submited by a
+   * make_request_fn function.  current->bio_list is also used as a
+   * flag to say if generic_make_request is currently active in this
+   * task or not.  If it is NULL, then no make_request is active.  If
+   * it is non-NULL, then a make_request is active, and new requests
+   * should be added at the tail */
   if (current->bio_list) {
     bio_list_add(&current->bio_list[0], bio);
     goto out;
   }
 
+  /* following loop may be a bit non-obvious, and so deserves some
+   * explanation.
+   * Before entering the loop, bio->bi_next is NULL (as all callers
+   * ensure that) so we have a list with a single bio.
+   * We pretend that we have just taken it off a longer list, so
+   * we assign bio_list to a pointer to the bio_list_on_stack,
+   * thus initialising the bio_list of new bios to be
+   * added.  ->make_request() may indeed add some more bios
+   * through a recursive call to generic_make_request.  If it
+   * did, we find a non-NULL value in bio_list and re-enter the loop
+   * from the top.  In this case we really did just take the bio
+   * of the top of the list (no pretending) and so remove it from
+   * bio_list, and call into ->make_request() again. */
   bio_list_init(&bio_list_on_stack[0]);
   current->bio_list = bio_list_on_stack;
   do {
-    struct request_queue *q = bdev_get_queue(bio->bi_bdev);
+    bool enter_succeeded = true;
 
-    if (likely(blk_queue_enter(q, bio->bi_opf & REQ_NOWAIT) == 0)) {
+    if (unlikely(q != bio->bi_disk->queue)) {
+      if (q)
+        blk_queue_exit(q);
+      q = bio->bi_disk->queue;
+      flags = 0;
+      if (bio->bi_opf & REQ_NOWAIT)
+        flags = BLK_MQ_REQ_NOWAIT;
+      if (blk_queue_enter(q, flags) < 0)
+        enter_succeeded = false;
+    }
+
+    if (enter_succeeded) {
       struct bio_list lower, same;
 
       /* Create a fresh bio_list for all subordinate requests */
       bio_list_on_stack[1] = bio_list_on_stack[0];
       bio_list_init(&bio_list_on_stack[0]);
-      ret = q->make_request_fn(q, bio); // blk_queue_bio
-
-      blk_queue_exit(q);
+      ret = q->make_request_fn(q, bio);
 
       /* sort new bios into those for a lower level
        * and those for the same level */
       bio_list_init(&lower);
       bio_list_init(&same);
-      while ((bio = bio_list_pop(&bio_list_on_stack[0])) != NULL)
-        if (q == bdev_get_queue(bio->bi_bdev))
+      while ((bio = bio_list_pop(&bio_list_on_stack[0])) != NULL) {
+        if (q == bio->bi_disk->queue)
           bio_list_add(&same, bio);
         else
           bio_list_add(&lower, bio);
+      }
       /* now assemble so we handle the lowest level first */
       bio_list_merge(&bio_list_on_stack[0], &lower);
       bio_list_merge(&bio_list_on_stack[0], &same);
       bio_list_merge(&bio_list_on_stack[0], &bio_list_on_stack[1]);
+    } else {
+      if (unlikely(!blk_queue_dying(q) && (bio->bi_opf & REQ_NOWAIT)))
+        bio_wouldblock_error(bio);
+      else
+        bio_io_error(bio);
+      q = NULL;
     }
-
     bio = bio_list_pop(&bio_list_on_stack[0]);
   } while (bio);
+
   current->bio_list = NULL; /* deactivate */
+
 out:
+  if (q)
+    blk_queue_exit(q);
+  return ret;
+}
+
+static noinline_for_stack bool generic_make_request_checks(struct bio *bio)
+{
+  struct request_queue *q;
+  int nr_sectors = bio_sectors(bio);
+  blk_status_t status = BLK_STS_IOERR;
+  char b[BDEVNAME_SIZE];
+
+  might_sleep();
+
+  q = bio->bi_disk->queue;
+  if (unlikely(!q)) {
+    goto end_io;
+  }
+
+  /*
+   * For a REQ_NOWAIT based request, return -EOPNOTSUPP
+   * if queue is not a request based queue.
+   */
+  if ((bio->bi_opf & REQ_NOWAIT) && !queue_is_rq_based(q))
+    goto not_supported;
+
+  if (should_fail_bio(bio))
+    goto end_io;
+
+  if (bio->bi_partno) {
+    if (unlikely(blk_partition_remap(bio)))
+      goto end_io;
+  } else {
+    if (unlikely(bio_check_ro(bio, &bio->bi_disk->part0)))
+      goto end_io;
+    if (unlikely(bio_check_eod(bio, get_capacity(bio->bi_disk))))
+      goto end_io;
+  }
+
+  /*
+   * Filter flush bio's early so that make_request based
+   * drivers without flush support don't have to worry
+   * about them.
+   */
+  if (op_is_flush(bio->bi_opf) && !test_bit(QUEUE_FLAG_WC, &q->queue_flags)) {
+    bio->bi_opf &= ~(REQ_PREFLUSH | REQ_FUA);
+    if (!nr_sectors) {
+      status = BLK_STS_OK;
+      goto end_io;
+    }
+  }
+
+  switch (bio_op(bio)) {
+  case REQ_OP_DISCARD:
+    if (!blk_queue_discard(q))
+      goto not_supported;
+    break;
+  case REQ_OP_SECURE_ERASE:
+    if (!blk_queue_secure_erase(q))
+      goto not_supported;
+    break;
+  case REQ_OP_WRITE_SAME:
+    if (!q->limits.max_write_same_sectors)
+      goto not_supported;
+    break;
+  case REQ_OP_ZONE_REPORT:
+  case REQ_OP_ZONE_RESET:
+    if (!blk_queue_is_zoned(q))
+      goto not_supported;
+    break;
+  case REQ_OP_WRITE_ZEROES:
+    if (!q->limits.max_write_zeroes_sectors)
+      goto not_supported;
+    break;
+  default:
+    break;
+  }
+
+  /*
+   * Various block parts want %current->io_context and lazy ioc
+   * allocation ends up trading a lot of pain for a small amount of
+   * memory.  Just allocate it upfront.  This may fail and block
+   * layer knows how to live with it.
+   */
+  create_io_context(GFP_ATOMIC, q->node);
+
+  if (!blkcg_bio_issue_check(q, bio))
+    return false;
+
+  if (!bio_flagged(bio, BIO_TRACE_COMPLETION)) {
+    trace_block_bio_queue(q, bio);
+    /* Now that enqueuing has been traced, we need to trace
+     * completion as well.
+     */
+    bio_set_flag(bio, BIO_TRACE_COMPLETION);
+  }
+  return true;
+
+not_supported:
+  status = BLK_STS_NOTSUPP;
+end_io:
+  bio->bi_status = status;
+  bio_endio(bio);
+  return false;
+}
+
+/* Remap block n of partition p to block n+start(p) of the disk.
+ * From now on, the generic block layer, the I/O scheduler, and the device driver
+ * forget about disk partitioning, and work directly with the whole disk. */
+static inline int blk_partition_remap(struct bio *bio)
+{
+  struct hd_struct *p;
+  int ret = -EIO;
+
+  rcu_read_lock();
+  p = __disk_get_part(bio->bi_disk, bio->bi_partno);
+  if (unlikely(!p))
+    goto out;
+  if (unlikely(should_fail_request(p, bio->bi_iter.bi_size)))
+    goto out;
+  if (unlikely(bio_check_ro(bio, p)))
+    goto out;
+
+  /* Zone reset does not include bi_size so bio_sectors() is always 0.
+   * Include a test for the reset op code and perform the remap if needed. */
+  if (bio_sectors(bio) || bio_op(bio) == REQ_OP_ZONE_RESET) {
+    if (bio_check_eod(bio, part_nr_sects_read(p)))
+      goto out;
+    bio->bi_iter.bi_sector += p->start_sect;
+  }
+  bio->bi_partno = 0;
+  ret = 0;
+out:
+  rcu_read_unlock();
   return ret;
 }
 
 struct request_queue {
   // Together with queue_head for cacheline sharing
-  struct list_head  queue_head;
-  struct request    *last_merge;
-  struct elevator_queue  *elevator;
-  request_fn_proc    *request_fn;
-  make_request_fn    *make_request_fn;
+  struct list_head        queue_head;
+  struct request          *last_merge;
+  struct elevator_queue   *elevator;
+  request_fn_proc         *request_fn;
+  make_request_fn         *make_request_fn;
 }
 
 struct request {
-  struct list_head queuelist;
-  struct request_queue *q;
-  struct bio *bio;
-  struct bio *biotail;
+  struct list_head      queuelist;
+  struct request_queue  *q;
+  struct bio            *bio;
+  struct bio            *biotail;
 }
 
-struct bio {
-  struct bio            *bi_next;  /* request queue link */
-  struct block_device   *bi_bdev;
-  blk_status_t          bi_status;
-  struct bvec_iter      bi_iter;
-  unsigned short        bi_vcnt;  /* how many bio_vec's */
-  unsigned short        bi_max_vecs;  /* max bvl_vecs we can hold */
-  atomic_t              __bi_cnt;  /* pin count */
-  struct bio_vec        *bi_io_vec;  /* the actual vec list */
+struct elevator_queue
+{
+  struct elevator_type *type;
+  void *elevator_data;
+  struct kobject kobj;
+  struct mutex sysfs_lock;
+  unsigned int registered:1;
+  unsigned int uses_mq:1;
+  DECLARE_HASHTABLE(hash, ELV_HASH_BITS);
+};
 
+/* main unit of I/O for the block layer and lower layers (ie drivers and
+ * stacking drivers) */
+struct bio {
+  struct bio              *bi_next;  /* request queue link */
+  struct gendisk          *bi_disk;
+  unsigned int            bi_opf;    /* bottom bits req flags, top bits REQ_OP. Use accessors. */
+  unsigned short          bi_flags;  /* status, etc and bvec pool number */
+  unsigned short          bi_ioprio;
+  unsigned short          bi_write_hint;
+  blk_status_t            bi_status;
+  u8                      bi_partno;
+
+  struct bio_vec          *bi_io_vec;  /* the actual vec list */
+  struct bvec_iter        bi_iter;
+
+  /* Number of segments in this BIO after
+   * physical address coalescing is performed. */
+  unsigned int            bi_phys_segments;
+
+  /* To keep track of the max segment size, we account for the
+   * sizes of the first and last mergeable segments in this bio. */
+  unsigned int            bi_seg_front_size;
+  unsigned int            bi_seg_back_size;
+
+  atomic_t                __bi_remaining;
+  bio_end_io_t            *bi_end_io;
+
+  void                    *bi_private;
+  /* Optional ioc and css associated with this bio.  Put on bio
+   * release.  Read comment on top of bio_associate_current(). */
+  struct io_context           *bi_ioc;
+  struct cgroup_subsys_state  *bi_css;
+  struct blkcg_gq             *bi_blkg;
+  struct bio_issue            bi_issue;
+
+
+  unsigned short              bi_vcnt;  /* how many bio_vec's */
+
+  /* Everything starting with bi_max_vecs will be preserved by bio_reset() */
+  unsigned short              bi_max_vecs;  /* max bvl_vecs we can hold */
+
+  atomic_t                     __bi_cnt;  /* pin count */
+
+  struct bio_set              *bi_pool;
+
+  /* We can inline a number of vecs at the end of the bio, to avoid
+   * double allocations for a small number of bio_vecs. This member
+   * MUST obviously be kept at the very end of the bio. */
+  struct bio_vec              bi_inline_vecs[0];
 };
 
 struct bvec_iter {
-  sector_t        bi_sector;  /* device address in 512 byte sectors */
-  unsigned int    bi_size;  /* residual I/O count */
-  unsigned int    bi_idx;    /* current index into bvl_vec */
-  unsigned int    bi_bvec_done;  /* number of bytes completed in current bvec */
+  sector_t        bi_sector;    /* device address in 512 byte sectors */
+  unsigned int    bi_size;      /* residual I/O count */
+  unsigned int    bi_idx;       /* current index into bvl_vec */
+  unsigned int    bi_bvec_done; /* number of bytes completed in current bvec */
 };
 
 struct bio_vec {
@@ -6524,7 +7419,6 @@ struct bio_vec {
   unsigned int  bv_offset;
 }
 ```
-![linux-io-bio.png](../Images/Kernel/io-bio.png)
 
 ### make_request_fn
 ```C++
@@ -6679,7 +7573,8 @@ static void scsi_request_fn(struct request_queue *q)
 }
 ```
 
-## init block device
+## init request_queue
+
 ```C++
 // Small computer system interface
 static struct scsi_device *scsi_alloc_sdev(
@@ -6740,6 +7635,8 @@ ext4_direct_IO();
               get_user_pages_unlocked();
                 own_read(&mm->mmap_sem);
                   __get_user_pages_locked();
+                    find_vma(mm, start);
+                    virt_to_page(start);
                 up_read(&mm->mmap_sem);
 
         get_more_blocks();
@@ -6758,44 +7655,83 @@ ext4_direct_IO();
           dio_bio_submit();
             submit_bio();
 
+      dio_await_completion(dio);
+      dio_complete();
+        ext4_end_io_dio();
+          ext4_put_io_end();
+
 wb_workfn();
   wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
-    wb_writeback();
-      /* traverse wb->b_io, which is inode list */
-      writeback_sb_inodes(); /* Struct.2.writeback_control */
-        __writeback_single_inode();
-          do_writepages();
+    while ((work = get_next_work_item(wb)) != NULL) {
+      wb_writeback();
+        if (list_empty(&wb->b_io))
+          queue_io(wb, work, dirtied_before);
+            list_splice_init(&wb->b_more_io, &wb->b_io);
+            move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
+            move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
 
-            ext4_writepages(); /* Struct.3.mpage_da_data */
-              /* 1. find io data */
-              mpage_prepare_extent_to_map();
-                /* 1.1 find dirty pages */
-                pagevec_lookup_range_tag();
-                  find_get_pages_range_tag();
-                    radix_tree_for_each_tagged();
-                /* 1.2. process dirty pages */
-                mpage_process_page_bufs();
-                  mpage_add_bh_to_extent();
-                  mpage_submit_page();
-                    ext4_bio_write_page();
-                      io_submit_add_bh(); /* Struct.4.buffer_head */
-                        io_submit_init_bio(); /* init bio */
-                          bio_alloc();
-                          wbc_init_bio();
-                        bio_add_page();
-              /* 2. submit io data */
-              ext4_io_submit();
-                submit_bio();
+        if (work->sb) {
+          /* traverse wb->b_io, which is inode list */
+          progress = writeback_sb_inodes(); /* Struct.2.writeback_control */
+            __writeback_single_inode();
+              do_writepages();
 
-      __writeback_inodes_wb();
+                ext4_writepages(); /* Struct.3.mpage_da_data */
+                  /* 1. find io data */
+                  mpage_prepare_extent_to_map();
+                    /* 1.1 find dirty pages */
+                    pagevec_lookup_range_tag();
+                      find_get_pages_range_tag();
+                        radix_tree_for_each_tagged();
+
+                    wait_on_page_writeback();
+                      wait_on_page_bit(page, PG_writeback);
+                        io_schedule();
+                          schedule();
+
+                    /* 1.2. process dirty pages */
+                    mpage_process_page_bufs();
+                      mpage_add_bh_to_extent();
+                      mpage_submit_page();
+                        ext4_bio_write_page();
+                          io_submit_add_bh(); /* Struct.4.buffer_head */
+                            io_submit_init_bio(); /* init bio */
+                              bio_alloc();
+                              wbc_init_bio();
+                            bio_add_page();
+
+                  /* 2. submit io data */
+                  ext4_io_submit();
+                    submit_bio();
+        } else {
+          progress = __writeback_inodes_wb();
+            writeback_sb_inodes();
+        }
+
+        if (progress)
+          continue;
+
+        inode_sleep_on_writeback();
+    }
+
+    wb_check_start_all(wb);
+      struct wb_writeback_work work = { };
+      wb_writeback(wb, &work);
+    wb_check_old_data_flush(wb);
+      struct wb_writeback_work work = { };
+      wb_writeback(wb, &work);
+    wb_check_background_flush(wb);
+      struct wb_writeback_work work = { };
+      wb_writeback(wb, &work);
+
   wb_wakeup();
     mod_delayed_work();
-
 
 writeback_inodes_sb();
   writeback_inodes_sb_nr();
     get_nr_dirty_pages();
     __writeback_inodes_sb_nr(); /* wb_writeback_work */
+      struct wb_writeback_work work = { };
       /* split a wb_writeback_work to all wb's of a bdi */
       bdi_split_work_to_wbs();
         /* split nr_pages to write according to bandwidth */
@@ -6812,6 +7748,11 @@ writeback_inodes_sb();
 
 submit_bio();
   generic_make_request();
+
+    generic_make_request_checks();
+      blk_partition_remap();
+        bio->bi_iter.bi_sector += p->start_sect;
+
     make_request_fn(); /* blk_queue_bio */
       blk_queue_bio();
         elv_merge();
@@ -6837,9 +7778,8 @@ submit_bio();
 
 scsi_request_fn();
 ```
-![linux-io-bio-request.png](../Images/Kernel/io-bio-request.png)
 
-## Questions:
+## Q:
 1. How to implement the IO port of dev register, and mmap of IO dev cache?
 2. How to assign virutal irq to a cpu?
 3. The interrupt controller sends interrupt to each cpu, which one will handle it?
@@ -6978,7 +7918,7 @@ struct pipe_buffer {
   unsigned long private;
 };
 ```
-![linux-ipc-pipe-2.png](../Images/Kernel/ipc-pipe-2.png)
+![](../Images/Kernel/ipc-pipe-2.png)
 
 ## fifo
 ```C++
@@ -7131,7 +8071,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
   }
 }
 ```
-![linux-ipc-fifo.png](../Images/Kernel/ipc-fifo.png)
+![](../Images/Kernel/ipc-fifo.png)
 
 ## signal
 ### resigter a sighand
@@ -7292,7 +8232,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
   return 0;
 }
 ```
-![linux-ipc-signal-register-handler.png](../Images/Kernel/ipc-signal-register-handler.png)
+![](../Images/Kernel/ipc-signal-register-handler.png)
 
 ### send a signal
 ```C++
@@ -7566,7 +8506,7 @@ asmlinkage long sys_rt_sigreturn(void)
   return regs->ax;
 }
 ```
-![linux-sig-handle.png](../Images/Kernel/sig-handle.png)
+![](../Images/Kernel/sig-handle.png)
 
 ## sem, shm, msg
 ```C++
@@ -7596,7 +8536,7 @@ struct idr {
   unsigned int    idr_next;
 };
 ```
-![ipc_ids](../Images/Kernel/ipc-ipc_ids.png)
+![](../Images/Kernel/ipc-ipc_ids.png)
 ```C++
 struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 {
@@ -8135,7 +9075,7 @@ shm_fault();
       shmem_alloc_and_acct_page();
 ```
 
-![linux-ipc-shm.png](../Images/Kernel/ipc-shm.png)
+![](../Images/Kernel/ipc-shm.png)
 
 ### semget
 ```C++
@@ -8555,7 +9495,7 @@ struct sem_undo_list {
 };
 ```
 
-![linux-ipc-sem-2.png](../Images/Kernel/ipc-sem-2.png)
+![](../Images/Kernel/ipc-sem-2.png)
 
 ```C++
 semget();
@@ -8595,7 +9535,7 @@ semop();
     list_add_tail(&queue.list, &sma->pending_alter);
     schedule();
 ```
-![linux-ipc-sem.png](../Images/Kernel/ipc-sem.png)
+![](../Images/Kernel/ipc-sem.png)
 
 ## Q:
 1. How access shm by a vm address?
@@ -8603,7 +9543,7 @@ semop();
 # Virtualization
 
 # Containerization
-![linux-container-vir-arch.png](../Images/Kernel/container-vir-arch.png)
+![](../Images/Kernel/container-vir-arch.png)
 
 ## ns
 ```C++
@@ -8784,7 +9724,7 @@ static __net_init int loopback_net_init(struct net *net)
   return 0;
 }
 ```
-![linux-container-namespace.png](../Images/Kernel/container-namespace.png)
+![](../Images/Kernel/container-namespace.png)
 
 ## cgroup
 cgrup subsystem:
@@ -8902,7 +9842,7 @@ memory.kmem.usage_in_bytes          system.slice
 memory.limit_in_bytes               tasks
 memory.max_usage_in_bytes           user.slice
 ```
-![linux-container-cgroup.png](../Images/Kernel/container-cgroup.png)
+![](../Images/Kernel/container-cgroup.png)
 
 ```C++
 void __init start_kernel(void)
@@ -9608,7 +10548,7 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
   ret = try_charge(memcg, gfp_mask, nr_pages);
 }
 ```
-![linux-container-cgroup-arch.png](../Images/Kernel/container-cgroup-arch.png)
+![](../Images/Kernel/container-cgroup-arch.png)
 
 ## Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
@@ -11580,19 +12520,19 @@ posix_timer_fn();
               try_to_wake_up();
 ```
 
-![kernel-time-timer.png](../Images/Kernel/time-timer.png)
+![](../Images/Kernel/time-timer.png)
 
-![kernel-time-timer-arch.png](../Images/Kernel/time-timer-arch.png)
+![](../Images/Kernel/time-timer-arch.png)
 
-![kernel-time-tiemer-origin.png](../Images/Kernel/time-tiemer-origin.png)
+![](../Images/Kernel/time-tiemer-origin.png)
 
-![kernel-time-timer-hrtimer.png](../Images/Kernel/time-timer-hrtimer.png)
+![](../Images/Kernel/time-timer-hrtimer.png)
 
-![kernel-time-timer-hrtimer-gtod.png](../Images/Kernel/time-timer-hrtimer-gtod.png)
+![](../Images/Kernel/time-timer-hrtimer-gtod.png)
 
-![kernel-time-timer-hrtimer-gtod-clockevent.png](../Images/Kernel/time-timer-hrtimer-gtod-clockevent.png)
+![](../Images/Kernel/time-timer-hrtimer-gtod-clockevent.png)
 
-![kernel-time-timer-hrtimer-gtod-clockevent-tick-emulation.png](../Images/Kernel/time-timer-hrtimer-gtod-clockevent-tick-emulation.png)
+![](../Images/Kernel/time-timer-hrtimer-gtod-clockevent-tick-emulation.png)
 
 ## Refence:
 [hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
