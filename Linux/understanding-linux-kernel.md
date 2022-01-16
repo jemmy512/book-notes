@@ -164,7 +164,7 @@ static inline void io_delay(void)
 
 ### Page Descriptors
 ### Non-Uniform Memory Access (NUMA)
-The Linux kernel makes use of NUMA even for some peculiar uniprocessor systems that have huge “holes” in the physical address space.
+The Linux kernel makes use of NUMA even for some peculiar uniprocessor systems that have huge "holes" in the physical address space.
 
 The kernel handles these architectures by assigning the contiguous subranges of valid physical addresses to different memory nodes.
 
@@ -172,6 +172,70 @@ The kernel handles these architectures by assigning the contiguous subranges of 
 ### Memory Area Management
 
 ### Noncontiguous Memory Area Management
+
+# 14 Block Device Drivers
+
+![](../Images/ULK/14-block-device-layer.png)
+
+## 14.1 Block Devices Handling
+
+![](../Images/ULK/14-1-page-segment-block-sector.png)
+
+### 14.1.1 Sectors
+
+* The controllers of the hardware block devices transfer data in chunks of fixed length called "sectors."
+
+
+### 14.1.2 Blocks
+
+The Virtual Filesystem, the mapping layer, and the filesystems group the disk data in logical units called "blocks."
+
+While the sector is the basic unit of data transfer for the hardware devices, the block is the basic unit of data transfer for the VFS and, consequently, for the filesystems.
+
+In Linux, the block size must be a power of 2 and cannot be larger than a page frame. Moreover, it must be a multiple of the sector size, because each block must include an integral number of sectors.
+
+Each block requires its own block buffer, which is a RAM memory area used by the kernel to store the block’s content.
+
+### 14.1.3 Segments
+
+As we will see shortly, block device drivers should be able to cope with "segments" of data: each segment is a memory page—or a portion of a memory page—including chunks of data that are physically adjacent on disk.
+
+For each scatter-gather DMA transfer, the block device driver must send to the disk controller:
+* The initial disk sector number and the total number of sectors to be transferred
+* A list of descriptors of memory areas, each of which consists of an address and a length.
+
+The disk controller takes care of the whole data transfer; for instance, in a read oper- ation the controller fetches the data from the adjacent disk sectors and scatters it into the various memory areas.
+
+To make use of scatter-gather DMA operations, block device drivers must handle the data in units called segments. A segment is simply a memory page—or a portion of a memory page—that includes the data of some adjacent disk sectors. Thus, a scatter- gather DMA operation may involve several segments at once.
+
+
+## 14.2 The Generic Block Layer
+The generic block layer is a kernel component that handles the requests for all block devices in the system.
+
+## 14.3 The I/O Scheduler
+To keep the block device driver from being suspended, each I/O operation is pro- cessed asynchronously. In particular, block device drivers are interrupt-driven (see the section "Monitoring I/O Operations" in the previous chapter): the generic block layer invokes the I/O scheduler to create a new block device request or to enlarge an already existing one and then terminates. The block device driver, which is activated at a later time, invokes the strategy routine to select a pending request and satisfy it by issuing suitable commands to the disk controller. When the I/O operation termi- nates, the disk controller raises an interrupt and the corresponding handler invokes the strategy routine again, if necessary, to process another pending request.
+
+Each block device driver maintains its own request queue, which contains the list of pending requests for the device. If the disk controller is handling several disks, there is usually one request queue for each physical block device.
+
+### 14.3.1 The "Noop" elevator
+
+There is no ordered queue: new requests are always added either at the front or at the tail of the dispatch queue, and the next request to be processed is always the first request in the queue.
+
+### 14.3.2 The "CFQ" elevator
+
+
+Requests coming from the same process are always inserted in the same queue.
+
+### 14.3.3 The "Deadline" elevator
+
+Besides the dispatch queue, the “Deadline” elevator makes use of four queues.
+* Two of them—the sorted queues—include the read and write requests, respectively, ordered according to their initial sector numbers.
+* The other two—the deadline queues— include the same read and write requests sorted according to their “deadlines.”
+
+A request deadline is essentially an expire timer that starts ticking when the request is passed to the elevator. By default, the expire time of read requests is 500 milliseconds, while the expire time for write requests is 5 seconds—read requests are privileged over write requests.
+
+## 14.4 Block Device Drivers
+## 14.5 Opening a Block Device File
 
 # 20 Program Execution
 ## 20.1 Executable Files
