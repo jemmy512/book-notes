@@ -1,3 +1,29 @@
+# 3 The Process
+## 3.1 Process Descriptor and the Task Structure
+### 3.1.1 Allocating the Process Descriptor
+### 3.1.Storing the Process Descriptor
+### 3.1.Process State
+### 3.1.Manipulating the Current Process State
+### 3.1.Process Context
+### 3.1.The Process Family Tree
+
+## 3.2 Process Creation
+### 3.2.1 Copy-on-Write
+The only overhead incurred by fork() is the duplication of the parent’s page tables and the creation of a unique process descriptor for the child.
+
+### 3.2.2 Forking
+### 3.2.3 vfork()
+
+## 3.3 The Linux Implementation of Threads
+### 3.3.1 Creating Threads
+### 3.3.2 Kernel Threads
+
+## 3.4 Process Termination
+### 3.4.1 Removing the Process Descriptor
+### 3.4.2 The Dilemma of the Parentless Task
+
+
+
 # 13 The Virtual Filesystem
 ## The Dentry Object
 The VFS often needs to perform directory-specific operations, such as path name lookup. Path name lookup involves translating each component of a path, ensuring it is valid, and following it to the next component. To facilitate this, the VFS employs the concept of a directory entry (dentry). A dentry is a specific component in a path.
