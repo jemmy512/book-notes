@@ -53,7 +53,7 @@
 
 ![](../Images/Kernel/file-vfs-system.png)
 
-```C++
+```c++
 register_filesystem(&ext4_fs_type);
 
 static struct file_system_type ext4_fs_type = {
@@ -141,7 +141,7 @@ struct mount {
 ```
 
 ## inode
-```C++
+```c++
 struct inode {
   const struct inode_operations   *i_op;
   struct super_block              *i_sb;
@@ -241,7 +241,7 @@ struct ext4_extent {
 
 ![](../Images/Kernel/ext4-extents.png)
 
-```C++
+```c++
 const struct inode_operations ext4_dir_inode_operations = {
   .create     = ext4_create,
   .lookup     = ext4_lookup,
@@ -282,7 +282,7 @@ ino = ext4_find_next_zero_bit((unsigned long *)
   * one block representing block bit info + several block representing data blocks
   * one block representing inode bit info + several block representing inode blocks
 
-```C++
+```c++
 struct ext4_group_desc
 {
   __le32  bg_block_bitmap_lo;  /* Blocks bitmap block */
@@ -292,7 +292,7 @@ struct ext4_group_desc
 ```
 ![](../Images/Kernel/block-group.png)
 
-```C++
+```c++
 struct ext4_super_block {
   __le32  s_blocks_count_lo;  /* Blocks count */
   __le32  s_r_blocks_count_lo;  /* Reserved blocks count */
@@ -326,7 +326,7 @@ struct super_block {
 ![](../Images/Kernel/mem-meta-block-group.png)
 
 ## directory
-```C++
+```c++
 struct ext4_dir_entry {
   __le32  inode;      /* Inode number */
   __le16  rec_len;    /* Directory entry length */
@@ -371,7 +371,7 @@ struct dx_entry
 ![](../Images/Kernel/dir-file-inode.png)
 
 ## hard/symbolic link
-```C++
+```c++
  ln [args] [dst] [src]
 ```
 ![](../Images/Kernel/file-link.png)
@@ -380,7 +380,7 @@ struct dx_entry
 ![](../Images/Kernel/file-arch.png)
 
 ## mount
-```C++
+```c++
 SYSCALL_DEFINE5(mount, char __user *, dev_name,
   char __user *, dir_name, char __user *, type,
   unsigned long, flags, void __user *, data)
@@ -474,7 +474,7 @@ struct vfsmount *vfs_kern_mount(
 }
 ```
 
-```C++
+```c++
 struct dentry *mount_fs(
   struct file_system_type *type, int flags,
   const char *name, void *data)
@@ -495,7 +495,7 @@ static struct dentry *ext4_mount(
 ```
 ![](../Images/Kernel/io-mount-example.png)
 
-```C++
+```c++
 mount();
   ksys_mount(); /* copy type, dev_name, data to kernel */
     do_mount(); /* get path by name */
@@ -507,7 +507,7 @@ mount();
 ```
 
 ## open
-```C++
+```c++
 struct task_struct {
   struct fs_struct      *fs;
   struct files_struct   *files;
@@ -582,7 +582,6 @@ struct file *path_openat(struct nameidata *nd,
   if (likely(!error)) {
     if (likely(file->f_mode & FMODE_OPENED))
       return file;
-    WARN_ON(1);
     error = -EINVAL;
   }
 
@@ -690,7 +689,7 @@ do_sys_open();
 ![](../Images/Kernel/dcache.png)
 
 ## read/write
-```C++
+```c++
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
   struct fd f = fdget_pos(fd);
@@ -773,7 +772,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 ```
 
 ### direct_io
-```C++
+```c++
 static const struct address_space_operations ext4_aops = {
   .readpage               = ext4_readpage,
   .readpages              = ext4_readpages,
@@ -829,7 +828,7 @@ static inline ssize_t do_blockdev_direct_IO(
 ```
 
 ### buffered read
-```C++
+```c++
 static ssize_t generic_file_buffered_read(struct kiocb *iocb,
     struct iov_iter *iter, ssize_t written)
 {
@@ -881,7 +880,7 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 ```
 
 ### buffered write
-```C++
+```c++
 ssize_t generic_perform_write(
   struct file *file, struct iov_iter *i, loff_t pos)
 {
@@ -1027,7 +1026,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 ```
 ## writeback
 
-![](../Images/Kernel/file-writeback.png)
+![](../Images/Kernel/proc-workqueue.png)
 
 ### backing_dev_info
 ```c++
@@ -1210,7 +1209,6 @@ void delayed_work_timer_fn(struct timer_list *t)
 
   /* if draining, only works from the same workqueue are allowed */
   if (unlikely(wq->flags & __WQ_DRAINING) &&
-      WARN_ON_ONCE(!is_chained_work(wq)))
     return;
 retry:
   /* pwq which will be used unless @work is executing elsewhere */
@@ -1258,9 +1256,6 @@ retry:
       cpu_relax();
       goto retry;
     }
-    /* oops */
-    WARN_ONCE(true, "workqueue: per-cpu pwq for %s on cpu%d has 0 refcnt",
-        wq->name, cpu);
   }
 
   /* pwq determined, queue */
@@ -1313,96 +1308,6 @@ static void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
 
 Direct IO and buffered IO will eventally call `submit_bio`.
 
-### bdi_wq
-
-```C++
-/* global variable, all backing task stored here */
-/* bdi_wq serves all asynchronous writeback tasks */
-struct workqueue_struct *bdi_wq;
-
-struct workqueue_struct {
-  struct list_head      pwqs;  /* WR: all pwqs of this wq */
-  struct list_head      list;  /* PR: list of all workqueues */
-
-  struct list_head      maydays; /* MD: pwqs requesting rescue */
-  struct worker         *rescuer; /* I: rescue worker */
-
-  struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
-  struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
-  struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
-};
-
-/* The per-pool workqueue. */
-struct pool_workqueue {
-  struct worker_pool      *pool;    /* I: the associated pool */
-  struct workqueue_struct *wq;    /* I: the owning workqueue */
-  int                     work_color;  /* L: current color */
-  int                     flush_color;  /* L: flushing color */
-  int                     refcnt;    /* L: reference count */
-  int                     nr_in_flight[WORK_NR_COLORS];/* L: nr of in_flight works */
-  int                     nr_active;  /* L: nr of active works */
-  int                     max_active;  /* L: max active works */
-  struct list_head        delayed_works;  /* L: delayed works */
-  struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
-  struct list_head        mayday_node;  /* MD: node on wq->maydays */
-
-  /* Release of unbound pwq is punted to system_wq.  See put_pwq()
-   * and pwq_unbound_release_workfn() for details.  pool_workqueue
-   * itself is also sched-RCU protected so that the first pwq can be
-   * determined without grabbing wq->mutex. */
-  struct work_struct  unbound_release_work;
-  struct rcu_head    rcu;
-} __aligned(1 << WORK_STRUCT_FLAG_BITS);
-
-struct worker_pool {
-  spinlock_t          lock;   /* the pool lock */
-  int                 cpu;    /* I: the associated cpu */
-  int                 node;   /* I: the associated node ID */
-  int                 id;     /* I: pool ID */
-  unsigned int        flags;  /* X: flags */
-
-  unsigned long       watchdog_ts;  /* L: watchdog timestamp */
-
-  struct list_head    worklist;  /* L: list of pending works */
-
-  int                 nr_workers;  /* L: total number of workers */
-  int                 nr_idle;  /* L: currently idle workers */
-
-  struct list_head    idle_list;  /* X: list of idle workers */
-  struct timer_list   idle_timer;  /* L: worker idle timeout */
-  struct timer_list   mayday_timer;  /* L: SOS timer for workers */
-
-  /* a workers is either on busy_hash or idle_list, or the manager */
-  DECLARE_HASHTABLE(busy_hash, BUSY_WORKER_HASH_ORDER);
-            /* L: hash of busy workers */
-
-  struct worker       *manager;  /* L: purely informational */
-  struct list_head    workers;  /* A: attached workers */
-  struct completion   *detach_completion; /* all workers detached */
-
-  struct ida          worker_ida;  /* worker IDs for task name */
-
-  struct workqueue_attrs  *attrs;    /* I: worker attributes */
-  struct hlist_node       hash_node;  /* PL: unbound_pool_hash node */
-  int                     refcnt;    /* PL: refcnt for unbound pools */
-
-  /* The current concurrency level.  As it's likely to be accessed
-   * from other CPUs during try_to_wake_up(), put it in a separate
-   * cacheline. */
-  atomic_t    nr_running ____cacheline_aligned_in_smp;
-
-  /* Destruction of pool is sched-RCU protected to allow dereferences
-   * from get_work_pool(). */
-  struct rcu_head    rcu;
-} ____cacheline_aligned_in_smp;
-
-struct backing_dev_info noop_backing_dev_info = {
-  .name           = "noop",
-  .capabilities   = BDI_CAP_NO_ACCT_AND_WRITEBACK,
-};
-```
-![](../Images/Kernel/file-read-write.png)
-
 ## Question:
 1. How to use inode bit map present all inodes?
 2. Does system alloc a block for a dirctory or a file?
@@ -1434,20 +1339,20 @@ mknod filename type major minor  // create dev file in /dev/
 ![](../Images/Kernel/io-sysfs.png)
 
 ## kobject
-```C++
+```c++
 module_init(logibm_init);
 module_exit(logibm_exit);
 ```
 
 A kernel module consists:
 1. header
-  ```C++
+  ```c++
   #include <linux/module.h>
   #include <linux/init.h>
   ```
 2. define functions, handling kernel module main logic
 3. Implement a file_operation interface
-  ```C++
+  ```c++
   static const struct file_operations lp_fops = {
     .owner    = THIS_MODULE,
     .write    = lp_write,
@@ -1474,7 +1379,7 @@ A kernel module consists:
 
 ### insmod char dev
 
-```C++
+```c++
 static int __init lp_init (void)
 {
   if (register_chrdev (LP_MAJOR, "lp", &lp_fops)) {
@@ -1517,7 +1422,7 @@ int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 ```
 
 ### dev_fs_type
-```C++
+```c++
 rest_init();
   kernel_thread(kernel_init);
     kernel_init_freeable();
@@ -1596,7 +1501,7 @@ out:
 ```
 
 ### mount char dev
-```C++
+```c++
 /* mount -t type device destination_dir
  *
  * mount -> ksys_mount -> do_mount -> do_new_mount ->
@@ -1724,7 +1629,7 @@ void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 }
 ```
 
-```C++
+```c++
 mount();
   ksys_mount(); /* copy type, dev_name, data to kernel */
     do_mount(); /* get path by name */
@@ -1745,7 +1650,7 @@ mount();
 ```
 
 ### mknod char dev
-```C++
+```c++
 /* mknod /dev/ttyS0 c 4 64 */
 SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
 {
@@ -1810,7 +1715,7 @@ static int shmem_mknod(
 }
 ```
 
-```C++
+```c++
 mknod();
   sys_mknodat();
     user_path_create();
@@ -1826,7 +1731,7 @@ mknod();
 ```
 
 ### open char dev
-```C++
+```c++
 const struct file_operations def_chr_fops = {
   .open = chrdev_open,
 };
@@ -1861,7 +1766,7 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 ```
 
 ### write char dev
-```C++
+```c++
 ssize_t __vfs_write(struct file *file, const char __user *p, size_t count, loff_t *pos)
 {
   if (file->f_op->write)
@@ -1922,7 +1827,7 @@ static ssize_t lp_write(
 ![](../Images/Kernel/io-char-dev-write.png)
 
 ### ioctl
-```C++
+```c++
 SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 {
   int error;
@@ -2073,7 +1978,7 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
 
 ![](../Images/Kernel/io-blk-dev-insmod-mknod-mount.png)
 
-```C++
+```c++
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
   inode->i_mode = mode;
@@ -2113,7 +2018,7 @@ static struct file_system_type ext4_fs_type = {
 ```
 
 ### bdev_map
-```C++
+```c++
 static struct kobj_map *bdev_map;
 // map a dev_t with a gendisk
 static inline void add_disk(struct gendisk *disk)
@@ -2138,7 +2043,7 @@ void blk_register_region(
 
 ### mount blk dev
 
-```C++
+```c++
 /* mont -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> fs_type.mount */
 static struct dentry *ext4_mount(
@@ -2171,7 +2076,7 @@ struct dentry *mount_bdev(
 ```
 
 #### blkdev_get_by_path
-```C++
+```c++
 struct block_device *blkdev_get_by_path(
   const char *path, fmode_t mode, void *holder)
 {
@@ -2184,7 +2089,7 @@ struct block_device *blkdev_get_by_path(
 }
 ```
 ##### lookup_bdev
-```C++
+```c++
 // 1. find the block device file under /dev which is devtmpfs file system
 struct block_device *lookup_bdev(const char *pathname)
 {
@@ -2329,7 +2234,7 @@ struct hd_struct {
 ```
 
 ##### blkdev_get
-```C++
+```c++
 static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
 {
   struct gendisk *disk;
@@ -2446,7 +2351,7 @@ static int sd_open(struct block_device *bdev, fmode_t mode)
 ```
 
 #### sget
-```C++
+```c++
 // drivers/scsi/sd.c
 static const struct block_device_operations sd_fops = {
   .owner                    = THIS_MODULE,
@@ -2508,7 +2413,7 @@ struct super_block *sget_userns(struct file_system_type *type,
 }
 ```
 
-```C++
+```c++
 mount();
   ksys_mount(); /* copy type, dev_name, data to kernel */
     do_mount(); /* get path by name */
@@ -2559,7 +2464,7 @@ mount();
 
 ![](../Images/Kernel/io-interrupt.png)
 
-```C++
+```c++
 static int logibm_open(struct input_dev *dev)
 {
   if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
@@ -2606,7 +2511,7 @@ enum irqreturn {
 ```
 
 ### request_irq
-```C++
+```c++
 static inline int request_irq(
   unsigned int irq, irq_handler_t handler,
   unsigned long flags, const char *name, void *dev)
@@ -2791,7 +2696,7 @@ struct idt_bits {
 ```
 
 ### init idt_table
-```C++
+```c++
 struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
 
 #define IA32_SYSCALL_VECTOR 0x80
@@ -2854,7 +2759,7 @@ enum {
 ```
 
 ### init_IRQ
-```C++
+```c++
 // after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
 void __init native_init_IRQ(void)
 {
@@ -2946,7 +2851,7 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags
 ```
 
 ### init vector_irq
-```C++
+```c++
 /* The interrupt vector interrupt controller sent to
  * each cpu is per cpu local variable, but the abstract
  * layer's virtual signal irq and it's irq_desc is global.
@@ -3001,7 +2906,7 @@ next_cpu:
 ```
 
 ## direct io
-```C++
+```c++
 read();
   vfs_read();
     file->f_op->write_iter(); /* ext4_file_read_iter */
@@ -3303,7 +3208,6 @@ ssize_t do_blockdev_direct_IO(
   if (drop_refcount(dio) == 0) {
     retval = dio_complete(dio, retval, DIO_COMPLETE_INVALIDATE);
   } else
-    BUG_ON(retval != -EIOCBQUEUED);
 
 out:
   return retval;
@@ -3587,7 +3491,6 @@ int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
    * mapped blocks then we can now return that memory error */
   ret = dio->page_errors;
   if (ret == 0) {
-    BUG_ON(sdio->block_in_file >= sdio->final_block_in_request);
     fs_startblk = sdio->block_in_file >> sdio->blkfactor;
     fs_endblk = (sdio->final_block_in_request - 1) >>
           sdio->blkfactor;
@@ -3699,7 +3602,6 @@ int dio_send_cur_page(struct dio *dio, struct dio_submit *sdio,
     ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
     if (ret == 0) {
       ret = dio_bio_add_page(sdio);
-      BUG_ON(ret != 0);
     }
   }
 out:
@@ -3717,7 +3619,6 @@ int dio_new_bio(struct dio *dio, struct dio_submit *sdio,
     goto out;
   sector = start_sector << (sdio->blkbits - 9);
   nr_pages = min(sdio->pages_in_io, BIO_MAX_PAGES);
-  BUG_ON(nr_pages <= 0);
   dio_bio_alloc(dio, sdio, map_bh->b_bdev, sector, nr_pages);
   sdio->boundary = 0;
 out:
@@ -3776,7 +3677,7 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 ```
 
 ## buffered io write
-```C++
+```c++
 /* wb_workfn -> wb_do_writeback -> wb_writeback
  * -> writeback_sb_inodes -> __writeback_single_inode
  * -> do_writepages -> ext4_writepages */
@@ -4286,8 +4187,6 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
   int nr_submitted = 0;
   int nr_to_submit = 0;
 
-  BUG_ON(!PageLocked(page));
-  BUG_ON(PageWriteback(page));
 
   if (keep_towrite)
     set_page_writeback_keepwrite(page);
@@ -4467,7 +4366,7 @@ void ext4_io_submit(struct ext4_io_submit *io)
 
 ![](../Images/Kernel/io-blk_queue_bio.png)
 
-```C++
+```c++
 // direct IO and buffered IO will come to here:
 blk_qc_t submit_bio(struct bio *bio)
 {
@@ -4809,7 +4708,7 @@ struct bio_vec {
 ```
 
 ### make_request_fn
-```C++
+```c++
 // make_request_fn -> blk_queue_bio
 blk_qc_t blk_queue_bio(struct request_queue *q, struct bio *bio)
 {
@@ -5006,36 +4905,32 @@ static struct request *cfq_find_rq_fmerge(
 ```
 
 ### request_fn
-```C++
+```c++
 void __blk_run_queue(struct request_queue *q)
 {
-	lockdep_assert_held(q->queue_lock);
-	WARN_ON_ONCE(q->mq_ops);
+  lockdep_assert_held(q->queue_lock);
 
-	if (unlikely(blk_queue_stopped(q)))
-		return;
+  if (unlikely(blk_queue_stopped(q)))
+    return;
 
-	__blk_run_queue_uncond(q);
+  __blk_run_queue_uncond(q);
 }
 
 void __blk_run_queue_uncond(struct request_queue *q)
 {
-	lockdep_assert_held(q->queue_lock);
-	WARN_ON_ONCE(q->mq_ops);
+  lockdep_assert_held(q->queue_lock);
 
-	if (unlikely(blk_queue_dead(q)))
-		return;
+  if (unlikely(blk_queue_dead(q)))
+    return;
 
-	/*
-	 * Some request_fn implementations, e.g. scsi_request_fn(), unlock
-	 * the queue lock internally. As a result multiple threads may be
-	 * running such a request function concurrently. Keep track of the
-	 * number of active request_fn invocations such that blk_drain_queue()
-	 * can wait until all these request_fn calls have finished.
-	 */
-	q->request_fn_active++;
-	q->request_fn(q); /* scsi_request_fn */
-	q->request_fn_active--;
+  /* Some request_fn implementations, e.g. scsi_request_fn(), unlock
+   * the queue lock internally. As a result multiple threads may be
+   * running such a request function concurrently. Keep track of the
+   * number of active request_fn invocations such that blk_drain_queue()
+   * can wait until all these request_fn calls have finished. */
+  q->request_fn_active++;
+  q->request_fn(q); /* scsi_request_fn */
+  q->request_fn_active--;
 }
 
 static void scsi_request_fn(struct request_queue *q)
@@ -5075,7 +4970,7 @@ static void scsi_request_fn(struct request_queue *q)
 
 ## init request_queue
 
-```C++
+```c++
 // Small computer system interface
 static struct scsi_device *scsi_alloc_sdev(
   struct scsi_target *starget,
@@ -5221,14 +5116,14 @@ void queue_unplugged(struct request_queue *q, unsigned int depth, bool from_sche
 
 void blk_run_queue_async(struct request_queue *q)
 {
-	lockdep_assert_held(q->queue_lock);
+  lockdep_assert_held(q->queue_lock);
 
-	if (likely(!blk_queue_stopped(q) && !blk_queue_dead(q)))
-		mod_delayed_work(kblockd_workqueue, &q->delay_work, 0);
+  if (likely(!blk_queue_stopped(q) && !blk_queue_dead(q)))
+    mod_delayed_work(kblockd_workqueue, &q->delay_work, 0);
 }
 ```
 
-```C++
+```c++
 /* direct io */
 ext4_direct_IO();
   ext4_direct_IO_write();
