@@ -1,7 +1,7 @@
 # Table of Contents
 * [Init](#Init)
     * [CPU](#cpu)
-* [Process Management](#Process-Management)
+* [Process](#Process)
     * [process](#process)
     * [thread](#thread)
     * [task_struct](#task_struct)
@@ -21,6 +21,14 @@
     * [wait_woken](#wait_woken)
     * [fork](#fork)
     * [exec](#exec)
+    * [kthreadd](#kthreadd)
+    * [workqueue](#workqueue)
+        * [struct](#wq-struct)
+        * [init](#wq-init)
+        * [worker_thread](#worker_thread)
+        * [schedule_work](#schedule_work)
+        * [create_worker](#create_worker)
+        * [flush_work](#flush_work)
 
 * [Memory Management :link:](./linux-kernel-mem.md)
 * [Network :link:](./linux-kernel-net.md)
@@ -84,7 +92,7 @@
   ```
 
 ## init kernel
-```C++
+```c++
 // init/main.c
 void start_kernel(void)
 {
@@ -175,7 +183,7 @@ int open(const char *pathname, int flags, mode_t mode)
 // File name Caller  Syscall name    Args    Strong name    Weak names
       open    -        open          i:siv   __libc_open   __open open
 ```
-```C++
+```c++
 // syscall-template.S
 T_PSEUDO (SYSCALL_SYMBOL, SYSCALL_NAME, SYSCALL_NARGS)
     ret
@@ -192,8 +200,9 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 ```
 
 ### 32
-```C++
-/* Linux takes system call arguments in registers:
+```c++
+/* glibc-2.28/sysdeps/unix/sysv/linux/i386/sysdep.h
+ Linux takes system call arguments in registers:
   syscall number  %eax       call-clobbered
   arg 1    %ebx       call-saved
   arg 2    %ecx       call-clobbered
@@ -212,24 +221,272 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 
 #define IA32_SYSCALL_VECTOR  0x80
 
+#define _DOARGS_0(n)  /* No arguments to frob.  */
+#define _DOARGS_1(n)  movl n(%esp), %ebx; _DOARGS_0 (n-4)
+#define  _DOARGS_2(n)  movl n(%esp), %ecx; _DOARGS_1 (n-4)
+#define _DOARGS_3(n)  movl n(%esp), %edx; _DOARGS_2 (n-4)
+#define _DOARGS_4(n)  movl n(%esp), %esi; _DOARGS_3 (n-4)
+#define _DOARGS_5(n)  movl n(%esp), %edi; _DOARGS_4 (n-4)
+#define _DOARGS_6(n)  movl n(%esp), %ebp; _DOARGS_5 (n-4)
+
+
+#define  DOARGS_0  /* No arguments to frob.  */
+#define  DOARGS_1  _DOARGS_1 (4)
+#define  DOARGS_2  _DOARGS_2 (8)
+#define DOARGS_3  _DOARGS_3 (16)
+#define DOARGS_4  _DOARGS_4 (24)
+#define DOARGS_5  _DOARGS_5 (32)
+#define DOARGS_6  _DOARGS_6 (40)
+
+#define PUSHARGS_0  /* No arguments to push.  */
+#define  _PUSHARGS_0  /* No arguments to push.  */
+
+#define PUSHARGS_1  movl %ebx, %edx; L(SAVEBX1): PUSHARGS_0
+#define  _PUSHARGS_1  pushl %ebx; cfi_adjust_cfa_offset (4);cfi_rel_offset (ebx, 0); L(PUSHBX1): _PUSHARGS_0
+
+/* CFI stands for Call Frame Information
+and helps a debugger create a reliable backtrace through functions. */
+
+#define PUSHARGS_2  PUSHARGS_1
+#define _PUSHARGS_2  _PUSHARGS_1
+
+#define PUSHARGS_3  _PUSHARGS_2
+#define _PUSHARGS_3  _PUSHARGS_2
+
+#define PUSHARGS_4  _PUSHARGS_4
+#define _PUSHARGS_4  pushl %esi; cfi_adjust_cfa_offset (4); cfi_rel_offset (esi, 0); L(PUSHSI1): _PUSHARGS_3
+
+#define PUSHARGS_5  _PUSHARGS_5
+#define _PUSHARGS_5  pushl %edi; cfi_adjust_cfa_offset (4); cfi_rel_offset (edi, 0); L(PUSHDI1): _PUSHARGS_4
+
+#define PUSHARGS_6  _PUSHARGS_6
+#define _PUSHARGS_6  pushl %ebp; cfi_adjust_cfa_offset (4); cfi_rel_offset (ebp, 0); L(PUSHBP1): _PUSHARGS_5
+
 /* trap_init */
 set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
 
 /* linux-4.19.y/arch/x86/entry/entry_32.S */
+/* Arguments:
+ * eax  system call number
+ * ebx  arg1
+ * ecx  arg2
+ * edx  arg3
+ * esi  arg4
+ * edi  arg5
+ * ebp  arg6 */
 ENTRY(entry_INT80_32)
-    ASM_CLAC
-    pushl   %eax                  /* pt_regs->orig_ax */
-    SAVE_ALL pt_regs_ax=$-ENOSYS  /* save rest */
-    movl    %esp, %eax
-    call    do_syscall_32_irqs_on
+  ASM_CLAC
+  pushl  %eax      /* pt_regs->orig_ax */
+
+  SAVE_ALL pt_regs_ax=$-ENOSYS switch_stacks=1  /* save rest */
+
+  /* User mode is traced as though IRQs are on, and the interrupt gate
+   * turned them off. */
+  TRACE_IRQS_OFF
+
+  movl  %esp, %eax
+  call  do_int80_syscall_32
 .Lsyscall_32_done:
 
+restore_all:
+  TRACE_IRQS_IRET
+  SWITCH_TO_ENTRY_STACK
+
+.Lrestore_all_notrace:
+  CHECK_AND_APPLY_ESPFIX
+.Lrestore_nocheck:
+  /* Switch back to user CR3 */
+  SWITCH_TO_USER_CR3 scratch_reg=%eax
+
+  BUG_IF_WRONG_CR3
+
+  /* Restore user state */
+  RESTORE_REGS pop=4      # skip orig_eax/error_code
 .Lirq_return:
-  INTERRUPT_RETURN /* iret */
+  /* ARCH_HAS_MEMBARRIER_SYNC_CORE rely on IRET core serialization
+   * when returning from IPI handler and when returning from
+   * scheduler to user-space. */
+  INTERRUPT_RETURN # iret
 
+restore_all_kernel:
+  TRACE_IRQS_IRET
+  PARANOID_EXIT_TO_KERNEL_MODE
+  BUG_IF_WRONG_CR3
+  RESTORE_REGS 4
+  jmp  .Lirq_return
+
+.section .fixup, "ax"
+ENTRY(iret_exc  )
+  pushl  $0        # no error code
+  pushl  $do_iret_error
+
+#ifdef CONFIG_DEBUG_ENTRY
+  /* The stack-frame here is the one that iret faulted on, so its a
+   * return-to-user frame. We are on kernel-cr3 because we come here from
+   * the fixup code. This confuses the CR3 checker, so switch to user-cr3
+   * as the checker expects it. */
+  pushl  %eax
+  SWITCH_TO_USER_CR3 scratch_reg=%eax
+  popl  %eax
+#endif
+
+  jmp  common_exception
+.previous
+  _ASM_EXTABLE(.Lirq_return, iret_exc)
 ENDPROC(entry_INT80_32)
+```
 
-static  void do_syscall_32_irqs_on(struct pt_regs *regs)
+```c++
+.macro SAVE_ALL pt_regs_ax=%eax switch_stacks=0
+  cld
+  PUSH_GS
+  pushl  %fs
+  pushl  %es
+  pushl  %ds
+  pushl  \pt_regs_ax
+  pushl  %ebp
+  pushl  %edi
+  pushl  %esi
+  pushl  %edx
+  pushl  %ecx
+  pushl  %ebx
+  movl   $(__USER_DS), %edx
+  movl   %edx, %ds
+  movl   %edx, %es
+  movl   $(__KERNEL_PERCPU), %edx
+  movl   %edx, %fs
+  SET_KERNEL_GS %edx
+  /* Switch to kernel stack if necessary */
+.if \switch_stacks > 0
+  SWITCH_TO_KERNEL_STACK
+.endif
+```
+
+```c++
+#define CS_FROM_ENTRY_STACK  (1 << 31)
+#define CS_FROM_USER_CR3  (1 << 30)
+
+.macro SWITCH_TO_KERNEL_STACK
+
+  ALTERNATIVE     "", "jmp .Lend_\@", X86_FEATURE_XENPV
+
+  BUG_IF_WRONG_CR3
+
+  SWITCH_TO_KERNEL_CR3 scratch_reg=%eax
+
+  /* %eax now contains the entry cr3 and we carry it forward in
+   * that register for the time this macro runs */
+
+  /* The high bits of the CS dword (__csh) are used for
+   * CS_FROM_ENTRY_STACK and CS_FROM_USER_CR3. Clear them in case
+   * hardware didn't do this for us. */
+  andl  $(0x0000ffff), PT_CS(%esp)
+
+  /* Are we on the entry stack? Bail out if not! */
+  movl  PER_CPU_VAR(cpu_entry_area), %ecx
+  addl  $CPU_ENTRY_AREA_entry_stack + SIZEOF_entry_stack, %ecx
+  subl  %esp, %ecx  /* ecx = (end of entry_stack) - esp */
+  cmpl  $SIZEOF_entry_stack, %ecx
+  jae  .Lend_\@
+
+  /* Load stack pointer into %esi and %edi */
+  movl  %esp, %esi
+  movl  %esi, %edi
+
+  /* Move %edi to the top of the entry stack */
+  andl  $(MASK_entry_stack), %edi
+  addl  $(SIZEOF_entry_stack), %edi
+
+  /* Load top of task-stack into %edi */
+  movl  TSS_entry2task_stack(%edi), %edi
+
+  /* Special case - entry from kernel mode via entry stack */
+#ifdef CONFIG_VM86
+  movl  PT_EFLAGS(%esp), %ecx    # mix EFLAGS and CS
+  movb  PT_CS(%esp), %cl
+  andl  $(X86_EFLAGS_VM | SEGMENT_RPL_MASK), %ecx
+#else
+  movl  PT_CS(%esp), %ecx
+  andl  $SEGMENT_RPL_MASK, %ecx
+#endif
+  cmpl  $USER_RPL, %ecx
+  jb  .Lentry_from_kernel_\@
+
+  /* Bytes to copy */
+  movl  $PTREGS_SIZE, %ecx
+
+#ifdef CONFIG_VM86
+  testl  $X86_EFLAGS_VM, PT_EFLAGS(%esi)
+  jz  .Lcopy_pt_regs_\@
+
+  /* Stack-frame contains 4 additional segment registers when
+   * coming from VM86 mode */
+  addl  $(4 * 4), %ecx
+
+#endif
+.Lcopy_pt_regs_\@:
+
+  /* Allocate frame on task-stack */
+  subl  %ecx, %edi
+
+  /* Switch to task-stack */
+  movl  %edi, %esp
+
+  /* We are now on the task-stack and can safely copy over the
+   * stack-frame */
+  shrl  $2, %ecx
+  cld
+  rep movsl
+
+  jmp .Lend_\@
+```
+
+```c++
+/* Switch back from the kernel stack to the entry stack.
+ *
+ * The %esp register must point to pt_regs on the task stack. It will
+ * first calculate the size of the stack-frame to copy, depending on
+ * whether we return to VM86 mode or not. With that it uses 'rep movsl'
+ * to copy the contents of the stack over to the entry stack */
+.macro SWITCH_TO_ENTRY_STACK
+
+  ALTERNATIVE     "", "jmp .Lend_\@", X86_FEATURE_XENPV
+
+  /* Bytes to copy */
+  movl  $PTREGS_SIZE, %ecx
+
+#ifdef CONFIG_VM86
+  testl  $(X86_EFLAGS_VM), PT_EFLAGS(%esp)
+  jz  .Lcopy_pt_regs_\@
+
+  /* Additional 4 registers to copy when returning to VM86 mode */
+  addl    $(4 * 4), %ecx
+
+.Lcopy_pt_regs_\@:
+#endif
+
+  /* Initialize source and destination for movsl */
+  movl  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %edi
+  subl  %ecx, %edi
+  movl  %esp, %esi
+
+  /* Save future stack pointer in %ebx */
+  movl  %edi, %ebx
+
+  /* Copy over the stack-frame */
+  shrl  $2, %ecx
+  cld
+  rep movsl
+
+  /* Switch to entry-stack - needs to happen after everything is
+   * copied because the NMI handler will overwrite the task-stack
+   * when on entry-stack */
+  movl  %ebx, %esp
+
+.Lend_\@:
+.endm
+
+static void do_syscall_32_irqs_on(struct pt_regs *regs)
 {
   struct thread_info *ti = current_thread_info();
   unsigned int nr = (unsigned int)regs->orig_ax;
@@ -317,10 +574,11 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
   }
 }
 ```
+![](../Images/Kernel/init-syscall.png)
 ![](../Images/Kernel/init-syscall-32.png)
 
 ### 64
-```C++
+```c++
 /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
   The Linux/x86-64 kernel expects the system call parameters in
   registers according to the following table:
@@ -339,44 +597,119 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
 
 ENTRY(entry_SYSCALL_64)
+  UNWIND_HINT_EMPTY
+  /* Interrupts are off on entry.
+   * We do not frame this tiny irq-off block with TRACE_IRQS_OFF/ON,
+   * it is too small to ever cause noticeable irq latency. */
+
+  swapgs
+  /* This path is only taken when PAGE_TABLE_ISOLATION is disabled so it
+   * is not required to switch CR3. */
+  movq  %rsp, PER_CPU_VAR(rsp_scratch)
+  movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp
+
   /* Construct struct pt_regs on stack */
-  pushq   $__USER_DS                /* pt_regs->ss */
-  pushq   PER_CPU_VAR(rsp_scratch)  /* pt_regs->sp */
-  pushq   %r11                      /* pt_regs->flags */
-  pushq   $__USER_CS                /* pt_regs->cs */
-  pushq   %rcx                      /* pt_regs->ip */
-  pushq   %rax                      /* pt_regs->orig_ax */
-  pushq   %rdi                      /* pt_regs->di */
-  pushq   %rsi                      /* pt_regs->si */
-  pushq   %rdx                      /* pt_regs->dx */
-  pushq   %rcx                      /* pt_regs->cx */
-  pushq   $-ENOSYS                  /* pt_regs->ax */
-  pushq   %r8                       /* pt_regs->r8 */
-  pushq   %r9                       /* pt_regs->r9 */
-  pushq   %r10                      /* pt_regs->r10 */
-  pushq   %r11                      /* pt_regs->r11 */
-  sub     $(6*8), %rsp              /* pt_regs->bp, bx, r12-15 not saved */
-  movq    PER_CPU_VAR(current_task), %r11
-  testl   $_TIF_WORK_SYSCALL_ENTRY|_TIF_ALLWORK_MASK, TASK_TI_flags(%r11)
-  jnz     entry_SYSCALL64_slow_path
+  pushq  $__USER_DS                 /* pt_regs->ss */
+  pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
+  pushq  %r11                       /* pt_regs->flags */
+  pushq  $__USER_CS                 /* pt_regs->cs */
+  pushq  %rcx                       /* pt_regs->ip */
+GLOBAL(entry_SYSCALL_64_after_hwframe)
+  pushq  %rax                       /* pt_regs->orig_ax */
 
-entry_SYSCALL64_slow_path:
+  PUSH_AND_CLEAR_REGS rax=$-ENOSYS
+
+  TRACE_IRQS_OFF
+
   /* IRQs are off. */
-  SAVE_EXTRA_REGS
-  movq    %rsp, %rdi
-  call    do_syscall_64           /* returns with IRQs disabled */
+  movq  %rax, %rdi
+  movq  %rsp, %rsi
+  call  do_syscall_64    /* returns with IRQs disabled */
 
-return_from_SYSCALL_64:
-  RESTORE_EXTRA_REGS
-  TRACE_IRQS_IRETQ
+  TRACE_IRQS_IRETQ    /* we're about to change IF */
+
+  /* Try to use SYSRET instead of IRET if we're returning to
+   * a completely clean 64-bit userspace context.  If we're not,
+   * go to the slow exit path. */
   movq  RCX(%rsp), %rcx
   movq  RIP(%rsp), %r11
-  movq  R11(%rsp), %r11
 
+  cmpq  %rcx, %r11  /* SYSRET requires RCX == RIP */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  /* On Intel CPUs, SYSRET with non-canonical RCX/RIP will #GP
+   * in kernel space.  This essentially lets the user take over
+   * the kernel, since userspace controls RSP.
+   *
+   * If width of "canonical tail" ever becomes variable, this will need
+   * to be updated to remain correct on both old and new CPUs.
+   *
+   * Change top bits to match most significant bit (47th or 56th bit
+   * depending on paging mode) in the address. */
+#ifdef CONFIG_X86_5LEVEL
+  ALTERNATIVE "shl $(64 - 48), %rcx; sar $(64 - 48), %rcx", \
+    "shl $(64 - 57), %rcx; sar $(64 - 57), %rcx", X86_FEATURE_LA57
+#else
+  shl  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
+  sar  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
+#endif
+
+  /* If this changed %rcx, it was not canonical */
+  cmpq  %rcx, %r11
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  cmpq  $__USER_CS, CS(%rsp)    /* CS must match SYSRET */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  movq  R11(%rsp), %r11
+  cmpq  %r11, EFLAGS(%rsp)    /* R11 == RFLAGS */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  /* SYSCALL clears RF when it saves RFLAGS in R11 and SYSRET cannot
+   * restore RF properly. If the slowpath sets it for whatever reason, we
+   * need to restore it correctly.
+   *
+   * SYSRET can restore TF, but unlike IRET, restoring TF results in a
+   * trap from userspace immediately after SYSRET.  This would cause an
+   * infinite loop whenever #DB happens with register state that satisfies
+   * the opportunistic SYSRET conditions.  For example, single-stepping
+   * this user code:
+   *
+   *           movq  $stuck_here, %rcx
+   *           pushfq
+   *           popq %r11
+   *   stuck_here:
+   *
+   * would never get past 'stuck_here'. */
+  testq  $(X86_EFLAGS_RF|X86_EFLAGS_TF), %r11
+  jnz  swapgs_restore_regs_and_return_to_usermode
+
+  /* nothing to check for RSP */
+
+  cmpq  $__USER_DS, SS(%rsp)    /* SS must match SYSRET */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  /* We win! This label is here just for ease of understanding
+   * perf profiles. Nothing jumps here. */
 syscall_return_via_sysret:
   /* rcx and r11 are already restored (see code above) */
-  RESTORE_C_REGS_EXCEPT_RCX_R11
-  movq  RSP(%rsp), %rsp
+  POP_REGS pop_rdi=0 skip_r11rcx=1
+
+  /* Now all regs are restored except RSP and RDI.
+   * Save old stack pointer and switch to trampoline stack. */
+  movq  %rsp, %rdi
+  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
+  UNWIND_HINT_EMPTY
+
+  pushq  RSP-RDI(%rdi)  /* RSP */
+  pushq  (%rdi)    /* RDI */
+
+  /* We are on the trampoline stack.  All regs except RDI are live.
+   * We can do future final exit work right here. */
+  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
+
+  popq  %rdi
+  popq  %rsp
   USERGS_SYSRET64
 END(entry_SYSCALL_64)
 
@@ -403,13 +736,13 @@ void do_syscall_64(struct pt_regs *regs)
 ![](../Images/Kernel/init-syscall-64.png)
 
 
-# Process Management
+# Process
 
 ![](../Images/Kernel/proc-management.png)
 
 ## process
 ![](../Images/Kernel/proc-compile.png)
-```C++
+```c++
 /* compile */
 gcc -c -fPIC process.c
 gcc -c -fPIC createprocess.c
@@ -447,7 +780,7 @@ export LD_LIBRARY_PATH=
 ![](../Images/Kernel/proc-task-1.png)
 
 ## schedule
-```C++
+```c++
 /* Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
  * Normal schedule: SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE */
 #define SCHED_NORMAL    0
@@ -504,16 +837,16 @@ struct thread_struct {
   /* Cached TLS descriptors: */
   struct desc_struct  tls_array[GDT_ENTRY_TLS_ENTRIES];
 #ifdef CONFIG_X86_32
-  unsigned long    sp0;
+  unsigned long       sp0; /* userland SP */
 #endif
-  unsigned long    sp;
+  unsigned long       sp; /* kernel SP */
 #ifdef CONFIG_X86_32
-  unsigned long    sysenter_cs;
+  unsigned long       sysenter_cs;
 #else
-  unsigned short    es;
-  unsigned short    ds;
-  unsigned short    fsindex;
-  unsigned short    gsindex;
+  unsigned short      es;
+  unsigned short      ds;
+  unsigned short      fsindex;
+  unsigned short      gsindex;
 #endif
 
   /* Floating point and extended processor state */
@@ -566,7 +899,7 @@ struct cfs_rq {
 ![](../Images/Kernel/proc-sched-entity-rq.png)
 ![](../Images/Kernel/proc-runqueue.png)
 
-```C++
+```c++
 struct sched_class {
   const struct sched_class *next;
 
@@ -956,7 +1289,7 @@ struct x86_hw_tss {
 ![](../Images/Kernel/proc-sched-reg.png)
 ![](../Images/Kernel/proc-sched-context-switch-flow.png)
 
-```C++
+```c++
 schedule(void)
     __schedule(false), // kernel/sched/core.c
         pick_next_task(rq, prev, &rf);
@@ -980,7 +1313,7 @@ schedule(void)
 ### preempt schedule
 ### TIF_NEED_RESCHED
 #### scheduler_tick
-```C++
+```c++
 void scheduler_tick(void)
 {
   int cpu = smp_processor_id();
@@ -1058,7 +1391,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 ```
 
 #### try_to_wake_up
-```C++
+```c++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
  * -> check_preempt_curr -> resched_curr */
 static int try_to_wake_up(
@@ -1209,7 +1542,7 @@ void set_tsk_need_resched(struct task_struct *tsk)
 
 ### real user preempt time
 #### return from system call
-```C++
+```c++
 /* do_syscall_64 -> syscall_return_slowpath
  * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
@@ -1227,7 +1560,7 @@ static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 ```
 
 #### return from interrupt
-```C++
+```c++
 /* do_IRQ -> retint_user -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 common_interrupt:
         ASM_CLAC
@@ -1259,7 +1592,7 @@ retint_kernel:
 
 ### real kernel preempt time
 #### preempt_enble
-```C++
+```c++
 #define preempt_enable() \
 do { \
   if (unlikely(preempt_count_dec_and_test())) \
@@ -1287,7 +1620,7 @@ static void __sched notrace preempt_schedule_common(void)
 ```
 
 #### return from interrupt
-```C++
+```c++
 /* do_IRQ -> retint_kernel */
 asmlinkage __visible void __sched preempt_schedule_irq(void)
 {
@@ -1518,7 +1851,39 @@ struct wait_queue_entry {
 * [try_to_wake_up](#try_to_wake_up)
 
 ## fork
-```C++
+```c++
+/* linux/4.19.y/arch/x86/include/asm/ptrace.h */
+struct pt_regs {
+/* C ABI says these regs are callee-preserved. They aren't saved on kernel entry
+ * unless syscall needs a complete, fully filled "struct pt_regs". */
+  unsigned long r15;
+  unsigned long r14;
+  unsigned long r13;
+  unsigned long r12;
+  unsigned long bp;
+  unsigned long bx;
+/* These regs are callee-clobbered. Always saved on kernel entry. */
+  unsigned long r11;
+  unsigned long r10;
+  unsigned long r9;
+  unsigned long r8;
+  unsigned long ax;
+  unsigned long cx;
+  unsigned long dx;
+  unsigned long si;
+  unsigned long di;
+/* On syscall entry, this is syscall#. On CPU exception, this is error code.
+ * On hw interrupt, it's IRQ number: */
+  unsigned long orig_ax;
+/* Return frame for iretq */
+  unsigned long ip;
+  unsigned long cs;
+  unsigned long flags;
+  unsigned long sp;
+  unsigned long ss;
+/* top of stack page */
+};
+
 SYSCALL_DEFINE0(fork)
 {
   return _do_fork(SIGCHLD, 0, 0, NULL, NULL, 0);
@@ -1556,6 +1921,821 @@ long _do_fork(
   return nr;
 }
 
+/* kernel/fork.c */
+struct task_struct *copy_process(
+  unsigned long clone_flags,
+  unsigned long stack_start,
+  unsigned long stack_size,
+  int __user *child_tidptr,
+  struct pid *pid,
+  int trace,
+  unsigned long tls,
+  int node)
+{
+  int retval;
+  struct task_struct *p;
+  struct multiprocess_signals delayed;
+
+  /* Don't allow sharing the root directory with processes in a different
+   * namespace */
+  if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
+    return ERR_PTR(-EINVAL);
+
+  if ((clone_flags & (CLONE_NEWUSER|CLONE_FS)) == (CLONE_NEWUSER|CLONE_FS))
+    return ERR_PTR(-EINVAL);
+
+  /* Thread groups must share signals as well, and detached threads
+   * can only be started up within the thread group. */
+  if ((clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_SIGHAND))
+    return ERR_PTR(-EINVAL);
+
+  /* Shared signal handlers imply shared VM. By way of the above,
+   * thread groups also imply shared VM. Blocking this case allows
+   * for various simplifications in other code. */
+  if ((clone_flags & CLONE_SIGHAND) && !(clone_flags & CLONE_VM))
+    return ERR_PTR(-EINVAL);
+
+  /* Siblings of global init remain as zombies on exit since they are
+   * not reaped by their parent (swapper). To solve this and to avoid
+   * multi-rooted process trees, prevent global and container-inits
+   * from creating siblings. */
+  if ((clone_flags & CLONE_PARENT) && current->signal->flags & SIGNAL_UNKILLABLE)
+    return ERR_PTR(-EINVAL);
+
+  /* If the new process will be in a different pid or user namespace
+   * do not allow it to share a thread group with the forking task. */
+  if (clone_flags & CLONE_THREAD) {
+    if ((clone_flags & (CLONE_NEWUSER | CLONE_NEWPID))
+    || (task_active_pid_ns(current) != current->nsproxy->pid_ns_for_children))
+      return ERR_PTR(-EINVAL);
+  }
+
+  /* Force any signals received before this point to be delivered
+   * before the fork happens.  Collect up signals sent to multiple
+   * processes that happen during the fork and delay them so that
+   * they appear to happen after the fork. */
+  sigemptyset(&delayed.signal);
+  INIT_HLIST_NODE(&delayed.node);
+
+  spin_lock_irq(&current->sighand->siglock);
+  if (!(clone_flags & CLONE_THREAD))
+    hlist_add_head(&delayed.node, &current->signal->multiprocess);
+  recalc_sigpending();
+  spin_unlock_irq(&current->sighand->siglock);
+  retval = -ERESTARTNOINTR;
+  if (signal_pending(current))
+    goto fork_out;
+
+  retval = -ENOMEM;
+  p = dup_task_struct(current, node);
+  if (!p)
+    goto fork_out;
+
+  /* This _must_ happen before we call free_task(), i.e. before we jump
+   * to any of the bad_fork_* labels. This is to avoid freeing
+   * p->set_child_tid which is (ab)used as a kthread's data pointer for
+   * kernel threads (PF_KTHREAD). */
+  p->set_child_tid = (clone_flags & CLONE_CHILD_SETTID) ? child_tidptr : NULL;
+  /* Clear TID on mm_release()? */
+  p->clear_child_tid = (clone_flags & CLONE_CHILD_CLEARTID) ? child_tidptr : NULL;
+
+  ftrace_graph_init_task(p);
+
+  rt_mutex_init_task(p);
+
+#ifdef CONFIG_PROVE_LOCKING
+  DEBUG_LOCKS_WARN_ON(!p->hardirqs_enabled);
+  DEBUG_LOCKS_WARN_ON(!p->softirqs_enabled);
+#endif
+  retval = -EAGAIN;
+  if (atomic_read(&p->real_cred->user->processes) >= task_rlimit(p, RLIMIT_NPROC)) {
+    if (p->real_cred->user != INIT_USER &&
+        !capable(CAP_SYS_RESOURCE) && !capable(CAP_SYS_ADMIN))
+      goto bad_fork_free;
+  }
+  current->flags &= ~PF_NPROC_EXCEEDED;
+
+  retval = copy_creds(p, clone_flags);
+  if (retval < 0)
+    goto bad_fork_free;
+
+  /* If multiple threads are within copy_process(), then this check
+   * triggers too late. This doesn't hurt, the check is only there
+   * to stop root fork bombs. */
+  retval = -EAGAIN;
+  if (nr_threads >= max_threads)
+    goto bad_fork_cleanup_count;
+
+  delayacct_tsk_init(p);  /* Must remain after dup_task_struct() */
+  p->flags &= ~(PF_SUPERPRIV | PF_WQ_WORKER | PF_IDLE);
+  p->flags |= PF_FORKNOEXEC;
+  INIT_LIST_HEAD(&p->children);
+  INIT_LIST_HEAD(&p->sibling);
+  rcu_copy_process(p);
+  p->vfork_done = NULL;
+  spin_lock_init(&p->alloc_lock);
+
+  init_sigpending(&p->pending);
+
+  p->utime = p->stime = p->gtime = 0;
+#ifdef CONFIG_ARCH_HAS_SCALED_CPUTIME
+  p->utimescaled = p->stimescaled = 0;
+#endif
+  prev_cputime_init(&p->prev_cputime);
+
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
+  seqcount_init(&p->vtime.seqcount);
+  p->vtime.starttime = 0;
+  p->vtime.state = VTIME_INACTIVE;
+#endif
+
+#if defined(SPLIT_RSS_COUNTING)
+  memset(&p->rss_stat, 0, sizeof(p->rss_stat));
+#endif
+
+  p->default_timer_slack_ns = current->timer_slack_ns;
+
+  task_io_accounting_init(&p->ioac);
+  acct_clear_integrals(p);
+
+  posix_cpu_timers_init(p);
+
+  p->io_context = NULL;
+  audit_set_context(p, NULL);
+  cgroup_fork(p);
+#ifdef CONFIG_NUMA
+  p->mempolicy = mpol_dup(p->mempolicy);
+  if (IS_ERR(p->mempolicy)) {
+    retval = PTR_ERR(p->mempolicy);
+    p->mempolicy = NULL;
+    goto bad_fork_cleanup_threadgroup_lock;
+  }
+#endif
+#ifdef CONFIG_CPUSETS
+  p->cpuset_mem_spread_rotor = NUMA_NO_NODE;
+  p->cpuset_slab_spread_rotor = NUMA_NO_NODE;
+  seqcount_init(&p->mems_allowed_seq);
+#endif
+#ifdef CONFIG_TRACE_IRQFLAGS
+  p->irq_events = 0;
+  p->hardirqs_enabled = 0;
+  p->hardirq_enable_ip = 0;
+  p->hardirq_enable_event = 0;
+  p->hardirq_disable_ip = _THIS_IP_;
+  p->hardirq_disable_event = 0;
+  p->softirqs_enabled = 1;
+  p->softirq_enable_ip = _THIS_IP_;
+  p->softirq_enable_event = 0;
+  p->softirq_disable_ip = 0;
+  p->softirq_disable_event = 0;
+  p->hardirq_context = 0;
+  p->softirq_context = 0;
+#endif
+
+  p->pagefault_disabled = 0;
+
+#ifdef CONFIG_LOCKDEP
+  p->lockdep_depth = 0; /* no locks held yet */
+  p->curr_chain_key = 0;
+  p->lockdep_recursion = 0;
+  lockdep_init_task(p);
+#endif
+
+#ifdef CONFIG_DEBUG_MUTEXES
+  p->blocked_on = NULL; /* not blocked yet */
+#endif
+#ifdef CONFIG_BCACHE
+  p->sequential_io  = 0;
+  p->sequential_io_avg  = 0;
+#endif
+
+  /* Perform scheduler related setup. Assign this task to a CPU. */
+  retval = sched_fork(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_policy;
+
+  retval = perf_event_init_task(p);
+  if (retval)
+    goto bad_fork_cleanup_policy;
+  retval = audit_alloc(p);
+  if (retval)
+    goto bad_fork_cleanup_perf;
+  /* copy all the process information */
+  shm_init_task(p);
+  retval = security_task_alloc(p, clone_flags);
+  if (retval)
+    goto bad_fork_cleanup_audit;
+  retval = copy_semundo(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_security;
+  retval = copy_files(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_semundo;
+  retval = copy_fs(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_files;
+  retval = copy_sighand(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_fs;
+  retval = copy_signal(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_sighand;
+  retval = copy_mm(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_signal;
+  retval = copy_namespaces(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_mm;
+  retval = copy_io(clone_flags, p);
+  if (retval)
+    goto bad_fork_cleanup_namespaces;
+  retval = copy_thread_tls(clone_flags, stack_start, stack_size, p, tls);
+  if (retval)
+    goto bad_fork_cleanup_io;
+
+  if (pid != &init_struct_pid) {
+    pid = alloc_pid(p->nsproxy->pid_ns_for_children);
+    if (IS_ERR(pid)) {
+      retval = PTR_ERR(pid);
+      goto bad_fork_cleanup_thread;
+    }
+  }
+
+#ifdef CONFIG_BLOCK
+  p->plug = NULL;
+#endif
+  futex_init_task(p);
+
+  /* sigaltstack should be cleared when sharing the same VM */
+  if ((clone_flags & (CLONE_VM|CLONE_VFORK)) == CLONE_VM)
+    sas_ss_reset(p);
+
+  /* Syscall tracing and stepping should be turned off in the
+   * child regardless of CLONE_PTRACE. */
+  user_disable_single_step(p);
+  clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
+#ifdef TIF_SYSCALL_EMU
+  clear_tsk_thread_flag(p, TIF_SYSCALL_EMU);
+#endif
+  clear_all_latency_tracing(p);
+
+  /* ok, now we should be set up.. */
+  p->pid = pid_nr(pid);
+  if (clone_flags & CLONE_THREAD) {
+    p->group_leader = current->group_leader;
+    p->tgid = current->tgid;
+  } else {
+    p->group_leader = p;
+    p->tgid = p->pid;
+  }
+
+  p->nr_dirtied = 0;
+  p->nr_dirtied_pause = 128 >> (PAGE_SHIFT - 10);
+  p->dirty_paused_when = 0;
+
+  p->pdeath_signal = 0;
+  INIT_LIST_HEAD(&p->thread_group);
+  p->task_works = NULL;
+
+  cgroup_threadgroup_change_begin(current);
+  /* Ensure that the cgroup subsystem policies allow the new process to be
+   * forked. It should be noted the the new process's css_set can be changed
+   * between here and cgroup_post_fork() if an organisation operation is in
+   * progress. */
+  retval = cgroup_can_fork(p);
+  if (retval)
+    goto bad_fork_free_pid;
+
+  /* From this point on we must avoid any synchronous user-space
+   * communication until we take the tasklist-lock. In particular, we do
+   * not want user-space to be able to predict the process start-time by
+   * stalling fork(2) after we recorded the start_time but before it is
+   * visible to the system. */
+
+  p->start_time = ktime_get_ns();
+  p->real_start_time = ktime_get_boot_ns();
+
+  /* Make it visible to the rest of the system, but dont wake it up yet.
+   * Need tasklist lock for parent etc handling! */
+  write_lock_irq(&tasklist_lock);
+
+  /* CLONE_PARENT re-uses the old parent */
+  if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {
+    p->real_parent = current->real_parent;
+    p->parent_exec_id = current->parent_exec_id;
+    if (clone_flags & CLONE_THREAD)
+      p->exit_signal = -1;
+    else
+      p->exit_signal = current->group_leader->exit_signal;
+  } else {
+    p->real_parent = current;
+    p->parent_exec_id = current->self_exec_id;
+    p->exit_signal = (clone_flags & CSIGNAL);
+  }
+
+  klp_copy_process(p);
+
+  spin_lock(&current->sighand->siglock);
+
+  /* Copy seccomp details explicitly here, in case they were changed
+   * before holding sighand lock. */
+  copy_seccomp(p);
+
+  rseq_fork(p, clone_flags);
+
+  /* Don't start children in a dying pid namespace */
+  if (unlikely(!(ns_of_pid(pid)->pid_allocated & PIDNS_ADDING))) {
+    retval = -ENOMEM;
+    goto bad_fork_cancel_cgroup;
+  }
+
+  /* Let kill terminate clone/fork in the middle */
+  if (fatal_signal_pending(current)) {
+    retval = -EINTR;
+    goto bad_fork_cancel_cgroup;
+  }
+
+
+  init_task_pid_links(p);
+  if (likely(p->pid)) {
+    ptrace_init_task(p, (clone_flags & CLONE_PTRACE) || trace);
+
+    init_task_pid(p, PIDTYPE_PID, pid);
+    if (thread_group_leader(p)) {
+      init_task_pid(p, PIDTYPE_TGID, pid);
+      init_task_pid(p, PIDTYPE_PGID, task_pgrp(current));
+      init_task_pid(p, PIDTYPE_SID, task_session(current));
+
+      if (is_child_reaper(pid)) {
+        ns_of_pid(pid)->child_reaper = p;
+        p->signal->flags |= SIGNAL_UNKILLABLE;
+      }
+      p->signal->shared_pending.signal = delayed.signal;
+      p->signal->tty = tty_kref_get(current->signal->tty);
+      /* Inherit has_child_subreaper flag under the same
+       * tasklist_lock with adding child to the process tree
+       * for propagate_has_child_subreaper optimization. */
+      p->signal->has_child_subreaper = p->real_parent->signal->has_child_subreaper ||
+               p->real_parent->signal->is_child_subreaper;
+      list_add_tail(&p->sibling, &p->real_parent->children);
+      list_add_tail_rcu(&p->tasks, &init_task.tasks);
+      attach_pid(p, PIDTYPE_TGID);
+      attach_pid(p, PIDTYPE_PGID);
+      attach_pid(p, PIDTYPE_SID);
+      __this_cpu_inc(process_counts);
+    } else {
+      current->signal->nr_threads++;
+      atomic_inc(&current->signal->live);
+      atomic_inc(&current->signal->sigcnt);
+      task_join_group_stop(p);
+      list_add_tail_rcu(&p->thread_group,
+            &p->group_leader->thread_group);
+      list_add_tail_rcu(&p->thread_node,
+            &p->signal->thread_head);
+    }
+    attach_pid(p, PIDTYPE_PID);
+    nr_threads++;
+  }
+  total_forks++;
+  hlist_del_init(&delayed.node);
+  spin_unlock(&current->sighand->siglock);
+  syscall_tracepoint_update(p);
+  write_unlock_irq(&tasklist_lock);
+
+  proc_fork_connector(p);
+  cgroup_post_fork(p);
+  cgroup_threadgroup_change_end(current);
+  perf_event_fork(p);
+
+  trace_task_newtask(p, clone_flags);
+  uprobe_copy_process(p, clone_flags);
+
+  copy_oom_score_adj(clone_flags, p);
+
+  return p;
+
+bad_fork_cancel_cgroup:
+  spin_unlock(&current->sighand->siglock);
+  write_unlock_irq(&tasklist_lock);
+  cgroup_cancel_fork(p);
+bad_fork_free_pid:
+  cgroup_threadgroup_change_end(current);
+  if (pid != &init_struct_pid)
+    free_pid(pid);
+bad_fork_cleanup_thread:
+  exit_thread(p);
+bad_fork_cleanup_io:
+  if (p->io_context)
+    exit_io_context(p);
+bad_fork_cleanup_namespaces:
+  exit_task_namespaces(p);
+bad_fork_cleanup_mm:
+  if (p->mm) {
+    mm_clear_owner(p->mm, p);
+    mmput(p->mm);
+  }
+bad_fork_cleanup_signal:
+  if (!(clone_flags & CLONE_THREAD))
+    free_signal_struct(p->signal);
+bad_fork_cleanup_sighand:
+  __cleanup_sighand(p->sighand);
+bad_fork_cleanup_fs:
+  exit_fs(p); /* blocking */
+bad_fork_cleanup_files:
+  exit_files(p); /* blocking */
+bad_fork_cleanup_semundo:
+  exit_sem(p);
+bad_fork_cleanup_security:
+  security_task_free(p);
+bad_fork_cleanup_audit:
+  audit_free(p);
+bad_fork_cleanup_perf:
+  perf_event_free_task(p);
+bad_fork_cleanup_policy:
+  lockdep_free_task(p);
+#ifdef CONFIG_NUMA
+  mpol_put(p->mempolicy);
+bad_fork_cleanup_threadgroup_lock:
+#endif
+  delayacct_tsk_free(p);
+bad_fork_cleanup_count:
+  atomic_dec(&p->cred->user->processes);
+  exit_creds(p);
+bad_fork_free:
+  p->state = TASK_DEAD;
+  put_task_stack(p);
+  delayed_free_task(p);
+fork_out:
+  spin_lock_irq(&current->sighand->siglock);
+  hlist_del_init(&delayed.node);
+  spin_unlock_irq(&current->sighand->siglock);
+  return ERR_PTR(retval);
+}
+
+int sched_fork(unsigned long clone_flags, struct task_struct *p)
+{
+  unsigned long flags;
+
+  __sched_fork(clone_flags, p);
+  /* We mark the process as NEW here. This guarantees that
+   * nobody will actually run it, and a signal or other external
+   * event cannot wake it up and insert it on the runqueue either. */
+  p->state = TASK_NEW;
+
+  /* Make sure we do not leak PI boosting priority to the child. */
+  p->prio = current->normal_prio;
+
+  /* Revert to default priority/policy on fork if requested. */
+  if (unlikely(p->sched_reset_on_fork)) {
+    if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+      p->policy = SCHED_NORMAL;
+      p->static_prio = NICE_TO_PRIO(0);
+      p->rt_priority = 0;
+    } else if (PRIO_TO_NICE(p->static_prio) < 0)
+      p->static_prio = NICE_TO_PRIO(0);
+
+    p->prio = p->normal_prio = __normal_prio(p);
+    set_load_weight(p, false);
+
+    /* We don't need the reset flag anymore after the fork. It has
+     * fulfilled its duty: */
+    p->sched_reset_on_fork = 0;
+  }
+
+  if (dl_prio(p->prio))
+    return -EAGAIN;
+  else if (rt_prio(p->prio))
+    p->sched_class = &rt_sched_class;
+  else
+    p->sched_class = &fair_sched_class;
+
+  init_entity_runnable_average(&p->se);
+
+  /* The child is not yet in the pid-hash so no cgroup attach races,
+   * and the cgroup is pinned to this child due to cgroup_fork()
+   * is ran before sched_fork().
+   *
+   * Silence PROVE_RCU. */
+  raw_spin_lock_irqsave(&p->pi_lock, flags);
+  rseq_migrate(p);
+  /* We're setting the CPU for the first time, we don't migrate,
+   * so use __set_task_cpu(). */
+  __set_task_cpu(p, smp_processor_id());
+  if (p->sched_class->task_fork)
+    p->sched_class->task_fork(p);
+  raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+
+#ifdef CONFIG_SCHED_INFO
+  if (likely(sched_info_on()))
+    memset(&p->sched_info, 0, sizeof(p->sched_info));
+#endif
+#if defined(CONFIG_SMP)
+  p->on_cpu = 0;
+#endif
+  init_task_preempt_count(p);
+#ifdef CONFIG_SMP
+  plist_node_init(&p->pushable_tasks, MAX_PRIO);
+  RB_CLEAR_NODE(&p->pushable_dl_tasks);
+#endif
+  return 0;
+}
+
+ struct task_struct *dup_task_struct(struct task_struct *orig, int node)
+{
+  struct task_struct *tsk;
+  unsigned long *stack;
+  struct vm_struct *stack_vm_area;
+  int err;
+
+  if (node == NUMA_NO_NODE)
+    node = tsk_fork_get_node(orig);
+  tsk = alloc_task_struct_node(node);
+  if (!tsk)
+    return NULL;
+
+  stack = alloc_thread_stack_node(tsk, node);
+  if (!stack)
+    goto free_tsk;
+
+  stack_vm_area = task_stack_vm_area(tsk);
+
+  err = arch_dup_task_struct(tsk, orig);
+
+  /* arch_dup_task_struct() clobbers the stack-related fields.  Make
+   * sure they're properly initialized before using any stack-related
+   * functions again. */
+  tsk->stack = stack;
+#ifdef CONFIG_VMAP_STACK
+  tsk->stack_vm_area = stack_vm_area;
+#endif
+#ifdef CONFIG_THREAD_INFO_IN_TASK
+  atomic_set(&tsk->stack_refcount, 1);
+#endif
+
+  if (err)
+    goto free_stack;
+
+#ifdef CONFIG_SECCOMP
+  /* We must handle setting up seccomp filters once we're under
+   * the sighand lock in case orig has changed between now and
+   * then. Until then, filter must be NULL to avoid messing up
+   * the usage counts on the error path calling free_task. */
+  tsk->seccomp.filter = NULL;
+#endif
+
+  setup_thread_stack(tsk, orig);
+  clear_user_return_notifier(tsk);
+  clear_tsk_need_resched(tsk);
+  set_task_stack_end_magic(tsk);
+
+#ifdef CONFIG_STACKPROTECTOR
+  tsk->stack_canary = get_random_canary();
+#endif
+
+  /* One for us, one for whoever does the "release_task()" (usually
+   * parent) */
+  atomic_set(&tsk->usage, 2);
+#ifdef CONFIG_BLK_DEV_IO_TRACE
+  tsk->btrace_seq = 0;
+#endif
+  tsk->splice_pipe = NULL;
+  tsk->task_frag.page = NULL;
+  tsk->wake_q.next = NULL;
+
+  account_kernel_stack(tsk, 1);
+
+  kcov_task_init(tsk);
+
+#ifdef CONFIG_FAULT_INJECTION
+  tsk->fail_nth = 0;
+#endif
+
+#ifdef CONFIG_BLK_CGROUP
+  tsk->throttle_queue = NULL;
+  tsk->use_memdelay = 0;
+#endif
+
+#ifdef CONFIG_MEMCG
+  tsk->active_memcg = NULL;
+#endif
+  return tsk;
+
+free_stack:
+  free_thread_stack(tsk);
+free_tsk:
+  free_task_struct(tsk);
+  return NULL;
+}
+
+static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
+{
+#ifdef CONFIG_VMAP_STACK
+  void *stack;
+  int i;
+
+  for (i = 0; i < NR_CACHED_STACKS; i++) {
+    struct vm_struct *s;
+
+    s = this_cpu_xchg(cached_stacks[i], NULL);
+
+    if (!s)
+      continue;
+
+    /* Clear stale pointers from reused stack. */
+    memset(s->addr, 0, THREAD_SIZE);
+
+    tsk->stack_vm_area = s;
+    tsk->stack = s->addr;
+    return s->addr;
+  }
+
+  stack = __vmalloc_node_range(THREAD_SIZE, THREAD_ALIGN,
+             VMALLOC_START, VMALLOC_END,
+             THREADINFO_GFP,
+             PAGE_KERNEL,
+             0, node, __builtin_return_address(0));
+
+  /* We can't call find_vm_area() in interrupt context, and
+   * free_thread_stack() can be called in interrupt context,
+   * so cache the vm_struct. */
+  if (stack) {
+    tsk->stack_vm_area = find_vm_area(stack);
+    tsk->stack = stack;
+  }
+  return stack;
+#else
+  struct page *page = alloc_pages_node(node, THREADINFO_GFP,
+               THREAD_SIZE_ORDER);
+
+  if (likely(page)) {
+    tsk->stack = page_address(page);
+    return tsk->stack;
+  }
+  return NULL;
+#endif
+}
+
+struct inactive_task_frame {
+  unsigned long flags;
+#ifdef CONFIG_X86_64
+  unsigned long r15;
+  unsigned long r14;
+  unsigned long r13;
+  unsigned long r12;
+#else
+  unsigned long si;
+  unsigned long di;
+#endif
+  unsigned long bx;
+
+  /* These two fields must be together.  They form a stack frame header,
+   * needed by get_frame_pointer(). */
+  unsigned long bp;
+  unsigned long ret_addr;
+};
+
+struct fork_frame {
+  struct inactive_task_frame frame;
+  struct pt_regs regs;
+};
+
+/* arch/x86/kernel/process_32.c */
+int copy_thread_tls(unsigned long clone_flags, unsigned long sp,
+  unsigned long arg, struct task_struct *p, unsigned long tls)
+{
+  struct pt_regs *childregs = task_pt_regs(p);
+  struct fork_frame *fork_frame = container_of(childregs, struct fork_frame, regs);
+  struct inactive_task_frame *frame = &fork_frame->frame;
+  struct task_struct *tsk;
+  int err;
+
+  /* For a new task use the RESET flags value since there is no before.
+   * All the status flags are zero; DF and all the system flags must also
+   * be 0, specifically IF must be 0 because we context switch to the new
+   * task with interrupts disabled. */
+  frame->flags = X86_EFLAGS_FIXED;
+  frame->bp = 0;
+  frame->ret_addr = (unsigned long) ret_from_fork;
+  p->thread.sp = (unsigned long) fork_frame;
+  p->thread.sp0 = (unsigned long) (childregs+1);
+  memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
+
+  if (unlikely(p->flags & PF_KTHREAD)) {
+    /* kernel thread */
+    memset(childregs, 0, sizeof(struct pt_regs));
+    frame->bx = sp;    /* function */
+    frame->di = arg;
+    p->thread.io_bitmap_ptr = NULL;
+    return 0;
+  }
+  frame->bx = 0;
+  *childregs = *current_pt_regs();
+  childregs->ax = 0;
+  if (sp)
+    childregs->sp = sp;
+
+  task_user_gs(p) = get_user_gs(current_pt_regs());
+
+  p->thread.io_bitmap_ptr = NULL;
+  tsk = current;
+  err = -ENOMEM;
+
+  if (unlikely(test_tsk_thread_flag(tsk, TIF_IO_BITMAP))) {
+    p->thread.io_bitmap_ptr = kmemdup(tsk->thread.io_bitmap_ptr, IO_BITMAP_BYTES, GFP_KERNEL);
+    if (!p->thread.io_bitmap_ptr) {
+      p->thread.io_bitmap_max = 0;
+      return -ENOMEM;
+    }
+    set_tsk_thread_flag(p, TIF_IO_BITMAP);
+  }
+
+  err = 0;
+
+  /* Set a new TLS for the child thread? */
+  if (clone_flags & CLONE_SETTLS)
+    err = do_set_thread_area(p, -1,
+      (struct user_desc __user *)tls, 0);
+
+  if (err && p->thread.io_bitmap_ptr) {
+    kfree(p->thread.io_bitmap_ptr);
+    p->thread.io_bitmap_max = 0;
+  }
+  return err;
+}
+```
+
+```c++
+/* A newly forked process directly context switches into this address.
+ *
+ * eax: prev task we switched from
+ * ebx: kernel thread func (NULL for user thread)
+ * edi: kernel thread arg */
+ENTRY(ret_from_fork)
+  call  schedule_tail_wrapper
+
+  testl  %ebx, %ebx
+  jnz  1f    /* kernel threads are uncommon */
+
+2:
+  /* When we fork, we trace the syscall return in the child, too. */
+  movl    %esp, %eax
+  call    syscall_return_slowpath
+  jmp     restore_all
+
+  /* kernel thread */
+1:  movl  %edi, %eax
+  CALL_NOSPEC %ebx
+  /* A kernel thread is allowed to return here after successfully
+   * calling do_execve().  Exit to userspace to complete the execve()
+   * syscall. */
+  movl  $0, PT_EAX(%esp)
+  jmp  2b
+END(ret_from_fork)
+
+restore_all:
+  TRACE_IRQS_IRET
+  SWITCH_TO_ENTRY_STACK
+
+/* The unwinder expects the last frame on the stack to always be at the same
+ * offset from the end of the page, which allows it to validate the stack.
+ * Calling schedule_tail() directly would break that convention because its an
+ * asmlinkage function so its argument has to be pushed on the stack.  This
+ * wrapper creates a proper "end of stack" frame header before the call. */
+ENTRY(schedule_tail_wrapper)
+  FRAME_BEGIN
+
+  pushl  %eax
+  call  schedule_tail
+  popl  %eax
+
+  FRAME_END
+  ret
+ENDPROC(schedule_tail_wrapper)
+
+void schedule_tail(struct task_struct *prev)
+  __releases(rq->lock)
+{
+  struct rq *rq;
+
+  /* New tasks start with FORK_PREEMPT_COUNT, see there and
+   * finish_task_switch() for details.
+   *
+   * finish_task_switch() will drop rq->lock() and lower preempt_count
+   * and the preempt_enable() will end up enabling preemption (on
+   * PREEMPT_COUNT kernels). */
+
+  rq = finish_task_switch(prev);
+  balance_callback(rq);
+  preempt_enable();
+
+  if (current->set_child_tid)
+    put_user(task_pid_vnr(current), current->set_child_tid);
+
+  calculate_sigpending();
+}
+```
+
+```c++
 /* copy_process -> sched_fork -> task_fork -> */
 static void task_fork_fair(struct task_struct *p)
 {
@@ -1623,12 +2803,64 @@ preempt:
 }
 
 ```
+
+```c++
+do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
+  copy_process();
+    task_struct* p = dup_task_struct(current, node);
+      stack = alloc_thread_stack_node();
+      p->stack = stack;
+
+    sched_fork();
+      p->sched_class->task_fork(p);
+        task_fork_fair();
+    copy_files();
+    copy_fs();
+    copy_sighand();
+    copy_signal();
+    copy_mm();
+    copy_namespaces();
+    copy_io();
+    copy_thread_tls(clone_flags, stack_start, stack_size, p, tls);
+      struct pt_regs *childregs = task_pt_regs(p); /* p->stack */
+      struct fork_frame *fork_frame = container_of(childregs, struct fork_frame, regs);
+      struct inactive_task_frame *frame = &fork_frame->frame;
+      p->thread.sp = (unsigned long) fork_frame;
+      childregs->sp = sp;
+
+      frame->ret_addr = (unsigned long) ret_from_fork;
+
+      p->thread.sp = (unsigned long) fork_frame;
+      p->thread.sp0 = (unsigned long) (childregs+1);
+
+      if (unlikely(p->flags & PF_KTHREAD)) {
+        /* kernel thread */
+        memset(childregs, 0, sizeof(struct pt_regs));
+        frame->bx = sp;    /* function */
+        frame->di = arg;
+        p->thread.io_bitmap_ptr = NULL;
+        return 0;
+      }
+
+      frame->bx = 0;
+      *childregs = *current_pt_regs();
+      childregs->ax = 0;
+      if (sp)
+        childregs->sp = sp;
+
+    alloc_pid();
+
+
+  wake_up_new_task(p);
+    activate_task();
+    check_preempt_curr();
+```
 ![](../Images/Kernel/fork.png)
 
 ![](../Images/Kernel/proc-fork-pthread-create.png)
 
 ## exec
-```C++
+```c++
 typedef struct elf64_hdr {
   unsigned char  e_ident[EI_NIDENT];  /* ELF "magic number" */
   Elf64_Half  e_type;  /* elf type: ET_NONE ET_REL ET_EXEC ET_CORE ET_DYN */
@@ -2559,7 +3791,957 @@ SYSCALL_DEFINE3(execve);
                     current->mm->end_data = end_data;
                     current->mm->start_stack = bprm->p;
 
-                    start_thread(regs, elf_entry, bprm->p);
+                    start_thread(regs, elf_entry /* new_ip */, bprm->p /* new_sp */);
+                      regs->ip  = new_ip;
+                      regs->sp  = new_sp;
+                      force_iret();
+```
+
+## kthreadd
+```c++
+int kthreadd(void *unused)
+{
+  struct task_struct *tsk = current;
+
+  /* Setup a clean context for our children to inherit. */
+  set_task_comm(tsk, "kthreadd");
+  ignore_signals(tsk);
+  set_cpus_allowed_ptr(tsk, cpu_all_mask);
+  set_mems_allowed(node_states[N_MEMORY]);
+
+  current->flags |= PF_NOFREEZE;
+  cgroup_init_kthreadd();
+
+  for (;;) {
+    set_current_state(TASK_INTERRUPTIBLE);
+    if (list_empty(&kthread_create_list))
+      schedule();
+    __set_current_state(TASK_RUNNING);
+
+    spin_lock(&kthread_create_lock);
+    while (!list_empty(&kthread_create_list)) {
+      struct kthread_create_info *create;
+
+      create = list_entry(kthread_create_list.next, struct kthread_create_info, list);
+      list_del_init(&create->list);
+      spin_unlock(&kthread_create_lock);
+
+      create_kthread(create);
+
+      spin_lock(&kthread_create_lock);
+    }
+    spin_unlock(&kthread_create_lock);
+  }
+
+  return 0;
+}
+
+void create_kthread(struct kthread_create_info *create)
+{
+  int pid;
+
+#ifdef CONFIG_NUMA
+  current->pref_node_fork = create->node;
+#endif
+  /* We want our own signal handler (we take no signals by default). */
+  pid = kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD);
+  if (pid < 0) {
+    /* If user was SIGKILLed, I release the structure. */
+    struct completion *done = xchg(&create->done, NULL);
+
+    if (!done) {
+      kfree(create);
+      return;
+    }
+    create->result = ERR_PTR(pid);
+    complete(done);
+  }
+}
+
+static int kthread(void *_create)
+{
+  /* Copy data: it's on kthread's stack */
+  struct kthread_create_info *create = _create;
+  int (*threadfn)(void *data) = create->threadfn;
+  void *data = create->data;
+  struct completion *done;
+  struct kthread *self;
+  int ret;
+
+  self = kzalloc(sizeof(*self), GFP_KERNEL);
+  set_kthread_struct(self);
+
+  /* If user was SIGKILLed, I release the structure. */
+  done = xchg(&create->done, NULL);
+  if (!done) {
+    kfree(create);
+    do_exit(-EINTR);
+  }
+
+  if (!self) {
+    create->result = ERR_PTR(-ENOMEM);
+    complete(done);
+    do_exit(-ENOMEM);
+  }
+
+  self->data = data;
+  init_completion(&self->exited);
+  init_completion(&self->parked);
+  current->vfork_done = &self->exited;
+
+  /* OK, tell user we're spawned, wait for stop or wakeup */
+  __set_current_state(TASK_UNINTERRUPTIBLE);
+  create->result = current;
+  /* Thread is going to call schedule(), do not preempt it,
+   * or the creator may spend more time in wait_task_inactive(). */
+  preempt_disable();
+  complete(done);
+  schedule_preempt_disabled();
+  preempt_enable();
+
+  ret = -EINTR;
+  if (!test_bit(KTHREAD_SHOULD_STOP, &self->flags)) {
+    cgroup_kthread_ready();
+    __kthread_parkme(self);
+    ret = threadfn(data);
+  }
+  do_exit(ret);
+}
+
+pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
+{
+  return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
+    (unsigned long)arg, NULL, NULL, 0);
+}
+```
+
+```c++
+create_kthread(create);
+  kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD);
+    _do_fork();
+
+kthread();
+  struct kthread_create_info *create = _create;
+  int (*threadfn)(void *data) = create->threadfn;
+  void *data = create->data;
+
+  threadfn(data);
+```
+
+## workqueue
+
+![](../Images/Kernel/proc-workqueue.png)
+
+* https://zhuanlan.zhihu.com/p/91106844
+* https://zhuanlan.zhihu.com/p/94561631
+* http://kernel.meizu.com/linux-workqueue.html
+
+### wq-struct
+```c++
+struct workqueue_struct {
+  struct list_head      pwqs;  /* WR: all pwqs of this wq */
+  struct list_head      list;  /* PR: list of all workqueues */
+
+  struct list_head      maydays; /* MD: pwqs requesting rescue */
+  struct worker         *rescuer; /* I: rescue worker */
+
+  struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
+  struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
+  struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
+};
+
+/* The per-pool workqueue. */
+struct pool_workqueue {
+  struct worker_pool      *pool;    /* I: the associated pool */
+  struct list_head        delayed_works;  /* L: delayed works */
+  struct list_head        mayday_node;  /* MD: node on wq->maydays */
+  struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
+  struct workqueue_struct *wq;    /* I: the owning workqueue */
+  int                     work_color;  /* L: current color */
+  int                     flush_color;  /* L: flushing color */
+  int                     refcnt;    /* L: reference count */
+  int                     nr_in_flight[WORK_NR_COLORS];/* L: nr of in_flight works */
+  int                     nr_active;  /* L: nr of active works */
+  int                     max_active;  /* L: max active works */
+
+  /* Release of unbound pwq is punted to system_wq.  See put_pwq()
+   * and pwq_unbound_release_workfn() for details.  pool_workqueue
+   * itself is also sched-RCU protected so that the first pwq can be
+   * determined without grabbing wq->mutex. */
+  struct work_struct  unbound_release_work;
+  struct rcu_head    rcu;
+} __aligned(1 << WORK_STRUCT_FLAG_BITS);
+
+struct worker_pool {
+  spinlock_t          lock;   /* the pool lock */
+  int                 cpu;    /* I: the associated cpu */
+  int                 node;   /* I: the associated node ID */
+  int                 id;     /* I: pool ID */
+  unsigned int        flags;  /* X: flags */
+
+  unsigned long       watchdog_ts;  /* L: watchdog timestamp */
+
+  struct list_head    worklist;  /* L: list of pending works */
+
+  int                 nr_workers;  /* L: total number of workers */
+  int                 nr_idle;  /* L: currently idle workers */
+
+  struct list_head    workers;  /* A: attached workers */
+  struct list_head    idle_list;  /* X: list of idle workers */
+  /* a workers is either on busy_hash or idle_list, or the manager */
+  DECLARE_HASHTABLE(busy_hash, BUSY_WORKER_HASH_ORDER); /* L: hash of busy workers */
+
+  struct timer_list   idle_timer;  /* L: worker idle timeout */
+  struct timer_list   mayday_timer;  /* L: SOS timer for workers */
+
+  struct worker       *manager;  /* L: purely informational */
+  struct completion   *detach_completion; /* all workers detached */
+
+  struct ida          worker_ida;  /* worker IDs for task name */
+
+  struct workqueue_attrs  *attrs;    /* I: worker attributes */
+  struct hlist_node       hash_node;  /* PL: unbound_pool_hash node */
+  int                     refcnt;    /* PL: refcnt for unbound pools */
+
+  /* The current concurrency level.  As it's likely to be accessed
+   * from other CPUs during try_to_wake_up(), put it in a separate
+   * cacheline. */
+  atomic_t    nr_running ____cacheline_aligned_in_smp;
+
+  /* Destruction of pool is sched-RCU protected to allow dereferences
+   * from get_work_pool(). */
+  struct rcu_head    rcu;
+} ____cacheline_aligned_in_smp;
+
+struct worker {
+  /* on idle list while idle, on busy hash table while busy */
+  union {
+    struct list_head      entry;  /* L: while idle */
+    struct hlist_node     hentry;  /* L: while busy */
+  };
+
+  struct work_struct      *current_work;  /* L: work being processed */
+  work_func_t             current_func;  /* L: current_work's fn */
+  struct pool_workqueue   *current_pwq; /* L: current_work's pwq */
+  struct list_head        scheduled;  /* L: scheduled works */
+
+  /* 64 bytes boundary on 64bit, 32 on 32bit */
+
+  struct task_struct      *task;    /* I: worker task */
+  struct worker_pool      *pool;    /* A: the associated pool */
+            /* L: for rescuers */
+  struct list_head        node;    /* A: anchored at pool->workers */
+            /* A: runs through worker->node */
+
+  unsigned long           last_active;  /* L: last active timestamp */
+  unsigned int            flags;    /* X: flags */
+  int                     id;    /* I: worker id */
+
+  /* Opaque string set with work_set_desc().  Printed out with task
+   * dump for debugging - WARN, BUG, panic or sysrq. */
+  char      desc[WORKER_DESC_LEN];
+
+  /* used only by rescuers to point to the target workqueue */
+  struct workqueue_struct  *rescue_wq;  /* I: the workqueue to rescue */
+};
+
+struct work_struct {
+  atomic_long_t     data;
+  struct list_head  entry;
+  work_func_t       func;
+};
+```
+
+```c++
+[root@VM-16-17-centos ~]# ps -ef | grep worker
+root           6       2  0  2021 ?        00:00:00 [kworker/0:0H-events_highpri]
+root          33       2  0  2021 ?        00:01:41 [kworker/0:1H-kblockd]
+root     2747154       2  0 Jan15 ?        00:00:00 [kworker/0:8-events]
+root     2751953       2  0 00:09 ?        00:00:00 [kworker/0:1-ata_sff]
+root     2756345       2  0 00:30 ?        00:00:00 [kworker/0:6-events]
+root     2756347       2  0 00:30 ?        00:00:00 [kworker/0:7-cgroup_pidlist_destroy]
+root     2757595       2  0 00:36 ?        00:00:00 [kworker/0:0-cgroup_pidlist_destroy]
+root     2757754       2  0 00:37 ?        00:00:00 [kworker/u2:1-events_unbound]
+root     2759049       2  0 00:43 ?        00:00:00 [kworker/u2:2-events_unbound]
+root     2760459 2760373  0 00:48 pts/4    00:00:00 grep --color=auto worker
+
+kworker/<cpu-id>:<worker-id-in-pool><High priority>
+kworker/<unbound>:<worker-id-in-pool><High priority>
+```
+
+### wq-init
+```c++
+void __init start_kernel(void)
+{
+  workqueue_init_early();
+}
+
+int __init workqueue_init_early(void)
+{
+  int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
+  int hk_flags = HK_FLAG_DOMAIN | HK_FLAG_WQ;
+  int i, cpu;
+
+  cpumask_copy(wq_unbound_cpumask, housekeeping_cpumask(hk_flags));
+
+  pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
+
+  /* initialize CPU pools */
+  for_each_possible_cpu(cpu) {
+    struct worker_pool *pool;
+
+    i = 0;
+    for_each_cpu_worker_pool(pool, cpu) {
+      pool->cpu = cpu;
+      cpumask_copy(pool->attrs->cpumask, cpumask_of(cpu));
+      pool->attrs->nice = std_nice[i++];
+      pool->node = cpu_to_node(cpu);
+
+      /* alloc pool ID */
+      mutex_lock(&wq_pool_mutex);
+      mutex_unlock(&wq_pool_mutex);
+    }
+  }
+
+  /* create default unbound and ordered wq attrs */
+  for (i = 0; i < NR_STD_WORKER_POOLS; i++) {
+    struct workqueue_attrs *attrs;
+
+    attrs->nice = std_nice[i];
+    unbound_std_wq_attrs[i] = attrs;
+
+    /* An ordered wq should have only one pwq as ordering is
+     * guaranteed by max_active which is enforced by pwqs.
+     * Turn off NUMA so that dfl_pwq is used for all nodes. */
+    attrs->nice = std_nice[i];
+    attrs->no_numa = true;
+    ordered_wq_attrs[i] = attrs;
+  }
+
+  system_wq = alloc_workqueue("events", 0, 0);
+  system_highpri_wq = alloc_workqueue("events_highpri", WQ_HIGHPRI, 0);
+  system_long_wq = alloc_workqueue("events_long", 0, 0);
+  system_unbound_wq = alloc_workqueue("events_unbound", WQ_UNBOUND, WQ_UNBOUND_MAX_ACTIVE);
+  system_freezable_wq = alloc_workqueue("events_freezable", WQ_FREEZABLE, 0);
+  system_power_efficient_wq = alloc_workqueue("events_power_efficient", WQ_POWER_EFFICIENT, 0);
+  system_freezable_power_efficient_wq = alloc_workqueue("events_freezable_power_efficient", WQ_FREEZABLE | WQ_POWER_EFFICIENT 0);
+
+  return 0;
+}
+
+/* alloc_workqueue -> */
+struct workqueue_struct *__alloc_workqueue_key(
+  const char *fmt,
+  unsigned int flags,
+  int max_active,
+  struct lock_class_key *key,
+  const char *lock_name, ...)
+{
+  size_t tbl_size = 0;
+  va_list args;
+  struct workqueue_struct *wq;
+  struct pool_workqueue *pwq;
+
+  /* Unbound && max_active == 1 used to imply ordered, which is no
+   * longer the case on NUMA machines due to per-node pools.  While
+   * alloc_ordered_workqueue() is the right way to create an ordered
+   * workqueue, keep the previous behavior to avoid subtle breakages
+   * on NUMA. */
+  if ((flags & WQ_UNBOUND) && max_active == 1)
+    flags |= __WQ_ORDERED;
+
+  /* see the comment above the definition of WQ_POWER_EFFICIENT */
+  if ((flags & WQ_POWER_EFFICIENT) && wq_power_efficient)
+    flags |= WQ_UNBOUND;
+
+  /* allocate wq and format name */
+  if (flags & WQ_UNBOUND)
+    tbl_size = nr_node_ids * sizeof(wq->numa_pwq_tbl[0]);
+
+  wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
+  if (!wq)
+    return NULL;
+
+  if (flags & WQ_UNBOUND) {
+    wq->unbound_attrs = alloc_workqueue_attrs(GFP_KERNEL);
+    if (!wq->unbound_attrs)
+      goto err_free_wq;
+  }
+
+  va_start(args, lock_name);
+  vsnprintf(wq->name, sizeof(wq->name), fmt, args);
+  va_end(args);
+
+  max_active = max_active ?: WQ_DFL_ACTIVE;
+  max_active = wq_clamp_max_active(max_active, flags, wq->name);
+
+  /* init wq */
+  wq->flags = flags;
+  wq->saved_max_active = max_active;
+  mutex_init(&wq->mutex);
+  atomic_set(&wq->nr_pwqs_to_flush, 0);
+  INIT_LIST_HEAD(&wq->pwqs);
+  INIT_LIST_HEAD(&wq->flusher_queue);
+  INIT_LIST_HEAD(&wq->flusher_overflow);
+  INIT_LIST_HEAD(&wq->maydays);
+
+  lockdep_init_map(&wq->lockdep_map, lock_name, key, 0);
+  INIT_LIST_HEAD(&wq->list);
+
+  if (alloc_and_link_pwqs(wq) < 0)
+    goto err_free_wq;
+
+  if (wq_online && init_rescuer(wq) < 0)
+    goto err_destroy;
+
+  if ((wq->flags & WQ_SYSFS) && workqueue_sysfs_register(wq))
+    goto err_destroy;
+
+  /* wq_pool_mutex protects global freeze state and workqueues list.
+   * Grab it, adjust max_active and add the new @wq to workqueues
+   * list. */
+  mutex_lock(&wq_pool_mutex);
+
+  mutex_lock(&wq->mutex);
+  for_each_pwq(pwq, wq)
+    pwq_adjust_max_active(pwq);
+  mutex_unlock(&wq->mutex);
+
+  list_add_tail_rcu(&wq->list, &workqueues);
+
+  mutex_unlock(&wq_pool_mutex);
+
+  return wq;
+
+err_free_wq:
+  free_workqueue_attrs(wq->unbound_attrs);
+  kfree(wq);
+  return NULL;
+err_destroy:
+  destroy_workqueue(wq);
+  return NULL;
+}
+
+int alloc_and_link_pwqs(struct workqueue_struct *wq)
+{
+  bool highpri = wq->flags & WQ_HIGHPRI;
+  int cpu, ret;
+
+  if (!(wq->flags & WQ_UNBOUND)) {
+    wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
+    if (!wq->cpu_pwqs)
+      return -ENOMEM;
+
+    for_each_possible_cpu(cpu) {
+      struct pool_workqueue *pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
+      struct worker_pool *cpu_pools = per_cpu(cpu_worker_pools, cpu);
+
+      init_pwq(pwq, wq, &cpu_pools[highpri]);
+
+      mutex_lock(&wq->mutex);
+      link_pwq(pwq);
+      mutex_unlock(&wq->mutex);
+    }
+    return 0;
+  } else if (wq->flags & __WQ_ORDERED) {
+    ret = apply_workqueue_attrs(wq, ordered_wq_attrs[highpri]);
+    /* there should only be single pwq for ordering guarantee */
+    return ret;
+  } else {
+    return apply_workqueue_attrs(wq, unbound_std_wq_attrs[highpri]);
+  }
+}
+```
+
+### worker_thread
+```c++
+int worker_thread(void *__worker)
+{
+  struct worker *worker = __worker;
+  struct worker_pool *pool = worker->pool;
+
+  /* tell the scheduler that this is a workqueue worker */
+  set_pf_worker(true);
+woke_up:
+  spin_lock_irq(&pool->lock);
+
+  /* am I supposed to die? */
+  if (unlikely(worker->flags & WORKER_DIE)) {
+    spin_unlock_irq(&pool->lock);
+    set_pf_worker(false);
+
+    set_task_comm(worker->task, "kworker/dying");
+    ida_simple_remove(&pool->worker_ida, worker->id);
+    worker_detach_from_pool(worker);
+    kfree(worker);
+    return 0;
+  }
+
+  worker_leave_idle(worker);
+recheck:
+  /* no more worker necessary? */
+  if (!need_more_worker(pool))
+    goto sleep;
+
+  /* do we need to manage? */
+  if (unlikely(!may_start_working(pool)) && manage_workers(worker))
+    goto recheck;
+
+  /* ->scheduled list can only be filled while a worker is
+   * preparing to process a work or actually processing it.
+   * Make sure nobody diddled with it while I was sleeping. */
+
+  /* Finish PREP stage.  We're guaranteed to have at least one idle
+   * worker or that someone else has already assumed the manager
+   * role.  This is where @worker starts participating in concurrency
+   * management if applicable and concurrency management is restored
+   * after being rebound.  See rebind_workers() for details. */
+  worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
+
+  do {
+    struct work_struct *work =
+      list_first_entry(&pool->worklist, struct work_struct, entry);
+
+    pool->watchdog_ts = jiffies;
+
+    if (likely(!(*work_data_bits(work) & WORK_STRUCT_LINKED))) {
+      /* optimization path, not strictly necessary */
+      process_one_work(worker, work);
+      if (unlikely(!list_empty(&worker->scheduled)))
+        process_scheduled_works(worker);
+    } else {
+      move_linked_works(work, &worker->scheduled, NULL);
+      process_scheduled_works(worker);
+    }
+  } while (keep_working(pool));
+
+  worker_set_flags(worker, WORKER_PREP);
+sleep:
+  /* pool->lock is held and there's no work to process and no need to
+   * manage, sleep.  Workers are woken up only while holding
+   * pool->lock or from local cpu, so setting the current state
+   * before releasing pool->lock is enough to prevent losing any
+   * event. */
+  worker_enter_idle(worker);
+  __set_current_state(TASK_IDLE);
+  spin_unlock_irq(&pool->lock);
+  schedule();
+  goto woke_up;
+}
+
+void process_one_work(struct worker *worker, struct work_struct *work)
+__releases(&pool->lock)
+__acquires(&pool->lock)
+{
+  struct pool_workqueue *pwq = get_work_pwq(work);
+  struct worker_pool *pool = worker->pool;
+  bool cpu_intensive = pwq->wq->flags & WQ_CPU_INTENSIVE;
+  int work_color;
+  struct worker *collision;
+#ifdef CONFIG_LOCKDEP
+  /* It is permissible to free the struct work_struct from
+   * inside the function that is called from it, this we need to
+   * take into account for lockdep too.  To avoid bogus "held
+   * lock freed" warnings as well as problems when looking into
+   * work->lockdep_map, make a copy and use that here. */
+  struct lockdep_map lockdep_map;
+
+  lockdep_copy_map(&lockdep_map, &work->lockdep_map);
+#endif
+  /* ensure we're on the correct CPU */
+         raw_smp_processor_id() != pool->cpu);
+
+  /* A single work shouldn't be executed concurrently by
+   * multiple workers on a single cpu.  Check whether anyone is
+   * already processing the work.  If so, defer the work to the
+   * currently executing one. */
+  collision = find_worker_executing_work(pool, work);
+  if (unlikely(collision)) {
+    move_linked_works(work, &collision->scheduled, NULL);
+    return;
+  }
+
+  /* claim and dequeue */
+  debug_work_deactivate(work);
+  hash_add(pool->busy_hash, &worker->hentry, (unsigned long)work);
+  worker->current_work = work;
+  worker->current_func = work->func;
+  worker->current_pwq = pwq;
+  work_color = get_work_color(work);
+
+  /* Record wq name for cmdline and debug reporting, may get
+   * overridden through set_worker_desc(). */
+  strscpy(worker->desc, pwq->wq->name, WORKER_DESC_LEN);
+
+  list_del_init(&work->entry);
+
+  /* CPU intensive works don't participate in concurrency management.
+   * They're the scheduler's responsibility.  This takes @worker out
+   * of concurrency management and the next code block will chain
+   * execution of the pending work items. */
+  if (unlikely(cpu_intensive))
+    worker_set_flags(worker, WORKER_CPU_INTENSIVE);
+
+  /* Wake up another worker if necessary.  The condition is always
+   * false for normal per-cpu workers since nr_running would always
+   * be >= 1 at this point.  This is used to chain execution of the
+   * pending work items for WORKER_NOT_RUNNING workers such as the
+   * UNBOUND and CPU_INTENSIVE ones. */
+  if (need_more_worker(pool))
+    wake_up_worker(pool);
+
+  /* Record the last pool and clear PENDING which should be the last
+   * update to @work.  Also, do this inside @pool->lock so that
+   * PENDING and queued state changes happen together while IRQ is
+   * disabled. */
+  set_work_pool_and_clear_pending(work, pool->id);
+
+  spin_unlock_irq(&pool->lock);
+
+  lock_map_acquire(&pwq->wq->lockdep_map);
+  lock_map_acquire(&lockdep_map);
+  /* Strictly speaking we should mark the invariant state without holding
+   * any locks, that is, before these two lock_map_acquire()'s.
+   *
+   * However, that would result in:
+   *
+   *   A(W1)
+   *   WFC(C)
+   *    A(W1)
+   *    C(C)
+   *
+   * Which would create W1->C->W1 dependencies, even though there is no
+   * actual deadlock possible. There are two solutions, using a
+   * read-recursive acquire on the work(queue) 'locks', but this will then
+   * hit the lockdep limitation on recursive locks, or simply discard
+   * these locks.
+   *
+   * AFAICT there is no possible deadlock scenario between the
+   * flush_work() and complete() primitives (except for single-threaded
+   * workqueues), so hiding them isn't a problem. */
+  lockdep_invariant_state(true);
+  trace_workqueue_execute_start(work);
+  worker->current_func(work);
+  /* While we must be careful to not use "work" after this, the trace
+   * point will only record its address. */
+  trace_workqueue_execute_end(work);
+  lock_map_release(&lockdep_map);
+  lock_map_release(&pwq->wq->lockdep_map);
+
+  if (unlikely(in_atomic() || lockdep_depth(current) > 0)) {
+    pr_err("BUG: workqueue leaked lock or atomic: %s/0x%08x/%d\n"
+           "     last function: %pf\n",
+           current->comm, preempt_count(), task_pid_nr(current),
+           worker->current_func);
+    debug_show_held_locks(current);
+    dump_stack();
+  }
+
+  /* The following prevents a kworker from hogging CPU on !PREEMPT
+   * kernels, where a requeueing work item waiting for something to
+   * happen could deadlock with stop_machine as such work item could
+   * indefinitely requeue itself while all other CPUs are trapped in
+   * stop_machine. At the same time, report a quiescent RCU state so
+   * the same condition doesn't freeze RCU. */
+  cond_resched();
+
+  spin_lock_irq(&pool->lock);
+
+  /* clear cpu intensive status */
+  if (unlikely(cpu_intensive))
+    worker_clr_flags(worker, WORKER_CPU_INTENSIVE);
+
+  /* we're done with it, release */
+  hash_del(&worker->hentry);
+  worker->current_work = NULL;
+  worker->current_func = NULL;
+  worker->current_pwq = NULL;
+  pwq_dec_nr_in_flight(pwq, work_color);
+}
+```
+
+### create_worker
+```c++
+struct worker *create_worker(struct worker_pool *pool)
+{
+  struct worker *worker = NULL;
+  int id = -1;
+  char id_buf[16];
+
+  /* ID is needed to determine kthread name */
+  id = ida_simple_get(&pool->worker_ida, 0, 0, GFP_KERNEL);
+  if (id < 0)
+    goto fail;
+
+  worker = alloc_worker(pool->node);
+  if (!worker)
+    goto fail;
+
+  worker->id = id;
+
+  if (pool->cpu >= 0)
+    snprintf(id_buf, sizeof(id_buf), "%d:%d%s", pool->cpu, id,
+       pool->attrs->nice < 0  ? "H" : "");
+  else
+    snprintf(id_buf, sizeof(id_buf), "u%d:%d", pool->id, id);
+
+  worker->task = kthread_create_on_node(worker_thread, worker, pool->node, "kworker/%s", id_buf);
+  if (IS_ERR(worker->task))
+    goto fail;
+
+  set_user_nice(worker->task, pool->attrs->nice);
+  kthread_bind_mask(worker->task, pool->attrs->cpumask);
+
+  /* successful, attach the worker to the pool */
+  worker_attach_to_pool(worker, pool);
+
+  /* start the newly created worker */
+  spin_lock_irq(&pool->lock);
+  worker->pool->nr_workers++;
+  worker_enter_idle(worker);
+  wake_up_process(worker->task);
+  spin_unlock_irq(&pool->lock);
+
+  return worker;
+
+fail:
+  if (id >= 0)
+    ida_simple_remove(&pool->worker_ida, id);
+  kfree(worker);
+  return NULL;
+}
+
+struct task_struct *kthread_create_on_node(int (*threadfn)(void *data),
+             void *data, int node,
+             const char namefmt[],
+             ...)
+{
+  struct task_struct *task;
+  va_list args;
+
+  va_start(args, namefmt);
+  task = __kthread_create_on_node(threadfn, data, node, namefmt, args);
+  va_end(args);
+
+  return task;
+}
+
+struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
+                void *data, int node,
+                const char namefmt[],
+                va_list args)
+{
+  DECLARE_COMPLETION_ONSTACK(done);
+  struct task_struct *task;
+  struct kthread_create_info *create = kmalloc(sizeof(*create),
+                 GFP_KERNEL);
+
+  if (!create)
+    return ERR_PTR(-ENOMEM);
+  create->threadfn = threadfn;
+  create->data = data;
+  create->node = node;
+  create->done = &done;
+
+  spin_lock(&kthread_create_lock);
+  list_add_tail(&create->list, &kthread_create_list);
+  spin_unlock(&kthread_create_lock);
+
+  wake_up_process(kthreadd_task);
+  /* Wait for completion in killable state, for I might be chosen by
+   * the OOM killer while kthreadd is trying to allocate memory for
+   * new kernel thread. */
+  if (unlikely(wait_for_completion_killable(&done))) {
+    /* If I was SIGKILLed before kthreadd (or new kernel thread)
+     * calls complete(), leave the cleanup of this structure to
+     * that thread. */
+    if (xchg(&create->done, NULL))
+      return ERR_PTR(-EINTR);
+    /* kthreadd (or new kernel thread) will call complete()
+     * shortly. */
+    wait_for_completion(&done);
+  }
+  task = create->result;
+  if (!IS_ERR(task)) {
+    static const struct sched_param param = { .sched_priority = 0 };
+    char name[TASK_COMM_LEN];
+
+    /* task is already visible to other tasks, so updating
+     * COMM must be protected. */
+    vsnprintf(name, sizeof(name), namefmt, args);
+    set_task_comm(task, name);
+    /* root may have changed our (kthreadd's) priority or CPU mask.
+     * The kernel thread should not inherit these properties. */
+    sched_setscheduler_nocheck(task, SCHED_NORMAL, &param);
+    set_cpus_allowed_ptr(task, cpu_all_mask);
+  }
+  kfree(create);
+  return task;
+}
+```
+
+### schedule_work
+```c++
+bool schedule_work(struct work_struct *work)
+{
+  return queue_work(system_wq, work);
+}
+
+bool queue_work(struct workqueue_struct *wq,
+            struct work_struct *work)
+{
+  return queue_work_on(WORK_CPU_UNBOUND, wq, work);
+}
+
+bool queue_work_on(int cpu, struct workqueue_struct *wq,
+       struct work_struct *work)
+{
+  bool ret = false;
+  unsigned long flags;
+
+  local_irq_save(flags);
+
+  if (!test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work))) {
+    __queue_work(cpu, wq, work);
+    ret = true;
+  }
+
+  local_irq_restore(flags);
+  return ret;
+}
+
+void __queue_work(int cpu, struct workqueue_struct *wq,
+       struct work_struct *work)
+{
+  struct pool_workqueue *pwq;
+  struct worker_pool *last_pool;
+  struct list_head *worklist;
+  unsigned int work_flags;
+  unsigned int req_cpu = cpu;
+
+  /* While a work item is PENDING && off queue, a task trying to
+   * steal the PENDING will busy-loop waiting for it to either get
+   * queued or lose PENDING.  Grabbing PENDING and queueing should
+   * happen with IRQ disabled. */
+  lockdep_assert_irqs_disabled();
+
+
+  /* if draining, only works from the same workqueue are allowed */
+  if (unlikely(wq->flags & __WQ_DRAINING) &&
+      WARN_ON_ONCE(!is_chained_work(wq)))
+    return;
+retry:
+  /* pwq which will be used unless @work is executing elsewhere */
+  if (wq->flags & WQ_UNBOUND) {
+    if (req_cpu == WORK_CPU_UNBOUND)
+      cpu = wq_select_unbound_cpu(raw_smp_processor_id());
+    pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
+  } else {
+    if (req_cpu == WORK_CPU_UNBOUND)
+      cpu = raw_smp_processor_id();
+    pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
+  }
+
+  /* If @work was previously on a different pool, it might still be
+   * running there, in which case the work needs to be queued on that
+   * pool to guarantee non-reentrancy. */
+  last_pool = get_work_pool(work);
+  if (last_pool && last_pool != pwq->pool) {
+    struct worker *worker;
+
+    spin_lock(&last_pool->lock);
+
+    worker = find_worker_executing_work(last_pool, work);
+
+    if (worker && worker->current_pwq->wq == wq) {
+      pwq = worker->current_pwq;
+    } else {
+      /* meh... not running there, queue here */
+      spin_unlock(&last_pool->lock);
+      spin_lock(&pwq->pool->lock);
+    }
+  } else {
+    spin_lock(&pwq->pool->lock);
+  }
+
+  /* pwq is determined and locked.  For unbound pools, we could have
+   * raced with pwq release and it could already be dead.  If its
+   * refcnt is zero, repeat pwq selection.  Note that pwqs never die
+   * without another pwq replacing it in the numa_pwq_tbl or while
+   * work items are executing on it, so the retrying is guaranteed to
+   * make forward-progress. */
+  if (unlikely(!pwq->refcnt)) {
+    if (wq->flags & WQ_UNBOUND) {
+      spin_unlock(&pwq->pool->lock);
+      cpu_relax();
+      goto retry;
+    }
+    /* oops */
+    WARN_ONCE(true, "workqueue: per-cpu pwq for %s on cpu%d has 0 refcnt",
+        wq->name, cpu);
+  }
+
+  /* pwq determined, queue */
+  trace_workqueue_queue_work(req_cpu, pwq, work);
+
+  if (WARN_ON(!list_empty(&work->entry))) {
+    spin_unlock(&pwq->pool->lock);
+    return;
+  }
+
+  pwq->nr_in_flight[pwq->work_color]++;
+  work_flags = work_color_to_flags(pwq->work_color);
+
+  if (likely(pwq->nr_active < pwq->max_active)) {
+    trace_workqueue_activate_work(work);
+    pwq->nr_active++;
+    worklist = &pwq->pool->worklist;
+    if (list_empty(worklist))
+      pwq->pool->watchdog_ts = jiffies;
+  } else {
+    work_flags |= WORK_STRUCT_DELAYED;
+    worklist = &pwq->delayed_works;
+  }
+
+  debug_work_activate(work);
+  insert_work(pwq, work, worklist, work_flags);
+
+  spin_unlock(&pwq->pool->lock);
+}
+```
+
+### flush_work
+
+```c++
+start_kernel();
+    workqueue_init_early();
+        alloc_workqueue();
+            struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
+            alloc_and_link_pwqs();
+                wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
+
+worker_thread();
+    may_start_working();
+    manage_workers();
+
+    process_one_work();
+        if (need_more_worker(pool))
+            wake_up_worker(pool);
+        worker->current_func(work);
+    process_scheduled_works();
+
+    schedule();
+
+
+create_worker();
+    worker = alloc_worker(pool->node);
+        worker->task = kthread_create_on_node(worker_thread, worker, pool->node, "kworker/%s", id_buf);
+            struct kthread_create_info *create = kmalloc(sizeof(*create), GFP_KERNEL);
+            list_add_tail(&create->list, &kthread_create_list);
+            wake_up_process(kthreadd_task);
+            wait_for_completion_killable(&done);
+        worker_attach_to_pool(worker, pool);
+        wake_up_process(worker->task);
 ```
 
 Reference:
@@ -2567,7 +4749,7 @@ Reference:
 
 # IPC
 ## pipe
-```C++
+```c++
 SYSCALL_DEFINE1(pipe, int __user *, fildes)
 {
   return sys_pipe2(fildes, 0);
@@ -2695,7 +4877,7 @@ struct pipe_buffer {
 ![](../Images/Kernel/ipc-pipe-2.png)
 
 ## fifo
-```C++
+```c++
 /* mkfifo is Glibc function */
 int
 mkfifo (const char *path, mode_t mode)
@@ -2849,7 +5031,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
 
 ## signal
 ### resigter a sighand
-```C++
+```c++
 struct task_struct {
     struct signal_struct    *signal;
     struct sighand_struct   *sighand;
@@ -3009,7 +5191,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
 ![](../Images/Kernel/ipc-signal-register-handler.png)
 
 ### send a signal
-```C++
+```c++
 /* kill->kill_something_info->kill_pid_info->group_send_sig_info->do_send_sig_info
  * tkill->do_tkill->do_send_specific->do_send_sig_info
  *
@@ -3133,7 +5315,7 @@ int wake_up_state(struct task_struct *p, unsigned int state)
 * [try_to_wake_up](#ttwu)
 
 ### handle signal
-```C++
+```c++
 static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 {
   while (true) {
@@ -3283,7 +5465,7 @@ asmlinkage long sys_rt_sigreturn(void)
 ![](../Images/Kernel/sig-handle.png)
 
 ## sem, shm, msg
-```C++
+```c++
 struct ipc_namespace {
   struct ipc_ids  ids[3];
 }
@@ -3311,7 +5493,7 @@ struct idr {
 };
 ```
 ![](../Images/Kernel/ipc-ipc_ids.png)
-```C++
+```c++
 struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 {
   struct kern_ipc_perm *out;
@@ -3401,7 +5583,7 @@ struct msg_queue {
 ```
 
 ### shmget
-```C++
+```c++
 SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 {
   struct ipc_namespace *ns;
@@ -3673,7 +5855,7 @@ static const struct file_operations shmem_file_operations = {
 ```
 
 ### shmat
-```C++
+```c++
 SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
 {
   unsigned long ret;
@@ -3793,7 +5975,7 @@ static const struct vm_operations_struct shmem_vm_ops = {
 ```
 
 ### shm_fault
-```C++
+```c++
 static int shm_fault(struct vm_fault *vmf)
 {
   struct file *file = vmf->vma->vm_file;
@@ -3820,7 +6002,7 @@ static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
 }
 ```
 
-```C++
+```c++
 shmget();
   ipcget();
     ipcget_private();
@@ -3852,7 +6034,7 @@ shm_fault();
 ![](../Images/Kernel/ipc-shm.png)
 
 ### semget
-```C++
+```c++
 SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
 {
   struct ipc_namespace *ns;
@@ -3916,7 +6098,7 @@ struct sem {
 ```
 
 ### semctl
-```C++
+```c++
 SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
 {
   int version;
@@ -4012,7 +6194,7 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 ```
 
 ### semop
-```C++
+```c++
 SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
     unsigned, nsops)
 {
@@ -4271,7 +6453,7 @@ struct sem_undo_list {
 
 ![](../Images/Kernel/ipc-sem-2.png)
 
-```C++
+```c++
 semget();
   ipcget();
     newary();
@@ -4320,7 +6502,7 @@ semop();
 ![](../Images/Kernel/container-vir-arch.png)
 
 ## ns
-```C++
+```c++
 # nsenter --target 58212 --mount --uts --ipc --net --pid -- env --ignore-environment -- /bin/bash
 
 root@f604f0e34bc2:/# ip addr
@@ -4333,11 +6515,11 @@ root@f604f0e34bc2:/# ip addr
     inet 172.17.0.3/16 brd 172.17.255.255 scope global eth0
        valid_lft forever preferred_lft forever
 ```
-```C++
+```c++
 unshare --mount --ipc --pid --net --mount-proc=/proc --fork /bin/bash
 ```
 
-```C++
+```c++
 int clone(int (*fn)(void *), void *child_stack, int flags, void *arg);
 /* CLONE_NEWUTS, CLONE_NEWUSER, CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWIPC, CLONE_NEWNET */
 
@@ -4347,7 +6529,7 @@ int setns(int fd, int nstype);
 int unshare(int flags);
 ```
 
-```C++
+```c++
 struct task_struct {
   struct nsproxy  *nsproxy;
   struct css_set  *cgroups;
@@ -4504,7 +6686,7 @@ static __net_init int loopback_net_init(struct net *net)
 cgrup subsystem:
   cpu, cpuacct, cpuset, memory, blkio, devices, net_cls(tc), freezer
 
-```C++
+```c++
 docker run -d --cpu-shares 513 --cpus 2 --cpuset-cpus 1,3 --memory 1024M --memory-swap 1234M --memory-swappiness 7 -p 8081:80 testnginx:1
 
 # docker ps
@@ -4525,7 +6707,7 @@ cgroup on /sys/fs/cgroup/hugetlb type cgroup (rw,nosuid,nodev,noexec,relatime,hu
 cgroup on /sys/fs/cgroup/freezer type cgroup (rw,nosuid,nodev,noexec,relatime,freezer)
 cgroup on /sys/fs/cgroup/pids type cgroup (rw,nosuid,nodev,noexec,relatime,pids)
 ```
-```C++
+```c++
 // sys/fs/cgroup
 drwxr-xr-x 5 root root  0 May 30 17:00 blkio
 lrwxrwxrwx 1 root root 11 May 30 17:00 cpu -> cpu,cpuacct
@@ -4618,7 +6800,7 @@ memory.max_usage_in_bytes           user.slice
 ```
 ![](../Images/Kernel/container-cgroup.png)
 
-```C++
+```c++
 void __init start_kernel(void)
 {
   cgroup_init();
@@ -4645,7 +6827,7 @@ int cgroup_init(void)
 ```
 
 ### cgroup_init_cftypes
-```C++
+```c++
 /* set the cftype's kf_ops to cgroup_kf_ops */
 static int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
 {
@@ -4733,7 +6915,7 @@ struct cftype {
 ```
 
 ### cgroup_init_subsys
-```C++
+```c++
 #define for_each_subsys(ss, ssid)          \
   for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT &&    \
        (((ss) = cgroup_subsys[ssid]) || true); (ssid)++)
@@ -4996,7 +7178,7 @@ struct kernfs_elem_attr {
 ```
 
 ### mnt cgroup_fs_type
-```C++
+```c++
 /* mount -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> cgroup_mount -> cgroup1_mount */
 struct dentry *cgroup1_mount(
@@ -5026,7 +7208,7 @@ struct dentry *cgroup1_mount(
 }
 ```
 
-```C++
+```c++
 int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask, int ref_flags)
 {
   LIST_HEAD(tmp_links);
@@ -5165,7 +7347,7 @@ static struct cftype mem_cgroup_legacy_files[] = {
 }
 ```
 
-```C++
+```c++
 /* mount -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> cgroup_mount -> cgroup1_mount */
 struct dentry *cgroup_do_mount(
@@ -5245,7 +7427,7 @@ struct dentry *kernfs_mount_ns(
 
 ```
 ### e.g. cpu.shares
-```C++
+```c++
 // cpu.shares -> cpu_shares_write_u64
 int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 {
@@ -5269,7 +7451,7 @@ int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 ```
 
 ### attach
-```C++
+```c++
 /* write id to /sys/fs/cgroup/cpu,cpuacct/tasks file
  *
  * cgroup1_base_files.cgroup_tasks_write -> __cgroup_procs_write ->
@@ -5334,7 +7516,7 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
 * SPI (Shared Peripheral Interrupt)
 
 ## init
-```C++
+```c++
 void start_kernel(void)
 {
   tick_init();
@@ -5445,7 +7627,7 @@ static __init void x86_late_time_init(void)
 ```
 
 ## hpet_time_init
-```C++
+```c++
 void __init hpet_time_init(void)
 {
   if (!hpet_enable())
@@ -5606,7 +7788,7 @@ inline unsigned int hpet_readl(unsigned int a)
 ```
 
 ## clocksource_register_hz
-```C++
+```c++
 static inline int clocksource_register_hz(struct clocksource *cs, u32 hz)
 {
   return __clocksource_register_scale(cs, 1, hz);
@@ -5638,7 +7820,7 @@ int __clocksource_register_scale(struct clocksource *cs, u32 scale, u32 freq)
 ```
 
 ## clockevents_config_and_register
-```C++
+```c++
 static void hpet_legacy_clockevent_register(void)
 {
   hpet_enable_legacy_int();
@@ -5839,7 +8021,7 @@ void tick_setup_oneshot(struct clock_event_device *newdev,
 ```
 
 ## setup irq0 timer irq
-```C++
+```c++
 static struct irqaction irq0  = {
   .handler = timer_interrupt,
   .flags = IRQF_NOBALANCING | IRQF_IRQPOLL | IRQF_TIMER,
@@ -5926,7 +8108,7 @@ void __init tsc_init(void)
 ```
 
 ## handle irq0 timer irq
-```C++
+```c++
 void tick_handle_periodic(struct clock_event_device *dev)
 {
   int cpu = smp_processor_id();
@@ -6027,7 +8209,7 @@ struct timer_base {
 ## setup_APIC_timer
 * Advance Programmable Interrupt Controller
 
-```C++
+```c++
 static void setup_APIC_timer(void)
 {
   struct clock_event_device *levt = this_cpu_ptr(&lapic_events);
@@ -6055,7 +8237,7 @@ static void setup_APIC_timer(void)
 ```
 
 ## hrtimer_run_queues
-```C++
+```c++
 struct hrtimer_cpu_base {
   raw_spinlock_t      lock;
   unsigned int        cpu;
@@ -6228,7 +8410,7 @@ static void __run_hrtimer(struct hrtimer_cpu_base *cpu_base,
 ```
 
 ## tick_check_oneshot_change
-```C++
+```c++
 int tick_check_oneshot_change(int allow_nohz)
 {
   struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
@@ -6297,7 +8479,7 @@ int tick_program_event(ktime_t expires, int force)
 ```
 
 ## hrtimer_switch_to_hres
-```C++
+```c++
 static void hrtimer_switch_to_hres(void)
 {
   struct hrtimer_cpu_base *base = this_cpu_ptr(&hrtimer_bases);
@@ -6321,7 +8503,7 @@ int tick_init_highres(void)
 ```
 
 ## hrtimer tick emulation
-```C++
+```c++
 /* setup the tick emulation timer */
 void tick_setup_sched_timer(void)
 {
@@ -6390,7 +8572,7 @@ static void tick_sched_handle(struct tick_sched *ts, struct pt_regs *regs)
 ```
 
 ## HRTIMER_SOFTIRQ
-```C++
+```c++
 DEFINE_PER_CPU(struct hrtimer_cpu_base, hrtimer_bases) =
 {
   .lock = __RAW_SPIN_LOCK_UNLOCKED(hrtimer_bases.lock),
@@ -6434,7 +8616,7 @@ static __latent_entropy void hrtimer_run_softirq(struct softirq_action *h)
 ```
 
 ## TIMER_SOFTIRQ
-```C++
+```c++
 void run_timer_softirq(struct softirq_action *h)
 {
   struct timer_base *base = this_cpu_ptr(&timer_bases[BASE_STD]);
@@ -6526,7 +8708,7 @@ void profile_tick(int type)
 ```
 
 ## hrtimer_interrupt
-```C++
+```c++
 void hrtimer_interrupt(struct clock_event_device *dev)
 {
   struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
@@ -6602,7 +8784,7 @@ retry:
 ```
 ## API
 ## gettimeofday
-```C++
+```c++
 SYSCALL_DEFINE2(gettimeofday, struct timeval __user *, tv,
     struct timezone __user *, tz)
 {
@@ -6681,7 +8863,7 @@ struct timekeeper {
 ```
 
 ## timer_create
-```C++
+```c++
 SYSCALL_DEFINE3(timer_create, const clockid_t, which_clock,
     struct sigevent __user *, timer_event_spec,
     timer_t __user *, created_timer_id)
@@ -6776,7 +8958,7 @@ static int common_timer_create(struct k_itimer *new_timer)
 ```
 
 ## timer_settime
-```C++
+```c++
 SYSCALL_DEFINE4(timer_settime, timer_t, timer_id, int, flags,
     const struct __kernel_itimerspec __user *, new_setting,
     struct __kernel_itimerspec __user *, old_setting)
@@ -6891,7 +9073,7 @@ static void common_hrtimer_arm(struct k_itimer *timr, ktime_t expires,
 ```
 
 ## timer cancel
-```C++
+```c++
 static int common_hrtimer_try_to_cancel(struct k_itimer *timr)
 {
   return hrtimer_try_to_cancel(&timr->it.real.timer);
@@ -6978,7 +9160,7 @@ static void __remove_hrtimer(struct hrtimer *timer,
 ```
 
 ## posix_timer_fn
-```C++
+```c++
 static enum hrtimer_restart posix_timer_fn(struct hrtimer *timer)
 {
   struct k_itimer *timr;
@@ -7147,7 +9329,7 @@ int del_timer(struct timer_list *timer)
 ```
 
 ## Call Stack
-```C++
+```c++
 start_kernel();
   tick_init();
     tick_broadcast_init();
@@ -7300,7 +9482,7 @@ http://www.wowotech.net/timer_subsystem/time-subsyste-architecture.html
 
 # Lock
 ## spin lock
-```C++
+```c++
 typedef struct spinlock {
   union {
     struct raw_spinlock rlock;
@@ -7488,7 +9670,7 @@ static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
 # Pthread
 
 ## pthread_create
-```C++
+```c++
 int __pthread_create_2_1 (
   pthread_t *newthread, const pthread_attr_t *attr,
   void *(*start_routine) (void *), void *arg)
@@ -7690,7 +9872,7 @@ void __deallocate_stack (struct pthread *pd)
 ## pthread_mutex
 ### lock
 
-```C++
+```c++
 SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
     struct timespec __user *, utime, u32 __user *, uaddr2,
     u32, val3)
