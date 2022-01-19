@@ -184,6 +184,8 @@ static int run_init_process(const char *init_filename)
 
 ## syscall
 
+![](../Images/Kernel/proc-sched-reg.png)
+
 ### glibc
 ```c++
 int open(const char *pathname, int flags, mode_t mode)
@@ -192,6 +194,7 @@ int open(const char *pathname, int flags, mode_t mode)
 // File name Caller  Syscall name    Args    Strong name    Weak names
       open    -        open          i:siv   __libc_open   __open open
 ```
+
 ```c++
 // syscall-template.S
 T_PSEUDO (SYSCALL_SYMBOL, SYSCALL_NAME, SYSCALL_NARGS)
@@ -3978,9 +3981,13 @@ kthread();
 
 ![](../Images/Kernel/proc-workqueue.png)
 
+![](../Images/Kernel/proc-workqueue-flow.png)
+
+* http://www.wowotech.net/irq_subsystem/cmwq-intro.html
 * https://zhuanlan.zhihu.com/p/91106844
 * https://zhuanlan.zhihu.com/p/94561631
 * http://kernel.meizu.com/linux-workqueue.html
+* [Kernel: Concurrency Managed Workqueue (cmwq)](https://www.kernel.org/doc/html/v4.10/core-api/workqueue.html)
 
 ### wq-struct
 ```c++
@@ -4059,6 +4066,12 @@ struct worker_pool {
   struct rcu_head    rcu;
 } ____cacheline_aligned_in_smp;
 
+struct workqueue_attrs {
+  int             nice;
+  cpumask_var_t   cpumask;
+  bool            no_numa;
+};
+
 struct worker {
   /* on idle list while idle, on busy hash table while busy */
   union {
@@ -4113,6 +4126,29 @@ root     2760459 2760373  0 00:48 pts/4    00:00:00 grep --color=auto worker
 
 kworker/<cpu-id>:<worker-id-in-pool><High priority>
 kworker/<unbound>:<worker-id-in-pool><High priority>
+```
+```c++
+/* the per-cpu worker pools */
+static DEFINE_PER_CPU_SHARED_ALIGNED(struct worker_pool [NR_STD_WORKER_POOLS], cpu_worker_pools);
+
+static DEFINE_IDR(worker_pool_idr);  /* PR: idr of all pools */
+
+/* PL: hash of all unbound pools keyed by pool->attrs */
+static DEFINE_HASHTABLE(unbound_pool_hash, UNBOUND_POOL_HASH_ORDER);
+
+/* I: attributes used when instantiating standard unbound pools on demand */
+static struct workqueue_attrs *unbound_std_wq_attrs[NR_STD_WORKER_POOLS];
+
+/* I: attributes used when instantiating ordered pools on demand */
+static struct workqueue_attrs *ordered_wq_attrs[NR_STD_WORKER_POOLS];
+
+struct workqueue_struct *system_wq;
+struct workqueue_struct *system_highpri_wq;
+struct workqueue_struct *system_long_wq;
+struct workqueue_struct *system_unbound_wq;
+struct workqueue_struct *system_freezable_wq;
+struct workqueue_struct *system_power_efficient_wq;
+struct workqueue_struct *system_freezable_power_efficient_wq;
 ```
 
 ### alloc_workqueue
@@ -4207,9 +4243,7 @@ int __init workqueue_init(void)
 
   list_for_each_entry(wq, &workqueues, list) {
     wq_update_unbound_numa(wq, smp_processor_id(), true);
-    WARN(init_rescuer(wq),
-         "workqueue: failed to create early rescuer for %s",
-         wq->name);
+    init_rescuer(wq);
   }
 
   mutex_unlock(&wq_pool_mutex);
@@ -4218,12 +4252,12 @@ int __init workqueue_init(void)
   for_each_online_cpu(cpu) {
     for_each_cpu_worker_pool(pool, cpu) {
       pool->flags &= ~POOL_DISASSOCIATED;
-      BUG_ON(!create_worker(pool));
+      create_worker(pool);
     }
   }
 
   hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
-    BUG_ON(!create_worker(pool));
+    create_worker(pool);
 
   wq_online = true;
   wq_watchdog_init();
@@ -4398,6 +4432,237 @@ void init_pwq(struct pool_workqueue *pwq, struct workqueue_struct *wq,
   INIT_LIST_HEAD(&pwq->pwqs_node);
   INIT_LIST_HEAD(&pwq->mayday_node);
   INIT_WORK(&pwq->unbound_release_work, pwq_unbound_release_workfn);
+}
+```
+
+### alloc_unbound_pwq
+```c++
+static DEFINE_HASHTABLE(unbound_pool_hash, UNBOUND_POOL_HASH_ORDER);
+
+struct pool_workqueue *alloc_unbound_pwq(struct workqueue_struct *wq,
+          const struct workqueue_attrs *attrs)
+{
+  struct worker_pool *pool;
+  struct pool_workqueue *pwq;
+
+  lockdep_assert_held(&wq_pool_mutex);
+
+  pool = get_unbound_pool(attrs);
+  if (!pool)
+    return NULL;
+
+  pwq = kmem_cache_alloc_node(pwq_cache, GFP_KERNEL, pool->node);
+  if (!pwq) {
+    put_unbound_pool(pool);
+    return NULL;
+  }
+
+  init_pwq(pwq, wq, pool);
+
+  return pwq;
+}
+
+/* kernel/workqueue.c */
+static cpumask_var_t *wq_numa_possible_cpumask; /* possible CPUs of each node */
+
+static struct worker_pool *get_unbound_pool(const struct workqueue_attrs *attrs)
+{
+  u32 hash = wqattrs_hash(attrs);
+  struct worker_pool *pool;
+  int node;
+  int target_node = NUMA_NO_NODE;
+
+  lockdep_assert_held(&wq_pool_mutex);
+
+  /* do we already have a matching pool? */
+  hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
+    if (wqattrs_equal(pool->attrs, attrs)) {
+      pool->refcnt++;
+      return pool;
+    }
+  }
+
+  /* if cpumask is contained inside a NUMA node, we belong to that node */
+  if (wq_numa_enabled) {
+    for_each_node(node) {
+      if (cpumask_subset(attrs->cpumask, wq_numa_possible_cpumask[node])) {
+        target_node = node;
+        break;
+      }
+    }
+  }
+
+  /* nope, create a new one */
+  pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
+  if (!pool || init_worker_pool(pool) < 0)
+    goto fail;
+
+  lockdep_set_subclass(&pool->lock, 1);  /* see put_pwq() */
+  copy_workqueue_attrs(pool->attrs, attrs);
+  pool->node = target_node;
+
+   /* no_numa isn't a worker_pool attribute, always clear it.  See
+   * 'struct workqueue_attrs' comments for detail. */
+  pool->attrs->no_numa = false;
+
+  if (worker_pool_assign_id(pool) < 0)
+    goto fail;
+
+  /* create and start the initial worker */
+  if (wq_online && !create_worker(pool))
+    goto fail;
+
+  /* install */
+  hash_add(unbound_pool_hash, &pool->hash_node, hash);
+
+  return pool;
+fail:
+  if (pool)
+    put_unbound_pool(pool);
+  return NULL;
+}
+
+struct apply_wqattrs_ctx {
+  struct workqueue_struct *wq;    /* target workqueue */
+  struct workqueue_attrs  *attrs;    /* attrs to apply */
+  struct list_head        list;    /* queued for batching commit */
+  struct pool_workqueue   *dfl_pwq;
+  struct pool_workqueue   *pwq_tbl[];
+};
+
+int apply_workqueue_attrs_locked(struct workqueue_struct *wq,
+          const struct workqueue_attrs *attrs)
+{
+  struct apply_wqattrs_ctx *ctx;
+
+  /* only unbound workqueues can change attributes */
+  if (WARN_ON(!(wq->flags & WQ_UNBOUND)))
+    return -EINVAL;
+
+  /* creating multiple pwqs breaks ordering guarantee */
+  if (!list_empty(&wq->pwqs)) {
+    if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
+      return -EINVAL;
+
+    wq->flags &= ~__WQ_ORDERED;
+  }
+
+  ctx = apply_wqattrs_prepare(wq, attrs);
+  if (!ctx)
+    return -ENOMEM;
+
+  /* the ctx has been prepared successfully, let's commit it */
+  apply_wqattrs_commit(ctx);
+  apply_wqattrs_cleanup(ctx);
+
+  return 0;
+}
+
+struct apply_wqattrs_ctx *
+apply_wqattrs_prepare(struct workqueue_struct *wq,
+          const struct workqueue_attrs *attrs)
+{
+  struct apply_wqattrs_ctx *ctx;
+  struct workqueue_attrs *new_attrs, *tmp_attrs;
+  int node;
+
+  lockdep_assert_held(&wq_pool_mutex);
+
+  ctx = kzalloc(struct_size(ctx, pwq_tbl, nr_node_ids), GFP_KERNEL);
+
+  new_attrs = alloc_workqueue_attrs(GFP_KERNEL);
+  tmp_attrs = alloc_workqueue_attrs(GFP_KERNEL);
+  if (!ctx || !new_attrs || !tmp_attrs)
+    goto out_free;
+
+  /*
+   * Calculate the attrs of the default pwq.
+   * If the user configured cpumask doesn't overlap with the
+   * wq_unbound_cpumask, we fallback to the wq_unbound_cpumask.
+   */
+  copy_workqueue_attrs(new_attrs, attrs);
+  cpumask_and(new_attrs->cpumask, new_attrs->cpumask, wq_unbound_cpumask);
+  if (unlikely(cpumask_empty(new_attrs->cpumask)))
+    cpumask_copy(new_attrs->cpumask, wq_unbound_cpumask);
+
+  /*
+   * We may create multiple pwqs with differing cpumasks.  Make a
+   * copy of @new_attrs which will be modified and used to obtain
+   * pools.
+   */
+  copy_workqueue_attrs(tmp_attrs, new_attrs);
+
+  /*
+   * If something goes wrong during CPU up/down, we'll fall back to
+   * the default pwq covering whole @attrs->cpumask.  Always create
+   * it even if we don't use it immediately.
+   */
+  ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
+  if (!ctx->dfl_pwq)
+    goto out_free;
+
+  for_each_node(node) {
+    if (wq_calc_node_cpumask(new_attrs, node, -1, tmp_attrs->cpumask)) {
+      ctx->pwq_tbl[node] = alloc_unbound_pwq(wq, tmp_attrs);
+      if (!ctx->pwq_tbl[node])
+        goto out_free;
+    } else {
+      ctx->dfl_pwq->refcnt++;
+      ctx->pwq_tbl[node] = ctx->dfl_pwq;
+    }
+  }
+
+  /* save the user configured attrs and sanitize it. */
+  copy_workqueue_attrs(new_attrs, attrs);
+  cpumask_and(new_attrs->cpumask, new_attrs->cpumask, cpu_possible_mask);
+  ctx->attrs = new_attrs;
+
+  ctx->wq = wq;
+  free_workqueue_attrs(tmp_attrs);
+  return ctx;
+
+out_free:
+  free_workqueue_attrs(tmp_attrs);
+  free_workqueue_attrs(new_attrs);
+  apply_wqattrs_cleanup(ctx);
+  return NULL;
+}
+
+static void apply_wqattrs_commit(struct apply_wqattrs_ctx *ctx)
+{
+  int node;
+
+  /* all pwqs have been created successfully, let's install'em */
+  mutex_lock(&ctx->wq->mutex);
+
+  copy_workqueue_attrs(ctx->wq->unbound_attrs, ctx->attrs);
+
+  /* save the previous pwq and install the new one */
+  for_each_node(node)
+    ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node,
+                ctx->pwq_tbl[node]);
+
+  /* @dfl_pwq might not have been used, ensure it's linked */
+  link_pwq(ctx->dfl_pwq);
+  swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
+
+  mutex_unlock(&ctx->wq->mutex);
+}
+
+/* free the resources after success or abort */
+static void apply_wqattrs_cleanup(struct apply_wqattrs_ctx *ctx)
+{
+  if (ctx) {
+    int node;
+
+    for_each_node(node)
+      put_pwq_unlocked(ctx->pwq_tbl[node]);
+    put_pwq_unlocked(ctx->dfl_pwq);
+
+    free_workqueue_attrs(ctx->attrs);
+
+    kfree(ctx);
+  }
 }
 ```
 
@@ -4626,10 +4891,11 @@ woke_up:
   worker_leave_idle(worker);
 recheck:
   /* no more worker necessary? */
-  if (!need_more_worker(pool))
+  if (!need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
     goto sleep;
 
   /* do we need to manage? */
+  /* return pool->nr_idle; */
   if (unlikely(!may_start_working(pool)) && manage_workers(worker))
     goto recheck;
 
@@ -4658,7 +4924,7 @@ recheck:
       move_linked_works(work, &worker->scheduled, NULL);
       process_scheduled_works(worker);
     }
-  } while (keep_working(pool));
+  } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
 
   worker_set_flags(worker, WORKER_PREP);
 sleep:
@@ -5125,14 +5391,9 @@ start_kernel();
             init_worker_pool();
                 timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
                 timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
-
+                alloc_workqueue_attrs();
         alloc_workqueue();
-            struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
-            alloc_and_link_pwqs();
-                wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
-            init_pwq();
-                INIT_WORK(&pwq->unbound_release_work, pwq_unbound_release_workfn);
-
+            --->
     rest_init();
         kernel_thread(kernel_init);
             kernel_init();
@@ -5140,10 +5401,83 @@ start_kernel();
                     workqueue_init();
                         for_each_cpu_worker_pool(pool, cpu);
                             create_worker(pool); /* each pool has at leat one worker */
+                        hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
+                            create_worker(pool);
+                        wq_watchdog_init();
+
+alloc_workqueue();
+    struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
+    alloc_and_link_pwqs();
+        wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
+        if (!(wq->flags & WQ_UNBOUND)) {
+            pwq->pool = &cpu_pools[priority];
+            init_pwq(pwq, wq, &cpu_pools[highpri]);
+                pwq->pool = pool;
+                pwq->wq = wq;
+            link_pwq();
+                pwq_adjust_max_active();
+                list_add_rcu(&pwq->pwqs_node, &wq->pwqs);
+        } else if (wq->flags & __WQ_ORDERED) {
+            apply_workqueue_attrs(wq, ordered_wq_attrs[priority]);
+        } else {
+            apply_workqueue_attrs(wq, unbound_std_wq_attrs[priority]);
+                apply_wqattrs_prepare(wq, attrs);
+                    apply_wqattrs_ctx* ctx = kzalloc(struct_size(ctx, pwq_tbl, nr_node_ids), GFP_KERNEL);
+                    ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
+                        --->
+                    for_each_node(node) {
+                        if (wq_calc_node_cpumask(new_attrs, node, -1, tmp_attrs->cpumask)) {
+                            ctx->pwq_tbl[node] = alloc_unbound_pwq(wq, tmp_attrs);
+                        } else {
+                            ctx->dfl_pwq->refcnt++;
+                            ctx->pwq_tbl[node] = ctx->dfl_pwq;
+                        }
+                    }
+                apply_wqattrs_commit(ctx);
+                    for_each_node(node)
+                        ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node, ctx->pwq_tbl[node]);
+                            link_pwq(pwq);
+                            rcu_assign_pointer(wq->numa_pwq_tbl[node], pwq);
+                        link_pwq(ctx->dfl_pwq);
+                        swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
+                apply_wqattrs_cleanup(ctx);
+        }
+    for_each_pwq(pwq, wq)
+        pwq_adjust_max_active(pwq);
+    init_rescuer();
+    list_add_tail_rcu(&wq->list, &workqueues);
+
+alloc_unbound_pwq();
+    pool = get_unbound_pool();
+        hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
+            if (wqattrs_equal(pool->attrs, attrs)) {
+                pool->refcnt++;
+                return pool;
+            }
+        }
+
+        for_each_node(node) {
+            if (cpumask_subset(attrs->cpumask, wq_numa_possible_cpumask[node])) {
+                target_node = node;
+                break;
+            }
+        }
+        pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
+        init_worker_pool(pool);
+        copy_workqueue_attrs(pool->attrs, attrs);
+        create_worker(pool);
+        hash_add(unbound_pool_hash, &pool->hash_node, hash);
+
+    pwq = kmem_cache_alloc_node();
+    init_pwq(pwq, wq, pool);
 
 create_worker(pool);
     woker = alloc_worker(pool->node);
-    worker->task = kthread_create_on_node(worker_thread); /* ---> */
+    worker->task = kthread_create_on_node(worker_thread);
+        kthreadd();
+            create_kthread();
+                kernel_thread();
+                    _do_fork();
         wake_up_process(kthreadd_task); /* kthreadd */
         wait_for_completion_killable(&done);
     worker_attach_to_pool();
@@ -5151,27 +5485,36 @@ create_worker(pool);
         try_to_wake_up();
 
 worker_thread();
+    if (worker->flags & WORKER_DIE) {
+        kfree(worker);
+        return;
+    }
+
     worker_leave_idle();
         worker_clr_flags(worker, WORKER_IDLE);
         pool->nr_idle--;
-    may_start_working();
-        return pool->nr_idle;
-    manage_workers();
-        maybe_create_worker();
-            mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INITIAL_TIMEOUT);
-            create_worker();
-                --->
-        wake_up(&wq_manager_wait);
+
+    if (!need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
+        goto sleep;
+
+    if (!may_start_working()) /* pool->nr_idle */
+        manage_workers();
+            maybe_create_worker();
+                mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INITIAL_TIMEOUT);
+                create_worker();
+                    --->
+            wake_up(&wq_manager_wait);
+
     worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
 
     process_one_work();
-        if (need_more_worker(pool)) /* !list_empty(&pool->worklist) && __need_more_worker(pool) */
+        if (need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
             wake_up_worker(pool);
                 try_to_wake_up();
         worker->current_func(work);
 
+    worker_enter_idle(worker);
     schedule();
-
 
 schedule_work();
     queue_work();
@@ -10413,5 +10756,708 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
     return futex_requeue(uaddr, flags, uaddr2, val, val2, &val3, 1);
   }
   return -ENOSYS;
+}
+```
+
+# interruption
+
+![](../Images/Kernel/io-irq.png)
+
+---
+
+![](../Images/Kernel/io-interrupt-vector.png)
+
+---
+
+![](../Images/Kernel/io-interrupt.png)
+
+## ksoftirqd
+```c++
+static struct smp_hotplug_thread softirq_threads = {
+  .store              = &ksoftirqd,
+  .thread_should_run  = ksoftirqd_should_run,
+  .thread_fn          = run_ksoftirqd,
+  .thread_comm        = "ksoftirqd/%u",
+};
+
+static __init int spawn_ksoftirqd(void)
+{
+  cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL,
+          takeover_tasklets);
+  BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
+
+  return 0;
+}
+early_initcall(spawn_ksoftirqd);
+
+int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
+{
+  unsigned int cpu;
+  int ret = 0;
+
+  get_online_cpus();
+  mutex_lock(&smpboot_threads_lock);
+  for_each_online_cpu(cpu) {
+    ret = __smpboot_create_thread(plug_thread, cpu);
+    if (ret) {
+      smpboot_destroy_threads(plug_thread);
+      goto out;
+    }
+    smpboot_unpark_thread(plug_thread, cpu);
+  }
+  list_add(&plug_thread->list, &hotplug_threads);
+out:
+  mutex_unlock(&smpboot_threads_lock);
+  put_online_cpus();
+  return ret;
+}
+
+static int
+__smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
+{
+  struct task_struct *tsk = *per_cpu_ptr(ht->store, cpu);
+  struct smpboot_thread_data *td;
+
+  if (tsk)
+    return 0;
+
+  td = kzalloc_node(sizeof(*td), GFP_KERNEL, cpu_to_node(cpu));
+  if (!td)
+    return -ENOMEM;
+  td->cpu = cpu;
+  td->ht = ht;
+
+  tsk = kthread_create_on_cpu(smpboot_thread_fn, td, cpu, ht->thread_comm);
+  if (IS_ERR(tsk)) {
+    kfree(td);
+    return PTR_ERR(tsk);
+  }
+   /* Park the thread so that it could start right on the CPU
+   * when it is available. */
+  kthread_park(tsk);
+  get_task_struct(tsk);
+  *per_cpu_ptr(ht->store, cpu) = tsk;
+  if (ht->create) {
+     /* Make sure that the task has actually scheduled out
+     * into park position, before calling the create
+     * callback. At least the migration thread callback
+     * requires that the task is off the runqueue. */
+    if (!wait_task_inactive(tsk, TASK_PARKED))
+      WARN_ON(1);
+    else
+      ht->create(cpu);
+  }
+  return 0;
+}
+
+struct task_struct *kthread_create_on_cpu(int (*threadfn)(void *data),
+            void *data, unsigned int cpu,
+            const char *namefmt)
+{
+  struct task_struct *p;
+
+  p = kthread_create_on_node(threadfn, data, cpu_to_node(cpu), namefmt,
+           cpu);
+  if (IS_ERR(p))
+    return p;
+  kthread_bind(p, cpu);
+  /* CPU hotplug need to bind once again when unparking the thread. */
+  set_bit(KTHREAD_IS_PER_CPU, &to_kthread(p)->flags);
+  to_kthread(p)->cpu = cpu;
+  return p;
+}
+
+void kthread_bind(struct task_struct *p, unsigned int cpu)
+{
+  __kthread_bind(p, cpu, TASK_UNINTERRUPTIBLE);
+}
+
+void __kthread_bind_mask(struct task_struct *p, const struct cpumask *mask, long state)
+{
+  unsigned long flags;
+
+  if (!wait_task_inactive(p, state)) {
+    WARN_ON(1);
+    return;
+  }
+
+  /* It's safe because the task is inactive. */
+  raw_spin_lock_irqsave(&p->pi_lock, flags);
+  do_set_cpus_allowed(p, mask);
+  p->flags |= PF_NO_SETAFFINITY;
+  raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+}
+
+void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
+{
+  struct rq *rq = task_rq(p);
+  bool queued, running;
+
+  lockdep_assert_held(&p->pi_lock);
+
+  queued = task_on_rq_queued(p);
+  running = task_current(rq, p);
+
+  if (queued) {
+     /* Because __kthread_bind() calls this on blocked tasks without
+     * holding rq->lock. */
+    lockdep_assert_held(&rq->lock);
+    dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+  }
+  if (running)
+    put_prev_task(rq, p);
+
+  p->sched_class->set_cpus_allowed(p, new_mask);
+
+  if (queued)
+    enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+  if (running)
+    set_curr_task(rq, p);
+}
+const struct sched_class fair_sched_class = {
+  #ifdef CONFIG_SMP
+  .set_cpus_allowed  = set_cpus_allowed_common,
+#endif
+};
+
+void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_mask)
+{
+  cpumask_copy(&p->cpus_allowed, new_mask);
+  p->nr_cpus_allowed = cpumask_weight(new_mask);
+}
+```
+
+## run_ksoftirqd
+```c++
+static void run_ksoftirqd(unsigned int cpu)
+{
+  local_irq_disable();
+  if (local_softirq_pending()) {
+     /* We can safely run softirq on inline stack, as we are not deep
+     * in the task stack here. */
+    __do_softirq();
+    local_irq_enable();
+    cond_resched();
+    return;
+  }
+  local_irq_enable();
+}
+
+struct softirq_action
+{
+  void  (*action)(struct softirq_action *);
+};
+
+asmlinkage __visible void __softirq_entry __do_softirq(void)
+{
+  unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
+  unsigned long old_flags = current->flags;
+  int max_restart = MAX_SOFTIRQ_RESTART;
+  struct softirq_action *h;
+  bool in_hardirq;
+  __u32 pending;
+  int softirq_bit;
+
+   /* Mask out PF_MEMALLOC s current task context is borrowed for the
+   * softirq. A softirq handled such as network RX might set PF_MEMALLOC
+   * again if the socket is related to swap */
+  current->flags &= ~PF_MEMALLOC;
+
+  pending = local_softirq_pending();
+  account_irq_enter_time(current);
+
+  __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
+  in_hardirq = lockdep_softirq_start();
+
+restart:
+  /* Reset the pending bitmask before enabling irqs */
+  set_softirq_pending(0);
+
+  local_irq_enable();
+
+  h = softirq_vec;
+
+  while ((softirq_bit = ffs(pending))) {
+    unsigned int vec_nr;
+    int prev_count;
+
+    h += softirq_bit - 1;
+
+    vec_nr = h - softirq_vec;
+    prev_count = preempt_count();
+
+    kstat_incr_softirqs_this_cpu(vec_nr);
+
+    trace_softirq_entry(vec_nr);
+    h->action(h);
+    trace_softirq_exit(vec_nr);
+    if (unlikely(prev_count != preempt_count())) {
+      pr_err("huh, entered softirq %u %s %p with preempt_count %08x, exited with %08x?\n",
+             vec_nr, softirq_to_name[vec_nr], h->action,
+             prev_count, preempt_count());
+      preempt_count_set(prev_count);
+    }
+    h++;
+    pending >>= softirq_bit;
+  }
+
+  rcu_bh_qs();
+  local_irq_disable();
+
+  pending = local_softirq_pending();
+  if (pending) {
+    if (time_before(jiffies, end) && !need_resched() &&
+        --max_restart)
+      goto restart;
+
+    wakeup_softirqd();
+  }
+
+  lockdep_softirq_end(in_hardirq);
+  account_irq_exit_time(current);
+  __local_bh_enable(SOFTIRQ_OFFSET);
+  WARN_ON_ONCE(in_interrupt());
+  current_restore_flags(old_flags, PF_MEMALLOC);
+}
+```
+
+```c++
+static int logibm_open(struct input_dev *dev)
+{
+  if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
+    return -EBUSY;
+  }
+  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
+  return 0;
+}
+
+static irqreturn_t logibm_interrupt(int irq, void *dev_id)
+{
+  char dx, dy;
+  unsigned char buttons;
+
+  outb(LOGIBM_READ_X_LOW, LOGIBM_CONTROL_PORT);
+  dx = (inb(LOGIBM_DATA_PORT) & 0xf);
+  outb(LOGIBM_READ_X_HIGH, LOGIBM_CONTROL_PORT);
+  dx |= (inb(LOGIBM_DATA_PORT) & 0xf) << 4;
+  outb(LOGIBM_READ_Y_LOW, LOGIBM_CONTROL_PORT);
+  dy = (inb(LOGIBM_DATA_PORT) & 0xf);
+  outb(LOGIBM_READ_Y_HIGH, LOGIBM_CONTROL_PORT);
+  buttons = inb(LOGIBM_DATA_PORT);
+  dy |= (buttons & 0xf) << 4;
+  buttons = ~buttons >> 5;
+
+  input_report_rel(logibm_dev, REL_X, dx);
+  input_report_rel(logibm_dev, REL_Y, dy);
+  input_report_key(logibm_dev, BTN_RIGHT,  buttons & 1);
+  input_report_key(logibm_dev, BTN_MIDDLE, buttons & 2);
+  input_report_key(logibm_dev, BTN_LEFT,   buttons & 4);
+  input_sync(logibm_dev);
+
+
+  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
+  return IRQ_HANDLED
+}
+
+irqreturn_t (*irq_handler_t)(int irq, void * dev_id);
+enum irqreturn {
+  IRQ_NONE    = (0 << 0),
+  IRQ_HANDLED    = (1 << 0),
+  IRQ_WAKE_THREAD    = (1 << 1),
+};
+```
+
+## request_irq
+```c++
+static inline int request_irq(
+  unsigned int irq, irq_handler_t handler,
+  unsigned long flags, const char *name, void *dev)
+{
+  return request_threaded_irq(irq, handler, NULL, flags, name, dev);
+}
+
+int request_threaded_irq(
+  unsigned int irq, irq_handler_t handler,
+  irq_handler_t thread_fn, unsigned long irqflags,
+  const char *devname, void *dev_id)
+{
+  struct irqaction *action;
+  struct irq_desc *desc;
+  int retval;
+
+  desc = irq_to_desc(irq);
+
+  action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+  action->handler = handler;
+  action->thread_fn = thread_fn;
+  action->flags = irqflags;
+  action->name = devname;
+  action->dev_id = dev_id;
+  retval = __setup_irq(irq, desc, action);
+}
+
+struct irq_data {
+  u32      mask;
+  unsigned int    irq;
+  unsigned long    hwirq;
+  struct irq_common_data  *common;
+  struct irq_chip    *chip;
+  struct irq_domain  *domain;
+#ifdef  CONFIG_IRQ_DOMAIN_HIERARCHY
+  struct irq_data    *parent_data;
+#endif
+  void      *chip_data;
+};
+
+struct irq_desc {
+  struct irqaction  *action;  /* IRQ action list */
+  struct module     *owner;
+  struct irq_data   irq_data;
+  const char        *name;
+};
+
+struct irqaction {
+  irq_handler_t       handler;
+  void                *dev_id;
+  void __percpu       *percpu_dev_id;
+  struct irqaction    *next;
+  irq_handler_t       thread_fn;
+  struct task_struct  *thread;
+  struct irqaction    *secondary;
+  unsigned int        irq;
+  unsigned int        flags;
+  unsigned long       thread_flags;
+  unsigned long       thread_mask;
+  const char          *name;
+  struct proc_dir_entry  *dir;
+};
+
+#ifdef CONFIG_SPARSE_IRQ
+static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
+
+struct irq_desc *irq_to_desc(unsigned int irq)
+{
+  return radix_tree_lookup(&irq_desc_tree, irq);
+}
+#else /* !CONFIG_SPARSE_IRQ */
+struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
+  [0 ... NR_IRQS-1] = { }
+};
+struct irq_desc *irq_to_desc(unsigned int irq)
+{
+  return (irq < NR_IRQS) ? irq_desc + irq : NULL;
+}
+#endif /* !CONFIG_SPARSE_IRQ */
+
+static int
+__setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
+{
+  struct irqaction *old, **old_ptr;
+  unsigned long flags, thread_mask = 0;
+  int ret, nested, shared = 0;
+
+  new->irq = irq;
+
+  if (new->thread_fn && !nested) {
+    ret = setup_irq_thread(new, irq, false);
+  }
+
+  old_ptr = &desc->action;
+  old = *old_ptr;
+  if (old) {
+    /* add new interrupt at end of irq queue */
+    do {
+      thread_mask |= old->thread_mask;
+      old_ptr = &old->next;
+      old = *old_ptr;
+    } while (old);
+  }
+  *old_ptr = new;
+  if (new->thread)
+    wake_up_process(new->thread);
+}
+
+int wake_up_process(struct task_struct *p)
+{
+  return try_to_wake_up(p, TASK_NORMAL, 0);
+}
+
+static int setup_irq_thread(
+  struct irqaction *new, unsigned int irq, bool secondary)
+{
+  struct task_struct *t;
+  struct sched_param param = {
+    .sched_priority = MAX_USER_RT_PRIO/2,
+  };
+
+  t = kthread_create(irq_thread, new, "irq/%d-%s", irq, new->name);
+  sched_setscheduler_nocheck(t, SCHED_FIFO, &param);
+  get_task_struct(t);
+  new->thread = t;
+
+  return 0;
+}
+
+/* How interrupt happens:
+ * 1. extern dev sends physic interrupt to interrupt controller
+ * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
+ * 3. cpu call IRQ hanlder according to interrupt vector
+ * 4. IRQ handler converts interrupt vector to abstract interrupt signal, handle it with irq_handler_t */
+
+
+/* arch/x86/include/asm/irq_vectors.h
+ * Linux IRQ vector layout.
+ *
+ * There are 256 IDT entries (per CPU - each entry is 8 bytes) which can
+ * be defined by Linux. They are used as a jump table by the CPU when a
+ * given vector is triggered - by a CPU-external, CPU-internal or
+ * software-triggered event.
+ *
+ * Linux sets the kernel code address each entry jumps to early during
+ * bootup, and never changes them. This is the general layout of the
+ * IDT entries:
+ *
+ *  Vectors   0 ...  31 : system traps and exceptions - hardcoded events
+ *  Vectors  32 ... 127 : device interrupts
+ *  Vector  128         : legacy int80 syscall interface
+ *  Vectors 129 ... INVALIDATE_TLB_VECTOR_START-1 except 204 : device interrupts
+ *  Vectors INVALIDATE_TLB_VECTOR_START ... 255 : special interrupts
+ *
+ * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
+ *
+ * This file enumerates the exact layout of them: */
+#define FIRST_EXTERNAL_VECTOR    0x20 // 32
+#define IA32_SYSCALL_VECTOR    0x80   // 128
+#define NR_VECTORS       256
+#define FIRST_SYSTEM_VECTOR    NR_VECTORS
+
+// arch/x86/kernel/traps.c, per cpu
+struct gate_struct {
+  u16    offset_low; // system irq hanlder addr
+  u16    segment;   // KERNEL_CS
+  struct idt_bits  bits;
+  u16    offset_middle;  // addr >> 16
+#ifdef CONFIG_X86_64
+  u32    offset_high;    // adr >> 32
+  u32    reserved;      // 0
+#endif
+};
+struct idt_bits {
+  u16 ist   : 3,   // DEFAULT_STACK
+      zero  : 5,
+      type  : 5,   // GATE_{INTERRUPT, TRAP, CALL, TASK}
+      dpl   : 2,   // DPL (Descriptor privilege level), DLP0, DLP3
+                   // RPL (Requested privilege level)
+      p     : 1;
+};
+```
+
+## init idt_table
+```c++
+struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
+
+#define IA32_SYSCALL_VECTOR 0x80
+
+void __init trap_init(void)
+{
+  int i;
+  set_intr_gate(X86_TRAP_DE, divide_error);
+  // ...
+  set_intr_gate(X86_TRAP_XF, simd_coprocessor_error);
+
+  /* Reserve all the builtin and the syscall vector: */
+  for (i = 0; i < FIRST_EXTERNAL_VECTOR; i++)
+    set_bit(i, used_vectors);
+
+#ifdef CONFIG_X86_32
+  set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
+  set_bit(IA32_SYSCALL_VECTOR, used_vectors);
+#endif
+
+  /* place at a fixed address */
+  __set_fixmap(FIX_RO_IDT, __pa_symbol(idt_table), PAGE_KERNEL_RO);
+  idt_descr.address = fix_to_virt(FIX_RO_IDT);
+}
+
+// set_intr_gate -> _set_gate
+static inline void _set_gate(
+  int gate, unsigned type, void *addr,
+  unsigned dpl, unsigned ist, unsigned seg)
+{
+  gate_desc s;
+  pack_gate(&s, type, (unsigned long)addr, dpl, ist, seg);
+  write_idt_entry(idt_table, gate, &s);
+}
+
+// arch/x86/include/asm/traps.h
+enum {
+  X86_TRAP_DE = 0,  /*  0, Divide-by-zero */
+  X86_TRAP_DB,    /*  1, Debug */
+  X86_TRAP_NMI,    /*  2, Non-maskable Interrupt */
+  X86_TRAP_BP,    /*  3, Breakpoint */
+  X86_TRAP_OF,    /*  4, Overflow */
+  X86_TRAP_BR,    /*  5, Bound Range Exceeded */
+  X86_TRAP_UD,    /*  6, Invalid Opcode */
+  X86_TRAP_NM,    /*  7, Device Not Available */
+  X86_TRAP_DF,    /*  8, Double Fault */
+  X86_TRAP_OLD_MF,  /*  9, Coprocessor Segment Overrun */
+  X86_TRAP_TS,    /* 10, Invalid TSS */
+  X86_TRAP_NP,    /* 11, Segment Not Present */
+  X86_TRAP_SS,    /* 12, Stack Segment Fault */
+  X86_TRAP_GP,    /* 13, General Protection Fault */
+  X86_TRAP_PF,    /* 14, Page Fault */
+  X86_TRAP_SPURIOUS,  /* 15, Spurious Interrupt */
+  X86_TRAP_MF,    /* 16, x87 Floating-Point Exception */
+  X86_TRAP_AC,    /* 17, Alignment Check */
+  X86_TRAP_MC,    /* 18, Machine Check */
+  X86_TRAP_XF,    /* 19, SIMD Floating-Point Exception */
+  X86_TRAP_IRET = 32,  /* 32, IRET Exception */
+};
+```
+
+## init_IRQ
+```c++
+// after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
+void __init native_init_IRQ(void)
+{
+  int i;
+  i = FIRST_EXTERNAL_VECTOR;
+#ifndef CONFIG_X86_LOCAL_APIC
+#define first_system_vector NR_VECTORS
+#endif
+
+  for_each_clear_bit_from(i, used_vectors, first_system_vector) {
+    /* IA32_SYSCALL_VECTOR could be used in trap_init already. */
+    set_intr_gate(i, irq_entries_start +
+        8 * (i - FIRST_EXTERNAL_VECTOR));
+  }
+}
+
+/* set `FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR` handler to do_IRQ
+ * irq_entries_start defined in arch\x86\entry\entry_{32, 64} */
+ENTRY(irq_entries_start)
+    vector=FIRST_EXTERNAL_VECTOR
+    .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
+  pushl  $(~vector+0x80)      /* Note: always in signed byte range */
+    vector=vector+1
+  jmp  common_interrupt /* invoke do_IRQ */
+  .align  8
+    .endr
+END(irq_entries_start)
+
+
+common_interrupt:
+  ASM_CLAC
+  addq  $-0x80, (%rsp)      /* Adjust vector to [-256, -1] range */
+  interrupt do_IRQ
+  /* 0(%rsp): old RSP */
+ret_from_intr:
+
+  /* Interrupt came from user space */
+GLOBAL(retint_user)
+
+/* Returning to kernel space */
+retint_kernel:
+
+unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
+{
+  struct pt_regs *old_regs = set_irq_regs(regs);
+  struct irq_desc * desc;
+  /* high bit used in ret_from_ code  */
+  unsigned vector = ~regs->orig_ax;
+
+  desc = __this_cpu_read(vector_irq[vector]);
+  if (!handle_irq(desc, regs)) {
+
+  }
+
+  set_irq_regs(old_regs);
+  return 1;
+}
+
+/* do_IRQ -> handle_irq -> */
+static inline void generic_handle_irq_desc(struct irq_desc *desc)
+{
+  desc->handle_irq(desc);
+}
+
+irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
+{
+  irqreturn_t retval = IRQ_NONE;
+  unsigned int irq = desc->irq_data.irq;
+  struct irqaction *action;
+
+  record_irq_time(desc);
+
+  for_each_action_of_desc(desc, action) {
+    irqreturn_t res;
+    res = action->handler(irq, action->dev_id);
+    switch (res) {
+    case IRQ_WAKE_THREAD:
+      __irq_wake_thread(desc, action);
+    case IRQ_HANDLED:
+      *flags |= action->flags;
+      break;
+    default:
+      break;
+    }
+    retval |= res;
+  }
+  return retval;
+}
+```
+
+## init vector_irq
+```c++
+/* The interrupt vector interrupt controller sent to
+ * each cpu is per cpu local variable, but the abstract
+ * layer's virtual signal irq and it's irq_desc is global.
+ * So per cpu needs its own mapping from vector to irq_desc */
+typedef struct irq_desc* vector_irq_t[NR_VECTORS];
+DECLARE_PER_CPU(vector_irq_t, vector_irq);
+
+// assign virtual irq to a cpu
+static int __assign_irq_vector(
+  int irq, struct apic_chip_data *d,
+  const struct cpumask *mask,
+  struct irq_data *irqdata)
+{
+  static int current_vector = FIRST_EXTERNAL_VECTOR + VECTOR_OFFSET_START;
+  static int current_offset = VECTOR_OFFSET_START % 16;
+  int cpu, vector;
+
+  while (cpu < nr_cpu_ids) {
+    int new_cpu, offset;
+
+    vector = current_vector;
+    offset = current_offset;
+next:
+    vector += 16;
+    if (vector >= first_system_vector) {
+      offset = (offset + 1) % 16;
+      vector = FIRST_EXTERNAL_VECTOR + offset;
+    }
+    /* If the search wrapped around, try the next cpu */
+    if (unlikely(current_vector == vector))
+      goto next_cpu;
+
+    if (test_bit(vector, used_vectors))
+      goto next;
+
+    /* Found one! */
+    current_vector = vector;
+    current_offset = offset;
+    /* Schedule the old vector for cleanup on all cpus */
+    if (d->cfg.vector)
+      cpumask_copy(d->old_domain, d->domain);
+    for_each_cpu(new_cpu, vector_searchmask)
+      per_cpu(vector_irq, new_cpu)[vector] = irq_to_desc(irq);
+    goto update;
+
+next_cpu:
+    cpumask_or(searched_cpumask, searched_cpumask, vector_cpumask);
+    cpumask_andnot(vector_cpumask, mask, searched_cpumask);
+    cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
+    continue;
 }
 ```
