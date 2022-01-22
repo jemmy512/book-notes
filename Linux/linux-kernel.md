@@ -26,6 +26,9 @@
     * [wake_up](#wake_up)
     * [wait_woken](#wait_woken)
     * [fork](#fork)
+        * [copy_process](#copy_process)
+        * [ret_from_fork](#ret_from_fork)
+        * [copy_thread_tls](#copy_thread_tls)
     * [exec](#exec)
     * [kthreadd](#kthreadd)
     * [workqueue](#workqueue)
@@ -1022,7 +1025,7 @@ void schedule(void)
  *   3. Wakeups don't really cause entry into schedule(). They add a
  *      task to the run-queue and that's it.
  * WARNING: must be called with preemption disabled! */
-static void __sched notrace __schedule(bool preempt)
+void __sched notrace __schedule(bool preempt)
 {
   struct task_struct *prev, *next;
   unsigned long *switch_count;
@@ -1034,6 +1037,54 @@ static void __sched notrace __schedule(bool preempt)
   rq = cpu_rq(cpu);
   prev = rq->curr;
 
+  schedule_debug(prev);
+
+  if (sched_feat(HRTICK))
+    hrtick_clear(rq);
+
+  local_irq_disable();
+  rcu_note_context_switch(preempt);
+
+  /* Make sure that signal_pending_state()->signal_pending() below
+   * can't be reordered with __set_current_state(TASK_INTERRUPTIBLE)
+   * done by the caller to avoid the race with signal_wake_up().
+   *
+   * The membarrier system call requires a full memory barrier
+   * after coming from user-space, before storing to rq->curr. */
+  rq_lock(rq, &rf);
+  smp_mb__after_spinlock();
+
+  /* Promote REQ to ACT */
+  rq->clock_update_flags <<= 1;
+  update_rq_clock(rq);
+
+  switch_count = &prev->nivcsw;
+  if (!preempt && prev->state) {
+    if (unlikely(signal_pending_state(prev->state, prev))) {
+      prev->state = TASK_RUNNING;
+    } else {
+      deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+      prev->on_rq = 0;
+
+      if (prev->in_iowait) {
+        atomic_inc(&rq->nr_iowait);
+        delayacct_blkio_start();
+      }
+
+      /* If a worker went to sleep, notify and ask workqueue
+       * whether it wants to wake up a task to maintain
+       * concurrency. */
+      if (prev->flags & PF_WQ_WORKER) {
+        struct task_struct *to_wakeup;
+
+        to_wakeup = wq_worker_sleeping(prev);
+        if (to_wakeup)
+          try_to_wake_up_local(to_wakeup, &rf);
+      }
+    }
+    switch_count = &prev->nvcsw;
+  }
+
   next = pick_next_task(rq, prev, &rf);
   clear_tsk_need_resched(prev);
   clear_preempt_need_resched();
@@ -1041,11 +1092,32 @@ static void __sched notrace __schedule(bool preempt)
   if (likely(prev != next)) {
     rq->nr_switches++;
     rq->curr = next;
+    /* The membarrier system call requires each architecture
+     * to have a full memory barrier after updating
+     * rq->curr, before returning to user-space.
+     *
+     * Here are the schemes providing that barrier on the
+     * various architectures:
+     * - mm ? switch_mm() : mmdrop() for x86, s390, sparc, PowerPC.
+     *   switch_mm() rely on membarrier_arch_switch_mm() on PowerPC.
+     * - finish_lock_switch() for weakly-ordered
+     *   architectures where spin_unlock is a full barrier,
+     * - switch_to() for arm64 (weakly-ordered, spin_unlock
+     *   is a RELEASE barrier), */
     ++*switch_count;
 
+    trace_sched_switch(preempt, prev, next);
+
+    /* Also unlocks the rq: */
     rq = context_switch(rq, prev, next, &rf);
+  } else {
+    rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
+    rq_unlock_irq(rq, &rf);
   }
+
+  balance_callback(rq);
 }
+
 
 static inline struct task_struct* pick_next_task(
   struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
@@ -1589,6 +1661,47 @@ void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
+```c++
+void try_to_wake_up_local(struct task_struct *p, struct rq_flags *rf)
+{
+  struct rq *rq = task_rq(p);
+
+  if (WARN_ON_ONCE(rq != this_rq()) ||
+      WARN_ON_ONCE(p == current))
+    return;
+
+  lockdep_assert_held(&rq->lock);
+
+  if (!raw_spin_trylock(&p->pi_lock)) {
+    /* This is OK, because current is on_cpu, which avoids it being
+     * picked for load-balance and preemption/IRQs are still
+     * disabled avoiding further scheduler activity on it and we've
+     * not yet picked a replacement task. */
+    rq_unlock(rq, rf);
+    raw_spin_lock(&p->pi_lock);
+    rq_relock(rq, rf);
+  }
+
+  if (!(p->state & TASK_NORMAL))
+    goto out;
+
+  trace_sched_waking(p);
+
+  if (!task_on_rq_queued(p)) {
+    if (p->in_iowait) {
+      delayacct_blkio_end(p);
+      atomic_dec(&rq->nr_iowait);
+    }
+    ttwu_activate(rq, p, ENQUEUE_WAKEUP | ENQUEUE_NOCLOCK);
+  }
+
+  ttwu_do_wakeup(rq, p, 0, rf);
+  ttwu_stat(p, smp_processor_id(), 0);
+out:
+  raw_spin_unlock(&p->pi_lock);
+}
+```
+
 ### real user preempt time
 #### return from system call
 ```c++
@@ -1969,7 +2082,10 @@ long _do_fork(
 
   return nr;
 }
+```
 
+### copy_process
+```c++
 /* kernel/fork.c */
 struct task_struct *copy_process(
   unsigned long clone_flags,
@@ -2362,63 +2478,6 @@ struct task_struct *copy_process(
   copy_oom_score_adj(clone_flags, p);
 
   return p;
-
-bad_fork_cancel_cgroup:
-  spin_unlock(&current->sighand->siglock);
-  write_unlock_irq(&tasklist_lock);
-  cgroup_cancel_fork(p);
-bad_fork_free_pid:
-  cgroup_threadgroup_change_end(current);
-  if (pid != &init_struct_pid)
-    free_pid(pid);
-bad_fork_cleanup_thread:
-  exit_thread(p);
-bad_fork_cleanup_io:
-  if (p->io_context)
-    exit_io_context(p);
-bad_fork_cleanup_namespaces:
-  exit_task_namespaces(p);
-bad_fork_cleanup_mm:
-  if (p->mm) {
-    mm_clear_owner(p->mm, p);
-    mmput(p->mm);
-  }
-bad_fork_cleanup_signal:
-  if (!(clone_flags & CLONE_THREAD))
-    free_signal_struct(p->signal);
-bad_fork_cleanup_sighand:
-  __cleanup_sighand(p->sighand);
-bad_fork_cleanup_fs:
-  exit_fs(p); /* blocking */
-bad_fork_cleanup_files:
-  exit_files(p); /* blocking */
-bad_fork_cleanup_semundo:
-  exit_sem(p);
-bad_fork_cleanup_security:
-  security_task_free(p);
-bad_fork_cleanup_audit:
-  audit_free(p);
-bad_fork_cleanup_perf:
-  perf_event_free_task(p);
-bad_fork_cleanup_policy:
-  lockdep_free_task(p);
-#ifdef CONFIG_NUMA
-  mpol_put(p->mempolicy);
-bad_fork_cleanup_threadgroup_lock:
-#endif
-  delayacct_tsk_free(p);
-bad_fork_cleanup_count:
-  atomic_dec(&p->cred->user->processes);
-  exit_creds(p);
-bad_fork_free:
-  p->state = TASK_DEAD;
-  put_task_stack(p);
-  delayed_free_task(p);
-fork_out:
-  spin_lock_irq(&current->sighand->siglock);
-  hlist_del_init(&delayed.node);
-  spin_unlock_irq(&current->sighand->siglock);
-  return ERR_PTR(retval);
 }
 
 int sched_fork(unsigned long clone_flags, struct task_struct *p)
@@ -2487,6 +2546,92 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
   RB_CLEAR_NODE(&p->pushable_dl_tasks);
 #endif
   return 0;
+}
+
+/* copy_process -> sched_fork -> sched_class->task_fork -> */
+void task_fork_fair(struct task_struct *p)
+{
+  struct cfs_rq *cfs_rq;
+  struct sched_entity *se = &p->se, *curr;
+  struct rq *rq = this_rq();
+  struct rq_flags rf;
+
+  rq_lock(rq, &rf);
+  update_rq_clock(rq);
+
+  cfs_rq = task_cfs_rq(current);
+  curr = cfs_rq->curr;
+  if (curr) {
+    update_curr(cfs_rq);
+    se->vruntime = curr->vruntime;
+  }
+  place_entity(cfs_rq, se, 1);
+
+  if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+    /*
+     * Upon rescheduling, sched_class::put_prev_task() will place
+     * 'current' within the tree based on its new key value.
+     */
+    swap(curr->vruntime, se->vruntime);
+    resched_curr(rq);
+  }
+
+  se->vruntime -= cfs_rq->min_vruntime;
+  rq_unlock(rq, &rf);
+}
+
+void wake_up_new_task(struct task_struct *p)
+{
+  struct rq_flags rf;
+  struct rq *rq;
+
+  p->state = TASK_RUNNING;
+
+  activate_task(rq, p, ENQUEUE_NOCLOCK);
+  p->on_rq = TASK_ON_RQ_QUEUED;
+  trace_sched_wakeup_new(p);
+  check_preempt_curr(rq, p, WF_FORK);
+}
+
+void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+{
+  const struct sched_class *class;
+
+  if (p->sched_class == rq->curr->sched_class) {
+    rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+  } else {
+    for_each_class(class) {
+      if (class == rq->curr->sched_class)
+        break;
+      if (class == p->sched_class) {
+        resched_curr(rq);
+        break;
+      }
+    }
+  }
+
+  if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
+    rq_clock_skip_update(rq);
+}
+
+/* fair_sched_class.check_preempt_wakeup */
+static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
+{
+  struct task_struct *curr = rq->curr;
+  struct sched_entity *se = &curr->se, *pse = &p->se;
+  struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+
+  if (test_tsk_need_resched(curr))
+    return;
+
+  find_matching_se(&se, &pse);
+  update_curr(cfs_rq_of(se));
+  if (wakeup_preempt_entity(se, pse) == 1) {
+    goto preempt;
+  }
+  return;
+preempt:
+  resched_curr(rq);
 }
 
  struct task_struct *dup_task_struct(struct task_struct *orig, int node)
@@ -2649,16 +2794,23 @@ struct fork_frame {
   struct inactive_task_frame frame;
   struct pt_regs regs;
 };
+```
 
-/* arch/x86/kernel/process_32.c */
+### copy_thread_tls
+```c++
+/* arch/x86/kernel/process_64.c */
 int copy_thread_tls(unsigned long clone_flags, unsigned long sp,
-  unsigned long arg, struct task_struct *p, unsigned long tls)
+    unsigned long arg, struct task_struct *p, unsigned long tls)
 {
-  struct pt_regs *childregs = task_pt_regs(p);
-  struct fork_frame *fork_frame = container_of(childregs, struct fork_frame, regs);
-  struct inactive_task_frame *frame = &fork_frame->frame;
-  struct task_struct *tsk;
   int err;
+  struct pt_regs *childregs;
+  struct fork_frame *fork_frame;
+  struct inactive_task_frame *frame;
+  struct task_struct *me = current;
+
+  childregs = task_pt_regs(p);
+  fork_frame = container_of(childregs, struct fork_frame, regs);
+  frame = &fork_frame->frame;
 
   /* For a new task use the RESET flags value since there is no before.
    * All the status flags are zero; DF and all the system flags must also
@@ -2668,31 +2820,33 @@ int copy_thread_tls(unsigned long clone_flags, unsigned long sp,
   frame->bp = 0;
   frame->ret_addr = (unsigned long) ret_from_fork;
   p->thread.sp = (unsigned long) fork_frame;
-  p->thread.sp0 = (unsigned long) (childregs+1);
+  p->thread.io_bitmap_ptr = NULL;
+
+  savesegment(gs, p->thread.gsindex);
+  p->thread.gsbase = p->thread.gsindex ? 0 : me->thread.gsbase;
+  savesegment(fs, p->thread.fsindex);
+  p->thread.fsbase = p->thread.fsindex ? 0 : me->thread.fsbase;
+  savesegment(es, p->thread.es);
+  savesegment(ds, p->thread.ds);
   memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
 
   if (unlikely(p->flags & PF_KTHREAD)) {
     /* kernel thread */
     memset(childregs, 0, sizeof(struct pt_regs));
     frame->bx = sp;    /* function */
-    frame->di = arg;
-    p->thread.io_bitmap_ptr = NULL;
+    frame->r12 = arg;
     return 0;
   }
   frame->bx = 0;
   *childregs = *current_pt_regs();
+
   childregs->ax = 0;
   if (sp)
     childregs->sp = sp;
 
-  task_user_gs(p) = get_user_gs(current_pt_regs());
-
-  p->thread.io_bitmap_ptr = NULL;
-  tsk = current;
   err = -ENOMEM;
-
-  if (unlikely(test_tsk_thread_flag(tsk, TIF_IO_BITMAP))) {
-    p->thread.io_bitmap_ptr = kmemdup(tsk->thread.io_bitmap_ptr, IO_BITMAP_BYTES, GFP_KERNEL);
+  if (unlikely(test_tsk_thread_flag(me, TIF_IO_BITMAP))) {
+    p->thread.io_bitmap_ptr = kmemdup(me->thread.io_bitmap_ptr, IO_BITMAP_BYTES, GFP_KERNEL);
     if (!p->thread.io_bitmap_ptr) {
       p->thread.io_bitmap_max = 0;
       return -ENOMEM;
@@ -2700,21 +2854,24 @@ int copy_thread_tls(unsigned long clone_flags, unsigned long sp,
     set_tsk_thread_flag(p, TIF_IO_BITMAP);
   }
 
-  err = 0;
-
   /* Set a new TLS for the child thread? */
-  if (clone_flags & CLONE_SETTLS)
-    err = do_set_thread_area(p, -1,
-      (struct user_desc __user *)tls, 0);
-
+  if (clone_flags & CLONE_SETTLS) {
+      err = do_arch_prctl_64(p, ARCH_SET_FS, tls);
+    if (err)
+      goto out;
+  }
+  err = 0;
+out:
   if (err && p->thread.io_bitmap_ptr) {
     kfree(p->thread.io_bitmap_ptr);
     p->thread.io_bitmap_max = 0;
   }
+
   return err;
 }
 ```
 
+### ret_from_fork
 ```c++
 /* linux-4.19.y/arch/x86/entry/entry_64.S
  * A newly forked process directly context switches into this address.
@@ -2781,128 +2938,56 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
 ```
 
 ```c++
-/* copy_process -> sched_fork -> task_fork -> */
-static void task_fork_fair(struct task_struct *p)
-{
-  /* default off, for bash bug and better use TLB and cache */
-  if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-    swap(curr->vruntime, se->vruntime);
-    resched_curr(rq);
-  }
-
-  se->vruntime -= cfs_rq->min_vruntime;
-}
-
-void wake_up_new_task(struct task_struct *p)
-{
-  struct rq_flags rf;
-  struct rq *rq;
-
-  p->state = TASK_RUNNING;
-
-  activate_task(rq, p, ENQUEUE_NOCLOCK);
-  p->on_rq = TASK_ON_RQ_QUEUED;
-  trace_sched_wakeup_new(p);
-  check_preempt_curr(rq, p, WF_FORK);
-}
-
-void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
-{
-  const struct sched_class *class;
-
-  if (p->sched_class == rq->curr->sched_class) {
-    rq->curr->sched_class->check_preempt_curr(rq, p, flags);
-  } else {
-    for_each_class(class) {
-      if (class == rq->curr->sched_class)
-        break;
-      if (class == p->sched_class) {
-        resched_curr(rq);
-        break;
-      }
-    }
-  }
-
-  if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
-    rq_clock_skip_update(rq);
-}
-
-/* fair_sched_class.check_preempt_wakeup */
-static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
-{
-  struct task_struct *curr = rq->curr;
-  struct sched_entity *se = &curr->se, *pse = &p->se;
-  struct cfs_rq *cfs_rq = task_cfs_rq(curr);
-
-  if (test_tsk_need_resched(curr))
-    return;
-
-  find_matching_se(&se, &pse);
-  update_curr(cfs_rq_of(se));
-  if (wakeup_preempt_entity(se, pse) == 1) {
-    goto preempt;
-  }
-  return;
-preempt:
-  resched_curr(rq);
-}
-
-```
-
-```c++
 do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
-  copy_process();
-    task_struct* p = dup_task_struct(current, node);
-      stack = alloc_thread_stack_node();
-      p->stack = stack;
+    copy_process();
+        task_struct* p = dup_task_struct(current, node);
+            stack = alloc_thread_stack_node();
+            p->stack = stack;
 
-    sched_fork();
-      p->sched_class->task_fork(p);
-        task_fork_fair();
-    copy_files();
-    copy_fs();
-    copy_sighand();
-    copy_signal();
-    copy_mm();
-    copy_namespaces();
-    copy_io();
-    copy_thread_tls(clone_flags, stack_start, stack_size, p, tls);
-      struct pt_regs *childregs = task_pt_regs(p); /* p->stack */
-      struct fork_frame *fork_frame = container_of(childregs, struct fork_frame, regs);
-      struct inactive_task_frame *frame = &fork_frame->frame;
-      p->thread.sp = (unsigned long) fork_frame;
-      childregs->sp = sp;
+        sched_fork();
+            p->sched_class->task_fork(p);
+                task_fork_fair();
+                    se->vruntime = curr->vruntime;
+                    if (sysctl_sched_child_runs_first && curr && entity_before(curr, se))
+                        swap(curr->vruntime, se->vruntime);
+                        resched_curr(rq);
+                            set_tsk_thread_flag(tsk, TIF_NEED_RESCHED);
+        copy_files();
+        copy_fs();
+        copy_sighand();
+        copy_signal();
+        copy_mm();
+        copy_namespaces();
+        copy_io();
+        copy_thread_tls(clone_flags, stack_start/*sp*/, stack_size/*arg*/, p, tls);
+            struct pt_regs *childregs = task_pt_regs(p); /* p->stack */
+            struct fork_frame *fork_frame = container_of(childregs, struct fork_frame, regs);
+            struct inactive_task_frame *frame = &fork_frame->frame;
+            p->thread.sp = (unsigned long) fork_frame;
 
-      frame->ret_addr = (unsigned long) ret_from_fork;
+            frame->ret_addr = (unsigned long) ret_from_fork;
 
-      p->thread.sp = (unsigned long) fork_frame;
-      p->thread.sp0 = (unsigned long) (childregs+1);
+            if (unlikely(p->flags & PF_KTHREAD)) {
+                /* kernel thread */
+                memset(childregs, 0, sizeof(struct pt_regs));
+                frame->bx = sp;    /* function */
+                frame->r12 = arg;
+                return 0;
+            }
 
-      if (unlikely(p->flags & PF_KTHREAD)) {
-        /* kernel thread */
-        memset(childregs, 0, sizeof(struct pt_regs));
-        frame->bx = sp;    /* function */
-        frame->di = arg;
-        p->thread.io_bitmap_ptr = NULL;
-        return 0;
-      }
+            frame->bx = 0;
+            *childregs = *current_pt_regs();
+            childregs->ax = 0;
+            if (sp)
+                childregs->sp = sp;
+        alloc_pid();
 
-      frame->bx = 0;
-      *childregs = *current_pt_regs();
-      childregs->ax = 0;
-      if (sp)
-        childregs->sp = sp;
+    wake_up_new_task(p);
+        activate_task();
+        check_preempt_curr();
 
-    alloc_pid();
-
-
-  wake_up_new_task(p);
-    activate_task();
-    check_preempt_curr();
-
-
-ret_from_fork
-
+ret_from_fork /* process stack_start */
+    --->
 ```
 ![](../Images/Kernel/fork.png)
 
@@ -3981,7 +4066,17 @@ kthread();
 
 ![](../Images/Kernel/proc-workqueue.png)
 
+---
+
 ![](../Images/Kernel/proc-workqueue-flow.png)
+
+---
+
+![](../Images/Kernel/proc-workqueue-state.png)
+
+---
+
+![](../Images/Kernel/proc-workqueue-arch.png)
 
 * http://www.wowotech.net/irq_subsystem/cmwq-intro.html
 * https://zhuanlan.zhihu.com/p/91106844
@@ -4071,6 +4166,15 @@ struct workqueue_attrs {
   cpumask_var_t   cpumask;
   bool            no_numa;
 };
+
+/* worker flags */
+WORKER_DIE            = 1 << 1,  /* die die die */
+WORKER_IDLE           = 1 << 2,  /* is idle */
+WORKER_PREP           = 1 << 3,  /* preparing to run works */
+WORKER_CPU_INTENSIVE  = 1 << 6,  /* cpu intensive */
+WORKER_UNBOUND        = 1 << 7,  /* worker is unbound */
+WORKER_REBOUND        = 1 << 8,  /* worker was rebound */
+WORKER_NOT_RUNNING    = WORKER_PREP | WORKER_CPU_INTENSIVE | WORKER_UNBOUND | WORKER_REBOUND;
 
 struct worker {
   /* on idle list while idle, on busy hash table while busy */
@@ -4575,28 +4679,22 @@ apply_wqattrs_prepare(struct workqueue_struct *wq,
   if (!ctx || !new_attrs || !tmp_attrs)
     goto out_free;
 
-  /*
-   * Calculate the attrs of the default pwq.
+  /* Calculate the attrs of the default pwq.
    * If the user configured cpumask doesn't overlap with the
-   * wq_unbound_cpumask, we fallback to the wq_unbound_cpumask.
-   */
+   * wq_unbound_cpumask, we fallback to the wq_unbound_cpumask. */
   copy_workqueue_attrs(new_attrs, attrs);
   cpumask_and(new_attrs->cpumask, new_attrs->cpumask, wq_unbound_cpumask);
   if (unlikely(cpumask_empty(new_attrs->cpumask)))
     cpumask_copy(new_attrs->cpumask, wq_unbound_cpumask);
 
-  /*
-   * We may create multiple pwqs with differing cpumasks.  Make a
+  /* We may create multiple pwqs with differing cpumasks.  Make a
    * copy of @new_attrs which will be modified and used to obtain
-   * pools.
-   */
+   * pools. */
   copy_workqueue_attrs(tmp_attrs, new_attrs);
 
-  /*
-   * If something goes wrong during CPU up/down, we'll fall back to
+  /* If something goes wrong during CPU up/down, we'll fall back to
    * the default pwq covering whole @attrs->cpumask.  Always create
-   * it even if we don't use it immediately.
-   */
+   * it even if we don't use it immediately. */
   ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
   if (!ctx->dfl_pwq)
     goto out_free;
@@ -4764,6 +4862,21 @@ fail:
     ida_simple_remove(&pool->worker_ida, id);
   kfree(worker);
   return NULL;
+}
+
+struct worker *alloc_worker(int node)
+{
+  struct worker *worker;
+
+  worker = kzalloc_node(sizeof(*worker), GFP_KERNEL, node);
+  if (worker) {
+    INIT_LIST_HEAD(&worker->entry);
+    INIT_LIST_HEAD(&worker->scheduled);
+    INIT_LIST_HEAD(&worker->node);
+    /* on creation a worker is in !idle && prep state */
+    worker->flags = WORKER_PREP;
+  }
+  return worker;
 }
 
 struct task_struct *kthread_create_on_node(int (*threadfn)(void *data),
@@ -4940,6 +5053,14 @@ sleep:
   goto woke_up;
 }
 
+void process_scheduled_works(struct worker *worker)
+{
+  while (!list_empty(&worker->scheduled)) {
+    struct work_struct *work = list_first_entry(&worker->scheduled, struct work_struct, entry);
+    process_one_work(worker, work);
+  }
+}
+
 void process_one_work(struct worker *worker, struct work_struct *work)
 __releases(&pool->lock)
 __acquires(&pool->lock)
@@ -4949,9 +5070,6 @@ __acquires(&pool->lock)
   bool cpu_intensive = pwq->wq->flags & WQ_CPU_INTENSIVE;
   int work_color;
   struct worker *collision;
-
-  /* ensure we're on the correct CPU */
-  raw_smp_processor_id() != pool->cpu);
 
   /* A single work shouldn't be executed concurrently by
    * multiple workers on a single cpu.  Check whether anyone is
@@ -5056,6 +5174,81 @@ __acquires(&pool->lock)
   worker->current_pwq = NULL;
   pwq_dec_nr_in_flight(pwq, work_color);
 }
+
+void worker_set_flags(struct worker *worker, unsigned int flags)
+{
+  struct worker_pool *pool = worker->pool;
+
+  WARN_ON_ONCE(worker->task != current);
+
+  /* If transitioning into NOT_RUNNING, adjust nr_running. */
+  if ((flags & WORKER_NOT_RUNNING) && !(worker->flags & WORKER_NOT_RUNNING)) {
+    atomic_dec(&pool->nr_running);
+  }
+
+  worker->flags |= flags;
+}
+
+void worker_clr_flags(struct worker *worker, unsigned int flags)
+{
+  struct worker_pool *pool = worker->pool;
+  unsigned int oflags = worker->flags;
+
+  WARN_ON_ONCE(worker->task != current);
+
+  worker->flags &= ~flags;
+
+  /* If transitioning out of NOT_RUNNING, increment nr_running.  Note
+   * that the nested NOT_RUNNING is not a noop.  NOT_RUNNING is mask
+   * of multiple flags, not a single flag. */
+  if ((flags & WORKER_NOT_RUNNING) && (oflags & WORKER_NOT_RUNNING))
+    if (!(worker->flags & WORKER_NOT_RUNNING))
+      atomic_inc(&pool->nr_running);
+}
+```
+
+```c++
+void __sched notrace __schedule(bool preempt) {
+  if (prev->flags & PF_WQ_WORKER) {
+    struct task_struct *to_wakeup;
+
+    to_wakeup = wq_worker_sleeping(prev);
+    if (to_wakeup)
+        try_to_wake_up_local(to_wakeup, &rf);
+  }
+}
+
+struct task_struct *wq_worker_sleeping(struct task_struct *task)
+{
+  struct worker *worker = kthread_data(task), *to_wakeup = NULL;
+  struct worker_pool *pool;
+
+  /* Rescuers, which may not have all the fields set up like normal
+   * workers, also reach here, let's not access anything before
+   * checking NOT_RUNNING. */
+  if (worker->flags & WORKER_NOT_RUNNING)
+    return NULL;
+
+  pool = worker->pool;
+
+  /* this can only happen on the local cpu */
+  if (WARN_ON_ONCE(pool->cpu != raw_smp_processor_id()))
+    return NULL;
+
+  /* The counterpart of the following dec_and_test, implied mb,
+   * worklist not empty test sequence is in insert_work().
+   * Please read comment there.
+   *
+   * NOT_RUNNING is clear.  This means that we're bound to and
+   * running on the local cpu w/ rq lock held and preemption
+   * disabled, which in turn means that none else could be
+   * manipulating idle_list, so dereferencing idle_list without pool
+   * lock is safe. */
+  if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
+    to_wakeup = first_idle_worker(pool);
+
+  return to_wakeup ? to_wakeup->task : NULL;
+}
 ```
 
 ### schedule_work
@@ -5112,7 +5305,7 @@ retry:
   if (wq->flags & WQ_UNBOUND) {
     if (req_cpu == WORK_CPU_UNBOUND)
       cpu = wq_select_unbound_cpu(raw_smp_processor_id());
-    pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
+    pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu)); /* wq->numa_pwq_tbl[node] */
   } else {
     if (req_cpu == WORK_CPU_UNBOUND)
       cpu = raw_smp_processor_id();
@@ -5203,6 +5396,14 @@ void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
 
   if (__need_more_worker(pool))
     wake_up_worker(pool);
+}
+
+static void wake_up_worker(struct worker_pool *pool)
+{
+  struct worker *worker = first_idle_worker(pool);
+
+  if (likely(worker))
+    wake_up_process(worker->task);
 }
 ```
 
@@ -5387,20 +5588,34 @@ static void send_mayday(struct work_struct *work)
 ```c++
 start_kernel();
     workqueue_init_early();
-        for_each_cpu_worker_pool()
-            init_worker_pool();
-                timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
-                timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
-                alloc_workqueue_attrs();
+        pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
+
+        for_each_possible_cpu(cpu)
+            for_each_cpu_worker_pool()
+                init_worker_pool();
+                    timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
+                    timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
+                    alloc_workqueue_attrs();
+
+        system_wq = alloc_workqueue("events");
+        system_highpri_wq = alloc_workqueue("events_highpri");
+        system_long_wq = alloc_workqueue("events_long");
+        system_freezable_wq = alloc_workqueue("events_freezable");
+        system_power_efficient_wq = alloc_workqueue("events_power_efficient");
+        system_freezable_power_efficient_wq = alloc_workqueue("events_freezable_power_efficient");
         alloc_workqueue();
             --->
+
     rest_init();
         kernel_thread(kernel_init);
             kernel_init();
                 kernel_init_freeable();
                     workqueue_init();
-                        for_each_cpu_worker_pool(pool, cpu);
-                            create_worker(pool); /* each pool has at leat one worker */
+                        wq_numa_init();
+                            wq_numa_possible_cpumask = tbl;
+                        for_each_online_cpu(cpu);
+                            for_each_cpu_worker_pool(pool, cpu);
+                                create_worker(pool); /* each pool has at leat one worker */
                         hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
                             create_worker(pool);
                         wq_watchdog_init();
@@ -5408,15 +5623,16 @@ start_kernel();
 alloc_workqueue();
     struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
     alloc_and_link_pwqs();
-        wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
         if (!(wq->flags & WQ_UNBOUND)) {
-            pwq->pool = &cpu_pools[priority];
-            init_pwq(pwq, wq, &cpu_pools[highpri]);
-                pwq->pool = pool;
-                pwq->wq = wq;
-            link_pwq();
-                pwq_adjust_max_active();
-                list_add_rcu(&pwq->pwqs_node, &wq->pwqs);
+            wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
+            for_each_possible_cpu(cpu) {
+                init_pwq(pwq, wq);
+                    pwq->pool = &cpu_pools[priority];
+                    pwq->wq = wq;
+                link_pwq();
+                    pwq_adjust_max_active();
+                    list_add_rcu(&pwq->pwqs_node, &wq->pwqs);
+            }
         } else if (wq->flags & __WQ_ORDERED) {
             apply_workqueue_attrs(wq, ordered_wq_attrs[priority]);
         } else {
@@ -5435,7 +5651,7 @@ alloc_workqueue();
                     }
                 apply_wqattrs_commit(ctx);
                     for_each_node(node)
-                        ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node, ctx->pwq_tbl[node]);
+                        ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node, ctx->pwq_tbl[node] /*pwq*/);
                             link_pwq(pwq);
                             rcu_assign_pointer(wq->numa_pwq_tbl[node], pwq);
                         link_pwq(ctx->dfl_pwq);
@@ -5448,7 +5664,7 @@ alloc_workqueue();
     list_add_tail_rcu(&wq->list, &workqueues);
 
 alloc_unbound_pwq();
-    pool = get_unbound_pool();
+    worker_pool* pool = get_unbound_pool();
         hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
             if (wqattrs_equal(pool->attrs, attrs)) {
                 pool->refcnt++;
@@ -5464,15 +5680,22 @@ alloc_unbound_pwq();
         }
         pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
         init_worker_pool(pool);
+            timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
+            timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
+            alloc_workqueue_attrs();
         copy_workqueue_attrs(pool->attrs, attrs);
         create_worker(pool);
+            --->
         hash_add(unbound_pool_hash, &pool->hash_node, hash);
 
-    pwq = kmem_cache_alloc_node();
+    pwq = kmem_cache_alloc_node(pwq_cache);
     init_pwq(pwq, wq, pool);
+        pwq->pool = pool;
+        pwq->wq = wq;
 
 create_worker(pool);
     woker = alloc_worker(pool->node);
+        worker->flags = WORKER_PREP;
     worker->task = kthread_create_on_node(worker_thread);
         kthreadd();
             create_kthread();
@@ -5481,6 +5704,7 @@ create_worker(pool);
         wake_up_process(kthreadd_task); /* kthreadd */
         wait_for_completion_killable(&done);
     worker_attach_to_pool();
+    worker_enter_idle(worker);
     wake_up_process(worker->task);
         try_to_wake_up();
 
@@ -5491,9 +5715,14 @@ worker_thread();
     }
 
     worker_leave_idle();
-        worker_clr_flags(worker, WORKER_IDLE);
         pool->nr_idle--;
+        worker_clr_flags(worker, WORKER_IDLE);
+            worker->flags &= ~flags;
+            if ((flags & WORKER_NOT_RUNNING) && (oflags & WORKER_NOT_RUNNING))
+                if (!(worker->flags & WORKER_NOT_RUNNING))
+                    atomic_inc(&pool->nr_running);
 
+    /* keep only one running worker for non-cpu-intensive workqueue */
     if (!need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
         goto sleep;
 
@@ -5505,20 +5734,70 @@ worker_thread();
                     --->
             wake_up(&wq_manager_wait);
 
-    worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
+    /* nr_running is inced when entering and deced when leaving */
+    worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);         /* 1.1 [nr_running]++ == 1 */
 
-    process_one_work();
-        if (need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
-            wake_up_worker(pool);
-                try_to_wake_up();
-        worker->current_func(work);
+    do {
+        work = list_first_entry(&pool->worklist, struct work_struct, entry);
+        if (likely(!(*work_data_bits(work) & WORK_STRUCT_LINKED))) {
+            process_one_work(worker, work);
+            if (unlikely(!list_empty(&worker->scheduled)))
+                process_scheduled_works(worker);
+        } else {
+            move_linked_works(work, &worker->scheduled, NULL);
+            process_scheduled_works(worker);
+        }
 
+        process_one_work();
+            if (unlikely(cpu_intensive))
+                worker_set_flags(worker, WORKER_CPU_INTENSIVE);     /* 2.1 [nr_running]-- == 0 */
+                    worker->flags |= flags;
+                    if ((flags & WORKER_NOT_RUNNING) && !(worker->flags & WORKER_NOT_RUNNING)) {
+                        atomic_dec(&pool->nr_running);
+                    }
+
+            if (need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
+                wake_up_worker(pool);
+                    try_to_wake_up();
+
+            worker->current_func(work);
+
+            if (unlikely(cpu_intensive))
+                worker_clr_flags(worker, WORKER_CPU_INTENSIVE);     /* 2.1 [nr_running]++ == 1 */
+    } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
+
+    worker_set_flags(worker, WORKER_PREP);                          /* 1.2 [nr_running]-- == 0 */
     worker_enter_idle(worker);
+
     schedule();
+        if (prev->flags & PF_WQ_WORKER)
+            to_wakeup = wq_worker_sleeping()
+                /* only wakeup idle thread when running task is going to suspend in process_one_work */
+                if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
+                    to_wakeup = first_idle_worker(pool);
+            try_to_wake_up_local(to_wakeup, &rf);
 
 schedule_work();
     queue_work();
-        queue_work_on();
+        queue_work_on(cpu, wq, work);
+            if (wq->flags & WQ_UNBOUND) {
+                if (req_cpu == WORK_CPU_UNBOUND)
+                    cpu = wq_select_unbound_cpu(raw_smp_processor_id());
+                pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
+            } else {
+                if (req_cpu == WORK_CPU_UNBOUND)
+                    cpu = raw_smp_processor_id();
+                pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
+            }
+
+            if (likely(pwq->nr_active < pwq->max_active)) {
+                pwq->nr_active++;
+                worklist = &pwq->pool->worklist;
+            } else {
+                work_flags |= WORK_STRUCT_DELAYED;
+                worklist = &pwq->delayed_works;
+            }
+
             insert_work(pwq, work, worklist, work_flags);
                 list_add_tail(&work->entry, head);
                 if (__need_more_worker(pool)) /* return !pool->nr_running */
@@ -5529,11 +5808,18 @@ idle_worker_timeout();
     while (too_many_workers(pool)) {
         mod_timer(&pool->idle_timer, expires);
         destroy_worker(worker);
+            pool->nr_workers--;
+            pool->nr_idle--;
+            list_del_init(&worker->entry);
+            worker->flags |= WORKER_DIE;
+            wake_up_process(worker->task);
     }
 
 pool_mayday_timeout();
     if (need_to_create_worker(pool)) /* need_more_worker(pool) && !may_start_working(pool) */
         send_mayday(work);
+            list_add_tail(&pwq->mayday_node, &wq->maydays);
+            wake_up_process(wq->rescuer->task);
     mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
 ```
 
@@ -10464,6 +10750,7 @@ static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
 
 ## pthread_create
 ```c++
+/* glibc-2.28/nptl/pthread_create.c */
 int __pthread_create_2_1 (
   pthread_t *newthread, const pthread_attr_t *attr,
   void *(*start_routine) (void *), void *arg)
@@ -10486,8 +10773,7 @@ int __pthread_create_2_1 (
   *newthread = (pthread_t) pd;
   atomic_increment (&__nptl_nthreads);
 
-  return create_thread(pd, iattr, &stopped_start,
-    STACK_VARIABLES_ARGS, &thread_ran);
+  return create_thread(pd, iattr, &stopped_start, STACK_VARIABLES_ARGS, &thread_ran);
 }
 versioned_symbol(libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);
 
@@ -10574,6 +10860,7 @@ and let it clean itself up.  */
 # define ARCH_CLONE __clone
 /* The userland implementation is:
    int clone (int (*fn)(void *arg), void *child_stack, int flags, void *arg),
+
    the kernel entry is:
    int clone (long flags, void *child_stack).
 
