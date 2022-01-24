@@ -31,11 +31,6 @@
                 * [blkdev_get](#blkdev_get)
                 * [bdev_map](#bdev_map)
             * [sget](#sget)
-    * [interruption](#interruption)
-        * [request_irq](#request_irq)
-        * [init idt_table](#init-idt_table)
-        * [init_IRQ](#init_IRQ)
-        * [init vector_irq](#init-vector_irq)
     * [direct io](#direct-iO)
         * [dio_get_page](#dio_get_page)
         * [get_more_blocks](#get_more_blocks)
@@ -4737,148 +4732,163 @@ generic_perform_write();
 
 /* write back */
 wb_workfn();
-  wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
-    while ((work = get_next_work_item(wb)) != NULL) {
-      wb_writeback();
+    wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
+        while ((work = get_next_work_item(wb)) != NULL) {
+            wb_writeback() {
+                struct blk_plug plug;
+                blk_start_plug(plug);
+                   current->plug = plug;
 
-        struct blk_plug plug;
-        blk_start_plug(plug);
-          current->plug = plug;
+                if (list_empty(&wb->b_io))
+                    queue_io(wb, work, dirtied_before);
+                        list_splice_init(&wb->b_more_io, &wb->b_io);
+                        move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
+                        move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
 
-        if (list_empty(&wb->b_io))
-          queue_io(wb, work, dirtied_before);
-            list_splice_init(&wb->b_more_io, &wb->b_io);
-            move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
-            move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
+                if (work->sb) {
+                    /* traverse wb->b_io, which is inode list */
+                    progress = writeback_sb_inodes(); /* Struct.2.writeback_control */
+                        while (!list_empty(&wb->b_io)) {
+                            __writeback_single_inode();
+                                do_writepages() {
 
-        if (work->sb) {
-          /* traverse wb->b_io, which is inode list */
-          progress = writeback_sb_inodes(); /* Struct.2.writeback_control */
-            __writeback_single_inode();
-              do_writepages();
+                                    ext4_writepages(); /* Struct.3.mpage_da_data */
+                                        /* 1. find io data */
+                                        mpage_prepare_extent_to_map();
+                                            /* 1.1 find dirty pages */
+                                            pagevec_lookup_range_tag();
+                                                find_get_pages_range_tag();
+                                                    radix_tree_for_each_tagged();
 
-                ext4_writepages(); /* Struct.3.mpage_da_data */
-                  /* 1. find io data */
-                  mpage_prepare_extent_to_map();
-                    /* 1.1 find dirty pages */
-                    pagevec_lookup_range_tag();
-                      find_get_pages_range_tag();
-                        radix_tree_for_each_tagged();
+                                            wait_on_page_writeback();
+                                                wait_on_page_bit(page, PG_writeback);
+                                                    io_schedule();
+                                                        schedule();
 
-                    wait_on_page_writeback();
-                      wait_on_page_bit(page, PG_writeback);
-                        io_schedule();
-                          schedule();
+                                            /* 1.2. process dirty pages */
+                                            mpage_process_page_bufs();
+                                                mpage_add_bh_to_extent();
+                                                mpage_submit_page();
+                                                    ext4_bio_write_page();
+                                                        io_submit_add_bh(); /* Struct.4.buffer_head */
+                                                            io_submit_init_bio(); /* init bio */
+                                                                bio_alloc();
+                                                                wbc_init_bio();
+                                                            bio_add_page();
 
-                    /* 1.2. process dirty pages */
-                    mpage_process_page_bufs();
-                      mpage_add_bh_to_extent();
-                      mpage_submit_page();
-                        ext4_bio_write_page();
-                          io_submit_add_bh(); /* Struct.4.buffer_head */
-                            io_submit_init_bio(); /* init bio */
-                              bio_alloc();
-                              wbc_init_bio();
-                            bio_add_page();
+                                        /* 2. submit io data */
+                                        ext4_io_submit();
+                                            submit_bio();
+                                }
+                                bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
+                                if ((inode->i_state & I_DIRTY_TIME)
+                                    && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
+                                {
+                                    mark_inode_dirty_sync(inode);
+                                }
+                        }
+                } else {
+                    progress = __writeback_inodes_wb();
+                        writeback_sb_inodes();
+                }
 
-                  /* 2. submit io data */
-                  ext4_io_submit();
-                    submit_bio();
-        } else {
-          progress = __writeback_inodes_wb();
-            writeback_sb_inodes();
+                if (progress)
+                    continue;
+
+                blk_finish_plug();
+                    blk_flush_plug_list();
+                        list_sort(NULL, &list, plug_rq_cmp);
+                        __elv_add_request();
+                        __blk_run_queue(q);
+                        current->plug = NULL;
+
+                inode_sleep_on_writeback();
+            }
         }
 
-        if (progress)
-          continue;
+        wb_check_start_all(wb);
+            struct wb_writeback_work work = { };
+            wb_writeback(wb, &work);
+        wb_check_old_data_flush(wb);
+            struct wb_writeback_work work = { };
+            wb_writeback(wb, &work);
+        wb_check_background_flush(wb);
+            struct wb_writeback_work work = { };
+            wb_writeback(wb, &work);
 
-        blk_finish_plug();
-          blk_flush_plug_list();
-            list_sort(NULL, &list, plug_rq_cmp);
-            __elv_add_request();
-            __blk_run_queue(q);
-            current->plug = NULL;
-
-        inode_sleep_on_writeback();
-    }
-
-    wb_check_start_all(wb);
-      struct wb_writeback_work work = { };
-      wb_writeback(wb, &work);
-    wb_check_old_data_flush(wb);
-      struct wb_writeback_work work = { };
-      wb_writeback(wb, &work);
-    wb_check_background_flush(wb);
-      struct wb_writeback_work work = { };
-      wb_writeback(wb, &work);
-
-  wb_wakeup();
-    mod_delayed_work();
+    if (!list_empty(&wb->work_list))
+        wb_wakeup(wb);
+            mod_delayed_work();
+                --->
+    else if (wb_has_dirty_io(wb) && dirty_writeback_interval)
+        wb_wakeup_delayed(wb);
+            queue_delayed_work();
+                --->
 
 writeback_inodes_sb();
-  writeback_inodes_sb_nr();
-    get_nr_dirty_pages();
-    __writeback_inodes_sb_nr(); /* wb_writeback_work */
-      struct wb_writeback_work work = { };
-      /* split a wb_writeback_work to all wb's of a bdi */
-      bdi_split_work_to_wbs();
-        /* split nr_pages to write according to bandwidth */
-        wb_split_bdi_pages();
-        wb_queue_work();
-          list_add_tail(&work->list, &wb->work_list);
-          mod_delayed_work(bdi_wq, &wb->dwork, 0);
-            mod_delayed_work_on();
-              __queue_delayed_work();
-                __queue_work(cpu, wq, &dwork->work);
-                  insert_work();
-                add_timer();
-      wb_wait_for_completion();
+    writeback_inodes_sb_nr();
+        get_nr_dirty_pages();
+        __writeback_inodes_sb_nr(); /* wb_writeback_work */
+            struct wb_writeback_work work = { };
+            /* split a wb_writeback_work to all wb's of a bdi */
+            bdi_split_work_to_wbs();
+                /* split nr_pages to write according to bandwidth */
+                wb_split_bdi_pages();
+                wb_queue_work();
+                    list_add_tail(&work->list, &wb->work_list);
+                    mod_delayed_work(bdi_wq, &wb->dwork, 0);
+                        mod_delayed_work_on();
+                            __queue_delayed_work();
+                                __queue_work(cpu, wq, &dwork->work);
+                                    insert_work();
+                                add_timer();
+            wb_wait_for_completion();
 
 /* io scheduler */
 submit_bio();
-  generic_make_request();
-    do {
-      generic_make_request_checks();
-        blk_partition_remap();
-          bio->bi_iter.bi_sector += p->start_sect;
+    generic_make_request();
+        do {
+            generic_make_request_checks();
+                blk_partition_remap();
+                    bio->bi_iter.bi_sector += p->start_sect;
 
-      make_request_fn() {/* blk_queue_bio */
-        blk_queue_bio();
-          blk_queue_bounce();
-          blk_queue_split();
+            make_request_fn() {/* blk_queue_bio */
+                blk_queue_bio();
+                    blk_queue_bounce();
+                    blk_queue_split();
 
-          ret = elv_merge();
-            blk_try_merge();
-            elv_rqhash_find();
-            elevator_merge_fn();
-              cfq_merge();
-          if (ret) {
-            bio_attempt_back_merge();
-            bio_attempt_back_merge();
-            return;
-          }
+                    ret = elv_merge();
+                        blk_try_merge();
+                        elv_rqhash_find();
+                        elevator_merge_fn();
+                            cfq_merge();
+                    if (ret) {
+                        bio_attempt_back_merge();
+                        bio_attempt_back_merge();
+                        return;
+                    }
 
-          get_request(); /* get a free request */
-          blk_init_request_from_bio();
+                    get_request(); /* get a free request */
+                    blk_init_request_from_bio();
 
-          if (current->plug) {
-            list_add_tail(&req->queuelist, &plug->list);
-            blk_account_io_start();
-          } else {
-            add_acct_request(); /* add req to queue */
-              blk_account_io_start();
-              __elv_add_request();
-            __blk_run_queue();
-              __blk_run_queue_uncond();
-                q->request_fn(q)();
-                  scsi_request_fn();
-          }
-      }
+                    if (current->plug) {
+                        list_add_tail(&req->queuelist, &plug->list);
+                        blk_account_io_start();
+                    } else {
+                        add_acct_request(); /* add req to queue */
+                            blk_account_io_start();
+                            __elv_add_request();
+                        __blk_run_queue();
+                            __blk_run_queue_uncond();
+                                q->request_fn(q)();
+                                    scsi_request_fn();
+                    }
+            }
 
-      bio_list_pop();
-      bio_list_add(); /* same or lower layer */
-      bio_list_merge();
-    } while (bio);
+            bio_list_pop();
+            bio_list_add(); /* same or lower layer */
+            bio_list_merge();
+        } while (bio);
 ```
 
 ## Reference
