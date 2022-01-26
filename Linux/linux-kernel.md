@@ -12,17 +12,19 @@
     * [thread](#thread)
     * [task_struct](#task_struct)
     * [schedule](#schedule)
-    * [voluntary schedule](#voluntary-schedule)
-    * [preempt schedule](#preempt-schedule)
-        * [TIF_NEED_RESCHED](#TIF_NEED_RESCHED)
-            * [scheduler_tick](#scheduler_tick)
-            * [try_to_wake_up](#try_to_wake_up)
-        * [real user preempt time](#real-user-preempt-time)
-            * [return from system call](#return-from-system-call)
-            * [return from interrupt](#return-from-interrupt)
-        * [real kernel preempt time](#real-kernel-preempt-time)
-            * [preempt_enable](#preempt_enble)
-            * [return from interrupt](#return-from-interrupt)
+        * [voluntary schedule](#voluntary-schedule)
+            * [switch_mm_irqs_off](#switch_mm_irqs_off)
+            * [switch_to](#switch_to)
+        * [preempt schedule](#preempt-schedule)
+            * [TIF_NEED_RESCHED](#TIF_NEED_RESCHED)
+                * [scheduler_tick](#scheduler_tick)
+                * [try_to_wake_up](#try_to_wake_up)
+            * [real user preempt time](#real-user-preempt-time)
+                * [return from system call](#return-from-system-call)
+                * [return from interrupt](#return-from-interrupt)
+            * [real kernel preempt time](#real-kernel-preempt-time)
+                * [preempt_enable](#preempt_enble)
+                * [return from interrupt](#return-from-interrupt)
     * [wake_up](#wake_up)
     * [wait_woken](#wait_woken)
     * [fork](#fork)
@@ -31,7 +33,7 @@
         * [copy_thread_tls](#copy_thread_tls)
     * [exec](#exec)
     * [kthreadd](#kthreadd)
-    * [workqueue](#workqueue)
+    * [cmwq](#cmwq)
         * [struct](#wq-struct)
         * [alloc_workqueue](#alloc_workqueue)
         * [create_worker](#create_worker)
@@ -215,6 +217,67 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 ```
 
 ### 32
+
+1. declare syscall table: arch/x86/entry/syscalls/syscall_32.tbl
+    ```c++
+    # 32-bit system call numbers and entry vectors
+
+    # The __ia32_sys and __ia32_compat_sys stubs are created on-the-fly for
+    # sys_*() system calls and compat_sys_*() compat system calls if
+    # IA32_EMULATION is defined, and expect struct pt_regs *regs as their only
+    # parameter.
+    #
+    # The abi is always "i386" for this file.
+    # <number>  <abi>   <name>      <entry point>       <compat entry point>
+        0       i386   restart_syscall    sys_restart_syscall   __ia32_sys_restart_syscall
+        1       i386   exit         sys_exit            __ia32_sys_exit
+        2       i386   fork         sys_fork            __ia32_sys_fork
+    ```
+
+2. generate syscall table: arch/x86/entry/syscall_32.c
+    ```c++
+    /* arch/x86/entry/syscalls/Makefile
+     * 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
+     * arch/sh/include/uapi/asm/unistd_32.h */
+    #define __NR_restart_syscall    0
+    #define __NR_exit               1
+    #define __NR_fork               2
+    #define __NR_read               3
+    #define __NR_write              4
+    #define __NR_open               5
+
+    /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh generates __SYSCALL_I386(__NR_open, sys_open) */
+    #define __SYSCALL_I386(nr, sym, qual) [nr] = sym,
+
+    __visible const sys_call_ptr_t ia32_sys_call_table[__NR_syscall_compat_max+1] = {
+        /* Smells like a compiler bug -- it doesn't work
+        * when the & below is removed. */
+        [0 ... __NR_syscall_compat_max] = &sys_ni_syscall,
+        #include <asm/syscalls_32.h>
+    };
+    ```
+
+3. declare implemenation: include/linux/syscalls.h
+    ```c++
+    /* include/linux/syscalls.h */
+    asmlinkage long sys_socket(int, int, int);
+    asmlinkage long sys_socketpair(int, int, int, int __user *);
+    asmlinkage long sys_bind(int, struct sockaddr __user *, int);
+    asmlinkage long sys_listen(int, int);
+    ```
+
+4. define implemenation: fs/open.c
+    ```c++
+    #include <linux/syscalls.h>
+    SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+    {
+        if (force_o_largefile())
+            flags |= O_LARGEFILE;
+
+        return do_sys_open(AT_FDCWD, filename, flags, mode);
+    }
+    ```
+
 ```c++
 /* glibc-2.28/sysdeps/unix/sysv/linux/i386/sysdep.h
  Linux takes system call arguments in registers:
@@ -276,7 +339,9 @@ and helps a debugger create a reliable backtrace through functions. */
 
 #define PUSHARGS_6  _PUSHARGS_6
 #define _PUSHARGS_6  pushl %ebp; cfi_adjust_cfa_offset (4); cfi_rel_offset (ebp, 0); L(PUSHBP1): _PUSHARGS_5
+```
 
+```c++
 /* trap_init */
 set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
 
@@ -593,6 +658,67 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 ![](../Images/Kernel/init-syscall-32.png)
 
 ### 64
+
+1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
+    ```c++
+    # 64-bit system call numbers and entry vectors
+
+    # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
+    # The abi is "common", "64" or "x32" for this file.
+    #
+    # <number>  <abi>     <name>    <entry point>
+        0       common    read      __x64_sys_read
+        1       common    write     __x64_sys_write
+        2       common    open      __x64_sys_open
+    ```
+
+2. genrate syscall table: arch/x86/entry/syscalls/Makefile
+    ```c++
+    /* 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
+    * arch/sh/include/uapi/asm/unistd_64.h */
+    #define __NR_restart_syscall    0
+    #define __NR_exit               1
+    #define __NR_fork               2
+    #define __NR_read               3
+    #define __NR_write              4
+    #define __NR_open               5
+
+    /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
+    * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
+    __SYSCALL_64(__NR_open, __x64_sys_read)
+    __SYSCALL_64(__NR_write, __x64_sys_write)
+    __SYSCALL_64(__NR_open, __x64_sys_open)
+
+    /* arch/x86/entry/syscall_64.c */
+    #define __SYSCALL_64(nr, sym, qual) [nr] = sym
+
+    asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+        /* Smells like a compiler bug -- it doesn't work
+        * when the & below is removed. */
+        [0 ... __NR_syscall_max] = &sys_ni_syscall,
+        #include <asm/syscalls_64.h>
+    };
+    ```
+
+3. declare implemenation: include/linux/syscalls.h
+    ```c++
+    asmlinkage long sys_write(unsigned int fd, const char __user *buf, size_t count);
+    asmlinkage long sys_read(unsigned int fd, char __user *buf, size_t count);
+    asmlinkage long sys_open(const char __user *filename, int flags, umode_t mode);
+    ```
+
+4. define implemenation: fs/open.c
+    ```c++
+    #include <linux/syscalls.h>
+    SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+    {
+        if (force_o_largefile())
+            flags |= O_LARGEFILE;
+
+        return do_sys_open(AT_FDCWD, filename, flags, mode);
+    }
+    ```
+
 ```c++
 /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
   The Linux/x86-64 kernel expects the system call parameters in
@@ -607,6 +733,14 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 #define DO_CALL(syscall_name, args)  \
   lea SYS_ify (syscall_name), %rax; \
   syscall
+```
+
+```c++
+/* linux-4.19.y/arch/parisc/include/asm/unistd.h */
+#define SYS_ify(syscall_name)   __NR_##syscall_name
+
+/* linux-4.19.y/include/uapi/asm-generic/unistd.h */
+#define __NR_socket   198
 
 /* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
 wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
@@ -1059,7 +1193,7 @@ void __sched notrace __schedule(bool preempt)
   update_rq_clock(rq);
 
   switch_count = &prev->nivcsw;
-  if (!preempt && prev->state) {
+  if (!preempt && prev->state) { /* 0 runnable */
     if (unlikely(signal_pending_state(prev->state, prev))) {
       prev->state = TASK_RUNNING;
     } else {
@@ -1092,21 +1226,7 @@ void __sched notrace __schedule(bool preempt)
   if (likely(prev != next)) {
     rq->nr_switches++;
     rq->curr = next;
-    /* The membarrier system call requires each architecture
-     * to have a full memory barrier after updating
-     * rq->curr, before returning to user-space.
-     *
-     * Here are the schemes providing that barrier on the
-     * various architectures:
-     * - mm ? switch_mm() : mmdrop() for x86, s390, sparc, PowerPC.
-     *   switch_mm() rely on membarrier_arch_switch_mm() on PowerPC.
-     * - finish_lock_switch() for weakly-ordered
-     *   architectures where spin_unlock is a full barrier,
-     * - switch_to() for arm64 (weakly-ordered, spin_unlock
-     *   is a RELEASE barrier), */
     ++*switch_count;
-
-    trace_sched_switch(preempt, prev, next);
 
     /* Also unlocks the rq: */
     rq = context_switch(rq, prev, next, &rf);
@@ -1192,7 +1312,10 @@ static struct rq* context_switch(
   barrier();
   return finish_task_switch(prev);
 }
+```
 
+#### switch_mm_irqs_off
+```c++
 void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
       struct task_struct *tsk)
 {
@@ -1230,7 +1353,10 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
   load_mm_cr4(next);
   switch_ldt(real_prev, next);
 }
+```
 
+#### switch_to
+```c++
 #define switch_to(prev, next, last) \
 do {                  \
   prepare_switch_to(prev, next);  \
@@ -1238,6 +1364,7 @@ do {                  \
   ((last) = __switch_to_asm((prev), (next))); \
 } while (0)
 
+/* linux-4.19.y/arch/x86/entry/entry_32.S */
 ENTRY(__switch_to_asm)
   /* Save callee-saved registers
    * This must match the order in struct inactive_task_frame */
@@ -1413,27 +1540,42 @@ struct x86_hw_tss {
 ```c++
 schedule(void)
     __schedule(false), // kernel/sched/core.c
-        pick_next_task(rq, prev, &rf);
-        context_switch(rq, prev, next, &rf);
-            switch_mm_irqs_off(prev->active_mm, next->mm, next) {
-              load_new_mm_cr3()
-            }
-            switch_to(prev, next, prev);
-                __switch_to_asm(); // switch registers, but not EIP [arch/x86/entry/entry_64.S]
-                    movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
-                    movl  TASK_threadsp(%edx), %esp /* %edx: next task */
+        if (!preempt && prev->state) /* 0 runnable */
+            deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
+                dequeue_task(rq, p, flags);
+            prev->on_rq = 0;
+            if (prev->flags & PF_WQ_WORKER) {
+                to_wakeup = wq_worker_sleeping(prev);
+                    if (WARN_ON_ONCE(pool->cpu != raw_smp_processor_id()))
+                    return NULL;
+                    /* only wakeup idle thread when running task is going to suspend in process_one_work */
+                    if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
+                        to_wakeup = first_idle_worker(pool);
+                if (to_wakeup)
+                    try_to_wake_up_local(to_wakeup, &rf);
 
-                    __switch_to(); // switch kernal stack [arch/x86/kernel/process_32.c]
-                        this_cpu_write(current_task, next_p);
-                        load_sp0(tss, next);
-            barrier();
-            return finish_task_switch(prev);
+        next = pick_next_task(rq, prev, &rf);
+        if (prev != next)
+            context_switch(rq, prev, next, &rf);
+                switch_mm_irqs_off(prev->active_mm, next->mm, next) {
+                    load_new_mm_cr3()
+                }
+                switch_to(prev, next, prev);
+                    __switch_to_asm(); // switch registers, but not EIP [arch/x86/entry/entry_64.S]
+                        movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
+                        movl  TASK_threadsp(%edx), %esp /* %edx: next task */
+
+                        __switch_to(); // switch kernal stack [arch/x86/kernel/process_32.c]
+                            this_cpu_write(current_task, next_p);
+                            load_sp0(tss, next);
+                barrier();
+                return finish_task_switch(prev);
 ```
 ![](../Images/Kernel/proc-sched-voluntary.png)
 
 ### preempt schedule
-### TIF_NEED_RESCHED
-#### scheduler_tick
+#### TIF_NEED_RESCHED
+##### scheduler_tick
 ```c++
 void scheduler_tick(void)
 {
@@ -1511,7 +1653,7 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 }
 ```
 
-#### try_to_wake_up
+##### try_to_wake_up
 ```c++
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
  * -> check_preempt_curr -> resched_curr */
@@ -1702,8 +1844,8 @@ out:
 }
 ```
 
-### real user preempt time
-#### return from system call
+#### real user preempt time
+##### return from system call
 ```c++
 /* do_syscall_64 -> syscall_return_slowpath
  * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
@@ -1721,7 +1863,7 @@ static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 }
 ```
 
-#### return from interrupt
+##### return from interrupt
 ```c++
 /* do_IRQ -> retint_user -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 common_interrupt:
@@ -1752,8 +1894,8 @@ retint_kernel:
         jmp     0b
 ```
 
-### real kernel preempt time
-#### preempt_enble
+#### real kernel preempt time
+##### preempt_enble
 ```c++
 #define preempt_enable() \
 do { \
@@ -1781,7 +1923,7 @@ static void __sched notrace preempt_schedule_common(void)
 }
 ```
 
-#### return from interrupt
+##### return from interrupt
 ```c++
 /* do_IRQ -> retint_kernel */
 asmlinkage __visible void __sched preempt_schedule_irq(void)
@@ -2568,10 +2710,8 @@ void task_fork_fair(struct task_struct *p)
   place_entity(cfs_rq, se, 1);
 
   if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-    /*
-     * Upon rescheduling, sched_class::put_prev_task() will place
-     * 'current' within the tree based on its new key value.
-     */
+    /* Upon rescheduling, sched_class::put_prev_task() will place
+     * 'current' within the tree based on its new key value. */
     swap(curr->vruntime, se->vruntime);
     resched_curr(rq);
   }
@@ -3864,19 +4004,19 @@ SYSCALL_DEFINE3(execve);
             file = do_open_execat();
 
             bprm_mm_init(bprm);
-              bprm->mm = mm = mm_alloc();
+                bprm->mm = mm = mm_alloc();
 
-              bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
-              bprm->vma = vma = vm_area_alloc(mm);
-              vma->vm_end = STACK_TOP_MAX;
-              vma->vm_start = vma->vm_end - PAGE_SIZE;
-              vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
-              vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
-              bprm->p = vma->vm_end - sizeof(void *);
+                bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+                bprm->vma = vma = vm_area_alloc(mm);
+                vma->vm_end = STACK_TOP_MAX;
+                vma->vm_start = vma->vm_end - PAGE_SIZE;
+                vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+                vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+                bprm->p = vma->vm_end - sizeof(void *);
 
             prepare_binprm(bprm);
-              bprm_fill_uid();
-              kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+                bprm_fill_uid();
+                kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
 
             copy_strings(bprm->envc, envp, bprm);
             copy_strings(bprm->argc, argv, bprm);
@@ -3893,23 +4033,23 @@ SYSCALL_DEFINE3(execve);
                     flush_old_exec();
 
                     setup_new_exec();
-                      arch_pick_mmap_layout();
-                        mm->get_unmapped_area = arch_get_unmapped_area;
-                        arch_pick_mmap_base(&mm->mmap_base);
-                          mmap_base();
-                      current->mm->task_size = TASK_SIZE;
+                        arch_pick_mmap_layout();
+                            mm->get_unmapped_area = arch_get_unmapped_area;
+                                arch_pick_mmap_base(&mm->mmap_base);
+                                    mmap_base();
+                        current->mm->task_size = TASK_SIZE;
 
                     setup_arg_pages();
-                      shift_arg_pages();
-                        vma_adjust(vma, new_start, old_end);
-                        move_page_tables();
-                        free_pgd_range();
-                        vma_adjust(vma, new_start, new_end);
-                      expand_stack();
+                        shift_arg_pages();
+                            vma_adjust(vma, new_start, old_end);
+                            move_page_tables();
+                            free_pgd_range();
+                            vma_adjust(vma, new_start, new_end);
+                        expand_stack();
                     current->mm->start_stack = bprm->p;
 
                     for (; i < loc->elf_ex.e_phnum; ) {
-                      elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+                        elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
                     }
 
                     set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
@@ -3919,16 +4059,16 @@ SYSCALL_DEFINE3(execve);
                     else
                         elf_entry = loc->elf_ex.e_entry;
 
-                    current->mm->end_code = end_code;
                     current->mm->start_code = start_code;
+                    current->mm->end_code = end_code;
                     current->mm->start_data = start_data;
                     current->mm->end_data = end_data;
                     current->mm->start_stack = bprm->p;
 
                     start_thread(regs, elf_entry /* new_ip */, bprm->p /* new_sp */);
-                      regs->ip  = new_ip;
-                      regs->sp  = new_sp;
-                      force_iret();
+                        regs->ip = new_ip;
+                        regs->sp = new_sp;
+                        force_iret();
 ```
 
 ## kthreadd
@@ -3992,6 +4132,12 @@ void create_kthread(struct kthread_create_info *create)
   }
 }
 
+pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
+{
+  return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
+    (unsigned long)arg, NULL, NULL, 0);
+}
+
 static int kthread(void *_create)
 {
   /* Copy data: it's on kthread's stack */
@@ -4041,12 +4187,6 @@ static int kthread(void *_create)
   }
   do_exit(ret);
 }
-
-pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
-{
-  return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
-    (unsigned long)arg, NULL, NULL, 0);
-}
 ```
 
 ```c++
@@ -4062,7 +4202,7 @@ kthread();
   threadfn(data);
 ```
 
-## workqueue
+## cmwq
 
 ![](../Images/Kernel/proc-workqueue.png)
 
@@ -4078,11 +4218,11 @@ kthread();
 
 ![](../Images/Kernel/proc-workqueue-arch.png)
 
+* [Kernel 4.19: Concurrency Managed Workqueue (cmwq)](https://www.kernel.org/doc/html/v4.19/core-api/workqueue.html)
 * http://www.wowotech.net/irq_subsystem/cmwq-intro.html
 * https://zhuanlan.zhihu.com/p/91106844
 * https://zhuanlan.zhihu.com/p/94561631
 * http://kernel.meizu.com/linux-workqueue.html
-* [Kernel: Concurrency Managed Workqueue (cmwq)](https://www.kernel.org/doc/html/v4.10/core-api/workqueue.html)
 
 ### wq-struct
 ```c++
@@ -4110,7 +4250,7 @@ struct pool_workqueue {
   int                     refcnt;    /* L: reference count */
   int                     nr_in_flight[WORK_NR_COLORS];/* L: nr of in_flight works */
   int                     nr_active;  /* L: nr of active works */
-  int                     max_active;  /* L: max active works */
+  int                     max_active;  /* L: max active works, the elements of pool->worklist */
 
   /* Release of unbound pwq is punted to system_wq.  See put_pwq()
    * and pwq_unbound_release_workfn() for details.  pool_workqueue
@@ -5175,6 +5315,59 @@ __acquires(&pool->lock)
   pwq_dec_nr_in_flight(pwq, work_color);
 }
 
+void pwq_dec_nr_in_flight(struct pool_workqueue *pwq, int color)
+{
+  /* uncolored work items don't participate in flushing or nr_active */
+  if (color == WORK_NO_COLOR)
+    goto out_put;
+
+  pwq->nr_in_flight[color]--;
+
+  pwq->nr_active--;
+  if (!list_empty(&pwq->delayed_works)) {
+    /* one down, submit a delayed one */
+    if (pwq->nr_active < pwq->max_active)
+      pwq_activate_first_delayed(pwq);
+  }
+
+  /* is flush in progress and are we at the flushing tip? */
+  if (likely(pwq->flush_color != color))
+    goto out_put;
+
+  /* are there still in-flight works? */
+  if (pwq->nr_in_flight[color])
+    goto out_put;
+
+  /* this pwq is done, clear flush_color */
+  pwq->flush_color = -1;
+
+  /* If this was the last pwq, wake up the first flusher.  It
+   * will handle the rest. */
+  if (atomic_dec_and_test(&pwq->wq->nr_pwqs_to_flush))
+    complete(&pwq->wq->first_flusher->done);
+out_put:
+  put_pwq(pwq);
+}
+
+void pwq_activate_first_delayed(struct pool_workqueue *pwq)
+{
+  struct work_struct *work = list_first_entry(&pwq->delayed_works, struct work_struct, entry);
+
+  pwq_activate_delayed_work(work);
+}
+
+void pwq_activate_delayed_work(struct work_struct *work)
+{
+  struct pool_workqueue *pwq = get_work_pwq(work);
+
+  trace_workqueue_activate_work(work);
+  if (list_empty(&pwq->pool->worklist))
+    pwq->pool->watchdog_ts = jiffies;
+  move_linked_works(work, &pwq->pool->worklist, NULL);
+  __clear_bit(WORK_STRUCT_DELAYED_BIT, work_data_bits(work));
+  pwq->nr_active++;
+}
+
 void worker_set_flags(struct worker *worker, unsigned int flags)
 {
   struct worker_pool *pool = worker->pool;
@@ -5705,6 +5898,7 @@ create_worker(pool);
         wait_for_completion_killable(&done);
     worker_attach_to_pool();
     worker_enter_idle(worker);
+        pool->nr_idle++;
     wake_up_process(worker->task);
         try_to_wake_up();
 
@@ -5764,14 +5958,25 @@ worker_thread();
 
             if (unlikely(cpu_intensive))
                 worker_clr_flags(worker, WORKER_CPU_INTENSIVE);     /* 2.1 [nr_running]++ == 1 */
+
+            pwq_dec_nr_in_flight();
+                pwq->nr_active--;
+                if (!list_empty(&pwq->delayed_works))
+                    if (pwq->nr_active < pwq->max_active)
+                        pwq_activate_first_delayed(pwq);
+                            move_linked_works(work, &pwq->pool->worklist, NULL);
+                            pwq->nr_active++;
     } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
 
     worker_set_flags(worker, WORKER_PREP);                          /* 1.2 [nr_running]-- == 0 */
     worker_enter_idle(worker);
+        pool->nr_idle++;
 
     schedule();
         if (prev->flags & PF_WQ_WORKER)
             to_wakeup = wq_worker_sleeping()
+                if (pool->cpu != raw_smp_processor_id())
+                return NULL;
                 /* only wakeup idle thread when running task is going to suspend in process_one_work */
                 if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
                     to_wakeup = first_idle_worker(pool);
