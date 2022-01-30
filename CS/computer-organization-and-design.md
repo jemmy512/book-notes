@@ -5,6 +5,9 @@
 * performance of a computer is determined by three key factors: instruction count, clock cycle time, and clock cycles per instruction (CPI).
 * compiler and the instruction set architecture determine the instruction count required for a given program
 
+
+For the reader interested in `understanding the processor and its performance` in more depth, Sections 4.3, 4.4, and 4.6 will be useful. Those interested in learning `how to build a processor` should also cover 4.2, 4.7, 4.8, and 4.9. For readers with an interest in `modern hardware design`, Section 4.13 describes how hardware design languages and CAD tools are used to implement hardware, and then how to use a hardware design language to describe a pipelined implementation.
+
 ### 4.1.2 An Overview of the Implementation
 
 For every instruction, the first two steps are identical:
@@ -32,7 +35,7 @@ The datapath elements in the MIPS implementation consist of two different types 
 2.  **State elements** in the design are not combinational, but instead contain state. An element contains state if it has some internal storage.
     * A state element has at least two inputs and one output. The required inputs are the data value to be written into the element and the clock, which determines when the data value is written. The output from a state element provides the value that was written in an earlier clock cycle.
 
-## 4.2.1 Clocking Methodology
+### 4.2.1 Clocking Methodology
 
 A **clocking methodology** defines when signals can be read and when they can be written.
 
@@ -238,9 +241,223 @@ sw    $15,100($2)   #       Base ($2) depends on sub
 
 **Avoid unnecessary forwading** Because some instructions do not write registers, this policy is inaccurate; sometimes it would forward when it shouldn’t. One solution is simply to check to see if the RegWrite signal will be active: examining the WB control field of the pipeline register during the EX and MEM stages determines whether RegWrite is asserted.
 
+If we can take the inputs to the ALU from `any pipeline register` rather than just ID/EX, then we can forward the proper data. By adding multiplexors to the input of the ALU, and with the proper controls, we can run the pipeline at full speed in the presence of these data dependences.
+
+This forwarding control will be in the `EX stage`, because the ALU forwarding multiplexors are found in that stage. Thus, we must pass the operand register numbers from the ID stage via the ID/EX pipeline register to determine whether to forward values.
+
+* ![](../Images/CODHSI/4.7-forwarding-unit.png)
+* ![](../Images/CODHSI/4.7-forwarding-unit-control-values.png)
+
+* EX hazard:
+
+    ```c++
+    if (EX/MEM.RegWrite
+        and (EX/MEM.RegisterRd != 0)
+        and (EX/MEM.RegisterRd = ID/EX.RegisterRs)
+    ) ForwardA = 10
+
+    if (EX/MEM.RegWrite
+        and (EX/MEM.RegisterRd != 0)
+        and (EX/MEM.RegisterRd = ID/EX.RegisterRt)
+    ) ForwardB = 10
+    ```
+
+* MEM hazard:
+
+    ```c++
+    if (MEM/WB.RegWrite
+        and (MEM/WB.RegisterRd !=  0)
+        and (MEM/WB.RegisterRd = ID/EX.RegisterRs)
+    ) ForwardA = 01
+
+    if (MEM/WB.RegWrite
+        and (MEM/WB.RegisterRd !=  0)
+        and (MEM/WB.RegisterRd = ID/EX.RegisterRt)
+    ) ForwardB = 01
+    ```
+
+One complication is potential data hazards between the result of the instruction in the WB stage, the result of the instruction in the MEM stage, and the source operand of the instruction in the ALU stage. For example, when summing a vector of numbers in a single register, a sequence of instructions will all read and write to the same register:
+```c++
+add $1,$1,$2
+add $1,$1,$3
+add $1,$1,$4
+
+if (MEM/WB.RegWrite
+    and (MEM/WB.RegisterRd !=  0)
+    and not(EX/MEM.RegWrite and (EX/MEM.RegisterRd !=  0)
+        and (EX/MEM.RegisterRd !=  ID/EX.RegisterRs)
+    )
+    and (MEM/WB.RegisterRd = ID/EX.RegisterRs)
+) ForwardA = 01
+
+if (MEM/WB.RegWrite
+    and (MEM/WB.RegisterRd !=  0)
+    and not(EX/MEM.RegWrite and (EX/MEM.RegisterRd !=  0)
+        and (EX/MEM.RegisterRd !=  ID/EX.RegisterRt)
+    )
+    and (MEM/WB.RegisterRd = ID/EX.RegisterRt)
+) ForwardB = 01
+```
+
+Note that the EX/MEM.RegisterRd field is the register destination for either an ALU instruction (which comes from the Rd field of the instruction) or a load (which comes from the Rt field).
+
+* ![](../Images/CODHSI/4.7-forwarding-unit-modified.png)
+    * the additions are the multiplexors to the inputs to the ALU.
+    * ![](../Images/CODHSI/4.7-forwarding-unit-modified-close-up.png)
+
+### 4.7.1 Data Hazards and Stalls
+
+one case where forwarding cannot save the day is when an instruction tries to read a register following a load instruction that writes the same register.
+
+![](../Images/CODHSI/4.7-hazard-load-load.png)
+* Since the dependence between the load and the following instruction (and) goes backward in time, this hazard cannot be solved by forwarding. Hence, this combination must result in a stall by the hazard detection unit.
+
+```c++
+if (ID/EX.MemRead
+    and ((ID/EX.RegisterRt = IF/ID.RegisterRs)
+        or (ID/EX.RegisterRt = IF/ID.RegisterRt)
+    )
+) stall the pipeline
+```
+
+If the instruction in the ID stage is stalled, then the instruction in the IF stage must also be stalled; otherwise, we would lose the fetched instruction. Preventing these two instructions from making progress is accomplished simply by preventing the PC register and the IF/ID pipeline register from changing. Provided these registers are preserved, the instruction in the IF stage will continue to be read using the same PC, and the registers in the ID stage will continue to be read using the same instruction fields in the IF/ID pipeline register.
+
+**Deasserting all nine control signals (setting them to 0) in the EX, MEM, and WB stages will create a “do nothing” or nop instruction.** By identifying the hazard in the ID stage, we can insert a bubble into the pipeline by changing the EX, MEM, and WB control fields of the ID/EX pipeline register to 0
+
+![](../Images/CODHSI/4.7-nop.png)
+
+![](../Images/CODHSI/4.7-hazard-detecting-unit-forwarding-unit.png)
+* The forwarding unit controls the ALU multiplexors to replace the value from a general-purpose register with the value from the proper pipeline register.
+* The hazard detection unit controls the writing of the PC and IF/ID registers plus the multiplexor that chooses between the real control values and all 0s. The hazard detection unit stalls and deasserts the control fields if the load-use hazard test above is true
+
 ## 4.8 Control Hazards
+
+An instruction must be fetched at every clock cycle to sustain the pipeline, yet in our design the decision about whether to branch doesn’t occur until the MEM pipeline stage.
+
+### Assume Branch Not Taken
+
+One improvement over branch stalling is to predict that the branch will not be taken and thus continue execution down the sequential instruction stream. If the branch is taken, the instructions that are being fetched and decoded must be discarded.
+
+To discard instructions, we merely change the original control values to 0s, much as we did to stall for a load-use data hazard. The difference is that we must also change the three instructions in the IF, ID, and EX stages when the branch reaches the MEM stage; for load-use stalls, we just change control to 0 in the ID stage and let them percolate through the pipeline. Discarding instructions, then, means we must be able to flush instructions in the IF, ID, and EX stages of the pipeline.
+
+### Reducing the Delay of Branches
+
+One way to improve branch performance is to reduce the cost of the taken branch.
+
+The MIPS architecture was designed to support fast single-cycle branches that could be pipelined with a small branch penalty.
+
+The designers observed that many branches rely only on simple tests (equality or sign, for example) and that such tests do not require a full ALU operation but can be done with at most a few gates. When a more complex branch decision is required, a separate instruction that uses an ALU to perform a comparison is required - a situation that is similar to the use of condition codes for branches.
+
+Moving the branch decision up requires two actions to occur earlier: computing the branch target address and evaluating the branch decision:
+1. The easy part of this change is to move up the branch address calculation. We already have the PC value and the immediate field in the IF/ID pipeline register, so we just move the branch adder from the EX stage to the ID stage.
+2. To implement branch on equal (and its inverse), we will need to forward results to the equality test logic that operates during ID. There are two complicating factors:
+    * During ID, we must decode the instruction, decide whether a bypass to the equality unit is needed, and complete the equality comparison so that if the instruction is a branch, we can set the PC to the branch target address. Forwarding for the operands of branches was formerly handled by the ALU forwarding logic, but the introduction of the equality test unit in ID will require new forwarding logic. Note that the bypassed source operands of a branch can come from either the ALU/MEM or MEM/WB pipeline latches.
+    * Because the values in a branch comparison are needed during ID but may be produced later in time, it is possible that a data hazard can occur and a stall will be needed.
+
+Despite these difficulties, moving the branch execution to the ID stage is an improvement, because it reduces the penalty of a branch to only one instruction if the branch is taken, namely, the one currently being fetched.
+
+To flush instructions in the IF stage, we add a control line, called **IF.Flush**, that zeros the instruction field of the IF/ID pipeline register. Clearing the register transforms the fetched instruction into a `nop`, an instruction that has no action and changes no state.
+
+Example
+```c++
+36 sub  $10, $4, $8
+40 beq  $1,  $3, 7    # PC-relative branch to 40+4+7*4=72
+44 and  $12, $2, $5
+48 or   $13, $2, $6
+52 add  $14, $4, $2
+56 slt  $15, $6, $7
+...
+72 lw   $4,  50($7)
+```
+
+![](../Images/CODHSI/4.8-control-hazard-reduce-delay-of-branch.png)
+* The ID stage of clock 3 determines that a branch must be taken, so it selects 72 as the next PC address and zeros the instruction fetched for the next clock cycle
+*  Clock cycle 4 shows the instruction at location 72 being fetched and the single bubble or nop instruction in the pipeline as a result of the taken branch.
+
+### Dynamic Branch Prediction
+
+**Dynamic branch prediction** Prediction of branches at runtime using runtime information.
+
+**Branch prediction buffer** Also called branch history table. A small memory that is indexed by the lower portion of the address of the branch instruction and that contains one or more bits indicating whether the branch was recently taken or not.
+
+One approach is to look up the address of the instruction to see if a branch was taken the last time this instruction was executed, and, if so, to begin fetching new instructions from the same place as the last time. This technique is called `dynamic branch prediction`.
+
+![](../Images/CODHSI/4.8-pipeline-final.png)
+
 ## 4.9 Exceptions
+
+Control is the most challenging aspect of processor design: it is both the hardest part to get right and the hardest part to make fast.
+
+One of the hardest parts of control is implementing exceptions and interrupts - events other than branches or jumps that change the normal flow of instruction execution. They were initially created to handle unexpected events from within the processor, like arithmetic overflow. The same basic mechanism was extended for I/O devices to communicate with the processor.
+
+Detecting exceptional conditions and taking the appropriate action is often on the critical timing path of a processor, which determines the clock cycle time and thus performance.
+
+There are two main methods used to communicate the reason for an exception:
+1. status register
+2. vectored interrupt. An interrupt for which the address to which control is transferred is determined by the cause of the exception.
+
+A pipelined implementation treats exceptions as another form of control hazard.
+
+
+
+![](../Images/CODHSI/4.9-pipeline-exception.png)
+* A new control signal, called **ID.Flush**, is ORed with the stall signal from the hazard detection unit to flush during ID
+* To flush the instruction in the EX phase, we use a new signal called **EX.Flush** to cause new multiplexors to zero the control lines
+* The key additions include a new input with the value 8000 0180hex in the multiplexor that supplies the new PC value; a Cause register to record the cause of the exception; and an Exception PC register to save the address of the instruction that caused the exception.
+
+The overflow exception is detected during the **EX stage**; hence, we can use the EX.Flush signal to prevent the instruction in the EX stage from writing its result in the WB stage.
+
+* Example
+    * ```c++
+        80000180hex sw $26, 1000($0)
+        80000184hex sw $27, 1004($0)
+        ````
+    * ![](../Images/CODHSI/4.9-pipeline-exception-example.png)
+    * The overflow is detected during the EX stage of clock 6, saving the address following the add in the EPC register (4C + 4 = 50hex).
+    * Overflow causes all the Flush signals to be set near the end of this clock cycle, deasserting control values (setting them to 0) for the add.
+    * Clock cycle 7 shows the instructions converted to bubbles in the pipeline plus the fetching of the first instruction of the exception routine - sw $25,1000($0) - from instruction location 8000 0180hex.
+    * Note that the AND and OR instructions, which are prior to the add, still complete. Although not shown, the ALU overflow signal is an input to the control unit.
+
+With five instructions active in any clock cycle, the challenge is to associate an exception with the appropriate instruction. Moreover, multiple exceptions can occur simultaneously in a single clock cycle. The solution is to prioritize the exceptions so that it is easy to determine which is serviced first. In most MIPS implementations, the hardware sorts exceptions so that the earliest instruction is interrupted.
+
+The hardware and the operating system must work in conjunction so that exceptions behave as you would expect.
+1. The `hardware` contract is normally to stop the offending instruction in midstream, let all prior instructions complete, flush all following instructions, set a register to show the cause of the exception, save the address of the offending instruction, and then jump to a prearranged address.
+2. The `operating system` contract is to look at the cause of the exception and act appropriately.
+
 ## 4.10 Parallelism via Instructions
+
+Pipelining exploits the potential parallelism among instructions. This parallelism is called instruction-level parallelism (ILP).
+
+There are two primary methods for increasing the potential amount of instruction-level parallelism:
+1. increasing the depth of the pipeline to overlap more instructions
+2. **multiple issue** replicate the internal components of the computer so that it can launch multiple instructions in every pipeline stage
+
+There are two major ways to implement a multiple-issue processor, with the major difference being the division of work between the compiler and the hardware:
+1. **static multiple issue** An approach to implementing a multiple-issue processor where many decisions are made by the compiler before execution.
+2. **dynamic multiple issue** An approach to implementing a multiple- issue processor where many decisions are made during execution by the processor.
+
+There are two primary and distinct responsibilities that must be dealt with in a multiple-issue pipeline:
+1. Packaging instructions into issue slots: how does the processor determine how many instructions and which instructions can be issued in a given clock cycle? In most static issue processors, this process is at least partially handled by the compiler; in dynamic issue designs, it is normally dealt with at runtime by the processor, although the compiler will often have already tried to help improve the issue rate by placing the instructions in a beneficial order.
+2. Dealing with data and control hazards: in static issue processors, the compiler handles some or all of the consequences of data and control hazards statically. In contrast, most dynamic issue processors attempt to alleviate at least some classes of hazards using hardware techniques operating at execution time.
+
+`issue slots` The positions from which instructions could issue in a given clock cycle; by analogy, these correspond to positions at the starting blocks for a sprint.
+
+## The Concept of Speculation
+
+**speculation** An approach whereby the compiler or processor guesses the outcome of an instruction to remove it as a dependence in executing other instructions.
+
+The difficulty with speculation is that it may be wrong. So, any speculation mechanism must include both:
+1. a method to check if the guess was right
+2. and a method to unroll or back out the effects of the instructions that were executed speculatively.
+
+Speculation may be done in the compiler or by the hardware:
+1. The compiler can use speculation to reorder instructions, moving an instruction across a branch or a load across a store.
+2. The processor hardware can perform the same transformation at runtime using techniques we discuss later in this section.
+
+The recovery mechanisms used for incorrect speculation are rather different:
+1. In software, the compiler usually inserts additional instructions that check the accuracy of the speculation and provide a fix-up routine to use when the speculation is incorrect.
+2. In hardware, the processor usually buffers the speculative results until it knows they are no longer speculative. If the speculation is correct, the instructions are completed by allowing the contents of the buffers to be written to the registers or memory. If the speculation is incorrect, the hardware flushes the buffers and re-executes the correct instruction sequence.
+
 ## 4.11 Real Stuff: The ARM Cortex-A8 and Intel Core i7 Pipelines
 ## 4.12 Going Faster: Instruction-Level Parallelism and Matrix Multiply
 ## 4.13 Advanced Topic: An Introduction to Digital Design Using a Hardware Design Language to Describe and Model a Pipeline and More Pipelining Illustrations
