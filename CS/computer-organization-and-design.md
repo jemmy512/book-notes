@@ -442,7 +442,7 @@ There are two primary and distinct responsibilities that must be dealt with in a
 
 `issue slots` The positions from which instructions could issue in a given clock cycle; by analogy, these correspond to positions at the starting blocks for a sprint.
 
-## The Concept of Speculation
+### The Concept of Speculation
 
 **speculation** An approach whereby the compiler or processor guesses the outcome of an instruction to remove it as a dependence in executing other instructions.
 
@@ -458,11 +458,131 @@ The recovery mechanisms used for incorrect speculation are rather different:
 1. In software, the compiler usually inserts additional instructions that check the accuracy of the speculation and provide a fix-up routine to use when the speculation is incorrect.
 2. In hardware, the processor usually buffers the speculative results until it knows they are no longer speculative. If the speculation is correct, the instructions are completed by allowing the contents of the buffers to be written to the registers or memory. If the speculation is incorrect, the hardware flushes the buffers and re-executes the correct instruction sequence.
 
+### Static Multiple Issue
+
+**issue packet** The set of instructions that issues together in one clock cycle; the packet may be determined statically by the compiler or dynamically by the processor.
+
+Since a static multiple-issue processor usually restricts what mix of instructions can be initiated in a given clock cycle, it is useful to think of the issue packet as a single instruction allowing several operations in certain predefined fields. This view led to the original name for this approach: **Very Long Instruction Word (VLIW)**.
+
+#### 2 Multiple Issue Example
+*  Issuing two instructions per cycle will require fetching and decoding 64 bits of instructions.
+* In many static multiple-issue processors, and essentially all VLIW processors, the layout of simultaneously issuing instructions is restricted to simplify the decoding and instruction issue
+* we will require that the instructions be paired and aligned on a 64-bit boundary, with the ALU or branch portion appearing first
+* if one instruction of the pair cannot be used, we require that it be replaced with a nop
+* Static multiple-issue processors vary in how they deal with potential data and control hazards. In some designs, the compiler takes full responsibility for removing all hazards, scheduling the code and inserting no-ops so that the code executes without any need for hazard detection or hardware-generated stalls. In others, the hardware detects data hazards and generates stalls **between** two issue packets, while requiring that the compiler avoid all dependences **within** an instruction pair.
+* ![](../Images/CODHSI/4.10-two-issue-table.png)
+* ![](../Images/CODHSI/4.10-two-issue-datapath.png)
+    * The additions needed for double issue are highlighted: another 32 bits from instruction memory, two more read ports and one more write port on the register file, and another ALU.
+* two-issue processor can improve performance by up to a factor of two. Doing so, however, requires that twice as many instructions be overlapped in execution, and this additional overlap increases the relative performance loss from data and control hazards.
+    * loads have a use latency of one clock cycle, which prevents one instruction from using the result without stalling. In the two-issue, five-stage pipeline the result of a load instruction cannot be used on the next clock cycle. This means that the next two instructions cannot use the load result without stalling.
+    * ```c++
+        Loop: lw    $t0, 0($s1)         # $t0=array element
+              addu  $t0, $t0,   $s2     # add scalar in $s2
+              sw    $t0, 0($s1)         # store result
+              addi  $s1, $s1,   -4      # decrement pointer
+              bne   $s1, $zero, Loop    # branch $s1!=0
+        ```
+        * The first three instructions have data dependences, and so do the last two
+        * Reorder the instructions to avoid as many pipeline stalls as possible
+        * ![](../Images/CODHSI/4.10-two-issue-loop-example.png)
+        * Notice that just one pair of instructions has both issue slots used.
+        * It takes four clocks per loop iteration; at four clocks to execute five instructions, we get the disappointing CPI of 0.8 versus the best case of 0.5., or an IPC of 1.25 versus 2.0.
+    * Loop Unrolling
+        * ![](../Images/CODHSI/4.10-two-issue-loo-unrolling.png)
+        * That 12 of the 14 instructions in the loop execute as pairs. It takes 8 clocks for 4 loop iterations, or 2 clocks per iteration, which yields a CPI of 8/14 = 0.57. Loop unrolling and scheduling with dual issue gave us an improvement factor of almost 2, partly from reducing the loop control instructions and partly from dual issue execution. The cost of this performance improvement is using four temporary registers rather than one, as well as a significant increase in code size.
+
+
+**use latency** Number of clock cycles between a load instruction and an instruction that can use the result of the load without stalling the pipeline.
+
+**loop unrolling** A technique to get more performance from loops that access arrays, in which multiple copies of the loop body are made and instructions from different iterations are
+
+**register renaming** The renaming of registers by the compiler or hardware to remove antidependences.
+
+**antidependence** Also called **name dependence**. An ordering forced by the reuse of a name, typically a register, rather than by a true dependence that carries a value between two instructions.
+
+### Dynamic Multiple-Issue Processors
+
+Dynamic multiple-issue processors are also known as **superscalar**. An advanced pipelining technique that enables the processor to execute more than one instruction per clock cycle by selecting them during execution.
+
+Achieving good performance on such a processor still requires the compiler to try to schedule instructions to move dependences apart and thereby improve the instruction issue rate
+
+**dynamic pipeline scheduling** Hardware support for reordering the order of instruction execution so as to avoid stalls.
+
+Many superscalars extend the basic framework of dynamic issue decisions to include dynamic pipeline scheduling. It chooses which instructions to execute in a given clock cycle while trying to avoid hazards and stalls.
+
+```c++
+lw     $t0, 20($s2)
+addu   $t1, $t0,    $t2
+sub    $s4, $s4,    $t3
+slti   $t5, $s4,    20
+```
+
+Even though the sub instruction is ready to execute, it must wait for the lw and addu to complete first, which might take many clock cycles if memory is slow. Even though the sub instruction is ready to execute, it must wait for the lw and addu to complete first, which might take many clock cycles if memory is slow.
+
+The pipeline is divided into three major units: an instruction fetch and issue unit, multiple functional units and a commit unit.
+
+![](../Images/CODHSI/4.10-dynamic-multi-issue-units.png)
+
+As soon as the buffer contains all its operands and the functional unit is ready to execute, the result is calculated. When the result is completed, it is sent to any reservation stations waiting for this particular result as well as to the commit unit, which buffers the result until it is safe to put the result into the register file or, for a store, into memory.
+
+The buffer in the commit unit, often called the reorder buffer, is also used to supply operands, in much the same way as forwarding logic does in a statically scheduled pipeline.
+
+**commit unit** The unit in a dynamic or out-of-order execution pipeline that decides when it is safe to release the result of an operation to programmer- visible registers and memory.
+
+**reservation station** A buffer within a functional unit that holds the operands and the operation.
+
+**reorder buffer** The buffer that holds results in a dynamically scheduled processor until it is safe to store the results to memory or a register.
+
+To see how this conceptually works, consider the following steps:
+1. When an instruction issues, it is copied to a reservation station for the appropriate functional unit. Any operands that are available in the register file or reorder buffer are also immediately copied into the reservation station.
+2. If an operand is not in the register file or reorder buffer, it must be waiting to be produced by a functional unit. The name of the functional unit that will produce the result is tracked. When that unit eventually produces the result, it is copied directly into the waiting reservation station from the functional unit bypassing the registers.
+
+Conceptually, you can think of a dynamically scheduled pipeline as analyzing the data flow structure of a program. The processor then executes the instructions in some order that preserves the data flow order of the program. This style of execution is called an out-of-order execution, since the instructions can be executed in a different order than they were fetched.
+
+**out-of-order execution** A situation in pipelined execution when an instruction blocked from executing does
+not cause the following instructions to wait.
+
+**in-order commit** A commit in which the results of pipelined execution are written to the programmer visible state in the same order that instructions are fetched.
+
+If an exception occurs, the computer can point to the last instruction executed, and the only registers updated will be those written by instructions before the instruction causing the exception.
+
+Although the front end (fetch and issue) and the back end (commit) of the pipeline run in order, the functional units are free to initiate execution whenever the data they need is available.
+
+Because the instructions are committed in order, we know whether or not the branch was correctly predicted before any instructions from the predicted path are committed.
+
+Given that compilers can also schedule code around data dependences, you might ask why a superscalar processor would use dynamic schedulin:
+1. not all stalls are predictable. In particular, cache misses (see Chapter 5) in the memory hierarchy cause unpredictable stalls. Dynamic scheduling allows the processor to hide some of those stalls by continuing to execute instructions while waiting for the stall to end.
+2. if the processor speculates on branch outcomes using dynamic branch prediction, it cannot know the exact order of instructions at compile time, since it depends on the predicted and actual behavior of branches. Incorporating dynamic speculation to exploit more instruc tion-level parallelism (ILP) without incorporating dynamic scheduling would significantly restrict the benefits of speculation.
+3. as the pipeline latency and issue width change from one implementation to another, the best way to compile a code sequence also changes.
+    * how to schedule a sequence of dependent instructions is affected by both issue width and latency
+    * The pipeline structure affects both the number of times a loop must be unrolled to avoid stalls as well as the process of compiler-based register renaming.
+    * Dynamic scheduling allows the hardware to hide most of these details.
+
+
+Both pipelining and multiple-issue execution increase peak instruction throughput and attempt to exploit instruction-level parallelism (ILP). Data and control dependences in programs, however, offer an upper limit on sustained performance because the processor must sometimes wait for a dependence to be resolved. Software-centric approaches to exploiting ILP rely on the ability of the compiler to find and reduce the effects of such dependences, while hardware-centric approaches rely on extensions to the pipeline and issue mechanisms. Speculation, performed by the compiler or the hardware, can increase the amount of ILP that can be exploited via prediction, although care must be taken since speculating incorrectly is likely to reduce performance.
+
 ## 4.11 Real Stuff: The ARM Cortex-A8 and Intel Core i7 Pipelines
+
 ## 4.12 Going Faster: Instruction-Level Parallelism and Matrix Multiply
+
 ## 4.13 Advanced Topic: An Introduction to Digital Design Using a Hardware Design Language to Describe and Model a Pipeline and More Pipelining Illustrations
+
 ## 4.14 Fallacies and Pitfalls
+Many of the difficulties of pipelining arise because of instruction set complications:
+1. Widely variable instruction lengths and running times can lead to imbalance among pipeline stages and severely complicate hazard detection in a design pipelined at the instruction set level.
+2. Sophisticated addressing modes can lead to different sorts of problems.
+
 ## 4.15 Concluding Remarks
+
+`Pipelining` improves throughput but not the inherent execution time, or instruction latency, of instructions; for some instructions, the latency is similar in length to the single-cycle approach
+
+`Multiple instruction issue` adds additional datapath hardware to allow multiple instructions to begin every clock cycle, but at an increase in effective latency. `Pipelining` was presented as reducing the clock cycle time of the simple single-cycle datapath. Multiple instruction issue, in comparison, clearly focuses on reducing clock cycles per instruction (CPI).
+
+The presence of data and control dependences, which can become `hazards`, are the primary limitations on how much parallelism can be exploited.
+
+`Scheduling` and `speculation` via `prediction`, both in hardware and in software, are the primary techniques used to reduce the performance impact of dependences.
+
+
 ## 4.16 Historical Perspective and Further Reading
 
 ## Reference
