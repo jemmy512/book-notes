@@ -45,57 +45,121 @@ An **edge-triggered clocking methodology** means that any values stored in a seq
 
 **Datapath element** A unit used to operate on or hold data within a processor. In the MIPS implementation, the datapath elements include the instruction and data memories, the register file, the ALU, and adders.
 
-* Register file
-    * ![](../Images/CODHSI/4.3-register-file.png)
+* Two state elements are needed to **store and access instructions**, and an adder is needed to compute the next instruction address.
+    * ![](../Images/CODHSI/4.3-datapath-store-access-instruction.png)
+
+* A portion of the datapath used for **fetching instructions** and **incrementing the program counter**.
+    * ![](../Images/CODHSI/4.3-datapath-fetch-instruction.png)
+
+* The two elements needed to implement R-format **ALU operations** are the register file and the ALU.
+    * ![](../Images/CODHSI/4.3-datapath-alu-operation.png)
     * The register file always outputs the contents of the registers corresponding to the Read register inputs on the outputs, no other control inputs are needed
     * Register write must be explicitly indicated by asserting the write control signal.
+    * Since writes to the register file are edge-triggered, our design can legally read and write the same register within a clock cycle: the read will get the value written in an earlier clock cycle, while the value written will be available to a read in a subsequent clock cycle.
 
-* ![](../Images/CODHSI/4.3-branch.png)
+* The two units needed to implement **loads and stores**
+    * ![](../Images/CODHSI/4.3-datapath-load-store.png)
+    * The memory unit needs a read signal, since, unlike the register file, reading the value of an invalid address can cause problems
+    * The sign extension unit has a 16-bit input that is **sign-extended** into a 32-bit result appearing on the output
+    * sign extension is used to compute the result in each cycle:
+        1. provide the `immediate` `ALU` operand for addi
+        2. calculate the potential `address` in the `execution` for beq
+        3. calculate the read `address` of `D-Mem` for lw
+        4. calculate the `D-Mem` `address` but it is for write address for sw
+
+* The datapath for a **branch** uses the ALU to evaluate the branch condition and a separate adder to compute the branch target as the sum of the incremented PC and the sign-extended, lower 16 bits of the instruction (the branch displacement), shifted left 2 bits.
+    * ![](../Images/CODHSI/4.3-datapath-branch-condition.png)
     * **branch target address** The address specified in a branch, which becomes the new program counter (PC) if the branch is taken. In the MIPS architecture the branch target is given by the sum of the offset field of the instruction and the address of the instruction following the branch.
     * branch datapath must do two operations:
         1. compute the branch target address and
         2. compare the register contents.
 
-* Data memory unit
-    * The memory unit needs a read signal, since, unlike the register file, reading the value of an invalid address can cause problems
+* The simple datapath
+    * ![](../Images/CODHSI/4.3-datapath.png)
 
 * [Dadapath](https://www.cise.ufl.edu/~mssz/CompOrg/CDA-proc.html) is the hardware that performs all the required operations, for example, ALU, registers, and internal buses.
 
 ## 4.4 A Simple Implementation Scheme
 
-* The ALU Control
-    * For the R-type instructions, the ALU needs to perform one of the five actions (AND, OR, subtract, add, or set on less than), depending on the value of the 6-bit funct (or function) field in the low-order bits of the instruction.
-    * We can generate the 4-bit ALU control input using a small control unit that has as inputs the function field of the instruction and a 2-bit control field, which we call ALUOp. ALUOp indicates whether the operation to be performed should be add (00) for loads and stores, subtract (01) for beq, or determined by the operation encoded in the funct field (10).
-    * **Multi-level decoding** -- main control generates ALUop bits, which are input to ALU control. The ALU control then generates the three-bit codes
-        * The advantage of a hierarchically partitioned or pipelined control scheme is realized in reduced hardware (several small control units are used instead of one large unit).
-    * ![](../Images/CODHSI/4.4-alu-control-line.png)
-    * ![](../Images/CODHSI/4.4-alu-control.png)
+### The ALU Control
+* For the R-type instructions, the ALU needs to perform one of the five actions (AND, OR, subtract, add, or set on less than), depending on the value of the 6-bit funct (or function) field in the low-order bits of the instruction.
+* We can generate the 4-bit ALU control input using a small control unit that has as inputs the function field of the instruction and a 2-bit control field, which we call ALUOp. ALUOp indicates whether the operation to be performed should be add (00) for loads and stores, subtract (01) for beq, or determined by the operation encoded in the funct field (10).
 
-* Designing the Main Control Unit
-    * ![](../Images/CODHSI/4.4-instruction-class.png)
-    * Instruction format for **R-format instructions**, which all have an opcode of 0. These instructions have three register operands: rs, rt, and rd. Fields rs and rt are sources, and rd is the destination. The ALU function is in the funct field and is decoded by the ALU control design in the previous section. The R-type instructions that we implement are add, sub, AND, OR, and slt. The shamt field is used only for shifts; we will ignore it in this chapter.
-    * Instruction format for **load (opcode = 35ten) and store** (opcode = 43ten) instructions. The register rs is the base register that is added to the 16-bit address field to form the memory address. For loads, rt is the destination register for the loaded value. For stores, rt is the source register whose value should be stored into memory.
-    * Instruction format for **branch equal** (opcode =4). The registers rs and rt are the source registers that are compared for equality. The 16-bit address field is sign-extended, shifted, and added to the PC + 4 to compute the branch target address.
+    ```c++
+    101011  00011 00010 0000000000 [0101 (00)]
+    ALUOp ()
+    ALU control []
+    ```
+* **Multi-level decoding** -- main control generates ALUop bits, which are input to ALU control. The ALU control then generates the three-bit codes
+    * The advantage of a hierarchically partitioned or pipelined control scheme is realized in reduced hardware (several small control units are used instead of one large unit).
+* ![](../Images/CODHSI/4.4-alu-control-line.png)
+* ![](../Images/CODHSI/4.4-alu-control.png)
 
-    * ![](../Images/CODHSI/4.4-datapath-control.png)
+### Designing the Main Control Unit
+* ![](../Images/CODHSI/4.4-instruction-class.png)
+* Instruction format for **R-format instructions**, which all have an opcode of 0. These instructions have three register operands: rs, rt, and rd. Fields rs and rt are sources, and rd is the destination. The ALU function is in the funct field and is decoded by the ALU control design in the previous section. The R-type instructions that we implement are add, sub, AND, OR, and slt. The shamt field is used only for shifts; we will ignore it in this chapter.
 
-    * ![](../Images/CODHSI/4.4-control-signals.png)
-    * ![](../Images/CODHSI/4.4-control-line-truth-table.png)
+    ```c++
+    add $<dst>,     $<src>,     immediate data
+    sub $<dst>,     $<src>,     $<src>
+    mul $<dst>,     $<src>,     $<src>
+    and $<dst>,     $<src>,     $<src>
+    or  $<dst>,     $<src>,     $<src>
+    sll $<dst>,     $<src>,     immediate data
+    srl $<dst>,     $<src>,     immediate data
+    ```
 
-* Operation of the Datapath
-    * R-type instruction, such as add $t1,$t2,$t3
-        1. (IF) The instruction is fetched, and the PC is incremented.
-        2. (ID) Two registers, $t2 and $t3, are read from the register file; also, the main control unit computes the setting of the control lines during this step.
-        3. (EX) The ALU operates on the data read from the register file, using the function code (bits 5:0, which is the funct field, of the instruction) to generate the ALU function.
-        4. (WB) The result from the ALU is written into the register file using bits 15:11 of the instruction to select the destination register ($t1).
-    * jump instruction
-        * ![](../Images/CODHSI/4.4-jump-datapath.png)
-        * the low-order 2 bits of a jump address are always 00two. The next lower 26 bits of this 32-bit address come from the 26-bit immediate field in the instruction.
-        * The upper 4 bits of the address that should replace the PC come from the PC of the jump instruction plus 4. Thus, we can implement a jump by storing into the PC the concatenation of
-            * the upper 4 bits of the current PC + 4 (these are bits 31:28 of the sequentially following instruction address)
-            * the 26-bit immediate field of the jump instruction
-            * the bits 00
-            * ![](../Images/CODHSI/4.4-jump-instruction.png)
+* Instruction format for **load (opcode = 35ten) and store (opcode = 43ten)** instructions. The register rs is the base register that is added to the 16-bit address field to form the memory address. For loads, rt is the destination register for the loaded value. For stores, rt is the source register whose value should be stored into memory.
+
+    ```c++
+    lw $<dst>, offset($<src>)
+    sw $<src>, offset($<dst>)
+    ```
+* Instruction format for **branch equal** (opcode =4). The registers rs and rt are the source registers that are compared for equality. The 16-bit address field is sign-extended, shifted, and added to the PC + 4 to compute the branch target address.
+
+    ```c++
+    beq $<src>, $<src>, branch offset
+    ```
+
+* ![](../Images/CODHSI/4.4-datapath-control.png)
+* ![](../Images/CODHSI/4.4-control-signals.png)
+* ![](../Images/CODHSI/4.4-control-line-truth-table.png)
+
+### Operation of the Datapath
+* The simple datapath with the control unit
+    * ![](../Images/CODHSI/4.4-datapath-control-unit.png)
+    * The input to the control unit is the 6-bit opcode field from the instruction
+    * The outputs of the control unit consist of:
+        * three 1-bit signals that are used to control multiplexors (RegDst, ALUSrc, and MemtoReg)
+        * three signals for controlling reads and writes in the register file and data memory (RegWrite, MemRead, and MemWrite)
+        * a 1-bit signal used in determining whether to possibly branch (Branch)
+        * a 2-bit control signal for the ALU (ALUOp)
+    * An AND gate is used to combine the branch control signal and the Zero output from the ALU; the AND gate output controls the selection of the next PC. Notice that PCSrc is now a derived signal, rather than one coming directly from the control unit.
+
+* The datapath in operation for an R-type instruction
+    1. (IF) The instruction is fetched, and the PC is incremented.
+    2. (ID) Two registers, $t2 and $t3, are read from the register file; also, the main control unit computes the setting of the control lines during this step.
+    3. (EX) The ALU operates on the data read from the register file, using the function code (bits 5:0, which is the funct field, of the instruction) to generate the ALU function.
+    4. (WB) The result from the ALU is written into the register file using bits 15:11 of the instruction to select the destination register ($t1).
+
+    ![](../Images/CODHSI/4.4-datapath-r-type-instruction.png)
+
+* The datapath in operation for a load instruction
+
+    * ![](../Images/CODHSI/4.4-datapath-load-instruction.png)
+
+* The datapath in operation for a branch-on-equal instruction
+    * ![](../Images/CODHSI/4.4-datapath-beq-instruction.png)
+
+* The simple control and datapath are extended to handle the jump instruction
+    * ![](../Images/CODHSI/4.4-datapath-jump-instruction.png)
+    * the low-order 2 bits of a jump address are always 00two. The next lower 26 bits of this 32-bit address come from the 26-bit immediate field in the instruction.
+    * The upper 4 bits of the address that should replace the PC come from the PC of the jump instruction plus 4. Thus, we can implement a jump by storing into the PC the concatenation of:
+        * the upper 4 bits of the current PC + 4 (these are bits 31:28 of the sequentially following instruction address)
+        * the 26-bit immediate field of the jump instruction
+        * the bits 00
+        * ![](../Images/CODHSI/4.4-jump-instruction-field.png)
+    * The jump instruction operates by replacing the lower 28 bits of the PC with the lower 26 bits of the instruction **shifted left by 2 bits**.
 
 * Why a Single-Cycle Implementation Is Not Used Today
     * the clock cycle must have the same length for every instruction in this single-cycle design. Of course, the longest possible path in the processor determines the clock cycle.
@@ -587,3 +651,9 @@ The presence of data and control dependences, which can become `hazards`, are th
 
 ## Reference
 * [4. Processors - Computer Organization and Design (2009)](https://www.cise.ufl.edu/~mssz/CompOrg/CDA-proc.html)
+
+# Solution
+
+https://github.com/dmohindru/cod5e
+
+https://www3.ntu.edu.sg/home/smitha/fyp_gerald/rDatapath.html
