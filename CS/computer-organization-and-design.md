@@ -1,3 +1,86 @@
+# 1Computer Abstractions and Technology
+## 1.1 Introduction
+## 1.2 Eight Great Ideas in Computer Architecture
+## 1.3 Below Your Program
+## 1.4 Under the Covers
+## 1.5 Technologies for Building Processors and Memory
+
+## 1.6 Performance
+
+### 1.6.1 Defining Performance
+
+**response time** Also called **execution time**. The total time required for the computer to complete a task, including disk accesses, memory accesses, I/O activities, operating system overhead, CPU execution time, and so on.
+
+**throughput** Also called **bandwidth**. Another measure of performance, it is the number of tasks completed per unit time.
+
+```c++
+PerformanceX = 1 / Execution timeX
+```
+
+### 1.6.2 Measuring Performance
+
+The most straightforward definition of time is called **wall clock time**, **response time**, or **elapsed time**.
+
+**CPU execution time** Also called **CPU time**. The time the CPU spends computing for this task and does not include time spent waiting for I/O or running other programs.
+
+**user CPU time** The CPU time spent in a program itself.
+
+**system CPU time** The CPU time spent in the operating system performing tasks on behalf of the program.
+
+We maintain a distinction between performance based on elapsed time and that based on CPU execution time. We will use the term **system performance** to refer to elapsed time on an unloaded system and **CPU performance** to refer to user CPU time.
+
+**clock cycle** Also called **tick**, **clock tick**, **clock period**, **clock**, or **cycle**. The time for one clock period, usually of the processor clock, which runs at a constant rate.
+
+**clock period** The length of each clock cycle.
+
+**clock rate** (e.g., 4 gigahertz, or 4 GHz), which is the inverse of the clock period.
+
+### 1.6.3 CPU Performance and Its Factors
+
+```c++
+<CPU execution time for a program> = <CPU clock cycles for a program> * <Clock cycle time>
+```
+
+### 1.6.4 Instruction Performance
+
+**clock cycles per instruction (CPI)** Average number of clock cycles per instruction for a program or program fragment.
+
+```c++
+<CPU clock cycles> = <Instructions for a program> * CPI
+```
+
+Since different instructions may take different amounts of time depending on what they do, CPI is an average of all the instructions executed in the program. CPI provides one way of comparing two different implementations of the same instruction set architecture, since the number of instructions executed for a program will, of course, be the same.
+
+### 1.6.5 The Classic CPU Performance Equation
+
+**instruction count** The number of instructions executed by the program.
+
+```c++
+<CPU time> = <Instruction count> * CPI * <Clock cycle time>
+```
+
+Components of performance | Units of measure
+--- | ---
+CPU execution time for a program | Seconds for the program
+Instruction count | Instructions executed for the program
+Clock cycles per instruction (CPI) | Average number of clock cycles per instruction
+Clock cycle time | Seconds per clock cycle
+
+**instruction mix** A measure of the dynamic frequency of instructions across one or many programs.
+
+Hardware or software component | Affects what? | How?
+--- | --- | ---
+Algorithm | Instruction count, possibly CPI | The algorithm determines the number of source program instructions executed and hence the number of processor instructions executed. The algorithm may also affect the CPI, by favoring slower or faster instructions. For example, if the algorithm uses more divides, it will tend to have a higher CPI.
+Programming language | Instruction count, CPI | The programming language certainly affects the instruction count, since statements in the language are translated to processor instructions, which determine instruction count. The language may also affect the CPI because of its features; for example, a language with heavy support for data abstraction (e.g., Java) will require indirect calls, which will use higher CPI instructions.
+Compiler | Instruction count, CPI | The efficiency of the compiler affects both the instruction count and average cycles per instruction, since the compiler determines the translation of the source language instructions into computer instructions. The compiler’s role can be very complex and affect the CPI in complex ways.
+Instruction set architecture | Instruction count, clock rate, CPI | The instruction set architecture affects all three aspects of CPU performance, since it affects the instructions needed for a function, the cost in cycles of each instruction, and the overall clock rate of the processor.
+
+## 1.7 The Power Wall
+## 1.8 The Sea Change: The Switch from Uniprocessors to Multiprocessors
+## 1.9 Real Stuff: Benchmarking the Intel Core i7
+## 1.10 Fallacies and Pitfalls
+## 1.11 ConcludingRemarks
+## 1.12 Historical Perspective and Further Reading
 
 # 4 The Processor
 
@@ -333,7 +416,7 @@ This forwarding control will be in the `EX stage`, because the ALU forwarding mu
         and (MEM/WB.RegisterRd !=  0)
         and (MEM/WB.RegisterRd = ID/EX.RegisterRs)
     ) ForwardA = 01
-
+    
     if (MEM/WB.RegWrite
         and (MEM/WB.RegisterRd !=  0)
         and (MEM/WB.RegisterRd = ID/EX.RegisterRt)
