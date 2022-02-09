@@ -36,6 +36,7 @@
     * [cmwq](#cmwq)
         * [struct](#wq-struct)
         * [alloc_workqueue](#alloc_workqueue)
+        * [alloc_unbound_pwq](#alloc_unbound_pwq)
         * [create_worker](#create_worker)
         * [worker_thread](#worker_thread)
         * [schedule_work](#schedule_work)
@@ -110,8 +111,7 @@
 // init/main.c
 void start_kernel(void)
 {
-  /* struct task_struct init_task = INIT_TASK(init_task)
-   * #0 process, the only one doesn't created by fork or kernel_thread */
+  /* #0 process, the only one doesn't created by fork or kernel_thread */
   set_task_stack_end_magic(&init_task);
 
   /* set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32) */
@@ -144,6 +144,22 @@ static void rest_init(void)
 
   cpu_startup_entry(CPUHP_ONLINE);
 }
+
+/* init/init_task.c */
+struct task_struct init_task
+#ifdef CONFIG_ARCH_TASK_STRUCT_ON_STACK
+  __init_task_data
+#endif
+= {
+#ifdef CONFIG_THREAD_INFO_IN_TASK
+  .thread_info      = INIT_THREAD_INFO(init_task),
+  .stack_refcount   = ATOMIC_INIT(1),
+#endif
+  .state    = 0,
+  .stack    = init_stack,
+  .usage    = ATOMIC_INIT(2),
+  .flags    = PF_KTHREAD,
+};
 ```
 
 ```c++
@@ -296,6 +312,9 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     POPARGS_##args
 
 #define ENTER_KERNEL int $0x80
+
+/* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
+#define SYS_ify(syscall_name)  __NR_##syscall_name
 
 #define IA32_SYSCALL_VECTOR  0x80
 
@@ -659,89 +678,89 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 
 ### 64
 
-1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
+* glibc
     ```c++
-    # 64-bit system call numbers and entry vectors
+    /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
+    The Linux/x86-64 kernel expects the system call parameters in
+    registers according to the following table:
+        syscall number  rax
+        arg 1           rdi
+        arg 2           rsi
+        arg 3           rdx
+        arg 4           r10
+        arg 5           r8
+        arg 6           r9 */
+    #define DO_CALL(syscall_name, args)  \
+    lea SYS_ify (syscall_name), %rax; \
+    syscall
 
-    # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
-    # The abi is "common", "64" or "x32" for this file.
-    #
-    # <number>  <abi>     <name>    <entry point>
-        0       common    read      __x64_sys_read
-        1       common    write     __x64_sys_write
-        2       common    open      __x64_sys_open
+    /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
+    #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
 
-2. genrate syscall table: arch/x86/entry/syscalls/Makefile
-    ```c++
-    /* 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
-    * arch/sh/include/uapi/asm/unistd_64.h */
-    #define __NR_restart_syscall    0
-    #define __NR_exit               1
-    #define __NR_fork               2
-    #define __NR_read               3
-    #define __NR_write              4
-    #define __NR_open               5
+* syscall_table
+    1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
+        ```c++
+        # 64-bit system call numbers and entry vectors
 
-    /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
-    * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
-    __SYSCALL_64(__NR_open, __x64_sys_read)
-    __SYSCALL_64(__NR_write, __x64_sys_write)
-    __SYSCALL_64(__NR_open, __x64_sys_open)
+        # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
+        # The abi is "common", "64" or "x32" for this file.
+        #
+        # <number>  <abi>     <name>    <entry point>
+            0       common    read      __x64_sys_read
+            1       common    write     __x64_sys_write
+            2       common    open      __x64_sys_open
+        ```
 
-    /* arch/x86/entry/syscall_64.c */
-    #define __SYSCALL_64(nr, sym, qual) [nr] = sym
+    2. genrate syscall table: arch/x86/entry/syscalls/Makefile
+        ```c++
+        /* 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
+        * arch/sh/include/uapi/asm/unistd_64.h */
+        #define __NR_restart_syscall    0
+        #define __NR_exit               1
+        #define __NR_fork               2
+        #define __NR_read               3
+        #define __NR_write              4
+        #define __NR_open               5
 
-    asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
-        /* Smells like a compiler bug -- it doesn't work
-        * when the & below is removed. */
-        [0 ... __NR_syscall_max] = &sys_ni_syscall,
-        #include <asm/syscalls_64.h>
-    };
-    ```
+        /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
+        * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
+        __SYSCALL_64(__NR_open, __x64_sys_read)
+        __SYSCALL_64(__NR_write, __x64_sys_write)
+        __SYSCALL_64(__NR_open, __x64_sys_open)
 
-3. declare implemenation: include/linux/syscalls.h
-    ```c++
-    asmlinkage long sys_write(unsigned int fd, const char __user *buf, size_t count);
-    asmlinkage long sys_read(unsigned int fd, char __user *buf, size_t count);
-    asmlinkage long sys_open(const char __user *filename, int flags, umode_t mode);
-    ```
+        /* arch/x86/entry/syscall_64.c */
+        #define __SYSCALL_64(nr, sym, qual) [nr] = sym
 
-4. define implemenation: fs/open.c
-    ```c++
-    #include <linux/syscalls.h>
-    SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
-    {
-        if (force_o_largefile())
-            flags |= O_LARGEFILE;
+        asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+            /* Smells like a compiler bug -- it doesn't work
+            * when the & below is removed. */
+            [0 ... __NR_syscall_max] = &sys_ni_syscall,
+            #include <asm/syscalls_64.h>
+        };
+        ```
 
-        return do_sys_open(AT_FDCWD, filename, flags, mode);
-    }
-    ```
+    3. declare implemenation: include/linux/syscalls.h
+        ```c++
+        asmlinkage long sys_write(unsigned int fd, const char __user *buf, size_t count);
+        asmlinkage long sys_read(unsigned int fd, char __user *buf, size_t count);
+        asmlinkage long sys_open(const char __user *filename, int flags, umode_t mode);
+        ```
+
+    4. define implemenation: fs/open.c
+        ```c++
+        #include <linux/syscalls.h>
+
+        SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+        {
+            if (force_o_largefile())
+                flags |= O_LARGEFILE;
+
+            return do_sys_open(AT_FDCWD, filename, flags, mode);
+        }
+        ```
 
 ```c++
-/* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
-  The Linux/x86-64 kernel expects the system call parameters in
-  registers according to the following table:
-    syscall number  rax
-    arg 1           rdi
-    arg 2           rsi
-    arg 3           rdx
-    arg 4           r10
-    arg 5           r8
-    arg 6           r9 */
-#define DO_CALL(syscall_name, args)  \
-  lea SYS_ify (syscall_name), %rax; \
-  syscall
-```
-
-```c++
-/* linux-4.19.y/arch/parisc/include/asm/unistd.h */
-#define SYS_ify(syscall_name)   __NR_##syscall_name
-
-/* linux-4.19.y/include/uapi/asm-generic/unistd.h */
-#define __NR_socket   198
-
 /* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
 wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
 
@@ -4210,6 +4229,7 @@ kthread();
 
 ![](../Images/Kernel/proc-workqueue-flow.png)
 
+* `nr_running`    `nr_active`    `max_active`    `CPU_INTENSIVE` control the concurrency
 ---
 
 ![](../Images/Kernel/proc-workqueue-state.png)
@@ -5976,7 +5996,7 @@ worker_thread();
         if (prev->flags & PF_WQ_WORKER)
             to_wakeup = wq_worker_sleeping()
                 if (pool->cpu != raw_smp_processor_id())
-                return NULL;
+                    return NULL;
                 /* only wakeup idle thread when running task is going to suspend in process_one_work */
                 if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
                     to_wakeup = first_idle_worker(pool);
@@ -11783,27 +11803,27 @@ static inline void _set_gate(
 
 // arch/x86/include/asm/traps.h
 enum {
-  X86_TRAP_DE = 0,  /*  0, Divide-by-zero */
-  X86_TRAP_DB,    /*  1, Debug */
-  X86_TRAP_NMI,    /*  2, Non-maskable Interrupt */
-  X86_TRAP_BP,    /*  3, Breakpoint */
-  X86_TRAP_OF,    /*  4, Overflow */
-  X86_TRAP_BR,    /*  5, Bound Range Exceeded */
-  X86_TRAP_UD,    /*  6, Invalid Opcode */
-  X86_TRAP_NM,    /*  7, Device Not Available */
-  X86_TRAP_DF,    /*  8, Double Fault */
-  X86_TRAP_OLD_MF,  /*  9, Coprocessor Segment Overrun */
-  X86_TRAP_TS,    /* 10, Invalid TSS */
-  X86_TRAP_NP,    /* 11, Segment Not Present */
-  X86_TRAP_SS,    /* 12, Stack Segment Fault */
-  X86_TRAP_GP,    /* 13, General Protection Fault */
-  X86_TRAP_PF,    /* 14, Page Fault */
-  X86_TRAP_SPURIOUS,  /* 15, Spurious Interrupt */
-  X86_TRAP_MF,    /* 16, x87 Floating-Point Exception */
-  X86_TRAP_AC,    /* 17, Alignment Check */
-  X86_TRAP_MC,    /* 18, Machine Check */
-  X86_TRAP_XF,    /* 19, SIMD Floating-Point Exception */
-  X86_TRAP_IRET = 32,  /* 32, IRET Exception */
+  X86_TRAP_DE = 0,      /*  0, Divide-by-zero */
+  X86_TRAP_DB,          /*  1, Debug */
+  X86_TRAP_NMI,         /*  2, Non-maskable Interrupt */
+  X86_TRAP_BP,          /*  3, Breakpoint */
+  X86_TRAP_OF,          /*  4, Overflow */
+  X86_TRAP_BR,          /*  5, Bound Range Exceeded */
+  X86_TRAP_UD,          /*  6, Invalid Opcode */
+  X86_TRAP_NM,          /*  7, Device Not Available */
+  X86_TRAP_DF,          /*  8, Double Fault */
+  X86_TRAP_OLD_MF,      /*  9, Coprocessor Segment Overrun */
+  X86_TRAP_TS,          /* 10, Invalid TSS */
+  X86_TRAP_NP,          /* 11, Segment Not Present */
+  X86_TRAP_SS,          /* 12, Stack Segment Fault */
+  X86_TRAP_GP,          /* 13, General Protection Fault */
+  X86_TRAP_PF,          /* 14, Page Fault */
+  X86_TRAP_SPURIOUS,    /* 15, Spurious Interrupt */
+  X86_TRAP_MF,          /* 16, x87 Floating-Point Exception */
+  X86_TRAP_AC,          /* 17, Alignment Check */
+  X86_TRAP_MC,          /* 18, Machine Check */
+  X86_TRAP_XF,          /* 19, SIMD Floating-Point Exception */
+  X86_TRAP_IRET = 32,   /* 32, IRET Exception */
 };
 ```
 
@@ -11820,8 +11840,7 @@ void __init native_init_IRQ(void)
 
   for_each_clear_bit_from(i, used_vectors, first_system_vector) {
     /* IA32_SYSCALL_VECTOR could be used in trap_init already. */
-    set_intr_gate(i, irq_entries_start +
-        8 * (i - FIRST_EXTERNAL_VECTOR));
+    set_intr_gate(i, irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR));
   }
 }
 
