@@ -416,7 +416,7 @@ This forwarding control will be in the `EX stage`, because the ALU forwarding mu
         and (MEM/WB.RegisterRd !=  0)
         and (MEM/WB.RegisterRd = ID/EX.RegisterRs)
     ) ForwardA = 01
-    
+
     if (MEM/WB.RegWrite
         and (MEM/WB.RegisterRd !=  0)
         and (MEM/WB.RegisterRd = ID/EX.RegisterRt)
@@ -485,20 +485,29 @@ An instruction must be fetched at every clock cycle to sustain the pipeline, yet
 
 One improvement over branch stalling is to predict that the branch will not be taken and thus continue execution down the sequential instruction stream. If the branch is taken, the instructions that are being fetched and decoded must be discarded.
 
-To discard instructions, we merely change the original control values to 0s, much as we did to stall for a load-use data hazard. The difference is that we must also change the three instructions in the IF, ID, and EX stages when the branch reaches the MEM stage; for load-use stalls, we just change control to 0 in the ID stage and let them percolate through the pipeline. Discarding instructions, then, means we must be able to flush instructions in the IF, ID, and EX stages of the pipeline.
+To discard instructions, we merely change the original control values to 0s, much as we did to stall for a load-use data hazard. The difference is that we must also change the three instructions in the IF, ID, and EX stages when the branch reaches the MEM stage; __for load-use stalls, we just change control to 0 in the ID stage__ and let them percolate through the pipeline. Discarding instructions, then, means we must be able to `flush` instructions in the IF, ID, and EX stages of the pipeline.
+
+**flush** To discard instructions in a pipeline, usually due to an unexpected event.
 
 ### Reducing the Delay of Branches
 
 One way to improve branch performance is to reduce the cost of the taken branch.
+
+We have assumed the next PC for a branch is selected in the MEM stage, but if we move the branch execution earlier in the pipeline, then fewer instructions need be flushed.
 
 The MIPS architecture was designed to support fast single-cycle branches that could be pipelined with a small branch penalty.
 
 The designers observed that many branches rely only on simple tests (equality or sign, for example) and that such tests do not require a full ALU operation but can be done with at most a few gates. When a more complex branch decision is required, a separate instruction that uses an ALU to perform a comparison is required - a situation that is similar to the use of condition codes for branches.
 
 Moving the branch decision up requires two actions to occur earlier: computing the branch target address and evaluating the branch decision:
-1. The easy part of this change is to move up the branch address calculation. We already have the PC value and the immediate field in the IF/ID pipeline register, so we just move the branch adder from the EX stage to the ID stage.
-2. To implement branch on equal (and its inverse), we will need to forward results to the equality test logic that operates during ID. There are two complicating factors:
+1. The easy part of this change is to move up the branch address calculation. We already have the PC value and the immediate field in the IF/ID pipeline register, so we just **move the branch adder from the EX stage to the ID stage**.
+2. Moving the branch test to the ID stage implies additional forwarding and hazard detection hardware, since a branch dependent on a result still in the pipeline must still work properly with this optimization.
+
+    To implement branch on equal (and its inverse), we will need to forward results to the equality test logic that operates during ID. There are two complicating factors:
+
     * During ID, we must decode the instruction, decide whether a bypass to the equality unit is needed, and complete the equality comparison so that if the instruction is a branch, we can set the PC to the branch target address. Forwarding for the operands of branches was formerly handled by the ALU forwarding logic, but the introduction of the equality test unit in ID will require new forwarding logic. Note that the bypassed source operands of a branch can come from either the ALU/MEM or MEM/WB pipeline latches.
+        * Forwarding for the operands of branches was formerly handled by the ALU forwarding logic, but the introduction of the equality test unit in ID will require new forwarding logic. Note that the bypassed source operands of a branch can come from either the ALU/MEM or MEM/WB pipeline latches.
+
     * Because the values in a branch comparison are needed during ID but may be produced later in time, it is possible that a data hazard can occur and a stall will be needed.
 
 Despite these difficulties, moving the branch execution to the ID stage is an improvement, because it reduces the penalty of a branch to only one instruction if the branch is taken, namely, the one currently being fetched.
@@ -525,9 +534,47 @@ Example
 
 **Dynamic branch prediction** Prediction of branches at runtime using runtime information.
 
-**Branch prediction buffer** Also called branch history table. A small memory that is indexed by the lower portion of the address of the branch instruction and that contains one or more bits indicating whether the branch was recently taken or not.
+**Branch prediction buffer** Also called **branch history table**. A small memory that is indexed by the lower portion of the address of the branch instruction and that contains one or more bits indicating whether the branch was recently taken or not.
 
 One approach is to look up the address of the instruction to see if a branch was taken the last time this instruction was executed, and, if so, to begin fetching new instructions from the same place as the last time. This technique is called `dynamic branch prediction`.
+
+This simple 1-bit prediction scheme has a performance shortcoming: even if a branch is almost always taken, we can predict incorrectly twice, rather than once, when it is not taken. To remedy this weakness, 2-bit prediction schemes are often used. In a 2-bit scheme, a prediction must be wrong twice before it is changed.
+
+A branch prediction buffer can be implemented as a small, special buffer accessed with the instruction address `during the IF pipe stage`. If the instruction is predicted as taken, fetching begins from the target as soon as the PC is known; as mentioned on page 318, it can be as early as the ID stage.
+
+The states in a 2-bit prediction scheme
+* ![](../Images/CODHSI/4.8-branch-prediction-two-bits.png)
+
+A **delayed branch** always executes the following instruction, but the second instruction following the branch will be affected by the branch.
+
+Compilers and assemblers try to place an instruction that always executes after the branch in the branch delay slot. The job of the software is to make the successor instructions valid and useful.
+
+**branch delay slot** The slot directly after a delayed branch instruction, which in the MIPS architecture is filled by an instruction that does not affect the branch.
+
+Scheduling the branch delay slot
+* ![](../Images/CODHSI/4.8-branch-delay-slot.png)
+    * (a) the delay slot is scheduled with an independent instruction from before the branch. This is the best choice.
+    * for (b) and (c), the use of $s1 in the branch condition prevents the add instruction (whose destination is $s1) from being moved into the branch delay slot.
+    * (b) the branch delay slot is scheduled from the target of the branch; usually the target instruction will need to be copied because it can be reached by another path. Strategy (b) is preferred when the branch is taken with high probability, such as a loop branch.
+    * Finally, the branch may be scheduled from the not-taken fall-through as in (c).
+    * To make this optimization legal for (b) or (c), it must be OK to execute the sub instruction when the branch goes in the unexpected direction. By “OK” we mean that the work is wasted, but the program will still execute correctly. This is the case, for example, if $t4 were an unused temporary register when the branch goes in the unexpected direction.
+
+The limitations on delayed branch scheduling arise from:
+1. the restrictions on the instructions that are scheduled into the delay slots and
+2. our ability to predict at compile time whether a branch is likely to be taken or not.
+
+A branch predictor tells us whether or not a branch is taken, but still requires the calculation of the branch target. In the five-stage pipeline, this calculation takes one cycle, meaning that taken branches will have a 1-cycle penalty. **Delayed branches** are one approach to eliminate that penalty. Another approach is to use a cache to hold the destination program counter or destination instruction using a **branch target buffer**:
+* A structure that caches the destination PC or destination instruction for a branch. It is usually organized as a cache with tags, making it more costly than a simple prediction buffer. Only predicted taken branches and jumps held in BTB.
+
+**correlating predictor** A branch predictor that combines local behavior of a particular branch and global information about the behavior of some recent number of executed branches.
+
+**tournament branch predictor** A branch predictor with multiple predictions for each branch and a selection mechanism that chooses which predictor to enable for a given branch.
+
+One way to reduce the number of conditional branches is to add **conditional move instructions**. Instead of changing the PC with a conditional branch, the instruction conditionally changes the destination register of the move.
+
+### Pipeline Summary
+
+We explained instruction pipelining step-by-step, starting with the single-cycle `datapath` and then adding `pipeline registers`, `forwarding paths`, `data hazard detection`, `branch prediction`, and `flushing instructions` on exceptions.
 
 ![](../Images/CODHSI/4.8-pipeline-final.png)
 
@@ -732,8 +779,11 @@ The presence of data and control dependences, which can become `hazards`, are th
 
 ## 4.16 Historical Perspective and Further Reading
 
-## Reference
+# Reference
 * [4. Processors - Computer Organization and Design (2009)](https://www.cise.ufl.edu/~mssz/CompOrg/CDA-proc.html)
+* [CMU: Introduction to Computer Architecture, Spring 2022](https://users.ece.cmu.edu/~jhoe/doku/doku.php?id=18-447_course_schedule_spring_2022)
+* [UC Berkeley: CS252 Graduate Computer Architecture Spring 2011](https://people.eecs.berkeley.edu/~kubitron/courses/cs252-S11)
+* [UC Berkeley: CS252 Graduate Computer Architecture](https://inst.eecs.berkeley.edu/~cs252/archives.html)
 
 # Solution
 
