@@ -219,7 +219,7 @@ An **edge-triggered clocking methodology** means that any values stored in a seq
         * a 2-bit control signal for the ALU (ALUOp)
     * An AND gate is used to combine the branch control signal and the Zero output from the ALU; the AND gate output controls the selection of the next PC. Notice that PCSrc is now a derived signal, rather than one coming directly from the control unit.
 
-* The datapath in operation for an R-type instruction
+* The datapath in operation for an **R-type instruction**
     1. (IF) The instruction is fetched, and the PC is incremented.
     2. (ID) Two registers, $t2 and $t3, are read from the register file; also, the main control unit computes the setting of the control lines during this step.
     3. (EX) The ALU operates on the data read from the register file, using the function code (bits 5:0, which is the funct field, of the instruction) to generate the ALU function.
@@ -227,14 +227,14 @@ An **edge-triggered clocking methodology** means that any values stored in a seq
 
     ![](../Images/CODHSI/4.4-datapath-r-type-instruction.png)
 
-* The datapath in operation for a load instruction
+* The datapath in operation for a **load instruction**
 
     * ![](../Images/CODHSI/4.4-datapath-load-instruction.png)
 
-* The datapath in operation for a branch-on-equal instruction
+* The datapath in operation for a **branch-on-equal instruction**
     * ![](../Images/CODHSI/4.4-datapath-beq-instruction.png)
 
-* The simple control and datapath are extended to handle the jump instruction
+* The simple control and datapath are extended to handle the **jump instruction**
     * ![](../Images/CODHSI/4.4-datapath-jump-instruction.png)
     * the low-order 2 bits of a jump address are always 00two. The next lower 26 bits of this 32-bit address come from the 26-bit immediate field in the instruction.
     * The upper 4 bits of the address that should replace the PC come from the PC of the jump instruction plus 4. Thus, we can implement a jump by storing into the PC the concatenation of:
@@ -456,9 +456,11 @@ Note that the EX/MEM.RegisterRd field is the register destination for either an 
 
 one case where forwarding cannot save the day is when an instruction tries to read a register following a load instruction that writes the same register.
 
+
 ![](../Images/CODHSI/4.7-hazard-load-load.png)
 * Since the dependence between the load and the following instruction (and) goes backward in time, this hazard cannot be solved by forwarding. Hence, this combination must result in a stall by the hazard detection unit.
 
+We need a hazard detection unit. It operates during the **ID stage** so that it can insert the stall between the load and its use.
 ```c++
 if (ID/EX.MemRead
     and ((ID/EX.RegisterRt = IF/ID.RegisterRs)
@@ -466,6 +468,8 @@ if (ID/EX.MemRead
     )
 ) stall the pipeline
 ```
+* The first line tests to see if the instruction is a load: the only instruction that reads data memory is a load.
+* The next two lines check to see if the destination register field of the load in the EX stage matches either source register of the instruction in the ID stage.
 
 If the instruction in the ID stage is stalled, then the instruction in the IF stage must also be stalled; otherwise, we would lose the fetched instruction. Preventing these two instructions from making progress is accomplished simply by preventing the PC register and the IF/ID pipeline register from changing. Provided these registers are preserved, the instruction in the IF stage will continue to be read using the same PC, and the registers in the ID stage will continue to be read using the same instruction fields in the IF/ID pipeline register.
 
@@ -474,8 +478,8 @@ If the instruction in the ID stage is stalled, then the instruction in the IF st
 ![](../Images/CODHSI/4.7-nop.png)
 
 ![](../Images/CODHSI/4.7-hazard-detecting-unit-forwarding-unit.png)
-* The forwarding unit controls the ALU multiplexors to replace the value from a general-purpose register with the value from the proper pipeline register.
-* The hazard detection unit controls the writing of the PC and IF/ID registers plus the multiplexor that chooses between the real control values and all 0s. The hazard detection unit stalls and deasserts the control fields if the load-use hazard test above is true
+* The **forwarding unit** controls the ALU multiplexors to replace the value from a general-purpose register with the value from the proper pipeline register.
+* The **hazard detection unit** controls the writing of the `PC` and `IF/ID registers` plus the `multiplexor` that chooses between the real control values and all 0s. The hazard detection unit stalls and deasserts the control fields if the load-use hazard test above is true
 
 ## 4.8 Control Hazards
 
@@ -620,7 +624,7 @@ The hardware and the operating system must work in conjunction so that exception
 
 ## 4.10 Parallelism via Instructions
 
-Pipelining exploits the potential parallelism among instructions. This parallelism is called instruction-level parallelism (ILP).
+Pipelining exploits the potential parallelism among instructions. This parallelism is called **instruction-level parallelism (ILP)**.
 
 There are two primary methods for increasing the potential amount of instruction-level parallelism:
 1. increasing the depth of the pipeline to overlap more instructions
@@ -787,6 +791,5 @@ The presence of data and control dependences, which can become `hazards`, are th
 
 # Solution
 
-https://github.com/dmohindru/cod5e
-
-https://www3.ntu.edu.sg/home/smitha/fyp_gerald/rDatapath.html
+* https://github.com/dmohindru/cod5e
+* [MIPS Diagram](https://www3.ntu.edu.sg/home/smitha/fyp_gerald/rDatapath.html)
