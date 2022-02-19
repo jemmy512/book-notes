@@ -10,6 +10,7 @@
 * [Distributed System Principle and Algorithm (GeekTime)](./Arch/gt-distributed-system-principle-and-algorithm.md)
 * [Microservice and Architecure Design (GeekTime)](./Arch/gt-microservice-and-architecure-design.md)
 * [Web-application Software Architecture :soon:](./Arch/web-application-software-architecture.md)
+* [Pattern-Oriented Software Architecture, Volume 1: A System of Patterns]() [Volume 2: Patterns for Concurrent and Networked Objects]() [Volume 3: Patterns for Resource Management]() [Volume 4: A Pattern Language for Distributed Computing]() [Volume 5: On Patterns and Pattern Languages]()
 
 # Computer Science
 
