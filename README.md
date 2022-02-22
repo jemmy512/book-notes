@@ -10,7 +10,7 @@
 * [Distributed System Principle and Algorithm (GeekTime)](./Arch/gt-distributed-system-principle-and-algorithm.md)
 * [Microservice and Architecure Design (GeekTime)](./Arch/gt-microservice-and-architecure-design.md)
 * [Web-application Software Architecture :soon:](./Arch/web-application-software-architecture.md)
-* [Pattern-Oriented Software Architecture :soon:]()[
+* [Pattern-Oriented Software Architecture :soon:]()
     * [Volume 1: A System of Patterns]()
     * [Volume 2: Patterns for Concurrent and Networked Objects]()
     * [Volume 3: Patterns for Resource Management]()
@@ -83,3 +83,7 @@
 * [Linux Kernel Development :soon:](./linux-kernel-development.md)
 * [Linux Basic](./Linux/linux-basic.md)
 * [Linux Performance Tuning](./Linux/linux-performance-tuning.md)
+
+
+# Others
+* [Debug kernel with VS Code](./Linux/vscode-debug-kernel.md)
