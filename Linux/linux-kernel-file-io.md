@@ -42,6 +42,10 @@
     * [init request_queue](#init-request_queue)
     * [blk_plug](#blk_plug)
 
+![](../Images/Kernel/kernel-structual.svg)
+
+---
+
 ![](../Images/Kernel/file-arch.png)
 
 # File Management
