@@ -96,6 +96,10 @@
     * [sock_def_write_space](#sock_def_write_space)
 * [inet_init](#inet_init)
 
+![](../Images/Kernel/kernel-structual.svg)
+
+---
+
 ![](../Images/Kernel/net-socket-sock.png)
 ![](../Images/Kernel/net-send-data-flow.png)
 

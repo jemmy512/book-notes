@@ -1,38 +1,40 @@
 # Table of Contents
-* [Memory Management](#Memory-Management)
-    * [segment](#segment)
-    * [paging](#paging)
-    * [mm_init](#mm_init)
-    * [user virtual space](#user-virtual-space)
-    * [kernel virtual space](#kernel-virtual-space)
-    * [numa](#numa)
-        * [node](#node)
-        * [zone](#zone)
-        * [page](#page)
-    * [buddy system](#buddy-system)
-    * [alloc_pages](#alloc_pages)
-    * [kmem_cache](#kmem_cache)
-        * [kmem_cache_create](#kmem_cache_create)
-        * [kmem_cache_alloc](#kmem_cache_alloc)
-        * [kmem_cache_alloc_node](#kmem_cache_alloc_node)
-    * [slab_alloc](#slab_alloc)
-    * [kswapd](#kswapd)
-    * [brk](#brk)
-    * [mmap](#mmap)
-    * [page fault](#page-fault)
-        * [do_anonymous_page](#do_anonymous_page)
-        * [do_fault](#do_fault)
-        * [do_swap_page](#do_swap_page)
-    * [pgd](#pgd)
-    * [kernel mapping](#kernel-mapping)
-    * [kmalloc](#kmalloc)
-    * [kmap_atomic](#kmap_atomic)
-    * [page_address](#page_address)
-    * [vmalloc](#vmalloc)
-    * [vmalloc_fault](#vmalloc_fault)
+* [segment](#segment)
+* [paging](#paging)
+* [mm_init](#mm_init)
+* [user virtual space](#user-virtual-space)
+* [kernel virtual space](#kernel-virtual-space)
+* [numa](#numa)
+    * [node](#node)
+    * [zone](#zone)
+    * [page](#page)
+* [buddy system](#buddy-system)
+* [alloc_pages](#alloc_pages)
+* [kmem_cache](#kmem_cache)
+    * [kmem_cache_create](#kmem_cache_create)
+    * [kmem_cache_alloc](#kmem_cache_alloc)
+    * [kmem_cache_alloc_node](#kmem_cache_alloc_node)
+* [slab_alloc](#slab_alloc)
+* [kswapd](#kswapd)
+* [brk](#brk)
+* [mmap](#mmap)
+* [page fault](#page-fault)
+    * [do_anonymous_page](#do_anonymous_page)
+    * [do_fault](#do_fault)
+    * [do_swap_page](#do_swap_page)
+* [pgd](#pgd)
+* [kernel mapping](#kernel-mapping)
+* [kmalloc](#kmalloc)
+* [kmap_atomic](#kmap_atomic)
+* [page_address](#page_address)
+* [vmalloc](#vmalloc)
+* [vmalloc_fault](#vmalloc_fault)
 
-# Memory Management
-### segment
+![](../Images/Kernel/kernel-structual.svg)
+
+---
+
+# segment
 ```C++
 #define GDT_ENTRY_INIT(flags, base, limit) { { { \
     .a = ((limit) & 0xffff) | (((base) & 0xffff) << 16), \
@@ -65,12 +67,12 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 ```
 ![linux-mem-segment.png](../Images/Kernel/mem-segment.png)
 
-### paging
+# paging
 ![linux-mem-segment-page.png](../Images/Kernel/mem-segment-page.png)
 
 ![linux-mem-page-table.png](../Images/Kernel/mem-kernel-page-table.png)
 
-### mm_init
+# mm_init
 ```c++
 void start_kernel(void) {
   mm_init();
@@ -89,7 +91,7 @@ static void __init mm_init(void)
 }
 ```
 
-### user virtual space
+# user virtual space
 ```C++
 
 #ifdef CONFIG_X86_32
@@ -144,7 +146,7 @@ struct vm_area_struct {
 ```
 ![linux-mem-vm.png](../Images/Kernel/mem-vm.png)
 
-### kernel virtual space
+# kernel virtual space
 ```C++
 /* PKMAP_BASE:
  * use alloc_pages() get struct page, user kmap() map the page to this area */
@@ -160,7 +162,7 @@ struct vm_area_struct {
 
 ![linux-mem-user-kernel-64.png](../Images/Kernel/mem-user-kernel-64.png)
 
-### numa
+# numa
 #### node
 ```C++
 struct pglist_data *node_data[MAX_NUMNODES];
@@ -339,14 +341,14 @@ struct page {
 ![linux-mem-physic-numa.png](../Images/Kernel/mem-physic-numa-1.png)
 ![linux-mem-physic-numa.png](../Images/Kernel/mem-physic-numa-2.png)
 
-### buddy system
+# buddy system
 ```C++
 struct free_area  free_area[MAX_ORDER];
 #define MAX_ORDER 11
 ```
 ![linux-mem-buddy-freepages.png](../Images/Kernel/mem-buddy-freepages.png)
 
-### alloc_pages
+# alloc_pages
 ```C++
 #define alloc_page(gfp_mask) alloc_pages(gfp_mask, 0)
 
@@ -427,7 +429,7 @@ static inline void expand(struct zone *zone, struct page *page,
 }
 ```
 
-### kmem_cache
+# kmem_cache
 ![linux-mem-kmem-cache-cpu-node.png](../Images/Kernel/mem-kmem-cache-cpu-node.png)
 ![linux-mem-kmem-cache.png](../Images/Kernel/mem-kmem-cache.png)
 
@@ -900,7 +902,7 @@ unsigned int size_index_elem(unsigned int bytes)
 }
 ```
 
-### slab_alloc
+# slab_alloc
 ```C++
 static __always_inline void *slab_alloc(
   struct kmem_cache *s, gfp_t gfpflags, unsigned long addr)
@@ -1160,7 +1162,7 @@ slab_alloc()
   * [slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
   * [Slub allocator](https://www.cnblogs.com/LoyenWang/p/11922887.html)
 
-### kswapd
+# kswapd
 ```C++
 //1. active page out when alloc
 get_page_from_freelist();
@@ -1241,7 +1243,7 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 }
 ```
 
-### brk
+# brk
 ```C++
 /* mm/mmap.c */
 SYSCALL_DEFINE1(brk, unsigned long, brk)
@@ -1375,7 +1377,7 @@ unsigned long get_unmapped_area(
 }
 ```
 
-### mmap
+# mmap
 ![](../Images/Kernel/mem-mmap-vma-file-page.png)
 ```C++
 struct mm_struct {
@@ -1907,7 +1909,7 @@ mm->get_unmapped_area();
       unmapped_area();
 ```
 
-### page fault
+# page fault
 ```C++
 struct file {
   struct file_operations* f_op;
@@ -2573,7 +2575,7 @@ do_page_fault();
 ```
 ![linux-mem-page-fault.png](../Images/Kernel/mem-page-fault.png)
 
-### pgd
+# pgd
 `cr3` register points to current process's `pgd`, which is set by `load_new_mm_cr3`.
 ```C++
 /* alloc pgd in mm_struct when forking */
@@ -2610,7 +2612,7 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 }
 ```
 
-### kernel mapping
+# kernel mapping
 ```C++
 // arch/x86/include/asm/pgtable_64.h
 extern pud_t level3_kernel_pgt[512];
@@ -2752,7 +2754,7 @@ unsigned long kernel_physical_mapping_init(
 }
 ```
 
-### kmalloc
+# kmalloc
 ```c++
 /* kmalloc is the normal method of allocating memory
  * for objects smaller than page size in the kernel. */
@@ -2827,7 +2829,7 @@ void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
 }
 ```
 
-### kmap_atomic
+# kmap_atomic
 ```C++
 void *kmap_atomic(struct page *page)
 {
@@ -2852,7 +2854,7 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 }
 ```
 
-### page_address
+# page_address
 ```c++
 /* get the mapped virtual address of a page */
 void *page_address(const struct page *page)
@@ -2891,7 +2893,7 @@ static  void *lowmem_page_address(const struct page *page)
 #define page_to_virt(x)  __va(PFN_PHYS(page_to_pfn(x)
 ```
 
-### vmalloc
+# vmalloc
 ```C++
 /* The kmalloc() function guarantees that the pages are
  * physically contiguous (and virtually contiguous).
@@ -2991,7 +2993,7 @@ fail:
 }
 ```
 
-### vmalloc_fault
+# vmalloc_fault
 ```C++
 static int vmalloc_fault(unsigned long address)
 {
