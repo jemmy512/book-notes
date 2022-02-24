@@ -1,3 +1,102 @@
+# 3 Processes
+## 3.1 Processes, Lightweight Processes, and Threads
+## 3.2 Process Descriptor
+## 3.3 Process Switch
+### 3.3.1 Hardware Context
+
+The set of data that must be loaded into the registers before the process resumes its execution on the CPU is called the **hardware context**. The hardware context is a sub- set of the process execution context, which includes all information needed for the process execution. In Linux, a part of the hardware context of a process is stored in the process descriptor, while the remaining part is saved in the Kernel Mode stack.
+
+We can thus define a **process switch** as the activity consist- ing of saving the hardware context of prev and replacing it with the hardware con- text of next.
+
+The contents of all registers used by a process in User Mode have already been saved on the Kernel Mode stack before per- forming process switching (see Chapter 4). This includes the contents of the ss and esp pair that specifies the User Mode stack pointer address.
+
+### 3.3.2 Task State Segment
+
+```c++
+struct __attribute__ ((__packed__)) vmcb_seg {
+    u16 selector;
+    u16 attrib;
+    u32 limit;
+    u64 base;
+};
+
+struct __attribute__ ((__packed__)) vmcb_save_area {
+    struct vmcb_seg es;
+    struct vmcb_seg cs;
+    struct vmcb_seg ss;
+    struct vmcb_seg ds;
+    struct vmcb_seg fs;
+    struct vmcb_seg gs;
+    struct vmcb_seg gdtr;
+    struct vmcb_seg ldtr;
+    struct vmcb_seg idtr;
+    struct vmcb_seg tr;
+    u8 reserved_1[43];
+    u8 cpl;
+    u8 reserved_2[4];
+    u64 efer;
+    u8 reserved_3[112];
+    u64 cr4;
+    u64 cr3;
+    u64 cr0;
+    u64 dr7;
+    u64 dr6;
+    u64 rflags;
+    u64 rip;
+    u8 reserved_4[88];
+    u64 rsp;
+    u8 reserved_5[24];
+    u64 rax;
+    u64 star;
+    u64 lstar;
+    u64 cstar;
+    u64 sfmask;
+    u64 kernel_gs_base;
+    u64 sysenter_cs;
+    u64 sysenter_esp;
+    u64 sysenter_eip;
+    u64 cr2;
+    u8 reserved_6[32];
+    u64 g_pat;
+    u64 dbgctl;
+    u64 br_from;
+    u64 br_to;
+    u64 last_excp_from;
+    u64 last_excp_to;
+};
+
+struct __attribute__ ((__packed__)) vmcb {
+    struct vmcb_control_area control;
+    struct vmcb_save_area save;
+};
+```
+
+#### 3.3.2.1 The thread field
+
+Each process descriptor includes a field called thread of type **thread_struct**, in which the kernel saves the hardware context whenever the process is being switched out.
+
+This data structure includes fields for most of the CPU regis- ters, except the general-purpose registers such as eax, ebx, etc., which are stored in the Kernel Mode stack.
+
+### 3.3.3 Performing the Process Switch
+Essentially, every process switch consists of two steps:
+1. Switching the Page Global Directory to install a new address space (Chapter 9).
+2. Switching the Kernel Mode stack and the hardware context, which provides all the information needed by the kernel to execute the new process, including the CPU registers.
+
+#### 3.3.3.1 The switch_to macro
+
+Before the process switching, the macro saves in the eax CPU register the content of the variable identified by the first input parameter prev—that is, the prev local variable allocated on the Kernel Mode stack of A. After the process switching, when A has resumed its execution, the macro writes the content of the eax CPU register in the memory location of A identified by the third output parameter last. Because the CPU register doesn’t change across the process switch, this memory location receives the address of C’s descriptor. In the current implementation of schedule(), the last parameter identifies the prev local variable of A, so prev is overwritten with the address of C.
+
+
+
+#### 3.3.3.2 The __swith_to function
+
+#### 3.3.4 Saving and Loading the FPU, MMX, and XMM Registers
+
+
+## 3.4 Creating Processes
+## 3.5 Destroying Processes
+
+
 # 6 Timing Measurements
 Two main kinds of timing measurement that must be performed by the Linux kernel:
 1. Keeping the current time and date so they can be returned to user programs through the time(), ftime(), and gettimeofday() APIs and used by the kernel itself as timestamps for files and network packets
@@ -144,16 +243,154 @@ Despite the clever data structures, handling software timers is a time-consuming
 ```C++
 static void udelay(int loops)
 {
-	while (loops--)
-		io_delay();	/* Approximately 1 us */
+    while (loops--)
+        io_delay();    /* Approximately 1 us */
 }
 
 static inline void io_delay(void)
 {
-	const u16 DELAY_PORT = 0x80;
-	asm volatile("outb %%al,%0" : : "dN" (DELAY_PORT));
+    const u16 DELAY_PORT = 0x80;
+    asm volatile("outb %%al,%0" : : "dN" (DELAY_PORT));
 }
 ```
+
+# 7 Process Scheduling
+
+## 7.1 Scheduling Policy
+
+Objectives: fast process response time, good throughput for background jobs, avoidance of process starvation, reconciliation of the needs of low- and high- priority processes, and so on.
+
+Linux scheduling is based on the time sharing technique: several processes run in “time multiplexing” because the CPU time is divided into slices, one for each runnable pro- cess.
+
+The scheduling policy is also based on ranking processes according to their priority.
+
+When speaking about scheduling, processes are traditionally classified as I/O-bound or CPU-bound.
+
+An alternative classification distinguishes three classes of processes: Interactive processes, Batch processes, Real-time processes.
+
+System call | Description
+--- | ---
+nice( ) | Change the static priority of a conventional process
+getpriority( ) | Get the maximum static priority of a group of conventional processes
+setpriority( ) | Set the static priority of a group of conventional processes
+sched_getscheduler( ) | Get the scheduling policy of a process
+sched_setscheduler( ) | Set the scheduling policy and the real-time priority of a process
+sched_getparam( ) | Get the real-time priority of a process
+sched_setparam( ) | Set the real-time priority of a process
+sched_yield( ) | Relinquish the processor voluntarily without blocking
+sched_get_priority_min( ) | Get the minimum real-time priority value for a policy
+sched_get_priority_max( ) | Set the maximum real-time priority value for a policy
+sched_rr_get_interval( ) | Get the time quantum value for the Round Robin policy
+sched_setaffinity( ) | Set the CPU affinity mask of a process
+sched_getaffinity( ) | Get the CPU affinity mask of a process
+
+### 7.1.1 Process Preemption
+
+When a process enters the TASK_RUNNING state, the kernel checks whether its dynamic priority is greater than the priority of the currently running process. If it is, the execution of current is interrupted and the scheduler is invoked to select another process to run.
+
+Be aware that a preempted process is not suspended, because it remains in the TASK_ RUNNING state; it simply no longer uses the CPU.
+
+### 7.1.2 How Long Must a Quantum Last?
+
+It is often believed that a long quantum duration degrades the response time of inter- active applications. This is usually false. As described in the section “Process Pre- emption” earlier in this chapter, interactive processes have a relatively high priority, so they quickly preempt the batch processes, no matter how long the quantum dura- tion is.
+
+## 7.2 The Scheduling Algorithm
+
+scheduling classes: SCHED_FIFO, SCHED_RR, SCHED_NORMAL
+
+### 7.2.1 Scheduling of Conventional Processes
+
+* Base time quantum
+
+    > base time quantum (in milliseconds) =
+    > 1. (140 – static priority) × 20 if static priority < 120
+    > 2. (140 – static priority) × 5 if static priority  =120
+
+    Description | Static priority | Nice value | Base time quantum | Interactivedelta | Sleep time threshold
+    --- | --- | --- | --- | --- | ---
+    Highest static priority | 100 | -20 | 800 ms | –3 | 299 ms
+    High static priority | 110 | -10 | 600 ms | -1 | 499 ms
+    Default static priority | 120 | 0 | 100 ms | +2 | 799 ms
+    Low static priority | 130 | +10 | 50 ms | +4 | 999 ms
+    Lowest static priority | 139 | +19 | 5 ms | +6 | 1199 ms
+
+
+* Dynamic priority and average sleep time
+
+    > dynamic priority = max(100, min(static priority − bonus + 5, 139))
+
+    The **bonus** is a value ranging from 0 to 10; a value less than 5 represents a penalty that lowers the dynamic priority, while a value greater than 5 is a premium that raises the dynamic priority. Bonus is related to the `average sleep time` of the process
+
+    Average sleep time | Bonus | Granularity
+    --- | --- | ---
+    \>=0 < 100 ms | 0 | 5120
+    \>=100 ms < 200 ms | 1 | 2560
+    \>=200 ms < 300 ms | 2 | 1280
+    \>=300 ms < 400 ms | 3 | 640
+    \>=400 ms < 500 ms | 4 | 320
+    \>=500 ms < 600 ms | 5 | 160
+    \>=600 ms < 700 ms | 6 | 80
+    \>=700 ms < 800 ms | 7 | 40
+    \>=800 ms < 900 ms | 8 | 20
+    \>=900 ms < 1000 ms | 9 | 10
+    1 second | 10 | 10
+
+    interactive process: [dynamic priority ≤ 3 × static priority / 4 + 28] or [bonus - 5 ≥ static priority / 4 − 28]
+
+    The expression `static priority / 4 − 28` is called the interactive delta.
+
+* Active and expired processes
+
+* Scheduling of Real-Time Processes
+
+## 7.3 Data Structures Used by the Scheduler
+
+### 7.3.4 schedule()
+
+* Direct invocation
+    1. Inserts current in the proper wait queue.
+    2. Changes the state of current either to TASK_INTERRUPTIBLE or to TASK_ UNINTERRUPTIBLE.
+    3. Invokes schedule( ).
+    4. Checks whether the resource is available; if not, goes to step 2.
+    5. Once the resource is available, removes current from the wait queue.
+
+* Lazy invocation
+
+    The scheduler can also be invoked in a lazy way by setting the TIF_NEED_RESCHED flag of current to 1.
+
+    * When current has used up its quantum of CPU time; this is done by the **scheduler_tick**() function.
+    * When a process is woken up and its priority is higher than that of the current process; this task is performed by the **try_to_wake_up**() function.
+    * When a **sched_setscheduler**() system call is issued (see the section “System Calls Related to Scheduling” later in this chapter).
+
+## 7.4 Functions Used by the Scheduler
+
+## 7.5 Runqueue Balancing in Multiprocessor Systems
+
+Types of multipro- cessor machines:
+* Classic multiprocessor architecture
+* Hyper-threading
+    * Allows the processor to exploit the machine cycles to execute another thread while the current thread is stalled for a memory access. A hyper-threaded physical CPU is seen by Linux as several different logical CPUs.
+* NUMA
+
+These basic kinds of multiprocessor systems are often combined. For instance, a motherboard that includes two different hyper-threaded CPUs is seen by the kernel as four logical CPUs.
+
+Linux sports a sophisticated runqueue balancing algorithm based on the notion of “scheduling domains.”
+
+### 7.5.1 Scheduling Domains
+
+A scheduling domain is a set of CPUs whose workloads should be kept balanced by the kernel.
+
+Workload balancing is always done between groups of a scheduling domain. In other words, a process is moved from one CPU to another only if the total workload of some group in some scheduling domain is significantly lower than the workload of another group in the same scheduling domain.
+
+![](../Images/ULK/7.5-schedule-domain-hierarchies.png)
+
+
+**TODO**
+
+### 7.5.2 rebalance_tick
+
+## 7.6 System Calls Related to Scheduling
+
 
 
 # 8 Memory Management
