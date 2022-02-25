@@ -25,6 +25,7 @@
 * [pgd](#pgd)
 * [kernel mapping](#kernel-mapping)
 * [kmalloc](#kmalloc)
+    * [kmalloc_caches](#kmalloc_caches)
 * [kmap_atomic](#kmap_atomic)
 * [page_address](#page_address)
 * [vmalloc](#vmalloc)
@@ -163,7 +164,7 @@ struct vm_area_struct {
 ![linux-mem-user-kernel-64.png](../Images/Kernel/mem-user-kernel-64.png)
 
 # numa
-#### node
+## node
 ```C++
 struct pglist_data *node_data[MAX_NUMNODES];
 
@@ -189,7 +190,7 @@ enum zone_type {
 };
 ```
 
-#### zone
+## zone
 ```C++
 struct zone {
   struct pglist_data  *zone_pgdat;
@@ -236,7 +237,7 @@ enum migratetype {
 };
 ```
 
-#### page
+## page
 ```C++
 struct page {
   /* Atomic flags, some possibly updated asynchronously */
@@ -519,7 +520,7 @@ struct kmem_cache_node {
 };
 ```
 
-#### kmem_cache_create
+## kmem_cache_create
 ```C++
 static struct kmem_cache *task_struct_cachep;
 
@@ -732,7 +733,7 @@ kmem_cache_create();
         list_add();
 ```
 
-#### kmem_cache_alloc
+## kmem_cache_alloc
 ```c++
 void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 {
@@ -742,7 +743,7 @@ void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 }
 ```
 
-#### kmem_cache_alloc_node
+## kmem_cache_alloc_node
 ```c++
 static inline struct task_struct *alloc_task_struct_node(int node)
 {
@@ -757,148 +758,6 @@ void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t gfp, int node)
 static inline void free_task_struct(struct task_struct *tsk)
 {
   kmem_cache_free(task_struct_cachep, tsk);
-}
-```
-
-#### kmalloc_caches
-```c++
-/* linux-4.19.y/mm/slab_common.c */
-struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
-
-void kmem_cache_init(void)
-{
-  setup_kmalloc_cache_index_table();
-  create_kmalloc_caches(0);
-}
-
-void create_kmalloc_caches(slab_flags_t flags)
-{
-  int i;
-
-  for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
-    if (!kmalloc_caches[i])
-      new_kmalloc_cache(i, flags);
-
-    if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6)
-      new_kmalloc_cache(1, flags);
-    if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7)
-      new_kmalloc_cache(2, flags);
-  }
-
-  /* Kmalloc array is now usable */
-  slab_state = UP;
-
-#ifdef CONFIG_ZONE_DMA
-  for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
-    struct kmem_cache *s = kmalloc_caches[i];
-
-    if (s) {
-      unsigned int size = kmalloc_size(i);
-      kmalloc_dma_caches[i] = create_kmalloc_cache(n,
-        size, SLAB_CACHE_DMA | flags, 0, 0);
-    }
-  }
-#endif
-}
-
-void new_kmalloc_cache(int idx, slab_flags_t flags)
-{
-  kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
-          kmalloc_info[idx].size, flags, 0,
-          kmalloc_info[idx].size);
-}
-
-const struct kmalloc_info_struct kmalloc_info[] __initconst = {
-  {NULL,                      0},    {"kmalloc-96",             96},
-  {"kmalloc-192",           192},    {"kmalloc-8",               8},
-  {"kmalloc-16",             16},    {"kmalloc-32",             32},
-  {"kmalloc-64",             64},    {"kmalloc-128",           128},
-  {"kmalloc-256",           256},    {"kmalloc-512",           512},
-  {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
-  {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
-  {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
-  {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
-  {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
-  {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
-  {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
-  {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
-  {"kmalloc-67108864", 67108864}
-};
-
-struct kmem_cache* create_kmalloc_cache(const char *name,
-    unsigned int size, slab_flags_t flags,
-    unsigned int useroffset, unsigned int usersize)
-{
-  struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
-
-  create_boot_cache(s, name, size, flags, useroffset, usersize);
-  list_add(&s->list, &slab_caches);
-  memcg_link_cache(s);
-  s->refcount = 1;
-  return s;
-}
-
-/* Find the kmem_cache structure that serves a given size of
- * allocation */
-struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
-{
-  unsigned int index;
-
-  if (size <= 192) {
-    if (!size)
-      return ZERO_SIZE_PTR;
-
-    index = size_index[size_index_elem(size)];
-  } else {
-    if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
-      WARN_ON(1);
-      return NULL;
-    }
-    index = fls(size - 1);
-  }
-
-#ifdef CONFIG_ZONE_DMA
-  if (unlikely((flags & GFP_DMA)))
-    return kmalloc_dma_caches[index];
-
-#endif
-  return kmalloc_caches[index];
-}
-
-/* Conversion table for small slabs sizes / 8 to the index in the
- * kmalloc array. This is necessary for slabs < 192 since we have non power
- * of two cache sizes there. The size of larger slabs can be determined using
- * fls. */
-u8 size_index[24] = {
-  3,  /* 8 */
-  4,  /* 16 */
-  5,  /* 24 */
-  5,  /* 32 */
-  6,  /* 40 */
-  6,  /* 48 */
-  6,  /* 56 */
-  6,  /* 64 */
-  1,  /* 72 */
-  1,  /* 80 */
-  1,  /* 88 */
-  1,  /* 96 */
-  7,  /* 104 */
-  7,  /* 112 */
-  7,  /* 120 */
-  7,  /* 128 */
-  2,  /* 136 */
-  2,  /* 144 */
-  2,  /* 152 */
-  2,  /* 160 */
-  2,  /* 168 */
-  2,  /* 176 */
-  2,  /* 184 */
-  2   /* 192 */
-};
-
-unsigned int size_index_elem(unsigned int bytes)
-{
-  return (bytes - 1) / 8;
 }
 ```
 
@@ -1598,7 +1457,7 @@ static void __vma_link(
 }
 ```
 
-#### get_unmapped_area
+## get_unmapped_area
 ```c++
 void setup_new_exec(struct linux_binprm * bprm)
 {
@@ -2115,7 +1974,7 @@ static int handle_pte_fault(struct vm_fault *vmf)
 }
 ```
 
-#### do_anonymous_page
+## do_anonymous_page
 ```c++
 /* 1. map to anonymouse page */
 static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
@@ -2245,7 +2104,7 @@ out:
 }
 ```
 
-#### do_fault
+## do_fault
 ```C++
 /* 2. map to a file */
 static vm_fault_t do_fault(struct vm_fault *vmf)
@@ -2472,7 +2331,7 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
 }
 ```
 
-#### do_swap_page
+## do_swap_page
 ```c++
 // 3. map to a swap
 int do_swap_page(struct vm_fault *vmf)
@@ -2826,6 +2685,148 @@ void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
   kmemleak_alloc(ret, size, 1, flags);
   kasan_kmalloc_large(ret, size, flags);
   return ret;
+}
+```
+
+## kmalloc_caches
+```c++
+/* linux-4.19.y/mm/slab_common.c */
+struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
+
+void kmem_cache_init(void)
+{
+  setup_kmalloc_cache_index_table();
+  create_kmalloc_caches(0);
+}
+
+void create_kmalloc_caches(slab_flags_t flags)
+{
+  int i;
+
+  for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
+    if (!kmalloc_caches[i])
+      new_kmalloc_cache(i, flags);
+
+    if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6)
+      new_kmalloc_cache(1, flags);
+    if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7)
+      new_kmalloc_cache(2, flags);
+  }
+
+  /* Kmalloc array is now usable */
+  slab_state = UP;
+
+#ifdef CONFIG_ZONE_DMA
+  for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+    struct kmem_cache *s = kmalloc_caches[i];
+
+    if (s) {
+      unsigned int size = kmalloc_size(i);
+      kmalloc_dma_caches[i] = create_kmalloc_cache(n,
+        size, SLAB_CACHE_DMA | flags, 0, 0);
+    }
+  }
+#endif
+}
+
+void new_kmalloc_cache(int idx, slab_flags_t flags)
+{
+  kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
+          kmalloc_info[idx].size, flags, 0,
+          kmalloc_info[idx].size);
+}
+
+const struct kmalloc_info_struct kmalloc_info[] __initconst = {
+  {NULL,                      0},    {"kmalloc-96",             96},
+  {"kmalloc-192",           192},    {"kmalloc-8",               8},
+  {"kmalloc-16",             16},    {"kmalloc-32",             32},
+  {"kmalloc-64",             64},    {"kmalloc-128",           128},
+  {"kmalloc-256",           256},    {"kmalloc-512",           512},
+  {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
+  {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
+  {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
+  {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
+  {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
+  {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
+  {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
+  {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
+  {"kmalloc-67108864", 67108864}
+};
+
+struct kmem_cache* create_kmalloc_cache(const char *name,
+    unsigned int size, slab_flags_t flags,
+    unsigned int useroffset, unsigned int usersize)
+{
+  struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
+
+  create_boot_cache(s, name, size, flags, useroffset, usersize);
+  list_add(&s->list, &slab_caches);
+  memcg_link_cache(s);
+  s->refcount = 1;
+  return s;
+}
+
+/* Find the kmem_cache structure that serves a given size of
+ * allocation */
+struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
+{
+  unsigned int index;
+
+  if (size <= 192) {
+    if (!size)
+      return ZERO_SIZE_PTR;
+
+    index = size_index[size_index_elem(size)];
+  } else {
+    if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
+      WARN_ON(1);
+      return NULL;
+    }
+    index = fls(size - 1);
+  }
+
+#ifdef CONFIG_ZONE_DMA
+  if (unlikely((flags & GFP_DMA)))
+    return kmalloc_dma_caches[index];
+
+#endif
+  return kmalloc_caches[index];
+}
+
+/* Conversion table for small slabs sizes / 8 to the index in the
+ * kmalloc array. This is necessary for slabs < 192 since we have non power
+ * of two cache sizes there. The size of larger slabs can be determined using
+ * fls. */
+u8 size_index[24] = {
+  3,  /* 8 */
+  4,  /* 16 */
+  5,  /* 24 */
+  5,  /* 32 */
+  6,  /* 40 */
+  6,  /* 48 */
+  6,  /* 56 */
+  6,  /* 64 */
+  1,  /* 72 */
+  1,  /* 80 */
+  1,  /* 88 */
+  1,  /* 96 */
+  7,  /* 104 */
+  7,  /* 112 */
+  7,  /* 120 */
+  7,  /* 128 */
+  2,  /* 136 */
+  2,  /* 144 */
+  2,  /* 152 */
+  2,  /* 160 */
+  2,  /* 168 */
+  2,  /* 176 */
+  2,  /* 184 */
+  2   /* 192 */
+};
+
+unsigned int size_index_elem(unsigned int bytes)
+{
+  return (bytes - 1) / 8;
 }
 ```
 
