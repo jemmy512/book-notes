@@ -1,17 +1,17 @@
 # Topics
-[I. General Background 1 - 3](#1\.Introduction)
+[I. General Background 1 - 3](#1-Introduction)
 
-[II. System Initialization 4 - 8](#4.Notification-Chains)
+[II. System Initialization 4 - 8](#4-Notification-Chains)
 
-[III. Transmission and Reception 9 - 13](#9.Interrupts-and-Network-Drivers)
+[III. Transmission and Reception 9 - 13](#9-Interrupts-and-Network-Drivers)
 
-[IV. Bridging 14 - 17](#14.Bridging:-Concepts)
+[IV. Bridging 14 - 17](#14-Bridging-Concepts)
 
-[V. Internet Protocol Version 4 (IPv4) 18 - 25](#18.IPv4)
+[V. Internet Protocol Version 4 (IPv4) 18 - 25](#18-IPv4)
 
-[VI. Neighboring Subsystem 26 - 30](#26.Neighboring-Subsystem:-Concepts)
+[VI. Neighboring Subsystem 26 - 30](#26-Neighboring-Subsystem-Concepts)
 
-[VII. Routing 30 - 36](#30.Routing:Concepts)
+[VII. Routing 30 - 36](#30-Routing-Concepts)
 
 # 1. Introduction
 ## 1.1. Basic Terminology
@@ -599,7 +599,21 @@ The `net_device` structures for all devices are put into a global list to which 
 ## 25.13. Files and Directories Featured in This Chapter
 
 # 26. Neighboring Subsystem: Concepts
+It covers such general issues as:
+* The tasks taken on by a general neighboring infrastructure
+* Why caching is valuable
+* The states a neighbor entry in the cache can take
+* Reachability detection and Network Unreachability Detection (NUD)
+* What proxying is for
+
 ## 26.1. What Is a Neighbor?
+
+A host is your neighbor if it is connected to the same LAN and it is config- uredonthesameL3network.
+
+Hosts that are not neighbors must communicate through a gateway or router.
+
+Two hosts can still be neighbors if they are separated by a system on the L2 layer (a bridge).
+
 ## 26.2. Reasons That Neighboring Protocols Are Needed
 ### 26.2.1. When L3 Addresses Need to Be Translated to L2 Addresses
 ### 26.2.2. Shared Medium
@@ -618,6 +632,7 @@ The `net_device` structures for all devices are put into a global list to which 
 #### 26.6.2.2 Derived states
 #### 26.6.2.3 Initial state
 ### 26.6.3. Reachability Confirmation
+
 # 27. Neighboring Subsystem: Infrastructure
 ## 27.1. Main Data Structures
 ## 27.2. Common Interface Between L3 Protocols and Neighboring Protocols
