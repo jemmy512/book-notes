@@ -66,12 +66,12 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 #define __USER_DS      (GDT_ENTRY_DEFAULT_USER_DS*8 + 3)
 #define __USER_CS      (GDT_ENTRY_DEFAULT_USER_CS*8 + 3)
 ```
-![linux-mem-segment.png](../Images/Kernel/mem-segment.png)
+![](../Images/Kernel/mem-segment.png)
 
 # paging
-![linux-mem-segment-page.png](../Images/Kernel/mem-segment-page.png)
+![](../Images/Kernel/mem-segment-page.png)
 
-![linux-mem-page-table.png](../Images/Kernel/mem-kernel-page-table.png)
+![](../Images/Kernel/mem-kernel-page-table.png)
 
 # mm_init
 ```c++
@@ -145,7 +145,7 @@ struct vm_area_struct {
   void * vm_private_data;    /* was vm_pte (shared mem) */
 } __randomize_layout;
 ```
-![linux-mem-vm.png](../Images/Kernel/mem-vm.png)
+![](../Images/Kernel/mem-vm.png)
 
 # kernel virtual space
 ```C++
@@ -155,13 +155,13 @@ struct vm_area_struct {
 /* FIXADDR_START:
  * use kmap_atomic() to map a file to write it back to physic disk */
 ```
-![linux-mem-kernel.png](../Images/Kernel/mem-kernel.png)
+![](../Images/Kernel/mem-kernel.png)
 
-![linux-mem-kernel-2.png](../Images/Kernel/mem-kernel-2.png)
+![](../Images/Kernel/mem-kernel-2.png)
 
-![linux-mem-user-kernel-32.png](../Images/Kernel/mem-user-kernel-32.png)
+![](../Images/Kernel/mem-user-kernel-32.png)
 
-![linux-mem-user-kernel-64.png](../Images/Kernel/mem-user-kernel-64.png)
+![](../Images/Kernel/mem-user-kernel-64.png)
 
 # numa
 ## node
@@ -339,15 +339,15 @@ struct page {
   int _last_cpupid;
 };
 ```
-![linux-mem-physic-numa.png](../Images/Kernel/mem-physic-numa-1.png)
-![linux-mem-physic-numa.png](../Images/Kernel/mem-physic-numa-2.png)
+![](../Images/Kernel/mem-physic-numa-1.png)
+![](../Images/Kernel/mem-physic-numa-2.png)
 
 # buddy system
 ```C++
 struct free_area  free_area[MAX_ORDER];
 #define MAX_ORDER 11
 ```
-![linux-mem-buddy-freepages.png](../Images/Kernel/mem-buddy-freepages.png)
+![](../Images/Kernel/mem-buddy-freepages.png)
 
 # alloc_pages
 ```C++
@@ -431,8 +431,8 @@ static inline void expand(struct zone *zone, struct page *page,
 ```
 
 # kmem_cache
-![linux-mem-kmem-cache-cpu-node.png](../Images/Kernel/mem-kmem-cache-cpu-node.png)
-![linux-mem-kmem-cache.png](../Images/Kernel/mem-kmem-cache.png)
+![](../Images/Kernel/mem-kmem-cache-cpu-node.png)
+![](../Images/Kernel/mem-kmem-cache.png)
 
 ```c++
 /* linux-4.19.y/mm/slab_common.c */
@@ -1011,11 +1011,11 @@ slab_alloc()
                   alloc_pages()
 ```
 
-![linux-mem-kmem-cache-alloc.png](../Images/Kernel/mem-kmem-cache-alloc.png)
+![](../Images/Kernel/mem-kmem-cache-alloc.png)
 
-![linux-mem-slub-structure.png](../Images/Kernel/mem-slub-structure.png)
+![](../Images/Kernel/mem-slub-structure.png)
 
-![linux-mem-mng.png](../Images/Kernel/mem-mng.png)
+![](../Images/Kernel/mem-mng.png)
 
 * Reference:
   * [slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
@@ -2432,7 +2432,7 @@ do_page_fault();
         /* 3. swap fault */
         do_swap_page();
 ```
-![linux-mem-page-fault.png](../Images/Kernel/mem-page-fault.png)
+![](../Images/Kernel/mem-page-fault.png)
 
 # pgd
 `cr3` register points to current process's `pgd`, which is set by `load_new_mm_cr3`.
@@ -2541,7 +2541,7 @@ PGD_PAGE_OFFSET = pgd_index(__PAGE_OFFSET_BASE)
 PGD_START_KERNEL = pgd_index(__START_KERNEL_map)
 L3_START_KERNEL = pud_index(__START_KERNEL_map)
 ```
-![linux-mem-kernel-page-table.png](../Images/Kernel/mem-kernel-page-table.png)
+![](../Images/Kernel/mem-kernel-page-table.png)
 
 ```C++
 // kernel mm_struct
