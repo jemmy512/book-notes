@@ -27,11 +27,11 @@
         * [tso_fragment](#tso_fragment)
         * [tcp_transmit_skb](#tcp_transmit_skb)
     * [ip layer](#ip-layer-tx)
-        * [route](#route)
         * [fill ip header](#fill-ip-header)
         * [send package](#send-package)
     * [mac layer](#mac-layer-tx)
         * [neighbour](#neighbour)
+        * [neigh_output](#neigh_output)
     * [dev layer](#dev-layer-tx)
     * [driver layer](#driver-layer-tx)
 * [read](#read)
@@ -45,6 +45,10 @@
         * [tcp_data_queue](#tcp_data_queue)
     * [vfs layer](#vfs-layer-rx)
     * [socket layer](#socket-layer-rx])
+
+* [route](#route)
+  * [route out](#route-out)
+  * [route in](#route-in)
 
 * [congestion control](#congestion-control)
     * [tcp_ca_state](#tcp_ca_state)
@@ -2703,7 +2707,7 @@ tcp_v4_rcv();
                   __wake_up_common();
       }
 ```
-![linux-net-hand-shake.png](../Images/Kernel/net-hand-shake.png  )
+![](../Images/Kernel/net-hand-shake.png  )
 
 # accept
 ```C++
@@ -3276,7 +3280,7 @@ __sys_shutdown();
 ```
 
 # sk_buff
-![linux-net-sk_buf.png](../Images/Kernel/net-sk_buf.png)
+![](../Images/Kernel/net-sk_buf.png)
 
 ```C++
 struct sk_buff {
@@ -3557,6 +3561,76 @@ void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
 }
 ```
 
+## skb_clone
+```c++
+
+/* Duplicate an &sk_buff. The new one is not owned by a socket. Both
+ * copies share the same packet data but not structure. The new
+ * buffer has a reference count of 1. If the allocation fails the
+ * function returns %NULL otherwise the new buffer is returned.
+ *
+ * If this function is called from an interrupt gfp_mask() must be
+ * %GFP_ATOMIC */
+struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
+{
+  struct sk_buff_fclones *fclones =
+    container_of(skb, struct sk_buff_fclones, skb1);
+  struct sk_buff *n;
+
+  if (skb_orphan_frags(skb, gfp_mask))
+    return NULL;
+
+  if (skb->fclone == SKB_FCLONE_ORIG &&
+      refcount_read(&fclones->fclone_ref) == 1) {
+    n = &fclones->skb2;
+    refcount_set(&fclones->fclone_ref, 2);
+  } else {
+    if (skb_pfmemalloc(skb))
+      gfp_mask |= __GFP_MEMALLOC;
+
+    n = kmem_cache_alloc(skbuff_head_cache, gfp_mask);
+    if (!n)
+      return NULL;
+
+    n->fclone = SKB_FCLONE_UNAVAILABLE;
+  }
+
+  return __skb_clone(n, skb);
+}
+
+struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
+{
+#define C(x) n->x = skb->x
+
+  n->next = n->prev = NULL;
+  n->sk = NULL;
+  __copy_skb_header(n, skb);
+
+  C(len);
+  C(data_len);
+  C(mac_len);
+  n->hdr_len = skb->nohdr ? skb_headroom(skb) : skb->hdr_len;
+  n->cloned = 1;
+  n->nohdr = 0;
+  n->peeked = 0;
+  C(pfmemalloc);
+  n->destructor = NULL;
+  C(tail);
+  C(end);
+  C(head);
+  C(head_frag);
+  C(data);
+  C(truesize);
+  refcount_set(&n->users, 1);
+
+  atomic_inc(&(skb_shinfo(skb)->dataref));
+  skb->cloned = 1;
+
+  return n;
+#undef C
+}
+```
+
 ```c++
 sk_stream_alloc_skb()
   size = ALIGN(size, 4)
@@ -3646,6 +3720,7 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
   int mss_now = 0, size_goal, copied_syn = 0;
   long timeo;
 
+/* 1. wait for connect */
   timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
   if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
     && !tcp_passive_fastopen(sk))
@@ -3664,7 +3739,7 @@ restart:
     int copy = 0;
     int max = size_goal;
 
-/*1. get an available skb */
+/* 2. get an available skb */
     skb = tcp_write_queue_tail(sk);
     if (tcp_send_head(sk)) {
       if (skb->ip_summed == CHECKSUM_NONE)
@@ -3692,11 +3767,13 @@ new_segment:
     if (copy > msg_data_left(msg))
       copy = msg_data_left(msg);
 
-/*2. copy data */
-    if (skb_availroom(skb) > 0 && !zc) { // skb->end - skb->tail - skb->reserved_tailroom;
+/* 3. copy data */
+    if (skb_availroom(skb) > 0 && !zc) { /* skb->end - skb->tail - skb->reserved_tailroom; */
+/* 3.1 copy to skb */
       copy = min_t(int, copy, skb_availroom(skb));
       err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
     } else if (!zc) {
+/* 3.2 copy to page_frag */
       bool merge = true;
       int i = skb_shinfo(skb)->nr_frags;
       struct page_frag *pfrag = sk_page_frag(sk); /* &sk->sk_frag */
@@ -3717,8 +3794,7 @@ new_segment:
       if (!sk_wmem_schedule(sk, copy))
         goto wait_for_memory;
 
-      err = skb_copy_to_page_nocache(
-        sk, &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
+      err = skb_copy_to_page_nocache(sk, &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
       if (err)
         goto do_error;
 
@@ -3730,7 +3806,8 @@ new_segment:
         page_ref_inc(pfrag->page);
       }
       pfrag->offset += copy;
-    } else { /* zero copy */
+    } else {
+/* 3.3 zero copy */
       err = skb_zerocopy_iter_stream(sk, skb, msg, copy, uarg);
       copy = err;
     }
@@ -3749,7 +3826,7 @@ new_segment:
     if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
       continue;
 
-/*3. send data */
+/* 4. send data */
     if (forced_push(tp)) {
       tcp_mark_push(tp, skb);
       __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
@@ -3767,8 +3844,7 @@ int skb_copy_to_page_nocache(
 {
   int err;
 
-  err = skb_do_copy_data_nocache(
-      sk, skb, from, page_address(page) + off, copy, skb->len);
+  err = skb_do_copy_data_nocache(sk, skb, from, page_address(page) + off, copy, skb->len);
   if (err)
     return err;
 
@@ -3810,7 +3886,9 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
     }
   }
 
+  /* Return the number of segments we want in the skb we are transmitting. */
   max_segs = tcp_tso_segs(sk, mss_now);
+
   while ((skb = tcp_send_head(sk))) {
     unsigned int limit;
 
@@ -3825,6 +3903,7 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
       goto repair; /* Skip network transmission */
     }
 
+    /* return how many segments are allowed */
     cwnd_quota = tcp_cwnd_test(tp, skb);
     if (!cwnd_quota) {
       if (push_one == 2)
@@ -3833,7 +3912,7 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
         break;
     }
 
-    /* Does the end_seq exceeds the cwnd? */
+    /* Does at least the first segment of SKB fit into the send window? */
     if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
       is_rwnd_limited = true;
       break;
@@ -4018,7 +4097,7 @@ void skb_split_inside_header(struct sk_buff *skb,
   skb1->len       += skb1->data_len;
   skb->data_len   = 0;
   skb->len        = len;
-  skb_set_tail_pointer(skb, len);
+  skb_set_tail_pointer(skb, len); /* skb->data + offset */
 }
 
 void skb_split_no_header(
@@ -4226,72 +4305,6 @@ int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
   }
   return err;
 }
-
-/* Duplicate an &sk_buff. The new one is not owned by a socket. Both
- * copies share the same packet data but not structure. The new
- * buffer has a reference count of 1. If the allocation fails the
- * function returns %NULL otherwise the new buffer is returned.
- *
- * If this function is called from an interrupt gfp_mask() must be
- * %GFP_ATOMIC */
-struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
-{
-  struct sk_buff_fclones *fclones =
-    container_of(skb, struct sk_buff_fclones, skb1);
-  struct sk_buff *n;
-
-  if (skb_orphan_frags(skb, gfp_mask))
-    return NULL;
-
-  if (skb->fclone == SKB_FCLONE_ORIG &&
-      refcount_read(&fclones->fclone_ref) == 1) {
-    n = &fclones->skb2;
-    refcount_set(&fclones->fclone_ref, 2);
-  } else {
-    if (skb_pfmemalloc(skb))
-      gfp_mask |= __GFP_MEMALLOC;
-
-    n = kmem_cache_alloc(skbuff_head_cache, gfp_mask);
-    if (!n)
-      return NULL;
-
-    n->fclone = SKB_FCLONE_UNAVAILABLE;
-  }
-
-  return __skb_clone(n, skb);
-}
-
-struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
-{
-#define C(x) n->x = skb->x
-
-  n->next = n->prev = NULL;
-  n->sk = NULL;
-  __copy_skb_header(n, skb);
-
-  C(len);
-  C(data_len);
-  C(mac_len);
-  n->hdr_len = skb->nohdr ? skb_headroom(skb) : skb->hdr_len;
-  n->cloned = 1;
-  n->nohdr = 0;
-  n->peeked = 0;
-  C(pfmemalloc);
-  n->destructor = NULL;
-  C(tail);
-  C(end);
-  C(head);
-  C(head_frag);
-  C(data);
-  C(truesize);
-  refcount_set(&n->users, 1);
-
-  atomic_inc(&(skb_shinfo(skb)->dataref));
-  skb->cloned = 1;
-
-  return n;
-#undef C
-}
 ```
 
 ## ip layer tx
@@ -4312,7 +4325,7 @@ const struct inet_connection_sock_af_ops ipv4_specific = {
 };
 
 /* 1. select route
- * 2. populate IP header
+ * 2. build IP header
  * 3. send packet */
 int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
 {
@@ -4324,7 +4337,7 @@ int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
   struct iphdr *iph;
   int res;
 
-/*1. select route */
+/* 1. select route */
   inet_opt = rcu_dereference(inet->inet_opt);
   fl4 = &fl->u.ip4;
   rt = skb_rtable(skb);
@@ -4347,7 +4360,7 @@ int ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
   }
   skb_dst_set_noref(skb, &rt->dst);
 
-/*2. fill IP header */
+/* 2. build IP header */
 packet_routed:
   /* OK, we know where to send it, allocate and build IP header.
    * skb_push decrements the 'skb->data' pointer */
@@ -4372,136 +4385,13 @@ packet_routed:
   skb->priority = sk->sk_priority;
   skb->mark = sk->sk_mark;
 
-/*3. send packet */
+/* 3. send packet */
   res = ip_local_out(net, sk, skb);
 }
 ```
 
-### route
-```C++
-/* ip_route_output_ports -> ip_route_output_flow ->
- * __ip_route_output_key -> ip_route_output_key_hash ->
- * ip_route_output_key_hash_rcu -> */
-struct rtable *ip_route_output_key_hash_rcu(struct net *net, struct flowi4 *fl4,
-  struct fib_result *res, const struct sk_buff *skb)
-{
-  struct net_device *dev_out = NULL;
-  int orig_oif = fl4->flowi4_oif;
-  unsigned int flags = 0;
-  struct rtable *rth;
-
-  err = fib_lookup(net, fl4, res, 0);
-
-make_route:
-  rth = __mkroute_output(res, fl4, orig_oif, dev_out, flags);
-}
-
-/* FIB: Forwarding Information Base*/
-int fib_lookup(struct net *net, const struct flowi4 *flp,
-  struct fib_result *res, unsigned int flags)
-{
-  struct fib_table *tb;
-  tb = fib_get_table(net, RT_TABLE_MAIN);
-  if (tb)
-    err = fib_table_lookup(tb, flp, res, flags | FIB_LOOKUP_NOREF);
-}
-```
-![linux-net-forwarding-table.png](../Images/Kernel/net-forwarding-table.png)
-
-```C++
-# Linux Server A
-default via 192.168.1.1 dev eth0
-192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.100 metric 100
-
-# Linux router
-192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.1
-192.168.2.0/24 dev eth1 proto kernel scope link src 192.168.2.1
-
-# Linux Server B
-default via 192.168.2.1 dev eth0
-192.168.2.0/24 dev eth0 proto kernel scope link src 192.168.2.100 metric 100
-```
-
-```C++
-// __mkroute_output ->
-struct rtable *rt_dst_alloc(
-  struct net_device *dev, unsigned int flags, u16 type,
-  bool nopolicy, bool noxfrm, bool will_cache)
-{
-  struct rtable *rt;
-
-  rt = dst_alloc(&ipv4_dst_ops, dev, 1, DST_OBSOLETE_FORCE_CHK,
-        (will_cache ? 0 : DST_HOST)
-        | (nopolicy ? DST_NOPOLICY : 0)
-        | (noxfrm ? DST_NOXFRM : 0));
-
-  if (rt) {
-    rt->rt_genid = rt_genid_ipv4(dev_net(dev));
-    rt->rt_flags = flags;
-    rt->rt_type = type;
-    rt->rt_is_input = 0;
-    rt->rt_iif = 0;
-    rt->rt_pmtu = 0;
-    rt->rt_gateway = 0;
-    rt->rt_uses_gateway = 0;
-    rt->rt_table_id = 0;
-    INIT_LIST_HEAD(&rt->rt_uncached);
-
-    rt->dst.output = ip_output;
-    if (flags & RTCF_LOCAL)
-      rt->dst.input = ip_local_deliver;
-  }
-
-  return rt;
-}
-
-struct rtable {
-  struct dst_entry  dst;
-  int             rt_genid;
-  unsigned int    rt_flags;
-  __u16           rt_type;
-  __u8            rt_is_input;
-  __u8            rt_uses_gateway;
-  int             rt_iif;
-  u8              rt_gw_family;
-  union {
-    __be32           rt_gw4;
-    struct in6_addr  rt_gw6;
-  };
-  u32 rt_mtu_locked:1, rt_pmtu:31;
-  struct list_head      rt_uncached;
-  struct uncached_list  *rt_uncached_list;
-};
-
-struct dst_entry {
-  struct net_device   *dev;
-  struct  dst_ops     *ops;
-  unsigned long       _metrics;
-  unsigned long       expires;
-  struct xfrm_state   *xfrm;
-  int      (*input)(struct sk_buff *);
-  int      (*output)(struct net *net, struct sock *sk, struct sk_buff *skb);
-};
-
-struct dst_ops ipv4_dst_ops = {
-  .family           = AF_INET,
-  .check            = ipv4_dst_check,
-  .default_advmss   = ipv4_default_advmss,
-  .mtu              = ipv4_mtu,
-  .cow_metrics      = ipv4_cow_metrics,
-  .destroy          = ipv4_dst_destroy,
-  .negative_advice  = ipv4_negative_advice,
-  .link_failure     = ipv4_link_failure,
-  .update_pmtu      = ip_rt_update_pmtu,
-  .redirect         = ip_do_redirect,
-  .local_out        = __ip_local_out,
-  .neigh_lookup     = ipv4_neigh_lookup,
-  .confirm_neigh     = ipv4_confirm_neigh,
-};
-```
-
-### fill ip header
-![linux-net-ip-header.png](../Images/Kernel/net-ip-header.png)
+### build ip header
+![](../Images/Kernel/net-ip-header.png)
 
 ### send package
 ```C++
@@ -4529,18 +4419,7 @@ int __ip_local_out(
            net, sk, skb, NULL, skb_dst(skb)->dev,
            dst_output);
 }
-```
-* ![linux-net-filter.png](../Images/Kernel/net-filter.png)
 
----
-
-* ![linux-net-filter-2.png](../Images/Kernel/net-filter-2.png)
-
----
-
-* ![linux-net-filter-3.png](../Images/Kernel/net-filter-3.png)
-
-```C++
 int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
   return skb_dst(skb)->output(net, sk, skb);
@@ -4591,19 +4470,19 @@ struct neighbour *__ipv4_neigh_lookup_noref(
 }
 
 struct neigh_table arp_tbl = {
-  .family     = AF_INET,
-  .key_len    = 4,
-  .protocol   = cpu_to_be16(ETH_P_IP),
-  .hash       = arp_hash,
-  .key_eq     = arp_key_eq,
-  .constructor = arp_constructor,
-  .proxy_redo = parp_redo,
-  .id         = "arp_cache",
+  .family       = AF_INET,
+  .key_len      = 4,
+  .protocol     = cpu_to_be16(ETH_P_IP),
+  .hash         = arp_hash,
+  .key_eq       = arp_key_eq,
+  .constructor  = arp_constructor,
+  .proxy_redo   = parp_redo,
+  .id           = "arp_cache",
 
-  .gc_interval = 30 * HZ,
-  .gc_thresh1 = 128,
-  .gc_thresh2 = 512,
-  .gc_thresh3 = 1024,
+  .gc_interval  = 30 * HZ,
+  .gc_thresh1   = 128,
+  .gc_thresh2   = 512,
+  .gc_thresh3   = 1024,
 };
 ```
 
@@ -4697,14 +4576,15 @@ int arp_constructor(struct neighbour *neigh)
 }
 
 const struct neigh_ops arp_hh_ops = {
-  .family =    AF_INET,
-  .solicit =    arp_solicit,
-  .error_report =    arp_error_report,
-  .output =    neigh_resolve_output,
-  .connected_output =  neigh_resolve_output,
+  .family             = AF_INET,
+  .solicit            = arp_solicit,
+  .error_report       = arp_error_report,
+  .output             = neigh_resolve_output,
+  .connected_output   = neigh_resolve_output,
 };
 ```
 
+### neigh_output
 ```C++
 int neigh_output(struct neighbour *n, struct sk_buff *skb)
 {
@@ -4720,26 +4600,52 @@ int neigh_resolve_output(struct neighbour *neigh, struct sk_buff *skb)
   }
 }
 
+int neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
+{
+  unsigned long now = jiffies;
+
+  if (READ_ONCE(neigh->used) != now)
+    WRITE_ONCE(neigh->used, now);
+  if (!(neigh->nud_state & (NUD_CONNECTED|NUD_DELAY|NUD_PROBE)))
+    return __neigh_event_send(neigh, skb);
+  return 0;
+}
+
 int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 {
   int rc;
   bool immediate_probe = false;
 
+  write_lock_bh(&neigh->lock);
+
+  rc = 0;
+  if (neigh->nud_state & (NUD_CONNECTED | NUD_DELAY | NUD_PROBE))
+    goto out_unlock_bh;
+  if (neigh->dead)
+    goto out_dead;
+
   if (!(neigh->nud_state & (NUD_STALE | NUD_INCOMPLETE))) {
-    if (NEIGH_VAR(neigh->parms, MCAST_PROBES) +
-        NEIGH_VAR(neigh->parms, APP_PROBES)) {
+    if (NEIGH_VAR(neigh->parms, MCAST_PROBES) + NEIGH_VAR(neigh->parms, APP_PROBES)) {
       unsigned long next, now = jiffies;
 
       atomic_set(&neigh->probes, NEIGH_VAR(neigh->parms, UCAST_PROBES));
-      neigh->nud_state = NUD_INCOMPLETE;
-      neigh->updated = now;
+      neigh_del_timer(neigh);
+      neigh->nud_state  = NUD_INCOMPLETE;
+      neigh->updated    = now;
       next = now + max(NEIGH_VAR(neigh->parms, RETRANS_TIME), HZ/2);
       neigh_add_timer(neigh, next);
       immediate_probe = true;
-    }
+    } else {
+      neigh->nud_state = NUD_FAILED;
+      neigh->updated = jiffies;
+      write_unlock_bh(&neigh->lock);
 
+      kfree_skb(skb);
+      return 1;
+    }
   } else if (neigh->nud_state & NUD_STALE) {
     neigh_dbg(2, "neigh %p is delayed\n", neigh);
+    neigh_del_timer(neigh);
     neigh->nud_state = NUD_DELAY;
     neigh->updated = jiffies;
     neigh_add_timer(neigh, jiffies + NEIGH_VAR(neigh->parms, DELAY_PROBE_TIME));
@@ -4747,14 +4653,38 @@ int __neigh_event_send(struct neighbour *neigh, struct sk_buff *skb)
 
   if (neigh->nud_state == NUD_INCOMPLETE) {
     if (skb) {
+      while (neigh->arp_queue_len_bytes + skb->truesize > NEIGH_VAR(neigh->parms, QUEUE_LEN_BYTES)) {
+        struct sk_buff *buff;
+
+        buff = __skb_dequeue(&neigh->arp_queue);
+        if (!buff)
+          break;
+        neigh->arp_queue_len_bytes -= buff->truesize;
+        kfree_skb(buff);
+        NEIGH_CACHE_STAT_INC(neigh->tbl, unres_discards);
+      }
+      skb_dst_force(skb);
+      /* skb is dequed in arp_rcv -> neigh_update */
       __skb_queue_tail(&neigh->arp_queue, skb);
-      neigh->arp_queue_len_Bytes += skb->truesize;
+      neigh->arp_queue_len_bytes += skb->truesize;
     }
     rc = 1;
   }
+
 out_unlock_bh:
   if (immediate_probe)
     neigh_probe(neigh);
+  else
+    write_unlock(&neigh->lock);
+  local_bh_enable();
+  return rc;
+
+out_dead:
+  if (neigh->nud_state & NUD_STALE)
+    goto out_unlock_bh;
+  write_unlock_bh(&neigh->lock);
+  kfree_skb(skb);
+  return 1;
 }
 
 void neigh_probe(struct neighbour *neigh)
@@ -4764,7 +4694,7 @@ void neigh_probe(struct neighbour *neigh)
   if (neigh->ops->solicit)
     neigh->ops->solicit(neigh, skb);
 }
-// arp_solicit ->
+/* arp_solicit -> */
 void arp_send_dst(
   int type, int ptype, __be32 dest_ip,
   struct net_device *dev, __be32 src_ip,
@@ -4775,8 +4705,7 @@ void arp_send_dst(
 {
   struct sk_buff *skb;
 
-  skb = arp_create(type, ptype, dest_ip, dev, src_ip,
-                    dest_hw, src_hw, target_hw);
+  skb = arp_create(type, ptype, dest_ip, dev, src_ip, dest_hw, src_hw, target_hw);
 
   skb_dst_set(skb, dst_clone(dst));
   arp_xmit(skb);
@@ -4851,9 +4780,9 @@ int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
     inet6 fe80::f816:3eff:fe75:9908/64 scope link
        valid_lft forever preferred_lft forever
 ```
-![linux-net-queue-displine.png](../Images/Kernel/net-queue-displine.png)
+![](../Images/Kernel/net-queue-displine.png)
 
-![linux-net-dev-pci](../Images/Kernel/net-dev-pci.png)
+![](../Images/Kernel/net-dev-pci.png)
 
 ```C++
 int __dev_xmit_skb(
@@ -5081,48 +5010,49 @@ sock_write_iter();
 
 /* tcp layer */
 tcp_sendmsg();
+  /* 1. wait for connection */
   if (!TCPF_ESTABLISHED)
     sk_stream_wait_connect();
 
-  /* 1. alloc skb */
+  /* 2. alloc skb */
   skb = sk_stream_alloc_skb(); /* alloc new one if null */
 
-  /* 2. copy data */
-    if (skb_availroom(skb) > 0 && !zc) {
+  /* 3. copy data */
+    if (skb_availroom(skb) > 0 && !zc) { /* 3.1 copy to skb */
       skb_add_data_nocache();
-    } else if (!zc) {
+    } else if (!zc) {                    /* 3.2 copy to page_frag */
       struct page_frag *pfrag = sk_page_frag(sk);
       sk_page_frag_refill(sk, pfrag);
       skb_copy_to_page_nocache();
-    } else { /* zero copy */
+    } else {                             /* 3.3 zero copy */
       skb_zerocopy_iter_stream();
     }
 
-  /* 3. send data */
+  /* 4. send data */
   __tcp_push_pending_frames(); tcp_push_one();
     tcp_write_xmit();
       max_segs = tcp_tso_segs();
       tso_segs = tcp_init_tso_segs();
 
-      /* 3.1 check */
+      /* 4.1 congestion control */
       tcp_cwnd_test();
       tcp_snd_wnd_test();
       tcp_nagle_test();
-
       tcp_tso_should_defer();
 
-      /* 3.2 split */
+      /* 4.2 fragment */
       limit = tcp_mss_split_point();
       tso_fragment();
         skb_split();
           skb_split_inside_header();
           skb_split_no_header();
 
+      /* 4.3 build TCP header */
       tcp_transmit_skb();
-        /* 3.3 fill TCP header */
+        /* 4.5 send msg */
         icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
 
-      /* 3.4 add into retransmit */
+      /* 4.4 add into retransmit */
       tcp_event_new_data_sent();
         __skb_unlink(skb, &sk->sk_write_queue);
         tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
@@ -5140,7 +5070,8 @@ ipv4_specific.ip_queue_xmit();
         __mkroute_output();
           rt_dst_alloc();
     skb_dst_set_noref(skb, &rt->dst);
-    /* 2. fill IP header */
+
+    /* 2. build IP header */
     ip_local_out();
       /* 3. netfilter */
       nf_hook();            /* NF_INET_LOCAL_OUT */
@@ -5202,94 +5133,55 @@ __dev_queue_xmit();
 /* driver layer */
 ixgb_xmit_frame();
 ```
-![linux-net-write.png](../Images/Kernel/net-write.png)
+![](../Images/Kernel/net-filter-2.png)
+
+---
+
+![](../Images/Kernel/net-write.png)
 
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
 # read
 ## driver layer rx
-```C++
-MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
-MODULE_DESCRIPTION("Intel(R) PRO/10GbE Network Driver");
-MODULE_LICENSE("GPL");
-MODULE_VERSION(DRV_VERSION);
 
-int ixgb_init_module(void)
-{
-  return pci_register_driver(&ixgb_driver);
-}
+![](../Images/Kernel/net-dev-pci.png)
 
-struct pci_driver {
-  struct list_head  node;
-  const char        *name;
-  const struct pci_device_id *id_table;
-  int  (*probe)(struct pci_dev *dev, const struct pci_device_id *id);
-  void (*remove)(struct pci_dev *dev);
-  int  (*suspend)(struct pci_dev *dev, pm_message_t state);
-  int  (*suspend_late)(struct pci_dev *dev, pm_message_t state);
-  int  (*resume_early)(struct pci_dev *dev);
-  int  (*resume) (struct pci_dev *dev);
-  void (*shutdown) (struct pci_dev *dev);
-  int  (*sriov_configure) (struct pci_dev *dev, int num_vfs);
-  const struct pci_error_handlers   *err_handler;
-  const struct attribute_group      **groups;
-  struct device_driver              driver;
-  struct pci_dynids                 dynids;
-};
+NAPI Usage:
+1. embed `struct napi_struct` in the driver's private structure
+2. initialise and register before the net device itself, using `netif_napi_add`, and unregistered after the net device, using `netif_napi_del`
+3. changes to driver's interrupt handler
+    * disabling interrupts
+    * tell the networking subsystem to poll your driver shortly to pick up all available packets by `napi_schedule`
+4. create a `poll` method for your driver; it's job is to obtain packets from the network interface and feed them into the kernel
+    * The poll() function must return the amount of work done.
+    * If and only if the return value is less than the budget, your driver must reenable interrupts and turn off polling by `napi_complete`
 
-struct pci_driver ixgb_driver = {
-  .name         = ixgb_driver_name,
-  .id_table     = ixgb_pci_tbl,
-  .probe        = ixgb_probe,
-  .remove       = ixgb_remove,
-  .err_handler  = &ixgb_err_handler
-};
+![](../Images/Kernel/net-rx_ring.png)
 
-module_init(ixgb_init_module);
+![](../Images/Kernel/net-desc-ring-1.png)
 
-/* Device Initialization Routine */
-int ixgb_probe(
-  struct pci_dev *pdev, const struct pci_device_id *ent)
-{
-  struct net_device *netdev = NULL;
-  struct ixgb_adapter *adapter;
+![](../Images/Kernel/net-desc-ring-2.png)
 
-  netdev = alloc_etherdev(sizeof(struct ixgb_adapter));
-  SET_NETDEV_DEV(netdev, &pdev->dev);
-
-  pci_set_drvdata(pdev, netdev); /* pdev->dev->driver_data = netdev;*/
-  adapter = netdev_priv(netdev);
-  adapter->netdev = netdev;
-  adapter->pdev = pdev;
-  adapter->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
-
-  adapter->hw.back = adapter;
-  adapter->hw.hw_addr = pci_ioremap_bar(pdev, BAR_0);
-
-  netdev->netdev_ops = &ixgb_netdev_ops;
-  ixgb_set_ethtool_ops(netdev);
-  netdev->watchdog_timeo = 5 * HZ;
-
-/* register poll func: ixgb_clean */
-  netif_napi_add(netdev, &adapter->napi, ixgb_clean, 64);
-
-  strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
-
-  adapter->bd_number = cards_found;
-  adapter->link_speed = 0;
-  adapter->link_duplex = 0;
-}
-
+```c++
 struct pci_dev {
   struct device     dev;      /* Generic device interface */
   struct pci_driver *driver;  /* Driver bound to this device */
 };
 
 struct device {
-  void                *driver_data;  /* dev_set_drvdata/dev_get_drvdata */
+  void                      *driver_data;  /* dev_set_drvdata/dev_get_drvdata */
 
   const char                *init_name;
   struct kobject            kobj;
+
+  unsigned long             state;
+
+  struct list_head          dev_list;
+  struct list_head          napi_list;
+  struct list_head          unreg_list;
+  struct list_head          close_list;
+  struct list_head          ptype_all;
+  struct list_head          ptype_specific;
 
   struct device             *parent;
   const struct device_type  *type;
@@ -5369,9 +5261,9 @@ struct ixgb_adapter {
   bool rx_csum;
 
   /* OS defined structs */
-  struct napi_struct napi;
-  struct net_device *netdev;
-  struct pci_dev *pdev;
+  struct napi_struct  napi;
+  struct net_device   *netdev;
+  struct pci_dev      *pdev;
 
   /* structs defined in ixgb_hw.h */
   struct ixgb_hw hw;
@@ -5380,6 +5272,49 @@ struct ixgb_adapter {
   u32 alloc_rx_buff_failed;
   bool have_msi;
   unsigned long flags;
+};
+
+struct ixgb_desc_ring {
+  void *desc; /* pointer to ring array of ixgb_{rx, tx}_desc */
+  dma_addr_t dma; /* physical address of the descriptor ring */
+  unsigned int size; /* length of descriptor ring in bytes */
+  unsigned int count; /* number of descriptors in the ring */
+  unsigned int next_to_use; /* next descriptor to associate a buffer with */
+  unsigned int next_to_clean; /* next descriptor to check for DD status bit */
+  struct ixgb_buffer *buffer_info; /* array of buffer information structs */
+};
+
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+typedef u64 dma_addr_t;
+#else
+typedef u32 dma_addr_t;
+#endif
+
+/* ixgb_alloc_rx_buffers maps skb to dma */
+struct ixgb_buffer {
+  struct sk_buff  *skb;
+  dma_addr_t      dma;
+  unsigned long   time_stamp;
+  u16             length;
+  u16             next_to_watch;
+  u16             mapped_as_page;
+};
+
+struct ixgb_rx_desc {
+  __le64        buff_addr;
+  __le16        length;
+  __le16        reserved;
+  u8            status;
+  u8            errors;
+  __le16        special;
+};
+
+struct ixgb_tx_desc {
+  __le64        buff_addr;
+  __le32        cmd_type_len;
+  u8            status;
+  u8            popts;
+  __le16        vlan;
 };
 
 struct napi_struct {
@@ -5401,11 +5336,101 @@ struct napi_struct {
   unsigned int      napi_id;
 };
 ```
-![linux-net-dev-pci](../Images/Kernel/net-dev-pci.png)
 
 ```C++
-// internet trasaction gigabyte
-// drivers/net/ethernet/intel/ixgb/ixgb_main.c
+MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
+MODULE_DESCRIPTION("Intel(R) PRO/10GbE Network Driver");
+MODULE_LICENSE("GPL");
+MODULE_VERSION(DRV_VERSION);
+
+int ixgb_init_module(void)
+{
+  return pci_register_driver(&ixgb_driver);
+}
+
+struct pci_driver {
+  struct list_head  node;
+  const char        *name;
+  const struct pci_device_id *id_table;
+  int  (*probe)(struct pci_dev *dev, const struct pci_device_id *id);
+  void (*remove)(struct pci_dev *dev);
+  int  (*suspend)(struct pci_dev *dev, pm_message_t state);
+  int  (*suspend_late)(struct pci_dev *dev, pm_message_t state);
+  int  (*resume_early)(struct pci_dev *dev);
+  int  (*resume) (struct pci_dev *dev);
+  void (*shutdown) (struct pci_dev *dev);
+  int  (*sriov_configure) (struct pci_dev *dev, int num_vfs);
+  const struct pci_error_handlers   *err_handler;
+  const struct attribute_group      **groups;
+  struct device_driver              driver;
+  struct pci_dynids                 dynids;
+};
+
+struct pci_driver ixgb_driver = {
+  .name         = ixgb_driver_name,
+  .id_table     = ixgb_pci_tbl,
+  .probe        = ixgb_probe,
+  .remove       = ixgb_remove,
+  .err_handler  = &ixgb_err_handler
+};
+
+module_init(ixgb_init_module);
+
+/* Device Initialization Routine */
+int ixgb_probe(
+  struct pci_dev *pdev, const struct pci_device_id *ent)
+{
+  struct net_device *netdev = NULL;
+  struct ixgb_adapter *adapter;
+
+  netdev = alloc_etherdev(sizeof(struct ixgb_adapter));
+  SET_NETDEV_DEV(netdev, &pdev->dev);
+
+  pci_set_drvdata(pdev, netdev); /* pdev->dev->driver_data = netdev */
+  adapter = netdev_priv(netdev);
+  adapter->netdev = netdev;
+  adapter->pdev = pdev;
+  adapter->msg_enable = netif_msg_init(debug, DEFAULT_MSG_ENABLE);
+
+  adapter->hw.back = adapter;
+  adapter->hw.hw_addr = pci_ioremap_bar(pdev, BAR_0);
+
+  netdev->netdev_ops = &ixgb_netdev_ops;
+  ixgb_set_ethtool_ops(netdev);
+  netdev->watchdog_timeo = 5 * HZ;
+
+/* register poll func: ixgb_clean */
+  netif_napi_add(netdev, &adapter->napi, ixgb_clean, 64);
+
+  strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
+
+  adapter->bd_number = cards_found;
+  adapter->link_speed = 0;
+  adapter->link_duplex = 0;
+}
+
+void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
+        int (*poll)(struct napi_struct *, int), int weight)
+{
+  INIT_LIST_HEAD(&napi->poll_list);
+  hrtimer_init(&napi->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED);
+  napi->timer.function = napi_watchdog;
+  init_gro_hash(napi);
+  napi->skb = NULL;
+  napi->poll = poll;
+  napi->weight = weight;
+  napi->dev = dev;
+  napi->poll_owner = -1;
+  set_bit(NAPI_STATE_SCHED, &napi->state);
+  set_bit(NAPI_STATE_NPSVC, &napi->state);
+  list_add_rcu(&napi->dev_list, &dev->napi_list);
+  napi_hash_add(napi);
+}
+```
+
+```C++
+/* internet trasaction gigabyte
+  drivers/net/ethernet/intel/ixgb/ixgb_main.c */
 const struct net_device_ops ixgb_netdev_ops = {
   .ndo_open               = ixgb_open,
   .ndo_stop               = ixgb_close,
@@ -5427,8 +5452,7 @@ int ixgb_up(struct ixgb_adapter *adapter)
 {
   struct net_device *netdev = adapter->netdev;
 
-  err = request_irq(adapter->pdev->irq,
-    ixgb_intr, irq_flags, netdev->name, netdev);
+  err = request_irq(adapter->pdev->irq, ixgb_intr, irq_flags, netdev->name, netdev);
 }
 
 irqreturn_t ixgb_intr(int irq, void *data)
@@ -5445,13 +5469,38 @@ irqreturn_t ixgb_intr(int irq, void *data)
     if (!test_bit(__IXGB_DOWN, &adapter->flags))
       mod_timer(&adapter->watchdog_timer, jiffies);
 
+  /* check if napi can be scheduled */
   if (napi_schedule_prep(&adapter->napi)) {
-    /* Disable interrupts and register for poll. The flush
-      of the posted write is intentionally left out. */
+    /*Disable interrupts and register for poll.
+      The flush of the posted write is intentionally left out.
+      Enable in ixgb_clean if work is done, i.e., work < budget */
     IXGB_WRITE_REG(&adapter->hw, IMC, ~0);
     __napi_schedule(&adapter->napi);
   }
   return IRQ_HANDLED;
+}
+
+/* check if napi can be scheduled */
+bool napi_schedule_prep(struct napi_struct *n)
+{
+  unsigned long val, new;
+
+  do {
+    val = READ_ONCE(n->state);
+    if (unlikely(val & NAPIF_STATE_DISABLE))
+      return false;
+    new = val | NAPIF_STATE_SCHED;
+
+    /* Sets STATE_MISSED bit if STATE_SCHED was already set
+     * This was suggested by Alexander Duyck, as compiler
+     * emits better code than :
+     * if (val & NAPIF_STATE_SCHED)
+     *     new |= NAPIF_STATE_MISSED; ß*/
+    new |= (val & NAPIF_STATE_SCHED) / NAPIF_STATE_SCHED *
+               NAPIF_STATE_MISSED;
+  } while (cmpxchg(&n->state, val, new) != val);
+
+  return !(val & NAPIF_STATE_SCHED);
 }
 
 /* __napi_schedule - schedule for receive
@@ -5544,14 +5593,73 @@ int ixgb_clean(struct napi_struct *napi, int budget)
   ixgb_clean_tx_irq(adapter);
   ixgb_clean_rx_irq(adapter, &work_done, budget);
 
-  /* If budget not fully consumed, exit the polling mode */
+  /*If budget not fully consumed, exit the polling mode
+    If and only if the return value is less than the budget,
+    your driver must reenable interrupts and turn off polling. */
   if (work_done < budget) {
     napi_complete_done(napi, work_done);
     if (!test_bit(__IXGB_DOWN, &adapter->flags))
+      /* counterpart to IXGB_WRITE_REG(&adapter->hw, IMC, ~0) */
       ixgb_irq_enable(adapter);
   }
 
   return work_done;
+}
+
+bool napi_complete_done(struct napi_struct *n, int work_done)
+{
+  unsigned long flags, val, new;
+
+  /*
+   * 1) Don't let napi dequeue from the cpu poll list
+   *    just in case its running on a different cpu.
+   * 2) If we are busy polling, do nothing here, we have
+   *    the guarantee we will be called later.
+   */
+  if (unlikely(n->state & (NAPIF_STATE_NPSVC | NAPIF_STATE_IN_BUSY_POLL)))
+    return false;
+
+  if (n->gro_bitmask) {
+    unsigned long timeout = 0;
+
+    if (work_done)
+      timeout = n->dev->gro_flush_timeout;
+
+    /* When the NAPI instance uses a timeout and keeps postponing
+     * it, we need to bound somehow the time packets are kept in
+     * the GRO layer
+     */
+    napi_gro_flush(n, !!timeout);
+    if (timeout)
+      hrtimer_start(&n->timer, ns_to_ktime(timeout), HRTIMER_MODE_REL_PINNED);
+  }
+  if (unlikely(!list_empty(&n->poll_list))) {
+    /* If n->poll_list is not empty, we need to mask irqs */
+    local_irq_save(flags);
+    list_del_init(&n->poll_list);
+    local_irq_restore(flags);
+  }
+
+  do {
+    val = READ_ONCE(n->state);
+
+    WARN_ON_ONCE(!(val & NAPIF_STATE_SCHED));
+
+    new = val & ~(NAPIF_STATE_MISSED | NAPIF_STATE_SCHED);
+
+    /* If STATE_MISSED was set, leave STATE_SCHED set,
+     * because we will call napi->poll() one more time.
+     * This C code was suggested by Alexander Duyck to help gcc.
+     */
+    new |= (val & NAPIF_STATE_MISSED) / NAPIF_STATE_MISSED * NAPIF_STATE_SCHED;
+  } while (cmpxchg(&n->state, val, new) != val);
+
+  if (unlikely(val & NAPIF_STATE_MISSED)) {
+    __napi_schedule(n);
+    return false;
+  }
+
+  return true;
 }
 
 bool ixgb_clean_rx_irq(struct ixgb_adapter *adapter, int *work_done, int work_to_do)
@@ -5684,55 +5792,7 @@ void skb_copy_to_linear_data_offset(
 {
   memcpy(skb->data + offset, from, len);
 }
-
-struct ixgb_desc_ring {
-  void *desc; /* pointer to ring array of ixgb_{rx, tx}_desc */
-  dma_addr_t dma; /* physical address of the descriptor ring */
-  unsigned int size; /* length of descriptor ring in bytes */
-  unsigned int count; /* number of descriptors in the ring */
-  unsigned int next_to_use; /* next descriptor to associate a buffer with */
-  unsigned int next_to_clean; /* next descriptor to check for DD status bit */
-  struct ixgb_buffer *buffer_info; /* array of buffer information structs */
-};
-
-#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
-typedef u64 dma_addr_t;
-#else
-typedef u32 dma_addr_t;
-#endif
-
-/* ixgb_alloc_rx_buffers maps skb to dma */
-struct ixgb_buffer {
-  struct sk_buff  *skb;
-  dma_addr_t      dma;
-  unsigned long   time_stamp;
-  u16             length;
-  u16             next_to_watch;
-  u16             mapped_as_page;
-};
-
-struct ixgb_rx_desc {
-  __le64        buff_addr;
-  __le16        length;
-  __le16        reserved;
-  u8            status;
-  u8            errors;
-  __le16        special;
-};
-
-struct ixgb_tx_desc {
-  __le64    buff_addr;
-  __le32    cmd_type_len;
-  u8        status;
-  u8        popts;
-  __le16    vlan;
-};
 ```
-![linux-net-rx_ring.png](../Images/Kernel/net-rx_ring.png)
-
-![](../Images/Kernel/net-desc-ring-1.png)
-
-![](../Images/Kernel/net-desc-ring-2.png)
 
 ## mac layer rx
 ```C++
@@ -5972,6 +6032,10 @@ struct list_head *ptype_head(const struct packet_type *pt)
 
 ## ip layer rx
 ```C++
+/*1. pre nf
+  2. route
+  2. defragment
+  3. in nf */
 int ip_rcv(struct sk_buff *skb, struct net_device *dev,
   struct packet_type *pt, struct net_device *orig_dev)
 {
@@ -6007,6 +6071,14 @@ int ip_rcv_finish_core(struct net *net, struct sock *sk,
   int (*edemux)(struct sk_buff *skb);
   struct rtable *rt;
   int err;
+
+  /* Initialise the virtual path cache for the packet. It describes
+   *  how the packet travels inside Linux networking. */
+  if (!skb_valid_dst(skb)) {
+    err = ip_route_input_noref(skb, iph->daddr, iph->saddr, iph->tos, dev);
+    if (unlikely(err))
+      goto drop_error;
+  }
 
   rt = skb_rtable(skb);
   if (rt->rt_type == RTN_MULTICAST) {
@@ -6872,7 +6944,7 @@ discard:
 ```c++
 /* tcp_rcv_established ->
  * Queues:
- * 1. backlog, push back when user reading
+ * 1. backlog, push back when user is reading
  * 2. sk_receive_queue, push back when user not reading
  * 3. out_of_order_queue */
 void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
@@ -7582,16 +7654,17 @@ netif_receive_skb()
 
 /* ip layer */
 ip_rcv()
-  NF_HOOK(NF_INET_PRE_ROUTING)
-    ip_rcv_finish()
-      ip_rcv_finish_core()
-      dst_input()
-        ip_local_deliver()
-          ip_defrag()
-          NF_HOOK(NF_INET_LOCAL_IN)
-            ip_local_deliver_finish()
-              inet_protos[protocol]->handler()
-                net_protocol->handler()
+    NF_HOOK(NF_INET_PRE_ROUTING)                    /* 1. PRE_NF */
+        ip_rcv_finish()
+            ip_rcv_finish_core()
+                ip_route_input_noref()              /* 2. route */
+            dst_input()
+                ip_local_deliver()
+                    ip_defrag()                     /* 3. defragment */
+                    NF_HOOK(NF_INET_LOCAL_IN)       /* 4. IN_NF */
+                    ip_local_deliver_finish()
+                        inet_protos[protocol]->handler()
+                            net_protocol->handler()
 
 /* tcp layer */
 tcp_v4_rcv();
@@ -7741,8 +7814,8 @@ tcp_v4_rcv();
 
       if (sk->sk_state == TCP_SYN_RECV) {
         tcp_init_transfer();
-          tcp_init_buffer_space();
-          tcp_init_congestion_control(sk);
+          tcp_init_buffer_space()tcp_init_congestion_control;
+          (sk);
         tcp_set_state(sk, TCP_ESTABLISHED);
 
         sk->sk_state_change();
@@ -7862,8 +7935,1117 @@ sock_read_iter()
                   tcp_v4_do_rcv()
 ```
 * [try_to_wake_up](./linux-kernel.md#ttwu)
+* [NAPI description on Linux Foundation](https://wiki.linuxfoundation.org/networking/napi)
 
-![linux-net-read.png](../Images/Kernel/net-read.png)
+![](../Images/Kernel/net-filter-2.png)
+
+---
+
+![](../Images/Kernel/net-read.png)
+
+
+# route
+![](../Images/Kernel/net-filter.png)
+
+---
+
+![](../Images/Kernel/net-filter-2.png)
+
+---
+
+![](../Images/Kernel/net-filter-3.png)
+
+---
+
+![](../Images/Kernel/net-route-fib.png)
+
+---
+
+![](../Images/Kernel/net-route.png)
+
+```c++
+struct net {
+  struct netns_ipv4    ipv4;
+};
+
+struct netns_ipv4 {
+  struct hlist_head    *fib_table_hash;
+}
+
+struct fib_table {
+  struct hlist_node    tb_hlist;
+  u32                  tb_id;
+  int                  tb_num_default;
+  struct rcu_head      rcu;
+  unsigned long        *tb_data;
+  unsigned long        __data[0];
+};
+
+struct fib_alias {
+  struct hlist_node   fa_list;
+  struct fib_info     *fa_info;
+  u8                  fa_tos;
+  u8                  fa_type;
+  u8                  fa_state;
+  u8                  fa_slen;
+  u32                 tb_id;
+  s16                 fa_default;
+  struct rcu_head     rcu;
+};
+
+struct fib_info {
+  struct hlist_node  fib_hash;
+  struct hlist_node  fib_lhash;
+  struct net         *fib_net;
+  int               fib_treeref;
+  refcount_t        fib_clntref;
+  unsigned int      fib_flags;
+  unsigned char     fib_dead;
+  unsigned char     fib_protocol;
+  unsigned char     fib_scope;
+  unsigned char     fib_type;
+  __be32            fib_prefsrc;
+  u32               fib_tb_id;
+  u32               fib_priority;
+  struct dst_metrics  *fib_metrics;
+#define fib_mtu fib_metrics->metrics[RTAX_MTU-1]
+#define fib_window fib_metrics->metrics[RTAX_WINDOW-1]
+#define fib_rtt fib_metrics->metrics[RTAX_RTT-1]
+#define fib_advmss fib_metrics->metrics[RTAX_ADVMSS-1]
+  int                 fib_nhs;
+  struct rcu_head     rcu;
+  struct fib_nh       fib_nh[0];
+#define fib_dev       fib_nh[0].nh_dev
+};
+
+struct fib_nh {
+  struct net_device   *nh_dev;
+  struct hlist_node   nh_hash;
+  struct fib_info     *nh_parent;
+  unsigned int        nh_flags;
+  unsigned char       nh_scope;
+  int                 nh_weight;
+  atomic_t            nh_upper_bound;
+  __u32               nh_tclassid;
+  int                 nh_oif;
+  __be32              nh_gw;
+  __be32              nh_saddr;
+  int                 nh_saddr_genid;
+  struct rtable __rcu * __percpu    *nh_pcpu_rth_output;
+  struct rtable __rcu               *nh_rth_input;
+  struct fnhe_hash_bucket  __rcu    *nh_exceptions;
+  struct lwtunnel_state             *nh_lwtstate;
+};
+
+struct fib_result {
+  __be32          prefix;
+  unsigned char   prefixlen;
+  unsigned char   nh_sel;
+  unsigned char   type;
+  unsigned char   scope;
+  u32             tclassid;
+  struct fib_info   *fi;
+  struct fib_table  *table;
+  struct hlist_head *fa_head;
+};
+```
+
+## route out
+```C++
+struct rtable *ip_route_output_ports(
+  struct net *net, struct flowi4 *fl4,
+  struct sock *sk,
+  __be32 daddr, __be32 saddr,
+  __be16 dport, __be16 sport,
+  __u8 proto, __u8 tos, int oif)
+{
+  flowi4_init_output(fl4, oif, sk ? sk->sk_mark : 0, tos,
+         RT_SCOPE_UNIVERSE, proto,
+         sk ? inet_sk_flowi_flags(sk) : 0,
+         daddr, saddr, dport, sport, sock_net_uid(net, sk));
+  if (sk)
+    security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
+
+  return ip_route_output_flow(net, fl4, sk);
+}
+
+struct rtable *ip_route_output_flow(struct net *net, struct flowi4 *flp4,
+            const struct sock *sk)
+{
+  struct rtable *rt = __ip_route_output_key(net, flp4);
+
+  if (IS_ERR(rt))
+    return rt;
+
+  if (flp4->flowi4_proto) {
+    flp4->flowi4_oif = rt->dst.dev->ifindex;
+    rt = (struct rtable *)xfrm_lookup_route(net, &rt->dst,
+              flowi4_to_flowi(flp4), sk, 0);
+  }
+
+  return rt;
+}
+
+struct rtable *__ip_route_output_key(struct net *net,
+               struct flowi4 *flp)
+{
+  return ip_route_output_key_hash(net, flp, NULL);
+}
+
+struct rtable *ip_route_output_key_hash(struct net *net, struct flowi4 *fl4,
+          const struct sk_buff *skb)
+{
+  __u8 tos = RT_FL_TOS(fl4);
+  struct fib_result res = {
+    .type       = RTN_UNSPEC,
+    .fi         = NULL,
+    .table      = NULL,
+    .tclassid   = 0,
+  };
+  struct rtable *rth;
+
+  fl4->flowi4_iif = LOOPBACK_IFINDEX;
+  fl4->flowi4_tos = tos & IPTOS_RT_MASK;
+  fl4->flowi4_scope = ((tos & RTO_ONLINK) ? RT_SCOPE_LINK : RT_SCOPE_UNIVERSE);
+
+  rcu_read_lock();
+  rth = ip_route_output_key_hash_rcu(net, fl4, &res, skb);
+  rcu_read_unlock();
+
+  return rth;
+}
+
+struct rtable *ip_route_output_key_hash_rcu(struct net *net, struct flowi4 *fl4,
+  struct fib_result *res, const struct sk_buff *skb)
+{
+  struct net_device *dev_out = NULL;
+  int orig_oif = fl4->flowi4_oif;
+  unsigned int flags = 0;
+  struct rtable *rth;
+
+  err = fib_lookup(net, fl4, res, 0);
+
+make_route:
+  rth = __mkroute_output(res, fl4, orig_oif, dev_out, flags);
+
+out:
+  return rth;
+}
+
+static struct rtable *__mkroute_output(const struct fib_result *res,
+               const struct flowi4 *fl4, int orig_oif,
+               struct net_device *dev_out,
+               unsigned int flags)
+{
+  struct fib_info *fi = res->fi;
+  struct fib_nh_exception *fnhe;
+  struct in_device *in_dev;
+  u16 type = res->type;
+  struct rtable *rth;
+  bool do_cache;
+
+  in_dev = __in_dev_get_rcu(dev_out);
+  if (!in_dev)
+    return ERR_PTR(-EINVAL);
+
+  if (likely(!IN_DEV_ROUTE_LOCALNET(in_dev)))
+    if (ipv4_is_loopback(fl4->saddr) &&
+        !(dev_out->flags & IFF_LOOPBACK) &&
+        !netif_is_l3_master(dev_out))
+      return ERR_PTR(-EINVAL);
+
+  if (ipv4_is_lbcast(fl4->daddr))
+    type = RTN_BROADCAST;
+  else if (ipv4_is_multicast(fl4->daddr))
+    type = RTN_MULTICAST;
+  else if (ipv4_is_zeronet(fl4->daddr))
+    return ERR_PTR(-EINVAL);
+
+  if (dev_out->flags & IFF_LOOPBACK)
+    flags |= RTCF_LOCAL;
+
+  do_cache = true;
+  if (type == RTN_BROADCAST) {
+    flags |= RTCF_BROADCAST | RTCF_LOCAL;
+    fi = NULL;
+  } else if (type == RTN_MULTICAST) {
+    flags |= RTCF_MULTICAST | RTCF_LOCAL;
+    if (!ip_check_mc_rcu(in_dev, fl4->daddr, fl4->saddr,
+             fl4->flowi4_proto))
+      flags &= ~RTCF_LOCAL;
+    else
+      do_cache = false;
+    /* If multicast route do not exist use
+     * default one, but do not gateway in this case.
+     * Yes, it is hack.
+     */
+    if (fi && res->prefixlen < 4)
+      fi = NULL;
+  } else if ((type == RTN_LOCAL) && (orig_oif != 0) &&
+       (orig_oif != dev_out->ifindex)) {
+    /* For local routes that require a particular output interface
+     * we do not want to cache the result.  Caching the result
+     * causes incorrect behaviour when there are multiple source
+     * addresses on the interface, the end result being that if the
+     * intended recipient is waiting on that interface for the
+     * packet he won't receive it because it will be delivered on
+     * the loopback interface and the IP_PKTINFO ipi_ifindex will
+     * be set to the loopback interface as well.
+     */
+    do_cache = false;
+  }
+
+  fnhe = NULL;
+  do_cache &= fi != NULL;
+  if (fi) {
+    struct rtable __rcu **prth;
+    struct fib_nh *nh = &FIB_RES_NH(*res);
+
+    fnhe = find_exception(nh, fl4->daddr);
+    if (!do_cache)
+      goto add;
+    if (fnhe) {
+      prth = &fnhe->fnhe_rth_output;
+    } else {
+      if (unlikely(fl4->flowi4_flags &
+             FLOWI_FLAG_KNOWN_NH &&
+             !(nh->nh_gw &&
+               nh->nh_scope == RT_SCOPE_LINK))) {
+        do_cache = false;
+        goto add;
+      }
+      prth = raw_cpu_ptr(nh->nh_pcpu_rth_output);
+    }
+    rth = rcu_dereference(*prth);
+    if (rt_cache_valid(rth) && dst_hold_safe(&rth->dst))
+      return rth;
+  }
+
+add:
+  rth = rt_dst_alloc(dev_out, flags, type,
+         IN_DEV_CONF_GET(in_dev, NOPOLICY),
+         IN_DEV_CONF_GET(in_dev, NOXFRM),
+         do_cache);
+  if (!rth)
+    return ERR_PTR(-ENOBUFS);
+
+  rth->rt_iif = orig_oif;
+
+  RT_CACHE_STAT_INC(out_slow_tot);
+
+  if (flags & (RTCF_BROADCAST | RTCF_MULTICAST)) {
+    if (flags & RTCF_LOCAL &&
+        !(dev_out->flags & IFF_LOOPBACK)) {
+      rth->dst.output = ip_mc_output;
+      RT_CACHE_STAT_INC(out_slow_mc);
+    }
+#ifdef CONFIG_IP_MROUTE
+    if (type == RTN_MULTICAST) {
+      if (IN_DEV_MFORWARD(in_dev) &&
+          !ipv4_is_local_multicast(fl4->daddr)) {
+        rth->dst.input = ip_mr_input;
+        rth->dst.output = ip_mc_output;
+      }
+    }
+#endif
+  }
+
+  rt_set_nexthop(rth, fl4->daddr, res, fnhe, fi, type, 0, do_cache);
+  lwtunnel_set_redirect(&rth->dst);
+
+  return rth;
+}
+
+void rt_set_nexthop(struct rtable *rt, __be32 daddr,
+         const struct fib_result *res,
+         struct fib_nh_exception *fnhe,
+         struct fib_info *fi, u16 type, u32 itag,
+         const bool do_cache)
+{
+  bool cached = false;
+
+  if (fi) {
+    struct fib_nh *nh = &FIB_RES_NH(*res);
+
+    if (nh->nh_gw && nh->nh_scope == RT_SCOPE_LINK) {
+      rt->rt_gateway = nh->nh_gw;
+      rt->rt_uses_gateway = 1;
+    }
+    dst_init_metrics(&rt->dst, fi->fib_metrics->metrics, true);
+    if (fi->fib_metrics != &dst_default_metrics) {
+      rt->dst._metrics |= DST_METRICS_REFCOUNTED;
+      refcount_inc(&fi->fib_metrics->refcnt);
+    }
+#ifdef CONFIG_IP_ROUTE_CLASSID
+    rt->dst.tclassid = nh->nh_tclassid;
+#endif
+    rt->dst.lwtstate = lwtstate_get(nh->nh_lwtstate);
+    if (unlikely(fnhe))
+      cached = rt_bind_exception(rt, fnhe, daddr, do_cache);
+    else if (do_cache)
+      cached = rt_cache_route(nh, rt);
+    if (unlikely(!cached)) {
+      /* Routes we intend to cache in nexthop exception or
+       * FIB nexthop have the DST_NOCACHE bit clear.
+       * However, if we are unsuccessful at storing this
+       * route into the cache we really need to set it.
+       */
+      if (!rt->rt_gateway)
+        rt->rt_gateway = daddr;
+      rt_add_uncached_list(rt);
+    }
+  } else
+    rt_add_uncached_list(rt);
+
+#ifdef CONFIG_IP_ROUTE_CLASSID
+#ifdef CONFIG_IP_MULTIPLE_TABLES
+  set_class_tag(rt, res->tclassid);
+#endif
+  set_class_tag(rt, itag);
+#endif
+}
+```
+
+![](../Images/Kernel/net-forwarding-table.png)
+
+```C++
+# Linux Server A
+default via 192.168.1.1 dev eth0
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.100 metric 100
+
+# Linux router
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.1
+192.168.2.0/24 dev eth1 proto kernel scope link src 192.168.2.1
+
+# Linux Server B
+default via 192.168.2.1 dev eth0
+192.168.2.0/24 dev eth0 proto kernel scope link src 192.168.2.100 metric 100
+```
+
+## route in
+```c++
+int ip_route_input_noref(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+       u8 tos, struct net_device *dev)
+{
+  struct fib_result res;
+  int err;
+
+  tos &= IPTOS_RT_MASK;
+  rcu_read_lock();
+  err = ip_route_input_rcu(skb, daddr, saddr, tos, dev, &res);
+  rcu_read_unlock();
+
+  return err;
+}
+
+/* called with rcu_read_lock held */
+int ip_route_input_rcu(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+           u8 tos, struct net_device *dev, struct fib_result *res)
+{
+  return ip_route_input_slow(skb, daddr, saddr, tos, dev, res);
+}
+
+int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
+             u8 tos, struct net_device *dev,
+             struct fib_result *res)
+{
+  struct in_device *in_dev = __in_dev_get_rcu(dev);
+  struct flow_keys *flkeys = NULL, _flkeys;
+  struct net    *net = dev_net(dev);
+  struct ip_tunnel_info *tun_info;
+  int    err = -EINVAL;
+  unsigned int  flags = 0;
+  u32    itag = 0;
+  struct rtable  *rth;
+  struct flowi4  fl4;
+  bool do_cache = true;
+
+  /* IP on this device is disabled. */
+
+  if (!in_dev)
+    goto out;
+
+  /* Check for the most weird martians, which can be not detected
+     by fib_lookup.
+   */
+
+  tun_info = skb_tunnel_info(skb);
+  if (tun_info && !(tun_info->mode & IP_TUNNEL_INFO_TX))
+    fl4.flowi4_tun_key.tun_id = tun_info->key.tun_id;
+  else
+    fl4.flowi4_tun_key.tun_id = 0;
+  skb_dst_drop(skb);
+
+  if (ipv4_is_multicast(saddr) || ipv4_is_lbcast(saddr))
+    goto martian_source;
+
+  res->fi = NULL;
+  res->table = NULL;
+  if (ipv4_is_lbcast(daddr) || (saddr == 0 && daddr == 0))
+    goto brd_input;
+
+  /* Accept zero addresses only to limited broadcast;
+   * I even do not know to fix it or not. Waiting for complains :-)
+   */
+  if (ipv4_is_zeronet(saddr))
+    goto martian_source;
+
+  if (ipv4_is_zeronet(daddr))
+    goto martian_destination;
+
+  /* Following code try to avoid calling IN_DEV_NET_ROUTE_LOCALNET(),
+   * and call it once if daddr or/and saddr are loopback addresses
+   */
+  if (ipv4_is_loopback(daddr)) {
+    if (!IN_DEV_NET_ROUTE_LOCALNET(in_dev, net))
+      goto martian_destination;
+  } else if (ipv4_is_loopback(saddr)) {
+    if (!IN_DEV_NET_ROUTE_LOCALNET(in_dev, net))
+      goto martian_source;
+  }
+
+  /*
+   *  Now we are ready to route packet.
+   */
+  fl4.flowi4_oif = 0;
+  fl4.flowi4_iif = dev->ifindex;
+  fl4.flowi4_mark = skb->mark;
+  fl4.flowi4_tos = tos;
+  fl4.flowi4_scope = RT_SCOPE_UNIVERSE;
+  fl4.flowi4_flags = 0;
+  fl4.daddr = daddr;
+  fl4.saddr = saddr;
+  fl4.flowi4_uid = sock_net_uid(net, NULL);
+
+  if (fib4_rules_early_flow_dissect(net, skb, &fl4, &_flkeys)) {
+    flkeys = &_flkeys;
+  } else {
+    fl4.flowi4_proto = 0;
+    fl4.fl4_sport = 0;
+    fl4.fl4_dport = 0;
+  }
+
+  err = fib_lookup(net, &fl4, res, 0);
+  if (err != 0) {
+    if (!IN_DEV_FORWARD(in_dev))
+      err = -EHOSTUNREACH;
+    goto no_route;
+  }
+
+  if (res->type == RTN_BROADCAST) {
+    if (IN_DEV_BFORWARD(in_dev))
+      goto make_route;
+    /* not do cache if bc_forwarding is enabled */
+    if (IPV4_DEVCONF_ALL(net, BC_FORWARDING))
+      do_cache = false;
+    goto brd_input;
+  }
+
+  if (res->type == RTN_LOCAL) {
+    err = fib_validate_source(skb, saddr, daddr, tos,
+            0, dev, in_dev, &itag);
+    if (err < 0)
+      goto martian_source;
+    goto local_input;
+  }
+
+  if (!IN_DEV_FORWARD(in_dev)) {
+    err = -EHOSTUNREACH;
+    goto no_route;
+  }
+  if (res->type != RTN_UNICAST)
+    goto martian_destination;
+
+make_route:
+  err = ip_mkroute_input(skb, res, in_dev, daddr, saddr, tos, flkeys);
+out:  return err;
+
+brd_input:
+  if (skb->protocol != htons(ETH_P_IP))
+    goto e_inval;
+
+  if (!ipv4_is_zeronet(saddr)) {
+    err = fib_validate_source(skb, saddr, 0, tos, 0, dev, in_dev, &itag);
+    if (err < 0)
+      goto martian_source;
+  }
+  flags |= RTCF_BROADCAST;
+  res->type = RTN_BROADCAST;
+  RT_CACHE_STAT_INC(in_brd);
+
+local_input:
+  do_cache &= res->fi && !itag;
+  if (do_cache) {
+    rth = rcu_dereference(FIB_RES_NH(*res).nh_rth_input);
+    if (rt_cache_valid(rth)) {
+      skb_dst_set_noref(skb, &rth->dst);
+      err = 0;
+      goto out;
+    }
+  }
+
+  rth = rt_dst_alloc(l3mdev_master_dev_rcu(dev) ? : net->loopback_dev,
+         flags | RTCF_LOCAL, res->type,
+         IN_DEV_CONF_GET(in_dev, NOPOLICY), false, do_cache);
+  if (!rth)
+    goto e_nobufs;
+
+  rth->dst.output= ip_rt_bug;
+#ifdef CONFIG_IP_ROUTE_CLASSID
+  rth->dst.tclassid = itag;
+#endif
+  rth->rt_is_input = 1;
+
+  RT_CACHE_STAT_INC(in_slow_tot);
+  if (res->type == RTN_UNREACHABLE) {
+    rth->dst.input= ip_error;
+    rth->dst.error= -err;
+    rth->rt_flags   &= ~RTCF_LOCAL;
+  }
+
+  if (do_cache) {
+    struct fib_nh *nh = &FIB_RES_NH(*res);
+
+    rth->dst.lwtstate = lwtstate_get(nh->nh_lwtstate);
+    if (lwtunnel_input_redirect(rth->dst.lwtstate)) {
+      WARN_ON(rth->dst.input == lwtunnel_input);
+      rth->dst.lwtstate->orig_input = rth->dst.input;
+      rth->dst.input = lwtunnel_input;
+    }
+
+    if (unlikely(!rt_cache_route(nh, rth)))
+      rt_add_uncached_list(rth);
+  }
+  skb_dst_set(skb, &rth->dst);
+  err = 0;
+  goto out;
+
+no_route:
+  RT_CACHE_STAT_INC(in_no_route);
+  res->type = RTN_UNREACHABLE;
+  res->fi = NULL;
+  res->table = NULL;
+  goto local_input;
+
+  /*
+   *  Do not cache martian addresses: they should be logged (RFC1812)
+   */
+martian_destination:
+  RT_CACHE_STAT_INC(in_martian_dst);
+#ifdef CONFIG_IP_ROUTE_VERBOSE
+  if (IN_DEV_LOG_MARTIANS(in_dev))
+    net_warn_ratelimited("martian destination %pI4 from %pI4, dev %s\n",
+             &daddr, &saddr, dev->name);
+#endif
+
+e_inval:
+  err = -EINVAL;
+  goto out;
+
+e_nobufs:
+  err = -ENOBUFS;
+  goto out;
+
+martian_source:
+  ip_handle_martian_source(dev, in_dev, skb, daddr, saddr);
+  goto out;
+}
+
+int ip_mkroute_input(struct sk_buff *skb,
+          struct fib_result *res,
+          struct in_device *in_dev,
+          __be32 daddr, __be32 saddr, u32 tos,
+          struct flow_keys *hkeys)
+{
+#ifdef CONFIG_IP_ROUTE_MULTIPATH
+  if (res->fi && res->fi->fib_nhs > 1) {
+    int h = fib_multipath_hash(res->fi->fib_net, NULL, skb, hkeys);
+
+    fib_select_multipath(res, h);
+  }
+#endif
+
+  /* create a routing cache entry */
+  return __mkroute_input(skb, res, in_dev, daddr, saddr, tos);
+}
+
+int __mkroute_input(struct sk_buff *skb,
+         const struct fib_result *res,
+         struct in_device *in_dev,
+         __be32 daddr, __be32 saddr, u32 tos)
+{
+  struct fib_nh_exception *fnhe;
+  struct rtable *rth;
+  int err;
+  struct in_device *out_dev;
+  bool do_cache;
+  u32 itag = 0;
+
+  /* get a working reference to the output device */
+  out_dev = __in_dev_get_rcu(FIB_RES_DEV(*res));
+  if (!out_dev) {
+    net_crit_ratelimited("Bug in ip_route_input_slow(). Please report.\n");
+    return -EINVAL;
+  }
+
+  err = fib_validate_source(skb, saddr, daddr, tos, FIB_RES_OIF(*res),
+          in_dev->dev, in_dev, &itag);
+  if (err < 0) {
+    ip_handle_martian_source(in_dev->dev, in_dev, skb, daddr,
+           saddr);
+
+    goto cleanup;
+  }
+
+  do_cache = res->fi && !itag;
+  if (out_dev == in_dev && err && IN_DEV_TX_REDIRECTS(out_dev) &&
+      skb->protocol == htons(ETH_P_IP) &&
+      (IN_DEV_SHARED_MEDIA(out_dev) ||
+       inet_addr_onlink(out_dev, saddr, FIB_RES_GW(*res))))
+    IPCB(skb)->flags |= IPSKB_DOREDIRECT;
+
+  if (skb->protocol != htons(ETH_P_IP)) {
+    /* Not IP (i.e. ARP). Do not create route, if it is
+     * invalid for proxy arp. DNAT routes are always valid.
+     *
+     * Proxy arp feature have been extended to allow, ARP
+     * replies back to the same interface, to support
+     * Private VLAN switch technologies. See arp.c.
+     */
+    if (out_dev == in_dev &&
+        IN_DEV_PROXY_ARP_PVLAN(in_dev) == 0) {
+      err = -EINVAL;
+      goto cleanup;
+    }
+  }
+
+  fnhe = find_exception(&FIB_RES_NH(*res), daddr);
+  if (do_cache) {
+    if (fnhe)
+      rth = rcu_dereference(fnhe->fnhe_rth_input);
+    else
+      rth = rcu_dereference(FIB_RES_NH(*res).nh_rth_input);
+    if (rt_cache_valid(rth)) {
+      skb_dst_set_noref(skb, &rth->dst);
+      goto out;
+    }
+  }
+
+  rth = rt_dst_alloc(out_dev->dev, 0, res->type,
+         IN_DEV_CONF_GET(in_dev, NOPOLICY),
+         IN_DEV_CONF_GET(out_dev, NOXFRM), do_cache);
+  if (!rth) {
+    err = -ENOBUFS;
+    goto cleanup;
+  }
+
+  rth->rt_is_input = 1;
+  RT_CACHE_STAT_INC(in_slow_tot);
+
+  rth->dst.input = ip_forward;
+
+  rt_set_nexthop(rth, daddr, res, fnhe, res->fi, res->type, itag, do_cache);
+
+  lwtunnel_set_redirect(&rth->dst);
+  skb_dst_set(skb, &rth->dst);
+out:
+  err = 0;
+ cleanup:
+  return err;
+}
+
+void skb_dst_set(struct sk_buff *skb, struct dst_entry *dst)
+{
+ skb->_skb_refdst = (unsigned long)dst;
+}
+```
+
+## fib_lookup
+```c++
+/* FIB: Forwarding Information Base*/
+int fib_lookup(struct net *net, struct flowi4 *flp,
+           struct fib_result *res, unsigned int flags)
+{
+  struct fib_table *tb;
+  int err = -ENETUNREACH;
+
+  flags |= FIB_LOOKUP_NOREF;
+  if (net->ipv4.fib_has_custom_rules)
+    return __fib_lookup(net, flp, res, flags);
+
+  rcu_read_lock();
+
+  res->tclassid = 0;
+
+  tb = rcu_dereference_rtnl(net->ipv4.fib_main);
+  if (tb)
+    err = fib_table_lookup(tb, flp, res, flags);
+
+  if (!err)
+    goto out;
+
+  tb = rcu_dereference_rtnl(net->ipv4.fib_default);
+  if (tb)
+    err = fib_table_lookup(tb, flp, res, flags);
+
+out:
+  if (err == -EAGAIN)
+    err = -ENETUNREACH;
+
+  rcu_read_unlock();
+
+  return err;
+}
+
+int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
+         struct fib_result *res, int fib_flags)
+{
+  struct trie *t = (struct trie *) tb->tb_data;
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+  struct trie_use_stats __percpu *stats = t->stats;
+#endif
+  const t_key key = ntohl(flp->daddr);
+  struct key_vector *n, *pn;
+  struct fib_alias *fa;
+  unsigned long index;
+  t_key cindex;
+
+  pn = t->kv;
+  cindex = 0;
+
+  n = get_child_rcu(pn, cindex);
+  if (!n) {
+    trace_fib_table_lookup(tb->tb_id, flp, NULL, -EAGAIN);
+    return -EAGAIN;
+  }
+
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+  this_cpu_inc(stats->gets);
+#endif
+
+  /* Step 1: Travel to the longest prefix match in the trie */
+  for (;;) {
+    index = get_cindex(key, n);
+
+    /* This bit of code is a bit tricky but it combines multiple
+     * checks into a single check.  The prefix consists of the
+     * prefix plus zeros for the "bits" in the prefix. The index
+     * is the difference between the key and this value.  From
+     * this we can actually derive several pieces of data.
+     *   if (index >= (1ul << bits))
+     *     we have a mismatch in skip bits and failed
+     *   else
+     *     we know the value is cindex
+     *
+     * This check is safe even if bits == KEYLENGTH due to the
+     * fact that we can only allocate a node with 32 bits if a
+     * long is greater than 32 bits.
+     */
+    if (index >= (1ul << n->bits))
+      break;
+
+    /* we have found a leaf. Prefixes have already been compared */
+    if (IS_LEAF(n))
+      goto found;
+
+    /* only record pn and cindex if we are going to be chopping
+     * bits later.  Otherwise we are just wasting cycles.
+     */
+    if (n->slen > n->pos) {
+      pn = n;
+      cindex = index;
+    }
+
+    n = get_child_rcu(n, index);
+    if (unlikely(!n))
+      goto backtrace;
+  }
+
+  /* Step 2: Sort out leaves and begin backtracing for longest prefix */
+  for (;;) {
+    /* record the pointer where our next node pointer is stored */
+    struct key_vector __rcu **cptr = n->tnode;
+
+    /* This test verifies that none of the bits that differ
+     * between the key and the prefix exist in the region of
+     * the lsb and higher in the prefix.
+     */
+    if (unlikely(prefix_mismatch(key, n)) || (n->slen == n->pos))
+      goto backtrace;
+
+    /* exit out and process leaf */
+    if (unlikely(IS_LEAF(n)))
+      break;
+
+    /* Don't bother recording parent info.  Since we are in
+     * prefix match mode we will have to come back to wherever
+     * we started this traversal anyway
+     */
+
+    while ((n = rcu_dereference(*cptr)) == NULL) {
+backtrace:
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+      if (!n)
+        this_cpu_inc(stats->null_node_hit);
+#endif
+      /* If we are at cindex 0 there are no more bits for
+       * us to strip at this level so we must ascend back
+       * up one level to see if there are any more bits to
+       * be stripped there.
+       */
+      while (!cindex) {
+        t_key pkey = pn->key;
+
+        /* If we don't have a parent then there is
+         * nothing for us to do as we do not have any
+         * further nodes to parse.
+         */
+        if (IS_TRIE(pn)) {
+          trace_fib_table_lookup(tb->tb_id, flp,
+                     NULL, -EAGAIN);
+          return -EAGAIN;
+        }
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+        this_cpu_inc(stats->backtrack);
+#endif
+        /* Get Child's index */
+        pn = node_parent_rcu(pn);
+        cindex = get_index(pkey, pn);
+      }
+
+      /* strip the least significant bit from the cindex */
+      cindex &= cindex - 1;
+
+      /* grab pointer for next child node */
+      cptr = &pn->tnode[cindex];
+    }
+  }
+
+found:
+  /* this line carries forward the xor from earlier in the function */
+  index = key ^ n->key;
+
+  /* Step 3: Process the leaf, if that fails fall back to backtracing */
+  hlist_for_each_entry_rcu(fa, &n->leaf, fa_list) {
+    struct fib_info *fi = fa->fa_info;
+    int nhsel, err;
+
+    if ((BITS_PER_LONG > KEYLENGTH) || (fa->fa_slen < KEYLENGTH)) {
+      if (index >= (1ul << fa->fa_slen))
+        continue;
+    }
+    if (fa->fa_tos && fa->fa_tos != flp->flowi4_tos)
+      continue;
+    if (fi->fib_dead)
+      continue;
+    if (fa->fa_info->fib_scope < flp->flowi4_scope)
+      continue;
+    fib_alias_accessed(fa);
+    err = fib_props[fa->fa_type].error;
+    if (unlikely(err < 0)) {
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+      this_cpu_inc(stats->semantic_match_passed);
+#endif
+      trace_fib_table_lookup(tb->tb_id, flp, NULL, err);
+      return err;
+    }
+    if (fi->fib_flags & RTNH_F_DEAD)
+      continue;
+    for (nhsel = 0; nhsel < fi->fib_nhs; nhsel++) {
+      const struct fib_nh *nh = &fi->fib_nh[nhsel];
+      struct in_device *in_dev = __in_dev_get_rcu(nh->nh_dev);
+
+      if (nh->nh_flags & RTNH_F_DEAD)
+        continue;
+      if (in_dev &&
+          IN_DEV_IGNORE_ROUTES_WITH_LINKDOWN(in_dev) &&
+          nh->nh_flags & RTNH_F_LINKDOWN &&
+          !(fib_flags & FIB_LOOKUP_IGNORE_LINKSTATE))
+        continue;
+      if (!(flp->flowi4_flags & FLOWI_FLAG_SKIP_NH_OIF)) {
+        if (flp->flowi4_oif &&
+            flp->flowi4_oif != nh->nh_oif)
+          continue;
+      }
+
+      if (!(fib_flags & FIB_LOOKUP_NOREF))
+        refcount_inc(&fi->fib_clntref);
+
+      res->prefix = htonl(n->key);
+      res->prefixlen = KEYLENGTH - fa->fa_slen;
+      res->nh_sel = nhsel;
+      res->type = fa->fa_type;
+      res->scope = fi->fib_scope;
+      res->fi = fi;
+      res->table = tb;
+      res->fa_head = &n->leaf;
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+      this_cpu_inc(stats->semantic_match_passed);
+#endif
+      trace_fib_table_lookup(tb->tb_id, flp, nh, err);
+
+      return err;
+    }
+  }
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+  this_cpu_inc(stats->semantic_match_miss);
+#endif
+  goto backtrace;
+}
+```
+
+## rt_dst_alloc
+```C++
+struct rtable {
+  struct dst_entry  dst;
+  int               rt_genid;
+  unsigned int      rt_flags;
+  __u16             rt_type;
+  __u8              rt_is_input;
+  __u8              rt_uses_gateway;
+  int               rt_iif;
+  u8                rt_gw_family;
+  union {
+    __be32           rt_gw4;
+    struct in6_addr  rt_gw6;
+  };
+  u32 rt_mtu_locked:1,  rt_pmtu:31;
+  struct list_head      rt_uncached;
+  struct uncached_list  *rt_uncached_list;
+};
+
+struct dst_entry {
+  struct net_device   *dev;
+  struct  dst_ops     *ops;
+  unsigned long       _metrics;
+  unsigned long       expires;
+  struct xfrm_state   *xfrm;
+  int (*input)(struct sk_buff *);
+  int (*output)(struct net *net, struct sock *sk, struct sk_buff *skb);
+};
+
+struct dst_ops ipv4_dst_ops = {
+  .family           = AF_INET,
+  .check            = ipv4_dst_check,
+  .default_advmss   = ipv4_default_advmss,
+  .mtu              = ipv4_mtu,
+  .cow_metrics      = ipv4_cow_metrics,
+  .destroy          = ipv4_dst_destroy,
+  .negative_advice  = ipv4_negative_advice,
+  .link_failure     = ipv4_link_failure,
+  .update_pmtu      = ip_rt_update_pmtu,
+  .redirect         = ip_do_redirect,
+  .local_out        = __ip_local_out,
+  .neigh_lookup     = ipv4_neigh_lookup,
+  .confirm_neigh    = ipv4_confirm_neigh,
+};
+
+struct rtable *rt_dst_alloc(
+  struct net_device *dev, unsigned int flags, u16 type,
+  bool nopolicy, bool noxfrm, bool will_cache)
+{
+  struct rtable *rt;
+
+  /*rt = dst_alloc(&ip6_dst_blackhole_ops
+    rt = dst_alloc(&ipv4_dst_blackhole_ops
+    rt = dst_alloc(&dn_dst_ops
+    rt = dst_alloc(&dn_dst_ops */
+
+  rt = dst_alloc(&ipv4_dst_ops, dev, 1, DST_OBSOLETE_FORCE_CHK,
+        (will_cache ? 0 : DST_HOST)
+        | (nopolicy ? DST_NOPOLICY : 0)
+        | (noxfrm ? DST_NOXFRM : 0));
+
+  if (rt) {
+    rt->rt_genid = rt_genid_ipv4(dev_net(dev));
+    rt->rt_flags = flags;
+    rt->rt_type = type;
+    rt->rt_is_input = 0;
+    rt->rt_iif = 0;
+    rt->rt_pmtu = 0;
+    rt->rt_gateway = 0;
+    rt->rt_uses_gateway = 0;
+    rt->rt_table_id = 0;
+    INIT_LIST_HEAD(&rt->rt_uncached);
+
+    rt->dst.output = ip_output;
+    if (flags & RTCF_LOCAL)
+      rt->dst.input = ip_local_deliver;
+
+    /* rth->dst.input = ip_forward;
+      rt->dst.input = ip6_input;
+      rt->dst.input = ip6_mc_input;
+      rt->dst.input = ip6_forward; */
+  }
+
+  return rt;
+}
+
+void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
+    int initial_ref, int initial_obsolete, unsigned short flags)
+{
+  struct dst_entry *dst;
+
+  if (ops->gc && dst_entries_get_fast(ops) > ops->gc_thresh) {
+    if (ops->gc(ops))
+      return NULL;
+  }
+
+  dst = kmem_cache_alloc(ops->kmem_cachep, GFP_ATOMIC);
+  if (!dst)
+    return NULL;
+
+  dst_init(dst, ops, dev, initial_ref, initial_obsolete, flags);
+
+  return dst;
+}
+
+void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
+    int initial_ref, int initial_obsolete, unsigned short flags)
+{
+  struct dst_entry *dst;
+
+  if (ops->gc && dst_entries_get_fast(ops) > ops->gc_thresh) {
+    if (ops->gc(ops))
+      return NULL;
+  }
+
+  dst = kmem_cache_alloc(ops->kmem_cachep, GFP_ATOMIC);
+  if (!dst)
+    return NULL;
+
+  dst_init(dst, ops, dev, initial_ref, initial_obsolete, flags);
+
+  return dst;
+}
+
+void dst_init(struct dst_entry *dst, struct dst_ops *ops,
+        struct net_device *dev, int initial_ref, int initial_obsolete,
+        unsigned short flags)
+{
+  dst->dev = dev;
+  if (dev)
+    dev_hold(dev);
+  dst->ops = ops;
+  dst_init_metrics(dst, dst_default_metrics.metrics, true);
+  dst->expires = 0UL;
+  dst->xfrm = NULL;
+  dst->input = dst_discard;
+  dst->output = dst_discard_out;
+  dst->error = 0;
+  dst->obsolete = initial_obsolete;
+  dst->header_len = 0;
+  dst->trailer_len = 0;
+  dst->tclassid = 0;
+  dst->lwtstate = NULL;
+  atomic_set(&dst->__refcnt, initial_ref);
+  dst->__use = 0;
+  dst->lastuse = jiffies;
+  dst->flags = flags;
+  if (!(flags & DST_NOCOUNT))
+    dst_entries_add(ops, 1);
+}
+```
 
 # congestion control
 
@@ -11021,7 +12203,7 @@ void __tcp_push_pending_frames(
 
 # epoll
 
-![kernel-net-epoll.png](../Images/Kernel/net-epoll.png)
+![](../Images/Kernel/net-epoll.png)
 
 ```c++
 typedef union epoll_data {
