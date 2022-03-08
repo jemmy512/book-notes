@@ -1,3 +1,5 @@
+![](https://www.brendangregg.com/Perf/linux_perf_tools_full.png)
+
 # CPU Performance Tunning
 
 # Memory Performance Tunning
