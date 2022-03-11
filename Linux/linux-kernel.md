@@ -95,20 +95,32 @@
     * install boot.img into MBR（Master Boot Record), and load boot.img into memory at 0x7c00 to run
     * core.img: diskboot.img, lzma_decompress.img, kernel.img
 
-* ```
-  boot.img
+* ```c++
+  boot.img                  // Power On Self Test
     core.img
-      diskboot.img // load other modules of grub into memory
-        real_to_prot// enable segement, page, open Gate A20
-        lzma_decompress.img
-        kernel.img // grub's kernel img not Linux kernel
-          grub_main // grub's main func
-            grub_load_config()
-            grub_command_execute ("normal", 0, 0)
-              grub_normal_execute()
-                grub_show_menu() // show which OS want to run
-                  grub_menu_execute_entry()
+      diskboot.img          // diskboot.S load other modules of grub into memory
+        lzma_decompress.img // startup_raw.S
+          real_to_prot      // enable segement, page, open Gate A20
+          kernel.img        // startup.S, grub's kernel img not Linux kernel
+            grub_main       // grub's main func
+              grub_load_config()
+              grub_command_execute ("normal", 0, 0)
+                grub_normal_execute()
+                  grub_show_menu() // show which OS want to run
+                    grub_menu_execute_entry() // start linux kernel
   ```
+  * boot.img
+      * checks the basic operability of the hardware and then it issues a BIOS interrupt, INT 13H, which locates the boot sectors on any attached bootable devices.
+      * read the first sector of the core image from a local disk and jump to it. Because of the size restriction, boot.img cannot understand any file system structure, so grub-install hardcodes the location of the first sector of the core image into boot.img when installing GRUB.
+  * diskboot.img
+      * the first sector of the core image when booting from a hard disk. It reads the rest of the core image into memory and starts the kernel. Since file system handling is not yet available, it encodes the location of the core image using a block list format.
+  * kernel.img
+      * contains GRUB’s basic run-time facilities: frameworks for device and file handling, environment variables, the rescue mode command-line parser, and so on. It is rarely used directly, but is built into all core images.
+  * core.img
+      * built dynamically from the kernel image and an arbitrary list of modules by the grub-mkimage program. Usually, it contains enough modules to access /boot/grub, and loads everything else (including menu handling, the ability to load target operating systems, and so on) from the file system at run-time. The modular design allows the core image to be kept small, since the areas of disk where it must be installed are often as small as 32KB.
+
+* [GNU GRUB Manual 2.06](https://www.gnu.org/software/grub/manual/grub/html_node/index.html#SEC_Contents)
+* [GNU GRUB Manual 2.06: Images](https://www.gnu.org/software/grub/manual/grub/html_node/Images.html)
 
 ## init kernel
 ```c++
