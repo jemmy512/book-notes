@@ -27,7 +27,7 @@
         * [tso_fragment](#tso_fragment)
         * [tcp_transmit_skb](#tcp_transmit_skb)
     * [ip layer](#ip-layer-tx)
-        * [fill ip header](#fill-ip-header)
+        * [build ip header](#build-ip-header)
         * [send package](#send-package)
     * [mac layer](#mac-layer-tx)
         * [neighbour](#neighbour)
@@ -874,6 +874,7 @@ socket();
               inode = sb->s_op->alloc_inode(sb);
                 sock_alloc_inode();
                   struct socket_alloc *ei = kmem_cache_alloc(sock_inode_cachep);
+                  struct socket_wq *wq = kmalloc(sizeof(*wq), GFP_KERNEL);
             else
               inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);
         sock = SOCKET_I(inode);
@@ -2886,6 +2887,7 @@ accpet();
         sk1->sk_prot->accept(); /* tcp_prot.accept */
           inet_csk_accept();
             reqsk_queue_empty();
+              /* wakeup by sk_listener->sk_data_ready() sock_def_readable in TCP_NEW_SYN_RECV */
               inet_csk_wait_for_connect();
                 prepare_to_wait_exclusive();
                   wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
@@ -4797,6 +4799,21 @@ int __dev_xmit_skb(
   }
 }
 
+bool qdisc_run_begin(struct Qdisc *qdisc)
+{
+  if (qdisc->flags & TCQ_F_NOLOCK) {
+    if (!spin_trylock(&qdisc->seqlock))
+      return false;
+  } else if (qdisc_is_running(qdisc)) {
+    return false;
+  }
+  /* Variant of write_seqcount_begin() telling lockdep a trylock
+   * was attempted. */
+  raw_write_seqcount_begin(&qdisc->running);
+  seqcount_acquire(&qdisc->running.dep_map, 0, 1, _RET_IP_);
+  return true;
+}
+
 void __qdisc_run(struct Qdisc *q)
 {
   int quota = dev_tx_weight; /* 64 */
@@ -5088,8 +5105,15 @@ ip_finish_output();
   neigh_output(neigh, skb);
     neigh->output();
       neigh_resolve_output(); /* arp_hh_ops.output */
-        if (!neigh_event_send())   /* send arp packet */
+        if (!neigh_event_send())
+            __skb_queue_tail(&neigh->arp_queue, skb);
+            neigh_probe();
+              arp_send_dst();
+                skb = arp_create();
+                arp_xmit(skb); /* arp_rcv */
+        {
           dev_queue_xmit(skb);
+        }
 
 /* dev layer */
 __dev_queue_xmit();
@@ -5098,37 +5122,36 @@ __dev_queue_xmit();
   struct Qdisc *q = rcu_derefence_bh(txq->qdisc);
   __dev_xmit_skb(skb, q, dev, txq);
     q->enqueue(skb, q, &to_free);
-    __qdisc_run(q);
-      while (qdisc_restart(q, &pakcets))
-        skb = dequeue_skb(q, &validate, packets);
-        sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
-          dev_hard_start_xmit();
-            while (skb) {
-              xmit_one();
-                netdev_start_xmit();
-                  __netdev_start_xmit();
-                    net_device_ops->ndo_start_xmit(skb, dev);
-                      ixgb_xmit_frame();
+    if (qdisc_run_begin(q)) { /* check if qdisc is alreay running */
+      __qdisc_run(q);
+        while (qdisc_restart(q, &pakcets))
+          skb = dequeue_skb(q, &validate, packets); /* may dequeue bulk sbk */
+          sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
+            dev_hard_start_xmit();
+              while (skb) {
+                xmit_one();
+                  netdev_start_xmit();
+                    __netdev_start_xmit();
+                      net_device_ops->ndo_start_xmit(skb, dev);
+                        ixgb_xmit_frame();
+              }
+            if (!dev_xmit_complete(ret)) {
+              /* Driver returned NETDEV_TX_BUSY - requeue skb */
+              ret = dev_requeue_skb(skb, q);
             }
-          if (dev_xmit_complete(ret)) {
-            /* Driver sent out skb successfully or skb was consumed */
-            ret = qdisc_qlen(q);
-          } else {
-            /* Driver returned NETDEV_TX_BUSY - requeue skb */
-            ret = dev_requeue_skb(skb, q);
-          }
-      {
-        if (quota <= 0 || need_resched()) {
-          __netif_reschedule(q);
-            *this_cpu_ptr(&softnet_data)->output_queue_tailp = q;
-            raise_softirq_irqoff(NET_TX_SOFTIRQ); /* return to user space */
+        {
+          if (quota <= 0 || need_resched()) {
+            __netif_reschedule(q);
+              *this_cpu_ptr(&softnet_data)->output_queue_tailp = q;
+              raise_softirq_irqoff(NET_TX_SOFTIRQ); /* return to user space */
 
-            net_tx_action(); /* NET_TX_SOFTIRQ */
-              qdisc_run(q);
-                __qdisc_run();
+              net_tx_action(); /* NET_TX_SOFTIRQ */
+                qdisc_run(q);
+                  __qdisc_run();
+          }
         }
-      }
-      qdisc_run_end(q);
+        qdisc_run_end(q);
+    }
 
 /* driver layer */
 ixgb_xmit_frame();
@@ -5610,12 +5633,10 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
 {
   unsigned long flags, val, new;
 
-  /*
-   * 1) Don't let napi dequeue from the cpu poll list
+  /* 1) Don't let napi dequeue from the cpu poll list
    *    just in case its running on a different cpu.
    * 2) If we are busy polling, do nothing here, we have
-   *    the guarantee we will be called later.
-   */
+   *    the guarantee we will be called later. */
   if (unlikely(n->state & (NAPIF_STATE_NPSVC | NAPIF_STATE_IN_BUSY_POLL)))
     return false;
 
@@ -5627,8 +5648,7 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
 
     /* When the NAPI instance uses a timeout and keeps postponing
      * it, we need to bound somehow the time packets are kept in
-     * the GRO layer
-     */
+     * the GRO layer */
     napi_gro_flush(n, !!timeout);
     if (timeout)
       hrtimer_start(&n->timer, ns_to_ktime(timeout), HRTIMER_MODE_REL_PINNED);
@@ -5649,8 +5669,7 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
 
     /* If STATE_MISSED was set, leave STATE_SCHED set,
      * because we will call napi->poll() one more time.
-     * This C code was suggested by Alexander Duyck to help gcc.
-     */
+     * This C code was suggested by Alexander Duyck to help gcc. */
     new |= (val & NAPIF_STATE_MISSED) / NAPIF_STATE_MISSED * NAPIF_STATE_SCHED;
   } while (cmpxchg(&n->state, val, new) != val);
 
@@ -6363,6 +6382,33 @@ do_time_wait:
   case TCP_TW_SUCCESS:;
   }
   goto discard_it;
+}
+
+int tcp_child_process(struct sock *parent, struct sock *child,
+          struct sk_buff *skb)
+{
+  int ret = 0;
+  int state = child->sk_state;
+
+  /* record NAPI ID of child */
+  sk_mark_napi_id(child, skb);
+
+  tcp_segs_in(tcp_sk(child), skb);
+  if (!sock_owned_by_user(child)) {
+    ret = tcp_rcv_state_process(child, skb);
+    /* Wakeup parent, send SIGIO */
+    if (state == TCP_SYN_RECV && child->sk_state != state)
+      parent->sk_data_ready(parent);
+  } else {
+    /* Alas, it is possible again, because we do lookup
+     * in main socket hash table and lock on listening
+     * socket does not protect us more. */
+    __sk_add_backlog(child, skb);
+  }
+
+  bh_unlock_sock(child);
+  sock_put(child);
+  return ret;
 }
 ```
 
@@ -7713,7 +7759,7 @@ tcp_v4_rcv();
     tcp_child_process();
       if (!sock_owned_by_user(child))
         tcp_rcv_state_process(child, skb);
-        sk_listener->sk_data_ready() /* sock_def_readable */
+        sk_listener->sk_data_ready() /* sock_def_readable, wakeup accept->inet_csk_wait_for_connect */
       else
         __sk_add_backlog(child, skb);
   }
@@ -8177,8 +8223,7 @@ static struct rtable *__mkroute_output(const struct fib_result *res,
       do_cache = false;
     /* If multicast route do not exist use
      * default one, but do not gateway in this case.
-     * Yes, it is hack.
-     */
+     * Yes, it is hack. */
     if (fi && res->prefixlen < 4)
       fi = NULL;
   } else if ((type == RTN_LOCAL) && (orig_oif != 0) &&
@@ -8190,8 +8235,7 @@ static struct rtable *__mkroute_output(const struct fib_result *res,
      * intended recipient is waiting on that interface for the
      * packet he won't receive it because it will be delivered on
      * the loopback interface and the IP_PKTINFO ipi_ifindex will
-     * be set to the loopback interface as well.
-     */
+     * be set to the loopback interface as well. */
     do_cache = false;
   }
 
@@ -8288,8 +8332,7 @@ void rt_set_nexthop(struct rtable *rt, __be32 daddr,
       /* Routes we intend to cache in nexthop exception or
        * FIB nexthop have the DST_NOCACHE bit clear.
        * However, if we are unsuccessful at storing this
-       * route into the cache we really need to set it.
-       */
+       * route into the cache we really need to set it. */
       if (!rt->rt_gateway)
         rt->rt_gateway = daddr;
       rt_add_uncached_list(rt);
@@ -8366,8 +8409,7 @@ int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
     goto out;
 
   /* Check for the most weird martians, which can be not detected
-     by fib_lookup.
-   */
+     by fib_lookup. */
 
   tun_info = skb_tunnel_info(skb);
   if (tun_info && !(tun_info->mode & IP_TUNNEL_INFO_TX))
@@ -8385,8 +8427,7 @@ int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
     goto brd_input;
 
   /* Accept zero addresses only to limited broadcast;
-   * I even do not know to fix it or not. Waiting for complains :-)
-   */
+   * I even do not know to fix it or not. Waiting for complains :-) */
   if (ipv4_is_zeronet(saddr))
     goto martian_source;
 
@@ -8394,8 +8435,7 @@ int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
     goto martian_destination;
 
   /* Following code try to avoid calling IN_DEV_NET_ROUTE_LOCALNET(),
-   * and call it once if daddr or/and saddr are loopback addresses
-   */
+   * and call it once if daddr or/and saddr are loopback addresses */
   if (ipv4_is_loopback(daddr)) {
     if (!IN_DEV_NET_ROUTE_LOCALNET(in_dev, net))
       goto martian_destination;
@@ -8404,9 +8444,7 @@ int ip_route_input_slow(struct sk_buff *skb, __be32 daddr, __be32 saddr,
       goto martian_source;
   }
 
-  /*
-   *  Now we are ready to route packet.
-   */
+  /*  Now we are ready to route packet. */
   fl4.flowi4_oif = 0;
   fl4.flowi4_iif = dev->ifindex;
   fl4.flowi4_mark = skb->mark;
@@ -8527,9 +8565,7 @@ no_route:
   res->table = NULL;
   goto local_input;
 
-  /*
-   *  Do not cache martian addresses: they should be logged (RFC1812)
-   */
+  /*  Do not cache martian addresses: they should be logged (RFC1812) */
 martian_destination:
   RT_CACHE_STAT_INC(in_martian_dst);
 #ifdef CONFIG_IP_ROUTE_VERBOSE
@@ -8610,8 +8646,7 @@ int __mkroute_input(struct sk_buff *skb,
      *
      * Proxy arp feature have been extended to allow, ARP
      * replies back to the same interface, to support
-     * Private VLAN switch technologies. See arp.c.
-     */
+     * Private VLAN switch technologies. See arp.c. */
     if (out_dev == in_dev &&
         IN_DEV_PROXY_ARP_PVLAN(in_dev) == 0) {
       err = -EINVAL;
@@ -8739,8 +8774,7 @@ int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
      *
      * This check is safe even if bits == KEYLENGTH due to the
      * fact that we can only allocate a node with 32 bits if a
-     * long is greater than 32 bits.
-     */
+     * long is greater than 32 bits. */
     if (index >= (1ul << n->bits))
       break;
 
@@ -8749,8 +8783,7 @@ int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
       goto found;
 
     /* only record pn and cindex if we are going to be chopping
-     * bits later.  Otherwise we are just wasting cycles.
-     */
+     * bits later.  Otherwise we are just wasting cycles. */
     if (n->slen > n->pos) {
       pn = n;
       cindex = index;
@@ -8768,8 +8801,7 @@ int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
 
     /* This test verifies that none of the bits that differ
      * between the key and the prefix exist in the region of
-     * the lsb and higher in the prefix.
-     */
+     * the lsb and higher in the prefix. */
     if (unlikely(prefix_mismatch(key, n)) || (n->slen == n->pos))
       goto backtrace;
 
@@ -8779,8 +8811,7 @@ int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
 
     /* Don't bother recording parent info.  Since we are in
      * prefix match mode we will have to come back to wherever
-     * we started this traversal anyway
-     */
+     * we started this traversal anyway */
 
     while ((n = rcu_dereference(*cptr)) == NULL) {
 backtrace:
@@ -8791,15 +8822,13 @@ backtrace:
       /* If we are at cindex 0 there are no more bits for
        * us to strip at this level so we must ascend back
        * up one level to see if there are any more bits to
-       * be stripped there.
-       */
+       * be stripped there. */
       while (!cindex) {
         t_key pkey = pn->key;
 
         /* If we don't have a parent then there is
          * nothing for us to do as we do not have any
-         * further nodes to parse.
-         */
+         * further nodes to parse. */
         if (IS_TRIE(pn)) {
           trace_fib_table_lookup(tb->tb_id, flp,
                      NULL, -EAGAIN);
@@ -13127,6 +13156,69 @@ void __wake_up_locked(
 ```
 * [__wake_up_common](#wake_up)
 
+## sock_def_write_space
+```c++
+/* tcp_rcv_established -> */
+/* tcp_rcv_state_process -> */
+void tcp_data_snd_check(struct sock *sk)
+{
+  tcp_push_pending_frames(sk);
+  tcp_check_space(sk);
+}
+
+void tcp_check_space(struct sock *sk)
+{
+  if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
+    sock_reset_flag(sk, SOCK_QUEUE_SHRUNK);
+    /* pairs with tcp_poll() */
+    smp_mb();
+    if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
+      tcp_new_space(sk);
+      if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
+        tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
+    }
+  }
+}
+
+/* When incoming ACK allowed to free some skb from write_queue,
+ * we remember this event in flag SOCK_QUEUE_SHRUNK and wake up socket
+ * on the exit from tcp input handler.
+ *
+ * PROBLEM: sndbuf expansion does not work well with largesend. */
+void tcp_new_space(struct sock *sk)
+{
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  if (tcp_should_expand_sndbuf(sk)) {
+    tcp_sndbuf_expand(sk);
+    tp->snd_cwnd_stamp = tcp_jiffies32;
+  }
+
+  sk->sk_write_space(sk); /* sock_def_write_space */
+}
+
+void sock_def_write_space(struct sock *sk)
+{
+  struct socket_wq *wq;
+
+  rcu_read_lock();
+
+  /* Do not wake up a writer until he can make "significant"
+   * progress.  --DaveM */
+  if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
+    wq = rcu_dereference(sk->sk_wq);
+    if (skwq_has_sleeper(wq))
+      wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+
+    /* Should agree with poll, otherwise some programs break */
+    if (sock_writeable(sk)) /* sk->sk_wmem_alloc < (sk->sk_sndbuf >> 1) */
+      sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
+  }
+
+  rcu_read_unlock();
+}
+```
+
 ```c++
 /* epoll_create */
 epoll_create();
@@ -13190,11 +13282,11 @@ ep_modify();
 epoll_wait();
     do_epoll_wait();
         ep_poll();
-            if (!ep_events_available(ep))
-                init_waitqueue_entry(&wait, default_wake_function);
-                __add_wait_queue_exclusive(&ep->wq, &wait);
-                    wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
-                    __add_wait_queue(wq_head, wq_entry);
+            init_waitqueue_entry(&wait, default_wake_function);
+            __add_wait_queue_exclusive(&ep->wq, &wait);
+                wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+                __add_wait_queue(wq_head, wq_entry);
+            while (!ep_events_available(ep))
                 schedule_hrtimeout_range();
                     __remove_wait_queue(&ep->wq, &wait);
 
@@ -13209,7 +13301,7 @@ epoll_wait();
                             return revents & epi->event.events;
 
                         if (revents) {
-                            if (__put_user(revents, &uevent->events);
+                            if (__put_user(revents, &uevent->events));
                                 list_add(&epi->rdllink, head);
 
                             if (epi->event.events & EPOLLONESHOT)
@@ -13242,69 +13334,22 @@ tcp_data_ready();
                                     __wake_up_common();
                                 ep_poll_safewake(&ep->poll_wait);
                                     wake_up_poll();
-```
 
-## sock_def_write_space
-```c++
-/* tcp_rcv_established -> */
-/* tcp_rcv_state_process -> */
-void tcp_data_snd_check(struct sock *sk)
-{
-  tcp_push_pending_frames(sk);
-  tcp_check_space(sk);
-}
+tcp_rcv_state_process();
+    tcp_data_snd_check();
+        tcp_check_space();
+            if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
+                /* sock tranfroms from non-writale(SOCK_NOSPACE) to writable(SOCK_QUEUE_SHRUNK) */
+                if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
+                    tcp_new_space(sk);
+                        if (tcp_should_expand_sndbuf(sk)) {
+                            tcp_sndbuf_expand(sk);
+                            tp->snd_cwnd_stamp = tcp_jiffies32;
+                        }
 
-void tcp_check_space(struct sock *sk)
-{
-  if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
-    sock_reset_flag(sk, SOCK_QUEUE_SHRUNK);
-    /* pairs with tcp_poll() */
-    smp_mb();
-    if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
-      tcp_new_space(sk);
-      if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
-        tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
-    }
-  }
-}
-
-/* When incoming ACK allowed to free some skb from write_queue,
- * we remember this event in flag SOCK_QUEUE_SHRUNK and wake up socket
- * on the exit from tcp input handler.
- *
- * PROBLEM: sndbuf expansion does not work well with largesend. */
-void tcp_new_space(struct sock *sk)
-{
-  struct tcp_sock *tp = tcp_sk(sk);
-
-  if (tcp_should_expand_sndbuf(sk)) {
-    tcp_sndbuf_expand(sk);
-    tp->snd_cwnd_stamp = tcp_jiffies32;
-  }
-
-  sk->sk_write_space(sk); /* sock_def_write_space */
-}
-
-void sock_def_write_space(struct sock *sk)
-{
-  struct socket_wq *wq;
-
-  rcu_read_lock();
-
-  /* Do not wake up a writer until he can make "significant"
-   * progress.  --DaveM */
-  if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
-    wq = rcu_dereference(sk->sk_wq);
-    if (skwq_has_sleeper(wq))
-      wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
-
-    /* Should agree with poll, otherwise some programs break */
-    if (sock_writeable(sk)) /* sk->sk_wmem_alloc < (sk->sk_sndbuf >> 1) */
-      sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
-  }
-
-  rcu_read_unlock();
-}
+                        sk->sk_write_space(sk); /* sock_def_write_space */
+                }
+            }
 ```
 
 ## Reference:
