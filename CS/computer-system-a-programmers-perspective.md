@@ -971,6 +971,18 @@ ret | Get return function address from stack and jump to
 * Registers `%eax, %edx, and %ecx` are classified as **caller-save (volatile) registers**. When procedure Q is called by P, it can overwrite these registers without destroying any data required by P.
 * On the other hand, registers `%ebx, %esi, and %edi` are classified as **callee-save (non-volatile) registers**. This means that Q must save the values of any of these registers on the stack before overwriting them, and restore them before returning.
 
+Register | Usage
+--- | ---
+EAX | return value of function
+EBX | local variable
+ECX | counter for bit shifting and string operation
+EDX | dividend for division operation
+ESI | store local variable
+EDI | store local variable
+EIP | instruction pointer
+ESP | stack pointer
+EBP | base pointer
+
 ### 3.7.4 Procedure Example
 ```c++
 int swap_add(int* xp, int* yp) {
