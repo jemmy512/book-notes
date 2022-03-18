@@ -1025,7 +1025,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 ```
 ## writeback
 
-![](../Images/Kernel/proc-workqueue.png)
+![](../Images/Kernel/proc-cmwq.png)
 
 ### backing_dev_info
 ```c++

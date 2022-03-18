@@ -4765,20 +4765,20 @@ kthread();
 
 ## cmwq
 
-![](../Images/Kernel/proc-workqueue.png)
+![](../Images/Kernel/proc-cmwq.png)
 
 ---
 
-![](../Images/Kernel/proc-workqueue-flow.png)
+![](../Images/Kernel/proc-cmwq-flow.png)
 
 * `nr_running`    `nr_active`    `max_active`    `CPU_INTENSIVE` control the concurrency
 ---
 
-![](../Images/Kernel/proc-workqueue-state.png)
+![](../Images/Kernel/proc-cmwq-state.png)
 
 ---
 
-![](../Images/Kernel/proc-workqueue-arch.png)
+![](../Images/Kernel/proc-cmwq-arch.png)
 
 * [Kernel 4.19: Concurrency Managed Workqueue (cmwq)](https://www.kernel.org/doc/html/v4.19/core-api/workqueue.html)
 * http://www.wowotech.net/irq_subsystem/cmwq-intro.html
