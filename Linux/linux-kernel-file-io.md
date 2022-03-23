@@ -6,6 +6,7 @@
     * [hard/symbolic link](#hardsymbolic-link)
     * [vfs](#vfs)
     * [mount](#mount)
+    * [alloc_file](#alloc_file)
     * [open](#open)
     * [read/write](#readwrite)
         * [direct_IO](#direct_IO)
@@ -503,6 +504,253 @@ mount();
           alloc_vfsmnt();
           mount_fs();
             fs_type.mount(); /* dev_fs_type, {dev, ext4}_mount */
+```
+
+## alloc_file
+```c++
+struct file *anon_inode_getfile(const char *name,
+        const struct file_operations *fops,
+        void *priv, int flags)
+{
+  struct file *file;
+
+  if (IS_ERR(anon_inode_inode))
+    return ERR_PTR(-ENODEV);
+
+  if (fops->owner && !try_module_get(fops->owner))
+    return ERR_PTR(-ENOENT);
+
+  /* We know the anon_inode inode count is always greater than zero,
+   * so ihold() is safe. */
+  ihold(anon_inode_inode);
+  file = alloc_file_pseudo(anon_inode_inode, anon_inode_mnt, name,
+         flags & (O_ACCMODE | O_NONBLOCK), fops);
+  if (IS_ERR(file))
+    goto err;
+
+  file->f_mapping = anon_inode_inode->i_mapping;
+
+  file->private_data = priv;
+
+  return file;
+
+err:
+  iput(anon_inode_inode);
+  module_put(fops->owner);
+  return file;
+}
+
+struct file *alloc_file_pseudo(struct inode *inode, struct vfsmount *mnt,
+        const char *name, int flags,
+        const struct file_operations *fops)
+{
+  static const struct dentry_operations anon_ops = {
+    .d_dname = simple_dname
+  };
+  struct qstr this = QSTR_INIT(name, strlen(name));
+  struct path path;
+  struct file *file;
+
+  path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this);
+  if (!path.dentry)
+    return ERR_PTR(-ENOMEM);
+  if (!mnt->mnt_sb->s_d_op)
+    d_set_d_op(path.dentry, &anon_ops);
+  path.mnt = mntget(mnt);
+  d_instantiate(path.dentry, inode);
+
+  file = alloc_file(&path, flags, fops);
+  if (IS_ERR(file)) {
+    ihold(inode);
+    path_put(&path);
+  }
+  return file;
+}
+
+struct dentry *d_alloc_pseudo(struct super_block *sb, const struct qstr *name)
+{
+  struct dentry *dentry = __d_alloc(sb, name);
+  if (likely(dentry))
+    dentry->d_flags |= DCACHE_NORCU;
+  return dentry;
+}
+
+struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
+{
+  struct external_name *ext = NULL;
+  struct dentry *dentry;
+  char *dname;
+  int err;
+
+  dentry = kmem_cache_alloc(dentry_cache, GFP_KERNEL);
+  if (!dentry)
+    return NULL;
+
+  /* We guarantee that the inline name is always NUL-terminated.
+   * This way the memcpy() done by the name switching in rename
+   * will still always have a NUL at the end, even if we might
+   * be overwriting an internal NUL character */
+  dentry->d_iname[DNAME_INLINE_LEN-1] = 0;
+  if (unlikely(!name)) {
+    name = &slash_name;
+    dname = dentry->d_iname;
+  } else if (name->len > DNAME_INLINE_LEN-1) {
+    size_t size = offsetof(struct external_name, name[1]);
+
+    ext = kmalloc(size + name->len, GFP_KERNEL_ACCOUNT);
+    if (!ext) {
+      kmem_cache_free(dentry_cache, dentry);
+      return NULL;
+    }
+    atomic_set(&ext->u.count, 1);
+    dname = ext->name;
+  } else  {
+    dname = dentry->d_iname;
+  }
+
+  dentry->d_name.len = name->len;
+  dentry->d_name.hash = name->hash;
+  memcpy(dname, name->name, name->len);
+  dname[name->len] = 0;
+
+  /* Make sure we always see the terminating NUL character */
+  smp_store_release(&dentry->d_name.name, dname); /* ^^^ */
+
+  dentry->d_lockref.count = 1;
+  dentry->d_flags = 0;
+  spin_lock_init(&dentry->d_lock);
+  seqcount_init(&dentry->d_seq);
+  dentry->d_inode = NULL;
+  dentry->d_parent = dentry;
+  dentry->d_sb = sb;
+  dentry->d_op = NULL;
+  dentry->d_fsdata = NULL;
+  INIT_HLIST_BL_NODE(&dentry->d_hash);
+  INIT_LIST_HEAD(&dentry->d_lru);
+  INIT_LIST_HEAD(&dentry->d_subdirs);
+  INIT_HLIST_NODE(&dentry->d_u.d_alias);
+  INIT_LIST_HEAD(&dentry->d_child);
+  d_set_d_op(dentry, dentry->d_sb->s_d_op);
+
+  if (dentry->d_op && dentry->d_op->d_init) {
+    err = dentry->d_op->d_init(dentry);
+    if (err) {
+      if (dname_external(dentry))
+        kfree(external_name(dentry));
+      kmem_cache_free(dentry_cache, dentry);
+      return NULL;
+    }
+  }
+
+  if (unlikely(ext)) {
+    pg_data_t *pgdat = page_pgdat(virt_to_page(ext));
+    mod_node_page_state(pgdat, NR_INDIRECTLY_RECLAIMABLE_BYTES, ksize(ext));
+  }
+
+  this_cpu_inc(nr_dentry);
+
+  return dentry;
+}
+
+static struct file *alloc_file(const struct path *path, int flags,
+    const struct file_operations *fop)
+{
+  struct file *file;
+
+  file = alloc_empty_file(flags, current_cred());
+  if (IS_ERR(file))
+    return file;
+
+  file->f_path = *path;
+  file->f_inode = path->dentry->d_inode;
+  file->f_mapping = path->dentry->d_inode->i_mapping;
+  file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
+  if ((file->f_mode & FMODE_READ) && likely(fop->read || fop->read_iter))
+    file->f_mode |= FMODE_CAN_READ;
+  if ((file->f_mode & FMODE_WRITE) && likely(fop->write || fop->write_iter))
+    file->f_mode |= FMODE_CAN_WRITE;
+  file->f_mode |= FMODE_OPENED;
+  file->f_op = fop;
+  if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
+    i_readcount_inc(path->dentry->d_inode);
+  return file;
+}
+
+struct file *alloc_empty_file(int flags, const struct cred *cred)
+{
+  static long old_max;
+  struct file *f;
+
+  /* Privileged users can go above max_files */
+  if (get_nr_files() >= files_stat.max_files && !capable(CAP_SYS_ADMIN)) {
+    /* percpu_counters are inaccurate.  Do an expensive check before
+     * we go and fail. */
+    if (percpu_counter_sum_positive(&nr_files) >= files_stat.max_files)
+      goto over;
+  }
+
+  f = __alloc_file(flags, cred);
+  if (!IS_ERR(f))
+    percpu_counter_inc(&nr_files);
+
+  return f;
+
+over:
+  /* Ran out of filps - report that */
+  if (get_nr_files() > old_max) {
+    pr_info("VFS: file-max limit %lu reached\n", get_max_files());
+    old_max = get_nr_files();
+  }
+  return ERR_PTR(-ENFILE);
+}
+
+static struct file *__alloc_file(int flags, const struct cred *cred)
+{
+  struct file *f;
+  int error;
+
+  f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
+  if (unlikely(!f))
+    return ERR_PTR(-ENOMEM);
+
+  f->f_cred = get_cred(cred);
+  error = security_file_alloc(f);
+  if (unlikely(error)) {
+    file_free_rcu(&f->f_u.fu_rcuhead);
+    return ERR_PTR(error);
+  }
+
+  atomic_long_set(&f->f_count, 1);
+  rwlock_init(&f->f_owner.lock);
+  spin_lock_init(&f->f_lock);
+  mutex_init(&f->f_pos_lock);
+  eventpoll_init_file(f);
+  f->f_flags = flags;
+  f->f_mode = OPEN_FMODE(flags);
+  /* f->f_version: 0 */
+
+  return f;
+}
+
+void eventpoll_init_file(struct file *file)
+{
+  INIT_LIST_HEAD(&file->f_ep_links);
+  INIT_LIST_HEAD(&file->f_tfile_llink);
+}
+```
+
+```c++
+anon_inode_getfile();
+    alloc_file_pseudo();
+        d_alloc_pseudo();
+        d_instantiate(path.dentry, inode);
+
+        alloc_file();
+
+    file->f_mapping = anon_inode_inode->i_mapping;
+    file->private_data = priv;
+
+
 ```
 
 ## open
