@@ -74,6 +74,11 @@
     * [tcp_cwnd_validate](#tcp_cwnd_validate)
 
 * [retransmit](#retransmit)
+    * [timer_lifecycle](#timer_lifecycle)
+      * [timer_init](#timer_init)
+      * [timer_reset](#timer_reset)
+      * [timer_clear](#timer_clear)
+
     * [tcp_write_timer](#tcp_write_timer)
         * [tcp_retransmit_skb](#tcp_retransmit_skb)
     * [tcp_delack_timer](#tcp_delack_timer)
@@ -553,85 +558,6 @@ out_free:
   return NULL;
 }
 
-void sock_init_data(struct socket *sock, struct sock *sk)
-{
-  sk_init_common(sk);
-  sk->sk_send_head  =  NULL;
-
-  timer_setup(&sk->sk_timer, NULL, 0);
-
-  sk->sk_allocation  =  GFP_KERNEL;
-  sk->sk_rcvbuf    =  sysctl_rmem_default;
-  sk->sk_sndbuf    =  sysctl_wmem_default;
-  sk->sk_state    =  TCP_CLOSE;
-
-  sk_set_socket(sk, sock);
-
-  sock_set_flag(sk, SOCK_ZAPPED);
-
-  if (sock) {
-    sk->sk_type  =  sock->type;
-    sk->sk_wq  =  sock->wq;
-    sock->sk  =  sk;
-    sk->sk_uid  =  SOCK_INODE(sock)->i_uid;
-  } else {
-    sk->sk_wq  =  NULL;
-    sk->sk_uid  =  make_kuid(sock_net(sk)->user_ns, 0);
-  }
-
-  rwlock_init(&sk->sk_callback_lock);
-  if (sk->sk_kern_sock)
-    lockdep_set_class_and_name(
-      &sk->sk_callback_lock,
-      af_kern_callback_keys + sk->sk_family,
-      af_family_kern_clock_key_strings[sk->sk_family]);
-  else
-    lockdep_set_class_and_name(
-      &sk->sk_callback_lock,
-      af_callback_keys + sk->sk_family,
-      af_family_clock_key_strings[sk->sk_family]);
-
-  sk->sk_state_change  =  sock_def_wakeup;
-  sk->sk_data_ready  =  sock_def_readable;
-  sk->sk_write_space  =  sock_def_write_space;
-  sk->sk_error_report  =  sock_def_error_report;
-  sk->sk_destruct    =  sock_def_destruct;
-
-  sk->sk_frag.page  =  NULL;
-  sk->sk_frag.offset  =  0;
-  sk->sk_peek_off    =  -1;
-
-  sk->sk_peer_pid   =  NULL;
-  sk->sk_peer_cred  =  NULL;
-  sk->sk_write_pending  =  0;
-  sk->sk_rcvlowat    =  1;
-  sk->sk_rcvtimeo    =  MAX_SCHEDULE_TIMEOUT;
-  sk->sk_sndtimeo    =  MAX_SCHEDULE_TIMEOUT;
-
-  sk->sk_stamp = SK_DEFAULT_STAMP;
-#if BITS_PER_LONG==32
-  seqlock_init(&sk->sk_stamp_seq);
-#endif
-  atomic_set(&sk->sk_zckey, 0);
-
-#ifdef CONFIG_NET_RX_BUSY_POLL
-  sk->sk_napi_id    =  0;
-  sk->sk_ll_usec    =  sysctl_net_busy_read;
-#endif
-
-  sk->sk_max_pacing_rate = ~0U;
-  sk->sk_pacing_rate = ~0U;
-  sk->sk_pacing_shift = 10;
-  sk->sk_incoming_cpu = -1;
-
-  sk_rx_queue_clear(sk);
-  /* Before updating sk_refcnt, we must commit prior changes to memory
-   * (Documentation/RCU/rculist_nulls.txt for details) */
-  smp_wmb();
-  refcount_set(&sk->sk_refcnt, 1);
-  atomic_set(&sk->sk_drops, 0);
-}
-
 /* sw: switch */
 struct list_head inetsw[SOCK_MAX];
 int __init inet_init(void)
@@ -797,6 +723,85 @@ struct file *alloc_file(
 ```
 
 ```c++
+void sock_init_data(struct socket *sock, struct sock *sk)
+{
+  sk_init_common(sk);
+  sk->sk_send_head  =  NULL;
+
+  timer_setup(&sk->sk_timer, NULL, 0);
+
+  sk->sk_allocation  =  GFP_KERNEL;
+  sk->sk_rcvbuf    =  sysctl_rmem_default;
+  sk->sk_sndbuf    =  sysctl_wmem_default;
+  sk->sk_state    =  TCP_CLOSE;
+
+  sk_set_socket(sk, sock);
+
+  sock_set_flag(sk, SOCK_ZAPPED);
+
+  if (sock) {
+    sk->sk_type  =  sock->type;
+    sk->sk_wq  =  sock->wq;
+    sock->sk  =  sk;
+    sk->sk_uid  =  SOCK_INODE(sock)->i_uid;
+  } else {
+    sk->sk_wq  =  NULL;
+    sk->sk_uid  =  make_kuid(sock_net(sk)->user_ns, 0);
+  }
+
+  rwlock_init(&sk->sk_callback_lock);
+  if (sk->sk_kern_sock)
+    lockdep_set_class_and_name(
+      &sk->sk_callback_lock,
+      af_kern_callback_keys + sk->sk_family,
+      af_family_kern_clock_key_strings[sk->sk_family]);
+  else
+    lockdep_set_class_and_name(
+      &sk->sk_callback_lock,
+      af_callback_keys + sk->sk_family,
+      af_family_clock_key_strings[sk->sk_family]);
+
+  sk->sk_state_change  =  sock_def_wakeup;
+  sk->sk_data_ready  =  sock_def_readable;
+  sk->sk_write_space  =  sock_def_write_space;
+  sk->sk_error_report  =  sock_def_error_report;
+  sk->sk_destruct    =  sock_def_destruct;
+
+  sk->sk_frag.page  =  NULL;
+  sk->sk_frag.offset  =  0;
+  sk->sk_peek_off    =  -1;
+
+  sk->sk_peer_pid   =  NULL;
+  sk->sk_peer_cred  =  NULL;
+  sk->sk_write_pending  =  0;
+  sk->sk_rcvlowat    =  1;
+  sk->sk_rcvtimeo    =  MAX_SCHEDULE_TIMEOUT;
+  sk->sk_sndtimeo    =  MAX_SCHEDULE_TIMEOUT;
+
+  sk->sk_stamp = SK_DEFAULT_STAMP;
+#if BITS_PER_LONG==32
+  seqlock_init(&sk->sk_stamp_seq);
+#endif
+  atomic_set(&sk->sk_zckey, 0);
+
+#ifdef CONFIG_NET_RX_BUSY_POLL
+  sk->sk_napi_id    =  0;
+  sk->sk_ll_usec    =  sysctl_net_busy_read;
+#endif
+
+  sk->sk_max_pacing_rate = ~0U;
+  sk->sk_pacing_rate = ~0U;
+  sk->sk_pacing_shift = 10;
+  sk->sk_incoming_cpu = -1;
+
+  sk_rx_queue_clear(sk);
+  /* Before updating sk_refcnt, we must commit prior changes to memory
+   * (Documentation/RCU/rculist_nulls.txt for details) */
+  smp_wmb();
+  refcount_set(&sk->sk_refcnt, 1);
+  atomic_set(&sk->sk_drops, 0);
+}
+
 // sk_prot->init(sk);
 int tcp_v4_init_sock(struct sock *sk)
 {
@@ -864,10 +869,11 @@ void tcp_init_sock(struct sock *sk)
 
 ```C++
 socket();
-  /* 1. create */
+/* 1. create */
   sock_create();
     struct socket *sock = _sock_create();
       sock = sock_alloc();
+/* 1.1 create socket inode */
         inode = new_inode_pseudo(sock_mnt->mnt_sb);
           alloc_inode();
             if (sb->s_op->alloc_inode)
@@ -880,6 +886,7 @@ socket();
         sock = SOCKET_I(inode);
         inode->i_op = &sockfs_inode_ops;
 
+/* 1.2 create sock */
       pf = net_families[family]; /* get AF */
       pf->create(); // inet_family_ops.inet_create
         inet_create();
@@ -893,6 +900,7 @@ socket();
               else
                 kmalloc(prot->obj_size);
 
+/* 1.3 init sock */
           sock_init_data(sock, sk);
             sk_init_common(sk);
             sk->sk_state_change = sock_def_wakeup;
@@ -908,8 +916,16 @@ socket();
               tcp_init_sock();
                 tcp_init_xmit_timers();
                   inet_csk_init_xmit_timers(sk, &tcp_write_timer, &tcp_delack_timer, &tcp_keepalive_timer);
+
+                sk->sk_state = TCP_CLOSE;
+                tp->snd_cwnd = TCP_INIT_CWND;
+                tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
                 tcp_assign_congestion_control();
                   icsk->icsk_ca_ops = rcu_dereference(net->ipv4.tcp_congestion_control);
+
+                sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
+                sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
+
 
   /* 2. map */
   sock_map_fd();
@@ -940,8 +956,7 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
   if (sock) {
     err = move_addr_to_kernel(umyaddr, addrlen, &address);
     if (err >= 0) {
-      err = sock->ops->bind(
-        sock, (struct sockaddr *)&address, addrlen);
+      err = sock->ops->bind(sock, (struct sockaddr *)&address, addrlen);
     }
     fput_light(sock->file, fput_needed);
   }
@@ -1004,15 +1019,48 @@ int inet_listen(struct socket *sock, int backlog)
 {
   struct sock *sk = sock->sk;
   unsigned char old_state;
-  int err;
+  int err, tcp_fastopen;
+
+  lock_sock(sk);
+
+  err = -EINVAL;
+  if (sock->state != SS_UNCONNECTED || sock->type != SOCK_STREAM)
+    goto out;
+
   old_state = sk->sk_state;
+  if (!((1 << old_state) & (TCPF_CLOSE | TCPF_LISTEN)))
+    goto out;
 
   /* Really, if the socket is already in listen state
-   * we can only allow the backlog to be adjusted. */
+   * we can only allow the backlog to be adjusted.
+   */
   if (old_state != TCP_LISTEN) {
+    /* Enable TFO w/o requiring TCP_FASTOPEN socket option.
+     * Note that only TCP sockets (SOCK_STREAM) will reach here.
+     * Also fastopen backlog may already been set via the option
+     * because the socket was in TCP_LISTEN state previously but
+     * was shutdown() rather than close().
+     */
+    tcp_fastopen = sock_net(sk)->ipv4.sysctl_tcp_fastopen;
+    if ((tcp_fastopen & TFO_SERVER_WO_SOCKOPT1) &&
+        (tcp_fastopen & TFO_SERVER_ENABLE) &&
+        !inet_csk(sk)->icsk_accept_queue.fastopenq.max_qlen)
+    {
+      fastopen_queue_tune(sk, backlog);
+      tcp_fastopen_init_key_once(sock_net(sk));
+    }
+
     err = inet_csk_listen_start(sk, backlog);
+    if (err)
+      goto out;
+    tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_LISTEN_CB, 0, NULL);
   }
   sk->sk_max_ack_backlog = backlog;
+  err = 0;
+
+out:
+  release_sock(sk);
+  return err;
 }
 
 int inet_csk_listen_start(struct sock *sk, int backlog)
@@ -1135,17 +1183,20 @@ listen();
     inet_listen();
       inet_csk_listen_start();
         reqsk_queue_alloc();
+          queue->fastopenq.rskq_rst_head = NULL;
+          queue->fastopenq.rskq_rst_tail = NULL;
+          queue->fastopenq.qlen = 0;
         inet_csk_delack_init(sk);
         sk_state_store(sk, TCP_LISTEN);
 
         sk->sk_prot->get_port();
-          sk->sk_prot->hash(sk);
-            inet_hash();
-              if (sk->sk_reuseport)
-                inet_reuseport_add_sock();
-                return;
-              __inet_hash();
-                __sk_nulls_add_node_rcu(sk, &ilb->nulls_head);
+        sk->sk_prot->hash(sk);
+          inet_hash();
+            if (sk->sk_reuseport)
+              inet_reuseport_add_sock();
+              return;
+            __inet_hash();
+              __sk_nulls_add_node_rcu(sk, &ilb->nulls_head);
 
       sk->sk_max_ack_backlog = backlog;
 ```
@@ -1252,6 +1303,8 @@ int tcp_connect(struct sock *sk)
   struct sk_buff *buff;
   int err;
 
+  tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_CONNECT_CB, 0, NULL);
+
   tcp_connect_init(sk);
 
   buff = sk_stream_alloc_skb(sk, 0, sk->sk_allocation, true);
@@ -1280,23 +1333,6 @@ int tcp_connect(struct sock *sk)
   /* Timer for repeating the SYN until an answer. */
   inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS, inet_csk(sk)->icsk_rto, TCP_RTO_MAX);
   return 0;
-}
-
-long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
-{
-  DEFINE_WAIT_FUNC(wait, woken_wake_function);
-
-  add_wait_queue(sk_sleep(sk), &wait);
-  sk->sk_write_pending += writebias;
-
-  while ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
-    timeo = wait_woken(&wait, TASK_INTERRUPTIBLE, timeo);
-    if (signal_pending(current) || !timeo)
-      break;
-  }
-  remove_wait_queue(sk_sleep(sk), &wait);
-  sk->sk_write_pending -= writebias;
-  return timeo;
 }
 
 /* Do all connect socket setups that can be done AF independent. */
@@ -1379,6 +1415,23 @@ void tcp_connect_queue_skb(struct sock *sk, struct sk_buff *skb)
   sk_mem_charge(sk, skb->truesize);
   WRITE_ONCE(tp->write_seq, tcb->end_seq);
   tp->packets_out += tcp_skb_pcount(skb);
+}
+
+long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
+{
+  DEFINE_WAIT_FUNC(wait, woken_wake_function);
+
+  add_wait_queue(sk_sleep(sk), &wait);
+  sk->sk_write_pending += writebias;
+
+  while ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+    timeo = wait_woken(&wait, TASK_INTERRUPTIBLE, timeo);
+    if (signal_pending(current) || !timeo)
+      break;
+  }
+  remove_wait_queue(sk_sleep(sk), &wait);
+  sk->sk_write_pending -= writebias;
+  return timeo;
 }
 ```
 * [wait_woken](./linux-kernel.md#wait_woken)
@@ -2552,6 +2605,8 @@ connect();
             tcp_connect();
               tcp_connect_init();
                 tcp_select_initial_window();
+                tp->snd_una = tp->write_seq;
+                tp->snd_nxt = tp->write_seq;
 
               sk_stream_alloc_skb();
               tcp_init_nondata_skb(TCPHDR_SYN);
@@ -2665,18 +2720,19 @@ tcp_v4_rcv();
 
       if (sk->sk_state == TCP_SYN_SENT) {
         tcp_rcv_synsent_state_process();
-          tcp_finish_connect(sk, skb);
-            tcp_set_state(sk, TCP_ESTABLISHED);
-            tcp_init_transfer();
-              tcp_init_buffer_space();
-              tcp_init_congestion_control(sk);
-            inet_csk_reset_keepalive_timer();
+            tcp_ack(sk, skb, FLAG_SLOWPATH);
+            tcp_finish_connect(sk, skb);
+                tcp_set_state(sk, TCP_ESTABLISHED);
+                tcp_init_transfer();
+                      tcp_call_bpf(sk, bpf_op, 0, NULL);
+                      tcp_init_congestion_control(sk);
+                      tcp_init_buffer_space(sk);
+                inet_csk_reset_keepalive_timer();
 
-          sk->sk_state_change();
-            /* wakup `connect` slept at inet_wait_for_connect */
-            sock_def_wakeup();
-          tcp_send_ack(sk);
-          tcp_set_state(sk, TCP_ESTABLISHED);
+                sk->sk_state_change();
+                    /* wakup `connect` slept at inet_wait_for_connect */
+                    sock_def_wakeup();
+            tcp_send_ack(sk);
 
         tcp_data_snd_check(sk);
       }
@@ -6341,7 +6397,7 @@ discard_and_relse:
     sock_put(sk);
   goto discard_it;
 
-do_time_wait:
+c
   if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
     inet_twsk_put(inet_twsk(sk));
     goto discard_it;
@@ -7716,6 +7772,10 @@ ip_rcv()
 tcp_v4_rcv();
   sk = __inet_lookup_skb();
 
+process:
+  if (sk->sk_state == TCP_TIME_WAIT)
+    goto do_time_wait;
+
   if (sk->sk_state == TCP_NEW_SYN_RECV) {
     struct request_sock *req = inet_reqsk(sk);
     sk = req->rsk_listener;
@@ -7780,6 +7840,11 @@ tcp_v4_rcv();
           /* 4. [seq < rcv_next < end_seq < win] OFO  */
           /* 5. [rcv_next < seq < end_seq < win] DACK */
         tcp_data_snd_check(sk);
+          tcp_check_space();
+            if (SOCK_QUEUE_SHRUNK && SOCK_NOSPACE) {
+              sk->sk_write_space(sk);
+                sock_def_write_space();
+            }
         tcp_ack_snd_check(sk);
     }
 
@@ -7901,13 +7966,16 @@ tcp_v4_rcv();
     goto discard_and_relse;
   }
 
+do_time_wait:
   if (sk->sk_state == TCP_TIME_WAIT) {
     tcp_v4_fill_cb(skb, iph, th);
     switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
       case TCP_TW_SYN: {
-        break;
+        /* reuse connection transition to SYN_RECV */
+        goto process;
       }
       case TCP_TW_ACK: {
+        /* send last ack */
         tcp_v4_timewait_ack(sk, skb);
         break;
       }
@@ -7926,7 +7994,8 @@ tcp_data_queue();
   /* 1. [seq = rcv_next < end_seq < win] */
     tcp_queue_rcv();
     tcp_event_data_recv();
-    tcp_ofo_queue(sk);
+      tcp_grow_window();
+    tcp_ofo_queue(sk); /* put data from the out_of_order queue into the receive_queue */
 
     kfree_skb_partial();
     tcp_data_ready(); /* wakeup `sk_wait_data` */
@@ -10999,6 +11068,8 @@ tcp_ack();
 
 
 # retransmit
+## timer_lifecycle
+### timer_init
 ```c++
 // sk->sk_prot->init(sk)
 int tcp_v4_init_sock(struct sock *sk)
@@ -11086,6 +11157,92 @@ void inet_csk_init_xmit_timers(struct sock *sk,
   timer_setup(&icsk->icsk_delack_timer, delack_handler, 0);
   timer_setup(&sk->sk_timer, keepalive_handler, 0);
   icsk->icsk_pending = icsk->icsk_ack.pending = 0;
+}
+```
+
+### timer_reset
+```c++
+/*
+1. tcp_event_new_data_sent
+2. case TCP_SYN_RECV
+2. case TCP_FIN_WAIT1
+4. tcp_rcv_fastopen_synack */
+void tcp_rearm_rto(struct sock *sk)
+{
+  const struct inet_connection_sock *icsk = inet_csk(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+
+  if (tp->fastopen_rsk)
+    return;
+
+  if (!tp->packets_out) {
+    inet_csk_clear_xmit_timer(sk, ICSK_TIME_RETRANS);
+  } else {
+    u32 rto = inet_csk(sk)->icsk_rto;
+    /* Offset the time elapsed after installing regular RTO */
+    if (icsk->icsk_pending == ICSK_TIME_REO_TIMEOUT ||
+        icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
+    {
+      s64 delta_us = tcp_rto_delta_us(sk);
+      /* delta_us may not be positive if the socket is locked
+       * when the retrans timer fires and is rescheduled. */
+      rto = usecs_to_jiffies(max_t(int, delta_us, 1));
+    }
+    inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS, rto, TCP_RTO_MAX);
+  }
+}
+
+void inet_csk_reset_xmit_timer(struct sock *sk, const int what,
+               unsigned long when,
+               const unsigned long max_when)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  if (when > max_when) {
+    pr_debug("reset_xmit_timer: sk=%p %d when=0x%lx, caller=%p\n",
+       sk, what, when, (void *)_THIS_IP_);
+    when = max_when;
+  }
+
+  if (what == ICSK_TIME_RETRANS || what == ICSK_TIME_PROBE0 ||
+      what == ICSK_TIME_EARLY_RETRANS || what == ICSK_TIME_LOSS_PROBE ||
+      what == ICSK_TIME_REO_TIMEOUT)
+  {
+    icsk->icsk_pending = what;
+    icsk->icsk_timeout = jiffies + when;
+    sk_reset_timer(sk, &icsk->icsk_retransmit_timer, icsk->icsk_timeout);
+  } else if (what == ICSK_TIME_DACK) {
+    icsk->icsk_ack.pending |= ICSK_ACK_TIMER;
+    icsk->icsk_ack.timeout = jiffies + when;
+    sk_reset_timer(sk, &icsk->icsk_delack_timer, icsk->icsk_ack.timeout);
+  } else {
+    pr_debug("inet_csk BUG: unknown timer value\n");
+  }
+}
+
+void sk_reset_timer(struct sock *sk, struct timer_list* timer,
+        unsigned long expires)
+{
+  if (!mod_timer(timer, expires))
+    sock_hold(sk);
+}
+```
+
+### timer_clear
+```c++
+void inet_csk_clear_xmit_timer(struct sock *sk, const int what)
+{
+  struct inet_connection_sock *icsk = inet_csk(sk);
+
+  if (what == ICSK_TIME_RETRANS || what == ICSK_TIME_PROBE0) {
+    icsk->icsk_pending = 0;
+    sk_stop_timer(sk, &icsk->icsk_retransmit_timer);
+  } else if (what == ICSK_TIME_DACK) {
+    icsk->icsk_ack.blocked = icsk->icsk_ack.pending = 0;
+    sk_stop_timer(sk, &icsk->icsk_delack_timer);
+  } else {
+    pr_debug("inet_csk BUG: unknown timer value\n");
+  }
 }
 
 void inet_csk_clear_xmit_timers(struct sock *sk)
@@ -12400,20 +12557,21 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 
   mutex_lock_nested(&ep->mtx, 0);
   if (op == EPOLL_CTL_ADD) {
-    if (!list_empty(&f.file->f_ep_links) ||
-            is_file_epoll(tf.file)) {
+    if (!list_empty(&f.file->f_ep_links) || is_file_epoll(tf.file)) {
       full_check = 1;
       mutex_unlock(&ep->mtx);
       mutex_lock(&epmutex);
+
       if (is_file_epoll(tf.file)) {
         error = -ELOOP;
         if (ep_loop_check(ep, tf.file) != 0) {
           clear_tfile_check_list();
           goto error_tgt_fput;
         }
-      } else
-        list_add(&tf.file->f_tfile_llink,
-              &tfile_check_list);
+      } else {
+        list_add(&tf.file->f_tfile_llink, &tfile_check_list);
+      }
+
       mutex_lock_nested(&ep->mtx, 0);
       if (is_file_epoll(tf.file)) {
         tep = tf.file->private_data;
