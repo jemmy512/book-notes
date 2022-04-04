@@ -1,9 +1,39 @@
 # PART I Foundations of Data Systems
 
 # 1. Reliable, Scalable, and Maintainable Applications.
+
+A data-intensive application is typically built from standard building blocks that provide commonly needed functionality:
+* Store data so that they, or another application, can find it again later (**databases**)
+* Remember the result of an expensive operation, to speed up reads (**caches**)
+* Allow users to search data by keyword or filter it in various ways (**search indexes**)
+* Send a message to another process, to be handled asynchronously (**stream processing**)
+* Periodically crunch a large amount of accumulated data (**batch processing**)
+
 ## 1.1 Thinking About Data Systems
 
+![](../Images/DDIA/1.1-data-system.png)
+
+There are many factors that may influence the design of a data system, including the `skills and experience` of the people involved, `legacy system dependencies`, the `timescale` for delivery, your organization’s `tolerance` of different kinds of risk, regulatory constraints.
+
+Reliability
+* The system should continue to work correctly (performing the correct function at the desired level of performance) even in the face of adversity (hardware or software faults, and even human error).
+
+Scalability
+* As the system grows (in data volume, traffic volume, or complexity), there should be reasonable ways of dealing with that growth.
+
+Maintainability
+* Over time, many different people will work on the system (engineering and operations, both maintaining current behavior and adapting the system to new use cases), and they should all be able to work on it productively.
+
 ## 1.2 Reliability
+
+For software, typical expectations include:
+* The application performs the function that the user expected.
+* It can tolerate the user making mistakes or using the software in unexpected ways.
+* Its performance is good enough for the required use case, under the expected load and data volume.
+* The system prevents any unauthorized access and abuse.
+
+
+
 ### 1.2.1 Hardware Faults
 ### 1.2.2 Software Errors
 ### 1.2.3 Human Errors
