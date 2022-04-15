@@ -1374,7 +1374,7 @@ Symbol table of `.gnu.hash' for image:
 
 ### 7.5.3 .rel.dyn .rel.plt
 
-The dynamically linked executable file uses the PIC method, but this cannot change the nature of its need for relocation. For dynamic linking, if a shared object is not compiled in PIC mode, then there is no doubt that it needs to be relocated at load time; if a shared object is compiled in PIC mode, then it also needs to be relocated at load time which is delayed to run time.
+The dynamically linked executable file uses the PIC method, but this cannot change the nature of its need for relocation. **For dynamic linking, if a shared object is not compiled in PIC mode, then there is no doubt that it needs to be relocated at `load time`; if a shared object is compiled in PIC mode, then it also needs to be relocated at load time which is delayed to` run time`.**
 
 For executable files or shared objects using PIC technology, although their code section do not need to be relocated (because the address is irrelevant), the data section also contains references to absolute addresses, because the absolute address-related parts in the code section are being separated, it becomes GOT, and GOT is actually part of the data section. In addition to GOT, the data section may also contain absolute addresses reference.
 
@@ -1494,7 +1494,7 @@ _dl_start -> _dl_start_final -> _dl_sysdep_start -> _dl_main
 
 For dynamically linked executable files, the kernel will analyze its dynamic linker address (in the ".interp" section), map the dynamic linker to the process address space, and then transfer control to the dynamic linker.
 
-In fact, the Linux kernel does not care whether the target ELF file is executable when executing execve() (file header e_type is ET_EXEC or ET_DYN), it simply loads the file according to the description in the program header table and then transfers the control to the ELF entry Address (without ".interp" is the e_entry of the ELF file; if there is ".interp", it is the e_entry of the dynamic linker) For dynamically linked executable files, the kernel will analyze its dynamic linker address (in ".interp" Paragraph), map the dynamic linker to the process address space, and then transfer control to the dynamic linker
+In fact, the Linux kernel does not care whether the target ELF file is executable when executing execve() (file header e_type is ET_EXEC or ET_DYN), it simply loads the file according to the description in the program header table and then transfers the control to the ELF entry Address (without ".interp" is the e_entry of the ELF file; if there is ".interp", it is the e_entry of the dynamic linker).
 
 ## 7.7 Explicit runtime linking
 ```c++
