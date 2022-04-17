@@ -754,6 +754,8 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 
 ### 64
 
+![](../Images/Kernel/init-syscall-stack.png)
+
 * glibc
     ```c++
     /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
@@ -852,7 +854,7 @@ ENTRY(entry_SYSCALL_64)
    * This path is only taken when PAGE_TABLE_ISOLATION is disabled so it
    * is not required to switch CR3. */
   movq  %rsp, PER_CPU_VAR(rsp_scratch)
-  movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp
+  movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp /* x86_hw_tss.sp1, update in __switch_to */
 
 /* 2. save user stack
   * Construct struct pt_regs on stack */
@@ -1568,7 +1570,8 @@ ENTRY(__switch_to_asm)
 
   /* 2.1 switch kernel sp
    * save old value from esp to prev task
-   * load new value from thread_struct of next task to esp */
+   * load new value from thread_struct of next task to esp
+   * OFFSET(TASK_threadsp, task_struct, thread.sp) */
   movl  %esp, TASK_threadsp(%rdi) /* %rdi: prev task */
   movl  TASK_threadsp(%rsi), %esp /* %rsi: next task */
 
@@ -1687,7 +1690,7 @@ static inline void update_task_stack(struct task_struct *task)
     this_cpu_write(cpu_tss_rw.x86_tss.sp1, task->thread.sp0);
 #else
   if (static_cpu_has(X86_FEATURE_XENPV))
-    load_sp0(task_top_of_stack(task));
+    load_sp0(task_top_of_stack(task)); /* load task->stack into cpu_tss_rw.x86_tss.sp0 */
 #endif
 }
 
@@ -1738,7 +1741,7 @@ schedule(void)
             if (prev->flags & PF_WQ_WORKER) {
                 to_wakeup = wq_worker_sleeping(prev);
                     if (WARN_ON_ONCE(pool->cpu != raw_smp_processor_id()))
-                    return NULL;
+                        return NULL;
                     /* only wakeup idle thread when running task is going to suspend in process_one_work */
                     if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
                         to_wakeup = first_idle_worker(pool);
@@ -1756,9 +1759,9 @@ schedule(void)
                         movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
                         movl  TASK_threadsp(%edx), %esp /* %edx: next task */
 
-                        __switch_to(); // switch kernal stack [arch/x86/kernel/process_64.c]
+                        __switch_to(); // switch cpu task_struct [arch/x86/kernel/process_64.c]
                             this_cpu_write(current_task, next_p);
-                            load_sp0(tss, next);
+                            load_sp0(task_top_of_stack(next_p)); /* load task->stack into cpu_tss_rw.x86_tss.sp0 */
                 barrier();
                 return finish_task_switch(prev);
 ```
@@ -2808,6 +2811,9 @@ out:
 ```
 
 ## fork
+
+* [Misc on Linux fork, switch_to, and scheduling](http://lastweek.io/notes/linux/fork/)
+
 ```c++
 SYSCALL_DEFINE0(fork)
 {
@@ -3491,7 +3497,36 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 ```
 
 ### copy_thread_tls
+
+![](../Images/Kernel/proc-fork-frame.png)
+
 ```c++
+struct fork_frame {
+  struct inactive_task_frame frame;
+  struct pt_regs regs;
+};
+
+/* This is the structure pointed to by thread.sp for an inactive task.  The
+ * order of the fields must match the code in __switch_to_asm(). */
+struct inactive_task_frame {
+  unsigned long flags;
+#ifdef CONFIG_X86_64
+  unsigned long r15;
+  unsigned long r14;
+  unsigned long r13;
+  unsigned long r12;
+#else
+  unsigned long si;
+  unsigned long di;
+#endif
+  unsigned long bx;
+
+  /* These two fields must be together.  They form a stack frame header,
+   * needed by get_frame_pointer(). */
+  unsigned long bp;
+  unsigned long ret_addr;
+};
+
 /* arch/x86/kernel/process_64.c */
 int copy_thread_tls(unsigned long clone_flags, unsigned long sp,
     unsigned long arg, struct task_struct *p, unsigned long tls)
@@ -3566,6 +3601,9 @@ out:
 ```
 
 ### ret_from_fork
+
+A program gets into this function by simply return from __switch_to().
+
 ```c++
 /* linux-4.19.y/arch/x86/entry/entry_64.S
  * A newly forked process directly context switches into this address.
@@ -3649,6 +3687,7 @@ do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
             p->sched_class->task_fork(p);
                 task_fork_fair();
                     se->vruntime = curr->vruntime;
+                    place_entity(cfs_rq, se, 1);
                     if (sysctl_sched_child_runs_first && curr && entity_before(curr, se))
                         swap(curr->vruntime, se->vruntime);
                         resched_curr(rq);
@@ -4592,6 +4631,8 @@ SYSCALL_DEFINE3(execve);
                     interp_elf_phdata = load_elf_phdrs();
 
                     flush_old_exec();
+                      /* de_thread: create new signal table
+                       * do_close_on_exec */
 
                     setup_new_exec();
                         arch_pick_mmap_layout();
@@ -4626,7 +4667,7 @@ SYSCALL_DEFINE3(execve);
                     current->mm->end_data = end_data;
                     current->mm->start_stack = bprm->p;
 
-                    start_thread(regs, elf_entry /* new_ip */, bprm->p /* new_sp */);
+                    start_thread(regs, elf_entry/* new_ip */, bprm->p/* new_sp */);
                         regs->ip = new_ip;
                         regs->sp = new_sp;
                         force_iret();
