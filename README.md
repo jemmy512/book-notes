@@ -39,6 +39,7 @@
     * [TCP/IP Illustrated, Volume 1: The Protocols](./CS/tcp-ip-illustrated-volume-1.md)
     * [Computer Networking: A Top-Down Approach :soon:]()
     * [UNIX Network Programming, Volume 1: The Sockets Networking API](./Linux/unp.md)
+    * [Data Plane Development KIT (DPDK)](../Linux/dpdk.md)
 
 * System Programming
     * [Advanced Programming in Unix Environment](./Linux/apue.md)
