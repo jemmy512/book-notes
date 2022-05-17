@@ -111,13 +111,90 @@ DPDK process a packet:
 6. If there are packets waiting, read the control structure from memory (memory read) and release the data buffer.
 
 ### 2.4.4 False Sharing
+
+In computer science, [false sharing](https://en.wikipedia.org/wiki/False_sharing) is a performance-degrading usage pattern that can arise in systems with distributed, coherent caches at the size of the smallest resource block managed by the caching mechanism. When a system participant attempts to periodically access data that is not being altered by another party, but that data shares a cache block with data that is being altered, the caching protocol may force the first participant to reload the whole cache block despite a lack of logical necessity. The caching system is unaware of activity within this block and forces the first participant to bear the caching system overhead required by true shared access of a resource.
+
+There is a cost for the data contention in a cache line, and if multicore is trying to access the different data in the same cache, CPU will invalidate the cache line and force an update, hurting the performance. This data sharing is not necessary because the multiple cores are not trying to access the same data, which is known as **false sharing**.
+
+The compiler can find the false sharing, and it will try to eliminate the false sharing at the optimization phase.
+
+If false sharing is identified, the software fix is simple: Just ensure the shared data elements reside in a different cache line. If a data structure is used for multicore use, each individual data member can occupy its own cache line.
+
+```c++
+#define RTE_CACHE_LINE_SIZE 64 
+#define __rte_cache_aligned __attribute__((__aligned__(RTE_CACHE_LINE_SIZE)))
+
+struct rte_port_core_stats {
+       __rte_cache_aligned uint64_t core1_pkts; 
+       __rte_cache_aligned uint64_t core2_pkts; 
+       __rte_cache_aligned uint64_t core3_pkts; 
+       __rte_cache_aligned uint64_t core4_pkts; 
+};
+```
+
 ### 2.4.5 Cache Coherency
+
 ### 2.4.6 Noisy Tenant and RDT
+Intel® proposed RDT (Resource Director Technology) framework to tackle the “noisy neighbor” problem, and RDT includes multiple technology ingredients such as cache monitoring, cache allocation, memory bandwidth monitoring, and cache and data optimization technologies. RDT is not specific to DPDK, so it is not introduced in this book.
 
 ## 2.5 TLB and HugePage
+
+Linux supports the hugepage size as 2 MB or 1 GB. The memory translation is indeed a multilevel page table lookup.
+
+In the latest Skylake processor, TLB entries are supported for 1 GB page size and 32 entries are supported for 2 MB page size.
+
+There are two ways to reserve HugePage using Linux.
+* Reserve the HugePage at Linux system initialization time and it will take this as the launch command option.
+* Dynamic memory reservation after the Linux is launched.
+
 ### 2.5.1 Reserve HugePage at Boot time
+
+> default_hugepagesz=1G hugepagesz=1G hugepages=4
+
 ### 2.5.2 Reserve HugePage at Runtime
 
+Reserve 1024 pages of 2 MB memory (2 MB HugePages):
+
+> echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+
+In the NUMA system with two nodes, we can use the following command:
+> echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+> echo 1024 > /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
+
+Mount hugetlbfs like a path/mnt/huge.
+> mkdir /mnt/huge
+> mount -t hugetlbfs nodev /mnt/huge
+
 ## 2.6 Memory Latency
+
+
 ## 2.7 DDIO
+Intel® DDIO enables the NIC and CPU to exchange data directly through the L3 cache, and NIC may move the packet into the LLC (instead of memory), as the new primary destination. In an optimized system, it reduces about 100 cycles for the arrived Ethernet packets.
+
 ## 2.8 NUMA
+
+# 3 Core-Based Parallelism
+## 3.1 Multicore Performance
+### 3.1.1 Horizontal Scale
+Amdahl’s law clearly indicates that the key to performance increase on a fixed workload needs to be focused on reducing the proportion of the sequential execution part in the whole task. For more information.
+
+### 3.1.2 Multicore
+The core in the CPU may stay idle while waiting for data arrival. HT is designed to reduce the CPU idle states. The CPU supports HT technology, and any physical core may contain logical cores N. When HT is enabled, the software sees two logical cores on one physical core. The technology is to reuse the multiple execution units of the superscalar pipeline more effectively.
+
+Every logical core has its complete and independent register set, and includes local interrupt logic. There is no difference other than a physical thread from the software perspective.
+
+Linux CPU Command Tools
+
+CPU Information Command | Command
+--- | ---
+The number of cores (physical cores) | cat /proc/cpuinfo \| grep "cpu cores" \| uniq
+The number of logical cores | cat /proc/cpuinfo    If “siblings” and “cpu cores” are consistent, it indicates that hyper-threading is not supported or disabled. If "siblings" is double to "cpu cores", it indicates that hyper-threading is supported and enabled.
+Socket ID | cat /proc/cpuinfo \| grep "physical id" \| sort \|  uniq \| wc –l or lscpu \| grep "CPU socket"
+Get ID for processor | cat /proc/cpuinfo \| grep "processor" \| wc –l
+
+### 3.1.3 Affinity
+### 3.1.4 Core Pinning in DPDK
+
+## 3.2 Instruction Concurrency and Data Parallelism
+### 3.2.1 Instruction Concurrency
+### 3.2.2 SIMD
