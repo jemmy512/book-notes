@@ -26,7 +26,7 @@ Intel® engineers need answer for the following:
 * A software path to enable the packet processing on x86 CPU;
 * Find a better software method to do things differently;
 * A performance scale way using multicore architecture;
-* How to tune “Linux system” as packet processing environment.
+* How to tune "Linux system" as packet processing environment.
 
 ### 1.3.2 DPDK Way
 
@@ -38,9 +38,9 @@ Intel® engineers need answer for the following:
 
 **Optimized memory**: Network processing is an I/O-bound workload scenario. Both CPU and NIC need access to the data in memory (actually cache and/or DRAM) frequently. The optimal memory access includes the use of HugePage and contiguous memory regions. For example, HugePage memory can reduce the TLB misses, multichannel-interleaved memory access can improve the total bandwidth efficiency, and the asymmetric memory access can reduce the access latency. The key idea is to get the data into cache as quickly as possible, so that CPU doesn’t stall.
 
-**Software tuning**: Tuning itself cannot be claimed as the best practice. In fact, it refers to a few known tuning practices, such as `cache line alignment` of data structure, avoiding `false sharing` between multiple cores, `pre-fetching data` in a timely manner, and `bulk operations` of multiple data (multi-buffer). These optimization methods are used in every corner of DPDK. The code example can be found in the “l3fwd” case study. It is important to know that these techniques are commonly applicable; beyond DPDK, any software can be optimized with the similar approach.
+**Software tuning**: Tuning itself cannot be claimed as the best practice. In fact, it refers to a few known tuning practices, such as `cache line alignment` of data structure, avoiding `false sharing` between multiple cores, `pre-fetching data` in a timely manner, and `bulk operations` of multiple data (multi-buffer). These optimization methods are used in every corner of DPDK. The code example can be found in the "l3fwd" case study. It is important to know that these techniques are commonly applicable; beyond DPDK, any software can be optimized with the similar approach.
 
-Using the latest **instruction set and platform technologies**: The latest instruction sets of Intel® processor and other new features has been one of the innovation sources of DPDK optimization. For example, Intel® `DDIO` (Direct Data I/O) technology is a hardware platform innovation in DMA and the cache subsystem. DDIO plays a “significant role to boost I/O performance as the packet data can be directly placed into cache, thus reducing the CPU access latency on DRAM. Without DDIO, packet is always placed into memory first, and then CPU needs to fetch packet data from DRAM into cache, which means the extra cycles that CPU needs to wait. The other example is how to make the best use of `SIMD (single-instruction multiple data)` and `multiple buffer` (multi-buffer) programming techniques. Some instructions, like `CMPXCHG`, are the cornerstone for lockless data structure design. `Crc32` instruction is also a good source for efficient hash computation. These contents will be covered in later chapters.
+Using the latest **instruction set and platform technologies**: The latest instruction sets of Intel® processor and other new features has been one of the innovation sources of DPDK optimization. For example, Intel® `DDIO` (Direct Data I/O) technology is a hardware platform innovation in DMA and the cache subsystem. DDIO plays a significant role to boost I/O performance as the packet data can be directly placed into cache, thus reducing the CPU access latency on DRAM. Without DDIO, packet is always placed into memory first, and then CPU needs to fetch packet data from DRAM into cache, which means the extra cycles that CPU needs to wait. The other example is how to make the best use of `SIMD (single-instruction multiple data)` and `multiple buffer` (multi-buffer) programming techniques. Some instructions, like `CMPXCHG`, are the cornerstone for lockless data structure design. `Crc32` instruction is also a good source for efficient hash computation. These contents will be covered in later chapters.
 
 **NIC driver tuning**: When the packet enters the system memory through PCIe interface, I/O performance is affected by the transaction efficiency among the PCIe-based device, bus transaction, and the system memory. For example, the packet data coalescence can make a difference through transferring multiple packets together, thus allowing a more efficient use of PCIe bus transactions. Modern NICs also support load balancing mechanisms such as receive side scaling (`RSS`) and Flow Director (`FDir`) features, which enable NIC multiple queue to work with CPU multiple core model. New NIC offload can also perform the packet header checksum, TCP segmentation offload (TSO), and tunnel header processing. DPDK is designed to take full advantage of the NIC features for performance reasons.
 
@@ -135,7 +135,7 @@ struct rte_port_core_stats {
 ### 2.4.5 Cache Coherency
 
 ### 2.4.6 Noisy Tenant and RDT
-Intel® proposed RDT (Resource Director Technology) framework to tackle the “noisy neighbor” problem, and RDT includes multiple technology ingredients such as cache monitoring, cache allocation, memory bandwidth monitoring, and cache and data optimization technologies. RDT is not specific to DPDK, so it is not introduced in this book.
+Intel® proposed RDT (Resource Director Technology) framework to tackle the "noisy neighbor" problem, and RDT includes multiple technology ingredients such as cache monitoring, cache allocation, memory bandwidth monitoring, and cache and data optimization technologies. RDT is not specific to DPDK, so it is not introduced in this book.
 
 ## 2.5 TLB and HugePage
 
@@ -188,13 +188,390 @@ Linux CPU Command Tools
 CPU Information Command | Command
 --- | ---
 The number of cores (physical cores) | cat /proc/cpuinfo \| grep "cpu cores" \| uniq
-The number of logical cores | cat /proc/cpuinfo    If “siblings” and “cpu cores” are consistent, it indicates that hyper-threading is not supported or disabled. If "siblings" is double to "cpu cores", it indicates that hyper-threading is supported and enabled.
+The number of logical cores | cat /proc/cpuinfo    If "siblings" and "cpu cores" are consistent, it indicates that hyper-threading is not supported or disabled. If "siblings" is double to "cpu cores", it indicates that hyper-threading is supported and enabled.
 Socket ID | cat /proc/cpuinfo \| grep "physical id" \| sort \|  uniq \| wc –l or lscpu \| grep "CPU socket"
 Get ID for processor | cat /proc/cpuinfo \| grep "processor" \| wc –l
 
 ### 3.1.3 Affinity
+
+1. Linux Kernel's support
+
+    ```c++
+    #include <sched.h>
+    int sched_setaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
+    int sched_getaffinity(pid_t pid, size_t cpusetsize, cpu_set_t *mask);
+    ```
+
+2. Why Use Affinity?
+
+    The most obvious benefit of binding the software task to the dedicated execution resource, which is indeed an optimal use of core resources if the performance is the key goal. Each core has its own dedicated L1/L2 cache. It keeps the most recently used data and instructions, and a dedicated running task implies the high chance of **cache hit** and is good for performance.
+
+3. CPU Isolation
+
+    Affinity binds the task to the assigned cores, but the Linux scheduler can load other tasks to the assigned cores.
+
+    Add boot time parameter:
+    > vim /boot/grub2.cfg
+    > isolcpu=2,3
+
+    Check boot time parameters:
+    > cat /proc/cmdline
+    > BOOT_IMAGE=/boot/vmlinuz-3.17.8–200.fc20.x86_64 root=UUID=3ae47813-79ea-4805-a732-21bedcbdb0b5 ro LANG=en_US.UTF-8 isolcpus=2,3
+
+4. CPU Utilization, 100%?
+
+    A core is often used with endless loop for packet processing, which also appears with 100% CPU utilization.
+
 ### 3.1.4 Core Pinning in DPDK
+
+1. EAL lcore
+    Linux scheduler does not manage the hardware cores that have been assigned to DPDK threads.
+
+    ![](../Images/dpdk/3.1-lcore-init.png)
+
+2. lcore Affinity
+
+3. Support for User-Created Threads
+
+4. Effecive Core Utilization
 
 ## 3.2 Instruction Concurrency and Data Parallelism
 ### 3.2.1 Instruction Concurrency
+
+The modern multicore processor adopts the **superscalar** architecture to increase the instructions’ concurrency. It can complete multiple instructions within a clock cycle.
+
+
+![](../Images/dpdk/3.2-skylake-arch.png)
+
 ### 3.2.2 SIMD
+
+Single-instruction multiple data (SIMD) improves performance by applying the instruction concurrency on the dimension of data width.
+
+**Multiple data** define a specific width as a data unit, and multiple data units are operated independently.
+
+**Single instruction** refers to the fact that for such a multiple data set, an instruction operation can be applied to all data units. SIMD is considered as a vectoring operation method.
+
+![](../Images/dpdk/3.2-simd.png)
+
+SIMD uses the register sets with much wider than the general-purpose registers (GPRs) in order to hold the wide data units. It has evolved with 128-bit XMM registers, 256-bit YMM registers, and 512-bit ZMM registers, but the GPRs are still 64-bit width.
+
+# 4. Synchronization
+
+## 4.1 Atomic and Memory Barrier
+### 4.1.1 Memory Barrier
+Memory barrier, also known as memory fence, enforces the memory access (load/store) in order.
+
+* LFENCE is a memory load fence; this ensures a serialization operation on all the previous memory loads that are globally visible.
+* SFENCE is a memory store fence; it only enforces that all previous memory stores are globally visible.
+* MFENCE is the combination to enforce that all the previous memory load and store operations are globally visible.
+
+### 4.1.2 Atomic Operation
+
+### 4.1.3 Linux Atomic Operation
+#### 4.1.3.1 Atomic Integer Operation
+#### 4.1.3.2 Atomic Bit Operation
+
+### 4.1.4 DPDK Atomic Operation
+#### 4.1.4.1 Memory Barrier API
+#### 4.1.4.2 Atomic API
+
+## 4.2 RWLock
+### 4.2.1 Linux API
+### 4.2.2 DPDK API
+
+## 4.3 Spinlock
+
+Spinlock is easy to cause the **self deadlock** if there is a repeated lock request from the same caller thread.
+
+When using the spinlock, the recursive request may lead to the **recursive deadlock**. In the context of interrupt handling, the spinlock needs to be used more carefully. Generally, it is recommended to **disable interrupt** first, and this will avoid thread and interrupt competition.
+
+### 4.3.1 Linux API
+### 4.3.2 DPDK API
+
+## 4.4 Lock-Free
+### 4.4.1 RTE_RING
+### 4.4.2 Enqueue/Dequeue
+### 4.4.3 Producer/Consumer
+
+
+# 5 Forwarding
+## 5.1 Forwarding Models
+
+A life cycle of packet goes through the system in the following order:
+* Packet **input**: An incoming packet arrives at the hardware interface.
+* **Preprocessing**: Parse the packet header in a coarse-grained manner.
+* Input **classification**: Classify the packet in a fine-grained manner.
+* **Ingress queuing**: Insert the packet into a FIFO (first in, first out) queue.
+* Delivery/**scheduling**: Schedule based on queue priority and CPU status.
+* **Accelerator**: Dedicated functions such as encryption/decryption and compression/decompression (e.g., IPsec).
+* Parallel **CPU processing**: Complex processing via software, such as protocol and flow session management.
+* **Egress queuing**: Schedule at packet exits according to QoS policy.
+* **Post-processing**: Release the packet buffer in the post-processing.
+* **Packet output**: Send the packet out through the hardware interface.
+
+![](../Images/dpdk/5.1-packet-processing.png)
+
+### 5.1.1 Pipeline Model
+
+The pipeline model, as the name suggests, is inspired by the industrial pipelining assembly line model. It divides a complex function (above the modular level) into several individual stages, and each stage is connected via queues.
+
+The networking system includes many compute- and I/O-intensive tasks; the pipeline model allows us to execute the compute-intensive tasks on a microprocessing engine and the I/O-intensive operations on another microprocessing engine. Each processing engine is task centric. Data are shared using queues between the tasks. Queues should have enough bandwidth to match the speed of the processing so that they will not become the bottleneck.
+
+Data are shared using queues between the tasks. Queues should have enough bandwidth to match the speed of the processing so that they will not become the bottleneck. Also, the latency of the whole pipeline path is an important factor that should be considered carefully.
+
+Limitations:
+* The hardware-based pipeline can be limited on its programmability, the hardware resource is decided during the chip design phase.
+* Hardware resource. For example, the on-chip memory can help the low-latency table lookup, but the on-chip memory size is often limited.
+
+![](../Images/dpdk/5.1-pipeline-model.png)
+
+### 5.1.2 RTC Model
+
+The run-to-completion (RTC or known as "run to end") model is relatively simple to understand. A program has the execution engine (e.g a CPU core) ownership; it will run until the task is completed.
+
+The RTC model fits the charateristics of multicore system very well. RTC model doesn’t necessarily share data via queues among cores, as the entire task is completed on its own execution resource.
+
+RTC is a sequential execution model; the whole path can be a series of complicated tasks, so it may include many memory accesses. Each memory access will cause additional access latency. For each memory access, core has to wait for the completion of data load/store. The latency may accumulate so that the overall latency will increase.
+
+Software-based packet forwarding model has faster development cycle than hardware/software co-design model, and software provides high portability and low development cost. It aligns well with cloud-based elastic model. Which enables on-demand use of the hardware (core resources can be assigned dynamically for high or low network function needs).
+
+### 5.1.3 Hybrid Model
+
+The high-speed I/O (on NIC) can be handled by RTC model; more cores can work together with NIC RSS (receive side scaling) and the use of multi-queue. This relieves the I/O bottleneck on the server platform.
+
+In addition to packet I/O, network function system comprises the packet **header parsing**, **protocol analysis**, and **packet modification**; the whole processing takes many table lookup, which is translated into many times of memory accesses. The accumulated memory latency in RTC model is not an effective way to make good use of CPU.
+
+Solutions to mitigate the memory latency:
+* One way is to combine the multiple memory access together by merging small table loopup into one big table looukup.
+* From the system architecture perspective, the other way to improve efficiency is to leverage the pipeline model; the pipeline model is good at hiding memory access latency.
+    * Break down the processing path into multiple tasks, then assign the different cores for the different tasks, and then connect all cores (tasks) to work together. The assigned core in the pipeline will only work on a specific task (as part of the pipeline stage), which improves the cache locality, thus resulting in higher efficiency.
+    * The major benefit of using the pipeline model is **cache locality**. Each core only executes a small portion of the whole application; thus, it is more friendly to the instruction cache. It is also easier for hardware and software **prefetching** to read data ahead of time.
+
+![](../Images/dpdk/5.1-rtc-pipeline.png)
+* RTC mode (a): Core 0 can be the control thread, which does not participate in the packet handling. Core 1 and Core 2 are the examples of RTC models; each core is responsible for the entire life cycle of packet processing, from Rx to Tx; Cores 3, 4, and 5 are using a similar RTC model; the difference is that NIC may turn on RSS features, so that the arrived packets may be processed by Cores 3, 4, and 5 for load balancing purpose.
+* Pipe-line mode (b): The packet processing is divided into logical stages A, B, and C. A packet needs to go through Rx -> App A -> App B -> App C -> Tx stages. Rx/Tx is supported by Core 0. Depending on the workload complexity, both Core 1 and Core 2 are running the same tasks (App A -> App B ->App C); eventually, the packet is returned to Core 0 for packet Tx.
+
+Perspective | Pipeline Model  | RTC Model
+--- | --- | ---
+Development | Easy, x86 core is general purpose, can do any task. Packet Framework is an existing implementation; the user can use it as a reference to build the features with software reuse (such as core/stages/tables, inter-core communication with queues, memory). Architecture focuses on the stage definition. | Easy. System consists of a list of function calls, often run as endless loop as a thread. Replicate to many cores.
+Performance | Good way to hide the memory latency, I/O, and load balancing. Add the overhead between cores, workload-specific tuning on the pipeline stages. | Replicate to many cores. Increasing cache locality is a challenge. Reducing memory-related processing can be achieved with code refactoring and design optimization.
+
+## 5.2 DPDK Specifics
+### 5.2.1 RTC Model
+
+DPDK initialization will reserve the specific cores to work on the NIC ports for packet Rx/Tx. If there are more NIC ports, a software developer can configure more cores. For the high-speed interface, the software developer can configure multiple queues for each interface, then assign multiple cores to do packet processing for those queues. This is a common approach of DPDK to realize performance scaling.
+
+### 5.2.2 Pipeline Model
+
+![](../Images/dpdk/5.2-pipe-line-block.png)
+![](../Images/dpdk/5.2-pipe-line-block-2.png)
+
+### 5.2.3 Packet Framework Port Library
+The port library (librte_port) provides a standard interface to implement different types of packet ports. This library defines initialization and runtime operation of the packet ports.
+
+\# | Port Type | Description
+--- | --- |---
+1 | SW Ring | A software circular buffer for packet/message transfer between pipeline modules.
+2 | HW Ring | Queue of buffer descriptors used to interact with NIC, switch, or accelerator ports.
+3 | IP Reassembly | Assembles IP fragments to an IP datagram.
+4 | IP Fragmentation | Fragments input packets with IP datagrams larger than MTU (maximum transmission unit) size.
+5 | Traffic Manager | Performs congestion management and hierarchical scheduling as per service-level agreements on an egress port.
+6 | Source Port | Packet generator port, similar to Linux kernel/dev/zero character device.
+7 | Sink Port | Packet terminator port to drop all input packets, similar to Linux kernel /dev/null character device.
+8 | Kernel NIC Interface (KNI) Port | Interface for sending/receiving packets to/from Linux kernel space.
+
+### 5.2.4 Packet Framework Table Library
+\# | Table | Description
+--- | --- | ---
+1 | Hash Table | Exact match table; the lookup key is an n-tuple of packet fields that uniquely identifies a traffic flow. It is used to implement flow classification tables, ARP tables, etc.
+2 | Longest Prefix Match (LPM) | The lookup key is an IPv4/IPv6 address. The lookup operation selects the longest IP prefix that matches the lookup IP address. Typically used to implement layer 3 routing tables.
+3 | Access Control List (ACL) | The lookup key is n-tuples of packet fields. The lookup operation searches over a set of rules and finds the best match (highest priority). It is used to implement rule base for firewalls, etc.
+4 | Array Tablet | The lookup key is a table entry index. It is used for implementing small databases such as IPv4 DSCP field entries, etc.
+
+### 5.2.5 Packet Framework Pipeline Library
+
+Once all the elements (input ports, tables, output ports) of the pipeline module are created, the input ports are connected to the tables, table action handlers are configured, and the tables are populated with the set of entries and associated actions
+
+![](../Images/dpdk/5.2-pipe-line-flow.png)
+
+## 5.3 Forwarding Table and Algorithm
+### 5.3.1 Hash Table
+
+### 5.3.2 Hash Library
+The first table is bucket-based signature table. It consists of an array of buckets, and each bucket has a fixed number of entries. Each entry contains a short signature of a key and an index to the key data pair. The second table consists of an array of key data pairs. When looking up a key, the signature in the first table will be compared first, and the key data pair in the second table is accessed only if the signature matches.
+
+### 5.3.3 Elastic Flow Distributor
+### 5.3.4 Longest Prefix Matching
+### 5.3.5 ACL
+
+## 5.4 Event Scheduling
+Event/packet scheduling focuses on addressing how the packets are scheduled from I/O device to core, from core to core, and from core to device. The cost of event scheduling could be high if implemented in software. Hardware accelerator can help in some cases.
+
+There are three packet-based event scheduling types:
+* **Parallel**: Packets from the same flow can be distributed to multiple cores at the same time, without packet ordering requirement.
+* **Ordered**: Packets from the same flow can be distributed to multiple cores but the packet order has to be restored at the egress port to the same order as ingress.
+* **Atomic**: Only one packet from the same flow is processed at one time, system wide.
+
+### 5.4.1 NIC-Based Packet Scheduler
+
+RSS distributes the received packets into multi-queues for load balancing among multicores.
+
+FDir directs the packet flow to the specific queue, which ensures the target core is the same one that handles the entire packet flow.
+
+[Introduction to Intel® Ethernet Flow Director and Memcached :link:](https://www.intel.com/content/dam/www/public/us/en/documents/white-papers/intel-ethernet-flow-director.pdf)
+
+### 5.4.2 Software-Based Packet Distributor
+
+The software packet scheduling has two key problems:
+* How to maintain the packet ordering in a parallel system.
+* How to achieve it with high performance.
+
+![](../Images/dpdk/5.4-software-packet-distributor.png)
+* The "Distributor Thread" communicates with the "Worker Threads" using a **cache line swapping** mechanism, passing up to 8 mbuf pointers at a time (one cache line) for each worker.
+
+The key design for the “Distributor Thread” is the data structure which is exchanged among cores. Inter-core data path is a known bottleneck of scheduling. The data structure needs to be cache-friendly because the cores talk with each other through last level cache (LLC).
+
+![](../Images/dpdk/5.4-software-distributor-packet-buf-array.png)
+
+The least significant 4 bits can be used for other purposes, such as mbuf status flag in the following:
+```c++
+#define RTE_DISTRIB_NO_BUF 0 /**< empty flags: no buffer requested */
+#define RTE_DISTRIB_GET_BUF (1) /**< worker requests a buffer, returns old */
+#define RTE_DISTRIB_RETURN_BUF (2) /**< worker returns a buffer, no request */
+```
+
+Ideally, the “Distributor Thread” can send 8 mbuf pointers to the worker core every time, and the worker core returns 8 mbuf pointers after completing the batched packet processing. This cache-aligned communication between “Distributor” and “Worker” threads minimizes the cache coherence overhead.
+
+Two other things to consider when developing a packet distributor based on these sample applications:
+* Distributor needs a **dedicated core** for the packet scheduling work.
+* The Worker Thread cannot handle the **asynchronous** task. The dispatching workflow is based on a blocking model, which cannot track the asynchronous packet.
+
+### 5.4.3 Event Device
+
+The eventdev library simplifies the packet processing with automatic multicore scaling, dynamic load balancing, pipelining, packet ingress order maintenance, and synchronization services.
+
+* In a polling model, core polls NIC ports/queues to receive a packet.
+* In an event-driven model, core polls the scheduler to select a packet.
+
+![](../Images/dpdk/5.4-eventdev-1.png)
+![](../Images/dpdk/5.4-eventdev-2.png)
+
+An example life cycle of a packet:
+* NIC receives the packet; RX core populates the flow id and then enqueues the packet to Queue 0.
+* The scheduler checks the event flow id and queue id and then dispatches the packet event to Queue0::flow0 subqueue.
+* Core 0 polls event from the Port 0 and then forwards this event to Queue 1, populates the queue id, and then enqueues event through Port 0.
+* The scheduler checks the event flow id and queue id and then delivers event to Queue1::flow0 subqueue.
+* Core 1 polls event from Port 1, updates the event type as TX, and then enqueues the event by Port 1.
+* The scheduler checks the event type and then delivers the event to TX port.
+* TX core dequeues the event and transmits the packet out.
+
+Atom Scheduler Type
+* ![](../Images/dpdk/5.4-atom-scheduler.png)
+* If there are four events that belong to flow0.
+* Scheduler only dispatches one event of flow0 at one time. Before the dispatched event enqueues again, no other event that belongs to flow0 will be dispatched.
+* If event0 is enqueued, then event1 will be dispatched.
+* And so on.
+
+
+Ordered Schedule Type:
+* ![](../Images/dpdk/5.4-ordered-scheduler.png)
+* There are four events that belong to flow 0.
+* Scheduler dispatches e0, e1, e2, and e3 to different ports at the same time. For example, e3 is sent to por0, e0 is sent to port, e1 is sent to port2, and e2 is sent to port3.
+* When e0, e1, e2, and e3 enqueue again, the scheduler will reorder all the events to keep them in order. For example, if the new enqueue order is e3, e1, e2, and e0, then the scheduler must reorder them as e0, e1, e2, and e3.
+
+## 5.5 ip_pipeline
+
+# 6 PCIe/NIC
+## 6.1 PCIe
+### 6.1.1 Protocol Stack
+
+Peripheral Component Interconnect Express; it is a high-speed serial communication and interconnect standard interface.
+
+The system bus is the bus interface to CPU, which is not open interface, which leaves the PCIe as the platform standard bus interface.
+
+![](../Images/dpdk/6.1-pcie-stack.png)
+* Transaction Transport Layer
+* Data Link Layer
+* Physical Layer (logical and electrical submodules)
+![](../Images/dpdk/6.1-pcie-layer.png)
+
+The TLP header section defines a set of transactional packet types:
+Type | Abbriviated Name
+--- | ---
+Memory read request | MRd
+Memory read locked access | MRdLk
+Memory write request | MWr
+I/O read | IORd
+I/O write | IOWr
+Configuration read (Type 0 and Type 1) | CfgRd0 CfgRd1
+Configuration write (Type 0 and Type 1) | CfgWd0 CfgWd1
+Message request without data | Msg
+Message request with data | MsgD
+Completion without data | Cpl
+Completion with data | CplD
+Completion without data associated with locked memory read requests | CplLk
+Completion with data associated with locked memory read requests | CplDLk
+
+The Ethernet packets that the NIC receives the wire are transferred as the payload of the PCIe transport layer. The NIC implements its own DMA (direct memory access) controller to access the memory via the PCIe bus. When the CPU receives/sends a packet from/to the NIC, the following PCIe transaction types are used: Memory Read/Write (MRd/MWr) and Completion with Data (CpID).
+
+### 6.1.2 Transaction Overhead
+### 6.1.3 Interface Metrics
+
+## 6.2 TLP Example
+## 6.3 NIC Descriptor
+
+The NIC interacts with the CPU (and its software) via a ring-based queue, which consists of many packet buffer descriptors, with the ring being a circular buffer in system memory.
+
+The NIC driver is responsible for the following basic steps:
+* Fill the packet memory address into the descriptor so that the NIC can use it to DMA the packet arrives on wire.
+* Move the Tail register; NIC will read and know how many descriptors are available.
+* Check the “DD” bit of the descriptor. For packet RX is done, refilling the packet memory buffer is required. For packet TX is done, releasing the memory buffer is done.
+* Configure the buffer descriptor (rte_mbuf).
+* Process the buffer descriptor.
+* Handle the scatter-gather, RSS (receive side scaling) and NIC offload, etc.
+
+
+The platform memory bandwidth is usually significantly higher than any individual PCIe interface bandwidth. For packet processing workloads, memory bandwidth is not a big challenge; it is mainly the PCIe interface that is the bottleneck.
+
+## 6.4 RX/TX Procedure
+
+
+### 6.4.1 High-Level View
+
+#### 6.4.1.1 RX
+
+![](../Images/dpdk/6.4-packet-rx.png)
+
+1. The CPU fills the packet buffer address into the RX descriptor.
+2. The NIC reads the RX descriptor (rxd) to obtain the memory address.
+3. The NIC writes the packet to the specified memory address (DMA).
+4. The NIC updates the RX descriptor to notify the RX completion.
+5. The CPU reads the RX descriptor and completes the packet RX
+6. The CPU processes the packet and decides the next step (processing).
+7. The CPU may change the packet and send it.
+
+#### 6.4.1.2 TX
+
+![](../Images/dpdk/6.4-packet-tx.png)
+
+8. The CPU reads the TX descriptor to check if any packet is sent successfully.
+9. The CPU writes the packet buffer address to the next TX descriptor.
+10. The NIC reads the TX descriptor to get the packet memory.
+11. The NIC reads the packet data from the address.
+12. The NIC updates the TX descriptor after packet TX is completed.
+
+
+The physical bandwidth of PCIe interface is indeed high. Take PCIe Gen2 x8 as an example: The throughput is up to 4 GB/s (32 Gbps). In reality, the effective data throughput is much less. Why? Because the packet moves between the main memory and the NIC device through DMA and PCIe bus transactions, and the PCIe bus is consumed by in/out packet data movement and NIC register access (MMIO). Also, the reads/writes {2,4,10,12} of the RX/TX descriptors described above need to be taken into consideration.
+
+### 6.4.2 Optimization Ideas
+1. Reduce the MMIO access:
+
+    NIC configuration and control are done by accessing the device registers; they use MMIO access.
+
+    When a packet is received, the Tail register is updated after a new packet buffer is allocated and refilled to the RX descriptor. If the packet buffer allocation and descriptor refills are batched together, we can reduce the total time spent updating the Tail.
+
+
+## 6.5 Throughput Analysis
+## 6.6 Packet Memory
+### 6.6.1 Mbuf
+### 6.6.2 Mempool
