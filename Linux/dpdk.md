@@ -429,7 +429,7 @@ The software packet scheduling has two key problems:
 ![](../Images/dpdk/5.4-software-packet-distributor.png)
 * The "Distributor Thread" communicates with the "Worker Threads" using a **cache line swapping** mechanism, passing up to 8 mbuf pointers at a time (one cache line) for each worker.
 
-The key design for the “Distributor Thread” is the data structure which is exchanged among cores. Inter-core data path is a known bottleneck of scheduling. The data structure needs to be cache-friendly because the cores talk with each other through last level cache (LLC).
+The key design for the "Distributor Thread" is the data structure which is exchanged among cores. Inter-core data path is a known bottleneck of scheduling. The data structure needs to be cache-friendly because the cores talk with each other through last level cache (LLC).
 
 ![](../Images/dpdk/5.4-software-distributor-packet-buf-array.png)
 
@@ -440,7 +440,7 @@ The least significant 4 bits can be used for other purposes, such as mbuf status
 #define RTE_DISTRIB_RETURN_BUF (2) /**< worker returns a buffer, no request */
 ```
 
-Ideally, the “Distributor Thread” can send 8 mbuf pointers to the worker core every time, and the worker core returns 8 mbuf pointers after completing the batched packet processing. This cache-aligned communication between “Distributor” and “Worker” threads minimizes the cache coherence overhead.
+Ideally, the "Distributor Thread" can send 8 mbuf pointers to the worker core every time, and the worker core returns 8 mbuf pointers after completing the batched packet processing. This cache-aligned communication between "Distributor" and "Worker" threads minimizes the cache coherence overhead.
 
 Two other things to consider when developing a packet distributor based on these sample applications:
 * Distributor needs a **dedicated core** for the packet scheduling work.
@@ -495,6 +495,8 @@ The system bus is the bus interface to CPU, which is not open interface, which l
 * Physical Layer (logical and electrical submodules)
 ![](../Images/dpdk/6.1-pcie-layer.png)
 
+### 6.1.2 Transaction Overhead
+
 The TLP header section defines a set of transactional packet types:
 Type | Abbriviated Name
 --- | ---
@@ -514,7 +516,8 @@ Completion with data associated with locked memory read requests | CplDLk
 
 The Ethernet packets that the NIC receives the wire are transferred as the payload of the PCIe transport layer. The NIC implements its own DMA (direct memory access) controller to access the memory via the PCIe bus. When the CPU receives/sends a packet from/to the NIC, the following PCIe transaction types are used: Memory Read/Write (MRd/MWr) and Completion with Data (CpID).
 
-### 6.1.2 Transaction Overhead
+For a normal TLP on 64-bit server platform, there are a total of **24 additional bytes** for transaction overhead. If the incoming Ethernet packet size is small (e.g., 64 bytes), the overhead is indeed significant.
+
 ### 6.1.3 Interface Metrics
 
 ## 6.2 TLP Example
@@ -525,7 +528,7 @@ The NIC interacts with the CPU (and its software) via a ring-based queue, which 
 The NIC driver is responsible for the following basic steps:
 * Fill the packet memory address into the descriptor so that the NIC can use it to DMA the packet arrives on wire.
 * Move the Tail register; NIC will read and know how many descriptors are available.
-* Check the “DD” bit of the descriptor. For packet RX is done, refilling the packet memory buffer is required. For packet TX is done, releasing the memory buffer is done.
+* Check the "DD" bit of the descriptor. For packet RX is done, refilling the packet memory buffer is required. For packet TX is done, releasing the memory buffer is done.
 * Configure the buffer descriptor (rte_mbuf).
 * Process the buffer descriptor.
 * Handle the scatter-gather, RSS (receive side scaling) and NIC offload, etc.
@@ -570,8 +573,187 @@ The physical bandwidth of PCIe interface is indeed high. Take PCIe Gen2 x8 as an
 
     When a packet is received, the Tail register is updated after a new packet buffer is allocated and refilled to the RX descriptor. If the packet buffer allocation and descriptor refills are batched together, we can reduce the total time spent updating the Tail.
 
+2. Improve the PCIe data transfer efficiency:
+
+    Packet descriptors can be accessed by both the CPU and the NIC. Every read or write of the descriptor is a PCIe transaction. Assuming each descriptor is 16 bytes long, then the payload will be smaller than PCIe/TLP overhead (24 bytes), resulting in a lower utilization on PCIe/TLP data transfer bandwidth.
+
+    If we combine multiple descriptor accesses, we can merge four descriptor accesses into one PCIe transaction, which will result in a total payload of 16 bytes × 4 = 64 bytes, which happens to be the same as the cache line size. So, this larger TLP payload can make much more effective use of PCIe bandwidth.
+
+3. Avoid partial writes of the cache line whenever possible
+
+    When a DMA engine is writing the packet data to the memory buffer, partial writes can happen in the following conditions:
+    * The buffer address is not cache line-aligned.
+    * The written length is not a multiple of the cache line size.
+
+    Partial writes of the cache line will lead to a merge of memory read–modify–write operations and cause additional reads, thus reducing the overall performance.
 
 ## 6.5 Throughput Analysis
 ## 6.6 Packet Memory
 ### 6.6.1 Mbuf
+
+![](../Images/dpdk/6.6-rte-mbuf.png)
+
+The software driver uses mbuf header to interact with NIC hardware for every packet in and out.
+
+All mbufs are cache line-aligned, but their size is configurable. Given that most Ethernet frame sizes are less than 1500 bytes, it is common to see the default mbuf packet size is set as 2KB.
+
+All mbufs are cache line-aligned, but their size is configurable. Given that most Ethernet frame sizes are less than 1500 bytes, it is common to see the default mbuf packet size is set as 2KB.
+
+Packet descriptor (metadata) contains the packet header information such as VLAN label, RSS hash values, and arrived port number.
+
+![](../Images/dpdk/6.6-jumbo-frame.png)
+
 ### 6.6.2 Mempool
+
+# 7 PMD
+## 7.1 DPDK Poll Mode
+### 7.1.1 Interrupt Mode
+
+The interrupt service has the cost of context switch, and the overhead exists for every interrupt service.
+
+### 7.1.2 Poll Mode
+
+Through the math model and analysis, it makes sense to assign the dedicated cores to handle the high-speed NIC in order to sustain the packet processing at the line rate.
+
+PMD is responsible for NIC port/queue initialization and setup, which includes filling the mbuf elements to HW (Hardware) descriptor and informing NIC to place the incoming packet to the specified memory address; packet metadata is updated into the buffer descriptor. PMD is responsible for allocating more buffers to accommodate the large size packet.
+
+### 7.1.3 Hybrid Mode
+
+![](../Images/dpdk/7.1-hybrid-model.png)
+1. The DPDK application creates a polling thread, which runs in the busy poll mode to check if any packets need to be received. By default, the interrupt is turned off.
+2. The polling thread detects the incoming packets on a core basis. If no packet is received, a conservative approach is implemented to decide the core idle time and then what’s next step. Two actions are given in case of no packets are received in the example.
+    * Within the core idle threshold (configurable by MACRO: SUSPEND_THRESHOLD), use "Pause" instruction to delay the busy poll for a specified time, which is implemented by "rte_delay_us" API.
+    * If the idle exceeds the configured threshold, interrupt/epoll mode is supported/enabled at the port/queue level (rte_eth_dev_rx_intr_ctl_q), the example strategy will turn on the port/queue interrupt, and the core enables one-time interrupt service before sleep.
+3. The core (polling thread) will block on epoll event: "rte_epoll_wait" is used here, which depends on epoll_wait.
+4. If a packet comes on the wire, the NIC will trigger a "Rx Interrupt".
+5. Depending on the kernel module, it will notify the igb_uio module if "UIO" is in place.
+6. UIO (user space I/O) will notify the user space with "uio_event_ notify".
+7. The sleep core is waked up, and it will return on "rte_poll_wait".
+8. The polling thread is back to work, and it will disable the port/queue interrupt and continue the busy poll mode.
+
+The HIP mode depends on the interrupt notification from the kernel modules, which can be UIO or VFIO (virtual function I/O). For VFIO-based implementation, the interrupt is supported at the queue level; every rxq can have its own interrupt number, because VFIO supports multiple MSI-X interrupt numbers. For UIO-based implementation, only one interrupt number is shared by all the RX queues.
+
+## 7.2 Performance Optimization
+
+For each packet RX, the packet memory is loaded into cache, the adjacent data is also loaded to the cache, and the memory access always happened with a cache line size (like 64 bytes). The prior data in the cache can be vacated while doing the packet computation; then the next use of the adjacent data becomes a problem; it may have to load the data from a lower-level cache or access the memory again.
+
+### 7.2.1 Burst Processing
+
+**Burst** decomposes the packet RX/TX into multiple small processing stages, allowing the adjacent data access and similar processing together. Thus, this can minimize the memory access for the multiple data read/writes, and the cache utilization can be highly effective. Packet burst processing is about to handle multiple packets (such as 8, 16, or even 32) at a time. The number of packets is determined by the DPDK user.
+
+DPDK uses the burst processing, and it is a well-known optimization idea. It decomposes the packet RX/TX into multiple small processing stages, allowing the **adjacent data access** and **similar processing** together. Thus, this can minimize the memory access for the multiple data read/writes, and the cache utilization can be highly effective. Packet burst processing is about to handle multiple packets (such as 8, 16, or even 32) at a time. The number of packets is determined by the DPDK user.
+
+The **prefetch** mechanism (hardware or software based) can help the adjacent cache lines to be accessed at one time. If four cache lines are updated, 16 descriptor (each size is 16 bytes long) accesses can be combined.
+
+In the non-burst design, only one packet was received at one time, and then it is processed and sent, at an individual basis. For each packet RX, the packet memory is loaded into cache, the adjacent data is also loaded to the cache, and the memory access always happened with a cache line size (like 64 bytes). The prior data in the cache can be vacated while doing the packet computation; then the next use of the adjacent data becomes a problem; it may have to load the data from a lower-level cache or access the memory again.
+
+In the packet burst design, multiple packets can be processed at a time. When the data is loaded in the first time (for the first packet), the adjacent data may be useful to the next packet’s use. This means only one memory access (or lower-level cache access) is required to receive two or more packets. This way, fewer memory access (or low-level cache access) is required to complete the multiple packets of RX.
+
+### 7.2.2 Batch Processing
+
+* **Latency**: The number of clock cycles to run an instruction.
+* **Throughput**: The number of clock cycles to run the same instruction again.
+
+Latency describes the waiting interval between two instructions, whereas throughput describes the concurrency capacity. The instruction latency is relatively fixed, concurrency can enhance the overall system performance, and issuing more instructions will help to increase concurrency.
+
+Modern CPU architecture is optimized with out-of-order execution and high concurrency. The effective method on instruction latency hiding is the batch processing; it is valid if there is no data dependency. The repetitive task can be done with a successive loop.
+
+![](../Images/dpdk/7.2-batch-processing.png)
+
+Packet RX needs the multiple memory access (such as descriptor and buffer read/write)
+
+In theory, the CPU and NIC (DMA engine) may try to access the same data. There are two kinds of data access:
+* Read–write conflict: Use the DD flag as an example. If packet RX is completed at NIC side, NIC will write the flag. Meanwhile, the CPU is polling this flag periodically.
+* Write–write conflict: CPU needs to assign the new packet buffer and refills them to NIC RX descriptor ring. Meanwhile, NIC will write the ring as part of packet RX, which is a DMA write-back.
+
+![](../Images/dpdk/7.2-batch-processing-2.png)
+
+In DPDK, ixgbe PMD has the batch processing for the packet RX/TX:
+1. The PMD checks if 8 packets are ready on the NIC’s receive queue. If so, the software will parse the hardware descriptor and translate the NIC descriptor to software-based packet metadata fields (mbuf). This is repeated until 32 packets are received, or no further packets arrived.
+2. Then, PMD will check if there is a need to allocate more packet buffers. If the threshold is reached, PMD will ask for many mbufs at a time.
+3. The final step will look into the actual number of packets in a burst, and refill the packet buffers as needed.
+
+### 7.2.3 SIMD
+
+The Intel® SSE (Streaming SIMD Extensions) instruction is based on 128-bit register, whereas AVX (advanced vector extensions) provides a 256-bit register and AVX512 provides a 512-bit register.
+
+## 7.3 Platform Configuration
+### 7.3.1 Hardware Impacts
+
+![](../Images/dpdk/7.3-cpu-mem-arch.png)
+
+DPDK is designed to be local or remote socket aware, and many software APIs are asking "socket" as the explicit input parameter.
+
+Using the remote core to handle the PCIe card will lead to extra inter-CPU communication, thereby slowing down the performance. PCIe slot is always attached to one CPU, and this is finalized in the motherboard design.
+
+command "lspci–vvv" can inspect the PCIe interface and details.
+
+I/O interfaces do not guarantee the NIC’s maximum networking performance. Don’t assume that 2x40Gbe Ethernet ports will deliver 80 Gbps I/O simultaneously. Other system factors such as the Ethernet chip capability and PCIe slot (speed and lanes) affect the I/O performance.
+
+Most NICs generally support multi-queues for packet I/O. When receive-side scaling (RSS) is enabled, NIC can distribute the packets into multiple queues, and then multiple cores can handle one or more queues for load balancing.
+
+
+### 7.3.2 Software Impacts
+
+* Huge page
+
+    > default_hugepagesz = 1G hugepagesz = 1G hugepages = 8
+
+    > cat /proc/meminfo
+
+* CPU isolation
+
+    > isolcpus = 2,3,4,5,6,7,8
+
+* PCIe extended tag
+
+    > CONFIG_RTE_PCI_CONFIG=y
+    > CONFIG_RTE_PCI_EXTENDED_TAG="on"
+
+    In the dual-socket system, the principle is to use the local core to drive the local Ethernet port.
+
+
+## 7.4 NIC Tuning
+### 7.4.1 RXQ/TXQ Length
+### 7.4.2 RXQ/TXQ Threshold
+
+# 8 NIC-Based Parallellism
+
+![](../Images/dpdk/8-multi-queue-nic-cpu.png)
+
+## 8.1 Multi-Queue
+### 8.1.1 NIC Support
+
+As the name suggests, the NIC RX/TX path has multiple hardware queues, and each queue can be associated with a specific core. In order to use the multiple queues, NIC came up with a few mechanisms (which will be discussed later) to distribute the incoming packets to the queues, and the actual packet move to the host memory is done with NIC DMA (direct memory access). When the CPU handles the packet, the packet and its buffer descriptor need to be loaded into cache. This memory and cache procedure is further optimized by the Intel® DDIO technology.
+
+The number of queues can be different at the RX/TX sides. The system designer will decide the following:
+* How many queues need be configured?
+* How many cores can be used for NIC driver (RX/TX)?
+* How many cores are available for other packet processing software use?
+* What are the packet distribution methods to send packets from the I/O core to different worker cores (for load balance processing, or application steer processing)?
+
+
+![](../Images/dpdk/8.1-multi-queue-selection.png)
+
+The steps involved in the packet-receiving process are summarized below:
+1. Recognizing a packet arrived on the Ethernet port
+2. Filtering the packet on L2 Ethernet protocols
+3. Queue assignment (such as Pool Select and Queue Select)
+4. Moving the packet into the receive data FIFO
+5. Transferring the packet into the host memory, owned by the specified queue
+6. Updating the status of the packet buffer descriptor
+
+### 8.1.2 Linux Support
+#### 8.1.2.1 NIC RX
+#### 8.1.2.2 NIC TX
+### 8.1.3 DPDK Support
+## 8.2 Flow Classification
+### 8.2.1 Packet Type
+### 8.2.2 Receive-Side Scaling (RSS)
+### 8.2.3 Flow Director (FDIR)
+### 8.2.4 NIC Switching
+### 8.2.5 Customized Flow Classification
+## 8.3 Use Case
+### 8.3.1 Hybrid RSS and FDIR
+### 8.3.2 Virtualization
+### 8.3.3 Rte_flow
