@@ -121,14 +121,14 @@ The compiler can find the false sharing, and it will try to eliminate the false 
 If false sharing is identified, the software fix is simple: Just ensure the shared data elements reside in a different cache line. If a data structure is used for multicore use, each individual data member can occupy its own cache line.
 
 ```c++
-#define RTE_CACHE_LINE_SIZE 64 
-#define __rte_cache_aligned __attribute__((__aligned__(RTE_CACHE_LINE_SIZE)))
+#define RTE_CACHE_LINE_SIZE 64
+#define __rte_cache_aligned __attribute__((__aligned__(RTE_CACHE_LINE_SIZE)))
 
-struct rte_port_core_stats {
-       __rte_cache_aligned uint64_t core1_pkts; 
-       __rte_cache_aligned uint64_t core2_pkts; 
-       __rte_cache_aligned uint64_t core3_pkts; 
-       __rte_cache_aligned uint64_t core4_pkts; 
+struct rte_port_core_stats {
+     __rte_cache_aligned uint64_t core1_pkts;
+     __rte_cache_aligned uint64_t core2_pkts;
+     __rte_cache_aligned uint64_t core3_pkts;
+     __rte_cache_aligned uint64_t core4_pkts;
 };
 ```
 
@@ -149,21 +149,21 @@ There are two ways to reserve HugePage using Linux.
 
 ### 2.5.1 Reserve HugePage at Boot time
 
-> default_hugepagesz=1G hugepagesz=1G hugepages=4
+> default_hugepagesz=1G hugepagesz=1G hugepages=4
 
 ### 2.5.2 Reserve HugePage at Runtime
 
 Reserve 1024 pages of 2 MB memory (2 MB HugePages):
 
-> echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+> echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
 
 In the NUMA system with two nodes, we can use the following command:
-> echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
-> echo 1024 > /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
+> echo 1024 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+> echo 1024 > /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
 
 Mount hugetlbfs like a path/mnt/huge.
-> mkdir /mnt/huge
-> mount -t hugetlbfs nodev /mnt/huge
+> mkdir /mnt/huge
+> mount -t hugetlbfs nodev /mnt/huge
 
 ## 2.6 Memory Latency
 
@@ -188,8 +188,8 @@ Linux CPU Command Tools
 CPU Information Command | Command
 --- | ---
 The number of cores (physical cores) | cat /proc/cpuinfo \| grep "cpu cores" \| uniq
-The number of logical cores | cat /proc/cpuinfo    If "siblings" and "cpu cores" are consistent, it indicates that hyper-threading is not supported or disabled. If "siblings" is double to "cpu cores", it indicates that hyper-threading is supported and enabled.
-Socket ID | cat /proc/cpuinfo \| grep "physical id" \| sort \|  uniq \| wc –l or lscpu \| grep "CPU socket"
+The number of logical cores | cat /proc/cpuinfo    If "siblings" and "cpu cores" are consistent, it indicates that hyper-threading is not supported or disabled. If "siblings" is double to "cpu cores", it indicates that hyper-threading is supported and enabled.
+Socket ID | cat /proc/cpuinfo \| grep "physical id" \| sort \|  uniq \| wc –l or lscpu \| grep "CPU socket"
 Get ID for processor | cat /proc/cpuinfo \| grep "processor" \| wc –l
 
 ### 3.1.3 Affinity
@@ -216,7 +216,7 @@ Get ID for processor | cat /proc/cpuinfo \| grep "processor" \| wc –l
 
     Check boot time parameters:
     > cat /proc/cmdline
-    > BOOT_IMAGE=/boot/vmlinuz-3.17.8–200.fc20.x86_64 root=UUID=3ae47813-79ea-4805-a732-21bedcbdb0b5 ro LANG=en_US.UTF-8 isolcpus=2,3
+    > BOOT_IMAGE=/boot/vmlinuz-3.17.8–200.fc20.x86_64 root=UUID=3ae47813-79ea-4805-a732-21bedcbdb0b5 ro LANG=en_US.UTF-8 isolcpus=2,3
 
 4. CPU Utilization, 100%?
 
@@ -435,9 +435,9 @@ The key design for the "Distributor Thread" is the data structure which is excha
 
 The least significant 4 bits can be used for other purposes, such as mbuf status flag in the following:
 ```c++
-#define RTE_DISTRIB_NO_BUF 0 /**< empty flags: no buffer requested */
-#define RTE_DISTRIB_GET_BUF (1) /**< worker requests a buffer, returns old */
-#define RTE_DISTRIB_RETURN_BUF (2) /**< worker returns a buffer, no request */
+#define RTE_DISTRIB_NO_BUF 0 /**< empty flags: no buffer requested */
+#define RTE_DISTRIB_GET_BUF (1) /**< worker requests a buffer, returns old */
+#define RTE_DISTRIB_RETURN_BUF (2) /**< worker returns a buffer, no request */
 ```
 
 Ideally, the "Distributor Thread" can send 8 mbuf pointers to the worker core every time, and the worker core returns 8 mbuf pointers after completing the batched packet processing. This cache-aligned communication between "Distributor" and "Worker" threads minimizes the cache coherence overhead.
@@ -697,7 +697,7 @@ Most NICs generally support multi-queues for packet I/O. When receive-side scali
 
 * Huge page
 
-    > default_hugepagesz = 1G hugepagesz = 1G hugepages = 8
+    > default_hugepagesz = 1G hugepagesz = 1G hugepages = 8
 
     > cat /proc/meminfo
 
@@ -744,16 +744,195 @@ The steps involved in the packet-receiving process are summarized below:
 6. Updating the status of the packet buffer descriptor
 
 ### 8.1.2 Linux Support
+
+For a NIC with a single queue, the software has to support the traffic load balance to multiple cores. The Linux kernel handles this with the Receive Packet Steering (**RPS**) mechanism. RPS is mainly responsible for distributing software interrupts across CPU cores.
+
 #### 8.1.2.1 NIC RX
+
+The NIC driver sets an interrupt request (IRQ) identifier for each RX queue. When a packet arrives, an IRQ is delivered to a core, which will serve the interrupt with software routine.
+
+IRQ affinity (smp_affinity) is such a mechanism, each IRQ can be allocated its affinity and assigned to a set of cores (using bit mask), and these affinitized cores can take care of the interrupts.
+
 #### 8.1.2.2 NIC TX
+
+The **XPS** (Transmit Packet Steering, introduced after Linux kernel 2.6.38) mechanism can intelligently select one of the multiple queues to send the packet. A mapping from the core to a TX queue is available.”
+* lock contention will be reduced because it reduces the competition for the same queue. The lock contention will be totally eliminated if each core has its own TX queue
+* the chance of cache miss is decreased during packet transmission.
+
 ### 8.1.3 DPDK Support
+
+DPDK principles are listed as follows:
+* Each NIC port will be configured with multi-queue at both the RX and TX sides, owned by DPDK PMD.
+* DPDK supports the port, queue, and core binding mechanism.
+* If a RX queue of the NIC is assigned to a core, the packets received from the queue are assumed to be processed completely on that core. This is the run-to-completion model.
+* If the memory pool is allocated from the local memory channel, closer to the core, both the received packet and the buffer descriptor should be located in the same memory pool.
+* If a TX queue is assigned to the core, both the packet and its buffer descriptor should be located in the local memory pool corresponding to the core and the TX queue.
+
 ## 8.2 Flow Classification
+
+Flow classification is how a NIC receives, parses, and classifies the arrived packet header with an action. The classification result can be written into the received packet descriptor. Because this is done by the NIC, it saves CPU cycles to do a similar job with software.
+
+
+Technique | Matching Information | Action
+--- | --- | ---
+Packet type | Protocol info | Mark packet type
+SR-IOV/VMDQ | MAC address, VLAN ID | Mark to queue set
+RSS | IP address, port ID  | Director to queue
+Flow Director | IP address, port ID | Director to queue/drop
+QoS | UP in VLAN tag (3-bits) | Mark to queue set
+Legitimacy verification | MAC address, VLAN ID | Mark to queue set/director
+
 ### 8.2.1 Packet Type
+
+NIC can read the incoming packet header to recognize “many” packet types and write the packet type into the buffer descriptor.
+
 ### 8.2.2 Receive-Side Scaling (RSS)
+
+![](../Images/dpdk/8.2-rss-flow.png)
+1. First, the packet type should be selected; then, depending on the different packet types, the different packet input fields can be used for hash computation.
+2. Hash computation is customizable, though the algorithm is implemented on NIC.
+3. Hash value determines the queue index, which directs the packet into a specific queue. It is determined by a table that maps from the hash value calculated from the packet’s fields to the queues in the hardware.
+
 ### 8.2.3 Flow Director (FDIR)
+
+![](../Images/dpdk/8.2-flow-director.png)
+The NIC parses the incoming packet header to get the packet type and will look up the Flow Director table; if “input fields” match a flow table entry, the defined action will be taken.
+
 ### 8.2.4 NIC Switching
+Switching capability is a feature for the cloud-based use case. As shown in the below figure, a system is running with the host and many virtual machines. The NIC has to be partitioned so that some VFs are assigned by the VMs.
+
+![](../Images/dpdk/8.2-sr-iov.png)
+
+If the NIC is embedded with an internal switch, sometimes it is called **SR-IOV-based switching**, and the packet forward decision can be made on a NIC; it compares the Ethernet header such as MAC/VLAN fields to do an internal switching.
+
+![](../Images/dpdk/8.2-ddp.png)
+
 ### 8.2.5 Customized Flow Classification
 ## 8.3 Use Case
 ### 8.3.1 Hybrid RSS and FDIR
+![](../Images/dpdk/8.3-hybrid-rss-fd.png)
+
+* Enable RSS & RD
+    ```c++
+    static struct rte_eth_conf port_conf = {
+        .rxmode = {
+            .mq_mode = ETH_MQ_RX_RSS,
+        },
+        .rx_adv_conf = {
+            .rss_conf = {
+                .rss_key = NULL,
+                .rss_hf = ETH_RSS_IP | ETH_RSS_UDP | ETH_RSS_TCP | ETH_RSS_SCTP,
+            },
+        }, //Enable RSS
+        .fdir_conf = {
+            .mode = RTE_FDIR_MODE_PERFECT,
+            .pballoc = RTE_FDIR_PBALLOC_64K,
+            .status = RTE_FDIR_REPORT_STATUS,
+            .mask = {
+                .VLAN_tci_mask = 0x0,
+                .ipv4_mask = {
+                    .src_ip = 0xFFFFFFFF,
+                    .dst_ip = 0xFFFFFFFF,
+                },
+                .ipv6_mask = {
+                    .src_ip = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+                    .dst_ip = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF},
+                },
+                .src_port_mask = 0xFFFF,
+                .dst_port_mask = 0xFFFF,
+                .mac_addr_byte_mask = 0xFF,
+                .tunnel_type_mask = 1,
+                .tunnel_id_mask = 0xFFFFFFFF,
+            },
+            .drop_queue = 127,
+        },//Enable the Flow Director.
+    };
+    ```
+
+* Config TX and RX Queue
+    ```c++
+    mbuf_pool = rte_pktmbuf_pool_create();
+
+    for (q = 0; q < rxRings; q ++) {
+        retval = rte_eth_rx_queue_setup(
+            port, q, rxRingSize,
+            rte_eth_dev_socket_id(port),
+            NULL,
+            mbuf_pool
+        );
+        if (retval < 0)
+            return retval;
+    }
+
+    for (q = 0; q < txRings; q ++) {
+        retval = rte_eth_tx_queue_setup(
+            port, q, txRingSize,
+            rte_eth_dev_socket_id(port),
+            NULL
+        );
+        if (retval < 0)
+            return retval;
+    }
+    //Configure the send and receive queues.
+    //In this case, rxRings = 5; txRings = 5.
+    ```
+
+* Set up Flow Director
+    ```c++
+    struct rte_eth_fdir_filter arg = {
+        .soft_id = 1,
+        .input = {
+            .flow_type = RTE_ETH_FLOW_NONFRAG_IPV4_UDP,
+            .flow = {
+                .udp4_flow = {
+                    .ip = {.src_ip = 0x03020202, .dst_ip = 0x05020202,}
+                    .src_port = rte_cpu_to_be_16(1024),
+                    .dst_port = rte_cpu_to_be_16(1024),
+                }
+                // Prepare the Flow Director config
+            }
+        }
+        .action = {
+            .rx_queue = 4,
+            .behavior= RTE_ETH_FDIR_ACCEPT,
+            .report_status = RTE_ETH_FDIR_REPORT_ID,
+        }
+    }
+
+    rte_eth_dev_filter_ctrl(port, RTE_ETH_FILTER_FDIR, RTE_ETH_FILTER_ADD, &arg);
+    // Add the Flow Director entry to the table.
+    ```
+
+    Reconfig RSS to remove queue3 from RSS table
+    ```c++
+    // Configure the hash value queue number mapping table.
+    // The table size is 128 for 82599 NIC.
+    struct rte_eth_rss_reta_entry64 reta_conf[2];
+    int i, j = 0;
+    for (idx = 0; idx < 3; idx++) {
+        reta_conf[idx].mask = ~0ULL;
+        for (i = 0; i < RTE_RETA_GROUP_SIZE; i++, j++) {
+                if (j == 4)
+                    j = 0;
+                reta_conf[idx].reta[i] = j;
+        }
+    }
+    rte_eth_dev_rss_reta_query(port, reta_conf, 128);
+    ```
+
 ### 8.3.2 Virtualization
+
+![](../Images/dpdk/8.3-virtualization.png)
+
 ### 8.3.3 Rte_flow
+
+# 9 NIC Offload
+## 9.1 NIC Offload
+## 9.2 Offload Flags
+## 9.3 Offload Capability
+## 9.4 Header Parsing
+### 9.4.1 VLAN Offload
+### 9.4.2 IEEE1588 Offload
+### 9.4.3 Checksum Offload
+### 9.4.4 Tunnel Offload
+### 9.4.5 Segmentation Offload (TSO)
