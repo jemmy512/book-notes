@@ -927,12 +927,150 @@ If the NIC is embedded with an internal switch, sometimes it is called **SR-IOV-
 ### 8.3.3 Rte_flow
 
 # 9 NIC Offload
+
 ## 9.1 NIC Offload
+
+NIC can read and then parse the arrived packet header:
+* Ethernet/IP packet integrity check,
+* Protocol parsing in multiple layers (Ethernet/VLAN, IPv4/IPv6, TCP/UDP/SCTP)
+* Support network overlay protocols such as VXLAN.
+
+Each packet is different and has its own packet buffer descriptor, the NIC will write the header parsing result into the buffer descriptor, and it is subject to the hardware definition. The NIC driver is responsible for setting up the buffer descriptor and packet buffer.
+
 ## 9.2 Offload Flags
+
+RX ol_flags in Bits | Description
+--- | ---
+PKT_RX_VLAN_PKT | If bit is set, the RX packet has VLAN, and VLAN ID is stripped to rte_mbuf
+PKT_RX_RSS_HASH | If bit is set, RSS hash result is available for RX packet in rte_mbuf
+PKT_RX_FDIR | If bit is set, the Flow Director result is available in rte_mbuf
+PKT_RX_L4_CKSUM_BAD, PKT_RX_IP_CKSUM_BAD | Checksum validation result on the RX packet side.
+PKT_RX_IEEE1588_PTP, PKT_RX_IEEE1588_TMST | IEEE1588 off-loading
+
+
+TX ol_flags in Bits | Description
+--- | ---
+PKT_TX_VLAN_PKT | If bit is set, insert VLAN ID in rte_mbuf before send packet goes out
+PKT_TX_IP_CKSUM, PKT_TX_TCP_CKSUM, PKT_TX_SCTP_CKSUM, PKT_TX_UDP_CKSUM, PKT_TX_OUTER_IP_CKSUM, PKT_TX_TCP_SEG | If bit is set, checksum is computed and inserted into the packet header. These flags can be used in the TSO and VXLAN/NVGRE protocol scenarios
+PKT_TX_IEEE1588_PTP | IEEE1588 off-loading
+
 ## 9.3 Offload Capability
 ## 9.4 Header Parsing
 ### 9.4.1 VLAN Offload
+![](../Images/dpdk/9.4-vlan-format.png)
+
+NIC can do the VLAN off-loading on the NIC, and VLAN insertion and stripping can save the CPU cycles.
+
+1. RX VLAN Filtering
+
+    VLAN filter is configurable on a port level, which receives packets with the same VLAN ID. The packets that do not have the same VLAN ID are not belonging to the same local network, which should be dropped directly.
+
+2. RX VLAN Stripping
+
+    To enable this feature, the appropriate bit should be set on the NIC port (or the queue of the NIC port). The NIC hardware will read the configuration register to determine whether VLAN stripping is required on the received packet.
+
+3. TX VLAN Insertion
+
+4. Double VLAN
+
 ### 9.4.2 IEEE1588 Offload
+
+IEEE1588 defines the PTP (Precision Time Protocol) for time synchronization.
+
+![](../Images/dpdk/9.4-ptp-format.png)
+
+![](../Images/dpdk/9.4-ptp-flow.png)
+
 ### 9.4.3 Checksum Offload
 ### 9.4.4 Tunnel Offload
+
+Different NICs have different features on how to off-load these protocols:
+* Some NICs may provide simple checksum offload features only;
+* Some NICs may have complex capabilities such as VXLAN and NVGRE packet parsing, which can send traffic to the tenant directly, and also supporting checksum offload for the tunnel protocols—IP and TCP/UDP.
+* Some NICs may even support off-loading the addition or stripping of the outer VXLAN and NVGRE header, so that the burden on the CPU can be reduced significantly.
+
+* VXLAN Packet Format ![](../Images/dpdk/9.4-vxlan-format.png)
+
+* VXLAN Unicast Packet Forwarding Flow ![](../Images/dpdk/9.4-vxlan-flow.png)
+
+* VXLAN Peer Discoveries and Tenant Address Learning ![](../Images/dpdk/9.4-vxlan-arp.png)
+
+* VXLAN-to-VLAN Logic Mapping by VXLAN Gateway ![](../Images/dpdk/9.4-vxlan-vlan.png)
+
+[VXLAN Overview: Cisco Nexus 9000 Series Switches](https://www.cisco.com/c/en/us/products/collateral/switches/nexus-9000-series-switches/white-paper-c11-729383.html)
+
 ### 9.4.5 Segmentation Offload (TSO)
+
+![](../Images/dpdk/9.4-tso.png)
+
+# 11 Hardware Virtualization
+
+Virtualization is the abstract logical resource presented to the workload, and it provides a virtualization layer on physical platform resources such as CPU, memory, and I/O. Virtualization can divide the physical resource into multiple partitions. In essence, virtualization enables multiple workloads to share a set of resources (such as a server). The workload can be migrated to other hardware platform, and as the virtualization is based on software abstraction layer, it decouples the dependency on the underlying hardware platform.
+
+## 11.1 x86 Virtualization
+
+![](../Images/dpdk/11.1-x86-virtualization.png)
+
+### 11.1.1 CPU Virtualization
+
+![](../Images/dpdk/11.1-vt-x.png)
+
+### 11.1.2 Memory Virtualization
+
+Memory virtualization supports the implementation of the virtual address space by two-level address translation, namely GVA (guest virtual address) -> GPA (guest physical address) -> HPA (host physical address).
+
+Intel® VT-x adds an extended page table (EPT) so that two-level address translation (GVA->GPA->HPA) can be assisted by hardware.
+
+![](../Images/dpdk/11.1-ept.png)
+* The CPU checks the page table and finishes the GPA->HPA translation via EPT. If the address is not hit with EPT TLB lookup, the CPU will check EPT using the traditional page walking mechanism. If there is still no address hit, an exception will be sent, and hypervisor will load the required page into memory to handle this eventually.
+* A similar lookup happens from L4 table walk, to L3 walk, to L2 walk, and to L1 walk if required.
+
+
+### 11.1.3 I/O Virtualization
+
+![](../Images/dpdk/11.1-io-virtualization.png)
+
+## 11.2 I/O Pass-through
+### 11.2.1 Intel® VT-d
+
+![](../Images/dpdk/11.2-vt-d-dma.png)
+
+Intel® VT-d provides the following capabilities:
+* **I/O device assignment**: Flexible I/O device assignment to VMs and extending the protection and isolation properties of VMs for I/O operations
+* **DMA remapping**: Address translation support for DMA (direct memory access) from devices
+* **Interrupt remapping**: Isolation and routing support for interrupts from devices and external interrupt controllers to appropriate VMs
+* **Reliability**: Recording and reporting of DMA and interrupt errors to system software that may otherwise corrupt memory or impact VM isolations.
+
+### 11.2.2 SR-IOV
+
+![](../Images/dpdk/11.2-sr-iov.png)
+
+* **PF** (physical function): a PCIe function with SR-IOV extended capability. It is responsible for configuring the device. In theory, a device can support multiple PFs. Today, most NICs only support one PF, and PF cannot be dynamically created and destroyed in the system.
+* **VF** (virtual function): a “lightweight” function and a virtual instance of partial device resource but necessary for basic function. VF can be created and destroyed by PF. Each VF has its own independent PCI configuration space, send and receive queues, interrupts, and other resources. The hypervisor can assign one or more VFs to a VM. Similarly, one or more VFs can be assigned to the container instance
+
+# 12 virtio
+Virtio is an abstraction for paravirtualized device interface. It is designed for providing hardware-independent, vendor-neutral support for the live migration of tenant workload.
+
+The front-end driver implemented in the guest operating system is generally called **virtio**, while the common back-end driver implemented in a hypervisor is called **vhost**.
+
+## 12.1 Virtio Overview
+
+A typical problem of I/O pass-through is that the packet received from the physical NIC will be directly delivered to the receive queue of the guest (tenant), or the packet sent by the transmit queue of the guest will be directly delivered to the receive queue of the other guest (VF of the same PF), or the packet is sent directly from the physical NIC bypassing the hypervisor.
+
+![](../Images/dpdk/12.1-virtio.png)
+
+## 12.2 Virtio Specification
+### 12.2.1 Device Initialization
+### 12.2.2 Virtqueue
+#### 12.2.2.1 Virtqueue Initialization
+#### 12.2.2.2 Split Virtqueue (Virtio1.0)
+#### 12.2.2.3 Descriptor Table
+#### 12.2.2.4 Available Ring
+#### 12.2.2.5 Used Ring
+#### 12.2.2.6 Packed Virtqueue (virtio1.1)
+#### 12.2.2.7 Descriptor Ring
+#### 12.2.2.8 Event Suppression
+### 12.2.3 Device Usage
+#### 12.2.3.1 Split Virtqueue
+#### 12.2.3.2 Packed Virtqueue
+## 12.3 Virtio Network Device Driver
