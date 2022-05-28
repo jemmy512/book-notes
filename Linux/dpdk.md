@@ -755,7 +755,7 @@ IRQ affinity (smp_affinity) is such a mechanism, each IRQ can be allocated its a
 
 #### 8.1.2.2 NIC TX
 
-The **XPS** (Transmit Packet Steering, introduced after Linux kernel 2.6.38) mechanism can intelligently select one of the multiple queues to send the packet. A mapping from the core to a TX queue is available.”
+The **XPS** (Transmit Packet Steering, introduced after Linux kernel 2.6.38) mechanism can intelligently select one of the multiple queues to send the packet. A mapping from the core to a TX queue is available."
 * lock contention will be reduced because it reduces the competition for the same queue. The lock contention will be totally eliminated if each core has its own TX queue
 * the chance of cache miss is decreased during packet transmission.
 
@@ -784,7 +784,7 @@ Legitimacy verification | MAC address, VLAN ID | Mark to queue set/director
 
 ### 8.2.1 Packet Type
 
-NIC can read the incoming packet header to recognize “many” packet types and write the packet type into the buffer descriptor.
+NIC can read the incoming packet header to recognize "many" packet types and write the packet type into the buffer descriptor.
 
 ### 8.2.2 Receive-Side Scaling (RSS)
 
@@ -796,7 +796,7 @@ NIC can read the incoming packet header to recognize “many” packet types and
 ### 8.2.3 Flow Director (FDIR)
 
 ![](../Images/dpdk/8.2-flow-director.png)
-The NIC parses the incoming packet header to get the packet type and will look up the Flow Director table; if “input fields” match a flow table entry, the defined action will be taken.
+The NIC parses the incoming packet header to get the packet type and will look up the Flow Director table; if "input fields" match a flow table entry, the defined action will be taken.
 
 ### 8.2.4 NIC Switching
 Switching capability is a feature for the cloud-based use case. As shown in the below figure, a system is running with the host and many virtual machines. The NIC has to be partitioned so that some VFs are assigned by the VMs.
@@ -1005,6 +1005,8 @@ Different NICs have different features on how to off-load these protocols:
 
 # 11 Hardware Virtualization
 
+[Intel® Virtualization Technology (Intel® VT)](https://www.intel.com/content/www/us/en/virtualization/virtualization-technology/intel-virtualization-technology.html)
+
 Virtualization is the abstract logical resource presented to the workload, and it provides a virtualization layer on physical platform resources such as CPU, memory, and I/O. Virtualization can divide the physical resource into multiple partitions. In essence, virtualization enables multiple workloads to share a set of resources (such as a server). The workload can be migrated to other hardware platform, and as the virtualization is based on software abstraction layer, it decouples the dependency on the underlying hardware platform.
 
 ## 11.1 x86 Virtualization
@@ -1045,8 +1047,9 @@ Intel® VT-d provides the following capabilities:
 
 ![](../Images/dpdk/11.2-sr-iov.png)
 
+**SR-IOV** is widely used by the PCIe device, which can be partitioned, and it can support up to 256 virtual functions. This can share NIC among VMs. SR-IOV defines the PF and VF concepts:
 * **PF** (physical function): a PCIe function with SR-IOV extended capability. It is responsible for configuring the device. In theory, a device can support multiple PFs. Today, most NICs only support one PF, and PF cannot be dynamically created and destroyed in the system.
-* **VF** (virtual function): a “lightweight” function and a virtual instance of partial device resource but necessary for basic function. VF can be created and destroyed by PF. Each VF has its own independent PCI configuration space, send and receive queues, interrupts, and other resources. The hypervisor can assign one or more VFs to a VM. Similarly, one or more VFs can be assigned to the container instance
+* **VF** (virtual function): a "lightweight" function and a virtual instance of partial device resource but necessary for basic function. VF can be created and destroyed by PF. Each VF has its own independent PCI configuration space, send and receive queues, interrupts, and other resources. The hypervisor can assign one or more VFs to a VM. Similarly, one or more VFs can be assigned to the container instance
 
 # 12 virtio
 Virtio is an abstraction for paravirtualized device interface. It is designed for providing hardware-independent, vendor-neutral support for the live migration of tenant workload.
@@ -1061,16 +1064,164 @@ A typical problem of I/O pass-through is that the packet received from the physi
 
 ## 12.2 Virtio Specification
 ### 12.2.1 Device Initialization
+
+Device initialization has the following five steps:
+1. After the device is rebooted (or powered on), the system discovers the device.
+2. If the guest operating system sets the device status as Acknowledge, the device is identified.
+3. If it sets the device status as Driver, it finds an appropriate driver.
+4. Installation and configuration of the device driver has the following steps: negotiation using feature bits at front-end and back-end, initialization of the virtual queue(s), optional MSI-X installation and device-specific configuration, etc.
+5. Then the status of the device is set as Driver_OK. If there is an error in the process, then the status is set as Failed.
+
 ### 12.2.2 Virtqueue
+
+Virtqueue is the actual data structure connecting the virtio front-end driver in the guest operating system and the back-end driver in the host.
+
+![](../Images/dpdk/12.2-virtio-queue.png)
+
 #### 12.2.2.1 Virtqueue Initialization
+The virtqueues can be initialized in below steps:
+1. Write the virtqueue index to the **queue_select** register.
+2. Read the **queue_size** register to get the size of the virtqueue. If the queue size is 0, the queue is not available. (The queue size of the legacy device must be specified by the device, while in the modern device, the driver may write a smaller value into the queue_size register to reduce the use of the memory.)
+3. Assign the guest memory to the queue, and write the guest physical address into the **queue_desc**, **queue_driver**, and queue_device registers.
+4. If the MSI-X interrupt mechanism is enabled, select an interrupt vector for the virtqueue, write the MSI-X vector into the **queue_msix_vector** register, and then read the field again to confirm that the correct value is returned.
+
 #### 12.2.2.2 Split Virtqueue (Virtio1.0)
+
+The virtqueue consists of a descriptor table, available ring, and used ring.
+
 #### 12.2.2.3 Descriptor Table
+
+Each descriptor, as shown in Figure 12.3, has four attributes:
+* **Address**: Guest physical address of the data buffer.
+* **Len**: Length of the data buffer.
+* **Next**: Address of the next descriptor in the chain.
+* **Flags**: Flags representing certain attributes of the current descriptor, for example whether Next is valid or not (if invalid, the current descriptor is the end of the entire descriptor chain) and whether the current descriptor is writable to the device.
+
 #### 12.2.2.4 Available Ring
+
+The available ring points to the descriptor. It is provided (written) by the guest driver and used (read) by the hypervisor device.
+
 #### 12.2.2.5 Used Ring
+
+The used ring points to the descriptor. It is provided (written) by the hypervisor device and used (read) by the guest driver. After the host completes the use of the descriptor taken from the available ring, the host will return the descriptor into the used ring so that the guest driver can take it back for another use.
+
 #### 12.2.2.6 Packed Virtqueue (virtio1.1)
+
+Packed Virtqueue consists:
+* A descriptor ring,
+* A driver event suppression structure (guest),
+* A device event suppression structure (host).
+
+The descriptor table, available ring, and used ring of split virtqueue are squashed into one descriptor ring in packed virtqueue.
+
+The primary **motivation** behind the implementation of the packed virtqueue layout is to be hardware-friendly; for example, the new layout will allow the hardware (such as FPGA) to fetch multiple descriptors using one PCIe bus transaction.
+
 #### 12.2.2.7 Descriptor Ring
+
+Each descriptor element in the descriptor ring represents a data buffer of the guest VM, and it supports the data exchange between the guest and the hypervisor.
+
 #### 12.2.2.8 Event Suppression
+
 ### 12.2.3 Device Usage
+
+There are two steps to use the device:
+1. The driver provides the device with the data buffer through the descriptor table and the available ring
+2. The device then sends the descriptor to the driver through the used ring after using that descriptor
+
 #### 12.2.3.1 Split Virtqueue
+
+1. The guest provides the memory buffer to the device.
+
+    In the guest operating system, the driver provides the device with the memory buffer in the following steps:
+
+    * Assign the information such as the address and length of the data buffer to an idle descriptor.
+    * Add the descriptor pointer to the header of the available ring of the virtqueue.
+    * Update the header pointer of the available ring.
+    * Write the virtqueue identification number to the queue notify register. This is to notify the device.
+
+2. The host uses and returns the data buffer.
+
+    After using the data buffer (the operation may be reads, writes, or partial reads or writes, depending on the type of device), the device fills the used ring with the used buffer descriptor and notifies the driver by the interrupt in the following steps:
+
+    * Add the header pointer of the used buffer descriptor to the used ring.
+    * Update the header pointer of the used ring.
+    * Notify the driver using interrupt, and the interrupt mode is based on MSI-X on/off.
+
+3. IN_ORDER feature support.
+
+
 #### 12.2.3.2 Packed Virtqueue
+
+1. The guest provides the memory buffer to the device.
+
+    The guest driver provides the memory buffer in the following steps:
+
+    * Assign the physical address and length of the data buffer to the next descriptor in the descriptor ring.
+    * Update descriptor’s AVAIL/USED bits based on the value of Driver Ring Wrap Counter to make it available to the device. And change the value of the Driver Ring Wrap Counter if the last descriptor in the ring was just made available.
+    * Write the virtqueue identification number to the queue notify register. This is to notify the device.
+
+2. The host uses and returns the data buffer.
+
+    After using the data buffer (the operation may be reads, writes, or partial reads or writes, depending on the type of device), the host returns the used descriptor with the buffer ID and notifies the guest driver by the interrupt. The detailed process is as follows:
+
+    * Write a used descriptor with the information such as buffer ID, flags, and data length (if needed).
+    * Update descriptor’s AVAIL/USED bits based on the value of Device Ring Wrap Counter to make it available to the driver. And change the value of the Device Ring Wrap Counter if "The guest provides the memory buffer to the device.
+    * Notify the driver using interrupt, on the basis of MSI-X on/off.
+
+3. IN_ORDER feature support
+
 ## 12.3 Virtio Network Device Driver
+
+The Linux kernel driver (virtio-net) has comprehensive features widely used for cloud computing workloads in guests, where the packet throughput requirement is not high, that is typically less than 800kpps.
+
+While the DPDK driver (virtio-net-pmd) offers a higher performance, it uses the poll mode with one or multiple cores (for multi-queues). This is mainly used for VNF/NFV deployment, network-intensive workload in cloud environment.
+
+### 12.3.1 Virtio-net
+
+virtio-net kernel module, consists of three layers: an underlying PCIe device layer, a virtqueue layer in the middle, and a network device layer in the top
+
+1. The PCIe Device Layer
+
+    ![](../Images/dpdk/12.3-pcie-device-layer.png)
+
+    The underlying PCIe device layer is responsible for detecting the PCIe device and initializing the corresponding device driver.
+
+2. The Virtqueue Layer
+
+    ![](../Images/dpdk/12.3-virtqueue-layer.png)
+
+    virtio_driver and virtio_device are the abstract classes of virtio drivers and devices.
+
+    virtio_pci_device represents an abstract virtio PCIe device, it has two concrete implementataions: virtio_pci_modern_device and virtio_pci_legacy_device.
+
+3. The Network Device Layer
+
+    The top network device layer implements two abstract classes: virtio devices (virtio_net_driver::virtio_driver) and network devices (dev::net_device). virtio_net_driver is a concrete implementation of the abstract virtio device for the network device, which uses the underlying PCIe device and the middle virtqueue layer to implement the packet sending and receiving of the network device and other control features.
+
+### 12.3.2 Virtio-net-PMD
+
+#### 12.3.2.1 Optimization of Single mbuf Packet Receiving
+
+The front-end driver should assign a descriptor from the idle vring descriptor table to each packet, fill in the guest buffer-associated information, and update the available ring entries and avail idx, and then the back-end driver reads and operates the updated available ring
+
+Since the front-end driver and the back-end driver generally run on different CPU cores, the update of the front-end driver and the read of the back-end driver may trigger cache migration of avail ring entries between cores, which is time-consuming.
+
+In order to solve this problem, DPDK offers an optimized design, fixing the mapping between the avail ring entry and the descriptor table entry. That is to say, all the head_idx entries of the avail ring point to a fixed location of vring descriptors.
+
+The update of the avail ring needs to update only the pointer of the ring itself. A fixed avail ring can avoid cache migration between different cores, eliminate the allocation and deallocation of vring descriptors, and facilitate further acceleration using SIMD instructions.
+
+#### 12.3.2.2 Support for Indirect Feature in Packet Sending
+
+* Fixed Available Ring ![](../Images/dpdk/12.3-fixed-ring.png)
+* Indirect Descriptor Table ![](../Images/dpdk/12.3-indirect-descriptor-table.png)
+* Every descriptor in the virtio queue descriptor table points to a memory area of the indirect descriptor table.
+* The descriptors (eight assigned to DPDK at present) in this area are connected to form a chain by next domains.
+* The first descriptor is used to point to the virtio net header, while the remaining seven descriptors can point to up to seven data areas of a jumbo frame.
+
+
+#### 12.3.2.3 IN_ORDER Feature
+#### 12.3.2.4 Multi-queue
+
+## 12.4 Virtio-User for Container
+
+![](../Images/dpdk/12.4-virtio-container.png)
