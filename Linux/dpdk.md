@@ -1,8 +1,23 @@
 # 1 Introduction
 ## 1.1 What’s Packet Processing?
 
+In general, it consists of packet **reception** and **transmission**, **packet header parsing**, **packet modification**, and **forwarding**. It occurs at multiple protocol layers.
+
+
+* In the **endpoint** system, the packet is sent to the local application for further processing. Packet **encryption** and decryption, or tunnel **overlay**, may be part of the packet processing, **session establishment**, and **termination**.
+* In the **middlebox** system, the packet is forwarded to the next hop in the network. Usually, this system handles a large number of packets in/out of the system, packet **lookup**, **access control**, and quality of service (**QoS**).
+
 ## 1.2 The Hardware Landscape
+
+The below silicon can be used for packet processing system. From the programmer skills, they can be split into the different category:
+* Hardware accelerator (FPGA (field-programmable gate array), ASIC (application-specific integrated circuit));
+* Network processor unit (NPU);
+* Multicore general-purpose processor (x86).
+
 ### 1.2.1 Hardware Accelerator
+
+ASIC’s shortcomings are also obvious: not flexible, not scalable, high development costs, and long development cycles.
+
 ### 1.2.2 Network Processor Unit
 ### 1.2.3 Multicore Processor
 
@@ -62,6 +77,11 @@ Using the latest **instruction set and platform technologies**: The latest instr
 ### 1.5.3 Accelerated Storage
 
 ## 1.6 Optimization Principles
+1. Target Software Optimization for a Specific Workload”
+2. Pursuing Scalable Performance
+3. Seeking Cache-Centric Design and Optimization
+4. Theoretical Analysis with Practice
+
 ## 1.7 DPDK Samples
 ### 1.7.1 HelloWorld
 #### 1.7.1.1 Initialize the Runtime Environment
@@ -1017,6 +1037,11 @@ Virtualization is the abstract logical resource presented to the workload, and i
 
 ![](../Images/dpdk/11.1-vt-x.png)
 
+* **VMCS** (virtual machine control structure) is primarily for CPU transition from non-root mode to root mode and vice versa. VMCS helps save/restore the virtual CPU status (registers) to accelerate the switching process.
+* **VMEnter** transits into VMX non-root mode
+* **VMExit** transits into VMX root mode
+* **VMLaunch/VMResume**: VM guest is launched or resumed by hypervisor"
+
 ### 11.1.2 Memory Virtualization
 
 Memory virtualization supports the implementation of the virtual address space by two-level address translation, namely GVA (guest virtual address) -> GPA (guest physical address) -> HPA (host physical address).
@@ -1225,3 +1250,263 @@ The update of the avail ring needs to update only the pointer of the ring itself
 ## 12.4 Virtio-User for Container
 
 ![](../Images/dpdk/12.4-virtio-container.png)
+
+# 13 Vhost-User
+
+## 13.1 Vhost Evolution
+### 13.1.1 Initial Back-end
+
+![](../Images/dpdk/13.1-initial-vhost.png)
+
+KVM is a kernel virtualization of x86 hardware; QEMU depends on KVM to emulate the full emulator environment such as CPU and I/O device; TAP is a virtual network device in the Linux kernel and it is a known interface between the Linux kernel and user space program, which provides interface to QEMU user space emulator.
+
+1. When the guest device driver initiates an IO request, KVM will capture the IO request, put the IO request into the shared memory page of KVM and qemu after preliminary processing, and then notify the qemu process in user space;
+2. The qemu process in user space will read IO reqeust from the kernel, and the IO operation will be simulated by the hardware simulation module; qemu's hardware simulation module will interact with different real physical device drivers according to the IO request to complete the real IO operation (such as through physical network card accesses the external network), and puts the result back into the shared memory page, notifying the IO processing module of the KVM;
+3. The KVM IO processing module reads the processing result and returns it to the client device driver.
+
+This architectural model requires the processing among the host, the guest, and QEMU, which results in multiple times of data copying and CPU context switching. As a result, the performance is not high and it is limited by the datapath and the message path.
+
+### 13.1.2 Vhost-Net
+
+![](../Images/dpdk/13.1-vhost-net.png)
+
+Vhost-net kernel module is designed to optimize this; the main enhancement is to reduce the QEMU burden.
+
+1. In the datapath, the packet data received from the TAP device is copied to the area which is owned by the virtual queue through the vhost-net module and the guest can receive the packet with one memory copy.
+2. In the message path, when the packet from the TAP device arrives at vhost-net, an interrupt is sent to the guest through the KVM module and the guest is notified. This reduces the QEMU processing
+
+### 13.1.3 Vhost-User
+
+DPDK vhost-user supports the guest to run any kind of virtio-net driver.
+* Linux virtio-net driver in kernel space.
+* DPDK virtio-pmd driver in user space.
+
+Vhost-user has the following basic functions:
+* Management of virtio-net network devices, including creation and destruction of virtio-net network devices.
+* Mapping and unmapping of the descriptor list, available ring, and used ring in the virtual queue into the virtual address space of the vhost process, as well as mapping and unmapping of the actual packet buffer into the virtual address space of the vhost process.
+* When a packet is received, it sends the message notification to the guest; when a packet is sent, it receives a message notification from the guest.
+* Support the packet exchange between virtio-net devices (via virtual queues, guest to guest) and between the virtio-net device and physical device (via NIC hardware queues).
+* Support the jumbo frame with multiple merged buffers.
+* Support the multi-queue to achieve performance scaling.
+
+### 13.1.4 Vhost-User Acceleration (vDPA)
+
+Vhost datapath acceleration (vDPA) is the latest design in implementing the vhost datapath on accelerators such as FPGA-based Smart NIC.
+
+## 13.2 Vhost-User Deep Dive
+
+Vhost-user must support many guests simultaneously. It creates, manages, and destroys the vhost devices for the corresponding virtio-net devices running in the guest.
+
+### 13.2.1 Message Mechanism
+
+![](../Images/dpdk/13.2-vhost-msg-qemu.png)
+
+### 13.2.2 Address Translation
+
+```c++
+/* Information relating to memory regions including offsets to
+ * addresses in QEMUs memory file. */
+struct rte_vhost_mem_region {
+    uint64_t guest_phys_addr;
+    uint64_t guest_user_addr;
+    uint64_t host_user_addr;
+    uint64_t size;
+    void     *mmap_addr;
+    uint64_t mmap_size;
+    int fd;
+};
+
+/* Memory structure includes region and mapping information. */
+struct rte_vhost_memory {
+    uint32_t nregions;
+    struct rte_vhost_mem_region regions[];
+};
+```
+
+### 13.2.3 Feature Negotiation
+
+```c++
+/* The feature bitmap for virtio net */
+#define VIRTIO_NET_F_CSUM	0	/* Host handles pkts w/ partial csum */
+#define VIRTIO_NET_F_GUEST_CSUM	1	/* Guest handles pkts w/ partial csum */
+#define VIRTIO_NET_F_MTU	3	/* Initial MTU advice. */
+#define VIRTIO_NET_F_MAC	5	/* Host has given MAC address. */
+#define VIRTIO_NET_F_GUEST_TSO4	7	/* Guest can handle TSOv4 in. */
+#define VIRTIO_NET_F_GUEST_TSO6	8	/* Guest can handle TSOv6 in. */
+#define VIRTIO_NET_F_GUEST_ECN	9	/* Guest can handle TSO[6] w/ ECN in. */
+#define VIRTIO_NET_F_GUEST_UFO	10	/* Guest can handle UFO in. */
+#define VIRTIO_NET_F_HOST_TSO4	11	/* Host can handle TSOv4 in. */
+#define VIRTIO_NET_F_HOST_TSO6	12	/* Host can handle TSOv6 in. */
+#define VIRTIO_NET_F_HOST_ECN	13	/* Host can handle TSO[6] w/ ECN in. */
+#define VIRTIO_NET_F_HOST_UFO	14	/* Host can handle UFO in. */
+#define VIRTIO_NET_F_MRG_RXBUF	15	/* Host can merge receive buffers. */
+#define VIRTIO_NET_F_STATUS	16	/* virtio_net_config.status available */
+#define VIRTIO_NET_F_CTRL_VQ	17	/* Control channel available */
+#define VIRTIO_NET_F_CTRL_RX	18	/* Control channel RX mode support */
+#define VIRTIO_NET_F_CTRL_VLAN	19	/* Control channel VLAN filtering */
+#define VIRTIO_NET_F_CTRL_RX_EXTRA 20	/* Extra RX mode control support */
+#define VIRTIO_NET_F_GUEST_ANNOUNCE 21	/* Guest can announce device on the network */
+#define VIRTIO_NET_F_MQ		22	/* Device supports Receive Flow Steering */
+```
+
+### 13.2.4 Virtio-Net Device Management
+
+The life cycle of a virtio-net device includes four stages: device creation, configuration, service kickoff, and device destruction:
+1. **Device creation**: Vhost-user creates a device by establishing a socket connection.
+
+    When you create a virtio-net device, you may need to:
+    * Assign a new virtio-net device architecture and add it into the virtio-net device list.
+    * Assign a processing core for serving the virtio-net device and add the virtio-net device into the list on the data plane.
+    * On the vhost, assign a RX/TX queue for serving the virtio-net.
+
+2. **Configuration**: Use the message` VHOST_SET_VRING_*` to configure the size, basic index, and location of the virtual queue. With this information, vhost maps the virtual queue into its own virtual address space.
+3. **Service kickoff**: Send the message VHOST_USER_SET_VRING_KICK to kick off the virtual queue service. Afterward, vhost can poll its receiving queues and put data in the receiving queue of the virtio-net device. It can also poll the virtual sending queues to check for data packets ready to be sent. If there are any, they are copied to the sending queue.
+4. **Destruction** of virtio-net device: Notify the service is stopped. After receiving the message, vhost will immediately stop the polling of the transmitted virtual queues and the polling of NIC receiving queues. At the same time, both the processing cores assigned to the virtio-net device and the RX/TX queues on the physical NIC will also be released.
+
+### 13.2.5 Vhost Checksum Offload and TSO
+
+## 13.3 Vhost PMD
+
+```c++
+static struct rte_vdev_driver pmd_vhost_drv = {
+    .probe = rte_pmd_vhost_probe,
+    .remove = rte_pmd_vhost_remove,
+};
+
+/* finally assign rx and tx ops */
+eth_dev->rx_pkt_burst = eth_vhost_rx;
+eth_dev->tx_pkt_burst = eth_vhost_tx;
+```
+
+# 14 DPDK for NFV
+
+https://portal.etsi.org/nfv/nfv_white_paper.pdf
+
+![](../Images/dpdk/14-cloud-sdi-nfv.png)
+
+## 14.1 Network Function Virtualization
+
+![](../Images/dpdk/14.1-nfv-framework.png)
+
+## 14.2 Virtual Network Function
+
+VNFs are software-defined network functions, for example firewalls, routers, or load balancers. VNF is a software module placed on a NFVI-capable server system. VNF placement need consider the following items:
+* System resource allocation
+    * The number of cores, memory, storage, and network interface should be evaluated.
+* Virtualized interface
+    * VNF can choose different interfaces: software interface (such as virtio), SR-IOV/VF interface PCIe device pass-through, or socket-based interface.
+* NIC drive
+* Hardware acceleration
+    * Smart NIC, Intel® FPGA, and Intel® QAT are platform accelerators, and they can replace the software function to free up CPU
+* QOS
+
+
+## 14.3 Open-Source Recipe for NFV
+### 14.3.1 FD.io
+
+![](../Images/dpdk/14.3-vpp-graph-node.png)
+
+### 14.3.2 Snort
+
+Snort is a widely used open source for intrusion detection and prevention system.
+
+![](../Images/dpdk/14.3-snort.png)
+
+# 15 Virtual Switch
+
+
+## 15.1 Introduction
+
+The virtual switch maintains virtual connections to multiple network interfaces, both physical and virtual.
+## 15.2 Open vSwitch
+
+![](../Images/dpdk/15.1-vswitch.png)
+
+### 15.2.1 OVS Components
+![](../Images/dpdk/15.2-ovs-components.png)
+
+### 15.2.2 OVS Datapath
+
+#### 15.2.2.1 Kernel (Native) Datapath
+![](../Images/dpdk/15.2-ovs-kernel-datapath.png)
+
+#### 15.2.2.2 User space Datapath and DPDK/PMD Acceleration
+![](../Images/dpdk/15.2-ovs-user-datapath.png)
+
+
+##### 15.2.2.2.1 IO
+
+* Physical IO (#1)
+
+* Physical IO : AF_XDP (#4)
+
+* Virtual IO (#2, #3)
+
+    * ![](../Images/dpdk/15.2-vhost-dpdk-vhost-virtio.png)
+
+    DPDK-accelerated OVS has integrated the DPDK vhost library and offers ports of type **dpdkvhostuser** and **dpdkvhostuserclient** which act as back-ends to a virtio-net device which resides in a VM or container.
+
+    The difference between dpdkvhostuser and dpdkvhostuserclient ports lies in with whom the responsibility lies for the creation of the socket which is used for control path communication between the virtio-net device and the back-end application.
+
+##### 15.2.2.2.2 Classification
+
+Packet classification is the process by which the vSwitch determines the correct course of action to take for a given ingress packet.
+
+The default user space OVS datapath has a three-level hierarchy of flow tables which are used for the classification process:
+1. EMC (exact match cache).
+2. DPCLS (datapath classifier).
+3. Ofproto
+
+
+The classification performance is critical to the overall performance of any vSwitch:
+* Probabilistic EMC insertion
+
+    This limits the amount of new entries in the EMC to 1 in every potential 100 insertions. This theoretically should reduce thrashing of the EMC when there are a high number of parallel flows.
+
+* Signature Match Cache (SMC)
+
+    This is an additional level of cache added after the EMC that is more memory efficient than the EMC as it stores flow "signatures" rather than the full flow.
+
+
+##### 15.2.2.2.3 Benchmarking and Testing
+##### 15.2.2.2.4
+
+# 16 Storage Acceleration
+
+## 16.1 The Storage System
+![](../Images/dpdk/16-network-storage-system.png)
+
+* iSCSI (Internet SCSI) protocol: Provides the block storage service on SCSI (Small Computer System Interface).
+    * ![](../Images/dpdk/16.1-iscsi-packet.png)
+* NAS protocol: Provides file storage service on Ethernet.
+* Restful protocol: Provides object storage service on HTTP.
+* FCoE (Fiber Channel over Ethernet): Provides storage service on the traditional SAN (storage area network).
+
+## 16.2 Optimization Opportunities
+![](../Images/dpdk/16.2-dpdk-optimization.png)
+
+## 16.3 SPDK (Open Source)
+
+![](../Images/dpdk/16.3-spdk-arch.png)
+
+
+### 16.3.1 Application Framework
+![](../Images/dpdk/16.3-spdk-event-framework.png)
+
+### 16.3.2 Storage PMD
+
+* Asynchronous I/O mode: SPDK uses the asynchronous mode for I/O access request. SPDK implements the asynchronous read/write interface to allow the application to request the I/O, and a further function check is followed for I/O completion.
+* SPDK adopts a lockless design, and each core (thread) accesses its own resources such as memory, I/O submission queue, I/O completion queue. Thus, I/O performance can be greatly improved.
+
+### 16.3.3 Storage Service
+### 16.3.4 Storage Protocols
+
+### 16.3.5 PMD Details
+![](../Images/dpdk/16.3-nvme-driver.png)
+
+### 16.3.6 SPDK and Virtualization
+![](../Images/dpdk/16.3-vm-spdk.png)
+
+### 16.3.7 Data Security
+#### 16.3.7.1 Cryptodev: CPU/Accelerator-Based Data Encryption
+#### 16.3.7.2 SSD/SED/Opal vbdev: Disk-Based Data Encryption
