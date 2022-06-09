@@ -576,28 +576,28 @@ struct inet_protosw inetsw_array[] =
     .protocol   = IPPROTO_TCP,
     .prot       = &tcp_prot,
     .ops        = &inet_stream_ops,
-    .flags       = INET_PROTOSW_PERMANENT | INET_PROTOSW_ICSK,
+    .flags      = INET_PROTOSW_PERMANENT | INET_PROTOSW_ICSK,
   },
   {
     .type       = SOCK_DGRAM,
     .protocol   = IPPROTO_UDP,
     .prot       = &udp_prot,
     .ops        = &inet_dgram_ops,
-    .flags       = INET_PROTOSW_PERMANENT,
+    .flags      = INET_PROTOSW_PERMANENT,
   },
   {
     .type       = SOCK_DGRAM,
     .protocol   = IPPROTO_ICMP,
     .prot       = &ping_prot,
     .ops        = &inet_sockraw_ops,
-    .flags       = INET_PROTOSW_REUSE,
+    .flags      = INET_PROTOSW_REUSE,
   },
   {
     .type       = SOCK_RAW,
     .protocol   = IPPROTO_IP,  /* wild card */
     .prot       = &raw_prot,
     .ops        = &inet_sockraw_ops,
-    .flags       = INET_PROTOSW_REUSE,
+    .flags      = INET_PROTOSW_REUSE,
   }
 };
 
@@ -3723,6 +3723,9 @@ sk_stream_alloc_skb()
 
 
 # write
+
+![](../Images/Kernel/net-read-write-route.png)
+
 ## vfs layer tx
 ```C++
 const struct file_operations socket_file_ops = {
@@ -5212,15 +5215,14 @@ __dev_queue_xmit();
 /* driver layer */
 ixgb_xmit_frame();
 ```
-![](../Images/Kernel/net-filter-2.png)
-
----
-
 ![](../Images/Kernel/net-write.png)
 
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
 # read
+
+![](../Images/Kernel/net-read-write-route.png)
+
 ## driver layer rx
 
 ![](../Images/Kernel/net-dev-pci.png)
@@ -5840,20 +5842,24 @@ rxdesc_done:
   return cleaned;
 }
 
-void ixgb_check_copybreak(
-  struct napi_struct *napi,
-  struct ixgb_buffer *buffer_info,
-  u32 length, struct sk_buff **skb)
+void ixgb_check_copybreak(struct napi_struct *napi,
+         struct ixgb_buffer *buffer_info,
+         u32 length, struct sk_buff **skb)
 {
   struct sk_buff *new_skb;
+
+  if (length > copybreak)
+    return;
 
   new_skb = napi_alloc_skb(napi, length);
   if (!new_skb)
     return;
 
-  skb_copy_to_linear_data_offset(new_skb, -NET_IP_ALIGN,
-               (*skb)->data - NET_IP_ALIGN,
-               length + NET_IP_ALIGN);
+  skb_copy_to_linear_data_offset(
+    new_skb, -NET_IP_ALIGN,
+    (*skb)->data - NET_IP_ALIGN,
+    length + NET_IP_ALIGN
+  );
   /* save the skb in buffer_info as good */
   buffer_info->skb = *skb;
   *skb = new_skb;
@@ -8051,10 +8057,6 @@ sock_read_iter()
 ```
 * [try_to_wake_up](./linux-kernel.md#ttwu)
 * [NAPI description on Linux Foundation](https://wiki.linuxfoundation.org/networking/napi)
-
-![](../Images/Kernel/net-filter-2.png)
-
----
 
 ![](../Images/Kernel/net-read.png)
 
@@ -13815,5 +13817,74 @@ fail:
   tcp_sk_exit(net);
 
   return res;
+}
+```
+
+# net_dev_init
+```c++
+static int __init net_dev_init(void)
+{
+  int i, rc = -ENOMEM;
+
+  if (dev_proc_init())
+    goto out;
+
+  if (netdev_kobject_init())
+    goto out;
+
+  INIT_LIST_HEAD(&ptype_all);
+  for (i = 0; i < PTYPE_HASH_SIZE; i++)
+    INIT_LIST_HEAD(&ptype_base[i]);
+
+  INIT_LIST_HEAD(&offload_base);
+
+  if (register_pernet_subsys(&netdev_net_ops))
+    goto out;
+
+  for_each_possible_cpu(i) {
+    struct work_struct *flush = per_cpu_ptr(&flush_works, i);
+    struct softnet_data *sd = &per_cpu(softnet_data, i);
+
+    INIT_WORK(flush, flush_backlog);
+
+    skb_queue_head_init(&sd->input_pkt_queue);
+    skb_queue_head_init(&sd->process_queue);
+#ifdef CONFIG_XFRM_OFFLOAD
+    skb_queue_head_init(&sd->xfrm_backlog);
+#endif
+    INIT_LIST_HEAD(&sd->poll_list);
+    sd->output_queue_tailp = &sd->output_queue;
+#ifdef CONFIG_RPS
+    sd->csd.func = rps_trigger_softirq;
+    sd->csd.info = sd;
+    sd->cpu = i;
+#endif
+
+    init_gro_hash(&sd->backlog);
+    sd->backlog.poll = process_backlog;
+    sd->backlog.weight = weight_p;
+  }
+
+  dev_boot_phase = 0;
+
+  if (register_pernet_device(&loopback_net_ops))
+    goto out;
+
+  if (register_pernet_device(&default_device_ops))
+    goto out;
+
+  open_softirq(NET_TX_SOFTIRQ, net_tx_action);
+  open_softirq(NET_RX_SOFTIRQ, net_rx_action);
+
+  rc = cpuhp_setup_state_nocalls(CPUHP_NET_DEV_DEAD, "net/dev:dead", NULL, dev_cpu_dead);
+  WARN_ON(rc < 0);
+  rc = 0;
+out:
+  return rc;
+}
+
+void open_softirq(int nr, void (*action)(struct softirq_action *))
+{
+  softirq_vec[nr].action = action;
 }
 ```
