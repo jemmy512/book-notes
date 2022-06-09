@@ -11877,13 +11877,16 @@ static struct smp_hotplug_thread softirq_threads = {
 
 static __init int spawn_ksoftirqd(void)
 {
-  cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL,
-          takeover_tasklets);
+  cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL, takeover_tasklets);
   BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
 
   return 0;
 }
 early_initcall(spawn_ksoftirqd);
+
+/* kernel/smpboot.c */
+static LIST_HEAD(hotplug_threads);
+static DEFINE_MUTEX(smpboot_threads_lock);
 
 int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
 {
@@ -11945,14 +11948,14 @@ __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
   return 0;
 }
 
-struct task_struct *kthread_create_on_cpu(int (*threadfn)(void *data),
-            void *data, unsigned int cpu,
-            const char *namefmt)
+struct task_struct *kthread_create_on_cpu(
+  int (*threadfn)(void *data),
+  void *data, unsigned int cpu,
+  const char *namefmt)
 {
   struct task_struct *p;
 
-  p = kthread_create_on_node(threadfn, data, cpu_to_node(cpu), namefmt,
-           cpu);
+  p = kthread_create_on_node(threadfn, data, cpu_to_node(cpu), namefmt, cpu);
   if (IS_ERR(p))
     return p;
   kthread_bind(p, cpu);
@@ -12024,12 +12027,73 @@ void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_ma
 
 ## run_ksoftirqd
 ```c++
+int smpboot_thread_fn(void *data)
+{
+  struct smpboot_thread_data *td = data;
+  struct smp_hotplug_thread *ht = td->ht;
+
+  while (1) {
+    set_current_state(TASK_INTERRUPTIBLE);
+    preempt_disable();
+    if (kthread_should_stop()) {
+      __set_current_state(TASK_RUNNING);
+      preempt_enable();
+      /* cleanup must mirror setup */
+      if (ht->cleanup && td->status != HP_THREAD_NONE)
+        ht->cleanup(td->cpu, cpu_online(td->cpu));
+      kfree(td);
+      return 0;
+    }
+
+    if (kthread_should_park()) {
+      __set_current_state(TASK_RUNNING);
+      preempt_enable();
+      if (ht->park && td->status == HP_THREAD_ACTIVE) {
+        BUG_ON(td->cpu != smp_processor_id());
+        ht->park(td->cpu);
+        td->status = HP_THREAD_PARKED;
+      }
+      kthread_parkme();
+      /* We might have been woken for stop */
+      continue;
+    }
+
+    BUG_ON(td->cpu != smp_processor_id());
+
+    /* Check for state change setup */
+    switch (td->status) {
+    case HP_THREAD_NONE:
+      __set_current_state(TASK_RUNNING);
+      preempt_enable();
+      if (ht->setup)
+        ht->setup(td->cpu);
+      td->status = HP_THREAD_ACTIVE;
+      continue;
+
+    case HP_THREAD_PARKED:
+      __set_current_state(TASK_RUNNING);
+      preempt_enable();
+      if (ht->unpark)
+        ht->unpark(td->cpu);
+      td->status = HP_THREAD_ACTIVE;
+      continue;
+    }
+
+    if (!ht->thread_should_run(td->cpu)) {
+      preempt_enable_no_resched();
+      schedule();
+    } else {
+      __set_current_state(TASK_RUNNING);
+      preempt_enable();
+      ht->thread_fn(td->cpu); /* run_ksoftirqd */
+    }
+  }
+}
+
 static void run_ksoftirqd(unsigned int cpu)
 {
   local_irq_disable();
   if (local_softirq_pending()) {
-     /* We can safely run softirq on inline stack, as we are not deep
-     * in the task stack here. */
     __do_softirq();
     local_irq_enable();
     cond_resched();
@@ -12040,7 +12104,7 @@ static void run_ksoftirqd(unsigned int cpu)
 
 struct softirq_action
 {
-  void  (*action)(struct softirq_action *);
+  void (*action)(struct softirq_action *);
 };
 
 asmlinkage __visible void __softirq_entry __do_softirq(void)
@@ -12083,15 +12147,7 @@ restart:
 
     kstat_incr_softirqs_this_cpu(vec_nr);
 
-    trace_softirq_entry(vec_nr);
-    h->action(h);
-    trace_softirq_exit(vec_nr);
-    if (unlikely(prev_count != preempt_count())) {
-      pr_err("huh, entered softirq %u %s %p with preempt_count %08x, exited with %08x?\n",
-             vec_nr, softirq_to_name[vec_nr], h->action,
-             prev_count, preempt_count());
-      preempt_count_set(prev_count);
-    }
+    h->action(h); /* soft irq handler, e.g., net_rx_action, net_tx_action */
     h++;
     pending >>= softirq_bit;
   }
@@ -12101,8 +12157,7 @@ restart:
 
   pending = local_softirq_pending();
   if (pending) {
-    if (time_before(jiffies, end) && !need_resched() &&
-        --max_restart)
+    if (time_before(jiffies, end) && !need_resched() && --max_restart)
       goto restart;
 
     wakeup_softirqd();
@@ -12553,6 +12608,49 @@ next_cpu:
     cpumask_andnot(vector_cpumask, mask, searched_cpumask);
     cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
     continue;
+}
+```
+
+## raise_softirq_irqoff
+```c++
+void raise_softirq_irqoff(unsigned int nr)
+{
+  __raise_softirq_irqoff(nr);
+
+  if (!in_interrupt())
+    wakeup_softirqd();
+}
+
+void __raise_softirq_irqoff(unsigned int nr)
+{
+  or_softirq_pending(1UL << nr);
+}
+
+#define local_softirq_pending_ref irq_stat.__softirq_pending
+
+#define local_softirq_pending() (__this_cpu_read(local_softirq_pending_ref))
+#define set_softirq_pending(x) (__this_cpu_write(local_softirq_pending_ref, (x)))
+#define or_softirq_pending(x) (__this_cpu_or(local_softirq_pending_ref, (x)))
+
+#define in_irq()  (hardirq_count())
+#define in_softirq()  (softirq_count())
+#define in_interrupt()  (irq_count())
+
+#define hardirq_count() (preempt_count() & HARDIRQ_MASK)
+#define softirq_count() (preempt_count() & SOFTIRQ_MASK)
+#define irq_count() (preempt_count() & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK))
+
+static __always_inline int preempt_count(void)
+{
+  return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
+}
+
+void wakeup_softirqd(void)
+{
+  struct task_struct *tsk = __this_cpu_read(ksoftirqd);
+
+  if (tsk && tsk->state != TASK_RUNNING)
+    wake_up_process(tsk);
 }
 ```
 
