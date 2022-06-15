@@ -60,17 +60,22 @@
     * [pthread_create](#pthread_create)
 
 * [interrupt](#interrupt)
-    * [ksoftirqd](#ksoftirqd)
-    * [run_ksoftirqd](#run_ksoftirqd)
+    * [trap_init](#trap_init)
+          * [do_trap](#do_trap)
+              * [divide_error entry_32](#divide_error_entry32)
+              * [divide_error entry_64](#divide_error_entry64)
+    * [init_IRQ](#init_irq)
+          * [set_intr_gate](#set_intr_gate)
+    * [E.g, do_page_fault](#do_page_fault)
     * [request_irq](#request_irq)
-    * [init idt_table](#init-idt_table)
-    * [init_irq](#init_irq)
-    * [init vector_irq](#init-vector_irq)
-    * [softirq_init](#softirq_init)
-    * [raise_softirq_irqoff](#raise_softirq_irqoff)
+    * [softirq](#softirq)
+          * [ksoftirqd](#ksoftirqd)
+          * [run_ksoftirqd](#run_ksoftirqd)
+          * [open_softirq](#open_softirq)
+          * [raise_softirq_irqoff](#raise_softirq_irqoff)
     * [tasklet](#tasklet)
-        * [open TASKLET_SOFTIRQ](#open-taskletsoftirq)
-        * [tasklet_schedule](#tasklet_schedule)
+          * [open TASKLET_SOFTIRQ](#open-tasklet_softirq)
+          * [tasklet_schedule](#tasklet_schedule)
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -868,7 +873,7 @@ ENTRY(entry_SYSCALL_64)
    * is not required to switch CR3. */
   movq  %rsp, PER_CPU_VAR(rsp_scratch)
   movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp /* x86_hw_tss.sp1, update in __switch_to */
-  /* movq    %gs:cpu_current_top_of_stack, %rsp */
+  /* movq %gs:cpu_current_top_of_stack, %rsp */
 
 /* 2. save user stack
   * Construct struct pt_regs on stack */
@@ -987,7 +992,11 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
   POP_REGS pop_rdi=0
 
   /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
-   * Save old stack pointer and switch to trampoline stack. */
+   * Save old stack pointer and switch to trampoline stack.
+   *
+   * Initialize source and destination for movsl
+   * OFFSET(TSS_sp0, tss_struct, x86_tss.sp0)
+   * DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_struct, cpu_tss_rw) */
   movq  %rsp, %rdi
   movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
   UNWIND_HINT_EMPTY
@@ -1150,9 +1159,9 @@ struct thread_struct {
 #endif
 
   /* Fault info: */
-	unsigned long       cr2;
-	unsigned long       trap_nr;
-	unsigned long       error_code;
+  unsigned long       cr2;
+  unsigned long       trap_nr;
+  unsigned long       error_code;
 
   /* Floating point and extended processor state */
   struct fpu    fpu;
@@ -1413,11 +1422,9 @@ again:
 
 done: __maybe_unused;
 #ifdef CONFIG_SMP
-  /*
-   * Move the next running task to the front of
+  /* Move the next running task to the front of
    * the list, so our cfs_tasks list becomes MRU
-   * one.
-   */
+   * one. */
   list_move(&p->se.group_node, &rq->cfs_tasks);
 #endif
 
@@ -1429,11 +1436,9 @@ done: __maybe_unused;
 idle:
   new_tasks = idle_balance(rq, rf);
 
-  /*
-   * Because idle_balance() releases (and re-acquires) rq->lock, it is
+  /* Because idle_balance() releases (and re-acquires) rq->lock, it is
    * possible for any higher priority task to appear. In that case we
-   * must re-start the pick_next_entity() loop.
-   */
+   * must re-start the pick_next_entity() loop. */
   if (new_tasks < 0)
     return RETRY_TASK;
 
@@ -1456,10 +1461,8 @@ void put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 
 void put_prev_entity(struct cfs_rq *cfs_rq, struct sched_entity *prev)
 {
-  /*
-   * If still on the runqueue then deactivate_task()
-   * was not called and update_curr() has to be done:
-   */
+  /* If still on the runqueue then deactivate_task()
+   * was not called and update_curr() has to be done: */
   if (prev->on_rq)
     update_curr(cfs_rq);
 
@@ -1698,6 +1701,19 @@ struct task_struct * __switch_to(
 
   return prev_p;
 }
+
+#define cpu_current_top_of_stack cpu_tss_rw.x86_tss.sp1
+
+#define task_top_of_stack(task) ((unsigned long)(task_pt_regs(task) + 1))
+
+#define task_pt_regs(task) \
+({ \
+  unsigned long __ptr = (unsigned long)task_stack_page(task); \
+  __ptr += THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING; \
+  ((struct pt_regs *)__ptr) - 1; \
+})
+
+#define task_stack_page(task) ((void *)(task)->stack)
 
 /* This is used when switching tasks or entering/exiting vm86 mode. */
 static inline void update_task_stack(struct task_struct *task)
@@ -11888,6 +11904,33 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 
 ![](../Images/ULK/4.2-gate-descriptors.png)
 
+
+How interrupt happens:
+ * 1. extern dev sends physic interrupt to interrupt controller
+ * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
+ * 3. cpu call IRQ hanlder according to interrupt vector
+ * 4. IRQ handler converts interrupt vector to abstract interrupt signal, handle it with irq_handler_t
+
+
+arch/x86/include/asm/irq_vectors.h
+
+Linux IRQ vector layout.
+* There are 256 IDT entries (per CPU - each entry is 8 bytes) which can be defined by Linux. They are used as a jump table by the CPU when a given vector is triggered - by a CPU-external, CPU-internal or software-triggered event.
+* Linux sets the kernel code address each entry jumps to early during bootup, and never changes them. This is the general layout of the IDT entries:
+  *  Vectors [0, 31] : system traps and exceptions - hardcoded events
+  *  Vectors [32, 127]: device interrupts
+  *  Vector  [128] : legacy int80 syscall interface
+  *  Vectors [129, INVALIDATE_TLB_VECTOR_START-1] except 204 : device interrupts
+  *  Vectors [INVALIDATE_TLB_VECTOR_START, 255] : special interrupts
+* 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
+* This file enumerates the exact layout of them:
+```c++
+#define FIRST_EXTERNAL_VECTOR   0x20  /* 32 */
+#define IA32_SYSCALL_VECTOR     0x80  /* 128 */
+#define NR_VECTORS              256
+#define FIRST_SYSTEM_VECTOR     NR_VECTORS
+```
+
 ```c++
 /* arch/x86/kernel/traps.c, per cpu */
 struct gate_struct {
@@ -11926,9 +11969,15 @@ struct idt_data {
 
 /* interrupt descriptor table */
 struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
+
+void start_kernel() {
+  trap_init();
+  init_IRQ();
+  softirq_init();
+}
 ```
 
-* (Interrupt Descriptor Table)[https://wiki.osdev.org/Interrupt_Descriptor_Table]
+* [Interrupt Descriptor Table](https://wiki.osdev.org/Interrupt_Descriptor_Table)
 
 ## trap_init
 ```c++
@@ -12101,45 +12150,431 @@ static const __initconst struct idt_data ist_idts[] = {
 };
 ```
 
-## set_intr_gate
+### do_trap
+
+The C functions that implement exception handlers always consist of the prefix do_ followed by the handler name. Most of these functions invoke the **do_trap**() function to store the hardware error code and the exception vector in the process descriptor of current, and then send a suitable signal to that process:
 ```c++
-void set_intr_gate(unsigned int n, const void *addr)
-{
-  struct idt_data data;
+current->thread.error_code = error_code;
+current->thread.trap_no = vector;
+force_sig_info(signr, info ?: SEND_SIG_PRIV, tsk);
+```
 
-  BUG_ON(n > 0xFF);
+```c++
+/* arch/x86/kernel/traps.c */
+DO_ERROR(X86_TRAP_DE,     SIGFPE,  "divide error",          divide_error)
+DO_ERROR(X86_TRAP_OF,     SIGSEGV, "overflow",              overflow)
+DO_ERROR(X86_TRAP_UD,     SIGILL,  "invalid opcode",        invalid_op)
+DO_ERROR(X86_TRAP_OLD_MF, SIGFPE,  "coprocessor segment overrun", coprocessor_segment_overrun)
+DO_ERROR(X86_TRAP_TS,     SIGSEGV, "invalid TSS",           invalid_TSS)
+DO_ERROR(X86_TRAP_NP,     SIGBUS,  "segment not present",   segment_not_present)
+DO_ERROR(X86_TRAP_SS,     SIGBUS,  "stack segment",         stack_segment)
+DO_ERROR(X86_TRAP_AC,     SIGBUS,  "alignment check",       alignment_check)
 
-  memset(&data, 0, sizeof(data));
-  data.vector = n;
-  data.addr = addr;
-  data.segment = __KERNEL_CS;
-  data.bits.type = GATE_INTERRUPT;
-  data.bits.p = 1;
+/* arch/x86/entry/entry_32.S */
+ENTRY(divide_error)
+  ASM_CLAC
+  pushl  $0        # no error code
+  pushl  $do_divide_error
+  jmp  common_exception
+END(divide_error)
 
-  idt_setup_from_table(idt_table, &data, 1, false);
+/* arch/x86/entry/entry_64.S */
+idtentry divide_error   do_divide_error   has_error_code=0
+
+#define DO_ERROR(trapnr, signr, str, name) \
+dotraplinkage void do_##name(struct pt_regs *regs, long error_code) \
+{ \
+  do_error_trap(regs, error_code, str, trapnr, signr); \
 }
 
-static void
-idt_setup_from_table(gate_desc *idt, const struct idt_data *t, int size, bool sys)
+static void do_error_trap(struct pt_regs *regs, long error_code, char *str,
+        unsigned long trapnr, int signr)
 {
-  gate_desc desc;
+  siginfo_t info;
 
-  for (; size > 0; t++, size--) {
-    idt_init_desc(&desc, t);
-    write_idt_entry(idt, t->vector, &desc);
-    if (sys)
-      set_bit(t->vector, system_vectors);
+  RCU_LOCKDEP_WARN(!rcu_is_watching(), "entry code didn't wake RCU");
+
+  if (!user_mode(regs) && fixup_bug(regs, trapnr))
+    return;
+
+  if (notify_die(DIE_TRAP, str, regs, error_code, trapnr, signr) != NOTIFY_STOP) {
+    cond_local_irq_enable(regs);
+    clear_siginfo(&info);
+    do_trap(trapnr, signr, str, regs, error_code, fill_trap_info(regs, signr, trapnr, &info));
   }
 }
+
+void do_trap(int trapnr, int signr, char *str, struct pt_regs *regs,
+  long error_code, siginfo_t *info)
+{
+  struct task_struct *tsk = current;
+
+
+  if (!do_trap_no_signal(tsk, trapnr, str, regs, error_code))
+    return;
+  /* We want error_code and trap_nr set for userspace faults and
+   * kernelspace faults which result in die(), but not
+   * kernelspace faults which are fixed up.  die() gives the
+   * process no chance to handle the signal and notice the
+   * kernel fault information, so that won't result in polluting
+   * the information about previously queued, but not yet
+   * delivered, faults.  See also do_general_protection below. */
+  tsk->thread.error_code = error_code;
+  tsk->thread.trap_nr = trapnr;
+
+  if (show_unhandled_signals && unhandled_signal(tsk, signr) && printk_ratelimit()) {
+    pr_info("%s[%d] trap %s ip:%lx sp:%lx error:%lx",
+      tsk->comm, tsk->pid, str,
+      regs->ip, regs->sp, error_code);
+    print_vma_addr(KERN_CONT " in ", regs->ip);
+    pr_cont("\n");
+  }
+
+  force_sig_info(signr, info ?: SEND_SIG_PRIV, tsk);
+}
+
+int force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
+{
+  unsigned long int flags;
+  int ret, blocked, ignored;
+  struct k_sigaction *action;
+
+  spin_lock_irqsave(&t->sighand->siglock, flags);
+  action = &t->sighand->action[sig-1];
+  ignored = action->sa.sa_handler == SIG_IGN;
+  blocked = sigismember(&t->blocked, sig);
+  if (blocked || ignored) {
+    action->sa.sa_handler = SIG_DFL;
+    if (blocked) {
+      sigdelset(&t->blocked, sig);
+      recalc_sigpending_and_wake(t);
+    }
+  }
+  /* Don't clear SIGNAL_UNKILLABLE for traced tasks, users won't expect
+   * debugging to leave init killable. */
+  if (action->sa.sa_handler == SIG_DFL && !t->ptrace)
+    t->signal->flags &= ~SIGNAL_UNKILLABLE;
+  ret = specific_send_sig_info(sig, info, t);
+  spin_unlock_irqrestore(&t->sighand->siglock, flags);
+
+  return ret;
+}
+
+static int specific_send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
+{
+  return send_signal(sig, info, t, PIDTYPE_PID);
+}
+```
+
+#### divide_error_entry_32
+```c++
+/* arch/x86/entry/entry_32.S */
+ENTRY(divide_error)
+  ASM_CLAC
+  pushl  $0        # no error code
+  pushl  $do_divide_error
+  jmp  common_exception
+END(divide_error)
+common_exception:
+  /* the function address is in %gs's slot on the stack */
+  pushl %fs
+  pushl %es
+  pushl %ds
+  pushl %eax
+  movl $(__USER_DS), %eax
+  movl %eax, %ds
+  movl %eax, %es
+  movl $(__KERNEL_PERCPU), %eax
+  movl %eax, %fs
+  pushl %ebp
+  pushl %edi
+  pushl %esi
+  pushl %edx
+  pushl %ecx
+  pushl %ebx
+  SWITCH_TO_KERNEL_STACK
+  ENCODE_FRAME_POINTER
+  cld
+  UNWIND_ESPFIX_STACK
+  GS_TO_REG %ecx
+  movl PT_GS(%esp), %edi  # get the function address
+  movl PT_ORIG_EAX(%esp), %edx  # get the error code
+  movl $-1, PT_ORIG_EAX(%esp)  # no syscall to restart
+  REG_TO_PTGS %ecx
+  SET_KERNEL_GS %ecx
+  TRACE_IRQS_OFF
+  movl %esp, %eax   # pt_regs pointer
+  CALL_NOSPEC %edi
+  jmp ret_from_exception
+END(common_exception)
+
+
+ret_from_exception:
+  preempt_stop(CLBR_ANY)
+ret_from_intr:
+#ifdef CONFIG_VM86
+  movl  PT_EFLAGS(%esp), %eax    # mix EFLAGS and CS
+  movb  PT_CS(%esp), %al
+  andl  $(X86_EFLAGS_VM | SEGMENT_RPL_MASK), %eax
+#else
+  /* We can be coming here from child spawned by kernel_thread(). */
+  movl  PT_CS(%esp), %eax
+  andl  $SEGMENT_RPL_MASK, %eax
+#endif
+  cmpl  $USER_RPL, %eax
+  jb  resume_kernel      # not returning to v8086 or userspace
+
+ENTRY(resume_userspace)
+  DISABLE_INTERRUPTS(CLBR_ANY)
+  TRACE_IRQS_OFF
+  movl  %esp, %eax
+  call  prepare_exit_to_usermode
+  jmp  restore_all
+END(ret_from_exception)
+```
+
+#### divide_error_entry_64
+```c++
+/* arch/x86/entry/entry_64.S */
+idtentry divide_error   do_divide_error   has_error_code=0
+
+.macro idtentry sym do_sym has_error_code:req paranoid=0 shift_ist=-1 create_gap=0
+ENTRY(\sym)
+  UNWIND_HINT_IRET_REGS offset=\has_error_code*8
+
+  /* Sanity check */
+  .if \shift_ist != -1 && \paranoid == 0
+  .error "using shift_ist requires paranoid=1"
+  .endif
+
+  ASM_CLAC
+
+  .if \has_error_code == 0
+  pushq $-1    /* ORIG_RAX: no syscall to restart */
+  .endif
+
+  .if \paranoid == 1
+  testb $3, CS-ORIG_RAX(%rsp)  /* If coming from userspace, switch stacks */
+  jnz .Lfrom_usermode_switch_stack_\@
+  .endif
+
+  .if \create_gap == 1
+  /* If coming from kernel space, create a 6-word gap to allow the
+   * int3 handler to emulate a call instruction. */
+  testb $3, CS-ORIG_RAX(%rsp)
+  jnz .Lfrom_usermode_no_gap_\@
+  .rept 6
+  pushq 5*8(%rsp)
+  .endr
+  UNWIND_HINT_IRET_REGS offset=8
+.Lfrom_usermode_no_gap_\@:
+  .endif
+
+  .if \paranoid
+  call paranoid_entry
+  .else
+  call error_entry
+  .endif
+  UNWIND_HINT_REGS
+  /* returned flag: ebx=0: need swapgs on exit, ebx=1: don't need it */
+
+  .if \paranoid
+  .if \shift_ist != -1
+  TRACE_IRQS_OFF_DEBUG   /* reload IDT in case of recursion */
+  .else
+  TRACE_IRQS_OFF
+  .endif
+  .endif
+
+  movq %rsp, %rdi   /* pt_regs pointer */
+
+  .if \has_error_code
+  movq ORIG_RAX(%rsp), %rsi  /* get error code */
+  movq $-1, ORIG_RAX(%rsp)  /* no syscall to restart */
+  .else
+  xorl %esi, %esi   /* no error code */
+  .endif
+
+  .if \shift_ist != -1
+  subq $EXCEPTION_STKSZ, CPU_TSS_IST(\shift_ist)
+  .endif
+
+  call \do_sym
+
+  .if \shift_ist != -1
+  addq $EXCEPTION_STKSZ, CPU_TSS_IST(\shift_ist)
+  .endif
+
+  /* these procedures expect "no swapgs" flag in ebx */
+  .if \paranoid
+  jmp paranoid_exit
+  .else
+  jmp error_exit
+  .endif
+
+  .if \paranoid == 1
+  /* Entry from userspace.  Switch stacks and treat it
+   * as a normal entry.  This means that paranoid handlers
+   * run in real process context if user_mode(regs). */
+.Lfrom_usermode_switch_stack_\@:
+  call error_entry
+
+  movq %rsp, %rdi   /* pt_regs pointer */
+
+  .if \has_error_code
+  movq ORIG_RAX(%rsp), %rsi  /* get error code */
+  movq $-1, ORIG_RAX(%rsp)  /* no syscall to restart */
+  .else
+  xorl %esi, %esi   /* no error code */
+  .endif
+
+  call \do_sym
+
+  jmp error_exit
+  .endif
+_ASM_NOKPROBE(\sym)
+END(\sym)
+.endm
+
+idtentry divide_error   do_divide_error   has_error_code=0
+
+/* Save all registers in pt_regs, and switch gs if needed.
+ * Use slow, but surefire "are we in kernel?" check.
+ * Return: ebx=0: need swapgs on exit, ebx=1: otherwise */
+ENTRY(paranoid_entry)
+  UNWIND_HINT_FUNC
+  cld
+  PUSH_AND_CLEAR_REGS save_ret=1
+  ENCODE_FRAME_POINTER 8
+  movl  $1, %ebx
+  movl  $MSR_GS_BASE, %ecx
+  rdmsr
+  testl  %edx, %edx
+  js  1f        /* negative -> in kernel */
+  SWAPGS
+  xorl  %ebx, %ebx
+
+1:
+  /* Always stash CR3 in %r14.  This value will be restored,
+   * verbatim, at exit.  Needed if paranoid_entry interrupted
+   * another entry that already switched to the user CR3 value
+   * but has not yet returned to userspace.
+   *
+   * This is also why CS (stashed in the "iret frame" by the
+   * hardware at entry) can not be used: this may be a return
+   * to kernel code, but with a user CR3 value. */
+  SAVE_AND_SWITCH_TO_KERNEL_CR3 scratch_reg=%rax save_reg=%r14
+
+  /* The above SAVE_AND_SWITCH_TO_KERNEL_CR3 macro doesn't do an
+   * unconditional CR3 write, even in the PTI case.  So do an lfence
+   * to prevent GS speculation, regardless of whether PTI is enabled. */
+  FENCE_SWAPGS_KERNEL_ENTRY
+
+  ret
+END(paranoid_entry)
 ```
 
 ## init_IRQ
 ```c++
 void start_kernel(void)
 {
+  early_irq_init();
   init_IRQ();
 }
 
+#ifdef CONFIG_SPARSE_IRQ
+  static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
+
+  struct irq_desc *irq_to_desc(unsigned int irq)
+  {
+    return radix_tree_lookup(&irq_desc_tree, irq);
+  }
+#else /* !CONFIG_SPARSE_IRQ */
+  struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
+    [0 ... NR_IRQS-1] = { }
+  };
+  struct irq_desc *irq_to_desc(unsigned int irq)
+  {
+    return (irq < NR_IRQS) ? irq_desc + irq : NULL;
+  }
+#endif /* !CONFIG_SPARSE_IRQ */
+
+int __init early_irq_init(void)
+{
+  int count, i, node = first_online_node;
+  struct irq_desc *desc;
+
+  init_irq_default_affinity();
+
+  printk(KERN_INFO "NR_IRQS: %d\n", NR_IRQS);
+
+  desc = irq_desc;
+  count = ARRAY_SIZE(irq_desc);
+
+  for (i = 0; i < count; i++) {
+    desc[i].kstat_irqs = alloc_percpu(unsigned int);
+    alloc_masks(&desc[i], node);
+    raw_spin_lock_init(&desc[i].lock);
+    lockdep_set_class(&desc[i].lock, &irq_desc_lock_class);
+    mutex_init(&desc[i].request_mutex);
+    desc_set_defaults(i, &desc[i], node, NULL, NULL);
+  }
+  return arch_early_irq_init();
+}
+
+void desc_set_defaults(unsigned int irq, struct irq_desc *desc, int node,
+            const struct cpumask *affinity, struct module *owner)
+{
+  int cpu;
+
+  desc->irq_common_data.handler_data = NULL;
+  desc->irq_common_data.msi_desc = NULL;
+
+  desc->irq_data.common = &desc->irq_common_data;
+  desc->irq_data.irq = irq;
+  desc->irq_data.chip = &no_irq_chip;
+  desc->irq_data.chip_data = NULL;
+  irq_settings_clr_and_set(desc, ~0, _IRQ_DEFAULT_INIT_FLAGS);
+  irqd_set(&desc->irq_data, IRQD_IRQ_DISABLED);
+  irqd_set(&desc->irq_data, IRQD_IRQ_MASKED);
+  desc->handle_irq = handle_bad_irq;
+  desc->depth = 1;
+  desc->irq_count = 0;
+  desc->irqs_unhandled = 0;
+  desc->tot_count = 0;
+  desc->name = NULL;
+  desc->owner = owner;
+  for_each_possible_cpu(cpu)
+    *per_cpu_ptr(desc->kstat_irqs, cpu) = 0;
+  desc_smp_init(desc, node, affinity);
+}
+
+int __init arch_early_irq_init(void)
+{
+  struct fwnode_handle *fn;
+
+  fn = irq_domain_alloc_named_fwnode("VECTOR");
+  BUG_ON(!fn);
+  x86_vector_domain = irq_domain_create_tree(fn, &x86_vector_domain_ops,
+               NULL);
+  BUG_ON(x86_vector_domain == NULL);
+  irq_set_default_host(x86_vector_domain);
+
+  arch_init_msi_domain(x86_vector_domain);
+
+  BUG_ON(!alloc_cpumask_var(&vector_searchmask, GFP_KERNEL));
+
+  /* Allocate the vector matrix allocator data structure and limit the
+   * search area. */
+  vector_matrix = irq_alloc_matrix(NR_VECTORS, FIRST_EXTERNAL_VECTOR,
+           FIRST_SYSTEM_VECTOR);
+  BUG_ON(!vector_matrix);
+
+  return arch_early_ioapic_init();
+}
+```
+
+```c++
 void __init init_IRQ(void)
 {
   int i;
@@ -12172,8 +12607,9 @@ void __init idt_setup_apic_and_irq_gates(void)
 
   idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true);
 
-  for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR) {
-    entry = irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR);
+  /* set intr for vector which is clear in system_vectors */
+  for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR /* 256 */) {
+    entry = irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR /* 32 */);
     set_intr_gate(i, entry);
   }
 
@@ -12185,6 +12621,18 @@ void __init idt_setup_apic_and_irq_gates(void)
 #endif
 }
 
+static const __initconst struct idt_data apic_idts[] = {
+  INTG(RESCHEDULE_VECTOR,    reschedule_interrupt),
+  INTG(CALL_FUNCTION_VECTOR,  call_function_interrupt),
+  INTG(CALL_FUNCTION_SINGLE_VECTOR, call_function_single_interrupt),
+  INTG(IRQ_MOVE_CLEANUP_VECTOR,  irq_move_cleanup_interrupt),
+  INTG(REBOOT_VECTOR,    reboot_interrupt),
+};
+
+static const __initconst struct idt_data early_pf_idts[] = {
+  INTG(X86_TRAP_PF,    page_fault),
+};
+
 /* arch/x86/include/asm/hw_irq.h */
 extern char irq_entries_start[];
 
@@ -12193,6 +12641,9 @@ extern char irq_entries_start[];
 
  * Build the entry stubs with some assembler magic.
  * We pack 1 stub into every 8-byte block. */
+#define FIRST_EXTERNAL_VECTOR 0x20        /* 32 */
+#define FIRST_SYSTEM_VECTOR   NR_VECTORS  /* 256 */
+
 ENTRY(irq_entries_start)
   vector=FIRST_EXTERNAL_VECTOR
   .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
@@ -12223,10 +12674,7 @@ GLOBAL(retint_user)
   call  prepare_exit_to_usermode
   TRACE_IRQS_IRETQ
 
-
-/*
- * Undoes ENTER_IRQ_STACK.
- */
+/* Undoes ENTER_IRQ_STACK. */
 .macro LEAVE_IRQ_STACK regs=1
   DEBUG_ENTRY_ASSERT_IRQS_OFF
   /* We need to be off the IRQ stack before decrementing irq_count. */
@@ -12236,10 +12684,8 @@ GLOBAL(retint_user)
   UNWIND_HINT_REGS
   .endif
 
-  /*
-   * As in ENTER_IRQ_STACK, irq_count == 0, we are still claiming
-   * the irq stack but we're not on it.
-   */
+  /* As in ENTER_IRQ_STACK, irq_count == 0, we are still claiming
+   * the irq stack but we're not on it. */
 
   decl  PER_CPU_VAR(irq_count)
 .endm
@@ -12309,6 +12755,7 @@ void irq_exit(void)
 #else
   lockdep_assert_irqs_disabled();
 #endif
+
   account_irq_exit_time(current);
   preempt_count_sub(HARDIRQ_OFFSET);
   if (!in_interrupt() && local_softirq_pending())
@@ -12336,7 +12783,50 @@ static inline void invoke_softirq(void)
 }
 ```
 
-## irq_desc
+### set_intr_gate
+```c++
+void __init update_intr_gate(unsigned int n, const void *addr)
+{
+  if (WARN_ON_ONCE(!test_bit(n, system_vectors)))
+    return;
+  set_intr_gate(n, addr);
+}
+
+void set_intr_gate(unsigned int n, const void *addr)
+{
+  struct idt_data data;
+
+  BUG_ON(n > 0xFF);
+
+  memset(&data, 0, sizeof(data));
+  data.vector = n;
+  data.addr = addr;
+  data.segment = __KERNEL_CS;
+  data.bits.type = GATE_INTERRUPT;
+  data.bits.p = 1;
+
+  idt_setup_from_table(idt_table, &data, 1, false);
+}
+
+static void
+idt_setup_from_table(gate_desc *idt, const struct idt_data *t, int size, bool sys)
+{
+  gate_desc desc;
+
+  for (; size > 0; t++, size--) {
+    idt_init_desc(&desc, t);
+    write_idt_entry(idt, t->vector, &desc);
+    if (sys)
+      set_bit(t->vector, system_vectors);
+  }
+}
+```
+
+## do_page_fault
+
+[page-fault](./linux-kernel-mem.md#page-fault)
+
+## request_irq
 ```c++
 /* The interrupt vector interrupt controller sent to
  * each cpu is per cpu local variable, but the abstract
@@ -12352,204 +12842,26 @@ struct irq_desc {
   irq_flow_handler_t     handle_irq;
   struct irqaction       *action; /* IRQ action list */
 
-  struct cpumask    *percpu_enabled;
-  wait_queue_head_t   wait_for_threads;
+  struct cpumask        *percpu_enabled;
+  wait_queue_head_t     wait_for_threads;
 };
 
 struct irqaction {
-  irq_handler_t  handler; /* typedef irqreturn_t (*irq_handler_t)(int, void *) */
-  void             *dev_id;
-  void __percpu      *percpu_dev_id;
-  struct irqaction   *next;
-  irq_handler_t      thread_fn;
-  struct task_struct *thread;
-  struct irqaction   *secondary;
-  unsigned int      irq;
-  unsigned int      flags;
-  unsigned long      thread_flags;
-  unsigned long      thread_mask;
-  const char        *name;
+  irq_handler_t       handler; /* typedef irqreturn_t (*irq_handler_t)(int, void *) */
+  void                *dev_id;
+  void __percpu       *percpu_dev_id;
+  struct irqaction    *next;
+  irq_handler_t       thread_fn;
+  struct task_struct  *thread;
+  struct irqaction    *secondary;
+  unsigned int        irq;
+  unsigned int        flags;
+  unsigned long       thread_flags;
+  unsigned long       thread_mask;
+  const char          *name;
   struct proc_dir_entry *dir;
 };
 
-/* assign virtual irq to a cpu */
-static int __assign_irq_vector(
-  int irq, struct apic_chip_data *d,
-  const struct cpumask *mask,
-  struct irq_data *irqdata)
-{
-  static int current_vector = FIRST_EXTERNAL_VECTOR + VECTOR_OFFSET_START;
-  static int current_offset = VECTOR_OFFSET_START % 16;
-  int cpu, vector;
-
-  while (cpu < nr_cpu_ids) {
-    int new_cpu, offset;
-
-    vector = current_vector;
-    offset = current_offset;
-next:
-    vector += 16;
-    if (vector >= first_system_vector) {
-      offset = (offset + 1) % 16;
-      vector = FIRST_EXTERNAL_VECTOR + offset;
-    }
-    /* If the search wrapped around, try the next cpu */
-    if (unlikely(current_vector == vector))
-      goto next_cpu;
-
-    if (test_bit(vector, used_vectors))
-      goto next;
-
-    /* Found one! */
-    current_vector = vector;
-    current_offset = offset;
-    /* Schedule the old vector for cleanup on all cpus */
-    if (d->cfg.vector)
-      cpumask_copy(d->old_domain, d->domain);
-    for_each_cpu(new_cpu, vector_searchmask)
-      per_cpu(vector_irq, new_cpu)[vector] = irq_to_desc(irq);
-    goto update;
-
-next_cpu:
-    cpumask_or(searched_cpumask, searched_cpumask, vector_cpumask);
-    cpumask_andnot(vector_cpumask, mask, searched_cpumask);
-    cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
-    continue;
-  }
-}
-```
-
-## do_page_fault
-
-[page-fault](./linux-kernel-mem.md#page-fault)
-
-## do_trap
-
-The C functions that implement exception han- dlers always consist of the prefix do_ followed by the handler name. Most of these functions invoke the **do_trap**() function to store the hardware error code and the exception vector in the process descriptor of current, and then send a suitable signal to that process:
-```c++
-current->thread.error_code = error_code;
-current->thread.trap_no = vector;
-force_sig_info(signr, info ?: SEND_SIG_PRIV, tsk);
-```
-
-```c++
-/* arch/x86/entry/entry_32.S */
-ENTRY(divide_error)
-  ASM_CLAC
-  pushl  $0        # no error code
-  pushl  $do_divide_error
-  jmp  common_exception
-END(divide_error)
-
-/* arch/x86/entry/entry_64.S */
-idtentry divide_error  	do_divide_error  	has_error_code=0
-```
-
-```c++
-/* arch/x86/kernel/traps.c */
-DO_ERROR(X86_TRAP_DE,     SIGFPE,  "divide error",    divide_error)
-DO_ERROR(X86_TRAP_OF,     SIGSEGV, "overflow",      overflow)
-DO_ERROR(X86_TRAP_UD,     SIGILL,  "invalid opcode",    invalid_op)
-DO_ERROR(X86_TRAP_OLD_MF, SIGFPE,  "coprocessor segment overrun",coprocessor_segment_overrun)
-DO_ERROR(X86_TRAP_TS,     SIGSEGV, "invalid TSS",    invalid_TSS)
-DO_ERROR(X86_TRAP_NP,     SIGBUS,  "segment not present",  segment_not_present)
-DO_ERROR(X86_TRAP_SS,     SIGBUS,  "stack segment",    stack_segment)
-DO_ERROR(X86_TRAP_AC,     SIGBUS,  "alignment check",    alignment_check)
-
-#define DO_ERROR(trapnr, signr, str, name)        \
-dotraplinkage void do_##name(struct pt_regs *regs, long error_code)  \
-{                  \
-  do_error_trap(regs, error_code, str, trapnr, signr);    \
-}
-
-static void do_error_trap(struct pt_regs *regs, long error_code, char *str,
-        unsigned long trapnr, int signr)
-{
-  siginfo_t info;
-
-  RCU_LOCKDEP_WARN(!rcu_is_watching(), "entry code didn't wake RCU");
-
-  if (!user_mode(regs) && fixup_bug(regs, trapnr))
-    return;
-
-  if (notify_die(DIE_TRAP, str, regs, error_code, trapnr, signr) != NOTIFY_STOP) {
-    cond_local_irq_enable(regs);
-    clear_siginfo(&info);
-    do_trap(trapnr, signr, str, regs, error_code, fill_trap_info(regs, signr, trapnr, &info));
-  }
-}
-
-void do_trap(int trapnr, int signr, char *str, struct pt_regs *regs,
-  long error_code, siginfo_t *info)
-{
-  struct task_struct *tsk = current;
-
-
-  if (!do_trap_no_signal(tsk, trapnr, str, regs, error_code))
-    return;
-  /*
-   * We want error_code and trap_nr set for userspace faults and
-   * kernelspace faults which result in die(), but not
-   * kernelspace faults which are fixed up.  die() gives the
-   * process no chance to handle the signal and notice the
-   * kernel fault information, so that won't result in polluting
-   * the information about previously queued, but not yet
-   * delivered, faults.  See also do_general_protection below.
-   */
-  tsk->thread.error_code = error_code;
-  tsk->thread.trap_nr = trapnr;
-
-  if (show_unhandled_signals && unhandled_signal(tsk, signr) && printk_ratelimit()) {
-    pr_info("%s[%d] trap %s ip:%lx sp:%lx error:%lx",
-      tsk->comm, tsk->pid, str,
-      regs->ip, regs->sp, error_code);
-    print_vma_addr(KERN_CONT " in ", regs->ip);
-    pr_cont("\n");
-  }
-
-  force_sig_info(signr, info ?: SEND_SIG_PRIV, tsk);
-}
-
-int force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
-{
-  unsigned long int flags;
-  int ret, blocked, ignored;
-  struct k_sigaction *action;
-
-  spin_lock_irqsave(&t->sighand->siglock, flags);
-  action = &t->sighand->action[sig-1];
-  ignored = action->sa.sa_handler == SIG_IGN;
-  blocked = sigismember(&t->blocked, sig);
-  if (blocked || ignored) {
-    action->sa.sa_handler = SIG_DFL;
-    if (blocked) {
-      sigdelset(&t->blocked, sig);
-      recalc_sigpending_and_wake(t);
-    }
-  }
-  /*
-   * Don't clear SIGNAL_UNKILLABLE for traced tasks, users won't expect
-   * debugging to leave init killable.
-   */
-  if (action->sa.sa_handler == SIG_DFL && !t->ptrace)
-    t->signal->flags &= ~SIGNAL_UNKILLABLE;
-  ret = specific_send_sig_info(sig, info, t);
-  spin_unlock_irqrestore(&t->sighand->siglock, flags);
-
-  return ret;
-}
-
-static int specific_send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
-{
-  return send_signal(sig, info, t, PIDTYPE_PID);
-}
-
-```
-
-## request_irq
-```c++
-
-```c++
 static int logibm_open(struct input_dev *dev)
 {
   if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
@@ -12588,6 +12900,7 @@ static irqreturn_t logibm_interrupt(int irq, void *dev_id)
 }
 
 irqreturn_t (*irq_handler_t)(int irq, void * dev_id);
+
 enum irqreturn {
   IRQ_NONE    = (0 << 0),
   IRQ_HANDLED    = (1 << 0),
@@ -12620,59 +12933,6 @@ int request_threaded_irq(
   action->dev_id = dev_id;
   retval = __setup_irq(irq, desc, action);
 }
-
-struct irq_data {
-  u32      mask;
-  unsigned int    irq;
-  unsigned long    hwirq;
-  struct irq_common_data  *common;
-  struct irq_chip    *chip;
-  struct irq_domain  *domain;
-#ifdef  CONFIG_IRQ_DOMAIN_HIERARCHY
-  struct irq_data    *parent_data;
-#endif
-  void      *chip_data;
-};
-
-struct irq_desc {
-  struct irqaction  *action;  /* IRQ action list */
-  struct module     *owner;
-  struct irq_data   irq_data;
-  const char        *name;
-};
-
-struct irqaction {
-  irq_handler_t       handler;
-  void                *dev_id;
-  void __percpu       *percpu_dev_id;
-  struct irqaction    *next;
-  irq_handler_t       thread_fn;
-  struct task_struct  *thread;
-  struct irqaction    *secondary;
-  unsigned int        irq;
-  unsigned int        flags;
-  unsigned long       thread_flags;
-  unsigned long       thread_mask;
-  const char          *name;
-  struct proc_dir_entry  *dir;
-};
-
-#ifdef CONFIG_SPARSE_IRQ
-static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
-
-struct irq_desc *irq_to_desc(unsigned int irq)
-{
-  return radix_tree_lookup(&irq_desc_tree, irq);
-}
-#else /* !CONFIG_SPARSE_IRQ */
-struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
-  [0 ... NR_IRQS-1] = { }
-};
-struct irq_desc *irq_to_desc(unsigned int irq)
-{
-  return (irq < NR_IRQS) ? irq_desc + irq : NULL;
-}
-#endif /* !CONFIG_SPARSE_IRQ */
 
 static int
 __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
@@ -12722,42 +12982,11 @@ static int setup_irq_thread(
 
   return 0;
 }
-
-/* How interrupt happens:
- * 1. extern dev sends physic interrupt to interrupt controller
- * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
- * 3. cpu call IRQ hanlder according to interrupt vector
- * 4. IRQ handler converts interrupt vector to abstract interrupt signal, handle it with irq_handler_t */
-
-
-/* arch/x86/include/asm/irq_vectors.h
- * Linux IRQ vector layout.
- *
- * There are 256 IDT entries (per CPU - each entry is 8 bytes) which can
- * be defined by Linux. They are used as a jump table by the CPU when a
- * given vector is triggered - by a CPU-external, CPU-internal or
- * software-triggered event.
- *
- * Linux sets the kernel code address each entry jumps to early during
- * bootup, and never changes them. This is the general layout of the
- * IDT entries:
- *
- *  Vectors   0 ...  31 : system traps and exceptions - hardcoded events
- *  Vectors  32 ... 127 : device interrupts
- *  Vector  128         : legacy int80 syscall interface
- *  Vectors 129 ... INVALIDATE_TLB_VECTOR_START-1 except 204 : device interrupts
- *  Vectors INVALIDATE_TLB_VECTOR_START ... 255 : special interrupts
- *
- * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
- *
- * This file enumerates the exact layout of them: */
-#define FIRST_EXTERNAL_VECTOR    0x20 /* 32 */
-#define IA32_SYSCALL_VECTOR    0x80   /* 128 */
-#define NR_VECTORS       256
-#define FIRST_SYSTEM_VECTOR    NR_VECTORS
 ```
 
-## ksoftirqd
+## softirq
+
+### ksoftirqd
 ```c++
 static struct smp_hotplug_thread softirq_threads = {
   .store              = &ksoftirqd,
@@ -12916,7 +13145,7 @@ void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_ma
 }
 ```
 
-## run_ksoftirqd
+### run_ksoftirqd
 ```c++
 int smpboot_thread_fn(void *data)
 {
@@ -13062,7 +13291,7 @@ restart:
 }
 ```
 
-## softirq_init
+### open_softirq
 ```c++
 void __init softirq_init(void)
 {
@@ -13105,7 +13334,7 @@ void open_softirq(int nr, void (*action)(struct softirq_action *))
 }
 ```
 
-## raise_softirq_irqoff
+### raise_softirq_irqoff
 ```c++
 void raise_softirq_irqoff(unsigned int nr)
 {
@@ -13155,6 +13384,13 @@ static __always_inline int preempt_count(void)
 {
   return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
 }
+
+DECLARE_PER_CPU(int, __preempt_count);
+/* Bits Description
+0-7   Preemption counter (max value = 255)
+8-15  Softirq counter (max value = 255).
+16-27 Hardirq counter (max value = 4096)
+28    PREEMPT_ACTIVE flag */
 
 void wakeup_softirqd(void)
 {
@@ -13246,7 +13482,10 @@ static void tasklet_action_common(struct softirq_action *a,
     local_irq_enable();
   }
 }
+```
 
+### tasklet_schedule
+```c++
 void tasklet_init(struct tasklet_struct *t,
       void (*func)(unsigned long), unsigned long data)
 {
@@ -13256,6 +13495,12 @@ void tasklet_init(struct tasklet_struct *t,
   t->func = func;
   t->data = data;
 }
+
+enum
+{
+  TASKLET_STATE_SCHED,  /* Tasklet is scheduled for execution */
+  TASKLET_STATE_RUN     /* Tasklet is running (SMP only) */
+};
 
 void tasklet_schedule(struct tasklet_struct *t)
 {

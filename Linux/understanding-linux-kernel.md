@@ -124,7 +124,6 @@ The Intel documentation classifies interrupts and exceptions as follows:
         * Aborts
     * Programmed exceptions
 
-
 **Programmable Interrupt Controller** performs the following actions:
 1. Monitors the IRQ lines, checking for raised signals. If two or more IRQ lines are raised, selects the one having the lower pin number.
 2. If a raised signal occurs on an IRQ line:
@@ -169,11 +168,13 @@ The descriptors are:
 
 ### 4.2.4 Hardware Handling of Interrupts and Exceptions
 After executing an instruction, the cs and eip pair of registers contain the logical address of the next instruction to be executed. Before dealing with that instruction, the control unit checks whether an interrupt or an exception occurred while the control unit executed the previous instruction. If one occurred, the control unit does the following:
-1. Determines the vector i (0 ≤ i ≤ 255) associated with the interrupt or the exception.
-2. Reads the ith entry of the IDT referred by the idtr register (we assume in the following description that the entry contains an interrupt or a trap gate).
-3. Gets the base address of the GDT from the gdtr register and looks in the GDT to read the Segment Descriptor identified by the selector in the IDT entry. This descriptor specifies the base address of the segment that includes the interrupt or exception handler.
-4. Makes sure the interrupt was issued by an authorized source. First, it compares the Current Privilege Level (CPL), which is stored in the two least significant bits of the cs register, with the Descriptor Privilege Level (DPL) of the Segment Descriptor included in the GDT. Raises a "General protection" exception if the CPL is lower than the DPL, because the interrupt handler cannot have a lower privilege than the program that caused the interrupt. For programmed exceptions, makes a further security check: compares the CPL with the DPL of the gate descriptor included in the IDT and raises a "General protection" exception if the DPL is lower than the CPL. This last check makes it possible to prevent access by user applications to specific trap or interrupt gates.
-5. Checks whether a change of privilege level is taking place—that is, if CPL is different from the selected Segment Descriptor’s DPL. If so, the control unit must start using the stack that is associated with the new privilege level. It does this by performing the following steps:
+1. Determines the `vector` i (0 ≤ i ≤ 255) associated with the interrupt or the exception.
+2. Reads the ith entry of the IDT referred by the `idtr` register (we assume in the following description that the entry contains an interrupt or a trap gate).
+3. Gets the base address of the GDT from the `gdtr` register and looks in the GDT to read the Segment Descriptor identified by the selector in the IDT entry. This descriptor specifies the base address of the segment that includes the interrupt or exception handler.
+4. Makes sure the interrupt was issued by an authorized source.
+    * First, it compares the Current Privilege Level (**CPL**), which is stored in the two least significant bits of the **cs register**, with the Descriptor Privilege Level (**DPL**) of the Segment Descriptor included in the GDT. Raises a "General protection" exception if the CPL is lower than the DPL, because the interrupt handler cannot have a lower privilege than the program that caused the interrupt.
+    * For programmed exceptions, makes a further security check: compares the CPL with the DPL of the gate descriptor included in the IDT and raises a "General protection" exception if the DPL is lower than the CPL. This last check makes it possible to prevent access by user applications to specific trap or interrupt gates.
+5. Checks whether a change of privilege level is taking place—that is, if CPL is different from the selected Segment Descriptor’s DPL. If so, the control unit must start using the `stack` that is associated with the new privilege level. It does this by performing the following steps:
     * Reads the tr register to access the TSS segment of the running process.
     * Loads the ss and esp registers with the proper values for the stack segment and stack pointer associated with the new privilege level. These values are found in the TSS (see the section "Task State Segment" in Chapter 3).
     * In the new stack, it saves the previous values of ss and esp, which define the logical address of the stack associated with the old privilege level.
@@ -182,22 +183,203 @@ After executing an instruction, the cs and eip pair of registers contain the log
 8. If the exception carries a hardware error code, it saves it on the stack.
 9. Loads cs and eip, respectively, with the Segment Selector and the Offset fields of the Gate Descriptor stored in the ith entry of the IDT. These values define the logical address of the first instruction of the interrupt or exception handler.
 
-After the interrupt or exception is processed, the corresponding handler must relinquish control to the interrupted process by issuing the iret instruction, which forces the control unit to:
-1. Load the cs, eip, and eflags registers with the values saved on the stack. If a hardware error code has been pushed in the stack on top of the eip contents, it must be popped before executing iret.
+After the interrupt or exception is processed, the corresponding handler must relinquish control to the interrupted process by issuing the `iret` instruction, which forces the control unit to:
+1. Load the **cs**, **eip**, and **eflags** registers with the values saved on the stack. If a hardware error code has been pushed in the stack on top of the eip contents, it must be popped before executing iret.
 2. Check whether the CPL of the handler is equal to the value contained in the two least significant bits of cs (this means the interrupted process was running at the same privilege level as the handler). If so, iret concludes execution; otherwise, go to the next step.
-3. Load the ss and esp registers from the stack and return to the stack associated with the old privilege level.
+3. Load the **ss** and **esp** registers from the stack and return to the stack associated with the old privilege level.
 4. Examine the contents of the ds, es, fs, and gs segment registers; if any of them contains a selector that refers to a Segment Descriptor whose DPL value is lower than CPL, clear the corresponding segment register. The control unit does this to forbid User Mode programs that run with a CPL equal to 3 from using segment registers previously used by kernel routines (with a DPL equal to 0). If these registers were not cleared, malicious User Mode programs could exploit them in order to access the kernel address space.
 
 ## 4.3 Nested Execution of Exception and Interrupt Handlers
 ![](../Images/ULK/4.3-nested-interrupt.png)
 
+The last instructions of a kernel control path that is taking care of an interrupt do not always put the current process back into User Mode: if the level of nesting is greater than 1, these instructions will put into execution the kernel control path that was interrupted last, and the CPU will continue to run in Kernel Mode.
+
+The price to pay for allowing nested kernel control paths is that an interrupt handler must never block, that is, no process switch can take place until an interrupt handler is running. In fact, all the data needed to resume a nested kernel control path is stored in the Kernel Mode stack, which is tightly bound to the current process.
+
+In contrast to exceptions, interrupts issued by I/O devices do not refer to data structures specific to the current process, although the kernel control paths that handle them run on behalf of that process.
+
+An interrupt handler may preempt both other interrupt handlers and exception handlers. Conversely, an exception handler never preempts an interrupt handler.
+
+Linux interleaves kernel control paths for two major reasons:
+* To improve the throughput of programmable interrupt controllers and device controllers.
+* To implement an interrupt model without priority levels.
+
 ## 4.4 Initializing the Interrupt Descriptor Table
+
+Before the kernel enables the interrupts, it must load the initial address of the IDT table into the idtr register and initialize all the entries of that table.
+
+### 4.4.1 Interrupt, Trap, and System Gates
+
+* **Interrupt gate**: All Linux interrupt handlers are activated by means of interrupt gates, and all are restricted to Kernel Mode.
+* **System gate** The three Linux exception handlers associated with the vectors 4, 5, and 128 are activated by means of system gates, so the three assembly language instructions into, bound, and int $0x80 can be issued in User Mode.
+* **System interrupt gate** The exception handler associated with the vector 3 is activated by means of a system interrupt gate, so the assembly language instruction int3 can be issued in User Mode.
+* **Trap gate** Most Linux exception handlers are activated by means of trap gates.
+* **Task gate** The Linux handler for the "Double fault" exception is activated by means of a task gate.
+
+### 4.4.2 Preliminary Initialization of the IDT
+
+The IDT is initialized and used by the BIOS routines while the computer still operates in Real Mode. Once Linux takes over, however, the IDT is moved to another area of RAM and initialized a second time, because Linux does not use any BIOS routine.
+
 ## 4.5 Exception Handling
+
+Exception handlers have a standard structure consisting of three steps:
+1. Save the contents of most registers in the Kernel Mode stack (this part is coded in assembly language).
+2. Handle the exception by means of a high-level C function.
+3. Exit from the handler by means of the ret_from_exception( ) function.
+
+
+### 4.5.1 Saving the Registers for the Exception Handler
+
+```c++
+ENTRY(async_page_fault)
+  ASM_CLAC
+  pushl $do_async_page_fault
+  jmp   common_exception
+END(async_page_fault)
+```
+
+### 4.5.2 Entering and Leaving the Exception Handler
+
 ## 4.6 Interrupt Handling
+
+### 4.6.1 I/O Interrupt Handling
+
+Interrupt handler flexibility is achieved in two distinct ways, as discussed in the following list.
+* IRQ sharing: each ISR is executed to verify whether its device needs attention; if so, the ISR performs all the operations that need to be executed when the device raises an interrupt
+* IRQ dynamic allocation
+
+Long noncritical operations should be deferred, because while an interrupt handler is running, the signals on the corresponding IRQ line are temporarily ignored. Therefore, interrupt handlers cannot perform any blocking procedure such as an I/O disk operation.
+
+Linux divides the actions to be performed following an interrupt into three classes:
+* **Critical** : Critical actions are executed within the interrupt handler immediately, with maskable interrupts disabled.
+* **Noncritical** : These actions can also finish quickly, so they are executed by the interrupt handler immediately, with the interrupts enabled.
+* **Noncritical Deferable** : Noncritical deferrable actions are performed by means of separate functions that are discussed in the later section "Softirqs and Tasklets."
+
+All I/O interrupt handlers perform the same four basic actions:
+1. Save the IRQ value and the register’s contents on the Kernel Mode stack.
+2. Send an acknowledgment to the PIC that is servicing the IRQ line, thus allowing it to issue further interrupts.
+3. Execute the interrupt service routines (ISRs) associated with all the devices that share the IRQ.
+4. Terminate by jumping to the ret_from_intr( ) address.
+
+#### 4.6.1.1 Interrupt vectors
+
+![](../Images/ULK/4.6-interrupt-handling.png)
+
+Vector Range | Use
+--- | ---
+0–19 (0x0–0x13) | Nonmaskable interrupts and exceptions
+20–31 (0x14–0x1f) | Intel-reserved
+32–127 (0x20–0x7f) | External interrupts (IRQs)
+128 (0x80) | Programmed exception for system calls
+129–238 (0x81–0xee) | External interrupts (IRQs)
+239 (0xef) | Local APIC timer interrupt
+240 (0xf0) | Local APIC thermal interrupt
+241–250 (0xf1–0xfa) | Reserved by Linux for future use
+251–253 (0xfb–0xfd) | Interprocessor interrupts
+254 (0xfe) | Local APIC error interrupt
+255 (0xff) | Local APIC spurious interrupt
+
+#### 4.6.1.2 IRQ data structures
+
+#### 4.6.1.3 IRQ distribution in multiprocessor systems
+
+During system bootstrap, the booting CPU executes the **setup_IO_APIC_irqs**() function to initialize the I/O APIC chip. The 24 entries of the Interrupt Redirection Table of the chip are filled, so that all IRQ signals from the I/O hardware devices can be routed to each CPU in the system according to the "lowest priority" scheme (see the earlier section "IRQs and Interrupts").
+
+During system bootstrap, moreover, all CPUs execute the **setup_local_APIC**() function, which takes care of initializing the local APICs.
+
+When a hardware device raises an IRQ signal, the multi-APIC system selects one of the CPUs and delivers the signal to the corresponding local APIC, which in turn interrupts its CPU. No other CPUs are notified of the event.
+
+#### 4.6.1.4 Multiple Kernel Mode stacks
+
+#### 4.6.1.5 Saving the registers for the interrupt handler
+
+```c++
+common_interrupt:
+    SAVE_ALL
+    movl %esp,%eax
+    call do_IRQ
+    jmp ret_from_intr
+
+SAVE_ALL:
+    cld
+    push %es
+    push %ds
+    pushl %eax
+    pushl %ebp
+    pushl %edi
+    pushl %esi
+    pushl %edx
+    pushl %ecx
+    pushl %ebx
+    movl $__USER_DS,%edx movl %edx,%ds
+    movl %edx,%es
+```
+
+SAVE_ALL saves all the CPU registers that may be used by the interrupt handler on the stack, except for **eflags, cs, eip, ss, and esp**, which are already saved automatically by the control unit (see the earlier section "Hardware Handling of Interrupts and Exceptions").
+
+#### 4.6.1.6 The do_IRQ( ) function
+
+#### 4.6.1.7 Reviving a lost interrupt
+
+#### 4.6.1.8 Dynamic allocation of IRQ lines
+
+As noted in section "Interrupt vectors," a few vectors are reserved for specific devices, while the remaining ones are dynamically handled.
+
+### 4.6.2 Interprocessor Interrupt Handling
+
+an interprocessor interrupt (IPI) is delivered not through an IRQ line, but directly as a message on the bus that connects the local APIC of all CPUs (either a dedicated bus in older motherboards, or the system bus in the Pentium 4–based motherboards).
+
+
+Linux makes use of three kinds of interprocessor interrupts (see also Table 4-2):
+* CALL_FUNCTION_VECTOR (vector 0xfb). Sent to all CPUs but the sender, forcing those CPUs to run a function passed by the sender. call_function_interrupt( ).
+* RESCHEDULE_VECTOR (vector 0xfc). When a CPU receives this type of interrupt, reschedule_interrupt().
+* INVALIDATE_TLB_VECTOR (vector 0xfd). Sent to all CPUs but the sender, forcing them to invalidate their Translation Lookaside Buffers. invalidate_interrupt( )
+
 ## 4.7 Softirqs and Tasklets
+
+Softirqs are **statically** allocated (i.e., defined at compile time), while tasklets can also be allocated and initialized at **runtime** (for instance, when loading a kernel module).
+
+Softirqs can run **concurrently** on several CPUs, even if they are of the same type. Thus, softirqs are reentrant functions and must explicitly protect their data structures with spin locks. Tasklets do not have to worry about this, because their execution is controlled more strictly by the kernel.
+
+Tasklets of the same type are always serialized: in other words, the same type of tasklet cannot be executed by two CPUs at the same time. However, tasklets of different types can be executed concurrently on several CPUs. Serializing the tasklet simplifies the life of device driver developers, because the tasklet function needs not be reentrant.
+
+Checks for active (pending) softirqs should be perfomed periodically:
+* When the kernel invokes the **local_bh_enable**() function* to enable softirqs on the local CPU
+* When the do_IRQ() function finishes handling an I/O interrupt and invokes the **irq_exit**() macro
+* If the system uses an I/O APIC, when the **smp_apic_timer_interrupt**() function finishes handling a local timer interrupt (see the section "Timekeeping Architecture in Multiprocessor Systems" in Chapter 6)
+* In multi-processor systems, when a CPU finishes handling a functiont riggered by a **CALL_FUNCTION_VECTOR** interprocessor interrupt
+* When one of the special **ksoftirqd**/n kernel threads is awakened (see later)
+
 ## 4.8 Work Queues
+
+The difference of defferable functions and work queues:
+* The main difference is that deferrable functions run in **interrupt context** while functions in work queues run in **process context**. Running in process context is the only way to execute functions that can **block**.
+* No **process switch** can take place in interrupt context.
+* Neither deferrable functions nor functions in a work queue can access the User Mode address space of a process.
+
 ## 4.9 Returning from Interrupts and Exceptions
 
+To resume execution of some program—several issues must be considered before doing it:
+* Number of kernel control paths being concurrently executed. If there is just one, the CPU must switch back to User Mode.
+* Pending process switch requests. If there is any request, the kernel must perform process scheduling; otherwise, control is returned to the current process.
+* Pending signals. If a signal is sent to the current process, it must be handled.
+* Single-step mode. If a debugger is tracing the execution of the current process, single-step mode must be restored before switching back to User Mode.
+* Virtual-8086 mode. If the CPU is in virtual-8086 mode, the current process is executing a legacy Real Mode program, thus it must be handled in a special way.
+
+
+A few flags are used to keep track of pending process switch requests, of pending signals, and of single step execution; they are stored in the flags field of the thread_ info descriptor:
+
+Flag name | Description
+--- | ---
+TIF_SYSCALL_TRACE | System calls are being traced
+TIF_NOTIFY_RESUME | Not used in the 80 x 86 platform
+TIF_SIGPENDING | The process has pending signals
+TIF_NEED_RESCHED | Scheduling must be performed
+TIF_SINGLESTEP | Restore single step execution on return to User Mode
+TIF_IRET | Force return from system call via iret rather than sysexit
+TIF_SYSCALL_AUDIT | System calls are being audited
+TIF_POLLING_NRFLAG | The idle process is polling the TIF_NEED_RESCHED flag
+TIF_MEMDIE | The process is being destroyed to reclaim memory (see the section "The Out of Memory Killer" in Chapter 17)
 
 # 6 Timing Measurements
 Two main kinds of timing measurement that must be performed by the Linux kernel:
@@ -476,7 +658,7 @@ Types of multiprocessor machines:
 
 These basic kinds of multiprocessor systems are often combined. For instance, a motherboard that includes two different hyper-threaded CPUs is seen by the kernel as four logical CPUs.
 
-Linux sports a sophisticated runqueue balancing algorithm based on the notion of "scheduling domains.”
+Linux sports a sophisticated runqueue balancing algorithm based on the notion of "scheduling domains."
 
 ### 7.5.1 Scheduling Domains
 
@@ -569,7 +751,7 @@ Requests coming from the same process are always inserted in the same queue.
 
 Besides the dispatch queue, the "Deadline" elevator makes use of four queues.
 * Two of them—the sorted queues—include the read and write requests, respectively, ordered according to their initial sector numbers.
-* The other two—the deadline queues— include the same read and write requests sorted according to their "deadlines.”
+* The other two—the deadline queues— include the same read and write requests sorted according to their "deadlines."
 
 A request deadline is essentially an expire timer that starts ticking when the request is passed to the elevator. By default, the expire time of read requests is 500 milliseconds, while the expire time for write requests is 5 seconds—read requests are privileged over write requests.
 
