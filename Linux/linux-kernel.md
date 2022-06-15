@@ -59,6 +59,19 @@
 * [Pthread](#Pthread)
     * [pthread_create](#pthread_create)
 
+* [interrupt](#interrupt)
+    * [ksoftirqd](#ksoftirqd)
+    * [run_ksoftirqd](#run_ksoftirqd)
+    * [request_irq](#request_irq)
+    * [init idt_table](#init-idt_table)
+    * [init_irq](#init_irq)
+    * [init vector_irq](#init-vector_irq)
+    * [softirq_init](#softirq_init)
+    * [raise_softirq_irqoff](#raise_softirq_irqoff)
+    * [tasklet](#tasklet)
+        * [open TASKLET_SOFTIRQ](#open-taskletsoftirq)
+        * [tasklet_schedule](#tasklet_schedule)
+
 ![](../Images/Kernel/kernel-structual.svg)
 
 # Init
@@ -300,11 +313,11 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 
 #define T_PSEUDO(SYMBOL, NAME, N)    PSEUDO (SYMBOL, NAME, N)
 
-#define PSEUDO(name, syscall_name, args)   \
-  .text;                                  \
-  ENTRY (name)                            \
-    DO_CALL (syscall_name, args);         \
-    cmpl $-4095, %eax;                    \
+#define PSEUDO(name, syscall_name, args) \
+  .text; \
+  ENTRY (name) \
+    DO_CALL (syscall_name, args); \
+    cmpl $-4095, %eax; \
     jae SYSCALL_ERROR_LABEL
 ```
 
@@ -381,10 +394,10 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
   arg 5    %edi       call-saved
   arg 6    %ebp       call-saved */
 #define DO_CALL(syscall_name, args) \
-    PUSHARGS_##args                \
-    DOARGS_##args                  \
+    PUSHARGS_##args \
+    DOARGS_##args \
     movl $SYS_ify (syscall_name), %eax; \ // get syscall id by syscall_name
-    ENTER_KERNEL                        \
+    ENTER_KERNEL \
     POPARGS_##args
 
 #define ENTER_KERNEL int $0x80
@@ -518,7 +531,7 @@ ENDPROC(entry_INT80_32)
   pushl  %fs
   pushl  %es
   pushl  %ds
-  pushl  \pt_regs_ax
+  pushl \pt_regs_ax
   pushl  %ebp
   pushl  %edi
   pushl  %esi
@@ -768,7 +781,7 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
         arg 4           r10
         arg 5           r8
         arg 6           r9 */
-    #define DO_CALL(syscall_name, args)  \
+    #define DO_CALL(syscall_name, args) \
     lea SYS_ify (syscall_name), %rax; \
     syscall
 
@@ -855,6 +868,7 @@ ENTRY(entry_SYSCALL_64)
    * is not required to switch CR3. */
   movq  %rsp, PER_CPU_VAR(rsp_scratch)
   movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp /* x86_hw_tss.sp1, update in __switch_to */
+  /* movq    %gs:cpu_current_top_of_stack, %rsp */
 
 /* 2. save user stack
   * Construct struct pt_regs on stack */
@@ -964,7 +978,7 @@ syscall_return_via_sysret:
 END(entry_SYSCALL_64)
 
 #define USERGS_SYSRET64 \
-  swapgs;              \
+  swapgs; \
   sysretq;
 ```
 
@@ -1117,6 +1131,7 @@ struct thread_info {
   u32             status; /* thread synchronous flags */
 };
 
+/* arch/x86/include/asm/processor.h */
 struct thread_struct {
   /* Cached TLS descriptors: */
   struct desc_struct  tls_array[GDT_ENTRY_TLS_ENTRIES];
@@ -1133,6 +1148,11 @@ struct thread_struct {
   unsigned short      fsindex;
   unsigned short      gsindex;
 #endif
+
+  /* Fault info: */
+	unsigned long       cr2;
+	unsigned long       trap_nr;
+	unsigned long       error_code;
 
   /* Floating point and extended processor state */
   struct fpu    fpu;
@@ -1549,8 +1569,8 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 #### switch_to
 ```c++
 #define switch_to(prev, next, last) \
-do {                  \
-  prepare_switch_to(prev, next);  \
+do { \
+  prepare_switch_to(prev, next); \
   /* 2. switch kernel esp, stack */
   ((last) = __switch_to_asm((prev), (next))); \
 } while (0)
@@ -6841,7 +6861,7 @@ static int ext4_mknod(struct inode *dir, struct dentry *dentry,
 }
 
 #define ext4_new_inode_start_handle(dir, mode, qstr, goal, owner, \
-            type, nblocks)        \
+            type, nblocks) \
   __ext4_new_inode(NULL, (dir), (mode), (qstr), (goal), (owner), \
        0, (type), __LINE__, (nblocks))
 
@@ -7319,13 +7339,13 @@ static int __setup_rt_frame(int sig, struct ksignal *ksig,
 RESTORE (restore_rt, __NR_rt_sigreturn)
 #define RESTORE(name, syscall) RESTORE2 (name, syscall)
 # define RESTORE2(name, syscall) \
-asm                                     \
-  (                                     \
-   ".LSTART_" #name ":\n"               \
-   "    .type __" #name ",@function\n"  \
-   "__" #name ":\n"                     \
-   "    movq $" #syscall ", %rax\n"     \
-   "    syscall\n"                      \
+asm \
+  ( \
+   ".LSTART_" #name ":\n" \
+   "    .type __" #name ",@function\n" \
+   "__" #name ":\n" \
+   "    movq $" #syscall ", %rax\n" \
+   "    syscall\n" \
 
 
 asmlinkage long sys_rt_sigreturn(void)
@@ -8803,8 +8823,8 @@ struct cftype {
 
 ### cgroup_init_subsys
 ```c++
-#define for_each_subsys(ss, ssid)          \
-  for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT &&    \
+#define for_each_subsys(ss, ssid) \
+  for ((ssid) = 0; (ssid) < CGROUP_SUBSYS_COUNT && \
        (((ss) = cgroup_subsys[ssid]) || true); (ssid)++)
 
 #define SUBSYS(_x) [_x ## _cgrp_id] = &_x ## _cgrp_subsys,
@@ -11476,13 +11496,13 @@ static inline void __raw_spin_lock(raw_spinlock_t *lock)
 
 
 /* include/linux/lockdep.h */
-#define LOCK_CONTENDED(_lock, try, lock)      \
-do {                \
-  if (!try(_lock)) {          \
-    lock_contended(&(_lock)->dep_map, _RET_IP_);  \
-    lock(_lock);          \
-  }              \
-  lock_acquired(&(_lock)->dep_map, _RET_IP_);      \
+#define LOCK_CONTENDED(_lock, try, lock) \
+do { \
+  if (!try(_lock)) { \
+    lock_contended(&(_lock)->dep_map, _RET_IP_); \
+    lock(_lock); \
+  } \
+  lock_acquired(&(_lock)->dep_map, _RET_IP_); \
 } while (0)
 
 
@@ -11526,31 +11546,31 @@ static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
 }
 
 /* arch/x86/include/asm/cmpxchg.h */
-#define arch_cmpxchg(ptr, old, new)          \
+#define arch_cmpxchg(ptr, old, new) \
   __cmpxchg(ptr, old, new, sizeof(*(ptr)))
 
-#define __cmpxchg(ptr, old, new, size)          \
+#define __cmpxchg(ptr, old, new, size) \
   __raw_cmpxchg((ptr), (old), (new), (size), LOCK_PREFIX)
 
-#define __raw_cmpxchg(ptr, old, new, size, lock)      \
-({                  \
-  __typeof__(*(ptr)) __ret;          \
-  __typeof__(*(ptr)) __old = (old);        \
-  __typeof__(*(ptr)) __new = (new);        \
-  switch (size) {              \
-  case __X86_CASE_W:            \
-  {                \
-    volatile u16 *__ptr = (volatile u16 *)(ptr);    \
-    asm volatile(lock "cmpxchgw %2,%1"      \
-           : "=a" (__ret), "+m" (*__ptr)    \
-           : "r" (__new), "0" (__old)      \
-           : "memory");        \
-    break;              \
-  }                \
-  default:              \
-    __cmpxchg_wrong_size();          \
-  }                \
-  __ret;                \
+#define __raw_cmpxchg(ptr, old, new, size, lock) \
+({ \
+  __typeof__(*(ptr)) __ret; \
+  __typeof__(*(ptr)) __old = (old); \
+  __typeof__(*(ptr)) __new = (new); \
+  switch (size) { \
+  case __X86_CASE_W: \
+  { \
+    volatile u16 *__ptr = (volatile u16 *)(ptr); \
+    asm volatile(lock "cmpxchgw %2,%1" \
+           : "=a" (__ret), "+m" (*__ptr) \
+           : "r" (__new), "0" (__old) \
+           : "memory"); \
+    break; \
+  } \
+  default: \
+    __cmpxchg_wrong_size(); \
+  } \
+  __ret; \
 })
 ```
 
@@ -11854,7 +11874,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 }
 ```
 
-# interruption
+# interrupt
 
 ![](../Images/Kernel/io-irq.png)
 
@@ -11865,6 +11885,877 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 ---
 
 ![](../Images/Kernel/io-interrupt.png)
+
+![](../Images/ULK/4.2-gate-descriptors.png)
+
+```c++
+// arch/x86/kernel/traps.c, per cpu
+struct gate_struct {
+  u16    offset_low;      /* system irq hanlder addr */
+  u16    segment;         /* KERNEL_CS */
+  struct idt_bits  bits;
+  u16    offset_middle;   /* addr >> 16 */
+#ifdef CONFIG_X86_64
+  u32    offset_high;     /* adr >> 32 */
+  u32    reserved;        /*  0 */
+#endif
+};
+
+struct idt_bits {
+  u16 ist   : 3,   /* Interrupt Stack Table, DEFAULT_STACK, KERNEK_STACK */
+      zero  : 5,
+      type  : 5,   /* GATE_{INTERRUPT, TRAP, CALL, TASK} */
+      dpl   : 2,   /* DPL (Descriptor privilege level), DLP0, DLP3 */
+                   /* RPL (Requested privilege level) */
+      p     : 1;   /* Present bit */
+};
+
+enum {
+  GATE_INTERRUPT = 0xE,
+  GATE_TRAP = 0xF,
+  GATE_CALL = 0xC,
+  GATE_TASK = 0x5,
+};
+
+struct idt_data {
+  unsigned int vector;
+  unsigned int segment;
+  struct idt_bits bits;
+  const void *addr;
+};
+
+/* interrupt descriptor table */
+struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
+```
+
+* (Interrupt Descriptor Table)[https://wiki.osdev.org/Interrupt_Descriptor_Table]
+
+## trap_init
+```c++
+/* arch/x86/kernel/traps.c */
+void __init trap_init(void)
+{
+  /* Init cpu_entry_area before IST entries are set up */
+  setup_cpu_entry_areas();
+
+  idt_setup_traps();
+
+  cea_set_pte(CPU_ENTRY_AREA_RO_IDT_VADDR, __pa_symbol(idt_table), PAGE_KERNEL_RO);
+  idt_descr.address = CPU_ENTRY_AREA_RO_IDT;
+
+  cpu_init();
+
+  idt_setup_ist_traps();
+
+  x86_init.irqs.trap_init();
+
+  idt_setup_debugidt_traps();
+}
+
+// arch/x86/include/asm/traps.h
+enum {
+  X86_TRAP_DE = 0,      /*  0, Divide-by-zero */
+  X86_TRAP_DB,          /*  1, Debug */
+  X86_TRAP_NMI,         /*  2, Non-maskable Interrupt */
+  X86_TRAP_BP,          /*  3, Breakpoint */
+  X86_TRAP_OF,          /*  4, Overflow */
+  X86_TRAP_BR,          /*  5, Bound Range Exceeded */
+  X86_TRAP_UD,          /*  6, Invalid Opcode */
+  X86_TRAP_NM,          /*  7, Device Not Available */
+  X86_TRAP_DF,          /*  8, Double Fault */
+  X86_TRAP_OLD_MF,      /*  9, Coprocessor Segment Overrun */
+  X86_TRAP_TS,          /* 10, Invalid TSS */
+  X86_TRAP_NP,          /* 11, Segment Not Present */
+  X86_TRAP_SS,          /* 12, Stack Segment Fault */
+  X86_TRAP_GP,          /* 13, General Protection Fault */
+  X86_TRAP_PF,          /* 14, Page Fault */
+  X86_TRAP_SPURIOUS,    /* 15, Spurious Interrupt */
+  X86_TRAP_MF,          /* 16, x87 Floating-Point Exception */
+  X86_TRAP_AC,          /* 17, Alignment Check */
+  X86_TRAP_MC,          /* 18, Machine Check */
+  X86_TRAP_XF,          /* 19, SIMD Floating-Point Exception */
+  X86_TRAP_IRET = 32,   /* 32, IRET Exception */
+};
+
+static const __initconst struct idt_data def_idts[] = {
+  INTG(X86_TRAP_DE,  divide_error),
+  INTG(X86_TRAP_NMI,  nmi),
+  INTG(X86_TRAP_BR,  bounds),
+  INTG(X86_TRAP_UD,  invalid_op),
+  INTG(X86_TRAP_NM,  device_not_available),
+  INTG(X86_TRAP_OLD_MF,  coprocessor_segment_overrun),
+  INTG(X86_TRAP_TS,  invalid_TSS),
+  INTG(X86_TRAP_NP,  segment_not_present),
+  INTG(X86_TRAP_SS,  stack_segment),
+  INTG(X86_TRAP_GP,  general_protection),
+  INTG(X86_TRAP_SPURIOUS,  spurious_interrupt_bug),
+  INTG(X86_TRAP_MF,  coprocessor_error),
+  INTG(X86_TRAP_AC,  alignment_check),
+  INTG(X86_TRAP_XF,  simd_coprocessor_error),
+
+#ifdef CONFIG_X86_32
+  TSKG(X86_TRAP_DF,  GDT_ENTRY_DOUBLEFAULT_TSS),
+#else
+  INTG(X86_TRAP_DF,  double_fault),
+#endif
+  INTG(X86_TRAP_DB,  debug),
+
+#ifdef CONFIG_X86_MCE
+  INTG(X86_TRAP_MC,  &machine_check),
+#endif
+
+  SYSG(X86_TRAP_OF,  overflow),
+#if defined(CONFIG_IA32_EMULATION)
+  SYSG(IA32_SYSCALL_VECTOR,  entry_INT80_compat),
+#elif defined(CONFIG_X86_32)
+  SYSG(IA32_SYSCALL_VECTOR,  entry_INT80_32),
+#endif
+};
+
+#define DPL0    0x0
+#define DPL3    0x3
+
+#define DEFAULT_STACK  0
+
+#define G(_vector, _addr, _ist, _type, _dpl, _segment) \
+{ \
+  .vector     = _vector, \
+  .bits.ist   = _ist, \
+  .bits.type  = _type, \
+  .bits.dpl   = _dpl, \
+  .bits.p     = 1, \
+  .addr       = _addr, \
+  .segment    = _segment, \
+}
+
+/* Interrupt gate */
+#define INTG(_vector, _addr) \
+  G(_vector, _addr, DEFAULT_STACK, GATE_INTERRUPT, DPL0, __KERNEL_CS)
+
+/* System interrupt gate */
+#define SYSG(_vector, _addr) \
+  G(_vector, _addr, DEFAULT_STACK, GATE_INTERRUPT, DPL3, __KERNEL_CS)
+
+/* Interrupt gate with interrupt stack */
+#define ISTG(_vector, _addr, _ist) \
+  G(_vector, _addr, _ist, GATE_INTERRUPT, DPL0, __KERNEL_CS)
+
+/* System interrupt gate with interrupt stack */
+#define SISTG(_vector, _addr, _ist) \
+  G(_vector, _addr, _ist, GATE_INTERRUPT, DPL3, __KERNEL_CS)
+
+/* Task gate */
+#define TSKG(_vector, _gdt) \
+  G(_vector, NULL, DEFAULT_STACK, GATE_TASK, DPL0, _gdt << 3)
+
+void __init idt_setup_traps(void)
+{
+  idt_setup_from_table(idt_table, def_idts, ARRAY_SIZE(def_idts), true);
+}
+
+void idt_setup_from_table(gate_desc *idt, const struct idt_data *t, int size, bool sys)
+{
+  gate_desc desc;
+
+  for (; size > 0; t++, size--) {
+    idt_init_desc(&desc, t);
+    write_idt_entry(idt, t->vector, &desc);
+    if (sys)
+      set_bit(t->vector, system_vectors);
+  }
+}
+
+void idt_init_desc(gate_desc *gate, const struct idt_data *d)
+{
+  unsigned long addr = (unsigned long) d->addr;
+
+  gate->offset_low = (u16) addr;
+  gate->segment  = (u16) d->segment;
+  gate->bits  = d->bits;
+  gate->offset_middle = (u16) (addr >> 16);
+#ifdef CONFIG_X86_64
+  gate->offset_high = (u32) (addr >> 32);
+  gate->reserved  = 0;
+#endif
+}
+
+#define write_idt_entry(dt, entry, g)  native_write_idt_entry(dt, entry, g)
+
+void native_write_idt_entry(gate_desc *idt, int entry, const gate_desc *gate)
+{
+  memcpy(&idt[entry], gate, sizeof(*gate));
+}
+
+void __init idt_setup_ist_traps(void)
+{
+  idt_setup_from_table(idt_table, ist_idts, ARRAY_SIZE(ist_idts), true);
+}
+
+static const __initconst struct idt_data ist_idts[] = {
+  ISTG(X86_TRAP_DB, debug, DEBUG_STACK),
+  ISTG(X86_TRAP_NMI, nmi, NMI_STACK),
+  ISTG(X86_TRAP_DF, double_fault, DOUBLEFAULT_STACK),
+#ifdef CONFIG_X86_MCE
+  ISTG(X86_TRAP_MC, &machine_check, MCE_STACK),
+#endif
+};
+```
+
+## set_intr_gate
+```c++
+void set_intr_gate(unsigned int n, const void *addr)
+{
+  struct idt_data data;
+
+  BUG_ON(n > 0xFF);
+
+  memset(&data, 0, sizeof(data));
+  data.vector = n;
+  data.addr = addr;
+  data.segment = __KERNEL_CS;
+  data.bits.type = GATE_INTERRUPT;
+  data.bits.p = 1;
+
+  idt_setup_from_table(idt_table, &data, 1, false);
+}
+
+static void
+idt_setup_from_table(gate_desc *idt, const struct idt_data *t, int size, bool sys)
+{
+  gate_desc desc;
+
+  for (; size > 0; t++, size--) {
+    idt_init_desc(&desc, t);
+    write_idt_entry(idt, t->vector, &desc);
+    if (sys)
+      set_bit(t->vector, system_vectors);
+  }
+}
+```
+
+## init_IRQ
+```c++
+void start_kernel(void)
+{
+  init_IRQ();
+}
+
+void __init init_IRQ(void)
+{
+  int i;
+
+  for (i = 0; i < nr_legacy_irqs(); i++)
+    per_cpu(vector_irq, 0)[ISA_IRQ_VECTOR(i)] = irq_to_desc(i);
+
+  x86_init.irqs.intr_init(); /* native_init_IRQ */
+}
+
+// after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
+void __init native_init_IRQ(void)
+{
+  /* Execute any quirks before the call gates are initialised: */
+  x86_init.irqs.pre_vector_init();
+
+  idt_setup_apic_and_irq_gates();
+  lapic_assign_system_vectors();
+
+  if (!acpi_ioapic && !of_ioapic && nr_legacy_irqs())
+    setup_irq(2, &irq2);
+
+  irq_ctx_init(smp_processor_id());
+}
+
+void __init idt_setup_apic_and_irq_gates(void)
+{
+  int i = FIRST_EXTERNAL_VECTOR;
+  void *entry;
+
+  idt_setup_from_table(idt_table, apic_idts, ARRAY_SIZE(apic_idts), true);
+
+  for_each_clear_bit_from(i, system_vectors, FIRST_SYSTEM_VECTOR) {
+    entry = irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR);
+    set_intr_gate(i, entry);
+  }
+
+#ifdef CONFIG_X86_LOCAL_APIC
+  for_each_clear_bit_from(i, system_vectors, NR_VECTORS) {
+    entry = spurious_entries_start + 8 * (i - FIRST_SYSTEM_VECTOR);
+    set_intr_gate(i, entry);
+  }
+#endif
+}
+
+/* arch/x86/include/asm/hw_irq.h */
+extern char irq_entries_start[];
+
+/* set `FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR` handler to do_IRQ
+ * irq_entries_start defined in arch\x86\entry\entry_{32, 64}
+
+ * Build the entry stubs with some assembler magic.
+ * We pack 1 stub into every 8-byte block. */
+ENTRY(irq_entries_start)
+  vector=FIRST_EXTERNAL_VECTOR
+  .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
+  pushl  $(~vector+0x80)      /* Note: always in signed byte range */
+  vector=vector+1
+  jmp  common_interrupt /* invoke do_IRQ */
+  .align  8
+  .endr
+END(irq_entries_start)
+
+common_interrupt:
+  ASM_CLAC
+  addq  $-0x80, (%rsp)      /* Adjust vector to [-256, -1] range */
+  interrupt do_IRQ
+  /* 0(%rsp): old RSP */
+ret_from_intr:
+  DISABLE_INTERRUPTS(CLBR_ANY)
+  TRACE_IRQS_OFF
+
+  LEAVE_IRQ_STACK
+
+  testb  $3, CS(%rsp)
+  jz  retint_kernel
+
+  /* Interrupt came from user space */
+GLOBAL(retint_user)
+  mov  %rsp,%rdi
+  call  prepare_exit_to_usermode
+  TRACE_IRQS_IRETQ
+
+
+/*
+ * Undoes ENTER_IRQ_STACK.
+ */
+.macro LEAVE_IRQ_STACK regs=1
+  DEBUG_ENTRY_ASSERT_IRQS_OFF
+  /* We need to be off the IRQ stack before decrementing irq_count. */
+  popq  %rsp
+
+  .if \regs
+  UNWIND_HINT_REGS
+  .endif
+
+  /*
+   * As in ENTER_IRQ_STACK, irq_count == 0, we are still claiming
+   * the irq stack but we're not on it.
+   */
+
+  decl  PER_CPU_VAR(irq_count)
+.endm
+
+unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
+{
+  struct pt_regs *old_regs = set_irq_regs(regs);
+  struct irq_desc * desc;
+  /* high bit used in ret_from_ code  */
+  unsigned vector = ~regs->orig_ax;
+
+  entering_irq();
+
+  desc = __this_cpu_read(vector_irq[vector]);
+
+  if (!handle_irq(desc, regs)) {
+    ack_APIC_irq();
+
+    if (desc != VECTOR_RETRIGGERED && desc != VECTOR_SHUTDOWN) {
+
+    } else {
+      __this_cpu_write(vector_irq[vector], VECTOR_UNUSED);
+    }
+  }
+
+  exiting_irq();
+
+  set_irq_regs(old_regs);
+  return 1;
+}
+
+/* do_IRQ -> handle_irq -> */
+static inline void generic_handle_irq_desc(struct irq_desc *desc)
+{
+  desc->handle_irq(desc);
+}
+
+irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
+{
+  irqreturn_t retval = IRQ_NONE;
+  unsigned int irq = desc->irq_data.irq;
+  struct irqaction *action;
+
+  record_irq_time(desc);
+
+  for_each_action_of_desc(desc, action) {
+    irqreturn_t res;
+    res = action->handler(irq, action->dev_id);
+    switch (res) {
+    case IRQ_WAKE_THREAD:
+      __irq_wake_thread(desc, action);
+    case IRQ_HANDLED:
+      *flags |= action->flags;
+      break;
+    default:
+      break;
+    }
+    retval |= res;
+  }
+  return retval;
+}
+
+void irq_exit(void)
+{
+#ifndef __ARCH_IRQ_EXIT_IRQS_DISABLED
+  local_irq_disable();
+#else
+  lockdep_assert_irqs_disabled();
+#endif
+  account_irq_exit_time(current);
+  preempt_count_sub(HARDIRQ_OFFSET);
+  if (!in_interrupt() && local_softirq_pending())
+    invoke_softirq();
+
+  tick_irq_exit();
+  rcu_irq_exit();
+  trace_hardirq_exit(); /* must be last! */
+}
+
+static inline void invoke_softirq(void)
+{
+  if (ksoftirqd_running(local_softirq_pending()))
+    return;
+
+  if (!force_irqthreads) {
+#ifdef CONFIG_HAVE_IRQ_EXIT_ON_IRQ_STACK
+    __do_softirq();
+#else
+    do_softirq_own_stack();
+#endif
+  } else {
+    wakeup_softirqd();
+  }
+}
+```
+
+## irq_desc
+```c++
+/* The interrupt vector interrupt controller sent to
+ * each cpu is per cpu local variable, but the abstract
+ * layer's virtual signal irq and it's irq_desc is global.
+ * So per cpu needs its own mapping from vector to irq_desc */
+typedef struct irq_desc* vector_irq_t[NR_VECTORS];
+DECLARE_PER_CPU(vector_irq_t, vector_irq);
+
+struct irq_desc {
+  struct irq_common_data irq_common_data;
+  struct irq_data        irq_data;
+  unsigned int __percpu  *kstat_irqs;
+  irq_flow_handler_t     handle_irq;
+  struct irqaction       *action; /* IRQ action list */
+
+  struct cpumask    *percpu_enabled;
+  wait_queue_head_t   wait_for_threads;
+};
+
+struct irqaction {
+  irq_handler_t  handler; /* typedef irqreturn_t (*irq_handler_t)(int, void *) */
+  void             *dev_id;
+  void __percpu      *percpu_dev_id;
+  struct irqaction   *next;
+  irq_handler_t      thread_fn;
+  struct task_struct *thread;
+  struct irqaction   *secondary;
+  unsigned int      irq;
+  unsigned int      flags;
+  unsigned long      thread_flags;
+  unsigned long      thread_mask;
+  const char        *name;
+  struct proc_dir_entry *dir;
+};
+
+// assign virtual irq to a cpu
+static int __assign_irq_vector(
+  int irq, struct apic_chip_data *d,
+  const struct cpumask *mask,
+  struct irq_data *irqdata)
+{
+  static int current_vector = FIRST_EXTERNAL_VECTOR + VECTOR_OFFSET_START;
+  static int current_offset = VECTOR_OFFSET_START % 16;
+  int cpu, vector;
+
+  while (cpu < nr_cpu_ids) {
+    int new_cpu, offset;
+
+    vector = current_vector;
+    offset = current_offset;
+next:
+    vector += 16;
+    if (vector >= first_system_vector) {
+      offset = (offset + 1) % 16;
+      vector = FIRST_EXTERNAL_VECTOR + offset;
+    }
+    /* If the search wrapped around, try the next cpu */
+    if (unlikely(current_vector == vector))
+      goto next_cpu;
+
+    if (test_bit(vector, used_vectors))
+      goto next;
+
+    /* Found one! */
+    current_vector = vector;
+    current_offset = offset;
+    /* Schedule the old vector for cleanup on all cpus */
+    if (d->cfg.vector)
+      cpumask_copy(d->old_domain, d->domain);
+    for_each_cpu(new_cpu, vector_searchmask)
+      per_cpu(vector_irq, new_cpu)[vector] = irq_to_desc(irq);
+    goto update;
+
+next_cpu:
+    cpumask_or(searched_cpumask, searched_cpumask, vector_cpumask);
+    cpumask_andnot(vector_cpumask, mask, searched_cpumask);
+    cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
+    continue;
+  }
+}
+```
+
+## do_page_fault
+
+[page-fault](./linux-kernel-mem.md#page-fault)
+
+## do_trap
+
+The C functions that implement exception han- dlers always consist of the prefix do_ followed by the handler name. Most of these functions invoke the **do_trap**() function to store the hardware error code and the exception vector in the process descriptor of current, and then send a suitable signal to that process:
+```c++
+current->thread.error_code = error_code;
+current->thread.trap_no = vector;
+force_sig_info(signr, info ?: SEND_SIG_PRIV, tsk);
+```
+
+```c++
+/* arch/x86/entry/entry_32.S */
+ENTRY(divide_error)
+  ASM_CLAC
+  pushl  $0        # no error code
+  pushl  $do_divide_error
+  jmp  common_exception
+END(divide_error)
+
+/* arch/x86/entry/entry_64.S */
+idtentry divide_error  	do_divide_error  	has_error_code=0
+```
+
+```c++
+/* arch/x86/kernel/traps.c */
+DO_ERROR(X86_TRAP_DE,     SIGFPE,  "divide error",    divide_error)
+DO_ERROR(X86_TRAP_OF,     SIGSEGV, "overflow",      overflow)
+DO_ERROR(X86_TRAP_UD,     SIGILL,  "invalid opcode",    invalid_op)
+DO_ERROR(X86_TRAP_OLD_MF, SIGFPE,  "coprocessor segment overrun",coprocessor_segment_overrun)
+DO_ERROR(X86_TRAP_TS,     SIGSEGV, "invalid TSS",    invalid_TSS)
+DO_ERROR(X86_TRAP_NP,     SIGBUS,  "segment not present",  segment_not_present)
+DO_ERROR(X86_TRAP_SS,     SIGBUS,  "stack segment",    stack_segment)
+DO_ERROR(X86_TRAP_AC,     SIGBUS,  "alignment check",    alignment_check)
+
+#define DO_ERROR(trapnr, signr, str, name)        \
+dotraplinkage void do_##name(struct pt_regs *regs, long error_code)  \
+{                  \
+  do_error_trap(regs, error_code, str, trapnr, signr);    \
+}
+
+static void do_error_trap(struct pt_regs *regs, long error_code, char *str,
+        unsigned long trapnr, int signr)
+{
+  siginfo_t info;
+
+  RCU_LOCKDEP_WARN(!rcu_is_watching(), "entry code didn't wake RCU");
+
+  if (!user_mode(regs) && fixup_bug(regs, trapnr))
+    return;
+
+  if (notify_die(DIE_TRAP, str, regs, error_code, trapnr, signr) != NOTIFY_STOP) {
+    cond_local_irq_enable(regs);
+    clear_siginfo(&info);
+    do_trap(trapnr, signr, str, regs, error_code, fill_trap_info(regs, signr, trapnr, &info));
+  }
+}
+
+void do_trap(int trapnr, int signr, char *str, struct pt_regs *regs,
+  long error_code, siginfo_t *info)
+{
+  struct task_struct *tsk = current;
+
+
+  if (!do_trap_no_signal(tsk, trapnr, str, regs, error_code))
+    return;
+  /*
+   * We want error_code and trap_nr set for userspace faults and
+   * kernelspace faults which result in die(), but not
+   * kernelspace faults which are fixed up.  die() gives the
+   * process no chance to handle the signal and notice the
+   * kernel fault information, so that won't result in polluting
+   * the information about previously queued, but not yet
+   * delivered, faults.  See also do_general_protection below.
+   */
+  tsk->thread.error_code = error_code;
+  tsk->thread.trap_nr = trapnr;
+
+  if (show_unhandled_signals && unhandled_signal(tsk, signr) && printk_ratelimit()) {
+    pr_info("%s[%d] trap %s ip:%lx sp:%lx error:%lx",
+      tsk->comm, tsk->pid, str,
+      regs->ip, regs->sp, error_code);
+    print_vma_addr(KERN_CONT " in ", regs->ip);
+    pr_cont("\n");
+  }
+
+  force_sig_info(signr, info ?: SEND_SIG_PRIV, tsk);
+}
+
+int force_sig_info(int sig, struct siginfo *info, struct task_struct *t)
+{
+  unsigned long int flags;
+  int ret, blocked, ignored;
+  struct k_sigaction *action;
+
+  spin_lock_irqsave(&t->sighand->siglock, flags);
+  action = &t->sighand->action[sig-1];
+  ignored = action->sa.sa_handler == SIG_IGN;
+  blocked = sigismember(&t->blocked, sig);
+  if (blocked || ignored) {
+    action->sa.sa_handler = SIG_DFL;
+    if (blocked) {
+      sigdelset(&t->blocked, sig);
+      recalc_sigpending_and_wake(t);
+    }
+  }
+  /*
+   * Don't clear SIGNAL_UNKILLABLE for traced tasks, users won't expect
+   * debugging to leave init killable.
+   */
+  if (action->sa.sa_handler == SIG_DFL && !t->ptrace)
+    t->signal->flags &= ~SIGNAL_UNKILLABLE;
+  ret = specific_send_sig_info(sig, info, t);
+  spin_unlock_irqrestore(&t->sighand->siglock, flags);
+
+  return ret;
+}
+
+static int specific_send_sig_info(int sig, struct siginfo *info, struct task_struct *t)
+{
+  return send_signal(sig, info, t, PIDTYPE_PID);
+}
+
+```
+
+## request_irq
+```c++
+
+```c++
+static int logibm_open(struct input_dev *dev)
+{
+  if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
+    return -EBUSY;
+  }
+  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
+  return 0;
+}
+
+static irqreturn_t logibm_interrupt(int irq, void *dev_id)
+{
+  char dx, dy;
+  unsigned char buttons;
+
+  outb(LOGIBM_READ_X_LOW, LOGIBM_CONTROL_PORT);
+  dx = (inb(LOGIBM_DATA_PORT) & 0xf);
+  outb(LOGIBM_READ_X_HIGH, LOGIBM_CONTROL_PORT);
+  dx |= (inb(LOGIBM_DATA_PORT) & 0xf) << 4;
+  outb(LOGIBM_READ_Y_LOW, LOGIBM_CONTROL_PORT);
+  dy = (inb(LOGIBM_DATA_PORT) & 0xf);
+  outb(LOGIBM_READ_Y_HIGH, LOGIBM_CONTROL_PORT);
+  buttons = inb(LOGIBM_DATA_PORT);
+  dy |= (buttons & 0xf) << 4;
+  buttons = ~buttons >> 5;
+
+  input_report_rel(logibm_dev, REL_X, dx);
+  input_report_rel(logibm_dev, REL_Y, dy);
+  input_report_key(logibm_dev, BTN_RIGHT,  buttons & 1);
+  input_report_key(logibm_dev, BTN_MIDDLE, buttons & 2);
+  input_report_key(logibm_dev, BTN_LEFT,   buttons & 4);
+  input_sync(logibm_dev);
+
+
+  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
+  return IRQ_HANDLED
+}
+
+irqreturn_t (*irq_handler_t)(int irq, void * dev_id);
+enum irqreturn {
+  IRQ_NONE    = (0 << 0),
+  IRQ_HANDLED    = (1 << 0),
+  IRQ_WAKE_THREAD    = (1 << 1),
+};
+
+static inline int request_irq(
+  unsigned int irq, irq_handler_t handler,
+  unsigned long flags, const char *name, void *dev)
+{
+  return request_threaded_irq(irq, handler, NULL, flags, name, dev);
+}
+
+int request_threaded_irq(
+  unsigned int irq, irq_handler_t handler,
+  irq_handler_t thread_fn, unsigned long irqflags,
+  const char *devname, void *dev_id)
+{
+  struct irqaction *action;
+  struct irq_desc *desc;
+  int retval;
+
+  desc = irq_to_desc(irq);
+
+  action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+  action->handler = handler;
+  action->thread_fn = thread_fn;
+  action->flags = irqflags;
+  action->name = devname;
+  action->dev_id = dev_id;
+  retval = __setup_irq(irq, desc, action);
+}
+
+struct irq_data {
+  u32      mask;
+  unsigned int    irq;
+  unsigned long    hwirq;
+  struct irq_common_data  *common;
+  struct irq_chip    *chip;
+  struct irq_domain  *domain;
+#ifdef  CONFIG_IRQ_DOMAIN_HIERARCHY
+  struct irq_data    *parent_data;
+#endif
+  void      *chip_data;
+};
+
+struct irq_desc {
+  struct irqaction  *action;  /* IRQ action list */
+  struct module     *owner;
+  struct irq_data   irq_data;
+  const char        *name;
+};
+
+struct irqaction {
+  irq_handler_t       handler;
+  void                *dev_id;
+  void __percpu       *percpu_dev_id;
+  struct irqaction    *next;
+  irq_handler_t       thread_fn;
+  struct task_struct  *thread;
+  struct irqaction    *secondary;
+  unsigned int        irq;
+  unsigned int        flags;
+  unsigned long       thread_flags;
+  unsigned long       thread_mask;
+  const char          *name;
+  struct proc_dir_entry  *dir;
+};
+
+#ifdef CONFIG_SPARSE_IRQ
+static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
+
+struct irq_desc *irq_to_desc(unsigned int irq)
+{
+  return radix_tree_lookup(&irq_desc_tree, irq);
+}
+#else /* !CONFIG_SPARSE_IRQ */
+struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
+  [0 ... NR_IRQS-1] = { }
+};
+struct irq_desc *irq_to_desc(unsigned int irq)
+{
+  return (irq < NR_IRQS) ? irq_desc + irq : NULL;
+}
+#endif /* !CONFIG_SPARSE_IRQ */
+
+static int
+__setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
+{
+  struct irqaction *old, **old_ptr;
+  unsigned long flags, thread_mask = 0;
+  int ret, nested, shared = 0;
+
+  new->irq = irq;
+
+  if (new->thread_fn && !nested) {
+    ret = setup_irq_thread(new, irq, false);
+  }
+
+  old_ptr = &desc->action;
+  old = *old_ptr;
+  if (old) {
+    /* add new interrupt at end of irq queue */
+    do {
+      thread_mask |= old->thread_mask;
+      old_ptr = &old->next;
+      old = *old_ptr;
+    } while (old);
+  }
+  *old_ptr = new;
+  if (new->thread)
+    wake_up_process(new->thread);
+}
+
+int wake_up_process(struct task_struct *p)
+{
+  return try_to_wake_up(p, TASK_NORMAL, 0);
+}
+
+static int setup_irq_thread(
+  struct irqaction *new, unsigned int irq, bool secondary)
+{
+  struct task_struct *t;
+  struct sched_param param = {
+    .sched_priority = MAX_USER_RT_PRIO/2,
+  };
+
+  t = kthread_create(irq_thread, new, "irq/%d-%s", irq, new->name);
+  sched_setscheduler_nocheck(t, SCHED_FIFO, &param);
+  get_task_struct(t);
+  new->thread = t;
+
+  return 0;
+}
+
+/* How interrupt happens:
+ * 1. extern dev sends physic interrupt to interrupt controller
+ * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
+ * 3. cpu call IRQ hanlder according to interrupt vector
+ * 4. IRQ handler converts interrupt vector to abstract interrupt signal, handle it with irq_handler_t */
+
+
+/* arch/x86/include/asm/irq_vectors.h
+ * Linux IRQ vector layout.
+ *
+ * There are 256 IDT entries (per CPU - each entry is 8 bytes) which can
+ * be defined by Linux. They are used as a jump table by the CPU when a
+ * given vector is triggered - by a CPU-external, CPU-internal or
+ * software-triggered event.
+ *
+ * Linux sets the kernel code address each entry jumps to early during
+ * bootup, and never changes them. This is the general layout of the
+ * IDT entries:
+ *
+ *  Vectors   0 ...  31 : system traps and exceptions - hardcoded events
+ *  Vectors  32 ... 127 : device interrupts
+ *  Vector  128         : legacy int80 syscall interface
+ *  Vectors 129 ... INVALIDATE_TLB_VECTOR_START-1 except 204 : device interrupts
+ *  Vectors INVALIDATE_TLB_VECTOR_START ... 255 : special interrupts
+ *
+ * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
+ *
+ * This file enumerates the exact layout of them: */
+#define FIRST_EXTERNAL_VECTOR    0x20 // 32
+#define IA32_SYSCALL_VECTOR    0x80   // 128
+#define NR_VECTORS       256
+#define FIRST_SYSTEM_VECTOR    NR_VECTORS
+```
 
 ## ksoftirqd
 ```c++
@@ -12171,443 +13062,46 @@ restart:
 }
 ```
 
+## softirq_init
 ```c++
-static int logibm_open(struct input_dev *dev)
+void __init softirq_init(void)
 {
-  if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
-    return -EBUSY;
-  }
-  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
-  return 0;
-}
+  int cpu;
 
-static irqreturn_t logibm_interrupt(int irq, void *dev_id)
-{
-  char dx, dy;
-  unsigned char buttons;
-
-  outb(LOGIBM_READ_X_LOW, LOGIBM_CONTROL_PORT);
-  dx = (inb(LOGIBM_DATA_PORT) & 0xf);
-  outb(LOGIBM_READ_X_HIGH, LOGIBM_CONTROL_PORT);
-  dx |= (inb(LOGIBM_DATA_PORT) & 0xf) << 4;
-  outb(LOGIBM_READ_Y_LOW, LOGIBM_CONTROL_PORT);
-  dy = (inb(LOGIBM_DATA_PORT) & 0xf);
-  outb(LOGIBM_READ_Y_HIGH, LOGIBM_CONTROL_PORT);
-  buttons = inb(LOGIBM_DATA_PORT);
-  dy |= (buttons & 0xf) << 4;
-  buttons = ~buttons >> 5;
-
-  input_report_rel(logibm_dev, REL_X, dx);
-  input_report_rel(logibm_dev, REL_Y, dy);
-  input_report_key(logibm_dev, BTN_RIGHT,  buttons & 1);
-  input_report_key(logibm_dev, BTN_MIDDLE, buttons & 2);
-  input_report_key(logibm_dev, BTN_LEFT,   buttons & 4);
-  input_sync(logibm_dev);
-
-
-  outb(LOGIBM_ENABLE_IRQ, LOGIBM_CONTROL_PORT);
-  return IRQ_HANDLED
-}
-
-irqreturn_t (*irq_handler_t)(int irq, void * dev_id);
-enum irqreturn {
-  IRQ_NONE    = (0 << 0),
-  IRQ_HANDLED    = (1 << 0),
-  IRQ_WAKE_THREAD    = (1 << 1),
-};
-```
-
-## request_irq
-```c++
-static inline int request_irq(
-  unsigned int irq, irq_handler_t handler,
-  unsigned long flags, const char *name, void *dev)
-{
-  return request_threaded_irq(irq, handler, NULL, flags, name, dev);
-}
-
-int request_threaded_irq(
-  unsigned int irq, irq_handler_t handler,
-  irq_handler_t thread_fn, unsigned long irqflags,
-  const char *devname, void *dev_id)
-{
-  struct irqaction *action;
-  struct irq_desc *desc;
-  int retval;
-
-  desc = irq_to_desc(irq);
-
-  action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
-  action->handler = handler;
-  action->thread_fn = thread_fn;
-  action->flags = irqflags;
-  action->name = devname;
-  action->dev_id = dev_id;
-  retval = __setup_irq(irq, desc, action);
-}
-
-struct irq_data {
-  u32      mask;
-  unsigned int    irq;
-  unsigned long    hwirq;
-  struct irq_common_data  *common;
-  struct irq_chip    *chip;
-  struct irq_domain  *domain;
-#ifdef  CONFIG_IRQ_DOMAIN_HIERARCHY
-  struct irq_data    *parent_data;
-#endif
-  void      *chip_data;
-};
-
-struct irq_desc {
-  struct irqaction  *action;  /* IRQ action list */
-  struct module     *owner;
-  struct irq_data   irq_data;
-  const char        *name;
-};
-
-struct irqaction {
-  irq_handler_t       handler;
-  void                *dev_id;
-  void __percpu       *percpu_dev_id;
-  struct irqaction    *next;
-  irq_handler_t       thread_fn;
-  struct task_struct  *thread;
-  struct irqaction    *secondary;
-  unsigned int        irq;
-  unsigned int        flags;
-  unsigned long       thread_flags;
-  unsigned long       thread_mask;
-  const char          *name;
-  struct proc_dir_entry  *dir;
-};
-
-#ifdef CONFIG_SPARSE_IRQ
-static RADIX_TREE(irq_desc_tree, GFP_KERNEL);
-
-struct irq_desc *irq_to_desc(unsigned int irq)
-{
-  return radix_tree_lookup(&irq_desc_tree, irq);
-}
-#else /* !CONFIG_SPARSE_IRQ */
-struct irq_desc irq_desc[NR_IRQS] __cacheline_aligned_in_smp = {
-  [0 ... NR_IRQS-1] = { }
-};
-struct irq_desc *irq_to_desc(unsigned int irq)
-{
-  return (irq < NR_IRQS) ? irq_desc + irq : NULL;
-}
-#endif /* !CONFIG_SPARSE_IRQ */
-
-static int
-__setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
-{
-  struct irqaction *old, **old_ptr;
-  unsigned long flags, thread_mask = 0;
-  int ret, nested, shared = 0;
-
-  new->irq = irq;
-
-  if (new->thread_fn && !nested) {
-    ret = setup_irq_thread(new, irq, false);
+  for_each_possible_cpu(cpu) {
+    per_cpu(tasklet_vec, cpu).tail = &per_cpu(tasklet_vec, cpu).head;
+    per_cpu(tasklet_hi_vec, cpu).tail = &per_cpu(tasklet_hi_vec, cpu).head;
   }
 
-  old_ptr = &desc->action;
-  old = *old_ptr;
-  if (old) {
-    /* add new interrupt at end of irq queue */
-    do {
-      thread_mask |= old->thread_mask;
-      old_ptr = &old->next;
-      old = *old_ptr;
-    } while (old);
-  }
-  *old_ptr = new;
-  if (new->thread)
-    wake_up_process(new->thread);
+  open_softirq(TASKLET_SOFTIRQ, tasklet_action);
+  open_softirq(HI_SOFTIRQ, tasklet_hi_action);
 }
 
-int wake_up_process(struct task_struct *p)
+enum
 {
-  return try_to_wake_up(p, TASK_NORMAL, 0);
-}
-
-static int setup_irq_thread(
-  struct irqaction *new, unsigned int irq, bool secondary)
-{
-  struct task_struct *t;
-  struct sched_param param = {
-    .sched_priority = MAX_USER_RT_PRIO/2,
-  };
-
-  t = kthread_create(irq_thread, new, "irq/%d-%s", irq, new->name);
-  sched_setscheduler_nocheck(t, SCHED_FIFO, &param);
-  get_task_struct(t);
-  new->thread = t;
-
-  return 0;
-}
-
-/* How interrupt happens:
- * 1. extern dev sends physic interrupt to interrupt controller
- * 2. interrupt controller converts interrupt signal to interrupt vector, sends it to each cpu
- * 3. cpu call IRQ hanlder according to interrupt vector
- * 4. IRQ handler converts interrupt vector to abstract interrupt signal, handle it with irq_handler_t */
-
-
-/* arch/x86/include/asm/irq_vectors.h
- * Linux IRQ vector layout.
- *
- * There are 256 IDT entries (per CPU - each entry is 8 bytes) which can
- * be defined by Linux. They are used as a jump table by the CPU when a
- * given vector is triggered - by a CPU-external, CPU-internal or
- * software-triggered event.
- *
- * Linux sets the kernel code address each entry jumps to early during
- * bootup, and never changes them. This is the general layout of the
- * IDT entries:
- *
- *  Vectors   0 ...  31 : system traps and exceptions - hardcoded events
- *  Vectors  32 ... 127 : device interrupts
- *  Vector  128         : legacy int80 syscall interface
- *  Vectors 129 ... INVALIDATE_TLB_VECTOR_START-1 except 204 : device interrupts
- *  Vectors INVALIDATE_TLB_VECTOR_START ... 255 : special interrupts
- *
- * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
- *
- * This file enumerates the exact layout of them: */
-#define FIRST_EXTERNAL_VECTOR    0x20 // 32
-#define IA32_SYSCALL_VECTOR    0x80   // 128
-#define NR_VECTORS       256
-#define FIRST_SYSTEM_VECTOR    NR_VECTORS
-
-// arch/x86/kernel/traps.c, per cpu
-struct gate_struct {
-  u16    offset_low; // system irq hanlder addr
-  u16    segment;   // KERNEL_CS
-  struct idt_bits  bits;
-  u16    offset_middle;  // addr >> 16
-#ifdef CONFIG_X86_64
-  u32    offset_high;    // adr >> 32
-  u32    reserved;      // 0
-#endif
+  HI_SOFTIRQ=0,
+  TIMER_SOFTIRQ,
+  NET_TX_SOFTIRQ,
+  NET_RX_SOFTIRQ,
+  BLOCK_SOFTIRQ,
+  IRQ_POLL_SOFTIRQ,
+  TASKLET_SOFTIRQ,
+  SCHED_SOFTIRQ,
+  HRTIMER_SOFTIRQ,
+  RCU_SOFTIRQ,
+  NR_SOFTIRQS
 };
-struct idt_bits {
-  u16 ist   : 3,   // DEFAULT_STACK
-      zero  : 5,
-      type  : 5,   // GATE_{INTERRUPT, TRAP, CALL, TASK}
-      dpl   : 2,   // DPL (Descriptor privilege level), DLP0, DLP3
-                   // RPL (Requested privilege level)
-      p     : 1;
+
+struct softirq_action
+{
+  void (*action)(struct softirq_action *);
 };
-```
 
-## init idt_table
-```c++
-struct gate_desc idt_table[NR_VECTORS] __page_aligned_bss;
+static struct softirq_action softirq_vec[NR_SOFTIRQS] __cacheline_aligned_in_smp;
 
-#define IA32_SYSCALL_VECTOR 0x80
-
-void __init trap_init(void)
+void open_softirq(int nr, void (*action)(struct softirq_action *))
 {
-  int i;
-  set_intr_gate(X86_TRAP_DE, divide_error);
-  // ...
-  set_intr_gate(X86_TRAP_XF, simd_coprocessor_error);
-
-  /* Reserve all the builtin and the syscall vector: */
-  for (i = 0; i < FIRST_EXTERNAL_VECTOR; i++)
-    set_bit(i, used_vectors);
-
-#ifdef CONFIG_X86_32
-  set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
-  set_bit(IA32_SYSCALL_VECTOR, used_vectors);
-#endif
-
-  /* place at a fixed address */
-  __set_fixmap(FIX_RO_IDT, __pa_symbol(idt_table), PAGE_KERNEL_RO);
-  idt_descr.address = fix_to_virt(FIX_RO_IDT);
-}
-
-// set_intr_gate -> _set_gate
-static inline void _set_gate(
-  int gate, unsigned type, void *addr,
-  unsigned dpl, unsigned ist, unsigned seg)
-{
-  gate_desc s;
-  pack_gate(&s, type, (unsigned long)addr, dpl, ist, seg);
-  write_idt_entry(idt_table, gate, &s);
-}
-
-// arch/x86/include/asm/traps.h
-enum {
-  X86_TRAP_DE = 0,      /*  0, Divide-by-zero */
-  X86_TRAP_DB,          /*  1, Debug */
-  X86_TRAP_NMI,         /*  2, Non-maskable Interrupt */
-  X86_TRAP_BP,          /*  3, Breakpoint */
-  X86_TRAP_OF,          /*  4, Overflow */
-  X86_TRAP_BR,          /*  5, Bound Range Exceeded */
-  X86_TRAP_UD,          /*  6, Invalid Opcode */
-  X86_TRAP_NM,          /*  7, Device Not Available */
-  X86_TRAP_DF,          /*  8, Double Fault */
-  X86_TRAP_OLD_MF,      /*  9, Coprocessor Segment Overrun */
-  X86_TRAP_TS,          /* 10, Invalid TSS */
-  X86_TRAP_NP,          /* 11, Segment Not Present */
-  X86_TRAP_SS,          /* 12, Stack Segment Fault */
-  X86_TRAP_GP,          /* 13, General Protection Fault */
-  X86_TRAP_PF,          /* 14, Page Fault */
-  X86_TRAP_SPURIOUS,    /* 15, Spurious Interrupt */
-  X86_TRAP_MF,          /* 16, x87 Floating-Point Exception */
-  X86_TRAP_AC,          /* 17, Alignment Check */
-  X86_TRAP_MC,          /* 18, Machine Check */
-  X86_TRAP_XF,          /* 19, SIMD Floating-Point Exception */
-  X86_TRAP_IRET = 32,   /* 32, IRET Exception */
-};
-```
-
-## init_IRQ
-```c++
-// after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
-void __init native_init_IRQ(void)
-{
-  int i;
-  i = FIRST_EXTERNAL_VECTOR;
-#ifndef CONFIG_X86_LOCAL_APIC
-#define first_system_vector NR_VECTORS
-#endif
-
-  for_each_clear_bit_from(i, used_vectors, first_system_vector) {
-    /* IA32_SYSCALL_VECTOR could be used in trap_init already. */
-    set_intr_gate(i, irq_entries_start + 8 * (i - FIRST_EXTERNAL_VECTOR));
-  }
-}
-
-/* set `FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR` handler to do_IRQ
- * irq_entries_start defined in arch\x86\entry\entry_{32, 64} */
-ENTRY(irq_entries_start)
-    vector=FIRST_EXTERNAL_VECTOR
-    .rept (FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
-  pushl  $(~vector+0x80)      /* Note: always in signed byte range */
-    vector=vector+1
-  jmp  common_interrupt /* invoke do_IRQ */
-  .align  8
-    .endr
-END(irq_entries_start)
-
-
-common_interrupt:
-  ASM_CLAC
-  addq  $-0x80, (%rsp)      /* Adjust vector to [-256, -1] range */
-  interrupt do_IRQ
-  /* 0(%rsp): old RSP */
-ret_from_intr:
-
-  /* Interrupt came from user space */
-GLOBAL(retint_user)
-
-/* Returning to kernel space */
-retint_kernel:
-
-unsigned int __irq_entry do_IRQ(struct pt_regs *regs)
-{
-  struct pt_regs *old_regs = set_irq_regs(regs);
-  struct irq_desc * desc;
-  /* high bit used in ret_from_ code  */
-  unsigned vector = ~regs->orig_ax;
-
-  desc = __this_cpu_read(vector_irq[vector]);
-  if (!handle_irq(desc, regs)) {
-
-  }
-
-  set_irq_regs(old_regs);
-  return 1;
-}
-
-/* do_IRQ -> handle_irq -> */
-static inline void generic_handle_irq_desc(struct irq_desc *desc)
-{
-  desc->handle_irq(desc);
-}
-
-irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
-{
-  irqreturn_t retval = IRQ_NONE;
-  unsigned int irq = desc->irq_data.irq;
-  struct irqaction *action;
-
-  record_irq_time(desc);
-
-  for_each_action_of_desc(desc, action) {
-    irqreturn_t res;
-    res = action->handler(irq, action->dev_id);
-    switch (res) {
-    case IRQ_WAKE_THREAD:
-      __irq_wake_thread(desc, action);
-    case IRQ_HANDLED:
-      *flags |= action->flags;
-      break;
-    default:
-      break;
-    }
-    retval |= res;
-  }
-  return retval;
-}
-```
-
-## init vector_irq
-```c++
-/* The interrupt vector interrupt controller sent to
- * each cpu is per cpu local variable, but the abstract
- * layer's virtual signal irq and it's irq_desc is global.
- * So per cpu needs its own mapping from vector to irq_desc */
-typedef struct irq_desc* vector_irq_t[NR_VECTORS];
-DECLARE_PER_CPU(vector_irq_t, vector_irq);
-
-// assign virtual irq to a cpu
-static int __assign_irq_vector(
-  int irq, struct apic_chip_data *d,
-  const struct cpumask *mask,
-  struct irq_data *irqdata)
-{
-  static int current_vector = FIRST_EXTERNAL_VECTOR + VECTOR_OFFSET_START;
-  static int current_offset = VECTOR_OFFSET_START % 16;
-  int cpu, vector;
-
-  while (cpu < nr_cpu_ids) {
-    int new_cpu, offset;
-
-    vector = current_vector;
-    offset = current_offset;
-next:
-    vector += 16;
-    if (vector >= first_system_vector) {
-      offset = (offset + 1) % 16;
-      vector = FIRST_EXTERNAL_VECTOR + offset;
-    }
-    /* If the search wrapped around, try the next cpu */
-    if (unlikely(current_vector == vector))
-      goto next_cpu;
-
-    if (test_bit(vector, used_vectors))
-      goto next;
-
-    /* Found one! */
-    current_vector = vector;
-    current_offset = offset;
-    /* Schedule the old vector for cleanup on all cpus */
-    if (d->cfg.vector)
-      cpumask_copy(d->old_domain, d->domain);
-    for_each_cpu(new_cpu, vector_searchmask)
-      per_cpu(vector_irq, new_cpu)[vector] = irq_to_desc(irq);
-    goto update;
-
-next_cpu:
-    cpumask_or(searched_cpumask, searched_cpumask, vector_cpumask);
-    cpumask_andnot(vector_cpumask, mask, searched_cpumask);
-    cpu = cpumask_first_and(vector_cpumask, cpu_online_mask);
-    continue;
+  softirq_vec[nr].action = action;
 }
 ```
 
@@ -12621,10 +13115,27 @@ void raise_softirq_irqoff(unsigned int nr)
     wakeup_softirqd();
 }
 
+#define hardirq_count() (preempt_count() & HARDIRQ_MASK)
+#define softirq_count() (preempt_count() & SOFTIRQ_MASK)
+#define irq_count() (preempt_count() & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK))
+
+#define in_irq()  (hardirq_count())
+#define in_softirq()  (softirq_count())
+#define in_interrupt()  (irq_count())
+#define in_serving_softirq() (softirq_count() & SOFTIRQ_OFFSET)
+#define in_nmi()  (preempt_count() & NMI_MASK)
+#define in_task()  (!(preempt_count() & (NMI_MASK | HARDIRQ_MASK | SOFTIRQ_OFFSET)))
+
 void __raise_softirq_irqoff(unsigned int nr)
 {
   or_softirq_pending(1UL << nr);
 }
+
+typedef struct {
+  unsigned int __softirq_pending;
+} ____cacheline_aligned irq_cpustat_t;
+
+DEFINE_PER_CPU_ALIGNED(irq_cpustat_t, irq_stat);
 
 #define local_softirq_pending_ref irq_stat.__softirq_pending
 
@@ -12651,6 +13162,126 @@ void wakeup_softirqd(void)
 
   if (tsk && tsk->state != TASK_RUNNING)
     wake_up_process(tsk);
+}
+```
+
+To summarize, each softirq goes through the following stages:
+* Registration of a softirq with the `open_softirq` function.
+* Activation of a softirq by marking it as deferred with the `raise_softirq` function.
+* After this, all marked softirqs will be triggered in the next time the Linux kernel schedules a round of executions of deferrable functions.
+* And execution of the deferred functions that have the same type.
+
+## tasklet
+
+### open TASKLET_SOFTIRQ
+```c++
+static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
+static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
+
+struct tasklet_head {
+  struct tasklet_struct *head;
+  struct tasklet_struct **tail;
+};
+
+struct tasklet_struct
+{
+  struct tasklet_struct *next;
+  unsigned long         state;
+  atomic_t              count;
+  void (*func)(unsigned long);
+  unsigned long         data;
+};
+
+void __init softirq_init(void)
+{
+  int cpu;
+
+  for_each_possible_cpu(cpu) {
+    per_cpu(tasklet_vec, cpu).tail = &per_cpu(tasklet_vec, cpu).head;
+    per_cpu(tasklet_hi_vec, cpu).tail = &per_cpu(tasklet_hi_vec, cpu).head;
+  }
+
+  open_softirq(TASKLET_SOFTIRQ, tasklet_action);
+  open_softirq(HI_SOFTIRQ, tasklet_hi_action);
+}
+
+static __latent_entropy void tasklet_action(struct softirq_action *a)
+{
+  tasklet_action_common(a, this_cpu_ptr(&tasklet_vec), TASKLET_SOFTIRQ);
+}
+
+static void tasklet_action_common(struct softirq_action *a,
+          struct tasklet_head *tl_head,
+          unsigned int softirq_nr)
+{
+  struct tasklet_struct *list;
+
+  local_irq_disable();
+  list = tl_head->head;
+  tl_head->head = NULL;
+  tl_head->tail = &tl_head->head;
+  local_irq_enable();
+
+  while (list) {
+    struct tasklet_struct *t = list;
+
+    list = list->next;
+
+    if (tasklet_trylock(t)) {
+      if (!atomic_read(&t->count)) {
+        if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
+          BUG();
+        t->func(t->data);
+        tasklet_unlock(t);
+        continue;
+      }
+      tasklet_unlock(t);
+    }
+
+    local_irq_disable();
+    t->next = NULL;
+    *tl_head->tail = t;
+    tl_head->tail = &t->next;
+    __raise_softirq_irqoff(softirq_nr);
+    local_irq_enable();
+  }
+}
+
+void tasklet_init(struct tasklet_struct *t,
+      void (*func)(unsigned long), unsigned long data)
+{
+  t->next = NULL;
+  t->state = 0;
+  atomic_set(&t->count, 0);
+  t->func = func;
+  t->data = data;
+}
+
+void tasklet_schedule(struct tasklet_struct *t)
+{
+  if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
+    __tasklet_schedule(t);
+}
+
+void __tasklet_schedule(struct tasklet_struct *t)
+{
+  __tasklet_schedule_common(t, &tasklet_vec, TASKLET_SOFTIRQ);
+}
+
+void __tasklet_schedule_common(struct tasklet_struct *t,
+  struct tasklet_head __percpu *headp,
+  unsigned int softirq_nr)
+{
+  struct tasklet_head *head;
+  unsigned long flags;
+
+  local_irq_save(flags);
+  head = this_cpu_ptr(headp);
+  t->next = NULL;
+  *head->tail = t;
+  head->tail = &(t->next);
+  raise_softirq_irqoff(softirq_nr);
+  local_irq_restore(flags);
 }
 ```
 
