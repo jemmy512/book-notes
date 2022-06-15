@@ -194,12 +194,12 @@ enum zone_type {
 ```C++
 struct zone {
   struct pglist_data  *zone_pgdat;
-  struct per_cpu_pageset *pageset; // hot/cold page
+  struct per_cpu_pageset *pageset; /* hot/cold page */
 
   unsigned long    zone_start_pfn;
-  unsigned long    managed_pages; // managed_pages = present_pages - reserved_pages
-  unsigned long    spanned_pages; // spanned_pages = zone_end_pfn - zone_start_pfn
-  unsigned long    present_pages; // present_pages = spanned_pages - absent_pages(pages in holes)
+  unsigned long    managed_pages; /* managed_pages = present_pages - reserved_pages */
+  unsigned long    spanned_pages; /* spanned_pages = zone_end_pfn - zone_start_pfn */
+  unsigned long    present_pages; /* present_pages = spanned_pages - absent_pages(pages in holes) */
 
   const char    *name;
   /* free areas of different sizes */
@@ -373,7 +373,7 @@ struct page *alloc_pages_current(gfp_t gfp, unsigned order)
   return page;
 }
 
-// __alloc_pages_nodemask ->
+/* __alloc_pages_nodemask -> */
 static struct page* get_page_from_freelist(
   gfp_t gfp_mask, unsigned int order,
   int alloc_flags, const struct alloc_context *ac)
@@ -811,7 +811,7 @@ static void *__slab_alloc(
   void *freelist;
   struct page *page;
 redo:
-  // 1. try kmem_cache_cpu freelist
+  /* 1. try kmem_cache_cpu freelist */
   freelist = c->freelist;
   if (freelist)
     goto load_freelist;
@@ -829,7 +829,7 @@ load_freelist:
   return freelist;
 
 new_slab:
-  // 2. try kmem_cache_cpu partial
+  /* 2. try kmem_cache_cpu partial */
   if (slub_percpu_partial(c)) { /* (c)->partial */
     page = c->page = slub_percpu_partial(c);
     slub_set_percpu_partial(c, page); /* slub_percpu_partial(c) = (p)->next; */
@@ -837,7 +837,7 @@ new_slab:
     goto redo;
   }
 
-  // 3. try kmem_cache_node
+  /* 3. try kmem_cache_node */
   freelist = new_slab_objects(s, gfpflags, node, &c);
   return freelist;
 }
@@ -850,12 +850,12 @@ static inline void *new_slab_objects(
   struct kmem_cache_cpu *c = *pc;
   struct page *page;
 
-  // 3.1. try kmem_cache_node partial
-  freelist = get_partial(s, flags, node, c); // -> get_partial_node()
+  /* 3.1. try kmem_cache_node partial */
+  freelist = get_partial(s, flags, node, c); /* -> get_partial_node() */
   if (freelist)
     return freelist;
 
-  // 3.2. alloc_page
+  /* 3.2. alloc_page */
   page = new_slab(s, flags, node);
   if (page) {
     c = raw_cpu_ptr(s->cpu_slab);
@@ -938,7 +938,7 @@ static inline void *acquire_slab(struct kmem_cache *s,
   return freelist;
 }
 
-// 3.2. new_slab_objects -> new_slab, no memory in kmem_cache_node
+/* 3.2. new_slab_objects -> new_slab, no memory in kmem_cache_node */
 static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 {
   struct page *page;
@@ -990,21 +990,21 @@ slab_alloc()
     else
       __slab_alloc()
         redo:
-        // 1. try kmem_cache_cpu freelist
+        /* 1. try kmem_cache_cpu freelist */
 
         new_slab:
-        // 2. try kmem_cache_cpu partial
+        /* 2. try kmem_cache_cpu partial */
           if (slub_percpu_partial(c))
             goto redo
 
-        // 3. try kmem_cache_node
+        /* 3. try kmem_cache_node */
           freelist = new_slab_objects()
-            // 3.1 try kmem_cache_node partial
+            /* 3.1 try kmem_cache_node partial */
             get_partial()
               get_partial_node()
                 list_for_each_entry_safe()
                   acquire_slab()
-            // 3.2 alloc_page
+            /* 3.2 alloc_page */
             new_slab()
               allocate_slab()
                 alloc_slab_page()
@@ -1029,7 +1029,7 @@ get_page_from_freelist();
         __node_reclaim();
             shrink_node();
 
-// 2. positive page out by kswapd
+/* 2. positive page out by kswapd */
 static int kswapd(void *p)
 {
   unsigned int alloc_order, reclaim_order;
@@ -1043,7 +1043,7 @@ static int kswapd(void *p)
     reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
   }
 }
-// balance_pgdat->kswapd_shrink_node->shrink_node
+/* balance_pgdat->kswapd_shrink_node->shrink_node */
 
 /* This is a basic per-node page freer.  Used by both kswapd and direct reclaim. */
 static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memcg,
@@ -1410,7 +1410,7 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 struct address_space {
   struct inode      *host;
   /* tree of private and shared mappings. e.g., vm_area_struct */
-  struct rb_root    i_mmap; // link the vma to the file
+  struct rb_root    i_mmap; /* link the vma to the file */
   const struct address_space_operations *a_ops;
 }
 
@@ -1579,7 +1579,7 @@ static void find_start_end(unsigned long addr, unsigned long flags,
   else
     *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
 
-  // TODO::?  shouldn't [begin, end) be [brk, mmap_base)
+  /* TODO::?  shouldn't [begin, end) be [brk, mmap_base) */
 }
 
 unsigned long get_mmap_base(int is_legacy)
@@ -1744,7 +1744,7 @@ mmap();
             } else if (vm_flags & VM_SHARED) {
               shmem_zero_setup(vma);
             } else {
-              vma_set_anonymous(vma);
+              vma_set_anonymous(vma); /* vma->vm_ops = NULL; */
             }
 
             /* 2.2. link the vma to the file */
@@ -1775,7 +1775,7 @@ struct file {
   struct address_space*   f_mapping;
 };
 
-// page cache in memory
+/* page cache in memory */
 struct address_space {
   struct inode            *host;
   struct radix_tree_root  i_pages; /* cached physical pages */
@@ -1796,6 +1796,7 @@ static void __init kvm_apf_trap_init(void)
   update_intr_gate(X86_TRAP_PF, async_page_fault);
 }
 
+/* arch/x86/entry/entry_32.S */
 ENTRY(async_page_fault)
   ASM_CLAC
   pushl $do_async_page_fault
@@ -1853,7 +1854,7 @@ void do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
   }
 }
 
-// linux-4.19.y/arch/x86/mm/fault.c
+/* linux-4.19.y/arch/x86/mm/fault.c */
 
 void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
@@ -2064,6 +2065,7 @@ static void __page_set_anon_rmap(struct page *page,
     anon_vma = anon_vma->root;
 
   anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
+  /* page->mapping points to its anon_vma, not to a struct address_space */
   page->mapping = (struct address_space *) anon_vma;
   page->index = linear_page_index(vma, address);
 }
@@ -2205,7 +2207,7 @@ int filemap_fault(struct vm_fault *vmf)
   struct page *page;
   int ret = 0;
 
-  page = find_get_page(mapping, offset); // find the physical cache page
+  page = find_get_page(mapping, offset); /* find the physical cache page */
   if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
     do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
   } else if (!page) {
@@ -2232,7 +2234,7 @@ static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
   struct address_space *mapping = file->f_mapping;
   struct page *page;
 
-  page = __page_cache_alloc(gfp_mask|__GFP_COLD); // invoke buddy system to alloc physical page
+  page = __page_cache_alloc(gfp_mask|__GFP_COLD); /* invoke buddy system to alloc physical page */
   ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
   ret = mapping->a_ops->readpage(file, page);
 }
@@ -2333,7 +2335,7 @@ vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
 
 ## do_swap_page
 ```c++
-// 3. map to a swap
+/* 3. map to a swap */
 int do_swap_page(struct vm_fault *vmf)
 {
   struct vm_area_struct *vma = vmf->vma;
@@ -2356,7 +2358,7 @@ int do_swap_page(struct vm_fault *vmf)
   swap_free(entry);
 }
 
-// swapin_readahead ->
+/* swapin_readahead -> */
 int swap_readpage(struct page *page, bool do_poll)
 {
   struct bio *bio;
@@ -2448,7 +2450,7 @@ static struct mm_struct *dup_mm(struct task_struct *tsk)
   err = dup_mmap(mm, oldmm);
   return mm;
 }
-// mm_init->
+/* mm_init-> */
 static inline int mm_alloc_pgd(struct mm_struct *mm)
 {
   mm->pgd = pgd_alloc(mm);
@@ -2473,7 +2475,7 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 
 # kernel mapping
 ```C++
-// arch/x86/include/asm/pgtable_64.h
+/* arch/x86/include/asm/pgtable_64.h */
 extern pud_t level3_kernel_pgt[512];
 extern pud_t level3_ident_pgt[512];
 
@@ -2486,7 +2488,7 @@ extern pgd_t init_top_pgt[];
 
 #define swapper_pg_dir init_top_pgt
 
-// arch\x86\kernel\head_64.S
+/* arch\x86\kernel\head_64.S */
 __INITDATA
 NEXT_PAGE(init_top_pgt)
   .quad   level3_ident_pgt - __START_KERNEL_map + _KERNPG_TABLE
@@ -2544,7 +2546,7 @@ L3_START_KERNEL = pud_index(__START_KERNEL_map)
 ![](../Images/Kernel/mem-kernel-page-table.png)
 
 ```C++
-// kernel mm_struct
+/* kernel mm_struct */
 struct mm_struct init_mm = {
   .mm_rb      = RB_ROOT,
   .pgd        = swapper_pg_dir,
@@ -2557,7 +2559,7 @@ struct mm_struct init_mm = {
   INIT_MM_CONTEXT(init_mm)
 };
 
-// init kernel mm_struct
+/* init kernel mm_struct */
 void __init setup_arch(char **cmdline_p)
 {
   clone_pgd_range(swapper_pg_dir + KERNEL_PGD_BOUNDARY,
@@ -2574,7 +2576,7 @@ void __init setup_arch(char **cmdline_p)
   init_mem_mapping();
 }
 
-// init_mem_mapping ->
+/* init_mem_mapping -> */
 unsigned long kernel_physical_mapping_init(
   unsigned long paddr_start,
   unsigned long paddr_end,
@@ -2841,11 +2843,11 @@ void *kmap_atomic(struct page *page)
 
 void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 {
-  // 64 bit machine doesn't have high memory
+  /* 64 bit machine doesn't have high memory */
   if (!PageHighMem(page))
     return page_address(page);
 
-  // 32 bit machine
+  /* 32 bit machine */
   type = kmap_atomic_idx_push();
   idx = type + KM_TYPE_NR*smp_processor_id();
   vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
@@ -2875,7 +2877,7 @@ void *page_address(const struct page *page)
 
     list_for_each_entry(pam, &pas->lh, list) {
       if (pam->page == page) {
-        ret = pam->virtual; // set_page_address()
+        ret = pam->virtual; /* set_page_address() */
         goto done;
       }
     }
@@ -2885,7 +2887,7 @@ done:
   return ret;
 }
 
-// page_address ->
+/* page_address -> */
 static  void *lowmem_page_address(const struct page *page)
 {
   return page_to_virt(page);

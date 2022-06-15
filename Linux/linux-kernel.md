@@ -109,18 +109,18 @@
     * core.img: diskboot.img, lzma_decompress.img, kernel.img
 
 * ```c++
-  boot.img                  // Power On Self Test
+  boot.img                  /* Power On Self Test */
     core.img
-      diskboot.img          // diskboot.S load other modules of grub into memory
-        lzma_decompress.img // startup_raw.S
-          real_to_prot      // enable segement, page, open Gate A20
-          kernel.img        // startup.S, grub's kernel img not Linux kernel
-            grub_main       // grub's main func
+      diskboot.img          /* diskboot.S load other modules of grub into memory */
+        lzma_decompress.img /* startup_raw.S */
+          real_to_prot      /* enable segement, page, open Gate A20 */
+          kernel.img        /* startup.S, grub's kernel img not Linux kernel */
+            grub_main       /* grub's main func */
               grub_load_config()
               grub_command_execute ("normal", 0, 0)
                 grub_normal_execute()
-                  grub_show_menu() // show which OS want to run
-                    grub_menu_execute_entry() // start linux kernel
+                  grub_show_menu() /* show which OS want to run */
+                    grub_menu_execute_entry() /* start linux kernel */
   ```
   * boot.img
       * checks the basic operability of the hardware and then it issues a BIOS interrupt, INT 13H, which locates the boot sectors on any attached bootable devices.
@@ -137,7 +137,7 @@
 
 ## init kernel
 ```c++
-// init/main.c
+/* init/main.c */
 void start_kernel(void)
 {
   /* #0 process, the only one doesn't created by fork or kernel_thread */
@@ -300,13 +300,13 @@ struct fork_frame {
 ```c++
 int open(const char *pathname, int flags, mode_t mode)
 
-// syscalls.list
-// File name Caller  Syscall name    Args    Strong name    Weak names
+/* syscalls.list */
+/* File name Caller  Syscall name    Args    Strong name    Weak names */
       open    -        open          i:siv   __libc_open   __open open
 ```
 
 ```c++
-// syscall-template.S
+/* syscall-template.S */
 T_PSEUDO (SYSCALL_SYMBOL, SYSCALL_NAME, SYSCALL_NARGS)
     ret
 T_PSEUDO_END (SYSCALL_SYMBOL)
@@ -396,7 +396,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 #define DO_CALL(syscall_name, args) \
     PUSHARGS_##args \
     DOARGS_##args \
-    movl $SYS_ify (syscall_name), %eax; \ // get syscall id by syscall_name
+    movl $SYS_ify (syscall_name), %eax; \ /* get syscall id by syscall_name */
     ENTER_KERNEL \
     POPARGS_##args
 
@@ -1753,7 +1753,7 @@ struct x86_hw_tss {
 
 ```c++
 schedule(void)
-    __schedule(false), // kernel/sched/core.c
+    __schedule(false), /* kernel/sched/core.c */
         if (!preempt && prev->state) /* 0 runnable */
             deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
                 dequeue_task(rq, p, flags);
@@ -1775,11 +1775,11 @@ schedule(void)
                     load_new_mm_cr3()
                 }
                 switch_to(prev, next, prev);
-                    __switch_to_asm(); // switch registers, but not EIP [arch/x86/entry/entry_64.S]
+                    __switch_to_asm(); /* switch registers, but not EIP [arch/x86/entry/entry_64.S] */
                         movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
                         movl  TASK_threadsp(%edx), %esp /* %edx: next task */
 
-                        __switch_to(); // switch cpu task_struct [arch/x86/kernel/process_64.c]
+                        __switch_to(); /* switch cpu task_struct [arch/x86/kernel/process_64.c] */
                             this_cpu_write(current_task, next_p);
                             load_sp0(task_top_of_stack(next_p)); /* load task->stack into cpu_tss_rw.x86_tss.sp0 */
                 barrier();
@@ -4161,7 +4161,7 @@ int load_elf_binary(struct linux_binprm *bprm)
   start_data = 0;
   end_data = 0;
 
-  // 1. find and open interpreter elf
+  /* 1. find and open interpreter elf */
   for (i = 0; i < loc->elf_ex.e_phnum; i++) {
     if (elf_ppnt->p_type == PT_INTERP) {
       if (elf_ppnt->p_filesz > PATH_MAX || elf_ppnt->p_filesz < 2)
@@ -7584,7 +7584,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 int __init shmem_init(void)
 {
   int error;
-  error = shmem_init_inodecache(); // shmem means shmem fs
+  error = shmem_init_inodecache(); /* shmem means shmem fs */
   error = register_filesystem(&shmem_fs_type);
   shm_mnt = kern_mount(&shmem_fs_type);
   return 0;
@@ -7719,7 +7719,7 @@ int ramfs_nommu_expand_for_mapping(struct inode *inode, size_t newsize)
 
   /* clear the memory we allocated */
   newsize = PAGE_SIZE * npages;
-  // get virtual address of a page from `page_address_htable`
+  /* get virtual address of a page from `page_address_htable` */
   data = page_address(pages);
   memset(data, 0, newsize);
 
@@ -8615,7 +8615,7 @@ cgroup on /sys/fs/cgroup/freezer type cgroup (rw,nosuid,nodev,noexec,relatime,fr
 cgroup on /sys/fs/cgroup/pids type cgroup (rw,nosuid,nodev,noexec,relatime,pids)
 ```
 ```c++
-// sys/fs/cgroup
+/* sys/fs/cgroup */
 drwxr-xr-x 5 root root  0 May 30 17:00 blkio
 lrwxrwxrwx 1 root root 11 May 30 17:00 cpu -> cpu,cpuacct
 lrwxrwxrwx 1 root root 11 May 30 17:00 cpuacct -> cpu,cpuacct
@@ -9157,7 +9157,7 @@ struct kernfs_node *__kernfs_create_file(
   struct kernfs_node *parent,
   const char *name,
   umode_t mode, loff_t size,
-  const struct kernfs_ops *ops, // cgroup_kf_ops
+  const struct kernfs_ops *ops, /* cgroup_kf_ops */
   void *priv, const void *ns,
   struct lock_class_key *key)
 {
@@ -9335,7 +9335,7 @@ struct dentry *kernfs_mount_ns(
 ```
 ### e.g. cpu.shares
 ```c++
-// cpu.shares -> cpu_shares_write_u64
+/* cpu.shares -> cpu_shares_write_u64 */
 int sched_group_set_shares(struct task_group *tg, unsigned long shares)
 {
   int i;
@@ -9380,7 +9380,7 @@ static int cgroup_migrate_execute(struct cgroup_mgctx *mgctx)
   }
 }
 
-// cpu_cgroup_attach -> sched_move_task -> sched_change_group
+/* cpu_cgroup_attach -> sched_move_task -> sched_change_group */
 static void sched_change_group(struct task_struct *tsk, int type)
 {
   struct task_group *tg;
@@ -9398,7 +9398,7 @@ static void sched_change_group(struct task_struct *tsk, int type)
     set_task_rq(tsk, task_cpu(tsk));
 }
 
-// handle_pte_fault -> do_anonymous_page() -> mem_cgroup_try_charge
+/* handle_pte_fault -> do_anonymous_page() -> mem_cgroup_try_charge */
 int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
         gfp_t gfp_mask, struct mem_cgroup **memcgp,
         bool compound)
@@ -11889,7 +11889,7 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 ![](../Images/ULK/4.2-gate-descriptors.png)
 
 ```c++
-// arch/x86/kernel/traps.c, per cpu
+/* arch/x86/kernel/traps.c, per cpu */
 struct gate_struct {
   u16    offset_low;      /* system irq hanlder addr */
   u16    segment;         /* KERNEL_CS */
@@ -11952,7 +11952,7 @@ void __init trap_init(void)
   idt_setup_debugidt_traps();
 }
 
-// arch/x86/include/asm/traps.h
+/* arch/x86/include/asm/traps.h */
 enum {
   X86_TRAP_DE = 0,      /*  0, Divide-by-zero */
   X86_TRAP_DB,          /*  1, Debug */
@@ -12150,7 +12150,7 @@ void __init init_IRQ(void)
   x86_init.irqs.intr_init(); /* native_init_IRQ */
 }
 
-// after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt
+/* after kernel called trap_init(), it invokes init_IRQ() to init other dev interrupt */
 void __init native_init_IRQ(void)
 {
   /* Execute any quirks before the call gates are initialised: */
@@ -12372,7 +12372,7 @@ struct irqaction {
   struct proc_dir_entry *dir;
 };
 
-// assign virtual irq to a cpu
+/* assign virtual irq to a cpu */
 static int __assign_irq_vector(
   int irq, struct apic_chip_data *d,
   const struct cpumask *mask,
@@ -12751,8 +12751,8 @@ static int setup_irq_thread(
  * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
  *
  * This file enumerates the exact layout of them: */
-#define FIRST_EXTERNAL_VECTOR    0x20 // 32
-#define IA32_SYSCALL_VECTOR    0x80   // 128
+#define FIRST_EXTERNAL_VECTOR    0x20 /* 32 */
+#define IA32_SYSCALL_VECTOR    0x80   /* 128 */
 #define NR_VECTORS       256
 #define FIRST_SYSTEM_VECTOR    NR_VECTORS
 ```

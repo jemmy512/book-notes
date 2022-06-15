@@ -414,7 +414,7 @@ enum sock_type {
 #define NPROTO    AF_MAX
 
 struct net_proto_family *net_families[NPROTO];
-// net/ipv4/af_inet.c
+/* net/ipv4/af_inet.c */
 const struct net_proto_family inet_family_ops = {
   .family = PF_INET,
   .create = inet_create
@@ -802,7 +802,7 @@ void sock_init_data(struct socket *sock, struct sock *sk)
   atomic_set(&sk->sk_drops, 0);
 }
 
-// sk_prot->init(sk);
+/* sk_prot->init(sk); */
 int tcp_v4_init_sock(struct sock *sk)
 {
   struct inet_connection_sock *icsk = inet_csk(sk);
@@ -888,7 +888,7 @@ socket();
 
 /* 1.2 create sock */
       pf = net_families[family]; /* get AF */
-      pf->create(); // inet_family_ops.inet_create
+      pf->create(); /* inet_family_ops.inet_create */
         inet_create();
           inet_protosw *answer = inetsw[sock->type]; /* get socket */
           sock->ops = answer->ops;
@@ -963,7 +963,7 @@ SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
   return err;
 }
 
-// inet_stream_ops.bind
+/* inet_stream_ops.bind */
 int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 {
   struct sockaddr_in *addr = (struct sockaddr_in *)uaddr;
@@ -1014,7 +1014,7 @@ SYSCALL_DEFINE2(listen, int, fd, int, backlog)
   return err;
 }
 
-// inet_stream_ops.listen
+/* inet_stream_ops.listen */
 int inet_listen(struct socket *sock, int backlog)
 {
   struct sock *sk = sock->sk;
@@ -1125,7 +1125,7 @@ struct inet_hashinfo tcp_hashinfo;
 
 int __inet_hash(struct sock *sk, struct sock *osk)
 {
-  struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo; // tcp_hashinfo;
+  struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo; /* tcp_hashinfo; */
   struct inet_listen_hashbucket *ilb;
   int err = 0;
 
@@ -1917,7 +1917,7 @@ struct request_sock *reqsk_alloc(const struct request_sock_ops *ops, struct sock
   return req;
 }
 
-// send_synack ->
+/* send_synack -> */
 int tcp_v4_send_synack(
   const struct sock *sk, struct dst_entry *dst,
   struct flowi *fl,
@@ -2638,7 +2638,7 @@ tcp_v4_rcv();
             tcp_init_xmit_timers();
 
           inet_ehash_nolisten();
-            inet_ehash_insert(); // hash insert the new sk and remove the old request_sk
+            inet_ehash_insert(); /* hash insert the new sk and remove the old request_sk */
               inet_ehash_bucket(hashinfo, sk->sk_hash);
               __sk_nulls_add_node_rcu();
                 hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
@@ -2782,7 +2782,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
   int err, len, newfd, fput_needed;
   struct sockaddr_storage address;
 
-  // listen socket
+  /* listen socket */
   sock = sockfd_lookup_light(fd, &err, &fput_needed);
   newsock = sock_alloc();
   newsock->type = sock->type;
@@ -2799,7 +2799,7 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
   return newfd;
 }
 
-// inet_stream_ops.accept
+/* inet_stream_ops.accept */
 int inet_accept(struct socket *sock, struct socket *newsock, int flags, bool kern)
 {
   struct sock *sk1 = sock->sk;
@@ -2810,7 +2810,7 @@ int inet_accept(struct socket *sock, struct socket *newsock, int flags, bool ker
   newsock->state = SS_CONNECTED;
 }
 
-// tcp_prot.accept
+/* tcp_prot.accept */
 struct sock *inet_csk_accept(struct sock *sk, int flags, int *err, bool kern)
 {
   struct inet_connection_sock *icsk = inet_csk(sk);
@@ -3147,7 +3147,7 @@ void sk_acceptq_added(struct sock *sk)
 
 ## reqsk_queue_remove
 ```c++
-// invoked by accept, remove the connected soket from accept queue
+/* invoked by accept, remove the connected soket from accept queue */
 request_sock *reqsk_queue_remove(struct request_sock_queue *queue, struct sock *parent)
 {
   struct request_sock *req;
@@ -3808,7 +3808,7 @@ restart:
       copy = max - skb->len;
     }
 
-    if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) { // !TCP_SKB_CB(skb)->eor
+    if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) { /* !TCP_SKB_CB(skb)->eor */
       bool first_skb;
 
 new_segment:
@@ -4130,7 +4130,7 @@ int tso_fragment(
 
 void skb_split(struct sk_buff *skb, struct sk_buff *skb1, const u32 len)
 {
-  int pos = skb_headlen(skb); // skb->len - skb->data_len
+  int pos = skb_headlen(skb); /* skb->len - skb->data_len */
 
   skb_shinfo(skb1)->tx_flags |= skb_shinfo(skb)->tx_flags & SKBTX_SHARED_FRAG;
   skb_zerocopy_clone(skb1, skb, 0);
@@ -4216,7 +4216,7 @@ void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
   if (tp->highest_sack == NULL)
     tp->highest_sack = skb;
 
-  tp->packets_out += tcp_skb_pcount(skb); // skb_shinfo(skb)->gso_segs
+  tp->packets_out += tcp_skb_pcount(skb); /* skb_shinfo(skb)->gso_segs */
   if (!prior_packets || icsk->icsk_pending == ICSK_TIME_LOSS_PROBE)
     tcp_rearm_rto(sk);
 
@@ -4486,7 +4486,7 @@ int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
   return skb_dst(skb)->output(net, sk, skb);
 }
 
-// ipv4_dst_ops.output
+/* ipv4_dst_ops.output */
 int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
   struct net_device *dev = skb_dst(skb)->dev;
@@ -4617,7 +4617,7 @@ struct neighbour *neigh_alloc(struct neigh_table *tbl, struct net_device *dev)
   n->dead      = 1;
 }
 
-// __neigh_create -> arp_tbl.constructor ->
+/* __neigh_create -> arp_tbl.constructor -> */
 int arp_constructor(struct neighbour *neigh)
 {
   __be32 addr = *(__be32 *)neigh->primary_key;
@@ -4651,7 +4651,7 @@ int neigh_output(struct neighbour *n, struct sk_buff *skb)
 {
   return n->output(n, skb);
 }
-// arp_hh_ops.output ->
+/* arp_hh_ops.output -> */
 int neigh_resolve_output(struct neighbour *neigh, struct sk_buff *skb)
 {
   /* send arp packet */
@@ -4811,12 +4811,12 @@ struct qdisc_skb_head {
   struct sk_buff  *tail;
 };
 
-// dev_queue_xmit ->
+/* dev_queue_xmit -> */
 int __dev_queue_xmit(struct sk_buff *skb, void *accel_priv)
 {
   struct net_device *dev = skb->dev;
   struct netdev_queue *txq;
-  struct Qdisc *q; // queueing discipline
+  struct Qdisc *q; /* queueing discipline */
 
   txq = netdev_pick_tx(dev, skb, accel_priv);
   q = rcu_dereference_bh(txq->qdisc);
@@ -4892,7 +4892,7 @@ void __qdisc_run(struct Qdisc *q)
   qdisc_run_end(q);
 }
 
-// net_tx_action -> qdisc_run -> __qdisc_run ->
+/* net_tx_action -> qdisc_run -> __qdisc_run -> */
 int qdisc_restart(struct Qdisc *q, int *packets)
 {
   struct netdev_queue *txq;
@@ -4971,7 +4971,7 @@ int xmit_one(struct sk_buff *skb, struct net_device *dev,
   return rc;
 }
 
-// netdev_start_xmit -> __netdev_start_xmit
+/* netdev_start_xmit -> __netdev_start_xmit */
 netdev_tx_t __netdev_start_xmit(
   const struct net_device_ops *ops,
   struct sk_buff *skb,
@@ -4980,7 +4980,7 @@ netdev_tx_t __netdev_start_xmit(
     skb->xmit_more = more ? 1 : 0;
     return ops->ndo_start_xmit(skb, dev);
 }
-// .ndo_start_xmit = ixgb_xmit_frame
+/* .ndo_start_xmit = ixgb_xmit_frame */
 netdev_tx_t
 ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 {
@@ -5043,8 +5043,8 @@ void qdisc_run(struct Qdisc *q)
 
 ## driver layer tx
 ```C++
-// internet trasaction gigabit
-// drivers/net/ethernet/intel/ixgb/ixgb_main.c
+/* internet trasaction gigabit */
+/* drivers/net/ethernet/intel/ixgb/ixgb_main.c */
 const struct net_device_ops ixgb_netdev_ops = {
   .ndo_open               = ixgb_open,
   .ndo_stop               = ixgb_close,
@@ -6095,7 +6095,7 @@ struct packet_type arp_packet_type = {
   .func =  arp_rcv,
 };
 
-// if_ether.h inet_init -> dev_add_pack(&ip_packet_type)
+/* if_ether.h inet_init -> dev_add_pack(&ip_packet_type) */
 void dev_add_pack(struct packet_type *pt)
 {
   struct list_head *head = ptype_head(pt);
@@ -6184,7 +6184,7 @@ int dst_input(struct sk_buff *skb)
   return skb_dst(skb)->input(skb);
 }
 
-// see at rt_dst_alloc(), rt.dst.input ->
+/* see at rt_dst_alloc(), rt.dst.input -> */
 int ip_local_deliver(struct sk_buff *skb)
 {
   struct net *net = dev_net(skb->dev);
@@ -7671,7 +7671,7 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
     tcp_send_ack(sk);
 }
 
-// process backlog
+/* process backlog */
 void release_sock(struct sock *sk)
 {
   if (sk->sk_backlog.tail)
@@ -7798,7 +7798,7 @@ process:
             tcp_init_xmit_timers();
 
           inet_ehash_nolisten();
-            inet_ehash_insert(); // hash insert the new sk and remove the old request_sk
+            inet_ehash_insert(); /* hash insert the new sk and remove the old request_sk */
               inet_ehash_bucket(hashinfo, sk->sk_hash);
               __sk_nulls_add_node_rcu();
                 hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
@@ -11073,7 +11073,7 @@ tcp_ack();
 ## timer_lifecycle
 ### timer_init
 ```c++
-// sk->sk_prot->init(sk)
+/* sk->sk_prot->init(sk) */
 int tcp_v4_init_sock(struct sock *sk)
 {
   struct inet_connection_sock *icsk = inet_csk(sk);
@@ -11690,12 +11690,12 @@ int inet_csk_ack_scheduled(const struct sock *sk)
 # tcpdump
 ## register_prot_hook
 ```c++
-// strace tcpdump -i eth0
-// pcap_can_set_rfmon_linux
+/* strace tcpdump -i eth0 */
+/* pcap_can_set_rfmon_linux */
 socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))
 
 struct net_proto_family *net_families[NPROTO];
-// net/ipv4/af_inet.c
+/* net/ipv4/af_inet.c */
 const struct net_proto_family packet_family_ops = {
   .family =  PF_PACKET,
   .create =  packet_create,
@@ -11833,7 +11833,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 
 ## tcpdump_rcv
 ```c++
-// net/core/dev.c
+/* net/core/dev.c */
 int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 {
   list_for_each_entry_rcu(ptype, &ptype_all, list) {
@@ -12085,7 +12085,7 @@ socket();
         sock = SOCKET_I(inode);
         inode->i_op = &sockfs_inode_ops;
       pf = net_families[family]; /* get AF */
-      pf->create(); // inet_family_ops.inet_create
+      pf->create(); /* inet_family_ops.inet_create */
         packet_create()
           struct sock *sk = sk_alloc();
           sock->ops = &packet_ops;
