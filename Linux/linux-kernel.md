@@ -47,15 +47,6 @@
         * [destroy_worker](#destroy_worker)
         * [maday_timer](#maday_timer)
 
-* [Memory Management :link:](./linux-kernel-mem.md)
-* [Network :link:](./linux-kernel-net.md)
-* [File Management :link:](./linux-kernel-file-io.md#File-Management)
-* [IO :link:](./linux-kernel-file-io.md#io)
-
-* [IPC](#IPC)
-* [Virtualization](#Virtualization)
-* [Containerization](#Containerization)
-* [Lock](#Lock)
 * [Pthread](#Pthread)
     * [pthread_create](#pthread_create)
 
@@ -76,6 +67,16 @@
     * [tasklet](#tasklet)
         * [open TASKLET_SOFTIRQ](#open-tasklet_softirq)
         * [tasklet_schedule](#tasklet_schedule)
+
+* [Memory Management :link:](./linux-kernel-mem.md)
+* [Network :link:](./linux-kernel-net.md)
+* [File Management :link:](./linux-kernel-file-io.md#File-Management)
+* [IO :link:](./linux-kernel-file-io.md#io)
+
+* [IPC](#IPC)
+* [Virtualization](#Virtualization)
+* [Containerization](#Containerization)
+* [Lock](#Lock)
 
 ![](../Images/Kernel/kernel-structual.svg)
 
