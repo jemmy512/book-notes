@@ -29,6 +29,11 @@
     * [ip layer](#ip-layer-tx)
         * [build ip header](#build-ip-header)
         * [send package](#send-package)
+        * [skb_gso_segment](#skb_gso_segment)
+            * [skb_mac_gso_segment](#skb_mac_gso_segment)
+            * [inet_gso_segment](#inet_gso_segment)
+            * [tcp4_gso_segment](#tcp4_gso_segment)
+        * [ip_fragment](#ip_fragment)
     * [mac layer](#mac-layer-tx)
         * [neighbour](#neighbour)
         * [neigh_output](#neigh_output)
@@ -3888,7 +3893,7 @@ new_segment:
       continue;
 
 /* 4. send data */
-    if (forced_push(tp)) {
+    if (forced_push(tp)) { /* tp->write_seq > tp->pushed_seq + (tp->max_window >> 1)) */
       tcp_mark_push(tp, skb);
       __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
     } else if (skb == tcp_send_head(sk))
@@ -4042,6 +4047,30 @@ repair:
   }
 
   return !tp->packets_out && !tcp_write_queue_empty(sk);
+}
+
+int tcp_init_tso_segs(struct sk_buff *skb, unsigned int mss_now)
+{
+  int tso_segs = tcp_skb_pcount(skb);
+
+  if (!tso_segs || (tso_segs > 1 && tcp_skb_mss(skb) != mss_now)) {
+    tcp_set_skb_tso_segs(skb, mss_now);
+    tso_segs = tcp_skb_pcount(skb);
+  }
+  return tso_segs;
+}
+
+void tcp_set_skb_tso_segs(struct sk_buff *skb, unsigned int mss_now)
+{
+  if (skb->len <= mss_now) {
+    /* Avoid the costly divide in the normal
+     * non-TSO case. */
+    tcp_skb_pcount_set(skb, 1);
+    TCP_SKB_CB(skb)->tcp_gso_size = 0;
+  } else {
+    tcp_skb_pcount_set(skb, DIV_ROUND_UP(skb->len, mss_now));
+    TCP_SKB_CB(skb)->tcp_gso_size = mss_now;
+  }
 }
 ```
 
@@ -4498,10 +4527,286 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
           ip_finish_output,
           !(IPCB(skb)->flags & IPSKB_REROUTED));
 }
+
+int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  unsigned int mtu;
+  int ret;
+
+  ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(sk, skb);
+  if (ret) {
+    kfree_skb(skb);
+    return ret;
+  }
+
+#if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
+  /* Policy lookup after SNAT yielded a new policy */
+  if (skb_dst(skb)->xfrm) {
+    IPCB(skb)->flags |= IPSKB_REROUTED;
+    return dst_output(net, sk, skb);
+  }
+#endif
+  mtu = ip_skb_dst_mtu(sk, skb);
+  if (skb_is_gso(skb))
+    return ip_finish_output_gso(net, sk, skb, mtu);
+
+  if (skb->len > mtu || IPCB(skb)->frag_max_size)
+    return ip_fragment(net, sk, skb, mtu, ip_finish_output2);
+
+  return ip_finish_output2(net, sk, skb);
+}
 ```
 
+### skb_gso_segment
+```c++
+int ip_finish_output_gso(struct net *net, struct sock *sk,
+        struct sk_buff *skb, unsigned int mtu)
+{
+  netdev_features_t features;
+  struct sk_buff *segs;
+  int ret = 0;
+
+  /* common case: seglen is <= mtu
+   */
+  if (skb_gso_validate_network_len(skb, mtu))
+    return ip_finish_output2(net, sk, skb);
+
+  features = netif_skb_features(skb);
+  BUILD_BUG_ON(sizeof(*IPCB(skb)) > SKB_SGO_CB_OFFSET);
+  segs = skb_gso_segment(skb, features & ~NETIF_F_GSO_MASK);
+  if (IS_ERR_OR_NULL(segs)) {
+    kfree_skb(skb);
+    return -ENOMEM;
+  }
+
+  consume_skb(skb);
+
+  do {
+    struct sk_buff *nskb = segs->next;
+    int err;
+
+    segs->next = NULL;
+    err = ip_fragment(net, sk, segs, mtu, ip_finish_output2);
+
+    if (err && ret == 0)
+      ret = err;
+    segs = nskb;
+  } while (segs);
+
+  return ret;
+}
+
+static inline
+struct sk_buff *skb_gso_segment(struct sk_buff *skb, netdev_features_t features)
+{
+  return __skb_gso_segment(skb, features, true);
+}
+
+struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
+          netdev_features_t features, bool tx_path)
+{
+  struct sk_buff *segs;
+
+  if (unlikely(skb_needs_check(skb, tx_path))) {
+    int err;
+
+    /* We're going to init ->check field in TCP or UDP header */
+    err = skb_cow_head(skb, 0);
+    if (err < 0)
+      return ERR_PTR(err);
+  }
+
+  /* Only report GSO partial support if it will enable us to
+   * support segmentation on this frame without needing additional
+   * work.
+   */
+  if (features & NETIF_F_GSO_PARTIAL) {
+    netdev_features_t partial_features = NETIF_F_GSO_ROBUST;
+    struct net_device *dev = skb->dev;
+
+    partial_features |= dev->features & dev->gso_partial_features;
+    if (!skb_gso_ok(skb, features | partial_features))
+      features &= ~NETIF_F_GSO_PARTIAL;
+  }
+
+  BUILD_BUG_ON(SKB_SGO_CB_OFFSET +
+         sizeof(*SKB_GSO_CB(skb)) > sizeof(skb->cb));
+
+  SKB_GSO_CB(skb)->mac_offset = skb_headroom(skb);
+  SKB_GSO_CB(skb)->encap_level = 0;
+
+  skb_reset_mac_header(skb);
+  skb_reset_mac_len(skb);
+
+  segs = skb_mac_gso_segment(skb, features);
+
+  if (unlikely(skb_needs_check(skb, tx_path) && !IS_ERR(segs)))
+    skb_warn_bad_offload(skb);
+
+  return segs;
+}
+```
+
+#### skb_mac_gso_segment
+```c++
+struct sk_buff *skb_mac_gso_segment(struct sk_buff *skb,
+            netdev_features_t features)
+{
+  struct sk_buff *segs = ERR_PTR(-EPROTONOSUPPORT);
+  struct packet_offload *ptype;
+  int vlan_depth = skb->mac_len;
+  __be16 type = skb_network_protocol(skb, &vlan_depth);
+
+  if (unlikely(!type))
+    return ERR_PTR(-EINVAL);
+
+  __skb_pull(skb, vlan_depth);
+
+  rcu_read_lock();
+  list_for_each_entry_rcu(ptype, &offload_base, list) {
+    if (ptype->type == type && ptype->callbacks.gso_segment) {
+      segs = ptype->callbacks.gso_segment(skb, features);
+      break;
+    }
+  }
+  rcu_read_unlock();
+
+  __skb_push(skb, skb->data - skb_mac_header(skb));
+
+  return segs;
+}
+```
+
+#### inet_gso_segment
+```c++
+struct sk_buff *inet_gso_segment(struct sk_buff *skb,
+         netdev_features_t features)
+{
+  bool udpfrag = false, fixedid = false, gso_partial, encap;
+  struct sk_buff *segs = ERR_PTR(-EINVAL);
+  const struct net_offload *ops;
+  unsigned int offset = 0;
+  struct iphdr *iph;
+  int proto, tot_len;
+  int nhoff;
+  int ihl;
+  int id;
+
+  skb_reset_network_header(skb);
+  nhoff = skb_network_header(skb) - skb_mac_header(skb);
+  if (unlikely(!pskb_may_pull(skb, sizeof(*iph))))
+    goto out;
+
+  iph = ip_hdr(skb);
+  ihl = iph->ihl * 4;
+  if (ihl < sizeof(*iph))
+    goto out;
+
+  id = ntohs(iph->id);
+  proto = iph->protocol;
+
+  /* Warning: after this point, iph might be no longer valid */
+  if (unlikely(!pskb_may_pull(skb, ihl)))
+    goto out;
+  __skb_pull(skb, ihl);
+
+  encap = SKB_GSO_CB(skb)->encap_level > 0;
+  if (encap)
+    features &= skb->dev->hw_enc_features;
+  SKB_GSO_CB(skb)->encap_level += ihl;
+
+  skb_reset_transport_header(skb);
+
+  segs = ERR_PTR(-EPROTONOSUPPORT);
+
+  if (!skb->encapsulation || encap) {
+    udpfrag = !!(skb_shinfo(skb)->gso_type & SKB_GSO_UDP);
+    fixedid = !!(skb_shinfo(skb)->gso_type & SKB_GSO_TCP_FIXEDID);
+
+    /* fixed ID is invalid if DF bit is not set */
+    if (fixedid && !(ip_hdr(skb)->frag_off & htons(IP_DF)))
+      goto out;
+  }
+
+  ops = rcu_dereference(inet_offloads[proto]);
+  if (likely(ops && ops->callbacks.gso_segment))
+    segs = ops->callbacks.gso_segment(skb, features);
+
+  if (IS_ERR_OR_NULL(segs))
+    goto out;
+
+  gso_partial = !!(skb_shinfo(segs)->gso_type & SKB_GSO_PARTIAL);
+
+  skb = segs;
+  do {
+    iph = (struct iphdr *)(skb_mac_header(skb) + nhoff);
+    if (udpfrag) {
+      iph->frag_off = htons(offset >> 3);
+      if (skb->next)
+        iph->frag_off |= htons(IP_MF);
+      offset += skb->len - nhoff - ihl;
+      tot_len = skb->len - nhoff;
+    } else if (skb_is_gso(skb)) {
+      if (!fixedid) {
+        iph->id = htons(id);
+        id += skb_shinfo(skb)->gso_segs;
+      }
+
+      if (gso_partial)
+        tot_len = skb_shinfo(skb)->gso_size +
+            SKB_GSO_CB(skb)->data_offset +
+            skb->head - (unsigned char *)iph;
+      else
+        tot_len = skb->len - nhoff;
+    } else {
+      if (!fixedid)
+        iph->id = htons(id++);
+      tot_len = skb->len - nhoff;
+    }
+    iph->tot_len = htons(tot_len);
+    ip_send_check(iph);
+    if (encap)
+      skb_reset_inner_headers(skb);
+    skb->network_header = (u8 *)iph - skb->head;
+    skb_reset_mac_len(skb);
+  } while ((skb = skb->next));
+
+out:
+  return segs;
+}
+```
+
+#### tcp4_gso_segment
+```c++
+struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
+          netdev_features_t features)
+{
+  if (!(skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4))
+    return ERR_PTR(-EINVAL);
+
+  if (!pskb_may_pull(skb, sizeof(struct tcphdr)))
+    return ERR_PTR(-EINVAL);
+
+  if (unlikely(skb->ip_summed != CHECKSUM_PARTIAL)) {
+    const struct iphdr *iph = ip_hdr(skb);
+    struct tcphdr *th = tcp_hdr(skb);
+
+    /* Set up checksum pseudo header, usually expect stack to
+     * have done this already. */
+
+    th->check = 0;
+    skb->ip_summed = CHECKSUM_PARTIAL;
+    __tcp_v4_send_check(skb, iph->saddr, iph->daddr);
+  }
+
+  return tcp_gso_segment(skb, features);
+}
+```
+
+### ip_fragment
+
 ## mac layer tx
-```C++
+```c++
 /* ip_finish_output -> */
 int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
