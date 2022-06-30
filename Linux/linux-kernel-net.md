@@ -42,6 +42,8 @@
 * [read](#read)
     * [driver layer](#driver-layer-rx)
     * [mac layer](#mac-layer-rx)
+        * [vlan_do_receive](#vlan_do_receive)
+        * [:link: br_handle_frame](#br_handle_frame)
     * [ip layer](#ip-layer-rx)
     * [tcp layer](#tcp-layer-rx)
         * [tcp_v4_rcv-TCP_NEW_SYN_RECV](#tcp_v4_rcv-TCP_NEW_SYN_RECV)
@@ -54,6 +56,11 @@
 * [route](#route)
   * [route out](#route-out)
   * [route in](#route-in)
+
+* [bridge](#bridge)
+    * [br_add_bridge](#br_add_bridge)
+    * [br_add_if](#br_add_if)
+    * [br_handle_frame](#br_handle_frame)
 
 * [congestion control](#congestion-control)
     * [tcp_ca_state](#tcp_ca_state)
@@ -3781,52 +3788,124 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 {
   struct tcp_sock *tp = tcp_sk(sk);
+  struct ubuf_info *uarg = NULL;
   struct sk_buff *skb;
+  struct sockcm_cookie sockc;
   int flags, err, copied = 0;
   int mss_now = 0, size_goal, copied_syn = 0;
+  bool process_backlog = false;
+  bool zc = false;
   long timeo;
 
-/* 1. wait for connect */
+  flags = msg->msg_flags;
+
+  if (flags & MSG_ZEROCOPY && size && sock_flag(sk, SOCK_ZEROCOPY)) {
+    if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) {
+      err = -EINVAL;
+      goto out_err;
+    }
+
+    skb = tcp_write_queue_tail(sk);
+    uarg = sock_zerocopy_realloc(sk, size, skb_zcopy(skb));
+    if (!uarg) {
+      err = -ENOBUFS;
+      goto out_err;
+    }
+
+    zc = sk->sk_route_caps & NETIF_F_SG;
+    if (!zc)
+      uarg->zerocopy = 0;
+  }
+
+  if (unlikely(flags & MSG_FASTOPEN || inet_sk(sk)->defer_connect) && !tp->repair) {
+    err = tcp_sendmsg_fastopen(sk, msg, &copied_syn, size);
+    if (err == -EINPROGRESS && copied_syn > 0)
+      goto out;
+    else if (err)
+      goto out_err;
+  }
+
   timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
-  if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
-    && !tcp_passive_fastopen(sk))
-  {
+
+  tcp_rate_check_app_limited(sk);  /* is sending application-limited? */
+
+  /* 1. wait for connect */
+  if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) && !tcp_passive_fastopen(sk)) {
     err = sk_stream_wait_connect(sk, &timeo);
     if (err != 0)
       goto do_error;
   }
 
+  if (unlikely(tp->repair)) {
+    if (tp->repair_queue == TCP_RECV_QUEUE) {
+      copied = tcp_send_rcvq(sk, msg, size);
+      goto out_nopush;
+    }
+
+    err = -EINVAL;
+    if (tp->repair_queue == TCP_NO_QUEUE)
+      goto out_err;
+
+    /* 'common' sending to sendq */
+  }
+
+  sockcm_init(&sockc, sk);
+  if (msg->msg_controllen) {
+    err = sock_cmsg_send(sk, msg, &sockc);
+    if (unlikely(err)) {
+      err = -EINVAL;
+      goto out_err;
+    }
+  }
+
+  /* This should be in poll */
+  sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
+
   /* Ok commence sending. */
   copied = 0;
+
 restart:
   mss_now = tcp_send_mss(sk, &size_goal, flags);
 
+  err = -EPIPE;
+  if (sk->sk_err || (sk->sk_shutdown & SEND_SHUTDOWN))
+    goto do_error;
+
   while (msg_data_left(msg)) {
     int copy = 0;
-    int max = size_goal;
 
 /* 2. get an available skb */
     skb = tcp_write_queue_tail(sk);
-    if (tcp_send_head(sk)) {
-      if (skb->ip_summed == CHECKSUM_NONE)
-        max = mss_now;
-      copy = max - skb->len;
-    }
+    if (skb)
+      copy = size_goal - skb->len;
 
     if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) { /* !TCP_SKB_CB(skb)->eor */
       bool first_skb;
+      int linear;
 
 new_segment:
       if (!sk_stream_memory_free(sk))
         goto wait_for_sndbuf;
 
-      first_skb = skb_queue_empty(&sk->sk_write_queue);
-      skb = sk_stream_alloc_skb(
-        sk, select_size(sk, sg, first_skb),
-        sk->sk_allocation, first_skb);
+      if (process_backlog && sk_flush_backlog(sk)) {
+        process_backlog = false;
+        goto restart;
+      }
+      first_skb = tcp_rtx_and_write_queues_empty(sk);
+      linear = select_size(first_skb, zc);
+      skb = sk_stream_alloc_skb(sk, linear, sk->sk_allocation,
+              first_skb);
+      if (!skb)
+        goto wait_for_memory;
+
+      process_backlog = true;
+      skb->ip_summed = CHECKSUM_PARTIAL;
+
       skb_entail(sk, skb);
       copy = size_goal;
-      max = size_goal;
+
+      if (tp->repair)
+        TCP_SKB_CB(skb)->sacked |= TCPCB_REPAIRED;
     }
 
     /* Try to append data to the end of skb. */
@@ -3838,6 +3917,8 @@ new_segment:
 /* 3.1 copy to skb */
       copy = min_t(int, copy, skb_availroom(skb));
       err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
+      if (err)
+        goto do_fault;
     } else if (!zc) {
 /* 3.2 copy to page_frag */
       bool merge = true;
@@ -3857,14 +3938,16 @@ new_segment:
       }
 
       copy = min_t(int, copy, pfrag->size - pfrag->offset);
+
       if (!sk_wmem_schedule(sk, copy))
         goto wait_for_memory;
 
-      err = skb_copy_to_page_nocache(sk, &msg->msg_iter, skb, pfrag->page, pfrag->offset, copy);
+      err = skb_copy_to_page_nocache(sk, &msg->msg_iter, skb,
+        pfrag->page, pfrag->offset, copy
+      );
       if (err)
         goto do_error;
 
-      /* Update the skb. */
       if (merge) {
         skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], copy);
       } else {
@@ -3875,10 +3958,19 @@ new_segment:
     } else {
 /* 3.3 zero copy */
       err = skb_zerocopy_iter_stream(sk, skb, msg, copy, uarg);
+      if (err == -EMSGSIZE || err == -EEXIST) {
+        tcp_mark_push(tp, skb);
+        goto new_segment;
+      }
+      if (err < 0)
+        goto do_error;
       copy = err;
     }
 
-    tp->write_seq += copy;
+    if (!copied)
+      TCP_SKB_CB(skb)->tcp_flags &= ~TCPHDR_PSH;
+
+    WRITE_ONCE(tp->write_seq, tp->write_seq + copy);
     TCP_SKB_CB(skb)->end_seq += copy;
     tcp_skb_pcount_set(skb, 0);
 
@@ -3889,17 +3981,58 @@ new_segment:
       goto out;
     }
 
-    if (skb->len < max || (flags & MSG_OOB) || unlikely(tp->repair))
+    if (skb->len < size_goal || (flags & MSG_OOB) || unlikely(tp->repair))
       continue;
 
-/* 4. send data */
+/* 4.1 send data */
     if (forced_push(tp)) { /* tp->write_seq > tp->pushed_seq + (tp->max_window >> 1)) */
       tcp_mark_push(tp, skb);
       __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
     } else if (skb == tcp_send_head(sk))
       tcp_push_one(sk, mss_now);
+
     continue;
+
+wait_for_sndbuf:
+    set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
+wait_for_memory:
+    if (copied)
+      tcp_push(sk, flags & ~MSG_MORE, mss_now, TCP_NAGLE_PUSH, size_goal);
+
+    err = sk_stream_wait_memory(sk, &timeo);
+    if (err != 0)
+      goto do_error;
+
+    mss_now = tcp_send_mss(sk, &size_goal, flags);
   }
+
+/* 4.2 send data */
+out:
+  if (copied) {
+    tcp_tx_timestamp(sk, sockc.tsflags);
+    tcp_push(sk, flags, mss_now, tp->nonagle, size_goal);
+  }
+
+out_nopush:
+  sock_zerocopy_put(uarg);
+  return copied + copied_syn;
+
+do_error:
+  skb = tcp_write_queue_tail(sk);
+do_fault:
+  tcp_remove_empty_skb(sk, skb);
+
+  if (copied + copied_syn)
+    goto out;
+out_err:
+  sock_zerocopy_put_abort(uarg);
+  err = sk_stream_error(sk, flags, err);
+  /* make sure we wake any epoll edge trigger waiter */
+  if (unlikely(tcp_rtx_and_write_queues_empty(sk) && err == -EAGAIN)) {
+    sk->sk_write_space(sk);
+    tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
+  }
+  return err;
 }
 
 int skb_copy_to_page_nocache(
@@ -4547,7 +4680,7 @@ int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
   }
 #endif
   mtu = ip_skb_dst_mtu(sk, skb);
-  if (skb_is_gso(skb))
+  if (skb_is_gso(skb)) /* support gso: skb_shinfo(skb)->gso_size */
     return ip_finish_output_gso(net, sk, skb, mtu);
 
   if (skb->len > mtu || IPCB(skb)->frag_max_size)
@@ -4566,8 +4699,7 @@ int ip_finish_output_gso(struct net *net, struct sock *sk,
   struct sk_buff *segs;
   int ret = 0;
 
-  /* common case: seglen is <= mtu
-   */
+  /* common case: seglen is <= mtu */
   if (skb_gso_validate_network_len(skb, mtu))
     return ip_finish_output2(net, sk, skb);
 
@@ -4629,8 +4761,7 @@ struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
       features &= ~NETIF_F_GSO_PARTIAL;
   }
 
-  BUILD_BUG_ON(SKB_SGO_CB_OFFSET +
-         sizeof(*SKB_GSO_CB(skb)) > sizeof(skb->cb));
+  BUILD_BUG_ON(SKB_SGO_CB_OFFSET + sizeof(*SKB_GSO_CB(skb)) > sizeof(skb->cb));
 
   SKB_GSO_CB(skb)->mac_offset = skb_headroom(skb);
   SKB_GSO_CB(skb)->encap_level = 0;
@@ -4730,7 +4861,7 @@ struct sk_buff *inet_gso_segment(struct sk_buff *skb,
 
   ops = rcu_dereference(inet_offloads[proto]);
   if (likely(ops && ops->callbacks.gso_segment))
-    segs = ops->callbacks.gso_segment(skb, features);
+    segs = ops->callbacks.gso_segment(skb, features); /* tcp4_gso_segment */
 
   if (IS_ERR_OR_NULL(segs))
     goto out;
@@ -6184,7 +6315,7 @@ void skb_copy_to_linear_data_offset(
 ```C++
 /* netif_receive_skb -> netif_receive_skb_internal ->
  * __netif_receive_skb -> __netif_receive_skb_core */
-int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
+int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc, struct packet_type **ppt_prev)
 {
   struct packet_type *ptype, *pt_prev;
 
@@ -6298,7 +6429,8 @@ skip_classify:
       goto out;
   }
 
-  rx_handler = rcu_dereference(skb->dev->rx_handler);
+  /* bridge handle */
+  rx_handler = rcu_dereference(skb->dev->rx_handler); /* br_handle_frame */
   if (rx_handler) {
     if (pt_prev) {
       ret = deliver_skb(skb, pt_prev, orig_dev);
@@ -6415,6 +6547,15 @@ struct list_head *ptype_head(const struct packet_type *pt)
       return pt->dev ? &pt->dev->ptype_specific : &ptype_base[ntohs(pt->type) & PTYPE_HASH_MASK];
 }
 ```
+
+### vlan_do_receive
+```c++
+
+```
+
+### ref_br_handle_frame
+
+[:link: br_handle_frame](#br_handle_frame)
 
 ## ip layer rx
 ```C++
@@ -9450,6 +9591,624 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
   if (!(flags & DST_NOCOUNT))
     dst_entries_add(ops, 1);
 }
+```
+
+
+# bridge
+
+![](../Images/Kernel/net-bridge.png)
+
+```c++
+struct net_bridge {
+  struct list_head      port_list;
+  struct net_device     *dev;
+
+  struct rhashtable     fdb_hash_tbl;
+
+  spinlock_t            multicast_lock;
+  struct net_bridge_mdb_htable __rcu *mdb;
+  struct hlist_head     router_list;
+
+  struct kobject        *ifobj;
+  struct hlist_head     fdb_list;
+};
+
+struct net_bridge_port {
+  struct net_bridge     *br;
+  struct net_device     *dev;
+  struct list_head      list;
+
+  port_id               port_id;
+  struct timer_list     forward_delay_timer;
+  struct timer_list     hold_timer;
+  struct timer_list     message_age_timer;
+  struct kobject        kobj;
+  struct rcu_head       rcu;
+  struct netpoll        *np;
+};
+
+const struct net_device_ops br_netdev_ops = {
+  .ndo_open     = br_dev_open,
+  .ndo_stop     = br_dev_stop,
+  .ndo_init     = br_dev_init,
+  .ndo_do_ioctl = br_dev_ioctl
+};
+```
+
+## br_add_bridge
+```c++
+int br_add_bridge(struct net *net, const char *name)
+{
+  struct net_device *dev;
+  int res;
+
+  dev = alloc_netdev(sizeof(struct net_bridge), name, NET_NAME_UNKNOWN, br_dev_setup);
+  dev_net_set(dev, net);
+  dev->rtnl_link_ops = &br_link_ops;
+
+  res = register_netdev(dev);
+
+  return res;
+}
+
+#define alloc_netdev(sizeof_priv, name, setup) \
+  alloc_netdev_mqs(sizeof_priv, name, setup, 1, 1)
+```
+
+## br_add_if
+```c++
+int br_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+{
+  struct net_bridge *br = netdev_priv(dev);
+
+  switch (cmd) {
+  case SIOCDEVPRIVATE:
+    return old_dev_ioctl(dev, rq, cmd);
+
+  case SIOCBRADDIF:
+  case SIOCBRDELIF:
+    return add_del_if(br, rq->ifr_ifindex, cmd == SIOCBRADDIF);
+  }
+
+  return -EOPNOTSUPP;
+}
+
+int br_add_if(struct net_bridge *br, struct net_device *dev,
+        struct netlink_ext_ack *extack)
+{
+  struct net_bridge_port *p;
+  int err = 0;
+  unsigned br_hr, dev_hr;
+  bool changed_addr, fdb_synced = false;
+
+  /* No bridging of bridges */
+  if (dev->netdev_ops->ndo_start_xmit == br_dev_xmit) {
+    NL_SET_ERR_MSG(extack, "Can not enslave a bridge to a bridge");
+    return -ELOOP;
+  }
+
+  /* Device has master upper dev */
+  if (netdev_master_upper_dev_get(dev))
+    return -EBUSY;
+
+  /* No bridging devices that dislike that (e.g. wireless) */
+  if (dev->priv_flags & IFF_DONT_BRIDGE) {
+    NL_SET_ERR_MSG(extack, "Device does not allow enslaving to a bridge");
+    return -EOPNOTSUPP;
+  }
+
+  p = new_nbp(br, dev);
+
+  call_netdevice_notifiers(NETDEV_JOIN, dev);
+
+  err = dev_set_allmulti(dev, 1);
+
+  err = kobject_init_and_add(&p->kobj, &brport_ktype, &(dev->dev.kobj),
+           SYSFS_BRIDGE_PORT_ATTR);
+  if (err)
+    goto err2;
+
+  err = br_sysfs_addif(p);
+  if (err)
+    goto err2;
+
+  err = br_netpoll_enable(p);
+  if (err)
+    goto err3;
+
+  err = netdev_rx_handler_register(dev, br_handle_frame, p);
+  if (err)
+    goto err4;
+
+  dev->priv_flags |= IFF_BRIDGE_PORT;
+
+  err = netdev_master_upper_dev_link(dev, br->dev, NULL, NULL, extack);
+  if (err)
+    goto err5;
+
+  err = nbp_switchdev_mark_set(p);
+  if (err)
+    goto err6;
+
+  dev_disable_lro(dev);
+
+  list_add_rcu(&p->list, &br->port_list);
+
+  nbp_update_port_count(br);
+  if (!br_promisc_port(p) && (p->dev->priv_flags & IFF_UNICAST_FLT)) {
+    fdb_synced = br_fdb_sync_static(br, p) == 0;
+    if (!fdb_synced)
+      netdev_err(dev, "failed to sync bridge static fdb addresses to this port\n");
+  }
+
+  netdev_update_features(br->dev);
+
+  br_hr = br->dev->needed_headroom;
+  dev_hr = netdev_get_fwd_headroom(dev);
+  if (br_hr < dev_hr)
+    update_headroom(br, dev_hr);
+  else
+    netdev_set_rx_headroom(dev, br_hr);
+
+  if (br_fdb_insert(br, p, dev->dev_addr, 0))
+    netdev_err(dev, "failed insert local address bridge forwarding table\n");
+
+  err = nbp_vlan_init(p);
+  if (err) {
+    netdev_err(dev, "failed to initialize vlan filtering on this port\n");
+    goto err7;
+  }
+
+  spin_lock_bh(&br->lock);
+  changed_addr = br_stp_recalculate_bridge_id(br);
+
+  if (netif_running(dev) && netif_oper_up(dev) && (br->dev->flags & IFF_UP))
+    br_stp_enable_port(p);
+  spin_unlock_bh(&br->lock);
+
+  br_ifinfo_notify(RTM_NEWLINK, NULL, p);
+
+  if (changed_addr)
+    call_netdevice_notifiers(NETDEV_CHANGEADDR, br->dev);
+
+  br_mtu_auto_adjust(br);
+  br_set_gso_limits(br);
+
+  kobject_uevent(&p->kobj, KOBJ_ADD);
+
+  return 0;
+
+err7:
+  if (fdb_synced)
+    br_fdb_unsync_static(br, p);
+  list_del_rcu(&p->list);
+  br_fdb_delete_by_port(br, p, 0, 1);
+  nbp_update_port_count(br);
+err6:
+  netdev_upper_dev_unlink(dev, br->dev);
+err5:
+  dev->priv_flags &= ~IFF_BRIDGE_PORT;
+  netdev_rx_handler_unregister(dev);
+err4:
+  br_netpoll_disable(p);
+err3:
+  sysfs_remove_link(br->ifobj, p->dev->name);
+err2:
+  br_multicast_del_port(p);
+  kobject_put(&p->kobj);
+  dev_set_allmulti(dev, -1);
+err1:
+  dev_put(dev);
+  return err;
+}
+```
+
+## br_handle_frame
+```c++
+rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
+{
+  struct net_bridge_port *p;
+  struct sk_buff *skb = *pskb;
+  const unsigned char *dest = eth_hdr(skb)->h_dest;
+  br_should_route_hook_t *rhook;
+
+  if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
+    return RX_HANDLER_PASS;
+
+  if (!is_valid_ether_addr(eth_hdr(skb)->h_source))
+    goto drop;
+
+  skb = skb_share_check(skb, GFP_ATOMIC);
+  if (!skb)
+    return RX_HANDLER_CONSUMED;
+
+  p = br_port_get_rcu(skb->dev);
+  if (p->flags & BR_VLAN_TUNNEL) {
+    if (br_handle_ingress_vlan_tunnel(skb, p, nbp_vlan_group_rcu(p)))
+      goto drop;
+  }
+
+  if (unlikely(is_link_local_ether_addr(dest))) {
+    u16 fwd_mask = p->br->group_fwd_mask_required;
+    /* See IEEE 802.1D Table 7-10 Reserved addresses
+     *
+     *    Assignment                Value
+     * Bridge Group Address     01-80-C2-00-00-00
+     * (MAC Control) 802.3      01-80-C2-00-00-01
+     * (Link Aggregation)802.3  01-80-C2-00-00-02
+     * 802.1X PAE address       01-80-C2-00-00-03
+     *
+     * 802.1AB LLDP             01-80-C2-00-00-0E
+     *
+     * Others reserved for future standardization */
+
+    fwd_mask |= p->group_fwd_mask;
+    switch (dest[5]) {
+    case 0x00:  /* Bridge Group Address */
+      /* If STP is turned off, then must forward to keep loop detection */
+      if (p->br->stp_enabled == BR_NO_STP || fwd_mask & (1u << dest[5]))
+        goto forward;
+      *pskb = skb;
+      __br_handle_local_finish(skb);
+      return RX_HANDLER_PASS;
+
+    case 0x01:  /* IEEE MAC (Pause) */
+      goto drop;
+
+    case 0x0E:  /* 802.1AB LLDP */
+      fwd_mask |= p->br->group_fwd_mask;
+      if (fwd_mask & (1u << dest[5]))
+        goto forward;
+      *pskb = skb;
+      __br_handle_local_finish(skb);
+      return RX_HANDLER_PASS;
+
+    default:
+      /* Allow selective forwarding for most other protocols */
+      fwd_mask |= p->br->group_fwd_mask;
+      if (fwd_mask & (1u << dest[5]))
+        goto forward;
+    }
+
+    /* The else clause should be hit when nf_hook():
+     *   - returns < 0 (drop/error)
+     *   - returns = 0 (stolen/nf_queue)
+     * Thus return 1 from the okfn() to signal the skb is ok to pass */
+    if (NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN, dev_net(skb->dev),
+      NULL, skb, skb->dev, NULL, br_handle_local_finish) == 1)
+    {
+      return RX_HANDLER_PASS;
+    } else {
+      return RX_HANDLER_CONSUMED;
+    }
+  }
+
+forward:
+  switch (p->state) {
+  case BR_STATE_FORWARDING:
+    rhook = rcu_dereference(br_should_route_hook);
+    if (rhook) {
+      if ((*rhook)(skb)) {
+        *pskb = skb;
+        return RX_HANDLER_PASS;
+      }
+      dest = eth_hdr(skb)->h_dest;
+    }
+    /* fall through */
+  case BR_STATE_LEARNING:
+    if (ether_addr_equal(p->br->dev->dev_addr, dest))
+      skb->pkt_type = PACKET_HOST;
+
+    NF_HOOK(NFPROTO_BRIDGE, NF_BR_PRE_ROUTING, dev_net(skb->dev),
+      NULL, skb, skb->dev, NULL, br_handle_frame_finish
+    );
+    break;
+  default:
+drop:
+    kfree_skb(skb);
+  }
+  return RX_HANDLER_CONSUMED;
+}
+
+int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  struct net_bridge_port *p = br_port_get_rcu(skb->dev);
+  enum br_pkt_type pkt_type = BR_PKT_UNICAST;
+  struct net_bridge_fdb_entry *dst = NULL;
+  struct net_bridge_mdb_entry *mdst;
+  bool local_rcv, mcast_hit = false;
+  struct net_bridge *br;
+  u16 vid = 0;
+
+  if (!p || p->state == BR_STATE_DISABLED)
+    goto drop;
+
+  if (!br_allowed_ingress(p->br, nbp_vlan_group_rcu(p), skb, &vid))
+    goto out;
+
+  nbp_switchdev_frame_mark(p, skb);
+
+  /* insert into forwarding database after filtering to avoid spoofing */
+  br = p->br;
+  if (p->flags & BR_LEARNING)
+    br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, false);
+
+  local_rcv = !!(br->dev->flags & IFF_PROMISC);
+  if (is_multicast_ether_addr(eth_hdr(skb)->h_dest)) {
+    /* by definition the broadcast is also a multicast address */
+    if (is_broadcast_ether_addr(eth_hdr(skb)->h_dest)) {
+      pkt_type = BR_PKT_BROADCAST;
+      local_rcv = true;
+    } else {
+      pkt_type = BR_PKT_MULTICAST;
+      if (br_multicast_rcv(br, p, skb, vid))
+        goto drop;
+    }
+  }
+
+  if (p->state == BR_STATE_LEARNING)
+    goto drop;
+
+  BR_INPUT_SKB_CB(skb)->brdev = br->dev;
+  BR_INPUT_SKB_CB(skb)->src_port_isolated = !!(p->flags & BR_ISOLATED);
+
+  if (IS_ENABLED(CONFIG_INET) &&
+    (skb->protocol == htons(ETH_P_ARP) || skb->protocol == htons(ETH_P_RARP)))
+  {
+    br_do_proxy_suppress_arp(skb, br, vid, p);
+  } else if (IS_ENABLED(CONFIG_IPV6) &&
+    skb->protocol == htons(ETH_P_IPV6) &&
+    br->neigh_suppress_enabled &&
+    pskb_may_pull(skb, sizeof(struct ipv6hdr) +
+    sizeof(struct nd_msg)) &&
+    ipv6_hdr(skb)->nexthdr == IPPROTO_ICMPV6)
+  {
+      struct nd_msg *msg, _msg;
+
+      msg = br_is_nd_neigh_msg(skb, &_msg);
+      if (msg)
+        br_do_suppress_nd(skb, br, vid, p, msg);
+  }
+
+  switch (pkt_type) {
+  case BR_PKT_MULTICAST:
+    mdst = br_mdb_get(br, skb, vid);
+    if ((mdst || BR_INPUT_SKB_CB_MROUTERS_ONLY(skb)) && br_multicast_querier_exists(br, eth_hdr(skb)))
+    {
+      if ((mdst && mdst->host_joined) || br_multicast_is_router(br)) {
+        local_rcv = true;
+        br->dev->stats.multicast++;
+      }
+      mcast_hit = true;
+    } else {
+      local_rcv = true;
+      br->dev->stats.multicast++;
+    }
+    break;
+  case BR_PKT_UNICAST:
+    dst = br_fdb_find_rcu(br, eth_hdr(skb)->h_dest, vid);
+  default:
+    break;
+  }
+
+  if (dst) {
+    unsigned long now = jiffies;
+
+    if (dst->is_local)
+      return br_pass_frame_up(skb);
+
+    if (now != dst->used)
+      dst->used = now;
+    br_forward(dst->dst, skb, local_rcv, false);
+  } else {
+    if (!mcast_hit)
+      br_flood(br, skb, pkt_type, local_rcv, false);
+    else
+      br_multicast_flood(mdst, skb, local_rcv, false);
+  }
+
+  if (local_rcv)
+    return br_pass_frame_up(skb);
+
+out:
+  return 0;
+drop:
+  kfree_skb(skb);
+  goto out;
+}
+```
+
+### br_forward
+```c++
+void br_forward(const struct net_bridge_port *to,
+    struct sk_buff *skb, bool local_rcv, bool local_orig)
+{
+  if (unlikely(!to))
+    goto out;
+
+  /* redirect to backup link if the destination port is down */
+  if (rcu_access_pointer(to->backup_port) && !netif_carrier_ok(to->dev)) {
+    struct net_bridge_port *backup_port;
+
+    backup_port = rcu_dereference(to->backup_port);
+    if (unlikely(!backup_port))
+      goto out;
+    to = backup_port;
+  }
+
+  if (should_deliver(to, skb)) {
+    if (local_rcv)
+      deliver_clone(to, skb, local_orig);
+    else
+      __br_forward(to, skb, local_orig);
+    return;
+  }
+
+out:
+  if (!local_rcv)
+    kfree_skb(skb);
+}
+
+void __br_forward(const struct net_bridge_port *to,
+       struct sk_buff *skb, bool local_orig)
+{
+  struct net_bridge_vlan_group *vg;
+  struct net_device *indev;
+  struct net *net;
+  int br_hook;
+
+  vg = nbp_vlan_group_rcu(to);
+  skb = br_handle_vlan(to->br, to, vg, skb);
+  if (!skb)
+    return;
+
+  indev = skb->dev;
+  skb->dev = to->dev;
+  if (!local_orig) {
+    if (skb_warn_if_lro(skb)) {
+      kfree_skb(skb);
+      return;
+    }
+    br_hook = NF_BR_FORWARD;
+    skb_forward_csum(skb);
+    net = dev_net(indev);
+  } else {
+    if (unlikely(netpoll_tx_running(to->br->dev))) {
+      skb_push(skb, ETH_HLEN);
+      if (!is_skb_forwardable(skb->dev, skb))
+        kfree_skb(skb);
+      else
+        br_netpoll_send_skb(to, skb);
+      return;
+    }
+    br_hook = NF_BR_LOCAL_OUT;
+    net = dev_net(skb->dev);
+    indev = NULL;
+  }
+
+  NF_HOOK(NFPROTO_BRIDGE, br_hook,
+    net, NULL, skb, indev, skb->dev,
+    br_forward_finish);
+}
+
+int br_forward_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  skb->tstamp = 0;
+  return NF_HOOK(NFPROTO_BRIDGE, NF_BR_POST_ROUTING,
+    net, sk, skb, NULL, skb->dev,
+    br_dev_queue_push_xmit);
+
+}
+
+int br_dev_queue_push_xmit(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  skb_push(skb, ETH_HLEN);
+  if (!is_skb_forwardable(skb->dev, skb))
+    goto drop;
+
+  br_drop_fake_rtable(skb);
+
+  if (skb->ip_summed == CHECKSUM_PARTIAL &&
+    (skb->protocol == htons(ETH_P_8021Q) ||
+    skb->protocol == htons(ETH_P_8021AD)))
+  {
+    int depth;
+
+    if (!__vlan_get_protocol(skb, skb->protocol, &depth))
+      goto drop;
+
+    skb_set_network_header(skb, depth);
+  }
+
+  dev_queue_xmit(skb);
+
+  return 0;
+
+drop:
+  kfree_skb(skb);
+  return 0;
+}
+```
+
+### br_pass_frame_up
+```c++
+
+int br_pass_frame_up(struct sk_buff *skb)
+{
+  struct net_device *indev, *brdev = BR_INPUT_SKB_CB(skb)->brdev;
+  struct net_bridge *br = netdev_priv(brdev);
+  struct net_bridge_vlan_group *vg;
+  struct pcpu_sw_netstats *brstats = this_cpu_ptr(br->stats);
+
+  vg = br_vlan_group_rcu(br);
+  /* Bridge is just like any other port.  Make sure the
+   * packet is allowed except in promisc modue when someone
+   * may be running packet capture. */
+  if (!(brdev->flags & IFF_PROMISC) && !br_allowed_egress(vg, skb)) {
+    kfree_skb(skb);
+    return NET_RX_DROP;
+  }
+
+  indev = skb->dev;
+  skb->dev = brdev;
+  skb = br_handle_vlan(br, NULL, vg, skb);
+  if (!skb)
+    return NET_RX_DROP;
+  /* update the multicast stats if the packet is IGMP/MLD */
+  br_multicast_count(br, NULL, skb, br_multicast_igmp_type(skb), BR_MCAST_DIR_TX);
+
+  return NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN,
+    dev_net(indev), NULL, skb, indev, NULL,
+    br_netif_receive_skb);
+}
+
+int br_netif_receive_skb(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+  br_drop_fake_rtable(skb);
+  return netif_receive_skb(skb);
+}
+```
+
+```c++
+br_add_bridge()
+    struct net_device* dev = alloc_netdev(sizeof(struct net_bridge));
+    dev_net_set(dev, net);
+    dev->rtnl_link_ops = &br_link_ops;
+    register_netdev(dev);
+
+br_dev_ioctl()
+    br_add_if()
+        struct net_bridge_port *p = new_nbp(br, dev);
+        br_sysfs_addif(p);
+        br_netpoll_enable(p);
+        netdev_rx_handler_register(dev, br_handle_frame, p);
+            dev->rx_handler_data = p;
+	        dev->rx_handler = br_handle_frame;
+        list_add_rcu(&p->list, &br->port_list);
+        br_fdb_insert(br, p, dev->dev_addr, 0);
+        nbp_vlan_init(p);
+
+br_handle_frame()
+    NF_HOOK(NFPROTO_BRIDGE, NF_BR_PRE_ROUTING,br_handle_frame_finish);
+        br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, false)
+        struct net_bridge_fdb_entry *dst = br_fdb_find_rcu(br, eth_hdr(skb)->h_dest, vid);
+
+        br_pass_frame_up(skb);
+            skb->dev = brdev;
+            NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN, br_netif_receive_skb);
+                netif_receive_skb(skb);
+
+        br_forward(dst->dst, skb);
+            if (should_deliver(to, skb))
+                skb->dev = to->dev;
+                NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_OUT br_forward_finish)
+                    NF_HOOK(NFPROTO_BRIDGE,NF_BR_POST_ROUTING, br_dev_queue_push_xmit)
+                        br_dev_queue_push_xmit()
+                            dev_queue_xmit(skb);
+
+        br_flood(br, skb);
+
+        br_multicast_flood(mdst, skb);
 ```
 
 # congestion control
