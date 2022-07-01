@@ -61,6 +61,8 @@
     * [br_add_bridge](#br_add_bridge)
     * [br_add_if](#br_add_if)
     * [br_handle_frame](#br_handle_frame)
+        * [br_forward](#br_forward)
+        * [br_pass_frame_up](#br_pass_frame_up)
 
 * [congestion control](#congestion-control)
     * [tcp_ca_state](#tcp_ca_state)
@@ -3751,6 +3753,15 @@ const struct file_operations socket_file_ops = {
   .release        =  sock_close,
 };
 
+const struct file_operations eventfd_fops = {
+  .show_fdinfo    = eventfd_show_fdinfo,
+  .release        = eventfd_release,
+  .poll           = eventfd_poll,
+  .read           = eventfd_read,
+  .write          = eventfd_write,
+  .llseek         = noop_llseek,
+};
+
 ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
   struct file *file = iocb->ki_filp;
@@ -6389,6 +6400,7 @@ another_round:
   if (pfmemalloc)
     goto skip_taps;
 
+/* 1. deliver ptype_all */
   list_for_each_entry_rcu(ptype, &ptype_all, list) {
     if (pt_prev)
       ret = deliver_skb(skb, pt_prev, orig_dev);
@@ -6429,7 +6441,7 @@ skip_classify:
       goto out;
   }
 
-  /* bridge handle */
+/* 2. bridge handle */
   rx_handler = rcu_dereference(skb->dev->rx_handler); /* br_handle_frame */
   if (rx_handler) {
     if (pt_prev) {
@@ -6462,7 +6474,7 @@ skip_classify:
 
   type = skb->protocol;
 
-  /* deliver only exact match when indicated */
+/* 3. deliver only exact match when indicated */
   if (likely(!deliver_exact)) {
     deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type,
                &ptype_base[ntohs(type) &
@@ -8204,7 +8216,20 @@ ixgb_intr()
 /* mac layer */
 netif_receive_skb()
   __netif_receive_skb_core()
-    packet_type->func()
+    /* 1. deliver ptype_all */
+    list_for_each_entry_rcu(ptype, &ptype_all, list) {
+        if (pt_prev)
+        ret = deliver_skb(skb, pt_prev, orig_dev);
+    }
+
+    vlan_do_receive(&skb);
+
+    /* 2. bridge handle */
+    rx_handler = rcu_dereference(skb->dev->rx_handler); /* br_handle_frame */
+    rx_handler(&skb);
+
+    /* 3. deliver only exact ptype match */
+    deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type, &ptype_base[ntohs(type) & PTYPE_HASH_MASK]);
 
 /* ip layer */
 ip_rcv()
@@ -9598,6 +9623,8 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 
 ![](../Images/Kernel/net-bridge.png)
 
+[lab](https://github.com/yanfeizhang/coder-kung-fu/tree/main/tests/network/test05)
+
 ```c++
 struct net_bridge {
   struct list_head      port_list;
@@ -9631,7 +9658,8 @@ const struct net_device_ops br_netdev_ops = {
   .ndo_open     = br_dev_open,
   .ndo_stop     = br_dev_stop,
   .ndo_init     = br_dev_init,
-  .ndo_do_ioctl = br_dev_ioctl
+  .ndo_do_ioctl = br_dev_ioctl,
+  .ndo_start_xmit   = br_dev_xmit,
 };
 ```
 
@@ -10183,7 +10211,7 @@ br_dev_ioctl()
         br_netpoll_enable(p);
         netdev_rx_handler_register(dev, br_handle_frame, p);
             dev->rx_handler_data = p;
-	        dev->rx_handler = br_handle_frame;
+          dev->rx_handler = br_handle_frame;
         list_add_rcu(&p->list, &br->port_list);
         br_fdb_insert(br, p, dev->dev_addr, 0);
         nbp_vlan_init(p);
@@ -10209,6 +10237,310 @@ br_handle_frame()
         br_flood(br, skb);
 
         br_multicast_flood(mdst, skb);
+```
+
+# veth
+```c++
+static const struct net_device_ops veth_netdev_ops = {
+  .ndo_init            = veth_dev_init,
+  .ndo_open            = veth_open,
+  .ndo_stop            = veth_close,
+  .ndo_start_xmit      = veth_xmit,
+  .ndo_get_stats64     = veth_get_stats64,
+  .ndo_set_rx_mode     = veth_set_multicast_list,
+  .ndo_set_mac_address = eth_mac_addr,
+  .ndo_set_rx_headroom  = veth_set_rx_headroom,
+  .ndo_bpf    = veth_xdp,
+  .ndo_xdp_xmit    = veth_xdp_xmit,
+};
+
+static struct rtnl_link_ops veth_link_ops = {
+  .kind       = DRV_NAME,
+  .priv_size  = sizeof(struct veth_priv),
+  .setup      = veth_setup,
+  .validate   = veth_validate,
+  .newlink    = veth_newlink,
+  .dellink    = veth_dellink,
+  .policy     = veth_policy,
+  .maxtype    = VETH_INFO_MAX,
+  .get_link_net  = veth_get_link_net,
+};
+
+static __init int veth_init(void)
+{
+  return rtnl_link_register(&veth_link_ops);
+}
+
+static LIST_HEAD(link_ops);
+```
+
+## veth_newlink
+```c++
+int veth_newlink(struct net *src_net, struct net_device *dev,
+      struct nlattr *tb[], struct nlattr *data[],
+      struct netlink_ext_ack *extack)
+{
+  int err;
+  struct net_device *peer;
+  struct veth_priv *priv;
+  char ifname[IFNAMSIZ];
+  struct nlattr *peer_tb[IFLA_MAX + 1], **tbp;
+  unsigned char name_assign_type;
+  struct ifinfomsg *ifmp;
+  struct net *net;
+
+  /* create and register peer first */
+  if (data != NULL && data[VETH_INFO_PEER] != NULL) {
+    struct nlattr *nla_peer;
+
+    nla_peer = data[VETH_INFO_PEER];
+    ifmp = nla_data(nla_peer);
+    err = rtnl_nla_parse_ifla(peer_tb,
+            nla_data(nla_peer) + sizeof(struct ifinfomsg),
+            nla_len(nla_peer) - sizeof(struct ifinfomsg),
+            NULL);
+    if (err < 0)
+      return err;
+
+    err = veth_validate(peer_tb, NULL, extack);
+    if (err < 0)
+      return err;
+
+    tbp = peer_tb;
+  } else {
+    ifmp = NULL;
+    tbp = tb;
+  }
+
+  if (ifmp && tbp[IFLA_IFNAME]) {
+    nla_strlcpy(ifname, tbp[IFLA_IFNAME], IFNAMSIZ);
+    name_assign_type = NET_NAME_USER;
+  } else {
+    snprintf(ifname, IFNAMSIZ, DRV_NAME "%%d");
+    name_assign_type = NET_NAME_ENUM;
+  }
+
+  net = rtnl_link_get_net(src_net, tbp);
+
+  peer = rtnl_create_link(net, ifname, name_assign_type, &veth_link_ops, tbp);
+
+  if (!ifmp || !tbp[IFLA_ADDRESS])
+    eth_hw_addr_random(peer);
+
+  if (ifmp && (dev->ifindex != 0))
+    peer->ifindex = ifmp->ifi_index;
+
+  peer->gso_max_size = dev->gso_max_size;
+  peer->gso_max_segs = dev->gso_max_segs;
+
+  err = register_netdevice(peer);
+  put_net(net);
+  net = NULL;
+  if (err < 0)
+    goto err_register_peer;
+
+  netif_carrier_off(peer);
+
+  err = rtnl_configure_link(peer, ifmp);
+  if (err < 0)
+    goto err_configure_peer;
+
+  /* register dev last */
+
+  if (tb[IFLA_ADDRESS] == NULL)
+    eth_hw_addr_random(dev);
+
+  if (tb[IFLA_IFNAME])
+    nla_strlcpy(dev->name, tb[IFLA_IFNAME], IFNAMSIZ);
+  else
+    snprintf(dev->name, IFNAMSIZ, DRV_NAME "%%d");
+
+  err = register_netdevice(dev);
+  if (err < 0)
+    goto err_register_dev;
+
+  netif_carrier_off(dev);
+
+  /* tie the deviced together */
+  priv = netdev_priv(dev);
+  rcu_assign_pointer(priv->peer, peer);
+
+  priv = netdev_priv(peer);
+  rcu_assign_pointer(priv->peer, dev);
+
+  return 0;
+
+err_register_dev:
+  /* nothing to do */
+err_configure_peer:
+  unregister_netdevice(peer);
+  return err;
+
+err_register_peer:
+  free_netdev(peer);
+  return err;
+}
+```
+
+## veth_setup
+```c++
+void veth_setup(struct net_device *dev)
+{
+  ether_setup(dev);
+
+  dev->priv_flags &= ~IFF_TX_SKB_SHARING;
+  dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+  dev->priv_flags |= IFF_NO_QUEUE;
+  dev->priv_flags |= IFF_PHONY_HEADROOM;
+
+  dev->netdev_ops = &veth_netdev_ops;
+  dev->ethtool_ops = &veth_ethtool_ops;
+
+  dev->features |= NETIF_F_LLTX;
+  dev->features |= VETH_FEATURES;
+  dev->vlan_features = dev->features &
+           ~(NETIF_F_HW_VLAN_CTAG_TX |
+             NETIF_F_HW_VLAN_STAG_TX |
+             NETIF_F_HW_VLAN_CTAG_RX |
+             NETIF_F_HW_VLAN_STAG_RX);
+  dev->needs_free_netdev = true;
+  dev->priv_destructor = veth_dev_free;
+  dev->max_mtu = ETH_MAX_MTU;
+
+  dev->hw_features = VETH_FEATURES;
+  dev->hw_enc_features = VETH_FEATURES;
+  dev->mpls_features = NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE;
+}
+```
+
+## veth_xmit
+```c++
+int dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
+   struct netdev_queue *txq)
+{
+  const struct net_device_ops *ops = dev->netdev_ops;
+  ops->ndo_start_xmit(skb, dev);
+}
+
+netdev_tx_t veth_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+  struct veth_priv *rcv_priv, *priv = netdev_priv(dev);
+  struct veth_rq *rq = NULL;
+  struct net_device *rcv;
+  int length = skb->len;
+  bool rcv_xdp = false;
+  int rxq;
+
+  rcu_read_lock();
+  rcv = rcu_dereference(priv->peer);
+  if (unlikely(!rcv)) {
+    kfree_skb(skb);
+    goto drop;
+  }
+
+  rcv_priv = netdev_priv(rcv);
+  rxq = skb_get_queue_mapping(skb);
+  if (rxq < rcv->real_num_rx_queues) {
+    rq = &rcv_priv->rq[rxq];
+    rcv_xdp = rcu_access_pointer(rq->xdp_prog);
+    skb_record_rx_queue(skb, rxq);
+  }
+
+  if (likely(veth_forward_skb(rcv, skb, rq, rcv_xdp) == NET_RX_SUCCESS)) {
+    struct pcpu_vstats *stats = this_cpu_ptr(dev->vstats);
+
+    u64_stats_update_begin(&stats->syncp);
+    stats->bytes += length;
+    stats->packets++;
+    u64_stats_update_end(&stats->syncp);
+  } else {
+drop:
+    atomic64_inc(&priv->dropped);
+  }
+
+  if (rcv_xdp)
+    __veth_xdp_flush(rq);
+
+  rcu_read_unlock();
+
+  return NETDEV_TX_OK;
+}
+
+int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
+          struct veth_rq *rq, bool xdp)
+{
+  return __dev_forward_skb(dev, skb)
+    ?
+    : xdp
+      ? veth_xdp_rx(rq, skb)
+      : netif_rx(skb);
+}
+
+int netif_rx(struct sk_buff *skb)
+{
+  return netif_rx_internal(skb);
+}
+
+
+static int netif_rx_internal(struct sk_buff *skb)
+{
+  int ret;
+
+  net_timestamp_check(netdev_tstamp_prequeue, skb);
+
+  trace_netif_rx(skb);
+  {
+    unsigned int qtail;
+
+    ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
+    put_cpu();
+  }
+  return ret;
+}
+
+int enqueue_to_backlog(struct sk_buff *skb, int cpu,
+            unsigned int *qtail)
+{
+  struct softnet_data *sd;
+  unsigned long flags;
+  unsigned int qlen;
+
+  sd = &per_cpu(softnet_data, cpu);
+
+  local_irq_save(flags);
+
+  rps_lock(sd);
+  if (!netif_running(skb->dev))
+    goto drop;
+
+  qlen = skb_queue_len(&sd->input_pkt_queue);
+  if (qlen <= netdev_max_backlog && !skb_flow_limit(skb, qlen)) {
+    if (qlen) {
+enqueue:
+      __skb_queue_tail(&sd->input_pkt_queue, skb);
+      input_queue_tail_incr_save(sd, qtail);
+      rps_unlock(sd);
+      local_irq_restore(flags);
+      return NET_RX_SUCCESS;
+    }
+
+    if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state)) {
+      if (!rps_ipi_queued(sd))
+        ____napi_schedule(sd, &sd->backlog);
+    }
+    goto enqueue;
+  }
+
+drop:
+  sd->dropped++;
+  rps_unlock(sd);
+
+  local_irq_restore(flags);
+
+  atomic_long_inc(&skb->dev->rx_dropped);
+  kfree_skb(skb);
+  return NET_RX_DROP;
+}
 ```
 
 # congestion control
@@ -13796,7 +14128,7 @@ __poll_t ep_item_poll(
   bool locked;
 
   pt->_key = epi->event.events;
-  if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; */
+  if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; epoll of epoll */
     return vfs_poll(epi->ffd.file, pt) & epi->event.events;
 
   ep = epi->ffd.file->private_data;
@@ -13808,7 +14140,13 @@ __poll_t ep_item_poll(
           locked) & epi->event.events;
 }
 
-/* vfs_poll -> fd->poll -> */
+__poll_t vfs_poll(struct file *file, struct poll_table_struct *pt)
+{
+  if (unlikely(!file->f_op->poll))
+    return DEFAULT_POLLMASK;
+  return file->f_op->poll(file, pt);
+}
+
 __poll_t sock_poll(struct file *file, poll_table *wait)
 {
   struct socket *sock = file->private_data;
@@ -13837,6 +14175,7 @@ __poll_t tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
   const struct tcp_sock *tp = tcp_sk(sk);
   int state;
 
+  /* 1. register observer */
   sock_poll_wait(file, sock, wait);
 
   state = inet_sk_state_load(sk);
@@ -13850,9 +14189,8 @@ __poll_t tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
   if (sk->sk_shutdown & RCV_SHUTDOWN)
     mask |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
 
-  /* Connected or passive Fast Open socket? */
-  if (state != TCP_SYN_SENT &&
-      (state != TCP_SYN_RECV || tp->fastopen_rsk)) {
+  /* 2. poll ready events */
+  if (state != TCP_SYN_SENT && (state != TCP_SYN_RECV || tp->fastopen_rsk)) {
     int target = sock_rcvlowat(sk, 0, INT_MAX);
 
     if (tp->urg_seq == tp->copied_seq &&
@@ -13900,7 +14238,9 @@ void sock_poll_wait(
 void poll_wait(struct file* filp, wait_queue_head_t* wait_address, poll_table* p)
 {
   if (p && p->_qproc && wait_address)
-    p->_qproc(filp, wait_address, p); /* ep_ptable_queue_proc */
+   /* ep_ptable_queue_proc      virqfd_ptable_queue_proc
+    * irqfd_ptable_queue_proc   memcg_event_ptable_queue_proc */
+    p->_qproc(filp, wait_address, p);
 }
 
 /* add our wait queue to the target file wakeup lists.
@@ -14209,9 +14549,7 @@ __poll_t ep_send_events_proc(
     /* ensure the user registered event(s) are still available */
     revents = ep_item_poll(epi, &pt, 1);
     if (revents) {
-      if (__put_user(revents, &uevent->events)
-        || __put_user(epi->event.data, &uevent->data))
-      {
+      if (__put_user(revents, &uevent->events) || __put_user(epi->event.data, &uevent->data)) {
         list_add(&epi->rdllink, head);
         ep_pm_stay_awake(epi);
         if (!esed->res)
@@ -14378,7 +14716,7 @@ void __wake_up_locked(
   __wake_up_common(wq_head, mode, nr, 0, NULL, NULL);
 }
 ```
-* [__wake_up_common](#wake_up)
+* [__wake_up_common](./linux-kernel.md#wake_up)
 
 ## sock_def_write_space
 ```c++
@@ -14455,39 +14793,43 @@ epoll_create();
 /* epoll_ctl */
 epoll_ctl();
     ep_insert();
+        struct ep_pqueue epq;
         kmem_cache_alloc(epi_cache);
         init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
-        ep_item_poll();
-            vfs_poll();
-                sock_poll();
-                    sock->ops->poll();
-                        tcp_poll();
+        revents = ep_item_poll(epi, &pt, 1);
+            if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; */
+                vfs_poll(file,  &epq.pt, 1);
+                    file->f_op->poll(); /* sock_poll() */
+                        sock->ops->poll(); /* tcp_poll() */
+                            /* 1. register observer */
                             sock_poll_wait();
-                                if (!poll_does_not_wait(p))
+                                if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
                                     poll_wait(filp, &sock->wq->wait, p);
-                                        ep_ptable_queue_proc();
+                                        p->_qproc(); /* ep_ptable_queue_proc() */
                                             init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
                                             add_wait_queue(whead, &pwq->wait);
-
+                            /* 2. poll ready events */
                             if (tcp_stream_is_readable(tp, target, sk))
                                 mask |= EPOLLIN | EPOLLRDNORM;
                             if (sk_stream_is_writeable(sk))
                                 mask |= EPOLLOUT | EPOLLWRNORM;
                             return mask;
+            else
+                poll_wait(epi->ffd.file, &ep->poll_wait, pt);
+                return ep_scan_ready_list(ep_read_events_proc);
 
-        poll_wait();
-        ep_scan_ready_list();
+        list_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);
+        ep_rbtree_insert(ep, epi);
 
-    list_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);
-    ep_rbtree_insert(ep, epi);
-
-    if (hasReadyEvents)
-        wake_up_locked(&ep->wq);
-        ep_poll_safewake(&ep->poll_wait);
+        if (revents && !ep_is_linked(epi))
+            wake_up_locked(&ep->wq);
+            ep_poll_safewake(&ep->poll_wait);
 
 ep_remove();
 
 ep_modify();
+    poll_table pt;
+    init_poll_funcptr(&pt, NULL);
     if (ep_item_poll(epi, &pt, 1)) {
         spin_lock_irq(&ep->wq.lock);
         if (!ep_is_linked(epi)) {
@@ -14516,26 +14858,37 @@ epoll_wait();
 
             ep_send_events();
                 ep_scan_ready_list();
+                    /* 1. send ready events to user space */
                     ep_send_events_proc();
-                        revents = ep_item_poll(epi, &pt, 1);
-                            if (tcp_stream_is_readable(tp, target, sk))
-                                revents |= EPOLLIN | EPOLLRDNORM;
-                            if (sk_stream_is_writeable(sk))
-                                revents |= EPOLLOUT | EPOLLWRNORM;
-                            return revents & epi->event.events;
+                        for () {
+                            revents = ep_item_poll(epi, &pt, 1);
+                                if (tcp_stream_is_readable(tp, target, sk))
+                                    revents |= EPOLLIN | EPOLLRDNORM;
+                                if (sk_stream_is_writeable(sk))
+                                    revents |= EPOLLOUT | EPOLLWRNORM;
+                                return revents & epi->event.events;
 
-                        if (revents) {
-                            if (__put_user(revents, &uevent->events));
-                                list_add(&epi->rdllink, head);
+                            if (revents) {
+                                if (__put_user(revents, &uevent->events));
+                                    list_add(&epi->rdllink, head);
 
-                            if (epi->event.events & EPOLLONESHOT)
-                                epi->event.events &= EP_PRIVATE_BITS;
-                            else if (!(epi->event.events & EPOLLET)) {
-                                list_add_tail(&epi->rdllink, &ep->rdllist);
-                                ep_pm_stay_awake(epi);
+                                if (epi->event.events & EPOLLONESHOT)
+                                    epi->event.events &= EP_PRIVATE_BITS;
+                                else if (!(epi->event.events & EPOLLET)) {
+                                    list_add_tail(&epi->rdllink, &ep->rdllist);
+                                    ep_pm_stay_awake(epi);
+                                }
                             }
                         }
 
+                    /* 2. link overflow evnets */
+                    for (ep->ovflist) {
+                        if (!ep_is_linked(epi)) {
+                            list_add_tail(&epi->rdllink, &ep->rdllist);
+                        }
+                    }
+
+                    /* 3. wake up observers */
                     if (!list_empty(&ep->rdllist)) {
                         wake_up_locked(&ep->wq);
                         ep_poll_safewake(&ep->poll_wait);
@@ -14550,14 +14903,16 @@ tcp_data_ready();
                 wake_up_interruptible_sync_poll();
                     __wake_up_common();
 
-                        ret = curr->func(curr, mode, wake_flags, key);
-                            ep_poll_callback();
-                                if (!ep_is_linked(epi))
-                                    list_add_tail(&epi->rdllink, &ep->rdllist);
-                                wake_up_locked(&ep->wq);
-                                    __wake_up_common();
-                                ep_poll_safewake(&ep->poll_wait);
-                                    wake_up_poll();
+                        list_for_each_entry_safe_from(curr, next, &wq_head->head) {
+                            ret = curr->func(curr, mode, wake_flags, key);
+                                ep_poll_callback();
+                                    if (!ep_is_linked(epi))
+                                        list_add_tail(&epi->rdllink, &ep->rdllist);
+                                    wake_up_locked(&ep->wq);
+                                        __wake_up_common();
+                                    ep_poll_safewake(&ep->poll_wait);
+                                        wake_up_poll();
+                        }
 
 tcp_rcv_state_process();
     tcp_data_snd_check();
