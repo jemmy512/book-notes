@@ -1754,7 +1754,7 @@ struct x86_hw_tss {
    * Linux does not use ring 1, so sp1 is not otherwise needed. */
   u64      sp1;
 
-  u64      sp2;
+  u64      sp2; /* scratch space to store tmp rsp */
   u64      reserved2;
   u64      ist[7];
   u32      reserved3;
@@ -3535,8 +3535,6 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 
 ### copy_thread_tls
 
-![](../Images/Kernel/proc-fork-frame.png)
-
 ```c++
 struct fork_frame {
   struct inactive_task_frame frame;
@@ -3712,6 +3710,8 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
   SWAPGS
   INTERRUPT_RETURN
 ```
+
+![](../Images/Kernel/proc-fork-frame.png)
 
 ```c++
 do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
