@@ -5757,6 +5757,11 @@ struct net_device {
   unsigned int                real_num_tx_queues;
 
   struct Qdisc                *qdisc;
+
+  struct {
+    struct list_head upper;
+    struct list_head lower;
+  } adj_list;
 }
 
 struct ixgb_adapter {
@@ -8219,7 +8224,7 @@ netif_receive_skb()
     /* 1. deliver ptype_all */
     list_for_each_entry_rcu(ptype, &ptype_all, list) {
         if (pt_prev)
-        ret = deliver_skb(skb, pt_prev, orig_dev);
+            deliver_skb(skb, pt_prev, orig_dev);
     }
 
     vlan_do_receive(&skb);
@@ -9701,6 +9706,27 @@ int br_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
   return -EOPNOTSUPP;
 }
 
+int add_del_if(struct net_bridge *br, int ifindex, int isadd)
+{
+  struct net *net = dev_net(br->dev);
+  struct net_device *dev;
+  int ret;
+
+  if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
+    return -EPERM;
+
+  dev = __dev_get_by_index(net, ifindex);
+  if (dev == NULL)
+    return -EINVAL;
+
+  if (isadd)
+    ret = br_add_if(br, dev, NULL);
+  else
+    ret = br_del_if(br, dev);
+
+  return ret;
+}
+
 int br_add_if(struct net_bridge *br, struct net_device *dev,
         struct netlink_ext_ack *extack)
 {
@@ -9828,6 +9854,23 @@ err2:
 err1:
   dev_put(dev);
   return err;
+}
+
+int netdev_rx_handler_register(struct net_device *dev,
+             rx_handler_func_t *rx_handler,
+             void *rx_handler_data)
+{
+  if (netdev_is_rx_handler_busy(dev))
+    return -EBUSY;
+
+  if (dev->priv_flags & IFF_NO_RX_HANDLER)
+    return -EINVAL;
+
+  /* Note: rx_handler_data must be set before rx_handler */
+  rcu_assign_pointer(dev->rx_handler_data, rx_handler_data);
+  rcu_assign_pointer(dev->rx_handler, rx_handler);
+
+  return 0;
 }
 ```
 
@@ -10276,6 +10319,7 @@ static LIST_HEAD(link_ops);
 
 ## veth_newlink
 ```c++
+/* ip link add veth0 type veth peer name veth1 */
 int veth_newlink(struct net *src_net, struct net_device *dev,
       struct nlattr *tb[], struct nlattr *data[],
       struct netlink_ext_ack *extack)
@@ -14121,30 +14165,24 @@ int ep_insert(
   return 0;
 }
 
-__poll_t ep_item_poll(
-  const struct epitem *epi, poll_table *pt, int depth)
+__poll_t ep_item_poll(const struct epitem *epi, poll_table *pt, int depth)
 {
-  struct eventpoll *ep;
-  bool locked;
+  struct file *file = epi->ffd.file;
+  __poll_t res;
 
   pt->_key = epi->event.events;
-  if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; epoll of epoll */
-    return vfs_poll(epi->ffd.file, pt) & epi->event.events;
-
-  ep = epi->ffd.file->private_data;
-  poll_wait(epi->ffd.file, &ep->poll_wait, pt);
-  locked = pt && (pt->_qproc == ep_ptable_queue_proc);
-
-  return ep_scan_ready_list(epi->ffd.file->private_data,
-          ep_read_events_proc, &depth, depth,
-          locked) & epi->event.events;
+  if (!is_file_epoll(file)) /* return f->f_op == &eventpoll_fops; epoll of epoll */
+    res = vfs_poll(file, pt);
+  else
+    res = __ep_eventpoll_poll(file, pt, depth);
+  return res & epi->event.events;
 }
 
 __poll_t vfs_poll(struct file *file, struct poll_table_struct *pt)
 {
   if (unlikely(!file->f_op->poll))
     return DEFAULT_POLLMASK;
-  return file->f_op->poll(file, pt);
+  return file->f_op->poll(file, pt); /* sock_poll, eventfd_poll */
 }
 
 __poll_t sock_poll(struct file *file, poll_table *wait)
@@ -14226,8 +14264,7 @@ __poll_t tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
   return mask;
 }
 
-void sock_poll_wait(
-  struct file *filp, struct socket *sock, poll_table *p)
+void sock_poll_wait(struct file *filp, struct socket *sock, poll_table *p)
 {
   if (!poll_does_not_wait(p)) {
     poll_wait(filp, &sock->wq->wait, p);
@@ -14398,7 +14435,7 @@ fetch_events:
     ep_reset_busy_poll_napi_id(ep);
 
     init_waitqueue_entry(&wait, current) {
-      wq_entry->flags     = 0;
+      wq_entry->flags    = 0;
       wq_entry->private  = p;
       wq_entry->func     = default_wake_function;
     }
@@ -14432,7 +14469,9 @@ fetch_events:
   }
 check_events:
   /* Is it worth to try to dig for events ? */
-  eavail = ep_events_available(ep);
+  eavail = ep_events_available(ep) {
+    return !list_empty_careful(&ep->rdllist) || READ_ONCE(ep->ovflist) != EP_UNACTIVE_PTR;
+  }
 
   spin_unlock_irq(&ep->wq.lock);
 
@@ -14454,89 +14493,29 @@ void ep_busy_loop(struct eventpoll *ep, int nonblock)
 int ep_send_events(struct eventpoll *ep,
         struct epoll_event __user *events, int maxevents)
 {
-  struct ep_send_events_data esed;
-
-  esed.maxevents = maxevents;
-  esed.events = events;
-
-  ep_scan_ready_list(ep, ep_send_events_proc, &esed, 0, false);
-  return esed.res;
-}
-
-struct ep_send_events_data {
-  int                 res;
-  int                 maxevents;
-  struct epoll_event  *events __user;
-};
-
-__poll_t ep_scan_ready_list(
-  struct eventpoll *ep,
-  __poll_t (*sproc)(struct eventpoll *, struct list_head *, void *),
-  void *priv, int depth, bool ep_locked)
-{
-  __poll_t res;
-  int pwake = 0;
-  struct epitem *epi, *nepi;
-
+  struct epitem *epi, *tmp;
   LIST_HEAD(txlist);
-  spin_lock_irq(&ep->wq.lock);
-  list_splice_init(&ep->rdllist, &txlist);
-  ep->ovflist = NULL;
-  spin_unlock_irq(&ep->wq.lock);
-
-  res = (*sproc)(ep, &txlist, priv); /* ep_send_events_proc */
-
-  spin_lock_irq(&ep->wq.lock);
-
-  for (nepi = ep->ovflist; (epi = nepi) != NULL; nepi = epi->next, epi->next = EP_UNACTIVE_PTR)
-  {
-    /* We need to check if the item is already in the list.
-     * During the "sproc" callback execution time, items are
-     * queued into ->ovflist but the "txlist" might already
-     * contain them, and the list_splice() below takes care of them. */
-    if (!ep_is_linked(epi)) {
-      list_add_tail(&epi->rdllink, &ep->rdllist);
-      ep_pm_stay_awake(epi);
-    }
-  }
-
-  ep->ovflist = EP_UNACTIVE_PTR;
-
-  /* Quickly re-inject items left on "txlist". */
-  list_splice(&txlist, &ep->rdllist);
-  __pm_relax(ep->ws);
-
-  if (!list_empty(&ep->rdllist)) {
-    if (waitqueue_active(&ep->wq))
-      wake_up_locked(&ep->wq);
-    if (waitqueue_active(&ep->poll_wait))
-      pwake++;
-  }
-  spin_unlock_irq(&ep->wq.lock);
-
-  if (!ep_locked)
-    mutex_unlock(&ep->mtx);
-
-  /* We have to call this outside the lock */
-  if (pwake)
-    ep_poll_safewake(&ep->poll_wait);
-
-  return res;
-}
-
-__poll_t ep_send_events_proc(
-  struct eventpoll *ep, struct list_head *head, void *priv)
-{
-  struct ep_send_events_data *esed = priv;
-  __poll_t revents;
-  struct epitem *epi;
-  struct epoll_event __user *uevent;
-  struct wakeup_source *ws;
   poll_table pt;
+  int res = 0;
+
+  if (fatal_signal_pending(current))
+    return -EINTR;
 
   init_poll_funcptr(&pt, NULL);
-  for (esed->res = 0, uevent = esed->events; !list_empty(head) && esed->res < esed->maxevents;) {
-    epi = list_first_entry(head, struct epitem, rdllink);
+
+  mutex_lock(&ep->mtx);
+  ep_start_scan(ep, &txlist) {
+    list_splice_init(&ep->rdllist, txlist);
+    WRITE_ONCE(ep->ovflist, NULL);
+  }
+
+  list_for_each_entry_safe(epi, tmp, &txlist, rdllink) {
+    struct wakeup_source *ws;
+    __poll_t revents;
+
+    if (res >= maxevents)
+      break;
+
     ws = ep_wakeup_source(epi);
     if (ws) {
       if (ws->active)
@@ -14546,44 +14525,58 @@ __poll_t ep_send_events_proc(
 
     list_del_init(&epi->rdllink);
 
-    /* ensure the user registered event(s) are still available */
     revents = ep_item_poll(epi, &pt, 1);
-    if (revents) {
-      if (__put_user(revents, &uevent->events) || __put_user(epi->event.data, &uevent->data)) {
-        list_add(&epi->rdllink, head);
-        ep_pm_stay_awake(epi);
-        if (!esed->res)
-          esed->res = -EFAULT;
-        return 0;
-      }
-      esed->res++;
-      uevent++;
+    if (!revents)
+      continue;
 
-      if (epi->event.events & EPOLLONESHOT)
-        epi->event.events &= EP_PRIVATE_BITS;
-      else if (!(epi->event.events & EPOLLET)) {
-        /* re-insert in Level Trigger mode */
-        list_add_tail(&epi->rdllink, &ep->rdllist);
-        ep_pm_stay_awake(epi);
-      }
+    events = epoll_put_uevent(revents, epi->event.data, events);
+    if (!events) {
+      list_add(&epi->rdllink, &txlist);
+      ep_pm_stay_awake(epi);
+      if (!res)
+        res = -EFAULT;
+      break;
+    }
+    res++;
+    if (epi->event.events & EPOLLONESHOT)
+      epi->event.events &= EP_PRIVATE_BITS;
+    else if (!(epi->event.events & EPOLLET)) {
+      list_add_tail(&epi->rdllink, &ep->rdllist);
+      ep_pm_stay_awake(epi);
+    }
+  }
+  ep_done_scan(ep, &txlist);
+  mutex_unlock(&ep->mtx);
+
+  return res;
+}
+
+void ep_done_scan(struct eventpoll *ep, struct list_head *txlist)
+{
+  struct epitem *epi, *nepi;
+
+  write_lock_irq(&ep->lock);
+
+  for (nepi = READ_ONCE(ep->ovflist); (epi = nepi) != NULL;
+       nepi = epi->next, epi->next = EP_UNACTIVE_PTR)
+  {
+    if (!ep_is_linked(epi)) {
+      list_add(&epi->rdllink, &ep->rdllist);
+      ep_pm_stay_awake(epi);
     }
   }
 
-  return 0;
-}
+  WRITE_ONCE(ep->ovflist, EP_UNACTIVE_PTR);
 
-void ep_poll_safewake(wait_queue_head_t *wq)
-{
-  wake_up_poll(wq, EPOLLIN);
-}
+  list_splice(txlist, &ep->rdllist);
+  __pm_relax(ep->ws);
 
-#define wake_up_poll(x, m)              \
-  __wake_up(x, TASK_NORMAL, 1, poll_to_key(m))
+  if (!list_empty(&ep->rdllist)) {
+    if (waitqueue_active(&ep->wq))
+      wake_up(&ep->wq);
+  }
 
-void __wake_up(struct wait_queue_head *wq_head, unsigned int mode,
-      int nr_exclusive, void *key)
-{
-  __wake_up_common_lock(wq_head, mode, nr_exclusive, 0, key);
+  write_unlock_irq(&ep->lock);
 }
 ```
 
@@ -14781,6 +14774,194 @@ void sock_def_write_space(struct sock *sk)
 }
 ```
 
+## evetfd
+```c++
+static const struct file_operations eventfd_fops = {
+  .release    = eventfd_release,
+  .poll       = eventfd_poll,
+  .read_iter  = eventfd_read,
+  .write      = eventfd_write,
+  .llseek     = noop_llseek,
+};
+```
+
+```c++
+SYSCALL_DEFINE2(eventfd2, unsigned int, count, int, flags)
+{
+  return do_eventfd(count, flags);
+}
+
+int do_eventfd(unsigned int count, int flags)
+{
+  struct eventfd_ctx *ctx;
+  struct file *file;
+  int fd;
+
+  ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+  if (!ctx)
+    return -ENOMEM;
+
+  kref_init(&ctx->kref);
+  init_waitqueue_head(&ctx->wqh);
+  ctx->count = count;
+  ctx->flags = flags;
+  ctx->id = ida_simple_get(&eventfd_ida, 0, 0, GFP_KERNEL);
+
+  flags &= EFD_SHARED_FCNTL_FLAGS;
+  flags |= O_RDWR;
+  fd = get_unused_fd_flags(flags);
+  if (fd < 0)
+    goto err;
+
+  file = anon_inode_getfile("[eventfd]", &eventfd_fops, ctx, flags);
+  if (IS_ERR(file)) {
+    put_unused_fd(fd);
+    fd = PTR_ERR(file);
+    goto err;
+  }
+
+  file->f_mode |= FMODE_NOWAIT;
+  fd_install(fd, file);
+  return fd;
+err:
+  eventfd_free_ctx(ctx);
+  return fd;
+}
+
+struct eventfd_ctx {
+  struct kref         kref;
+  wait_queue_head_t   wqh;
+  __u64               count;
+  unsigned int        flags;
+  int                 id;
+};
+
+static ssize_t eventfd_read(struct kiocb *iocb, struct iov_iter *to)
+{
+  struct file *file = iocb->ki_filp;
+  struct eventfd_ctx *ctx = file->private_data;
+  __u64 ucnt = 0;
+  DECLARE_WAITQUEUE(wait, current); /* default_wake_function */
+
+  if (iov_iter_count(to) < sizeof(ucnt))
+    return -EINVAL;
+
+  spin_lock_irq(&ctx->wqh.lock);
+  if (!ctx->count) {
+    if ((file->f_flags & O_NONBLOCK) || (iocb->ki_flags & IOCB_NOWAIT)) {
+      spin_unlock_irq(&ctx->wqh.lock);
+      return -EAGAIN;
+    }
+
+    __add_wait_queue(&ctx->wqh, &wait);
+
+    for (;;) {
+      set_current_state(TASK_INTERRUPTIBLE);
+      if (ctx->count)
+        break;
+      if (signal_pending(current)) {
+        __remove_wait_queue(&ctx->wqh, &wait);
+        __set_current_state(TASK_RUNNING);
+        spin_unlock_irq(&ctx->wqh.lock);
+        return -ERESTARTSYS;
+      }
+      spin_unlock_irq(&ctx->wqh.lock);
+      schedule();
+      spin_lock_irq(&ctx->wqh.lock);
+    }
+    __remove_wait_queue(&ctx->wqh, &wait);
+    __set_current_state(TASK_RUNNING);
+  }
+  eventfd_ctx_do_read(ctx, &ucnt);
+
+  if (waitqueue_active(&ctx->wqh))
+    wake_up_locked_poll(&ctx->wqh, EPOLLOUT);
+
+  spin_unlock_irq(&ctx->wqh.lock);
+  if (unlikely(copy_to_iter(&ucnt, sizeof(ucnt), to) != sizeof(ucnt)))
+    return -EFAULT;
+
+  return sizeof(ucnt);
+}
+
+void eventfd_ctx_do_read(struct eventfd_ctx *ctx, __u64 *cnt)
+{
+  lockdep_assert_held(&ctx->wqh.lock);
+
+  *cnt = (ctx->flags & EFD_SEMAPHORE) ? 1 : ctx->count;
+  ctx->count -= *cnt;
+}
+
+static __poll_t eventfd_poll(struct file *file, poll_table *wait)
+{
+  struct eventfd_ctx *ctx = file->private_data;
+  __poll_t events = 0;
+  u64 count;
+
+  poll_wait(file, &ctx->wqh, wait);
+
+  count = READ_ONCE(ctx->count);
+
+  if (count > 0)
+    events |= EPOLLIN;
+  if (count == ULLONG_MAX)
+    events |= EPOLLERR;
+  if (ULLONG_MAX - 1 > count)
+    events |= EPOLLOUT;
+
+  return events;
+}
+
+static ssize_t eventfd_write(struct file *file, const char __user *buf, size_t count,
+           loff_t *ppos)
+{
+  struct eventfd_ctx *ctx = file->private_data;
+  ssize_t res;
+  __u64 ucnt;
+  DECLARE_WAITQUEUE(wait, current);
+
+  if (count < sizeof(ucnt))
+    return -EINVAL;
+  if (copy_from_user(&ucnt, buf, sizeof(ucnt)))
+    return -EFAULT;
+  if (ucnt == ULLONG_MAX)
+    return -EINVAL;
+
+  spin_lock_irq(&ctx->wqh.lock);
+  res = -EAGAIN;
+  if (ULLONG_MAX - ctx->count > ucnt)
+    res = sizeof(ucnt);
+  else if (!(file->f_flags & O_NONBLOCK)) {
+    __add_wait_queue(&ctx->wqh, &wait);
+    for (res = 0;;) {
+      set_current_state(TASK_INTERRUPTIBLE);
+      if (ULLONG_MAX - ctx->count > ucnt) {
+        res = sizeof(ucnt);
+        break;
+      }
+      if (signal_pending(current)) {
+        res = -ERESTARTSYS;
+        break;
+      }
+      spin_unlock_irq(&ctx->wqh.lock);
+      schedule();
+      spin_lock_irq(&ctx->wqh.lock);
+    }
+    __remove_wait_queue(&ctx->wqh, &wait);
+    __set_current_state(TASK_RUNNING);
+  }
+
+  if (likely(res > 0)) {
+    ctx->count += ucnt;
+    if (waitqueue_active(&ctx->wqh))
+      wake_up_locked_poll(&ctx->wqh, EPOLLIN);
+  }
+  spin_unlock_irq(&ctx->wqh.lock);
+
+  return res;
+}
+```
+
 ```c++
 /* epoll_create */
 epoll_create();
@@ -14805,7 +14986,7 @@ epoll_ctl();
                             sock_poll_wait();
                                 if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
                                     poll_wait(filp, &sock->wq->wait, p);
-                                        p->_qproc(); /* ep_ptable_queue_proc() */
+                                        p->_qproc(); /* ep_ptable_queue_proc, virqfd_ptable_queue_proc, irqfd_ptable_queue_proc, memcg_event_ptable_queue_proc */
                                             init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
                                             add_wait_queue(whead, &pwq->wait);
                             /* 2. poll ready events */
@@ -14848,6 +15029,7 @@ ep_modify();
 epoll_wait();
     do_epoll_wait();
         ep_poll();
+            /* 0. wait for ready events */
             init_waitqueue_entry(&wait, default_wake_function);
             __add_wait_queue_exclusive(&ep->wq, &wait);
                 wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
@@ -14857,43 +15039,41 @@ epoll_wait();
                     __remove_wait_queue(&ep->wq, &wait);
 
             ep_send_events();
-                ep_scan_ready_list();
-                    /* 1. send ready events to user space */
-                    ep_send_events_proc();
-                        for () {
-                            revents = ep_item_poll(epi, &pt, 1);
-                                if (tcp_stream_is_readable(tp, target, sk))
-                                    revents |= EPOLLIN | EPOLLRDNORM;
-                                if (sk_stream_is_writeable(sk))
-                                    revents |= EPOLLOUT | EPOLLWRNORM;
-                                return revents & epi->event.events;
+                /* 1. send ready events to user space */
+                for (ep->rdlist) {
+                    revents = ep_item_poll(epi, &pt, 1);
+                        if (tcp_stream_is_readable(tp, target, sk))
+                            revents |= EPOLLIN | EPOLLRDNORM;
+                        if (sk_stream_is_writeable(sk))
+                            revents |= EPOLLOUT | EPOLLWRNORM;
+                        return revents & epi->event.events;
 
-                            if (revents) {
-                                if (__put_user(revents, &uevent->events));
-                                    list_add(&epi->rdllink, head);
+                    if (revents) {
+                        if (__put_user(revents, &uevent->events));
+                            list_add(&epi->rdllink, head);
 
-                                if (epi->event.events & EPOLLONESHOT)
-                                    epi->event.events &= EP_PRIVATE_BITS;
-                                else if (!(epi->event.events & EPOLLET)) {
-                                    list_add_tail(&epi->rdllink, &ep->rdllist);
-                                    ep_pm_stay_awake(epi);
-                                }
-                            }
-                        }
-
-                    /* 2. link overflow evnets */
-                    for (ep->ovflist) {
-                        if (!ep_is_linked(epi)) {
+                        if (epi->event.events & EPOLLONESHOT)
+                            epi->event.events &= EP_PRIVATE_BITS;
+                        else if (!(epi->event.events & EPOLLET)) {
                             list_add_tail(&epi->rdllink, &ep->rdllist);
+                            ep_pm_stay_awake(epi);
                         }
                     }
+                }
 
-                    /* 3. wake up observers */
-                    if (!list_empty(&ep->rdllist)) {
-                        wake_up_locked(&ep->wq);
-                        ep_poll_safewake(&ep->poll_wait);
-                            __wake_up_common_lock();
+                /* 2. link overflow evnets */
+                for (ep->ovflist) {
+                    if (!ep_is_linked(epi)) {
+                        list_add_tail(&epi->rdllink, &ep->rdllist);
                     }
+                }
+
+                /* 3. wake up observers */
+                if (!list_empty(&ep->rdllist)) {
+                    wake_up_locked(&ep->wq);
+                    ep_poll_safewake(&ep->poll_wait);
+                        __wake_up_common_lock();
+                }
 
 /* wake epoll_wait */
 tcp_data_ready();
