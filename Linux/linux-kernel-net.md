@@ -3738,7 +3738,7 @@ sk_stream_alloc_skb()
 
 # write
 
-![](../Images/Kernel/net-read-write-route.png)
+![](../Images/Kernel/net-read-write-route-bridge.png)
 
 ## vfs layer tx
 ```C++
@@ -5668,7 +5668,7 @@ ixgb_xmit_frame();
 
 # read
 
-![](../Images/Kernel/net-read-write-route.png)
+![](../Images/Kernel/net-read-write-route-bridge.png)
 
 ## driver layer rx
 
@@ -6567,7 +6567,106 @@ struct list_head *ptype_head(const struct packet_type *pt)
 
 ### vlan_do_receive
 ```c++
+bool vlan_do_receive(struct sk_buff **skbp)
+{
+  struct sk_buff *skb = *skbp;
+  __be16 vlan_proto = skb->vlan_proto;
+  u16 vlan_id = skb_vlan_tag_get_id(skb);
+  struct net_device *vlan_dev;
+  struct vlan_pcpu_stats *rx_stats;
 
+  vlan_dev = vlan_find_dev(skb->dev, vlan_proto, vlan_id);
+  if (!vlan_dev)
+    return false;
+
+  skb = *skbp = skb_share_check(skb, GFP_ATOMIC);
+  if (unlikely(!skb))
+    return false;
+
+  if (unlikely(!(vlan_dev->flags & IFF_UP))) {
+    kfree_skb(skb);
+    *skbp = NULL;
+    return false;
+  }
+
+  skb->dev = vlan_dev;
+  if (unlikely(skb->pkt_type == PACKET_OTHERHOST)) {
+    if (ether_addr_equal_64bits(eth_hdr(skb)->h_dest, vlan_dev->dev_addr))
+      skb->pkt_type = PACKET_HOST;
+  }
+
+  if (!(vlan_dev_priv(vlan_dev)->flags & VLAN_FLAG_REORDER_HDR) &&
+      !netif_is_macvlan_port(vlan_dev) &&
+      !netif_is_bridge_port(vlan_dev))
+  {
+    unsigned int offset = skb->data - skb_mac_header(skb);
+
+    skb_push(skb, offset);
+    skb = *skbp = vlan_insert_inner_tag(skb, skb->vlan_proto,
+                skb->vlan_tci, skb->mac_len);
+    if (!skb)
+      return false;
+    skb_pull(skb, offset + VLAN_HLEN);
+    skb_reset_mac_len(skb);
+  }
+
+  skb->priority = vlan_get_ingress_priority(vlan_dev, skb->vlan_tci);
+  __vlan_hwaccel_clear_tag(skb);
+
+  rx_stats = this_cpu_ptr(vlan_dev_priv(vlan_dev)->vlan_pcpu_stats);
+
+  u64_stats_update_begin(&rx_stats->syncp);
+  rx_stats->rx_packets++;
+  rx_stats->rx_bytes += skb->len;
+  if (skb->pkt_type == PACKET_MULTICAST)
+    rx_stats->rx_multicast++;
+  u64_stats_update_end(&rx_stats->syncp);
+
+  return true;
+}
+
+struct sk_buff *vlan_insert_inner_tag(struct sk_buff *skb,
+  __be16 vlan_proto, u16 vlan_tci, unsigned int mac_len)
+{
+	int err;
+
+	err = __vlan_insert_inner_tag(skb, vlan_proto, vlan_tci, mac_len);
+	if (err) {
+		dev_kfree_skb_any(skb);
+		return NULL;
+	}
+	return skb;
+}
+
+int __vlan_insert_inner_tag(struct sk_buff *skb,
+  __be16 vlan_proto, u16 vlan_tci, unsigned int mac_len)
+{
+	struct vlan_ethhdr *veth;
+
+	if (skb_cow_head(skb, VLAN_HLEN) < 0)
+		return -ENOMEM;
+
+	skb_push(skb, VLAN_HLEN);
+
+	/* Move the mac header sans proto to the beginning of the new header. */
+	if (likely(mac_len > ETH_TLEN))
+		memmove(skb->data, skb->data + VLAN_HLEN, mac_len - ETH_TLEN);
+	skb->mac_header -= VLAN_HLEN;
+
+	veth = (struct vlan_ethhdr *)(skb->data + mac_len - ETH_HLEN);
+
+	/* first, the ethernet type */
+	if (likely(mac_len >= ETH_TLEN)) {
+		veth->h_vlan_proto = vlan_proto;
+	} else {
+		veth->h_vlan_encapsulated_proto = skb->protocol;
+	}
+
+	/* now, the TCI */
+	veth->h_vlan_TCI = htons(vlan_tci);
+
+	return 0;
+}
 ```
 
 ### ref_br_handle_frame
@@ -10293,8 +10392,8 @@ static const struct net_device_ops veth_netdev_ops = {
   .ndo_set_rx_mode     = veth_set_multicast_list,
   .ndo_set_mac_address = eth_mac_addr,
   .ndo_set_rx_headroom  = veth_set_rx_headroom,
-  .ndo_bpf    = veth_xdp,
-  .ndo_xdp_xmit    = veth_xdp_xmit,
+  .ndo_bpf              = veth_xdp,
+  .ndo_xdp_xmit         = veth_xdp_xmit,
 };
 
 static struct rtnl_link_ops veth_link_ops = {
