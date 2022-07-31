@@ -1251,6 +1251,22 @@ The update of the avail ring needs to update only the pointer of the ring itself
 
 ![](../Images/dpdk/12.4-virtio-container.png)
 
+* [Redhat: Introducing virtio-networking: Combining virtualization and networking for modern IT](https://www.redhat.com/en/blog/introducing-virtio-networking-combining-virtualization-and-networking-modern-it)
+* [Redhat: Introduction to virtio-networking and vhost-net](https://www.redhat.com/en/blog/introduction-virtio-networking-and-vhost-net)
+* [Redhat: Deep dive into Virtio-networking and vhost-net](https://www.redhat.com/en/blog/deep-dive-virtio-networking-and-vhost-net)
+* [Hands on vhost-net: Do. Or do not. There is no try](https://www.redhat.com/en/blog/hands-vhost-net-do-or-do-not-there-no-try)
+* [A journey to the vhost-users realm](https://www.redhat.com/en/blog/journey-vhost-users-realm)
+* [Redhat: How vhost-user came into being: Virtio-networking and DPDK](https://www.redhat.com/en/blog/how-vhost-user-came-being-virtio-networking-and-dpdk)
+* [Hands on vhost-user: A warm welcome to DPDK](https://www.redhat.com/en/blog/hands-vhost-user-warm-welcome-dpdk)
+* [Virtqueues and virtio ring: How the data travels](https://www.redhat.com/en/blog/virtqueues-and-virtio-ring-how-data-travels)
+* [Packed virtqueue: How to reduce overhead with virtio](https://www.redhat.com/en/blog/packed-virtqueue-how-reduce-overhead-virtio)
+* [Achieving network wirespeed in an open standard manner: introducing vDPA](https://www.redhat.com/en/blog/achieving-network-wirespeed-open-standard-manner-introducing-vdpa)
+* [Introduction to vDPA kernel framework](https://www.redhat.com/en/blog/introduction-vdpa-kernel-framework)
+* [vDPA kernel framework part 1: vDPA bus for abstracting hardware](https://www.redhat.com/en/blog/vdpa-kernel-framework-part-1-vdpa-bus-abstracting-hardware)
+* [vDPA kernel framework part 2: vDPA bus drivers for kernel subsystem interactions](https://www.redhat.com/en/blog/vdpa-kernel-framework-part-2-vdpa-bus-drivers-kernel-subsystem-interactions)
+* [https://www.redhat.com/en/blog/hyperscale-virtiovdpa-introduction-one-control-plane-rule-them-all](https://www.redhat.com/en/blog/hyperscale-virtiovdpa-introduction-one-control-plane-rule-them-all)
+* [Hardening Virtio for emerging security usecases](https://www.redhat.com/en/blog/hardening-virtio-emerging-security-usecases)
+
 # 13 Vhost-User
 
 ## 13.1 Vhost Evolution
