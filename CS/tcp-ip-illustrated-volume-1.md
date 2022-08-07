@@ -454,6 +454,12 @@ DSACKs, conversely, are able to be sent only after a duplicate segment has arriv
     2. else if the 2nd SACK number contains the 1st SACK number, the 1st SACK block is DSACK
     3. else it's normal SACK
 
+Type | Fast Retransmit | Ack > 1st DSACK | 2nd DSACK contains 1st DSACK |
+--- | --- | --- | ---
+Lost Ack | :white_check_mark: | :white_check_mark: | :white_check_mark:
+Delay Data | :white_check_mark: | :white_check_mark: | :heavy_multiplication_x:
+Network dulicate Data | :heavy_multiplication_x: | :white_check_mark: | :white_check_mark:
+
 Reference:
 * https://www.cnblogs.com/lshs/p/6038617.html
 
