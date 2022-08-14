@@ -2516,6 +2516,14 @@ The pipeline final implementation:
     * **Write Invalidate**: one cpu core updates it's cache, and sync a "invalidate" info to other cores to invalidate their cache
     * **Write Broadcast**: the writing cpu update it's cache and sync the new data to other cpu cores to let them updat their cache.
 
+### False Sharing
+
+* **Definiiton**: In computer science, false sharing is a performance-degrading usage pattern that can arise in systems with distributed, coherent caches at the size of the smallest resource block managed by the caching mechanism. When a system participant attempts to periodically access data that is not being altered by another party, but that data shares a cache block with data that is being altered, the caching protocol may force the first participant to reload the whole cache block despite a lack of logical necessity.[1] The caching system is unaware of activity within this block and forces the first participant to bear the caching system overhead required by true shared access of a resource.
+
+* **Mitigation**
+    * For instance, false sharing in CPU caches can be prevented by reordering variables or adding padding (unused bytes) between variables. However, some of these program changes may increase the size of the objects, leading to higher memory use.
+    * Compile-time data transformations can also mitigate false-sharing.[3] However, some of these transformations may not always be allowed
+
 ### MESI
 * **M** (Modified): The cache line is present only in the current cache, and is dirty - it has been modified (M state) from the value in main memory. The cache is required to write the data back to main memory at some time in the future, before permitting any other read of the (no longer valid) main memory state. The write-back changes the line to the Shared state(S).
 * **E** (Exclusive): The cache line is present only in the current cache, but is clean - it matches main memory. It may be changed to the Shared state at any time, in response to a read request. Alternatively, it may be changed to the Modified state when writing to it.
