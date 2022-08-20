@@ -32,21 +32,103 @@ For software, typical expectations include:
 * Its performance is good enough for the required use case, under the expected load and data volume.
 * The system prevents any unauthorized access and abuse.
 
+**Reliability**: continuing to work correctly, even when things go wrong.
 
+A **fault** is usually defined as one component of the system deviating from its spec, whereas a **failure** is when the system as a whole stops providing the required service to the user. It is impossible to reduce the probability of a fault to zero; therefore it is usually best to design fault-tolerance mechanisms that prevent faults from causing failures.
 
 ### 1.2.1 Hardware Faults
+
+Hard disks crash, RAM becomes faulty, the power grid has a blackout, someone unplugs the wrong network cable.
+
+Our first response is usually to add redundancy to the individual hardware components in order to reduce the failure rate of the system:
+* Disks may be set up in a RAID configuration
+* servers may have dual power supplies and hot-swappable CPUs
+* datacenters may have batteries and diesel generators for backup power
+
+When one component dies, the redundant component can take its place while the broken component is replaced.
+
 ### 1.2.2 Software Errors
+
+We usually think of hardware faults as being random and independent from each other.
+
+Solution:
+* carefully thinking about assumptions and interactions in the system
+* thorough testing
+* process isolation
+* allowing processes to crash and restart
+* measuring, monitoring, and analyzing system behavior in production.
+
 ### 1.2.3 Human Errors
-### 1.2.4 How Important Is Reliability?
+Solutions:
+* Design systems in a way that minimizes opportunities for error. For example, well-designed abstractions, APIs, and admin interfaces make it easy to do “the right thing” and discourage “the wrong thing.” However, if the interfaces are too restrictive people will work around them, negating their benefit, so this is a tricky balance to get right.
+* Decouple the places where people make the most mistakes from the places where they can cause failures. In particular, provide fully featured non-production sandbox environments where people can explore and experiment safely, using real data, without affecting real users.
+* Test thoroughly at all levels, from unit tests to whole-system integration tests and manual tests [3]. Automated testing is widely used, well understood, and especially valuable for covering corner cases that rarely arise in normal operation.
+* Allow quick and easy recovery from human errors, to minimize the impact in the case of a failure. For example, make it fast to roll back configuration changes, roll out new code gradually (so that any unexpected bugs affect only a small subset of users), and provide tools to recompute data (in case it turns out that the old computation was incorrect).
+* Set up detailed and clear monitoring, such as performance metrics and error rates. In other engineering disciplines this is referred to as telemetry. (Once a rocket has left the ground, telemetry is essential for tracking what is happening, and for understanding failures [14].) Monitoring can show us early warning signals and allow us to check whether any assumptions or constraints are being violated. When a problem occurs, metrics can be invaluable in diagnosing the issue.
+* Implement good management practices and training—a complex and important aspect, and beyond the scope of this book.
 
 ## 1.3 Scalability
+
+**Scalability** is the term we use to describe a system’s ability to cope with increased load.
+
 ### 1.3.1 Describing Load
+
+The best choice of parameters depends on the architecture of your system:
+* requests per second to a web server
+* the ratio of reads to writes in a database
+* the number of simultaneously active users in a chat room
+* the hit rate on a cache
+
 ### 1.3.2 Describing Performance
+
+You can investigate what happens when the load increases:
+* When you increase a load parameter and keep the system resources (CPU, mem‐ ory, network bandwidth, etc.) unchanged, how is the performance of your system affected?
+* When you increase a load parameter, how much do you need to increase the resources if you want to keep performance unchanged.
+
+There are algorithms that can calculate a good approximation of percentiles at minimal CPU and memory cost, such as `forward decay`, `t-digest`, or `HdrHistogram`.
+
 ### 1.3.3 Approaches for Coping with Load
 
+How do we maintain good performance even when our load parameters increase by some amount?
+* An **architecture** that is appropriate for one level of load is unlikely to cope with 10 times that load.
+* People often talk of a dichotomy between **scaling up** (vertical scaling, moving to a more powerful machine) and **scaling out** (horizontal scaling, distributing the load across multiple smaller machines).
+* Some systems are **elastic**, meaning that they can automatically add computing resour‐ ces when they detect a load increase, whereas other systems are scaled manually
+* While distributing **stateless services** across multiple machines is fairly straightfor‐ ward, taking stateful data systems from a single node to a distributed setup can intro‐ duce a lot of additional complexity.
+* As the tools and abstractions for **distributed systems** get better, this common wisdom may change, at least for some kinds of applications.
+* The architecture of systems that operate at large scale is usually highly specific to the application—there is no such thing as a generic, **one-size-fits-all** scalable architecture.
+
 ## 1.4 Maintainability
+* Operability: Make it easy for operations teams to keep the system running smoothly.
+* Simplicity: Make it easy for new engineers to understand the system, by removing as much complexity as possible from the system. (Note this is not the same as simplicity of the user interface.)
+* Evolvability: Make it easy for engineers to make changes to the system in the future, adapting it for unanticipated use cases as requirements change. Also known as extensibil‐ ity, modifiability, or plasticity.
+
 ### 1.4.1 Operability: Making Life Easy for Operations
+A good operations team typically is responsible for the following, and more [29]:
+• Monitoring the health of the system and quickly restoring service if it goes into a bad state
+• Tracking down the cause of problems, such as system failures or degraded per‐ formance
+• Keeping software and platforms up to date, including security patches
+• Keeping tabs on how different systems affect each other, so that a problematic change can be avoided before it causes damage
+• Anticipating future problems and solving them before they occur (e.g., capacity planning)
+• Establishing good practices and tools for deployment, configuration manage‐ ment, and more
+• Performing complex maintenance tasks, such as moving an application from one platform to another
+• Maintaining the security of the system as configuration changes are made
+• Defining processes that make operations predictable and help keep the produc‐ tion environment stable
+• Preserving the organization’s knowledge about the system, even as individual people come and go
+
 ### 1.4.2 Simplicity: Managing Complexity
+
+There are various possible symptoms of complexity:
+* explosion of the state space
+* tight coupling of modules
+* tangled dependencies
+* inconsistent naming and terminology
+* hacks aimed at solving performance problems
+* special-casing to work around issues elsewhere
+
+Moseley and Marks define complexity as **accidental** if it is not inherent in the problem that the software solves (as seen by the users) but arises only from the implementation.
+
+One of the best tools we have for removing accidental complexity is **abstraction**. A good abstraction can hide a great deal of implementation detail behind a clean, simple-to-understand façade.
+
 ### 1.4.3 Evolvability: Making Change Easy
 
 # 2. Data Models and Query Languages.
