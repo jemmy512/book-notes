@@ -1460,6 +1460,12 @@ sighandler_t signal(int signum, sighandler_t handler);
 
 # IPC Programming
 
+Category:
+1. Messaging (pipeline, FIFO, message queue)
+2. Synchronization (mutex, conditional variable, semaphore, read and write lock, file and wirte lock)
+3. Shared memory (anonymous and named)
+4. Remote procedure Call (Solaris gate and sun RPC)
+
 * Unix inter-domain communication:
     ```C++
     // Unix communicatin:
