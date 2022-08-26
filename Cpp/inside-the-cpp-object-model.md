@@ -282,129 +282,17 @@ class A : public virtual Y, public virtual Z {};
         1. Microsoft's compiler introduced the `virtual base class table`. Each class object with one or more virtual base classes has a pointer to the virtual base class table inserted within it.
         2. Bjarne's solution is to `place not the address but the offset` of the virtual base class within the virtual function table.
             * Obejct layout & vtb laytout
-                ```c++
-                // object layout
-                clang -Xclang -fdump-record-layouts -stdlib=libc++ -std=c++17 -c model.cc
-
-                // vtb layout
-                clang -Xclang -fdump-vtable-layouts -stdlib=libc++ -std=c++17 -c model.cc
-                ```
-
-                ```c++
-                // layout.cc
-                struct Base {
-                    virtual ~Base() = default;
-
-                    virtual void FnBase() {  }
-
-                    int a;
-                    int b;
-                };
-
-                struct BaseA : virtual public Base {
-                    virtual void FnBaseA() {  }
-
-                    int a;
-                    int b;
-                };
-
-                struct BaseB : virtual public Base {
-                    virtual void FnBaseB() {  }
-
-                    int a;
-                    int b;
-                };
-
-                struct Derive : public BaseB, public BaseA {
-                    void FnBase() override {  }
-                    void FnBaseA() override {  }
-                    void FnBaseB() override {  }
-                };
-
-                int main() {
-                    Derive d;
-                    return 0;
-                }
-                ```
-                ```c++
-                Vtable for 'Derive' (21 entries).
-                 0 | vbase_offset (32)
-                 1 | offset_to_top (0)
-                 2 | Derive RTTI
-                     -- (BaseB, 0) vtable address --
-                     -- (Derive, 0) vtable address --
-                 3 | void Derive::FnBaseB()
-                 4 | Derive::~Derive() [complete]
-                 5 | Derive::~Derive() [deleting]
-                 6 | void Derive::FnBase()
-                 7 | void Derive::FnBaseA()
-                 8 | vbase_offset (16)
-                 9 | offset_to_top (-16)
-                10 | Derive RTTI
-                     -- (BaseA, 16) vtable address --
-                11 | void Derive::FnBaseA()
-                     [this adjustment: -16 non-virtual] method: void BaseA::FnBaseA()
-                12 | Derive::~Derive() [complete]
-                     [this adjustment: -16 non-virtual] method: BaseA::~BaseA()
-                13 | Derive::~Derive() [deleting]
-                     [this adjustment: -16 non-virtual] method: BaseA::~BaseA()
-                14 | vcall_offset (-32)
-                15 | vcall_offset (-32)
-                16 | offset_to_top (-32)
-                17 | Derive RTTI
-                     -- (Base, 32) vtable address --
-                18 | Derive::~Derive() [complete]
-                     [this adjustment: 0 non-virtual, -24 vcall offset offset] method: Base::~Base()
-                19 | Derive::~Derive() [deleting]
-                     [this adjustment: 0 non-virtual, -24 vcall offset offset] method: Base::~Base()
-                20 | void Derive::FnBase()
-                     [this adjustment: 0 non-virtual, -32 vcall offset offset] method: void Base::FnBase()
-
-                Virtual base offset offsets for 'Derive' (1 entry).
-                Base | -24
-
-                Thunks for 'Derive::~Derive()' (2 entries).
-                0 | this adjustment: -16 non-virtual
-                1 | this adjustment: 0 non-virtual, -24 vcall offset offset
-
-                Thunks for 'void Derive::FnBase()' (1 entry).
-                0 | this adjustment: 0 non-virtual, -32 vcall offset offset
-
-                Thunks for 'void Derive::FnBaseA()' (1 entry).
-                0 | this adjustment: -16 non-virtual
-
-                VTable indices for 'Derive' (5 entries).
-                0 | void Derive::FnBaseB()
-                1 | Derive::~Derive() [complete]
-                2 | Derive::~Derive() [deleting]
-                3 | void Derive::FnBase()
-                4 | void Derive::FnBaseA()
-                ```
-                ```c++
-                *** Dumping AST Record Layout
-                         0 | struct Derive
-                         0 |   struct BaseB (primary base)
-                         0 |     (BaseB vtable pointer)
-                         8 |     int a
-                        12 |     int b
-                        16 |   struct BaseA (base)
-                        16 |     (BaseA vtable pointer)
-                        24 |     int a
-                        28 |     int b
-                        32 |   struct Base (virtual base)
-                        32 |     (Base vtable pointer)
-                        40 |     int a
-                        44 |     int b
-                           | [sizeof=48, dsize=48, align=8,
-                           |  nvsize=32, nvalign=8]
-                ```
-            * ![cpp-virtual-inheritance.png](../Images/cpp-virtual-inheritance.png)
+                * Example refer: https://github.com/Jemmy512/software-engineer/blob/master/Cpp/README.md#polymorphism
+            * ![cpp-vtable.png](../Images/cpp-vtable.png)
                 * BaseA has its own virtual `FunB`, Derive overrides it and adds it into vtable of both BaseA and BaseB.
 
     5. In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no associated data members.
     6. Ref:
-        1. https://www.nowcoder.com/profile/3669004/note/detail/232803
-        2. https://mp.weixin.qq.com/s?__biz=MzkyODE5NjU2Mw==&mid=2247484758&idx=1&sn=4e614430f666f63ab135c13a716d07c1&chksm=c21d37eaf56abefc8d2a1dc3e09a8146d242475cb0900ee5a94ab6a94a991168a887f7351821&scene=178&cur_album_id=1667018561883570181#rd
+        * [VTable Entry 1: Interview Series C++ object layout](https://developpaper.com/interview-series-c-object-layout/)
+        * [VTable Entry 2: Understand C++ vtable from assembly code :link: Part 1](https://guihao-liang.github.io/2020/05/30/what-is-vtable-in-cpp)
+        * [VTable Proficient 1: What does C++ Object Layout Look Like?](https://nimrod.blog/posts/what-does-cpp-object-layout-look-like/)
+        * [VTable Proficient 2: C++ Virtual Table Tables(VTT)](https://nimrod.blog/posts/cpp-virtual-table-tables/)
+        * [coolshell: C++ virtual function table analysis (CN)](https://coolshell.cn/articles/12165.html)
 
 ## 3.5 Object Member Efficiency
 1. In terms of actual program performance, the important point here is that with optimization turned on, no runtime performance cost for encapsulation and the use of inline access functions was exhibited.
