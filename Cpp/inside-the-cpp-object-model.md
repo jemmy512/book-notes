@@ -288,11 +288,11 @@ class A : public virtual Y, public virtual Z {};
 
     5. In general, the most efficient use of a virtual base class is that of an abstract virtual base class with no associated data members.
     6. Ref:
-        * [VTable Entry 1: Interview Series C++ object layout](https://developpaper.com/interview-series-c-object-layout/)
+        * [VTable Entry 1: Interview Series C++ object layout :us: EN](https://developpaper.com/interview-series-c-object-layout/)    [:cn: CN](https://mp.weixin.qq.com/s?__biz=MzkyODE5NjU2Mw==&mid=2247484758&idx=1&sn=4e614430f666f63ab135c13a716d07c1&source=41#wechat_redirect)
         * [VTable Entry 2: Understand C++ vtable from assembly code :link: Part 1](https://guihao-liang.github.io/2020/05/30/what-is-vtable-in-cpp)
         * [VTable Proficient 1: What does C++ Object Layout Look Like?](https://nimrod.blog/posts/what-does-cpp-object-layout-look-like/)
         * [VTable Proficient 2: C++ Virtual Table Tables(VTT)](https://nimrod.blog/posts/cpp-virtual-table-tables/)
-        * [coolshell: C++ virtual function table analysis (CN)](https://coolshell.cn/articles/12165.html)
+        * [coolshell: C++ virtual function table analysis (:cn: CN)](https://coolshell.cn/articles/12165.html)
 
 ## 3.5 Object Member Efficiency
 1. In terms of actual program performance, the important point here is that with optimization turned on, no runtime performance cost for encapsulation and the use of inline access functions was exhibited.

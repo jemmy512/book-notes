@@ -33,7 +33,7 @@
 
 * Compilation
     * [Compilers: Principles, Techniques, and Tools :soon:](./CS/compilers-crinciples-techniques-and-tools.md)
-    * [Programmer Self-Cultivation: Linking, Loading and Libraries (CN)](./CS/programmer-self-cultivation-link-load-library.md)
+    * [Programmer Self-Cultivation: Linking, Loading and Libraries (:cn: CN)](./CS/programmer-self-cultivation-link-load-library.md)
 
 * Network
     * [TCP/IP Illustrated, Volume 1: The Protocols](./CS/tcp-ip-illustrated-volume-1.md)
