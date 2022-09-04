@@ -103,17 +103,17 @@ How do we maintain good performance even when our load parameters increase by so
 * Evolvability: Make it easy for engineers to make changes to the system in the future, adapting it for unanticipated use cases as requirements change. Also known as extensibil‐ ity, modifiability, or plasticity.
 
 ### 1.4.1 Operability: Making Life Easy for Operations
-A good operations team typically is responsible for the following, and more [29]:
-• Monitoring the health of the system and quickly restoring service if it goes into a bad state
-• Tracking down the cause of problems, such as system failures or degraded per‐ formance
-• Keeping software and platforms up to date, including security patches
-• Keeping tabs on how different systems affect each other, so that a problematic change can be avoided before it causes damage
-• Anticipating future problems and solving them before they occur (e.g., capacity planning)
-• Establishing good practices and tools for deployment, configuration manage‐ ment, and more
-• Performing complex maintenance tasks, such as moving an application from one platform to another
-• Maintaining the security of the system as configuration changes are made
-• Defining processes that make operations predictable and help keep the produc‐ tion environment stable
-• Preserving the organization’s knowledge about the system, even as individual people come and go
+A good operations team typically is responsible for the following, and more:
+* Monitoring the health of the system and quickly restoring service if it goes into a bad state
+* Tracking down the cause of problems, such as system failures or degraded per‐ formance
+* Keeping software and platforms up to date, including security patches
+* Keeping tabs on how different systems affect each other, so that a problematic change can be avoided before it causes damage
+* Anticipating future problems and solving them before they occur (e.g., capacity planning)
+* Establishing good practices and tools for deployment, configuration manage‐ ment, and more
+* Performing complex maintenance tasks, such as moving an application from one platform to another
+* Maintaining the security of the system as configuration changes are made
+* Defining processes that make operations predictable and help keep the produc‐ tion environment stable
+* Preserving the organization’s knowledge about the system, even as individual people come and go
 
 ### 1.4.2 Simplicity: Managing Complexity
 
@@ -132,10 +132,26 @@ One of the best tools we have for removing accidental complexity is **abstractio
 ### 1.4.3 Evolvability: Making Change Easy
 
 # 2. Data Models and Query Languages.
+
+Data models are perhaps the most important part of developing software, because they have such a profound effect: not only on how the software is written, but also on how we think about the problem that we are solving.
+
 ## 2.1 Relational Model Versus Document Model
+
+SQL, based on the relational model proposed by Edgar Codd in 1970: data is organized into relations (called tables in SQL), where each relation is an unordered collection of tuples (rows in SQL).
+
 ### 2.1.2 The Birth of NoSOL
+There are several driving forces behind the adoption of NoSQL databases, including:
+* A need for greater scalability than relational databases can easily achieve, includ‐ ing very large datasets or very high write throughput
+* A widespread preference for free and open source software over commercial database products
+* Specialized query operations that are not well supported by the relational model
+* Frustration with the restrictiveness of relational schemas, and a desire for a more dynamic and expressive data model
+
 ### 2.1.3 The Object-Relational Mismatch
+If data is stored in relational tables, an awkward translation layer is required between the objects in the application code and the database model of tables, rows, and columns. The discon‐ nect between the models is sometimes called an **impedance mismatch**.
+
 ### 2.1.4 Many-to-One and Many-to-Many Relationships
+Whether you store an ID or a text string is a question of duplication. When you use an ID, the information that is meaningful to humans (such as the word Philanthropy) is stored in only one place, and everything that refers to it uses an ID (which only has meaning within the database).
+
 ### 2.1.5 Are Document Databases Repeating History?
 ### 2.1.6 Relational Versus Document Databases Today
 
