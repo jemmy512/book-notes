@@ -53,6 +53,19 @@
     * [vfs layer](#vfs-layer-rx)
     * [socket layer](#socket-layer-rx])
 
+* [epoll](#epoll)
+    * [epoll_create](#epoll_create)
+    * [epoll_ctl](#epoll_ctl)
+        * [ep_insert](#ep_insert)
+            *[ep_item_poll](#ep_item_poll)
+        * [ep_modify](#ep_modify)
+        * [ep_delete](#ep_delete)
+    * [epoll_wait](#epoll_wait)
+    * [sock_def_readable](#sock_def_readable)
+    * [sock_def_write_space](#sock_def_write_space)
+    * [eventpoll_init](#eventpoll_init)
+    * [evetfd](#evetfd)
+
 * [route](#route)
   * [route out](#route-out)
   * [route in](#route-in)
@@ -108,18 +121,12 @@
     * [tcp_send_synack](#tcp_send_synack)
     * [tcp_fin](#tcp_fin)
     * [tcp_send_fin](#tcp_send_fin)
-* [epoll](#epoll)
-    * [epoll_create](#epoll_create)
-    * [epoll_ctl](#epoll_ctl)
-        * [ep_insert](#ep_insert)
-            *[ep_item_poll](#ep_item_poll)
-        * [ep_modify](#ep_modify)
-        * [ep_delete](#ep_delete)
-    * [epoll_wait](#epoll_wait)
-    * [sock_def_readable](#sock_def_readable)
-    * [sock_def_write_space](#sock_def_write_space)
 * [inet_init](#inet_init)
 * [net_dev_init](#net_dev_init)
+
+---
+
+* [Linux Thundering Herd Problem :cn:](https://mp.weixin.qq.com/s/dQWKBujtPcazzw7zacP1lg)
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -1803,6 +1810,9 @@ discard:
 ```
 
 ### tcp_conn_request
+
+* [tcp/dccp: lockless listener](https://lwn.net/Articles/659199/)
+
 ```c++
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
@@ -3025,7 +3035,7 @@ void prepare_to_wait_exclusive(
 
 #define DEFINE_WAIT(name) DEFINE_WAIT_FUNC(name, autoremove_wake_function)
 
-#define DEFINE_WAIT_FUNC(name, function)       \
+#define DEFINE_WAIT_FUNC(name, function)      \
   struct wait_queue_entry name = {            \
     .private  = current,                      \
     .func     = function,                     \
@@ -8584,13 +8594,17 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 
 ```c++
 /* driver layer */
-ixgb_intr()
+ixgb_intr(int irq, void *data)
   IXGB_WRITE_REG(&adapter->hw, IMC, ~0);  /* disable irq */
   __napi_schedule()
+    list_add_tail(&napi->poll_list, &sd->poll_list)
     __raise_softirq_irqoff(NET_RX_SOFTIRQ)
       net_rx_action()
+        LIST_HEAD(list);
+        list_splice_init(&sd->poll_list, &list)
+
         napi_poll()
-          ixgb_clean_tx_irq(adapter);
+          ixgb_clean_tx_irq(adapter); /* dma_unmap_page */
           ixgb_clean_rx_irq(adapter, &work_done, budget);
             netif_receive_skb(skb);
 
@@ -8622,14 +8636,14 @@ netif_receive_skb()
 
 /* ip layer */
 ip_rcv()
-    NF_HOOK(NF_INET_PRE_ROUTING)                    /* 1. PRE_NF */
+    NF_HOOK(NF_INET_PRE_ROUTING)                    /* 1. NF_INET_PRE_ROUTING */
         ip_rcv_finish()
             ip_rcv_finish_core()
                 ip_route_input_noref()              /* 2. route */
             dst_input()
                 ip_local_deliver()
                     ip_defrag()                     /* 3. defragment */
-                    NF_HOOK(NF_INET_LOCAL_IN)       /* 4. IN_NF */
+                    NF_HOOK(NF_INET_LOCAL_IN)       /* 4. NF_INET_LOCAL_IN */
                     ip_local_deliver_finish()
                         inet_protos[protocol]->handler()
                             net_protocol->handler()
@@ -8817,8 +8831,8 @@ process:
             /* Advance cwnd if state allows */
             tcp_cong_avoid(sk, ack, acked_sacked);
           }
-	        tcp_update_pacing_rate(sk);
-	      tcp_xmit_recovery();
+          tcp_update_pacing_rate(sk);
+        tcp_xmit_recovery();
 
       if (sk->sk_state == TCP_SYN_RECV) {
         tcp_init_transfer();
@@ -8889,7 +8903,7 @@ do_time_wait:
   }
 
 tcp_data_queue();
-  /* 1. [seq = rcv_next < end_seq < win] */
+  /* 1. ACK [seq = rcv_next < end_seq < win] */
     tcp_queue_rcv();
     tcp_event_data_recv();
       tcp_grow_window();
@@ -8900,21 +8914,21 @@ tcp_data_queue();
       sk->sk_data_ready();
         sock_def_readable();
 
-  /* 2. [seq < end_seq < rcv_next < win] */
+  /* 2. DROP [seq < end_seq < rcv_next < win] */
     tcp_dsack_set();
     tcp_enter_quickack_mode();
     inet_csk_schedule_ack(sk);
     tcp_drop();
 
-  /* 3. [rcv_next < win < seq < end_seq] */
+  /* 3. DROP [rcv_next < win < seq < end_seq] */
     tcp_enter_quickack_mode();
     inet_csk_schedule_ack(sk);
     tcp_drop();
 
-  /* 4. [seq < rcv_next < end_seq < win] */
+  /* 4. OFO [seq < rcv_next < end_seq < win] */
     tcp_dsack_set();
 
-  /* 5. [rcv_next < seq < end_seq < win] */
+  /* 5. DACK [rcv_next < seq < end_seq < win] */
     tcp_data_queue_ofo();
 
 /* vfs layer */
@@ -14250,6 +14264,10 @@ void __tcp_push_pending_frames(
 
 ![](../Images/Kernel/net-epoll.png)
 
+---
+
+![](../Images/Kernel/net-epoll-thread-model.png)
+
 ```c++
 typedef union epoll_data {
   void     *ptr;
@@ -14639,7 +14657,9 @@ __poll_t tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
 
   state = inet_sk_state_load(sk);
   if (state == TCP_LISTEN)
-    return inet_csk_listen_poll(sk);
+    return inet_csk_listen_poll(sk) {
+      return !reqsk_queue_empty(&inet_csk(sk)->icsk_accept_queue) ? (EPOLLIN | EPOLLRDNORM) : 0;
+    }
 
   mask = 0;
 
@@ -15383,6 +15403,32 @@ static ssize_t eventfd_write(struct file *file, const char __user *buf, size_t c
 }
 ```
 
+## eventpoll_init
+```c++
+int __init eventpoll_init(void)
+{
+  struct sysinfo si;
+
+  si_meminfo(&si);
+
+  max_user_watches = (((si.totalram - si.totalhigh) / 25) << PAGE_SHIFT) / EP_ITEM_COST;
+
+  /* Allocates slab cache used to allocate "struct epitem" items */
+  epi_cache = kmem_cache_create("eventpoll_epi", sizeof(struct epitem),
+      0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+
+  /* Allocates slab cache used to allocate "struct eppoll_entry" */
+  pwq_cache = kmem_cache_create("eventpoll_pwq",
+    sizeof(struct eppoll_entry), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
+  epoll_sysctls_init();
+
+  ephead_cache = kmem_cache_create("ep_head",
+    sizeof(struct epitems_head), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
+
+  return 0;
+}
+```
+
 ```c++
 /* epoll_create */
 epoll_create();
@@ -15401,21 +15447,49 @@ epoll_ctl();
         revents = ep_item_poll(epi, &pt, 1);
             if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; */
                 vfs_poll(file,  &epq.pt, 1);
-                    file->f_op->poll(); /* sock_poll() */
-                        sock->ops->poll(); /* tcp_poll() */
-                            /* 1. register observer */
-                            sock_poll_wait();
-                                if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
-                                    poll_wait(filp, &sock->wq->wait, p);
-                                        p->_qproc(); /* ep_ptable_queue_proc, virqfd_ptable_queue_proc, irqfd_ptable_queue_proc, memcg_event_ptable_queue_proc */
-                                            init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
-                                            add_wait_queue(whead, &pwq->wait);
-                            /* 2. poll ready events */
-                            if (tcp_stream_is_readable(tp, target, sk))
-                                mask |= EPOLLIN | EPOLLRDNORM;
-                            if (sk_stream_is_writeable(sk))
-                                mask |= EPOLLOUT | EPOLLWRNORM;
-                            return mask;
+                    file->f_op->poll();
+                        {
+                          sock_poll(struct file *file, poll_table *wait)
+                            sock->ops->poll(); /* tcp_poll() */
+                                /* 1. register observer */
+                                sock_poll_wait();
+                                    if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
+                                        poll_wait(filp, &sock->wq->wait, p);
+                                            p->_qproc();
+                                                init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
+                                                add_wait_queue(whead, &pwq->wait);
+
+                                /* 2. poll listen socket */
+                                if (state == TCP_LISTEN)
+                                    return inet_csk_listen_poll(sk) {
+                                        return !reqsk_queue_empty(&inet_csk(sk)->icsk_accept_queue)
+                                          ? (EPOLLIN | EPOLLRDNORM) : 0;
+                                    }
+
+                                /* 3. poll ready events */
+                                if (tcp_stream_is_readable(tp, target, sk))
+                                    mask |= EPOLLIN | EPOLLRDNORM;
+                                if (sk_stream_is_writeable(sk))
+                                    mask |= EPOLLOUT | EPOLLWRNORM;
+                                return mask;
+                        }, {
+                          eventfd_poll(struct file *file, poll_table *wait)
+                              poll_wait(struct file * filp, wait_queue_head_t * queue, poll_table *pt)
+                                  pt->_qproc(filep, queue, pt);
+                                      /* ep_ptable_queue_proc,
+                                      * virqfd_ptable_queue_proc,
+                                      * irqfd_ptable_queue_proc,
+                                      * memcg_event_ptable_queue_proc */
+                              if (count > 0)
+                                  events |= EPOLLIN;
+                              if (count == ULLONG_MAX)
+                                  events |= EPOLLERR;
+                              if (ULLONG_MAX - 1 > count)
+                                  events |= EPOLLOUT;
+
+                              return events;
+                        }
+
             else
                 poll_wait(epi->ffd.file, &ep->poll_wait, pt);
                 return ep_scan_ready_list(ep_read_events_proc);
@@ -15507,8 +15581,16 @@ tcp_data_ready();
                         list_for_each_entry_safe_from(curr, next, &wq_head->head) {
                             ret = curr->func(curr, mode, wake_flags, key);
                                 ep_poll_callback();
+                                    /* 1. check EPOLLONCESHOT */
+                                    if (!(epi->event.events & ~EP_PRIVATE_BITS))
+                                        return;
+                                    /* 2. check intrested events */
+                                    if (!(pollflags & epi->event.events)
+                                        return;
+                                    /* 3. add to epoll ready list */
                                     if (!ep_is_linked(epi))
                                         list_add_tail(&epi->rdllink, &ep->rdllist);
+                                    /* 4. wake up */
                                     wake_up_locked(&ep->wq);
                                         __wake_up_common();
                                     ep_poll_safewake(&ep->poll_wait);
