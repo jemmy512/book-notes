@@ -31,6 +31,8 @@
 
     * [fork](#fork)
         * [copy_process](#copy_process)
+        * [dup_task_struct](#dup_task_struct)
+        * [sched_fork](#sched_fork)
         * [ret_from_fork](#ret_from_fork)
         * [copy_thread_tls](#copy_thread_tls)
     * [exec](#exec)
@@ -78,15 +80,15 @@
 * [Containerization](#Containerization)
 * [Lock](#Lock)
 
-![](../Images/Kernel/kernel-structual.svg)
+<img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
 # Init
 ## cpu
-![](../Images/Kernel/init-cpu.png)
+<img src='../Images/Kernel/init-cpu.png' style='max-height:850px'/>
 
-![](../Images/Kernel/init-cpu-2.png)
+<img src='../Images/Kernel/init-cpu-2.png' style='max-height:850px'/>
 
-![](../Images/Kernel/init-cpu-process-program.png)
+<img src='../Images/Kernel/init-cpu-process-program.png' style='max-height:850px'/>
 
 ## bios
 * ![](../Images/Kernel/init-bios.png)
@@ -234,13 +236,13 @@ static int run_init_process(const char *init_filename)
     (const char __user *const __user *)envp_init);
 }
 ```
-![](../Images/Kernel/init-kernel.png)
+<img src='../Images/Kernel/init-kernel.png' style='max-height:850px'/>
 
-![](../Images/Kernel/init-cpu-arch.png)
+<img src='../Images/Kernel/init-cpu-arch.png' style='max-height:850px'/>
 
 ## syscall
 
-![](../Images/Kernel/proc-sched-reg.png)
+<img src='../Images/Kernel/proc-sched-reg.png' style='max-height:850px'/>
 
 ```c++
 /* linux/4.19.y/arch/x86/include/asm/ptrace.h */
@@ -459,7 +461,7 @@ and helps a debugger create a reliable backtrace through functions. */
 /* trap_init */
 set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
 
-/* linux-4.19.y/arch/x86/entry/entry_32.S */
+/* arch/x86/entry/entry_32.S */
 /* Arguments:
  * eax  system call number
  * ebx  arg1
@@ -768,12 +770,12 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
   }
 }
 ```
-![](../Images/Kernel/init-syscall.png)
-![](../Images/Kernel/init-syscall-32.png)
+<img src='../Images/Kernel/init-syscall.png' style='max-height:850px'/>
+<img src='../Images/Kernel/init-syscall-32.png' style='max-height:850px'/>
 
 ### 64
 
-![](../Images/Kernel/init-syscall-stack.png)
+<img src='../Images/Kernel/init-syscall-stack.png' style='max-height:850px'/>
 
 * glibc
     ```c++
@@ -991,6 +993,26 @@ END(entry_SYSCALL_64)
 ```c++
 GLOBAL(swapgs_restore_regs_and_return_to_usermode)
   POP_REGS pop_rdi=0
+  /*
+  .macro POP_REGS pop_rdi=1
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbp
+    popq %rbx
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rax
+    popq %rcx
+    popq %rdx
+    popq %rsi
+    .if \pop_rdi
+      popq %rdi
+    .endif
+  .endm */
 
   /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
    * Save old stack pointer and switch to trampoline stack.
@@ -999,10 +1021,11 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
    * OFFSET(TSS_sp0, tss_struct, x86_tss.sp0)
    * DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_struct, cpu_tss_rw) */
   movq  %rsp, %rdi
+  /* load_sp0(task_top_of_stack(task)) */
   movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
   UNWIND_HINT_EMPTY
 
-  /* Copy the IRET frame to the trampoline stack. */
+  /* Copy the IRET frame from kernel stack to the user trampoline stack.tack. */
   pushq  6*8(%rdi)  /* SS */
   pushq  5*8(%rdi)  /* RSP */
   pushq  4*8(%rdi)  /* EFLAGS */
@@ -1040,15 +1063,51 @@ void do_syscall_64(struct pt_regs *regs)
   syscall_return_slowpath(regs);
 }
 ```
-![](../Images/Kernel/init-syscall-64.png)
+<img src='../Images/Kernel/init-syscall-64.png' style='max-height:850px'/>
 
+```c++
+entry_SYSCALL_64()
+    /* 1. swap to kernel stack */
+    movq  %rsp, PER_CPU_VAR(rsp_scratch)
+    movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp
+
+    /* 2. save user stack */
+    pushq  $__USER_DS                 /* pt_regs->ss */
+    pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
+    pushq  %r11                       /* pt_regs->flags */
+    pushq  $__USER_CS                 /* pt_regs->cs */
+    pushq  %rcx                       /* pt_regs->ip */
+    pushq  %rax                       /* pt_regs->orig_ax */
+
+    /* 3. do_syscall */
+    movq  %rax, %rdi
+    movq  %rsp, %rsi
+    call  do_syscall_64
+
+    /* 4. restore user stack */
+    swapgs_restore_regs_and_return_to_usermode()
+        POP_REGS pop_rdi=0
+        /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS */
+
+        movq  %rsp, %rdi /* save kernel sp */
+        movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp /* load user sp */
+
+        /* Copy the IRET frame from kernel stack to the user trampoline stack. */
+        pushq  6*8(%rdi)  /* SS */
+        pushq  5*8(%rdi)  /* RSP */
+        pushq  4*8(%rdi)  /* EFLAGS */
+        pushq  3*8(%rdi)  /* CS */
+        pushq  2*8(%rdi)  /* RIP */
+
+        INTERRUPT_RETURN
+```
 
 # Process
 
-![](../Images/Kernel/proc-management.png)
+<img src='../Images/Kernel/proc-management.png' style='max-height:850px'/>
 
 ## process
-![](../Images/Kernel/proc-compile.png)
+<img src='../Images/Kernel/proc-compile.png' style='max-height:850px'/>
 ```c++
 /* compile */
 gcc -c -fPIC process.c
@@ -1067,24 +1126,24 @@ export LD_LIBRARY_PATH=
 ```
 
 1. elf: relocatable file
-![](../Images/Kernel/proc-elf-relocatable.png)
+<img src='../Images/Kernel/proc-elf-relocatable.png' style='max-height:850px'/>
 
 2. elf: executable file
-![](../Images/Kernel/proc-elf-executable.png)
+<img src='../Images/Kernel/proc-elf-executable.png' style='max-height:850px'/>
 
 3. elf: shared object
 
 4. elf: core dump
 
-![](../Images/Kernel/proc-tree.png)
+<img src='../Images/Kernel/proc-tree.png' style='max-height:850px'/>
 
-![](../Images/Kernel/proc-elf-compile-exec.png)
+<img src='../Images/Kernel/proc-elf-compile-exec.png' style='max-height:850px'/>
 
 ## thread
-![](../Images/Kernel/proc-thread.png)
+<img src='../Images/Kernel/proc-thread.png' style='max-height:850px'/>
 
 ## task_struct
-![](../Images/Kernel/proc-task-1.png)
+<img src='../Images/Kernel/proc-task-1.png' style='max-height:850px'/>
 
 ## schedule
 ```c++
@@ -1211,8 +1270,8 @@ struct cfs_rq {
   struct sched_entity *curr, *next, *last, *skip;
 };
 ```
-![](../Images/Kernel/proc-sched-entity-rq.png)
-![](../Images/Kernel/proc-runqueue.png)
+<img src='../Images/Kernel/proc-sched-entity-rq.png' style='max-height:850px'/>
+<img src='../Images/Kernel/proc-runqueue.png' style='max-height:850px'/>
 
 ```c++
 struct sched_class {
@@ -1264,9 +1323,17 @@ const struct sched_class fair_sched_class = {
   .pick_next_task     = pick_next_task_fair
 };
 ```
-![](../Images/Kernel/proc-shced-cpu-rq-class-entity-task.png)
+<img src='../Images/Kernel/proc-sched-cpu-rq-class-entity-task.png' style='max-height:850px'/>
 
 ### voluntary schedule
+<img src="../Images/Kernel/proc-sched-context-swith.png" style="max-height:850px"/>
+
+<img src="../Images/Kernel/proc-cpu-tss.png" style="max-height:850px"/>
+
+<img src='../Images/Kernel/proc-tss.png' style='max-height:850px'/>
+<img src='../Images/Kernel/proc-sched-reg.png' style='max-height:850px'/>
+<img src="../Images/Kernel/proc-sched-context-switch-flow.png" style="max-height:850px"/>
+
 ```c++
 void schedule(void)
 {
@@ -1572,6 +1639,7 @@ void switch_mm_irqs_off(struct mm_struct *prev, struct mm_struct *next,
 
 #### switch_to
 ```c++
+/* arch/x86/include/asm/switch_to.h */
 #define switch_to(prev, next, last) \
 do { \
   prepare_switch_to(prev, next); \
@@ -1579,7 +1647,7 @@ do { \
   ((last) = __switch_to_asm((prev), (next))); \
 } while (0)
 
-/* linux-4.19.y/arch/x86/entry/entry_64.S */
+/* arch/x86/entry/entry_64.S */
 ENTRY(__switch_to_asm)
   UNWIND_HINT_FUNC
   /* Save callee-saved registers to prev task
@@ -1763,10 +1831,6 @@ struct x86_hw_tss {
   u16      io_bitmap_base;
 }
 ```
-![](../Images/Kernel/proc-cpu-tss.png)
-![](../Images/Kernel/proc-tss.png)
-![](../Images/Kernel/proc-sched-reg.png)
-![](../Images/Kernel/proc-sched-context-switch-flow.png)
 
 ```c++
 schedule(void)
@@ -1793,8 +1857,23 @@ schedule(void)
                 }
                 switch_to(prev, next, prev);
                     __switch_to_asm(); /* switch registers, but not EIP [arch/x86/entry/entry_64.S] */
+                        pushq  %rbx
+                        pushq  %r12
+                        pushq  %r13
+                        pushq  %r14
+                        pushq  %r15
+                        pushfq
+
+                        /* OFFSET(TASK_threadsp, task_struct, thread.sp) */
                         movl  %esp, TASK_threadsp(%eax) /* %eax: prev task */
                         movl  TASK_threadsp(%edx), %esp /* %edx: next task */
+
+                        popq  %r15
+                        popq  %r14
+                        popq  %r13
+                        popq  %r12
+                        popq  %rbx
+                        popq  %rbp
 
                         __switch_to(); /* switch cpu task_struct [arch/x86/kernel/process_64.c] */
                             this_cpu_write(current_task, next_p);
@@ -1802,7 +1881,7 @@ schedule(void)
                 barrier();
                 return finish_task_switch(prev);
 ```
-![](../Images/Kernel/proc-sched-voluntary.png)
+<img src='../Images/Kernel/proc-sched-voluntary.png' style='max-height:850px'/>
 
 
 ### preempt schedule
@@ -1850,6 +1929,7 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
 
 static void entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 {
+  /* Update run-time statistics of the 'current' */
   update_curr(cfs_rq);
   update_load_avg(curr, UPDATE_TG);
   update_cfs_shares(curr);
@@ -1913,7 +1993,30 @@ static void check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
     resched_curr(rq_of(cfs_rq));
 }
 
-/* resched_curr -> */
+void resched_curr(struct rq *rq)
+{
+  struct task_struct *curr = rq->curr;
+  int cpu;
+
+  lockdep_assert_rq_held(rq);
+
+  if (test_tsk_need_resched(curr))
+    return;
+
+  cpu = cpu_of(rq);
+
+  if (cpu == smp_processor_id()) {
+    set_tsk_need_resched(curr);
+    set_preempt_need_resched();
+    return;
+  }
+
+  if (set_nr_and_not_polling(curr))
+    smp_send_reschedule(cpu);
+  else
+    trace_sched_wake_idle_without_ipi(cpu);
+}
+
 static inline void set_tsk_need_resched(struct task_struct *tsk)
 {
   /* just mark thread with TIF_NEED_RESCHED */
@@ -2018,7 +2121,7 @@ asmlinkage __visible void __sched preempt_schedule_irq(void)
   } while (need_resched());
 }
 ```
-![](../Images/Kernel/proc-sched.png)
+<img src='../Images/Kernel/proc-sched.png' style='max-height:850px'/>
 
 ### Q
 1. A process waits on a block operation (mutex, semphore, waitqueue), it calls schedule(). Will it be removed from rq, and add to rq when block operation wakeups?
@@ -2381,7 +2484,7 @@ out:
 ```
 
 ## wake_up
-![](../Images/Kernel/proc-wake-up.png)
+<img src='../Images/Kernel/proc-wake-up.png' style='max-height:850px'/>
 
 ```c++
 #define wake_up(x)                        __wake_up(x, TASK_NORMAL, 1, NULL)
@@ -2456,7 +2559,7 @@ static int __wake_up_common(
     ret = curr->func(curr, mode, wake_flags, key);
     if (ret < 0)
       break;
-    /* WQ_FLAG_EXCLUSIVE : fix thunderbird problem */
+    /* WQ_FLAG_EXCLUSIVE : fix Thundering Herd problem */
     if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
       break;
 
@@ -2847,9 +2950,54 @@ out:
 }
 ```
 
+```c++
+try_to_wake_up();
+    ttwu_queue();
+        rq_lock(rq, &rf);
+        ttwu_do_activate(rq, p, wake_flags, &rf);
+            /* 1. insert p into rq */
+            ttwu_activate(rq, p, en_flags);
+                activate_task(rq, p, en_flags);
+                    enqueue_task(rq, p, flags);
+                        p->sched_class->enqueue_task(rq, p, flags);
+                p->on_rq = TASK_ON_RQ_QUEUED;
+
+            /* 2. check schedule curr */
+            ttwu_do_wakeup(rq, p, wake_flags, rf);
+                check_preempt_curr(rq, p, wake_flags);
+                    rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+                        check_preempt_wakeup();
+                            ret = wakeup_preempt_entity(se, pse);
+                                s64 gran, vdiff = curr->vruntime - se->vruntime;
+                                if (vdiff <= 0)
+                                    return -1;
+
+                                gran = wakeup_gran(se);
+                                    unsigned long gran = sysctl_sched_wakeup_granularity;
+                                    return calc_delta_fair(gran, se);
+
+                                if (vdiff > gran)
+                                    return 1;
+
+                            if (ret) {
+                                resched_curr();
+                                    set_tsk_need_resched();
+                            }
+
+                p->state = TASK_RUNNING;
+        rq_unlock(rq, &rf);
+
+```
+
 ## fork
 
 * [Misc on Linux fork, switch_to, and scheduling](http://lastweek.io/notes/linux/fork/)
+
+<img src="../Images/Kernel/proc-fork-frame.png" height="850"/>
+
+<img src="../Images/Kernel/fork.png" style="max-height:1200px"/>
+
+<img src="../Images/Kernel/proc-fork-pthread-create.png" style="max-height:850px"/>
 
 ```c++
 SYSCALL_DEFINE0(fork)
@@ -3286,104 +3434,6 @@ struct task_struct *copy_process(
   return p;
 }
 
-int sched_fork(unsigned long clone_flags, struct task_struct *p)
-{
-  unsigned long flags;
-
-  __sched_fork(clone_flags, p);
-  /* We mark the process as NEW here. This guarantees that
-   * nobody will actually run it, and a signal or other external
-   * event cannot wake it up and insert it on the runqueue either. */
-  p->state = TASK_NEW;
-
-  /* Make sure we do not leak PI boosting priority to the child. */
-  p->prio = current->normal_prio;
-
-  /* Revert to default priority/policy on fork if requested. */
-  if (unlikely(p->sched_reset_on_fork)) {
-    if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
-      p->policy = SCHED_NORMAL;
-      p->static_prio = NICE_TO_PRIO(0);
-      p->rt_priority = 0;
-    } else if (PRIO_TO_NICE(p->static_prio) < 0)
-      p->static_prio = NICE_TO_PRIO(0);
-
-    p->prio = p->normal_prio = __normal_prio(p);
-    set_load_weight(p, false);
-
-    /* We don't need the reset flag anymore after the fork. It has
-     * fulfilled its duty: */
-    p->sched_reset_on_fork = 0;
-  }
-
-  if (dl_prio(p->prio))
-    return -EAGAIN;
-  else if (rt_prio(p->prio))
-    p->sched_class = &rt_sched_class;
-  else
-    p->sched_class = &fair_sched_class;
-
-  init_entity_runnable_average(&p->se);
-
-  /* The child is not yet in the pid-hash so no cgroup attach races,
-   * and the cgroup is pinned to this child due to cgroup_fork()
-   * is ran before sched_fork().
-   *
-   * Silence PROVE_RCU. */
-  raw_spin_lock_irqsave(&p->pi_lock, flags);
-  rseq_migrate(p);
-  /* We're setting the CPU for the first time, we don't migrate,
-   * so use __set_task_cpu(). */
-  __set_task_cpu(p, smp_processor_id());
-  if (p->sched_class->task_fork)
-    p->sched_class->task_fork(p);
-  raw_spin_unlock_irqrestore(&p->pi_lock, flags);
-
-#ifdef CONFIG_SCHED_INFO
-  if (likely(sched_info_on()))
-    memset(&p->sched_info, 0, sizeof(p->sched_info));
-#endif
-#if defined(CONFIG_SMP)
-  p->on_cpu = 0;
-#endif
-  init_task_preempt_count(p);
-#ifdef CONFIG_SMP
-  plist_node_init(&p->pushable_tasks, MAX_PRIO);
-  RB_CLEAR_NODE(&p->pushable_dl_tasks);
-#endif
-  return 0;
-}
-
-/* copy_process -> sched_fork -> sched_class->task_fork -> */
-void task_fork_fair(struct task_struct *p)
-{
-  struct cfs_rq *cfs_rq;
-  struct sched_entity *se = &p->se, *curr;
-  struct rq *rq = this_rq();
-  struct rq_flags rf;
-
-  rq_lock(rq, &rf);
-  update_rq_clock(rq);
-
-  cfs_rq = task_cfs_rq(current);
-  curr = cfs_rq->curr;
-  if (curr) {
-    update_curr(cfs_rq);
-    se->vruntime = curr->vruntime; /* child has same vruntime as parent */
-  }
-  place_entity(cfs_rq, se, 1);
-
-  if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-    /* Upon rescheduling, sched_class::put_prev_task() will place
-     * 'current' within the tree based on its new key value. */
-    swap(curr->vruntime, se->vruntime);
-    resched_curr(rq);
-  }
-
-  se->vruntime -= cfs_rq->min_vruntime;
-  rq_unlock(rq, &rf);
-}
-
 void wake_up_new_task(struct task_struct *p)
 {
   struct rq_flags rf;
@@ -3396,7 +3446,10 @@ void wake_up_new_task(struct task_struct *p)
   trace_sched_wakeup_new(p);
   check_preempt_curr(rq, p, WF_FORK);
 }
+```
 
+### dup_task_struct
+```c++
 struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 {
   struct task_struct *tsk;
@@ -3533,6 +3586,107 @@ static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
 }
 ```
 
+### sched_fork
+```c++
+int sched_fork(unsigned long clone_flags, struct task_struct *p)
+{
+  unsigned long flags;
+
+  __sched_fork(clone_flags, p);
+  /* We mark the process as NEW here. This guarantees that
+   * nobody will actually run it, and a signal or other external
+   * event cannot wake it up and insert it on the runqueue either. */
+  p->state = TASK_NEW;
+
+  /* Make sure we do not leak PI boosting priority to the child. */
+  p->prio = current->normal_prio;
+
+  /* Revert to default priority/policy on fork if requested. */
+  if (unlikely(p->sched_reset_on_fork)) {
+    if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+      p->policy = SCHED_NORMAL;
+      p->static_prio = NICE_TO_PRIO(0);
+      p->rt_priority = 0;
+    } else if (PRIO_TO_NICE(p->static_prio) < 0)
+      p->static_prio = NICE_TO_PRIO(0);
+
+    p->prio = p->normal_prio = __normal_prio(p);
+    set_load_weight(p, false);
+
+    /* We don't need the reset flag anymore after the fork. It has
+     * fulfilled its duty: */
+    p->sched_reset_on_fork = 0;
+  }
+
+  if (dl_prio(p->prio))
+    return -EAGAIN;
+  else if (rt_prio(p->prio))
+    p->sched_class = &rt_sched_class;
+  else
+    p->sched_class = &fair_sched_class;
+
+  init_entity_runnable_average(&p->se);
+
+  /* The child is not yet in the pid-hash so no cgroup attach races,
+   * and the cgroup is pinned to this child due to cgroup_fork()
+   * is ran before sched_fork().
+   *
+   * Silence PROVE_RCU. */
+  raw_spin_lock_irqsave(&p->pi_lock, flags);
+  rseq_migrate(p);
+  /* We're setting the CPU for the first time, we don't migrate,
+   * so use __set_task_cpu(). */
+  __set_task_cpu(p, smp_processor_id());
+  if (p->sched_class->task_fork)
+    p->sched_class->task_fork(p);
+  raw_spin_unlock_irqrestore(&p->pi_lock, flags);
+
+#ifdef CONFIG_SCHED_INFO
+  if (likely(sched_info_on()))
+    memset(&p->sched_info, 0, sizeof(p->sched_info));
+#endif
+#if defined(CONFIG_SMP)
+  p->on_cpu = 0;
+#endif
+  init_task_preempt_count(p);
+#ifdef CONFIG_SMP
+  plist_node_init(&p->pushable_tasks, MAX_PRIO);
+  RB_CLEAR_NODE(&p->pushable_dl_tasks);
+#endif
+  return 0;
+}
+
+/* copy_process -> sched_fork -> sched_class->task_fork -> */
+void task_fork_fair(struct task_struct *p)
+{
+  struct cfs_rq *cfs_rq;
+  struct sched_entity *se = &p->se, *curr;
+  struct rq *rq = this_rq();
+  struct rq_flags rf;
+
+  rq_lock(rq, &rf);
+  update_rq_clock(rq);
+
+  cfs_rq = task_cfs_rq(current);
+  curr = cfs_rq->curr;
+  if (curr) {
+    update_curr(cfs_rq);
+    se->vruntime = curr->vruntime; /* child has same vruntime as parent */
+  }
+  place_entity(cfs_rq, se, 1);
+
+  if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+    /* Upon rescheduling, sched_class::put_prev_task() will place
+     * 'current' within the tree based on its new key value. */
+    swap(curr->vruntime, se->vruntime);
+    resched_curr(rq);
+  }
+
+  se->vruntime -= cfs_rq->min_vruntime;
+  rq_unlock(rq, &rf);
+}
+```
+
 ### copy_thread_tls
 
 ```c++
@@ -3640,7 +3794,7 @@ out:
 A program gets into this function by simply return from __switch_to().
 
 ```c++
-/* linux-4.19.y/arch/x86/entry/entry_64.S
+/* arch/x86/entry/entry_64.S
  * A newly forked process directly context switches into this address.
  *
  * rax: prev task we switched from
@@ -3683,14 +3837,35 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
 1:
 #endif
   POP_REGS pop_rdi=0
+  /*
+  .macro POP_REGS pop_rdi=1
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbp
+    popq %rbx
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rax
+    popq %rcx
+    popq %rdx
+    popq %rsi
+    .if \pop_rdi
+      popq %rdi
+    .endif
+  .endm */
 
   /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
    * Save old stack pointer and switch to trampoline stack. */
   movq  %rsp, %rdi
+  /* load_sp0(task_top_of_stack(task)) */
   movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
   UNWIND_HINT_EMPTY
 
-  /* Copy the IRET frame to the trampoline stack. */
+  /* Copy the IRET frame from kernel stack to the user trampoline stack */
   pushq  6*8(%rdi)  /* SS */
   pushq  5*8(%rdi)  /* RSP */
   pushq  4*8(%rdi)  /* EFLAGS */
@@ -3711,16 +3886,16 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
   INTERRUPT_RETURN
 ```
 
-![](../Images/Kernel/proc-fork-frame.png)
-
 ```c++
 do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
     copy_process();
-        task_struct* p = dup_task_struct(current, node);
-            stack = alloc_thread_stack_node();
-            p->stack = stack;
+        task_struct* tsk = dup_task_struct(current, node);
+            /* alloc a new kernel stack */
+            tsk->stack = alloc_thread_stack_node();
+            tsk->stack_vm_area = task_stack_vm_area(tsk);
 
         sched_fork();
+            p->sched_class = &fair_sched_class;
             p->sched_class->task_fork(p);
                 task_fork_fair();
                     se->vruntime = curr->vruntime;
@@ -3766,9 +3941,6 @@ do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
 ret_from_fork /* process stack_start */
     --->
 ```
-![](../Images/Kernel/fork.png)
-
-![](../Images/Kernel/proc-fork-pthread-create.png)
 
 ## exec
 ```c++
@@ -3898,91 +4070,115 @@ int do_execve(struct filename *filename,
   return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
 }
 
-static int do_execveat_common(
-  int fd, struct filename *filename,
-  struct user_arg_ptr argv,
-  struct user_arg_ptr envp, int flags)
+int do_execveat_common(int fd, struct filename *filename,
+            struct user_arg_ptr argv,
+            struct user_arg_ptr envp,
+            int flags)
 {
-  return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}
-
-static int __do_execve_file(
-  int fd, struct filename *filename,
-  struct user_arg_ptr argv,
-  struct user_arg_ptr envp,
-  int flags, struct file *file)
-{
-  char *pathbuf = NULL;
   struct linux_binprm *bprm;
-  struct files_struct *displaced;
   int retval;
 
-  retval = -ENOMEM;
-  bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
-  retval = prepare_bprm_creds(bprm);
+  if (IS_ERR(filename))
+    return PTR_ERR(filename);
 
-  if (!file)
-    file = do_open_execat(fd, filename, flags);
+  /*
+   * We move the actual failure in case of RLIMIT_NPROC excess from
+   * set*uid() to execve() because too many poorly written programs
+   * don't check setuid() return code.  Here we additionally recheck
+   * whether NPROC limit is still exceeded.
+   */
+  if ((current->flags & PF_NPROC_EXCEEDED) &&
+      is_ucounts_overlimit(current_ucounts(), UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC))) {
+    retval = -EAGAIN;
+    goto out_ret;
+  }
 
-  /* execve() is a valuable balancing opportunity, because at
-   * this point the task has the smallest effective memory and cache footprint. */
-  sched_exec();
+  /* We're below the limit (still or again), so we don't want to make
+   * further execve() calls fail. */
+  current->flags &= ~PF_NPROC_EXCEEDED;
 
-  bprm->file = file;
-  if (!filename) {
-    bprm->filename = "none";
-  } else if (fd == AT_FDCWD || filename->name[0] == '/') {
+  bprm = alloc_bprm(fd, filename);
+  if (IS_ERR(bprm)) {
+    retval = PTR_ERR(bprm);
+    goto out_ret;
+  }
+
+  retval = count(argv, MAX_ARG_STRINGS);
+
+  bprm->argc = retval;
+
+  retval = count(envp, MAX_ARG_STRINGS);
+
+  bprm->envc = retval;
+
+  retval = bprm_stack_limits(bprm);
+  if (retval < 0)
+    goto out_free;
+
+  retval = copy_string_kernel(bprm->filename, bprm);
+
+  bprm->exec = bprm->p;
+
+  retval = copy_strings(bprm->envc, envp, bprm);
+
+
+  retval = copy_strings(bprm->argc, argv, bprm);
+
+  /*
+   * When argv is empty, add an empty string ("") as argv[0] to
+   * ensure confused userspace programs that start processing
+   * from argv[1] won't end up walking envp. See also
+   * bprm_stack_limits().
+   */
+  if (bprm->argc == 0) {
+    retval = copy_string_kernel("", bprm);
+    if (retval < 0)
+      goto out_free;
+    bprm->argc = 1;
+  }
+
+  retval = bprm_execve(bprm, fd, filename, flags);
+out_free:
+  free_bprm(bprm);
+
+out_ret:
+  putname(filename);
+  return retval;
+}
+
+struct linux_binprm *alloc_bprm(int fd, struct filename *filename)
+{
+  struct linux_binprm *bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
+  int retval = -ENOMEM;
+  if (!bprm)
+    goto out;
+
+  if (fd == AT_FDCWD || filename->name[0] == '/') {
     bprm->filename = filename->name;
   } else {
     if (filename->name[0] == '\0')
-      pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
+      bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
     else
-      pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s", fd, filename->name);
-    if (close_on_exec(fd, rcu_dereference_raw(current->files->fdt)))
-      bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+      bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s",
+              fd, filename->name);
+    if (!bprm->fdpath)
+      goto out_free;
 
-    bprm->filename = pathbuf;
+    bprm->filename = bprm->fdpath;
   }
-
   bprm->interp = bprm->filename;
 
-  /* Create a new mm_struct and populate it with a temporary stack
-   * vm_area_struct, update it later in setup_arg_pages() */
-  bprm_mm_init(bprm);
+  retval = bprm_mm_init(bprm);
+  if (retval)
+    goto out_free;
+  return bprm;
 
-  bprm->argc = count(argv, MAX_ARG_STRINGS);
-  bprm->envc = count(envp, MAX_ARG_STRINGS);
-
-  /* Fill the binprm structure from the inode.
-   * Check permissions, then read the first 128 (BINPRM_BUF_SIZE) bytes */
-  prepare_binprm(bprm);
-
-  retval = copy_strings_kernel(1, &bprm->filename, bprm);
-  bprm->exec = bprm->p;
-  retval = copy_strings(bprm->envc, envp, bprm);
-  retval = copy_strings(bprm->argc, argv, bprm);
-
-  retval = exec_binprm(bprm);
-
-  /* execve succeeded */
-  current->fs->in_exec = 0;
-  current->in_execve = 0;
-  membarrier_execve(current);
-  rseq_execve(current);
-  acct_update_integrals(current);
-  task_numa_free(current, false);
+out_free:
   free_bprm(bprm);
-  kfree(pathbuf);
-  if (filename)
-    putname(filename);
-  if (displaced)
-    put_files_struct(displaced);
-
-  return retval;
+out:
+  return ERR_PTR(retval);
 }
-```
 
-```c++
 int bprm_mm_init(struct linux_binprm *bprm)
 {
   int err;
@@ -4013,28 +4209,208 @@ err:
   return err;
 }
 
-int __bprm_mm_init(struct linux_binprm *bprm)
+ int __bprm_mm_init(struct linux_binprm *bprm)
 {
   int err;
   struct vm_area_struct *vma = NULL;
   struct mm_struct *mm = bprm->mm;
 
   bprm->vma = vma = vm_area_alloc(mm);
-
+  if (!vma)
+    return -ENOMEM;
   vma_set_anonymous(vma);
 
+  if (mmap_write_lock_killable(mm)) {
+    err = -EINTR;
+    goto err_free;
+  }
+
+  /*
+   * Place the stack at the largest stack address the architecture
+   * supports. Later, we'll move this to an appropriate place. We don't
+   * use STACK_TOP because that can depend on attributes which aren't
+   * configured yet.
+   */
+  BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
   vma->vm_end = STACK_TOP_MAX;
   vma->vm_start = vma->vm_end - PAGE_SIZE;
   vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
   vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
   err = insert_vm_struct(mm, vma);
+  if (err)
+    goto err;
 
   mm->stack_vm = mm->total_vm = 1;
-  arch_bprm_mm_init(mm, vma);
-  up_write(&mm->mmap_sem);
+  mmap_write_unlock(mm);
   bprm->p = vma->vm_end - sizeof(void *);
   return 0;
+err:
+  mmap_write_unlock(mm);
+err_free:
+  bprm->vma = NULL;
+  vm_area_free(vma);
+  return err;
+}
+
+int bprm_execve(struct linux_binprm *bprm,
+           int fd, struct filename *filename, int flags)
+{
+  struct file *file;
+  int retval;
+
+  retval = prepare_bprm_creds(bprm);
+  if (retval)
+    return retval;
+
+  check_unsafe_exec(bprm);
+  current->in_execve = 1;
+
+  file = do_open_execat(fd, filename, flags);
+  retval = PTR_ERR(file);
+  if (IS_ERR(file))
+    goto out_unmark;
+
+  sched_exec();
+
+  bprm->file = file;
+  /*
+   * Record that a name derived from an O_CLOEXEC fd will be
+   * inaccessible after exec.  This allows the code in exec to
+   * choose to fail when the executable is not mmaped into the
+   * interpreter and an open file descriptor is not passed to
+   * the interpreter.  This makes for a better user experience
+   * than having the interpreter start and then immediately fail
+   * when it finds the executable is inaccessible.
+   */
+  if (bprm->fdpath && get_close_on_exec(fd))
+    bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+
+  /* Set the unchanging part of bprm->cred */
+  retval = security_bprm_creds_for_exec(bprm);
+  if (retval)
+    goto out;
+
+  retval = exec_binprm(bprm);
+  if (retval < 0)
+    goto out;
+
+  /* execve succeeded */
+  current->fs->in_exec = 0;
+  current->in_execve = 0;
+  rseq_execve(current);
+  acct_update_integrals(current);
+  task_numa_free(current, false);
+  return retval;
+
+out:
+  /*
+   * If past the point of no return ensure the code never
+   * returns to the userspace process.  Use an existing fatal
+   * signal if present otherwise terminate the process with
+   * SIGSEGV.
+   */
+  if (bprm->point_of_no_return && !fatal_signal_pending(current))
+    force_fatal_sig(SIGSEGV);
+
+out_unmark:
+  current->fs->in_exec = 0;
+  current->in_execve = 0;
+
+  return retval;
+}
+```
+
+```c++
+int exec_binprm(struct linux_binprm *bprm)
+{
+	pid_t old_pid, old_vpid;
+	int ret, depth;
+
+	/* Need to fetch pid before load_binary changes it */
+	old_pid = current->pid;
+	rcu_read_lock();
+	old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
+	rcu_read_unlock();
+
+	/* This allows 4 levels of binfmt rewrites before failing hard. */
+	for (depth = 0;; depth++) {
+		struct file *exec;
+		if (depth > 5)
+			return -ELOOP;
+
+		ret = search_binary_handler(bprm);
+		if (ret < 0)
+			return ret;
+		if (!bprm->interpreter)
+			break;
+
+		exec = bprm->file;
+		bprm->file = bprm->interpreter;
+		bprm->interpreter = NULL;
+
+		allow_write_access(exec);
+		if (unlikely(bprm->have_execfd)) {
+			if (bprm->executable) {
+				fput(exec);
+				return -ENOEXEC;
+			}
+			bprm->executable = exec;
+		} else
+			fput(exec);
+	}
+
+	audit_bprm(bprm);
+	trace_sched_process_exec(current, old_pid, bprm);
+	ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
+	proc_exec_connector(current);
+	return 0;
+}
+
+int search_binary_handler(struct linux_binprm *bprm)
+{
+  bool need_retry = IS_ENABLED(CONFIG_MODULES);
+  struct linux_binfmt *fmt;
+  int retval;
+
+  retval = prepare_binprm(bprm);
+  if (retval < 0)
+    return retval;
+
+  retval = security_bprm_check(bprm);
+  if (retval)
+    return retval;
+
+  retval = -ENOENT;
+ retry:
+  read_lock(&binfmt_lock);
+  list_for_each_entry(fmt, &formats, lh) {
+    if (!try_module_get(fmt->module))
+      continue;
+    read_unlock(&binfmt_lock);
+
+    retval = fmt->load_binary(bprm);
+
+    read_lock(&binfmt_lock);
+    put_binfmt(fmt);
+    if (bprm->point_of_no_return || (retval != -ENOEXEC)) {
+      read_unlock(&binfmt_lock);
+      return retval;
+    }
+  }
+  read_unlock(&binfmt_lock);
+
+  if (need_retry) {
+    if (printable(bprm->buf[0]) && printable(bprm->buf[1]) &&
+        printable(bprm->buf[2]) && printable(bprm->buf[3]))
+      return retval;
+    if (request_module("binfmt-%04x", *(ushort *)(bprm->buf + 2)) < 0)
+      return retval;
+    need_retry = false;
+    goto retry;
+  }
+
+  return retval;
 }
 
 /* Fill the binprm structure from the inode.
@@ -4043,16 +4419,7 @@ int __bprm_mm_init(struct linux_binprm *bprm)
  * This may be called multiple times for binary chains (scripts for example). */
 int prepare_binprm(struct linux_binprm *bprm)
 {
-  int retval;
   loff_t pos = 0;
-
-  bprm_fill_uid(bprm);
-
-  /* fill in binprm security blob */
-  retval = security_bprm_set_creds(bprm);
-  if (retval)
-    return retval;
-  bprm->called_set_creds = 1;
 
   memset(bprm->buf, 0, BINPRM_BUF_SIZE);
   return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
@@ -4070,52 +4437,6 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
   set_fs(old_fs);
   return result;
 }
-```
-
-```c++
-static int exec_binprm(struct linux_binprm *bprm)
-{
-  pid_t old_pid, old_vpid;
-  int ret;
-
-  /* Need to fetch pid before load_binary changes it */
-  old_pid = current->pid;
-  rcu_read_lock();
-  old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
-  rcu_read_unlock();
-
-  ret = search_binary_handler(bprm);
-  if (ret >= 0) {
-    audit_bprm(bprm);
-    trace_sched_process_exec(current, old_pid, bprm);
-    ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
-    proc_exec_connector(current);
-  }
-
-  return ret;
-}
-
-int search_binary_handler(struct linux_binprm *bprm)
-{
-  bool need_retry = IS_ENABLED(CONFIG_MODULES);
-  struct linux_binfmt *fmt;
-  int retval;
-  retval = -ENOENT;
-
- retry:
-  read_lock(&binfmt_lock);
-  list_for_each_entry(fmt, &formats, lh) {
-    if (!try_module_get(fmt->module))
-      continue;
-    read_unlock(&binfmt_lock);
-    retval = fmt->load_binary(bprm);
-    if (retval < 0 && !bprm->mm)
-      return retval;
-  }
-  read_unlock(&binfmt_lock);
-
-  return retval;
-}
 
 static struct linux_binfmt elf_format = {
   .module       = THIS_MODULE,
@@ -4128,89 +4449,111 @@ static struct linux_binfmt elf_format = {
 int load_elf_binary(struct linux_binprm *bprm)
 {
   struct file *interpreter = NULL; /* to shut gcc up */
-  unsigned long load_addr = 0, load_bias = 0;
-  int load_addr_set = 0;
-  char * elf_interpreter = NULL;
+  unsigned long load_bias = 0, phdr_addr = 0;
+  int first_pt_load = 1;
   unsigned long error;
   struct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;
+  struct elf_phdr *elf_property_phdata = NULL;
   unsigned long elf_bss, elf_brk;
   int bss_prot = 0;
   int retval, i;
   unsigned long elf_entry;
+  unsigned long e_entry;
   unsigned long interp_load_addr = 0;
   unsigned long start_code, end_code, start_data, end_data;
   unsigned long reloc_func_desc __maybe_unused = 0;
   int executable_stack = EXSTACK_DEFAULT;
-  struct pt_regs *regs = current_pt_regs();
-
-  struct {
-    struct elfhdr elf_ex;
-    struct elfhdr interp_elf_ex;
-  } *loc;
+  struct elfhdr *elf_ex = (struct elfhdr *)bprm->buf;
+  struct elfhdr *interp_elf_ex = NULL;
   struct arch_elf_state arch_state = INIT_ARCH_ELF_STATE;
-  loff_t pos;
+  struct mm_struct *mm;
+  struct pt_regs *regs;
 
-  loc = kmalloc(sizeof(*loc), GFP_KERNEL);
-
-  /* Get the exec-header */
-  loc->elf_ex = *((struct elfhdr *)bprm->buf);
-
+  retval = -ENOEXEC;
   /* First of all, some simple consistency checks */
-  if (memcmp(loc->elf_ex.e_ident, ELFMAG, SELFMAG) != 0)
+  if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
     goto out;
-  if (loc->elf_ex.e_type != ET_EXEC && loc->elf_ex.e_type != ET_DYN)
+
+  if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
     goto out;
-  if (!elf_check_arch(&loc->elf_ex))
+  if (!elf_check_arch(elf_ex))
     goto out;
-  if (elf_check_fdpic(&loc->elf_ex))
+  if (elf_check_fdpic(elf_ex))
     goto out;
   if (!bprm->file->f_op->mmap)
     goto out;
 
-  elf_phdata = load_elf_phdrs(&loc->elf_ex, bprm->file);
+  elf_phdata = load_elf_phdrs(elf_ex, bprm->file);
+  if (!elf_phdata)
+    goto out;
 
   elf_ppnt = elf_phdata;
-  elf_bss = 0;
-  elf_brk = 0;
+  for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
+    char *elf_interpreter;
 
-  start_code = ~0UL;
-  end_code = 0;
-  start_data = 0;
-  end_data = 0;
-
-  /* 1. find and open interpreter elf */
-  for (i = 0; i < loc->elf_ex.e_phnum; i++) {
-    if (elf_ppnt->p_type == PT_INTERP) {
-      if (elf_ppnt->p_filesz > PATH_MAX || elf_ppnt->p_filesz < 2)
-        goto out_free_ph;
-
-      elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
-
-      pos = elf_ppnt->p_offset;
-      retval = kernel_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz, &pos);
-
-      /* make sure path is NULL terminated */
-      if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
-        goto out_free_interp;
-
-      interpreter = open_exec(elf_interpreter);
-      retval = PTR_ERR(interpreter);
-      if (IS_ERR(interpreter))
-        goto out_free_interp;
-
-      would_dump(bprm, interpreter);
-
-      /* Get the exec headers */
-      pos = 0;
-      retval = kernel_read(interpreter, &loc->interp_elf_ex, sizeof(loc->interp_elf_ex), &pos);
-
-      break;
+    if (elf_ppnt->p_type == PT_GNU_PROPERTY) {
+      elf_property_phdata = elf_ppnt;
+      continue;
     }
-    elf_ppnt++;
+
+    if (elf_ppnt->p_type != PT_INTERP)
+      continue;
+
+    /*
+     * This is the program interpreter used for shared libraries -
+     * for now assume that this is an a.out format binary.
+     */
+    retval = -ENOEXEC;
+    if (elf_ppnt->p_filesz > PATH_MAX || elf_ppnt->p_filesz < 2)
+      goto out_free_ph;
+
+    retval = -ENOMEM;
+    elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
+    if (!elf_interpreter)
+      goto out_free_ph;
+
+    retval = elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz,
+          elf_ppnt->p_offset);
+    if (retval < 0)
+      goto out_free_interp;
+    /* make sure path is NULL terminated */
+    retval = -ENOEXEC;
+    if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
+      goto out_free_interp;
+
+    interpreter = open_exec(elf_interpreter);
+    kfree(elf_interpreter);
+    retval = PTR_ERR(interpreter);
+    if (IS_ERR(interpreter))
+      goto out_free_ph;
+
+    /*
+     * If the binary is not readable then enforce mm->dumpable = 0
+     * regardless of the interpreter's permissions.
+     */
+    would_dump(bprm, interpreter);
+
+    interp_elf_ex = kmalloc(sizeof(*interp_elf_ex), GFP_KERNEL);
+    if (!interp_elf_ex) {
+      retval = -ENOMEM;
+      goto out_free_ph;
+    }
+
+    /* Get the exec headers */
+    retval = elf_read(interpreter, interp_elf_ex,
+          sizeof(*interp_elf_ex), 0);
+    if (retval < 0)
+      goto out_free_dentry;
+
+    break;
+
+out_free_interp:
+    kfree(elf_interpreter);
+    goto out_free_ph;
   }
 
   elf_ppnt = elf_phdata;
-  for (i = 0; i < loc->elf_ex.e_phnum; i++, elf_ppnt++)
+  for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++)
     switch (elf_ppnt->p_type) {
     case PT_GNU_STACK:
       if (elf_ppnt->p_flags & PF_X)
@@ -4220,7 +4563,7 @@ int load_elf_binary(struct linux_binprm *bprm)
       break;
 
     case PT_LOPROC ... PT_HIPROC:
-      retval = arch_elf_pt_proc(&loc->elf_ex, elf_ppnt,
+      retval = arch_elf_pt_proc(elf_ex, elf_ppnt,
               bprm->file, false,
               &arch_state);
       if (retval)
@@ -4229,24 +4572,33 @@ int load_elf_binary(struct linux_binprm *bprm)
     }
 
   /* Some simple consistency checks for the interpreter */
-  if (elf_interpreter) {
+  if (interpreter) {
     retval = -ELIBBAD;
     /* Not an ELF interpreter */
-    if (memcmp(loc->interp_elf_ex.e_ident, ELFMAG, SELFMAG) != 0)
+    if (memcmp(interp_elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
       goto out_free_dentry;
     /* Verify the interpreter has a valid arch */
-    if (!elf_check_arch(&loc->interp_elf_ex) || elf_check_fdpic(&loc->interp_elf_ex))
+    if (!elf_check_arch(interp_elf_ex) ||
+        elf_check_fdpic(interp_elf_ex))
       goto out_free_dentry;
 
     /* Load the interpreter program headers */
-    interp_elf_phdata = load_elf_phdrs(&loc->interp_elf_ex, interpreter);
+    interp_elf_phdata = load_elf_phdrs(interp_elf_ex,
+               interpreter);
+    if (!interp_elf_phdata)
+      goto out_free_dentry;
 
     /* Pass PT_LOPROC..PT_HIPROC headers to arch code */
+    elf_property_phdata = NULL;
     elf_ppnt = interp_elf_phdata;
-    for (i = 0; i < loc->interp_elf_ex.e_phnum; i++, elf_ppnt++)
+    for (i = 0; i < interp_elf_ex->e_phnum; i++, elf_ppnt++)
       switch (elf_ppnt->p_type) {
+      case PT_GNU_PROPERTY:
+        elf_property_phdata = elf_ppnt;
+        break;
+
       case PT_LOPROC ... PT_HIPROC:
-        retval = arch_elf_pt_proc(&loc->interp_elf_ex,
+        retval = arch_elf_pt_proc(interp_elf_ex,
                 elf_ppnt, interpreter,
                 true, &arch_state);
         if (retval)
@@ -4255,38 +4607,61 @@ int load_elf_binary(struct linux_binprm *bprm)
       }
   }
 
-  retval = arch_check_elf(&loc->elf_ex,
-        !!interpreter, &loc->interp_elf_ex,
+  retval = parse_elf_properties(interpreter ?: bprm->file,
+              elf_property_phdata, &arch_state);
+  if (retval)
+    goto out_free_dentry;
+
+  /*
+   * Allow arch code to reject the ELF at this point, whilst it's
+   * still possible to return an error to the code that invoked
+   * the exec syscall.
+   */
+  retval = arch_check_elf(elf_ex,
+        !!interpreter, interp_elf_ex,
         &arch_state);
+  if (retval)
+    goto out_free_dentry;
 
   /* Flush all traces of the currently running executable */
-  retval = flush_old_exec(bprm);
+  retval = begin_new_exec(bprm);
   if (retval)
     goto out_free_dentry;
 
   /* Do this immediately, since STACK_TOP as used in setup_arg_pages
      may depend on the personality.  */
-  SET_PERSONALITY2(loc->elf_ex, &arch_state);
-  if (elf_read_implies_exec(loc->elf_ex, executable_stack))
+  SET_PERSONALITY2(*elf_ex, &arch_state);
+  if (elf_read_implies_exec(*elf_ex, executable_stack))
     current->personality |= READ_IMPLIES_EXEC;
 
   if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
     current->flags |= PF_RANDOMIZE;
 
   setup_new_exec(bprm);
-  install_exec_creds(bprm);
 
-  /* set stack vm_area_struct */
-  retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack);
+  /* Do this so that we can load the interpreter, if need be.  We will
+     change some of these later */
+  retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
+         executable_stack);
+  if (retval < 0)
+    goto out_free_dentry;
 
-  current->mm->start_stack = bprm->p;
+  elf_bss = 0;
+  elf_brk = 0;
+
+  start_code = ~0UL;
+  end_code = 0;
+  start_data = 0;
+  end_data = 0;
 
   /* Now we do a little grungy work by mmapping the ELF image into
      the correct location in memory. */
-  for (i = 0, elf_ppnt = elf_phdata; i < loc->elf_ex.e_phnum; i++, elf_ppnt++) {
-    int elf_prot = 0, elf_flags, elf_fixed = MAP_FIXED_NOREPLACE;
+  for(i = 0, elf_ppnt = elf_phdata;
+      i < elf_ex->e_phnum; i++, elf_ppnt++) {
+    int elf_prot, elf_flags;
     unsigned long k, vaddr;
     unsigned long total_size = 0;
+    unsigned long alignment;
 
     if (elf_ppnt->p_type != PT_LOAD)
       continue;
@@ -4300,74 +4675,160 @@ int load_elf_binary(struct linux_binprm *bprm)
       retval = set_brk(elf_bss + load_bias,
            elf_brk + load_bias,
            bss_prot);
-
+      if (retval)
+        goto out_free_dentry;
       nbyte = ELF_PAGEOFFSET(elf_bss);
       if (nbyte) {
         nbyte = ELF_MIN_ALIGN - nbyte;
         if (nbyte > elf_brk - elf_bss)
           nbyte = elf_brk - elf_bss;
-        if (clear_user((void __user *)elf_bss + load_bias, nbyte)) {
-          /* This bss-zeroing can fail if the ELF
+        if (clear_user((void __user *)elf_bss +
+              load_bias, nbyte)) {
+          /*
+           * This bss-zeroing can fail if the ELF
            * file specifies odd protections. So
-           * we don't check the return value */
+           * we don't check the return value
+           */
         }
       }
-
-      elf_fixed = MAP_FIXED;
     }
 
-    if (elf_ppnt->p_flags & PF_R)
-      elf_prot |= PROT_READ;
-    if (elf_ppnt->p_flags & PF_W)
-      elf_prot |= PROT_WRITE;
-    if (elf_ppnt->p_flags & PF_X)
-      elf_prot |= PROT_EXEC;
+    elf_prot = make_prot(elf_ppnt->p_flags, &arch_state,
+             !!interpreter, false);
 
-    elf_flags = MAP_PRIVATE | MAP_DENYWRITE | MAP_EXECUTABLE;
+    elf_flags = MAP_PRIVATE;
 
     vaddr = elf_ppnt->p_vaddr;
-
-    if (loc->elf_ex.e_type == ET_EXEC || load_addr_set) {
-      elf_flags |= elf_fixed;
-    } else if (loc->elf_ex.e_type == ET_DYN) {
-      if (elf_interpreter) {
+    /*
+     * The first time through the loop, first_pt_load is true:
+     * layout will be calculated. Once set, use MAP_FIXED since
+     * we know we've already safely mapped the entire region with
+     * MAP_FIXED_NOREPLACE in the once-per-binary logic following.
+     */
+    if (!first_pt_load) {
+      elf_flags |= MAP_FIXED;
+    } else if (elf_ex->e_type == ET_EXEC) {
+      /*
+       * This logic is run once for the first LOAD Program
+       * Header for ET_EXEC binaries. No special handling
+       * is needed.
+       */
+      elf_flags |= MAP_FIXED_NOREPLACE;
+    } else if (elf_ex->e_type == ET_DYN) {
+      /*
+       * This logic is run once for the first LOAD Program
+       * Header for ET_DYN binaries to calculate the
+       * randomization (load_bias) for all the LOAD
+       * Program Headers.
+       *
+       * There are effectively two types of ET_DYN
+       * binaries: programs (i.e. PIE: ET_DYN with INTERP)
+       * and loaders (ET_DYN without INTERP, since they
+       * _are_ the ELF interpreter). The loaders must
+       * be loaded away from programs since the program
+       * may otherwise collide with the loader (especially
+       * for ET_EXEC which does not have a randomized
+       * position). For example to handle invocations of
+       * "./ld.so someprog" to test out a new version of
+       * the loader, the subsequent program that the
+       * loader loads must avoid the loader itself, so
+       * they cannot share the same load range. Sufficient
+       * room for the brk must be allocated with the
+       * loader as well, since brk must be available with
+       * the loader.
+       *
+       * Therefore, programs are loaded offset from
+       * ELF_ET_DYN_BASE and loaders are loaded into the
+       * independently randomized mmap region (0 load_bias
+       * without MAP_FIXED nor MAP_FIXED_NOREPLACE).
+       */
+      if (interpreter) {
         load_bias = ELF_ET_DYN_BASE;
         if (current->flags & PF_RANDOMIZE)
           load_bias += arch_mmap_rnd();
-        elf_flags |= elf_fixed;
+        alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
+        if (alignment)
+          load_bias &= ~(alignment - 1);
+        elf_flags |= MAP_FIXED_NOREPLACE;
       } else
         load_bias = 0;
 
+      /*
+       * Since load_bias is used for all subsequent loading
+       * calculations, we must lower it by the first vaddr
+       * so that the remaining calculations based on the
+       * ELF vaddrs will be correctly offset. The result
+       * is then page aligned.
+       */
       load_bias = ELF_PAGESTART(load_bias - vaddr);
 
-      total_size = total_mapping_size(elf_phdata, loc->elf_ex.e_phnum);
+      /*
+       * Calculate the entire size of the ELF mapping
+       * (total_size), used for the initial mapping,
+       * due to load_addr_set which is set to true later
+       * once the initial mapping is performed.
+       *
+       * Note that this is only sensible when the LOAD
+       * segments are contiguous (or overlapping). If
+       * used for LOADs that are far apart, this would
+       * cause the holes between LOADs to be mapped,
+       * running the risk of having the mapping fail,
+       * as it would be larger than the ELF file itself.
+       *
+       * As a result, only ET_DYN does this, since
+       * some ET_EXEC (e.g. ia64) may have large virtual
+       * memory holes between LOADs.
+       *
+       */
+      total_size = total_mapping_size(elf_phdata,
+              elf_ex->e_phnum);
+      if (!total_size) {
+        retval = -EINVAL;
+        goto out_free_dentry;
+      }
     }
 
     error = elf_map(bprm->file, load_bias + vaddr, elf_ppnt,
         elf_prot, elf_flags, total_size);
+    if (BAD_ADDR(error)) {
+      retval = IS_ERR((void *)error) ?
+        PTR_ERR((void*)error) : -EINVAL;
+      goto out_free_dentry;
+    }
 
-    if (!load_addr_set) {
-      load_addr_set = 1;
-      load_addr = (elf_ppnt->p_vaddr - elf_ppnt->p_offset);
-      if (loc->elf_ex.e_type == ET_DYN) {
-        load_bias += error - ELF_PAGESTART(load_bias + vaddr);
-        load_addr += load_bias;
+    if (first_pt_load) {
+      first_pt_load = 0;
+      if (elf_ex->e_type == ET_DYN) {
+        load_bias += error -
+                     ELF_PAGESTART(load_bias + vaddr);
         reloc_func_desc = load_bias;
       }
     }
+
+    /*
+     * Figure out which segment in the file contains the Program
+     * Header table, and map to the associated memory address.
+     */
+    if (elf_ppnt->p_offset <= elf_ex->e_phoff &&
+        elf_ex->e_phoff < elf_ppnt->p_offset + elf_ppnt->p_filesz) {
+      phdr_addr = elf_ex->e_phoff - elf_ppnt->p_offset +
+            elf_ppnt->p_vaddr;
+    }
+
     k = elf_ppnt->p_vaddr;
-    if (k < start_code)
+    if ((elf_ppnt->p_flags & PF_X) && k < start_code)
       start_code = k;
     if (start_data < k)
       start_data = k;
 
-    /* Check to see if the section's size will overflow the
+    /*
+     * Check to see if the section's size will overflow the
      * allowed task size. Note that p_filesz must always be
-     * <= p_memsz so it is only necessary to check p_memsz. */
+     * <= p_memsz so it is only necessary to check p_memsz.
+     */
     if (BAD_ADDR(k) || elf_ppnt->p_filesz > elf_ppnt->p_memsz ||
         elf_ppnt->p_memsz > TASK_SIZE ||
-        TASK_SIZE - elf_ppnt->p_memsz < k)
-    {
+        TASK_SIZE - elf_ppnt->p_memsz < k) {
       /* set_brk can never work. Avoid overflows. */
       retval = -EINVAL;
       goto out_free_dentry;
@@ -4386,9 +4847,10 @@ int load_elf_binary(struct linux_binprm *bprm)
       bss_prot = elf_prot;
       elf_brk = k;
     }
-  } /* for (i = 0, elf_ppnt = elf_phdata; i < loc->elf_ex.e_phnum; */
+  }
 
-  loc->elf_ex.e_entry += load_bias;
+  e_entry = elf_ex->e_entry + load_bias;
+  phdr_addr += load_bias;
   elf_bss += load_bias;
   elf_brk += load_bias;
   start_code += load_bias;
@@ -4396,43 +4858,92 @@ int load_elf_binary(struct linux_binprm *bprm)
   start_data += load_bias;
   end_data += load_bias;
 
+  /* Calling set_brk effectively mmaps the pages that we need
+   * for the bss and break sections.  We must do this before
+   * mapping in the interpreter, to make sure it doesn't wind
+   * up getting placed where the bss needs to go.
+   */
   retval = set_brk(elf_bss, elf_brk, bss_prot);
+  if (retval)
+    goto out_free_dentry;
+  if (likely(elf_bss != elf_brk) && unlikely(padzero(elf_bss))) {
+    retval = -EFAULT; /* Nobody gets to see this, but.. */
+    goto out_free_dentry;
+  }
 
-  if (elf_interpreter) {
-    unsigned long interp_map_addr = 0;
-
-    elf_entry = load_elf_interp(&loc->interp_elf_ex,
+  if (interpreter) {
+    elf_entry = load_elf_interp(interp_elf_ex,
               interpreter,
-              &interp_map_addr,
-              load_bias, interp_elf_phdata);
+              load_bias, interp_elf_phdata,
+              &arch_state);
     if (!IS_ERR((void *)elf_entry)) {
-      /* load_elf_interp() returns relocation adjustment */
+      /*
+       * load_elf_interp() returns relocation
+       * adjustment
+       */
       interp_load_addr = elf_entry;
-      elf_entry += loc->interp_elf_ex.e_entry;
+      elf_entry += interp_elf_ex->e_entry;
     }
-
+    if (BAD_ADDR(elf_entry)) {
+      retval = IS_ERR((void *)elf_entry) ?
+          (int)elf_entry : -EINVAL;
+      goto out_free_dentry;
+    }
     reloc_func_desc = interp_load_addr;
 
     allow_write_access(interpreter);
     fput(interpreter);
-    kfree(elf_interpreter);
+
+    kfree(interp_elf_ex);
+    kfree(interp_elf_phdata);
   } else {
-    elf_entry = loc->elf_ex.e_entry;
+    elf_entry = e_entry;
+    if (BAD_ADDR(elf_entry)) {
+      retval = -EINVAL;
+      goto out_free_dentry;
+    }
   }
 
-  kfree(interp_elf_phdata);
   kfree(elf_phdata);
 
   set_binfmt(&elf_format);
 
-  retval = create_elf_tables(bprm, &loc->elf_ex, load_addr, interp_load_addr);
+#ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES
+  retval = ARCH_SETUP_ADDITIONAL_PAGES(bprm, elf_ex, !!interpreter);
+  if (retval < 0)
+    goto out;
+#endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */
 
-  /* N.B. passed_fileno might not be initialized? */
-  current->mm->end_code = end_code;
-  current->mm->start_code = start_code;
-  current->mm->start_data = start_data;
-  current->mm->end_data = end_data;
-  current->mm->start_stack = bprm->p;
+  retval = create_elf_tables(bprm, elf_ex, interp_load_addr,
+           e_entry, phdr_addr);
+  if (retval < 0)
+    goto out;
+
+  mm = current->mm;
+  mm->end_code = end_code;
+  mm->start_code = start_code;
+  mm->start_data = start_data;
+  mm->end_data = end_data;
+  mm->start_stack = bprm->p;
+
+  if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {
+    /*
+     * For architectures with ELF randomization, when executing
+     * a loader directly (i.e. no interpreter listed in ELF
+     * headers), move the brk area out of the mmap region
+     * (since it grows up, and may collide early with the stack
+     * growing down), and into the unused ELF_ET_DYN_BASE region.
+     */
+    if (IS_ENABLED(CONFIG_ARCH_HAS_ELF_RANDOMIZE) &&
+        elf_ex->e_type == ET_DYN && !interpreter) {
+      mm->brk = mm->start_brk = ELF_ET_DYN_BASE;
+    }
+
+    mm->brk = mm->start_brk = arch_randomize_brk(mm);
+#ifdef compat_brk_randomized
+    current->brk_randomized = 1;
+#endif
+  }
 
   if (current->personality & MMAP_PAGE_ZERO) {
     /* Why this, you ask???  Well SVr4 maps page 0 as read-only,
@@ -4443,8 +4954,37 @@ int load_elf_binary(struct linux_binprm *bprm)
         MAP_FIXED | MAP_PRIVATE, 0);
   }
 
+  regs = current_pt_regs();
+#ifdef ELF_PLAT_INIT
+  /*
+   * The ABI may specify that certain registers be set up in special
+   * ways (on i386 %edx is the address of a DT_FINI function, for
+   * example.  In addition, it may also specify (eg, PowerPC64 ELF)
+   * that the e_entry field is the address of the function descriptor
+   * for the startup routine, rather than the address of the startup
+   * routine itself.  This macro performs whatever initialization to
+   * the regs structure is required as well as any relocations to the
+   * function descriptor entries when executing dynamically links apps.
+   */
+  ELF_PLAT_INIT(regs, reloc_func_desc);
+#endif
+
   finalize_exec(bprm);
-  start_thread(regs, elf_entry, bprm->p);
+  START_THREAD(elf_ex, regs, elf_entry, bprm->p);
+  retval = 0;
+out:
+  return retval;
+
+  /* error cleanup */
+out_free_dentry:
+  kfree(interp_elf_ex);
+  kfree(interp_elf_phdata);
+  allow_write_access(interpreter);
+  if (interpreter)
+    fput(interpreter);
+out_free_ph:
+  kfree(elf_phdata);
+  goto out;
 }
 
 void start_thread(
@@ -4637,77 +5177,149 @@ static int shift_arg_pages(struct vm_area_struct *vma, unsigned long shift)
 SYSCALL_DEFINE3(execve);
   do_execve();
     do_execveat_common();
-        __do_execve_file();
-            file = do_open_execat();
+        struct linux_binprm* bprm = alloc_bprm(fd, filename);
+            bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
+            bprm->filename = bprm->fdpath;
+            bprm->interp = bprm->filename;
 
             bprm_mm_init(bprm);
                 bprm->mm = mm = mm_alloc();
-
                 bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
-                bprm->vma = vma = vm_area_alloc(mm);
-                vma->vm_end = STACK_TOP_MAX;
-                vma->vm_start = vma->vm_end - PAGE_SIZE;
-                vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
-                vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
-                bprm->p = vma->vm_end - sizeof(void *);
 
-            prepare_binprm(bprm);
-                bprm_fill_uid();
-                kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+                __bprm_mm_init(bprm);
+                    bprm->vma = vma = vm_area_alloc(mm);
+                    vma->vm_end = STACK_TOP_MAX;
+                    vma->vm_start = vma->vm_end - PAGE_SIZE;
+                    vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+                    vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
-            copy_strings(bprm->envc, envp, bprm);
-            copy_strings(bprm->argc, argv, bprm);
+                    insert_vm_struct(mm, vma);
+
+                    mm->stack_vm = mm->total_vm = 1;
+                    bprm->p = vma->vm_end - sizeof(void *);
+
+        bprm_execve(bprm, fd, filename, flags);
+            file = do_open_execat(fd, filename, flags);
+
+            sched_exec();
+
+            bprm->file = file;
 
             exec_binprm(bprm);
-              search_binary_handler();
-                load_elf_binary();
-                    elf_phdata = load_elf_phdrs();
+                search_binary_handler(bprm);
+                    prepare_binprm(bprm);
+                        /* read the first 128 (BINPRM_BUF_SIZE) bytes */
+                        kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+                            vfs_read(file, (void __user *)buf, count, pos)
 
-                    elf_interpreter = kmalloc();
-                    interpreter = open_exec(elf_interpreter);
-                    interp_elf_phdata = load_elf_phdrs();
+                    list_for_each_entry(fmt, &formats, lh) {
+                        fmt->load_binary(bprm);
+                            load_elf_binary();
+                                /* consistency checks */
+                                if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
+                                    goto out;
+                                if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
+                                    goto out;
+                                if (!elf_check_arch(elf_ex))
+                                    goto out;
+                                if (elf_check_fdpic(elf_ex))
+                                    goto out;
+                                if (!bprm->file->f_op->mmap)
+                                    goto out;
 
-                    flush_old_exec();
-                      /* de_thread: create new signal table
-                       * do_close_on_exec */
+                                elf_ppnt = elf_phdata = load_elf_phdrs();
 
-                    setup_new_exec();
-                        arch_pick_mmap_layout();
-                            mm->get_unmapped_area = arch_get_unmapped_area;
-                                arch_pick_mmap_base(&mm->mmap_base);
-                                    mmap_base();
-                        current->mm->task_size = TASK_SIZE;
+                                /* find PT_INTERP header */
+                                for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
+                                    if (elf_ppnt->p_type != PT_INTERP)
+                                        continue;
+                                    /* read interprete name */
+                                    char* elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
+                                    elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz, elf_ppnt->p_offset);
+                                    /* open interpreter file */
+                                    interpreter = open_exec(elf_interpreter);
+                                    /* read interpreter elfhdr */
+                                    interp_elf_ex = kmalloc(sizeof(*interp_elf_ex), GFP_KERNEL);
+                                    elf_read(interpreter, interp_elf_ex, sizeof(*interp_elf_ex), 0);
+                                }
 
-                    setup_arg_pages();
-                        shift_arg_pages();
-                            vma_adjust(vma, new_start, old_end);
-                            move_page_tables();
-                            free_pgd_range();
-                            vma_adjust(vma, new_start, new_end);
-                        expand_stack();
-                    current->mm->start_stack = bprm->p;
+                                if (interpreter) {
+                                    /* Load the interpreter program headers */
+                                    interp_elf_phdata = load_elf_phdrs(interp_elf_ex, interpreter);
+                                }
 
-                    for (; i < loc->elf_ex.e_phnum; ) {
-                        elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+                                /* Flush all traces of the currently running executable */
+                                retval = begin_new_exec(bprm);
+
+                                setup_new_exec(bprm);
+                                    arch_pick_mmap_layout();
+                                        mm->get_unmapped_area = arch_get_unmapped_area;
+                                            arch_pick_mmap_base(&mm->mmap_base);
+                                                mmap_base();
+                                    arch_setup_new_exec();
+                                    current->mm->task_size = TASK_SIZE;
+
+                                /* Finalizes the stack vm_area_struct. */
+                                setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack);
+                                    shift_arg_pages();
+                                        vma_adjust(vma, new_start, old_end);
+                                        move_page_tables();
+                                        free_pgd_range();
+                                        vma_adjust(vma, new_start, new_end);
+                                    current->mm->start_stack = bprm->p;
+                                    expand_stack();
+
+                                elf_bss = 0;
+                                elf_brk = 0;
+                                start_code = ~0UL;
+                                end_code = 0;
+                                start_data = 0;
+                                end_data = 0;
+
+                                /* mmapping the ELF image into the correct location in memory. */
+                                for (i < loc->elf_ex.e_phnum) {
+                                    if (elf_ppnt->p_type != PT_LOAD)
+                                        continue;
+
+                                    vaddr = elf_ppnt->p_vaddr;
+                                    if (interpreter) {
+                                        load_bias = ELF_ET_DYN_BASE;
+                                    } else
+                                        load_bias = 0;
+
+                                    elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+                                }
+
+                                e_entry = elf_ex->e_entry + load_bias;
+                                phdr_addr += load_bias;
+                                elf_bss += load_bias;
+                                elf_brk += load_bias;
+                                start_code += load_bias;
+                                end_code += load_bias;
+                                start_data += load_bias;
+                                end_data += load_bias;
+
+                                set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
+
+                                if (elf_interpreter)
+                                    elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
+                                else
+                                    elf_entry = loc->elf_ex.e_entry;
+
+                                mm = current->mm;
+                                mm->end_code = end_code;
+                                mm->start_code = start_code;
+                                mm->start_data = start_data;
+                                mm->end_data = end_data;
+                                mm->start_stack = bprm->p;
+
+                                regs = current_pt_regs();
+                                start_thread(regs, elf_entry/* new_ip */, bprm->p/* new_sp */);
+                                    regs->ip = new_ip;
+                                    regs->sp = new_sp;
+                                    force_iret();
                     }
 
-                    set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
-
-                    if (elf_interpreter)
-                        elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
-                    else
-                        elf_entry = loc->elf_ex.e_entry;
-
-                    current->mm->start_code = start_code;
-                    current->mm->end_code = end_code;
-                    current->mm->start_data = start_data;
-                    current->mm->end_data = end_data;
-                    current->mm->start_stack = bprm->p;
-
-                    start_thread(regs, elf_entry/* new_ip */, bprm->p/* new_sp */);
-                        regs->ip = new_ip;
-                        regs->sp = new_sp;
-                        force_iret();
 ```
 
 ## kthreadd
@@ -4843,20 +5455,20 @@ kthread();
 
 ## cmwq
 
-![](../Images/Kernel/proc-cmwq.png)
+<img src='../Images/Kernel/proc-cmwq.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/proc-cmwq-flow.png)
+<img src='../Images/Kernel/proc-cmwq-flow.png' style='max-height:850px'/>
 
 * `nr_running`    `nr_active`    `max_active`    `CPU_INTENSIVE` control the concurrency
 ---
 
-![](../Images/Kernel/proc-cmwq-state.png)
+<img src='../Images/Kernel/proc-cmwq-state.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/proc-cmwq-arch.png)
+<img src='../Images/Kernel/proc-cmwq-arch.png' style='max-height:850px'/>
 
 * [Kernel 4.19: Concurrency Managed Workqueue (cmwq)](https://www.kernel.org/doc/html/v4.19/core-api/workqueue.html)
 * http://www.wowotech.net/irq_subsystem/cmwq-intro.html
@@ -6798,7 +7410,7 @@ struct pipe_buffer {
   unsigned long private;
 };
 ```
-![](../Images/Kernel/ipc-pipe-2.png)
+<img src='../Images/Kernel/ipc-pipe-2.png' style='max-height:850px'/>
 
 ## fifo
 ```c++
@@ -6951,7 +7563,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
   }
 }
 ```
-![](../Images/Kernel/ipc-fifo.png)
+<img src='../Images/Kernel/ipc-fifo.png' style='max-height:850px'/>
 
 ## signal
 ### resigter a sighand
@@ -7112,7 +7724,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
   return 0;
 }
 ```
-![](../Images/Kernel/ipc-signal-register-handler.png)
+<img src='../Images/Kernel/ipc-signal-register-handler.png' style='max-height:850px'/>
 
 ### send a signal
 ```c++
@@ -7386,7 +7998,7 @@ asmlinkage long sys_rt_sigreturn(void)
   return regs->ax;
 }
 ```
-![](../Images/Kernel/sig-handle.png)
+<img src='../Images/Kernel/sig-handle.png' style='max-height:850px'/>
 
 ## sem, shm, msg
 ```c++
@@ -7416,7 +8028,7 @@ struct idr {
   unsigned int    idr_next;
 };
 ```
-![](../Images/Kernel/ipc-ipc_ids.png)
+<img src='../Images/Kernel/ipc-ipc_ids.png' style='max-height:850px'/>
 ```c++
 struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 {
@@ -7955,7 +8567,7 @@ shm_fault();
       shmem_alloc_and_acct_page();
 ```
 
-![](../Images/Kernel/ipc-shm.png)
+<img src='../Images/Kernel/ipc-shm.png' style='max-height:850px'/>
 
 ### semget
 ```c++
@@ -8375,7 +8987,7 @@ struct sem_undo_list {
 };
 ```
 
-![](../Images/Kernel/ipc-sem-2.png)
+<img src='../Images/Kernel/ipc-sem-2.png' style='max-height:850px'/>
 
 ```c++
 semget();
@@ -8415,7 +9027,7 @@ semop();
     list_add_tail(&queue.list, &sma->pending_alter);
     schedule();
 ```
-![](../Images/Kernel/ipc-sem.png)
+<img src='../Images/Kernel/ipc-sem.png' style='max-height:850px'/>
 
 ## Q:
 1. How access shm by a vm address?
@@ -8423,7 +9035,7 @@ semop();
 # Virtualization
 
 # Containerization
-![](../Images/Kernel/container-vir-arch.png)
+<img src='../Images/Kernel/container-vir-arch.png' style='max-height:850px'/>
 
 ## ns
 ```c++
@@ -8604,7 +9216,7 @@ static __net_init int loopback_net_init(struct net *net)
   return 0;
 }
 ```
-![](../Images/Kernel/container-namespace.png)
+<img src='../Images/Kernel/container-namespace.png' style='max-height:850px'/>
 
 ## cgroup
 cgrup subsystem:
@@ -8722,7 +9334,7 @@ memory.kmem.usage_in_bytes          system.slice
 memory.limit_in_bytes               tasks
 memory.max_usage_in_bytes           user.slice
 ```
-![](../Images/Kernel/container-cgroup.png)
+<img src='../Images/Kernel/container-cgroup.png' style='max-height:850px'/>
 
 ```c++
 void __init start_kernel(void)
@@ -9428,7 +10040,7 @@ int mem_cgroup_try_charge(struct page *page, struct mm_struct *mm,
   ret = try_charge(memcg, gfp_mask, nr_pages);
 }
 ```
-![](../Images/Kernel/container-cgroup-arch.png)
+<img src='../Images/Kernel/container-cgroup-arch.png' style='max-height:850px'/>
 
 ## Q:
 1. What do `cgroup_roots` and `cgroup_dlt_root` for?
@@ -11385,19 +11997,19 @@ posix_timer_fn();
               try_to_wake_up();
 ```
 
-![](../Images/Kernel/time-timer.png)
+<img src='../Images/Kernel/time-timer.png' style='max-height:850px'/>
 
-![](../Images/Kernel/time-timer-arch.png)
+<img src='../Images/Kernel/time-timer-arch.png' style='max-height:850px'/>
 
-![](../Images/Kernel/time-tiemer-origin.png)
+<img src='../Images/Kernel/time-tiemer-origin.png' style='max-height:850px'/>
 
-![](../Images/Kernel/time-timer-hrtimer.png)
+<img src='../Images/Kernel/time-timer-hrtimer.png' style='max-height:850px'/>
 
-![](../Images/Kernel/time-timer-hrtimer-gtod.png)
+<img src='../Images/Kernel/time-timer-hrtimer-gtod.png' style='max-height:850px'/>
 
-![](../Images/Kernel/time-timer-hrtimer-gtod-clockevent.png)
+<img src='../Images/Kernel/time-timer-hrtimer-gtod-clockevent.png' style='max-height:850px'/>
 
-![](../Images/Kernel/time-timer-hrtimer-gtod-clockevent-tick-emulation.png)
+<img src='../Images/Kernel/time-timer-hrtimer-gtod-clockevent-tick-emulation.png' style='max-height:850px'/>
 
 ## Refence:
 [hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
@@ -11893,17 +12505,17 @@ long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 
 # interrupt
 
-![](../Images/Kernel/io-irq.png)
+<img src='../Images/Kernel/io-irq.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/io-interrupt-vector.png)
+<img src='../Images/Kernel/io-interrupt-vector.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/io-interrupt.png)
+<img src='../Images/Kernel/io-interrupt.png' style='max-height:850px'/>
 
-![](../Images/ULK/4.2-gate-descriptors.png)
+<img src='../Images/ULK/4.2-gate-descriptors.png' style='max-height:850px'/>
 
 
 How interrupt happens:
