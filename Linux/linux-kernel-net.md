@@ -128,12 +128,15 @@
 
 * [Linux Thundering Herd Problem :cn:](https://mp.weixin.qq.com/s/dQWKBujtPcazzw7zacP1lg)
 
-![](../Images/Kernel/kernel-structual.svg)
+<img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-socket-sock.png)
-![](../Images/Kernel/net-send-data-flow.png)
+<img src='../Images/Kernel/net-socket-sock.png' style='max-height:850px'/>
+
+---
+
+<img src='../Images/Kernel/net-send-data-flow.png' style='max-height:850px'/>
 
 ```C++
 struct socket_alloc {
@@ -1225,7 +1228,7 @@ int inet_hash(struct sock *sk)
   return err;
 }
 
-/* linux-4.19.y/net/ipv4/tcp_ipv4.c */
+/* net/ipv4/tcp_ipv4.c */
 struct inet_hashinfo tcp_hashinfo;
 
 int __inet_hash(struct sock *sk, struct sock *osk)
@@ -1316,7 +1319,7 @@ listen();
 ```
 
 # connect
-![](../Images/Kernel/net-hand-shake.png)
+<img src='../Images/Kernel/net-hand-shake.png' style='max-height:850px'/>
 
 ## send
 ```C++
@@ -3498,7 +3501,7 @@ __sys_shutdown();
 ```
 
 # sk_buff
-![](../Images/Kernel/net-sk_buf.png)
+<img src='../Images/Kernel/net-sk_buf.png' style='max-height:850px'/>
 
 ```C++
 struct sk_buff {
@@ -3884,11 +3887,11 @@ sk_stream_alloc_skb()
 
 # write
 
-![](../Images/Kernel/net-read-write-route-bridge.png)
+<img src='../Images/Kernel/net-read-write-route-bridge.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-write.png)
+<img src='../Images/Kernel/net-write.png'/>
 
 ## vfs layer tx
 ```C++
@@ -4818,7 +4821,7 @@ packet_routed:
 ```
 
 ### build ip header
-![](../Images/Kernel/net-ip-header.png)
+<img src='../Images/Kernel/net-ip-header.png' style='max-height:850px'/>
 
 ### send package
 ```C++
@@ -5522,9 +5525,9 @@ u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
 ```
 * [xps: Transmit Packet Steering](https://lwn.net/Articles/412062/)
 
-![](../Images/Kernel/net-queue-displine.png)
+<img src='../Images/Kernel/net-queue-displine.png' style='max-height:850px'/>
 
-![](../Images/Kernel/net-dev-pci.png)
+<img src='../Images/Kernel/net-dev-pci.png' style='max-height:850px'/>
 
 ```C++
 int __dev_xmit_skb(
@@ -5914,15 +5917,15 @@ ixgb_xmit_frame();
 
 # read
 
-![](../Images/Kernel/net-read-write-route-bridge.png)
+<img src='../Images/Kernel/net-read-write-route-bridge.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-read.png)
+<img src='../Images/Kernel/net-read.png'/>
 
 ## driver layer rx
 
-![](../Images/Kernel/net-dev-pci.png)
+<img src='../Images/Kernel/net-dev-pci.png' style='max-height:850px'/>
 
 NAPI Usage:
 1. embed `struct napi_struct` in the driver's private structure
@@ -5934,11 +5937,11 @@ NAPI Usage:
     * The poll() function must return the amount of work done.
     * If and only if the return value is less than the budget, your driver must reenable interrupts and turn off polling by `napi_complete`
 
-![](../Images/Kernel/net-rx_ring.png)
+<img src='../Images/Kernel/net-rx_ring.png' style='max-height:850px'/>
 
-![](../Images/Kernel/net-desc-ring-1.png)
+<img src='../Images/Kernel/net-desc-ring-1.png' style='max-height:850px'/>
 
-![](../Images/Kernel/net-desc-ring-2.png)
+<img src='../Images/Kernel/net-desc-ring-2.png' style='max-height:850px'/>
 
 ```c++
 struct pci_dev {
@@ -8969,23 +8972,23 @@ sock_read_iter()
 * [NAPI description on Linux Foundation](https://wiki.linuxfoundation.org/networking/napi)
 
 # route
-![](../Images/Kernel/net-filter.png)
+<img src='../Images/Kernel/net-filter.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-filter-2.png)
+<img src='../Images/Kernel/net-filter-2.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-filter-3.png)
+<img src='../Images/Kernel/net-filter-3.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-route-fib.png)
+<img src='../Images/Kernel/net-route-fib.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-route.png)
+<img src='../Images/Kernel/net-route.png' style='max-height:850px'/>
 
 ```c++
 struct net {
@@ -9327,7 +9330,7 @@ void rt_set_nexthop(struct rtable *rt, __be32 daddr,
 }
 ```
 
-![](../Images/Kernel/net-forwarding-table.png)
+<img src='../Images/Kernel/net-forwarding-table.png' style='max-height:850px'/>
 
 ```C++
 # Linux Server A
@@ -10057,7 +10060,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 
 # bridge
 
-![](../Images/Kernel/net-bridge.png)
+<img src='../Images/Kernel/net-bridge.png' style='max-height:850px'/>
 
 [lab](https://github.com/yanfeizhang/coder-kung-fu/tree/main/tests/network/test05)
 
@@ -11025,8 +11028,8 @@ drop:
 cubic
 ```
 
-![](../Images/Kernel/net-cubic-algorithm.png)
-![](../Images/Kernel/net-cubic-algorithm-growth.png)
+<img src='../Images/Kernel/net-cubic-algorithm.png' style='max-height:850px'/>
+<img src='../Images/Kernel/net-cubic-algorithm-growth.png' style='max-height:850px'/>
 
 * β: Multiplicative decrease factor
 * wmax: Window size just before the last reduction
@@ -11050,7 +11053,7 @@ Another major difference between CUBIC and many earlier TCP algorithms is that i
 
 ## tcp_ca_state
 
-![](../Images/Kernel/net-ca-state.png)
+<img src='../Images/Kernel/net-ca-state.png' style='max-height:850px'/>
 
 Linux NewReno/SACK/ECN state machine.
 
@@ -11262,7 +11265,7 @@ void tcp_try_keep_open(struct sock *sk)
 ```
 
 ## ecn
-![](../Images/Kernel/net-ecn-ip.png)
+<img src='../Images/Kernel/net-ecn-ip.png' style='max-height:850px'/>
 ```c++
 /* ECE: Echo of Congestion Encountered */
 enum {
@@ -11298,7 +11301,7 @@ int IP_ECN_set_ce(struct iphdr *iph)
 }
 ```
 
-![](../Images/Kernel/net-ecn-tcp.png)
+<img src='../Images/Kernel/net-ecn-tcp.png' style='max-height:850px'/>
 ```c++
 /* tcp support */
 #define TCPHDR_FIN 0x01
@@ -14262,11 +14265,11 @@ void __tcp_push_pending_frames(
 
 # epoll
 
-![](../Images/Kernel/net-epoll.png)
+<img src='../Images/Kernel/net-epoll.png' style='max-height:850px'/>
 
 ---
 
-![](../Images/Kernel/net-epoll-thread-model.png)
+<img src='../Images/Kernel/net-epoll-thread-model.png' style='max-height:850px'/>
 
 ```c++
 typedef union epoll_data {
@@ -15632,7 +15635,7 @@ tcp_rcv_state_process();
 
 # inet_init
 ```c++
-/* linux-4.19.y/include/linux/init.h */
+/* include/linux/init.h */
 #define ___define_initcall(fn, id, __sec) \
   static initcall_t __initcall_##fn##id __used \
     __attribute__((__section__(#__sec ".init"))) = fn;
@@ -15642,7 +15645,7 @@ tcp_rcv_state_process();
 
 #define fs_initcall(fn)      __define_initcall(fn, 5)
 
-/* linux-4.19.y/net/ipv4/af_inet.c */
+/* net/ipv4/af_inet.c */
 fs_initcall(inet_init);
 
 int __init inet_init(void)
