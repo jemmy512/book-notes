@@ -2330,6 +2330,7 @@ The pipeline final implementation:
     * Next are slow but enormous local disks.
     * Finally, some systems even include an additional level of disks on remote servers that can be accessed over a network.
 * ![](../Images/CSAPP/1.6-memory-performance.png)
+* ![](../Images/CSAPP/1.6-cache-hierarchy-latency.png)
 
 ### 6.3.1 Caching in the Memory Hierarchy
 * The central idea of a `memory hierarchy` is that for each k, the faster and smaller storage device at level k serves as a cache for the larger and slower storage device at level k + 1
