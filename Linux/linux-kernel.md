@@ -250,7 +250,7 @@ static int run_init_process(const char *init_filename)
 <img src='../Images/Kernel/proc-sched-reg.png' style='max-height:850px'/>
 
 ```c++
-/* linux/4.19.y/arch/x86/include/asm/ptrace.h */
+/* arch/x86/include/asm/ptrace.h */
 struct pt_regs {
 /* C ABI says these regs are callee-preserved. They aren't saved on kernel entry
  * unless syscall needs a complete, fully filled "struct pt_regs". */
@@ -332,6 +332,522 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     DO_CALL (syscall_name, args); \
     cmpl $-4095, %eax; \
     jae SYSCALL_ERROR_LABEL
+```
+
+### 64
+
+<img src='../Images/Kernel/init-syscall-stack.png' style='max-height:850px'/>
+
+* glibc
+    ```c++
+    /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
+    The Linux/x86-64 kernel expects the system call parameters in
+    registers according to the following table:
+        syscall number  rax
+        arg 1           rdi
+        arg 2           rsi
+        arg 3           rdx
+        arg 4           r10
+        arg 5           r8
+        arg 6           r9 */
+    #define DO_CALL(syscall_name, args) \
+    lea SYS_ify (syscall_name), %rax; \
+    syscall
+
+    /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
+    #define SYS_ify(syscall_name)  __NR_##syscall_name
+    ```
+
+* syscall_table
+    1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
+        ```c++
+        # 64-bit system call numbers and entry vectors
+
+        # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
+        # The abi is "common", "64" or "x32" for this file.
+        #
+        # <number>  <abi>     <name>    <entry point>
+            0       common    read      __x64_sys_read
+            1       common    write     __x64_sys_write
+            2       common    open      __x64_sys_open
+        ```
+
+    2. genrate syscall table: arch/x86/entry/syscalls/Makefile
+        ```c++
+        /* 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
+        * arch/sh/include/uapi/asm/unistd_64.h */
+        #define __NR_restart_syscall    0
+        #define __NR_exit               1
+        #define __NR_fork               2
+        #define __NR_read               3
+        #define __NR_write              4
+        #define __NR_open               5
+
+        /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
+        * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
+        __SYSCALL_64(__NR_open, __x64_sys_read)
+        __SYSCALL_64(__NR_write, __x64_sys_write)
+        __SYSCALL_64(__NR_open, __x64_sys_open)
+
+        /* arch/x86/entry/syscall_64.c */
+        #define __SYSCALL_64(nr, sym, qual) [nr] = sym
+
+        asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
+            /* Smells like a compiler bug -- it doesn't work
+            * when the & below is removed. */
+            [0 ... __NR_syscall_max] = &sys_ni_syscall,
+            #include <asm/syscalls_64.h>
+        };
+        ```
+
+    3. declare implemenation: include/linux/syscalls.h
+        ```c++
+        asmlinkage long sys_write(unsigned int fd, const char __user *buf, size_t count);
+        asmlinkage long sys_read(unsigned int fd, char __user *buf, size_t count);
+        asmlinkage long sys_open(const char __user *filename, int flags, umode_t mode);
+        ```
+
+    4. define implemenation: fs/open.c
+        ```c++
+        #include <linux/syscalls.h>
+
+        SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+        {
+            if (force_o_largefile())
+                flags |= O_LARGEFILE;
+
+            return do_sys_open(AT_FDCWD, filename, flags, mode);
+        }
+        ```
+
+```c++
+/* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
+wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
+
+ENTRY(entry_SYSCALL_64)
+  UNWIND_HINT_EMPTY
+  /* Interrupts are off on entry.
+   * We do not frame this tiny irq-off block with TRACE_IRQS_OFF/ON,
+   * it is too small to ever cause noticeable irq latency. */
+
+  swapgs
+
+/* 1. swap to kernel stack
+   * This path is only taken when PAGE_TABLE_ISOLATION is disabled so it
+   * is not required to switch CR3. */
+  movq  %rsp, PER_CPU_VAR(rsp_scratch)
+  movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp /* x86_hw_tss.sp1, update in __switch_to */
+  /* movq %gs:cpu_current_top_of_stack, %rsp */
+
+/* 2. save user stack
+  * Construct struct pt_regs on stack */
+  pushq  $__USER_DS                 /* pt_regs->ss */
+  pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
+  pushq  %r11                       /* pt_regs->flags */
+  pushq  $__USER_CS                 /* pt_regs->cs */
+  pushq  %rcx                       /* pt_regs->ip */
+GLOBAL(entry_SYSCALL_64_after_hwframe)
+  pushq  %rax                       /* pt_regs->orig_ax */
+
+  PUSH_AND_CLEAR_REGS rax=$-ENOSYS
+
+  TRACE_IRQS_OFF
+
+/* 3. do_syscall */
+  movq  %rax, %rdi
+  movq  %rsp, %rsi
+  call  do_syscall_64    /* returns with IRQs disabled */
+
+  TRACE_IRQS_IRETQ    /* we're about to change IF */
+
+  /* Try to use SYSRET instead of IRET if we're returning to
+   * a completely clean 64-bit userspace context.  If we're not,
+   * go to the slow exit path. */
+  movq  RCX(%rsp), %rcx
+  movq  RIP(%rsp), %r11
+
+/* 4. restore user stack */
+  cmpq  %rcx, %r11  /* SYSRET requires RCX == RIP */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  /* On Intel CPUs, SYSRET with non-canonical RCX/RIP will #GP
+   * in kernel space.  This essentially lets the user take over
+   * the kernel, since userspace controls RSP.
+   *
+   * If width of "canonical tail" ever becomes variable, this will need
+   * to be updated to remain correct on both old and new CPUs.
+   *
+   * Change top bits to match most significant bit (47th or 56th bit
+   * depending on paging mode) in the address. */
+#ifdef CONFIG_X86_5LEVEL
+  ALTERNATIVE "shl $(64 - 48), %rcx; sar $(64 - 48), %rcx", \
+    "shl $(64 - 57), %rcx; sar $(64 - 57), %rcx", X86_FEATURE_LA57
+#else
+  shl  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
+  sar  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
+#endif
+
+  /* If this changed %rcx, it was not canonical */
+  cmpq  %rcx, %r11
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  cmpq  $__USER_CS, CS(%rsp)    /* CS must match SYSRET */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  movq  R11(%rsp), %r11
+  cmpq  %r11, EFLAGS(%rsp)    /* R11 == RFLAGS */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  /* SYSCALL clears RF when it saves RFLAGS in R11 and SYSRET cannot
+   * restore RF properly. If the slowpath sets it for whatever reason, we
+   * need to restore it correctly.
+   *
+   * SYSRET can restore TF, but unlike IRET, restoring TF results in a
+   * trap from userspace immediately after SYSRET.  This would cause an
+   * infinite loop whenever #DB happens with register state that satisfies
+   * the opportunistic SYSRET conditions.  For example, single-stepping
+   * this user code:
+   *
+   *           movq  $stuck_here, %rcx
+   *           pushfq
+   *           popq %r11
+   *   stuck_here:
+   *
+   * would never get past 'stuck_here'. */
+  testq  $(X86_EFLAGS_RF|X86_EFLAGS_TF), %r11
+  jnz  swapgs_restore_regs_and_return_to_usermode
+
+  /* nothing to check for RSP */
+
+  cmpq  $__USER_DS, SS(%rsp)    /* SS must match SYSRET */
+  jne  swapgs_restore_regs_and_return_to_usermode
+
+  /* We win! This label is here just for ease of understanding
+   * perf profiles. Nothing jumps here. */
+syscall_return_via_sysret:
+  /* rcx and r11 are already restored (see code above) */
+  POP_REGS pop_rdi=0 skip_r11rcx=1
+
+  /* Now all regs are restored except RSP and RDI.
+   * Save old stack pointer and switch to trampoline stack. */
+  movq  %rsp, %rdi
+  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
+  UNWIND_HINT_EMPTY
+
+  pushq  RSP-RDI(%rdi)  /* RSP */
+  pushq  (%rdi)    /* RDI */
+
+  /* We are on the trampoline stack.  All regs except RDI are live.
+   * We can do future final exit work right here. */
+  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
+
+  popq  %rdi
+  popq  %rsp
+  USERGS_SYSRET64
+END(entry_SYSCALL_64)
+
+#define USERGS_SYSRET64 \
+  swapgs; \
+  sysretq;
+```
+
+```c++
+SYM_CODE_START_LOCAL(common_interrupt_return)
+SYM_INNER_LABEL(swapgs_restore_regs_and_return_to_usermode, SYM_L_GLOBAL)
+  IBRS_EXIT
+
+  POP_REGS pop_rdi=0
+  /*
+  .macro POP_REGS pop_rdi=1
+    popq %r15
+    popq %r14
+    popq %r13
+    popq %r12
+    popq %rbp
+    popq %rbx
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rax
+    popq %rcx
+    popq %rdx
+    popq %rsi
+    .if \pop_rdi
+      popq %rdi
+    .endif
+  .endm */
+
+  /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
+   * Save old stack pointer and switch to trampoline stack. */
+  movq  %rsp, %rdi
+  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
+  UNWIND_HINT_EMPTY
+
+  /* Copy the IRET frame to the trampoline stack. */
+  pushq  6*8(%rdi)  /* SS */
+  pushq  5*8(%rdi)  /* RSP */
+  pushq  4*8(%rdi)  /* EFLAGS */
+  pushq  3*8(%rdi)  /* CS */
+  pushq  2*8(%rdi)  /* RIP */
+
+  /* Push user RDI on the trampoline stack. */
+  pushq  (%rdi)
+
+  /* We are on the trampoline stack.  All regs except RDI are live.
+   * We can do future final exit work right here. */
+  STACKLEAK_ERASE_NOCLOBBER
+
+  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
+
+  /* Restore RDI. */
+  popq  %rdi
+  swapgs
+  jmp  .Lnative_iret
+
+.Lnative_iret:
+  UNWIND_HINT_IRET_REGS
+  /* Are we returning to a stack segment from the LDT?  Note: in
+   * 64-bit mode SS:RSP on the exception stack is always valid. */
+#ifdef CONFIG_X86_ESPFIX64
+  testb  $4, (SS-RIP)(%rsp)
+  jnz  native_irq_return_ldt
+#endif
+
+SYM_INNER_LABEL(native_irq_return_iret, SYM_L_GLOBAL)
+  ANNOTATE_NOENDBR // exc_double_fault
+  /* This may fault.  Non-paranoid faults on return to userspace are
+   * handled by fixup_bad_iret.  These include #SS, #GP, and #NP.
+   * Double-faults due to espfix64 are handled in exc_double_fault.
+   * Other faults here are fatal. */
+  iretq
+
+#ifdef CONFIG_X86_ESPFIX64
+native_irq_return_ldt:
+  /* We are running with user GSBASE.  All GPRs contain their user
+   * values.  We have a percpu ESPFIX stack that is eight slots
+   * long (see ESPFIX_STACK_SIZE).  espfix_waddr points to the bottom
+   * of the ESPFIX stack.
+   *
+   * We clobber RAX and RDI in this code.  We stash RDI on the
+   * normal stack and RAX on the ESPFIX stack.
+   *
+   * The ESPFIX stack layout we set up looks like this:
+   *
+   * --- top of ESPFIX stack ---
+   * SS
+   * RSP
+   * RFLAGS
+   * CS
+   * RIP  <-- RSP points here when we're done
+   * RAX  <-- espfix_waddr points here
+   * --- bottom of ESPFIX stack --- */
+
+  pushq  %rdi        /* Stash user RDI */
+  swapgs          /* to kernel GS */
+  SWITCH_TO_KERNEL_CR3 scratch_reg=%rdi  /* to kernel CR3 */
+
+  movq  PER_CPU_VAR(espfix_waddr), %rdi
+  movq  %rax, (0*8)(%rdi)    /* user RAX */
+
+  movq  (1*8)(%rsp), %rax    /* user RIP */
+  movq  %rax, (1*8)(%rdi)
+
+  movq  (2*8)(%rsp), %rax    /* user CS */
+  movq  %rax, (2*8)(%rdi)
+
+  movq  (3*8)(%rsp), %rax    /* user RFLAGS */
+  movq  %rax, (3*8)(%rdi)
+
+  movq  (5*8)(%rsp), %rax    /* user SS */
+  movq  %rax, (5*8)(%rdi)
+
+  movq  (4*8)(%rsp), %rax    /* user RSP */
+  movq  %rax, (4*8)(%rdi)
+  /* Now RAX == RSP. */
+
+  andl  $0xffff0000, %eax    /* RAX = (RSP & 0xffff0000) */
+
+  /* espfix_stack[31:16] == 0.  The page tables are set up such that
+   * (espfix_stack | (X & 0xffff0000)) points to a read-only alias of
+   * espfix_waddr for any X.  That is, there are 65536 RO aliases of
+   * the same page.  Set up RSP so that RSP[31:16] contains the
+   * respective 16 bits of the /userspace/ RSP and RSP nonetheless
+   * still points to an RO alias of the ESPFIX stack. */
+  orq  PER_CPU_VAR(espfix_stack), %rax
+
+  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
+  swapgs            /* to user GS */
+  popq  %rdi        /* Restore user RDI */
+
+  movq  %rax, %rsp
+  UNWIND_HINT_IRET_REGS offset=8
+
+  /* At this point, we cannot write to the stack any more, but we can
+   * still read. */
+  popq  %rax        /* Restore user RAX */
+
+  /* RSP now points to an ordinary IRET frame, except that the page
+   * is read-only and RSP[31:16] are preloaded with the userspace
+   * values.  We can now IRET back to userspace. */
+  jmp  native_irq_return_iret
+#endif
+SYM_CODE_END(common_interrupt_return)
+_ASM_NOKPROBE(common_interrupt_return)
+```
+
+```c++
+/* entry_SYSCALL_64 -> entry_SYSCALL64_slow_pat -> do_syscall_64 */
+void do_syscall_64(struct pt_regs *regs, int nr)
+{
+  add_random_kstack_offset();
+  nr = syscall_enter_from_user_mode(regs, nr);
+
+  instrumentation_begin();
+
+  if (!do_syscall_x64(regs, nr) && !do_syscall_x32(regs, nr) && nr != -1) {
+    /* Invalid system call, but still a system call. */
+    regs->ax = __x64_sys_ni_syscall(regs);
+  }
+
+  instrumentation_end();
+  syscall_exit_to_user_mode(regs);
+}
+
+void syscall_exit_to_user_mode(struct pt_regs *regs)
+{
+  instrumentation_begin();
+  __syscall_exit_to_user_mode_work(regs);
+  instrumentation_end();
+  __exit_to_user_mode();
+}
+
+void __syscall_exit_to_user_mode_work(struct pt_regs *regs)
+{
+  syscall_exit_to_user_mode_prepare(regs);
+  local_irq_disable_exit_to_user();
+  exit_to_user_mode_prepare(regs);
+}
+
+void exit_to_user_mode_prepare(struct pt_regs *regs)
+{
+  unsigned long ti_work = read_thread_flags();
+
+  lockdep_assert_irqs_disabled();
+
+  /* Flush pending rcuog wakeup before the last need_resched() check */
+  tick_nohz_user_enter_prepare();
+
+  if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
+    ti_work = exit_to_user_mode_loop(regs, ti_work);
+
+  arch_exit_to_user_mode_prepare(regs, ti_work);
+
+  /* Ensure that the address limit is intact and no locks are held */
+  addr_limit_user_check();
+  kmap_assert_nomap();
+  lockdep_assert_irqs_disabled();
+  lockdep_sys_exit();
+}
+
+unsigned long exit_to_user_mode_loop(struct pt_regs *regs,
+              unsigned long ti_work)
+{
+  while (ti_work & EXIT_TO_USER_MODE_WORK) {
+
+    local_irq_enable_exit_to_user(ti_work);
+
+    if (ti_work & _TIF_NEED_RESCHED)
+      schedule();
+
+    if (ti_work & _TIF_UPROBE)
+      uprobe_notify_resume(regs);
+
+    if (ti_work & _TIF_PATCH_PENDING)
+      klp_update_patch_state(current);
+
+    if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+      arch_do_signal_or_restart(regs);
+
+    if (ti_work & _TIF_NOTIFY_RESUME)
+      resume_user_mode_work(regs);
+
+    arch_exit_to_user_mode_work(regs, ti_work);
+
+    local_irq_disable_exit_to_user();
+
+    /* Check if any of the above work has queued a deferred wakeup */
+    tick_nohz_user_enter_prepare();
+
+    ti_work = read_thread_flags();
+  }
+
+  /* Return the latest work state for arch_exit_to_user_mode() */
+  return ti_work;
+}
+
+void __exit_to_user_mode(void)
+{
+  instrumentation_begin();
+  trace_hardirqs_on_prepare();
+  lockdep_hardirqs_on_prepare();
+  instrumentation_end();
+
+  user_enter_irqoff();
+  arch_exit_to_user_mode();
+  lockdep_hardirqs_on(CALLER_ADDR0);
+}
+```
+<img src='../Images/Kernel/init-syscall-64.png' style='max-height:850px'/>
+
+```c++
+entry_SYSCALL_64()
+    /* 1. swap to kernel stack */
+    movq  %rsp, PER_CPU_VAR(rsp_scratch)
+    movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp
+
+    /* 2. save user stack */
+    pushq  $__USER_DS                 /* pt_regs->ss */
+    pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
+    pushq  %r11                       /* pt_regs->flags */
+    pushq  $__USER_CS                 /* pt_regs->cs */
+    pushq  %rcx                       /* pt_regs->ip */
+    pushq  %rax                       /* pt_regs->orig_ax */
+
+    /* 3. do_syscall */
+    movq  %rax, %rdi
+    movq  %rsp, %rsi
+    call  do_syscall_64
+        regs->ax = __x64_sys_ni_syscall(regs);
+        syscall_exit_to_user_mode(regs);
+            __syscall_exit_to_user_mode_work();
+                exit_to_user_mode_prepare();
+                    if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
+                        ti_work = exit_to_user_mode_loop(regs, ti_work);
+                            if (ti_work & _TIF_NEED_RESCHED)
+                                schedule();
+                            if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                                arch_do_signal_or_restart(regs);
+
+            __exit_to_user_mode();
+                arch_exit_to_user_mode();
+
+    /* 4. restore user stack */
+    swapgs_restore_regs_and_return_to_usermode()
+        POP_REGS pop_rdi=0
+        /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS */
+
+        movq  %rsp, %rdi /* save kernel sp */
+        movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp /* load user sp */
+
+        /* Copy the IRET frame from kernel stack to the user trampoline stack. */
+        pushq  6*8(%rdi)  /* SS */
+        pushq  5*8(%rdi)  /* RSP */
+        pushq  4*8(%rdi)  /* EFLAGS */
+        pushq  3*8(%rdi)  /* CS */
+        pushq  2*8(%rdi)  /* RIP */
+
+        INTERRUPT_RETURN
 ```
 
 ### 32
@@ -777,433 +1293,6 @@ void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 ```
 <img src='../Images/Kernel/init-syscall.png' style='max-height:850px'/>
 <img src='../Images/Kernel/init-syscall-32.png' style='max-height:850px'/>
-
-### 64
-
-<img src='../Images/Kernel/init-syscall-stack.png' style='max-height:850px'/>
-
-* glibc
-    ```c++
-    /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
-    The Linux/x86-64 kernel expects the system call parameters in
-    registers according to the following table:
-        syscall number  rax
-        arg 1           rdi
-        arg 2           rsi
-        arg 3           rdx
-        arg 4           r10
-        arg 5           r8
-        arg 6           r9 */
-    #define DO_CALL(syscall_name, args) \
-    lea SYS_ify (syscall_name), %rax; \
-    syscall
-
-    /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
-    #define SYS_ify(syscall_name)  __NR_##syscall_name
-    ```
-
-* syscall_table
-    1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
-        ```c++
-        # 64-bit system call numbers and entry vectors
-
-        # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
-        # The abi is "common", "64" or "x32" for this file.
-        #
-        # <number>  <abi>     <name>    <entry point>
-            0       common    read      __x64_sys_read
-            1       common    write     __x64_sys_write
-            2       common    open      __x64_sys_open
-        ```
-
-    2. genrate syscall table: arch/x86/entry/syscalls/Makefile
-        ```c++
-        /* 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
-        * arch/sh/include/uapi/asm/unistd_64.h */
-        #define __NR_restart_syscall    0
-        #define __NR_exit               1
-        #define __NR_fork               2
-        #define __NR_read               3
-        #define __NR_write              4
-        #define __NR_open               5
-
-        /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
-        * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
-        __SYSCALL_64(__NR_open, __x64_sys_read)
-        __SYSCALL_64(__NR_write, __x64_sys_write)
-        __SYSCALL_64(__NR_open, __x64_sys_open)
-
-        /* arch/x86/entry/syscall_64.c */
-        #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-
-        asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
-            /* Smells like a compiler bug -- it doesn't work
-            * when the & below is removed. */
-            [0 ... __NR_syscall_max] = &sys_ni_syscall,
-            #include <asm/syscalls_64.h>
-        };
-        ```
-
-    3. declare implemenation: include/linux/syscalls.h
-        ```c++
-        asmlinkage long sys_write(unsigned int fd, const char __user *buf, size_t count);
-        asmlinkage long sys_read(unsigned int fd, char __user *buf, size_t count);
-        asmlinkage long sys_open(const char __user *filename, int flags, umode_t mode);
-        ```
-
-    4. define implemenation: fs/open.c
-        ```c++
-        #include <linux/syscalls.h>
-
-        SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
-        {
-            if (force_o_largefile())
-                flags |= O_LARGEFILE;
-
-            return do_sys_open(AT_FDCWD, filename, flags, mode);
-        }
-        ```
-
-```c++
-/* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
-wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
-
-ENTRY(entry_SYSCALL_64)
-  UNWIND_HINT_EMPTY
-  /* Interrupts are off on entry.
-   * We do not frame this tiny irq-off block with TRACE_IRQS_OFF/ON,
-   * it is too small to ever cause noticeable irq latency. */
-
-  swapgs
-
-/* 1. swap to kernel stack
-   * This path is only taken when PAGE_TABLE_ISOLATION is disabled so it
-   * is not required to switch CR3. */
-  movq  %rsp, PER_CPU_VAR(rsp_scratch)
-  movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp /* x86_hw_tss.sp1, update in __switch_to */
-  /* movq %gs:cpu_current_top_of_stack, %rsp */
-
-/* 2. save user stack
-  * Construct struct pt_regs on stack */
-  pushq  $__USER_DS                 /* pt_regs->ss */
-  pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
-  pushq  %r11                       /* pt_regs->flags */
-  pushq  $__USER_CS                 /* pt_regs->cs */
-  pushq  %rcx                       /* pt_regs->ip */
-GLOBAL(entry_SYSCALL_64_after_hwframe)
-  pushq  %rax                       /* pt_regs->orig_ax */
-
-  PUSH_AND_CLEAR_REGS rax=$-ENOSYS
-
-  TRACE_IRQS_OFF
-
-/* 3. do_syscall */
-  movq  %rax, %rdi
-  movq  %rsp, %rsi
-  call  do_syscall_64    /* returns with IRQs disabled */
-
-  TRACE_IRQS_IRETQ    /* we're about to change IF */
-
-  /* Try to use SYSRET instead of IRET if we're returning to
-   * a completely clean 64-bit userspace context.  If we're not,
-   * go to the slow exit path. */
-  movq  RCX(%rsp), %rcx
-  movq  RIP(%rsp), %r11
-
-/* 4. restore user stack */
-  cmpq  %rcx, %r11  /* SYSRET requires RCX == RIP */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  /* On Intel CPUs, SYSRET with non-canonical RCX/RIP will #GP
-   * in kernel space.  This essentially lets the user take over
-   * the kernel, since userspace controls RSP.
-   *
-   * If width of "canonical tail" ever becomes variable, this will need
-   * to be updated to remain correct on both old and new CPUs.
-   *
-   * Change top bits to match most significant bit (47th or 56th bit
-   * depending on paging mode) in the address. */
-#ifdef CONFIG_X86_5LEVEL
-  ALTERNATIVE "shl $(64 - 48), %rcx; sar $(64 - 48), %rcx", \
-    "shl $(64 - 57), %rcx; sar $(64 - 57), %rcx", X86_FEATURE_LA57
-#else
-  shl  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
-  sar  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
-#endif
-
-  /* If this changed %rcx, it was not canonical */
-  cmpq  %rcx, %r11
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  cmpq  $__USER_CS, CS(%rsp)    /* CS must match SYSRET */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  movq  R11(%rsp), %r11
-  cmpq  %r11, EFLAGS(%rsp)    /* R11 == RFLAGS */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  /* SYSCALL clears RF when it saves RFLAGS in R11 and SYSRET cannot
-   * restore RF properly. If the slowpath sets it for whatever reason, we
-   * need to restore it correctly.
-   *
-   * SYSRET can restore TF, but unlike IRET, restoring TF results in a
-   * trap from userspace immediately after SYSRET.  This would cause an
-   * infinite loop whenever #DB happens with register state that satisfies
-   * the opportunistic SYSRET conditions.  For example, single-stepping
-   * this user code:
-   *
-   *           movq  $stuck_here, %rcx
-   *           pushfq
-   *           popq %r11
-   *   stuck_here:
-   *
-   * would never get past 'stuck_here'. */
-  testq  $(X86_EFLAGS_RF|X86_EFLAGS_TF), %r11
-  jnz  swapgs_restore_regs_and_return_to_usermode
-
-  /* nothing to check for RSP */
-
-  cmpq  $__USER_DS, SS(%rsp)    /* SS must match SYSRET */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  /* We win! This label is here just for ease of understanding
-   * perf profiles. Nothing jumps here. */
-syscall_return_via_sysret:
-  /* rcx and r11 are already restored (see code above) */
-  POP_REGS pop_rdi=0 skip_r11rcx=1
-
-  /* Now all regs are restored except RSP and RDI.
-   * Save old stack pointer and switch to trampoline stack. */
-  movq  %rsp, %rdi
-  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
-  UNWIND_HINT_EMPTY
-
-  pushq  RSP-RDI(%rdi)  /* RSP */
-  pushq  (%rdi)    /* RDI */
-
-  /* We are on the trampoline stack.  All regs except RDI are live.
-   * We can do future final exit work right here. */
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-
-  popq  %rdi
-  popq  %rsp
-  USERGS_SYSRET64
-END(entry_SYSCALL_64)
-
-#define USERGS_SYSRET64 \
-  swapgs; \
-  sysretq;
-```
-
-```c++
-GLOBAL(swapgs_restore_regs_and_return_to_usermode)
-  POP_REGS pop_rdi=0
-  /*
-  .macro POP_REGS pop_rdi=1
-    popq %r15
-    popq %r14
-    popq %r13
-    popq %r12
-    popq %rbp
-    popq %rbx
-    popq %r11
-    popq %r10
-    popq %r9
-    popq %r8
-    popq %rax
-    popq %rcx
-    popq %rdx
-    popq %rsi
-    .if \pop_rdi
-      popq %rdi
-    .endif
-  .endm */
-
-  /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
-   * Save old stack pointer and switch to trampoline stack.
-   *
-   * Initialize source and destination for movsl
-   * OFFSET(TSS_sp0, tss_struct, x86_tss.sp0)
-   * DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_struct, cpu_tss_rw) */
-  movq  %rsp, %rdi
-  /* load_sp0(task_top_of_stack(task)) */
-  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
-  UNWIND_HINT_EMPTY
-
-  /* Copy the IRET frame from kernel stack to the user trampoline stack.tack. */
-  pushq  6*8(%rdi)  /* SS */
-  pushq  5*8(%rdi)  /* RSP */
-  pushq  4*8(%rdi)  /* EFLAGS */
-  pushq  3*8(%rdi)  /* CS */
-  pushq  2*8(%rdi)  /* RIP */
-
-  /* Push user RDI on the trampoline stack. */
-  pushq  (%rdi)
-
-  /* We are on the trampoline stack.  All regs except RDI are live.
-   * We can do future final exit work right here. */
-
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-
-  /* Restore RDI. */
-  popq  %rdi
-  SWAPGS
-  INTERRUPT_RETURN
-```
-
-```c++
-/* entry_SYSCALL_64 -> entry_SYSCALL64_slow_pat -> do_syscall_64 */
-void do_syscall_64(struct pt_regs *regs, int nr)
-{
-  add_random_kstack_offset();
-  nr = syscall_enter_from_user_mode(regs, nr);
-
-  instrumentation_begin();
-
-  if (!do_syscall_x64(regs, nr) && !do_syscall_x32(regs, nr) && nr != -1) {
-    /* Invalid system call, but still a system call. */
-    regs->ax = __x64_sys_ni_syscall(regs);
-  }
-
-  instrumentation_end();
-  syscall_exit_to_user_mode(regs);
-}
-
-void syscall_exit_to_user_mode(struct pt_regs *regs)
-{
-  instrumentation_begin();
-  __syscall_exit_to_user_mode_work(regs);
-  instrumentation_end();
-  __exit_to_user_mode();
-}
-
-void __syscall_exit_to_user_mode_work(struct pt_regs *regs)
-{
-  syscall_exit_to_user_mode_prepare(regs);
-  local_irq_disable_exit_to_user();
-  exit_to_user_mode_prepare(regs);
-}
-
-void exit_to_user_mode_prepare(struct pt_regs *regs)
-{
-  unsigned long ti_work = read_thread_flags();
-
-  lockdep_assert_irqs_disabled();
-
-  /* Flush pending rcuog wakeup before the last need_resched() check */
-  tick_nohz_user_enter_prepare();
-
-  if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
-    ti_work = exit_to_user_mode_loop(regs, ti_work);
-
-  arch_exit_to_user_mode_prepare(regs, ti_work);
-
-  /* Ensure that the address limit is intact and no locks are held */
-  addr_limit_user_check();
-  kmap_assert_nomap();
-  lockdep_assert_irqs_disabled();
-  lockdep_sys_exit();
-}
-
-unsigned long exit_to_user_mode_loop(struct pt_regs *regs,
-              unsigned long ti_work)
-{
-  while (ti_work & EXIT_TO_USER_MODE_WORK) {
-
-    local_irq_enable_exit_to_user(ti_work);
-
-    if (ti_work & _TIF_NEED_RESCHED)
-      schedule();
-
-    if (ti_work & _TIF_UPROBE)
-      uprobe_notify_resume(regs);
-
-    if (ti_work & _TIF_PATCH_PENDING)
-      klp_update_patch_state(current);
-
-    if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-      arch_do_signal_or_restart(regs);
-
-    if (ti_work & _TIF_NOTIFY_RESUME)
-      resume_user_mode_work(regs);
-
-    arch_exit_to_user_mode_work(regs, ti_work);
-
-    local_irq_disable_exit_to_user();
-
-    /* Check if any of the above work has queued a deferred wakeup */
-    tick_nohz_user_enter_prepare();
-
-    ti_work = read_thread_flags();
-  }
-
-  /* Return the latest work state for arch_exit_to_user_mode() */
-  return ti_work;
-}
-
-void __exit_to_user_mode(void)
-{
-  instrumentation_begin();
-  trace_hardirqs_on_prepare();
-  lockdep_hardirqs_on_prepare();
-  instrumentation_end();
-
-  user_enter_irqoff();
-  arch_exit_to_user_mode();
-  lockdep_hardirqs_on(CALLER_ADDR0);
-}
-```
-<img src='../Images/Kernel/init-syscall-64.png' style='max-height:850px'/>
-
-```c++
-entry_SYSCALL_64()
-    /* 1. swap to kernel stack */
-    movq  %rsp, PER_CPU_VAR(rsp_scratch)
-    movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp
-
-    /* 2. save user stack */
-    pushq  $__USER_DS                 /* pt_regs->ss */
-    pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
-    pushq  %r11                       /* pt_regs->flags */
-    pushq  $__USER_CS                 /* pt_regs->cs */
-    pushq  %rcx                       /* pt_regs->ip */
-    pushq  %rax                       /* pt_regs->orig_ax */
-
-    /* 3. do_syscall */
-    movq  %rax, %rdi
-    movq  %rsp, %rsi
-    call  do_syscall_64
-        regs->ax = __x64_sys_ni_syscall(regs);
-        syscall_exit_to_user_mode(regs);
-            __syscall_exit_to_user_mode_work();
-                exit_to_user_mode_prepare();
-                    if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
-                        ti_work = exit_to_user_mode_loop(regs, ti_work);
-                            if (ti_work & _TIF_NEED_RESCHED)
-                                schedule();
-                            if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                                arch_do_signal_or_restart(regs);
-
-            __exit_to_user_mode();
-                arch_exit_to_user_mode();
-
-    /* 4. restore user stack */
-    swapgs_restore_regs_and_return_to_usermode()
-        POP_REGS pop_rdi=0
-        /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS */
-
-        movq  %rsp, %rdi /* save kernel sp */
-        movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp /* load user sp */
-
-        /* Copy the IRET frame from kernel stack to the user trampoline stack. */
-        pushq  6*8(%rdi)  /* SS */
-        pushq  5*8(%rdi)  /* RSP */
-        pushq  4*8(%rdi)  /* EFLAGS */
-        pushq  3*8(%rdi)  /* CS */
-        pushq  2*8(%rdi)  /* RIP */
-
-        INTERRUPT_RETURN
-```
 
 # Process
 
@@ -3914,14 +4003,10 @@ ENTRY(ret_from_fork)
 END(ret_from_fork)
 
 
-GLOBAL(swapgs_restore_regs_and_return_to_usermode)
-#ifdef CONFIG_DEBUG_ENTRY
-  /* Assert that pt_regs indicates user mode. */
-  testb  $3, CS(%rsp)
-  jnz  1f
-  ud2
-1:
-#endif
+SYM_CODE_START_LOCAL(common_interrupt_return)
+SYM_INNER_LABEL(swapgs_restore_regs_and_return_to_usermode, SYM_L_GLOBAL)
+  IBRS_EXIT
+
   POP_REGS pop_rdi=0
   /*
   .macro POP_REGS pop_rdi=1
@@ -3947,11 +4032,10 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
   /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
    * Save old stack pointer and switch to trampoline stack. */
   movq  %rsp, %rdi
-  /* load_sp0(task_top_of_stack(task)) */
   movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
   UNWIND_HINT_EMPTY
 
-  /* Copy the IRET frame from kernel stack to the user trampoline stack */
+  /* Copy the IRET frame to the trampoline stack. */
   pushq  6*8(%rdi)  /* SS */
   pushq  5*8(%rdi)  /* RSP */
   pushq  4*8(%rdi)  /* EFLAGS */
@@ -3963,13 +4047,104 @@ GLOBAL(swapgs_restore_regs_and_return_to_usermode)
 
   /* We are on the trampoline stack.  All regs except RDI are live.
    * We can do future final exit work right here. */
+  STACKLEAK_ERASE_NOCLOBBER
 
   SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
 
   /* Restore RDI. */
   popq  %rdi
-  SWAPGS
-  INTERRUPT_RETURN
+  swapgs
+  jmp  .Lnative_iret
+
+.Lnative_iret:
+  UNWIND_HINT_IRET_REGS
+  /* Are we returning to a stack segment from the LDT?  Note: in
+   * 64-bit mode SS:RSP on the exception stack is always valid. */
+#ifdef CONFIG_X86_ESPFIX64
+  testb  $4, (SS-RIP)(%rsp)
+  jnz  native_irq_return_ldt
+#endif
+
+SYM_INNER_LABEL(native_irq_return_iret, SYM_L_GLOBAL)
+  ANNOTATE_NOENDBR // exc_double_fault
+  /* This may fault.  Non-paranoid faults on return to userspace are
+   * handled by fixup_bad_iret.  These include #SS, #GP, and #NP.
+   * Double-faults due to espfix64 are handled in exc_double_fault.
+   * Other faults here are fatal. */
+  iretq
+
+#ifdef CONFIG_X86_ESPFIX64
+native_irq_return_ldt:
+  /* We are running with user GSBASE.  All GPRs contain their user
+   * values.  We have a percpu ESPFIX stack that is eight slots
+   * long (see ESPFIX_STACK_SIZE).  espfix_waddr points to the bottom
+   * of the ESPFIX stack.
+   *
+   * We clobber RAX and RDI in this code.  We stash RDI on the
+   * normal stack and RAX on the ESPFIX stack.
+   *
+   * The ESPFIX stack layout we set up looks like this:
+   *
+   * --- top of ESPFIX stack ---
+   * SS
+   * RSP
+   * RFLAGS
+   * CS
+   * RIP  <-- RSP points here when we're done
+   * RAX  <-- espfix_waddr points here
+   * --- bottom of ESPFIX stack --- */
+
+  pushq  %rdi        /* Stash user RDI */
+  swapgs          /* to kernel GS */
+  SWITCH_TO_KERNEL_CR3 scratch_reg=%rdi  /* to kernel CR3 */
+
+  movq  PER_CPU_VAR(espfix_waddr), %rdi
+  movq  %rax, (0*8)(%rdi)    /* user RAX */
+
+  movq  (1*8)(%rsp), %rax    /* user RIP */
+  movq  %rax, (1*8)(%rdi)
+
+  movq  (2*8)(%rsp), %rax    /* user CS */
+  movq  %rax, (2*8)(%rdi)
+
+  movq  (3*8)(%rsp), %rax    /* user RFLAGS */
+  movq  %rax, (3*8)(%rdi)
+
+  movq  (5*8)(%rsp), %rax    /* user SS */
+  movq  %rax, (5*8)(%rdi)
+
+  movq  (4*8)(%rsp), %rax    /* user RSP */
+  movq  %rax, (4*8)(%rdi)
+  /* Now RAX == RSP. */
+
+  andl  $0xffff0000, %eax    /* RAX = (RSP & 0xffff0000) */
+
+  /* espfix_stack[31:16] == 0.  The page tables are set up such that
+   * (espfix_stack | (X & 0xffff0000)) points to a read-only alias of
+   * espfix_waddr for any X.  That is, there are 65536 RO aliases of
+   * the same page.  Set up RSP so that RSP[31:16] contains the
+   * respective 16 bits of the /userspace/ RSP and RSP nonetheless
+   * still points to an RO alias of the ESPFIX stack. */
+  orq  PER_CPU_VAR(espfix_stack), %rax
+
+  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
+  swapgs            /* to user GS */
+  popq  %rdi        /* Restore user RDI */
+
+  movq  %rax, %rsp
+  UNWIND_HINT_IRET_REGS offset=8
+
+  /* At this point, we cannot write to the stack any more, but we can
+   * still read. */
+  popq  %rax        /* Restore user RAX */
+
+  /* RSP now points to an ordinary IRET frame, except that the page
+   * is read-only and RSP[31:16] are preloaded with the userspace
+   * values.  We can now IRET back to userspace. */
+  jmp  native_irq_return_iret
+#endif
+SYM_CODE_END(common_interrupt_return)
+_ASM_NOKPROBE(common_interrupt_return)
 ```
 
 ```c++
@@ -5558,7 +5733,7 @@ struct workqueue_struct {
 /* The per-pool workqueue. */
 struct pool_workqueue {
   struct worker_pool      *pool;    /* I: the associated pool */
-  struct list_head        delayed_works;  /* L: delayed works */
+  struct list_head        inactive_works;  /* L: inactive works */
   struct list_head        mayday_node;  /* MD: node on wq->maydays */
   struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
   struct workqueue_struct *wq;    /* I: the owning workqueue */
@@ -5989,7 +6164,7 @@ void init_pwq(struct pool_workqueue *pwq, struct workqueue_struct *wq,
   pwq->wq = wq;
   pwq->flush_color = -1;
   pwq->refcnt = 1;
-  INIT_LIST_HEAD(&pwq->delayed_works);
+  INIT_LIST_HEAD(&pwq->inactive_works);
   INIT_LIST_HEAD(&pwq->pwqs_node);
   INIT_LIST_HEAD(&pwq->mayday_node);
   INIT_WORK(&pwq->unbound_release_work, pwq_unbound_release_workfn);
@@ -6640,10 +6815,10 @@ void pwq_dec_nr_in_flight(struct pool_workqueue *pwq, int color)
   pwq->nr_in_flight[color]--;
 
   pwq->nr_active--;
-  if (!list_empty(&pwq->delayed_works)) {
-    /* one down, submit a delayed one */
+  if (!list_empty(&pwq->inactive_works)) {
+    /* one down, submit a inactive one */
     if (pwq->nr_active < pwq->max_active)
-      pwq_activate_first_delayed(pwq);
+      pwq_activate_first_inactive(pwq);
   }
 
   /* is flush in progress and are we at the flushing tip? */
@@ -6665,22 +6840,21 @@ out_put:
   put_pwq(pwq);
 }
 
-void pwq_activate_first_delayed(struct pool_workqueue *pwq)
+void pwq_activate_first_inactive(struct pool_workqueue *pwq)
 {
-  struct work_struct *work = list_first_entry(&pwq->delayed_works, struct work_struct, entry);
+  struct work_struct *work = list_first_entry(&pwq->inactive_works, struct work_struct, entry);
 
-  pwq_activate_delayed_work(work);
+  pwq_activate_inactive_work(work);
 }
 
-void pwq_activate_delayed_work(struct work_struct *work)
+void pwq_activate_inactive_work(struct work_struct *work)
 {
   struct pool_workqueue *pwq = get_work_pwq(work);
 
-  trace_workqueue_activate_work(work);
   if (list_empty(&pwq->pool->worklist))
     pwq->pool->watchdog_ts = jiffies;
   move_linked_works(work, &pwq->pool->worklist, NULL);
-  __clear_bit(WORK_STRUCT_DELAYED_BIT, work_data_bits(work));
+  __clear_bit(WORK_STRUCT_INACTIVE_BIT, work_data_bits(work));
   pwq->nr_active++;
 }
 
@@ -6879,7 +7053,7 @@ retry:
       pwq->pool->watchdog_ts = jiffies;
   } else {
     work_flags |= WORK_STRUCT_DELAYED;
-    worklist = &pwq->delayed_works;
+    worklist = &pwq->inactive_works;
   }
 
   debug_work_activate(work);
@@ -6977,6 +7151,13 @@ void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
     add_timer_on(timer, cpu);
   else
     add_timer(timer);
+}
+
+/* when delayed_work timer expired */
+void delayed_work_timer_fn(struct timer_list *t)
+{
+  struct delayed_work *dwork = from_timer(dwork, t, timer);
+  __queue_work(dwork->cpu, dwork->wq, &dwork->work);
 }
 ```
 
@@ -7278,9 +7459,9 @@ woke_up:
 
             pwq_dec_nr_in_flight();
                 pwq->nr_active--;
-                if (!list_empty(&pwq->delayed_works))
+                if (!list_empty(&pwq->inactive_works))
                     if (pwq->nr_active < pwq->max_active)
-                        pwq_activate_first_delayed(pwq);
+                        pwq_activate_first_inactive(pwq);
                             move_linked_works(work, &pwq->pool->worklist, NULL);
                             pwq->nr_active++;
     } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
@@ -7319,7 +7500,7 @@ schedule_work();
                 worklist = &pwq->pool->worklist;
             } else {
                 work_flags |= WORK_STRUCT_DELAYED;
-                worklist = &pwq->delayed_works;
+                worklist = &pwq->inactive_works;
             }
 
             insert_work(pwq, work, worklist, work_flags);
@@ -13193,16 +13374,6 @@ SYM_CODE_END(error_return)
 SYM_CODE_START_LOCAL(common_interrupt_return)
 SYM_INNER_LABEL(swapgs_restore_regs_and_return_to_usermode, SYM_L_GLOBAL)
   IBRS_EXIT
-#ifdef CONFIG_DEBUG_ENTRY
-  /* Assert that pt_regs indicates user mode. */
-  testb  $3, CS(%rsp)
-  jnz  1f
-  ud2
-1:
-#endif
-#ifdef CONFIG_XEN_PV
-  ALTERNATIVE "", "jmp xenpv_restore_regs_and_return_to_usermode", X86_FEATURE_XENPV
-#endif
 
   POP_REGS pop_rdi=0
 
