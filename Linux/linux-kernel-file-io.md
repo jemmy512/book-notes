@@ -26,12 +26,9 @@
         * [write char dev](#write-char-dev)
         * [ioctl](#ioctl)
     * [block dev](#block-dev)
+        * [inode_hashtable](#inode_hashtable)
         * [mount blk dev](#mount-blk-dev)
-            * [blkdev_get_by_path](#blkdev_get_by_path)
-                * [lookup_bdev](#lookup_bdev)
-                * [blkdev_get](#blkdev_get)
-                * [bdev_map](#bdev_map)
-            * [sget](#sget)
+            * [ext4_get_tree](#ext4_get_tree)
     * [direct io](#direct-iO)
         * [dio_get_page](#dio_get_page)
         * [get_more_blocks](#get_more_blocks)
@@ -44,26 +41,20 @@
     * [blk_plug](#blk_plug)
     * [call graph](#call-graph-io)
 
-![](../Images/Kernel/kernel-structual.svg)
+<img src='../Images/Kernel/kernel-structual.svg'/>
 
 ---
 
-![](../Images/Kernel/file-arch.png)
+<img src='../Images/Kernel/file-arch.png' height='600' />
 
 # File Management
 
 ![](../Images/Kernel/file-vfs-system.png)
 
+* [Kernel Doc: Filesystems](https://www.kernel.org/doc/html/latest/filesystems/index.html)
+
 ```c++
 register_filesystem(&ext4_fs_type);
-
-static struct file_system_type ext4_fs_type = {
-  .owner    = THIS_MODULE,
-  .name     = "ext4",
-  .mount    = ext4_mount,
-  .kill_sb  = kill_block_super,
-  .fs_flags = FS_REQUIRES_DEV,
-};
 
 struct file {
   struct path                   f_path;
@@ -122,6 +113,13 @@ struct dentry {
   struct list_head                d_subdirs;
 };
 
+struct mountpoint {
+  struct hlist_node   m_hash;
+  struct dentry       *m_dentry;
+  struct hlist_head   m_list;
+  int m_count;
+};
+
 struct mount {
   struct hlist_node     mnt_hash;
   struct mount          *mnt_parent;
@@ -138,6 +136,7 @@ struct mount {
   struct list_head      mnt_instance;/* mount instance on sb->s_mounts */
   const char            *mnt_devname;/* Name of device e.g. /dev/dsk/hda1 */
   struct list_head      mnt_list;
+  struct mountpoint     *mnt_mp;     /* where is it mounted */
 };
 ```
 
@@ -206,11 +205,11 @@ struct ext4_inode {
   __le32  i_size_high;
 };
 ```
-![](../Images/Kernel/file-inode-blocks.png)
+<img src='../Images/Kernel/file-inode-blocks.png' height='700' />
 
 ## extent
 ```c++
-// Each block (leaves and indexes), even inode-stored has header.
+/* Each block (leaves and indexes), even inode-stored has header. */
 struct ext4_extent_header {
   __le16  eh_magic;  /* probably will support different formats */
   __le16  eh_entries;  /* number of valid entries */
@@ -375,23 +374,21 @@ struct dx_entry
 ```c++
  ln [args] [dst] [src]
 ```
-![](../Images/Kernel/file-link.png)
+
+<img src='../Images/Kernel/file-link.png' height='600' />
 
 ## vfs
-![](../Images/Kernel/file-arch.png)
+<img src='../Images/Kernel/file-arch.png' height='600' />
 
 ## mount
-```c++
-SYSCALL_DEFINE5(mount, char __user *, dev_name,
-  char __user *, dir_name, char __user *, type,
-  unsigned long, flags, void __user *, data)
-{
-  return ksys_mount(dev_name, dir_name, type, flags, data);
-}
 
-int ksys_mount(
-  char __user *dev_name, char __user *dir_name,
-  char __user *type, unsigned long flags, void __user *data)
+<img src='../Images/Kernel/io-mount-example.png' height='600' />
+
+* [Kernel Doc: Filesystem Mount API](https://github.com/torvalds/linux/blob/master/Documentation/filesystems/mount_api.rst)
+
+```c++
+YSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
+    char __user *, type, unsigned long, flags, void __user *, data)
 {
   int ret;
   char *kernel_type;
@@ -399,10 +396,28 @@ int ksys_mount(
   void *options;
 
   kernel_type = copy_mount_string(type);
+  ret = PTR_ERR(kernel_type);
+  if (IS_ERR(kernel_type))
+    goto out_type;
+
   kernel_dev = copy_mount_string(dev_name);
+  ret = PTR_ERR(kernel_dev);
+  if (IS_ERR(kernel_dev))
+    goto out_dev;
+
   options = copy_mount_options(data);
+  ret = PTR_ERR(options);
+  if (IS_ERR(options))
+    goto out_data;
+
   ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 
+  kfree(options);
+out_data:
+  kfree(kernel_dev);
+out_dev:
+  kfree(kernel_type);
+out_type:
   return ret;
 }
 
@@ -410,101 +425,420 @@ long do_mount(const char *dev_name, const char __user *dir_name,
     const char *type_page, unsigned long flags, void *data_page)
 {
   struct path path;
-  unsigned int mnt_flags = 0, sb_flags;
-  int retval = 0;
+  int ret;
 
-  /* get the mountpoint */
-  retval = user_path(dir_name, &path);
-
-  if (flags & MS_REMOUNT)
-    retval = do_remount(&path, flags, sb_flags, mnt_flags, data_page);
-  else if (flags & MS_BIND)
-    retval = do_loopback(&path, dev_name, flags & MS_REC);
-  else if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
-    retval = do_change_type(&path, flags);
-  else if (flags & MS_MOVE)
-    retval = do_move_mount(&path, dev_name);
-  else
-    retval = do_new_mount(&path, type_page, sb_flags, mnt_flags,
-              dev_name, data_page);
-dput_out:
+  ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
+  if (ret)
+    return ret;
+  ret = path_mount(dev_name, &path, type_page, flags, data_page);
   path_put(&path);
-  return retval;
+  return ret;
 }
 
-static int do_new_mount(
-  struct path *path, const char *fstype, int sb_flags,
-  int mnt_flags, const char *name, void *data)
+int user_path_at(int dfd, const char __user *name, unsigned flags,
+     struct path *path)
+{
+  return user_path_at_empty(dfd, name, flags, path, NULL);
+}
+
+int path_mount(const char *dev_name, struct path *path,
+    const char *type_page, unsigned long flags, void *data_page)
+{
+  unsigned int mnt_flags = 0, sb_flags;
+  int ret;
+
+  /* Discard magic */
+  if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
+    flags &= ~MS_MGC_MSK;
+
+  /* Basic sanity checks */
+  if (data_page)
+    ((char *)data_page)[PAGE_SIZE - 1] = 0;
+
+  if (flags & MS_NOUSER)
+    return -EINVAL;
+
+  ret = security_sb_mount(dev_name, path, type_page, flags, data_page);
+  if (ret)
+    return ret;
+  if (!may_mount())
+    return -EPERM;
+  if (flags & SB_MANDLOCK)
+    warn_mandlock();
+
+  /* Default to relatime unless overriden */
+  if (!(flags & MS_NOATIME))
+    mnt_flags |= MNT_RELATIME;
+
+  /* Separate the per-mountpoint flags */
+  if (flags & MS_NOSUID)
+    mnt_flags |= MNT_NOSUID;
+  if (flags & MS_NODEV)
+    mnt_flags |= MNT_NODEV;
+  if (flags & MS_NOEXEC)
+    mnt_flags |= MNT_NOEXEC;
+  if (flags & MS_NOATIME)
+    mnt_flags |= MNT_NOATIME;
+  if (flags & MS_NODIRATIME)
+    mnt_flags |= MNT_NODIRATIME;
+  if (flags & MS_STRICTATIME)
+    mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
+  if (flags & MS_RDONLY)
+    mnt_flags |= MNT_READONLY;
+  if (flags & MS_NOSYMFOLLOW)
+    mnt_flags |= MNT_NOSYMFOLLOW;
+
+  /* The default atime for remount is preservation */
+  if ((flags & MS_REMOUNT) &&
+      ((flags & (MS_NOATIME | MS_NODIRATIME | MS_RELATIME |
+           MS_STRICTATIME)) == 0)) {
+    mnt_flags &= ~MNT_ATIME_MASK;
+    mnt_flags |= path->mnt->mnt_flags & MNT_ATIME_MASK;
+  }
+
+  sb_flags = flags & (SB_RDONLY |
+          SB_SYNCHRONOUS |
+          SB_MANDLOCK |
+          SB_DIRSYNC |
+          SB_SILENT |
+          SB_POSIXACL |
+          SB_LAZYTIME |
+          SB_I_VERSION);
+
+  if ((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND))
+    return do_reconfigure_mnt(path, mnt_flags);
+  if (flags & MS_REMOUNT)
+    return do_remount(path, flags, sb_flags, mnt_flags, data_page);
+  if (flags & MS_BIND)
+    return do_loopback(path, dev_name, flags & MS_REC);
+  if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
+    return do_change_type(path, flags);
+  if (flags & MS_MOVE)
+    return do_move_mount_old(path, dev_name);
+
+  return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
+          data_page);
+}
+
+int do_new_mount(struct path *path, const char *fstype, int sb_flags,
+      int mnt_flags, const char *name, void *data)
 {
   struct file_system_type *type;
-  struct vfsmount *mnt;
-  int err;
+  struct fs_context *fc;
+  const char *subtype = NULL;
+  int err = 0;
+
+  if (!fstype)
+    return -EINVAL;
 
   type = get_fs_type(fstype);
-  mnt = vfs_kern_mount(type, sb_flags, name, data);
-  if (!IS_ERR(mnt) && (type->fs_flags & FS_HAS_SUBTYPE) &&
-      !mnt->mnt_sb->s_subtype)
-    mnt = fs_set_subtype(mnt, fstype);
+  if (!type)
+    return -ENODEV;
 
+  if (type->fs_flags & FS_HAS_SUBTYPE) {
+    subtype = strchr(fstype, '.');
+    if (subtype) {
+      subtype++;
+      if (!*subtype) {
+        put_filesystem(type);
+        return -EINVAL;
+      }
+    }
+  }
+
+  fc = fs_context_for_mount(type, sb_flags);
   put_filesystem(type);
+  if (IS_ERR(fc))
+    return PTR_ERR(fc);
 
-  /* add a mount into a namespace's mount tree */
-  err = do_add_mount(real_mount(mnt), path, mnt_flags);
-  if (err)
-    mntput(mnt);
+  if (subtype)
+    err = vfs_parse_fs_string(fc, "subtype", subtype, strlen(subtype));
+  if (!err && name)
+    err = vfs_parse_fs_string(fc, "source", name, strlen(name));
+  if (!err)
+    err = parse_monolithic_mount_data(fc, data);
+  if (!err && !mount_capable(fc))
+    err = -EPERM;
+
+  if (!err)
+    err = vfs_get_tree(fc);
+  if (!err)
+    err = do_new_mount_fc(fc, path, mnt_flags);
+
+  put_fs_context(fc);
   return err;
 }
 
-struct vfsmount *vfs_kern_mount(
-  struct file_system_type *type, int flags, const char *name, void *data)
+/* vfs_get_tree - Get the mountable root */
+int vfs_get_tree(struct fs_context *fc)
+{
+  struct super_block *sb;
+  int error;
+
+  if (fc->root)
+    return -EBUSY;
+
+  error = fc->ops->get_tree(fc); /* ext4_get_tree */
+  if (error < 0)
+    return error;
+
+  sb = fc->root->d_sb;
+  WARN_ON(!sb->s_bdi);
+
+  /* Write barrier is for super_cache_count(). We place it before setting
+   * SB_BORN as the data dependency between the two functions is the
+   * superblock structure contents that we just set up, not the SB_BORN
+   * flag. */
+  smp_wmb();
+  sb->s_flags |= SB_BORN;
+
+  error = security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
+  if (unlikely(error)) {
+    fc_drop_locked(fc);
+    return error;
+  }
+
+  /* filesystems should never set s_maxbytes larger than MAX_LFS_FILESIZE
+   * but s_maxbytes was an unsigned long long for many releases. Throw
+   * this warning for a little while to try and catch filesystems that
+   * violate this rule. */
+  WARN((sb->s_maxbytes < 0), "%s set sb->s_maxbytes to "
+    "negative value (%lld)\n", fc->fs_type->name, sb->s_maxbytes);
+
+  return 0;
+}
+
+/* Create a new mount using a superblock configuration and request it
+ * be added to the namespace tree. */
+static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
+         unsigned int mnt_flags)
+{
+  struct vfsmount *mnt;
+  struct mountpoint *mp;
+  struct super_block *sb = fc->root->d_sb;
+  int error;
+
+  error = security_sb_kern_mount(sb);
+  if (!error && mount_too_revealing(sb, &mnt_flags))
+    error = -EPERM;
+
+  if (unlikely(error)) {
+    fc_drop_locked(fc);
+    return error;
+  }
+
+  up_write(&sb->s_umount);
+
+  mnt = vfs_create_mount(fc);
+  if (IS_ERR(mnt))
+    return PTR_ERR(mnt);
+
+  mnt_warn_timestamp_expiry(mountpoint, mnt);
+
+  mp = lock_mount(mountpoint);
+  if (IS_ERR(mp)) {
+    mntput(mnt);
+    return PTR_ERR(mp);
+  }
+  error = do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+  unlock_mount(mp);
+  if (error < 0)
+    mntput(mnt);
+  return error;
+}
+
+/* vfs_create_mount - Create a mount for a configured superblock */
+struct vfsmount *vfs_create_mount(struct fs_context *fc)
 {
   struct mount *mnt;
-  struct dentry *root;
+  struct user_namespace *fs_userns;
 
-  mnt = alloc_vfsmnt(name);
-  root = mount_fs(type, flags, name, data);
+  if (!fc->root)
+    return ERR_PTR(-EINVAL);
 
-  mnt->mnt.mnt_root = root;
-  mnt->mnt.mnt_sb = root->d_sb;
-  mnt->mnt_mountpoint = mnt->mnt.mnt_root;
-  mnt->mnt_parent = mnt;
+  mnt = alloc_vfsmnt(fc->source ?: "none");
+  if (!mnt)
+    return ERR_PTR(-ENOMEM);
+
+  if (fc->sb_flags & SB_KERNMOUNT)
+    mnt->mnt.mnt_flags = MNT_INTERNAL;
+
+  atomic_inc(&fc->root->d_sb->s_active);
+  mnt->mnt.mnt_sb    = fc->root->d_sb;
+  mnt->mnt.mnt_root  = dget(fc->root);
+  mnt->mnt_mountpoint  = mnt->mnt.mnt_root;
+  mnt->mnt_parent    = mnt;
+
+  fs_userns = mnt->mnt.mnt_sb->s_user_ns;
+  if (!initial_idmapping(fs_userns))
+    mnt->mnt.mnt_userns = get_user_ns(fs_userns);
+
   lock_mount_hash();
-  list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+  list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
   unlock_mount_hash();
   return &mnt->mnt;
 }
+
+int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
+      const struct path *path, int mnt_flags)
+{
+  struct mount *parent = real_mount(path->mnt);
+
+  mnt_flags &= ~MNT_INTERNAL_FLAGS;
+
+  if (unlikely(!check_mnt(parent))) {
+    /* that's acceptable only for automounts done in private ns */
+    if (!(mnt_flags & MNT_SHRINKABLE))
+      return -EINVAL;
+    /* ... and for those we'd better have mountpoint still alive */
+    if (!parent->mnt_ns)
+      return -EINVAL;
+  }
+
+  /* Refuse the same filesystem on the same mount point */
+  if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
+      path->mnt->mnt_root == path->dentry)
+    return -EBUSY;
+
+  if (d_is_symlink(newmnt->mnt.mnt_root))
+    return -EINVAL;
+
+  newmnt->mnt.mnt_flags = mnt_flags;
+  return graft_tree(newmnt, parent, mp);
+}
+
+int graft_tree(struct mount *mnt, struct mount *p, struct mountpoint *mp)
+{
+  if (mnt->mnt.mnt_sb->s_flags & SB_NOUSER)
+    return -EINVAL;
+
+  if (d_is_dir(mp->m_dentry) !=
+        d_is_dir(mnt->mnt.mnt_root))
+    return -ENOTDIR;
+
+  return attach_recursive_mnt(mnt, p, mp, false);
+}
+
+static int attach_recursive_mnt(struct mount *source_mnt,
+      struct mount *dest_mnt,
+      struct mountpoint *dest_mp,
+      bool moving)
+{
+  struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
+  HLIST_HEAD(tree_list);
+  struct mnt_namespace *ns = dest_mnt->mnt_ns;
+  struct mountpoint *smp;
+  struct mount *child, *p;
+  struct hlist_node *n;
+  int err;
+
+  /* Preallocate a mountpoint in case the new mounts need
+   * to be tucked under other mounts. */
+  smp = get_mountpoint(source_mnt->mnt.mnt_root);
+  if (IS_ERR(smp))
+    return PTR_ERR(smp);
+
+  /* Is there space to add these mounts to the mount namespace? */
+  if (!moving) {
+    err = count_mounts(ns, source_mnt);
+    if (err)
+      goto out;
+  }
+
+  if (IS_MNT_SHARED(dest_mnt)) {
+    err = invent_group_ids(source_mnt, true);
+    if (err)
+      goto out;
+    err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
+    lock_mount_hash();
+    if (err)
+      goto out_cleanup_ids;
+    for (p = source_mnt; p; p = next_mnt(p, source_mnt))
+      set_mnt_shared(p);
+  } else {
+    lock_mount_hash();
+  }
+
+  if (moving) {
+    unhash_mnt(source_mnt);
+    attach_mnt(source_mnt, dest_mnt, dest_mp);
+    touch_mnt_namespace(source_mnt->mnt_ns);
+  } else {
+    if (source_mnt->mnt_ns) {
+      /* move from anon - the caller will destroy */
+      list_del_init(&source_mnt->mnt_ns->list);
+    }
+    mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+    commit_tree(source_mnt);
+  }
+
+  hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
+    struct mount *q;
+    hlist_del_init(&child->mnt_hash);
+    q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
+    if (q)
+      mnt_change_mountpoint(child, smp, q);
+    /* Notice when we are propagating across user namespaces */
+    if (child->mnt_parent->mnt_ns->user_ns != user_ns)
+      lock_mnt_tree(child);
+    child->mnt.mnt_flags &= ~MNT_LOCKED;
+    commit_tree(child);
+  }
+  put_mountpoint(smp);
+  unlock_mount_hash();
+
+  return 0;
+
+ out_cleanup_ids:
+  while (!hlist_empty(&tree_list)) {
+    child = hlist_entry(tree_list.first, struct mount, mnt_hash);
+    child->mnt_parent->mnt_ns->pending_mounts = 0;
+    umount_tree(child, UMOUNT_SYNC);
+  }
+  unlock_mount_hash();
+  cleanup_group_ids(source_mnt, NULL);
+ out:
+  ns->pending_mounts = 0;
+
+  read_seqlock_excl(&mount_lock);
+  put_mountpoint(smp);
+  read_sequnlock_excl(&mount_lock);
+
+  return err;
+}
 ```
 
 ```c++
-struct dentry *mount_fs(
-  struct file_system_type *type, int flags,
-  const char *name, void *data)
-{
-  struct dentry *root;
-  struct super_block *sb;
-  root = type->mount(type, flags, name, data);
-  sb = root->d_sb;
-}
+mount(dev_name, dir_name, type, flags, data);
+    copy_mount_string(); /* type, dev_name, data */
+    do_mount();
+        struct path path;
+        user_path_at(&path);
+            user_path_at_empty();
+        path_mount(&path);
+            do_new_mount();
+                struct file_system_type *type = get_fs_type(fstype);
+                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
+                vfs_parse_fs_string();
 
-static struct dentry *ext4_mount(
-  struct file_system_type *fs_type,
-  int flags, const char *dev_name, void *data)
-{
-  return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
-}
-/* ---> see mount block device in IO part */
-```
-![](../Images/Kernel/io-mount-example.png)
+                /* Create a superblock which can then later be used for mounting */
+                vfs_get_tree(fc);
+                    fc->ops->get_tree(fc); /* ext4_get_tree */
+                    struct super_block *sb = fc->root->d_sb;
+                    security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
 
-```c++
-mount();
-  ksys_mount(); /* copy type, dev_name, data to kernel */
-    do_mount(); /* get path by name */
-      do_new_mount(); /* get fs_type by type */
-        vfs_kern_mount();
-          alloc_vfsmnt();
-          mount_fs();
-            fs_type.mount(); /* dev_fs_type, {dev, ext4}_mount */
+                do_new_mount_fc(fc, path, mnt_flags);
+                    struct vfsmount *mnt = vfs_create_mount(fc);
+                        struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
+                        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
+
+                    struct mountpoint *mp = lock_mount(mountpoint);
+                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+                        struct mount *parent = real_mount(path->mnt);
+                        graft_tree(newmnt, parent, mp);
+                            attach_recursive_mnt(mnt, p, mp, false);
+                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+                                commit_tree(source_mnt);
 ```
 
 ## alloc_file
@@ -1008,7 +1342,7 @@ static int lookup_open(struct nameidata *nd, struct path *path,
   const struct open_flags *op,
   bool got_write, int *opened)
 {
-  // open with O_CREAT flag
+  /* open with O_CREAT flag */
   if (!dentry->d_inode && (open_flag & O_CREAT)) {
     error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
   }
@@ -1083,7 +1417,7 @@ do_sys_open();
     putname();
 ```
 
-![](../Images/Kernel/dcache.png)
+<img src='../Images/Kernel/dcache.png' height='700' />
 
 ## read-write
 
@@ -1849,7 +2183,7 @@ int want_pages_array(struct page ***res, size_t size,
 
   if (count > maxpages)
     count = maxpages;
-  WARN_ON(!count);  // caller should've prevented that
+  WARN_ON(!count);  /* caller should've prevented that */
   if (!*res) {
     *res = kvmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
     if (!*res)
@@ -3127,9 +3461,9 @@ static int wb_init(
     INIT_WORK(&(_work)->work, (_func));      \
     __setup_timer(&(_work)->timer, delayed_work_timer_fn,  \
             (unsigned long)(_work),      \
-// wb_workfn -> wb_do_writeback -> wb_writeback -> writeback_sb_inodes
-// -> __writeback_single_inode -> do_writepages -> ext4_writepages
-// ---> see ext4_writepages in IO management
+/* wb_workfn -> wb_do_writeback -> wb_writeback -> writeback_sb_inodes */
+/* -> __writeback_single_inode -> do_writepages -> ext4_writepages */
+/* ---> see ext4_writepages in IO management */
 
 void delayed_work_timer_fn(struct timer_list *t)
 {
@@ -3283,9 +3617,9 @@ All devices have the corresponding device file in /dev(is devtmpfs file system),
 * [The multiqueue block layer](https://lwn.net/Articles/552904/)
 
 ```c++
-lsmod           // list installed modes
-insmod *.ko     // install mode
-mknod filename type major minor  // create dev file in /dev/
+lsmod           /* list installed modes */
+insmod *.ko     /* install mode */
+mknod filename type major minor  /* create dev file in /dev/ */
 
 /*
 /sys has following directories
@@ -3506,7 +3840,7 @@ struct dentry *mount_single(
   return dget(s->s_root);
 }
 
-// int ramfs_fill_super(struct super_block *sb, void *data, int silent)
+/* int ramfs_fill_super(struct super_block *sb, void *data, int silent) */
 int shmem_fill_super(struct super_block *sb, void *data, int silent)
 {
   struct inode *inode;
@@ -3954,7 +4288,7 @@ void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 }
 
 const struct file_operations def_blk_fops = {
-  .open           = blkdev_open, // call blkdev_get
+  .open           = blkdev_open, /* call blkdev_get */
   .release        = blkdev_close,
   .llseek         = block_llseek,
   .read_iter      = blkdev_read_iter,
@@ -3966,151 +4300,100 @@ const struct file_operations def_blk_fops = {
   .splice_write   = iter_file_splice_write,
   .fallocate      = blkdev_fallocate,
 };
-
-static struct file_system_type ext4_fs_type = {
-  .owner    = THIS_MODULE,
-  .name     = "ext4",
-  .mount    = ext4_mount,
-  .kill_sb  = kill_block_super,
-  .fs_flags = FS_REQUIRES_DEV,
-};
 ```
 
-### bdev_map
+### inode_hashtable
+
 ```c++
-static struct kobj_map *bdev_map;
-// map a dev_t with a gendisk
-static inline void add_disk(struct gendisk *disk)
+static unsigned int i_hash_mask __read_mostly;
+static unsigned int i_hash_shift __read_mostly;
+static struct hlist_head *inode_hashtable __read_mostly;
+static __cacheline_aligned_in_smp DEFINE_SPINLOCK(inode_hash_lock);
+
+
+static inline void insert_inode_hash(struct inode *inode)
 {
-  device_add_disk(NULL, disk);
+  __insert_inode_hash(inode, inode->i_ino);
 }
 
-void device_add_disk(struct device *parent, struct gendisk *disk)
+void __insert_inode_hash(struct inode *inode, unsigned long hashval)
 {
-  blk_register_region(disk_devt(disk), disk->minors, NULL,
-          exact_match, exact_lock, disk);
+  struct hlist_head *b = inode_hashtable + hash(inode->i_sb, hashval);
+
+  spin_lock(&inode_hash_lock);
+  spin_lock(&inode->i_lock);
+  hlist_add_head_rcu(&inode->i_hash, b);
+  spin_unlock(&inode->i_lock);
+  spin_unlock(&inode_hash_lock);
 }
 
-void blk_register_region(
-  dev_t devt, unsigned long range, struct module *module,
-  struct kobject *(*probe)(dev_t, int *, void *),
-  int (*lock)(dev_t, void *), void *data)
+struct inode *ilookup(struct super_block *sb, unsigned long ino)
 {
-  kobj_map(bdev_map, devt, range, module, probe, lock, data);
+  struct hlist_head *head = inode_hashtable + hash(sb, ino);
+  struct inode *inode;
+again:
+  spin_lock(&inode_hash_lock);
+  inode = find_inode_fast(sb, head, ino);
+  spin_unlock(&inode_hash_lock);
+
+  if (inode) {
+    if (IS_ERR(inode))
+      return NULL;
+    wait_on_inode(inode);
+    if (unlikely(inode_unhashed(inode))) {
+      iput(inode);
+      goto again;
+    }
+  }
+  return inode;
+}
+
+struct inode *find_inode_nowait(struct super_block *sb,
+        unsigned long hashval,
+        int (*match)(struct inode *, unsigned long,
+               void *),
+        void *data)
+{
+  struct hlist_head *head = inode_hashtable + hash(sb, hashval);
+  struct inode *inode, *ret_inode = NULL;
+  int mval;
+
+  spin_lock(&inode_hash_lock);
+  hlist_for_each_entry(inode, head, i_hash) {
+    if (inode->i_sb != sb)
+      continue;
+    mval = match(inode, hashval, data);
+    if (mval == 0)
+      continue;
+    if (mval == 1)
+      ret_inode = inode;
+    goto out;
+  }
+out:
+  spin_unlock(&inode_hash_lock);
+  return ret_inode;
+}
+
+struct inode *find_inode_rcu(struct super_block *sb, unsigned long hashval,
+           int (*test)(struct inode *, void *), void *data)
+{
+  struct hlist_head *head = inode_hashtable + hash(sb, hashval);
+  struct inode *inode;
+
+  hlist_for_each_entry_rcu(inode, head, i_hash) {
+    if (inode->i_sb == sb &&
+        !(READ_ONCE(inode->i_state) & (I_FREEING | I_WILL_FREE)) &&
+        test(inode, data))
+      return inode;
+  }
+  return NULL;
 }
 ```
 
 ### mount blk dev
 
 ```c++
-/* mont -> ksys_mount -> do_mount -> do_new_mount ->
- * vfs_kern_mount -> mount_fs -> fs_type.mount */
-static struct dentry *ext4_mount(
-  struct file_system_type *fs_type, int flags,
-  const char *dev_name, void *data)
-{
-  return mount_bdev(fs_type, flags, dev_name, data, ext4_fill_super);
-}
-
-struct dentry *mount_bdev(
-  struct file_system_type *fs_type,
-  int flags, const char *dev_name, void *data,
-  int (*fill_super)(struct super_block *, void *, int))
-{
-  struct block_device *bdev;
-  struct super_block *s;
-  fmode_t mode = FMODE_READ | FMODE_EXCL;
-  int error = 0;
-
-  if (!(flags & MS_RDONLY))
-    mode |= FMODE_WRITE;
-
-  bdev = blkdev_get_by_path(dev_name, mode, fs_type);
-
-  s = sget(fs_type, test_bdev_super, set_bdev_super, flags | MS_NOSEC, bdev);
-  fill_super(s, data, flags & SB_SILENT ? 1 : 0);
-
-  return dget(s->s_root);
-}
-```
-
-#### blkdev_get_by_path
-```c++
-struct block_device *blkdev_get_by_path(
-  const char *path, fmode_t mode, void *holder)
-{
-  struct block_device *bdev;
-  int err;
-
-  bdev = lookup_bdev(path);             // find blk device
-  err = blkdev_get(bdev, mode, holder); // open blk device
-  return bdev;
-}
-```
-##### lookup_bdev
-```c++
-// 1. find the block device file under /dev which is devtmpfs file system
-struct block_device *lookup_bdev(const char *pathname)
-{
-  struct block_device *bdev;
-  struct inode *inode;
-  struct path path;
-  int error;
-
-  error = kern_path(pathname, LOOKUP_FOLLOW, &path);
-  inode = d_backing_inode(path.dentry); /* dentry->d_inode, inode in /dev fs */
-  bdev = bd_acquire(inode);
-
-  return bdev;
-}
-
-// 2. find the block device in bdev file system by its key: dev_t
-static struct block_device *bd_acquire(struct inode *inode)
-{
-  struct block_device *bdev;
-  bdev = bdget(inode->i_rdev);
-  if (bdev) {
-    spin_lock(&bdev_lock);
-    if (!inode->i_bdev) {
-      bdgrab(bdev);
-      inode->i_bdev = bdev;
-      inode->i_mapping = bdev->bd_inode->i_mapping;
-    }
-  }
-  return bdev;
-}
-
-struct block_device *bdget(dev_t dev)
-{
-  struct block_device *bdev;
-  struct inode *inode;
-
-  /* get the inode from the blk fs by dev_t, create new one if absence */
-  inode = iget5_locked(blockdev_superblock, hash(dev), bdev_test, bdev_set, &dev);
-  bdev = &BDEV_I(inode)->bdev;
-
-  if (inode->i_state & I_NEW) {
-    bdev->bd_contains = NULL;
-    bdev->bd_super = NULL;
-    bdev->bd_inode = inode;
-    bdev->bd_block_size = i_blocksize(inode);
-    bdev->bd_part_count = 0;
-    bdev->bd_invalidated = 0;
-    inode->i_mode = S_IFBLK;
-    inode->i_rdev = dev;
-    inode->i_bdev = bdev;
-    inode->i_data.a_ops = &def_blk_aops;
-    mapping_set_gfp_mask(&inode->i_data, GFP_USER);
-    spin_lock(&bdev_lock);
-    list_add(&bdev->bd_list, &all_bdevs);
-    spin_unlock(&bdev_lock);
-    unlock_new_inode(inode);
-  }
-
-  return bdev;
-}
-
-// 3rd file system, save all blk device
+/* 3rd file system, save all blk device  */
 struct super_block *blockdev_superblock;
 
 static struct file_system_type bd_type = {
@@ -4143,272 +4426,751 @@ struct bdev_inode {
 };
 
 struct block_device {
-  dev_t                 bd_dev;
-  int                   bd_openers;
-  struct super_block    *bd_super;
-  struct block_device   *bd_contains;
-  struct gendisk        *bd_disk;
-  struct hd_struct      *bd_part;
+  sector_t                  bd_start_sect;
+  sector_t                  bd_nr_sectors;
+  struct inode*             bd_inode;  /* will die */
+  struct super_block*       bd_super;
+  struct request_queue*     bd_queue;
+  dev_t                     bd_dev;
+  struct gendisk *          bd_disk;
 
-  unsigned              bd_block_size;
-  unsigned              bd_part_count;
-  int                   bd_invalidated;
-  struct request_queue  *bd_queue;
-  struct backing_dev_info *bd_bdi;
-  struct list_head        bd_list;
-};
+  struct disk_stats __percpu *bd_stats;
+  unsigned long             bd_stamp;
+  bool                      bd_read_only;  /* read-only policy */
+  atomic_t                  bd_openers;
+  void *                    bd_claiming;
+  struct device             bd_device;
+  void *                    bd_holder;
+  int                       bd_holders;
+  bool                      bd_write_holder;
+  struct kobject*           bd_holder_dir;
+  u8                        bd_partno;
+  spinlock_t                bd_size_lock; /* for bd_inode->i_size updates */
+
+  /* The counter of freeze processes */
+  int                       bd_fsfreeze_count;
+  /* Mutex for freeze */
+  struct mutex              bd_fsfreeze_mutex;
+  struct super_block*       bd_fsfreeze_sb;
+
+  struct partition_meta_info* bd_meta_info;
+}
 
 struct gendisk {
-  int                                   major; /* major number of driver */
-  int                                   first_minor;
-  int                                   minors; /* partition numbers */
-  char                                  disk_name[DISK_NAME_LEN]; /* name of major driver */
+  int                       major; /* major number of driver */
+  int                       first_minor;
+  int                       minors; /* partition numbers */
+  struct xarray             part_tbl;
+  struct request_queue      *queue;
+  struct backing_dev_info   *bdi;
 
-  char *(*devnode)(struct gendisk *gd, umode_t *mode);
-
-  struct disk_part_tbl __rcu            *part_tbl;
-  struct hd_struct                      part0;
+  char                      disk_name[DISK_NAME_LEN]; /* name of major driver */
 
   const struct block_device_operations  *fops;
-  struct request_queue                  *queue;
-  void                                  *private_data;
+  void                      *private_data;
 
-  int                                   flags;
-  struct kobject                        *slave_dir;
-};
-
-struct hd_struct {
-  sector_t                    start_sect;
-  sector_t                    nr_sects;
-
-  struct device               __dev;
-  struct kobject              *holder_dir;
-  int                         policy, partno;
-  struct partition_meta_info  *info;
-
-  struct disk_stats           dkstats;
-  struct percpu_ref           ref;
-  struct rcu_head             rcu_head;
+  int                       flags;
+  struct kobject            *slave_dir;
 };
 ```
 
-##### blkdev_get
+#### ext4_get_tree
 ```c++
-static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
+static const struct fs_context_operations ext4_context_ops = {
+    .parse_param    = ext4_parse_param,
+    .get_tree       = ext4_get_tree,
+    .reconfigure    = ext4_reconfigure,
+    .free           = ext4_fc_free,
+};
+
+static int ext4_get_tree(struct fs_context *fc)
 {
-  struct gendisk *disk;
-  struct module *owner;
-  int ret;
-  int partno;
-  int perm = 0;
+  return get_tree_bdev(fc, ext4_fill_super);
+}
 
-  if (mode & FMODE_READ)
-    perm |= MAY_READ;
-  if (mode & FMODE_WRITE)
-    perm |= MAY_WRITE;
+/* Get a superblock based on a single block device */
+int get_tree_bdev(
+  struct fs_context *fc,
+  int (*fill_super)(struct super_block *, struct fs_context *))
+{
+  struct block_device *bdev;
+  struct super_block *s;
+  fmode_t mode = FMODE_READ | FMODE_EXCL;
+  int error = 0;
 
-  disk = get_gendisk(bdev->bd_dev, &partno);
+  if (!(fc->sb_flags & SB_RDONLY))
+    mode |= FMODE_WRITE;
 
-  owner = disk->fops->owner;
+  if (!fc->source)
+    return invalf(fc, "No source specified");
 
-  if (!bdev->bd_openers) {
-    bdev->bd_disk = disk;
-    bdev->bd_queue = disk->queue;
-    bdev->bd_contains = bdev;
-    bdev->bd_partno = partno;
+  bdev = blkdev_get_by_path(fc->source, mode, fc->fs_type);
+  if (IS_ERR(bdev)) {
+    errorf(fc, "%s: Can't open blockdev", fc->source);
+    return PTR_ERR(bdev);
+  }
 
-    if (!partno) { // 1. open whole disk
-      ret = -ENXIO;
-      bdev->bd_part = disk_get_part(disk, partno);
+  /* Once the superblock is inserted into the list by sget_fc(), s_umount
+   * will protect the lockfs code from trying to start a snapshot while
+   * we are mounting */
+  mutex_lock(&bdev->bd_fsfreeze_mutex);
+  if (bdev->bd_fsfreeze_count > 0) {
+    mutex_unlock(&bdev->bd_fsfreeze_mutex);
+    warnf(fc, "%pg: Can't mount, blockdev is frozen", bdev);
+    blkdev_put(bdev, mode);
+    return -EBUSY;
+  }
 
-      if (disk->fops->open) {
-        ret = disk->fops->open(bdev, mode);
-      }
+  fc->sb_flags |= SB_NOSEC;
+  fc->sget_key = bdev;
+  s = sget_fc(fc, test_bdev_super_fc, set_bdev_super_fc);
+  mutex_unlock(&bdev->bd_fsfreeze_mutex);
+  if (IS_ERR(s)) {
+    blkdev_put(bdev, mode);
+    return PTR_ERR(s);
+  }
 
-      if (!ret)
-        bd_set_size(bdev,(loff_t)get_capacity(disk)<<9);
-
-      if (bdev->bd_invalidated) {
-        if (!ret)
-          rescan_partitions(disk, bdev);
-      }
-
-    } else {  // 2. open a partition
-      struct block_device *whole;
-      whole = bdget_disk(disk, 0);
-      ret = __blkdev_get(whole, mode, 1);
-      bdev->bd_contains = whole;
-      bdev->bd_part = disk_get_part(disk, partno);
-      bd_set_size(bdev, (loff_t)bdev->bd_part->nr_sects << 9);
+  if (s->s_root) {
+    /* Don't summarily change the RO/RW state. */
+    if ((fc->sb_flags ^ s->s_flags) & SB_RDONLY) {
+      warnf(fc, "%pg: Can't mount, would change RO state", bdev);
+      deactivate_locked_super(s);
+      blkdev_put(bdev, mode);
+      return -EBUSY;
     }
+
+    /* s_umount nests inside open_mutex during
+     * __invalidate_device().  blkdev_put() acquires
+     * open_mutex and can't be called under s_umount.  Drop
+     * s_umount temporarily.  This is safe as we're
+     * holding an active reference. */
+    up_write(&s->s_umount);
+    blkdev_put(bdev, mode);
+    down_write(&s->s_umount);
   } else {
-    if (bdev->bd_contains == bdev) {
-      ret = 0;
-      if (bdev->bd_disk->fops->open)
-        ret = bdev->bd_disk->fops->open(bdev, mode);
-      /* the same as first opener case, read comment there */
-      if (bdev->bd_invalidated && (!ret || ret == -ENOMEDIUM))
-        bdev_disk_changed(bdev, ret == -ENOMEDIUM);
-      if (ret)
-        goto out_unlock_bdev;
+    s->s_mode = mode;
+    snprintf(s->s_id, sizeof(s->s_id), "%pg", bdev);
+    shrinker_debugfs_rename(&s->s_shrink, "sb-%s:%s", fc->fs_type->name, s->s_id);
+    sb_set_blocksize(s, block_size(bdev));
+    error = fill_super(s, fc);
+    if (error) {
+      deactivate_locked_super(s);
+      return error;
     }
+
+    s->s_flags |= SB_ACTIVE;
+    bdev->bd_super = s;
   }
 
-  bdev->bd_openers++;
-  if (for_part)
-    bdev->bd_part_count++;
-}
-
-struct gendisk *get_gendisk(dev_t devt, int *partno)
-{
-  struct gendisk *disk = NULL;
-
-  if (MAJOR(devt) != BLOCK_EXT_MAJOR) { // 1. get the whole device
-    struct kobject *kobj = kobj_lookup(bdev_map, devt, partno);
-    if (kobj)
-      disk = dev_to_disk(kobj_to_dev(kobj));
-  } else {                              // 2. get a partition
-    struct hd_struct *part;
-    part = idr_find(&ext_devt_idr, blk_mangle_minor(MINOR(devt)));
-    if (part && get_disk(part_to_disk(part))) {
-      *partno = part->partno;
-      disk = part_to_disk(part);
-    }
-  }
-  return disk;
-}
-
-#define dev_to_disk(device) container_of((device), struct gendisk, part0.__dev)
-#define dev_to_part(device) container_of((device), struct hd_struct, __dev)
-#define disk_to_dev(disk)   (&(disk)->part0.__dev)
-#define part_to_dev(part)   (&((part)->__dev))
-
-static inline struct gendisk *part_to_disk(struct hd_struct *part)
-{
-  if (likely(part)) {
-    if (part->partno)
-      return dev_to_disk(part_to_dev(part)->parent);
-    else
-      return dev_to_disk(part_to_dev(part));
-  }
-  return NULL;
-}
-
-static const struct block_device_operations sd_fops = {
-  .owner          = THIS_MODULE,
-  .open           = sd_open,
-  .release        = sd_release,
-  .ioctl          = sd_ioctl,
-  .getgeo         = sd_getgeo,
-  .compat_ioctl   = sd_compat_ioctl,
-};
-
-static int sd_open(struct block_device *bdev, fmode_t mode)
-{
-
-}
-```
-
-#### sget
-```c++
-// drivers/scsi/sd.c
-static const struct block_device_operations sd_fops = {
-  .owner                    = THIS_MODULE,
-  .open                     = sd_open,
-  .release                  = sd_release,
-  .ioctl                    = sd_ioctl,
-  .getgeo                   = sd_getgeo,
-  .compat_ioctl             = sd_compat_ioctl,
-  .check_events             = sd_check_events,
-  .revalidate_disk          = sd_revalidate_disk,
-  .unlock_native_capacity   = sd_unlock_native_capacity,
-  .pr_ops                   = &sd_pr_ops,
-};
-
-static int sd_open(struct block_device *bdev, fmode_t mode)
-{ }
-
-static int set_bdev_super(struct super_block *s, void *data)
-{
-  s->s_bdev = data;
-  s->s_dev = s->s_bdev->bd_dev;
-  s->s_bdi = bdi_get(s->s_bdev->bd_bdi);
+  BUG_ON(fc->root);
+  fc->root = dget(s->s_root);
   return 0;
 }
 
-struct super_block *sget(struct file_system_type *type,
-  int (*test)(struct super_block *,void *),
-  int (*set)(struct super_block *,void *),
-  int flags,
-  void *data)
+struct block_device *blkdev_get_by_path(const char *path, fmode_t mode, void *holder)
 {
-  struct user_namespace *user_ns = current_user_ns();
-  return sget_userns(type, test, set, flags, user_ns, data);
+  struct block_device *bdev;
+  dev_t dev;
+  int error;
+
+  error = lookup_bdev(path, &dev);
+  if (error)
+    return ERR_PTR(error);
+
+  bdev = blkdev_get_by_dev(dev, mode, holder);
+  if (!IS_ERR(bdev) && (mode & FMODE_WRITE) && bdev_read_only(bdev)) {
+    blkdev_put(bdev, mode);
+    return ERR_PTR(-EACCES);
+  }
+
+  return bdev;
 }
 
-struct super_block *sget_userns(struct file_system_type *type,
-  int (*test)(struct super_block *,void *),
-  int (*set)(struct super_block *,void *),
-  int flags, struct user_namespace *user_ns,
-  void *data)
+/* Look up a struct block_device by name. */
+int lookup_bdev(const char *pathname, dev_t *dev)
+{
+  struct inode *inode;
+  struct path path;
+  int error;
+
+  if (!pathname || !*pathname)
+    return -EINVAL;
+
+  /* search /dev/xxx (devtmpfs) by name */
+  error = kern_path(pathname, LOOKUP_FOLLOW, &path);
+  if (error)
+    return error;
+
+  inode = d_backing_inode(path.dentry); /* dentry->d_inode*/
+  error = -ENOTBLK;
+  if (!S_ISBLK(inode->i_mode))
+    goto out_path_put;
+  error = -EACCES;
+  if (!may_open_dev(&path))
+    goto out_path_put;
+
+  *dev = inode->i_rdev;
+  error = 0;
+
+out_path_put:
+  path_put(&path);
+  return error;
+}
+
+/* open a block device by device number */
+struct block_device *blkdev_get_by_dev(dev_t dev, fmode_t mode, void *holder)
+{
+  bool unblock_events = true;
+  struct block_device *bdev;
+  struct gendisk *disk;
+  int ret;
+
+  ret = devcgroup_check_permission(DEVCG_DEV_BLOCK,
+      MAJOR(dev), MINOR(dev),
+      ((mode & FMODE_READ) ? DEVCG_ACC_READ : 0) |
+      ((mode & FMODE_WRITE) ? DEVCG_ACC_WRITE : 0));
+  if (ret)
+    return ERR_PTR(ret);
+
+  bdev = blkdev_get_no_open(dev);
+  if (!bdev)
+    return ERR_PTR(-ENXIO);
+  disk = bdev->bd_disk;
+
+  if (mode & FMODE_EXCL) {
+    ret = bd_prepare_to_claim(bdev, holder);
+    if (ret)
+      goto put_blkdev;
+  }
+
+  disk_block_events(disk);
+
+  mutex_lock(&disk->open_mutex);
+  ret = -ENXIO;
+  if (!disk_live(disk))
+    goto abort_claiming;
+  if (!try_module_get(disk->fops->owner))
+    goto abort_claiming;
+  if (bdev_is_partition(bdev)) /* bdev->bd_partno */
+    ret = blkdev_get_part(bdev, mode);
+  else
+    ret = blkdev_get_whole(bdev, mode);
+  if (ret)
+    goto put_module;
+  if (mode & FMODE_EXCL) {
+    bd_finish_claiming(bdev, holder);
+
+    /* Block event polling for write claims if requested.  Any write
+     * holder makes the write_holder state stick until all are
+     * released.  This is good enough and tracking individual
+     * writeable reference is too fragile given the way @mode is
+     * used in blkdev_get/put(). */
+    if ((mode & FMODE_WRITE) && !bdev->bd_write_holder &&
+        (disk->event_flags & DISK_EVENT_FLAG_BLOCK_ON_EXCL_WRITE)) {
+      bdev->bd_write_holder = true;
+      unblock_events = false;
+    }
+  }
+  mutex_unlock(&disk->open_mutex);
+
+  if (unblock_events)
+    disk_unblock_events(disk);
+  return bdev;
+
+put_module:
+  module_put(disk->fops->owner);
+abort_claiming:
+  if (mode & FMODE_EXCL)
+    bd_abort_claiming(bdev, holder);
+  mutex_unlock(&disk->open_mutex);
+  disk_unblock_events(disk);
+put_blkdev:
+  blkdev_put_no_open(bdev);
+  return ERR_PTR(ret);
+}
+
+struct block_device *blkdev_get_no_open(dev_t dev)
+{
+  struct block_device *bdev;
+  struct inode *inode;
+
+  /* find inode in global inode_hashtable */
+  inode = ilookup(blockdev_superblock, dev);
+  if (!inode && IS_ENABLED(CONFIG_BLOCK_LEGACY_AUTOLOAD)) {
+    blk_request_module(dev);
+    inode = ilookup(blockdev_superblock, dev);
+  }
+  if (!inode)
+    return NULL;
+
+  /* switch from the inode reference to a device mode one: */
+  bdev = &BDEV_I(inode)->bdev;
+
+  if (!kobject_get_unless_zero(&bdev->bd_device.kobj))
+    bdev = NULL;
+
+  iput(inode);
+  return bdev;
+}
+
+int blkdev_get_whole(struct block_device *bdev, fmode_t mode)
+{
+  struct gendisk *disk = bdev->bd_disk;
+  int ret;
+
+  if (disk->fops->open) {
+    ret = disk->fops->open(bdev, mode);
+    if (ret) {
+      /* avoid ghost partitions on a removed medium */
+      if (ret == -ENOMEDIUM && test_bit(GD_NEED_PART_SCAN, &disk->state))
+        bdev_disk_changed(disk, true);
+      return ret;
+    }
+  }
+
+  if (!atomic_read(&bdev->bd_openers))
+    set_init_blocksize(bdev);
+  if (test_bit(GD_NEED_PART_SCAN, &disk->state))
+    bdev_disk_changed(disk, false);
+  atomic_inc(&bdev->bd_openers);
+  return 0;
+}
+
+/* Find or create a superblock */
+struct super_block *sget_fc(struct fs_context *fc,
+    int (*test)(struct super_block *, struct fs_context *),
+    int (*set)(struct super_block *, struct fs_context *))
 {
   struct super_block *s = NULL;
   struct super_block *old;
+  struct user_namespace *user_ns = fc->global ? &init_user_ns : fc->user_ns;
   int err;
 
-  if (!s) {
-    s = alloc_super(type, (flags & ~MS_SUBMOUNT), user_ns);
+retry:
+  spin_lock(&sb_lock);
+  if (test) {
+    hlist_for_each_entry(old, &fc->fs_type->fs_supers, s_instances) {
+      if (test(old, fc))
+        goto share_extant_sb;
+    }
   }
-  err = set(s, data);
+  if (!s) {
+    spin_unlock(&sb_lock);
+    s = alloc_super(fc->fs_type, fc->sb_flags, user_ns);
+    if (!s)
+      return ERR_PTR(-ENOMEM);
+    goto retry;
+  }
 
-  s->s_type = type;
-  strlcpy(s->s_id, type->name, sizeof(s->s_id));
-  list_add_tail(&s->s_list, &super_blocks);
-  hlist_add_head(&s->s_instances, &type->fs_supers);
+  s->s_fs_info = fc->s_fs_info;
+  err = set(s, fc);
+  if (err) {
+    s->s_fs_info = NULL;
+    spin_unlock(&sb_lock);
+    destroy_unused_super(s);
+    return ERR_PTR(err);
+  }
+  fc->s_fs_info = NULL;
+  s->s_type = fc->fs_type;
+  s->s_iflags |= fc->s_iflags;
+  strlcpy(s->s_id, s->s_type->name, sizeof(s->s_id));
+  list_add_tail(&s->s_list, &super_blocks); /* add to global super block */
+  hlist_add_head(&s->s_instances, &s->s_type->fs_supers);
   spin_unlock(&sb_lock);
-  get_filesystem(type);
-  register_shrinker(&s->s_shrink);
+  get_filesystem(s->s_type);
+  register_shrinker_prepared(&s->s_shrink);
   return s;
+
+share_extant_sb:
+  if (user_ns != old->s_user_ns) {
+    spin_unlock(&sb_lock);
+    destroy_unused_super(s);
+    return ERR_PTR(-EBUSY);
+  }
+  if (!grab_super(old))
+    goto retry;
+  destroy_unused_super(s);
+  return old;
+}
+```
+
+### device_add_disk
+```c++
+int device_register(struct device *dev)
+{
+  device_initialize(dev);
+  return device_add(dev);
+}
+
+static int sd_probe(struct device *dev)
+{
+    struct gendisk *gd = blk_mq_alloc_disk_for_queue(sdp->request_queue, &sd_bio_compl_lkclass);
+    error = device_add_disk(dev, gd, NULL);
+}
+
+/* add disk information to kernel list */
+int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
+         const struct attribute_group **groups)
+
+{
+  struct device *ddev = disk_to_dev(disk);
+  int ret;
+
+  /* Only makes sense for bio-based to set ->poll_bio */
+  if (queue_is_mq(disk->queue) && disk->fops->poll_bio)
+    return -EINVAL;
+
+  elevator_init_mq(disk->queue);
+
+  if (disk->major) {
+    if (WARN_ON(!disk->minors))
+      return -EINVAL;
+
+    if (disk->minors > DISK_MAX_PARTS) {
+      disk->minors = DISK_MAX_PARTS;
+    }
+    if (disk->first_minor + disk->minors > MINORMASK + 1)
+      return -EINVAL;
+  } else {
+    if (WARN_ON(disk->minors))
+      return -EINVAL;
+
+    ret = blk_alloc_ext_minor();
+    if (ret < 0)
+      return ret;
+    disk->major = BLOCK_EXT_MAJOR;
+    disk->first_minor = ret;
+  }
+
+  /* delay uevents, until we scanned partition table */
+  dev_set_uevent_suppress(ddev, 1);
+
+  ddev->parent = parent;
+  ddev->groups = groups;
+  dev_set_name(ddev, "%s", disk->disk_name);
+  if (!(disk->flags & GENHD_FL_HIDDEN))
+    ddev->devt = MKDEV(disk->major, disk->first_minor);
+  ret = device_add(ddev);
+  if (ret)
+    goto out_free_ext_minor;
+
+  ret = disk_alloc_events(disk);
+  if (ret)
+    goto out_device_del;
+
+  if (!sysfs_deprecated) {
+    ret = sysfs_create_link(block_depr, &ddev->kobj, kobject_name(&ddev->kobj));
+    if (ret)
+      goto out_device_del;
+  }
+
+  pm_runtime_set_memalloc_noio(ddev, true);
+
+  ret = blk_integrity_add(disk);
+  if (ret)
+    goto out_del_block_link;
+
+  disk->part0->bd_holder_dir = kobject_create_and_add("holders", &ddev->kobj);
+  if (!disk->part0->bd_holder_dir) {
+    ret = -ENOMEM;
+    goto out_del_integrity;
+  }
+  disk->slave_dir = kobject_create_and_add("slaves", &ddev->kobj);
+  if (!disk->slave_dir) {
+    ret = -ENOMEM;
+    goto out_put_holder_dir;
+  }
+
+  ret = bd_register_pending_holders(disk);
+  if (ret < 0)
+    goto out_put_slave_dir;
+
+  ret = blk_register_queue(disk);
+  if (ret)
+    goto out_put_slave_dir;
+
+  if (!(disk->flags & GENHD_FL_HIDDEN)) {
+    ret = bdi_register(disk->bdi, "%u:%u", disk->major, disk->first_minor);
+    if (ret)
+      goto out_unregister_queue;
+    bdi_set_owner(disk->bdi, ddev);
+    ret = sysfs_create_link(&ddev->kobj,
+          &disk->bdi->dev->kobj, "bdi");
+    if (ret)
+      goto out_unregister_bdi;
+
+    bdev_add(disk->part0, ddev->devt);
+    if (get_capacity(disk))
+      disk_scan_partitions(disk, FMODE_READ);
+
+    /*
+     * Announce the disk and partitions after all partitions are
+     * created. (for hidden disks uevents remain suppressed forever)
+     */
+    dev_set_uevent_suppress(ddev, 0);
+    disk_uevent(disk, KOBJ_ADD);
+  }
+
+  disk_update_readahead(disk);
+  disk_add_events(disk);
+  set_bit(GD_ADDED, &disk->state);
+  return 0;
+
+  return ret;
+}
+
+/**
+ * device_add - add device to device hierarchy.
+ * @dev: device.
+ *
+ * This is part 2 of device_register(), though may be called
+ * separately _iff_ device_initialize() has been called separately.
+ *
+ * This adds @dev to the kobject hierarchy via kobject_add(), adds it
+ * to the global and sibling lists for the device, then
+ * adds it to the other relevant subsystems of the driver model.
+ *
+ * Do not call this routine or device_register() more than once for
+ * any device structure.  The driver model core is not designed to work
+ * with devices that get unregistered and then spring back to life.
+ * (Among other things, it's very hard to guarantee that all references
+ * to the previous incarnation of @dev have been dropped.)  Allocate
+ * and register a fresh new struct device instead.
+ *
+ * NOTE: _Never_ directly free @dev after calling this function, even
+ * if it returned an error! Always use put_device() to give up your
+ * reference instead.
+ *
+ * Rule of thumb is: if device_add() succeeds, you should call
+ * device_del() when you want to get rid of it. If device_add() has
+ * *not* succeeded, use *only* put_device() to drop the reference
+ * count.
+ */
+int device_add(struct device *dev)
+{
+  struct device *parent;
+  struct kobject *kobj;
+  struct class_interface *class_intf;
+  int error = -EINVAL;
+  struct kobject *glue_dir = NULL;
+
+  dev = get_device(dev);
+  if (!dev)
+    goto done;
+
+  if (!dev->p) {
+    error = device_private_init(dev);
+    if (error)
+      goto done;
+  }
+
+  /*
+   * for statically allocated devices, which should all be converted
+   * some day, we need to initialize the name. We prevent reading back
+   * the name, and force the use of dev_name()
+   */
+  if (dev->init_name) {
+    dev_set_name(dev, "%s", dev->init_name);
+    dev->init_name = NULL;
+  }
+
+  /* subsystems can specify simple device enumeration */
+  if (!dev_name(dev) && dev->bus && dev->bus->dev_name)
+    dev_set_name(dev, "%s%u", dev->bus->dev_name, dev->id);
+
+  if (!dev_name(dev)) {
+    error = -EINVAL;
+    goto name_error;
+  }
+
+  pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
+
+  parent = get_device(dev->parent);
+  kobj = get_device_parent(dev, parent);
+  if (IS_ERR(kobj)) {
+    error = PTR_ERR(kobj);
+    goto parent_error;
+  }
+  if (kobj)
+    dev->kobj.parent = kobj;
+
+  /* use parent numa_node */
+  if (parent && (dev_to_node(dev) == NUMA_NO_NODE))
+    set_dev_node(dev, dev_to_node(parent));
+
+  /* first, register with generic layer. */
+  /* we require the name to be set before, and pass NULL */
+  error = kobject_add(&dev->kobj, dev->kobj.parent, NULL);
+  if (error) {
+    glue_dir = get_glue_dir(dev);
+    goto Error;
+  }
+
+  /* notify platform of device entry */
+  device_platform_notify(dev);
+
+  error = device_create_file(dev, &dev_attr_uevent);
+  if (error)
+    goto attrError;
+
+  error = device_add_class_symlinks(dev);
+  if (error)
+    goto SymlinkError;
+  error = device_add_attrs(dev);
+  if (error)
+    goto AttrsError;
+  error = bus_add_device(dev);
+  if (error)
+    goto BusError;
+  error = dpm_sysfs_add(dev);
+  if (error)
+    goto DPMError;
+  device_pm_add(dev);
+
+  if (MAJOR(dev->devt)) {
+    error = device_create_file(dev, &dev_attr_dev);
+    if (error)
+      goto DevAttrError;
+
+    error = device_create_sys_dev_entry(dev);
+    if (error)
+      goto SysEntryError;
+
+    devtmpfs_create_node(dev);
+  }
+
+  /* Notify clients of device addition.  This call must come
+   * after dpm_sysfs_add() and before kobject_uevent().
+   */
+  if (dev->bus)
+    blocking_notifier_call_chain(&dev->bus->p->bus_notifier, BUS_NOTIFY_ADD_DEVICE, dev);
+
+  kobject_uevent(&dev->kobj, KOBJ_ADD);
+
+  /*
+   * Check if any of the other devices (consumers) have been waiting for
+   * this device (supplier) to be added so that they can create a device
+   * link to it.
+   *
+   * This needs to happen after device_pm_add() because device_link_add()
+   * requires the supplier be registered before it's called.
+   *
+   * But this also needs to happen before bus_probe_device() to make sure
+   * waiting consumers can link to it before the driver is bound to the
+   * device and the driver sync_state callback is called for this device.
+   */
+  if (dev->fwnode && !dev->fwnode->dev) {
+    dev->fwnode->dev = dev;
+    fw_devlink_link_device(dev);
+  }
+
+  bus_probe_device(dev);
+
+  /*
+   * If all driver registration is done and a newly added device doesn't
+   * match with any driver, don't block its consumers from probing in
+   * case the consumer device is able to operate without this supplier.
+   */
+  if (dev->fwnode && fw_devlink_drv_reg_done && !dev->can_match)
+    fw_devlink_unblock_consumers(dev);
+
+  if (parent)
+    klist_add_tail(&dev->p->knode_parent,
+             &parent->p->klist_children);
+
+  if (dev->class) {
+    mutex_lock(&dev->class->p->mutex);
+    /* tie the class to the device */
+    klist_add_tail(&dev->p->knode_class,
+             &dev->class->p->klist_devices);
+
+    /* notify any interfaces that the device is here */
+    list_for_each_entry(class_intf,
+            &dev->class->p->interfaces, node)
+      if (class_intf->add_dev)
+        class_intf->add_dev(dev, class_intf);
+    mutex_unlock(&dev->class->p->mutex);
+  }
+
+done:
+  put_device(dev);
+  return error;
+}
+
+void bdev_add(struct block_device *bdev, dev_t dev)
+{
+  bdev->bd_dev = dev;
+  bdev->bd_inode->i_rdev = dev;
+  bdev->bd_inode->i_ino = dev;
+  insert_inode_hash(bdev->bd_inode);
 }
 ```
 
 ```c++
-mount();
-  ksys_mount(); /* copy type, dev_name, data to kernel */
-    do_mount(); /* get path by name */
-      do_new_mount(); /* get fs_type by type */
-        vfs_kern_mount();
-          alloc_vfsmnt();
-          mount_fs();
+mount(dev_name, dir_name, type, flags, data);
+    copy_mount_string(); /* type, dev_name, data */
+    do_mount();
+        struct path path;
+        user_path_at(&path);
+            user_path_at_empty();
+        path_mount(&path);
+            do_new_mount();
+                struct file_system_type *type = get_fs_type(fstype);
+                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
+                vfs_parse_fs_string();
 
-            fs_type.mount();
-              ext4_mount();
-                mount_bdev();
-                  blkdev_get_by_path();
-                    lookup_bdev(); /* 1. find blk inode in /dev/xxx by name*/
-                      kern_path();
-                      d_backing_inode(); /* get inode of devtmpfs */
-                      bd_acquire(); /* find block_dev by dev_t in blkdev fs */
-                        bdget();
-                          iget5_locked(blockdev_superblock, ...); /* blk dev fs */
-                    blkdev_get();  /* 2. open blk device */
-                      __blkdev_get();
-                        get_gendisk();
-                          kobj_lookup();          /* 1. open whole gisk */
-                            dev_to_disk(kobj_to_dev(kobj));
+                /* Create a superblock which can then later be used for mounting */
+                vfs_get_tree(fc);
+                    fc->ops->get_tree(fc); /* ext4_get_tree */
+                    struct super_block *sb = fc->root->d_sb;
+                    security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
 
-                          idr_find(&ext_devt_idr); /* 2. open a partition */
-                            part_to_disk(part);
-                              dev_to_disk(part_to_dev(part));
+                do_new_mount_fc(fc, path, mnt_flags);
+                    struct vfsmount *mnt = vfs_create_mount(fc);
+                        struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
+                        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
+
+                    struct mountpoint *mp = lock_mount(mountpoint);
+                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+                        struct mount *parent = real_mount(path->mnt);
+                        graft_tree(newmnt, parent, mp);
+                            attach_recursive_mnt(mnt, p, mp, false);
+                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+                                commit_tree(source_mnt);
+
+ext4_get_tree(fc);
+    get_tree_bdev(fc, ext4_fill_super);
+        struct block_device *bdev = blkdev_get_by_path(fc->source, mode, fc->fs_type);
+            dev_t dev;
+            lookup_bdev(path, &dev); /* lookup a bdev's dev_t by path */
+                struct path path;
+                kern_path(pathname, LOOKUP_FOLLOW, &path); /* search /dev/xxx (1. devtmpfs) by name */
+                inode = d_backing_inode(path.dentry); /* dentry->d_inode, inode of devtmpfs */
+                *dev = inode->i_rdev;
+
+            bdev = blkdev_get_by_dev(dev, mode, holder);
+                bdev = blkdev_get_no_open(dev);
+                    inode = ilookup(blockdev_superblock, dev); /* search bdev in (2. bdev fs) */
+                        /* find inode in global inode_hashtable */
+                    bdev = &BDEV_I(inode)->bdev;
+
+                if (bdev_is_partition(bdev)) /* bdev->bd_partno */
+                    blkdev_get_part(bdev, mode);
+                else
+                    blkdev_get_whole(bdev, mode);
+                        struct gendisk *disk = bdev->bd_disk;
                         disk->fops->open(bdev, mode);
-                  sget();
-                    sget_userns();
-                      alloc_super();
-                      set_bdev_super();
-                  fill_super();
-                    ext4_fill_super();
-                  dget();
-          list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+
+        fc->sget_key = bdev;
+        struct super_block* s = sget_fc(fc, test_bdev_super_fc, set_bdev_super_fc);
+            s = alloc_super(fc->fs_type, fc->sb_flags, user_ns);
+            list_add_tail(&s->s_list, &super_blocks); /* add to global super block */
+            hlist_add_head(&s->s_instances, &s->s_type->fs_supers);
+
+        fill_super(s, fc);
+            ext4_fill_super();
+        fc->root = dget(s->s_root);
+
 ```
 
 ## direct io
@@ -5304,8 +6066,8 @@ struct ext4_io_submit {
 };
 
 /* find & lock contiguous range of dirty pages and underlying extent to map */
-// mpage_prepare_extent_to_map -> mpage_process_page_bufs ->
-// mpage_submit_page -> ext4_bio_write_page -> io_submit_add_bh
+/* mpage_prepare_extent_to_map -> mpage_process_page_bufs -> */
+/* mpage_submit_page -> ext4_bio_write_page -> io_submit_add_bh */
 static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 {
   struct address_space *mapping = mpd->inode->i_mapping;
@@ -5691,21 +6453,21 @@ void ext4_io_submit(struct ext4_io_submit *io)
   }
   io->io_bio = NULL;
 }
-// ---> submit_bio
+/* ---> submit_bio */
 ```
 
 ## submit_bio
-![](../Images/Kernel/io-bio.png)
+<img src='../Images/Kernel/io-bio.png' height='800' />
 
 ![](../Images/Kernel/io-bio-request.png)
 
 ---
 
-![](../Images/Kernel/io-blk_queue_bio.png)
+<img src='../Images/Kernel/io-blk_queue_bio.png' height='800' />
 
 ```c++
 struct request_queue {
-  // Together with queue_head for cacheline sharing
+  /* Together with queue_head for cacheline sharing */
   struct list_head        queue_head;
   struct request          *last_merge;
   struct elevator_queue   *elevator;
@@ -6274,7 +7036,7 @@ enum elv_merge blk_try_merge(struct request *rq, struct bio *bio)
   return ELEVATOR_NO_MERGE;
 }
 
-// elevator_merge_fn for iosched_cfq is:
+/* elevator_merge_fn for iosched_cfq is: */
 static enum elv_merge cfq_merge(struct request_queue *q, struct request **req,
          struct bio *bio)
 {
@@ -6340,7 +7102,7 @@ __submit_bio(bio);
 ## init request_queue
 
 ```c++
-// Small computer system interface
+/* Small computer system interface */
 static struct scsi_device *scsi_alloc_sdev(
   struct scsi_target *starget,
   u64 lun, void *hostdata)
@@ -6380,7 +7142,7 @@ int blk_init_allocated_queue(struct request_queue *q)
   blk_queue_make_request(q, blk_queue_bio);
   /* init elevator */
   if (elevator_init(q, NULL)) {
-    /* struct elevator_type elevator_noop // fifo
+    /* struct elevator_type elevator_noop fifo
      * struct elevator_type iosched_deadline
      * struct elevator_type iosched_cfq */
   }
@@ -6502,22 +7264,18 @@ void blk_mq_sched_insert_requests(struct blk_mq_hw_ctx *hctx,
   struct elevator_queue *e;
   struct request_queue *q = hctx->queue;
 
-  /*
-   * blk_mq_sched_insert_requests() is called from flush plug
+  /* blk_mq_sched_insert_requests() is called from flush plug
    * context only, and hold one usage counter to prevent queue
-   * from being released.
-   */
+   * from being released. */
   percpu_ref_get(&q->q_usage_counter);
 
   e = hctx->queue->elevator;
   if (e) {
     e->type->ops.insert_requests(hctx, list, false);
   } else {
-    /*
-     * try to issue requests directly if the hw queue isn't
+    /* try to issue requests directly if the hw queue isn't
      * busy in case of 'none' scheduler, and this way may save
-     * us one extra enqueue & dequeue to sw queue.
-     */
+     * us one extra enqueue & dequeue to sw queue. */
     if (!hctx->dispatch_busy && !run_queue_async) {
       blk_mq_run_dispatch_ops(hctx->queue,
         blk_mq_try_issue_list_directly(hctx, list));
@@ -6567,10 +7325,8 @@ static void __blk_mq_delay_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async,
 
 void __blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx)
 {
-  /*
-   * We can't run the queue inline with ints disabled. Ensure that
-   * we catch bad users of this early.
-   */
+  /* We can't run the queue inline with ints disabled. Ensure that
+   * we catch bad users of this early. */
   WARN_ON_ONCE(in_interrupt());
 
   blk_mq_run_dispatch_ops(hctx->queue,
@@ -6607,8 +7363,7 @@ int __blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
     spin_unlock(&hctx->lock);
   }
 
-  /*
-   * Only ask the scheduler for requests, if we didn't have residual
+  /* Only ask the scheduler for requests, if we didn't have residual
    * requests from the dispatch list. This is to avoid the case where
    * we only ever dispatch a fraction of the requests available because
    * of low device queue depth. Once we pull requests out of the IO
@@ -6618,8 +7373,7 @@ int __blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
    *
    * We want to dispatch from the scheduler if there was nothing
    * on the dispatch list or we were able to dispatch from the
-   * dispatch list.
-   */
+   * dispatch list. */
   if (!list_empty(&rq_list)) {
     blk_mq_sched_mark_restart_hctx(hctx);
     if (blk_mq_dispatch_rq_list(hctx, &rq_list, 0)) {
@@ -6655,9 +7409,7 @@ bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *hctx, struct list_head *list,
   if (list_empty(list))
     return false;
 
-  /*
-   * Now process all the entries, sending them to the driver.
-   */
+  /* Now process all the entries, sending them to the driver. */
   errors = queued = 0;
   do {
     struct blk_mq_queue_data bd;
@@ -6673,10 +7425,8 @@ bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *hctx, struct list_head *list,
 
     bd.rq = rq;
 
-    /*
-     * Flag last if we have no more requests, or if we have more
-     * but can't assign a driver tag to it.
-     */
+    /* Flag last if we have no more requests, or if we have more
+     * but can't assign a driver tag to it. */
     if (list_empty(list))
       bd.last = true;
     else {
@@ -6684,10 +7434,8 @@ bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *hctx, struct list_head *list,
       bd.last = !blk_mq_get_driver_tag(nxt);
     }
 
-    /*
-     * once the request is queued to lld, no need to cover the
-     * budget any more
-     */
+    /* once the request is queued to lld, no need to cover the
+     * budget any more */
     if (nr_budgets)
       nr_budgets--;
     ret = q->mq_ops->queue_rq(hctx, &bd);
@@ -6702,11 +7450,9 @@ bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *hctx, struct list_head *list,
       blk_mq_handle_dev_resource(rq, list);
       goto out;
     case BLK_STS_ZONE_RESOURCE:
-      /*
-       * Move the request to zone_list and keep going through
+      /* Move the request to zone_list and keep going through
        * the dispatch list to find more requests the drive can
-       * accept.
-       */
+       * accept. */
       blk_mq_handle_zone_resource(rq, &zone_list);
       needs_resource = true;
       break;
@@ -6720,15 +7466,12 @@ out:
     list_splice_tail_init(&zone_list, list);
 
   /* If we didn't flush the entire list, we could have told the driver
-   * there was more coming, but that turned out to be a lie.
-   */
+   * there was more coming, but that turned out to be a lie. */
   if ((!list_empty(list) || errors || needs_resource ||
        ret == BLK_STS_DEV_RESOURCE) && q->mq_ops->commit_rqs && queued)
     q->mq_ops->commit_rqs(hctx);
-  /*
-   * Any items that need requeuing? Stuff them into hctx->dispatch,
-   * that is where we will continue on next queue run.
-   */
+  /* Any items that need requeuing? Stuff them into hctx->dispatch,
+   * that is where we will continue on next queue run. */
   if (!list_empty(list)) {
     bool needs_restart;
     /* For non-shared tags, the RESTART check will suffice */
@@ -6742,17 +7485,14 @@ out:
     list_splice_tail_init(list, &hctx->dispatch);
     spin_unlock(&hctx->lock);
 
-    /*
-     * Order adding requests to hctx->dispatch and checking
+    /* Order adding requests to hctx->dispatch and checking
      * SCHED_RESTART flag. The pair of this smp_mb() is the one
      * in blk_mq_sched_restart(). Avoid restart code path to
      * miss the new added requests to hctx->dispatch, meantime
-     * SCHED_RESTART is observed here.
-     */
+     * SCHED_RESTART is observed here. */
     smp_mb();
 
-    /*
-     * If SCHED_RESTART was set by the caller of this function and
+    /* If SCHED_RESTART was set by the caller of this function and
      * it is no longer set that means that it was cleared by another
      * thread and hence that a queue rerun is needed.
      *
@@ -6775,8 +7515,7 @@ out:
      * bit is set, run queue after a delay to avoid IO stalls
      * that could otherwise occur if the queue is idle.  We'll do
      * similar if we couldn't get budget or couldn't lock a zone
-     * and SCHED_RESTART is set.
-     */
+     * and SCHED_RESTART is set. */
     needs_restart = blk_mq_sched_needs_restart(hctx);
     if (prep == PREP_DISPATCH_NO_BUDGET)
       needs_resource = true;
