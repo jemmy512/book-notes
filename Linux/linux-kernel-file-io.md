@@ -3265,8 +3265,9 @@ current->backing_dev_info = inode_to_bdi(inode);
 
 generic_perform_write(struct kiocb *iocb, struct iov_iter *i);
     do {
+        struct page *page;
         a_ops->write_begin();
-            ext4_write_begin();
+            ext4_write_begin(struct page **pagep);
                 page = grab_cache_page_write_begin(mapping, index);
                     /* Find and get a reference to a folio from i_pages cache */
                     pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping));
@@ -3279,7 +3280,7 @@ generic_perform_write(struct kiocb *iocb, struct iov_iter *i);
                         create_page_buffers();
                         mark_buffer_dirty();
                         set_buffer_uptodate();
-                ext4_journal_stop(handle);
+                *pages = page;
 
         flush_dcache_page(page);
         copy_page_from_iter_atomic(page, offset, bytes, i);
@@ -3289,6 +3290,7 @@ generic_perform_write(struct kiocb *iocb, struct iov_iter *i);
                 ext4_journal_stop();
                 block_write_end();
                     __block_commit_write();
+                        set_buffer_uptodate(bh);
                         mark_buffer_dirty();
                             __mark_inode_dirty(inode, I_DIRTY_PAGES);
 
@@ -3475,121 +3477,8 @@ void delayed_work_timer_fn(struct timer_list *t)
 ```
 
 ### queue_work
-```c++
- void __queue_work(int cpu, struct workqueue_struct *wq,
-       struct work_struct *work)
-{
-  struct pool_workqueue *pwq;
-  struct worker_pool *last_pool;
-  struct list_head *worklist;
-  unsigned int work_flags;
-  unsigned int req_cpu = cpu;
 
-  /* While a work item is PENDING && off queue, a task trying to
-   * steal the PENDING will busy-loop waiting for it to either get
-   * queued or lose PENDING.  Grabbing PENDING and queueing should
-   * happen with IRQ disabled. */
-  lockdep_assert_irqs_disabled();
-
-
-  /* if draining, only works from the same workqueue are allowed */
-  if (unlikely(wq->flags & __WQ_DRAINING) &&
-    return;
-retry:
-  /* pwq which will be used unless @work is executing elsewhere */
-  if (wq->flags & WQ_UNBOUND) {
-    if (req_cpu == WORK_CPU_UNBOUND)
-      cpu = wq_select_unbound_cpu(raw_smp_processor_id());
-    pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
-  } else {
-    if (req_cpu == WORK_CPU_UNBOUND)
-      cpu = raw_smp_processor_id();
-    pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
-  }
-
-  /* If @work was previously on a different pool, it might still be
-   * running there, in which case the work needs to be queued on that
-   * pool to guarantee non-reentrancy. */
-  last_pool = get_work_pool(work);
-  if (last_pool && last_pool != pwq->pool) {
-    struct worker *worker;
-
-    spin_lock(&last_pool->lock);
-
-    worker = find_worker_executing_work(last_pool, work);
-
-    if (worker && worker->current_pwq->wq == wq) {
-      pwq = worker->current_pwq;
-    } else {
-      /* meh... not running there, queue here */
-      spin_unlock(&last_pool->lock);
-      spin_lock(&pwq->pool->lock);
-    }
-  } else {
-    spin_lock(&pwq->pool->lock);
-  }
-
-  /* pwq is determined and locked.  For unbound pools, we could have
-   * raced with pwq release and it could already be dead.  If its
-   * refcnt is zero, repeat pwq selection.  Note that pwqs never die
-   * without another pwq replacing it in the numa_pwq_tbl or while
-   * work items are executing on it, so the retrying is guaranteed to
-   * make forward-progress. */
-  if (unlikely(!pwq->refcnt)) {
-    if (wq->flags & WQ_UNBOUND) {
-      spin_unlock(&pwq->pool->lock);
-      cpu_relax();
-      goto retry;
-    }
-  }
-
-  /* pwq determined, queue */
-  trace_workqueue_queue_work(req_cpu, pwq, work);
-
-  if (WARN_ON(!list_empty(&work->entry))) {
-    spin_unlock(&pwq->pool->lock);
-    return;
-  }
-
-  pwq->nr_in_flight[pwq->work_color]++;
-  work_flags = work_color_to_flags(pwq->work_color);
-
-  if (likely(pwq->nr_active < pwq->max_active)) {
-    trace_workqueue_activate_work(work);
-    pwq->nr_active++;
-    worklist = &pwq->pool->worklist;
-    if (list_empty(worklist))
-      pwq->pool->watchdog_ts = jiffies;
-  } else {
-    work_flags |= WORK_STRUCT_INACTIVE;
-    worklist = &pwq->inactive_works;
-  }
-
-  debug_work_activate(work);
-  insert_work(pwq, work, worklist, work_flags);
-
-  spin_unlock(&pwq->pool->lock);
-}
-
-static void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
-      struct list_head *head, unsigned int extra_flags)
-{
-  struct worker_pool *pool = pwq->pool;
-
-  /* we own @work, set data and link */
-  set_work_pwq(work, pwq, extra_flags);
-  list_add_tail(&work->entry, head);
-  get_pwq(pwq);
-
-  /* Ensure either wq_worker_sleeping() sees the above
-   * list_add_tail() or we see zero nr_running to avoid workers lying
-   * around lazily while there are works to be processed. */
-  smp_mb();
-
-  if (__need_more_worker(pool))
-    wake_up_worker(pool);
-}
-```
+* [linux-kernel.md schedule_work](./linux-kernel.md#schedule_work)
 
 Direct IO and buffered IO will eventally call `submit_bio`.
 
@@ -3604,6 +3493,9 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 
 # IO
 
+![](../Images/Kernel/io-stack.png)
+
+
 ![](../Images/Kernel/file-read-write.png)
 
 All devices have the corresponding device file in /dev(is devtmpfs file system), which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
@@ -3615,6 +3507,7 @@ All devices have the corresponding device file in /dev(is devtmpfs file system),
 * [OPW, Linux: The block I/O layer, :one: Base concepts ](http://ari-ava.blogspot.com/2014/06/opw-linux-block-io-layer-part-1-base.html) [:two: The request interface](http://ari-ava.blogspot.com/2014/06/opw-linux-block-io-layer-part-2-request.html) [:three: The make request interface](http://ari-ava.blogspot.com/2014/07/opw-linux-block-io-layer-part-3-make.html) [:four: The multi-queue interface](http://ari-ava.blogspot.com/2014/07/opw-linux-block-io-layer-part-4-multi.html)
 * [Linux Block IO: Introducing Multi-queue SSD Access on Multi-core Systems.pdf](https://kernel.dk/systor13-final18.pdf)
 * [The multiqueue block layer](https://lwn.net/Articles/552904/)
+* [Simple Clear File IO :cn:](https://spongecaptain.cool/SimpleClearFileIO/)
 
 ```c++
 lsmod           /* list installed modes */
@@ -4349,11 +4242,10 @@ again:
 }
 
 struct inode *find_inode_nowait(struct super_block *sb,
-        unsigned long hashval,
-        int (*match)(struct inode *, unsigned long,
-               void *),
-        void *data)
-{
+    unsigned long hashval,
+    int (*match)(struct inode *, unsigned long, void *),
+    void *data
+) {
   struct hlist_head *head = inode_hashtable + hash(sb, hashval);
   struct inode *inode, *ret_inode = NULL;
   int mval;
@@ -7728,7 +7620,7 @@ __submit_bio(bio);
             rq = __blk_mq_alloc_requests(&data);
 
         if (plug)
-            blk_add_rq_to_plug(plug, rq); /* request is scheduled to device derive when blk_start_unplug */
+            blk_add_rq_to_plug(plug, rq); /* request is scheduled to device derive when blk_finish_plug */
         else if (rq->rq_flags & RQF_ELV)
             blk_mq_sched_insert_request(rq, false, true, true);
         else
@@ -7740,6 +7632,7 @@ blk_finish_plug();
     if (plug == current->plug) {
     __blk_flush_plug(plug, false);
         blk_mq_flush_plug_list();
+            struct request_queue *q = rq->q;
             if (!multiple_queues && !has_elevator && !from_schedule) {
                 if (__blk_mq_flush_plug_list(q, plug))
                     q->mq_ops->queue_rqs(&plug->mq_list);
