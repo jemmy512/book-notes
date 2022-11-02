@@ -151,7 +151,6 @@ $ file /bin/bash
 
 $ file /lib/ld-2.6.1.so
 /lib/libc-2.6.1.so: ELF 32-bit LSB shared object, Intel 80386, version 1 (SYSV), for GNU/Linux 2.6.8, stripped
-
 ```
 
 ## 3.2 What does the object file look like?
@@ -167,6 +166,27 @@ Separating data and instruction has many benefits:
 ## 3.3 Mining SimpleSection.o
 
 ## 3.4 ELF file structure description
+
+![](../Images/LinkLoadLibrary/3.4-elf-format.png)
+
+```c++
+typedef struct elf32_hdr {
+    unsigned char   e_ident[EI_NIDENT];
+    Elf32_Half      e_type;
+    Elf32_Half      e_machine;
+    Elf32_Word      e_version;
+    Elf32_Addr      e_entry;	/* Entry point */
+    Elf32_Off       e_phoff;
+    Elf32_Off       e_shoff;
+    Elf32_Word      e_flags;
+    Elf32_Half      e_ehsize;
+    Elf32_Half      e_phentsize;
+    Elf32_Half      e_phnum;
+    Elf32_Half      e_shentsize;
+    Elf32_Half      e_shnum;
+    Elf32_Half      e_shstrndx;
+} Elf32_Ehdr;
+```
 
 ## 3.5 Linked interface-symbol
 
