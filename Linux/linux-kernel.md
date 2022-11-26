@@ -48,6 +48,7 @@
         * [flush_work](#flush_work)
         * [destroy_worker](#destroy_worker)
         * [maday_timer](#maday_timer)
+        * [call graph](#call-graph-cmwq)
 
 * [Pthread](#Pthread)
     * [pthread_create](#pthread_create)
@@ -74,6 +75,7 @@
     * [tasklet](#tasklet)
         * [open TASKLET_SOFTIRQ](#open-tasklet_softirq)
         * [tasklet_schedule](#tasklet_schedule)
+    * [call graph](#call-graph-intr)
 
 * [Memory Management :link:](./linux-kernel-mem.md)
 * [Network :link:](./linux-kernel-net.md)
@@ -5695,6 +5697,8 @@ kthread();
 
 ## cmwq
 
+* [Kernel Doc](https://docs.kernel.org/core-api/workqueue.html)
+
 <img src='../Images/Kernel/proc-cmwq.png' style='max-height:850px'/>
 
 ---
@@ -7275,6 +7279,7 @@ static void send_mayday(struct work_struct *work)
 }
 ```
 
+### call-graph-cmwq
 ```c++
 start_kernel();
     workqueue_init_early();
@@ -13925,52 +13930,6 @@ void __exit_to_user_mode(void)
 }
 ```
 
-```c++
-#define DECLARE_IDTENTRY_IRQ(vector, cfunc)
-    idtentry \vector asm_\cfunc \cfunc has_error_code=1
-
-    SYM_CODE_START(\asmsym)
-        call \cfunc
-        jmp  error_return
-    SYM_CODE_END(\asmsym)
-
-    SYM_CODE_START_LOCAL(error_return)
-    testb $3, CS(%rsp)
-    jz restore_regs_and_return_to_kernel
-    jmp swapgs_restore_regs_and_return_to_usermode
-    SYM_CODE_END(error_return)
-
-
-#define DEFINE_IDTENTRY_IRQ(func)
-    void func(struct pt_regs *regs, unsigned long error_code) {
-        run_irq_on_irqstack_cond(__##func, regs, vector);
-            if (user_mode(regs) || __this_cpu_read(hardirq_stack_inuse)) {
-                func(c_args);
-            } else {
-                call_on_irqstack(func, asm_call, constr);
-                    call_on_stack(__this_cpu_read(hardirq_stack_ptr), func, asm_call, argconstr)
-                        /* 1. Write the stack pointer into the top most place of the irq  stack.
-                         * 2. Switch the stack pointer to the top of the irq stack
-                         * 3. Invoke whatever needs to be done (@asm_call argument)
-                         * 4. Pop the original stack pointer from the top of the irq stack */
-            }
-        irqentry_exit(regs, state);
-            if (user_mode(regs)) {
-                irqentry_exit_to_user_mode(regs);
-                    exit_to_user_mode_prepare(regs);
-                        if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
-                            ti_work = exit_to_user_mode_loop(regs, ti_work);
-                                if (ti_work & _TIF_NEED_RESCHED)
-                                    schedule();
-                                if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                                    arch_do_signal_or_restart(regs);
-                    __exit_to_user_mode();
-                        arch_exit_to_user_mode();
-            }
-    }
-
-```
-
 ## do_page_fault
 
 [page-fault](./linux-kernel-mem.md#page-fault)
@@ -14654,6 +14613,53 @@ void __tasklet_schedule_common(struct tasklet_struct *t,
   raise_softirq_irqoff(softirq_nr);
   local_irq_restore(flags);
 }
+```
+
+## call-graph-intr
+```c++
+#define DECLARE_IDTENTRY_IRQ(vector, cfunc)
+    idtentry \vector asm_\cfunc \cfunc has_error_code=1
+
+    SYM_CODE_START(\asmsym)
+        call \cfunc
+        jmp  error_return
+    SYM_CODE_END(\asmsym)
+
+    SYM_CODE_START_LOCAL(error_return)
+    testb $3, CS(%rsp)
+    jz restore_regs_and_return_to_kernel
+    jmp swapgs_restore_regs_and_return_to_usermode
+    SYM_CODE_END(error_return)
+
+
+#define DEFINE_IDTENTRY_IRQ(func)
+    void func(struct pt_regs *regs, unsigned long error_code) {
+        run_irq_on_irqstack_cond(__##func, regs, vector);
+            if (user_mode(regs) || __this_cpu_read(hardirq_stack_inuse)) {
+                func(c_args);
+            } else {
+                call_on_irqstack(func, asm_call, constr);
+                    call_on_stack(__this_cpu_read(hardirq_stack_ptr), func, asm_call, argconstr)
+                        /* 1. Write the stack pointer into the top most place of the irq  stack.
+                         * 2. Switch the stack pointer to the top of the irq stack
+                         * 3. Invoke whatever needs to be done (@asm_call argument)
+                         * 4. Pop the original stack pointer from the top of the irq stack */
+            }
+        irqentry_exit(regs, state);
+            if (user_mode(regs)) {
+                irqentry_exit_to_user_mode(regs);
+                    exit_to_user_mode_prepare(regs);
+                        if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
+                            ti_work = exit_to_user_mode_loop(regs, ti_work);
+                                if (ti_work & _TIF_NEED_RESCHED)
+                                    schedule();
+                                if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                                    arch_do_signal_or_restart(regs);
+                    __exit_to_user_mode();
+                        arch_exit_to_user_mode();
+            }
+    }
+
 ```
 
 [Interrupts, Exceptions, and System Calls](http://www.cse.iitm.ac.in/~chester/courses/15o_os/slides/5_Interrupts.pdf)
