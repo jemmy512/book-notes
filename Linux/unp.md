@@ -439,7 +439,7 @@ Connection is idle, keep-alive not set | Peer TCP sends a `FIN`, which we can de
  * Default operation of close: it returns immediately. ![](../Images/Unp/7.5-so-linger-1.png)
  * close with SO_LINGER socket option set and l_linger a positive value. ![](../Images/Unp/7.5-so-linger-2.png)
  * close with SO_LINGER socket option set and l_linger a small positive value. ![](../Images/Unp/7.5-so-linger-3.png)
- * A successful return from close, with the SO_LINGER socket option set, only tells us that the data we sent (and our FIN) have been acknowledged by the peer TCP. This does not tell us whether the peer application has read the data. If we do not set the SO_LINGER socket option, we do not know whether the peer TCP has acknowledged the data.
+ * A successful return from close, with the SO_LINGER socket option set, only tells us that the data we sent (and our FIN) have been acknowledged by the peer TCP. This does not tell us whether the peer application has read the data. **If we do not set the SO_LINGER socket option, we do not know whether the peer TCP has acknowledged the data**.
 * Using SHUT_WR to know that peer has received our data. ![](../Images/Unp/7.5-so-linger-4.png)
 * Another way to know that the peer application has read our data is to use an application-level acknowledgment, or application ACK. ![](../Images/Unp/7.5-so-linger-5.png)
 
