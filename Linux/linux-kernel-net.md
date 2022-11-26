@@ -9,6 +9,7 @@
         * [tcp_conn_request](#tcp_conn_request)
         * [tcp_rcv_synsent_state_process](#tcp_rcv_synsent_state_process)
         * [tcp_check_req](#tcp_check_req)
+    * [call graph](#call-graph-connect)
 * [accept](#accept)
 * [accept queue](#accept-queue)
     * [TCP_LISTEN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
@@ -39,6 +40,8 @@
         * [neigh_output](#neigh_output)
     * [dev layer](#dev-layer-tx)
     * [driver layer](#driver-layer-tx)
+    * [call graph](#call-graph-write)
+
 * [read](#read)
     * [driver layer](#driver-layer-rx)
     * [mac layer](#mac-layer-rx)
@@ -52,6 +55,7 @@
         * [tcp_data_queue](#tcp_data_queue)
     * [vfs layer](#vfs-layer-rx)
     * [socket layer](#socket-layer-rx])
+    * [call graph](#call-graph-read)
 
 * [epoll](#epoll)
     * [epoll_create](#epoll_create)
@@ -65,6 +69,7 @@
     * [sock_def_write_space](#sock_def_write_space)
     * [eventpoll_init](#eventpoll_init)
     * [evetfd](#evetfd)
+    * [call graph](#call-graph-epoll)
 
 * [route](#route)
   * [route out](#route-out)
@@ -127,6 +132,7 @@
 ---
 
 * [Linux Thundering Herd Problem :cn:](https://mp.weixin.qq.com/s/dQWKBujtPcazzw7zacP1lg)
+* [Linux Kernel TCP/IP Stack :cn:](https://mp.weixin.qq.com/s/EAEzLbsRIWyAv2x8tR3gNA)
 
 <img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
@@ -2720,6 +2726,7 @@ sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
 }
 ```
 
+## call-graph-connect
 ```C++
 send:
 connect();
@@ -5759,6 +5766,7 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 }
 ```
 
+## call-graph-write
 ```C++
 /* vfs layer */
 SYSCALL_DEFINE3(write, fd, buf, count);
@@ -5779,7 +5787,7 @@ tcp_sendmsg();
   if (!TCPF_ESTABLISHED)
     sk_stream_wait_connect();
 
-  /* 2. alloc skb */
+  /* 2. alloc skb & insert into sk_write_queue */
   skb = sk_stream_alloc_skb(); /* alloc new one if null */
   skb_entail(sk, skb); /* add into sk->sk_write_queue */
 
@@ -8595,6 +8603,7 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 * [wait_woken](./linux-kernel.md#wait_woken)
 * [wake_up](./linux-kernel.md#wake_up)
 
+## call-graph-read
 ```c++
 /* driver layer */
 ixgb_intr(int irq, void *data)
@@ -15432,6 +15441,7 @@ int __init eventpoll_init(void)
 }
 ```
 
+## call-graph-epoll
 ```c++
 /* epoll_create */
 epoll_create();
@@ -15588,7 +15598,7 @@ tcp_data_ready();
                                     if (!(epi->event.events & ~EP_PRIVATE_BITS))
                                         return;
                                     /* 2. check intrested events */
-                                    if (!(pollflags & epi->event.events)
+                                    if (!(pollflags & epi->event.events))
                                         return;
                                     /* 3. add to epoll ready list */
                                     if (!ep_is_linked(epi))
