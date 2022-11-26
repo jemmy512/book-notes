@@ -352,6 +352,8 @@ struct page {
 ![](../Images/Kernel/mem-physic-numa-1.png)
 ![](../Images/Kernel/mem-physic-numa-2.png)
 
+![](../Images/Kernel/mem-physic-numa-3.png)
+
 # buddy system
 ```C++
 struct free_area  free_area[MAX_ORDER];
