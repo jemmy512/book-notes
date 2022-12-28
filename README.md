@@ -56,6 +56,11 @@
 * [Refactoring to Patterns :soon:](./SE/refactoring-to-patterns.md)
 * [Working Effectively with Legacy Code :soon:](./SE/working-effectively-with-legacy-code.md)
 
+# C
+* [The C Programming Language :soon:](./C/the-c-programming-language.md)
+* [Expert C Programming: Deep C Secrets :soon:](./C/expert-c-programming.md)
+* [C Traps and Pitfalls :soon:](./C/c-traps-and-pitfalls.md)
+
 # C++
 * [C++ Core Guildlines](./Cpp/cpp-core-guidelines.md)
 * [C++ Primer](./Cpp/cpp-primer.md)
@@ -81,9 +86,11 @@
     * [File & IO System](./Linux/linux-kernel-file-io.md)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
+* [The Linux Kernel Annotated Reference :soon:]()
+* [Linux Kernel Development :soon:](./Linux/linux-kernel-development.md)
+* [Linux System Programming :soon:](./Linux/linux-system-programming.md)
 * [Understanding Linux Network Internals](./Linux/understanding-linux-network-internals.md)
 * [Understanding The Linux Virtual Memory Manager](./Linux/understanding-the-linux-virtual-memory-manager.md)
-* [Linux Kernel Development :soon:](./linux-kernel-development.md)
 * [Linux Basic](./Linux/linux-basic.md)
 * [Linux Performance Tuning](./Linux/linux-performance-tuning.md)
 
