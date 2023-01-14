@@ -98,3 +98,6 @@
 
 # Others
 * [Debug kernel with VS Code](./Linux/vscode-debug-kernel.md)
+
+# English
+[英语语法新思维: 初级教程+中级教程+高级教程](./Eng/英语语法新思维.md)
