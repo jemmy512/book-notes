@@ -47,7 +47,7 @@ int main() {
 # 2 Syntactic pitfalls
 ## 2.1 Understanding function declarations
 
-If fp is a pointer to a function, **\*fp** is the function itself, so **(*fp)()** is the way to invoke it. ANSI C p~rmits this to be abbreviated as **fp()**
+If fp is a pointer to a function, **\*fp** is the function itself, so **(*fp)()** is the way to invoke it. ANSI C permits this to be abbreviated as **fp()**
 
 ```c
 ( *(void(*)())0 ) ();
@@ -193,8 +193,8 @@ for (monthp = calendar; monthp < &calendar[12]; monthp++) {
 A character string constant in C represents the address of an area of memory that holds the characters in the constant, followed by a null character (' \0').
 
 ```c
-ehar *r, *malloe();
-r =malloe(strlen(s) +strlen(t)); strepy(r, s);
+char *r, *malloe();
+r = malloe(strlen(s) + strlen(t));
 strcpy(r, s);
 strcat(r, t);
 ```
@@ -205,13 +205,13 @@ This example, however, fails for three reasons
 ```c
 char *r, *malloc();
 
-r = malioe(strlen(s) + strlen(t) + 1);
+r = malloc(strlen(s) + strlen(t) + 1);
 if (!r) {
     complain();
     exit(1);
 }
 
-strepy(r, s);
+strcpy(r, s);
 strcat(r, t);
 
 free(r) ;
@@ -314,7 +314,7 @@ Although linkers don't understand C, they do understand machine language and mem
 
 **int a=7;** is a definition of a that includes an explicit initial value. Not only does it allocate memory for a, but it says what value that memory should have.
 
-**extern int a;** is not a definition of a. It still says that a ISan external integer variable, but by including the extern ~eyword; it explicitly says that the storage for a is allocated somewhere else.
+**extern int a;** is not a definition of a. It still says that a ISan external integer variable, but by including the extern keyword; it explicitly says that the storage for a is allocated somewhere else.
 
 What about a program that defines the same external variable more than once?
 * systems vary, most systems will reject the program.
@@ -398,7 +398,7 @@ if (errno)
     complain
 
 // E.g., 2 error
-errno = O;
+errno = 0;
 // call library function
 if (errno)
     complain
@@ -494,7 +494,7 @@ else
     { if (I(y > x)) assert_error("foo.c", 39); };
 ```
 
-The right way to define assert is far from obvious: make the body of assert look like an expression and not a statement:
+The right way to define assert is far from obvious: make the body of assert **look like an expression** and not a statement:
 ```c
 #define assert(e) \
     ((void)((e) || _assert_error(__FILE __ , __LINE __)))
@@ -529,7 +529,7 @@ The language definition guarantees a few things about the relative sizes of the 
 ## 7.4 Are characters signed or unsigned?
 
 But a compiler converting a char to an int has a choice: should it treat the char as a signed or an unsigned quantity?
-* If the former, it should expand the char to an int by replicat- ing the sign bit;
+* If the former, it should expand the char to an int by replicating the sign bit;
 * if the latter, it should fill the extra bit positions with zeroes.
 
 If you care whether a character value with the high-order bit on is treated as a negative number, you should probably declare it as **unsigned char**. Such values are guaranteed to be zero-extended when converted to integer, whereas ordinary char variables may be signed in one implementation and unsigned in another.
@@ -539,9 +539,9 @@ If you care whether a character value with the high-order bit on is treated as a
 Two questions seem to cause trouble for people who use shift operators:
 1. In a right shift, are vacated bits filled with zeroes or copies of the sign bit?
 
-    If the item being shifted is unsigned, zeroes are shifted in. If the item is signed, the implementation is permit- ted to fill vacated bit positions either with zeroes or with copies of the sign bit.
+    If the item being shifted is unsigned, zeroes are shifted in. If the item is signed, the implementation is permitted to fill vacated bit positions either with zeroes or with copies of the sign bit.
 
-    If you care about vacated bits in a right shift, declare the vari- able in question as unsigned.
+    If you care about vacated bits in a right shift, declare the variable in question as unsigned.
 
 2. What values are permitted for the shift count?
 
@@ -563,7 +563,7 @@ What relationships might we want to hold between a, b, p, and q?
 2. If we change the sign of a, we want that to change the sign of q, but not the magnitude.
 3. When b>O, we want to ensure that r>=O and r<b. For instance, if the remainder is being used as an index to a hash table, it is important to be able to know that it will always be a valid index.
 
-Thus C, and any language that implements truncating integer divi- sion, must give up at least one of these three principles. Most program- ming languages give up number 3.
+Thus C, and any language that implements truncating integer division, must give up at least one of these three principles. Most programming languages give up number 3.
 
 ## 7.8 How big is a random number?
 ## 7.9 Case conversion
@@ -575,25 +575,27 @@ Thus C, and any language that implements truncating integer divi- sion, must giv
 
 these macros depend on the implementation's character set to the extent that they demand that the difference between an upper-case letter and the corresponding lower-case letter be the same constant for all letters.
 
-These macros do have one disadvantage, though: when given some- thing that is not a letter of the appropriate case, they return garbage.
+These macros do have one disadvantage, though: when given something that is not a letter of the appropriate case, they return garbage.
 
 AT&T software development noticed:
 ```c
-#define toupper(c) ((c) >= 'a' && (c) <= 'z' ? (c) + 'A' - 'a' : (c))
-#define tolower(c) ((c) >= 'A' && (c) <= 'Z' ? (c) + 'a' - 'A' : (c))
+#define toupper(c) ((c) >= 'a' && (c) <= 'z' ? (c) + 'A'-'a' : (c))
+#define tolower(c) ((c) >= 'A' && (c) <= 'Z' ? (c) + 'a'-'A' : (c))
 ```
 
-this would cause c to be evaluated anywhere between one and three tiines for each call, which would play havoc with expres- sions like toupper (*p++ ). Instead, he decided to rewrite toupper and tolower as functions
+this would cause c to be evaluated anywhere between one and three times for each call, which would play havoc with expressions like toupper (*p++ ). Instead, he decided to rewrite toupper and tolower as functions
 ```c
 int toupper(int c) {
     if (c >= 'a' && c <= 'z')
-        return c + 'A' - 'a';
+        return c + 'A'-'a';
 
     return c;
 }
 ```
 
 ## 7.10 Free first, then reallocate?
+
+## 7.11 An example of portability problems
 
 ```c
 void printnum(long n, void (*p)()) {
@@ -614,7 +616,7 @@ void printnum(long n, void (*p)()) {
 void printneg(long n, void (*p)()) {
     long q;
     int r;
-    
+
     q = n/ 10;
     r = n % 10;
     if (r > 0) {
@@ -628,8 +630,6 @@ void printneg(long n, void (*p)()) {
     (*p)("0123456789"[-r]);
 }
 ```
-
-## 7.11 An example of portability problems
 
 # 8 Advice and answers
 ## 8.1 Advice
