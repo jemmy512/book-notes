@@ -22,7 +22,7 @@
 * Operating System
     * [Computer System: A Programmer's Perspective](./CS/computer-system-a-programmers-perspective.md)
     * [Operating Systems: Three Easy Pieces :soon:]()
-    * [Operating System Concepts :soon:]()
+    * [Operating System Concepts](./CS/operating-system-concepts.md)
     * [Modern Operating System](./CS/modern-operating-system.md)
     * [Operating Systems Design and Implementation :soon:](./CS/computer-system-design-implementation.md)
 
