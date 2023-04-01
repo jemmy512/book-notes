@@ -1,4 +1,7 @@
+[:link: Linux Memory Management Documentation](https://docs.kernel.org/mm/index.html)
+
 # Table of Contents
+* [boot](#boot)
 * [segment](#segment)
 * [paging](#paging)
 * [mm_init](#mm_init)
@@ -43,6 +46,105 @@
 ![](../Images/Kernel/kernel-structual.svg)
 
 ---
+
+# boot
+```s
+__primary_switch
+    bl record_mmu_state
+    bl preserve_boot_args
+    bl create_idmap
+
+    bl __cpu_setup
+
+    b __primary_switch
+        bl __enable_mmu
+        bl clear_page_tables
+        bl create_kernel_mapping
+        bl __primary_switched
+            adr_l x4, init_task
+            init_cpu_task x4, x5, x6
+
+            adr_l x8, vectors   // load VBAR_EL1 with virtual
+            msr vbar_el1, x8   // vector table address
+
+            bl set_cpu_boot_mode_flag
+
+            bl __pi_memset
+
+            mov x0, x21    // pass FDT address in x0
+            bl early_fdt_map
+                early_fixmap_init()
+                    __p4d_populate(p4dp, __pa_symbol(bm_pud))
+                    __pud_populate(pudp, __pa_symbol(bm_pmd))
+                    __pmd_populate(pmdp, __pa_symbol(bm_pte))
+
+                early_fdt_ptr = fixmap_remap_fdt(dt_phys, size)
+                    create_mapping_noalloc()
+
+
+
+            mov x0, x20    // pass the full boot status
+            bl init_feature_override
+            bl start_kernel
+```
+
+```c
+/* init/main.c * /
+start_kernel()
+    page_address_init();
+
+    setup_arch(&command_line);
+        early_fixmap_init();
+        early_ioremap_init();
+        setup_machine_fdt(__fdt_pointer);
+        arm64_memblock_init();
+        paging_init();
+        acpi_table_upgrade();
+        bootmem_init();
+
+    build_all_zonelists(NULL);
+    page_alloc_init();
+    mm_init();
+    kmem_cache_init_late();
+    pagecache_init();
+```
+
+## paging_init
+```c
+/* arch/arm64/mm/mmu.c */
+paging_init()
+    map_kernel(pgdp);
+        map_kernel_segment(pgdp, _stext, _etext, text_prot);
+            __create_pgd_mapping(pgdp, phys, virt, size)
+                __create_pgd_mapping_locked(pgdir, phys, virt, size)
+
+        map_kernel_segment(pgdp, __start_rodata, __inittext_begin);
+        map_kernel_segment(pgdp, __inittext_begin, __inittext_end);
+        map_kernel_segment(pgdp, __initdata_begin, __initdata_end);
+        map_kernel_segment(pgdp, _data, _end);
+
+    /* map all the memory banks */
+    map_mem(pgdp);
+        memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
+        for_each_mem_range(i, &start, &end) {
+            if (start >= end)
+                break;
+            __map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL), flags);
+                __create_pgd_mapping(pgdp, phys, virt, size);
+                    __create_pgd_mapping_locked()
+        }
+
+    pgd_clear_fixmap();
+    cpu_replace_ttbr1(lm_alias(swapper_pg_dir), init_idmap_pg_dir);
+	init_mm.pgd = swapper_pg_dir;
+
+	memblock_phys_free(init_pg_dir, size);
+
+	memblock_allow_resize();
+
+	create_idmap();
+
+```
 
 # segment
 ```C++
@@ -1740,8 +1842,8 @@ kmem_cache_alloc(s, flags)
                 kfence_alloc()
                 __slab_alloc_node(s, gfpflags, node, addr, orig_size)
                     if (ifdef_CONFIG_SLUB_TINY) {
-                        obj = get_partial(s, node)
-                            obj = get_partial_node(s, n)
+                        obj = get_partial(s, node) {
+                            obj = get_partial_node(s, n) {
                                 list_for_each_entry_safe(&n->partial) {
                                     obj = alloc_single_from_partial(s, n, slab, pc->orig_size);
                                         object = slab->freelist;
@@ -1761,8 +1863,21 @@ kmem_cache_alloc(s, flags)
 
                                     if (obj)
                                         return obj;
-
+                                    /* Remove slab from the partial list, freeze it and
+                                     * return the pointer to the freelist.*/
                                     t = acquire_slab(s, n)
+                                        __cmpxchg_double_slab(s, slab,
+                                            freelist, counters,
+                                            new.freelist, new.counters,
+                                            "acquire_slab"
+                                        )
+                                        remove_partial(n, slab)
+                                            list_del(&slab->slab_list);
+                                            n->nr_partial--;
+
+                                    if (!t)
+                                        break;
+
                                     if (!obj) {
                                         *pc->slab = slab;
                                         obj = t;
@@ -1772,15 +1887,19 @@ kmem_cache_alloc(s, flags)
                                     }
                                 }
 
+                                return obj;
+                            }
+
                             if (obj)
                                 return obj;
                             obj = get_any_partial(s)
                                 return NULL;
+                        }
 
                         if (obj)
                             return obj;
 
-                        slab = new_slab(s, gfpflags, node)
+                        slab = new_slab(s, gfpflags, node)  {
                             allocate_slab(s, f, n)
                                 slab = alloc_slab_page(alloc_gfp, node, oo);
                                     alloc_pages()
@@ -1807,6 +1926,7 @@ kmem_cache_alloc(s, flags)
                                 }
 
                                 return slab;
+                        }
 
                         alloc_single_from_new_slab(s, slab, orig_size)
                             object = slab->freelist;
@@ -1828,7 +1948,7 @@ kmem_cache_alloc(s, flags)
 
                             if (unlikely(!object || !slab || !node_match(slab, node))) {
                                 object = __slab_alloc(s, gfpflags, node, addr, c, orig_size);
-                                    ___slab_alloc(s, gfpflags, node, addr, c, orig_size);
+                                    ___slab_alloc(s, gfpflags, node, addr, c, orig_size) {
                                         reread_slab:
                                             slab = READ_ONCE(c->slab);
                                             if (!slab) {
@@ -1919,6 +2039,7 @@ kmem_cache_alloc(s, flags)
                                             c->slab = slab;
 
                                             goto load_freelist;
+                                    }
 
                             } else {
                                 void *next_object = get_freepointer_safe(s, object);

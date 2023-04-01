@@ -1,5 +1,5 @@
 # Table of Contents
-* [Init](#Init)
+* [Boot](#boot)
     * [CPU](#cpu)
     * [bios](#bios)
     * [init-kernel](#init-kernel)
@@ -89,7 +89,7 @@
 
 <img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
-# Init
+# Boot
 ## cpu
 <img src='../Images/Kernel/init-cpu.png' style='max-height:850px'/>
 
@@ -149,6 +149,61 @@
 
 * [GNU GRUB Manual 2.06](https://www.gnu.org/software/grub/manual/grub/html_node/index.html#SEC_Contents)
 * [GNU GRUB Manual 2.06: Images](https://www.gnu.org/software/grub/manual/grub/html_node/Images.html)
+
+```s
+/* arch/arm64/kernel/head.S */
+ * Kernel startup entry point.
+ * ---------------------------
+ *
+ * The requirements are:
+ *   MMU = off, D-cache = off, I-cache = on or off,
+ *   x0 = physical address to the FDT blob. */
+
+__HEAD
+  efi_signature_nop
+  b  primary_entry
+  .quad  0
+  le64sym  _kernel_size_le
+  le64sym  _kernel_flags_le
+  .quad  0 // reserved
+  .quad  0 // reserved
+  .quad  0 // reserved
+  .ascii  ARM64_IMAGE_MAGIC
+  .long  .Lpe_header_offset
+
+  __EFI_PE_HEADER
+
+  .section ".idmap.text","a"
+
+
+__primary_switch
+    bl record_mmu_state
+    bl preserve_boot_args
+    bl create_idmap
+
+    bl __cpu_setup
+    b __primary_switch
+        bl __enable_mmu
+        bl clear_page_tables
+        bl create_kernel_mapping
+        bl __primary_switched
+            adr_l x4, init_task
+            init_cpu_task x4, x5, x6
+
+            adr_l x8, vectors   // load VBAR_EL1 with virtual
+            msr vbar_el1, x8   // vector table address
+
+            bl set_cpu_boot_mode_flag
+
+            bl __pi_memset
+
+            mov x0, x21    // pass FDT address in x0
+            bl early_fdt_map   // Try mapping the FDT early
+            mov x0, x20    // pass the full boot status
+            bl init_feature_override  // Parse cpu feature overrides
+
+            bl start_kernel
+```
 
 ## init kernel
 ```c++
@@ -5544,6 +5599,47 @@ SYSCALL_DEFINE3(execve);
                                     force_iret();
                     }
 
+```
+
+## exit
+```
+    do_exit(code)
+    synchronize_group_exit(tsk, code);
+
+    kcov_task_exit(tsk);
+    kmsan_task_exit(tsk);
+
+    coredump_task_exit(tsk);
+    ptrace_event(PTRACE_EVENT_EXIT, code);
+
+    validate_creds_for_do_exit(tsk);
+
+    io_uring_files_cancel();
+    exit_signals(tsk);
+
+    exit_mm();
+    exit_sem(tsk);
+
+  exit_shm(tsk);
+  exit_files(tsk);
+  exit_fs(tsk);
+  exit_task_namespaces(tsk);
+  exit_task_work(tsk);
+  exit_thread(tsk);
+    perf_event_exit_task(tsk);
+  sched_autogroup_exit_task(tsk);
+  cgroup_exit(tsk);
+    exit_tasks_rcu_start();
+  exit_notify(tsk, group_dead);
+  proc_exit_connector(tsk);
+  mpol_put_task_policy(tsk);
+    exit_io_context(tsk);
+    free_pipe_info(tsk->splice_pipe);
+    put_page(tsk->task_frag.page);
+    exit_rcu();
+  exit_tasks_rcu_finish();
+  lockdep_free_task(tsk);
+  do_task_dead();
 ```
 
 ## kthreadd
@@ -12268,193 +12364,6 @@ posix_timer_fn();
 [hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
 
 http://www.wowotech.net/timer_subsystem/time-subsyste-architecture.html
-
-# Lock
-## spin lock
-```c++
-typedef struct spinlock {
-  union {
-    struct raw_spinlock rlock;
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-# define LOCK_PADSIZE (offsetof(struct raw_spinlock, dep_map))
-    struct {
-      u8 __padding[LOCK_PADSIZE];
-      struct lockdep_map dep_map;
-    };
-#endif
-  };
-} spinlock_t;
-
-
-typedef struct raw_spinlock {
-  arch_spinlock_t raw_lock;
-
-#ifdef CONFIG_DEBUG_SPINLOCK
-  unsigned int magic, owner_cpu;
-  void *owner;
-#endif
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-  struct lockdep_map dep_map;
-#endif
-} raw_spinlock_t;
-
-
-typedef struct {
-  volatile unsigned int slock;
-} arch_spinlock_t;
-
-typedef struct {
-  union {
-    u32 slock;
-    struct __raw_tickets {
-#ifdef __ARMEB__
-      u16 next;
-      u16 owner;
-#else
-      u16 owner;
-      u16 next;
-#endif
-    } tickets;
-  };
-} arch_spinlock_t;
-
-/* include/asm-generic/qspinlock_types.h */
-typedef struct qspinlock {
-  union {
-    atomic_t val;
-
-    /* By using the whole 2nd least significant byte for the
-     * pending bit, we can allow better optimization of the lock
-     * acquisition for the pending bit holder. */
-#ifdef __LITTLE_ENDIAN
-    struct {
-      u8  locked;
-      u8  pending;
-    };
-    struct {
-      u16  locked_pending;
-      u16  tail;
-    };
-#else
-    struct {
-      u16  tail;
-      u16  locked_pending;
-    };
-    struct {
-      u8  reserved[2];
-      u8  pending;
-      u8  locked;
-    };
-#endif
-  };
-} arch_spinlock_t;
-
-/* include/linux/spinlock.h */
-static  void spin_lock(spinlock_t *lock)
-{
-  raw_spin_lock(&lock->rlock);
-}
-
-#define raw_spin_lock(lock)  _raw_spin_lock(lock)
-#define raw_spin_trylock(lock)  __cond_lock(lock, _raw_spin_trylock(lock))
-
-/* include/linux/spinlock_api_smp.h */
-#define _raw_spin_lock(lock) __raw_spin_lock(lock)
-
-static inline void __raw_spin_lock(raw_spinlock_t *lock)
-{
-  preempt_disable();
-  /* for lockdep debug */
-  spin_acquire(&lock->dep_map, 0, 0, _RET_IP_);
-
-  LOCK_CONTENDED(lock, do_raw_spin_trylock, do_raw_spin_lock);
-}
-
-/*include/linux/lockdep.h */
-#define spin_acquire(l, s, t, i) lock_acquire_exclusive(l, s, t, NULL, i)
-#define lock_acquire_exclusive(l, s, t, n, i) lock_acquire(l, s, t, 0, 1, n, i)
-#define lock_acquire(l, s, t, r, c, n, i)  do { } while (0)
-
-
-/* include/linux/lockdep.h */
-#define LOCK_CONTENDED(_lock, try, lock) \
-do { \
-  if (!try(_lock)) { \
-    lock_contended(&(_lock)->dep_map, _RET_IP_); \
-    lock(_lock); \
-  } \
-  lock_acquired(&(_lock)->dep_map, _RET_IP_); \
-} while (0)
-
-
-/* include/linux/spinlock.h */
-static inline int do_raw_spin_trylock(raw_spinlock_t *lock)
-{
-  return arch_spin_trylock(&(lock)->raw_lock);
-}
-
-/* kernel/locking/spinlock_debug.c */
-void do_raw_spin_lock(raw_spinlock_t *lock)
-{
-  debug_spin_lock_before(lock);
-  arch_spin_lock(&lock->raw_lock);
-  debug_spin_lock_after(lock);
-}
-
-#define arch_spin_lock(l)    queued_spin_lock(l)
-
-static  void queued_spin_lock(struct qspinlock *lock)
-{
-  u32 val;
-
-  val = atomic_cmpxchg_acquire(&lock->val, 0, _Q_LOCKED_VAL);
-  if (likely(val == 0))
-    return;
-  queued_spin_lock_slowpath(lock, val);
-}
-
-#define  atomic_cmpxchg_acquire    atomic_cmpxchg
-
-static  int atomic_cmpxchg(atomic_t *v, int old, int new)
-{
-  kasan_check_write(v, sizeof(*v));
-  return arch_atomic_cmpxchg(v, old, new);
-}
-
-static  int arch_atomic_cmpxchg(atomic_t *v, int old, int new)
-{
-  return arch_cmpxchg(&v->counter, old, new);
-}
-
-/* arch/x86/include/asm/cmpxchg.h */
-#define arch_cmpxchg(ptr, old, new) \
-  __cmpxchg(ptr, old, new, sizeof(*(ptr)))
-
-#define __cmpxchg(ptr, old, new, size) \
-  __raw_cmpxchg((ptr), (old), (new), (size), LOCK_PREFIX)
-
-#define __raw_cmpxchg(ptr, old, new, size, lock) \
-({ \
-  __typeof__(*(ptr)) __ret; \
-  __typeof__(*(ptr)) __old = (old); \
-  __typeof__(*(ptr)) __new = (new); \
-  switch (size) { \
-  case __X86_CASE_W: \
-  { \
-    volatile u16 *__ptr = (volatile u16 *)(ptr); \
-    asm volatile(lock "cmpxchgw %2,%1" \
-           : "=a" (__ret), "+m" (*__ptr) \
-           : "r" (__new), "0" (__old) \
-           : "memory"); \
-    break; \
-  } \
-  default: \
-    __cmpxchg_wrong_size(); \
-  } \
-  __ret; \
-})
-```
 
 # Pthread
 
