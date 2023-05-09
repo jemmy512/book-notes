@@ -45,27 +45,45 @@
 
 ![](../Images/Kernel/kernel-structual.svg)
 
+
+* Folio
+    * [LWN - Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
+    * [YouTube - Large Pages in the Linux Kernel - 2020.12.03 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=hoSpvGxXgNg)
+    * [YouTuBe - Folios - 2022.6.20 Matthew Wilcox](https://www.youtube.com/watch?v=URTuP6wXYPA)
+    * [YouTube - Memory Folios - 2022.6.23 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=nknQML80w3E)
+* [LWN - Compund Page](https://lwn.net/Kernel/Index/#Memory_management-Compound_pages)
+
 ---
 
 # boot
 ```s
-__primary_switch
+primary_entry
     bl record_mmu_state
+
+    /* Preserve the arguments passed by the bootloader in x0 .. x3 */
     bl preserve_boot_args
+
     bl create_idmap
 
     bl __cpu_setup
 
     b __primary_switch
+        adrp x1, reserved_pg_dir
+        adrp x2, init_idmap_pg_dir
         bl __enable_mmu
+
         bl clear_page_tables
         bl create_kernel_mapping
+
+        adrp x1, init_pg_dir
+        load_ttbr1 x1, x1, x2 /* install x1 as a TTBR1 page table */
+
         bl __primary_switched
             adr_l x4, init_task
             init_cpu_task x4, x5, x6
 
-            adr_l x8, vectors   // load VBAR_EL1 with virtual
-            msr vbar_el1, x8   // vector table address
+            adr_l x8, vectors /* load VBAR_EL1 with virtual */
+            msr vbar_el1, x8 /* vector table address */
 
             bl set_cpu_boot_mode_flag
 
@@ -73,55 +91,102 @@ __primary_switch
 
             mov x0, x21    // pass FDT address in x0
             bl early_fdt_map
+                /* populate pud, pmd, pte, p4d */
                 early_fixmap_init()
                     __p4d_populate(p4dp, __pa_symbol(bm_pud))
                     __pud_populate(pudp, __pa_symbol(bm_pmd))
                     __pmd_populate(pmdp, __pa_symbol(bm_pte))
 
+                /* map phys & virt */
                 early_fdt_ptr = fixmap_remap_fdt(dt_phys, size)
                     create_mapping_noalloc()
 
+            mov x0, x20 /* pass the full boot status */
+            bl init_feature_override  /* Parse cpu feature overrides */
 
-
-            mov x0, x20    // pass the full boot status
-            bl init_feature_override
             bl start_kernel
 ```
 
 ```c
-/* init/main.c * /
+/* init/main.c */
 start_kernel()
     page_address_init();
-
     setup_arch(&command_line);
-        early_fixmap_init();
-        early_ioremap_init();
-        setup_machine_fdt(__fdt_pointer);
-        arm64_memblock_init();
-        paging_init();
-        acpi_table_upgrade();
-        bootmem_init();
 
-    build_all_zonelists(NULL);
+    build_all_zonelists(NULL) {
+        __build_all_zonelists(NULL) {
+            for_each_node(nid) {
+                pg_data_t *pgdat = NODE_DATA(nid);
+
+                build_zonelists(pgdat);
+            }
+        }
+        for_each_possible_cpu(cpu)
+            per_cpu_pages_init(&per_cpu(boot_pageset, cpu), &per_cpu(boot_zonestats, cpu));
+
+        mminit_verify_zonelist();
+        cpuset_init_current_mems_allowed();
+    }
+
     page_alloc_init();
     mm_init();
     kmem_cache_init_late();
     pagecache_init();
 ```
 
-## paging_init
+## setup_arch
+
+```c
+setup_arch(&command_line);
+    setup_initial_init_mm(_stext, _etext, _edata, _end) {
+        init_mm.start_code = (unsigned long)start_code;
+        init_mm.end_code = (unsigned long)end_code;
+        init_mm.end_data = (unsigned long)end_data;
+        init_mm.brk = (unsigned long)brk;
+    }
+
+    early_fixmap_init() {
+        unsigned long addr = FIXADDR_TOT_START;
+
+        early_fixmap_init_pud(p4dp, addr, end);
+            early_fixmap_init_pmd(pudp, addr, end);
+                early_fixmap_init_pte(pmdp, addr);
+                    if (pmd_none(pmd)) {
+                        ptep = bm_pte[BM_PTE_TABLE_IDX(addr)];
+                        __pmd_populate(pmdp, __pa_symbol(ptep), PMD_TYPE_TABLE);
+                    }
+
+
+    }
+    early_ioremap_init();
+    setup_machine_fdt(__fdt_pointer);
+    arm64_memblock_init();
+    paging_init();
+    acpi_table_upgrade();
+    bootmem_init();
+```
+
+### paging_init
 ```c
 /* arch/arm64/mm/mmu.c */
 paging_init()
+    pgd_t *pgdp = pgd_set_fixmap(__pa_symbol(swapper_pg_dir));
+
     map_kernel(pgdp);
         map_kernel_segment(pgdp, _stext, _etext, text_prot);
             __create_pgd_mapping(pgdp, phys, virt, size)
-                __create_pgd_mapping_locked(pgdir, phys, virt, size)
+                --->
+            vm_area_add_early(vma) {
+                vm->next = *p;
+                *p = vm;
+            }
 
         map_kernel_segment(pgdp, __start_rodata, __inittext_begin);
         map_kernel_segment(pgdp, __inittext_begin, __inittext_end);
         map_kernel_segment(pgdp, __initdata_begin, __initdata_end);
         map_kernel_segment(pgdp, _data, _end);
+
+        fixmap_copy(pgdp);
 
     /* map all the memory banks */
     map_mem(pgdp);
@@ -131,18 +196,226 @@ paging_init()
                 break;
             __map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL), flags);
                 __create_pgd_mapping(pgdp, phys, virt, size);
-                    __create_pgd_mapping_locked()
+                    --->
         }
 
     pgd_clear_fixmap();
+
     cpu_replace_ttbr1(lm_alias(swapper_pg_dir), init_idmap_pg_dir);
 	init_mm.pgd = swapper_pg_dir;
 
+    /* free boot memory block */
 	memblock_phys_free(init_pg_dir, size);
+        memblock_remove_range(&memblock.reserved, base, size)
 
 	memblock_allow_resize();
 
 	create_idmap();
+```
+
+### setup_machine_fdt
+```c
+setup_machine_fdt(__fdt_pointer)
+    void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL) {
+        const u64 dt_virt_base = __fix_to_virt(FIX_FDT);
+        dt_phys_base = round_down(dt_phys, PAGE_SIZE);
+        offset = dt_phys % PAGE_SIZE;
+        dt_virt = (void *)dt_virt_base + offset;
+
+        create_mapping_noalloc(dt_phys_base, dt_virt_base, PAGE_SIZE, prot);
+            __create_pgd_mapping();
+
+        *size = fdt_totalsize(dt_virt);
+        if (*size > MAX_FDT_SIZE)
+            return NULL;
+
+        if (offset + *size > PAGE_SIZE) {
+            create_mapping_noalloc(dt_phys_base, dt_virt_base,
+                        offset + *size, prot);
+        }
+
+        return dt_virt;
+
+    }
+	const char *name;
+
+	if (dt_virt)
+		memblock_reserve(dt_phys, size);
+
+    fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
+
+	name = of_flat_dt_get_machine_name();
+
+```
+
+```c
+bootmem_init() {
+    min = PFN_UP(memblock_start_of_DRAM());
+    max = PFN_DOWN(memblock_end_of_DRAM());
+
+    early_memtest(min << PAGE_SHIFT, max << PAGE_SHIFT);
+
+    max_pfn = max_low_pfn = max;
+    min_low_pfn = min;
+
+    arch_numa_init();
+
+    sparse_init();
+
+    zone_sizes_init() {
+        free_area_init(max_zone_pfns) {
+
+            find_zone_movable_pfns_for_nodes();
+
+            for_each_node(nid) {
+                pg_data_t *pgdat;
+
+                if (!node_online(nid)) {
+
+                    pgdat = arch_alloc_nodedata(nid) {
+
+                    }
+
+                    arch_refresh_nodedata(nid, pgdat);
+                    free_area_init_memoryless_node(nid);
+
+                    continue;
+                }
+
+                pgdat = NODE_DATA(nid);
+                free_area_init_node(nid) {
+                    get_pfn_range_for_nid(nid, &start_pfn, &end_pfn);
+
+                    pgdat->node_id = nid;
+                    pgdat->node_start_pfn = start_pfn;
+                    pgdat->per_cpu_nodestats = NULL;
+
+                    calculate_node_totalpages(pgdat, start_pfn, end_pfn);
+
+                    alloc_node_mem_map() {
+                        start = pgdat->node_start_pfn & ~(MAX_ORDER_NR_PAGES - 1);
+                        offset = pgdat->node_start_pfn - start;
+
+                        end = pgdat_end_pfn(pgdat);
+                        end = ALIGN(end, MAX_ORDER_NR_PAGES);
+                        size =  (end - start) * sizeof(struct page);
+                        map = memmap_alloc(size);
+
+                        pgdat->node_mem_map = map + offset;
+
+                        if (pgdat == NODE_DATA(0)) {
+                            mem_map = NODE_DATA(0)->node_mem_map;
+                            if (page_to_pfn(mem_map) != pgdat->node_start_pfn)
+                                mem_map -= offset;
+                        }
+                    }
+
+                    /* Set up the zone data structures */
+                    free_area_init_core(pgdat) {
+                        /* calculate the freesize of pgdat */
+                        zone_init_internals(zone, j, nid, freesize);
+                        set_pageblock_order();
+                        setup_usemap(zone);
+                        init_currently_empty_zone();
+                    }
+                    lru_gen_init_pgdat(pgdat);
+                }
+
+                /* Any memory on that node */
+                if (pgdat->node_present_pages)
+                    node_set_state(nid, N_MEMORY);
+                check_for_memory(pgdat, nid);
+            }
+
+            memmap_init() {
+                for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid) {
+                    struct pglist_data *node = NODE_DATA(nid);
+
+                    for (j = 0; j < MAX_NR_ZONES; j++) {
+                        struct zone *zone = node->node_zones + j;
+
+                        /* return zone->present_pages */
+                        if (!populated_zone(zone))
+                            continue;
+
+                        memmap_init_zone_range(zone, start_pfn, end_pfn, &hole_pfn) {
+                            memmap_init_range() {
+                                for (pfn = start_pfn; pfn < end_pfn; ) {
+                                    if (context == MEMINIT_EARLY) {
+                                        if (overlap_memmap_init(zone, &pfn))
+                                            continue;
+                                        if (defer_init(nid, pfn, zone_end_pfn)) {
+                                            deferred_struct_pages = true;
+                                            break;
+                                        }
+                                    }
+
+                                    page = pfn_to_page(pfn); /* mem_map + pfn */
+                                    __init_single_page(page, pfn, zone, nid) {
+                                        mm_zero_struct_page(page);
+                                        set_page_links(page, zone, nid, pfn);
+                                        init_page_count(page);
+                                        page_mapcount_reset(page);
+                                        page_cpupid_reset_last(page);
+                                        page_kasan_tag_reset(page);
+
+                                        INIT_LIST_HEAD(&page->lru);
+                                    }
+                                    if (context == MEMINIT_HOTPLUG)
+                                        __SetPageReserved(page);
+
+                                    if (pageblock_aligned(pfn)) {
+                                        set_pageblock_migratetype(page, migratetype);
+                                        cond_resched();
+                                    }
+
+                                    pfn++;
+                                }
+                            }
+                        }
+                        zone_id = j;
+                    }
+                }
+            }
+        }
+    }
+
+    dma_contiguous_reserve(arm64_dma_phys_limit);
+
+    reserve_crashkernel();
+
+    memblock_dump_all();
+}
+```
+
+# memblock
+
+```c
+memmap_alloc()
+    if (exact_nid)
+		ptr = memblock_alloc_exact_nid_raw();
+	else
+		ptr = memblock_alloc_try_nid_raw() {
+            memblock_alloc_internal()
+                alloc = memblock_alloc_range_nid() {
+                    found = memblock_find_in_range_node(size, align, start, end, nid, flags);
+                    if (found && !memblock_reserve(found, size))
+                        goto done;
+                }
+                return phys_to_virt(alloc) {
+                    /* PAGE_OFFSET - the virtual address of the start of the linear map
+                     * at the start of the TTBR1 address space. */
+                    #define __phys_to_virt(x) ((unsigned long)((x) - PHYS_OFFSET) | PAGE_OFFSET)
+                    #define PHYS_OFFSET ({ VM_BUG_ON(memstart_addr & 1); memstart_addr; })
+                    memstart_addr = round_down(memblock_start_of_DRAM(), ARM64_MEMSTART_ALIGN);
+                }
+        }
+
+    return ptr;
+
+```
+
+```c
 
 ```
 
@@ -187,7 +460,67 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 # mm_init
 ```c
 void start_kernel(void) {
-  mm_init();
+    mm_core_init() {
+        build_all_zonelists(NULL);
+        page_alloc_init_cpuhp();
+
+        page_ext_init_flatmem();
+        mem_debugging_and_hardening_init();
+        kfence_alloc_pool();
+        report_meminit();
+        kmsan_init_shadow();
+        stack_depot_early_init();
+        mem_init_print_info();
+        kmem_cache_init();
+        /*
+            * page_owner must be initialized after buddy is ready, and also after
+            * slab is ready so that stack_depot_init() works properly
+            */
+        page_ext_init_flatmem_late();
+        kmemleak_init();
+        ptlock_cache_init();
+        pgtable_cache_init();
+        debug_objects_mem_init();
+        vmalloc_init() {
+
+        }
+        /* If no deferred init page_ext now, as vmap is fully initialized */
+        if (!deferred_struct_pages)
+            page_ext_init();
+        /* Should be run before the first non-init thread is created */
+        init_espfix_bsp();
+        /* Should be run after espfix64 is set up. */
+        pti_init();
+        kmsan_init_runtime();
+        mm_cache_init();
+
+        /* release free pages to the buddy allocator */
+        memblock_free_all() {
+            /* The mem_map array can get very big.
+             * Free the unused area of the memory map. */
+            free_unused_memmap() {
+                for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, NULL) {
+                    free_memmap(prev_end, start) {
+                        /* Free boot memory block previously allocated by memblock_phys_alloc_xx() API.
+                         * The freeing memory will not be released to the buddy allocator. */
+                        memblock_phys_free(pg, pgend - pg);
+                            memblock_remove_range(&memblock.reserved, base, size) {
+                                memblock_isolate_range()
+                                memblock_remove_region()
+                            }
+                    }
+                }
+            }
+            reset_all_zones_managed_pages();
+                atomic_long_set(&z->managed_pages, 0);
+
+            pages = free_low_memory_core_early() {
+                for_each_free_mem_range()
+                    __free_pages()
+            }
+            totalram_pages_add(pages);
+        }
+    }
 }
 
 static void __init mm_init(void)
@@ -472,762 +805,139 @@ struct free_area  free_area[MAX_ORDER];
 
 * [Memory Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
 
-
 ```c
 alloc_pages(make, order)
     alloc_pages_node(numa_node_id(), mask, order)
         __alloc_pages(mask, order, nid, NULL)
-            page = get_page_from_freelist()
+            page = get_page_from_freelist() {
+            retry:
                 for_next_zone_zonelist_nodemask() {
-                    return page = rmqueue()
-                      if (pcp_allowed_order(order)) {
-                        page = rmqueue_pcplist()
-                      } else {
-                        page = rmqueue_buddy()
-                          __rmqueue_smallest()
-                            get_page_from_free_area()
-                            del_page_from_free_list()
-                            expand()
-                          __rmqueue()
-                      }
+                try_this_zone:
+                    return page = rmqueue() {
+                        if (pcp_allowed_order(order)) {
+                            page = rmqueue_pcplist()
+                            if (likely(page))
+                                goto out;
+                        }
+
+                        page = rmqueue_buddy() {
+                            do {
+                                __rmqueue() {
+                                    if (alloc_flags & ALLOC_CMA) {
+                                        page = __rmqueue_cma_fallback(zone, order);
+                                        if (page)
+                                            return page;
+                                    }
+
+                                retry:
+                                    page = __rmqueue_smallest(zone, order, migratetype) {
+                                        for (; current_order < MAX_ORDER; ++current_order) {
+                                            area = &(zone->free_area[current_order]);
+                                            page = get_page_from_free_area(area, migratetype);
+                                            if (!page)
+                                                continue;
+                                            del_page_from_free_list(page, zone, current_order) {
+                                                list_del(&page->buddy_list) {
+                                                    __list_del_entry(entry);
+                                                    entry->next = LIST_POISON1;
+                                                    entry->prev = LIST_POISON2;
+                                                }
+                                                __ClearPageBuddy(page);
+                                                set_page_private(page, 0);
+                                                zone->free_area[order].nr_free--;
+                                            }
+                                            expand(zone, page, order, current_order, migratetype) {
+                                                unsigned long size = 1 << high;
+
+                                                while (high > low) {
+                                                    high--;
+                                                    size >>= 1;
+
+                                                    if (set_page_guard(zone, &page[size], high, migratetype))
+                                                        continue;
+
+                                                    add_to_free_list(&page[size], zone, high, migratetype) {
+                                                        struct free_area *area = &zone->free_area[order];
+                                                        list_add(&page->buddy_list, &area->free_list[migratetype]);
+                                                        area->nr_free++;
+                                                    }
+                                                    set_buddy_order(&page[size], high);
+                                                }
+                                            }
+                                            set_pcppage_migratetype(page, migratetype) {
+                                                page->index = migratetype;
+                                            }
+                                            return page;
+                                        }
+
+                                        return NULL;
+                                    }
+                                    if (unlikely(!page)) {
+                                        if (alloc_flags & ALLOC_CMA)
+                                            page = __rmqueue_cma_fallback(zone, order)
+                                                __rmqueue_smallest(zone, order, MIGRATE_CMA);
+                                            __rmqueue_fallback = [](zone, order, migratetype, alloc_flags) {
+
+                                            }
+                                        if (!page && __rmqueue_fallback())
+                                            goto retry;
+                                    }
+                                    return page;
+                                }
+                            } while (check_new_pages(page, order));
+                        }
+                    }
                 }
+            }
+
+            if (likely(page))
+                goto out;
 
             page = __alloc_pages_slowpath()
-              wake_all_kswapds(order, gfp_mask, ac)
-              get_page_from_freelist()
-              __alloc_pages_direct_reclaim()
-              __alloc_pages_direct_compact()
-              __alloc_pages_may_oom()
-              __alloc_pages_cpuset_fallback()
+                wake_all_kswapds(order, gfp_mask, ac)
+                page = get_page_from_freelist()
+                if (page)
+                    goto got_pg;
+                __alloc_pages_direct_reclaim()
+                __alloc_pages_direct_compact()
+                __alloc_pages_cpuset_fallback()
 
-              __alloc_pages_may_oom()
-                out_of_memory()
-                  oom_kill_process()
-                    do_send_sig_info(SIGKILL, SEND_SIG_PRIV)
+                __alloc_pages_may_oom()
+                    out_of_memory()
+                        oom_kill_process()
+                            do_send_sig_info(SIGKILL, SEND_SIG_PRIV)
 
               /* sched current process */
               cond_resched()
-
-```
-
-
-```C++
-static inline struct page *alloc_pages(gfp_t gfp_mask, unsigned int order)
-{
-  return alloc_pages_node(numa_node_id(), gfp_mask, order);
-}
-
-static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
-            unsigned int order)
-{
-  if (nid == NUMA_NO_NODE)
-    nid = numa_mem_id(); /* Returns the number of the nearest Node with memory */
-
-  return __alloc_pages_node(nid, gfp_mask, order);
-}
-
-static inline struct page *
-__alloc_pages_node(int nid, gfp_t gfp_mask, unsigned int order)
-{
-  return __alloc_pages(gfp_mask, order, nid, NULL);
-}
-
-struct page *__alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid,
-              nodemask_t *nodemask)
-{
-  struct page *page;
-  unsigned int alloc_flags = ALLOC_WMARK_LOW;
-  gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
-  struct alloc_context ac = { };
-
-  if (WARN_ON_ONCE_GFP(order >= MAX_ORDER, gfp))
-    return NULL;
-
-  gfp &= gfp_allowed_mask;
-
-  alloc_gfp = gfp = current_gfp_context(gfp);
-  if (!prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac, &alloc_gfp, &alloc_flags))
-    return NULL;
-
-  /* Forbid the first pass from falling back to types that fragment
-   * memory until all local zones are considered. */
-  alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp);
-
-  /* First allocation attempt */
-  page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac);
-  if (likely(page))
-    goto out;
-
-  alloc_gfp = gfp;
-  ac.spread_dirty_pages = false;
-
-  /* Restore the original nodemask if it was potentially replaced with
-   * &cpuset_current_mems_allowed to optimize the fast-path attempt. */
-  ac.nodemask = nodemask;
-
-  page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
-
-out:
-  if (memcg_kmem_enabled() && (gfp & __GFP_ACCOUNT) && page &&
-      unlikely(__memcg_kmem_charge_page(page, gfp, order) != 0))
-  {
-    __free_pages(page, order);
-    page = NULL;
-  }
-
-  trace_mm_page_alloc(page, order, alloc_gfp, ac.migratetype);
-
-  return page;
-}
-
-static struct page *
-get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
-            const struct alloc_context *ac)
-{
-  struct zoneref *z;
-  struct zone *zone;
-  struct pglist_data *last_pgdat = NULL;
-  bool last_pgdat_dirty_ok = false;
-  bool no_fallback;
-
-retry:
-  /* Scan zonelist, looking for a zone with enough free.
-   * See also __cpuset_node_allowed() comment in kernel/cgroup/cpuset.c. */
-  no_fallback = alloc_flags & ALLOC_NOFRAGMENT;
-  z = ac->preferred_zoneref;
-  for_next_zone_zonelist_nodemask(zone, z, ac->highest_zoneidx, ac->nodemask) {
-    struct page *page;
-    unsigned long mark;
-
-    if (cpusets_enabled() && (alloc_flags & ALLOC_CPUSET) && !__cpuset_zone_allowed(zone, gfp_mask))
-        continue;
-
-    if (ac->spread_dirty_pages) {
-      if (last_pgdat != zone->zone_pgdat) {
-        last_pgdat = zone->zone_pgdat;
-        last_pgdat_dirty_ok = node_dirty_ok(zone->zone_pgdat);
-      }
-
-      if (!last_pgdat_dirty_ok)
-        continue;
-    }
-
-    if (no_fallback && nr_online_nodes > 1 && zone != ac->preferred_zoneref->zone) {
-      int local_nid;
-
-      /* If moving to a remote node, retry but allow
-       * fragmenting fallbacks. Locality is more important
-       * than fragmentation avoidance. */
-      local_nid = zone_to_nid(ac->preferred_zoneref->zone);
-      if (zone_to_nid(zone) != local_nid) {
-        alloc_flags &= ~ALLOC_NOFRAGMENT;
-        goto retry;
-      }
-    }
-
-    mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK);
-    if (!zone_watermark_fast(zone, order, mark, ac->highest_zoneidx, alloc_flags, gfp_mask)) {
-      int ret;
-
-#ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
-      /* Watermark failed for this zone, but see if we can
-       * grow this zone if it contains deferred pages. */
-      if (static_branch_unlikely(&deferred_pages)) {
-        if (_deferred_grow_zone(zone, order))
-          goto try_this_zone;
-      }
-#endif
-      /* Checked here to keep the fast path fast */
-      if (alloc_flags & ALLOC_NO_WATERMARKS)
-        goto try_this_zone;
-
-      if (!node_reclaim_enabled() ||
-          !zone_allows_reclaim(ac->preferred_zoneref->zone, zone))
-        continue;
-
-      ret = node_reclaim(zone->zone_pgdat, gfp_mask, order);
-      switch (ret) {
-      case NODE_RECLAIM_NOSCAN:
-        /* did not scan */
-        continue;
-      case NODE_RECLAIM_FULL:
-        /* scanned but unreclaimable */
-        continue;
-      default:
-        /* did we reclaim enough */
-        if (zone_watermark_ok(zone, order, mark,
-          ac->highest_zoneidx, alloc_flags))
-          goto try_this_zone;
-
-        continue;
-      }
-    }
-
-try_this_zone:
-    page = rmqueue(ac->preferred_zoneref->zone, zone, order, gfp_mask, alloc_flags, ac->migratetype);
-    if (page) {
-      prep_new_page(page, order, gfp_mask, alloc_flags);
-
-     if (unlikely(order && (alloc_flags & ALLOC_HARDER)))
-        reserve_highatomic_pageblock(page, zone, order);
-
-      return page;
-    } else {
-#ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
-      /* Try again if zone has deferred pages */
-      if (static_branch_unlikely(&deferred_pages)) {
-        if (_deferred_grow_zone(zone, order))
-          goto try_this_zone;
-      }
-#endif
-    }
-  }
-
-  /* It's possible on a UMA machine to get through all zones that are
-   * fragmented. If avoiding fragmentation, reset and try again. */
-  if (no_fallback) {
-    alloc_flags &= ~ALLOC_NOFRAGMENT;
-    goto retry;
-  }
-
-  return NULL;
-}
-
-/* rmqueue -> __rmqueue -> __rmqueue_smallest */
-struct page *rmqueue(struct zone *preferred_zone,
-      struct zone *zone, unsigned int order,
-      gfp_t gfp_flags, unsigned int alloc_flags,
-      int migratetype)
-{
-  struct page *page;
-
-  if (likely(pcp_allowed_order(order))) {
-    if (!IS_ENABLED(CONFIG_CMA) || alloc_flags & ALLOC_CMA ||
-        migratetype != MIGRATE_MOVABLE) {
-      page = rmqueue_pcplist(preferred_zone, zone, order,
-          migratetype, alloc_flags);
-      if (likely(page))
-        goto out;
-    }
-  }
-
-  page = rmqueue_buddy(preferred_zone, zone, order, alloc_flags,
-              migratetype);
-
-out:
-  if (unlikely(test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags))) {
-    clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
-    wakeup_kswapd(zone, 0, 0, zone_idx(zone));
-  }
-
-  VM_BUG_ON_PAGE(page && bad_range(zone, page), page);
-  return page;
-}
-
-struct page *rmqueue_pcplist(struct zone *preferred_zone,
-      struct zone *zone, unsigned int order,
-      int migratetype, unsigned int alloc_flags)
-{
-  struct per_cpu_pages *pcp;
-  struct list_head *list;
-  struct page *page;
-  unsigned long __maybe_unused UP_flags;
-
-  pcp_trylock_prepare(UP_flags);
-  pcp = pcp_spin_trylock(zone->per_cpu_pageset);
-  if (!pcp) {
-    pcp_trylock_finish(UP_flags);
-    return NULL;
-  }
-
-  pcp->free_factor >>= 1;
-  list = &pcp->lists[order_to_pindex(migratetype, order)];
-  page = __rmqueue_pcplist(zone, order, migratetype, alloc_flags, pcp, list);
-  pcp_spin_unlock(pcp);
-  pcp_trylock_finish(UP_flags);
-  if (page) {
-    __count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
-    zone_statistics(preferred_zone, zone, 1);
-  }
-  return page;
-}
-
-struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
-         unsigned int order, unsigned int alloc_flags,
-         int migratetype)
-{
-  struct page *page;
-  unsigned long flags;
-
-  do {
-    page = NULL;
-    spin_lock_irqsave(&zone->lock, flags);
-
-    if (alloc_flags & ALLOC_HIGHATOMIC)
-      page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
-    if (!page) {
-      page = __rmqueue(zone, order, migratetype, alloc_flags);
-
-      if (!page && (alloc_flags & ALLOC_OOM))
-        page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
-
-      if (!page) {
-        spin_unlock_irqrestore(&zone->lock, flags);
-        return NULL;
-      }
-    }
-    __mod_zone_freepage_state(zone, -(1 << order),
-            get_pcppage_migratetype(page));
-    spin_unlock_irqrestore(&zone->lock, flags);
-  } while (check_new_pages(page, order));
-
-  __count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
-  zone_statistics(preferred_zone, zone, 1);
-
-  return page;
-}
-
-struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
-            int migratetype)
-{
-  unsigned int current_order;
-  struct free_area *area;
-  struct page *page;
-
-  /* Find a page of the appropriate size in the preferred list */
-  for (current_order = order; current_order < MAX_ORDER; ++current_order) {
-    area = &(zone->free_area[current_order]);
-    page = get_page_from_free_area(area, migratetype);
-    if (!page)
-      continue;
-    del_page_from_free_list(page, zone, current_order);
-    expand(zone, page, order, current_order, migratetype);
-    set_pcppage_migratetype(page, migratetype);
-    trace_mm_page_alloc_zone_locked(page, order, migratetype,
-        pcp_allowed_order(order) &&
-        migratetype < MIGRATE_PCPTYPES);
-    return page;
-  }
-
-  return NULL;
-}
-
-static inline void expand(struct zone *zone, struct page *page,
-  int low, int high, struct free_area *area,
-  int migratetype)
-{
-  unsigned long size = 1 << high;
-
-  while (high > low) {
-    area--;
-    high--;
-    size >>= 1;
-
-    list_add(&page[size].lru, &area->free_list[migratetype]);
-    area->nr_free++;
-    set_page_order(&page[size], high);
-  }
-}
-```
-
-```c
-struct page *
-__alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
-            struct alloc_context *ac)
-{
-  bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
-  const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER;
-  struct page *page = NULL;
-  unsigned int alloc_flags;
-  unsigned long did_some_progress;
-  enum compact_priority compact_priority;
-  enum compact_result compact_result;
-  int compaction_retries;
-  int no_progress_loops;
-  unsigned int cpuset_mems_cookie;
-  int reserve_flags;
-
-  /* We also sanity check to catch abuse of atomic reserves being used by
-   * callers that are not in atomic context. */
-  if (WARN_ON_ONCE((gfp_mask & (__GFP_ATOMIC|__GFP_DIRECT_RECLAIM)) ==
-        (__GFP_ATOMIC|__GFP_DIRECT_RECLAIM)))
-    gfp_mask &= ~__GFP_ATOMIC;
-
-retry_cpuset:
-  compaction_retries = 0;
-  no_progress_loops = 0;
-  compact_priority = DEF_COMPACT_PRIORITY;
-  cpuset_mems_cookie = read_mems_allowed_begin();
-
-  /* The fast path uses conservative alloc_flags to succeed only until
-   * kswapd needs to be woken up, and to avoid the cost of setting up
-   * alloc_flags precisely. So we do that now. */
-  alloc_flags = gfp_to_alloc_flags(gfp_mask);
-
-  /* We need to recalculate the starting point for the zonelist iterator
-   * because we might have used different nodemask in the fast path, or
-   * there was a cpuset modification and we are retrying - otherwise we
-   * could end up iterating over non-eligible zones endlessly. */
-  ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
-          ac->highest_zoneidx, ac->nodemask);
-  if (!ac->preferred_zoneref->zone)
-    goto nopage;
-
-  /* Check for insane configurations where the cpuset doesn't contain
-   * any suitable zone to satisfy the request - e.g. non-movable
-   * GFP_HIGHUSER allocations from MOVABLE nodes only. */
-  if (cpusets_insane_config() && (gfp_mask & __GFP_HARDWALL)) {
-    struct zoneref *z = first_zones_zonelist(ac->zonelist,
-          ac->highest_zoneidx,
-          &cpuset_current_mems_allowed);
-    if (!z->zone)
-      goto nopage;
-  }
-
-  if (alloc_flags & ALLOC_KSWAPD)
-    wake_all_kswapds(order, gfp_mask, ac);
-
-  /* The adjusted alloc_flags might result in immediate success, so try
-   * that first */
-  page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
-  if (page)
-    goto got_pg;
-
-  /* For costly allocations, try direct compaction first, as it's likely
-   * that we have enough base pages and don't need to reclaim. For non-
-   * movable high-order allocations, do that as well, as compaction will
-   * try prevent permanent fragmentation by migrating from blocks of the
-   * same migratetype.
-   * Don't try this for allocations that are allowed to ignore
-   * watermarks, as the ALLOC_NO_WATERMARKS attempt didn't yet happen. */
-  if (can_direct_reclaim &&
-      (costly_order ||
-         (order > 0 && ac->migratetype != MIGRATE_MOVABLE))
-      && !gfp_pfmemalloc_allowed(gfp_mask)) {
-    page = __alloc_pages_direct_compact(gfp_mask, order,
-            alloc_flags, ac,
-            INIT_COMPACT_PRIORITY,
-            &compact_result);
-    if (page)
-      goto got_pg;
-
-    if (costly_order && (gfp_mask & __GFP_NORETRY)) {
-
-      if (compact_result == COMPACT_SKIPPED ||
-          compact_result == COMPACT_DEFERRED)
-        goto nopage;
-      compact_priority = INIT_COMPACT_PRIORITY;
-    }
-  }
-
-retry:
-  /* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
-  if (alloc_flags & ALLOC_KSWAPD)
-    wake_all_kswapds(order, gfp_mask, ac);
-
-  reserve_flags = __gfp_pfmemalloc_flags(gfp_mask);
-  if (reserve_flags)
-    alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags);
-
-  /* Reset the nodemask and zonelist iterators if memory policies can be
-   * ignored. These allocations are high priority and system rather than
-   * user oriented. */
-  if (!(alloc_flags & ALLOC_CPUSET) || reserve_flags) {
-    ac->nodemask = NULL;
-    ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
-          ac->highest_zoneidx, ac->nodemask);
-  }
-
-  /* Attempt with potentially adjusted zonelist and alloc_flags */
-  page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
-  if (page)
-    goto got_pg;
-
-  /* Caller is not willing to reclaim, we can't balance anything */
-  if (!can_direct_reclaim)
-    goto nopage;
-
-  /* Avoid recursion of direct reclaim */
-  if (current->flags & PF_MEMALLOC)
-    goto nopage;
-
-  /* Try direct reclaim and then allocating */
-  page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,
-              &did_some_progress);
-  if (page)
-    goto got_pg;
-
-  /* Try direct compaction and then allocating */
-  page = __alloc_pages_direct_compact(gfp_mask, order, alloc_flags, ac,
-          compact_priority, &compact_result);
-  if (page)
-    goto got_pg;
-
-  /* Do not loop if specifically requested */
-  if (gfp_mask & __GFP_NORETRY)
-    goto nopage;
-
-  /* Do not retry costly high order allocations unless they are
-   * __GFP_RETRY_MAYFAIL */
-  if (costly_order && !(gfp_mask & __GFP_RETRY_MAYFAIL))
-    goto nopage;
-
-  if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
-         did_some_progress > 0, &no_progress_loops))
-    goto retry;
-
-  /* It doesn't make any sense to retry for the compaction if the order-0
-   * reclaim is not able to make any progress because the current
-   * implementation of the compaction depends on the sufficient amount
-   * of free memory (see __compaction_suitable) */
-  if (did_some_progress > 0 &&
-      should_compact_retry(ac, order, alloc_flags,
-        compact_result, &compact_priority,
-        &compaction_retries))
-    goto retry;
-
-
-  /* Deal with possible cpuset update races before we start OOM killing */
-  if (check_retry_cpuset(cpuset_mems_cookie, ac))
-    goto retry_cpuset;
-
-  /* Reclaim has failed us, start killing things */
-  page = __alloc_pages_may_oom(gfp_mask, order, ac, &did_some_progress);
-  if (page)
-    goto got_pg;
-
-  /* Avoid allocations with no watermarks from looping endlessly */
-  if (tsk_is_oom_victim(current) &&
-      (alloc_flags & ALLOC_OOM ||
-       (gfp_mask & __GFP_NOMEMALLOC)))
-    goto nopage;
-
-  /* Retry as long as the OOM killer is making progress */
-  if (did_some_progress) {
-    no_progress_loops = 0;
-    goto retry;
-  }
-
-nopage:
-  /* Deal with possible cpuset update races before we fail */
-  if (check_retry_cpuset(cpuset_mems_cookie, ac))
-    goto retry_cpuset;
-
-  /* Make sure that __GFP_NOFAIL request doesn't leak out and make sure
-   * we always retry */
-  if (gfp_mask & __GFP_NOFAIL) {
-    /* All existing users of the __GFP_NOFAIL are blockable, so warn
-     * of any new users that actually require GFP_NOWAIT */
-    if (WARN_ON_ONCE_GFP(!can_direct_reclaim, gfp_mask))
-      goto fail;
-
-    /* PF_MEMALLOC request from this context is rather bizarre
-     * because we cannot reclaim anything and only can loop waiting
-     * for somebody to do a work for us */
-    WARN_ON_ONCE_GFP(current->flags & PF_MEMALLOC, gfp_mask);
-
-    /* non failing costly orders are a hard requirement which we
-     * are not prepared for much so let's warn about these users
-     * so that we can identify them and convert them to something
-     * else. */
-    WARN_ON_ONCE_GFP(order > PAGE_ALLOC_COSTLY_ORDER, gfp_mask);
-
-    /* Help non-failing allocations by giving them access to memory
-     * reserves but do not use ALLOC_NO_WATERMARKS because this
-     * could deplete whole memory reserves which would just make
-     * the situation worse */
-    page = __alloc_pages_cpuset_fallback(gfp_mask, order, ALLOC_HARDER, ac);
-    if (page)
-      goto got_pg;
-
-    cond_resched();
-    goto retry;
-  }
-fail:
-  warn_alloc(gfp_mask, ac->nodemask,
-      "page allocation failure: order:%u", order);
-got_pg:
-  return page;
-}
 ```
 
 ## free_pages
 
 ```c
 free_pages(vaddr, order)
-  __free_pages(virt_to_page((void *)addr), order)
-    while (order-- > 0)
-      free_the_page(page + (1 << order), order)
-        __free_pages_ok(page, order, FPI_NONE)
-          __free_one_page(page, pfn, zone, order, migratetype, fpi_flags)
-            while (order < MAX_ORDER - 1) {
-              buddy = find_buddy_page_pfn(page, pfn)
-                if (!page_is_guard(buddy))
-                  del_page_from_free_list(buddy, zone, order)
-              combined_pfn = buddy_pfn & pfn;
-              page = page + (combined_pfn - pfn);
-              pfn = combined_pfn;
-              order++;
-            }
+    __free_pages(virt_to_page((void *)addr), order)
+        while (order-- > 0)
+            free_the_page(page + (1 << order), order)
+                __free_pages_ok(page, order, FPI_NONE)
+                    __free_one_page(page, pfn, zone, order, migratetype, fpi_flags)
+                        while (order < MAX_ORDER - 1) {
+                            buddy = find_buddy_page_pfn(page, pfn)
+                                if (!page_is_guard(buddy))
+                                    del_page_from_free_list(buddy, zone, order)
+                            if (!buddy)
+                                goto done_merging;
 
-            if (to_tail)
-              add_to_free_list_tail(page, zone, order, migratetype);
-            else
-              add_to_free_list(page, zone, order, migratetype);
-```
+                            combined_pfn = buddy_pfn & pfn;
+                            page = page + (combined_pfn - pfn);
+                            pfn = combined_pfn;
+                            order++;
+                        }
 
-
-```c
-void free_pages(unsigned long addr, unsigned int order)
-{
-  if (addr != 0) {
-    __free_pages(virt_to_page((void *)addr), order);
-  }
-}
-
-void __free_pages(struct page *page, unsigned int order)
-{
-  /* get PageHead before we drop reference */
-  int head = PageHead(page);
-
-  if (put_page_testzero(page))
-    free_the_page(page, order);
-  else if (!head)
-    while (order-- > 0)
-      free_the_page(page + (1 << order), order);
-}
-
-void free_the_page(struct page *page, unsigned int order)
-{
-  if (pcp_allowed_order(order))
-    free_unref_page(page, order);
-  else
-    __free_pages_ok(page, order, FPI_NONE);
-}
-
-void __free_pages_ok(struct page *page, unsigned int order,
-          fpi_t fpi_flags)
-{
-  unsigned long flags;
-  int migratetype;
-  unsigned long pfn = page_to_pfn(page);
-  struct zone *zone = page_zone(page);
-
-  if (!free_pages_prepare(page, order, true, fpi_flags))
-    return;
-
-  migratetype = get_pfnblock_migratetype(page, pfn);
-
-  spin_lock_irqsave(&zone->lock, flags);
-  if (unlikely(has_isolate_pageblock(zone) ||
-    is_migrate_isolate(migratetype))) {
-    migratetype = get_pfnblock_migratetype(page, pfn);
-  }
-  __free_one_page(page, pfn, zone, order, migratetype, fpi_flags);
-  spin_unlock_irqrestore(&zone->lock, flags);
-
-  __count_vm_events(PGFREE, 1 << order);
-}
-
-void __free_one_page(struct page *page,
-    unsigned long pfn,
-    struct zone *zone, unsigned int order,
-    int migratetype, fpi_t fpi_flags)
-{
-  struct capture_control *capc = task_capc(zone);
-  unsigned long buddy_pfn = 0;
-  unsigned long combined_pfn;
-  struct page *buddy;
-  bool to_tail;
-
-    if (likely(!is_migrate_isolate(migratetype)))
-    __mod_zone_freepage_state(zone, 1 << order, migratetype);
-
-  while (order < MAX_ORDER - 1) {
-    if (compaction_capture(capc, page, order, migratetype)) {
-      __mod_zone_freepage_state(zone, -(1 << order),
-                migratetype);
-      return;
-    }
-
-    buddy = find_buddy_page_pfn(page, pfn, order, &buddy_pfn);
-    if (!buddy)
-      goto done_merging;
-
-    if (unlikely(order >= pageblock_order)) {
-      int buddy_mt = get_pageblock_migratetype(buddy);
-
-      if (migratetype != buddy_mt
-          && (!migratetype_is_mergeable(migratetype) ||
-            !migratetype_is_mergeable(buddy_mt)))
-        goto done_merging;
-    }
-
-    if (page_is_guard(buddy))
-      clear_page_guard(zone, buddy, order, migratetype);
-    else
-      del_page_from_free_list(buddy, zone, order);
-    combined_pfn = buddy_pfn & pfn;
-    page = page + (combined_pfn - pfn);
-    pfn = combined_pfn;
-    order++;
-  }
-
-done_merging:
-  set_buddy_order(page, order);
-
-  if (fpi_flags & FPI_TO_TAIL)
-    to_tail = true;
-  else if (is_shuffle_order(order))
-    to_tail = shuffle_pick_tail();
-  else
-    to_tail = buddy_merge_likely(pfn, buddy_pfn, page, order);
-
-  if (to_tail)
-    add_to_free_list_tail(page, zone, order, migratetype);
-  else
-    add_to_free_list(page, zone, order, migratetype);
-
-  /* Notify page reporting subsystem of freed page */
-  if (!(fpi_flags & FPI_SKIP_REPORT_NOTIFY))
-    page_reporting_notify_free(order);
-}
-
-struct page *find_buddy_page_pfn(struct page *page,
-      unsigned long pfn, unsigned int order, unsigned long *buddy_pfn)
-{
-  unsigned long __buddy_pfn = __find_buddy_pfn(pfn, order);
-  struct page *buddy;
-
-  buddy = page + (__buddy_pfn - pfn);
-  if (buddy_pfn)
-    *buddy_pfn = __buddy_pfn;
-
-  if (page_is_buddy(page, buddy, order))
-    return buddy;
-  return NULL;
-}
-
-static inline unsigned long
-__find_buddy_pfn(unsigned long page_pfn, unsigned int order)
-{
-  return page_pfn ^ (1 << order);
-}
-
-bool page_is_buddy(struct page *page, struct page *buddy,
-         unsigned int order)
-{
-  if (!page_is_guard(buddy) && !PageBuddy(buddy))
-    return false;
-
-  if (buddy_order(buddy) != order)
-    return false;
-
-  if (page_zone_id(page) != page_zone_id(buddy))
-    return false;
-
-  return true;
-}
+                    done_merging:
+                        if (to_tail)
+                            add_to_free_list_tail(page, zone, order, migratetype);
+                        else
+                            add_to_free_list(page, zone, order, migratetype);
 ```
 
 # kmem_cache
@@ -2171,569 +1881,6 @@ struct kmem_cache_cpu {
 };
 ```
 
-## slub_alloc
-```c
-void *kmem_cache_alloc(struct kmem_cache *s, gfp_t gfpflags)
-{
-  return __kmem_cache_alloc_lru(s, NULL, gfpflags);
-}
-
-void *__kmem_cache_alloc_lru(
-  struct kmem_cache *s, struct list_lru *lru, gfp_t gfpflags)
-{
-  void *ret = slab_alloc(s, lru, gfpflags, _RET_IP_, s->object_size);
-  return ret;
-}
-
-void *slab_alloc(struct kmem_cache *s, struct list_lru *lru,
-    gfp_t gfpflags, unsigned long addr, size_t orig_size)
-{
-  return slab_alloc_node(s, lru, gfpflags, NUMA_NO_NODE, addr, orig_size);
-}
-
-void *slab_alloc_node(struct kmem_cache *s, struct list_lru *lru,
-    gfp_t gfpflags, int node, unsigned long addr, size_t orig_size)
-{
-  void *object;
-  struct obj_cgroup *objcg = NULL;
-  bool init = false;
-
-  s = slab_pre_alloc_hook(s, lru, &objcg, 1, gfpflags);
-  if (!s)
-    return NULL;
-
-  object = kfence_alloc(s, orig_size, gfpflags);
-  if (unlikely(object))
-    goto out;
-
-  object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
-
-  maybe_wipe_obj_freeptr(s, object);
-  init = slab_want_init_on_alloc(gfpflags, s);
-
-out:
-  slab_post_alloc_hook(s, objcg, gfpflags, 1, &object, init, orig_size);
-
-  return object;
-}
-```
-
-### ifndef_CONFIG_SLUB_TINY
-```c
-#ifndef CONFIG_SLUB_TINY
-
-void *__slab_alloc_node(struct kmem_cache *s,
-    gfp_t gfpflags, int node, unsigned long addr, size_t orig_size)
-{
-  struct kmem_cache_cpu *c;
-  struct slab *slab;
-  unsigned long tid;
-  void *object;
-
-redo:
-  c = raw_cpu_ptr(s->cpu_slab);
-  tid = READ_ONCE(c->tid);
-
-  barrier();
-
-  object = c->freelist;
-  slab = c->slab;
-
-  if (!USE_LOCKLESS_FAST_PATH() || unlikely(!object || !slab || !node_match(slab, node))) {
-    object = ___slab_alloc(s, gfpflags, node, addr, c, orig_size);
-  } else {
-    void *next_object = get_freepointer_safe(s, object);
-
-    if (unlikely(!this_cpu_cmpxchg_double(
-        s->cpu_slab->freelist, s->cpu_slab->tid,
-        object, tid,
-        next_object, next_tid(tid))))
-    {
-      note_cmpxchg_failure("slab_alloc", s, tid);
-      goto redo;
-    }
-    prefetch_freepointer(s, next_object);
-    stat(s, ALLOC_FASTPATH);
-  }
-
-  return object;
-}
-
-
-void *___slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
-        unsigned long addr, struct kmem_cache_cpu *c, unsigned int orig_size)
-{
-  void *freelist;
-  struct slab *slab;
-  unsigned long flags;
-  struct partial_context pc;
-
-  stat(s, ALLOC_SLOWPATH);
-
-reread_slab:
-
-  slab = READ_ONCE(c->slab);
-  if (!slab) {
-    if (unlikely(node != NUMA_NO_NODE && !node_isset(node, slab_nodes)))
-      node = NUMA_NO_NODE;
-    goto new_slab;
-  }
-
-redo:
-  if (unlikely(!node_match(slab, node))) {
-    if (!node_isset(node, slab_nodes)) {
-      node = NUMA_NO_NODE;
-    } else {
-      stat(s, ALLOC_NODE_MISMATCH);
-      goto deactivate_slab;
-    }
-  }
-
-  if (unlikely(!pfmemalloc_match(slab, gfpflags)))
-    goto deactivate_slab;
-
-  local_lock_irqsave(&s->cpu_slab->lock, flags);
-  if (unlikely(slab != c->slab)) {
-    local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-    goto reread_slab;
-  }
-  freelist = c->freelist;
-  if (freelist)
-    goto load_freelist;
-
-  freelist = get_freelist(s, slab);
-
-  if (!freelist) {
-    c->slab = NULL;
-    c->tid = next_tid(c->tid);
-    local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-    stat(s, DEACTIVATE_BYPASS);
-    goto new_slab;
-  }
-
-  stat(s, ALLOC_REFILL);
-
-load_freelist:
-  lockdep_assert_held(this_cpu_ptr(&s->cpu_slab->lock));
-
-  VM_BUG_ON(!c->slab->frozen);
-  c->freelist = get_freepointer(s, freelist);
-  c->tid = next_tid(c->tid);
-  local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-  return freelist;
-
-deactivate_slab:
-
-  local_lock_irqsave(&s->cpu_slab->lock, flags);
-  if (slab != c->slab) {
-    local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-    goto reread_slab;
-  }
-  freelist = c->freelist;
-  c->slab = NULL;
-  c->freelist = NULL;
-  c->tid = next_tid(c->tid);
-  local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-  deactivate_slab(s, slab, freelist);
-
-new_slab:
-  if (slub_percpu_partial(c)) {
-    local_lock_irqsave(&s->cpu_slab->lock, flags);
-    if (unlikely(c->slab)) {
-      local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-      goto reread_slab;
-    }
-    if (unlikely(!slub_percpu_partial(c))) {
-      local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-      goto new_objects;
-    }
-
-    slab = c->slab = slub_percpu_partial(c);
-    slub_set_percpu_partial(c, slab);
-    local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-    stat(s, CPU_PARTIAL_ALLOC);
-    goto redo;
-  }
-
-new_objects:
-  pc.flags = gfpflags;
-  pc.slab = &slab;
-  pc.orig_size = orig_size;
-  freelist = get_partial(s, node, &pc);
-  if (freelist)
-    goto check_new_slab;
-
-  slub_put_cpu_ptr(s->cpu_slab);
-  slab = new_slab(s, gfpflags, node);
-  c = slub_get_cpu_ptr(s->cpu_slab);
-
-  if (unlikely(!slab)) {
-    slab_out_of_memory(s, gfpflags, node);
-    return NULL;
-  }
-
-  stat(s, ALLOC_SLAB);
-
-  if (kmem_cache_debug(s)) {
-    freelist = alloc_single_from_new_slab(s, slab, orig_size);
-
-    if (unlikely(!freelist))
-      goto new_objects;
-
-    if (s->flags & SLAB_STORE_USER)
-      set_track(s, freelist, TRACK_ALLOC, addr);
-
-    return freelist;
-  }
-
-  freelist = slab->freelist;
-  slab->freelist = NULL;
-  slab->inuse = slab->objects;
-  slab->frozen = 1;
-
-  inc_slabs_node(s, slab_nid(slab), slab->objects);
-
-check_new_slab:
-
-  if (kmem_cache_debug(s)) {
-    if (s->flags & SLAB_STORE_USER)
-      set_track(s, freelist, TRACK_ALLOC, addr);
-
-    return freelist;
-  }
-
-  if (unlikely(!pfmemalloc_match(slab, gfpflags))) {
-    deactivate_slab(s, slab, get_freepointer(s, freelist));
-    return freelist;
-  }
-
-retry_load_slab:
-  local_lock_irqsave(&s->cpu_slab->lock, flags);
-  if (unlikely(c->slab)) {
-    void *flush_freelist = c->freelist;
-    struct slab *flush_slab = c->slab;
-
-    c->slab = NULL;
-    c->freelist = NULL;
-    c->tid = next_tid(c->tid);
-
-    local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-
-    deactivate_slab(s, flush_slab, flush_freelist);
-
-    stat(s, CPUSLAB_FLUSH);
-
-    goto retry_load_slab;
-  }
-  c->slab = slab;
-
-  goto load_freelist;
-}
-```
-
-### ifdef_CONFIG_SLUB_TINY
-```c
-#else /* CONFIG_SLUB_TINY */
-void *__slab_alloc_node(struct kmem_cache *s,
-    gfp_t gfpflags, int node, unsigned long addr, size_t orig_size)
-{
-  struct partial_context pc;
-  struct slab *slab;
-  void *object;
-
-  pc.flags = gfpflags;
-  pc.slab = &slab;
-  pc.orig_size = orig_size;
-  object = get_partial(s, node, &pc);
-
-  if (object)
-    return object;
-
-  slab = new_slab(s, gfpflags, node);
-  if (unlikely(!slab)) {
-    slab_out_of_memory(s, gfpflags, node);
-    return NULL;
-  }
-
-  object = alloc_single_from_new_slab(s, slab, orig_size);
-
-  return object;
-}
-void *get_partial(struct kmem_cache *s, int node, struct partial_context *pc)
-{
-  void *object;
-  int searchnode = node;
-
-  if (node == NUMA_NO_NODE)
-    searchnode = numa_mem_id();
-
-  object = get_partial_node(s, get_node(s, searchnode), pc);
-  if (object || node != NUMA_NO_NODE)
-    return object;
-
-  return get_any_partial(s, pc);
-}
-
-void *get_partial_node(struct kmem_cache *s, struct kmem_cache_node *n,
-            struct partial_context *pc)
-{
-  struct slab *slab, *slab2;
-  void *object = NULL;
-  unsigned long flags;
-  unsigned int partial_slabs = 0;
-
-  if (!n || !n->nr_partial)
-    return NULL;
-
-  spin_lock_irqsave(&n->list_lock, flags);
-  list_for_each_entry_safe(slab, slab2, &n->partial, slab_list) {
-    void *t;
-
-    if (!pfmemalloc_match(slab, pc->flags))
-      continue;
-
-    if (IS_ENABLED(CONFIG_SLUB_TINY) || kmem_cache_debug(s)) {
-      object = alloc_single_from_partial(s, n, slab, pc->orig_size);
-      if (object)
-        break;
-      continue;
-    }
-
-    t = acquire_slab(s, n, slab, object == NULL);
-    if (!t)
-      break;
-
-    if (!object) {
-      *pc->slab = slab;
-      stat(s, ALLOC_FROM_PARTIAL);
-      object = t;
-    } else {
-      put_cpu_partial(s, slab, 0);
-      stat(s, CPU_PARTIAL_NODE);
-      partial_slabs++;
-    }
-#ifdef CONFIG_SLUB_CPU_PARTIAL
-    if (!kmem_cache_has_cpu_partial(s)
-      || partial_slabs > s->cpu_partial_slabs / 2)
-      break;
-#else
-    break;
-#endif
-
-  }
-  spin_unlock_irqrestore(&n->list_lock, flags);
-
-  return object;
-}
-
-void *alloc_single_from_partial(struct kmem_cache *s,
-    struct kmem_cache_node *n, struct slab *slab, int orig_size)
-{
-  void *object;
-
-  lockdep_assert_held(&n->list_lock);
-
-  object = slab->freelist;
-  slab->freelist = get_freepointer(s, object);
-  slab->inuse++;
-
-  if (!alloc_debug_processing(s, slab, object, orig_size)) {
-    remove_partial(n, slab);
-    return NULL;
-  }
-
-  if (slab->inuse == slab->objects) {
-    remove_partial(n, slab);
-    add_full(s, n, slab);
-  }
-
-  return object;
-}
-
-void *freelist_ptr(const struct kmem_cache *s, void *ptr,
-         unsigned long ptr_addr)
-{
-#ifdef CONFIG_SLAB_FREELIST_HARDENED
-  return (void *)((unsigned long)ptr ^ s->random ^
-      swab((unsigned long)kasan_reset_tag((void *)ptr_addr)));
-#else
-  return ptr;
-#endif
-}
-
-/* Returns the freelist pointer recorded at location ptr_addr. */
-static inline void *freelist_dereference(const struct kmem_cache *s,
-           void *ptr_addr)
-{
-  return freelist_ptr(s, (void *)*(unsigned long *)(ptr_addr),
-          (unsigned long)ptr_addr);
-}
-
-static inline void *get_freepointer(struct kmem_cache *s, void *object)
-{
-  object = kasan_reset_tag(object);
-  return freelist_dereference(s, object + s->offset);
-}
-
-inline void *acquire_slab(struct kmem_cache *s,
-    struct kmem_cache_node *n, struct slab *slab,
-    int mode)
-{
-  void *freelist;
-  unsigned long counters;
-  struct slab new;
-
-  lockdep_assert_held(&n->list_lock);
-
-  freelist = slab->freelist;
-  counters = slab->counters;
-  new.counters = counters;
-  if (mode) {
-    new.inuse = slab->objects;
-    new.freelist = NULL;
-  } else {
-    new.freelist = freelist;
-  }
-
-  VM_BUG_ON(new.frozen);
-  new.frozen = 1;
-
-  if (!__cmpxchg_double_slab(s, slab,
-      freelist, counters,
-      new.freelist, new.counters,
-      "acquire_slab"))
-    return NULL;
-
-  remove_partial(n, slab);
-  WARN_ON(!freelist);
-  return freelist;
-}
-
-struct slab *new_slab(struct kmem_cache *s, gfp_t flags, int node)
-{
-  if (unlikely(flags & GFP_SLAB_BUG_MASK))
-    flags = kmalloc_fix_flags(flags);
-
-  return allocate_slab(s, flags & (GFP_RECLAIM_MASK | GFP_CONSTRAINT_MASK), node);
-}
-
-static struct slab *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
-{
-  struct slab *slab;
-  struct kmem_cache_order_objects oo = s->oo;
-  gfp_t alloc_gfp;
-  void *start, *p, *next;
-  int idx;
-  bool shuffle;
-
-  flags &= gfp_allowed_mask;
-
-  flags |= s->allocflags;
-
-  alloc_gfp = (flags | __GFP_NOWARN | __GFP_NORETRY) & ~__GFP_NOFAIL;
-  if ((alloc_gfp & __GFP_DIRECT_RECLAIM) && oo_order(oo) > oo_order(s->min))
-    alloc_gfp = (alloc_gfp | __GFP_NOMEMALLOC) & ~__GFP_RECLAIM;
-
-  slab = alloc_slab_page(alloc_gfp, node, oo);
-  if (unlikely(!slab)) {
-    oo = s->min;
-    alloc_gfp = flags;
-
-    slab = alloc_slab_page(alloc_gfp, node, oo);
-    if (unlikely(!slab))
-      return NULL;
-    stat(s, ORDER_FALLBACK);
-  }
-
-  slab->objects = oo_objects(oo);
-  slab->inuse = 0;
-  slab->frozen = 0;
-
-  account_slab(slab, oo_order(oo), s, flags);
-
-  slab->slab_cache = s;
-
-  kasan_poison_slab(slab);
-
-  start = slab_address(slab);
-
-  setup_slab_debug(s, slab, start);
-
-  shuffle = shuffle_freelist(s, slab);
-
-  if (!shuffle) {
-    start = fixup_red_left(s, start);
-    start = setup_object(s, start);
-    slab->freelist = start;
-    for (idx = 0, p = start; idx < slab->objects - 1; idx++) {
-      next = p + s->size;
-      next = setup_object(s, next);
-      set_freepointer(s, p, next);
-      p = next;
-    }
-    set_freepointer(s, p, NULL);
-  }
-
-  return slab;
-}
-
-struct slab *alloc_slab_page(gfp_t flags, int node,
-    struct kmem_cache_order_objects oo)
-{
-  struct folio *folio;
-  struct slab *slab;
-  unsigned int order = oo_order(oo);
-
-  if (node == NUMA_NO_NODE)
-    folio = (struct folio *)alloc_pages(flags, order);
-  else
-    folio = (struct folio *)__alloc_pages_node(node, flags, order);
-
-  if (!folio)
-    return NULL;
-
-  slab = folio_slab(folio);
-  __folio_set_slab(folio);
-  /* Make the flag visible before any changes to folio->mapping */
-  smp_wmb();
-  if (folio_is_pfmemalloc(folio))
-    slab_set_pfmemalloc(slab);
-
-  return slab;
-}
-
-void *alloc_single_from_new_slab(struct kmem_cache *s,
-          struct slab *slab, int orig_size)
-{
-  int nid = slab_nid(slab);
-  struct kmem_cache_node *n = get_node(s, nid);
-  unsigned long flags;
-  void *object;
-
-
-  object = slab->freelist;
-  slab->freelist = get_freepointer(s, object);
-  slab->inuse = 1;
-
-  if (!alloc_debug_processing(s, slab, object, orig_size))
-    return NULL;
-
-  spin_lock_irqsave(&n->list_lock, flags);
-
-  if (slab->inuse == slab->objects)
-    add_full(s, n, slab);
-  else
-    add_partial(n, slab, DEACTIVATE_TO_HEAD);
-
-  inc_slabs_node(s, nid, slab->objects);
-  spin_unlock_irqrestore(&n->list_lock, flags);
-
-  return object;
-}
-
-#endif /* CONFIG_SLUB_TINY */
-```
-
 # kswapd
 ```C++
 //1. active page out when alloc
@@ -2818,6 +1965,15 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 # brk
 ```C++
 /* mm/mmap.c */
+SYSCALL_DEFINE1(brk)
+    if (brk <= mm->brk) {
+        do_munmap()
+    }
+
+    do_brk(oldbrk, len)
+
+
+
 SYSCALL_DEFINE1(brk, unsigned long, brk)
 {
     unsigned long retval;
@@ -2949,48 +2105,253 @@ unsigned long get_unmapped_area(
 }
 ```
 
+# create_pgd_mapping
+
+```c
+__create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
+    do {
+        next = pgd_addr_end(addr, end);
+        alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc, flags) {
+            if (pgd_none(pgd)) {
+                pud_phys = pgtable_alloc(PUD_SHIFT);
+                __p4d_populate(p4dp, pud_phys, p4dval);
+                p4d = READ_ONCE(*p4dp);
+            }
+            BUG_ON(p4d_bad(p4d));
+
+            pudp = pud_set_fixmap_offset(p4dp, addr);
+            do {
+                alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags) {
+                    if (pud_none(pud)) {
+                        pmd_phys = pgtable_alloc(PMD_SHIFT);
+                        __pud_populate(pudp, pmd_phys, pudval);
+                        pud = READ_ONCE(*pudp);
+                    }
+                    BUG_ON(pud_bad(pud));
+
+                    pmdp = pmd_set_fixmap_offset(pudp, addr);
+                    do {
+                        next = pmd_cont_addr_end(addr, end);
+                        init_pmd(pudp, addr, next, phys, __prot, pgtable_alloc, flags) {
+                            do {
+                                next = pmd_addr_end(addr, end);
+                                alloc_init_cont_pte() {
+                                    if (pmd_none(pmd)) {
+                                        pte_phys = pgtable_alloc(PAGE_SHIFT);
+                                        __pmd_populate(pmdp, pte_phys, pmdval);
+                                        pmd = READ_ONCE(*pmdp);
+                                    }
+                                    BUG_ON(pmd_bad(pmd));
+
+                                    do {
+                                        next = pte_cont_addr_end(addr, end);
+                                        init_pte(pmdp, addr, next, phys, __prot) {
+                                            ptep = pte_set_fixmap_offset(pmdp, addr);
+                                            do {
+                                                set_pte(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
+                                                    WRITE_ONCE(*ptep, pte);
+                                                    if (pte_valid_not_user(pte)) {
+                                                        dsb(ishst);
+                                                        isb();
+                                                    }
+                                                }
+                                                phys += PAGE_SIZE;
+                                            } while (ptep++, addr += PAGE_SIZE, addr != end);
+                                            pte_clear_fixmap();
+                                        }
+                                        phys += next - addr;
+                                    } while (addr = next, addr != end);
+                                }
+                                phys += next - addr;
+                            } while (pmdp++, addr = next, addr != end);
+                            phys += next - addr;
+                        }
+                        phys += next - addr;
+                    } while (addr = next, addr != end);
+                    pmd_clear_fixmap();
+                }
+                phys += next - addr;
+            } while (pudp++, addr = next, addr != end);
+            pud_clear_fixmap();
+        }
+        phys += next - addr;
+
+        phys += next - addr;
+    } while (pgdp++, addr = next, addr != end);
+```
+
+# remove_pgd_mapping
+
+```c
+__remove_pgd_mapping()
+    /* free phys mem which virt addr is [start, end] */
+    unmap_hotplug_range(asid, pgdir, start, end, 0, tlb) {
+        do {
+            if (pgd_none(pgd))
+                continue;
+        /* 1. pgd */
+            unmap_hotplug_p4d_range(asid, pgdp, addr, next, free_mapped, tlb) {
+                do {
+                    if (p4d_none(p4d))
+                        continue;
+        /* 2. pud */
+                    unmap_hotplug_pud_range(asid, p4dp, addr, next, free_mapped, tlb) {
+                        do {
+                            if (pud_none(pud))
+                                continue;
+                            if (pud_sect(pud)) {
+                                pud_clear(pudp);
+                                // tlb_batach_tlb_gather(tlb, addr | ARM64_TLB_FLUSH_PUD);
+
+                                flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                    --->
+                                if (free_mapped) {
+                                    free_hotplug_page_range(pud_page(pud), PUD_SIZE, tlb)
+                                        free_pages()
+                                }
+                                continue;
+                            }
+        /* 2. pmd */
+                            unmap_hotplug_pmd_range(asid, pudp, addr, next, free_mapped, tlb) {
+                                do {
+                                    if (pmd_none(pmd))
+                                        continue;
+
+                                    flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                        --->
+                                    if (pmd_sect(pmd)) {
+                                        pmd_clear(pmdp);
+                                        if (free_mapped)
+                                            free_hotplug_page_range(pmd_page(pmd), PMD_SIZE, tlb)
+                                               free_pages()
+                                        continue;
+                                    }
+        /* 3. pte */
+                                    unmap_hotplug_pte_range(asid, pmdp, addr, next, free_mapped, tlb);
+                                        do {
+                                            if (pte_none(pte))
+                                                continue;
+                                            pte_clear(NULL, addr, ptep);
+
+                                            flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                                --->
+                                            if (free_mapped) {
+                                                free_hotplug_page_range(pte_page(pte), PAGE_SIZE, tlb)
+                                                   free_pages()
+                                            }
+                                        } while (addr += PAGE_SIZE, addr < end);
+                                    }
+                                } while (addr = next, addr < end);
+                            }
+                        } while (addr = next, addr < end);
+                    }
+                } while (addr = next, addr < end);
+            }
+        } while (addr = next, addr < end)
+
+    /* free phsy mem of pgtable which is used to map virt addr [start, end] */
+    free_empty_tables()
+        do {
+            pgd = READ_ONCE(*pgdp);
+            if (pgd_none(pgd))
+                continue;
+            free_empty_p4d_table(asid, pgdp, addr, next, floor, ceiling, tlb) {
+                do {
+                    if (p4d_none(p4d))
+                        continue;
+                    free_empty_pud_table(asid, p4dp, addr, next, floor, ceiling, tlb) {
+                        do {
+                            pud = READ_ONCE(*pudp);
+                            free_empty_pmd_table(asid, pudp, addr, next, floor, ceiling, tlb) {
+                                do {
+                                    pmd = READ_ONCE(*pmdp);
+                                    if (pmd_none(pmd))
+                                        continue;
+                                    free_empty_pte_table(asid, pmdp, addr, next, floor, ceiling, tlb) {
+                                        do {
+                                            WARN_ON(!pte_none(pte));
+                                        } while ();
+
+                                        pmd_clear(pmdp);
+                                        __flush_tlb_kernel_pgtable(start);
+                                        free_hotplug_pgtable_page(virt_to_page(ptep), tlb);
+                                            free_pages()
+                                    }
+                                } while (addr = next, addr < end);
+
+                                pud_clear(pudp);
+                                __flush_tlb_kernel_pgtable(start);
+                                free_hotplug_pgtable_page(virt_to_page(pmdp), tlb);
+                                    free_pages()
+                            }
+                        } while (addr = next, addr < end);
+
+                        p4d_clear(p4dp);
+                        __flush_tlb_kernel_pgtable(start);
+                        free_hotplug_pgtable_page(virt_to_page(pudp), tlb);
+                            free_pages()
+                    }
+                } while (addr = next, addr < end);
+            }
+        } while (addr = next, addr < end);
+```
+
 # mmap
 
 ```C++
-mmap();
-  sys_mmap_pgoff();
-    vm_mmap_pgoff();
-      do_mmap_pgoff();
-        do_mmap();
+mmap() {
+    sys_mmap_pgoff() {
+        vm_mmap_pgoff() {
+            do_mmap_pgoff() {
+                do_mmap()
 
-          get_unmapped_area();
-            get_area = current->mm->get_unmapped_area;
-            if (file) {
-              if (file->f_op->get_unmapped_area)
-                get_area = file->f_op->get_unmapped_area;
-                  __thp_get_unmapped_area();
-                    current->mm->get_unmapped_area();
-            } else if (flags & MAP_SHARED) {
-              get_area = shmem_get_unmapped_area;
+                get_unmapped_area();
+                    get_area = current->mm->get_unmapped_area;
+                    if (file) {
+                    if (file->f_op->get_unmapped_area)
+                        get_area = file->f_op->get_unmapped_area;
+                            __thp_get_unmapped_area();
+                                current->mm->get_unmapped_area();
+                    } else if (flags & MAP_SHARED) {
+                        get_area = shmem_get_unmapped_area;
+                    }
+                    addr = get_area(file, addr, len, pgoff, flags);
+
+                map_region() {
+                    /* Unmap any existing mapping in the area */
+	                do_vmi_munmap(&vmi, mm);
+
+                    vma_merge();
+
+                    struct vm_area_struct *vma = kmem_cache_zalloc();
+
+                    if (file) {
+                        vma->vm_file = get_file(file);
+                        /* 2.1. link the file to vma */
+                        rc = call_mtmap(file, vma);
+                            file->f_op->mmap(file, vma);
+                            ext4_file_mmap();
+                                vma->vm_ops = &ext4_file_vm_ops;
+
+                        if (rc) {
+                            unmap_region()
+                                --->
+                        }
+                    } else if (vm_flags & VM_SHARED) {
+                        shmem_zero_setup(vma);
+                    } else {
+                        vma_set_anonymous(vma); /* vma->vm_ops = NULL; */
+                    }
+                }
+
+                /* 2.2. link the vma to the file */
+                vma_link(mm, vma, prev, rb_link, rb_parent);
+                    vma_interval_tree_insert(vma, &mapping->i_mmap);
+
             }
-            addr = get_area(file, addr, len, pgoff, flags);
-
-          map_region();
-            vma_merge();
-
-            struct vm_area_struct *vma = kmem_cache_zalloc();
-
-            if (file) {
-              vma->vm_file = get_file(file);
-              /* 2.1. link the file to vma */
-              call_mmap(file, vma);
-                file->f_op->mmap(file, vma);
-                  ext4_file_mmap();
-                    vma->vm_ops = &ext4_file_vm_ops;
-            } else if (vm_flags & VM_SHARED) {
-              shmem_zero_setup(vma);
-            } else {
-              vma_set_anonymous(vma); /* vma->vm_ops = NULL; */
-            }
-
-            /* 2.2. link the vma to the file */
-            vma_link(mm, vma, prev, rb_link, rb_parent);
-              vma_interval_tree_insert(vma, &mapping->i_mmap);
+        }
+    }
+}
 
 
 setup_new_exec();
@@ -3010,6 +2371,7 @@ mm->get_unmapped_area();
 ```
 
 ![](../Images/Kernel/mem-mmap-vma-file-page.png)
+
 ```C++
 struct mm_struct {
   pgd_t                 *pgd;
@@ -3054,131 +2416,6 @@ struct anon_vma {
   struct rb_root_cached rb_root;
 };
 
-SYSCALL_DEFINE6(
-  mmap, unsigned long, addr, unsigned long, len,
-  unsigned long, prot, unsigned long, flags,
-  unsigned long, fd, unsigned long, off)
-{
-  error = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
-}
-
-SYSCALL_DEFINE6(mmap_pgoff, unsigned long, addr, unsigned long, len,
-    unsigned long, prot, unsigned long, flags,
-    unsigned long, fd, unsigned long, pgoff)
-{
-  struct file *file = NULL;
-
-  file = fget(fd);
-
-  retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff);
-  return retval;
-}
-
-/*  vm_mmap_pgoff -> do_mmap_pgoff -> do_mmap */
-unsigned long do_mmap(struct file *file, unsigned long addr,
-      unsigned long len, unsigned long prot,
-      unsigned long flags, vm_flags_t vm_flags,
-      unsigned long pgoff, unsigned long *populate,
-      struct list_head *uf)
-{
-  addr = get_unmapped_area(file, addr, len, pgoff, flags);
-  if (IS_ERR_VALUE(addr))
-    return addr;
-
-  addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
-  return addr;
-}
-
-/* 1. get_unmapped_area */
-unsigned long get_unmapped_area(
-  struct file *file, unsigned long addr, unsigned long len,
-  unsigned long pgoff, unsigned long flags)
-{
-  unsigned long (*get_area)(struct file *, unsigned long,
-          unsigned long, unsigned long, unsigned long);
-  get_area = current->mm->get_unmapped_area;
-  if (file) {
-    if (file->f_op->get_unmapped_area)
-      get_area = file->f_op->get_unmapped_area;
-  } else if (flags & MAP_SHARED) {
-    get_area = shmem_get_unmapped_area;
-  }
-  addr = get_area(file, addr, len, pgoff, flags);
-}
-
-const struct file_operations ext4_file_operations = {
-  .mmap               = ext4_file_mmap
-  .get_unmapped_area  = thp_get_unmapped_area,
-};
-
-unsigned long __thp_get_unmapped_area(
-  struct file *filp, unsigned long len,
-  loff_t off, unsigned long flags, unsigned long size)
-{
-  unsigned long addr;
-  loff_t off_end = off + len;
-  loff_t off_align = round_up(off, size);
-  unsigned long len_pad;
-  len_pad = len + size;
-
-  addr = current->mm->get_unmapped_area(
-    filp, 0, len_pad, off >> PAGE_SHIFT, flags);
-  addr += (off - addr) & (size - 1);
-  return addr;
-}
-
-/* 2. mmap_region */
-unsigned long mmap_region(struct file *file, unsigned long addr,
-    unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
-    struct list_head *uf)
-{
-  struct mm_struct *mm = current->mm;
-  struct vm_area_struct *vma, *prev;
-  struct rb_node **rb_link, *rb_parent;
-
-  vma = vma_merge(mm, prev, addr, addr + len, vm_flags,
-      NULL, file, pgoff, NULL, NULL_VM_UFFD_CTX);
-  if (vma)
-    goto out;
-
-  vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
-
-  vma->vm_mm = mm;
-  vma->vm_start = addr;
-  vma->vm_end = addr + len;
-  vma->vm_flags = vm_flags;
-  vma->vm_page_prot = vm_get_page_prot(vm_flags);
-  vma->vm_pgoff = pgoff;
-  INIT_LIST_HEAD(&vma->anon_vma_chain);
-
-  if (file) {
-    vma->vm_file = get_file(file);
-    /* 2.1. link the file to vma */
-    call_mmap(file, vma);
-    addr = vma->vm_start;
-    vm_flags = vma->vm_flags;
-  } else if (vm_flags & VM_SHARED) {
-    shmem_zero_setup(vma);
-  } else {
-    vma_set_anonymous(vma);
-  }
-
-  /* 2.2. link the vma to the file */
-  vma_link(mm, vma, prev, rb_link, rb_parent);
-
-  return addr;
-}
-
-static inline int call_mmap(struct file *file, struct vm_area_struct *vma)
-{
-  return file->f_op->mmap(file, vma);
-}
-
-static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
-{
-  vma->vm_ops = &ext4_file_vm_ops;
-}
-
 /* page cache in memory */
 struct address_space {
   struct inode          *host;
@@ -3197,306 +2434,126 @@ struct address_space {
   struct list_head      private_list;
   void*                 private_data;
 };
-
-/* 2.2. link the vma to the file */
-static void vma_link(struct mm_struct *mm, struct vm_area_struct *vma,
-      struct vm_area_struct *prev, struct rb_node **rb_link,
-      struct rb_node *rb_parent)
-{
-  struct address_space *mapping = NULL;
-
-  if (vma->vm_file) {
-    mapping = vma->vm_file->f_mapping;
-    i_mmap_lock_write(mapping);
-  }
-
-  __vma_link(mm, vma, prev, rb_link, rb_parent);
-  __vma_link_file(vma);
-
-  if (mapping)
-    i_mmap_unlock_write(mapping);
-
-  mm->map_count++;
-  validate_mm(mm);
-}
-
-static void __vma_link_file(struct vm_area_struct *vma)
-{
-  struct file *file;
-
-  file = vma->vm_file;
-  if (file) {
-    struct address_space *mapping = file->f_mapping;
-    vma_interval_tree_insert(vma, &mapping->i_mmap);
-  }
-}
-
-static void __vma_link(
-  struct mm_struct *mm, struct vm_area_struct *vma,
-  struct vm_area_struct *prev, struct rb_node **rb_link,
-  struct rb_node *rb_parent)
-{
-  __vma_link_list(mm, vma, prev, rb_parent);
-  __vma_link_rb(mm, vma, rb_link, rb_parent);
-}
-```
-
-## get_unmapped_area
-```c
-void setup_new_exec(struct linux_binprm * bprm)
-{
-  arch_pick_mmap_layout(current->mm, &bprm->rlim_stack);
-}
-
-void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
-{
-  if (mmap_is_legacy())
-    mm->get_unmapped_area = arch_get_unmapped_area;
-  else
-    mm->get_unmapped_area = arch_get_unmapped_area_topdown;
-
-  arch_pick_mmap_base(&mm->mmap_base, &mm->mmap_legacy_base,
-      arch_rnd(mmap64_rnd_bits), task_size_64bit(0),
-      rlim_stack);
-}
-
-static void arch_pick_mmap_base(unsigned long *base, unsigned long *legacy_base,
-    unsigned long random_factor, unsigned long task_size,
-    struct rlimit *rlim_stack)
-{
-  *legacy_base = mmap_legacy_base(random_factor, task_size);
-  if (mmap_is_legacy())
-    *base = *legacy_base;
-  else
-    *base = mmap_base(random_factor, task_size, rlim_stack);
-}
-
-unsigned long mmap_base(unsigned long rnd, unsigned long task_size,
-             struct rlimit *rlim_stack)
-{
-  unsigned long gap = rlim_stack->rlim_cur;
-  unsigned long pad = stack_maxrandom_size(task_size) + stack_guard_gap;
-  unsigned long gap_min, gap_max;
-
-  /* Values close to RLIM_INFINITY can overflow. */
-  if (gap + pad > gap)
-    gap += pad;
-
-  /* Top of mmap area (just below the process stack).
-   * Leave an at least ~128 MB hole with possible stack randomization. */
-  gap_min = SIZE_128M;
-  gap_max = (task_size / 6) * 5;
-
-  if (gap < gap_min)
-    gap = gap_min;
-  else if (gap > gap_max)
-    gap = gap_max;
-
-  return PAGE_ALIGN(task_size - gap - rnd);
-}
-```
-
-```c
-unsigned long
-arch_get_unmapped_area(struct file *filp, unsigned long addr,
-    unsigned long len, unsigned long pgoff, unsigned long flags)
-{
-  struct mm_struct *mm = current->mm;
-  struct vm_area_struct *vma;
-  struct vm_unmapped_area_info info;
-  unsigned long begin, end;
-
-  addr = mpx_unmapped_area_check(addr, len, flags);
-  if (IS_ERR_VALUE(addr))
-    return addr;
-
-  if (flags & MAP_FIXED)
-    return addr;
-
-  find_start_end(addr, flags, &begin, &end);
-
-  if (len > end)
-    return -ENOMEM;
-
-  if (addr) {
-    addr = PAGE_ALIGN(addr);
-    vma = find_vma(mm, addr);
-    if (end - len >= addr && (!vma || addr + len <= vm_start_gap(vma)))
-      return addr;
-  }
-
-  info.flags = 0;
-  info.length = len;
-  info.low_limit = begin;
-  info.high_limit = end;
-  info.align_mask = 0;
-  info.align_offset = pgoff << PAGE_SHIFT;
-  if (filp) {
-    info.align_mask = get_align_mask();
-    info.align_offset += get_align_bits();
-  }
-  return vm_unmapped_area(&info);
-}
-
-static void find_start_end(unsigned long addr, unsigned long flags,
-    unsigned long *begin, unsigned long *end)
-{
-  if (!in_compat_syscall() && (flags & MAP_32BIT)) {
-    /* This is usually used needed to map code in small
-      model, so it needs to be in the first 31bit. Limit
-      it to that.  This means we need to move the
-      unmapped base down for this case. This can give
-      conflicts with the heap, but we assume that glibc
-      malloc knows how to fall back to mmap. Give it 1GB
-      of playground for now. -AK */
-    *begin = 0x40000000;
-    *end = 0x80000000;
-    if (current->flags & PF_RANDOMIZE) {
-      *begin = randomize_page(*begin, 0x02000000);
-    }
-    return;
-  }
-
-  *begin  = get_mmap_base(1);
-  if (in_compat_syscall())
-    *end = task_size_32bit();
-  else
-    *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
-
-  /* TODO::?  shouldn't [begin, end) be [brk, mmap_base) */
-}
-
-unsigned long get_mmap_base(int is_legacy)
-{
-  struct mm_struct *mm = current->mm;
-
-#ifdef CONFIG_HAVE_ARCH_COMPAT_MMAP_BASES
-  if (in_compat_syscall()) {
-    return is_legacy ? mm->mmap_compat_legacy_base
-         : mm->mmap_compat_base;
-  }
-#endif
-  return is_legacy ? mm->mmap_legacy_base : mm->mmap_base;
-}
-
-/* Search for an unmapped address range.
- *
- * We are looking for a range that:
- * - does not intersect with any VMA;
- * - is contained within the [low_limit, high_limit) interval;
- * - is at least the desired size.
- * - satisfies (begin_addr & align_mask) == (align_offset & align_mask) */
-unsigned long vm_unmapped_area(struct vm_unmapped_area_info *info)
-{
-  if (info->flags & VM_UNMAPPED_AREA_TOPDOWN)
-    return unmapped_area_topdown(info);
-  else
-    return unmapped_area(info);
-}
-
-unsigned long unmapped_area(struct vm_unmapped_area_info *info)
-{
-  /* We implement the search by looking for an rbtree node that
-   * immediately follows a suitable gap. That is,
-   * - gap_start = vma->vm_prev->vm_end <= info->high_limit - length;
-   * - gap_end   = vma->vm_start        >= info->low_limit  + length;
-   * - gap_end - gap_start >= length */
-
-  struct mm_struct *mm = current->mm;
-  struct vm_area_struct *vma;
-  unsigned long length, low_limit, high_limit, gap_start, gap_end;
-
-  /* Adjust search length to account for worst case alignment overhead */
-  length = info->length + info->align_mask;
-  if (length < info->length)
-    return -ENOMEM;
-
-  /* Adjust search limits by the desired length */
-  if (info->high_limit < length)
-    return -ENOMEM;
-  high_limit = info->high_limit - length;
-
-  if (info->low_limit > high_limit)
-    return -ENOMEM;
-  low_limit = info->low_limit + length;
-
-  /* Check if rbtree root looks promising */
-  if (RB_EMPTY_ROOT(&mm->mm_rb))
-    goto check_highest;
-  vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
-  if (vma->rb_subtree_gap < length)
-    goto check_highest;
-
-  while (true) {
-    /* Visit left subtree if it looks promising */
-    gap_end = vm_start_gap(vma);
-    if (gap_end >= low_limit && vma->vm_rb.rb_left) {
-      struct vm_area_struct *left =
-        rb_entry(vma->vm_rb.rb_left,
-           struct vm_area_struct, vm_rb);
-      if (left->rb_subtree_gap >= length) {
-        vma = left;
-        continue;
-      }
-    }
-
-    gap_start = vma->vm_prev ? vm_end_gap(vma->vm_prev) : 0;
-check_current:
-    /* Check if current node has a suitable gap */
-    if (gap_start > high_limit)
-      return -ENOMEM;
-    if (gap_end >= low_limit &&
-        gap_end > gap_start && gap_end - gap_start >= length)
-      goto found;
-
-    /* Visit right subtree if it looks promising */
-    if (vma->vm_rb.rb_right) {
-      struct vm_area_struct *right =
-        rb_entry(vma->vm_rb.rb_right,
-           struct vm_area_struct, vm_rb);
-      if (right->rb_subtree_gap >= length) {
-        vma = right;
-        continue;
-      }
-    }
-
-    /* Go back up the rbtree to find next candidate node */
-    while (true) {
-      struct rb_node *prev = &vma->vm_rb;
-      if (!rb_parent(prev))
-        goto check_highest;
-      vma = rb_entry(rb_parent(prev),
-               struct vm_area_struct, vm_rb);
-      if (prev == vma->vm_rb.rb_left) {
-        gap_start = vm_end_gap(vma->vm_prev);
-        gap_end = vm_start_gap(vma);
-        goto check_current;
-      }
-    }
-  }
-
-check_highest:
-  /* Check highest gap, which does not precede any rbtree node */
-  gap_start = mm->highest_vm_end;
-  gap_end = ULONG_MAX;
-  if (gap_start > high_limit)
-    return -ENOMEM;
-
-found:
-  /* We found a suitable gap. Clip it with the original low_limit. */
-  if (gap_start < info->low_limit)
-    gap_start = info->low_limit;
-
-  /* Adjust gap address to the desired alignment */
-  gap_start += (info->align_offset - gap_start) & info->align_mask;
-
-  return gap_start;
-}
 ```
 
 # page fault
 
 ![](../Images/Kernel/mem-page-fault.png)
+
+
+```c
+/* arm64
+ * arch/arm64/mm/fault.c */
+static const struct fault_info fault_info[] = {
+    do_translation_fault, SIGSEGV, SEGV_MAPERR, "level 0 translation"
+};
+
+el1h_64_sync_handler() {
+    switch (esr) {
+        el1_abort(regs, esr) {
+            do_mem_abort()
+                do_translation_fault()
+                    do_page_fault()
+                        __do_page_fault()
+                            handle_mm_fault()
+                                --->
+        }
+    }
+}
+
+el0t_64_sync_handler() {
+    switch (ESR_ELx_EC(esr)) {
+	case ESR_ELx_EC_SVC64:
+		el0_svc(regs) {
+
+        }
+    }
+}
+
+
+/* mm/memory.c */
+handle_mm_fault(vma, address, flags, regs);
+
+    hugetlb_fault();
+
+    __handle_mm_fault()
+
+        pgd = pgd_offset(mm, address)
+        p4d = p4d_alloc(pgd)
+        if (!p4d)
+            return VM_FAULT_OOM;
+        pud = pud_alloc(p4d)
+        if (!pud)
+            return VM_FAULT_OOM;
+        pmd = pmd_alloc(pud)
+        if (!pmd)
+            return VM_FAULT_OOM;
+
+        handle_pte_fault();
+
+            /* 1. anonymous fault */
+            do_anonymous_page();
+                pte = pte_alloc(pmd)
+                if (pte)
+                    return VM_FAULT_OOM;
+                alloc_zeroed_user_highpage_movable();
+                alloc_pages_vma();
+                    __alloc_pages_nodemask();
+                        get_page_from_freelist();
+                mk_pte();
+                page_add_new_anon_rmap()
+                __page_set_anon_rmap();
+                    anon_vma = vma->anon_vma;
+                    page->mapping = (struct address_space *) anon_vma;
+                set_pte_at()
+                update_mmu_cache()
+
+            /* 2. file fault */
+            do_fault()
+                /* 2.1 read fault */
+                do_read_fault()
+                    __do_fault();
+                        vma->vm_ops->fault();
+                            ext4_filemap_fault();
+                                filemap_fault();
+                                    page = find_get_page();
+                                    if (page) {
+                                        do_async_mmap_readahead();
+                                    } else if (!page) {
+                                        do_async_mmap_readahead();
+                                    }
+
+                                    page_cache_read();
+                                        page = __page_cache_alloc();
+                                        address_space.a_ops.readpage();
+                                        ext4_read_inline_page();
+                                            kmap_atomic();
+                                            ext4_read_inline_data();
+                                            kumap_atomic();
+                    finish_fault()
+                        alloc_set_pte()
+                        pte_unmap_unlock()
+
+                /* 2.2 cow fault */
+                do_cow_fault()
+
+                /* 2.3 shared fault */
+                do_shared_fault()
+
+            /* 3. swap fault */
+            do_swap_page();
+
+            update_mmu_tlb()
+
+/* x86 */
+exc_page_fault();
+  handle_page_fault();
+    do_kern_addr_fault();
+
+    do_user_addr_fault();
+        vma = find_vma(mm, address);
+
+```
 
 ```C++
 struct file {
@@ -3523,969 +2580,6 @@ struct address_space {
   void*                 private_data;
 };
 
-void __init setup_arch(char **cmdline_p)
-{
-  idt_setup_early_pf();
-}
-
-void __init idt_setup_early_pf(void)
-{
-  idt_setup_from_table(idt_table, early_pf_idts, ARRAY_SIZE(early_pf_idts), true);
-}
-
-static const __initconst struct idt_data early_pf_idts[] = {
-  INTG(X86_TRAP_PF,    asm_exc_page_fault),
-};
-```
-
-## asm_exc_page_fault
-```c
-DECLARE_IDTENTRY_RAW_ERRORCODE(X86_TRAP_PF,  exc_page_fault);
-
-/* DECLARE_IDTENTRY_RAW_ERRORCODE - Declare functions for raw IDT entry points
- *            Error code pushed by hardware
- * @vector:  Vector number (ignored for C)
- * @func:  Function name of the entry point
- *
- * Maps to DECLARE_IDTENTRY_ERRORCODE() */
-#define DECLARE_IDTENTRY_RAW_ERRORCODE(vector, func) \
-  DECLARE_IDTENTRY_ERRORCODE(vector, func)
-
-#ifndef __ASSEMBLY__
-#define DECLARE_IDTENTRY_ERRORCODE(vector, func) \
-  asmlinkage void asm_##func(void); \
-  asmlinkage void xen_asm_##func(void); \
-  __visible void func(struct pt_regs *regs, unsigned long error_code)
-
-#else /* !__ASSEMBLY__ */
-#define DECLARE_IDTENTRY_ERRORCODE(vector, func) \
-  idtentry vector asm_##func func has_error_code=1
-
-/**
- * idtentry - Macro to generate entry stubs for simple IDT entries
- * @vector:    Vector number
- * @asmsym:    ASM symbol for the entry point
- * @cfunc:    C function to be called
- * @has_error_code:  Hardware pushed error code on stack
- *
- * The macro emits code to set up the kernel context for straight forward
- * and simple IDT entries. No IST stack, no paranoid entry checks. */
-.macro idtentry vector asmsym cfunc has_error_code:req
-SYM_CODE_START(\asmsym)
-  UNWIND_HINT_IRET_REGS offset=\has_error_code*8
-  ENDBR
-  ASM_CLAC
-  cld
-
-  .if \has_error_code == 0
-    pushq  $-1      /* ORIG_RAX: no syscall to restart */
-  .endif
-
-  .if \vector == X86_TRAP_BP
-    /* If coming from kernel space, create a 6-word gap to allow the
-     * int3 handler to emulate a call instruction. */
-    testb  $3, CS-ORIG_RAX(%rsp)
-    jnz  .Lfrom_usermode_no_gap_\@
-    .rept  6
-    pushq  5*8(%rsp)
-    .endr
-    UNWIND_HINT_IRET_REGS offset=8
-.Lfrom_usermode_no_gap_\@:
-  .endif
-
-  idtentry_body \cfunc \has_error_code
-
-_ASM_NOKPROBE(\asmsym)
-SYM_CODE_END(\asmsym)
-.endm
-
-/**
- * idtentry_body - Macro to emit code calling the C function
- * @cfunc:    C function to be called
- * @has_error_code:  Hardware pushed error code on stack */
-.macro idtentry_body cfunc has_error_code:req
-
-  /* Call error_entry() and switch to the task stack if from userspace.
-   *
-   * When in XENPV, it is already in the task stack, and it can't fault
-   * for native_iret() nor native_load_gs_index() since XENPV uses its
-   * own pvops for IRET and load_gs_index().  And it doesn't need to
-   * switch the CR3.  So it can skip invoking error_entry(). */
-  ALTERNATIVE "call error_entry; movq %rax, %rsp", \
-    "call xen_error_entry", X86_FEATURE_XENPV
-
-  ENCODE_FRAME_POINTER
-  UNWIND_HINT_REGS
-
-  movq  %rsp, %rdi      /* pt_regs pointer into 1st argument*/
-
-  .if \has_error_code == 1
-    movq  ORIG_RAX(%rsp), %rsi  /* get error code into 2nd argument*/
-    movq  $-1, ORIG_RAX(%rsp)  /* no syscall to restart */
-  .endif
-
-  call \cfunc
-
-  /* For some configurations \cfunc ends up being a noreturn. */
-  REACHABLE
-
-  jmp  error_return
-.endm
-
-SYM_CODE_START_LOCAL(error_return)
- UNWIND_HINT_REGS
- DEBUG_ENTRY_ASSERT_IRQS_OFF
- testb $3, CS(%rsp)
- jz restore_regs_and_return_to_kernel
- jmp swapgs_restore_regs_and_return_to_usermode
-SYM_CODE_END(error_return)
-
-DEFINE_IDTENTRY_RAW_ERRORCODE(exc_page_fault)
-{
-  unsigned long address = read_cr2();
-  irqentry_state_t state;
-
-  prefetchw(&current->mm->mmap_lock);
-
-  if (kvm_handle_async_pf(regs, (u32)address))
-    return;
-
-  state = irqentry_enter(regs);
-
-  instrumentation_begin();
-  handle_page_fault(regs, error_code, address);
-  instrumentation_end();
-
-  irqentry_exit(regs, state);
-}
-
-void
-handle_page_fault(struct pt_regs *regs, unsigned long error_code, unsigned long address)
-{
-  trace_page_fault_entries(regs, error_code, address);
-
-  if (unlikely(kmmio_fault(regs, address)))
-    return;
-
-  if (unlikely(fault_in_kernel_space(address))) {
-    do_kern_addr_fault(regs, error_code, address);
-  } else {
-    do_user_addr_fault(regs, error_code, address);
-
-    local_irq_disable();
-  }
-}
-```
-## do_kern_addr_fault
-```c
-void
-do_kern_addr_fault(struct pt_regs *regs, unsigned long hw_error_code,
-       unsigned long address)
-{
-  /*
-   * Protection keys exceptions only happen on user pages.  We
-   * have no user pages in the kernel portion of the address
-   * space, so do not expect them here.
-   */
-  WARN_ON_ONCE(hw_error_code & X86_PF_PK);
-
-#ifdef CONFIG_X86_32
-  if (!(hw_error_code & (X86_PF_RSVD | X86_PF_USER | X86_PF_PROT))) {
-    if (vmalloc_fault(address) >= 0)
-      return;
-  }
-#endif
-
-  if (is_f00f_bug(regs, hw_error_code, address))
-    return;
-
-  /* Was the fault spurious, caused by lazy TLB invalidation? */
-  if (spurious_kernel_fault(hw_error_code, address))
-    return;
-
-  /* kprobes don't want to hook the spurious faults: */
-  if (WARN_ON_ONCE(kprobe_page_fault(regs, X86_TRAP_PF)))
-    return;
-
-  bad_area_nosemaphore(regs, hw_error_code, address);
-}
-
-int vmalloc_fault(unsigned long address)
-{
-  unsigned long pgd_paddr;
-  pmd_t *pmd_k;
-  pte_t *pte_k;
-
-  /* Make sure we are in vmalloc area: */
-  if (!(address >= VMALLOC_START && address < VMALLOC_END))
-    return -1;
-
-  /*
-   * Synchronize this task's top level page-table
-   * with the 'reference' page table.
-   *
-   * Do _not_ use "current" here. We might be inside
-   * an interrupt in the middle of a task switch..
-   */
-  pgd_paddr = read_cr3_pa();
-  pmd_k = vmalloc_sync_one(__va(pgd_paddr), address);
-  if (!pmd_k)
-    return -1;
-
-  if (pmd_large(*pmd_k))
-    return 0;
-
-  pte_k = pte_offset_kernel(pmd_k, address);
-  if (!pte_present(*pte_k))
-    return -1;
-
-  return 0;
-}
-
-pmd_t *vmalloc_sync_one(pgd_t *pgd, unsigned long address)
-{
-  unsigned index = pgd_index(address);
-  pgd_t *pgd_k;
-  p4d_t *p4d, *p4d_k;
-  pud_t *pud, *pud_k;
-  pmd_t *pmd, *pmd_k;
-
-  pgd += index;
-  pgd_k = init_mm.pgd + index;
-
-  if (!pgd_present(*pgd_k))
-    return NULL;
-
-  /*
-   * set_pgd(pgd, *pgd_k); here would be useless on PAE
-   * and redundant with the set_pmd() on non-PAE. As would
-   * set_p4d/set_pud.
-   */
-  p4d = p4d_offset(pgd, address);
-  p4d_k = p4d_offset(pgd_k, address);
-  if (!p4d_present(*p4d_k))
-    return NULL;
-
-  pud = pud_offset(p4d, address);
-  pud_k = pud_offset(p4d_k, address);
-  if (!pud_present(*pud_k))
-    return NULL;
-
-  pmd = pmd_offset(pud, address);
-  pmd_k = pmd_offset(pud_k, address);
-
-  if (pmd_present(*pmd) != pmd_present(*pmd_k))
-    set_pmd(pmd, *pmd_k);
-
-  if (!pmd_present(*pmd_k))
-    return NULL;
-  else
-  return pmd_k;
-}
-```
-
-## do_user_addr_fault
-```c
-void do_user_addr_fault(struct pt_regs *regs,
-      unsigned long error_code,
-      unsigned long address)
-{
-  struct vm_area_struct *vma;
-  struct task_struct *tsk;
-  struct mm_struct *mm;
-  vm_fault_t fault;
-  unsigned int flags = FAULT_FLAG_DEFAULT;
-
-  tsk = current;
-  mm = tsk->mm;
-
-  if (unlikely((error_code & (X86_PF_USER | X86_PF_INSTR)) == X86_PF_INSTR)) {
-    if (is_errata93(regs, address))
-      return;
-
-    page_fault_oops(regs, error_code, address);
-    return;
-  }
-
-  /* kprobes don't want to hook the spurious faults: */
-  if (WARN_ON_ONCE(kprobe_page_fault(regs, X86_TRAP_PF)))
-    return;
-
-  if (unlikely(error_code & X86_PF_RSVD))
-    pgtable_bad(regs, error_code, address);
-
-  if (unlikely(cpu_feature_enabled(X86_FEATURE_SMAP) &&
-         !(error_code & X86_PF_USER) &&
-         !(regs->flags & X86_EFLAGS_AC))) {
-    page_fault_oops(regs, error_code, address);
-    return;
-  }
-
-  if (unlikely(faulthandler_disabled() || !mm)) {
-    bad_area_nosemaphore(regs, error_code, address);
-    return;
-  }
-
-  if (user_mode(regs)) {
-    local_irq_enable();
-    flags |= FAULT_FLAG_USER;
-  } else {
-    if (regs->flags & X86_EFLAGS_IF)
-      local_irq_enable();
-  }
-
-  perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
-
-  if (error_code & X86_PF_WRITE)
-    flags |= FAULT_FLAG_WRITE;
-  if (error_code & X86_PF_INSTR)
-    flags |= FAULT_FLAG_INSTRUCTION;
-
-#ifdef CONFIG_X86_64
-  if (is_vsyscall_vaddr(address)) {
-    if (emulate_vsyscall(error_code, regs, address))
-      return;
-  }
-#endif
-
-  if (unlikely(!mmap_read_trylock(mm))) {
-    if (!user_mode(regs) && !search_exception_tables(regs->ip)) {
-      bad_area_nosemaphore(regs, error_code, address);
-      return;
-    }
-retry:
-    mmap_read_lock(mm);
-  } else {
-    might_sleep();
-  }
-
-  vma = find_vma(mm, address);
-  if (unlikely(!vma)) {
-    bad_area(regs, error_code, address);
-    return;
-  }
-  if (likely(vma->vm_start <= address))
-    goto good_area;
-  if (unlikely(!(vma->vm_flags & VM_GROWSDOWN))) {
-    bad_area(regs, error_code, address);
-    return;
-  }
-  if (unlikely(expand_stack(vma, address))) {
-    bad_area(regs, error_code, address);
-    return;
-  }
-
-good_area:
-  if (unlikely(access_error(error_code, vma))) {
-    bad_area_access_error(regs, error_code, address, vma);
-    return;
-  }
-
-  fault = handle_mm_fault(vma, address, flags, regs);
-
-  if (fault_signal_pending(fault, regs)) {
-    if (!user_mode(regs))
-      kernelmode_fixup_or_oops(regs, error_code, address,
-             SIGBUS, BUS_ADRERR,
-             ARCH_DEFAULT_PKEY);
-    return;
-  }
-
-  /* The fault is fully completed (including releasing mmap lock) */
-  if (fault & VM_FAULT_COMPLETED)
-    return;
-
-  if (unlikely(fault & VM_FAULT_RETRY)) {
-    flags |= FAULT_FLAG_TRIED;
-    goto retry;
-  }
-
-  mmap_read_unlock(mm);
-  if (likely(!(fault & VM_FAULT_ERROR)))
-    return;
-
-  if (fatal_signal_pending(current) && !user_mode(regs)) {
-    kernelmode_fixup_or_oops(regs, error_code, address,
-           0, 0, ARCH_DEFAULT_PKEY);
-    return;
-  }
-
-  if (fault & VM_FAULT_OOM) {
-    /* Kernel mode? Handle exceptions or die: */
-    if (!user_mode(regs)) {
-      kernelmode_fixup_or_oops(regs, error_code, address,
-             SIGSEGV, SEGV_MAPERR,
-             ARCH_DEFAULT_PKEY);
-      return;
-    }
-
-    pagefault_out_of_memory();
-  } else {
-    if (fault & (VM_FAULT_SIGBUS|VM_FAULT_HWPOISON|
-           VM_FAULT_HWPOISON_LARGE))
-      do_sigbus(regs, error_code, address, fault);
-    else if (fault & VM_FAULT_SIGSEGV)
-      bad_area_nosemaphore(regs, error_code, address);
-    else
-      BUG();
-  }
-}
-
-vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
-         unsigned int flags, struct pt_regs *regs)
-{
-  vm_fault_t ret;
-
-  __set_current_state(TASK_RUNNING);
-
-  count_vm_event(PGFAULT);
-  count_memcg_event_mm(vma->vm_mm, PGFAULT);
-
-  /* do counter updates before entering really critical section. */
-  check_sync_rss_stat(current);
-
-  if (!arch_vma_access_permitted(vma, flags & FAULT_FLAG_WRITE,
-              flags & FAULT_FLAG_INSTRUCTION,
-              flags & FAULT_FLAG_REMOTE))
-    return VM_FAULT_SIGSEGV;
-
-  /*
-   * Enable the memcg OOM handling for faults triggered in user
-   * space.  Kernel faults are handled more gracefully.
-   */
-  if (flags & FAULT_FLAG_USER)
-    mem_cgroup_enter_user_fault();
-
-  if (unlikely(is_vm_hugetlb_page(vma)))
-    ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
-  else
-    ret = __handle_mm_fault(vma, address, flags);
-
-  if (flags & FAULT_FLAG_USER) {
-    mem_cgroup_exit_user_fault();
-    /*
-     * The task may have entered a memcg OOM situation but
-     * if the allocation error was handled gracefully (no
-     * VM_FAULT_OOM), there is no need to kill anything.
-     * Just clean up the OOM state peacefully.
-     */
-    if (task_in_memcg_oom(current) && !(ret & VM_FAULT_OOM))
-      mem_cgroup_oom_synchronize(false);
-  }
-
-  mm_account_fault(regs, address, flags, ret);
-
-  return ret;
-}
-
-static int __handle_mm_fault(
-  struct vm_area_struct *vma,
-  unsigned long address,
-  unsigned int flags)
-{
-  struct vm_fault vmf = {
-    .vma = vma,
-    .address = address & PAGE_MASK,
-    .flags = flags,
-    .pgoff = linear_page_index(vma, address),
-    .gfp_mask = __get_fault_gfp_mask(vma),
-  };
-
-  struct mm_struct *mm = vma->vm_mm;
-  pgd_t *pgd;
-  p4d_t *p4d;
-  int ret;
-
-  pgd = pgd_offset(mm, address);
-  p4d = p4d_alloc(mm, pgd, address);
-
-  vmf.pud = pud_alloc(mm, p4d, address);
-  vmf.pmd = pmd_alloc(mm, vmf.pud, address);
-
-  return handle_pte_fault(&vmf);
-}
-
-static int handle_pte_fault(struct vm_fault *vmf)
-{
-  pte_t entry;
-  vmf->pte = pte_offset_map(vmf->pmd, vmf->address);
-  vmf->orig_pte = *vmf->pte;
-
-  if (!vmf->pte) {
-    if (vma_is_anonymous(vmf->vma)) /* return !vma->vm_ops; */
-      return do_anonymous_page(vmf);
-    else
-      return do_fault(vmf);
-  }
-
-  if (!pte_present(vmf->orig_pte))
-    return do_swap_page(vmf);
-}
-```
-
-### hugetlb_fault
-
-### do_anonymous_page
-```c
-/* 1. map to anonymouse page */
-static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  struct mem_cgroup *memcg;
-  struct page *page;
-  vm_fault_t ret = 0;
-  pte_t entry;
-
-  /* File mapping without ->vm_ops ? */
-  if (vma->vm_flags & VM_SHARED)
-    return VM_FAULT_SIGBUS;
-
-  if (pte_alloc(vma->vm_mm, vmf->pmd, vmf->address))
-    return VM_FAULT_OOM;
-
-  /* See the comment in pte_alloc_one_map() */
-  if (unlikely(pmd_trans_unstable(vmf->pmd)))
-    return 0;
-
-  /* Allocate our own private page. */
-  if (unlikely(anon_vma_prepare(vma)))
-    goto oom;
-
-  page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
-  if (!page)
-    goto oom;
-
-  if (mem_cgroup_try_charge_delay(page, vma->vm_mm, GFP_KERNEL, &memcg,
-          false))
-    goto oom_free_page;
-
-  __SetPageUptodate(page);
-
-  entry = mk_pte(page, vma->vm_page_prot);
-
-  /* if can write page, set the wr flag in pte */
-  if (vma->vm_flags & VM_WRITE)
-    entry = pte_mkwrite(pte_mkdirty(entry));
-
-  vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address,
-      &vmf->ptl);
-  if (!pte_none(*vmf->pte))
-    goto release;
-
-  /* add map from physic memory page to virtual address
-   * add pte mapping to a new anonymous page
-   * rmap: Reverse Mapping */
-  page_add_new_anon_rmap(page, vma, vmf->address, false);
-
-  mem_cgroup_commit_charge(page, memcg, false, false);
-  lru_cache_add_active_or_unevictable(page, vma);
-
-setpte:
-  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
-
-  /* No need to invalidate - it was non-present before */
-  update_mmu_cache(vma, vmf->address, vmf->pte);
-
-  return VM_FAULT_OOM;
-}
-
-static inline pte_t mk_pte(struct page *page, pgprot_t prot)
-{
-  return pfn_pte(page_to_pfn(page), prot);
-}
-
-void page_add_new_anon_rmap(struct page *page,
-  struct vm_area_struct *vma, unsigned long address, bool compound)
-{
-  int nr = compound ? hpage_nr_pages(page) : 1;
-
-  __mod_node_page_state(page_pgdat(page), NR_ANON_MAPPED, nr);
-  __page_set_anon_rmap(page, vma, address, 1);
-}
-
-static void __page_set_anon_rmap(struct page *page,
-  struct vm_area_struct *vma, unsigned long address, int exclusive)
-{
-  struct anon_vma *anon_vma = vma->anon_vma;
-
-  if (PageAnon(page))
-    return;
-
-  if (!exclusive)
-    anon_vma = anon_vma->root;
-
-  anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
-  /* page->mapping points to its anon_vma, not to a struct address_space */
-  page->mapping = (struct address_space *) anon_vma;
-  page->index = linear_page_index(vma, address);
-}
-
-void *alloc_zeroed_user_highpage(
-  gfp_t movableflags,
-  struct vm_area_struct *vma,
-  unsigned long vaddr)
-{
-  struct page *page = alloc_page_vma(GFP_HIGHUSER | movableflags,
-      vma, vaddr);
-
-  if (page)
-    clear_user_highpage(page, vaddr);
-
-  return page;
-}
-
-#define alloc_page_vma(gfp_mask, vma, addr)      \
-  alloc_pages_vma(gfp_mask, 0, vma, addr, numa_node_id(), false)
-
-struct page *alloc_pages_vma(gfp_t gfp, int order, struct vm_area_struct *vma,
-    unsigned long addr, int node, bool hugepage)
-{
-  struct mempolicy *pol;
-  struct page *page;
-  int preferred_nid;
-  nodemask_t *nmask;
-
-  pol = get_vma_policy(vma, addr);
-
-  nmask = policy_nodemask(gfp, pol);
-  preferred_nid = policy_node(gfp, pol, node);
-  page = __alloc_pages_nodemask(gfp, order, preferred_nid, nmask);
-  mpol_cond_put(pol);
-out:
-  return page;
-}
-```
-
-### do_fault
-```C++
-/* 2. map to a file */
-static vm_fault_t do_fault(struct vm_fault *vmf)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  struct mm_struct *vm_mm = vma->vm_mm;
-  vm_fault_t ret;
-
-  if (!vma->vm_ops->fault) {
-    if (unlikely(!pmd_present(*vmf->pmd)))
-      ret = VM_FAULT_SIGBUS;
-    else {
-      vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm,
-                   vmf->pmd,
-                   vmf->address,
-                   &vmf->ptl);
-      if (unlikely(pte_none(*vmf->pte)))
-        ret = VM_FAULT_SIGBUS;
-      else
-        ret = VM_FAULT_NOPAGE;
-
-      pte_unmap_unlock(vmf->pte, vmf->ptl);
-    }
-  } else if (!(vmf->flags & FAULT_FLAG_WRITE))
-    ret = do_read_fault(vmf);
-  else if (!(vma->vm_flags & VM_SHARED))
-    ret = do_cow_fault(vmf);
-  else
-    ret = do_shared_fault(vmf);
-
-  /* preallocated pagetable is unused: free it */
-  if (vmf->prealloc_pte) {
-    pte_free(vm_mm, vmf->prealloc_pte);
-    vmf->prealloc_pte = NULL;
-  }
-  return ret;
-}
-
-static vm_fault_t do_read_fault(struct vm_fault *vmf)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  vm_fault_t ret = 0;
-
-  if (vma->vm_ops->map_pages && fault_around_bytes >> PAGE_SHIFT > 1) {
-    ret = do_fault_around(vmf);
-    if (ret)
-      return ret;
-  }
-
-  ret = __do_fault(vmf);
-
-  ret |= finish_fault(vmf);
-
-  return ret;
-}
-
-
-static int __do_fault(struct vm_fault *vmf)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  if (pmd_none(*vmf->pmd) && !vmf->prealloc_pte) {
-    vmf->prealloc_pte = pte_alloc_one(vmf->vma->vm_mm);
-    if (!vmf->prealloc_pte)
-      return VM_FAULT_OOM;
-  }
-
-  int ret;
-  ret = vma->vm_ops->fault(vmf);
-  return ret;
-}
-
-static const struct vm_operations_struct ext4_file_vm_ops = {
-  .fault        = ext4_filemap_fault,
-  .map_pages    = filemap_map_pages,
-  .page_mkwrite = ext4_page_mkwrite,
-};
-
-int ext4_filemap_fault(struct vm_fault *vmf)
-{
-  int err;
-  struct inode *inode = file_inode(vmf->vma->vm_file);
-
-  down_read(&EXT4_I(inode)->i_mmap_sem);
-  err = filemap_fault(vmf);
-  up_read(&EXT4_I(inode)->i_mmap_sem);
-
-  return err;
-}
-
-/* read in file data for page fault handling */
-int filemap_fault(struct vm_fault *vmf)
-{
-  int error;
-  struct file *file = vmf->vma->vm_file;
-  struct address_space *mapping = file->f_mapping;
-  struct inode *inode = mapping->host;
-  pgoff_t offset = vmf->pgoff;
-  struct page *page;
-  int ret = 0;
-
-  page = find_get_page(mapping, offset); /* find the physical cache page */
-  if (likely(page) && !(vmf->flags & FAULT_FLAG_TRIED)) {
-    do_async_mmap_readahead(vmf->vma, ra, file, page, offset);
-  } else if (!page) {
-    /* Synchronous readahead happens when we don't even find
-     * a page in the page cache at all.*/
-    do_sync_mmap_readahead(vmf->vma, ra, file, offset);
-
-retry_find:
-    page = find_get_page(mapping, offset);
-    if (!page)
-      goto no_cached_page;
-  }
-
-  vmf->page = page;
-  return ret | VM_FAULT_LOCKED;
-no_cached_page:
-  error = page_cache_read(file, offset, vmf->gfp_mask);
-}
-
-/* This adds the requested page to the page cache if it isn't already there,
- * and schedules an I/O to read in its contents from disk. */
-static int page_cache_read(struct file *file, pgoff_t offset, gfp_t gfp_mask)
-{
-  struct address_space *mapping = file->f_mapping;
-  struct page *page;
-
-  page = __page_cache_alloc(gfp_mask|__GFP_COLD); /* invoke buddy system to alloc physical page */
-  ret = add_to_page_cache_lru(page, mapping, offset, gfp_mask & GFP_KERNEL);
-  ret = mapping->a_ops->readpage(file, page);
-}
-
-static const struct address_space_operations ext4_aops = {
-  .readpage   = ext4_readpage,
-  .readpages  = ext4_readpages,
-};
-
-static int ext4_read_inline_page(struct inode *inode, struct page *page)
-{
-  void *kaddr;
-
-  kaddr = kmap_atomic(page);
-  ret = ext4_read_inline_data(inode, kaddr, len, &iloc);
-  flush_dcache_page(page);
-  kunmap_atomic(kaddr);
-}
-
-/* finish page fault once we have prepared the page to fault */
-vm_fault_t finish_fault(struct vm_fault *vmf)
-{
-  struct page *page;
-  vm_fault_t ret = 0;
-
-  /* Did we COW the page? */
-  if ((vmf->flags & FAULT_FLAG_WRITE) &&
-      !(vmf->vma->vm_flags & VM_SHARED))
-    page = vmf->cow_page;
-  else
-    page = vmf->page;
-
-  if (!(vmf->vma->vm_flags & VM_SHARED))
-    ret = check_stable_address_space(vmf->vma->vm_mm);
-  if (!ret)
-    ret = alloc_set_pte(vmf, vmf->memcg, page);
-  if (vmf->pte)
-    pte_unmap_unlock(vmf->pte, vmf->ptl);
-  return ret;
-}
-
-#define pte_unmap_unlock(pte, ptl)  do {    \
-  spin_unlock(ptl);        \
-  pte_unmap(pte);          \
-} while (0)
-
-/* setup new PTE entry for given page and add reverse page mapping */
-vm_fault_t alloc_set_pte(struct vm_fault *vmf, struct mem_cgroup *memcg,
-    struct page *page)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  bool write = vmf->flags & FAULT_FLAG_WRITE;
-  pte_t entry;
-  vm_fault_t ret;
-
-  if (pmd_none(*vmf->pmd) && PageTransCompound(page) &&
-      IS_ENABLED(CONFIG_TRANSPARENT_HUGE_PAGECACHE)) {
-
-    ret = do_set_pmd(vmf, page);
-    if (ret != VM_FAULT_FALLBACK)
-      return ret;
-  }
-
-  if (!vmf->pte) {
-    ret = pte_alloc_one_map(vmf);
-    if (ret)
-      return ret;
-  }
-
-  /* Re-check under ptl */
-  if (unlikely(!pte_none(*vmf->pte)))
-    return VM_FAULT_NOPAGE;
-
-  flush_icache_page(vma, page);
-  entry = mk_pte(page, vma->vm_page_prot);
-  if (write)
-    entry = maybe_mkwrite(pte_mkdirty(entry), vma);
-
-  /* copy-on-write page */
-  if (write && !(vma->vm_flags & VM_SHARED)) {
-    inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
-    page_add_new_anon_rmap(page, vma, vmf->address, false);
-    mem_cgroup_commit_charge(page, memcg, false, false);
-    lru_cache_add_active_or_unevictable(page, vma);
-  } else {
-    inc_mm_counter_fast(vma->vm_mm, mm_counter_file(page));
-    page_add_file_rmap(page, false);
-  }
-
-  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
-
-  /* no need to invalidate: a not-present page won't be cached */
-  update_mmu_cache(vma, vmf->address, vmf->pte);
-
-  return 0;
-}
-```
-
-### do_swap_page
-```c
-/* 3. map to a swap */
-int do_swap_page(struct vm_fault *vmf)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  struct page *page, *swapcahe;
-  struct mem_cgroup *memcg;c
-  swp_entry_t entry;
-  pte_t pte;
-
-  entry = pte_to_swp_entry(vmf->orig_pte);
-  page = lookup_swap_cache(entry);
-  if (!page) {
-    page = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE, vma,
-          vmf->address);
-  }
-
-  swapcache = page;
-  pte = mk_pte(page, vma->vm_page_prot);
-  set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
-  vmf->orig_pte = pte;
-  swap_free(entry);
-}
-
-/* swapin_readahead -> */
-int swap_readpage(struct page *page, bool do_poll)
-{
-  struct bio *bio;
-  int ret = 0;
-  struct swap_info_struct *sis = page_swap_info(page);
-  blk_qc_t qc;
-  struct block_device *bdev;
-
-  if (sis->flags & SWP_FILE) {
-    struct file *swap_file = sis->swap_file;
-    struct address_space *mapping = swap_file->f_mapping;
-    ret = mapping->a_ops->readpage(swap_file, page);
-    return ret;
-  }
-}
-```
-
-```c
-exc_page_fault();
-  handle_page_fault();
-    do_kern_addr_fault();
-
-    do_user_addr_fault();
-      vma = find_vma(mm, address);
-      handle_mm_fault(vma, address, flags, regs);
-        hugetlb_fault();
-
-        handle_pte_fault();
-          /* 1. anonymous fault */
-          do_anonymous_page();
-            pte_alloc();
-            alloc_zeroed_user_highpage_movable();
-              alloc_pages_vma();
-                  __alloc_pages_nodemask();
-                    get_page_from_freelist();
-            mk_pte();
-            page_add_new_anon_rmap()
-              __page_set_anon_rmap();
-                anon_vma = vma->anon_vma;
-                page->mapping = (struct address_space *) anon_vma;
-            set_pte_at()
-            update_mmu_cache()
-
-          /* 2. file fault */
-          do_fault()
-            /* 2.1 read fault */
-            do_read_fault()
-              __do_fault();
-                vma->vm_ops->fault();
-                  ext4_filemap_fault();
-                    filemap_fault();
-                      page = find_get_page();
-                      if (page) {
-                        do_async_mmap_readahead();
-                      } else if (!page) {
-                        do_async_mmap_readahead();
-                      }
-
-                      page_cache_read();
-                        page = __page_cache_alloc();
-                        address_space.a_ops.readpage();
-                          ext4_read_inline_page();
-                            kmap_atomic();
-                            ext4_read_inline_data();
-                            kumap_atomic();
-              finish_fault()
-                alloc_set_pte()
-                pte_unmap_unlock()
-
-            /* 2.2 cow fault */
-            do_cow_fault()
-
-            /* 2.3 shared fault */
-            do_shared_fault()
-
-          /* 3. swap fault */
-          do_swap_page();
 ```
 
 # pgd
@@ -4523,6 +2617,419 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
         KERNEL_PGD_PTRS);
   }
 }
+```
+
+# munmap
+```c
+munmap()
+SYSCALL_DEFINE2(munmap) {
+    __vm_munmap(addr, len, true) {
+        do_vmi_munmap() {
+            do_vmi_align_munmap() {
+                unmap_region() {
+                    lru_add_drain();
+                    tlb_gather_mmu(&tlb, mm);
+                    update_hiwater_rss(mm);
+
+                    /* 1. just unmap the phys which is mmaped with vma, vma is free by vm_area_free */
+                    unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
+                        do {
+                            unmap_single_vma();
+                                unmap_page_range() {
+                                    tlb_start_vma(tlb, vma);
+
+                                    pgd = pgd_offset(vma->vm_mm, addr);
+                                    do {
+                                        next = pgd_addr_end(addr, end);
+                                        if (pgd_none_or_clear_bad(pgd))
+                                            continue;
+                                        next = zap_p4d_range(tlb, vma, pgd, addr, next, details); {
+                                            p4d = p4d_offset(pgd, addr);
+                                            do {
+                                                next = p4d_addr_end(addr, end);
+                                                if (p4d_none_or_clear_bad(p4d))
+                                                    continue;
+                                                next = zap_pud_range(tlb, vma, p4d, addr, next, details) {
+                                                    do {
+                                                        if (pud_none_or_clear_bad(pud))
+                                                            continue;
+                                                        next = zap_pmd_range(tlb, vma, pud, addr, next, details); {
+                                                            zap_pte_range() {
+                                                                do {
+                                                                    pte_t ptent = *pte;
+                                                                    struct page *page;
+
+                                                                    if (pte_present(ptent)) {
+                                                                        unsigned int delay_rmap;
+
+                                                                        page = vm_normal_page(vma, addr, ptent);
+
+                                                                        ptent = ptep_get_and_clear_full(mm, addr, pte, tlb->fullmm);
+                                                                        tlb_remove_tlb_entry(tlb, pte, addr) {
+                                                                            tlb_flush_pte_range()
+                                                                                __tlb_adjust_range(tlb, address, size);
+                                                                                tlb->cleared_ptes = 1;
+                                                                            __tlb_remove_tlb_entry()
+                                                                        }
+                                                                        zap_install_uffd_wp_if_needed(vma, addr, pte, details, ptent);
+                                                                        if (unlikely(!page))
+                                                                            continue;
+
+                                                                        delay_rmap = 0;
+                                                                        if (!PageAnon(page)) {
+                                                                            if (pte_dirty(ptent)) {
+                                                                                set_page_dirty(page);
+                                                                                if (tlb_delay_rmap(tlb)) {
+                                                                                    delay_rmap = 1;
+                                                                                    force_flush = 1;
+                                                                                }
+                                                                            }
+                                                                        }
+
+                                                                        __tlb_remove_page(tlb, page, delay_rmap) {
+                                                                            batch = tlb->active;
+                                                                            batch->encoded_pages[batch->nr++] = page;
+                                                                            if (batch->nr == batch->max) {
+                                                                                if (!tlb_next_batch(tlb))
+                                                                                    return true;
+                                                                                batch = tlb->active;
+                                                                            }
+                                                                        }
+                                                                    }
+
+
+                                                                    pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
+                                                                    zap_install_uffd_wp_if_needed(vma, addr, pte, details, ptent);
+                                                                } while (pte++, addr += PAGE_SIZE, addr != end);
+                                                            }
+                                                        }
+                                                    next:
+                                                        cond_resched();
+                                                    } while (pud++, addr = next, addr != end);
+                                                }
+                                            } while (p4d++, addr = next, addr != end);
+                                        }
+                                    } while (pgd++, addr = next, addr != end);
+
+                                    tlb_end_vma(tlb, vma) {
+                                        tlb_flush_mmu_tlbonly(tlb);
+                                    }
+                                }
+                        } while ((vma = mas_find(&mas, end_addr - 1)) != NULL);
+                    }
+
+                    /* 2 free pg table */
+                    free_pgtables(&tlb) {
+                        do {
+                            unlink_anon_vmas(vma);
+                            unlink_file_vma(vma);
+
+                            /* frees user-level page tables */
+                            free_pgd_range() {
+                                do {
+                                    next = pgd_addr_end(addr, end);
+                                    if (pgd_none_or_clear_bad(pgd))
+                                        continue;
+                                    free_p4d_range(tlb, pgd, addr, next, floor, ceiling); {
+                                        do {
+                                            next = p4d_addr_end(addr, end);
+                                            if (p4d_none_or_clear_bad(p4d))
+                                                continue;
+                                            free_pud_range(tlb, p4d, addr, next, floor, ceiling) {
+                                                do {
+                                                    next = pud_addr_end(addr, end);
+                                                    if (pud_none_or_clear_bad(pud))
+                                                        continue;
+                                                    free_pmd_range(tlb, pud, addr, next, floor, ceiling); {
+                                                        do {
+                                                            next = pmd_addr_end(addr, end);
+                                                            if (pmd_none_or_clear_bad(pmd))
+                                                                continue;
+                                                            free_pte_range(tlb, pmd, addr); {
+                                                                pgtable_t token = pmd_pgtable(*pmd);
+                                                                pmd_clear(pmd);
+                                                                pte_free_tlb(tlb, token, addr) {
+                                                                    tlb_flush_pmd_range(tlb, address, PAGE_SIZE)
+                                                                    tlb->freed_tables = 1;
+                                                                    __pte_free_tlb(tlb, ptep, address) {
+                                                                        pgtable_pte_page_dtor(pte);
+	                                                                    tlb_remove_table(tlb, pte) {
+                                                                            /* add to tlb mmu_gather */
+                                                                            (*batch)->tables[(*batch)->nr++] = table;
+                                                                            if ((*batch)->nr == MAX_TABLE_BATCH)
+                                                                                tlb_table_flush(tlb)
+                                                                                    --->
+                                                                        }
+                                                                    }
+                                                                }
+                                                                mm_dec_nr_ptes(tlb->mm);
+                                                            }
+                                                        } while (pmd++, addr = next, addr != end);
+
+                                                        pud_clear(pud);
+                                                        pmd_free_tlb(tlb, pmd, start) {
+                                                            tlb_flush_pud_range(tlb, address, PAGE_SIZE);
+                                                            tlb->freed_tables = 1;
+                                                            __pmd_free_tlb(tlb, pmdp, address) {
+                                                                pgtable_pmd_page_dtor(page);
+	                                                            tlb_remove_table(tlb, page);
+                                                                    --->
+                                                            }
+                                                        }
+                                                        mm_dec_nr_pmds(tlb->mm);
+                                                    }
+                                                } while (pud++, addr = next, addr != end);
+
+                                                pud = pud_offset(p4d, start);
+                                                p4d_clear(p4d);
+                                                pud_free_tlb(tlb, pud, start) {
+                                                    tlb_remove_table(tlb, pud);
+                                                        --->
+                                                }
+                                                mm_dec_nr_puds(tlb->mm);
+                                            }
+
+                                            p4d = p4d_offset(pgd, start);
+                                            pgd_clear(pgd);
+                                            p4d_free_tlb(tlb, p4d, start) {
+
+                                            }
+                                        } while (p4d++, addr = next, addr != end);
+                                    }
+                                } while (pgd++, addr = next, addr != end)
+                            }
+                        } while (vma);
+                    }
+
+                    /* 3. finish gather */
+                    tlb_finish_mmu(&tlb) {
+                        tlb_flush_mmu(tlb) {
+                            tlb_flush_mmu_tlbonly(tlb)  {
+                                if (!(tlb->freed_tables
+                                    || tlb->cleared_ptes
+                                    || tlb->cleared_pmds
+                                    || tlb->cleared_puds
+                                    || tlb->cleared_p4ds)
+                                ) {
+                                    return;
+                                }
+                                tlb_flush(tlb);
+                                    __flush_tlb_range()
+                                __tlb_reset_range(tlb);
+                            }
+
+                            tlb_flush_mmu_free(tlb) {
+                                tlb_table_flush(tlb)  {
+                                    if (*batch) {
+                                        tlb_table_invalidate(tlb) {
+                                            if (tlb_needs_table_invalidate()) {
+                                                tlb_flush_mmu_tlbonly(tlb)
+                                                    --->
+                                            }
+                                        }
+                                        tlb_remove_table_free(*batch) {
+                                            for (i = 0; i < batch->nr; i++)
+                                                __tlb_remove_table(batch->tables[i]);
+                                                    free_page_and_swap_cache();
+                                                        free_page();
+                                            free_page((unsigned long)bat ch);
+                                        }
+                                        *batch = NULL;
+                                    }
+                                }
+
+                                tlb_batch_pages_flush(tlb) {
+                                    free_pages_and_swap_cache(pages, nr);
+                                }
+                            }
+                        }
+
+                        tlb_batch_list_free() {
+                            for (batch = tlb->local.next; batch; batch = next) {
+                                next = batch->next;
+                                free_pages((unsigned long)batch, 0);
+                            }
+                        }
+                    }
+                }
+
+                remove_mt(mm, &mas_detach) {
+                    mas_for_each(mas, vma, ULONG_MAX) {
+                        remove_vma(vma) {
+                            vm_area_free(vma) {
+                                free_anon_vma_name(vma);
+	                            kmem_cache_free(vm_area_cachep, vma);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+# remove_memory
+```c
+/* mm/memory_hotplug.c
+ * Remove memory if every memory block is offline */
+remove_memory(start, size)
+    try_remove_memory()
+        arch_remove_memory()
+
+/* arch/arm64/mm/mmu.c */
+arch_remove_memory(start, size, altmap)
+    __remove_pages(start_pfn, nr_pages, altmap);
+        for () {
+            __remove_section(pfn, cur_nr_pages, map_offset, altmap)
+                sparse_remove_section(ms, pfn, nr_pages, map_offset, altmap)
+                    section_deactivate()
+                    ....
+
+        }
+
+	__remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size)
+        /* 1. free phys mem which virt addr is [start, end] */
+        unmap_hotplug_range(start, end, false, NULL) {
+            do {
+            /* 1. pgd */
+                unmap_hotplug_p4d_range(pgdp, addr, next, free_mapped, altmap) {
+                    do {
+            /* 2. pud */
+                        unmap_hotplug_pud_range(p4dp, addr, next, free_mapped, altmap) {
+                            do {
+                                if (pud_sect(pud)) {
+                                    pud_clear(pudp);
+                                    /* arch/arm64/include/asm/tlbflush.h */
+                                    flush_tlb_kernel_range(addr, addr + PAGE_SIZE) {
+                                        if ((end - start) > (MAX_TLBI_OPS * PAGE_SIZE)) {
+                                            flush_tlb_all();
+                                            return;
+                                        }
+
+                                        start = __TLBI_VADDR(start, 0);
+                                        end = __TLBI_VADDR(end, 0);
+
+                                        dsb(ishst);
+                                        for (addr = start; addr < end; addr += 1 << (PAGE_SHIFT - 12))
+                                            __tlbi(vaale1is, addr);
+                                        dsb(ish);
+                                        isb();
+                                    }
+
+                                    if (free_mapped) {
+                                        free_hotplug_page_range(pud_page(pud), PUD_SIZE, altmap)
+                                            free_pages()
+                                    }
+                                    continue;
+                                }
+            /* 3. pmd */
+                                unmap_hotplug_pmd_range(pudp, addr, next, free_mapped, altmap) {
+                                    do {
+                                        if (pmd_sect(pmd)) {
+                                            pmd_clear(pmdp);
+                                            flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                                --->
+                                            if (free_mapped)
+                                                free_hotplug_page_range() {
+                                                    free_pages()
+                                                }
+                                            continue;
+                                        }
+            /* 4. pte */
+                                        unmap_hotplug_pte_range(pmdp, addr, next, free_mapped, altmap) {
+                                            do {
+                                                pte_clear(&init_mm, addr, ptep);
+                                                flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                                    --->
+                                                if (free_mapped)
+                                                    free_hotplug_page_range() {
+                                                        free_pages()
+                                                    }
+                                            } while (addr += PAGE_SIZE, addr < end);
+                                        }
+                                    } while (addr = next, addr < end);
+                                }
+                            } while (addr = next, addr < end);
+                        }
+                    } while (addr = next, addr < end);
+                }
+            } while (addr = next, addr < end)
+        }
+
+        /* 2. free phsy mem of pgtable which is used to map virt addr [start, end] */
+	    free_empty_tables(start, end, PAGE_OFFSET, PAGE_END) {
+            do {
+                next = pgd_addr_end(addr, end);
+                pgdp = pgd_offset_k(addr);
+                pgd = READ_ONCE(*pgdp);
+                if (pgd_none(pgd))
+                    continue;
+
+                free_empty_p4d_table(pgdp, addr, next, floor, ceiling) {
+                    do {
+                        next = p4d_addr_end(addr, end);
+                        p4dp = p4d_offset(pgdp, addr);
+                        p4d = READ_ONCE(*p4dp);
+                        if (p4d_none(p4d))
+                            continue;
+
+                        free_empty_pud_table(p4dp, addr, next, floor, ceiling) {
+                            do {
+                                next = pud_addr_end(addr, end);
+                                pudp = pud_offset(p4dp, addr);
+                                pud = READ_ONCE(*pudp);
+                                if (pud_none(pud))
+                                    continue;
+
+                                free_empty_pmd_table(pudp, addr, next, floor, ceiling) {
+                                    do {
+                                        next = pmd_addr_end(addr, end);
+                                        pmdp = pmd_offset(pudp, addr);
+                                        pmd = READ_ONCE(*pmdp);
+                                        if (pmd_none(pmd))
+                                            continue;
+
+                                        free_empty_pte_table(pmdp, addr, next, floor, ceiling) {
+                                            do {
+                                                ptep = pte_offset_kernel(pmdp, addr);
+                                                pte = READ_ONCE(*ptep);
+                                            } while (addr += PAGE_SIZE, addr < end);
+
+                                            pmd_clear(pmdp);
+                                            __flush_tlb_kernel_pgtable(start);
+                                                --->
+                                            free_hotplug_pgtable_page(virt_to_page(ptep)) {
+                                                free_pages()
+                                            }
+                                        }
+                                    } while (addr = next, addr < end);
+
+                                    pud_clear(pudp);
+                                    __flush_tlb_kernel_pgtable(start);
+                                        --->
+                                    free_hotplug_pgtable_page(virt_to_page(pmdp)) {
+                                        free_pages()
+                                    }
+                                }
+                            } while (addr = next, addr < end);
+
+                            p4d_clear(p4dp);
+                            __flush_tlb_kernel_pgtable(start) {
+                                dsb(ishst);
+                                __tlbi(vaae1is, addr); /* invalidate the TLB */
+                                dsb(ish);
+                                isb();
+                            }
+
+                            free_hotplug_pgtable_page(virt_to_page(pudp)) {
+                                free_pages()
+                            }
+                        }
+                    } while (addr = next, addr < end);
+                }
+            } while (addr = next, addr < end);
+        }
 ```
 
 # kernel mapping
