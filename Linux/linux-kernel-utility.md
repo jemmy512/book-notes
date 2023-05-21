@@ -1886,6 +1886,211 @@ Reference:
 
 ## futex
 
+![](../Images/Kernel/lock-rt-mutex.png)
+
+```c
+static struct {
+    struct futex_hash_bucket *queues;
+    unsigned long            hashsize;
+} __futex_data;
+
+struct futex_hash_bucket {
+    atomic_t            waiters; /* number of waiters */
+    spinlock_t          lock;
+    struct plist_head   chain;
+};
+
+struct futex_q {
+    struct plist_node       list;
+
+    struct task_struct      *task;
+    spinlock_t              *lock_ptr;
+    union futex_key         key;
+    struct futex_pi_state   *pi_state;
+    struct rt_mutex_waiter  *rt_waiter;
+    union futex_key         *requeue_pi_key;
+    u32                     bitset;
+    atomic_t                requeue_state;
+    struct rcuwait          requeue_wait;
+};
+
+struct futex_pi_state {
+    struct list_head        list;
+    struct rt_mutex_base    pi_mutex;
+    struct task_struct      *owner;
+    refcount_t              refcount;
+    union futex_key         key;
+};
+```
+
+### futex_lock_pi
+```c
+futex_lock_pi(uaddr, flags, timeout, 0) {
+    struct futex_q q = futex_q_init;
+
+retry:
+    ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &q.key)
+
+retry_private:
+    hb = futex_q_lock(&q);
+    ret = futex_lock_pi_atomic(uaddr, hb, &q.key, &q.pi_state) {
+        top_waiter = futex_top_waiter(hb, key);
+        if (top_waiter)
+            return attach_to_pi_state(uaddr, uval, top_waiter->pi_state, ps);
+
+        return attach_to_pi_owner(uaddr, newval, key, ps, exiting) {
+            __attach_to_pi_owner(p, key, ps) {
+                pi_state = alloc_pi_state();
+                rt_mutex_init_proxy_locked(&pi_state->pi_mutex, p);
+
+                pi_state->key = *key;
+
+                list_add(&pi_state->list, &p->pi_state_list);
+
+                pi_state->owner = p;
+
+                *ps = pi_state;
+            }
+        }
+    }
+    if (unlikely(ret)) {
+        switch (ret) {
+        case 1: /* We got the lock. */
+            ret = 0;
+            goto out_unlock_put_key;
+        }
+    }
+    __futex_queue(&q, hb);
+
+    if (trylock) {
+        ret = rt_mutex_futex_trylock(&q.pi_state->pi_mutex);
+        /* Fixup the trylock return value: */
+        ret = ret ? 0 : -EWOULDBLOCK;
+        goto no_block;
+    }
+
+    rt_mutex_init_waiter(&rt_waiter);
+
+    /* Start lock acquisition for another task */
+    ret = __rt_mutex_start_proxy_lock(&q.pi_state->pi_mutex, &rt_waiter, current);
+    if (ret) {
+        if (ret == 1)
+            ret = 0;
+        goto cleanup;
+    }
+
+    /* Wait for lock acquisition */
+    rt_mutex_wait_proxy_lock(&q.pi_state->pi_mutex, to, &rt_waiter);
+
+cleanup:
+    if (ret && !rt_mutex_cleanup_proxy_lock(&q.pi_state->pi_mutex, &rt_waiter))
+        ret = 0;
+
+no_block:
+    fixup_pi_owner(uaddr, &q, !ret);
+    futex_unqueue_pi(&q);
+    spin_unlock(q.lock_ptr);
+    goto out;
+
+out_unlock_put_key:
+    futex_q_unlock(hb);
+
+out:
+    if (to) {
+        hrtimer_cancel(&to->timer);
+        destroy_hrtimer_on_stack(&to->timer);
+    }
+    return ret != -EINTR ? ret : -ERESTARTNOINTR;
+
+uaddr_faulted:
+    futex_q_unlock(hb);
+
+    ret = fault_in_user_writeable(uaddr);
+    if (ret)
+        goto out;
+
+    if (!(flags & FLAGS_SHARED))
+        goto retry_private;
+
+    goto retry;
+}
+```
+
+```c
+futex_unlock_pi(uaddr, flags);
+```
+
+```c
+futex_wait(uaddr, flags, val, abs_time, bitset)
+    to = futex_setup_timer()
+
+retry:
+    ret = futex_wait_setup(uaddr, val, flags, &q, &hb) {
+        ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &q->key, FUTEX_READ) {
+            /* private: current->mm, address, 0
+             * share: inode->i_sequence, page->index, offset_within_page */
+        }
+        ret = futex_get_value_locked(&uval, uaddr);
+    }
+    if (ret)
+        goto out;
+
+    futex_wait_queue(hb, &q, to) {
+        set_current_state(TASK_INTERRUPTIBLE|TASK_FREEZABLE);
+        futex_queue(q, hb) {
+            plist_node_init(&q->list, prio);
+            plist_add(&q->list, &hb->chain);
+            q->task = current;
+        }
+        __set_current_state(TASK_RUNNING);
+    }
+
+    if (!futex_unqueue(&q))
+        goto out;
+
+    if (!signal_pending(current))
+        goto retry;
+
+    ret = set_restart_fn(restart, futex_wait_restart);
+
+out:
+    if (to) {
+        hrtimer_cancel(&to->timer);
+        destroy_hrtimer_on_stack(&to->timer);
+    }
+```
+
+```c
+futex_wake(uaddr, flags, nr_wake, bitest)
+    DEFINE_WAKE_Q(wake_q);
+    get_futex_key(uaddr, flags & FLAGS_SHARED, &key, FUTEX_READ);
+    hb = futex_hash(&key);
+
+    /* just return if no waiter */
+    if (!futex_hb_waiters_pending(hb))
+        return ret;
+
+    plist_for_each_entry_safe(this, next, &hb->chain, list) {
+        if (futex_match (&this->key, &key)) {
+            if (this->pi_state || this->rt_waiter) {
+                ret = -EINVAL;
+                break;
+            }
+
+            /* Check if one of the bits is set in both bitsets */
+            if (!(this->bitset & bitset))
+                continue;
+
+            futex_wake_mark(&wake_q, this);
+            if (++ret >= nr_wake)
+                break;
+        }
+    }
+
+    spin_unlock(&hb->lock);
+    wake_up_q(&wake_q);
+```
+
 ## spinlock
 
 [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
@@ -2477,7 +2682,7 @@ __rt_mutex_lock()
         }
 
         /* try_to_take_rt_mutex() sets the waiter bit
-	     * unconditionally. We might have to fix that up. */
+         * unconditionally. We might have to fix that up. */
         fixup_rt_mutex_waiters(lock, true/*acquire_lock*/) {
             if (rt_mutex_has_waiters(lock))
                 return;
