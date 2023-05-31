@@ -18,6 +18,7 @@
     * [spinlock](#spinlock)
     * [rtmutex](#rtmutex)
     * [semaphore](#semaphore)
+    * [rwsem](#rwsem)
 
 
 # Core
@@ -2756,6 +2757,250 @@ rt_mutex_unlock(lock)
 ```
 
 ## semaphore
+
+## rwsem
+```c
+struct rw_semaphore {
+    /* Bit  0    - writer locked bit
+     * Bit  1    - waiters present bit
+     * Bit  2    - lock handoff bit
+     * Bits 3-7  - reserved
+     * Bits 8-62 - 55-bit reader count
+     * Bit  63   - read fail bit */
+    atomic_long_t count;
+
+    /* - Bit 0: RWSEM_READER_OWNED - The rwsem is owned by readers
+     * - Bit 1: RWSEM_NONSPINNABLE - Cannot spin on a reader-owned lock */
+    atomic_long_t owner;
+    struct optimistic_spin_queue osq; /* atomic_t: spinner MCS lock */
+    raw_spinlock_t wait_lock;
+    struct list_head wait_list;
+};
+
+enum rwsem_waiter_type {
+    RWSEM_WAITING_FOR_WRITE,
+    RWSEM_WAITING_FOR_READ
+};
+
+struct rwsem_waiter {
+    struct list_head        list;
+    struct task_struct      *task;
+    enum rwsem_waiter_type  type;
+    unsigned long           timeout;
+    bool                    handoff_set;
+};
+```
+
+```c
+down_read(struct rw_semaphore *sem)
+    might_sleep();
+    LOCK_CONTENDED(sem, __down_read_trylock, __down_read) {
+        #define LOCK_CONTENDED(_lock, try, lock) \
+        do { \
+            if (!try(_lock)) { \
+                lock_contended(&(_lock)->dep_map, _RET_IP_); \
+                lock(_lock); \
+            } \
+            lock_acquired(&(_lock)->dep_map, _RET_IP_); \
+        } while (0)
+    }
+
+
+int ret = __down_read_trylock(sem) {
+    tmp = atomic_long_read(&sem->count);
+    while (!(tmp & RWSEM_READ_FAILED_MASK)) {
+        if (atomic_long_try_cmpxchg_acquire(&sem->count, &tmp, tmp + RWSEM_READER_BIAS)) {
+            rwsem_set_reader_owned(sem) {
+                unsigned long val = (unsigned long)owner | RWSEM_READER_OWNED |
+                    (atomic_long_read(&sem->owner) & RWSEM_NONSPINNABLE);
+
+                atomic_long_set(&sem->owner, val);
+            }
+            ret = 1;
+            break;
+        }
+    }
+}
+
+#define RWSEM_READ_FAILED_MASK	(RWSEM_WRITER_MASK|RWSEM_FLAG_WAITERS|\
+    RWSEM_FLAG_HANDOFF|RWSEM_FLAG_READFAIL)
+
+__down_read(struct rw_semaphore *sem) {
+    __down_read_common(sem, TASK_UNINTERRUPTIBLE) {
+        preempt_disable();
+        ret = rwsem_read_trylock(sem, &count) {
+            *cntp = atomic_long_add_return_acquire(RWSEM_READER_BIAS, &sem->count);
+
+            /* to many readers, disable spin */
+            if (WARN_ON_ONCE(*cntp < 0)) {
+                rwsem_set_nonspinnable(sem) {
+                    unsigned long owner = atomic_long_read(&sem->owner);
+                    do {
+                        if (!(owner & RWSEM_READER_OWNED))
+                            break;
+                        if (owner & RWSEM_NONSPINNABLE)
+                            break;
+                    } while (!atomic_long_try_cmpxchg(
+                        &sem->owner, &owner, owner | RWSEM_NONSPINNABLE)
+                    );
+                }
+            }
+
+            if (!(*cntp & RWSEM_READ_FAILED_MASK)) {
+                rwsem_set_reader_owned(sem)
+                    --->
+                return true;
+            }
+            return false;
+        }
+        if (!ret) {
+            ret = rwsem_down_read_slowpath(sem, count, state) {
+                long adjustment = -RWSEM_READER_BIAS;
+                long rcnt = (count >> RWSEM_READER_SHIFT);
+                struct rwsem_waiter waiter;
+                DEFINE_WAKE_Q(wake_q);
+
+                /* top waiter will wakeup batch readers */
+                if ((atomic_long_read(&sem->owner) & RWSEM_READER_OWNED)
+                    && (rcnt > 1) && !(count & RWSEM_WRITER_LOCKED)) {
+
+                    goto queue;
+                }
+
+                /* optimistic lock stealing */
+                if (!(count & (RWSEM_WRITER_LOCKED | RWSEM_FLAG_HANDOFF))) {
+                    rwsem_set_reader_owned(sem);
+                        --->
+                    lockevent_inc(rwsem_rlock_steal);
+
+                    if ((rcnt == 1) && (count & RWSEM_FLAG_WAITERS)) {
+                        raw_spin_lock_irq(&sem->wait_lock);
+                        if (!list_empty(&sem->wait_list))
+                            rwsem_mark_wake(sem, RWSEM_WAKE_READ_OWNED, &wake_q) {
+                                waiter = rwsem_first_waiter(sem);
+
+                                if (waiter->type == RWSEM_WAITING_FOR_WRITE) {
+                                    if (wake_type == RWSEM_WAKE_ANY) {
+                                        wake_q_add(wake_q, waiter->task);
+                                        lockevent_inc(rwsem_wake_writer);
+                                    }
+
+                                    return;
+                                }
+
+                                if (wake_type != RWSEM_WAKE_READ_OWNED) {
+                                    struct task_struct *owner;
+
+                                    adjustment = RWSEM_READER_BIAS;
+                                    oldcount = atomic_long_fetch_add(adjustment, &sem->count);
+                                    if (unlikely(oldcount & RWSEM_WRITER_MASK)) {
+                                        if (time_after(jiffies, waiter->timeout)) {
+                                            if (!(oldcount & RWSEM_FLAG_HANDOFF)) {
+                                                adjustment -= RWSEM_FLAG_HANDOFF;
+                                                lockevent_inc(rwsem_rlock_handoff);
+                                            }
+                                            waiter->handoff_set = true;
+                                        }
+
+                                        atomic_long_add(-adjustment, &sem->count);
+                                        return;
+                                    }
+                                    owner = waiter->task;
+                                    __rwsem_set_reader_owned(sem, owner);
+                                }
+                            }
+                        raw_spin_unlock_irq(&sem->wait_lock);
+                        wake_up_q(&wake_q);
+                    }
+                    return sem;
+                }
+
+            queue:
+                waiter.task = current;
+                waiter.type = RWSEM_WAITING_FOR_READ;
+                waiter.timeout = jiffies + RWSEM_WAIT_TIMEOUT;
+                waiter.handoff_set = false;
+
+                raw_spin_lock_irq(&sem->wait_lock);
+                if (list_empty(&sem->wait_list)) {
+                    if (!(atomic_long_read(&sem->count) & RWSEM_WRITER_MASK)) {
+                        /* Provide lock ACQUIRE */
+                        smp_acquire__after_ctrl_dep();
+                        raw_spin_unlock_irq(&sem->wait_lock);
+                        rwsem_set_reader_owned(sem);
+                            --->
+                        lockevent_inc(rwsem_rlock_fast);
+                        return sem;
+                    }
+                    /* add flag only for the first waiter */
+                    adjustment += RWSEM_FLAG_WAITERS;
+                }
+                rwsem_add_waiter(sem, &waiter);
+
+                /* we're now waiting on the lock, but no longer actively locking */
+                count = atomic_long_add_return(adjustment, &sem->count);
+
+                rwsem_cond_wake_waiter(sem, count, &wake_q) {
+                    if (count & RWSEM_WRITER_MASK)
+                        return;
+
+                    if (count & RWSEM_READER_MASK) {
+                        wake_type = RWSEM_WAKE_READERS;
+                    } else {
+                        wake_type = RWSEM_WAKE_ANY;
+                        clear_nonspinnable(sem);
+                    }
+                    rwsem_mark_wake(sem, wake_type, wake_q);
+                }
+                raw_spin_unlock_irq(&sem->wait_lock);
+
+                if (!wake_q_empty(&wake_q))
+                    wake_up_q(&wake_q);
+
+                trace_contention_begin(sem, LCB_F_READ);
+
+                /* wait to be given the lock */
+                for (;;) {
+                    set_current_state(state);
+                    if (!smp_load_acquire(&waiter.task)) {
+                        /* Matches rwsem_mark_wake()'s smp_store_release(). */
+                        break;
+                    }
+                    if (signal_pending_state(state, current)) {
+                        raw_spin_lock_irq(&sem->wait_lock);
+                        if (waiter.task)
+                            goto out_nolock;
+                        raw_spin_unlock_irq(&sem->wait_lock);
+                        /* Ordered by sem->wait_lock against rwsem_mark_wake(). */
+                        break;
+                    }
+                    schedule_preempt_disabled();
+                    lockevent_inc(rwsem_sleep_reader);
+                }
+
+                __set_current_state(TASK_RUNNING);
+                lockevent_inc(rwsem_rlock);
+                trace_contention_end(sem, 0);
+                return sem;
+
+            out_nolock:
+                rwsem_del_wake_waiter(sem, &waiter, &wake_q);
+                __set_current_state(TASK_RUNNING);
+                lockevent_inc(rwsem_rlock_fail);
+                trace_contention_end(sem, -EINTR);
+                return ERR_PTR(-EINTR);
+            }
+            if (IS_ERR(ret)) {
+                ret = -EINTR;
+                goto out;
+            }
+            DEBUG_RWSEMS_WARN_ON(!is_rwsem_reader_owned(sem), sem);
+        }
+    out:
+        preempt_enable();
+    }
+}
+```
 
 # Data structures
 
