@@ -377,13 +377,14 @@ paging_init()
     pgd_t *pgdp = pgd_set_fixmap(__pa_symbol(swapper_pg_dir));
 
     map_kernel(pgdp);
-        map_kernel_segment(pgdp, _stext, _etext, text_prot);
+        map_kernel_segment(pgdp, _stext, _etext, text_prot) {
             __create_pgd_mapping(pgdp, phys, virt, size)
                 --->
             vm_area_add_early(vma) {
             vm->next = *p;
                 *p = vm;
             }
+        }
 
         map_kernel_segment(pgdp, __start_rodata, __inittext_begin);
         map_kernel_segment(pgdp, __inittext_begin, __inittext_end);
@@ -393,7 +394,7 @@ paging_init()
         fixmap_copy(pgdp);
 
     /* map all the memory banks */
-    map_mem(pgdp);
+    map_mem(pgdp) {
         memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
         for_each_mem_range(i, &start, &end) {
             if (start >= end)
@@ -402,6 +403,7 @@ paging_init()
                 __create_pgd_mapping(pgdp, phys, virt, size);
                     --->
         }
+    }
 
     pgd_clear_fixmap();
 
@@ -1888,6 +1890,8 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 
 ![](../Images/Kernel/mem-slub-structure.png)
 
+* [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
+
 ```c
 kmem_cache_alloc(s, flags)
     __kmem_cache_alloc_lru(s, lru, flags)
@@ -2789,6 +2793,44 @@ struct address_space {
 
 ![](../Images/Kernel/mem-page-fault.png)
 
+![](../Images/Kernel/mem-fault-0.png)
+
+---
+
+![](../Images/Kernel/mem-fault-1.png)
+
+---
+
+![](../Images/Kernel/mem-fault-2.png)
+
+---
+
+![](../Images/Kernel/mem-fault-3.png)
+
+---
+
+![](../Images/Kernel/mem-fault-4.png)
+
+---
+
+![](../Images/Kernel/mem-fault-4.1.png)
+
+---
+
+![](../Images/Kernel/mem-fault-4.2.png)
+
+---
+
+![](../Images/Kernel/mem-fault-4.3.png)
+
+---
+
+![](../Images/Kernel/mem-fault-4.4.png)
+
+![](../Images/Kernel/mem-fault-4.4.1.png)
+
+---
+
 
 ```c
 /* arm64
@@ -2848,7 +2890,7 @@ handle_mm_fault(vma, address, flags, regs);
 
     hugetlb_fault();
 
-    __handle_mm_fault()
+    __handle_mm_fault() {
 
         pgd = pgd_offset(mm, address)
         p4d = p4d_alloc(pgd)
@@ -2862,61 +2904,147 @@ handle_mm_fault(vma, address, flags, regs);
             return VM_FAULT_OOM;
 
         handle_pte_fault() {
+            if (!vmf->pte) {
+		            return do_pte_missing(vmf) {
+                    if (vma_is_anonymous(vmf->vma)) {
+                        /* 1. anonymous fault */
+                        return do_anonymous_page(vmf) {
+                            pte = pte_alloc(pmd)
+                            if (pte)
+                                return VM_FAULT_OOM;
+                            anon_vma_prepare(vma)
+                                --->
 
-            /* 1. anonymous fault */
-            do_anonymous_page();
-                pte = pte_alloc(pmd)
-                if (pte)
-                    return VM_FAULT_OOM;
-                alloc_zeroed_user_highpage_movable();
-                alloc_pages_vma();
-                    __alloc_pages_nodemask();
-                        get_page_from_freelist();
-                mk_pte();
-                page_add_new_anon_rmap()
-                __page_set_anon_rmap();
-                    anon_vma = vma->anon_vma;
-                    page->mapping = (struct address_space *) anon_vma;
-                set_pte_at()
-                update_mmu_cache()
+                            folio = vma_alloc_zeroed_movable_folio(vma, vmf->address);
 
-            /* 2. file fault */
-            do_fault()
-                /* 2.1 read fault */
-                do_read_fault()
-                    __do_fault();
-                        vma->vm_ops->fault();
-                            ext4_filemap_fault();
-                                filemap_fault();
-                                    page = find_get_page();
-                                    if (page) {
-                                        do_async_mmap_readahead();
-                                    } else if (!page) {
-                                        do_async_mmap_readahead();
-                                    }
+                            mk_pte();
 
-                                    page_cache_read();
-                                        page = __page_cache_alloc();
-                                        address_space.a_ops.readpage();
-                                        ext4_read_inline_page();
-                                            kmap_atomic();
-                                            ext4_read_inline_data();
-                                            kumap_atomic();
-                    finish_fault()
-                        alloc_set_pte()
-                        pte_unmap_unlock()
+                            folio_add_new_anon_rmap(folio, vma, vmf->address);
+                                __page_set_anon_rmap(folio, &folio->page, vma, address, 1);
+                                    --->
+                            folio_add_lru_vma(folio, vma);
 
-                /* 2.2 cow fault */
-                do_cow_fault()
+                            set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+                            update_mmu_cache()
+                        }
+                    } else {
+                        /* 2. file fault */
+                        return do_fault(vmf) {
+                            /* 2.1 read fault */
+                            do_read_fault() {
+                                __do_fault();
+                                    vma->vm_ops->fault();
+                                        ext4_filemap_fault();
+                                            filemap_fault();
+                                                page = find_get_page();
+                                                if (page) {
+                                                    do_async_mmap_readahead();
+                                                } else if (!page) {
+                                                    do_async_mmap_readahead();
+                                                }
 
-                /* 2.3 shared fault */
-                do_shared_fault()
+                                                page_cache_read();
+                                                    page = __page_cache_alloc();
+                                                    address_space.a_ops.readpage();
+                                                    ext4_read_inline_page();
+                                                        kmap_atomic();
+                                                        ext4_read_inline_data();
+                                                        kumap_atomic();
+                                finish_fault()
+                                    alloc_set_pte()
+                                    pte_unmap_unlock()
+                            }
+
+                            /* 2.2 cow fault */
+                            do_cow_fault() {
+                                anon_vma_prepare(vma)
+                                vmf->cow_page = alloc_page_vma()
+                                __do_fault(vmf) {
+                                    /* TODO which fault? */
+                                    vma->vm_ops->fault(vmf)
+                                }
+
+                                copy_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma);
+                                finish_fault(vmf);
+                            }
+
+                            /* 2.3 shared fault */
+                            do_shared_fault() {
+
+                            }
+                        }
+                    }
+                }
+            }
 
             /* 3. swap fault */
-            do_swap_page();
+            if (!pte_present(vmf->orig_pte)) {
+		        return do_swap_page(vmf) {
 
-            update_mmu_tlb()
+                }
+            }
+
+            if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
+		        return do_numa_page(vmf) {
+
+                }
+            }
+
+            if (vmf->flags & (FAULT_FLAG_WRITE | FAULT_FLAG_UNSHARE)) {
+                if (!pte_write(entry))
+                    return do_wp_page(vmf) {
+                        vmf->page = vm_normal_page()
+                        folio = page_folio(vmf->page)
+                        if (folio && folio_test_anon(folio)) {
+                            if (folio_test_ksm(folio) || folio_ref_count(folio) > 3)
+			                    goto copy;
+                            if (folio_ref_count(folio) > 1 + folio_test_swapcache(folio))
+			                    goto copy;
+                            if (folio_test_ksm(folio) || folio_ref_count(folio) != 1) {
+                                folio_unlock(folio);
+                                goto copy;
+                            }
+
+                            page_move_anon_rmap(vmf->page, vma);
+                    reuse:
+                            wp_page_reuse(vmf);
+                            return 0;
+                        }
+
+                    copy:
+                        return wp_page_copy(vmf) {
+                            old_folio = page_folio(vmf->page)
+                            anon_vma_prepare(vma)
+                                --->
+                            new_folio = vma_alloc_folio(vma, vmf->address)
+                            __wp_page_copy_user(&new_folio->page, vmf->page, vmf)
+
+                            flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
+                            entry = mk_pte(&new_folio->page, vma->vm_page_prot);
+                            entry = pte_sw_mkyoung(entry);
+                            entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+                            folio_add_new_anon_rmap(new_folio, vma, vmf->address);
+                                __page_set_anon_rmap(folio, &folio->page, vma, address, 1);
+                                    --->
+                            folio_add_lru_vma(new_folio, vma);
+                            if (old_folio) {
+                                page_remove_rmap(vmf->page, vma, false);
+                            }
+                        }
+                    }
+                else if (likely(vmf->flags & FAULT_FLAG_WRITE))
+                    entry = pte_mkdirty(entry);
+            }
+
+            update_mmu_tlb(vmf->vma, vmf->address, vmf->pte) {
+
+            }
+
+            update_mmu_cache(vmf->vma, vmf->address, vmf->pte) {
+
+            }
         }
+    }
 ```
 
 ```c
@@ -3246,8 +3374,19 @@ SYSCALL_DEFINE2(munmap) {
 
 # rmap
 
+* [wowotech](http://www.wowotech.net/memory_management/reverse_mapping.html)
 * [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
 * [linux 匿名页反向映射 - 知乎](https://zhuanlan.zhihu.com/p/361173109)
+* https://blog.csdn.net/u010923083/article/details/116456497
+* https://zhuanlan.zhihu.com/p/448713030
+
+
+Q:
+1. Child VMA is linked to parent VA when forking, when to remove it from parent?
+
+![](../Images/Kernel/mem-rmap-arch.png)
+
+![](../Images/Kernel/mem-rmap-1.png)
 
 ```c
 struct vm_area_struct {
@@ -3265,12 +3404,20 @@ struct anon_vma {
     struct rb_root_cached rb_root;
 };
 
+struct anon_vma_chain {
+	struct vm_area_struct*  vma;
+	struct anon_vma*        anon_vma;
+	struct list_head        same_vma;
+	struct rb_node          rb;
+	unsigned long rb_subtree_last;
+};
+
 struct page {
     /* If low bit clear, points to inode address_space, or NULL.
      * If page mapped as anonymous memory, low bit is set,
      * and it points to anon_vma object */
     struct address_space *mapping;
-​
+
     union {
         /* page offset in user virtual address space for anon mapping
          * page offset in file for file mapping */
@@ -3281,24 +3428,19 @@ struct page {
     }
 };
 
-wp_page_copy()
-do_anonymous_page()
-do_cow_fault()
+anon_vma_prepare()
+    if (likely(vma->anon_vma))
+		return 0;
 
-migrate_vma_insert_page()
-
-expand_upwards()
-expand_downwards()
-
-    anon_vma_prepare()
-        avc = anon_vma_chain_alloc(GFP_KERNEL);
-        anon_vma = anon_vma_alloc()
-        vma->anon_vma = anon_vma;
-        anon_vma_chain_link(vma, avc, anon_vma);
-            avc->vma = vma;
-            avc->anon_vma = anon_vma;
-            list_add(&avc->same_vma, &vma->anon_vma_chain);
-            anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
+    avc = anon_vma_chain_alloc(GFP_KERNEL);
+    anon_vma = find_mergeable_anon_vma(vma);
+    anon_vma = anon_vma_alloc()
+    vma->anon_vma = anon_vma;
+    anon_vma_chain_link(vma, avc, anon_vma);
+        avc->vma = vma;
+        avc->anon_vma = anon_vma;
+        list_add(&avc->same_vma, &vma->anon_vma_chain);
+        anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
 
 page_add_anon_rmap()
     __page_set_anon_rmap()
@@ -3306,51 +3448,9 @@ page_add_anon_rmap()
         anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
         WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
         folio->index = linear_page_index(vma, address);
-
-page_add_new_anon_rmap()
-    folio_add_new_anon_rmap()
-        __page_set_anon_rmap(folio, &folio->page, vma, address, 1);
-            --->
-
-try_to_unmap()
-    struct rmap_walk_control rwc = {
-        .rmap_one = try_to_unmap_one,
-        .arg = (void *)flags,
-        .done = folio_not_mapped,
-        .anon_lock = folio_lock_anon_vma_read,
-    };
-
-    rmap_walk_locked(folio, &rwc);
-        if (folio_test_anon(folio))
-            rmap_walk_anon(folio, rwc, true) {
-                pgoff_start = folio_pgoff(folio);
-                pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
-                anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
-                        pgoff_start, pgoff_end) {
-                    struct vm_area_struct *vma = avc->vma;
-                    unsigned long address = vma_address(&folio->page, vma);
-
-                    VM_BUG_ON_VMA(address == -EFAULT, vma);
-                    cond_resched();
-
-                    if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
-                        continue;
-
-                    ret = rwc->rmap_one(folio, vma, address, rwc->arg) {
-                        try_to_unmap_one()
-
-
-                    }
-                    if (!ret) {
-                        break;
-                    }
-                    if (rwc->done && rwc->done(folio))
-                        break;
-                }
-            }
-        else
-            rmap_walk_file(folio, rwc, true);
 ```
+
+![](../Images/Kernel/mem-ramp-anon_vma_prepare.png)
 
 ```c
 anon_vma_fork()
@@ -3380,6 +3480,60 @@ anon_vma_fork()
     vma->anon_vma = anon_vma;
     anon_vma_chain_link(vma, avc, anon_vma);
     anon_vma->parent->num_children++;
+```
+
+![](../Images/Kernel/mem-rmap-try_to_unmap.png)
+```c
+try_to_unmap()
+    struct rmap_walk_control rwc = {
+        .rmap_one = try_to_unmap_one,
+        .arg = (void *)flags,
+        .done = folio_not_mapped,
+        .anon_lock = folio_lock_anon_vma_read,
+    };
+
+    rmap_walk_locked(folio, &rwc);
+        if (folio_test_anon(folio))
+            rmap_walk_anon(folio, rwc, true) {
+                pgoff_start = folio_pgoff(folio);
+                pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+                anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root, pgoff_start, pgoff_end) {
+                    struct vm_area_struct *vma = avc->vma;
+                    unsigned long address = vma_address(&folio->page, vma);
+
+                    rwc->invalid_vma(vma, rwc->arg) {
+
+                    }
+
+                    ret = rwc->rmap_one(folio, vma, address, rwc->arg) {
+                        try_to_unmap_one() {
+
+                        }
+                    }
+
+                    rwc->done(folio) {
+                        folio_not_mapped() {
+
+                        }
+                    }
+                }
+            }
+        else {
+            rmap_walk_file(folio, rwc, true) {
+                struct address_space *mapping = folio_mapping(folio);
+                vma_interval_tree_foreach(vma, &mapping->i_mmap, pgoff_start, pgoff_end) {
+                    unsigned long address = vma_address(&folio->page, vma);
+
+                    if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
+                        continue;
+
+                    if (!rwc->rmap_one(folio, vma, address, rwc->arg))
+                        goto done;
+                    if (rwc->done && rwc->done(folio))
+                        goto done;
+                }
+            }
+        }
 ```
 
 # remove_memory
