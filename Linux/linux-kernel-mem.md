@@ -1,10 +1,10 @@
-[:link: Linux Memory Management Documentation](https://docs.kernel.org/mm/index.html)
+[:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
 
 # Table of Contents
-* [boot](#boot)
+* [_start:](#_start)
 * [segment](#segment)
 * [paging](#paging)
-* [mm_init](#mm_init)
+* [mm_core_init](#mm_core_init)
 * [user virtual space](#user-virtual-space)
 * [kernel virtual space](#kernel-virtual-space)
 * [numa](#numa)
@@ -42,6 +42,7 @@
 * [page_address](#page_address)
 * [vmalloc](#vmalloc)
 * [vmalloc_fault](#vmalloc_fault)
+* [page reclaim](#page_reclaim)
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -52,12 +53,32 @@
     * [YouTuBe - Folios - 2022.6.20 Matthew Wilcox](https://www.youtube.com/watch?v=URTuP6wXYPA)
     * [YouTube - Memory Folios - 2022.6.23 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=nknQML80w3E)
 * [LWN - Compund Page](https://lwn.net/Kernel/Index/#Memory_management-Compound_pages)
+* [wowo tech - memory management :cn:](http://www.wowotech.net/sort/memory_management)
+* [LoyenWang :cn:]()
+    * [ARM V8 MMU and mem mapping](https://www.cnblogs.com/LoyenWang/p/11406693.html)
+    * [Physical memory init](https://www.cnblogs.com/LoyenWang/p/11440957.html)
+    * [paging_init](https://www.cnblogs.com/LoyenWang/p/11483948.html)
+    * [sparse memory model](https://www.cnblogs.com/LoyenWang/p/11523678.html)
+    * [zone_sizes_init](https://www.cnblogs.com/LoyenWang/p/11568481.html)
+    * [zoned page frame allocator](https://www.cnblogs.com/LoyenWang/p/11626237.html)
+    * [buddy system](https://www.cnblogs.com/LoyenWang/p/11666939.html)
+    * [watermark](https://www.cnblogs.com/LoyenWang/p/11708255.html)
+    * [memory compaction](https://www.cnblogs.com/LoyenWang/p/11746357.html)
+    * [memory reclaim](https://www.cnblogs.com/LoyenWang/p/11827153.html)
+    * [slub allocator](https://www.cnblogs.com/LoyenWang/p/11922887.html)
+    * [vmap vmalloc](https://www.cnblogs.com/LoyenWang/p/11965787.html)
+    * [vma malloc mmap ](https://www.cnblogs.com/LoyenWang/p/12037658.html)
+    * [page fault](https://www.cnblogs.com/LoyenWang/p/12116570.html)
+    * [rmap](https://www.cnblogs.com/LoyenWang/p/12164683.html)
+    * [cma](https://www.cnblogs.com/LoyenWang/p/12182594.html)
 
 ---
 
-# boot
+# _start:
 ```s
-primary_entry
+/* arch/arm64/kernel/head.S */
+_start:
+_primary_entry
     bl record_mmu_state
 
     /* Preserve the arguments passed by the bootloader in x0 .. x3 */
@@ -67,7 +88,7 @@ primary_entry
 
     bl __cpu_setup
 
-    b __primary_switch
+    b __primary_switch {
         adrp x1, reserved_pg_dir
         adrp x2, init_idmap_pg_dir
         bl __enable_mmu
@@ -78,12 +99,18 @@ primary_entry
         adrp x1, init_pg_dir
         load_ttbr1 x1, x1, x2 /* install x1 as a TTBR1 page table */
 
-        bl __primary_switched
+        bl __primary_switched {
             adr_l x4, init_task
             init_cpu_task x4, x5, x6
 
             adr_l x8, vectors /* load VBAR_EL1 with virtual */
             msr vbar_el1, x8 /* vector table address */
+
+            /* Save the offset between
+             * the kernel virtual and physical mappings*/
+            ldr_l    x4, kimage_vaddr
+            sub    x4, x4, x0
+            str_l    x4, kimage_voffset, x5
 
             bl set_cpu_boot_mode_flag
 
@@ -105,36 +132,127 @@ primary_entry
             bl init_feature_override  /* Parse cpu feature overrides */
 
             bl start_kernel
+        }
+    }
 ```
 
 ```c
 /* init/main.c */
 start_kernel()
-    page_address_init();
-    setup_arch(&command_line);
+    setup_arch(&command_line) {
+        setup_initial_init_mm()
+        early_fixmap_init()
+        early_ioremap_init();
+        setup_machine_fdt(__fdt_pointer);
+        arm64_memblock_init() {
 
-    build_all_zonelists(NULL) {
-        __build_all_zonelists(NULL) {
-            for_each_node(nid) {
-                pg_data_t *pgdat = NODE_DATA(nid);
-
-                build_zonelists(pgdat);
-            }
         }
-        for_each_possible_cpu(cpu)
-            per_cpu_pages_init(&per_cpu(boot_pageset, cpu), &per_cpu(boot_zonestats, cpu));
-
-        mminit_verify_zonelist();
-        cpuset_init_current_mems_allowed();
+        paging_init() {
+            /* map kernel: text, rodata init, data, bss*/
+            map_kernel(pgdp);
+            /* map all the memory banks */
+            map_mem(pgdp);
+            pgd_clear_fixmap();
+            cpu_replace_ttbr1(lm_alias(swapper_pg_dir), init_idmap_pg_dir);
+            init_mm.pgd = swapper_pg_dir;
+            memblock_phys_free(__pa_symbol(init_pg_dir));
+            memblock_allow_resize();
+            create_idmap();
+        }
+        acpi_table_upgrade();
+        bootmem_init() {
+            dma_pernuma_cma_reserve();
+            sparse_init();
+            zone_sizes_init();
+            dma_contiguous_reserve(arm64_dma_phys_limit);
+            reserve_crashkernel();
+            memblock_dump_all();
+        }
     }
 
-    page_alloc_init();
-    mm_init();
-    kmem_cache_init_late();
-    pagecache_init();
+    setup_per_cpu_areas() {
+
+    }
+
+    mm_core_init() {
+        build_all_zonelists(NULL) {
+            __build_all_zonelists(NULL) {
+                for_each_node(nid) {
+                    pg_data_t *pgdat = NODE_DATA(nid);
+
+                    build_zonelists(pgdat);
+                }
+            }
+            for_each_possible_cpu(cpu)
+                per_cpu_pages_init(&per_cpu(boot_pageset, cpu), &per_cpu(boot_zonestats, cpu));
+
+            mminit_verify_zonelist();
+            cpuset_init_current_mems_allowed();
+        }
+        page_alloc_init_cpuhp();
+        page_ext_init_flatmem();
+        mem_debugging_and_hardening_init();
+        kfence_alloc_pool();
+        report_meminit();
+        kmsan_init_shadow();
+        stack_depot_early_init();
+        mem_init();
+        mem_init_print_info();
+        kmem_cache_init();
+
+        page_ext_init_flatmem_late();
+        kmemleak_init();
+        ptlock_cache_init();
+        pgtable_cache_init();
+        debug_objects_mem_init();
+        vmalloc_init();
+        /* If no deferred init page_ext now, as vmap is fully initialized */
+        if (!deferred_struct_pages)
+            page_ext_init();
+        /* Should be run before the first non-init thread is created */
+        init_espfix_bsp();
+        /* Should be run after espfix64 is set up. */
+        pti_init();
+        kmsan_init_runtime();
+        mm_cache_init();
+    }
+
+    kmem_cache_init_late() {
+        flushwq = alloc_workqueue("slub_flushwq", WQ_MEM_RECLAIM, 0);
+    }
+
+    setup_per_cpu_pageset() {
+
+    }
+
+    anon_vma_init() {
+
+    }
+
+    thread_stack_cache_init() {
+        thread_stack_cache = kmem_cache_create_usercopy(
+            "thread_stack",
+            THREAD_SIZE, THREAD_SIZE, 0, 0,
+            THREAD_SIZE, NUL
+        );
+    }
+
+    proc_caches_init() {
+
+    }
+
+    vfs_caches_init() {
+
+    }
+
+    pagecache_init() {
+        for (i = 0; i < PAGE_WAIT_TABLE_SIZE; i++)
+            init_waitqueue_head(&folio_wait_table[i]);
+        page_writeback_init();
+    }
 ```
 
-## setup_arch
+# setup_arch
 
 ```c
 setup_arch(&command_line);
@@ -158,15 +276,101 @@ setup_arch(&command_line);
 
 
     }
+
     early_ioremap_init();
+
     setup_machine_fdt(__fdt_pointer);
+        --->
     arm64_memblock_init();
+        --->
     paging_init();
+        --->
     acpi_table_upgrade();
+
     bootmem_init();
+        --->
 ```
 
-### paging_init
+## setup_machine_fdt
+```c
+setup_machine_fdt(__fdt_pointer)
+    void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL) {
+        const u64 dt_virt_base = __fix_to_virt(FIX_FDT);
+        dt_phys_base = round_down(dt_phys, PAGE_SIZE);
+        offset = dt_phys % PAGE_SIZE;
+        dt_virt = (void *)dt_virt_base + offset;
+
+        create_mapping_noalloc(dt_phys_base, dt_virt_base, PAGE_SIZE, prot);
+            __create_pgd_mapping();
+
+        *size = fdt_totalsize(dt_virt);
+        if (*size > MAX_FDT_SIZE)
+            return NULL;
+
+        if (offset + *size > PAGE_SIZE) {
+            create_mapping_noalloc(dt_phys_base, dt_virt_base,
+                        offset + *size, prot);
+        }
+
+        return dt_virt;
+    }
+    if (dt_virt)
+        memblock_reserve(dt_phys, size);
+
+    early_init_dt_scan(dt_virt) {
+        status = early_init_dt_verify(params);
+        early_init_dt_scan_nodes() {
+
+        }
+    }
+
+    const char * name = of_flat_dt_get_machine_name();
+
+    /* Early fixups are done, map the FDT as read-only now */
+    fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO) {
+
+    }
+
+    name = of_flat_dt_get_machine_name();
+
+```
+
+## arm64_memblock_init
+
+```c
+arm64_memblock_init() {
+    s64 linear_region_size = PAGE_END - _PAGE_OFFSET(vabits_actual);
+
+    /* Remove memory above our supported physical address size */
+    memblock_remove(1ULL << PHYS_MASK_SHIFT, ULLONG_MAX);
+
+    /* Select a suitable value for the base of physical memory. */
+    memstart_addr = round_down(memblock_start_of_DRAM(), ARM64_MEMSTART_ALIGN);
+
+    /* Register the kernel text, kernel data, initrd, and initial
+        * pagetables with memblock. */
+    memblock_reserve(__pa_symbol(_stext), _end - _stext);
+
+    /* Remove the memory that we will not be able to cover
+     * with the linear mapping. */
+    memblock_remove(max_t(u64, memstart_addr + linear_region_size, __pa_symbol(_end)), ULLONG_MAX);
+
+    if (IS_ENABLED(CONFIG_BLK_DEV_INITRD) && phys_initrd_size) {
+        /* the generic initrd code expects virtual addresses */
+        initrd_start = __phys_to_virt(phys_initrd_start);
+        initrd_end = initrd_start + phys_initrd_size;
+    }
+
+    early_init_fdt_scan_reserved_mem() {
+
+    }
+
+    high_memory = __va(memblock_end_of_DRAM() - 1) + 1;
+}
+```
+
+
+## paging_init
 ```c
 /* arch/arm64/mm/mmu.c */
 paging_init()
@@ -177,7 +381,7 @@ paging_init()
             __create_pgd_mapping(pgdp, phys, virt, size)
                 --->
             vm_area_add_early(vma) {
-                vm->next = *p;
+            vm->next = *p;
                 *p = vm;
             }
 
@@ -202,52 +406,18 @@ paging_init()
     pgd_clear_fixmap();
 
     cpu_replace_ttbr1(lm_alias(swapper_pg_dir), init_idmap_pg_dir);
-	init_mm.pgd = swapper_pg_dir;
+    init_mm.pgd = swapper_pg_dir;
 
     /* free boot memory block */
-	memblock_phys_free(init_pg_dir, size);
+    memblock_phys_free(init_pg_dir, size);
         memblock_remove_range(&memblock.reserved, base, size)
 
-	memblock_allow_resize();
+    memblock_allow_resize();
 
-	create_idmap();
+    create_idmap();
 ```
 
-### setup_machine_fdt
-```c
-setup_machine_fdt(__fdt_pointer)
-    void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL) {
-        const u64 dt_virt_base = __fix_to_virt(FIX_FDT);
-        dt_phys_base = round_down(dt_phys, PAGE_SIZE);
-        offset = dt_phys % PAGE_SIZE;
-        dt_virt = (void *)dt_virt_base + offset;
-
-        create_mapping_noalloc(dt_phys_base, dt_virt_base, PAGE_SIZE, prot);
-            __create_pgd_mapping();
-
-        *size = fdt_totalsize(dt_virt);
-        if (*size > MAX_FDT_SIZE)
-            return NULL;
-
-        if (offset + *size > PAGE_SIZE) {
-            create_mapping_noalloc(dt_phys_base, dt_virt_base,
-                        offset + *size, prot);
-        }
-
-        return dt_virt;
-
-    }
-	const char *name;
-
-	if (dt_virt)
-		memblock_reserve(dt_phys, size);
-
-    fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
-
-	name = of_flat_dt_get_machine_name();
-
-```
-
+## bootmem_init
 ```c
 bootmem_init() {
     min = PFN_UP(memblock_start_of_DRAM());
@@ -260,13 +430,162 @@ bootmem_init() {
 
     arch_numa_init();
 
-    sparse_init();
+    sparse_init() {
+        /* Mark all memblocks as present */
+        memblocks_present() {
+            for_each_mem_pfn_range()
+                memory_present(nid, start, end) {
+                    if (unlikely(!mem_section)) {
+                        mem_section = memblock_alloc(size, align);
+                    }
+
+                    mminit_validate_memmodel_limits(&start, &end);
+
+                    for (pfn = start; pfn < end; pfn += PAGES_PER_SECTION) {
+                        unsigned long section = pfn_to_section_nr(pfn);
+                        struct mem_section *ms;
+
+                        sparse_index_init(section, nid) {
+                            unsigned long root = SECTION_NR_TO_ROOT(section_nr);
+                            struct mem_section *section;
+
+                            if (mem_section[root])
+                                return 0;
+
+                            section = sparse_index_alloc(nid);
+                            if (!section)
+                                return -ENOMEM;
+
+                            mem_section[root] = section;
+
+                            return 0;
+                        }
+                        set_section_nid(section, nid);
+
+                        ms = __nr_to_section(section);
+                        if (!ms->section_mem_map) {
+                            ms->section_mem_map = sparse_encode_early_nid(nid) |
+                                            SECTION_IS_ONLINE;
+                            __section_mark_present(ms, section);
+                        }
+                    }
+                }
+        }
+
+        for_each_present_section_nr(pnum_begin + 1, pnum_end) {
+            int nid = sparse_early_nid(__nr_to_section(pnum_end));
+
+            if (nid == nid_begin) {
+                map_count++;
+                continue;
+            }
+            /* Init node with sections in range [pnum_begin, pnum_end) */
+            sparse_init_nid(nid_begin, pnum_begin, pnum_end, map_count);
+            nid_begin = nid;
+            pnum_begin = pnum_end;
+            map_count = 1;
+        }
+
+        /* cover the last node */
+        sparse_init_nid(nid_begin, pnum_begin, pnum_end, map_count) {
+            struct mem_section_usage *usage;
+            unsigned long pnum;
+            struct page *map;
+
+            usage = sparse_early_usemaps_alloc_pgdat_section(NODE_DATA(nid), mem_section_usage_size() * map_count);
+
+            sparse_buffer_init(map_count * section_map_size(), nid);
+
+            for_each_present_section_nr(pnum_begin, pnum) {
+                unsigned long pfn = section_nr_to_pfn(pnum);
+
+                if (pnum >= pnum_end)
+                    break;
+
+                map = __populate_section_memmap(pfn, PAGES_PER_SECTION, nid, NULL, NULL) {
+                    unsigned long start = (unsigned long) pfn_to_page(pfn);
+                    unsigned long end = start + nr_pages * sizeof(struct page);
+
+                    if (vmemmap_can_optimize(altmap, pgmap))
+                        r = vmemmap_populate_compound_pages(pfn, start, end, nid, pgmap);
+                    else {
+                        r = vmemmap_populate(start, end, nid, altmap) {
+                            if (!IS_ENABLED(CONFIG_ARM64_4K_PAGES)) {
+                                return vmemmap_populate_basepages(start, end, node, altmap) {
+                                    for (; addr < end; addr += PAGE_SIZE) {
+                                        pte = vmemmap_populate_address(addr, node, altmap, reuse) {
+                                            pgd = vmemmap_pgd_populate(addr, node) {
+                                                pgd_t *pgd = pgd_offset_k(addr);
+                                                if (pgd_none(*pgd)) {
+                                                    void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node) {
+                                                        p = vmemmap_alloc_block(size, node) {
+                                                            if (slab_is_available()) {
+                                                                gfp_t gfp_mask = GFP_KERNEL|__GFP_RETRY_MAYFAIL|__GFP_NOWARN;
+
+                                                                page = alloc_pages_node(node, gfp_mask, order) {
+                                                                    __alloc_pages();
+                                                                }
+                                                                if (page)
+                                                                    return page_address(page);
+
+                                                                return NULL;
+                                                            } else {
+                                                                return __earlyonly_bootmem_alloc(node, size, size, __pa(MAX_DMA_ADDRESS)) {
+                                                                    memblock_alloc_try_nid_raw()
+                                                                        memblock_alloc_internal()
+                                                                            --->
+                                                                }
+                                                            }
+                                                        }
+                                                        memset(p, 0, size);
+                                                    }
+                                                    if (!p)
+                                                        return NULL;
+                                                    pgd_populate(&init_mm, pgd, p);
+                                                }
+                                                return pgd;
+                                            }
+
+                                            p4d = vmemmap_p4d_populate(pgd, addr, node);
+
+                                            pud = vmemmap_pud_populate(p4d, addr, node);
+
+                                            pmd = vmemmap_pmd_populate(pud, addr, node);
+
+                                            pte = vmemmap_pte_populate(pmd, addr, node, altmap, reuse);
+
+                                            vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
+                                        }
+                                        if (!pte)
+                                            return -ENOMEM;
+                                    }
+                                }
+                            } else {
+                                return vmemmap_populate_hugepages(start, end, node, altmap);
+                            }
+                        }
+                    }
+                }
+
+                check_usemap_section_nr(nid, usage);
+                sparse_init_one_section(__nr_to_section(pnum), pnum, map, usage, SECTION_IS_EARLY);
+                usage = (void *) usage + mem_section_usage_size();
+            }
+            sparse_buffer_fini();
+        }
+    }
 
     zone_sizes_init() {
+        /* Initialise all pg_data_t and zone data */
         free_area_init(max_zone_pfns) {
 
             find_zone_movable_pfns_for_nodes();
 
+            for_each_mem_pfn_range(i, MAX_NUMNODES, &start_pfn, &end_pfn, &nid) {
+                subsection_map_init(start_pfn, end_pfn - start_pfn);
+            }
+
+            setup_nr_node_ids();
             for_each_node(nid) {
                 pg_data_t *pgdat;
 
@@ -290,9 +609,19 @@ bootmem_init() {
                     pgdat->node_start_pfn = start_pfn;
                     pgdat->per_cpu_nodestats = NULL;
 
-                    calculate_node_totalpages(pgdat, start_pfn, end_pfn);
+                    calculate_node_totalpages(pgdat, start_pfn, end_pfn) {
+                        spanned = zone_spanned_pages_in_node();
+                        absent = zone_absent_pages_in_node()
+                        if (size)
+                            zone->zone_start_pfn = zone_start_pfn;
+                        else
+                            zone->zone_start_pfn = 0;
+                        zone->spanned_pages = size;
+                        zone->present_pages = real_size;
 
-                    alloc_node_mem_map() {
+                    }
+
+                    alloc_node_mem_map() { #ifdef CONFIG_FLATMEM
                         start = pgdat->node_start_pfn & ~(MAX_ORDER_NR_PAGES - 1);
                         offset = pgdat->node_start_pfn - start;
 
@@ -350,11 +679,11 @@ bootmem_init() {
                                         }
                                     }
 
-                                    page = pfn_to_page(pfn); /* mem_map + pfn */
+                                    page = pfn_to_page(pfn); /* vmemmap + pfn */
                                     __init_single_page(page, pfn, zone, nid) {
-                                        mm_zero_struct_page(page);
+                                        mm_zero_struct_page(page); /* memset(0) */
                                         set_page_links(page, zone, nid, pfn);
-                                        init_page_count(page);
+                                        init_page_count(page); /* 1 */
                                         page_mapcount_reset(page);
                                         page_cpupid_reset_last(page);
                                         page_kasan_tag_reset(page);
@@ -388,14 +717,108 @@ bootmem_init() {
 }
 ```
 
+# mm_core_init
+```c
+void start_kernel(void) {
+    mm_core_init() {
+        build_all_zonelists(NULL);
+        page_alloc_init_cpuhp();
+
+        page_ext_init_flatmem();
+        mem_debugging_and_hardening_init();
+        kfence_alloc_pool();
+        report_meminit();
+        kmsan_init_shadow();
+        stack_depot_early_init();
+
+        mem_init() {
+            /* release free pages to the buddy allocator */
+            memblock_free_all() {
+                /* The mem_map array can get very big.
+                 * Free the unused area of the memory map. */
+                free_unused_memmap() {
+                    for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, NULL) {
+                        free_memmap(prev_end, start) {
+                            /* Free boot memory block previously allocated by memblock_phys_alloc_xx() API.
+                            * The freeing memory will not be released to the buddy allocator. */
+                            memblock_phys_free(pg, pgend - pg);
+                                memblock_remove_range(&memblock.reserved, base, size) {
+                                    memblock_isolate_range()
+                                    memblock_remove_region()
+                                }
+                        }
+                    }
+                }
+                reset_all_zones_managed_pages();
+                    atomic_long_set(&z->managed_pages, 0);
+
+                pages = free_low_memory_core_early() {
+                    memmap_init_reserved_pages() {
+                        /* initialize struct pages for the reserved regions */
+                        for_each_reserved_mem_range(i, &start, &end)
+                            reserve_bootmem_region(start, end) {
+                                for (; start_pfn < end_pfn; start_pfn++) {
+                                    struct page *page = pfn_to_page(start_pfn);
+                                    init_reserved_page(start_pfn) {
+
+                                    }
+                                    /* Avoid false-positive PageTail() */
+                                    INIT_LIST_HEAD(&page->lru);
+
+                                    __SetPageReserved(page);
+
+                                }
+                            }
+
+                        /* and also treat struct pages for the NOMAP regions as PageReserved */
+                        for_each_mem_region(region) {
+                            if (memblock_is_nomap(region)) {
+                                start = region->base;
+                                end = start + region->size;
+                                reserve_bootmem_region(start, end);
+                            }
+                        }
+                    }
+
+                    for_each_free_mem_range()
+                        __free_pages()
+                }
+                totalram_pages_add(pages);
+            }
+        }
+
+        mem_init_print_info();
+        kmem_cache_init();
+
+        page_ext_init_flatmem_late();
+        kmemleak_init();
+        ptlock_cache_init();
+        pgtable_cache_init();
+        debug_objects_mem_init();
+        vmalloc_init() {
+
+        }
+        /* If no deferred init page_ext now, as vmap is fully initialized */
+        if (!deferred_struct_pages)
+            page_ext_init();
+        /* Should be run before the first non-init thread is created */
+        init_espfix_bsp();
+        /* Should be run after espfix64 is set up. */
+        pti_init();
+        kmsan_init_runtime();
+        mm_cache_init();
+    }
+}
+```
+
 # memblock
 
 ```c
 memmap_alloc()
     if (exact_nid)
-		ptr = memblock_alloc_exact_nid_raw();
-	else
-		ptr = memblock_alloc_try_nid_raw() {
+        ptr = memblock_alloc_exact_nid_raw();
+    else
+        ptr = memblock_alloc_try_nid_raw() {
             memblock_alloc_internal()
                 alloc = memblock_alloc_range_nid() {
                     found = memblock_find_in_range_node(size, align, start, end, nid, flags);
@@ -408,6 +831,7 @@ memmap_alloc()
                     #define __phys_to_virt(x) ((unsigned long)((x) - PHYS_OFFSET) | PAGE_OFFSET)
                     #define PHYS_OFFSET ({ VM_BUG_ON(memstart_addr & 1); memstart_addr; })
                     memstart_addr = round_down(memblock_start_of_DRAM(), ARM64_MEMSTART_ALIGN);
+                    #define vmemmap ((struct page *)VMEMMAP_START - (memstart_addr >> PAGE_SHIFT))
                 }
         }
 
@@ -456,85 +880,6 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 ![](../Images/Kernel/mem-segment-page.png)
 
 ![](../Images/Kernel/mem-kernel-page-table.png)
-
-# mm_init
-```c
-void start_kernel(void) {
-    mm_core_init() {
-        build_all_zonelists(NULL);
-        page_alloc_init_cpuhp();
-
-        page_ext_init_flatmem();
-        mem_debugging_and_hardening_init();
-        kfence_alloc_pool();
-        report_meminit();
-        kmsan_init_shadow();
-        stack_depot_early_init();
-        mem_init_print_info();
-        kmem_cache_init();
-        /*
-            * page_owner must be initialized after buddy is ready, and also after
-            * slab is ready so that stack_depot_init() works properly
-            */
-        page_ext_init_flatmem_late();
-        kmemleak_init();
-        ptlock_cache_init();
-        pgtable_cache_init();
-        debug_objects_mem_init();
-        vmalloc_init() {
-
-        }
-        /* If no deferred init page_ext now, as vmap is fully initialized */
-        if (!deferred_struct_pages)
-            page_ext_init();
-        /* Should be run before the first non-init thread is created */
-        init_espfix_bsp();
-        /* Should be run after espfix64 is set up. */
-        pti_init();
-        kmsan_init_runtime();
-        mm_cache_init();
-
-        /* release free pages to the buddy allocator */
-        memblock_free_all() {
-            /* The mem_map array can get very big.
-             * Free the unused area of the memory map. */
-            free_unused_memmap() {
-                for_each_mem_pfn_range(i, MAX_NUMNODES, &start, &end, NULL) {
-                    free_memmap(prev_end, start) {
-                        /* Free boot memory block previously allocated by memblock_phys_alloc_xx() API.
-                         * The freeing memory will not be released to the buddy allocator. */
-                        memblock_phys_free(pg, pgend - pg);
-                            memblock_remove_range(&memblock.reserved, base, size) {
-                                memblock_isolate_range()
-                                memblock_remove_region()
-                            }
-                    }
-                }
-            }
-            reset_all_zones_managed_pages();
-                atomic_long_set(&z->managed_pages, 0);
-
-            pages = free_low_memory_core_early() {
-                for_each_free_mem_range()
-                    __free_pages()
-            }
-            totalram_pages_add(pages);
-        }
-    }
-}
-
-static void __init mm_init(void)
-{
-  page_ext_init_flatmem();
-  mem_init();
-  kmem_cache_init();
-  pgtable_init();
-  vmalloc_init();
-  ioremap_huge_init();
-  init_espfix_bsp();
-  pti_init();
-}
-```
 
 # user virtual space
 ```C++
@@ -2318,8 +2663,12 @@ mmap() {
                     addr = get_area(file, addr, len, pgoff, flags);
 
                 map_region() {
+                    if (may_expand_vm()) {
+                        return -ENOMEM;
+                    }
+
                     /* Unmap any existing mapping in the area */
-	                do_vmi_munmap(&vmi, mm);
+                    do_vmi_munmap(&vmi, mm);
 
                     vma_merge();
 
@@ -2455,16 +2804,39 @@ el1h_64_sync_handler() {
                 do_translation_fault()
                     do_page_fault()
                         __do_page_fault()
-                            handle_mm_fault()
+                            fault = handle_mm_fault()
                                 --->
+                            if (fault & VM_FAULT_OOM) {
+                                pagefault_out_of_memory() {
+
+                                }
+                                return 0;
+                            }
+
+                            if (fault & VM_FAULT_SIGBUS) {
+                                arm64_force_sig_fault(SIGBUS, BUS_ADRERR, far, inf->name);
+                            } else if (fault & (VM_FAULT_HWPOISON_LARGE | VM_FAULT_HWPOISON)) {
+                                unsigned int lsb;
+
+                                lsb = PAGE_SHIFT;
+                                if (fault & VM_FAULT_HWPOISON_LARGE)
+                                    lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
+
+                                arm64_force_sig_mceerr(BUS_MCEERR_AR, far, lsb, inf->name);
+                            } else {
+                                arm64_force_sig_fault(SIGSEGV,
+                                    fault == VM_FAULT_BADACCESS ? SEGV_ACCERR : SEGV_MAPERR,
+                                    far, inf->name
+                                );
+                            }
         }
     }
 }
 
 el0t_64_sync_handler() {
     switch (ESR_ELx_EC(esr)) {
-	case ESR_ELx_EC_SVC64:
-		el0_svc(regs) {
+    case ESR_ELx_EC_SVC64:
+        el0_svc(regs) {
 
         }
     }
@@ -2489,7 +2861,7 @@ handle_mm_fault(vma, address, flags, regs);
         if (!pmd)
             return VM_FAULT_OOM;
 
-        handle_pte_fault();
+        handle_pte_fault() {
 
             /* 1. anonymous fault */
             do_anonymous_page();
@@ -2544,14 +2916,17 @@ handle_mm_fault(vma, address, flags, regs);
             do_swap_page();
 
             update_mmu_tlb()
+        }
+```
 
+```c
 /* x86 */
 exc_page_fault();
-  handle_page_fault();
-    do_kern_addr_fault();
+    handle_page_fault();
+        do_kern_addr_fault();
 
-    do_user_addr_fault();
-        vma = find_vma(mm, address);
+        do_user_addr_fault();
+            vma = find_vma(mm, address);
 
 ```
 
@@ -2753,7 +3128,7 @@ SYSCALL_DEFINE2(munmap) {
                                                                     tlb->freed_tables = 1;
                                                                     __pte_free_tlb(tlb, ptep, address) {
                                                                         pgtable_pte_page_dtor(pte);
-	                                                                    tlb_remove_table(tlb, pte) {
+                                                                        tlb_remove_table(tlb, pte) {
                                                                             /* add to tlb mmu_gather */
                                                                             (*batch)->tables[(*batch)->nr++] = table;
                                                                             if ((*batch)->nr == MAX_TABLE_BATCH)
@@ -2772,7 +3147,7 @@ SYSCALL_DEFINE2(munmap) {
                                                             tlb->freed_tables = 1;
                                                             __pmd_free_tlb(tlb, pmdp, address) {
                                                                 pgtable_pmd_page_dtor(page);
-	                                                            tlb_remove_table(tlb, page);
+                                                                tlb_remove_table(tlb, page);
                                                                     --->
                                                             }
                                                         }
@@ -2858,7 +3233,7 @@ SYSCALL_DEFINE2(munmap) {
                         remove_vma(vma) {
                             vm_area_free(vma) {
                                 free_anon_vma_name(vma);
-	                            kmem_cache_free(vm_area_cachep, vma);
+                                kmem_cache_free(vm_area_cachep, vma);
                             }
                         }
                     }
@@ -2867,6 +3242,144 @@ SYSCALL_DEFINE2(munmap) {
         }
     }
 }
+```
+
+# rmap
+
+* [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
+* [linux 匿名页反向映射 - 知乎](https://zhuanlan.zhihu.com/p/361173109)
+
+```c
+struct vm_area_struct {
+    struct list_head    anon_vma_chain;
+    struct anon_vma*    anon_vma;
+}
+
+struct anon_vma {
+    struct anon_vma *root;
+    struct rw_semaphore rwsem;
+
+    unsigned degree;
+    atomic_t refcount;
+    struct anon_vma *parent;
+    struct rb_root_cached rb_root;
+};
+
+struct page {
+    /* If low bit clear, points to inode address_space, or NULL.
+     * If page mapped as anonymous memory, low bit is set,
+     * and it points to anon_vma object */
+    struct address_space *mapping;
+​
+    union {
+        /* page offset in user virtual address space for anon mapping
+         * page offset in file for file mapping */
+        pgoff_t index;
+        union {
+            atomic_t _mapcount;
+        }
+    }
+};
+
+wp_page_copy()
+do_anonymous_page()
+do_cow_fault()
+
+migrate_vma_insert_page()
+
+expand_upwards()
+expand_downwards()
+
+    anon_vma_prepare()
+        avc = anon_vma_chain_alloc(GFP_KERNEL);
+        anon_vma = anon_vma_alloc()
+        vma->anon_vma = anon_vma;
+        anon_vma_chain_link(vma, avc, anon_vma);
+            avc->vma = vma;
+            avc->anon_vma = anon_vma;
+            list_add(&avc->same_vma, &vma->anon_vma_chain);
+            anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
+
+page_add_anon_rmap()
+    __page_set_anon_rmap()
+        struct anon_vma *anon_vma = vma->anon_vma;
+        anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
+        WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
+        folio->index = linear_page_index(vma, address);
+
+page_add_new_anon_rmap()
+    folio_add_new_anon_rmap()
+        __page_set_anon_rmap(folio, &folio->page, vma, address, 1);
+            --->
+
+try_to_unmap()
+    struct rmap_walk_control rwc = {
+        .rmap_one = try_to_unmap_one,
+        .arg = (void *)flags,
+        .done = folio_not_mapped,
+        .anon_lock = folio_lock_anon_vma_read,
+    };
+
+    rmap_walk_locked(folio, &rwc);
+        if (folio_test_anon(folio))
+            rmap_walk_anon(folio, rwc, true) {
+                pgoff_start = folio_pgoff(folio);
+                pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
+                anon_vma_interval_tree_foreach(avc, &anon_vma->rb_root,
+                        pgoff_start, pgoff_end) {
+                    struct vm_area_struct *vma = avc->vma;
+                    unsigned long address = vma_address(&folio->page, vma);
+
+                    VM_BUG_ON_VMA(address == -EFAULT, vma);
+                    cond_resched();
+
+                    if (rwc->invalid_vma && rwc->invalid_vma(vma, rwc->arg))
+                        continue;
+
+                    ret = rwc->rmap_one(folio, vma, address, rwc->arg) {
+                        try_to_unmap_one()
+
+
+                    }
+                    if (!ret) {
+                        break;
+                    }
+                    if (rwc->done && rwc->done(folio))
+                        break;
+                }
+            }
+        else
+            rmap_walk_file(folio, rwc, true);
+```
+
+```c
+anon_vma_fork()
+    anon_vma_clone(vma, pvma) {
+        list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
+            struct anon_vma *anon_vma;
+
+            avc = anon_vma_chain_alloc(GFP_NOWAIT | __GFP_NOWARN);
+
+            anon_vma = pavc->anon_vma;
+            root = lock_anon_vma_root(root, anon_vma);
+            anon_vma_chain_link(dst, avc, anon_vma);
+
+            if (!dst->anon_vma && src->anon_vma
+                && anon_vma->num_children < 2
+                && anon_vma->num_active_vmas == 0) {
+
+                dst->anon_vma = anon_vma;
+            }
+        }
+    }
+
+    anon_vma = anon_vma_alloc()
+    avc = anon_vma_chain_alloc(GFP_KERNEL)
+    anon_vma->root = pvma->anon_vma->root;
+    anon_vma->parent = pvma->anon_vma;
+    vma->anon_vma = anon_vma;
+    anon_vma_chain_link(vma, avc, anon_vma);
+    anon_vma->parent->num_children++;
 ```
 
 # remove_memory
@@ -2888,7 +3401,7 @@ arch_remove_memory(start, size, altmap)
 
         }
 
-	__remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size)
+    __remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size)
         /* 1. free phys mem which virt addr is [start, end] */
         unmap_hotplug_range(start, end, false, NULL) {
             do {
@@ -2958,7 +3471,7 @@ arch_remove_memory(start, size, altmap)
         }
 
         /* 2. free phsy mem of pgtable which is used to map virt addr [start, end] */
-	    free_empty_tables(start, end, PAGE_OFFSET, PAGE_END) {
+        free_empty_tables(start, end, PAGE_OFFSET, PAGE_END) {
             do {
                 next = pgd_addr_end(addr, end);
                 pgdp = pgd_offset_k(addr);
@@ -3500,9 +4013,6 @@ struct vm_struct {
   unsigned long     size;
   unsigned long     flags;
   struct page       **pages;
-#ifdef CONFIG_HAVE_ARCH_HUGE_VMALLOC
-  unsigned int      page_order;
-#endif
   unsigned int      nr_pages;
   phys_addr_t       phys_addr;
   const void        *caller;
@@ -3897,4 +4407,162 @@ static int vmalloc_fault(unsigned long address)
 
   return 0
 }
+```
+
+# page_reclaim
+```c
+typedef struct pglist_data {
+    struct lruvec        lruvec;
+    struct task_struct *kswapd;
+};
+
+struct lruvec {
+    struct list_head        lists[NR_LRU_LISTS];
+    spinlock_t                lru_lock;
+
+    unsigned long            anon_cost;
+    unsigned long            file_cost;
+
+    atomic_long_t            nonresident_age;
+
+    unsigned long            refaults[ANON_AND_FILE];
+
+    unsigned long            flags;
+
+    struct pglist_data *pgdat;
+};
+
+enum lru_list {
+    LRU_INACTIVE_ANON = LRU_BASE,
+    LRU_ACTIVE_ANON = LRU_BASE + LRU_ACTIVE,
+    LRU_INACTIVE_FILE = LRU_BASE + LRU_FILE,
+    LRU_ACTIVE_FILE = LRU_BASE + LRU_FILE + LRU_ACTIVE,
+    LRU_UNEVICTABLE,
+    NR_LRU_LISTS
+};
+
+struct pagevec {
+    unsigned char nr;
+    bool percpu_pvec_drained;
+    struct page *pages[PAGEVEC_SIZE];
+};
+
+struct cpu_fbatches {
+    local_lock_t lock;
+    struct folio_batch lru_add;
+    struct folio_batch lru_deactivate_file;
+    struct folio_batch lru_deactivate;
+    struct folio_batch lru_lazyfree;
+    struct folio_batch activate;
+};
+
+static DEFINE_PER_CPU(struct cpu_fbatches, cpu_fbatches) = {
+    .lock = INIT_LOCAL_LOCK(lock),
+};
+
+struct folio_batch {
+    unsigned char nr;
+    bool percpu_pvec_drained;
+    struct folio *folios[PAGEVEC_SIZE];
+};
+
+struct lru_rotate {
+    local_lock_t lock;
+    struct folio_batch fbatch;
+};
+static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
+    .lock = INIT_LOCAL_LOCK(lock),
+};
+```
+
+# fork
+```c
+kernel_clone()
+    copy_mm() {
+        if (clone_flags & CLONE_VM) {
+            mmget(oldmm);
+            mm = oldmm;
+        } else {
+            mm = dup_mm(tsk, current->mm) {
+                mm = allocate_mm();
+                memcpy(mm, oldmm, sizeof(*mm));
+
+                mm_init(mm, tsk, mm->user_ns)
+                dup_mmap(mm, oldmm) {
+                    for_each_vma(old_vmi, mpnt) {
+                        struct file *file;
+
+                        if (mpnt->vm_flags & VM_DONTCOPY) {
+                            vm_stat_account(mm, mpnt->vm_flags, -vma_pages(mpnt));
+                            continue;
+                        }
+                        charge = 0;
+                        /* Don't duplicate many vmas if we've been oom-killed (for example) */
+                        if (fatal_signal_pending(current)) {
+                            retval = -EINTR;
+                            goto loop_out;
+                        }
+                        if (mpnt->vm_flags & VM_ACCOUNT) {
+                            unsigned long len = vma_pages(mpnt);
+                            charge = len;
+                        }
+
+                        tmp = vm_area_dup(mpnt);
+
+                        retval = vma_dup_policy(mpnt, tmp);
+
+                        tmp->vm_mm = mm;
+                        retval = dup_userfaultfd(tmp, &uf);
+
+                        if (tmp->vm_flags & VM_WIPEONFORK) {
+                            /* VM_WIPEONFORK gets a clean slate in the child.
+                             * Don't prepare anon_vma until fault since we don't
+                             * copy page for current vma. */
+                            tmp->anon_vma = NULL;
+                        } else {
+                            anon_vma_fork(tmp, mpnt) {
+                                --->
+                            }
+                        }
+
+                        vm_flags_clear(tmp, VM_LOCKED_MASK);
+                        file = tmp->vm_file;
+                        if (file) {
+                            struct address_space *mapping = file->f_mapping;
+
+                            get_file(file);
+                            i_mmap_lock_write(mapping);
+                            if (tmp->vm_flags & VM_SHARED)
+                                mapping_allow_writable(mapping);
+
+                            flush_dcache_mmap_lock(mapping);
+                            /* insert tmp into the share list, just after mpnt */
+                            vma_interval_tree_insert_after(tmp, mpnt, &mapping->i_mmap);
+                            flush_dcache_mmap_unlock(mapping);
+                            i_mmap_unlock_write(mapping);
+                        }
+
+                        /* Link the vma into the MT */
+                        if (vma_iter_bulk_store(&vmi, tmp))
+                            goto fail_nomem_vmi_store;
+
+                        mm->map_count++;
+                        if (!(tmp->vm_flags & VM_WIPEONFORK))
+                            retval = copy_page_range(tmp, mpnt);
+
+                        if (tmp->vm_ops && tmp->vm_ops->open)
+                            tmp->vm_ops->open(tmp);
+
+                        if (retval)
+                            goto loop_out;
+                    }
+                    /* a new mm has just been created */
+                    retval = arch_dup_mmap(oldmm, mm);
+                }
+            }
+        }
+
+        tsk->mm = mm;
+        tsk->active_mm = mm;
+    }
 ```
