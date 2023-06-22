@@ -2289,6 +2289,14 @@ static inline void set_tsk_need_resched(struct task_struct *tsk)
 
 ##### sched_setscheduler
 ```c
+SYSCALL_DEFINE3(sched_setscheduler)
+    do_sched_setscheduler()
+        p = find_process_by_pid(pid);
+        get_task_struct(p);
+        sched_setscheduler(p, policy, &lparam);
+            __sched_setscheduler()
+
+		put_task_struct(p);
 /* 1. check policy, prio args */
 
 ```
@@ -4222,6 +4230,7 @@ _ASM_NOKPROBE(common_interrupt_return)
 
 ```c++
 do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
+kernel_clone(struct kernel_clone_args *args)
     copy_process();
         task_struct* tsk = dup_task_struct(current, node);
             /* alloc a new kernel stack */
@@ -4266,7 +4275,8 @@ do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
             childregs->ax = 0;
             if (sp)
                 childregs->sp = sp;
-        alloc_pid();
+        pid = alloc_pid(p->nsproxy->pid_ns_for_children)
+        
 
     wake_up_new_task(p);
         activate_task();
