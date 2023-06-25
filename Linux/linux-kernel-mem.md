@@ -2905,7 +2905,7 @@ handle_mm_fault(vma, address, flags, regs);
 
         handle_pte_fault() {
             if (!vmf->pte) {
-		            return do_pte_missing(vmf) {
+                return do_pte_missing(vmf) {
                     if (vma_is_anonymous(vmf->vma)) {
                         /* 1. anonymous fault */
                         return do_anonymous_page(vmf) {
@@ -2979,13 +2979,13 @@ handle_mm_fault(vma, address, flags, regs);
 
             /* 3. swap fault */
             if (!pte_present(vmf->orig_pte)) {
-		        return do_swap_page(vmf) {
+                return do_swap_page(vmf) {
 
                 }
             }
 
             if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
-		        return do_numa_page(vmf) {
+                return do_numa_page(vmf) {
 
                 }
             }
@@ -2997,9 +2997,9 @@ handle_mm_fault(vma, address, flags, regs);
                         folio = page_folio(vmf->page)
                         if (folio && folio_test_anon(folio)) {
                             if (folio_test_ksm(folio) || folio_ref_count(folio) > 3)
-			                    goto copy;
+                                goto copy;
                             if (folio_ref_count(folio) > 1 + folio_test_swapcache(folio))
-			                    goto copy;
+                                goto copy;
                             if (folio_test_ksm(folio) || folio_ref_count(folio) != 1) {
                                 folio_unlock(folio);
                                 goto copy;
@@ -3374,7 +3374,7 @@ SYSCALL_DEFINE2(munmap) {
 
 # rmap
 
-* [wowotech](http://www.wowotech.net/memory_management/reverse_mapping.html)
+* [wowotech - 逆向映射的演进](http://www.wowotech.net/memory_management/reverse_mapping.html)
 * [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
 * [linux 匿名页反向映射 - 知乎](https://zhuanlan.zhihu.com/p/361173109)
 * https://blog.csdn.net/u010923083/article/details/116456497
@@ -3405,11 +3405,11 @@ struct anon_vma {
 };
 
 struct anon_vma_chain {
-	struct vm_area_struct*  vma;
-	struct anon_vma*        anon_vma;
-	struct list_head        same_vma;
-	struct rb_node          rb;
-	unsigned long rb_subtree_last;
+    struct vm_area_struct*  vma;
+    struct anon_vma*        anon_vma;
+    struct list_head        same_vma;
+    struct rb_node          rb;
+    unsigned long rb_subtree_last;
 };
 
 struct page {
@@ -3430,7 +3430,7 @@ struct page {
 
 anon_vma_prepare()
     if (likely(vma->anon_vma))
-		return 0;
+        return 0;
 
     avc = anon_vma_chain_alloc(GFP_KERNEL);
     anon_vma = find_mergeable_anon_vma(vma);
@@ -3493,7 +3493,7 @@ try_to_unmap()
     };
 
     rmap_walk_locked(folio, &rwc);
-        if (folio_test_anon(folio))
+        if (folio_test_anon(folio)) {
             rmap_walk_anon(folio, rwc, true) {
                 pgoff_start = folio_pgoff(folio);
                 pgoff_end = pgoff_start + folio_nr_pages(folio) - 1;
@@ -3518,7 +3518,7 @@ try_to_unmap()
                     }
                 }
             }
-        else {
+        } else {
             rmap_walk_file(folio, rwc, true) {
                 struct address_space *mapping = folio_mapping(folio);
                 vma_interval_tree_foreach(vma, &mapping->i_mmap, pgoff_start, pgoff_end) {
@@ -4719,4 +4719,301 @@ kernel_clone()
         tsk->mm = mm;
         tsk->active_mm = mm;
     }
+```
+
+# cma
+
+![](../Images/Kernel/mem-cam.png)
+
+* [wowo tech](http://www.wowotech.net/memory_management/cma.html)
+
+```c
+struct cma {
+    unsigned long   base_pfn;
+    unsigned long   count;
+    unsigned long   *bitmap;
+    unsigned int    order_per_bit; /* Order of pages represented by one bit */
+    struct mutex    lock;
+    const char      *name;
+};
+
+extern struct cma cma_areas[MAX_CMA_AREAS];
+extern unsigned cma_area_count;
+
+/* setup_arch---> arm64_memblock_init---> early_init_fdt_scan_reserved_mem
+ *---> fdt_init_reserved_mem---> __reserved_mem_init_node */
+RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);
+
+static int __init __reserved_mem_init_node(struct reserved_mem *rmem)
+{
+    extern const struct of_device_id __reservedmem_of_table[];
+    const struct of_device_id *i;
+    int ret = -ENOENT;
+
+    for (i = __reservedmem_of_table; i < &__rmem_of_table_sentinel; i++) {
+        reservedmem_of_init_fn initfn = i->data;
+        const char *compat = i->compatible;
+
+        if (!of_flat_dt_is_compatible(rmem->fdt_node, compat))
+            continue;
+
+        ret = initfn(rmem);
+        if (ret == 0) {
+            break;
+        }
+    }
+    return ret;
+}
+
+rmem_cma_setup(struct reserved_mem *rmem)
+    unsigned long node = rmem->fdt_node;
+    bool default_cma = of_get_flat_dt_prop(node, "linux,cma-default", NULL);
+    struct cma *cma;
+
+    err = cma_init_reserved_mem(rmem->base, rmem->size, 0, rmem->name, &cma) {
+        cma = &cma_areas[cma_area_count];
+
+        snprintf(cma->name, CMA_MAX_NAME,  "cma%d\n", cma_area_count);
+
+        cma->base_pfn = PFN_DOWN(base);
+        cma->count = size >> PAGE_SHIFT;
+        cma->order_per_bit = order_per_bit;
+        *res_cma = cma;
+        cma_area_count++;
+        totalcma_pages += (size / PAGE_SIZE);
+    }
+
+    dma_contiguous_early_fixup(rmem->base, rmem->size);
+
+    rmem->ops = &rmem_cma_ops;
+    rmem->priv = cma;
+```
+
+## cma_init_reserved_areas
+
+![](../Images/Kernel/mem-cma_init_reserved_areas.png)
+```c
+cma_init_reserved_areas(void)
+    for (i = 0; i < cma_area_count; i++) {
+        cma_activate_area(&cma_areas[i]) {
+            unsigned long base_pfn = cma->base_pfn, pfn;
+            struct zone *zone;
+
+            cma->bitmap = bitmap_zalloc(cma_bitmap_maxno(cma), GFP_KERNEL);
+
+            zone = page_zone(pfn_to_page(base_pfn));
+            for (pfn = base_pfn + 1; pfn < base_pfn + cma->count; pfn++) {
+                if (page_zone(pfn_to_page(pfn)) != zone)
+                    goto not_in_zone;
+            }
+
+            for (pfn = base_pfn; pfn < base_pfn + cma->count; pfn += pageblock_nr_pages) {
+                init_cma_reserved_pageblock(pfn_to_page(pfn)) {
+                    do {
+                        __ClearPageReserved(p);
+                        set_page_count(p, 0);
+                    } while (++p, --i);
+
+                    set_pageblock_migratetype(page, MIGRATE_CMA);
+                    set_page_refcounted(page);
+                    /* free pages to the buddy */
+                    __free_pages(page, pageblock_order);
+
+                    adjust_managed_page_count(page, pageblock_nr_pages);
+                    page_zone(page)->cma_pages += pageblock_nr_pages;
+                }
+            }
+
+            return;
+
+        not_in_zone:
+            bitmap_free(cma->bitmap);
+        out_error:
+            /* Expose all pages to the buddy, they are useless for CMA. */
+            if (!cma->reserve_pages_on_error) {
+                for (pfn = base_pfn; pfn < base_pfn + cma->count; pfn++) {
+                    free_reserved_page(pfn_to_page(pfn)) {
+
+                    }
+                }
+            }
+            totalcma_pages -= cma->count;
+            cma->count = 0;
+            pr_err("CMA area %s could not be activated\n", cma->name);
+            return;
+        }
+    }
+```
+
+## cma_alloc
+
+![](../Images/Kernel/mem-cma_alloc.png)
+
+```c
+struct page *cma_alloc(struct cma *cma, unsigned long count,
+               unsigned int align, bool no_warn)
+    unsigned long mask, offset;
+    unsigned long pfn = -1;
+    unsigned long start = 0;
+    unsigned long bitmap_maxno, bitmap_no, bitmap_count;
+    unsigned long i;
+    struct page *page = NULL;
+    int ret = -ENOMEM;
+
+    mask = cma_bitmap_aligned_mask(cma, align);
+    offset = cma_bitmap_aligned_offset(cma, align);
+    bitmap_maxno = cma_bitmap_maxno(cma);
+    bitmap_count = cma_bitmap_pages_to_bits(cma, count);
+
+    for (;;) {
+        spin_lock_irq(&cma->lock);
+        bitmap_no = bitmap_find_next_zero_area_off(cma->bitmap,
+            bitmap_maxno, start, bitmap_count, mask, offset
+        );
+
+        bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
+        spin_unlock_irq(&cma->lock);
+
+        pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
+
+        mutex_lock(&cma_mutex);
+        ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA) {
+            unsigned long outer_start, outer_end;
+            int order;
+            int ret = 0;
+
+            struct compact_control cc = {
+                .nr_migratepages = 0,
+                .order = -1,
+                .zone = page_zone(pfn_to_page(start)),
+                .mode = MIGRATE_SYNC,
+                .ignore_skip_hint = true,
+                .no_set_skip_hint = true,
+                .gfp_mask = current_gfp_context(gfp_mask),
+                .alloc_contig = true,
+            };
+            INIT_LIST_HEAD(&cc.migratepages);
+
+            ret = start_isolate_page_range(start, end, migratetype, 0, gfp_mask) {
+                /* isolate [isolate_start, isolate_start + pageblock_nr_pages) pageblock */
+                ret = isolate_single_pageblock() {
+                    set_migratetype_isolate() {
+                        set_pageblock_migratetype(page, MIGRATE_ISOLATE);
+                        zone->nr_isolate_pageblock++;
+                        nr_pages = move_freepages_block(zone, page, MIGRATE_ISOLATE, NULL) {
+                            move_freepages() {
+                                for (pfn = start_pfn; pfn <= end_pfn;) {
+                                    page = pfn_to_page(pfn);
+                                    order = buddy_order(page);
+                                    move_to_free_list(page, zone, order, migratetype) {
+                                        struct free_area *area = &zone->free_area[order];
+                                        list_move_tail(&page->buddy_list, &area->free_list[migratetype]);
+                                    }
+                                    pfn += 1 << order;
+                                    pages_moved += 1 << order;
+                                }
+                            }
+                        }
+
+                        __mod_zone_freepage_state(zone, -nr_pages, mt);
+                    }
+                }
+
+                if (isolate_start == isolate_end - pageblock_nr_pages)
+                    skip_isolation = true;
+
+                /* isolate [isolate_end - pageblock_nr_pages, isolate_end) pageblock */
+                ret = isolate_single_pageblock();
+
+                /* skip isolated pageblocks at the beginning and end */
+                for (pfn = isolate_start + pageblock_nr_pages;
+                    pfn < isolate_end - pageblock_nr_pages;
+                    pfn += pageblock_nr_pages) {
+                    page = __first_valid_page(pfn, pageblock_nr_pages);
+                    if (page && set_migratetype_isolate()) {
+                        undo_isolate_page_range();
+                        unset_migratetype_isolate(
+                            pfn_to_page(isolate_end - pageblock_nr_pages),
+                            migratetype);
+                        return -EBUSY;
+                    }
+                }
+            }
+            if (ret)
+                goto done;
+
+            drain_all_pages(cc.zone);
+
+            ret = __alloc_contig_migrate_range(&cc, start, end);
+            if (ret && ret != -EBUSY)
+                goto done;
+            ret = 0;
+
+            order = 0;
+            outer_start = start;
+            while (!PageBuddy(pfn_to_page(outer_start))) {
+                if (++order > MAX_ORDER) {
+                    outer_start = start;
+                    break;
+                }
+                outer_start &= ~0UL << order;
+            }
+
+            if (outer_start != start) {
+                order = buddy_order(pfn_to_page(outer_start));
+
+                if (outer_start + (1UL << order) <= start)
+                    outer_start = start;
+            }
+
+            /* Make sure the range is really isolated. */
+            if (test_pages_isolated(outer_start, end, 0)) {
+                ret = -EBUSY;
+                goto done;
+            }
+
+            /* Grab isolated pages from freelists. */
+            outer_end = isolate_freepages_range(&cc, outer_start, end);
+            if (!outer_end) {
+                ret = -EBUSY;
+                goto done;
+            }
+
+            /* Free head and tail (if any) */
+            if (start != outer_start)
+                free_contig_range(outer_start, start - outer_start);
+            if (end != outer_end)
+                free_contig_range(end, outer_end - end);
+
+        done:
+            undo_isolate_page_range(start, end, migratetype);
+            return ret;
+        }
+        mutex_unlock(&cma_mutex);
+
+        if (ret == 0) {
+            page = pfn_to_page(pfn);
+            break;
+        }
+
+        cma_clear_bitmap(cma, pfn, count);
+        if (ret != -EBUSY)
+            break;
+
+        /* try again with a bit different memory target */
+        start = bitmap_no + mask + 1;
+    }
+
+out:
+    if (page) {
+        count_vm_event(CMA_ALLOC_SUCCESS);
+        cma_sysfs_account_success_pages(cma, count);
+    } else {
+        count_vm_event(CMA_ALLOC_FAIL);
+        if (cma)
+            cma_sysfs_account_fail_pages(cma, count);
+    }
+
+    return page;
+}
 ```
