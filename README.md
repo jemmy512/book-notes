@@ -84,6 +84,7 @@
     * [Memory Management](./Linux/linux-kernel-mem.md)
     * [Network System](./Linux/linux-kernel-net.md)
     * [File & IO System](./Linux/linux-kernel-file-io.md)
+    * [Interrupt](./Linux/linux-kernel-intr.md)
     * [Utitlies](./Linux/linux-kernel-utility.md)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
