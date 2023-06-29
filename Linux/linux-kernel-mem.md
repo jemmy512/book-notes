@@ -1,5 +1,3 @@
-[:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
-
 # Table of Contents
 * [_start:](#_start)
 * [segment](#segment)
@@ -46,6 +44,8 @@
 
 ![](../Images/Kernel/kernel-structual.svg)
 
+* [:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
+    * [Memory Layout on AArch64 Linux](https://www.kernel.org/doc/html/latest/arm64/memory.html)
 
 * Folio
     * [LWN - Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
@@ -71,7 +71,7 @@
     * [page fault](https://www.cnblogs.com/LoyenWang/p/12116570.html)
     * [rmap](https://www.cnblogs.com/LoyenWang/p/12164683.html)
     * [cma](https://www.cnblogs.com/LoyenWang/p/12182594.html)
-
+* [内存管理2：ARM64 linux虚拟内存布局是怎样的](https://zhuanlan.zhihu.com/p/407063888)
 ---
 
 # _start:
