@@ -1,3 +1,13 @@
+# Linux Kernel
+* [Process Management](./Linux/linux-kernel-proc.md)
+* [Memory Management](./Linux/linux-kernel-mem.md)
+* [Network System](./Linux/linux-kernel-net.md)
+* [File & IO System](./Linux/linux-kernel-file-io.md)
+* [Interrupt](./Linux/linux-kernel-intr.md)
+* [Utilities](./Linux/linux-kernel-utility.md)
+* [IPC](./Linux/linux-kernel-ipc.md)
+* [Time](./Linux/linux-kernel-time.md)
+
 # Architecture & Design
 * [Clean Architecture :soon:]()
 * [Domain Driven Design :soon:](./Arch/domain-driven-design.md)
@@ -79,15 +89,6 @@
 * [GCC: new allocator malloc](https://github.com/Jemmy512/software-engineer/blob/master/OpenSource/new-allocator-malloc.md)
 
 # Linux
-* [Linux Kernel]()
-    * [Process Management](./Linux/linux-kernel-proc.md)
-    * [Memory Management](./Linux/linux-kernel-mem.md)
-    * [Network System](./Linux/linux-kernel-net.md)
-    * [File & IO System](./Linux/linux-kernel-file-io.md)
-    * [Interrupt](./Linux/linux-kernel-intr.md)
-    * [Utitlies](./Linux/linux-kernel-utility.md)
-    * [IPC](./Linux/linux-kernel-ipc.md)
-    * [Time](./Linux/linux-kernel-time.md)
 * [Linux Programming](./Linux/linux-programming.md)
 * [Understanding Linux Kernel](./Linux/understanding-linux-kernel.md)
 * [Linux Kernel Development](./Linux/linux-kernel-development.md)
