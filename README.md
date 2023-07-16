@@ -4,7 +4,7 @@
 * [Network System](./Linux/linux-kernel-net.md)
 * [File & IO System](./Linux/linux-kernel-file-io.md)
 * [Interrupt](./Linux/linux-kernel-intr.md)
-* [Utilities](./Linux/linux-kernel-utility.md)
+* [Core](./Linux/linux-kernel-core.md)
 * [IPC](./Linux/linux-kernel-ipc.md)
 * [Time](./Linux/linux-kernel-time.md)
 
