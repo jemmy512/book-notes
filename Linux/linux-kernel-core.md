@@ -24,6 +24,9 @@
         * [up_read](#up_read)
         * [down_write](#down_write)
         * [up_write](#up_write)
+    * [rwlock](#rwlock)
+        * [read_lock](#read_lock)
+        * [write_lock](#write_lock)
     * [mlock](#mlock)
 
 # Core
@@ -397,7 +400,7 @@ void queued_spin_lock(struct qspinlock *lock)
 }
 ```
 
-### queued_spin_lock_slowpath
+#### queued_spin_lock_slowpath
 
 ```c
 void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
@@ -612,6 +615,194 @@ release:
 }
 ```
 
+### spin_unlock
+
+```c
+spin_unlock(spinlock_t *lock) {
+	raw_spin_unlock(&lock->rlock) {
+        __raw_spin_unlock(raw_spinlock_t *lock) {
+	        spin_release(&lock->dep_map, _RET_IP_);
+            do_raw_spin_unlock(lock) {
+                mmiowb_spin_unlock();
+                arch_spin_unlock(&lock->raw_lock) {
+                    u16 *ptr = (u16 *)lock + IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
+                    u32 val = atomic_read(lock);
+
+                    smp_store_release(ptr, (u16)val + 1);
+                }
+                __release(lock);
+            }
+            preempt_enable();
+        }
+    }
+}
+```
+
+## rwlock
+
+Aka read write spinlock, implemented by qrwlock.
+
+```c
+typedef struct {
+    arch_rwlock_t       raw_lock;
+} rwlock_t;
+
+typedef struct qrwlock {
+    union {
+        atomic_t        cnts;
+        struct {
+            u8 wlocked;    /* Locked for write? */
+            u8 __lstate[3];
+        };
+    };
+    arch_spinlock_t     wait_lock;
+} arch_rwlock_t;
+
+#define     _QW_WAITING     0x100   /* A writer is waiting */
+#define     _QW_LOCKED      0x0ff   /* A writer holds the lock */
+#define     _QW_WMASK       0x1ff   /* Writer mask */
+#define     _QR_SHIFT       9       /* Reader count shift */
+#define     _QR_BIAS        (1U << _QR_SHIFT)
+```
+
+```c
+/* include/linux/rwlock.h */
+#define read_lock(lock)         _raw_read_lock(lock)
+#define read_lock_irq(lock)     _raw_read_lock_irq(lock)
+#define read_lock_bh(lock)      _raw_read_lock_bh(lock)
+
+#define read_unlock(lock)       _raw_read_unlock(lock)
+#define read_unlock_irq(lock)   _raw_read_unlock_irq(lock)
+
+#define write_lock(lock)        _raw_write_lock(lock)
+#define write_lock_irq(lock)    _raw_write_lock_irq(lock)
+#define write_lock_bh(lock)     _raw_write_lock_bh(lock)
+
+#define write_unlock(lock)      _raw_write_unlock(lock)
+#define write_unlock_irq(lock)  _raw_write_unlock_irq(lock)
+
+/* include/asm-generic/qrwlock.h */
+#define arch_read_lock(l)       queued_read_lock(l)
+#define arch_write_lock(l)      queued_write_lock(l)
+#define arch_read_trylock(l)    queued_read_trylock(l)
+#define arch_write_trylock(l)   queued_write_trylock(l)
+#define arch_read_unlock(l)     queued_read_unlock(l)
+#define arch_write_unlock(l)    queued_write_unlock(l)
+#define arch_rwlock_is_contended(l)     queued_rwlock_is_contended(l)
+```
+
+### read_lock
+```c
+static inline void __raw_read_lock(rwlock_t *lock)
+{
+    preempt_disable();
+    rwlock_acquire_read(&lock->dep_map, 0, 0, _RET_IP_);
+    LOCK_CONTENDED(lock, do_raw_read_trylock, do_raw_read_lock);
+}
+
+do_raw_read_trylock() {
+    arch_read_trylock(&(rwlock)->raw_lock) {
+        queued_read_trylock() {
+            int cnts;
+
+            cnts = atomic_read(&lock->cnts);
+            if (likely(!(cnts & _QW_WMASK))) {
+                cnts = (u32)atomic_add_return_acquire(_QR_BIAS, &lock->cnts);
+                if (likely(!(cnts & _QW_WMASK))) {
+                    return 1;
+                }
+                /* revert add since writer has already hold the lock */
+                atomic_sub(_QR_BIAS, &lock->cnts);
+            }
+            return 0;
+        }
+    }
+}
+
+do_raw_read_lock() {
+    arch_raw_read_lock() {
+        queued_read_lock() {
+            int cnts;
+
+            cnts = atomic_add_return_acquire(_QR_BIAS, &lock->cnts);
+            if (likely(!(cnts & _QW_WMASK)))
+                return;
+
+            /* The slowpath will decrement the reader count, if necessary. */
+            queued_read_lock_slowpath(lock) {
+                if (unlikely(in_interrupt())) {
+                    atomic_cond_read_acquire(&lock->cnts, !(VAL & _QW_LOCKED));
+                    return;
+                }
+                atomic_sub(_QR_BIAS, &lock->cnts);
+
+                /* Put the reader into the wait queue */
+                arch_spin_lock(&lock->wait_lock);
+                atomic_add(_QR_BIAS, &lock->cnts);
+
+                /* The ACQUIRE semantics of the following spinning code ensure
+                 * that accesses can't leak upwards out of our subsequent critical
+                 * section in the case that the lock is currently held for write. */
+                atomic_cond_read_acquire(&lock->cnts, !(VAL & _QW_LOCKED));
+
+                /* Signal the next one in queue to become queue head */
+                arch_spin_unlock(&lock->wait_lock);
+            }
+        }
+    }
+}
+```
+
+### write_lock
+```c
+do_raw_write_trylock() {
+    arch_write_trylock(&(rwlock)->raw_lock) {
+        queued_write_trylock() {
+            int cnts;
+
+            cnts = atomic_read(&lock->cnts);
+            if (unlikely(cnts))
+                return 0;
+
+            return likely(atomic_try_cmpxchg_acquire(&lock->cnts, &cnts, _QW_LOCKED));
+        }
+    }
+}
+
+do_raw_write_lock() {
+    arch_raw_write_lock() {
+        queued_write_lock(struct qrwlock *lock) {
+            int cnts = 0;
+            /* Optimize for the unfair lock case where the fair flag is 0. */
+            if (likely(atomic_try_cmpxchg_acquire(&lock->cnts, &cnts, _QW_LOCKED)))
+                return;
+
+            queued_write_lock_slowpath(lock) {
+                int cnts;
+
+                /* Put the writer into the wait queue */
+                arch_spin_lock(&lock->wait_lock);
+
+                /* Try to acquire the lock directly if no reader is present */
+                if (!(cnts = atomic_read(&lock->cnts)) &&
+                    atomic_try_cmpxchg_acquire(&lock->cnts, &cnts, _QW_LOCKED))
+                    goto unlock;
+
+                /* Set the waiting flag to notify readers that a writer is pending */
+                atomic_or(_QW_WAITING, &lock->cnts);
+
+                /* When no more readers or writers, set the locked flag */
+                do {
+                    cnts = atomic_cond_read_relaxed(&lock->cnts, VAL == _QW_WAITING);
+                } while (!atomic_try_cmpxchg_acquire(&lock->cnts, &cnts, _QW_LOCKED));
+            unlock:
+                arch_spin_unlock(&lock->wait_lock);
+            }
+        }
+    }
+}
+```
+
 ## mutex
 
 * [Mutex内核同步机制详解 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487213&idx=1&sn=f299bbcd57a81dd2d3ed9171d5ebc636)
@@ -636,23 +827,23 @@ mutex_lock()
  * NULL means not owned. Since task_struct pointers are aligned at
  * at least L1_CACHE_BYTES, we have low bits to store extra state.
  *
- * Bit0 indicates a non-empty waiter list; unlock must issue a wakeup.
- * Bit1 indicates unlock needs to hand the lock to the top-waiter
- * Bit2 indicates handoff has been done and we're waiting for pickup. */
-#define MUTEX_FLAG_WAITERS    0x01
-#define MUTEX_FLAG_HANDOFF    0x02
-#define MUTEX_FLAG_PICKUP     0x04
-#define MUTEX_FLAGS           0x07
+    * Bit0 indicates a non-empty waiter list; unlock must issue a wakeup.
+    * Bit1 indicates unlock needs to hand the lock to the top-waiter
+    * Bit2 indicates handoff has been done and we're waiting for pickup. */
+    #define MUTEX_FLAG_WAITERS    0x01
+    #define MUTEX_FLAG_HANDOFF    0x02
+    #define MUTEX_FLAG_PICKUP     0x04
+    #define MUTEX_FLAGS           0x07
 
-struct mutex { /* !CONFIG_PREEMPT_RT  */
-    atomic_long_t       owner;
-    raw_spinlock_t      wait_lock;
-    struct list_head    wait_list;
+    struct mutex { /* !CONFIG_PREEMPT_RT  */
+        atomic_long_t       owner;
+        raw_spinlock_t      wait_lock;
+        struct list_head    wait_list;
 };
 
 /* kernel/locking/mutex.c */
 mutex_lock()
-    /* 1. fastpath: tries to atomically acquire the lock by cmpxchg()ing the owner
+    /* 1. fastpath: cmpxchg. Tries to atomically acquire the lock by cmpxchg()ing the owner
      * with the current task. This only works in the uncontended case
      * (cmpxchg() checks against 0UL, so all 3 state bits above have to be 0).
      * If the lock is contended it goes to the next possible path.*/
@@ -667,7 +858,7 @@ mutex_lock()
         __mutex_lock(lock, TASK_UNINTERRUPTIBLE) {
             preempt_disable();
 
-            /* 2. midpath: aka optimistic spinning, tries to spin for acquisition
+            /* 2. midpath: optimistic spinning. Tries to spin for acquisition
              * while the lock owner is running and there are no other tasks ready to run
              * that have higher priority (need_resched).
              * The rationale is that if the lock owner is running,
@@ -714,7 +905,7 @@ mutex_lock()
                 return 0;
             }
 
-            /* 3. slowpath: last resort, if the lock is still unable to be acquired,
+            /* 3. slowpath: sleep wait. If the lock is still unable to be acquired,
              * the task is added to the wait-queue and sleeps until woken up by the unlock path.
              * Under normal circumstances it blocks as TASK_UNINTERRUPTIBLE. */
             raw_spin_lock(&lock->wait_lock);
