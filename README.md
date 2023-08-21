@@ -3,7 +3,7 @@
 * [Memory Management](./Linux/linux-kernel-mem.md)
 * [Network System](./Linux/linux-kernel-net.md)
 * [File & IO System](./Linux/linux-kernel-file-io.md)
-* [Interrupt](./Linux/linux-kernel-intr.md)
+* Interrupt [ARM 64](./Linux/linux-kernel-intr-arm64.md) :heavy_minus_sign: [x86](./Linux/linux-kernel-intr-arm64.md)
 * [Core](./Linux/linux-kernel-core.md)
 * [IPC](./Linux/linux-kernel-ipc.md)
 * [Time](./Linux/linux-kernel-time.md)
