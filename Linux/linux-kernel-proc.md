@@ -1,7 +1,7 @@
 # Table of Contents
 * [CPU](#cpu)
 * [bios](#bios)
-* [init-kernel](#init-kernel)
+* [start_kernel](#start_kernel)
 * [syscall](#syscall)
     * [glibs](#glibc)
     * [32](#32)
@@ -26,19 +26,23 @@
             * [preempt_enable](#preempt_enble)
             * [return from interrupt](#return-from-interrupt)
     * [SCHED_RT](#SCHED_RR)
-        * [task_tick_rt](#task_tick_rt)
         * [enqueue_task_rt](#enqueue_task_rt)
         * [dequeue_task_rt](#dequeue_task_rt)
-        * [task_fork_rt](#task_fork_rt)
-        * [pick_next_task_rt](#pick_next_task_rt)
         * [put_prev_task_rt](#put_prev_task_rt)
+        * [pick_next_task_rt](#pick_next_task_rt)
+        * [set_next_task_rt](#set_next_task_rt)
+        * [push_rt_task](#push_rt_task)
+        * [pull_rt_task](#pull_rt_task)
+        * [select_task_rq_rt](#select_task_rq_rt)
+        * [task_tick_rt](#task_tick_rt)
     * [SCHED_CFS](#SCHED_CFS)
-        * [sched_vslice](#sched_vslice)
-        * [task_tick_fair](#task_tick_fair)
+        * [enqueue_task_fair](#enqueue_task_fair)
         * [dequeue_task_fair](#dequeue_task_fair)
         * [put_prev_task_fair](#put_prev_task_fair)
-        * [enqueue_task_fair](#enqueue_task_fair)
         * [pick_next_task_fair](#pick_next_task_fair)
+        * [set_next_task_fair](#set_next_task_fair)
+        * [sched_vslice](#sched_vslice)
+        * [task_tick_fair](#task_tick_fair)
         * [task_fork_fair](#task_fork_fair)
     * [task_group](#task_group)
 
@@ -73,6 +77,8 @@
 
 <img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
+![](../Images/Kernel/proc-xmind.png)
+
 # cpu
 <img src='../Images/Kernel/init-cpu.png' style='max-height:850px'/>
 
@@ -106,29 +112,29 @@
     * install boot.img into MBR(Master Boot Record), and load boot.img into memory at 0x7c00 to run
     * core.img: diskboot.img, lzma_decompress.img, kernel.img
 
-* ```c
-  boot.img                  /* Power On Self Test */
+*   ```c
+    boot.img                    /* Power On Self Test */
     core.img
-      diskboot.img          /* diskboot.S load other modules of grub into memory */
-        lzma_decompress.img /* startup_raw.S */
-          real_to_prot      /* enable segement, page, open Gate A20 */
-          kernel.img        /* startup.S, grub's kernel img not Linux kernel */
-            grub_main       /* grub's main func */
-              grub_load_config()
-              grub_command_execute ("normal", 0, 0)
-                grub_normal_execute()
-                  grub_show_menu() /* show which OS want to run */
-                    grub_menu_execute_entry() /* start linux kernel */
-  ```
-  * boot.img
-      * checks the basic operability of the hardware and then it issues a BIOS interrupt, INT 13H, which locates the boot sectors on any attached bootable devices.
-      * read the first sector of the core image from a local disk and jump to it. Because of the size restriction, boot.img cannot understand any file system structure, so grub-install hardcodes the location of the first sector of the core image into boot.img when installing GRUB.
-  * diskboot.img
-      * the first sector of the core image when booting from a hard disk. It reads the rest of the core image into memory and starts the kernel. Since file system handling is not yet available, it encodes the location of the core image using a block list format.
-  * kernel.img
-      * contains GRUB’s basic run-time facilities: frameworks for device and file handling, environment variables, the rescue mode command-line parser, and so on. It is rarely used directly, but is built into all core images.
-  * core.img
-      * built dynamically from the kernel image and an arbitrary list of modules by the grub-mkimage program. Usually, it contains enough modules to access /boot/grub, and loads everything else (including menu handling, the ability to load target operating systems, and so on) from the file system at run-time. The modular design allows the core image to be kept small, since the areas of disk where it must be installed are often as small as 32KB.
+        diskboot.img            /* diskboot.S load other modules of grub into memory */
+            lzma_decompress.img /* startup_raw.S */
+                real_to_prot    /* enable segement, page, open Gate A20 */
+                kernel.img      /* startup.S, grub's kernel img not Linux kernel */
+                    grub_main   /* grub's main func */
+                        grub_load_config()
+                        grub_command_execute ("normal", 0, 0)
+                            grub_normal_execute()
+                                grub_show_menu() /* show which OS want to run */
+                                    grub_menu_execute_entry() /* start linux kernel */
+    ```
+    * boot.img
+        * checks the basic operability of the hardware and then it issues a BIOS interrupt, INT 13H, which locates the boot sectors on any attached bootable devices.
+        * read the first sector of the core image from a local disk and jump to it. Because of the size restriction, boot.img cannot understand any file system structure, so grub-install hardcodes the location of the first sector of the core image into boot.img when installing GRUB.
+    * diskboot.img
+        * the first sector of the core image when booting from a hard disk. It reads the rest of the core image into memory and starts the kernel. Since file system handling is not yet available, it encodes the location of the core image using a block list format.
+    * kernel.img
+        * contains GRUB’s basic run-time facilities: frameworks for device and file handling, environment variables, the rescue mode command-line parser, and so on. It is rarely used directly, but is built into all core images.
+    * core.img
+        * built dynamically from the kernel image and an arbitrary list of modules by the grub-mkimage program. Usually, it contains enough modules to access /boot/grub, and loads everything else (including menu handling, the ability to load target operating systems, and so on) from the file system at run-time. The modular design allows the core image to be kept small, since the areas of disk where it must be installed are often as small as 32KB.
 
 * [GNU GRUB Manual 2.06](https://www.gnu.org/software/grub/manual/grub/html_node/index.html#SEC_Contents)
 * [GNU GRUB Manual 2.06: Images](https://www.gnu.org/software/grub/manual/grub/html_node/Images.html)
@@ -143,21 +149,20 @@
  *   x0 = physical address to the FDT blob. */
 
 __HEAD
-  efi_signature_nop
-  b  primary_entry
-  .quad  0
-  le64sym  _kernel_size_le
-  le64sym  _kernel_flags_le
-  .quad  0
-  .quad  0
-  .quad  0
-  .ascii  ARM64_IMAGE_MAGIC
-  .long  .Lpe_header_offset
+    efi_signature_nop
+    b  primary_entry
+    .quad  0
+    le64sym  _kernel_size_le
+    le64sym  _kernel_flags_le
+    .quad  0
+    .quad  0
+    .quad  0
+    .ascii  ARM64_IMAGE_MAGIC
+    .long  .Lpe_header_offset
 
-  __EFI_PE_HEADER
+    __EFI_PE_HEADER
 
-  .section ".idmap.text","a"
-
+    .section ".idmap.text","a"
 
 primary_entry
     bl record_mmu_state
@@ -200,43 +205,43 @@ primary_entry
             bl start_kernel
 ```
 
-# init kernel
+# start_kernel
 ```c
 /* init/main.c */
 void start_kernel(void)
 {
-  /* #0 process, the only one doesn't created by fork or kernel_thread */
-  set_task_stack_end_magic(&init_task);
+    /* #0 process, the only one doesn't created by fork or kernel_thread */
+    set_task_stack_end_magic(&init_task);
 
-  /* set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32) */
-  trap_init();
+    /* set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32) */
+    trap_init();
 
-  /* mnt_init()->init_rootfs() register_filesystem(&rootfs_fs_type) */
-  vfs_caches_init()
+    /* mnt_init()->init_rootfs() register_filesystem(&rootfs_fs_type) */
+    vfs_caches_init()
+    setup_arch(&command_line)
+    mm_init();
+    sched_init();
+    init_IRQ();
+    softirq_init();
+    signals_init();
+    cpuset_init();
+    cgroup_init();
 
-  mm_init();
-  sched_init();
-  init_IRQ();
-  softirq_init();
-  signals_init();
-  cpuset_init();
-  cgroup_init();
-
-  rest_init()
+    rest_init()
 }
 
 static void rest_init(void)
 {
-  struct task_struct *tsk;
-  int pid;
+    struct task_struct *tsk;
+    int pid;
 
-  pid = kernel_thread(kernel_init, NULL, CLONE_FS);
+    pid = kernel_thread(kernel_init, NULL, CLONE_FS);
 
-  pid = kernel_thread(kthreadd, NULL, CLONE_FS | CLONE_FILES);
+    pid = kernel_thread(kthreadd, NULL, CLONE_FS | CLONE_FILES);
 
-  complete(&kthreadd_done);
+    complete(&kthreadd_done);
 
-  cpu_startup_entry(CPUHP_ONLINE);
+    cpu_startup_entry(CPUHP_ONLINE);
 }
 
 /* init/init_task.c */
@@ -297,9 +302,220 @@ static int run_init_process(const char *init_filename)
 
 <img src='../Images/Kernel/init-cpu-arch.png' style='max-height:850px'/>
 
+
+## smp_boot
+
+* [ARM64 的多核启动流程分析](https://zhuanlan.zhihu.com/p/512099688?utm_id=0)
+* [ARM64 SMP多核启动 spin-table](https://mp.weixin.qq.com/s/4T4WcbG5rMpHFtU8-xxTbg) [PSCI](https://mp.weixin.qq.com/s/NaEvCuSDJMQ2dsN5rJ6GqA)
+
+```c
+SYM_FUNC_START(secondary_holding_pen)
+    mov     x0, xzr
+    bl      init_kernel_el
+    mrs     x2, mpidr_el1
+    mov_q   x1, MPIDR_HWID_BITMASK
+    and     x2, x2, x1
+    adr_l   x3, secondary_holding_pen_release
+pen:    ldr    x4, [x3]
+    cmp     x4, x2
+    b.eq    secondary_startup
+    wfe
+    b       pen
+SYM_FUNC_END(secondary_holding_pen)
+
+void start_kernel(void) {
+    setup_arch(&command_line) {
+/* 1. cpu_init */
+        smp_init_cpus() {
+            smp_cpu_setup(cpu) {
+                /* Read a cpu's enable method and record it in cpu_ops. */
+                init_cpu_ops(cpu) {
+                    const char *enable_method = cpu_read_enable_method(cpu);
+
+                    cpu_ops[cpu] = cpu_get_ops(enable_method); /* "spin-table" or "psci" */
+                }
+
+                ops = get_cpu_ops(cpu);
+                ops->cpu_init(cpu) {
+                    smp_spin_table_ops->cpu_init() {
+                        smp_spin_table_cpu_init() {
+                            /*  Determine the address from which the CPU is polling */
+                            of_property_read_u64(dn, "cpu-release-addr", &cpu_release_addr[cpu]);
+                        }
+                    }
+
+                    cpu_psci_ops->cpu_psci_cpu_init() {
+
+                    }
+                }
+
+                set_cpu_possible(cpu, true);
+            }
+        }
+    }
+
+/* 2. cpu_prepare */
+    arch_call_rest_init() {
+        rest_init() {
+            user_mode_thread(kernel_init);
+            kernel_init() {
+                kernel_init_freeable() {
+                    smp_prepare_cpus() {
+                        cpu_ops[cpu]->cpu_prepare() {
+                            smp_spin_table_ops->cpu_prepare() {
+                                smp_spin_table_cpu_prepare() {
+                                    __le64 __iomem *release_addr;
+                                    phys_addr_t pa_holding_pen = __pa_symbol(secondary_holding_pen);
+
+                                    release_addr = ioremap_cache(cpu_release_addr[cpu], sizeof(*release_addr));
+
+                                    writeq_relaxed(pa_holding_pen, release_addr);
+                                    dcache_clean_inval_poc((__force unsigned long)release_addr,
+                                                (__force unsigned long)release_addr +
+                                                    sizeof(*release_addr));
+                                    sev();
+
+                                    iounmap(release_addr);
+
+                                    return 0;
+                                }
+                                cpu_psci_cpu_prepare() {
+
+                                }
+                            }
+                        }
+                    }
+/* 3. cpu_boot */
+                    smp_init() {
+                        idle_threads_init() {
+                            fork_idle(cpu)
+                        }
+                        cpuhp_threads_init();
+
+                        bringup_nonboot_cpus(setup_max_cpus) {
+                            cpuhp_bringup_mask(cpu_present_mask, setup_max_cpus, CPUHP_ONLINE) {
+                                for_each_cpu::cpu_up(cpu, target) {
+                                    try_online_node(cpu_to_node(cpu));
+                                    _cpu_up(cpu, 0, target) {
+                                        cpuhp_up_callbacks(cpu, st, target) {
+                                            cpuhp_reset_state(cpu, st, prev_state)
+
+                                            cpuhp_invoke_callback_range(false, cpu, st, prev_state) {
+                                                while (cpuhp_next_state(bringup, &state, st, target)) {
+                                                    cpuhp_invoke_callback(cpu, state, bringup, NULL, NULL);
+                                                }
+                                                cpuhp_invoke_callback(cpu, state, bringup, NULL, NULL) {
+                                                    struct cpuhp_cpu_state *st = per_cpu_ptr(&cpuhp_state, cpu);
+                                                    struct cpuhp_step *step = cpuhp_get_step(state);
+                                                    cb = bringup ? step->startup.single : step->teardown.single;
+                                                    ret = cb(cpu) {
+                                                        bringup_cpu()
+                                                            --->
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+}
+```
+
+```c
+bringup_cpu() {
+    __cpu_up(cpu, idle) { //arch/arm64/kernel/smp.c
+        boot_secondary(cpu, idle) {
+            ops = get_cpu_ops(cpu);
+            ops->cpu_boot(cpu) {
+                smp_spin_table_cpu_boot() {
+                    u64 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = INVALID_HWID };
+                    u64 cpu_logical_map(unsigned int cpu) {
+                        return __cpu_logical_map[cpu];
+                    }
+
+                    write_pen_release(cpu_logical_map(cpu)/*val*/) {
+                        void *start = (void *)&secondary_holding_pen_release;
+                        unsigned long size = sizeof(secondary_holding_pen_release);
+
+                        secondary_holding_pen_release = val;
+                        dcache_clean_inval_poc((unsigned long)start, (unsigned long)start + size);
+                    }
+                    sev();
+                }
+
+                cpu_psci_cpu_boot() {
+                    phys_addr_t pa_secondary_entry = __pa_symbol(secondary_entry);
+                    err = psci_ops.cpu_on(cpu_logical_map(cpu), pa_secondary_entry) {
+                        psci_0_2_cpu_on() {
+                            __psci_cpu_on() {
+                                invoke_psci_fn() {
+                                    if (case SMCCC_CONDUIT_HVC) {
+                                        invoke_psci_fn = __invoke_psci_fn_hvc() {
+                                            arm_smccc_hvc()
+                                        }
+                                    } else if (case SMCCC_CONDUIT_SMC) {
+                                        invoke_psci_fn = __invoke_psci_fn_smc() {
+                                            arm_smccc_smc()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
 # syscall
 
 <img src='../Images/Kernel/proc-sched-reg.png' style='max-height:850px'/>
+
+```c
+struct pt_regs {
+    union {
+        struct user_pt_regs user_regs;
+        struct {
+            u64 regs[31];
+            u64 sp;
+            u64 pc;
+            u64 pstate;
+        };
+    };
+    u64 orig_x0;
+#ifdef __AARCH64EB__
+    u32 unused2;
+    s32 syscallno;
+#else
+    s32 syscallno;
+    u32 unused2;
+#endif
+    u64 sdei_ttbr1;
+    /* Only valid when ARM64_HAS_GIC_PRIO_MASKING is enabled. */
+    u64 pmr_save;
+    u64 stackframe[2];
+
+    /* Only valid for some EL1 exceptions. */
+    u64 lockdep_hardirqs;
+    u64 exit_rcu;
+};
+
+struct user_pt_regs {
+    __u64        regs[31];
+    __u64        sp;
+    __u64        pc;
+    __u64        pstate;
+};
+```
 
 ```c
 /* arch/x86/include/asm/ptrace.h */
@@ -472,384 +688,6 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         }
         ```
 
-```c
-/* Moduel Specific Register, trap_init -> cpu_init -> syscall_init */
-wrmsrl(MSR_LSTAR, (unsigned long)entry_SYSCALL_64);
-
-ENTRY(entry_SYSCALL_64)
-  UNWIND_HINT_EMPTY
-  /* Interrupts are off on entry.
-   * We do not frame this tiny irq-off block with TRACE_IRQS_OFF/ON,
-   * it is too small to ever cause noticeable irq latency. */
-
-  swapgs
-
-/* 1. swap to kernel stack
-   * This path is only taken when PAGE_TABLE_ISOLATION is disabled so it
-   * is not required to switch CR3. */
-  movq  %rsp, PER_CPU_VAR(rsp_scratch)
-  movq  PER_CPU_VAR(cpu_current_top_of_stack), %rsp /* x86_hw_tss.sp1, update in __switch_to */
-  /* movq %gs:cpu_current_top_of_stack, %rsp */
-
-/* 2. save user stack
-  * Construct struct pt_regs on stack */
-  pushq  $__USER_DS                 /* pt_regs->ss */
-  pushq  PER_CPU_VAR(rsp_scratch)   /* pt_regs->sp */
-  pushq  %r11                       /* pt_regs->flags */
-  pushq  $__USER_CS                 /* pt_regs->cs */
-  pushq  %rcx                       /* pt_regs->ip */
-GLOBAL(entry_SYSCALL_64_after_hwframe)
-  pushq  %rax                       /* pt_regs->orig_ax */
-
-  PUSH_AND_CLEAR_REGS rax=$-ENOSYS
-
-  TRACE_IRQS_OFF
-
-/* 3. do_syscall */
-  movq  %rax, %rdi
-  movq  %rsp, %rsi
-  call  do_syscall_64    /* returns with IRQs disabled */
-
-  TRACE_IRQS_IRETQ    /* we're about to change IF */
-
-  /* Try to use SYSRET instead of IRET if we're returning to
-   * a completely clean 64-bit userspace context.  If we're not,
-   * go to the slow exit path. */
-  movq  RCX(%rsp), %rcx
-  movq  RIP(%rsp), %r11
-
-/* 4. restore user stack */
-  cmpq  %rcx, %r11  /* SYSRET requires RCX == RIP */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  /* On Intel CPUs, SYSRET with non-canonical RCX/RIP will #GP
-   * in kernel space.  This essentially lets the user take over
-   * the kernel, since userspace controls RSP.
-   *
-   * If width of "canonical tail" ever becomes variable, this will need
-   * to be updated to remain correct on both old and new CPUs.
-   *
-   * Change top bits to match most significant bit (47th or 56th bit
-   * depending on paging mode) in the address. */
-#ifdef CONFIG_X86_5LEVEL
-  ALTERNATIVE "shl $(64 - 48), %rcx; sar $(64 - 48), %rcx", \
-    "shl $(64 - 57), %rcx; sar $(64 - 57), %rcx", X86_FEATURE_LA57
-#else
-  shl  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
-  sar  $(64 - (__VIRTUAL_MASK_SHIFT+1)), %rcx
-#endif
-
-  /* If this changed %rcx, it was not canonical */
-  cmpq  %rcx, %r11
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  cmpq  $__USER_CS, CS(%rsp)    /* CS must match SYSRET */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  movq  R11(%rsp), %r11
-  cmpq  %r11, EFLAGS(%rsp)    /* R11 == RFLAGS */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  /* SYSCALL clears RF when it saves RFLAGS in R11 and SYSRET cannot
-   * restore RF properly. If the slowpath sets it for whatever reason, we
-   * need to restore it correctly.
-   *
-   * SYSRET can restore TF, but unlike IRET, restoring TF results in a
-   * trap from userspace immediately after SYSRET.  This would cause an
-   * infinite loop whenever #DB happens with register state that satisfies
-   * the opportunistic SYSRET conditions.  For example, single-stepping
-   * this user code:
-   *
-   *           movq  $stuck_here, %rcx
-   *           pushfq
-   *           popq %r11
-   *   stuck_here:
-   *
-   * would never get past 'stuck_here'. */
-  testq  $(X86_EFLAGS_RF|X86_EFLAGS_TF), %r11
-  jnz  swapgs_restore_regs_and_return_to_usermode
-
-  /* nothing to check for RSP */
-
-  cmpq  $__USER_DS, SS(%rsp)    /* SS must match SYSRET */
-  jne  swapgs_restore_regs_and_return_to_usermode
-
-  /* We win! This label is here just for ease of understanding
-   * perf profiles. Nothing jumps here. */
-syscall_return_via_sysret:
-  /* rcx and r11 are already restored (see code above) */
-  POP_REGS pop_rdi=0 skip_r11rcx=1
-
-  /* Now all regs are restored except RSP and RDI.
-   * Save old stack pointer and switch to trampoline stack. */
-  movq  %rsp, %rdi
-  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
-  UNWIND_HINT_EMPTY
-
-  pushq  RSP-RDI(%rdi)  /* RSP */
-  pushq  (%rdi)    /* RDI */
-
-  /* We are on the trampoline stack.  All regs except RDI are live.
-   * We can do future final exit work right here. */
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-
-  popq  %rdi
-  popq  %rsp
-  USERGS_SYSRET64
-END(entry_SYSCALL_64)
-
-#define USERGS_SYSRET64 \
-  swapgs; \
-  sysretq;
-```
-
-```c
-SYM_CODE_START_LOCAL(common_interrupt_return)
-SYM_INNER_LABEL(swapgs_restore_regs_and_return_to_usermode, SYM_L_GLOBAL)
-  IBRS_EXIT
-
-  POP_REGS pop_rdi=0
-  /*
-  .macro POP_REGS pop_rdi=1
-    popq %r15
-    popq %r14
-    popq %r13
-    popq %r12
-    popq %rbp
-    popq %rbx
-    popq %r11
-    popq %r10
-    popq %r9
-    popq %r8
-    popq %rax
-    popq %rcx
-    popq %rdx
-    popq %rsi
-    .if \pop_rdi
-      popq %rdi
-    .endif
-  .endm */
-
-  /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
-   * Save old stack pointer and switch to trampoline stack. */
-  movq  %rsp, %rdi
-  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
-  UNWIND_HINT_EMPTY
-
-  /* Copy the IRET frame to the trampoline stack. */
-  pushq  6*8(%rdi)  /* SS */
-  pushq  5*8(%rdi)  /* RSP */
-  pushq  4*8(%rdi)  /* EFLAGS */
-  pushq  3*8(%rdi)  /* CS */
-  pushq  2*8(%rdi)  /* RIP */
-
-  /* Push user RDI on the trampoline stack. */
-  pushq  (%rdi)
-
-  /* We are on the trampoline stack.  All regs except RDI are live.
-   * We can do future final exit work right here. */
-  STACKLEAK_ERASE_NOCLOBBER
-
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-
-  /* Restore RDI. */
-  popq  %rdi
-  swapgs
-  jmp  .Lnative_iret
-
-.Lnative_iret:
-  UNWIND_HINT_IRET_REGS
-  /* Are we returning to a stack segment from the LDT?  Note: in
-   * 64-bit mode SS:RSP on the exception stack is always valid. */
-#ifdef CONFIG_X86_ESPFIX64
-  testb  $4, (SS-RIP)(%rsp)
-  jnz  native_irq_return_ldt
-#endif
-
-SYM_INNER_LABEL(native_irq_return_iret, SYM_L_GLOBAL)
-  ANNOTATE_NOENDBR // exc_double_fault
-  /* This may fault.  Non-paranoid faults on return to userspace are
-   * handled by fixup_bad_iret.  These include #SS, #GP, and #NP.
-   * Double-faults due to espfix64 are handled in exc_double_fault.
-   * Other faults here are fatal. */
-  iretq
-
-#ifdef CONFIG_X86_ESPFIX64
-native_irq_return_ldt:
-  /* We are running with user GSBASE.  All GPRs contain their user
-   * values.  We have a percpu ESPFIX stack that is eight slots
-   * long (see ESPFIX_STACK_SIZE).  espfix_waddr points to the bottom
-   * of the ESPFIX stack.
-   *
-   * We clobber RAX and RDI in this code.  We stash RDI on the
-   * normal stack and RAX on the ESPFIX stack.
-   *
-   * The ESPFIX stack layout we set up looks like this:
-   *
-   * --- top of ESPFIX stack ---
-   * SS
-   * RSP
-   * RFLAGS
-   * CS
-   * RIP  <-- RSP points here when we're done
-   * RAX  <-- espfix_waddr points here
-   * --- bottom of ESPFIX stack --- */
-
-  pushq  %rdi        /* Stash user RDI */
-  swapgs          /* to kernel GS */
-  SWITCH_TO_KERNEL_CR3 scratch_reg=%rdi  /* to kernel CR3 */
-
-  movq  PER_CPU_VAR(espfix_waddr), %rdi
-  movq  %rax, (0*8)(%rdi)    /* user RAX */
-
-  movq  (1*8)(%rsp), %rax    /* user RIP */
-  movq  %rax, (1*8)(%rdi)
-
-  movq  (2*8)(%rsp), %rax    /* user CS */
-  movq  %rax, (2*8)(%rdi)
-
-  movq  (3*8)(%rsp), %rax    /* user RFLAGS */
-  movq  %rax, (3*8)(%rdi)
-
-  movq  (5*8)(%rsp), %rax    /* user SS */
-  movq  %rax, (5*8)(%rdi)
-
-  movq  (4*8)(%rsp), %rax    /* user RSP */
-  movq  %rax, (4*8)(%rdi)
-  /* Now RAX == RSP. */
-
-  andl  $0xffff0000, %eax    /* RAX = (RSP & 0xffff0000) */
-
-  /* espfix_stack[31:16] == 0.  The page tables are set up such that
-   * (espfix_stack | (X & 0xffff0000)) points to a read-only alias of
-   * espfix_waddr for any X.  That is, there are 65536 RO aliases of
-   * the same page.  Set up RSP so that RSP[31:16] contains the
-   * respective 16 bits of the /userspace/ RSP and RSP nonetheless
-   * still points to an RO alias of the ESPFIX stack. */
-  orq  PER_CPU_VAR(espfix_stack), %rax
-
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-  swapgs            /* to user GS */
-  popq  %rdi        /* Restore user RDI */
-
-  movq  %rax, %rsp
-  UNWIND_HINT_IRET_REGS offset=8
-
-  /* At this point, we cannot write to the stack any more, but we can
-   * still read. */
-  popq  %rax        /* Restore user RAX */
-
-  /* RSP now points to an ordinary IRET frame, except that the page
-   * is read-only and RSP[31:16] are preloaded with the userspace
-   * values.  We can now IRET back to userspace. */
-  jmp  native_irq_return_iret
-#endif
-SYM_CODE_END(common_interrupt_return)
-_ASM_NOKPROBE(common_interrupt_return)
-```
-
-```c
-/* entry_SYSCALL_64 -> entry_SYSCALL64_slow_pat -> do_syscall_64 */
-void do_syscall_64(struct pt_regs *regs, int nr)
-{
-  add_random_kstack_offset();
-  nr = syscall_enter_from_user_mode(regs, nr);
-
-  instrumentation_begin();
-
-  if (!do_syscall_x64(regs, nr) && !do_syscall_x32(regs, nr) && nr != -1) {
-    /* Invalid system call, but still a system call. */
-    regs->ax = __x64_sys_ni_syscall(regs);
-  }
-
-  instrumentation_end();
-  syscall_exit_to_user_mode(regs);
-}
-
-void syscall_exit_to_user_mode(struct pt_regs *regs)
-{
-  instrumentation_begin();
-  __syscall_exit_to_user_mode_work(regs);
-  instrumentation_end();
-  __exit_to_user_mode();
-}
-
-void __syscall_exit_to_user_mode_work(struct pt_regs *regs)
-{
-  syscall_exit_to_user_mode_prepare(regs);
-  local_irq_disable_exit_to_user();
-  exit_to_user_mode_prepare(regs);
-}
-
-void exit_to_user_mode_prepare(struct pt_regs *regs)
-{
-  unsigned long ti_work = read_thread_flags();
-
-  lockdep_assert_irqs_disabled();
-
-  /* Flush pending rcuog wakeup before the last need_resched() check */
-  tick_nohz_user_enter_prepare();
-
-  if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
-    ti_work = exit_to_user_mode_loop(regs, ti_work);
-
-  arch_exit_to_user_mode_prepare(regs, ti_work);
-
-  /* Ensure that the address limit is intact and no locks are held */
-  addr_limit_user_check();
-  kmap_assert_nomap();
-  lockdep_assert_irqs_disabled();
-  lockdep_sys_exit();
-}
-
-unsigned long exit_to_user_mode_loop(struct pt_regs *regs,
-              unsigned long ti_work)
-{
-  while (ti_work & EXIT_TO_USER_MODE_WORK) {
-
-    local_irq_enable_exit_to_user(ti_work);
-
-    if (ti_work & _TIF_NEED_RESCHED)
-      schedule();
-
-    if (ti_work & _TIF_UPROBE)
-      uprobe_notify_resume(regs);
-
-    if (ti_work & _TIF_PATCH_PENDING)
-      klp_update_patch_state(current);
-
-    if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-      arch_do_signal_or_restart(regs);
-
-    if (ti_work & _TIF_NOTIFY_RESUME)
-      resume_user_mode_work(regs);
-
-    arch_exit_to_user_mode_work(regs, ti_work);
-
-    local_irq_disable_exit_to_user();
-
-    /* Check if any of the above work has queued a deferred wakeup */
-    tick_nohz_user_enter_prepare();
-
-    ti_work = read_thread_flags();
-  }
-
-  /* Return the latest work state for arch_exit_to_user_mode() */
-  return ti_work;
-}
-
-void __exit_to_user_mode(void)
-{
-  instrumentation_begin();
-  trace_hardirqs_on_prepare();
-  lockdep_hardirqs_on_prepare();
-  instrumentation_end();
-
-  user_enter_irqoff();
-  arch_exit_to_user_mode();
-  lockdep_hardirqs_on(CALLER_ADDR0);
-}
-```
 <img src='../Images/Kernel/init-syscall-64.png' style='max-height:850px'/>
 
 ```c
@@ -1631,6 +1469,7 @@ export LD_LIBRARY_PATH=
 <img src='../Images/Kernel/proc-task-1.png' style='max-height:850px'/>
 
 # schedule
+* [Kernel Index Sched - LWN](https://lwn.net/Kernel/Index/#Scheduler)
 
 ![](../Images/Kernel/proc-sched-class.png)
 
@@ -1658,8 +1497,14 @@ export LD_LIBRARY_PATH=
 * [内核工匠]()
     * [Linux Scheduler之rt选核流程](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488449&idx=1&sn=fd4fb753e0395fb538295aa4145a8494)
 
+* [汪辰]
+    * [Linux 内核的抢占模型](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
+    * [Linux "PREEMPT_RT" 抢占模式分析报告](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230806-linux-preempt-rt.md#/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
+    * [实时 Linux(Real-Time Linux)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230727-rt-linux.md)
+    * [Linux 调度器(Schedular)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230801-linux-scheduler.md)
+
 ```c
-/* Schedule Policy:
+/* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
  * Normal schedule: SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE */
 #define SCHED_NORMAL    0
@@ -1678,34 +1523,34 @@ export LD_LIBRARY_PATH=
 #define DEFAULT_PRIO      (MAX_RT_PRIO + NICE_WIDTH / 2)
 
 struct task_struct {
-  struct thread_info        thread_info;
+    struct thread_info        thread_info;
 
-  int                       on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
+    int                       on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
 
-  int                       prio;
-  int                       static_prio;
-  int                       normal_prio;
-  unsigned int              rt_priority;
+    int                       prio;
+    int                       static_prio;
+    int                       normal_prio;
+    unsigned int              rt_priority;
 
-  const struct sched_class  *sched_class;
-  struct sched_entity       se;
-  struct sched_rt_entity    rt;
-  struct sched_dl_entity    dl;
-  struct task_group         *sched_task_group;
-  unsigned int              policy;
+    const struct sched_class  *sched_class;
+    struct sched_entity       se;
+    struct sched_rt_entity    rt;
+    struct sched_dl_entity    dl;
+    struct task_group         *sched_task_group;
+    unsigned int              policy;
 
-  struct mm_struct          *mm;
-  struct mm_struct          *active_mm;
+    struct mm_struct          *mm;
+    struct mm_struct          *active_mm;
 
-  void                      *stack; /* kernel stack */
+    void                      *stack; /* kernel stack */
 
-  /* CPU-specific state of this task: */
-  struct thread_struct      thread;
+    /* CPU-specific state of this task: */
+    struct thread_struct      thread;
 };
 
 struct thread_info {
-  unsigned long   flags;  /* TIF_SIGPENDING, TIF_NEED_RESCHED */
-  u32             status; /* thread synchronous flags */
+    unsigned long   flags;  /* TIF_SIGPENDING, TIF_NEED_RESCHED */
+    u32             status; /* thread synchronous flags */
 };
 
 
@@ -1717,77 +1562,50 @@ struct thread_struct {
     unsigned long        fault_code;    /* ESR_EL1 value */
 };
 
-/* arch/x86/include/asm/processor.h */
-struct thread_struct {
-  /* Cached TLS descriptors: */
-  struct desc_struct  tls_array[GDT_ENTRY_TLS_ENTRIES];
-#ifdef CONFIG_X86_32
-  unsigned long       sp0; /* userland SP */
-#endif
-  unsigned long       sp; /* kernel SP */
-
-#ifdef CONFIG_X86_32
-  unsigned long       sysenter_cs;
-#else
-  unsigned short      es;
-  unsigned short      ds;
-  unsigned short      fsindex;
-  unsigned short      gsindex;
-#endif
-
-  /* Fault info: */
-  unsigned long       cr2;
-  unsigned long       trap_nr;
-  unsigned long       error_code;
-
-  /* Floating point and extended processor state */
-  struct fpu    fpu;
-};
-
 struct rq {
-  raw_spinlock_t  lock;
-  unsigned int    nr_running;
-  unsigned long   cpu_load[CPU_LOAD_IDX_MAX];
+    raw_spinlock_t  lock;
+    unsigned int    nr_running;
+    unsigned long   cpu_load[CPU_LOAD_IDX_MAX];
 
-  struct load_weight  load;
-  unsigned long       nr_load_updates;
-  u64                 nr_switches;
+    struct load_weight  load;
+    unsigned long       nr_load_updates;
+    u64                 nr_switches;
 
-  struct cfs_rq cfs;
-  struct rt_rq  rt;
-  struct dl_rq  dl;
-  struct task_struct *curr, *idle, *stop;
+    struct cfs_rq cfs;
+    struct rt_rq  rt;
+    struct dl_rq  dl;
+    struct task_struct *curr, *idle, *stop;
 };
 ```
 <img src='../Images/Kernel/proc-sched-entity-rq.png' style='max-height:850px'/>
 
 ```c
 struct sched_class {
-  const struct sched_class *next;
+    const struct sched_class *next;
 
-  void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
-  void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
-  void (*yield_task) (struct rq *rq);
-  bool (*yield_to_task) (struct rq *rq, struct task_struct *p, bool preempt);
+    void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
+    void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
+    void (*yield_task) (struct rq *rq);
+    bool (*yield_to_task) (struct rq *rq, struct task_struct *p, bool preempt);
 
-  void (*check_preempt_curr) (struct rq *rq, struct task_struct *p, int flags);
+    void (*check_preempt_curr) (struct rq *rq, struct task_struct *p, int flags);
 
-  struct task_struct * (*pick_next_task) (struct rq *rq,
-            struct task_struct *prev,
-            struct rq_flags *rf);
-  void (*put_prev_task) (struct rq *rq, struct task_struct *p);
+    struct task_struct * (*pick_next_task) (struct rq *rq,
+                struct task_struct *prev,
+                struct rq_flags *rf);
+    void (*put_prev_task) (struct rq *rq, struct task_struct *p);
 
-  void (*set_curr_task) (struct rq *rq);
-  void (*task_tick) (struct rq *rq, struct task_struct *p, int queued);
-  void (*task_fork) (struct task_struct *p);
-  void (*task_dead) (struct task_struct *p);
+    void (*set_curr_task) (struct rq *rq);
+    void (*task_tick) (struct rq *rq, struct task_struct *p, int queued);
+    void (*task_fork) (struct task_struct *p);
+    void (*task_dead) (struct task_struct *p);
 
-  void (*switched_from) (struct rq *this_rq, struct task_struct *task);
-  void (*switched_to) (struct rq *this_rq, struct task_struct *task);
-  void (*prio_changed) (struct rq *this_rq, struct task_struct *task, int oldprio);
-  unsigned int (*get_rr_interval) (struct rq *rq,
-           struct task_struct *task);
-  void (*update_curr) (struct rq *rq);
+    void (*switched_from) (struct rq *this_rq, struct task_struct *task);
+    void (*switched_to) (struct rq *this_rq, struct task_struct *task);
+    void (*prio_changed) (struct rq *this_rq, struct task_struct *task, int oldprio);
+    unsigned int (*get_rr_interval) (struct rq *rq,
+            struct task_struct *task);
+    void (*update_curr) (struct rq *rq);
 };
 
 extern const struct sched_class stop_sched_class;
@@ -1801,14 +1619,14 @@ extern const struct sched_class idle_sched_class;
  * fair_sched_class: for normal processes
  * idle_sched_class: idle */
 
-const struct sched_class fair_sched_class = {
-  .next               = &idle_sched_class,
-  .enqueue_task       = enqueue_task_fair,
-  .dequeue_task       = dequeue_task_fair,
-  .yield_task         = yield_task_fair,
-  .yield_to_task      = yield_to_task_fair,
-  .check_preempt_curr = check_preempt_wakeup,
-  .pick_next_task     = pick_next_task_fair
+DEFINE_SCHED_CLASS(fair) = {
+    .next               = &idle_sched_class,
+    .enqueue_task       = enqueue_task_fair,
+    .dequeue_task       = dequeue_task_fair,
+    .yield_task         = yield_task_fair,
+    .yield_to_task      = yield_to_task_fair,
+    .check_preempt_curr = check_preempt_wakeup,
+    .pick_next_task     = pick_next_task_fair
 };
 ```
 <img src='../Images/Kernel/proc-sched-cpu-rq-class-entity-task.png' style='max-height:850px'/>
@@ -1816,9 +1634,6 @@ const struct sched_class fair_sched_class = {
 ## voluntary schedule
 <img src="../Images/Kernel/proc-sched-context-swith.png" style="max-height:850px"/>
 
-<img src="../Images/Kernel/proc-cpu-tss.png" style="max-height:850px"/>
-
-<img src='../Images/Kernel/proc-tss.png' style='max-height:850px'/>
 <img src='../Images/Kernel/proc-sched-reg.png' style='max-height:850px'/>
 
 ![](../Images/Kernel/proc-sched-arch.png)
@@ -1827,15 +1642,21 @@ const struct sched_class fair_sched_class = {
 ```c
 schedule(void) {
     sched_submit_work(tsk) {
+        if (task_is_running(tsk))
+            return;
+
         if (task_flags & (PF_WQ_WORKER | PF_IO_WORKER)) {
             if (task_flags & PF_WQ_WORKER)
                 wq_worker_sleeping(tsk) {
-                    if (need_more_worker(pool))
+                    if (need_more_worker(pool)) {
                         wake_up_worker(pool);
+                    }
                 }
             else
                 io_wq_worker_sleeping(tsk);
         }
+
+        blk_flush_plug(tsk->plug, true);
     }
 
     do {
@@ -1854,184 +1675,252 @@ schedule(void) {
     }
 }
 
-schedule(void) {
-    __schedule(SM_NONE) /* kernel/sched/core.c */
-        if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
-            hrtick_clear(rq);
+__schedule(SM_NONE) {/* kernel/sched/core.c */
+    if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
+        hrtick_clear(rq);
 
-        local_irq_disable();
-        update_rq_clock(rq);
+    local_irq_disable();
+    update_rq_clock(rq);
 
-        prev_state = READ_ONCE(prev->__state);
-        if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
-            if (signal_pending_state(prev_state, prev)) {
-                WRITE_ONCE(prev->__state, TASK_RUNNING);
-            } else {
-                prev->sched_contributes_to_load =
-                    (prev_state & TASK_UNINTERRUPTIBLE) &&
-                    !(prev_state & TASK_NOLOAD) &&
-                    !(prev_state & TASK_FROZEN);
+    prev_state = READ_ONCE(prev->__state);
+    if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
+        if (signal_pending_state(prev_state, prev)) {
+            WRITE_ONCE(prev->__state, TASK_RUNNING);
+        } else {
+            prev->sched_contributes_to_load =
+                (prev_state & TASK_UNINTERRUPTIBLE) &&
+                !(prev_state & TASK_NOLOAD) &&
+                !(prev_state & TASK_FROZEN);
 
-                if (prev->sched_contributes_to_load)
-                    rq->nr_uninterruptible++;
+            if (prev->sched_contributes_to_load)
+                rq->nr_uninterruptible++;
 
-                deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK);
-
-                if (prev->in_iowait) {
-                    atomic_inc(&rq->nr_iowait);
-                    delayacct_blkio_start();
-                }
+            deactivate_task(rq, prev, DEQUEUE_SLEEP | DEQUEUE_NOCLOCK) {
+                p->on_rq = (flags & DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;
+                dequeue_task(rq, p, flags);
             }
-            switch_count = &prev->nvcsw;
+
+            if (prev->in_iowait) {
+                atomic_inc(&rq->nr_iowait);
+                delayacct_blkio_start();
+            }
         }
+        switch_count = &prev->nvcsw;
+    }
 
-        next = pick_next_task(rq, prev, &rf);
-        clear_tsk_need_resched(prev);
-        clear_preempt_need_resched();
+    next = pick_next_task(rq, prev, &rf) {
+        if (!sched_core_enabled(rq)) {
+            return __pick_next_task(rq, prev, rf) {
+                if (likely(!sched_class_above(prev->sched_class, &fair_sched_class)
+                    && rq->nr_running == rq->cfs.h_nr_running)) {
 
-        if (likely(prev != next)) {
-            context_switch(rq, prev, next, &rf) {
-                prepare_task_switch(rq, prev, next);
-                arch_start_context_switch(prev);
+                    p = pick_next_task_fair(rq, prev, rf);
+                    if (unlikely(p == RETRY_TASK))
+                        goto restart;
 
-                if (!next->mm) { /* kernel task */
-                    enter_lazy_tlb(prev->active_mm, next) {
-                        update_saved_ttbr0(tsk, &init_mm) {
-                            if (mm == &init_mm)
-                                ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
-                            else
-                                ttbr = phys_to_ttbr(virt_to_phys(mm->pgd)) | ASID(mm) << 48;
-
-                            WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
-                        }
+                    /* Assume the next prioritized class is idle_sched_class */
+                    if (!p) {
+                        put_prev_task(rq, prev);
+                        p = pick_next_task_idle(rq);
                     }
 
-                    next->active_mm = prev->active_mm;
+                    return p;
+                }
 
-                    if (prev->mm) /* from user */
-                        mmgrab_lazy_tlb(prev->active_mm) {
-                            atomic_inc(&mm->mm_count);
-                        }
-                    else
-                        prev->active_mm = NULL;
+            restart:
+                put_prev_task_balance(rq, prev, rf);
 
-                } else { /* user task */
-                    membarrier_switch_mm(rq, prev->active_mm, next->mm);
-                    switch_mm_irqs_off(prev->active_mm, next->mm, next) {
-                        /* arch/arm64/include/asm/mmu_context.h */
-                        switch_mm(mm_prev, mm_next, tsk) {
-                            if (prev != next) {
-                                __switch_mm(next) {
-                                    if (next == &init_mm) {
-                                        cpu_set_reserved_ttbr0() {
-                                            ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
-                                            write_sysreg(ttbr, ttbr0_el1);
-                                        }
-                                        return;
+                for_each_class(class) {
+                    p = class->pick_next_task(rq);
+                    if (p)
+                        return p;
+                }
+            }
+        }
+
+        cpu = cpu_of(rq);
+
+        /* Stopper task is switching into idle, no need core-wide selection. */
+        if (cpu_is_offline(cpu)) {
+            rq->core_pick = NULL;
+            return __pick_next_task(rq, prev, rf);
+        }
+
+        /* do core sched */
+    }
+
+    clear_tsk_need_resched(prev);
+    clear_preempt_need_resched();
+
+    if (likely(prev != next)) {
+        context_switch(rq, prev, next, &rf) {
+            prepare_task_switch(rq, prev, next);
+            arch_start_context_switch(prev);
+
+            if (!next->mm) { /* kernel task */
+                enter_lazy_tlb(prev->active_mm, next) {
+                    update_saved_ttbr0(tsk, &init_mm) {
+                        if (mm == &init_mm)
+                            ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+                        else
+                            ttbr = phys_to_ttbr(virt_to_phys(mm->pgd)) | ASID(mm) << 48;
+
+                        WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
+                    }
+                }
+
+                next->active_mm = prev->active_mm;
+
+                if (prev->mm) /* from user */
+                    mmgrab_lazy_tlb(prev->active_mm) {
+                        atomic_inc(&mm->mm_count);
+                    }
+                else
+                    prev->active_mm = NULL;
+
+            } else { /* user task */
+                membarrier_switch_mm(rq, prev->active_mm, next->mm);
+                switch_mm_irqs_off(prev->active_mm, next->mm, next) {
+                    /* arch/arm64/include/asm/mmu_context.h */
+                    switch_mm(mm_prev, mm_next, tsk) {
+                        if (prev != next) {
+                            __switch_mm(next) {
+                                if (next == &init_mm) {
+                                    cpu_set_reserved_ttbr0() {
+                                        ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+                                        write_sysreg(ttbr, ttbr0_el1);
+                                    }
+                                    return;
+                                }
+
+                                check_and_switch_context(next) {
+                                    local_flush_tlb_all() {
+                                        __tlbi(vmalle1);
                                     }
 
-                                    check_and_switch_context(next) {
-                                        local_flush_tlb_all() {
-                                            __tlbi(vmalle1);
-                                        }
-
-                                        cpu_switch_mm(mm->pgd, mm) {
-                                            BUG_ON(pgd == swapper_pg_dir);
-                                            cpu_set_reserved_ttbr0();
-                                                --->
-                                            cpu_do_switch_mm(virt_to_phys(pgd),mm) {
-                                                ttbr1 = read_sysreg(ttbr1_el1);
-                                                write_sysreg(ttbr1, ttbr1_el1);
-                                                isb();
-                                                ttbr0 = phys_to_ttbr(pgd_phys);
-                                                write_sysreg(ttbr0, ttbr0_el1);
-                                            }
+                                    cpu_switch_mm(mm->pgd, mm) {
+                                        BUG_ON(pgd == swapper_pg_dir);
+                                        cpu_set_reserved_ttbr0();
+                                            --->
+                                        cpu_do_switch_mm(virt_to_phys(pgd),mm) {
+                                            ttbr1 = read_sysreg(ttbr1_el1);
+                                            write_sysreg(ttbr1, ttbr1_el1);
+                                            isb();
+                                            ttbr0 = phys_to_ttbr(pgd_phys);
+                                            write_sysreg(ttbr0, ttbr0_el1);
                                         }
                                     }
                                 }
                             }
-
-                            update_saved_ttbr0(tsk, next);
-                                --->
                         }
-                    }
-                    lru_gen_use_mm(next->mm);
 
-                    if (!prev->mm) { /* from kernel */
-                        /* will mmdrop_lazy_tlb() in finish_task_switch(). */
-                        rq->prev_mm = prev->active_mm;
-                        prev->active_mm = NULL;
+                        update_saved_ttbr0(tsk, next);
+                            --->
                     }
                 }
+                lru_gen_use_mm(next->mm);
 
-                switch_to(prev, next, prev) {
-                    __switch_to() {
-                        fpsimd_thread_switch(next);
-                        tls_thread_switch(next);
-                        hw_breakpoint_thread_switch(next);
-                        contextidr_thread_switch(next);
-                        entry_task_switch(next);
-                        ssbs_thread_switch(next);
-                        erratum_1418040_thread_switch(next);
-                        ptrauth_thread_switch_user(next);
-
-                        /* arch/arm64/kernel/entry.S */
-                        last = cpu_switch_to(prev, next) {
-                            mov    x10, #THREAD_CPU_CONTEXT
-                            /* store callee-saved registers */
-                            /* restore callee-saved registers */
-                            msr    sp_el0, x1
-                        }
-                    }
-                }
-
-                return finish_task_switch(prev) {
-                    struct rq *rq = this_rq();
-                    struct mm_struct *mm = rq->prev_mm;
-
-                    rq->prev_mm = NULL;
-
-                    if (mm) {
-                        membarrier_mm_sync_core_before_usermode(mm);
-                        mmdrop_lazy_tlb_sched(mm) {
-                            mmdrop_sched(mm) {
-                                if (unlikely(atomic_dec_and_test(&mm->mm_count)))
-                                    __mmdrop(mm) {
-                                        cleanup_lazy_tlbs(mm);
-
-                                        WARN_ON_ONCE(mm == current->active_mm);
-                                        mm_free_pgd(mm);
-                                        destroy_context(mm);
-                                        mmu_notifier_subscriptions_destroy(mm);
-                                        check_mm(mm);
-                                        put_user_ns(mm->user_ns);
-                                        mm_pasid_drop(mm);
-                                        mm_destroy_cid(mm);
-
-                                        for (i = 0; i < NR_MM_COUNTERS; i++)
-                                            percpu_counter_destroy(&mm->rss_stat[i]);
-                                        free_mm(mm);
-                                    }
-                            }
-                        }
-                    }
-
-                    if (unlikely(prev_state == TASK_DEAD)) {
-                        if (prev->sched_class->task_dead)
-                            prev->sched_class->task_dead(prev);
-
-                        /* Task is done with its stack. */
-                        put_task_stack(prev);
-
-                        put_task_struct_rcu_user(prev);
-                    }
-
-                    return rq;
+                if (!prev->mm) { /* from kernel */
+                    /* will mmdrop_lazy_tlb() in finish_task_switch(). */
+                    rq->prev_mm = prev->active_mm;
+                    prev->active_mm = NULL;
                 }
             }
-        } else {
-            __balance_callbacks(rq);
+
+            switch_to(prev, next, prev) {
+                __switch_to() {
+                    fpsimd_thread_switch(next);
+                    tls_thread_switch(next);
+                    hw_breakpoint_thread_switch(next);
+                    contextidr_thread_switch(next);
+                    entry_task_switch(next);
+                    ssbs_thread_switch(next);
+                    erratum_1418040_thread_switch(next);
+                    ptrauth_thread_switch_user(next);
+
+                    /* arch/arm64/kernel/entry.S */
+                    last = cpu_switch_to(prev, next) {
+                        /* x0 = previous task_struct (must be preserved across the switch)
+                         *   x1 = next task_struct
+                         * Previous and next are guaranteed not to be the same. */
+                        SYM_FUNC_START(cpu_switch_to)
+                            mov	x10, #THREAD_CPU_CONTEXT // task.thread.cpu_context
+                            add	x8, x0, x10
+                            mov	x9, sp
+                            stp	x19, x20, [x8], #16		// store callee-saved registers
+                            stp	x21, x22, [x8], #16
+                            stp	x23, x24, [x8], #16
+                            stp	x25, x26, [x8], #16
+                            stp	x27, x28, [x8], #16
+                            stp	x29, x9, [x8], #16
+                            str	lr, [x8]
+
+                            add	x8, x1, x10
+                            ldp	x19, x20, [x8], #16		// restore callee-saved registers
+                            ldp	x21, x22, [x8], #16
+                            ldp	x23, x24, [x8], #16
+                            ldp	x25, x26, [x8], #16
+                            ldp	x27, x28, [x8], #16
+                            ldp	x29, x9, [x8], #16
+                            ldr	lr, [x8]
+                            mov	sp, x9
+                            msr	sp_el0, x1
+
+                            ptrauth_keys_install_kernel x1, x8, x9, x10
+                            scs_save x0
+                            scs_load_current
+                            ret
+                    }
+                }
+            }
+
+            return finish_task_switch(prev) {
+                struct rq *rq = this_rq();
+                struct mm_struct *mm = rq->prev_mm;
+
+                rq->prev_mm = NULL;
+
+                if (mm) {
+                    membarrier_mm_sync_core_before_usermode(mm);
+                    mmdrop_lazy_tlb_sched(mm) {
+                        mmdrop_sched(mm) {
+                            if (unlikely(atomic_dec_and_test(&mm->mm_count)))
+                                __mmdrop(mm) {
+                                    cleanup_lazy_tlbs(mm);
+
+                                    WARN_ON_ONCE(mm == current->active_mm);
+                                    mm_free_pgd(mm);
+                                    destroy_context(mm);
+                                    mmu_notifier_subscriptions_destroy(mm);
+                                    check_mm(mm);
+                                    put_user_ns(mm->user_ns);
+                                    mm_pasid_drop(mm);
+                                    mm_destroy_cid(mm);
+
+                                    for (i = 0; i < NR_MM_COUNTERS; i++)
+                                        percpu_counter_destroy(&mm->rss_stat[i]);
+                                    free_mm(mm);
+                                }
+                        }
+                    }
+                }
+
+                if (unlikely(prev_state == TASK_DEAD)) {
+                    if (prev->sched_class->task_dead)
+                        prev->sched_class->task_dead(prev);
+
+                    /* Task is done with its stack. */
+                    put_task_stack(prev);
+
+                    put_task_struct_rcu_user(prev);
+                }
+
+                return rq;
+            }
         }
+    } else {
+        __balance_callbacks(rq);
+    }
 }
 ```
 
@@ -2050,28 +1939,28 @@ schedule(void) {
 ```c
 void scheduler_tick(void)
 {
-  int cpu = smp_processor_id();
-  struct rq *rq = cpu_rq(cpu);
-  struct task_struct *curr = rq->curr;
-  struct rq_flags rf;
+    int cpu = smp_processor_id();
+    struct rq *rq = cpu_rq(cpu);
+    struct task_struct *curr = rq->curr;
+    struct rq_flags rf;
 
-  sched_clock_tick();
+    sched_clock_tick();
 
-  rq_lock(rq, &rf);
+    rq_lock(rq, &rf);
 
-  update_rq_clock(rq);
-  curr->sched_class->task_tick(rq, curr, 0); /* task_tick_fair */
-  cpu_load_update_active(rq);
-  calc_global_load_tick(rq);
+    update_rq_clock(rq);
+    curr->sched_class->task_tick(rq, curr, 0); /* task_tick_fair */
+    cpu_load_update_active(rq);
+    calc_global_load_tick(rq);
 
-  rq_unlock(rq, &rf);
+    rq_unlock(rq, &rf);
 
-  perf_event_task_tick();
+    perf_event_task_tick();
 
-#ifdef CONFIG_SMP
-  rq->idle_balance = idle_cpu(cpu);
-  trigger_load_balance(rq);
-#endif
+    #ifdef CONFIG_SMP
+    rq->idle_balance = idle_cpu(cpu);
+    trigger_load_balance(rq);
+    #endif
 }
 ```
 
@@ -2091,7 +1980,7 @@ SYSCALL_DEFINE3(sched_setscheduler)
 
 ```
 
-#### prempt time
+#### preempt time
 
 ![](../Images/Kernel/proc-preempt-user-exec.png)
 
@@ -2275,6 +2164,159 @@ update_curr_rt(rq)
     }
 ```
 
+### enqueue_task_rt
+
+![](../Images/Kernel/proc-sched-rt-enque-deque-task.png)
+
+```c
+enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
+    if (flags & ENQUEUE_WAKEUP)
+        rt_se->timeout = 0;
+
+    check_schedstat_required();
+    update_stats_wait_start_rt(rt_rq_of_se(rt_se), rt_se);
+
+    enqueue_rt_entity(rt_se, flags) {
+        update_stats_enqueue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+
+        dequeue_rt_stack(rt_se, flags) {
+            /* Because the prio of an upper entry depends on the lower
+             * entries, we must remove entries top - down. */
+            for_each_sched_rt_entity(rt_se) {
+                rt_se->back = back;
+                back = rt_se;
+            }
+
+            rt_nr_running = rt_rq_of_se(back)->rt_nr_running;
+
+            for (rt_se = back; rt_se; rt_se = rt_se->back) {
+                if (on_rt_rq(rt_se))
+                    __dequeue_rt_entity(rt_se, flags);
+            }
+
+            dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running);
+        }
+
+        for_each_sched_rt_entity(rt_se) {
+            __enqueue_rt_entity(rt_se, flags) {
+                if (flags & ENQUEUE_HEAD)
+                    list_add(&rt_se->run_list, queue);
+                else
+                    list_add_tail(&rt_se->run_list, queue);
+                __set_bit(rt_se_prio(rt_se), array->bitmap) {
+
+                }
+                rt_se->on_list = 1;
+                rt_se->on_rq = 1;
+
+                inc_rt_tasks(rt_se, rt_rq) {
+                    int prio = rt_se_prio(rt_se);
+
+                    rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
+                    rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
+
+                    inc_rt_prio(rt_rq, prio) {
+                        int prev_prio = rt_rq->highest_prio.curr;
+
+                        if (prio < prev_prio)
+                            rt_rq->highest_prio.curr = prio;
+
+                        inc_rt_prio_smp(rt_rq, prio, prev_prio) {
+                            struct rq *rq = rq_of_rt_rq(rt_rq);
+                        #ifdef CONFIG_RT_GROUP_SCHED
+                            if (&rq->rt != rt_rq)
+                                return;
+                        #endif
+                            if (rq->online && prio < prev_prio) {
+                                cpupri_set(&rq->rd->cpupri, rq->cpu, prio) {
+                                    int *currpri = &cp->cpu_to_pri[cpu];
+                                    int oldpri = *currpri;
+
+                                    newpri = convert_prio(newpri);
+
+                                    if (newpri == oldpri)
+                                        return;
+
+                                    if (likely(newpri != CPUPRI_INVALID)) {
+                                        struct cpupri_vec *vec = &cp->pri_to_cpu[newpri];
+                                        cpumask_set_cpu(cpu, vec->mask);
+                                        atomic_inc(&(vec)->count);
+                                    }
+                                    if (likely(oldpri != CPUPRI_INVALID)) {
+                                        struct cpupri_vec *vec  = &cp->pri_to_cpu[oldpri];
+                                        atomic_dec(&(vec)->count);
+                                        cpumask_clear_cpu(cpu, vec->mask);
+                                    }
+
+                                    *currpri = newpri;
+                                }
+                            }
+                        }
+                    }
+                    inc_rt_migration(rt_se, rt_rq);
+                    inc_rt_group(rt_se, rt_rq);
+                }
+            }
+        }
+        enqueue_top_rt_rq(&rq->rt);
+    }
+
+    if (!task_current(rq, p) && p->nr_cpus_allowed > 1) {
+        enqueue_pushable_task(rq, p) {
+            plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
+            plist_node_init(&p->pushable_tasks, p->prio);
+            plist_add(&p->pushable_tasks, &rq->rt.pushable_tasks);
+
+            /* Update the highest prio pushable task */
+            if (p->prio < rq->rt.highest_prio.next)
+                rq->rt.highest_prio.next = p->prio;
+        }
+    }
+
+}
+```
+
+### dequeue_task_rt
+```c
+dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
+    struct rq *rq = rq_of_rt_se(rt_se);
+
+    update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+
+    dequeue_rt_stack(rt_se, flags)
+        --->
+
+    for_each_sched_rt_entity(rt_se) {
+        struct rt_rq *rt_rq = group_rt_rq(rt_se);
+
+        if (rt_rq && rt_rq->rt_nr_running)
+            __enqueue_rt_entity(rt_se, flags);
+    }
+
+    enqueue_top_rt_rq(&rq->rt);
+        --->
+```
+
+### put_prev_task_rt
+```c
+put_prev_task_rt(struct rq *rq, struct task_struct *p)
+    struct sched_rt_entity *rt_se = &p->rt;
+    struct rt_rq *rt_rq = &rq->rt;
+
+    if (on_rt_rq(&p->rt))
+        update_stats_wait_start_rt(rt_rq, rt_se);
+
+    update_curr_rt(rq);
+
+    update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+
+    if (on_rt_rq(&p->rt) && p->nr_cpus_allowed > 1) {
+        enqueue_pushable_task(rq, p) {
+
+        }
+    }
+```
+
 ### pick_next_task_rt
 
 ![](../Images/Kernel/proc-sched-rt-pick_next_task_rt.png)
@@ -2341,11 +2383,7 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
 
                 if (p) {
                     if (task_on_rq_migrating(p)) {
-                        /*
-                        * Preserve migrating task's wait time so wait_start
-                        * time stamp can be adjusted to accumulate wait time
-                        * prior to migration.
-                        */
+
                         __schedstat_set(stats->wait_start, delta);
 
                         return;
@@ -2523,130 +2561,6 @@ push_rt_tasks()
 ```c
 ```
 
-### enqueue_task_rt
-
-![](../Images/Kernel/proc-sched-rt-enque-deque-task.png)
-
-```c
-enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
-    if (flags & ENQUEUE_WAKEUP)
-        rt_se->timeout = 0;
-
-    check_schedstat_required();
-    update_stats_wait_start_rt(rt_rq_of_se(rt_se), rt_se);
-
-    enqueue_rt_entity(rt_se, flags) {
-        update_stats_enqueue_rt(rt_rq_of_se(rt_se), rt_se, flags);
-
-        dequeue_rt_stack(rt_se, flags) {
-            /* Because the prio of an upper entry depends on the lower
-             * entries, we must remove entries top - down. */
-            for_each_sched_rt_entity(rt_se) {
-                rt_se->back = back;
-                back = rt_se;
-            }
-
-            rt_nr_running = rt_rq_of_se(back)->rt_nr_running;
-
-            for (rt_se = back; rt_se; rt_se = rt_se->back) {
-                if (on_rt_rq(rt_se))
-                    __dequeue_rt_entity(rt_se, flags);
-            }
-
-            dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running);
-        }
-
-        for_each_sched_rt_entity(rt_se) {
-            __enqueue_rt_entity(rt_se, flags) {
-                if (flags & ENQUEUE_HEAD)
-                    list_add(&rt_se->run_list, queue);
-                else
-                    list_add_tail(&rt_se->run_list, queue);
-                __set_bit(rt_se_prio(rt_se), array->bitmap) {
-
-                }
-                rt_se->on_list = 1;
-                rt_se->on_rq = 1;
-
-	            inc_rt_tasks(rt_se, rt_rq) {
-                    int prio = rt_se_prio(rt_se);
-
-                    rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
-                    rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
-
-                    inc_rt_prio(rt_rq, prio) {
-                        int prev_prio = rt_rq->highest_prio.curr;
-
-                        if (prio < prev_prio)
-                            rt_rq->highest_prio.curr = prio;
-
-                        inc_rt_prio_smp(rt_rq, prio, prev_prio) {
-                            struct rq *rq = rq_of_rt_rq(rt_rq);
-                        #ifdef CONFIG_RT_GROUP_SCHED
-                            if (&rq->rt != rt_rq)
-                                return;
-                        #endif
-                            if (rq->online && prio < prev_prio)
-                                cpupri_set(&rq->rd->cpupri, rq->cpu, prio) {
-                                    int *currpri = &cp->cpu_to_pri[cpu];
-                                    int oldpri = *currpri;
-
-                                    newpri = convert_prio(newpri);
-
-                                    if (newpri == oldpri)
-                                        return;
-
-                                    if (likely(newpri != CPUPRI_INVALID)) {
-                                        struct cpupri_vec *vec = &cp->pri_to_cpu[newpri];
-                                        cpumask_set_cpu(cpu, vec->mask);
-                                        atomic_inc(&(vec)->count);
-                                    }
-                                    if (likely(oldpri != CPUPRI_INVALID)) {
-                                        struct cpupri_vec *vec  = &cp->pri_to_cpu[oldpri];
-                                        atomic_dec(&(vec)->count);
-                                        cpumask_clear_cpu(cpu, vec->mask);
-                                    }
-
-                                    *currpri = newpri;
-                                }
-                        }
-                    }
-                    inc_rt_migration(rt_se, rt_rq);
-                    inc_rt_group(rt_se, rt_rq);
-                }
-            }
-        }
-        enqueue_top_rt_rq(&rq->rt);
-    }
-
-    if (!task_current(rq, p) && p->nr_cpus_allowed > 1) {
-        enqueue_pushable_task(rq, p) {
-
-        }
-    }
-
-}
-```
-
-### dequeue_task_rt
-```c
-dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
-    struct rq *rq = rq_of_rt_se(rt_se);
-
-    update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
-
-    dequeue_rt_stack(rt_se, flags)
-        --->
-
-    for_each_sched_rt_entity(rt_se) {
-        struct rt_rq *rt_rq = group_rt_rq(rt_se);
-
-        if (rt_rq && rt_rq->rt_nr_running)
-            __enqueue_rt_entity(rt_se, flags);
-    }
-    enqueue_top_rt_rq(&rq->rt);
-```
-
 ### select_task_rq_rt
 
 ![](../Images/Kernel/proc-sched-rt-cpupri.png)
@@ -2666,10 +2580,12 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
     rcu_read_lock();
     curr = READ_ONCE(rq->curr); /* unlocked access */
 
+    /* test if curr must run on this core */
     test = curr && unlikely(rt_task(curr))
         && (curr->nr_cpus_allowed < 2 || curr->prio <= p->prio);
 
     if (test || !rt_task_fits_capacity(p, cpu)) {
+        /* 1. find lowest cpus */
         int target = find_lowest_rq(p) {
             struct sched_domain *sd;
             struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
@@ -2691,7 +2607,9 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                     int task_pri = convert_prio(p->prio);
                     int idx, cpu;
 
+                    /* 1.1 find lowest cpus from vec[0, idx] */
                     for (idx = 0; idx < task_pri; idx++) {
+                        /* 1.1.1 mask p and vec*/
                         ret = __cpupri_find(cp, p, lowest_mask, idx) {
                             struct cpupri_vec *vec  = &cp->pri_to_cpu[idx];
                             int skip = 0;
@@ -2714,7 +2632,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                         if (!lowest_mask || !fitness_fn)
                             return 1;
 
-                        /* Ensure the capacity of the CPUs fit the task */
+                        /* 1.1.2 remove cpu which is incapable for this task */
                         for_each_cpu(cpu, lowest_mask) {
                             if (!fitness_fn(p, cpu)) {
                                 cpumask_clear_cpu(cpu, lowest_mask);
@@ -2737,12 +2655,14 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
             if (!ret)
                 return -1; /* No targets found */
 
-            /* We prioritize the last CPU that the task executed on since
+            /* 1.2 pick the cpu which run task previously
+             * We prioritize the last CPU that the task executed on since
              * it is most likely cache-hot in that location. */
             if (cpumask_test_cpu(cpu, lowest_mask))
                 return cpu;
 
-            /* Otherwise, we consult the sched_domains span maps to figure
+            /* 1.3 pick from sched domain
+             * Otherwise, we consult the sched_domains span maps to figure
              * out which CPU is logically closest to our hot cache data. */
             if (!cpumask_test_cpu(this_cpu, lowest_mask))
                 this_cpu = -1; /* Skip this_cpu opt if not among lowest */
@@ -2752,14 +2672,15 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                 if (sd->flags & SD_WAKE_AFFINE) {
                     int best_cpu;
 
+                    /* 1.3.1 sd find this_cpu */
                     if (this_cpu != -1 &&
                         cpumask_test_cpu(this_cpu, sched_domain_span(sd))) {
                         rcu_read_unlock();
                         return this_cpu;
                     }
 
-                    best_cpu = cpumask_any_and_distribute(lowest_mask,
-                                        sched_domain_span(sd));
+                    /* 1.3.2 pick any cpu from sched domain if best_cpu < nr_cpu_ids */
+                    best_cpu = cpumask_any_and_distribute(lowest_mask, sched_domain_span(sd));
                     if (best_cpu < nr_cpu_ids) {
                         rcu_read_unlock();
                         return best_cpu;
@@ -2768,9 +2689,11 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
             }
             rcu_read_unlock();
 
+            /* 1.4 pick this_cpu if valid */
             if (this_cpu != -1)
                 return this_cpu;
 
+            /* 1.5 pick any lowest cpu if valid */
             cpu = cpumask_any_distribute(lowest_mask);
             if (cpu < nr_cpu_ids)
                 return cpu;
@@ -2778,9 +2701,11 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
             return -1;
         }
 
+        /* 2. pick tsk cpu: lowest target cpu is incapable */
         if (!test && target != -1 && !rt_task_fits_capacity(p, target))
             goto out_unlock;
 
+        /* 3. pick target cpu: p prio is higher than the prio of task from target cpu */
         if (target != -1 && p->prio < cpu_rq(target)->rt.highest_prio.curr)
             cpu = target;
     }
@@ -2817,7 +2742,84 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 }
 ```
 
+### balance_rt
+```c
+balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
+    if (!on_rt_rq(&p->rt) && need_pull_rt_task(rq, p)) {
+        rq_unpin_lock(rq, rf);
+        pull_rt_task(rq) {
+            int this_cpu = this_rq->cpu, cpu;
+            bool resched = false;
+            struct task_struct *p, *push_task;
+            struct rq *src_rq;
+            int rt_overload_count = rt_overloaded(this_rq);
+
+            if (likely(!rt_overload_count))
+                return;
+
+            smp_rmb();
+
+            /* If we are the only overloaded CPU do nothing */
+            if (rt_overload_count == 1 &&
+                cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
+                return;
+
+        #ifdef HAVE_RT_PUSH_IPI
+            if (sched_feat(RT_PUSH_IPI)) {
+                tell_cpu_to_push(this_rq);
+                return;
+            }
+        #endif
+
+            for_each_cpu(cpu, this_rq->rd->rto_mask) {
+                if (this_cpu == cpu)
+                    continue;
+
+                src_rq = cpu_rq(cpu);
+                if (src_rq->rt.highest_prio.next >=
+                    this_rq->rt.highest_prio.curr)
+                    continue;
+                push_task = NULL;
+                double_lock_balance(this_rq, src_rq);
+
+                p = pick_highest_pushable_task(src_rq, this_cpu);
+
+                if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
+                    if (p->prio < src_rq->curr->prio)
+                        goto skip;
+
+                    if (is_migration_disabled(p)) {
+                        push_task = get_push_task(src_rq);
+                    } else {
+                        deactivate_task(src_rq, p, 0);
+                        set_task_cpu(p, this_cpu);
+                        activate_task(this_rq, p, 0);
+                        resched = true;
+                    }
+                }
+        skip:
+                double_unlock_balance(this_rq, src_rq);
+
+                if (push_task) {
+                    raw_spin_rq_unlock(this_rq);
+                    stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
+                                push_task, &src_rq->push_work);
+                    raw_spin_rq_lock(this_rq);
+                }
+            }
+
+            if (resched)
+                resched_curr(this_rq);
+        }
+        rq_repin_lock(rq, rf);
+    }
+
+    return sched_stop_runnable(rq) || sched_dl_runnable(rq) || sched_rt_runnable(rq);
+```
+
 ## SCHED_CFS
+
+* [Kernel Index CFS - LWN](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
 
 ![](../Images/Kernel/proc-sched-cfs.png)
 
@@ -2946,167 +2948,6 @@ DEFINE_SCHED_CLASS(fair) = {
     .pick_next_task     = __pick_next_task_fair,
     .put_prev_task      = put_prev_task_fair,
     .set_next_task      = set_next_task_fair,
-}
-```
-
-#### sched_vslice
-![](../Images/Kernel/proc-sched-cfs-sched_vslice.png)
-![](../Images/Kernel/proc-sched-cfs-sched_vslice-2.png)
-
-```c
-const int sched_prio_to_weight[40] = {
- /* -20 */     88761,     71755,     56483,     46273,     36291,
- /* -15 */     29154,     23254,     18705,     14949,     11916,
- /* -10 */      9548,      7620,      6100,      4904,      3906,
- /*  -5 */      3121,      2501,      1991,      1586,      1277,
- /*   0 */      1024,       820,       655,       526,       423,
- /*   5 */       335,       272,       215,       172,       137,
- /*  10 */       110,        87,        70,        56,        45,
- /*  15 */        36,        29,        23,        18,        15,
-};
-
-sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
-    slice = sched_slice(cfs_rq, se) {
-        slice = __sched_period(nr_running + !se->on_rq) {
-            if (unlikely(nr_running > sched_nr_latency/*8*/))
-                return nr_running * sysctl_sched_min_granularity/*0.75 msec*/;
-            else
-                return sysctl_sched_latency/*6ms*/;
-        }
-        for_each_sched_entity(se) {
-            struct load_weight *load;
-                struct load_weight lw;
-                struct cfs_rq *qcfs_rq;
-
-                qcfs_rq = cfs_rq_of(se);
-                load = &qcfs_rq->load;
-
-                if (unlikely(!se->on_rq)) {
-                    lw = qcfs_rq->load;
-                    update_load_add(&lw, se->load.weight);
-                    load = &lw;
-                }
-
-            slice = __calc_delta(slice, se->load.weight, load) {
-                /* delta_exec * weight / lw.weight
-                 *   OR
-                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
-            }
-        }
-        if (sched_feat(BASE_SLICE)) {
-            if (se_is_idle(init_se) && !sched_idle_cfs_rq(cfs_rq))
-                min_gran = sysctl_sched_idle_min_granularity;
-            else
-                min_gran = sysctl_sched_min_granularity;
-
-            slice = max_t(u64, slice, min_gran);
-        }
-        return slice;
-    }
-    calc_delta_fair(slice, se) {
-        if (unlikely(se->load.weight != NICE_0_LOAD)) {
-            delta = __calc_delta(delta, NICE_0_LOAD, &se->load)
-                --->
-        }
-
-        return delta;
-    }
-```
-
-#### task_tick_fair
-
-![](../Images/Kernel/proc-sched-cfs-task_tick.png)
-![](../Images/Kernel/proc-sched-cfs-update_curr.png)
-
-```c
-task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
-    for_each_sched_entity(se) {
-        cfs_rq = cfs_rq_of(se);
-        entity_tick(cfs_rq, se, queued) {
-            update_curr(cfs_rq) {
-                delta_exec = now - curr->exec_start;
-                curr->exec_start = now;
-                curr->sum_exec_runtime += delta_exec;
-                schedstat_add(cfs_rq->exec_clock, delta_exec);
-
-                curr->vruntime += calc_delta_fair(delta_exec, curr);
-                update_min_vruntime(cfs_rq);
-
-                if (entity_is_task(curr)) {
-                    struct task_struct *curtask = task_of(curr);
-                    cgroup_account_cputime(curtask, delta_exec);
-                    account_group_exec_runtime(curtask, delta_exec);
-                }
-
-                account_cfs_rq_runtime(cfs_rq, delta_exec) {
-                    cfs_rq->runtime_remaining -= delta_exec;
-
-                    if (likely(cfs_rq->runtime_remaining > 0))
-                        return;
-
-                    if (cfs_rq->throttled)
-                        return;
-
-                    if (!assign_cfs_rq_runtime(cfs_rq) && likely(cfs_rq->curr))
-                        resched_curr(rq_of(cfs_rq));
-                }
-            }
-
-            update_load_avg(cfs_rq, curr, UPDATE_TG) {
-
-            }
-
-            update_cfs_group(curr) {
-
-            }
-
-        #ifdef CONFIG_SCHED_HRTICK
-            if (queued) {
-                resched_curr(rq_of(cfs_rq));
-                return;
-            }
-
-            if (!sched_feat(DOUBLE_TICK) && hrtimer_active(&rq_of(cfs_rq)->hrtick_timer))
-                return;
-        #endif
-
-            if (cfs_rq->nr_running > 1) {
-                check_preempt_tick(cfs_rq, curr) {
-                    ideal_runtime = min_t(u64, sched_slice(cfs_rq, curr), sysctl_sched_latency);
-                    delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
-                    if (delta_exec > ideal_runtime) {
-                        resched_curr(rq_of(cfs_rq));
-                        clear_buddies(cfs_rq, curr);
-                        return;
-                    }
-
-                    if (delta_exec < sysctl_sched_min_granularity)
-                        return;
-
-                    se = __pick_first_entity(cfs_rq);
-                    delta = curr->vruntime - se->vruntime;
-
-                    if (delta < 0)
-                        return;
-
-                    if (delta > ideal_runtime)
-                        resched_curr(rq_of(cfs_rq));
-                }
-            }
-        }
-    }
-
-    if (static_branch_unlikely(&sched_numa_balancing))
-        task_tick_numa(rq, curr) {
-
-        }
-
-    update_misfit_status(curr, rq);
-    update_overutilized_status(task_rq(curr));
-
-    task_tick_core(rq, curr) {
-
-    }
 }
 ```
 
@@ -3323,28 +3164,30 @@ dequeue_throttle:
 }
 ```
 
-#### task_fork_fair
-
-![](../Images/Kernel/proc-sched-cfs-task_fork_fair.png)
+#### put_prev_task_fair
 
 ```c
-task_fork_fair(struct task_struct *p)
-    update_rq_clock(rq);
+put_prev_task_fair(struct rq *rq, struct task_struct *prev)
+    struct sched_entity *se = &prev->se;
+    struct cfs_rq *cfs_rq;
 
-    cfs_rq = task_cfs_rq(current);
-    curr = cfs_rq->curr;
-    if (curr) {
-        update_curr(cfs_rq);
-        se->vruntime = curr->vruntime;
+    for_each_sched_entity(se) {
+        cfs_rq = cfs_rq_of(se);
+        put_prev_entity(cfs_rq, se) {
+            if (prev->on_rq)
+                update_curr(cfs_rq);
+                    --->
+
+            if (prev->on_rq) {
+                update_stats_wait_start_fair(cfs_rq, prev);
+                __enqueue_entity(cfs_rq, prev) {
+                    rb_add_cached(&se->run_node, &cfs_rq->tasks_timeline, __entity_less);
+                }
+                update_load_avg(cfs_rq, prev, 0);
+            }
+            cfs_rq->curr = NULL;
+        }
     }
-    place_entity(cfs_rq, se, 1);
-
-    if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-        swap(curr->vruntime, se->vruntime);
-        resched_curr(rq);
-    }
-
-    se->vruntime -= cfs_rq->min_vruntime;
 ```
 
 #### pick_next_task_fair
@@ -3527,32 +3370,6 @@ idle:
     update_idle_rq_clock_pelt(rq);
 ```
 
-#### put_prev_task_fair
-
-```c
-put_prev_task_fair(struct rq *rq, struct task_struct *prev)
-    struct sched_entity *se = &prev->se;
-    struct cfs_rq *cfs_rq;
-
-    for_each_sched_entity(se) {
-        cfs_rq = cfs_rq_of(se);
-        put_prev_entity(cfs_rq, se) {
-            if (prev->on_rq)
-                update_curr(cfs_rq);
-                    --->
-
-            if (prev->on_rq) {
-                update_stats_wait_start_fair(cfs_rq, prev);
-                __enqueue_entity(cfs_rq, prev) {
-                    rb_add_cached(&se->run_node, &cfs_rq->tasks_timeline, __entity_less);
-                }
-                update_load_avg(cfs_rq, prev, 0);
-            }
-            cfs_rq->curr = NULL;
-        }
-    }
-```
-
 #### set_next_task_fair
 ```c
 set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
@@ -3594,6 +3411,266 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
     }
 ```
 
+#### sched_vslice
+![](../Images/Kernel/proc-sched-cfs-sched_vslice.png)
+![](../Images/Kernel/proc-sched-cfs-sched_vslice-2.png)
+
+```c
+const int sched_prio_to_weight[40] = {
+ /* -20 */     88761,     71755,     56483,     46273,     36291,
+ /* -15 */     29154,     23254,     18705,     14949,     11916,
+ /* -10 */      9548,      7620,      6100,      4904,      3906,
+ /*  -5 */      3121,      2501,      1991,      1586,      1277,
+ /*   0 */      1024,       820,       655,       526,       423,
+ /*   5 */       335,       272,       215,       172,       137,
+ /*  10 */       110,        87,        70,        56,        45,
+ /*  15 */        36,        29,        23,        18,        15,
+};
+
+sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+    slice = sched_slice(cfs_rq, se) {
+        slice = __sched_period(nr_running + !se->on_rq) {
+            if (unlikely(nr_running > sched_nr_latency/*8*/))
+                return nr_running * sysctl_sched_min_granularity/*0.75 msec*/;
+            else
+                return sysctl_sched_latency/*6ms*/;
+        }
+        for_each_sched_entity(se) {
+            struct load_weight *load;
+                struct load_weight lw;
+                struct cfs_rq *qcfs_rq;
+
+                qcfs_rq = cfs_rq_of(se);
+                load = &qcfs_rq->load;
+
+                if (unlikely(!se->on_rq)) {
+                    lw = qcfs_rq->load;
+                    update_load_add(&lw, se->load.weight);
+                    load = &lw;
+                }
+
+            slice = __calc_delta(slice, se->load.weight, load) {
+                /* delta_exec * weight / lw.weight
+                 *   OR
+                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
+            }
+        }
+        if (sched_feat(BASE_SLICE)) {
+            if (se_is_idle(init_se) && !sched_idle_cfs_rq(cfs_rq))
+                min_gran = sysctl_sched_idle_min_granularity;
+            else
+                min_gran = sysctl_sched_min_granularity;
+
+            slice = max_t(u64, slice, min_gran);
+        }
+        return slice;
+    }
+    calc_delta_fair(slice, se) {
+        if (unlikely(se->load.weight != NICE_0_LOAD)) {
+            delta = __calc_delta(delta, NICE_0_LOAD, &se->load)
+                --->
+        }
+
+        return delta;
+    }
+```
+
+#### task_tick_fair
+
+![](../Images/Kernel/proc-sched-cfs-task_tick.png)
+![](../Images/Kernel/proc-sched-cfs-update_curr.png)
+
+```c
+task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
+    for_each_sched_entity(se) {
+        cfs_rq = cfs_rq_of(se);
+        entity_tick(cfs_rq, se, queued) {
+            update_curr(cfs_rq) {
+                delta_exec = now - curr->exec_start;
+                curr->exec_start = now;
+                curr->sum_exec_runtime += delta_exec;
+                schedstat_add(cfs_rq->exec_clock, delta_exec);
+
+                curr->vruntime += calc_delta_fair(delta_exec, curr);
+                update_min_vruntime(cfs_rq);
+
+                if (entity_is_task(curr)) {
+                    struct task_struct *curtask = task_of(curr);
+                    cgroup_account_cputime(curtask, delta_exec);
+                    account_group_exec_runtime(curtask, delta_exec);
+                }
+
+                account_cfs_rq_runtime(cfs_rq, delta_exec) {
+                    cfs_rq->runtime_remaining -= delta_exec;
+
+                    if (likely(cfs_rq->runtime_remaining > 0))
+                        return;
+
+                    if (cfs_rq->throttled)
+                        return;
+
+                    if (!assign_cfs_rq_runtime(cfs_rq) && likely(cfs_rq->curr))
+                        resched_curr(rq_of(cfs_rq));
+                }
+            }
+
+            update_load_avg(cfs_rq, curr, UPDATE_TG) {
+
+            }
+
+            update_cfs_group(curr) {
+
+            }
+
+        #ifdef CONFIG_SCHED_HRTICK
+            if (queued) {
+                resched_curr(rq_of(cfs_rq));
+                return;
+            }
+
+            if (!sched_feat(DOUBLE_TICK) && hrtimer_active(&rq_of(cfs_rq)->hrtick_timer))
+                return;
+        #endif
+
+            if (cfs_rq->nr_running > 1) {
+                check_preempt_tick(cfs_rq, curr) {
+                    ideal_runtime = min_t(u64, sched_slice(cfs_rq, curr), sysctl_sched_latency);
+                    delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
+                    if (delta_exec > ideal_runtime) {
+                        resched_curr(rq_of(cfs_rq));
+                        clear_buddies(cfs_rq, curr);
+                        return;
+                    }
+
+                    if (delta_exec < sysctl_sched_min_granularity)
+                        return;
+
+                    se = __pick_first_entity(cfs_rq);
+                    delta = curr->vruntime - se->vruntime;
+
+                    if (delta < 0)
+                        return;
+
+                    if (delta > ideal_runtime)
+                        resched_curr(rq_of(cfs_rq));
+                }
+            }
+        }
+    }
+
+    if (static_branch_unlikely(&sched_numa_balancing)){
+        task_tick_numa(rq, curr) {
+
+        }
+    }
+
+    update_misfit_status(curr, rq);
+    update_overutilized_status(task_rq(curr));
+
+    task_tick_core(rq, curr) {
+
+    }
+}
+```
+
+#### task_fork_fair
+
+![](../Images/Kernel/proc-sched-cfs-task_fork_fair.png)
+
+```c
+task_fork_fair(struct task_struct *p)
+    update_rq_clock(rq);
+
+    cfs_rq = task_cfs_rq(current);
+    curr = cfs_rq->curr;
+    if (curr) {
+        update_curr(cfs_rq);
+        se->vruntime = curr->vruntime;
+    }
+    place_entity(cfs_rq, se, 1);
+
+    if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
+        swap(curr->vruntime, se->vruntime);
+        resched_curr(rq);
+    }
+
+    se->vruntime -= cfs_rq->min_vruntime;
+```
+
+### balance_fair
+```c
+balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+    if (rq->nr_running)
+        return 1;
+
+    return newidle_balance(rq, rf) != 0;
+}
+```
+
+### select_task_rq_fair
+
+```c
+select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
+    int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
+    struct sched_domain *tmp, *sd = NULL;
+    int cpu = smp_processor_id();
+    int new_cpu = prev_cpu;
+    int want_affine = 0;
+    /* SD_flags and WF_flags share the first nibble */
+    int sd_flag = wake_flags & 0xF;
+
+    lockdep_assert_held(&p->pi_lock);
+    if (wake_flags & WF_TTWU) {
+        record_wakee(p);
+
+        if (sched_energy_enabled()) {
+            new_cpu = find_energy_efficient_cpu(p, prev_cpu);
+            if (new_cpu >= 0)
+                return new_cpu;
+            new_cpu = prev_cpu;
+        }
+
+        want_affine = !wake_wide(p) && cpumask_test_cpu(cpu, p->cpus_ptr);
+    }
+
+    rcu_read_lock();
+    for_each_domain(cpu, tmp) {
+        /*
+         * If both 'cpu' and 'prev_cpu' are part of this domain,
+         * cpu is a valid SD_WAKE_AFFINE target.
+         */
+        if (want_affine && (tmp->flags & SD_WAKE_AFFINE) &&
+            cpumask_test_cpu(prev_cpu, sched_domain_span(tmp))) {
+            if (cpu != prev_cpu)
+                new_cpu = wake_affine(tmp, p, cpu, prev_cpu, sync);
+
+            sd = NULL; /* Prefer wake_affine over balance flags */
+            break;
+        }
+
+        /*
+         * Usually only true for WF_EXEC and WF_FORK, as sched_domains
+         * usually do not have SD_BALANCE_WAKE set. That means wakeup
+         * will usually go to the fast path.
+         */
+        if (tmp->flags & sd_flag)
+            sd = tmp;
+        else if (!want_affine)
+            break;
+    }
+
+    if (unlikely(sd)) {
+        /* Slow path */
+        new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag);
+    } else if (wake_flags & WF_TTWU) { /* XXX always ? */
+        /* Fast path */
+        new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
+    }
+    rcu_read_unlock();
+
+    return new_cpu;
+```
 ## task_group
 
 * [内核工匠 - CFS组调度](http://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488762&idx=1&sn=4e835ac76d2125d29f61780feef65504)
@@ -4402,983 +4479,25 @@ SYSCALL_DEFINE0(fork)
   return _do_fork(SIGCHLD, 0, 0, NULL, NULL, 0);
 }
 
-long _do_fork(
-  unsigned long clone_flags,
-  unsigned long stack_start,
-  unsigned long stack_size,
-  int __user *parent_tidptr,
-  int __user *child_tidptr,
-  unsigned long tls)
-{
-  struct task_struct *p;
-  int trace = 0;
-  long nr;
-
-  p = copy_process(clone_flags, stack_start, stack_size,
-    child_tidptr, NULL, trace, tls, NUMA_NO_NODE);
-
-  if (IS_ERR(p))
-    return PTR_ERR(p);
-
-  struct pid *pid;
-  pid = get_task_pid(p, PIDTYPE_PID);
-  nr = pid_vnr(pid);
-
-  if (clone_flags & CLONE_PARENT_SETTID)
-    put_user(nr, parent_tidptr);
-
-  wake_up_new_task(p);
-
-  put_pid(pid);
-
-  return nr;
-}
-```
-
-## copy_process
-```c
-/* kernel/fork.c */
-struct task_struct *copy_process(
-  unsigned long clone_flags,
-  unsigned long stack_start,
-  unsigned long stack_size,
-  int __user *child_tidptr,
-  struct pid *pid,
-  int trace,
-  unsigned long tls,
-  int node)
-{
-  int retval;
-  struct task_struct *p;
-  struct multiprocess_signals delayed;
-
-  /* Don't allow sharing the root directory with processes in a different
-   * namespace */
-  if ((clone_flags & (CLONE_NEWNS|CLONE_FS)) == (CLONE_NEWNS|CLONE_FS))
-    return ERR_PTR(-EINVAL);
-
-  if ((clone_flags & (CLONE_NEWUSER|CLONE_FS)) == (CLONE_NEWUSER|CLONE_FS))
-    return ERR_PTR(-EINVAL);
-
-  /* Thread groups must share signals as well, and detached threads
-   * can only be started up within the thread group. */
-  if ((clone_flags & CLONE_THREAD) && !(clone_flags & CLONE_SIGHAND))
-    return ERR_PTR(-EINVAL);
-
-  /* Shared signal handlers imply shared VM. By way of the above,
-   * thread groups also imply shared VM. Blocking this case allows
-   * for various simplifications in other code. */
-  if ((clone_flags & CLONE_SIGHAND) && !(clone_flags & CLONE_VM))
-    return ERR_PTR(-EINVAL);
-
-  /* Siblings of global init remain as zombies on exit since they are
-   * not reaped by their parent (swapper). To solve this and to avoid
-   * multi-rooted process trees, prevent global and container-inits
-   * from creating siblings. */
-  if ((clone_flags & CLONE_PARENT) && current->signal->flags & SIGNAL_UNKILLABLE)
-    return ERR_PTR(-EINVAL);
-
-  /* If the new process will be in a different pid or user namespace
-   * do not allow it to share a thread group with the forking task. */
-  if (clone_flags & CLONE_THREAD) {
-    if ((clone_flags & (CLONE_NEWUSER | CLONE_NEWPID))
-    || (task_active_pid_ns(current) != current->nsproxy->pid_ns_for_children))
-      return ERR_PTR(-EINVAL);
-  }
-
-  /* Force any signals received before this point to be delivered
-   * before the fork happens.  Collect up signals sent to multiple
-   * processes that happen during the fork and delay them so that
-   * they appear to happen after the fork. */
-  sigemptyset(&delayed.signal);
-  INIT_HLIST_NODE(&delayed.node);
-
-  spin_lock_irq(&current->sighand->siglock);
-  if (!(clone_flags & CLONE_THREAD))
-    hlist_add_head(&delayed.node, &current->signal->multiprocess);
-  recalc_sigpending();
-  spin_unlock_irq(&current->sighand->siglock);
-  retval = -ERESTARTNOINTR;
-  if (signal_pending(current))
-    goto fork_out;
-
-  retval = -ENOMEM;
-  p = dup_task_struct(current, node);
-  if (!p)
-    goto fork_out;
-
-  /* This _must_ happen before we call free_task(), i.e. before we jump
-   * to any of the bad_fork_* labels. This is to avoid freeing
-   * p->set_child_tid which is (ab)used as a kthread's data pointer for
-   * kernel threads (PF_KTHREAD). */
-  p->set_child_tid = (clone_flags & CLONE_CHILD_SETTID) ? child_tidptr : NULL;
-  /* Clear TID on mm_release()? */
-  p->clear_child_tid = (clone_flags & CLONE_CHILD_CLEARTID) ? child_tidptr : NULL;
-
-  ftrace_graph_init_task(p);
-
-  rt_mutex_init_task(p);
-
-#ifdef CONFIG_PROVE_LOCKING
-  DEBUG_LOCKS_WARN_ON(!p->hardirqs_enabled);
-  DEBUG_LOCKS_WARN_ON(!p->softirqs_enabled);
-#endif
-  retval = -EAGAIN;
-  if (atomic_read(&p->real_cred->user->processes) >= task_rlimit(p, RLIMIT_NPROC)) {
-    if (p->real_cred->user != INIT_USER &&
-        !capable(CAP_SYS_RESOURCE) && !capable(CAP_SYS_ADMIN))
-      goto bad_fork_free;
-  }
-  current->flags &= ~PF_NPROC_EXCEEDED;
-
-  retval = copy_creds(p, clone_flags);
-  if (retval < 0)
-    goto bad_fork_free;
-
-  /* If multiple threads are within copy_process(), then this check
-   * triggers too late. This doesn't hurt, the check is only there
-   * to stop root fork bombs. */
-  retval = -EAGAIN;
-  if (nr_threads >= max_threads)
-    goto bad_fork_cleanup_count;
-
-  delayacct_tsk_init(p);  /* Must remain after dup_task_struct() */
-  p->flags &= ~(PF_SUPERPRIV | PF_WQ_WORKER | PF_IDLE);
-  p->flags |= PF_FORKNOEXEC;
-  INIT_LIST_HEAD(&p->children);
-  INIT_LIST_HEAD(&p->sibling);
-  rcu_copy_process(p);
-  p->vfork_done = NULL;
-  spin_lock_init(&p->alloc_lock);
-
-  init_sigpending(&p->pending);
-
-  p->utime = p->stime = p->gtime = 0;
-#ifdef CONFIG_ARCH_HAS_SCALED_CPUTIME
-  p->utimescaled = p->stimescaled = 0;
-#endif
-  prev_cputime_init(&p->prev_cputime);
-
-#ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
-  seqcount_init(&p->vtime.seqcount);
-  p->vtime.starttime = 0;
-  p->vtime.state = VTIME_INACTIVE;
-#endif
-
-#if defined(SPLIT_RSS_COUNTING)
-  memset(&p->rss_stat, 0, sizeof(p->rss_stat));
-#endif
-
-  p->default_timer_slack_ns = current->timer_slack_ns;
-
-  task_io_accounting_init(&p->ioac);
-  acct_clear_integrals(p);
-
-  posix_cpu_timers_init(p);
-
-  p->io_context = NULL;
-  audit_set_context(p, NULL);
-  cgroup_fork(p);
-#ifdef CONFIG_NUMA
-  p->mempolicy = mpol_dup(p->mempolicy);
-  if (IS_ERR(p->mempolicy)) {
-    retval = PTR_ERR(p->mempolicy);
-    p->mempolicy = NULL;
-    goto bad_fork_cleanup_threadgroup_lock;
-  }
-#endif
-#ifdef CONFIG_CPUSETS
-  p->cpuset_mem_spread_rotor = NUMA_NO_NODE;
-  p->cpuset_slab_spread_rotor = NUMA_NO_NODE;
-  seqcount_init(&p->mems_allowed_seq);
-#endif
-#ifdef CONFIG_TRACE_IRQFLAGS
-  p->irq_events = 0;
-  p->hardirqs_enabled = 0;
-  p->hardirq_enable_ip = 0;
-  p->hardirq_enable_event = 0;
-  p->hardirq_disable_ip = _THIS_IP_;
-  p->hardirq_disable_event = 0;
-  p->softirqs_enabled = 1;
-  p->softirq_enable_ip = _THIS_IP_;
-  p->softirq_enable_event = 0;
-  p->softirq_disable_ip = 0;
-  p->softirq_disable_event = 0;
-  p->hardirq_context = 0;
-  p->softirq_context = 0;
-#endif
-
-  p->pagefault_disabled = 0;
-
-#ifdef CONFIG_LOCKDEP
-  p->lockdep_depth = 0; /* no locks held yet */
-  p->curr_chain_key = 0;
-  p->lockdep_recursion = 0;
-  lockdep_init_task(p);
-#endif
-
-#ifdef CONFIG_DEBUG_MUTEXES
-  p->blocked_on = NULL; /* not blocked yet */
-#endif
-#ifdef CONFIG_BCACHE
-  p->sequential_io  = 0;
-  p->sequential_io_avg  = 0;
-#endif
-
-  /* Perform scheduler related setup. Assign this task to a CPU. */
-  retval = sched_fork(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_policy;
-
-  retval = perf_event_init_task(p);
-  if (retval)
-    goto bad_fork_cleanup_policy;
-  retval = audit_alloc(p);
-  if (retval)
-    goto bad_fork_cleanup_perf;
-  /* copy all the process information */
-  shm_init_task(p);
-  retval = security_task_alloc(p, clone_flags);
-  if (retval)
-    goto bad_fork_cleanup_audit;
-  retval = copy_semundo(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_security;
-  retval = copy_files(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_semundo;
-  retval = copy_fs(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_files;
-  retval = copy_sighand(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_fs;
-  retval = copy_signal(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_sighand;
-  retval = copy_mm(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_signal;
-  retval = copy_namespaces(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_mm;
-  retval = copy_io(clone_flags, p);
-  if (retval)
-    goto bad_fork_cleanup_namespaces;
-  retval = copy_thread_tls(clone_flags, stack_start, stack_size, p, tls);
-  if (retval)
-    goto bad_fork_cleanup_io;
-
-  if (pid != &init_struct_pid) {
-    pid = alloc_pid(p->nsproxy->pid_ns_for_children);
-    if (IS_ERR(pid)) {
-      retval = PTR_ERR(pid);
-      goto bad_fork_cleanup_thread;
-    }
-  }
-
-#ifdef CONFIG_BLOCK
-  p->plug = NULL;
-#endif
-  futex_init_task(p);
-
-  /* sigaltstack should be cleared when sharing the same VM */
-  if ((clone_flags & (CLONE_VM|CLONE_VFORK)) == CLONE_VM)
-    sas_ss_reset(p);
-
-  /* Syscall tracing and stepping should be turned off in the
-   * child regardless of CLONE_PTRACE. */
-  user_disable_single_step(p);
-  clear_tsk_thread_flag(p, TIF_SYSCALL_TRACE);
-#ifdef TIF_SYSCALL_EMU
-  clear_tsk_thread_flag(p, TIF_SYSCALL_EMU);
-#endif
-  clear_all_latency_tracing(p);
-
-  /* ok, now we should be set up.. */
-  p->pid = pid_nr(pid);
-  if (clone_flags & CLONE_THREAD) {
-    p->group_leader = current->group_leader;
-    p->tgid = current->tgid;
-  } else {
-    p->group_leader = p;
-    p->tgid = p->pid;
-  }
-
-  p->nr_dirtied = 0;
-  p->nr_dirtied_pause = 128 >> (PAGE_SHIFT - 10);
-  p->dirty_paused_when = 0;
-
-  p->pdeath_signal = 0;
-  INIT_LIST_HEAD(&p->thread_group);
-  p->task_works = NULL;
-
-  cgroup_threadgroup_change_begin(current);
-  /* Ensure that the cgroup subsystem policies allow the new process to be
-   * forked. It should be noted the the new process's css_set can be changed
-   * between here and cgroup_post_fork() if an organisation operation is in
-   * progress. */
-  retval = cgroup_can_fork(p);
-  if (retval)
-    goto bad_fork_free_pid;
-
-  /* From this point on we must avoid any synchronous user-space
-   * communication until we take the tasklist-lock. In particular, we do
-   * not want user-space to be able to predict the process start-time by
-   * stalling fork(2) after we recorded the start_time but before it is
-   * visible to the system. */
-
-  p->start_time = ktime_get_ns();
-  p->real_start_time = ktime_get_boot_ns();
-
-  /* Make it visible to the rest of the system, but dont wake it up yet.
-   * Need tasklist lock for parent etc handling! */
-  write_lock_irq(&tasklist_lock);
-
-  /* CLONE_PARENT re-uses the old parent */
-  if (clone_flags & (CLONE_PARENT|CLONE_THREAD)) {
-    p->real_parent = current->real_parent;
-    p->parent_exec_id = current->parent_exec_id;
-    if (clone_flags & CLONE_THREAD)
-      p->exit_signal = -1;
-    else
-      p->exit_signal = current->group_leader->exit_signal;
-  } else {
-    p->real_parent = current;
-    p->parent_exec_id = current->self_exec_id;
-    p->exit_signal = (clone_flags & CSIGNAL);
-  }
-
-  klp_copy_process(p);
-
-  spin_lock(&current->sighand->siglock);
-
-  /* Copy seccomp details explicitly here, in case they were changed
-   * before holding sighand lock. */
-  copy_seccomp(p);
-
-  rseq_fork(p, clone_flags);
-
-  /* Don't start children in a dying pid namespace */
-  if (unlikely(!(ns_of_pid(pid)->pid_allocated & PIDNS_ADDING))) {
-    retval = -ENOMEM;
-    goto bad_fork_cancel_cgroup;
-  }
-
-  /* Let kill terminate clone/fork in the middle */
-  if (fatal_signal_pending(current)) {
-    retval = -EINTR;
-    goto bad_fork_cancel_cgroup;
-  }
-
-
-  init_task_pid_links(p);
-  if (likely(p->pid)) {
-    ptrace_init_task(p, (clone_flags & CLONE_PTRACE) || trace);
-
-    init_task_pid(p, PIDTYPE_PID, pid);
-    if (thread_group_leader(p)) {
-      init_task_pid(p, PIDTYPE_TGID, pid);
-      init_task_pid(p, PIDTYPE_PGID, task_pgrp(current));
-      init_task_pid(p, PIDTYPE_SID, task_session(current));
-
-      if (is_child_reaper(pid)) {
-        ns_of_pid(pid)->child_reaper = p;
-        p->signal->flags |= SIGNAL_UNKILLABLE;
-      }
-      p->signal->shared_pending.signal = delayed.signal;
-      p->signal->tty = tty_kref_get(current->signal->tty);
-      /* Inherit has_child_subreaper flag under the same
-       * tasklist_lock with adding child to the process tree
-       * for propagate_has_child_subreaper optimization. */
-      p->signal->has_child_subreaper = p->real_parent->signal->has_child_subreaper ||
-               p->real_parent->signal->is_child_subreaper;
-      list_add_tail(&p->sibling, &p->real_parent->children);
-      list_add_tail_rcu(&p->tasks, &init_task.tasks);
-      attach_pid(p, PIDTYPE_TGID);
-      attach_pid(p, PIDTYPE_PGID);
-      attach_pid(p, PIDTYPE_SID);
-      __this_cpu_inc(process_counts);
-    } else {
-      current->signal->nr_threads++;
-      atomic_inc(&current->signal->live);
-      atomic_inc(&current->signal->sigcnt);
-      task_join_group_stop(p);
-      list_add_tail_rcu(&p->thread_group,
-            &p->group_leader->thread_group);
-      list_add_tail_rcu(&p->thread_node,
-            &p->signal->thread_head);
-    }
-    attach_pid(p, PIDTYPE_PID);
-    nr_threads++;
-  }
-  total_forks++;
-  hlist_del_init(&delayed.node);
-  spin_unlock(&current->sighand->siglock);
-  syscall_tracepoint_update(p);
-  write_unlock_irq(&tasklist_lock);
-
-  proc_fork_connector(p);
-  cgroup_post_fork(p);
-  cgroup_threadgroup_change_end(current);
-  perf_event_fork(p);
-
-  trace_task_newtask(p, clone_flags);
-  uprobe_copy_process(p, clone_flags);
-
-  copy_oom_score_adj(clone_flags, p);
-
-  return p;
-}
-
-void wake_up_new_task(struct task_struct *p)
-{
-  struct rq_flags rf;
-  struct rq *rq;
-
-  p->state = TASK_RUNNING;
-
-  activate_task(rq, p, ENQUEUE_NOCLOCK);
-  p->on_rq = TASK_ON_RQ_QUEUED;
-  trace_sched_wakeup_new(p);
-  check_preempt_curr(rq, p, WF_FORK);
-}
-```
-
-## dup_task_struct
-```c
-struct task_struct *dup_task_struct(struct task_struct *orig, int node)
-{
-  struct task_struct *tsk;
-  unsigned long *stack;
-  struct vm_struct *stack_vm_area;
-  int err;
-
-  if (node == NUMA_NO_NODE)
-    node = tsk_fork_get_node(orig);
-  tsk = alloc_task_struct_node(node);
-  if (!tsk)
-    return NULL;
-
-  stack = alloc_thread_stack_node(tsk, node);
-  if (!stack)
-    goto free_tsk;
-
-  stack_vm_area = task_stack_vm_area(tsk);
-
-  err = arch_dup_task_struct(tsk, orig);
-
-  /* arch_dup_task_struct() clobbers the stack-related fields.  Make
-   * sure they're properly initialized before using any stack-related
-   * functions again. */
-  tsk->stack = stack;
-#ifdef CONFIG_VMAP_STACK
-  tsk->stack_vm_area = stack_vm_area;
-#endif
-#ifdef CONFIG_THREAD_INFO_IN_TASK
-  atomic_set(&tsk->stack_refcount, 1);
-#endif
-
-  if (err)
-    goto free_stack;
-
-#ifdef CONFIG_SECCOMP
-  /* We must handle setting up seccomp filters once we're under
-   * the sighand lock in case orig has changed between now and
-   * then. Until then, filter must be NULL to avoid messing up
-   * the usage counts on the error path calling free_task. */
-  tsk->seccomp.filter = NULL;
-#endif
-
-  setup_thread_stack(tsk, orig);
-  clear_user_return_notifier(tsk);
-  clear_tsk_need_resched(tsk);
-  set_task_stack_end_magic(tsk);
-
-#ifdef CONFIG_STACKPROTECTOR
-  tsk->stack_canary = get_random_canary();
-#endif
-
-  /* One for us, one for whoever does the "release_task()" (usually
-   * parent) */
-  atomic_set(&tsk->usage, 2);
-#ifdef CONFIG_BLK_DEV_IO_TRACE
-  tsk->btrace_seq = 0;
-#endif
-  tsk->splice_pipe = NULL;
-  tsk->task_frag.page = NULL;
-  tsk->wake_q.next = NULL;
-
-  account_kernel_stack(tsk, 1);
-
-  kcov_task_init(tsk);
-
-#ifdef CONFIG_FAULT_INJECTION
-  tsk->fail_nth = 0;
-#endif
-
-#ifdef CONFIG_BLK_CGROUP
-  tsk->throttle_queue = NULL;
-  tsk->use_memdelay = 0;
-#endif
-
-#ifdef CONFIG_MEMCG
-  tsk->active_memcg = NULL;
-#endif
-  return tsk;
-
-free_stack:
-  free_thread_stack(tsk);
-free_tsk:
-  free_task_struct(tsk);
-  return NULL;
-}
-
-static unsigned long *alloc_thread_stack_node(struct task_struct *tsk, int node)
-{
-#ifdef CONFIG_VMAP_STACK
-  void *stack;
-  int i;
-
-  for (i = 0; i < NR_CACHED_STACKS; i++) {
-    struct vm_struct *s;
-
-    s = this_cpu_xchg(cached_stacks[i], NULL);
-
-    if (!s)
-      continue;
-
-    /* Clear stale pointers from reused stack. */
-    memset(s->addr, 0, THREAD_SIZE);
-
-    tsk->stack_vm_area = s;
-    tsk->stack = s->addr;
-    return s->addr;
-  }
-
-  stack = __vmalloc_node_range(THREAD_SIZE, THREAD_ALIGN,
-             VMALLOC_START, VMALLOC_END,
-             THREADINFO_GFP,
-             PAGE_KERNEL,
-             0, node, __builtin_return_address(0));
-
-  /* We can't call find_vm_area() in interrupt context, and
-   * free_thread_stack() can be called in interrupt context,
-   * so cache the vm_struct. */
-  if (stack) {
-    tsk->stack_vm_area = find_vm_area(stack);
-    tsk->stack = stack;
-  }
-  return stack;
-#else
-  struct page *page = alloc_pages_node(node, THREADINFO_GFP,
-               THREAD_SIZE_ORDER);
-
-  if (likely(page)) {
-    tsk->stack = page_address(page);
-    return tsk->stack;
-  }
-  return NULL;
-#endif
-}
-```
-
-## sched_fork
-```c
-int sched_fork(unsigned long clone_flags, struct task_struct *p)
-{
-  unsigned long flags;
-
-  __sched_fork(clone_flags, p);
-  /* We mark the process as NEW here. This guarantees that
-   * nobody will actually run it, and a signal or other external
-   * event cannot wake it up and insert it on the runqueue either. */
-  p->state = TASK_NEW;
-
-  /* Make sure we do not leak PI boosting priority to the child. */
-  p->prio = current->normal_prio;
-
-  /* Revert to default priority/policy on fork if requested. */
-  if (unlikely(p->sched_reset_on_fork)) {
-    if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
-      p->policy = SCHED_NORMAL;
-      p->static_prio = NICE_TO_PRIO(0);
-      p->rt_priority = 0;
-    } else if (PRIO_TO_NICE(p->static_prio) < 0)
-      p->static_prio = NICE_TO_PRIO(0);
-
-    p->prio = p->normal_prio = __normal_prio(p);
-    set_load_weight(p, false);
-
-    /* We don't need the reset flag anymore after the fork. It has
-     * fulfilled its duty: */
-    p->sched_reset_on_fork = 0;
-  }
-
-  if (dl_prio(p->prio))
-    return -EAGAIN;
-  else if (rt_prio(p->prio))
-    p->sched_class = &rt_sched_class;
-  else
-    p->sched_class = &fair_sched_class;
-
-  init_entity_runnable_average(&p->se);
-
-  /* The child is not yet in the pid-hash so no cgroup attach races,
-   * and the cgroup is pinned to this child due to cgroup_fork()
-   * is ran before sched_fork().
-   *
-   * Silence PROVE_RCU. */
-  raw_spin_lock_irqsave(&p->pi_lock, flags);
-  rseq_migrate(p);
-  /* We're setting the CPU for the first time, we don't migrate,
-   * so use __set_task_cpu(). */
-  __set_task_cpu(p, smp_processor_id());
-  if (p->sched_class->task_fork)
-    p->sched_class->task_fork(p);
-  raw_spin_unlock_irqrestore(&p->pi_lock, flags);
-
-#ifdef CONFIG_SCHED_INFO
-  if (likely(sched_info_on()))
-    memset(&p->sched_info, 0, sizeof(p->sched_info));
-#endif
-#if defined(CONFIG_SMP)
-  p->on_cpu = 0;
-#endif
-  init_task_preempt_count(p);
-#ifdef CONFIG_SMP
-  plist_node_init(&p->pushable_tasks, MAX_PRIO);
-  RB_CLEAR_NODE(&p->pushable_dl_tasks);
-#endif
-  return 0;
-}
-
-/* copy_process -> sched_fork -> sched_class->task_fork -> */
-void task_fork_fair(struct task_struct *p)
-{
-  struct cfs_rq *cfs_rq;
-  struct sched_entity *se = &p->se, *curr;
-  struct rq *rq = this_rq();
-  struct rq_flags rf;
-
-  rq_lock(rq, &rf);
-  update_rq_clock(rq);
-
-  cfs_rq = task_cfs_rq(current);
-  curr = cfs_rq->curr;
-  if (curr) {
-    update_curr(cfs_rq);
-    se->vruntime = curr->vruntime; /* child has same vruntime as parent */
-  }
-  place_entity(cfs_rq, se, 1);
-
-  if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-    /* Upon rescheduling, sched_class::put_prev_task() will place
-     * 'current' within the tree based on its new key value. */
-    swap(curr->vruntime, se->vruntime);
-    resched_curr(rq);
-  }
-
-  se->vruntime -= cfs_rq->min_vruntime;
-  rq_unlock(rq, &rf);
-}
-```
-
-## copy_thread_tls
-
-```c
-struct fork_frame {
-  struct inactive_task_frame frame;
-  struct pt_regs regs;
-};
-
-/* This is the structure pointed to by thread.sp for an inactive task.  The
- * order of the fields must match the code in __switch_to_asm(). */
-struct inactive_task_frame {
-  unsigned long flags;
-#ifdef CONFIG_X86_64
-  unsigned long r15;
-  unsigned long r14;
-  unsigned long r13;
-  unsigned long r12;
-#else
-  unsigned long si;
-  unsigned long di;
-#endif
-  unsigned long bx;
-
-  /* These two fields must be together.  They form a stack frame header,
-   * needed by get_frame_pointer(). */
-  unsigned long bp;
-  unsigned long ret_addr;
-};
-
-/* arch/x86/kernel/process_64.c */
-int copy_thread_tls(unsigned long clone_flags, unsigned long sp,
-    unsigned long arg, struct task_struct *p, unsigned long tls)
-{
-  int err;
-  struct pt_regs *childregs;
-  struct fork_frame *fork_frame;
-  struct inactive_task_frame *frame;
-  struct task_struct *me = current;
-
-  childregs = task_pt_regs(p);
-  fork_frame = container_of(childregs, struct fork_frame, regs);
-  frame = &fork_frame->frame;
-
-  /* For a new task use the RESET flags value since there is no before.
-   * All the status flags are zero; DF and all the system flags must also
-   * be 0, specifically IF must be 0 because we context switch to the new
-   * task with interrupts disabled. */
-  frame->flags = X86_EFLAGS_FIXED;
-  frame->bp = 0;
-  frame->ret_addr = (unsigned long) ret_from_fork;
-  p->thread.sp = (unsigned long) fork_frame;
-  p->thread.io_bitmap_ptr = NULL;
-
-  savesegment(gs, p->thread.gsindex);
-  p->thread.gsbase = p->thread.gsindex ? 0 : me->thread.gsbase;
-  savesegment(fs, p->thread.fsindex);
-  p->thread.fsbase = p->thread.fsindex ? 0 : me->thread.fsbase;
-  savesegment(es, p->thread.es);
-  savesegment(ds, p->thread.ds);
-  memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
-
-  if (unlikely(p->flags & PF_KTHREAD)) {
-    /* kernel thread */
-    memset(childregs, 0, sizeof(struct pt_regs));
-    frame->bx = sp;    /* function */
-    frame->r12 = arg;
-    return 0;
-  }
-  frame->bx = 0;
-  *childregs = *current_pt_regs();
-
-  childregs->ax = 0;
-  if (sp)
-    childregs->sp = sp;
-
-  err = -ENOMEM;
-  if (unlikely(test_tsk_thread_flag(me, TIF_IO_BITMAP))) {
-    p->thread.io_bitmap_ptr = kmemdup(me->thread.io_bitmap_ptr, IO_BITMAP_BYTES, GFP_KERNEL);
-    if (!p->thread.io_bitmap_ptr) {
-      p->thread.io_bitmap_max = 0;
-      return -ENOMEM;
-    }
-    set_tsk_thread_flag(p, TIF_IO_BITMAP);
-  }
-
-  /* Set a new TLS for the child thread? */
-  if (clone_flags & CLONE_SETTLS) {
-      err = do_arch_prctl_64(p, ARCH_SET_FS, tls);
-    if (err)
-      goto out;
-  }
-  err = 0;
-out:
-  if (err && p->thread.io_bitmap_ptr) {
-    kfree(p->thread.io_bitmap_ptr);
-    p->thread.io_bitmap_max = 0;
-  }
-
-  return err;
-}
-```
-
-## ret_from_fork
-
-A program gets into this function by simply return from __switch_to().
-
-```c
-/* arch/x86/entry/entry_64.S
- * A newly forked process directly context switches into this address.
- *
- * rax: prev task we switched from
- * rbx: kernel thread func (NULL for user thread)
- * r12: kernel thread arg */
-ENTRY(ret_from_fork)
-  UNWIND_HINT_EMPTY
-  movq  %rax, %rdi
-  call  schedule_tail      /* rdi: 'prev' task parameter */
-
-  testq  %rbx, %rbx      /* from kernel_thread? */
-  jnz  1f        /* kernel threads are uncommon */
-
-2:
-  UNWIND_HINT_REGS
-  movq  %rsp, %rdi
-  call  syscall_return_slowpath  /* returns with IRQs disabled */
-  TRACE_IRQS_ON      /* user mode is traced as IRQS on */
-  jmp  swapgs_restore_regs_and_return_to_usermode
-
-1:
-  /* kernel thread */
-  UNWIND_HINT_EMPTY
-  movq  %r12, %rdi
-  CALL_NOSPEC %rbx
-  /* A kernel thread is allowed to return here after successfully
-   * calling do_execve().  Exit to userspace to complete the execve()
-   * syscall. */
-  movq  $0, RAX(%rsp)
-  jmp  2b
-END(ret_from_fork)
-
-
-SYM_CODE_START_LOCAL(common_interrupt_return)
-SYM_INNER_LABEL(swapgs_restore_regs_and_return_to_usermode, SYM_L_GLOBAL)
-  IBRS_EXIT
-
-  POP_REGS pop_rdi=0
-  /*
-  .macro POP_REGS pop_rdi=1
-    popq %r15
-    popq %r14
-    popq %r13
-    popq %r12
-    popq %rbp
-    popq %rbx
-    popq %r11
-    popq %r10
-    popq %r9
-    popq %r8
-    popq %rax
-    popq %rcx
-    popq %rdx
-    popq %rsi
-    .if \pop_rdi
-      popq %rdi
-    .endif
-  .endm */
-
-  /* The stack is now user RDI, orig_ax, RIP, CS, EFLAGS, RSP, SS.
-   * Save old stack pointer and switch to trampoline stack. */
-  movq  %rsp, %rdi
-  movq  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %rsp
-  UNWIND_HINT_EMPTY
-
-  /* Copy the IRET frame to the trampoline stack. */
-  pushq  6*8(%rdi)  /* SS */
-  pushq  5*8(%rdi)  /* RSP */
-  pushq  4*8(%rdi)  /* EFLAGS */
-  pushq  3*8(%rdi)  /* CS */
-  pushq  2*8(%rdi)  /* RIP */
-
-  /* Push user RDI on the trampoline stack. */
-  pushq  (%rdi)
-
-  /* We are on the trampoline stack.  All regs except RDI are live.
-   * We can do future final exit work right here. */
-  STACKLEAK_ERASE_NOCLOBBER
-
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-
-  /* Restore RDI. */
-  popq  %rdi
-  swapgs
-  jmp  .Lnative_iret
-
-.Lnative_iret:
-  UNWIND_HINT_IRET_REGS
-  /* Are we returning to a stack segment from the LDT?  Note: in
-   * 64-bit mode SS:RSP on the exception stack is always valid. */
-#ifdef CONFIG_X86_ESPFIX64
-  testb  $4, (SS-RIP)(%rsp)
-  jnz  native_irq_return_ldt
-#endif
-
-SYM_INNER_LABEL(native_irq_return_iret, SYM_L_GLOBAL)
-  ANNOTATE_NOENDBR // exc_double_fault
-  /* This may fault.  Non-paranoid faults on return to userspace are
-   * handled by fixup_bad_iret.  These include #SS, #GP, and #NP.
-   * Double-faults due to espfix64 are handled in exc_double_fault.
-   * Other faults here are fatal. */
-  iretq
-
-#ifdef CONFIG_X86_ESPFIX64
-native_irq_return_ldt:
-  /* We are running with user GSBASE.  All GPRs contain their user
-   * values.  We have a percpu ESPFIX stack that is eight slots
-   * long (see ESPFIX_STACK_SIZE).  espfix_waddr points to the bottom
-   * of the ESPFIX stack.
-   *
-   * We clobber RAX and RDI in this code.  We stash RDI on the
-   * normal stack and RAX on the ESPFIX stack.
-   *
-   * The ESPFIX stack layout we set up looks like this:
-   *
-   * --- top of ESPFIX stack ---
-   * SS
-   * RSP
-   * RFLAGS
-   * CS
-   * RIP  <-- RSP points here when we're done
-   * RAX  <-- espfix_waddr points here
-   * --- bottom of ESPFIX stack --- */
-
-  pushq  %rdi        /* Stash user RDI */
-  swapgs          /* to kernel GS */
-  SWITCH_TO_KERNEL_CR3 scratch_reg=%rdi  /* to kernel CR3 */
-
-  movq  PER_CPU_VAR(espfix_waddr), %rdi
-  movq  %rax, (0*8)(%rdi)    /* user RAX */
-
-  movq  (1*8)(%rsp), %rax    /* user RIP */
-  movq  %rax, (1*8)(%rdi)
-
-  movq  (2*8)(%rsp), %rax    /* user CS */
-  movq  %rax, (2*8)(%rdi)
-
-  movq  (3*8)(%rsp), %rax    /* user RFLAGS */
-  movq  %rax, (3*8)(%rdi)
-
-  movq  (5*8)(%rsp), %rax    /* user SS */
-  movq  %rax, (5*8)(%rdi)
-
-  movq  (4*8)(%rsp), %rax    /* user RSP */
-  movq  %rax, (4*8)(%rdi)
-  /* Now RAX == RSP. */
-
-  andl  $0xffff0000, %eax    /* RAX = (RSP & 0xffff0000) */
-
-  /* espfix_stack[31:16] == 0.  The page tables are set up such that
-   * (espfix_stack | (X & 0xffff0000)) points to a read-only alias of
-   * espfix_waddr for any X.  That is, there are 65536 RO aliases of
-   * the same page.  Set up RSP so that RSP[31:16] contains the
-   * respective 16 bits of the /userspace/ RSP and RSP nonetheless
-   * still points to an RO alias of the ESPFIX stack. */
-  orq  PER_CPU_VAR(espfix_stack), %rax
-
-  SWITCH_TO_USER_CR3_STACK scratch_reg=%rdi
-  swapgs            /* to user GS */
-  popq  %rdi        /* Restore user RDI */
-
-  movq  %rax, %rsp
-  UNWIND_HINT_IRET_REGS offset=8
-
-  /* At this point, we cannot write to the stack any more, but we can
-   * still read. */
-  popq  %rax        /* Restore user RAX */
-
-  /* RSP now points to an ordinary IRET frame, except that the page
-   * is read-only and RSP[31:16] are preloaded with the userspace
-   * values.  We can now IRET back to userspace. */
-  jmp  native_irq_return_iret
-#endif
-SYM_CODE_END(common_interrupt_return)
-_ASM_NOKPROBE(common_interrupt_return)
-```
-
-```c
 do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
-kernel_clone(struct kernel_clone_args *args)
-    copy_process();
-        task_struct* tsk = dup_task_struct(current, node);
-            /* alloc a new kernel stack */
-            tsk->stack = alloc_thread_stack_node();
-            tsk->stack_vm_area = task_stack_vm_area(tsk);
+kernel_clone(struct kernel_clone_args *args) {
+    copy_process() {
+        task_struct* tsk = dup_task_struct(current, node) {
+            tsk = alloc_task_struct_node(node);
+            arch_dup_task_struct(tsk, orig);
+            alloc_thread_stack_node(tsk, node) {
+                alloc_pages();
+            }
+            setup_thread_stack(tsk, orig);
+            clear_user_return_notifier(tsk);
+            clear_tsk_need_resched(tsk);
+            set_task_stack_end_magic(tsk);
+            clear_syscall_work_syscall_user_dispatch(tsk);
+            return tsk;
+        }
 
-        sched_fork();
+        cgroup_fork();
+        sched_fork() {
             p->sched_class = &fair_sched_class;
             p->sched_class->task_fork(p);
                 task_fork_fair();
@@ -5388,6 +4507,7 @@ kernel_clone(struct kernel_clone_args *args)
                         swap(curr->vruntime, se->vruntime);
                         resched_curr(rq);
                             set_tsk_thread_flag(tsk, TIF_NEED_RESCHED);
+        }
         copy_files();
         copy_fs();
         copy_sighand();
@@ -5395,36 +4515,75 @@ kernel_clone(struct kernel_clone_args *args)
         copy_mm();
         copy_namespaces();
         copy_io();
-        copy_thread_tls(clone_flags, stack_start/*sp*/, stack_size/*arg*/, p, tls);
-            struct pt_regs *childregs = task_pt_regs(p); /* p->stack */
-            struct fork_frame *fork_frame = container_of(childregs, struct fork_frame, regs);
-            struct inactive_task_frame *frame = &fork_frame->frame;
-            p->thread.sp = (unsigned long) fork_frame;
+        copy_thread(clone_flags, stack_start/*sp*/, stack_size/*arg*/, p, tls) {
+            unsigned long clone_flags = args->flags;
+            unsigned long stack_start = args->stack;
+            unsigned long tls = args->tls;
+            struct pt_regs *childregs = task_pt_regs(p);
 
-            frame->ret_addr = (unsigned long) ret_from_fork;
+            memset(&p->thread.cpu_context, 0, sizeof(struct cpu_context));
 
-            if (unlikely(p->flags & PF_KTHREAD)) {
-                /* kernel thread */
+            if (likely(!args->fn)) {
+                *childregs = *current_pt_regs();
+                childregs->regs[0] = 0;
+
+                *task_user_tls(p) = read_sysreg(tpidr_el0);
+                if (system_supports_tpidr2())
+                    p->thread.tpidr2_el0 = read_sysreg_s(SYS_TPIDR2_EL0);
+
+                if (stack_start) {
+                    if (is_compat_thread(task_thread_info(p)))
+                        childregs->compat_sp = stack_start;
+                    else
+                        childregs->sp = stack_start;
+                }
+
+                if (clone_flags & CLONE_SETTLS) {
+                    p->thread.uw.tp_value = tls;
+                    p->thread.tpidr2_el0 = 0;
+                }
+            } else {
+                /* A kthread has no context to ERET to, so ensure any buggy
+                 * ERET is treated as an illegal exception return.
+                 *
+                 * When a user task is created from a kthread, childregs will
+                 * be initialized by start_thread() or start_compat_thread(). */
                 memset(childregs, 0, sizeof(struct pt_regs));
-                frame->bx = sp;    /* function */
-                frame->r12 = arg;
-                return 0;
-            }
+                childregs->pstate = PSR_MODE_EL1h | PSR_IL_BIT;
 
-            frame->bx = 0;
-            *childregs = *current_pt_regs();
-            childregs->ax = 0;
-            if (sp)
-                childregs->sp = sp;
+                p->thread.cpu_context.x19 = (unsigned long)args->fn;
+                p->thread.cpu_context.x20 = (unsigned long)args->fn_arg;
+            }
+            p->thread.cpu_context.pc = (unsigned long)ret_from_fork;
+            p->thread.cpu_context.sp = (unsigned long)childregs;
+            /* For the benefit of the unwinder, set up childregs->stackframe
+             * as the final frame for the new task. */
+            p->thread.cpu_context.fp = (unsigned long)childregs->stackframe;
+
+            ptrace_hw_copy_thread(p);
+
+            return 0;
+        }
         pid = alloc_pid(p->nsproxy->pid_ns_for_children)
+        futex_init_task(p);
+    }
 
 
     wake_up_new_task(p);
         activate_task();
         check_preempt_curr();
+}
 
-ret_from_fork /* process stack_start */
-    --->
+SYM_CODE_START(ret_from_fork)
+    bl	schedule_tail
+    cbz	x19, 1f				// not a kernel thread
+    mov	x0, x20
+    blr	x19
+1:	get_current_task tsk
+    mov	x0, sp
+    bl	asm_exit_to_user_mode
+    b	ret_to_user
+SYM_CODE_END(ret_from_fork)
 ```
 
 # exec
@@ -6770,7 +5929,7 @@ SYSCALL_DEFINE3(execve);
 
 # exit
 ```c
-    do_exit(code)
+do_exit(code) {
     synchronize_group_exit(tsk, code);
 
     kcov_task_exit(tsk);
@@ -6787,26 +5946,27 @@ SYSCALL_DEFINE3(execve);
     exit_mm();
     exit_sem(tsk);
 
-  exit_shm(tsk);
-  exit_files(tsk);
-  exit_fs(tsk);
-  exit_task_namespaces(tsk);
-  exit_task_work(tsk);
-  exit_thread(tsk);
-    perf_event_exit_task(tsk);
-  sched_autogroup_exit_task(tsk);
-  cgroup_exit(tsk);
-    exit_tasks_rcu_start();
-  exit_notify(tsk, group_dead);
-  proc_exit_connector(tsk);
-  mpol_put_task_policy(tsk);
-    exit_io_context(tsk);
-    free_pipe_info(tsk->splice_pipe);
-    put_page(tsk->task_frag.page);
-    exit_rcu();
-  exit_tasks_rcu_finish();
-  lockdep_free_task(tsk);
-  do_task_dead();
+    exit_shm(tsk);
+    exit_files(tsk);
+    exit_fs(tsk);
+    exit_task_namespaces(tsk);
+    exit_task_work(tsk);
+    exit_thread(tsk);
+        perf_event_exit_task(tsk);
+    sched_autogroup_exit_task(tsk);
+    cgroup_exit(tsk);
+        exit_tasks_rcu_start();
+    exit_notify(tsk, group_dead);
+    proc_exit_connector(tsk);
+    mpol_put_task_policy(tsk);
+        exit_io_context(tsk);
+        free_pipe_info(tsk->splice_pipe);
+        put_page(tsk->task_frag.page);
+        exit_rcu();
+    exit_tasks_rcu_finish();
+    lockdep_free_task(tsk);
+    do_task_dead();
+}
 ```
 
 # kthreadd
