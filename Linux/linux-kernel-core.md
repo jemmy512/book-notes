@@ -62,7 +62,8 @@
 
 ![](../Images/Kernel/lock-rt-mutex.png)
 
-* [futex问答 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488098&idx=1&sn=f6336b787450e3f618658bc8ff4a0de0)
+* [futex问答 - 内核工匠](https://mp.weixin.qq.com/s/MHGwhAg2fs6HtRLduHkDrw)
+
 ```c
 static struct {
     struct futex_hash_bucket *queues;
@@ -640,7 +641,7 @@ spin_unlock(spinlock_t *lock) {
 
 ## rwlock
 
-Aka read write spinlock, implemented by qrwlock.
+Aka read write spining lock, implemented by qrwlock. While rwsem is a read write sleeping lock.
 
 ```c
 typedef struct {
@@ -805,6 +806,7 @@ do_raw_write_lock() {
 
 ## mutex
 
+* [Wait/wound mutexes - LWN](https://lwn.net/Articles/548909/)
 * [Mutex内核同步机制详解 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487213&idx=1&sn=f299bbcd57a81dd2d3ed9171d5ebc636)
 
 ### CONFIG_PREEMPT_RT
@@ -1423,6 +1425,8 @@ rt_mutex_unlock(lock)
 ## semaphore
 
 ## rwsem
+
+rwlock is a read write spining lock, implemented by qrwlock. While rwsem is a read write sleeping lock.
 
 * [Linux读写锁逻辑解析 - 内核工匠](https://mp.weixin.qq.com/s/oNa5urBSdMlq41htxJ5miQ)
 * [读写信号量 - 内核工匠](https://mp.weixin.qq.com/s/8cJm7nBM3ESoL1SLJXuMRw)
