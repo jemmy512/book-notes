@@ -1,8 +1,13 @@
 # Table of Contents
 * [_start:](#_start)
+* [setu_arch](#setup_arch)
+    * [setup_machine_fdt](#setup_machine_fdt)
+    * [arm64_memblock_init](#arm64_memblock_init)
+    * [bootmem_init](#bootmem_init)
+* [mm_core_init](#mm_core_init)
+* [memblock](#memblock)
 * [segment](#segment)
 * [paging](#paging)
-* [mm_core_init](#mm_core_init)
 * [user virtual space](#user-virtual-space)
 * [kernel virtual space](#kernel-virtual-space)
 * [numa](#numa)
@@ -33,6 +38,10 @@
         * [do_swap_page](#do_swap_page)
         * [hugetlb_fault](#hugetlb_fault)
 * [pgd](#pgd)
+* [munmap](#munmap)
+* [mmu_gather](#mmu_gather)
+* [rmap](#rmap)
+* [remove_memory](#remove_memory)
 * [kernel mapping](#kernel-mapping)
 * [kmalloc](#kmalloc)
     * [kmalloc_caches](#kmalloc_caches)
@@ -41,6 +50,10 @@
 * [vmalloc](#vmalloc)
 * [vmalloc_fault](#vmalloc_fault)
 * [page reclaim](#page_reclaim)
+* [fork](#fork)
+* [cma](#cma)
+    * [cma_init_reserved_areas](#cma_init_reserved_areas)
+    * [cma_alloc](cma_alloc)
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -48,12 +61,14 @@
     * [Memory Layout on AArch64 Linux](https://www.kernel.org/doc/html/latest/arm64/memory.html)
 
 * Folio
-    * [LWN - Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
+    * [LWN Series - Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
     * [YouTube - Large Pages in the Linux Kernel - 2020.12.03 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=hoSpvGxXgNg)
     * [YouTuBe - Folios - 2022.6.20 Matthew Wilcox](https://www.youtube.com/watch?v=URTuP6wXYPA)
     * [YouTube - Memory Folios - 2022.6.23 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=nknQML80w3E)
+    * [论好名字的重要性： Linux内核page到folio的变迁](https://mp.weixin.qq.com/s/l7lIPwf66Py06X3ACf9BTg)
 * [LWN - Compund Page](https://lwn.net/Kernel/Index/#Memory_management-Compound_pages)
 * [wowo tech - memory management :cn:](http://www.wowotech.net/sort/memory_management)
+    * [ARM64 Kernel Image Mapping的变化](http://www.wowotech.net/memory_management/436.html)
 * [LoyenWang :cn:]()
     * [ARM V8 MMU and mem mapping](https://www.cnblogs.com/LoyenWang/p/11406693.html)
     * [Physical memory init](https://www.cnblogs.com/LoyenWang/p/11440957.html)
@@ -71,7 +86,22 @@
     * [page fault](https://www.cnblogs.com/LoyenWang/p/12116570.html)
     * [rmap](https://www.cnblogs.com/LoyenWang/p/12164683.html)
     * [cma](https://www.cnblogs.com/LoyenWang/p/12182594.html)
+
 * [内存管理2：ARM64 linux虚拟内存布局是怎样的](https://zhuanlan.zhihu.com/p/407063888)
+
+* Cache
+    * [深入学习Cache系列 :one: :link:](https://mp.weixin.qq.com/s/0_TRtwVxWW2B-izGFwykOw) [:two: :link:](https://mp.weixin.qq.com/s/zN1BlEL378YSSKlcL96MGQ) [:three: :link:](https://mp.weixin.qq.com/s/84BAFSCjasJBFDiN-XXUMg)
+
+* [深入理解Linux内核之mmu-gather操作](https://blog.csdn.net/youzhangjing_/article/details/127703682)
+
+*  bin的技术小屋
+    * [深入理解 Linux 虚拟内存管理](https://mp.weixin.qq.com/s/uWadcBxEgctnrgyu32T8sQ)
+    * [深入理解 Linux 物理内存管理](https://mp.weixin.qq.com/s/Cn-oX0W5DrI2PivaWLDpPw)
+    * [深入理解 Linux 物理内存分配全链路实现](https://mp.weixin.qq.com/s/llZXDRG99NUXoMyIAf00ig)
+    * [深入理解 Linux 伙伴系统的设计与实现](https://mp.weixin.qq.com/s/e28oT6vE7cOD5M8pukn_jw)
+    * [深度解读 Linux 内核级通用内存池 - kmalloc](https://mp.weixin.qq.com/s/atHXeXxx0L63w99RW7bMHg)
+    * [深度解读 Linux 虚拟物理内存映射](https://mp.weixin.qq.com/s/FzTBx32ABR0Vtpq50pwNSA)
+
 ---
 
 # _start:
@@ -159,14 +189,15 @@ start_kernel()
             memblock_allow_resize();
             create_idmap();
         }
+
         acpi_table_upgrade();
+
         bootmem_init() {
             dma_pernuma_cma_reserve();
             sparse_init();
             zone_sizes_init();
             dma_contiguous_reserve(arm64_dma_phys_limit);
             reserve_crashkernel();
-            memblock_dump_all();
         }
     }
 
@@ -1036,6 +1067,9 @@ enum migratetype {
 ```
 
 ## page
+
+* [Kernel Index struct_page - LWN](https://lwn.net/Kernel/Index/#Memory_management-struct_page)
+
 ```C++
 struct page {
     /* Atomic flags + zone number, some possibly updated asynchronously */
@@ -1150,15 +1184,14 @@ struct free_area  free_area[MAX_ORDER];
 
 ## alloc_pages
 
-* [Memory Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
-
 ```c
-alloc_pages(make, order)
-    alloc_pages_node(numa_node_id(), mask, order)
-        __alloc_pages(mask, order, nid, NULL)
+alloc_pages(make, order) {
+    alloc_pages_node(numa_node_id(), mask, order) {
+        __alloc_pages(mask, order, nid, NULL) {
             page = get_page_from_freelist() {
             retry:
                 for_next_zone_zonelist_nodemask() {
+                    /* check weather the zone is suitable for alloc */
                 try_this_zone:
                     return page = rmqueue() {
                         if (pcp_allowed_order(order)) {
@@ -1200,7 +1233,20 @@ alloc_pages(make, order)
                                                     high--;
                                                     size >>= 1;
 
-                                                    if (set_page_guard(zone, &page[size], high, migratetype))
+                                                    ret  = set_page_guard(zone, &page[size], high, migratetype) {
+                                                        if (order >= debug_guardpage_minorder())
+                                                            return false;
+
+                                                        __SetPageGuard(page);
+                                                        INIT_LIST_HEAD(&page->buddy_list);
+                                                        set_page_private(page, order);
+                                                        /* Guard pages are not available for any usage */
+                                                        if (!is_migrate_isolate(migratetype))
+                                                            __mod_zone_freepage_state(zone, -(1 << order), migratetype);
+
+                                                        return true;
+                                                    }
+                                                    if (ret)
                                                         continue;
 
                                                     add_to_free_list(&page[size], zone, high, migratetype) {
@@ -1221,18 +1267,26 @@ alloc_pages(make, order)
                                     }
                                     if (unlikely(!page)) {
                                         if (alloc_flags & ALLOC_CMA)
-                                            page = __rmqueue_cma_fallback(zone, order)
+                                            page = __rmqueue_cma_fallback(zone, order) {
                                                 __rmqueue_smallest(zone, order, MIGRATE_CMA);
-                                            __rmqueue_fallback = [](zone, order, migratetype, alloc_flags) {
+                                            }
+                                        if (!page) {
+                                            ret = __rmqueue_fallback() {
 
                                             }
-                                        if (!page && __rmqueue_fallback())
-                                            goto retry;
+                                            if (ret) {
+                                                goto retry;
+                                            }
+                                        }
                                     }
                                     return page;
                                 }
                             } while (check_new_pages(page, order));
                         }
+                        if ((alloc_flags & ALLOC_KSWAPD) && ZONE_BOOSTED_WATERMARK) {
+                            wakeup_kswapd(zone, 0, 0, zone_idx(zone));
+                        }
+                        return page;
                     }
                 }
             }
@@ -1240,22 +1294,79 @@ alloc_pages(make, order)
             if (likely(page))
                 goto out;
 
-            page = __alloc_pages_slowpath()
-                wake_all_kswapds(order, gfp_mask, ac)
-                page = get_page_from_freelist()
+            page = __alloc_pages_slowpath() {
+                alloc_flags = gfp_to_alloc_flags(gfp_mask, order);
+                ac->preferred_zoneref = first_zones_zonelist();
+
+            restart:
+                wake_all_kswapds(order, gfp_mask, ac) {
+
+                }
+                page = get_page_from_freelist();
                 if (page)
                     goto got_pg;
+                __alloc_pages_direct_compact()
+                    --->
+
+            retry:
+                if (alloc_flags & ALLOC_KSWAPD) {
+                     wake_all_kswapds(order, gfp_mask, ac);
+                }
+
                 __alloc_pages_direct_reclaim()
                 __alloc_pages_direct_compact()
+
+                if (should_reclaim_retry()) {
+                    goto retry;
+                }
+
+                if (check_retry_cpuset || check_retry_zonelist)
+                    goto restart;
+
                 __alloc_pages_cpuset_fallback()
 
                 __alloc_pages_may_oom()
-                    out_of_memory()
-                        oom_kill_process()
-                            do_send_sig_info(SIGKILL, SEND_SIG_PRIV)
+                    --->
 
-              /* sched current process */
-              cond_resched()
+                if (did_some_progress) {
+                    no_progress_loops = 0;
+                    goto retry;
+                }
+
+                /* sched current process */
+                cond_resched()
+
+            got_pg:
+                return page;
+            }
+        }
+    }
+}
+```
+
+```c
+__alloc_pages_direct_compact() {
+    compact_result = try_to_compact_pages()
+    if (*compact_result == COMPACT_SKIPPED)
+        return NULL;
+}
+
+```
+
+```c
+__alloc_pages_direct_reclaim() {
+
+}
+```
+
+```c
+__alloc_pages_may_oom() {
+    out_of_memory() {
+        oom_kill_process() {
+            do_send_sig_info(SIGKILL, SEND_SIG_PRIV)
+        }
+    }
+}
 ```
 
 ## free_pages
@@ -1888,10 +1999,12 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 
 # slub
 
+* [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
+
 ![](../Images/Kernel/mem-slub-structure.png)
 
-* [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
-
+* SLUB内存管理 [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
+## slub_alloc
 ```c
 kmem_cache_alloc(s, flags)
     __kmem_cache_alloc_lru(s, lru, flags)
@@ -1987,7 +2100,7 @@ kmem_cache_alloc(s, flags)
                                 return slab;
                         }
 
-                        alloc_single_from_new_slab(s, slab, orig_size)
+                        return alloc_single_from_new_slab(s, slab, orig_size) {
                             object = slab->freelist;
                             slab->freelist = get_freepointer(s, object);
                             slab->inuse = 1;
@@ -1999,6 +2112,8 @@ kmem_cache_alloc(s, flags)
 
                             inc_slabs_node(s, nid, slab->objects);
 
+                            return obj;
+                        }
                     } else { /* ifndef_CONFIG_SLUB_TINY */
                         redo:
                             /* 1. get free obj from cpu cache */
@@ -2117,51 +2232,50 @@ kmem_cache_alloc(s, flags)
                 maybe_wipe_obj_freeptr()
                 slab_want_init_on_alloc()
                 slab_post_alloc_hook()
-
 ```
 
 ```c
 /* Reuses the bits in struct page */
 struct slab {
-  unsigned long __page_flags;
+    unsigned long __page_flags;
 
 #if defined(CONFIG_SLAB)
 
 #elif defined(CONFIG_SLUB)
 
-  struct kmem_cache *slab_cache;
-  union {
-    struct {
-      union {
-        struct list_head slab_list;
+    struct kmem_cache *slab_cache;
+    union {
+        struct {
+            union {
+                struct list_head slab_list;
 #ifdef CONFIG_SLUB_CPU_PARTIAL
-        struct {
-          struct slab *next;
-          int slabs;  /* Nr of slabs left */
-        };
+                struct {
+                    struct slab *next;
+                    int slabs; /* Nr of slabs left */
+                };
 #endif
-      };
+            };
 
-      /* Double-word boundary */
-      void *freelist; /* first free object, only used if CONFIG_SLUB_TINY */
-      union {
-        unsigned long counters;
-        struct {
-          unsigned inuse:16;
-          unsigned objects:15;
-          unsigned frozen:1;
+            /* Double-word boundary */
+            void *freelist; /* first free object, only used if CONFIG_SLUB_TINY */
+            union {
+                unsigned long counters;
+                struct {
+                    unsigned inuse:16;
+                    unsigned objects:15;
+                    unsigned frozen:1;
+                };
+            };
         };
-      };
+
+        struct rcu_head rcu_head;
     };
 
-    struct rcu_head rcu_head;
-  };
-
-  unsigned int __unused;
+    unsigned int __unused;
 
 #endif
 
-  atomic_t __page_refcount;
+    atomic_t __page_refcount;
 };
 ```
 
@@ -2651,10 +2765,8 @@ __remove_pgd_mapping()
 mmap() {
     sys_mmap_pgoff() {
         vm_mmap_pgoff() {
-            do_mmap_pgoff() {
-                do_mmap()
-
-                get_unmapped_area();
+            do_mmap() {
+                get_unmapped_area() {
                     get_area = current->mm->get_unmapped_area;
                     if (file) {
                     if (file->f_op->get_unmapped_area)
@@ -2665,9 +2777,10 @@ mmap() {
                         get_area = shmem_get_unmapped_area;
                     }
                     addr = get_area(file, addr, len, pgoff, flags);
+                }
 
                 map_region() {
-                    if (may_expand_vm()) {
+                    if (!may_expand_vm()) {
                         return -ENOMEM;
                     }
 
@@ -2681,10 +2794,12 @@ mmap() {
                     if (file) {
                         vma->vm_file = get_file(file);
                         /* 2.1. link the file to vma */
-                        rc = call_mtmap(file, vma);
+                        rc = call_mtmap(file, vma) {
                             file->f_op->mmap(file, vma);
-                            ext4_file_mmap();
+                            ext4_file_mmap() {
                                 vma->vm_ops = &ext4_file_vm_ops;
+                            }
+                        }
 
                         if (rc) {
                             unmap_region()
@@ -2700,7 +2815,6 @@ mmap() {
                 /* 2.2. link the vma to the file */
                 vma_link(mm, vma, prev, rb_link, rb_parent);
                     vma_interval_tree_insert(vma, &mapping->i_mmap);
-
             }
         }
     }
@@ -2708,19 +2822,20 @@ mmap() {
 
 
 setup_new_exec();
-  arch_pick_mmap_layout();
-    mm->get_unmapped_area = arch_get_unmapped_area;
-    arch_pick_mmap_base();
-      mmap_base();
+    arch_pick_mmap_layout();
+        mm->get_unmapped_area = arch_get_unmapped_area;
+        arch_pick_mmap_base();
+            mmap_base();
 
 mm->get_unmapped_area();
-  arch_get_unmapped_area();
-    find_start_end();
-      *begin  = get_mmap_base(1);
-        return mm->mmap_base;
-      *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
-    vm_unmapped_area();
-      unmapped_area();
+    arch_get_unmapped_area();
+        find_start_end() {
+            *begin = get_mmap_base(1);
+                return mm->mmap_base;
+            *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
+        }
+        vm_unmapped_area();
+            unmapped_area();
 ```
 
 ![](../Images/Kernel/mem-mmap-vma-file-page.png)
@@ -2925,6 +3040,7 @@ handle_mm_fault(vma, address, flags, regs);
                             folio_add_lru_vma(folio, vma);
 
                             set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+                                --->
                             update_mmu_cache()
                         }
                     } else {
@@ -3123,6 +3239,7 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 ```
 
 # munmap
+
 ```c
 munmap()
 SYSCALL_DEFINE2(munmap) {
@@ -3135,225 +3252,14 @@ SYSCALL_DEFINE2(munmap) {
                     update_hiwater_rss(mm);
 
                     /* 1. just unmap the phys which is mmaped with vma, vma is free by vm_area_free */
-                    unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
-                        do {
-                            unmap_single_vma();
-                                unmap_page_range() {
-                                    tlb_start_vma(tlb, vma);
-
-                                    pgd = pgd_offset(vma->vm_mm, addr);
-                                    do {
-                                        next = pgd_addr_end(addr, end);
-                                        if (pgd_none_or_clear_bad(pgd))
-                                            continue;
-                                        next = zap_p4d_range(tlb, vma, pgd, addr, next, details); {
-                                            p4d = p4d_offset(pgd, addr);
-                                            do {
-                                                next = p4d_addr_end(addr, end);
-                                                if (p4d_none_or_clear_bad(p4d))
-                                                    continue;
-                                                next = zap_pud_range(tlb, vma, p4d, addr, next, details) {
-                                                    do {
-                                                        if (pud_none_or_clear_bad(pud))
-                                                            continue;
-                                                        next = zap_pmd_range(tlb, vma, pud, addr, next, details); {
-                                                            zap_pte_range() {
-                                                                do {
-                                                                    pte_t ptent = *pte;
-                                                                    struct page *page;
-
-                                                                    if (pte_present(ptent)) {
-                                                                        unsigned int delay_rmap;
-
-                                                                        page = vm_normal_page(vma, addr, ptent);
-
-                                                                        ptent = ptep_get_and_clear_full(mm, addr, pte, tlb->fullmm);
-                                                                        tlb_remove_tlb_entry(tlb, pte, addr) {
-                                                                            tlb_flush_pte_range()
-                                                                                __tlb_adjust_range(tlb, address, size);
-                                                                                tlb->cleared_ptes = 1;
-                                                                            __tlb_remove_tlb_entry()
-                                                                        }
-                                                                        zap_install_uffd_wp_if_needed(vma, addr, pte, details, ptent);
-                                                                        if (unlikely(!page))
-                                                                            continue;
-
-                                                                        delay_rmap = 0;
-                                                                        if (!PageAnon(page)) {
-                                                                            if (pte_dirty(ptent)) {
-                                                                                set_page_dirty(page);
-                                                                                if (tlb_delay_rmap(tlb)) {
-                                                                                    delay_rmap = 1;
-                                                                                    force_flush = 1;
-                                                                                }
-                                                                            }
-                                                                        }
-
-                                                                        __tlb_remove_page(tlb, page, delay_rmap) {
-                                                                            batch = tlb->active;
-                                                                            batch->encoded_pages[batch->nr++] = page;
-                                                                            if (batch->nr == batch->max) {
-                                                                                if (!tlb_next_batch(tlb))
-                                                                                    return true;
-                                                                                batch = tlb->active;
-                                                                            }
-                                                                        }
-                                                                    }
-
-
-                                                                    pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
-                                                                    zap_install_uffd_wp_if_needed(vma, addr, pte, details, ptent);
-                                                                } while (pte++, addr += PAGE_SIZE, addr != end);
-                                                            }
-                                                        }
-                                                    next:
-                                                        cond_resched();
-                                                    } while (pud++, addr = next, addr != end);
-                                                }
-                                            } while (p4d++, addr = next, addr != end);
-                                        }
-                                    } while (pgd++, addr = next, addr != end);
-
-                                    tlb_end_vma(tlb, vma) {
-                                        tlb_flush_mmu_tlbonly(tlb);
-                                    }
-                                }
-                        } while ((vma = mas_find(&mas, end_addr - 1)) != NULL);
-                    }
-
+                    unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked)
+                        --->
                     /* 2 free pg table */
-                    free_pgtables(&tlb) {
-                        do {
-                            unlink_anon_vmas(vma);
-                            unlink_file_vma(vma);
-
-                            /* frees user-level page tables */
-                            free_pgd_range() {
-                                do {
-                                    next = pgd_addr_end(addr, end);
-                                    if (pgd_none_or_clear_bad(pgd))
-                                        continue;
-                                    free_p4d_range(tlb, pgd, addr, next, floor, ceiling); {
-                                        do {
-                                            next = p4d_addr_end(addr, end);
-                                            if (p4d_none_or_clear_bad(p4d))
-                                                continue;
-                                            free_pud_range(tlb, p4d, addr, next, floor, ceiling) {
-                                                do {
-                                                    next = pud_addr_end(addr, end);
-                                                    if (pud_none_or_clear_bad(pud))
-                                                        continue;
-                                                    free_pmd_range(tlb, pud, addr, next, floor, ceiling); {
-                                                        do {
-                                                            next = pmd_addr_end(addr, end);
-                                                            if (pmd_none_or_clear_bad(pmd))
-                                                                continue;
-                                                            free_pte_range(tlb, pmd, addr); {
-                                                                pgtable_t token = pmd_pgtable(*pmd);
-                                                                pmd_clear(pmd);
-                                                                pte_free_tlb(tlb, token, addr) {
-                                                                    tlb_flush_pmd_range(tlb, address, PAGE_SIZE)
-                                                                    tlb->freed_tables = 1;
-                                                                    __pte_free_tlb(tlb, ptep, address) {
-                                                                        pgtable_pte_page_dtor(pte);
-                                                                        tlb_remove_table(tlb, pte) {
-                                                                            /* add to tlb mmu_gather */
-                                                                            (*batch)->tables[(*batch)->nr++] = table;
-                                                                            if ((*batch)->nr == MAX_TABLE_BATCH)
-                                                                                tlb_table_flush(tlb)
-                                                                                    --->
-                                                                        }
-                                                                    }
-                                                                }
-                                                                mm_dec_nr_ptes(tlb->mm);
-                                                            }
-                                                        } while (pmd++, addr = next, addr != end);
-
-                                                        pud_clear(pud);
-                                                        pmd_free_tlb(tlb, pmd, start) {
-                                                            tlb_flush_pud_range(tlb, address, PAGE_SIZE);
-                                                            tlb->freed_tables = 1;
-                                                            __pmd_free_tlb(tlb, pmdp, address) {
-                                                                pgtable_pmd_page_dtor(page);
-                                                                tlb_remove_table(tlb, page);
-                                                                    --->
-                                                            }
-                                                        }
-                                                        mm_dec_nr_pmds(tlb->mm);
-                                                    }
-                                                } while (pud++, addr = next, addr != end);
-
-                                                pud = pud_offset(p4d, start);
-                                                p4d_clear(p4d);
-                                                pud_free_tlb(tlb, pud, start) {
-                                                    tlb_remove_table(tlb, pud);
-                                                        --->
-                                                }
-                                                mm_dec_nr_puds(tlb->mm);
-                                            }
-
-                                            p4d = p4d_offset(pgd, start);
-                                            pgd_clear(pgd);
-                                            p4d_free_tlb(tlb, p4d, start) {
-
-                                            }
-                                        } while (p4d++, addr = next, addr != end);
-                                    }
-                                } while (pgd++, addr = next, addr != end)
-                            }
-                        } while (vma);
-                    }
-
+                    free_pgtables(&tlb)
+                        --->
                     /* 3. finish gather */
-                    tlb_finish_mmu(&tlb) {
-                        tlb_flush_mmu(tlb) {
-                            tlb_flush_mmu_tlbonly(tlb)  {
-                                if (!(tlb->freed_tables
-                                    || tlb->cleared_ptes
-                                    || tlb->cleared_pmds
-                                    || tlb->cleared_puds
-                                    || tlb->cleared_p4ds)
-                                ) {
-                                    return;
-                                }
-                                tlb_flush(tlb);
-                                    __flush_tlb_range()
-                                __tlb_reset_range(tlb);
-                            }
-
-                            tlb_flush_mmu_free(tlb) {
-                                tlb_table_flush(tlb)  {
-                                    if (*batch) {
-                                        tlb_table_invalidate(tlb) {
-                                            if (tlb_needs_table_invalidate()) {
-                                                tlb_flush_mmu_tlbonly(tlb)
-                                                    --->
-                                            }
-                                        }
-                                        tlb_remove_table_free(*batch) {
-                                            for (i = 0; i < batch->nr; i++)
-                                                __tlb_remove_table(batch->tables[i]);
-                                                    free_page_and_swap_cache();
-                                                        free_page();
-                                            free_page((unsigned long)bat ch);
-                                        }
-                                        *batch = NULL;
-                                    }
-                                }
-
-                                tlb_batch_pages_flush(tlb) {
-                                    free_pages_and_swap_cache(pages, nr);
-                                }
-                            }
-                        }
-
-                        tlb_batch_list_free() {
-                            for (batch = tlb->local.next; batch; batch = next) {
-                                next = batch->next;
-                                free_pages((unsigned long)batch, 0);
-                            }
-                        }
-                    }
+                    tlb_finish_mmu(&tlb)
+                        --->
                 }
 
                 remove_mt(mm, &mas_detach) {
@@ -3369,6 +3275,553 @@ SYSCALL_DEFINE2(munmap) {
             }
         }
     }
+}
+```
+
+# mmu_gather
+
+* [ARM64内核源码解读: mmu-gather操作](https://blog.csdn.net/m0_50662680/article/details/128445158)
+
+![](../Images/Kernel/mem-mmu_gather.png)
+
+```c
+struct mmu_gather {
+    struct mm_struct    		*mm;
+
+    struct mmu_table_batch    *batch;
+
+    unsigned long        start;
+    unsigned long        end;
+
+    unsigned int        fullmm : 1;
+
+    unsigned int        need_flush_all : 1;
+
+    unsigned int        freed_tables : 1;
+
+    unsigned int        delayed_rmap : 1;
+
+    unsigned int        cleared_ptes : 1;
+    unsigned int        cleared_pmds : 1;
+    unsigned int        cleared_puds : 1;
+    unsigned int        cleared_p4ds : 1;
+
+    unsigned int        vma_exec : 1;
+    unsigned int        vma_huge : 1;
+    unsigned int        vma_pfn  : 1;
+
+    unsigned int        batch_count;
+
+    struct mmu_gather_batch *active;
+    struct mmu_gather_batch    local;
+    struct page        *__pages[MMU_GATHER_BUNDLE];
+
+#ifdef CONFIG_MMU_GATHER_PAGE_SIZE
+    unsigned int page_size;
+#endif
+};
+
+struct mmu_table_batch {
+    struct rcu_head     rcu;
+    unsigned int        nr;
+    void                *tables[];
+};
+
+struct mmu_gather_batch {
+    struct mmu_gather_batch     *next;
+    unsigned int                nr;
+    unsigned int                max;
+    struct encoded_page         *encoded_pages[];
+};
+```
+
+## tlb_gather_mmu
+```c
+tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm,
+                 bool fullmm) {
+    tlb->mm = mm;
+    tlb->fullmm = fullmm;
+
+#ifndef CONFIG_MMU_GATHER_NO_GATHER
+    tlb->need_flush_all = 0;
+    tlb->local.next = NULL;
+    tlb->local.nr   = 0;
+    tlb->local.max  = ARRAY_SIZE(tlb->__pages);
+    tlb->active     = &tlb->local;
+    tlb->batch_count = 0;
+#endif
+    tlb->delayed_rmap = 0;
+
+    tlb_table_init(tlb) {
+        tlb->batch = NULL;
+    }
+
+#ifdef CONFIG_MMU_GATHER_PAGE_SIZE
+    tlb->page_size = 0;
+#endif
+
+    __tlb_reset_range(tlb) {
+        if (tlb->fullmm) {
+            tlb->start = tlb->end = ~0;
+        } else {
+            tlb->start = TASK_SIZE;
+            tlb->end = 0;
+        }
+        tlb->freed_tables = 0;
+        tlb->cleared_ptes = 0;
+        tlb->cleared_pmds = 0;
+        tlb->cleared_puds = 0;
+        tlb->cleared_p4ds = 0;
+    }
+
+    inc_tlb_flush_pending(tlb->mm);
+}
+```
+
+## unmap_vmas
+```c
+unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
+    do {
+        unmap_single_vma();
+            unmap_page_range() {
+                tlb_start_vma(tlb, vma);
+
+                pgd = pgd_offset(vma->vm_mm, addr);
+                do {
+                    next = pgd_addr_end(addr, end);
+                    if (pgd_none_or_clear_bad(pgd))
+                        continue;
+                    next = zap_p4d_range(tlb, vma, pgd, addr, next, details); {
+                        p4d = p4d_offset(pgd, addr);
+                        do {
+                            next = p4d_addr_end(addr, end);
+                            if (p4d_none_or_clear_bad(p4d))
+                                continue;
+                            next = zap_pud_range(tlb, vma, p4d, addr, next, details) {
+                                do {
+                                    if (pud_none_or_clear_bad(pud))
+                                        continue;
+                                    next = zap_pmd_range(tlb, vma, pud, addr, next, details); {
+                                        zap_pte_range() {
+                                            start_pte = pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
+                                            flush_tlb_batched_pending(mm);
+                                            arch_enter_lazy_mmu_mode();
+
+                                            do {
+                                                pte_t ptent = *pte;
+                                                struct page *page;
+
+                                                if (pte_present(ptent)) {
+                                                    unsigned int delay_rmap;
+
+                                                    page = vm_normal_page(vma, addr, ptent);
+
+                                                    ptent = ptep_get_and_clear_full(mm, addr, pte, tlb->fullmm);
+                                                    tlb_remove_tlb_entry(tlb, pte, addr) {
+                                                        tlb_flush_pte_range() {
+                                                            __tlb_adjust_range(tlb, address, size) {
+                                                                tlb->start = min(tlb->start, address);
+                                                                tlb->end = max(tlb->end, address + range_size);
+                                                            }
+                                                            tlb->cleared_ptes = 1;
+                                                        }
+                                                        __tlb_remove_tlb_entry();
+                                                    }
+                                                    zap_install_uffd_wp_if_needed(vma, addr, pte, details, ptent);
+                                                    if (unlikely(!page))
+                                                        continue;
+
+                                                    delay_rmap = 0;
+                                                    if (!PageAnon(page)) {
+                                                        if (pte_dirty(ptent)) {
+                                                            set_page_dirty(page);
+                                                            if (tlb_delay_rmap(tlb)) {
+                                                                delay_rmap = 1;
+                                                                force_flush = 1;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    ret = __tlb_remove_page(tlb, page, delay_rmap) {
+                                                        batch = tlb->active;
+                                                        batch->encoded_pages[batch->nr++] = page;
+                                                        if (batch->nr == batch->max) {
+                                                            ret = tlb_next_batch(tlb) {
+                                                                batch = tlb->active;
+                                                                if (batch->next) {
+                                                                    tlb->active = batch->next;
+                                                                    return true;
+                                                                }
+
+                                                                if (tlb->batch_count == MAX_GATHER_BATCH_COUNT)
+                                                                    return false;
+
+                                                                batch = (void *)__get_free_page(GFP_NOWAIT | __GFP_NOWARN);
+                                                                if (!batch)
+                                                                    return false;
+
+                                                                tlb->batch_count++;
+                                                                batch->next = NULL;
+                                                                batch->nr   = 0;
+                                                                batch->max  = MAX_GATHER_BATCH;
+
+                                                                tlb->active->next = batch;
+                                                                tlb->active = batch;
+
+                                                                return true;
+                                                            }
+                                                            if (!ret)
+                                                                return true;
+                                                            batch = tlb->active;
+                                                        }
+                                                    }
+                                                    if (ret) {
+                                                        force_flush = 1;
+                                                        addr += PAGE_SIZE;
+                                                        break;
+                                                    }
+                                                    continue;
+                                                }
+
+                                                pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
+                                                zap_install_uffd_wp_if_needed(vma, addr, pte, details, ptent);
+                                            } while (pte++, addr += PAGE_SIZE, addr != end);
+
+                                            if (force_flush) {
+                                                tlb_flush_mmu_tlbonly(tlb);
+                                                tlb_flush_rmaps(tlb, vma);
+                                            }
+                                            pte_unmap_unlock(start_pte, ptl);
+
+                                            /*
+                                            * If we forced a TLB flush (either due to running out of
+                                            * batch buffers or because we needed to flush dirty TLB
+                                            * entries before releasing the ptl), free the batched
+                                            * memory too. Come back again if we didn't do everything.
+                                            */
+                                            if (force_flush)
+                                                tlb_flush_mmu(tlb);
+
+                                            return addr;
+                                        }
+                                    }
+                                next:
+                                    cond_resched();
+                                } while (pud++, addr = next, addr != end);
+                            }
+                        } while (p4d++, addr = next, addr != end);
+                    }
+                } while (pgd++, addr = next, addr != end);
+
+                tlb_end_vma(tlb, vma) {
+                    tlb_flush_mmu_tlbonly(tlb);
+                }
+            }
+    } while ((vma = mas_find(&mas, end_addr - 1)) != NULL);
+}
+```
+
+## free_pgtables
+```c
+/* 2 free pg table */
+free_pgtables(&tlb) {
+    do {
+        unlink_anon_vmas(vma);
+        unlink_file_vma(vma);
+
+        free_pgd_range() {
+            addr &= PMD_MASK;
+            if (addr < floor) {
+                addr += PMD_SIZE;
+                if (!addr)
+                    return;
+            }
+            if (ceiling) {
+                ceiling &= PMD_MASK;
+                if (!ceiling)
+                    return;
+            }
+            if (end - 1 > ceiling - 1)
+                end -= PMD_SIZE;
+            if (addr > end - 1)
+                return;
+
+            do {
+                next = pgd_addr_end(addr, end);
+                if (pgd_none_or_clear_bad(pgd))
+                    continue;
+                free_p4d_range(tlb, pgd, addr, next, floor, ceiling) {
+                    do {
+                        next = p4d_addr_end(addr, end);
+                        if (p4d_none_or_clear_bad(p4d))
+                            continue;
+                        free_pud_range(tlb, p4d, addr, next, floor, ceiling) {
+                            do {
+                                next = pud_addr_end(addr, end);
+                                if (pud_none_or_clear_bad(pud))
+                                    continue;
+                                free_pmd_range(tlb, pud, addr, next, floor, ceiling); {
+                                    do {
+                                        next = pmd_addr_end(addr, end);
+                                        if (pmd_none_or_clear_bad(pmd))
+                                            continue;
+                                        free_pte_range(tlb, pmd, addr); {
+                                            pgtable_t token = pmd_pgtable(*pmd);
+                                            pmd_clear(pmd);
+                                            pte_free_tlb(tlb, token, addr) {
+                                                tlb_flush_pmd_range(tlb, address, PAGE_SIZE) {
+                                                    __tlb_adjust_range(tlb, address, size);
+                                                    tlb->cleared_pmds = 1;
+                                                }
+                                                tlb->freed_tables = 1;
+                                                __pte_free_tlb(tlb, ptep, address) {
+                                                    pgtable_pte_page_dtor(pte);
+                                                    tlb_remove_table(tlb, pte) {
+                                                        struct mmu_table_batch **batch = &tlb->batch;
+
+                                                        if (*batch == NULL) {
+                                                            *batch = (struct mmu_table_batch *)__get_free_page(GFP_NOWAIT | __GFP_NOWARN);
+                                                            if (*batch == NULL) {
+                                                                tlb_table_invalidate(tlb);
+                                                                tlb_remove_table_one(table);
+                                                                return;
+                                                            }
+                                                            (*batch)->nr = 0;
+                                                        }
+
+                                                        (*batch)->tables[(*batch)->nr++] = table;
+                                                        if ((*batch)->nr == MAX_TABLE_BATCH) {
+                                                            tlb_table_flush(tlb);
+                                                                --->
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            mm_dec_nr_ptes(tlb->mm);
+                                        }
+                                    } while (pmd++, addr = next, addr != end);
+
+                                    start &= PUD_MASK;
+                                    if (start < floor)
+                                        return;
+                                    if (ceiling) {
+                                        ceiling &= PUD_MASK;
+                                        if (!ceiling)
+                                            return;
+                                    }
+                                    if (end - 1 > ceiling - 1)
+                                        return;
+
+                                    pud_clear(pud);
+                                    pmd_free_tlb(tlb, pmd, start) {
+                                        tlb_flush_pud_range(tlb, address, PAGE_SIZE) {
+                                            __tlb_adjust_range(tlb, address, size);
+                                            tlb->cleared_puds = 1;
+                                        }
+                                        tlb->freed_tables = 1;
+                                        __pmd_free_tlb(tlb, pmdp, address) {
+                                            pgtable_pmd_page_dtor(page);
+                                            tlb_remove_table(tlb, page);
+                                                --->
+                                        }
+                                    }
+                                    mm_dec_nr_pmds(tlb->mm);
+                                }
+                            } while (pud++, addr = next, addr != end);
+
+                            start &= P4D_MASK;
+                            if (start < floor)
+                                return;
+                            if (ceiling) {
+                                ceiling &= P4D_MASK;
+                                if (!ceiling)
+                                    return;
+                            }
+                            if (end - 1 > ceiling - 1)
+                                return;
+
+                            pud = pud_offset(p4d, start);
+                            p4d_clear(p4d);
+                            pud_free_tlb(tlb, pud, start) {
+                                tlb_remove_table(tlb, pud);
+                                    --->
+                            }
+                            mm_dec_nr_puds(tlb->mm);
+                        }
+
+                        p4d = p4d_offset(pgd, start);
+                        pgd_clear(pgd);
+                        p4d_free_tlb(tlb, p4d, start) {
+
+                        }
+                    } while (p4d++, addr = next, addr != end);
+                }
+            } while (pgd++, addr = next, addr != end)
+        }
+    } while (vma);
+}
+```
+
+## tlb_finish_mmu
+```c
+/* 3. finish gather */
+tlb_finish_mmu(&tlb) {
+    tlb_flush_mmu(tlb) {
+        tlb_flush_mmu_tlbonly(tlb)  {
+            if (!(tlb->freed_tables
+                || tlb->cleared_ptes || tlb->cleared_pmds
+                || tlb->cleared_puds || tlb->cleared_p4ds)) {
+
+                return;
+            }
+            tlb_flush(tlb) {
+                if (tlb->fullmm) {
+                    if (!last_level)
+                        flush_tlb_mm(tlb->mm);
+                    return;
+                }
+
+                __flush_tlb_range(&vma, tlb->start, tlb->end, stride,
+                        last_level, tlb_level);
+            }
+            __tlb_reset_range(tlb) {
+                if (tlb->fullmm) {
+                    tlb->start = tlb->end = ~0;
+                } else {
+                    tlb->start = TASK_SIZE;
+                    tlb->end = 0;
+                }
+                tlb->freed_tables = 0;
+                tlb->cleared_ptes = 0;
+                tlb->cleared_pmds = 0;
+                tlb->cleared_puds = 0;
+                tlb->cleared_p4ds = 0;
+            }
+        }
+
+        tlb_flush_mmu_free(tlb) {
+            tlb_table_flush(tlb)  {
+                if (*batch) {
+                    tlb_table_invalidate(tlb) {
+                        if (tlb_needs_table_invalidate()) {
+                            tlb_flush_mmu_tlbonly(tlb)
+                                --->
+                        }
+                    }
+                    tlb_remove_table_free(*batch) {
+                        for (i = 0; i < batch->nr; i++) {
+                            __tlb_remove_table(batch->tables[i]) {
+                                free_page_and_swap_cache() {
+                                    free_page();
+                                }
+                            }
+                        }
+                        free_page((unsigned long)batch);
+                    }
+                    *batch = NULL;
+                }
+            }
+
+            tlb_batch_pages_flush(tlb) {
+                free_pages_and_swap_cache(pages, nr) {
+                    lru_add_drain();
+                    for (int i = 0; i < nr; i++)
+                        free_swap_cache(encoded_page_ptr(pages[i]));
+                    release_pages(pages, nr);
+                }
+            }
+        }
+    }
+
+    tlb_batch_list_free() {
+        for (batch = tlb->local.next; batch; batch = next) {
+            next = batch->next;
+            free_pages((unsigned long)batch, 0);
+        }
+    }
+}
+```
+
+# mremap
+```c
+SYSCALL_DEFINE5(mremap) {
+    vma = vma_lookup(mm, addr);
+    if (flags & (MREMAP_FIXED | MREMAP_DONTUNMAP)) {
+        ret = mremap_to(addr, old_len, new_addr, new_len,
+                &locked, flags, &uf, &uf_unmap_early,
+                &uf_unmap);
+        goto out;
+    }
+    if (old_len >= new_len) {
+        VMA_ITERATOR(vmi, mm, addr + new_len);
+
+        if (old_len == new_len) {
+            ret = addr;
+            goto out;
+        }
+
+        ret = do_vmi_munmap(&vmi, mm, addr + new_len, old_len - new_len,
+                    &uf_unmap, true);
+        if (ret)
+            goto out;
+
+        ret = addr;
+        goto out_unlocked;
+    }
+
+    /* Ok, we need to grow */
+    vma = vma_to_resize(addr, old_len, new_len, flags);
+
+    /* old_len exactly to the end of the area.. */
+    if (old_len == vma->vm_end - addr) {
+        /* can we just expand the current mapping? */
+        if (vma_expandable(vma, new_len - old_len)) {
+            long pages = (new_len - old_len) >> PAGE_SHIFT;
+            unsigned long extension_start = addr + old_len;
+            unsigned long extension_end = addr + new_len;
+            pgoff_t extension_pgoff = vma->vm_pgoff +
+                ((extension_start - vma->vm_start) >> PAGE_SHIFT);
+            VMA_ITERATOR(vmi, mm, extension_start);
+
+            vma = vma_merge(&vmi, mm, vma, extension_start,
+                extension_end, vma->vm_flags, vma->anon_vma,
+                vma->vm_file, extension_pgoff, vma_policy(vma),
+                vma->vm_userfaultfd_ctx, anon_vma_name(vma));
+            if (!vma) {
+                vm_unacct_memory(pages);
+                ret = -ENOMEM;
+                goto out;
+            }
+
+            if (vma->vm_flags & VM_LOCKED) {
+                mm->locked_vm += pages;
+                locked = true;
+                new_addr = addr;
+            }
+            ret = addr;
+            goto out;
+        }
+    }
+
+    ret = -ENOMEM;
+    if (flags & MREMAP_MAYMOVE) {
+        unsigned long map_flags = 0;
+        if (vma->vm_flags & VM_MAYSHARE)
+            map_flags |= MAP_SHARED;
+
+        new_addr = get_unmapped_area(vma->vm_file, 0, new_len,
+            vma->vm_pgoff + ((addr - vma->vm_start) >> PAGE_SHIFT),
+            map_flags);
+        if (IS_ERR_VALUE(new_addr)) {
+            ret = new_addr;
+            goto out;
+        }
+
+        ret = move_vma(vma, addr, old_len, new_len, new_addr,
+            &locked, flags, &uf, &uf_unmap);
+    }
+out:
+    return ret;
 }
 ```
 
@@ -4123,420 +4576,81 @@ static  void *lowmem_page_address(const struct page *page)
 
 # vmalloc
 
-```c
-vmalloc(size);
-    __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END, gfp_mask, PAGE_KERNEL, 0, node, caller)
-    struct vm_struct *area = __get_vm_area_node();
-        area = kzalloc_node(sizeof(*area));
-        /* Allocate a region of KVA */
-        va = alloc_vmap_area(size);
-            va = kmem_cache_alloc_node(vmap_area_cachep);
-            addr = __alloc_vmap_area(&free_vmap_area_root, &free_vmap_area_list, size, align, vstart, vend);
-                va = find_vmap_lowest_match();
-                adjust_va_to_fit_type();
-                    kmem_cache_alloc(vmap_area_cachep, GFP_NOWAIT);
-            va->va_start = addr;
-            va->va_end = addr + size;
-            va->vm = NULL;
-            insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
-        setup_vmalloc_vm(area, va, flags, caller);
-
-    /* Allocate physical pages and map them into vmalloc space. */
-    __vmalloc_area_node(area, gfp_mask, prot, shift, node);
-        vm_area_alloc_pages();
-            alloc_pages();
-
-        vmap_pages_range(addr, addr + size, prot, area->pages, page_shift);
-            vmap_range_noflush();
-                pgd = pgd_offset_k(addr);
-                vmap_p4d_range();
-                    p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
-                    vmap_pud_range();
-                        pud = pud_alloc_track(&init_mm, p4d, addr, mask);
-                        vmap_pmd_range();
-                            pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
-                            vmap_pte_range();
-                                pte = pte_alloc_kernel_track(pmd, addr, mask);
-                                set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot));
-```
-
 ```C++
 struct vm_struct {
-  struct vm_struct  *next;
-  void              *addr;
-  unsigned long     size;
-  unsigned long     flags;
-  struct page       **pages;
-  unsigned int      nr_pages;
-  phys_addr_t       phys_addr;
-  const void        *caller;
+    struct vm_struct  *next;
+    void              *addr;
+    unsigned long     size;
+    unsigned long     flags;
+    struct page       **pages;
+    unsigned int      nr_pages;
+    phys_addr_t       phys_addr;
+    const void        *caller;
 };
 
 struct vmap_area {
-  unsigned long va_start;
-  unsigned long va_end;
+    unsigned long va_start;
+    unsigned long va_end;
 
-  struct rb_node rb_node; /* address sorted rbtree */
-  struct list_head list; /* address sorted list */
+    struct rb_node rb_node; /* address sorted rbtree */
+    struct list_head list; /* address sorted list */
 
-  union {
-    unsigned long subtree_max_size; /* in "free" tree free_vmap_area_root */
-    struct vm_struct *vm;           /* in "busy" tree vmap_area_root */
-  };
+    union {
+        unsigned long subtree_max_size; /* in "free" tree free_vmap_area_root */
+        struct vm_struct *vm;           /* in "busy" tree vmap_area_root */
+    };
 };
+```
 
-/* The kmalloc() function guarantees that the pages are
- * physically contiguous (and virtually contiguous).
- *
- * The vmalloc() function ensures only that the pages are
- * contiguous within the virtual address space. */
-void *vmalloc(unsigned long size)
-{
-  return __vmalloc_node(size, 1, GFP_KERNEL, NUMA_NO_NODE, __builtin_return_address(0));
-}
-
-void *__vmalloc_node(unsigned long size, unsigned long align,
-          gfp_t gfp_mask, int node, const void *caller)
-{
-  return __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END,
-        gfp_mask, PAGE_KERNEL, 0, node, caller);
-}
-
-void *__vmalloc_node_range(
-  unsigned long size, unsigned long align,
-  unsigned long start, unsigned long end, gfp_t gfp_mask,
-  pgprot_t prot, unsigned long vm_flags, int node,
-  const void *caller)
-{
-  struct vm_struct *area;
-  void *addr;
-  unsigned long real_size = size;
-
-  size = PAGE_ALIGN(size);
-
-  area = __get_vm_area_node(size, align, VM_ALLOC | VM_UNINITIALIZED |
-        vm_flags, start, end, node, gfp_mask, caller);
-
-  /* Allocate physical pages and map them into vmalloc space. */
-  ret = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
-
-  return area->addr;
-}
-
-struct vm_struct *__get_vm_area_node(unsigned long size,
-    unsigned long align, unsigned long shift, unsigned long flags,
-    unsigned long start, unsigned long end, int node,
-    gfp_t gfp_mask, const void *caller)
-{
-  struct vmap_area *va;
-  struct vm_struct *area;
-  unsigned long requested_size = size;
-
-  size = ALIGN(size, 1ul << shift);
-  if (unlikely(!size))
-    return NULL;
-
-  if (flags & VM_IOREMAP)
-    align = 1ul << clamp_t(int, get_count_order_long(size), PAGE_SHIFT, IOREMAP_MAX_ORDER);
-
-  area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node);
-  if (unlikely(!area))
-    return NULL;
-
-  if (!(flags & VM_NO_GUARD))
-    size += PAGE_SIZE;
-
-  va = alloc_vmap_area(size, align, start, end, node, gfp_mask);
-  if (IS_ERR(va)) {
-    kfree(area);
-    return NULL;
-  }
-
-  setup_vmalloc_vm(area, va, flags, caller);
-
-  if (!(flags & VM_ALLOC))
-    area->addr = kasan_unpoison_vmalloc(area->addr, requested_size,
-                KASAN_VMALLOC_PROT_NORMAL);
-
-  return area;
-}
-
-static void *__vmalloc_area_node(
-  struct vm_struct *area, gfp_t gfp_mask,
-  pgprot_t prot, int node)
-{
-  struct page **pages;
-
-  nr_pages = get_vm_area_size(area) >> PAGE_SHIFT;
-  array_size = (nr_pages * sizeof(struct page *));
-
-  /* Please note that the recursion is strictly bounded. */
-  if (array_size > PAGE_SIZE) {
-    area->pages = __vmalloc_node(array_size, 1, nested_gfp|highmem_mask,
-        PAGE_KERNEL, node, area->caller);
-  } else {
-    area->pages = kmalloc_node(array_size, nested_gfp, node);
-  }
-
-  if (!pages) {
-    remove_vm_area(area->addr);
-    kfree(area);
-    return NULL;
-  }
-
-  area->nr_pages = vm_area_alloc_pages(gfp_mask | __GFP_NOWARN,
-    node, page_order, nr_small_pages, area->pages);
-
-  do {
-    ret = vmap_pages_range(addr, addr + size, prot, area->pages, page_shift);
-    if (nofail && (ret < 0))
-      schedule_timeout_uninterruptible(1);
-  } while (nofail && (ret < 0));
-
-  return area->addr;
-
-fail:
-  vfree(area->addr);
-  return NULL;
-}
-
-unsigned int
-vm_area_alloc_pages(gfp_t gfp, int nid,
-    unsigned int order, unsigned int nr_pages, struct page **pages)
-{
-  unsigned int nr_allocated = 0;
-  struct page *page;
-  int i;
-
-  if (!order) {
-    gfp_t bulk_gfp = gfp & ~__GFP_NOFAIL;
-
-    while (nr_allocated < nr_pages) {
-      unsigned int nr, nr_pages_request;
-
-      nr_pages_request = min(100U, nr_pages - nr_allocated);
-
-      if (IS_ENABLED(CONFIG_NUMA) && nid == NUMA_NO_NODE)
-        nr = alloc_pages_bulk_array_mempolicy(bulk_gfp,
-              nr_pages_request,
-              pages + nr_allocated);
-
-      else
-        nr = alloc_pages_bulk_array_node(bulk_gfp, nid,
-              nr_pages_request,
-              pages + nr_allocated);
-
-      nr_allocated += nr;
-      cond_resched();
-
-      if (nr != nr_pages_request)
-        break;
-    }
-  }
-
-  /* High-order pages or fallback path if "bulk" fails. */
-  while (nr_allocated < nr_pages) {
-    if (fatal_signal_pending(current))
-      break;
-
-    if (nid == NUMA_NO_NODE)
-      page = alloc_pages(gfp, order);
-    else
-      page = alloc_pages_node(nid, gfp, order);
-    if (unlikely(!page))
-      break;
-    /*
-     * Higher order allocations must be able to be treated as
-     * indepdenent small pages by callers (as they can with
-     * small-page vmallocs). Some drivers do their own refcounting
-     * on vmalloc_to_page() pages, some use page->mapping,
-     * page->lru, etc.
-     */
-    if (order)
-      split_page(page, order);
-
-    for (i = 0; i < (1U << order); i++)
-      pages[nr_allocated + i] = page + i;
-
-    cond_resched();
-    nr_allocated += 1U << order;
-  }
-
-  return nr_allocated;
-}
-
-/* map pages to a kernel virtual address */
-int vmap_pages_range(unsigned long addr, unsigned long end,
-    pgprot_t prot, struct page **pages, unsigned int page_shift)
-{
-  int err;
-
-  err = vmap_pages_range_noflush(addr, end, prot, pages, page_shift);
-  flush_cache_vmap(addr, end);
-  return err;
-}
-
-int vmap_pages_range_noflush(unsigned long addr, unsigned long end,
-    pgprot_t prot, struct page **pages, unsigned int page_shift)
-{
-  unsigned int i, nr = (end - addr) >> PAGE_SHIFT;
-
-  WARN_ON(page_shift < PAGE_SHIFT);
-
-  if (!IS_ENABLED(CONFIG_HAVE_ARCH_HUGE_VMALLOC) || page_shift == PAGE_SHIFT)
-    return vmap_small_pages_range_noflush(addr, end, prot, pages);
-
-  for (i = 0; i < nr; i += 1U << (page_shift - PAGE_SHIFT)) {
-    int err;
-
-    err = vmap_range_noflush(
-      addr,
-      addr + (1UL << page_shift),
-      __pa(page_address(pages[i])), prot,
-      page_shift
-    );
-    if (err)
-      return err;
-
-    addr += 1UL << page_shift;
-  }
-
-  return 0;
-}
-
-int vmap_range_noflush(unsigned long addr, unsigned long end,
-      phys_addr_t phys_addr, pgprot_t prot,
-      unsigned int max_page_shift)
-{
-  pgd_t *pgd;
-  unsigned long start;
-  unsigned long next;
-  int err;
-  pgtbl_mod_mask mask = 0;
-
-  might_sleep();
-  start = addr;
-  pgd = pgd_offset_k(addr);
-  do {
-    next = pgd_addr_end(addr, end);
-    err = vmap_p4d_range(pgd, addr, next, phys_addr, prot,
-          max_page_shift, &mask);
-    if (err)
-      break;
-  } while (pgd++, phys_addr += (next - addr), addr = next, addr != end);
-
-  if (mask & ARCH_PAGE_TABLE_SYNC_MASK)
-    arch_sync_kernel_mappings(start, end);
-
-  return err;
-}
-
-int vmap_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
-      phys_addr_t phys_addr, pgprot_t prot,
-      unsigned int max_page_shift, pgtbl_mod_mask *mask)
-{
-  p4d_t *p4d;
-  unsigned long next;
-
-  p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
-  if (!p4d)
-    return -ENOMEM;
-  do {
-    next = p4d_addr_end(addr, end);
-
-    if (vmap_try_huge_p4d(p4d, addr, next, phys_addr, prot, max_page_shift)) {
-      *mask |= PGTBL_P4D_MODIFIED;
-      continue;
+```c
+vmalloc(size);
+    __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END, gfp_mask, PAGE_KERNEL, 0, node, caller) {
+        struct vm_struct *area = __get_vm_area_node() {
+            area = kzalloc_node(sizeof(*area));
+            /* Allocate a region of KVA */
+            va = alloc_vmap_area(size) {
+                va = kmem_cache_alloc_node(vmap_area_cachep);
+                addr = __alloc_vmap_area(&free_vmap_area_root, &free_vmap_area_list, size, align, vstart, vend) {
+                    va = find_vmap_lowest_match();
+                    adjust_va_to_fit_type();
+                        kmem_cache_alloc(vmap_area_cachep, GFP_NOWAIT);
+                }
+                va->va_start = addr;
+                va->va_end = addr + size;
+                va->vm = NULL;
+                insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
+            }
+            setup_vmalloc_vm(area, va, flags, caller);
+        }
     }
 
-    if (vmap_pud_range(p4d, addr, next, phys_addr, prot, max_page_shift, mask))
-      return -ENOMEM;
-  } while (p4d++, phys_addr += (next - addr), addr = next, addr != end);
-  return 0;
-}
+    /* Allocate physical pages and map them into vmalloc space. */
+    __vmalloc_area_node(area, gfp_mask, prot, shift, node) {
+        vm_area_alloc_pages() {
+            alloc_pages();
+        }
 
-int vmap_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
-      phys_addr_t phys_addr, pgprot_t prot,
-      unsigned int max_page_shift, pgtbl_mod_mask *mask)
-{
-  pud_t *pud;
-  unsigned long next;
+        vmap_pages_range(addr, addr + size, prot, area->pages, page_shift) {
+            vmap_range_noflush() {
+                pgd = pgd_offset_k(addr);
+                vmap_p4d_range() {
+                    p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
+                    vmap_pud_range() {
+                        pud = pud_alloc_track(&init_mm, p4d, addr, mask);
+                        vmap_pmd_range() {
+                            pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
+                            vmap_pte_range() {
+                                pte = pte_alloc_kernel_track(pmd, addr, mask);
+                                set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot)) {
 
-  pud = pud_alloc_track(&init_mm, p4d, addr, mask);
-  if (!pud)
-    return -ENOMEM;
-  do {
-    next = pud_addr_end(addr, end);
-
-    if (vmap_try_huge_pud(pud, addr, next, phys_addr, prot, max_page_shift)) {
-      *mask |= PGTBL_PUD_MODIFIED;
-      continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-
-    if (vmap_pmd_range(pud, addr, next, phys_addr, prot,
-          max_page_shift, mask))
-      return -ENOMEM;
-  } while (pud++, phys_addr += (next - addr), addr = next, addr != end);
-  return 0;
-}
-
-int vmap_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
-      phys_addr_t phys_addr, pgprot_t prot,
-      unsigned int max_page_shift, pgtbl_mod_mask *mask)
-{
-  pmd_t *pmd;
-  unsigned long next;
-
-  pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
-  if (!pmd)
-    return -ENOMEM;
-  do {
-    next = pmd_addr_end(addr, end);
-
-    if (vmap_try_huge_pmd(pmd, addr, next, phys_addr, prot, max_page_shift)) {
-      *mask |= PGTBL_PMD_MODIFIED;
-      continue;
-    }
-
-    if (vmap_pte_range(pmd, addr, next, phys_addr, prot, max_page_shift, mask))
-      return -ENOMEM;
-  } while (pmd++, phys_addr += (next - addr), addr = next, addr != end);
-  return 0;
-}
-
-int vmap_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
-      phys_addr_t phys_addr, pgprot_t prot,
-      unsigned int max_page_shift, pgtbl_mod_mask *mask)
-{
-  pte_t *pte;
-  u64 pfn;
-  unsigned long size = PAGE_SIZE;
-
-  pfn = phys_addr >> PAGE_SHIFT;
-  pte = pte_alloc_kernel_track(pmd, addr, mask);
-  if (!pte)
-    return -ENOMEM;
-
-  do {
-#ifdef CONFIG_HUGETLB_PAGE
-    size = arch_vmap_pte_range_map_size(addr, end, pfn, max_page_shift);
-    if (size != PAGE_SIZE) {
-      pte_t entry = pfn_pte(pfn, prot);
-
-      entry = arch_make_huge_pte(entry, ilog2(size), 0);
-      set_huge_pte_at(&init_mm, addr, pte, entry);
-      pfn += PFN_DOWN(size);
-      continue;
-    }
-#endif
-
-    set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot));
-    pfn++;
-  } while (pte += PFN_DOWN(size), addr += size, addr != end);
-
-  *mask |= PGTBL_PTE_MODIFIED;
-  return 0;
-}
 ```
 
 # vmalloc_fault
@@ -4726,6 +4840,7 @@ kernel_clone()
 ![](../Images/Kernel/mem-cam.png)
 
 * [wowo tech](http://www.wowotech.net/memory_management/cma.html)
+* [CMA技术原理分析 - 内核工匠](https://mp.weixin.qq.com/s/kNHys4p2sXFV6wwV7VDFqQ)
 
 ```c
 struct cma {
