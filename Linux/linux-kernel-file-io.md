@@ -14,6 +14,8 @@
             * [bdi_wq](#bdi_wq)
         * [buffered read](#buffered-read)
     * [writeback](#writeback)
+    * [coredump](#coredump)
+
 
 * [IO](#IO)
     * [kobject](#kobject)
@@ -1422,6 +1424,8 @@ do_sys_open();
 ## read-write
 
 ![](../Images/Kernel/file-read-write.png)
+
+* [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
 
 ```c++
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
@@ -3491,9 +3495,88 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 ## TODO
 1. xarray
 
+
+## coredump
+```c
+do_coredump() {
+    struct core_state core_state;
+
+    struct coredump_params cprm = {
+		.siginfo = siginfo,
+		.limit = rlimit(RLIMIT_CORE),
+		.mm_flags = mm->flags,
+		.vma_meta = NULL,
+		.cpu = raw_smp_processor_id(),
+	};
+
+    coredump_wait(siginfo->si_signo, &core_state) {
+
+    }
+
+    format_corename(&cn, &cprm, &argv, &argc);
+    cprm.file = filp_open(cn.corename, open_flags, 0600);
+
+    file_start_write(cprm.file);
+    core_dumped = binfmt->core_dump(&cprm) {
+        elf_core_dump(cprm) {
+            dump_emit(cprm, &elf, sizeof(elf));
+            /* Write program headers for segments dump */
+            for (i = 0; i < cprm->vma_count; i++) {
+                dump_emit(cprm, &phdr, sizeof(phdr))
+            }
+
+            dump_emit(cprm, phdr4note, sizeof(*phdr4note));
+            elf_core_write_extra_phdrs(cprm, offset);
+            write_note_info(&info, cprm);
+
+            /* For cell spufs */
+            elf_coredump_extra_notes_write(cprm);
+            /* Align to page */
+            dump_skip_to(cprm, dataoff);
+
+            for (i = 0; i < cprm->vma_count; i++) {
+                struct core_vma_metadata *meta = cprm->vma_meta + i;
+                dump_user_range(cprm, meta->start, meta->dump_size);
+            }
+            elf_core_write_extra_data(cprm);
+            dump_emit(cprm, shdr4extnum, sizeof(*shdr4extnum)) {
+                struct file *file = cprm->file;
+                loff_t pos = file->f_pos;
+                ssize_t n;
+                if (cprm->written + nr > cprm->limit)
+                    return 0;
+
+
+                if (dump_interrupted())
+                    return 0;
+                n = __kernel_write(file, addr, nr, &pos) {
+                    file->f_op->write_iter(&kiocb, from);
+                }
+                if (n != nr)
+                    return 0;
+                file->f_pos = pos;
+                cprm->written += n;
+                cprm->pos += n;
+
+                return 1;
+            }
+        }
+    }
+    file_end_write(cprm.file);
+    free_vma_snapshot(&cprm);
+    coredump_finish(core_dumped) {
+        next = current->signal->core_state->dumper.next;
+        while ((curr = next) != NULL) {
+            wake_up_process(task);
+        }
+    }
+}
+```
+
 # IO
 
 ![](../Images/Kernel/io-stack.png)
+* [From www.thomas-krenn.com](https://www.thomas-krenn.com/en/wiki/Linux_Storage_Stack_Diagram)
 
 
 ![](../Images/Kernel/file-read-write.png)
