@@ -1728,7 +1728,15 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                 }
 
             restart:
-                put_prev_task_balance(rq, prev, rf);
+                put_prev_task_balance(rq, prev, rf) {
+                    for_class_range(class, prev->sched_class, &idle_sched_class) {
+                        if (class->balance(rq, prev, rf))
+                            break;
+                    }
+
+                    put_prev_task(rq, prev);
+                        --->
+                }
 
                 for_each_class(class) {
                     p = class->pick_next_task(rq);
@@ -1841,30 +1849,30 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                     /* arch/arm64/kernel/entry.S */
                     last = cpu_switch_to(prev, next) {
                         /* x0 = previous task_struct (must be preserved across the switch)
-                         *   x1 = next task_struct
+                         * x1 = next task_struct
                          * Previous and next are guaranteed not to be the same. */
                         SYM_FUNC_START(cpu_switch_to)
-                            mov	x10, #THREAD_CPU_CONTEXT // task.thread.cpu_context
-                            add	x8, x0, x10
-                            mov	x9, sp
-                            stp	x19, x20, [x8], #16		// store callee-saved registers
-                            stp	x21, x22, [x8], #16
-                            stp	x23, x24, [x8], #16
-                            stp	x25, x26, [x8], #16
-                            stp	x27, x28, [x8], #16
-                            stp	x29, x9, [x8], #16
-                            str	lr, [x8]
+                            mov    x10, #THREAD_CPU_CONTEXT // task.thread.cpu_context
+                            add    x8, x0, x10 /* calc prev task cpu_context addr */
+                            mov    x9, sp
+                            stp    x19, x20, [x8], #16        // store callee-saved registers
+                            stp    x21, x22, [x8], #16
+                            stp    x23, x24, [x8], #16
+                            stp    x25, x26, [x8], #16
+                            stp    x27, x28, [x8], #16
+                            stp    x29, x9, [x8], #16
+                            str    lr, [x8]
 
-                            add	x8, x1, x10
-                            ldp	x19, x20, [x8], #16		// restore callee-saved registers
-                            ldp	x21, x22, [x8], #16
-                            ldp	x23, x24, [x8], #16
-                            ldp	x25, x26, [x8], #16
-                            ldp	x27, x28, [x8], #16
-                            ldp	x29, x9, [x8], #16
-                            ldr	lr, [x8]
-                            mov	sp, x9
-                            msr	sp_el0, x1
+                            add    x8, x1, x10  /* calc next task cpu_context addr */
+                            ldp    x19, x20, [x8], #16        // restore callee-saved registers
+                            ldp    x21, x22, [x8], #16
+                            ldp    x23, x24, [x8], #16
+                            ldp    x25, x26, [x8], #16
+                            ldp    x27, x28, [x8], #16
+                            ldp    x29, x9, [x8], #16
+                            ldr    lr, [x8]
+                            mov    sp, x9
+                            msr    sp_el0, x1
 
                             ptrauth_keys_install_kernel x1, x8, x9, x10
                             scs_save x0
@@ -2559,6 +2567,79 @@ push_rt_tasks()
 
 ### pull_rt_task
 ```c
+void pull_rt_task(struct rq *this_rq) {
+    int this_cpu = this_rq->cpu, cpu;
+    bool resched = false;
+    struct task_struct *p, *push_task;
+    struct rq *src_rq;
+    int rt_overload_count = rt_overloaded(this_rq);
+
+    if (likely(!rt_overload_count))
+        return;
+
+    smp_rmb();
+
+    if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
+        return;
+
+    for_each_cpu(cpu, this_rq->rd->rto_mask) {
+        if (this_cpu == cpu)
+            continue;
+
+        src_rq = cpu_rq(cpu);
+
+        if (src_rq->rt.highest_prio.next >= this_rq->rt.highest_prio.curr)
+            continue;
+
+        push_task = NULL;
+        double_lock_balance(this_rq, src_rq);
+
+        p = pick_highest_pushable_task(src_rq, this_cpu) {
+            struct plist_head *head = &rq->rt.pushable_tasks;
+            struct task_struct *p;
+
+            if (!has_pushable_tasks(rq))
+                return NULL;
+
+            plist_for_each_entry(p, head, pushable_tasks) {
+                ret = pick_rt_task(rq, p, cpu) {
+                    return (!task_on_cpu(rq, p)
+                        && cpumask_test_cpu(cpu, &p->cpus_mask));
+                }
+                if (ret)
+                    return p;
+            }
+
+            return NULL;
+        }
+
+        if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
+            if (p->prio < src_rq->curr->prio)
+                goto skip;
+
+            if (is_migration_disabled(p)) {
+                push_task = get_push_task(src_rq);
+            } else {
+                deactivate_task(src_rq, p, 0);
+                set_task_cpu(p, this_cpu);
+                activate_task(this_rq, p, 0);
+                resched = true;
+            }
+        }
+skip:
+        double_unlock_balance(this_rq, src_rq);
+
+        if (push_task) {
+            raw_spin_rq_unlock(this_rq);
+            stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
+                        push_task, &src_rq->push_work);
+            raw_spin_rq_lock(this_rq);
+        }
+    }
+
+    if (resched)
+        resched_curr(this_rq);
+}
 ```
 
 ### select_task_rq_rt
@@ -3174,9 +3255,13 @@ put_prev_task_fair(struct rq *rq, struct task_struct *prev)
     for_each_sched_entity(se) {
         cfs_rq = cfs_rq_of(se);
         put_prev_entity(cfs_rq, se) {
-            if (prev->on_rq)
+            if (prev->on_rq) {
                 update_curr(cfs_rq);
                     --->
+            }
+
+            check_cfs_rq_runtime(cfs_rq);
+            check_spread(cfs_rq, prev);
 
             if (prev->on_rq) {
                 update_stats_wait_start_fair(cfs_rq, prev);
@@ -3259,19 +3344,8 @@ simple:
 #endif
 
     if (prev) {
-        put_prev_task(rq, prev) {
-            prev->sched_class->put_prev_task(rq, prev) {
-                put_prev_task_fair(struct rq *rq, struct task_struct *prev) {
-                    struct sched_entity *se = &prev->se;
-                    struct cfs_rq *cfs_rq;
-                    for_each_sched_entity(se) {
-                        cfs_rq = cfs_rq_of(se);
-                        put_prev_entity(cfs_rq, se);
-                            --->
-                    }
-                }
-            }
-        }
+        put_prev_task(rq, prev)
+            --->
     }
 
     do {
@@ -3604,7 +3678,11 @@ balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
     if (rq->nr_running)
         return 1;
 
-    return newidle_balance(rq, rf) != 0;
+    ret = newidle_balance(rq, rf) {
+
+    }
+
+    return ret != 0;
 }
 ```
 
@@ -3636,10 +3714,6 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 
     rcu_read_lock();
     for_each_domain(cpu, tmp) {
-        /*
-         * If both 'cpu' and 'prev_cpu' are part of this domain,
-         * cpu is a valid SD_WAKE_AFFINE target.
-         */
         if (want_affine && (tmp->flags & SD_WAKE_AFFINE) &&
             cpumask_test_cpu(prev_cpu, sched_domain_span(tmp))) {
             if (cpu != prev_cpu)
@@ -3649,28 +3723,22 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
             break;
         }
 
-        /*
-         * Usually only true for WF_EXEC and WF_FORK, as sched_domains
-         * usually do not have SD_BALANCE_WAKE set. That means wakeup
-         * will usually go to the fast path.
-         */
         if (tmp->flags & sd_flag)
             sd = tmp;
         else if (!want_affine)
             break;
     }
 
-    if (unlikely(sd)) {
-        /* Slow path */
+    if (unlikely(sd)) { /* Slow path */
         new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag);
-    } else if (wake_flags & WF_TTWU) { /* XXX always ? */
-        /* Fast path */
+    } else if (wake_flags & WF_TTWU) { /* Fast path */
         new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
     }
     rcu_read_unlock();
 
     return new_cpu;
 ```
+
 ## task_group
 
 * [内核工匠 - CFS组调度](http://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488762&idx=1&sn=4e835ac76d2125d29f61780feef65504)
@@ -3684,7 +3752,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 
 ```c
 static struct cftype cpu_legacy_files[] = {
-    {
+    {E
         .name = "shares",
         .read_u64 = cpu_shares_read_u64,
         .write_u64 = cpu_shares_write_u64,
@@ -4389,7 +4457,8 @@ struct wait_queue_entry {
  * -> check_preempt_curr -> resched_curr */
 
 try_to_wake_up() {
-    ttwu_queue() {
+    cpu = select_task_rq(p, p->wake_cpu, wake_flags | WF_TTWU);
+   ttwu_queue(p, cpu, wake_flags) {
         ttwu_do_activate(rq, p, wake_flags, &rf) {
             if (p->in_iowait) {
                 delayacct_blkio_end(p);
@@ -4410,7 +4479,9 @@ try_to_wake_up() {
                 p->on_rq = TASK_ON_RQ_QUEUED;
             }
 
-            check_preempt_curr(rq, p, wake_flags);
+            check_preempt_curr(rq, p, wake_flags) {
+                sched_class->check_preempt_curr();
+            }
 
             ttwu_do_wakeup(p) {
                 WRITE_ONCE(p->__state, TASK_RUNNING);
@@ -4421,46 +4492,8 @@ try_to_wake_up() {
             }
         }
     }
+    preempt_enable();
 }
-
-
-```c
-try_to_wake_up();
-    ttwu_queue();
-        rq_lock(rq, &rf);
-        ttwu_do_activate(rq, p, wake_flags, &rf);
-            /* 1. insert p into rq */
-            ttwu_activate(rq, p, en_flags);
-                activate_task(rq, p, en_flags);
-                    enqueue_task(rq, p, flags);
-                        p->sched_class->enqueue_task(rq, p, flags);
-                p->on_rq = TASK_ON_RQ_QUEUED;
-
-            /* 2. check schedule curr */
-            ttwu_do_wakeup(rq, p, wake_flags, rf);
-                check_preempt_curr(rq, p, wake_flags);
-                    rq->curr->sched_class->check_preempt_curr(rq, p, flags);
-                        check_preempt_wakeup();
-                            ret = wakeup_preempt_entity(se, pse);
-                                s64 gran, vdiff = curr->vruntime - se->vruntime;
-                                if (vdiff <= 0)
-                                    return -1;
-
-                                gran = wakeup_gran(se);
-                                    unsigned long gran = sysctl_sched_wakeup_granularity;
-                                    return calc_delta_fair(gran, se);
-
-                                if (vdiff > gran)
-                                    return 1;
-
-                            if (ret) {
-                                resched_curr();
-                                    set_tsk_need_resched();
-                            }
-
-                p->state = TASK_RUNNING;
-        rq_unlock(rq, &rf);
-
 ```
 
 # fork
@@ -4575,14 +4608,14 @@ kernel_clone(struct kernel_clone_args *args) {
 }
 
 SYM_CODE_START(ret_from_fork)
-    bl	schedule_tail
-    cbz	x19, 1f				// not a kernel thread
-    mov	x0, x20
-    blr	x19
-1:	get_current_task tsk
-    mov	x0, sp
-    bl	asm_exit_to_user_mode
-    b	ret_to_user
+    bl    schedule_tail
+    cbz    x19, 1f                // not a kernel thread
+    mov    x0, x20
+    blr    x19
+1:    get_current_task tsk
+    mov    x0, sp
+    bl    asm_exit_to_user_mode
+    b    ret_to_user
 SYM_CODE_END(ret_from_fork)
 ```
 
