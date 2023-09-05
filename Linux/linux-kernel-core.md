@@ -16,6 +16,9 @@
     * [lru](#lru)
     * [futex](#futex)
     * [spinlock](#spinlock)
+    * [rwlock](#rwlock)
+        * [read_lock](#read_lock)
+        * [write_lock](#write_lock)
     * [rtmutex](#rtmutex)
     * [ww-mutex-design](#ww-mutex-design)
     * [semaphore](#semaphore)
@@ -24,10 +27,14 @@
         * [up_read](#up_read)
         * [down_write](#down_write)
         * [up_write](#up_write)
-    * [rwlock](#rwlock)
-        * [read_lock](#read_lock)
-        * [write_lock](#write_lock)
     * [mlock](#mlock)
+
+* pthread
+    * [pthread_mutex]
+    * [pthread_cond]
+    * [pthread_sem]
+    * [pthread_rwlock]
+    * [pthread_barrier_t]
 
 # Core
 

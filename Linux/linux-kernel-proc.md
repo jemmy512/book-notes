@@ -139,7 +139,7 @@
 * [GNU GRUB Manual 2.06](https://www.gnu.org/software/grub/manual/grub/html_node/index.html#SEC_Contents)
 * [GNU GRUB Manual 2.06: Images](https://www.gnu.org/software/grub/manual/grub/html_node/Images.html)
 
-```s
+```c
 /* arch/arm64/kernel/head.S */
  * Kernel startup entry point.
  * ---------------------------
@@ -205,7 +205,15 @@ primary_entry
             bl start_kernel
 ```
 
+[x] write the release
+[ ] update the website
+
+[ ] wtei
+
+
+
 # start_kernel
+
 ```c
 /* init/main.c */
 void start_kernel(void)
@@ -738,692 +746,6 @@ entry_SYSCALL_64()
         pushq  2*8(%rdi)  /* RIP */
 
         INTERRUPT_RETURN
-```
-
-## 32
-
-1. declare syscall table: arch/x86/entry/syscalls/syscall_32.tbl
-    ```c
-    # 32-bit system call numbers and entry vectors
-
-    # The __ia32_sys and __ia32_compat_sys stubs are created on-the-fly for
-    # sys_*() system calls and compat_sys_*() compat system calls if
-    # IA32_EMULATION is defined, and expect struct pt_regs *regs as their only
-    # parameter.
-    #
-    # The abi is always "i386" for this file.
-    # <number>  <abi>   <name>      <entry point>       <compat entry point>
-        0       i386   restart_syscall    sys_restart_syscall   __ia32_sys_restart_syscall
-        1       i386   exit         sys_exit            __ia32_sys_exit
-        2       i386   fork         sys_fork            __ia32_sys_fork
-    ```
-
-2. generate syscall table: arch/x86/entry/syscall_32.c
-    ```c
-    /* arch/x86/entry/syscalls/Makefile
-     * 2.1 arch/x86/entry/syscalls/syscallhdr.sh generates #define __NR_open
-     * arch/sh/include/uapi/asm/unistd_32.h */
-    #define __NR_restart_syscall    0
-    #define __NR_exit               1
-    #define __NR_fork               2
-    #define __NR_read               3
-    #define __NR_write              4
-    #define __NR_open               5
-
-    /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh generates __SYSCALL_I386(__NR_open, sys_open) */
-    #define __SYSCALL_I386(nr, sym, qual) [nr] = sym,
-
-    __visible const sys_call_ptr_t ia32_sys_call_table[__NR_syscall_compat_max+1] = {
-        /* Smells like a compiler bug -- it doesn't work
-        * when the & below is removed. */
-        [0 ... __NR_syscall_compat_max] = &sys_ni_syscall,
-        #include <asm/syscalls_32.h>
-    };
-    ```
-
-3. declare implemenation: include/linux/syscalls.h
-    ```c
-    /* include/linux/syscalls.h */
-    asmlinkage long sys_socket(int, int, int);
-    asmlinkage long sys_socketpair(int, int, int, int __user *);
-    asmlinkage long sys_bind(int, struct sockaddr __user *, int);
-    asmlinkage long sys_listen(int, int);
-    ```
-
-4. define implemenation: fs/open.c
-    ```c
-    #include <linux/syscalls.h>
-    SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
-    {
-        if (force_o_largefile())
-            flags |= O_LARGEFILE;
-
-        return do_sys_open(AT_FDCWD, filename, flags, mode);
-    }
-    ```
-
-```c
-/* glibc-2.28/sysdeps/unix/sysv/linux/i386/sysdep.h
- Linux takes system call arguments in registers:
-  syscall number  %eax       call-clobbered
-  arg 1    %ebx       call-saved
-  arg 2    %ecx       call-clobbered
-  arg 3    %edx       call-clobbered
-  arg 4    %esi       call-saved
-  arg 5    %edi       call-saved
-  arg 6    %ebp       call-saved */
-#define DO_CALL(syscall_name, args) \
-    PUSHARGS_##args \
-    DOARGS_##args \
-    movl $SYS_ify (syscall_name), %eax; \ /* get syscall id by syscall_name */
-    ENTER_KERNEL \
-    POPARGS_##args
-
-#define ENTER_KERNEL int $0x80
-
-/* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
-#define SYS_ify(syscall_name)  __NR_##syscall_name
-
-#define IA32_SYSCALL_VECTOR  0x80
-
-#define _DOARGS_0(n)  /* No arguments to frob.  */
-#define _DOARGS_1(n)  movl n(%esp), %ebx; _DOARGS_0 (n-4)
-#define  _DOARGS_2(n)  movl n(%esp), %ecx; _DOARGS_1 (n-4)
-#define _DOARGS_3(n)  movl n(%esp), %edx; _DOARGS_2 (n-4)
-#define _DOARGS_4(n)  movl n(%esp), %esi; _DOARGS_3 (n-4)
-#define _DOARGS_5(n)  movl n(%esp), %edi; _DOARGS_4 (n-4)
-#define _DOARGS_6(n)  movl n(%esp), %ebp; _DOARGS_5 (n-4)
-
-
-#define  DOARGS_0  /* No arguments to frob.  */
-#define  DOARGS_1  _DOARGS_1 (4)
-#define  DOARGS_2  _DOARGS_2 (8)
-#define DOARGS_3  _DOARGS_3 (16)
-#define DOARGS_4  _DOARGS_4 (24)
-#define DOARGS_5  _DOARGS_5 (32)
-#define DOARGS_6  _DOARGS_6 (40)
-
-#define PUSHARGS_0  /* No arguments to push.  */
-#define  _PUSHARGS_0  /* No arguments to push.  */
-
-#define PUSHARGS_1  movl %ebx, %edx; L(SAVEBX1): PUSHARGS_0
-#define  _PUSHARGS_1  pushl %ebx; cfi_adjust_cfa_offset (4);cfi_rel_offset (ebx, 0); L(PUSHBX1): _PUSHARGS_0
-
-/* CFI stands for Call Frame Information
-and helps a debugger create a reliable backtrace through functions. */
-
-#define PUSHARGS_2  PUSHARGS_1
-#define _PUSHARGS_2  _PUSHARGS_1
-
-#define PUSHARGS_3  _PUSHARGS_2
-#define _PUSHARGS_3  _PUSHARGS_2
-
-#define PUSHARGS_4  _PUSHARGS_4
-#define _PUSHARGS_4  pushl %esi; cfi_adjust_cfa_offset (4); cfi_rel_offset (esi, 0); L(PUSHSI1): _PUSHARGS_3
-
-#define PUSHARGS_5  _PUSHARGS_5
-#define _PUSHARGS_5  pushl %edi; cfi_adjust_cfa_offset (4); cfi_rel_offset (edi, 0); L(PUSHDI1): _PUSHARGS_4
-
-#define PUSHARGS_6  _PUSHARGS_6
-#define _PUSHARGS_6  pushl %ebp; cfi_adjust_cfa_offset (4); cfi_rel_offset (ebp, 0); L(PUSHBP1): _PUSHARGS_5
-```
-
-```c
-/* trap_init */
-set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32);
-
-/* arch/x86/entry/entry_32.S */
-/* Arguments:
- * eax  system call number
- * ebx  arg1
- * ecx  arg2
- * edx  arg3
- * esi  arg4
- * edi  arg5
- * ebp  arg6 */
-ENTRY(entry_INT80_32)
-  ASM_CLAC
-  pushl  %eax      /* pt_regs->orig_ax */
-
-  SAVE_ALL pt_regs_ax=$-ENOSYS switch_stacks=1  /* save rest */
-
-  /* User mode is traced as though IRQs are on, and the interrupt gate
-   * turned them off. */
-  TRACE_IRQS_OFF
-
-  movl  %esp, %eax
-  call  do_int80_syscall_32
-.Lsyscall_32_done:
-
-restore_all:
-  TRACE_IRQS_IRET
-  SWITCH_TO_ENTRY_STACK
-
-.Lrestore_all_notrace:
-  CHECK_AND_APPLY_ESPFIX
-.Lrestore_nocheck:
-  /* Switch back to user CR3 */
-  SWITCH_TO_USER_CR3 scratch_reg=%eax
-
-  BUG_IF_WRONG_CR3
-
-  /* Restore user state */
-  RESTORE_REGS pop=4      # skip orig_eax/error_code
-.Lirq_return:
-  /* ARCH_HAS_MEMBARRIER_SYNC_CORE rely on IRET core serialization
-   * when returning from IPI handler and when returning from
-   * scheduler to user-space. */
-  INTERRUPT_RETURN # iret
-
-restore_all_kernel:
-  TRACE_IRQS_IRET
-  PARANOID_EXIT_TO_KERNEL_MODE
-  BUG_IF_WRONG_CR3
-  RESTORE_REGS 4
-  jmp  .Lirq_return
-
-.section .fixup, "ax"
-ENTRY(iret_exc  )
-  pushl  $0        # no error code
-  pushl  $do_iret_error
-
-#ifdef CONFIG_DEBUG_ENTRY
-  /* The stack-frame here is the one that iret faulted on, so its a
-   * return-to-user frame. We are on kernel-cr3 because we come here from
-   * the fixup code. This confuses the CR3 checker, so switch to user-cr3
-   * as the checker expects it. */
-  pushl  %eax
-  SWITCH_TO_USER_CR3 scratch_reg=%eax
-  popl  %eax
-#endif
-
-  jmp  common_exception
-.previous
-  _ASM_EXTABLE(.Lirq_return, iret_exc)
-ENDPROC(entry_INT80_32)
-```
-
-```c
-.macro SAVE_ALL pt_regs_ax=%eax switch_stacks=0
-  cld
-  PUSH_GS
-  pushl  %fs
-  pushl  %es
-  pushl  %ds
-  pushl \pt_regs_ax
-  pushl  %ebp
-  pushl  %edi
-  pushl  %esi
-  pushl  %edx
-  pushl  %ecx
-  pushl  %ebx
-  movl   $(__USER_DS), %edx
-  movl   %edx, %ds
-  movl   %edx, %es
-  movl   $(__KERNEL_PERCPU), %edx
-  movl   %edx, %fs
-  SET_KERNEL_GS %edx
-  /* Switch to kernel stack if necessary */
-.if \switch_stacks > 0
-  SWITCH_TO_KERNEL_STACK
-.endif
-```
-
-```c
-#define CS_FROM_ENTRY_STACK  (1 << 31)
-#define CS_FROM_USER_CR3  (1 << 30)
-
-.macro SWITCH_TO_KERNEL_STACK
-
-  ALTERNATIVE     "", "jmp .Lend_\@", X86_FEATURE_XENPV
-
-  BUG_IF_WRONG_CR3
-
-  SWITCH_TO_KERNEL_CR3 scratch_reg=%eax
-
-  /* %eax now contains the entry cr3 and we carry it forward in
-   * that register for the time this macro runs */
-
-  /* The high bits of the CS dword (__csh) are used for
-   * CS_FROM_ENTRY_STACK and CS_FROM_USER_CR3. Clear them in case
-   * hardware didn't do this for us. */
-  andl  $(0x0000ffff), PT_CS(%esp)
-
-  /* Are we on the entry stack? Bail out if not! */
-  movl  PER_CPU_VAR(cpu_entry_area), %ecx
-  addl  $CPU_ENTRY_AREA_entry_stack + SIZEOF_entry_stack, %ecx
-  subl  %esp, %ecx  /* ecx = (end of entry_stack) - esp */
-  cmpl  $SIZEOF_entry_stack, %ecx
-  jae  .Lend_\@
-
-  /* Load stack pointer into %esi and %edi */
-  movl  %esp, %esi
-  movl  %esi, %edi
-
-  /* Move %edi to the top of the entry stack */
-  andl  $(MASK_entry_stack), %edi
-  addl  $(SIZEOF_entry_stack), %edi
-
-  /* Load top of task-stack into %edi */
-  movl  TSS_entry2task_stack(%edi), %edi
-
-  /* Special case - entry from kernel mode via entry stack */
-#ifdef CONFIG_VM86
-  movl  PT_EFLAGS(%esp), %ecx    # mix EFLAGS and CS
-  movb  PT_CS(%esp), %cl
-  andl  $(X86_EFLAGS_VM | SEGMENT_RPL_MASK), %ecx
-#else
-  movl  PT_CS(%esp), %ecx
-  andl  $SEGMENT_RPL_MASK, %ecx
-#endif
-  cmpl  $USER_RPL, %ecx
-  jb  .Lentry_from_kernel_\@
-
-  /* Bytes to copy */
-  movl  $PTREGS_SIZE, %ecx
-
-#ifdef CONFIG_VM86
-  testl  $X86_EFLAGS_VM, PT_EFLAGS(%esi)
-  jz  .Lcopy_pt_regs_\@
-
-  /* Stack-frame contains 4 additional segment registers when
-   * coming from VM86 mode */
-  addl  $(4 * 4), %ecx
-
-#endif
-.Lcopy_pt_regs_\@:
-
-  /* Allocate frame on task-stack */
-  subl  %ecx, %edi
-
-  /* Switch to task-stack */
-  movl  %edi, %esp
-
-  /* We are now on the task-stack and can safely copy over the
-   * stack-frame */
-  shrl  $2, %ecx
-  cld
-  rep movsl
-
-  jmp .Lend_\@
-```
-
-```c
-/* Switch back from the kernel stack to the entry stack.
- *
- * The %esp register must point to pt_regs on the task stack. It will
- * first calculate the size of the stack-frame to copy, depending on
- * whether we return to VM86 mode or not. With that it uses 'rep movsl'
- * to copy the contents of the stack over to the entry stack */
-.macro SWITCH_TO_ENTRY_STACK
-
-  ALTERNATIVE     "", "jmp .Lend_\@", X86_FEATURE_XENPV
-
-  /* Bytes to copy */
-  movl  $PTREGS_SIZE, %ecx
-
-#ifdef CONFIG_VM86
-  testl  $(X86_EFLAGS_VM), PT_EFLAGS(%esp)
-  jz  .Lcopy_pt_regs_\@
-
-  /* Additional 4 registers to copy when returning to VM86 mode */
-  addl    $(4 * 4), %ecx
-
-.Lcopy_pt_regs_\@:
-#endif
-
-  /* Initialize source and destination for movsl */
-  movl  PER_CPU_VAR(cpu_tss_rw + TSS_sp0), %edi
-  subl  %ecx, %edi
-  movl  %esp, %esi
-
-  /* Save future stack pointer in %ebx */
-  movl  %edi, %ebx
-
-  /* Copy over the stack-frame */
-  shrl  $2, %ecx
-  cld
-  rep movsl
-
-  /* Switch to entry-stack - needs to happen after everything is
-   * copied because the NMI handler will overwrite the task-stack
-   * when on entry-stack */
-  movl  %ebx, %esp
-
-.Lend_\@:
-.endm
-
-static void do_syscall_32_irqs_on(struct pt_regs *regs)
-{
-  struct thread_info *ti = current_thread_info();
-  unsigned int nr = (unsigned int)regs->orig_ax;
-
-  if (likely(nr < IA32_NR_syscalls)) {
-    regs->ax = ia32_sys_call_table[nr](
-      (unsigned int)regs->bx, (unsigned int)regs->cx,
-      (unsigned int)regs->dx, (unsigned int)regs->si,
-      (unsigned int)regs->di, (unsigned int)regs->bp
-    );
-  }
-
-  syscall_return_slowpath(regs);
-}
-
-inline void syscall_return_slowpath(struct pt_regs *regs)
-{
-  struct thread_info *ti = current_thread_info();
-  u32 cached_flags = READ_ONCE(ti->flags);
-
-  if (IS_ENABLED(CONFIG_PROVE_LOCKING) &&
-      WARN(irqs_disabled(), "syscall %ld left IRQs disabled", regs->orig_ax))
-    local_irq_enable();
-
-  rseq_syscall(regs);
-
-  if (unlikely(cached_flags & SYSCALL_EXIT_WORK_FLAGS))
-    syscall_slow_exit_work(regs, cached_flags);
-
-  local_irq_disable();
-  prepare_exit_to_usermode(regs);
-}
-
-inline void prepare_exit_to_usermode(struct pt_regs *regs)
-{
-  struct thread_info *ti = current_thread_info();
-  u32 cached_flags;
-
-  addr_limit_user_check();
-
-  cached_flags = READ_ONCE(ti->flags);
-
-  if (unlikely(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
-    exit_to_usermode_loop(regs, cached_flags);
-
-  user_enter_irqoff();
-
-  mds_user_clear_cpu_buffers();
-}
-
-void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
-{
-  while (true) {
-    local_irq_enable();
-
-    if (cached_flags & _TIF_NEED_RESCHED)
-      schedule();
-
-    if (cached_flags & _TIF_UPROBE)
-      uprobe_notify_resume(regs);
-
-    if (cached_flags & _TIF_PATCH_PENDING)
-      klp_update_patch_state(current);
-
-    /* deal with pending signal delivery */
-    if (cached_flags & _TIF_SIGPENDING)
-      do_signal(regs);
-
-    if (cached_flags & _TIF_NOTIFY_RESUME) {
-      clear_thread_flag(TIF_NOTIFY_RESUME);
-      tracehook_notify_resume(regs);
-      rseq_handle_notify_resume(NULL, regs);
-    }
-
-    if (cached_flags & _TIF_USER_RETURN_NOTIFY)
-      fire_user_return_notifiers();
-
-    /* Disable IRQs and retry */
-    local_irq_disable();
-
-    cached_flags = READ_ONCE(current_thread_info()->flags);
-
-    if (!(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
-      break;
-  }
-}
-```
-<img src='../Images/Kernel/init-syscall.png' style='max-height:850px'/>
-<img src='../Images/Kernel/init-syscall-32.png' style='max-height:850px'/>
-
-<img src='../Images/Kernel/proc-management.png' style='max-height:850px'/>
-
-## arm64
-```c
-SYM_FUNC_START_LOCAL(__primary_switched)
-    adr_l    x4, init_task
-    init_cpu_task x4, x5, x6
-
-    adr_l    x8, vectors            // load VBAR_EL1 with virtual
-    msr    vbar_el1, x8            // vector table address
-    isb
-
-SYM_FUNC_START_LOCAL(__secondary_switched)
-    mov    x0, x20
-    bl    set_cpu_boot_mode_flag
-
-    mov    x0, x20
-    bl    finalise_el2
-
-    str_l    xzr, __early_cpu_boot_status, x3
-    adr_l    x5, vectors
-    msr    vbar_el1, x5
-    isb
-```
-
-```c
-SYM_CODE_START(vectors)
-    kernel_ventry    1, t, 64, sync     // Synchronous EL1t
-    kernel_ventry    1, t, 64, irq      // IRQ EL1t
-    kernel_ventry    1, t, 64, fiq      // FIQ EL1t
-    kernel_ventry    1, t, 64, error    // Error EL1t
-
-    kernel_ventry    1, h, 64, sync     // Synchronous EL1h
-    kernel_ventry    1, h, 64, irq      // IRQ EL1h
-    kernel_ventry    1, h, 64, fiq      // FIQ EL1h
-    kernel_ventry    1, h, 64, error    // Error EL1h
-
-    kernel_ventry    0, t, 64, sync     // Synchronous 64-bit EL0
-    kernel_ventry    0, t, 64, irq      // IRQ 64-bit EL0
-    kernel_ventry    0, t, 64, fiq      // FIQ 64-bit EL0
-    kernel_ventry    0, t, 64, error    // Error 64-bit EL0
-
-    kernel_ventry    0, t, 32, sync     // Synchronous 32-bit EL0
-    kernel_ventry    0, t, 32, irq      // IRQ 32-bit EL0
-    kernel_ventry    0, t, 32, fiq      // FIQ 32-bit EL0
-    kernel_ventry    0, t, 32, error    // Error 32-bit EL0
-SYM_CODE_END(vectors)
-
-.macro kernel_ventry, el:req, ht:req, regsize:req, label:req
-    .align 7
-.Lventry_start\@:
-    .if    \el == 0
-    b    .Lskip_tramp_vectors_cleanup\@
-    .if    \regsize == 64
-    mrs    x30, tpidrro_el0
-    msr    tpidrro_el0, xzr
-    .else
-    mov    x30, xzr
-    .endif
-.Lskip_tramp_vectors_cleanup\@:
-    .endif
-
-    sub    sp, sp, #PT_REGS_SIZE
-#ifdef CONFIG_VMAP_STACK
-    add    sp, sp, x0            // sp' = sp + x0
-    sub    x0, sp, x0            // x0' = sp' - x0 = (sp + x0) - x0 = sp
-    tbnz    x0, #THREAD_SHIFT, 0f
-    sub    x0, sp, x0            // x0'' = sp' - x0' = (sp + x0) - sp = x0
-    sub    sp, sp, x0            // sp'' = sp' - x0 = (sp + x0) - x0 = sp
-    b    el\el\ht\()_\regsize\()_\label
-
-0:
-    /* Stash the original SP (minus PT_REGS_SIZE) in tpidr_el0. */
-    msr    tpidr_el0, x0
-
-    /* Recover the original x0 value and stash it in tpidrro_el0 */
-    sub    x0, sp, x0
-    msr    tpidrro_el0, x0
-
-    /* Switch to the overflow stack */
-    adr_this_cpu sp, overflow_stack + OVERFLOW_STACK_SIZE, x0
-
-    mrs    x0, tpidr_el0            // sp of interrupted context
-    sub    x0, sp, x0            // delta with top of overflow stack
-    tst    x0, #~(OVERFLOW_STACK_SIZE - 1)    // within range?
-    b.ne    __bad_stack            // no? -> bad stack pointer
-
-    /* We were already on the overflow stack. Restore sp/x0 and carry on. */
-    sub    sp, sp, x0
-    mrs    x0, tpidrro_el0
-#endif
-    b    el\el\ht\()_\regsize\()_\label
-.org .Lventry_start\@ + 128    // Did we overflow the ventry slot?
-    .endm
-```
-
-```c
-/* arch/arm64/include/asm/exception.h */
-asmlinkage void el1t_64_sync_handler(struct pt_regs *regs);
-asmlinkage void el1t_64_irq_handler(struct pt_regs *regs);
-asmlinkage void el1t_64_fiq_handler(struct pt_regs *regs);
-asmlinkage void el1t_64_error_handler(struct pt_regs *regs);
-
-void noinstr el0t_64_sync_handler(struct pt_regs *regs)
-    unsigned long esr = read_sysreg(esr_el1);
-
-    switch (ESR_ELx_EC(esr)) {
-    case ESR_ELx_EC_SVC64:
-        el0_svc(regs) {
-            enter_from_user_mode(regs) {
-                lockdep_hardirqs_off(CALLER_ADDR0);
-                CT_WARN_ON(ct_state() != CONTEXT_USER);
-                user_exit_irqoff();
-                trace_hardirqs_off_finish();
-                mte_disable_tco_entry(current);
-            }
-            cortex_a76_erratum_1463225_svc_handler();
-
-            do_el0_svc(regs) {
-                fp_user_discard();
-                el0_svc_common(regs, regs->regs[8], __NR_syscalls, sys_call_table) {
-                    unsigned long flags = read_thread_flags();
-
-                    regs->orig_x0 = regs->regs[0];
-                    regs->syscallno = scno;
-
-                    if (flags & _TIF_MTE_ASYNC_FAULT) {
-                        syscall_set_return_value(current, regs, -ERESTARTNOINTR, 0);
-                        return;
-                    }
-
-                    invoke_syscall(regs, scno, sc_nr, syscall_table) {
-                        if (scno < sc_nr) {
-                            syscall_fn_t syscall_fn;
-                            syscall_fn = syscall_table[array_index_nospec(scno, sc_nr)];
-                            ret = __invoke_syscall(regs, syscall_fn) {
-                                return syscall_fn(regs);
-                            }
-                        } else {
-                            ret = do_ni_syscall(regs, scno);
-                        }
-                    }
-                }
-            }
-
-            exit_to_user_mode(regs) {
-                prepare_exit_to_user_mode(regs) {
-                    flags = read_thread_flags();
-                    if (unlikely(flags & _TIF_WORK_MASK)) {
-                        do_notify_resume(regs, flags) {
-                            do {
-                                if (thread_flags & _TIF_NEED_RESCHED) {
-                                    local_daif_restore(DAIF_PROCCTX_NOIRQ);
-                                    schedule();
-                                } else {
-                                    local_daif_restore(DAIF_PROCCTX);
-
-                                    if (thread_flags & _TIF_UPROBE)
-                                        uprobe_notify_resume(regs);
-
-                                    if (thread_flags & _TIF_MTE_ASYNC_FAULT) {
-                                        clear_thread_flag(TIF_MTE_ASYNC_FAULT);
-                                        send_sig_fault(SIGSEGV, SEGV_MTEAERR, (void __user *)NULL, current);
-                                    }
-
-                                    if (thread_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                                        do_signal(regs);
-
-                                    if (thread_flags & _TIF_NOTIFY_RESUME)
-                                        resume_user_mode_work(regs);
-
-                                    if (thread_flags & _TIF_FOREIGN_FPSTATE)
-                                        fpsimd_restore_current_state();
-                                }
-
-                                local_daif_mask();
-                                thread_flags = read_thread_flags();
-                            } while (thread_flags & _TIF_WORK_MASK);
-                        }
-                    }
-                }
-
-                mte_check_tfsr_exit();
-
-                __exit_to_user_mode() {
-                    trace_hardirqs_on_prepare();
-                    lockdep_hardirqs_on_prepare();
-                    user_enter_irqoff();
-                    lockdep_hardirqs_on(CALLER_ADDR0);
-                }
-            }
-        }
-        break;
-    case ESR_ELx_EC_DABT_LOW:
-        el0_da(regs, esr);
-        break;
-    case ESR_ELx_EC_IABT_LOW:
-        el0_ia(regs, esr);
-        break;
-    case ESR_ELx_EC_FP_ASIMD:
-        el0_fpsimd_acc(regs, esr);
-        break;
-    case ESR_ELx_EC_SVE:
-        el0_sve_acc(regs, esr);
-        break;
-    case ESR_ELx_EC_SME:
-        el0_sme_acc(regs, esr);
-        break;
-    case ESR_ELx_EC_FP_EXC64:
-        el0_fpsimd_exc(regs, esr);
-        break;
-    case ESR_ELx_EC_SYS64:
-    case ESR_ELx_EC_WFx:
-        el0_sys(regs, esr);
-        break;
-    case ESR_ELx_EC_SP_ALIGN:
-        el0_sp(regs, esr);
-        break;
-    case ESR_ELx_EC_PC_ALIGN:
-        el0_pc(regs, esr);
-        break;
-    case ESR_ELx_EC_UNKNOWN:
-        el0_undef(regs, esr);
-        break;
-    case ESR_ELx_EC_BTI:
-        el0_bti(regs);
-        break;
-    case ESR_ELx_EC_BREAKPT_LOW:
-    case ESR_ELx_EC_SOFTSTP_LOW:
-    case ESR_ELx_EC_WATCHPT_LOW:
-    case ESR_ELx_EC_BRK64:
-        el0_dbg(regs, esr);
-        break;
-    case ESR_ELx_EC_FPAC:
-        el0_fpac(regs, esr);
-        break;
-    default:
-        el0_inv(regs, esr);
-    }
-
 ```
 
 # process
@@ -4260,29 +3582,25 @@ void __wake_up(
   struct wait_queue_head *wq_head, unsigned int mode,
   int nr_exclusive, void *key)
 {
-  __wake_up_common_lock(wq_head, mode, nr_exclusive, 0, key);
-}
+    __wake_up_common_lock(wq_head, mode, nr_exclusive, 0, key) {
+        unsigned long flags;
+        wait_queue_entry_t bookmark;
 
-static void __wake_up_common_lock(struct wait_queue_head *wq_head, unsigned int mode,
-      int nr_exclusive, int wake_flags, void *key)
-{
-  unsigned long flags;
-  wait_queue_entry_t bookmark;
+        bookmark.flags = 0;
+        bookmark.private = NULL;
+        bookmark.func = NULL;
+        INIT_LIST_HEAD(&bookmark.entry);
 
-  bookmark.flags = 0;
-  bookmark.private = NULL;
-  bookmark.func = NULL;
-  INIT_LIST_HEAD(&bookmark.entry);
+        spin_lock_irqsave(&wq_head->lock, flags);
+        nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
+        spin_unlock_irqrestore(&wq_head->lock, flags);
 
-  spin_lock_irqsave(&wq_head->lock, flags);
-  nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
-  spin_unlock_irqrestore(&wq_head->lock, flags);
-
-  while (bookmark.flags & WQ_FLAG_BOOKMARK) {
-    spin_lock_irqsave(&wq_head->lock, flags);
-    nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
-    spin_unlock_irqrestore(&wq_head->lock, flags);
-  }
+        while (bookmark.flags & WQ_FLAG_BOOKMARK) {
+            spin_lock_irqsave(&wq_head->lock, flags);
+            nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
+            spin_unlock_irqrestore(&wq_head->lock, flags);
+        }
+    }
 }
 
 static int __wake_up_common(
@@ -4290,47 +3608,47 @@ static int __wake_up_common(
   int nr_exclusive, int wake_flags, void *key,
   wait_queue_entry_t *bookmark)
 {
-  wait_queue_entry_t *curr, *next;
-  int cnt = 0;
+    wait_queue_entry_t *curr, *next;
+    int cnt = 0;
 
-  lockdep_assert_held(&wq_head->lock);
+    lockdep_assert_held(&wq_head->lock);
 
-  if (bookmark && (bookmark->flags & WQ_FLAG_BOOKMARK)) {
-    curr = list_next_entry(bookmark, entry);
+    if (bookmark && (bookmark->flags & WQ_FLAG_BOOKMARK)) {
+        curr = list_next_entry(bookmark, entry);
 
-    list_del(&bookmark->entry);
-    bookmark->flags = 0;
-  } else
-    curr = list_first_entry(&wq_head->head, wait_queue_entry_t, entry);
+        list_del(&bookmark->entry);
+        bookmark->flags = 0;
+    } else
+        curr = list_first_entry(&wq_head->head, wait_queue_entry_t, entry);
 
-  if (&curr->entry == &wq_head->head)
-    return nr_exclusive;
+    if (&curr->entry == &wq_head->head)
+        return nr_exclusive;
 
-  list_for_each_entry_safe_from(curr, next, &wq_head->head, entry) {
-    unsigned flags = curr->flags;
-    int ret;
+    list_for_each_entry_safe_from(curr, next, &wq_head->head, entry) {
+        unsigned flags = curr->flags;
+        int ret;
 
-    if (flags & WQ_FLAG_BOOKMARK)
-      continue;
+        if (flags & WQ_FLAG_BOOKMARK)
+        continue;
 
-    /* ep_poll_callback, default_wake_func, woken_wake_function */
-    ret = curr->func(curr, mode, wake_flags, key);
-    if (ret < 0)
-      break;
-    /* WQ_FLAG_EXCLUSIVE : fix Thundering Herd problem */
-    if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
-      break;
+        /* ep_poll_callback, default_wake_func, woken_wake_function */
+        ret = curr->func(curr, mode, wake_flags, key);
+        if (ret < 0)
+        break;
+        /* WQ_FLAG_EXCLUSIVE : fix Thundering Herd problem */
+        if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
+        break;
 
-    if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT)
-      && (&next->entry != &wq_head->head))
-    {
-      bookmark->flags = WQ_FLAG_BOOKMARK;
-      list_add_tail(&bookmark->entry, &next->entry);
-      break;
+        if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT)
+        && (&next->entry != &wq_head->head))
+        {
+        bookmark->flags = WQ_FLAG_BOOKMARK;
+        list_add_tail(&bookmark->entry, &next->entry);
+        break;
+        }
     }
-  }
 
-  return nr_exclusive;
+    return nr_exclusive;
 }
 ```
 
@@ -4338,104 +3656,88 @@ static int __wake_up_common(
 ```c
 long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
 {
-  DEFINE_WAIT_FUNC(wait, woken_wake_function);
+    DEFINE_WAIT_FUNC(wait, woken_wake_function);
 
-  add_wait_queue(sk_sleep(sk), &wait);
-  sk->sk_write_pending += writebias;
+    add_wait_queue(sk_sleep(sk), &wait);
+    sk->sk_write_pending += writebias;
 
-  while ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
-    timeo = wait_woken(&wait, TASK_INTERRUPTIBLE, timeo);
-    if (signal_pending(current) || !timeo)
-      break;
-  }
-  remove_wait_queue(sk_sleep(sk), &wait);
-  sk->sk_write_pending -= writebias;
-  return timeo;
+    while ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+        timeo = wait_woken(&wait, TASK_INTERRUPTIBLE, timeo) {
+            /* The below executes an smp_mb(), which matches with the full barrier
+            * executed by the try_to_wake_up() in woken_wake_function() such that
+            * either we see the store to wq_entry->flags in woken_wake_function()
+            * or woken_wake_function() sees our store to current->state. */
+            set_current_state(mode); /* A */
+            if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop()) {
+                timeout = schedule_timeout(timeout) {
+
+                }
+            }
+            __set_current_state(TASK_RUNNING);
+
+            /* The below executes an smp_mb(), which matches with the smp_mb() (C)
+            * in woken_wake_function() such that either we see the wait condition
+            * being true or the store to wq_entry->flags in woken_wake_function()
+            * follows ours in the coherence order. */
+            smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
+
+            return timeout;
+        }
+        if (signal_pending(current) || !timeo)
+        break;
+    }
+    remove_wait_queue(sk_sleep(sk), &wait);
+    sk->sk_write_pending -= writebias;
+    return timeo;
 }
 
-long wait_woken(struct wait_queue_entry *wq_entry, unsigned mode, long timeout)
-{
-  /* The below executes an smp_mb(), which matches with the full barrier
-   * executed by the try_to_wake_up() in woken_wake_function() such that
-   * either we see the store to wq_entry->flags in woken_wake_function()
-   * or woken_wake_function() sees our store to current->state. */
-  set_current_state(mode); /* A */
-  if (!(wq_entry->flags & WQ_FLAG_WOKEN) && !is_kthread_should_stop())
-    timeout = schedule_timeout(timeout);
-  __set_current_state(TASK_RUNNING);
-
-  /* The below executes an smp_mb(), which matches with the smp_mb() (C)
-   * in woken_wake_function() such that either we see the wait condition
-   * being true or the store to wq_entry->flags in woken_wake_function()
-   * follows ours in the coherence order. */
-  smp_store_mb(wq_entry->flags, wq_entry->flags & ~WQ_FLAG_WOKEN); /* B */
-
-  return timeout;
-}
 
 long __sched schedule_timeout(signed long timeout)
 {
-  struct process_timer timer;
-  unsigned long expire;
+    struct process_timer timer;
+    unsigned long expire;
 
-  switch (timeout)
-  {
-  case MAX_SCHEDULE_TIMEOUT:
-    schedule();
-    goto out;
-  default:
-    if (timeout < 0) {
-      printk(KERN_ERR "schedule_timeout: wrong timeout "
-        "value %lx\n", timeout);
-      dump_stack();
-      current->state = TASK_RUNNING;
-      goto out;
+    switch (timeout)
+    {
+    case MAX_SCHEDULE_TIMEOUT:
+        schedule();
+        goto out;
+    default:
+        if (timeout < 0) {
+        printk(KERN_ERR "schedule_timeout: wrong timeout "
+            "value %lx\n", timeout);
+        dump_stack();
+        current->state = TASK_RUNNING;
+        goto out;
+        }
     }
-  }
 
-  expire = timeout + jiffies;
+    expire = timeout + jiffies;
 
-  timer.task = current;
-  timer_setup_on_stack(&timer.timer, process_timeout, 0);
-  __mod_timer(&timer.timer, expire, 0);
-  schedule();
-  del_singleshot_timer_sync(&timer.timer);
+    timer.task = current;
+    timer_setup_on_stack(&timer.timer, process_timeout, 0);
+    __mod_timer(&timer.timer, expire, 0);
+    schedule();
+    del_singleshot_timer_sync(&timer.timer);
 
-  /* Remove the timer from the object tracker */
-  destroy_timer_on_stack(&timer.timer);
+    /* Remove the timer from the object tracker */
+    destroy_timer_on_stack(&timer.timer);
 
-  timeout = expire - jiffies;
+    timeout = expire - jiffies;
 
- out:
-  return timeout < 0 ? 0 : timeout;
+out:
+    return timeout < 0 ? 0 : timeout;
 }
 
 void process_timeout(struct timer_list *t)
 {
-  struct process_timer *timeout = from_timer(timeout, t, timer);
+    struct process_timer *timeout = from_timer(timeout, t, timer);
 
-  wake_up_process(timeout->task);
-}
+    wake_up_process(timeout->task) {
+        return try_to_wake_up(p, TASK_NORMAL, 0) {
 
-int wake_up_process(struct task_struct *p)
-{
-  return try_to_wake_up(p, TASK_NORMAL, 0);
-}
-
-int woken_wake_function(
-  struct wait_queue_entry *wq_entry, unsigned mode, int sync, void *key)
-{
-  /* Pairs with the smp_store_mb() in wait_woken(). */
-  smp_mb(); /* C */
-  wq_entry->flags |= WQ_FLAG_WOKEN;
-
-  return default_wake_function(wq_entry, mode, sync, key);
-}
-
-int default_wake_function(
-  wait_queue_entry_t *curr, unsigned mode, int wake_flags, void *key)
-{
-  return try_to_wake_up(curr->private, mode, wake_flags);
+        }
+    }
 }
 
 /* wait_queue_entry::flags */
@@ -4622,31 +3924,31 @@ SYM_CODE_END(ret_from_fork)
 # exec
 ```c
 typedef struct elf64_hdr {
-  unsigned char  e_ident[EI_NIDENT];  /* ELF "magic number" */
-  Elf64_Half  e_type;  /* elf type: ET_NONE ET_REL ET_EXEC ET_CORE ET_DYN */
-  Elf64_Half  e_machine; /* instruction set architecture */
-  Elf64_Word  e_version; /* version of ELF. */
-  Elf64_Addr  e_entry;  /* crt1.o **_start symbol** Entry point virtual address */
-  Elf64_Off   e_phoff;  /* Program header table file offset */
-  Elf64_Off   e_shoff;  /* Section header table file offset */
-  Elf64_Word  e_flags; /* depends on the target architecture */
-  Elf64_Half  e_ehsize; /* size of this header */
-  Elf64_Half  e_phentsize; /* program header table entry size */
-  Elf64_Half  e_phnum; /* number of entries in the program header table */
-  Elf64_Half  e_shentsize; /* size of a section header table entry */
-  Elf64_Half  e_shnum; /* number of entries in the section header table */
-  Elf64_Half  e_shstrndx; /* index of the section header table entry that contains the section names. */
+    unsigned char  e_ident[EI_NIDENT];  /* ELF "magic number" */
+    Elf64_Half  e_type;  /* elf type: ET_NONE ET_REL ET_EXEC ET_CORE ET_DYN */
+    Elf64_Half  e_machine; /* instruction set architecture */
+    Elf64_Word  e_version; /* version of ELF. */
+    Elf64_Addr  e_entry;  /* crt1.o **_start symbol** Entry point virtual address */
+    Elf64_Off   e_phoff;  /* Program header table file offset */
+    Elf64_Off   e_shoff;  /* Section header table file offset */
+    Elf64_Word  e_flags; /* depends on the target architecture */
+    Elf64_Half  e_ehsize; /* size of this header */
+    Elf64_Half  e_phentsize; /* program header table entry size */
+    Elf64_Half  e_phnum; /* number of entries in the program header table */
+    Elf64_Half  e_shentsize; /* size of a section header table entry */
+    Elf64_Half  e_shnum; /* number of entries in the section header table */
+    Elf64_Half  e_shstrndx; /* index of the section header table entry that contains the section names. */
 } Elf64_Ehdr;
 
 typedef struct elf64_phdr {
-  Elf64_Word  p_type;
-  Elf64_Word  p_flags;
-  Elf64_Off   p_offset; /* Segment file offset */
-  Elf64_Addr  p_vaddr;  /* Segment virtual address */
-  Elf64_Addr  p_paddr;  /* Segment physical address */
-  Elf64_Xword p_filesz; /* Segment size in file */
-  Elf64_Xword p_memsz;  /* Segment size in memory */
-  Elf64_Xword p_align;  /* Segment alignment, file & memory */
+    Elf64_Word  p_type;
+    Elf64_Word  p_flags;
+    Elf64_Off   p_offset; /* Segment file offset */
+    Elf64_Addr  p_vaddr;  /* Segment virtual address */
+    Elf64_Addr  p_paddr;  /* Segment physical address */
+    Elf64_Xword p_filesz; /* Segment size in file */
+    Elf64_Xword p_memsz;  /* Segment size in memory */
+    Elf64_Xword p_align;  /* Segment alignment, file & memory */
 } Elf64_Phdr;
 
 /* These constants are for the segment types stored in the image headers */
@@ -4665,66 +3967,66 @@ typedef struct elf64_phdr {
 #define PT_GNU_EH_FRAME 0x6474e550
 
 typedef struct elf64_shdr {
-  Elf64_Word  sh_name;  /* Section name, index in string tbl */
-  Elf64_Word  sh_type;  /* Type of section: SHT_PROGBITS, SHT_SYMTAB, SHT_RELA */
-  Elf64_Xword sh_flags; /* Miscellaneous section attributes: SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR */
-  Elf64_Addr  sh_addr;  /* Section virtual addr at execution */
-  Elf64_Off   sh_offset;/* Section file offset */
-  Elf64_Xword sh_size;  /* Size of section in bytes */
-  Elf64_Word  sh_link;  /* Index of another section */
-  Elf64_Word  sh_info;  /* Additional section information */
-  Elf64_Xword sh_addralign; /* Section alignment */
-  Elf64_Xword sh_entsize; /* Entry size if section holds table */
+    Elf64_Word  sh_name;  /* Section name, index in string tbl */
+    Elf64_Word  sh_type;  /* Type of section: SHT_PROGBITS, SHT_SYMTAB, SHT_RELA */
+    Elf64_Xword sh_flags; /* Miscellaneous section attributes: SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR */
+    Elf64_Addr  sh_addr;  /* Section virtual addr at execution */
+    Elf64_Off   sh_offset;/* Section file offset */
+    Elf64_Xword sh_size;  /* Size of section in bytes */
+    Elf64_Word  sh_link;  /* Index of another section */
+    Elf64_Word  sh_info;  /* Additional section information */
+    Elf64_Xword sh_addralign; /* Section alignment */
+    Elf64_Xword sh_entsize; /* Entry size if section holds table */
 } Elf64_Shdr;
 
 struct linux_binfmt {
-  struct list_head lh;
-  struct module *module;
-  int (*load_binary)(struct linux_binprm *);
-  int (*load_shlib)(struct file *);
-  int (*core_dump)(struct coredump_params *cprm);
-  unsigned long min_coredump;     /* minimal dump size */
+    struct list_head lh;
+    struct module *module;
+    int (*load_binary)(struct linux_binprm *);
+    int (*load_shlib)(struct file *);
+    int (*core_dump)(struct coredump_params *cprm);
+    unsigned long min_coredump;     /* minimal dump size */
 };
 
 static struct linux_binfmt elf_format = {
-  .module         = THIS_MODULE,
-  .load_binary    = load_elf_binary,
-  .load_shlib     = load_elf_library,
-  .core_dump      = elf_core_dump,
-  .min_coredump   = ELF_EXEC_PAGESIZE,
+    .module         = THIS_MODULE,
+    .load_binary    = load_elf_binary,
+    .load_shlib     = load_elf_library,
+    .core_dump      = elf_core_dump,
+    .min_coredump   = ELF_EXEC_PAGESIZE,
 };
 
 struct linux_binprm {
-  char buf[BINPRM_BUF_SIZE];
+    char buf[BINPRM_BUF_SIZE];
 #ifdef CONFIG_MMU
-  struct vm_area_struct *vma;
-  unsigned long vma_pages;
+    struct vm_area_struct *vma;
+    unsigned long vma_pages;
 #else
-# define MAX_ARG_PAGES  32
-  struct page *page[MAX_ARG_PAGES];
+    # define MAX_ARG_PAGES  32
+    struct page *page[MAX_ARG_PAGES];
 #endif
-  struct mm_struct *mm;
-  unsigned long p; /* current top of mem */
-  unsigned int
-    called_set_creds:1,
-    cap_elevated:1,
-    secureexec:1;
+    struct mm_struct *mm;
+    unsigned long p; /* current top of mem */
+    unsigned int
+        called_set_creds:1,
+        cap_elevated:1,
+        secureexec:1;
 
-  unsigned int recursion_depth; /* only for search_binary_handler() */
-  struct file * file;
-  struct cred *cred;  /* new credentials */
-  int unsafe;    /* how unsafe this exec is (mask of LSM_UNSAFE_*) */
-  unsigned int per_clear;  /* bits to clear in current->personality */
-  int argc, envc;
-  const char * filename;  /* Name of binary as seen by procps */
-  const char * interp;  /* Name of the binary really executed. Most
-           of the time same as filename, but could be
-           different for binfmt_{misc,script} */
-  unsigned interp_flags;
-  unsigned interp_data;
-  unsigned long loader, exec;
+    unsigned int recursion_depth; /* only for search_binary_handler() */
+    struct file * file;
+    struct cred *cred;  /* new credentials */
+    int unsafe;    /* how unsafe this exec is (mask of LSM_UNSAFE_*) */
+    unsigned int per_clear;  /* bits to clear in current->personality */
+    int argc, envc;
+    const char * filename;  /* Name of binary as seen by procps */
+    const char * interp;  /* Name of the binary really executed. Most
+            of the time same as filename, but could be
+            different for binfmt_{misc,script} */
+    unsigned interp_flags;
+    unsigned interp_data;
+    unsigned long loader, exec;
 
-  struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
+    struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
 };
 ```
 
@@ -4735,121 +4037,77 @@ SYSCALL_DEFINE3(execve,
   const char __user *const __user *, argv,
   const char __user *const __user *, envp)
 {
-  return do_execve(getname(filename), argv, envp);
-}
+    return do_execve(getname(filename), argv, envp) {
+        struct user_arg_ptr argv = { .ptr.native = __argv };
+        struct user_arg_ptr envp = { .ptr.native = __envp };
+        return do_execveat_common(AT_FDCWD, filename, argv, envp, 0) {
+            struct linux_binprm *bprm;
+            int retval;
 
-int do_execve(struct filename *filename,
-  const char __user *const __user *__argv,
-  const char __user *const __user *__envp)
-{
-  struct user_arg_ptr argv = { .ptr.native = __argv };
-  struct user_arg_ptr envp = { .ptr.native = __envp };
-  return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
-}
+            if (IS_ERR(filename))
+                return PTR_ERR(filename);
 
-int do_execveat_common(int fd, struct filename *filename,
-            struct user_arg_ptr argv,
-            struct user_arg_ptr envp,
-            int flags)
-{
-  struct linux_binprm *bprm;
-  int retval;
+            /* We move the actual failure in case of RLIMIT_NPROC excess from
+            * set*uid() to execve() because too many poorly written programs
+            * don't check setuid() return code.  Here we additionally recheck
+            * whether NPROC limit is still exceeded. */
+            if ((current->flags & PF_NPROC_EXCEEDED) &&
+                is_ucounts_overlimit(current_ucounts(), UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC))) {
+                retval = -EAGAIN;
+                goto out_ret;
+            }
 
-  if (IS_ERR(filename))
-    return PTR_ERR(filename);
+            /* We're below the limit (still or again), so we don't want to make
+            * further execve() calls fail. */
+            current->flags &= ~PF_NPROC_EXCEEDED;
 
-  /* We move the actual failure in case of RLIMIT_NPROC excess from
-   * set*uid() to execve() because too many poorly written programs
-   * don't check setuid() return code.  Here we additionally recheck
-   * whether NPROC limit is still exceeded. */
-  if ((current->flags & PF_NPROC_EXCEEDED) &&
-      is_ucounts_overlimit(current_ucounts(), UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC))) {
-    retval = -EAGAIN;
-    goto out_ret;
-  }
+            bprm = alloc_bprm(fd, filename);
+            if (IS_ERR(bprm)) {
+                retval = PTR_ERR(bprm);
+                goto out_ret;
+            }
 
-  /* We're below the limit (still or again), so we don't want to make
-   * further execve() calls fail. */
-  current->flags &= ~PF_NPROC_EXCEEDED;
+            retval = count(argv, MAX_ARG_STRINGS);
 
-  bprm = alloc_bprm(fd, filename);
-  if (IS_ERR(bprm)) {
-    retval = PTR_ERR(bprm);
-    goto out_ret;
-  }
+            bprm->argc = retval;
 
-  retval = count(argv, MAX_ARG_STRINGS);
+            retval = count(envp, MAX_ARG_STRINGS);
 
-  bprm->argc = retval;
+            bprm->envc = retval;
 
-  retval = count(envp, MAX_ARG_STRINGS);
+            retval = bprm_stack_limits(bprm);
+            if (retval < 0)
+                goto out_free;
 
-  bprm->envc = retval;
+            retval = copy_string_kernel(bprm->filename, bprm);
 
-  retval = bprm_stack_limits(bprm);
-  if (retval < 0)
-    goto out_free;
+            bprm->exec = bprm->p;
 
-  retval = copy_string_kernel(bprm->filename, bprm);
-
-  bprm->exec = bprm->p;
-
-  retval = copy_strings(bprm->envc, envp, bprm);
+            retval = copy_strings(bprm->envc, envp, bprm);
 
 
-  retval = copy_strings(bprm->argc, argv, bprm);
+            retval = copy_strings(bprm->argc, argv, bprm);
 
-  /* When argv is empty, add an empty string ("") as argv[0] to
-   * ensure confused userspace programs that start processing
-   * from argv[1] won't end up walking envp. See also
-   * bprm_stack_limits(). */
-  if (bprm->argc == 0) {
-    retval = copy_string_kernel("", bprm);
-    if (retval < 0)
-      goto out_free;
-    bprm->argc = 1;
-  }
+            /* When argv is empty, add an empty string ("") as argv[0] to
+            * ensure confused userspace programs that start processing
+            * from argv[1] won't end up walking envp. See also
+            * bprm_stack_limits(). */
+            if (bprm->argc == 0) {
+                retval = copy_string_kernel("", bprm);
+                if (retval < 0)
+                goto out_free;
+                bprm->argc = 1;
+            }
 
-  retval = bprm_execve(bprm, fd, filename, flags);
-out_free:
-  free_bprm(bprm);
+            retval = bprm_execve(bprm, fd, filename, flags);
+        out_free:
+            free_bprm(bprm);
 
-out_ret:
-  putname(filename);
-  return retval;
-}
-
-struct linux_binprm *alloc_bprm(int fd, struct filename *filename)
-{
-  struct linux_binprm *bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
-  int retval = -ENOMEM;
-  if (!bprm)
-    goto out;
-
-  if (fd == AT_FDCWD || filename->name[0] == '/') {
-    bprm->filename = filename->name;
-  } else {
-    if (filename->name[0] == '\0')
-      bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
-    else
-      bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s",
-              fd, filename->name);
-    if (!bprm->fdpath)
-      goto out_free;
-
-    bprm->filename = bprm->fdpath;
-  }
-  bprm->interp = bprm->filename;
-
-  retval = bprm_mm_init(bprm);
-  if (retval)
-    goto out_free;
-  return bprm;
-
-out_free:
-  free_bprm(bprm);
-out:
-  return ERR_PTR(retval);
+        out_ret:
+            putname(filename);
+            return retval;
+        }
+    }
 }
 
 int bprm_mm_init(struct linux_binprm *bprm)
@@ -6011,74 +5269,55 @@ struct task_struct *kthreadd_task;
 
 struct kthread_create_info
 {
-  int (*threadfn)(void *data);
-  void *data;
-  int node;
+    int (*threadfn)(void *data);
+    void *data;
+    int node;
 
-  /* Result passed back to kthread_create() from kthreadd. */
-  struct task_struct *result;
-  struct completion *done;
+    /* Result passed back to kthread_create() from kthreadd. */
+    struct task_struct *result;
+    struct completion *done;
 
-  struct list_head list;
+    struct list_head list;
 };
 
 int kthreadd(void *unused)
 {
-  struct task_struct *tsk = current;
+    struct task_struct *tsk = current;
 
-  /* Setup a clean context for our children to inherit. */
-  set_task_comm(tsk, "kthreadd");
-  ignore_signals(tsk);
-  set_cpus_allowed_ptr(tsk, cpu_all_mask);
-  set_mems_allowed(node_states[N_MEMORY]);
+    /* Setup a clean context for our children to inherit. */
+    set_task_comm(tsk, "kthreadd");
+    ignore_signals(tsk);
+    set_cpus_allowed_ptr(tsk, cpu_all_mask);
+    set_mems_allowed(node_states[N_MEMORY]);
 
-  current->flags |= PF_NOFREEZE;
-  cgroup_init_kthreadd();
+    current->flags |= PF_NOFREEZE;
+    cgroup_init_kthreadd();
 
-  for (;;) {
-    set_current_state(TASK_INTERRUPTIBLE);
-    if (list_empty(&kthread_create_list))
-      schedule();
-    __set_current_state(TASK_RUNNING);
+    for (;;) {
+        set_current_state(TASK_INTERRUPTIBLE);
+        if (list_empty(&kthread_create_list))
+        schedule();
+        __set_current_state(TASK_RUNNING);
 
-    spin_lock(&kthread_create_lock);
-    while (!list_empty(&kthread_create_list)) {
-      struct kthread_create_info *create;
+        spin_lock(&kthread_create_lock);
+        while (!list_empty(&kthread_create_list)) {
+            struct kthread_create_info *create;
 
-      create = list_entry(kthread_create_list.next, struct kthread_create_info, list);
-      list_del_init(&create->list);
-      spin_unlock(&kthread_create_lock);
+            create = list_entry(kthread_create_list.next, struct kthread_create_info, list);
+            list_del_init(&create->list);
+            spin_unlock(&kthread_create_lock);
 
-      create_kthread(create);
+            create_kthread(create) {
+                kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD);
+                    _do_fork();
+            }
 
-      spin_lock(&kthread_create_lock);
+            spin_lock(&kthread_create_lock);
+        }
+        spin_unlock(&kthread_create_lock);
     }
-    spin_unlock(&kthread_create_lock);
-  }
 
   return 0;
-}
-
-void create_kthread(struct kthread_create_info *create)
-{
-  int pid;
-
-#ifdef CONFIG_NUMA
-  current->pref_node_fork = create->node;
-#endif
-  /* We want our own signal handler (we take no signals by default). */
-  pid = kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD);
-  if (pid < 0) {
-    /* If user was SIGKILLed, I release the structure. */
-    struct completion *done = xchg(&create->done, NULL);
-
-    if (!done) {
-      kfree(create);
-      return;
-    }
-    create->result = ERR_PTR(pid);
-    complete(done);
-  }
 }
 
 pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
@@ -6089,66 +5328,53 @@ pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 
 static int kthread(void *_create)
 {
-  /* Copy data: it's on kthread's stack */
-  struct kthread_create_info *create = _create;
-  int (*threadfn)(void *data) = create->threadfn;
-  void *data = create->data;
-  struct completion *done;
-  struct kthread *self;
-  int ret;
+    /* Copy data: it's on kthread's stack */
+    struct kthread_create_info *create = _create;
+    int (*threadfn)(void *data) = create->threadfn;
+    void *data = create->data;
+    struct completion *done;
+    struct kthread *self;
+    int ret;
 
-  self = kzalloc(sizeof(*self), GFP_KERNEL);
-  set_kthread_struct(self);
+    self = kzalloc(sizeof(*self), GFP_KERNEL);
+    set_kthread_struct(self);
 
-  /* If user was SIGKILLed, I release the structure. */
-  done = xchg(&create->done, NULL);
-  if (!done) {
-    kfree(create);
-    do_exit(-EINTR);
-  }
+    /* If user was SIGKILLed, I release the structure. */
+    done = xchg(&create->done, NULL);
+    if (!done) {
+        kfree(create);
+        do_exit(-EINTR);
+    }
 
-  if (!self) {
-    create->result = ERR_PTR(-ENOMEM);
+    if (!self) {
+        create->result = ERR_PTR(-ENOMEM);
+        complete(done);
+        do_exit(-ENOMEM);
+    }
+
+    self->data = data;
+    init_completion(&self->exited);
+    init_completion(&self->parked);
+    current->vfork_done = &self->exited;
+
+    /* OK, tell user we're spawned, wait for stop or wakeup */
+    __set_current_state(TASK_UNINTERRUPTIBLE);
+    create->result = current;
+    /* Thread is going to call schedule(), do not preempt it,
+    * or the creator may spend more time in wait_task_inactive(). */
+    preempt_disable();
     complete(done);
-    do_exit(-ENOMEM);
-  }
+    schedule_preempt_disabled();
+    preempt_enable();
 
-  self->data = data;
-  init_completion(&self->exited);
-  init_completion(&self->parked);
-  current->vfork_done = &self->exited;
-
-  /* OK, tell user we're spawned, wait for stop or wakeup */
-  __set_current_state(TASK_UNINTERRUPTIBLE);
-  create->result = current;
-  /* Thread is going to call schedule(), do not preempt it,
-   * or the creator may spend more time in wait_task_inactive(). */
-  preempt_disable();
-  complete(done);
-  schedule_preempt_disabled();
-  preempt_enable();
-
-  ret = -EINTR;
-  if (!test_bit(KTHREAD_SHOULD_STOP, &self->flags)) {
-    cgroup_kthread_ready();
-    __kthread_parkme(self);
-    ret = threadfn(data);
-  }
-  do_exit(ret);
+    ret = -EINTR;
+    if (!test_bit(KTHREAD_SHOULD_STOP, &self->flags)) {
+        cgroup_kthread_ready();
+        __kthread_parkme(self);
+        ret = threadfn(data);
+    }
+    do_exit(ret);
 }
-```
-
-```c
-create_kthread(create);
-  kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD);
-    _do_fork();
-
-kthread();
-  struct kthread_create_info *create = _create;
-  int (*threadfn)(void *data) = create->threadfn;
-  void *data = create->data;
-
-  threadfn(data);
 ```
 
 # kswapd
@@ -6531,41 +5757,41 @@ WORKER_REBOUND        = 1 << 8,  /* worker was rebound */
 WORKER_NOT_RUNNING    = WORKER_PREP | WORKER_CPU_INTENSIVE | WORKER_UNBOUND | WORKER_REBOUND;
 
 struct worker {
-  /* on idle list while idle, on busy hash table while busy */
-  union {
-    struct list_head      entry;  /* L: while idle */
-    struct hlist_node     hentry;  /* L: while busy */
-  };
+    /* on idle list while idle, on busy hash table while busy */
+    union {
+        struct list_head      entry;  /* L: while idle */
+        struct hlist_node     hentry;  /* L: while busy */
+    };
 
-  struct work_struct      *current_work;  /* L: work being processed */
-  work_func_t             current_func;   /* L: current_work's fn */
-  struct pool_workqueue   *current_pwq;   /* L: current_work's pwq */
-  struct list_head        scheduled;      /* L: scheduled works */
+    struct work_struct      *current_work;  /* L: work being processed */
+    work_func_t             current_func;   /* L: current_work's fn */
+    struct pool_workqueue   *current_pwq;   /* L: current_work's pwq */
+    struct list_head        scheduled;      /* L: scheduled works */
 
-  /* 64 bytes boundary on 64bit, 32 on 32bit */
+    /* 64 bytes boundary on 64bit, 32 on 32bit */
 
-  struct task_struct      *task;    /* I: worker task */
-  struct worker_pool      *pool;    /* A: the associated pool */
-            /* L: for rescuers */
-  struct list_head        node;    /* A: anchored at pool->workers */
-            /* A: runs through worker->node */
+    struct task_struct      *task;    /* I: worker task */
+    struct worker_pool      *pool;    /* A: the associated pool */
+                /* L: for rescuers */
+    struct list_head        node;    /* A: anchored at pool->workers */
+                /* A: runs through worker->node */
 
-  unsigned long           last_active;  /* L: last active timestamp */
-  unsigned int            flags;    /* X: flags */
-  int                     id;    /* I: worker id */
+    unsigned long           last_active;  /* L: last active timestamp */
+    unsigned int            flags;    /* X: flags */
+    int                     id;    /* I: worker id */
 
-  /* Opaque string set with work_set_desc().  Printed out with task
-   * dump for debugging - WARN, BUG, panic or sysrq. */
-  char      desc[WORKER_DESC_LEN];
+    /* Opaque string set with work_set_desc().  Printed out with task
+    * dump for debugging - WARN, BUG, panic or sysrq. */
+    char      desc[WORKER_DESC_LEN];
 
-  /* used only by rescuers to point to the target workqueue */
-  struct workqueue_struct  *rescue_wq;  /* I: the workqueue to rescue */
+    /* used only by rescuers to point to the target workqueue */
+    struct workqueue_struct  *rescue_wq;  /* I: the workqueue to rescue */
 };
 
 struct work_struct {
-  atomic_long_t     data;
-  struct list_head  entry;
-  work_func_t       func;
+    atomic_long_t     data;
+    struct list_head  entry;
+    work_func_t       func;
 };
 ```
 
@@ -6585,6 +5811,7 @@ root     2760459 2760373  0 00:48 pts/4    00:00:00 grep --color=auto worker
 kworker/<cpu-id>:<worker-id-in-pool><High priority>
 kworker/<unbound>:<worker-id-in-pool><High priority>
 ```
+
 ```c
 /* the per-cpu worker pools */
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct worker_pool [NR_STD_WORKER_POOLS], cpu_worker_pools);
@@ -6607,1690 +5834,4 @@ struct workqueue_struct *system_unbound_wq;
 struct workqueue_struct *system_freezable_wq;
 struct workqueue_struct *system_power_efficient_wq;
 struct workqueue_struct *system_freezable_power_efficient_wq;
-```
-
-## alloc_workqueue
-```c
-void __init start_kernel(void)
-{
-  kernel_init_freeable();
-  workqueue_init_early();
-}
-
-int __init workqueue_init_early(void)
-{
-  int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
-  int hk_flags = HK_FLAG_DOMAIN | HK_FLAG_WQ;
-  int i, cpu;
-
-  WARN_ON(__alignof__(struct pool_workqueue) < __alignof__(long long));
-
-  BUG_ON(!alloc_cpumask_var(&wq_unbound_cpumask, GFP_KERNEL));
-  cpumask_copy(wq_unbound_cpumask, housekeeping_cpumask(hk_flags));
-
-  pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
-
-  /* initialize CPU pools */
-  for_each_possible_cpu(cpu) {
-    struct worker_pool *pool;
-
-    i = 0;
-    for_each_cpu_worker_pool(pool, cpu) {
-      BUG_ON(init_worker_pool(pool));
-      pool->cpu = cpu;
-      cpumask_copy(pool->attrs->cpumask, cpumask_of(cpu));
-      pool->attrs->nice = std_nice[i++];
-      pool->node = cpu_to_node(cpu);
-
-      /* alloc pool ID */
-      mutex_lock(&wq_pool_mutex);
-      BUG_ON(worker_pool_assign_id(pool));
-      mutex_unlock(&wq_pool_mutex);
-    }
-  }
-
-  /* create default unbound and ordered wq attrs */
-  for (i = 0; i < NR_STD_WORKER_POOLS; i++) {
-    struct workqueue_attrs *attrs;
-
-    BUG_ON(!(attrs = alloc_workqueue_attrs(GFP_KERNEL)));
-    attrs->nice = std_nice[i];
-    unbound_std_wq_attrs[i] = attrs;
-
-    /* An ordered wq should have only one pwq as ordering is
-     * guaranteed by max_active which is enforced by pwqs.
-     * Turn off NUMA so that dfl_pwq is used for all nodes. */
-    BUG_ON(!(attrs = alloc_workqueue_attrs(GFP_KERNEL)));
-    attrs->nice = std_nice[i];
-    attrs->no_numa = true;
-    ordered_wq_attrs[i] = attrs;
-  }
-
-  system_wq = alloc_workqueue("events", 0, 0);
-  system_highpri_wq = alloc_workqueue("events_highpri", WQ_HIGHPRI, 0);
-  system_long_wq = alloc_workqueue("events_long", 0, 0);
-  system_unbound_wq = alloc_workqueue("events_unbound", WQ_UNBOUND, WQ_UNBOUND_MAX_ACTIVE);
-  system_freezable_wq = alloc_workqueue("events_freezable", WQ_FREEZABLE, 0);
-  system_power_efficient_wq = alloc_workqueue("events_power_efficient", WQ_POWER_EFFICIENT, 0);
-  system_freezable_power_efficient_wq = alloc_workqueue("events_freezable_power_efficient", WQ_FREEZABLE | WQ_POWER_EFFICIENT 0);
-
-  return 0;
-}
-
-void __init start_kernel::rest_init::kernel_init_freeable(void)
-{
-  wait_for_completion(&kthreadd_done);
-  workqueue_init();
-}
-
-int __init workqueue_init(void)
-{
-  struct workqueue_struct *wq;
-  struct worker_pool *pool;
-  int cpu, bkt;
-
-  wq_numa_init();
-
-  mutex_lock(&wq_pool_mutex);
-
-  for_each_possible_cpu(cpu) {
-    for_each_cpu_worker_pool(pool, cpu) {
-      pool->node = cpu_to_node(cpu);
-    }
-  }
-
-  list_for_each_entry(wq, &workqueues, list) {
-    wq_update_unbound_numa(wq, smp_processor_id(), true);
-    init_rescuer(wq);
-  }
-
-  mutex_unlock(&wq_pool_mutex);
-
-  /* create the initial workers */
-  for_each_online_cpu(cpu) {
-    for_each_cpu_worker_pool(pool, cpu) {
-      pool->flags &= ~POOL_DISASSOCIATED;
-      create_worker(pool);
-    }
-  }
-
-  hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
-    create_worker(pool);
-
-  wq_online = true;
-  wq_watchdog_init();
-
-  return 0;
-}
-
-/* alloc_workqueue -> */
-struct workqueue_struct *__alloc_workqueue_key(
-  const char *fmt,
-  unsigned int flags,
-  int max_active,
-  struct lock_class_key *key,
-  const char *lock_name, ...)
-{
-  size_t tbl_size = 0;
-  va_list args;
-  struct workqueue_struct *wq;
-  struct pool_workqueue *pwq;
-
-  /* Unbound && max_active == 1 used to imply ordered, which is no
-   * longer the case on NUMA machines due to per-node pools.  While
-   * alloc_ordered_workqueue() is the right way to create an ordered
-   * workqueue, keep the previous behavior to avoid subtle breakages
-   * on NUMA. */
-  if ((flags & WQ_UNBOUND) && max_active == 1)
-    flags |= __WQ_ORDERED;
-
-  /* see the comment above the definition of WQ_POWER_EFFICIENT */
-  if ((flags & WQ_POWER_EFFICIENT) && wq_power_efficient)
-    flags |= WQ_UNBOUND;
-
-  /* allocate wq and format name */
-  if (flags & WQ_UNBOUND)
-    tbl_size = nr_node_ids * sizeof(wq->numa_pwq_tbl[0]);
-
-  wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
-  if (!wq)
-    return NULL;
-
-  if (flags & WQ_UNBOUND) {
-    wq->unbound_attrs = alloc_workqueue_attrs(GFP_KERNEL);
-    if (!wq->unbound_attrs)
-      goto err_free_wq;
-  }
-
-  va_start(args, lock_name);
-  vsnprintf(wq->name, sizeof(wq->name), fmt, args);
-  va_end(args);
-
-  max_active = max_active ?: WQ_DFL_ACTIVE;
-  max_active = wq_clamp_max_active(max_active, flags, wq->name);
-
-  /* init wq */
-  wq->flags = flags;
-  wq->saved_max_active = max_active;
-  mutex_init(&wq->mutex);
-  atomic_set(&wq->nr_pwqs_to_flush, 0);
-  INIT_LIST_HEAD(&wq->pwqs);
-  INIT_LIST_HEAD(&wq->flusher_queue);
-  INIT_LIST_HEAD(&wq->flusher_overflow);
-  INIT_LIST_HEAD(&wq->maydays);
-
-  lockdep_init_map(&wq->lockdep_map, lock_name, key, 0);
-  INIT_LIST_HEAD(&wq->list);
-
-  if (alloc_and_link_pwqs(wq) < 0)
-    goto err_free_wq;
-
-  if (wq_online && init_rescuer(wq) < 0)
-    goto err_destroy;
-
-  if ((wq->flags & WQ_SYSFS) && workqueue_sysfs_register(wq))
-    goto err_destroy;
-
-  /* wq_pool_mutex protects global freeze state and workqueues list.
-   * Grab it, adjust max_active and add the new @wq to workqueues
-   * list. */
-  mutex_lock(&wq_pool_mutex);
-
-  mutex_lock(&wq->mutex);
-  for_each_pwq(pwq, wq)
-    pwq_adjust_max_active(pwq);
-  mutex_unlock(&wq->mutex);
-
-  list_add_tail_rcu(&wq->list, &workqueues);
-
-  mutex_unlock(&wq_pool_mutex);
-
-  return wq;
-
-err_free_wq:
-  free_workqueue_attrs(wq->unbound_attrs);
-  kfree(wq);
-  return NULL;
-err_destroy:
-  destroy_workqueue(wq);
-  return NULL;
-}
-
-int alloc_and_link_pwqs(struct workqueue_struct *wq)
-{
-  bool highpri = wq->flags & WQ_HIGHPRI;
-  int cpu, ret;
-
-  if (!(wq->flags & WQ_UNBOUND)) {
-    wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
-    if (!wq->cpu_pwqs)
-      return -ENOMEM;
-
-    for_each_possible_cpu(cpu) {
-      struct pool_workqueue *pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
-      struct worker_pool *cpu_pools = per_cpu(cpu_worker_pools, cpu);
-
-      init_pwq(pwq, wq, &cpu_pools[highpri]);
-
-      mutex_lock(&wq->mutex);
-      link_pwq(pwq);
-      mutex_unlock(&wq->mutex);
-    }
-    return 0;
-  } else if (wq->flags & __WQ_ORDERED) {
-    ret = apply_workqueue_attrs(wq, ordered_wq_attrs[highpri]);
-    /* there should only be single pwq for ordering guarantee */
-    return ret;
-  } else {
-    return apply_workqueue_attrs(wq, unbound_std_wq_attrs[highpri]);
-  }
-}
-
-int init_worker_pool(struct worker_pool *pool)
-{
-  spin_lock_init(&pool->lock);
-  pool->id = -1;
-  pool->cpu = -1;
-  pool->node = NUMA_NO_NODE;
-  pool->flags |= POOL_DISASSOCIATED;
-  pool->watchdog_ts = jiffies;
-  INIT_LIST_HEAD(&pool->worklist);
-  INIT_LIST_HEAD(&pool->idle_list);
-  hash_init(pool->busy_hash);
-
-  timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
-
-  timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
-
-  INIT_LIST_HEAD(&pool->workers);
-
-  ida_init(&pool->worker_ida);
-  INIT_HLIST_NODE(&pool->hash_node);
-  pool->refcnt = 1;
-
-  /* shouldn't fail above this point */
-  pool->attrs = alloc_workqueue_attrs(GFP_KERNEL);
-  if (!pool->attrs)
-    return -ENOMEM;
-  return 0;
-}
-
-void init_pwq(struct pool_workqueue *pwq, struct workqueue_struct *wq,
-         struct worker_pool *pool)
-{
-  BUG_ON((unsigned long)pwq & WORK_STRUCT_FLAG_MASK);
-
-  memset(pwq, 0, sizeof(*pwq));
-
-  pwq->pool = pool;
-  pwq->wq = wq;
-  pwq->flush_color = -1;
-  pwq->refcnt = 1;
-  INIT_LIST_HEAD(&pwq->inactive_works);
-  INIT_LIST_HEAD(&pwq->pwqs_node);
-  INIT_LIST_HEAD(&pwq->mayday_node);
-  INIT_WORK(&pwq->unbound_release_work, pwq_unbound_release_workfn);
-}
-```
-
-## alloc_unbound_pwq
-```c
-static DEFINE_HASHTABLE(unbound_pool_hash, UNBOUND_POOL_HASH_ORDER);
-
-struct pool_workqueue *alloc_unbound_pwq(struct workqueue_struct *wq,
-          const struct workqueue_attrs *attrs)
-{
-  struct worker_pool *pool;
-  struct pool_workqueue *pwq;
-
-  lockdep_assert_held(&wq_pool_mutex);
-
-  pool = get_unbound_pool(attrs);
-  if (!pool)
-    return NULL;
-
-  pwq = kmem_cache_alloc_node(pwq_cache, GFP_KERNEL, pool->node);
-  if (!pwq) {
-    put_unbound_pool(pool);
-    return NULL;
-  }
-
-  init_pwq(pwq, wq, pool);
-
-  return pwq;
-}
-
-/* kernel/workqueue.c */
-static cpumask_var_t *wq_numa_possible_cpumask; /* possible CPUs of each node */
-
-static struct worker_pool *get_unbound_pool(const struct workqueue_attrs *attrs)
-{
-  u32 hash = wqattrs_hash(attrs);
-  struct worker_pool *pool;
-  int node;
-  int target_node = NUMA_NO_NODE;
-
-  lockdep_assert_held(&wq_pool_mutex);
-
-  /* do we already have a matching pool? */
-  hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
-    if (wqattrs_equal(pool->attrs, attrs)) {
-      pool->refcnt++;
-      return pool;
-    }
-  }
-
-  /* if cpumask is contained inside a NUMA node, we belong to that node */
-  if (wq_numa_enabled) {
-    for_each_node(node) {
-      if (cpumask_subset(attrs->cpumask, wq_numa_possible_cpumask[node])) {
-        target_node = node;
-        break;
-      }
-    }
-  }
-
-  /* nope, create a new one */
-  pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
-  if (!pool || init_worker_pool(pool) < 0)
-    goto fail;
-
-  lockdep_set_subclass(&pool->lock, 1);  /* see put_pwq() */
-  copy_workqueue_attrs(pool->attrs, attrs);
-  pool->node = target_node;
-
-   /* no_numa isn't a worker_pool attribute, always clear it.  See
-   * 'struct workqueue_attrs' comments for detail. */
-  pool->attrs->no_numa = false;
-
-  if (worker_pool_assign_id(pool) < 0)
-    goto fail;
-
-  /* create and start the initial worker */
-  if (wq_online && !create_worker(pool))
-    goto fail;
-
-  /* install */
-  hash_add(unbound_pool_hash, &pool->hash_node, hash);
-
-  return pool;
-fail:
-  if (pool)
-    put_unbound_pool(pool);
-  return NULL;
-}
-
-struct apply_wqattrs_ctx {
-  struct workqueue_struct *wq;    /* target workqueue */
-  struct workqueue_attrs  *attrs;    /* attrs to apply */
-  struct list_head        list;    /* queued for batching commit */
-  struct pool_workqueue   *dfl_pwq;
-  struct pool_workqueue   *pwq_tbl[];
-};
-
-int apply_workqueue_attrs_locked(struct workqueue_struct *wq,
-          const struct workqueue_attrs *attrs)
-{
-  struct apply_wqattrs_ctx *ctx;
-
-  /* only unbound workqueues can change attributes */
-  if (WARN_ON(!(wq->flags & WQ_UNBOUND)))
-    return -EINVAL;
-
-  /* creating multiple pwqs breaks ordering guarantee */
-  if (!list_empty(&wq->pwqs)) {
-    if (WARN_ON(wq->flags & __WQ_ORDERED_EXPLICIT))
-      return -EINVAL;
-
-    wq->flags &= ~__WQ_ORDERED;
-  }
-
-  ctx = apply_wqattrs_prepare(wq, attrs);
-  if (!ctx)
-    return -ENOMEM;
-
-  /* the ctx has been prepared successfully, let's commit it */
-  apply_wqattrs_commit(ctx);
-  apply_wqattrs_cleanup(ctx);
-
-  return 0;
-}
-
-struct apply_wqattrs_ctx *
-apply_wqattrs_prepare(struct workqueue_struct *wq,
-          const struct workqueue_attrs *attrs)
-{
-  struct apply_wqattrs_ctx *ctx;
-  struct workqueue_attrs *new_attrs, *tmp_attrs;
-  int node;
-
-  lockdep_assert_held(&wq_pool_mutex);
-
-  ctx = kzalloc(struct_size(ctx, pwq_tbl, nr_node_ids), GFP_KERNEL);
-
-  new_attrs = alloc_workqueue_attrs(GFP_KERNEL);
-  tmp_attrs = alloc_workqueue_attrs(GFP_KERNEL);
-  if (!ctx || !new_attrs || !tmp_attrs)
-    goto out_free;
-
-  /* Calculate the attrs of the default pwq.
-   * If the user configured cpumask doesn't overlap with the
-   * wq_unbound_cpumask, we fallback to the wq_unbound_cpumask. */
-  copy_workqueue_attrs(new_attrs, attrs);
-  cpumask_and(new_attrs->cpumask, new_attrs->cpumask, wq_unbound_cpumask);
-  if (unlikely(cpumask_empty(new_attrs->cpumask)))
-    cpumask_copy(new_attrs->cpumask, wq_unbound_cpumask);
-
-  /* We may create multiple pwqs with differing cpumasks.  Make a
-   * copy of @new_attrs which will be modified and used to obtain
-   * pools. */
-  copy_workqueue_attrs(tmp_attrs, new_attrs);
-
-  /* If something goes wrong during CPU up/down, we'll fall back to
-   * the default pwq covering whole @attrs->cpumask.  Always create
-   * it even if we don't use it immediately. */
-  ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
-  if (!ctx->dfl_pwq)
-    goto out_free;
-
-  for_each_node(node) {
-    if (wq_calc_node_cpumask(new_attrs, node, -1, tmp_attrs->cpumask)) {
-      ctx->pwq_tbl[node] = alloc_unbound_pwq(wq, tmp_attrs);
-      if (!ctx->pwq_tbl[node])
-        goto out_free;
-    } else {
-      ctx->dfl_pwq->refcnt++;
-      ctx->pwq_tbl[node] = ctx->dfl_pwq;
-    }
-  }
-
-  /* save the user configured attrs and sanitize it. */
-  copy_workqueue_attrs(new_attrs, attrs);
-  cpumask_and(new_attrs->cpumask, new_attrs->cpumask, cpu_possible_mask);
-  ctx->attrs = new_attrs;
-
-  ctx->wq = wq;
-  free_workqueue_attrs(tmp_attrs);
-  return ctx;
-
-out_free:
-  free_workqueue_attrs(tmp_attrs);
-  free_workqueue_attrs(new_attrs);
-  apply_wqattrs_cleanup(ctx);
-  return NULL;
-}
-
-static void apply_wqattrs_commit(struct apply_wqattrs_ctx *ctx)
-{
-  int node;
-
-  /* all pwqs have been created successfully, let's install'em */
-  mutex_lock(&ctx->wq->mutex);
-
-  copy_workqueue_attrs(ctx->wq->unbound_attrs, ctx->attrs);
-
-  /* save the previous pwq and install the new one */
-  for_each_node(node)
-    ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node,
-                ctx->pwq_tbl[node]);
-
-  /* @dfl_pwq might not have been used, ensure it's linked */
-  link_pwq(ctx->dfl_pwq);
-  swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
-
-  mutex_unlock(&ctx->wq->mutex);
-}
-
-/* free the resources after success or abort */
-static void apply_wqattrs_cleanup(struct apply_wqattrs_ctx *ctx)
-{
-  if (ctx) {
-    int node;
-
-    for_each_node(node)
-      put_pwq_unlocked(ctx->pwq_tbl[node]);
-    put_pwq_unlocked(ctx->dfl_pwq);
-
-    free_workqueue_attrs(ctx->attrs);
-
-    kfree(ctx);
-  }
-}
-```
-
-## create_worker
-```c
-static bool manage_workers(struct worker *worker)
-{
-  struct worker_pool *pool = worker->pool;
-
-  if (pool->flags & POOL_MANAGER_ACTIVE)
-    return false;
-
-  pool->flags |= POOL_MANAGER_ACTIVE;
-  pool->manager = worker;
-
-  maybe_create_worker(pool);
-
-  pool->manager = NULL;
-  pool->flags &= ~POOL_MANAGER_ACTIVE;
-  wake_up(&wq_manager_wait);
-  return true;
-}
-
-void maybe_create_worker(struct worker_pool *pool)
-__releases(&pool->lock)
-__acquires(&pool->lock)
-{
-restart:
-  spin_unlock_irq(&pool->lock);
-
-  /* if we don't make progress in MAYDAY_INITIAL_TIMEOUT, call for help */
-  mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INITIAL_TIMEOUT);
-
-  while (true) {
-    if (create_worker(pool) || !need_to_create_worker(pool))
-      break;
-
-    schedule_timeout_interruptible(CREATE_COOLDOWN);
-
-    if (!need_to_create_worker(pool))
-      break;
-  }
-
-  del_timer_sync(&pool->mayday_timer);
-  spin_lock_irq(&pool->lock);
-  /* This is necessary even after a new worker was just successfully
-   * created as @pool->lock was dropped and the new worker might have
-   * already become busy. */
-  if (need_to_create_worker(pool))
-    goto restart;
-}
-```
-
-```c
-struct worker *create_worker(struct worker_pool *pool)
-{
-  struct worker *worker = NULL;
-  int id = -1;
-  char id_buf[16];
-
-  /* ID is needed to determine kthread name */
-  id = ida_simple_get(&pool->worker_ida, 0, 0, GFP_KERNEL);
-  if (id < 0)
-    goto fail;
-
-  worker = alloc_worker(pool->node);
-  if (!worker)
-    goto fail;
-
-  worker->id = id;
-
-  if (pool->cpu >= 0)
-    snprintf(id_buf, sizeof(id_buf), "%d:%d%s", pool->cpu, id,
-       pool->attrs->nice < 0  ? "H" : "");
-  else
-    snprintf(id_buf, sizeof(id_buf), "u%d:%d", pool->id, id);
-
-  worker->task = kthread_create_on_node(worker_thread, worker, pool->node, "kworker/%s", id_buf);
-  if (IS_ERR(worker->task))
-    goto fail;
-
-  set_user_nice(worker->task, pool->attrs->nice);
-  kthread_bind_mask(worker->task, pool->attrs->cpumask);
-
-  /* successful, attach the worker to the pool */
-  worker_attach_to_pool(worker, pool);
-
-  /* start the newly created worker */
-  spin_lock_irq(&pool->lock);
-  worker->pool->nr_workers++;
-  worker_enter_idle(worker);
-  wake_up_process(worker->task);
-  spin_unlock_irq(&pool->lock);
-
-  return worker;
-
-fail:
-  if (id >= 0)
-    ida_simple_remove(&pool->worker_ida, id);
-  kfree(worker);
-  return NULL;
-}
-
-struct worker *alloc_worker(int node)
-{
-  struct worker *worker;
-
-  worker = kzalloc_node(sizeof(*worker), GFP_KERNEL, node);
-  if (worker) {
-    INIT_LIST_HEAD(&worker->entry);
-    INIT_LIST_HEAD(&worker->scheduled);
-    INIT_LIST_HEAD(&worker->node);
-    /* on creation a worker is in !idle && prep state */
-    worker->flags = WORKER_PREP;
-  }
-  return worker;
-}
-
-struct task_struct *kthread_create_on_node(int (*threadfn)(void *data),
-             void *data, int node,
-             const char namefmt[],
-             ...)
-{
-  struct task_struct *task;
-  va_list args;
-
-  va_start(args, namefmt);
-  task = __kthread_create_on_node(threadfn, data, node, namefmt, args);
-  va_end(args);
-
-  return task;
-}
-
-struct task_struct *__kthread_create_on_node(int (*threadfn)(void *data),
-                void *data, int node,
-                const char namefmt[],
-                va_list args)
-{
-  DECLARE_COMPLETION_ONSTACK(done);
-  struct task_struct *task;
-  struct kthread_create_info *create = kmalloc(sizeof(*create), GFP_KERNEL);
-
-  if (!create)
-    return ERR_PTR(-ENOMEM);
-  create->threadfn = threadfn;
-  create->data = data;
-  create->node = node;
-  create->done = &done;
-
-  spin_lock(&kthread_create_lock);
-  list_add_tail(&create->list, &kthread_create_list);
-  spin_unlock(&kthread_create_lock);
-
-  wake_up_process(kthreadd_task); /* kthreadd */
-  /* Wait for completion in killable state, for I might be chosen by
-   * the OOM killer while kthreadd is trying to allocate memory for
-   * new kernel thread. */
-  if (unlikely(wait_for_completion_killable(&done))) {
-    /* If I was SIGKILLed before kthreadd (or new kernel thread)
-     * calls complete(), leave the cleanup of this structure to
-     * that thread. */
-    if (xchg(&create->done, NULL))
-      return ERR_PTR(-EINTR);
-    /* kthreadd (or new kernel thread) will call complete()
-     * shortly. */
-    wait_for_completion(&done);
-  }
-  task = create->result;
-  if (!IS_ERR(task)) {
-    static const struct sched_param param = { .sched_priority = 0 };
-    char name[TASK_COMM_LEN];
-
-    /* task is already visible to other tasks, so updating
-     * COMM must be protected. */
-    vsnprintf(name, sizeof(name), namefmt, args);
-    set_task_comm(task, name);
-    /* root may have changed our (kthreadd's) priority or CPU mask.
-     * The kernel thread should not inherit these properties. */
-    sched_setscheduler_nocheck(task, SCHED_NORMAL, &param);
-    set_cpus_allowed_ptr(task, cpu_all_mask);
-  }
-  kfree(create);
-  return task;
-}
-
-void worker_enter_idle(struct worker *worker)
-{
-  struct worker_pool *pool = worker->pool;
-
-  if (WARN_ON_ONCE(worker->flags & WORKER_IDLE) ||
-      WARN_ON_ONCE(!list_empty(&worker->entry) &&
-       (worker->hentry.next || worker->hentry.pprev)))
-    return;
-
-  /* can't use worker_set_flags(), also called from create_worker() */
-  worker->flags |= WORKER_IDLE;
-  pool->nr_idle++;
-  worker->last_active = jiffies;
-
-  /* idle_list is LIFO */
-  list_add(&worker->entry, &pool->idle_list);
-
-  if (too_many_workers(pool) && !timer_pending(&pool->idle_timer))
-    mod_timer(&pool->idle_timer, jiffies + IDLE_WORKER_TIMEOUT);
-
-  /* Sanity check nr_running.  Because unbind_workers() releases
-   * pool->lock between setting %WORKER_UNBOUND and zapping
-   * nr_running, the warning may trigger spuriously.  Check iff
-   * unbind is not in progress. */
-  WARN_ON_ONCE(!(pool->flags & POOL_DISASSOCIATED) &&
-         pool->nr_workers == pool->nr_idle &&
-         atomic_read(&pool->nr_running));
-}
-```
-
-## worker_thread
-```c
-int worker_thread(void *__worker)
-{
-  struct worker *worker = __worker;
-  struct worker_pool *pool = worker->pool;
-
-  /* tell the scheduler that this is a workqueue worker */
-  set_pf_worker(true);
-woke_up:
-  spin_lock_irq(&pool->lock);
-
-  /* am I supposed to die? */
-  if (unlikely(worker->flags & WORKER_DIE)) {
-    spin_unlock_irq(&pool->lock);
-    set_pf_worker(false);
-
-    set_task_comm(worker->task, "kworker/dying");
-    ida_simple_remove(&pool->worker_ida, worker->id);
-    worker_detach_from_pool(worker);
-    kfree(worker);
-    return 0;
-  }
-
-  worker_leave_idle(worker);
-recheck:
-  /* no more worker necessary? */
-  if (!need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
-    goto sleep;
-
-  /* do we need to manage? */
-  /* return pool->nr_idle; */
-  if (unlikely(!may_start_working(pool)) && manage_workers(worker))
-    goto recheck;
-
-  /* ->scheduled list can only be filled while a worker is
-   * preparing to process a work or actually processing it.
-   * Make sure nobody diddled with it while I was sleeping. */
-
-  /* Finish PREP stage.  We're guaranteed to have at least one idle
-   * worker or that someone else has already assumed the manager
-   * role.  This is where @worker starts participating in concurrency
-   * management if applicable and concurrency management is restored
-   * after being rebound.  See rebind_workers() for details. */
-  worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
-
-  do {
-    struct work_struct *work = list_first_entry(&pool->worklist, struct work_struct, entry);
-
-    pool->watchdog_ts = jiffies;
-
-    if (likely(!(*work_data_bits(work) & WORK_STRUCT_LINKED))) {
-      /* optimization path, not strictly necessary */
-      process_one_work(worker, work);
-      if (unlikely(!list_empty(&worker->scheduled)))
-        process_scheduled_works(worker);
-    } else {
-      move_linked_works(work, &worker->scheduled, NULL);
-      process_scheduled_works(worker);
-    }
-  } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
-
-  worker_set_flags(worker, WORKER_PREP);
-sleep:
-  /* pool->lock is held and there's no work to process and no need to
-   * manage, sleep.  Workers are woken up only while holding
-   * pool->lock or from local cpu, so setting the current state
-   * before releasing pool->lock is enough to prevent losing any
-   * event. */
-  worker_enter_idle(worker);
-  __set_current_state(TASK_IDLE);
-  spin_unlock_irq(&pool->lock);
-  schedule();
-  goto woke_up;
-}
-
-void process_scheduled_works(struct worker *worker)
-{
-  while (!list_empty(&worker->scheduled)) {
-    struct work_struct *work = list_first_entry(&worker->scheduled, struct work_struct, entry);
-    process_one_work(worker, work);
-  }
-}
-
-void process_one_work(struct worker *worker, struct work_struct *work)
-__releases(&pool->lock)
-__acquires(&pool->lock)
-{
-  struct pool_workqueue *pwq = get_work_pwq(work);
-  struct worker_pool *pool = worker->pool;
-  bool cpu_intensive = pwq->wq->flags & WQ_CPU_INTENSIVE;
-  int work_color;
-  struct worker *collision;
-
-  /* A single work shouldn't be executed concurrently by
-   * multiple workers on a single cpu.  Check whether anyone is
-   * already processing the work.  If so, defer the work to the
-   * currently executing one. */
-  collision = find_worker_executing_work(pool, work);
-  if (unlikely(collision)) {
-    move_linked_works(work, &collision->scheduled, NULL);
-    return;
-  }
-
-  /* claim and dequeue */
-  debug_work_deactivate(work);
-  hash_add(pool->busy_hash, &worker->hentry, (unsigned long)work);
-  worker->current_work = work;
-  worker->current_func = work->func;
-  worker->current_pwq = pwq;
-  work_color = get_work_color(work);
-
-  /* Record wq name for cmdline and debug reporting, may get
-   * overridden through set_worker_desc(). */
-  strscpy(worker->desc, pwq->wq->name, WORKER_DESC_LEN);
-
-  list_del_init(&work->entry);
-
-  /* CPU intensive works don't participate in concurrency management.
-   * They're the scheduler's responsibility.  This takes @worker out
-   * of concurrency management and the next code block will chain
-   * execution of the pending work items. */
-  if (unlikely(cpu_intensive))
-    worker_set_flags(worker, WORKER_CPU_INTENSIVE);
-
-  /* Wake up another worker if necessary.  The condition is always
-   * false for normal per-cpu workers since nr_running would always
-   * be >= 1 at this point.  This is used to chain execution of the
-   * pending work items for WORKER_NOT_RUNNING workers such as the
-   * UNBOUND and CPU_INTENSIVE ones. */
-  if (need_more_worker(pool))
-    wake_up_worker(pool);
-
-  /* Record the last pool and clear PENDING which should be the last
-   * update to @work.  Also, do this inside @pool->lock so that
-   * PENDING and queued state changes happen together while IRQ is
-   * disabled. */
-  set_work_pool_and_clear_pending(work, pool->id);
-
-  spin_unlock_irq(&pool->lock);
-
-  lock_map_acquire(&pwq->wq->lockdep_map);
-  lock_map_acquire(&lockdep_map);
-  /* Strictly speaking we should mark the invariant state without holding
-   * any locks, that is, before these two lock_map_acquire()'s.
-   *
-   * However, that would result in:
-   *
-   *   A(W1)
-   *   WFC(C)
-   *    A(W1)
-   *    C(C)
-   *
-   * Which would create W1->C->W1 dependencies, even though there is no
-   * actual deadlock possible. There are two solutions, using a
-   * read-recursive acquire on the work(queue) 'locks', but this will then
-   * hit the lockdep limitation on recursive locks, or simply discard
-   * these locks.
-   *
-   * AFAICT there is no possible deadlock scenario between the
-   * flush_work() and complete() primitives (except for single-threaded
-   * workqueues), so hiding them isn't a problem. */
-  lockdep_invariant_state(true);
-  trace_workqueue_execute_start(work);
-  worker->current_func(work);
-  /* While we must be careful to not use "work" after this, the trace
-   * point will only record its address. */
-  trace_workqueue_execute_end(work);
-  lock_map_release(&lockdep_map);
-  lock_map_release(&pwq->wq->lockdep_map);
-
-  if (unlikely(in_atomic() || lockdep_depth(current) > 0)) {
-    debug_show_held_locks(current);
-    dump_stack();
-  }
-
-  /* The following prevents a kworker from hogging CPU on !PREEMPT
-   * kernels, where a requeueing work item waiting for something to
-   * happen could deadlock with stop_machine as such work item could
-   * indefinitely requeue itself while all other CPUs are trapped in
-   * stop_machine. At the same time, report a quiescent RCU state so
-   * the same condition doesn't freeze RCU. */
-  cond_resched();
-
-  spin_lock_irq(&pool->lock);
-
-  /* clear cpu intensive status */
-  if (unlikely(cpu_intensive))
-    worker_clr_flags(worker, WORKER_CPU_INTENSIVE);
-
-  /* we're done with it, release */
-  hash_del(&worker->hentry);
-  worker->current_work = NULL;
-  worker->current_func = NULL;
-  worker->current_pwq = NULL;
-  pwq_dec_nr_in_flight(pwq, work_color);
-}
-
-void pwq_dec_nr_in_flight(struct pool_workqueue *pwq, int color)
-{
-  /* uncolored work items don't participate in flushing or nr_active */
-  if (color == WORK_NO_COLOR)
-    goto out_put;
-
-  pwq->nr_in_flight[color]--;
-
-  pwq->nr_active--;
-  if (!list_empty(&pwq->inactive_works)) {
-    /* one down, submit a inactive one */
-    if (pwq->nr_active < pwq->max_active)
-      pwq_activate_first_inactive(pwq);
-  }
-
-  /* is flush in progress and are we at the flushing tip? */
-  if (likely(pwq->flush_color != color))
-    goto out_put;
-
-  /* are there still in-flight works? */
-  if (pwq->nr_in_flight[color])
-    goto out_put;
-
-  /* this pwq is done, clear flush_color */
-  pwq->flush_color = -1;
-
-  /* If this was the last pwq, wake up the first flusher.  It
-   * will handle the rest. */
-  if (atomic_dec_and_test(&pwq->wq->nr_pwqs_to_flush))
-    complete(&pwq->wq->first_flusher->done);
-out_put:
-  put_pwq(pwq);
-}
-
-void pwq_activate_first_inactive(struct pool_workqueue *pwq)
-{
-  struct work_struct *work = list_first_entry(&pwq->inactive_works, struct work_struct, entry);
-
-  pwq_activate_inactive_work(work);
-}
-
-void pwq_activate_inactive_work(struct work_struct *work)
-{
-  struct pool_workqueue *pwq = get_work_pwq(work);
-
-  if (list_empty(&pwq->pool->worklist))
-    pwq->pool->watchdog_ts = jiffies;
-  move_linked_works(work, &pwq->pool->worklist, NULL);
-  __clear_bit(WORK_STRUCT_INACTIVE_BIT, work_data_bits(work));
-  pwq->nr_active++;
-}
-
-void worker_set_flags(struct worker *worker, unsigned int flags)
-{
-  struct worker_pool *pool = worker->pool;
-
-  WARN_ON_ONCE(worker->task != current);
-
-  /* If transitioning into NOT_RUNNING, adjust nr_running. */
-  if ((flags & WORKER_NOT_RUNNING) && !(worker->flags & WORKER_NOT_RUNNING)) {
-    atomic_dec(&pool->nr_running);
-  }
-
-  worker->flags |= flags;
-}
-
-void worker_clr_flags(struct worker *worker, unsigned int flags)
-{
-  struct worker_pool *pool = worker->pool;
-  unsigned int oflags = worker->flags;
-
-  WARN_ON_ONCE(worker->task != current);
-
-  worker->flags &= ~flags;
-
-  /* If transitioning out of NOT_RUNNING, increment nr_running.  Note
-   * that the nested NOT_RUNNING is not a noop.  NOT_RUNNING is mask
-   * of multiple flags, not a single flag. */
-  if ((flags & WORKER_NOT_RUNNING) && (oflags & WORKER_NOT_RUNNING))
-    if (!(worker->flags & WORKER_NOT_RUNNING))
-      atomic_inc(&pool->nr_running);
-}
-```
-
-```c
-void __sched notrace __schedule(bool preempt) {
-  if (prev->flags & PF_WQ_WORKER) {
-    struct task_struct *to_wakeup;
-
-    to_wakeup = wq_worker_sleeping(prev);
-    if (to_wakeup)
-        try_to_wake_up_local(to_wakeup, &rf);
-  }
-}
-
-struct task_struct *wq_worker_sleeping(struct task_struct *task)
-{
-  struct worker *worker = kthread_data(task), *to_wakeup = NULL;
-  struct worker_pool *pool;
-
-  /* Rescuers, which may not have all the fields set up like normal
-   * workers, also reach here, let's not access anything before
-   * checking NOT_RUNNING. */
-  if (worker->flags & WORKER_NOT_RUNNING)
-    return NULL;
-
-  pool = worker->pool;
-
-  /* this can only happen on the local cpu */
-  if (WARN_ON_ONCE(pool->cpu != raw_smp_processor_id()))
-    return NULL;
-
-  /* The counterpart of the following dec_and_test, implied mb,
-   * worklist not empty test sequence is in insert_work().
-   * Please read comment there.
-   *
-   * NOT_RUNNING is clear.  This means that we're bound to and
-   * running on the local cpu w/ rq lock held and preemption
-   * disabled, which in turn means that none else could be
-   * manipulating idle_list, so dereferencing idle_list without pool
-   * lock is safe. */
-  if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
-    to_wakeup = first_idle_worker(pool);
-
-  return to_wakeup ? to_wakeup->task : NULL;
-}
-```
-
-## schedule_work
-```c
-bool schedule_work(struct work_struct *work)
-{
-  return queue_work(system_wq, work);
-}
-
-bool queue_work(struct workqueue_struct *wq,
-            struct work_struct *work)
-{
-  return queue_work_on(WORK_CPU_UNBOUND, wq, work);
-}
-
-bool queue_work_on(int cpu, struct workqueue_struct *wq,
-       struct work_struct *work)
-{
-  bool ret = false;
-  unsigned long flags;
-
-  local_irq_save(flags);
-
-  if (!test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work))) {
-    __queue_work(cpu, wq, work);
-    ret = true;
-  }
-
-  local_irq_restore(flags);
-  return ret;
-}
-
-void __queue_work(int cpu, struct workqueue_struct *wq,
-       struct work_struct *work)
-{
-  struct pool_workqueue *pwq;
-  struct worker_pool *last_pool;
-  struct list_head *worklist;
-  unsigned int work_flags;
-  unsigned int req_cpu = cpu;
-
-  /* While a work item is PENDING && off queue, a task trying to
-   * steal the PENDING will busy-loop waiting for it to either get
-   * queued or lose PENDING.  Grabbing PENDING and queueing should
-   * happen with IRQ disabled. */
-  lockdep_assert_irqs_disabled();
-
-  /* if draining, only works from the same workqueue are allowed */
-  if (unlikely(wq->flags & __WQ_DRAINING) &&
-      WARN_ON_ONCE(!is_chained_work(wq)))
-    return;
-retry:
-  /* pwq which will be used unless @work is executing elsewhere */
-  if (wq->flags & WQ_UNBOUND) {
-    if (req_cpu == WORK_CPU_UNBOUND)
-      cpu = wq_select_unbound_cpu(raw_smp_processor_id());
-    pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu)); /* wq->numa_pwq_tbl[node] */
-  } else {
-    if (req_cpu == WORK_CPU_UNBOUND)
-      cpu = raw_smp_processor_id();
-    pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
-  }
-
-  /* If @work was previously on a different pool, it might still be
-   * running there, in which case the work needs to be queued on that
-   * pool to guarantee non-reentrancy. */
-  last_pool = get_work_pool(work);
-  if (last_pool && last_pool != pwq->pool) {
-    struct worker *worker;
-
-    spin_lock(&last_pool->lock);
-
-    worker = find_worker_executing_work(last_pool, work);
-
-    if (worker && worker->current_pwq->wq == wq) {
-      pwq = worker->current_pwq;
-    } else {
-      /* meh... not running there, queue here */
-      spin_unlock(&last_pool->lock);
-      spin_lock(&pwq->pool->lock);
-    }
-  } else {
-    spin_lock(&pwq->pool->lock);
-  }
-
-  /* pwq is determined and locked.  For unbound pools, we could have
-   * raced with pwq release and it could already be dead.  If its
-   * refcnt is zero, repeat pwq selection.  Note that pwqs never die
-   * without another pwq replacing it in the numa_pwq_tbl or while
-   * work items are executing on it, so the retrying is guaranteed to
-   * make forward-progress. */
-  if (unlikely(!pwq->refcnt)) {
-    if (wq->flags & WQ_UNBOUND) {
-      spin_unlock(&pwq->pool->lock);
-      cpu_relax();
-      goto retry;
-    }
-    /* oops */
-    WARN_ONCE(true, "workqueue: per-cpu pwq for %s on cpu%d has 0 refcnt",
-        wq->name, cpu);
-  }
-
-  /* pwq determined, queue */
-  trace_workqueue_queue_work(req_cpu, pwq, work);
-
-  if (WARN_ON(!list_empty(&work->entry))) {
-    spin_unlock(&pwq->pool->lock);
-    return;
-  }
-
-  pwq->nr_in_flight[pwq->work_color]++;
-  work_flags = work_color_to_flags(pwq->work_color);
-
-  if (likely(pwq->nr_active < pwq->max_active)) {
-    trace_workqueue_activate_work(work);
-    pwq->nr_active++;
-    worklist = &pwq->pool->worklist;
-    if (list_empty(worklist))
-      pwq->pool->watchdog_ts = jiffies;
-  } else {
-    work_flags |= WORK_STRUCT_DELAYED;
-    worklist = &pwq->inactive_works;
-  }
-
-  debug_work_activate(work);
-  insert_work(pwq, work, worklist, work_flags);
-
-  spin_unlock(&pwq->pool->lock);
-}
-
-void insert_work(struct pool_workqueue *pwq, struct work_struct *work,
-      struct list_head *head, unsigned int extra_flags)
-{
-  struct worker_pool *pool = pwq->pool;
-
-  /* we own @work, set data and link */
-  set_work_pwq(work, pwq, extra_flags);
-  list_add_tail(&work->entry, head);
-  get_pwq(pwq);
-
-  /* Ensure either wq_worker_sleeping() sees the above
-   * list_add_tail() or we see zero nr_running to avoid workers lying
-   * around lazily while there are works to be processed. */
-  smp_mb();
-
-  if (__need_more_worker(pool))
-    wake_up_worker(pool);
-}
-
-static void wake_up_worker(struct worker_pool *pool)
-{
-  struct worker *worker = first_idle_worker(pool);
-
-  if (likely(worker))
-    wake_up_process(worker->task);
-}
-```
-
-## schedule_delayed_work
-```c
-bool schedule_delayed_work(struct delayed_work *dwork, unsigned long delay)
-{
-  return queue_delayed_work(system_wq, dwork, delay);
-}
-
-bool queue_delayed_work(struct workqueue_struct *wq,
-              struct delayed_work *dwork,
-              unsigned long delay)
-{
-  return queue_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
-}
-
-bool queue_delayed_work_on(int cpu, struct workqueue_struct *wq,
-         struct delayed_work *dwork, unsigned long delay)
-{
-  struct work_struct *work = &dwork->work;
-  bool ret = false;
-  unsigned long flags;
-
-  /* read the comment in __queue_work() */
-  local_irq_save(flags);
-
-  if (!test_and_set_bit(WORK_STRUCT_PENDING_BIT, work_data_bits(work))) {
-    __queue_delayed_work(cpu, wq, dwork, delay);
-    ret = true;
-  }
-
-  local_irq_restore(flags);
-  return ret;
-}
-
-void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
-        struct delayed_work *dwork, unsigned long delay)
-{
-  struct timer_list *timer = &dwork->timer;
-  struct work_struct *work = &dwork->work;
-
-  WARN_ON_ONCE(!wq);
-  WARN_ON_ONCE(timer->function != delayed_work_timer_fn);
-  WARN_ON_ONCE(timer_pending(timer));
-  WARN_ON_ONCE(!list_empty(&work->entry));
-
-  /* If @delay is 0, queue @dwork->work immediately.  This is for
-   * both optimization and correctness.  The earliest @timer can
-   * expire is on the closest next tick and delayed_work users depend
-   * on that there's no such delay when @delay is 0. */
-  if (!delay) {
-    __queue_work(cpu, wq, &dwork->work);
-    return;
-  }
-
-  dwork->wq = wq;
-  dwork->cpu = cpu;
-  timer->expires = jiffies + delay;
-
-  if (unlikely(cpu != WORK_CPU_UNBOUND))
-    add_timer_on(timer, cpu);
-  else
-    add_timer(timer);
-}
-
-/* when delayed_work timer expired */
-void delayed_work_timer_fn(struct timer_list *t)
-{
-  struct delayed_work *dwork = from_timer(dwork, t, timer);
-  __queue_work(dwork->cpu, dwork->wq, &dwork->work);
-}
-```
-
-## flush_work
-```c
-
-```
-
-## idle_timer
-```c
-static void idle_worker_timeout(struct timer_list *t)
-{
-  struct worker_pool *pool = from_timer(pool, t, idle_timer);
-
-  spin_lock_irq(&pool->lock);
-
-  while (too_many_workers(pool)) {
-    struct worker *worker;
-    unsigned long expires;
-
-    /* idle_list is kept in LIFO order, check the last one */
-    worker = list_entry(pool->idle_list.prev, struct worker, entry);
-    expires = worker->last_active + IDLE_WORKER_TIMEOUT;
-
-    if (time_before(jiffies, expires)) {
-      mod_timer(&pool->idle_timer, expires);
-      break;
-    }
-
-    destroy_worker(worker);
-  }
-
-  spin_unlock_irq(&pool->lock);
-}
-
-bool too_many_workers(struct worker_pool *pool)
-{
-  bool managing = pool->flags & POOL_MANAGER_ACTIVE;
-  int nr_idle = pool->nr_idle + managing; /* manager is considered idle */
-  int nr_busy = pool->nr_workers - nr_idle;
-
-  return nr_idle > 2 && (nr_idle - 2) * MAX_IDLE_WORKERS_RATIO >= nr_busy;
-}
-
-static void destroy_worker(struct worker *worker)
-{
-  struct worker_pool *pool = worker->pool;
-
-  lockdep_assert_held(&pool->lock);
-
-  /* sanity check frenzy */
-  if (WARN_ON(worker->current_work) ||
-      WARN_ON(!list_empty(&worker->scheduled)) ||
-      WARN_ON(!(worker->flags & WORKER_IDLE)))
-    return;
-
-  pool->nr_workers--;
-  pool->nr_idle--;
-
-  list_del_init(&worker->entry);
-  worker->flags |= WORKER_DIE;
-  wake_up_process(worker->task);
-}
-```
-
-## maday_timer
-```c
-static void pool_mayday_timeout(struct timer_list *t)
-{
-  struct worker_pool *pool = from_timer(pool, t, mayday_timer);
-  struct work_struct *work;
-
-  spin_lock_irq(&pool->lock);
-  spin_lock(&wq_mayday_lock);    /* for wq->maydays */
-
-  if (need_to_create_worker(pool)) {
-    /* We've been trying to create a new worker but
-     * haven't been successful.  We might be hitting an
-     * allocation deadlock.  Send distress signals to
-     * rescuers. */
-    list_for_each_entry(work, &pool->worklist, entry)
-      send_mayday(work);
-  }
-
-  spin_unlock(&wq_mayday_lock);
-  spin_unlock_irq(&pool->lock);
-
-  mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
-}
-
-bool need_to_create_worker(struct worker_pool *pool)
-{
-  return need_more_worker(pool) && !may_start_working(pool);
-}
-
-static void send_mayday(struct work_struct *work)
-{
-  struct pool_workqueue *pwq = get_work_pwq(work);
-  struct workqueue_struct *wq = pwq->wq;
-
-  lockdep_assert_held(&wq_mayday_lock);
-
-  if (!wq->rescuer)
-    return;
-
-  /* mayday mayday mayday */
-  if (list_empty(&pwq->mayday_node)) {
-    /* If @pwq is for an unbound wq, its base ref may be put at
-     * any time due to an attribute change.  Pin @pwq until the
-     * rescuer is done with it. */
-    get_pwq(pwq);
-    list_add_tail(&pwq->mayday_node, &wq->maydays);
-    wake_up_process(wq->rescuer->task);
-  }
-}
-```
-
-# pthread_create
-```c
-/* glibc-2.28/nptl/pthread_create.c */
-int __pthread_create_2_1 (
-  pthread_t *newthread, const pthread_attr_t *attr,
-  void *(*start_routine) (void *), void *arg)
-{
-  const struct pthread_attr *iattr = (struct pthread_attr *) attr;
-  struct pthread_attr default_attr;
-  if (iattr == NULL)
-  {
-    iattr = &default_attr;
-  }
-
-  struct pthread *pd = NULL;
-  int err = ALLOCATE_STACK (iattr, &pd);
-
-  pd->start_routine = start_routine;
-  pd->arg = arg;
-  pd->schedpolicy = self->schedpolicy;
-  pd->schedparam = self->schedparam;
-
-  *newthread = (pthread_t) pd;
-  atomic_increment (&__nptl_nthreads);
-
-  return create_thread(pd, iattr, &stopped_start, STACK_VARIABLES_ARGS, &thread_ran);
-}
-versioned_symbol(libpthread, __pthread_create_2_1, pthread_create, GLIBC_2_1);
-
-# define ALLOCATE_STACK_PARMS void **stack, size_t *stacksize
-
-# define ALLOCATE_STACK(attr, pd) allocate_stack (attr, pd, &stackaddr)
-
-static int allocate_stack (
-  const struct pthread_attr *attr,
-  struct pthread **pdp, ALLOCATE_STACK_PARMS)
-{
-  struct pthread *pd;
-  size_t size;
-  size_t pagesize_m1 = __getpagesize () - 1;
-
-  size = attr->stacksize;
-
-  /* Allocate some anonymous memory.  If possible use the cache.  */
-  size_t guardsize;
-  void *mem;
-  const int prot = (PROT_READ | PROT_WRITE | ((GL(dl_stack_flags) & PF_X) ? PROT_EXEC : 0));
-  /* Adjust the stack size for alignment.  */
-  size &= ~__static_tls_align_m1;
-  /* Make sure the size of the stack is enough for the guard and
-  eventually the thread descriptor.  */
-  guardsize = (attr->guardsize + pagesize_m1) & ~pagesize_m1;
-  size += guardsize;
-  pd = get_cached_stack (&size, &mem);
-  if (pd == NULL)
-  {
-    /* If a guard page is required, avoid committing memory by first
-    allocate with PROT_NONE and then reserve with required permission
-    excluding the guard page.  */
-    mem = __mmap (NULL, size, (guardsize == 0) ? prot : PROT_NONE,
-      MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
-    /* Place the thread descriptor at the end of the stack.  */
-#if TLS_TCB_AT_TP
-    pd = (struct pthread *) ((char *) mem + size) - 1;
-#elif TLS_DTV_AT_TP
-    pd = (struct pthread *) ((((uintptr_t) mem + size - __static_tls_size)
-      & ~__static_tls_align_m1) - TLS_PRE_TCB_SIZE);
-#endif
-    /* Now mprotect the required region excluding the guard area. */
-    char *guard = guard_position(mem, size, guardsize, pd, pagesize_m1);
-    setup_stack_prot(mem, size, guard, guardsize, prot);
-
-    pd->stackblock = mem;
-    pd->stackblock_size = size;
-    pd->guardsize = guardsize;
-    pd->specific[0] = pd->specific_1stblock;
-
-    stack_list_add (&pd->list, &stack_used);
-  }
-
-  *pdp = pd;
-  void *stacktop;
-# if TLS_TCB_AT_TP
-  /* The stack begins before the TCB and the static TLS block.  */
-  stacktop = ((char *) (pd + 1) - __static_tls_size);
-# elif TLS_DTV_AT_TP
-  stacktop = (char *) (pd - 1);
-# endif
-  *stack = stacktop;
-}
-
-# define STACK_VARIABLES_PARMS void *stackaddr, size_t stacksize
-# define STACK_VARIABLES_ARGS stackaddr, stacksize
-
-static int create_thread (
-  struct pthread *pd, const struct pthread_attr *attr,
-  bool *stopped_start, STACK_VARIABLES_PARMS, bool *thread_ran)
-{
-  const int clone_flags = (CLONE_VM | CLONE_FS | CLONE_FILES
-    | CLONE_SYSVSEM | CLONE_SIGHAND | CLONE_THREAD | CLONE_SETTLS
-    | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | 0);
-
-  ARCH_CLONE (&start_thread, STACK_VARIABLES_ARGS, clone_flags, pd, &pd->tid, tp, &pd->tid)；
-  /* It's started now, so if we fail below, we'll have to cancel it
-and let it clean itself up.  */
-  *thread_ran = true;
-}
-
-
-# define ARCH_CLONE __clone
-/* The userland implementation is:
-   int clone (int (*fn)(void *arg), void *child_stack, int flags, void *arg),
-
-   the kernel entry is:
-   int clone (long flags, void *child_stack).
-
-   The parameters are passed in register and on the stack from userland:
-   rdi: fn
-   rsi: child_stack
-   rdx: flags
-   rcx: arg
-   r8d: TID field in parent
-   r9d: thread pointer
-%esp+8: TID field in child
-
-   The kernel expects:
-   rax: system call number
-   rdi: flags
-   rsi: child_stack
-   rdx: TID field in parent
-   r10: TID field in child
-   r8:  thread pointer  */
-
-ENTRY (__clone)
-  movq    $-EINVAL,%rax
-  /* Insert the argument onto the new stack.  */
-  subq    $16,%rsi
-  movq    %rcx,8(%rsi)
-
-  /* Save the function pointer.  It will be popped off in the
-      child in the ebx frobbing below. */
-  movq    %rdi,0(%rsi)
-
-  /* Do the system call.  */
-  movq    %rdx, %rdi
-  movq    %r8, %rdx
-  movq    %r9, %r8
-  mov     8(%rsp), %R10_LP
-  movl    $SYS_ify(clone),%eax
-
-  syscall
-PSEUDO_END (__clone)
-
-SYSCALL_DEFINE5(clone, unsigned long, clone_flags,
-  unsigned long, newsp,
-  int __user *, parent_tidptr,
-  int __user *, child_tidptr,
-  unsigned long, tls)
-{
-  return _do_fork(clone_flags, newsp, 0, parent_tidptr, child_tidptr, tls);
-}
-
-#define THREAD_SETMEM(descr, member, value) \
-  descr->member = (value)
-
-#define START_THREAD_DEFN \
-  static int __attribute__ ((noreturn)) start_thread (void *arg)
-START_THREAD_DEFN
-{
-    struct pthread *pd = START_THREAD_SELF;
-    /* Run the code the user provided.  */
-    THREAD_SETMEM (pd, result, pd->start_routine (pd->arg));
-    /* Call destructors for the thread_local TLS variables.  */
-    /* Run the destructor for the thread-local data.  */
-    __nptl_deallocate_tsd ();
-    if (__glibc_unlikely (atomic_decrement_and_test (&__nptl_nthreads)))
-        /* This was the last thread.  */
-        exit (0);
-    __free_tcb (pd);
-    __exit_thread ();
-}
-
-void __free_tcb (struct pthread *pd)
-{
-  __deallocate_stack (pd);
-}
-
-void __deallocate_stack (struct pthread *pd)
-{
-  /* Remove the thread from the list of threads with user defined
-     stacks.  */
-  stack_list_del (&pd->list);
-  /* Not much to do.  Just free the mmap()ed memory.  Note that we do
-     not reset the 'used' flag in the 'tid' field.  This is done by
-     the kernel.  If no thread has been created yet this field is
-     still zero.  */
-  if (__glibc_likely (! pd->user_stack))
-    (void) queue_stack (pd);
-}
-```
-
-# pthread_mutex
-## lock
-
-```c
-SYSCALL_DEFINE6(futex, u32 __user *, uaddr, int, op, u32, val,
-    struct timespec __user *, utime, u32 __user *, uaddr2,
-    u32, val3)
-{
-  struct timespec ts;
-  ktime_t t, *tp = NULL;
-  u32 val2 = 0;
-  int cmd = op & FUTEX_CMD_MASK;
-
-  if (utime && (cmd == FUTEX_WAIT || cmd == FUTEX_LOCK_PI ||
-          cmd == FUTEX_WAIT_BITSET ||
-          cmd == FUTEX_WAIT_REQUEUE_PI)) {
-    if (unlikely(should_fail_futex(!(op & FUTEX_PRIVATE_FLAG))))
-      return -EFAULT;
-    if (copy_from_user(&ts, utime, sizeof(ts)) != 0)
-      return -EFAULT;
-    if (!timespec_valid(&ts))
-      return -EINVAL;
-
-    t = timespec_to_ktime(ts);
-    if (cmd == FUTEX_WAIT)
-      t = ktime_add_safe(ktime_get(), t);
-    tp = &t;
-  }
-
-  /* number of waiters to wake in 'utime' if cmd == FUTEX_WAKE_OP. */
-  if (cmd == FUTEX_REQUEUE || cmd == FUTEX_CMP_REQUEUE ||
-      cmd == FUTEX_CMP_REQUEUE_PI || cmd == FUTEX_WAKE_OP)
-    val2 = (u32) (unsigned long) utime;
-
-  return do_futex(uaddr, op, val, tp, uaddr2, val2, val3);
-}
-
-long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
-    u32 __user *uaddr2, u32 val2, u32 val3)
-{
-  int cmd = op & FUTEX_CMD_MASK;
-  unsigned int flags = 0;
-
-  if (!(op & FUTEX_PRIVATE_FLAG))
-    flags |= FLAGS_SHARED;
-
-  if (op & FUTEX_CLOCK_REALTIME) {
-    flags |= FLAGS_CLOCKRT;
-    if (cmd != FUTEX_WAIT && cmd != FUTEX_WAIT_BITSET && \
-        cmd != FUTEX_WAIT_REQUEUE_PI)
-      return -ENOSYS;
-  }
-
-  switch (cmd) {
-  case FUTEX_LOCK_PI:
-  case FUTEX_UNLOCK_PI:
-  case FUTEX_TRYLOCK_PI:
-  case FUTEX_WAIT_REQUEUE_PI:
-  case FUTEX_CMP_REQUEUE_PI:
-    if (!futex_cmpxchg_enabled)
-      return -ENOSYS;
-  }
-
-  switch (cmd) {
-  case FUTEX_WAIT:
-    val3 = FUTEX_BITSET_MATCH_ANY;
-    /* fall through */
-  case FUTEX_WAIT_BITSET:
-    return futex_wait(uaddr, flags, val, timeout, val3);
-  case FUTEX_WAKE:
-    val3 = FUTEX_BITSET_MATCH_ANY;
-    /* fall through */
-  case FUTEX_WAKE_BITSET:
-    return futex_wake(uaddr, flags, val, val3);
-  case FUTEX_REQUEUE:
-    return futex_requeue(uaddr, flags, uaddr2, val, val2, NULL, 0);
-  case FUTEX_CMP_REQUEUE:
-    return futex_requeue(uaddr, flags, uaddr2, val, val2, &val3, 0);
-  case FUTEX_WAKE_OP:
-    return futex_wake_op(uaddr, flags, uaddr2, val, val2, val3);
-  case FUTEX_LOCK_PI:
-    return futex_lock_pi(uaddr, flags, timeout, 0);
-  case FUTEX_UNLOCK_PI:
-    return futex_unlock_pi(uaddr, flags);
-  case FUTEX_TRYLOCK_PI:
-    return futex_lock_pi(uaddr, flags, NULL, 1);
-  case FUTEX_WAIT_REQUEUE_PI:
-    val3 = FUTEX_BITSET_MATCH_ANY;
-    return futex_wait_requeue_pi(uaddr, flags, val, timeout, val3,
-               uaddr2);
-  case FUTEX_CMP_REQUEUE_PI:
-    return futex_requeue(uaddr, flags, uaddr2, val, val2, &val3, 1);
-  }
-  return -ENOSYS;
-}
 ```
