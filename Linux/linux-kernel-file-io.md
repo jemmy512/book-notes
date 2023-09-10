@@ -15,7 +15,7 @@
         * [buffered read](#buffered-read)
     * [writeback](#writeback)
     * [coredump](#coredump)
-
+    * [alloc_fd](#alloc_fd)
 
 * [IO](#IO)
     * [kobject](#kobject)
@@ -3570,6 +3570,119 @@ do_coredump() {
             wake_up_process(task);
         }
     }
+}
+```
+
+# alloc_fd
+
+```c
+static int alloc_fd(unsigned start, unsigned end, unsigned flags) {
+	struct files_struct *files = current->files;
+	unsigned int fd;
+	int error;
+	struct fdtable *fdt;
+
+	spin_lock(&files->file_lock);
+
+repeat:
+	fdt = files_fdtable(files);
+	fd = start;
+	if (fd < files->next_fd)
+		fd = files->next_fd;
+
+	if (fd < fdt->max_fds) {
+		fd = find_next_fd(fdt, fd) {
+
+        }
+    }
+
+	error = -EMFILE;
+
+	error = expand_files(files, fd) {
+        struct fdtable *fdt;
+        int expanded = 0;
+
+    repeat:
+        fdt = files_fdtable(files);
+
+        /* Do we need to expand? */
+        if (nr < fdt->max_fds)
+            return expanded;
+
+        /* Can we expand? */
+        if (nr >= sysctl_nr_open)
+            return -EMFILE;
+
+        if (unlikely(files->resize_in_progress)) {
+            spin_unlock(&files->file_lock);
+            expanded = 1;
+            wait_event(files->resize_wait, !files->resize_in_progress);
+            spin_lock(&files->file_lock);
+            goto repeat;
+        }
+
+        /* All good, so we try */
+        files->resize_in_progress = true;
+        expanded = expand_fdtable(files, nr) {
+            struct fdtable *new_fdt, *cur_fdt;
+
+            spin_unlock(&files->file_lock);
+            new_fdt = alloc_fdtable(nr);
+
+            /* make sure all fd_install() have seen resize_in_progress
+            * or have finished their rcu_read_lock_sched() section.
+            */
+            if (atomic_read(&files->count) > 1)
+                synchronize_rcu();
+
+            spin_lock(&files->file_lock);
+            if (!new_fdt)
+                return -ENOMEM;
+
+            if (unlikely(new_fdt->max_fds <= nr)) {
+                __free_fdtable(new_fdt);
+                return -EMFILE;
+            }
+
+            cur_fdt = files_fdtable(files);
+            BUG_ON(nr < cur_fdt->max_fds);
+            copy_fdtable(new_fdt, cur_fdt);
+            rcu_assign_pointer(files->fdt, new_fdt);
+
+            if (cur_fdt != &files->fdtab)
+                call_rcu(&cur_fdt->rcu, free_fdtable_rcu);
+            /* coupled with smp_rmb() in fd_install() */
+            smp_wmb();
+            return 1;
+        }
+        files->resize_in_progress = false;
+
+        wake_up_all(&files->resize_wait);
+        return expanded;
+    }
+
+	if (start <= files->next_fd) {
+		files->next_fd = fd + 1;
+    }
+
+	__set_open_fd(fd, fdt);
+	if (flags & O_CLOEXEC)
+		__set_close_on_exec(fd, fdt);
+	else
+		__clear_close_on_exec(fd, fdt);
+	error = fd;
+
+#if 1
+	/* Sanity check */
+	if (rcu_access_pointer(fdt->fd[fd]) != NULL) {
+		printk(KERN_WARNING "alloc_fd: slot %d not NULL!\n", fd);
+		rcu_assign_pointer(fdt->fd[fd], NULL);
+	}
+#endif
+
+out:
+	spin_unlock(&files->file_lock);
+	return error;
 }
 ```
 
