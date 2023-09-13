@@ -435,9 +435,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
                     do_notify_resume(regs, flags) {
                         do {
                             if (thread_flags & _TIF_NEED_RESCHED) {
-                                /* Unmask Debug and SError for the next task */
                                 local_daif_restore(DAIF_PROCCTX_NOIRQ);
-
                                 schedule();
                             } else {
                                 local_daif_restore(DAIF_PROCCTX);
@@ -468,14 +466,19 @@ el0t_64_irq_handler(struct pt_regs *regs) {
                 }
             }
             mte_check_tfsr_exit();
-            __exit_to_user_mode();
+            __exit_to_user_mode() {
+                trace_hardirqs_on_prepare();
+                lockdep_hardirqs_on_prepare();
+                user_enter_irqoff();
+                lockdep_hardirqs_on(CALLER_ADDR0);
+            }
         }
     }
 }
 ```
 
 ```c
-el1t_64_irq_handler() {
+el1h_64_irq_handler(struct pt_regs *regs) {
     el1_interrupt(regs, handle_arch_irq) {
         write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
 
@@ -578,52 +581,8 @@ void noinstr el0t_64_sync_handler(struct pt_regs *regs) {
                 }
             }
 
-            exit_to_user_mode(regs) {
-                prepare_exit_to_user_mode(regs) {
-                    flags = read_thread_flags();
-                    if (unlikely(flags & _TIF_WORK_MASK)) {
-                        do_notify_resume(regs, flags) {
-                            do {
-                                if (thread_flags & _TIF_NEED_RESCHED) {
-                                    local_daif_restore(DAIF_PROCCTX_NOIRQ);
-                                    schedule();
-                                } else {
-                                    local_daif_restore(DAIF_PROCCTX);
-
-                                    if (thread_flags & _TIF_UPROBE)
-                                        uprobe_notify_resume(regs);
-
-                                    if (thread_flags & _TIF_MTE_ASYNC_FAULT) {
-                                        clear_thread_flag(TIF_MTE_ASYNC_FAULT);
-                                        send_sig_fault(SIGSEGV, SEGV_MTEAERR, (void __user *)NULL, current);
-                                    }
-
-                                    if (thread_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                                        do_signal(regs);
-
-                                    if (thread_flags & _TIF_NOTIFY_RESUME)
-                                        resume_user_mode_work(regs);
-
-                                    if (thread_flags & _TIF_FOREIGN_FPSTATE)
-                                        fpsimd_restore_current_state();
-                                }
-
-                                local_daif_mask();
-                                thread_flags = read_thread_flags();
-                            } while (thread_flags & _TIF_WORK_MASK);
-                        }
-                    }
-                }
-
-                mte_check_tfsr_exit();
-
-                __exit_to_user_mode() {
-                    trace_hardirqs_on_prepare();
-                    lockdep_hardirqs_on_prepare();
-                    user_enter_irqoff();
-                    lockdep_hardirqs_on(CALLER_ADDR0);
-                }
-            }
+            exit_to_user_mode(regs)
+                --->
         }
         break;
     case ESR_ELx_EC_DABT_LOW:
@@ -672,5 +631,141 @@ void noinstr el0t_64_sync_handler(struct pt_regs *regs) {
     default:
         el0_inv(regs, esr);
     }
+}
+```
+
+
+# gicv3
+
+```c
+int __init
+gic_of_init(struct device_node *node, struct device_node *parent)
+{
+    struct gic_chip_data *gic;
+    int irq, ret;
+
+    gic = &gic_data[gic_cnt];
+
+    ret = gic_of_setup(gic, node);
+
+    if (gic_cnt == 0 && !gic_check_eoimode(node, &gic->raw_cpu_base))
+        static_branch_disable(&supports_deactivate_key);
+
+        ret = __gic_init_bases(gic, &node->fwnode) {
+            f (gic == &gic_data[0]) {
+
+            for (i = 0; i < NR_GIC_CPU_IF; i++)
+                gic_cpu_map[i] = 0xff;
+
+            set_handle_irq(gic_handle_irq);
+        }
+
+        ret = gic_init_bases(gic, handle) {
+
+        }
+        if (gic == &gic_data[0]) {
+            gic_smp_init();
+        }
+    }
+
+
+    if (!gic_cnt) {
+        gic_init_physaddr(node);
+        gic_of_setup_kvm_info(node);
+    }
+
+    if (parent) {
+        irq = irq_of_parse_and_map(node, 0);
+        gic_cascade_irq(gic_cnt, irq);
+    }
+
+    if (IS_ENABLED(CONFIG_ARM_GIC_V2M))
+        gicv2m_init(&node->fwnode, gic_data[gic_cnt].domain);
+
+    gic_cnt++;
+    return 0;
+}
+
+```
+```c
+set_smp_ipi_range(int ipi_base, int n) {
+    int i;
+
+    nr_ipi = min(n, MAX_IPI);
+
+    for (i = 0; i < nr_ipi; i++) {
+        int err;
+
+        err = request_percpu_irq(ipi_base + i, ipi_handler,
+                     "IPI", &irq_stat);
+        WARN_ON(err);
+
+        ipi_desc[i] = irq_to_desc(ipi_base + i);
+        irq_set_status_flags(ipi_base + i, IRQ_HIDDEN);
+    }
+
+    ipi_irq_base = ipi_base;
+
+    /* Setup the boot CPU immediately */
+    ipi_setup(smp_processor_id());
+}
+```
+
+```c
+irqreturn_t ipi_handler(int irq, void *data) {
+    do_handle_IPI(irq - ipi_irq_base) {
+        unsigned int cpu = smp_processor_id();
+
+        if ((unsigned)ipinr < NR_IPI)
+            trace_ipi_entry(ipi_types[ipinr]);
+
+        switch (ipinr) {
+        case IPI_RESCHEDULE:
+            scheduler_ipi() {
+                #define preempt_fold_need_resched() \
+                do { \
+                    if (tif_need_resched()) \
+                        set_preempt_need_resched(); \
+                } while (0)
+            }
+            break;
+
+        case IPI_CALL_FUNC:
+            generic_smp_call_function_interrupt();
+            break;
+
+        case IPI_CPU_STOP:
+            local_cpu_stop();
+            break;
+
+        case IPI_CPU_CRASH_STOP:
+            if (IS_ENABLED(CONFIG_KEXEC_CORE)) {
+                ipi_cpu_crash_stop(cpu, get_irq_regs());
+
+                unreachable();
+            }
+            break;
+
+    #ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
+        case IPI_TIMER:
+            tick_receive_broadcast();
+            break;
+    #endif
+
+    #ifdef CONFIG_IRQ_WORK
+        case IPI_IRQ_WORK:
+            irq_work_run();
+            break;
+    #endif
+
+        default:
+            pr_crit("CPU%u: Unknown IPI message 0x%x\n", cpu, ipinr);
+            break;
+        }
+
+        if ((unsigned)ipinr < NR_IPI)
+            trace_ipi_exit(ipi_types[ipinr]);
+    }
+    return IRQ_HANDLED;
 }
 ```

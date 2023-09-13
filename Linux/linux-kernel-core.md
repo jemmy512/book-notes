@@ -630,9 +630,9 @@ release:
 
 ```c
 spin_unlock(spinlock_t *lock) {
-	raw_spin_unlock(&lock->rlock) {
+    raw_spin_unlock(&lock->rlock) {
         __raw_spin_unlock(raw_spinlock_t *lock) {
-	        spin_release(&lock->dep_map, _RET_IP_);
+            spin_release(&lock->dep_map, _RET_IP_);
             do_raw_spin_unlock(lock) {
                 mmiowb_spin_unlock();
                 arch_spin_unlock(&lock->raw_lock) {

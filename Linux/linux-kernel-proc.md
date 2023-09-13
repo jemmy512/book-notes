@@ -1376,8 +1376,8 @@ irqentry_exit();
 ```c
 #define preempt_enable() \
 do { \
-  if (unlikely(preempt_count_dec_and_test())) \
-    __preempt_schedule(); \
+    if (unlikely(preempt_count_dec_and_test())) \
+        __preempt_schedule(); \
 } while (0)
 
 #define preempt_count_dec_and_test() \
@@ -1385,8 +1385,8 @@ do { \
 
 static  bool should_resched(int preempt_offset)
 {
-  return unlikely(preempt_count() == preempt_offset &&
-      tif_need_resched());
+    return unlikely(preempt_count() == preempt_offset &&
+        tif_need_resched());
 }
 
 #define tif_need_resched() test_thread_flag(TIF_NEED_RESCHED)
@@ -1395,7 +1395,11 @@ static  bool should_resched(int preempt_offset)
 static void __sched notrace preempt_schedule_common(void)
 {
   do {
-    __schedule(true);
+    preempt_disable_notrace();
+    preempt_latency_start(1);
+    __schedule(SM_PREEMPT);
+    preempt_latency_stop(1);
+    preempt_enable_no_resched_notrace();
   } while (need_resched());
 }
 ```
@@ -1403,15 +1407,16 @@ static void __sched notrace preempt_schedule_common(void)
 #### return from interrupt
 ```c
 /* do_IRQ -> retint_kernel */
-asmlinkage __visible void __sched preempt_schedule_irq(void)
-{
-  do {
-    preempt_disable();
-    local_irq_enable();
-    __schedule(true);
-    local_irq_disable();
-    sched_preempt_enable_no_resched();
-  } while (need_resched());
+el1t_64_irq_handler() {
+    el1_interrupt(regs, handle_arch_irq) {
+        write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
+
+        if (IS_ENABLED(CONFIG_ARM64_PSEUDO_NMI) && !interrupts_enabled(regs)) {
+            __el1_pnmi(regs, handler);
+        } else {
+            __el1_irq(regs, handler)
+        }
+    }
 }
 ```
 <img src='../Images/Kernel/proc-sched.png' style='max-height:850px'/>
