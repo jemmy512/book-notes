@@ -1068,7 +1068,10 @@ enum migratetype {
 
 ## page
 
-* [Kernel Index struct_page - LWN](https://lwn.net/Kernel/Index/#Memory_management-struct_page)
+* [LWN Index  - struct_page](https://lwn.net/Kernel/Index/#Memory_management-struct_page)
+    * [Pulling slabs out of struct page](https://lwn.net/Articles/871982/)
+    * [Struct slab comes to 5.17 ](https://lwn.net/Articles/881039/)
+    * [The proper time to split struct page](https://lwn.net/Articles/937839/)
 
 ```C++
 struct page {
@@ -1183,6 +1186,10 @@ struct free_area  free_area[MAX_ORDER];
 ![](../Images/Kernel/mem-buddy-freepages.png)
 
 ## alloc_pages
+
+* [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
+    * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) [:two:](https://lwn.net/Articles/591990/)
+
 
 ```c
 alloc_pages(make, order) {
@@ -2000,6 +2007,7 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 # slub
 
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
+    * [The SLUB allocator ](https://lwn.net/Articles/229984/)
 
 ![](../Images/Kernel/mem-slub-structure.png)
 

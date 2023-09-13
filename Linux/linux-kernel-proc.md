@@ -825,6 +825,23 @@ export LD_LIBRARY_PATH=
     * [实时 Linux(Real-Time Linux)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230727-rt-linux.md)
     * [Linux 调度器(Schedular)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230801-linux-scheduler.md)
 
+* [PREEMPT_RT Linux](https://wiki.linuxfoundation.org/realtime/start)
+    * [LWN - A realtime preemption overview](https://lwn.net/Articles/146861/)
+    * [Preemption Models](https://wiki.linuxfoundation.org/realtime/documentation/technical_basics/preemption_models)
+        * No Forced Preemption (server)
+        * Voluntary Kernel Preemption (Desktop)
+        * Preemptible Kernel (Low-Latency Desktop)
+        * Preemptible Kernel (Basic RT)
+        * Fully Preemptible Kernel (RT)
+
+* [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
+* [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
+    * [Scheduling domains](https://lwn.net/Articles/80911/)
+* [LWN Index - Completely fair scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
+* [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
+* [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
+* [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
+
 ```c
 /* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE

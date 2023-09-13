@@ -41,6 +41,9 @@
 # Data structures
 
 ## xarray
+
+* [LWN Index - Radix tree](https://lwn.net/Kernel/Index/#Radix_tree)
+
 ## maple tree
 
 * [LWN - Introducing maple trees](https://lwn.net/Articles/845507/)
