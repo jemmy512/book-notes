@@ -4760,11 +4760,29 @@ kernel_clone()
             mm = oldmm;
         } else {
             mm = dup_mm(tsk, current->mm) {
-                mm = allocate_mm();
+                mm = allocate_mm() {
+                    kmem_cache_alloc(mm_cachep, GFP_KERNEL);
+                }
                 memcpy(mm, oldmm, sizeof(*mm));
 
                 mm_init(mm, tsk, mm->user_ns)
                 dup_mmap(mm, oldmm) {
+                    dup_mm_exe_file(mm, oldmm) {
+                        struct file *exe_file = get_mm_exe_file(oldmm);
+                        RCU_INIT_POINTER(mm->exe_file, exe_file);
+                        if (exe_file) {
+                            deny_write_access(exe_file) {
+                                struct inode *inode = file_inode(file);
+	                            return atomic_dec_unless_positive(&inode->i_writecount) ? 0 : -ETXTBSY;
+                            }
+                        }
+                    }
+
+                    mm->total_vm = oldmm->total_vm;
+                    mm->data_vm = oldmm->data_vm;
+                    mm->exec_vm = oldmm->exec_vm;
+                    mm->stack_vm = oldmm->stack_vm;
+
                     for_each_vma(old_vmi, mpnt) {
                         struct file *file;
 
