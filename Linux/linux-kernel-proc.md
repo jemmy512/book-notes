@@ -838,11 +838,12 @@ export LD_LIBRARY_PATH=
 * [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
 * [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
     * [Scheduling domains](https://lwn.net/Articles/80911/)
+    * [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
 * [LWN Index - Completely fair scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
 * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
 * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
 * [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
-
+* [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
 ```c
 /* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
@@ -1181,7 +1182,9 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                     tls_thread_switch(next);
                     hw_breakpoint_thread_switch(next);
                     contextidr_thread_switch(next);
-                    entry_task_switch(next);
+                    entry_task_switch(next) {
+                        __this_cpu_write(__entry_task, next);
+                    }
                     ssbs_thread_switch(next);
                     erratum_1418040_thread_switch(next);
                     ptrauth_thread_switch_user(next);
@@ -1195,7 +1198,7 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                             mov    x10, #THREAD_CPU_CONTEXT // task.thread.cpu_context
                             add    x8, x0, x10 /* calc prev task cpu_context addr */
                             mov    x9, sp
-                            stp    x19, x20, [x8], #16        // store callee-saved registers
+                            stp    x19, x20, [x8], #16 /* store callee-saved registers */
                             stp    x21, x22, [x8], #16
                             stp    x23, x24, [x8], #16
                             stp    x25, x26, [x8], #16
@@ -1204,7 +1207,7 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                             str    lr, [x8]
 
                             add    x8, x1, x10  /* calc next task cpu_context addr */
-                            ldp    x19, x20, [x8], #16        // restore callee-saved registers
+                            ldp    x19, x20, [x8], #16 /* restore callee-saved registers */
                             ldp    x21, x22, [x8], #16
                             ldp    x23, x24, [x8], #16
                             ldp    x25, x26, [x8], #16
@@ -1228,6 +1231,25 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
 
                 rq->prev_mm = NULL;
 
+                prev_state = READ_ONCE(prev->__state);
+                vtime_task_switch(prev);
+                perf_event_task_sched_in(prev, current);
+                finish_task(prev) {
+                    smp_store_release(&prev->on_cpu, 0);
+                }
+                tick_nohz_task_switch();
+                finish_lock_switch(rq) {
+                    spin_acquire(&__rq_lockp(rq)->dep_map, 0, 0, _THIS_IP_);
+                    __balance_callbacks(rq);
+                    raw_spin_rq_unlock_irq(rq)
+                        --->
+                }
+                finish_arch_post_lock_switch();
+                kcov_finish_switch(current);
+                kmap_local_sched_in();
+
+                fire_sched_in_preempt_notifiers(current);
+
                 if (mm) {
                     membarrier_mm_sync_core_before_usermode(mm);
                     mmdrop_lazy_tlb_sched(mm) {
@@ -1237,7 +1259,14 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                                     cleanup_lazy_tlbs(mm);
 
                                     WARN_ON_ONCE(mm == current->active_mm);
-                                    mm_free_pgd(mm);
+                                    mm_free_pgd(mm) {
+                                        pgd_free(mm, mm->pgd) {
+                                            if (PGD_SIZE == PAGE_SIZE)
+                                                free_page((unsigned long)pgd);
+                                            else
+                                                kmem_cache_free(pgd_cache, pgd);
+                                        }
+                                    }
                                     destroy_context(mm);
                                     mmu_notifier_subscriptions_destroy(mm);
                                     check_mm(mm);
@@ -1268,6 +1297,10 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
         }
     } else {
         __balance_callbacks(rq);
+        raw_spin_rq_unlock_irq(rq) {
+            raw_spin_rq_unlock(rq);
+            local_irq_enable();
+        }
     }
 }
 ```
@@ -2741,20 +2774,8 @@ simple:
             return se;
         }
 
-        set_next_entity(cfs_rq, se) {
-            clear_buddies(cfs_rq, se);
-
-            if (se->on_rq) {
-                update_stats_wait_end_fair(cfs_rq, se);
-                __dequeue_entity(cfs_rq, se);
-                update_load_avg(cfs_rq, se, UPDATE_TG);
-            }
-
-            update_stats_curr_start(cfs_rq, se);
-            cfs_rq->curr = se;
-
-            se->prev_sum_exec_runtime = se->sum_exec_runtime;
-        }
+        set_next_entity(cfs_rq, se)
+            --->
         cfs_rq = group_cfs_rq(se);
 
     } while (cfs_rq);
@@ -2850,23 +2871,23 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
     slice = sched_slice(cfs_rq, se) {
         slice = __sched_period(nr_running + !se->on_rq) {
             if (unlikely(nr_running > sched_nr_latency/*8*/))
-                return nr_running * sysctl_sched_min_granularity/*0.75 msec*/;
+                return nr_running * sysctl_sched_base_slice/*0.75 msec*/;
             else
                 return sysctl_sched_latency/*6ms*/;
         }
         for_each_sched_entity(se) {
             struct load_weight *load;
-                struct load_weight lw;
-                struct cfs_rq *qcfs_rq;
+            struct load_weight lw;
+            struct cfs_rq *qcfs_rq;
 
-                qcfs_rq = cfs_rq_of(se);
-                load = &qcfs_rq->load;
+            qcfs_rq = cfs_rq_of(se);
+            load = &qcfs_rq->load;
 
-                if (unlikely(!se->on_rq)) {
-                    lw = qcfs_rq->load;
-                    update_load_add(&lw, se->load.weight);
-                    load = &lw;
-                }
+            if (unlikely(!se->on_rq)) {
+                lw = qcfs_rq->load;
+                update_load_add(&lw, se->load.weight);
+                load = &lw;
+            }
 
             slice = __calc_delta(slice, se->load.weight, load) {
                 /* delta_exec * weight / lw.weight
@@ -2878,7 +2899,7 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
             if (se_is_idle(init_se) && !sched_idle_cfs_rq(cfs_rq))
                 min_gran = sysctl_sched_idle_min_granularity;
             else
-                min_gran = sysctl_sched_min_granularity;
+                min_gran = sysctl_sched_base_slice;
 
             slice = max_t(u64, slice, min_gran);
         }
@@ -2950,30 +2971,6 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
             if (!sched_feat(DOUBLE_TICK) && hrtimer_active(&rq_of(cfs_rq)->hrtick_timer))
                 return;
         #endif
-
-            if (cfs_rq->nr_running > 1) {
-                check_preempt_tick(cfs_rq, curr) {
-                    ideal_runtime = min_t(u64, sched_slice(cfs_rq, curr), sysctl_sched_latency);
-                    delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;
-                    if (delta_exec > ideal_runtime) {
-                        resched_curr(rq_of(cfs_rq));
-                        clear_buddies(cfs_rq, curr);
-                        return;
-                    }
-
-                    if (delta_exec < sysctl_sched_min_granularity)
-                        return;
-
-                    se = __pick_first_entity(cfs_rq);
-                    delta = curr->vruntime - se->vruntime;
-
-                    if (delta < 0)
-                        return;
-
-                    if (delta > ideal_runtime)
-                        resched_curr(rq_of(cfs_rq));
-                }
-            }
         }
     }
 
