@@ -1,3 +1,9 @@
+# 2 Memory Addressing
+## 2.1 Memory Addresses
+##  2.2 Segmentation in Hardware
+## 2.3 Segmentation in Linux
+## 2.4 Paging in Hardware Paging in Linux
+
 # 3 Processes
 ## 3.1 Processes, Lightweight Processes, and Threads
 ## 3.2 Process Descriptor
@@ -678,21 +684,78 @@ Workload balancing is always done between groups of a scheduling domain. In othe
 
 
 # 8 Memory Management
-## Page Frame Management
+## 8.1 Page Frame Management
 1. Linux adopts the smaller 4 KB page frame size as the standard memory allocation unit. This makes things simpler for two reasons:
     * The Page Fault exceptions issued by the paging circuitry are easily interpreted.
     * Although both 4 KB and 4 MB are multiples of all disk block sizes, transfers of data between main memory and disks are in most cases more efficient when the smaller size is used.
 
-### Page Descriptors
-### Non-Uniform Memory Access (NUMA)
+### 8.1.1 Page Descriptors
+### 8.1.2 Non-Uniform Memory Access (NUMA)
 The Linux kernel makes use of NUMA even for some peculiar uniprocessor systems that have huge "holes" in the physical address space.
 
 The kernel handles these architectures by assigning the contiguous subranges of valid physical addresses to different memory nodes.
 
+### 8.1.3 Memory Zones
 
-### Memory Area Management
+Linux kernel must deal with two hardware constraints of the 80 × 86 architecture:
+* The Direct Memory Access (DMA) processors for old ISA buses have a strong limitation: they are able to address only the first 16 MB of RAM.
+* In modern 32-bit computers with lots of RAM, the CPU cannot directly access all physical memory because the linear address space is too small.
 
-### Noncontiguous Memory Area Management
+ZONE | DREC
+:---: | :---
+ZONE_DMA | Contains page frames of memory below 16 MB
+ZONE_NORMAL | Contains page frames of memory at and above 16 MB and below 896 MB
+ZONE_HIGHMEM | Contains page frames of memory at and above 896 MB
+
+//?? ZONE_HIGHMEM zone includes page frames that cannot be directly accessed by the kernel through the linear mapping in the fourth gigabyte of linear address space
+
+### 8.1.4 The Pool of Reserved Page Frames
+
+### 8.1.5 The Zoned Page Frame Allocator
+
+### 8.1.6 Kernel Mappings of High-Memory Page Frames
+
+#### 8.1.6.1 Permanent kernel mappings
+#### 8.1.6.2 Temporary kernel mappings
+
+### 8.1.7 The Buddy System Algorithm
+
+All free page frames are grouped into 11 lists of blocks that contain groups of 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, and 1024 contiguous page frames, respectively. The largest request of 1024 page frames corresponds to a chunk of 4 MB of contiguous RAM. The physical address of the first page frame of a block is a multiple of the group size.
+
+The reverse operation, releasing blocks of page frames, gives rise to the name of this algorithm. The kernel attempts to merge pairs of free buddy blocks of size b together into a single block of size 2b. Two blocks are considered buddies if:
+• Both blocks have the same size, say b.
+• They are located in contiguous physical addresses.
+• The physical address of the first page frame of the first block is a multiple of 2 * b * 2^12.
+
+
+### 8.1.9 The Per-CPU Page Frame Cache
+
+### 8.1.10 The Zone Allocator
+
+The __alloc_pages() function essentially executes the following steps:
+1. Performs a first scanning of the memory zones (see the block of code shown ear- lier). In this first scan, the min threshold value is set to z->pages_low, where z points to the zone descriptor being analyzed (the can_try_harder and gfp_high parameters are set to zero).
+2. If the function did not terminate in the previous step, there is not much free memory left: the function awakens the kswapd kernel threads to start reclaiming page frames asynchronously (see Chapter 17).
+3. Performs a second scanning of the memory zones, passing as base threshold the value z->pages_min. As explained previously, the actual threshold is determined also by the can_try_harder and gfp_high flags. This step is nearly identical to step 1, except that the function is using a lower threshold.
+4. If the function did not terminate in the previous step, the system is definitely low on memory. If the kernel control path that issued the memory allocation request is not an interrupt handler or a deferrable function and it is trying to reclaim page frames (either the PF_MEMALLOC flag or the PF_MEMDIE flag of current is set), the function then performs a third scanning of the memory zones, trying to allo- cate the page frames ignoring the low-on-memory thresholds—that is, without invoking zone_watermark_ok(). This is the only case where the kernel control path is allowed to deplete the low-on-memory reserve of pages specified by the lowmem_reserve field of the zone descriptor. In fact, in this case the kernel con- trol path that issued the memory request is ultimately trying to free page frames, thus it should get what it has requested, if at all possible. If no memory zone includes enough page frames, the function returns NULL to notify the caller of the failure.
+5. Here, the invoking kernel control path is not trying to reclaim memory. If the _ _ GFP_WAIT flag of gfp_mask is not set, the function returns NULL to notify the kernel control path of the memory allocation failure: in this case, there is no way to satisfy the request without blocking the current process.
+6. Here the current process can be blocked: invokes cond_resched() to check whether some other process needs the CPU.
+7. Sets the PF_MEMALLOC flag of current, to denote the fact that the process is ready to perform memory reclaiming.
+8. Stores in current->reclaim_state a pointer to a reclaim_state structure. This structure includes just one field, reclaimed_slab, initialized to zero (we’ll see how this field is used in the section “Interfacing the Slab Allocator with the Zoned Page Frame Allocator” later in this chapter).
+9. Invokes try_to_free_pages() to look for some page frames to be reclaimed (see the section “Low On Memory Reclaiming” in Chapter 17). The latter function may block the current process. Once that function returns, __alloc_pages() resets the PF_MEMALLOC flag of current and invokes once more cond_resched().
+10. If the previous step has freed some page frames, the function performs yet another scanning of the memory zones equal to the one performed in step 3. If the memory allocation request cannot be satisfied, the function determines whether it should continue scanning the memory zone: if the _ _GFP_NORETRY flag is clear and either the memory allocation request spans up to eight page frames, or one of the _ _GFP_REPEAT and _ _GFP_NOFAIL flags is set, the function invokes blk_congestion_wait() to put the process asleep for awhile (see Chapter 14), and it jumps back to step 6. Otherwise, the function returns NULL to notify the caller that the memory allocation failed.
+11. If no page frame has been freed in step 9, the kernel is in deep trouble, because free memory is dangerously low and it was not possible to reclaim any page frame. Perhaps the time has come to take a crucial decision. If the kernel control path is allowed to perform the filesystem-dependent operations needed to kill a process (the _ _GFP_FS flag in gfp_mask is set) and the _ _GFP_NORETRY flag is clear, performs the following substeps:
+a. Scans once again the memory zones with a threshold value equal to z-> pages_high.
+b. Invokes out_of_memory() to start freeing some memory by killing a victim process (see “The Out of Memory Killer” in Chapter 17).
+c. Jumps back to step 1.
+
+
+## 8.2 Memory Area Management
+
+Slabs can be destroyed in two cases:
+* There are too many free objects in the slab cache (see the later section “Releas- ing a Slab from a Cache”).
+* A timer function invoked periodically determines that there are fully unused slabs that can be released (see Chapter 17).
+
+## 8.3 Noncontiguous Memory Area Management
 
 # 14 Block Device Drivers
 
@@ -757,6 +820,9 @@ A request deadline is essentially an expire timer that starts ticking when the r
 
 ## 14.4 Block Device Drivers
 ## 14.5 Opening a Block Device File
+
+
+# 17 Page Frame Reclaiming
 
 # 20 Program Execution
 ## 20.1 Executable Files

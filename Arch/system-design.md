@@ -1,3 +1,7 @@
+![](../Images/SystemDesign/bytebytego-software-arch-styles.png)
+
+* https://blog.bytebytego.com/p/ep68-top-architectural-styles
+
 # System Design Problems
 
 ## System Design Interviews: A step by step guide
@@ -213,7 +217,7 @@ In the TinyURL example in Section 1, the shortened URL is "http://tinyurl.com/jl
     * Workaround for the issues:
         * We can append an increasing sequence number to each input URL to make it unique and then generate its hash. We don’t need to store this sequence number in the databases, though. Possible problems with this approach could be an ever-increasing sequence number. Can it overflow? Appending an increasing sequence number will also impact the performance of the service.
         * Another solution could be to append the user id (which should be unique) to the input URL. However, if the user has not signed in, we would have to ask the user to choose a uniqueness key. Even after this, if we have a conflict, we have to keep generating a key until we get a unique one.
-    ![](../Images/SystemDesign/tiny-url-high-level-design-1.png)
+        ![](../Images/SystemDesign/tiny-url-high-level-design-1.png)
 
 2. Generating keys offline
     We can have a standalone Key Generation Service (KGS) that generates random six-letter strings beforehand and stores them in a database (let’s call it key-DB). Whenever we want to shorten a URL, we will take one of the already-generated keys and use it. This approach will make things quite simple and fast. Not only are we not encoding the URL, but we won’t have to worry about duplications or collisions. KGS will make sure all the keys inserted into key-DB are unique
