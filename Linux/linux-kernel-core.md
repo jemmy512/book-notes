@@ -1,5 +1,12 @@
 [:link: Linux - Core API Documentation :link:](https://docs.kernel.org/core-api/index.html)
 
+
+* [并发机制 - LoyenWang](https://www.cnblogs.com/LoyenWang/category/1689461.html)
+    * [Semophore](https://www.cnblogs.com/LoyenWang/p/12907230.html)
+    * [Mutex](https://www.cnblogs.com/LoyenWang/p/12826811.html)
+    * [RCU :one:](https://www.cnblogs.com/LoyenWang/p/12681494.html) [RCU :two:](https://www.cnblogs.com/LoyenWang/p/12770878.html)
+    * [spinlock/rwlock/seqlock](https://www.cnblogs.com/LoyenWang/p/12632532.html)
+
 * [Core](#core)
 
 * [Data structures](#data-structures)

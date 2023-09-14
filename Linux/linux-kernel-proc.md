@@ -828,11 +828,12 @@ export LD_LIBRARY_PATH=
 * [PREEMPT_RT Linux](https://wiki.linuxfoundation.org/realtime/start)
     * [LWN - A realtime preemption overview](https://lwn.net/Articles/146861/)
     * [Preemption Models](https://wiki.linuxfoundation.org/realtime/documentation/technical_basics/preemption_models)
-        * No Forced Preemption (server)
-        * Voluntary Kernel Preemption (Desktop)
-        * Preemptible Kernel (Low-Latency Desktop)
-        * Preemptible Kernel (Basic RT)
-        * Fully Preemptible Kernel (RT)
+        Model | Case | Preempt Points
+        --- | --- | ---
+        PREEMPT_NONE | No Forced Preemption (server) | `system call returns` + `interrupts`
+        PREEMPT_VOLUNTARY | Voluntary Kernel Preemption (Desktop) | `system call returns` + `interrupts` + `explicit preemption points`
+        PREEMPT | Preemptible Kernel (Low-Latency Desktop) |`system call returns` + `interrupts` + `all kernel code(except critical section)`
+        PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
 
 * [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
 * [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
@@ -5406,6 +5407,8 @@ static int kthread(void *_create)
 # cmwq
 
 * [Kernel Doc](https://docs.kernel.org/core-api/workqueue.html)
+
+* Wowo Tech [:one: :link:](http://www.wowotech.net/irq_subsystem/workqueue.html) [:two: :link:](http://www.wowotech.net/irq_subsystem/cmwq-intro.html)  [:three: :link:](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html)  [:four: :link:](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
 
 <img src='../Images/Kernel/proc-cmwq.png' style='max-height:850px'/>
 
