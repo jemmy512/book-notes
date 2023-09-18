@@ -2773,14 +2773,16 @@ __remove_pgd_mapping()
 mmap() {
     sys_mmap_pgoff() {
         vm_mmap_pgoff() {
-            do_mmap() {
+            do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf) {
                 get_unmapped_area() {
                     get_area = current->mm->get_unmapped_area;
                     if (file) {
-                    if (file->f_op->get_unmapped_area)
-                        get_area = file->f_op->get_unmapped_area;
-                            __thp_get_unmapped_area();
+                    if (file->f_op->get_unmapped_area) {
+                        get_area = file->f_op->get_unmapped_area {
+                            __thp_get_unmapped_area() {
                                 current->mm->get_unmapped_area();
+                            }
+                        }
                     } else if (flags & MAP_SHARED) {
                         get_area = shmem_get_unmapped_area;
                     }
@@ -2823,6 +2825,107 @@ mmap() {
                 /* 2.2. link the vma to the file */
                 vma_link(mm, vma, prev, rb_link, rb_parent);
                     vma_interval_tree_insert(vma, &mapping->i_mmap);
+            }
+
+            if (populate) {
+			    mm_populate(ret, populate) {
+                    for (nstart = start; nstart < end; nstart = nend) {
+                        vma = find_vma_intersection(mm, nstart, end);
+                        ret = populate_vma_page_range(vma, nstart, nend, &locked) {
+                            __get_user_pages(mm, start, nr_pages, gup_flags, NULL, locked ? locked : &local_locked) {
+                                do {
+                                    struct page *page;
+                                    unsigned int foll_flags = gup_flags;
+                                    unsigned int page_increm;
+
+                                    /* first iteration or cross vma bound */
+                                    if (!vma || start >= vma->vm_end) {
+                                        vma = gup_vma_lookup(mm, start);
+                                        if (!vma && in_gate_area(mm, start)) {
+                                            ret = get_gate_page(mm, start & PAGE_MASK,
+                                                    gup_flags, &vma, pages ? &page : NULL);
+                                            if (ret)
+                                                goto out;
+                                            ctx.page_mask = 0;
+                                            goto next_page;
+                                        }
+
+                                        if (!vma) {
+                                            ret = -EFAULT;
+                                            goto out;
+                                        }
+                                        ret = check_vma_flags(vma, gup_flags);
+                                        if (ret)
+                                            goto out;
+                                    }
+                            retry:
+                                    if (fatal_signal_pending(current)) {
+                                        ret = -EINTR;
+                                        goto out;
+                                    }
+                                    cond_resched();
+
+                                    page = follow_page_mask(vma, start, foll_flags, &ctx);
+                                    if (!page || PTR_ERR(page) == -EMLINK) {
+                                        ret = faultin_page(vma, start, &foll_flags, PTR_ERR(page) == -EMLINK, locked) {
+                                            handle_mm_fault(vma, address, fault_flags, NULL);
+                                                --->
+                                        }
+                                    } else if (PTR_ERR(page) == -EEXIST) {
+                                        if (pages) {
+                                            ret = PTR_ERR(page);
+                                            goto out;
+                                        }
+                                    } else if (IS_ERR(page)) {
+                                        ret = PTR_ERR(page);
+                                        goto out;
+                                    }
+
+                            next_page:
+                                    page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
+                                    if (page_increm > nr_pages)
+                                        page_increm = nr_pages;
+
+                                    if (pages) {
+                                        struct page *subpage;
+                                        unsigned int j;
+
+                                        if (page_increm > 1) {
+                                            struct folio *folio;
+
+                                            folio = try_grab_folio(page, page_increm - 1, foll_flags);
+                                            if (WARN_ON_ONCE(!folio)) {
+                                                gup_put_folio(page_folio(page), 1, foll_flags);
+                                                ret = -EFAULT;
+                                                goto out;
+                                            }
+                                        }
+
+                                        for (j = 0; j < page_increm; j++) {
+                                            subpage = nth_page(page, j);
+                                            pages[i + j] = subpage;
+                                            flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
+                                            flush_dcache_page(subpage);
+                                        }
+                                    }
+
+                                    i += page_increm;
+                                    start += page_increm * PAGE_SIZE;
+                                    nr_pages -= page_increm;
+                                } while (nr_pages);
+                            }
+                        }
+                        if (ret < 0) {
+                            if (ignore_errors) {
+                                ret = 0;
+                                continue;	/* continue at next VMA */
+                            }
+                            break;
+                        }
+                        nend = nstart + ret * PAGE_SIZE;
+                        ret = 0;
+                    }
+                }
             }
         }
     }
