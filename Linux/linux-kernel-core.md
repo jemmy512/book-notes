@@ -55,6 +55,8 @@
 
 * [LWN - Introducing maple trees](https://lwn.net/Articles/845507/)
 * [The Maple Tree, A Modern Data Structure for a Complex Problem](https://blogs.oracle.com/linux/the-maple-tree)
+* [Linux commit - Maple Tree: add new data structure](https://github.com/torvalds/linux/commit/54a611b605901c7d5d05b6b8f5d04a6ceb0962aa)
+* [Linux doc](https://docs.kernel.org/core-api/maple_tree.html)
 
 # Concurrency primitives
 
