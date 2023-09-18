@@ -5241,6 +5241,7 @@ SYSCALL_DEFINE3(execve);
 # exit
 ```c
 do_exit(code) {
+    WARN_ON(irqs_disabled());
     synchronize_group_exit(tsk, code);
 
     kcov_task_exit(tsk);
@@ -5263,17 +5264,17 @@ do_exit(code) {
     exit_task_namespaces(tsk);
     exit_task_work(tsk);
     exit_thread(tsk);
-        perf_event_exit_task(tsk);
+    perf_event_exit_task(tsk);
     sched_autogroup_exit_task(tsk);
     cgroup_exit(tsk);
-        exit_tasks_rcu_start();
+    exit_tasks_rcu_start();
     exit_notify(tsk, group_dead);
     proc_exit_connector(tsk);
     mpol_put_task_policy(tsk);
-        exit_io_context(tsk);
-        free_pipe_info(tsk->splice_pipe);
-        put_page(tsk->task_frag.page);
-        exit_rcu();
+    exit_io_context(tsk);
+    free_pipe_info(tsk->splice_pipe);
+    put_page(tsk->task_frag.page);
+    exit_rcu();
     exit_tasks_rcu_finish();
     lockdep_free_task(tsk);
     do_task_dead();
@@ -5328,8 +5329,10 @@ int kthreadd(void *unused)
             spin_unlock(&kthread_create_lock);
 
             create_kthread(create) {
-                kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD);
-                    _do_fork();
+                kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD) {
+                    return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
+                        (unsigned long)arg, NULL, NULL, 0);
+                }
             }
 
             spin_lock(&kthread_create_lock);
@@ -5338,12 +5341,6 @@ int kthreadd(void *unused)
     }
 
   return 0;
-}
-
-pid_t kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
-{
-  return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
-    (unsigned long)arg, NULL, NULL, 0);
 }
 
 static int kthread(void *_create)
@@ -5390,7 +5387,22 @@ static int kthread(void *_create)
     ret = -EINTR;
     if (!test_bit(KTHREAD_SHOULD_STOP, &self->flags)) {
         cgroup_kthread_ready();
-        __kthread_parkme(self);
+        __kthread_parkme(self) {
+            __kthread_parkme(struct kthread *self) {
+                for (;;) {
+
+                    set_special_state(TASK_PARKED);
+                    if (!test_bit(KTHREAD_SHOULD_PARK, &self->flags))
+                        break;
+
+                    preempt_disable();
+                    complete(&self->parked);
+                    schedule_preempt_disabled();
+                    preempt_enable();
+                }
+                __set_current_state(TASK_RUNNING);
+            }
+        }
         ret = threadfn(data);
     }
     do_exit(ret);
