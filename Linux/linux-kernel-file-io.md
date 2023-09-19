@@ -1123,271 +1123,216 @@ struct files_struct {
   struct file __rcu * fd_array[NR_OPEN_DEFAULT];
 };
 
-SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
-{
-  return do_sys_open(AT_FDCWD, filename, flags, mode);
-}
+SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode) {
+return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
+    struct open_flags op;
+    struct filename *tmp = getname(filename);
+    int fd = get_unused_fd_flags(flags);
 
-long do_sys_open(int dfd, const char __user *filename, int flags, umode_t mode)
-{
-  struct filename *tmp = getname(filename);
-  int fd = get_unused_fd_flags(flags);
-  if (fd >= 0) {
-    struct file *f = do_filp_open(dfd, tmp, &op);
-    if (IS_ERR(f)) {
-      put_unused_fd(fd);
-      fd = PTR_ERR(f);
-    } else {
-      fsnotify_open(f);
-      fd_install(fd, f);
+    struct file *f = do_filp_open(dfd, tmp, &op) {
+        struct nameidata nd;
+        int flags = op->lookup_flags;
+        struct file *filp;
+
+        filp = path_openat(&nd, op, flags | LOOKUP_RCU) {
+            file = alloc_empty_file(op->open_flag, current_cred());
+
+            if (unlikely(file->f_flags & __O_TMPFILE)) {
+                error = do_tmpfile(nd, flags, op, file);
+            } else if (unlikely(file->f_flags & O_PATH)) {
+                error = do_o_path(nd, flags, file);
+            } else {
+                const char *s = path_init(nd, flags);
+
+                do {
+                    error = link_path_walk(s, nd) {
+
+                    }
+
+                    s = open_last_lookups(nd, file, op) {
+                        struct dentry *dir = nd->path.dentry;
+                        int open_flag = op->open_flag;
+                        bool got_write = false;
+                        struct dentry *dentry;
+                        const char *res;
+
+                        nd->flags |= op->intent;
+
+                        if (!(open_flag & O_CREAT)) {
+                            if (nd->last.name[nd->last.len])
+                            nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+
+                            /* 1. search in dcache */
+                            dentry = lookup_fast(nd);
+                            if (likely(dentry))
+                                goto finish_lookup;
+                        } else {
+                            /* create side of things */
+                            if (nd->flags & LOOKUP_RCU) {
+                            if (!try_to_unlazy(nd))
+                                return ERR_PTR(-ECHILD);
+                            }
+                            audit_inode(nd->name, dir, AUDIT_INODE_PARENT);
+                            /* trailing slashes? */
+                            if (unlikely(nd->last.name[nd->last.len]))
+                                return ERR_PTR(-EISDIR);
+                        }
+
+                        if (open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
+                            got_write = !mnt_want_write(nd->path.mnt);
+                        }
+
+                        /* 2. search in file system */
+                        dentry = lookup_open(nd, file, op, got_write) {
+                            /* Negative dentry, just create the file */
+                            if (!dentry->d_inode && (open_flag & O_CREAT)) {
+                                error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
+                            }
+
+                            dentry = d_alloc_parallel(dir, &nd->last, &wq);
+                            struct dentry *res = dir_inode->i_op->lookup(
+                                dir_inode, dentry, nd->flags); /* ext4_lookup */
+                            path->dentry = dentry;
+                            path->mnt = nd->path.mnt;
+                        }
+
+                    finish_lookup:
+                        if (nd->depth)
+                            put_link(nd);
+                        res = step_into(nd, WALK_TRAILING, dentry);
+                        if (unlikely(res))
+                            nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
+                        return res;
+                    }
+                } while (error && s);
+
+                do_open(nd, file, op) {
+                    struct user_namespace *mnt_userns;
+                    int open_flag = op->open_flag;
+                    bool do_truncate;
+                    int acc_mode;
+                    int error;
+
+                    if (!(file->f_mode & (FMODE_OPENED | FMODE_CREATED))) {
+                        error = complete_walk(nd);
+                    }
+                    if (!(file->f_mode & FMODE_CREATED))
+                        audit_inode(nd->name, nd->path.dentry, 0);
+                    mnt_userns = mnt_user_ns(nd->path.mnt);
+                    if (open_flag & O_CREAT) {
+                        if ((open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED))
+                            return -EEXIST;
+                        if (d_is_dir(nd->path.dentry))
+                            return -EISDIR;
+                        error = may_create_in_sticky(mnt_userns, nd, d_backing_inode(nd->path.dentry));
+                        if (unlikely(error))
+                        return error;
+                    }
+
+                    do_truncate = false;
+                    acc_mode = op->acc_mode;
+                    if (file->f_mode & FMODE_CREATED) {
+                        /* Don't check for write permission, don't truncate */
+                        open_flag &= ~O_TRUNC;
+                        acc_mode = 0;
+                    } else if (d_is_reg(nd->path.dentry) && open_flag & O_TRUNC) {
+                        error = mnt_want_write(nd->path.mnt);
+                        if (error)
+                            return error;
+                        do_truncate = true;
+                    }
+
+                    error = may_open(mnt_userns, &nd->path, acc_mode, open_flag);
+
+                    if (!error && !(file->f_mode & FMODE_OPENED)) {
+                        error = vfs_open(&nd->path, file) {
+                            struct dentry *dentry = d_real(path->dentry, NULL, file->f_flags, 0);
+                            file->f_path = *path;
+
+                            return do_dentry_open(file, d_backing_inode(dentry), NULL, cred) {
+                                f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
+                                path_get(&f->f_path);
+                                f->f_inode = inode;
+                                f->f_mapping = inode->i_mapping;
+                                f->f_op = fops_get(inode->i_fop);
+                                open = f->f_op->open;
+                                error = open(inode, f);
+                                f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
+                                file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
+                                return 0;
+                            }
+                        }
+                    }
+                    if (!error)
+                        error = ima_file_check(file, op->acc_mode);
+                    if (!error && do_truncate) {
+                        error = handle_truncate(mnt_userns, file) {
+
+                        }
+                    }
+                    if (do_truncate)
+                        mnt_drop_write(nd->path.mnt);
+                    return error;
+                }
+                terminate_walk(nd);
+            }
+
+            return ERR_PTR(error);
+        }
+
+        return filp;
     }
-  }
-  putname(tmp);
-  return fd;
-}
 
-struct file *do_filp_open(int dfd, struct filename *pathname,
-    const struct open_flags *op)
-{
-  struct nameidata nd;
-  int flags = op->lookup_flags;
-  struct file *filp;
+    fsnotify_open(f) {
+        __u32 mask = FS_OPEN;
 
-  set_nameidata(&nd, dfd, pathname);
-  filp = path_openat(&nd, op, flags | LOOKUP_RCU);
-  if (unlikely(filp == ERR_PTR(-ECHILD)))
-    filp = path_openat(&nd, op, flags);
-  if (unlikely(filp == ERR_PTR(-ESTALE)))
-    filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
-  restore_nameidata();
-  return filp;
-}
+        if (file->f_flags & __FMODE_EXEC)
+            mask |= FS_OPEN_EXEC;
 
-struct file *path_openat(struct nameidata *nd,
-      const struct open_flags *op, unsigned flags)
-{
-  struct file *file;
-  int error;
+        fsnotify_file(file, mask) {
+            const struct path *path;
 
-  file = alloc_empty_file(op->open_flag, current_cred());
-  if (IS_ERR(file))
-    return file;
+            if (file->f_mode & FMODE_NONOTIFY)
+                return 0;
 
-  if (unlikely(file->f_flags & __O_TMPFILE)) {
-    error = do_tmpfile(nd, flags, op, file);
-  } else if (unlikely(file->f_flags & O_PATH)) {
-    error = do_o_path(nd, flags, file);
-  } else {
-    const char *s = path_init(nd, flags);
-    while (!(error = link_path_walk(s, nd)) && (s = open_last_lookups(nd, file, op)) != NULL);
+            path = file_real_path(file);
+            return fsnotify_parent(path->dentry, mask, path, FSNOTIFY_EVENT_PATH) {
+                struct inode *inode = d_inode(dentry);
 
-    if (!error)
-      error = do_open(nd, file, op);
-    terminate_walk(nd);
-  }
-  if (likely(!error)) {
-    if (likely(file->f_mode & FMODE_OPENED))
-      return file;
-    WARN_ON(1);
-    error = -EINVAL;
-  }
-  fput(file);
-  if (error == -EOPENSTALE) {
-    if (flags & LOOKUP_RCU)
-      error = -ECHILD;
-    else
-      error = -ESTALE;
-  }
-  return ERR_PTR(error);
-}
+                if (atomic_long_read(&inode->i_sb->s_fsnotify_connectors) == 0)
+                    return 0;
 
-const char *open_last_lookups(struct nameidata *nd,
-       struct file *file, const struct open_flags *op)
-{
-  struct dentry *dir = nd->path.dentry;
-  int open_flag = op->open_flag;
-  bool got_write = false;
-  struct dentry *dentry;
-  const char *res;
+                if (S_ISDIR(inode->i_mode)) {
+                    mask |= FS_ISDIR;
 
-  nd->flags |= op->intent;
+                    /* sb/mount marks are not interested in name of directory */
+                    if (!(dentry->d_flags & DCACHE_FSNOTIFY_PARENT_WATCHED))
+                        goto notify_child;
+                }
 
-  if (nd->last_type != LAST_NORM) {
-    if (nd->depth)
-      put_link(nd);
-    return handle_dots(nd, nd->last_type);
-  }
+                if (IS_ROOT(dentry))
+                    goto notify_child;
 
-  if (!(open_flag & O_CREAT)) {
-    if (nd->last.name[nd->last.len])
-      nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+                return __fsnotify_parent(dentry, mask, data, data_type);
 
-        /* 1. search in dcache */
-    dentry = lookup_fast(nd);
-    if (IS_ERR(dentry))
-      return ERR_CAST(dentry);
-    if (likely(dentry))
-      goto finish_lookup;
-
-    BUG_ON(nd->flags & LOOKUP_RCU);
-  } else {
-    /* create side of things */
-    if (nd->flags & LOOKUP_RCU) {
-      if (!try_to_unlazy(nd))
-        return ERR_PTR(-ECHILD);
+            notify_child:
+	            return fsnotify(mask, data, data_type, NULL, NULL, inode, 0);
+            }
+        }
     }
-    audit_inode(nd->name, dir, AUDIT_INODE_PARENT);
-    /* trailing slashes? */
-    if (unlikely(nd->last.name[nd->last.len]))
-      return ERR_PTR(-EISDIR);
-  }
+    fd_install(fd, f);
 
-  if (open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
-    got_write = !mnt_want_write(nd->path.mnt);
-  }
-  if (open_flag & O_CREAT)
-    inode_lock(dir->d_inode);
-  else
-    inode_lock_shared(dir->d_inode);
-
-    /* 2. search in file system */
-  dentry = lookup_open(nd, file, op, got_write);
-  if (!IS_ERR(dentry) && (file->f_mode & FMODE_CREATED))
-    fsnotify_create(dir->d_inode, dentry);
-  if (open_flag & O_CREAT)
-    inode_unlock(dir->d_inode);
-  else
-    inode_unlock_shared(dir->d_inode);
-
-  if (got_write)
-    mnt_drop_write(nd->path.mnt);
-
-  if (IS_ERR(dentry))
-    return ERR_CAST(dentry);
-
-  if (file->f_mode & (FMODE_OPENED | FMODE_CREATED)) {
-    dput(nd->path.dentry);
-    nd->path.dentry = dentry;
-    return NULL;
-  }
-
-finish_lookup:
-  if (nd->depth)
-    put_link(nd);
-  res = step_into(nd, WALK_TRAILING, dentry);
-  if (unlikely(res))
-    nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
-  return res;
-}
-
-int do_open(struct nameidata *nd,
-       struct file *file, const struct open_flags *op)
-{
-  struct user_namespace *mnt_userns;
-  int open_flag = op->open_flag;
-  bool do_truncate;
-  int acc_mode;
-  int error;
-
-  if (!(file->f_mode & (FMODE_OPENED | FMODE_CREATED))) {
-    error = complete_walk(nd);
-    if (error)
-      return error;
-  }
-  if (!(file->f_mode & FMODE_CREATED))
-    audit_inode(nd->name, nd->path.dentry, 0);
-  mnt_userns = mnt_user_ns(nd->path.mnt);
-  if (open_flag & O_CREAT) {
-    if ((open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED))
-      return -EEXIST;
-    if (d_is_dir(nd->path.dentry))
-      return -EISDIR;
-    error = may_create_in_sticky(mnt_userns, nd, d_backing_inode(nd->path.dentry));
-    if (unlikely(error))
-      return error;
-  }
-  if ((nd->flags & LOOKUP_DIRECTORY) && !d_can_lookup(nd->path.dentry))
-    return -ENOTDIR;
-
-  do_truncate = false;
-  acc_mode = op->acc_mode;
-  if (file->f_mode & FMODE_CREATED) {
-    /* Don't check for write permission, don't truncate */
-    open_flag &= ~O_TRUNC;
-    acc_mode = 0;
-  } else if (d_is_reg(nd->path.dentry) && open_flag & O_TRUNC) {
-    error = mnt_want_write(nd->path.mnt);
-    if (error)
-      return error;
-    do_truncate = true;
-  }
-
-  error = may_open(mnt_userns, &nd->path, acc_mode, open_flag);
-
-  if (!error && !(file->f_mode & FMODE_OPENED))
-    error = vfs_open(&nd->path, file);
-  if (!error)
-    error = ima_file_check(file, op->acc_mode);
-  if (!error && do_truncate)
-    error = handle_truncate(mnt_userns, file);
-  if (unlikely(error > 0)) {
-    WARN_ON(1);
-    error = -EINVAL;
-  }
-  if (do_truncate)
-    mnt_drop_write(nd->path.mnt);
-  return error;
-}
-
-static int lookup_open(struct nameidata *nd, struct path *path,
-  struct file *file,
-  const struct open_flags *op,
-  bool got_write, int *opened)
-{
-  /* open with O_CREAT flag */
-  if (!dentry->d_inode && (open_flag & O_CREAT)) {
-    error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
-  }
-
-  dentry = d_alloc_parallel(dir, &nd->last, &wq);
-  struct dentry *res = dir_inode->i_op->lookup(
-    dir_inode, dentry, nd->flags); /* ext4_lookup */
-  path->dentry = dentry;
-  path->mnt = nd->path.mnt;
+    putname(tmp);
+    return fd;
 }
 
 const struct inode_operations ext4_dir_inode_operations = {
-  .create    = ext4_create,
-  .lookup    = ext4_lookup
-}
-
-int vfs_open(const struct path *path, struct file *file,
-  const struct cred *cred)
-{
-  struct dentry *dentry = d_real(path->dentry, NULL, file->f_flags, 0);
-  file->f_path = *path;
-  return do_dentry_open(file, d_backing_inode(dentry), NULL, cred);
-}
-
-static int do_dentry_open(struct file *f,
-  struct inode *inode,
-  int (*open)(struct inode *, struct file *),
-  const struct cred *cred)
-{
-  f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
-  path_get(&f->f_path);
-  f->f_inode = inode;
-  f->f_mapping = inode->i_mapping;
-  f->f_op = fops_get(inode->i_fop);
-  open = f->f_op->open;
-  error = open(inode, f);
-  f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
-  file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
-  return 0;
+    .create    = ext4_create,
+    .lookup    = ext4_lookup
 }
 
 const struct file_operations ext4_file_operations = {
-  .open    = ext4_file_open,
+    .open    = ext4_file_open,
 };
 ```
 
