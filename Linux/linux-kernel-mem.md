@@ -3159,9 +3159,9 @@ handle_mm_fault(vma, address, flags, regs);
                         return do_fault(vmf) {
                             /* 2.1 read fault */
                             do_read_fault() {
-                                __do_fault();
-                                    vma->vm_ops->fault();
-                                        ext4_filemap_fault();
+                                __do_fault() {
+                                    vma->vm_ops->fault() {
+                                        ext4_filemap_fault() {
                                             filemap_fault();
                                                 page = find_get_page();
                                                 if (page) {
@@ -3177,6 +3177,13 @@ handle_mm_fault(vma, address, flags, regs);
                                                         kmap_atomic();
                                                         ext4_read_inline_data();
                                                         kumap_atomic();
+                                        }
+                                        shmem_fault() {
+
+                                        }
+                                    }
+                                }
+
                                 finish_fault()
                                     alloc_set_pte()
                                     pte_unmap_unlock()

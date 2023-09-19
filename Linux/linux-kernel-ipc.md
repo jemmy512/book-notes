@@ -1,3 +1,25 @@
+
+* [pipe](#pipe)
+* [fifo](#fifo)
+* [POSIX shmem](#POSIX-shmem)
+    * [shmem_ops](#shmem_ops)
+    * [shmem_open](#shmem_open)
+    * [shmem_close](#shmem_close)
+    * [shmem_fault](#shmem_fault)
+* [System V IPC](#system-v-ipc)
+    * [shm](#shm)
+        * [shmget](#shmget)
+        * [shmat](#shmat)
+        * [shm_ops](#shm_ops)
+        * [shm_open](#shm_open)
+        * [shm_close](#shm_close)
+        * [shm_fault](#shm_fault)
+    * [sem]
+        * [semget](#semget)
+        * [semctl](#semctl)
+        * [semop](#semop)
+
+
 # pipe
 ```c
 SYSCALL_DEFINE1(pipe, int __user *, fildes)
@@ -280,7 +302,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
 <img src='../Images/Kernel/ipc-fifo.png' style='max-height:850px'/>
 
 # signal
-## resigter a sighand
+## resigter
 ```c
 struct task_struct {
     struct signal_struct    *signal;
@@ -440,7 +462,7 @@ int do_sigaction(int sig, struct k_sigaction *act, struct k_sigaction *oact)
 ```
 <img src='../Images/Kernel/ipc-signal-register-handler.png' style='max-height:850px'/>
 
-## send a signal
+## send
 ```c
 group_send_sig_info()
     check_kill_permission(sig, info, p);
@@ -578,7 +600,7 @@ int wake_up_state(struct task_struct *p, unsigned int state)
 ```
 * [try_to_wake_up](#ttwu)
 
-## handle signal
+## handle
 ```c
 static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 {
@@ -728,7 +750,416 @@ asmlinkage long sys_rt_sigreturn(void)
 ```
 <img src='../Images/Kernel/sig-handle.png' style='max-height:850px'/>
 
-# sem, shm, msg
+# POSIX shmem
+
+## shmem_ops
+
+```c
+static const struct vm_operations_struct shmem_vm_ops = {
+    .fault      = shmem_fault,
+    .map_pages  = filemap_map_pages,
+}
+
+static const struct vm_operations_struct shmem_anon_vm_ops = {
+    .fault      = shmem_fault,
+    .map_pages  = filemap_map_pages,
+};
+
+static const struct file_operations shmem_file_operations = {
+    .mmap           = shmem_mmap,
+    .open           = shmem_file_open,
+    .get_unmapped_area = shmem_get_unmapped_area,
+    .llseek         = shmem_file_llseek,
+    .read_iter      = shmem_file_read_iter,
+    .write_iter     = shmem_file_write_iter,
+    .fsync          = noop_fsync,
+    .splice_read    = shmem_file_splice_read,
+    .splice_write   = iter_file_splice_write,
+    .fallocate      = shmem_fallocate,
+};
+
+static const struct inode_operations shmem_inode_operations = {
+    .getattr        = shmem_getattr,
+    .setattr        = shmem_setattr,
+};
+
+static const struct inode_operations shmem_dir_inode_operations = {
+    .getattr        = shmem_getattr,
+    .create         = shmem_create,
+    .lookup         = simple_lookup,
+    .link           = shmem_link,
+    .unlink         = shmem_unlink,
+    .symlink        = shmem_symlink,
+    .mkdir          = shmem_mkdir,
+    .rmdir          = shmem_rmdir,
+    .mknod          = shmem_mknod,
+    .rename         = shmem_rename2,
+    .tmpfile        = shmem_tmpfile,
+    .get_offset_ctx = shmem_get_offset_ctx,
+};
+```
+
+## shmem_open
+
+* Misr C
+```c
+int shm_open(const char *name, int flag, mode_t mode)
+{
+    int cs;
+    char buf[NAME_MAX+10];
+    name = __shm_mapname(name, buf) {
+        char *p;
+        while (*name == '/') name++;
+        if (*(p = __strchrnul(name, '/')) || p==name ||
+            (p-name <= 2 && name[0]=='.' && p[-1]=='.')) {
+            errno = EINVAL;
+            return 0;
+        }
+        if (p-name > NAME_MAX) {
+            errno = ENAMETOOLONG;
+            return 0;
+        }
+        memcpy(buf, "/dev/shm/", 9);
+        memcpy(buf+9, name, p-name+1);
+        return buf;
+    }
+	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
+	int fd = open(name, flag|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK, mode);
+	pthread_setcancelstate(cs, 0);
+	return fd;
+}
+```
+
+* kernel
+```c
+open() {
+    dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL) {
+        int shmem_create(struct mnt_idmap *idmap, struct inode *dir,
+            struct dentry *dentry, umode_t mode, bool excl) {
+
+            return shmem_mknod(idmap, dir, dentry, mode | S_IFREG, 0) {
+                struct inode *inode;
+                int error;
+
+                inode = shmem_get_inode(idmap, dir->i_sb, dir, mode, dev, VM_NORESERVE) {
+                    struct inode *inode;
+                    struct shmem_inode_info *info;
+                    struct shmem_sb_info *sbinfo = SHMEM_SB(sb);
+                    ino_t ino;
+                    int err;
+
+                    err = shmem_reserve_inode(sb, &ino);
+
+                    inode = new_inode(sb);
+
+                    inode->i_ino = ino;
+                    inode_init_owner(idmap, inode, dir, mode);
+                    inode->i_blocks = 0;
+                    inode->i_atime = inode->i_mtime = inode_set_ctime_current(inode);
+                    inode->i_generation = get_random_u32();
+
+                    info = SHMEM_I(inode);
+                    memset(info, 0, (char *)inode - (char *)info);
+                    spin_lock_init(&info->lock);
+                    atomic_set(&info->stop_eviction, 0);
+                    info->seals = F_SEAL_SEAL;
+                    info->flags = flags & VM_NORESERVE;
+                    info->i_crtime = inode->i_mtime;
+                    info->fsflags = (dir == NULL) ? 0 : SHMEM_I(dir)->fsflags & SHMEM_FL_INHERITED;
+                    if (info->fsflags)
+                        shmem_set_inode_flags(inode, info->fsflags);
+                    INIT_LIST_HEAD(&info->shrinklist);
+                    INIT_LIST_HEAD(&info->swaplist);
+                    INIT_LIST_HEAD(&info->swaplist);
+                    if (sbinfo->noswap)
+                        mapping_set_unevictable(inode->i_mapping);
+                    simple_xattrs_init(&info->xattrs);
+                    cache_no_acl(inode);
+                    mapping_set_large_folios(inode->i_mapping);
+
+                    switch (mode & S_IFMT) {
+                    default:
+                        inode->i_op = &shmem_special_inode_operations;
+                        init_special_inode(inode, mode, dev);
+                        break;
+                    case S_IFREG:
+                        inode->i_mapping->a_ops = &shmem_aops;
+                        inode->i_op = &shmem_inode_operations;
+                        inode->i_fop = &shmem_file_operations;
+                        mpol_shared_policy_init(&info->policy, shmem_get_sbmpol(sbinfo));
+                        break;
+                    case S_IFDIR:
+                        inc_nlink(inode);
+                        /* Some things misbehave if size == 0 on a directory */
+                        inode->i_size = 2 * BOGO_DIRENT_SIZE;
+                        inode->i_op = &shmem_dir_inode_operations;
+                        inode->i_fop = &simple_offset_dir_operations;
+                        simple_offset_init(shmem_get_offset_ctx(inode));
+                        break;
+                    case S_IFLNK:
+                        mpol_shared_policy_init(&info->policy, NULL);
+                        break;
+                    }
+
+                    lockdep_annotate_inode_mutex_key(inode);
+                    return inode;
+                }
+
+                error = simple_offset_add(shmem_get_offset_ctx(dir), dentry);
+
+                dir->i_size += BOGO_DIRENT_SIZE;
+                dir->i_mtime = inode_set_ctime_current(dir);
+                inode_inc_iversion(dir);
+                d_instantiate(dentry, inode);
+                dget(dentry); /* Extra count - pin the dentry in core */
+                return error;
+            }
+        }
+    }
+
+    shmem_file_open(struct inode *inode, struct file *file) {
+        file->f_mode |= FMODE_CAN_ODIRECT;
+        return generic_file_open(inode, file) {
+            if (!(filp->f_flags & O_LARGEFILE) && i_size_read(inode) > MAX_NON_LFS)
+                return -EOVERFLOW;
+            return 0;
+        }
+    }
+}
+```
+
+## shmem_fault
+```c
+vm_fault_t shmem_fault(struct vm_fault *vmf) {
+    struct vm_area_struct *vma = vmf->vma;
+    struct inode *inode = file_inode(vma->vm_file);
+    gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+    struct folio *folio = NULL;
+    int err;
+    vm_fault_t ret = VM_FAULT_LOCKED;
+
+    if (unlikely(inode->i_private)) {
+        struct shmem_falloc *shmem_falloc;
+
+        spin_lock(&inode->i_lock);
+        shmem_falloc = inode->i_private;
+        if (shmem_falloc &&
+            shmem_falloc->waitq &&
+            vmf->pgoff >= shmem_falloc->start &&
+            vmf->pgoff < shmem_falloc->next) {
+
+            struct file *fpin;
+            wait_queue_head_t *shmem_falloc_waitq;
+            DEFINE_WAIT_FUNC(shmem_fault_wait, synchronous_wake_function);
+
+            ret = VM_FAULT_NOPAGE;
+            fpin = maybe_unlock_mmap_for_io(vmf, NULL);
+            if (fpin)
+                ret = VM_FAULT_RETRY;
+
+            shmem_falloc_waitq = shmem_falloc->waitq;
+            prepare_to_wait(shmem_falloc_waitq, &shmem_fault_wait,
+                    TASK_UNINTERRUPTIBLE);
+            spin_unlock(&inode->i_lock);
+            schedule();
+
+            spin_lock(&inode->i_lock);
+            finish_wait(shmem_falloc_waitq, &shmem_fault_wait);
+            spin_unlock(&inode->i_lock);
+
+            if (fpin)
+                fput(fpin);
+            return ret;
+        }
+        spin_unlock(&inode->i_lock);
+    }
+
+    /* find page in cache, or get from swap, or allocate */
+    err = shmem_get_folio_gfp(inode, vmf->pgoff, &folio, SGP_CACHE, gfp, vma, vmf, &ret) {
+        struct address_space *mapping = inode->i_mapping;
+        struct shmem_inode_info *info = SHMEM_I(inode);
+        struct shmem_sb_info *sbinfo;
+        struct mm_struct *charge_mm;
+        struct folio *folio;
+        pgoff_t hindex;
+        gfp_t huge_gfp;
+        int error;
+        int once = 0;
+        int alloced = 0;
+
+        if (index > (MAX_LFS_FILESIZE >> PAGE_SHIFT))
+            return -EFBIG;
+    repeat:
+        if (sgp <= SGP_CACHE &&
+            ((loff_t)index << PAGE_SHIFT) >= i_size_read(inode)) {
+            return -EINVAL;
+        }
+
+        sbinfo = SHMEM_SB(inode->i_sb);
+        charge_mm = vma ? vma->vm_mm : NULL;
+
+        folio = filemap_get_entry(mapping, index);
+        if (folio && vma && userfaultfd_minor(vma)) {
+            *fault_type = handle_userfault(vmf, VM_UFFD_MINOR) {
+
+            }
+            return 0;
+        }
+
+        if (xa_is_value(folio)) {
+            error = shmem_swapin_folio(inode, index, &folio, sgp, gfp, vma, fault_type);
+            if (error == -EEXIST)
+                goto repeat;
+
+            *foliop = folio;
+            return error;
+        }
+
+        /* SGP_READ: succeed on hole, with NULL folio, letting caller zero.
+         * SGP_NOALLOC: fail on hole, with NULL folio, letting caller fail. */
+        *foliop = NULL;
+        if (sgp == SGP_READ)
+            return 0;
+        if (sgp == SGP_NOALLOC)
+            return -ENOENT;
+
+        /* Fast cache lookup and swap lookup did not find it: allocate. */
+        if (vma && userfaultfd_missing(vma)) {
+            *fault_type = handle_userfault(vmf, VM_UFFD_MISSING);
+            return 0;
+        }
+
+        if (!shmem_is_huge(inode, index, false,
+                vma ? vma->vm_mm : NULL, vma ? vma->vm_flags : 0))
+            goto alloc_nohuge;
+
+        huge_gfp = vma_thp_gfp_mask(vma);
+        huge_gfp = limit_gfp_mask(huge_gfp, gfp);
+        folio = shmem_alloc_and_acct_folio(huge_gfp, inode, index, true/*huge*/) {
+            struct shmem_inode_info *info = SHMEM_I(inode);
+            struct folio *folio;
+            int nr;
+            int err;
+
+            err = shmem_inode_acct_block(inode, nr);
+
+            if (huge)
+                folio = shmem_alloc_hugefolio(gfp, info, index);
+            else {
+                folio = shmem_alloc_folio(gfp, info, index) {
+                    folio = vma_alloc_folio(gfp, 0, &pvma, 0, false) {
+                        __alloc_pages();
+                    }
+                }
+            }
+            return folio;
+        }
+
+        if (IS_ERR(folio)) {
+    alloc_nohuge:
+            folio = shmem_alloc_and_acct_folio(gfp, inode, index, false);
+        }
+
+        hindex = round_down(index, folio_nr_pages(folio));
+
+        if (sgp == SGP_WRITE)
+            __folio_set_referenced(folio);
+
+        error = shmem_add_to_page_cache(folio, mapping, hindex, NULL, gfp & GFP_RECLAIM_MASK, charge_mm) {
+            XA_STATE_ORDER(xas, &mapping->i_pages, index, folio_order(folio));
+            do {
+                xas_lock_irq(&xas);
+
+                xas_store(&xas, folio);
+
+                mapping->nrpages += nr;
+            unlock:
+                xas_unlock_irq(&xas);
+            } while (xas_nomem(&xas, gfp));
+
+            return 0;
+
+        }
+
+        folio_add_lru(folio);
+        shmem_recalc_inode(inode, folio_nr_pages(folio), 0);
+        alloced = true;
+
+        if (folio_test_pmd_mappable(folio) &&
+            DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE) <
+                        folio_next_index(folio) - 1) {
+
+            spin_lock(&sbinfo->shrinklist_lock);
+
+            if (list_empty_careful(&info->shrinklist)) {
+                list_add_tail(&info->shrinklist, &sbinfo->shrinklist);
+                sbinfo->shrinklist_len++;
+            }
+            spin_unlock(&sbinfo->shrinklist_lock);
+        }
+
+        if (sgp == SGP_FALLOC)
+            sgp = SGP_WRITE;
+    clear:
+        if (sgp != SGP_WRITE && !folio_test_uptodate(folio)) {
+            long i, n = folio_nr_pages(folio);
+
+            for (i = 0; i < n; i++)
+                clear_highpage(folio_page(folio, i));
+            flush_dcache_folio(folio);
+            folio_mark_uptodate(folio);
+        }
+
+        /* Perhaps the file has been truncated since we checked */
+        if (sgp <= SGP_CACHE && ((loff_t)index << PAGE_SHIFT) >= i_size_read(inode)) {
+            if (alloced) {
+                folio_clear_dirty(folio);
+                filemap_remove_folio(folio);
+                shmem_recalc_inode(inode, 0, 0);
+            }
+            error = -EINVAL;
+            goto unlock;
+        }
+    out:
+        *foliop = folio;
+
+        return 0;
+
+    unacct:
+        shmem_inode_unacct_blocks(inode, folio_nr_pages(folio));
+
+        if (folio_test_large(folio)) {
+            folio_unlock(folio);
+            folio_put(folio);
+            goto alloc_nohuge;
+        }
+    unlock:
+        if (folio) {
+            folio_unlock(folio);
+            folio_put(folio);
+        }
+        if (error == -ENOSPC && !once++) {
+            shmem_recalc_inode(inode, 0, 0);
+            goto repeat;
+        }
+        if (error == -EEXIST)
+            goto repeat;
+        return error;
+    }
+    if (err)
+        return vmf_error(err);
+    if (folio)
+        vmf->page = folio_file_page(folio, vmf->pgoff);
+    return ret;
+}
+```
+
+# System V IPC
+
+## shm
+
+<img src='../Images/Kernel/ipc-shm.png' style='max-height:850px'/>
+
 ```c
 struct ipc_namespace {
   struct ipc_ids  ids[3];
@@ -742,21 +1173,22 @@ struct ipc_namespace {
 #define msg_ids(ns)  ((ns)->ids[IPC_MSG_IDS])
 #define shm_ids(ns)  ((ns)->ids[IPC_SHM_IDS])
 
-
 struct ipc_ids {
-  int in_use;
-  unsigned short seq;
-  struct rw_semaphore rwsem;
-  struct idr ipcs_idr;
-  int next_id;
+  int                   in_use;
+  unsigned short        seq;
+  struct rw_semaphore   rwsem;
+  struct idr            ipcs_idr;
+  int                   next_id;
 };
 
 struct idr {
-  struct radix_tree_root  idr_rt;
-  unsigned int    idr_next;
+  struct radix_tree_root    idr_rt;
+  unsigned int              idr_next;
 };
 ```
+
 <img src='../Images/Kernel/ipc-ipc_ids.png' style='max-height:850px'/>
+
 ```c
 struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
 {
@@ -785,39 +1217,37 @@ static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, i
 }
 
 struct kern_ipc_perm {
-  spinlock_t  lock;
-  bool      deleted;
-  int       id;
-  key_t     key;
-  kuid_t    uid, gid, cuid, cgid;
-  umode_t    mode;
-  unsigned long  seq;
-  void    *security;
+  spinlock_t            lock;
+  bool                  deleted;
+  int                   id;
+  key_t                 key;
+  kuid_t                uid, gid, cuid, cgid;
+  umode_t               mode;
+  unsigned long         seq;
+  void                  *security;
 
-  struct rhash_head khtnode;
-  struct rcu_head rcu;
-  refcount_t refcount;
+  struct rhash_head     khtnode;
+  struct rcu_head       rcu;
+  refcount_t            refcount;
 };
 
 struct sem_array {
   struct kern_ipc_perm  sem_perm;  /* permissions .. see ipc.h */
-  time_t      sem_ctime;  /* create/last semctl() time */
-  struct list_head  pending_alter;  /* pending operations */
-                            /* that alter the array */
-  struct list_head  pending_const;  /* pending complex operations */
-            /* that do not alter semvals */
-  struct list_head  list_id;  /* undo requests on this array */
-  int      sem_nsems;  /* no. of semaphores in array */
-  int      complex_count;  /* pending complex operations */
-  unsigned int    use_global_lock;/* >0: global lock required */
+  time_t                sem_ctime;  /* create/last semctl() time */
+  struct list_head      pending_alter;  /* pending operations */ /* that alter the array */
+  struct list_head      pending_const;  /* pending complex operations */ /* that do not alter semvals */
+  struct list_head      list_id;  /* undo requests on this array */
+  int                   sem_nsems;  /* no. of semaphores in array */
+  int                   complex_count;  /* pending complex operations */
+  unsigned int          use_global_lock;/* >0: global lock required */
 
-  struct sem    sems[];
+  struct sem            sems[];
 } __randomize_layout;
 
 struct shmid_kernel /* private to the kernel */
 {
   struct kern_ipc_perm  shm_perm;
-  struct file            *shm_file;
+  struct file           *shm_file;
   unsigned long         shm_nattch;
   unsigned long         shm_segsz;
   time_t                shm_atim, shm_dtim, shm_ctim;
@@ -830,474 +1260,506 @@ struct shmid_kernel /* private to the kernel */
 } __randomize_layout;
 
 struct msg_queue {
-  struct kern_ipc_perm q_perm;
-  time_t q_stime;      /* last msgsnd time */
-  time_t q_rtime;      /* last msgrcv time */
-  time_t q_ctime;      /* last change time */
-  unsigned long q_cbytes;    /* current number of bytes on queue */
-  unsigned long q_qnum;    /* number of messages in queue */
-  unsigned long q_qbytes;    /* max number of bytes on queue */
-  pid_t q_lspid;      /* pid of last msgsnd */
-  pid_t q_lrpid;      /* last receive pid */
+  struct kern_ipc_perm  q_perm;
+  time_t                q_stime; /* last msgsnd time */
+  time_t                q_rtime; /* last msgrcv time */
+  time_t                q_ctime; /* last change time */
+  unsigned long         q_cbytes; /* current number of bytes on queue */
+  unsigned long         q_qnum; /* number of messages in queue */
+  unsigned long         q_qbytes; /* max number of bytes on queue */
+  pid_t                 q_lspid; /* pid of last msgsnd */
+  pid_t                 q_lrpid; /* last receive pid */
 
-  struct list_head q_messages;
-  struct list_head q_receivers;
-  struct list_head q_senders;
+  struct list_head      q_messages;
+  struct list_head      q_receivers;
+  struct list_head      q_senders;
 } __randomize_layout;
 ```
 
-## shmget
+### shmget
 ```c
 SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 {
-  struct ipc_namespace *ns;
-  static const struct ipc_ops shm_ops = {
-    .getnew = newseg,
-    .associate = shm_security,
-    .more_checks = shm_more_checks,
-  };
+    struct ipc_namespace *ns;
+    static const struct ipc_ops shm_ops = {
+        .getnew = newseg,
+        .associate = shm_security,
+        .more_checks = shm_more_checks,
+    };
 
-  struct ipc_params shm_params;
-  ns = current->nsproxy->ipc_ns;
-  shm_params.key = key;
-  shm_params.flg = shmflg;
-  shm_params.u.size = size;
+    struct ipc_params shm_params;
+    ns = current->nsproxy->ipc_ns;
+    shm_params.key = key;
+    shm_params.flg = shmflg;
+    shm_params.u.size = size;
 
-  return ipcget(ns, &shm_ids(ns), &shm_ops, &shm_params);
-}
-
-
-int ipcget(struct ipc_namespace *ns, struct ipc_ids *ids,
-    const struct ipc_ops *ops, struct ipc_params *params)
-{
-  if (params->key == IPC_PRIVATE)
-    return ipcget_new(ns, ids, ops, params);
-  else
-    return ipcget_public(ns, ids, ops, params);
-}
-
-static int ipcget_public(struct ipc_namespace *ns, struct ipc_ids *ids,
-    const struct ipc_ops *ops, struct ipc_params *params)
-{
-  struct kern_ipc_perm *ipcp;
-  int flg = params->flg;
-  int err;
-  ipcp = ipc_findkey(ids, params->key);
-  if (ipcp == NULL) {
-    if (!(flg & IPC_CREAT))
-      err = -ENOENT;
-    else
-      err = ops->getnew(ns, params);
-  } else {
-    if (flg & IPC_CREAT && flg & IPC_EXCL)
-      err = -EEXIST;
-    else {
-      err = 0;
-      if (ops->more_checks)
-        err = ops->more_checks(ipcp, params);
+    return ipcget(ns, &shm_ids(ns), &shm_ops, &shm_params) {
+        if (params->key == IPC_PRIVATE) {
+            return ipcget_new(ns, ids, ops, params) {
+                down_write(&ids->rwsem);
+                err = ops->getnew(ns, params);
+                up_write(&ids->rwsem);
+            }
+        } else {
+            return ipcget_public(ns, ids, ops, params) {
+                ipcp = ipc_findkey(ids, params->key);
+                if (ipcp == NULL) {
+                    if (!(flg & IPC_CREAT))
+                        err = -ENOENT;
+                    else
+                        err = ops->getnew(ns, params); /* newseg */
+                } else {
+                    if (flg & IPC_CREAT && flg & IPC_EXCL)
+                        err = -EEXIST;
+                    else {
+                        err = 0;
+                    if (ops->more_checks)
+                        err = ops->more_checks(ipcp, params);
+                    }
+                    if (!err) {
+				        err = ipc_check_perms(ns, ipcp, ops, params);
+                    }
+                }
+                return err;
+            }
+        }
     }
-  }
-  return err;
 }
 
-static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
-{
-  key_t key = params->key;
-  int shmflg = params->flg;
-  size_t size = params->u.size;
-  int error;
-  struct shmid_kernel *shp;
-  size_t numpages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
-  struct file *file;
-  char name[13];
-  vm_flags_t acctflag = 0;
+static int newseg(struct ipc_namespace *ns, struct ipc_params *params) {
+    key_t key = params->key;
+    int shmflg = params->flg;
+    size_t size = params->u.size;
+    int error;
+    struct shmid_kernel *shp;
+    size_t numpages = (size + PAGE_SIZE - 1) >> PAGE_SHIFT;
+    struct file *file;
+    char name[13];
+    vm_flags_t acctflag = 0;
 
-  shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
-  shp->shm_perm.key = key;
-  shp->shm_perm.mode = (shmflg & S_IRWXUGO);
-  shp->mlock_user = NULL;
-  shp->shm_perm.security = NULL;
-  shp->shm_cprid = task_tgid_vnr(current);
-  shp->shm_lprid = 0;
-  shp->shm_atim = shp->shm_dtim = 0;
-  shp->shm_ctim = get_seconds();
-  shp->shm_segsz = size;
-  shp->shm_nattch = 0;
-  shp->shm_creator = current;
+    shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
+    shp->shm_perm.key = key;
+    shp->shm_perm.mode = (shmflg & S_IRWXUGO);
+    shp->mlock_user = NULL;
+    shp->shm_perm.security = NULL;
+    shp->shm_cprid = task_tgid_vnr(current);
+    shp->shm_lprid = 0;
+    shp->shm_atim = shp->shm_dtim = 0;
+    shp->shm_ctim = get_seconds();
+    shp->shm_segsz = size;
+    shp->shm_nattch = 0;
+    shp->shm_creator = current;
 
-  file = shmem_kernel_file_setup(name, size, acctflag);
-  file_inode(file)->i_ino = shp->shm_perm.id;
-  shp->shm_file = file;
+    file = shmem_kernel_file_setup(name, size, acctflag) {
+        return __shmem_file_setup(shm_mnt/*mnt*/, name, size, flags, S_PRIVATE) {
+            struct inode *inode;
+            struct file *res;
 
-  error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
-  list_add(&shp->shm_clist, &current->sysvshm.shm_clist);
+            inode = shmem_get_inode(mnt->mnt_sb, NULL, S_IFREG | S_IRWXUGO, 0, flags) {
+                return __shmem_get_inode(idmap, sb, dir, mode, dev, flags);
+                    --->
+            }
 
-  ns->shm_tot += numpages;
-  error = shp->shm_perm.id;
+            inode->i_flags |= i_flags;
+            inode->i_size = size;
+            clear_nlink(inode);  /* It is unlinked */
 
-  return error;
+            res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size)) {
+                unsigned long npages, xpages, loop;
+                struct page *pages;
+                unsigned order;
+                void *data;
+                int ret;
+                gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+
+                /* make various checks */
+                order = get_order(newsize);
+
+                ret = inode_newsize_ok(inode, newsize);
+
+                i_size_write(inode, newsize);
+
+                pages = alloc_pages(gfp, order);
+
+                xpages = 1UL << order;
+                npages = (newsize + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+                split_page(pages, order);
+
+                for (loop = npages; loop < xpages; loop++) {
+                    __free_page(pages + loop);
+                }
+
+                /* clear the memory we allocated */
+                newsize = PAGE_SIZE * npages;
+                /* get virtual address of a page from `page_address_htable` */
+                data = page_address(pages);
+                memset(data, 0, newsize);
+
+                /* attach all the pages to the inode's address space */
+                for (loop = 0; loop < npages; loop++) {
+                    struct page *page = pages + loop;
+
+                    ret = add_to_page_cache_lru(page, inode->i_mapping, loop, gfp) {
+                        return filemap_add_folio(mapping, page_folio(page), index, gfp) {
+                            void *shadow = NULL;
+                            int ret;
+
+                            __folio_set_locked(folio);
+                            ret = __filemap_add_folio(mapping, folio, index, gfp, &shadow) {
+
+                            }
+                            if (unlikely(ret))
+                                __folio_clear_locked(folio);
+                            else {
+                                WARN_ON_ONCE(folio_test_active(folio));
+                                if (!(gfp & __GFP_WRITE) && shadow)
+                                    workingset_refault(folio, shadow);
+                                folio_add_lru(folio);
+                            }
+                            return ret;
+                        }
+                    }
+                    if (ret < 0)
+                        goto add_error;
+
+                    /* prevent the page from being discarded on memory pressure */
+                    SetPageDirty(page);
+                    SetPageUptodate(page);
+
+                    unlock_page(page);
+                    put_page(page);
+                }
+
+                return 0;
+
+            add_error:
+                while (loop < npages)
+                    __free_page(pages + loop++);
+                return ret;
+            }
+
+            res = alloc_file_pseudo(inode, mnt, name, O_RDWR, &shmem_file_operations) {
+                static const struct dentry_operations anon_ops = {
+                    .d_dname = simple_dname
+                };
+                struct qstr this = QSTR_INIT(name, strlen(name));
+                struct path path;
+                struct file *file;
+
+                path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this);
+
+                if (!mnt->mnt_sb->s_d_op)
+                    d_set_d_op(path.dentry, &anon_ops);
+
+                path.mnt = mntget(mnt);
+                d_instantiate(path.dentry, inode);
+
+                file = alloc_file(&path, flags, fop) {
+                    struct file *file = alloc_empty_file(flags, current_cred());
+                    file->f_path = *path;
+                    file->f_inode = path->dentry->d_inode;
+                    file->f_mapping = path->dentry->d_inode->i_mapping;
+                    file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
+
+                    if ((file->f_mode & FMODE_READ) && likely(fop->read || fop->read_iter))
+                        file->f_mode |= FMODE_CAN_READ;
+                    if ((file->f_mode & FMODE_WRITE) && likely(fop->write || fop->write_iter))
+                        file->f_mode |= FMODE_CAN_WRITE;
+
+                    file->f_mode |= FMODE_OPENED;
+                    file->f_op = fop;
+                    if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
+                        i_readcount_inc(path->dentry->d_inode);
+
+                    return file;
+                }
+
+                return file;
+            }
+
+            return res;
+        }
+    }
+
+    file_inode(file)->i_ino = shp->shm_perm.id;
+    shp->shm_file = file;
+
+    error = ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+    list_add(&shp->shm_clist, &current->sysvshm.shm_clist);
+
+    ns->shm_tot += numpages;
+    error = shp->shm_perm.id;
+
+    return error;
 }
 
 int __init shmem_init(void)
 {
-  int error;
-  error = shmem_init_inodecache(); /* shmem means shmem fs */
-  error = register_filesystem(&shmem_fs_type);
-  shm_mnt = kern_mount(&shmem_fs_type);
-  return 0;
+    int error;
+    error = shmem_init_inodecache(); /* shmem means shmem fs */
+    error = register_filesystem(&shmem_fs_type);
+    shm_mnt = kern_mount(&shmem_fs_type);
+    return 0;
 }
 
 static struct file_system_type shmem_fs_type = {
-  .owner    = THIS_MODULE,
-  .name    = "tmpfs",
-  .mount    = shmem_mount,
-  .kill_sb  = kill_litter_super,
-  .fs_flags  = FS_USERNS_MOUNT,
-};
-
-struct file *shmem_kernel_file_setup(const char *name, loff_t size, unsigned long flags)
-{
-  return __shmem_file_setup(shm_mnt, name, size, flags, S_PRIVATE);
-}
-
-static struct file *__shmem_file_setup(
-  struct vfsmount *mnt, const char *name, loff_t size,
-  unsigned long flags, unsigned int i_flags)
-{
-  struct inode *inode;
-  struct file *res;
-
-  inode = shmem_get_inode(mnt->mnt_sb, NULL, S_IFREG | S_IRWXUGO, 0,
-        flags);
-  if (unlikely(!inode)) {
-    shmem_unacct_size(flags, size);
-    return ERR_PTR(-ENOSPC);
-  }
-
-  inode->i_flags |= i_flags;
-  inode->i_size = size;
-  clear_nlink(inode);  /* It is unlinked */
-
-  res = ERR_PTR(ramfs_nommu_expand_for_mapping(inode, size));
-  if (!IS_ERR(res))
-    res = alloc_file_pseudo(inode, mnt, name, O_RDWR,
-        &shmem_file_operations);
-  if (IS_ERR(res))
-    iput(inode);
-
-  return res;
-}
-
-struct file *alloc_file_pseudo(
-  struct inode *inode, struct vfsmount *mnt,
-  const char *name, int flags,
-  const struct file_operations *fops)
-{
-  static const struct dentry_operations anon_ops = {
-    .d_dname = simple_dname
-  };
-  struct qstr this = QSTR_INIT(name, strlen(name));
-  struct path path;
-  struct file *file;
-
-  path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this);
-
-  if (!mnt->mnt_sb->s_d_op)
-    d_set_d_op(path.dentry, &anon_ops);
-
-  path.mnt = mntget(mnt);
-  d_instantiate(path.dentry, inode);
-
-  file = alloc_file(&path, flags, fops);
-  if (IS_ERR(file)) {
-    ihold(inode);
-    path_put(&path);
-  }
-  return file;
-}
-
-static struct file *alloc_file(
-  const struct path *path, int flags,
-  const struct file_operations *fop)
-{
-  struct file *file = alloc_empty_file(flags, current_cred());
-  file->f_path = *path;
-  file->f_inode = path->dentry->d_inode;
-  file->f_mapping = path->dentry->d_inode->i_mapping;
-  file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
-
-  if ((file->f_mode & FMODE_READ)
-    && likely(fop->read || fop->read_iter))
-    file->f_mode |= FMODE_CAN_READ;
-  if ((file->f_mode & FMODE_WRITE)
-    && likely(fop->write || fop->write_iter))
-    file->f_mode |= FMODE_CAN_WRITE;
-
-  file->f_mode |= FMODE_OPENED;
-  file->f_op = fop;
-  if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
-    i_readcount_inc(path->dentry->d_inode);
-
-  return file;
-}
-
-
-int ramfs_nommu_expand_for_mapping(struct inode *inode, size_t newsize)
-{
-  unsigned long npages, xpages, loop;
-  struct page *pages;
-  unsigned order;
-  void *data;
-  int ret;
-  gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
-
-  /* make various checks */
-  order = get_order(newsize);
-  if (unlikely(order >= MAX_ORDER))
-    return -EFBIG;
-
-  ret = inode_newsize_ok(inode, newsize);
-  if (ret)
-    return ret;
-
-  i_size_write(inode, newsize);
-
-  pages = alloc_pages(gfp, order);
-  if (!pages)
-    return -ENOMEM;
-
-  xpages = 1UL << order;
-  npages = (newsize + PAGE_SIZE - 1) >> PAGE_SHIFT;
-
-  split_page(pages, order);
-
-  for (loop = npages; loop < xpages; loop++)
-    __free_page(pages + loop);
-
-  /* clear the memory we allocated */
-  newsize = PAGE_SIZE * npages;
-  /* get virtual address of a page from `page_address_htable` */
-  data = page_address(pages);
-  memset(data, 0, newsize);
-
-  /* attach all the pages to the inode's address space */
-  for (loop = 0; loop < npages; loop++) {
-    struct page *page = pages + loop;
-
-    ret = add_to_page_cache_lru(page, inode->i_mapping, loop,
-          gfp);
-    if (ret < 0)
-      goto add_error;
-
-    /* prevent the page from being discarded on memory pressure */
-    SetPageDirty(page);
-    SetPageUptodate(page);
-
-    unlock_page(page);
-    put_page(page);
-  }
-
-  return 0;
-
-add_error:
-  while (loop < npages)
-    __free_page(pages + loop++);
-  return ret;
-}
-
-static const struct file_operations shmem_file_operations = {
-  .mmap               = shmem_mmap,
-  .get_unmapped_area  = shmem_get_unmapped_area,
-  .llseek             = shmem_file_llseek,
-  .read_iter          = shmem_file_read_iter,
-  .write_iter         = generic_file_write_iter,
-  .fsync              = noop_fsync,
-  .splice_read        = generic_file_splice_read,
-  .splice_write       = iter_file_splice_write,
-  .fallocate          = shmem_fallocate,
+    .owner      = THIS_MODULE,
+    .name       = "tmpfs",
+    .mount      = shmem_mount,
+    .kill_sb    = kill_litter_super,
+    .fs_flags   = FS_USERNS_MOUNT,
 };
 ```
 
-## shmat
+### shmat
 ```c
-SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg)
-{
-  unsigned long ret;
-  long err;
-  err = do_shmat(shmid, shmaddr, shmflg, &ret, SHMLBA);
-  force_successful_syscall_return();
-  return (long)ret;
-}
+SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg) {
+    err = do_shmat(shmid, shmaddr, shmflg, &ret, SHMLBA) {
+        struct shmid_kernel *shp = shm_obtain_object_check(ns, shmid);
+        path = shp->shm_file->f_path;
+        path_get(&path);
+        shp->shm_nattch++;
+        size = i_size_read(d_inode(path.dentry));
 
-long do_shmat(int shmid, char __user *shmaddr, int shmflg,
-        ulong *raddr, unsigned long shmlba)
-{
-  struct shmid_kernel *shp;
-  unsigned long addr = (unsigned long)shmaddr;
-  unsigned long size;
-  struct file *file;
-  int    err;
-  unsigned long flags = MAP_SHARED;
-  unsigned long prot;
-  int acc_mode;
-  struct ipc_namespace *ns;
-  struct shm_file_data *sfd;
-  struct path path;
-  fmode_t f_mode;
-  unsigned long populate = 0;
+        base = get_file(shp->shm_file);
+	    shp->shm_nattch++;
+        struct shm_file_data * sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
+        sfd->id = shp->shm_perm.id;
+        sfd->ns = get_ipc_ns(ns);
+        sfd->file = base;
+        sfd->vm_ops = NULL;
 
-  prot = PROT_READ | PROT_WRITE;
-  acc_mode = S_IRUGO | S_IWUGO;
-  f_mode = FMODE_READ | FMODE_WRITE;
+        file = alloc_file(&path, f_mode,
+            is_file_hugepages(shp->shm_file)
+            ? &shm_file_operations_huge
+            : &shm_file_operations
+        );
+        file->private_data = sfd;
+        file->f_mapping = shp->shm_file->f_mapping;
 
-  ns = current->nsproxy->ipc_ns;
-  shp = shm_obtain_object_check(ns, shmid);
+        addr = do_mmap(file, addr, size, prot, flags, 0, &populate, NULL) {
+            vma = vm_area_alloc(mm);
+            vma->vm_file = get_file(file);
+		    error = call_mmap(file, vma) {
+                return file->f_op->mmap(file, vma) {
+                    shm_mmap();
+                        --->
+                }
+            }
+        }
+        *raddr = addr;
+        err = 0;
 
-  path = shp->shm_file->f_path;
-  path_get(&path);
-  shp->shm_nattch++;
-  size = i_size_read(d_inode(path.dentry));
+        if (populate) {
+		    mm_populate(addr, populate);
+                --->
+        }
 
-  sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
-  sfd->id = shp->shm_perm.id;
-  sfd->ns = get_ipc_ns(ns);
-  sfd->file = shp->shm_file;
-  sfd->vm_ops = NULL;
+        if (shm_may_destroy(shp))
+            shm_destroy(ns, shp);
+        else
+            shm_unlock(shp);
 
-  file = alloc_file(&path, f_mode,
-        is_file_hugepages(shp->shm_file)
-          ? &shm_file_operations_huge
-          : &shm_file_operations);
-  file->private_data = sfd;
-  file->f_mapping = shp->shm_file->f_mapping;
+        return err;
+    }
 
-  addr = do_mmap_pgoff(file, addr, size, prot, flags, 0, &populate, NULL);
-  *raddr = addr;
-  err = 0;
-
-  return err;
+    return (long)ret;
 }
 
 static const struct file_operations shm_file_operations = {
-  .mmap       = shm_mmap,
-  .fsync      = shm_fsync,
-  .release    = shm_release,
-  .get_unmapped_area  = shm_get_unmapped_area,
-  .llseek     = noop_llseek,
-  .fallocate  = shm_fallocate,
+    .mmap       = shm_mmap,
+    .fsync      = shm_fsync,
+    .release    = shm_release,
+    .get_unmapped_area  = shm_get_unmapped_area,
+    .llseek     = noop_llseek,
+    .fallocate  = shm_fallocate,
 };
 
-/* do_mmap_pgoff -> do_mmap -> mmap_region -> call_map -> file.f_op.mmap */
+/* do_mmap -> mmap_region -> call_map -> file.f_op.mmap */
 static int shm_mmap(struct file *file, struct vm_area_struct *vma)
 {
-  struct shm_file_data *sfd = shm_file_data(file);
-  int ret;
-  ret = __shm_open(vma);
-  ret = call_mmap(sfd->file, vma); /* shmem_mmap */
+    struct shm_file_data *sfd = shm_file_data(file);
+    ret = __shm_open(vma) {
+        struct shmid_kernel *shp;
 
-  sfd->vm_ops = vma->vm_ops; /* shmem_vm_ops */
-  vma->vm_ops = &shm_vm_ops;
+        shp = shm_lock(sfd->ns, sfd->id);
 
-  return 0;
+        if (IS_ERR(shp))
+            return PTR_ERR(shp);
+
+        if (shp->shm_file != sfd->file) {
+            shm_unlock(shp);
+            return -EINVAL;
+        }
+
+        shp->shm_atim = ktime_get_real_seconds();
+        ipc_update_pid(&shp->shm_lprid, task_tgid(current));
+        shp->shm_nattch++;
+        shm_unlock(shp);
+        return 0;
+    }
+
+    ret = call_mmap(sfd->file, vma) {/* shmem_mmap */
+        return file->f_op->mmap(file, vma) {
+            shmem_mmap() {
+                file_accessed(file);
+                if (inode->i_nlink)
+                    vma->vm_ops = &shmem_vm_ops;
+                else
+                    vma->vm_ops = &shmem_anon_vm_ops;
+            }
+        }
+    }
+
+    sfd->vm_ops = vma->vm_ops; /* shmem_vm_ops */
+    vma->vm_ops = &shm_vm_ops;
+
+    return 0;
 }
+```
 
-int call_mmap(struct file *file, struct vm_area_struct *vma)
-{
-  return file->f_op->mmap(file, vma);
-}
-
+### shm_ops
+```c
 struct shm_file_data {
-  int                     id;
-  struct ipc_namespace    *ns;
-  struct file              *file;
-  const struct vm_operations_struct *vm_ops;
+    int                       id;
+    struct ipc_namespace      *ns;
+    struct file               *file;
+    const struct vm_operations_struct *vm_ops;
 };
 
 static const struct vm_operations_struct shm_vm_ops = {
-  .open   = shm_open,  /* callback for a new vm-area open */
-  .close  = shm_close,  /* callback for when the vm-area is released */
-  .fault  = shm_fault,
+    .open   = shm_open,  /* callback for a new vm-area open */
+    .close  = shm_close,  /* callback for when the vm-area is released */
+    .fault  = shm_fault,
 };
 
-static const struct file_operations shmem_file_operations = {
-  .mmap               = shmem_mmap,
-  .get_unmapped_area  = shmem_get_unmapped_area,
-  .llseek             = shmem_file_llseek,
-};
-
-static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
-{
-  file_accessed(file);
-  vma->vm_ops = &shmem_vm_ops;
-  return 0;
-}
-
-static const struct vm_operations_struct shmem_vm_ops = {
-  .fault      = shmem_fault,
-  .map_pages  = filemap_map_pages,
+static const struct file_operations shm_file_operations = {
+    .mmap                   = shm_mmap,
+    .fsync                  = shm_fsync,
+    .release                = shm_release,
+    .get_unmapped_area      = shm_get_unmapped_area,
+    .llseek                 = noop_llseek,
+    .fallocate              = shm_fallocate,
 };
 ```
 
-## shm_fault
+
+### shm_open
+
 ```c
-static int shm_fault(struct vm_fault *vmf)
-{
-  struct file *file = vmf->vma->vm_file;
-  struct shm_file_data *sfd = shm_file_data(file);
-  return sfd->vm_ops->fault(vmf);
+void shm_open(struct vm_area_struct *vma) {
+	struct file *file = vma->vm_file;
+    struct shm_file_data *sfd = shm_file_data(file);
+    int err;
+
+    if (sfd->vm_ops->open) {
+        sfd->vm_ops->open(vma) {
+            shmem_file_open(struct inode *inode, struct file *file) {
+                file->f_mode |= FMODE_CAN_ODIRECT;
+                return generic_file_open(inode, file) {
+                    if (!(filp->f_flags & O_LARGEFILE) && i_size_read(inode) > MAX_NON_LFS)
+                        return -EOVERFLOW;
+                    return 0;
+                }
+            }
+        }
+    }
+
+    err = __shm_open(sfd) {
+        struct shmid_kernel *shp;
+
+        shp = shm_lock(sfd->ns, sfd->id);
+
+        if (shp->shm_file != sfd->file) {
+            shm_unlock(shp);
+            return -EINVAL;
+        }
+
+        shp->shm_atim = ktime_get_real_seconds();
+        ipc_update_pid(&shp->shm_lprid, task_tgid(current));
+        shp->shm_nattch++;
+        shm_unlock(shp);
+    }
 }
+```
 
-static int shmem_fault(struct vm_fault *vmf)
-{
-  struct vm_area_struct *vma = vmf->vma;
-  struct inode *inode = file_inode(vma->vm_file);
-  gfp_t gfp = mapping_gfp_mask(inode->i_mapping);
+### shm_close
+```c
+void shm_close(struct vm_area_struct *vma) {
+	struct file *file = vma->vm_file;
+	struct shm_file_data *sfd = shm_file_data(file);
 
-  error = shmem_getpage_gfp(inode, vmf->pgoff, &vmf->page, sgp,
-          gfp, vma, vmf, &ret);
+	/* Always call underlying close if present */
+	if (sfd->vm_ops->close) {
+		sfd->vm_ops->close(vma) {
+
+        }
+    }
+
+	__shm_close(sfd) {
+        struct shmid_kernel *shp;
+        struct ipc_namespace *ns = sfd->ns;
+
+        down_write(&shm_ids(ns).rwsem);
+        shp = shm_lock(ns, sfd->id);
+
+        ipc_update_pid(&shp->shm_lprid, task_tgid(current));
+        shp->shm_dtim = ktime_get_real_seconds();
+        shp->shm_nattch--;
+
+        if (shm_may_destroy(shp)) {
+            shm_destroy(ns, shp);
+        } else {
+            shm_unlock(shp);
+        }
+
+    done:
+        up_write(&shm_ids(ns).rwsem);
+    }
 }
+```
 
-static int shmem_getpage_gfp(struct inode *inode, pgoff_t index,
-  struct page **pagep, enum sgp_type sgp, gfp_t gfp,
-  struct vm_area_struct *vma, struct vm_fault *vmf, int *fault_type)
-{
-  page = shmem_alloc_and_acct_page(gfp, info, sbinfo,
-        index, false);
+### shm_fault
+```c
+static int shm_fault(struct vm_fault *vmf) {
+    struct file *file = vmf->vma->vm_file;
+    struct shm_file_data *sfd = shm_file_data(file);
+    return sfd->vm_ops->fault(vmf); /* shmem_fault */
 }
 ```
 
 ```c
 shmget();
-  ipcget();
-    ipcget_private();
-    ipcget_public();
-      newseg();
-        shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
-        file = shmem_kernel_file_setup(name, size, acctflag);
-          __shmem_file_setup();
-            shmem_get_inode();
-            alloc_file_pseudo();
-        shp->shm_file = file;
-        ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+    ipcget();
+        ipcget_private();
+        ipcget_public();
+            newseg();
+                shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
+                file = shmem_kernel_file_setup(name, size, acctflag);
+                    __shmem_file_setup();
+                        shmem_get_inode();
+                        alloc_file_pseudo();
+                shp->shm_file = file;
+                ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
 
 shmat();
-  do_shmat();
-    shm_obtain_object_check();
-    sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
-    file = alloc_file();
-    do_mmap_pgoff();
-      shm_mmap();
-        shmem_mmap();
+    do_shmat();
+        shm_obtain_object_check();
+        sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
+        file = alloc_file();
+        do_mmap_pgoff();
+            shm_mmap();
+                shmem_mmap();
 
 shm_fault();
-  shmem_fault();
-    shmem_getpage_gfp();
-      shmem_alloc_and_acct_page();
+    shmem_fault();
+        shmem_getpage_gfp();
+            shmem_alloc_and_acct_page();
 ```
 
-<img src='../Images/Kernel/ipc-shm.png' style='max-height:850px'/>
-
-## semget
+## sem
+### semget
 ```c
 SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
 {
@@ -1361,7 +1823,7 @@ struct sem {
 };
 ```
 
-## semctl
+### semctl
 ```c
 SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
 {
@@ -1457,7 +1919,7 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 }
 ```
 
-## semop
+### semop
 ```c
 SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
     unsigned, nsops)
