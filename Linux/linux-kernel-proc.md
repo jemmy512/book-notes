@@ -890,8 +890,16 @@ struct task_struct {
 };
 
 struct thread_info {
-    unsigned long   flags;  /* TIF_SIGPENDING, TIF_NEED_RESCHED */
-    u32             status; /* thread synchronous flags */
+    unsigned long       flags;  /* TIF_SIGPENDING, TIF_NEED_RESCHED */
+    u64                 ttbr0;
+    union {
+        u64             preempt_count;  /* 0 => preemptible, <0 => bug */
+        struct {
+            u32         count;
+            u32         need_resched;
+        } preempt;
+    };s
+    u32                 cpu;
 };
 
 
@@ -4132,230 +4140,230 @@ SYSCALL_DEFINE3(execve,
 
 int bprm_mm_init(struct linux_binprm *bprm)
 {
-  int err;
-  struct mm_struct *mm = NULL;
+    int err;
+    struct mm_struct *mm = NULL;
 
-  bprm->mm = mm = mm_alloc();
-  err = -ENOMEM;
-  if (!mm)
-    goto err;
+    bprm->mm = mm = mm_alloc();
+    err = -ENOMEM;
+    if (!mm)
+        goto err;
 
-  /* Save current stack limit for all calculations made during exec. */
-  task_lock(current->group_leader);
-  bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
-  task_unlock(current->group_leader);
+    /* Save current stack limit for all calculations made during exec. */
+    task_lock(current->group_leader);
+    bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+    task_unlock(current->group_leader);
 
-  err = __bprm_mm_init(bprm);
-  if (err)
-    goto err;
+    err = __bprm_mm_init(bprm);
+    if (err)
+        goto err;
 
-  return 0;
+    return 0;
 
 err:
-  if (mm) {
-    bprm->mm = NULL;
-    mmdrop(mm);
-  }
+    if (mm) {
+        bprm->mm = NULL;
+        mmdrop(mm);
+    }
 
-  return err;
+    return err;
 }
 
  int __bprm_mm_init(struct linux_binprm *bprm)
 {
-  int err;
-  struct vm_area_struct *vma = NULL;
-  struct mm_struct *mm = bprm->mm;
+    int err;
+    struct vm_area_struct *vma = NULL;
+    struct mm_struct *mm = bprm->mm;
 
-  bprm->vma = vma = vm_area_alloc(mm);
-  if (!vma)
-    return -ENOMEM;
-  vma_set_anonymous(vma);
+    bprm->vma = vma = vm_area_alloc(mm);
+    if (!vma)
+        return -ENOMEM;
+    vma_set_anonymous(vma);
 
-  if (mmap_write_lock_killable(mm)) {
-    err = -EINTR;
-    goto err_free;
-  }
+    if (mmap_write_lock_killable(mm)) {
+        err = -EINTR;
+        goto err_free;
+    }
 
-  /* Place the stack at the largest stack address the architecture
-   * supports. Later, we'll move this to an appropriate place. We don't
-   * use STACK_TOP because that can depend on attributes which aren't
-   * configured yet. */
-  BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
-  vma->vm_end = STACK_TOP_MAX;
-  vma->vm_start = vma->vm_end - PAGE_SIZE;
-  vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
-  vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+    /* Place the stack at the largest stack address the architecture
+    * supports. Later, we'll move this to an appropriate place. We don't
+    * use STACK_TOP because that can depend on attributes which aren't
+    * configured yet. */
+    BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
+    vma->vm_end = STACK_TOP_MAX;
+    vma->vm_start = vma->vm_end - PAGE_SIZE;
+    vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+    vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
-  err = insert_vm_struct(mm, vma);
-  if (err)
-    goto err;
+    err = insert_vm_struct(mm, vma);
+    if (err)
+        goto err;
 
-  mm->stack_vm = mm->total_vm = 1;
-  mmap_write_unlock(mm);
-  bprm->p = vma->vm_end - sizeof(void *);
-  return 0;
+    mm->stack_vm = mm->total_vm = 1;
+    mmap_write_unlock(mm);
+    bprm->p = vma->vm_end - sizeof(void *);
+    return 0;
 err:
-  mmap_write_unlock(mm);
+    mmap_write_unlock(mm);
 err_free:
-  bprm->vma = NULL;
-  vm_area_free(vma);
-  return err;
+    bprm->vma = NULL;
+    vm_area_free(vma);
+    return err;
 }
 
 int bprm_execve(struct linux_binprm *bprm,
            int fd, struct filename *filename, int flags)
 {
-  struct file *file;
-  int retval;
+    struct file *file;
+    int retval;
 
-  retval = prepare_bprm_creds(bprm);
-  if (retval)
+    retval = prepare_bprm_creds(bprm);
+    if (retval)
+        return retval;
+
+    check_unsafe_exec(bprm);
+    current->in_execve = 1;
+
+    file = do_open_execat(fd, filename, flags);
+    retval = PTR_ERR(file);
+    if (IS_ERR(file))
+        goto out_unmark;
+
+    sched_exec();
+
+    bprm->file = file;
+    /* Record that a name derived from an O_CLOEXEC fd will be
+    * inaccessible after exec.  This allows the code in exec to
+    * choose to fail when the executable is not mmaped into the
+    * interpreter and an open file descriptor is not passed to
+    * the interpreter.  This makes for a better user experience
+    * than having the interpreter start and then immediately fail
+    * when it finds the executable is inaccessible. */
+    if (bprm->fdpath && get_close_on_exec(fd))
+        bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+
+    /* Set the unchanging part of bprm->cred */
+    retval = security_bprm_creds_for_exec(bprm);
+    if (retval)
+        goto out;
+
+    retval = exec_binprm(bprm);
+    if (retval < 0)
+        goto out;
+
+    /* execve succeeded */
+    current->fs->in_exec = 0;
+    current->in_execve = 0;
+    rseq_execve(current);
+    acct_update_integrals(current);
+    task_numa_free(current, false);
     return retval;
 
-  check_unsafe_exec(bprm);
-  current->in_execve = 1;
-
-  file = do_open_execat(fd, filename, flags);
-  retval = PTR_ERR(file);
-  if (IS_ERR(file))
-    goto out_unmark;
-
-  sched_exec();
-
-  bprm->file = file;
-  /* Record that a name derived from an O_CLOEXEC fd will be
-   * inaccessible after exec.  This allows the code in exec to
-   * choose to fail when the executable is not mmaped into the
-   * interpreter and an open file descriptor is not passed to
-   * the interpreter.  This makes for a better user experience
-   * than having the interpreter start and then immediately fail
-   * when it finds the executable is inaccessible. */
-  if (bprm->fdpath && get_close_on_exec(fd))
-    bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
-
-  /* Set the unchanging part of bprm->cred */
-  retval = security_bprm_creds_for_exec(bprm);
-  if (retval)
-    goto out;
-
-  retval = exec_binprm(bprm);
-  if (retval < 0)
-    goto out;
-
-  /* execve succeeded */
-  current->fs->in_exec = 0;
-  current->in_execve = 0;
-  rseq_execve(current);
-  acct_update_integrals(current);
-  task_numa_free(current, false);
-  return retval;
-
 out:
-  /* If past the point of no return ensure the code never
-   * returns to the userspace process.  Use an existing fatal
-   * signal if present otherwise terminate the process with
-   * SIGSEGV. */
-  if (bprm->point_of_no_return && !fatal_signal_pending(current))
-    force_fatal_sig(SIGSEGV);
+    /* If past the point of no return ensure the code never
+    * returns to the userspace process.  Use an existing fatal
+    * signal if present otherwise terminate the process with
+    * SIGSEGV. */
+    if (bprm->point_of_no_return && !fatal_signal_pending(current))
+        force_fatal_sig(SIGSEGV);
 
 out_unmark:
-  current->fs->in_exec = 0;
-  current->in_execve = 0;
+    current->fs->in_exec = 0;
+    current->in_execve = 0;
 
-  return retval;
+    return retval;
 }
 ```
 
 ```c
 int exec_binprm(struct linux_binprm *bprm)
 {
-  pid_t old_pid, old_vpid;
-  int ret, depth;
+    pid_t old_pid, old_vpid;
+    int ret, depth;
 
-  /* Need to fetch pid before load_binary changes it */
-  old_pid = current->pid;
-  rcu_read_lock();
-  old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
-  rcu_read_unlock();
+    /* Need to fetch pid before load_binary changes it */
+    old_pid = current->pid;
+    rcu_read_lock();
+    old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
+    rcu_read_unlock();
 
-  /* This allows 4 levels of binfmt rewrites before failing hard. */
-  for (depth = 0;; depth++) {
-    struct file *exec;
-    if (depth > 5)
-      return -ELOOP;
+    /* This allows 4 levels of binfmt rewrites before failing hard. */
+    for (depth = 0;; depth++) {
+        struct file *exec;
+        if (depth > 5)
+        return -ELOOP;
 
-    ret = search_binary_handler(bprm);
-    if (ret < 0)
-      return ret;
-    if (!bprm->interpreter)
-      break;
+        ret = search_binary_handler(bprm);
+        if (ret < 0)
+        return ret;
+        if (!bprm->interpreter)
+        break;
 
-    exec = bprm->file;
-    bprm->file = bprm->interpreter;
-    bprm->interpreter = NULL;
+        exec = bprm->file;
+        bprm->file = bprm->interpreter;
+        bprm->interpreter = NULL;
 
-    allow_write_access(exec);
-    if (unlikely(bprm->have_execfd)) {
-      if (bprm->executable) {
+        allow_write_access(exec);
+        if (unlikely(bprm->have_execfd)) {
+        if (bprm->executable) {
+            fput(exec);
+            return -ENOEXEC;
+        }
+        bprm->executable = exec;
+        } else
         fput(exec);
-        return -ENOEXEC;
-      }
-      bprm->executable = exec;
-    } else
-      fput(exec);
-  }
+    }
 
-  audit_bprm(bprm);
-  trace_sched_process_exec(current, old_pid, bprm);
-  ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
-  proc_exec_connector(current);
-  return 0;
+    audit_bprm(bprm);
+    trace_sched_process_exec(current, old_pid, bprm);
+    ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
+    proc_exec_connector(current);
+    return 0;
 }
 
 int search_binary_handler(struct linux_binprm *bprm)
 {
-  bool need_retry = IS_ENABLED(CONFIG_MODULES);
-  struct linux_binfmt *fmt;
-  int retval;
+    bool need_retry = IS_ENABLED(CONFIG_MODULES);
+    struct linux_binfmt *fmt;
+    int retval;
 
-  retval = prepare_binprm(bprm);
-  if (retval < 0)
+    retval = prepare_binprm(bprm);
+    if (retval < 0)
     return retval;
 
-  retval = security_bprm_check(bprm);
-  if (retval)
+    retval = security_bprm_check(bprm);
+    if (retval)
     return retval;
 
-  retval = -ENOENT;
- retry:
-  read_lock(&binfmt_lock);
-  list_for_each_entry(fmt, &formats, lh) {
-    if (!try_module_get(fmt->module))
-      continue;
+    retval = -ENOENT;
+retry:
+    read_lock(&binfmt_lock);
+    list_for_each_entry(fmt, &formats, lh) {
+        if (!try_module_get(fmt->module))
+        continue;
+        read_unlock(&binfmt_lock);
+
+        retval = fmt->load_binary(bprm);
+
+        read_lock(&binfmt_lock);
+        put_binfmt(fmt);
+        if (bprm->point_of_no_return || (retval != -ENOEXEC)) {
+        read_unlock(&binfmt_lock);
+        return retval;
+        }
+    }
     read_unlock(&binfmt_lock);
 
-    retval = fmt->load_binary(bprm);
-
-    read_lock(&binfmt_lock);
-    put_binfmt(fmt);
-    if (bprm->point_of_no_return || (retval != -ENOEXEC)) {
-      read_unlock(&binfmt_lock);
-      return retval;
+    if (need_retry) {
+        if (printable(bprm->buf[0]) && printable(bprm->buf[1]) &&
+            printable(bprm->buf[2]) && printable(bprm->buf[3]))
+        return retval;
+        if (request_module("binfmt-%04x", *(ushort *)(bprm->buf + 2)) < 0)
+        return retval;
+        need_retry = false;
+        goto retry;
     }
-  }
-  read_unlock(&binfmt_lock);
 
-  if (need_retry) {
-    if (printable(bprm->buf[0]) && printable(bprm->buf[1]) &&
-        printable(bprm->buf[2]) && printable(bprm->buf[3]))
-      return retval;
-    if (request_module("binfmt-%04x", *(ushort *)(bprm->buf + 2)) < 0)
-      return retval;
-    need_retry = false;
-    goto retry;
-  }
-
-  return retval;
+    return retval;
 }
 
 /* Fill the binprm structure from the inode.
@@ -4364,31 +4372,31 @@ int search_binary_handler(struct linux_binprm *bprm)
  * This may be called multiple times for binary chains (scripts for example). */
 int prepare_binprm(struct linux_binprm *bprm)
 {
-  loff_t pos = 0;
+    loff_t pos = 0;
 
-  memset(bprm->buf, 0, BINPRM_BUF_SIZE);
-  return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+    memset(bprm->buf, 0, BINPRM_BUF_SIZE);
+    return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
 }
 
 ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
 {
-  mm_segment_t old_fs;
-  ssize_t result;
+    mm_segment_t old_fs;
+    ssize_t result;
 
-  old_fs = get_fs();
-  set_fs(get_ds());
-  /* The cast to a user pointer is valid due to the set_fs() */
-  result = vfs_read(file, (void __user *)buf, count, pos);
-  set_fs(old_fs);
-  return result;
+    old_fs = get_fs();
+    set_fs(get_ds());
+    /* The cast to a user pointer is valid due to the set_fs() */
+    result = vfs_read(file, (void __user *)buf, count, pos);
+    set_fs(old_fs);
+    return result;
 }
 
 static struct linux_binfmt elf_format = {
-  .module       = THIS_MODULE,
-  .load_binary  = load_elf_binary,
-  .load_shlib   = load_elf_library,
-  .core_dump    = elf_core_dump,
-  .min_coredump = ELF_EXEC_PAGESIZE,
+    .module       = THIS_MODULE,
+    .load_binary  = load_elf_binary,
+    .load_shlib   = load_elf_library,
+    .core_dump    = elf_core_dump,
+    .min_coredump = ELF_EXEC_PAGESIZE,
 };
 
 int load_elf_binary(struct linux_binprm *bprm)
