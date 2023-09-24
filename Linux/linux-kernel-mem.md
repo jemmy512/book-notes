@@ -101,6 +101,7 @@
     * [深入理解 Linux 伙伴系统的设计与实现](https://mp.weixin.qq.com/s/e28oT6vE7cOD5M8pukn_jw)
     * [深度解读 Linux 内核级通用内存池 - kmalloc](https://mp.weixin.qq.com/s/atHXeXxx0L63w99RW7bMHg)
     * [深度解读 Linux 虚拟物理内存映射](https://mp.weixin.qq.com/s/FzTBx32ABR0Vtpq50pwNSA)
+    * [深度解读 Linux mmap](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw)
 
 ---
 
@@ -473,7 +474,6 @@ bootmem_init() {
                     }
 
                     mminit_validate_memmodel_limits(&start, &end);
-
                     for (pfn = start; pfn < end; pfn += PAGES_PER_SECTION) {
                         unsigned long section = pfn_to_section_nr(pfn);
                         struct mem_section *ms;
@@ -486,24 +486,26 @@ bootmem_init() {
                                 return 0;
 
                             section = sparse_index_alloc(nid);
-                            if (!section)
-                                return -ENOMEM;
-
                             mem_section[root] = section;
-
-                            return 0;
                         }
                         set_section_nid(section, nid);
 
                         ms = __nr_to_section(section);
                         if (!ms->section_mem_map) {
-                            ms->section_mem_map = sparse_encode_early_nid(nid) |
-                                            SECTION_IS_ONLINE;
-                            __section_mark_present(ms, section);
+                            ms->section_mem_map = sparse_encode_early_nid(nid) | SECTION_IS_ONLINE {
+                                    (nid << SECTION_NID_SHIFT) | SECTION_IS_ONLINE;
+                                }
+                            __section_mark_present(ms, section) {
+                                ms->section_mem_map |= SECTION_MARKED_PRESENT
+                            }
                         }
                     }
                 }
         }
+
+        pnum_begin = first_present_section_nr();
+    	nid_begin = sparse_early_nid(__nr_to_section(pnum_begin));
+
 
         for_each_present_section_nr(pnum_begin + 1, pnum_end) {
             int nid = sparse_early_nid(__nr_to_section(pnum_end));
@@ -527,7 +529,10 @@ bootmem_init() {
 
             usage = sparse_early_usemaps_alloc_pgdat_section(NODE_DATA(nid), mem_section_usage_size() * map_count);
 
-            sparse_buffer_init(map_count * section_map_size(), nid);
+            sparse_buffer_init(map_count * section_map_size(), nid) {
+                sparsemap_buf = memmap_alloc(size, section_map_size(), addr, nid, true);
+	            sparsemap_buf_end = sparsemap_buf + size;
+            }
 
             for_each_present_section_nr(pnum_begin, pnum) {
                 unsigned long pfn = section_nr_to_pfn(pnum);
@@ -535,6 +540,7 @@ bootmem_init() {
                 if (pnum >= pnum_end)
                     break;
 
+                /* 1. sparse-vmemmap.c */
                 map = __populate_section_memmap(pfn, PAGES_PER_SECTION, nid, NULL, NULL) {
                     unsigned long start = (unsigned long) pfn_to_page(pfn);
                     unsigned long end = start + nr_pages * sizeof(struct page);
@@ -581,7 +587,22 @@ bootmem_init() {
 
                                             p4d = vmemmap_p4d_populate(pgd, addr, node);
 
-                                            pud = vmemmap_pud_populate(p4d, addr, node);
+                                            pud = vmemmap_pud_populate(p4d, addr, node) {
+                                                pud_t *pud = pud_offset(p4d, addr);
+                                                if (pud_none(*pud)) {
+                                                    void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
+                                                    if (!p)
+                                                        return NULL;
+                                                    pmd_init(p);
+                                                    pud_populate(&init_mm/*mm*/, pud/*pudp*/, p/*pmdp*/) {
+                                                        pudval_t pudval = PUD_TYPE_TABLE;
+
+                                                        pudval |= (mm == &init_mm) ? PUD_TABLE_UXN : PUD_TABLE_PXN;
+                                                        __pud_populate(pudp, __pa(pmdp), pudval);
+                                                    }
+                                                    return pud;
+                                                }
+                                            }
 
                                             pmd = vmemmap_pmd_populate(pud, addr, node);
 
@@ -600,8 +621,21 @@ bootmem_init() {
                     }
                 }
 
+                /* sparse.c */
+                map = __populate_section_memmap(pfn, PAGES_PER_SECTION, nid, NULL, NULL) {
+                    unsigned long size = section_map_size();
+                    struct page *map = sparse_buffer_alloc(size);
+                    phys_addr_t addr = __pa(MAX_DMA_ADDRESS);
+
+                    map = memmap_alloc(size, size, addr, nid, false);
+                }
+
                 check_usemap_section_nr(nid, usage);
-                sparse_init_one_section(__nr_to_section(pnum), pnum, map, usage, SECTION_IS_EARLY);
+                sparse_init_one_section(__nr_to_section(pnum), pnum, map, usage, SECTION_IS_EARLY) {
+                    ms->section_mem_map &= ~SECTION_MAP_MASK;
+                    ms->section_mem_map |= sparse_encode_mem_map(mem_map, pnum) | SECTION_HAS_MEM_MAP | flags;
+                    ms->usage = usage;
+                }
                 usage = (void *) usage + mem_section_usage_size();
             }
             sparse_buffer_fini();
@@ -877,7 +911,7 @@ memmap_alloc()
 ```
 
 # segment
-```C++
+```c
 #define GDT_ENTRY_INIT(flags, base, limit) { { { \
     .a = ((limit) & 0xffff) | (((base) & 0xffff) << 16), \
     .b = (((base) & 0xff0000) >> 16) | (((flags) & 0xf0ff) << 8) | \
@@ -915,7 +949,7 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 ![](../Images/Kernel/mem-kernel-page-table.png)
 
 # user virtual space
-```C++
+```c
 
 #ifdef CONFIG_X86_32
 /* User space process size: 3GB (default). */
@@ -970,7 +1004,7 @@ struct vm_area_struct {
 ![](../Images/Kernel/mem-vm.png)
 
 # kernel virtual space
-```C++
+```c
 /* PKMAP_BASE:
  * use alloc_pages() get struct page, user kmap() map the page to this area */
 
@@ -987,7 +1021,7 @@ struct vm_area_struct {
 
 # numa
 ## node
-```C++
+```c
 struct pglist_data *node_data[MAX_NUMNODES];
 
 typedef struct pglist_data {
@@ -1020,7 +1054,7 @@ ZONE_HIGHMEM | 896 MiB - End
 * [Chapter 2 Describing Physical Memory](https://www.kernel.org/doc/gorman/html/understand/understand005.html)
 
 ## zone
-```C++
+```c
 struct zone {
   struct pglist_data  *zone_pgdat;
   struct per_cpu_pageset *pageset; /* hot/cold page */
@@ -1073,7 +1107,7 @@ enum migratetype {
     * [Struct slab comes to 5.17 ](https://lwn.net/Articles/881039/)
     * [The proper time to split struct page](https://lwn.net/Articles/937839/)
 
-```C++
+```c
 struct page {
     /* Atomic flags + zone number, some possibly updated asynchronously */
     unsigned long flags; /* include/linux/page-flags.h */
@@ -1179,7 +1213,7 @@ struct page {
 ![](../Images/Kernel/mem-physic-numa-3.png)
 
 # buddy system
-```C++
+```c
 struct free_area  free_area[MAX_ORDER];
 #define MAX_ORDER 11
 ```
@@ -1497,7 +1531,7 @@ struct kmem_cache_node {
 ```
 
 ## kmem_cache_create
-```C++
+```c
 static struct kmem_cache *task_struct_cachep;
 
 task_struct_cachep = kmem_cache_create("task_struct",
@@ -1783,7 +1817,7 @@ slab_alloc()
                   alloc_pages()
 ```
 
-```C++
+```c
 static __always_inline void *slab_alloc(
   struct kmem_cache *s, gfp_t gfpflags, unsigned long addr)
 {
@@ -2353,7 +2387,7 @@ struct kmem_cache_cpu {
 ```
 
 # kswapd
-```C++
+```c
 //1. active page out when alloc
 get_page_from_freelist();
     node_reclaim();
@@ -2434,7 +2468,7 @@ static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
 ```
 
 # brk
-```C++
+```c
 /* mm/mmap.c */
 SYSCALL_DEFINE1(brk)
     if (brk <= mm->brk) {
@@ -2635,7 +2669,6 @@ __create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
                                 }
                                 phys += next - addr;
                             } while (pmdp++, addr = next, addr != end);
-                            phys += next - addr;
                         }
                         phys += next - addr;
                     } while (addr = next, addr != end);
@@ -2645,8 +2678,6 @@ __create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
             } while (pudp++, addr = next, addr != end);
             pud_clear_fixmap();
         }
-        phys += next - addr;
-
         phys += next - addr;
     } while (pgdp++, addr = next, addr != end);
 ```
@@ -2769,7 +2800,7 @@ __remove_pgd_mapping()
 
 # mmap
 
-```C++
+```c
 mmap() {
     sys_mmap_pgoff() {
         vm_mmap_pgoff() {
@@ -2951,7 +2982,7 @@ mm->get_unmapped_area();
 
 ![](../Images/Kernel/mem-mmap-vma-file-page.png)
 
-```C++
+```c
 struct mm_struct {
   pgd_t                 *pgd;
   struct vm_area_struct *mmap;  /* list of VMAs */
@@ -3292,7 +3323,7 @@ exc_page_fault();
 
 ```
 
-```C++
+```c
 struct file {
   struct file_operations* f_op;
   struct address_space*   f_mapping;
@@ -3317,43 +3348,6 @@ struct address_space {
   void*                 private_data;
 };
 
-```
-
-# pgd
-`cr3` register points to current process's `pgd`, which is set by `load_new_mm_cr3`.
-```C++
-/* alloc pgd in mm_struct when forking */
-static struct mm_struct *dup_mm(struct task_struct *tsk)
-{
-  struct mm_struct *mm, *oldmm = current->mm;
-  mm = allocate_mm();
-  memcpy(mm, oldmm, sizeof(*mm));
-  if (!mm_init(mm, tsk, mm->user_ns))
-    goto fail_nomem;
-  err = dup_mmap(mm, oldmm);
-  return mm;
-}
-/* mm_init-> */
-static inline int mm_alloc_pgd(struct mm_struct *mm)
-{
-  mm->pgd = pgd_alloc(mm);
-  return 0;
-}
-
-static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
-{
-  /* If the pgd points to a shared pagetable level (either the
-     ptes in non-PAE, or shared PMD in PAE), then just copy the
-     references from swapper_pg_dir.
-     swapper_pg_dir: kernel's pgd */
-  if (CONFIG_PGTABLE_LEVELS == 2
-    || (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD)
-    || CONFIG_PGTABLE_LEVELS >= 4) {
-    clone_pgd_range(pgd + KERNEL_PGD_BOUNDARY,
-        swapper_pg_dir + KERNEL_PGD_BOUNDARY,
-        KERNEL_PGD_PTRS);
-  }
-}
 ```
 
 # munmap
@@ -4007,24 +4001,27 @@ anon_vma_prepare()
     anon_vma = find_mergeable_anon_vma(vma);
     anon_vma = anon_vma_alloc()
     vma->anon_vma = anon_vma;
-    anon_vma_chain_link(vma, avc, anon_vma);
+    anon_vma_chain_link(vma, avc, anon_vma) {
         avc->vma = vma;
         avc->anon_vma = anon_vma;
         list_add(&avc->same_vma, &vma->anon_vma_chain);
         anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
+    }
 
-page_add_anon_rmap()
-    __page_set_anon_rmap()
+page_add_anon_rmap() {
+    __page_set_anon_rmap() {
         struct anon_vma *anon_vma = vma->anon_vma;
         anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
         WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
         folio->index = linear_page_index(vma, address);
+    }
+}
 ```
 
 ![](../Images/Kernel/mem-ramp-anon_vma_prepare.png)
 
 ```c
-anon_vma_fork()
+anon_vma_fork() {
     anon_vma_clone(vma, pvma) {
         list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
             struct anon_vma *anon_vma;
@@ -4051,11 +4048,12 @@ anon_vma_fork()
     vma->anon_vma = anon_vma;
     anon_vma_chain_link(vma, avc, anon_vma);
     anon_vma->parent->num_children++;
+}
 ```
 
 ![](../Images/Kernel/mem-rmap-try_to_unmap.png)
 ```c
-try_to_unmap()
+try_to_unmap() {
     struct rmap_walk_control rwc = {
         .rmap_one = try_to_unmap_one,
         .arg = (void *)flags,
@@ -4063,7 +4061,7 @@ try_to_unmap()
         .anon_lock = folio_lock_anon_vma_read,
     };
 
-    rmap_walk_locked(folio, &rwc);
+    rmap_walk_locked(folio, &rwc) {
         if (folio_test_anon(folio)) {
             rmap_walk_anon(folio, rwc, true) {
                 pgoff_start = folio_pgoff(folio);
@@ -4105,6 +4103,8 @@ try_to_unmap()
                 }
             }
         }
+    }
+}
 ```
 
 # remove_memory
@@ -4271,7 +4271,7 @@ arch_remove_memory(start, size, altmap)
 ```
 
 # kernel mapping
-```C++
+```c
 /* arch/x86/include/asm/pgtable_64.h */
 extern pud_t level3_kernel_pgt[512];
 extern pud_t level3_ident_pgt[512];
@@ -4341,7 +4341,7 @@ L3_START_KERNEL = pud_index(__START_KERNEL_map)
 ```
 ![](../Images/Kernel/mem-kernel-page-table.png)
 
-```C++
+```c
 /* kernel mm_struct */
 struct mm_struct init_mm = {
   .mm_rb      = RB_ROOT,
@@ -4415,8 +4415,7 @@ unsigned long kernel_physical_mapping_init(
 ```c
 /* kmalloc is the normal method of allocating memory
  * for objects smaller than page size in the kernel. */
-static void *kmalloc(size_t size, gfp_t flags)
-{
+static void *kmalloc(size_t size, gfp_t flags) {
   if (__builtin_constant_p(size)) {
     if (size > KMALLOC_MAX_CACHE_SIZE)
       return kmalloc_large(size, flags);
@@ -4434,55 +4433,59 @@ static void *kmalloc(size_t size, gfp_t flags)
 #endif
   }
 
-  return __kmalloc(size, flags);
-}
+    return __kmalloc(size, flags) {
+        struct kmem_cache *s;
+        void *ret;
 
-/* slub.c */
-void *__kmalloc(size_t size, gfp_t flags)
-{
-  struct kmem_cache *s;
-  void *ret;
+        if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
+            return kmalloc_large(size, flags) {
+                unsigned int order = get_order(size);
+                return kmalloc_order_trace(size, flags, order) {
+                    kmalloc_order(size, flags, order) {
+                        void *ret;
+                        struct page *page;
 
-  if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
-    return kmalloc_large(size, flags);
+                        flags |= __GFP_COMP;
+                        page = alloc_pages(flags, order);
+                        ret = page ? page_address(page) : NULL;
+                        kmemleak_alloc(ret, size, 1, flags);
+                        kasan_kmalloc_large(ret, size, flags);
+                        return ret;
+                    }
+                }
+            }
 
-  s = kmalloc_slab(size, flags);
-  if (unlikely(ZERO_OR_NULL_PTR(s)))
-    return s;
+        s = kmalloc_slab(size, flags) {
+            unsigned int index;
 
-  ret = slab_alloc(s, flags, _RET_IP_);
+        if (size <= 192) {
+            if (!size)
+            return ZERO_SIZE_PTR;
 
-  return ret;
-}
-```
+            index = size_index[size_index_elem(size)] {
+                return (bytes - 1) / 8;
+            }
+        } else {
+            if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
+            WARN_ON(1);
+            return NULL;
+            }
+            index = fls(size - 1);
+        }
 
-```c
-static __always_inline void *kmalloc_large(size_t size, gfp_t flags)
-{
-  unsigned int order = get_order(size);
-  return kmalloc_order_trace(size, flags, order);
-}
+        #ifdef CONFIG_ZONE_DMA
+        if (unlikely((flags & GFP_DMA)))
+            return kmalloc_dma_caches[index];
 
-static __always_inline void *
-kmalloc_order_trace(size_t size, gfp_t flags, unsigned int order)
-{
-  return kmalloc_order(size, flags, order);
-}
+        #endif
+        return kmalloc_caches[index];
+    }
+    if (unlikely(ZERO_OR_NULL_PTR(s)))
+        return s;
 
-/* To avoid unnecessary overhead, we pass through large allocation requests
- * directly to the page allocator. We use __GFP_COMP, because we will need to
- * know the allocation order to free the pages properly in kfree. */
-void *kmalloc_order(size_t size, gfp_t flags, unsigned int order)
-{
-  void *ret;
-  struct page *page;
+    ret = slab_alloc(s, flags, _RET_IP_);
 
-  flags |= __GFP_COMP;
-  page = alloc_pages(flags, order);
-  ret = page ? page_address(page) : NULL;
-  kmemleak_alloc(ret, size, 1, flags);
-  kasan_kmalloc_large(ret, size, flags);
-  return ret;
+    return ret;
 }
 ```
 
@@ -4493,103 +4496,67 @@ struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
 
 void kmem_cache_init(void)
 {
-  setup_kmalloc_cache_index_table();
-  create_kmalloc_caches(0);
-}
+    setup_kmalloc_cache_index_table();
+    create_kmalloc_caches(0) {
+        for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
+            if (!kmalloc_caches[i])
+            new_kmalloc_cache(i, flags);
 
-void create_kmalloc_caches(slab_flags_t flags)
-{
-  int i;
+            if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6) {
+                new_kmalloc_cache(1, flags);
+            }
+            if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7) {
+                new_kmalloc_cache(2, flags) {
+                    kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
+                        kmalloc_info[idx].size, flags, 0,
+                        kmalloc_info[idx].size
+                    ) {
 
-  for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
-    if (!kmalloc_caches[i])
-      new_kmalloc_cache(i, flags);
+                    }
+                }
+            }
+        }
 
-    if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6)
-      new_kmalloc_cache(1, flags);
-    if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7)
-      new_kmalloc_cache(2, flags);
-  }
+        /* Kmalloc array is now usable */
+        slab_state = UP;
 
-  /* Kmalloc array is now usable */
-  slab_state = UP;
+        for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+            struct kmem_cache *s = kmalloc_caches[i];
 
-#ifdef CONFIG_ZONE_DMA
-  for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
-    struct kmem_cache *s = kmalloc_caches[i];
+            if (s) {
+                unsigned int size = kmalloc_size(i);
+                kmalloc_dma_caches[i] = create_kmalloc_cache(n,
+                    size, SLAB_CACHE_DMA | flags, 0, 0) {
 
-    if (s) {
-      unsigned int size = kmalloc_size(i);
-      kmalloc_dma_caches[i] = create_kmalloc_cache(n,
-        size, SLAB_CACHE_DMA | flags, 0, 0);
+                    struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
+
+                    create_boot_cache(s, name, size, flags, useroffset, usersize);
+                    list_add(&s->list, &slab_caches);
+                    memcg_link_cache(s);
+                    s->refcount = 1;
+                    return s;
+                }
+            }
+        }
     }
-  }
-#endif
-}
-
-void new_kmalloc_cache(int idx, slab_flags_t flags)
-{
-  kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
-          kmalloc_info[idx].size, flags, 0,
-          kmalloc_info[idx].size);
 }
 
 const struct kmalloc_info_struct kmalloc_info[] __initconst = {
-  {NULL,                      0},    {"kmalloc-96",             96},
-  {"kmalloc-192",           192},    {"kmalloc-8",               8},
-  {"kmalloc-16",             16},    {"kmalloc-32",             32},
-  {"kmalloc-64",             64},    {"kmalloc-128",           128},
-  {"kmalloc-256",           256},    {"kmalloc-512",           512},
-  {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
-  {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
-  {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
-  {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
-  {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
-  {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
-  {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
-  {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
-  {"kmalloc-67108864", 67108864}
+    {NULL,                      0},    {"kmalloc-96",             96},
+    {"kmalloc-192",           192},    {"kmalloc-8",               8},
+    {"kmalloc-16",             16},    {"kmalloc-32",             32},
+    {"kmalloc-64",             64},    {"kmalloc-128",           128},
+    {"kmalloc-256",           256},    {"kmalloc-512",           512},
+    {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
+    {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
+    {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
+    {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
+    {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
+    {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
+    {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
+    {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
+    {"kmalloc-67108864", 67108864}
 };
-
-struct kmem_cache* create_kmalloc_cache(const char *name,
-    unsigned int size, slab_flags_t flags,
-    unsigned int useroffset, unsigned int usersize)
-{
-  struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
-
-  create_boot_cache(s, name, size, flags, useroffset, usersize);
-  list_add(&s->list, &slab_caches);
-  memcg_link_cache(s);
-  s->refcount = 1;
-  return s;
-}
-
-/* Find the kmem_cache structure that serves a given size of
- * allocation */
-struct kmem_cache *kmalloc_slab(size_t size, gfp_t flags)
-{
-  unsigned int index;
-
-  if (size <= 192) {
-    if (!size)
-      return ZERO_SIZE_PTR;
-
-    index = size_index[size_index_elem(size)];
-  } else {
-    if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
-      WARN_ON(1);
-      return NULL;
-    }
-    index = fls(size - 1);
-  }
-
-#ifdef CONFIG_ZONE_DMA
-  if (unlikely((flags & GFP_DMA)))
-    return kmalloc_dma_caches[index];
-
-#endif
-  return kmalloc_caches[index];
-}
 
 /* Conversion table for small slabs sizes / 8 to the index in the
  * kmalloc array. This is necessary for slabs < 192 since we have non power
@@ -4621,35 +4588,27 @@ u8 size_index[24] = {
   2,  /* 184 */
   2   /* 192 */
 };
-
-unsigned int size_index_elem(unsigned int bytes)
-{
-  return (bytes - 1) / 8;
-}
 ```
 
 # kmap_atomic
-```C++
-void *kmap_atomic(struct page *page)
-{
-  return kmap_atomic_prot(page, kmap_prot);
-}
+```c
+void *kmap_atomic(struct page *page) {
+    return kmap_atomic_prot(page, kmap_prot) {
+        /* 64 bit machine doesn't have high memory */
+        if (!PageHighMem(page))
+            return page_address(page);
+                --->
 
-#define __fix_to_virt(x)  (FIXADDR_TOP - ((x) << PAGE_SHIFT))
+        /* 32 bit machine */
+        type = kmap_atomic_idx_push();
+        idx = type + KM_TYPE_NR*smp_processor_id();
+        vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx) {
+            return (FIXADDR_TOP - ((x) << PAGE_SHIFT))
+        }
+        set_pte(kmap_pte-idx, mk_pte(page, prot));
 
-void *kmap_atomic_prot(struct page *page, pgprot_t prot)
-{
-  /* 64 bit machine doesn't have high memory */
-  if (!PageHighMem(page))
-    return page_address(page);
-
-  /* 32 bit machine */
-  type = kmap_atomic_idx_push();
-  idx = type + KM_TYPE_NR*smp_processor_id();
-  vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
-  set_pte(kmap_pte-idx, mk_pte(page, prot));
-
-  return (void *)vaddr;
+        return (void *)vaddr;
+    }
 }
 ```
 
@@ -4658,43 +4617,38 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 /* get the mapped virtual address of a page */
 void *page_address(const struct page *page)
 {
-  unsigned long flags;
-  void *ret;
-  struct page_address_slot *pas;
+    unsigned long flags;
+    void *ret;
+    struct page_address_slot *pas;
 
-  if (!PageHighMem(page))
-    return lowmem_page_address(page);
-
-  pas = page_slot(page);
-  ret = NULL;
-  spin_lock_irqsave(&pas->lock, flags);
-  if (!list_empty(&pas->lh)) {
-    struct page_address_map *pam;
-
-    list_for_each_entry(pam, &pas->lh, list) {
-      if (pam->page == page) {
-        ret = pam->virtual; /* set_page_address() */
-        goto done;
-      }
+    if (!PageHighMem(page)) {
+        return lowmem_page_address(page) {
+            return page_to_virt(page) {
+                __va(PFN_PHYS(page_to_pfn(x)));
+            }
+        }
     }
-  }
+
+    pas = page_slot(page);
+    ret = NULL;
+    spin_lock_irqsave(&pas->lock, flags);
+    if (!list_empty(&pas->lh)) {
+        struct page_address_map *pam;
+
+        list_for_each_entry(pam, &pas->lh, list) {
+        if (pam->page == page) {
+            ret = pam->virtual; /* set_page_address() */
+            goto done;
+        }
+    }
 done:
-  spin_unlock_irqrestore(&pas->lock, flags);
-  return ret;
+    spin_unlock_irqrestore(&pas->lock, flags);
+    return ret;
 }
-
-/* page_address -> */
-static  void *lowmem_page_address(const struct page *page)
-{
-  return page_to_virt(page);
-}
-
-#define page_to_virt(x)  __va(PFN_PHYS(page_to_pfn(x)
 ```
 
 # vmalloc
-
-```C++
+```c
 struct vm_struct {
     struct vm_struct  *next;
     void              *addr;
@@ -4760,7 +4714,44 @@ vmalloc(size);
                             vmap_pte_range() {
                                 pte = pte_alloc_kernel_track(pmd, addr, mask);
                                 set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot)) {
+                                    set_ptes(mm, addr, ptep, pte, 1) {
+                                        for (;;) {
+                                            __set_pte_at(mm, addr, ptep, pte) {
+                                                if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte)) {
+                                                    __sync_icache_dcache(pte) {
+                                                        struct folio *folio = page_folio(pte_page(pte));
+                                                        if (!test_bit(PG_dcache_clean, &folio->flags)) {
+                                                            sync_icache_aliases(
+                                                                (unsigned long)folio_address(folio),
+                                                                (unsigned long)folio_address(folio) + folio_size(folio)) {
 
+                                                                if (icache_is_aliasing()) {
+                                                                    dcache_clean_pou(start, end);
+                                                                    icache_inval_all_pou();
+                                                                } else {
+                                                                    caches_clean_inval_pou(start, end);
+                                                                }
+                                                            }
+                                                            set_bit(PG_dcache_clean, &folio->flags);
+                                                        }
+                                                    }
+                                                }
+
+                                                set_pte(ptep, pte) {
+                                                    WRITE_ONCE(*ptep, pte);
+                                                    if (pte_valid_not_user(pte)) {
+                                                        dsb(ishst);
+                                                        isb();
+                                                    }
+                                                }
+                                            }
+                                            if (--nr == 0)
+                                                break;
+                                            ptep++;
+                                            addr += PAGE_SIZE;
+                                            pte_val(pte) += PAGE_SIZE;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -4769,30 +4760,6 @@ vmalloc(size);
             }
         }
     }
-```
-
-# vmalloc_fault
-```C++
-static int vmalloc_fault(unsigned long address)
-{
-  unsigned long pgd_paddr;
-  pmd_t *pmd_k;
-  pte_t *pte_k;
-
-  if (!(address >= VMALLOC_START && address < VMALLOC_END))
-    return -1;
-
-  pgd_paddr = read_cr3_pa();
-  pmd_k = vmalloc_sync_one(__va(pgd_paddr), address);
-  if (!pmd_k)
-    return -1;
-
-  pte_k = pte_offset_kernel(pmd_k, address);
-  if (!pte_present(*pte_k))
-    return -1;
-
-  return 0
-}
 ```
 
 # page_reclaim
