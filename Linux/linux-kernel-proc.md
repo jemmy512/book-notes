@@ -192,6 +192,10 @@ primary_entry
             adr_l x8, vectors /* load VBAR_EL1 with virtual */
             msr vbar_el1, x8 /* vector table address */
 
+            ldr_l x4, kimage_vaddr // Save the offset between
+            sub   x4, x4, x0 // the kernel virtual and
+            str_l x4, kimage_voffset, x5 // physical mappings
+
             bl set_cpu_boot_mode_flag
 
             bl __pi_memset
@@ -220,6 +224,10 @@ void start_kernel(void)
 {
     /* #0 process, the only one doesn't created by fork or kernel_thread */
     set_task_stack_end_magic(&init_task);
+
+    local_irq_disable();
+
+    setup_arch(&command_line);
 
     /* set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32) */
     trap_init();
@@ -3787,7 +3795,12 @@ struct wait_queue_entry {
  * -> check_preempt_curr -> resched_curr */
 
 try_to_wake_up() {
-    cpu = select_task_rq(p, p->wake_cpu, wake_flags | WF_TTWU);
+    cpu = select_task_rq(p, p->wake_cpu, wake_flags | WF_TTWU) {
+        if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p))
+            cpu = p->sched_class->select_task_rq(p, cpu, wake_flags);
+        else
+            cpu = cpumask_any(p->cpus_ptr);
+    }
    ttwu_queue(p, cpu, wake_flags) {
         ttwu_do_activate(rq, p, wake_flags, &rf) {
             if (p->in_iowait) {
