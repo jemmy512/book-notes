@@ -2807,7 +2807,6 @@ mmap() {
             do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf) {
                 get_unmapped_area() {
                     get_area = current->mm->get_unmapped_area;
-                    if (file) {
                     if (file->f_op->get_unmapped_area) {
                         get_area = file->f_op->get_unmapped_area {
                             __thp_get_unmapped_area() {
@@ -2984,65 +2983,66 @@ mm->get_unmapped_area();
 
 ```c
 struct mm_struct {
-  pgd_t                 *pgd;
-  struct vm_area_struct *mmap;  /* list of VMAs */
+    pgd_t                   *pgd;
+    struct maple_tree       mm_mt;
+    struct rw_semaphore     mmap_lock;
 }
 
 struct vm_area_struct {
-  /* For areas with an address space and backing store,
-   * linkage into the address_space->i_mmap interval tree. */
-  struct {
-    struct rb_node rb;
-    unsigned long rb_subtree_last;
-  } shared;
+    /* For areas with an address space and backing store,
+    * linkage into the address_space->i_mmap interval tree. */
+    struct {
+        struct rb_node rb;
+        unsigned long rb_subtree_last;
+    } shared;
 
-  /* A file's MAP_PRIVATE vma can be in both i_mmap tree and anon_vma list
-   * An anonymous MAP_PRIVATE, stack or brk vma can only be in an anon_vma list.
-   * A MAP_SHARED vma can only be in the i_mmap tree. */
-  struct list_head anon_vma_chain;
-  struct anon_vma *anon_vma;
+    /* A file's MAP_PRIVATE vma can be in both i_mmap tree and anon_vma list
+    * An anonymous MAP_PRIVATE, stack or brk vma can only be in an anon_vma list.
+    * A MAP_SHARED vma can only be in the i_mmap tree. */
+    struct list_head anon_vma_chain;
+    struct anon_vma *anon_vma;
 
-  const struct vm_operations_struct *vm_ops;
+    const struct vm_operations_struct *vm_ops;
 
-  unsigned long vm_pgoff; /* Offset (within vm_file) in PAGE_SIZE units */
-  struct file * vm_file;  /* File we map to (can be NULL). */
-  void * vm_private_data; /* was vm_pte (shared mem) */
+    unsigned long vm_pgoff; /* Offset (within vm_file) in PAGE_SIZE units */
+    struct file * vm_file;  /* File we map to (can be NULL). */
+    void * vm_private_data; /* was vm_pte (shared mem) */
 };
 
 struct anon_vma_chain {
-  struct vm_area_struct *vma;
-  struct anon_vma *anon_vma;
-  struct list_head same_vma;  /* locked by mmap_sem & page_table_lock */
-  struct rb_node rb;          /* locked by anon_vma->rwsem */
-  unsigned long rb_subtree_last;
+    struct vm_area_struct   *vma;
+    struct anon_vma         *anon_vma;
+    struct list_head        same_vma; /* locked by mmap_sem & page_table_lock */
+    struct rb_node          rb; /* locked by anon_vma->rwsem */
+    unsigned long           rb_subtree_last;
 };
 
 struct anon_vma {
-  struct anon_vma       *root;  /* Root of this anon_vma tree */
-  struct rw_semaphore   rwsem;  /* W: modification, R: walking the list */
-  atomic_t              refcount;
-  unsigned              degree;
-  struct anon_vma       *parent;  /* Parent of this anon_vma */
-  struct rb_root_cached rb_root;
+    struct anon_vma       *root;  /* Root of this anon_vma tree */
+    struct rw_semaphore   rwsem;  /* W: modification, R: walking the list */
+    atomic_t              refcount;
+    unsigned              degree;
+    struct anon_vma       *parent;  /* Parent of this anon_vma */
+    struct rb_root_cached rb_root;
 };
 
 /* page cache in memory */
 struct address_space {
-  struct inode          *host;
-  struct xarray         i_pages; /* cached physical pages */
-  struct rw_semaphore   invalidate_lock;
-  gfp_t                 gfp_mask;
-  atomic_t              i_mmap_writable; /* Number of VM_SHARED mappings. */
-  struct rb_root_cached i_mmap; /* Tree of private and shared mappings. vm_area_struct */
-  struct rw_semaphore   i_mmap_rwsem;
-  unsigned long         nrpages;
-  pgoff_t               writeback_index; /* Writeback starts here */
-  const struct address_space_operations *a_ops;
-  unsigned long         flags;
-  errseq_t              wb_err;
-  spinlock_t            private_lock;
-  struct list_head      private_list;
-  void*                 private_data;
+    struct inode          *host;
+    struct xarray         i_pages; /* cached physical pages */
+    struct rw_semaphore   invalidate_lock;
+    gfp_t                 gfp_mask;
+    atomic_t              i_mmap_writable; /* Number of VM_SHARED mappings. */
+    struct rb_root_cached i_mmap; /* Tree of private and shared mappings. vm_area_struct */
+    struct rw_semaphore   i_mmap_rwsem;
+    unsigned long         nrpages;
+    pgoff_t               writeback_index; /* Writeback starts here */
+    const struct address_space_operations *a_ops;
+    unsigned long         flags;
+    errseq_t              wb_err;
+    spinlock_t            private_lock;
+    struct list_head      private_list;
+    void*                 private_data;
 };
 ```
 
@@ -3099,10 +3099,10 @@ static const struct fault_info fault_info[] = {
 el1h_64_sync_handler() {
     switch (esr) {
         el1_abort(regs, esr) {
-            do_mem_abort()
-                do_translation_fault()
-                    do_page_fault()
-                        __do_page_fault()
+            do_mem_abort() {
+                do_translation_fault() {
+                    do_page_fault() {
+                        __do_page_fault() {
                             fault = handle_mm_fault()
                                 --->
                             if (fault & VM_FAULT_OOM) {
@@ -3128,6 +3128,10 @@ el1h_64_sync_handler() {
                                     far, inf->name
                                 );
                             }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -3189,7 +3193,7 @@ handle_mm_fault(vma, address, flags, regs);
                         /* 2. file fault */
                         return do_fault(vmf) {
                             /* 2.1 read fault */
-                            do_read_fault() {
+                            do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
                                 __do_fault() {
                                     vma->vm_ops->fault() {
                                         ext4_filemap_fault() {
@@ -3221,7 +3225,7 @@ handle_mm_fault(vma, address, flags, regs);
                             }
 
                             /* 2.2 cow fault */
-                            do_cow_fault() {
+                            do_cow_fault() { /* if (!(vma->vm_flags & VM_SHARED)) */
                                 anon_vma_prepare(vma)
                                 vmf->cow_page = alloc_page_vma()
                                 __do_fault(vmf) {
@@ -3325,27 +3329,27 @@ exc_page_fault();
 
 ```c
 struct file {
-  struct file_operations* f_op;
-  struct address_space*   f_mapping;
+    struct file_operations* f_op;
+    struct address_space*   f_mapping;
 };
 
 /* page cache in memory */
 struct address_space {
-  struct inode          *host;
-  struct xarray         i_pages; /* cached physical pages */
-  struct rw_semaphore   invalidate_lock;
-  gfp_t                 gfp_mask;
-  atomic_t              i_mmap_writable; /* Number of VM_SHARED mappings. */
-  struct rb_root_cached i_mmap; /* Tree of private and shared mappings. vm_area_struct */
-  struct rw_semaphore   i_mmap_rwsem;
-  unsigned long         nrpages;
-  pgoff_t               writeback_index; /* Writeback starts here */
-  const struct address_space_operations *a_ops;
-  unsigned long         flags;
-  errseq_t              wb_err;
-  spinlock_t            private_lock;
-  struct list_head      private_list;
-  void*                 private_data;
+    struct inode          *host;
+    struct xarray         i_pages; /* cached physical pages */
+    struct rw_semaphore   invalidate_lock;
+    gfp_t                 gfp_mask;
+    atomic_t              i_mmap_writable; /* Number of VM_SHARED mappings. */
+    struct rb_root_cached i_mmap; /* Tree of private and shared mappings. vm_area_struct */
+    struct rw_semaphore   i_mmap_rwsem;
+    unsigned long         nrpages;
+    pgoff_t               writeback_index; /* Writeback starts here */
+    const struct address_space_operations *a_ops;
+    unsigned long         flags;
+    errseq_t              wb_err;
+    spinlock_t            private_lock;
+    struct list_head      private_list;
+    void*                 private_data;
 };
 
 ```
@@ -3398,21 +3402,17 @@ SYSCALL_DEFINE2(munmap) {
 
 ```c
 struct mmu_gather {
-    struct mm_struct    		*mm;
+    struct mm_struct        *mm;
 
-    struct mmu_table_batch    *batch;
+    struct mmu_table_batch  *batch;
 
     unsigned long        start;
     unsigned long        end;
 
     unsigned int        fullmm : 1;
-
     unsigned int        need_flush_all : 1;
-
     unsigned int        freed_tables : 1;
-
     unsigned int        delayed_rmap : 1;
-
     unsigned int        cleared_ptes : 1;
     unsigned int        cleared_pmds : 1;
     unsigned int        cleared_puds : 1;
@@ -3424,9 +3424,9 @@ struct mmu_gather {
 
     unsigned int        batch_count;
 
-    struct mmu_gather_batch *active;
-    struct mmu_gather_batch    local;
-    struct page        *__pages[MMU_GATHER_BUNDLE];
+    struct mmu_gather_batch     *active;
+    struct mmu_gather_batch     local;
+    struct page                 *__pages[MMU_GATHER_BUNDLE];
 
 #ifdef CONFIG_MMU_GATHER_PAGE_SIZE
     unsigned int page_size;
@@ -3449,8 +3449,7 @@ struct mmu_gather_batch {
 
 ## tlb_gather_mmu
 ```c
-tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm,
-                 bool fullmm) {
+tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm, bool fullmm) {
     tlb->mm = mm;
     tlb->fullmm = fullmm;
 
@@ -3501,18 +3500,21 @@ unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
                 pgd = pgd_offset(vma->vm_mm, addr);
                 do {
                     next = pgd_addr_end(addr, end);
-                    if (pgd_none_or_clear_bad(pgd))
+                    if (pgd_none_or_clear_bad(pgd)) {
                         continue;
+                    }
                     next = zap_p4d_range(tlb, vma, pgd, addr, next, details); {
                         p4d = p4d_offset(pgd, addr);
                         do {
                             next = p4d_addr_end(addr, end);
-                            if (p4d_none_or_clear_bad(p4d))
+                            if (p4d_none_or_clear_bad(p4d)) {
                                 continue;
+                            }
                             next = zap_pud_range(tlb, vma, p4d, addr, next, details) {
                                 do {
-                                    if (pud_none_or_clear_bad(pud))
+                                    if (pud_none_or_clear_bad(pud)) {
                                         continue;
+                                    }
                                     next = zap_pmd_range(tlb, vma, pud, addr, next, details); {
                                         zap_pte_range() {
                                             start_pte = pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
@@ -3569,8 +3571,6 @@ unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
                                                                     return false;
 
                                                                 batch = (void *)__get_free_page(GFP_NOWAIT | __GFP_NOWARN);
-                                                                if (!batch)
-                                                                    return false;
 
                                                                 tlb->batch_count++;
                                                                 batch->next = NULL;
@@ -3605,14 +3605,9 @@ unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
                                             }
                                             pte_unmap_unlock(start_pte, ptl);
 
-                                            /*
-                                            * If we forced a TLB flush (either due to running out of
-                                            * batch buffers or because we needed to flush dirty TLB
-                                            * entries before releasing the ptl), free the batched
-                                            * memory too. Come back again if we didn't do everything.
-                                            */
                                             if (force_flush)
                                                 tlb_flush_mmu(tlb);
+                                                    --->
 
                                             return addr;
                                         }
@@ -3960,13 +3955,13 @@ struct vm_area_struct {
 }
 
 struct anon_vma {
-    struct anon_vma *root;
-    struct rw_semaphore rwsem;
+    struct anon_vma         *root;
+    struct rw_semaphore     rwsem;
 
-    unsigned degree;
-    atomic_t refcount;
-    struct anon_vma *parent;
-    struct rb_root_cached rb_root;
+    unsigned                degree;
+    atomic_t                refcount;
+    struct anon_vma         *parent;
+    struct rb_root_cached   rb_root;
 };
 
 struct anon_vma_chain {
@@ -3974,7 +3969,7 @@ struct anon_vma_chain {
     struct anon_vma*        anon_vma;
     struct list_head        same_vma;
     struct rb_node          rb;
-    unsigned long rb_subtree_last;
+    unsigned long           rb_subtree_last;
 };
 
 struct page {
@@ -4013,7 +4008,15 @@ page_add_anon_rmap() {
         struct anon_vma *anon_vma = vma->anon_vma;
         anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
         WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
-        folio->index = linear_page_index(vma, address);
+        folio->index = linear_page_index(vma, address) {
+            pgoff_t pgoff;
+            if (unlikely(is_vm_hugetlb_page(vma))) {
+                return linear_hugepage_index(vma, address);
+            }
+            pgoff = (address - vma->vm_start) >> PAGE_SHIFT;
+            pgoff += vma->vm_pgoff;
+            return pgoff;
+        }
     }
 }
 ```
@@ -4053,7 +4056,7 @@ anon_vma_fork() {
 
 ![](../Images/Kernel/mem-rmap-try_to_unmap.png)
 ```c
-try_to_unmap() {
+try_to_unmap(struct folio *folio, enum ttu_flags flags) {
     struct rmap_walk_control rwc = {
         .rmap_one = try_to_unmap_one,
         .arg = (void *)flags,
