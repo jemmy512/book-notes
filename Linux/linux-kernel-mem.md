@@ -2619,60 +2619,78 @@ __create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
         alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc, flags) {
             if (pgd_none(pgd)) {
                 pud_phys = pgtable_alloc(PUD_SHIFT);
-                __p4d_populate(p4dp, pud_phys, p4dval);
+                __p4d_populate(p4dp, pud_phys, p4dval) {
+                    set_p4d(p4dp, __p4d(__phys_to_p4d_val(pudp) | prot));
+                }
                 p4d = READ_ONCE(*p4dp);
             }
             BUG_ON(p4d_bad(p4d));
 
             pudp = pud_set_fixmap_offset(p4dp, addr);
             do {
-                alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags) {
-                    if (pud_none(pud)) {
-                        pmd_phys = pgtable_alloc(PMD_SHIFT);
-                        __pud_populate(pudp, pmd_phys, pudval);
-                        pud = READ_ONCE(*pudp);
-                    }
-                    BUG_ON(pud_bad(pud));
-
-                    pmdp = pmd_set_fixmap_offset(pudp, addr);
-                    do {
-                        next = pmd_cont_addr_end(addr, end);
-                        init_pmd(pudp, addr, next, phys, __prot, pgtable_alloc, flags) {
-                            do {
-                                next = pmd_addr_end(addr, end);
-                                alloc_init_cont_pte() {
-                                    if (pmd_none(pmd)) {
-                                        pte_phys = pgtable_alloc(PAGE_SHIFT);
-                                        __pmd_populate(pmdp, pte_phys, pmdval);
-                                        pmd = READ_ONCE(*pmdp);
-                                    }
-                                    BUG_ON(pmd_bad(pmd));
-
-                                    do {
-                                        next = pte_cont_addr_end(addr, end);
-                                        init_pte(pmdp, addr, next, phys, __prot) {
-                                            ptep = pte_set_fixmap_offset(pmdp, addr);
-                                            do {
-                                                set_pte(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
-                                                    WRITE_ONCE(*ptep, pte);
-                                                    if (pte_valid_not_user(pte)) {
-                                                        dsb(ishst);
-                                                        isb();
-                                                    }
-                                                }
-                                                phys += PAGE_SIZE;
-                                            } while (ptep++, addr += PAGE_SIZE, addr != end);
-                                            pte_clear_fixmap();
-                                        }
-                                        phys += next - addr;
-                                    } while (addr = next, addr != end);
-                                }
-                                phys += next - addr;
-                            } while (pmdp++, addr = next, addr != end);
+                next = pud_addr_end(addr, end);
+                if (pud_sect_supported() && (flags & NO_BLOCK_MAPPINGS) == 0) {
+                    pud_set_huge(pudp, phys, prot);
+                } else {
+                    alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags) {
+                        if (pud_none(pud)) {
+                            pmd_phys = pgtable_alloc(PMD_SHIFT);
+                            __pud_populate(pudp, pmd_phys, pudval);
+                            pud = READ_ONCE(*pudp);
                         }
-                        phys += next - addr;
-                    } while (addr = next, addr != end);
-                    pmd_clear_fixmap();
+                        BUG_ON(pud_bad(pud));
+
+                        pmdp = pmd_set_fixmap_offset(pudp, addr);
+                        do {
+                            next = pmd_cont_addr_end(addr, end);
+                            init_pmd(pudp, addr, next, phys, __prot, pgtable_alloc, flags) {
+                                do {
+                                    next = pmd_addr_end(addr, end);
+                                    if ((flags & NO_BLOCK_MAPPINGS) == 0) {
+                                        pmd_set_huge(pmdp, phys, prot) {
+                                            prot = mk_pmd_sect_prot(prot) {
+                                                return __pgprot((pgprot_val(prot) & ~PMD_TABLE_BIT) | PMD_TYPE_SECT);
+                                            }
+                                            pmd_t new_pmd = pfn_pmd(__phys_to_pfn(phys), prot);
+
+                                            set_pmd(pmdp, new_pmd);
+                                            return 1;
+                                        }
+                                    } else {
+                                        alloc_init_cont_pte(pmdp, addr, next, phys, prot, pgtable_alloc, flags) {
+                                            if (pmd_none(pmd)) {
+                                                pte_phys = pgtable_alloc(PAGE_SHIFT);
+                                                __pmd_populate(pmdp, pte_phys, pmdval);
+                                                pmd = READ_ONCE(*pmdp);
+                                            }
+                                            BUG_ON(pmd_bad(pmd));
+
+                                            do {
+                                                next = pte_cont_addr_end(addr, end);
+                                                init_pte(pmdp, addr, next, phys, __prot) {
+                                                    ptep = pte_set_fixmap_offset(pmdp, addr);
+                                                    do {
+                                                        set_pte(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
+                                                            WRITE_ONCE(*ptep, pte);
+                                                            if (pte_valid_not_user(pte)) {
+                                                                dsb(ishst);
+                                                                isb();
+                                                            }
+                                                        }
+                                                        phys += PAGE_SIZE;
+                                                    } while (ptep++, addr += PAGE_SIZE, addr != end);
+                                                    pte_clear_fixmap();
+                                                }
+                                                phys += next - addr;
+                                            } while (addr = next, addr != end);
+                                        }
+                                    }
+                                    phys += next - addr;
+                                } while (pmdp++, addr = next, addr != end);
+                            }
+                            phys += next - addr;
+                        } while (addr = next, addr != end);
+                    }
                 }
                 phys += next - addr;
             } while (pudp++, addr = next, addr != end);
