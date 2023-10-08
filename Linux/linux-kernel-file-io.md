@@ -3484,7 +3484,7 @@ do_coredump() {
                 dump_user_range(cprm, meta->start, meta->dump_size);
             }
             elf_core_write_extra_data(cprm);
-            dump_emit(cprm, shdr4extnum, sizeof(*shdr4extnum)) {
+            dump_emit(cprm, shdr4extnum/*addr*/, sizeof(*shdr4extnum)/*nr*/) {
                 struct file *file = cprm->file;
                 loff_t pos = file->f_pos;
                 ssize_t n;
@@ -3496,6 +3496,7 @@ do_coredump() {
                     return 0;
                 n = __kernel_write(file, addr, nr, &pos) {
                     file->f_op->write_iter(&kiocb, from);
+                    fsnotify_modify(file);
                 }
                 if (n != nr)
                     return 0;
