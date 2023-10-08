@@ -1592,8 +1592,51 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
             rt_nr_running = rt_rq_of_se(back)->rt_nr_running;
 
             for (rt_se = back; rt_se; rt_se = rt_se->back) {
-                if (on_rt_rq(rt_se))
-                    __dequeue_rt_entity(rt_se, flags);
+                if (on_rt_rq(rt_se)) { /* rt_se->on_rq */
+                    __dequeue_rt_entity(rt_se, flags) {
+                        struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
+                        struct rt_prio_array *array = &rt_rq->active;
+
+                        if (move_entity(flags)) {
+                            __delist_rt_entity(rt_se, array) {
+                                list_del_init(&rt_se->run_list);
+
+                                if (list_empty(array->queue + rt_se_prio(rt_se))) {
+                                    __clear_bit(rt_se_prio(rt_se), array->bitmap);
+                                }
+
+                                rt_se->on_list = 0;
+                            }
+                        }
+                        rt_se->on_rq = 0;
+
+                        dec_rt_tasks(rt_se, rt_rq) {
+                            rt_rq->rt_nr_running -= rt_se_nr_running(rt_se);
+                            rt_rq->rr_nr_running -= rt_se_rr_nr_running(rt_se);
+
+                            dec_rt_prio(rt_rq, rt_se_prio(rt_se)) {
+                                int prev_prio = rt_rq->highest_prio.curr;
+
+                                if (rt_rq->rt_nr_running) {
+                                    if (prio == prev_prio) {
+                                        struct rt_prio_array *array = &rt_rq->active;
+                                        rt_rq->highest_prio.curr = sched_find_first_bit(array->bitmap);
+                                    }
+                                } else {
+                                    rt_rq->highest_prio.curr = MAX_RT_PRIO-1;
+                                }
+
+                                dec_rt_prio_smp(rt_rq, prio, prev_prio) {
+                                    if (rq->online && rt_rq->highest_prio.curr != prev_prio) {
+		                                cpupri_set(&rq->rd->cpupri, rq->cpu, rt_rq->highest_prio.curr);
+                                    }
+                                }
+                            }
+                            dec_rt_migration(rt_se, rt_rq);
+                            dec_rt_group(rt_se, rt_rq);
+                        }
+                    }
+                }
             }
 
             dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running);
@@ -1605,9 +1648,8 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                     list_add(&rt_se->run_list, queue);
                 else
                     list_add_tail(&rt_se->run_list, queue);
-                __set_bit(rt_se_prio(rt_se), array->bitmap) {
+                __set_bit(rt_se_prio(rt_se), array->bitmap);
 
-                }
                 rt_se->on_list = 1;
                 rt_se->on_rq = 1;
 
@@ -1630,7 +1672,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                 return;
                         #endif
                             if (rq->online && prio < prev_prio) {
-                                cpupri_set(&rq->rd->cpupri, rq->cpu, prio) {
+                                cpupri_set(&rq->rd->cpupri/*cp*/, rq->cpu, prio) {
                                     int *currpri = &cp->cpu_to_pri[cpu];
                                     int oldpri = *currpri;
 
@@ -1669,7 +1711,6 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
             plist_node_init(&p->pushable_tasks, p->prio);
             plist_add(&p->pushable_tasks, &rq->rt.pushable_tasks);
 
-            /* Update the highest prio pushable task */
             if (p->prio < rq->rt.highest_prio.next)
                 rq->rt.highest_prio.next = p->prio;
         }
@@ -1680,23 +1721,40 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
 
 ### dequeue_task_rt
 ```c
-dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
-    struct rq *rq = rq_of_rt_se(rt_se);
+static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
+	struct sched_rt_entity *rt_se = &p->rt;
 
-    update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+	update_curr_rt(rq);
+	dequeue_rt_entity(rt_se, flags) {
+        struct rq *rq = rq_of_rt_se(rt_se);
 
-    dequeue_rt_stack(rt_se, flags)
-        --->
+        update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
 
-    for_each_sched_rt_entity(rt_se) {
-        struct rt_rq *rt_rq = group_rt_rq(rt_se);
+        dequeue_rt_stack(rt_se, flags)
+            --->
 
-        if (rt_rq && rt_rq->rt_nr_running)
-            __enqueue_rt_entity(rt_se, flags);
+        for_each_sched_rt_entity(rt_se) {
+            struct rt_rq *rt_rq = group_rt_rq(rt_se);
+
+            if (rt_rq && rt_rq->rt_nr_running)
+                __enqueue_rt_entity(rt_se, flags);
+        }
+
+        enqueue_top_rt_rq(&rq->rt);
+            --->
     }
 
-    enqueue_top_rt_rq(&rq->rt);
-        --->
+	dequeue_pushable_task(rq, p) {
+        plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
+
+        if (has_pushable_tasks(rq)) {
+            p = plist_first_entry(&rq->rt.pushable_tasks, struct task_struct, pushable_tasks);
+            rq->rt.highest_prio.next = p->prio;
+        } else {
+            rq->rt.highest_prio.next = MAX_RT_PRIO-1;
+        }
+    }
+}
 ```
 
 ### put_prev_task_rt
@@ -1713,9 +1771,7 @@ put_prev_task_rt(struct rq *rq, struct task_struct *p)
     update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
 
     if (on_rt_rq(&p->rt) && p->nr_cpus_allowed > 1) {
-        enqueue_pushable_task(rq, p) {
-
-        }
+        enqueue_pushable_task(rq, p);
     }
 ```
 
@@ -1744,11 +1800,8 @@ pick_next_task_rt(struct rq *rq)
                     int idx;
 
                     idx = sched_find_first_bit(array->bitmap);
-                    BUG_ON(idx >= MAX_RT_PRIO);
-
                     queue = array->queue + idx;
-                    if (SCHED_WARN_ON(list_empty(queue)))
-                        return NULL;
+
                     next = list_entry(queue->next, struct sched_rt_entity, run_list);
 
                     return next;
@@ -1774,7 +1827,7 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
     if (on_rt_rq(&p->rt)) {
         update_stats_wait_end_rt(rt_rq, rt_se) {
             if (rt_entity_is_task(rt_se))
-            p = rt_task_of(rt_se);
+                p = rt_task_of(rt_se);
 
             stats = __schedstats_from_rt_se(rt_se);
             if (!stats)
@@ -1802,16 +1855,8 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
         }
     }
 
-    dequeue_pushable_task(rq, p) {
-        plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
-
-        if (has_pushable_tasks(rq)) {
-            p = plist_first_entry(&rq->rt.pushable_tasks, struct task_struct, pushable_tasks);
-            rq->rt.highest_prio.next = p->prio;
-        } else {
-            rq->rt.highest_prio.next = MAX_RT_PRIO-1;
-        }
-    }
+    dequeue_pushable_task(rq, p)
+        --->
 
     if (!first)
         return;
@@ -1837,9 +1882,9 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
 ### push_rt_tasks
 ```c
 push_rt_tasks()
-    push_rt_task(rq, false) {
+    push_rt_task(rq, false/*pull*/) {
         if (!rq->rt.overloaded)
-        return 0;
+            return 0;
 
         next_task = pick_next_pushable_task(rq);
         if (!next_task)
@@ -1997,8 +2042,7 @@ void pull_rt_task(struct rq *this_rq) {
 
             plist_for_each_entry(p, head, pushable_tasks) {
                 ret = pick_rt_task(rq, p, cpu) {
-                    return (!task_on_cpu(rq, p)
-                        && cpumask_test_cpu(cpu, &p->cpus_mask));
+                    return (!task_on_cpu(rq, p) && cpumask_test_cpu(cpu, &p->cpus_mask));
                 }
                 if (ret)
                     return p;
@@ -2148,8 +2192,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                     int best_cpu;
 
                     /* 1.3.1 sd find this_cpu */
-                    if (this_cpu != -1 &&
-                        cpumask_test_cpu(this_cpu, sched_domain_span(sd))) {
+                    if (this_cpu != -1 && cpumask_test_cpu(this_cpu, sched_domain_span(sd))) {
                         rcu_read_unlock();
                         return this_cpu;
                     }
@@ -2177,7 +2220,10 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
         }
 
         /* 2. pick tsk cpu: lowest target cpu is incapable */
-        if (!test && target != -1 && !rt_task_fits_capacity(p, target))
+        rt_task_fits_capacity(p, target) {
+
+        }
+        if (!test && target != -1 && !ret)
             goto out_unlock;
 
         /* 3. pick target cpu: p prio is higher than the prio of task from target cpu */
@@ -2185,6 +2231,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
             cpu = target;
     }
 
+out_unlock:
     return cpu;
 ```
 
@@ -2217,75 +2264,36 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 }
 ```
 
+### yield_task_rt
+```c
+requeue_task_rt(rq, rq->curr, 0) {
+    struct sched_rt_entity *rt_se = &p->rt;
+    struct rt_rq *rt_rq;
+
+    for_each_sched_rt_entity(rt_se) {
+        rt_rq = rt_rq_of_se(rt_se);
+        requeue_rt_entity(rt_rq, rt_se, head) {
+            if (on_rt_rq(rt_se)) {
+                struct rt_prio_array *array = &rt_rq->active;
+                struct list_head *queue = array->queue + rt_se_prio(rt_se);
+
+                if (head)
+                    list_move(&rt_se->run_list, queue);
+                else
+                    list_move_tail(&rt_se->run_list, queue);
+            }
+        }
+    }
+}
+```
+
 ### balance_rt
 ```c
 balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
     if (!on_rt_rq(&p->rt) && need_pull_rt_task(rq, p)) {
         rq_unpin_lock(rq, rf);
-        pull_rt_task(rq) {
-            int this_cpu = this_rq->cpu, cpu;
-            bool resched = false;
-            struct task_struct *p, *push_task;
-            struct rq *src_rq;
-            int rt_overload_count = rt_overloaded(this_rq);
-
-            if (likely(!rt_overload_count))
-                return;
-
-            smp_rmb();
-
-            /* If we are the only overloaded CPU do nothing */
-            if (rt_overload_count == 1 &&
-                cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
-                return;
-
-        #ifdef HAVE_RT_PUSH_IPI
-            if (sched_feat(RT_PUSH_IPI)) {
-                tell_cpu_to_push(this_rq);
-                return;
-            }
-        #endif
-
-            for_each_cpu(cpu, this_rq->rd->rto_mask) {
-                if (this_cpu == cpu)
-                    continue;
-
-                src_rq = cpu_rq(cpu);
-                if (src_rq->rt.highest_prio.next >=
-                    this_rq->rt.highest_prio.curr)
-                    continue;
-                push_task = NULL;
-                double_lock_balance(this_rq, src_rq);
-
-                p = pick_highest_pushable_task(src_rq, this_cpu);
-
-                if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
-                    if (p->prio < src_rq->curr->prio)
-                        goto skip;
-
-                    if (is_migration_disabled(p)) {
-                        push_task = get_push_task(src_rq);
-                    } else {
-                        deactivate_task(src_rq, p, 0);
-                        set_task_cpu(p, this_cpu);
-                        activate_task(this_rq, p, 0);
-                        resched = true;
-                    }
-                }
-        skip:
-                double_unlock_balance(this_rq, src_rq);
-
-                if (push_task) {
-                    raw_spin_rq_unlock(this_rq);
-                    stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
-                                push_task, &src_rq->push_work);
-                    raw_spin_rq_lock(this_rq);
-                }
-            }
-
-            if (resched)
-                resched_curr(this_rq);
-        }
+        pull_rt_task(rq)
+            --->
         rq_repin_lock(rq, rf);
     }
 
@@ -3110,7 +3118,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 
 ```c
 static struct cftype cpu_legacy_files[] = {
-    {E
+    {
         .name = "shares",
         .read_u64 = cpu_shares_read_u64,
         .write_u64 = cpu_shares_write_u64,
@@ -3616,7 +3624,7 @@ long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
             return timeout;
         }
         if (signal_pending(current) || !timeo)
-        break;
+            break;
     }
     remove_wait_queue(sk_sleep(sk), &wait);
     sk->sk_write_pending -= writebias;
