@@ -24,7 +24,7 @@
                 * [return from interrupt](#return-from-interrupt)
         * [kernel preempt](#kernel-preempt)
             * [preempt_enable](#preempt_enble)
-            * [return from interrupt](#return-from-interrupt)
+            * [preempt_schedule_irq](#preempt_schedule_irq)
     * [SCHED_RT](#SCHED_RR)
         * [enqueue_task_rt](#enqueue_task_rt)
         * [dequeue_task_rt](#dequeue_task_rt)
@@ -804,6 +804,17 @@ export LD_LIBRARY_PATH=
 
 ![](../Images/Kernel/proc-sched-class.png)
 
+* [LWN](https://lwn.net/Kernel/Index/)
+    * [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
+    * [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
+        * [Scheduling domains](https://lwn.net/Articles/80911/)
+    * [LWN Index - CFS scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
+        * [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
+            * [[PATCH 00/15] sched: EEVDF and latency-nice and/or slice-attr](https://lore.kernel.org/all/20230531115839.089944915@infradead.org/#t)
+    * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
+    * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
+    * [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
+
 * [进程调度 - LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
     * [1. 基础](https://www.cnblogs.com/LoyenWang/p/12249106.html)
     * [2. CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
@@ -816,14 +827,15 @@ export LD_LIBRARY_PATH=
     * [进程切换分析(1) - 基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)
     * [进程切换分析(2) - TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)
     * [CFS调度器(3) - 组调度](http://www.wowotech.net/process_management/449.html)
-    * [CFS调度器(4) - PELT:link:](http://www.wowotech.net/process_management/450.html) [PELT算法浅析:link:](http://www.wowotech.net/process_management/pelt.html)
+    * [CFS调度器(4) - :one:PELT](http://www.wowotech.net/process_management/450.html)   [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
     * [CFS调度器(5) - 带宽控制](http://www.wowotech.net/process_management/451.html)
     * [CFS调度器(6) - 总结](http://www.wowotech.net/process_management/452.html)
-    * [CFS任务的负载均衡 - 概述:link:](http://www.wowotech.net/process_management/load_balance.html) [任务放置:link:](http://www.wowotech.net/process_management/task_placement.html) [load balance:link:](http://www.wowotech.net/process_management/load_balance_detail.html) [load_balance函数代码详解:link:](http://www.wowotech.net/process_management/load_balance_function.html)
-    * [CFS任务放置代码详解](http://www.wowotech.net/process_management/task_placement_detail.html)
+    * [CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two:任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three:load balance](http://www.wowotech.net/process_management/load_balance_detail.html)    [:four:load_balance函数代码详解](http://www.wowotech.net/process_management/load_balance_function.html)
+    * [CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)
     * [ARM Linux上的系统调用代码分析](http://www.wowotech.net/process_management/syscall-arm.html)
     * [Linux调度器 - 用户空间接口](http://www.wowotech.net/process_management/scheduler-API.html)
     * [schedutil governor情景分析](http://www.wowotech.net/process_management/schedutil_governor.html)
+    * [TLB flush](http://www.wowotech.net/memory_management/tlb-flush.html)
 
 * [内核工匠]()
     * [Linux Scheduler之rt选核流程](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488449&idx=1&sn=fd4fb753e0395fb538295aa4145a8494)
@@ -833,14 +845,9 @@ export LD_LIBRARY_PATH=
     * [调度器32 - RT选核](https://www.cnblogs.com/hellokitty2/p/15881574.html)
     * [调度器34 - RT负载均衡](https://www.cnblogs.com/hellokitty2/p/15974333.html)
 
-* [CHENG Jian Linux进程管理与调度]
+* [CHENG Jian Linux进程管理与调度](https://kernel.blog.csdn.net/article/details/51456569)
     * [WAKE_AFFINE](https://blog.csdn.net/gatieme/article/details/106315848)
-    * []()
-    * []()
-    * []()
-    * []()
-    * []()
-    * []()
+    * [用户抢占和内核抢占](https://blog.csdn.net/gatieme/article/details/51872618)
 
 * [汪辰]
     * [Linux 内核的抢占模型](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
@@ -858,15 +865,9 @@ export LD_LIBRARY_PATH=
         PREEMPT | Preemptible Kernel (Low-Latency Desktop) |`system call returns` + `interrupts` + `all kernel code(except critical section)`
         PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
 
-* [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
-* [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
-    * [Scheduling domains](https://lwn.net/Articles/80911/)
-    * [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
-* [LWN Index - Completely fair scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
-* [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
-* [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
-* [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
 * [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
+* [Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
+
 ```c
 /* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
@@ -1319,7 +1320,21 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
             }
         }
     } else {
-        __balance_callbacks(rq);
+        __balance_callbacks(rq) {
+            do_balance_callbacks(rq, __splice_balance_callbacks(rq, false)/*head*/) {
+                void (*func)(struct rq *rq);
+                struct balance_callback *next;
+
+                while (head) {
+                    func = (void (*)(struct rq *))head->func;
+                    next = head->next;
+                    head->next = NULL;
+                    head = next;
+
+                    func(rq);
+                }
+            }
+        }
         raw_spin_rq_unlock_irq(rq) {
             raw_spin_rq_unlock(rq);
             local_irq_enable();
@@ -1399,22 +1414,22 @@ SYSCALL_DEFINE3(sched_setscheduler) {
  * -> prepare_exit_to_usermode -> exit_to_usermode_loop */
 static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
 {
-  while (true) {
-    local_irq_enable();
+    while (true) {
+        local_irq_enable();
 
-    if (cached_flags & _TIF_NEED_RESCHED)
-      schedule();
+        if (cached_flags & _TIF_NEED_RESCHED)
+            schedule();
 
-    if (cached_flags & _TIF_SIGPENDING)
-      do_signal(regs);
-  }
+        if (cached_flags & _TIF_SIGPENDING)
+            do_signal(regs);
+    }
 }
 ```
 
 ##### return from interrupt
 
 ```c
-irqentry_exit();
+irqentry_exit() {
     if (user_mode(regs)) {
         irqentry_exit_to_user_mode(regs);
             exit_to_user_mode_prepare(ress);
@@ -1423,7 +1438,7 @@ irqentry_exit();
                         schedule();
                 arch_exit_to_user_mode_prepare(regs, ti_work);
     }
-
+}
 ```
 
 ### kernel preempt
@@ -1443,7 +1458,7 @@ do { \
 } while (0)
 
 #define preempt_count_dec_and_test() \
-  ({ preempt_count_sub(1); should_resched(0); })
+    ({ preempt_count_sub(1); should_resched(0); })
 
 static  bool should_resched(int preempt_offset)
 {
@@ -1456,17 +1471,15 @@ static  bool should_resched(int preempt_offset)
 /* __preempt_schedule -> */
 static void __sched notrace preempt_schedule_common(void)
 {
-  do {
-    preempt_disable_notrace();
-    preempt_latency_start(1);
-    __schedule(SM_PREEMPT);
-    preempt_latency_stop(1);
-    preempt_enable_no_resched_notrace();
-  } while (need_resched());
+    do {
+        preempt_disable_notrace();
+        __schedule(SM_PREEMPT);
+        preempt_enable_no_resched_notrace();
+    } while (need_resched());
 }
 ```
 
-#### return from interrupt
+#### preempt_schedule_irq
 ```c
 /* do_IRQ -> retint_kernel */
 el1t_64_irq_handler() {
@@ -1476,7 +1489,36 @@ el1t_64_irq_handler() {
         if (IS_ENABLED(CONFIG_ARM64_PSEUDO_NMI) && !interrupts_enabled(regs)) {
             __el1_pnmi(regs, handler);
         } else {
-            __el1_irq(regs, handler)
+            __el1_irq(regs, handler) {
+                enter_from_kernel_mode(regs);
+
+                irq_enter_rcu();
+                do_interrupt_handler(regs, handler);
+                irq_exit_rcu();
+
+                arm64_preempt_schedule_irq() {
+                    if (!need_irq_preemption())
+                        return;
+
+                    if (READ_ONCE(current_thread_info()->preempt_count) != 0)
+                        return;
+
+                    if (system_uses_irq_prio_masking() && read_sysreg(daif))
+                        return;
+
+                    if (system_capabilities_finalized()) {
+                        preempt_schedule_irq() {
+                            do {
+                                preempt_disable();
+                                local_irq_enable();
+                                __schedule(SM_PREEMPT);
+                                local_irq_disable();
+                                sched_preempt_enable_no_resched();
+                            } while (need_resched());
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2447,8 +2489,6 @@ balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
 ```
 
 ## SCHED_CFS
-
-* [Kernel Index CFS - LWN](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
 
 ![](../Images/Kernel/proc-sched-cfs.png)
 
@@ -6196,7 +6236,7 @@ static int kthread(void *_create)
 
 * [Kernel Doc](https://docs.kernel.org/core-api/workqueue.html)
 
-* Wowo Tech [:one: :link:](http://www.wowotech.net/irq_subsystem/workqueue.html) [:two: :link:](http://www.wowotech.net/irq_subsystem/cmwq-intro.html)  [:three: :link:](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html)  [:four: :link:](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
+* Wowo Tech [:one: Basic Concept](http://www.wowotech.net/irq_subsystem/workqueue.html) [:two: Overview](http://www.wowotech.net/irq_subsystem/cmwq-intro.html)  [:three: Code Anatomy](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html)  [:four: Handle Work](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
 
 <img src='../Images/Kernel/proc-cmwq.png' style='max-height:850px'/>
 
