@@ -811,6 +811,12 @@ export LD_LIBRARY_PATH=
     * [LWN Index - CFS scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
         * [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
             * [[PATCH 00/15] sched: EEVDF and latency-nice and/or slice-attr](https://lore.kernel.org/all/20230531115839.089944915@infradead.org/#t)
+            * [[PATCH 01/15] sched/fair: Add cfs_rq::avg_vruntime](https://github.com/torvalds/linux/commit/af4cf40470c22efa3987200fd19478199e08e103)
+            * [[PATCH 03/15] sched/fair: Add lag based placement](https://github.com/torvalds/linux/commit/86bfbb7ce4f67a88df2639198169b685668e7349)
+            * [[PATCH 04/15] rbtree: Add rb_add_augmented_cached() helper](https://github.com/torvalds/linux/commit/99d4d26551b56f4e523dd04e4970b94aa796a64e)
+            * [[PATCH 05/15] sched/fair: Implement an EEVDF like policy](https://github.com/torvalds/linux/commit/147f3efaa24182a21706bca15eab2f3f4630b5fe)
+            * [[PATCH 07/15] sched/smp: Use lag to simplify cross-runqueue placement](https://github.com/torvalds/linux/commit/e8f331bcc270354a803c2127c486190d33eac441)
+            * [[PATCH 08/15] sched: Commit to EEVDF](https://github.com/torvalds/linux/commit/5e963f2bd4654a202a8a05aa3a86cb0300b10e6c)
             * ![](../Images/Kernel/proc-sched-cfs-eevdf.png)
     * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
     * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
@@ -2638,7 +2644,28 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
             /* If we're the current task, we must renormalise before calling update_curr(). */
             if (curr) {
                 place_entity(cfs_rq, se, flags) {
-                    u64 vslice, vruntime = avg_vruntime(cfs_rq);
+                    u64 vslice;
+                    u64 vruntime = avg_vruntime(cfs_rq) {
+                        struct sched_entity *curr = cfs_rq->curr;
+                        s64 avg = cfs_rq->avg_vruntime;
+                        long load = cfs_rq->avg_load;
+
+                        if (curr && curr->on_rq) {
+                            unsigned long weight = scale_load_down(curr->load.weight);
+
+                            avg += entity_key(cfs_rq, curr) * weight;
+                            load += weight;
+                        }
+
+                        if (load) {
+                            if (avg < 0) { /* sign flips effective floor / ceil */
+                                avg -= (load - 1);
+                            }
+                            avg = div_s64(avg, load);
+                        }
+
+                        return cfs_rq->min_vruntime + avg;
+                    }
                     s64 lag = 0;
 
                     se->slice = sysctl_sched_base_slice;
@@ -2651,9 +2678,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                         lag = se->vlag;
 
                         load = cfs_rq->avg_load;
-                        if (curr && curr->on_rq)
+                        if (curr && curr->on_rq) {
                             load += scale_load_down(curr->load.weight);
-
+                        }
                         lag *= load + scale_load_down(se->load.weight);
                         if (WARN_ON_ONCE(!load))
                             load = 1;
@@ -2713,7 +2740,13 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
             update_stats_enqueue_fair(cfs_rq, se, flags);
             if (!curr) {
                 __enqueue_entity(cfs_rq, se) {
-                    avg_vruntime_add(cfs_rq, se);
+                    avg_vruntime_add(cfs_rq, se) {
+                        unsigned long weight = scale_load_down(se->load.weight);
+                        s64 key = entity_key(cfs_rq, se);
+
+                        cfs_rq->avg_vruntime += key * weight;
+                        cfs_rq->avg_load += weight;
+                    }
                     se->min_deadline = se->deadline;
 
                     RB_DECLARE_CALLBACKS(static, min_deadline_cb, struct sched_entity,
@@ -2819,22 +2852,26 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
             update_curr(cfs_rq);
             update_load_avg(cfs_rq, se, action);
-            se_update_runnable(se);
 
             update_stats_dequeue_fair(cfs_rq, se, flags);
-
             clear_buddies(cfs_rq, se);
+
+            update_entity_lag(cfs_rq, se) {
+                s64 lag, limit;
+
+                lag = avg_vruntime(cfs_rq) - se->vruntime;
+                limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
+                se->vlag = clamp(lag, -limit, limit);
+            }
 
             if (se != cfs_rq->curr) {
                 __dequeue_entity(cfs_rq, se) {
-                    rb_erase_cached(&se->run_node, &cfs_rq->tasks_timeline);
+                    rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline, &min_deadline_cb);
+                    avg_vruntime_sub(cfs_rq, se);
                 }
             }
             se->on_rq = 0;
             account_entity_dequeue(cfs_rq, se);
-
-            if (!(flags & DEQUEUE_SLEEP))
-                se->vruntime -= cfs_rq->min_vruntime;
 
             /* return excess runtime on last dequeue */
             return_cfs_rq_runtime(cfs_rq);
@@ -2922,9 +2959,7 @@ put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 
             if (prev->on_rq) {
                 update_stats_wait_start_fair(cfs_rq, prev);
-                __enqueue_entity(cfs_rq, prev) {
-                    rb_add_cached(&se->run_node, &cfs_rq->tasks_timeline, __entity_less);
-                }
+                __enqueue_entity(cfs_rq, prev);
                 update_load_avg(cfs_rq, prev, 0);
             }
             cfs_rq->curr = NULL;
@@ -3128,6 +3163,9 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
                 update_stats_wait_end_fair(cfs_rq, se);
                 __dequeue_entity(cfs_rq, se);
                 update_load_avg(cfs_rq, se, UPDATE_TG);
+                /* HACK, stash a copy of deadline at the point of pick in vlag,
+                 * which isn't used until dequeue. */
+                se->vlag = se->deadline;
             }
 
             update_stats_curr_start(cfs_rq, se);
@@ -3205,8 +3243,11 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
     }
     calc_delta_fair(slice, se) {
         if (unlikely(se->load.weight != NICE_0_LOAD)) {
-            delta = __calc_delta(delta, NICE_0_LOAD, &se->load)
-                --->
+            delta = __calc_delta(delta, NICE_0_LOAD, &se->load) {
+                /* delta_exec * weight / lw.weight
+                 *   OR
+                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
+            }
         }
 
         return delta;
@@ -3228,8 +3269,8 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                 curr->exec_start = now;
                 curr->sum_exec_runtime += delta_exec;
                 schedstat_add(cfs_rq->exec_clock, delta_exec);
-
                 curr->vruntime += calc_delta_fair(delta_exec, curr);
+
                 update_deadline(cfs_rq, curr) {
                     if ((s64)(se->vruntime - se->deadline) < 0)
                         return;
@@ -3260,8 +3301,11 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                             curr = NULL;
                     }
 
-                    if (se && (!curr)) {
-                        vruntime = (!curr) ? se->vruntime : min_vruntime(vruntime, se->vruntime);
+                    if (se) {
+                        if (!curr)
+                            vruntime = se->vruntime;
+                        else
+                            vruntime = min_vruntime(vruntime, se->vruntime);
                     }
 
                     /* ensure we never gain time by being placed backwards. */
