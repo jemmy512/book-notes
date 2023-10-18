@@ -4309,6 +4309,20 @@ struct task_group {
 ```
 
 # load_balance
+
+1. Load balance
+    * tick load balance
+        ![](../Images/Kernel/proc-sched-lb-tick-balance.png)
+    * new idle load balance
+        ![](../Images/Kernel/proc-sched-lb-newidle-balance.png)
+    * nohz idle load banlance
+        ![](../Images/Kernel/proc-sched-lb-nohzidle-balance.png)
+
+2. Task placement - select_task_rq
+    * try_to_wake_up
+    * wake_up_new_task
+    * sched_exec
+
 ```c
 void scheduler_tick(void){
     rq->idle_balance = idle_cpu(cpu);
