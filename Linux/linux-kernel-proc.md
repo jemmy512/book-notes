@@ -3392,137 +3392,6 @@ task_fork_fair(struct task_struct *p)
     se->vruntime -= cfs_rq->min_vruntime;
 ```
 
-#### balance_fair
-```c
-balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
-{
-    if (rq->nr_running)
-        return 1;
-
-    ret = newidle_balance(rq, rf) {
-        unsigned long next_balance = jiffies + HZ;
-        int this_cpu = this_rq->cpu;
-        u64 t0, t1, curr_cost = 0;
-        struct sched_domain *sd;
-        int pulled_task = 0;
-
-        update_misfit_status(NULL, this_rq);
-
-        /*
-        * There is a task waiting to run. No need to search for one.
-        * Return 0; the task will be enqueued when switching to idle.
-        */
-        if (this_rq->ttwu_pending)
-            return 0;
-
-        /*
-        * We must set idle_stamp _before_ calling idle_balance(), such that we
-        * measure the duration of idle_balance() as idle time.
-        */
-        this_rq->idle_stamp = rq_clock(this_rq);
-
-        /*
-        * Do not pull tasks towards !active CPUs...
-        */
-        if (!cpu_active(this_cpu))
-            return 0;
-
-        /*
-        * This is OK, because current is on_cpu, which avoids it being picked
-        * for load-balance and preemption/IRQs are still disabled avoiding
-        * further scheduler activity on it and we're being very careful to
-        * re-start the picking loop.
-        */
-        rq_unpin_lock(this_rq, rf);
-
-        rcu_read_lock();
-        sd = rcu_dereference_check_sched_domain(this_rq->sd);
-
-        if (!READ_ONCE(this_rq->rd->overload) ||
-            (sd && this_rq->avg_idle < sd->max_newidle_lb_cost)) {
-
-            if (sd)
-                update_next_balance(sd, &next_balance);
-            rcu_read_unlock();
-
-            goto out;
-        }
-        rcu_read_unlock();
-
-        raw_spin_rq_unlock(this_rq);
-
-        t0 = sched_clock_cpu(this_cpu);
-        update_blocked_averages(this_cpu);
-
-        rcu_read_lock();
-        for_each_domain(this_cpu, sd) {
-            int continue_balancing = 1;
-            u64 domain_cost;
-
-            update_next_balance(sd, &next_balance);
-
-            if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
-                break;
-
-            if (sd->flags & SD_BALANCE_NEWIDLE) {
-
-                pulled_task = load_balance(this_cpu, this_rq, sd, CPU_NEWLY_IDLE, &continue_balancing);
-                    --->
-
-                t1 = sched_clock_cpu(this_cpu);
-                domain_cost = t1 - t0;
-                update_newidle_cost(sd, domain_cost);
-
-                curr_cost += domain_cost;
-                t0 = t1;
-            }
-
-            /*
-            * Stop searching for tasks to pull if there are
-            * now runnable tasks on this rq.
-            */
-            if (pulled_task || this_rq->nr_running > 0 ||
-                this_rq->ttwu_pending)
-                break;
-        }
-        rcu_read_unlock();
-
-        raw_spin_rq_lock(this_rq);
-
-        if (curr_cost > this_rq->max_idle_balance_cost)
-            this_rq->max_idle_balance_cost = curr_cost;
-
-        /*
-        * While browsing the domains, we released the rq lock, a task could
-        * have been enqueued in the meantime. Since we're not going idle,
-        * pretend we pulled a task.
-        */
-        if (this_rq->cfs.h_nr_running && !pulled_task)
-            pulled_task = 1;
-
-        /* Is there a task of a high priority class? */
-        if (this_rq->nr_running != this_rq->cfs.h_nr_running)
-            pulled_task = -1;
-
-    out:
-        /* Move the next balance forward */
-        if (time_after(this_rq->next_balance, next_balance))
-            this_rq->next_balance = next_balance;
-
-        if (pulled_task)
-            this_rq->idle_stamp = 0;
-        else
-            nohz_newidle_balance(this_rq);
-
-        rq_repin_lock(this_rq, rf);
-
-        return pulled_task;
-    }
-
-    return ret != 0;
-}
-```
-
 #### select_task_rq_fair
 
 ```c
@@ -4308,14 +4177,186 @@ struct task_group {
 };
 ```
 
+# sched_domain
+```c
+sched_init_numa() {
+
+}
+```
+
+```c
+sched_init_domains(cpu_active_mask) {
+	zalloc_cpumask_var(&sched_domains_tmpmask, GFP_KERNEL);
+	zalloc_cpumask_var(&sched_domains_tmpmask2, GFP_KERNEL);
+	zalloc_cpumask_var(&fallback_doms, GFP_KERNEL);
+
+	arch_update_cpu_topology();
+	asym_cpu_capacity_scan();
+	ndoms_cur = 1;
+	doms_cur = alloc_sched_domains(ndoms_cur);
+	if (!doms_cur)
+		doms_cur = &fallback_doms;
+	cpumask_and(doms_cur[0], cpu_map, housekeeping_cpumask(HK_TYPE_DOMAIN));
+	err = build_sched_domains(doms_cur[0], NULL) {
+        enum s_alloc alloc_state = sa_none;
+        struct sched_domain *sd;
+        struct s_data d;
+        struct rq *rq = NULL;
+        int i, ret = -ENOMEM;
+        bool has_asym = false;
+
+        if (WARN_ON(cpumask_empty(cpu_map)))
+            goto error;
+
+        alloc_state = __visit_domain_allocation_hell(&d, cpu_map);
+        if (alloc_state != sa_rootdomain)
+            goto error;
+
+        /* Set up domains for CPUs specified by the cpu_map: */
+        for_each_cpu(i, cpu_map) {
+            struct sched_domain_topology_level *tl;
+
+            sd = NULL;
+            for_each_sd_topology(tl) {
+
+                if (WARN_ON(!topology_span_sane(tl, cpu_map, i)))
+                    goto error;
+
+                sd = build_sched_domain(tl, cpu_map, attr, sd, i);
+
+                has_asym |= sd->flags & SD_ASYM_CPUCAPACITY;
+
+                if (tl == sched_domain_topology)
+                    *per_cpu_ptr(d.sd, i) = sd;
+                if (tl->flags & SDTL_OVERLAP)
+                    sd->flags |= SD_OVERLAP;
+                if (cpumask_equal(cpu_map, sched_domain_span(sd)))
+                    break;
+            }
+        }
+
+        /* Build the groups for the domains */
+        for_each_cpu(i, cpu_map) {
+            for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
+                sd->span_weight = cpumask_weight(sched_domain_span(sd));
+                if (sd->flags & SD_OVERLAP) {
+                    if (build_overlap_sched_groups(sd, i))
+                        goto error;
+                } else {
+                    if (build_sched_groups(sd, i))
+                        goto error;
+                }
+            }
+        }
+
+        /*
+        * Calculate an allowed NUMA imbalance such that LLCs do not get
+        * imbalanced.
+        */
+        for_each_cpu(i, cpu_map) {
+            unsigned int imb = 0;
+            unsigned int imb_span = 1;
+
+            for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
+                struct sched_domain *child = sd->child;
+
+                if (!(sd->flags & SD_SHARE_PKG_RESOURCES) && child &&
+                    (child->flags & SD_SHARE_PKG_RESOURCES)) {
+                    struct sched_domain __rcu *top_p;
+                    unsigned int nr_llcs;
+
+                    /*
+                    * For a single LLC per node, allow an
+                    * imbalance up to 12.5% of the node. This is
+                    * arbitrary cutoff based two factors -- SMT and
+                    * memory channels. For SMT-2, the intent is to
+                    * avoid premature sharing of HT resources but
+                    * SMT-4 or SMT-8 *may* benefit from a different
+                    * cutoff. For memory channels, this is a very
+                    * rough estimate of how many channels may be
+                    * active and is based on recent CPUs with
+                    * many cores.
+                    *
+                    * For multiple LLCs, allow an imbalance
+                    * until multiple tasks would share an LLC
+                    * on one node while LLCs on another node
+                    * remain idle. This assumes that there are
+                    * enough logical CPUs per LLC to avoid SMT
+                    * factors and that there is a correlation
+                    * between LLCs and memory channels.
+                    */
+                    nr_llcs = sd->span_weight / child->span_weight;
+                    if (nr_llcs == 1)
+                        imb = sd->span_weight >> 3;
+                    else
+                        imb = nr_llcs;
+                    imb = max(1U, imb);
+                    sd->imb_numa_nr = imb;
+
+                    /* Set span based on the first NUMA domain. */
+                    top_p = sd->parent;
+                    while (top_p && !(top_p->flags & SD_NUMA)) {
+                        top_p = top_p->parent;
+                    }
+                    imb_span = top_p ? top_p->span_weight : sd->span_weight;
+                } else {
+                    int factor = max(1U, (sd->span_weight / imb_span));
+
+                    sd->imb_numa_nr = imb * factor;
+                }
+            }
+        }
+
+        /* Calculate CPU capacity for physical packages and nodes */
+        for (i = nr_cpumask_bits-1; i >= 0; i--) {
+            if (!cpumask_test_cpu(i, cpu_map))
+                continue;
+
+            for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
+                claim_allocations(i, sd);
+                init_sched_groups_capacity(i, sd);
+            }
+        }
+
+        /* Attach the domains */
+        rcu_read_lock();
+        for_each_cpu(i, cpu_map) {
+            rq = cpu_rq(i);
+            sd = *per_cpu_ptr(d.sd, i);
+
+            /* Use READ_ONCE()/WRITE_ONCE() to avoid load/store tearing: */
+            if (rq->cpu_capacity_orig > READ_ONCE(d.rd->max_cpu_capacity))
+                WRITE_ONCE(d.rd->max_cpu_capacity, rq->cpu_capacity_orig);
+
+            cpu_attach_domain(sd, d.rd, i);
+        }
+        rcu_read_unlock();
+
+        if (has_asym)
+            static_branch_inc_cpuslocked(&sched_asym_cpucapacity);
+
+        if (rq && sched_debug_verbose) {
+            pr_info("root domain span: %*pbl (max cpu_capacity = %lu)\n",
+                cpumask_pr_args(cpu_map), rq->rd->max_cpu_capacity);
+        }
+
+        ret = 0;
+    error:
+        __free_domain_allocs(&d, alloc_state, cpu_map);
+
+        return ret;
+    }
+}
+```
+
 # load_balance
 
 1. Load balance
-    * tick load balance
+    * tick_balance
         ![](../Images/Kernel/proc-sched-lb-tick-balance.png)
-    * new idle load balance
+    * newidle_balance
         ![](../Images/Kernel/proc-sched-lb-newidle-balance.png)
-    * nohz idle load banlance
+    * nohzidle_banlance
         ![](../Images/Kernel/proc-sched-lb-nohzidle-balance.png)
 
 2. Task placement - select_task_rq
@@ -4323,6 +4364,7 @@ struct task_group {
     * wake_up_new_task
     * sched_exec
 
+## tick_balance
 ```c
 void scheduler_tick(void){
     rq->idle_balance = idle_cpu(cpu);
@@ -4346,6 +4388,7 @@ void run_rebalance_domains(struct softirq_action *h)
     struct rq *this_rq = this_rq();
     enum cpu_idle_type idle = this_rq->idle_balance
         ? CPU_IDLE : CPU_NOT_IDLE;
+
     if (nohz_idle_balance(this_rq, idle)) {
         return;
     }
@@ -4383,175 +4426,8 @@ void run_rebalance_domains(struct softirq_action *h)
             }
 
             if (time_after_eq(jiffies, sd->last_balance + interval)) {
-                ret = load_balance(cpu, rq, sd, idle, &continue_balancing) {
-                    int ld_moved, cur_ld_moved, active_balance = 0;
-                    struct sched_domain *sd_parent = sd->parent;
-                    struct sched_group *group;
-                    struct rq *busiest;
-                    struct rq_flags rf;
-                    struct cpumask *cpus = this_cpu_cpumask_var_ptr(load_balance_mask);
-                    struct lb_env env = {
-                        .sd             = sd,
-                        .dst_cpu        = this_cpu,
-                        .dst_rq         = this_rq,
-                        .dst_grpmask    = group_balance_mask(sd->groups),
-                        .idle           = idle,
-                        .loop_break     = SCHED_NR_MIGRATE_BREAK,
-                        .cpus           = cpus,
-                        .fbq_type       = all,
-                        .tasks          = LIST_HEAD_INIT(env.tasks),
-                    };
-
-                    cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
-
-                    schedstat_inc(sd->lb_count[idle]);
-
-                redo:
-                    if (!should_we_balance(&env)) {
-                        *continue_balancing = 0;
-                        goto out_balanced;
-                    }
-
-                    group = find_busiest_group(&env);
-                    busiest = find_busiest_queue(&env, group);
-
-                    schedstat_add(sd->lb_imbalance[idle], env.imbalance);
-
-                    env.src_cpu = busiest->cpu;
-                    env.src_rq = busiest;
-
-                    ld_moved = 0;
-                    /* Clear this flag as soon as we find a pullable task */
-                    env.flags |= LBF_ALL_PINNED;
-                    if (busiest->nr_running > 1) {
-                        env.loop_max  = min(sysctl_sched_nr_migrate, busiest->nr_running);
-
-                more_balance:
-                        rq_lock_irqsave(busiest, &rf);
-                        update_rq_clock(busiest);
-
-                        /* cur_ld_moved - load moved in current iteration
-                         * ld_moved     - cumulative load moved across iterations */
-                        cur_ld_moved = detach_tasks(&env);
-
-                        rq_unlock(busiest, &rf);
-
-                        if (cur_ld_moved) {
-                            attach_tasks(&env);
-                            ld_moved += cur_ld_moved;
-                        }
-
-                        local_irq_restore(rf.flags);
-
-                        if (env.flags & LBF_NEED_BREAK) {
-                            env.flags &= ~LBF_NEED_BREAK;
-                            if (env.loop < busiest->nr_running)
-                                goto more_balance;
-                        }
-
-                        if ((env.flags & LBF_DST_PINNED) && env.imbalance > 0) {
-
-                            /* Prevent to re-select dst_cpu via env's CPUs */
-                            __cpumask_clear_cpu(env.dst_cpu, env.cpus);
-
-                            env.dst_rq  = cpu_rq(env.new_dst_cpu);
-                            env.dst_cpu = env.new_dst_cpu;
-                            env.flags   &= ~LBF_DST_PINNED;
-                            env.loop    = 0;
-                            env.loop_break     = SCHED_NR_MIGRATE_BREAK;
-
-                            goto more_balance;
-                        }
-
-                        if (sd_parent) {
-                            int *group_imbalance = &sd_parent->groups->sgc->imbalance;
-
-                            if ((env.flags & LBF_SOME_PINNED) && env.imbalance > 0)
-                                *group_imbalance = 1;
-                        }
-
-                        /* All tasks on this runqueue were pinned by CPU affinity */
-                        if (unlikely(env.flags & LBF_ALL_PINNED)) {
-                            __cpumask_clear_cpu(cpu_of(busiest), cpus);
-
-                            if (!cpumask_subset(cpus, env.dst_grpmask)) {
-                                env.loop = 0;
-                                env.loop_break = SCHED_NR_MIGRATE_BREAK;
-                                goto redo;
-                            }
-                            goto out_all_pinned;
-                        }
-                    }
-
-                    if (!ld_moved) {
-                        schedstat_inc(sd->lb_failed[idle]);
-
-                        if (idle != CPU_NEWLY_IDLE)
-                            sd->nr_balance_failed++;
-
-                        if (need_active_balance(&env)) {
-                            unsigned long flags;
-
-                            raw_spin_rq_lock_irqsave(busiest, flags);
-
-                            if (!cpumask_test_cpu(this_cpu, busiest->curr->cpus_ptr)) {
-                                raw_spin_rq_unlock_irqrestore(busiest, flags);
-                                goto out_one_pinned;
-                            }
-
-                            env.flags &= ~LBF_ALL_PINNED;
-
-                            if (!busiest->active_balance) {
-                                busiest->active_balance = 1;
-                                busiest->push_cpu = this_cpu;
-                                active_balance = 1;
-                            }
-                            raw_spin_rq_unlock_irqrestore(busiest, flags);
-
-                            if (active_balance) {
-                                stop_one_cpu_nowait(cpu_of(busiest),
-                                    active_load_balance_cpu_stop, busiest,
-                                    &busiest->active_balance_work);
-                            }
-                        }
-                    } else {
-                        sd->nr_balance_failed = 0;
-                    }
-
-                    if (likely(!active_balance) || need_active_balance(&env)) {
-                        /* We were unbalanced, so reset the balancing interval */
-                        sd->balance_interval = sd->min_interval;
-                    }
-
-                    goto out;
-
-                out_balanced:
-                    if (sd_parent && !(env.flags & LBF_ALL_PINNED)) {
-                        int *group_imbalance = &sd_parent->groups->sgc->imbalance;
-
-                        if (*group_imbalance)
-                            *group_imbalance = 0;
-                    }
-
-                out_all_pinned:
-                    schedstat_inc(sd->lb_balanced[idle]);
-
-                    sd->nr_balance_failed = 0;
-
-                out_one_pinned:
-                    ld_moved = 0;
-
-                    if (env.idle == CPU_NEWLY_IDLE)
-                        goto out;
-
-                    /* tune up the balancing interval */
-                    if ((env.flags & LBF_ALL_PINNED &&
-                        sd->balance_interval < MAX_PINNED_INTERVAL) ||
-                        sd->balance_interval < sd->max_interval)
-                        sd->balance_interval *= 2;
-                out:
-                    return ld_moved;
-                }
+                ret = load_balance(cpu, rq, sd, idle, &continue_balancing);
+                    --->
                 if (ret) {
                     idle = idle_cpu(cpu) ? CPU_IDLE : CPU_NOT_IDLE;
                     busy = idle != CPU_IDLE && !sched_idle_cpu(cpu);
@@ -4576,6 +4452,529 @@ void run_rebalance_domains(struct softirq_action *h)
         if (likely(update_next_balance))
             rq->next_balance = next_balance;
     }
+}
+```
+
+## nohz_idle_balance
+```c
+nohz_balancer_kick(rq) {
+    unsigned long now = jiffies;
+    struct sched_domain_shared *sds;
+    struct sched_domain *sd;
+    int nr_busy, i, cpu = rq->cpu;
+    unsigned int flags = 0;
+
+    if (unlikely(rq->idle_balance))
+        return;
+
+    nohz_balance_exit_idle(rq) {
+        if (likely(!rq->nohz_tick_stopped))
+            return;
+
+        rq->nohz_tick_stopped = 0;
+        cpumask_clear_cpu(rq->cpu, nohz.idle_cpus_mask);
+        atomic_dec(&nohz.nr_cpus);
+
+        set_cpu_sd_state_busy(rq->cpu) {
+            struct sched_domain *sd;
+
+            rcu_read_lock();
+            sd = rcu_dereference(per_cpu(sd_llc, cpu));
+
+            if (!sd || !sd->nohz_idle)
+                goto unlock;
+            sd->nohz_idle = 0;
+
+            atomic_inc(&sd->shared->nr_busy_cpus);
+        unlock:
+            rcu_read_unlock();
+        }
+    }
+
+    if (likely(!atomic_read(&nohz.nr_cpus)))
+        return;
+
+    if (READ_ONCE(nohz.has_blocked) && time_after(now, READ_ONCE(nohz.next_blocked)))
+        flags = NOHZ_STATS_KICK;
+
+    if (time_before(now, nohz.next_balance))
+        goto out;
+
+    if (rq->nr_running >= 2) {
+        flags = NOHZ_STATS_KICK | NOHZ_BALANCE_KICK;
+        goto out;
+    }
+
+    rcu_read_lock();
+
+    sd = rcu_dereference(rq->sd);
+    if (sd) {
+        ret = check_cpu_capacity(rq, sd) {
+            return ((rq->cpu_capacity * sd->imbalance_pct) < (rq->cpu_capacity_orig * 100));
+        }
+        if (rq->cfs.h_nr_running >= 1 && ret) {
+            flags = NOHZ_STATS_KICK | NOHZ_BALANCE_KICK;
+            goto unlock;
+        }
+    }
+
+    sd = rcu_dereference(per_cpu(sd_asym_packing, cpu));
+    if (sd) {
+        for_each_cpu_and(i, sched_domain_span(sd), nohz.idle_cpus_mask) {
+            if (sched_use_asym_prio(sd, i) && sched_asym_prefer(i, cpu)) {
+                flags = NOHZ_STATS_KICK | NOHZ_BALANCE_KICK;
+                goto unlock;
+            }
+        }
+    }
+
+    sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, cpu));
+    if (sd) {
+        if (check_misfit_status(rq, sd)) {
+            flags = NOHZ_STATS_KICK | NOHZ_BALANCE_KICK;
+            goto unlock;
+        }
+        goto unlock;
+    }
+
+    sds = rcu_dereference(per_cpu(sd_llc_shared, cpu));
+    if (sds) {
+        nr_busy = atomic_read(&sds->nr_busy_cpus);
+        if (nr_busy > 1) {
+            flags = NOHZ_STATS_KICK | NOHZ_BALANCE_KICK;
+            goto unlock;
+        }
+    }
+unlock:
+    rcu_read_unlock();
+out:
+    if (READ_ONCE(nohz.needs_update))
+        flags |= NOHZ_NEXT_KICK;
+
+    if (flags) {
+        kick_ilb(flags) {
+            int ilb_cpu;
+
+            if (flags & NOHZ_BALANCE_KICK)
+                nohz.next_balance = jiffies+1;
+
+            ilb_cpu = find_new_ilb() {
+                int ilb;
+                const struct cpumask *hk_mask;
+
+                hk_mask = housekeeping_cpumask(HK_TYPE_MISC);
+
+                for_each_cpu_and(ilb, nohz.idle_cpus_mask, hk_mask) {
+
+                    if (ilb == smp_processor_id())
+                        continue;
+
+                    ret = idle_cpu(ilb) {
+                        struct rq *rq = cpu_rq(cpu);
+                        if (rq->curr != rq->idle)
+                            return 0;
+                        if (rq->nr_running)
+                            return 0;
+                        if (rq->ttwu_pending)
+                            return 0;
+                        return 1;;
+                    }
+                    if (ret)
+                        return ilb;
+                }
+
+                return nr_cpu_ids;
+            }
+
+            if (ilb_cpu >= nr_cpu_ids)
+                return;
+
+            flags = atomic_fetch_or(flags, nohz_flags(ilb_cpu));
+            if (flags & NOHZ_KICK_MASK)
+                return;
+
+            smp_call_function_single_async(ilb_cpu, &cpu_rq(ilb_cpu)->nohz_csd) {
+                arch_send_call_function_single_ipi();
+            }
+        }
+    }
+}
+```
+
+```c
+nohz_idle_balance(this_rq, idle) {
+    unsigned int flags = this_rq->nohz_idle_balance;
+
+    if (!flags)
+        return false;
+
+    this_rq->nohz_idle_balance = 0;
+
+    if (idle != CPU_IDLE)
+        return false;
+
+    _nohz_idle_balance(this_rq, flags) {
+        /* Earliest time when we have to do rebalance again */
+        unsigned long now = jiffies;
+        unsigned long next_balance = now + 60*HZ;
+        bool has_blocked_load = false;
+        int update_next_balance = 0;
+        int this_cpu = this_rq->cpu;
+        int balance_cpu;
+        struct rq *rq;
+
+        SCHED_WARN_ON((flags & NOHZ_KICK_MASK) == NOHZ_BALANCE_KICK);
+
+        if (flags & NOHZ_STATS_KICK)
+            WRITE_ONCE(nohz.has_blocked, 0);
+        if (flags & NOHZ_NEXT_KICK)
+            WRITE_ONCE(nohz.needs_update, 0);
+
+        smp_mb();
+
+        for_each_cpu_wrap(balance_cpu,  nohz.idle_cpus_mask, this_cpu+1) {
+            if (!idle_cpu(balance_cpu))
+                continue;
+
+            if (need_resched()) {
+                if (flags & NOHZ_STATS_KICK)
+                    has_blocked_load = true;
+                if (flags & NOHZ_NEXT_KICK)
+                    WRITE_ONCE(nohz.needs_update, 1);
+                goto abort;
+            }
+
+            rq = cpu_rq(balance_cpu);
+
+            if (flags & NOHZ_STATS_KICK)
+                has_blocked_load |= update_nohz_stats(rq);
+
+            if (time_after_eq(jiffies, rq->next_balance)) {
+                struct rq_flags rf;
+
+                rq_lock_irqsave(rq, &rf);
+                update_rq_clock(rq);
+                rq_unlock_irqrestore(rq, &rf);
+
+                if (flags & NOHZ_BALANCE_KICK)
+                    rebalance_domains(rq, CPU_IDLE);
+            }
+
+            if (time_after(next_balance, rq->next_balance)) {
+                next_balance = rq->next_balance;
+                update_next_balance = 1;
+            }
+        }
+
+        if (likely(update_next_balance))
+            nohz.next_balance = next_balance;
+
+        if (flags & NOHZ_STATS_KICK)
+            WRITE_ONCE(nohz.next_blocked, now + msecs_to_jiffies(LOAD_AVG_PERIOD));
+
+    abort:
+        /* There is still blocked load, enable periodic update */
+        if (has_blocked_load)
+            WRITE_ONCE(nohz.has_blocked, 1);
+    }
+}
+```
+
+## newidle_balance
+
+```c
+int newidle_balance(rq, rf) {
+    unsigned long next_balance = jiffies + HZ;
+    int this_cpu = this_rq->cpu;
+    u64 t0, t1, curr_cost = 0;
+    struct sched_domain *sd;
+    int pulled_task = 0;
+
+    update_misfit_status(NULL/*p*/, this_rq/*rq*/) {
+        if (!sched_asym_cpucap_active())
+            return;
+
+        if (!p || p->nr_cpus_allowed == 1) {
+            rq->misfit_task_load = 0;
+            return;
+        }
+
+        if (task_fits_cpu(p, cpu_of(rq))) {
+            rq->misfit_task_load = 0;
+            return;
+        }
+
+        rq->misfit_task_load = max_t(unsigned long, task_h_load(p), 1);
+    }
+
+    if (this_rq->ttwu_pending)
+        return 0;
+
+    this_rq->idle_stamp = rq_clock(this_rq);
+
+    if (!cpu_active(this_cpu))
+        return 0;
+
+    rq_unpin_lock(this_rq, rf);
+
+    rcu_read_lock();
+    sd = rcu_dereference_check_sched_domain(this_rq->sd);
+
+    if (!READ_ONCE(this_rq->rd->overload) || (sd && this_rq->avg_idle < sd->max_newidle_lb_cost)) {
+        if (sd) {
+            update_next_balance(sd, &next_balance) {
+                unsigned long interval, next;
+
+                interval = get_sd_balance_interval(sd, 0);
+                next = sd->last_balance + interval;
+
+                if (time_after(*next_balance, next))
+                    *next_balance = next;
+            }
+        }
+        rcu_read_unlock();
+
+        goto out;
+    }
+    rcu_read_unlock();
+
+    raw_spin_rq_unlock(this_rq);
+
+    t0 = sched_clock_cpu(this_cpu);
+    update_blocked_averages(this_cpu);
+
+    rcu_read_lock();
+    for_each_domain(this_cpu, sd) {
+        int continue_balancing = 1;
+        u64 domain_cost;
+
+        update_next_balance(sd, &next_balance);
+
+        if (this_rq->avg_idle < curr_cost + sd->max_newidle_lb_cost)
+            break;
+
+        if (sd->flags & SD_BALANCE_NEWIDLE) {
+            pulled_task = load_balance(this_cpu, this_rq, sd, CPU_NEWLY_IDLE, &continue_balancing);
+                --->
+            t1 = sched_clock_cpu(this_cpu);
+            domain_cost = t1 - t0;
+            update_newidle_cost(sd, domain_cost) {
+                if (cost > sd->max_newidle_lb_cost) {
+                    sd->max_newidle_lb_cost = cost;
+                    sd->last_decay_max_lb_cost = jiffies;
+                } else if (time_after(jiffies, sd->last_decay_max_lb_cost + HZ)) {
+                    sd->max_newidle_lb_cost = (sd->max_newidle_lb_cost * 253) / 256;
+                    sd->last_decay_max_lb_cost = jiffies;
+                }
+            }
+
+            curr_cost += domain_cost;
+            t0 = t1;
+        }
+
+        if (pulled_task || this_rq->nr_running > 0 || this_rq->ttwu_pending)
+            break;
+    }
+    rcu_read_unlock();
+
+    raw_spin_rq_lock(this_rq);
+
+    if (curr_cost > this_rq->max_idle_balance_cost)
+        this_rq->max_idle_balance_cost = curr_cost;
+
+    if (this_rq->cfs.h_nr_running && !pulled_task)
+        pulled_task = 1;
+
+    /* Is there a task of a high priority class? */
+    if (this_rq->nr_running != this_rq->cfs.h_nr_running)
+        pulled_task = -1;
+
+out:
+    /* Move the next balance forward */
+    if (time_after(this_rq->next_balance, next_balance))
+        this_rq->next_balance = next_balance;
+
+    if (pulled_task)
+        this_rq->idle_stamp = 0;
+    else
+        nohz_newidle_balance(this_rq);
+
+    rq_repin_lock(this_rq, rf);
+
+    return pulled_task;
+}
+```
+
+## do_load_balance
+```c
+ret = load_balance(cpu, rq, sd, idle, &continue_balancing) {
+    int ld_moved, cur_ld_moved, active_balance = 0;
+    struct sched_domain *sd_parent = sd->parent;
+    struct sched_group *group;
+    struct rq *busiest;
+    struct rq_flags rf;
+    struct cpumask *cpus = this_cpu_cpumask_var_ptr(load_balance_mask);
+    struct lb_env env = {
+        .sd             = sd,
+        .dst_cpu        = this_cpu,
+        .dst_rq         = this_rq,
+        .dst_grpmask    = group_balance_mask(sd->groups),
+        .idle           = idle,
+        .loop_break     = SCHED_NR_MIGRATE_BREAK,
+        .cpus           = cpus,
+        .fbq_type       = all,
+        .tasks          = LIST_HEAD_INIT(env.tasks),
+    };
+
+    cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
+
+    schedstat_inc(sd->lb_count[idle]);
+
+redo:
+    if (!should_we_balance(&env)) {
+        *continue_balancing = 0;
+        goto out_balanced;
+    }
+
+    group = find_busiest_group(&env);
+    busiest = find_busiest_queue(&env, group);
+
+    schedstat_add(sd->lb_imbalance[idle], env.imbalance);
+
+    env.src_cpu = busiest->cpu;
+    env.src_rq = busiest;
+
+    ld_moved = 0;
+    /* Clear this flag as soon as we find a pullable task */
+    env.flags |= LBF_ALL_PINNED;
+    if (busiest->nr_running > 1) {
+        env.loop_max  = min(sysctl_sched_nr_migrate, busiest->nr_running);
+
+more_balance:
+        rq_lock_irqsave(busiest, &rf);
+        update_rq_clock(busiest);
+
+        /* cur_ld_moved - load moved in current iteration
+            * ld_moved     - cumulative load moved across iterations */
+        cur_ld_moved = detach_tasks(&env);
+
+        rq_unlock(busiest, &rf);
+
+        if (cur_ld_moved) {
+            attach_tasks(&env);
+            ld_moved += cur_ld_moved;
+        }
+
+        local_irq_restore(rf.flags);
+
+        if (env.flags & LBF_NEED_BREAK) {
+            env.flags &= ~LBF_NEED_BREAK;
+            if (env.loop < busiest->nr_running)
+                goto more_balance;
+        }
+
+        if ((env.flags & LBF_DST_PINNED) && env.imbalance > 0) {
+
+            /* Prevent to re-select dst_cpu via env's CPUs */
+            __cpumask_clear_cpu(env.dst_cpu, env.cpus);
+
+            env.dst_rq  = cpu_rq(env.new_dst_cpu);
+            env.dst_cpu = env.new_dst_cpu;
+            env.flags   &= ~LBF_DST_PINNED;
+            env.loop    = 0;
+            env.loop_break     = SCHED_NR_MIGRATE_BREAK;
+
+            goto more_balance;
+        }
+
+        if (sd_parent) {
+            int *group_imbalance = &sd_parent->groups->sgc->imbalance;
+
+            if ((env.flags & LBF_SOME_PINNED) && env.imbalance > 0)
+                *group_imbalance = 1;
+        }
+
+        /* All tasks on this runqueue were pinned by CPU affinity */
+        if (unlikely(env.flags & LBF_ALL_PINNED)) {
+            __cpumask_clear_cpu(cpu_of(busiest), cpus);
+
+            if (!cpumask_subset(cpus, env.dst_grpmask)) {
+                env.loop = 0;
+                env.loop_break = SCHED_NR_MIGRATE_BREAK;
+                goto redo;
+            }
+            goto out_all_pinned;
+        }
+    }
+
+    if (!ld_moved) {
+        schedstat_inc(sd->lb_failed[idle]);
+
+        if (idle != CPU_NEWLY_IDLE)
+            sd->nr_balance_failed++;
+
+        if (need_active_balance(&env)) {
+            unsigned long flags;
+
+            raw_spin_rq_lock_irqsave(busiest, flags);
+
+            if (!cpumask_test_cpu(this_cpu, busiest->curr->cpus_ptr)) {
+                raw_spin_rq_unlock_irqrestore(busiest, flags);
+                goto out_one_pinned;
+            }
+
+            env.flags &= ~LBF_ALL_PINNED;
+
+            if (!busiest->active_balance) {
+                busiest->active_balance = 1;
+                busiest->push_cpu = this_cpu;
+                active_balance = 1;
+            }
+            raw_spin_rq_unlock_irqrestore(busiest, flags);
+
+            if (active_balance) {
+                stop_one_cpu_nowait(cpu_of(busiest),
+                    active_load_balance_cpu_stop, busiest,
+                    &busiest->active_balance_work);
+            }
+        }
+    } else {
+        sd->nr_balance_failed = 0;
+    }
+
+    if (likely(!active_balance) || need_active_balance(&env)) {
+        /* We were unbalanced, so reset the balancing interval */
+        sd->balance_interval = sd->min_interval;
+    }
+
+    goto out;
+
+out_balanced:
+    if (sd_parent && !(env.flags & LBF_ALL_PINNED)) {
+        int *group_imbalance = &sd_parent->groups->sgc->imbalance;
+
+        if (*group_imbalance)
+            *group_imbalance = 0;
+    }
+
+out_all_pinned:
+    schedstat_inc(sd->lb_balanced[idle]);
+
+    sd->nr_balance_failed = 0;
+
+out_one_pinned:
+    ld_moved = 0;
+
+    if (env.idle == CPU_NEWLY_IDLE)
+        goto out;
+
+    /* tune up the balancing interval */
+    if ((env.flags & LBF_ALL_PINNED &&
+        sd->balance_interval < MAX_PINNED_INTERVAL) ||
+        sd->balance_interval < sd->max_interval)
+        sd->balance_interval *= 2;
+out:
+    return ld_moved;
 }
 ```
 
