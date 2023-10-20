@@ -4855,7 +4855,7 @@ more_balance:
         update_rq_clock(busiest);
 
         /* cur_ld_moved - load moved in current iteration
-            * ld_moved     - cumulative load moved across iterations */
+         * ld_moved     - cumulative load moved across iterations */
         cur_ld_moved = detach_tasks(&env);
 
         rq_unlock(busiest, &rf);
@@ -4874,7 +4874,6 @@ more_balance:
         }
 
         if ((env.flags & LBF_DST_PINNED) && env.imbalance > 0) {
-
             /* Prevent to re-select dst_cpu via env's CPUs */
             __cpumask_clear_cpu(env.dst_cpu, env.cpus);
 
@@ -4975,6 +4974,181 @@ out_one_pinned:
         sd->balance_interval *= 2;
 out:
     return ld_moved;
+}
+```
+
+### find_busiest_group
+```c
+struct sched_group *find_busiest_group(struct lb_env *env)
+{
+    struct sg_lb_stats *local, *busiest;
+    struct sd_lb_stats sds;
+
+    init_sd_lb_stats(&sds);
+
+    update_sd_lb_stats(env, &sds);
+
+    if (!sds.busiest)
+        goto out_balanced;
+
+    busiest = &sds.busiest_stat;
+
+    /* Misfit tasks should be dealt with regardless of the avg load */
+    if (busiest->group_type == group_misfit_task)
+        goto force_balance;
+
+    if (sched_energy_enabled()) {
+        struct root_domain *rd = env->dst_rq->rd;
+
+        if (rcu_dereference(rd->pd) && !READ_ONCE(rd->overutilized))
+            goto out_balanced;
+    }
+
+    if (busiest->group_type == group_asym_packing)
+        goto force_balance;
+
+    if (busiest->group_type == group_imbalanced)
+        goto force_balance;
+
+    local = &sds.local_stat;
+
+    if (local->group_type > busiest->group_type)
+        goto out_balanced;
+
+    if (local->group_type == group_overloaded) {
+        if (local->avg_load >= busiest->avg_load)
+            goto out_balanced;
+
+        /* XXX broken for overlapping NUMA groups */
+        sds.avg_load = (sds.total_load * SCHED_CAPACITY_SCALE) /
+                sds.total_capacity;
+
+        if (local->avg_load >= sds.avg_load)
+            goto out_balanced;
+
+        if (100 * busiest->avg_load <= env->sd->imbalance_pct * local->avg_load)
+            goto out_balanced;
+    }
+
+    if (sds.prefer_sibling && local->group_type == group_has_spare &&
+        sibling_imbalance(env, &sds, busiest, local) > 1)
+        goto force_balance;
+
+    if (busiest->group_type != group_overloaded) {
+        if (env->idle == CPU_NOT_IDLE) {
+            goto out_balanced;
+        }
+
+        if (busiest->group_type == group_smt_balance &&
+            smt_vs_nonsmt_groups(sds.local, sds.busiest)) {
+            /* Let non SMT CPU pull from SMT CPU sharing with sibling */
+            goto force_balance;
+        }
+
+        if (busiest->group_weight > 1 && local->idle_cpus <= (busiest->idle_cpus + 1)) {
+            goto out_balanced;
+        }
+
+        if (busiest->sum_h_nr_running == 1) {
+            goto out_balanced;
+        }
+    }
+
+force_balance:
+    /* Looks like there is an imbalance. Compute it */
+    calculate_imbalance(env, &sds);
+    return env->imbalance ? sds.busiest : NULL;
+
+out_balanced:
+    env->imbalance = 0;
+    return NULL;
+}
+```
+
+### find_busiest_queue
+```c
+struct rq *find_busiest_queue(struct lb_env *env, struct sched_group *group) {
+    struct rq *busiest = NULL, *rq;
+    unsigned long busiest_util = 0, busiest_load = 0, busiest_capacity = 1;
+    unsigned int busiest_nr = 0;
+    int i;
+
+    for_each_cpu_and(i, sched_group_span(group), env->cpus) {
+        unsigned long capacity, load, util;
+        unsigned int nr_running;
+        enum fbq_type rt;
+
+        rq = cpu_rq(i);
+        rt = fbq_classify_rq(rq);
+
+        if (rt > env->fbq_type)
+            continue;
+
+        nr_running = rq->cfs.h_nr_running;
+        if (!nr_running)
+            continue;
+
+        capacity = capacity_of(i);
+
+        if (env->sd->flags & SD_ASYM_CPUCAPACITY
+            && !capacity_greater(capacity_of(env->dst_cpu), capacity)
+            && nr_running == 1) {
+
+            continue;
+        }
+
+        if ((env->sd->flags & SD_ASYM_PACKING) &&
+            sched_use_asym_prio(env->sd, i) &&
+            sched_asym_prefer(i, env->dst_cpu) &&
+            nr_running == 1)
+            continue;
+
+        switch (env->migration_type) {
+        case migrate_load:
+            load = cpu_load(rq);
+
+            if (nr_running == 1 && load > env->imbalance &&
+                !check_cpu_capacity(rq, env->sd))
+                break;
+
+            if (load * busiest_capacity > busiest_load * capacity) {
+                busiest_load = load;
+                busiest_capacity = capacity;
+                busiest = rq;
+            }
+            break;
+
+        case migrate_util:
+            util = cpu_util_cfs_boost(i);
+
+            if (nr_running <= 1)
+                continue;
+
+            if (busiest_util < util) {
+                busiest_util = util;
+                busiest = rq;
+            }
+            break;
+
+        case migrate_task:
+            if (busiest_nr < nr_running) {
+                busiest_nr = nr_running;
+                busiest = rq;
+            }
+            break;
+
+        case migrate_misfit:
+            if (rq->misfit_task_load > busiest_load) {
+                busiest_load = rq->misfit_task_load;
+                busiest = rq;
+            }
+
+            break;
+
+        }
+    }
+
+    return busiest;
 }
 ```
 
