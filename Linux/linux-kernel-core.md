@@ -60,28 +60,35 @@
 
 # Concurrency primitives
 
+* [:orange_book: Is Parallel Programming Hard, And, If So, What Can You Do About It?](https://mirrors.edge.kernel.org/pub/linux/kernel/people/paulmck/perfbook/perfbook.html)
+* [Compiler Reordering](http://www.wowotech.net/kernel_synchronization/453.html)
+
 ## atomic
-## rcu
-* [内核工匠 - RCU前传：从同步到RCU的引入](http://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247489093&idx=1&sn=24f159f20ffc4c698f8fa17a0fef0a6c)
+
+* [原子操作](http://www.wowotech.net/kernel_synchronization/atomic.html)
+
+## per-cpu
+
+* [Per-CPU变量](http://www.wowotech.net/kernel_synchronization/per-cpu.html)
+
 ## barrier
 
+* [memory-barrier - wowo tech :one:](http://www.wowotech.net/kernel_synchronization/memory-barrier.html)    [:link: :two:](https://mp.weixin.qq.com/s/s6AvLiVVkoMX4dIGpqmXYA)
 
 # locking
 
-## barrier
-
-* [原理和实战解析Linux中如何正确地使用内存屏障 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487950&idx=1&sn=c6cb416efc2831c5666a5ae9a205dcf3)
-## lru
+## rcu
 
 * [kernel: RCU concepts](https://www.kernel.org/doc/html/latest/RCU/index.html)
+* [内核工匠 - RCU前传：从同步到RCU的引入](http://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247489093&idx=1&sn=24f159f20ffc4c698f8fa17a0fef0a6c)
+* [wowo tech - RCU synchronize原理分析](http://www.wowotech.net/kernel_synchronization/223.html) [:link: RCU基础](http://www.wowotech.net/kernel_synchronization/rcu_fundamentals.html)
 
 ## futex
 
 * [Kernel Index Futex - LWN](https://lwn.net/Kernel/Index/#Futex)
+* [futex问答 - wowo tech](http://www.wowotech.net/kernel_synchronization/futex.html)
 
 ![](../Images/Kernel/lock-rt-mutex.png)
-
-* [futex问答 - 内核工匠](https://mp.weixin.qq.com/s/MHGwhAg2fs6HtRLduHkDrw)
 
 ```c
 static struct {
@@ -295,7 +302,7 @@ futex_wake(uaddr, flags, nr_wake, bitest)
 * [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
 * [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487444&idx=1&sn=b3529fb6234175b273caaacf0e816b6f)
 * [spinlock - 术道经纬](https://www.zhihu.com/column/c_1108400140804726784) [:one: CSA spinlock](https://zhuanlan.zhihu.com/p/80727111) [:two: MCS spinlock](https://zhuanlan.zhihu.com/p/89058726) [:three: qspinlock](https://zhuanlan.zhihu.com/p/100546935) [:four: API](https://zhuanlan.zhihu.com/p/90634198) [:five: deadlock](https://zhuanlan.zhihu.com/p/103971328)
-
+* [wowo tech - spinklock](http://www.wowotech.net/kernel_synchronization/spinlock.html)  [qspinlock](http://www.wowotech.net/kernel_synchronization/queued_spinlock.html)
 
 ```c
 #ifdef CONFIG_PREEMPT_RT
@@ -662,6 +669,8 @@ spin_unlock(spinlock_t *lock) {
 
 Aka read write spining lock, implemented by qrwlock. While rwsem is a read write sleeping lock.
 
+* [rwlock - wowo tech](http://www.wowotech.net/kernel_synchronization/rw-spinlock.html)
+
 ```c
 typedef struct {
     arch_rwlock_t       raw_lock;
@@ -823,10 +832,14 @@ do_raw_write_lock() {
 }
 ```
 
+## seqlock
+
+* [seqlock - wowo tech](http://www.wowotech.net/kernel_synchronization/seqlock.html)
+
 ## mutex
 
 * [Wait/wound mutexes - LWN](https://lwn.net/Articles/548909/)
-* [Mutex内核同步机制详解 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487213&idx=1&sn=f299bbcd57a81dd2d3ed9171d5ebc636)
+* [mutex - wowo tech](http://www.wowotech.net/kernel_synchronization/504.html)
 
 ### CONFIG_PREEMPT_RT
 ```c
@@ -1453,7 +1466,7 @@ rt_mutex_unlock(lock)
 
 rwlock is a read write spining lock, implemented by qrwlock. While rwsem is a read write sleeping lock.
 
-* [Linux读写锁逻辑解析 - 内核工匠](https://mp.weixin.qq.com/s/oNa5urBSdMlq41htxJ5miQ)
+* [Linux读写锁逻辑解析 - wowo tech](http://www.wowotech.net/kernel_synchronization/rwsem.html)
 * [读写信号量 - 内核工匠](https://mp.weixin.qq.com/s/8cJm7nBM3ESoL1SLJXuMRw)
 
 ```c
@@ -2084,10 +2097,3 @@ __up_write(struct rw_semaphore *sem)
 
 ## xarray
 ## maple tree
-
-# Concurrency primitives
-
-## atomic
-## rcu
-
-## barrier
