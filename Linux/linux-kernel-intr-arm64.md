@@ -19,6 +19,7 @@
     * [8. 中断唤醒系统流程](http://www.wowotech.net/irq_subsystem/irq_handle_procedure.html)
     * [softirq](http://www.wowotech.net/irq_subsystem/soft-irq.html)
     * [tasklet](http://www.wowotech.net/irq_subsystem/tasklet.html)
+    * [ARMv8 异常处理简介](https://mp.weixin.qq.com/s/dZEMB4_Xmgd8f7GO7c8Oag)
 
 # vectors
 
@@ -46,6 +47,7 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 
 ```c
 SYM_CODE_START(vectors)
+    // t: thread, h: handler
     kernel_ventry    1, t, 64, sync     // Synchronous EL1t
     kernel_ventry    1, t, 64, irq      // IRQ EL1t
     kernel_ventry    1, t, 64, fiq      // FIQ EL1t
@@ -652,6 +654,43 @@ void noinstr el0t_64_sync_handler(struct pt_regs *regs) {
 }
 ```
 
+```c
+void noinstr el1h_64_sync_handler(struct pt_regs *regs) {
+    unsigned long esr = read_sysreg(esr_el1);
+
+    switch (ESR_ELx_EC(esr)) {
+    case ESR_ELx_EC_DABT_CUR:
+    case ESR_ELx_EC_IABT_CUR:
+        el1_abort(regs, esr) {
+
+        }
+        break;
+    case ESR_ELx_EC_PC_ALIGN:
+        el1_pc(regs, esr) {
+
+        }
+        break;
+    case ESR_ELx_EC_SYS64:
+    case ESR_ELx_EC_UNKNOWN:
+        el1_undef(regs, esr);
+        break;
+    case ESR_ELx_EC_BTI:
+        el1_bti(regs, esr);
+        break;
+    case ESR_ELx_EC_BREAKPT_CUR:
+    case ESR_ELx_EC_SOFTSTP_CUR:
+    case ESR_ELx_EC_WATCHPT_CUR:
+    case ESR_ELx_EC_BRK64:
+        el1_dbg(regs, esr);
+        break;
+    case ESR_ELx_EC_FPAC:
+        el1_fpac(regs, esr);
+        break;
+    default:
+        __panic_unhandled(regs, "64-bit el1h sync", esr);
+    }
+}
+```
 
 # gicv3
 
@@ -793,8 +832,8 @@ irqreturn_t ipi_handler(int irq, void *data) {
 ## request_percpu_irq
 ```c
 request_percpu_irq(unsigned int irq, irq_handler_t handler,
-		   const char *devname, void __percpu *percpu_dev_id) {
-	return __request_percpu_irq(irq, handler, 0, devname, percpu_dev_id) {
+           const char *devname, void __percpu *percpu_dev_id) {
+    return __request_percpu_irq(irq, handler, 0, devname, percpu_dev_id) {
         desc = irq_to_desc(irq);
 
         action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
