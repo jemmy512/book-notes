@@ -103,7 +103,7 @@
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-    
+
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -637,7 +637,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
     lea SYS_ify (syscall_name), %rax; \
     syscall
-    
+
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -646,7 +646,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-        
+
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -666,16 +666,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-        
+
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-        
+
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-        
+
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -694,12 +694,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-        
+
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-        
+
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -4409,7 +4409,18 @@ void run_rebalance_domains(struct softirq_action *h)
 
         rcu_read_lock();
         for_each_domain(cpu, sd) {
-            need_decay = update_newidle_cost(sd, 0);
+            need_decay = update_newidle_cost(sd, 0)  {
+                if (cost > sd->max_newidle_lb_cost) {
+                    sd->max_newidle_lb_cost = cost;
+                    sd->last_decay_max_lb_cost = jiffies;
+                } else if (time_after(jiffies, sd->last_decay_max_lb_cost + HZ)) {
+                    sd->max_newidle_lb_cost = (sd->max_newidle_lb_cost * 253) / 256;
+                    sd->last_decay_max_lb_cost = jiffies;
+                    return true;
+                }
+
+                return false;
+            }
             max_cost += sd->max_newidle_lb_cost;
 
             if (!continue_balancing) {
@@ -4418,7 +4429,18 @@ void run_rebalance_domains(struct softirq_action *h)
                 break;
             }
 
-            interval = get_sd_balance_interval(sd, busy);
+            interval = get_sd_balance_interval(sd, busy) {
+                unsigned long interval = sd->balance_interval;
+
+                if (cpu_busy)
+                    interval *= sd->busy_factor;
+
+                interval = msecs_to_jiffies(interval);
+                if (cpu_busy)
+                    interval -= 1;
+
+                return clamp(interval, 1UL, max_load_balance_interval);
+            }
 
             need_serialize = sd->flags & SD_SERIALIZE;
             if (need_serialize) {
@@ -4759,15 +4781,7 @@ int newidle_balance(rq, rf) {
                 --->
             t1 = sched_clock_cpu(this_cpu);
             domain_cost = t1 - t0;
-            update_newidle_cost(sd, domain_cost) {
-                if (cost > sd->max_newidle_lb_cost) {
-                    sd->max_newidle_lb_cost = cost;
-                    sd->last_decay_max_lb_cost = jiffies;
-                } else if (time_after(jiffies, sd->last_decay_max_lb_cost + HZ)) {
-                    sd->max_newidle_lb_cost = (sd->max_newidle_lb_cost * 253) / 256;
-                    sd->last_decay_max_lb_cost = jiffies;
-                }
-            }
+            update_newidle_cost(sd, domain_cost);
 
             curr_cost += domain_cost;
             t0 = t1;
