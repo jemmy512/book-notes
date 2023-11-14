@@ -2644,15 +2644,18 @@ I’m talking about friends who care deeply about each other, who support each o
 ## 8.19 双层定语从句
 
 英语中还有一种双层定语从句, 其特点是:
-1. 一个先行词首先被一个限定性定语从句所修饰, 来表示一个特定的意思. **{ [先行词 + 限定性定语从句] + 限定性定语从句 }**
+1. 一个先行词首先被一个限定性定语从句所修饰, 来表示一个特定的意思, 然后，这个 **[先行词 + 限定性定语从句]** 再被另外一个限定性定语从句所修饰 **{ [先行词 + 限定性定语从句] + 限定性定语从句 }**
 2. 这两个限定性定语从句是处在不同层次上的, 并不像并列定语从句那样是同一个先行词后面带有两个并列的定语从句, 因而不能用连词and, but, or等来连接它们
 
 He is {[ the only person that we know ] who speaks so many foreign languages }.
-
+* 第一层定语从句 that we know 的先行词为 the only person
+* 第二层定语从句 who speaks so many foreign languages 的先行词为 the only person that we know
 
 There is {[ nothing you can do, achieve, or buy ] that will outshine the peace, joy and happiness of being in communication with the partner you love }.
 
 {[ What was it (that) you started to tell me in the restaurant ] that you didn't understand about me }?
+* 第一层定语从句 you started to tell me in the restaurant 的先行词为 what
+* 第二层定语从句 that you didn't understand about me 的先行词为 what...you started to tell me in the restaurant
 
 The only {[ system (that) I know ] which will help you to remember what you have heard at a lecture } is that of keeping notes.
 
