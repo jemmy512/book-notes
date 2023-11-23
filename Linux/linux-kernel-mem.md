@@ -49,7 +49,8 @@
 * [page_address](#page_address)
 * [vmalloc](#vmalloc)
 * [vmalloc_fault](#vmalloc_fault)
-* [page reclaim](#page_reclaim)
+* [page_reclaim](#page_reclaim)
+* [migrate_pages](#migrate_pages)
 * [fork](#fork)
 * [cma](#cma)
     * [cma_init_reserved_areas](#cma_init_reserved_areas)
@@ -2042,7 +2043,7 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
     * [The SLUB allocator ](https://lwn.net/Articles/229984/)
-
+* [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1)    [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2)  [:three: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3)    [:four: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
 ![](../Images/Kernel/mem-slub-structure.png)
 
 * SLUB内存管理 [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
@@ -4848,6 +4849,9 @@ static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
     .lock = INIT_LOCAL_LOCK(lock),
 };
 ```
+
+# migrate_pages
+
 
 # fork
 ```c
