@@ -46,6 +46,21 @@
         * [task_fork_fair](#task_fork_fair)
     * [task_group](#task_group)
 
+* [sched_domain](#sched_domain)
+* [load_balance](#load_balance)
+    * [tick_balance](#tick_balance)
+    * [nohz_idle_balance](#nohz_idle_balance)
+    * [newidle_balance](#newidle_balance)
+    * [do_load_balance](#do_load_balance)
+        * [should_we_balance](#should_we_balance)
+        * [find_busiest_group](#find_busiest_group)
+            * [update_sd_lb_stats](#update_sd_lb_stats)
+            * [update_sd_pick_busiest](#update_sd_pick_busiest)
+            * [calculate_imbalance](#calculate_imbalance)
+        * [find_busiest_queue](#find_busiest_queue)
+        * [detach_tasks](#detach_tasks)
+            * [can_migrate_task](#can_migrate_task)
+
 * [wake_up](#wake_up)
 * [wait_woken](#wait_woken)
 * [try_to_wake_up](#try_to_wake_up)
@@ -2749,7 +2764,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                     se->min_deadline = se->deadline;
 
                     RB_DECLARE_CALLBACKS(static, min_deadline_cb, struct sched_entity,
-		                run_node, min_deadline, min_deadline_update);
+                        run_node, min_deadline, min_deadline_update);
                     rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
                                 __entity_less, &min_deadline_cb);
 
@@ -3727,10 +3742,8 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
             int imb_numa_nr = sd->imb_numa_nr;
 #ifdef CONFIG_NUMA_BALANCING
             int idlest_cpu;
-            /*
-             * If there is spare capacity at NUMA, try to select
-             * the preferred node
-             */
+            /* If there is spare capacity at NUMA, try to select
+             * the preferred node */
             if (cpu_to_node(this_cpu) == p->numa_preferred_nid)
                 return NULL;
 
@@ -3738,15 +3751,13 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
             if (cpu_to_node(idlest_cpu) == p->numa_preferred_nid)
                 return idlest;
 #endif /* CONFIG_NUMA_BALANCING */
-            /*
-             * Otherwise, keep the task close to the wakeup source
+            /* Otherwise, keep the task close to the wakeup source
              * and improve locality if the number of running tasks
              * would remain below threshold where an imbalance is
              * allowed while accounting for the possibility the
              * task is pinned to a subset of CPUs. If there is a
              * real need of migration, periodic load balance will
-             * take care of it.
-             */
+             * take care of it. */
             if (p->nr_cpus_allowed != NR_CPUS) {
                 struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_rq_mask);
 
@@ -3763,12 +3774,10 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
         }
 #endif /* CONFIG_NUMA */
 
-        /*
-         * Select group with highest number of idle CPUs. We could also
+        /* Select group with highest number of idle CPUs. We could also
          * compare the utilization which is more stable but it can end
          * up that the group has less spare capacity but finally more
-         * idle CPUs which means more opportunity to run task.
-         */
+         * idle CPUs which means more opportunity to run task. */
         if (local_sgs.idle_cpus >= idlest_sgs.idle_cpus)
             return NULL;
         break;
@@ -3806,21 +3815,17 @@ find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this
         if (available_idle_cpu(i)) {
             struct cpuidle_state *idle = idle_get_state(rq);
             if (idle && idle->exit_latency < min_exit_latency) {
-                /*
-                 * We give priority to a CPU whose idle state
+                /* We give priority to a CPU whose idle state
                  * has the smallest exit latency irrespective
-                 * of any idle timestamp.
-                 */
+                 * of any idle timestamp. */
                 min_exit_latency = idle->exit_latency;
                 latest_idle_timestamp = rq->idle_stamp;
                 shallowest_idle_cpu = i;
             } else if ((!idle || idle->exit_latency == min_exit_latency) &&
                    rq->idle_stamp > latest_idle_timestamp) {
-                /*
-                 * If equal or no active idle state, then
+                /* If equal or no active idle state, then
                  * the most recently idled CPU might have
-                 * a warmer cache.
-                 */
+                 * a warmer cache. */
                 latest_idle_timestamp = rq->idle_stamp;
                 shallowest_idle_cpu = i;
             }
@@ -3932,11 +3937,9 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
             if (!this_sd)
                 return -1;
 
-            /*
-            * If we're busy, the assumption that the last idle period
+            /* If we're busy, the assumption that the last idle period
             * predicts the future is flawed; age away the remaining
-            * predicted idle time.
-            */
+            * predicted idle time. */
             if (unlikely(this_rq->wake_stamp < now)) {
                 while (this_rq->wake_stamp < now && this_rq->wake_avg_idle) {
                     this_rq->wake_stamp++;
@@ -4185,18 +4188,18 @@ sched_init_numa() {
 
 ```c
 sched_init_domains(cpu_active_mask) {
-	zalloc_cpumask_var(&sched_domains_tmpmask, GFP_KERNEL);
-	zalloc_cpumask_var(&sched_domains_tmpmask2, GFP_KERNEL);
-	zalloc_cpumask_var(&fallback_doms, GFP_KERNEL);
+    zalloc_cpumask_var(&sched_domains_tmpmask, GFP_KERNEL);
+    zalloc_cpumask_var(&sched_domains_tmpmask2, GFP_KERNEL);
+    zalloc_cpumask_var(&fallback_doms, GFP_KERNEL);
 
-	arch_update_cpu_topology();
-	asym_cpu_capacity_scan();
-	ndoms_cur = 1;
-	doms_cur = alloc_sched_domains(ndoms_cur);
-	if (!doms_cur)
-		doms_cur = &fallback_doms;
-	cpumask_and(doms_cur[0], cpu_map, housekeeping_cpumask(HK_TYPE_DOMAIN));
-	err = build_sched_domains(doms_cur[0], NULL) {
+    arch_update_cpu_topology();
+    asym_cpu_capacity_scan();
+    ndoms_cur = 1;
+    doms_cur = alloc_sched_domains(ndoms_cur);
+    if (!doms_cur)
+        doms_cur = &fallback_doms;
+    cpumask_and(doms_cur[0], cpu_map, housekeeping_cpumask(HK_TYPE_DOMAIN));
+    err = build_sched_domains(doms_cur[0], NULL) {
         enum s_alloc alloc_state = sa_none;
         struct sched_domain *sd;
         struct s_data d;
@@ -4248,10 +4251,8 @@ sched_init_domains(cpu_active_mask) {
             }
         }
 
-        /*
-        * Calculate an allowed NUMA imbalance such that LLCs do not get
-        * imbalanced.
-        */
+        /* Calculate an allowed NUMA imbalance such that LLCs do not get
+        * imbalanced. */
         for_each_cpu(i, cpu_map) {
             unsigned int imb = 0;
             unsigned int imb_span = 1;
@@ -4264,8 +4265,7 @@ sched_init_domains(cpu_active_mask) {
                     struct sched_domain __rcu *top_p;
                     unsigned int nr_llcs;
 
-                    /*
-                    * For a single LLC per node, allow an
+                    /* For a single LLC per node, allow an
                     * imbalance up to 12.5% of the node. This is
                     * arbitrary cutoff based two factors -- SMT and
                     * memory channels. For SMT-2, the intent is to
@@ -4282,8 +4282,7 @@ sched_init_domains(cpu_active_mask) {
                     * remain idle. This assumes that there are
                     * enough logical CPUs per LLC to avoid SMT
                     * factors and that there is a correlation
-                    * between LLCs and memory channels.
-                    */
+                    * between LLCs and memory channels. */
                     nr_llcs = sd->span_weight / child->span_weight;
                     if (nr_llcs == 1)
                         imb = sd->span_weight >> 3;
@@ -4949,7 +4948,7 @@ more_balance:
 
                     attach_task(env->dst_rq, p) {
                         activate_task(rq, p, ENQUEUE_NOCLOCK);
-	                    check_preempt_curr(rq, p, 0);
+                        check_preempt_curr(rq, p, 0);
                     }
                 }
 
@@ -5030,7 +5029,7 @@ more_balance:
                     &busiest->active_balance_work/*work_buf*/) {
 
                     *work_buf = (struct cpu_stop_work){ .fn = fn, .arg = arg, .caller = _RET_IP_, };
-	                return cpu_stop_queue_work(cpu, work_buf);
+                    return cpu_stop_queue_work(cpu, work_buf);
                 }
             }
         }
@@ -5071,6 +5070,70 @@ out_one_pinned:
         sd->balance_interval *= 2;
 out:
     return ld_moved;
+}
+```
+
+### should_we_balance
+```c
+int should_we_balance(struct lb_env *env)
+{
+    struct cpumask *swb_cpus = this_cpu_cpumask_var_ptr(should_we_balance_tmpmask);
+    struct sched_group *sg = env->sd->groups;
+    int cpu, idle_smt = -1;
+
+    /* Ensure the balancing environment is consistent; can happen
+     * when the softirq triggers 'during' hotplug. */
+    if (!cpumask_test_cpu(env->dst_cpu, env->cpus)) {
+        return 0;
+    }
+
+    /* In the newly idle case, we will allow all the CPUs
+     * to do the newly idle load balance.
+     *
+     * However, we bail out if we already have tasks or a wakeup pending,
+     * to optimize wakeup latency. */
+    if (env->idle == CPU_NEWLY_IDLE) {
+        if (env->dst_rq->nr_running > 0 || env->dst_rq->ttwu_pending) {
+            return 0;
+        }
+        return 1;
+    }
+
+    cpumask_copy(swb_cpus, group_balance_mask(sg));
+    /* Try to find first idle CPU */
+    for_each_cpu_and(cpu, swb_cpus, env->cpus) {
+        if (!idle_cpu(cpu)) {
+            continue;
+        }
+
+        /* Don't balance to idle SMT in busy core right away when
+         * balancing cores, but remember the first idle SMT CPU for
+         * later consideration.  Find CPU on an idle core first. */
+        if (!(env->sd->flags & SD_SHARE_CPUCAPACITY) && !is_core_idle(cpu)) {
+            if (idle_smt == -1) {
+                idle_smt = cpu;
+            }
+            /* If the core is not idle, and first SMT sibling which is
+             * idle has been found, then its not needed to check other
+             * SMT siblings for idleness: */
+#ifdef CONFIG_SCHED_SMT
+            cpumask_andnot(swb_cpus, swb_cpus, cpu_smt_mask(cpu));
+#endif
+            continue;
+        }
+
+        /* Are we the first idle core in a non-SMT domain or higher,
+         * or the first idle CPU in a SMT domain? */
+        return cpu == env->dst_cpu;
+    }
+
+    /* Are we the first idle CPU with busy siblings? */
+    if (idle_smt != -1) {
+        return idle_smt == env->dst_cpu;
+    }
+
+    /* Are we the first CPU of this group ? */
+    return group_balance_cpu(sg) == env->dst_cpu;
 }
 ```
 
@@ -5342,11 +5405,9 @@ next_group:
         sg = sg->next;
     } while (sg != env->sd->groups);
 
-    /*
-    * Indicate that the child domain of the busiest group prefers tasks
+    /* Indicate that the child domain of the busiest group prefers tasks
     * go to a child's sibling domains first. NB the flags of a sched group
-    * are those of the child domain.
-    */
+    * are those of the child domain. */
     if (sds->busiest)
         sds->prefer_sibling = !!(sds->busiest->flags & SD_PREFER_SIBLING);
 
@@ -5750,7 +5811,7 @@ struct rq *find_busiest_queue(struct lb_env *env, struct sched_group *group) {
 }
 ```
 
-## detach_tasks
+### detach_tasks
 
 ```c
 int detach_tasks(struct lb_env *env)
@@ -5792,127 +5853,8 @@ int detach_tasks(struct lb_env *env)
         }
 
         p = list_last_entry(tasks, struct task_struct, se.group_node);
-        ret = can_migrate_task(p, env) {
-            int tsk_cache_hot;
 
-            lockdep_assert_rq_held(env->src_rq);
-
-            /* We do not migrate tasks that are:
-             * 1) throttled_lb_pair, or
-             * 2) cannot be migrated to this CPU due to cpus_ptr, or
-             * 3) running (obviously), or
-             * 4) are cache-hot on their current CPU. */
-            if (throttled_lb_pair(task_group(p), env->src_cpu, env->dst_cpu))
-                return 0;
-
-            /* Disregard pcpu kthreads; they are where they need to be. */
-            if (kthread_is_per_cpu(p))
-                return 0;
-
-            if (!cpumask_test_cpu(env->dst_cpu, p->cpus_ptr)) {
-                int cpu;
-
-                schedstat_inc(p->stats.nr_failed_migrations_affine);
-
-                env->flags |= LBF_SOME_PINNED;
-
-                /* Remember if this task can be migrated to any other CPU in
-                 * our sched_group. We may want to revisit it if we couldn't
-                 * meet load balance goals by pulling other tasks on src_cpu.
-                 *
-                 * Avoid computing new_dst_cpu
-                 * - for NEWLY_IDLE
-                 * - if we have already computed one in current iteration
-                 * - if it's an active balance */
-                if (env->idle == CPU_NEWLY_IDLE
-                    || env->flags & (LBF_DST_PINNED | LBF_ACTIVE_LB)) {
-
-                    return 0;
-                }
-
-                /* Prevent to re-select dst_cpu via env's CPUs: */
-                for_each_cpu_and(cpu, env->dst_grpmask, env->cpus) {
-                    if (cpumask_test_cpu(cpu, p->cpus_ptr)) {
-                        env->flags |= LBF_DST_PINNED;
-                        env->new_dst_cpu = cpu;
-                        break;
-                    }
-                }
-
-                return 0;
-            }
-
-            /* Record that we found at least one task that could run on dst_cpu */
-            env->flags &= ~LBF_ALL_PINNED;
-
-            if (task_on_cpu(env->src_rq, p)) {
-                schedstat_inc(p->stats.nr_failed_migrations_running);
-                return 0;
-            }
-
-            /* Aggressive migration if:
-             * 1) active balance
-             * 2) destination numa is preferred
-             * 3) task is cache cold, or
-             * 4) too many balance attempts have failed. */
-            if (env->flags & LBF_ACTIVE_LB)
-                return 1;
-
-            tsk_cache_hot = migrate_degrades_locality(p, env) {
-
-            }
-            if (tsk_cache_hot == -1) {
-                tsk_cache_hot = task_hot(p, env) {
-                    s64 delta;
-
-                    lockdep_assert_rq_held(env->src_rq);
-
-                    if (p->sched_class != &fair_sched_class)
-                        return 0;
-
-                    if (unlikely(task_has_idle_policy(p)))
-                        return 0;
-
-                    /* SMT siblings share cache */
-                    if (env->sd->flags & SD_SHARE_CPUCAPACITY)
-                        return 0;
-
-                    /* Buddy candidates are cache hot: */
-                    if (sched_feat(CACHE_HOT_BUDDY) && env->dst_rq->nr_running &&
-                        (&p->se == cfs_rq_of(&p->se)->next))
-                        return 1;
-
-                    if (sysctl_sched_migration_cost == -1)
-                        return 1;
-
-                    /* Don't migrate task if the task's cookie does not match
-                     * with the destination CPU's core cookie. */
-                    if (!sched_core_cookie_match(cpu_rq(env->dst_cpu), p))
-                        return 1;
-
-                    if (sysctl_sched_migration_cost == 0)
-                        return 0;
-
-                    delta = rq_clock_task(env->src_rq) - p->se.exec_start;
-
-                    return delta < (s64)sysctl_sched_migration_cost;
-                }
-            }
-
-            if (tsk_cache_hot <= 0
-                || env->sd->nr_balance_failed > env->sd->cache_nice_tries) {
-
-                if (tsk_cache_hot == 1) {
-                    schedstat_inc(env->sd->lb_hot_gained[env->idle]);
-                    schedstat_inc(p->stats.nr_forced_migrations);
-                }
-                return 1;
-            }
-
-            schedstat_inc(p->stats.nr_failed_migrations_hot);
-            return 0;
-        }
-        if (!ret)
+        if (!can_migrate_task(p, env))
             goto next;
 
         switch (env->migration_type) {
@@ -5996,6 +5938,130 @@ next:
     schedstat_add(env->sd->lb_gained[env->idle], detached);
 
     return detached;
+}
+```
+
+#### can_migrate_task
+```c
+ret = can_migrate_task(p, env) {
+    int tsk_cache_hot;
+
+    lockdep_assert_rq_held(env->src_rq);
+
+    /* We do not migrate tasks that are:
+     * 1) throttled_lb_pair, or
+     * 2) cannot be migrated to this CPU due to cpus_ptr, or
+     * 3) running (obviously), or
+     * 4) are cache-hot on their current CPU. */
+    if (throttled_lb_pair(task_group(p), env->src_cpu, env->dst_cpu))
+        return 0;
+
+    /* Disregard pcpu kthreads; they are where they need to be. */
+    if (kthread_is_per_cpu(p))
+        return 0;
+
+    if (!cpumask_test_cpu(env->dst_cpu, p->cpus_ptr)) {
+        int cpu;
+
+        schedstat_inc(p->stats.nr_failed_migrations_affine);
+
+        env->flags |= LBF_SOME_PINNED;
+
+        /* Remember if this task can be migrated to any other CPU in
+         * our sched_group. We may want to revisit it if we couldn't
+         * meet load balance goals by pulling other tasks on src_cpu.
+         *
+         * Avoid computing new_dst_cpu
+         * - for NEWLY_IDLE
+         * - if we have already computed one in current iteration
+         * - if it's an active balance */
+        if (env->idle == CPU_NEWLY_IDLE
+            || env->flags & (LBF_DST_PINNED | LBF_ACTIVE_LB)) {
+
+            return 0;
+        }
+
+        /* Prevent to re-select dst_cpu via env's CPUs: */
+        for_each_cpu_and(cpu, env->dst_grpmask, env->cpus) {
+            if (cpumask_test_cpu(cpu, p->cpus_ptr)) {
+                env->flags |= LBF_DST_PINNED;
+                env->new_dst_cpu = cpu;
+                break;
+            }
+        }
+
+        return 0;
+    }
+
+    /* Record that we found at least one task that could run on dst_cpu */
+    env->flags &= ~LBF_ALL_PINNED;
+
+    if (task_on_cpu(env->src_rq, p)) {
+        schedstat_inc(p->stats.nr_failed_migrations_running);
+        return 0;
+    }
+
+    /* Aggressive migration if:
+     * 1) active balance
+     * 2) destination numa is preferred
+     * 3) task is cache cold, or
+     * 4) too many balance attempts have failed. */
+    if (env->flags & LBF_ACTIVE_LB)
+        return 1;
+
+    tsk_cache_hot = migrate_degrades_locality(p, env) {
+
+    }
+    if (tsk_cache_hot == -1) {
+        tsk_cache_hot = task_hot(p, env) {
+            s64 delta;
+
+            lockdep_assert_rq_held(env->src_rq);
+
+            if (p->sched_class != &fair_sched_class)
+                return 0;
+
+            if (unlikely(task_has_idle_policy(p)))
+                return 0;
+
+            /* SMT siblings share cache */
+            if (env->sd->flags & SD_SHARE_CPUCAPACITY)
+                return 0;
+
+            /* Buddy candidates are cache hot: */
+            if (sched_feat(CACHE_HOT_BUDDY) && env->dst_rq->nr_running &&
+                (&p->se == cfs_rq_of(&p->se)->next))
+                return 1;
+
+            if (sysctl_sched_migration_cost == -1)
+                return 1;
+
+            /* Don't migrate task if the task's cookie does not match
+                * with the destination CPU's core cookie. */
+            if (!sched_core_cookie_match(cpu_rq(env->dst_cpu), p))
+                return 1;
+
+            if (sysctl_sched_migration_cost == 0)
+                return 0;
+
+            delta = rq_clock_task(env->src_rq) - p->se.exec_start;
+
+            return delta < (s64)sysctl_sched_migration_cost;
+        }
+    }
+
+    if (tsk_cache_hot <= 0
+        || env->sd->nr_balance_failed > env->sd->cache_nice_tries) {
+
+        if (tsk_cache_hot == 1) {
+            schedstat_inc(env->sd->lb_hot_gained[env->idle]);
+            schedstat_inc(p->stats.nr_forced_migrations);
+        }
+        return 1;
+    }
+
+    schedstat_inc(p->stats.nr_failed_migrations_hot);
+    return 0;
 }
 ```
 
