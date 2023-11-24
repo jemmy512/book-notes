@@ -22,12 +22,21 @@
     * [barrier](#barrier)
     * [lru](#lru)
     * [futex](#futex)
+        * [futex_lock_pi](#futex_lock_pi)
     * [spinlock](#spinlock)
+        * [spin_lock](#spin_lock)
+            * [queued_spin_lock_slowpath](#queued_spin_lock_slowpath)
+        * [spin_unlock](#spin_unlock)
     * [rwlock](#rwlock)
         * [read_lock](#read_lock)
         * [write_lock](#write_lock)
+    * [seqlock](#seqlock)
+    * [mutex](#mutex)
+        * [CONFIG_PREEMPT_RT](#CONFIG_PREEMPT_RT)
+        * [!CONFIG_PREEMPT_RT](#!CONFIG_PREEMPT_RT)
     * [rtmutex](#rtmutex)
-    * [ww-mutex-design](#ww-mutex-design)
+        * [rt_mutex_lock](#rt_mutex_lock)
+        * [rt_mutex_unlock](#rt_mutex_unlock)
     * [semaphore](#semaphore)
     * [rwsem](#rwsem)
         * [down_read](#down_read)
@@ -861,18 +870,18 @@ mutex_lock()
  * NULL means not owned. Since task_struct pointers are aligned at
  * at least L1_CACHE_BYTES, we have low bits to store extra state.
  *
-    * Bit0 indicates a non-empty waiter list; unlock must issue a wakeup.
-    * Bit1 indicates unlock needs to hand the lock to the top-waiter
-    * Bit2 indicates handoff has been done and we're waiting for pickup. */
-    #define MUTEX_FLAG_WAITERS    0x01
-    #define MUTEX_FLAG_HANDOFF    0x02
-    #define MUTEX_FLAG_PICKUP     0x04
-    #define MUTEX_FLAGS           0x07
+ * Bit0 indicates a non-empty waiter list; unlock must issue a wakeup.
+ * Bit1 indicates unlock needs to hand the lock to the top-waiter
+ * Bit2 indicates handoff has been done and we're waiting for pickup. */
+#define MUTEX_FLAG_WAITERS    0x01
+#define MUTEX_FLAG_HANDOFF    0x02
+#define MUTEX_FLAG_PICKUP     0x04
+#define MUTEX_FLAGS           0x07
 
-    struct mutex { /* !CONFIG_PREEMPT_RT  */
-        atomic_long_t       owner;
-        raw_spinlock_t      wait_lock;
-        struct list_head    wait_list;
+struct mutex { /* !CONFIG_PREEMPT_RT  */
+    atomic_long_t       owner;
+    raw_spinlock_t      wait_lock;
+    struct list_head    wait_list;
 };
 
 /* kernel/locking/mutex.c */
@@ -2092,8 +2101,3 @@ __up_write(struct rw_semaphore *sem)
 ## mlock
 
 * [mlock锁原理剖析 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247486877&idx=1&sn=b757dad0ceffe76d9f16cfbde07ce4d0)
-
-# Data structures
-
-## xarray
-## maple tree
