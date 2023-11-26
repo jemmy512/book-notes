@@ -46,6 +46,8 @@
         * [set_next_task_fair](#set_next_task_fair)
         * [select_task_rq_fair](#select_task_rq_fair)
             * [find_idlest_cpu](#find_idlest_cpu)
+                * [find_idlest_group](#find_idlest_group)
+                * [find_idlest_group_cpu](#find_idlest_group_cpu)
             * [select_idle_sibling](#select_idle_sibling)
         * [wakeup_preempt_fair](#wakeup_preempt_fair)
         * [sched_vslice](#sched_vslice)
@@ -2307,6 +2309,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                                 return 0;
                             if (lowest_mask) {
                                 cpumask_and(lowest_mask, &p->cpus_mask, vec->mask);
+                                cpumask_and(lowest_mask, lowest_mask, cpu_active_mask);
                                 if (cpumask_empty(lowest_mask))
                                     return 0;
                             }
@@ -3291,6 +3294,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
         ret = wake_wide(p) {
             unsigned int master = current->wakee_flips;
             unsigned int slave = p->wakee_flips;
+            /* nr of cpus which share the llc */
             int factor = __this_cpu_read(sd_llc_size);
 
             if (master < slave)
@@ -3308,19 +3312,22 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
             && cpumask_test_cpu(prev_cpu, sched_domain_span(tmp))) {
 
             if (cpu != prev_cpu) {
-                new_cpu = wake_affine(tmp, p, cpu, prev_cpu, sync) {
+                new_cpu = wake_affine(tmp, p, cpu/*this_cpu*/, prev_cpu, sync) {
                     int target = nr_cpumask_bits;
 
                     if (sched_feat(WA_IDLE)) {
                         target = wake_affine_idle(this_cpu, prev_cpu, sync) {
-                            if (available_idle_cpu(this_cpu) && cpus_share_cache(this_cpu, prev_cpu))
+                            if (available_idle_cpu(this_cpu) && cpus_share_cache(this_cpu, prev_cpu)) {
                                 return available_idle_cpu(prev_cpu) ? prev_cpu : this_cpu;
+                            }
 
-                            if (sync && cpu_rq(this_cpu)->nr_running == 1)
+                            if (sync && cpu_rq(this_cpu)->nr_running == 1) {
                                 return this_cpu;
+                            }
 
-                            if (available_idle_cpu(prev_cpu))
+                            if (available_idle_cpu(prev_cpu)) {
                                 return prev_cpu;
+                            }
 
                             return nr_cpumask_bits;
                         }
@@ -3445,6 +3452,8 @@ new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag) {
 }
 ```
 
+###### find_idlest_group
+
 ```c
 static struct sched_group *
 find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
@@ -3505,6 +3514,7 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
                 if (sd->flags & SD_ASYM_CPUCAPACITY
                     && sgs->group_misfit_task_load
                     && task_fits_cpu(p, i)) {
+
                     sgs->group_misfit_task_load = 0;
                 }
             }
@@ -3622,6 +3632,8 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
 }
 ```
 
+###### find_idlest_group_cpu
+
 ```c
 static int
 find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
@@ -3656,8 +3668,9 @@ find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this
                 min_exit_latency = idle->exit_latency;
                 latest_idle_timestamp = rq->idle_stamp;
                 shallowest_idle_cpu = i;
-            } else if ((!idle || idle->exit_latency == min_exit_latency) &&
-                   rq->idle_stamp > latest_idle_timestamp) {
+            } else if ((!idle || idle->exit_latency == min_exit_latency)
+                && rq->idle_stamp > latest_idle_timestamp) {
+
                 /* If equal or no active idle state, then
                  * the most recently idled CPU might have
                  * a warmer cache. */
@@ -3746,10 +3759,18 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
         has_idle_core = test_idle_cores(target);
         if (!has_idle_core && cpus_share_cache(prev, target)) {
             i = select_idle_smt(p, prev) {
-
+                int cpu;
+                for_each_cpu_and(cpu, cpu_smt_mask(target), p->cpus_ptr) {
+                    if (cpu == target)
+                        continue;
+                    if (available_idle_cpu(cpu) || sched_idle_cpu(cpu))
+                        return cpu;
+                }
+                return -1;
             }
-            if ((unsigned int)i < nr_cpumask_bits)
+            if ((unsigned int)i < nr_cpumask_bits) {
                 return i;
+            }
         }
     }
 
@@ -3757,42 +3778,8 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
         struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_rq_mask);
         int i, cpu, idle_cpu = -1, nr = INT_MAX;
         struct sched_domain_shared *sd_share;
-        struct rq *this_rq = this_rq();
-        int this = smp_processor_id();
-        struct sched_domain *this_sd = NULL;
-        u64 time = 0;
 
         cpumask_and(cpus, sched_domain_span(sd), p->cpus_ptr);
-
-        if (sched_feat(SIS_PROP) && !has_idle_core) {
-            u64 avg_cost, avg_idle, span_avg;
-            unsigned long now = jiffies;
-
-            this_sd = rcu_dereference(*this_cpu_ptr(&sd_llc));
-            if (!this_sd)
-                return -1;
-
-            /* If we're busy, the assumption that the last idle period
-            * predicts the future is flawed; age away the remaining
-            * predicted idle time. */
-            if (unlikely(this_rq->wake_stamp < now)) {
-                while (this_rq->wake_stamp < now && this_rq->wake_avg_idle) {
-                    this_rq->wake_stamp++;
-                    this_rq->wake_avg_idle >>= 1;
-                }
-            }
-
-            avg_idle = this_rq->wake_avg_idle;
-            avg_cost = this_sd->avg_scan_cost + 1;
-
-            span_avg = sd->span_weight * avg_idle;
-            if (span_avg > 4*avg_cost)
-                nr = div_u64(span_avg, avg_cost);
-            else
-                nr = 4;
-
-            time = cpu_clock(this);
-        }
 
         if (sched_feat(SIS_UTIL)) {
             sd_share = rcu_dereference(per_cpu(sd_llc_shared, target));
@@ -3805,45 +3792,40 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
             }
         }
 
+        if (static_branch_unlikely(&sched_cluster_active)) {
+            struct sched_group *sg = sd->groups;
+
+            if (sg->flags & SD_CLUSTER) {
+                for_each_cpu_wrap(cpu, sched_group_span(sg), target + 1) {
+                    if (!cpumask_test_cpu(cpu, cpus))
+                        continue;
+
+                    if (has_idle_core) {
+                        i = select_idle_core(p, cpu, cpus, &idle_cpu);
+                        if ((unsigned int)i < nr_cpumask_bits)
+                            return i;
+                    } else {
+                        if (--nr <= 0)
+                            return -1;
+                        idle_cpu = __select_idle_cpu(cpu, p);
+                        if ((unsigned int)idle_cpu < nr_cpumask_bits)
+                            return idle_cpu;
+                    }
+                }
+                cpumask_andnot(cpus, cpus, sched_group_span(sg));
+            }
+        }
+
         for_each_cpu_wrap(cpu, cpus, target + 1) {
             if (has_idle_core) {
-                i = select_idle_core(p, cpu/*core*/, cpus, &idle_cpu) {
-                    bool idle = true;
-                    int cpu;
-
-                    for_each_cpu(cpu, cpu_smt_mask(core)) {
-                        if (!available_idle_cpu(cpu)) {
-                            idle = false;
-                            if (*idle_cpu == -1) {
-                                if (sched_idle_cpu(cpu) && cpumask_test_cpu(cpu, p->cpus_ptr)) {
-                                    *idle_cpu = cpu;
-                                    break;
-                                }
-                                continue;
-                            }
-                            break;
-                        }
-                        if (*idle_cpu == -1 && cpumask_test_cpu(cpu, p->cpus_ptr))
-                            *idle_cpu = cpu;
-                    }
-
-                    if (idle)
-                        return core;
-
-                    cpumask_andnot(cpus, cpus, cpu_smt_mask(core));
-                    return -1;
-                }
+                i = select_idle_core(p, cpu, cpus, &idle_cpu);
                 if ((unsigned int)i < nr_cpumask_bits)
                     return i;
-            } else {
-                if (!--nr)
-                    return -1;
-                idle_cpu = __select_idle_cpu(cpu, p) {
-                    if ((available_idle_cpu(cpu) || sched_idle_cpu(cpu)) && sched_cpu_cookie_match(cpu_rq(cpu), p))
-                        return cpu;
 
+            } else {
+                if (--nr <= 0)
                     return -1;
-                }
+                idle_cpu = __select_idle_cpu(cpu, p);
                 if ((unsigned int)idle_cpu < nr_cpumask_bits)
                     break;
             }
@@ -3851,16 +3833,6 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
 
         if (has_idle_core)
             set_idle_cores(target, false);
-
-        if (sched_feat(SIS_PROP) && this_sd && !has_idle_core) {
-            time = cpu_clock(this) - time;
-
-            /* Account for the scan cost of wakeups against the average
-             * idle time. */
-            this_rq->wake_avg_idle -= min(this_rq->wake_avg_idle, time);
-
-            update_avg(&this_sd->avg_scan_cost, time);
-        }
 
         return idle_cpu;
     }
@@ -4325,6 +4297,7 @@ sched_init_domains(cpu_active_mask) {
 
     arch_update_cpu_topology();
     asym_cpu_capacity_scan();
+
     ndoms_cur = 1;
     doms_cur = alloc_sched_domains(ndoms_cur);
     if (!doms_cur)
@@ -4351,11 +4324,106 @@ sched_init_domains(cpu_active_mask) {
 
             sd = NULL;
             for_each_sd_topology(tl) {
+                sd = build_sched_domain(tl, cpu_map, attr, sd, i) {
+                    struct sched_domain *sd = sd_init(tl, cpu_map, child, cpu) {
+                        struct sd_data *sdd = &tl->data;
+                        struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu);
+                        int sd_id, sd_weight, sd_flags = 0;
+                        struct cpumask *sd_span;
 
-                if (WARN_ON(!topology_span_sane(tl, cpu_map, i)))
-                    goto error;
+                        sched_domains_curr_level = tl->numa_level;
+                        sd_weight = cpumask_weight(tl->mask(cpu));
 
-                sd = build_sched_domain(tl, cpu_map, attr, sd, i);
+                        if (tl->sd_flags) {
+                            sd_flags = (*tl->sd_flags)();
+                        }
+                        *sd = (struct sched_domain) {
+                            .min_interval        = sd_weight,
+                            .max_interval        = 2*sd_weight,
+                            .busy_factor        = 16,
+                            .imbalance_pct        = 117,
+
+                            .cache_nice_tries    = 0,
+
+                            .flags = 1*SD_BALANCE_NEWIDLE
+                                | 1*SD_BALANCE_EXEC
+                                | 1*SD_BALANCE_FORK
+                                | 0*SD_BALANCE_WAKE
+                                | 1*SD_WAKE_AFFINE
+                                | 0*SD_SHARE_CPUCAPACITY
+                                | 0*SD_SHARE_PKG_RESOURCES
+                                | 0*SD_SERIALIZE
+                                | 1*SD_PREFER_SIBLING
+                                | 0*SD_NUMA
+                                | sd_flags ,
+                            .last_balance        = jiffies,
+                            .balance_interval    = sd_weight,
+                            .max_newidle_lb_cost    = 0,
+                            .last_decay_max_lb_cost    = jiffies,
+                            .child            = child,
+                        };
+
+                        sd_span = sched_domain_span(sd);
+                        cpumask_and(sd_span, cpu_map, tl->mask(cpu));
+                        sd_id = cpumask_first(sd_span);
+
+                        sd->flags |= asym_cpu_capacity_classify(sd_span, cpu_map)
+
+                        /* Convert topological properties into behaviour. */
+                        /* Don't attempt to spread across CPUs of different capacities. */
+                        if ((sd->flags & SD_ASYM_CPUCAPACITY) && sd->child)
+                            sd->child->flags &= ~SD_PREFER_SIBLING;
+
+                        if (sd->flags & SD_SHARE_CPUCAPACITY) {
+                            sd->imbalance_pct = 110;
+
+                        } else if (sd->flags & SD_SHARE_PKG_RESOURCES) {
+                            sd->imbalance_pct = 117;
+                            sd->cache_nice_tries = 1;
+                        } else if (sd->flags & SD_NUMA) {
+                            sd->cache_nice_tries = 2;
+                            sd->flags &= ~SD_PREFER_SIBLING;
+                            sd->flags |= SD_SERIALIZE;
+                            if (sched_domains_numa_distance[tl->numa_level] > node_reclaim_distance) {
+                                sd->flags &= ~(SD_BALANCE_EXEC |
+                                        SD_BALANCE_FORK |
+                                        SD_WAKE_AFFINE);
+                            }
+                        } else {
+                            sd->cache_nice_tries = 1;
+                        }
+
+                        /* For all levels sharing cache; connect a sched_domain_shared
+                         * instance. */
+                        if (sd->flags & SD_SHARE_PKG_RESOURCES) {
+                            sd->shared = *per_cpu_ptr(sdd->sds, sd_id);
+                            atomic_inc(&sd->shared->ref);
+                            atomic_set(&sd->shared->nr_busy_cpus, sd_weight);
+                        }
+
+                        sd->private = sdd;
+
+                        return sd;
+                    }
+
+                    if (child) {
+                        sd->level = child->level + 1;
+                        sched_domain_level_max = max(sched_domain_level_max, sd->level);
+                        child->parent = sd;
+
+                        if (!cpumask_subset(sched_domain_span(child),
+                                    sched_domain_span(sd))) {
+                            /* Fixup, ensure @sd has at least @child CPUs. */
+                            cpumask_or(sched_domain_span(sd),
+                                sched_domain_span(sd),
+                                sched_domain_span(child));
+                        }
+
+                    }
+                    set_domain_attribute(sd, attr);
+
+                    return sd;
+                }
 
                 has_asym |= sd->flags & SD_ASYM_CPUCAPACITY;
 
@@ -5037,8 +5105,6 @@ ret = load_balance(cpu, rq, sd, idle, &continue_balancing) {
 
     cpumask_and(cpus, sched_domain_span(sd), cpu_active_mask);
 
-    schedstat_inc(sd->lb_count[idle]);
-
 redo:
     if (!should_we_balance(&env)) {
         *continue_balancing = 0;
@@ -5047,8 +5113,6 @@ redo:
 
     group = find_busiest_group(&env);
     busiest = find_busiest_queue(&env, group);
-
-    schedstat_add(sd->lb_imbalance[idle], env.imbalance);
 
     env.src_cpu = busiest->cpu;
     env.src_rq = busiest;
@@ -5160,8 +5224,10 @@ more_balance:
             raw_spin_rq_unlock_irqrestore(busiest, flags);
 
             if (active_balance) {
-                stop_one_cpu_nowait(cpu_of(busiest)/*cpu*/,
-                    active_load_balance_cpu_stop/*fn*/, busiest,/*arg*/
+                stop_one_cpu_nowait(
+                    cpu_of(busiest)/*cpu*/,
+                    active_load_balance_cpu_stop/*fn*/,
+                    busiest,/*arg*/
                     &busiest->active_balance_work/*work_buf*/) {
 
                     *work_buf = (struct cpu_stop_work){ .fn = fn, .arg = arg, .caller = _RET_IP_, };
@@ -5282,7 +5348,9 @@ struct sched_group *find_busiest_group(struct lb_env *env)
 
     init_sd_lb_stats(&sds);
 
-    update_sd_lb_stats(env, &sds);
+    update_sd_lb_stats(env, &sds) {
+        --->
+    }
 
     if (!sds.busiest)
         goto out_balanced;
@@ -5317,8 +5385,8 @@ struct sched_group *find_busiest_group(struct lb_env *env)
             goto out_balanced;
 
         /* XXX broken for overlapping NUMA groups */
-        sds.avg_load = (sds.total_load * SCHED_CAPACITY_SCALE) /
-                sds.total_capacity;
+        sds.avg_load = (sds.total_load * SCHED_CAPACITY_SCALE)
+            / sds.total_capacity;
 
         if (local->avg_load >= sds.avg_load)
             goto out_balanced;
@@ -5327,17 +5395,18 @@ struct sched_group *find_busiest_group(struct lb_env *env)
             goto out_balanced;
     }
 
-    if (sds.prefer_sibling && local->group_type == group_has_spare &&
-        sibling_imbalance(env, &sds, busiest, local) > 1)
+    if (sds.prefer_sibling && local->group_type == group_has_spare
+        && sibling_imbalance(env, &sds, busiest, local) > 1) {
         goto force_balance;
+    }
 
     if (busiest->group_type != group_overloaded) {
         if (env->idle == CPU_NOT_IDLE) {
             goto out_balanced;
         }
 
-        if (busiest->group_type == group_smt_balance &&
-            smt_vs_nonsmt_groups(sds.local, sds.busiest)) {
+        if (busiest->group_type == group_smt_balance
+            && smt_vs_nonsmt_groups(sds.local, sds.busiest)) {
             /* Let non SMT CPU pull from SMT CPU sharing with sibling */
             goto force_balance;
         }
@@ -5353,7 +5422,9 @@ struct sched_group *find_busiest_group(struct lb_env *env)
 
 force_balance:
     /* Looks like there is an imbalance. Compute it */
-    calculate_imbalance(env, &sds);
+    calculate_imbalance(env, &sds) {
+        --->
+    }
     return env->imbalance ? sds.busiest : NULL;
 
 out_balanced:
@@ -5363,6 +5434,7 @@ out_balanced:
 ```
 
 #### update_sd_lb_stats
+
 ```c
 update_sd_lb_stats(env, &sds) {
     struct sched_group *sg = env->sd->groups;
@@ -5507,7 +5579,6 @@ update_sd_lb_stats(env, &sds) {
             if (!local_group && env->sd->flags & SD_ASYM_PACKING
                 && env->idle != CPU_NOT_IDLE && sgs->sum_h_nr_running
                 && sched_asym(env, sds, sgs, group)) {
-
                 sgs->group_asym_packing = 1;
             }
 
@@ -5559,12 +5630,10 @@ next_group:
 
         /* Update over-utilization (tipping point, U >= 0) indicator */
         WRITE_ONCE(rd->overutilized, sg_status & SG_OVERUTILIZED);
-        trace_sched_overutilized_tp(rd, sg_status & SG_OVERUTILIZED);
     } else if (sg_status & SG_OVERUTILIZED) {
         struct root_domain *rd = env->dst_rq->rd;
 
         WRITE_ONCE(rd->overutilized, SG_OVERUTILIZED);
-        trace_sched_overutilized_tp(rd, SG_OVERUTILIZED);
     }
 
     update_idle_cpu_scan(env, sum_util);
@@ -5680,9 +5749,11 @@ has_spare:
          * CPUs which means less opportunity to pull tasks. */
         if (sgs->idle_cpus > busiest->idle_cpus)
             return false;
-        else if ((sgs->idle_cpus == busiest->idle_cpus) &&
-            (sgs->sum_nr_running <= busiest->sum_nr_running))
+        else if ((sgs->idle_cpus == busiest->idle_cpus)
+            && (sgs->sum_nr_running <= busiest->sum_nr_running)) {
+
             return false;
+        }
 
         break;
     }
