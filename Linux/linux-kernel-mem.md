@@ -59,6 +59,7 @@
 * [cma](#cma)
     * [cma_init_reserved_areas](#cma_init_reserved_areas)
     * [cma_alloc](cma_alloc)
+* [mem_compact](#mem_compact)
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -5264,3 +5265,7 @@ out:
     return page;
 }
 ```
+
+# mem_compact
+
+* [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
