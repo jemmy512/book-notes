@@ -30,14 +30,16 @@
         * [put_prev_task_rt](#put_prev_task_rt)
         * [pick_next_task_rt](#pick_next_task_rt)
         * [set_next_task_rt](#set_next_task_rt)
-        * [push_rt_task](#push_rt_task)
-        * [pull_rt_task](#pull_rt_task)
         * [select_task_rq_rt](#select_task_rq_rt)
         * [wakeup_preempt_rt](#wakeup_preempt_rt)
         * [task_tick_rt](#task_tick_rt)
         * [yield_task_rt](#yield_task_rt)
         * [prio_changed_rt](#prio_changed_rt)
+        * [switched_from_rt](#switched_from_rt)
+        * [switched_to_rt](#switched_to_rq)
         * [balance_rt](#balance_rt)
+            * [push_rt_task](#push_rt_task)
+            * [pull_rt_task](#pull_rt_task)
     * [SCHED_CFS](#SCHED_CFS)
         * [enqueue_task_fair](#enqueue_task_fair)
         * [dequeue_task_fair](#dequeue_task_fair)
@@ -53,6 +55,10 @@
         * [sched_vslice](#sched_vslice)
         * [task_tick_fair](#task_tick_fair)
         * [task_fork_fair](#task_fork_fair)
+        * [yield_task_fair](#yield_task_fair)
+        * [prio_changed_fair](#prio_changed_fair)
+        * [switched_from_fair](#switched_from_fair)
+        * [switched_to_fair](#switched_to_fair)
     * [task_group](#task_group)
 
 * [sched_domain](#sched_domain)
@@ -115,7 +121,7 @@
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-
+    
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -649,7 +655,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
     lea SYS_ify (syscall_name), %rax; \
     syscall
-
+    
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -658,7 +664,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-
+        
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -678,16 +684,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-
+        
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-
+        
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-
+        
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -706,12 +712,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-
+        
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-
+        
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -848,19 +854,12 @@ export LD_LIBRARY_PATH=
     * [CFS调度器 - :one:PELT](http://www.wowotech.net/process_management/450.html)   [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
     * [CFS调度器 - 带宽控制](http://www.wowotech.net/process_management/451.html)
     * [CFS调度器 - 总结](http://www.wowotech.net/process_management/452.html)
-    * [CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
     * [ARM Linux上的系统调用代码分析](http://www.wowotech.net/process_management/syscall-arm.html)
     * [Linux调度器 - 用户空间接口](http://www.wowotech.net/process_management/scheduler-API.html)
     * [schedutil governor情景分析](http://www.wowotech.net/process_management/schedutil_governor.html)
     * [TLB flush](http://www.wowotech.net/memory_management/tlb-flush.html)
 
-* [内核工匠]()
-    * [Linux Scheduler之rt选核流程](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488449&idx=1&sn=fd4fb753e0395fb538295aa4145a8494)
-
 * [hellokitty2 进程管理](https://www.cnblogs.com/hellokitty2/category/1791168.html)
-    * [调度器24 - CFS任务选核](https://www.cnblogs.com/hellokitty2/p/15750931.html)
-    * [调度器32 - RT选核](https://www.cnblogs.com/hellokitty2/p/15881574.html)
-    * [调度器34 - RT负载均衡](https://www.cnblogs.com/hellokitty2/p/15974333.html)
 
 * [CHENG Jian Linux进程管理与调度](https://kernel.blog.csdn.net/article/details/51456569)
     * [WAKE_AFFINE](https://blog.csdn.net/gatieme/article/details/106315848)
@@ -883,7 +882,6 @@ export LD_LIBRARY_PATH=
         PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
 
 * [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
-* [Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
 
 ```c
 /* Schedule Class:
@@ -1982,259 +1980,11 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
     }
 ```
 
-### push_rt_tasks
-
-```c
-/* If the current CPU has more than one RT task, see if the non
- * running task can migrate over to a CPU that is running a task
- * of lesser priority. */
-push_rt_tasks()
-    push_rt_task(rq, false/*pull*/) {
-        if (!rq->rt.overloaded)
-            return 0;
-
-        next_task = pick_next_pushable_task(rq) {
-            return plist_first_entry(&rq->rt.pushable_tasks,
-                struct task_struct, pushable_tasks);
-        }
-        if (!next_task)
-            return 0;
-
-    retry:
-        if (unlikely(next_task->prio < rq->curr->prio)) {
-            resched_curr(rq);
-            return 0;
-        }
-
-        if (is_migration_disabled(next_task)) {
-            struct task_struct *push_task = NULL;
-            int cpu;
-
-            if (!pull || rq->push_busy)
-                return 0;
-
-            if (rq->curr->sched_class != &rt_sched_class)
-                return 0;
-
-            cpu = find_lowest_rq(rq->curr);
-                --->
-            if (cpu == -1 || cpu == rq->cpu)
-                return 0;
-
-            push_task = get_push_task(rq);
-            if (push_task) {
-                raw_spin_rq_unlock(rq);
-                stop_one_cpu_nowait(rq->cpu, push_cpu_stop, push_task, &rq->push_work) {
-
-                }
-                raw_spin_rq_lock(rq);
-            }
-
-            return 0;
-        }
-
-        if (WARN_ON(next_task == rq->curr))
-            return 0;
-
-        /* We might release rq lock */
-        get_task_struct(next_task);
-
-        /* find_lock_lowest_rq locks the rq if found */
-        lowest_rq = find_lock_lowest_rq(next_task, rq) {
-            struct rq *lowest_rq = NULL;
-            int tries;
-            int cpu;
-
-            for (tries = 0; tries < RT_MAX_TRIES; tries++) {
-                cpu = find_lowest_rq(task);
-                    --->
-                if ((cpu == -1) || (cpu == rq->cpu))
-                    break;
-
-                lowest_rq = cpu_rq(cpu);
-
-                if (lowest_rq->rt.highest_prio.curr <= task->prio) {
-                    lowest_rq = NULL;
-                    break;
-                }
-
-                /* if the prio of this runqueue changed, try again */
-                if (double_lock_balance(rq, lowest_rq)) {
-                    if (unlikely(task_rq(task) != rq
-                        || !cpumask_test_cpu(lowest_rq->cpu, &task->cpus_mask)
-                        || task_on_cpu(rq, task)
-                        || !rt_task(task)
-                        || is_migration_disabled(task)
-                        || !task_on_rq_queued(task))) {
-
-                        double_unlock_balance(rq, lowest_rq);
-                        lowest_rq = NULL;
-                        break;
-                    }
-                }
-
-                /* If this rq is still suitable use it. */
-                if (lowest_rq->rt.highest_prio.curr > task->prio)
-                    break;
-
-                /* try again */
-                double_unlock_balance(rq, lowest_rq);
-                lowest_rq = NULL;
-            }
-
-            return lowest_rq;
-        }
-        if (!lowest_rq) {
-            struct task_struct *task;
-
-            task = pick_next_pushable_task(rq);
-            if (task == next_task) {
-                goto out;
-            }
-
-            if (!task)
-                /* No more tasks, just exit */
-                goto out;
-
-            put_task_struct(next_task);
-            next_task = task;
-            goto retry;
-        }
-
-        deactivate_task(rq, next_task, 0) {
-            p->on_rq = (flags & DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;
-            dequeue_task(rq, p, flags) {
-                if (sched_core_enabled(rq)) {
-                    sched_core_dequeue(rq, p, flags);
-                }
-
-                if (!(flags & DEQUEUE_NOCLOCK))
-                    update_rq_clock(rq);
-
-                if (!(flags & DEQUEUE_SAVE)) {
-                    sched_info_dequeue(rq, p);
-                    psi_dequeue(p, flags & DEQUEUE_SLEEP);
-                }
-
-                uclamp_rq_dec(rq, p);
-                p->sched_class->dequeue_task(rq, p, flags);
-            }
-        }
-
-        set_task_cpu(next_task, lowest_rq->cpu);
-        activate_task(lowest_rq, next_task, 0) {
-            if (task_on_rq_migrating(p))
-                flags |= ENQUEUE_MIGRATED;
-            if (flags & ENQUEUE_MIGRATED)
-                sched_mm_cid_migrate_to(rq, p);
-
-            enqueue_task(rq, p, flags) {
-                if (!(flags & ENQUEUE_NOCLOCK))
-                    update_rq_clock(rq);
-
-                if (!(flags & ENQUEUE_RESTORE)) {
-                    sched_info_enqueue(rq, p);
-                    psi_enqueue(p, (flags & ENQUEUE_WAKEUP) && !(flags & ENQUEUE_MIGRATED));
-                }
-
-                uclamp_rq_inc(rq, p);
-                p->sched_class->enqueue_task(rq, p, flags);
-
-                if (sched_core_enabled(rq))
-                    sched_core_enqueue(rq, p);
-            }
-
-            p->on_rq = TASK_ON_RQ_QUEUED;
-        }
-        resched_curr(lowest_rq);
-        ret = 1;
-
-        double_unlock_balance(rq, lowest_rq);
-    out:
-        put_task_struct(next_task);
-
-        return ret;
-    }
-}
-```
-
-### pull_rt_task
-```c
-void pull_rt_task(struct rq *this_rq) {
-    int this_cpu = this_rq->cpu, cpu;
-    bool resched = false;
-    struct task_struct *p, *push_task;
-    struct rq *src_rq;
-    int rt_overload_count = rt_overloaded(this_rq);
-
-    if (likely(!rt_overload_count))
-        return;
-
-    smp_rmb();
-
-    if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
-        return;
-
-    for_each_cpu(cpu, this_rq->rd->rto_mask) {
-        if (this_cpu == cpu)
-            continue;
-
-        src_rq = cpu_rq(cpu);
-
-        if (src_rq->rt.highest_prio.next >= this_rq->rt.highest_prio.curr)
-            continue;
-
-        push_task = NULL;
-        double_lock_balance(this_rq, src_rq);
-
-        p = pick_highest_pushable_task(src_rq, this_cpu) {
-            struct plist_head *head = &rq->rt.pushable_tasks;
-            struct task_struct *p;
-
-            if (!has_pushable_tasks(rq))
-                return NULL;
-
-            plist_for_each_entry(p, head, pushable_tasks) {
-                ret = pick_rt_task(rq, p, cpu) {
-                    return (!task_on_cpu(rq, p) && cpumask_test_cpu(cpu, &p->cpus_mask));
-                }
-                if (ret)
-                    return p;
-            }
-
-            return NULL;
-        }
-
-        if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
-            if (p->prio < src_rq->curr->prio)
-                goto skip;
-
-            if (is_migration_disabled(p)) {
-                push_task = get_push_task(src_rq);
-            } else {
-                deactivate_task(src_rq, p, 0);
-                set_task_cpu(p, this_cpu);
-                activate_task(this_rq, p, 0);
-                resched = true;
-            }
-        }
-skip:
-        double_unlock_balance(this_rq, src_rq);
-
-        if (push_task) {
-            raw_spin_rq_unlock(this_rq);
-            stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
-                        push_task, &src_rq->push_work);
-            raw_spin_rq_lock(this_rq);
-        }
-    }
-
-    if (resched)
-        resched_curr(this_rq);
-}
-```
-
 ### select_task_rq_rt
+
+* [内核工匠 - Linux Scheduler之rt选核流程](https://mp.weixin.qq.com/s/DByOOnJYTA2BDrwTXSDBmQ)
+* [hellokitty2 - 调度器32 - RT选核](https://www.cnblogs.com/hellokitty2/p/15881574.html)
+
 
 ![](../Images/Kernel/proc-sched-rt-cpupri.png)
 
@@ -2513,7 +2263,6 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
         return;
 
     if (task_current(rq, p)) {
-#ifdef CONFIG_SMP
         if (oldprio < p->prio) {
             rt_queue_pull_task(rq) {
                 pull_rt_task(rq);
@@ -2526,11 +2275,6 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
         if (p->prio > rq->rt.highest_prio.curr) {
             resched_curr(rq);
         }
-#else
-        /* For UP simply resched on drop of prio */
-        if (oldprio < p->prio)
-            resched_curr(rq);
-#endif /* CONFIG_SMP */
     } else {
         /* This task is not running, but if it is
          * greater than the current running task
@@ -2541,7 +2285,49 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
 }
 ```
 
+#### switched_from_rt
+
+```c
+void switched_from_rt(struct rq *rq, struct task_struct *p)
+{
+    /* If there are other RT tasks then we will reschedule
+     * and the scheduling of the other RT tasks will handle
+     * the balancing. But if we are the last RT task
+     * we may need to handle the pulling of RT tasks
+     * now. */
+    if (!task_on_rq_queued(p) || rq->rt.rt_nr_running)
+        return;
+
+    rt_queue_pull_task(rq);
+}
+```
+
+#### switched_to_rt
+```c
+
+/* When switching a task to RT, we may overload the runqueue
+ * with RT tasks. In this case we try to push them off to
+ * other runqueues. */
+void switched_to_rt(struct rq *rq, struct task_struct *p)
+{
+    if (task_current(rq, p)) {
+        update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
+        return;
+    }
+
+    if (task_on_rq_queued(p)) {
+        if (p->nr_cpus_allowed > 1 && rq->rt.overloaded)
+            rt_queue_push_tasks(rq);
+        if (p->prio < rq->curr->prio && cpu_online(cpu_of(rq)))
+            resched_curr(rq);
+    }
+}
+```
+
 ### balance_rt
+
+* [hellokitty2 - 调度器34 - RT负载均衡](https://www.cnblogs.com/hellokitty2/p/15974333.html)
+
 ```c
 balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
     if (!on_rt_rq(&p->rt) && need_pull_rt_task(rq, p)) {
@@ -2552,6 +2338,258 @@ balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
     }
 
     return sched_stop_runnable(rq) || sched_dl_runnable(rq) || sched_rt_runnable(rq);
+```
+
+#### pull_rt_task
+```c
+void pull_rt_task(struct rq *this_rq) {
+    int this_cpu = this_rq->cpu, cpu;
+    bool resched = false;
+    struct task_struct *p, *push_task;
+    struct rq *src_rq;
+    int rt_overload_count = rt_overloaded(this_rq);
+
+    if (likely(!rt_overload_count))
+        return;
+
+    smp_rmb();
+
+    if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
+        return;
+
+    for_each_cpu(cpu, this_rq->rd->rto_mask) {
+        if (this_cpu == cpu)
+            continue;
+
+        src_rq = cpu_rq(cpu);
+
+        if (src_rq->rt.highest_prio.next >= this_rq->rt.highest_prio.curr)
+            continue;
+
+        push_task = NULL;
+        double_lock_balance(this_rq, src_rq);
+
+        p = pick_highest_pushable_task(src_rq, this_cpu) {
+            struct plist_head *head = &rq->rt.pushable_tasks;
+            struct task_struct *p;
+
+            if (!has_pushable_tasks(rq))
+                return NULL;
+
+            plist_for_each_entry(p, head, pushable_tasks) {
+                ret = pick_rt_task(rq, p, cpu) {
+                    return (!task_on_cpu(rq, p) && cpumask_test_cpu(cpu, &p->cpus_mask));
+                }
+                if (ret)
+                    return p;
+            }
+
+            return NULL;
+        }
+
+        if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
+            if (p->prio < src_rq->curr->prio)
+                goto skip;
+
+            if (is_migration_disabled(p)) {
+                push_task = get_push_task(src_rq);
+            } else {
+                deactivate_task(src_rq, p, 0);
+                set_task_cpu(p, this_cpu);
+                activate_task(this_rq, p, 0);
+                resched = true;
+            }
+        }
+skip:
+        double_unlock_balance(this_rq, src_rq);
+
+        if (push_task) {
+            raw_spin_rq_unlock(this_rq);
+            stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
+                        push_task, &src_rq->push_work);
+            raw_spin_rq_lock(this_rq);
+        }
+    }
+
+    if (resched)
+        resched_curr(this_rq);
+}
+```
+
+#### push_rt_tasks
+
+```c
+/* If the current CPU has more than one RT task, see if the non
+ * running task can migrate over to a CPU that is running a task
+ * of lesser priority. */
+push_rt_tasks()
+    push_rt_task(rq, false/*pull*/) {
+        if (!rq->rt.overloaded)
+            return 0;
+
+        next_task = pick_next_pushable_task(rq) {
+            return plist_first_entry(&rq->rt.pushable_tasks,
+                struct task_struct, pushable_tasks);
+        }
+        if (!next_task)
+            return 0;
+
+    retry:
+        if (unlikely(next_task->prio < rq->curr->prio)) {
+            resched_curr(rq);
+            return 0;
+        }
+
+        if (is_migration_disabled(next_task)) {
+            struct task_struct *push_task = NULL;
+            int cpu;
+
+            if (!pull || rq->push_busy)
+                return 0;
+
+            if (rq->curr->sched_class != &rt_sched_class)
+                return 0;
+
+            cpu = find_lowest_rq(rq->curr);
+                --->
+            if (cpu == -1 || cpu == rq->cpu)
+                return 0;
+
+            push_task = get_push_task(rq);
+            if (push_task) {
+                raw_spin_rq_unlock(rq);
+                stop_one_cpu_nowait(rq->cpu, push_cpu_stop, push_task, &rq->push_work) {
+
+                }
+                raw_spin_rq_lock(rq);
+            }
+
+            return 0;
+        }
+
+        if (WARN_ON(next_task == rq->curr))
+            return 0;
+
+        /* We might release rq lock */
+        get_task_struct(next_task);
+
+        /* find_lock_lowest_rq locks the rq if found */
+        lowest_rq = find_lock_lowest_rq(next_task, rq) {
+            struct rq *lowest_rq = NULL;
+            int tries;
+            int cpu;
+
+            for (tries = 0; tries < RT_MAX_TRIES; tries++) {
+                cpu = find_lowest_rq(task);
+                    --->
+                if ((cpu == -1) || (cpu == rq->cpu))
+                    break;
+
+                lowest_rq = cpu_rq(cpu);
+
+                if (lowest_rq->rt.highest_prio.curr <= task->prio) {
+                    lowest_rq = NULL;
+                    break;
+                }
+
+                /* if the prio of this runqueue changed, try again */
+                if (double_lock_balance(rq, lowest_rq)) {
+                    if (unlikely(task_rq(task) != rq
+                        || !cpumask_test_cpu(lowest_rq->cpu, &task->cpus_mask)
+                        || task_on_cpu(rq, task)
+                        || !rt_task(task)
+                        || is_migration_disabled(task)
+                        || !task_on_rq_queued(task))) {
+
+                        double_unlock_balance(rq, lowest_rq);
+                        lowest_rq = NULL;
+                        break;
+                    }
+                }
+
+                /* If this rq is still suitable use it. */
+                if (lowest_rq->rt.highest_prio.curr > task->prio)
+                    break;
+
+                /* try again */
+                double_unlock_balance(rq, lowest_rq);
+                lowest_rq = NULL;
+            }
+
+            return lowest_rq;
+        }
+        if (!lowest_rq) {
+            struct task_struct *task;
+
+            task = pick_next_pushable_task(rq);
+            if (task == next_task) {
+                goto out;
+            }
+
+            if (!task)
+                /* No more tasks, just exit */
+                goto out;
+
+            put_task_struct(next_task);
+            next_task = task;
+            goto retry;
+        }
+
+        deactivate_task(rq, next_task, 0) {
+            p->on_rq = (flags & DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;
+            dequeue_task(rq, p, flags) {
+                if (sched_core_enabled(rq)) {
+                    sched_core_dequeue(rq, p, flags);
+                }
+
+                if (!(flags & DEQUEUE_NOCLOCK))
+                    update_rq_clock(rq);
+
+                if (!(flags & DEQUEUE_SAVE)) {
+                    sched_info_dequeue(rq, p);
+                    psi_dequeue(p, flags & DEQUEUE_SLEEP);
+                }
+
+                uclamp_rq_dec(rq, p);
+                p->sched_class->dequeue_task(rq, p, flags);
+            }
+        }
+
+        set_task_cpu(next_task, lowest_rq->cpu);
+        activate_task(lowest_rq, next_task, 0) {
+            if (task_on_rq_migrating(p))
+                flags |= ENQUEUE_MIGRATED;
+            if (flags & ENQUEUE_MIGRATED)
+                sched_mm_cid_migrate_to(rq, p);
+
+            enqueue_task(rq, p, flags) {
+                if (!(flags & ENQUEUE_NOCLOCK))
+                    update_rq_clock(rq);
+
+                if (!(flags & ENQUEUE_RESTORE)) {
+                    sched_info_enqueue(rq, p);
+                    psi_enqueue(p, (flags & ENQUEUE_WAKEUP) && !(flags & ENQUEUE_MIGRATED));
+                }
+
+                uclamp_rq_inc(rq, p);
+                p->sched_class->enqueue_task(rq, p, flags);
+
+                if (sched_core_enabled(rq))
+                    sched_core_enqueue(rq, p);
+            }
+
+            p->on_rq = TASK_ON_RQ_QUEUED;
+        }
+        resched_curr(lowest_rq);
+        ret = 1;
+
+        double_unlock_balance(rq, lowest_rq);
+    out:
+        put_task_struct(next_task);
+
+        return ret;
+    }
+}
 ```
 
 ## SCHED_CFS
@@ -3245,6 +3283,8 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
 ```
 
 #### select_task_rq_fair
+
+* [hellokitty2 - 调度器24 - CFS任务选核](https://www.cnblogs.com/hellokitty2/p/15750931.html)
 
 ```c
 try_to_wake_up() { /* wake up select */
@@ -4140,9 +4180,170 @@ task_fork_fair(struct task_struct *p)
     se->vruntime -= cfs_rq->min_vruntime;
 ```
 
+#### yield_task_fair
+
+```c
+yield_task_fair(struct rq *rq)
+{
+    struct task_struct *curr = rq->curr;
+    struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+    struct sched_entity *se = &curr->se;
+
+    if (unlikely(rq->nr_running == 1))
+        return;
+
+    clear_buddies(cfs_rq, se);
+
+    update_rq_clock(rq);
+    update_curr(cfs_rq);
+    rq_clock_skip_update(rq);
+
+    se->deadline += calc_delta_fair(se->slice, se);
+}
+```
+
+#### prio_changed_fair
+```c
+static void
+prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
+{
+    if (!task_on_rq_queued(p))
+        return;
+
+    if (rq->cfs.nr_running == 1)
+        return;
+
+    /* Reschedule if we are currently running on this runqueue and
+     * our priority decreased, or if we are not currently running on
+     * this runqueue and our priority is higher than the current's */
+    if (task_current(rq, p)) {
+        if (p->prio > oldprio)
+            resched_curr(rq);
+    } else
+        wakeup_preempt(rq, p, 0);
+}
+
+```
+
+#### switched_from_fair
+
+```c
+void switched_from_fair(struct rq *rq, struct task_struct *p)
+{
+	detach_task_cfs_rq(p) {
+        struct sched_entity *se = &p->se;
+
+	    detach_entity_cfs_rq(se) {
+            struct cfs_rq *cfs_rq = cfs_rq_of(se);
+
+            /*
+            * In case the task sched_avg hasn't been attached:
+            * - A forked task which hasn't been woken up by wake_up_new_task().
+            * - A task which has been woken up by try_to_wake_up() but is
+            *   waiting for actually being woken up by sched_ttwu_pending().
+            */
+            if (!se->avg.last_update_time)
+                return;
+
+            /* Catch up with the cfs_rq and remove our load when we leave */
+            update_load_avg(cfs_rq, se, 0);
+            detach_entity_load_avg(cfs_rq, se) {
+                dequeue_load_avg(cfs_rq, se);
+                sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
+                sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
+                /* See update_cfs_rq_load_avg() */
+                cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
+                                cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
+
+                sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
+                sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
+                /* See update_cfs_rq_load_avg() */
+                cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
+                                    cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
+
+                add_tg_cfs_propagate(cfs_rq, -se->avg.load_sum);
+
+                cfs_rq_util_change(cfs_rq, 0);
+            }
+            update_tg_load_avg(cfs_rq);
+            propagate_entity_cfs_rq(se);
+        }
+    }
+}
+```
+
+#### switched_to_fair
+
+```c
+void switched_to_fair(struct rq *rq, struct task_struct *p)
+{
+    attach_task_cfs_rq(p) {
+        struct sched_entity *se = &p->se;
+
+	    attach_entity_cfs_rq(se) {
+            struct cfs_rq *cfs_rq = cfs_rq_of(se);
+
+            /* Synchronize entity with its cfs_rq */
+            update_load_avg(cfs_rq, se, sched_feat(ATTACH_AGE_LOAD) ? 0 : SKIP_AGE_LOAD);
+            attach_entity_load_avg(cfs_rq, se) {
+                /* cfs_rq->avg.period_contrib can be used for both cfs_rq and se.
+                 * See ___update_load_avg() for details. */
+                u32 divider = get_pelt_divider(&cfs_rq->avg);
+
+                /* When we attach the @se to the @cfs_rq, we must align the decay
+                 * window because without that, really weird and wonderful things can
+                 * happen.
+                 *
+                 * XXX illustrate */
+                se->avg.last_update_time = cfs_rq->avg.last_update_time;
+                se->avg.period_contrib = cfs_rq->avg.period_contrib;
+
+                /*
+                * Hell(o) Nasty stuff.. we need to recompute _sum based on the new
+                * period_contrib. This isn't strictly correct, but since we're
+                * entirely outside of the PELT hierarchy, nobody cares if we truncate
+                * _sum a little.
+                */
+                se->avg.util_sum = se->avg.util_avg * divider;
+
+                se->avg.runnable_sum = se->avg.runnable_avg * divider;
+
+                se->avg.load_sum = se->avg.load_avg * divider;
+                if (se_weight(se) < se->avg.load_sum)
+                    se->avg.load_sum = div_u64(se->avg.load_sum, se_weight(se));
+                else
+                    se->avg.load_sum = 1;
+
+                enqueue_load_avg(cfs_rq, se);
+                cfs_rq->avg.util_avg += se->avg.util_avg;
+                cfs_rq->avg.util_sum += se->avg.util_sum;
+                cfs_rq->avg.runnable_avg += se->avg.runnable_avg;
+                cfs_rq->avg.runnable_sum += se->avg.runnable_sum;
+
+                add_tg_cfs_propagate(cfs_rq, se->avg.load_sum);
+
+                cfs_rq_util_change(cfs_rq, 0);
+            }
+            update_tg_load_avg(cfs_rq);
+            propagate_entity_cfs_rq(se);
+        }
+    }
+
+    if (task_on_rq_queued(p)) {
+        /* We were most likely switched from sched_rt, so
+         * kick off the schedule if running, otherwise just see
+         * if we can still preempt the current task. */
+        if (task_current(rq, p))
+            resched_curr(rq);
+        else
+            wakeup_preempt(rq, p, 0);
+    }
+}
+```
+
 ## task_group
 
-* [内核工匠 - CFS组调度](http://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247488762&idx=1&sn=4e835ac76d2125d29f61780feef65504)
+* [内核工匠 - CFS组调度](https://mp.weixin.qq.com/s/BbXFZSq6xFclRahX7oPD9A)
 
 ![](../Images/Kernel/proc-sched-task_group.png)
 
@@ -4165,9 +4366,9 @@ static struct cftype cpu_legacy_files[] = {
     }
 };
 
-cpu_shares_write_u64()
-    sched_group_set_shares(css_tg(css), scale_load(shareval))
-        __sched_group_set_shares(tg, shares)
+cpu_shares_write_u64() {
+    sched_group_set_shares(css_tg(css), scale_load(shareval)) {
+        __sched_group_set_shares(tg, shares) {
             tg->shares = shares;
             for_each_possible_cpu(i) {
                 struct rq *rq = cpu_rq(i);
@@ -4190,6 +4391,9 @@ cpu_shares_write_u64()
                 }
                 rq_unlock_irqrestore(rq, &rf);
             }
+        }
+    }
+}
 ```
 
 ![](../Images/Kernel/proc-sched-task-group-period-quota.png)
@@ -4283,6 +4487,9 @@ struct task_group {
 ```
 
 # sched_domain
+
+* [极致Linux内核 - Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
+
 ```c
 sched_init_numa() {
 
@@ -4338,12 +4545,12 @@ sched_init_domains(cpu_active_mask) {
                             sd_flags = (*tl->sd_flags)();
                         }
                         *sd = (struct sched_domain) {
-                            .min_interval        = sd_weight,
-                            .max_interval        = 2*sd_weight,
+                            .min_interval       = sd_weight,
+                            .max_interval       = 2*sd_weight,
                             .busy_factor        = 16,
-                            .imbalance_pct        = 117,
+                            .imbalance_pct      = 117,
 
-                            .cache_nice_tries    = 0,
+                            .cache_nice_tries   = 0,
 
                             .flags = 1*SD_BALANCE_NEWIDLE
                                 | 1*SD_BALANCE_EXEC
@@ -4356,11 +4563,11 @@ sched_init_domains(cpu_active_mask) {
                                 | 1*SD_PREFER_SIBLING
                                 | 0*SD_NUMA
                                 | sd_flags ,
-                            .last_balance        = jiffies,
-                            .balance_interval    = sd_weight,
+                            .last_balance           = jiffies,
+                            .balance_interval       = sd_weight,
                             .max_newidle_lb_cost    = 0,
-                            .last_decay_max_lb_cost    = jiffies,
-                            .child            = child,
+                            .last_decay_max_lb_cost = jiffies,
+                            .child                  = child,
                         };
 
                         sd_span = sched_domain_span(sd);
@@ -4385,9 +4592,9 @@ sched_init_domains(cpu_active_mask) {
                             sd->flags &= ~SD_PREFER_SIBLING;
                             sd->flags |= SD_SERIALIZE;
                             if (sched_domains_numa_distance[tl->numa_level] > node_reclaim_distance) {
-                                sd->flags &= ~(SD_BALANCE_EXEC |
-                                        SD_BALANCE_FORK |
-                                        SD_WAKE_AFFINE);
+                                sd->flags &= ~(
+                                    SD_BALANCE_EXEC | SD_BALANCE_FORK | SD_WAKE_AFFINE
+                                );
                             }
                         } else {
                             sd->cache_nice_tries = 1;
@@ -4411,12 +4618,13 @@ sched_init_domains(cpu_active_mask) {
                         sched_domain_level_max = max(sched_domain_level_max, sd->level);
                         child->parent = sd;
 
-                        if (!cpumask_subset(sched_domain_span(child),
-                                    sched_domain_span(sd))) {
+                        if (!cpumask_subset(sched_domain_span(child), sched_domain_span(sd))) {
                             /* Fixup, ensure @sd has at least @child CPUs. */
-                            cpumask_or(sched_domain_span(sd),
+                            cpumask_or(
                                 sched_domain_span(sd),
-                                sched_domain_span(child));
+                                sched_domain_span(sd),
+                                sched_domain_span(child)
+                            );
                         }
 
                     }
@@ -4441,11 +4649,13 @@ sched_init_domains(cpu_active_mask) {
             for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
                 sd->span_weight = cpumask_weight(sched_domain_span(sd));
                 if (sd->flags & SD_OVERLAP) {
-                    if (build_overlap_sched_groups(sd, i))
+                    if (build_overlap_sched_groups(sd, i)) {
                         goto error;
+                    }
                 } else {
-                    if (build_sched_groups(sd, i))
+                    if (build_sched_groups(sd, i)) {
                         goto error;
+                    }
                 }
             }
         }
@@ -4547,6 +4757,10 @@ sched_init_domains(cpu_active_mask) {
 ```
 
 # load_balance
+
+* [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
+
+---
 
 1. Load balance
     * tick_balance
@@ -6498,8 +6712,35 @@ try_to_wake_up() {
             wakeup_preempt(rq, p, wake_flags) {
                 if (p->sched_class == rq->curr->sched_class)
                     rq->curr->sched_class->wakeup_preempt(rq, p, flags);
-                else if (sched_class_above(p->sched_class, rq->curr->sched_class))
-                    resched_curr(rq);
+                else if (sched_class_above(p->sched_class, rq->curr->sched_class) ) {
+                    resched_curr(rq) {
+                        struct task_struct *curr = rq->curr;
+                        int cpu;
+
+                        lockdep_assert_rq_held(rq);
+
+                        if (test_tsk_need_resched(curr))
+                            return;
+
+                        cpu = cpu_of(rq);
+
+                        if (cpu == smp_processor_id()) {
+                            set_tsk_need_resched(curr) {
+                                set_tsk_thread_flag(tsk,TIF_NEED_RESCHED);
+                            }
+                            set_preempt_need_resched() {
+                                current_thread_info()->preempt.need_resched = 0;
+                            }
+                            return;
+                        }
+
+                        if (set_nr_and_not_polling(curr)) {
+                            smp_send_reschedule(cpu) {
+                                arch_smp_send_reschedule(cpu);
+                            }
+                        }
+                    }
+                }
 
                 /*
                 * A queue event has occurred, and we're going to schedule.  In
@@ -8127,7 +8368,7 @@ static int kthread(void *_create)
 
 # kswapd
 
-* [kswapd介绍 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487168&idx=1&sn=b8ae6d5af2f28119fe9bdbcca8474582)
+* [kswapd介绍 - 内核工匠](https://mp.weixin.qq.com/s/1iVJC8Ca5OQfdEIYQW-4GQ)
 
 # cmwq
 
