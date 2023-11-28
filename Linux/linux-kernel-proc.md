@@ -62,6 +62,12 @@
     * [task_group](#task_group)
 
 * [sched_domain](#sched_domain)
+* [cpu capacity](#cpu_capacity)
+    * [parse_dt_topology](#parse_dt_topology)
+    * [parse_socket](#parse_socket)
+    * [parse_cluster](#parse_cluster)
+    * [parse_core](#parse_core)
+
 * [load_balance](#load_balance)
     * [tick_balance](#tick_balance)
     * [nohz_idle_balance](#nohz_idle_balance)
@@ -121,7 +127,7 @@
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-    
+
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -655,7 +661,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
     lea SYS_ify (syscall_name), %rax; \
     syscall
-    
+
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -664,7 +670,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-        
+
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -684,16 +690,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-        
+
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-        
+
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-        
+
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -712,12 +718,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-        
+
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-        
+
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -851,7 +857,7 @@ export LD_LIBRARY_PATH=
 * [wowo Tech](http://www.wowotech.net/sort/process_management)
     * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)     [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)   [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
     * [CFS调度器 - 组调度](http://www.wowotech.net/process_management/449.html)
-    * [CFS调度器 - :one:PELT](http://www.wowotech.net/process_management/450.html)   [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
+    * [CFS调度器 - :one:PELT](http://www.wowotech.net/process_management/PELT.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/450.html)
     * [CFS调度器 - 带宽控制](http://www.wowotech.net/process_management/451.html)
     * [CFS调度器 - 总结](http://www.wowotech.net/process_management/452.html)
     * [ARM Linux上的系统调用代码分析](http://www.wowotech.net/process_management/syscall-arm.html)
@@ -4753,6 +4759,267 @@ sched_init_domains(cpu_active_mask) {
 
         return ret;
     }
+}
+```
+
+# cpu_capacity
+
+* [DumpStack - 负载跟踪](http://www.dumpstack.cn/index.php/category/tracking)
+
+```c
+dmips = dmips_mhz * policy->cpuinfo.max_freq
+cpu_scale = (dmips * 1024) / dmips[MAX]
+```
+
+* raw_capacity
+* cpu_scale
+
+    Normalized cpu capacity towards the maximum core and highest frequency, a fixed value.
+
+    * arch_scale_cpu_capacity(): get cpu capacity
+    * topology_get_cpu_scale(): get cpu_scale of a cpu
+    * topology_set_cpu_scale(): set the cpu_scale of a cpu
+
+* arch_freq_scale
+
+    The percpu variable is a changing value that represents the CPU's current frequency normalized to 1024, relative to the maximum frequency of that CPU.
+
+    * arch_scale_freq_capacity()
+    * topology_get_freq_scale()
+    * arch_set_freq_scale()
+    * topology_set_freq_scale()
+    * set time point
+        * cpufreq_driver_fast_switch()
+        * cpufreq_freq_transition_end()
+* cpu_capacity_orig vs cpu_capacity
+    * capacity_of(): capacity for cfs tasks
+    * capacity_orig_of()
+    * update_cpu_capacity(): update both cpu_capacity_orig and cpu_capacity
+    * scale_rt_capacity(): caculate cfs capacity
+
+## parse_dt_topology
+
+```c
+parse_dt_topology(void)
+{
+    struct device_node *cn, *map;
+    int ret = 0;
+    int cpu;
+
+    cn = of_find_node_by_path("/cpus");
+    map = of_get_child_by_name(cn, "cpu-map");
+    ret = parse_socket(map);
+
+    topology_normalize_cpu_scale() {
+        u64 capacity;
+        u64 capacity_scale;
+        int cpu;
+
+        capacity_scale = 1;
+        for_each_possible_cpu(cpu) {
+            capacity = raw_capacity[cpu] * per_cpu(freq_factor, cpu);
+            capacity_scale = max(capacity, capacity_scale);
+        }
+
+        for_each_possible_cpu(cpu) {
+            capacity = raw_capacity[cpu] * per_cpu(freq_factor, cpu);
+            capacity = div64_u64(capacity << SCHED_CAPACITY_SHIFT, capacity_scale);
+            topology_set_cpu_scale(cpu, capacity) {
+                per_cpu(cpu_scale, cpu) = capacity;
+            }
+        }
+    }
+
+    return ret;
+}
+```
+
+## parse_socket
+
+```c
+parse_socket(struct device_node *socket)
+{
+    char name[20];
+    struct device_node *c;
+    bool has_socket = false;
+    int package_id = 0, ret;
+
+    do {
+        snprintf(name, sizeof(name), "socket%d", package_id);
+        c = of_get_child_by_name(socket, name);
+        if (c) {
+            has_socket = true;
+            ret = parse_cluster(c, package_id, -1, 0);
+            of_node_put(c);
+            if (ret != 0)
+                return ret;
+        }
+        package_id++;
+    } while (c);
+
+    if (!has_socket)
+        ret = parse_cluster(socket, 0, -1, 0);
+
+    return ret;
+}
+```
+
+## parse_cluster
+
+```c
+parse_cluster(struct device_node *cluster, int package_id,
+                int cluster_id, int depth)
+{
+    char name[20];
+    bool leaf = true;
+    bool has_cores = false;
+    struct device_node *c;
+    int core_id = 0;
+    int i, ret;
+
+    /* First check for child clusters */
+    i = 0;
+    do {
+        snprintf(name, sizeof(name), "cluster%d", i);
+        c = of_get_child_by_name(cluster, name);
+        if (c) {
+            leaf = false;
+            ret = parse_cluster(c, package_id, i, depth + 1);
+            of_node_put(c);
+            if (ret != 0)
+                return ret;
+        }
+        i++;
+    } while (c);
+
+    /* Now check for cores */
+    i = 0;
+    do {
+        snprintf(name, sizeof(name), "core%d", i);
+        c = of_get_child_by_name(cluster, name);
+        if (c) {
+            has_cores = true;
+
+            if (depth == 0) {
+                of_node_put(c);
+                return -EINVAL;
+            }
+
+            if (leaf) {
+                ret = parse_core(c, package_id, cluster_id, core_id++);
+            } else {
+                ret = -EINVAL;
+            }
+
+            of_node_put(c);
+            if (ret != 0)
+                return ret;
+        }
+        i++;
+    } while (c);
+
+    return 0;
+}
+```
+
+## parse_core
+
+```c
+parse_core(struct device_node *core, int package_id,
+                int cluster_id, int core_id)
+{
+    char name[20];
+    bool leaf = true;
+    int i = 0;
+    int cpu;
+    struct device_node *t;
+
+    do {
+        snprintf(name, sizeof(name), "thread%d", i);
+        t = of_get_child_by_name(core, name);
+        if (t) {
+            leaf = false;
+            cpu = get_cpu_for_node(t);
+            if (cpu >= 0) {
+                cpu_topology[cpu].package_id = package_id;
+                cpu_topology[cpu].cluster_id = cluster_id;
+                cpu_topology[cpu].core_id = core_id;
+                cpu_topology[cpu].thread_id = i;
+            } else if (cpu != -ENODEV) {
+                of_node_put(t);
+                return -EINVAL;
+            }
+            of_node_put(t);
+        }
+        i++;
+    } while (t);
+
+    cpu = get_cpu_for_node(core);
+    if (cpu >= 0) {
+        if (!leaf) {
+            return -EINVAL;
+        }
+
+        cpu_topology[cpu].package_id = package_id;
+        cpu_topology[cpu].cluster_id = cluster_id;
+        cpu_topology[cpu].core_id = core_id;
+    } else if (leaf && cpu != -ENODEV) {
+        return -EINVAL;
+    }
+
+    return 0;
+}
+```
+
+```c
+get_cpu_for_node(struct device_node *node)
+{
+    struct device_node *cpu_node;
+    int cpu;
+
+    cpu_node = of_parse_phandle(node, "cpu", 0);
+    if (!cpu_node)
+        return -1;
+
+    cpu = of_cpu_node_to_id(cpu_node);
+    if (cpu >= 0) {
+        topology_parse_cpu_capacity(cpu_node, cpu) {
+            struct clk *cpu_clk;
+            static bool cap_parsing_failed;
+            int ret;
+            u32 cpu_capacity;
+
+            if (cap_parsing_failed)
+                return false;
+
+            ret = of_property_read_u32(cpu_node, "capacity-dmips-mhz", &cpu_capacity);
+            if (!ret) {
+                if (!raw_capacity) {
+                    raw_capacity = kcalloc(num_possible_cpus(),
+                                sizeof(*raw_capacity),
+                                GFP_KERNEL);
+                    if (!raw_capacity) {
+                        cap_parsing_failed = true;
+                        return false;
+                    }
+                }
+                raw_capacity[cpu] = cpu_capacity;
+
+                cpu_clk = of_clk_get(cpu_node, 0);
+                if (!PTR_ERR_OR_ZERO(cpu_clk)) {
+                    per_cpu(freq_factor, cpu) = clk_get_rate(cpu_clk) / 1000;
+                    clk_put(cpu_clk);
+                }
+            } else {
+                cap_parsing_failed = true;
+                free_raw_capacity();
+            }
+
+            return !ret;
+        }
+    }
+    of_node_put(cpu_node);
+    return cpu;
 }
 ```
 
