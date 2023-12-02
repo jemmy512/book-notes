@@ -68,6 +68,11 @@
     * [parse_cluster](#parse_cluster)
     * [parse_core](#parse_core)
 
+* [PELT](#PELT)
+    * [___update_load_sum](#___update_load_sum)
+    * [update_load_avg](#update_load_avg)
+        * [update_cfs_rq_load_avg](#update_cfs_rq_load_avg)
+
 * [load_balance](#load_balance)
     * [tick_balance](#tick_balance)
     * [nohz_idle_balance](#nohz_idle_balance)
@@ -854,10 +859,9 @@ export LD_LIBRARY_PATH=
     * [5. CFS调度器](https://www.cnblogs.com/LoyenWang/p/12495319.html)
     * [6. 实时调度器](https://www.cnblogs.com/LoyenWang/p/12584345.html)
 
-* [wowo Tech](http://www.wowotech.net/sort/process_management)
+* [Wowo Tech](http://www.wowotech.net/sort/process_management)
     * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)     [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)   [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
     * [CFS调度器 - 组调度](http://www.wowotech.net/process_management/449.html)
-    * [CFS调度器 - :one:PELT](http://www.wowotech.net/process_management/PELT.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/450.html)
     * [CFS调度器 - 带宽控制](http://www.wowotech.net/process_management/451.html)
     * [CFS调度器 - 总结](http://www.wowotech.net/process_management/452.html)
     * [ARM Linux上的系统调用代码分析](http://www.wowotech.net/process_management/syscall-arm.html)
@@ -4289,47 +4293,8 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
 	    attach_entity_cfs_rq(se) {
             struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-            /* Synchronize entity with its cfs_rq */
             update_load_avg(cfs_rq, se, sched_feat(ATTACH_AGE_LOAD) ? 0 : SKIP_AGE_LOAD);
-            attach_entity_load_avg(cfs_rq, se) {
-                /* cfs_rq->avg.period_contrib can be used for both cfs_rq and se.
-                 * See ___update_load_avg() for details. */
-                u32 divider = get_pelt_divider(&cfs_rq->avg);
-
-                /* When we attach the @se to the @cfs_rq, we must align the decay
-                 * window because without that, really weird and wonderful things can
-                 * happen.
-                 *
-                 * XXX illustrate */
-                se->avg.last_update_time = cfs_rq->avg.last_update_time;
-                se->avg.period_contrib = cfs_rq->avg.period_contrib;
-
-                /*
-                * Hell(o) Nasty stuff.. we need to recompute _sum based on the new
-                * period_contrib. This isn't strictly correct, but since we're
-                * entirely outside of the PELT hierarchy, nobody cares if we truncate
-                * _sum a little.
-                */
-                se->avg.util_sum = se->avg.util_avg * divider;
-
-                se->avg.runnable_sum = se->avg.runnable_avg * divider;
-
-                se->avg.load_sum = se->avg.load_avg * divider;
-                if (se_weight(se) < se->avg.load_sum)
-                    se->avg.load_sum = div_u64(se->avg.load_sum, se_weight(se));
-                else
-                    se->avg.load_sum = 1;
-
-                enqueue_load_avg(cfs_rq, se);
-                cfs_rq->avg.util_avg += se->avg.util_avg;
-                cfs_rq->avg.util_sum += se->avg.util_sum;
-                cfs_rq->avg.runnable_avg += se->avg.runnable_avg;
-                cfs_rq->avg.runnable_sum += se->avg.runnable_sum;
-
-                add_tg_cfs_propagate(cfs_rq, se->avg.load_sum);
-
-                cfs_rq_util_change(cfs_rq, 0);
-            }
+            attach_entity_load_avg(cfs_rq, se);
             update_tg_load_avg(cfs_rq);
             propagate_entity_cfs_rq(se);
         }
@@ -4764,7 +4729,7 @@ sched_init_domains(cpu_active_mask) {
 
 # cpu_capacity
 
-* [DumpStack - 负载跟踪](http://www.dumpstack.cn/index.php/category/tracking)
+* [DumpStack - 负载跟踪 - cpu算力](http://www.dumpstack.cn/index.php/2022/06/02/743.html  )
 
 ```c
 dmips = dmips_mhz * policy->cpuinfo.max_freq
@@ -5023,6 +4988,279 @@ get_cpu_for_node(struct device_node *node)
 }
 ```
 
+# PELT
+
+* [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
+* [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
+
+![](../Images/Kernel/proc-shced-cfs-update_load_avg.png)
+
+## ___update_load_sum
+
+```c
+int ___update_load_sum(u64 now, struct sched_avg *sa,
+		  unsigned long load, unsigned long runnable, int running)
+{
+	u64 delta;
+
+	delta = now - sa->last_update_time;
+
+	if ((s64)delta < 0) {
+		sa->last_update_time = now;
+		return 0;
+	}
+
+	delta >>= 10;
+	if (!delta)
+		return 0;
+
+	sa->last_update_time += delta << 10;
+
+	if (!load)
+		runnable = running = 0;
+
+    ret = accumulate_sum(delta, sa, load, runnable, running) {
+        u32 contrib = (u32)delta; /* p == 0 -> delta < 1024 */
+        u64 periods;
+
+        delta += sa->period_contrib;
+        periods = delta / 1024; /* A period is 1024us (~1ms) */
+
+        /* Step 1: decay old *_sum if we crossed period boundaries. */
+        if (periods) {
+            sa->load_sum = decay_load(sa->load_sum, periods);
+            sa->runnable_sum = decay_load(sa->runnable_sum, periods);
+            sa->util_sum = decay_load((u64)(sa->util_sum), periods);
+
+            /* Step 2 */
+            delta %= 1024;
+            if (load) {
+                contrib = __accumulate_pelt_segments(periods, 1024 - sa->period_contrib, delta) {
+                    u32 c1, c2, c3 = d3; /* y^0 == 1 */
+
+                    /* c1 = d1 y^p */
+                    c1 = decay_load((u64)d1, periods);
+
+                    /*            p-1
+                     * c2 = 1024 \Sum y^n
+                     *            n=1
+                     *
+                     *              inf        inf
+                     *    = 1024 ( \Sum y^n - \Sum y^n - y^0 )
+                     *              n=0        n=p */
+                    c2 = LOAD_AVG_MAX - decay_load(LOAD_AVG_MAX, periods) - 1024;
+
+                    return c1 + c2 + c3;
+                }
+            }
+        }
+        sa->period_contrib = delta;
+
+        if (load)
+            sa->load_sum += load * contrib;
+        if (runnable)
+            sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT;
+        if (running)
+            sa->util_sum += contrib << SCHED_CAPACITY_SHIFT;
+
+        return periods;
+    }
+	if (!ret)
+		return 0;
+
+	return 1;
+}
+
+static __always_inline void
+___update_load_avg(struct sched_avg *sa, unsigned long load)
+{
+    u32 divider = get_pelt_divider(sa) {
+        #define LOAD_AVG_MAX        47742
+        #define PELT_MIN_DIVIDER    (LOAD_AVG_MAX - 1024)
+        return PELT_MIN_DIVIDER + avg->period_contrib;
+    }
+
+    /*                              contrib
+     * load_avg = --------------------------------------------- * se_weight(se)
+     *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
+    sa->load_avg = div_u64(load * sa->load_sum, divider);
+
+    /*                              runnable * contrib
+     * runnable_avg = --------------------------------------------- * 1024
+     *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
+    sa->runnable_avg = div_u64(sa->runnable_sum, divider);
+
+    /*                              contrib
+     * util_avg = --------------------------------------------- * 1024
+     *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
+    WRITE_ONCE(sa->util_avg, sa->util_sum / divider);
+}
+```
+
+## update_load_avg
+
+```c
+void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
+{
+    u64 now = cfs_rq_clock_pelt(cfs_rq);
+    int decayed;
+
+    if (se->avg.last_update_time && !(flags & SKIP_AGE_LOAD)) {
+        __update_load_avg_se(now, cfs_rq, se) {
+            --->
+        }
+    }
+
+    decayed  = update_cfs_rq_load_avg(now, cfs_rq) {
+        --->
+    }
+    decayed |= propagate_entity_load_avg(se);
+
+    if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
+        /* DO_ATTACH means we're here from enqueue_entity().
+         * !last_update_time means we've passed through
+         * migrate_task_rq_fair() indicating we migrated. */
+        attach_entity_load_avg(cfs_rq, se) {
+            u32 divider = get_pelt_divider(&cfs_rq->avg);
+
+            se->avg.last_update_time = cfs_rq->avg.last_update_time;
+            se->avg.period_contrib = cfs_rq->avg.period_contrib;
+
+            se->avg.util_sum = se->avg.util_avg * divider;
+            se->avg.runnable_sum = se->avg.runnable_avg * divider;
+
+            se->avg.load_sum = se->avg.load_avg * divider;
+            if (se_weight(se) < se->avg.load_sum)
+                se->avg.load_sum = div_u64(se->avg.load_sum, se_weight(se));
+            else
+                se->avg.load_sum = 1;
+
+            enqueue_load_avg(cfs_rq, se) {
+                cfs_rq->avg.load_avg += se->avg.load_avg;
+                cfs_rq->avg.load_sum += se_weight(se) * se->avg.load_sum;
+            }
+            cfs_rq->avg.util_avg += se->avg.util_avg;
+            cfs_rq->avg.util_sum += se->avg.util_sum;
+            cfs_rq->avg.runnable_avg += se->avg.runnable_avg;
+            cfs_rq->avg.runnable_sum += se->avg.runnable_sum;
+
+            add_tg_cfs_propagate(cfs_rq, se->avg.load_sum);
+
+            cfs_rq_util_change(cfs_rq, 0);
+        }
+        update_tg_load_avg(cfs_rq) {
+            long delta;
+            u64 now;
+
+            if (cfs_rq->tg == &root_task_group)
+                return;
+
+            now = sched_clock_cpu(cpu_of(rq_of(cfs_rq)));
+            if (now - cfs_rq->last_update_tg_load_avg < NSEC_PER_MSEC)
+                return;
+
+            delta = cfs_rq->avg.load_avg - cfs_rq->tg_load_avg_contrib;
+            if (abs(delta) > cfs_rq->tg_load_avg_contrib / 64) {
+                atomic_long_add(delta, &cfs_rq->tg->load_avg);
+                cfs_rq->tg_load_avg_contrib = cfs_rq->avg.load_avg;
+                cfs_rq->last_update_tg_load_avg = now;
+            }
+        }
+    } else if (flags & DO_DETACH) {
+        detach_entity_load_avg(cfs_rq, se) {
+            dequeue_load_avg(cfs_rq, se) {
+                cfs_rq->avg.load_avg += se->avg.load_avg;
+                cfs_rq->avg.load_sum += se_weight(se) * se->avg.load_sum;
+            }
+            sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
+            sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
+            /* See update_cfs_rq_load_avg() */
+            cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
+                            cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
+
+            sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
+            sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
+            /* See update_cfs_rq_load_avg() */
+            cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
+                                cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
+
+            add_tg_cfs_propagate(cfs_rq, -se->avg.load_sum);
+
+            cfs_rq_util_change(cfs_rq, 0);
+        }
+        update_tg_load_avg(cfs_rq);
+    } else if (decayed) {
+        cfs_rq_util_change(cfs_rq, 0);
+        if (flags & UPDATE_TG)
+            update_tg_load_avg(cfs_rq);
+    }
+}
+```
+
+### update_cfs_rq_load_avg
+
+```c
+static inline int
+update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
+{
+    unsigned long removed_load = 0, removed_util = 0, removed_runnable = 0;
+    struct sched_avg *sa = &cfs_rq->avg;
+    int decayed = 0;
+
+    if (cfs_rq->removed.nr) {
+        unsigned long r;
+        u32 divider = get_pelt_divider(&cfs_rq->avg);
+
+        raw_spin_lock(&cfs_rq->removed.lock);
+        swap(cfs_rq->removed.util_avg, removed_util);
+        swap(cfs_rq->removed.load_avg, removed_load);
+        swap(cfs_rq->removed.runnable_avg, removed_runnable);
+        cfs_rq->removed.nr = 0;
+        raw_spin_unlock(&cfs_rq->removed.lock);
+
+        r = removed_load;
+        sub_positive(&sa->load_avg, r);
+        sub_positive(&sa->load_sum, r * divider);
+        /* See sa->util_sum below */
+        sa->load_sum = max_t(u32, sa->load_sum, sa->load_avg * PELT_MIN_DIVIDER);
+
+        r = removed_util;
+        sub_positive(&sa->util_avg, r);
+        sub_positive(&sa->util_sum, r * divider);
+        sa->util_sum = max_t(u32, sa->util_sum, sa->util_avg * PELT_MIN_DIVIDER);
+
+        r = removed_runnable;
+        sub_positive(&sa->runnable_avg, r);
+        sub_positive(&sa->runnable_sum, r * divider);
+        /* See sa->util_sum above */
+        sa->runnable_sum = max_t(u32, sa->runnable_sum,
+                            sa->runnable_avg * PELT_MIN_DIVIDER);
+
+        add_tg_cfs_propagate(cfs_rq,
+            -(long)(removed_runnable * divider) >> SCHED_CAPACITY_SHIFT);
+
+        decayed = 1;
+    }
+
+    decayed |= __update_load_avg_cfs_rq(now, cfs_rq) {
+        if (___update_load_sum(now, &cfs_rq->avg,
+            scale_load_down(cfs_rq->load.weight),
+            cfs_rq->h_nr_running,
+            cfs_rq->curr != NULL)) {
+
+            ___update_load_avg(&cfs_rq->avg, 1);
+            return 1;
+        }
+
+        return 0;
+    }
+    u64_u32_store_copy(sa->last_update_time,
+                cfs_rq->last_update_time_copy,
+                sa->last_update_time);
+    return decayed;
+}
+```
+
 # load_balance
 
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
@@ -5097,24 +5335,17 @@ void run_rebalance_domains(struct softirq_action *h)
 
             thermal_pressure = arch_scale_thermal_pressure(cpu_of(rq));
 
-            decayed |= update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class) {
-
-            }
-            decayed |= update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class) {
-
-            }
-            decayed |= update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure) {
-
-            }
-            decayed |= update_irq_load_avg(rq, 0) {
-
-            }
+            decayed |= update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class);
+            decayed |= update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class);
+            decayed |= update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure);
+            decayed |= update_irq_load_avg(rq, 0);
 
             if (others_have_blocked(rq))
                 *done = false;
 
             return decayed;
         }
+
         decayed |= __update_blocked_fair(rq, &done) {
             struct cfs_rq *cfs_rq = &rq->cfs;
             bool decayed;
@@ -6491,7 +6722,6 @@ struct rq *find_busiest_queue(struct lb_env *env, struct sched_group *group) {
             }
 
             break;
-
         }
     }
 
