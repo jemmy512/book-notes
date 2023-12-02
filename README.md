@@ -1,12 +1,12 @@
 # Linux Kernel
-* [Process Management](./Linux/linux-kernel-proc.md)
-* [Memory Management](./Linux/linux-kernel-mem.md)
-* [Network System](./Linux/linux-kernel-net.md)
-* [File & IO System](./Linux/linux-kernel-file-io.md)
-* Interrupt [ARM 64](./Linux/linux-kernel-intr-arm64.md) :heavy_minus_sign: [x86](./Linux/linux-kernel-intr-arm64.md)
-* [Core](./Linux/linux-kernel-core.md)
-* [IPC](./Linux/linux-kernel-ipc.md)
-* [Time](./Linux/linux-kernel-time.md)
+* [Process Management](./Linux/linux-proc.md)
+* [Memory Management](./Linux/linux-mem.md)
+* [Network System](./Linux/linux-net.md)
+* [File & IO System](./Linux/linux-file-io.md)
+* Interrupt [ARM 64](./Linux/linux-intr-arm64.md) :heavy_minus_sign: [x86](./Linux/linux-intr-arm64.md)
+* [Core](./Linux/linux-core.md)
+* [IPC](./Linux/linux-ipc.md)
+* [Time](./Linux/linux-time.md)
 
 # Architecture & Design
 * [Clean Architecture :soon:]()
