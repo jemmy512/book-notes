@@ -2565,7 +2565,39 @@ push_rt_tasks()
             }
         }
 
-        set_task_cpu(next_task, lowest_rq->cpu);
+        set_task_cpu(next_task, lowest_rq->cpu) {
+            if (task_cpu(p) != new_cpu) {
+                if (p->sched_class->migrate_task_rq) {
+                    p->sched_class->migrate_task_rq(p, new_cpu);
+                }
+                p->se.nr_migrations++;
+                rseq_migrate(p);
+                sched_mm_cid_migrate_from(p);
+                perf_event_task_migrate(p);
+            }
+
+            __set_task_cpu(p, new_cpu) {
+                set_task_rq(p, cpu) {
+                    struct task_group *tg = task_group(p);
+
+                    set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]) {
+                        p_last_update_time = cfs_rq_last_update_time(prev);
+                        n_last_update_time = cfs_rq_last_update_time(next);
+
+                        __update_load_avg_blocked_se(p_last_update_time, se);
+                        se->avg.last_update_time = n_last_update_time;
+                    }
+                    p->se.cfs_rq = tg->cfs_rq[cpu];
+                    p->se.parent = tg->se[cpu];
+                    p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
+
+                    p->rt.rt_rq  = tg->rt_rq[cpu];
+                    p->rt.parent = tg->rt_se[cpu];
+                }
+                WRITE_ONCE(task_thread_info(p)->cpu, cpu);
+                p->wake_cpu = cpu;
+            }
+        }
         activate_task(lowest_rq, next_task, 0) {
             if (task_on_rq_migrating(p))
                 flags |= ENQUEUE_MIGRATED;
@@ -4994,6 +5026,7 @@ get_cpu_for_node(struct device_node *node)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 
 ![](../Images/Kernel/proc-shced-cfs-update_load_avg.png)
+![](../Images/Kernel/proc-sched-cfs-update_load_avg.png)
 
 ## ___update_load_sum
 
@@ -5106,7 +5139,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     int decayed;
 
     if (se->avg.last_update_time && !(flags & SKIP_AGE_LOAD)) {
-        __update_load_avg_se(now, cfs_rq, se) {
+        __update_load_avg_se(nfvzow, cfs_rq, se) {
             --->
         }
     }
@@ -5169,8 +5202,10 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     } else if (flags & DO_DETACH) {
         detach_entity_load_avg(cfs_rq, se) {
             dequeue_load_avg(cfs_rq, se) {
-                cfs_rq->avg.load_avg += se->avg.load_avg;
-                cfs_rq->avg.load_sum += se_weight(se) * se->avg.load_sum;
+                sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
+                sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
+                cfs_rq->avg.load_sum = max_t(u32, cfs_rq->avg.load_sum,
+                                cfs_rq->avg.load_avg * PELT_MIN_DIVIDER);
             }
             sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
             sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
@@ -7307,8 +7342,9 @@ kernel_clone(struct kernel_clone_args *args) {
 
         cgroup_fork();
         sched_fork() {
+            p->__state = TASK_NEW;
             p->sched_class = &fair_sched_class;
-            p->sched_class->task_fork(p);
+            p->sched_class->task_fork(p) {
                 task_fork_fair();
                     se->vruntime = curr->vruntime;
                     place_entity(cfs_rq, se, 1);
@@ -7316,6 +7352,14 @@ kernel_clone(struct kernel_clone_args *args) {
                         swap(curr->vruntime, se->vruntime);
                         resched_curr(rq);
                             set_tsk_thread_flag(tsk, TIF_NEED_RESCHED);
+            }
+            init_entity_runnable_average(&p->se) {
+                struct sched_avg *sa = &se->avg;
+                memset(sa, 0, sizeof(*sa));
+                if (entity_is_task(se)) {
+                    sa->load_avg = scale_load_down(se->load.weight);
+                }
+            }
         }
         copy_files();
         copy_fs();
@@ -7377,10 +7421,38 @@ kernel_clone(struct kernel_clone_args *args) {
         futex_init_task(p);
     }
 
+    wake_up_new_task(p) {
+        post_init_entity_util_avg(p) {
+            struct sched_entity *se = &p->se;
+            struct cfs_rq *cfs_rq = cfs_rq_of(se);
+            struct sched_avg *sa = &se->avg;
+            long cpu_scale = arch_scale_cpu_capacity(cpu_of(rq_of(cfs_rq)));
+            long cap = (long)(cpu_scale - cfs_rq->avg.util_avg) / 2;
 
-    wake_up_new_task(p);
+            if (p->sched_class != &fair_sched_class) {
+                se->avg.last_update_time = cfs_rq_clock_pelt(cfs_rq);
+                return;
+            }
+
+            if (cap > 0) {
+                if (cfs_rq->avg.util_avg != 0) {
+                    sa->util_avg  = cfs_rq->avg.util_avg * se->load.weight;
+                    sa->util_avg /= (cfs_rq->avg.load_avg + 1);
+
+                    if (sa->util_avg > cap)
+                        sa->util_avg = cap;
+                } else {
+                    sa->util_avg = cap;
+                }
+            }
+
+            sa->runnable_avg = sa->util_avg;
+        }
+
         activate_task();
         wakeup_preempt();
+        p->sched_class->task_woken(rq, p);
+    }
 }
 
 SYM_CODE_START(ret_from_fork)
