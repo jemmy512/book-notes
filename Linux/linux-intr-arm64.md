@@ -442,11 +442,56 @@ el0t_64_irq_handler(struct pt_regs *regs) {
         if (regs->pc & BIT(55))
             arm64_apply_bp_hardening();
 
-        irq_enter_rcu();
+        irq_enter_rcu() {
+            __irq_enter_raw() {
+                preempt_count_add(HARDIRQ_OFFSET);
+                lockdep_hardirq_enter();
+            }
+
+            if (tick_nohz_full_cpu(smp_processor_id())
+                || (is_idle_task(current) && (irq_count() == HARDIRQ_OFFSET))) {
+                tick_irq_enter();
+            }
+
+            account_hardirq_enter(current) {
+                vtime_account_irq(tsk, HARDIRQ_OFFSET);
+                irqtime_account_irq(tsk, HARDIRQ_OFFSET) {
+                    struct irqtime *irqtime = this_cpu_ptr(&cpu_irqtime);
+                    unsigned int pc;
+                    s64 delta;
+                    int cpu;
+
+                    if (!sched_clock_irqtime)
+                        return;
+
+                    cpu = smp_processor_id();
+                    delta = sched_clock_cpu(cpu) - irqtime->irq_start_time;
+                    irqtime->irq_start_time += delta;
+                    pc = irq_count() - offset;
+
+                    if (pc & HARDIRQ_MASK)
+                        irqtime_account_delta(irqtime, delta, CPUTIME_IRQ);
+                    else if ((pc & SOFTIRQ_OFFSET) && curr != this_cpu_ksoftirqd())
+                        irqtime_account_delta(irqtime, delta, CPUTIME_SOFTIRQ);
+                }
+            }
+        }
+
         do_interrupt_handler(regs, handler) {
 
         }
-        irq_exit_rcu();
+
+        irq_exit_rcu() {
+            account_hardirq_exit(current) {
+                vtime_account_hardirq(tsk);
+	            irqtime_account_irq(tsk, 0);
+            }
+            preempt_count_sub(HARDIRQ_OFFSET);
+            if (!in_interrupt() && local_softirq_pending())
+                invoke_softirq();
+
+            tick_irq_exit();
+        }
 
         exit_to_user_mode(regs) {
             exit_to_user_mode_prepare(regs) {
