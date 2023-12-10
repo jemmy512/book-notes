@@ -60,6 +60,10 @@
         * [switched_from_fair](#switched_from_fair)
         * [switched_to_fair](#switched_to_fair)
     * [task_group](#task_group)
+        * [init_cfs_bandwidth](#init_cfs_bandwidth)
+        * [tg_set_cfs_bandwidth](#tg_set_cfs_bandwidth)
+        * [throttle_cfs_rq](#throttle_cfs_rq)
+        * [sched_group_set_shares](#sched_group_set_shares)
 
 * [sched_domain](#sched_domain)
 * [cpu capacity](#cpu_capacity)
@@ -103,6 +107,18 @@
 
 * [cmwq](#cmwq)
     * [wq-struct](#wq-struct)
+
+* [cgroup]
+    * [cgroup_create](#cgroup_create)
+    * [cgroup_attach_task](#cgroup_attach_task)
+    * [cgroup_fork](#cgroup_fork)
+    * [mem_cgroup](#mem_cgroup)
+        * [mem_cgroup_write](#mem_cgroup_write)
+        * [mem_cgroup_charge](#mem_cgroup_charge)
+    * [cpu_cgroup](#cpu_cgroup)
+        * [cpu_cgroup_css_alloc](#cpu_cgroup_css_alloc)
+        * [cpu_weight_write_u64](#cpu_weight_write_u64)
+        * [cpu_max_write](#cpu_max_write)
 
 <img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
@@ -4350,58 +4366,11 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
 
 ![](../Images/Kernel/proc-sched-task_group.png)
 
+---
+
 ![](../Images/Kernel/proc-sched-task_group-2.png)
 
-![](../Images/Kernel/proc-sched-task-group-share-1.png)
-![](../Images/Kernel/proc-sched-task-group-share-2.png)
-
-```c
-static struct cftype cpu_legacy_files[] = {
-    {
-        .name = "shares",
-        .read_u64 = cpu_shares_read_u64,
-        .write_u64 = cpu_shares_write_u64,
-    },
-    {
-        .name = "idle",
-        .read_s64 = cpu_idle_read_s64,
-        .write_s64 = cpu_idle_write_s64,
-    }
-};
-
-cpu_shares_write_u64() {
-    sched_group_set_shares(css_tg(css), scale_load(shareval)) {
-        __sched_group_set_shares(tg, shares) {
-            tg->shares = shares;
-            for_each_possible_cpu(i) {
-                struct rq *rq = cpu_rq(i);
-                struct sched_entity *se = tg->se[i];
-                struct rq_flags rf;
-
-                /* Propagate contribution to hierarchy */
-                rq_lock_irqsave(rq, &rf);
-                update_rq_clock(rq);
-                for_each_sched_entity(se) {
-                    update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
-                    update_cfs_group(se) {
-                        calc_group_shares(gcfs_rq) {
-
-                        }
-                        reweight_entity(cfs_rq_of(se), se, shares) {
-
-                        }
-                    }
-                }
-                rq_unlock_irqrestore(rq, &rf);
-            }
-        }
-    }
-}
-```
-
 ![](../Images/Kernel/proc-sched-task-group-period-quota.png)
-
-![](../Images/Kernel/proc-sched-task-group-cfs-bandwidth.png)
 
 ```c
 struct cfs_bandwidth {
@@ -4449,13 +4418,6 @@ struct cfs_rq {
 };
 ```
 
-![](../Images/Kernel/proc-sched-task-group-cfs-bandwidth-2.png)
-
-![](../Images/Kernel/proc-sched-task-group-cfs-bandwidth-3.png)
-
-![](../Images/Kernel/proc-sched-cfs-throttle.png)
-
-
 ```c
 struct task_group {
     struct cgroup_subsys_state  css;
@@ -4487,6 +4449,264 @@ struct task_group {
 
     struct cfs_bandwidth        cfs_bandwidth;
 };
+```
+
+### init_cfs_bandwidth
+
+![](../Images/Kernel/proc-sched-cfs-init_cfs_bandwidth.png)
+
+### tg_set_cfs_bandwidth
+
+![](../Images/Kernel/proc-sched-cfs-tg_set_cfs_bandwidth.png)
+
+```c
+int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
+                u64 burst) {
+    int i, ret = 0, runtime_enabled, runtime_was_enabled;
+    struct cfs_bandwidth *cfs_b = &tg->cfs_bandwidth;
+
+    if (tg == &root_task_group)
+        return -EINVAL;
+
+    guard(cpus_read_lock)();
+    guard(mutex)(&cfs_constraints_mutex);
+
+    ret = __cfs_schedulable(tg, period, quota);
+    if (ret)
+        return ret;
+
+    runtime_enabled = quota != RUNTIME_INF;
+    runtime_was_enabled = cfs_b->quota != RUNTIME_INF;
+
+    if (runtime_enabled && !runtime_was_enabled)
+        cfs_bandwidth_usage_inc();
+
+    scoped_guard (raw_spinlock_irq, &cfs_b->lock) {
+        cfs_b->period = ns_to_ktime(period);
+        cfs_b->quota = quota;
+        cfs_b->burst = burst;
+
+        __refill_cfs_bandwidth_runtime(cfs_b) {
+            s64 runtime;
+
+            if (unlikely(cfs_b->quota == RUNTIME_INF))
+                return;
+
+            cfs_b->runtime += cfs_b->quota;
+            runtime = cfs_b->runtime_snap - cfs_b->runtime;
+            if (runtime > 0) {
+                cfs_b->burst_time += runtime;
+                cfs_b->nr_burst++;
+            }
+
+            cfs_b->runtime = min(cfs_b->runtime, cfs_b->quota + cfs_b->burst);
+            cfs_b->runtime_snap = cfs_b->runtime;
+        }
+
+        if (runtime_enabled) {
+            start_cfs_bandwidth(cfs_b) {
+                if (cfs_b->period_active)
+                    return;
+
+                cfs_b->period_active = 1;
+                hrtimer_forward_now(&cfs_b->period_timer, cfs_b->period);
+                hrtimer_start_expires(&cfs_b->period_timer, HRTIMER_MODE_ABS_PINNED);
+            }
+        }
+    }
+
+    for_each_online_cpu(i) {
+        struct cfs_rq *cfs_rq = tg->cfs_rq[i];
+        struct rq *rq = cfs_rq->rq;
+
+        guard(rq_lock_irq)(rq);
+        cfs_rq->runtime_enabled = runtime_enabled;
+        cfs_rq->runtime_remaining = 0;
+
+        if (cfs_rq->throttled)
+            unthrottle_cfs_rq(cfs_rq);
+    }
+
+    if (runtime_was_enabled && !runtime_enabled)
+        cfs_bandwidth_usage_dec();
+
+    return 0;
+}
+```
+
+### throttle_cfs_rq
+
+![](../Images/Kernel/proc-sched-cfs-throttle_cfs_rq.png)
+
+```c
+bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
+{
+    struct rq *rq = rq_of(cfs_rq);
+    struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
+    struct sched_entity *se;
+    long task_delta, idle_task_delta, dequeue = 1;
+
+    raw_spin_lock(&cfs_b->lock);
+    /* This will start the period timer if necessary */
+    ret = __assign_cfs_rq_runtime(cfs_b, cfs_rq, 1) {
+        u64 min_amount, amount = 0;
+
+        /* note: this is a positive sum as runtime_remaining <= 0 */
+        min_amount = target_runtime - cfs_rq->runtime_remaining;
+
+        if (cfs_b->quota == RUNTIME_INF)
+            amount = min_amount;
+        else {
+            start_cfs_bandwidth(cfs_b);
+
+            if (cfs_b->runtime > 0) {
+                amount = min(cfs_b->runtime, min_amount);
+                cfs_b->runtime -= amount;
+                cfs_b->idle = 0;
+            }
+        }
+
+        cfs_rq->runtime_remaining += amount;
+
+        return cfs_rq->runtime_remaining > 0;
+    }
+    if (ret) {
+        dequeue = 0;
+    } else {
+        list_add_tail_rcu(&cfs_rq->throttled_list, &cfs_b->throttled_cfs_rq);
+    }
+    raw_spin_unlock(&cfs_b->lock);
+
+    if (!dequeue)
+        return false;  /* Throttle no longer required. */
+
+    se = cfs_rq->tg->se[cpu_of(rq_of(cfs_rq))];
+
+    /* freeze hierarchy runnable averages while throttled */
+    rcu_read_lock();
+    walk_tg_tree_from(cfs_rq->tg, tg_throttle_down, tg_nop, (void *)rq) {
+        struct rq *rq = data;
+        struct cfs_rq *cfs_rq = tg->cfs_rq[cpu_of(rq)];
+
+        /* group is entering throttled state, stop time */
+        if (!cfs_rq->throttle_count) {
+            cfs_rq->throttled_clock_pelt = rq_clock_pelt(rq);
+            list_del_leaf_cfs_rq(cfs_rq);
+
+            SCHED_WARN_ON(cfs_rq->throttled_clock_self);
+            if (cfs_rq->nr_running)
+                cfs_rq->throttled_clock_self = rq_clock(rq);
+        }
+        cfs_rq->throttle_count++;
+
+        return 0;
+    }
+    rcu_read_unlock();
+
+    task_delta = cfs_rq->h_nr_running;
+    idle_task_delta = cfs_rq->idle_h_nr_running;
+
+    for_each_sched_entity(se) {
+        struct cfs_rq *qcfs_rq = cfs_rq_of(se);
+        /* throttled entity or throttle-on-deactivate */
+        if (!se->on_rq)
+            goto done;
+
+        dequeue_entity(qcfs_rq, se, DEQUEUE_SLEEP);
+
+        if (cfs_rq_is_idle(group_cfs_rq(se)))
+            idle_task_delta = cfs_rq->h_nr_running;
+
+        qcfs_rq->h_nr_running -= task_delta;
+        qcfs_rq->idle_h_nr_running -= idle_task_delta;
+
+        if (qcfs_rq->load.weight) {
+            /* Avoid re-evaluating load for this entity: */
+            se = parent_entity(se);
+            break;
+        }
+    }
+
+    for_each_sched_entity(se) {
+        struct cfs_rq *qcfs_rq = cfs_rq_of(se);
+        /* throttled entity or throttle-on-deactivate */
+        if (!se->on_rq)
+            goto done;
+
+        update_load_avg(qcfs_rq, se, 0);
+        se_update_runnable(se);
+
+        if (cfs_rq_is_idle(group_cfs_rq(se)))
+            idle_task_delta = cfs_rq->h_nr_running;
+
+        qcfs_rq->h_nr_running -= task_delta;
+        qcfs_rq->idle_h_nr_running -= idle_task_delta;
+    }
+
+    /* At this point se is NULL and we are at root level*/
+    sub_nr_running(rq, task_delta);
+
+done:
+
+    cfs_rq->throttled = 1;
+    SCHED_WARN_ON(cfs_rq->throttled_clock);
+    if (cfs_rq->nr_running)
+        cfs_rq->throttled_clock = rq_clock(rq);
+    return true;
+}
+```
+
+### sched_group_set_shares
+
+![](../Images/Kernel/proc-sched-task-group-sched_group_set_shares-1.png)
+
+---
+
+![](../Images/Kernel/proc-sched-task-group-sched_group_set_shares-2.png)
+
+```c
+static struct cftype cpu_legacy_files[] = {
+    {
+        .name = "shares",
+        .read_u64 = cpu_shares_read_u64,
+        .write_u64 = cpu_shares_write_u64,
+    },
+    {
+        .name = "idle",
+        .read_s64 = cpu_idle_read_s64,
+        .write_s64 = cpu_idle_write_s64,
+    }
+};
+
+cpu_shares_write_u64() {
+    sched_group_set_shares(css_tg(css), scale_load(shareval)) {
+        __sched_group_set_shares(tg, shares) {
+            tg->shares = shares;
+            for_each_possible_cpu(i) {
+                struct rq *rq = cpu_rq(i);
+                struct sched_entity *se = tg->se[i];
+                struct rq_flags rf;
+
+                /* Propagate contribution to hierarchy */
+                rq_lock_irqsave(rq, &rf);
+                update_rq_clock(rq);
+                for_each_sched_entity(se) {
+                    update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
+                    update_cfs_group(se) {
+                        calc_group_shares(gcfs_rq) {
+
+                        }
+                        reweight_entity(cfs_rq_of(se), se, shares) {
+
+                        }
+                    }
+                }
+                rq_unlock_irqrestore(rq, &rf);
+            }
+        }
+    }
+}
+
 ```
 
 # sched_domain
@@ -5025,7 +5245,6 @@ get_cpu_for_node(struct device_node *node)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 
-![](../Images/Kernel/proc-shced-cfs-update_load_avg.png)
 ![](../Images/Kernel/proc-sched-cfs-update_load_avg.png)
 
 ## ___update_load_sum
@@ -9398,7 +9617,8 @@ struct workqueue_struct *system_freezable_power_efficient_wq;
 
 # cgroup
 
-## cgroup_create
+* [开发内功修炼 - cgroup](https://mp.weixin.qq.com/s/rUQLM8WfjMqa__Nvhjhmxw)
+
 ```c
 static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
     .show_options   = cgroup_show_options,
@@ -9407,8 +9627,75 @@ static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
     .show_path      = cgroup_show_path,
 };
 
+static struct cftype cgroup_base_files[] = {
+    {
+        .name = "cgroup.type",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cgroup_type_show,
+        .write = cgroup_type_write,
+    },
+    {
+        .name = "cgroup.procs",
+        .flags = CFTYPE_NS_DELEGATABLE,
+        .file_offset = offsetof(struct cgroup, procs_file),
+        .release = cgroup_procs_release,
+        .seq_start = cgroup_procs_start,
+        .seq_next = cgroup_procs_next,
+        .seq_show = cgroup_procs_show,
+        .write = cgroup_procs_write,
+    },
+}
+
+static struct kernfs_ops cgroup_kf_ops = {
+    .atomic_write_len   = PAGE_SIZE,
+    .open               = cgroup_file_open,
+    .release            = cgroup_file_release,
+    .write              = cgroup_file_write,
+    .poll               = cgroup_file_poll,
+    .seq_start          = cgroup_seqfile_start,
+    .seq_next           = cgroup_seqfile_next,
+    .seq_stop           = cgroup_seqfile_stop,
+    .seq_show           = cgroup_seqfile_show,
+};
+```
+
+## cgroup_create
+
+```c
 cgroup_mkdir() {
     cgrp = cgroup_create(parent, name, mode);
+
+    css_populate_dir(&cgrp->self) {
+        if (css->flags & CSS_VISIBLE)
+            return 0;
+
+        if (!css->ss) {
+
+        } else {
+            list_for_each_entry(cfts, &css->ss->cfts, node) {
+                ret = cgroup_addrm_files(css, cgrp, cfts, true) {
+                    struct cftype *cft, *cft_end = NULL;
+                    int ret = 0;
+                restart:
+                    for (cft = cfts; cft != cft_end && cft->name[0] != '\0'; cft++) {
+                        if (is_add) {
+                            ret = cgroup_add_file(css, cgrp, cft) {
+                                __kernfs_create_file();
+                            }
+                        } else {
+                            cgroup_rm_file(cgrp, cft) {
+                                kernfs_remove_by_name();
+                            }
+                        }
+                    }
+                    return ret;
+                }
+            }
+        }
+
+        css->flags |= CSS_VISIBLE;
+    }
+
     cgroup_apply_control_enable(cgrp) {
         css = css_create(dsct, ss) {
             css = ss->css_alloc(parent_css);
@@ -9438,136 +9725,12 @@ cgroup_mkdir() {
 }
 ```
 
-## mem_cgroup_write
-```c
-/* APIs to change the cgrp status */
-struct cftype mem_cgroup_legacy_files[] = {
-    {
-        .name = "usage_in_bytes",
-        .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
-        .read_u64 = mem_cgroup_read_u64,
-    },
-    {
-        .name = "kmem.limit_in_bytes",
-        .private = MEMFILE_PRIVATE(_KMEM, RES_LIMIT),
-        .write = mem_cgroup_write,
-        .read_u64 = mem_cgroup_read_u64,
-    }
-    {
-        .name = "kmem.usage_in_bytes",
-        .private = MEMFILE_PRIVATE(_KMEM, RES_USAGE),
-        .read_u64 = mem_cgroup_read_u64,
-    }
-    { },
-};
-
-ssize_t mem_cgroup_write(struct kernfs_open_file *of,
-                char *buf, size_t nbytes, loff_t off)
-{
-    struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
-    unsigned long nr_pages;
-    int ret;
-
-    buf = strstrip(buf);
-    ret = page_counter_memparse(buf, "-1", &nr_pages);
-    if (ret)
-        return ret;
-
-    switch (MEMFILE_ATTR(of_cft(of)->private)) {
-    case RES_LIMIT:
-        if (mem_cgroup_is_root(memcg)) { /* Can't set limit on root */
-            ret = -EINVAL;
-            break;
-        }
-        switch (MEMFILE_TYPE(of_cft(of)->private)) {
-        case _MEM:
-            ret = mem_cgroup_resize_max(memcg, nr_pages, false);
-            break;
-        case _MEMSWAP:
-            ret = mem_cgroup_resize_max(memcg, nr_pages, true);
-            break;
-        case _KMEM:
-            ret = 0;
-            break;
-        case _TCP:
-            ret = memcg_update_tcp_max(memcg, nr_pages);
-            break;
-        }
-        break;
-    case RES_SOFT_LIMIT:
-        if (IS_ENABLED(CONFIG_PREEMPT_RT)) {
-            ret = -EOPNOTSUPP;
-        } else {
-            WRITE_ONCE(memcg->soft_limit, nr_pages);
-            ret = 0;
-        }
-        break;
-    }
-    return ret ?: nbytes;
-}
-```
-
-```c
-int mem_cgroup_resize_max(struct mem_cgroup *memcg,
-                unsigned long max, bool memsw)
-{
-    bool enlarge = false;
-    bool drained = false;
-    int ret;
-    bool limits_invariant;
-    struct page_counter *counter = memsw ? &memcg->memsw : &memcg->memory;
-
-    do {
-        if (signal_pending(current)) {
-            ret = -EINTR;
-            break;
-        }
-
-        mutex_lock(&memcg_max_mutex);
-        /*
-        * Make sure that the new limit (memsw or memory limit) doesn't
-        * break our basic invariant rule memory.max <= memsw.max.
-        */
-        limits_invariant = memsw ? max >= READ_ONCE(memcg->memory.max) :
-                    max <= memcg->memsw.max;
-        if (!limits_invariant) {
-            mutex_unlock(&memcg_max_mutex);
-            ret = -EINVAL;
-            break;
-        }
-        if (max > counter->max)
-            enlarge = true;
-        ret = page_counter_set_max(counter, max) {
-
-        }
-        mutex_unlock(&memcg_max_mutex);
-
-        if (!ret)
-            break;
-
-        if (!drained) {
-            drain_all_stock(memcg);
-            drained = true;
-            continue;
-        }
-
-        if (!try_to_free_mem_cgroup_pages(memcg, 1, GFP_KERNEL,
-                    memsw ? 0 : MEMCG_RECLAIM_MAY_SWAP)) {
-            ret = -EBUSY;
-            break;
-        }
-    } while (true);
-
-    if (!ret && enlarge)
-        memcg_oom_recover(memcg);
-
-    return ret;
-}
-```
-
 ## cgroup_attach_task
 
 ```c
+cgroup_procs_write()
+    cgroup_attach_task()
+
 int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool threadgroup)
 {
     DEFINE_CGROUP_MGCTX(mgctx);
@@ -9782,7 +9945,158 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
 }
 ```
 
-## mem_cgroup_charge
+## mem_cgroup
+
+```c
+struct cgroup_subsys memory_cgrp_subsys = {
+    .css_alloc          = mem_cgroup_css_alloc,
+    .css_online         = mem_cgroup_css_online,
+    .css_offline        = mem_cgroup_css_offline,
+    .css_released       = mem_cgroup_css_released,
+    .css_free           = mem_cgroup_css_free,
+    .css_reset          = mem_cgroup_css_reset,
+    .css_rstat_flush    = mem_cgroup_css_rstat_flush,
+    .can_attach = mem_cgroup_can_attach,
+#if defined(CONFIG_LRU_GEN) || defined(CONFIG_MEMCG_KMEM)
+    .attach = mem_cgroup_attach,
+#endif
+    .cancel_attach      = mem_cgroup_cancel_attach,
+    .post_attach        = mem_cgroup_move_task,
+#ifdef CONFIG_MEMCG_KMEM
+    .fork               = mem_cgroup_fork,
+    .exit               = mem_cgroup_exit,
+#endif
+    .dfl_cftypes        = memory_files,
+    .legacy_cftypes     = mem_cgroup_legacy_files,
+    .early_init = 0,
+};
+
+struct cftype mem_cgroup_legacy_files[] = {
+    {
+        .name = "usage_in_bytes",
+        .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
+        .read_u64 = mem_cgroup_read_u64,
+    },
+    {
+        .name = "kmem.limit_in_bytes",
+        .private = MEMFILE_PRIVATE(_KMEM, RES_LIMIT),
+        .write = mem_cgroup_write,
+        .read_u64 = mem_cgroup_read_u64,
+    },
+    {
+        .name = "kmem.usage_in_bytes",
+        .private = MEMFILE_PRIVATE(_KMEM, RES_USAGE),
+        .read_u64 = mem_cgroup_read_u64,
+    }
+    { },
+};
+```
+
+### mem_cgroup_write
+
+```c
+ssize_t mem_cgroup_write(struct kernfs_open_file *of,
+                char *buf, size_t nbytes, loff_t off)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+    unsigned long nr_pages;
+    int ret;
+
+    buf = strstrip(buf);
+    ret = page_counter_memparse(buf, "-1", &nr_pages);
+    if (ret)
+        return ret;
+
+    switch (MEMFILE_ATTR(of_cft(of)->private)) {
+    case RES_LIMIT:
+        if (mem_cgroup_is_root(memcg)) { /* Can't set limit on root */
+            ret = -EINVAL;
+            break;
+        }
+        switch (MEMFILE_TYPE(of_cft(of)->private)) {
+        case _MEM:
+            ret = mem_cgroup_resize_max(memcg, nr_pages, false);
+            break;
+        case _MEMSWAP:
+            ret = mem_cgroup_resize_max(memcg, nr_pages, true);
+            break;
+        case _KMEM:
+            ret = 0;
+            break;
+        case _TCP:
+            ret = memcg_update_tcp_max(memcg, nr_pages);
+            break;
+        }
+        break;
+    case RES_SOFT_LIMIT:
+        if (IS_ENABLED(CONFIG_PREEMPT_RT)) {
+            ret = -EOPNOTSUPP;
+        } else {
+            WRITE_ONCE(memcg->soft_limit, nr_pages);
+            ret = 0;
+        }
+        break;
+    }
+    return ret ?: nbytes;
+}
+```
+
+```c
+int mem_cgroup_resize_max(struct mem_cgroup *memcg,
+                unsigned long max, bool memsw)
+{
+    bool enlarge = false;
+    bool drained = false;
+    int ret;
+    bool limits_invariant;
+    struct page_counter *counter = memsw ? &memcg->memsw : &memcg->memory;
+
+    do {
+        if (signal_pending(current)) {
+            ret = -EINTR;
+            break;
+        }
+
+        mutex_lock(&memcg_max_mutex);
+
+        limits_invariant = memsw ? max >= READ_ONCE(memcg->memory.max) :
+                    max <= memcg->memsw.max;
+        if (!limits_invariant) {
+            mutex_unlock(&memcg_max_mutex);
+            ret = -EINVAL;
+            break;
+        }
+        if (max > counter->max)
+            enlarge = true;
+        ret = page_counter_set_max(counter, max) {
+
+        }
+        mutex_unlock(&memcg_max_mutex);
+
+        if (!ret)
+            break;
+
+        if (!drained) {
+            drain_all_stock(memcg);
+            drained = true;
+            continue;
+        }
+
+        if (!try_to_free_mem_cgroup_pages(memcg, 1, GFP_KERNEL,
+                    memsw ? 0 : MEMCG_RECLAIM_MAY_SWAP)) {
+            ret = -EBUSY;
+            break;
+        }
+    } while (true);
+
+    if (!ret && enlarge)
+        memcg_oom_recover(memcg);
+
+    return ret;
+}
+```
+
+### mem_cgroup_charge
 
 ```c
 mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
@@ -9811,6 +10125,298 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
     css_put(&memcg->css);
 
     return ret;
+}
+```
+
+## cpu_cgroup
+
+```c
+struct cgroup_subsys cpu_cgrp_subsys = {
+    .css_alloc          = cpu_cgroup_css_alloc,
+    .css_online         = cpu_cgroup_css_online,
+    .css_released       = cpu_cgroup_css_released,
+    .css_free           = cpu_cgroup_css_free,
+    .css_extra_stat_show = cpu_extra_stat_show,
+    .css_local_stat_show = cpu_local_stat_show,
+#ifdef CONFIG_RT_GROUP_SCHED
+    .can_attach         = cpu_cgroup_can_attach,
+#endif
+    .attach             = cpu_cgroup_attach,
+    .legacy_cftypes     = cpu_legacy_files,
+    .dfl_cftypes        = cpu_files,
+    .early_init         = true,
+    .threaded           = true,
+};
+
+static struct cftype cpu_files[] = {
+#ifdef CONFIG_FAIR_GROUP_SCHED
+    {
+        .name = "weight",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = cpu_weight_read_u64,
+        .write_u64 = cpu_weight_write_u64,
+    },
+    {
+        .name = "weight.nice",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_s64 = cpu_weight_nice_read_s64,
+        .write_s64 = cpu_weight_nice_write_s64,
+    },
+    {
+        .name = "idle",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_s64 = cpu_idle_read_s64,
+        .write_s64 = cpu_idle_write_s64,
+    },
+#endif
+#ifdef CONFIG_CFS_BANDWIDTH
+    {
+        .name = "max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cpu_max_show,
+        .write = cpu_max_write,
+    },
+    {
+        .name = "max.burst",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = cpu_cfs_burst_read_u64,
+        .write_u64 = cpu_cfs_burst_write_u64,
+    },
+#endif
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+    {
+        .name = "uclamp.min",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cpu_uclamp_min_show,
+        .write = cpu_uclamp_min_write,
+    },
+    {
+        .name = "uclamp.max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cpu_uclamp_max_show,
+        .write = cpu_uclamp_max_write,
+    },
+#endif
+    { }    /* terminate */
+};
+```
+
+### cpu_cgroup_css_alloc
+
+```c
+struct cgroup_subsys_state *
+cpu_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
+{
+    struct task_group *parent = css_tg(parent_css);
+    struct task_group *tg;
+
+    if (!parent) {
+        return &root_task_group.css;
+    }
+
+    tg = sched_create_group(parent) {
+        struct task_group *tg;
+
+        tg = kmem_cache_alloc(task_group_cache, GFP_KERNEL | __GFP_ZERO);
+
+        alloc_fair_sched_group(tg, parent) {
+            tg->cfs_rq = kcalloc(nr_cpu_ids, sizeof(cfs_rq), GFP_KERNEL);
+
+            tg->se = kcalloc(nr_cpu_ids, sizeof(se), GFP_KERNEL);
+
+            tg->shares = NICE_0_LOAD;
+
+            init_cfs_bandwidth(tg_cfs_bandwidth(tg), tg_cfs_bandwidth(parent)) {
+                --->
+            }
+
+            for_each_possible_cpu(i) {
+                cfs_rq = kzalloc_node(sizeof(struct cfs_rq), GFP_KERNEL, cpu_to_node(i));
+                se = kzalloc_node(sizeof(struct sched_entity_stats), GFP_KERNEL, cpu_to_node(i));
+
+                init_cfs_rq(cfs_rq) {
+                    cfs_rq->tasks_timeline = RB_ROOT_CACHED;
+                    u64_u32_store(cfs_rq->min_vruntime, (u64)(-(1LL << 20)));
+                    raw_spin_lock_init(&cfs_rq->removed.lock);
+                }
+
+                init_tg_cfs_entry(tg, cfs_rq, se, i/*cpu*/, parent->se[i]/*parent*/) {
+                    struct rq *rq = cpu_rq(cpu);
+
+                    cfs_rq->tg = tg;
+                    cfs_rq->rq = rq;
+                    init_cfs_rq_runtime(cfs_rq);
+
+                    tg->cfs_rq[cpu] = cfs_rq;
+                    tg->se[cpu] = se;
+
+                    /* se could be NULL for root_task_group */
+                    if (!se)
+                        return;
+
+                    if (!parent) {
+                        se->cfs_rq = &rq->cfs;
+                        se->depth = 0;
+                    } else {
+                        se->cfs_rq = parent->my_q;
+                        se->depth = parent->depth + 1;
+                    }
+
+                    se->my_q = cfs_rq;
+                    /* guarantee group entities always have weight */
+                    update_load_set(&se->load, NICE_0_LOAD);
+                    se->parent = parent;
+                }
+                init_entity_runnable_average(se);
+            }
+        }
+
+        alloc_rt_sched_group(tg, parent) {
+            struct rt_rq *rt_rq;
+            struct sched_rt_entity *rt_se;
+            int i;
+
+            tg->rt_rq = kcalloc(nr_cpu_ids, sizeof(rt_rq), GFP_KERNEL);
+            tg->rt_se = kcalloc(nr_cpu_ids, sizeof(rt_se), GFP_KERNEL);
+
+            init_rt_bandwidth(&tg->rt_bandwidth,
+                    ktime_to_ns(def_rt_bandwidth.rt_period), 0);
+
+            for_each_possible_cpu(i) {
+                rt_rq = kzalloc_node(sizeof(struct rt_rq), GFP_KERNEL, cpu_to_node(i));
+                rt_se = kzalloc_node(sizeof(struct sched_rt_entity), GFP_KERNEL, cpu_to_node(i));
+
+                init_rt_rq(rt_rq);
+                rt_rq->rt_runtime = tg->rt_bandwidth.rt_runtime;
+                init_tg_rt_entry(tg, rt_rq, rt_se, i/*cpu*/, parent->rt_se[i]/*parent*/) {
+                    struct rq *rq = cpu_rq(cpu);
+
+                    rt_rq->highest_prio.curr = MAX_RT_PRIO-1;
+                    rt_rq->rt_nr_boosted = 0;
+                    rt_rq->rq = rq;
+                    rt_rq->tg = tg;
+
+                    tg->rt_rq[cpu] = rt_rq;
+                    tg->rt_se[cpu] = rt_se;
+
+                    if (!parent)
+                        rt_se->rt_rq = &rq->rt;
+                    else
+                        rt_se->rt_rq = parent->my_q;
+
+                    rt_se->my_q = rt_rq;
+                    rt_se->parent = parent;
+                    INIT_LIST_HEAD(&rt_se->run_list);
+                }
+            }
+        }
+
+        alloc_uclamp_sched_group(tg, parent);
+
+        return tg;
+    }
+
+    return &tg->css;
+}
+```
+
+### cpu_weight_write_u64
+
+```c
+int cpu_weight_write_u64(struct cgroup_subsys_state *css,
+                struct cftype *cft, u64 weight)
+{
+    if (weight < CGROUP_WEIGHT_MIN || weight > CGROUP_WEIGHT_MAX)
+        return -ERANGE;
+
+    weight = DIV_ROUND_CLOSEST_ULL(weight * 1024, CGROUP_WEIGHT_DFL);
+
+    return sched_group_set_shares(css_tg(css), scale_load(weight)) {
+        if (!tg->se[0])
+            return -EINVAL;
+
+        shares = clamp(shares, scale_load(MIN_SHARES), scale_load(MAX_SHARES));
+
+        if (tg->shares == shares)
+            return 0;
+
+        tg->shares = shares;
+        for_each_possible_cpu(i) {
+            struct rq *rq = cpu_rq(i);
+            struct sched_entity *se = tg->se[i];
+            struct rq_flags rf;
+
+            /* Propagate contribution to hierarchy */
+            rq_lock_irqsave(rq, &rf);
+            update_rq_clock(rq);
+            for_each_sched_entity(se) {
+                update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
+                update_cfs_group(se) {
+                    struct cfs_rq *gcfs_rq = group_cfs_rq(se);
+                    long shares;
+
+                    shares = READ_ONCE(gcfs_rq->tg->shares);
+
+                    if (unlikely(se->load.weight != shares)) {
+                        reweight_entity(cfs_rq_of(se), se, shares) {
+                            bool curr = cfs_rq->curr == se;
+                            if (se->on_rq) {
+                                if (curr)
+                                    update_curr(cfs_rq);
+                                else
+                                    __dequeue_entity(cfs_rq, se);
+                                update_load_sub(&cfs_rq->load, se->load.weight);
+                            }
+                            dequeue_load_avg(cfs_rq, se);
+
+                            if (!se->on_rq) {
+                                se->vlag = div_s64(se->vlag * se->load.weight, weight);
+                            } else {
+                                reweight_eevdf(cfs_rq, se, weight);
+                            }
+
+                            update_load_set(&se->load, weight);
+
+                            u32 divider = get_pelt_divider(&se->avg);
+                            se->avg.load_avg = div_u64(se_weight(se) * se->avg.load_sum, divider);
+
+                            enqueue_load_avg(cfs_rq, se);
+                            if (se->on_rq) {
+                                update_load_add(&cfs_rq->load, se->load.weight);
+                                if (!curr) {
+                                    __enqueue_entity(cfs_rq, se);
+                                    update_min_vruntime(cfs_rq);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            rq_unlock_irqrestore(rq, &rf);
+        }
+
+        return 0;
+    }
+}
+```
+
+### cpu_max_write
+
+```c
+ssize_t cpu_max_write(struct kernfs_open_file *of,
+                char *buf, size_t nbytes, loff_t off)
+{
+    struct task_group *tg = css_tg(of_css(of));
+    u64 period = tg_get_cfs_period(tg);
+    u64 burst = tg_get_cfs_burst(tg);
+    u64 quota;
+    int ret;
+
+    ret = cpu_period_quota_parse(buf, &period, &quota);
+    if (!ret) {
+        ret = tg_set_cfs_bandwidth(tg, period, quota, burst);
+    }
+    return ret ?: nbytes;
 }
 ```
 
@@ -9936,12 +10542,6 @@ int cgroup_can_fork(struct task_struct *child, struct kernel_clone_args *kargs)
 
             spin_unlock_irq(&css_set_lock);
 
-            /*
-            * If @cset should be threaded, look up the matching dom_cset and
-            * link them up.  We first fully initialize @cset then look for the
-            * dom_cset.  It's simpler this way and safe as @cset is guaranteed
-            * to stay empty until we return.
-            */
             if (cgroup_is_threaded(cset->dfl_cgrp)) {
                 struct css_set *dcset;
 
