@@ -112,6 +112,9 @@
     * [wq-struct](#wq-struct)
 
 * [cgroup]
+    * [cgrou_init](#cgroup_init)
+        * [cgroup_init_cftypes](#cgroup_init_cftypes)
+        * [cgroup_init_subsys](#cgroup_init_subsys)
     * [cgroup_create](#cgroup_create)
     * [cgroup_attach_task](#cgroup_attach_task)
     * [cgroup_fork](#cgroup_fork)
@@ -9943,6 +9946,9 @@ struct workqueue_struct *system_freezable_power_efficient_wq;
 # cgroup
 
 * [开发内功修炼 - cgroup](https://mp.weixin.qq.com/s/rUQLM8WfjMqa__Nvhjhmxw)
+* [奇小葩 - linux cgroup](https://blog.csdn.net/u012489236/category_11288796.html)
+
+![](../Images/Kernel/proc-sched-cfs-cgroup_init.png)
 
 ```c
 struct task_struct {
@@ -9990,6 +9996,103 @@ static struct kernfs_ops cgroup_kf_ops = {
     .seq_show           = cgroup_seqfile_show,
 };
 ```
+
+## cgroup_init
+
+```c
+int __init cgroup_init(void)
+{
+    struct cgroup_subsys *ss;
+    int ssid;
+
+    BUILD_BUG_ON(CGROUP_SUBSYS_COUNT > 16);
+    BUG_ON(cgroup_init_cftypes(NULL, cgroup_base_files));
+    BUG_ON(cgroup_init_cftypes(NULL, cgroup_psi_files));
+    BUG_ON(cgroup_init_cftypes(NULL, cgroup1_base_files));
+
+    cgroup_rstat_boot();
+
+    get_user_ns(init_cgroup_ns.user_ns);
+
+    cgroup_lock();
+
+    hash_add(css_set_table,
+        &init_css_set.hlist,
+        css_set_hash(init_css_set.subsys)
+    );
+
+    BUG_ON(cgroup_setup_root(&cgrp_dfl_root, 0));
+
+    cgroup_unlock();
+
+    for_each_subsys(ss, ssid) {
+        if (ss->early_init) {
+            struct cgroup_subsys_state *css = init_css_set.subsys[ss->id];
+            css->id = cgroup_idr_alloc(&ss->css_idr, css, 1, 2, GFP_KERNEL);
+            BUG_ON(css->id < 0);
+        } else {
+            cgroup_init_subsys(ss, false);
+        }
+
+        list_add_tail(&init_css_set.e_cset_node[ssid],
+            &cgrp_dfl_root.cgrp.e_csets[ssid]);
+
+        if (!cgroup_ssid_enabled(ssid))
+            continue;
+
+        cgrp_dfl_root.subsys_mask |= 1 << ss->id;
+
+        /* implicit controllers must be threaded too */
+        WARN_ON(ss->implicit_on_dfl && !ss->threaded);
+
+        if (ss->implicit_on_dfl) {
+            cgrp_dfl_implicit_ss_mask |= 1 << ss->id;
+        } else if (!ss->dfl_cftypes) {
+            cgrp_dfl_inhibit_ss_mask |= 1 << ss->id;
+        }
+
+        if (ss->threaded) {
+            cgrp_dfl_threaded_ss_mask |= 1 << ss->id;
+        }
+
+        if (ss->dfl_cftypes == ss->legacy_cftypes) {
+            WARN_ON(cgroup_add_cftypes(ss, ss->dfl_cftypes));
+        } else {
+            WARN_ON(cgroup_add_dfl_cftypes(ss, ss->dfl_cftypes));
+            WARN_ON(cgroup_add_legacy_cftypes(ss, ss->legacy_cftypes));
+        }
+
+        if (ss->bind) {
+            ss->bind(init_css_set.subsys[ssid]);
+        }
+
+        cgroup_lock();
+        css_populate_dir(init_css_set.subsys[ssid]) {
+            --->
+        }
+        cgroup_unlock();
+    }
+
+    /* init_css_set.subsys[] has been updated, re-hash */
+    hash_del(&init_css_set.hlist);
+    hash_add(css_set_table, &init_css_set.hlist,
+        css_set_hash(init_css_set.subsys));
+
+    WARN_ON(sysfs_create_mount_point(fs_kobj, "cgroup"));
+    WARN_ON(register_filesystem(&cgroup_fs_type));
+    WARN_ON(register_filesystem(&cgroup2_fs_type));
+    WARN_ON(!proc_create_single("cgroups", 0, NULL, proc_cgroupstats_show));
+#ifdef CONFIG_CPUSETS
+    WARN_ON(register_filesystem(&cpuset_fs_type));
+#endif
+
+    return 0;
+}
+```
+
+### cgroup_init_cftypes
+
+### cgroup_init_subsys
 
 ## cgroup_create
 
