@@ -61,8 +61,11 @@
         * [switched_to_fair](#switched_to_fair)
     * [task_group](#task_group)
         * [init_cfs_bandwidth](#init_cfs_bandwidth)
+            * [sched_cfs_period_timer](#sched_cfs_period_timer)
+            * [sched_cfs_slack_timer](#sched_cfs_slack_timer)
         * [tg_set_cfs_bandwidth](#tg_set_cfs_bandwidth)
         * [throttle_cfs_rq](#throttle_cfs_rq)
+        * [unthrottle_cfs_rq](#unthrottle_cfs_rq)
         * [sched_group_set_shares](#sched_group_set_shares)
 
 * [sched_domain](#sched_domain)
@@ -117,6 +120,7 @@
         * [mem_cgroup_charge](#mem_cgroup_charge)
     * [cpu_cgroup](#cpu_cgroup)
         * [cpu_cgroup_css_alloc](#cpu_cgroup_css_alloc)
+        * [cpu_cgroup_attach](#cpu_cgroup_attach)
         * [cpu_weight_write_u64](#cpu_weight_write_u64)
         * [cpu_max_write](#cpu_max_write)
 
@@ -2865,7 +2869,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                     se->runnable_weight = se->my_q->h_nr_running;
             }
 
-            update_cfs_group(se);
+            update_cfs_group(se) {
+                --->
+            }
 
             if (!curr)
                 place_entity(cfs_rq, se, flags);
@@ -2962,7 +2968,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
         update_load_avg(cfs_rq, se, UPDATE_TG);
         se_update_runnable(se);
-        update_cfs_group(se);
+        update_cfs_group(se) {
+            --->
+        }
 
         cfs_rq->h_nr_running++;
         cfs_rq->idle_h_nr_running += idle_h_nr_running;
@@ -3027,9 +3035,31 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
             account_entity_dequeue(cfs_rq, se);
 
             /* return excess runtime on last dequeue */
-            return_cfs_rq_runtime(cfs_rq);
+            return_cfs_rq_runtime(cfs_rq) {
+                struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
+                s64 slack_runtime = cfs_rq->runtime_remaining - min_cfs_rq_runtime;
 
-            update_cfs_group(se);
+                if (slack_runtime <= 0)
+                    return;
+
+                raw_spin_lock(&cfs_b->lock);
+                if (cfs_b->quota != RUNTIME_INF) {
+                    cfs_b->runtime += slack_runtime;
+
+                    if (cfs_b->runtime > sched_cfs_bandwidth_slice()
+                        && !list_empty(&cfs_b->throttled_cfs_rq)) {
+                        start_cfs_slack_bandwidth(cfs_b);
+                    }
+                }
+                raw_spin_unlock(&cfs_b->lock);
+
+                /* even if it's not valid for return we don't want to try again */
+                cfs_rq->runtime_remaining -= slack_runtime;
+            }
+
+            update_cfs_group(se) {
+                --->
+            }
 
             if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) != DEQUEUE_SAVE)
                 update_min_vruntime(cfs_rq);
@@ -3065,7 +3095,9 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
         update_load_avg(cfs_rq, se, UPDATE_TG);
         se_update_runnable(se);
-        update_cfs_group(se);
+        update_cfs_group(se) {
+            --->
+        }
 
         cfs_rq->h_nr_running--;
         cfs_rq->idle_h_nr_running -= idle_h_nr_running;
@@ -4173,7 +4205,14 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                     if (cfs_rq->throttled)
                         return;
 
-                    if (!assign_cfs_rq_runtime(cfs_rq) && likely(cfs_rq->curr))
+                    ret = assign_cfs_rq_runtime(cfs_rq) {
+                        cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
+
+                        __assign_cfs_rq_runtime(cfs_b, cfs_rq, sched_cfs_bandwidth_slice()) {
+                            --->
+                        }
+                    }
+                    if (!ret && likely(cfs_rq->curr))
                         resched_curr(rq_of(cfs_rq));
                 }
             }
@@ -4182,8 +4221,8 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
 
             }
 
-            update_cfs_group(curr) {
-
+            update_cfs_group(curr)  {
+                --->
             }
 
         #ifdef CONFIG_SCHED_HRTICK
@@ -4294,12 +4333,10 @@ void switched_from_fair(struct rq *rq, struct task_struct *p)
         detach_entity_cfs_rq(se) {
             struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-            /*
-            * In case the task sched_avg hasn't been attached:
+            /* In case the task sched_avg hasn't been attached:
             * - A forked task which hasn't been woken up by wake_up_new_task().
             * - A task which has been woken up by try_to_wake_up() but is
-            *   waiting for actually being woken up by sched_ttwu_pending().
-            */
+            *   waiting for actually being woken up by sched_ttwu_pending(). */
             if (!se->avg.last_update_time)
                 return;
 
@@ -4377,7 +4414,7 @@ struct cfs_bandwidth {
     raw_spinlock_t      lock;
     ktime_t             period;
     u64                 quota;
-    u64                 runtime;
+    u64                 runtime; /* the remaining time of the quota */
     u64                 burst;
     u64                 runtime_snap;
     s64                 hierarchical_quota;
@@ -4385,8 +4422,8 @@ struct cfs_bandwidth {
     u8                  idle;
     u8                  period_active;
     u8                  slack_started;
-    struct hrtimer      period_timer;
-    struct hrtimer      slack_timer;
+    struct hrtimer      period_timer; /* refill the runtime */
+    struct hrtimer      slack_timer; /* return the remaining time to tg time pool */
     struct list_head    throttled_cfs_rq;
 
     int                 nr_periods;
@@ -4397,24 +4434,18 @@ struct cfs_bandwidth {
 };
 
 struct cfs_rq {
-#ifdef CONFIG_CFS_BANDWIDTH
     int            runtime_enabled;
     s64            runtime_remaining;
 
     u64            throttled_pelt_idle;
-#ifndef CONFIG_64BIT
-    u64                     throttled_pelt_idle_copy;
-#endif
+
     u64            throttled_clock;
     u64            throttled_clock_pelt;
     u64            throttled_clock_pelt_time;
     int            throttled;
     int            throttle_count;
     struct list_head    throttled_list;
-#ifdef CONFIG_SMP
     struct list_head    throttled_csd_list;
-#endif
-#endif /* CONFIG_CFS_BANDWIDTH */
 };
 ```
 
@@ -4454,6 +4485,222 @@ struct task_group {
 ### init_cfs_bandwidth
 
 ![](../Images/Kernel/proc-sched-cfs-init_cfs_bandwidth.png)
+
+```c
+void init_cfs_bandwidth(struct cfs_bandwidth *cfs_b, struct cfs_bandwidth *parent)
+{
+    raw_spin_lock_init(&cfs_b->lock);
+    cfs_b->runtime = 0;
+    cfs_b->quota = RUNTIME_INF;
+    cfs_b->period = ns_to_ktime(default_cfs_period());
+    cfs_b->burst = 0;
+    cfs_b->hierarchical_quota = parent ? parent->hierarchical_quota : RUNTIME_INF;
+
+    INIT_LIST_HEAD(&cfs_b->throttled_cfs_rq);
+    hrtimer_init(&cfs_b->period_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS_PINNED);
+    cfs_b->period_timer.function = sched_cfs_period_timer;
+
+    /* Add a random offset so that timers interleave */
+    hrtimer_set_expires(&cfs_b->period_timer,
+                get_random_u32_below(cfs_b->period));
+    hrtimer_init(&cfs_b->slack_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+    cfs_b->slack_timer.function = sched_cfs_slack_timer;
+    cfs_b->slack_started = false;
+}
+```
+
+#### sched_cfs_period_timer
+```c
+enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
+{
+    struct cfs_bandwidth *cfs_b = container_of(timer, struct cfs_bandwidth, period_timer);
+    unsigned long flags;
+    int overrun;
+    int idle = 0;
+    int count = 0;
+
+    raw_spin_lock_irqsave(&cfs_b->lock, flags);
+    for (;;) {
+        overrun = hrtimer_forward_now(timer, cfs_b->period);
+        if (!overrun)
+            break;
+
+        idle = do_sched_cfs_period_timer(cfs_b, overrun, flags) {
+            int throttled;
+
+            /* no need to continue the timer with no bandwidth constraint */
+            if (cfs_b->quota == RUNTIME_INF)
+                goto out_deactivate;
+
+            throttled = !list_empty(&cfs_b->throttled_cfs_rq);
+            cfs_b->nr_periods += overrun;
+
+            /* Refill extra burst quota even if cfs_b->idle */
+            __refill_cfs_bandwidth_runtime(cfs_b) {
+                cfs_b->runtime += cfs_b->quota;
+                runtime = cfs_b->runtime_snap - cfs_b->runtime;
+                if (runtime > 0) {
+                    cfs_b->burst_time += runtime;
+                    cfs_b->nr_burst++;
+                }
+
+                cfs_b->runtime = min(cfs_b->runtime, cfs_b->quota + cfs_b->burst);
+                cfs_b->runtime_snap = cfs_b->runtime;
+            }
+
+            if (cfs_b->idle && !throttled)
+                goto out_deactivate;
+
+            if (!throttled) {
+                cfs_b->idle = 1;
+                return 0;
+            }
+
+            cfs_b->nr_throttled += overrun;
+
+            while (throttled && cfs_b->runtime > 0) {
+                raw_spin_unlock_irqrestore(&cfs_b->lock, flags);
+                throttled = distribute_cfs_runtime(cfs_b);
+                raw_spin_lock_irqsave(&cfs_b->lock, flags);
+            }
+
+            cfs_b->idle = 0;
+
+            return 0;
+
+        out_deactivate:
+            return 1;
+        }
+
+        if (++count > 3) {
+            u64 new, old = ktime_to_ns(cfs_b->period);
+
+            /* Grow period by a factor of 2 to avoid losing precision.
+            * Precision loss in the quota/period ratio can cause __cfs_schedulable
+            * to fail. */
+            new = old * 2;
+            if (new < max_cfs_quota_period) {
+                cfs_b->period = ns_to_ktime(new);
+                cfs_b->quota *= 2;
+                cfs_b->burst *= 2;
+            }
+
+            /* reset count so we don't come right back in here */
+            count = 0;
+        }
+    }
+    if (idle)
+        cfs_b->period_active = 0;
+    raw_spin_unlock_irqrestore(&cfs_b->lock, flags);
+
+    return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
+}
+```
+
+#### sched_cfs_slack_timer
+```c
+enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
+{
+	struct cfs_bandwidth *cfs_b =
+		container_of(timer, struct cfs_bandwidth, slack_timer);
+
+	do_sched_cfs_slack_timer(cfs_b) {
+        u64 runtime = 0, slice = sched_cfs_bandwidth_slice();
+        unsigned long flags;
+
+        /* confirm we're still not at a refresh boundary */
+        raw_spin_lock_irqsave(&cfs_b->lock, flags);
+        cfs_b->slack_started = false;
+
+        /* Are we near the end of the current quota period? */
+        if (runtime_refresh_within(cfs_b, min_bandwidth_expiration)) {
+            raw_spin_unlock_irqrestore(&cfs_b->lock, flags);
+            return;
+        }
+
+        if (cfs_b->quota != RUNTIME_INF && cfs_b->runtime > slice)
+            runtime = cfs_b->runtime;
+
+        raw_spin_unlock_irqrestore(&cfs_b->lock, flags);
+
+        if (!runtime)
+            return;
+
+        distribute_cfs_runtime(cfs_b) {
+            int this_cpu = smp_processor_id();
+            u64 runtime, remaining = 1;
+            bool throttled = false;
+            struct cfs_rq *cfs_rq, *tmp;
+            struct rq_flags rf;
+            struct rq *rq;
+            LIST_HEAD(local_unthrottle);
+
+            rcu_read_lock();
+            list_for_each_entry_rcu(cfs_rq, &cfs_b->throttled_cfs_rq, throttled_list) {
+                rq = rq_of(cfs_rq);
+
+                if (!remaining) {
+                    throttled = true;
+                    break;
+                }
+
+                rq_lock_irqsave(rq, &rf);
+                if (!cfs_rq_throttled(cfs_rq))
+                    goto next;
+
+                /* Already queued for async unthrottle */
+                if (!list_empty(&cfs_rq->throttled_csd_list))
+                    goto next;
+
+                raw_spin_lock(&cfs_b->lock);
+                runtime = -cfs_rq->runtime_remaining + 1;
+                if (runtime > cfs_b->runtime) {
+                    runtime = cfs_b->runtime;
+                }
+                cfs_b->runtime -= runtime;
+                remaining = cfs_b->runtime;
+                raw_spin_unlock(&cfs_b->lock);
+
+                cfs_rq->runtime_remaining += runtime;
+
+                /* we check whether we're throttled above */
+                if (cfs_rq->runtime_remaining > 0) {
+                    if (cpu_of(rq) != this_cpu) {
+                        unthrottle_cfs_rq_async(cfs_rq);
+                    } else {
+                        list_add_tail(&cfs_rq->throttled_csd_list, &local_unthrottle);
+                    }
+                } else {
+                    throttled = true;
+                }
+
+        next:
+                rq_unlock_irqrestore(rq, &rf);
+            }
+
+            list_for_each_entry_safe(cfs_rq, tmp, &local_unthrottle, throttled_csd_list) {
+                struct rq *rq = rq_of(cfs_rq);
+
+                rq_lock_irqsave(rq, &rf);
+
+                list_del_init(&cfs_rq->throttled_csd_list);
+
+                if (cfs_rq_throttled(cfs_rq)) {
+                    unthrottle_cfs_rq(cfs_rq);
+                }
+
+                rq_unlock_irqrestore(rq, &rf);
+            }
+
+            rcu_read_unlock();
+
+            return throttled;
+        }
+    }
+
+	return HRTIMER_NORESTART;
+}
+```
 
 ### tg_set_cfs_bandwidth
 
@@ -4608,7 +4855,6 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 
     for_each_sched_entity(se) {
         struct cfs_rq *qcfs_rq = cfs_rq_of(se);
-        /* throttled entity or throttle-on-deactivate */
         if (!se->on_rq)
             goto done;
 
@@ -4649,10 +4895,96 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 done:
 
     cfs_rq->throttled = 1;
-    SCHED_WARN_ON(cfs_rq->throttled_clock);
     if (cfs_rq->nr_running)
         cfs_rq->throttled_clock = rq_clock(rq);
+
     return true;
+}
+```
+
+### unthrottle_cfs_rq
+
+```c
+void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
+{
+    struct rq *rq = rq_of(cfs_rq);
+    struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
+    struct sched_entity *se;
+    long task_delta, idle_task_delta;
+
+    se = cfs_rq->tg->se[cpu_of(rq)];
+
+    cfs_rq->throttled = 0;
+
+    update_rq_clock(rq);
+
+    raw_spin_lock(&cfs_b->lock);
+    if (cfs_rq->throttled_clock) {
+        cfs_b->throttled_time += rq_clock(rq) - cfs_rq->throttled_clock;
+        cfs_rq->throttled_clock = 0;
+    }
+    list_del_rcu(&cfs_rq->throttled_list);
+    raw_spin_unlock(&cfs_b->lock);
+
+    /* update hierarchical throttle state */
+    walk_tg_tree_from(cfs_rq->tg, tg_nop, tg_unthrottle_up, (void *)rq);
+
+    if (!cfs_rq->load.weight) {
+        if (!cfs_rq->on_list)
+            return;
+        for_each_sched_entity(se) {
+            if (list_add_leaf_cfs_rq(cfs_rq_of(se)))
+                break;
+        }
+        goto unthrottle_throttle;
+    }
+
+    task_delta = cfs_rq->h_nr_running;
+    idle_task_delta = cfs_rq->idle_h_nr_running;
+    for_each_sched_entity(se) {
+        struct cfs_rq *qcfs_rq = cfs_rq_of(se);
+
+        if (se->on_rq)
+            break;
+        enqueue_entity(qcfs_rq, se, ENQUEUE_WAKEUP);
+
+        if (cfs_rq_is_idle(group_cfs_rq(se)))
+            idle_task_delta = cfs_rq->h_nr_running;
+
+        qcfs_rq->h_nr_running += task_delta;
+        qcfs_rq->idle_h_nr_running += idle_task_delta;
+
+        /* end evaluation on encountering a throttled cfs_rq */
+        if (cfs_rq_throttled(qcfs_rq))
+            goto unthrottle_throttle;
+    }
+
+    for_each_sched_entity(se) {
+        struct cfs_rq *qcfs_rq = cfs_rq_of(se);
+
+        update_load_avg(qcfs_rq, se, UPDATE_TG);
+        se_update_runnable(se);
+
+        if (cfs_rq_is_idle(group_cfs_rq(se)))
+            idle_task_delta = cfs_rq->h_nr_running;
+
+        qcfs_rq->h_nr_running += task_delta;
+        qcfs_rq->idle_h_nr_running += idle_task_delta;
+
+        /* end evaluation on encountering a throttled cfs_rq */
+        if (cfs_rq_throttled(qcfs_rq))
+            goto unthrottle_throttle;
+    }
+
+    /* At this point se is NULL and we are at root level*/
+    add_nr_running(rq, task_delta);
+
+unthrottle_throttle:
+    assert_list_leaf_cfs_rq(rq);
+
+    /* Determine whether we need to wake up potentially idle CPU: */
+    if (rq->curr == rq->idle && rq->cfs.nr_running)
+        resched_curr(rq);
 }
 ```
 
@@ -4693,12 +5025,7 @@ cpu_shares_write_u64() {
                 for_each_sched_entity(se) {
                     update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
                     update_cfs_group(se) {
-                        calc_group_shares(gcfs_rq) {
-
-                        }
-                        reweight_entity(cfs_rq_of(se), se, shares) {
-
-                        }
+                        --->
                     }
                 }
                 rq_unlock_irqrestore(rq, &rf);
@@ -7493,10 +7820,8 @@ try_to_wake_up() {
                     }
                 }
 
-                /*
-                * A queue event has occurred, and we're going to schedule.  In
-                * this case, we can save a useless back to back clock update.
-                */
+                /* A queue event has occurred, and we're going to schedule.  In
+                * this case, we can save a useless back to back clock update. */
                 if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
                     rq_clock_skip_update(rq);
             }
@@ -9620,6 +9945,13 @@ struct workqueue_struct *system_freezable_power_efficient_wq;
 * [开发内功修炼 - cgroup](https://mp.weixin.qq.com/s/rUQLM8WfjMqa__Nvhjhmxw)
 
 ```c
+struct task_struct {
+    struct css_set      *cgroups;
+    struct list_head    cg_list; /* link to css_set mg_tasks, dying_tasks */
+};
+```
+
+```c
 static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
     .show_options   = cgroup_show_options,
     .mkdir          = cgroup_mkdir,
@@ -9919,6 +10251,17 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
                         }
                         from_cset->nr_tasks--;
                     }
+                }
+
+                tset->csets = &tset->dst_csets;
+
+                if (tset->nr_tasks) {
+                    do_each_subsys_mask(ss, ssid, mgctx->ss_mask) {
+                        if (ss->attach) {
+                            tset->ssid = ssid;
+                            ss->attach(tset);
+                        }
+                    } while_each_subsys_mask();
                 }
             }
         }
@@ -10317,6 +10660,71 @@ cpu_cgroup_css_alloc(struct cgroup_subsys_state *parent_css)
     }
 
     return &tg->css;
+}
+```
+
+### cpu_cgroup_attach
+
+```c
+void cpu_cgroup_attach(struct cgroup_taskset *tset)
+{
+    struct task_struct *task;
+    struct cgroup_subsys_state *css;
+
+    cgroup_taskset_for_each(task, css, tset) {
+        sched_move_task(task) {
+            group = sched_get_task_group(tsk);
+            if (group == tsk->sched_task_group)
+                return;
+
+            update_rq_clock(rq);
+
+            running = task_current(rq, tsk);
+            queued = task_on_rq_queued(tsk);
+
+            if (queued)
+                dequeue_task(rq, tsk, queue_flags);
+            if (running)
+                put_prev_task(rq, tsk);
+
+            sched_change_group(tsk, group) {
+                tsk->sched_task_group = group;
+
+                if (tsk->sched_class->task_change_group) {
+                    tsk->sched_class->task_change_group(tsk);
+                } else {
+                    set_task_rq(tsk, task_cpu(tsk)) {
+                        struct task_group *tg = task_group(p);
+
+                        if (CONFIG_FAIR_GROUP_SCHED) {
+                            set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]) {
+                                p_last_update_time = cfs_rq_last_update_time(prev);
+                                n_last_update_time = cfs_rq_last_update_time(next);
+
+                                __update_load_avg_blocked_se(p_last_update_time, se);
+                                se->avg.last_update_time = n_last_update_time;
+                            }
+                            p->se.cfs_rq = tg->cfs_rq[cpu];
+                            p->se.parent = tg->se[cpu];
+                            p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
+                        }
+
+                        if (CONFIG_RT_GROUP_SCHED) {
+                            p->rt.rt_rq  = tg->rt_rq[cpu];
+                            p->rt.parent = tg->rt_se[cpu];
+                        }
+                    }
+                }
+            }
+
+            if (queued)
+                enqueue_task(rq, tsk, queue_flags);
+            if (running) {
+                set_next_task(rq, tsk);
+                resched_curr(rq);
+            }
+        }
+    }
 }
 ```
 
