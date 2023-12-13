@@ -111,7 +111,7 @@
 * [cmwq](#cmwq)
     * [wq-struct](#wq-struct)
 
-* [cgroup]
+* [cgroup](#cgroup)
     * [cgrou_init](#cgroup_init)
         * [cgroup_init_cftypes](#cgroup_init_cftypes)
         * [cgroup_init_subsys](#cgroup_init_subsys)
@@ -121,6 +121,8 @@
     * [mem_cgroup](#mem_cgroup)
         * [mem_cgroup_write](#mem_cgroup_write)
         * [mem_cgroup_charge](#mem_cgroup_charge)
+        * [mem_cgroup_can_attach](#mem_cgroup_can_attach)
+        * [mem_](#mem_cgroup_post_attach)
     * [cpu_cgroup](#cpu_cgroup)
         * [cpu_cgroup_css_alloc](#cpu_cgroup_css_alloc)
         * [cpu_cgroup_attach](#cpu_cgroup_attach)
@@ -9947,17 +9949,38 @@ struct workqueue_struct *system_freezable_power_efficient_wq;
 
 * [开发内功修炼 - cgroup](https://mp.weixin.qq.com/s/rUQLM8WfjMqa__Nvhjhmxw)
 * [奇小葩 - linux cgroup](https://blog.csdn.net/u012489236/category_11288796.html)
-
+* [极客时间](https://time.geekbang.org/column/article/115582)
 ![](../Images/Kernel/proc-sched-cfs-cgroup_init.png)
 
 ```c
 struct task_struct {
     struct css_set      *cgroups;
-    struct list_head    cg_list; /* link to css_set mg_tasks, dying_tasks */
+    struct list_head    cg_list; /* anchored to css_set mg_tasks, dying_tasks */
 };
 ```
 
 ```c
+const struct file_operations kernfs_file_fops = {
+    .read_iter  = kernfs_fop_read_iter,
+    .write_iter = kernfs_fop_write_iter,
+    .llseek     = kernfs_fop_llseek,
+    .mmap       = kernfs_fop_mmap,
+    .open       = kernfs_fop_open,
+    .release    = kernfs_fop_release,
+    .poll       = kernfs_fop_poll,
+    .fsync      = noop_fsync,
+    .splice_read    = copy_splice_read,
+    .splice_write   = iter_file_splice_write,
+};
+
+static struct file_system_type cgroup2_fs_type = {
+    .name               = "cgroup2",
+    .init_fs_context    = cgroup_init_fs_context,
+    .parameters         = cgroup2_fs_parameters,
+    .kill_sb            = cgroup_kill_sb,
+    .fs_flags           = FS_USERNS_MOUNT,
+};
+
 static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
     .show_options   = cgroup_show_options,
     .mkdir          = cgroup_mkdir,
@@ -9965,6 +9988,7 @@ static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
     .show_path      = cgroup_show_path,
 };
 
+/* cgroup v2 base files */
 static struct cftype cgroup_base_files[] = {
     {
         .name = "cgroup.type",
@@ -10000,6 +10024,32 @@ static struct kernfs_ops cgroup_kf_ops = {
 ## cgroup_init
 
 ```c
+int __init cgroup_init_early(void)
+{
+    static struct cgroup_fs_context __initdata ctx;
+    struct cgroup_subsys *ss;
+    int i;
+
+    ctx.root = &cgrp_dfl_root;
+    init_cgroup_root(&ctx);
+    cgrp_dfl_root.cgrp.self.flags |= CSS_NO_REF;
+
+    RCU_INIT_POINTER(init_task.cgroups, &init_css_set);
+
+    for_each_subsys(ss, i) {
+        ss->id = i;
+        ss->name = cgroup_subsys_name[i];
+        if (!ss->legacy_name)
+            ss->legacy_name = cgroup_subsys_name[i];
+
+        if (ss->early_init)
+            cgroup_init_subsys(ss, true);
+    }
+    return 0;
+}
+
+```
+```c
 int __init cgroup_init(void)
 {
     struct cgroup_subsys *ss;
@@ -10021,7 +10071,7 @@ int __init cgroup_init(void)
         css_set_hash(init_css_set.subsys)
     );
 
-    BUG_ON(cgroup_setup_root(&cgrp_dfl_root, 0));
+    cgroup_setup_root(&cgrp_dfl_root, 0);
 
     cgroup_unlock();
 
@@ -10029,7 +10079,6 @@ int __init cgroup_init(void)
         if (ss->early_init) {
             struct cgroup_subsys_state *css = init_css_set.subsys[ss->id];
             css->id = cgroup_idr_alloc(&ss->css_idr, css, 1, 2, GFP_KERNEL);
-            BUG_ON(css->id < 0);
         } else {
             cgroup_init_subsys(ss, false);
         }
@@ -10041,9 +10090,6 @@ int __init cgroup_init(void)
             continue;
 
         cgrp_dfl_root.subsys_mask |= 1 << ss->id;
-
-        /* implicit controllers must be threaded too */
-        WARN_ON(ss->implicit_on_dfl && !ss->threaded);
 
         if (ss->implicit_on_dfl) {
             cgrp_dfl_implicit_ss_mask |= 1 << ss->id;
@@ -10078,13 +10124,11 @@ int __init cgroup_init(void)
     hash_add(css_set_table, &init_css_set.hlist,
         css_set_hash(init_css_set.subsys));
 
-    WARN_ON(sysfs_create_mount_point(fs_kobj, "cgroup"));
-    WARN_ON(register_filesystem(&cgroup_fs_type));
-    WARN_ON(register_filesystem(&cgroup2_fs_type));
-    WARN_ON(!proc_create_single("cgroups", 0, NULL, proc_cgroupstats_show));
-#ifdef CONFIG_CPUSETS
-    WARN_ON(register_filesystem(&cpuset_fs_type));
-#endif
+    sysfs_create_mount_point(fs_kobj, "cgroup");
+    register_filesystem(&cgroup_fs_type);
+    register_filesystem(&cgroup2_fs_type);
+    proc_create_single("cgroups", 0, NULL, proc_cgroupstats_show);
+    register_filesystem(&cpuset_fs_type);
 
     return 0;
 }
@@ -10092,7 +10136,130 @@ int __init cgroup_init(void)
 
 ### cgroup_init_cftypes
 
+```c
+int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    struct cftype *cft;
+    int ret = 0;
+
+    for (cft = cfts; cft->name[0] != '\0'; cft++) {
+        struct kernfs_ops *kf_ops;
+
+        if (cft->flags & __CFTYPE_ADDED) {
+            ret = -EBUSY;
+            break;
+        }
+
+        if (cft->seq_start)
+            kf_ops = &cgroup_kf_ops;
+        else
+            kf_ops = &cgroup_kf_single_ops;
+
+        if (cft->max_write_len && cft->max_write_len != PAGE_SIZE) {
+            kf_ops = kmemdup(kf_ops, sizeof(*kf_ops), GFP_KERNEL);
+            if (!kf_ops) {
+                ret = -ENOMEM;
+                break;
+            }
+            kf_ops->atomic_write_len = cft->max_write_len;
+        }
+
+        cft->kf_ops = kf_ops;
+        cft->ss = ss;
+        cft->flags |= __CFTYPE_ADDED;
+    }
+
+    if (ret)
+        cgroup_exit_cftypes(cfts);
+    return ret;
+}
+```
+
 ### cgroup_init_subsys
+
+```c
+void __init cgroup_init_subsys(struct cgroup_subsys *ss, bool early)
+{
+    struct cgroup_subsys_state *css;
+
+    idr_init(&ss->css_idr);
+    INIT_LIST_HEAD(&ss->cfts);
+
+    /* Create the root cgroup state for this subsystem */
+    ss->root = &cgrp_dfl_root;
+    css = ss->css_alloc(NULL);
+    /* We don't handle early failures gracefully */
+    BUG_ON(IS_ERR(css));
+    init_and_link_css(css, ss, &cgrp_dfl_root.cgrp);
+
+    css->flags |= CSS_NO_REF;
+
+    if (early) {
+        css->id = 1;
+    } else {
+        css->id = cgroup_idr_alloc(&ss->css_idr, css, 1, 2, GFP_KERNEL);
+    }
+
+    init_css_set.subsys[ss->id] = css;
+
+    have_fork_callback |= (bool)ss->fork << ss->id;
+    have_exit_callback |= (bool)ss->exit << ss->id;
+    have_release_callback |= (bool)ss->release << ss->id;
+    have_canfork_callback |= (bool)ss->can_fork << ss->id;
+
+    online_css(css);
+}
+```
+
+### cgroup_setup_root
+
+```c
+int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask) {
+    LIST_HEAD(tmp_links);
+    struct cgroup *root_cgrp = &root->cgrp;
+    struct kernfs_syscall_ops *kf_sops;
+    struct css_set *cset;
+    int i, ret;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    ret = percpu_ref_init(&root_cgrp->self.refcnt, css_release,
+                0, GFP_KERNEL);
+    ret = allocate_cgrp_cset_links(2 * css_set_count, &tmp_links);
+    ret = cgroup_init_root_id(root);
+
+    kf_sops = (root == &cgrp_dfl_root)
+        ? &cgroup_kf_syscall_ops
+        : &cgroup1_kf_syscall_ops;
+
+    root->kf_root = kernfs_create_root(
+        kf_sops,
+        KERNFS_ROOT_CREATE_DEACTIVATED
+            | KERNFS_ROOT_SUPPORT_EXPORTOP
+            | KERNFS_ROOT_SUPPORT_USER_XATTR,
+        root_cgrp);
+    root_cgrp->kn = kernfs_root_to_node(root->kf_root);
+    root_cgrp->ancestors[0] = root_cgrp;
+
+    ret = css_populate_dir(&root_cgrp->self);
+
+    ret = cgroup_rstat_init(root_cgrp);
+    ret = rebind_subsystems(root, ss_mask);
+    ret = cgroup_bpf_inherit(root_cgrp);
+    list_add(&root->root_list, &cgroup_roots);
+    cgroup_root_count++;
+
+    spin_lock_irq(&css_set_lock);
+    hash_for_each(css_set_table, i, cset, hlist) {
+        link_css_set(&tmp_links, cset, root_cgrp);
+        if (css_set_populated(cset))
+            cgroup_update_populated(root_cgrp, true);
+    }
+    spin_unlock_irq(&css_set_lock);
+
+    ret = 0;
+}
+```
 
 ## cgroup_create
 
@@ -10105,7 +10272,14 @@ cgroup_mkdir() {
             return 0;
 
         if (!css->ss) {
-
+            if (cgroup_on_dfl(cgrp)) {
+                ret = cgroup_addrm_files(css, cgrp, cgroup_base_files, true);
+                if (cgroup_psi_enabled()) {
+                    ret = cgroup_addrm_files(css, cgrp, cgroup_psi_files, true);
+                }
+            } else {
+                ret = cgroup_addrm_files(css, cgrp, cgroup1_base_files, true);
+            }
         } else {
             list_for_each_entry(cfts, &css->ss->cfts, node) {
                 ret = cgroup_addrm_files(css, cgrp, cfts, true) {
@@ -10166,9 +10340,32 @@ cgroup_mkdir() {
 cgroup_procs_write()
     cgroup_attach_task()
 
+write() {
+    kernfs_fop_write() {
+        cgroup_file_write() {
+            cgroup_procs_write() {
+                cgroup_attach_task() {
+                    cgroup_migrate() {
+                        cgroup_migrate_execute();
+                    }
+                }
+                cgroup_procs_write_finish() {
+                    for_each_subsys(ss, ssid) {
+                        if (ss->post_attach) {
+                            ss->post_attach();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool threadgroup)
 {
     DEFINE_CGROUP_MGCTX(mgctx);
+
+/* 1. prepare src csets */
     task = leader;
     do {
         cgroup_migrate_add_src(task_css_set(task), dst_cgrp, &mgctx) {
@@ -10182,7 +10379,7 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
         }
     } while_each_thread(leader, task);
 
-    /* prepare dst csets and commit */
+/* 2. prepare dst csets and commit */
     ret = cgroup_migrate_prepare_dst(&mgctx) {
         struct css_set *src_cset, *tmp_cset;
 
@@ -10298,78 +10495,107 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
         }
     }
 
-    if (!ret) {
-        ret = cgroup_migrate(leader, threadgroup, &mgctx) {
-            task = leader;
-            do {
-                cgroup_migrate_add_task(task, mgctx) {
-                    cset = task_css_set(task);
-                    if (!cset->mg_src_cgrp) {
-                        return;
-                    }
+    if (ret) {
+        goto error;
+    }
 
-                    mgctx->tset.nr_tasks++;
-
-                    list_move_tail(&task->cg_list, &cset->mg_tasks);
-                    if (list_empty(&cset->mg_node)) {
-                        list_add_tail(&cset->mg_node, &mgctx->tset.src_csets);
-                    }
-                    if (list_empty(&cset->mg_dst_cset->mg_node)) {
-                        list_add_tail(&cset->mg_dst_cset->mg_node, &mgctx->tset.dst_csets);
-                    }
+/* 3. do migrate */
+    ret = cgroup_migrate(leader, threadgroup, &mgctx) {
+    /* 3.1 add task to mgctx */
+        task = leader;
+        do {
+            cgroup_migrate_add_task(task, mgctx) {
+                cset = task_css_set(task);
+                if (!cset->mg_src_cgrp) {
+                    return;
                 }
-                if (!threadgroup) {
-                    break;
+
+                mgctx->tset.nr_tasks++;
+
+                list_move_tail(&task->cg_list, &cset->mg_tasks);
+                if (list_empty(&cset->mg_node)) {
+                    list_add_tail(&cset->mg_node, &mgctx->tset.src_csets);
                 }
-            } while_each_thread(leader, task);
+                if (list_empty(&cset->mg_dst_cset->mg_node)) {
+                    list_add_tail(&cset->mg_dst_cset->mg_node, &mgctx->tset.dst_csets);
+                }
+            }
+            if (!threadgroup) {
+                break;
+            }
+        } while_each_thread(leader, task);
 
-            return cgroup_migrate_execute(mgctx) {
-                list_for_each_entry(cset, &tset->src_csets, mg_node) {
-                    list_for_each_entry_safe(task, tmp_task, &cset->mg_tasks, cg_list) {
-                        struct css_set *from_cset = task_css_set(task);
-                        struct css_set *to_cset = cset->mg_dst_cset;
+        return cgroup_migrate_execute(mgctx) {
+    /* 3.2 test can attach */
+            if (tset->nr_tasks) {
+                do_each_subsys_mask(ss, ssid, mgctx->ss_mask) {
+                    if (ss->can_attach) {
+                        tset->ssid = ssid;
+                        ret = ss->can_attach(tset) {
+                            cpu_cgroup_can_attach();
+                            mem_cgroup_can_attach();
+                        }
+                        if (ret) {
+                            failed_ssid = ssid;
+                            goto out_cancel_attach;
+                        }
+                    }
+                } while_each_subsys_mask();
+            }
 
-                        get_css_set(to_cset);
-                        to_cset->nr_tasks++;
-                        css_set_move_task(task, from_cset, to_cset, true) {
-                            if (from_cset) {
-                                WARN_ON_ONCE(list_empty(&task->cg_list));
+    /* 3.3 css_set_move_task */
+            list_for_each_entry(cset, &tset->src_csets, mg_node) {
+                list_for_each_entry_safe(task, tmp_task, &cset->mg_tasks, cg_list) {
+                    struct css_set *from_cset = task_css_set(task);
+                    struct css_set *to_cset = cset->mg_dst_cset;
 
-                                css_set_skip_task_iters(from_cset, task);
-                                list_del_init(&task->cg_list);
-                                if (!css_set_populated(from_cset))
-                                    css_set_update_populated(from_cset, false);
-                            } else {
-                                WARN_ON_ONCE(!list_empty(&task->cg_list));
-                            }
+                    get_css_set(to_cset);
+                    to_cset->nr_tasks++;
+                    css_set_move_task(task, from_cset, to_cset, true) {
+                        if (from_cset) {
+                            WARN_ON_ONCE(list_empty(&task->cg_list));
 
-                            if (to_cset) {
-                                WARN_ON_ONCE(task->flags & PF_EXITING);
-
-                                cgroup_move_task(task, to_cset) {
-                                    rcu_assign_pointer(task->cgroups, to);
+                            css_set_skip_task_iters(from_cset, task);
+                            list_del_init(&task->cg_list);
+                            if (!css_set_populated(from_cset)) {
+                                css_set_update_populated(from_cset, false) {
+                                    list_for_each_entry(link, &cset->cgrp_links, cgrp_link) {
+                                        cgroup_update_populated(link->cgrp, populated);
+                                    }
                                 }
-                                list_add_tail(&task->cg_list, use_mg_tasks ? &to_cset->mg_tasks : &to_cset->tasks);
                             }
                         }
-                        from_cset->nr_tasks--;
-                    }
-                }
 
-                tset->csets = &tset->dst_csets;
-
-                if (tset->nr_tasks) {
-                    do_each_subsys_mask(ss, ssid, mgctx->ss_mask) {
-                        if (ss->attach) {
-                            tset->ssid = ssid;
-                            ss->attach(tset);
+                        if (to_cset) {
+                            cgroup_move_task(task, to_cset) {
+                                rcu_assign_pointer(task->cgroups, to);
+                            }
+                            list_add_tail(&task->cg_list, use_mg_tasks
+                                ? &to_cset->mg_tasks : &to_cset->tasks);
                         }
-                    } while_each_subsys_mask();
+                    }
+                    from_cset->nr_tasks--;
                 }
+            }
+
+            tset->csets = &tset->dst_csets;
+
+    /* 3.4 do attach */
+            if (tset->nr_tasks) {
+                do_each_subsys_mask(ss, ssid, mgctx->ss_mask) {
+                    if (ss->attach) {
+                        tset->ssid = ssid;
+                        ss->attach(tset) {
+                            cpu_cgroup_attach();
+                            mem_cgroup_attach();
+                        }
+                    }
+                } while_each_subsys_mask();
             }
         }
     }
 
+/* 4. cleanup after attach */
     cgroup_migrate_finish(&mgctx) {
         list_for_each_entry_safe(cset, tmp_cset, &mgctx->preloaded_src_csets, mg_src_preload_node) {
             cset->mg_src_cgrp = NULL;
@@ -10402,16 +10628,12 @@ struct cgroup_subsys memory_cgrp_subsys = {
     .css_free           = mem_cgroup_css_free,
     .css_reset          = mem_cgroup_css_reset,
     .css_rstat_flush    = mem_cgroup_css_rstat_flush,
-    .can_attach = mem_cgroup_can_attach,
-#if defined(CONFIG_LRU_GEN) || defined(CONFIG_MEMCG_KMEM)
-    .attach = mem_cgroup_attach,
-#endif
+    .can_attach         = mem_cgroup_can_attach,
+    .attach             = mem_cgroup_attach,
     .cancel_attach      = mem_cgroup_cancel_attach,
     .post_attach        = mem_cgroup_move_task,
-#ifdef CONFIG_MEMCG_KMEM
     .fork               = mem_cgroup_fork,
     .exit               = mem_cgroup_exit,
-#endif
     .dfl_cftypes        = memory_files,
     .legacy_cftypes     = mem_cgroup_legacy_files,
     .early_init = 0,
@@ -10552,7 +10774,9 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
 
     memcg = get_mem_cgroup_from_mm(mm);
     ret = charge_memcg(folio, memcg, gfp) {
-        ret = try_charge(memcg, gfp, folio_nr_pages(folio));
+        ret = try_charge(memcg, gfp, folio_nr_pages(folio)) {
+            page_counter_charge(&memcg->memory, nr_pages);
+        }
         if (ret)
             goto out;
 
@@ -10571,6 +10795,135 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
     css_put(&memcg->css);
 
     return ret;
+}
+```
+
+### mem_cgroup_can_attach
+
+```c
+int mem_cgroup_can_attach(struct cgroup_taskset *tset)
+{
+    struct cgroup_subsys_state *css;
+    struct mem_cgroup *memcg = NULL; /* unneeded init to make gcc happy */
+    struct mem_cgroup *from;
+    struct task_struct *leader, *p;
+    struct mm_struct *mm;
+    unsigned long move_flags;
+    int ret = 0;
+
+    p = NULL;
+    cgroup_taskset_for_each_leader(leader, css, tset) {
+        WARN_ON_ONCE(p);
+        p = leader;
+        memcg = mem_cgroup_from_css(css);
+    }
+    if (!p)
+        return 0;
+
+    from = mem_cgroup_from_task(p);
+
+    mm = get_task_mm(p);
+    /* We move charges only when we move a owner of the mm */
+    if (mm->owner == p) {
+        spin_lock(&mc.lock);
+        mc.mm = mm;
+        mc.from = from;
+        mc.to = memcg;
+        mc.flags = move_flags;
+        spin_unlock(&mc.lock);
+        ret = mem_cgroup_precharge_mc(mm) {
+            unsigned long precharge = mem_cgroup_count_precharge(mm) {
+                mmap_read_lock(mm);
+                walk_page_range(mm, 0, ULONG_MAX, &precharge_walk_ops, NULL) {
+                    mem_cgroup_count_precharge_pte_range() {
+                        for (; addr != end; pte++, addr += PAGE_SIZE) {
+                            if (get_mctgt_type(vma, addr, ptep_get(pte), NULL)) {
+                                mc.precharge++;
+                            }
+                        }
+                    }
+                }
+                mmap_read_unlock(mm);
+
+                precharge = mc.precharge;
+                mc.precharge = 0;
+
+                return precharge;
+            }
+
+            mc.moving_task = current;
+            return mem_cgroup_do_precharge(precharge) {
+                ret = try_charge(mc.to, GFP_KERNEL & ~__GFP_DIRECT_RECLAIM, count) {
+                    page_counter_charge(&memcg->memory, nr_pages);
+                }
+                if (!ret) {
+                    mc.precharge += count;
+                    return ret;
+                }
+            }
+        }
+        if (ret) {
+            mem_cgroup_clear_mc();
+        }
+    } else {
+        mmput(mm);
+    }
+    return ret;
+}
+```
+
+### mem_cgroup_post_attach
+
+```c
+static void mem_cgroup_move_task(void)
+{
+    if (mc.to) {
+        mem_cgroup_move_charge() {
+            walk_page_range(mc.mm, 0, ULONG_MAX, &charge_walk_ops, NULL) {
+                mem_cgroup_move_charge_pte_range(pmd_t *pmd,
+                    unsigned long addr, unsigned long end, struct mm_walk *walk) {
+
+                    if (target_type == MC_TARGET_PAGE) {
+                        page = target.page;
+                        if (isolate_lru_page(page)) {
+                            ret = mem_cgroup_move_account(page, true, mc.from, mc.to) {
+                                folio->memcg_data = (unsigned long)to;
+                            }
+                            if (!ret) {
+                                mc.precharge -= HPAGE_PMD_NR;
+                                mc.moved_charge += HPAGE_PMD_NR;
+                            }
+                            putback_lru_page(page);
+                        }
+                        unlock_page(page);
+                        put_page(page);
+                    }
+                }
+            }
+        }
+
+        mem_cgroup_clear_mc() {
+            mc.moving_task = NULL;
+            __mem_cgroup_clear_mc() {
+                if (mc.precharge) {
+                    mem_cgroup_cancel_charge(mc.to, mc.precharge) {
+                        page_counter_uncharge(&memcg->memory, nr_pages);
+                    }
+                    mc.precharge = 0;
+                }
+
+                if (mc.moved_charge) {
+                    mem_cgroup_cancel_charge(mc.from, mc.moved_charge);
+                    mc.moved_charge = 0;
+                }
+            }
+            spin_lock(&mc.lock);
+            mc.from = NULL;
+            mc.to = NULL;
+            mc.mm = NULL;
+            spin_unlock(&mc.lock);
+        }
+    }
 }
 ```
 
@@ -11113,4 +11466,99 @@ cgroup_post_fork
 cgroup_cancel_fork
 
 cgroup_free
+```
+
+
+## cgroup_subtree_control_write
+```c
+ssize_t cgroup_subtree_control_write(
+    struct kernfs_open_file *of,
+    char *buf, size_t nbytes, loff_t off)
+{
+    u16 enable = 0, disable = 0;
+    struct cgroup *cgrp, *child;
+    struct cgroup_subsys *ss;
+    char *tok;
+    int ssid, ret;
+
+    buf = strstrip(buf);
+    while ((tok = strsep(&buf, " "))) {
+        if (tok[0] == '\0')
+            continue;
+        do_each_subsys_mask(ss, ssid, ~cgrp_dfl_inhibit_ss_mask) {
+            if (!cgroup_ssid_enabled(ssid) ||
+                strcmp(tok + 1, ss->name))
+                continue;
+
+            if (*tok == '+') {
+                enable |= 1 << ssid;
+                disable &= ~(1 << ssid);
+            } else if (*tok == '-') {
+                disable |= 1 << ssid;
+                enable &= ~(1 << ssid);
+            } else {
+                return -EINVAL;
+            }
+            break;
+        } while_each_subsys_mask();
+        if (ssid == CGROUP_SUBSYS_COUNT)
+            return -EINVAL;
+    }
+
+    cgrp = cgroup_kn_lock_live(of->kn, true);
+    if (!cgrp)
+        return -ENODEV;
+
+    for_each_subsys(ss, ssid) {
+        if (enable & (1 << ssid)) {
+            if (cgrp->subtree_control & (1 << ssid)) {
+                enable &= ~(1 << ssid);
+                continue;
+            }
+
+            if (!(cgroup_control(cgrp) & (1 << ssid))) {
+                ret = -ENOENT;
+                goto out_unlock;
+            }
+        } else if (disable & (1 << ssid)) {
+            if (!(cgrp->subtree_control & (1 << ssid))) {
+                disable &= ~(1 << ssid);
+                continue;
+            }
+
+            /* a child has it enabled? */
+            cgroup_for_each_live_child(child, cgrp) {
+                if (child->subtree_control & (1 << ssid)) {
+                    ret = -EBUSY;
+                    goto out_unlock;
+                }
+            }
+        }
+    }
+
+    if (!enable && !disable) {
+        ret = 0;
+        goto out_unlock;
+    }
+
+    ret = cgroup_vet_subtree_control_enable(cgrp, enable);
+    if (ret)
+        goto out_unlock;
+
+    /* save and update control masks and prepare csses */
+    cgroup_save_control(cgrp);
+
+    cgrp->subtree_control |= enable;
+    cgrp->subtree_control &= ~disable;
+
+    ret = cgroup_apply_control(cgrp);
+    cgroup_finalize_control(cgrp, ret);
+    if (ret)
+        goto out_unlock;
+
+    kernfs_activate(cgrp->kn);
+out_unlock:
+    cgroup_kn_unlock(of->kn);
+    return ret ?: nbytes;
+}
 ```
