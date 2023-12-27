@@ -117,6 +117,7 @@
     * [cgrou_init](#cgroup_init)
         * [cgroup_init_cftypes](#cgroup_init_cftypes)
         * [cgroup_init_subsys](#cgroup_init_subsys)
+        * [cgroup_setup_root](#cgroup_setup_root)
     * [cgroup_create](#cgroup_create)
     * [cgroup_attach_task](#cgroup_attach_task)
     * [cgroup_fork](#cgroup_fork)
@@ -10202,6 +10203,26 @@ void update_cfs_group(struct sched_entity *se) {
 * [奇小葩 - linux cgroup](https://blog.csdn.net/u012489236/category_11288796.html)
 * [极客时间](https://time.geekbang.org/column/article/115582)
 
+* Kernel cgroup v2 https://docs.kernel.org/admin-guide/cgroup-v2.html
+* Domain cgroup:
+
+    1. migrate: Controllers which are not in active use in the v2 hierarchy can be bound to other hierarchies.
+    2. migrate: If a process is composed of multiple threads, writing the PID of any thread migrates all threads of the process.
+    3. fork: When a process forks a child process, the new process is born into the cgroup that the forking process belongs to at the time of the operation
+    4. destroy: A cgroup which doesn't have any children or live processes can be destroyed by removing the directory.
+    5. No Internal Process Constraint
+
+* Threaded cgroup:
+
+    1. threads of a process can be put in different cgroups and are not subject to the no internal process constraint - threaded controllers can be enabled on non-leaf cgroups whether they have threads in them or not.
+    2. As the threaded domain cgroup hosts all the domain resource consumptions of the subtree, it is considered to have internal resource consumptions whether there are processes in it or not and can't have populated child cgroups which aren't threaded.  Because the root cgroup is not subject to no internal process constraint, it can serve both as a threaded domain and a parent to domain cgroups.
+    3. As the cgroup will join the parent's resource domain.  The parent  must either be a valid (threaded) domain or a threaded cgroup.
+    4. A domain cgroup is turned into a threaded domain when one of its child cgroup becomes threaded or threaded controllers are enabled
+    5. The threaded domain cgroup serves as the resource domain for the whole subtree, and, while the threads can be scattered across the subtree
+
+* Memory cgroup
+    1. Migrating a process to a different cgroup doesn't move the memory usages that it instantiated while in the previous cgroup to the new cgroup.
+
 ![](../Images/Kernel/proc-cgroup-fs.png)
 
 ```c
@@ -10519,7 +10540,7 @@ int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask) {
 cgroup_mkdir() {
     cgrp = cgroup_create(parent, name, mode);
 
-    css_populate_dir(&cgrp->self) {
+    css_populate_dir(&cgrp->self/*css*/) {
         if (css->flags & CSS_VISIBLE)
             return 0;
 
@@ -10558,30 +10579,39 @@ cgroup_mkdir() {
     }
 
     cgroup_apply_control_enable(cgrp) {
-        css = css_create(dsct, ss) {
-            css = ss->css_alloc(parent_css);
-            init_and_link_css(css, ss, cgrp);
-            err = percpu_ref_init(&css->refcnt, css_release, 0, GFP_KERNEL);
-            err = cgroup_idr_alloc(&ss->css_idr, NULL, 2, 0, GFP_KERNEL);
-            css->id = err;
+        for_each_subsys(ss, ssid) {
+            css = css_create(dsct, ss) {
+                css = ss->css_alloc(parent_css);
+                init_and_link_css(css, ss, cgrp);
+                err = percpu_ref_init(&css->refcnt, css_release, 0, GFP_KERNEL);
+                err = cgroup_idr_alloc(&ss->css_idr, NULL, 2, 0, GFP_KERNEL);
+                css->id = err;
 
-            list_add_tail_rcu(&css->sibling, &parent_css->children);
-            cgroup_idr_replace(&ss->css_idr, css, css->id);
-            err = online_css(css) {
-                if (ss->css_online) {
-                    ret = ss->css_online(css);
-                }
-                if (!ret) {
-                    css->flags |= CSS_ONLINE;
-                    rcu_assign_pointer(css->cgroup->subsys[ss->id], css);
-                    atomic_inc(&css->online_cnt);
-                    if (css->parent) {
-                        atomic_inc(&css->parent->online_cnt);
+                list_add_tail_rcu(&css->sibling, &parent_css->children);
+                cgroup_idr_replace(&ss->css_idr, css, css->id);
+                err = online_css(css) {
+                    if (ss->css_online) {
+                        ret = ss->css_online(css);
+                    }
+                    if (!ret) {
+                        css->flags |= CSS_ONLINE;
+                        rcu_assign_pointer(css->cgroup->subsys[ss->id], css);
+                        atomic_inc(&css->online_cnt);
+                        if (css->parent) {
+                            atomic_inc(&css->parent->online_cnt);
+                        }
                     }
                 }
+                return css;
             }
-            return css;
+            if (css_visible(css)) {
+                ret = css_populate_dir(css);
+                if (ret) {
+                    return ret;
+                }
+            }
         }
+        return 0;
     }
 }
 ```
