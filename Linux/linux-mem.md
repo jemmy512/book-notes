@@ -26,6 +26,7 @@
 * [slab](#slab)
     * [slab_alloc](#slab_alloc)
 * [slub](#slub)
+    * [create_cache](#create_cache)
     * [slub_alloc](#slub_alloc)
 * [kswapd](#kswapd)
 * [brk](#brk)
@@ -510,7 +511,7 @@ bootmem_init() {
         }
 
         pnum_begin = first_present_section_nr();
-    	nid_begin = sparse_early_nid(__nr_to_section(pnum_begin));
+        nid_begin = sparse_early_nid(__nr_to_section(pnum_begin));
 
 
         for_each_present_section_nr(pnum_begin + 1, pnum_end) {
@@ -537,7 +538,7 @@ bootmem_init() {
 
             sparse_buffer_init(map_count * section_map_size(), nid) {
                 sparsemap_buf = memmap_alloc(size, section_map_size(), addr, nid, true);
-	            sparsemap_buf_end = sparsemap_buf + size;
+                sparsemap_buf_end = sparsemap_buf + size;
             }
 
             for_each_present_section_nr(pnum_begin, pnum) {
@@ -2049,237 +2050,445 @@ static inline struct page *alloc_slab_page(struct kmem_cache *s,
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
     * [The SLUB allocator ](https://lwn.net/Articles/229984/)
 * [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1)    [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2)  [:three: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3)    [:four: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
+* SLUB内存管理 [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
+
 ![](../Images/Kernel/mem-slub-structure.png)
 
-* SLUB内存管理 [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
+
+## create_cache
+
+```c
+struct kmem_cache *
+kmem_cache_create_usercopy(const char *name,
+    unsigned int size, unsigned int align,
+    slab_flags_t flags,
+    unsigned int useroffset, unsigned int usersize,
+    void (*ctor)(void *))
+{
+    struct kmem_cache *s = NULL;
+    const char *cache_name;
+    int err;
+
+    mutex_lock(&slab_mutex);
+
+    flags &= CACHE_CREATE_MASK;
+
+    if (!usersize)
+        s = __kmem_cache_alias(name, size, align, flags, ctor);
+
+    cache_name = kstrdup_const(name, GFP_KERNEL);
+
+    s = create_cache(cache_name, size,
+        calculate_alignment(flags, align, size),
+        flags, useroffset, usersize, ctor, NULL) {
+
+        s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
+
+        s->name = name;
+        s->size = s->object_size = object_size;
+        s->align = align;
+        s->ctor = ctor;
+        s->useroffset = useroffset;
+        s->usersize = usersize;
+
+        __kmem_cache_create(s, flags) {
+            err = kmem_cache_open(s, flags) {
+                s->flags = kmem_cache_flags(s->size, flags, s->name);
+                s->random = get_random_long();
+
+                if (!calculate_sizes(s))
+                    goto error;
+
+                s->min_partial = min_t(unsigned long, MAX_PARTIAL, ilog2(s->size) / 2);
+                s->min_partial = max_t(unsigned long, MIN_PARTIAL, s->min_partial);
+
+                set_cpu_partial(s) {
+                    s->cpu_partial = nr_objects;
+                    nr_slabs = DIV_ROUND_UP(nr_objects * 2, oo_objects(s->oo));
+                    s->cpu_partial_slabs = nr_slabs;
+                }
+
+            #ifdef CONFIG_NUMA
+                s->remote_node_defrag_ratio = 1000;
+            #endif
+
+                init_cache_random_seq(s);
+
+                init_kmem_cache_nodes(s) {
+                    for_each_node_mask(node, slab_nodes) {
+                        struct kmem_cache_node *n;
+
+                        if (slab_state == DOWN) {
+                            early_kmem_cache_node_alloc(node);
+                            continue;
+                        }
+                        n = kmem_cache_alloc_node(kmem_cache_node, GFP_KERNEL, node);
+
+                        init_kmem_cache_node(n) {
+                            n->nr_partial = 0;
+                            spin_lock_init(&n->list_lock);
+                            INIT_LIST_HEAD(&n->partial);
+                        }
+                        s->node[node] = n;
+                    }
+                }
+
+                alloc_kmem_cache_cpus(s) {
+                    s->cpu_slab = __alloc_percpu(sizeof(struct kmem_cache_cpu),
+				        2 * sizeof(void *));
+
+                    init_kmem_cache_cpus(s) {
+                        for_each_possible_cpu(cpu) {
+                            c = per_cpu_ptr(s->cpu_slab, cpu);
+                            local_lock_init(&c->lock);
+                            c->tid = init_tid(cpu);
+                        }
+                    }
+                }
+            }
+
+            err = sysfs_slab_add(s);
+
+            if (s->flags & SLAB_STORE_USER)
+                debugfs_slab_add(s);
+        }
+
+        s->refcount = 1;
+        list_add(&s->list, &slab_caches);
+        return s;
+    }
+    if (IS_ERR(s)) {
+        err = PTR_ERR(s);
+        kfree_const(cache_name);
+    }
+
+out_unlock:
+    mutex_unlock(&slab_mutex);
+
+    if (err) {
+        return NULL;
+    }
+    return s;
+}
+```
+
 ## slub_alloc
 ```c
-kmem_cache_alloc(s, flags)
+kmem_cache_alloc(s, flags) {
     __kmem_cache_alloc_lru(s, lru, flags)
         slab_alloc()
             slab_alloc_node()
                 slab_pre_alloc_hook()
                 kfence_alloc()
-                __slab_alloc_node(s, gfpflags, node, addr, orig_size)
-                    if (ifdef_CONFIG_SLUB_TINY) {
-                        obj = get_partial(s, node) {
-                            obj = get_partial_node(s, n) {
-                                list_for_each_entry_safe(&n->partial) {
-                                    obj = alloc_single_from_partial(s, n, slab, pc->orig_size);
+                __slab_alloc_node()
+}
+
+__slab_alloc_node(s, gfpflags, node, addr, orig_size) {
+    if (ifdef_CONFIG_SLUB_TINY) {
+        obj = get_partial(s, node);
+        if (obj)
+            return obj;
+
+        slab = new_slab(s, gfpflags, node)  {
+            allocate_slab(s, f, n)
+                slab = alloc_slab_page(alloc_gfp, node, oo) {
+                    alloc_pages();
+                }
+                slab->objects = oo_objects(oo);
+                slab->inuse = 0;
+                slab->frozen = 0;
+                account_slab(slab, oo_order(oo), s, flags);
+                slab->slab_cache = s;
+                kasan_poison_slab(slab);
+                start = slab_address(slab);
+                /* Shuffle the single linked freelist based on a random pre-computed sequence */
+                shuffle = shuffle_freelist(s, slab);
+                if (!shuffle) {
+                    start = fixup_red_left(s, start);
+                    start = setup_object(s, start);
+                    slab->freelist = start;
+                    for (idx = 0, p = start; idx < slab->objects - 1; idx++) {
+                        next = p + s->size;
+                        next = setup_object(s, next);
+                        set_freepointer(s, p, next);
+                        p = next;
+                    }
+                    set_freepointer(s, p, NULL);
+                }
+
+                return slab;
+        }
+
+        return alloc_single_from_new_slab(s, slab, orig_size) {
+            object = slab->freelist;
+            slab->freelist = get_freepointer(s, object);
+            slab->inuse = 1;
+
+            if (slab->inuse == slab->objects)
+                add_full(s, n, slab);
+            else
+                add_partial(n, slab, DEACTIVATE_TO_HEAD);
+
+            inc_slabs_node(s, nid, slab->objects);
+
+            return obj;
+        }
+    } else { /* ifndef_CONFIG_SLUB_TINY */
+    redo:
+        /* 1. get free obj from cpu cache */
+        c = raw_cpu_ptr(s->cpu_slab);
+        object = c->freelist;
+        slab = c->slab;
+
+        if (unlikely(!object || !slab || !node_match(slab, node))) {
+            object = __slab_alloc(s, gfpflags, node, addr, c, orig_size){
+                ___slab_alloc(s, gfpflags, node, addr, c, orig_size) {
+                reread_slab:
+                    slab = READ_ONCE(c->slab);
+                    if (!slab) {
+                        goto new_slab;
+                    }
+
+                redo:
+                    freelist = c->freelist;
+                    if (freelist)
+                        goto load_freelist;
+
+                    freelist = get_freelist(s, slab) {
+                        struct slab new;
+                        unsigned long counters;
+                        void *freelist;
+
+                        do {
+                            freelist = slab->freelist;
+                            counters = slab->counters;
+
+                            new.counters = counters;
+
+                            new.inuse = slab->objects;
+                            new.frozen = freelist != NULL;
+
+                        } while (!__slab_update_freelist(s, slab,
+                            freelist, counters,
+                            NULL, new.counters,
+                            "get_freelist")
+                        );
+
+                        return freelist;
+                    }
+                    if (!freelist) {
+                        c->slab = NULL;
+                        c->tid = next_tid(c->tid);
+                        goto new_slab;
+                    }
+
+                load_freelist:
+                    c->freelist = get_freepointer(s, freelist) {
+                        object = kasan_reset_tag(object);
+                        ptr_addr = (unsigned long)object + s->offset;
+                        p = *(freeptr_t *)(ptr_addr);
+                        return freelist_ptr_decode(s, p, ptr_addr);
+                    }
+                    c->tid = next_tid(c->tid);
+                    return freelist;
+
+                deactivate_slab:
+                    freelist = c->freelist;
+                    c->slab = NULL;
+                    c->freelist = NULL;
+                    c->tid = next_tid(c->tid);
+                    deactivate_slab(s, slab, freelist);
+
+                new_slab:
+                    if (slub_percpu_partial(c)) {
+                        if (unlikely(c->slab)) {
+                            goto reread_slab;
+                        }
+                        if (unlikely(!slub_percpu_partial(c))) {
+                            /* we were preempted and partial list got empty */
+                            goto new_objects;
+                        }
+
+                        slab = c->slab = slub_percpu_partial(c);
+                        slub_set_percpu_partial(c, slab) {
+                            c->partial = slab->next;
+                        }
+                        goto redo;
+                    }
+
+                new_objects:
+                    /* get partial from node */
+                    pc.flags = gfpflags;
+                    pc.slab = &slab;
+                    pc.orig_size = orig_size;
+                    freelist = get_partial(s, node, &pc) {
+                        obj = get_partial_node(s, n) {
+                            list_for_each_entry_safe(slab, slab2, &n->partial, slab_list) {
+                                if (IS_ENABLED(CONFIG_SLUB_TINY) || kmem_cache_debug(s)) {
+                                    obj = alloc_single_from_partial(s, n, slab, pc->orig_size) {
                                         object = slab->freelist;
-                                        slab->freelist = get_freepointer(s, object);
+                                        slab->freelist = get_freepointer(s, object) {
                                             /* `object + s->offset` stores next free obj addr */
                                             return freelist_dereference(s, object + s->offset);
+                                        }
                                         slab->inuse++;
 
                                         /* slab is runing out, move it from parital list to full list */
                                         if (slab->inuse == slab->objects) {
-                                            remove_partial(n, slab);
+                                            remove_partial(n, slab) {
                                                 list_del(&slab->slab_list);
                                                 n->nr_partial--;
-                                            add_full(s, n, slab);
+                                            }
+                                            add_full(s, n, slab) {
                                                 list_add(&slab->slab_list, &n->full);
+                                            }
                                         }
+                                    }
 
                                     if (obj)
-                                        return obj;
-                                    /* Remove slab from the partial list, freeze it and
-                                     * return the pointer to the freelist.*/
-                                    t = acquire_slab(s, n)
-                                        __cmpxchg_double_slab(s, slab,
-                                            freelist, counters,
-                                            new.freelist, new.counters,
-                                            "acquire_slab"
-                                        )
-                                        remove_partial(n, slab)
-                                            list_del(&slab->slab_list);
-                                            n->nr_partial--;
-
-                                    if (!t)
                                         break;
-
-                                    if (!obj) {
-                                        *pc->slab = slab;
-                                        obj = t;
-                                    } else {
-                                        put_cpu_partial(s, slab, 0);
-                                        partial_slabs++;
-                                    }
+                                    continue;
                                 }
 
-                                return obj;
+                                /* Remove slab from the partial list, freeze it and
+                                 * return the pointer to the freelist.*/
+                                t = acquire_slab(s, n, slab, object == NULL/*mode*/) {
+                                    void *freelist;
+                                    unsigned long counters;
+                                    struct slab new;
+
+                                    freelist = slab->freelist;
+                                    counters = slab->counters;
+                                    new.counters = counters;
+                                    if (mode) {
+                                        new.inuse = slab->objects;
+                                        new.freelist = NULL;
+                                    } else {
+                                        new.freelist = freelist;
+                                    }
+
+                                    new.frozen = 1;
+
+                                    if (!__slab_update_freelist(s, slab,
+                                            freelist, counters,
+                                            new.freelist, new.counters,
+                                            "acquire_slab"))
+                                        return NULL;
+
+                                    remove_partial(n, slab) {
+                                        list_del(&slab->slab_list);
+	                                    n->nr_partial--;
+                                    }
+                                    return freelist;
+                                }
+
+                                if (!t)
+                                    break;
+
+                                if (!obj) {
+                                    *pc->slab = slab; /* c->slab */
+                                    obj = t;
+                                } else {
+                                    put_cpu_partial(s, slab, 0) {
+                                        struct slab *oldslab;
+                                        struct slab *slab_to_unfreeze = NULL;
+                                        unsigned long flags;
+                                        int slabs = 0;
+
+                                        oldslab = this_cpu_read(s->cpu_slab->partial);
+
+                                        if (oldslab) {
+                                            if (drain && oldslab->slabs >= s->cpu_partial_slabs) {
+                                                slab_to_unfreeze = oldslab;
+                                                oldslab = NULL;
+                                            } else {
+                                                slabs = oldslab->slabs;
+                                            }
+                                        }
+
+                                        slabs++;
+
+                                        slab->slabs = slabs;
+                                        slab->next = oldslab;
+
+                                        this_cpu_write(s->cpu_slab->partial, slab);
+
+                                        if (slab_to_unfreeze) {
+                                            __unfreeze_partials(s, slab_to_unfreeze);
+                                        }
+                                    }
+                                    partial_slabs++;
+                                }
+
+                                if (!kmem_cache_has_cpu_partial(s) || partial_slabs > s->cpu_partial_slabs / 2) {
+                                    break;
+                                }
                             }
 
-                            if (obj)
-                                return obj;
-                            obj = get_any_partial(s)
-                                return NULL;
+                            return obj;
                         }
 
                         if (obj)
                             return obj;
+                        obj = get_any_partial(s)
+                            return NULL;
+                    }
+                    if (freelist)
+                        goto check_new_slab;
 
-                        slab = new_slab(s, gfpflags, node)  {
-                            allocate_slab(s, f, n)
-                                slab = alloc_slab_page(alloc_gfp, node, oo);
-                                    alloc_pages()
-                                slab->objects = oo_objects(oo);
-                                slab->inuse = 0;
-                                slab->frozen = 0;
-                                account_slab(slab, oo_order(oo), s, flags);
-                                slab->slab_cache = s;
-                                kasan_poison_slab(slab);
-                                start = slab_address(slab);
-                                /* Shuffle the single linked freelist based on a random pre-computed sequence */
-                                shuffle = shuffle_freelist(s, slab);
-                                if (!shuffle) {
-                                    start = fixup_red_left(s, start);
-                                    start = setup_object(s, start);
-                                    slab->freelist = start;
-                                    for (idx = 0, p = start; idx < slab->objects - 1; idx++) {
-                                        next = p + s->size;
-                                        next = setup_object(s, next);
-                                        set_freepointer(s, p, next);
-                                        p = next;
-                                    }
-                                    set_freepointer(s, p, NULL);
-                                }
+                    slub_put_cpu_ptr(s->cpu_slab);
+                    /* node has no partial, alloc_page */
+                    slab = new_slab(s, gfpflags, node) {
+                        alloc_pages();
+                    }
+                    c = slub_get_cpu_ptr(s->cpu_slab);
 
-                                return slab;
-                        }
-
-                        return alloc_single_from_new_slab(s, slab, orig_size) {
-                            object = slab->freelist;
-                            slab->freelist = get_freepointer(s, object);
-                            slab->inuse = 1;
-
-                            if (slab->inuse == slab->objects)
-                                add_full(s, n, slab);
-                            else
-                                add_partial(n, slab, DEACTIVATE_TO_HEAD);
-
-                            inc_slabs_node(s, nid, slab->objects);
-
-                            return obj;
-                        }
-                    } else { /* ifndef_CONFIG_SLUB_TINY */
-                        redo:
-                            /* 1. get free obj from cpu cache */
-                            object = c->freelist;
-                            slab = c->slab;
-
-                            if (unlikely(!object || !slab || !node_match(slab, node))) {
-                                object = __slab_alloc(s, gfpflags, node, addr, c, orig_size);
-                                    ___slab_alloc(s, gfpflags, node, addr, c, orig_size) {
-                                        reread_slab:
-                                            slab = READ_ONCE(c->slab);
-                                            if (!slab) {
-                                                goto new_slab;
-                                            }
-
-                                        redo:
-                                            freelist = c->freelist;
-                                            if (freelist)
-                                                goto load_freelist;
-
-                                            freelist = get_freelist(s, slab);
-                                            if (!freelist) {
-                                                c->slab = NULL;
-                                                c->tid = next_tid(c->tid);
-                                                local_unlock_irqrestore(&s->cpu_slab->lock, flags);
-                                                stat(s, DEACTIVATE_BYPASS);
-                                                goto new_slab;
-                                            }
-
-                                        load_freelist:
-                                            c->freelist = get_freepointer(s, freelist);
-                                            c->tid = next_tid(c->tid);
-                                            return freelist;
-
-                                        deactivate_slab:
-                                            freelist = c->freelist;
-                                            c->slab = NULL;
-                                            c->freelist = NULL;
-                                            c->tid = next_tid(c->tid);
-                                            deactivate_slab(s, slab, freelist);
-
-                                        new_slab:
-                                            if (slub_percpu_partial(c)) {
-                                                if (unlikely(c->slab)) {
-                                                    goto reread_slab;
-                                                }
-                                                if (unlikely(!slub_percpu_partial(c))) {
-                                                    /* we were preempted and partial list got empty */
-                                                    goto new_objects;
-                                                }
-
-                                                slab = c->slab = slub_percpu_partial(c);
-                                                slub_set_percpu_partial(c, slab);
-                                                stat(s, CPU_PARTIAL_ALLOC);
-                                                goto redo;
-                                            }
-
-                                        new_objects:
-                                            /* get partial from node */
-                                            freelist = get_partial(s, node, &pc);
-                                            if (freelist)
-                                                goto check_new_slab;
-
-                                            slub_put_cpu_ptr(s->cpu_slab);
-                                            /* node has no partial, alloc_page */
-                                            slab = new_slab(s, gfpflags, node);
-                                                alloc_pages()
-                                            c = slub_get_cpu_ptr(s->cpu_slab);
-
-                                            if (unlikely(!slab)) {
-                                                slab_out_of_memory(s, gfpflags, node);
-                                                return NULL;
-                                            }
-
-                                            freelist = slab->freelist;
-                                            slab->freelist = NULL;
-                                            slab->inuse = slab->objects;
-                                            slab->frozen = 1;
-
-                                        check_new_slab:
-
-                                        retry_load_slab:
-                                            if (unlikely(c->slab)) {
-                                                void *flush_freelist = c->freelist;
-                                                struct slab *flush_slab = c->slab;
-
-                                                c->slab = NULL;
-                                                c->freelist = NULL;
-                                                c->tid = next_tid(c->tid);
-
-                                                deactivate_slab(s, flush_slab, flush_freelist);
-
-                                                stat(s, CPUSLAB_FLUSH);
-
-                                                goto retry_load_slab;
-                                            }
-                                            c->slab = slab;
-
-                                            goto load_freelist;
-                                    }
-
-                            } else {
-                                void *next_object = get_freepointer_safe(s, object);
-
-                                if (unlikely(!this_cpu_cmpxchg_double(
-                                    s->cpu_slab->freelist, s->cpu_slab->tid,
-                                    object, tid,
-                                    next_object, next_tid(tid))))
-                                {
-                                    note_cmpxchg_failure("slab_alloc", s, tid);
-                                    goto redo;
-                                }
-                            }
+                    if (unlikely(!slab)) {
+                        slab_out_of_memory(s, gfpflags, node);
+                        return NULL;
                     }
 
-                maybe_wipe_obj_freeptr()
-                slab_want_init_on_alloc()
-                slab_post_alloc_hook()
+                    freelist = slab->freelist;
+                    slab->freelist = NULL;
+                    slab->inuse = slab->objects;
+                    slab->frozen = 1;
+
+                check_new_slab:
+
+                retry_load_slab:
+                    if (unlikely(c->slab)) {
+                        void *flush_freelist = c->freelist;
+                        struct slab *flush_slab = c->slab;
+
+                        c->slab = NULL;
+                        c->freelist = NULL;
+                        c->tid = next_tid(c->tid);
+
+                        deactivate_slab(s, flush_slab, flush_freelist);
+
+                        goto retry_load_slab;
+                    }
+                    c->slab = slab;
+
+                    goto load_freelist;
+                }
+            }
+        } else {
+            void *next_object = get_freepointer_safe(s, object);
+
+            if (unlikely(!this_cpu_cmpxchg_double(
+                s->cpu_slab->freelist, s->cpu_slab->tid,
+                object, tid,
+                next_object, next_tid(tid))))
+            {
+                note_cmpxchg_failure("slab_alloc", s, tid);
+                goto redo;
+            }
+        }
+
+        return object;
+    }
+}
 ```
 
 ```c
@@ -2882,7 +3091,7 @@ mmap() {
             }
 
             if (populate) {
-			    mm_populate(ret, populate) {
+                mm_populate(ret, populate) {
                     for (nstart = start; nstart < end; nstart = nend) {
                         vma = find_vma_intersection(mm, nstart, end);
                         ret = populate_vma_page_range(vma, nstart, nend, &locked) {
@@ -4880,7 +5089,7 @@ kernel_clone()
                         if (exe_file) {
                             deny_write_access(exe_file) {
                                 struct inode *inode = file_inode(file);
-	                            return atomic_dec_unless_positive(&inode->i_writecount) ? 0 : -ETXTBSY;
+                                return atomic_dec_unless_positive(&inode->i_writecount) ? 0 : -ETXTBSY;
                             }
                         }
                     }
