@@ -32,8 +32,8 @@
         * [write_lock](#write_lock)
     * [seqlock](#seqlock)
     * [mutex](#mutex)
-        * [CONFIG_PREEMPT_RT](#CONFIG_PREEMPT_RT)
-        * [!CONFIG_PREEMPT_RT](#!CONFIG_PREEMPT_RT)
+        * [mutex_lock](#mutex_lock)
+        * [mutex_unlock](#mutex_unlock)
     * [rtmutex](#rtmutex)
         * [rt_mutex_lock](#rt_mutex_lock)
         * [rt_mutex_unlock](#rt_mutex_unlock)
@@ -850,21 +850,6 @@ do_raw_write_lock() {
 * [Wait/wound mutexes - LWN](https://lwn.net/Articles/548909/)
 * [mutex - wowo tech](http://www.wowotech.net/kernel_synchronization/504.html)
 
-### CONFIG_PREEMPT_RT
-```c
-struct mutex { /* CONFIG_PREEMPT_RT  */
-    struct rt_mutex_base    rtmutex;
-};
-
-/* kernel/locking/rtmutex_api.c */
-mutex_lock()
-    __mutex_lock_common(lock, TASK_UNINTERRUPTIBLE)
-        __rt_mutex_lock()
-            --->
-
-```
-
-### !CONFIG_PREEMPT_RT
 ```c
 /* @owner: contains: 'struct task_struct *' to the current lock owner,
  * NULL means not owned. Since task_struct pointers are aligned at
@@ -883,9 +868,13 @@ struct mutex { /* !CONFIG_PREEMPT_RT  */
     raw_spinlock_t      wait_lock;
     struct list_head    wait_list;
 };
+```
 
+### mutex_lock
+
+```c
 /* kernel/locking/mutex.c */
-mutex_lock()
+mutex_lock() {
     /* 1. fastpath: cmpxchg. Tries to atomically acquire the lock by cmpxchg()ing the owner
      * with the current task. This only works in the uncontended case
      * (cmpxchg() checks against 0UL, so all 3 state bits above have to be 0).
@@ -899,123 +888,212 @@ mutex_lock()
 
     __mutex_lock_slowpath() {
         __mutex_lock(lock, TASK_UNINTERRUPTIBLE) {
-            preempt_disable();
+            return __mutex_lock_common(lock, state, subclass, nest_lock, ip, NULL, false) {
+                preempt_disable();
 
-            /* 2. midpath: optimistic spinning. Tries to spin for acquisition
-             * while the lock owner is running and there are no other tasks ready to run
-             * that have higher priority (need_resched).
-             * The rationale is that if the lock owner is running,
-             * it is likely to release the lock soon.
-             * The mutex spinners are queued up using MCS lock
-             * so that only one spinner can compete for the mutex. */
-            ret = __mutex_trylock() {
-                return !__mutex_trylock_common(lock, false) {
-                    unsigned long owner, curr = (unsigned long)current;
+                /* 2. midpath: optimistic spinning. Tries to spin for acquisition
+                * while the lock owner is running and there are no other tasks ready to run
+                * that have higher priority (need_resched).
+                * The rationale is that if the lock owner is running,
+                * it is likely to release the lock soon.
+                * The mutex spinners are queued up using MCS lock
+                * so that only one spinner can compete for the mutex. */
+                ret = __mutex_trylock() {
+                    /* Returns: __mutex_owner(lock) on failure or NULL on success. */
+                    return !__mutex_trylock_common(lock, false) {
+                        unsigned long owner, curr = (unsigned long)current;
 
-                    owner = atomic_long_read(&lock->owner);
-                    for (;;) { /* must loop, can race against a flag */
-                        unsigned long flags = __owner_flags(owner);
-                        unsigned long task = owner & ~MUTEX_FLAGS;
+                        owner = atomic_long_read(&lock->owner);
+                        for (;;) { /* must loop, can race against a flag */
+                            unsigned long flags = __owner_flags(owner);
+                            unsigned long task = owner & ~MUTEX_FLAGS;
 
-                        if (task) {
-                            if (flags & MUTEX_FLAG_PICKUP) {
-                                if (task != curr)
+                            if (task) {
+                                if (flags & MUTEX_FLAG_PICKUP) {
+                                    if (task != curr)
+                                        break;
+                                    flags &= ~MUTEX_FLAG_PICKUP;
+                                } else if (handoff) {
+                                    if (flags & MUTEX_FLAG_HANDOFF)
+                                        break;
+                                    flags |= MUTEX_FLAG_HANDOFF;
+                                } else {
                                     break;
-                                flags &= ~MUTEX_FLAG_PICKUP;
-                            } else if (handoff) {
-                                if (flags & MUTEX_FLAG_HANDOFF)
-                                    break;
-                                flags |= MUTEX_FLAG_HANDOFF;
+                                }
                             } else {
+                                task = curr;
+                            }
+
+                            if (atomic_long_try_cmpxchg_acquire(&lock->owner, &owner, task | flags)) {
+                                if (task == curr)
+                                    return NULL;
                                 break;
                             }
-                        } else {
-                            task = curr;
                         }
 
-                        if (atomic_long_try_cmpxchg_acquire(&lock->owner, &owner, task | flags)) {
-                            if (task == curr)
-                                return NULL;
+                        return __owner_task(owner);
+                    }
+                }
+                ret |= mutex_optimistic_spin(lock, ww_ctx, NULL/*waiter*/) {
+                    if (!waiter) {
+                        ret  = mutex_can_spin_on_owner(lock) {
+                            int retval = 1;
+                            if (need_resched())
+                                return 0;
+                            owner = __mutex_owner(lock);
+                            if (owner)
+                                retval = owner_on_cpu(owner);
+                            return retval;
+                        }
+
+                        if (!ret) {
+                            goto fail;
+                        }
+
+                        ret = osq_lock(&lock->osq) {
+
+                        }
+                        if (!ret)
+                            goto fail;
+                    }
+
+                    for (;;) {
+                        struct task_struct *owner;
+
+                        owner = __mutex_trylock_or_owner(lock) {
+                            return __mutex_trylock_common(lock, false);
+                        }
+                        if (!owner)
                             break;
+
+                        ret = mutex_spin_on_owner(lock, owner, ww_ctx, waiter) {
+                            bool ret = true;
+
+                            while (__mutex_owner(lock) == owner) {
+                                barrier();
+                                if (!owner_on_cpu(owner) || need_resched()) {
+                                    ret = false;
+                                    break;
+                                }
+
+                                if (ww_ctx && !ww_mutex_spin_on_owner(lock, ww_ctx, waiter)) {
+                                    ret = false;
+                                    break;
+                                }
+
+                                cpu_relax();
+                            }
+
+                            return ret;
+                        }
+                        if (!ret)
+                            goto fail_unlock;
+
+                        cpu_relax();
+                    }
+
+                    if (!waiter)
+                        osq_unlock(&lock->osq);
+
+                    return true;
+
+                fail_unlock:
+                    if (!waiter)
+                        osq_unlock(&lock->osq);
+
+                fail:
+                    if (need_resched()) {
+                        __set_current_state(TASK_RUNNING);
+                        schedule_preempt_disabled();
+                    }
+
+                    return false;
+                }
+                if (ret) {
+                    preempt_enable();
+                    return 0;
+                }
+
+                if (__mutex_trylock(lock)) {
+                    if (ww_ctx) {
+                        __ww_mutex_check_waiters(lock, ww_ctx);
+                    }
+
+                    goto skip_wait;
+                }
+
+                /* 3. slowpath: sleep wait. If the lock is still unable to be acquired,
+                * the task is added to the wait-queue and sleeps until woken up by the unlock path.
+                * Under normal circumstances it blocks as TASK_UNINTERRUPTIBLE. */
+                raw_spin_lock(&lock->wait_lock);
+
+                if (!use_ww_ctx) {
+                    __mutex_add_waiter(lock, &waiter, &lock->wait_list) {
+                        list_add_tail(&waiter->list, list);
+                        if (__mutex_waiter_is_first(lock, waiter)) {
+                            __mutex_set_flag(lock, MUTEX_FLAG_WAITERS);
+                        }
+                    }
+                } else {
+                    ret = __ww_mutex_add_waiter(&waiter, lock, ww_ctx);
+                    if (ret)
+                        goto err_early_kill;
+                }
+
+                for (;;) {
+                    if (__mutex_trylock(lock))
+                        goto acquired;
+
+                    if (signal_pending_state(state, current)) {
+                        ret = -EINTR;
+                        goto err;
+                    }
+
+                    schedule_preempt_disabled() {
+                        sched_preempt_enable_no_resched() {
+                            barrier();
+                            preempt_count_dec()
+                        }
+                        schedule();
+                        preempt_disable() {
+                            preempt_count_inc();
+                            barrier();
                         }
                     }
 
-                    return __owner_task(owner);
-                }
-            }
-            if (ret) {
-                preempt_enable();
-                return 0;
-            }
-
-            /* 3. slowpath: sleep wait. If the lock is still unable to be acquired,
-             * the task is added to the wait-queue and sleeps until woken up by the unlock path.
-             * Under normal circumstances it blocks as TASK_UNINTERRUPTIBLE. */
-            raw_spin_lock(&lock->wait_lock);
-
-            if (!use_ww_ctx) {
-                __mutex_add_waiter(lock, &waiter, &lock->wait_list) {
-                    list_add_tail(&waiter->list, list);
-                    if (__mutex_waiter_is_first(lock, waiter)) {
-                        __mutex_set_flag(lock, MUTEX_FLAG_WAITERS);
+                    first = __mutex_waiter_is_first(lock, &waiter);
+                    ret = __mutex_trylock_or_handoff(lock, first) {
+                        return !__mutex_trylock_common(lock, handoff);
                     }
-                }
-            } else {
-                ret = __ww_mutex_add_waiter(&waiter, lock, ww_ctx);
-                if (ret)
-                    goto err_early_kill;
-            }
-
-            for (;;) {
-                if (__mutex_trylock(lock))
-                    goto acquired;
-
-                if (signal_pending_state(state, current)) {
-                    ret = -EINTR;
-                    goto err;
-                }
-
-                schedule_preempt_disabled() {
-                    sched_preempt_enable_no_resched() {
-                        barrier();
-                        preempt_count_dec()
+                    if (ret) {
+                        break;
                     }
-                    schedule();
-                    preempt_disable() {
-                        preempt_count_inc();
-                        barrier();
+
+                    if (first && mutex_optimistic_spin(lock, ww_ctx, &waiter)) {
+                        break;
                     }
+
+                    raw_spin_lock(&lock->wait_lock);
                 }
-
-                first = __mutex_waiter_is_first(lock, &waiter);
-
-                ret = __mutex_trylock_or_handoff(lock, first) {
-                    return !__mutex_trylock_common(lock, handoff);
-                }
-                if (ret)
-                    break;
-
-                raw_spin_lock(&lock->wait_lock);
-            }
 
             acquired:
                 __set_current_state(TASK_RUNNING);
                 __mutex_remove_waiter(lock, &waiter);
 
             skip_wait:
-                /* got the lock - cleanup and rejoice! */
-                lock_acquired(&lock->dep_map, ip);
-
                 if (ww_ctx)
                     ww_mutex_lock_acquired(ww, ww_ctx);
 
                 raw_spin_unlock(&lock->wait_lock);
                 preempt_enable();
                 return 0;
+            }
         }
     }
+}
 ```
 
+### mutex_unlock
 ```c
 void __sched mutex_unlock(struct mutex *lock) {
     ret = __mutex_unlock_fast(lock) {
