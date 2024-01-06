@@ -22,7 +22,10 @@
     * [barrier](#barrier)
     * [lru](#lru)
     * [futex](#futex)
+        * [futex_wait](#futex_wait)
+        * [futex_wake](#futex_wake)
         * [futex_lock_pi](#futex_lock_pi)
+        * [futex_unlock_pi](#futex_unlock_pi)
     * [spinlock](#spinlock)
         * [spin_lock](#spin_lock)
             * [queued_spin_lock_slowpath](#queued_spin_lock_slowpath)
@@ -30,6 +33,9 @@
     * [rwlock](#rwlock)
         * [read_lock](#read_lock)
         * [write_lock](#write_lock)
+    * [osq](#osq)
+        * [osq_lock](#osq_lock)
+        * [osq_lock](#osq_un)
     * [seqlock](#seqlock)
     * [mutex](#mutex)
         * [mutex_lock](#mutex_lock)
@@ -126,12 +132,227 @@ struct futex_q {
 };
 
 struct futex_pi_state {
-    struct list_head        list;
+    struct list_head        list; /* rt_mutex list hold by a task */
     struct rt_mutex_base    pi_mutex;
     struct task_struct      *owner;
     refcount_t              refcount;
     union futex_key         key;
 };
+```
+
+```c
+
+long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
+        u32 __user *uaddr2, u32 val2, u32 val3)
+{
+    unsigned int flags = futex_to_flags(op);
+    int cmd = op & FUTEX_CMD_MASK;
+
+    if (flags & FLAGS_CLOCKRT) {
+        if (cmd != FUTEX_WAIT_BITSET &&
+            cmd != FUTEX_WAIT_REQUEUE_PI &&
+            cmd != FUTEX_LOCK_PI2)
+            return -ENOSYS;
+    }
+
+    switch (cmd) {
+    case FUTEX_WAIT:
+        val3 = FUTEX_BITSET_MATCH_ANY;
+        fallthrough;
+    case FUTEX_WAIT_BITSET:
+        return futex_wait(uaddr, flags, val, timeout, val3);
+    case FUTEX_WAKE:
+        val3 = FUTEX_BITSET_MATCH_ANY;
+        fallthrough;
+    case FUTEX_WAKE_BITSET:
+        return futex_wake(uaddr, flags, val, val3);
+    case FUTEX_REQUEUE:
+        return futex_requeue(uaddr, flags, uaddr2, flags, val, val2, NULL, 0);
+    case FUTEX_CMP_REQUEUE:
+        return futex_requeue(uaddr, flags, uaddr2, flags, val, val2, &val3, 0);
+    case FUTEX_WAKE_OP:
+        return futex_wake_op(uaddr, flags, uaddr2, val, val2, val3);
+    case FUTEX_LOCK_PI:
+        flags |= FLAGS_CLOCKRT;
+        fallthrough;
+    case FUTEX_LOCK_PI2:
+        return futex_lock_pi(uaddr, flags, timeout, 0);
+    case FUTEX_UNLOCK_PI:
+        return futex_unlock_pi(uaddr, flags);
+    case FUTEX_TRYLOCK_PI:
+        return futex_lock_pi(uaddr, flags, NULL, 1);
+    case FUTEX_WAIT_REQUEUE_PI:
+        val3 = FUTEX_BITSET_MATCH_ANY;
+        return futex_wait_requeue_pi(uaddr, flags, val, timeout, val3, uaddr2);
+    case FUTEX_CMP_REQUEUE_PI:
+        return futex_requeue(uaddr, flags, uaddr2, flags, val, val2, &val3, 1);
+    }
+    return -ENOSYS;
+}
+```
+
+### futex_wait
+```c
+int futex_wait(u32 __user *uaddr, unsigned int flags, u32 val, ktime_t *abs_time, u32 bitset)
+{
+    struct hrtimer_sleeper timeout, *to;
+    struct restart_block *restart;
+    int ret;
+
+    to = futex_setup_timer(abs_time, &timeout, flags, current->timer_slack_ns);
+
+    ret = __futex_wait(uaddr, flags, val, to, bitset) {
+        struct futex_q q = futex_q_init;
+        struct futex_hash_bucket *hb;
+        int ret;
+
+        if (!bitset)
+            return -EINVAL;
+
+        q.bitset = bitset;
+
+    retry:
+        ret = futex_wait_setup(uaddr, val, flags, &q, &hb) [
+        retry:
+            ret = get_futex_key(uaddr, flags, &q->key, FUTEX_READ);
+            if (unlikely(ret != 0))
+                return ret;
+
+        retry_private:
+            *hb = futex_q_lock(q);
+
+            ret = futex_get_value_locked(&uval, uaddr);
+
+            if (ret) {
+                futex_q_unlock(*hb);
+
+                ret = get_user(uval, uaddr);
+                if (ret)
+                    return ret;
+
+                if (!(flags & FLAGS_SHARED))
+                    goto retry_private;
+
+                goto retry;
+            }
+
+            if (uval != val) {
+                futex_q_unlock(*hb);
+                ret = -EWOULDBLOCK;
+            }
+
+            return ret;
+        ]
+        if (ret)
+            return ret;
+
+        /* futex_queue and wait for wakeup, timeout, or a signal. */
+        futex_wait_queue(hb, &q, to) {
+            set_current_state(TASK_INTERRUPTIBLE|TASK_FREEZABLE);
+            futex_queue(q, hb) {
+                prio = min(current->normal_prio, MAX_RT_PRIO);
+                plist_node_init(&q->list, prio);
+                plist_add(&q->list, &hb->chain);
+                q->task = current;
+            }
+
+            if (timeout)
+                hrtimer_sleeper_start_expires(timeout, HRTIMER_MODE_ABS);
+
+            /* If we have been removed from the hash list, then another task
+                * has tried to wake us, and we can skip the call to schedule(). */
+            if (likely(!plist_node_empty(&q->list))) {
+                if (!timeout || timeout->task)
+                    schedule();
+            }
+            __set_current_state(TASK_RUNNING);
+        }
+
+        /* If we were woken (and unqueued), we succeeded, whatever. */
+        if (!futex_unqueue(&q))
+            return 0;
+
+        if (to && !to->task)
+            return -ETIMEDOUT;
+
+        if (!signal_pending(current))
+            goto retry;
+
+        return -ERESTARTSYS;
+    }
+
+    /* No timeout, nothing to clean up. */
+    if (!to)
+        return ret;
+
+    hrtimer_cancel(&to->timer);
+    destroy_hrtimer_on_stack(&to->timer);
+
+    if (ret == -ERESTARTSYS) {
+        restart = &current->restart_block;
+        restart->futex.uaddr = uaddr;
+        restart->futex.val = val;
+        restart->futex.time = *abs_time;
+        restart->futex.bitset = bitset;
+        restart->futex.flags = flags | FLAGS_HAS_TIMEOUT;
+
+        return set_restart_fn(restart, futex_wait_restart);
+    }
+
+    return ret;
+}
+```
+
+### futex_wake
+
+```c
+int futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
+{
+    struct futex_hash_bucket *hb;
+    struct futex_q *this, *next;
+    union futex_key key = FUTEX_KEY_INIT;
+    DEFINE_WAKE_Q(wake_q);
+    int ret;
+
+    if (!bitset)
+        return -EINVAL;
+
+    ret = get_futex_key(uaddr, flags, &key, FUTEX_READ);
+    if (unlikely(ret != 0))
+        return ret;
+
+    if ((flags & FLAGS_STRICT) && !nr_wake)
+        return 0;
+
+    hb = futex_hash(&key);
+
+    /* Make sure we really have tasks to wakeup */
+    if (!futex_hb_waiters_pending(hb))
+        return ret;
+
+    spin_lock(&hb->lock);
+
+    plist_for_each_entry_safe(this, next, &hb->chain, list) {
+        if (futex_match (&this->key, &key)) {
+            if (this->pi_state || this->rt_waiter) {
+                ret = -EINVAL;
+                break;
+            }
+
+            /* Check if one of the bits is set in both bitsets */
+            if (!(this->bitset & bitset))
+                continue;
+
+            this->wake(&wake_q, this);
+            if (++ret >= nr_wake)
+                break;
+        }
+    }
+
+    spin_unlock(&hb->lock);
+    wake_up_q(&wake_q);
+    return ret;
+}
 ```
 
 ### futex_lock_pi
@@ -144,12 +365,141 @@ retry:
 
 retry_private:
     hb = futex_q_lock(&q);
-    ret = futex_lock_pi_atomic(uaddr, hb, &q.key, &q.pi_state) {
+    ret = futex_lock_pi_atomic(uaddr, hb, &q.key, &q.pi_state/*ps*/, current/*task*/, &exiting, 0/*set_waiters*/) {
         top_waiter = futex_top_waiter(hb, key);
-        if (top_waiter)
-            return attach_to_pi_state(uaddr, uval, top_waiter->pi_state, ps);
+        if (top_waiter) {
+            return attach_to_pi_state(uaddr, uval, top_waiter->pi_state/*pi_state*/, ps) {
+                pid_t pid = uval & FUTEX_TID_MASK;
+                u32 uval2;
+                int ret;
 
-        return attach_to_pi_owner(uaddr, newval, key, ps, exiting) {
+                if (unlikely(!pi_state))
+                    return -EINVAL;
+
+                raw_spin_lock_irq(&pi_state->pi_mutex.wait_lock);
+
+                if (futex_get_value_locked(&uval2, uaddr))
+                    goto out_efault;
+
+                if (uval != uval2)
+                    goto out_eagain;
+
+                if (uval & FUTEX_OWNER_DIED) {
+                    /* exit_pi_state_list sets owner to NULL and wakes the
+                     * topmost waiter. The task which acquires the
+                     * pi_state->rt_mutex will fixup owner. */
+                    if (!pi_state->owner) {
+                        /* No pi state owner, but the user space TID
+                         * is not 0. Inconsistent state. [5] */
+                        if (pid)
+                            goto out_einval;
+                        /* Take a ref on the state and return success. [4] */
+                        goto out_attach;
+                    }
+
+                    /* If TID is 0, then either the dying owner has not
+                     * yet executed exit_pi_state_list() or some waiter
+                     * acquired the rtmutex in the pi state, but did not
+                     * yet fixup the TID in user space.
+                     *
+                     * Take a ref on the state and return success. [6] */
+                    if (!pid)
+                        goto out_attach;
+                } else {
+                    /* If the owner died bit is not set, then the pi_state
+                     * must have an owner. [7] */
+                    if (!pi_state->owner)
+                        goto out_einval;
+                }
+
+                /* Bail out if user space manipulated the futex value. If pi
+                 * state exists then the owner TID must be the same as the
+                 * user space TID. [9/10] */
+                if (pid != task_pid_vnr(pi_state->owner))
+                    goto out_einval;
+
+            out_attach:
+                get_pi_state(pi_state);
+                raw_spin_unlock_irq(&pi_state->pi_mutex.wait_lock);
+                *ps = pi_state;
+                return 0;
+
+            out_einval:
+                ret = -EINVAL;
+                goto out_error;
+
+            out_eagain:
+                ret = -EAGAIN;
+                goto out_error;
+
+            out_efault:
+                ret = -EFAULT;
+                goto out_error;
+
+            out_error:
+                raw_spin_unlock_irq(&pi_state->pi_mutex.wait_lock);
+                return ret;
+            }
+        }
+
+        /* No waiter and user TID is 0. We are here because the
+         * waiters or the owner died bit is set or called from
+         * requeue_cmp_pi or for whatever reason something took the
+         * syscall. */
+        if (!(uval & FUTEX_TID_MASK)) {
+            /*
+            * We take over the futex. No other waiters and the user space
+            * TID is 0. We preserve the owner died bit.
+            */
+            newval = uval & FUTEX_OWNER_DIED;
+            newval |= vpid;
+
+            /* The futex requeue_pi code can enforce the waiters bit */
+            if (set_waiters)
+                newval |= FUTEX_WAITERS;
+
+            ret = lock_pi_update_atomic(uaddr, uval, newval);
+            if (ret)
+                return ret;
+
+            /*
+            * If the waiter bit was requested the caller also needs PI
+            * state attached to the new owner of the user space futex.
+            *
+            * @task is guaranteed to be alive and it cannot be exiting
+            * because it is either sleeping or waiting in
+            * futex_requeue_pi_wakeup_sync().
+            *
+            * No need to do the full attach_to_pi_owner() exercise
+            * because @task is known and valid.
+            */
+            if (set_waiters) {
+                raw_spin_lock_irq(&task->pi_lock);
+                __attach_to_pi_owner(task, key, ps);
+                raw_spin_unlock_irq(&task->pi_lock);
+            }
+            return 1;
+        }
+
+        /* First waiter. Set the waiters bit before attaching ourself to
+         * the owner. If owner tries to unlock, it will be forced into
+         * the kernel and blocked on hb->lock. */
+        newval = uval | FUTEX_WAITERS;
+        ret = lock_pi_update_atomic(uaddr, uval, newval) {
+            err = futex_cmpxchg_value_locked(&curval, uaddr, uval, newval);
+            if (unlikely(err))
+                return err;
+
+            /* If user space value changed, let the caller retry */
+            return curval != uval ? -EAGAIN : 0;
+        }
+        if (ret)
+            return ret;
+
+        return attach_to_pi_owner(uaddr, newval/*uval*/, key, ps, exiting) {
+            pid_t pid = uval & FUTEX_TID_MASK;
+            p = find_get_task_by_vpid(pid);
+
             __attach_to_pi_owner(p, key, ps) {
                 pi_state = alloc_pi_state();
                 rt_mutex_init_proxy_locked(&pi_state->pi_mutex, p);
@@ -166,15 +516,45 @@ retry_private:
     }
     if (unlikely(ret)) {
         switch (ret) {
-        case 1: /* We got the lock. */
+        case 1:
+            /* We got the lock. */
             ret = 0;
+            goto out_unlock_put_key;
+        case -EFAULT:
+            goto uaddr_faulted;
+        case -EBUSY:
+        case -EAGAIN:
+            /*
+             * Two reasons for this:
+             * - EBUSY: Task is exiting and we just wait for the
+             *   exit to complete.
+             * - EAGAIN: The user space value changed.
+             */
+            futex_q_unlock(hb);
+            /*
+             * Handle the case where the owner is in the middle of
+             * exiting. Wait for the exit to complete otherwise
+             * this task might loop forever, aka. live lock.
+             */
+            wait_for_owner_exiting(ret, exiting);
+            cond_resched();
+            goto retry;
+        default:
             goto out_unlock_put_key;
         }
     }
-    __futex_queue(&q, hb);
+    __futex_queue(&q, hb) {
+        prio = min(current->normal_prio, MAX_RT_PRIO);
+
+        plist_node_init(&q->list, prio);
+        plist_add(&q->list, &hb->chain);
+        q->task = current;
+    }
 
     if (trylock) {
-        ret = rt_mutex_futex_trylock(&q.pi_state->pi_mutex);
+        ret = rt_mutex_futex_trylock(&q.pi_state->pi_mutex) {
+            rt_mutex_slowtrylock(lock);
+        }
         /* Fixup the trylock return value: */
         ret = ret ? 0 : -EWOULDBLOCK;
         goto no_block;
@@ -183,7 +563,19 @@ retry_private:
     rt_mutex_init_waiter(&rt_waiter);
 
     /* Start lock acquisition for another task */
-    ret = __rt_mutex_start_proxy_lock(&q.pi_state->pi_mutex, &rt_waiter, current);
+    ret = __rt_mutex_start_proxy_lock(&q.pi_state->pi_mutex, &rt_waiter, current) {
+        if (try_to_take_rt_mutex(lock, task, NULL))
+            return 1;
+
+        /* We enforce deadlock detection for futexes */
+        ret = task_blocks_on_rt_mutex(lock, waiter, task, NULL, RT_MUTEX_FULL_CHAINWALK);
+
+        if (ret && !rt_mutex_owner(lock)) {
+            ret = 0;
+        }
+
+        return ret;
+    }
     if (ret) {
         if (ret == 1)
             ret = 0;
@@ -191,11 +583,29 @@ retry_private:
     }
 
     /* Wait for lock acquisition */
-    rt_mutex_wait_proxy_lock(&q.pi_state->pi_mutex, to, &rt_waiter);
+    rt_mutex_wait_proxy_lock(&q.pi_state->pi_mutex, to, &rt_waiter) {
+        /* sleep on the mutex */
+        set_current_state(TASK_INTERRUPTIBLE);
+        ret = rt_mutex_slowlock_block(lock, NULL, TASK_INTERRUPTIBLE, to, waiter);
+        /* try_to_take_rt_mutex() sets the waiter bit unconditionally. We might
+         * have to fix that up. */
+        fixup_rt_mutex_waiters(lock, true) {
+            owner = READ_ONCE(*p);
+            if (owner & RT_MUTEX_HAS_WAITERS) {
+                if (acquire_lock)
+                    xchg_acquire(p, owner & ~RT_MUTEX_HAS_WAITERS);
+                else
+                    WRITE_ONCE(*p, owner & ~RT_MUTEX_HAS_WAITERS);
+            }
+        }
+    }
 
 cleanup:
     if (ret && !rt_mutex_cleanup_proxy_lock(&q.pi_state->pi_mutex, &rt_waiter))
         ret = 0;
+    rt_mutex_post_schedule() {
+        sched_update_worker(current);
+    }
 
 no_block:
     fixup_pi_owner(uaddr, &q, !ret);
@@ -216,7 +626,12 @@ out:
 uaddr_faulted:
     futex_q_unlock(hb);
 
-    ret = fault_in_user_writeable(uaddr);
+    ret = fault_in_user_writeable(uaddr) {
+        mmap_read_lock(mm);
+        ret = fixup_user_fault(mm, (unsigned long)uaddr,
+                    FAULT_FLAG_WRITE, NULL);
+        mmap_read_unlock(mm);
+    }
     if (ret)
         goto out;
 
@@ -227,86 +642,13 @@ uaddr_faulted:
 }
 ```
 
-```c
-futex_unlock_pi(uaddr, flags);
-```
+### futex_unlock_pi
 
 ```c
-futex_wait(uaddr, flags, val, abs_time, bitset)
-    to = futex_setup_timer()
 
-retry:
-    ret = futex_wait_setup(uaddr, val, flags, &q, &hb) {
-        ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &q->key, FUTEX_READ) {
-            /* private: current->mm, address, 0
-             * share: inode->i_sequence, page->index, offset_within_page */
-        }
-        ret = futex_get_value_locked(&uval, uaddr);
-    }
-    if (ret)
-        goto out;
-
-    futex_wait_queue(hb, &q, to) {
-        set_current_state(TASK_INTERRUPTIBLE|TASK_FREEZABLE);
-        futex_queue(q, hb) {
-            plist_node_init(&q->list, prio);
-            plist_add(&q->list, &hb->chain);
-            q->task = current;
-        }
-        __set_current_state(TASK_RUNNING);
-    }
-
-    if (!futex_unqueue(&q))
-        goto out;
-
-    if (!signal_pending(current))
-        goto retry;
-
-    ret = set_restart_fn(restart, futex_wait_restart);
-
-out:
-    if (to) {
-        hrtimer_cancel(&to->timer);
-        destroy_hrtimer_on_stack(&to->timer);
-    }
-```
-
-```c
-futex_wake(uaddr, flags, nr_wake, bitest)
-    DEFINE_WAKE_Q(wake_q);
-    get_futex_key(uaddr, flags & FLAGS_SHARED, &key, FUTEX_READ);
-    hb = futex_hash(&key);
-
-    /* just return if no waiter */
-    if (!futex_hb_waiters_pending(hb))
-        return ret;
-
-    plist_for_each_entry_safe(this, next, &hb->chain, list) {
-        if (futex_match (&this->key, &key)) {
-            if (this->pi_state || this->rt_waiter) {
-                ret = -EINVAL;
-                break;
-            }
-
-            /* Check if one of the bits is set in both bitsets */
-            if (!(this->bitset & bitset))
-                continue;
-
-            futex_wake_mark(&wake_q, this);
-            if (++ret >= nr_wake)
-                break;
-        }
-    }
-
-    spin_unlock(&hb->lock);
-    wake_up_q(&wake_q);
 ```
 
 ## spinlock
-
-![](../Images/Kernel/lock-spinlock.png)
-![](../Images/Kernel/lock-spinlock-qued-status.png)
-![](../Images/Kernel/lock-spinlock-qued-status-trans.png)
 
 * [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
 * [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487444&idx=1&sn=b3529fb6234175b273caaacf0e816b6f)
@@ -343,9 +685,6 @@ typedef struct qspinlock {
     };
 } arch_spinlock_t;
 
-/* task ctx, hardirq ctx, softirq ctx, nmi ctx */
-#define MAX_NODES    4
-
 struct mcs_spinlock {
     struct mcs_spinlock *next;
     int locked; /* 1 if lock acquired */
@@ -356,15 +695,36 @@ struct qnode {
     struct mcs_spinlock mcs;
 };
 
+/* task ctx, hardirq ctx, softirq ctx, nmi ctx */
+#define MAX_NODES    4
 static DEFINE_PER_CPU_ALIGNED(struct qnode, qnodes[MAX_NODES]);
 ```
-![](../Images/Kernel/lock-spinlock-qued-msc.png)
+![](../Images/Kernel/lock-spinlock-arch.png)
+
+---
 
 ![](../Images/Kernel/lock-spinlock-qued-bits.png)
 
+---
+
 ![](../Images/Kernel/lock-spinlock-qued-cpux.png)
 
+---
+
 ![](../Images/Kernel/lock-spinlock-qued.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued-status.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued-status-trans.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock.png)
+
 
 ### spin_lock
 ```c
@@ -577,7 +937,9 @@ pv_queue:
         WRITE_ONCE(prev->next, node);
 
         pv_wait_node(node, prev);
-        arch_mcs_spin_lock_contended(&node->locked);
+        arch_mcs_spin_lock_contended(&node->locked) {
+            smp_cond_load_acquire(l, VAL);
+        }
 
         /* While waiting for the MCS lock, the next pointer may have
          * been set by another lock waiter. We optimistically load
@@ -841,6 +1203,178 @@ do_raw_write_lock() {
 }
 ```
 
+## osq
+
+```c
+struct optimistic_spin_node {
+    struct optimistic_spin_node *next, *prev;
+    int locked; /* 1 if lock acquired */
+    int cpu; /* encoded CPU # + 1 value */
+};
+
+struct optimistic_spin_queue {
+    atomic_t tail;
+};
+
+DEFINE_PER_CPU_SHARED_ALIGNED(struct optimistic_spin_node, osq_node);
+```
+
+### osq_lock
+
+```c
+bool osq_lock(struct optimistic_spin_queue *lock)
+{
+    struct optimistic_spin_node *node = this_cpu_ptr(&osq_node);
+    struct optimistic_spin_node *prev, *next;
+    int curr = encode_cpu(smp_processor_id());
+    int old;
+
+    node->locked = 0;
+    node->next = NULL;
+    node->cpu = curr;
+
+    old = atomic_xchg(&lock->tail, curr);
+    if (old == OSQ_UNLOCKED_VAL)
+        return true;
+
+    prev = decode_cpu(old);
+    node->prev = prev;
+
+    /* osq_lock               unqueue
+     *
+     * node->prev = prev        osq_wait_next()
+     * WMB                MB
+     * prev->next = node        next->prev = prev // unqueue-C
+     *
+     * Here 'node->prev' and 'next->prev' are the same variable and we need
+     * to ensure these stores happen in-order to avoid corrupting the list. */
+    smp_wmb();
+
+    WRITE_ONCE(prev->next, node);
+
+    /* Wait to acquire the lock or cancellation. Note that need_resched()
+     * will come with an IPI, which will wake smp_cond_load_relaxed() if it
+     * is implemented with a monitor-wait. vcpu_is_preempted() relies on
+     * polling, be careful. */
+    if (smp_cond_load_relaxed(&node->locked,
+        VAL || need_resched() || vcpu_is_preempted(node_cpu(node->prev)))) {
+
+        return true;
+    }
+
+    /* unqueue since cur need_resched() or vcpu_is_preempted() */
+
+    /* Step - A  -- stabilize @prev
+     *
+     * Undo our @prev->next assignment; this will make @prev's
+     * unlock()/unqueue() wait for a next pointer since @lock points to us
+     * (or later). */
+
+    for (;;) {
+        /* cpu_relax() below implies a compiler barrier which would
+         * prevent this comparison being optimized away. */
+        if (data_race(prev->next) == node
+            && cmpxchg(&prev->next, node, NULL) == node) {
+
+            break;
+        }
+
+        /* We can only fail the cmpxchg() racing against an unlock(),
+         * in which case we should observe @node->locked becoming
+         * true. */
+        if (smp_load_acquire(&node->locked))
+            return true;
+
+        cpu_relax();
+
+        /* Or we race against a concurrent unqueue()'s step-B, in which
+         * case its step-C will write us a new @node->prev pointer.  */
+        prev = READ_ONCE(node->prev);
+    }
+
+    /* Step - B -- stabilize @next
+     *
+     * Similar to unlock(), wait for @node->next or move @lock from @node
+     * back to @prev. */
+    next = osq_wait_next(lock, node, prev);
+    if (!next)
+        return false;
+
+    /* Step - C -- unlink
+     *
+     * @prev is stable because its still waiting for a new @prev->next
+     * pointer, @next is stable because our @node->next pointer is NULL and
+     * it will wait in Step-A. */
+    WRITE_ONCE(next->prev, prev);
+    WRITE_ONCE(prev->next, next);
+
+    return false;
+}
+```
+
+### osq_unlock
+
+```c
+
+void osq_unlock(struct optimistic_spin_queue *lock)
+{
+    struct optimistic_spin_node *node, *next;
+    int curr = encode_cpu(smp_processor_id());
+
+    if (likely(atomic_cmpxchg_release(&lock->tail, curr,
+                      OSQ_UNLOCKED_VAL) == curr))
+        return;
+
+    node = this_cpu_ptr(&osq_node);
+    next = xchg(&node->next, NULL);
+    if (next) {
+        WRITE_ONCE(next->locked, 1);
+        return;
+    }
+
+    next = osq_wait_next(lock, node, NULL/*prev*/) {
+        struct optimistic_spin_node *next = NULL;
+        int curr = encode_cpu(smp_processor_id());
+        int old;
+
+        /* If there is a prev node in queue, then the 'old' value will be
+         * the prev node's CPU #, else it's set to OSQ_UNLOCKED_VAL since if
+         * we're currently last in queue, then the queue will then become empty. */
+        old = prev ? prev->cpu : OSQ_UNLOCKED_VAL;
+
+        for (;;) {
+            if (atomic_read(&lock->tail) == curr &&
+                atomic_cmpxchg_acquire(&lock->tail, curr, old) == curr) {
+                /* We were the last queued, we moved @lock back. @prev
+                 * will now observe @lock and will complete its
+                 * unlock()/unqueue(). */
+                break;
+            }
+
+            /* We must xchg() the @node->next value, because if we were to
+            * leave it in, a concurrent unlock()/unqueue() from
+            * @node->next might complete Step-A and think its @prev is
+            * still valid.
+            *
+            * If the concurrent unlock()/unqueue() wins the race, we'll
+            * wait for either @lock to point to us, through its Step-B, or
+            * wait for a new @node->next from its Step-C. */
+            if (node->next) {
+                next = xchg(&node->next, NULL);
+                if (next)
+                    break;
+            }
+
+            cpu_relax();
+        }
+
+        return next;
+    }
+    if (next)
+        WRITE_ONCE(next->locked, 1);
+}
+```
+
 ## seqlock
 
 * [seqlock - wowo tech](http://www.wowotech.net/kernel_synchronization/seqlock.html)
@@ -864,9 +1398,10 @@ do_raw_write_lock() {
 #define MUTEX_FLAGS           0x07
 
 struct mutex { /* !CONFIG_PREEMPT_RT  */
-    atomic_long_t       owner;
-    raw_spinlock_t      wait_lock;
-    struct list_head    wait_list;
+    atomic_long_t                   owner;
+    struct optimistic_spin_queue    osq;
+    raw_spinlock_t                  wait_lock;
+    struct list_head                wait_list;
 };
 ```
 
@@ -950,9 +1485,7 @@ mutex_lock() {
                             goto fail;
                         }
 
-                        ret = osq_lock(&lock->osq) {
-
-                        }
+                        ret = osq_lock(&lock->osq);
                         if (!ret)
                             goto fail;
                     }
@@ -971,6 +1504,7 @@ mutex_lock() {
 
                             while (__mutex_owner(lock) == owner) {
                                 barrier();
+                                /* owner may be blocked or goto sleep */
                                 if (!owner_on_cpu(owner) || need_resched()) {
                                     ret = false;
                                     break;
@@ -998,8 +1532,9 @@ mutex_lock() {
                     return true;
 
                 fail_unlock:
-                    if (!waiter)
+                    if (!waiter) {
                         osq_unlock(&lock->osq);
+                    }
 
                 fail:
                     if (need_resched()) {
@@ -1096,6 +1631,7 @@ mutex_lock() {
 ### mutex_unlock
 ```c
 void __sched mutex_unlock(struct mutex *lock) {
+    /* 1. fast path: flags are clear */
     ret = __mutex_unlock_fast(lock) {
         unsigned long curr = (unsigned long)current;
 
@@ -1104,24 +1640,30 @@ void __sched mutex_unlock(struct mutex *lock) {
     if (ret)
         return;
 
+    /* 2. slow path */
     __mutex_unlock_slowpath(lock, _RET_IP) {
         struct task_struct *next = NULL;
         DEFINE_WAKE_Q(wake_q);
         unsigned long owner;
 
+        /* 2.1 release the owner */
         owner = atomic_long_read(&lock->owner);
         for (;;) {
-            if (owner & MUTEX_FLAG_HANDOFF)
+            if (owner & MUTEX_FLAG_HANDOFF) {
                 break;
+            }
 
+            /* release the owner but keep the flags */
             if (atomic_long_try_cmpxchg_release(&lock->owner, &owner, __owner_flags(owner))) {
-                if (owner & MUTEX_FLAG_WAITERS)
+                if (owner & MUTEX_FLAG_WAITERS) {
+                    /* break to wake up the waiter */
                     break;
-
+                }
                 return;
             }
         }
 
+        /* 2.2 wake up waiters */
         raw_spin_lock(&lock->wait_lock);
         if (!list_empty(&lock->wait_list)) {
             struct mutex_waiter *waiter = list_first_entry(
@@ -1135,10 +1677,10 @@ void __sched mutex_unlock(struct mutex *lock) {
         if (owner & MUTEX_FLAG_HANDOFF) {
             __mutex_handoff(lock, next/*task*/) {
                 unsigned long owner = atomic_long_read(&lock->owner);
-
                 for (;;) {
                     unsigned long new;
 
+                    /* MUTEX_FLAG_HANDOFF is cleared implicitly */
                     new = (owner & MUTEX_FLAG_WAITERS);
                     new |= (unsigned long)task;
                     if (task) {
@@ -1196,6 +1738,7 @@ struct rt_mutex_waiter {
 
 struct task_struct {
     raw_spinlock_t          pi_lock;
+    /* top waiter of each rtmutex hold by this task */
     struct rb_root_cached   pi_waiters;
     struct task_struct      *pi_top_task;
     struct rt_mutex_waiter  *pi_blocked_on;
