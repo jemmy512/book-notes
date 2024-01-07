@@ -93,6 +93,8 @@
 
 # locking
 
+* [Locking in the kernel](https://docs.kernel.org/locking/index.html#)
+
 ## rcu
 
 * [kernel: RCU concepts](https://www.kernel.org/doc/html/latest/RCU/index.html)
@@ -101,10 +103,10 @@
 
 ## futex
 
+![](../Images/Kernel/lock-rt-mutex.png)
+
 * [Kernel Index Futex - LWN](https://lwn.net/Kernel/Index/#Futex)
 * [futex问答 - wowo tech](http://www.wowotech.net/kernel_synchronization/futex.html)
-
-![](../Images/Kernel/lock-rt-mutex.png)
 
 ```c
 static struct {
@@ -843,6 +845,32 @@ pi_faulted:
 
 ## spinlock
 
+![](../Images/Kernel/lock-spinlock-arch.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued-bits.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued-cpux.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued-status.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock-qued-status-trans.png)
+
+---
+
+![](../Images/Kernel/lock-spinlock.png)
+
 * [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
 * [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487444&idx=1&sn=b3529fb6234175b273caaacf0e816b6f)
 * [spinlock - 术道经纬](https://www.zhihu.com/column/c_1108400140804726784) [:one: CSA spinlock](https://zhuanlan.zhihu.com/p/80727111) [:two: MCS spinlock](https://zhuanlan.zhihu.com/p/89058726) [:three: qspinlock](https://zhuanlan.zhihu.com/p/100546935) [:four: API](https://zhuanlan.zhihu.com/p/90634198) [:five: deadlock](https://zhuanlan.zhihu.com/p/103971328)
@@ -892,32 +920,6 @@ struct qnode {
 #define MAX_NODES    4
 static DEFINE_PER_CPU_ALIGNED(struct qnode, qnodes[MAX_NODES]);
 ```
-![](../Images/Kernel/lock-spinlock-arch.png)
-
----
-
-![](../Images/Kernel/lock-spinlock-qued-bits.png)
-
----
-
-![](../Images/Kernel/lock-spinlock-qued-cpux.png)
-
----
-
-![](../Images/Kernel/lock-spinlock-qued.png)
-
----
-
-![](../Images/Kernel/lock-spinlock-qued-status.png)
-
----
-
-![](../Images/Kernel/lock-spinlock-qued-status-trans.png)
-
----
-
-![](../Images/Kernel/lock-spinlock.png)
-
 
 ### spin_lock
 ```c
@@ -1895,11 +1897,10 @@ void __sched mutex_unlock(struct mutex *lock) {
 
 ## rtmutex
 
+![](../Images/Kernel/lock-rt-mutex.png)
 
 * [The Evolution of Real-Time Linux](https://personal.utdallas.edu/~cxl137330/courses/fall13/RTS/papers/2a.pdf)
 * [RT Mutex Implementation Anatomy :cn:](https://www.cnblogs.com/hellokitty2/p/17010913.html)
-
-![](../Images/Kernel/lock-rt-mutex.png)
 
 * Why need lock stealing? [The big kernel lock strikes again](https://lwn.net/Articles/281938/)
 
