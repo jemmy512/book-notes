@@ -2585,6 +2585,92 @@ rt_mutex_unlock(lock)
 
 ## semaphore
 
+```c
+struct semaphore {
+    raw_spinlock_t      lock;
+    unsigned int        count;
+    struct list_head    wait_list;
+};
+
+struct semaphore_waiter {
+    struct list_head        list;
+    struct task_struct      *task;
+    bool                    up;
+};
+```
+
+### sem_down
+
+```c
+void __sched down(struct semaphore *sem)
+{
+    unsigned long flags;
+
+    might_sleep();
+    raw_spin_lock_irqsave(&sem->lock, flags);
+    if (likely(sem->count > 0))
+        sem->count--;
+    else {
+        __down(sem) {
+            __down_common(sem, TASK_UNINTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT) {
+                ___down_common(sem, state, timeout) {
+                    struct semaphore_waiter waiter;
+
+                    list_add_tail(&waiter.list, &sem->wait_list);
+                    waiter.task = current;
+                    waiter.up = false;
+
+                    for (;;) {
+                        if (signal_pending_state(state, current))
+                            goto interrupted;
+                        if (unlikely(timeout <= 0))
+                            goto timed_out;
+                        __set_current_state(state);
+                        raw_spin_unlock_irq(&sem->lock);
+                        timeout = schedule_timeout(timeout);
+                        raw_spin_lock_irq(&sem->lock);
+                        if (waiter.up)
+                            return 0;
+                    }
+
+                timed_out:
+                    list_del(&waiter.list);
+                    return -ETIME;
+
+                interrupted:
+                    list_del(&waiter.list);
+                    return -EINTR;
+                }
+            }
+        }
+    }
+    raw_spin_unlock_irqrestore(&sem->lock, flags);
+}
+```
+
+### sem_up
+
+```c
+void __sched up(struct semaphore *sem)
+{
+    unsigned long flags;
+
+    raw_spin_lock_irqsave(&sem->lock, flags);
+    if (likely(list_empty(&sem->wait_list)))
+        sem->count++;
+    else {
+        __up(sem) {
+            struct semaphore_waiter *waiter = list_first_entry(
+                &sem->wait_list, struct semaphore_waiter, list);
+            list_del(&waiter->list);
+            waiter->up = true;
+            wake_up_process(waiter->task);
+        }
+    }
+    raw_spin_unlock_irqrestore(&sem->lock, flags);
+}
+```
+
 ## rwsem
 
 rwlock is a read write spining lock, implemented by qrwlock. While rwsem is a read write sleeping lock.
