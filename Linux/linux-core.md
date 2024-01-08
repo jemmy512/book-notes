@@ -105,6 +105,10 @@
 
 ![](../Images/Kernel/lock-rt-mutex.png)
 
+---
+
+![](../Images/Kernel/lock-futex-flow.png)
+
 * [Kernel Index Futex - LWN](https://lwn.net/Kernel/Index/#Futex)
 * [futex问答 - wowo tech](http://www.wowotech.net/kernel_synchronization/futex.html)
 
@@ -1898,6 +1902,10 @@ void __sched mutex_unlock(struct mutex *lock) {
 ## rtmutex
 
 ![](../Images/Kernel/lock-rt-mutex.png)
+
+---
+
+![](../Images/Kernel/lock-rt-mutex-flow.png)
 
 * [The Evolution of Real-Time Linux](https://personal.utdallas.edu/~cxl137330/courses/fall13/RTS/papers/2a.pdf)
 * [RT Mutex Implementation Anatomy :cn:](https://www.cnblogs.com/hellokitty2/p/17010913.html)
