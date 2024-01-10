@@ -1593,11 +1593,10 @@ struct rt_rq {
         int     next; /* next highest */
     } highest_prio;
 
-    unsigned int            rt_nr_migratory;
-    unsigned int            rt_nr_total;
     int                     overloaded;
     struct plist_head       pushable_tasks;
 
+    /* rt_rq is enqueued into rq */
     int                     rt_queued;
 
     int                     rt_throttled;
@@ -1690,6 +1689,138 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
         update_stats_enqueue_rt(rt_rq_of_se(rt_se), rt_se, flags);
 
         dequeue_rt_stack(rt_se, flags) {
+
+        }
+
+        for_each_sched_rt_entity(rt_se) {
+            __enqueue_rt_entity(rt_se, flags) {
+                if (flags & ENQUEUE_HEAD)
+                    list_add(&rt_se->run_list, queue);
+                else
+                    list_add_tail(&rt_se->run_list, queue);
+                __set_bit(rt_se_prio(rt_se), array->bitmap);
+
+                rt_se->on_list = 1;
+                rt_se->on_rq = 1;
+
+                inc_rt_tasks(rt_se, rt_rq) {
+                    int prio = rt_se_prio(rt_se);
+
+                    rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
+                    rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
+
+                    inc_rt_prio(rt_rq, prio) {
+                        int prev_prio = rt_rq->highest_prio.curr;
+
+                        if (prio < prev_prio)
+                            rt_rq->highest_prio.curr = prio;
+
+                        inc_rt_prio_smp(rt_rq, prio, prev_prio) {
+                            struct rq *rq = rq_of_rt_rq(rt_rq);
+                            if (&rq->rt != rt_rq) {
+                                return;
+                            }
+                            if (rq->online && prio < prev_prio) {
+                                cpupri_set(&rq->rd->cpupri/*cp*/, rq->cpu, prio) {
+                                    int *currpri = &cp->cpu_to_pri[cpu];
+                                    int oldpri = *currpri;
+
+                                    newpri = convert_prio(newpri);
+                                    if (newpri == oldpri) {
+                                        return;
+                                    }
+
+                                    if (likely(newpri != CPUPRI_INVALID)) {
+                                        struct cpupri_vec *vec = &cp->pri_to_cpu[newpri];
+                                        cpumask_set_cpu(cpu, vec->mask);
+                                        atomic_inc(&(vec)->count);
+                                    }
+                                    if (likely(oldpri != CPUPRI_INVALID)) {
+                                        struct cpupri_vec *vec  = &cp->pri_to_cpu[oldpri];
+                                        atomic_dec(&(vec)->count);
+                                        cpumask_clear_cpu(cpu, vec->mask);
+                                    }
+
+                                    *currpri = newpri;
+                                }
+                            }
+                        }
+                    }
+                    inc_rt_group(rt_se, rt_rq) {
+                        if (rt_se_boosted(rt_se))
+                            rt_rq->rt_nr_boosted++;
+
+                        if (rt_rq->tg) {
+                            start_rt_bandwidth(&rt_rq->tg->rt_bandwidth) {
+                                if (!rt_b->rt_period_active) {
+                                    rt_b->rt_period_active = 1;
+                                    hrtimer_forward_now(&rt_b->rt_period_timer, ns_to_ktime(0));
+                                    hrtimer_start_expires(&rt_b->rt_period_timer,
+                                                HRTIMER_MODE_ABS_PINNED_HARD);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        enqueue_top_rt_rq(&rq->rt) {
+            struct rq *rq = rq_of_rt_rq(rt_rq);
+            if (rt_rq->rt_queued)
+                return;
+
+            if (rt_rq_throttled(rt_rq))
+                return;
+
+            if (rt_rq->rt_nr_running) {
+                add_nr_running(rq, rt_rq->rt_nr_running);
+                rt_rq->rt_queued = 1;
+            }
+
+            /* Kick cpufreq (see the comment in kernel/sched/sched.h). */
+            cpufreq_update_util(rq, 0);
+        }
+    }
+
+    if (!task_current(rq, p) && p->nr_cpus_allowed > 1) {
+        enqueue_pushable_task(rq, p) {
+            plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
+            plist_node_init(&p->pushable_tasks, p->prio);
+            plist_add(&p->pushable_tasks, &rq->rt.pushable_tasks);
+
+            if (p->prio < rq->rt.highest_prio.next) {
+                rq->rt.highest_prio.next = p->prio;
+            }
+
+            if (!rq->rt.overloaded) {
+                rt_set_overload(rq) {
+                    if (!rq->online)
+                        return;
+
+                    cpumask_set_cpu(rq->cpu, rq->rd->rto_mask);
+                    smp_wmb();
+                    atomic_inc(&rq->rd->rto_count);
+                }
+                rq->rt.overloaded = 1;
+            }
+        }
+    }
+
+}
+```
+
+### dequeue_task_rt
+```c
+static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
+    struct sched_rt_entity *rt_se = &p->rt;
+
+    update_curr_rt(rq);
+    dequeue_rt_entity(rt_se, flags) {
+        struct rq *rq = rq_of_rt_se(rt_se);
+
+        update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+
+        dequeue_rt_stack(rt_se, flags) {
             /* Because the prio of an upper entry depends on the lower
              * entries, we must remove entries top - down. */
             for_each_sched_rt_entity(rt_se) {
@@ -1722,7 +1853,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                             rt_rq->rt_nr_running -= rt_se_nr_running(rt_se);
                             rt_rq->rr_nr_running -= rt_se_rr_nr_running(rt_se);
 
-                            dec_rt_prio(rt_rq, rt_se_prio(rt_se)) {
+                            dec_rt_prio(rt_rq, rt_se_prio(rt_se)/*prio*/) {
                                 int prev_prio = rt_rq->highest_prio.curr;
 
                                 if (rt_rq->rt_nr_running) {
@@ -1747,130 +1878,15 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                 }
             }
 
-            dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running);
-        }
+            dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running) {
+                struct rq *rq = rq_of_rt_rq(rt_rq);
+                if (!rt_rq->rt_queued)
+                    return;
 
-        for_each_sched_rt_entity(rt_se) {
-            __enqueue_rt_entity(rt_se, flags) {
-                if (flags & ENQUEUE_HEAD)
-                    list_add(&rt_se->run_list, queue);
-                else
-                    list_add_tail(&rt_se->run_list, queue);
-                __set_bit(rt_se_prio(rt_se), array->bitmap);
-
-                rt_se->on_list = 1;
-                rt_se->on_rq = 1;
-
-                inc_rt_tasks(rt_se, rt_rq) {
-                    int prio = rt_se_prio(rt_se);
-
-                    rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
-                    rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
-
-                    inc_rt_prio(rt_rq, prio) {
-                        int prev_prio = rt_rq->highest_prio.curr;
-
-                        if (prio < prev_prio)
-                            rt_rq->highest_prio.curr = prio;
-
-                        inc_rt_prio_smp(rt_rq, prio, prev_prio) {
-                            struct rq *rq = rq_of_rt_rq(rt_rq);
-                        #ifdef CONFIG_RT_GROUP_SCHED
-                            if (&rq->rt != rt_rq)
-                                return;
-                        #endif
-                            if (rq->online && prio < prev_prio) {
-                                cpupri_set(&rq->rd->cpupri/*cp*/, rq->cpu, prio) {
-                                    int *currpri = &cp->cpu_to_pri[cpu];
-                                    int oldpri = *currpri;
-
-                                    newpri = convert_prio(newpri);
-
-                                    if (newpri == oldpri)
-                                        return;
-
-                                    if (likely(newpri != CPUPRI_INVALID)) {
-                                        struct cpupri_vec *vec = &cp->pri_to_cpu[newpri];
-                                        cpumask_set_cpu(cpu, vec->mask);
-                                        atomic_inc(&(vec)->count);
-                                    }
-                                    if (likely(oldpri != CPUPRI_INVALID)) {
-                                        struct cpupri_vec *vec  = &cp->pri_to_cpu[oldpri];
-                                        atomic_dec(&(vec)->count);
-                                        cpumask_clear_cpu(cpu, vec->mask);
-                                    }
-
-                                    *currpri = newpri;
-                                }
-                            }
-                        }
-                    }
-                    inc_rt_migration(rt_se, rt_rq) {
-                        struct task_struct *p;
-
-                        if (!rt_entity_is_task(rt_se))
-                            return;
-
-                        p = rt_task_of(rt_se);
-                        rt_rq = &rq_of_rt_rq(rt_rq)->rt;
-
-                        rt_rq->rt_nr_total++;
-                        if (p->nr_cpus_allowed > 1)
-                            rt_rq->rt_nr_migratory++;
-
-                        update_rt_migration(rt_rq) {
-                            if (rt_rq->rt_nr_migratory && rt_rq->rt_nr_total > 1) {
-                                if (!rt_rq->overloaded) {
-                                    rt_set_overload(rq_of_rt_rq(rt_rq)) {
-                                        if (!rq->online)
-                                            return;
-
-                                        cpumask_set_cpu(rq->cpu, rq->rd->rto_mask);
-                                        smp_wmb();
-                                        atomic_inc(&rq->rd->rto_count);
-                                    }
-                                    rt_rq->overloaded = 1;
-                                }
-                            } else if (rt_rq->overloaded) {
-                                rt_clear_overload(rq_of_rt_rq(rt_rq));
-                                rt_rq->overloaded = 0;
-                            }
-                        }
-                    }
-                    inc_rt_group(rt_se, rt_rq);
-                }
+                sub_nr_running(rq, count);
+                rt_rq->rt_queued = 0;
             }
         }
-        enqueue_top_rt_rq(&rq->rt);
-    }
-
-    if (!task_current(rq, p) && p->nr_cpus_allowed > 1) {
-        enqueue_pushable_task(rq, p) {
-            plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
-            plist_node_init(&p->pushable_tasks, p->prio);
-            plist_add(&p->pushable_tasks, &rq->rt.pushable_tasks);
-
-            if (p->prio < rq->rt.highest_prio.next)
-                rq->rt.highest_prio.next = p->prio;
-        }
-    }
-
-}
-```
-
-### dequeue_task_rt
-```c
-static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
-    struct sched_rt_entity *rt_se = &p->rt;
-
-    update_curr_rt(rq);
-    dequeue_rt_entity(rt_se, flags) {
-        struct rq *rq = rq_of_rt_se(rt_se);
-
-        update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
-
-        dequeue_rt_stack(rt_se, flags)
-            --->
 
         for_each_sched_rt_entity(rt_se) {
             struct rt_rq *rt_rq = group_rt_rq(rt_se);
@@ -1891,6 +1907,11 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
             rq->rt.highest_prio.next = p->prio;
         } else {
             rq->rt.highest_prio.next = MAX_RT_PRIO-1;
+
+            if (rq->rt.overloaded) {
+                rt_clear_overload(rq);
+                rq->rt.overloaded = 0;
+            }
         }
     }
 }
@@ -2023,7 +2044,6 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
 * [内核工匠 - Linux Scheduler之rt选核流程](https://mp.weixin.qq.com/s/DByOOnJYTA2BDrwTXSDBmQ)
 * [hellokitty2 - 调度器32 - RT选核](https://www.cnblogs.com/hellokitty2/p/15881574.html)
 
-
 ![](../Images/Kernel/proc-sched-rt-cpupri.png)
 
 ```c
@@ -2079,7 +2099,10 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                     task, lowest_mask,
                     rt_task_fits_capacity
                 ) {
-                    int task_pri = convert_prio(p->prio);
+                    int task_pri = convert_prio(p->prio) {
+                        /* preempt order:
+                         * INVILID > IDLE > NORMAL > RT0...RT99 */
+                    }
                     int idx, cpu;
 
                     /* 1.1 find lowest cpus from vec[0, idx] */
@@ -2089,12 +2112,16 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                             struct cpupri_vec *vec  = &cp->pri_to_cpu[idx];
                             int skip = 0;
 
-                            if (!atomic_read(&(vec)->count))
+                            if (!atomic_read(&(vec)->count)) {
                                 skip = 1;
-                            if (skip)
+                            }
+                            smp_rmb();
+                            if (skip) {
                                 return 0;
-                            if (cpumask_any_and(&p->cpus_mask, vec->mask) >= nr_cpu_ids)
+                            }
+                            if (cpumask_any_and(&p->cpus_mask, vec->mask) >= nr_cpu_ids) {
                                 return 0;
+                            }
                             if (lowest_mask) {
                                 cpumask_and(lowest_mask, &p->cpus_mask, vec->mask);
                                 cpumask_and(lowest_mask, lowest_mask, cpu_active_mask);
@@ -2103,10 +2130,12 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                             }
                             return 1;
                         }
-                        if (!ret)
+                        if (!ret) {
                             continue;
-                        if (!lowest_mask || !fitness_fn)
+                        }
+                        if (!lowest_mask || !fitness_fn) {
                             return 1;
+                        }
 
                         /* 1.1.2 remove cpu which is incapable for this task */
                         for_each_cpu(cpu, lowest_mask) {
@@ -2115,12 +2144,16 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                             }
                         }
 
-                        if (cpumask_empty(lowest_mask))
+                        if (cpumask_empty(lowest_mask)) {
                             continue;
+                        }
                         return 1;
                     }
-                    if (fitness_fn)
+                    /* If we failed to find a fitting lowest_mask, kick off a new search
+	                 * but without taking into account any fitness criteria this time. */
+                    if (fitness_fn) {
                         return cpupri_find(cp, p, lowest_mask);
+                    }
 
                     return 0;
                 }
@@ -2130,20 +2163,23 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                 }
             }
 
-            if (!ret)
+            if (!ret) {
                 return -1; /* No targets found */
+            }
 
             /* 1.2 pick the cpu which run task previously
              * We prioritize the last CPU that the task executed on since
              * it is most likely cache-hot in that location. */
-            if (cpumask_test_cpu(cpu, lowest_mask))
+            if (cpumask_test_cpu(cpu, lowest_mask)) {
                 return cpu;
+            }
 
             /* 1.3 pick from sched domain
              * Otherwise, we consult the sched_domains span maps to figure
              * out which CPU is logically closest to our hot cache data. */
-            if (!cpumask_test_cpu(this_cpu, lowest_mask))
+            if (!cpumask_test_cpu(this_cpu, lowest_mask)) {
                 this_cpu = -1; /* Skip this_cpu opt if not among lowest */
+            }
 
             rcu_read_lock();
             for_each_domain(cpu, sd) {
@@ -2167,22 +2203,21 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
             rcu_read_unlock();
 
             /* 1.4 pick this_cpu if valid */
-            if (this_cpu != -1)
+            if (this_cpu != -1) {
                 return this_cpu;
+            }
 
             /* 1.5 pick any lowest cpu if valid */
             cpu = cpumask_any_distribute(lowest_mask);
-            if (cpu < nr_cpu_ids)
+            if (cpu < nr_cpu_ids) {
                 return cpu;
+            }
 
             return -1;
         }
 
-        /* 2. pick tsk cpu: lowest target cpu is incapable */
-        rt_task_fits_capacity(p, target) {
-
-        }
-        if (!test && target != -1 && !ret)
+        /* 2. pick tsk cpu: target lowest target cpu is incapable */
+        if (!test && target != -1 && !rt_task_fits_capacity(p, target))
             goto out_unlock;
 
         /* 3. pick target cpu: p prio is higher than the prio of task from target cpu */
@@ -2856,7 +2891,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                     if (sched_feat(PLACE_DEADLINE_INITIAL) && (flags & ENQUEUE_INITIAL))
                         vslice /= 2;
 
-                    /* EEVDF: vd_i = ve_i + r_i/w_i */
+                    /* EEVDF: vd_i = ve_i + r_i/w_i
+                     * r_i: request time, w_i: weight(nice), */
                     se->deadline = se->vruntime + vslice;
                 }
             }
@@ -3244,17 +3280,20 @@ simple:
     do {
         se = pick_next_entity(cfs_rq, NULL) {
             ret = entity_eligible(cfs_rq, cfs_rq->next/*se*/) {
-                struct sched_entity *curr = cfs_rq->curr;
-                s64 avg = cfs_rq->avg_vruntime;
-                long load = cfs_rq->avg_load;
+                return vruntime_eligible(cfs_rq, se->vruntime) {
+                    struct sched_entity *curr = cfs_rq->curr;
+                    s64 avg = cfs_rq->avg_vruntime;
+                    long load = cfs_rq->avg_load;
 
-                if (curr && curr->on_rq) {
-                    unsigned long weight = scale_load_down(curr->load.weight);
+                    if (curr && curr->on_rq) {
+                        unsigned long weight = scale_load_down(curr->load.weight);
 
-                    avg += entity_key(cfs_rq, curr) * weight;
-                    load += weight;
+                        avg += entity_key(cfs_rq, curr) * weight;
+                        load += weight;
+                    }
+
+                    return avg >= (s64)(vruntime - cfs_rq->min_vruntime) * load;
                 }
-                return avg >= entity_key(cfs_rq, se) * load;
             }
 
             if (sched_feat(NEXT_BUDDY) && cfs_rq->next && ret)
@@ -4199,7 +4238,20 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                     }
 
                     /* ensure we never gain time by being placed backwards. */
-                    u64_u32_store(cfs_rq->min_vruntime, __update_min_vruntime(cfs_rq, vruntime));
+                    u64_u32_store(cfs_rq->min_vruntime,
+                        __update_min_vruntime(cfs_rq, vruntime) {
+                            u64 min_vruntime = cfs_rq->min_vruntime;
+                            s64 delta = (s64)(vruntime - min_vruntime);
+                            if (delta > 0) {
+                                avg_vruntime_update(cfs_rq, delta) {
+                                    /* v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load */
+                                    cfs_rq->avg_vruntime -= cfs_rq->avg_load * delta;
+                                }
+                                min_vruntime = vruntime;
+                            }
+                            return min_vruntime;
+                        }
+                    );
                 }
 
                 if (entity_is_task(curr)) {
