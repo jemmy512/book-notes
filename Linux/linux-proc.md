@@ -17,7 +17,7 @@
             * [set_tsk_need_resched](#set_tsk_need_resched)
                 * [scheduler_tick](#scheduler_tick)
                 * [try_to_wake_up](#try_to_wake_upp)
-                * [sched_setscheduler](sched_setscheduler)
+                * [sched_setscheduler](#sched_setscheduler)
             * [prempt time](#preempt-time)
                 * [return from system call](#return-from-system-call)
                 * [return from interrupt](#return-from-interrupt)
@@ -2912,9 +2912,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                     se->runnable_weight = se->my_q->h_nr_running;
             }
 
-            update_cfs_group(se) {
-                --->
-            }
+            update_cfs_group(se);
 
             if (!curr)
                 place_entity(cfs_rq, se, flags);
@@ -2940,6 +2938,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
             check_schedstat_required();
             update_stats_enqueue_fair(cfs_rq, se, flags);
+
             if (!curr) {
                 __enqueue_entity(cfs_rq, se) {
                     avg_vruntime_add(cfs_rq, se) {
@@ -2949,29 +2948,29 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                         cfs_rq->avg_vruntime += key * weight;
                         cfs_rq->avg_load += weight;
                     }
-                    se->min_deadline = se->deadline;
+                    se->min_vruntime = se->deadline;
 
-                    RB_DECLARE_CALLBACKS(static, min_deadline_cb, struct sched_entity,
-                        run_node, min_deadline, min_deadline_update);
+                    RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
+                        run_node, min_vruntime, min_vruntime_update);
                     rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
-                                __entity_less, &min_deadline_cb);
+                                __entity_less, &min_vruntime_cb);
 
-                    /* se->min_deadline = min(se->deadline, left->min_deadline, right->min_deadline) */
-                    bool min_deadline_update(struct sched_entity *se, bool exit) {
-                        u64 old_min_deadline = se->min_deadline;
+                    /* se->min_vruntime = min(se->deadline, left->min_vruntime, right->min_vruntime) */
+                    bool min_vruntime_update(struct sched_entity *se, bool exit) {
+                        u64 old_min_vruntime = se->min_vruntime;
                         struct rb_node *node = &se->run_node;
 
-                        se->min_deadline = se->deadline;
-                        __update_min_deadline(se, node->rb_right);
-                        __update_min_deadline(se, node->rb_left) {
+                        se->min_vruntime = se->deadline;
+                        __min_vruntime_update(se, node->rb_right);
+                        __min_vruntime_update(se, node->rb_left) {
                             if (node) {
                                 struct sched_entity *rse = __node_2_se(node);
-                                if (deadline_gt(min_deadline, se, rse))
-                                    se->min_deadline = rse->min_deadline;
+                                if (deadline_gt(min_vruntime, se, rse))
+                                    se->min_vruntime = rse->min_vruntime;
                             }
                         }
 
-                        return se->min_deadline == old_min_deadline;
+                        return se->min_vruntime == old_min_vruntime;
                     }
                 }
             }
@@ -3011,9 +3010,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
         update_load_avg(cfs_rq, se, UPDATE_TG);
         se_update_runnable(se);
-        update_cfs_group(se) {
-            --->
-        }
+        update_cfs_group(se);
 
         cfs_rq->h_nr_running++;
         cfs_rq->idle_h_nr_running += idle_h_nr_running;
@@ -3070,7 +3067,7 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
             if (se != cfs_rq->curr) {
                 __dequeue_entity(cfs_rq, se) {
-                    rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline, &min_deadline_cb);
+                    rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline, &min_vruntime_cb);
                     avg_vruntime_sub(cfs_rq, se);
                 }
             }
@@ -3138,9 +3135,7 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
         update_load_avg(cfs_rq, se, UPDATE_TG);
         se_update_runnable(se);
-        update_cfs_group(se) {
-            --->
-        }
+        update_cfs_group(se);
 
         cfs_rq->h_nr_running--;
         cfs_rq->idle_h_nr_running -= idle_h_nr_running;
@@ -3320,12 +3315,12 @@ simple:
 
                     if (!best || deadline_gt(deadline, best, se)) {
                         best = se;
-                        if (best->deadline == best->min_deadline)
+                        if (best->deadline == best->min_vruntime)
                             break;
                     }
 
                     if (node->rb_left &&
-                        __node_2_se(node->rb_left)->min_deadline == se->min_deadline) {
+                        __node_2_se(node->rb_left)->min_vruntime == se->min_vruntime) {
                         node = node->rb_left;
                         continue;
                     }
@@ -4281,13 +4276,8 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                 }
             }
 
-            update_load_avg(cfs_rq, curr, UPDATE_TG) {
-
-            }
-
-            update_cfs_group(curr)  {
-                --->
-            }
+            update_load_avg(cfs_rq, curr, UPDATE_TG);
+            update_cfs_group(curr);
 
         #ifdef CONFIG_SCHED_HRTICK
             if (queued) {
@@ -4406,24 +4396,7 @@ void switched_from_fair(struct rq *rq, struct task_struct *p)
 
             /* Catch up with the cfs_rq and remove our load when we leave */
             update_load_avg(cfs_rq, se, 0);
-            detach_entity_load_avg(cfs_rq, se) {
-                dequeue_load_avg(cfs_rq, se);
-                sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
-                sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
-                /* See update_cfs_rq_load_avg() */
-                cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
-                                cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
-
-                sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
-                sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
-                /* See update_cfs_rq_load_avg() */
-                cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
-                                    cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
-
-                add_tg_cfs_propagate(cfs_rq, -se->avg.load_sum);
-
-                cfs_rq_util_change(cfs_rq, 0);
-            }
+            detach_entity_load_avg(cfs_rq, se);
             update_tg_load_avg(cfs_rq);
             propagate_entity_cfs_rq(se);
         }
@@ -5104,6 +5077,7 @@ ___update_load_avg(struct sched_avg *sa, unsigned long load)
 ## update_load_avg
 
 ```c
+/* Update task and its cfs_rq load average */
 void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
     u64 now = cfs_rq_clock_pelt(cfs_rq);
@@ -5127,7 +5101,9 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     decayed |= propagate_entity_load_avg(se);
 
     if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
-        /* DO_ATTACH means we're here from enqueue_entity().
+        /* attach this entity to its cfs_rq load avg
+         *
+         * DO_ATTACH means we're here from enqueue_entity().
          * !last_update_time means we've passed through
          * migrate_task_rq_fair() indicating we migrated. */
         attach_entity_load_avg(cfs_rq, se) {
@@ -5177,6 +5153,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
             }
         }
     } else if (flags & DO_DETACH) {
+        /* detach this entity from its cfs_rq load avg */
         detach_entity_load_avg(cfs_rq, se) {
             dequeue_load_avg(cfs_rq, se) {
                 sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
@@ -5201,23 +5178,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
             cfs_rq_util_change(cfs_rq, 0);
         }
 
-        update_tg_load_avg(cfs_rq) {
-            long delta;
-            u64 now;
-            if (cfs_rq->tg == &root_task_group)
-                return;
-
-            now = sched_clock_cpu(cpu_of(rq_of(cfs_rq)));
-            if (now - cfs_rq->last_update_tg_load_avg < NSEC_PER_MSEC)
-                return;
-
-            delta = cfs_rq->avg.load_avg - cfs_rq->tg_load_avg_contrib;
-            if (abs(delta) > cfs_rq->tg_load_avg_contrib / 64) {
-                atomic_long_add(delta, &cfs_rq->tg->load_avg);
-                cfs_rq->tg_load_avg_contrib = cfs_rq->avg.load_avg;
-                cfs_rq->last_update_tg_load_avg = now;
-            }
-        }
+        update_tg_load_avg(cfs_rq);
     } else if (decayed) {
         cfs_rq_util_change(cfs_rq, 0) {
             struct rq *rq = rq_of(cfs_rq);
@@ -7218,12 +7179,21 @@ struct wait_queue_entry {
  * -> wakeup_preempt -> resched_curr */
 
 try_to_wake_up() {
+    if (p == current) {
+		ttwu_do_wakeup(p) {
+            WRITE_ONCE(p->__state, TASK_RUNNING);
+        }
+		goto out;
+	}
+
     cpu = select_task_rq(p, p->wake_cpu, wake_flags | WF_TTWU) {
         if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p))
             cpu = p->sched_class->select_task_rq(p, cpu, wake_flags);
         else
             cpu = cpumask_any(p->cpus_ptr);
     }
+    set_task_cpu(p, cpu);
+
     ttwu_queue(p, cpu, wake_flags) {
         ttwu_do_activate(rq, p, wake_flags, &rf) {
             if (p->in_iowait) {
@@ -7246,9 +7216,9 @@ try_to_wake_up() {
             }
 
             wakeup_preempt(rq, p, wake_flags) {
-                if (p->sched_class == rq->curr->sched_class)
+                if (p->sched_class == rq->curr->sched_class) {
                     rq->curr->sched_class->wakeup_preempt(rq, p, flags);
-                else if (sched_class_above(p->sched_class, rq->curr->sched_class) ) {
+                } else if (sched_class_above(p->sched_class, rq->curr->sched_class) ) {
                     resched_curr(rq) {
                         struct task_struct *curr = rq->curr;
                         int cpu;
@@ -10155,9 +10125,7 @@ cpu_shares_write_u64() {
                 update_rq_clock(rq);
                 for_each_sched_entity(se) {
                     update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
-                    update_cfs_group(se) {
-                        --->
-                    }
+                    update_cfs_group(se);
                 }
                 rq_unlock_irqrestore(rq, &rf);
             }
@@ -10178,7 +10146,7 @@ void update_cfs_group(struct sched_entity *se) {
         return;
     }
 
-    shares = calc_group_shares(gcfs_rq) {
+    shares = calc_group_shares(gcfs_rq/*cfs_rq*/) {
         long tg_weight, tg_shares, load, shares;
         struct task_group *tg = cfs_rq->tg;
 
@@ -11449,9 +11417,7 @@ int cpu_weight_write_u64(struct cgroup_subsys_state *css,
             update_rq_clock(rq);
             for_each_sched_entity(se) {
                 update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
-                update_cfs_group(se) {
-                    --->
-                }
+                update_cfs_group(se);
             }
             rq_unlock_irqrestore(rq, &rf);
         }
