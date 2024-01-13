@@ -2912,6 +2912,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                     se->runnable_weight = se->my_q->h_nr_running;
             }
 
+            /* update task group entity shares */
             update_cfs_group(se);
 
             if (!curr)
@@ -3033,6 +3034,36 @@ enqueue_throttle:
 ```
 
 #### dequeue_task_fair
+
+```c
+dequeue_task_fair()
+    for_each_sched_entity() {
+        dequeue_entity() {
+            update_curr()
+            update_load_avg()
+            clear_buddies()
+            update_entity_lag()
+            __dequeue_entity() {
+                rb_erase_augmented_cached()
+                avg_vruntime_sub()
+            }
+            account_entity_dequeue() {
+                update_load_sub()
+            }
+            return_cfs_rq_runtime()
+            update_cfs_group()
+        }
+    }
+
+    for_each_sched_entity() {
+        update_load_avg()
+        se_update_runnable()
+        update_cfs_group()
+    }
+
+    sub_nr_running()
+```
+
 ```c
 dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     struct cfs_rq *cfs_rq;
@@ -3072,7 +3103,19 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                 }
             }
             se->on_rq = 0;
-            account_entity_dequeue(cfs_rq, se);
+            account_entity_dequeue(cfs_rq, se) {
+                update_load_sub(&cfs_rq->load, se->load.weight) {
+                    lw->weight -= dec;
+                    lw->inv_weight = 0;
+                }
+                if (entity_is_task(se)) {
+                    account_numa_dequeue(rq_of(cfs_rq), task_of(se));
+                    list_del_init(&se->group_node);
+                }
+                cfs_rq->nr_running--;
+                if (se_is_idle(se))
+                    cfs_rq->idle_nr_running--;
+            }
 
             /* return excess runtime on last dequeue */
             return_cfs_rq_runtime(cfs_rq) {
@@ -3088,6 +3131,7 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
                     if (cfs_b->runtime > sched_cfs_bandwidth_slice()
                         && !list_empty(&cfs_b->throttled_cfs_rq)) {
+
                         start_cfs_slack_bandwidth(cfs_b);
                     }
                 }
@@ -3097,9 +3141,7 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                 cfs_rq->runtime_remaining -= slack_runtime;
             }
 
-            update_cfs_group(se) {
-                --->
-            }
+            update_cfs_group(se);
 
             if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) != DEQUEUE_SAVE)
                 update_min_vruntime(cfs_rq);
@@ -3223,6 +3265,7 @@ again:
             else
                 curr = NULL;
 
+            /* do the throttle and dequeue its entity in the parent(s) */
             if (unlikely(check_cfs_rq_runtime(cfs_rq))) {
                 cfs_rq = &rq->cfs;
 
@@ -3273,7 +3316,7 @@ simple:
     }
 
     do {
-        se = pick_next_entity(cfs_rq, NULL) {
+        se = pick_next_entity(cfs_rq) {
             ret = entity_eligible(cfs_rq, cfs_rq->next/*se*/) {
                 return vruntime_eligible(cfs_rq, se->vruntime) {
                     struct sched_entity *curr = cfs_rq->curr;
@@ -3295,6 +3338,7 @@ simple:
                 return cfs_rq->next;
 
             return pick_eevdf(cfs_rq) {
+                /* the root note of the rbt */
                 struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
                 struct sched_entity *curr = cfs_rq->curr;
                 struct sched_entity *best = NULL;
@@ -3332,6 +3376,7 @@ simple:
                     best = curr;
 
                 if (unlikely(!best)) {
+                    /* pick the left most node */
                     struct sched_entity *left = __pick_first_entity(cfs_rq);
                     if (left) {
                         return left;
@@ -3351,9 +3396,7 @@ simple:
 
 done: __maybe_unused;
 
-#ifdef CONFIG_SMP
     list_move(&p->se.group_node, &rq->cfs_tasks);
-#endif
 
     if (hrtick_enabled_fair(rq))
         hrtick_start_fair(rq, p);
@@ -3471,6 +3514,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
             new_cpu = prev_cpu;
         }
 
+        /* Detect M:N waker/wakee relationships via a switching-frequency heuristic. */
         ret = wake_wide(p) {
             unsigned int master = current->wakee_flips;
             unsigned int slave = p->wakee_flips;
@@ -3495,6 +3539,8 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
                 new_cpu = wake_affine(tmp, p, cpu/*this_cpu*/, prev_cpu, sync) {
                     int target = nr_cpumask_bits;
 
+                    /* only considers 'now', it check if the waking CPU is
+                     * cache-affine and is (or	will be) idle */
                     if (sched_feat(WA_IDLE)) {
                         target = wake_affine_idle(this_cpu, prev_cpu, sync) {
                             if (available_idle_cpu(this_cpu) && cpus_share_cache(this_cpu, prev_cpu)) {
@@ -3513,6 +3559,9 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
                         }
                     }
 
+                    /* considers the weight to reflect the average
+                     * scheduling latency of the CPUs. This seems to work
+                     * for the overloaded case. */
                     if (sched_feat(WA_WEIGHT) && target == nr_cpumask_bits) {
                         target = wake_affine_weight(sd, p, this_cpu, prev_cpu, sync) {
                             s64 this_eff_load, prev_eff_load;
@@ -4207,6 +4256,7 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                     /* EEVDF: vd_i = ve_i + r_i / w_i */
                     se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
 
+                    /* The task has consumed its request, reschedule. */
                     if (cfs_rq->nr_running > 1) {
                         resched_curr(rq_of(cfs_rq));
                         clear_buddies(cfs_rq, se);
@@ -4226,10 +4276,17 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                     }
 
                     if (se) {
-                        if (!curr)
+                        if (!curr) {
                             vruntime = se->vruntime;
-                        else
-                            vruntime = min_vruntime(vruntime, se->vruntime);
+                        } else {
+                            vruntime = min_vruntime(vruntime, se->vruntime) {
+                                s64 delta = (s64)(vruntime - min_vruntime);
+                                if (delta < 0) {
+                                    min_vruntime = vruntime;
+                                }
+                                return min_vruntime;
+                            }
+                        }
                     }
 
                     /* ensure we never gain time by being placed backwards. */
@@ -4239,7 +4296,8 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                             s64 delta = (s64)(vruntime - min_vruntime);
                             if (delta > 0) {
                                 avg_vruntime_update(cfs_rq, delta) {
-                                    /* v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load */
+                                    /* TODO: why?
+                                     * v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load */
                                     cfs_rq->avg_vruntime -= cfs_rq->avg_load * delta;
                                 }
                                 min_vruntime = vruntime;
@@ -4266,7 +4324,6 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
 
                     ret = assign_cfs_rq_runtime(cfs_rq) {
                         cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
-
                         __assign_cfs_rq_runtime(cfs_b, cfs_rq, sched_cfs_bandwidth_slice()) {
                             --->
                         }
@@ -4312,7 +4369,55 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
 
 ```c
 task_fork_fair(struct task_struct *p)
-    update_rq_clock(rq);
+    update_rq_clock(rq) {
+        s64 delta;
+
+        lockdep_assert_rq_held(rq);
+
+        if (rq->clock_update_flags & RQCF_ACT_SKIP)
+            return;
+
+        delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
+        if (delta < 0)
+            return;
+        rq->clock += delta;
+        update_rq_clock_task(rq, delta) {
+            s64 __maybe_unused steal = 0, irq_delta = 0;
+
+        #ifdef CONFIG_IRQ_TIME_ACCOUNTING
+            irq_delta = irq_time_read(cpu_of(rq)) - rq->prev_irq_time;
+
+            if (irq_delta > delta)
+                irq_delta = delta;
+
+            rq->prev_irq_time += irq_delta;
+            delta -= irq_delta;
+            psi_account_irqtime(rq->curr, irq_delta);
+            delayacct_irq(rq->curr, irq_delta);
+        #endif
+            rq->clock_task += delta;
+
+            /* The clock_pelt scales the time to reflect the effective amount of
+             * computation done during the running delta time but then sync back to
+             * clock_task when rq is idle. */
+            update_rq_clock_pelt(rq, delta) {
+                if (unlikely(is_idle_task(rq->curr))) {
+                    _update_idle_rq_clock_pelt(rq) {
+                        rq->clock_pelt  = rq_clock_task(rq);
+                        u64_u32_store(rq->clock_idle, rq_clock(rq));
+                        u64_u32_store(rq->clock_pelt_idle, rq_clock_pelt(rq));
+                    }
+                    return;
+                }
+
+                /* Scale the elapsed time to reflect the real amount of computation */
+                delta = cap_scale(delta, arch_scale_cpu_capacity(cpu_of(rq)));
+                delta = cap_scale(delta, arch_scale_freq_capacity(cpu_of(rq)));
+
+                rq->clock_pelt += delta;
+            }
+        }
+    }
 
     cfs_rq = task_cfs_rq(current);
     curr = cfs_rq->curr;
@@ -4320,15 +4425,8 @@ task_fork_fair(struct task_struct *p)
         update_curr(cfs_rq);
         se->vruntime = curr->vruntime;
     }
-    place_entity(cfs_rq, se, 1)
+    place_entity(cfs_rq, se, ENQUEUE_INITIAL);
         --->
-
-    if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-        swap(curr->vruntime, se->vruntime);
-        resched_curr(rq);
-    }
-
-    se->vruntime -= cfs_rq->min_vruntime;
 ```
 
 #### yield_task_fair
@@ -4982,11 +5080,13 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
 
     delta = now - sa->last_update_time;
 
+    /* s64 ns clock overflow */
     if ((s64)delta < 0) {
         sa->last_update_time = now;
         return 0;
     }
 
+    /* ns -> us */
     delta >>= 10;
     if (!delta)
         return 0;
@@ -5012,7 +5112,7 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
             /* Step 2 */
             delta %= 1024;
             if (load) {
-                contrib = __accumulate_pelt_segments(periods, 1024 - sa->period_contrib, delta) {
+                contrib = __accumulate_pelt_segments(periods, 1024 - sa->period_contrib/*d1*/, delta/*d3*/) {
                     u32 c1, c2, c3 = d3; /* y^0 == 1 */
 
                     /* c1 = d1 y^p */
@@ -5095,9 +5195,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
         }
     }
 
-    decayed  = update_cfs_rq_load_avg(now, cfs_rq) {
-        --->
-    }
+    decayed  = update_cfs_rq_load_avg(now, cfs_rq);
     decayed |= propagate_entity_load_avg(se);
 
     if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
@@ -5336,7 +5434,25 @@ void run_rebalance_domains(struct softirq_action *h)
             decayed |= update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class);
             decayed |= update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class);
             decayed |= update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure);
-            decayed |= update_irq_load_avg(rq, 0);
+            decayed |= update_irq_load_avg(rq, 0) {
+                running = cap_scale(running, arch_scale_freq_capacity(cpu_of(rq)));
+                running = cap_scale(running, arch_scale_cpu_capacity(cpu_of(rq)));
+
+                /* before (rq->clock - running) cpu exec the normal task not interrupt work
+                 * 0: just decay the past time do not accumulate */
+                ret = ___update_load_sum(rq->clock - running, &rq->avg_irq,
+                            0, 0, 0);
+
+                /* [rq->clock - running, rq->clock) cpu exec interrupt work
+                 * 1: decay interrupt time */
+                ret += ___update_load_sum(rq->clock, &rq->avg_irq,
+                            1, 1, 1);
+
+                if (ret) {
+                    ___update_load_avg(&rq->avg_irq, 1);
+                    trace_pelt_irq_tp(rq);
+                }
+            }
 
             if (others_have_blocked(rq))
                 *done = false;
