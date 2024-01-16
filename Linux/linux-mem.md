@@ -61,6 +61,11 @@
     * [cma_init_reserved_areas](#cma_init_reserved_areas)
     * [cma_alloc](cma_alloc)
 * [mem_compact](#mem_compact)
+* [out_of_memory](#out_of_memory)
+    * [oom_reaper](#oom_reaper)
+    * [select_bad_process](#select_bad_process)
+    * [oom_kill_process](#oom_kill_process)
+
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -1404,16 +1409,6 @@ __alloc_pages_direct_compact() {
 ```c
 __alloc_pages_direct_reclaim() {
 
-}
-```
-
-```c
-__alloc_pages_may_oom() {
-    out_of_memory() {
-        oom_kill_process() {
-            do_send_sig_info(SIGKILL, SEND_SIG_PRIV)
-        }
-    }
 }
 ```
 
@@ -5478,3 +5473,378 @@ out:
 # mem_compact
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
+
+# out_of_memory
+
+```c
+bool out_of_memory(struct oom_control *oc)
+{
+    unsigned long freed = 0;
+
+    if (oom_killer_disabled)
+        return false;
+
+    if (!is_memcg_oom(oc)) {
+        blocking_notifier_call_chain(&oom_notify_list, 0, &freed);
+        if (freed > 0 && !is_sysrq_oom(oc)) {
+            /* Got some memory back in the last second. */
+            return true;
+        }
+    }
+
+    if (task_will_free_mem(current)) {
+        mark_oom_victim(current) {
+            struct mm_struct *mm = tsk->mm;
+
+            if (test_and_set_tsk_thread_flag(tsk, TIF_MEMDIE))
+                return;
+
+            /* oom_mm is bound to the signal struct life time. */
+            if (!cmpxchg(&tsk->signal->oom_mm, NULL, mm))
+                mmgrab(tsk->signal->oom_mm);
+
+            __thaw_task(tsk);
+            atomic_inc(&oom_victims);
+        }
+
+        /* Give the OOM victim time to exit naturally before invoking the oom_reaping. */
+        queue_oom_reaper(current) {
+            if (test_and_set_bit(MMF_OOM_REAP_QUEUED, &tsk->signal->oom_mm->flags))
+                return;
+
+            get_task_struct(tsk);
+            timer_setup(&tsk->oom_reaper_timer, wake_oom_reaper, 0);
+            tsk->oom_reaper_timer.expires = jiffies + OOM_REAPER_DELAY;
+            add_timer(&tsk->oom_reaper_timer);
+        }
+        return true;
+    }
+
+    if (!(oc->gfp_mask & __GFP_FS) && !is_memcg_oom(oc))
+        return true;
+
+    oc->constraint = constrained_alloc(oc);
+    if (oc->constraint != CONSTRAINT_MEMORY_POLICY)
+        oc->nodemask = NULL;
+    check_panic_on_oom(oc);
+
+    if (!is_memcg_oom(oc)
+        && sysctl_oom_kill_allocating_task
+        && current->mm && !oom_unkillable_task(current)
+        && oom_cpuset_eligible(current, oc)
+        && current->signal->oom_score_adj != OOM_SCORE_ADJ_MIN) {
+
+        get_task_struct(current);
+        oc->chosen = current;
+        oom_kill_process(oc, "Out of memory (oom_kill_allocating_task)");
+        return true;
+    }
+
+    select_bad_process(oc);
+    if (!oc->chosen) {
+        dump_header(oc);
+        if (!is_sysrq_oom(oc) && !is_memcg_oom(oc))
+            panic("System is deadlocked on memory\n");
+    }
+    if (oc->chosen && oc->chosen != (void *)-1UL) {
+        oom_kill_process(oc, !is_memcg_oom(oc) ? "Out of memory" : "Memory cgroup out of memory");
+    }
+    return !!oc->chosen;
+}
+```
+
+## oom_reaper
+
+```c
+void wake_oom_reaper(struct timer_list *timer)
+{
+    struct task_struct *tsk = container_of(timer, struct task_struct, oom_reaper_timer);
+    struct mm_struct *mm = tsk->signal->oom_mm;
+    unsigned long flags;
+
+    /* The victim managed to terminate on its own - see exit_mmap */
+    if (test_bit(MMF_OOM_SKIP, &mm->flags)) {
+        put_task_struct(tsk);
+        return;
+    }
+
+    spin_lock_irqsave(&oom_reaper_lock, flags);
+    tsk->oom_reaper_list = oom_reaper_list;
+    oom_reaper_list = tsk;
+    spin_unlock_irqrestore(&oom_reaper_lock, flags);
+    wake_up(&oom_reaper_wait);
+}
+
+int oom_reaper(void *unused)
+{
+    set_freezable();
+
+    while (true) {
+        struct task_struct *tsk = NULL;
+
+        wait_event_freezable(oom_reaper_wait, oom_reaper_list != NULL);
+
+        spin_lock_irq(&oom_reaper_lock);
+        if (oom_reaper_list != NULL) {
+            tsk = oom_reaper_list;
+            oom_reaper_list = tsk->oom_reaper_list;
+        }
+        spin_unlock_irq(&oom_reaper_lock);
+
+        if (tsk) {
+            oom_reap_task(tsk) {
+                int attempts = 0;
+                struct mm_struct *mm = tsk->signal->oom_mm;
+
+                oom_reap_task_mm = [](tsk, mm) {
+                    bool ret = true;
+
+                    if (test_bit(MMF_OOM_SKIP, &mm->flags)) {
+                        trace_skip_task_reaping(tsk->pid);
+                        goto out_unlock;
+                    }
+
+                    ret = __oom_reap_task_mm(mm) {
+                        struct vm_area_struct *vma;
+                        bool ret = true;
+                        VMA_ITERATOR(vmi, mm, 0);
+
+                        set_bit(MMF_UNSTABLE, &mm->flags);
+
+                        for_each_vma(vmi, vma) {
+                            if (vma->vm_flags & (VM_HUGETLB|VM_PFNMAP))
+                                continue;
+
+                            if (vma_is_anonymous(vma) || !(vma->vm_flags & VM_SHARED)) {
+                                struct mmu_notifier_range range;
+                                struct mmu_gather tlb;
+
+                                mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, mm, vma->vm_start, vma->vm_end);
+                                tlb_gather_mmu(&tlb, mm);
+                                if (mmu_notifier_invalidate_range_start_nonblock(&range)) {
+                                    tlb_finish_mmu(&tlb);
+                                    ret = false;
+                                    continue;
+                                }
+                                unmap_page_range(&tlb, vma, range.start, range.end, NULL);
+                                mmu_notifier_invalidate_range_end(&range);
+                                tlb_finish_mmu(&tlb);
+                            }
+                        }
+
+                        return ret;
+                    }
+                }
+
+                while (attempts++ < MAX_OOM_REAP_RETRIES && !oom_reap_task_mm()) {
+                    schedule_timeout_idle(HZ/10);
+                }
+
+                if (attempts <= MAX_OOM_REAP_RETRIES || test_bit(MMF_OOM_SKIP, &mm->flags))
+                    goto done;
+
+                sched_show_task(tsk);
+                debug_show_all_locks();
+
+            done:
+                tsk->oom_reaper_list = NULL;
+
+                set_bit(MMF_OOM_SKIP, &mm->flags);
+
+                put_task_struct(tsk);
+            }
+        }
+    }
+
+    return 0;
+}
+```
+
+## select_bad_process
+
+```c
+void select_bad_process(struct oom_control *oc)
+{
+    oc->chosen_points = LONG_MIN;
+
+    if (is_memcg_oom(oc))
+        mem_cgroup_scan_tasks(oc->memcg, oom_evaluate_task, oc);
+    else {
+        struct task_struct *p;
+
+        rcu_read_lock();
+        for_each_process(p) {
+            oom_evaluate_task = [](p, oc) {
+                struct oom_control *oc = arg;
+                long points;
+
+                if (oom_unkillable_task(task))
+                    goto next;
+
+                /* p may not have freeable memory in nodemask */
+                if (!is_memcg_oom(oc) && !oom_cpuset_eligible(task, oc))
+                    goto next;
+
+                /* This task already has access to memory reserves and is being killed.
+                * Don't allow any other task to have access to the reserves unless
+                * the task has MMF_OOM_SKIP because chances that it would release
+                * any memory is quite low. */
+                if (!is_sysrq_oom(oc) && tsk_is_oom_victim(task)) {
+                    if (test_bit(MMF_OOM_SKIP, &task->signal->oom_mm->flags))
+                        goto next;
+                    goto abort;
+                }
+
+                /* If task is allocating a lot of memory and has been marked to be
+                * killed first if it triggers an oom, then select it. */
+                if (oom_task_origin(task)) {
+                    points = LONG_MAX;
+                    goto select;
+                }
+
+                points = oom_badness(task, oc->totalpages) {
+                    long points;
+                    long adj;
+
+                    if (oom_unkillable_task(p))
+                        return LONG_MIN;
+
+                    p = find_lock_task_mm(p);
+                    if (!p)
+                        return LONG_MIN;
+
+                    adj = (long)p->signal->oom_score_adj;
+                    if (adj == OOM_SCORE_ADJ_MIN || test_bit(MMF_OOM_SKIP, &p->mm->flags) || in_vfork(p)) {
+                        task_unlock(p);
+                        return LONG_MIN;
+                    }
+
+                    /* The baseline for the badness score is the proportion of RAM that each
+                     * task's rss, pagetable and swap space use */
+                    points = get_mm_rss(p->mm) + get_mm_counter(p->mm, MM_SWAPENTS) +
+                        mm_pgtables_bytes(p->mm) / PAGE_SIZE;
+                    task_unlock(p);
+
+                    /* Normalize to oom_score_adj units */
+                    adj *= totalpages / 1000;
+                    points += adj;
+
+                    return points;
+                }
+                if (points == LONG_MIN || points < oc->chosen_points)
+                    goto next;
+
+            select:
+                if (oc->chosen)
+                    put_task_struct(oc->chosen);
+                get_task_struct(task);
+                oc->chosen = task;
+                oc->chosen_points = points;
+            next:
+                return 0;
+            abort:
+                if (oc->chosen)
+                    put_task_struct(oc->chosen);
+                oc->chosen = (void *)-1UL;
+                return 1;
+            }
+
+            if (oom_evaluate_task())
+                break;
+        }
+        rcu_read_unlock();
+    }
+}
+```
+
+## oom_kill_process
+
+```c
+void oom_kill_process(struct oom_control *oc, const char *message)
+{
+    struct task_struct *victim = oc->chosen;
+    struct mem_cgroup *oom_group;
+    static DEFINE_RATELIMIT_STATE(oom_rs, DEFAULT_RATELIMIT_INTERVAL,
+                        DEFAULT_RATELIMIT_BURST);
+
+    /* If the task is already exiting, don't alarm the sysadmin or kill
+     * its children or threads, just give it access to memory reserves
+     * so it can die quickly */
+    task_lock(victim);
+    if (task_will_free_mem(victim)) {
+        mark_oom_victim(victim);
+        queue_oom_reaper(victim);
+        task_unlock(victim);
+        put_task_struct(victim);
+        return;
+    }
+    task_unlock(victim);
+
+    if (__ratelimit(&oom_rs)) {
+        dump_header(oc);
+        dump_oom_victim(oc, victim);
+    }
+
+    oom_group = mem_cgroup_get_oom_group(victim, oc->memcg);
+
+    __oom_kill_process(victim, message) {
+        struct task_struct *p;
+        struct mm_struct *mm;
+        bool can_oom_reap = true;
+
+        p = find_lock_task_mm(victim);
+        if (!p) {
+            put_task_struct(victim);
+            return;
+        } else if (victim != p) {
+            get_task_struct(p);
+            put_task_struct(victim);
+            victim = p;
+        }
+
+        /* Get a reference to safely compare mm after task_unlock(victim) */
+        mm = victim->mm;
+        mmgrab(mm);
+
+        /* Raise event before sending signal: task reaper must see this */
+        count_vm_event(OOM_KILL);
+        memcg_memory_event_mm(mm, MEMCG_OOM_KILL);
+
+        do_send_sig_info(SIGKILL, SEND_SIG_PRIV, victim, PIDTYPE_TGID);
+        mark_oom_victim(victim);
+        task_unlock(victim);
+
+        rcu_read_lock();
+        for_each_process(p) {
+            if (!process_shares_mm(p, mm))
+                continue;
+            if (same_thread_group(p, victim))
+                continue;
+            if (is_global_init(p)) {
+                can_oom_reap = false;
+                set_bit(MMF_OOM_SKIP, &mm->flags);
+                continue;
+            }
+
+            if (unlikely(p->flags & PF_KTHREAD))
+                continue;
+            do_send_sig_info(SIGKILL, SEND_SIG_PRIV, p, PIDTYPE_TGID);
+        }
+        rcu_read_unlock();
+
+        if (can_oom_reap)
+            queue_oom_reaper(victim);
+
+        mmdrop(mm);
+        put_task_struct(victim);
+    }
+
+    /* If necessary, kill all tasks in the selected memory cgroup. */
+    if (oom_group) {
+        memcg_memory_event(oom_group, MEMCG_OOM_GROUP_KILL);
+        mem_cgroup_print_oom_group(oom_group);
+        mem_cgroup_scan_tasks(oom_group, oom_kill_memcg_member, (void *)message);
+        mem_cgroup_put(oom_group);
+    }
+}
+```
