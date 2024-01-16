@@ -1101,7 +1101,7 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
     update_rq_clock(rq);
 
     prev_state = READ_ONCE(prev->__state);
-    if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
+    if (!(sched_mode & SM_MASK_PREEMPT) && prev_state/* tsk not running */) {
         if (signal_pending_state(prev_state, prev)) {
             WRITE_ONCE(prev->__state, TASK_RUNNING);
         } else {
@@ -2830,6 +2830,12 @@ DEFINE_SCHED_CLASS(fair) = {
 
 ```c
 enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
+    util_est_enqueue(&rq->cfs, p) {
+        int enqueued  = cfs_rq->avg.util_est;
+        enqueued += _task_util_est(p);
+        WRITE_ONCE(cfs_rq->avg.util_est, enqueued);
+    }
+
     for_each_sched_entity(se) {
         if (se->on_rq)
             break;
@@ -3072,7 +3078,11 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     int idle_h_nr_running = task_has_idle_policy(p);
     bool was_sched_idle = sched_idle_rq(rq);
 
-    util_est_dequeue(&rq->cfs, p);
+    util_est_dequeue(&rq->cfs, p) {
+        int enqueued  = cfs_rq->avg.util_est;
+        enqueued -= min_t(unsigned int, enqueued, _task_util_est(p));
+        WRITE_ONCE(cfs_rq->avg.util_est, enqueued);
+    }
 
     for_each_sched_entity(se) {
         cfs_rq = cfs_rq_of(se);
@@ -3199,7 +3209,50 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
         rq->next_balance = jiffies;
 
 dequeue_throttle:
-    util_est_update(&rq->cfs, p, task_sleep);
+    util_est_update(&rq->cfs/*cfs_rq*/, p, task_sleep) {
+        if (!task_sleep)
+            return;
+
+        ewma = READ_ONCE(p->se.avg.util_est);
+
+        /* If the PELT values haven't changed since enqueue time,
+         * skip the util_est update. */
+        if (ewma & UTIL_AVG_UNCHANGED)
+            return;
+
+        dequeued = task_util(p) {
+            return READ_ONCE(p->se.avg.util_avg);
+        }
+
+        /* Reset EWMA on utilization increases, the moving average is used only
+         * to smooth utilization decreases. */
+        if (ewma <= dequeued) {
+            ewma = dequeued;
+            goto done;
+        }
+
+        last_ewma_diff = ewma - dequeued;
+        if (last_ewma_diff < UTIL_EST_MARGIN)
+            goto done;
+
+        /* To avoid overestimation of actual task utilization, skip updates if
+         * we cannot grant there is idle time in this CPU. */
+        if (dequeued > arch_scale_cpu_capacity(cpu_of(rq_of(cfs_rq))))
+            return;
+
+        /* To avoid underestimate of task utilization, skip updates of EWMA if
+         * we cannot grant that thread got all CPU time it wanted. */
+        if ((dequeued + UTIL_EST_MARGIN) < task_runnable(p))
+            goto done;
+
+
+        ewma <<= UTIL_EST_WEIGHT_SHIFT;
+        ewma  -= last_ewma_diff;
+        ewma >>= UTIL_EST_WEIGHT_SHIFT;
+    done:
+        ewma |= UTIL_AVG_UNCHANGED;
+        WRITE_ONCE(p->se.avg.util_est, ewma);
+    }
     hrtick_update(rq);
 }
 ```
@@ -4380,6 +4433,8 @@ task_fork_fair(struct task_struct *p)
         delta = sched_clock_cpu(cpu_of(rq)) - rq->clock;
         if (delta < 0)
             return;
+
+        /* real clock of rq */
         rq->clock += delta;
         update_rq_clock_task(rq, delta) {
             s64 __maybe_unused steal = 0, irq_delta = 0;
@@ -4395,6 +4450,8 @@ task_fork_fair(struct task_struct *p)
             psi_account_irqtime(rq->curr, irq_delta);
             delayacct_irq(rq->curr, irq_delta);
         #endif
+
+            /* real task exec clock exclude irq */
             rq->clock_task += delta;
 
             /* The clock_pelt scales the time to reflect the effective amount of
@@ -5068,6 +5125,7 @@ get_cpu_for_node(struct device_node *node)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 
+![](../Images/Kernel/proc-sched-cfs-pelt-segement.png)
 ![](../Images/Kernel/proc-sched-cfs-update_load_avg.png)
 
 ## ___update_load_sum
@@ -5189,7 +5247,13 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
                 cfs_rq->curr == se);
            if (ret) {
                 ___update_load_avg(&se->avg, se_weight(se));
-                cfs_se_util_change(&se->avg);
+                cfs_se_util_change(&se->avg) {
+                    int enqueued = avg->util_est;
+                    if (enqueued & UTIL_AVG_UNCHANGED) {
+                        enqueued &= ~UTIL_AVG_UNCHANGED;
+                        WRITE_ONCE(avg->util_est, enqueued);
+                    }
+                }
                 return 1;
             }
         }
@@ -5443,14 +5507,13 @@ void run_rebalance_domains(struct softirq_action *h)
                 ret = ___update_load_sum(rq->clock - running, &rq->avg_irq,
                             0, 0, 0);
 
-                /* [rq->clock - running, rq->clock) cpu exec interrupt work
+                /* [rq->clock - running, rq->clock] cpu exec interrupt work
                  * 1: decay interrupt time */
                 ret += ___update_load_sum(rq->clock, &rq->avg_irq,
                             1, 1, 1);
 
                 if (ret) {
                     ___update_load_avg(&rq->avg_irq, 1);
-                    trace_pelt_irq_tp(rq);
                 }
             }
 
@@ -5492,7 +5555,7 @@ void run_rebalance_domains(struct softirq_action *h)
 
         rcu_read_lock();
         for_each_domain(cpu, sd) {
-            need_decay = update_newidle_cost(sd, 0)  {
+            need_decay = update_newidle_cost(sd, 0/*cost*/)  {
                 if (cost > sd->max_newidle_lb_cost) {
                     sd->max_newidle_lb_cost = cost;
                     sd->last_decay_max_lb_cost = jiffies;
@@ -5564,6 +5627,15 @@ void run_rebalance_domains(struct softirq_action *h)
 ## nohz_idle_balance
 
 ```c
+static struct {
+    cpumask_var_t idle_cpus_mask;
+    atomic_t nr_cpus;
+    int has_blocked; /* Idle CPUS has blocked load */
+    int needs_update; /* Newly idle CPUs need their next_balance collated */
+    unsigned long next_balance; /* in jiffy units */
+    unsigned long next_blocked; /* Next update of blocked load in jiffies */
+} nohz;
+
 nohz_balancer_kick(rq) {
     unsigned long now = jiffies;
     struct sched_domain_shared *sds;
