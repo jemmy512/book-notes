@@ -5848,3 +5848,162 @@ void oom_kill_process(struct oom_control *oc, const char *message)
     }
 }
 ```
+
+# exit_mm
+
+```c
+void exit_mm(void)
+{
+    struct mm_struct *mm = current->mm;
+
+    exit_mm_release(current, mm) {
+
+    }
+
+    if (!mm)
+        return;
+    mmap_read_lock(mm);
+    mmgrab_lazy_tlb(mm);
+    BUG_ON(mm != current->active_mm);
+    /* more a memory barrier than a real lock */
+    task_lock(current);
+    smp_mb__after_spinlock();
+    local_irq_disable();
+    current->mm = NULL;
+    membarrier_update_current_mm(NULL);
+    enter_lazy_tlb(mm, current);
+    local_irq_enable();
+    task_unlock(current);
+    mmap_read_unlock(mm);
+    mm_update_next_owner(mm);
+
+    mmput(mm) {
+        if (atomic_dec_and_test(&mm->mm_users)) {
+		    __mmput(mm) {
+                uprobe_clear_state(mm);
+                exit_aio(mm);
+                ksm_exit(mm);
+                khugepaged_exit(mm); /* must run before exit_mmap */
+
+                exit_mmap(mm) {
+                    struct mmu_gather tlb;
+                    struct vm_area_struct *vma;
+                    unsigned long nr_accounted = 0;
+                    MA_STATE(mas, &mm->mm_mt, 0, 0);
+                    int count = 0;
+
+                    /* mm's last user has gone, and its about to be pulled down */
+                    mmu_notifier_release(mm);
+
+                    mmap_read_lock(mm);
+                    arch_exit_mmap(mm);
+
+                    vma = mas_find(&mas, ULONG_MAX);
+                    if (!vma || unlikely(xa_is_zero(vma))) {
+                        /* Can happen if dup_mmap() received an OOM */
+                        mmap_read_unlock(mm);
+                        mmap_write_lock(mm);
+                        goto destroy;
+                    }
+
+                    lru_add_drain();
+                    flush_cache_mm(mm);
+                    tlb_gather_mmu_fullmm(&tlb, mm);
+
+                    /* update_hiwater_rss(mm) here? but nobody should be looking */
+                    /* Use ULONG_MAX here to ensure all VMAs in the mm are unmapped */
+                    unmap_vmas(&tlb, &mas, vma, 0, ULONG_MAX, ULONG_MAX, false) {
+                        struct mmu_notifier_range range;
+                        struct zap_details details = {
+                            .zap_flags = ZAP_FLAG_DROP_MARKER | ZAP_FLAG_UNMAP,
+                            /* Careful - we need to zap private pages too! */
+                            .even_cows = true,
+                        };
+
+                        mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma->vm_mm,
+                                    start_addr, end_addr);
+                        mmu_notifier_invalidate_range_start(&range);
+                        do {
+                            unsigned long start = start_addr;
+                            unsigned long end = end_addr;
+                            hugetlb_zap_begin(vma, &start, &end);
+                            unmap_single_vma(tlb, vma, start, end, &details, mm_wr_locked);
+                            hugetlb_zap_end(vma, &details);
+                            vma = mas_find(mas, tree_end - 1);
+                        } while (vma && likely(!xa_is_zero(vma)));
+                        mmu_notifier_invalidate_range_end(&range);
+                    }
+
+                    mmap_read_unlock(mm);
+
+                    /* Set MMF_OOM_SKIP to hide this task from the oom killer/reaper
+                     * because the memory has been already freed. */
+                    set_bit(MMF_OOM_SKIP, &mm->flags);
+                    mmap_write_lock(mm);
+                    mt_clear_in_rcu(&mm->mm_mt);
+                    mas_set(&mas, vma->vm_end);
+                    free_pgtables(&tlb, &mas, vma, FIRST_USER_ADDRESS, USER_PGTABLES_CEILING, true);
+                        --->
+                    tlb_finish_mmu(&tlb);
+
+                    /* Walk the list again, actually closing and freeing it, with preemption
+                     * enabled, without holding any MM locks besides the unreachable
+                     * mmap_write_lock. */
+                    mas_set(&mas, vma->vm_end);
+                    do {
+                        if (vma->vm_flags & VM_ACCOUNT) {
+                            nr_accounted += vma_pages(vma);
+                        }
+
+                        remove_vma(vma, true) {
+                            might_sleep();
+                            if (vma->vm_ops && vma->vm_ops->close)
+                                vma->vm_ops->close(vma);
+                            if (vma->vm_file)
+                                fput(vma->vm_file);
+                            mpol_put(vma_policy(vma));
+                            if (unreachable)
+                                __vm_area_free(vma);
+                            else {
+                                vm_area_free(vma) {
+                                    kmem_cache_free(vm_area_cachep, vma);
+                                }
+                            }
+                        }
+
+                        count++;
+                        cond_resched();
+                        vma = mas_find(&mas, ULONG_MAX);
+                    } while (vma && likely(!xa_is_zero(vma)));
+
+                    BUG_ON(count != mm->map_count);
+
+                    trace_exit_mmap(mm);
+                destroy:
+                    __mt_destroy(&mm->mm_mt);
+                    mmap_write_unlock(mm);
+                    vm_unacct_memory(nr_accounted);
+                }
+                mm_put_huge_zero_page(mm);
+                set_mm_exe_file(mm, NULL);
+                if (!list_empty(&mm->mmlist)) {
+                    spin_lock(&mmlist_lock);
+                    list_del(&mm->mmlist);
+                    spin_unlock(&mmlist_lock);
+                }
+                if (mm->binfmt)
+                    module_put(mm->binfmt->module);
+                lru_gen_del_mm(mm);
+
+                mmdrop(mm) {
+
+                }
+            }
+        }
+    }
+
+    if (test_thread_flag(TIF_MEMDIE)) {
+        exit_oom_victim();
+    }
+}
+```
