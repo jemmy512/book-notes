@@ -5417,6 +5417,12 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
 }
 ```
 
+# uclap
+
+![](../Images/Kernel/proc-sched-uclamp.png)
+
+* [dumpstack - uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html)
+
 # load_balance
 
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
@@ -6362,7 +6368,28 @@ update_sd_lb_stats(env, &sds) {
                     if (!child) {
                         update_cpu_capacity(sd, cpu) {
                             /* capacity which only for cfs */
-                            unsigned long capacity = scale_rt_capacity(cpu);
+                            unsigned long capacity = scale_rt_capacity(cpu) {
+                                struct rq *rq = cpu_rq(cpu);
+                                unsigned long max = arch_scale_cpu_capacity(cpu);
+                                unsigned long used, free;
+                                unsigned long irq;
+
+                                irq = cpu_util_irq(rq);
+
+                                if (unlikely(irq >= max))
+                                    return 1;
+
+                                used = READ_ONCE(rq->avg_rt.util_avg);
+                                used += READ_ONCE(rq->avg_dl.util_avg);
+                                used += thermal_load_avg(rq);
+
+                                if (unlikely(used >= max))
+                                    return 1;
+
+                                free = max - used;
+
+                                return scale_irq_capacity(free, irq, max);
+                            }
                             struct sched_group *sdg = sd->groups;
 
                             cpu_rq(cpu)->cpu_capacity_orig = arch_scale_cpu_capacity(cpu);
@@ -6470,7 +6497,7 @@ update_sd_lb_stats(env, &sds) {
 
             sgs->group_capacity = group->sgc->capacity;
 
-            sgs->group_weight = group->group_weight;
+            sgs->group_weight = group->group_weight; /* nr of cpu */
 
             /* Check if dst CPU is idle and preferred to this group */
             if (!local_group && env->sd->flags & SD_ASYM_PACKING
@@ -6483,7 +6510,28 @@ update_sd_lb_stats(env, &sds) {
             if (!local_group && smt_balance(env, sgs, group))
                 sgs->group_smt_balance = 1;
 
-            sgs->group_type = group_classify(env->sd->imbalance_pct, group, sgs);
+            sgs->group_type = group_classify(env->sd->imbalance_pct, group, sgs) {
+                if (group_is_overloaded(imbalance_pct, sgs))
+                    return group_overloaded;
+
+                /* sub-sd failed to reach balance because of affinity */
+                if (sg_imbalanced(group))
+                    return group_imbalanced;
+
+                if (sgs->group_asym_packing)
+                    return group_asym_packing;
+
+                if (sgs->group_smt_balance)
+                    return group_smt_balance;
+
+                if (sgs->group_misfit_task_load)
+                    return group_misfit_task;
+
+                if (!group_has_capacity(imbalance_pct, sgs))
+                    return group_fully_busy;
+
+                return group_has_spare;
+            }
 
             /* Computing avg_load makes sense only when group is overloaded */
             if (sgs->group_type == group_overloaded)
@@ -9021,6 +9069,7 @@ SYSCALL_DEFINE4(wait4, pid_t, upid, int __user *, stat_addr,
                             int retval;
 
                             ptrace = false;
+                            /* only thread leader added into PIDTYPE_TGID */
                             target = pid_task(wo->wo_pid, PIDTYPE_TGID);
                             ret = is_effectively_child(wo, ptrace, target) {
                                 struct task_struct *parent = !ptrace
