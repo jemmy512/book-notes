@@ -2190,6 +2190,10 @@ struct page {
 
 ![](../Images/Kernel/mem-free_area.png)
 
+---
+
+![](../Images/Kernel/mem-alloc_pages.svg)
+
 * [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
     * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) [:two:](https://lwn.net/Articles/591990/)
 
@@ -3355,6 +3359,8 @@ out:
 ```
 
 # free_pages
+
+![](../Images/Kernel/mem-free_pages.svg)
 
 ```c
 void free_the_page(struct page *page, unsigned int order)
