@@ -46,14 +46,15 @@
 
 * [kmem_cache](#kmem_cache)
     * [kmem_cache_create](#kmem_cache_create)
-    * [kmem_cache_alloc](#kmem_cache_alloc)
-    * [kmem_cache_alloc_node](#kmem_cache_alloc_node)
+        * [calculate_sizes](#calculate_sizes)
+    * [kmem_cache_destroy](#kmem_cache_destroy)
 
 * [slab](#slab)
     * [slab_alloc](#slab_alloc)
 * [slub](#slub)
-    * [create_cache](#create_cache)
     * [slub_alloc](#slub_alloc)
+    * [slub_free](#slub_free)
+
 * [kswapd](#kswapd)
 * [brk](#brk)
 * [create_pgd_mapping](#create_pgd_mapping)
@@ -3782,8 +3783,9 @@ kmem_cache_create_usercopy(const char *name,
                 s->flags = kmem_cache_flags(s->size, flags, s->name);
                 s->random = get_random_long();
 
-                if (!calculate_sizes(s))
+                if (!calculate_sizes(s)) {
                     goto error;
+                }
 
                 s->min_partial = min_t(unsigned long, MAX_PARTIAL, ilog2(s->size) / 2);
                 s->min_partial = max_t(unsigned long, MIN_PARTIAL, s->min_partial);
@@ -3793,10 +3795,6 @@ kmem_cache_create_usercopy(const char *name,
                     nr_slabs = DIV_ROUND_UP(nr_objects * 2, oo_objects(s->oo));
                     s->cpu_partial_slabs = nr_slabs;
                 }
-
-            #ifdef CONFIG_NUMA
-                s->remote_node_defrag_ratio = 1000;
-            #endif
 
                 init_cache_random_seq(s);
 
@@ -3808,8 +3806,8 @@ kmem_cache_create_usercopy(const char *name,
                             early_kmem_cache_node_alloc(node);
                             continue;
                         }
-                        n = kmem_cache_alloc_node(kmem_cache_node, GFP_KERNEL, node);
 
+                        n = kmem_cache_alloc_node(kmem_cache_node, GFP_KERNEL, node);
                         init_kmem_cache_node(n) {
                             n->nr_partial = 0;
                             spin_lock_init(&n->list_lock);
@@ -3820,9 +3818,7 @@ kmem_cache_create_usercopy(const char *name,
                 }
 
                 alloc_kmem_cache_cpus(s) {
-                    s->cpu_slab = __alloc_percpu(sizeof(struct kmem_cache_cpu),
-				        2 * sizeof(void *));
-
+                    s->cpu_slab = __alloc_percpu(sizeof(struct kmem_cache_cpu), 2 * sizeof(void *));
                     init_kmem_cache_cpus(s) {
                         for_each_possible_cpu(cpu) {
                             c = per_cpu_ptr(s->cpu_slab, cpu);
@@ -3858,34 +3854,186 @@ out_unlock:
 }
 ```
 
-## kmem_cache_alloc
+### calculate_sizes
 
-![](../Images/Kernel/mem-kmem-cache-alloc.png)
+![](../Images/Kernel/mem-slub-layout.png)
 
 ```c
-void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
-{
-  void *ret = slab_alloc(cachep, flags, _RET_IP_);
+int calculate_sizes(struct kmem_cache *s) {
+    slab_flags_t flags = s->flags;
+    unsigned int size = s->object_size;
+    unsigned int order;
 
-  return ret;
+/* 1. | object_size + ALIGN | */
+    size = ALIGN(size, sizeof(void *));
+
+#ifdef CONFIG_SLUB_DEBUG
+    if ((flags & SLAB_POISON) && !(flags & SLAB_TYPESAFE_BY_RCU) && !s->ctor)
+        s->flags |= __OBJECT_POISON;
+    else
+        s->flags &= ~__OBJECT_POISON;
+
+/* 2. | object_size + ALIGN | RHT_RED_ZONE | */
+    if ((flags & SLAB_RED_ZONE) && size == s->object_size)
+        size += sizeof(void *);
+#endif
+
+    s->inuse = size;
+
+    if (slub_debug_orig_size(s) ||
+        (flags & (SLAB_TYPESAFE_BY_RCU | SLAB_POISON)) ||
+        ((flags & SLAB_RED_ZONE) && s->object_size < sizeof(void *)) || s->ctor) {
+
+/* 3.1 | object_size + ALIGN | RHT_RED_ZONE | free_ptr | */
+        s->offset = size;
+        size += sizeof(void *);
+    } else {
+/* 3.2 | object_size + ALIGN | RED_ZONE | */
+        s->offset = ALIGN_DOWN(s->object_size / 2, sizeof(void *));
+    }
+
+#ifdef CONFIG_SLUB_DEBUG
+    if (flags & SLAB_STORE_USER) {
+/* 4. | object_size + ALIGN | RHT_RED_ZONE | free_ptr | track | track | */
+        size += 2 * sizeof(struct track);
+
+        /* Save the original kmalloc request size */
+        if (flags & SLAB_KMALLOC) {
+            size += sizeof(unsigned int);
+        }
+    }
+#endif
+
+    kasan_cache_create(s, &size, &s->flags);
+#ifdef CONFIG_SLUB_DEBUG
+    if (flags & SLAB_RED_ZONE) {
+/* 5. | LFT_RED_ZONE | object_size + ALIGN | RHT_RED_ZONE | free_ptr | */
+        size += sizeof(void *);
+
+        s->red_left_pad = sizeof(void *);
+        s->red_left_pad = ALIGN(s->red_left_pad, s->align);
+        size += s->red_left_pad;
+    }
+#endif
+
+/* 6. | LFT_RED_ZONE | object_size + ALIGN | RHT_RED_ZONE | free_ptr | ALIGN | */
+    size = ALIGN(size, s->align);
+    s->size = size;
+    s->reciprocal_size = reciprocal_value(size);
+
+    order = calculate_order(size) {
+        unsigned int order;
+        unsigned int min_objects;
+        unsigned int max_objects;
+        unsigned int min_order;
+
+        min_objects = slub_min_objects;
+        if (!min_objects) {
+            unsigned int nr_cpus = num_present_cpus();
+            if (nr_cpus <= 1)
+                nr_cpus = nr_cpu_ids;
+            min_objects = 4 * (fls(nr_cpus) + 1);
+        }
+        /* min_objects can't be 0 because get_order(0) is undefined */
+        max_objects = max(order_objects(slub_max_order, size), 1U);
+        min_objects = min(min_objects, max_objects);
+
+        min_order = max_t(unsigned int, slub_min_order, get_order(min_objects * size));
+        ret = order_objects(min_order, size) {
+            return ((unsigned int)PAGE_SIZE << order) / size;
+        }
+        if (ret > MAX_OBJS_PER_PAGE) {
+            return get_order(size * MAX_OBJS_PER_PAGE) - 1;
+        }
+
+        for (unsigned int fraction = 16; fraction > 1; fraction /= 2) {
+            order = calc_slab_order(size, min_order, slub_max_order, fraction) {
+                unsigned int order;
+
+                for (order = min_order; order <= max_order; order++) {
+                    unsigned int slab_size = (unsigned int)PAGE_SIZE << order;
+                    unsigned int rem;
+
+                    rem = slab_size % size;
+                    if (rem <= slab_size / fract_leftover)
+                        break;
+                }
+
+                return order;
+            }
+
+            if (order <= slub_max_order)
+                return order;
+        }
+
+        order = get_order(size);
+        if (order <= MAX_ORDER)
+            return order;
+        return -ENOSYS;
+    }
+
+    if ((int)order < 0)
+        return 0;
+
+    s->allocflags = 0;
+    if (order)
+        s->allocflags |= __GFP_COMP;
+
+    if (s->flags & SLAB_CACHE_DMA)
+        s->allocflags |= GFP_DMA;
+
+    if (s->flags & SLAB_CACHE_DMA32)
+        s->allocflags |= GFP_DMA32;
+
+    if (s->flags & SLAB_RECLAIM_ACCOUNT)
+        s->allocflags |= __GFP_RECLAIMABLE;
+
+    s->oo = oo_make(order, size);
+    s->min = oo_make(get_order(size), size) {
+        struct kmem_cache_order_objects x = {
+            (order << OO_SHIFT) + order_objects(order, size)
+        };
+        return x;
+    }
+
+    return !!oo_objects(s->oo) {
+        return x.x & OO_MASK;
+    }
 }
 ```
 
-## kmem_cache_alloc_node
+## kmem_cache_destroy
+
 ```c
-static inline struct task_struct *alloc_task_struct_node(int node)
+void kmem_cache_destroy(struct kmem_cache *s)
 {
-  return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
-}
+    int err = -EBUSY;
+    bool rcu_set;
 
-void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t gfp, int node)
-{
-  return slab_alloc_node(cachep, gfp, node);
-}
+    if (unlikely(!s) || !kasan_check_byte(s))
+        return;
 
-static inline void free_task_struct(struct task_struct *tsk)
-{
-  kmem_cache_free(task_struct_cachep, tsk);
+    cpus_read_lock();
+    mutex_lock(&slab_mutex);
+
+    rcu_set = s->flags & SLAB_TYPESAFE_BY_RCU;
+
+    s->refcount--;
+    if (s->refcount)
+        goto out_unlock;
+
+    err = shutdown_cache(s) {
+
+    }
+
+out_unlock:
+    mutex_unlock(&slab_mutex);
+    cpus_read_unlock();
+    if (!err && !rcu_set) {
+        kmem_cache_release(s) {
+
+        }
+    }
 }
 ```
 
@@ -4284,6 +4432,22 @@ __slab_alloc_node(s, gfpflags, node, addr, orig_size) {
 
         return object;
     }
+}
+```
+
+### slab_free
+```c
+void slab_free(struct kmem_cache *s, struct slab *slab,
+                    void *head, void *tail, void **p, int cnt,
+                    unsigned long addr)
+{
+    memcg_slab_free_hook(s, slab, p, cnt);
+    /*
+    * With KASAN enabled slab_free_freelist_hook modifies the freelist
+    * to remove objects, whose reuse must be delayed.
+    */
+    if (slab_free_freelist_hook(s, &head, &tail, &cnt))
+        do_slab_free(s, slab, head, tail, cnt, addr);
 }
 ```
 
