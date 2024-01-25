@@ -3612,599 +3612,138 @@ struct kmem_cache kmem_cache_boot = {
   .aligs  = ARCH_KMALLOC_MINALIGN,
 };
 
-void kmem_cache_init(void)
-{
-  static struct kmem_cache boot_kmem_cache, boot_kmem_cache_node;
-
-  kmem_cache_node = &boot_kmem_cache_node;
-  kmem_cache = &boot_kmem_cache;
-
-  create_boot_cache(kmem_cache_node, "kmem_cache_node",
-    sizeof(struct kmem_cache_node), SLAB_HWCACHE_ALIGN, 0, 0);
-
-  register_hotmemory_notifier(&slab_memory_callback_nb);
-
-  /* Able to allocate the per node structures */
-  slab_state = PARTIAL;
-
-  create_boot_cache(kmem_cache, "kmem_cache",
-      offsetof(struct kmem_cache, node) +
-        nr_node_ids * sizeof(struct kmem_cache_node *),
-      SLAB_HWCACHE_ALIGN, 0, 0
-  );
-
-  kmem_cache = bootstrap(&boot_kmem_cache);
-  kmem_cache_node = bootstrap(&boot_kmem_cache_node);
-
-  /* Now we can use the kmem_cache to allocate kmalloc slabs */
-  setup_kmalloc_cache_index_table();
-  create_kmalloc_caches(0);
-
-  /* Setup random freelists for each cache */
-  init_freelist_randomization();
-
-  cpuhp_setup_state_nocalls(CPUHP_SLUB_DEAD, "slub:dead", NULL,
-          slub_cpu_dead);
-}
 
 struct kmem_cache {
-  /* each NUMA node has one kmem_cache_cpu kmem_cache_node */
-  struct kmem_cache_cpu  *cpu_slab;
-  struct kmem_cache_node *node[MAX_NUMNODES];
+    /* each NUMA node has one kmem_cache_cpu kmem_cache_node */
+    struct kmem_cache_cpu  *cpu_slab;
+    struct kmem_cache_node *node[MAX_NUMNODES];
 
-  /* Used for retriving partial slabs etc */
-  unsigned long flags;
-  unsigned long min_partial;
-  int size;         /* The size of an object including meta data */
-  int object_size;  /* The size of an object without meta data */
-  int offset;       /* Free pointer offset. */
-  int cpu_partial;  /* Number of per cpu partial objects to keep around */
+    /* Used for retriving partial slabs etc */
+    unsigned long flags;
+    unsigned long min_partial;
+    int size;         /* The size of an object including meta data */
+    int object_size;  /* The size of an object without meta data */
+    int offset;       /* Free pointer offset. */
+    int cpu_partial;  /* Number of per cpu partial objects to keep around */
 
-  struct kmem_cache_order_objects oo;
-  /* Allocation and freeing of slabs */
-  struct kmem_cache_order_objects max;
-  struct kmem_cache_order_objects min;
-  gfp_t allocflags;  /* gfp flags to use on each alloc */
-  int refcount;      /* Refcount for slab cache destroy */
-  void (*ctor)(void *);
-  const char *name;       /* Name (only for display!) */
-  struct list_head list;  /* List of slab caches */
+
+    struct kmem_cache_order_objects oo;
+    /* Allocation and freeing of slabs */
+    struct kmem_cache_order_objects max;
+    struct kmem_cache_order_objects min;
+    gfp_t allocflags;  /* gfp flags to use on each alloc */
+    int refcount;      /* Refcount for slab cache destroy */
+    void (*ctor)(void *);
+    const char *name;       /* Name (only for display!) */
+    struct list_head list;  /* List of slab caches */
 };
 
-struct kmem_cache_cpu {
-  void **freelist;      /* Pointer to next available object */
-  struct page *page;    /* The slab from which we are allocating */
-  struct page *partial; /* Partially allocated frozen slabs */
-  unsigned long tid;    /* Globally unique transaction id */
+struct kmem_cache {
+#ifndef CONFIG_SLUB_TINY
+    struct kmem_cache_cpu __percpu *cpu_slab;
+#endif
+    /* Used for retrieving partial slabs, etc. */
+    slab_flags_t flags;
+    unsigned long min_partial;
+    unsigned int size;		/* Object size including metadata */
+    unsigned int object_size;	/* Object size without metadata */
+    struct reciprocal_value reciprocal_size;
+    unsigned int offset;		/* Free pointer offset */
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+    /* Number of per cpu partial objects to keep around */
+    unsigned int cpu_partial;
+    /* Number of per cpu partial slabs to keep around */
+    unsigned int cpu_partial_slabs;
+#endif
+
+    /* high 16 bits store nr of page accomodate slab
+     * low 16 bits store nr of obj in a slab */
+    struct kmem_cache_order_objects oo;
+
+    /* Allocation and freeing of slabs */
+    struct kmem_cache_order_objects min;
+    gfp_t allocflags;		/* gfp flags to use on each alloc */
+    int refcount;			/* Refcount for slab cache destroy */
+    void (*ctor)(void *object);	/* Object constructor */
+    unsigned int inuse;		/* Offset to metadata */
+    unsigned int align;		/* Alignment */
+    unsigned int red_left_pad;	/* Left redzone padding size */
+    const char *name;		/* Name (only for display!) */
+    struct list_head list;		/* List of slab caches */
+
+    struct kmem_cache_node *node[MAX_NUMNODES];
 };
 
 struct kmem_cache_node {
-  unsigned long     nr_partial;
-  struct list_head  partial;
+    spinlock_t          list_lock;
+    unsigned long       nr_partial;
+    struct list_head    partial;
+};
+
+struct kmem_cache_cpu {
+    union {
+        struct {
+            void **freelist;	/* Pointer to next available object */
+            unsigned long tid;	/* Globally unique transaction id */
+        };
+        freelist_aba_t freelist_tid;
+    };
+    struct slab *slab;	/* The slab from which we are allocating */
+
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+    struct slab *partial;	/* Partially allocated frozen slabs */
+#endif
+    local_lock_t lock;	/* Protects the fields above */
 };
 ```
 
+```c
+void kmem_cache_init(void)
+{
+    static struct kmem_cache boot_kmem_cache, boot_kmem_cache_node;
+
+    kmem_cache_node = &boot_kmem_cache_node;
+    kmem_cache = &boot_kmem_cache;
+
+    create_boot_cache(kmem_cache_node, "kmem_cache_node",
+        sizeof(struct kmem_cache_node), SLAB_HWCACHE_ALIGN, 0, 0);
+
+    register_hotmemory_notifier(&slab_memory_callback_nb);
+
+    /* Able to allocate the per node structures */
+    slab_state = PARTIAL;
+
+    create_boot_cache(kmem_cache, "kmem_cache",
+        offsetof(struct kmem_cache, node) +
+            nr_node_ids * sizeof(struct kmem_cache_node *),
+        SLAB_HWCACHE_ALIGN, 0, 0
+    );
+
+    kmem_cache = bootstrap(&boot_kmem_cache);
+    kmem_cache_node = bootstrap(&boot_kmem_cache_node);
+
+    /* Now we can use the kmem_cache to allocate kmalloc slabs */
+    setup_kmalloc_cache_index_table();
+    create_kmalloc_caches(0);
+
+    /* Setup random freelists for each cache */
+    init_freelist_randomization();
+
+    cpuhp_setup_state_nocalls(CPUHP_SLUB_DEAD, "slub:dead", NULL,
+          slub_cpu_dead);
+}
+```
+
 ## kmem_cache_create
-```c
-static struct kmem_cache *task_struct_cachep;
-
-task_struct_cachep = kmem_cache_create("task_struct",
-      arch_task_struct_size, align,
-      SLAB_PANIC|SLAB_NOTRACK|SLAB_ACCOUNT, NULL);
-
-struct kmem_cache *kmem_cache_create(
-  const char *name, unsigned int size, unsigned int align,
-  slab_flags_t flags, void (*ctor)(void *))
-{
-  return kmem_cache_create_usercopy(name, size, align, flags, 0, 0, ctor);
-}
-
-struct kmem_cache *kmem_cache_create_usercopy(
-  const char *name, /* name in /proc/slabinfo to identify this cache */
-  unsigned int size,
-  unsigned int align,
-  slab_flags_t flags,
-  unsigned int useroffset, /* Usercopy region offset */
-  unsigned int usersize,  /* Usercopy region size */
-  void (*ctor)(void *))
-{
-  struct kmem_cache *s = NULL;
-  const char *cache_name;
-  int err;
-
-  get_online_cpus();
-  get_online_mems();
-  memcg_get_cache_ids();
-
-  mutex_lock(&slab_mutex);
-
-  if (!usersize)
-    s = __kmem_cache_alias(name, size, align, flags, ctor);
-  if (s)
-    goto out_unlock;
-
-  cache_name = kstrdup_const(name, GFP_KERNEL);
-
-  s = create_cache(cache_name, size,
-       calculate_alignment(flags, align, size),
-       flags, useroffset, usersize, ctor, NULL, NULL);
-
-out_unlock:
-  mutex_unlock(&slab_mutex);
-
-  memcg_put_cache_ids();
-  put_online_mems();
-  put_online_cpus();
-
-  return s;
-}
-
-static struct kmem_cache *create_cache(
-  const char *name,
-  unsigned int object_size, unsigned int align,
-  slab_flags_t flags, unsigned int useroffset,
-  unsigned int usersize, void (*ctor)(void *),
-  struct mem_cgroup *memcg, struct kmem_cache *root_cache)
-{
-  struct kmem_cache *s;
-  int err;
-
-  /* 1. alloc */
-  /* kmem_cache = &boot_kmem_cache; */
-  s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
-
-  s->name = name;
-  s->size = s->object_size = object_size;
-  s->align = align;
-  s->ctor = ctor;
-  s->useroffset = useroffset;
-  s->usersize = usersize;
-
-  /* 2. init */
-  err = init_memcg_params(s, memcg, root_cache);
-  err = __kmem_cache_create(s, flags);
-
-  /* 3. link */
-  s->refcount = 1;
-  list_add(&s->list, &slab_caches);
-  memcg_link_cache(s);
-
-  return s;
-}
-
-/* 1. alloc */
-static inline void *kmem_cache_zalloc(struct kmem_cache *k, gfp_t flags)
-{
-  return kmem_cache_alloc(k, flags | __GFP_ZERO);
-}
-
-/* 2. init */
-int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
-{
-  int err;
-
-  err = kmem_cache_open(s, flags);
-
-  memcg_propagate_slab_attrs(s);
-  err = sysfs_slab_add(s);
-  if (err)
-    __kmem_cache_release(s);
-
-  return err;
-}
-
-static int kmem_cache_open(struct kmem_cache *s, slab_flags_t flags)
-{
-  if (!calculate_sizes(s, -1))
-    goto error;
-  if (disable_higher_order_debug) {
-    if (get_order(s->size) > get_order(s->object_size)) {
-      s->flags &= ~DEBUG_METADATA_FLAGS;
-      s->offset = 0;
-      if (!calculate_sizes(s, -1))
-        goto error;
-    }
-  }
-
-  set_min_partial(s, ilog2(s->size) / 2);
-  set_cpu_partial(s);
-
-  if (slab_state >= UP) {
-    if (init_cache_random_seq(s))
-      goto error;
-  }
-
-  if (!init_kmem_cache_nodes(s))
-    goto error;
-
-  if (alloc_kmem_cache_cpus(s))
-    return 0;
-}
-
-/* kmem_cache_node */
-static int init_kmem_cache_nodes(struct kmem_cache *s)
-{
-  for_each_node_state(node, N_NORMAL_MEMORY) {
-      struct kmem_cache_node *n;
-
-      if (slab_state == DOWN) {
-          early_kmem_cache_node_alloc(node);
-          continue;
-      }
-      n = kmem_cache_alloc_node(
-        kmem_cache_node, GFP_KERNEL, node);
-
-      if (!n) {
-          free_kmem_cache_nodes(s);
-          return 0;
-      }
-
-      init_kmem_cache_node(n);
-      s->node[node] = n;
-  }
-}
-
-void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t gfp, int node)
-{
-  return slab_alloc_node(cachep, gfp, node);
-}
-
-/* kmem_cache_cpu */
-static inline int alloc_kmem_cache_cpus(struct kmem_cache *s)
-{
-  s->cpu_slab = __alloc_percpu(sizeof(struct kmem_cache_cpu),
-             2 * sizeof(void *));
-
-  init_kmem_cache_cpus(s);
-
-  return 1;
-}
-
-static void init_kmem_cache_cpus(struct kmem_cache *s)
-{
-  int cpu;
-
-  for_each_possible_cpu(cpu)
-    per_cpu_ptr(s->cpu_slab, cpu)->tid = init_tid(cpu);
-}
-
-#define per_cpu_ptr(ptr, cpu) \
-  ((typeof(ptr)) ((char *) (ptr) + PERCPU_OFFSET * cpu))
-```
 
 ```c
-kmem_cache_create();
-    __kmem_cache_alias();
-        find_mergable();
-    create_cache();
-        kmem_cache_zalloc();
-           kmem_cache_alloc();
-
-        __kmem_cache_create();
-            kmem_cache_open();
-                caculate_size();
-                    caculate_order();
-                    oo_make();
-                set_min_partial();
-                set_cpu_partial();
-
-                init_kmem_cache_nodes();
-                    kmem_alloc_cache_node();
-                    init_keme_cache_node();
-                alloc_kmem_cache_cpus();
-                    init_keme_cache_cpu();
-
-        list_add();
-```
-
-## kmem_cache_alloc
-```c
-void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
+struct kmem_cache *
+kmem_cache_create(const char *name, unsigned int size, unsigned int align,
+        slab_flags_t flags, void (*ctor)(void *))
 {
-  void *ret = slab_alloc(cachep, flags, _RET_IP_);
-
-  return ret;
-}
-```
-
-## kmem_cache_alloc_node
-```c
-static inline struct task_struct *alloc_task_struct_node(int node)
-{
-  return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+    return kmem_cache_create_usercopy(name, size, align, flags, 0, 0, ctor);
 }
 
-void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t gfp, int node)
-{
-  return slab_alloc_node(cachep, gfp, node);
-}
-
-static inline void free_task_struct(struct task_struct *tsk)
-{
-  kmem_cache_free(task_struct_cachep, tsk);
-}
-```
-# slab
-## slab_alloc
-
-![](../Images/Kernel/mem-slab-struct.png)
-
-![](../Images/Kernel/mem-kmem-cache-alloc.png)
-
-![](../Images/Kernel/mem-mng.png)
-
-* Reference:
-  * [slaballocators.pdf](https://events.static.linuxfound.org/sites/events/files/slides/slaballocators.pdf)
-  * [Slub allocator](https://www.cnblogs.com/LoyenWang/p/11922887.html)
-
-
-```c
-slab_alloc()
-  slab_alloc_node()
-    c = raw_cpu_ptr(s->cpu_slab);
-    object = c->freelist;
-
-    if (cpu_slab->freelist)   /* ALLOC_FASTPATH */
-      next_object = get_freepointer_safe(s, object);
-      this_cpu_cmpxchg_double(object, next_objext);
-    else                      /* ALLOC_SLOWPATH */
-      __slab_alloc()
-        redo:
-        /* 1. try kmem_cache_cpu freelist */
-
-        new_slab:
-        /* 2. try kmem_cache_cpu partial */
-          if (slub_percpu_partial(c))
-            goto redo
-
-        /* 3. try kmem_cache_node */
-          freelist = new_slab_objects()
-            /* 3.1 try kmem_cache_node partial */
-            get_partial()
-              get_partial_node()
-                list_for_each_entry_safe()
-                  acquire_slab()
-            /* 3.2 alloc_page */
-            new_slab()
-              allocate_slab()
-                alloc_slab_page()
-                  alloc_pages()
-```
-
-```c
-static __always_inline void *slab_alloc(
-  struct kmem_cache *s, gfp_t gfpflags, unsigned long addr)
-{
-  return slab_alloc_node(s, gfpflags, NUMA_NO_NODE, addr);
-}
-
-static void *slab_alloc_node(struct kmem_cache *s,
-    gfp_t gfpflags, int node, unsigned long addr)
-{
-  void *object;
-  struct kmem_cache_cpu *c;
-  struct page *page;
-  unsigned long tid;
-
-  tid = this_cpu_read(s->cpu_slab->tid);
-  c = raw_cpu_ptr(s->cpu_slab);
-
-  object = c->freelist;
-  page = c->page;
-  if (unlikely(!object || !node_match(page, node))) {
-    object = __slab_alloc(s, gfpflags, node, addr, c);
-    stat(s, ALLOC_SLOWPATH);
-  } else {
-    /* update the freelist and tid to new values */
-    void *next_object = get_freepointer_safe(s, object);
-
-    if (unlikely(!this_cpu_cmpxchg_double(
-        s->cpu_slab->freelist, s->cpu_slab->tid,
-        object, tid,
-        next_object, next_tid(tid)))
-    ) {
-      note_cmpxchg_failure("slab_alloc", s, tid);
-      goto redo;
-    }
-
-    prefetch_freepointer(s, next_object);
-    stat(s, ALLOC_FASTPATH);
-  }
-  return object;
-}
-
-static void *__slab_alloc(
-  struct kmem_cache *s, gfp_t gfpflags, int node,
-  unsigned long addr, struct kmem_cache_cpu *c)
-{
-  void *freelist;
-  struct page *page;
-redo:
-  /* 1. try kmem_cache_cpu freelist */
-  freelist = c->freelist;
-  if (freelist)
-    goto load_freelist;
-
-  freelist = get_freelist(s, page);
-  if (!freelist) {
-    c->page = NULL;
-    stat(s, DEACTIVATE_BYPASS);
-    goto new_slab;
-  }
-
-load_freelist:
-  c->freelist = get_freepointer(s, freelist);
-  c->tid = next_tid(c->tid);
-  return freelist;
-
-new_slab:
-  /* 2. try kmem_cache_cpu partial */
-  if (slub_percpu_partial(c)) { /* (c)->partial */
-    page = c->page = slub_percpu_partial(c);
-    slub_set_percpu_partial(c, page); /* slub_percpu_partial(c) = (p)->next; */
-    stat(s, CPU_PARTIAL_ALLOC);
-    goto redo;
-  }
-
-  /* 3. try kmem_cache_node */
-  freelist = new_slab_objects(s, gfpflags, node, &c);
-  return freelist;
-}
-
-static inline void *new_slab_objects(
-  struct kmem_cache *s, gfp_t flags,
-  int node, struct kmem_cache_cpu **pc)
-{
-  void *freelist;
-  struct kmem_cache_cpu *c = *pc;
-  struct page *page;
-
-  /* 3.1. try kmem_cache_node partial */
-  freelist = get_partial(s, flags, node, c); /* -> get_partial_node() */
-  if (freelist)
-    return freelist;
-
-  /* 3.2. alloc_page */
-  page = new_slab(s, flags, node);
-  if (page) {
-    c = raw_cpu_ptr(s->cpu_slab);
-    if (c->page)
-      flush_slab(s, c);
-
-    freelist = page->freelist;
-    page->freelist = NULL;
-
-    stat(s, ALLOC_SLAB);
-    c->page = page;
-    *pc = c;
-  } else
-    freelist = NULL;
-
-  return freelis
-}
-
-/* 3.1. get_partial -> */
-static void *get_partial_node(
-  struct kmem_cache *s, struct kmem_cache_node *n,
-  struct kmem_cache_cpu *c, gfp_t flags)
-{
-  struct page *page, *page2;
-  void *object = NULL;
-  int available = 0;
-  int objects;
-
-  list_for_each_entry_safe(page, page2, &n->partial, lru) {
-    void *t;
-    t = acquire_slab(s, n, page, object == NULL, &objects);
-    if (!t)
-      break;
-
-    available += objects;
-    if (!object) {
-      c->page = page;
-      stat(s, ALLOC_FROM_PARTIAL);
-      object = t;
-    } else {
-      put_cpu_partial(s, page, 0);
-      stat(s, CPU_PARTIAL_NODE);
-    }
-    if (!kmem_cache_has_cpu_partial(s)
-      || available > slub_cpu_partial(s) / 2)
-      break;
-  }
-
-  return object;
-}
-
-static inline void *acquire_slab(struct kmem_cache *s,
-    struct kmem_cache_node *n, struct page *page,
-    int mode, int *objects)
-{
-  void *freelist;
-  unsigned long counters;
-  struct page new;
-
-  freelist = page->freelist;
-  counters = page->counters;
-  new.counters = counters;
-  *objects = new.objects - new.inuse;
-  if (mode) {
-    new.inuse = page->objects;
-    new.freelist = NULL;
-  } else {
-    new.freelist = freelist;
-  }
-
-  new.frozen = 1;
-
-  if (!__cmpxchg_double_slab(s, page,
-      freelist, counters,
-      new.freelist, new.counters,
-      "acquire_slab"))
-    return NULL;
-
-  remove_partial(n, page);
-  return freelist;
-}
-
-/* 3.2. new_slab_objects -> new_slab, no memory in kmem_cache_node */
-static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
-{
-  struct page *page;
-  struct kmem_cache_order_objects oo = s->oo;
-  gfp_t alloc_gfp;
-  void *start, *p;
-  int idx, order;
-  bool shuffle;
-
-  flags &= gfp_allowed_mask;
-
-  page = alloc_slab_page(s, alloc_gfp, node, oo);
-  if (unlikely(!page)) {
-    oo = s->min;
-    alloc_gfp = flags;
-
-    page = alloc_slab_page(s, alloc_gfp, node, oo);
-    if (unlikely(!page))
-      goto out;
-    stat(s, ORDER_FALLBACK);
-  }
-  return page;
-}
-
-static inline struct page *alloc_slab_page(struct kmem_cache *s,
-    gfp_t flags, int node, struct kmem_cache_order_objects oo)
-{
-  struct page *page;
-  unsigned int order = oo_order(oo);
-
-  if (node == NUMA_NO_NODE)
-    page = alloc_pages(flags, order);
-  else
-    page = __alloc_pages_node(node, flags, order);
-
-  if (page && memcg_charge_slab(page, flags, order, s)) {
-    __free_pages(page, order);
-    page = NULL;
-  }
-
-  return page;
-}
-```
-
-# slub
-
-* [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
-    * [The SLUB allocator ](https://lwn.net/Articles/229984/)
-* [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1)    [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2)  [:three: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3)    [:four: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
-* SLUB内存管理 [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
-
-![](../Images/Kernel/mem-slub-structure.png)
-
-
-## create_cache
-
-```c
 struct kmem_cache *
 kmem_cache_create_usercopy(const char *name,
     unsigned int size, unsigned int align,
@@ -4319,7 +3858,117 @@ out_unlock:
 }
 ```
 
+## kmem_cache_alloc
+
+![](../Images/Kernel/mem-kmem-cache-alloc.png)
+
+```c
+void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
+{
+  void *ret = slab_alloc(cachep, flags, _RET_IP_);
+
+  return ret;
+}
+```
+
+## kmem_cache_alloc_node
+```c
+static inline struct task_struct *alloc_task_struct_node(int node)
+{
+  return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+}
+
+void *kmem_cache_alloc_node(struct kmem_cache *cachep, gfp_t gfp, int node)
+{
+  return slab_alloc_node(cachep, gfp, node);
+}
+
+static inline void free_task_struct(struct task_struct *tsk)
+{
+  kmem_cache_free(task_struct_cachep, tsk);
+}
+```
+
+# slub
+
+* [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
+    * [The SLUB allocator ](https://lwn.net/Articles/229984/)
+* [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1)    [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2)  [:three: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3)    [:four: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
+* SLUB内存管理 [:one:](https://zhuanlan.zhihu.com/p/239918912) [:two:](https://zhuanlan.zhihu.com/p/239959275)
+
+* bin 的技术小屋
+    * [80 张图带你一步一步推演 slab 内存池的设计与实现](https://mp.weixin.qq.com/s/yHF5xBm5yMXDAHmE_noeCg)
+    * [从内核源码看 slab 内存池的创建初始化流程](https://mp.weixin.qq.com/s/CcPUAeHY0i2XAVerAWCmLA)
+    * [深入理解 slab cache 内存分配全链路实现](https://mp.weixin.qq.com/s/bNAQmzeBLx2HObSNySmB-Q)
+    * [深度解析 slab 内存池回收内存以及销毁全流程](https://mp.weixin.qq.com/s/dHLqT6KtAPZWzq_SmQZVFA)
+
+![](../Images/Kernel/mem-slub-structure.png)
+
+![](../Images/Kernel/mem-slub-layout.png)
+
+![](../Images/Kernel/mem-mng.png)
+
+
+```c
+/* Reuses the bits in struct page */
+struct slab {
+    unsigned long __page_flags;
+
+    struct kmem_cache *slab_cache;
+    union {
+        struct {
+            union {
+                struct list_head slab_list;
+#ifdef CONFIG_SLUB_CPU_PARTIAL
+                struct {
+                    struct slab *next;
+                    int slabs;	/* Nr of slabs left */
+                };
+#endif
+            };
+            /* Double-word boundary */
+            union {
+                struct {
+                    void *freelist;		/* first free object */
+                    union {
+                        unsigned long counters;
+                        struct {
+                            unsigned inuse:16;
+                            unsigned objects:15;
+                            unsigned frozen:1;
+                        };
+                    };
+                };
+#ifdef system_has_freelist_aba
+                freelist_aba_t freelist_counter;
+#endif
+            };
+        };
+        struct rcu_head rcu_head;
+    };
+    unsigned int __unused;
+
+    atomic_t __page_refcount;
+#ifdef CONFIG_MEMCG
+    unsigned long memcg_data;
+#endif
+};
+
+/* guard the struct slab has same member offset with struct page */
+#define SLAB_MATCH(pg, sl) \
+    static_assert(offsetof(struct page, pg) == offsetof(struct slab, sl))
+
+SLAB_MATCH(flags, __page_flags);
+SLAB_MATCH(compound_head, slab_cache);	/* Ensure bit 0 is clear */
+SLAB_MATCH(_refcount, __page_refcount);
+SLAB_MATCH(memcg_data, memcg_data);
+#undef SLAB_MATCH
+```
+
 ## slub_alloc
+
+![](../Images/Kernel/mem-slab_alloc.png)
+
 ```c
 kmem_cache_alloc(s, flags) {
     __kmem_cache_alloc_lru(s, lru, flags)
@@ -4636,126 +4285,6 @@ __slab_alloc_node(s, gfpflags, node, addr, orig_size) {
         return object;
     }
 }
-```
-
-```c
-/* Reuses the bits in struct page */
-struct slab {
-    unsigned long __page_flags;
-
-#if defined(CONFIG_SLAB)
-
-#elif defined(CONFIG_SLUB)
-
-    struct kmem_cache *slab_cache;
-    union {
-        struct {
-            union {
-                struct list_head slab_list;
-#ifdef CONFIG_SLUB_CPU_PARTIAL
-                struct {
-                    struct slab *next;
-                    int slabs; /* Nr of slabs left */
-                };
-#endif
-            };
-
-            /* Double-word boundary */
-            void *freelist; /* first free object, only used if CONFIG_SLUB_TINY */
-            union {
-                unsigned long counters;
-                struct {
-                    unsigned inuse:16;
-                    unsigned objects:15;
-                    unsigned frozen:1;
-                };
-            };
-        };
-
-        struct rcu_head rcu_head;
-    };
-
-    unsigned int __unused;
-
-#endif
-
-    atomic_t __page_refcount;
-};
-
-/* guard the struct slab has same member offset with struct page */
-#define SLAB_MATCH(pg, sl) \
-    static_assert(offsetof(struct page, pg) == offsetof(struct slab, sl))
-
-SLAB_MATCH(flags, __page_flags);
-SLAB_MATCH(compound_head, slab_cache);	/* Ensure bit 0 is clear */
-SLAB_MATCH(_refcount, __page_refcount);
-SLAB_MATCH(memcg_data, memcg_data);
-#undef SLAB_MATCH
-```
-
-```c
-struct kmem_cache {
-#ifndef CONFIG_SLUB_TINY
-  struct kmem_cache_cpu __percpu *cpu_slab;
-#endif
-
-  /* Used for retrieving partial slabs, etc. */
-  slab_flags_t            flags;
-  unsigned long           min_partial;
-  unsigned int            size;  /* The size of an object including metadata */
-  unsigned int            object_size;/* The size of an object without metadata */
-  struct reciprocal_value reciprocal_size;
-  unsigned int            offset;  /* Free pointer offset */
-
-#ifdef CONFIG_SLUB_CPU_PARTIAL
-  /* Number of per cpu partial objects to keep around */
-  unsigned int cpu_partial;
-  /* Number of per cpu partial slabs to keep around */
-  unsigned int cpu_partial_slabs;
-#endif
-
-  struct kmem_cache_order_objects oo;
-  /* Allocation and freeing of slabs */
-  struct kmem_cache_order_objects min;
-
-  gfp_t             allocflags;  /* gfp flags to use on each alloc */
-  int               refcount; /* Refcount for slab cache destroy */
-  void (*ctor)(void *);
-  unsigned int      inuse;    /* Offset to metadata */
-  unsigned int      align;    /* Alignment */
-  unsigned int      red_left_pad;  /* Left redzone padding size */
-  const char        *name;  /* Name (only for display!) */
-  struct list_head  list;  /* List of slab caches */
-
-  struct kmem_cache_node *node[MAX_NUMNODES];
-};
-
-struct kmem_cache_node {
-#ifdef CONFIG_SLAB
-
-#endif
-
-#ifdef CONFIG_SLUB
-    spinlock_t        list_lock;
-    unsigned long     nr_partial;
-    struct list_head  partial;
-
-#ifdef CONFIG_SLUB_DEBUG
-    atomic_long_t     nr_slabs;
-    atomic_long_t     total_objects;
-    struct list_head full;
-#endif /* CONFIG_SLUB_DEBUG */
-
-#endif /* CONFIG_SLUB */
-};
-
-struct kmem_cache_cpu {
-    void          **freelist;  /* Pointer to next available object */
-    unsigned long tid;  /* Globally unique transaction id */
-    struct slab   *slab;  /* The slab from which we are allocating */
-    struct slab   *partial;  /* Partially allocated frozen slabs */
-    local_lock_t  lock;  /* Protects the fields above */
-};
 ```
 
 # kswapd
@@ -5190,6 +4719,8 @@ __remove_pgd_mapping()
 
 # mmap
 
+* bin 的技术小屋 [原理](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw)   [源码](https://mp.weixin.qq.com/s/BY3OZ6rkYYyQil_webt7Xg)
+
 ```c
 mmap() {
     sys_mmap_pgoff() {
@@ -5478,6 +5009,7 @@ struct address_space {
 
 ---
 
+* [bin 的技术小屋](https://mp.weixin.qq.com/s/zyLSQehjr0zQ5WemjMqluw)
 
 ```c
 /* arm64
@@ -6643,6 +6175,9 @@ unsigned long kernel_physical_mapping_init(
 ```
 
 # kmalloc
+
+* [bin的技术小屋](https://mp.weixin.qq.com/s/atHXeXxx0L63w99RW7bMHg)
+
 ```c
 /* kmalloc is the normal method of allocating memory
  * for objects smaller than page size in the kernel. */
