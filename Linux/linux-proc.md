@@ -5988,6 +5988,9 @@ out:
 ```
 
 ## do_load_balance
+
+![](../Images/Kernel/proc-sched-load_balance.svg)
+
 ```c
 ret = load_balance(cpu, rq, sd, idle, &continue_balancing) {
     int ld_moved, cur_ld_moved, active_balance = 0;
