@@ -60,12 +60,14 @@
 * [create_pgd_mapping](#create_pgd_mapping)
 * [remove_pgd_mapping](#remove_pgd_mapping)
 * [mmap](#mmap)
-* [page fault](#page-fault)
-    * [do_user_addr_fault](#do_user_addr_fault)
-        * [do_anonymous_page](#do_anonymous_page)
-        * [do_fault](#do_fault)
-        * [do_swap_page](#do_swap_page)
-        * [hugetlb_fault](#hugetlb_fault)
+     * [get_unmapped_area](#get_unmapped_area)
+     * [mmap_region](#mmap_region)
+     * [mm_populate](#mm_populate)
+* [page_fault](#page_fault)
+    * [do_anonymous_page](#do_anonymous_page)
+    * [do_fault](#do_fault)
+    * [do_swap_page](#do_swap_page)
+    * [hugetlb_fault](#hugetlb_fault)
 * [munmap](#munmap)
 * [mmu_gather](#mmu_gather)
     * [tlb_gather_mmu](#tlb_gather_mmu)
@@ -83,6 +85,7 @@
 * [page_reclaim](#page_reclaim)
 * [migrate_pages](#migrate_pages)
 * [fork](#fork)
+    * [copy_page_range](#copy_page_range)
 * [cma](#cma)
     * [cma_init_reserved_areas](#cma_init_reserved_areas)
     * [cma_alloc](cma_alloc)
@@ -5260,185 +5263,6 @@ __remove_pgd_mapping()
 
 * bin 的技术小屋 [原理](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw)   [源码](https://mp.weixin.qq.com/s/BY3OZ6rkYYyQil_webt7Xg)
 
-```c
-mmap() {
-    sys_mmap_pgoff() {
-        vm_mmap_pgoff() {
-            do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf) {
-                get_unmapped_area() {
-                    get_area = current->mm->get_unmapped_area;
-                    if (file->f_op->get_unmapped_area) {
-                        get_area = file->f_op->get_unmapped_area {
-                            __thp_get_unmapped_area() {
-                                current->mm->get_unmapped_area();
-                            }
-                        }
-                    } else if (flags & MAP_SHARED) {
-                        get_area = shmem_get_unmapped_area;
-                    }
-                    addr = get_area(file, addr, len, pgoff, flags);
-                }
-
-                map_region() {
-                    if (!may_expand_vm()) {
-                        return -ENOMEM;
-                    }
-
-                    /* Unmap any existing mapping in the area */
-                    do_vmi_munmap(&vmi, mm);
-
-                    vma_merge();
-
-                    struct vm_area_struct *vma = kmem_cache_zalloc();
-
-                    if (file) {
-                        vma->vm_file = get_file(file);
-                        /* 2.1. link the file to vma */
-                        rc = call_mtmap(file, vma) {
-                            file->f_op->mmap(file, vma);
-                            ext4_file_mmap() {
-                                vma->vm_ops = &ext4_file_vm_ops;
-                            }
-                        }
-
-                        if (rc) {
-                            unmap_region()
-                                --->
-                        }
-                    } else if (vm_flags & VM_SHARED) {
-                        shmem_zero_setup(vma);
-                    } else {
-                        vma_set_anonymous(vma); /* vma->vm_ops = NULL; */
-                    }
-                }
-
-                /* 2.2. link the vma to the file */
-                vma_link(mm, vma, prev, rb_link, rb_parent);
-                    vma_interval_tree_insert(vma, &mapping->i_mmap);
-            }
-
-            if (populate) {
-                mm_populate(ret, populate) {
-                    for (nstart = start; nstart < end; nstart = nend) {
-                        vma = find_vma_intersection(mm, nstart, end);
-                        ret = populate_vma_page_range(vma, nstart, nend, &locked) {
-                            __get_user_pages(mm, start, nr_pages, gup_flags, NULL, locked ? locked : &local_locked) {
-                                do {
-                                    struct page *page;
-                                    unsigned int foll_flags = gup_flags;
-                                    unsigned int page_increm;
-
-                                    /* first iteration or cross vma bound */
-                                    if (!vma || start >= vma->vm_end) {
-                                        vma = gup_vma_lookup(mm, start);
-                                        if (!vma && in_gate_area(mm, start)) {
-                                            ret = get_gate_page(mm, start & PAGE_MASK,
-                                                    gup_flags, &vma, pages ? &page : NULL);
-                                            if (ret)
-                                                goto out;
-                                            ctx.page_mask = 0;
-                                            goto next_page;
-                                        }
-
-                                        if (!vma) {
-                                            ret = -EFAULT;
-                                            goto out;
-                                        }
-                                        ret = check_vma_flags(vma, gup_flags);
-                                        if (ret)
-                                            goto out;
-                                    }
-                            retry:
-                                    if (fatal_signal_pending(current)) {
-                                        ret = -EINTR;
-                                        goto out;
-                                    }
-                                    cond_resched();
-
-                                    page = follow_page_mask(vma, start, foll_flags, &ctx);
-                                    if (!page || PTR_ERR(page) == -EMLINK) {
-                                        ret = faultin_page(vma, start, &foll_flags, PTR_ERR(page) == -EMLINK, locked) {
-                                            handle_mm_fault(vma, address, fault_flags, NULL);
-                                                --->
-                                        }
-                                    } else if (PTR_ERR(page) == -EEXIST) {
-                                        if (pages) {
-                                            ret = PTR_ERR(page);
-                                            goto out;
-                                        }
-                                    } else if (IS_ERR(page)) {
-                                        ret = PTR_ERR(page);
-                                        goto out;
-                                    }
-
-                            next_page:
-                                    page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
-                                    if (page_increm > nr_pages)
-                                        page_increm = nr_pages;
-
-                                    if (pages) {
-                                        struct page *subpage;
-                                        unsigned int j;
-
-                                        if (page_increm > 1) {
-                                            struct folio *folio;
-
-                                            folio = try_grab_folio(page, page_increm - 1, foll_flags);
-                                            if (WARN_ON_ONCE(!folio)) {
-                                                gup_put_folio(page_folio(page), 1, foll_flags);
-                                                ret = -EFAULT;
-                                                goto out;
-                                            }
-                                        }
-
-                                        for (j = 0; j < page_increm; j++) {
-                                            subpage = nth_page(page, j);
-                                            pages[i + j] = subpage;
-                                            flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
-                                            flush_dcache_page(subpage);
-                                        }
-                                    }
-
-                                    i += page_increm;
-                                    start += page_increm * PAGE_SIZE;
-                                    nr_pages -= page_increm;
-                                } while (nr_pages);
-                            }
-                        }
-                        if (ret < 0) {
-                            if (ignore_errors) {
-                                ret = 0;
-                                continue; /* continue at next VMA */
-                            }
-                            break;
-                        }
-                        nend = nstart + ret * PAGE_SIZE;
-                        ret = 0;
-                    }
-                }
-            }
-        }
-    }
-}
-
-
-setup_new_exec();
-    arch_pick_mmap_layout();
-        mm->get_unmapped_area = arch_get_unmapped_area;
-        arch_pick_mmap_base();
-            mmap_base();
-
-mm->get_unmapped_area();
-    arch_get_unmapped_area();
-        find_start_end() {
-            *begin = get_mmap_base(1);
-                return mm->mmap_base;
-            *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
-        }
-        vm_unmapped_area();
-            unmapped_area();
-```
-
 ![](../Images/Kernel/mem-mmap-vma-file-page.png)
 
 ```c
@@ -5506,7 +5330,839 @@ struct address_space {
 };
 ```
 
-# page fault
+```c
+mmap() {
+    sys_mmap_pgoff() {
+        vm_mmap_pgoff() {
+            do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf) {
+                get_unmapped_area() {
+                    get_area = current->mm->get_unmapped_area;
+                    if (file->f_op->get_unmapped_area) {
+                        get_area = file->f_op->get_unmapped_area {
+                            __thp_get_unmapped_area() {
+                                current->mm->get_unmapped_area();
+                            }
+                        }
+                    } else if (flags & MAP_SHARED) {
+                        get_area = shmem_get_unmapped_area;
+                    }
+                    addr = get_area(file, addr, len, pgoff, flags); /* arch_get_unmapped_area */
+                }
+
+                map_region() {
+                    if (!may_expand_vm()) {
+                        return -ENOMEM;
+                    }
+
+                    /* Unmap any existing mapping in the area */
+                    do_vmi_munmap(&vmi, mm);
+
+                    vma_merge();
+
+                    struct vm_area_struct *vma = kmem_cache_zalloc();
+
+                    if (file) {
+                        vma->vm_file = get_file(file);
+                        /* 2.1. link the file to vma */
+                        rc = call_mmap(file, vma) {
+                            file->f_op->mmap(file, vma);
+                            ext4_file_mmap() {
+                                vma->vm_ops = &ext4_file_vm_ops;
+                            }
+                        }
+
+                        /* 2.2. link the vma to the file */
+                        vma_interval_tree_insert(vma, &mapping->i_mmap);
+
+                        if (rc) {
+                            unmap_region()
+                                --->
+                        }
+                    } else if (vm_flags & VM_SHARED) {
+                        shmem_zero_setup(vma); /* tmpfs under /dev/zero */
+                    } else {
+                        vma_set_anonymous(vma); /* vma->vm_ops = NULL; */
+                    }
+                }
+            }
+
+            if (populate) {
+                mm_populate(ret, populate);
+            }
+        }
+    }
+}
+
+
+setup_new_exec();
+    arch_pick_mmap_layout();
+        mm->get_unmapped_area = arch_get_unmapped_area;
+        arch_pick_mmap_base();
+            mmap_base();
+
+mm->get_unmapped_area();
+    arch_get_unmapped_area();
+        find_start_end() {
+            *begin = get_mmap_base(1);
+                return mm->mmap_base;
+            *end = task_size_64bit(addr > DEFAULT_MAP_WINDOW);
+        }
+        vm_unmapped_area();
+            unmapped_area();
+```
+
+```c
+SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
+        unsigned long, prot, unsigned long, flags,
+        unsigned long, fd, unsigned long, off)
+{
+    if (offset_in_page(off) != 0)
+        return -EINVAL;
+
+    return ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT) {
+        struct file *file = NULL;
+        unsigned long retval;
+
+        if (!(flags & MAP_ANONYMOUS)) {
+            audit_mmap_fd(fd, flags);
+            file = fget(fd);
+            if (!file)
+                return -EBADF;
+            if (is_file_hugepages(file)) {
+                len = ALIGN(len, huge_page_size(hstate_file(file)));
+            } else if (unlikely(flags & MAP_HUGETLB)) {
+                retval = -EINVAL;
+                goto out_fput;
+            }
+        } else if (flags & MAP_HUGETLB) {
+            struct hstate *hs;
+
+            hs = hstate_sizelog((flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK);
+            if (!hs)
+                return -EINVAL;
+
+            len = ALIGN(len, huge_page_size(hs));
+            file = hugetlb_file_setup(HUGETLB_ANON_FILE, len,
+                    VM_NORESERVE,
+                    HUGETLB_ANONHUGE_INODE,
+                    (flags >> MAP_HUGE_SHIFT) & MAP_HUGE_MASK);
+            if (IS_ERR(file))
+                return PTR_ERR(file);
+        }
+
+        retval = vm_mmap_pgoff(file, addr, len, prot, flags, pgoff) {
+            unsigned long ret;
+            struct mm_struct *mm = current->mm;
+            unsigned long populate;
+            LIST_HEAD(uf);
+
+            ret = security_mmap_file(file, prot, flag);
+            if (!ret) {
+                if (mmap_write_lock_killable(mm))
+                    return -EINTR;
+
+                ret = do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf);
+
+                mmap_write_unlock(mm);
+                userfaultfd_unmap_complete(mm, &uf);
+                if (populate)
+                    mm_populate(ret, populate);
+            }
+            return ret;
+        }
+
+    out_fput:
+        if (file)
+            fput(file);
+        return retval;
+    }
+}
+```
+
+## do_mmap
+
+```c
+ unsigned long do_mmap(struct file *file, unsigned long addr,
+    unsigned long len, unsigned long prot,
+    unsigned long flags, vm_flags_t vm_flags,
+    unsigned long pgoff, unsigned long *populate,
+    struct list_head *uf) {
+
+    struct mm_struct *mm = current->mm;
+    int pkey = 0;
+
+    *populate = 0;
+
+    if (!len)
+        return -EINVAL;
+
+    if ((prot & PROT_READ) && (current->personality & READ_IMPLIES_EXEC))
+        if (!(file && path_noexec(&file->f_path)))
+            prot |= PROT_EXEC;
+
+    /* force arch specific MAP_FIXED handling in get_unmapped_area */
+    if (flags & MAP_FIXED_NOREPLACE)
+        flags |= MAP_FIXED;
+
+    if (!(flags & MAP_FIXED))
+        addr = round_hint_to_min(addr);
+
+    /* Careful about overflows.. */
+    len = PAGE_ALIGN(len);
+    if (!len)
+        return -ENOMEM;
+
+    /* offset overflow? */
+    if ((pgoff + (len >> PAGE_SHIFT)) < pgoff)
+        return -EOVERFLOW;
+
+    /* Too many mappings? */
+    if (mm->map_count > sysctl_max_map_count)
+        return -ENOMEM;
+
+    addr = get_unmapped_area(file, addr, len, pgoff, flags);
+    if (IS_ERR_VALUE(addr))
+        return addr;
+
+    if (flags & MAP_FIXED_NOREPLACE) {
+        if (find_vma_intersection(mm, addr, addr + len))
+            return -EEXIST;
+    }
+
+    if (prot == PROT_EXEC) {
+        pkey = execute_only_pkey(mm);
+        if (pkey < 0)
+            pkey = 0;
+    }
+
+    /* Do simple checking here so the lower-level routines won't have
+    * to. we assume access permissions have been handled by the open
+    * of the memory object, so we don't do any here. */
+    vm_flags |= calc_vm_prot_bits(prot, pkey) | calc_vm_flag_bits(flags) |
+            mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC;
+
+    if (flags & MAP_LOCKED)
+        if (!can_do_mlock())
+            return -EPERM;
+
+    if (!mlock_future_ok(mm, vm_flags, len))
+        return -EAGAIN;
+
+    if (file) {
+        struct inode *inode = file_inode(file);
+        unsigned long flags_mask;
+
+        if (!file_mmap_ok(file, inode, pgoff, len))
+            return -EOVERFLOW;
+
+        flags_mask = LEGACY_MAP_MASK | file->f_op->mmap_supported_flags;
+
+        switch (flags & MAP_TYPE) {
+        case MAP_SHARED:
+            flags &= LEGACY_MAP_MASK;
+            fallthrough;
+        case MAP_SHARED_VALIDATE:
+            if (flags & ~flags_mask)
+                return -EOPNOTSUPP;
+            if (prot & PROT_WRITE) {
+                if (!(file->f_mode & FMODE_WRITE))
+                    return -EACCES;
+                if (IS_SWAPFILE(file->f_mapping->host))
+                    return -ETXTBSY;
+            }
+
+            if (IS_APPEND(inode) && (file->f_mode & FMODE_WRITE))
+                return -EACCES;
+
+            vm_flags |= VM_SHARED | VM_MAYSHARE;
+            if (!(file->f_mode & FMODE_WRITE))
+                vm_flags &= ~(VM_MAYWRITE | VM_SHARED);
+            fallthrough;
+        case MAP_PRIVATE:
+            if (!(file->f_mode & FMODE_READ))
+                return -EACCES;
+            if (path_noexec(&file->f_path)) {
+                if (vm_flags & VM_EXEC)
+                    return -EPERM;
+                vm_flags &= ~VM_MAYEXEC;
+            }
+
+            if (!file->f_op->mmap)
+                return -ENODEV;
+            if (vm_flags & (VM_GROWSDOWN|VM_GROWSUP))
+                return -EINVAL;
+            break;
+
+        default:
+            return -EINVAL;
+        }
+    } else {
+        switch (flags & MAP_TYPE) {
+        case MAP_SHARED:
+            if (vm_flags & (VM_GROWSDOWN|VM_GROWSUP))
+                return -EINVAL;
+            pgoff = 0;
+            vm_flags |= VM_SHARED | VM_MAYSHARE;
+            break;
+        case MAP_PRIVATE:
+            pgoff = addr >> PAGE_SHIFT;
+            break;
+        default:
+            return -EINVAL;
+        }
+    }
+
+    if (flags & MAP_NORESERVE) {
+        /* We honor MAP_NORESERVE if allowed to overcommit */
+        if (sysctl_overcommit_memory != OVERCOMMIT_NEVER)
+            vm_flags |= VM_NORESERVE;
+
+        /* hugetlb applies strict overcommit unless MAP_NORESERVE */
+        if (file && is_file_hugepages(file))
+            vm_flags |= VM_NORESERVE;
+    }
+
+    addr = mmap_region(file, addr, len, vm_flags, pgoff, uf);
+    if (!IS_ERR_VALUE(addr) &&
+        ((vm_flags & VM_LOCKED) ||
+        (flags & (MAP_POPULATE | MAP_NONBLOCK)) == MAP_POPULATE))
+        *populate = len;
+    return addr;
+}
+```
+
+## get_unmapped_area
+
+```c
+unsigned long
+get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
+        unsigned long pgoff, unsigned long flags)
+{
+    unsigned long (*get_area)(struct file *, unsigned long,
+                unsigned long, unsigned long, unsigned long);
+
+    unsigned long error = arch_mmap_check(addr, len, flags);
+    if (error)
+        return error;
+
+    /* Careful about overflows.. */
+    if (len > TASK_SIZE)
+        return -ENOMEM;
+
+    get_area = current->mm->get_unmapped_area;
+    if (file) {
+        if (file->f_op->get_unmapped_area) {
+            get_area = file->f_op->get_unmapped_area;
+        }
+    } else if (flags & MAP_SHARED) {
+        pgoff = 0;
+        get_area = shmem_get_unmapped_area;
+    } else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
+        get_area = thp_get_unmapped_area;
+    }
+
+    addr = get_area(file, addr, len, pgoff, flags) {
+        arch_get_unmapped_area() {
+            return generic_get_unmapped_area(filp, addr, len, pgoff, flags); {
+                struct mm_struct *mm = current->mm;
+                struct vm_area_struct *vma, *prev;
+                struct vm_unmapped_area_info info;
+                const unsigned long mmap_end = arch_get_mmap_end(addr, len, flags) {
+
+                }
+
+                if (len > mmap_end - mmap_min_addr)
+                    return -ENOMEM;
+
+                if (flags & MAP_FIXED)
+                    return addr;
+
+                if (addr) {
+                    addr = PAGE_ALIGN(addr);
+                    vma = find_vma_prev(mm, addr, &prev);
+                    if (mmap_end - len >= addr && addr >= mmap_min_addr &&
+                        (!vma || addr + len <= vm_start_gap(vma)) &&
+                        (!prev || addr >= vm_end_gap(prev)))
+                        return addr;
+                }
+
+                info.flags = 0;
+                info.length = len;
+                info.low_limit = mm->mmap_base;
+                info.high_limit = mmap_end;
+                info.align_mask = 0;
+                info.align_offset = 0;
+                return vm_unmapped_area(&info) {
+                    unsigned long addr;
+
+                    if (info->flags & VM_UNMAPPED_AREA_TOPDOWN) {
+                        addr = unmapped_area_topdown(info);
+                    } else {
+                        addr = unmapped_area(info) {
+                            unsigned long length, gap;
+                            unsigned long low_limit, high_limit;
+                            struct vm_area_struct *tmp;
+
+                            MA_STATE(mas, &current->mm->mm_mt, 0, 0);
+
+                            /* Adjust search length to account for worst case alignment overhead */
+                            length = info->length + info->align_mask;
+                            if (length < info->length)
+                                return -ENOMEM;
+
+                            low_limit = info->low_limit;
+                            if (low_limit < mmap_min_addr)
+                                low_limit = mmap_min_addr;
+                            high_limit = info->high_limit;
+                        retry:
+                            if (mas_empty_area(&mas, low_limit, high_limit - 1, length))
+                                return -ENOMEM;
+
+                            gap = mas.index;
+                            gap += (info->align_offset - gap) & info->align_mask;
+                            tmp = mas_next(&mas, ULONG_MAX);
+                            if (tmp && (tmp->vm_flags & VM_STARTGAP_FLAGS)) { /* Avoid prev check if possible */
+                                if (vm_start_gap(tmp) < gap + length - 1) {
+                                    low_limit = tmp->vm_end;
+                                    mas_reset(&mas);
+                                    goto retry;
+                                }
+                            } else {
+                                tmp = mas_prev(&mas, 0);
+                                if (tmp && vm_end_gap(tmp) > gap) {
+                                    low_limit = vm_end_gap(tmp);
+                                    mas_reset(&mas);
+                                    goto retry;
+                                }
+                            }
+
+                            return gap;
+                        }
+                    }
+
+                    return addr;
+                }
+            }
+        }
+    }
+    if (IS_ERR_VALUE(addr))
+        return addr;
+
+    if (addr > TASK_SIZE - len)
+        return -ENOMEM;
+    if (offset_in_page(addr))
+        return -EINVAL;
+
+    error = security_mmap_addr(addr);
+    return error ? error : addr;
+}
+```
+
+## mmap_region
+
+![](../Images/Kernel/mem-mmap_region.png)
+
+```c
+unsigned long mmap_region(struct file *file, unsigned long addr,
+        unsigned long len, vm_flags_t vm_flags, unsigned long pgoff,
+        struct list_head *uf)
+{
+    struct mm_struct *mm = current->mm;
+    struct vm_area_struct *vma = NULL;
+    struct vm_area_struct *next, *prev, *merge;
+    pgoff_t pglen = len >> PAGE_SHIFT;
+    unsigned long charged = 0;
+    unsigned long end = addr + len;
+    unsigned long merge_start = addr, merge_end = end;
+    bool writable_file_mapping = false;
+    pgoff_t vm_pgoff;
+    int error;
+    VMA_ITERATOR(vmi, mm, addr);
+
+    /* Check against address space limit. */
+    if (!may_expand_vm(mm, vm_flags, len >> PAGE_SHIFT)) {
+        unsigned long nr_pages;
+
+        /* MAP_FIXED may remove pages of mappings that intersects with
+         * requested mapping. Account for the pages it would unmap. */
+        nr_pages = count_vma_pages_range(mm, addr, end);
+
+        if (!may_expand_vm(mm, vm_flags, (len >> PAGE_SHIFT) - nr_pages))
+            return -ENOMEM;
+    }
+
+    /* Unmap any existing mapping in the area */
+    if (do_vmi_munmap(&vmi, mm, addr, len, uf, false))
+        return -ENOMEM;
+
+    /* Private writable mapping: check memory availability */
+    if (accountable_mapping(file, vm_flags)) {
+        charged = len >> PAGE_SHIFT;
+        if (security_vm_enough_memory_mm(mm, charged))
+            return -ENOMEM;
+        vm_flags |= VM_ACCOUNT;
+    }
+
+    next = vma_next(&vmi);
+    prev = vma_prev(&vmi);
+    if (vm_flags & VM_SPECIAL) {
+        if (prev)
+            vma_iter_next_range(&vmi);
+        goto cannot_expand;
+    }
+
+    /* Attempt to expand an old mapping */
+    /* Check next */
+    ret = can_vma_merge_before(next, vm_flags, NULL, file, pgoff+pglen, NULL_VM_UFFD_CTX, NULL);
+    if (next && next->vm_start == end && !vma_policy(next) && ret) {
+        merge_end = next->vm_end;
+        vma = next;
+        vm_pgoff = next->vm_pgoff - pglen;
+    }
+
+    /* Check prev */
+    ret = vma
+        ? can_vma_merge_after(prev, vm_flags, vma->anon_vma, file, pgoff, vma->vm_userfaultfd_ctx, NULL)
+        : can_vma_merge_after(prev, vm_flags, NULL, file, pgoff,
+                    NULL_VM_UFFD_CTX, NULL);
+    if (prev && prev->vm_end == addr && !vma_policy(prev) && (ret)) {
+        merge_start = prev->vm_start;
+        vma = prev;
+        vm_pgoff = prev->vm_pgoff;
+    } else if (prev) {
+        vma_iter_next_range(&vmi);
+    }
+
+    /* Actually expand, if possible */
+    if (vma && !vma_expand(&vmi, vma, merge_start, merge_end, vm_pgoff, next)) {
+        khugepaged_enter_vma(vma, vm_flags);
+        goto expanded;
+    }
+
+    if (vma == prev)
+        vma_iter_set(&vmi, addr);
+
+cannot_expand:
+    vma = vm_area_alloc(mm);
+    if (!vma) {
+        error = -ENOMEM;
+        goto unacct_error;
+    }
+
+    vma_iter_config(&vmi, addr, end);
+    vma->vm_start = addr;
+    vma->vm_end = end;
+    vm_flags_init(vma, vm_flags);
+    vma->vm_page_prot = vm_get_page_prot(vm_flags);
+    vma->vm_pgoff = pgoff;
+
+    if (file) {
+        vma->vm_file = get_file(file);
+        error = call_mmap(file, vma) {
+            return file->f_op->mmap(file, vma) { /* ext4_file_mmap */
+                vma->vm_ops = &ext4_file_vm_ops;
+            }
+        }
+        if (error)
+            goto unmap_and_free_vma;
+
+        if (vma_is_shared_maywrite(vma)) {
+            error = mapping_map_writable(file->f_mapping);
+            if (error)
+                goto close_and_free_vma;
+
+            writable_file_mapping = true;
+        }
+
+        error = -EINVAL;
+        if (WARN_ON((addr != vma->vm_start)))
+            goto close_and_free_vma;
+
+        vma_iter_config(&vmi, addr, end);
+
+        if (unlikely(vm_flags != vma->vm_flags && prev)) {
+            merge = vma_merge_new_vma(&vmi, prev, vma, vma->vm_start, vma->vm_end, vma->vm_pgoff) {
+
+                return vma_merge(vmi, vma->vm_mm, prev, start, end, vma->vm_flags,
+                    vma->anon_vma, vma->vm_file, pgoff, vma_policy(vma),
+                    vma->vm_userfaultfd_ctx, anon_vma_name(vma));
+            }
+            if (merge) {
+                fput(vma->vm_file);
+                vm_area_free(vma);
+                vma = merge;
+                /* Update vm_flags to pick up the change. */
+                vm_flags = vma->vm_flags;
+                goto unmap_writable;
+            }
+        }
+
+        vm_flags = vma->vm_flags;
+    } else if (vm_flags & VM_SHARED) {
+        error = shmem_zero_setup(vma) { /* tmpfs under /dev/zero */
+            struct file *file;
+            loff_t size = vma->vm_end - vma->vm_start;
+
+            file = shmem_kernel_file_setup("dev/zero", size, vma->vm_flags);
+            if (IS_ERR(file))
+                return PTR_ERR(file);
+
+            if (vma->vm_file)
+                fput(vma->vm_file);
+            vma->vm_file = file;
+            vma->vm_ops = &shmem_anon_vm_ops;
+
+            return 0;
+        }
+        if (error)
+            goto free_vma;
+    } else {
+        vma_set_anonymous(vma) {
+            vma->vm_ops = NULL;
+        }
+    }
+
+    if (map_deny_write_exec(vma, vma->vm_flags)) {
+        error = -EACCES;
+        goto close_and_free_vma;
+    }
+
+    /* Allow architectures to sanity-check the vm_flags */
+    error = -EINVAL;
+    if (!arch_validate_flags(vma->vm_flags))
+        goto close_and_free_vma;
+
+    error = -ENOMEM;
+    if (vma_iter_prealloc(&vmi, vma))
+        goto close_and_free_vma;
+
+    /* Lock the VMA since it is modified after insertion into VMA tree */
+    vma_start_write(vma);
+    vma_iter_store(&vmi, vma);
+    mm->map_count++;
+    if (vma->vm_file) {
+        i_mmap_lock_write(vma->vm_file->f_mapping);
+        if (vma_is_shared_maywrite(vma))
+            mapping_allow_writable(vma->vm_file->f_mapping);
+
+        flush_dcache_mmap_lock(vma->vm_file->f_mapping);
+
+        /* insert vma into address_space i_mmap tree */
+        vma_interval_tree_insert(vma, &vma->vm_file->f_mapping->i_mmap);
+        flush_dcache_mmap_unlock(vma->vm_file->f_mapping);
+        i_mmap_unlock_write(vma->vm_file->f_mapping);
+    }
+
+    khugepaged_enter_vma(vma, vma->vm_flags);
+
+    /* Once vma denies write, undo our temporary denial count */
+unmap_writable:
+    if (writable_file_mapping)
+        mapping_unmap_writable(file->f_mapping);
+    file = vma->vm_file;
+    ksm_add_vma(vma);
+expanded:
+    perf_event_mmap(vma);
+
+    vm_stat_account(mm, vm_flags, len >> PAGE_SHIFT);
+    if (vm_flags & VM_LOCKED) {
+        if ((vm_flags & VM_SPECIAL) || vma_is_dax(vma) ||
+                    is_vm_hugetlb_page(vma) ||
+                    vma == get_gate_vma(current->mm))
+            vm_flags_clear(vma, VM_LOCKED_MASK);
+        else
+            mm->locked_vm += (len >> PAGE_SHIFT);
+    }
+
+    if (file)
+        uprobe_mmap(vma);
+
+    /* New (or expanded) vma always get soft dirty status.
+    * Otherwise user-space soft-dirty page tracker won't
+    * be able to distinguish situation when vma area unmapped,
+    * then new mapped in-place (which must be aimed as
+    * a completely new data area). */
+    vm_flags_set(vma, VM_SOFTDIRTY);
+
+    vma_set_page_prot(vma);
+
+    validate_mm(mm);
+    return addr;
+
+close_and_free_vma:
+    if (file && vma->vm_ops && vma->vm_ops->close)
+        vma->vm_ops->close(vma);
+
+    if (file || vma->vm_file) {
+unmap_and_free_vma:
+        fput(vma->vm_file);
+        vma->vm_file = NULL;
+
+        vma_iter_set(&vmi, vma->vm_end);
+        /* Undo any partial mapping done by a device driver. */
+        unmap_region(mm, &vmi.mas, vma, prev, next, vma->vm_start,
+                vma->vm_end, vma->vm_end, true);
+    }
+    if (writable_file_mapping)
+        mapping_unmap_writable(file->f_mapping);
+free_vma:
+    vm_area_free(vma);
+unacct_error:
+    if (charged)
+        vm_unacct_memory(charged);
+    validate_mm(mm);
+    return error;
+}
+```
+
+## mm_populate
+
+```c
+int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
+{
+    struct mm_struct *mm = current->mm;
+    unsigned long end, nstart, nend;
+    struct vm_area_struct *vma = NULL;
+    int locked = 0;
+    long ret = 0;
+
+    end = start + len;
+
+    for (nstart = start; nstart < end; nstart = nend) {
+        if (!locked) {
+            locked = 1;
+            mmap_read_lock(mm);
+            vma = find_vma_intersection(mm, nstart, end);
+        } else if (nstart >= vma->vm_end)
+            vma = find_vma_intersection(mm, vma->vm_end, end);
+
+        if (!vma)
+            break;
+
+        nend = min(end, vma->vm_end);
+        if (vma->vm_flags & (VM_IO | VM_PFNMAP))
+            continue;
+        if (nstart < vma->vm_start)
+            nstart = vma->vm_start;
+
+        ret = populate_vma_page_range(vma, nstart, nend, &locked) {
+            if (vma->vm_flags & VM_LOCKONFAULT)
+                return nr_pages;
+
+            gup_flags = FOLL_TOUCH;
+
+            if ((vma->vm_flags & (VM_WRITE | VM_SHARED)) == VM_WRITE)
+                gup_flags |= FOLL_WRITE;
+
+            if (vma_is_accessible(vma))
+                gup_flags |= FOLL_FORCE;
+
+            if (locked)
+                gup_flags |= FOLL_UNLOCKABLE;
+
+            ret = __get_user_pages(mm, start, nr_pages, gup_flags, NULL, locked ? locked : &local_locked) {
+                do {
+                    struct page *page;
+                    unsigned int foll_flags = gup_flags;
+                    unsigned int page_increm;
+
+                    /* first iteration or cross vma bound */
+                    if (!vma || start >= vma->vm_end) {
+                        vma = gup_vma_lookup(mm, start);
+                        if (!vma && in_gate_area(mm, start)) {
+                            ret = get_gate_page(mm, start & PAGE_MASK,
+                                    gup_flags, &vma, pages ? &page : NULL);
+                            if (ret)
+                                goto out;
+                            ctx.page_mask = 0;
+                            goto next_page;
+                        }
+
+                        if (!vma) {
+                            ret = -EFAULT;
+                            goto out;
+                        }
+                        ret = check_vma_flags(vma, gup_flags);
+                        if (ret)
+                            goto out;
+                    }
+            retry:
+                    if (fatal_signal_pending(current)) {
+                        ret = -EINTR;
+                        goto out;
+                    }
+                    cond_resched();
+
+                    page = follow_page_mask(vma, start, foll_flags, &ctx);
+                    if (!page || PTR_ERR(page) == -EMLINK) {
+                        ret = faultin_page(vma, start, &foll_flags, PTR_ERR(page) == -EMLINK, locked) {
+                            handle_mm_fault(vma, address, fault_flags, NULL);
+                                --->
+                        }
+                    } else if (PTR_ERR(page) == -EEXIST) {
+                        if (pages) {
+                            ret = PTR_ERR(page);
+                            goto out;
+                        }
+                    } else if (IS_ERR(page)) {
+                        ret = PTR_ERR(page);
+                        goto out;
+                    }
+
+            next_page:
+                    page_increm = 1 + (~(start >> PAGE_SHIFT) & ctx.page_mask);
+                    if (page_increm > nr_pages)
+                        page_increm = nr_pages;
+
+                    if (pages) {
+                        struct page *subpage;
+                        unsigned int j;
+
+                        if (page_increm > 1) {
+                            struct folio *folio;
+
+                            folio = try_grab_folio(page, page_increm - 1, foll_flags);
+                            if (WARN_ON_ONCE(!folio)) {
+                                gup_put_folio(page_folio(page), 1, foll_flags);
+                                ret = -EFAULT;
+                                goto out;
+                            }
+                        }
+
+                        for (j = 0; j < page_increm; j++) {
+                            subpage = nth_page(page, j);
+                            pages[i + j] = subpage;
+                            flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
+                            flush_dcache_page(subpage);
+                        }
+                    }
+
+                    i += page_increm;
+                    start += page_increm * PAGE_SIZE;
+                    nr_pages -= page_increm;
+                } while (nr_pages);
+            }
+
+            lru_add_drain();
+            return ret;
+        }
+        if (ret < 0) {
+            if (ignore_errors) {
+                ret = 0;
+                continue;	/* continue at next VMA */
+            }
+            break;
+        }
+        nend = nstart + ret * PAGE_SIZE;
+        ret = 0;
+    }
+    if (locked)
+        mmap_read_unlock(mm);
+    return ret;	/* 0 or negative error code */
+}
+```
+
+# page_fault
 
 ![](../Images/Kernel/mem-page-fault.png)
 
@@ -5550,19 +6206,54 @@ struct address_space {
 
 * [bin 的技术小屋](https://mp.weixin.qq.com/s/zyLSQehjr0zQ5WemjMqluw)
 
+
+```c
+struct file {
+    struct file_operations* f_op;
+    struct address_space*   f_mapping;
+};
+
+/* page cache in memory */
+struct address_space {
+    struct inode          *host;
+    struct xarray         i_pages; /* cached physical pages */
+    struct rw_semaphore   invalidate_lock;
+    gfp_t                 gfp_mask;
+    atomic_t              i_mmap_writable; /* Number of VM_SHARED mappings. */
+    struct rb_root_cached i_mmap; /* Tree of private and shared mappings. vm_area_struct */
+    struct rw_semaphore   i_mmap_rwsem;
+    unsigned long         nrpages;
+    pgoff_t               writeback_index; /* Writeback starts here */
+    const struct address_space_operations *a_ops;
+    unsigned long         flags;
+    errseq_t              wb_err;
+    spinlock_t            private_lock;
+    struct list_head      private_list;
+    void*                 private_data;
+};
+```
+
 ```c
 /* arm64
  * arch/arm64/mm/fault.c */
 static const struct fault_info fault_info[] = {
-    do_translation_fault, SIGSEGV, SEGV_MAPERR, "level 0 translation"
+    { do_translation_fault, SIGSEGV, SEGV_MAPERR,	"level 0 translation fault" },
+    { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 1 translation fault" },
+    { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 2 translation fault" },
+    { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 3 translation fault" },
 };
 
 el1h_64_sync_handler() {
     switch (esr) {
         el1_abort(regs, esr) {
             do_mem_abort() {
-                do_translation_fault() {
+                const struct fault_info *inf = esr_to_fault_info(esr) {
+                    return fault_info + (esr & ESR_ELx_FSC);
+                }
+                inf->fn(far, esr, regs)->do_translation_fault() {
                     do_page_fault() {
+                        vma = lock_vma_under_rcu(mm, addr);
+
                         __do_page_fault() {
                             fault = handle_mm_fault()
                                 --->
@@ -5597,23 +6288,12 @@ el1h_64_sync_handler() {
     }
 }
 
-el0t_64_sync_handler() {
-    switch (ESR_ELx_EC(esr)) {
-    case ESR_ELx_EC_SVC64:
-        el0_svc(regs) {
-
-        }
-    }
-}
-
 
 /* mm/memory.c */
 handle_mm_fault(vma, address, flags, regs);
-
     hugetlb_fault();
 
     __handle_mm_fault() {
-
         pgd = pgd_offset(mm, address)
         p4d = p4d_alloc(pgd)
         if (!p4d)
@@ -5621,6 +6301,7 @@ handle_mm_fault(vma, address, flags, regs);
         pud = pud_alloc(p4d)
         if (!pud)
             return VM_FAULT_OOM;
+    retry_pud:
         pmd = pmd_alloc(pud)
         if (!pmd)
             return VM_FAULT_OOM;
@@ -5657,25 +6338,18 @@ handle_mm_fault(vma, address, flags, regs);
                             do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
                                 __do_fault() {
                                     vma->vm_ops->fault() {
-                                        ext4_filemap_fault() {
-                                            filemap_fault();
-                                                page = find_get_page();
-                                                if (page) {
+                                        ext4_file_vm_ops.fault() {
+                                            filemap_fault() {
+                                                folio = filemap_get_folio(mapping, index);
+                                                if (folio) {
                                                     do_async_mmap_readahead();
                                                 } else if (!page) {
-                                                    do_async_mmap_readahead();
+                                                    do_sync_mmap_readahead();
+                                                    folio = __filemap_get_folio();
                                                 }
 
-                                                page_cache_read();
-                                                    page = __page_cache_alloc();
-                                                    address_space.a_ops.readpage();
-                                                    ext4_read_inline_page();
-                                                        kmap_atomic();
-                                                        ext4_read_inline_data();
-                                                        kumap_atomic();
-                                        }
-                                        shmem_fault() {
-
+                                                vmf->page = folio_file_page(folio, index);
+                                            }
                                         }
                                     }
                                 }
@@ -5689,10 +6363,7 @@ handle_mm_fault(vma, address, flags, regs);
                             do_cow_fault() { /* if (!(vma->vm_flags & VM_SHARED)) */
                                 anon_vma_prepare(vma)
                                 vmf->cow_page = alloc_page_vma()
-                                __do_fault(vmf) {
-                                    /* TODO which fault? */
-                                    vma->vm_ops->fault(vmf)
-                                }
+                                __do_fault(vmf);
 
                                 copy_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma);
                                 finish_fault(vmf);
@@ -5700,7 +6371,9 @@ handle_mm_fault(vma, address, flags, regs);
 
                             /* 2.3 shared fault */
                             do_shared_fault() {
-
+                                __do_fault(vmf);
+                                ext4_page_mkwrite();
+                                fault_dirty_shared_page();
                             }
                         }
                     }
@@ -5714,6 +6387,7 @@ handle_mm_fault(vma, address, flags, regs);
                 }
             }
 
+            /* migrate page from remote node to cur node */
             if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
                 return do_numa_page(vmf) {
 
@@ -5721,27 +6395,35 @@ handle_mm_fault(vma, address, flags, regs);
             }
 
             if (vmf->flags & (FAULT_FLAG_WRITE | FAULT_FLAG_UNSHARE)) {
-                if (!pte_write(entry))
+                if (!pte_write(entry)) {
                     return do_wp_page(vmf) {
                         vmf->page = vm_normal_page()
                         folio = page_folio(vmf->page)
-                        if (folio && folio_test_anon(folio)) {
-                            if (folio_test_ksm(folio) || folio_ref_count(folio) > 3)
-                                goto copy;
-                            if (folio_ref_count(folio) > 1 + folio_test_swapcache(folio))
-                                goto copy;
-                            if (folio_test_ksm(folio) || folio_ref_count(folio) != 1) {
-                                folio_unlock(folio);
-                                goto copy;
-                            }
 
-                            page_move_anon_rmap(vmf->page, vma);
-                    reuse:
-                            wp_page_reuse(vmf);
+                        /* Shared mapping */
+                        if (vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) {
+                            if (!vmf->page)
+                                return wp_pfn_shared(vmf);
+                            return wp_page_shared(vmf, folio) {
+                                do_page_mkwrite();
+                            }
+                        }
+
+                        /* Private mapping */
+                        if (folio && folio_test_anon(folio) &&
+                            (PageAnonExclusive(vmf->page) || wp_can_reuse_anon_folio(folio, vma))) {
+                            if (!PageAnonExclusive(vmf->page))
+                                SetPageAnonExclusive(vmf->page);
+                            if (unlikely(unshare)) {
+                                pte_unmap_unlock(vmf->pte, vmf->ptl);
+                                return 0;
+                            }
+                            wp_page_reuse(vmf, folio) {
+                                maybe_mkwrite(pte_mkdirty(entry), vma);
+                            }
                             return 0;
                         }
 
-                    copy:
                         return wp_page_copy(vmf) {
                             old_folio = page_folio(vmf->page)
                             anon_vma_prepare(vma)
@@ -5753,17 +6435,11 @@ handle_mm_fault(vma, address, flags, regs);
                             entry = mk_pte(&new_folio->page, vma->vm_page_prot);
                             entry = pte_sw_mkyoung(entry);
                             entry = maybe_mkwrite(pte_mkdirty(entry), vma);
-                            folio_add_new_anon_rmap(new_folio, vma, vmf->address);
-                                __page_set_anon_rmap(folio, &folio->page, vma, address, 1);
-                                    --->
-                            folio_add_lru_vma(new_folio, vma);
-                            if (old_folio) {
-                                page_remove_rmap(vmf->page, vma, false);
-                            }
                         }
                     }
-                else if (likely(vmf->flags & FAULT_FLAG_WRITE))
+                } else if (likely(vmf->flags & FAULT_FLAG_WRITE)) {
                     entry = pte_mkdirty(entry);
+                }
             }
 
             update_mmu_tlb(vmf->vma, vmf->address, vmf->pte) {
@@ -5775,44 +6451,6 @@ handle_mm_fault(vma, address, flags, regs);
             }
         }
     }
-```
-
-```c
-/* x86 */
-exc_page_fault();
-    handle_page_fault();
-        do_kern_addr_fault();
-
-        do_user_addr_fault();
-            vma = find_vma(mm, address);
-
-```
-
-```c
-struct file {
-    struct file_operations* f_op;
-    struct address_space*   f_mapping;
-};
-
-/* page cache in memory */
-struct address_space {
-    struct inode          *host;
-    struct xarray         i_pages; /* cached physical pages */
-    struct rw_semaphore   invalidate_lock;
-    gfp_t                 gfp_mask;
-    atomic_t              i_mmap_writable; /* Number of VM_SHARED mappings. */
-    struct rb_root_cached i_mmap; /* Tree of private and shared mappings. vm_area_struct */
-    struct rw_semaphore   i_mmap_rwsem;
-    unsigned long         nrpages;
-    pgoff_t               writeback_index; /* Writeback starts here */
-    const struct address_space_operations *a_ops;
-    unsigned long         flags;
-    errseq_t              wb_err;
-    spinlock_t            private_lock;
-    struct list_head      private_list;
-    void*                 private_data;
-};
-
 ```
 
 # munmap
@@ -7244,6 +7882,320 @@ kernel_clone()
         tsk->mm = mm;
         tsk->active_mm = mm;
     }
+```
+
+## copy_page_range
+
+```c
+int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma)
+{
+    pgd_t *src_pgd, *dst_pgd;
+    unsigned long next;
+    unsigned long addr = src_vma->vm_start;
+    unsigned long end = src_vma->vm_end;
+    struct mm_struct *dst_mm = dst_vma->vm_mm;
+    struct mm_struct *src_mm = src_vma->vm_mm;
+    struct mmu_notifier_range range;
+    bool is_cow;
+    int ret;
+
+    if (!vma_needs_copy(dst_vma, src_vma))
+        return 0;
+
+    if (is_vm_hugetlb_page(src_vma))
+        return copy_hugetlb_page_range(dst_mm, src_mm, dst_vma, src_vma);
+
+    if (unlikely(src_vma->vm_flags & VM_PFNMAP)) {
+        /* We do not free on error cases below as remove_vma
+        * gets called on error from higher level routine */
+        ret = track_pfn_copy(src_vma);
+        if (ret)
+            return ret;
+    }
+
+    /* We need to invalidate the secondary MMU mappings only when
+    * there could be a permission downgrade on the ptes of the
+    * parent mm. And a permission downgrade will only happen if
+    * is_cow_mapping() returns true. */
+    is_cow = is_cow_mapping(src_vma->vm_flags);
+
+    if (is_cow) {
+        mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE,
+                    0, src_mm, addr, end);
+        mmu_notifier_invalidate_range_start(&range);
+        /* Disabling preemption is not needed for the write side, as
+        * the read side doesn't spin, but goes to the mmap_lock.
+        *
+        * Use the raw variant of the seqcount_t write API to avoid
+        * lockdep complaining about preemptibility. */
+        vma_assert_write_locked(src_vma);
+        raw_write_seqcount_begin(&src_mm->write_protect_seq);
+    }
+
+    ret = 0;
+    dst_pgd = pgd_offset(dst_mm, addr);
+    src_pgd = pgd_offset(src_mm, addr);
+    do {
+        next = pgd_addr_end(addr, end);
+        if (pgd_none_or_clear_bad(src_pgd))
+            continue;
+        ret = copy_p4d_range(dst_vma, src_vma, dst_pgd, src_pgd, addr, next) {
+            struct mm_struct *dst_mm = dst_vma->vm_mm;
+            p4d_t *src_p4d, *dst_p4d;
+            unsigned long next;
+
+            dst_p4d = p4d_alloc(dst_mm, dst_pgd, addr);
+            if (!dst_p4d)
+                return -ENOMEM;
+
+            src_p4d = p4d_offset(src_pgd, addr);
+            do {
+                next = p4d_addr_end(addr, end);
+                if (p4d_none_or_clear_bad(src_p4d))
+                    continue;
+                ret = copy_pud_range(dst_vma, src_vma, dst_p4d, src_p4d, addr, next) {
+                    dst_pud = pud_alloc(dst_mm, dst_p4d, addr);
+                    if (!dst_pud)
+                        return -ENOMEM;
+                    src_pud = pud_offset(src_p4d, addr);
+                    do {
+                        next = pud_addr_end(addr, end);
+                        if (pud_trans_huge(*src_pud) || pud_devmap(*src_pud)) {
+                            int err;
+
+                            VM_BUG_ON_VMA(next-addr != HPAGE_PUD_SIZE, src_vma);
+                            err = copy_huge_pud(dst_mm, src_mm,
+                                        dst_pud, src_pud, addr, src_vma);
+                            if (err == -ENOMEM)
+                                return -ENOMEM;
+                            if (!err)
+                                continue;
+                            /* fall through */
+                        }
+                        if (pud_none_or_clear_bad(src_pud))
+                            continue;
+
+                        ret = copy_pmd_range(dst_vma, src_vma, dst_pud, src_pud, addr, next) {
+                            dst_pmd = pmd_alloc(dst_mm, dst_pud, addr);
+                            if (!dst_pmd)
+                                return -ENOMEM;
+                            src_pmd = pmd_offset(src_pud, addr);
+                            do {
+                                next = pmd_addr_end(addr, end);
+                                if (is_swap_pmd(*src_pmd) || pmd_trans_huge(*src_pmd)
+                                    || pmd_devmap(*src_pmd)) {
+                                    int err;
+                                    VM_BUG_ON_VMA(next-addr != HPAGE_PMD_SIZE, src_vma);
+                                    err = copy_huge_pmd(dst_mm, src_mm, dst_pmd, src_pmd,
+                                                addr, dst_vma, src_vma);
+                                    if (err == -ENOMEM)
+                                        return -ENOMEM;
+                                    if (!err)
+                                        continue;
+                                    /* fall through */
+                                }
+                                if (pmd_none_or_clear_bad(src_pmd))
+                                    continue;
+                                if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd,
+                                        addr, next))
+                                    return -ENOMEM;
+                            } while (dst_pmd++, src_pmd++, addr = next, addr != end);
+                            return 0;
+                        }
+                        if (ret)
+                            return -ENOMEM;
+                    } while (dst_pud++, src_pud++, addr = next, addr != end);
+                    return 0;
+                }
+                if (ret)
+                    return -ENOMEM;
+            } while (dst_p4d++, src_p4d++, addr = next, addr != end);
+            return 0;
+        }
+        if (unlikely(ret)) {
+            untrack_pfn_clear(dst_vma);
+            ret = -ENOMEM;
+            break;
+        }
+    } while (dst_pgd++, src_pgd++, addr = next, addr != end);
+
+    if (is_cow) {
+        raw_write_seqcount_end(&src_mm->write_protect_seq);
+        mmu_notifier_invalidate_range_end(&range);
+    }
+    return ret;
+}
+```
+
+```c
+int copy_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+        pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
+        unsigned long end)
+{
+    struct mm_struct *dst_mm = dst_vma->vm_mm;
+    struct mm_struct *src_mm = src_vma->vm_mm;
+    pte_t *orig_src_pte, *orig_dst_pte;
+    pte_t *src_pte, *dst_pte;
+    pte_t ptent;
+    spinlock_t *src_ptl, *dst_ptl;
+    int progress, ret = 0;
+    int rss[NR_MM_COUNTERS];
+    swp_entry_t entry = (swp_entry_t){0};
+    struct folio *prealloc = NULL;
+
+again:
+    progress = 0;
+    init_rss_vec(rss);
+
+    dst_pte = pte_alloc_map_lock(dst_mm, dst_pmd, addr, &dst_ptl);
+    if (!dst_pte) {
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    src_pte = pte_offset_map_nolock(src_mm, src_pmd, addr, &src_ptl);
+    if (!src_pte) {
+        pte_unmap_unlock(dst_pte, dst_ptl);
+        /* ret == 0 */
+        goto out;
+    }
+    spin_lock_nested(src_ptl, SINGLE_DEPTH_NESTING);
+    orig_src_pte = src_pte;
+    orig_dst_pte = dst_pte;
+    arch_enter_lazy_mmu_mode();
+
+    do {
+        if (progress >= 32) {
+            progress = 0;
+            if (need_resched() || spin_needbreak(src_ptl) || spin_needbreak(dst_ptl))
+                break;
+        }
+        ptent = ptep_get(src_pte);
+        if (pte_none(ptent)) {
+            progress++;
+            continue;
+        }
+        if (unlikely(!pte_present(ptent))) {
+            ret = copy_nonpresent_pte(dst_mm, src_mm,
+                dst_pte, src_pte, dst_vma, src_vma, addr, rss);
+            if (ret == -EIO) {
+                entry = pte_to_swp_entry(ptep_get(src_pte));
+                break;
+            } else if (ret == -EBUSY) {
+                break;
+            } else if (!ret) {
+                progress += 8;
+                continue;
+            }
+
+            WARN_ON_ONCE(ret != -ENOENT);
+        }
+
+        /* copy_present_pte() will clear `*prealloc' if consumed */
+        ret = copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
+            addr, rss, &prealloc) {
+
+            page = vm_normal_page(src_vma, addr, pte);
+            if (page)
+                folio = page_folio(page);
+            if (page && folio_test_anon(folio)) {
+                folio_get(folio);
+                if (unlikely(folio_try_dup_anon_rmap_pte(folio, page, src_vma))) {
+                    /* Page may be pinned, we have to copy. */
+                    folio_put(folio);
+                    return copy_present_page(dst_vma, src_vma, dst_pte, src_pte,
+                        addr, rss, prealloc, page) {
+
+                        copy_user_highpage(&new_folio->page, page, addr, src_vma);
+                        __folio_mark_uptodate(new_folio);
+                        folio_add_new_anon_rmap(new_folio, dst_vma, addr);
+                        folio_add_lru_vma(new_folio, dst_vma);
+                        rss[MM_ANONPAGES]++;
+
+                        /* All done, just insert the new page copy in the child */
+                        pte = mk_pte(&new_folio->page, dst_vma->vm_page_prot);
+                        pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
+                        if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
+                            pte = pte_mkuffd_wp(pte);
+                        set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
+                        return 0;
+                    }
+                }
+                rss[MM_ANONPAGES]++;
+            } else if (page) {
+                folio_get(folio);
+                folio_dup_file_rmap_pte(folio, page);
+                rss[mm_counter_file(page)]++;
+            }
+
+            /* If it's a COW mapping, write protect it both
+             * in the parent and the child */
+            if (is_cow_mapping(vm_flags) && pte_write(pte)) {
+                ptep_set_wrprotect(src_mm, addr, src_pte);
+                pte = pte_wrprotect(pte);
+            }
+            VM_BUG_ON(page && folio_test_anon(folio) && PageAnonExclusive(page));
+
+            /* If it's a shared mapping, mark it clean in the child */
+            if (vm_flags & VM_SHARED)
+                pte = pte_mkclean(pte);
+            pte = pte_mkold(pte);
+
+            if (!userfaultfd_wp(dst_vma))
+                pte = pte_clear_uffd_wp(pte);
+
+            set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
+            return 0;
+        }
+
+        /* If we need a pre-allocated page for this pte, drop the
+         * locks, allocate, and try again. */
+        if (unlikely(ret == -EAGAIN))
+            break;
+        if (unlikely(prealloc)) {
+            /* pre-alloc page cannot be reused by next time so as
+            * to strictly follow mempolicy (e.g., alloc_page_vma()
+            * will allocate page according to address).  This
+            * could only happen if one pinned pte changed. */
+            folio_put(prealloc);
+            prealloc = NULL;
+        }
+        progress += 8;
+    } while (dst_pte++, src_pte++, addr += PAGE_SIZE, addr != end);
+
+    arch_leave_lazy_mmu_mode();
+    pte_unmap_unlock(orig_src_pte, src_ptl);
+    add_mm_rss_vec(dst_mm, rss);
+    pte_unmap_unlock(orig_dst_pte, dst_ptl);
+    cond_resched();
+
+    if (ret == -EIO) {
+        VM_WARN_ON_ONCE(!entry.val);
+        if (add_swap_count_continuation(entry, GFP_KERNEL) < 0) {
+            ret = -ENOMEM;
+            goto out;
+        }
+        entry.val = 0;
+    } else if (ret == -EBUSY) {
+        goto out;
+    } else if (ret ==  -EAGAIN) {
+        prealloc = folio_prealloc(src_mm, src_vma, addr, false);
+        if (!prealloc)
+            return -ENOMEM;
+    } else if (ret) {
+        VM_WARN_ON_ONCE(1);
+    }
+
+    /* We've captured and resolved the error. Reset, try again. */
+    ret = 0;
+
+    if (addr != end)
+        goto again;
+out:
+    if (unlikely(prealloc))
+        folio_put(prealloc);
+    return ret;
+}
 ```
 
 # cma
