@@ -5,12 +5,14 @@
     * [arm64_memblock_init](#arm64_memblock_init)
     * [paging_init](#paging_init)
     * [bootmem_init](#bootmem_init)
+
 * [sparsemem](#sparsemem)
     * [sparse_init](#sparse_init)
     * [vmemmap_populate](#vmemmap_populate)
     * [sparse_add_section](#sparse_add_section)
     * [sparse_remove_section](#sparse_remove_section)
 * [mm_core_init](#mm_core_init)
+
 * [memblock](#memblock)
     * [memblock_add](#memblock_add)
     * [memmap_remove](#memmap_remove)
@@ -20,10 +22,12 @@
     * [add_memory](#add_memory)
     * [remove_memory](#remove_memory)
         * [arch_remove_memroy](#arch_remove_memory)
+
 * [segment](#segment)
 * [paging](#paging)
 * [user virtual space](#user-virtual-space)
 * [kernel virtual space](#kernel-virtual-space)
+
 * [numa](#numa)
     * [node](#node)
     * [zone](#zone)
@@ -40,6 +44,7 @@
         * [alloc_pages_direct_compact](#alloc_pages_direct_compact)
         * [alloc_pages_direct_reclaim](#alloc_pages_direct_reclaim)
         * [alloc_pages_may_oom](#alloc_pages_may_oom)
+
 * [free_pages](#free_pages)
     * [free_unref_page](#free_unref_page)
     * [free_one_page](#free_one_page)
@@ -59,22 +64,31 @@
 * [brk](#brk)
 * [create_pgd_mapping](#create_pgd_mapping)
 * [remove_pgd_mapping](#remove_pgd_mapping)
+
 * [mmap](#mmap)
      * [get_unmapped_area](#get_unmapped_area)
      * [mmap_region](#mmap_region)
      * [mm_populate](#mm_populate)
+
 * [page_fault](#page_fault)
     * [do_anonymous_page](#do_anonymous_page)
     * [do_fault](#do_fault)
     * [do_swap_page](#do_swap_page)
     * [hugetlb_fault](#hugetlb_fault)
+
 * [munmap](#munmap)
+
 * [mmu_gather](#mmu_gather)
     * [tlb_gather_mmu](#tlb_gather_mmu)
     * [unmap_vmas](#unmap_vmas)
     * [free_pgtables](#free_pgtables)
     * [tlb_finish_mmu](#tlb_finish_mmu)
+
 * [mremap](#mremap)
+    * [anon_vma_prepare](#anon_vma_prepare)
+    * [anon_vma_fork](#anon_vma_fork)
+    * [try_to_unmap](#try_to_unmap)
+
 * [rmap](#rmap)
 * [kernel mapping](#kernel-mapping)
 * [kmalloc](#kmalloc)
@@ -84,12 +98,16 @@
 * [vmalloc](#vmalloc)
 * [page_reclaim](#page_reclaim)
 * [migrate_pages](#migrate_pages)
+
 * [fork](#fork)
     * [copy_page_range](#copy_page_range)
+
 * [cma](#cma)
     * [cma_init_reserved_areas](#cma_init_reserved_areas)
     * [cma_alloc](cma_alloc)
+
 * [mem_compact](#mem_compact)
+
 * [out_of_memory](#out_of_memory)
     * [oom_reaper](#oom_reaper)
     * [select_bad_process](#select_bad_process)
@@ -5346,10 +5364,20 @@ mmap() {
                     } else if (flags & MAP_SHARED) {
                         get_area = shmem_get_unmapped_area;
                     }
-                    addr = get_area(file, addr, len, pgoff, flags); /* arch_get_unmapped_area */
+                    addr = get_area(file, addr, len, pgoff, flags) { /* arch_get_unmapped_area */
+                        vm_unmapped_area() {
+                            if (info->flags & VM_UNMAPPED_AREA_TOPDOWN)
+                                addr = unmapped_area_topdown(info);
+                            else {
+                                addr = unmapped_area(info) {
+
+                                }
+                            }
+                        }
+                    }
                 }
 
-                map_region() {
+                mmap_region() {
                     if (!may_expand_vm()) {
                         return -ENOMEM;
                     }
@@ -5357,7 +5385,7 @@ mmap() {
                     /* Unmap any existing mapping in the area */
                     do_vmi_munmap(&vmi, mm);
 
-                    vma_merge();
+                    vma_expand();
 
                     struct vm_area_struct *vma = kmem_cache_zalloc();
 
@@ -6323,7 +6351,7 @@ handle_mm_fault(vma, address, flags, regs);
                             mk_pte();
 
                             folio_add_new_anon_rmap(folio, vma, vmf->address);
-                                __page_set_anon_rmap(folio, &folio->page, vma, address, 1);
+                                __folio_set_anon(folio, &folio->page, vma, address, 1);
                                     --->
                             folio_add_lru_vma(folio, vma);
 
@@ -6354,9 +6382,22 @@ handle_mm_fault(vma, address, flags, regs);
                                     }
                                 }
 
-                                finish_fault()
-                                    alloc_set_pte()
-                                    pte_unmap_unlock()
+                                finish_fault() {
+                                    set_pte_range(vmf, folio, page, 1, vmf->address) {
+                                        entry = mk_pte(page, vma->vm_page_prot);
+                                        if (write && !(vma->vm_flags & VM_SHARED)) {
+                                            add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr);
+                                            folio_add_new_anon_rmap(folio, vma, addr);
+                                            folio_add_lru_vma(folio, vma);
+                                        } else {
+                                            add_mm_counter(vma->vm_mm, mm_counter_file(page), nr);
+                                            folio_add_file_rmap_ptes(folio, page, nr, vma);
+                                        }
+                                        set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr);
+
+                                        update_mmu_cache_range(vmf, vma, addr, vmf->pte, nr);
+                                    }
+                                }
                             }
 
                             /* 2.2 cow fault */
@@ -6373,6 +6414,7 @@ handle_mm_fault(vma, address, flags, regs);
                             do_shared_fault() {
                                 __do_fault(vmf);
                                 ext4_page_mkwrite();
+                                finish_fault(vmf);
                                 fault_dirty_shared_page();
                             }
                         }
@@ -6402,8 +6444,11 @@ handle_mm_fault(vma, address, flags, regs);
 
                         /* Shared mapping */
                         if (vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) {
-                            if (!vmf->page)
-                                return wp_pfn_shared(vmf);
+                            if (!vmf->page) {
+                                return wp_pfn_shared(vmf) {
+
+                                }
+                            }
                             return wp_page_shared(vmf, folio) {
                                 do_page_mkwrite();
                             }
@@ -6419,6 +6464,7 @@ handle_mm_fault(vma, address, flags, regs);
                                 return 0;
                             }
                             wp_page_reuse(vmf, folio) {
+                                pte_mkyoung(vmf->orig_pte);
                                 maybe_mkwrite(pte_mkdirty(entry), vma);
                             }
                             return 0;
@@ -6442,13 +6488,9 @@ handle_mm_fault(vma, address, flags, regs);
                 }
             }
 
-            update_mmu_tlb(vmf->vma, vmf->address, vmf->pte) {
+            update_mmu_tlb(vmf->vma, vmf->address, vmf->pte);
 
-            }
-
-            update_mmu_cache(vmf->vma, vmf->address, vmf->pte) {
-
-            }
+            update_mmu_cache(vmf->vma, vmf->address, vmf->pte);
         }
     }
 ```
@@ -6460,7 +6502,12 @@ munmap()
 SYSCALL_DEFINE2(munmap) {
     __vm_munmap(addr, len, true) {
         do_vmi_munmap() {
+            vma = vma_find(vmi, end);
             do_vmi_align_munmap() {
+                if (start > vma->vm_start) {
+                    error = __split_vma(vmi, vma, start, 1);
+                }
+
                 unmap_region() {
                     lru_add_drain();
                     tlb_gather_mmu(&tlb, mm);
@@ -6503,6 +6550,7 @@ SYSCALL_DEFINE2(munmap) {
 struct mmu_gather {
     struct mm_struct        *mm;
 
+    /* gather page table memory */
     struct mmu_table_batch  *batch;
 
     unsigned long        start;
@@ -6523,6 +6571,7 @@ struct mmu_gather {
 
     unsigned int        batch_count;
 
+    /* gather normla memory */
     struct mmu_gather_batch     *active;
     struct mmu_gather_batch     local;
     struct page                 *__pages[MMU_GATHER_BUNDLE];
@@ -6728,12 +6777,35 @@ unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
 ```
 
 ## free_pgtables
+
 ```c
 /* 2 free pg table */
 free_pgtables(&tlb) {
     do {
-        unlink_anon_vmas(vma);
-        unlink_file_vma(vma);
+        unlink_anon_vmas(vma) {
+            list_for_each_entry_safe(avc, next, &vma->anon_vma_chain, same_vma) {
+                struct anon_vma *anon_vma = avc->anon_vma;
+
+                root = lock_anon_vma_root(root, anon_vma);
+                anon_vma_interval_tree_remove(avc, &anon_vma->rb_root);
+                list_del(&avc->same_vma);
+                anon_vma_chain_free(avc) {
+                    kmem_cache_free(anon_vma_chain_cachep);
+                }
+            }
+        }
+
+        unlink_file_vma(vma) {
+            struct file *file = vma->vm_file;
+            if (file) {
+                struct address_space *mapping = file->f_mapping;
+                i_mmap_lock_write(mapping);
+                __remove_shared_vm_struct(vma, file, mapping) {
+                    vma_interval_tree_remove(vma, &mapping->i_mmap);
+                }
+                i_mmap_unlock_write(mapping);
+            }
+        }
 
         free_pgd_range() {
             addr &= PMD_MASK;
@@ -6907,6 +6979,7 @@ tlb_finish_mmu(&tlb) {
 
         tlb_flush_mmu_free(tlb) {
             tlb_table_flush(tlb)  {
+                **batch = &tlb->batch;
                 if (*batch) {
                     tlb_table_invalidate(tlb) {
                         if (tlb_needs_table_invalidate()) {
@@ -6929,12 +7002,29 @@ tlb_finish_mmu(&tlb) {
             }
 
             tlb_batch_pages_flush(tlb) {
-                free_pages_and_swap_cache(pages, nr) {
-                    lru_add_drain();
-                    for (int i = 0; i < nr; i++)
-                        free_swap_cache(encoded_page_ptr(pages[i]));
-                    release_pages(pages, nr);
+                for (batch = &tlb->local; batch && batch->nr; batch = batch->next) {
+                    struct encoded_page **pages = batch->encoded_pages;
+
+                    do {
+                        unsigned int nr = min(512U, batch->nr);
+
+                        free_pages_and_swap_cache(pages, nr) {
+                            lru_add_drain();
+                            for (int i = 0; i < nr; i++) {
+                                free_swap_cache(encoded_page_ptr(pages[i]));
+                            }
+                            release_pages(pages, nr) {
+                                mem_cgroup_uncharge_list(&pages_to_free);
+                                free_unref_page_list(&pages_to_free);
+                            }
+                        }
+                        pages += nr;
+                        batch->nr -= nr;
+
+                        cond_resched();
+                    } while (batch->nr);
                 }
+                tlb->active = &tlb->local;
             }
         }
     }
@@ -6949,6 +7039,7 @@ tlb_finish_mmu(&tlb) {
 ```
 
 # mremap
+
 ```c
 SYSCALL_DEFINE5(mremap) {
     vma = vma_lookup(mm, addr);
@@ -7033,19 +7124,15 @@ out:
 
 # rmap
 
+![](../Images/Kernel/mem-rmap-arch.png)
+
+![](../Images/Kernel/mem-rmap-1.png)
+
 * [wowotech - 逆向映射的演进](http://www.wowotech.net/memory_management/reverse_mapping.html)
 * [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
 * [linux 匿名页反向映射 - 知乎](https://zhuanlan.zhihu.com/p/361173109)
 * https://blog.csdn.net/u010923083/article/details/116456497
 * https://zhuanlan.zhihu.com/p/448713030
-
-
-Q:
-1. Child VMA is linked to parent VA when forking, when to remove it from parent?
-
-![](../Images/Kernel/mem-rmap-arch.png)
-
-![](../Images/Kernel/mem-rmap-1.png)
 
 ```c
 struct vm_area_struct {
@@ -7087,8 +7174,12 @@ struct page {
         }
     }
 };
+```
 
-anon_vma_prepare()
+## anon_vma_prepare
+
+```c
+anon_vma_prepare() {
     if (likely(vma->anon_vma))
         return 0;
 
@@ -7102,9 +7193,10 @@ anon_vma_prepare()
         list_add(&avc->same_vma, &vma->anon_vma_chain);
         anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
     }
+}
 
-page_add_anon_rmap() {
-    __page_set_anon_rmap() {
+folio_add_new_anon_rmap() {
+    __folio_set_anon() {
         struct anon_vma *anon_vma = vma->anon_vma;
         anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
         WRITE_ONCE(folio->mapping, (struct address_space *) anon_vma);
@@ -7119,42 +7211,91 @@ page_add_anon_rmap() {
         }
     }
 }
+
+__folio_add_anon_rmap() {
+    __folio_add_rmap(folio, page, nr_pages, level, &nr_pmdmapped) {
+        switch (level) {
+        case RMAP_LEVEL_PTE:
+            do {
+                first = atomic_inc_and_test(&page->_mapcount);
+            } while (page++, --nr_pages > 0);
+            break;
+
+        case RMAP_LEVEL_PMD:
+            first = atomic_inc_and_test(&folio->_entire_mapcount);
+            break;
+        }
+    }
+}
+
+void __folio_add_file_rmap()
+{
+    nr = __folio_add_rmap(folio, page, nr_pages, level, &nr_pmdmapped);
+}
 ```
+
+## anon_vma_fork
 
 ![](../Images/Kernel/mem-ramp-anon_vma_prepare.png)
 
 ```c
-anon_vma_fork() {
-    anon_vma_clone(vma, pvma) {
+int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
+{
+    struct anon_vma_chain *avc;
+    struct anon_vma *anon_vma;
+    int error;
+
+    /* Don't bother if the parent process has no anon_vma here. */
+    if (!pvma->anon_vma)
+        return 0;
+
+    /* Drop inherited anon_vma, we'll reuse existing or allocate new. */
+    vma->anon_vma = NULL;
+
+    /* 1. attach the new VMA to the parent VMA's anon_vmas,
+     * so rmap can find non-COWed pages in child processes. */
+    error = anon_vma_clone(vma, pvma) {
         list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
             struct anon_vma *anon_vma;
 
             avc = anon_vma_chain_alloc(GFP_NOWAIT | __GFP_NOWARN);
-
             anon_vma = pavc->anon_vma;
             root = lock_anon_vma_root(root, anon_vma);
             anon_vma_chain_link(dst, avc, anon_vma);
-
-            if (!dst->anon_vma && src->anon_vma
-                && anon_vma->num_children < 2
-                && anon_vma->num_active_vmas == 0) {
-
-                dst->anon_vma = anon_vma;
-            }
         }
+        if (dst->anon_vma)
+            dst->anon_vma->num_active_vmas++;
+        return 0;
     }
 
-    anon_vma = anon_vma_alloc()
-    avc = anon_vma_chain_alloc(GFP_KERNEL)
+    /* An existing anon_vma has been reused, all done then. */
+    if (vma->anon_vma)
+        return 0;
+
+    /* 2. Then add our own anon_vma. */
+    anon_vma = anon_vma_alloc();
+    anon_vma->num_active_vmas++;
+    avc = anon_vma_chain_alloc(GFP_KERNEL);
+
     anon_vma->root = pvma->anon_vma->root;
     anon_vma->parent = pvma->anon_vma;
+
+    get_anon_vma(anon_vma->root);
+    /* Mark this anon_vma as the one where our new (COWed) pages go. */
     vma->anon_vma = anon_vma;
+    anon_vma_lock_write(anon_vma);
     anon_vma_chain_link(vma, avc, anon_vma);
     anon_vma->parent->num_children++;
+    anon_vma_unlock_write(anon_vma);
+
+    return 0;
 }
 ```
 
+## try_to_unmap
+
 ![](../Images/Kernel/mem-rmap-try_to_unmap.png)
+
 ```c
 try_to_unmap(struct folio *folio, enum ttu_flags flags) {
     struct rmap_walk_control rwc = {
@@ -7173,20 +7314,14 @@ try_to_unmap(struct folio *folio, enum ttu_flags flags) {
                     struct vm_area_struct *vma = avc->vma;
                     unsigned long address = vma_address(&folio->page, vma);
 
-                    rwc->invalid_vma(vma, rwc->arg) {
-
-                    }
+                    rwc->invalid_vma(vma, rwc->arg);
 
                     ret = rwc->rmap_one(folio, vma, address, rwc->arg) {
-                        try_to_unmap_one() {
-
-                        }
+                        try_to_unmap_one();
                     }
 
                     rwc->done(folio) {
-                        folio_not_mapped() {
-
-                        }
+                        folio_not_mapped();
                     }
                 }
             }
@@ -7207,6 +7342,129 @@ try_to_unmap(struct folio *folio, enum ttu_flags flags) {
             }
         }
     }
+}
+```
+
+```c
+bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
+            unsigned long address, void *arg)
+{
+    struct mm_struct *mm = vma->vm_mm;
+    DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
+    pte_t pteval;
+    struct page *subpage;
+    bool anon_exclusive, ret = true;
+    struct mmu_notifier_range range;
+    enum ttu_flags flags = (enum ttu_flags)(long)arg;
+    unsigned long pfn;
+    unsigned long hsz = 0;
+
+    /* check if @pvmw->pfn is mapped in @pvmw->vma at @pvmw->address */
+    while (page_vma_mapped_walk(&pvmw)) {
+        pfn = pte_pfn(ptep_get(pvmw.pte));
+        subpage = folio_page(folio, pfn - folio_pfn(folio));
+        address = pvmw.address;
+        anon_exclusive = folio_test_anon(folio) &&
+                PageAnonExclusive(subpage);
+
+        if (should_defer_flush(mm, flags)) {
+            pteval = ptep_get_and_clear(mm, address, pvmw.pte);
+            set_tlb_ubc_flush_pending(mm, pteval, address);
+        } else {
+            pteval = ptep_clear_flush(vma, address, pvmw.pte);
+        }
+
+        /* Set the dirty flag on the folio now the pte is gone. */
+        if (pte_dirty(pteval))
+            folio_mark_dirty(folio);
+
+        /* Update high watermark before we lower rss */
+        update_hiwater_rss(mm);
+
+        if (folio_test_anon(folio)) {
+            swp_entry_t entry = page_swap_entry(subpage);
+            pte_t swp_pte;
+
+
+            /* MADV_FREE page check */
+            if (!folio_test_swapbacked(folio)) {
+                int ref_count, map_count;
+                smp_mb();
+
+                ref_count = folio_ref_count(folio);
+                map_count = folio_mapcount(folio);
+
+                smp_rmb();
+
+                if (ref_count == 1 + map_count && !folio_test_dirty(folio)) {
+                    dec_mm_counter(mm, MM_ANONPAGES);
+                    goto discard;
+                }
+
+                set_pte_at(mm, address, pvmw.pte, pteval);
+                folio_set_swapbacked(folio);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+
+            if (swap_duplicate(entry) < 0) {
+                set_pte_at(mm, address, pvmw.pte, pteval);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+            if (arch_unmap_one(mm, vma, address, pteval) < 0) {
+                swap_free(entry);
+                set_pte_at(mm, address, pvmw.pte, pteval);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+
+            /* See folio_try_share_anon_rmap(): clear PTE first. */
+            if (anon_exclusive && folio_try_share_anon_rmap_pte(folio, subpage)) {
+                swap_free(entry);
+                set_pte_at(mm, address, pvmw.pte, pteval);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+            if (list_empty(&mm->mmlist)) {
+                spin_lock(&mmlist_lock);
+                if (list_empty(&mm->mmlist))
+                    list_add(&mm->mmlist, &init_mm.mmlist);
+                spin_unlock(&mmlist_lock);
+            }
+            dec_mm_counter(mm, MM_ANONPAGES);
+            inc_mm_counter(mm, MM_SWAPENTS);
+            swp_pte = swp_entry_to_pte(entry);
+            if (anon_exclusive)
+                swp_pte = pte_swp_mkexclusive(swp_pte);
+            if (pte_soft_dirty(pteval))
+                swp_pte = pte_swp_mksoft_dirty(swp_pte);
+            if (pte_uffd_wp(pteval))
+                swp_pte = pte_swp_mkuffd_wp(swp_pte);
+            set_pte_at(mm, address, pvmw.pte, swp_pte);
+        } else {
+            dec_mm_counter(mm, mm_counter_file(&folio->page));
+        }
+discard:
+        if (unlikely(folio_test_hugetlb(folio)))
+            hugetlb_remove_rmap(folio);
+        else {
+            folio_remove_rmap_pte(folio, subpage, vma) {
+                atomic_add_negative(-1, &page->_mapcount);
+            }
+        }
+        if (vma->vm_flags & VM_LOCKED)
+            mlock_drain_local();
+        folio_put(folio);
+    }
+
+    mmu_notifier_invalidate_range_end(&range);
+
+    return ret;
 }
 ```
 
@@ -7806,7 +8064,9 @@ kernel_clone()
                     mm->exec_vm = oldmm->exec_vm;
                     mm->stack_vm = oldmm->stack_vm;
 
-                    for_each_vma(old_vmi, mpnt) {
+                    __mt_dup(&oldmm->mm_mt, &mm->mm_mt, GFP_KERNEL);
+
+                    for_each_vma(vmi, mpnt) {
                         struct file *file;
 
                         if (mpnt->vm_flags & VM_DONTCOPY) {
@@ -7824,7 +8084,10 @@ kernel_clone()
                             charge = len;
                         }
 
-                        tmp = vm_area_dup(mpnt);
+                        tmp = vm_area_dup(mpnt) {
+                            new = kmem_cache_alloc(vm_area_cachep, GFP_KERNEL);
+                            memcpy(new, orig, sizeof(*new));
+                        }
 
                         retval = vma_dup_policy(mpnt, tmp);
 
@@ -7847,16 +8110,16 @@ kernel_clone()
                         if (file) {
                             struct address_space *mapping = file->f_mapping;
 
-                            get_file(file);
-                            i_mmap_lock_write(mapping);
-                            if (tmp->vm_flags & VM_SHARED)
-                                mapping_allow_writable(mapping);
+                            if (tmp->vm_flags & VM_SHARED) {
+                                mapping_allow_writable(mapping) {
+                                    atomic_inc(&mapping->i_mmap_writable);
+                                }
+                            }
 
                             flush_dcache_mmap_lock(mapping);
                             /* insert tmp into the share list, just after mpnt */
                             vma_interval_tree_insert_after(tmp, mpnt, &mapping->i_mmap);
                             flush_dcache_mmap_unlock(mapping);
-                            i_mmap_unlock_write(mapping);
                         }
 
                         /* Link the vma into the MT */
@@ -7875,6 +8138,8 @@ kernel_clone()
                     }
                     /* a new mm has just been created */
                     retval = arch_dup_mmap(oldmm, mm);
+
+                    flush_tlb_mm(oldmm);
                 }
             }
         }
@@ -7899,25 +8164,30 @@ int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_v
     bool is_cow;
     int ret;
 
-    if (!vma_needs_copy(dst_vma, src_vma))
+    ret = vma_needs_copy(dst_vma, src_vma) {
+        if (userfaultfd_wp(dst_vma))
+            return true;
+        if (src_vma->vm_flags & (VM_PFNMAP | VM_MIXEDMAP))
+            return true;
+        if (src_vma->anon_vma)
+            return true;
+        return false;
+    }
+    if (!ret)
         return 0;
 
     if (is_vm_hugetlb_page(src_vma))
         return copy_hugetlb_page_range(dst_mm, src_mm, dst_vma, src_vma);
 
     if (unlikely(src_vma->vm_flags & VM_PFNMAP)) {
-        /* We do not free on error cases below as remove_vma
-        * gets called on error from higher level routine */
         ret = track_pfn_copy(src_vma);
         if (ret)
             return ret;
     }
 
-    /* We need to invalidate the secondary MMU mappings only when
-    * there could be a permission downgrade on the ptes of the
-    * parent mm. And a permission downgrade will only happen if
-    * is_cow_mapping() returns true. */
-    is_cow = is_cow_mapping(src_vma->vm_flags);
+    is_cow = is_cow_mapping(src_vma->vm_flags) {
+        return (flags & (VM_SHARED | VM_MAYWRITE)) == VM_MAYWRITE;
+    }
 
     if (is_cow) {
         mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE,
@@ -7960,18 +8230,6 @@ int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_v
                     src_pud = pud_offset(src_p4d, addr);
                     do {
                         next = pud_addr_end(addr, end);
-                        if (pud_trans_huge(*src_pud) || pud_devmap(*src_pud)) {
-                            int err;
-
-                            VM_BUG_ON_VMA(next-addr != HPAGE_PUD_SIZE, src_vma);
-                            err = copy_huge_pud(dst_mm, src_mm,
-                                        dst_pud, src_pud, addr, src_vma);
-                            if (err == -ENOMEM)
-                                return -ENOMEM;
-                            if (!err)
-                                continue;
-                            /* fall through */
-                        }
                         if (pud_none_or_clear_bad(src_pud))
                             continue;
 
@@ -7982,22 +8240,9 @@ int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_v
                             src_pmd = pmd_offset(src_pud, addr);
                             do {
                                 next = pmd_addr_end(addr, end);
-                                if (is_swap_pmd(*src_pmd) || pmd_trans_huge(*src_pmd)
-                                    || pmd_devmap(*src_pmd)) {
-                                    int err;
-                                    VM_BUG_ON_VMA(next-addr != HPAGE_PMD_SIZE, src_vma);
-                                    err = copy_huge_pmd(dst_mm, src_mm, dst_pmd, src_pmd,
-                                                addr, dst_vma, src_vma);
-                                    if (err == -ENOMEM)
-                                        return -ENOMEM;
-                                    if (!err)
-                                        continue;
-                                    /* fall through */
-                                }
                                 if (pmd_none_or_clear_bad(src_pmd))
                                     continue;
-                                if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd,
-                                        addr, next))
+                                if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd, addr, next))
                                     return -ENOMEM;
                             } while (dst_pmd++, src_pmd++, addr = next, addr != end);
                             return 0;
@@ -8153,10 +8398,6 @@ again:
         if (unlikely(ret == -EAGAIN))
             break;
         if (unlikely(prealloc)) {
-            /* pre-alloc page cannot be reused by next time so as
-            * to strictly follow mempolicy (e.g., alloc_page_vma()
-            * will allocate page according to address).  This
-            * could only happen if one pinned pte changed. */
             folio_put(prealloc);
             prealloc = NULL;
         }
