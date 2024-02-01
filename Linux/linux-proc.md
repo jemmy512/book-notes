@@ -95,7 +95,10 @@
 * [wait4](#wait4)
     * [wait_consider_task](#wait_consider_task)
     * [wait_task_zombie](#wait_task_zombie)
+
 * [exec](#exec)
+    * [load_elf_binary](#load_elf_binary)
+
 * [kthreadd](#kthreadd)
 
 * [cmwq](#cmwq)
@@ -7708,6 +7711,35 @@ static struct linux_binfmt elf_format = {
     .core_dump      = elf_core_dump,
     .min_coredump   = ELF_EXEC_PAGESIZE,
 };
+
+struct linux_binprm {
+    struct vm_area_struct   *vma;
+    unsigned long           vma_pages;
+
+    struct mm_struct        *mm;
+    unsigned long           p; /* sp pointer */
+    unsigned long           argmin; /* rlimit marker for copy_strings() */
+    struct file *executable; /* Executable to pass to the interpreter */
+    struct file *interpreter;
+    struct file *file;
+    struct cred *cred;	/* new credentials */
+    int unsafe;		/* how unsafe this exec is (mask of LSM_UNSAFE_*) */
+    unsigned int per_clear;	/* bits to clear in current->personality */
+    int argc, envc;
+    const char *filename;	/* Name of binary as seen by procps */
+    const char *interp;	/* Name of the binary really executed. Most
+                of the time same as filename, but could be
+                different for binfmt_{misc,script} */
+    const char *fdpath;	/* generated filename for execveat */
+    unsigned interp_flags;
+    int execfd;		/* File descriptor of the executable */
+    unsigned long loader; /* loader filename */
+    unsigned long exec; /* filename of program */
+
+    struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
+
+    char buf[BINPRM_BUF_SIZE];
+}
 ```
 
 ```c
@@ -7734,6 +7766,7 @@ SYSCALL_DEFINE3(execve,
                 bprm->interp = bprm->filename;
                 bprm_mm_init(bprm) {
                     bprm->mm = mm = mm_alloc();
+                    bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
 
                     __bprm_mm_init(bprm) {
                         bprm->vma = vma = vm_area_alloc(mm);
@@ -7755,8 +7788,6 @@ SYSCALL_DEFINE3(execve,
                 limit = _STK_LIM / 4 * 3;
 	            limit = min(limit, bprm->rlim_stack.rlim_cur / 4);
                 ptr_size = (max(bprm->argc, 1) + bprm->envc) * sizeof(void *);
-                if (limit <= ptr_size)
-                    return -E2BIG;
                 limit -= ptr_size;
                 bprm->argmin = bprm->p - limit;
             }
@@ -7969,26 +8000,6 @@ out_free_interp:
         goto out_free_ph;
     }
 
-    elf_ppnt = elf_phdata;
-    for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
-        switch (elf_ppnt->p_type) {
-        case PT_GNU_STACK:
-            if (elf_ppnt->p_flags & PF_X)
-                executable_stack = EXSTACK_ENABLE_X;
-            else
-                executable_stack = EXSTACK_DISABLE_X;
-            break;
-
-        case PT_LOPROC ... PT_HIPROC:
-            retval = arch_elf_pt_proc(elf_ex, elf_ppnt,
-                        bprm->file, false,
-                        &arch_state);
-            if (retval)
-                goto out_free_dentry;
-            break;
-        }
-    }
-
     /* Some simple consistency checks for the interpreter */
     if (interpreter) {
         retval = -ELIBBAD;
@@ -8002,39 +8013,9 @@ out_free_interp:
 
         /* Load the interpreter program headers */
         interp_elf_phdata = load_elf_phdrs(interp_elf_ex, interpreter);
-        if (!interp_elf_phdata)
-            goto out_free_dentry;
-
-        /* Pass PT_LOPROC..PT_HIPROC headers to arch code */
-        elf_property_phdata = NULL;
-        elf_ppnt = interp_elf_phdata;
-        for (i = 0; i < interp_elf_ex->e_phnum; i++, elf_ppnt++)
-            switch (elf_ppnt->p_type) {
-            case PT_GNU_PROPERTY:
-                elf_property_phdata = elf_ppnt;
-                break;
-
-            case PT_LOPROC ... PT_HIPROC:
-                retval = arch_elf_pt_proc(interp_elf_ex,
-                            elf_ppnt, interpreter,
-                            true, &arch_state);
-                if (retval)
-                    goto out_free_dentry;
-                break;
-            }
     }
 
-    retval = parse_elf_properties(interpreter ?: bprm->file,
-                    elf_property_phdata, &arch_state);
-    if (retval)
-        goto out_free_dentry;
-
-    /* Allow arch code to reject the ELF at this point, whilst it's
-    * still possible to return an error to the code that invoked
-    * the exec syscall. */
-    retval = arch_check_elf(elf_ex, !!interpreter, interp_elf_ex, &arch_state);
-    if (retval)
-        goto out_free_dentry;
+    retval = parse_elf_properties(interpreter ?: bprm->file, elf_property_phdata, &arch_state);
 
     /* Flush all traces of the currently running executable */
     retval = begin_new_exec(bprm) {
@@ -8068,7 +8049,10 @@ out_free_interp:
         }
 
         setup_new_exec(bprm) {
-
+            arch_pick_mmap_layout() {
+                mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
+                mm->get_unmapped_area = arch_get_unmapped_area;
+            }
         }
     }
 
@@ -8089,6 +8073,9 @@ out_free_interp:
         ret = mprotect_fixup(&vmi, &tlb, vma, &prev, vma->vm_start, vma->vm_end,
                 vm_flags);
         tlb_finish_mmu(&tlb);
+
+        /* shift tmp stack to its final location */
+        shift_arg_pages(vma, stack_shift);
 
         stack_expand = 131072UL; /* randomly 32*4k (or 2*64k) pages */
         stack_size = vma->vm_end - vma->vm_start;
@@ -8123,8 +8110,7 @@ out_free_interp:
         if (elf_ppnt->p_type != PT_LOAD)
             continue;
 
-        elf_prot = make_prot(elf_ppnt->p_flags, &arch_state,
-                    !!interpreter, false);
+        elf_prot = make_prot(elf_ppnt->p_flags, &arch_state, !!interpreter, false);
 
         elf_flags = MAP_PRIVATE;
 
@@ -8136,7 +8122,7 @@ out_free_interp:
             elf_flags |= MAP_FIXED_NOREPLACE;
         } else if (elf_ex->e_type == ET_DYN) {
             if (interpreter) {
-                load_bias = ELF_ET_DYN_BASE; /* (2 * DEFAULT_MAP_WINDOW_64 / 3) */
+                load_bias = ELF_ET_DYN_BASE; /* (2 * TASK_SIZE_64 / 3) */
                 if (current->flags & PF_RANDOMIZE) {
                     load_bias += arch_mmap_rnd();
                 }
@@ -8169,18 +8155,15 @@ out_free_interp:
                 if (BAD_ADDR(map_addr))
                     return map_addr;
                 if (eppnt->p_memsz > eppnt->p_filesz) {
-                    zero_start = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) +
-                        eppnt->p_filesz;
-                    zero_end = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) +
-                        eppnt->p_memsz;
+                    zero_start = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_filesz;
+                    zero_end = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
 
                     if (padzero(zero_start) && (prot & PROT_WRITE))
                         return -EFAULT;
                 }
             } else {
                 map_addr = zero_start = ELF_PAGESTART(addr);
-                zero_end = zero_start + ELF_PAGEOFFSET(eppnt->p_vaddr) +
-                    eppnt->p_memsz;
+                zero_end = zero_start + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
             }
             if (eppnt->p_memsz > eppnt->p_filesz) {
                 int error;
@@ -8188,8 +8171,7 @@ out_free_interp:
                 zero_start = ELF_PAGEALIGN(zero_start);
                 zero_end = ELF_PAGEALIGN(zero_end);
 
-                error = vm_brk_flags(zero_start, zero_end - zero_start,
-                            prot & PROT_EXEC ? VM_EXEC : 0);
+                error = vm_brk_flags(zero_start, zero_end - zero_start, prot & PROT_EXEC ? VM_EXEC : 0);
                 if (error)
                     map_addr = error;
             }
@@ -8208,8 +8190,7 @@ out_free_interp:
          * Header table, and map to the associated memory address. */
         if (elf_ppnt->p_offset <= elf_ex->e_phoff &&
             elf_ex->e_phoff < elf_ppnt->p_offset + elf_ppnt->p_filesz) {
-            phdr_addr = elf_ex->e_phoff - elf_ppnt->p_offset +
-                    elf_ppnt->p_vaddr;
+            phdr_addr = elf_ex->e_phoff - elf_ppnt->p_offset + elf_ppnt->p_vaddr;
         }
 
         k = elf_ppnt->p_vaddr;
@@ -8218,9 +8199,6 @@ out_free_interp:
         if (start_data < k)
             start_data = k;
 
-        /* Check to see if the section's size will overflow the
-         * allowed task size. Note that p_filesz must always be
-         * <= p_memsz so it is only necessary to check p_memsz. */
         if (BAD_ADDR(k) || elf_ppnt->p_filesz > elf_ppnt->p_memsz ||
             elf_ppnt->p_memsz > TASK_SIZE ||
             TASK_SIZE - elf_ppnt->p_memsz < k) {
@@ -8236,7 +8214,7 @@ out_free_interp:
         if (end_data < k)
             end_data = k;
         k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;
-        if (k > elf_brk)
+        if (elf_brk < k)
             elf_brk = k;
     }
 
@@ -8252,11 +8230,9 @@ out_free_interp:
 
     if (interpreter) {
         elf_entry = load_elf_interp(interp_elf_ex,
-                        interpreter,
-                        load_bias, interp_elf_phdata,
-                        &arch_state);
+            interpreter, load_bias, interp_elf_phdata, &arch_state
+        );
         if (!IS_ERR_VALUE(elf_entry)) {
-            /* load_elf_interp() returns relocation adjustment */
             interp_load_addr = elf_entry;
             elf_entry += interp_elf_ex->e_entry;
         }
@@ -8273,8 +8249,7 @@ out_free_interp:
         mm->binfmt = new;
     }
 
-    retval = create_elf_tables(bprm, elf_ex, interp_load_addr,
-                e_entry, phdr_addr) {
+    retval = create_elf_tables(bprm, elf_ex, interp_load_addr, e_entry, phdr_addr) {
         items = (argc + 1) + (envc + 1) + 1;
 	    bprm->p = STACK_ROUND(sp, items);
         sp = (elf_addr_t __user *)bprm->p;
@@ -8329,8 +8304,7 @@ out_free_interp:
     mm->start_stack = bprm->p;
 
     if (current->personality & MMAP_PAGE_ZERO) {
-        error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
-                MAP_FIXED | MAP_PRIVATE, 0);
+        error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC, MAP_FIXED | MAP_PRIVATE, 0);
     }
 
     regs = current_pt_regs();
@@ -8429,11 +8403,8 @@ SYSCALL_DEFINE3(execve);
 
                                 setup_new_exec(bprm);
                                     arch_pick_mmap_layout();
+                                        mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
                                         mm->get_unmapped_area = arch_get_unmapped_area;
-                                            arch_pick_mmap_base(&mm->mmap_base);
-                                                mmap_base();
-                                    arch_setup_new_exec();
-                                    current->mm->task_size = TASK_SIZE;
 
                                 /* Finalizes the stack vm_area_struct. */
                                 setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack);
