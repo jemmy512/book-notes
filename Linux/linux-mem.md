@@ -4210,6 +4210,8 @@ SLAB_MATCH(memcg_data, memcg_data);
 
 ## slub_alloc
 
+![](../Images/Kernel/mem-slab_alloc_node.svg)
+
 ![](../Images/Kernel/mem-slab_alloc.png)
 
 ![](../Images/Kernel/mem-slab_alloc-2.png)
@@ -5280,6 +5282,8 @@ __remove_pgd_mapping()
 # mmap
 
 * bin 的技术小屋 [原理](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw)   [源码](https://mp.weixin.qq.com/s/BY3OZ6rkYYyQil_webt7Xg)
+
+![](../Images/Kernel/mem-mmap.svg)
 
 ![](../Images/Kernel/mem-mmap-vma-file-page.png)
 

@@ -7690,6 +7690,8 @@ SYM_CODE_END(ret_from_fork)
 
 # exec
 
+![](../Images/Kernel/proc-exec.svg)
+
 * [ELF Format Cheatsheet](https://gist.github.com/x0nu11byt3/bcb35c3de461e5fb66173071a2379779)
 
 ![](../Images/Kernel/proc-elf.png)
