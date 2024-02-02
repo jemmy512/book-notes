@@ -62,8 +62,10 @@
 
 * [kswapd](#kswapd)
 * [brk](#brk)
-* [create_pgd_mapping](#create_pgd_mapping)
-* [remove_pgd_mapping](#remove_pgd_mapping)
+
+* [pgd_mapping](#pgd_mapping)
+    * [create_pgd_mapping](#create_pgd_mapping)
+    * [remove_pgd_mapping](#remove_pgd_mapping)
 
 * [mmap](#mmap)
      * [get_unmapped_area](#get_unmapped_area)
@@ -94,7 +96,6 @@
 * [kmalloc](#kmalloc)
     * [kmalloc_caches](#kmalloc_caches)
 * [kmap_atomic](#kmap_atomic)
-* [page_address](#page_address)
 * [vmalloc](#vmalloc)
 * [page_reclaim](#page_reclaim)
 * [migrate_pages](#migrate_pages)
@@ -1984,14 +1985,16 @@ struct vm_area_struct {
 ![](../Images/Kernel/mem-vm.png)
 
 # kernel virtual space
-```c
-/* PKMAP_BASE:
- * use alloc_pages() get struct page, user kmap() map the page to this area */
 
-/* FIXADDR_START:
- * use kmap_atomic() to map a file to write it back to physic disk */
+```c
+/* PAGE_OFFSET - the virtual address of the start of the linear map, at the
+ *               start of the TTBR1 address space.
+ * PAGE_END - the end of the linear map, where all other kernel mappings begin.
+ * KIMAGE_VADDR - the virtual address of the start of the kernel image.
+ * VA_BITS - the maximum number of bits for virtual addresses. */
 ```
-![](../Images/Kernel/mem-kernel.png)
+
+![](../Images/Kernel/mem-kernel-layout.png)
 
 ![](../Images/Kernel/mem-kernel-2.png)
 
@@ -2059,7 +2062,7 @@ struct zone {
 
     const char    *name;
     /* free areas of different sizes */
-    struct free_area  free_area[MAX_ORDER];
+    struct free_area  free_area[MAX_PAGE_ORDER];
     /* zone flags, see below */
     unsigned long    flags;
 
@@ -3942,7 +3945,7 @@ int calculate_sizes(struct kmem_cache *s) {
         }
 
         order = get_order(size);
-        if (order <= MAX_ORDER)
+        if (order <= MAX_PAGE_ORDER)
             return order;
         return -ENOSYS;
     }
@@ -5072,7 +5075,9 @@ unsigned long get_unmapped_area(
 }
 ```
 
-# create_pgd_mapping
+# pgd_mapping
+
+## create_pgd_mapping
 
 ```c
 __create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
@@ -5163,7 +5168,7 @@ __create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
 }
 ```
 
-# remove_pgd_mapping
+## remove_pgd_mapping
 
 ```c
 __remove_pgd_mapping()
@@ -5428,9 +5433,8 @@ mmap() {
 
 setup_new_exec();
     arch_pick_mmap_layout();
+        mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
         mm->get_unmapped_area = arch_get_unmapped_area;
-        arch_pick_mmap_base();
-            mmap_base();
 
 mm->get_unmapped_area();
     arch_get_unmapped_area();
@@ -7815,10 +7819,7 @@ void *kmap_atomic(struct page *page) {
         return (void *)vaddr;
     }
 }
-```
 
-# page_address
-```c
 /* get the mapped virtual address of a page */
 void *page_address(const struct page *page)
 {
@@ -8035,6 +8036,7 @@ static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
 
 # migrate_pages
 
+* https://zhuanlan.zhihu.com/p/610249696
 
 # fork
 ```c
@@ -8675,7 +8677,7 @@ struct page *cma_alloc(struct cma *cma, unsigned long count,
             order = 0;
             outer_start = start;
             while (!PageBuddy(pfn_to_page(outer_start))) {
-                if (++order > MAX_ORDER) {
+                if (++order > MAX_PAGE_ORDER) {
                     outer_start = start;
                     break;
                 }
