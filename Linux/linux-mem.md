@@ -4264,7 +4264,7 @@ SLAB_MATCH(memcg_data, memcg_data);
 
 ## slub_alloc
 
-![](../Images/Kernel/mem-slab_alloc_node.svg)
+![](../Images/Kernel/mem-slab_alloc.svg)
 
 ![](../Images/Kernel/mem-slab_alloc.png)
 
@@ -8087,7 +8087,7 @@ static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
 
 # page_migrate
 
-![](../Images/Kernel/mem-page_migrate.svg)
+![](../Images/Kernel/mem-migrate_pages.svg)
 
 Type | Note
 --- | ---
