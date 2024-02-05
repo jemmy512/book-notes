@@ -98,7 +98,11 @@
 * [kmap_atomic](#kmap_atomic)
 * [vmalloc](#vmalloc)
 * [page_reclaim](#page_reclaim)
-* [migrate_pages](#migrate_pages)
+* [page_migrate](#page_migrate)
+    * [migreate_pages_batch](#migreate_pages_batch)
+        * [migrate_folio_unmap](#migrate_folio_unmap)
+        * [migrate_folio_move](#migrate_folio_move)
+* [page_compact](#page_compact)
 
 * [fork](#fork)
     * [copy_page_range](#copy_page_range)
@@ -106,8 +110,6 @@
 * [cma](#cma)
     * [cma_init_reserved_areas](#cma_init_reserved_areas)
     * [cma_alloc](cma_alloc)
-
-* [mem_compact](#mem_compact)
 
 * [out_of_memory](#out_of_memory)
     * [oom_reaper](#oom_reaper)
@@ -3296,7 +3298,56 @@ got_pg:
 ### alloc_pages_direct_compact
 
 ```c
+struct page *
+__alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
+        unsigned int alloc_flags, const struct alloc_context *ac,
+        enum compact_priority prio, enum compact_result *compact_result)
+{
+    struct page *page = NULL;
+    unsigned long pflags;
+    unsigned int noreclaim_flag;
 
+    if (!order)
+        return NULL;
+
+    psi_memstall_enter(&pflags);
+    delayacct_compact_start();
+    noreclaim_flag = memalloc_noreclaim_save();
+
+    *compact_result = try_to_compact_pages(gfp_mask, order, alloc_flags, ac, prio, &page);
+
+    memalloc_noreclaim_restore(noreclaim_flag);
+    psi_memstall_leave(&pflags);
+    delayacct_compact_end();
+
+    if (*compact_result == COMPACT_SKIPPED)
+        return NULL;
+
+    count_vm_event(COMPACTSTALL);
+
+    /* Prep a captured page if available */
+    if (page)
+        prep_new_page(page, order, gfp_mask, alloc_flags);
+
+    /* Try get a page from the freelist if available */
+    if (!page)
+        page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
+
+    if (page) {
+        struct zone *zone = page_zone(page);
+
+        zone->compact_blockskip_flush = false;
+        compaction_defer_reset(zone, order, true);
+        count_vm_event(COMPACTSUCCESS);
+        return page;
+    }
+
+    count_vm_event(COMPACTFAIL);
+
+    cond_resched();
+
+    return NULL;
+}
 ```
 
 ### alloc_pages_direct_reclaim
@@ -8034,9 +8085,555 @@ static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
 };
 ```
 
-# migrate_pages
+# page_migrate
 
-* https://zhuanlan.zhihu.com/p/610249696
+![](../Images/Kernel/mem-page_migrate.svg)
+
+Type | Note
+--- | ---
+MIGRATE_ASYNC | means never block
+MIGRATE_SYNC_LIGHT | allow blocking on most operations but not `->writepage` as the potential stall time is too significant
+MIGRATE_SYNC | will block when migrating pages
+MIGRATE_SYNC_NO_COPY | will block when migrating pages but will not copy pages with the CPU
+
+```c
+enum migrate_reason {
+    MR_COMPACTION,
+    MR_MEMORY_FAILURE,
+    MR_MEMORY_HOTPLUG,
+    MR_SYSCALL,
+    MR_MEMPOLICY_MBIND,
+    MR_NUMA_MISPLACED,
+    MR_CONTIG_RANGE,
+    MR_LONGTERM_PIN,
+    MR_DEMOTION,
+    MR_TYPES
+};
+```
+
+```c
+int migrate_pages(struct list_head *from, new_folio_t get_new_folio,
+        free_folio_t put_new_folio, unsigned long private,
+        enum migrate_mode mode, int reason, unsigned int *ret_succeeded)
+{
+    int rc, rc_gather;
+    int nr_pages;
+    struct folio *folio, *folio2;
+    LIST_HEAD(folios);
+    LIST_HEAD(ret_folios);
+    LIST_HEAD(split_folios);
+    struct migrate_pages_stats stats;
+
+    rc_gather = migrate_hugetlbs(from, get_new_folio, put_new_folio, private,
+                    mode, reason, &stats, &ret_folios);
+    if (rc_gather < 0)
+        goto out;
+
+again:
+    nr_pages = 0;
+    list_for_each_entry_safe(folio, folio2, from, lru) {
+        /* Retried hugetlb folios will be kept in list  */
+        if (folio_test_hugetlb(folio)) {
+            list_move_tail(&folio->lru, &ret_folios);
+            continue;
+        }
+
+        nr_pages += folio_nr_pages(folio);
+        if (nr_pages >= NR_MAX_BATCHED_MIGRATION)
+            break;
+    }
+    if (nr_pages >= NR_MAX_BATCHED_MIGRATION)
+        list_cut_before(&folios, from, &folio2->lru);
+    else
+        list_splice_init(from, &folios);
+
+    if (mode == MIGRATE_ASYNC)
+        rc = migrate_pages_batch(&folios, get_new_folio, put_new_folio,
+                private, mode, reason, &ret_folios,
+                &split_folios, &stats,
+                NR_MAX_MIGRATE_PAGES_RETRY);
+    else
+        rc = migrate_pages_sync(&folios, get_new_folio, put_new_folio,
+                private, mode, reason, &ret_folios,
+                &split_folios, &stats);
+
+    list_splice_tail_init(&folios, &ret_folios);
+    if (rc < 0) {
+        rc_gather = rc;
+        list_splice_tail(&split_folios, &ret_folios);
+        goto out;
+    }
+    if (!list_empty(&split_folios)) {
+        migrate_pages_batch(&split_folios, get_new_folio,
+                put_new_folio, private, MIGRATE_ASYNC, reason,
+                &ret_folios, NULL, &stats, 1);
+        list_splice_tail_init(&split_folios, &ret_folios);
+    }
+    rc_gather += rc;
+    if (!list_empty(from))
+        goto again;
+out:
+    list_splice(&ret_folios, from);
+
+    if (list_empty(from))
+        rc_gather = 0;
+
+    if (ret_succeeded)
+        *ret_succeeded = stats.nr_succeeded;
+
+    return rc_gather;
+}
+```
+
+## migreate_pages_batch
+
+```c
+int migrate_pages_batch(struct list_head *from,
+        new_folio_t get_new_folio, free_folio_t put_new_folio,
+        unsigned long private, enum migrate_mode mode, int reason,
+        struct list_head *ret_folios, struct list_head *split_folios,
+        struct migrate_pages_stats *stats, int nr_pass)
+{
+    LIST_HEAD(unmap_folios);
+    LIST_HEAD(dst_folios);
+    bool nosplit = (reason == MR_NUMA_MISPLACED);
+
+    for (pass = 0; pass < nr_pass && retry; pass++) {
+        retry = 0;
+        thp_retry = 0;
+        nr_retry_pages = 0;
+
+        list_for_each_entry_safe(folio, folio2, from, lru) {
+            is_large = folio_test_large(folio);
+            is_thp = is_large && folio_test_pmd_mappable(folio);
+            nr_pages = folio_nr_pages(folio);
+
+            cond_resched();
+
+            if (!thp_migration_supported() && is_thp) {
+                nr_failed++;
+                stats->nr_thp_failed++;
+                if (!try_split_folio(folio, split_folios)) {
+                    continue;
+                }
+                list_move_tail(&folio->lru, ret_folios);
+                continue;
+            }
+
+            rc = migrate_folio_unmap(get_new_folio, put_new_folio,
+                private, folio, &dst, mode, reason,
+                ret_folios);
+            switch(rc) {
+            case -ENOMEM:
+                nr_failed++;
+                stats->nr_thp_failed += is_thp;
+                /* Large folio NUMA faulting doesn't split to retry. */
+                if (is_large && !nosplit) {
+                    int ret = try_split_folio(folio, split_folios);
+
+                    if (!ret) {
+                        stats->nr_thp_split += is_thp;
+                        stats->nr_split++;
+                        break;
+                    } else if (reason == MR_LONGTERM_PIN && ret == -EAGAIN) {
+                        retry++;
+                        thp_retry += is_thp;
+                        nr_retry_pages += nr_pages;
+                        /* Undo duplicated failure counting. */
+                        nr_failed--;
+                        stats->nr_thp_failed -= is_thp;
+                        break;
+                    }
+                }
+
+                stats->nr_failed_pages += nr_pages + nr_retry_pages;
+                /* nr_failed isn't updated for not used */
+                stats->nr_thp_failed += thp_retry;
+                rc_saved = rc;
+                if (list_empty(&unmap_folios))
+                    goto out;
+                else
+                    goto move;
+            case -EAGAIN:
+                retry++;
+                thp_retry += is_thp;
+                nr_retry_pages += nr_pages;
+                break;
+            case MIGRATEPAGE_SUCCESS:
+                stats->nr_succeeded += nr_pages;
+                stats->nr_thp_succeeded += is_thp;
+                break;
+            case MIGRATEPAGE_UNMAP:
+                list_move_tail(&folio->lru, &unmap_folios);
+                list_add_tail(&dst->lru, &dst_folios);
+                break;
+            default:
+                nr_failed++;
+                stats->nr_thp_failed += is_thp;
+                stats->nr_failed_pages += nr_pages;
+                break;
+            }
+        }
+    }
+    nr_failed += retry;
+    stats->nr_thp_failed += thp_retry;
+    stats->nr_failed_pages += nr_retry_pages;
+
+move:
+    /* Flush TLBs for all unmapped folios */
+    try_to_unmap_flush();
+
+    retry = 1;
+    for (pass = 0; pass < nr_pass && retry; pass++) {
+        retry = 0;
+        thp_retry = 0;
+        nr_retry_pages = 0;
+
+        dst = list_first_entry(&dst_folios, struct folio, lru);
+        dst2 = list_next_entry(dst, lru);
+        list_for_each_entry_safe(folio, folio2, &unmap_folios, lru) {
+            is_thp = folio_test_large(folio) && folio_test_pmd_mappable(folio);
+            nr_pages = folio_nr_pages(folio);
+
+            cond_resched();
+
+            rc = migrate_folio_move(put_new_folio, private, folio, dst, mode, reason, ret_folios);
+            switch(rc) {
+            case -EAGAIN:
+                retry++;
+                thp_retry += is_thp;
+                nr_retry_pages += nr_pages;
+                break;
+            case MIGRATEPAGE_SUCCESS:
+                stats->nr_succeeded += nr_pages;
+                stats->nr_thp_succeeded += is_thp;
+                break;
+            default:
+                nr_failed++;
+                stats->nr_thp_failed += is_thp;
+                stats->nr_failed_pages += nr_pages;
+                break;
+            }
+            dst = dst2;
+            dst2 = list_next_entry(dst, lru);
+        }
+    }
+    nr_failed += retry;
+    stats->nr_thp_failed += thp_retry;
+    stats->nr_failed_pages += nr_retry_pages;
+
+    rc = rc_saved ? : nr_failed;
+out:
+    /* Cleanup remaining folios */
+    dst = list_first_entry(&dst_folios, struct folio, lru);
+    dst2 = list_next_entry(dst, lru);
+    list_for_each_entry_safe(folio, folio2, &unmap_folios, lru) {
+        int old_page_state = 0;
+        struct anon_vma *anon_vma = NULL;
+
+        __migrate_folio_extract(dst, &old_page_state, &anon_vma);
+        migrate_folio_undo_src(folio, old_page_state & PAGE_WAS_MAPPED,
+                    anon_vma, true, ret_folios);
+        list_del(&dst->lru);
+        migrate_folio_undo_dst(dst, true, put_new_folio, private);
+        dst = dst2;
+        dst2 = list_next_entry(dst, lru);
+    }
+
+    return rc;
+}
+```
+
+### migrate_folio_unmap
+
+```c
+rc = migrate_folio_unmap(get_new_folio, put_new_folio,
+    private, folio, &dst, mode, reason,
+    ret_folios) {
+
+    if (folio_ref_count(src) == 1) {
+        /* Folio was freed from under us. So we are done. */
+        folio_clear_active(src);
+        folio_clear_unevictable(src);
+        /* free_pages_prepare() will clear PG_isolated. */
+        list_del(&src->lru);
+        migrate_folio_done(src, reason);
+        return MIGRATEPAGE_SUCCESS;
+    }
+
+    dst = get_new_folio(src, private);
+    if (!dst)
+        return -ENOMEM;
+    *dstp = dst;
+
+    dst->private = NULL;
+
+    if (!folio_trylock(src)) {
+        if (mode == MIGRATE_ASYNC)
+            goto out;
+
+        if (current->flags & PF_MEMALLOC)
+            goto out;
+
+        if (mode == MIGRATE_SYNC_LIGHT && !folio_test_uptodate(src))
+            goto out;
+
+        folio_lock(src);
+    }
+    locked = true;
+    if (folio_test_mlocked(src))
+        old_page_state |= PAGE_WAS_MLOCKED;
+
+    if (folio_test_writeback(src)) {
+        switch (mode) {
+        case MIGRATE_SYNC:
+        case MIGRATE_SYNC_NO_COPY:
+            break;
+        default:
+            rc = -EBUSY;
+            goto out;
+        }
+        folio_wait_writeback(src);
+    }
+
+    if (folio_test_anon(src) && !folio_test_ksm(src))
+        anon_vma = folio_get_anon_vma(src);
+
+    if (unlikely(!folio_trylock(dst)))
+        goto out;
+    dst_locked = true;
+
+    if (unlikely(!is_lru)) {
+        __migrate_folio_record(dst, old_page_state, anon_vma);
+        return MIGRATEPAGE_UNMAP;
+    }
+
+    if (!src->mapping) {
+        if (folio_test_private(src)) {
+            try_to_free_buffers(src);
+            goto out;
+        }
+    } else if (folio_mapped(src)) {
+        /* Establish migration ptes */
+        try_to_migrate(src, mode == MIGRATE_ASYNC ? TTU_BATCH_FLUSH : 0);
+        old_page_state |= PAGE_WAS_MAPPED;
+    }
+
+    if (!folio_mapped(src)) {
+        __migrate_folio_record(dst, old_page_state, anon_vma);
+        return MIGRATEPAGE_UNMAP;
+    }
+
+out:
+    if (rc == -EAGAIN)
+        ret = NULL;
+
+    migrate_folio_undo_src(src, old_page_state & PAGE_WAS_MAPPED,
+                anon_vma, locked, ret);
+    migrate_folio_undo_dst(dst, dst_locked, put_new_folio, private);
+
+    return rc;
+}
+```
+
+### migrate_folio_move
+
+```c
+/* Migrate the folio to the newly allocated folio in dst. */
+static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
+			      struct folio *src, struct folio *dst,
+			      enum migrate_mode mode, enum migrate_reason reason,
+			      struct list_head *ret)
+{
+	int rc;
+	int old_page_state = 0;
+	struct anon_vma *anon_vma = NULL;
+	bool is_lru = !__folio_test_movable(src);
+	struct list_head *prev;
+
+	__migrate_folio_extract(dst, &old_page_state, &anon_vma);
+	prev = dst->lru.prev;
+	list_del(&dst->lru);
+
+	rc = move_to_new_folio(dst, src, mode) {
+        if (likely(is_lru)) {
+            struct address_space *mapping = folio_mapping(src);
+
+            if (!mapping)
+                rc = migrate_folio(mapping, dst, src, mode);
+            else if (mapping_unmovable(mapping))
+                rc = -EOPNOTSUPP;
+            else if (mapping->a_ops->migrate_folio)
+                rc = mapping->a_ops->migrate_folio(mapping, dst, src,
+                                    mode);
+            else
+                rc = fallback_migrate_folio(mapping, dst, src, mode);
+        } else {
+            const struct movable_operations *mops;
+            VM_BUG_ON_FOLIO(!folio_test_isolated(src), src);
+            if (!folio_test_movable(src)) {
+                rc = MIGRATEPAGE_SUCCESS;
+                folio_clear_isolated(src);
+                goto out;
+            }
+
+            mops = folio_movable_ops(src);
+            rc = mops->migrate_page(&dst->page, &src->page, mode);
+            WARN_ON_ONCE(rc == MIGRATEPAGE_SUCCESS &&
+                    !folio_test_isolated(src));
+        }
+
+        if (rc == MIGRATEPAGE_SUCCESS) {
+            if (__folio_test_movable(src)) {
+                VM_BUG_ON_FOLIO(!folio_test_isolated(src), src);
+
+                folio_clear_isolated(src);
+            }
+
+            if (!folio_mapping_flags(src))
+                src->mapping = NULL;
+
+            if (likely(!folio_is_zone_device(dst)))
+                flush_dcache_folio(dst);
+        }
+    out:
+        return rc;
+    }
+	if (rc)
+		goto out;
+
+	if (unlikely(!is_lru))
+		goto out_unlock_both;
+
+	folio_add_lru(dst);
+	if (old_page_state & PAGE_WAS_MLOCKED)
+		lru_add_drain();
+
+	if (old_page_state & PAGE_WAS_MAPPED)
+		remove_migration_ptes(src, dst, false);
+
+out_unlock_both:
+	folio_unlock(dst);
+	set_page_owner_migrate_reason(&dst->page, reason);
+
+	folio_put(dst);
+
+
+	list_del(&src->lru);
+	/* Drop an anon_vma reference if we took one */
+	if (anon_vma)
+		put_anon_vma(anon_vma);
+	folio_unlock(src);
+	migrate_folio_done(src, reason);
+
+	return rc;
+out:
+	if (rc == -EAGAIN) {
+		list_add(&dst->lru, prev);
+		__migrate_folio_record(dst, old_page_state, anon_vma);
+		return rc;
+	}
+
+	migrate_folio_undo_src(src, old_page_state & PAGE_WAS_MAPPED,
+			       anon_vma, true, ret);
+	migrate_folio_undo_dst(dst, true, put_new_folio, private);
+
+	return rc;
+}
+```
+
+### remove_migration_ptes
+
+```c
+void remove_migration_ptes(struct folio *src, struct folio *dst, bool locked)
+{
+    struct rmap_walk_control rwc = {
+        .rmap_one = remove_migration_pte,
+        .arg = src,
+    };
+
+    if (locked)
+        rmap_walk_locked(dst, &rwc);
+    else
+        rmap_walk(dst, &rwc);
+}
+```
+
+```c
+bool remove_migration_pte(struct folio *folio,
+    struct vm_area_struct *vma, unsigned long addr, void *old)
+{
+    DEFINE_FOLIO_VMA_WALK(pvmw, old, vma, addr, PVMW_SYNC | PVMW_MIGRATION);
+
+    while (page_vma_mapped_walk(&pvmw)) {
+        rmap_t rmap_flags = RMAP_NONE;
+        pte_t old_pte;
+        pte_t pte;
+        swp_entry_t entry;
+        struct page *new;
+        unsigned long idx = 0;
+
+        /* pgoff is invalid for ksm pages, but they are never large */
+        if (folio_test_large(folio) && !folio_test_hugetlb(folio))
+            idx = linear_page_index(vma, pvmw.address) - pvmw.pgoff;
+        new = folio_page(folio, idx);
+
+        folio_get(folio);
+        pte = mk_pte(new, READ_ONCE(vma->vm_page_prot));
+        old_pte = ptep_get(pvmw.pte);
+        if (pte_swp_soft_dirty(old_pte))
+            pte = pte_mksoft_dirty(pte);
+
+        entry = pte_to_swp_entry(old_pte);
+        if (!is_migration_entry_young(entry))
+            pte = pte_mkold(pte);
+        if (folio_test_dirty(folio) && is_migration_entry_dirty(entry))
+            pte = pte_mkdirty(pte);
+        if (is_writable_migration_entry(entry))
+            pte = pte_mkwrite(pte, vma);
+        else if (pte_swp_uffd_wp(old_pte))
+            pte = pte_mkuffd_wp(pte);
+
+        if (folio_test_anon(folio) && !is_readable_migration_entry(entry))
+            rmap_flags |= RMAP_EXCLUSIVE;
+
+        if (unlikely(is_device_private_page(new))) {
+            if (pte_write(pte))
+                entry = make_writable_device_private_entry(page_to_pfn(new));
+            else
+                entry = make_readable_device_private_entry(page_to_pfn(new));
+
+            pte = swp_entry_to_pte(entry);
+            if (pte_swp_soft_dirty(old_pte))
+                pte = pte_swp_mksoft_dirty(pte);
+            if (pte_swp_uffd_wp(old_pte))
+                pte = pte_swp_mkuffd_wp(pte);
+        }
+
+        if (folio_test_anon(folio))
+            folio_add_anon_rmap_pte(folio, new, vma, pvmw.address, rmap_flags);
+        else
+            folio_add_file_rmap_pte(folio, new, vma);
+        set_pte_at(vma->vm_mm, pvmw.address, pvmw.pte, pte);
+
+        if (vma->vm_flags & VM_LOCKED)
+            mlock_drain_local();
+
+        /* No need to invalidate - it was non-present before */
+        update_mmu_cache(vma, pvmw.address, pvmw.pte);
+    }
+
+    return true;
+}
+```
+
+# page_compact
+
+* [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
+
+```c
+
+```
 
 # fork
 ```c
@@ -8742,10 +9339,6 @@ out:
     return page;
 }
 ```
-
-# mem_compact
-
-* [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
 
 # out_of_memory
 
