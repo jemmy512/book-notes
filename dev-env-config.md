@@ -13,9 +13,9 @@
     ```s
     # ~/.gitconfig
     [http]
-        proxy = socks5://127.0.0.1:7890
+        proxy = 127.0.0.1:7890
     [https]
-        proxy = socks5://127.0.0.1:7890
+        proxy = 127.0.0.1:7890
     ```
 
     ```c
