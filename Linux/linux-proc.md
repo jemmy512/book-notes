@@ -843,6 +843,7 @@ export LD_LIBRARY_PATH=
 2. elf: executable file
 
     * [ELF Format Cheatsheet](https://gist.github.com/x0nu11byt3/bcb35c3de461e5fb66173071a2379779)
+    * [Executable and Linkable Format (ELF).pdf](https://www.cs.cmu.edu/afs/cs/academic/class/15213-f00/docs/elf.pdf)
     <img src='../Images/Kernel/proc-elf.png' style='max-height:850px'/>
 
 3. elf: shared object
