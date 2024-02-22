@@ -97,7 +97,10 @@
     * [kmalloc_caches](#kmalloc_caches)
 * [kmap_atomic](#kmap_atomic)
 * [vmalloc](#vmalloc)
+
 * [page_reclaim](#page_reclaim)
+    * [shrink_node](#shrink_node)
+
 * [page_migrate](#page_migrate)
     * [migreate_pages_batch](#migreate_pages_batch)
         * [migrate_folio_unmap](#migrate_folio_unmap)
@@ -123,7 +126,6 @@
     * [oom_reaper](#oom_reaper)
     * [select_bad_process](#select_bad_process)
     * [oom_kill_process](#oom_kill_process)
-
 
 ![](../Images/Kernel/kernel-structual.svg)
 
@@ -183,6 +185,9 @@
     * [深度解读 Linux 内核级通用内存池 - kmalloc](https://mp.weixin.qq.com/s/atHXeXxx0L63w99RW7bMHg)
     * [深度解读 Linux 虚拟物理内存映射](https://mp.weixin.qq.com/s/FzTBx32ABR0Vtpq50pwNSA)
     * [深度解读 Linux mmap](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw)
+
+*  深度 Linux
+    * [探索三大分配器: bootmem, buddy, slab](https://mp.weixin.qq.com/s/Ki1z8na9-oVw1tk7PcdVrg)
 
 ---
 
@@ -3367,7 +3372,6 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 
         return rc;
     }
-    }
 
     if (*compact_result == COMPACT_SKIPPED)
         return NULL;
@@ -3393,7 +3397,37 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 ### alloc_pages_direct_reclaim
 
 ```c
+struct page *
+__alloc_pages_direct_reclaim(gfp_t gfp_mask, unsigned int order,
+        unsigned int alloc_flags, const struct alloc_context *ac,
+        unsigned long *did_some_progress)
+{
+    struct page *page = NULL;
+    unsigned long pflags;
+    bool drained = false;
 
+    psi_memstall_enter(&pflags);
+    *did_some_progress = __perform_reclaim(gfp_mask, order, ac);
+    if (unlikely(!(*did_some_progress)))
+        goto out;
+
+retry:
+    page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
+
+    /* If an allocation failed after direct reclaim, it could be because
+    * pages are pinned on the per-cpu lists or in high alloc reserves.
+    * Shrink them and try again */
+    if (!page && !drained) {
+        unreserve_highatomic_pageblock(ac, false);
+        drain_all_pages(NULL);
+        drained = true;
+        goto retry;
+    }
+out:
+    psi_memstall_leave(&pflags);
+
+    return page;
+}
 ```
 
 ### alloc_pages_may_oom
@@ -8045,6 +8079,8 @@ vmalloc(size);
 
 # page_reclaim
 
+* [深入了解页面回收技术：提升资源利用率](https://mp.weixin.qq.com/s/gdbsi5Eq3Ixf7YNqHYjN9A)
+
 ```c
 typedef struct pglist_data {
     struct lruvec           lruvec;
@@ -8109,9 +8145,567 @@ struct lru_rotate {
     local_lock_t lock;
     struct folio_batch fbatch;
 };
+
 static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
     .lock = INIT_LOCAL_LOCK(lock),
 };
+```
+
+```c
+__perform_reclaim(gfp_mask, order, ac) {
+    unsigned int noreclaim_flag;
+    unsigned long progress;
+
+    cond_resched();
+
+    /* We now go into synchronous reclaim */
+    cpuset_memory_pressure_bump();
+    fs_reclaim_acquire(gfp_mask);
+    noreclaim_flag = memalloc_noreclaim_save();
+
+    progress = try_to_free_pages(ac->zonelist, order, gfp_mask, ac->nodemask) {
+        unsigned long nr_reclaimed;
+        struct scan_control sc = {
+            .nr_to_reclaim = SWAP_CLUSTER_MAX,
+            .gfp_mask = current_gfp_context(gfp_mask),
+            .reclaim_idx = gfp_zone(gfp_mask),
+            .order = order,
+            .nodemask = nodemask,
+            .priority = DEF_PRIORITY,
+            .may_writepage = !laptop_mode,
+            .may_unmap = 1,
+            .may_swap = 1,
+        };
+
+        /* Do not enter reclaim if fatal signal was delivered while throttled.
+        * 1 is returned so that the page allocator does not OOM kill at this
+        * point. */
+        if (throttle_direct_reclaim(sc.gfp_mask, zonelist, nodemask))
+            return 1;
+
+        set_task_reclaim_state(current, &sc.reclaim_state);
+
+        nr_reclaimed = do_try_to_free_pages(zonelist, &sc) {
+            int initial_priority = sc->priority;
+            pg_data_t *last_pgdat;
+            struct zoneref *z;
+            struct zone *zone;
+        retry:
+            delayacct_freepages_start();
+
+            if (!cgroup_reclaim(sc))
+                __count_zid_vm_events(ALLOCSTALL, sc->reclaim_idx, 1);
+
+            do {
+                if (!sc->proactive) {
+                    vmpressure_prio(sc->gfp_mask, sc->target_mem_cgroup, sc->priority);
+                }
+                sc->nr_scanned = 0;
+
+                shrink_zones(zonelist, sc) {
+                    struct zoneref *z;
+                    struct zone *zone;
+                    unsigned long nr_soft_reclaimed;
+                    unsigned long nr_soft_scanned;
+                    gfp_t orig_mask;
+                    pg_data_t *last_pgdat = NULL;
+                    pg_data_t *first_pgdat = NULL;
+
+                    /* If the number of buffer_heads in the machine exceeds the maximum
+                    * allowed level, force direct reclaim to scan the highmem zone as
+                    * highmem pages could be pinning lowmem pages storing buffer_heads */
+                    orig_mask = sc->gfp_mask;
+                    if (buffer_heads_over_limit) {
+                        sc->gfp_mask |= __GFP_HIGHMEM;
+                        sc->reclaim_idx = gfp_zone(sc->gfp_mask);
+                    }
+
+                    for_each_zone_zonelist_nodemask(zone, z, zonelist, sc->reclaim_idx, sc->nodemask) {
+                        /* Take care memory controller reclaiming has small influence
+                        * to global LRU. */
+                        if (!cgroup_reclaim(sc)) {
+                            if (!cpuset_zone_allowed(zone,
+                                        GFP_KERNEL | __GFP_HARDWALL))
+                                continue;
+
+                            /* If we already have plenty of memory free for
+                            * compaction in this zone, don't free any more.
+                            * Even though compaction is invoked for any
+                            * non-zero order, only frequent costly order
+                            * reclamation is disruptive enough to become a
+                            * noticeable problem, like transparent huge
+                            * page allocations. */
+                            if (IS_ENABLED(CONFIG_COMPACTION) &&
+                                sc->order > PAGE_ALLOC_COSTLY_ORDER &&
+                                compaction_ready(zone, sc)) {
+                                sc->compaction_ready = true;
+                                continue;
+                            }
+
+                            /* Shrink each node in the zonelist once. If the
+                            * zonelist is ordered by zone (not the default) then a
+                            * node may be shrunk multiple times but in that case
+                            * the user prefers lower zones being preserved. */
+                            if (zone->zone_pgdat == last_pgdat)
+                                continue;
+
+                            /* This steals pages from memory cgroups over softlimit
+                            * and returns the number of reclaimed pages and
+                            * scanned pages. This works for global memory pressure
+                            * and balancing, not for a memcg's limit. */
+                            nr_soft_scanned = 0;
+                            nr_soft_reclaimed = mem_cgroup_soft_limit_reclaim(zone->zone_pgdat,
+                                        sc->order, sc->gfp_mask,
+                                        &nr_soft_scanned);
+                            sc->nr_reclaimed += nr_soft_reclaimed;
+                            sc->nr_scanned += nr_soft_scanned;
+                            /* need some check for avoid more shrink_zone() */
+                        }
+
+                        if (!first_pgdat)
+                            first_pgdat = zone->zone_pgdat;
+
+                        /* See comment about same check for global reclaim above */
+                        if (zone->zone_pgdat == last_pgdat)
+                            continue;
+                        last_pgdat = zone->zone_pgdat;
+
+                        shrink_node(zone->zone_pgdat, sc)
+                            --->
+                    }
+
+                    if (first_pgdat)
+                        consider_reclaim_throttle(first_pgdat, sc);
+
+                    /* Restore to original mask to avoid the impact on the caller if we
+                    * promoted it to __GFP_HIGHMEM. */
+                    sc->gfp_mask = orig_mask;
+                }
+
+                if (sc->nr_reclaimed >= sc->nr_to_reclaim)
+                    break;
+
+                if (sc->compaction_ready)
+                    break;
+
+                /* If we're getting trouble reclaiming, start doing
+                * writepage even in laptop mode. */
+                if (sc->priority < DEF_PRIORITY - 2)
+                    sc->may_writepage = 1;
+            } while (--sc->priority >= 0);
+
+            last_pgdat = NULL;
+            for_each_zone_zonelist_nodemask(zone, z, zonelist, sc->reclaim_idx, sc->nodemask) {
+                if (zone->zone_pgdat == last_pgdat)
+                    continue;
+                last_pgdat = zone->zone_pgdat;
+
+                snapshot_refaults(sc->target_mem_cgroup, zone->zone_pgdat);
+
+                if (cgroup_reclaim(sc)) {
+                    struct lruvec *lruvec;
+
+                    lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup,
+                                zone->zone_pgdat);
+                    clear_bit(LRUVEC_CGROUP_CONGESTED, &lruvec->flags);
+                }
+            }
+
+            delayacct_freepages_end();
+
+            if (sc->nr_reclaimed)
+                return sc->nr_reclaimed;
+
+            /* Aborted reclaim to try compaction? don't OOM, then */
+            if (sc->compaction_ready)
+                return 1;
+
+            /* We make inactive:active ratio decisions based on the node's
+            * composition of memory, but a restrictive reclaim_idx or a
+            * memory.low cgroup setting can exempt large amounts of
+            * memory from reclaim. Neither of which are very common, so
+            * instead of doing costly eligibility calculations of the
+            * entire cgroup subtree up front, we assume the estimates are
+            * good, and retry with forcible deactivation if that fails. */
+            if (sc->skipped_deactivate) {
+                sc->priority = initial_priority;
+                sc->force_deactivate = 1;
+                sc->skipped_deactivate = 0;
+                goto retry;
+            }
+
+            /* Untapped cgroup reserves?  Don't OOM, retry. */
+            if (sc->memcg_low_skipped) {
+                sc->priority = initial_priority;
+                sc->force_deactivate = 0;
+                sc->memcg_low_reclaim = 1;
+                sc->memcg_low_skipped = 0;
+                goto retry;
+            }
+
+            return 0;
+        }
+
+        set_task_reclaim_state(current, NULL);
+
+        return nr_reclaimed;
+    }
+
+    memalloc_noreclaim_restore(noreclaim_flag);
+    fs_reclaim_release(gfp_mask);
+
+    cond_resched();
+
+    return progress;
+}
+```
+
+## shrink_node
+
+```c
+shrink_node(zone->zone_pgdat, sc) {
+    unsigned long nr_reclaimed, nr_scanned, nr_node_reclaimed;
+    struct lruvec *target_lruvec;
+    bool reclaimable = false;
+
+    if (lru_gen_enabled() && root_reclaim(sc)) {
+        lru_gen_shrink_node(pgdat, sc);
+        return;
+    }
+
+    target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
+
+again:
+    memset(&sc->nr, 0, sizeof(sc->nr));
+
+    nr_reclaimed = sc->nr_reclaimed;
+    nr_scanned = sc->nr_scanned;
+
+    prepare_scan_control(pgdat, sc);
+
+    shrink_node_memcgs(pgdat, sc) {
+        struct mem_cgroup *target_memcg = sc->target_mem_cgroup;
+        struct mem_cgroup *memcg;
+
+        memcg = mem_cgroup_iter(target_memcg, NULL, NULL);
+        do {
+            struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
+            unsigned long reclaimed;
+            unsigned long scanned;
+
+            /* This loop can become CPU-bound when target memcgs
+            * aren't eligible for reclaim - either because they
+            * don't have any reclaimable pages, or because their
+            * memory is explicitly protected. Avoid soft lockups. */
+            cond_resched();
+
+            mem_cgroup_calculate_protection(target_memcg, memcg);
+
+            if (mem_cgroup_below_min(target_memcg, memcg)) {
+                /* Hard protection.
+                * If there is no reclaimable memory, OOM. */
+                continue;
+            } else if (mem_cgroup_below_low(target_memcg, memcg)) {
+                /* Soft protection.
+                * Respect the protection only as long as
+                * there is an unprotected supply
+                * of reclaimable memory from other cgroups. */
+                if (!sc->memcg_low_reclaim) {
+                    sc->memcg_low_skipped = 1;
+                    continue;
+                }
+                memcg_memory_event(memcg, MEMCG_LOW);
+            }
+
+            reclaimed = sc->nr_reclaimed;
+            scanned = sc->nr_scanned;
+
+            shrink_lruvec(lruvec, sc) {
+                unsigned long nr[NR_LRU_LISTS];
+                unsigned long targets[NR_LRU_LISTS];
+                unsigned long nr_to_scan;
+                enum lru_list lru;
+                unsigned long nr_reclaimed = 0;
+                unsigned long nr_to_reclaim = sc->nr_to_reclaim;
+                bool proportional_reclaim;
+                struct blk_plug plug;
+
+                if (lru_gen_enabled() && !root_reclaim(sc)) {
+                    lru_gen_shrink_lruvec(lruvec, sc);
+                    return;
+                }
+
+                get_scan_count(lruvec, sc, nr);
+
+                /* Record the original scan target for proportional adjustments later */
+                memcpy(targets, nr, sizeof(nr));
+
+                /* Global reclaiming within direct reclaim at DEF_PRIORITY is a normal
+                * event that can occur when there is little memory pressure e.g.
+                * multiple streaming readers/writers. Hence, we do not abort scanning
+                * when the requested number of pages are reclaimed when scanning at
+                * DEF_PRIORITY on the assumption that the fact we are direct
+                * reclaiming implies that kswapd is not keeping up and it is best to
+                * do a batch of work at once. For memcg reclaim one check is made to
+                * abort proportional reclaim if either the file or anon lru has already
+                * dropped to zero at the first pass. */
+                proportional_reclaim = (!cgroup_reclaim(sc) && !current_is_kswapd() &&
+                            sc->priority == DEF_PRIORITY);
+
+                blk_start_plug(&plug);
+                while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] || nr[LRU_INACTIVE_FILE]) {
+                    unsigned long nr_anon, nr_file, percentage;
+                    unsigned long nr_scanned;
+
+                    for_each_evictable_lru(lru) {
+                        if (nr[lru]) {
+                            nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
+                            nr[lru] -= nr_to_scan;
+
+                            nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, sc);
+                        }
+                    }
+
+                    cond_resched();
+
+                    if (nr_reclaimed < nr_to_reclaim || proportional_reclaim)
+                        continue;
+
+                    /* For kswapd and memcg, reclaim at least the number of pages
+                    * requested. Ensure that the anon and file LRUs are scanned
+                    * proportionally what was requested by get_scan_count(). We
+                    * stop reclaiming one LRU and reduce the amount scanning
+                    * proportional to the original scan target. */
+                    nr_file = nr[LRU_INACTIVE_FILE] + nr[LRU_ACTIVE_FILE];
+                    nr_anon = nr[LRU_INACTIVE_ANON] + nr[LRU_ACTIVE_ANON];
+
+                    /* It's just vindictive to attack the larger once the smaller
+                    * has gone to zero.  And given the way we stop scanning the
+                    * smaller below, this makes sure that we only make one nudge
+                    * towards proportionality once we've got nr_to_reclaim. */
+                    if (!nr_file || !nr_anon)
+                        break;
+
+                    if (nr_file > nr_anon) {
+                        unsigned long scan_target = targets[LRU_INACTIVE_ANON] +
+                                    targets[LRU_ACTIVE_ANON] + 1;
+                        lru = LRU_BASE;
+                        percentage = nr_anon * 100 / scan_target;
+                    } else {
+                        unsigned long scan_target = targets[LRU_INACTIVE_FILE] +
+                                    targets[LRU_ACTIVE_FILE] + 1;
+                        lru = LRU_FILE;
+                        percentage = nr_file * 100 / scan_target;
+                    }
+
+                    /* Stop scanning the smaller of the LRU */
+                    nr[lru] = 0;
+                    nr[lru + LRU_ACTIVE] = 0;
+
+                    /* Recalculate the other LRU scan count based on its original
+                    * scan target and the percentage scanning already complete */
+                    lru = (lru == LRU_FILE) ? LRU_BASE : LRU_FILE;
+                    nr_scanned = targets[lru] - nr[lru];
+                    nr[lru] = targets[lru] * (100 - percentage) / 100;
+                    nr[lru] -= min(nr[lru], nr_scanned);
+
+                    lru += LRU_ACTIVE;
+                    nr_scanned = targets[lru] - nr[lru];
+                    nr[lru] = targets[lru] * (100 - percentage) / 100;
+                    nr[lru] -= min(nr[lru], nr_scanned);
+                }
+
+                blk_finish_plug(&plug);
+                sc->nr_reclaimed += nr_reclaimed;
+
+                /* Even if we did not try to evict anon pages at all, we want to
+                * rebalance the anon lru active/inactive ratio. */
+                if (can_age_anon_pages(lruvec_pgdat(lruvec), sc)
+                    && inactive_is_low(lruvec, LRU_INACTIVE_ANON)) {
+
+                    shrink_active_list(SWAP_CLUSTER_MAX, lruvec, sc, LRU_ACTIVE_ANON) {
+                        unsigned long nr_taken;
+                        unsigned long nr_scanned;
+                        unsigned long vm_flags;
+                        LIST_HEAD(l_hold);	/* The folios which were snipped off */
+                        LIST_HEAD(l_active);
+                        LIST_HEAD(l_inactive);
+                        unsigned nr_deactivate, nr_activate;
+                        unsigned nr_rotated = 0;
+                        int file = is_file_lru(lru);
+                        struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+
+                        lru_add_drain();
+
+                        spin_lock_irq(&lruvec->lru_lock);
+
+                        nr_taken = isolate_lru_folios(nr_to_scan, lruvec, &l_hold,
+                                        &nr_scanned, sc, lru);
+
+                        __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, nr_taken);
+
+                        if (!cgroup_reclaim(sc))
+                            __count_vm_events(PGREFILL, nr_scanned);
+                        __count_memcg_events(lruvec_memcg(lruvec), PGREFILL, nr_scanned);
+
+                        spin_unlock_irq(&lruvec->lru_lock);
+
+                        while (!list_empty(&l_hold)) {
+                            struct folio *folio;
+
+                            cond_resched();
+                            folio = lru_to_folio(&l_hold);
+                            list_del(&folio->lru);
+
+                            if (unlikely(!folio_evictable(folio))) {
+                                folio_putback_lru(folio);
+                                continue;
+                            }
+
+                            if (unlikely(buffer_heads_over_limit)) {
+                                if (folio_needs_release(folio) &&
+                                    folio_trylock(folio)) {
+                                    filemap_release_folio(folio, 0);
+                                    folio_unlock(folio);
+                                }
+                            }
+
+                            /* Referenced or rmap lock contention: rotate */
+                            if (folio_referenced(folio, 0, sc->target_mem_cgroup,
+                                        &vm_flags) != 0) {
+                                /* Identify referenced, file-backed active folios and
+                                * give them one more trip around the active list. So
+                                * that executable code get better chances to stay in
+                                * memory under moderate memory pressure.  Anon folios
+                                * are not likely to be evicted by use-once streaming
+                                * IO, plus JVM can create lots of anon VM_EXEC folios,
+                                * so we ignore them here. */
+                                if ((vm_flags & VM_EXEC) && folio_is_file_lru(folio)) {
+                                    nr_rotated += folio_nr_pages(folio);
+                                    list_add(&folio->lru, &l_active);
+                                    continue;
+                                }
+                            }
+
+                            folio_clear_active(folio);	/* we are de-activating */
+                            folio_set_workingset(folio);
+                            list_add(&folio->lru, &l_inactive);
+                        }
+
+                        /* Move folios back to the lru list. */
+                        spin_lock_irq(&lruvec->lru_lock);
+
+                        nr_activate = move_folios_to_lru(lruvec, &l_active);
+                        nr_deactivate = move_folios_to_lru(lruvec, &l_inactive);
+                        /* Keep all free folios in l_active list */
+                        list_splice(&l_inactive, &l_active);
+
+                        __count_vm_events(PGDEACTIVATE, nr_deactivate);
+                        __count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
+
+                        __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
+                        spin_unlock_irq(&lruvec->lru_lock);
+
+                        if (nr_rotated)
+                            lru_note_cost(lruvec, file, 0, nr_rotated);
+                        mem_cgroup_uncharge_list(&l_active);
+
+                        free_unref_page_list(&l_active);
+                            --->
+                    }
+                }
+            }
+
+            shrink_slab(sc->gfp_mask, pgdat->node_id, memcg, sc->priority) {
+
+            }
+
+            /* Record the group's reclaim efficiency */
+            if (!sc->proactive)
+                vmpressure(sc->gfp_mask, memcg, false,
+                    sc->nr_scanned - scanned,
+                    sc->nr_reclaimed - reclaimed);
+
+        } while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
+    }
+
+    flush_reclaim_state(sc);
+
+    nr_node_reclaimed = sc->nr_reclaimed - nr_reclaimed;
+
+    /* Record the subtree's reclaim efficiency */
+    if (!sc->proactive)
+        vmpressure(sc->gfp_mask, sc->target_mem_cgroup, true,
+            sc->nr_scanned - nr_scanned, nr_node_reclaimed);
+
+    if (nr_node_reclaimed)
+        reclaimable = true;
+
+    if (current_is_kswapd()) {
+        /* If reclaim is isolating dirty pages under writeback,
+        * it implies that the long-lived page allocation rate
+        * is exceeding the page laundering rate. Either the
+        * global limits are not being effective at throttling
+        * processes due to the page distribution throughout
+        * zones or there is heavy usage of a slow backing
+        * device. The only option is to throttle from reclaim
+        * context which is not ideal as there is no guarantee
+        * the dirtying process is throttled in the same way
+        * balance_dirty_pages() manages.
+        *
+        * Once a node is flagged PGDAT_WRITEBACK, kswapd will
+        * count the number of pages under pages flagged for
+        * immediate reclaim and stall if any are encountered
+        * in the nr_immediate check below. */
+        if (sc->nr.writeback && sc->nr.writeback == sc->nr.taken)
+            set_bit(PGDAT_WRITEBACK, &pgdat->flags);
+
+        /* Allow kswapd to start writing pages during reclaim.*/
+        if (sc->nr.unqueued_dirty == sc->nr.file_taken)
+            set_bit(PGDAT_DIRTY, &pgdat->flags);
+
+        /* If kswapd scans pages marked for immediate
+        * reclaim and under writeback (nr_immediate), it
+        * implies that pages are cycling through the LRU
+        * faster than they are written so forcibly stall
+        * until some pages complete writeback. */
+        if (sc->nr.immediate)
+            reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
+    }
+
+    /* Tag a node/memcg as congested if all the dirty pages were marked
+    * for writeback and immediate reclaim (counted in nr.congested).
+    *
+    * Legacy memcg will stall in page writeback so avoid forcibly
+    * stalling in reclaim_throttle(). */
+    if (sc->nr.dirty && sc->nr.dirty == sc->nr.congested) {
+        if (cgroup_reclaim(sc) && writeback_throttling_sane(sc))
+            set_bit(LRUVEC_CGROUP_CONGESTED, &target_lruvec->flags);
+
+        if (current_is_kswapd())
+            set_bit(LRUVEC_NODE_CONGESTED, &target_lruvec->flags);
+    }
+
+    /* Stall direct reclaim for IO completions if the lruvec is
+    * node is congested. Allow kswapd to continue until it
+    * starts encountering unqueued dirty pages or cycling through
+    * the LRU too quickly. */
+    if (!current_is_kswapd() && current_may_throttle() &&
+        !sc->hibernation_mode &&
+        (test_bit(LRUVEC_CGROUP_CONGESTED, &target_lruvec->flags) ||
+        test_bit(LRUVEC_NODE_CONGESTED, &target_lruvec->flags)))
+        reclaim_throttle(pgdat, VMSCAN_THROTTLE_CONGESTED);
+
+    if (should_continue_reclaim(pgdat, nr_node_reclaimed, sc))
+        goto again;
+
+    /* Kswapd gives up on balancing particular nodes after too
+    * many failures to reclaim anything from them and goes to
+    * sleep. On reclaim progress, reset the failure counter. A
+    * successful direct reclaim run will revive a dormant kswapd. */
+    if (reclaimable)
+        pgdat->kswapd_failures = 0;
+}
 ```
 
 # page_migrate
@@ -8470,21 +9064,21 @@ out:
 ```c
 /* Migrate the folio to the newly allocated folio in dst. */
 static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
-			      struct folio *src, struct folio *dst,
-			      enum migrate_mode mode, enum migrate_reason reason,
-			      struct list_head *ret)
+                struct folio *src, struct folio *dst,
+                enum migrate_mode mode, enum migrate_reason reason,
+                struct list_head *ret)
 {
-	int rc;
-	int old_page_state = 0;
-	struct anon_vma *anon_vma = NULL;
-	bool is_lru = !__folio_test_movable(src);
-	struct list_head *prev;
+    int rc;
+    int old_page_state = 0;
+    struct anon_vma *anon_vma = NULL;
+    bool is_lru = !__folio_test_movable(src);
+    struct list_head *prev;
 
-	__migrate_folio_extract(dst, &old_page_state, &anon_vma);
-	prev = dst->lru.prev;
-	list_del(&dst->lru);
+    __migrate_folio_extract(dst, &old_page_state, &anon_vma);
+    prev = dst->lru.prev;
+    list_del(&dst->lru);
 
-	rc = move_to_new_folio(dst, src, mode) {
+    rc = move_to_new_folio(dst, src, mode) {
         if (likely(is_lru)) {
             struct address_space *mapping = folio_mapping(src);
 
@@ -8528,46 +9122,46 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
     out:
         return rc;
     }
-	if (rc)
-		goto out;
+    if (rc)
+        goto out;
 
-	if (unlikely(!is_lru))
-		goto out_unlock_both;
+    if (unlikely(!is_lru))
+        goto out_unlock_both;
 
-	folio_add_lru(dst);
-	if (old_page_state & PAGE_WAS_MLOCKED)
-		lru_add_drain();
+    folio_add_lru(dst);
+    if (old_page_state & PAGE_WAS_MLOCKED)
+        lru_add_drain();
 
-	if (old_page_state & PAGE_WAS_MAPPED)
-		remove_migration_ptes(src, dst, false);
+    if (old_page_state & PAGE_WAS_MAPPED)
+        remove_migration_ptes(src, dst, false);
 
 out_unlock_both:
-	folio_unlock(dst);
-	set_page_owner_migrate_reason(&dst->page, reason);
+    folio_unlock(dst);
+    set_page_owner_migrate_reason(&dst->page, reason);
 
-	folio_put(dst);
+    folio_put(dst);
 
 
-	list_del(&src->lru);
-	/* Drop an anon_vma reference if we took one */
-	if (anon_vma)
-		put_anon_vma(anon_vma);
-	folio_unlock(src);
-	migrate_folio_done(src, reason);
+    list_del(&src->lru);
+    /* Drop an anon_vma reference if we took one */
+    if (anon_vma)
+        put_anon_vma(anon_vma);
+    folio_unlock(src);
+    migrate_folio_done(src, reason);
 
-	return rc;
+    return rc;
 out:
-	if (rc == -EAGAIN) {
-		list_add(&dst->lru, prev);
-		__migrate_folio_record(dst, old_page_state, anon_vma);
-		return rc;
-	}
+    if (rc == -EAGAIN) {
+        list_add(&dst->lru, prev);
+        __migrate_folio_record(dst, old_page_state, anon_vma);
+        return rc;
+    }
 
-	migrate_folio_undo_src(src, old_page_state & PAGE_WAS_MAPPED,
-			       anon_vma, true, ret);
-	migrate_folio_undo_dst(dst, true, put_new_folio, private);
+    migrate_folio_undo_src(src, old_page_state & PAGE_WAS_MAPPED,
+                anon_vma, true, ret);
+    migrate_folio_undo_dst(dst, true, put_new_folio, private);
 
-	return rc;
+    return rc;
 }
 ```
 
@@ -8658,14 +9252,14 @@ bool remove_migration_pte(struct folio *folio,
 
 # page_compact
 
+
 ![](../Images/Kernel/mem-page_compact.svg)
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
 
+![](../Images/Kernel/mem-page-compact-points.png)
 
-* MIGRATE_ASYNC
-    * exit and not wait if lock page failed
-    * exit and not wait if too many zone ioslated pages
+![](../Images/Kernel/mem-page-compact-cases.png)
 
 ```c
 status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highest_zoneidx, capture) {
@@ -8941,9 +9535,9 @@ enum compact_result compact_finished(struct compact_control *cc)
             return COMPACT_CONTINUE;
 
         /* Always finish scanning a pageblock to reduce the possibility of
-         * fallbacks in the future. This is particularly important when
-         * migration source is unmovable/reclaimable but it's not worth
-         * special casing. */
+        * fallbacks in the future. This is particularly important when
+        * migration source is unmovable/reclaimable but it's not worth
+        * special casing. */
         if (!pageblock_aligned(cc->migrate_pfn))
             return COMPACT_CONTINUE;
 
@@ -8991,6 +9585,8 @@ enum compact_result compact_finished(struct compact_control *cc)
 
 ## isolate_migratepages
 
+![](../Images/Kernel/mem-isolate_migratepages-flow.png)
+
 ```c
 isolate_migrate_t isolate_migratepages(struct compact_control *cc)
 {
@@ -9003,40 +9599,28 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
         (cc->mode != MIGRATE_SYNC ? ISOLATE_ASYNC_MIGRATE : 0);
     bool fast_find_block;
 
-    /* Start at where we last stopped, or beginning of the zone as
-    * initialized by compact_zone(). The first failure will use
-    * the lowest PFN as the starting point for linear scanning. */
     low_pfn = fast_find_migrateblock(cc);
     block_start_pfn = pageblock_start_pfn(low_pfn);
     if (block_start_pfn < cc->zone->zone_start_pfn)
         block_start_pfn = cc->zone->zone_start_pfn;
 
-    /* fast_find_migrateblock() has already ensured the pageblock is not
-    * set with a skipped flag, so to avoid the isolation_suitable check
-    * below again, check whether the fast search was successful. */
     fast_find_block = low_pfn != cc->migrate_pfn && !cc->fast_search_fail;
 
-    /* Only scan within a pageblock boundary */
     block_end_pfn = pageblock_end_pfn(low_pfn);
 
-    /* Iterate over whole pageblocks until we find the first suitable.
-    * Do not cross the free scanner. */
+
     for (; block_end_pfn <= cc->free_pfn;
         fast_find_block = false,
         cc->migrate_pfn = low_pfn = block_end_pfn,
         block_start_pfn = block_end_pfn,
         block_end_pfn += pageblock_nr_pages) {
 
-        /* This can potentially iterate a massively long zone with
-        * many pageblocks unsuitable, so periodically check if we
-        * need to schedule. */
         if (!(low_pfn % (COMPACT_CLUSTER_MAX * pageblock_nr_pages)))
             cond_resched();
 
         page = pageblock_pfn_to_page(block_start_pfn, block_end_pfn, cc->zone);
         if (!page) {
             unsigned long next_pfn;
-
             next_pfn = skip_offline_sections(block_start_pfn);
             if (next_pfn)
                 block_end_pfn = min(next_pfn, cc->free_pfn);
@@ -9052,18 +9636,11 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
             && !fast_find_block && !isolation_suitable(cc, page))
             continue;
 
-        /* For async direct compaction, only scan the pageblocks of the
-         * same migratetype without huge pages. Async direct compaction
-         * is optimistic to see if the minimum amount of work satisfies
-         * the allocation. The cached PFN is updated as it's possible
-         * that all remaining blocks between source and target are
-         * unsuitable and the compaction scanners fail to meet. */
         ret = suitable_migration_source(cc, page) {
             int block_mt;
 
             if (pageblock_skip_persistent(page))
                 return false;
-
             if ((cc->mode != MIGRATE_ASYNC) || !cc->direct_compaction)
                 return true;
 
@@ -9096,8 +9673,8 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
         }
 
         /* Either we isolated something and proceed with migration. Or
-         * we failed and compact_zone should decide if we should
-         * continue or not. */
+        * we failed and compact_zone should decide if we should
+        * continue or not. */
         break;
     }
 
@@ -9128,28 +9705,28 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
         return pfn;
 
     /* If the migrate_pfn is not at the start of a zone or the start
-     * of a pageblock then assume this is a continuation of a previous
-     * scan restarted due to COMPACT_CLUSTER_MAX. */
+    * of a pageblock then assume this is a continuation of a previous
+    * scan restarted due to COMPACT_CLUSTER_MAX. */
     if (pfn != cc->zone->zone_start_pfn && pfn != pageblock_start_pfn(pfn))
         return pfn;
 
     /* For smaller orders, just linearly scan as the number of pages
-     * to migrate should be relatively small and does not necessarily
-     * justify freeing up a large block for a small allocation. */
+    * to migrate should be relatively small and does not necessarily
+    * justify freeing up a large block for a small allocation. */
     if (cc->order <= PAGE_ALLOC_COSTLY_ORDER)
         return pfn;
 
     /* Only allow kcompactd and direct requests for movable pages to
-     * quickly clear out a MOVABLE pageblock for allocation. This
-     * reduces the risk that a large movable pageblock is freed for
-     * an unmovable/reclaimable small allocation. */
+    * quickly clear out a MOVABLE pageblock for allocation. This
+    * reduces the risk that a large movable pageblock is freed for
+    * an unmovable/reclaimable small allocation. */
     if (cc->direct_compaction && cc->migratetype != MIGRATE_MOVABLE)
         return pfn;
 
     /* When starting the migration scanner, pick any pageblock within the
-     * first half of the search space. Otherwise try and pick a pageblock
-     * within the first eighth to reduce the chances that a migration
-     * target later becomes a source. */
+    * first half of the search space. Otherwise try and pick a pageblock
+    * within the first eighth to reduce the chances that a migration
+    * target later becomes a source. */
     distance = (cc->free_pfn - cc->migrate_pfn) >> 1;
     if (cc->migrate_pfn != cc->zone->zone_start_pfn)
         distance >>= 2;
@@ -9169,6 +9746,7 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
 
         spin_lock_irqsave(&cc->zone->lock, flags);
         freelist = &area->free_list[MIGRATE_MOVABLE];
+
         list_for_each_entry(freepage, freelist, buddy_list) {
             unsigned long free_pfn;
 
@@ -9179,10 +9757,6 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
 
             free_pfn = page_to_pfn(freepage);
             if (free_pfn < high_pfn) {
-                /* Avoid if skipped recently. Ideally it would
-                * move to the tail but even safe iteration of
-                * the list assumes an entry is deleted, not
-                * reordered. */
                 if (get_pageblock_skip(freepage))
                     continue;
 
@@ -9235,15 +9809,10 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
 
     cc->migrate_pfn = low_pfn;
 
-    /* Ensure that there are not too many pages isolated from the LRU
-    * list by either parallel reclaimers or compaction. If there are,
-    * delay for some time until fewer pages are isolated */
     while (unlikely(too_many_isolated(cc))) {
-        /* stop isolation if there are still pages not migrated */
         if (cc->nr_migratepages)
             return -EAGAIN;
 
-        /* async migration should just abort */
         if (cc->mode == MIGRATE_ASYNC)
             return -EAGAIN;
 
@@ -9351,16 +9920,9 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             * Buddy pages. */
         }
 
-        /* Skip if free. We read page order here without zone lock
-        * which is generally unsafe, but the race window is small and
-        * the worst thing that can happen is that we skip some
-        * potential isolation targets. */
         if (PageBuddy(page)) {
             unsigned long freepage_order = buddy_order_unsafe(page);
 
-            /* Without lock, we cannot be sure that what we got is
-            * a valid page order. Consider only values in the
-            * valid order range to prevent low_pfn overflow. */
             if (freepage_order > 0 && freepage_order <= MAX_PAGE_ORDER) {
                 low_pfn += (1UL << freepage_order) - 1;
                 nr_scanned += (1UL << freepage_order) - 1;
@@ -9368,15 +9930,8 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             continue;
         }
 
-        /* Regardless of being on LRU, compound pages such as THP and
-        * hugetlbfs are not to be compacted unless we are attempting
-        * an allocation much larger than the huge page size (eg CMA).
-        * We can potentially save a lot of iterations if we skip them
-        * at once. The check is racy, but we can consider only valid
-        * values and the only danger is skipping too much. */
         if (PageCompound(page) && !cc->alloc_contig) {
             const unsigned int order = compound_order(page);
-
             if (likely(order <= MAX_PAGE_ORDER)) {
                 low_pfn += (1UL << order) - 1;
                 nr_scanned += (1UL << order) - 1;
@@ -9384,14 +9939,8 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             goto isolate_fail;
         }
 
-        /* Check may be lockless but that's ok as we recheck later.
-        * It's possible to migrate LRU and non-lru movable pages.
-        * Skip any other type of page */
         if (!PageLRU(page)) {
-            /* __PageMovable can return false positive so we need
-            * to verify it under page_lock. */
-            if (unlikely(__PageMovable(page)) &&
-                    !PageIsolated(page)) {
+            if (unlikely(__PageMovable(page)) && !PageIsolated(page)) {
                 if (locked) {
                     unlock_page_lruvec_irqrestore(locked, flags);
                     locked = NULL;
@@ -9406,22 +9955,17 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             goto isolate_fail;
         }
 
-        /* Be careful not to clear PageLRU until after we're
-        * sure the page is not being freed elsewhere -- the
-        * page release code relies on it. */
         folio = folio_get_nontail_page(page);
         if (unlikely(!folio))
             goto isolate_fail;
 
-        /* Migration will fail if an anonymous page is pinned in memory,
-        * so avoid taking lru_lock and isolating it unnecessarily in an
-        * admittedly racy check. */
         mapping = folio_mapping(folio);
+        /* an anonymous page is pinned in memory */
         if (!mapping && (folio_ref_count(folio) - 1) > folio_mapcount(folio))
             goto isolate_fail_put;
 
         /* Only allow to migrate anonymous pages in GFP_NOFS context
-        * because those do not depend on fs locks. */
+         * because those do not depend on fs locks. */
         if (!(cc->gfp_mask & __GFP_FS) && mapping)
             goto isolate_fail_put;
 
@@ -9435,43 +9979,21 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
         if (!(mode & ISOLATE_UNEVICTABLE) && is_unevictable)
             goto isolate_fail_put;
 
-        /* To minimise LRU disruption, the caller can indicate with
-        * ISOLATE_ASYNC_MIGRATE that it only wants to isolate pages
-        * it will be able to migrate without blocking - clean pages
-        * for the most part.  PageWriteback would require blocking. */
         if ((mode & ISOLATE_ASYNC_MIGRATE) && folio_test_writeback(folio))
             goto isolate_fail_put;
 
         is_dirty = folio_test_dirty(folio);
 
-        if (((mode & ISOLATE_ASYNC_MIGRATE) && is_dirty) ||
-            (mapping && is_unevictable)) {
+        if (((mode & ISOLATE_ASYNC_MIGRATE) && is_dirty) || (mapping && is_unevictable)) {
             bool migrate_dirty = true;
             bool is_unmovable;
 
-            /* Only folios without mappings or that have
-            * a ->migrate_folio callback are possible to migrate
-            * without blocking.
-            *
-            * Folios from unmovable mappings are not migratable.
-            *
-            * However, we can be racing with truncation, which can
-            * free the mapping that we need to check. Truncation
-            * holds the folio lock until after the folio is removed
-            * from the page so holding it ourselves is sufficient.
-            *
-            * To avoid locking the folio just to check unmovable,
-            * assume every unmovable folio is also unevictable,
-            * which is a cheaper test.  If our assumption goes
-            * wrong, it's not a correctness bug, just potentially
-            * wasted cycles. */
             if (!folio_trylock(folio))
                 goto isolate_fail_put;
 
             mapping = folio_mapping(folio);
             if ((mode & ISOLATE_ASYNC_MIGRATE) && is_dirty) {
-                migrate_dirty = !mapping ||
-                        mapping->a_ops->migrate_folio;
+                migrate_dirty = !mapping || mapping->a_ops->migrate_folio;
             }
             is_unmovable = mapping && mapping_unmovable(mapping);
             folio_unlock(folio);
@@ -9479,7 +10001,6 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
                 goto isolate_fail_put;
         }
 
-        /* Try isolate the folio */
         if (!folio_test_clear_lru(folio))
             goto isolate_fail_put;
 
@@ -9487,28 +10008,25 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
 
         /* If we already hold the lock, we can skip some rechecking */
         if (lruvec != locked) {
-            if (locked)
+            if (locked) {
                 unlock_page_lruvec_irqrestore(locked, flags);
+            }
 
             compact_lock_irqsave(&lruvec->lru_lock, &flags, cc);
             locked = lruvec;
-
-            lruvec_memcg_debug(lruvec, folio);
 
             /* Try get exclusive access under lock. If marked for
             * skip, the scan is aborted unless the current context
             * is a rescan to reach the end of the pageblock. */
             if (!skip_updated && valid_page) {
                 skip_updated = true;
-                if (test_and_set_skip(cc, valid_page) &&
-                    !cc->finish_pageblock) {
+                if (test_and_set_skip(cc, valid_page) && !cc->finish_pageblock) {
                     low_pfn = end_pfn;
                     goto isolate_abort;
                 }
             }
 
-            /* folio become large since the non-locked check,
-            * and it's on LRU. */
+            /* folio become large since the non-locked check, and it's on LRU. */
             if (unlikely(folio_test_large(folio) && !cc->alloc_contig)) {
                 low_pfn += folio_nr_pages(folio) - 1;
                 nr_scanned += folio_nr_pages(folio) - 1;
@@ -9523,12 +10041,10 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
 
         /* Successfully isolated */
         lruvec_del_folio(lruvec, folio);
-        node_stat_mod_folio(folio,
-                NR_ISOLATED_ANON + folio_is_file_lru(folio),
-                folio_nr_pages(folio));
 
 isolate_success:
         list_add(&folio->lru, &cc->migratepages);
+
 isolate_success_no_list:
         cc->nr_migratepages += folio_nr_pages(folio);
         nr_isolated += folio_nr_pages(folio);
@@ -9538,8 +10054,9 @@ isolate_success_no_list:
         * fully scanned (e.g. dirty/writeback pages, parallel allocation)
         * or a lock is contended. For contention, isolate quickly to
         * potentially remove one source of contention. */
-        if (cc->nr_migratepages >= COMPACT_CLUSTER_MAX &&
-            !cc->finish_pageblock && !cc->contended) {
+        if (cc->nr_migratepages >= COMPACT_CLUSTER_MAX
+            && !cc->finish_pageblock && !cc->contended) {
+
             ++low_pfn;
             break;
         }
@@ -9639,24 +10156,12 @@ void isolate_freepages(struct compact_control *cc)
     if (cc->nr_freepages)
         goto splitmap;
 
-    /* Initialise the free scanner. The starting point is where we last
-    * successfully isolated from, zone-cached value, or the end of the
-    * zone when isolating for the first time. For looping we also need
-    * this pfn aligned down to the pageblock boundary, because we do
-    * block_start_pfn -= pageblock_nr_pages in the for loop.
-    * For ending point, take care when isolating in last pageblock of a
-    * zone which ends in the middle of a pageblock.
-    * The low boundary is the end of the pageblock the migration scanner
-    * is using. */
     isolate_start_pfn = cc->free_pfn;
     block_start_pfn = pageblock_start_pfn(isolate_start_pfn);
     block_end_pfn = min(block_start_pfn + pageblock_nr_pages, zone_end_pfn(zone));
     low_pfn = pageblock_end_pfn(cc->migrate_pfn);
     stride = cc->mode == MIGRATE_ASYNC ? COMPACT_CLUSTER_MAX : 1;
 
-    /* Isolate free pages until enough are available to migrate the
-    * pages on cc->migratepages. We stop searching if the migrate
-    * and free page scanners meet or enough free pages are isolated. */
     for (; block_start_pfn >= low_pfn;
         block_end_pfn = block_start_pfn,
         block_start_pfn -= pageblock_nr_pages,
@@ -9664,130 +10169,135 @@ void isolate_freepages(struct compact_control *cc)
 
         unsigned long nr_isolated;
 
-        /* This can iterate a massively long zone without finding any
-        * suitable migration targets, so periodically check resched. */
         if (!(block_start_pfn % (COMPACT_CLUSTER_MAX * pageblock_nr_pages)))
             cond_resched();
 
         page = pageblock_pfn_to_page(block_start_pfn, block_end_pfn, zone);
         if (!page) {
             unsigned long next_pfn;
-
             next_pfn = skip_offline_sections_reverse(block_start_pfn);
             if (next_pfn)
                 block_start_pfn = max(next_pfn, low_pfn);
-
             continue;
         }
 
-        /* Check the block is suitable for migration */
         if (!suitable_migration_target(cc, page))
             continue;
 
-        /* If isolation recently failed, do not retry */
         if (!isolation_suitable(cc, page))
             continue;
 
         /* Found a block suitable for isolating free pages from. */
-        nr_isolated = isolate_freepages_block(cc, &isolate_start_pfn,
-            block_end_pfn, freelist, stride, false) {
-                if (strict)
-                    stride = 1;
+        nr_isolated = isolate_freepages_block(cc, &isolate_start_pfn/*start_pfn*/,
+            block_end_pfn, freelist, stride, false/*strict*/) {
 
-                page = pfn_to_page(blockpfn);
+            if (strict)
+                stride = 1;
 
-                /* Isolate free pages. */
-                for (; blockpfn < end_pfn; blockpfn += stride, page += stride) {
-                    int isolated;
+            page = pfn_to_page(blockpfn);
 
-                    /* Periodically drop the lock (if held) regardless of its
-                    * contention, to give chance to IRQs. Abort if fatal signal
-                    * pending. */
-                    if (!(blockpfn % COMPACT_CLUSTER_MAX)
-                        && compact_unlock_should_abort(&cc->zone->lock, flags, &locked, cc))
-                        break;
+            for (; blockpfn < end_pfn; blockpfn += stride, page += stride) {
+                int isolated;
 
-                    nr_scanned++;
+                if (!(blockpfn % COMPACT_CLUSTER_MAX)
+                    && compact_unlock_should_abort(&cc->zone->lock, flags, &locked, cc))
+                    break;
 
-                    /* For compound pages such as THP and hugetlbfs, we can save
-                    * potentially a lot of iterations if we skip them at once.
-                    * The check is racy, but we can consider only valid values
-                    * and the only danger is skipping too much. */
-                    if (PageCompound(page)) {
-                        const unsigned int order = compound_order(page);
+                nr_scanned++;
 
-                        if (blockpfn + (1UL << order) <= end_pfn) {
-                            blockpfn += (1UL << order) - 1;
-                            page += (1UL << order) - 1;
-                            nr_scanned += (1UL << order) - 1;
-                        }
-
-                        goto isolate_fail;
+                if (PageCompound(page)) {
+                    const unsigned int order = compound_order(page);
+                    if (blockpfn + (1UL << order) <= end_pfn) {
+                        blockpfn += (1UL << order) - 1;
+                        page += (1UL << order) - 1;
+                        nr_scanned += (1UL << order) - 1;
                     }
 
-                    if (!PageBuddy(page))
-                        goto isolate_fail;
-
-                    /* If we already hold the lock, we can skip some rechecking. */
-                    if (!locked) {
-                        locked = compact_lock_irqsave(&cc->zone->lock, &flags, cc);
-
-                        /* Recheck this is a buddy page under lock */
-                        if (!PageBuddy(page))
-                            goto isolate_fail;
-                    }
-
-                    /* Found a free page, will break it into order-0 pages */
-                    order = buddy_order(page);
-                    isolated = __isolate_free_page(page, order);
-                    if (!isolated)
-                        break;
-                    set_page_private(page, order);
-
-                    nr_scanned += isolated - 1;
-                    total_isolated += isolated;
-                    cc->nr_freepages += isolated;
-                    list_add_tail(&page->lru, freelist);
-
-                    if (!strict && cc->nr_migratepages <= cc->nr_freepages) {
-                        blockpfn += isolated;
-                        break;
-                    }
-                    /* Advance to the end of split page */
-                    blockpfn += isolated - 1;
-                    page += isolated - 1;
-                    continue;
-
-            isolate_fail:
-                    if (strict)
-                        break;
-
+                    goto isolate_fail;
                 }
 
-                if (locked)
-                    spin_unlock_irqrestore(&cc->zone->lock, flags);
+                if (!PageBuddy(page))
+                    goto isolate_fail;
 
-                /* Be careful to not go outside of the pageblock. */
-                if (unlikely(blockpfn > end_pfn))
-                    blockpfn = end_pfn;
+                /* If we already hold the lock, we can skip some rechecking. */
+                if (!locked) {
+                    locked = compact_lock_irqsave(&cc->zone->lock, &flags, cc);
 
-                trace_mm_compaction_isolate_freepages(*start_pfn, blockpfn,
-                                nr_scanned, total_isolated);
+                    /* Recheck this is a buddy page under lock */
+                    if (!PageBuddy(page))
+                        goto isolate_fail;
+                }
 
-                /* Record how far we have got within the block */
-                *start_pfn = blockpfn;
+                /* Found a free page, will break it into order-0 pages */
+                order = buddy_order(page);
+                isolated = __isolate_free_page(page, order) {
+                    struct zone *zone = page_zone(page);
+                    int mt = get_pageblock_migratetype(page);
 
-                /* If strict isolation is requested by CMA then check that all the
-                * pages requested were isolated. If there were any failures, 0 is
-                * returned and CMA will fail. */
-                if (strict && blockpfn < end_pfn)
-                    total_isolated = 0;
+                    if (!is_migrate_isolate(mt)) {
+                        unsigned long watermark;
+                        watermark = zone->_watermark[WMARK_MIN] + (1UL << order);
+                        if (!zone_watermark_ok(zone, 0, watermark, 0, ALLOC_CMA))
+                            return 0;
 
-                cc->total_free_scanned += nr_scanned;
-                if (total_isolated)
-                    count_compact_events(COMPACTISOLATED, total_isolated);
-                return total_isolated;
+                        __mod_zone_freepage_state(zone, -(1UL << order), mt);
+                    }
+
+                    del_page_from_free_list(page, zone, order);
+
+                    if (order >= pageblock_order - 1) {
+                        struct page *endpage = page + (1 << order) - 1;
+                        for (; page < endpage; page += pageblock_nr_pages) {
+                            int mt = get_pageblock_migratetype(page);
+                            if (migratetype_is_mergeable(mt))
+                                set_pageblock_migratetype(page, MIGRATE_MOVABLE);
+                        }
+                    }
+
+                    return 1UL << order;
+                }
+                if (!isolated)
+                    break;
+                set_page_private(page, order);
+
+                nr_scanned += isolated - 1;
+                total_isolated += isolated;
+                cc->nr_freepages += isolated;
+
+                list_add_tail(&page->lru, freelist);
+
+                if (!strict && cc->nr_migratepages <= cc->nr_freepages) {
+                    blockpfn += isolated;
+                    break;
+                }
+                /* Advance to the end of split page */
+                blockpfn += isolated - 1;
+                page += isolated - 1;
+                continue;
+
+        isolate_fail:
+                if (strict)
+                    break;
             }
+
+            if (locked)
+                spin_unlock_irqrestore(&cc->zone->lock, flags);
+
+            /* Be careful to not go outside of the pageblock. */
+            if (unlikely(blockpfn > end_pfn))
+                blockpfn = end_pfn;
+
+            /* Record how far we have got within the block */
+            *start_pfn = blockpfn;
+
+            if (strict && blockpfn < end_pfn)
+                total_isolated = 0;
+
+            cc->total_free_scanned += nr_scanned;
+            if (total_isolated)
+                count_compact_events(COMPACTISOLATED, total_isolated);
+            return total_isolated;
+        }
 
         /* Update the skip hint if the full pageblock was scanned */
         if (isolate_start_pfn == block_end_pfn)
@@ -9802,8 +10312,7 @@ void isolate_freepages(struct compact_control *cc)
             }
             break;
         } else if (isolate_start_pfn < block_end_pfn) {
-            /* If isolation failed early, do not continue
-            * needlessly. */
+            /* If isolation failed early, do not continue needlessly. */
             break;
         }
 
@@ -9815,15 +10324,39 @@ void isolate_freepages(struct compact_control *cc)
         stride = min_t(unsigned int, COMPACT_CLUSTER_MAX, stride << 1);
     }
 
-    /* Record where the free scanner will restart next time. Either we
-    * broke from the loop and set isolate_start_pfn based on the last
-    * call to isolate_freepages_block(), or we met the migration scanner
-    * and the loop terminated due to isolate_start_pfn < low_pfn */
     cc->free_pfn = isolate_start_pfn;
 
 splitmap:
-    /* __isolate_free_page() does not map the pages */
-    split_map_pages(freelist);
+    split_map_pages(freelist) {
+        unsigned int i, order, nr_pages;
+        struct page *page, *next;
+        LIST_HEAD(tmp_list);
+
+        list_for_each_entry_safe(page, next, list, lru) {
+            list_del(&page->lru);
+
+            order = page_private(page);
+            nr_pages = 1 << order;
+
+            post_alloc_hook(page, order, __GFP_MOVABLE);
+            if (order) {
+                split_page(page, order) {
+                    for (i = 1; i < (1 << order); i++) {
+                        set_page_refcounted(page + i);
+                    }
+                    split_page_owner(page, 1 << order);
+                    split_page_memcg(page, 1 << order);
+                }
+            }
+
+            for (i = 0; i < nr_pages; i++) {
+                list_add(&page->lru, &tmp_list);
+                page++;
+            }
+        }
+
+        list_splice(&tmp_list, list);
+    }
 }
 ```
 
@@ -9846,14 +10379,14 @@ void fast_isolate_freepages(struct compact_control *cc)
         return;
 
     /* If starting the scan, use a deeper search and use the highest
-    * PFN found if a suitable one is not found. */
+     * PFN found if a suitable one is not found. */
     if (cc->free_pfn >= cc->zone->compact_init_free_pfn) {
         limit = pageblock_nr_pages >> 1;
         scan_start = true;
     }
 
     /* Preferred point is in the top quarter of the scan space but take
-    * a pfn from the top half if the search is problematic. */
+     * a pfn from the top half if the search is problematic. */
     distance = (cc->free_pfn - cc->migrate_pfn);
     low_pfn = pageblock_start_pfn(cc->free_pfn - (distance >> 2));
     min_pfn = pageblock_start_pfn(cc->free_pfn - (distance >> 1));
@@ -9862,7 +10395,7 @@ void fast_isolate_freepages(struct compact_control *cc)
         low_pfn = min_pfn;
 
     /* Search starts from the last successful isolation order or the next
-    * order to search after a previous failure */
+     * order to search after a previous failure */
     cc->search_order = min_t(unsigned int, cc->order - 1, cc->search_order);
 
     for (order = cc->search_order;
@@ -9881,6 +10414,7 @@ void fast_isolate_freepages(struct compact_control *cc)
 
         spin_lock_irqsave(&cc->zone->lock, flags);
         freelist = &area->free_list[MIGRATE_MOVABLE];
+
         list_for_each_entry_reverse(freepage, freelist, buddy_list) {
             unsigned long pfn;
 
