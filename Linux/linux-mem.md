@@ -60,7 +60,6 @@
     * [slub_alloc](#slub_alloc)
     * [slub_free](#slub_free)
 
-* [kswapd](#kswapd)
 * [brk](#brk)
 
 * [pgd_mapping](#pgd_mapping)
@@ -114,6 +113,9 @@
         * [isolate_migratepages_block](#isolate_migratepages_block)
     * [isolate_freepages](#isolate_freepages)
         * [fast_isolate_freepages](#fast_isolate_freepages)
+
+* [kcompactd](#kcompactd)
+* [kswapd](#kswapd)
 
 * [fork](#fork)
     * [copy_page_range](#copy_page_range)
@@ -638,7 +640,26 @@ bootmem_init() {
                         /* calculate the freesize of pgdat */
                         zone_init_internals(zone, j, nid, freesize);
                         set_pageblock_order();
-                        setup_usemap(zone);
+                        setup_usemap(zone) {
+                            unsigned long usemapsize = usemap_size(
+                                zone->zone_start_pfn, zone->spanned_pages) {
+
+                                unsigned long usemapsize;
+                                zonesize += zone_start_pfn & (pageblock_nr_pages-1);
+                                usemapsize = roundup(zonesize, pageblock_nr_pages);
+                                usemapsize = usemapsize >> pageblock_order;
+                                usemapsize *= NR_PAGEBLOCK_BITS;
+                                usemapsize = roundup(usemapsize, BITS_PER_LONG);
+
+                                return usemapsize / BITS_PER_BYTE;
+                            }
+                            zone->pageblock_flags = NULL;
+                            if (usemapsize) {
+                                zone->pageblock_flags = memblock_alloc_node(
+                                    usemapsize, SMP_CACHE_BYTES, zone_to_nid(zone)
+                                );
+                            }
+                        }
                         init_currently_empty_zone();
                     }
                     lru_gen_init_pgdat(pgdat);
@@ -2224,15 +2245,11 @@ struct page {
 
 # alloc_pages
 
-![](../Images/Kernel/mem-alloc_pages.png)
-
----
-
-![](../Images/Kernel/mem-free_area.png)
-
----
-
 ![](../Images/Kernel/mem-alloc_pages.svg)
+
+watermark | free area
+--- | ---
+![](../Images/Kernel/mem-alloc_pages.png) | ![](../Images/Kernel/mem-free_area.png)
 
 * [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
     * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) [:two:](https://lwn.net/Articles/591990/)
@@ -2763,8 +2780,9 @@ struct page *rmqueue(struct zone *preferred_zone,
 
 out:
     /* Separate test+clear to avoid unnecessary atomics */
-    if ((alloc_flags & ALLOC_KSWAPD) &&
-        unlikely(test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags))) {
+    if ((alloc_flags & ALLOC_KSWAPD)
+        && unlikely(test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags))) {
+
         clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
         wakeup_kswapd(zone, 0, 0, zone_idx(zone));
     }
@@ -2907,15 +2925,17 @@ bool __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
                 if (free_area_empty(area, fallback_mt))
                     continue;
 
-                ret = can_steal_fallback(order, migratetype) {
+                ret = can_steal_fallback(order, migratetype/*start_mt*/) {
                     if (order >= pageblock_order)
                         return true;
 
-                    if (order >= pageblock_order / 2 ||
-                        start_mt == MIGRATE_RECLAIMABLE ||
-                        start_mt == MIGRATE_UNMOVABLE ||
-                        page_group_by_mobility_disabled)
+                    if (order >= pageblock_order / 2
+                        || start_mt == MIGRATE_RECLAIMABLE
+                        || start_mt == MIGRATE_UNMOVABLE
+                        || page_group_by_mobility_disabled) {
+
                         return true;
+                    }
 
                     return false;
                 }
@@ -2957,10 +2977,6 @@ find_smallest:
         if (fallback_mt != -1)
             break;
     }
-
-    /* This should not happen - we already found a suitable fallback
-    * when looking for the largest page. */
-    VM_BUG_ON(current_order > MAX_PAGE_ORDER);
 
 do_steal:
     page = get_page_from_free_area(area, fallback_mt);
@@ -4982,71 +4998,6 @@ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
             }
         }
     }
-}
-```
-
-# kswapd
-
-```c
-//1. active page out when alloc
-get_page_from_freelist();
-    node_reclaim();
-        __node_reclaim();
-            shrink_node();
-
-/* 2. positive page out by kswapd */
-static int kswapd(void *p)
-{
-    unsigned int alloc_order, reclaim_order;
-    unsigned int classzone_idx = MAX_NR_ZONES - 1;
-    pg_data_t *pgdat = (pg_data_t*)p;
-    struct task_struct *tsk = current;
-
-    for ( ; ; ) {
-        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
-            classzone_idx);
-        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
-    }
-}
-/* balance_pgdat->kswapd_shrink_node->shrink_node */
-
-/* This is a basic per-node page freer.  Used by both kswapd and direct reclaim. */
-static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memcg,
-            struct scan_control *sc, unsigned long *lru_pages)
-{
-    unsigned long nr[NR_LRU_LISTS];
-    enum lru_list lru;
-
-    while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
-        nr[LRU_INACTIVE_FILE]) {
-        unsigned long nr_anon, nr_file, percentage;
-        unsigned long nr_scanned;
-
-        for_each_evictable_lru(lru) {
-            if (nr[lru]) {
-                nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
-                nr[lru] -= nr_to_scan;
-
-                nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, memcg, sc);
-            }
-        }
-    }
-}
-
-#define for_each_evictable_lru(lru) for (lru = 0; lru <= LRU_ACTIVE_FILE; lru++)
-
-static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
-         struct lruvec *lruvec, struct mem_cgroup *memcg,
-         struct scan_control *sc)
-{
-  if (is_active_lru(lru)) {
-        if (inactive_list_is_low(lruvec, is_file_lru(lru),
-            memcg, sc, true))
-            shrink_active_list(nr_to_scan, lruvec, sc, lru);
-        return 0;
-  }
-
-  return shrink_inactive_list(nr_to_scan, lruvec, sc, lru);
 }
 ```
 
@@ -10521,7 +10472,318 @@ void fast_isolate_freepages(struct compact_control *cc)
 }
 ```
 
+# kcompactd
+
+```c
+int kcompactd(void *p)
+{
+    pg_data_t *pgdat = (pg_data_t *)p;
+    struct task_struct *tsk = current;
+    long default_timeout = msecs_to_jiffies(HPAGE_FRAG_CHECK_INTERVAL_MSEC);
+    long timeout = default_timeout;
+
+    const struct cpumask *cpumask = cpumask_of_node(pgdat->node_id);
+
+    if (!cpumask_empty(cpumask))
+        set_cpus_allowed_ptr(tsk, cpumask);
+
+    set_freezable();
+
+    pgdat->kcompactd_max_order = 0;
+    pgdat->kcompactd_highest_zoneidx = pgdat->nr_zones - 1;
+
+    while (!kthread_should_stop()) {
+        unsigned long pflags;
+
+        if (!sysctl_compaction_proactiveness)
+            timeout = MAX_SCHEDULE_TIMEOUT;
+        ret = wait_event_freezable_timeout(pgdat->kcompactd_wait, kcompactd_work_requested(pgdat), timeout);
+        if (ret && !pgdat->proactive_compact_trigger) {
+            kcompactd_do_work(pgdat) {
+                int zoneid;
+                struct zone *zone;
+                struct compact_control cc = {
+                    .order = pgdat->kcompactd_max_order,
+                    .search_order = pgdat->kcompactd_max_order,
+                    .highest_zoneidx = pgdat->kcompactd_highest_zoneidx,
+                    .mode = MIGRATE_SYNC_LIGHT,
+                    .ignore_skip_hint = false,
+                    .gfp_mask = GFP_KERNEL,
+                };
+                enum compact_result ret;
+
+                for (zoneid = 0; zoneid <= cc.highest_zoneidx; zoneid++) {
+                    zone = &pgdat->node_zones[zoneid];
+                    if (!populated_zone(zone))
+                        continue;
+
+                    if (compaction_deferred(zone, cc.order))
+                        continue;
+
+                    ret = compaction_suit_allocation_order(zone, cc.order, zoneid, ALLOC_WMARK_MIN) {
+                        unsigned long watermark;
+
+                        watermark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK);
+                        if (zone_watermark_ok(zone, order, watermark, highest_zoneidx,
+                                    alloc_flags))
+                            return COMPACT_SUCCESS;
+
+                        ret = compaction_suitable(zone, order, highest_zoneidx) {
+                            enum compact_result compact_result;
+                            bool suitable;
+
+                            suitable = __compaction_suitable(zone, order, highest_zoneidx, zone_page_state(zone, NR_FREE_PAGES)) {
+                                unsigned long watermark = (order > PAGE_ALLOC_COSTLY_ORDER)
+                                    ? low_wmark_pages(zone) : min_wmark_pages(zone);
+                                watermark += compact_gap(order) { return 2UL << order; }
+                                return __zone_watermark_ok(zone, 0, watermark, highest_zoneidx, ALLOC_CMA, wmark_target);
+                            }
+                            /* index towards 0 implies failure is due to lack of memory
+                             * index towards 1000 implies failure is due to fragmentation */
+                            if (suitable) {
+                                compact_result = COMPACT_CONTINUE;
+                                if (order > PAGE_ALLOC_COSTLY_ORDER) {
+                                    int fragindex = fragmentation_index(zone, order) {
+                                        struct contig_page_info info;
+                                        fill_contig_page_info(zone, order, &info);
+                                            --->
+                                        return __fragmentation_index(order, &info) {
+                                            unsigned long requested = 1UL << order;
+
+                                            if (WARN_ON_ONCE(order > MAX_PAGE_ORDER))
+                                                return 0;
+
+                                            if (!info->free_blocks_total)
+                                                return 0;
+
+                                            /* Fragmentation index only makes sense when a request would fail */
+                                            if (info->free_blocks_suitable)
+                                                return -1000;
+
+                                            /* Index is between 0 and 1 so return within 3 decimal places
+                                             *
+                                             * 0 => allocation would fail due to lack of memory
+                                             * 1 => allocation would fail due to fragmentation */
+                                            return 1000 - div_u64(
+                                                (1000+
+                                                    (div_u64(
+                                                        info->free_pages * 1000ULL,
+                                                        requested)
+                                                    )
+                                                ),
+                                                info->free_blocks_total
+                                            );
+                                        }
+                                    }
+                                    if (fragindex >= 0 &&
+                                        fragindex <= sysctl_extfrag_threshold) {
+                                        suitable = false;
+                                        compact_result = COMPACT_NOT_SUITABLE_ZONE;
+                                    }
+                                }
+                            } else {
+                                compact_result = COMPACT_SKIPPED;
+                            }
+
+                            return suitable;
+                        }
+                        if (!ret)
+                            return COMPACT_SKIPPED;
+
+                        return COMPACT_CONTINUE;
+                    }
+                    if (ret != COMPACT_CONTINUE)
+                        continue;
+
+                    if (kthread_should_stop())
+                        return;
+
+                    cc.zone = zone;
+                    status = compact_zone(&cc, NULL);
+                        --->
+
+                    if (status == COMPACT_SUCCESS) {
+                        compaction_defer_reset(zone, cc.order, false);
+                    } else if (status == COMPACT_PARTIAL_SKIPPED || status == COMPACT_COMPLETE) {
+                        drain_all_pages(zone);
+                        defer_compaction(zone, cc.order);
+                    }
+                }
+
+                if (pgdat->kcompactd_max_order <= cc.order)
+                    pgdat->kcompactd_max_order = 0;
+                if (pgdat->kcompactd_highest_zoneidx >= cc.highest_zoneidx)
+                    pgdat->kcompactd_highest_zoneidx = pgdat->nr_zones - 1;
+            }
+            timeout = default_timeout;
+            continue;
+        }
+
+        timeout = default_timeout;
+        ret = should_proactive_compact_node(pgdat) {
+            int wmark_high;
+
+            if (!sysctl_compaction_proactiveness || kswapd_is_running(pgdat))
+                return false;
+
+            wmark_high = fragmentation_score_wmark(false) {
+                unsigned int wmark_low = max(100U - sysctl_compaction_proactiveness, 5U);
+                return low ? wmark_low : min(wmark_low + 10, 100U);
+            }
+            return fragmentation_score_node(pgdat) {
+                unsigned int score = 0;
+                int zoneid;
+
+                for (zoneid = 0; zoneid < MAX_NR_ZONES; zoneid++) {
+                    struct zone *zone = &pgdat->node_zones[zoneid];
+                    if (!populated_zone(zone))
+                        continue;
+
+                    score += fragmentation_score_zone_weighted(zone) {
+                        unsigned long score = zone->present_pages * fragmentation_score_zone(zone) {
+                            return extfrag_for_order(zone, COMPACTION_HPAGE_ORDER) {
+                                struct contig_page_info info;
+
+                                fill_contig_page_info(zone, order, &info) {
+                                    unsigned int order;
+
+                                    info->free_pages = 0;
+                                    info->free_blocks_total = 0;
+                                    info->free_blocks_suitable = 0;
+
+                                    for (order = 0; order < NR_PAGE_ORDERS; order++) {
+                                        unsigned long blocks = data_race(zone->free_area[order].nr_free);
+                                        info->free_blocks_total += blocks;
+
+                                        /* Count free base pages */
+                                        info->free_pages += blocks << order;
+
+                                        /* Count the suitable free blocks */
+                                        if (order >= suitable_order)
+                                            info->free_blocks_suitable +=
+                                                blocks << (order - suitable_order);
+                                    }
+                                }
+                                if (info.free_pages == 0)
+                                    return 0;
+
+                                return div_u64(
+                                    (info.free_pages - (info.free_blocks_suitable << order)) * 100,
+                                    info.free_pages
+                                );
+                            }
+                        }
+                        return div64_ul(score, zone->zone_pgdat->node_present_pages + 1);
+                    }
+                }
+
+                return score;
+            } > wmark_high;
+        }
+        if (ret) {
+            unsigned int prev_score, score;
+
+            prev_score = fragmentation_score_node(pgdat);
+            proactive_compact_node(pgdat) {
+                int zoneid;
+                struct zone *zone;
+                struct compact_control cc = {
+                    .order = -1,
+                    .mode = MIGRATE_SYNC_LIGHT,
+                    .ignore_skip_hint = true,
+                    .whole_zone = true,
+                    .gfp_mask = GFP_KERNEL,
+                    .proactive_compaction = true,
+                };
+
+                for (zoneid = 0; zoneid < MAX_NR_ZONES; zoneid++) {
+                    zone = &pgdat->node_zones[zoneid];
+                    if (!populated_zone(zone))
+                        continue;
+                    cc.zone = zone;
+                    compact_zone(&cc, NULL);
+                }
+            }
+            score = fragmentation_score_node(pgdat);
+            if (unlikely(score >= prev_score))
+                timeout = default_timeout << COMPACT_MAX_DEFER_SHIFT;
+        }
+        if (unlikely(pgdat->proactive_compact_trigger))
+            pgdat->proactive_compact_trigger = false;
+    }
+
+    return 0;
+}
+```
+
+
+# kswapd
+
+```c
+//1. active page out when alloc
+get_page_from_freelist();
+    node_reclaim();
+        __node_reclaim();
+            shrink_node();
+
+/* 2. positive page out by kswapd */
+static int kswapd(void *p)
+{
+    unsigned int alloc_order, reclaim_order;
+    unsigned int classzone_idx = MAX_NR_ZONES - 1;
+    pg_data_t *pgdat = (pg_data_t*)p;
+    struct task_struct *tsk = current;
+
+    for ( ; ; ) {
+        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
+            classzone_idx);
+        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
+    }
+}
+/* balance_pgdat->kswapd_shrink_node->shrink_node */
+
+/* This is a basic per-node page freer.  Used by both kswapd and direct reclaim. */
+static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memcg,
+            struct scan_control *sc, unsigned long *lru_pages)
+{
+    unsigned long nr[NR_LRU_LISTS];
+    enum lru_list lru;
+
+    while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
+        nr[LRU_INACTIVE_FILE]) {
+        unsigned long nr_anon, nr_file, percentage;
+        unsigned long nr_scanned;
+
+        for_each_evictable_lru(lru) {
+            if (nr[lru]) {
+                nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
+                nr[lru] -= nr_to_scan;
+
+                nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, memcg, sc);
+            }
+        }
+    }
+}
+
+#define for_each_evictable_lru(lru) for (lru = 0; lru <= LRU_ACTIVE_FILE; lru++)
+
+static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
+         struct lruvec *lruvec, struct mem_cgroup *memcg,
+         struct scan_control *sc)
+{
+  if (is_active_lru(lru)) {
+        if (inactive_list_is_low(lruvec, is_file_lru(lru),
+            memcg, sc, true))
+            shrink_active_list(nr_to_scan, lruvec, sc, lru);
+        return 0;
+  }
+
+  return shrink_inactive_list(nr_to_scan, lruvec, sc, lru);
+}
+```
+
 # fork
+
 ```c
 kernel_clone()
     copy_mm() {
