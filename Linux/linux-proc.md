@@ -135,8 +135,6 @@
 
 <img src='../Images/Kernel/kernel-structual.svg' style='max-height:850px'/>
 
-![](../Images/Kernel/proc-xmind.png)
-
 # cpu
 <img src='../Images/Kernel/init-cpu.png' style='max-height:850px'/>
 
@@ -277,6 +275,8 @@ primary_entry
 
 
 # start_kernel
+
+![](../Images/Kernel/ker-start.svg)
 
 ```c
 /* init/main.c */
@@ -814,9 +814,12 @@ entry_SYSCALL_64()
         pushq  2*8(%rdi)  /* RIP */
 
         INTERRUPT_RETURN
-```
+```f
 
 # process
+
+![](../Images/Kernel/proc-process-management.svg)
+
 <img src='../Images/Kernel/proc-compile.png' style='max-height:850px'/>
 
 ```c
@@ -5433,6 +5436,8 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
 * [dumpstack - uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html)
 
 # load_balance
+
+![](../Images/Kernel/proc-load_balance.svg)
 
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
 

@@ -7237,6 +7237,8 @@ out:
 
 # rmap
 
+![](../Images/Kernel/mem-rmap.svg)
+
 ![](../Images/Kernel/mem-rmap-arch.png)
 
 ![](../Images/Kernel/mem-rmap-1.png)
