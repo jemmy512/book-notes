@@ -2557,9 +2557,54 @@ retry:
             }
 
             /* Return true if free base pages are above 'mark' */
-            if (__zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags,
-                            free_pages))
+            ret = __zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags, free_pages) {
+                long min = mark;
+                int o;
+
+                free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags);
+
+                if (unlikely(alloc_flags & ALLOC_RESERVES)) {
+                    if (alloc_flags & ALLOC_MIN_RESERVE) {
+                        min -= min / 2;
+                        if (alloc_flags & ALLOC_NON_BLOCK) {
+                            min -= min / 4;
+                        }
+                    }
+                    if (alloc_flags & ALLOC_OOM) {
+                        min -= min / 2;
+                    }
+                }
+
+                if (free_pages <= min + z->lowmem_reserve[highest_zoneidx])
+                    return false;
+
+                if (!order)
+                    return true;
+
+                for (o = order; o < NR_PAGE_ORDERS; o++) {
+                    struct free_area *area = &z->free_area[o];
+                    int mt;
+
+                    if (!area->nr_free)
+                        continue;
+
+                    for (mt = 0; mt < MIGRATE_PCPTYPES; mt++) {
+                        if (!free_area_empty(area, mt))
+                            return true;
+                    }
+                    if ((alloc_flags & ALLOC_CMA) && !free_area_empty(area, MIGRATE_CMA)) {
+                        return true;
+                    }
+                    if ((alloc_flags & (ALLOC_HIGHATOMIC|ALLOC_OOM)) &&
+                        !free_area_empty(area, MIGRATE_HIGHATOMIC)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (ret) {
                 return true;
+            }
 
             /* Ignore watermark boosting for __GFP_HIGH order-0 allocations
              * when checking the min watermark. The min watermark is the
@@ -9231,7 +9276,7 @@ status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highes
     };
     struct capture_control capc = {
         .cc = &cc,
-        .page = NULL,
+        .page = NULL, /* call compaction_capture to capture the page when __free_one_page */
     };
 
     WRITE_ONCE(current->capture_control, &capc);
@@ -9551,14 +9596,9 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
     bool fast_find_block;
 
     low_pfn = fast_find_migrateblock(cc);
-    block_start_pfn = pageblock_start_pfn(low_pfn);
-    if (block_start_pfn < cc->zone->zone_start_pfn)
-        block_start_pfn = cc->zone->zone_start_pfn;
-
+    block_start_pfn = max(pageblock_start_pfn(low_pfn), cc->zone->zone_start_pfn);
     fast_find_block = low_pfn != cc->migrate_pfn && !cc->fast_search_fail;
-
     block_end_pfn = pageblock_end_pfn(low_pfn);
-
 
     for (; block_end_pfn <= cc->free_pfn;
         fast_find_block = false,
@@ -9584,8 +9624,10 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
         * before making it "skip" so other compaction instances do
         * not scan the same block. */
         if ((pageblock_aligned(low_pfn) || low_pfn == cc->zone->zone_start_pfn)
-            && !fast_find_block && !isolation_suitable(cc, page))
+            && !fast_find_block && !isolation_suitable(cc, page)) {
+
             continue;
+        }
 
         ret = suitable_migration_source(cc, page) {
             int block_mt;
@@ -9617,7 +9659,6 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
             continue;
         }
 
-        /* Perform the isolation */
         ret = isolate_migratepages_block(cc, low_pfn, block_end_pfn, isolate_mode);
         if (ret) {
             return ISOLATE_ABORT;
@@ -9634,6 +9675,13 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
 ```
 
 ### fast_find_migrateblock
+
+1. If the target order is too small, then there's absolutely no need to search. Still, use cc->migrate_pfn as the starting pfn.
+2. Since there's a requirement for cc->order, it's only applicable to `direct memory` and `async memory` compaction (only these two scenarios specify cc->order; for other scenarios, cc->order is -1).
+3. The pageblock where the free page is located must be within the 1/2 or 1/8 of the memory search range. This part is the most likely area to be scanned by migrate scanner, to avoid affecting the scanning of free pages.
+4. Scanning for free pages will alter the layout of the freelist, so try to ensure that the free list isn't scanned for free memory blocks repeatedly in the next scan.
+5. If cc->ignore_skip_hint is set, the migrate scanner won't use the fast mechanism for migrating pages.
+6. Only search for movable free pages, and the search range starts from order - 1.
 
 ```c
 unsigned long fast_find_migrateblock(struct compact_control *cc)
@@ -9714,7 +9762,13 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
                 /* Reorder to so a future search skips recent pages */
                 move_freelist_tail(freelist, freepage);
 
-                update_fast_start_pfn(cc, free_pfn);
+                update_fast_start_pfn(cc, free_pfn) {
+                    if (cc->fast_start_pfn == ULONG_MAX)
+                        return;
+                    if (!cc->fast_start_pfn)
+                        cc->fast_start_pfn = pfn;
+                    cc->fast_start_pfn = min(cc->fast_start_pfn, pfn);
+                }
                 pfn = pageblock_start_pfn(free_pfn);
                 if (pfn < cc->zone->zone_start_pfn)
                     pfn = cc->zone->zone_start_pfn;
@@ -9728,17 +9782,29 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
 
     cc->total_migrate_scanned += nr_scanned;
 
-    /* If fast scanning failed then use a cached entry for a page block
-    * that had free pages as the basis for starting a linear scan. */
     if (!found_block) {
         cc->fast_search_fail++;
-        pfn = reinit_migrate_pfn(cc);
+        pfn = reinit_migrate_pfn(cc) {
+            if (!cc->fast_start_pfn || cc->fast_start_pfn == ULONG_MAX)
+                return cc->migrate_pfn;
+            cc->migrate_pfn = cc->fast_start_pfn;
+            cc->fast_start_pfn = ULONG_MAX;
+
+            return cc->migrate_pfn;
+        }
     }
     return pfn;
 }
 ```
 
 ### isolate_migratepages_block
+
+1. Not isolate huge pages, but alloc_contig_range may dissolve hugetlbfs
+2. Not isolate free buddy pages
+3. non-LRU page allocated for kernel usage, can be isolated if the developer impelements isolate_page, migratepage and putback_page operations
+4. Not isolatte pinned pages
+5. Only isolate annonymous pages for GFP_NOFS
+6. Isolation affected by policy: ISOLATE_ASYNC_MIGRATE wont isolate dirty pages and writing pages
 
 ```c
 int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
@@ -9763,10 +9829,8 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
     while (unlikely(too_many_isolated(cc))) {
         if (cc->nr_migratepages)
             return -EAGAIN;
-
         if (cc->mode == MIGRATE_ASYNC)
             return -EAGAIN;
-
         reclaim_throttle(pgdat, VMSCAN_THROTTLE_ISOLATED);
 
         if (fatal_signal_pending(current))
@@ -10132,7 +10196,19 @@ void isolate_freepages(struct compact_control *cc)
             continue;
         }
 
-        if (!suitable_migration_target(cc, page))
+        ret = suitable_migration_target(cc, page) {
+            if (PageBuddy(page) && (buddy_order_unsafe(page) >= pageblock_order))
+                return false;
+            }
+
+            if (cc->ignore_block_suitable)
+                return true;
+            if (is_migrate_movable(get_pageblock_migratetype(page)))
+                return true;
+
+            return false;
+        }
+        if (!ret)
             continue;
 
         if (!isolation_suitable(cc, page))
@@ -10313,6 +10389,8 @@ splitmap:
 
 ### fast_isolate_freepages
 
+![](../Images/Kernel/mem-isolate_freepages-low-min-pfn.png)
+
 ```c
 void fast_isolate_freepages(struct compact_control *cc)
 {
@@ -10385,7 +10463,6 @@ void fast_isolate_freepages(struct compact_control *cc)
 
             if (pfn >= min_pfn && pfn > high_pfn) {
                 high_pfn = pfn;
-
                 /* Shorten the scan if a candidate is found */
                 limit >>= 1;
             }
@@ -10397,7 +10474,6 @@ void fast_isolate_freepages(struct compact_control *cc)
         /* Use a maximum candidate pfn if a preferred one was not found */
         if (!page && high_pfn) {
             page = pfn_to_page(high_pfn);
-
             /* Update freepage for the list reorder below */
             freepage = page;
         }
@@ -10405,7 +10481,6 @@ void fast_isolate_freepages(struct compact_control *cc)
         /* Reorder to so a future search skips recent pages */
         move_freelist_head(freelist, freepage);
 
-        /* Isolate the page if available */
         if (page) {
             if (__isolate_free_page(page, order)) {
                 set_page_private(page, order);
@@ -10468,11 +10543,115 @@ void fast_isolate_freepages(struct compact_control *cc)
         return;
 
     low_pfn = page_to_pfn(page);
-    fast_isolate_around(cc, low_pfn);
+    fast_isolate_around(cc, low_pfn) {
+        unsigned long start_pfn, end_pfn;
+        struct page *page;
+
+        /* Do not search around if there are enough pages already */
+        if (cc->nr_freepages >= cc->nr_migratepages)
+            return;
+
+        /* Minimise scanning during async compaction */
+        if (cc->direct_compaction && cc->mode == MIGRATE_ASYNC)
+            return;
+
+        /* Pageblock boundaries */
+        start_pfn = max(pageblock_start_pfn(pfn), cc->zone->zone_start_pfn);
+        end_pfn = min(pageblock_end_pfn(pfn), zone_end_pfn(cc->zone));
+
+        page = pageblock_pfn_to_page(start_pfn, end_pfn, cc->zone);
+        if (!page)
+            return;
+
+        isolate_freepages_block(cc, &start_pfn, end_pfn, &cc->freepages, 1, false);
+
+        /* Skip this pageblock in the future as it's full or nearly full */
+        if (start_pfn == end_pfn && !cc->no_set_skip_hint)
+            set_pageblock_skip(page);
+    }
 }
 ```
 
 # kcompactd
+
+* The conditions to waktup kcompactd
+    1. Before kswapd run
+
+        ```c
+        void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
+		    enum zone_type highest_zoneidx) {
+
+            /* Hopeless node, leave it to direct reclaim if possible */
+            if (pgdat->kswapd_failures >= MAX_RECLAIM_RETRIES
+                || (pgdat_balanced(pgdat, order, highest_zoneidx)
+                && !pgdat_watermark_boosted(pgdat, highest_zoneidx))) {
+
+                if (!(gfp_flags & __GFP_DIRECT_RECLAIM))
+                    wakeup_kcompactd(pgdat, order, highest_zoneidx);
+                return;
+            }
+        }
+        ```
+
+        wakeup_kcompactd if the failure of kswapd comes from external fragments not low memory.
+
+    2. When kswapd run
+
+        ```c
+        steal_suitable_fallback(zone, page, alloc_flags, start_migratetype, can_steal) {
+            /* Boost watermarks to increase reclaim pressure to reduce the
+             * likelihood of future fallbacks. Wake kswapd now as the node
+             * may be balanced overall and kswapd will not wake naturally. */
+            if (boost_watermark(zone) && (alloc_flags & ALLOC_KSWAPD))
+                set_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
+        }
+
+        struct page *rmqueue(struct zone *preferred_zone,
+            struct zone *zone, unsigned int order,
+            gfp_t gfp_flags, unsigned int alloc_flags,
+            int migratetype) {
+
+            if ((alloc_flags & ALLOC_KSWAPD)
+                && unlikely(test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags))) {
+
+                clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
+                wakeup_kswapd(zone, 0, 0, zone_idx(zone));
+            }
+
+            return page;
+        }
+
+        static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx) {
+            nr_boost_reclaim = 0;
+            for (i = 0; i <= highest_zoneidx; i++) {
+                zone = pgdat->node_zones + i;
+                if (!managed_zone(zone))
+                    continue;
+                nr_boost_reclaim += zone->watermark_boost;
+                zone_boosts[i] = zone->watermark_boost;
+            }
+            boosted = nr_boost_reclaim;
+
+            if (boosted) {
+                wakeup_kcompactd(pgdat, pageblock_order, highest_zoneidx);
+            }
+        }
+
+        ```
+
+    3. After kswapd run
+
+        ```c
+        void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
+            unsigned int highest_zoneidx) {
+
+            if (prepare_kswapd_sleep(pgdat, reclaim_order, highest_zoneidx)) {
+                /* We have freed the memory, now we should compact it to make
+                 * allocation of the requested order possible. */
+                wakeup_kcompactd(pgdat, alloc_order, highest_zoneidx);
+            }
+        }
+        ```
 
 ```c
 int kcompactd(void *p)
@@ -10524,15 +10703,16 @@ int kcompactd(void *p)
                         unsigned long watermark;
 
                         watermark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK);
-                        if (zone_watermark_ok(zone, order, watermark, highest_zoneidx,
-                                    alloc_flags))
+                        if (zone_watermark_ok(zone, order, watermark, highest_zoneidx, alloc_flags)) {
                             return COMPACT_SUCCESS;
+                        }
 
                         ret = compaction_suitable(zone, order, highest_zoneidx) {
                             enum compact_result compact_result;
                             bool suitable;
 
                             suitable = __compaction_suitable(zone, order, highest_zoneidx, zone_page_state(zone, NR_FREE_PAGES)) {
+
                                 unsigned long watermark = (order > PAGE_ALLOC_COSTLY_ORDER)
                                     ? low_wmark_pages(zone) : min_wmark_pages(zone);
                                 watermark += compact_gap(order) { return 2UL << order; }
@@ -10565,7 +10745,7 @@ int kcompactd(void *p)
                                              * 0 => allocation would fail due to lack of memory
                                              * 1 => allocation would fail due to fragmentation */
                                             return 1000 - div_u64(
-                                                (1000+
+                                                (1000 +
                                                     (div_u64(
                                                         info->free_pages * 1000ULL,
                                                         requested)
@@ -10575,8 +10755,7 @@ int kcompactd(void *p)
                                             );
                                         }
                                     }
-                                    if (fragindex >= 0 &&
-                                        fragindex <= sysctl_extfrag_threshold) {
+                                    if (fragindex >= 0 && fragindex <= sysctl_extfrag_threshold) {
                                         suitable = false;
                                         compact_result = COMPACT_NOT_SUITABLE_ZONE;
                                     }
@@ -10626,7 +10805,7 @@ int kcompactd(void *p)
             if (!sysctl_compaction_proactiveness || kswapd_is_running(pgdat))
                 return false;
 
-            wmark_high = fragmentation_score_wmark(false) {
+            wmark_high = fragmentation_score_wmark(false/*low*/) {
                 unsigned int wmark_low = max(100U - sysctl_compaction_proactiveness, 5U);
                 return low ? wmark_low : min(wmark_low + 10, 100U);
             }
@@ -10654,11 +10833,7 @@ int kcompactd(void *p)
                                     for (order = 0; order < NR_PAGE_ORDERS; order++) {
                                         unsigned long blocks = data_race(zone->free_area[order].nr_free);
                                         info->free_blocks_total += blocks;
-
-                                        /* Count free base pages */
                                         info->free_pages += blocks << order;
-
-                                        /* Count the suitable free blocks */
                                         if (order >= suitable_order)
                                             info->free_blocks_suitable +=
                                                 blocks << (order - suitable_order);
@@ -10702,6 +10877,7 @@ int kcompactd(void *p)
                         continue;
                     cc.zone = zone;
                     compact_zone(&cc, NULL);
+                        --->
                 }
             }
             score = fragmentation_score_node(pgdat);
@@ -10720,7 +10896,7 @@ int kcompactd(void *p)
 # kswapd
 
 ```c
-//1. active page out when alloc
+/* 1. active page out when alloc */
 get_page_from_freelist();
     node_reclaim();
         __node_reclaim();
@@ -10740,6 +10916,7 @@ static int kswapd(void *p)
         reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
     }
 }
+
 /* balance_pgdat->kswapd_shrink_node->shrink_node */
 
 /* This is a basic per-node page freer.  Used by both kswapd and direct reclaim. */
