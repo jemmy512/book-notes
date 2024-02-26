@@ -1,0 +1,174 @@
+
+**********************************************  Linux Q&A Network  **********************************************
+
+1. TCP/IP协议栈层次结构
+      | OSI中的层     功能                                    TCP/IP协议族                          设备
+      | 应用层       文件传输，电子邮件，                     TFTP，HTTP，SNMP，                
+    5 |              文件服务，虚拟终端                       FTP，SMTP，DNS，Telnet
+    　| 表示层       数据格式化，代码转换，数据加密           没有协议
+    　| 会话层       解除或建立与别的接点的联系               没有协议
+    --------------------------------------------------------------------------------------------------------------
+    4 | 传输层       提供端对端的接口                         TCP，UDP                            四层交换机
+    3 | 网络层       为数据包选择路由                         IP，ICMP，RIP，OSPF，BGP，IGMP      路由器，三层交换机
+    2 | 数据链路层   传输有地址的帧以及错误检测功能           SLIP，CSLIP，PPP，ARP，RARP，MTU    网桥，网卡，交换机
+    1 | 物理层       以二进制数据形式在物理媒体上传输数据     ISO2110，IEEE802，IEEE802.2         中继器，集线器
+    
+    特点：
+        面向连接：   两端组成一个连接，每端以五元组为标识
+        双工字节流： 采用字节流进行双工数据通信
+        有序性：     利用序列号保证发送的有序性
+        可靠性：     利用ACK保证数据的可靠性
+        流量控制：   接收方利用接收窗口通告发送方
+        拥塞控制：   接收方利用拥塞窗口通告发送方
+    
+2. TCP三次握手需要知道的细节点
+
+3. TCP四次挥手需要知道的细节点(CLOSE_WAIT、TIME_WAIT、MSL)
+
+3.1 TIME_WAIT
+    第一，确保主机A最后发送的确认能够到达主机B。如果处于LAST-ACK状态的主机B一直收不到来自主机A的确认，它会重传断开连接请求，
+    然后主机A就可以有足够的时间去再次发送确认。但是这也只能尽最大力量来确保能够正常断开，如果主机A的确认总是在网络中滞留失效，
+    从而超过了2MSL，最后也无法正常断开；
+
+    第二，如果主机A在发送了确认之后立即进入CLOSED状态。假设之后主机A再次向主机B发送一条连接请求，而这条连接请求比之前的确认报文更早地到达主机B，
+    则会使得主机B以为这条连接请求是在旧的连接中A发出的报文，并不看成是一条新的连接请求了，即使得这个连接请求失效了，增加2MSL的时间可以使得这个失
+    效的连接请求报文作废，这样才不影响下次新的连接请求中出现失效的连接请求。
+
+4. TCP与UDP的区别与适用场景
+    TCP可靠性：重连，重发，通信建立在连接基础上，协议栈保证数据有序性
+    
+5. linux常见网络模型详解(select、poll与epoll)
+
+6. epoll_event结构中的epoll_data_t的fd与ptr的使用场景
+
+7. Windows常见的网络模型详解(select、WSAEventSelect、WSAAsyncSelect)
+8. Windows上的完成端口模型(IOCP)
+9. 异步的connect函数如何编写
+
+10.select函数可以检测网络异常吗，网络异常检查 http://www.cpplive.com/html/1670.html
+    No. 
+12. epoll的水平模式和边缘模式
+    边缘模式接受数据时必须一次性接收所有
+    发送数据：注册事件--发送数据--返回-1，errno=EWOULDBLOCK,EAGAIN无法发送--检测注册可写事件--下次可写时写
+    
+13. 如何将socket设置成非阻塞的(创建时设置与创建完成后设置)，非阻塞socket与阻塞的socket在收发数据上的区别
+    SOCK_NONBLOCK, fcntl(), accept4()
+    
+14. send/recv(read/write)返回值大于0、等于0、小于0的区别
+    [nogle algorithem] TCP_NODELAY
+    block:      -1: ERROR                  0: connection close  >0: real data size send to networkCard buf
+    nonblock:   -1: EWOULDBLOCK EINTER,    0: connection close  >0: real data size send to networkCard buf
+    
+15.如何编写正确的收数据代码与发数据代码
+
+16.发送数据缓冲区与接收数据缓冲区如何设计
+    每个socket有一个接受队列缓冲区(先进先出)，发送缓冲区(先进先出)
+    
+17.socket选项SO_SNDTIMEO和SO_RCVTIMEO
+    阻塞socket send recv 超时时间
+
+18.socket选项TCP_NODELAY
+    网卡缓冲区中的数据立即发送
+    
+19.socket选项SO_REUSEADDR和SO_REUSEPORT（Windows平台与linux平台的区别）
+    一个地址或者端口释放2分钟之后才能被使用
+    
+20.socket选项SO_LINGER
+21.shutdown与优雅关闭 http://blog.csdn.net/zhangshouming/article/details/39558473
+    TIME_WAIT：
+        1.使得TCP的全双工连接能够可靠的终止 
+        2.使得连接终止后网络上任然残余数据被丢弃而不至于被新连接接收.
+    TCP_NODELAY: shut down "nagle" algorithm
+    选项            间隔    关闭方式  等待关闭与否
+    SO_DONTLINGER   不关心  优雅      否
+    SO_LINGER       零      强制      否
+    SO_LINGER       非零    优雅      是
+    -------------------------------------------------------------------------------------------------------------------                    
+    struct linger {
+        int l_onoff;    // 0--off, nonzero--on 
+        int l_linger;   // linger time, POSIX specifies units as seconds
+    }
+    SO_LINGER.l_onoff   SO_LINGER.l_linger  close() 
+    0                   非0/0               默认行为：立即返回；socket发送缓冲区有数据，写入FIN，立即返回， TCP尽量发送数据
+    非0                 0                   清空socket发送缓冲区，发送RST，返回；非正常4次挥手，避免TIME_WAIT状态 
+    非0                 非0                 阻塞直到：1. 发送缓冲区数据及FIN发送并得到对等端确认 2. l_linger 时间超时， 
+                                                在数据和FIN确认之前超时，close返回EWOULDBLOCK。
+                                                close成功返回仅表示对等端TCP收到数据，不表示对等进程收到数据，使用shutdown
+                                                和read可知道对等进程是否收到数据。
+                                            非阻塞模式下，close并不等待数据发送完成或超时，而是立即返回，根据返回值和errno
+                                                可判断残余数据是否发送完毕。
+23.socket选项SO_KEEPALIVE
+    对所有socket起所用，默认时间太长2小时，产生无用网络流量，无论client，server有无交互，心跳包依然会发送
+    
+24.关于错误码EINTR
+    有些API执行时可能会被信号中断，当出错时，判断errno=EINT，是否是真正的出错
+    
+25.如何解决tcp粘包问题，网络协议设计要点 http://blog.csdn.net/zhangxinrun/article/details/6721495
+    原因：发送方等待缓冲区满了之后才发送； 接受方没有及时从缓冲区接受数据，导致数据在缓冲区堆积
+    UDP有边界控制不粘包。TCP可靠协议不存在丢包问题，有粘包问题。
+    策略(设计要点)：1. 规定每个数据包的大小  2. 特殊字符作为结束字符 3. 添加报头指定报体长度
+    
+26.信号SIGPIPE与EPIPE错误码
+    连接关闭，调用read，write会产生SIGPIPE信号，该信号默认动作terminate导致程序退出
+    
+27.gethostbyname阻塞与错误码获取问题 http://blog.csdn.net/analogous_love/article/details/53433994
+    阻塞函数，出错时不能使用perror打印错误信息，应该使用herror
+    
+28.心跳包的设计技巧（保活心跳包与业务心跳包）
+29.断线重连机制如何设计
+    1. 等待等间距，指数时间重新连接   2. 监控网络状态重连 3. 用户选择重连
+    
+30.如何检测对端已经关闭
+    1. 心跳包机制 2. 判断recv和errno(对端主动关闭recv：-1，errno：EBADF；对端被动关闭recv：0，errno：EWOULDBLOCK)
+    
+31.如何清除无效的死链（端与端之间的线路故障）
+    死链： socket异常关闭，没有正常4次挥手；路由中间链路短路断开，select，epoll无法检测到该错误，此时由心跳包检测
+    
+32.定时器的不同实现及优缺点
+    用途：发送心跳包； 定时任务
+    libevent定时器由小根堆实现， std::priority_queue。 libuv：红黑树
+    
+34.http协议的具体格式
+    Method_url_version\r\n
+    key:_value\r\n
+    Connection:_Keep-alive\r\n
+    Content-length:_8
+    \r\n
+    abcdefgh
+    
+35.http head、get与post方法的细节
+36.http代理、socks4代理与socks5代理如何编码实现
+    
+37.ping
+38.telnet
+39. signal(SIGCHLD, SIG_IGN);
+    父进程会fork子进程去处理任务，父进程若等待子进程结束会增加父进程负担，不等待会造成子进程成为僵尸进程，该信号处理机制
+    会将僵尸的子进程交给init进程进行资源的释放
+    
+40. TCP/IP RST 报文
+    端口未打开，请求超时，提前关闭，
+    1. 建立连接时：发送一个不存在的端口，向一个listen的套接字或端口发送数据分节
+    2. 发送数据时：数据错误，不是按照seq要求发送数据
+    3. 连接异常终止时：使用SO_LINGER选项直接发送RST报文
+    4. 处理异常中止连接（半打开状态）：服务器异常中止连接，而客户端依旧保持连接，向服务器发送报文，服务器会相应RST
+    5. 端口处于TIME_WAIT状态，被占用
+    
+41. 网络故障排查手段：
+    ping, telnet命令, nc, tcpdump -i any 'tcp port 80', lsof(list opened fd), netstate, 
+
+nonblock connection
+SO_REUSEADDR
+
+42. Q: what happens in the background from the time you press the Power button until the Linux login prompt appears?
+    A: https://discuss.leetcode.com/topic/92910/what-happens-in-the-background-from
+        -the-time-you-press-the-power-button-until-the-linux-login-prompt-appears
+  
+43. 惊群(thundering herd) 问题
+    当多进程线程阻塞在同一个事件时，该事件的发生的会唤醒所有线程进程，但最终只有一个线程对该事件进行处理，其他线程进程
+        会在失败后重新进行休眠。
+    新版Linux系统解决accept惊群问题，epoll_wait部分惊群问题（在worker保持工作状态下，都会被唤醒）
+    解决方法：
+        Nginx 使用mutex解决该问题。每个子进程在epoll_wait之前先去申请mutex，申请到了继续处理，否则继续等待。
+44. fork 和 vfork 区别
+
+45. 窗口滑动机制

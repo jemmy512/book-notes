@@ -1,0 +1,18 @@
+Ref: https://support.rackspace.com/how-to/installing-mysql-server-on-ubuntu/
+
+1. Install
+    apt-get install mysql-server
+2. Allow Remote Access
+    ufw allow mysql // uncomplicated firewall(UFW) ubuntu firewall management tool
+    GRANT ALL PRIVILEGES ON *.* TO 'root'@'%' IDENTIFIED BY '123456' WITH GRANT OPTION;
+    FLUSH PRIVILEGES;
+    change config file: /etc/mysql/my.cnf  #bind-address = 127.0.0.1
+3. Start MySQL Server
+    start mysql
+4. Launch at Reboot
+    enable mysql
+5. Start the MySQL Shell
+    /usr/bin/mysql -u root -p
+6. Set the Root Password
+    UPDATE mysql.user SET Password = PASSWORD('password') WHERE User = 'root';
+    FLUSH PRIVILEGES;

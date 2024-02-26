@@ -1,0 +1,29 @@
+Ref : https://blog.csdn.net/lcyaiym/article/details/76696192
+https://my.oschina.net/u/173975/blog/298658
+
+1. Donwload and Install JDK
+    wget
+2. Extract tar
+    mkdir /usr/local/java
+    cd /usr/local/java
+    tar -zxvf jdk-8u101-linux-x64.tar.gz
+3. Config envirometn
+    vim vim /etc/profile
+    
+    export JAVA_HOME=/usr/local/java
+    export JAVA_BIN=$JAVA_HOME/bin
+    export PATH=$PATH:$JAVA_HOME/bin
+    export CLASSPATH=.:$JAVA_HOME/lib/dt.jar:$JAVA_HOME/lib/tools.jar
+    export PATH=$JAVA_HOME/bin:$JRE_HOME/bin:$PATH
+    
+    # enable enviroment config
+    source /etc/profile
+
+1. Download and Install Tomcat
+    mkdir /usr/local/tomcat
+    cd /usr/local/tomcat
+    tar -zxvf jdk-8u101-linux-x64.tar.gz
+2. Start and Stop Tomcat
+    cd /usr/local/tomcat/bin
+    ./startup.sh
+    ./shutdown.sh

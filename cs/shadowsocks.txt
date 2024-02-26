@@ -1,0 +1,22 @@
+1. Install shadowsocks server:
+    wget --no-check-certificate -O shadowsocks-all.sh https://raw.githubusercontent.com/teddysun/shadowsocks_install/master/shadowsocks-all.sh
+    chmod +x shadowsocks-all.sh
+    ./shadowsocks-all.sh 2>&1 | tee shadowsocks-all.log
+2. Multiple user config, path: /etc/shadowsocks-python/shadowsocks.json
+    {
+        "server":"0.0.0.0",
+        "local_address":"127.0.0.1",
+        "local_port":1080,
+        "port_password":{
+             "8989":"password0",
+             "9001":"password1"
+        },
+        "timeout":300,
+        "method":"aes-256-cfb",
+        "fast_open": false
+    }
+3. Server operation:
+    Shadowsocks-Python version：
+    /etc/init.d/shadowsocks-python start | stop | restart | status
+4. Uninstall
+    ./shadowsocks-all.sh uninstall

@@ -1,0 +1,773 @@
+
+********************************************** 7. STL Containers ***************************************************
+
+        Sequence Containers                          Associative Container
+        - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+        array(build-in)                              RB-tree(non-public)
+        vector                                          set, multiset
+            headp(implemented by algorithm)             map, mutimap
+                priority-queue                       hashtable(non-standard)
+        list                                            hash_set, hash_multiset(non-standard)
+        slit(non-standard)                              hash_map, hash_multimap(non-standard)
+        deque
+            stack(adaptor)
+            queue(adaptor)
+
+Containers Ability:
+    1. All containers provide value rather than reference semantics.
+    2. The elements inside a container have a specific order.
+    3. In general, operations are not safe in the sense that they check for every possible error.
+Container Operations:
+    Initialization:
+        1. Initialize a container with elements of another container.
+            std::make_move_iterator();
+        2. Initialize a container with elements of ordinary C-style array.
+            std::begin(), std::end();
+        3. Initialized a container from stdin.
+            std::deque<int> d{std::istream_iterator(std::cin), std::istream_iterator()};
+            std::deque<int> d((std::istream_iterator(std::cin)), (std::istream_iterator()));
+                // This construct is valid syntactically as either a declaration or an expression.
+                // It's treated as a declaration by language rules, but extra parentheses force it to be an expession.
+    Assignments and Swap:
+        Iterators and Reference to elements of a container follow swapped elements, after swap they still refer
+            to the elements they referred before, but in a different container.
+    Size Operation:
+        size(), empty(), max_size();
+    Elements Access:
+        All containers except vector and deques guarantee that iterators and references remain valid if other
+            elements are deleted. For vector only elements before point of erase remain valid.
+        If insert elements only list, forward-list and associated container guarantee that iterators and 
+            references to elements remain valid.
+        For vector insertion that guarantee is given but insertion don't exceed the capacity.
+        For unordered list that guarantee is given for reference in general but for iterators only when no rehashing.
+    Container Types:
+        size_type, diff_type, val_type, reference, const_reference, iterator, const_iterator, pointer, const_pointer
+Array: <array>     
+    // Copy their elements into their internal static C-style array.
+    namespace std {
+        template <typename T, size_t N>
+        class array;
+    }
+    
+    Abilities:
+    1.Initialization:
+        Note array<> is the only container whose elements are default initialize when nothing passed.
+        Which means for fundamental type, the initial value may undefined rather zero.
+        std::array<int, 4> x; // elements of x have undfined value          ----> default-initialization
+        std::array<int, x> x = {}; // ok, all elements are zero initialized ----> value-initialization
+        // array<> doesn't provide a constructor for initializer list, it fulfills the requirement of aggregate.
+        // An aggregate is an array or a class with no-provided constructor, no private or protected nonstatic 
+            data member, no base calsses, and no virtual functions.
+        // Number of elements in initializer list higher than required, its ill-formed.
+        // Initializer list is the only way to initialize array during its declaration, so can't use parenthesis
+            syntax to specify initial values.
+            std::array<int, 5> a({1, 2, 3}); // error
+            std::vector<int>   v({1, 2, 3}); // ok
+    2.swap() and move semantics:
+        swap assigns new value to the element that iterator, reference and pointer refer to.
+        array<> can't simpley swap pointer internally, so swap has liner complexity, iterator and reference 
+            don't swap containers with their elements.
+        std::move() is implecity provided for array<>
+    Operation:
+    1.creat, copy and destroy:
+        // Because class array<> is an aggreagte, those constructors are implicitly defined. The default 
+            constructor default initialize the elements, which means the fundamental type value is undefined.
+        array<Elem, N> c;               // Default constructor
+        array<Elem, N> c(c2);           // Copy constructor
+        array<Elem, N> c = c2;          // Copy constructor
+        array<Elem, N> c(rv);           // Move contructor
+        array<Elem, N> c = rc;          // Move constructor
+        array<Elem, N> c = initist;     // Creates an array initialized with elements of initializer list
+    2.Nonmodifying Operations:
+        c.size();   c.empty();  c.max_size(); // maximum number
+    3.Assignment Operations:
+        c = c2; c = rm; c.swap(c2); swap(c, c2); c = fill(val); // assign val to each element in array c
+    4.Access Operations:
+        c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
+    5.Iterator Functions:
+        begin(); end(); cbegin(); cend(); rbegin(); rend(); crbegin(); crend();
+        // Iterators remain valid as long as array remain valid.
+Vector: <vector>
+    namespace std {
+        template<typname T, typname Allocator = allocator<T>>
+        class vector;
+    }
+  1.Abilities:
+    Size and Capaicity: 
+        // The capacity of a vector is important for two reasons:
+            1. Reallocation invalidates all reference, pointers, iterator for elements of the vector.
+            2. Reallocation takes time.
+        // avoid reallocation:
+            v.reserve(80); // reserve memory for 80 elements
+            std::vector<int> v(80);
+        // To avoid internal fragmentation, implementations allocate a whole block of memory.
+        // The capacity of vector never shrinks.
+        // C++11 introduced a nonbinding request to shrink the capacity to fit the current number of items.
+            v.shrink_to_fit(); 
+                // this request is nonbinding to allow latitude for implementation-specific optimizaion. 
+        // Capacity could only shrink indirectly:
+            std::vector<T>(v).swap(v);
+            // after swap all references, pointers, iterators invalide.
+        vector<T> v;            vector<T> v(n);         v.~vector(); // detroys elems and frees memory.
+        vector<T> v(v2);        vector<T> v(n, elem);
+        vector<T> v = v2;       vector<T> v(beg, end);
+        vector<T> v(rm);        vector<T> v(initlist);
+        vector<T> v = rm;       vector<T> v = initlist;
+  2. operation:
+        // An explicit call to default constructor could initializes fundamental types.
+        v.empty(); v.size(); v.max_size(); v.capacity(); v.reserve(); v.shrink_to_fit(); == != < >=
+    Assignments
+        v = v2; v = rm; v = initlist; v = assign(n, elem); v = assign(beg, end); v = assign(initlist);
+        v.swap(v2); swap(v, v2);
+    Access Operations:
+        c[inx];(no range checking)  c.at(inx);(with range checking) c.front(); c.back(); (no check existence)
+    Iterator Functions:
+        // The exact type of these iterators is implementation defined.
+    Insertion and Removing Elements:
+        Interting and Removing happen faster when:
+            1. Interting and removing at the end.
+            2. The capacity is large enough on entry.
+            3. Multiple elements are inserted by a single call rather than multiple calls.
+        v.push_back(elem); 
+        v.pop_back();               v.emplace(pos, arg...);     v.resize(num);
+        v.insert(pos, elem);        v.emplace_back(arg...);     v.resize(num, elem);
+        v.insert(pos, n, elem);     v.erase(pos);               v.clear();
+        v.insert(pos, beg, end);    v.erase(beg, end);
+        v.insert(pos, initlist);    
+    Using vector as C-style Array:
+        std::vector<char> v;
+        v.resize(41);
+        strcpy(v.data(), "hello world");
+        printf("%s\n", v.data());
+Deque:
+    Deque manages its elements with dynamic array.
+    namespace std {
+        template<typename T, typename Allocator = allocator<T>>
+        class deque;
+    }
+    1. Abilities:
+        // Iterator must be smart pointer rather than ordinary pointer, because they must jump between 
+            different blocks.
+        // The internal structure has one more direction so the element access and iterator movement a bit slower.
+        // Deques provide no support for capacity and moment of reallcation.
+        // Blocks might get freed when they're no longer used, so size of deque might shrink.
+    2. Operations:
+        Most operations of deque are same to vector, here are some different one:   
+            push_front(); emplace_front(); 
+List: <list> double list
+    c.unique();     c.splice(pos, c2);  c.splice(pos, c2, c2pos);   c.splice(pos, c2, c2beg, c2end);
+    c.unique(op);   c.sort();   c.sort(op); c.merge(c2);    c.merge(c2, op);    c.reverse();
+    // op means op() return true
+Forward-List: <forward_list>
+    The standard states: "It's intended that forward_list have zero spece or time overhead relative to a
+        hand-written C-style singly linked list. Features that would conflict with that goal have been omitted".
+    Abilities:
+        1. Only provide forward iterators, not bidirectional iterators. And reverse supports are not provided also.
+            Functions like reverser_iterator, rbebin(), rend(), crbegin(), crend() not provided also.
+        2. The anchor of forward_list has no pointer to the last element. So it doesn't provide functions to deal
+            with the last element. Such as back(), push_back() and pop_back().
+        3. For any operations that modify list in a way that elements are inserted or deleted at specific position, 
+            special versions are provided. Such as _before and _after suffix member functions.
+    Operations:
+    1. Create, copy and destroy:
+        The ability to create, copy and destroy is the same as for every sequence container.
+        forward_list<Elem> l;           forward_list<Elem> l(n);            l.~forward_list();
+        forward_list<Elem> l(l2);       forward_list<Elem> l(n, elem);
+        forward_list<Elem> l = l2;      forward_list<Elem> l(beg, end);
+        forward_list<Elem> l(rm);       forward_list<Elem> l(initlist);
+        forward_list<Elem> l = rm;      forward_list<Elem> l = initlist;
+    2. Nonmodifyint operations:
+        l.empty(); l.max_size(); < = > // note: size() function si not provided.
+    3. Assignment:
+        l = l2; l = rm; l = initlist; l = assign(n, elem); l = assign(beg, end); l = assign(initlist); swap(l, l2);
+    4. Access:
+        front();
+    5. Iterator function:
+        begin(); end(); cbegin(); cend(); before_begin(); cbefore_end();
+    6. Inserting and Removing:
+        Gerneral hints apply:
+            1. As usual when using with STL, we must ensure that arguments are valid.
+            2. Inserting and removing is faster if, when working with multiple elements, you use a singal call 
+                for all elements rather than multiple calls.
+        l.push_front(elem);                 l.emplace_front(pos, args...);  l.reseize(num, elem);
+        l.pop_front();                      l.emplace_front(args...);       l.clear();
+        l.insert_after(pos, elem);          l.erase_after(pos);
+        l.insert_after(pos, n, elem);       l.erase_after(beg, end);
+        l.insert_after(pos, begin, end);    l.remove(val);
+        l.insert_after(pos, initlist);      l.resize(num);
+    7. splice and functions to change order:
+        l.unique();                             l.sort();
+        l.unique(op);                           l.sort(op);
+        l.splice_after(pos, l2);                l.merge(l2);
+        l.splice_after(pos, l2, l2pos);         l.merge(l2,op);
+        l.splice_after(pos, l2, l2beg, l2end);  l.reverse();
+Set and multiple Set: // sort elements automatically according to certain sort criterion
+    prototype:
+        teplate<typename T, typename Compare = less<T>, typename Allocator = allocator<T>>
+        class set, multiset;
+    // impelmented as red-black-tree, which are good for both changing and searching for elements.
+    
+    Operation:
+    1. Create, copy and destroy:
+        SET s;          SET s(beg, end);        SET:
+        SET s(op);      SET s(initlist);            set<Elem>; set<Elem, op>; 
+        SET s(s2);      SET s = initlist;           multiset<Elem>, multiset<Elem, op>
+        SET s = s2;     s.~SET();
+        SET s(rm);
+        SET s = rm;
+        SET s = rm;
+        Sorting criterion can defined int two ways:
+            1. As a template parameter.
+                std::set<int, std::greater<int>> coll;
+            2. As a contructor parameter.
+                std::set<int> coll(std::greater<int>);
+    2. Nonmodifying Operation: 
+        c.key_comp();   c.vlaue_comp(); c.empty();  c.size();   c.max_size();   == < !=
+    3. Special Search Operations:
+        c.count(vla);   c.find();   c.lower_bound(val); c.upper_bound(val); c.equal_bound(val);
+    4. Assignment:
+        // Both containers must have same elements type and comparison criteria.
+        c = c2; c = rm; c = initlist; c.swap(c2);
+    5. Iterator Functions:
+        // Set and multiset do not provide direct elements access.
+        c.begin(); c.end(); c.cbegin(); c.rbegin(); c.crbegin();
+        // As with all associated container classes, the iterators are bidirectional iterators.
+        // More important is the constraint that, from an iterator's point of view, all elements are
+            considered constant. So, you can't compromise the order of the element by changing their value.
+        // Can't call modifying algorithm on the set or multiset, just user member function.
+    6. Inserting and Removing:
+        paire<iterator, bool> insert(val);      c.emplace(arg...);              c.erase(beg, end);
+        iterator insert(pos, val);              c.emplace_hint(pos, arg...);    c.clear();
+        void     insert(beg, end);              c.erase(val);
+        void     insert(initlist);              c.erase(pos, val);
+        
+        Return type of insert() and empalce is different:
+            set:
+                pair<iterator, bool>    insert(const value_type &val);
+                iterator                insert(const_iterator posHint, const value_type &val);
+                
+                template<typeneme...Args>
+                pair<iterator, bool>    emplace(Args&&...args);
+                tempalte<typename...Args>
+                iterator                emplace_hint(const_iterator posHint, Args&&...args);
+            multiset:
+                iterator                insert(const value_type &val);
+                iterator                insert(const_iterator posHint, const value_type &val);
+                
+                template<typeneme...Args>
+                iterator                emplace(Args&&...args);
+                tempalte<typename...Args>
+                iterator                emplace_hint(const_iterator posHint, Args&&...args);
+    Implementation:
+        1. The iterator in set is const, so we can't change value of the set by iterator.
+        2. Iterators before/after insert/erase are still valid except the current iterator.
+Map and multimap:
+    prototype:
+        template<typename Key, typename value, typename Compare = less<Key>, typename Allocator
+            = allocator<pair<const Key, value>>>;
+        class map, multimap;
+    Abilities:
+        // sets and multisets, maps and multimaps use the same internal data structure, so you could
+            consider sets and multisets as the special maps and multimaps, respectively.
+        // And maps and multimaps have the abilities of the sets and multisets.
+        // You may not change the key directly which may compromise the correct order. To modify the element
+            you should remove the element that hold the old key and insert a new element that has the new 
+            key and old value.
+        1. Create, copy and destroy
+            map c();        map c (initlist);       c.~map();   map:
+            map c(op);      map c = initlist;                       map<Key, val>   map<Key, val, op>
+            map c(c2);      map c(beg, end);                        multimap<Key, val> multimap<Key, val, op>                
+            map c = c2;     map c(beg, end, op);
+        2. Nonmodifying Operations:
+            c.key_comp();   c.value_comp(); c.empty(); c.size(); c.max_size(); == >= < !=
+        3. Special Search Operations:
+            c.count(val); c.find(val); c.lower_bound(val); c.upper_bound(); c.equal_range();
+            // Using the find_if algorithm to search for an element with a certain value is even more complicated
+                that writing a loop, because have to provide a function object that compres the value of an 
+                element with a certain value.
+        4. Assignment:
+            c = c2; c = rm; c = initlist; swap
+        5. Iterator Function and access:
+            begin(); end(); cbegin(); cend(); rbegin(); crbegin();
+            map also provide: at() and [](return reference) elements access operators;
+            // If no such element in map, [key] will insert a new element with key and default init value.
+            // The key inside map and multimap are considered to be constant, so type of elements is:
+                pair<const Key, T>
+            // To change the key of an element only way is to replace the old element with a new element that has
+                the same value.
+        6. Inserting and Removing Function:
+            pair<iterator, bool> insert(val);   emplace(args...);               erase(val);
+            iterator insert(pos, val);          emplace_hint(pos, args...);     eraase(pos);
+            void     insert(beg, end);          clear();                        erase(beg, end);
+            void     insert(initlist);
+            // Inserting elementa are placed at the end of the existing equivalent values.
+            // Thress other ways to pass a value into a map:
+                1. use value_type. To avoid implicit type conversion.
+                        coll.insert(map<string, float>::value_type("otto", 22.3));
+                    or  coll.insert(decltype(coll)::value_type("otto", 22.3));
+                2. User pair<>.
+                    coll.insert(pair<string, float>("otto", 22.3));         // implicit conversion
+                    coll.insert(pair<const string, float>("otto", 22.3));   // no implicit conversion
+                3. Use make_pair();
+                    coll.insert(make_pair("otto", 22.3));
+            // Calling erase() for the element to which you are referring with pos invalidates pos as an 
+                iterator of coll.
+    Implementation:
+        1. Can't change key by iterator.
+        2. Iterators before/after insert/erase are still valid except the current iterator.
+Unordered Container: <unordered_set> <unordred_map> <functional>
+    prototype:
+        template<typename T, typename Hash = hash<T>,
+            typename EpPred = equal_to<T>, typename Allocator = allocator<T>>
+        class unordered_set, unordered_multiset;
+        
+        template<typename Key, typename T, typename Hash = hash<T>, 
+            typename EpPred = equal_to<T>, typename Allocator = allocator<pair<const Key, T>>>;
+        class unordered_map, unordered_multimap;
+    Abilities:
+        1. Disadvantages over ordered container:
+            Don't provide <, <=, >, >= except ==, !=.
+            Don't provide lower_boud() and upper_bound().
+            Don't provide reverse operations, because iteratora are guaranteed to be forward list.
+        2. programmer's operations can infulence the behavior of the hash table:
+            Can specify the minum of the buckets.
+            Can provide you own hash function.
+            Can provide you own equivalence criterion.
+            Can specify load factor.
+            Can force rehashing.
+        3. programmer can not infulence the following bahavior:
+            The growth factor.
+            The minum load factor.
+        4. element access:
+            Don't provide direct element access.
+            Indirect element access via iterator has constraint, from point of view, the key is constant.
+        1. Create, copy, destroy:
+            UNORD c;                    UNORD c(beg, end);
+            UNORD c(bnum);              UNORD c(beg, end, bnum);
+            UNORD c(bnum, hf);          UNORD c(beg, end, bnum, hf);
+            UNORD c(bnum, hf, cmp);     UNORD c(beg, end, bnum, hf, cmp);
+            UNORD c(c2);                c.~UNORD();
+            UNORD c = c2;               max_load_factor(0.7);// call after contrction.
+            UNORD c(initlist);
+            UNORD c = initlist;
+            
+            UNORD:
+                unordered_set<Elem>;                unordered_map<Key, T>;
+                unordered_set<Elem, Hash>;          unordered_map<Key, T, Hash>;
+                unordered_set<Elem, Hash, Cmp>;     unordered_map<Key, T, Hash, Cmp>;
+        2. Layout operations:
+            hash_function(); key_eq(); bucket_count(); max_bucket_count();    rehash(bnum);
+            load_factor();   max_load_factor();        max_load_factor(val);  reserve(num);
+        3. Nonmodifying operations:
+            empty(); size(); max_sizse(); == !=
+        4. Special Searching Operations:
+            Unordered container optimized for fast searching of elements, they provide special version of 
+                general algorithm with the same name.
+            find(val); count(val); equal_range(val);
+        5. Access:
+            c[key]; c.at(key); // unordered map provided only
+        5. Assignment:
+            c = c2; c = rm; c = initlist; swap();
+        6. Iterators and Access:
+            begin(); cbegin(); rbegin(); crbegin();
+        7. Inserting and Removing 
+            // In general, erasing elements don't invalidate iterators and references to other elements.
+            // Inserting and emplacing may invalidate iterators when rehashing happens, wehereas reference 
+                to elements remain valiad.
+            insert(val);        emplace(args...);           erase(val); // return number of removed elems
+            insert(pos, val);   emplace_hit(pos, args...);  erase(pos); // return following position
+            insert(beg, end);                               erase(beg, end);
+            insert(initlist);                               clear();
+            // insert return new element postion and whether it is succeeded or following position.
+            // erase return number of elements erased or following position.
+            // For unordered maps and multimaps, to insert a key/value must keep in mind that inside, 
+                the key is considered to be constant, so you must provide correct type or implicit or 
+                explicity type conversions.
+            // Since C++ 11, the most convenient way to insert element is to pass them as initlist.
+            // Three other ways to insert elements:
+                1. vale_type:
+                    coll.insert(unorderedmap<string, int>::value_type("otto", 123));
+                2. pair<>:
+                    coll.insert(pair<string, int>("otto", 123));
+                3. mak_pair:
+                    coll.insert(make_pair("otto", 123));
+        8. Bucket Interface:
+            bucket(val);        bucket_count();     bucket_size(bucketidx); 
+            begin(bucketidx);   end(bucketidx);     cbegin(bucketidx);
+            
+********************************************** 8. STL Container Member in Detail ***********************************
+
+Type Definitions:
+    container::reference;       container::iterator         container::const_reverse_iterator   
+    container::const_reference; container::const_iterator   container::pointer                  
+                                container::reverse_iterator container::const_pointer
+    container::value_type;      container::key_compare
+    container::size_type        container::value_compare    container::local_iterator  // bucket iterator
+    container::key_type         container::hasher           container::const_local_iterator
+    container::difference_type  container::key_equal // equality predicate of unordered container
+    container::mapped_type 
+Creat, Copy and Destroy
+    container::container();
+    explicit container::container(const CompFunc &cmpPred); // set, multiset, map, multimap
+    explicit container::container(<initializer-list>, <size_type bnum>,
+        <const Hasher &hashser>, <const KeyEqual &eqPred>);//
+Nonmodifying Policy Functions:
+    value_compare container::value_comp() const;
+    key_compare container::key_comp() const;
+    key_equal container::key_eq() const;
+    hasher container::hash_function() const;
+    float container::load_factor() const;
+Modifying Policy Functions:
+    void container::reserse(size_type num);
+    void container::shrink_to_fit();
+    void container::rehash(size_type num);
+    void container::max_load_factor(floag loadFactor);
+Bucket Interface for Unordered Container:
+    local_iterator container::begin(sizt_type bucketIdx);
+    const_local_iterator container::begin(sizt_type bucketIdx) const;
+Allocator Support:
+    container::allocator_type;
+    allocator_type container::get_allocator() const;
+    
+********************************************** 9. STL Iterators ****************************************************
+
+Categories:
+    Output Iterators, Input Iterators, Forward Iterators, Bidirectional Itrators, Random-access Itrators
+Auxiliary Iterator Functions:
+    void advance(InputIterator &pos, Dist n);  // no check end
+    ForwardIterator next(ForwardIterator pos);
+    ForwardIterator next(ForwardIterator pos, Dist n);
+    BIdirectionalIterator prev(BidirectionalIterator pos, <Dist n>);
+    Dist distance(InputIterator pos1, InputIterator pos2); // bad performen for other than random-access iterator
+    void iter_swap(ForwardIterator1 pos1,  ForwardIterator2, pos2); // swap the values of two iterators
+Converting Reverse Iterators Back Using base():
+    deque<int>::reverse_iterator riter;
+    reverse_iterator<deque<int>::iterator> riter; // convert normal iterator to reverse iterator
+    deque<int>::iterator iter = riter.base();
+Functionality of Insert Iterators:
+    OuputIterator copy(InputIterator from_pos, InputIterator from_end, OutputIterator to_pos);
+Kinds of Insert Iterators:
+    Name                Class                   Called Function     Creation
+    Back inserter       back_insert_iterator    push_back(value)    back_inserter(cont)
+    Front inserter      front_insert_iterator   push_front(value)   front_inserter(cont)
+    General inserter    insert_iterator         insert(pos, value)  inserter(cont, pos)
+    eg:
+        list<int> coll;
+        back_inserter(coll) = 44;       coll.push_back(44);
+        front_inserter(coll) = 55;      coll.push_front(55);
+        inserter(coll, 1) = 46;         coll.insert(1, 44);
+Stream Iterators:
+    A stream iterator is an iterator that allow you to use a stream as source or destination of algorithm.
+    
+    1. ostream Iterator:
+    template<typename T, typename charT = char, typename traits = char_traits<charT>> class ostream_iterator;
+    ostream_iterator<T> (ostream);
+    ostream_iterator<T> (ostream, const char * delim); // use delim as delimiter between the values.
+    
+    2. istream_iterator:
+    template<typename T, typename charT = char, typename traits = char_traits<charT>, typename Distance = ptrdiff_t>
+    class istream_iterator;
+    istream_iterator<T> ();
+    istream_iterator<T> (istream);
+    eg: 
+        istream_iterator<int> intReader(cin); // create an enf-of-stream iterator
+        istream_iterator<int> intReaderEOF; // create end-of-stream iterator
+        while (inReader != intReaderEOF) {
+            cout << *intReader << endl;
+            ++intReader;
+        }
+     
+    3. Move Iterator:
+        list<string> s;
+        vector<string> v1(s.begin(), s.end());                                          // copy s to v1
+        vector<string> v2(make_move_iterator(s.begin()), make_move_iterator(s.end()));  // move s to v2
+Iterator Traits:
+    Categories:
+        std::output_iterator_tag;
+        std::input_iterator_tag;
+        std::forward_iterator_tag : input_iterator_tag;
+        std::bidirectional_iterator_tag : forward_iterator_tag;
+        std::random_access_iterator_tag : bidirectional_iterator_tag;
+    templage<typename T> struct iterator_traits< T*> {
+        typedef typename T::iterator_category   iterator_category;
+        typedef typename T::value_type          value_type;
+        typedef typename T::difference_type     difference_type;
+        typedef typename T::pointer             pointer;
+        typedef typename T::reference           reference;
+    }
+    iterator_category(const Iterator &);
+    value_type(const Iterator &);
+    distance_type(const Iterator &);
+Portable Interface:
+    template<class Category, class T, class Distance = ptrdiff_t, 
+        class Pointer = T*, class Reference = T&>
+    struct iterator {
+        typedef Category    iterator_category;
+        typedef T           value_type;
+        typedef Distance    distance_type;
+        typedef Pointer     pointer;
+        typedef Reference   reference;
+    };
+    eg: template<class Item>
+    struct ListIter: public std::iterator<std::forward_iterator_tag, item> {...};
+        
+Type Traits:
+    struct _true_type {};
+    struct _false_type {};
+    
+    template<class type>
+    struct _type_traits {
+        typedef _true_type this_dummy_member_must_be_first;
+        
+        typedef _false_type has_trivial_default_constructor;
+        typedef _false_type has_trivial_copy_constructor;
+        typedef _false_type has_trivial_assigment_operator;
+        typedef _false_type has_trivial_destructor;
+        typedef _false_type is_POD_type;
+    };
+    
+********************************************** 10. Function Ojbect and Using Lambda ********************************
+
+    A function object is an object that has operator() defined.
+Adaptable:
+    template<class Arg, class Result>
+    struct unary_function() {
+        typedef Arg argument_type;
+        typedef Result result_type;
+    };
+    template<calss Arg1, class Arg2, class Result>
+    struct binary_function {
+        typedef Arg1 first_argument_type;
+        typedef Arg2 second_argument_type;
+        typedef Result result_argument_type;
+    };
+Concept of function objects:
+    class FunctionObjectType {
+    public:
+        void operator()() {
+            statements
+        }
+    }
+    Advantages of this definition:
+        1. A functions might be smarter because it may have a state.
+        2. Each function has its owen type.
+        3. A function ojbect is usually faster than a function pointer.
+    1. Function object can be used as sorting criterion.
+    2. Function object has useful internal stata.
+    3.  for_each
+        template< class InputIt, class UnaryFunction >
+        UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f ); (until C++20)
+        
+        template< class InputIt, class UnaryFunction >
+        constexpr UnaryFunction for_each( InputIt first, InputIt last, UnaryFunction f);   (since C++20)
+        
+        template< class ExecutionPolicy, class ForwardIt, class UnaryFunction2 >
+        void for_each( ExecutionPolicy&& policy, ForwardIt first, ForwardIt last, UnaryFunction2 f );  (since C++17)
+    4. Predicates versus Function Objects
+        Predicates are functions or function objects that return a Boolean value. Not every function that returns
+            a Boolean value is a valid predicate for STL.
+        template<typename ForwIter, typename Predicate>
+        ForwIter std::remove_if(ForwIer beg, ForwIter end, Predicate op) {
+            beg = find_if(beg, end, op);
+            if (beg == end)
+                return beg;
+            else {
+                ForwIter next = beg;
+                return remove_copy_if(++next, end, beg, op);
+            }
+        }
+        A predicate should always stateless. You shouldn't pass a function ojbect for which the behavior depends
+            on how often it is copied or called.
+Predefined Function Objects <functional>
+    negate<T>()          plus<T>()    
+    minus<T>()           less_equal<T>()
+    multiplies<T>()      greater_equal<T>()    
+    divides<T>()         logical_not<T>()
+    modules<T>()         logical_and<T>()
+    equal_to<T>()        logical_or<T>()
+    not_equal_to<T>()    bit_and<T>()    
+    less<T>()            bit_or<T>()
+    greater<T>()         bit_xor<T>()
+    
+Function Adapters and Binders
+	A function adapter is a function ojbect that enables the composition of function objects with each other,
+		with certain values, or with special functions.
+	bind(op, args...);  mem_fn(op); not1(op);   not2(op);
+	template<class F, class... Args> /*unspecified*/ bind(F &&f, Args &&... args);
+	what bind can do:
+		Adapt and compose new function object out of existing or predefined function objects.
+		Call global functions.
+		Call member function for object, pointers to objects, and smart pointer to objects.
+		
+		for_each(sp.begin(), sp.end(), bind(&Person::print, _1));
+		for_each(sp,begin, sp.end, mem_fn(&Persion::print));
+		mem_fn(&Person::printf)(ojb, "Person: ");   // call ojb.printf(...);
+		acculate(coll.begin(), coll.end(), 0,       // binding to map data member
+			bind(plus<int>(), _1, bind(&map<string, int>::value_type::second, _2)));
+Using Lambdas
+	lambdas versus Binders
+	Lambdas versus Stateful Functions
+	Lambdas Calling Global and Member Functions
+	Lambda as Hash Function, Sorting, Equal Criterion
+        
+********************************************** 11. STL Algorithm ***************************************************
+Head files: <algorithm> <numeric> <functional>
+A Brief Introduction:
+     Algorithms work in overwrite mode rather than insert mode. So destination must have enough space.
+<numeric>:
+    accmulate, iner_product, partial_sum, power, iota
+<algorithm>:
+    iter_swap, swap, fill, fill_n, max, min, lexicographical_compare
+    equal: compare two sequences in range [firsr, last), extra sequence of second one out of last will be discareded.
+    mismatch: return iterator of the first not equal character, extra characters discareded; if the second sequence 
+        length is less than the first one, the behavior is undefined.
+    set_union, set_intersection, set_difference, set_symmetric_difference
+Data process:
+    adjacent_find, 
+    for_each(first, last, Function f): process data in [first, last) by f, f should not change the element, because 
+        first and last is InputIterator has no guarantee for assignment operation, but transform() can change.
+    
+    
+  
+********************************************** 12. Special Container ***********************************************
+
+stack: <stack>
+    template<typename T, typename Container = deque<T>> class stack;
+    Reason why deque is default container:
+        Unlike vector, deque free their memory when eles are removed and don't have to copy all eles on realocation.
+    Interface:
+        push()  top()   pop()
+        
+********************************************** 13. String **********************************************************
+    
+Types:
+    template<typenaem charT, typename traits = char_traits<charT>, typename Allocator = allocator<charT>>
+    class badic_string;
+    
+    typedef basic_string<char>      string;
+    typedef basic_string<wchar_t>   wstring;
+    typedef basic_string<char16_t>  u16string;
+    typedef badic_string<char32_t>  u32string;
+    
+Operations:
+    constructor                 replace()               [], at()                to_string(), to_wstring()
+    destructor                  +                       front(), back()         copy()
+    =, assign()                 ==, !=, <, > compare()  >>, getline()           data(), c_str()
+    swap()                      empty()                 <<                      find
+    +=, append(), push_back()   size(), length()        stoi(), stol(), stoll() begin(), end()
+    insert()                    reserve()               stoul(), stoull()       crbegin()
+    erase(), pop_back()         shrink_to_fit()         stof(), stod(), stold() get_allocator()
+    clear                       substr(beg, count);
+    resize()
+    
+    Argument types:
+        const string &str;
+        const string &str, size_type idx, size_type num;
+        const char *cstr
+        const char *chars, size_type len;
+        char c;
+        size_type num, char c;
+        const_iterator beg, const_iterator end, initlist;
+    Only single-arguement version const char* handles the character '\0' as special character,.
+Constructor and Destructor:
+    string s;                       string s(num, c);
+    string s(str);                  string s(beg, end);
+    string s(mvstr);                string(initlist);
+    string s(str, stridx);          s.~string();
+    string s(str, stridx, strlen);
+    string s(cstr);
+    string s(chars, charslen);
+Strings and C-Strings
+    In standard C++, the type of string literal was changed from char * to const char *.
+    There is automatic type conversion from const char * into strings, but not vice versa.
+    String do not provide special meaning for the character '\0'.
+    Transfer:
+        data() and c_str(); // return the contents of the string as an array of characters including '\0'.
+            // return an array that is owned by the string, so caller must not modify or free the memeory.
+        copy(); // '\0' character is not provided.
+    Searching and Finding
+        find();             find_last_of()      // find the last character that is part of value
+        rfind();            find_first_not_of() // find the first character that it not part of value
+        find_first_of()     find_last_not_of
+    The value npos (staic const size_type npos = -1)
+        If s search function fails, it returns string::npos.
+        Alwyas use string::size_type, not int or unsigned for the search and find return type. 
+    Numeric Conversions:
+        stoi(str, idxRet = nullptr, base = 10); // stod, stol, stoll, stoul, stoull
+        1. Those functions skip leading whitespaces.
+        2. They allow you to return the index of the first character after the last processed character.
+        3. Exception invalid_arguement or out_of_range may be throw.
+    Regex: 
+   
+   
+********************************************** 19. Allocator *******************************************************
+STL Portable Interface: simple_alloc
+Design Philosophy:
+    1. Require space from System Heap
+    2. Multi-thread safe
+    3. The handler of not enough memory
+    4. Memory fragment
+
+**********************************************  STL Adapter ******************************************************
+Container Adapter:
+    queue:
+    stack:
+Iterator Adapter:
+    Insert Iterator:
+    Name                Class                   Called Function     Creation
+    Back inserter       back_insert_iterator    push_back(value)    back_inserter(cont)
+    Front inserter      front_insert_iterator   push_front(value)   front_inserter(cont)
+    General inserter    insert_iterator         insert(pos, value)  inserter(cont, pos)
+    eg:
+        list<int> coll;
+        back_inserter(coll) = 44;       coll.push_back(44);
+        front_inserter(coll) = 55;      coll.push_front(55);
+        inserter(coll, 1) = 46;         coll.insert(1, 44);
+    IOStream Iterator:
+        istream_iterator;
+        ostream_iterator;
+    Reverse Iterator:
+Function Adapter:
+    template<class Arg, class Result>
+    struct unary_function() {
+        typedef Arg argument_type;
+        typedef Result result_type;
+    };
+    template<calss Arg1, class Arg2, class Result>
+    struct binary_function {
+        typedef Arg1 first_argument_type;
+        typedef Arg2 second_argument_type;
+        typedef Result result_argument_type;
+    };
+    bind1st(const Op &op, const T &x);
+    bind2nd(const Op &op, const T &x);
+    not1(const Pred &pred);
+    not2(const Pred &pred);
+    ptr_fun(Result(*fp)(Arg));
+    ptr_fun(Result(*fp)(Arg1, Arg2));
+    mem_fun(S (T::*f)());
+    mem_fun(S (T::*f)() const);
+    mem_fun(S (T::*f)(A));
+    mem_fun_ref(S (T::*f)() const);
+    
+
+**********************************************  STL Header *******************************************************
+
+<utility>:
+    swap
+    exchange: C++14
+        template<class T, class U = T> T exchange(T &obj, U &&new_value); (since C++14 until C++20)
+        template<class T, class U = T> constexpr T exchange(T &obj, U &&new_value); (since C++20)
+    move: C++11
+    move_if_noexcept: C++11
+    as_const: C++17
+    declval: C++14
+    make_pair:
+    == >= < !=
+    std::get: C++11
+    to_char: C++17
+    from_chars: C++17
+    
+<iomanip>
+    setw();
+   
