@@ -99,6 +99,9 @@
 
 * [page_reclaim](#page_reclaim)
     * [shrink_node](#shrink_node)
+        * [shrink_node_memcgs](#shrink_node_memcgs)
+            * [shrink_list](#shrink_list)
+            * [shrink_slab](#shrink_slab)
 
 * [page_migrate](#page_migrate)
     * [migreate_pages_batch](#migreate_pages_batch)
@@ -8080,6 +8083,8 @@ vmalloc(size);
 
 * [深入了解页面回收技术：提升资源利用率](https://mp.weixin.qq.com/s/gdbsi5Eq3Ixf7YNqHYjN9A)
 
+![](../images/kernel/mem-page_reclaim-lruvec.png)
+
 ```c
 typedef struct pglist_data {
     struct lruvec           lruvec;
@@ -8114,40 +8119,6 @@ enum lru_list {
     LRU_UNEVICTABLE,
     NR_LRU_LISTS
 };
-
-struct pagevec {
-    unsigned char nr;
-    bool percpu_pvec_drained;
-    struct page *pages[PAGEVEC_SIZE];
-};
-
-struct cpu_fbatches {
-    local_lock_t lock;
-    struct folio_batch lru_add;
-    struct folio_batch lru_deactivate_file;
-    struct folio_batch lru_deactivate;
-    struct folio_batch lru_lazyfree;
-    struct folio_batch activate;
-};
-
-static DEFINE_PER_CPU(struct cpu_fbatches, cpu_fbatches) = {
-    .lock = INIT_LOCAL_LOCK(lock),
-};
-
-struct folio_batch {
-    unsigned char nr;
-    bool percpu_pvec_drained;
-    struct folio *folios[PAGEVEC_SIZE];
-};
-
-struct lru_rotate {
-    local_lock_t lock;
-    struct folio_batch fbatch;
-};
-
-static DEFINE_PER_CPU(struct lru_rotate, lru_rotate) = {
-    .lock = INIT_LOCAL_LOCK(lock),
-};
 ```
 
 ```c
@@ -8170,7 +8141,7 @@ __perform_reclaim(gfp_mask, order, ac) {
             .reclaim_idx = gfp_zone(gfp_mask),
             .order = order,
             .nodemask = nodemask,
-            .priority = DEF_PRIORITY,
+            .priority = DEF_PRIORITY, /* Scan (total_size >> priority) pages at once */
             .may_writepage = !laptop_mode,
             .may_unmap = 1,
             .may_swap = 1,
@@ -8188,8 +8159,8 @@ __perform_reclaim(gfp_mask, order, ac) {
             pg_data_t *last_pgdat;
             struct zoneref *z;
             struct zone *zone;
-        retry:
 
+        retry:
             if (!cgroup_reclaim(sc))
                 __count_zid_vm_events(ALLOCSTALL, sc->reclaim_idx, 1);
 
@@ -8358,6 +8329,10 @@ __perform_reclaim(gfp_mask, order, ac) {
 
 ## shrink_node
 
+![](../images/kernel/mem-page_reclaim-shrink_node.png)
+
+![](../images/kernel/mem-page_reclaim-scan_balance.png)
+
 ```c
 shrink_node(zone->zone_pgdat, sc) {
     unsigned long nr_reclaimed, nr_scanned, nr_node_reclaimed;
@@ -8379,251 +8354,7 @@ again:
 
     prepare_scan_control(pgdat, sc);
 
-    shrink_node_memcgs(pgdat, sc) {
-        struct mem_cgroup *target_memcg = sc->target_mem_cgroup;
-        struct mem_cgroup *memcg;
-
-        memcg = mem_cgroup_iter(target_memcg, NULL, NULL);
-        do {
-            struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
-            unsigned long reclaimed;
-            unsigned long scanned;
-
-            /* This loop can become CPU-bound when target memcgs
-            * aren't eligible for reclaim - either because they
-            * don't have any reclaimable pages, or because their
-            * memory is explicitly protected. Avoid soft lockups. */
-            cond_resched();
-
-            mem_cgroup_calculate_protection(target_memcg, memcg);
-
-            if (mem_cgroup_below_min(target_memcg, memcg)) {
-                /* Hard protection.
-                * If there is no reclaimable memory, OOM. */
-                continue;
-            } else if (mem_cgroup_below_low(target_memcg, memcg)) {
-                /* Soft protection.
-                * Respect the protection only as long as
-                * there is an unprotected supply
-                * of reclaimable memory from other cgroups. */
-                if (!sc->memcg_low_reclaim) {
-                    sc->memcg_low_skipped = 1;
-                    continue;
-                }
-                memcg_memory_event(memcg, MEMCG_LOW);
-            }
-
-            reclaimed = sc->nr_reclaimed;
-            scanned = sc->nr_scanned;
-
-            shrink_lruvec(lruvec, sc) {
-                unsigned long nr[NR_LRU_LISTS];
-                unsigned long targets[NR_LRU_LISTS];
-                unsigned long nr_to_scan;
-                enum lru_list lru;
-                unsigned long nr_reclaimed = 0;
-                unsigned long nr_to_reclaim = sc->nr_to_reclaim;
-                bool proportional_reclaim;
-                struct blk_plug plug;
-
-                if (lru_gen_enabled() && !root_reclaim(sc)) {
-                    lru_gen_shrink_lruvec(lruvec, sc);
-                    return;
-                }
-
-                get_scan_count(lruvec, sc, nr);
-
-                /* Record the original scan target for proportional adjustments later */
-                memcpy(targets, nr, sizeof(nr));
-
-                /* Global reclaiming within direct reclaim at DEF_PRIORITY is a normal
-                * event that can occur when there is little memory pressure e.g.
-                * multiple streaming readers/writers. Hence, we do not abort scanning
-                * when the requested number of pages are reclaimed when scanning at
-                * DEF_PRIORITY on the assumption that the fact we are direct
-                * reclaiming implies that kswapd is not keeping up and it is best to
-                * do a batch of work at once. For memcg reclaim one check is made to
-                * abort proportional reclaim if either the file or anon lru has already
-                * dropped to zero at the first pass. */
-                proportional_reclaim = (!cgroup_reclaim(sc) && !current_is_kswapd() &&
-                            sc->priority == DEF_PRIORITY);
-
-                blk_start_plug(&plug);
-                while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] || nr[LRU_INACTIVE_FILE]) {
-                    unsigned long nr_anon, nr_file, percentage;
-                    unsigned long nr_scanned;
-
-                    for_each_evictable_lru(lru) {
-                        if (nr[lru]) {
-                            nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
-                            nr[lru] -= nr_to_scan;
-
-                            nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, sc);
-                        }
-                    }
-
-                    cond_resched();
-
-                    if (nr_reclaimed < nr_to_reclaim || proportional_reclaim)
-                        continue;
-
-                    /* For kswapd and memcg, reclaim at least the number of pages
-                    * requested. Ensure that the anon and file LRUs are scanned
-                    * proportionally what was requested by get_scan_count(). We
-                    * stop reclaiming one LRU and reduce the amount scanning
-                    * proportional to the original scan target. */
-                    nr_file = nr[LRU_INACTIVE_FILE] + nr[LRU_ACTIVE_FILE];
-                    nr_anon = nr[LRU_INACTIVE_ANON] + nr[LRU_ACTIVE_ANON];
-
-                    /* It's just vindictive to attack the larger once the smaller
-                    * has gone to zero.  And given the way we stop scanning the
-                    * smaller below, this makes sure that we only make one nudge
-                    * towards proportionality once we've got nr_to_reclaim. */
-                    if (!nr_file || !nr_anon)
-                        break;
-
-                    if (nr_file > nr_anon) {
-                        unsigned long scan_target = targets[LRU_INACTIVE_ANON] +
-                                    targets[LRU_ACTIVE_ANON] + 1;
-                        lru = LRU_BASE;
-                        percentage = nr_anon * 100 / scan_target;
-                    } else {
-                        unsigned long scan_target = targets[LRU_INACTIVE_FILE] +
-                                    targets[LRU_ACTIVE_FILE] + 1;
-                        lru = LRU_FILE;
-                        percentage = nr_file * 100 / scan_target;
-                    }
-
-                    /* Stop scanning the smaller of the LRU */
-                    nr[lru] = 0;
-                    nr[lru + LRU_ACTIVE] = 0;
-
-                    /* Recalculate the other LRU scan count based on its original
-                    * scan target and the percentage scanning already complete */
-                    lru = (lru == LRU_FILE) ? LRU_BASE : LRU_FILE;
-                    nr_scanned = targets[lru] - nr[lru];
-                    nr[lru] = targets[lru] * (100 - percentage) / 100;
-                    nr[lru] -= min(nr[lru], nr_scanned);
-
-                    lru += LRU_ACTIVE;
-                    nr_scanned = targets[lru] - nr[lru];
-                    nr[lru] = targets[lru] * (100 - percentage) / 100;
-                    nr[lru] -= min(nr[lru], nr_scanned);
-                }
-
-                blk_finish_plug(&plug);
-                sc->nr_reclaimed += nr_reclaimed;
-
-                /* Even if we did not try to evict anon pages at all, we want to
-                * rebalance the anon lru active/inactive ratio. */
-                if (can_age_anon_pages(lruvec_pgdat(lruvec), sc)
-                    && inactive_is_low(lruvec, LRU_INACTIVE_ANON)) {
-
-                    shrink_active_list(SWAP_CLUSTER_MAX, lruvec, sc, LRU_ACTIVE_ANON) {
-                        unsigned long nr_taken;
-                        unsigned long nr_scanned;
-                        unsigned long vm_flags;
-                        LIST_HEAD(l_hold);	/* The folios which were snipped off */
-                        LIST_HEAD(l_active);
-                        LIST_HEAD(l_inactive);
-                        unsigned nr_deactivate, nr_activate;
-                        unsigned nr_rotated = 0;
-                        int file = is_file_lru(lru);
-                        struct pglist_data *pgdat = lruvec_pgdat(lruvec);
-
-                        lru_add_drain();
-
-                        spin_lock_irq(&lruvec->lru_lock);
-
-                        nr_taken = isolate_lru_folios(nr_to_scan, lruvec, &l_hold,
-                                        &nr_scanned, sc, lru);
-
-                        __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, nr_taken);
-
-                        if (!cgroup_reclaim(sc))
-                            __count_vm_events(PGREFILL, nr_scanned);
-                        __count_memcg_events(lruvec_memcg(lruvec), PGREFILL, nr_scanned);
-
-                        spin_unlock_irq(&lruvec->lru_lock);
-
-                        while (!list_empty(&l_hold)) {
-                            struct folio *folio;
-
-                            cond_resched();
-                            folio = lru_to_folio(&l_hold);
-                            list_del(&folio->lru);
-
-                            if (unlikely(!folio_evictable(folio))) {
-                                folio_putback_lru(folio);
-                                continue;
-                            }
-
-                            if (unlikely(buffer_heads_over_limit)) {
-                                if (folio_needs_release(folio) &&
-                                    folio_trylock(folio)) {
-                                    filemap_release_folio(folio, 0);
-                                    folio_unlock(folio);
-                                }
-                            }
-
-                            /* Referenced or rmap lock contention: rotate */
-                            if (folio_referenced(folio, 0, sc->target_mem_cgroup,
-                                        &vm_flags) != 0) {
-                                /* Identify referenced, file-backed active folios and
-                                * give them one more trip around the active list. So
-                                * that executable code get better chances to stay in
-                                * memory under moderate memory pressure.  Anon folios
-                                * are not likely to be evicted by use-once streaming
-                                * IO, plus JVM can create lots of anon VM_EXEC folios,
-                                * so we ignore them here. */
-                                if ((vm_flags & VM_EXEC) && folio_is_file_lru(folio)) {
-                                    nr_rotated += folio_nr_pages(folio);
-                                    list_add(&folio->lru, &l_active);
-                                    continue;
-                                }
-                            }
-
-                            folio_clear_active(folio);	/* we are de-activating */
-                            folio_set_workingset(folio);
-                            list_add(&folio->lru, &l_inactive);
-                        }
-
-                        /* Move folios back to the lru list. */
-                        spin_lock_irq(&lruvec->lru_lock);
-
-                        nr_activate = move_folios_to_lru(lruvec, &l_active);
-                        nr_deactivate = move_folios_to_lru(lruvec, &l_inactive);
-                        /* Keep all free folios in l_active list */
-                        list_splice(&l_inactive, &l_active);
-
-                        __count_vm_events(PGDEACTIVATE, nr_deactivate);
-                        __count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
-
-                        __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
-                        spin_unlock_irq(&lruvec->lru_lock);
-
-                        if (nr_rotated)
-                            lru_note_cost(lruvec, file, 0, nr_rotated);
-                        mem_cgroup_uncharge_list(&l_active);
-
-                        free_unref_page_list(&l_active);
-                            --->
-                    }
-                }
-            }
-
-            shrink_slab(sc->gfp_mask, pgdat->node_id, memcg, sc->priority) {
-
-            }
-
-            /* Record the group's reclaim efficiency */
-            if (!sc->proactive)
-                vmpressure(sc->gfp_mask, memcg, false,
-                    sc->nr_scanned - scanned,
-                    sc->nr_reclaimed - reclaimed);
-
-        } while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
-    }
+    shrink_node_memcgs(pgdat, sc);
 
     flush_reclaim_state(sc);
 
@@ -8701,6 +8432,735 @@ again:
     * successful direct reclaim run will revive a dormant kswapd. */
     if (reclaimable)
         pgdat->kswapd_failures = 0;
+}
+```
+
+### shrink_node_memcgs
+
+```c
+shrink_node_memcgs(pgdat, sc) {
+    struct mem_cgroup *target_memcg = sc->target_mem_cgroup;
+    struct mem_cgroup *memcg;
+
+    memcg = mem_cgroup_iter(target_memcg, NULL, NULL);
+    do {
+        struct lruvec *lruvec = mem_cgroup_lruvec(memcg, pgdat);
+        unsigned long reclaimed;
+        unsigned long scanned;
+
+        /* This loop can become CPU-bound when target memcgs
+        * aren't eligible for reclaim - either because they
+        * don't have any reclaimable pages, or because their
+        * memory is explicitly protected. Avoid soft lockups. */
+        cond_resched();
+
+        mem_cgroup_calculate_protection(target_memcg, memcg);
+
+        if (mem_cgroup_below_min(target_memcg, memcg)) {
+            /* Hard protection.
+            * If there is no reclaimable memory, OOM. */
+            continue;
+        } else if (mem_cgroup_below_low(target_memcg, memcg)) {
+            /* Soft protection.
+            * Respect the protection only as long as
+            * there is an unprotected supply
+            * of reclaimable memory from other cgroups. */
+            if (!sc->memcg_low_reclaim) {
+                sc->memcg_low_skipped = 1;
+                continue;
+            }
+            memcg_memory_event(memcg, MEMCG_LOW);
+        }
+
+        reclaimed = sc->nr_reclaimed;
+        scanned = sc->nr_scanned;
+
+        shrink_lruvec(lruvec, sc) {
+            unsigned long nr[NR_LRU_LISTS];
+            unsigned long targets[NR_LRU_LISTS];
+            unsigned long nr_to_scan;
+            enum lru_list lru;
+            unsigned long nr_reclaimed = 0;
+            unsigned long nr_to_reclaim = sc->nr_to_reclaim;
+            bool proportional_reclaim;
+            struct blk_plug plug;
+
+            if (lru_gen_enabled() && !root_reclaim(sc)) {
+                lru_gen_shrink_lruvec(lruvec, sc);
+                return;
+            }
+
+            get_scan_count(lruvec, sc, nr);
+
+            /* Record the original scan target for proportional adjustments later */
+            memcpy(targets, nr, sizeof(nr));
+
+            /* Global reclaiming within direct reclaim at DEF_PRIORITY is a normal
+            * event that can occur when there is little memory pressure e.g.
+            * multiple streaming readers/writers. Hence, we do not abort scanning
+            * when the requested number of pages are reclaimed when scanning at
+            * DEF_PRIORITY on the assumption that the fact we are direct
+            * reclaiming implies that kswapd is not keeping up and it is best to
+            * do a batch of work at once. For memcg reclaim one check is made to
+            * abort proportional reclaim if either the file or anon lru has already
+            * dropped to zero at the first pass. */
+            proportional_reclaim = (!cgroup_reclaim(sc) && !current_is_kswapd() &&
+                        sc->priority == DEF_PRIORITY);
+
+            blk_start_plug(&plug);
+            while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] || nr[LRU_INACTIVE_FILE]) {
+                unsigned long nr_anon, nr_file, percentage;
+                unsigned long nr_scanned;
+
+                for_each_evictable_lru(lru) {
+                    if (nr[lru]) {
+                        nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
+                        nr[lru] -= nr_to_scan;
+
+                        nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, sc);
+                    }
+                }
+
+                cond_resched();
+
+                if (nr_reclaimed < nr_to_reclaim || proportional_reclaim)
+                    continue;
+
+                /* For kswapd and memcg, reclaim at least the number of pages
+                * requested. Ensure that the anon and file LRUs are scanned
+                * proportionally what was requested by get_scan_count(). We
+                * stop reclaiming one LRU and reduce the amount scanning
+                * proportional to the original scan target. */
+                nr_file = nr[LRU_INACTIVE_FILE] + nr[LRU_ACTIVE_FILE];
+                nr_anon = nr[LRU_INACTIVE_ANON] + nr[LRU_ACTIVE_ANON];
+
+                /* It's just vindictive to attack the larger once the smaller
+                * has gone to zero.  And given the way we stop scanning the
+                * smaller below, this makes sure that we only make one nudge
+                * towards proportionality once we've got nr_to_reclaim. */
+                if (!nr_file || !nr_anon)
+                    break;
+
+                if (nr_file > nr_anon) {
+                    unsigned long scan_target = targets[LRU_INACTIVE_ANON] +
+                                targets[LRU_ACTIVE_ANON] + 1;
+                    lru = LRU_BASE;
+                    percentage = nr_anon * 100 / scan_target;
+                } else {
+                    unsigned long scan_target = targets[LRU_INACTIVE_FILE] +
+                                targets[LRU_ACTIVE_FILE] + 1;
+                    lru = LRU_FILE;
+                    percentage = nr_file * 100 / scan_target;
+                }
+
+                /* Stop scanning the smaller of the LRU */
+                nr[lru] = 0;
+                nr[lru + LRU_ACTIVE] = 0;
+
+                /* Recalculate the other LRU scan count based on its original
+                * scan target and the percentage scanning already complete */
+                lru = (lru == LRU_FILE) ? LRU_BASE : LRU_FILE;
+                nr_scanned = targets[lru] - nr[lru];
+                nr[lru] = targets[lru] * (100 - percentage) / 100;
+                nr[lru] -= min(nr[lru], nr_scanned);
+
+                lru += LRU_ACTIVE;
+                nr_scanned = targets[lru] - nr[lru];
+                nr[lru] = targets[lru] * (100 - percentage) / 100;
+                nr[lru] -= min(nr[lru], nr_scanned);
+            }
+
+            blk_finish_plug(&plug);
+            sc->nr_reclaimed += nr_reclaimed;
+
+            /* Even if we did not try to evict anon pages at all, we want to
+            * rebalance the anon lru active/inactive ratio. */
+            if (can_age_anon_pages(lruvec_pgdat(lruvec), sc)
+                && inactive_is_low(lruvec, LRU_INACTIVE_ANON)) {
+
+                shrink_active_list(SWAP_CLUSTER_MAX, lruvec, sc, LRU_ACTIVE_ANON);
+            }
+        }
+
+        shrink_slab(sc->gfp_mask, pgdat->node_id, memcg, sc->priority);
+
+        /* Record the group's reclaim efficiency */
+        if (!sc->proactive)
+            vmpressure(sc->gfp_mask, memcg, false,
+                sc->nr_scanned - scanned,
+                sc->nr_reclaimed - reclaimed);
+
+    } while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
+}
+```
+
+#### get_scan_count
+
+```c
+void get_scan_count(struct lruvec *lruvec, struct scan_control *sc, unsigned long *nr)
+{
+    struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+    struct mem_cgroup *memcg = lruvec_memcg(lruvec);
+    unsigned long anon_cost, file_cost, total_cost;
+    int swappiness = mem_cgroup_swappiness(memcg);
+    u64 fraction[ANON_AND_FILE];
+    u64 denominator = 0;	/* gcc */
+    enum scan_balance scan_balance;
+    unsigned long ap, fp;
+    enum lru_list lru;
+
+    /* If we have no swap space, do not bother scanning anon folios. */
+    if (!sc->may_swap || !can_reclaim_anon_pages(memcg, pgdat->node_id, sc)) {
+        scan_balance = SCAN_FILE;
+        goto out;
+    }
+
+    /*
+    * Global reclaim will swap to prevent OOM even with no
+    * swappiness, but memcg users want to use this knob to
+    * disable swapping for individual groups completely when
+    * using the memory controller's swap limit feature would be
+    * too expensive.
+    */
+    if (cgroup_reclaim(sc) && !swappiness) {
+        scan_balance = SCAN_FILE;
+        goto out;
+    }
+
+    /*
+    * Do not apply any pressure balancing cleverness when the
+    * system is close to OOM, scan both anon and file equally
+    * (unless the swappiness setting disagrees with swapping).
+    */
+    if (!sc->priority && swappiness) {
+        scan_balance = SCAN_EQUAL;
+        goto out;
+    }
+
+    /*
+    * If the system is almost out of file pages, force-scan anon.
+    */
+    if (sc->file_is_tiny) {
+        scan_balance = SCAN_ANON;
+        goto out;
+    }
+
+    /*
+    * If there is enough inactive page cache, we do not reclaim
+    * anything from the anonymous working right now.
+    */
+    if (sc->cache_trim_mode) {
+        scan_balance = SCAN_FILE;
+        goto out;
+    }
+
+    scan_balance = SCAN_FRACT;
+    /*
+    * Calculate the pressure balance between anon and file pages.
+    *
+    * The amount of pressure we put on each LRU is inversely
+    * proportional to the cost of reclaiming each list, as
+    * determined by the share of pages that are refaulting, times
+    * the relative IO cost of bringing back a swapped out
+    * anonymous page vs reloading a filesystem page (swappiness).
+    *
+    * Although we limit that influence to ensure no list gets
+    * left behind completely: at least a third of the pressure is
+    * applied, before swappiness.
+    *
+    * With swappiness at 100, anon and file have equal IO cost.
+    */
+    total_cost = sc->anon_cost + sc->file_cost;
+    anon_cost = total_cost + sc->anon_cost;
+    file_cost = total_cost + sc->file_cost;
+    total_cost = anon_cost + file_cost;
+
+    ap = swappiness * (total_cost + 1);
+    ap /= anon_cost + 1;
+
+    fp = (200 - swappiness) * (total_cost + 1);
+    fp /= file_cost + 1;
+
+    fraction[0] = ap;
+    fraction[1] = fp;
+    denominator = ap + fp;
+out:
+    for_each_evictable_lru(lru) {
+        int file = is_file_lru(lru);
+        unsigned long lruvec_size;
+        unsigned long low, min;
+        unsigned long scan;
+
+        lruvec_size = lruvec_lru_size(lruvec, lru, sc->reclaim_idx);
+        mem_cgroup_protection(sc->target_mem_cgroup, memcg, &min, &low);
+
+        if (min || low) {
+            /*
+            * Scale a cgroup's reclaim pressure by proportioning
+            * its current usage to its memory.low or memory.min
+            * setting.
+            *
+            * This is important, as otherwise scanning aggression
+            * becomes extremely binary -- from nothing as we
+            * approach the memory protection threshold, to totally
+            * nominal as we exceed it.  This results in requiring
+            * setting extremely liberal protection thresholds. It
+            * also means we simply get no protection at all if we
+            * set it too low, which is not ideal.
+            *
+            * If there is any protection in place, we reduce scan
+            * pressure by how much of the total memory used is
+            * within protection thresholds.
+            *
+            * There is one special case: in the first reclaim pass,
+            * we skip over all groups that are within their low
+            * protection. If that fails to reclaim enough pages to
+            * satisfy the reclaim goal, we come back and override
+            * the best-effort low protection. However, we still
+            * ideally want to honor how well-behaved groups are in
+            * that case instead of simply punishing them all
+            * equally. As such, we reclaim them based on how much
+            * memory they are using, reducing the scan pressure
+            * again by how much of the total memory used is under
+            * hard protection.
+            */
+            unsigned long cgroup_size = mem_cgroup_size(memcg);
+            unsigned long protection;
+
+            /* memory.low scaling, make sure we retry before OOM */
+            if (!sc->memcg_low_reclaim && low > min) {
+                protection = low;
+                sc->memcg_low_skipped = 1;
+            } else {
+                protection = min;
+            }
+
+            /* Avoid TOCTOU with earlier protection check */
+            cgroup_size = max(cgroup_size, protection);
+
+            scan = lruvec_size - lruvec_size * protection /
+                (cgroup_size + 1);
+
+            /*
+            * Minimally target SWAP_CLUSTER_MAX pages to keep
+            * reclaim moving forwards, avoiding decrementing
+            * sc->priority further than desirable.
+            */
+            scan = max(scan, SWAP_CLUSTER_MAX);
+        } else {
+            scan = lruvec_size;
+        }
+
+        scan >>= sc->priority;
+
+        /*
+        * If the cgroup's already been deleted, make sure to
+        * scrape out the remaining cache.
+        */
+        if (!scan && !mem_cgroup_online(memcg))
+            scan = min(lruvec_size, SWAP_CLUSTER_MAX);
+
+        switch (scan_balance) {
+        case SCAN_EQUAL:
+            /* Scan lists relative to size */
+            break;
+        case SCAN_FRACT:
+            /*
+            * Scan types proportional to swappiness and
+            * their relative recent reclaim efficiency.
+            * Make sure we don't miss the last page on
+            * the offlined memory cgroups because of a
+            * round-off error.
+            */
+            scan = mem_cgroup_online(memcg) ?
+                div64_u64(scan * fraction[file], denominator) :
+                DIV64_U64_ROUND_UP(scan * fraction[file],
+                        denominator);
+            break;
+        case SCAN_FILE:
+        case SCAN_ANON:
+            /* Scan one type exclusively */
+            if ((scan_balance == SCAN_FILE) != file)
+                scan = 0;
+            break;
+        default:
+            /* Look ma, no brain */
+            BUG();
+        }
+
+        nr[lru] = scan;
+    }
+}
+```
+
+#### shrink_list
+
+* shrink_active_list
+
+    ![](../images/kernel/mem-page_reclaim-shrink_active_list.png)
+
+* shrink_inactive_list
+
+    ![](../images/kernel/mem-page_reclaim-shrink_inactive_list.png)
+
+    ![](../images/kernel/mem-page_reclaim-shrink_inactive_list-2.png)
+
+```c
+unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
+                struct lruvec *lruvec, struct scan_control *sc)
+{
+    if (is_active_lru(lru)) {
+        if (sc->may_deactivate & (1 << is_file_lru(lru))) {
+            shrink_active_list(nr_to_scan, lruvec, sc, lru) {
+                unsigned long nr_taken;
+                unsigned long nr_scanned;
+                unsigned long vm_flags;
+                LIST_HEAD(l_hold);	/* The folios which were snipped off */
+                LIST_HEAD(l_active);
+                LIST_HEAD(l_inactive);
+                unsigned nr_deactivate, nr_activate;
+                unsigned nr_rotated = 0;
+                int file = is_file_lru(lru);
+                struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+
+                lru_add_drain();
+
+                spin_lock_irq(&lruvec->lru_lock);
+
+                nr_taken = isolate_lru_folios(nr_to_scan, lruvec,
+                    &l_hold, &nr_scanned, sc, lru);
+
+                __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, nr_taken);
+
+                if (!cgroup_reclaim(sc))
+                    __count_vm_events(PGREFILL, nr_scanned);
+                __count_memcg_events(lruvec_memcg(lruvec), PGREFILL, nr_scanned);
+
+                spin_unlock_irq(&lruvec->lru_lock);
+
+                while (!list_empty(&l_hold)) {
+                    struct folio *folio;
+
+                    cond_resched();
+                    folio = lru_to_folio(&l_hold);
+                    list_del(&folio->lru);
+
+                    if (unlikely(!folio_evictable(folio))) {
+                        folio_putback_lru(folio);
+                        continue;
+                    }
+
+                    if (unlikely(buffer_heads_over_limit)) {
+                        if (folio_needs_release(folio) &&
+                            folio_trylock(folio)) {
+                            filemap_release_folio(folio, 0);
+                            folio_unlock(folio);
+                        }
+                    }
+
+                    /* Referenced or rmap lock contention: rotate */
+                    if (folio_referenced(folio, 0, sc->target_mem_cgroup,
+                                &vm_flags) != 0) {
+                        /*
+                        * Identify referenced, file-backed active folios and
+                        * give them one more trip around the active list. So
+                        * that executable code get better chances to stay in
+                        * memory under moderate memory pressure.  Anon folios
+                        * are not likely to be evicted by use-once streaming
+                        * IO, plus JVM can create lots of anon VM_EXEC folios,
+                        * so we ignore them here.
+                        */
+                        if ((vm_flags & VM_EXEC) && folio_is_file_lru(folio)) {
+                            nr_rotated += folio_nr_pages(folio);
+                            list_add(&folio->lru, &l_active);
+                            continue;
+                        }
+                    }
+
+                    folio_clear_active(folio);	/* we are de-activating */
+                    folio_set_workingset(folio);
+                    list_add(&folio->lru, &l_inactive);
+                }
+
+                /*
+                * Move folios back to the lru list.
+                */
+                spin_lock_irq(&lruvec->lru_lock);
+
+                nr_activate = move_folios_to_lru(lruvec, &l_active);
+                nr_deactivate = move_folios_to_lru(lruvec, &l_inactive);
+                /* Keep all free folios in l_active list */
+                list_splice(&l_inactive, &l_active);
+
+                __count_vm_events(PGDEACTIVATE, nr_deactivate);
+                __count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
+
+                __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
+                spin_unlock_irq(&lruvec->lru_lock);
+
+                if (nr_rotated)
+                    lru_note_cost(lruvec, file, 0, nr_rotated);
+                mem_cgroup_uncharge_list(&l_active);
+                free_unref_page_list(&l_active);
+            }
+        } else {
+            sc->skipped_deactivate = 1;
+        }
+        return 0;
+    }
+
+    return shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
+        LIST_HEAD(folio_list);
+        unsigned long nr_scanned;
+        unsigned int nr_reclaimed = 0;
+        unsigned long nr_taken;
+        struct reclaim_stat stat;
+        bool file = is_file_lru(lru);
+        enum vm_event_item item;
+        struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+        bool stalled = false;
+
+        while (unlikely(too_many_isolated(pgdat, file, sc))) {
+            if (stalled)
+                return 0;
+
+            /* wait a bit for the reclaimer. */
+            stalled = true;
+            reclaim_throttle(pgdat, VMSCAN_THROTTLE_ISOLATED);
+
+            /* We are about to die and free our memory. Return now. */
+            if (fatal_signal_pending(current))
+                return SWAP_CLUSTER_MAX;
+        }
+
+        lru_add_drain();
+
+        spin_lock_irq(&lruvec->lru_lock);
+
+        nr_taken = isolate_lru_folios(nr_to_scan, lruvec, &folio_list, &nr_scanned, sc, lru);
+
+        __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, nr_taken);
+        item = PGSCAN_KSWAPD + reclaimer_offset();
+        if (!cgroup_reclaim(sc))
+            __count_vm_events(item, nr_scanned);
+        __count_memcg_events(lruvec_memcg(lruvec), item, nr_scanned);
+        __count_vm_events(PGSCAN_ANON + file, nr_scanned);
+
+        spin_unlock_irq(&lruvec->lru_lock);
+
+        if (nr_taken == 0)
+            return 0;
+
+        nr_reclaimed = shrink_folio_list(&folio_list, pgdat, sc, &stat, false);
+
+        spin_lock_irq(&lruvec->lru_lock);
+        move_folios_to_lru(lruvec, &folio_list);
+
+        __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
+        item = PGSTEAL_KSWAPD + reclaimer_offset();
+        if (!cgroup_reclaim(sc))
+            __count_vm_events(item, nr_reclaimed);
+        __count_memcg_events(lruvec_memcg(lruvec), item, nr_reclaimed);
+        __count_vm_events(PGSTEAL_ANON + file, nr_reclaimed);
+        spin_unlock_irq(&lruvec->lru_lock);
+
+        lru_note_cost(lruvec, file, stat.nr_pageout, nr_scanned - nr_reclaimed);
+        mem_cgroup_uncharge_list(&folio_list);
+        free_unref_page_list(&folio_list);
+
+        /*
+        * If dirty folios are scanned that are not queued for IO, it
+        * implies that flushers are not doing their job. This can
+        * happen when memory pressure pushes dirty folios to the end of
+        * the LRU before the dirty limits are breached and the dirty
+        * data has expired. It can also happen when the proportion of
+        * dirty folios grows not through writes but through memory
+        * pressure reclaiming all the clean cache. And in some cases,
+        * the flushers simply cannot keep up with the allocation
+        * rate. Nudge the flusher threads in case they are asleep.
+        */
+        if (stat.nr_unqueued_dirty == nr_taken) {
+            wakeup_flusher_threads(WB_REASON_VMSCAN);
+            /*
+            * For cgroupv1 dirty throttling is achieved by waking up
+            * the kernel flusher here and later waiting on folios
+            * which are in writeback to finish (see shrink_folio_list()).
+            *
+            * Flusher may not be able to issue writeback quickly
+            * enough for cgroupv1 writeback throttling to work
+            * on a large system.
+            */
+            if (!writeback_throttling_sane(sc))
+                reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
+        }
+
+        sc->nr.dirty += stat.nr_dirty;
+        sc->nr.congested += stat.nr_congested;
+        sc->nr.unqueued_dirty += stat.nr_unqueued_dirty;
+        sc->nr.writeback += stat.nr_writeback;
+        sc->nr.immediate += stat.nr_immediate;
+        sc->nr.taken += nr_taken;
+        if (file)
+            sc->nr.file_taken += nr_taken;
+
+        return nr_reclaimed;
+    }
+}
+```
+
+#### shrink_slab
+
+```c
+unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int priority)
+{
+    unsigned long ret, freed = 0;
+    struct shrinker *shrinker;
+
+    /*
+    * The root memcg might be allocated even though memcg is disabled
+    * via "cgroup_disable=memory" boot parameter.  This could make
+    * mem_cgroup_is_root() return false, then just run memcg slab
+    * shrink, but skip global shrink.  This may result in premature
+    * oom.
+    */
+    if (!mem_cgroup_disabled() && !mem_cgroup_is_root(memcg))
+        return shrink_slab_memcg(gfp_mask, nid, memcg, priority);
+
+    /*
+    * lockless algorithm of global shrink.
+    *
+    * In the unregistration setp, the shrinker will be freed asynchronously
+    * via RCU after its refcount reaches 0. So both rcu_read_lock() and
+    * shrinker_try_get() can be used to ensure the existence of the shrinker.
+    *
+    * So in the global shrink:
+    *  step 1: use rcu_read_lock() to guarantee existence of the shrinker
+    *          and the validity of the shrinker_list walk.
+    *  step 2: use shrinker_try_get() to try get the refcount, if successful,
+    *          then the existence of the shrinker can also be guaranteed,
+    *          so we can release the RCU lock to do do_shrink_slab() that
+    *          may sleep.
+    *  step 3: *MUST* to reacquire the RCU lock before calling shrinker_put(),
+    *          which ensures that neither this shrinker nor the next shrinker
+    *          will be freed in the next traversal operation.
+    *  step 4: do shrinker_put() paired with step 2 to put the refcount,
+    *          if the refcount reaches 0, then wake up the waiter in
+    *          shrinker_free() by calling complete().
+    */
+    rcu_read_lock();
+    list_for_each_entry_rcu(shrinker, &shrinker_list, list) {
+        struct shrink_control sc = {
+            .gfp_mask = gfp_mask,
+            .nid = nid,
+            .memcg = memcg,
+        };
+
+        if (!shrinker_try_get(shrinker))
+            continue;
+
+        rcu_read_unlock();
+
+        ret = do_shrink_slab(&sc, shrinker, priority) {
+            unsigned long freed = 0;
+            unsigned long long delta;
+            long total_scan;
+            long freeable;
+            long nr;
+            long new_nr;
+            long batch_size = shrinker->batch
+                ? shrinker->batch : SHRINK_BATCH;
+            long scanned = 0, next_deferred;
+
+            freeable = shrinker->count_objects(shrinker, shrinkctl);
+            if (freeable == 0 || freeable == SHRINK_EMPTY)
+                return freeable;
+
+            /*
+            * copy the current shrinker scan count into a local variable
+            * and zero it so that other concurrent shrinker invocations
+            * don't also do this scanning work.
+            */
+            nr = xchg_nr_deferred(shrinker, shrinkctl);
+
+            if (shrinker->seeks) {
+                delta = freeable >> priority;
+                delta *= 4;
+                do_div(delta, shrinker->seeks);
+            } else {
+                /*
+                * These objects don't require any IO to create. Trim
+                * them aggressively under memory pressure to keep
+                * them from causing refetches in the IO caches.
+                */
+                delta = freeable / 2;
+            }
+
+            total_scan = nr >> priority;
+            total_scan += delta;
+            total_scan = min(total_scan, (2 * freeable));
+
+            /*
+            * Normally, we should not scan less than batch_size objects in one
+            * pass to avoid too frequent shrinker calls, but if the slab has less
+            * than batch_size objects in total and we are really tight on memory,
+            * we will try to reclaim all available objects, otherwise we can end
+            * up failing allocations although there are plenty of reclaimable
+            * objects spread over several slabs with usage less than the
+            * batch_size.
+            *
+            * We detect the "tight on memory" situations by looking at the total
+            * number of objects we want to scan (total_scan). If it is greater
+            * than the total number of objects on slab (freeable), we must be
+            * scanning at high prio and therefore should try to reclaim as much as
+            * possible.
+            */
+            while (total_scan >= batch_size ||
+                total_scan >= freeable) {
+                unsigned long ret;
+                unsigned long nr_to_scan = min(batch_size, total_scan);
+
+                shrinkctl->nr_to_scan = nr_to_scan;
+                shrinkctl->nr_scanned = nr_to_scan;
+                ret = shrinker->scan_objects(shrinker, shrinkctl);
+                if (ret == SHRINK_STOP)
+                    break;
+                freed += ret;
+
+                count_vm_events(SLABS_SCANNED, shrinkctl->nr_scanned);
+                total_scan -= shrinkctl->nr_scanned;
+                scanned += shrinkctl->nr_scanned;
+
+                cond_resched();
+            }
+
+            /*
+            * The deferred work is increased by any new work (delta) that wasn't
+            * done, decreased by old deferred work that was done now.
+            *
+            * And it is capped to two times of the freeable items.
+            */
+            next_deferred = max_t(long, (nr + delta - scanned), 0);
+            next_deferred = min(next_deferred, (2 * freeable));
+
+            /*
+            * move the unused scan count back into the shrinker in a
+            * manner that handles concurrent updates.
+            */
+            new_nr = add_nr_deferred(next_deferred, shrinker, shrinkctl);
+
+            return freed;
+        }
+        if (ret == SHRINK_EMPTY)
+            ret = 0;
+        freed += ret;
+
+        rcu_read_lock();
+        shrinker_put(shrinker);
+    }
+
+    rcu_read_unlock();
+    cond_resched();
+    return freed;
 }
 ```
 
@@ -9495,9 +9955,9 @@ bool remove_migration_pte(struct folio *folio,
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
 
-![](../images/kernel/mem-page-compact-points.png)
+![](../images/kernel/mem-page_compact-points.png)
 
-![](../images/kernel/mem-page-compact-cases.png)
+![](../images/kernel/mem-page_compact-cases.png)
 
 ```c
 status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highest_zoneidx, capture) {
@@ -9541,7 +10001,7 @@ status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highes
 
         cc->migratetype = gfp_migratetype(cc->gfp_mask);
 
-        if (!is_via_compact_memory(cc->order)) {
+        if (!is_via_compact_memory(cc->order)) { /* return order == -1; */
             ret = compaction_suit_allocation_order(
                 cc->zone, cc->order,
                 cc->highest_zoneidx,
@@ -9719,6 +10179,8 @@ status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highes
 
 ## compact_finished
 
+![](../images/kernel/mem-page_compact-finished.png)
+
 ```c
 enum compact_result compact_finished(struct compact_control *cc)
 {
@@ -9766,7 +10228,7 @@ enum compact_result compact_finished(struct compact_control *cc)
             goto out;
         }
 
-        if (is_via_compact_memory(cc->order))
+        if (is_via_compact_memory(cc->order)) /* return cc-order == -1; */
             return COMPACT_CONTINUE;
 
         /* Always finish scanning a pageblock to reduce the possibility of
@@ -11143,51 +11605,11 @@ static int kswapd(void *p)
     struct task_struct *tsk = current;
 
     for ( ; ; ) {
-        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order,
-            classzone_idx);
-        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx);
-    }
-}
+        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order, classzone_idx);
+        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx) {
 
-/* balance_pgdat->kswapd_shrink_node->shrink_node */
-
-/* This is a basic per-node page freer.  Used by both kswapd and direct reclaim. */
-static void shrink_node_memcg(struct pglist_data *pgdat, struct mem_cgroup *memcg,
-            struct scan_control *sc, unsigned long *lru_pages)
-{
-    unsigned long nr[NR_LRU_LISTS];
-    enum lru_list lru;
-
-    while (nr[LRU_INACTIVE_ANON] || nr[LRU_ACTIVE_FILE] ||
-        nr[LRU_INACTIVE_FILE]) {
-        unsigned long nr_anon, nr_file, percentage;
-        unsigned long nr_scanned;
-
-        for_each_evictable_lru(lru) {
-            if (nr[lru]) {
-                nr_to_scan = min(nr[lru], SWAP_CLUSTER_MAX);
-                nr[lru] -= nr_to_scan;
-
-                nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, memcg, sc);
-            }
         }
     }
-}
-
-#define for_each_evictable_lru(lru) for (lru = 0; lru <= LRU_ACTIVE_FILE; lru++)
-
-static unsigned long shrink_list(enum lru_list lru, unsigned long nr_to_scan,
-         struct lruvec *lruvec, struct mem_cgroup *memcg,
-         struct scan_control *sc)
-{
-  if (is_active_lru(lru)) {
-        if (inactive_list_is_low(lruvec, is_file_lru(lru),
-            memcg, sc, true))
-            shrink_active_list(nr_to_scan, lruvec, sc, lru);
-        return 0;
-  }
-
-  return shrink_inactive_list(nr_to_scan, lruvec, sc, lru);
 }
 ```
 
