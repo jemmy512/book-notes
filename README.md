@@ -60,11 +60,11 @@
     * [Distributed Systems, 3rd Edition :soon:](https://www.distributed-systems.net/index.php/books/ds3/)
 
 # Software Engineering
-* [Design Patterns :soon:](./SE/design-patterns.md)
-* [Clean Code](./SE/clean-code.md)
-* [Refactor V2](./SE/refactoring-2.md)
-* [Refactoring to Patterns :soon:](./SE/refactoring-to-patterns.md)
-* [Working Effectively with Legacy Code :soon:](./SE/working-effectively-with-legacy-code.md)
+* [Design Patterns :soon:](./se/design-patterns.md)
+* [Clean Code](./se/clean-code.md)
+* [Refactor V2](./se/refactoring-2.md)
+* [Refactoring to Patterns :soon:](./se/refactoring-to-patterns.md)
+* [Working Effectively with Legacy Code :soon:](./se/working-effectively-with-legacy-code.md)
 
 # C
 * [The C Programming Language :soon:](./c/the-c-programming-language.md)
