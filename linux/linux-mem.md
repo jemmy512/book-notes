@@ -101,6 +101,10 @@
     * [throttle_direct_reclaim](#throttle_direct_reclaim)
     * [shrink_node](#shrink_node)
         * [shrink_node_memcgs](#shrink_node_memcgs)
+            * [get_scan_count](#get_scan_count)
+        * [shrink_active_list](#shrink_active_list)
+        * [shrink_inactive_list](#shrink_inactive_list)
+            * [shrink_folio_list](#shrink_folio_list)
         * [shrink_slab](#shrink_slab)
     * [vmpressure](#vmpressure)
 
@@ -8082,6 +8086,10 @@ vmalloc(size);
 
 # page_reclaim
 
+1. directly free the unmodified file pages
+2. writeback the modified file pages to storage device
+3. writeback annonymous pages to swapping area
+
 ![](../images/kernel/mem-page_reclaim.svg)
 
 ![](../images/kernel/mem-page_reclaim_cases.png)
@@ -8208,13 +8216,6 @@ __perform_reclaim(gfp_mask, order, ac) {
                             if (!cpuset_zone_allowed(zone, GFP_KERNEL | __GFP_HARDWALL))
                                 continue;
 
-                            /* If we already have plenty of memory free for
-                            * compaction in this zone, don't free any more.
-                            * Even though compaction is invoked for any
-                            * non-zero order, only frequent costly order
-                            * reclamation is disruptive enough to become a
-                            * noticeable problem, like transparent huge
-                            * page allocations. */
                             if (IS_ENABLED(CONFIG_COMPACTION) &&
                                 sc->order > PAGE_ALLOC_COSTLY_ORDER &&
                                 compaction_ready(zone, sc)) {
@@ -8222,17 +8223,9 @@ __perform_reclaim(gfp_mask, order, ac) {
                                 continue;
                             }
 
-                            /* Shrink each node in the zonelist once. If the
-                            * zonelist is ordered by zone (not the default) then a
-                            * node may be shrunk multiple times but in that case
-                            * the user prefers lower zones being preserved. */
                             if (zone->zone_pgdat == last_pgdat)
                                 continue;
 
-                            /* This steals pages from memory cgroups over softlimit
-                            * and returns the number of reclaimed pages and
-                            * scanned pages. This works for global memory pressure
-                            * and balancing, not for a memcg's limit. */
                             nr_soft_scanned = 0;
                             nr_soft_reclaimed = mem_cgroup_soft_limit_reclaim(
                                 zone->zone_pgdat,
@@ -8241,7 +8234,6 @@ __perform_reclaim(gfp_mask, order, ac) {
                             );
                             sc->nr_reclaimed += nr_soft_reclaimed;
                             sc->nr_scanned += nr_soft_scanned;
-                            /* need some check for avoid more shrink_zone() */
                         }
 
                         if (!first_pgdat)
@@ -8474,21 +8466,6 @@ again:
         reclaimable = true;
 
     if (current_is_kswapd()) {
-        /* If reclaim is isolating dirty pages under writeback,
-        * it implies that the long-lived page allocation rate
-        * is exceeding the page laundering rate. Either the
-        * global limits are not being effective at throttling
-        * processes due to the page distribution throughout
-        * zones or there is heavy usage of a slow backing
-        * device. The only option is to throttle from reclaim
-        * context which is not ideal as there is no guarantee
-        * the dirtying process is throttled in the same way
-        * balance_dirty_pages() manages.
-        *
-        * Once a node is flagged PGDAT_WRITEBACK, kswapd will
-        * count the number of pages under pages flagged for
-        * immediate reclaim and stall if any are encountered
-        * in the nr_immediate check below. */
         if (sc->nr.writeback && sc->nr.writeback == sc->nr.taken)
             set_bit(PGDAT_WRITEBACK, &pgdat->flags);
 
@@ -8497,12 +8474,13 @@ again:
             set_bit(PGDAT_DIRTY, &pgdat->flags);
 
         /* If kswapd scans pages marked for immediate
-        * reclaim and under writeback (nr_immediate), it
-        * implies that pages are cycling through the LRU
-        * faster than they are written so forcibly stall
-        * until some pages complete writeback. */
-        if (sc->nr.immediate)
+         * reclaim and under writeback (nr_immediate), it
+         * implies that pages are cycling through the LRU
+         * faster than they are written so forcibly stall
+         * until some pages complete writeback. */
+        if (sc->nr.immediate) {
             reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
+        }
     }
 
     /* Tag a node/memcg as congested if all the dirty pages were marked
@@ -8519,22 +8497,20 @@ again:
     }
 
     /* Stall direct reclaim for IO completions if the lruvec is
-    * node is congested. Allow kswapd to continue until it
-    * starts encountering unqueued dirty pages or cycling through
-    * the LRU too quickly. */
-    if (!current_is_kswapd() && current_may_throttle() &&
-        !sc->hibernation_mode &&
-        (test_bit(LRUVEC_CGROUP_CONGESTED, &target_lruvec->flags) ||
-        test_bit(LRUVEC_NODE_CONGESTED, &target_lruvec->flags)))
+     * node is congested. Allow kswapd to continue until it
+     * starts encountering unqueued dirty pages or cycling through
+     * the LRU too quickly. */
+    is_congested = (test_bit(LRUVEC_CGROUP_CONGESTED, &target_lruvec->flags)
+        || test_bit(LRUVEC_NODE_CONGESTED, &target_lruvec->flags));
+    if (!current_is_kswapd() && current_may_throttle()
+        && !sc->hibernation_mode && is_congested) {
+
         reclaim_throttle(pgdat, VMSCAN_THROTTLE_CONGESTED);
+    }
 
     if (should_continue_reclaim(pgdat, nr_node_reclaimed, sc))
         goto again;
 
-    /* Kswapd gives up on balancing particular nodes after too
-    * many failures to reclaim anything from them and goes to
-    * sleep. On reclaim progress, reset the failure counter. A
-    * successful direct reclaim run will revive a dormant kswapd. */
     if (reclaimable)
         pgdat->kswapd_failures = 0;
 }
@@ -8678,11 +8654,12 @@ shrink_node_memcgs(pgdat, sc) {
         shrink_slab(sc->gfp_mask, pgdat->node_id, memcg, sc->priority);
 
         /* Record the group's reclaim efficiency */
-        if (!sc->proactive)
+        if (!sc->proactive) {
             vmpressure(sc->gfp_mask, memcg, false,
                 sc->nr_scanned - scanned,
-                sc->nr_reclaimed - reclaimed);
-
+                sc->nr_reclaimed - reclaimed
+            );
+        }
     } while ((memcg = mem_cgroup_iter(target_memcg, memcg, NULL)));
 }
 ```
@@ -8752,7 +8729,18 @@ out:
         unsigned long low, min;
         unsigned long scan;
 
-        lruvec_size = lruvec_lru_size(lruvec, lru, sc->reclaim_idx);
+        lruvec_size = lruvec_lru_size(lruvec, lru, sc->reclaim_idx) {
+            for (zid = 0; zid <= zone_idx; zid++) {
+                struct zone *zone = &lruvec_pgdat(lruvec)->node_zones[zid];
+                if (!managed_zone(zone))
+                    continue;
+                if (!mem_cgroup_disabled())
+                    size += mem_cgroup_get_zone_lru_size(lruvec, lru, zid);
+                else
+                    size += zone_page_state(zone, NR_ZONE_LRU_BASE + lru);
+            }
+            return size;
+        }
         mem_cgroup_protection(sc->target_mem_cgroup, memcg, &min, &low) {
             *min = READ_ONCE(memcg->memory.emin);
             *low = READ_ONCE(memcg->memory.elow);
@@ -8833,8 +8821,10 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 
     spin_lock_irq(&lruvec->lru_lock);
 
+    /* 1. isolate nr_to_scan size folios, which may still be active/inactive */
     nr_taken = isolate_lru_folios(nr_to_scan, lruvec,
-        &l_hold, &nr_scanned, sc, lru);
+        &l_hold, &nr_scanned, sc, lru
+    );
 
     __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, nr_taken);
 
@@ -8844,6 +8834,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 
     spin_unlock_irq(&lruvec->lru_lock);
 
+    /* 2. filter the folios which should sitll be active/inactive */
     while (!list_empty(&l_hold)) {
         struct folio *folio;
 
@@ -8857,8 +8848,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
         }
 
         if (unlikely(buffer_heads_over_limit)) {
-            if (folio_needs_release(folio) &&
-                folio_trylock(folio)) {
+            if (folio_needs_release(folio) && folio_trylock(folio)) {
                 filemap_release_folio(folio, 0);
                 folio_unlock(folio);
             }
@@ -8882,6 +8872,8 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 
     spin_lock_irq(&lruvec->lru_lock);
 
+    /* 3. move folios can be moved to active/inactive lru
+     * return the folios can be freed to buddy */
     nr_activate = move_folios_to_lru(lruvec, &l_active);
     nr_deactivate = move_folios_to_lru(lruvec, &l_inactive/*list*/) {
         int nr_pages, nr_moved = 0;
@@ -8907,8 +8899,9 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
                     spin_unlock_irq(&lruvec->lru_lock);
                     destroy_large_folio(folio);
                     spin_lock_irq(&lruvec->lru_lock);
-                } else
+                } else {
                     list_add(&folio->lru, &folios_to_free);
+                }
 
                 continue;
             }
@@ -8938,6 +8931,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
     if (nr_rotated)
         lru_note_cost(lruvec, file, 0, nr_rotated);
 
+    /* 4. free candicate folios to buddy */
     mem_cgroup_uncharge_list(&l_active);
     free_unref_page_list(&l_active);
 }
@@ -9034,8 +9028,6 @@ move:
 
 ![](../images/kernel/mem-page_reclaim-shrink_inactive_list.png)
 
-![](../images/kernel/mem-page_reclaim-shrink_inactive_list-2.png)
-
 ```c
 shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
     LIST_HEAD(folio_list);
@@ -9096,24 +9088,8 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
     mem_cgroup_uncharge_list(&folio_list);
     free_unref_page_list(&folio_list);
 
-    /* If dirty folios are scanned that are not queued for IO, it
-    * implies that flushers are not doing their job. This can
-    * happen when memory pressure pushes dirty folios to the end of
-    * the LRU before the dirty limits are breached and the dirty
-    * data has expired. It can also happen when the proportion of
-    * dirty folios grows not through writes but through memory
-    * pressure reclaiming all the clean cache. And in some cases,
-    * the flushers simply cannot keep up with the allocation
-    * rate. Nudge the flusher threads in case they are asleep. */
     if (stat.nr_unqueued_dirty == nr_taken) {
         wakeup_flusher_threads(WB_REASON_VMSCAN);
-        /* For cgroupv1 dirty throttling is achieved by waking up
-        * the kernel flusher here and later waiting on folios
-        * which are in writeback to finish (see shrink_folio_list()).
-        *
-        * Flusher may not be able to issue writeback quickly
-        * enough for cgroupv1 writeback throttling to work
-        * on a large system. */
         if (!writeback_throttling_sane(sc))
             reclaim_throttle(pgdat, VMSCAN_THROTTLE_WRITEBACK);
     }
@@ -9132,6 +9108,8 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
 ```
 
 #### shrink_folio_list
+
+![](../images/kernel/mem-shrink_folio_list.png)
 
 ```c
 unsigned int shrink_folio_list(struct list_head *folio_list,
@@ -9171,6 +9149,7 @@ retry:
         /* Account the number of base pages */
         sc->nr_scanned += nr_pages;
 
+/* rotate to active list */
         if (unlikely(!folio_evictable(folio)))
             goto activate_locked;
 
@@ -9192,6 +9171,7 @@ retry:
         if (writeback && folio_test_reclaim(folio))
             stat->nr_congested += nr_pages;
 
+/* check writeback page */
         if (folio_test_writeback(folio)) {
             /* Case 1 above:
              * folios are being queued for I/O but
@@ -9199,7 +9179,7 @@ retry:
             if (current_is_kswapd() &&
                 folio_test_reclaim(folio) &&
                 test_bit(PGDAT_WRITEBACK, &pgdat->flags)) {
-                stat->nr_immediate += nr_pages;
+                stat->nr_immediate += nr_pages; /* do immediate reclaim */
                 goto activate_locked;
 
             /* Case 2 above:
@@ -9209,18 +9189,7 @@ retry:
             } else if (writeback_throttling_sane(sc) ||
                 !folio_test_reclaim(folio) ||
                 !may_enter_fs(folio, sc->gfp_mask)) {
-                /* This is slightly racy -
-                * folio_end_writeback() might have
-                * just cleared the reclaim flag, then
-                * setting the reclaim flag here ends up
-                * interpreted as the readahead flag - but
-                * that does not matter enough to care.
-                * What we do want is for this folio to
-                * have the reclaim flag set next time
-                * memcg reclaim reaches the tests above,
-                * so it will then wait for writeback to
-                * avoid OOM; and it's also appropriate
-                * in global reclaim. */
+
                 folio_set_reclaim(folio);
                 stat->nr_writeback += nr_pages;
                 goto activate_locked;
@@ -9258,6 +9227,7 @@ retry:
             continue;
         }
 
+/* add anno swapbacked folio to swapcache */
         if (folio_test_anon(folio) && folio_test_swapbacked(folio)) {
             if (!folio_test_swapcache(folio)) {
                 if (!(sc->gfp_mask & __GFP_IO))
@@ -9265,46 +9235,33 @@ retry:
                 if (folio_maybe_dma_pinned(folio))
                     goto keep_locked;
                 if (folio_test_large(folio)) {
-                    /* cannot split folio, skip it */
                     if (!can_split_folio(folio, NULL))
                         goto activate_locked;
-                    /* Split folios without a PMD map right
-                    * away. Chances are some or all of the
-                    * tail pages can be freed without IO. */
-                    if (!folio_entire_mapcount(folio) &&
-                        split_folio_to_list(folio,
-                                folio_list))
+                    if (!folio_entire_mapcount(folio) && split_folio_to_list(folio, folio_list))
                         goto activate_locked;
                 }
-                if (!add_to_swap(folio)) {
+                if (!add_to_swap(folio)) { /* add failed */
                     if (!folio_test_large(folio))
                         goto activate_locked_split;
                     /* Fallback to swap normal pages */
-                    if (split_folio_to_list(folio,
-                                folio_list))
+                    if (split_folio_to_list(folio, folio_list))
                         goto activate_locked;
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-                    count_memcg_folio_events(folio, THP_SWPOUT_FALLBACK, 1);
-                    count_vm_event(THP_SWPOUT_FALLBACK);
-#endif
                     if (!add_to_swap(folio))
                         goto activate_locked_split;
                 }
             }
         } else if (folio_test_swapbacked(folio) && folio_test_large(folio)) {
-            /* Split shmem folio */
             if (split_folio_to_list(folio, folio_list))
                 goto keep_locked;
         }
 
-        /* If the folio was split above, the tail pages will make
-        * their own pass through this function and be accounted
-        * then. */
+        /* large page was splited */
         if ((nr_pages > 1) && !folio_test_large(folio)) {
             sc->nr_scanned -= (nr_pages - 1);
             nr_pages = 1;
         }
 
+/* unmap mapped folio */
         /* The folio is mapped into the page tables of one or more
          * processes. Try to unmap it here. */
         if (folio_mapped(folio)) {
@@ -9317,44 +9274,28 @@ retry:
             try_to_unmap(folio, flags);
             if (folio_mapped(folio)) {
                 stat->nr_unmap_fail += nr_pages;
-                if (!was_swapbacked &&
-                    folio_test_swapbacked(folio))
+                if (!was_swapbacked && folio_test_swapbacked(folio))
                     stat->nr_lazyfree_fail += nr_pages;
                 goto activate_locked;
             }
         }
 
-        /* Folio is unmapped now so it cannot be newly pinned anymore.
-        * No point in trying to reclaim folio if it is pinned.
-        * Furthermore we don't want to reclaim underlying fs metadata
-        * if the folio is pinned and thus potentially modified by the
-        * pinning process as that may upset the filesystem. */
         if (folio_maybe_dma_pinned(folio))
             goto activate_locked;
 
+/* writeback diry folio */
         mapping = folio_mapping(folio);
         if (folio_test_dirty(folio)) {
-            /* Only kswapd can writeback filesystem folios
-            * to avoid risk of stack overflow. But avoid
-            * injecting inefficient single-folio I/O into
-            * flusher writeback as much as possible: only
-            * write folios when we've encountered many
-            * dirty folios, and when we've already scanned
-            * the rest of the LRU for clean folios and see
-            * the same dirty folios again (with the reclaim
-            * flag set). */
+            /* dont writeback:
+             * 1. only kswap can writeback, otherwise its may be stack overflow
+             * 2. folio is not under reaclaim
+             * 3. pgdat is not doing batch writeback */
             if (folio_is_file_lru(folio) &&
-                (!current_is_kswapd() ||
-                !folio_test_reclaim(folio) ||
-                !test_bit(PGDAT_DIRTY, &pgdat->flags))) {
-                /* Immediately reclaim when written back.
-                * Similar in principle to folio_deactivate()
-                * except we already have the folio isolated
-                * and know it's dirty */
-                node_stat_mod_folio(folio, NR_VMSCAN_IMMEDIATE,
-                        nr_pages);
-                folio_set_reclaim(folio);
+                (!current_is_kswapd() || !folio_test_reclaim(folio)
+                    || !test_bit(PGDAT_DIRTY, &pgdat->flags))) {
 
+                node_stat_mod_folio(folio, NR_VMSCAN_IMMEDIATE, nr_pages);
+                folio_set_reclaim(folio);
                 goto activate_locked;
             }
 
@@ -9365,9 +9306,6 @@ retry:
             if (!sc->may_writepage)
                 goto keep_locked;
 
-            /* Folio is dirty. Flush the TLB if a writable entry
-            * potentially exists to avoid CPU writes after I/O
-            * starts and then write it out here. */
             try_to_unmap_flush_dirty();
             switch (pageout(folio, mapping, &plug)) {
             case PAGE_KEEP:
@@ -9375,18 +9313,19 @@ retry:
             case PAGE_ACTIVATE:
                 goto activate_locked;
             case PAGE_SUCCESS:
+                /* after successful wirteback,
+                 * the folio may be writebackable, dirty again */
                 stat->nr_pageout += nr_pages;
 
                 if (folio_test_writeback(folio))
                     goto keep;
                 if (folio_test_dirty(folio))
                     goto keep;
-
                 if (!folio_trylock(folio))
                     goto keep;
-                if (folio_test_dirty(folio) ||
-                    folio_test_writeback(folio))
+                if (folio_test_dirty(folio) || folio_test_writeback(folio))
                     goto keep_locked;
+
                 mapping = folio_mapping(folio);
                 fallthrough;
             case PAGE_CLEAN:
@@ -9394,27 +9333,10 @@ retry:
             }
         }
 
+/* free folio buffer */
         /* If the folio has buffers, try to free the buffer
-        * mappings associated with this folio. If we succeed
-        * we try to free the folio as well.
-        *
-        * We do this even if the folio is dirty.
-        * filemap_release_folio() does not perform I/O, but it
-        * is possible for a folio to have the dirty flag set,
-        * but it is actually clean (all its buffers are clean).
-        * This happens if the buffers were written out directly,
-        * with submit_bh(). ext3 will do this, as well as
-        * the blockdev mapping.  filemap_release_folio() will
-        * discover that cleanness and will drop the buffers
-        * and mark the folio clean - it can be freed.
-        *
-        * Rarely, folios can have buffers and no ->mapping.
-        * These are the folios which were not successfully
-        * invalidated in truncate_cleanup_folio().  We try to
-        * drop those buffers here and if that worked, and the
-        * folio is no longer mapped into process address space
-        * (refcount == 1) it can be freed.  Otherwise, leave
-        * the folio on the LRU so it is swappable. */
+         * mappings associated with this folio. If we succeed
+         * we try to free the folio as well. */
         if (folio_needs_release(folio)) {
             if (!filemap_release_folio(folio, sc->gfp_mask))
                 goto activate_locked;
@@ -9434,23 +9356,18 @@ retry:
             }
         }
 
+/* remove_mapping */
         if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
             /* follow __remove_mapping for reference */
             if (!folio_ref_freeze(folio, 1))
                 goto keep_locked;
-            /* The folio has only one reference left, which is
-            * from the isolation. After the caller puts the
-            * folio back on the lru and drops the reference, the
-            * folio will be freed anyway. It doesn't matter
-            * which lru it goes on. So we don't bother checking
-            * the dirty flag here. */
             count_vm_events(PGLAZYFREED, nr_pages);
             count_memcg_folio_events(folio, PGLAZYFREED, nr_pages);
-        } else if (!mapping || !__remove_mapping(mapping, folio, true,
-                            sc->target_mem_cgroup))
+        } else if (!mapping || !__remove_mapping(mapping, folio, true, sc->target_mem_cgroup))
             goto keep_locked;
 
         folio_unlock(folio);
+
 free_it:
         nr_reclaimed += nr_pages;
         if (unlikely(folio_test_large(folio)))
@@ -9460,8 +9377,6 @@ free_it:
         continue;
 
 activate_locked_split:
-        /* The tail pages that are failed to add into swap cache
-         * reach here.  Fixup nr_scanned and nr_pages.*/
         if (nr_pages > 1) {
             sc->nr_scanned -= (nr_pages - 1);
             nr_pages = 1;
@@ -9471,6 +9386,7 @@ activate_locked:
         if (folio_test_swapcache(folio)
             && (mem_cgroup_swap_full(folio) || folio_test_mlocked(folio))) {
 
+            /* Free the swap space used for this folio. */
             folio_free_swap(folio);
         }
         if (!folio_test_mlocked(folio)) {
@@ -9493,20 +9409,6 @@ keep:
         /* Folios which weren't demoted go back on @folio_list */
         list_splice_init(&demote_folios, folio_list);
 
-        /* goto retry to reclaim the undemoted folios in folio_list if
-        * desired.
-        *
-        * Reclaiming directly from top tier nodes is not often desired
-        * due to it breaking the LRU ordering: in general memory
-        * should be reclaimed from lower tier nodes and demoted from
-        * top tier nodes.
-        *
-        * However, disabling reclaim from top tier nodes entirely
-        * would cause ooms in edge scenarios where lower tier memory
-        * is unreclaimable for whatever reason, eg memory being
-        * mlocked or too hot to reclaim. We can disable reclaim
-        * from top tier nodes in proactive reclaim though as that is
-        * not real memory pressure. */
         if (!sc->proactive) {
             do_demote_pass = false;
             goto retry;
@@ -9583,8 +9485,7 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
             long freeable;
             long nr;
             long new_nr;
-            long batch_size = shrinker->batch
-                ? shrinker->batch : SHRINK_BATCH;
+            long batch_size = shrinker->batch ? shrinker->batch : SHRINK_BATCH;
             long scanned = 0, next_deferred;
 
             freeable = shrinker->count_objects(shrinker, shrinkctl);
@@ -9624,8 +9525,7 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
             * than the total number of objects on slab (freeable), we must be
             * scanning at high prio and therefore should try to reclaim as much as
             * possible. */
-            while (total_scan >= batch_size ||
-                total_scan >= freeable) {
+            while (total_scan >= batch_size || total_scan >= freeable) {
                 unsigned long ret;
                 unsigned long nr_to_scan = min(batch_size, total_scan);
 
@@ -9669,6 +9569,7 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
     return freed;
 }
 ```
+
 ## vmpressure
 
 ```c
