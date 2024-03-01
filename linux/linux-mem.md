@@ -8137,6 +8137,7 @@ enum pageflags {
     PG_dirty,
     PG_lru,
     PG_active,      /* active page */
+    PG_swapcache,   /* Swap page: swp_entry_t in private */
     PG_swapbacked,  /* Page is backed by RAM/swap */
     PG_unevictable, /* Page is "unevictable"  */
 }
@@ -8211,7 +8212,7 @@ __perform_reclaim(gfp_mask, order, ac) {
 
                     for_each_zone_zonelist_nodemask(zone, z, zonelist, sc->reclaim_idx, sc->nodemask) {
                         /* Take care memory controller reclaiming has small influence
-                        * to global LRU. */
+                         * to global LRU. */
                         if (!cgroup_reclaim(sc)) {
                             if (!cpuset_zone_allowed(zone, GFP_KERNEL | __GFP_HARDWALL))
                                 continue;
@@ -8252,7 +8253,7 @@ __perform_reclaim(gfp_mask, order, ac) {
                         consider_reclaim_throttle(first_pgdat, sc);
 
                     /* Restore to original mask to avoid the impact on the caller if we
-                    * promoted it to __GFP_HIGHMEM. */
+                     * promoted it to __GFP_HIGHMEM. */
                     sc->gfp_mask = orig_mask;
                 }
 
@@ -8263,7 +8264,7 @@ __perform_reclaim(gfp_mask, order, ac) {
                     break;
 
                 /* If we're getting trouble reclaiming, start doing
-                * writepage even in laptop mode. */
+                 * writepage even in laptop mode. */
                 if (sc->priority < DEF_PRIORITY - 2)
                     sc->may_writepage = 1;
             } while (--sc->priority >= 0);
@@ -8458,9 +8459,10 @@ again:
     nr_node_reclaimed = sc->nr_reclaimed - nr_reclaimed;
 
     /* Record the subtree's reclaim efficiency */
-    if (!sc->proactive)
+    if (!sc->proactive) {
         vmpressure(sc->gfp_mask, sc->target_mem_cgroup, true,
             sc->nr_scanned - nr_scanned, nr_node_reclaimed);
+    }
 
     if (nr_node_reclaimed)
         reclaimable = true;
@@ -8536,19 +8538,20 @@ shrink_node_memcgs(pgdat, sc) {
 
         if (mem_cgroup_below_min(target_memcg, memcg)) {
             /* Hard protection.
-            * If there is no reclaimable memory, OOM. */
+             * If there is no reclaimable memory, OOM. */
             continue;
         } else if (mem_cgroup_below_low(target_memcg, memcg)) {
             /* Soft protection.
-            * Respect the protection only as long as
-            * there is an unprotected supply
-            * of reclaimable memory from other cgroups. */
+             * Respect the protection only as long as
+             * there is an unprotected supply
+             * of reclaimable memory from other cgroups. */
             if (!sc->memcg_low_reclaim) {
                 sc->memcg_low_skipped = 1;
                 continue;
             }
             memcg_memory_event(memcg, MEMCG_LOW);
         }
+        /* else: cgroup mem usage is above the low, do reclaim */
 
         reclaimed = sc->nr_reclaimed;
         scanned = sc->nr_scanned;
@@ -8627,7 +8630,7 @@ shrink_node_memcgs(pgdat, sc) {
                 nr[lru + LRU_ACTIVE] = 0;
 
                 /* Recalculate the other LRU scan count based on its original
-                * scan target and the percentage scanning already complete */
+                 * scan target and the percentage scanning already complete */
                 lru = (lru == LRU_FILE) ? LRU_BASE : LRU_FILE;
                 nr_scanned = targets[lru] - nr[lru];
                 nr[lru] = targets[lru] * (100 - percentage) / 100;
@@ -8643,7 +8646,7 @@ shrink_node_memcgs(pgdat, sc) {
             sc->nr_reclaimed += nr_reclaimed;
 
             /* Even if we did not try to evict anon pages at all, we want to
-            * rebalance the anon lru active/inactive ratio. */
+             * rebalance the anon lru active/inactive ratio. */
             if (can_age_anon_pages(lruvec_pgdat(lruvec), sc)
                 && inactive_is_low(lruvec, LRU_INACTIVE_ANON)) {
 
@@ -12089,26 +12092,223 @@ int kcompactd(void *p)
 # kswapd
 
 ```c
-/* 1. active page out when alloc */
-get_page_from_freelist();
-    node_reclaim();
-        __node_reclaim();
-            shrink_node();
-
-/* 2. positive page out by kswapd */
-static int kswapd(void *p)
+int kswapd(void *p)
 {
     unsigned int alloc_order, reclaim_order;
-    unsigned int classzone_idx = MAX_NR_ZONES - 1;
-    pg_data_t *pgdat = (pg_data_t*)p;
+    unsigned int highest_zoneidx = MAX_NR_ZONES - 1;
+    pg_data_t *pgdat = (pg_data_t *)p;
     struct task_struct *tsk = current;
+    const struct cpumask *cpumask = cpumask_of_node(pgdat->node_id);
+
+    if (!cpumask_empty(cpumask))
+        set_cpus_allowed_ptr(tsk, cpumask);
+
+    tsk->flags |= PF_MEMALLOC | PF_KSWAPD;
+    set_freezable();
+
+    WRITE_ONCE(pgdat->kswapd_order, 0);
+    WRITE_ONCE(pgdat->kswapd_highest_zoneidx, MAX_NR_ZONES);
+    atomic_set(&pgdat->nr_writeback_throttled, 0);
 
     for ( ; ; ) {
-        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order, classzone_idx);
-        reclaim_order = balance_pgdat(pgdat, alloc_order, classzone_idx) {
+        bool ret;
 
+        alloc_order = reclaim_order = READ_ONCE(pgdat->kswapd_order);
+        highest_zoneidx = kswapd_highest_zoneidx(pgdat, highest_zoneidx);
+
+kswapd_try_sleep:
+        kswapd_try_to_sleep(pgdat, alloc_order, reclaim_order, highest_zoneidx);
+
+        /* Read the new order and highest_zoneidx */
+        alloc_order = READ_ONCE(pgdat->kswapd_order);
+        highest_zoneidx = kswapd_highest_zoneidx(pgdat, highest_zoneidx);
+        WRITE_ONCE(pgdat->kswapd_order, 0);
+        WRITE_ONCE(pgdat->kswapd_highest_zoneidx, MAX_NR_ZONES);
+
+        ret = try_to_freeze();
+        if (kthread_should_stop())
+            break;
+        if (ret)
+            continue;
+
+        reclaim_order = balance_pgdat(pgdat, alloc_order, highest_zoneidx) {
+            struct scan_control sc = {
+                .gfp_mask = GFP_KERNEL,
+                .order = order,
+                .may_unmap = 1,
+            };
+
+            set_task_reclaim_state(current, &sc.reclaim_state);
+
+            nr_boost_reclaim = 0;
+            for (i = 0; i <= highest_zoneidx; i++) {
+                zone = pgdat->node_zones + i;
+                if (!managed_zone(zone))
+                    continue;
+
+                nr_boost_reclaim += zone->watermark_boost;
+                zone_boosts[i] = zone->watermark_boost;
+            }
+            boosted = nr_boost_reclaim;
+
+        restart:
+            set_reclaim_active(pgdat, highest_zoneidx);
+            sc.priority = DEF_PRIORITY;
+            do {
+                unsigned long nr_reclaimed = sc.nr_reclaimed;
+                bool raise_priority = true;
+                bool balanced;
+                bool ret;
+
+                sc.reclaim_idx = highest_zoneidx;
+                if (buffer_heads_over_limit) {
+                    for (i = MAX_NR_ZONES - 1; i >= 0; i--) {
+                        zone = pgdat->node_zones + i;
+                        if (!managed_zone(zone))
+                            continue;
+
+                        sc.reclaim_idx = i;
+                        break;
+                    }
+                }
+
+                balanced = pgdat_balanced(pgdat, sc.order, highest_zoneidx);
+                if (!balanced && nr_boost_reclaim) {
+                    nr_boost_reclaim = 0;
+                    goto restart;
+                }
+
+                if (!nr_boost_reclaim && balanced)
+                    goto out;
+
+                /* Limit the priority of boosting to avoid reclaim writeback */
+                if (nr_boost_reclaim && sc.priority == DEF_PRIORITY - 2)
+                    raise_priority = false;
+
+                /* Do not writeback or swap pages for boosted reclaim. The
+                 * intent is to relieve pressure not issue sub-optimal IO
+                 * from reclaim context. If no pages are reclaimed, the
+                 * reclaim will be aborted. */
+                sc.may_writepage = !laptop_mode && !nr_boost_reclaim;
+                sc.may_swap = !nr_boost_reclaim;
+
+                /* Do some background aging, to give pages a chance to be
+                 * referenced before reclaiming. All pages are rotated
+                 * regardless of classzone as this is about consistent aging. */
+                kswapd_age_node(pgdat, &sc);
+
+                /* If we're getting trouble reclaiming, start doing writepage
+                * even in laptop mode. */
+                if (sc.priority < DEF_PRIORITY - 2)
+                    sc.may_writepage = 1;
+
+                /* Call soft limit reclaim before calling shrink_node. */
+                sc.nr_scanned = 0;
+                nr_soft_scanned = 0;
+                nr_soft_reclaimed = mem_cgroup_soft_limit_reclaim(
+                    pgdat, sc.order, sc.gfp_mask, &nr_soft_scanned
+                );
+                sc.nr_reclaimed += nr_soft_reclaimed;
+
+                /* There should be no need to raise the scanning priority if
+                 * enough pages are already being scanned that that high
+                 * watermark would be met at 100% efficiency. */
+                ret = kswapd_shrink_node(pgdat, &sc) {
+                    /* Reclaim a number of pages proportional to the number of zones */
+                    sc->nr_to_reclaim = 0;
+                    for (z = 0; z <= sc->reclaim_idx; z++) {
+                        zone = pgdat->node_zones + z;
+                        if (!managed_zone(zone))
+                            continue;
+
+                        sc->nr_to_reclaim += max(high_wmark_pages(zone), SWAP_CLUSTER_MAX);
+                    }
+
+                    shrink_node(pgdat, sc);
+                        --->
+
+                    /* Fragmentation may mean that the system cannot be rebalanced for
+                     * high-order allocations. If twice the allocation size has been
+                     * reclaimed then recheck watermarks only at order-0 to prevent
+                     * excessive reclaim. Assume that a process requested a high-order
+                     * can direct reclaim/compact. */
+                    if (sc->order && sc->nr_reclaimed >= compact_gap(sc->order))
+                        sc->order = 0;
+
+                    return sc->nr_scanned >= sc->nr_to_reclaim;
+                }
+                if (ret)
+                    raise_priority = false;
+
+                /* If the low watermark is met there is no need for processes
+                * to be throttled on pfmemalloc_wait as they should not be
+                * able to safely make forward progress. Wake them */
+                if (waitqueue_active(&pgdat->pfmemalloc_wait) && allow_direct_reclaim(pgdat))
+                    wake_up_all(&pgdat->pfmemalloc_wait);
+
+                /* Check if kswapd should be suspending */
+                __fs_reclaim_release(_THIS_IP_);
+                ret = try_to_freeze();
+                __fs_reclaim_acquire(_THIS_IP_);
+                if (ret || kthread_should_stop())
+                    break;
+
+                /* Raise priority if scanning rate is too low or there was no
+                 * progress in reclaiming pages */
+                nr_reclaimed = sc.nr_reclaimed - nr_reclaimed;
+                nr_boost_reclaim -= min(nr_boost_reclaim, nr_reclaimed);
+
+                /* If reclaim made no progress for a boost, stop reclaim as
+                 * IO cannot be queued and it could be an infinite loop in
+                 * extreme circumstances. */
+                if (nr_boost_reclaim && !nr_reclaimed)
+                    break;
+
+                if (raise_priority || !nr_reclaimed) {
+                    sc.priority--;
+                }
+            } while (sc.priority >= 1);
+
+            if (!sc.nr_reclaimed)
+                pgdat->kswapd_failures++;
+
+        out:
+            clear_reclaim_active(pgdat, highest_zoneidx);
+
+            /* If reclaim was boosted, account for the reclaim done in this pass */
+            if (boosted) {
+                unsigned long flags;
+
+                for (i = 0; i <= highest_zoneidx; i++) {
+                    if (!zone_boosts[i])
+                        continue;
+
+                    /* Increments are under the zone lock */
+                    zone = pgdat->node_zones + i;
+                    spin_lock_irqsave(&zone->lock, flags);
+                    zone->watermark_boost -= min(zone->watermark_boost, zone_boosts[i]);
+                    spin_unlock_irqrestore(&zone->lock, flags);
+                }
+
+                /* As there is now likely space, wakeup kcompact to defragment pageblocks. */
+                wakeup_kcompactd(pgdat, pageblock_order, highest_zoneidx);
+            }
+
+            snapshot_refaults(NULL, pgdat);
+            __fs_reclaim_release(_THIS_IP_);
+            psi_memstall_leave(&pflags);
+            set_task_reclaim_state(current, NULL);
+
+            return sc.order;
         }
+
+        if (reclaim_order < alloc_order)
+            goto kswapd_try_sleep;
     }
+
+    tsk->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
+
+    return 0;
 }
 ```
 
