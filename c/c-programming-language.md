@@ -17,19 +17,15 @@ Since C passes arguments to functions by value, there is no direct way for the c
 
 ## 5.3 Pointers and Arrays
 
-By definition, the value of a variable or expression of type array is the address of element zero of the array. Thus after the assignment
-```c
-pa = &a[0];
-```
-pa and a have identical values. Since the name of an array is a synonym for the location of the initial element, the assignment pa=&a[0] can also be written as
+By definition, the value of a variable or expression of type array is the address of element zero of the array. Thus after the assignment `pa = &a[0];` pa and a have identical values. Since the name of an array is a synonym for the location of the initial element, the assignment pa=&a[0] can also be written as `pa = a;`.
 
-```c
-pa = a;
-```
+&a[i] and a+i are also identical: a+i is the address of the i-th element beyond a.
 
-There is one difference between an array name and a pointer that must be kept in mind. A pointer is a variable, so pa=a and pa++ are legal. But an array name is not a variable; constructions like a=pa and a++ are illegal.
+If pa is a pointer, expressions might use it with a subscript; pa[i] is identical to *(pa+i). In short, an `array-and-index` expression is equivalent to one written as a `pointer and offset`
 
-When an array name is passed to a function, what is passed is the location of the initial element.
+There is one difference between an array name and a pointer that must be kept in mind. `A pointer is a variable`, so pa=a and pa++ are legal. But an `array name is not a variable`; constructions like a=pa and a++ are illegal.
+
+When an array name is passed to a function, what is passed is the location of the initial element. Within the called function, this argument is a local variable.
 
 
 ## 5.4 Address Arithmetic
