@@ -72,10 +72,14 @@
      * [mm_populate](#mm_populate)
 
 * [page_fault](#page_fault)
+    * [hugetlb_fault](#hugetlb_fault)
     * [do_anonymous_page](#do_anonymous_page)
     * [do_fault](#do_fault)
+        * [do_read_fault](#do_read_fault)
+        * [do_cow_fault](#do_cow_fault)
+        * [do_sharaed_fault](#do_shared_fault)
     * [do_swap_page](#do_swap_page)
-    * [hugetlb_fault](#hugetlb_fault)
+    * [do_wp_page](#do_wp_page)
 
 * [munmap](#munmap)
 
@@ -98,6 +102,8 @@
 * [vmalloc](#vmalloc)
 
 * [page_reclaim](#page_reclaim)
+    * [lru](#lru)
+    * [folio_batch](#folio_batch)
     * [throttle_direct_reclaim](#throttle_direct_reclaim)
     * [shrink_node](#shrink_node)
         * [shrink_node_memcgs](#shrink_node_memcgs)
@@ -125,6 +131,13 @@
 
 * [kcompactd](#kcompactd)
 * [kswapd](#kswapd)
+
+* [swap](#swap)
+    * [add_to_swap](#add_to_swap)
+    * [swap_free](#swap_free)
+    * [folio_free_swap](#folio_free_swap)
+    * [swap_cache_get_folio](#swap_cache_get_folio)
+    * [swapin_readahead](#swapin_readahead)
 
 * [fork](#fork)
     * [copy_page_range](#copy_page_range)
@@ -4853,7 +4866,7 @@ void kmem_cache_free(struct kmem_cache *s, void *x)
 }
 
 void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
-	       unsigned long addr)
+           unsigned long addr)
 {
     memcg_slab_free_hook(s, slab, &object, 1);
     /* With KASAN enabled slab_free_freelist_hook modifies the freelist
@@ -6299,7 +6312,7 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
         if (ret < 0) {
             if (ignore_errors) {
                 ret = 0;
-                continue;	/* continue at next VMA */
+                continue;    /* continue at next VMA */
             }
             break;
         }
@@ -6308,7 +6321,7 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
     }
     if (locked)
         mmap_read_unlock(mm);
-    return ret;	/* 0 or negative error code */
+    return ret;    /* 0 or negative error code */
 }
 ```
 
@@ -6387,7 +6400,7 @@ struct address_space {
 /* arm64
  * arch/arm64/mm/fault.c */
 static const struct fault_info fault_info[] = {
-    { do_translation_fault, SIGSEGV, SEGV_MAPERR,	"level 0 translation fault" },
+    { do_translation_fault, SIGSEGV, SEGV_MAPERR,    "level 0 translation fault" },
     { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 1 translation fault" },
     { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 2 translation fault" },
     { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 3 translation fault" },
@@ -6461,84 +6474,22 @@ handle_mm_fault(vma, address, flags, regs);
                 return do_pte_missing(vmf) {
                     if (vma_is_anonymous(vmf->vma)) {
                         /* 1. anonymous fault */
-                        return do_anonymous_page(vmf) {
-                            pte = pte_alloc(pmd)
-                            if (pte)
-                                return VM_FAULT_OOM;
-                            anon_vma_prepare(vma)
-                                --->
-
-                            folio = vma_alloc_zeroed_movable_folio(vma, vmf->address);
-
-                            mk_pte();
-
-                            folio_add_new_anon_rmap(folio, vma, vmf->address);
-                                __folio_set_anon(folio, &folio->page, vma, address, 1);
-                                    --->
-                            folio_add_lru_vma(folio, vma);
-
-                            set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
-                                --->
-                            update_mmu_cache()
-                        }
+                        return do_anonymous_page(vmf);
+                            --->
                     } else {
                         /* 2. file fault */
                         return do_fault(vmf) {
                             /* 2.1 read fault */
-                            do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
-                                __do_fault() {
-                                    vma->vm_ops->fault() {
-                                        ext4_file_vm_ops.fault() {
-                                            filemap_fault() {
-                                                folio = filemap_get_folio(mapping, index);
-                                                if (folio) {
-                                                    do_async_mmap_readahead();
-                                                } else if (!page) {
-                                                    do_sync_mmap_readahead();
-                                                    folio = __filemap_get_folio();
-                                                }
-
-                                                vmf->page = folio_file_page(folio, index);
-                                            }
-                                        }
-                                    }
-                                }
-
-                                finish_fault() {
-                                    set_pte_range(vmf, folio, page, 1, vmf->address) {
-                                        entry = mk_pte(page, vma->vm_page_prot);
-                                        if (write && !(vma->vm_flags & VM_SHARED)) {
-                                            add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr);
-                                            folio_add_new_anon_rmap(folio, vma, addr);
-                                            folio_add_lru_vma(folio, vma);
-                                        } else {
-                                            add_mm_counter(vma->vm_mm, mm_counter_file(page), nr);
-                                            folio_add_file_rmap_ptes(folio, page, nr, vma);
-                                        }
-                                        set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr);
-
-                                        update_mmu_cache_range(vmf, vma, addr, vmf->pte, nr);
-                                    }
-                                }
-                            }
+                            do_read_fault();
+                                --->
 
                             /* 2.2 cow fault */
-                            do_cow_fault() { /* if (!(vma->vm_flags & VM_SHARED)) */
-                                anon_vma_prepare(vma)
-                                vmf->cow_page = alloc_page_vma()
-                                __do_fault(vmf);
-
-                                copy_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma);
-                                finish_fault(vmf);
-                            }
+                            do_cow_fault();
+                                --->
 
                             /* 2.3 shared fault */
-                            do_shared_fault() {
-                                __do_fault(vmf);
-                                ext4_page_mkwrite();
-                                finish_fault(vmf);
-                                fault_dirty_shared_page();
-                            }
+                            do_shared_fault();
+                                --->
                         }
                     }
                 }
@@ -6546,65 +6497,20 @@ handle_mm_fault(vma, address, flags, regs);
 
             /* 3. swap fault */
             if (!pte_present(vmf->orig_pte)) {
-                return do_swap_page(vmf) {
-
-                }
+                return do_swap_page(vmf)
+                    --->
             }
 
             /* migrate page from remote node to cur node */
             if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma)) {
-                return do_numa_page(vmf) {
-
-                }
+                return do_numa_page(vmf);
+                    --->
             }
 
             if (vmf->flags & (FAULT_FLAG_WRITE | FAULT_FLAG_UNSHARE)) {
                 if (!pte_write(entry)) {
-                    return do_wp_page(vmf) {
-                        vmf->page = vm_normal_page()
-                        folio = page_folio(vmf->page)
-
-                        /* Shared mapping */
-                        if (vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) {
-                            if (!vmf->page) {
-                                return wp_pfn_shared(vmf) {
-
-                                }
-                            }
-                            return wp_page_shared(vmf, folio) {
-                                do_page_mkwrite();
-                            }
-                        }
-
-                        /* Private mapping */
-                        if (folio && folio_test_anon(folio) &&
-                            (PageAnonExclusive(vmf->page) || wp_can_reuse_anon_folio(folio, vma))) {
-                            if (!PageAnonExclusive(vmf->page))
-                                SetPageAnonExclusive(vmf->page);
-                            if (unlikely(unshare)) {
-                                pte_unmap_unlock(vmf->pte, vmf->ptl);
-                                return 0;
-                            }
-                            wp_page_reuse(vmf, folio) {
-                                pte_mkyoung(vmf->orig_pte);
-                                maybe_mkwrite(pte_mkdirty(entry), vma);
-                            }
-                            return 0;
-                        }
-
-                        return wp_page_copy(vmf) {
-                            old_folio = page_folio(vmf->page)
-                            anon_vma_prepare(vma)
-                                --->
-                            new_folio = vma_alloc_folio(vma, vmf->address)
-                            __wp_page_copy_user(&new_folio->page, vmf->page, vmf)
-
-                            flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
-                            entry = mk_pte(&new_folio->page, vma->vm_page_prot);
-                            entry = pte_sw_mkyoung(entry);
-                            entry = maybe_mkwrite(pte_mkdirty(entry), vma);
-                        }
-                    }
+                    return do_wp_page(vmf);
+                        --->
                 } else if (likely(vmf->flags & FAULT_FLAG_WRITE)) {
                     entry = pte_mkdirty(entry);
                 }
@@ -6615,6 +6521,364 @@ handle_mm_fault(vma, address, flags, regs);
             update_mmu_cache(vmf->vma, vmf->address, vmf->pte);
         }
     }
+```
+
+## do_anonymous_page
+
+```c
+do_anonymous_page(vmf) {
+    pte = pte_alloc(pmd)
+    if (pte)
+        return VM_FAULT_OOM;
+    anon_vma_prepare(vma)
+        --->
+
+    folio = vma_alloc_zeroed_movable_folio(vma, vmf->address);
+
+    mk_pte();
+
+    folio_add_new_anon_rmap(folio, vma, vmf->address);
+        __folio_set_anon(folio, &folio->page, vma, address, 1);
+            --->
+    folio_add_lru_vma(folio, vma);
+
+    set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+        --->
+    update_mmu_cache()
+}
+```
+
+## do_fault
+
+### do_read_fault
+
+```c
+do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
+    __do_fault() {
+        vma->vm_ops->fault() {
+            ext4_file_vm_ops.fault() {
+                filemap_fault() {
+                    folio = filemap_get_folio(mapping, index);
+                    if (folio) {
+                        do_async_mmap_readahead();
+                    } else if (!page) {
+                        do_sync_mmap_readahead();
+                        folio = __filemap_get_folio();
+                    }
+
+                    vmf->page = folio_file_page(folio, index);
+                }
+            }
+        }
+    }
+
+    finish_fault() {
+        set_pte_range(vmf, folio, page, 1, vmf->address) {
+            entry = mk_pte(page, vma->vm_page_prot);
+            if (write && !(vma->vm_flags & VM_SHARED)) {
+                add_mm_counter(vma->vm_mm, MM_ANONPAGES, nr);
+                folio_add_new_anon_rmap(folio, vma, addr);
+                folio_add_lru_vma(folio, vma);
+            } else {
+                add_mm_counter(vma->vm_mm, mm_counter_file(page), nr);
+                folio_add_file_rmap_ptes(folio, page, nr, vma);
+            }
+            set_ptes(vma->vm_mm, addr, vmf->pte, entry, nr);
+
+            update_mmu_cache_range(vmf, vma, addr, vmf->pte, nr);
+        }
+    }
+}
+```
+
+### do_cow_fault
+
+```c
+do_cow_fault() { /* if (!(vma->vm_flags & VM_SHARED)) */
+    anon_vma_prepare(vma)
+    vmf->cow_page = alloc_page_vma()
+    __do_fault(vmf);
+
+    copy_user_highpage(vmf->cow_page, vmf->page, vmf->address, vma);
+    finish_fault(vmf);
+}
+```
+
+### do_shared_fault
+
+```c
+do_shared_fault() {
+    __do_fault(vmf);
+    ext4_page_mkwrite();
+    finish_fault(vmf);
+    fault_dirty_shared_page();
+}
+```
+
+## do_swap_page
+
+```c
+vm_fault_t do_swap_page(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct folio *swapcache, *folio = NULL;
+    struct page *page;
+    struct swap_info_struct *si = NULL;
+    rmap_t rmap_flags = RMAP_NONE;
+    bool exclusive = false;
+    swp_entry_t entry;
+    pte_t pte;
+    vm_fault_t ret = 0;
+    void *shadow = NULL;
+
+    if (!pte_unmap_same(vmf))
+        goto out;
+
+    entry = pte_to_swp_entry(vmf->orig_pte);
+    if (unlikely(non_swap_entry(entry))) {
+        if (is_migration_entry(entry)) {
+            migration_entry_wait(vma->vm_mm, vmf->pmd, vmf->address);
+        } else if (is_pte_marker_entry(entry)) {
+            ret = handle_pte_marker(vmf);
+        } else {
+            print_bad_pte(vma, vmf->address, vmf->orig_pte, NULL);
+            ret = VM_FAULT_SIGBUS;
+        }
+        goto out;
+    }
+
+    si = get_swap_device(entry);
+    if (unlikely(!si))
+        goto out;
+
+    folio = swap_cache_get_folio(entry, vma, vmf->address);
+    if (folio)
+        page = folio_file_page(folio, swp_offset(entry));
+    swapcache = folio;
+
+    if (!folio) {
+        if (data_race(si->flags & SWP_SYNCHRONOUS_IO) && __swap_count(entry) == 1) {
+            folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE, 0, vma, vmf->address, false);
+            page = &folio->page;
+            if (folio) {
+                __folio_set_locked(folio);
+                __folio_set_swapbacked(folio);
+
+                if (mem_cgroup_swapin_charge_folio(folio, vma->vm_mm, GFP_KERNEL, entry)) {
+                    ret = VM_FAULT_OOM;
+                    goto out_page;
+                }
+                mem_cgroup_swapin_uncharge_swap(entry);
+
+                shadow = get_shadow_from_swap_cache(entry);
+                if (shadow)
+                    workingset_refault(folio, shadow);
+
+                folio_add_lru(folio);
+
+                /* To provide entry to swap_read_folio() */
+                folio->swap = entry;
+                swap_read_folio(folio, true, NULL);
+                folio->private = NULL;
+            }
+        } else {
+            page = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE, vmf);
+            if (page)
+                folio = page_folio(page);
+            swapcache = folio;
+        }
+
+        if (!folio) {
+            vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+            if (likely(vmf->pte && pte_same(ptep_get(vmf->pte), vmf->orig_pte)))
+                ret = VM_FAULT_OOM;
+            goto unlock;
+        }
+
+        /* Had to read the page from swap area: Major fault */
+        ret = VM_FAULT_MAJOR;
+        count_vm_event(PGMAJFAULT);
+        count_memcg_event_mm(vma->vm_mm, PGMAJFAULT);
+    }
+
+    ret |= folio_lock_or_retry(folio, vmf);
+    if (ret & VM_FAULT_RETRY)
+        goto out_release;
+
+    if (swapcache) {
+        if (unlikely(!folio_test_swapcache(folio) || page_swap_entry(page).val != entry.val))
+            goto out_page;
+
+        folio = ksm_might_need_to_copy(folio, vma, vmf->address);
+        if (unlikely(!folio)) {
+            ret = VM_FAULT_OOM;
+            folio = swapcache;
+            goto out_page;
+        } else if (unlikely(folio == ERR_PTR(-EHWPOISON))) {
+            ret = VM_FAULT_HWPOISON;
+            folio = swapcache;
+            goto out_page;
+        }
+        if (folio != swapcache)
+            page = folio_page(folio, 0);
+
+        if ((vmf->flags & FAULT_FLAG_WRITE) && folio == swapcache &&
+            !folio_test_ksm(folio) && !folio_test_lru(folio))
+            lru_add_drain();
+    }
+
+    folio_throttle_swaprate(folio, GFP_KERNEL);
+
+    /* Back out if somebody else already faulted in this pte. */
+    vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+    if (unlikely(!vmf->pte || !pte_same(ptep_get(vmf->pte), vmf->orig_pte)))
+        goto out_nomap;
+
+    if (unlikely(!folio_test_uptodate(folio))) {
+        ret = VM_FAULT_SIGBUS;
+        goto out_nomap;
+    }
+
+    if (!folio_test_ksm(folio)) {
+        exclusive = pte_swp_exclusive(vmf->orig_pte);
+        if (folio != swapcache) {
+            exclusive = true;
+        } else if (exclusive && folio_test_writeback(folio)
+            && data_race(si->flags & SWP_STABLE_WRITES)) {
+
+            exclusive = false;
+        }
+    }
+
+    arch_swap_restore(entry, folio);
+
+    swap_free(entry);
+    if (should_try_to_free_swap(folio, vma, vmf->flags))
+        folio_free_swap(folio);
+
+    inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
+    dec_mm_counter(vma->vm_mm, MM_SWAPENTS);
+    pte = mk_pte(page, vma->vm_page_prot);
+
+    if (!folio_test_ksm(folio) && (exclusive || folio_ref_count(folio) == 1)) {
+        if (vmf->flags & FAULT_FLAG_WRITE) {
+            pte = maybe_mkwrite(pte_mkdirty(pte), vma);
+            vmf->flags &= ~FAULT_FLAG_WRITE;
+        }
+        rmap_flags |= RMAP_EXCLUSIVE;
+    }
+
+    flush_icache_page(vma, page);
+    if (pte_swp_soft_dirty(vmf->orig_pte))
+        pte = pte_mksoft_dirty(pte);
+    if (pte_swp_uffd_wp(vmf->orig_pte))
+        pte = pte_mkuffd_wp(pte);
+    vmf->orig_pte = pte;
+
+    /* ksm created a completely new copy */
+    if (unlikely(folio != swapcache && swapcache)) {
+        folio_add_new_anon_rmap(folio, vma, vmf->address);
+        folio_add_lru_vma(folio, vma);
+    } else {
+        folio_add_anon_rmap_pte(folio, page, vma, vmf->address, rmap_flags);
+    }
+
+    set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
+    arch_do_swap_page(vma->vm_mm, vma, vmf->address, pte, vmf->orig_pte);
+
+    folio_unlock(folio);
+    if (folio != swapcache && swapcache) {
+        folio_unlock(swapcache);
+        folio_put(swapcache);
+    }
+
+    if (vmf->flags & FAULT_FLAG_WRITE) {
+        ret |= do_wp_page(vmf);
+        if (ret & VM_FAULT_ERROR)
+            ret &= VM_FAULT_ERROR;
+        goto out;
+    }
+
+    /* No need to invalidate - it was non-present before */
+    update_mmu_cache_range(vmf, vma, vmf->address, vmf->pte, 1);
+unlock:
+    if (vmf->pte)
+        pte_unmap_unlock(vmf->pte, vmf->ptl);
+out:
+    if (si)
+        put_swap_device(si);
+    return ret;
+out_nomap:
+    if (vmf->pte)
+        pte_unmap_unlock(vmf->pte, vmf->ptl);
+out_page:
+    folio_unlock(folio);
+out_release:
+    folio_put(folio);
+    if (folio != swapcache && swapcache) {
+        folio_unlock(swapcache);
+        folio_put(swapcache);
+    }
+    if (si)
+        put_swap_device(si);
+    return ret;
+}
+```
+
+## do_numa_page
+
+```c
+
+```
+
+## do_wp_page
+
+```c
+do_wp_page(vmf) {
+    vmf->page = vm_normal_page()
+    folio = page_folio(vmf->page)
+
+    /* Shared mapping */
+    if (vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) {
+        if (!vmf->page) {
+            return wp_pfn_shared(vmf) {
+
+            }
+        }
+        return wp_page_shared(vmf, folio) {
+            do_page_mkwrite();
+        }
+    }
+
+    /* Private mapping */
+    if (folio && folio_test_anon(folio) &&
+        (PageAnonExclusive(vmf->page) || wp_can_reuse_anon_folio(folio, vma))) {
+        if (!PageAnonExclusive(vmf->page))
+            SetPageAnonExclusive(vmf->page);
+        if (unlikely(unshare)) {
+            pte_unmap_unlock(vmf->pte, vmf->ptl);
+            return 0;
+        }
+        wp_page_reuse(vmf, folio) {
+            pte_mkyoung(vmf->orig_pte);
+            maybe_mkwrite(pte_mkdirty(entry), vma);
+        }
+        return 0;
+    }
+
+    return wp_page_copy(vmf) {
+        old_folio = page_folio(vmf->page)
+        anon_vma_prepare(vma)
+            --->
+        new_folio = vma_alloc_folio(vma, vmf->address)
+        __wp_page_copy_user(&new_folio->page, vmf->page, vmf)
+
+        flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
+        entry = mk_pte(&new_folio->page, vma->vm_page_prot);
+        entry = pte_sw_mkyoung(entry);
+        entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+    }
+}
 ```
 
 # munmap
@@ -8096,6 +8360,9 @@ vmalloc(size);
 
 ![](../images/kernel/mem-page_reclaim-lruvec.png)
 
+
+## lru
+
 ```c
 typedef struct pglist_data {
     struct lruvec           lruvec;
@@ -8115,7 +8382,7 @@ struct lruvec {
 
     unsigned long            flags;
 
-    struct pglist_data *pgdat;
+    struct pglist_data      *pgdat;
 };
 
 #define LRU_BASE        0
@@ -8142,6 +8409,96 @@ enum pageflags {
     PG_unevictable, /* Page is "unevictable"  */
 }
 ```
+
+```c
+/* Mark a page as having seen activity.
+ *
+ * inactive,unreferenced     -> inactive,referenced
+ * inactive,referenced       -> active,unreferenced
+ * active,unreferenced       -> active,referenced
+ *
+ * When a newly allocated page is not yet visible, so safe for non-atomic ops,
+ * __SetPageReferenced(page) may be substituted for mark_page_accessed(page). */
+
+void folio_mark_accessed(struct folio *folio)
+{
+    if (lru_gen_enabled()) {
+        folio_inc_refs(folio);
+        return;
+    }
+
+    if (!folio_test_referenced(folio)) {
+        folio_set_referenced(folio);
+    } else if (folio_test_unevictable(folio)) {
+        /* Unevictable pages are on the "LRU_UNEVICTABLE" list. But,
+        * this list is never rotated or maintained, so marking an
+        * unevictable page accessed has no effect. */
+    } else if (!folio_test_active(folio)) {
+        /* If the folio is on the LRU, queue it for activation via
+        * cpu_fbatches.activate. Otherwise, assume the folio is in a
+        * folio_batch, mark it active and it'll be moved to the active
+        * LRU on the next drain. */
+        if (folio_test_lru(folio)) {
+            folio_activate(folio);
+        } else {
+            __lru_cache_activate_folio(folio);
+        }
+
+        folio_clear_referenced(folio);
+        workingset_activation(folio);
+    }
+    if (folio_test_idle(folio)) {
+        folio_clear_idle(folio);
+    }
+}
+```
+
+## folio_batch
+
+```c
+struct folio_batch {
+    unsigned char nr;
+    bool percpu_pvec_drained;
+    struct folio *folios[PAGEVEC_SIZE];
+};
+
+unsigned folio_batch_add(struct folio_batch *fbatch, struct folio *folio)
+{
+    fbatch->folios[fbatch->nr++] = folio;
+}
+
+unsigned int folio_batch_space(struct folio_batch *fbatch)
+{
+    return PAGEVEC_SIZE - fbatch->nr;
+}
+
+void folio_batch_move_lru(struct folio_batch *fbatch, move_fn_t move_fn)
+{
+    int i;
+    struct lruvec *lruvec = NULL;
+    unsigned long flags = 0;
+
+    for (i = 0; i < folio_batch_count(fbatch); i++) {
+        struct folio *folio = fbatch->folios[i];
+
+        /* block memcg migration while the folio moves between lru */
+        if (move_fn != lru_add_fn && !folio_test_clear_lru(folio))
+            continue;
+
+        lruvec = folio_lruvec_relock_irqsave(folio, lruvec, &flags);
+        move_fn(lruvec, folio);
+
+        folio_set_lru(folio);
+    }
+
+    if (lruvec)
+        unlock_page_lruvec_irqrestore(lruvec, flags);
+    folios_put(fbatch->folios, folio_batch_count(fbatch));
+    folio_batch_reinit(fbatch);
+}
+```
+
+## perform_reclaim
 
 ```c
 __perform_reclaim(gfp_mask, order, ac) {
@@ -8677,7 +9034,7 @@ void get_scan_count(struct lruvec *lruvec, struct scan_control *sc, unsigned lon
     unsigned long anon_cost, file_cost, total_cost;
     int swappiness = mem_cgroup_swappiness(memcg);
     u64 fraction[ANON_AND_FILE];
-    u64 denominator = 0;	/* gcc */
+    u64 denominator = 0;    /* gcc */
     enum scan_balance scan_balance;
     unsigned long ap, fp;
     enum lru_list lru;
@@ -8812,7 +9169,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
     unsigned long nr_taken;
     unsigned long nr_scanned;
     unsigned long vm_flags;
-    LIST_HEAD(l_hold);	/* The folios which were snipped off */
+    LIST_HEAD(l_hold);    /* The folios which were snipped off */
     LIST_HEAD(l_active);
     LIST_HEAD(l_inactive);
     unsigned nr_deactivate, nr_activate;
@@ -8868,7 +9225,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
             }
         }
 
-        folio_clear_active(folio);	/* we are de-activating */
+        folio_clear_active(folio);    /* we are de-activating */
         folio_set_workingset(folio);
         list_add(&folio->lru, &l_inactive);
     }
@@ -9075,6 +9432,7 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
         return 0;
 
     nr_reclaimed = shrink_folio_list(&folio_list, pgdat, sc, &stat, false);
+        --->
 
     spin_lock_irq(&lruvec->lru_lock);
     move_folios_to_lru(lruvec, &folio_list);
@@ -9441,11 +9799,6 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
     unsigned long ret, freed = 0;
     struct shrinker *shrinker;
 
-    /* The root memcg might be allocated even though memcg is disabled
-    * via "cgroup_disable=memory" boot parameter.  This could make
-    * mem_cgroup_is_root() return false, then just run memcg slab
-    * shrink, but skip global shrink.  This may result in premature
-    * oom. */
     if (!mem_cgroup_disabled() && !mem_cgroup_is_root(memcg))
         return shrink_slab_memcg(gfp_mask, nid, memcg, priority);
 
@@ -9569,6 +9922,135 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
 
     rcu_read_unlock();
     cond_resched();
+    return freed;
+}
+```
+
+## shrink_slab_memcg
+
+```c
+unsigned long shrink_slab_memcg(gfp_t gfp_mask, int nid,
+    struct mem_cgroup *memcg, int priority)
+{
+    struct shrinker_info *info;
+    unsigned long ret, freed = 0;
+    int offset, index = 0;
+
+    if (!mem_cgroup_online(memcg))
+        return 0;
+
+again:
+    rcu_read_lock();
+    info = rcu_dereference(memcg->nodeinfo[nid]->shrinker_info);
+    if (unlikely(!info))
+        goto unlock;
+
+    if (index < shrinker_id_to_index(info->map_nr_max)) {
+        struct shrinker_info_unit *unit;
+
+        unit = info->unit[index];
+
+        rcu_read_unlock();
+
+        for_each_set_bit(offset, unit->map, SHRINKER_UNIT_BITS) {
+            struct shrink_control sc = {
+                .gfp_mask = gfp_mask,
+                .nid = nid,
+                .memcg = memcg,
+            };
+            struct shrinker *shrinker;
+            int shrinker_id = calc_shrinker_id(index, offset);
+
+            rcu_read_lock();
+            shrinker = idr_find(&shrinker_idr, shrinker_id);
+            if (unlikely(!shrinker || !shrinker_try_get(shrinker))) {
+                clear_bit(offset, unit->map);
+                rcu_read_unlock();
+                continue;
+            }
+            rcu_read_unlock();
+
+            /* Call non-slab shrinkers even though kmem is disabled */
+            if (!memcg_kmem_online() && !(shrinker->flags & SHRINKER_NONSLAB))
+                continue;
+
+            ret = do_shrink_slab(&sc, shrinker, priority) {
+                long batch_size = shrinker->batch
+                    ? shrinker->batch : SHRINK_BATCH;
+                long scanned = 0, next_deferred;
+
+                freeable = shrinker->count_objects(shrinker, shrinkctl);
+                if (freeable == 0 || freeable == SHRINK_EMPTY)
+                    return freeable;
+
+                nr = xchg_nr_deferred(shrinker, shrinkctl);
+
+                if (shrinker->seeks) {
+                    delta = freeable >> priority;
+                    delta *= 4;
+                    do_div(delta, shrinker->seeks);
+                } else {
+                    delta = freeable / 2;
+                }
+
+                total_scan = nr >> priority;
+                total_scan += delta;
+                total_scan = min(total_scan, (2 * freeable));
+
+                while (total_scan >= batch_size || total_scan >= freeable) {
+                    unsigned long ret;
+                    unsigned long nr_to_scan = min(batch_size, total_scan);
+
+                    shrinkctl->nr_to_scan = nr_to_scan;
+                    shrinkctl->nr_scanned = nr_to_scan;
+                    ret = shrinker->scan_objects(shrinker, shrinkctl);
+                    if (ret == SHRINK_STOP)
+                        break;
+                    freed += ret;
+
+                    count_vm_events(SLABS_SCANNED, shrinkctl->nr_scanned);
+                    total_scan -= shrinkctl->nr_scanned;
+                    scanned += shrinkctl->nr_scanned;
+
+                    cond_resched();
+                }
+
+                /*
+                * The deferred work is increased by any new work (delta) that wasn't
+                * done, decreased by old deferred work that was done now.
+                *
+                * And it is capped to two times of the freeable items.
+                */
+                next_deferred = max_t(long, (nr + delta - scanned), 0);
+                next_deferred = min(next_deferred, (2 * freeable));
+
+                /*
+                * move the unused scan count back into the shrinker in a
+                * manner that handles concurrent updates.
+                */
+                new_nr = add_nr_deferred(next_deferred, shrinker, shrinkctl);
+
+                trace_mm_shrink_slab_end(shrinker, shrinkctl->nid, freed, nr, new_nr, total_scan);
+                return freed;
+            }
+            if (ret == SHRINK_EMPTY) {
+                clear_bit(offset, unit->map);
+                smp_mb__after_atomic();
+                ret = do_shrink_slab(&sc, shrinker, priority);
+                if (ret == SHRINK_EMPTY)
+                    ret = 0;
+                else
+                    set_shrinker_bit(memcg, nid, shrinker_id);
+            }
+            freed += ret;
+            shrinker_put(shrinker);
+        }
+
+        index++;
+        goto again;
+    }
+unlock:
+    rcu_read_unlock();
     return freed;
 }
 ```
@@ -10470,7 +10952,7 @@ status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highes
         .gfp_mask = gfp_mask, /* compact file pages for __GFP_FS */
         .zone = zone,
         /* not compact dirty and writing page for MIGRATE_ASYNC & MIGRATE_SYNC_LIGHT */
-        .mode = (prio == COMPACT_PRIO_ASYNC) ? MIGRATE_ASYNC :	MIGRATE_SYNC_LIGHT,
+        .mode = (prio == COMPACT_PRIO_ASYNC) ? MIGRATE_ASYNC :    MIGRATE_SYNC_LIGHT,
         .alloc_flags = alloc_flags,
         .highest_zoneidx = highest_zoneidx,
         .direct_compaction = true,
@@ -11356,10 +11838,10 @@ void isolate_freepages(struct compact_control *cc)
 {
     struct zone *zone = cc->zone;
     struct page *page;
-    unsigned long block_start_pfn;	/* start of current pageblock */
+    unsigned long block_start_pfn;    /* start of current pageblock */
     unsigned long isolate_start_pfn; /* exact pfn we start at */
-    unsigned long block_end_pfn;	/* end of current pageblock */
-    unsigned long low_pfn;	     /* lowest pfn scanner is able to scan */
+    unsigned long block_end_pfn;    /* end of current pageblock */
+    unsigned long low_pfn;         /* lowest pfn scanner is able to scan */
     struct list_head *freelist = &cc->freepages;
     unsigned int stride;
 
@@ -11776,7 +12258,7 @@ void fast_isolate_freepages(struct compact_control *cc)
 
         ```c
         void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
-		    enum zone_type highest_zoneidx) {
+            enum zone_type highest_zoneidx) {
 
             /* Hopeless node, leave it to direct reclaim if possible */
             if (pgdat->kswapd_failures >= MAX_RECLAIM_RETRIES
@@ -12310,6 +12792,519 @@ kswapd_try_sleep:
 
     return 0;
 }
+```
+
+# swap
+
+```c
+struct swap_info_struct *swap_info[MAX_SWAPFILES];
+
+struct swap_info_struct {
+    struct percpu_ref users;    /* indicate and keep swap device valid. */
+    unsigned long    flags;     /* SWP_USED etc: see above */
+    signed short    prio;       /* swap priority of this type */
+    struct plist_node list;     /* entry in swap_active_head */
+    signed char    type;        /* strange name for an index */
+    unsigned int    max;        /* extent of the swap_map */
+    unsigned char *swap_map;    /* vmalloc'ed array of usage counts */
+    struct swap_cluster_info *cluster_info; /* cluster info. Only for SSD */
+    struct swap_cluster_list free_clusters; /* free clusters list */
+    unsigned int lowest_bit;    /* index of first free in swap_map */
+    unsigned int highest_bit;    /* index of last free in swap_map */
+    unsigned int pages;        /* total of usable pages of swap */
+    unsigned int inuse_pages;    /* number of those currently in use */
+    unsigned int cluster_next;    /* likely index for next allocation */
+    unsigned int cluster_nr;    /* countdown to next cluster search */
+    unsigned int __percpu *cluster_next_cpu; /*percpu index for next allocation */
+    struct percpu_cluster __percpu *percpu_cluster; /* per cpu's swap location */
+    struct rb_root swap_extent_root;/* root of the swap extent rbtree */
+    struct bdev_handle *bdev_handle;/* open handle of the bdev */
+    struct block_device *bdev;    /* swap device or bdev of swap file */
+    struct file *swap_file;        /* seldom referenced */
+    unsigned int old_block_size;    /* seldom referenced */
+    struct completion comp;        /* seldom referenced */
+    spinlock_t lock;
+    spinlock_t cont_lock;
+    struct work_struct discard_work; /* discard worker */
+    struct swap_cluster_list discard_clusters; /* discard clusters list */
+    struct plist_node avail_lists[];
+};
+
+struct swap_extent {
+    struct rb_node rb_node; /* insert into swap_extent_root */
+    pgoff_t start_page;
+    pgoff_t nr_pages;
+    sector_t start_block;
+};
+
+static const struct address_space_operations swap_aops = {
+    .writepage      = swap_writepage,
+    .dirty_folio    = noop_dirty_folio,
+    .migrate_folio  = migrate_folio,
+};
+
+struct address_space *swapper_spaces[MAX_SWAPFILES];
+static unsigned int nr_swapper_spaces[MAX_SWAPFILES];
+
+struct swap_slots_cache {
+    bool            lock_initialized;
+    struct mutex    alloc_lock; /* protects slots, nr, cur */
+    swp_entry_t     *slots;
+    int             nr;
+    int             cur;
+
+    spinlock_t      free_lock;  /* protects slots_ret, n_ret */
+    swp_entry_t     *slots_ret;
+    int             n_ret;
+};
+```
+
+```c
+static inline swp_entry_t swp_entry(unsigned long type, pgoff_t offset)
+{
+    swp_entry_t ret;
+    ret.val = (type << SWP_TYPE_SHIFT) | (offset & SWP_OFFSET_MASK);
+    return ret;
+}
+
+static inline unsigned swp_type(swp_entry_t entry)
+{
+    return (entry.val >> SWP_TYPE_SHIFT);
+}
+
+static inline pgoff_t swp_offset(swp_entry_t entry)
+{
+    return entry.val & SWP_OFFSET_MASK;
+}
+```
+
+## add_to_swap
+
+```c
+bool add_to_swap(struct folio *folio)
+{
+    swp_entry_t entry;
+    int err;
+
+    entry = folio_alloc_swap(folio) {
+        swp_entry_t entry;
+        struct swap_slots_cache *cache;
+
+        entry.val = 0;
+
+        if (folio_test_large(folio)) {
+            if (IS_ENABLED(CONFIG_THP_SWAP) && arch_thp_swp_supported()) {
+                get_swap_pages(1, &entry, folio_nr_pages(folio)) {
+                    unsigned long size = swap_entry_size(entry_size);
+                    struct swap_info_struct *si, *next;
+                    long avail_pgs;
+                    int n_ret = 0;
+                    int node;
+
+                    /* Only single cluster request supported */
+                    WARN_ON_ONCE(n_goal > 1 && size == SWAPFILE_CLUSTER);
+
+                    spin_lock(&swap_avail_lock);
+
+                    avail_pgs = atomic_long_read(&nr_swap_pages) / size;
+                    if (avail_pgs <= 0) {
+                        spin_unlock(&swap_avail_lock);
+                        goto noswap;
+                    }
+
+                    n_goal = min3((long)n_goal, (long)SWAP_BATCH, avail_pgs);
+
+                    atomic_long_sub(n_goal * size, &nr_swap_pages);
+
+                start_over:
+                    node = numa_node_id();
+                    plist_for_each_entry_safe(si, next, &swap_avail_heads[node], avail_lists[node]) {
+                        /* requeue si to after same-priority siblings */
+                        plist_requeue(&si->avail_lists[node], &swap_avail_heads[node]);
+                        spin_unlock(&swap_avail_lock);
+                        spin_lock(&si->lock);
+                        if (!si->highest_bit || !(si->flags & SWP_WRITEOK)) {
+                            spin_lock(&swap_avail_lock);
+                            if (plist_node_empty(&si->avail_lists[node])) {
+                                spin_unlock(&si->lock);
+                                goto nextsi;
+                            }
+                            __del_from_avail_list(si);
+                            spin_unlock(&si->lock);
+                            goto nextsi;
+                        }
+                        if (size == SWAPFILE_CLUSTER) {
+                            if (si->flags & SWP_BLKDEV)
+                                n_ret = swap_alloc_cluster(si, swp_entries);
+                        } else
+                            n_ret = scan_swap_map_slots(si, SWAP_HAS_CACHE,
+                                            n_goal, swp_entries);
+                        spin_unlock(&si->lock);
+                        if (n_ret || size == SWAPFILE_CLUSTER)
+                            goto check_out;
+                        cond_resched();
+
+                        spin_lock(&swap_avail_lock);
+                nextsi:
+                        if (plist_node_empty(&next->avail_lists[node]))
+                            goto start_over;
+                    }
+
+                    spin_unlock(&swap_avail_lock);
+
+                check_out:
+                    if (n_ret < n_goal)
+                        atomic_long_add((long)(n_goal - n_ret) * size, &nr_swap_pages);
+                noswap:
+                    return n_ret;
+                }
+            }
+            goto out;
+        }
+
+        cache = raw_cpu_ptr(&swp_slots);
+
+        if (likely(check_cache_active() && cache->slots)) {
+            mutex_lock(&cache->alloc_lock);
+            if (cache->slots) {
+    repeat:
+                if (cache->nr) {
+                    entry = cache->slots[cache->cur];
+                    cache->slots[cache->cur++].val = 0;
+                    cache->nr--;
+                } else if (refill_swap_slots_cache(cache)) {
+                    goto repeat;
+                    refill_swap_slots_cache(cache) {
+                        if (!use_swap_slot_cache)
+                            return 0;
+
+                        cache->cur = 0;
+                        if (swap_slot_cache_active)
+                            cache->nr = get_swap_pages(
+                                SWAP_SLOTS_CACHE_SIZE, cache->slots, 1
+                            );
+
+                        return cache->nr;
+                    }
+                }
+            }
+            mutex_unlock(&cache->alloc_lock);
+            if (entry.val)
+                goto out;
+        }
+
+        get_swap_pages(1, &entry, 1);
+    out:
+        if (mem_cgroup_try_charge_swap(folio, entry)) {
+            put_swap_folio(folio, entry);
+            entry.val = 0;
+        }
+        return entry;
+    }
+
+    err = add_to_swap_cache(folio, entry,
+        __GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN, NULL) {
+
+        struct address_space *address_space = swap_address_space(entry);
+        pgoff_t idx = swp_offset(entry);
+        XA_STATE_ORDER(xas, &address_space->i_pages, idx, folio_order(folio));
+        unsigned long i, nr = folio_nr_pages(folio);
+        void *old;
+
+        xas_set_update(&xas, workingset_update_node);
+
+        VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+        VM_BUG_ON_FOLIO(folio_test_swapcache(folio), folio);
+        VM_BUG_ON_FOLIO(!folio_test_swapbacked(folio), folio);
+
+        folio_ref_add(folio, nr);
+        folio_set_swapcache(folio);
+        folio->swap = entry;
+
+        do {
+            xas_lock_irq(&xas);
+            xas_create_range(&xas);
+            if (xas_error(&xas))
+                goto unlock;
+            for (i = 0; i < nr; i++) {
+                VM_BUG_ON_FOLIO(xas.xa_index != idx + i, folio);
+                if (shadowp) {
+                    old = xas_load(&xas);
+                    if (xa_is_value(old))
+                        *shadowp = old;
+                }
+                xas_store(&xas, folio);
+                xas_next(&xas);
+            }
+            address_space->nrpages += nr;
+            __node_stat_mod_folio(folio, NR_FILE_PAGES, nr);
+            __lruvec_stat_mod_folio(folio, NR_SWAPCACHE, nr);
+    unlock:
+            xas_unlock_irq(&xas);
+        } while (xas_nomem(&xas, gfp));
+
+        if (!xas_error(&xas))
+            return 0;
+
+        folio_clear_swapcache(folio);
+        folio_ref_sub(folio, nr);
+        return xas_error(&xas);
+    }
+
+    folio_mark_dirty(folio);
+
+    return true;
+
+fail:
+    put_swap_folio(folio, entry);
+    return false;
+}
+```
+
+## swap_free
+
+```c
+void swap_free(swp_entry_t entry)
+{
+    struct swap_info_struct *p;
+
+    p = _swap_info_get(entry) {
+        return swp_swap_info(entry) {
+            return swap_type_to_swap_info(swp_type(entry)) {
+                if (type >= MAX_SWAPFILES)
+                    return NULL;
+
+                return READ_ONCE(swap_info[type]);
+            }
+        }
+    }
+
+    __swap_entry_free(p, entry) {
+        struct swap_cluster_info *ci;
+        unsigned long offset = swp_offset(entry);
+        unsigned char usage;
+
+        ci = lock_cluster_or_swap_info(p, offset);
+        usage = __swap_entry_free_locked(p, offset, 1) {
+            unsigned char count;
+            unsigned char has_cache;
+
+            count = p->swap_map[offset];
+
+            has_cache = count & SWAP_HAS_CACHE;
+            count &= ~SWAP_HAS_CACHE;
+
+            if (usage == SWAP_HAS_CACHE) {
+                VM_BUG_ON(!has_cache);
+                has_cache = 0;
+            } else if (count == SWAP_MAP_SHMEM) {
+                /*
+                * Or we could insist on shmem.c using a special
+                * swap_shmem_free() and free_shmem_swap_and_cache()...
+                */
+                count = 0;
+            } else if ((count & ~COUNT_CONTINUED) <= SWAP_MAP_MAX) {
+                if (count == COUNT_CONTINUED) {
+                    if (swap_count_continued(p, offset, count))
+                        count = SWAP_MAP_MAX | COUNT_CONTINUED;
+                    else
+                        count = SWAP_MAP_MAX;
+                } else
+                    count--;
+            }
+
+            usage = count | has_cache;
+            if (usage)
+                WRITE_ONCE(p->swap_map[offset], usage);
+            else
+                WRITE_ONCE(p->swap_map[offset], SWAP_HAS_CACHE);
+
+            return usage;
+        }
+        unlock_cluster_or_swap_info(p, ci);
+
+        if (!usage) {
+            free_swap_slot(entry) {
+                struct swap_slots_cache *cache;
+
+                cache = raw_cpu_ptr(&swp_slots);
+                if (likely(use_swap_slot_cache && cache->slots_ret)) {
+                    spin_lock_irq(&cache->free_lock);
+                    /* Swap slots cache may be deactivated before acquiring lock */
+                    if (!use_swap_slot_cache || !cache->slots_ret) {
+                        spin_unlock_irq(&cache->free_lock);
+                        goto direct_free;
+                    }
+                    if (cache->n_ret >= SWAP_SLOTS_CACHE_SIZE) {
+                        /* Return slots to global pool. */
+                        swapcache_free_entries(cache->slots_ret, cache->n_ret) {
+                            struct swap_info_struct *p, *prev;
+                            int i;
+
+                            if (n <= 0)
+                                return;
+
+                            prev = NULL;
+                            p = NULL;
+
+                            if (nr_swapfiles > 1)
+                                sort(entries, n, sizeof(entries[0]), swp_entry_cmp, NULL);
+                            for (i = 0; i < n; ++i) {
+                                p = swap_info_get_cont(entries[i], prev);
+                                if (p) {
+                                    swap_entry_free(p, entries[i]) {
+                                        struct swap_cluster_info *ci;
+                                        unsigned long offset = swp_offset(entry);
+                                        unsigned char count;
+
+                                        ci = lock_cluster(p, offset);
+                                        count = p->swap_map[offset];
+                                        VM_BUG_ON(count != SWAP_HAS_CACHE);
+                                        p->swap_map[offset] = 0;
+                                        dec_cluster_info_page(p, p->cluster_info, offset);
+                                        unlock_cluster(ci);
+
+                                        mem_cgroup_uncharge_swap(entry, 1);
+                                        swap_range_free(p, offset, 1) {
+                                            unsigned long begin = offset;
+                                            unsigned long end = offset + nr_entries - 1;
+                                            void (*swap_slot_free_notify)(struct block_device *, unsigned long);
+
+                                            if (offset < si->lowest_bit)
+                                                si->lowest_bit = offset;
+                                            if (end > si->highest_bit) {
+                                                bool was_full = !si->highest_bit;
+
+                                                WRITE_ONCE(si->highest_bit, end);
+                                                if (was_full && (si->flags & SWP_WRITEOK))
+                                                    add_to_avail_list(si);
+                                            }
+                                            atomic_long_add(nr_entries, &nr_swap_pages);
+                                            WRITE_ONCE(si->inuse_pages, si->inuse_pages - nr_entries);
+                                            if (si->flags & SWP_BLKDEV)
+                                                swap_slot_free_notify =
+                                                    si->bdev->bd_disk->fops->swap_slot_free_notify;
+                                            else
+                                                swap_slot_free_notify = NULL;
+
+                                            while (offset <= end) {
+                                                arch_swap_invalidate_page(si->type, offset);
+                                                zswap_invalidate(si->type, offset);
+                                                if (swap_slot_free_notify)
+                                                    swap_slot_free_notify(si->bdev, offset);
+                                                offset++;
+                                            }
+                                            clear_shadow_from_swap_cache(si->type, begin, end) {
+                                                unsigned long curr = begin;
+                                                void *old;
+
+                                                for (;;) {
+                                                    swp_entry_t entry = swp_entry(type, curr);
+                                                    struct address_space *address_space = swap_address_space(entry);
+                                                    XA_STATE(xas, &address_space->i_pages, curr);
+
+                                                    xas_set_update(&xas, workingset_update_node);
+
+                                                    xa_lock_irq(&address_space->i_pages);
+                                                    xas_for_each(&xas, old, end) {
+                                                        if (!xa_is_value(old))
+                                                            continue;
+                                                        xas_store(&xas, NULL);
+                                                    }
+                                                    xa_unlock_irq(&address_space->i_pages);
+
+                                                    /* search the next swapcache until we meet end */
+                                                    curr >>= SWAP_ADDRESS_SPACE_SHIFT;
+                                                    curr++;
+                                                    curr <<= SWAP_ADDRESS_SPACE_SHIFT;
+                                                    if (curr > end)
+                                                        break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                prev = p;
+                            }
+                            if (p)
+                                spin_unlock(&p->lock);
+                        }
+                        cache->n_ret = 0;
+                    }
+                    cache->slots_ret[cache->n_ret++] = entry;
+                    spin_unlock_irq(&cache->free_lock);
+                } else {
+            direct_free:
+                    swapcache_free_entries(&entry, 1);
+                }
+            }
+        }
+
+        return usage;
+    }
+}
+```
+
+## folio_free_swap
+
+```c
+/* Free the swap space used for this folio. */
+bool folio_free_swap(struct folio *folio) {
+    if (!folio_test_swapcache(folio))
+        return false;
+    if (folio_test_writeback(folio))
+        return false;
+    if (folio_swapped(folio))
+        return false;
+
+
+    delete_from_swap_cache(folio) {
+        swp_entry_t entry = folio->swap;
+        struct address_space *address_space = swap_address_space(entry);
+
+        xa_lock_irq(&address_space->i_pages);
+        __delete_from_swap_cache(folio, entry, NULL/*shadow*/) {
+            struct address_space *address_space = swap_address_space(entry);
+            int i;
+            long nr = folio_nr_pages(folio);
+            pgoff_t idx = swp_offset(entry);
+            XA_STATE(xas, &address_space->i_pages, idx);
+
+            xas_set_update(&xas, workingset_update_node);
+
+            VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+            VM_BUG_ON_FOLIO(!folio_test_swapcache(folio), folio);
+            VM_BUG_ON_FOLIO(folio_test_writeback(folio), folio);
+
+            for (i = 0; i < nr; i++) {
+                void *entry = xas_store(&xas, shadow);
+                VM_BUG_ON_PAGE(entry != folio, entry);
+                xas_next(&xas);
+            }
+            folio->swap.val = 0;
+            folio_clear_swapcache(folio);
+            address_space->nrpages -= nr;
+            __node_stat_mod_folio(folio, NR_FILE_PAGES, -nr);
+            __lruvec_stat_mod_folio(folio, NR_SWAPCACHE, -nr);
+
+        }
+        xa_unlock_irq(&address_space->i_pages);
+
+        put_swap_folio(folio, entry);
+        folio_ref_sub(folio, folio_nr_pages(folio));
+
+    }
+
+    folio_set_dirty(folio);
+    return true;
+```
+
+## swap_cache_get_folio
+
+## swapin_readahead
+
+```c
+
 ```
 
 # fork
