@@ -8462,6 +8462,19 @@ struct folio_batch {
     struct folio *folios[PAGEVEC_SIZE];
 };
 
+struct cpu_fbatches {
+    local_lock_t lock;
+    struct folio_batch lru_add;
+    struct folio_batch lru_deactivate_file;
+    struct folio_batch lru_deactivate;
+    struct folio_batch lru_lazyfree;
+    struct folio_batch activate;
+};
+
+static DEFINE_PER_CPU(struct cpu_fbatches, cpu_fbatches) = {
+    .lock = INIT_LOCAL_LOCK(lock),
+};
+
 unsigned folio_batch_add(struct folio_batch *fbatch, struct folio *folio)
 {
     fbatch->folios[fbatch->nr++] = folio;
@@ -8471,30 +8484,71 @@ unsigned int folio_batch_space(struct folio_batch *fbatch)
 {
     return PAGEVEC_SIZE - fbatch->nr;
 }
+```
 
-void folio_batch_move_lru(struct folio_batch *fbatch, move_fn_t move_fn)
+```c
+void lru_add_drain(void)
 {
-    int i;
-    struct lruvec *lruvec = NULL;
-    unsigned long flags = 0;
+    local_lock(&cpu_fbatches.lock);
+    lru_add_drain_cpu(smp_processor_id()) {
+        struct cpu_fbatches *fbatches = &per_cpu(cpu_fbatches, cpu);
+        struct folio_batch *fbatch = &fbatches->lru_add;
 
-    for (i = 0; i < folio_batch_count(fbatch); i++) {
-        struct folio *folio = fbatch->folios[i];
+        if (folio_batch_count(fbatch)) {
+            folio_batch_move_lru(fbatch, lru_add_fn/*move_fn*/) {
+                int i;
+                struct lruvec *lruvec = NULL;
+                unsigned long flags = 0;
 
-        /* block memcg migration while the folio moves between lru */
-        if (move_fn != lru_add_fn && !folio_test_clear_lru(folio))
-            continue;
+                for (i = 0; i < folio_batch_count(fbatch); i++) {
+                    struct folio *folio = fbatch->folios[i];
 
-        lruvec = folio_lruvec_relock_irqsave(folio, lruvec, &flags);
-        move_fn(lruvec, folio);
+                    /* block memcg migration while the folio moves between lru */
+                    if (move_fn != lru_add_fn && !folio_test_clear_lru(folio))
+                        continue;
 
-        folio_set_lru(folio);
+                    lruvec = folio_lruvec_relock_irqsave(folio, lruvec, &flags);
+                    move_fn(lruvec, folio);
+
+                    folio_set_lru(folio);
+                }
+
+                if (lruvec)
+                    unlock_page_lruvec_irqrestore(lruvec, flags);
+                folios_put(fbatch->folios, folio_batch_count(fbatch));
+                folio_batch_reinit(fbatch);
+            }
+        }
+
+        fbatch = &per_cpu(lru_rotate.fbatch, cpu);
+        /* Disabling interrupts below acts as a compiler barrier. */
+        if (data_race(folio_batch_count(fbatch))) {
+            local_lock_irqsave(&lru_rotate.lock, flags);
+            folio_batch_move_lru(fbatch, lru_move_tail_fn);
+            local_unlock_irqrestore(&lru_rotate.lock, flags);
+        }
+
+        fbatch = &fbatches->lru_deactivate_file;
+        if (folio_batch_count(fbatch))
+            folio_batch_move_lru(fbatch, lru_deactivate_file_fn);
+
+        fbatch = &fbatches->lru_deactivate;
+        if (folio_batch_count(fbatch))
+            folio_batch_move_lru(fbatch, lru_deactivate_fn);
+
+        fbatch = &fbatches->lru_lazyfree;
+        if (folio_batch_count(fbatch))
+            folio_batch_move_lru(fbatch, lru_lazyfree_fn);
+
+        folio_activate_drain(cpu) {
+            struct folio_batch *fbatch = &per_cpu(cpu_fbatches.activate, cpu);
+
+            if (folio_batch_count(fbatch))
+                folio_batch_move_lru(fbatch, folio_activate_fn);
+        }
     }
-
-    if (lruvec)
-        unlock_page_lruvec_irqrestore(lruvec, flags);
-    folios_put(fbatch->folios, folio_batch_count(fbatch));
-    folio_batch_reinit(fbatch);
+    local_unlock(&cpu_fbatches.lock);
+    mlock_drain_local();
 }
 ```
 
