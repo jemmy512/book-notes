@@ -3650,6 +3650,7 @@ All devices have the corresponding device file in /dev(is devtmpfs file system),
 * [Linux Block IO: Introducing Multi-queue SSD Access on Multi-core Systems.pdf](https://kernel.dk/systor13-final18.pdf)
 * [The multiqueue block layer](https://lwn.net/Articles/552904/)
 * [Simple Clear File IO :cn:](https://spongecaptain.cool/SimpleClearFileIO/)
+* [IO子系统全流程介绍](https://zhuanlan.zhihu.com/p/545906763)
 
 ```c++
 lsmod           /* list installed modes */
