@@ -104,6 +104,7 @@
 * [page_reclaim](#page_reclaim)
     * [lru](#lru)
     * [folio_batch](#folio_batch)
+    * [workingset](#workingset)
     * [throttle_direct_reclaim](#throttle_direct_reclaim)
     * [shrink_node](#shrink_node)
         * [shrink_node_memcgs](#shrink_node_memcgs)
@@ -8360,8 +8361,11 @@ vmalloc(size);
 
 ![](../images/kernel/mem-page_reclaim-lruvec.png)
 
+* [Overview of Memory Reclaim in the Current Upstream Kernel.pdf](https://lpc.events/event/11/contributions/896/attachments/793/1493/slides-r2.pdf)
 
 ## lru
+
+* [linux内存回收之 File page的 lru list算法原理](https://zhuanlan.zhihu.com/p/421298579)
 
 ```c
 typedef struct pglist_data {
@@ -8407,6 +8411,7 @@ enum pageflags {
     PG_swapcache,   /* Swap page: swp_entry_t in private */
     PG_swapbacked,  /* Page is backed by RAM/swap */
     PG_unevictable, /* Page is "unevictable"  */
+    PG_workingset,
 }
 ```
 
@@ -8441,7 +8446,16 @@ void folio_mark_accessed(struct folio *folio)
         if (folio_test_lru(folio)) {
             folio_activate(folio);
         } else {
-            __lru_cache_activate_folio(folio);
+            __lru_cache_activate_folio(folio) {
+                fbatch = this_cpu_ptr(&cpu_fbatches.lru_add);
+                for (i = folio_batch_count(fbatch) - 1; i >= 0; i--) {
+                    struct folio *batch_folio = fbatch->folios[i];
+                    if (batch_folio == folio) {
+                        folio_set_active(folio);
+                        break;
+                    }
+                }
+            }
         }
 
         folio_clear_referenced(folio);
@@ -8549,6 +8563,147 @@ void lru_add_drain(void)
     }
     local_unlock(&cpu_fbatches.lock);
     mlock_drain_local();
+}
+```
+
+## workingset
+
+```c
+void workingset_refault(struct folio *folio, void *shadow)
+{
+    bool file = folio_is_file_lru(folio);
+    struct pglist_data *pgdat;
+    struct mem_cgroup *memcg;
+    struct lruvec *lruvec;
+    bool workingset;
+    long nr;
+
+    nr = folio_nr_pages(folio);
+    memcg = folio_memcg(folio);
+    pgdat = folio_pgdat(folio);
+    lruvec = mem_cgroup_lruvec(memcg, pgdat);
+
+    mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + file, nr);
+
+    if (!workingset_test_recent(shadow, file, &workingset))
+        return;
+
+    folio_set_active(folio);
+    workingset_age_nonresident(lruvec, nr) {
+        do {
+            atomic_long_add(nr_pages, &lruvec->nonresident_age);
+        } while ((lruvec = parent_lruvec(lruvec)));
+    }
+    mod_lruvec_state(lruvec, WORKINGSET_ACTIVATE_BASE + file, nr);
+
+    /* Folio was active prior to eviction */
+    if (workingset) {
+        folio_set_workingset(folio);
+        lru_note_cost_refault(folio);
+        mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + file, nr);
+    }
+}
+
+/* folio_mark_accessed -> workingset_activation */
+void workingset_activation(struct folio *folio)
+{
+    struct mem_cgroup *memcg;
+
+    rcu_read_lock();
+
+    memcg = folio_memcg_rcu(folio);
+    if (!mem_cgroup_disabled() && !memcg)
+        goto out;
+    workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio));
+out:
+    rcu_read_unlock();
+}
+
+/* shrink_folio_list -> __remove_mapping -> workingset_eviction */
+void *workingset_eviction(struct folio *folio, struct mem_cgroup *target_memcg)
+{
+    struct pglist_data *pgdat = folio_pgdat(folio);
+    unsigned long eviction;
+    struct lruvec *lruvec;
+    int memcgid;
+
+    lruvec = mem_cgroup_lruvec(target_memcg, pgdat);
+    /* XXX: target_memcg can be NULL, go through lruvec */
+    memcgid = mem_cgroup_id(lruvec_memcg(lruvec));
+    eviction = atomic_long_read(&lruvec->nonresident_age);
+    eviction >>= bucket_order;
+    workingset_age_nonresident(lruvec, folio_nr_pages(folio));
+
+    return pack_shadow(memcgid, pgdat, eviction, folio_test_workingset(folio)) {
+        eviction &= EVICTION_MASK;
+        eviction = (eviction << MEM_CGROUP_ID_SHIFT) | memcgid;
+        eviction = (eviction << NODES_SHIFT) | pgdat->node_id;
+        eviction = (eviction << WORKINGSET_SHIFT) | workingset;
+
+        return xa_mk_value(eviction);
+    }
+}
+
+bool workingset_test_recent(void *shadow, bool file, bool *workingset)
+{
+    struct mem_cgroup *eviction_memcg;
+    struct lruvec *eviction_lruvec;
+    unsigned long refault_distance;
+    unsigned long workingset_size;
+    unsigned long refault;
+    int memcgid;
+    struct pglist_data *pgdat;
+    unsigned long eviction;
+
+    rcu_read_lock();
+
+    unpack_shadow(shadow, &memcgid, &pgdat, &eviction, workingset) {
+        unsigned long entry = xa_to_value(shadow);
+        int memcgid, nid;
+        bool workingset;
+
+        workingset = entry & ((1UL << WORKINGSET_SHIFT) - 1);
+        entry >>= WORKINGSET_SHIFT;
+        nid = entry & ((1UL << NODES_SHIFT) - 1);
+        entry >>= NODES_SHIFT;
+        memcgid = entry & ((1UL << MEM_CGROUP_ID_SHIFT) - 1);
+        entry >>= MEM_CGROUP_ID_SHIFT;
+
+        *memcgidp = memcgid;
+        *pgdat = NODE_DATA(nid);
+        *evictionp = entry;
+        *workingsetp = workingset;
+    }
+    eviction <<= bucket_order;
+
+    eviction_memcg = mem_cgroup_from_id(memcgid);
+    if (!mem_cgroup_disabled() && (!eviction_memcg || !mem_cgroup_tryget(eviction_memcg))) {
+        rcu_read_unlock();
+        return false;
+    }
+
+    rcu_read_unlock();
+
+
+    mem_cgroup_flush_stats_ratelimited(eviction_memcg);
+
+    eviction_lruvec = mem_cgroup_lruvec(eviction_memcg, pgdat);
+    refault = atomic_long_read(&eviction_lruvec->nonresident_age);
+    refault_distance = (refault - eviction) & EVICTION_MASK;
+
+    workingset_size = lruvec_page_state(eviction_lruvec, NR_ACTIVE_FILE);
+    if (!file) {
+        workingset_size += lruvec_page_state(eviction_lruvec, NR_INACTIVE_FILE);
+    }
+    if (mem_cgroup_get_nr_swap_pages(eviction_memcg) > 0) {
+        workingset_size += lruvec_page_state(eviction_lruvec, NR_ACTIVE_ANON);
+        if (file) {
+            workingset_size += lruvec_page_state(eviction_lruvec, NR_INACTIVE_ANON);
+        }
+    }
+
+    mem_cgroup_put(eviction_memcg);
+    return refault_distance <= workingset_size;
 }
 ```
 
