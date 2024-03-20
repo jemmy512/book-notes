@@ -9091,10 +9091,6 @@ static int kthread(void *_create)
 }
 ```
 
-# kswapd
-
-* [kswapd介绍 - 内核工匠](https://mp.weixin.qq.com/s/1iVJC8Ca5OQfdEIYQW-4GQ)
-
 # cmwq
 
 * [Kernel Doc](https://docs.kernel.org/core-api/workqueue.html)

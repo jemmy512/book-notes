@@ -13024,6 +13024,8 @@ int kcompactd(void *p)
 
 # kswapd
 
+* [kswapd介绍 - 内核工匠](https://mp.weixin.qq.com/s/1iVJC8Ca5OQfdEIYQW-4GQ)
+
 ```c
 int kswapd(void *p)
 {
@@ -14490,8 +14492,9 @@ bool out_of_memory(struct oom_control *oc)
                 return;
 
             /* oom_mm is bound to the signal struct life time. */
-            if (!cmpxchg(&tsk->signal->oom_mm, NULL, mm))
+            if (!cmpxchg(&tsk->signal->oom_mm, NULL, mm)) {
                 mmgrab(tsk->signal->oom_mm);
+            }
 
             __thaw_task(tsk);
             atomic_inc(&oom_victims);
@@ -14533,11 +14536,11 @@ bool out_of_memory(struct oom_control *oc)
     select_bad_process(oc);
     if (!oc->chosen) {
         dump_header(oc);
-        if (!is_sysrq_oom(oc) && !is_memcg_oom(oc))
-            panic("System is deadlocked on memory\n");
     }
     if (oc->chosen && oc->chosen != (void *)-1UL) {
-        oom_kill_process(oc, !is_memcg_oom(oc) ? "Out of memory" : "Memory cgroup out of memory");
+        oom_kill_process(oc, !is_memcg_oom(oc)
+            ? "Out of memory" : "Memory cgroup out of memory"
+        );
     }
     return !!oc->chosen;
 }
@@ -14617,6 +14620,7 @@ int oom_reaper(void *unused)
                                     continue;
                                 }
                                 unmap_page_range(&tlb, vma, range.start, range.end, NULL);
+                                    --->
                                 mmu_notifier_invalidate_range_end(&range);
                                 tlb_finish_mmu(&tlb);
                             }
@@ -14833,7 +14837,16 @@ void oom_kill_process(struct oom_control *oc, const char *message)
     if (oom_group) {
         memcg_memory_event(oom_group, MEMCG_OOM_GROUP_KILL);
         mem_cgroup_print_oom_group(oom_group);
-        mem_cgroup_scan_tasks(oom_group, oom_kill_memcg_member, (void *)message);
+        mem_cgroup_scan_tasks(
+            oom_group,
+            oom_kill_memcg_member() {
+                if (task->signal->oom_score_adj != OOM_SCORE_ADJ_MIN && !is_global_init(task)) {
+                    get_task_struct(task);
+                    __oom_kill_process(task, message);
+                }
+            }
+            (void *)message
+        );
         mem_cgroup_put(oom_group);
     }
 }
@@ -14842,6 +14855,7 @@ void oom_kill_process(struct oom_control *oc, const char *message)
 # exit_mm
 
 ```c
+/* exit -> do_exit -> exit_mm */
 void exit_mm(void)
 {
     struct mm_struct *mm = current->mm;
@@ -14917,7 +14931,8 @@ void exit_mm(void)
                             unsigned long start = start_addr;
                             unsigned long end = end_addr;
                             hugetlb_zap_begin(vma, &start, &end);
-                            unmap_single_vma(tlb, vma, start, end, &details, mm_wr_locked);
+                            unmap_single_vma(tlb, vma, start, end, &details, mm_wr_locked)
+                                --->
                             hugetlb_zap_end(vma, &details);
                             vma = mas_find(mas, tree_end - 1);
                         } while (vma && likely(!xa_is_zero(vma)));
@@ -14986,14 +15001,42 @@ void exit_mm(void)
                 lru_gen_del_mm(mm);
 
                 mmdrop(mm) {
+                    if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
+                        __mmdrop(mm) {
+                            /* Ensure no CPUs are using this as their lazy tlb mm */
+                            cleanup_lazy_tlbs(mm);
 
+                            mm_free_pgd(mm) {
+                                pgd_free(mm, mm->pgd) {
+                                    if (PGD_SIZE == PAGE_SIZE)
+                                        free_page((unsigned long)pgd);
+                                    else
+                                        kmem_cache_free(pgd_cache, pgd);
+                                }
+                            }
+                            destroy_context(mm);
+                            mmu_notifier_subscriptions_destroy(mm);
+                            check_mm(mm);
+                            put_user_ns(mm->user_ns);
+                            mm_pasid_drop(mm);
+                            mm_destroy_cid(mm);
+                            percpu_counter_destroy_many(mm->rss_stat, NR_MM_COUNTERS);
+
+                            free_mm(mm);
+                        }
+                    }
                 }
             }
         }
     }
 
     if (test_thread_flag(TIF_MEMDIE)) {
-        exit_oom_victim();
+        exit_oom_victim() {
+            clear_thread_flag(TIF_MEMDIE);
+            if (!atomic_dec_return(&oom_victims)) {
+                wake_up_all(&oom_victims_wait);
+            }
+        }
     }
 }
 ```
