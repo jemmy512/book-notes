@@ -559,14 +559,19 @@ group_send_sig_info()
 
 ```
 
+pid | meaning
+--- | ---
+\> 0 | sent to the process with the ID specified by pid.
+== 0 | sent to every process in the process group of the calling process.
+== -1 | sent to every process for which the calling process has permission to send signals, except for process 1 (init), but see below.
+<-1 | sent to every process in the process group whose ID is -pid.
+
+
+* kill -> kill_something_info -> kill_pid_info -> group_send_sig_info -> do_send_sig_info
+* tkill -> do_tkill -> do_send_specific -> do_send_sig_info
+* tgkill -> do_tkill->do_send_specific -> do_send_sig_info
+* rt_sigqueueinfo -> do_rt_sigqueueinfo -> kill_proc_info -> kill_pid_info -> group_send_sig_info -> do_send_sig_info
 ```c
-/* kill->kill_something_info->kill_pid_info->group_send_sig_info->do_send_sig_info
- * tkill->do_tkill->do_send_specific->do_send_sig_info
- *
- * tgkill->do_tkill->do_send_specific->do_send_sig_info
- *
- * rt_sigqueueinfo->do_rt_sigqueueinfo->kill_proc_info->kill_pid_info
- * ->group_send_sig_info->do_send_sig_info */
 
 SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
 {
@@ -578,7 +583,46 @@ SYSCALL_DEFINE2(kill, pid_t, pid, int, sig)
     info.si_pid = task_tgid_vnr(current);
     info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
 
-    return kill_something_info(sig, &info, pid);
+    return kill_something_info(sig, &info, pid) {
+        if (pid > 0) {
+            return kill_proc_info(sig, info, pid) {
+                kill_pid_info(sig, info, find_vpid(pid)) {
+                    for (;;) {
+                        rcu_read_lock();
+                        p = pid_task(pid, PIDTYPE_PID);
+                        if (p)
+                            error = group_send_sig_info(sig, info, p, PIDTYPE_TGID);
+                        rcu_read_unlock();
+                        if (likely(!p || error != -ESRCH))
+                            return error;
+                    }
+                }
+            }
+        } else if (pid == 0) {
+            ret = __kill_pgrp_info(sig, info, task_pgrp(current));
+        } else if (pid < -1) {
+            ret = __kill_pgrp_info(sig, info, find_vpid(-pid)) {
+                do_each_pid_task(pgrp, PIDTYPE_PGID, p) {
+                    int err = group_send_sig_info(sig, info, p, PIDTYPE_PGID) {
+                        do_send_sig_info(sig, info, p, type);
+                    }
+                } while_each_pid_task(pgrp, PIDTYPE_PGID, p);
+            }
+        } else if (pid == -1) {
+            int retval = 0, count = 0;
+            struct task_struct * p;
+
+            for_each_process(p) {
+                if (task_pid_vnr(p) > 1 && !same_thread_group(p, current)) {
+                    int err = group_send_sig_info(sig, info, p, PIDTYPE_MAX);
+                    ++count;
+                    if (err != -EPERM)
+                        retval = err;
+                }
+            }
+            ret = count ? retval : -ESRCH;
+        }
+    }
 }
 
 int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p,
@@ -595,8 +639,8 @@ int do_send_sig_info(int sig, struct kernel_siginfo *info, struct task_struct *p
     return ret;
 }
 
-static int send_signal_locked(int sig, struct siginfo *info, struct task_struct *t,
-      int group, int from_ancestor_ns)
+int send_signal_locked(int sig, struct kernel_siginfo *info,
+    struct task_struct *t, enum pid_type type)
 {
     struct sigpending *pending;
     struct sigqueue *q;
@@ -652,7 +696,7 @@ static int send_signal_locked(int sig, struct siginfo *info, struct task_struct 
 		goto ret;
 
     /* per-process or per-thread signal */
-    pending = group ? &t->signal->shared_pending : &t->pending;
+    pending = (type != PIDTYPE_PID) ? &t->signal->shared_pending : &t->pending;
     if (legacy_queue(pending, sig))
         goto ret;
 
@@ -698,6 +742,21 @@ out_set:
 
     sigaddset(&pending->signal, sig);
 
+    /* Let multiprocess signals appear after on-going forks */
+    if (type > PIDTYPE_TGID) {
+        struct multiprocess_signals *delayed;
+        hlist_for_each_entry(delayed, &t->signal->multiprocess, node) {
+            sigset_t *signal = &delayed->signal;
+            /* Can't queue both a stop and a continue signal */
+            if (sig == SIGCONT)
+                sigdelsetmask(signal, SIG_KERNEL_STOP_MASK);
+            else if (sig_kernel_stop(sig))
+                sigdelset(signal, SIGCONT);
+            sigaddset(signal, sig);
+        }
+    }
+
+
     complete_signal(sig, t, group) {
         struct signal_struct *signal = p->signal;
         struct task_struct *t;
@@ -730,7 +789,12 @@ out_set:
                 if (!wake_up_state(t, state | TASK_INTERRUPTIBLE)) {
                     /* wake up failed
                      * kick a running thread to enter/exit the kernel */
-                    kick_process(t);
+                    kick_process(t) {
+                        int cpu = task_cpu(p);
+                        if ((cpu != smp_processor_id()) && task_curr(p)) {
+                            smp_send_reschedule(cpu);
+                        }
+                    }
                 }
             }
         }
@@ -1085,7 +1149,6 @@ relock:
         if (ka->sa.sa_handler == SIG_IGN)
             continue;
         if (ka->sa.sa_handler != SIG_DFL) {
-            /* Run the handler.  */
             ksig->ka = *ka;
 
             if (ka->sa.sa_flags & SA_ONESHOT)
