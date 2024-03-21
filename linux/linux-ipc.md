@@ -777,6 +777,25 @@ out_set:
             signal->curr_target = t;
         }
 
+        if (sig_fatal(p, sig) &&
+            (signal->core_state || !(signal->flags & SIGNAL_GROUP_EXIT))
+            && !sigismember(&t->real_blocked, sig)
+            && (sig == SIGKILL || !p->ptrace)) {
+            /* This signal will be fatal to the whole group. */
+            if (!sig_kernel_coredump(sig)) {
+                /* Start a group exit and wake everybody up. */
+                signal->flags = SIGNAL_GROUP_EXIT;
+                signal->group_exit_code = sig;
+                signal->group_stop_count = 0;
+                __for_each_thread(signal, t) {
+                    task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
+                    sigaddset(&t->pending.signal, SIGKILL);
+                    signal_wake_up(t, 1);
+                }
+                return;
+            }
+        }
+
         signal_wake_up(t, sig == SIGKILL/*fatal*/) {
             unsigned int state = 0;
             if (fatal && !(t->jobctl & JOBCTL_PTRACE_FROZEN)) {
@@ -1212,7 +1231,47 @@ relock:
             goto out;
 
         /* Death signals, no core dump. */
-        do_group_exit(ksig->info.si_signo);
+        do_group_exit(ksig->info.si_signo) {
+            struct signal_struct *sig = current->signal;
+
+            if (sig->flags & SIGNAL_GROUP_EXIT)
+                exit_code = sig->group_exit_code;
+            else if (sig->group_exec_task)
+                exit_code = 0;
+            else {
+                struct sighand_struct *const sighand = current->sighand;
+
+                spin_lock_irq(&sighand->siglock);
+                if (sig->flags & SIGNAL_GROUP_EXIT)
+                    /* Another thread got here before we took the lock.  */
+                    exit_code = sig->group_exit_code;
+                else if (sig->group_exec_task)
+                    exit_code = 0;
+                else {
+                    sig->group_exit_code = exit_code;
+                    sig->flags = SIGNAL_GROUP_EXIT;
+                    zap_other_threads(current) {
+                        p->signal->group_stop_count = 0;
+
+                        for_other_threads(p, t) {
+                            task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
+                            /* Don't require de_thread to wait for the vhost_worker */
+                            if ((t->flags & (PF_IO_WORKER | PF_USER_WORKER)) != PF_USER_WORKER)
+                                count++;
+
+                            /* Don't bother with already dead threads */
+                            if (t->exit_state)
+                                continue;
+                            sigaddset(&t->pending.signal, SIGKILL);
+                            signal_wake_up(t, 1);
+                        }
+                    }
+                }
+                spin_unlock_irq(&sighand->siglock);
+            }
+
+            do_exit(exit_code);
+        }
         /* NOTREACHED */
     }
     spin_unlock_irq(&sighand->siglock);
