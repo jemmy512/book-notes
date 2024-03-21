@@ -23,6 +23,7 @@
     * [add_memory](#add_memory)
     * [remove_memory](#remove_memory)
         * [arch_remove_memroy](#arch_remove_memory)
+    * [memory_subsys.online](#memory_subsys.online)
 
 * [segment](#segment)
 * [paging](#paging)
@@ -2260,16 +2261,9 @@ struct vm_area_struct {
 
 # numa
 
-![](../images/kernel/mem-physic-numa-1.png)
-
----
-
 ![](../images/kernel/mem-physic-numa-2.png)
 
----
-
-![](../images/kernel/mem-physic-numa-3.png)
-
+![](../images/kernel/mem-physic-numa-1.png)
 
 ```
               +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -2290,6 +2284,7 @@ struct vm_area_struct {
 ```
 
 ## node
+
 ```c
 struct pglist_data *node_data[MAX_NUMNODES];
 
@@ -2912,8 +2907,9 @@ try_this_zone:
             return page;
         } else {
             if (has_unaccepted_memory()) {
-                if (try_to_accept_memory(zone, order))
+                if (try_to_accept_memory(zone, order)) {
                     goto try_this_zone;
+                }
             }
         }
     }
@@ -3194,7 +3190,7 @@ bool __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
     for (current_order = MAX_PAGE_ORDER; current_order >= min_order; --current_order) {
         area = &(zone->free_area[current_order]);
         fallback_mt = find_suitable_fallback(area, current_order,
-            start_migratetype, false, &can_steal) {
+            start_migratetype/*migratetype*/, false, &can_steal) {
 
             int i;
             int fallback_mt;
@@ -3429,7 +3425,30 @@ restart:
     /* The fast path uses conservative alloc_flags to succeed only until
     * kswapd needs to be woken up, and to avoid the cost of setting up
     * alloc_flags precisely. So we do that now. */
-    alloc_flags = gfp_to_alloc_flags(gfp_mask, order);
+    alloc_flags = gfp_to_alloc_flags(gfp_mask, order) {
+        unsigned int alloc_flags = ALLOC_WMARK_MIN | ALLOC_CPUSET;
+
+        alloc_flags |= (__force int)
+            (gfp_mask & (__GFP_HIGH | __GFP_KSWAPD_RECLAIM));
+
+        if (!(gfp_mask & __GFP_DIRECT_RECLAIM)) {
+            if (!(gfp_mask & __GFP_NOMEMALLOC)) {
+                alloc_flags |= ALLOC_NON_BLOCK;
+
+                if (order > 0) {
+                    alloc_flags |= ALLOC_HIGHATOMIC;
+                }
+            }
+
+            if (alloc_flags & ALLOC_MIN_RESERVE)
+                alloc_flags &= ~ALLOC_CPUSET;
+        } else if (unlikely(rt_task(current)) && in_task())
+            alloc_flags |= ALLOC_MIN_RESERVE;
+
+        alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, alloc_flags);
+
+        return alloc_flags;
+    }
 
     /* We need to recalculate the starting point for the zonelist iterator
     * because we might have used different nodemask in the fast path, or
@@ -3444,9 +3463,11 @@ restart:
     * any suitable zone to satisfy the request - e.g. non-movable
     * GFP_HIGHUSER allocations from MOVABLE nodes only. */
     if (cpusets_insane_config() && (gfp_mask & __GFP_HARDWALL)) {
-        struct zoneref *z = first_zones_zonelist(ac->zonelist,
-                    ac->highest_zoneidx,
-                    &cpuset_current_mems_allowed);
+        struct zoneref *z = first_zones_zonelist(
+            ac->zonelist,
+            ac->highest_zoneidx,
+            &cpuset_current_mems_allowed
+        );
         if (!z->zone)
             goto nopage;
     }
@@ -3497,7 +3518,22 @@ retry:
     if (alloc_flags & ALLOC_KSWAPD)
         wake_all_kswapds(order, gfp_mask, ac);
 
-    reserve_flags = __gfp_pfmemalloc_flags(gfp_mask);
+    reserve_flags = __gfp_pfmemalloc_flags(gfp_mask) {
+        if (unlikely(gfp_mask & __GFP_NOMEMALLOC))
+            return 0;
+        if (gfp_mask & __GFP_MEMALLOC)
+            return ALLOC_NO_WATERMARKS;
+        if (in_serving_softirq() && (current->flags & PF_MEMALLOC))
+            return ALLOC_NO_WATERMARKS;
+        if (!in_interrupt()) {
+            if (current->flags & PF_MEMALLOC)
+                return ALLOC_NO_WATERMARKS;
+            else if (oom_reserves_allowed(current))
+                return ALLOC_OOM;
+        }
+
+        return 0;
+    }
     if (reserve_flags)
         alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags) |
                     (alloc_flags & ALLOC_KSWAPD);
@@ -10466,19 +10502,15 @@ again:
                     cond_resched();
                 }
 
-                /*
-                * The deferred work is increased by any new work (delta) that wasn't
+                /* The deferred work is increased by any new work (delta) that wasn't
                 * done, decreased by old deferred work that was done now.
                 *
-                * And it is capped to two times of the freeable items.
-                */
+                * And it is capped to two times of the freeable items. */
                 next_deferred = max_t(long, (nr + delta - scanned), 0);
                 next_deferred = min(next_deferred, (2 * freeable));
 
-                /*
-                * move the unused scan count back into the shrinker in a
-                * manner that handles concurrent updates.
-                */
+                /* move the unused scan count back into the shrinker in a
+                * manner that handles concurrent updates. */
                 new_nr = add_nr_deferred(next_deferred, shrinker, shrinkctl);
 
                 trace_mm_shrink_slab_end(shrinker, shrinkctl->nid, freed, nr, new_nr, total_scan);
@@ -13551,10 +13583,8 @@ void swap_free(swp_entry_t entry)
                 VM_BUG_ON(!has_cache);
                 has_cache = 0;
             } else if (count == SWAP_MAP_SHMEM) {
-                /*
-                * Or we could insist on shmem.c using a special
-                * swap_shmem_free() and free_shmem_swap_and_cache()...
-                */
+                /* Or we could insist on shmem.c using a special
+                * swap_shmem_free() and free_shmem_swap_and_cache()... */
                 count = 0;
             } else if ((count & ~COUNT_CONTINUED) <= SWAP_MAP_MAX) {
                 if (count == COUNT_CONTINUED) {
@@ -14484,7 +14514,57 @@ bool out_of_memory(struct oom_control *oc)
         }
     }
 
-    if (task_will_free_mem(current)) {
+    ret = task_will_free_mem(current) {
+        struct mm_struct *mm = task->mm;
+        struct task_struct *p;
+        bool ret = true;
+
+        if (!mm)
+            return false;
+
+        ret = __task_will_free_mem(task) {
+            struct signal_struct *sig = task->signal;
+
+            if (sig->core_state)
+                return false;
+
+            if (sig->flags & SIGNAL_GROUP_EXIT)
+                return true;
+
+            if (thread_group_empty(task) && (task->flags & PF_EXITING))
+                return true;
+
+            return false;
+        }
+        if (!ret)
+            return false;
+
+        /* This task has already been drained by the oom reaper so there are
+        * only small chances it will free some more */
+        if (test_bit(MMF_OOM_SKIP, &mm->flags))
+            return false;
+
+        if (atomic_read(&mm->mm_users) <= 1)
+            return true;
+
+        /* Make sure that all tasks which share the mm with the given tasks
+        * are dying as well to make sure that a) nobody pins its mm and
+        * b) the task is also reapable by the oom reaper. */
+        rcu_read_lock();
+        for_each_process(p) {
+            if (!process_shares_mm(p, mm))
+                continue;
+            if (same_thread_group(task, p))
+                continue;
+            ret = __task_will_free_mem(p);
+            if (!ret)
+                break;
+        }
+        rcu_read_unlock();
+
+        return ret;
+    }
+    if (ret) {
         mark_oom_victim(current) {
             struct mm_struct *mm = tsk->mm;
 
@@ -14593,7 +14673,6 @@ int oom_reaper(void *unused)
                     bool ret = true;
 
                     if (test_bit(MMF_OOM_SKIP, &mm->flags)) {
-                        trace_skip_task_reaping(tsk->pid);
                         goto out_unlock;
                     }
 
@@ -14690,8 +14769,8 @@ void select_bad_process(struct oom_control *oc)
                 }
 
                 /* If task is allocating a lot of memory and has been marked to be
-                * killed first if it triggers an oom, then select it. */
-                if (oom_task_origin(task)) {
+                 * killed first if it triggers an oom, then select it. */
+                if (oom_task_origin(task)) { /* return p->signal->oom_flag_origin; */
                     points = LONG_MAX;
                     goto select;
                 }
@@ -14861,11 +14940,44 @@ void exit_mm(void)
     struct mm_struct *mm = current->mm;
 
     exit_mm_release(current, mm) {
+        futex_exit_release(tsk) {
+            if (unlikely(tsk->robust_list)) {
+                exit_robust_list(tsk) {
 
+                }
+                tsk->robust_list = NULL;
+            }
+
+            if (unlikely(!list_empty(&tsk->pi_state_list))) {
+                exit_pi_state_list(tsk) {
+
+                }
+            }
+        }
+
+        mm_release(tsk, mm) {
+            uprobe_free_utask(tsk);
+
+            /* Get rid of any cached register state */
+            deactivate_mm(tsk, mm);
+
+            if (tsk->clear_child_tid) {
+                if (atomic_read(&mm->mm_users) > 1) {
+                    put_user(0, tsk->clear_child_tid);
+                    do_futex(tsk->clear_child_tid, FUTEX_WAKE,
+                            1, NULL, NULL, 0, 0);
+                }
+                tsk->clear_child_tid = NULL;
+            }
+
+            if (tsk->vfork_done)
+                complete_vfork_done(tsk);
+        }
     }
 
     if (!mm)
         return;
+
     mmap_read_lock(mm);
     mmgrab_lazy_tlb(mm);
     BUG_ON(mm != current->active_mm);
