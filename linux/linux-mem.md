@@ -29,10 +29,9 @@
     * [memmap_remove](#memmap_remove)
     * [memmap_free](#memmap_free)
     * [memblock_free_all](#memblock_free_all)
-* [memory_hotplug](#memory_hotplug)
+* [hotplug](#hotplug)
     * [add_memory](#add_memory)
     * [remove_memory](#remove_memory)
-        * [arch_remove_memroy](#arch_remove_memory)
     * [memory_subsys](#memory_subsys)
         * [memory_block_online](#memory_block_online)
         * [memory_block_offline](#memory_block_offline)
@@ -2119,7 +2118,7 @@ memblock_free_all() {
 }
 ```
 
-# memory_hotplug
+# hotplug
 
 ## add_memory
 
@@ -2143,7 +2142,24 @@ int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags) {
             }
 
             __try_online_node(nid, false) {
+                pg_data_t *pgdat;
+                int ret = 1;
 
+                if (node_online(nid))
+                    return 0;
+
+                pgdat = hotadd_init_pgdat(nid) {
+                    struct pglist_data *pgdat;
+                    pgdat = NODE_DATA(nid);
+                    free_area_init_core_hotplug(pgdat);
+                    build_all_zonelists(pgdat);
+                }
+
+                if (set_node_online) {
+                    node_set_online(nid);
+                    ret = register_one_node(nid);
+                    BUG_ON(ret);
+                }
             }
 
             arch_add_memory(nid, start, size, &params) {
@@ -2153,8 +2169,8 @@ int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags) {
                     flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
                 __create_pgd_mapping(swapper_pg_dir, start, __phys_to_virt(start),
-                            size, params->pgprot, __pgd_pgtable_alloc,
-                            flags);
+                    size, params->pgprot, __pgd_pgtable_alloc, flags
+                );
 
                 memblock_clear_nomap(start, size);
 
@@ -2181,6 +2197,12 @@ int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags) {
             }
 
             ret = create_memory_block_devices(start, size, NULL, group) {
+                start_block_id = pfn_to_block_id(PFN_DOWN(start));
+	            end_block_id = pfn_to_block_id(PFN_DOWN(start + size)) {
+                    return memory_block_id(pfn_to_section_nr(pfn)) {
+                        return section_nr / sections_per_block;
+                    }
+                }
                 for (block_id = start_block_id; block_id != end_block_id; block_id++) {
                     ret = add_hotplug_memory_block(block_id, altmap, group) {
                         add_memory_block();
@@ -2195,8 +2217,8 @@ int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags) {
                 BUG_ON(ret);
             }
             register_memory_blocks_under_node(nid, PFN_DOWN(start),
-                    PFN_UP(start + size - 1),
-                    MEMINIT_HOTPLUG);
+                PFN_UP(start + size - 1), MEMINIT_HOTPLUG
+            );
         }
         if (ret < 0)
             release_memory_resource(res);
@@ -2243,7 +2265,7 @@ int add_memory_block(unsigned long block_id, unsigned long state,
         mem->zone = early_node_zone_for_memory_block(mem, NUMA_NO_NODE);
 #endif /* CONFIG_NUMA */
 
-    ret = __add_memory_block(mem) {
+    ret = __add_memory_block(mem/*memory*/) {
         int ret;
 
         memory->dev.bus = &memory_subsys;
@@ -2256,14 +2278,7 @@ int add_memory_block(unsigned long block_id, unsigned long state,
             device_initialize(dev);
             return device_add(dev);
         }
-        if (ret) {
-            put_device(&memory->dev);
-            return ret;
-        }
-        ret = xa_err(xa_store(&memory_blocks, memory->dev.id, memory,
-                    GFP_KERNEL));
-        if (ret)
-            device_unregister(&memory->dev);
+        xa_store(&memory_blocks, memory->dev.id, memory, GFP_KERNEL)
 
         return ret;
     }
@@ -2335,165 +2350,6 @@ int remove_memory(u64 start, u64 size) {
 }
 ```
 
-### arch_remove_memory
-
-```c
-/* arch/arm64/mm/mmu.c */
-arch_remove_memory(start, size, altmap) {
-    __remove_pages(start_pfn, nr_pages, altmap) {
-        for () {
-            __remove_section(pfn, cur_nr_pages, map_offset, altmap)
-                sparse_remove_section(ms, pfn, nr_pages, map_offset, altmap)
-                    --->
-        }
-    }
-
-    __remove_pgd_mapping(swapper_pg_dir, __phys_to_virt(start), size) {
-        /* 1. free phys mem which virt addr is [start, end] */
-        unmap_hotplug_range(start, end, false, NULL) {
-            do {
-            /* 1. pgd */
-                unmap_hotplug_p4d_range(pgdp, addr, next, free_mapped, altmap) {
-                    do {
-            /* 2. pud */
-                        unmap_hotplug_pud_range(p4dp, addr, next, free_mapped, altmap) {
-                            do {
-                                if (pud_sect(pud)) {
-                                    pud_clear(pudp);
-                                    /* arch/arm64/include/asm/tlbflush.h */
-                                    flush_tlb_kernel_range(addr, addr + PAGE_SIZE) {
-                                        if ((end - start) > (MAX_TLBI_OPS * PAGE_SIZE)) {
-                                            flush_tlb_all();
-                                            return;
-                                        }
-
-                                        start = __TLBI_VADDR(start, 0);
-                                        end = __TLBI_VADDR(end, 0);
-
-                                        dsb(ishst);
-                                        for (addr = start; addr < end; addr += 1 << (PAGE_SHIFT - 12))
-                                            __tlbi(vaale1is, addr);
-                                        dsb(ish);
-                                        isb();
-                                    }
-
-                                    if (free_mapped) {
-                                        free_hotplug_page_range(pud_page(pud), PUD_SIZE, altmap)
-                                            free_pages()
-                                    }
-                                    continue;
-                                }
-            /* 3. pmd */
-                                unmap_hotplug_pmd_range(pudp, addr, next, free_mapped, altmap) {
-                                    do {
-                                        if (pmd_sect(pmd)) {
-                                            pmd_clear(pmdp);
-                                            flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
-                                                --->
-                                            if (free_mapped)
-                                                free_hotplug_page_range() {
-                                                    free_pages()
-                                                }
-                                            continue;
-                                        }
-            /* 4. pte */
-                                        unmap_hotplug_pte_range(pmdp, addr, next, free_mapped, altmap) {
-                                            do {
-                                                pte_clear(&init_mm, addr, ptep);
-                                                flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
-                                                    --->
-                                                if (free_mapped)
-                                                    free_hotplug_page_range() {
-                                                        free_pages()
-                                                    }
-                                            } while (addr += PAGE_SIZE, addr < end);
-                                        }
-                                    } while (addr = next, addr < end);
-                                }
-                            } while (addr = next, addr < end);
-                        }
-                    } while (addr = next, addr < end);
-                }
-            } while (addr = next, addr < end)
-        }
-
-        /* 2. free phsy mem of pgtable which is used to map virt addr [start, end] */
-        free_empty_tables(start, end, PAGE_OFFSET, PAGE_END) {
-            do {
-                next = pgd_addr_end(addr, end);
-                pgdp = pgd_offset_k(addr);
-                pgd = READ_ONCE(*pgdp);
-                if (pgd_none(pgd))
-                    continue;
-
-                free_empty_p4d_table(pgdp, addr, next, floor, ceiling) {
-                    do {
-                        next = p4d_addr_end(addr, end);
-                        p4dp = p4d_offset(pgdp, addr);
-                        p4d = READ_ONCE(*p4dp);
-                        if (p4d_none(p4d))
-                            continue;
-
-                        free_empty_pud_table(p4dp, addr, next, floor, ceiling) {
-                            do {
-                                next = pud_addr_end(addr, end);
-                                pudp = pud_offset(p4dp, addr);
-                                pud = READ_ONCE(*pudp);
-                                if (pud_none(pud))
-                                    continue;
-
-                                free_empty_pmd_table(pudp, addr, next, floor, ceiling) {
-                                    do {
-                                        next = pmd_addr_end(addr, end);
-                                        pmdp = pmd_offset(pudp, addr);
-                                        pmd = READ_ONCE(*pmdp);
-                                        if (pmd_none(pmd))
-                                            continue;
-
-                                        free_empty_pte_table(pmdp, addr, next, floor, ceiling) {
-                                            do {
-                                                ptep = pte_offset_kernel(pmdp, addr);
-                                                pte = READ_ONCE(*ptep);
-                                            } while (addr += PAGE_SIZE, addr < end);
-
-                                            pmd_clear(pmdp);
-                                            __flush_tlb_kernel_pgtable(start);
-                                                --->
-                                            free_hotplug_pgtable_page(virt_to_page(ptep)) {
-                                                free_pages()
-                                            }
-                                        }
-                                    } while (addr = next, addr < end);
-
-                                    pud_clear(pudp);
-                                    __flush_tlb_kernel_pgtable(start);
-                                        --->
-                                    free_hotplug_pgtable_page(virt_to_page(pmdp)) {
-                                        free_pages()
-                                    }
-                                }
-                            } while (addr = next, addr < end);
-
-                            p4d_clear(p4dp);
-                            __flush_tlb_kernel_pgtable(start) {
-                                dsb(ishst);
-                                __tlbi(vaae1is, addr); /* invalidate the TLB */
-                                dsb(ish);
-                                isb();
-                            }
-
-                            free_hotplug_pgtable_page(virt_to_page(pudp)) {
-                                free_pages()
-                            }
-                        }
-                    } while (addr = next, addr < end);
-                }
-            } while (addr = next, addr < end);
-        }
-    }
-}
-```
-
 ## memory_subsys
 
 ```c
@@ -2511,7 +2367,7 @@ struct memory_block {
     int nid;                /* NID for this memory block */
 
     struct zone *zone;
-    struct device dev;
+    struct device dev;      /* dev.bus = &memory_subsys */
     struct vmem_altmap *altmap;
     struct memory_group *group;     /* group (if any) for this block */
     struct list_head group_next;    /* next block inside memory group */
@@ -8200,8 +8056,6 @@ free_pgtables(&tlb) {
         unlink_anon_vmas(vma) {
             list_for_each_entry_safe(avc, next, &vma->anon_vma_chain, same_vma) {
                 struct anon_vma *anon_vma = avc->anon_vma;
-
-                root = lock_anon_vma_root(root, anon_vma);
                 anon_vma_interval_tree_remove(avc, &anon_vma->rb_root);
                 list_del(&avc->same_vma);
                 anon_vma_chain_free(avc) {
@@ -8627,27 +8481,34 @@ folio_add_new_anon_rmap() {
             return pgoff;
         }
     }
-}
 
-__folio_add_anon_rmap() {
-    __folio_add_rmap(folio, page, nr_pages, level, &nr_pmdmapped) {
-        switch (level) {
-        case RMAP_LEVEL_PTE:
-            do {
-                first = atomic_inc_and_test(&page->_mapcount);
-            } while (page++, --nr_pages > 0);
-            break;
+    __folio_set_swapbacked(folio);
 
-        case RMAP_LEVEL_PMD:
-            first = atomic_inc_and_test(&folio->_entire_mapcount);
-            break;
+    if (likely(!folio_test_large(folio))) {
+        /* increment count (starts at -1) */
+        atomic_set(&folio->_mapcount, 0);
+        SetPageAnonExclusive(&folio->page);
+    } else if (!folio_test_pmd_mappable(folio)) {
+        int i;
+
+        for (i = 0; i < nr; i++) {
+            struct page *page = folio_page(folio, i);
+
+            /* increment count (starts at -1) */
+            atomic_set(&page->_mapcount, 0);
+            SetPageAnonExclusive(page);
         }
-    }
-}
 
-void __folio_add_file_rmap()
-{
-    nr = __folio_add_rmap(folio, page, nr_pages, level, &nr_pmdmapped);
+        atomic_set(&folio->_nr_pages_mapped, nr);
+    } else {
+        /* increment count (starts at -1) */
+        atomic_set(&folio->_entire_mapcount, 0);
+        atomic_set(&folio->_nr_pages_mapped, ENTIRELY_MAPPED);
+        SetPageAnonExclusive(&folio->page);
+        __lruvec_stat_mod_folio(folio, NR_ANON_THPS, nr);
+    }
+
+    __lruvec_stat_mod_folio(folio, NR_ANON_MAPPED, nr);
 }
 ```
 
@@ -8656,6 +8517,12 @@ void __folio_add_file_rmap()
 ![](../images/kernel/mem-ramp-anon_vma_prepare.png)
 
 ```c
+dup_mmap(mm, oldmm) {
+    for_each_vma(vmi, mpnt) {
+        anon_vma_fork();
+    }
+}
+
 int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 {
     struct anon_vma_chain *avc;
@@ -8671,13 +8538,12 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
 
     /* 1. attach the new VMA to the parent VMA's anon_vmas,
      * so rmap can find non-COWed pages in child processes. */
-    error = anon_vma_clone(vma, pvma) {
+    error = anon_vma_clone(vma/*dst*/, pvma/*src*/) {
         list_for_each_entry_reverse(pavc, &src->anon_vma_chain, same_vma) {
             struct anon_vma *anon_vma;
 
             avc = anon_vma_chain_alloc(GFP_NOWAIT | __GFP_NOWARN);
             anon_vma = pavc->anon_vma;
-            root = lock_anon_vma_root(root, anon_vma);
             anon_vma_chain_link(dst, avc, anon_vma);
         }
         if (dst->anon_vma)
@@ -8735,6 +8601,7 @@ try_to_unmap(struct folio *folio, enum ttu_flags flags) {
 
                     ret = rwc->rmap_one(folio, vma, address, rwc->arg) {
                         try_to_unmap_one();
+                            --->
                     }
 
                     rwc->done(folio) {
@@ -8855,6 +8722,7 @@ bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
             }
             dec_mm_counter(mm, MM_ANONPAGES);
             inc_mm_counter(mm, MM_SWAPENTS);
+            
             swp_pte = swp_entry_to_pte(entry);
             if (anon_exclusive)
                 swp_pte = pte_swp_mkexclusive(swp_pte);
