@@ -1,6 +1,24 @@
 * PPI (Private Peripheral Interrupt)
 * SPI (Shared Peripheral Interrupt)
 
+<img src='../images/kernel/time-timer.png' style='max-height:850px'/>
+
+<img src='../images/kernel/time-timer-arch.png' style='max-height:850px'/>
+
+<img src='../images/kernel/time-tiemer-origin.png' style='max-height:850px'/>
+
+<img src='../images/kernel/time-timer-hrtimer.png' style='max-height:850px'/>
+
+<img src='../images/kernel/time-timer-hrtimer-gtod.png' style='max-height:850px'/>
+
+<img src='../images/kernel/time-timer-hrtimer-gtod-clockevent.png' style='max-height:850px'/>
+
+<img src='../images/kernel/time-timer-hrtimer-gtod-clockevent-tick-emulation.png' style='max-height:850px'/>
+
+* [hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
+* http://www.wowotech.net/timer_subsystem/time-subsyste-architecture.html
+
+
 # init
 ```c
 start_kernel(void)
@@ -322,27 +340,8 @@ posix_timer_fn();
                             try_to_wake_up();
 ```
 
-<img src='../images/kernel/time-timer.png' style='max-height:850px'/>
-
-<img src='../images/kernel/time-timer-arch.png' style='max-height:850px'/>
-
-<img src='../images/kernel/time-tiemer-origin.png' style='max-height:850px'/>
-
-<img src='../images/kernel/time-timer-hrtimer.png' style='max-height:850px'/>
-
-<img src='../images/kernel/time-timer-hrtimer-gtod.png' style='max-height:850px'/>
-
-<img src='../images/kernel/time-timer-hrtimer-gtod-clockevent.png' style='max-height:850px'/>
-
-<img src='../images/kernel/time-timer-hrtimer-gtod-clockevent-tick-emulation.png' style='max-height:850px'/>
-
-# Refence:
-[hrtimers and beyond](http://www.cs.columbia.edu/~nahum/w6998/papers/ols2006-hrtimers-slides.pdf)
-
-http://www.wowotech.net/timer_subsystem/time-subsyste-architecture.html
-
-
 # hrtimer_run_queues
+
 ```c
 struct hrtimer_cpu_base {
   raw_spinlock_t      lock;
@@ -516,6 +515,7 @@ static void __run_hrtimer(struct hrtimer_cpu_base *cpu_base,
 ```
 
 # tick_check_oneshot_change
+
 ```c
 int tick_check_oneshot_change(int allow_nohz)
 {
@@ -1135,6 +1135,7 @@ ret:
 ```
 
 # kernel timer api
+
 ```c
 #define timer_setup(timer, callback, flags) __init_timer((timer), (callback), (flags))
 #define __init_timer(_timer, _fn, _flags)   init_timer_key((_timer), (_fn), (_flags), NULL, NULL)
@@ -1191,19 +1192,364 @@ static inline void timerqueue_init(struct timerqueue_node *node)
 {
   RB_CLEAR_NODE(&node->node);
 }
+```
 
+# time_wheel
+
+## add_timer
+
+```c
+void add_timer(struct timer_list *timer)
+{
+    if (WARN_ON_ONCE(timer_pending(timer)))
+        return;
+
+    __mod_timer(timer, timer->expires, MOD_TIMER_NOTPENDING) {
+        unsigned long clk = 0, flags, bucket_expiry;
+        struct timer_base *base, *new_base;
+        unsigned int idx = UINT_MAX;
+        int ret = 0;
+
+        if (!(options & MOD_TIMER_NOTPENDING) && timer_pending(timer)) {
+            long diff = timer->expires - expires;
+
+            if (!diff)
+                return 1;
+            if (options & MOD_TIMER_REDUCE && diff <= 0)
+                return 1;
+
+            base = lock_timer_base(timer, &flags);
+            if (!timer->function)
+                goto out_unlock;
+
+            forward_timer_base(base) {
+                __forward_timer_base(base, READ_ONCE(jiffies)) {
+                    if (time_before_eq(basej, base->clk))
+                        return;
+
+                    if (time_after(base->next_expiry, basej)) {
+                        base->clk = basej;
+                    } else {
+                        if (WARN_ON_ONCE(time_before(base->next_expiry, base->clk)))
+                            return;
+                        base->clk = base->next_expiry;
+                    }
+                }
+            }
+
+            if (timer_pending(timer) && (options & MOD_TIMER_REDUCE) &&
+                time_before_eq(timer->expires, expires)) {
+                ret = 1;
+                goto out_unlock;
+            }
+
+            clk = base->clk;
+            idx = calc_wheel_index(expires, clk, &bucket_expiry) {
+                unsigned long delta = expires - clk;
+                unsigned int idx;
+
+                if (delta < LVL_START(1)) {
+                    idx = calc_index(expires, 0, bucket_expiry);
+                } else if (delta < LVL_START(2)) {
+                    idx = calc_index(expires, 1, bucket_expiry);
+                } else if (delta < LVL_START(3)) {
+                    idx = calc_index(expires, 2, bucket_expiry);
+                } else if (delta < LVL_START(4)) {
+                    idx = calc_index(expires, 3, bucket_expiry);
+                } else if (delta < LVL_START(5)) {
+                    idx = calc_index(expires, 4, bucket_expiry);
+                } else if (delta < LVL_START(6)) {
+                    idx = calc_index(expires, 5, bucket_expiry);
+                } else if (delta < LVL_START(7)) {
+                    idx = calc_index(expires, 6, bucket_expiry);
+                } else if (LVL_DEPTH > 8 && delta < LVL_START(8)) {
+                    idx = calc_index(expires, 7, bucket_expiry);
+                } else if ((long) delta < 0) {
+                    idx = clk & LVL_MASK;
+                    *bucket_expiry = clk;
+                } else {
+                    if (delta >= WHEEL_TIMEOUT_CUTOFF) {
+                        expires = clk + WHEEL_TIMEOUT_MAX;
+                    }
+
+                    idx = calc_index(expires, LVL_DEPTH - 1, bucket_expiry) {
+                        expires = (expires >> LVL_SHIFT(lvl)) + 1;
+                        *bucket_expiry = expires << LVL_SHIFT(lvl);
+                        return LVL_OFFS(lvl) + (expires & LVL_MASK);
+                    }
+                }
+                return idx;
+            }
+
+            if (idx == timer_get_idx(timer)) {
+                if (!(options & MOD_TIMER_REDUCE))
+                    timer->expires = expires;
+                else if (time_after(timer->expires, expires))
+                    timer->expires = expires;
+                ret = 1;
+                goto out_unlock;
+            }
+        } else {
+            base = lock_timer_base(timer, &flags);
+            if (!timer->function)
+                goto out_unlock;
+
+            forward_timer_base(base);
+        }
+
+        ret = detach_if_pending(timer, base, false);
+        if (!ret && (options & MOD_TIMER_PENDING_ONLY))
+            goto out_unlock;
+
+        new_base = get_timer_this_cpu_base(timer->flags);
+
+        if (base != new_base) {
+            if (likely(base->running_timer != timer)) {
+                /* See the comment in lock_timer_base() */
+                timer->flags |= TIMER_MIGRATING;
+
+                raw_spin_unlock(&base->lock);
+                base = new_base;
+                raw_spin_lock(&base->lock);
+                WRITE_ONCE(timer->flags, (timer->flags & ~TIMER_BASEMASK) | base->cpu);
+                forward_timer_base(base);
+            }
+        }
+
+        timer->expires = expires;
+        if (idx != UINT_MAX && clk == base->clk) {
+            enqueue_timer(base, timer, idx, bucket_expiry) {
+                hlist_add_head(&timer->entry, base->vectors + idx);
+                __set_bit(idx, base->pending_map);
+                timer_set_idx(timer, idx);
+
+                if (time_before(bucket_expiry, base->next_expiry)) {
+                    base->next_expiry = bucket_expiry;
+                    base->timers_pending = true;
+                    base->next_expiry_recalc = false;
+                    trigger_dyntick_cpu(base, timer) {
+                        if (!is_timers_nohz_active() || timer->flags & TIMER_DEFERRABLE)
+                            return;
+                        if (base->is_idle) {
+                            WARN_ON_ONCE(!(timer->flags & TIMER_PINNED ||
+                                    tick_nohz_full_cpu(base->cpu)));
+                            wake_up_nohz_cpu(base->cpu) {
+                                if (!wake_up_full_nohz_cpu(cpu)) {
+                                    wake_up_idle_cpu(cpu) {
+                                        smp_send_reschedule(cpu);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            internal_add_timer(base, timer) {
+                idx = calc_wheel_index(timer->expires, base->clk, &bucket_expiry);
+	            enqueue_timer(base, timer, idx, bucket_expiry);
+            }
+        }
+
+    out_unlock:
+        raw_spin_unlock_irqrestore(&base->lock, flags);
+
+        return ret;
+    }
+}
+```
+
+## del_timer
+
+```c
 int del_timer(struct timer_list *timer)
 {
-  struct timer_base *base;
-  unsigned long flags;
-  int ret = 0;
+    return timer_delete(timer) {
+        return __timer_delete(timer, false) {
+            if (timer_pending(timer) || shutdown) {
+            base = lock_timer_base(timer, &flags);
+            ret = detach_if_pending(timer, base, true) {
+                unsigned idx = timer_get_idx(timer);
 
-  if (timer_pending(timer)) {
-    base = lock_timer_base(timer, &flags);
-    ret = detach_if_pending(timer, base, true);
-    raw_spin_unlock_irqrestore(&base->lock, flags);
-  }
+                if (!timer_pending(timer))
+                    return 0;
 
-  return ret;
+                if (hlist_is_singular_node(&timer->entry, base->vectors + idx)) {
+                    __clear_bit(idx, base->pending_map);
+                    base->next_expiry_recalc = true;
+                }
+
+                detach_timer(timer, clear_pending) {
+                    struct hlist_node *entry = &timer->entry;
+
+                    __hlist_del(entry);
+                    if (clear_pending)
+                        entry->pprev = NULL;
+                    entry->next = LIST_POISON2;
+                }
+                return 1;
+            }
+            if (shutdown)
+                timer->function = NULL;
+            raw_spin_unlock_irqrestore(&base->lock, flags);
+
+            return ret;
+        }
+
+        }
+    }
+}
+```
+
+## run_timers
+
+```c
+open_softirq(TIMER_SOFTIRQ, run_timer_softirq);
+
+void run_local_timers(void)
+{
+    struct timer_base *base = this_cpu_ptr(&timer_bases[BASE_LOCAL]);
+
+    hrtimer_run_queues();
+
+    for (int i = 0; i < NR_BASES; i++, base++) {
+        /* Raise the softirq only if required. */
+        if (time_after_eq(jiffies, base->next_expiry) ||
+            (i == BASE_DEF && tmigr_requires_handle_remote())) {
+            raise_softirq(TIMER_SOFTIRQ);
+            return;
+        }
+    }
+}
+
+void run_timer_softirq(struct softirq_action *h)
+{
+	run_timer_base(BASE_LOCAL) {
+        struct timer_base *base = this_cpu_ptr(&timer_bases[index]);
+        __run_timer_base(base) {
+            if (time_before(jiffies, base->next_expiry))
+                return;
+
+            __run_timers(base) {
+                struct hlist_head heads[LVL_DEPTH];
+                int levels;
+
+                if (base->running_timer)
+                    return;
+
+                while (time_after_eq(jiffies, base->clk)
+                    && time_after_eq(jiffies, base->next_expiry)) {
+
+                    levels = collect_expired_timers(base, heads) {
+                        unsigned long clk = base->clk = base->next_expiry;
+                        struct hlist_head *vec;
+                        int i, levels = 0;
+                        unsigned int idx;
+
+                        for (i = 0; i < LVL_DEPTH; i++) {
+                            idx = (clk & LVL_MASK) + i * LVL_SIZE;
+
+                            if (__test_and_clear_bit(idx, base->pending_map)) {
+                                vec = base->vectors + idx;
+                                hlist_move_list(vec, heads++);
+                                levels++;
+                            }
+                            /* Is it time to look at the next level? */
+                            if (clk & LVL_CLK_MASK)
+                                break;
+                            /* Shift clock for the next level granularity */
+                            clk >>= LVL_CLK_SHIFT;
+                        }
+                        return levels;
+                    }
+
+                    base->clk++;
+                    next_expiry_recalc(base) {
+                        unsigned long clk, next, adj;
+                        unsigned lvl, offset = 0;
+
+                        next = base->clk + NEXT_TIMER_MAX_DELTA;
+                        clk = base->clk;
+                        for (lvl = 0; lvl < LVL_DEPTH; lvl++, offset += LVL_SIZE) {
+                            int pos = next_pending_bucket(base, offset, clk & LVL_MASK) {
+                                unsigned pos, start = offset + clk;
+                                unsigned end = offset + LVL_SIZE;
+
+                                pos = find_next_bit(base->pending_map, end, start);
+                                if (pos < end)
+                                    return pos - start;
+
+                                pos = find_next_bit(base->pending_map, start, offset);
+                                return pos < start ? pos + LVL_SIZE - start : -1;
+                            }
+                            unsigned long lvl_clk = clk & LVL_CLK_MASK;
+
+                            if (pos >= 0) {
+                                unsigned long tmp = clk + (unsigned long) pos;
+
+                                tmp <<= LVL_SHIFT(lvl);
+                                if (time_before(tmp, next))
+                                    next = tmp;
+
+                                /* If the next expiration happens before we reach
+                                 * the next level, no need to check further. */
+                                if (pos <= ((LVL_CLK_DIV - lvl_clk) & LVL_CLK_MASK))
+                                    break;
+                            }
+                            adj = lvl_clk ? 1 : 0;
+                            clk >>= LVL_CLK_SHIFT;
+                            clk += adj;
+                        }
+
+                        base->next_expiry = next;
+                        base->next_expiry_recalc = false;
+                        base->timers_pending = !(next == base->clk + NEXT_TIMER_MAX_DELTA);
+                    }
+
+                    while (levels--) {
+                        expire_timers(base, heads + levels) {
+                            unsigned long baseclk = base->clk - 1;
+
+                            while (!hlist_empty(head)) {
+                                struct timer_list *timer;
+                                void (*fn)(struct timer_list *);
+
+                                timer = hlist_entry(head->first, struct timer_list, entry);
+
+                                base->running_timer = timer;
+                                detach_timer(timer, true)
+                                    --->
+
+                                fn = timer->function;
+
+                                if (WARN_ON_ONCE(!fn)) {
+                                    /* Should never happen. Emphasis on should! */
+                                    base->running_timer = NULL;
+                                    continue;
+                                }
+
+                                if (timer->flags & TIMER_IRQSAFE) {
+                                    call_timer_fn(timer, fn, baseclk);
+                                    base->running_timer = NULL;
+                                } else {
+                                    call_timer_fn(timer, fn, baseclk);
+                                    base->running_timer = NULL;
+                                    timer_sync_wait_running(base);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+	if (IS_ENABLED(CONFIG_NO_HZ_COMMON)) {
+		run_timer_base(BASE_GLOBAL);
+		run_timer_base(BASE_DEF);
+
+		if (is_timers_nohz_active())
+			tmigr_handle_remote();
+	}
 }
 ```
