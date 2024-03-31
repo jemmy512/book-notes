@@ -1636,7 +1636,41 @@ vm_fault_t shmem_fault(struct vm_fault *vmf) {
         }
 
         if (xa_is_value(folio)) {
-            error = shmem_swapin_folio(inode, index, &folio, sgp, gfp, vma, fault_type);
+            error = shmem_swapin_folio(inode, index, &folio, sgp, gfp, vma, fault_type) {
+                swap = radix_to_swp_entry(*foliop);
+                *foliop = NULL;
+
+                si = get_swap_device(swap);
+
+                /* Look it up and read it in.. */
+                folio = swap_cache_get_folio(swap, NULL, 0);
+                if (!folio) {
+                    folio = shmem_swapin_cluster(swap, gfp, info, index);
+                }
+
+                /* We have to do this with folio locked to prevent races */
+                folio_lock(folio);
+                folio_wait_writeback(folio);
+                arch_swap_restore(swap, folio);
+
+                if (shmem_should_replace_folio(folio, gfp)) {
+                    error = shmem_replace_folio(&folio, gfp, info, index);
+                }
+
+                error = shmem_add_to_page_cache(folio, mapping, index, swp_to_radix_entry(swap), gfp);
+                shmem_recalc_inode(inode, 0, -1);
+
+                if (sgp == SGP_WRITE)
+                    folio_mark_accessed(folio);
+
+                delete_from_swap_cache(folio);
+                folio_mark_dirty(folio);
+                swap_free(swap);
+                put_swap_device(si);
+
+                *foliop = folio;
+                return 0;
+            }
             if (error == -EEXIST)
                 goto repeat;
 

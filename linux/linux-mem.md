@@ -81,11 +81,12 @@
 
 * [page_fault](#page_fault)
     * [hugetlb_fault](#hugetlb_fault)
-    * [do_anonymous_page](#do_anonymous_page)
-    * [do_fault](#do_fault)
-        * [do_read_fault](#do_read_fault)
-        * [do_cow_fault](#do_cow_fault)
-        * [do_sharaed_fault](#do_shared_fault)
+    * [do_pte_missing](#do_pte_missing)
+        * [do_anonymous_page](#do_anonymous_page)
+        * [do_fault](#do_fault)
+            * [do_read_fault](#do_read_fault)
+            * [do_cow_fault](#do_cow_fault)
+            * [do_sharaed_fault](#do_shared_fault)
     * [do_swap_page](#do_swap_page)
     * [do_wp_page](#do_wp_page)
 
@@ -119,13 +120,14 @@
             * [get_scan_count](#get_scan_count)
         * [shrink_active_list](#shrink_active_list)
         * [shrink_inactive_list](#shrink_inactive_list)
-            * [shrink_folio_list](#shrink_folio_list)
+        * [shrink_folio_list](#shrink_folio_list)
         * [shrink_slab](#shrink_slab)
     * [vmpressure](#vmpressure)
 
 * [page_migrate](#page_migrate)
     * [migreate_pages_batch](#migreate_pages_batch)
         * [migrate_folio_unmap](#migrate_folio_unmap)
+            * [try_to_migrate](#try_to_migrate)
         * [migrate_folio_move](#migrate_folio_move)
             * [migrate_folio](#migrate_folio)
         * [remove_migration_ptes](#remove_migration_ptes)
@@ -236,7 +238,7 @@
 
 # _start:
 
-* Rebuild ![](../images/kernel/ker-start.svg)
+* Rebuild ![](../images/kernel/ker-start.svg) /* EXPORT */
 
 ```s
 /* arch/arm64/kernel/head.S */
@@ -1205,10 +1207,10 @@ struct page {
             struct list_head lru; /* See page-flags.h for PAGE_MAPPING_FLAGS */
             /* lowest bit is 1 for anonymous mapping, 0 for file mapping */
             struct address_space *mapping;
-            /* file page: index of page in page cache
-             * anon page: offset of vma in process virtual space */
+            /* 1. anon mapping: page offset in user virtual address space
+             * 2. file mapping: page offset in file
+             * 3. migration type */
             pgoff_t index;
-            pgoff_t index;          /* Our offset within mapping. */
             unsigned long private; /* struct buffer_head */
         };
 
@@ -1300,6 +1302,8 @@ struct page {
 
 # sparsemem
 
+[Pic Source](https://zhuanlan.zhihu.com/p/220068494) ![](../images/kernel/mem-sparsemem-arch.png)
+
 * [Physical Memory Model: FLATE - SPARSE](https://docs.kernel.org/mm/memory-model.html)
 
 ```c
@@ -1357,6 +1361,12 @@ struct page {
         struct mem_section *__sec = __pfn_to_section(__pfn); \
         __section_mem_map_addr(__sec) + __pfn; \
     })
+
+    struct page *__section_mem_map_addr(struct mem_section *section) {
+        unsigned long map = section->section_mem_map;
+        map &= SECTION_MAP_MASK;
+        return (struct page *)map;
+    }
 #endif /* CONFIG_FLATMEM/SPARSEMEM */
 ```
 
@@ -1467,7 +1477,12 @@ int sparse_init(void) {
 
             /* 1. sparse-vmemmap.c */
             map = __populate_section_memmap(pfn, PAGES_PER_SECTION, nid, NULL, NULL) {
-                unsigned long start = (unsigned long) pfn_to_page(pfn);
+                /* get virt addr of this page in vmemmap area */
+                unsigned long start = (unsigned long) pfn_to_page(pfn) {
+                    return (pfn) + vmemmap {
+                        return ((struct page *)VMEMMAP_START - (memstart_addr >> PAGE_SHIFT));
+                    }
+                }
                 unsigned long end = start + nr_pages * sizeof(struct page);
 
                 if (vmemmap_can_optimize(altmap, pgmap))
@@ -2799,13 +2814,11 @@ int memory_block_offline(struct memory_block *mem)
                             } else if (PageTransHuge(page))
                                 pfn = page_to_pfn(head) + thp_nr_pages(page) - 1;
 
-                            /*
-                            * HWPoison pages have elevated reference counts so the migration would
+                            /* HWPoison pages have elevated reference counts so the migration would
                             * fail on them. It also doesn't make any sense to migrate them in the
                             * first place. Still try to unmap such a page in case it is still mapped
                             * (e.g. current hwpoison implementation doesn't unmap KSM pages but keep
-                            * the unmap as the catch all safety net).
-                            */
+                            * the unmap as the catch all safety net). */
                             if (PageHWPoison(page)) {
                                 if (WARN_ON(folio_test_lru(folio)))
                                     folio_isolate_lru(folio);
@@ -2816,10 +2829,8 @@ int memory_block_offline(struct memory_block *mem)
 
                             if (!get_page_unless_zero(page))
                                 continue;
-                            /*
-                            * We can skip free pages. And we can deal with pages on
-                            * LRU and non-lru movable pages.
-                            */
+                            /* We can skip free pages. And we can deal with pages on
+                             * LRU and non-lru movable pages. */
                             if (PageLRU(page))
                                 isolated = isolate_lru_page(page);
                             else
@@ -2846,17 +2857,13 @@ int memory_block_offline(struct memory_block *mem)
                             };
                             int ret;
 
-                            /*
-                            * We have checked that migration range is on a single zone so
-                            * we can use the nid of the first page to all the others.
-                            */
+                            /* We have checked that migration range is on a single zone so
+                             * we can use the nid of the first page to all the others. */
                             mtc.nid = page_to_nid(list_first_entry(&source, struct page, lru));
 
-                            /*
-                            * try to allocate from a different node but reuse this node
-                            * if there are no other online nodes to be used (e.g. we are
-                            * offlining a part of the only existing node)
-                            */
+                            /* try to allocate from a different node but reuse this node
+                             * if there are no other online nodes to be used (e.g. we are
+                             * offlining a part of the only existing node) */
                             node_clear(mtc.nid, nmask);
                             if (nodes_empty(nmask))
                                 node_set(mtc.nid, nmask);
@@ -2882,11 +2889,9 @@ int memory_block_offline(struct memory_block *mem)
                 goto failed_removal_isolated;
             }
 
-            /*
-            * Dissolve free hugepages in the memory block before doing
-            * offlining actually in order to make hugetlbfs's object
-            * counting consistent.
-            */
+            /* Dissolve free hugepages in the memory block before doing
+             * offlining actually in order to make hugetlbfs's object
+             * counting consistent. */
             ret = dissolve_free_huge_pages(start_pfn, end_pfn);
             if (ret) {
                 reason = "failure to dissolve huge pages";
@@ -2901,11 +2906,9 @@ int memory_block_offline(struct memory_block *mem)
         __offline_isolated_pages(start_pfn, end_pfn);
         pr_debug("Offlined Pages %ld\n", nr_pages);
 
-        /*
-        * The memory sections are marked offline, and the pageblock flags
+        /* The memory sections are marked offline, and the pageblock flags
         * effectively stale; nobody should be touching them. Fixup the number
-        * of isolated pageblocks, memory onlining will properly revert this.
-        */
+        * of isolated pageblocks, memory onlining will properly revert this. */
         spin_lock_irqsave(&zone->lock, flags);
         zone->nr_isolate_pageblock -= nr_pages / pageblock_nr_pages;
         spin_unlock_irqrestore(&zone->lock, flags);
@@ -2920,10 +2923,8 @@ int memory_block_offline(struct memory_block *mem)
         /* reinitialise watermarks and update pcp limits */
         init_per_zone_wmark_min();
 
-        /*
-        * Make sure to mark the node as memory-less before rebuilding the zone
-        * list. Otherwise this node would still appear in the fallback lists.
-        */
+        /* Make sure to mark the node as memory-less before rebuilding the zone
+        * list. Otherwise this node would still appear in the fallback lists. */
         node_states_clear_node(node, &arg);
         if (!populated_zone(zone)) {
             zone_pcp_reset(zone);
@@ -3115,6 +3116,7 @@ struct page *alloc_pages(gfp_t gfp_mask, unsigned int order) {
             }
             alloc_gfp = gfp;
             ret = prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac, &alloc_gfp, &alloc_flags);
+                --->
             if (!ret)
                 return NULL;
 
@@ -7414,7 +7416,8 @@ handle_mm_fault(vma, address, flags, regs);
     }
 ```
 
-## do_anonymous_page
+## do_pte_missing
+### do_anonymous_page
 
 ```c
 do_anonymous_page(vmf) {
@@ -7439,14 +7442,18 @@ do_anonymous_page(vmf) {
 }
 ```
 
-## do_fault
+### do_fault
 
-### do_read_fault
+#### do_read_fault
 
 ```c
 do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
     __do_fault() {
         vma->vm_ops->fault() {
+            shm_vm_ops.fault() {
+                shmem_fault();
+                    --->
+            }
             ext4_file_vm_ops.fault() {
                 filemap_fault() {
                     folio = filemap_get_folio(mapping, index);
@@ -7482,7 +7489,7 @@ do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
 }
 ```
 
-### do_cow_fault
+#### do_cow_fault
 
 ```c
 do_cow_fault() { /* if (!(vma->vm_flags & VM_SHARED)) */
@@ -7495,7 +7502,7 @@ do_cow_fault() { /* if (!(vma->vm_flags & VM_SHARED)) */
 }
 ```
 
-### do_shared_fault
+#### do_shared_fault
 
 ```c
 do_shared_fault() {
@@ -7549,8 +7556,8 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
     swapcache = folio;
 
     if (!folio) {
+        /* the 1st time of page fault */
         if (data_race(si->flags & SWP_SYNCHRONOUS_IO) && __swap_count(entry) == 1) {
-
             folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE, 0, vma, vmf->address, false);
             page = &folio->page;
             if (folio) {
@@ -7569,12 +7576,23 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
                 folio_add_lru(folio);
 
-                /* To provide entry to swap_read_folio() */
                 folio->swap = entry;
-                swap_read_folio(folio, true, NULL);
+                swap_read_folio(folio, true, NULL) {
+                    if (zswap_load(folio)) {
+                        folio_mark_uptodate(folio);
+                        folio_unlock(folio);
+                    } else if (data_race(sis->flags & SWP_FS_OPS)) {
+                        swap_read_folio_fs(folio, plug);
+                    } else if (synchronous || (sis->flags & SWP_SYNCHRONOUS_IO)) {
+                        swap_read_folio_bdev_sync(folio, sis);
+                    } else {
+                        swap_read_folio_bdev_async(folio, sis);
+                    }
+                }
                 folio->private = NULL;
             }
         } else {
+            /* the 2nd+ times page fault */
             page = swapin_readahead(entry, GFP_HIGHUSER_MOVABLE, vmf);
             if (page)
                 folio = page_folio(page);
@@ -7645,9 +7663,20 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
     arch_swap_restore(entry, folio);
 
-    swap_free(entry);
-    if (should_try_to_free_swap(folio, vma, vmf->flags)) {
+    swap_free(entry)
+        --->
+    ret = should_try_to_free_swap(folio, vma, vmf->flags) {
+        if (!folio_test_swapcache(folio))
+            return false;
+        if (mem_cgroup_swap_full(folio) || (vma->vm_flags & VM_LOCKED) ||
+            folio_test_mlocked(folio))
+            return true;
+        return (fault_flags & FAULT_FLAG_WRITE) && !folio_test_ksm(folio) &&
+            folio_ref_count(folio) == 2;
+    }
+    if (ret) {
         folio_free_swap(folio);
+            --->
     }
 
     inc_mm_counter(vma->vm_mm, MM_ANONPAGES);
@@ -8402,6 +8431,13 @@ out:
 
 # rmap
 
+Q:
+1. what is key of anon_vma tree inserting/deleting?
+
+    Childs have the same VM layout as parent when forking.
+
+    What about shmem which doesn't have same VM address between diffirent procs?
+
 ![](../images/kernel/mem-rmap.svg)
 
 ![](../images/kernel/mem-rmap-arch.png)
@@ -8445,8 +8481,8 @@ struct page {
     struct address_space *mapping;
 
     union {
-        /* 1. page offset in user virtual address space for anon mapping
-         * 2. page offset in file for file mapping
+        /* 1. anon mapping: page offset in user virtual address space
+         * 2. file mapping: page offset in file
          * 3. migration type */
         pgoff_t index;
         union {
@@ -8459,6 +8495,7 @@ struct page {
 ## anon_vma_prepare
 
 ```c
+/* attach an anon_vma to a memory region */
 anon_vma_prepare() {
     if (likely(vma->anon_vma))
         return 0;
@@ -8675,9 +8712,14 @@ bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
         update_hiwater_rss(mm);
 
         if (folio_test_anon(folio)) {
-            swp_entry_t entry = page_swap_entry(subpage);
-            pte_t swp_pte;
+            swp_entry_t entry = page_swap_entry(subpage) {
+                struct folio *folio = page_folio(page);
+                swp_entry_t entry = folio->swap;
 
+                entry.val += folio_page_idx(folio, page);
+                return entry;
+            }
+            pte_t swp_pte;
 
             /* MADV_FREE page check */
             if (!folio_test_swapbacked(folio)) {
@@ -8701,6 +8743,7 @@ bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
                 break;
             }
 
+            /* Increase reference count of swap entry by 1 */
             if (swap_duplicate(entry) < 0) {
                 set_pte_at(mm, address, pvmw.pte, pteval);
                 ret = false;
@@ -9256,11 +9299,13 @@ vmalloc(size);
 
 # page_reclaim
 
+Q: how workingset works?
+
 1. directly free the unmodified file pages
 2. writeback the modified file pages to storage device
 3. writeback annonymous pages to swapping area
 
-![](../images/kernel/mem-page_reclaim.svg)
+![](../images/kernel/mem-page_reclaim.svg) /* EXPORT */
 
 ![](../images/kernel/mem-page_reclaim_cases.png)
 
@@ -10582,7 +10627,7 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
 }
 ```
 
-#### shrink_folio_list
+### shrink_folio_list
 
 ![](../images/kernel/mem-shrink_folio_list.png)
 
@@ -10636,6 +10681,7 @@ retry:
             && folio_mapped(folio) && folio_test_referenced(folio))
             goto keep_locked;
 
+/* check writeback page */
         folio_check_dirty_writeback(folio, &dirty, &writeback);
         if (dirty || writeback)
             stat->nr_dirty += nr_pages;
@@ -10646,7 +10692,6 @@ retry:
         if (writeback && folio_test_reclaim(folio))
             stat->nr_congested += nr_pages;
 
-/* check writeback page */
         if (folio_test_writeback(folio)) {
             /* Case 1 above:
              * folios are being queued for I/O but
@@ -10746,6 +10791,7 @@ retry:
             if (folio_test_pmd_mappable(folio))
                 flags |= TTU_SPLIT_HUGE_PMD;
 
+            /* try to unmap and write swp_pte */
             try_to_unmap(folio, flags);
             if (folio_mapped(folio)) {
                 stat->nr_unmap_fail += nr_pages;
@@ -10831,9 +10877,8 @@ retry:
             }
         }
 
-/* remove_mapping */
+/* remove_mapping from swapcache or filecache */
         if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
-            /* follow __remove_mapping for reference */
             if (!folio_ref_freeze(folio, 1))
                 goto keep_locked;
             count_vm_events(PGLAZYFREED, nr_pages);
@@ -10902,6 +10947,112 @@ keep:
     if (plug)
         swap_write_unplug(plug);
     return nr_reclaimed;
+}
+```
+
+## remove_mapping
+
+```c
+/* remove mapping from swapcache or filecache */
+int __remove_mapping(struct address_space *mapping, struct folio *folio,
+                bool reclaimed, struct mem_cgroup *target_memcg)
+{
+    int refcount;
+    void *shadow = NULL;
+
+    BUG_ON(!folio_test_locked(folio));
+    BUG_ON(mapping != folio_mapping(folio));
+
+    if (!folio_test_swapcache(folio))
+        spin_lock(&mapping->host->i_lock);
+    xa_lock_irq(&mapping->i_pages);
+
+    refcount = 1 + folio_nr_pages(folio);
+    if (!folio_ref_freeze(folio, refcount))
+        goto cannot_free;
+    /* note: atomic_cmpxchg in folio_ref_freeze provides the smp_rmb */
+    if (unlikely(folio_test_dirty(folio))) {
+        folio_ref_unfreeze(folio, refcount);
+        goto cannot_free;
+    }
+
+    if (folio_test_swapcache(folio)) {
+        swp_entry_t swap = folio->swap;
+
+        if (reclaimed && !mapping_exiting(mapping)) {
+            shadow = workingset_eviction(folio, target_memcg);
+        }
+        __delete_from_swap_cache(folio, swap, shadow);
+            --->
+        mem_cgroup_swapout(folio, swap);
+        xa_unlock_irq(&mapping->i_pages);
+        put_swap_folio(folio, swap);
+    } else {
+        void (*free_folio)(struct folio *);
+
+        free_folio = mapping->a_ops->free_folio;
+
+        if (reclaimed && folio_is_file_lru(folio)
+            && !mapping_exiting(mapping) && !dax_mapping(mapping)) {
+
+            shadow = workingset_eviction(folio, target_memcg);
+        }
+        __filemap_remove_folio(folio, shadow) {
+            struct address_space *mapping = folio->mapping;
+
+            filemap_unaccount_folio(mapping, folio) {
+                nr = folio_nr_pages(folio);
+
+                __lruvec_stat_mod_folio(folio, NR_FILE_PAGES, -nr);
+                if (folio_test_swapbacked(folio)) {
+                    __lruvec_stat_mod_folio(folio, NR_SHMEM, -nr);
+                    if (folio_test_pmd_mappable(folio)) {
+                        __lruvec_stat_mod_folio(folio, NR_SHMEM_THPS, -nr);
+                    }
+                } else if (folio_test_pmd_mappable(folio)) {
+                    __lruvec_stat_mod_folio(folio, NR_FILE_THPS, -nr);
+                    filemap_nr_thps_dec(mapping);
+                }
+
+                if (WARN_ON_ONCE(folio_test_dirty(folio) && mapping_can_writeback(mapping)))
+                    folio_account_cleaned(folio, inode_to_wb(mapping->host));
+            }
+            page_cache_delete(mapping, folio, shadow) {
+                XA_STATE(xas, &mapping->i_pages, folio->index);
+                long nr = 1;
+
+                mapping_set_update(&xas, mapping);
+
+                xas_set_order(&xas, folio->index, folio_order(folio));
+                nr = folio_nr_pages(folio);
+
+                VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+
+                xas_store(&xas, shadow);
+                xas_init_marks(&xas);
+
+                folio->mapping = NULL;
+                /* Leave page->index set: truncation lookup relies upon it */
+                mapping->nrpages -= nr;
+            }
+        }
+
+        xa_unlock_irq(&mapping->i_pages);
+        if (mapping_shrinkable(mapping))
+            inode_add_lru(mapping->host);
+        spin_unlock(&mapping->host->i_lock);
+
+        if (free_folio)
+            free_folio(folio);
+    }
+
+    return 1;
+
+cannot_free:
+    xa_unlock_irq(&mapping->i_pages);
+    if (!folio_test_swapcache(folio))
+        spin_unlock(&mapping->host->i_lock);
+    return 0;
 }
 ```
 
@@ -11588,6 +11739,7 @@ rc = migrate_folio_unmap(get_new_folio, put_new_folio,
         }
     } else if (folio_mapped(src)) {
         try_to_migrate(src, mode == MIGRATE_ASYNC ? TTU_BATCH_FLUSH : 0);
+            --->
         old_page_state |= PAGE_WAS_MAPPED;
     }
 
@@ -11606,6 +11758,182 @@ out:
     migrate_folio_undo_dst(dst, dst_locked, put_new_folio, private);
 
     return rc;
+}
+```
+
+#### try_to_migrate
+
+```c
+void try_to_migrate(struct folio *folio, enum ttu_flags flags)
+{
+    struct rmap_walk_control rwc = {
+        .rmap_one = try_to_migrate_one,
+        .arg = (void *)flags,
+        .done = folio_not_mapped,
+        .anon_lock = folio_lock_anon_vma_read,
+    };
+
+    if (WARN_ON_ONCE(flags & ~(TTU_RMAP_LOCKED | TTU_SPLIT_HUGE_PMD | TTU_SYNC | TTU_BATCH_FLUSH)))
+        return;
+
+    if (folio_is_zone_device(folio) &&
+        (!folio_is_device_private(folio) && !folio_is_device_coherent(folio)))
+        return;
+
+    if (!folio_test_ksm(folio) && folio_test_anon(folio))
+        rwc.invalid_vma = invalid_migration_vma;
+
+    if (flags & TTU_RMAP_LOCKED)
+        rmap_walk_locked(folio, &rwc);
+    else
+        rmap_walk(folio, &rwc);
+}
+```
+
+```c
+bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
+            unsigned long address, void *arg)
+{
+    struct mm_struct *mm = vma->vm_mm;
+    DEFINE_FOLIO_VMA_WALK(pvmw, folio, vma, address, 0);
+    pte_t pteval;
+    struct page *subpage;
+    bool anon_exclusive, ret = true;
+    struct mmu_notifier_range range;
+    enum ttu_flags flags = (enum ttu_flags)(long)arg;
+    unsigned long pfn;
+    unsigned long hsz = 0;
+
+    if (flags & TTU_SYNC)
+        pvmw.flags = PVMW_SYNC;
+
+    if (flags & TTU_SPLIT_HUGE_PMD)
+        split_huge_pmd_address(vma, address, true, folio);
+
+    /* For THP, we have to assume the worse case ie pmd for invalidation.
+    * For hugetlb, it could be much worse if we need to do pud
+    * invalidation in the case of pmd sharing.
+    *
+    * Note that the page can not be free in this function as call of
+    * try_to_unmap() must hold a reference on the page. */
+    range.end = vma_address_end(&pvmw);
+    mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma->vm_mm,
+                address, range.end);
+    if (folio_test_hugetlb(folio)) {
+        adjust_range_if_pmd_sharing_possible(vma, &range.start, &range.end);
+        hsz = huge_page_size(hstate_vma(vma));
+    }
+    mmu_notifier_invalidate_range_start(&range);
+
+    while (page_vma_mapped_walk(&pvmw)) {
+#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
+        /* PMD-mapped THP migration entry */
+        if (!pvmw.pte) {
+            subpage = folio_page(folio, pmd_pfn(*pvmw.pmd) - folio_pfn(folio));
+            if (set_pmd_migration_entry(&pvmw, subpage)) {
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+            continue;
+        }
+#endif
+
+        /* Unexpected PMD-mapped THP? */
+        VM_BUG_ON_FOLIO(!pvmw.pte, folio);
+
+        pfn = pte_pfn(ptep_get(pvmw.pte));
+
+        if (folio_is_zone_device(folio)) {
+            VM_BUG_ON_FOLIO(folio_nr_pages(folio) > 1, folio);
+            subpage = &folio->page;
+        } else {
+            subpage = folio_page(folio, pfn - folio_pfn(folio));
+        }
+        address = pvmw.address;
+        anon_exclusive = folio_test_anon(folio) && PageAnonExclusive(subpage);
+
+        /* Set the dirty flag on the folio now the pte is gone. */
+        if (pte_dirty(pteval))
+            folio_mark_dirty(folio);
+
+        /* Update high watermark before we lower rss */
+        update_hiwater_rss(mm);
+
+        if (folio_is_device_private(folio)) {
+
+        } else if (PageHWPoison(subpage)) {
+
+        } else if (pte_unused(pteval) && !userfaultfd_armed(vma)) {
+
+        } else {
+            swp_entry_t entry;
+            pte_t swp_pte;
+
+            if (arch_unmap_one(mm, vma, address, pteval) < 0) {
+                if (folio_test_hugetlb(folio))
+                    set_huge_pte_at(mm, address, pvmw.pte, pteval, hsz);
+                else
+                    set_pte_at(mm, address, pvmw.pte, pteval);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+
+            /* See folio_try_share_anon_rmap_pte(): clear PTE first. */
+            if (folio_test_hugetlb(folio)) {
+
+            } else if (anon_exclusive &&
+                folio_try_share_anon_rmap_pte(folio, subpage)) {
+                set_pte_at(mm, address, pvmw.pte, pteval);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+
+            /* Store the pfn of the page in a special migration
+             * pte. do_swap_page() will wait until the migration
+             * pte is removed and then restart fault handling. */
+            if (pte_write(pteval))
+                entry = make_writable_migration_entry( page_to_pfn(subpage));
+            else if (anon_exclusive)
+                entry = make_readable_exclusive_migration_entry( page_to_pfn(subpage));
+            else
+                entry = make_readable_migration_entry(page_to_pfn(subpage));
+
+            if (pte_young(pteval))
+                entry = make_migration_entry_young(entry);
+            if (pte_dirty(pteval))
+                entry = make_migration_entry_dirty(entry);
+
+            swp_pte = swp_entry_to_pte(entry);
+            if (pte_soft_dirty(pteval))
+                swp_pte = pte_swp_mksoft_dirty(swp_pte);
+            if (pte_uffd_wp(pteval))
+                swp_pte = pte_swp_mkuffd_wp(swp_pte);
+
+            if (folio_test_hugetlb(folio))
+                set_huge_pte_at(mm, address, pvmw.pte, swp_pte, hsz);
+            else
+                set_pte_at(mm, address, pvmw.pte, swp_pte);
+
+            /* No need to invalidate here it will synchronize on
+             * against the special swap migration pte. */
+        }
+
+        if (unlikely(folio_test_hugetlb(folio))) {
+            hugetlb_remove_rmap(folio);
+        } else {
+            folio_remove_rmap_pte(folio, subpage, vma);
+        }
+        if (vma->vm_flags & VM_LOCKED)
+            mlock_drain_local();
+        folio_put(folio);
+    }
+
+    mmu_notifier_invalidate_range_end(&range);
+
+    return ret;
 }
 ```
 
@@ -13947,6 +14275,8 @@ struct swap_info_struct {
 
         /* Special value in each swap_map continuation */
         #define SWAP_CONT_MAX	0x7f /* Max count */
+
+        /* refcnt, inc at try_to_unmap_one */
     }
     struct swap_cluster_info *cluster_info; /* cluster info. Only for SSD */
     struct swap_cluster_list free_clusters; /* free clusters list */
@@ -13990,8 +14320,8 @@ struct swap_cluster_list {
 
 struct swap_cluster_info {
     spinlock_t      lock;
-    /* stores next cluster if the cluster is free or cluster usage
-     * counter otherwise*/
+    /* stores next cluster if the cluster is free
+     * or cluster usage counter otherwise */
     unsigned int    data:24;
     unsigned int    flags:8;
 };
@@ -14762,8 +15092,7 @@ retry:
         folio_put(folio);
     }
 
-    /*
-    * Lets check again to see if there are still swap entries in the map.
+    /* Lets check again to see if there are still swap entries in the map.
     * If yes, we would need to do retry the unuse logic again.
     * Under global memory pressure, swap entries can be reinserted back
     * into process space after the mmlist loop above passes over them.
@@ -14773,8 +15102,7 @@ retry:
     * exit_mmap(), which proceeds at its own independent pace;
     * and even shmem_writepage() could have been preempted after
     * folio_alloc_swap(), temporarily hiding that swap.  It's easy
-    * and robust (though cpu-intensive) just to keep retrying.
-    */
+    * and robust (though cpu-intensive) just to keep retrying. */
     if (READ_ONCE(si->inuse_pages)) {
         if (!signal_pending(current))
             goto retry;
@@ -14782,10 +15110,8 @@ retry:
     }
 
 success:
-    /*
-    * Make sure that further cleanups after try_to_unuse() returns happen
-    * after swap_range_free() reduces si->inuse_pages to 0.
-    */
+    /* Make sure that further cleanups after try_to_unuse() returns happen
+    * after swap_range_free() reduces si->inuse_pages to 0. */
     smp_mb();
     return 0;
 }
@@ -15244,6 +15570,12 @@ checks:
         unsigned long idx = page_nr / SWAPFILE_CLUSTER;
         if (!cluster_info)
             return;
+
+        /* The info about idx cluster may be stored in three independent places:
+         * 1. percpu_cluster, 2. cluster_info[idx], 3. free_cluster.head
+         *
+         * free_cluster.head is advanced when 2 is null,
+         * alloc_cluster always sets the flags of free_cluster.head to 0 */
         if (cluster_is_free(&cluster_info[idx])) { /* info->flags & CLUSTER_FLAG_FREE */
             alloc_cluster(p, idx) {
                 struct swap_cluster_info *ci = si->cluster_info;
@@ -15392,8 +15724,15 @@ bool scan_swap_map_try_ssd_cluster(struct swap_info_struct *si,
 new_cluster:
     cluster = this_cpu_ptr(si->percpu_cluster);
     if (cluster_is_null(&cluster->index)) {
+        /* The info about idx cluster may be stored in three independent places:
+         * 1. percpu_cluster, 2. cluster_info[idx], 3. free_cluster.head
+         *
+         * Here 1 and 2 are null, but 3 is not.
+         * inc_cluster_info_page will advance free_cluster.head when 2 is null,
+         * alloc_cluster always sets the flags of free_cluster.head to 0 */
         if (!cluster_list_empty(&si->free_clusters)) {
-            cluster->index = si->free_clusters.head; /* Q: don't move head to next? */
+            /* After assignment 1 and 3 will be nonull */
+            cluster->index = si->free_clusters.head;
             cluster->next = cluster_next(&cluster->index) * SWAPFILE_CLUSTER;
         } else if (!cluster_list_empty(&si->discard_clusters)) {
             swap_do_scheduled_discard(si);
@@ -15585,8 +15924,7 @@ void swap_free(swp_entry_t entry)
                                         unsigned long idx = page_nr / SWAPFILE_CLUSTER;
 
                                         VM_BUG_ON(cluster_count(&cluster_info[idx]) == 0);
-                                        cluster_set_count(&cluster_info[idx],
-                                            cluster_count(&cluster_info[idx]) - 1);
+                                        cluster_set_count(&cluster_info[idx], cluster_count(&cluster_info[idx]) - 1);
 
                                         if (cluster_count(&cluster_info[idx]) == 0) {
                                             free_cluster(p, idx) {
@@ -15692,7 +16030,7 @@ void swap_free(swp_entry_t entry)
 ## folio_free_swap
 
 ```c
-/* Free the swap cache used for this folio. */
+/* delete folio from swap cache */
 bool folio_free_swap(struct folio *folio) {
     if (!folio_test_swapcache(folio))
         return false;
@@ -15700,7 +16038,6 @@ bool folio_free_swap(struct folio *folio) {
         return false;
     if (folio_swapped(folio))
         return false;
-
 
     delete_from_swap_cache(folio) {
         swp_entry_t entry = folio->swap;
@@ -15730,7 +16067,6 @@ bool folio_free_swap(struct folio *folio) {
             address_space->nrpages -= nr;
             __node_stat_mod_folio(folio, NR_FILE_PAGES, -nr);
             __lruvec_stat_mod_folio(folio, NR_SWAPCACHE, -nr);
-
         }
         xa_unlock_irq(&address_space->i_pages);
 
