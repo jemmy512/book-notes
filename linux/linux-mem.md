@@ -89,6 +89,7 @@
             * [do_sharaed_fault](#do_shared_fault)
     * [do_swap_page](#do_swap_page)
     * [do_wp_page](#do_wp_page)
+    * [do_numa_page](#do_numa_page)
 
 * [munmap](#munmap)
 
@@ -3008,55 +3009,44 @@ EXPORT_PER_CPU_SYMBOL_GPL(gdt_page);
 # user virtual space
 
 ```c
-
-#ifdef CONFIG_X86_32
-/* User space process size: 3GB (default). */
-#define TASK_SIZE    PAGE_OFFSET
-#define TASK_SIZE_MAX    TASK_SIZE
-/* config PAGE_OFFSET
-        hex
-        default 0xC0000000
-        depends on X86_32 */
-#else
 /* User space process size. 47bits minus one guard page. */
 #define TASK_SIZE_MAX  ((1UL << 47) - PAGE_SIZE)
-#define TASK_SIZE    (test_thread_flag(TIF_ADDR32) ? \
-          IA32_PAGE_OFFSET : TASK_SIZE_MAX)
+#define TASK_SIZE    (test_thread_flag(TIF_ADDR32) ? IA32_PAGE_OFFSET : TASK_SIZE_MAX)
+
 struct mm_struct {
-  unsigned long mmap_base;  /* base of mmap area */
-  unsigned long total_vm;   /* Total pages mapped */
-  unsigned long locked_vm;  /* Pages that have PG_mlocked set */
-  unsigned long pinned_vm;  /* Refcount permanently increased */
-  unsigned long data_vm;    /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
-  unsigned long exec_vm;    /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
-  unsigned long stack_vm;   /* VM_STACK */
-  unsigned long start_code, end_code, start_data, end_data;
-  unsigned long start_brk, brk, start_stack;
-  unsigned long arg_start, arg_end, env_start, env_end;
+    unsigned long mmap_base;  /* base of mmap area */
+    unsigned long total_vm;   /* Total pages mapped */
+    unsigned long locked_vm;  /* Pages that have PG_mlocked set */
+    unsigned long pinned_vm;  /* Refcount permanently increased */
+    unsigned long data_vm;    /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
+    unsigned long exec_vm;    /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
+    unsigned long stack_vm;   /* VM_STACK */
+    unsigned long start_code, end_code, start_data, end_data;
+    unsigned long start_brk, brk, start_stack;
+    unsigned long arg_start, arg_end, env_start, env_end;
 
-  unsigned long task_size; /* size of task vm space */
+    unsigned long task_size; /* size of task vm space */
 
-  struct vm_area_struct *mmap;    /* list of VMAs */
-  struct rb_root mm_rb;
+    struct vm_area_struct *mmap;    /* list of VMAs */
+    struct rb_root mm_rb;
 };
 
 struct vm_area_struct {
-  /* The first cache line has the info for VMA tree walking. */
-  unsigned long vm_start; /* Our start address within vm_mm. */
-  unsigned long vm_end; /* The first byte after our end address within vm_mm. */
-  /* linked list of VM areas per task, sorted by address */
-  struct vm_area_struct *vm_next, *vm_prev;
-  struct rb_node vm_rb;
+    unsigned long vm_start; /* Our start address within vm_mm. */
+    unsigned long vm_end; /* The first byte after our end address within vm_mm. */
 
-  struct mm_struct *vm_mm; /* The address space we belong to. */
-  struct list_head anon_vma_chain; /* Serialized by mmap_sem &
-            * page_table_lock */
-  const struct vm_operations_struct *vm_ops;
+    /* linked list of VM areas per task, sorted by address */
+    struct vm_area_struct *vm_next, *vm_prev;
+    struct rb_node vm_rb;
 
-  struct anon_vma *anon_vma; /* Serialized by page_table_lock */
-  /* Function pointers to deal with this struct. */
-  struct file * vm_file; /* File we map to (can be NULL). */
-  void * vm_private_data; /* was vm_pte (shared mem) */
+    struct mm_struct *vm_mm; /* The address space we belong to. */
+    struct list_head anon_vma_chain;
+    const struct vm_operations_struct *vm_ops;
+
+    struct anon_vma *anon_vma;  /* Serialized by page_table_lock */
+    unsigned long vm_pgoff;     /* Offset (within vm_file) in PAGE_SIZE units */
+    struct file * vm_file;      /* File we map to (can be NULL). */
+    void * vm_private_data;     /* was vm_pte (shared mem) */
 } __randomize_layout;
 ```
 
@@ -6518,6 +6508,7 @@ SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
                     return -EINTR;
 
                 ret = do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf);
+                    --->
 
                 mmap_write_unlock(mm);
                 userfaultfd_unmap_complete(mm, &uf);
@@ -6754,6 +6745,7 @@ get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
                     if (info->flags & VM_UNMAPPED_AREA_TOPDOWN) {
                         addr = unmapped_area_topdown(info);
                     } else {
+                        /* arm64 adopts classical layout, addr grows from low to high */
                         addr = unmapped_area(info) {
                             unsigned long length, gap;
                             unsigned long low_limit, high_limit;
@@ -7230,33 +7222,15 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
 
 ---
 
-![](../images/kernel/mem-fault-2.png)
+![](../images/kernel/mem-fault-do_translation_fault.png)
 
 ---
 
-![](../images/kernel/mem-fault-3.png)
+![](../images/kernel/mem-fault-do_page_fault.png)
 
 ---
 
-![](../images/kernel/mem-fault-4.png)
-
----
-
-![](../images/kernel/mem-fault-4.1.png)
-
----
-
-![](../images/kernel/mem-fault-4.2.png)
-
----
-
-![](../images/kernel/mem-fault-4.3.png)
-
----
-
-![](../images/kernel/mem-fault-4.4.png)
-
-![](../images/kernel/mem-fault-4.4.1.png)
+![](../images/kernel/mem-fault-handle_pte_fault.png)
 
 ---
 
@@ -7293,7 +7267,7 @@ struct address_space {
 /* arm64
  * arch/arm64/mm/fault.c */
 static const struct fault_info fault_info[] = {
-    { do_translation_fault, SIGSEGV, SEGV_MAPERR,    "level 0 translation fault" },
+    { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 0 translation fault" },
     { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 1 translation fault" },
     { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 2 translation fault" },
     { do_translation_fault, SIGSEGV, SEGV_MAPERR,   "level 3 translation fault" },
@@ -7417,7 +7391,10 @@ handle_mm_fault(vma, address, flags, regs);
 ```
 
 ## do_pte_missing
+
 ### do_anonymous_page
+
+![](../images/kernel/mem-fault-do_anonymous_fault.png)
 
 ```c
 do_anonymous_page(vmf) {
@@ -7443,6 +7420,8 @@ do_anonymous_page(vmf) {
 ```
 
 ### do_fault
+
+![](../images/kernel/mem-fault-do_fault.png)
 
 #### do_read_fault
 
@@ -7748,13 +7727,18 @@ out_release:
 }
 ```
 
-## do_numa_page
-
-```c
-
-```
-
 ## do_wp_page
+
+![](../images/kernel/mem-fault-do_swap_fault.png)
+
+---
+
+![](../images/kernel/mem-fault-do_wp_page.png)
+
+---
+
+![](../images/kernel/mem-fault-wp_page_copy.png)
+
 
 ```c
 do_wp_page(vmf) {
@@ -7773,7 +7757,8 @@ do_wp_page(vmf) {
         }
     }
 
-    /* Private mapping */
+    /* Private mapping
+     * the last proc can reuse the folio, others need COW */
     if (folio && folio_test_anon(folio) &&
         (PageAnonExclusive(vmf->page) || wp_can_reuse_anon_folio(folio, vma))) {
         if (!PageAnonExclusive(vmf->page))
@@ -7790,18 +7775,101 @@ do_wp_page(vmf) {
     }
 
     return wp_page_copy(vmf) {
-        old_folio = page_folio(vmf->page)
-        anon_vma_prepare(vma)
-            --->
-        new_folio = vma_alloc_folio(vma, vmf->address)
-        __wp_page_copy_user(&new_folio->page, vmf->page, vmf)
+        const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
 
-        flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
-        entry = mk_pte(&new_folio->page, vma->vm_page_prot);
-        entry = pte_sw_mkyoung(entry);
-        entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+        if (vmf->page)
+            old_folio = page_folio(vmf->page);
+        ret = vmf_anon_prepare(vmf);
+        if (unlikely(ret))
+            goto out;
+
+        pfn_is_zero = is_zero_pfn(pte_pfn(vmf->orig_pte));
+        new_folio = folio_prealloc(mm, vma, vmf->address, pfn_is_zero);
+        if (!new_folio)
+            goto oom;
+
+        if (!pfn_is_zero) {
+            int err;
+            err = __wp_page_copy_user(&new_folio->page, vmf->page, vmf);
+            if (err) {
+                folio_put(new_folio);
+                if (old_folio)
+                    folio_put(old_folio);
+
+                delayacct_wpcopy_end();
+                return err == -EHWPOISON ? VM_FAULT_HWPOISON : 0;
+            }
+            kmsan_copy_page_meta(&new_folio->page, vmf->page);
+        }
+
+        __folio_mark_uptodate(new_folio);
+
+        mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm,
+                    vmf->address & PAGE_MASK,
+                    (vmf->address & PAGE_MASK) + PAGE_SIZE);
+        mmu_notifier_invalidate_range_start(&range);
+
+        vmf->pte = pte_offset_map_lock(mm, vmf->pmd, vmf->address, &vmf->ptl);
+        if (likely(vmf->pte && pte_same(ptep_get(vmf->pte), vmf->orig_pte))) {
+            flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
+            entry = mk_pte(&new_folio->page, vma->vm_page_prot);
+            entry = pte_sw_mkyoung(entry);
+            if (unlikely(unshare)) {
+                if (pte_soft_dirty(vmf->orig_pte))
+                    entry = pte_mksoft_dirty(entry);
+                if (pte_uffd_wp(vmf->orig_pte))
+                    entry = pte_mkuffd_wp(entry);
+            } else {
+                entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+            }
+
+            ptep_clear_flush(vma, vmf->address, vmf->pte);
+            folio_add_new_anon_rmap(new_folio, vma, vmf->address);
+                --->
+            folio_add_lru_vma(new_folio, vma);
+
+            BUG_ON(unshare && pte_write(entry));
+            set_pte_at_notify(mm, vmf->address, vmf->pte, entry);
+            update_mmu_cache_range(vmf, vma, vmf->address, vmf->pte, 1);
+            if (old_folio) {
+                folio_remove_rmap_pte(old_folio, vmf->page, vma);
+            }
+
+            /* Free the old page.. */
+            new_folio = old_folio;
+            page_copied = 1;
+            pte_unmap_unlock(vmf->pte, vmf->ptl);
+        } else if (vmf->pte) {
+            update_mmu_tlb(vma, vmf->address, vmf->pte);
+            pte_unmap_unlock(vmf->pte, vmf->ptl);
+        }
+
+        mmu_notifier_invalidate_range_end(&range);
+
+        if (new_folio)
+            folio_put(new_folio);
+        if (old_folio) {
+            if (page_copied)
+                free_swap_cache(old_folio);
+            folio_put(old_folio);
+        }
+
+        return 0;
+    oom:
+        ret = VM_FAULT_OOM;
+    out:
+        if (old_folio)
+            folio_put(old_folio);
+
+        return ret;
     }
 }
+```
+
+## do_numa_page
+
+```c
+
 ```
 
 # munmap
@@ -7947,6 +8015,7 @@ tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm, bool fullmm) {
 ```
 
 ## unmap_vmas
+
 ```c
 unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
     do {
@@ -8298,7 +8367,10 @@ tlb_finish_mmu(&tlb) {
                         for (i = 0; i < batch->nr; i++) {
                             __tlb_remove_table(batch->tables[i]) {
                                 free_page_and_swap_cache() {
-                                    free_page();
+                                    struct folio *folio = page_folio(page);
+                                    free_swap_cache(folio);
+                                    if (!is_huge_zero_page(page))
+                                        folio_put(folio);
                                 }
                             }
                         }
@@ -8431,18 +8503,11 @@ out:
 
 # rmap
 
-Q:
-1. what is key of anon_vma tree inserting/deleting?
-
-    Childs have the same VM layout as parent when forking.
-
-    What about shmem which doesn't have same VM address between diffirent procs?
-
-![](../images/kernel/mem-rmap.svg)
-
 ![](../images/kernel/mem-rmap-arch.png)
 
 ![](../images/kernel/mem-rmap-1.png)
+
+![](../images/kernel/mem-rmap.svg) /* EXPORT */
 
 * [wowotech - 逆向映射的演进](http://www.wowotech.net/memory_management/reverse_mapping.html)
 * [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
@@ -8454,6 +8519,10 @@ Q:
 struct vm_area_struct {
     struct list_head    anon_vma_chain;
     struct anon_vma*    anon_vma;
+
+    /* key used to insert into anon_vma rb_root */
+    unsigned long vm_pgoff; /* Offset (within vm_file) in PAGE_SIZE units */
+    struct file * vm_file;  /* File we map to (can be NULL). */
 }
 
 struct anon_vma {
@@ -8694,8 +8763,7 @@ bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
         pfn = pte_pfn(ptep_get(pvmw.pte));
         subpage = folio_page(folio, pfn - folio_pfn(folio));
         address = pvmw.address;
-        anon_exclusive = folio_test_anon(folio) &&
-                PageAnonExclusive(subpage);
+        anon_exclusive = folio_test_anon(folio) && PageAnonExclusive(subpage);
 
         if (should_defer_flush(mm, flags)) {
             pteval = ptep_get_and_clear(mm, address, pvmw.pte);
@@ -8716,7 +8784,9 @@ bool try_to_unmap_one(struct folio *folio, struct vm_area_struct *vma,
                 struct folio *folio = page_folio(page);
                 swp_entry_t entry = folio->swap;
 
-                entry.val += folio_page_idx(folio, page);
+                entry.val += folio_page_idx(folio, page) {
+                    return ((p) - &(folio)->page);
+                }
                 return entry;
             }
             pte_t swp_pte;
@@ -16424,7 +16494,9 @@ again:
              * in the parent and the child */
             if (is_cow_mapping(vm_flags) && pte_write(pte)) {
                 ptep_set_wrprotect(src_mm, addr, src_pte);
-                pte = pte_wrprotect(pte);
+                pte = pte_wrprotect(pte) {
+                    pte_val(pte) |= _PAGE_FOW;
+                }
             }
             VM_BUG_ON(page && folio_test_anon(folio) && PageAnonExclusive(page));
 
