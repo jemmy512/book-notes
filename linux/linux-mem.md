@@ -1329,6 +1329,20 @@ struct page {
 ```
 
 ```c
+#define __is_lm_address(addr) (((u64)(addr) - PAGE_OFFSET) < (PAGE_END - PAGE_OFFSET))
+
+#define __lm_to_phys(addr) (((addr) - PAGE_OFFSET) + PHYS_OFFSET)
+#define __kimg_to_phys(addr) ((addr) - kimage_voffset)
+
+#define __virt_to_phys_nodebug(x) ({ \
+    phys_addr_t __x = (phys_addr_t)(__tag_reset(x)); \
+    __is_lm_address(__x) ? __lm_to_phys(__x) : __kimg_to_phys(__x); \
+})
+
+#define __virt_to_phys(x)	__virt_to_phys_nodebug(x)
+#define __pa(x) __virt_to_phys((unsigned long)(x))
+
+
 #if defined(CONFIG_FLATMEM)
 
     #ifndef ARCH_PFN_OFFSET
@@ -3060,13 +3074,23 @@ struct vm_area_struct {
  * PAGE_END - the end of the linear map, where all other kernel mappings begin.
  * KIMAGE_VADDR - the virtual address of the start of the kernel image.
  * VA_BITS - the maximum number of bits for virtual addresses. */
+
+ AArch64 Linux memory layout with 4KB pages + 4 levels (48-bit)::
+
+  Start             End                 Size        Use
+  -----------------------------------------------------------------------
+  0000000000000000	0000ffffffffffff    256TB       user
+  ffff000000000000	ffff7fffffffffff    128TB       kernel logical memory map
+ [ffff600000000000	ffff7fffffffffff]    32TB       [kasan shadow region]
+  ffff800000000000	ffff80007fffffff      2GB       modules
+  ffff800080000000	fffffbffefffffff    124TB       vmalloc
+  fffffbfff0000000	fffffbfffdffffff    224MB       fixed mappings (top down)
+  fffffbfffe000000	fffffbfffe7fffff      8MB       [guard region]
+  fffffbfffe800000	fffffbffff7fffff     16MB       PCI I/O space
+  fffffbffff800000	fffffbffffffffff      8MB       [guard region]
+  fffffc0000000000	fffffdffffffffff      2TB       vmemmap
+  fffffe0000000000	ffffffffffffffff      2TB       [guard region]
 ```
-
-![](../images/kernel/mem-kernel-layout.png)
-
-![](../images/kernel/mem-kernel-2.png)
-
-![](../images/kernel/mem-user-kernel-32.png)
 
 ![](../images/kernel/mem-user-kernel-64.png)
 
@@ -8055,8 +8079,9 @@ unmap_vmas(&tlb, mt, vma, start, end, mm_wr_locked) {
                                                     unsigned int delay_rmap;
 
                                                     page = vm_normal_page(vma, addr, ptent);
-
+                                                    /* clear pte entry */
                                                     ptent = ptep_get_and_clear_full(mm, addr, pte, tlb->fullmm);
+
                                                     tlb_remove_tlb_entry(tlb, pte, addr) {
                                                         tlb_flush_pte_range() {
                                                             __tlb_adjust_range(tlb, address, size) {
@@ -8949,15 +8974,15 @@ L3_START_KERNEL = pud_index(__START_KERNEL_map)
 ```c
 /* kernel mm_struct */
 struct mm_struct init_mm = {
-  .mm_rb      = RB_ROOT,
-  .pgd        = swapper_pg_dir,
-  .mm_users   = ATOMIC_INIT(2),
-  .mm_count   = ATOMIC_INIT(1),
-  .mmap_sem   = __RWSEM_INITIALIZER(init_mm.mmap_sem),
-  .page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
-  .mmlist     = LIST_HEAD_INIT(init_mm.mmlist),
-  .user_ns    = &init_user_ns,
-  INIT_MM_CONTEXT(init_mm)
+    .mm_rb      = RB_ROOT,
+    .pgd        = swapper_pg_dir,
+    .mm_users   = ATOMIC_INIT(2),
+    .mm_count   = ATOMIC_INIT(1),
+    .mmap_sem   = __RWSEM_INITIALIZER(init_mm.mmap_sem),
+    .page_table_lock =  __SPIN_LOCK_UNLOCKED(init_mm.page_table_lock),
+    .mmlist     = LIST_HEAD_INIT(init_mm.mmlist),
+    .user_ns    = &init_user_ns,
+    INIT_MM_CONTEXT(init_mm)
 };
 
 /* init kernel mm_struct */
@@ -9024,22 +9049,19 @@ unsigned long kernel_physical_mapping_init(
 /* kmalloc is the normal method of allocating memory
  * for objects smaller than page size in the kernel. */
 static void *kmalloc(size_t size, gfp_t flags) {
-  if (__builtin_constant_p(size)) {
-    if (size > KMALLOC_MAX_CACHE_SIZE)
-      return kmalloc_large(size, flags);
+    if (__builtin_constant_p(size)) {
+        if (size > KMALLOC_MAX_CACHE_SIZE)
+            return kmalloc_large(size, flags);
 
-#ifndef CONFIG_SLOB
-    if (!(flags & GFP_DMA)) {
-      unsigned int index = kmalloc_index(size);
-
-      if (!index)
-        return ZERO_SIZE_PTR;
-
-      return kmem_cache_alloc_trace(kmalloc_caches[index],
-          flags, size);
+    #ifndef CONFIG_SLOB
+        if (!(flags & GFP_DMA)) {
+            unsigned int index = kmalloc_index(size);
+            if (!index)
+                return ZERO_SIZE_PTR;
+            return kmem_cache_alloc_trace(kmalloc_caches[index], flags, size);
+        }
+    #endif
     }
-#endif
-  }
 
     return __kmalloc(size, flags) {
         struct kmem_cache *s;
@@ -9066,38 +9088,39 @@ static void *kmalloc(size_t size, gfp_t flags) {
         s = kmalloc_slab(size, flags) {
             unsigned int index;
 
-        if (size <= 192) {
-            if (!size)
-            return ZERO_SIZE_PTR;
+            if (size <= 192) {
+                if (!size)
+                return ZERO_SIZE_PTR;
 
-            index = size_index[size_index_elem(size)] {
-                return (bytes - 1) / 8;
+                index = size_index[size_index_elem(size)] {
+                    return (bytes - 1) / 8;
+                }
+            } else {
+                if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
+                    WARN_ON(1);
+                    return NULL;
+                }
+                index = fls(size - 1);
             }
-        } else {
-            if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
-            WARN_ON(1);
-            return NULL;
-            }
-            index = fls(size - 1);
+
+            #ifdef CONFIG_ZONE_DMA
+                if (unlikely((flags & GFP_DMA)))
+                    return kmalloc_dma_caches[index];
+            #endif
+            return kmalloc_caches[index];
         }
+        if (unlikely(ZERO_OR_NULL_PTR(s)))
+            return s;
 
-        #ifdef CONFIG_ZONE_DMA
-        if (unlikely((flags & GFP_DMA)))
-            return kmalloc_dma_caches[index];
+        ret = slab_alloc(s, flags, _RET_IP_);
 
-        #endif
-        return kmalloc_caches[index];
+        return ret;
     }
-    if (unlikely(ZERO_OR_NULL_PTR(s)))
-        return s;
-
-    ret = slab_alloc(s, flags, _RET_IP_);
-
-    return ret;
 }
 ```
 
 ## kmalloc_caches
+
 ```c
 /* mm/slab_common.c */
 struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
@@ -9108,7 +9131,7 @@ void kmem_cache_init(void)
     create_kmalloc_caches(0) {
         for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
             if (!kmalloc_caches[i])
-            new_kmalloc_cache(i, flags);
+                new_kmalloc_cache(i, flags);
 
             if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6) {
                 new_kmalloc_cache(1, flags);
@@ -9198,61 +9221,8 @@ u8 size_index[24] = {
 };
 ```
 
-# kmap_atomic
-```c
-void *kmap_atomic(struct page *page) {
-    return kmap_atomic_prot(page, kmap_prot) {
-        /* 64 bit machine doesn't have high memory */
-        if (!PageHighMem(page))
-            return page_address(page);
-                --->
-
-        /* 32 bit machine */
-        type = kmap_atomic_idx_push();
-        idx = type + KM_TYPE_NR*smp_processor_id();
-        vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx) {
-            return (FIXADDR_TOP - ((x) << PAGE_SHIFT))
-        }
-        set_pte(kmap_pte-idx, mk_pte(page, prot));
-
-        return (void *)vaddr;
-    }
-}
-
-/* get the mapped virtual address of a page */
-void *page_address(const struct page *page)
-{
-    unsigned long flags;
-    void *ret;
-    struct page_address_slot *pas;
-
-    if (!PageHighMem(page)) {
-        return lowmem_page_address(page) {
-            return page_to_virt(page) {
-                __va(PFN_PHYS(page_to_pfn(x)));
-            }
-        }
-    }
-
-    pas = page_slot(page);
-    ret = NULL;
-    spin_lock_irqsave(&pas->lock, flags);
-    if (!list_empty(&pas->lh)) {
-        struct page_address_map *pam;
-
-        list_for_each_entry(pam, &pas->lh, list) {
-        if (pam->page == page) {
-            ret = pam->virtual; /* set_page_address() */
-            goto done;
-        }
-    }
-done:
-    spin_unlock_irqrestore(&pas->lock, flags);
-    return ret;
-}
-```
-
 # vmalloc
+
 ```c
 struct vm_struct {
     struct vm_struct  *next;
@@ -9280,9 +9250,12 @@ struct vmap_area {
 ```
 
 ```c
-vmalloc(size);
+/* allocate virtually contiguous memory */
+vmalloc(size) {
     __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END, gfp_mask, PAGE_KERNEL, 0, node, caller) {
         struct vm_struct *area = __get_vm_area_node() {
+            struct vmap_area *va;
+	        struct vm_struct *area;
             area = kzalloc_node(sizeof(*area));
             /* Allocate a region of KVA */
             va = alloc_vmap_area(size) {
@@ -9299,63 +9272,66 @@ vmalloc(size);
             }
             setup_vmalloc_vm(area, va, flags, caller);
         }
+
+        ret = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
+        return area->addr;
+    }
+}
+
+/* Allocate physical pages and map them into vmalloc space. */
+__vmalloc_area_node(area, gfp_mask, prot, shift, node) {
+    vm_area_alloc_pages() {
+        alloc_pages();
     }
 
-    /* Allocate physical pages and map them into vmalloc space. */
-    __vmalloc_area_node(area, gfp_mask, prot, shift, node) {
-        vm_area_alloc_pages() {
-            alloc_pages();
-        }
+    vmap_pages_range(addr, addr + size, prot, area->pages, page_shift) {
+        vmap_range_noflush() {
+            pgd = pgd_offset_k(addr);
+            vmap_p4d_range() {
+                p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
+                vmap_pud_range() {
+                    pud = pud_alloc_track(&init_mm, p4d, addr, mask);
+                    vmap_pmd_range() {
+                        pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
+                        vmap_pte_range() {
+                            pte = pte_alloc_kernel_track(pmd, addr, mask);
+                            set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot)) {
+                                set_ptes(mm, addr, ptep, pte, 1) {
+                                    for (;;) {
+                                        __set_pte_at(mm, addr, ptep, pte) {
+                                            if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte)) {
+                                                __sync_icache_dcache(pte) {
+                                                    struct folio *folio = page_folio(pte_page(pte));
+                                                    if (!test_bit(PG_dcache_clean, &folio->flags)) {
+                                                        sync_icache_aliases(
+                                                            (unsigned long)folio_address(folio),
+                                                            (unsigned long)folio_address(folio) + folio_size(folio)) {
 
-        vmap_pages_range(addr, addr + size, prot, area->pages, page_shift) {
-            vmap_range_noflush() {
-                pgd = pgd_offset_k(addr);
-                vmap_p4d_range() {
-                    p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
-                    vmap_pud_range() {
-                        pud = pud_alloc_track(&init_mm, p4d, addr, mask);
-                        vmap_pmd_range() {
-                            pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
-                            vmap_pte_range() {
-                                pte = pte_alloc_kernel_track(pmd, addr, mask);
-                                set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot)) {
-                                    set_ptes(mm, addr, ptep, pte, 1) {
-                                        for (;;) {
-                                            __set_pte_at(mm, addr, ptep, pte) {
-                                                if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte)) {
-                                                    __sync_icache_dcache(pte) {
-                                                        struct folio *folio = page_folio(pte_page(pte));
-                                                        if (!test_bit(PG_dcache_clean, &folio->flags)) {
-                                                            sync_icache_aliases(
-                                                                (unsigned long)folio_address(folio),
-                                                                (unsigned long)folio_address(folio) + folio_size(folio)) {
-
-                                                                if (icache_is_aliasing()) {
-                                                                    dcache_clean_pou(start, end);
-                                                                    icache_inval_all_pou();
-                                                                } else {
-                                                                    caches_clean_inval_pou(start, end);
-                                                                }
+                                                            if (icache_is_aliasing()) {
+                                                                dcache_clean_pou(start, end);
+                                                                icache_inval_all_pou();
+                                                            } else {
+                                                                caches_clean_inval_pou(start, end);
                                                             }
-                                                            set_bit(PG_dcache_clean, &folio->flags);
                                                         }
-                                                    }
-                                                }
-
-                                                set_pte(ptep, pte) {
-                                                    WRITE_ONCE(*ptep, pte);
-                                                    if (pte_valid_not_user(pte)) {
-                                                        dsb(ishst);
-                                                        isb();
+                                                        set_bit(PG_dcache_clean, &folio->flags);
                                                     }
                                                 }
                                             }
-                                            if (--nr == 0)
-                                                break;
-                                            ptep++;
-                                            addr += PAGE_SIZE;
-                                            pte_val(pte) += PAGE_SIZE;
+
+                                            set_pte(ptep, pte) {
+                                                WRITE_ONCE(*ptep, pte);
+                                                if (pte_valid_not_user(pte)) {
+                                                    dsb(ishst);
+                                                    isb();
+                                                }
+                                            }
                                         }
+                                        if (--nr == 0)
+                                            break;
+                                        ptep++;
+                                        addr += PAGE_SIZE;
+                                        pte_val(pte) += PAGE_SIZE;
                                     }
                                 }
                             }
@@ -9365,6 +9341,7 @@ vmalloc(size);
             }
         }
     }
+}
 ```
 
 # page_reclaim
@@ -10706,8 +10683,8 @@ unsigned int shrink_folio_list(struct list_head *folio_list,
         struct pglist_data *pgdat, struct scan_control *sc,
         struct reclaim_stat *stat, bool ignore_references)
 {
+    struct folio_batch free_folios;
     LIST_HEAD(ret_folios);
-    LIST_HEAD(free_folios);
     LIST_HEAD(demote_folios);
     unsigned int nr_reclaimed = 0;
     unsigned int pgactivate = 0;
@@ -10960,10 +10937,15 @@ retry:
 
 free_it:
         nr_reclaimed += nr_pages;
-        if (unlikely(folio_test_large(folio)))
-            destroy_large_folio(folio);
-        else
-            list_add(&folio->lru, &free_folios);
+
+        if (folio_test_large(folio) && folio_test_large_rmappable(folio))
+            folio_undo_large_rmappable(folio);
+
+        if (folio_batch_add(&free_folios, folio) == 0) {
+            mem_cgroup_uncharge_folios(&free_folios);
+            try_to_unmap_flush();
+            free_unref_folios(&free_folios);
+        }
         continue;
 
 activate_locked_split:
@@ -10976,7 +10958,7 @@ activate_locked:
         if (folio_test_swapcache(folio)
             && (mem_cgroup_swap_full(folio) || folio_test_mlocked(folio))) {
 
-            /* Free the swap space used for this folio. */
+            /* Free the swap cache used for this folio. */
             folio_free_swap(folio);
         }
         if (!folio_test_mlocked(folio)) {
@@ -12452,6 +12434,23 @@ bool remove_migration_pte(struct folio *folio,
 ![](../images/kernel/mem-page_compact-cases.png)
 
 ```c
+struct zone {
+    /* pfn where compaction free scanner should start */
+    unsigned long       compact_cached_free_pfn;
+    /* pfn where compaction migration scanner should start */
+    unsigned long       compact_cached_migrate_pfn[ASYNC_AND_SYNC];
+    unsigned long       compact_init_migrate_pfn;
+    unsigned long       compact_init_free_pfn;
+
+    unsigned int        compact_considered;
+    unsigned int        compact_defer_shift;
+    int                 compact_order_failed;
+
+    /* Set to true when the PG_migrate_skip bits should be cleared */
+    bool                compact_blockskip_flush;
+};
+
+```c
 status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highest_zoneidx, capture) {
     enum compact_result ret;
     struct compact_control cc = {
@@ -12710,8 +12709,9 @@ enum compact_result compact_finished(struct compact_control *cc)
                 return COMPACT_PARTIAL_SKIPPED;
 
             score = fragmentation_score_zone(cc->zone);
+                --->
             wmark_low = fragmentation_score_wmark(true);
-
+                --->
             if (score > wmark_low)
                 ret = COMPACT_CONTINUE;
             else
@@ -12778,8 +12778,8 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
     unsigned long low_pfn;
     struct page *page;
     const isolate_mode_t isolate_mode =
-        (sysctl_compact_unevictable_allowed ? ISOLATE_UNEVICTABLE : 0) |
-        (cc->mode != MIGRATE_SYNC ? ISOLATE_ASYNC_MIGRATE : 0);
+        (sysctl_compact_unevictable_allowed ? ISOLATE_UNEVICTABLE : 0)
+        | (cc->mode != MIGRATE_SYNC ? ISOLATE_ASYNC_MIGRATE : 0);
     bool fast_find_block;
 
     low_pfn = fast_find_migrateblock(cc);
@@ -13384,7 +13384,7 @@ void isolate_freepages(struct compact_control *cc)
         }
 
         ret = suitable_migration_target(cc, page) {
-            if (PageBuddy(page) && (buddy_order_unsafe(page) >= pageblock_order))
+            if (PageBuddy(page) && (buddy_order_unsafe(page) >= pageblock_order)) {
                 return false;
             }
 
@@ -13761,7 +13761,7 @@ void fast_isolate_freepages(struct compact_control *cc)
 
 # kcompactd
 
-* The conditions to waktup kcompactd
+* The conditions to wakeup kcompactd
     1. Before kswapd run
 
         ```c
@@ -16227,7 +16227,7 @@ kernel_clone()
                         if (file) {
                             struct address_space *mapping = file->f_mapping;
 
-                            if (tmp->vm_flags & VM_SHARED) {
+                            if (vma_is_shared_maywrite(tmp)) {
                                 mapping_allow_writable(mapping) {
                                     atomic_inc(&mapping->i_mmap_writable);
                                 }
@@ -16246,6 +16246,7 @@ kernel_clone()
                         mm->map_count++;
                         if (!(tmp->vm_flags & VM_WIPEONFORK))
                             retval = copy_page_range(tmp, mpnt);
+                                --->
 
                         if (tmp->vm_ops && tmp->vm_ops->open)
                             tmp->vm_ops->open(tmp);
@@ -16359,7 +16360,9 @@ int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_v
                                 next = pmd_addr_end(addr, end);
                                 if (pmd_none_or_clear_bad(src_pmd))
                                     continue;
-                                if (copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd, addr, next))
+                                ret = copy_pte_range(dst_vma, src_vma, dst_pmd, src_pmd, addr, next);
+                                    --->
+                                if (ret)
                                     return -ENOMEM;
                             } while (dst_pmd++, src_pmd++, addr = next, addr != end);
                             return 0;
@@ -16439,7 +16442,58 @@ again:
         }
         if (unlikely(!pte_present(ptent))) {
             ret = copy_nonpresent_pte(dst_mm, src_mm,
-                dst_pte, src_pte, dst_vma, src_vma, addr, rss);
+                dst_pte, src_pte, dst_vma, src_vma, addr, rss) {
+
+                swp_entry_t entry = pte_to_swp_entry(orig_pte);
+
+                if (likely(!non_swap_entry(entry))) {
+                    /* inc swap refcnt */
+                    if (swap_duplicate(entry) < 0)
+                        return -EIO;
+
+                    /* make sure dst_mm is on swapoff's mmlist. */
+                    if (unlikely(list_empty(&dst_mm->mmlist))) {
+                        spin_lock(&mmlist_lock);
+                        if (list_empty(&dst_mm->mmlist))
+                            list_add(&dst_mm->mmlist, &src_mm->mmlist);
+                        spin_unlock(&mmlist_lock);
+                    }
+                    /* Mark the swap entry as shared. */
+                    if (pte_swp_exclusive(orig_pte)) {
+                        pte = pte_swp_clear_exclusive(orig_pte);
+                        set_pte_at(src_mm, addr, src_pte, pte);
+                    }
+                    rss[MM_SWAPENTS]++;
+                } else if (is_migration_entry(entry)) {
+                    folio = pfn_swap_entry_folio(entry);
+
+                    rss[mm_counter(folio)]++;
+
+                    if (!is_readable_migration_entry(entry) && is_cow_mapping(vm_flags)) {
+                        entry = make_readable_migration_entry( swp_offset(entry));
+                        pte = swp_entry_to_pte(entry);
+                        if (pte_swp_soft_dirty(orig_pte))
+                            pte = pte_swp_mksoft_dirty(pte);
+                        if (pte_swp_uffd_wp(orig_pte))
+                            pte = pte_swp_mkuffd_wp(pte);
+                        set_pte_at(src_mm, addr, src_pte, pte);
+                    }
+                } else if (is_device_private_entry(entry)) {
+
+                } else if (is_device_exclusive_entry(entry)) {
+
+                } else if (is_pte_marker_entry(entry)) {
+                    pte_marker marker = copy_pte_marker(entry, dst_vma);
+
+                    if (marker)
+                        set_pte_at(dst_mm, addr, dst_pte, make_pte_marker(marker));
+                    return 0;
+                }
+                if (!userfaultfd_wp(dst_vma))
+                    pte = pte_swp_clear_uffd_wp(pte);
+                set_pte_at(dst_mm, addr, dst_pte, pte);
+                return 0;
+            }
             if (ret == -EIO) {
                 entry = pte_to_swp_entry(ptep_get(src_pte));
                 break;
