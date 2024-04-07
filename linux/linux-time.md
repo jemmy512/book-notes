@@ -1196,6 +1196,8 @@ static inline void timerqueue_init(struct timerqueue_node *node)
 
 # time_wheel
 
+* https://blog.csdn.net/wangquan1992/article/details/122968025
+
 ## add_timer
 
 ```c
@@ -1247,6 +1249,8 @@ void add_timer(struct timer_list *timer)
             idx = calc_wheel_index(expires, clk, &bucket_expiry) {
                 unsigned long delta = expires - clk;
                 unsigned int idx;
+
+                #define LVL_START(n) ((LVL_SIZE - 1) << (((n) - 1) * LVL_CLK_SHIFT))
 
                 if (delta < LVL_START(1)) {
                     idx = calc_index(expires, 0, bucket_expiry);
@@ -1367,35 +1371,34 @@ int del_timer(struct timer_list *timer)
     return timer_delete(timer) {
         return __timer_delete(timer, false) {
             if (timer_pending(timer) || shutdown) {
-            base = lock_timer_base(timer, &flags);
-            ret = detach_if_pending(timer, base, true) {
-                unsigned idx = timer_get_idx(timer);
+                base = lock_timer_base(timer, &flags);
+                ret = detach_if_pending(timer, base, true) {
+                    unsigned idx = timer_get_idx(timer);
 
-                if (!timer_pending(timer))
-                    return 0;
+                    if (!timer_pending(timer))
+                        return 0;
 
-                if (hlist_is_singular_node(&timer->entry, base->vectors + idx)) {
-                    __clear_bit(idx, base->pending_map);
-                    base->next_expiry_recalc = true;
+                    if (hlist_is_singular_node(&timer->entry, base->vectors + idx)) {
+                        __clear_bit(idx, base->pending_map);
+                        base->next_expiry_recalc = true;
+                    }
+
+                    detach_timer(timer, clear_pending) {
+                        struct hlist_node *entry = &timer->entry;
+
+                        __hlist_del(entry);
+                        if (clear_pending)
+                            entry->pprev = NULL;
+                        entry->next = LIST_POISON2;
+                    }
+                    return 1;
                 }
+                if (shutdown)
+                    timer->function = NULL;
+                raw_spin_unlock_irqrestore(&base->lock, flags);
 
-                detach_timer(timer, clear_pending) {
-                    struct hlist_node *entry = &timer->entry;
-
-                    __hlist_del(entry);
-                    if (clear_pending)
-                        entry->pprev = NULL;
-                    entry->next = LIST_POISON2;
-                }
-                return 1;
+                return ret;
             }
-            if (shutdown)
-                timer->function = NULL;
-            raw_spin_unlock_irqrestore(&base->lock, flags);
-
-            return ret;
-        }
-
         }
     }
 }
