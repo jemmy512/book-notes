@@ -370,3 +370,27 @@ Certainly! Here is a list of common IELTS vocabulary related to furniture:
 * go along ... till you meet ...
 * go across/through
 * at the end of the road/path
+
+
+# industry
+
+* Accommodation and Food Services
+* Administrative and Support and Waste Management and Remediation Services
+* Agriculture, Forestry, Fishing and Hunting
+* Arts, Entertainment, and Recreation
+* Construction
+* Educational Services
+* Finance and Insurance
+* Health Care and Social Assistance
+* Information
+* Management of Companies and Enterprises
+* Manufacturing
+* Mining, Quarrying, and Oil and Gas Extraction
+* Professional, Scientific, and Technical Services
+* Public Administration
+* Real Estate and Rental and Leasing
+* Retail Trade
+* Transportation and Warehousing
+* Utilities
+* Wholesale Trade
+* Other Services (except Public Administration)
