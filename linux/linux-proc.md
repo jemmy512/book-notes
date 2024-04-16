@@ -12901,8 +12901,8 @@ out_unlock:
 
 # namespace
 
-* [](https://blog.csdn.net/summer_fish/article/details/134437688)
-* [](https://zhuanlan.zhihu.com/p/335171876)
+* [Linux - Namespace](https://blog.csdn.net/summer_fish/article/details/134437688)
+* [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
 
 ```c
 struct task_struct {
@@ -12924,21 +12924,259 @@ struct nsproxy {
 int setns(int fd, int nstype);
 int unshare(int flags);
 
-
 int     copy_namespaces(unsigned long flags, struct task_struct *tsk);
 void    exit_task_namespaces(struct task_struct *tsk);
 void    switch_task_namespaces(struct task_struct *tsk, struct nsproxy *new);
 void    free_nsproxy(struct nsproxy *ns);
-int     unshare_nsproxy_namespaces(unsigned long, struct nsproxy **, struct cred *, struct fs_struct *);
 int     nsproxy_cache_init(void);
-void    put_nsproxy(struct nsproxy *ns) {  }
-void    get_nsproxy(struct nsproxy *ns) {  }
+```
 
+## setns
+
+* PID Namespace
+    * When setns/unshare, the caller creats a new namespace for its chilren, but the caller itself doesn't move into the new namespace.
+    * The 1st process with pid 1 created by caller is init process in new namespace
+
+```c
+SYSCALL_DEFINE2(setns, int, fd, int, flags)
+{
+    /* fd of namespace file */
+    struct fd f = fdget(fd);
+    struct ns_common *ns = NULL;
+    struct nsset nsset = {};
+    int err = 0;
+
+    if (!f.file)
+        return -EBADF;
+
+    if (proc_ns_file(f.file)) {
+        ns = get_proc_ns(file_inode(f.file));
+        if (flags && (ns->ops->type != flags)) {
+            err = -EINVAL;
+        }
+        flags = ns->ops->type;
+    } else if (!IS_ERR(pidfd_pid(f.file))) {
+        err = check_setns_flags(flags);
+    } else {
+        err = -EINVAL;
+    }
+    if (err)
+        goto out;
+
+    err = prepare_nsset(flags, &nsset) {
+        struct task_struct *me = current;
+
+        /* flags arg is 0, copy current ns, dont create a new one */
+        nsset->nsproxy = create_new_namespaces(0, me, current_user_ns(), me->fs) {
+            struct nsproxy *new_nsp;
+            int err;
+
+            new_nsp = create_nsproxy() {
+                return kmem_cache_alloc(nsproxy_cachep, GFP_KERNEL);
+            }
+
+            new_nsp->mnt_ns = copy_mnt_ns(flags, tsk->nsproxy->mnt_ns, user_ns, new_fs);
+            new_nsp->uts_ns = copy_utsname(flags, user_ns, tsk->nsproxy->uts_ns);
+            new_nsp->ipc_ns = copy_ipcs(flags, user_ns, tsk->nsproxy->ipc_ns);
+
+            new_nsp->pid_ns_for_children =
+                copy_pid_ns(flags, user_ns, tsk->nsproxy->pid_ns_for_children);
+
+            new_nsp->cgroup_ns = copy_cgroup_ns(flags, user_ns,
+                                tsk->nsproxy->cgroup_ns);
+
+            new_nsp->net_ns = copy_net_ns(flags, user_ns, tsk->nsproxy->net_ns);
+
+            new_nsp->time_ns_for_children = copy_time_ns(flags, user_ns,
+                tsk->nsproxy->time_ns_for_children);
+
+            new_nsp->time_ns = get_time_ns(tsk->nsproxy->time_ns);
+
+            return new_nsp;
+        }
+        if (IS_ERR(nsset->nsproxy))
+            return PTR_ERR(nsset->nsproxy);
+
+        if (flags & CLONE_NEWUSER)
+            nsset->cred = prepare_creds();
+        else
+            nsset->cred = current_cred();
+        if (!nsset->cred)
+            goto out;
+
+        /* Only create a temporary copy of fs_struct if we really need to. */
+        if (flags == CLONE_NEWNS) {
+            nsset->fs = me->fs;
+        } else if (flags & CLONE_NEWNS) {
+            nsset->fs = copy_fs_struct(me->fs);
+            if (!nsset->fs)
+                goto out;
+        }
+
+        nsset->flags = flags;
+        return 0;
+    }
+    if (err)
+        goto out;
+
+    if (proc_ns_file(f.file)) {
+        err = validate_ns(&nsset, ns) {
+            return ns->ops->install(nsset, ns) {
+                pidns_install() {
+                    struct nsproxy *nsproxy = nsset->nsproxy;
+                    struct pid_namespace *active = task_active_pid_ns(current);
+                    struct pid_namespace *ancestor, *new = to_pid_ns(ns);
+
+                    ancestor = new;
+                    while (ancestor->level > active->level) {
+                        ancestor = ancestor->parent;
+                    }
+                    if (ancestor != active) {
+                        return -EINVAL;
+                    }
+
+                    put_pid_ns(nsproxy->pid_ns_for_children);
+                    nsproxy->pid_ns_for_children = get_pid_ns(new) {
+                        if (ns != &init_pid_ns)
+                            refcount_inc(&ns->ns.count);
+                        return ns;
+                    }
+                }
+
+                timens_install();
+                ipcns_install();
+                mntns_install();
+                netns_install();
+            }
+        }
+    } else {
+        err = validate_nsset(&nsset, pidfd_pid(f.file));
+    }
+    if (!err) {
+        commit_nsset(&nsset) {
+            unsigned flags = nsset->flags;
+            struct task_struct *me = current;
+
+        #ifdef CONFIG_USER_NS
+            if (flags & CLONE_NEWUSER) {
+                /* transfer ownership */
+                commit_creds(nsset_cred(nsset));
+                nsset->cred = NULL;
+            }
+        #endif
+
+            /* We only need to commit if we have used a temporary fs_struct. */
+            if ((flags & CLONE_NEWNS) && (flags & ~CLONE_NEWNS)) {
+                set_fs_root(me->fs, &nsset->fs->root);
+                set_fs_pwd(me->fs, &nsset->fs->pwd);
+            }
+
+        #ifdef CONFIG_IPC_NS
+            if (flags & CLONE_NEWIPC)
+                exit_sem(me);
+        #endif
+
+        #ifdef CONFIG_TIME_NS
+            if (flags & CLONE_NEWTIME)
+                timens_commit(me, nsset->nsproxy->time_ns);
+        #endif
+
+            /* transfer ownership */
+            switch_task_namespaces(me, nsset->nsproxy) {
+                p->nsproxy = new;
+            }
+            nsset->nsproxy = NULL;
+        }
+        perf_event_namespaces(current);
+    }
+    put_nsset(&nsset);
+out:
+    fdput(f);
+    return err;
+}
+```
+
+## unshare
+
+```c
+SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
+{
+    return ksys_unshare(unshare_flags) {
+        struct fs_struct *fs, *new_fs = NULL;
+        struct files_struct *new_fd = NULL;
+        struct cred *new_cred = NULL;
+        struct nsproxy *new_nsproxy = NULL;
+        int do_sysvsem = 0;
+        int err;
+
+        if (unshare_flags & (CLONE_NEWIPC|CLONE_SYSVSEM))
+            do_sysvsem = 1;
+        err = unshare_fs(unshare_flags, &new_fs);
+
+        err = unshare_fd(unshare_flags, NR_OPEN_MAX, &new_fd);
+
+        err = unshare_userns(unshare_flags, &new_cred);
+
+        err = unshare_nsproxy_namespaces(
+            unshare_flags, &new_nsproxy, new_cred, new_fs) {
+
+            *new_nsp = create_new_namespaces(unshare_flags, current, user_ns,
+                new_fs ? new_fs : current->fs);
+        }
+
+
+        if (new_fs || new_fd || do_sysvsem || new_cred || new_nsproxy) {
+            if (do_sysvsem) {
+                /* CLONE_SYSVSEM is equivalent to sys_exit(). */
+                exit_sem(current);
+            }
+            if (unshare_flags & CLONE_NEWIPC) {
+                /* Orphan segments in old ns (see sem above). */
+                exit_shm(current);
+                shm_init_task(current);
+            }
+
+            if (new_nsproxy)
+                switch_task_namespaces(current, new_nsproxy);
+
+            task_lock(current);
+
+            if (new_fs) {
+                fs = current->fs;
+                spin_lock(&fs->lock);
+                current->fs = new_fs;
+                if (--fs->users)
+                    new_fs = NULL;
+                else
+                    new_fs = fs;
+                spin_unlock(&fs->lock);
+            }
+
+            if (new_fd)
+                swap(current->files, new_fd);
+
+            task_unlock(current);
+
+            if (new_cred) {
+                /* Install the new user namespace */
+                commit_creds(new_cred);
+                new_cred = NULL;
+            }
+        }
+
+        return err;
+    }
+}
 ```
 
 ## pid_namespace
 
-* [](http://www.wowotech.net/process_management/pid.html)
+* [wowotech - Linux系统如何标识进程？](http://www.wowotech.net/process_management/pid.html)
+
+* the 1st process with pid 1 is init process in each namespace and has sepcial privilege
+* a process in one namspace cant affect processes in parent or sibling namespaces
+* If mounted, the /proc filesystem for a new PID namespace only shows processes belonging to the same namespace
+* root namespace can show all processes
 
 ```c
 struct task_struct {
@@ -13314,4 +13552,10 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_s
 
     return pid;
 }
+```
+
+## ipc_namespace
+
+```c
+
 ```
