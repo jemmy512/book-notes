@@ -1,4 +1,5 @@
 # Table of Contents
+
 * [CPU](#cpu)
 * [bios](#bios)
 * [start_kernel](#start_kernel)
@@ -114,8 +115,8 @@
 
 * [cfs_bandwidth](#cfs_bandwidth)
     * [init_cfs_bandwidth](#init_cfs_bandwidth)
-        * [sched_cfs_period_timer](#sched_cfs_period_timer)
-        * [sched_cfs_slack_timer](#sched_cfs_slack_timer)
+    * [sched_cfs_period_timer](#sched_cfs_period_timer)
+    * [sched_cfs_slack_timer](#sched_cfs_slack_timer)
     * [tg_set_cfs_bandwidth](#tg_set_cfs_bandwidth)
     * [throttle_cfs_rq](#throttle_cfs_rq)
     * [unthrottle_cfs_rq](#unthrottle_cfs_rq)
@@ -2312,6 +2313,7 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
                         }
 
                         if (rt_rq_throttled(rt_rq)) {
+                            /* sched_rt_rq_enqueue at sched_rt_period_timer */
                             sched_rt_rq_dequeue(rt_rq) {
                                 struct sched_rt_entity *rt_se;
                                 int cpu = cpu_of(rq_of_rt_rq(rt_rq));
@@ -2902,7 +2904,9 @@ DEFINE_SCHED_CLASS(fair) = {
 enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     util_est_enqueue(&rq->cfs, p) {
         int enqueued  = cfs_rq->avg.util_est;
-        enqueued += _task_util_est(p);
+        enqueued += _task_util_est(p) {
+            return READ_ONCE(p->se.avg.util_est) & ~UTIL_AVG_UNCHANGED;
+        }
         WRITE_ONCE(cfs_rq->avg.util_est, enqueued);
     }
 
@@ -3155,7 +3159,9 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
     util_est_dequeue(&rq->cfs, p) {
         int enqueued  = cfs_rq->avg.util_est;
-        enqueued -= min_t(unsigned int, enqueued, _task_util_est(p));
+        enqueued -= min_t(unsigned int, enqueued, _task_util_est(p) {
+            return READ_ONCE(p->se.avg.util_est) & ~UTIL_AVG_UNCHANGED
+        });
         WRITE_ONCE(cfs_rq->avg.util_est, enqueued);
     }
 
@@ -4609,6 +4615,7 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
 # sched_domain
 
 * [极致Linux内核 - Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
+* [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo)      [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
 ```c
 sched_init_numa() {
@@ -5141,6 +5148,7 @@ get_cpu_for_node(struct device_node *node)
 
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
+* [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
 
 ![](../images/kernel/proc-sched-cfs-pelt-segement.png)
 ![](../images/kernel/proc-sched-cfs-update_load_avg.png)
@@ -5149,13 +5157,16 @@ get_cpu_for_node(struct device_node *node)
 
 ![](../imeage/kernel/proc-pelt_last_update_time.png) /* EXPORT */
 
+* [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity — how much is a process loading the system right now? — as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
+
 ```c
 struct sched_avg {
     u64                 last_update_time;
 
-    /* running + runnable, scaled to weight */
+    /* running + waiting, scaled to weight */
     u64                 load_sum;
-    /* running + runnalbe, scaled to 1024 */
+    /* runnable includes either actually running,
+     * or waiting for an available CPU */
     u64                 runnable_sum;
     /* running state, scaled to 1024, no weight */
     u32                 util_sum;
@@ -5167,7 +5178,7 @@ struct sched_avg {
     unsigned long       load_avg;
     unsigned long       runnable_avg;
     unsigned long       util_avg;
-    unsigned int        util_est;
+    unsigned int        util_est; /* saved util before sleep */
 }
 ```
 
@@ -5180,8 +5191,32 @@ load, runnable and running function as:
     * on the other hand, for tasks and groups, if a certain group SE which has several tasks waiting together has been waiting in the queue for 1 ms, the pressure it causes should be multiplied.
 
 ```c
+/* sched_entity:
+ *
+ *   task:
+ *     se_weight()   = se->load.weight
+ *     se_runnable() = !!on_rq
+ *
+ *   group: [ see update_cfs_group() ]
+ *     se_weight()   = tg->weight * grq->load_avg / tg->load_avg
+ *     se_runnable() = grq->h_nr_running
+ *
+ *   runnable_sum = se_runnable() * runnable = grq->runnable_sum
+ *   runnable_avg = runnable_sum
+ *
+ *   load_sum := runnable
+ *   load_avg = se_weight(se) * load_sum
+ *
+ * cfq_rq:
+ *
+ *   runnable_sum = \Sum se->avg.runnable_sum
+ *   runnable_avg = \Sum se->avg.runnable_avg
+ *
+ *   load_sum = \Sum se_weight(se) * se->avg.load_sum
+ *   load_avg = \Sum se->avg.load_avg */
+
 int ___update_load_sum(u64 now, struct sched_avg *sa,
-          unsigned long load, unsigned long runnable, int running)
+        unsigned long load, unsigned long runnable, int running)
 {
     u64 delta;
 
@@ -5210,8 +5245,8 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
         delta += sa->period_contrib;
         periods = delta / 1024; /* A period is 1024us (~1ms) */
 
-        /* Step 1: decay old *_sum if we crossed period boundaries. */
         if (periods) {
+            /* Step 1: decay old *_sum if we crossed period boundaries. */
             sa->load_sum = decay_load(sa->load_sum, periods);
             sa->runnable_sum = decay_load(sa->runnable_sum, periods);
             sa->util_sum = decay_load((u64)(sa->util_sum), periods);
@@ -5244,8 +5279,8 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
             sa->load_sum += load * contrib; /* scale to load */
         if (runnable)
             sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT;
-        if (running)
-            sa->util_sum += contrib << SCHED_CAPACITY_SHIFT; /* scale to 1024 */
+        if (running) /* scale to SCHED_CAPACITY_SHIFT 1024 */
+            sa->util_sum += contrib << SCHED_CAPACITY_SHIFT;
 
         return periods;
     }
@@ -5256,7 +5291,7 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
 }
 
 static __always_inline void
-___update_load_avg(struct sched_avg *sa, unsigned long load/* se weight */)
+___update_load_avg(struct sched_avg *sa, unsigned long load/* se_weight */)
 {
     u32 divider = get_pelt_divider(sa) {
         #define LOAD_AVG_MAX        47742
@@ -5264,12 +5299,15 @@ ___update_load_avg(struct sched_avg *sa, unsigned long load/* se weight */)
         return PELT_MIN_DIVIDER + avg->period_contrib;
     }
 
-    /*                              contrib
-     * load_avg = --------------------------------------------- * total_weight
+    /* ___update_load_sum also takes load arg, only one of the two loads takes affect,
+     * when one takes affect, the another is set to 1 */
+
+    /*                             contrib
+     * load_avg = --------------------------------------------- * load
      *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
     sa->load_avg = div_u64(load * sa->load_sum, divider);
 
-    /*                              runnable * contrib
+    /*                      runnable_sum = runnable * contrib
      * runnable_avg = --------------------------------------------- * 1024
      *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
     sa->runnable_avg = div_u64(sa->runnable_sum, divider);
@@ -5290,6 +5328,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     u64 now = cfs_rq_clock_pelt(cfs_rq);
     int decayed;
 
+    /* a new forked or migrated task's last_update_time is 0 */
     if (se->avg.last_update_time && !(flags & SKIP_AGE_LOAD)) {
         __update_load_avg_se(now, cfs_rq, se) {
             ret = ___update_load_sum(now, &se->avg, !!se->on_rq, se_runnable(se),
@@ -5308,7 +5347,8 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
         }
     }
 
-    decayed  = update_cfs_rq_load_avg(now, cfs_rq);
+    /* decayed indicates wheather load has been updated and freq needs to be updated */
+    decayed = update_cfs_rq_load_avg(now, cfs_rq);
     decayed |= propagate_entity_load_avg(se) {
         struct cfs_rq *cfs_rq, *gcfs_rq;
 
@@ -5442,6 +5482,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
         return 1;
     }
 
+    /* new forked or migrated task */
     if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
         /* attach this entity to its cfs_rq load avg
          *
@@ -5609,11 +5650,12 @@ struct rq {
     /* based on clock_task, align to the largest core with highest frequency
      * only updated when task running
      * exclude intr time
-     * exclude idel time */
+     * exclude idle time */
     u64             clock_pelt;
+
+    u64             clock_idle;
     u64             clock_pelt_idle;
     unsigned long   lost_idle_time;
-    u64             clock_idle;
 };
 ```
 
@@ -5770,9 +5812,7 @@ void run_rebalance_domains(struct softirq_action *h)
 
                 /* [rq->clock - running, rq->clock] cpu exec interrupt work
                  * 1: decay interrupt time */
-                ret += ___update_load_sum(rq->clock, &rq->avg_irq,
-                            1, 1, 1);
-
+                ret += ___update_load_sum(rq->clock, &rq->avg_irq, 1, 1, 1);
                 if (ret) {
                     ___update_load_avg(&rq->avg_irq, 1);
                 }
@@ -6089,8 +6129,24 @@ nohz_idle_balance(this_rq, idle) {
 
             rq = cpu_rq(balance_cpu);
 
-            if (flags & NOHZ_STATS_KICK)
-                has_blocked_load |= update_nohz_stats(rq);
+            if (flags & NOHZ_STATS_KICK) {
+                has_blocked_load |= update_nohz_stats(rq) {
+                    unsigned int cpu = rq->cpu;
+
+                    if (!rq->has_blocked_load)
+                        return false;
+
+                    if (!cpumask_test_cpu(cpu, nohz.idle_cpus_mask))
+                        return false;
+
+                    if (!time_after(jiffies, READ_ONCE(rq->last_blocked_load_update_tick)))
+                        return true;
+
+                    update_blocked_averages(cpu);
+
+                    return rq->has_blocked_load;
+                }
+            }
 
             if (time_after_eq(jiffies, rq->next_balance)) {
                 struct rq_flags rf;
@@ -6342,6 +6398,7 @@ more_balance:
         }
 
         if (sd_parent) {
+            /* notify parent the imbalance of child */
             int *group_imbalance = &sd_parent->groups->sgc->imbalance;
             if ((env.flags & LBF_SOME_PINNED) && env.imbalance > 0)
                 *group_imbalance = 1;
@@ -6506,6 +6563,24 @@ int should_we_balance(struct lb_env *env)
 ### find_busiest_group
 
 ```c
+/* Decision matrix according to the local and busiest group type:
+ *
+ * busiest \ local has_spare fully_busy misfit asym imbalanced overloaded
+ * has_spare        nr_idle   balanced   N/A    N/A  balanced   balanced
+ * fully_busy       nr_idle   nr_idle    N/A    N/A  balanced   balanced
+ * misfit_task      force     N/A        N/A    N/A  N/A        N/A
+ * asym_packing     force     force      N/A    N/A  force      force
+ * imbalanced       force     force      N/A    N/A  force      force
+ * overloaded       force     force      N/A    N/A  force      avg_load
+ *
+ * N/A :      Not Applicable because already filtered while updating
+ *            statistics.
+ * balanced : The system is balanced for these 2 groups.
+ * force :    Calculate the imbalance as load migration is probably needed.
+ * avg_load : Only if imbalance is significant enough.
+ * nr_idle :  dst_cpu is not busy and the number of idle CPUs is quite
+ *            different in groups. */
+
 struct sched_group *find_busiest_group(struct lb_env *env)
 {
     struct sg_lb_stats *local, *busiest;
@@ -6873,11 +6948,50 @@ update_sd_lb_stats(env, &sds) {
 
             for_each_cpu_and(i, sched_group_span(group), env->cpus) {
                 struct rq *rq = cpu_rq(i);
-                unsigned long load = cpu_load(rq);
+                unsigned long load = cpu_load(rq) {
+                    return cfs_rq->avg.load_avg;
+                }
 
                 sgs->group_load += load;
-                sgs->group_util += cpu_util_cfs(i);
-                sgs->group_runnable += cpu_runnable(rq);
+                sgs->group_util += cpu_util_cfs(i) {
+                    return cpu_util(
+                        cpu, NULL,
+                        -1, /* @dst_cpu: CPU @p migrates to, -1 if @p moves from @cpu or @p == NULL */
+                        0 /* 1 to enable boosting, otherwise 0 */
+                        ) {
+                        struct cfs_rq *cfs_rq = &cpu_rq(cpu)->cfs;
+                        unsigned long util = READ_ONCE(cfs_rq->avg.util_avg);
+                        unsigned long runnable;
+
+                        if (boost) {
+                            runnable = READ_ONCE(cfs_rq->avg.runnable_avg);
+                            util = max(util, runnable);
+                        }
+
+                        if (p && task_cpu(p) == cpu && dst_cpu != cpu)
+                            lsub_positive(&util, task_util(p));
+                        else if (p && task_cpu(p) != cpu && dst_cpu == cpu)
+                            util += task_util(p);
+
+                        if (sched_feat(UTIL_EST)) {
+                            unsigned long util_est;
+
+                            util_est = READ_ONCE(cfs_rq->avg.util_est);
+
+                            if (dst_cpu == cpu)
+                                util_est += _task_util_est(p);
+                            else if (p && unlikely(task_on_rq_queued(p) || current == p))
+                                lsub_positive(&util_est, _task_util_est(p));
+
+                            util = max(util, util_est);
+                        }
+
+                        return min(util, arch_scale_cpu_capacity(cpu));
+                    }
+                }
+                sgs->group_runnable += cpu_runnable(rq) {
+                    return cfs_rq->avg.runnable_avg;
+                }
                 sgs->sum_h_nr_running += rq->cfs.h_nr_running;
 
                 nr_running = rq->nr_running;
@@ -6948,7 +7062,22 @@ update_sd_lb_stats(env, &sds) {
                 if (sgs->group_misfit_task_load)
                     return group_misfit_task;
 
-                if (!group_has_capacity(imbalance_pct, sgs))
+                ret = group_has_capacity(imbalance_pct, sgs) {
+                    /* nr task is smaller than the nr CPUs
+                     * the utilization is lower than the available capacity */
+                    if (sgs->sum_nr_running < sgs->group_weight)
+                        return true;
+
+                    /* group_runnable > group_capacity imblance_pct */
+                    if ((sgs->group_capacity * imbalance_pct) < (sgs->group_runnable * 100))
+                        return false;
+
+                    if ((sgs->group_util * imbalance_pct) < (sgs->group_capacity * 100))
+                        return true;
+
+                    return false;
+                }
+                if (!ret)
                     return group_fully_busy;
 
                 return group_has_spare;
@@ -7038,9 +7167,7 @@ update_sd_pick_busiest(struct lb_env *env,
     if (sgs->group_type < busiest->group_type)
         return false;
 
-    /* The candidate and the current busiest group are the same type of
-     * group. Let check which one is the busiest according to the type. */
-
+    /* sgs->group_type == busiest->group_type */
     switch (sgs->group_type) {
     case group_overloaded:
         /* Select the overloaded group with highest avg_load. */
@@ -7453,7 +7580,7 @@ ret = can_migrate_task(p, env) {
                 return 1;
 
             /* Don't migrate task if the task's cookie does not match
-                * with the destination CPU's core cookie. */
+             * with the destination CPU's core cookie. */
             if (!sched_core_cookie_match(cpu_rq(env->dst_cpu), p))
                 return 1;
 
@@ -7908,7 +8035,24 @@ kernel_clone(struct kernel_clone_args *args) {
 
             return 0;
         }
-        pid = alloc_pid(p->nsproxy->pid_ns_for_children)
+
+        pid = alloc_pid(p->nsproxy->pid_ns_for_children);
+        p->pid = pid_nr(pid) {
+            pid_t nr = 0;
+            if (pid)
+                nr = pid->numbers[0].nr; /* numbers[0] global id */
+            return nr;
+        }
+        init_task_pid(p, PIDTYPE_PID, pid);
+
+        if (clone_flags & CLONE_THREAD) {
+            p->group_leader = current->group_leader;
+            p->tgid = current->tgid;
+        } else {
+            p->group_leader = p;
+            p->tgid = p->pid;
+        }
+
         futex_init_task(p);
     }
 
@@ -10355,9 +10499,13 @@ struct task_group *sched_create_group(struct task_group *parent) {
 
 # cfs_bandwidth
 
+
+![](../images/kernel/proc-sched-cfs-period-quota.png)
+
 ```c
 struct cfs_bandwidth {
     raw_spinlock_t      lock;
+    /* in each period time, the grp has quota time to run */
     ktime_t             period;
     u64                 quota;
     u64                 runtime; /* the remaining time of the quota */
@@ -10407,7 +10555,8 @@ void init_cfs_bandwidth(struct cfs_bandwidth *cfs_b, struct cfs_bandwidth *paren
 }
 ```
 
-### sched_cfs_period_timer
+## sched_cfs_period_timer
+
 ```c
 enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
 {
@@ -10495,7 +10644,7 @@ enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
 }
 ```
 
-### sched_cfs_slack_timer
+## sched_cfs_slack_timer
 
 ```c
 enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
@@ -10511,7 +10660,9 @@ enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
         raw_spin_lock_irqsave(&cfs_b->lock, flags);
         cfs_b->slack_started = false;
 
-        /* Are we near the end of the current quota period? */
+        /* Are we near the end of the current quota period?
+         * Yes: throttled tasks will be unthrottled in sched_cfs_period_timer
+         * NO: throttled tasks need to be unthrottled here */
         if (runtime_refresh_within(cfs_b, min_bandwidth_expiration)) {
             raw_spin_unlock_irqrestore(&cfs_b->lock, flags);
             return;
@@ -10552,6 +10703,8 @@ enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
                     goto next;
 
                 raw_spin_lock(&cfs_b->lock);
+                /* By the above checks, this should never be true */
+                SCHED_WARN_ON(cfs_rq->runtime_remaining > 0);
                 runtime = -cfs_rq->runtime_remaining + 1;
                 if (runtime > cfs_b->runtime) {
                     runtime = cfs_b->runtime;
@@ -10751,7 +10904,9 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
     idle_task_delta = cfs_rq->idle_h_nr_running;
 
     for_each_sched_entity(se) {
-        struct cfs_rq *qcfs_rq = cfs_rq_of(se);
+        struct cfs_rq *qcfs_rq = cfs_rq_of(se) {
+            return se->cfs_rq;
+        }
         if (!se->on_rq)
             goto done;
 
@@ -10763,11 +10918,15 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
         qcfs_rq->h_nr_running -= task_delta;
         qcfs_rq->idle_h_nr_running -= idle_task_delta;
 
+        /* parent cfs_rq has more than one se, stop dequeue parent */
         if (qcfs_rq->load.weight) {
             /* Avoid re-evaluating load for this entity: */
             se = parent_entity(se);
             break;
         }
+
+        /* parent cfs_rq owns only one scheduling entity,
+         * proceed with dequeuing towards the hierarchy upward */
     }
 
     for_each_sched_entity(se) {
@@ -10910,11 +11069,7 @@ unthrottle_throttle:
 
 ## sched_group_set_shares
 
-![](../images/kernel/proc-sched-task-group-sched_group_set_shares-1.png)
-
----
-
-![](../images/kernel/proc-sched-task-group-sched_group_set_shares-2.png)
+![](../images/kernel/proc-sched-task-group-sched_group_set_shares.png)
 
 ```c
 static struct cftype cpu_legacy_files[] = {
@@ -10955,6 +11110,8 @@ cpu_shares_write_u64() {
 ```
 
 ## update_cfs_group
+
+![](../images/kernel/proc-sched-update_cfs_shares.png)
 
 ```c
 /* recalc group shares based on the current state of its group runqueue */
@@ -11041,11 +11198,11 @@ void update_cfs_group(struct sched_entity *se) {
 
 ```c
 struct rt_bandwidth {
-    raw_spinlock_t          rt_runtime_lock;
-    ktime_t                 rt_period; /* timer interval of checking */
-    u64                     rt_runtime; /* remaining run time */
-    struct hrtimer          rt_period_timer;
-    unsigned int            rt_period_active;
+    raw_spinlock_t  rt_runtime_lock;
+    ktime_t         rt_period; /* timer interval of checking */
+    u64             rt_runtime; /* remaining run time */
+    struct hrtimer  rt_period_timer;
+    unsigned int    rt_period_active;
 };
 ```
 
@@ -11147,7 +11304,7 @@ int tg_rt_schedulable(struct task_group *tg, void *data)
 }
 ```
 
-### sched_rt_period_timer
+## sched_rt_period_timer
 
 ```c
 void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
@@ -11283,6 +11440,7 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
                     throttled = 1;
 
                 if (enqueue) {
+                    /* sched_rt_rq_dequeue at task_tick_rt */
                     sched_rt_rq_enqueue(rt_rq) {
                         struct task_struct *curr = rq_of_rt_rq(rt_rq)->curr;
                         struct rq *rq = rq_of_rt_rq(rt_rq);
@@ -12738,5 +12896,422 @@ ssize_t cgroup_subtree_control_write(
 out_unlock:
     cgroup_kn_unlock(of->kn);
     return ret ?: nbytes;
+}
+```
+
+# namespace
+
+* [](https://blog.csdn.net/summer_fish/article/details/134437688)
+* [](https://zhuanlan.zhihu.com/p/335171876)
+
+```c
+struct task_struct {
+    struct nsproxy *nsproxy;
+}
+
+struct nsproxy {
+    refcount_t count;
+    struct uts_namespace    *uts_ns;
+    struct ipc_namespace    *ipc_ns;
+    struct mnt_namespace    *mnt_ns;
+    struct pid_namespace    *pid_ns_for_children;
+    struct net              *net_ns;
+    struct time_namespace   *time_ns;
+    struct time_namespace   *time_ns_for_children;
+    struct cgroup_namespace *cgroup_ns;
+};
+
+int setns(int fd, int nstype);
+int unshare(int flags);
+
+
+int     copy_namespaces(unsigned long flags, struct task_struct *tsk);
+void    exit_task_namespaces(struct task_struct *tsk);
+void    switch_task_namespaces(struct task_struct *tsk, struct nsproxy *new);
+void    free_nsproxy(struct nsproxy *ns);
+int     unshare_nsproxy_namespaces(unsigned long, struct nsproxy **, struct cred *, struct fs_struct *);
+int     nsproxy_cache_init(void);
+void    put_nsproxy(struct nsproxy *ns) {  }
+void    get_nsproxy(struct nsproxy *ns) {  }
+
+```
+
+## pid_namespace
+
+* [](http://www.wowotech.net/process_management/pid.html)
+
+```c
+struct task_struct {
+    /* PID/PID hash table linkage. */
+    struct pid          *thread_pid;
+    struct hlist_node   pid_links[PIDTYPE_MAX];
+    struct list_head    thread_node;
+};
+
+enum pid_type {
+    PIDTYPE_PID,
+    PIDTYPE_TGID,
+    PIDTYPE_PGID,
+    PIDTYPE_SID,
+    PIDTYPE_MAX,
+};
+
+struct pid
+{
+    atomic_t count;
+    unsigned int level;
+    /* lists of tasks that use this pid */
+    struct hlist_head tasks[PIDTYPE_MAX];
+    struct rcu_head rcu;
+    struct upid numbers[1];  //存储每层的pid信息的变成数组，长度就是上面的level
+};
+
+struct pid
+{
+    refcount_t      count;
+    unsigned int    level;
+    spinlock_t      lock;
+    struct dentry   *stashed;
+    u64             ino;
+
+    /* lists of tasks that use this pid */
+    struct hlist_head tasks[PIDTYPE_MAX];
+    struct hlist_head inodes;
+
+    /* wait queue for pidfd notifications */
+    wait_queue_head_t wait_pidfd;
+    struct rcu_head rcu;
+
+    /* a pid in level x has at least x upid,
+     * which means parent ns can see pids in children ns */
+    struct upid numbers[];
+};
+
+struct upid {
+    int nr; /* pid nr in current level */
+    struct pid_namespace *ns /* current level's ns */;
+};
+```
+
+### getpid_xxx
+
+```c
+/* the helpers to get the pid's id seen from different namespaces
+ *
+ * pid_nr()    : global id, i.e. the id seen from the init namespace;
+ * pid_vnr()   : virtual id, i.e. the id seen from the pid namespace of
+ *               current.
+ * pid_nr_ns() : id seen from the ns specified.
+ *
+ * see also task_xid_nr() etc in include/linux/sched.h */
+
+static inline pid_t pid_nr(struct pid *pid)
+{
+	pid_t nr = 0;
+	if (pid)
+		nr = pid->numbers[0].nr;
+	return nr;
+}
+
+pid_t pid_vnr(struct pid *pid)
+{
+    ns = task_active_pid_ns(current) {
+        pid = task_pid(tsk) {
+            return task->thread_pid;
+        }
+        return ns_of_pid(pid) {
+            struct pid_namespace *ns = NULL;
+            if (pid)
+                ns = pid->numbers[pid->level].ns;
+            return ns;
+        };
+    }
+    return pid_nr_ns(pid, ns) {
+        struct upid *upid;
+        pid_t nr = 0;
+
+        if (pid && ns->level <= pid->level) {
+            upid = &pid->numbers[ns->level];
+            if (upid->ns == ns)
+                nr = upid->nr;
+        }
+        return nr;
+    }
+}
+
+struct pid *get_task_pid(struct task_struct *task, enum pid_type type)
+{
+    struct pid *pid;
+    pid_ptr =  return (type == PIDTYPE_PID)
+        ? &task->thread_pid : &task->signal->pids[type];
+    pid = get_pid(rcu_dereference(*pid_ptr)) {
+        if (pid)
+            refcount_inc(&pid->count);
+        return pid;
+    }
+    return pid;
+}
+
+struct pid *find_pid_ns(int nr, struct pid_namespace *ns)
+{
+    return idr_find(&ns->idr, nr);
+}
+```
+
+```c
+SYSCALL_DEFINE0(getpid)
+{
+    return task_tgid_vnr(current) {
+        return __task_pid_nr_ns(tsk, PIDTYPE_TGID, NULL/*ns*/) {
+            pid_t nr = 0;
+
+            rcu_read_lock();
+            if (!ns) {
+                ns = task_active_pid_ns(current);
+            }
+            nr = pid_nr_ns(*task_pid_ptr(task, type), ns);
+            rcu_read_unlock();
+
+            return nr;
+        }
+    }
+}
+
+SYSCALL_DEFINE1(getpgid, pid_t, pid)
+{
+    return do_getpgid(pid) {
+        struct task_struct *p;
+        struct pid *grp;
+        int retval;
+
+        rcu_read_lock();
+        if (!pid) {
+            grp = task_pgrp(current) {
+                return task->signal->pids[PIDTYPE_PGID];
+            }
+        } else {
+            retval = -ESRCH;
+            p = find_task_by_vpid(pid) {
+                return find_task_by_pid_ns(pid/*nr*/, task_active_pid_ns(current)) {
+                    pid = find_pid_ns(nr, ns) {
+                        return idr_find(&ns->idr, nr);
+                    }
+                    return pid_task(pid, PIDTYPE_PID/*type*/) {
+                        struct task_struct *result = NULL;
+                        if (pid) {
+                            struct hlist_node *first;
+                            first = rcu_dereference_check(
+                                hlist_first_rcu(&pid->tasks[type]),
+                                lockdep_tasklist_lock_is_held()
+                            );
+                            if (first)
+                                result = hlist_entry(first, struct task_struct,
+                                    pid_links[(type)]
+                                );
+                        }
+                        return result;
+                    }
+                }
+            }
+            if (!p)
+                goto out;
+            grp = task_pgrp(p);
+            if (!grp)
+                goto out;
+
+            retval = security_task_getpgid(p);
+            if (retval)
+                goto out;
+        }
+        retval = pid_vnr(grp) {
+            return pid_nr_ns(pid, task_active_pid_ns(current));
+        }
+    out:
+        rcu_read_unlock();
+        return retval;
+    }
+}
+```
+
+### copy_pid_ns
+
+```c
+struct pid_namespace *copy_pid_ns(unsigned long flags,
+	struct user_namespace *user_ns, struct pid_namespace *old_ns)
+{
+	if (!(flags & CLONE_NEWPID))
+		return get_pid_ns(old_ns);
+	if (task_active_pid_ns(current) != old_ns)
+		return ERR_PTR(-EINVAL);
+	return create_pid_namespace(user_ns, old_ns) {
+        struct pid_namespace *ns;
+        unsigned int level = parent_pid_ns->level + 1;
+        struct ucounts *ucounts;
+        int err;
+
+        err = -EINVAL;
+        if (!in_userns(parent_pid_ns->user_ns, user_ns))
+            goto out;
+
+        err = -ENOSPC;
+        if (level > MAX_PID_NS_LEVEL)
+            goto out;
+        ucounts = inc_pid_namespaces(user_ns);
+        if (!ucounts)
+            goto out;
+
+        err = -ENOMEM;
+        ns = kmem_cache_zalloc(pid_ns_cachep, GFP_KERNEL);
+        if (ns == NULL)
+            goto out_dec;
+
+        idr_init(&ns->idr);
+
+        ns->pid_cachep = create_pid_cachep(level) {
+            /* Level 0 is init_pid_ns.pid_cachep */
+            struct kmem_cache **pkc = &pid_cache[level - 1];
+            struct kmem_cache *kc;
+            char name[4 + 10 + 1];
+            unsigned int len;
+
+            kc = READ_ONCE(*pkc);
+            if (kc)
+                return kc;
+
+            snprintf(name, sizeof(name), "pid_%u", level + 1);
+            len = struct_size_t(struct pid, numbers, level + 1);
+            mutex_lock(&pid_caches_mutex);
+            /* Name collision forces to do allocation under mutex. */
+            if (!*pkc)
+                *pkc = kmem_cache_create(name, len, 0,
+                            SLAB_HWCACHE_ALIGN | SLAB_ACCOUNT, NULL);
+            mutex_unlock(&pid_caches_mutex);
+            /* current can fail, but someone else can succeed. */
+            return READ_ONCE(*pkc);
+        }
+        if (ns->pid_cachep == NULL)
+            goto out_free_idr;
+
+        err = ns_alloc_inum(&ns->ns);
+        if (err)
+            goto out_free_idr;
+        ns->ns.ops = &pidns_operations;
+
+        refcount_set(&ns->ns.count, 1);
+        ns->level = level;
+        ns->parent = get_pid_ns(parent_pid_ns);
+        ns->user_ns = get_user_ns(user_ns);
+        ns->ucounts = ucounts;
+        ns->pid_allocated = PIDNS_ADDING;
+    #if defined(CONFIG_SYSCTL) && defined(CONFIG_MEMFD_CREATE)
+        ns->memfd_noexec_scope = pidns_memfd_noexec_scope(parent_pid_ns);
+    #endif
+
+        return ns;
+
+    out_free_idr:
+        idr_destroy(&ns->idr);
+        kmem_cache_free(pid_ns_cachep, ns);
+    out_dec:
+        dec_pid_namespaces(ucounts);
+    out:
+        return ERR_PTR(err);
+    }
+}
+```
+
+### alloc_pid
+
+```c
+struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_size)
+{
+    struct pid *pid;
+    enum pid_type type;
+    int i, nr;
+    struct pid_namespace *tmp;
+    struct upid *upid;
+    int retval = -ENOMEM;
+
+    if (set_tid_size > ns->level + 1)
+        return ERR_PTR(-EINVAL);
+
+    pid = kmem_cache_alloc(ns->pid_cachep, GFP_KERNEL);
+
+    tmp = ns;
+    pid->level = ns->level;
+
+    for (i = ns->level; i >= 0; i--) {
+        int tid = 0;
+
+        if (set_tid_size) {
+            tid = set_tid[ns->level - i];
+
+            retval = -EINVAL;
+            if (tid < 1 || tid >= pid_max)
+                goto out_free;
+            if (tid != 1 && !tmp->child_reaper)
+                goto out_free;
+            retval = -EPERM;
+            if (!checkpoint_restore_ns_capable(tmp->user_ns))
+                goto out_free;
+            set_tid_size--;
+        }
+
+        idr_preload(GFP_KERNEL);
+        spin_lock_irq(&pidmap_lock);
+
+        if (tid) {
+            nr = idr_alloc(&tmp->idr, NULL, tid, tid + 1, GFP_ATOMIC);
+            if (nr == -ENOSPC) {
+                nr = -EEXIST;
+            }
+        } else {
+            int pid_min = 1;
+            if (idr_get_cursor(&tmp->idr) > RESERVED_PIDS) {
+                pid_min = RESERVED_PIDS;
+            }
+            nr = idr_alloc_cyclic(&tmp->idr, NULL, pid_min, pid_max, GFP_ATOMIC);
+        }
+        spin_unlock_irq(&pidmap_lock);
+        idr_preload_end();
+
+        if (nr < 0) {
+            retval = (nr == -ENOSPC) ? -EAGAIN : nr;
+            goto out_free;
+        }
+
+        pid->numbers[i].nr = nr;
+        pid->numbers[i].ns = tmp;
+        tmp = tmp->parent;
+    }
+
+    retval = -ENOMEM;
+
+    get_pid_ns(ns);
+    refcount_set(&pid->count, 1);
+    spin_lock_init(&pid->lock);
+    for (type = 0; type < PIDTYPE_MAX; ++type) {
+        INIT_HLIST_HEAD(&pid->tasks[type]);
+    }
+
+    init_waitqueue_head(&pid->wait_pidfd);
+    INIT_HLIST_HEAD(&pid->inodes);
+
+    upid = pid->numbers + ns->level;
+    spin_lock_irq(&pidmap_lock);
+    if (!(ns->pid_allocated & PIDNS_ADDING)) {
+        goto out_unlock;
+    }
+    pid->stashed = NULL;
+    pid->ino = ++pidfs_ino;
+
+    /* Make the PID visible to find_pid_ns. */
+    for ( ; upid >= pid->numbers; --upid) {
+        idr_replace(&upid->ns->idr, pid, upid->nr);
+        upid->ns->pid_allocated++;
+    }
+    spin_unlock_irq(&pidmap_lock);
+
+    return pid;
 }
 ```
