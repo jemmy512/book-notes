@@ -9540,7 +9540,6 @@ void exit_notify(struct task_struct *tsk, int group_dead)
         if (unlikely(!list_empty(&father->ptraced)))
             exit_ptrace(father, dead);
 
-        /* Can drop and reacquire tasklist_lock */
         reaper = find_child_reaper(father, dead) {
             struct pid_namespace *pid_ns = task_active_pid_ns(father);
             struct task_struct *reaper = pid_ns->child_reaper;
@@ -9568,28 +9567,61 @@ void exit_notify(struct task_struct *tsk, int group_dead)
                     --->
             }
 
-            zap_pid_ns_processes(pid_ns);
-            write_lock_irq(&tasklist_lock);
+            /* Q: kill all processes in the ns? */
+            zap_pid_ns_processes(pid_ns) {
+                struct task_struct *task, *me = current;
+                int init_pids = thread_group_leader(me) ? 1 : 2;
+                struct pid *pid;
 
+                /* Don't allow any more processes into the pid namespace */
+                disable_pid_allocation(pid_ns);
+
+                me->sighand->action[SIGCHLD - 1].sa.sa_handler = SIG_IGN;
+
+                nr = 2;
+                idr_for_each_entry_continue(&pid_ns->idr, pid, nr) {
+                    task = pid_task(pid, PIDTYPE_PID);
+                    if (task && !__fatal_signal_pending(task))
+                        group_send_sig_info(SIGKILL, SEND_SIG_PRIV, task, PIDTYPE_MAX);
+                }
+
+                do {
+                    clear_thread_flag(TIF_SIGPENDING);
+                    rc = kernel_wait4(-1, NULL, __WALL, NULL);
+                } while (rc != -ECHILD);
+
+                for (;;) {
+                    set_current_state(TASK_INTERRUPTIBLE);
+                    if (pid_ns->pid_allocated == init_pids)
+                        break;
+
+                    exit_tasks_rcu_stop();
+                    schedule();
+                    exit_tasks_rcu_start();
+                }
+                __set_current_state(TASK_RUNNING);
+
+                if (pid_ns->reboot)
+                    current->signal->group_exit_code = pid_ns->reboot;
+            }
             return father;
         }
 
         if (list_empty(&father->children))
             return;
 
+        /* When we die, we re-parent all our children, and try to:
+         * 3. give it to the init process (PID 1) in our pid namespace */
         reaper = find_new_reaper(father, reaper/*child_reaper*/) {
+            /* 1. give them to another thread in our thread group, if such a member exists */
             thread = find_alive_thread(father);
             if (thread)
                 return thread;
 
+            /* 2. give it to the first ancestor process which prctl'd itself as a
+             *    child_subreaper for its children (like a service manager) */
             if (father->signal->has_child_subreaper) {
                 unsigned int ns_level = task_pid(father)->level;
-                /* Find the first ->is_child_subreaper ancestor in our pid_ns.
-                 * We can't check reaper != child_reaper to ensure we do not
-                 * cross the namespaces, the exiting parent could be injected
-                 * by setns() + fork().
-                 * We check pid->level, this is slightly more efficient than
-                 * task_active_pid_ns(reaper) != task_active_pid_ns(father). */
                 for (reaper = father->real_parent;
                     task_pid(reaper)->level == ns_level;
                     reaper = reaper->real_parent) {
@@ -9618,7 +9650,7 @@ void exit_notify(struct task_struct *tsk, int group_dead)
             /* If this is a threaded reparent there is no need to
              * notify anyone anything has happened. */
             if (!same_thread_group(reaper, father)) {
-                reparent_leader(father, p, dead) [
+                reparent_leader(father, p, dead) {
                     if (unlikely(p->exit_state == EXIT_DEAD))
                         return;
 
@@ -9635,7 +9667,7 @@ void exit_notify(struct task_struct *tsk, int group_dead)
                     }
 
                     kill_orphaned_pgrp(p, father);
-                ]
+                }
             }
         }
         list_splice_tail_init(&father->children, &reaper->children);
@@ -9655,10 +9687,10 @@ void exit_notify(struct task_struct *tsk, int group_dead)
                  * we are, and it was the only connection outside. */
                 ignored_task = NULL;
 
-            if (task_pgrp(parent) != pgrp &&
-                task_session(parent) == task_session(tsk) &&
-                will_become_orphaned_pgrp(pgrp, ignored_task) &&
-                has_stopped_jobs(pgrp)) {
+            if (task_pgrp(parent) != pgrp
+                && task_session(parent) == task_session(tsk)
+                && will_become_orphaned_pgrp(pgrp, ignored_task)
+                && has_stopped_jobs(pgrp)) {
 
                 __kill_pgrp_info(SIGHUP, SEND_SIG_PRIV, pgrp);
                 __kill_pgrp_info(SIGCONT, SEND_SIG_PRIV, pgrp) {
@@ -11484,6 +11516,7 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 * [开发内功修炼 - cgroup](https://mp.weixin.qq.com/s/rUQLM8WfjMqa__Nvhjhmxw)
 * [奇小葩 - linux cgroup](https://blog.csdn.net/u012489236/category_11288796.html)
 * [极客时间](https://time.geekbang.org/column/article/115582)
+* [Docker 背后的内核知识 - cgroups 资源限制](https://www.infoq.cn/news/docker-kernel-knowledge-cgroups-resource-isolation)
 
 * Kernel cgroup v2 https://docs.kernel.org/admin-guide/cgroup-v2.html
 * Domain cgroup:
@@ -12903,6 +12936,7 @@ out_unlock:
 
 * [Linux - Namespace](https://blog.csdn.net/summer_fish/article/details/134437688)
 * [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
+* [Docker 背后的内核知识 - Namespace 资源隔离](https://www.infoq.cn/article/docker-kernel-knowledge-namespace-resource-isolation/)
 
 ```c
 struct task_struct {
@@ -12936,6 +12970,7 @@ int     nsproxy_cache_init(void);
 * PID Namespace
     * When setns/unshare, the caller creats a new namespace for its chilren, but the caller itself doesn't move into the new namespace.
     * The 1st process with pid 1 created by caller is init process in new namespace
+    * This is beacause a process pid cant change during its lifetime
 
 ```c
 SYSCALL_DEFINE2(setns, int, fd, int, flags)
@@ -13044,9 +13079,48 @@ SYSCALL_DEFINE2(setns, int, fd, int, flags)
                 }
 
                 timens_install();
-                ipcns_install();
-                mntns_install();
-                netns_install();
+
+                ipcns_install() {
+                    struct nsproxy *nsproxy = nsset->nsproxy;
+                    struct ipc_namespace *ns = to_ipc_ns(new);
+                    put_ipc_ns(nsproxy->ipc_ns);
+                    nsproxy->ipc_ns = get_ipc_ns(ns);
+                }
+
+                mntns_install() {
+                    struct nsproxy *nsproxy = nsset->nsproxy;
+                    struct fs_struct *fs = nsset->fs;
+                    struct mnt_namespace *mnt_ns = to_mnt_ns(ns), *old_mnt_ns;
+                    struct user_namespace *user_ns = nsset->cred->user_ns;
+                    struct path root;
+                    int err;
+
+                    if (fs->users != 1)
+                        return -EINVAL;
+
+                    get_mnt_ns(mnt_ns);
+                    old_mnt_ns = nsproxy->mnt_ns;
+                    nsproxy->mnt_ns = mnt_ns;
+
+                    /* Find the root */
+                    err = vfs_path_lookup(mnt_ns->root->mnt.mnt_root,
+                        &mnt_ns->root->mnt,
+                        "/", LOOKUP_DOWN, &root
+                    );
+
+                    put_mnt_ns(old_mnt_ns);
+
+                    /* Update the pwd and root */
+                    set_fs_pwd(fs, &root);
+                    set_fs_root(fs, &root);
+                }
+
+                netns_install() {
+                    struct nsproxy *nsproxy = nsset->nsproxy;
+                    struct net *net = to_net_ns(ns);
+                    put_net(nsproxy->net_ns);
+                    nsproxy->net_ns = get_net(net);
+                }
             }
         }
     } else {
@@ -13171,19 +13245,31 @@ SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
 
 ## pid_namespace
 
+![](../images/kernel/ns-pid.png)
+
 * [wowotech - Linux系统如何标识进程？](http://www.wowotech.net/process_management/pid.html)
+* [Linux 内核进程管理之进程ID](https://www.cnblogs.com/hazir/p/linux_kernel_pid.html)
+
+* Q: what happens when ini process dies before other processes in a pid namespace?
+    * zap_pid_ns_processes seems kill all other process
 
 * the 1st process with pid 1 is init process in each namespace and has sepcial privilege
-* a process in one namspace cant affect processes in parent or sibling namespaces
+* a process in one namespace cant affect processes in parent or sibling namespaces
 * If mounted, the /proc filesystem for a new PID namespace only shows processes belonging to the same namespace
 * root namespace can show all processes
 
 ```c
 struct task_struct {
+    pid_t               pid;
+    pid_t               tgid;
+
     /* PID/PID hash table linkage. */
     struct pid          *thread_pid;
     struct hlist_node   pid_links[PIDTYPE_MAX];
     struct list_head    thread_node;
+
+    /* task group leader */
+    struct task_struct  *group_leader;
 };
 
 enum pid_type {
@@ -13192,16 +13278,6 @@ enum pid_type {
     PIDTYPE_PGID,
     PIDTYPE_SID,
     PIDTYPE_MAX,
-};
-
-struct pid
-{
-    atomic_t count;
-    unsigned int level;
-    /* lists of tasks that use this pid */
-    struct hlist_head tasks[PIDTYPE_MAX];
-    struct rcu_head rcu;
-    struct upid numbers[1];  //存储每层的pid信息的变成数组，长度就是上面的level
 };
 
 struct pid
@@ -13220,14 +13296,35 @@ struct pid
     wait_queue_head_t wait_pidfd;
     struct rcu_head rcu;
 
-    /* a pid in level x has at least x upid,
-     * which means parent ns can see pids in children ns */
+    /* pid nr in each ns hierarchy level */
     struct upid numbers[];
 };
 
 struct upid {
     int nr; /* pid nr in current level */
-    struct pid_namespace *ns /* current level's ns */;
+    struct pid_namespace *ns; /* current level's ns */
+};
+
+struct pid_namespace {
+    struct idr              idr;
+    struct rcu_head         rcu;
+    unsigned int            pid_allocated;
+    struct task_struct      *child_reaper;
+    struct kmem_cache       *pid_cachep;
+    unsigned int            level;
+    struct pid_namespace    *parent;
+
+    struct user_namespace   *user_ns;
+    struct ucounts          *ucounts;
+    int reboot;
+    struct ns_common        ns;
+}
+
+struct ns_common {
+    struct dentry *stashed;
+    const struct proc_ns_operations *ops;
+    unsigned int inum;
+    refcount_t count;
 };
 ```
 
@@ -13294,6 +13391,15 @@ struct pid *find_pid_ns(int nr, struct pid_namespace *ns)
 {
     return idr_find(&ns->idr, nr);
 }
+
+pid_t task_pid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
+pid_t task_tgid_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
+pid_t task_pigd_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
+pid_t task_session_nr_ns(struct task_struct *tsk, struct pid_namespace *ns);
+
+struct task_struct *find_task_by_pid_ns(pid_t nr, struct pid_namespace *ns);
+struct task_struct *find_task_by_vpid(pid_t vnr);
+struct task_struct *find_task_by_pid(pid_t vnr);
 ```
 
 ```c
@@ -13558,4 +13664,164 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_s
 
 ```c
 
+```
+
+## uts_namespace
+
+```c
+struct uts_namespace {
+	struct new_utsname name;
+	struct user_namespace *user_ns;
+	struct ucounts *ucounts;
+	struct ns_common ns;
+};
+
+struct new_utsname {
+	char sysname[__NEW_UTS_LEN + 1];
+	char nodename[__NEW_UTS_LEN + 1];
+	char release[__NEW_UTS_LEN + 1];
+	char version[__NEW_UTS_LEN + 1];
+	char machine[__NEW_UTS_LEN + 1];
+	char domainname[__NEW_UTS_LEN + 1];
+};
+```
+
+```c
+struct ctl_table uts_kern_table[] = {
+    {
+        .procname   = "arch",
+        /* offset = data - (char*)&init_uts_ns
+         * data = offset + (char*)uts_ns */
+        .data       = init_uts_ns.name.machine,
+        .maxlen     = sizeof(init_uts_ns.name.machine),
+        .mode       = 0444,
+        .proc_handler   = proc_do_uts_string,
+    },
+    {
+        .procname   = "ostype",
+        .data       = init_uts_ns.name.sysname,
+        .maxlen     = sizeof(init_uts_ns.name.sysname),
+        .mode       = 0444,
+        .proc_handler   = proc_do_uts_string,
+    },
+    {
+        .procname   = "osrelease",
+        .data       = init_uts_ns.name.release,
+        .maxlen     = sizeof(init_uts_ns.name.release),
+        .mode       = 0444,
+        .proc_handler   = proc_do_uts_string,
+    },
+    {
+        .procname	= "version",
+        .data       = init_uts_ns.name.version,
+        .maxlen     = sizeof(init_uts_ns.name.version),
+        .mode       = 0444,
+        .proc_handler   = proc_do_uts_string,
+    },
+    {
+        .procname	= "hostname",
+        .data       = init_uts_ns.name.nodename,
+        .maxlen     = sizeof(init_uts_ns.name.nodename),
+        .mode       = 0644,
+        .proc_handler   = proc_do_uts_string,
+        .poll       = &hostname_poll,
+    },
+    {
+        .procname   = "domainname",
+        .data       = init_uts_ns.name.domainname,
+        .maxlen     = sizeof(init_uts_ns.name.domainname),
+        .mode       = 0644,
+        .proc_handler   = proc_do_uts_string,
+        .poll       = &domainname_poll,
+    },
+    {}
+};
+
+enum uts_proc {
+    UTS_PROC_ARCH,
+    UTS_PROC_OSTYPE,
+    UTS_PROC_OSRELEASE,
+    UTS_PROC_VERSION,
+    UTS_PROC_HOSTNAME,
+    UTS_PROC_DOMAINNAME,
+};
+
+SYSCALL_DEFINE2(sethostname, char __user *, name, int, len)
+{
+    int errno;
+    char tmp[__NEW_UTS_LEN];
+
+    errno = -EFAULT;
+    if (!copy_from_user(tmp, name, len)) {
+        struct new_utsname *u;
+
+        add_device_randomness(tmp, len);
+        down_write(&uts_sem);
+
+        struct new_utsname *u = utsname() {
+            return &current->nsproxy->uts_ns->name;
+        }
+        memcpy(u->nodename, tmp, len);
+        memset(u->nodename + len, 0, sizeof(u->nodename) - len);
+        errno = 0;
+
+        uts_proc_notify(UTS_PROC_HOSTNAME) {
+            struct ctl_table *table = &uts_kern_table[proc];
+	        proc_sys_poll_notify(table->poll);
+        }
+        up_write(&uts_sem);
+    }
+    return errno;
+}
+
+int proc_do_uts_string(struct ctl_table *table, int write,
+        void *buffer, size_t *lenp, loff_t *ppos)
+{
+    struct ctl_table uts_table;
+    int r;
+    char tmp_data[__NEW_UTS_LEN + 1];
+
+    memcpy(&uts_table, table, sizeof(uts_table));
+    uts_table.data = tmp_data;
+
+    down_read(&uts_sem);
+    memcpy(tmp_data, get_uts(table), sizeof(tmp_data));
+    up_read(&uts_sem);
+    /* Reads/writes a string from/to the user buffer */
+    r = proc_dostring(&uts_table, write, buffer, lenp, ppos);
+
+    if (write) {
+        /* Write back the new value */
+        add_device_randomness(tmp_data, sizeof(tmp_data));
+        down_write(&uts_sem);
+        memcpy(get_uts(table), tmp_data, sizeof(tmp_data));
+        up_write(&uts_sem);
+        proc_sys_poll_notify(table->poll);
+    }
+
+    return r;
+}
+```
+
+## user_namespace
+
+```c
+
+```
+
+## mnt_namespace
+
+```c
+struct mnt_namespace {
+    struct ns_common        ns;
+    struct mount*           root;
+    struct rb_root          mounts; /* Protected by namespace_sem */
+    struct user_namespace   *user_ns;
+    struct ucounts          *ucounts;
+    u64                     seq; /* Sequence number to prevent loops */
+    wait_queue_head_t       poll;
+    u64 event;
+    unsigned int            nr_mounts; /* # of mounts in the namespace */
+    unsigned int            pending_mounts;
+}
 ```

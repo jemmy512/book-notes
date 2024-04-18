@@ -14526,9 +14526,9 @@ struct ep_pqueue {
 };
 
 typedef struct poll_table_struct {
-  /* register observer for file wait queue */
-  poll_queue_proc _qproc; /* ep_ptable_queue_proc */
-  __poll_t        _key;
+    /* register observer for file wait queue */
+    poll_queue_proc _qproc; /* ep_ptable_queue_proc */
+    __poll_t        _key;
 } poll_table;
 
 /* structures and helpers for f_op->poll implementations */
@@ -14570,6 +14570,7 @@ int ep_insert(
   }
 
   revents = ep_item_poll(epi, &epq.pt, 1);
+    --->
 
   if (epi->nwait < 0)
     goto error_unregister;
@@ -14616,6 +14617,7 @@ int ep_insert(
 ```
 
 #### ep_item_poll
+
 ```c++
 __poll_t ep_item_poll(const struct epitem *epi, poll_table *pt, int depth)
 {
