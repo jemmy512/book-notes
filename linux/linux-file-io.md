@@ -8,6 +8,8 @@
     * [mount](#mount)
     * [alloc_file](#alloc_file)
     * [open](#open)
+        * [link_path_walk](#link_path_walk)
+        * [open_last_lookups](#open_last_lookups)
     * [read-write](#read-write)
         * [direct_IO](#direct_IO)
         * [buffered write](#buffered-write)
@@ -55,7 +57,7 @@
 
 * [Kernel Doc: Filesystems](https://www.kernel.org/doc/html/latest/filesystems/index.html)
 
-```c++
+```c
 register_filesystem(&ext4_fs_type);
 
 struct file {
@@ -115,13 +117,6 @@ struct dentry {
   struct list_head                d_subdirs;
 };
 
-struct mountpoint {
-  struct hlist_node   m_hash;
-  struct dentry       *m_dentry;
-  struct hlist_head   m_list;
-  int m_count;
-};
-
 struct mount {
   struct hlist_node     mnt_hash;
   struct mount          *mnt_parent;
@@ -136,14 +131,28 @@ struct mount {
   struct list_head      mnt_mounts;  /* list of children, anchored here */
   struct list_head      mnt_child;   /* and going through their mnt_child */
   struct list_head      mnt_instance;/* mount instance on sb->s_mounts */
-  const char            *mnt_devname;/* Name of device e.g. /dev/dsk/hda1 */
+  const char*           mnt_devname;/* Name of device e.g. /dev/dsk/hda1 */
   struct list_head      mnt_list;
-  struct mountpoint     *mnt_mp;     /* where is it mounted */
+  struct mountpoint*    mnt_mp;     /* where is it mounted */
+
+  struct list_head      mnt_expire;	/* link in fs-specific expiry list */
+  struct list_head      mnt_share;	/* circular list of shared mounts */
+  struct list_head      mnt_slave_list;/* list of slave mounts */
+  struct list_head      mnt_slave;	/* slave list entry */
+  struct mount*         mnt_master;	/* slave is on master->mnt_slave_list */
+  struct mnt_namespace* mnt_ns;	/* containing namespace */
+};
+
+struct mountpoint {
+  struct hlist_node   m_hash;
+  struct dentry       *m_dentry;
+  struct hlist_head   m_list;
+  int m_count;
 };
 ```
 
 ## inode
-```c++
+```c
 struct inode {
   const struct inode_operations   *i_op;
   struct super_block              *i_sb;
@@ -210,7 +219,8 @@ struct ext4_inode {
 <img src='../images/kernel/file-inode-blocks.png' height='700' />
 
 ## extent
-```c++
+
+```c
 /* Each block (leaves and indexes), even inode-stored has header. */
 struct ext4_extent_header {
   __le16  eh_magic;  /* probably will support different formats */
@@ -220,6 +230,7 @@ struct ext4_extent_header {
   __le32  eh_generation;  /* generation of the tree */
 };
 
+/* leaf node in the tree */
 struct ext4_extent_idx {
   __le32  ei_block;  /* index covers logical blocks from 'block' */
   __le32  ei_leaf_lo;  /* pointer to the physical block of the next *
@@ -243,7 +254,7 @@ struct ext4_extent {
 
 ![](../images/kernel/ext4-extents.png)
 
-```c++
+```c
 const struct inode_operations ext4_dir_inode_operations = {
   .create     = ext4_create,
   .lookup     = ext4_lookup,
@@ -284,7 +295,7 @@ ino = ext4_find_next_zero_bit((unsigned long *)
   * one block representing block bit info + several block representing data blocks
   * one block representing inode bit info + several block representing inode blocks
 
-```c++
+```c
 struct ext4_group_desc
 {
   __le32  bg_block_bitmap_lo;  /* Blocks bitmap block */
@@ -294,7 +305,7 @@ struct ext4_group_desc
 ```
 ![](../images/kernel/block-group.png)
 
-```c++
+```c
 struct ext4_super_block {
   __le32  s_blocks_count_lo;  /* Blocks count */
   __le32  s_r_blocks_count_lo;  /* Reserved blocks count */
@@ -328,7 +339,7 @@ struct super_block {
 ![](../images/kernel/mem-meta-block-group.png)
 
 ## directory
-```c++
+```c
 struct ext4_dir_entry {
   __le32  inode;      /* Inode number */
   __le16  rec_len;    /* Directory entry length */
@@ -373,7 +384,7 @@ struct dx_entry
 ![](../images/kernel/dir-file-inode.png)
 
 ## hard/symbolic link
-```c++
+```c
  ln [args] [dst] [src]
 ```
 
@@ -388,59 +399,72 @@ struct dx_entry
 
 * [Kernel Doc: Filesystem Mount API](https://github.com/torvalds/linux/blob/master/Documentation/filesystems/mount_api.rst)
 
-```c++
+Call stack
+
+```c
+mount(dev_name, dir_name, type, flags, data);
+    copy_mount_string(); /* type, dev_name, data */
+    do_mount();
+        struct path path;
+        user_path_at(&path);
+            user_path_at_empty();
+        path_mount(&path);
+            do_new_mount();
+                struct file_system_type *type = get_fs_type(fstype);
+                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
+                vfs_parse_fs_string();
+
+                /* Create a superblock which can then later be used for mounting */
+                vfs_get_tree(fc);
+                    fc->ops->get_tree(fc); /* ext4_get_tree */
+                    struct super_block *sb = fc->root->d_sb;
+                    security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
+
+                do_new_mount_fc(fc, path, mnt_flags);
+                    struct vfsmount *mnt = vfs_create_mount(fc);
+                        struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
+                        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
+
+                    struct mountpoint *mp = lock_mount(mountpoint);
+                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+                        struct mount *parent = real_mount(path->mnt);
+                        graft_tree(newmnt, parent, mp);
+                            attach_recursive_mnt(mnt, p, mp, false);
+                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+                                commit_tree(source_mnt);
+```
+
+```c
 YSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
     char __user *, type, unsigned long, flags, void __user *, data)
 {
-  int ret;
-  char *kernel_type;
-  char *kernel_dev;
-  void *options;
+    int ret;
+    char *kernel_type;
+    char *kernel_dev;
+    void *options;
 
-  kernel_type = copy_mount_string(type);
-  ret = PTR_ERR(kernel_type);
-  if (IS_ERR(kernel_type))
-    goto out_type;
+    kernel_type = copy_mount_string(type);
+    kernel_dev = copy_mount_string(dev_name);
+    options = copy_mount_options(data);
 
-  kernel_dev = copy_mount_string(dev_name);
-  ret = PTR_ERR(kernel_dev);
-  if (IS_ERR(kernel_dev))
-    goto out_dev;
+    ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 
-  options = copy_mount_options(data);
-  ret = PTR_ERR(options);
-  if (IS_ERR(options))
-    goto out_data;
-
-  ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
-
-  kfree(options);
-out_data:
-  kfree(kernel_dev);
-out_dev:
-  kfree(kernel_type);
-out_type:
-  return ret;
+    return ret;
 }
 
 long do_mount(const char *dev_name, const char __user *dir_name,
     const char *type_page, unsigned long flags, void *data_page)
 {
-  struct path path;
-  int ret;
+    struct path path;
+    int ret;
 
-  ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
-  if (ret)
+    ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path) {
+        return user_path_at_empty(dfd, name, flags, path, NULL);
+    }
+
+    ret = path_mount(dev_name, &path, type_page, flags, data_page);
+    path_put(&path);
     return ret;
-  ret = path_mount(dev_name, &path, type_page, flags, data_page);
-  path_put(&path);
-  return ret;
-}
-
-int user_path_at(int dfd, const char __user *name, unsigned flags,
-     struct path *path)
-{
-  return user_path_at_empty(dfd, name, flags, path, NULL);
 }
 
 int path_mount(const char *dev_name, struct path *path,
@@ -452,21 +476,6 @@ int path_mount(const char *dev_name, struct path *path,
   /* Discard magic */
   if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
     flags &= ~MS_MGC_MSK;
-
-  /* Basic sanity checks */
-  if (data_page)
-    ((char *)data_page)[PAGE_SIZE - 1] = 0;
-
-  if (flags & MS_NOUSER)
-    return -EINVAL;
-
-  ret = security_sb_mount(dev_name, path, type_page, flags, data_page);
-  if (ret)
-    return ret;
-  if (!may_mount())
-    return -EPERM;
-  if (flags & SB_MANDLOCK)
-    warn_mandlock();
 
   /* Default to relatime unless overriden */
   if (!(flags & MS_NOATIME))
@@ -521,93 +530,137 @@ int path_mount(const char *dev_name, struct path *path,
   return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
           data_page);
 }
+```
 
+### do_new_mount
+
+```c
 int do_new_mount(struct path *path, const char *fstype, int sb_flags,
       int mnt_flags, const char *name, void *data)
 {
-  struct file_system_type *type;
-  struct fs_context *fc;
-  const char *subtype = NULL;
-  int err = 0;
+    struct file_system_type *type;
+    struct fs_context *fc;
+    const char *subtype = NULL;
+    int err = 0;
 
-  if (!fstype)
-    return -EINVAL;
+    type = get_fs_type(fstype) {
+        struct file_system_type *fs;
+        const char *dot = strchr(name, '.');
+        int len = dot ? dot - name : strlen(name);
 
-  type = get_fs_type(fstype);
-  if (!type)
-    return -ENODEV;
+        fs = __get_fs_type(name, len) {
+            struct file_system_type *fs;
 
-  if (type->fs_flags & FS_HAS_SUBTYPE) {
-    subtype = strchr(fstype, '.');
-    if (subtype) {
-      subtype++;
-      if (!*subtype) {
-        put_filesystem(type);
-        return -EINVAL;
-      }
+            read_lock(&file_systems_lock);
+            fs = *(find_filesystem(name, len));
+            if (fs && !try_module_get(fs->owner))
+                fs = NULL;
+            read_unlock(&file_systems_lock);
+            return fs;
+        }
+        if (!fs && (request_module("fs-%.*s", len, name) == 0)) {
+            fs = __get_fs_type(name, len);
+            if (!fs)
+                pr_warn_once("request_module fs-%.*s succeeded, but still no fs?\n",
+                        len, name);
+        }
+
+        if (dot && fs && !(fs->fs_flags & FS_HAS_SUBTYPE)) {
+            put_filesystem(fs);
+            fs = NULL;
+        }
+        return fs;
     }
-  }
+    if (!type)
+        return -ENODEV;
 
-  fc = fs_context_for_mount(type, sb_flags);
-  put_filesystem(type);
-  if (IS_ERR(fc))
-    return PTR_ERR(fc);
+    if (type->fs_flags & FS_HAS_SUBTYPE) {
+        subtype = strchr(fstype, '.');
+        if (subtype) {
+            subtype++;
+        }
+        if (!*subtype) {
+            put_filesystem(type);
+            return -EINVAL;
+        }
+    }
 
-  if (subtype)
-    err = vfs_parse_fs_string(fc, "subtype", subtype, strlen(subtype));
-  if (!err && name)
-    err = vfs_parse_fs_string(fc, "source", name, strlen(name));
-  if (!err)
-    err = parse_monolithic_mount_data(fc, data);
-  if (!err && !mount_capable(fc))
-    err = -EPERM;
+    fc = fs_context_for_mount(type, sb_flags) {
+        fc = kzalloc(sizeof(struct fs_context));
+        fc->purpose	= purpose;
+        fc->sb_flags	= sb_flags;
+        fc->sb_flags_mask = sb_flags_mask;
+        fc->fs_type	= get_filesystem(fs_type);
+        fc->cred	= get_current_cred();
+        fc->net_ns	= get_net(current->nsproxy->net_ns);
+        fc->log.prefix	= fs_type->name;
 
-  if (!err)
-    err = vfs_get_tree(fc);
-  if (!err)
-    err = do_new_mount_fc(fc, path, mnt_flags);
+        mutex_init(&fc->uapi_mutex);
 
-  put_fs_context(fc);
-  return err;
-}
+        switch (purpose) {
+        case FS_CONTEXT_FOR_MOUNT:
+            fc->user_ns = get_user_ns(fc->cred->user_ns);
+            break;
+        case FS_CONTEXT_FOR_SUBMOUNT:
+            fc->user_ns = get_user_ns(reference->d_sb->s_user_ns);
+        }
 
-/* vfs_get_tree - Get the mountable root */
-int vfs_get_tree(struct fs_context *fc)
-{
-  struct super_block *sb;
-  int error;
+        init_fs_context = fc->fs_type->init_fs_context;
+        ret = init_fs_context(fc) {
+            ext4_init_fs_context(struct fs_context *fc) {
+                struct ext4_fs_context *ctx;
 
-  if (fc->root)
-    return -EBUSY;
+                ctx = kzalloc(sizeof(struct ext4_fs_context), GFP_KERNEL);
+                if (!ctx)
+                    return -ENOMEM;
 
-  error = fc->ops->get_tree(fc); /* ext4_get_tree */
-  if (error < 0)
-    return error;
+                fc->fs_private = ctx;
+                fc->ops = &ext4_context_ops;
+            }
 
-  sb = fc->root->d_sb;
-  WARN_ON(!sb->s_bdi);
+            shmem_init_fs_context(struct fs_context *fc) {
+                struct shmem_options *ctx;
 
-  /* Write barrier is for super_cache_count(). We place it before setting
-   * SB_BORN as the data dependency between the two functions is the
-   * superblock structure contents that we just set up, not the SB_BORN
-   * flag. */
-  smp_wmb();
-  sb->s_flags |= SB_BORN;
+                ctx = kzalloc(sizeof(struct shmem_options), GFP_KERNEL);
+                if (!ctx)
+                    return -ENOMEM;
 
-  error = security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
-  if (unlikely(error)) {
-    fc_drop_locked(fc);
-    return error;
-  }
+                ctx->mode = 0777 | S_ISVTX;
+                ctx->uid = current_fsuid();
+                ctx->gid = current_fsgid();
 
-  /* filesystems should never set s_maxbytes larger than MAX_LFS_FILESIZE
-   * but s_maxbytes was an unsigned long long for many releases. Throw
-   * this warning for a little while to try and catch filesystems that
-   * violate this rule. */
-  WARN((sb->s_maxbytes < 0), "%s set sb->s_maxbytes to "
-    "negative value (%lld)\n", fc->fs_type->name, sb->s_maxbytes);
+                fc->fs_private = ctx;
+                fc->ops = &shmem_fs_context_ops;
+            }
+        }
+    }
 
-  return 0;
+    if (subtype)
+        err = vfs_parse_fs_string(fc, "subtype", subtype, strlen(subtype));
+    if (!err && name)
+        err = vfs_parse_fs_string(fc, "source", name, strlen(name));
+    if (!err)
+        err = parse_monolithic_mount_data(fc, data);
+    if (!err && !mount_capable(fc))
+        err = -EPERM;
+
+    if (!err) {
+        err = vfs_get_tree(fc) {
+            struct super_block *sb;
+            int error;
+            /* Get a superblock based on a single block device */
+            error = fc->ops->get_tree(fc); /* ext4_get_tree */
+            sb = fc->root->d_sb;
+            sb->s_flags |= SB_BORN;
+
+            return 0;
+        }
+    }
+    if (!err)
+        err = do_new_mount_fc(fc, path, mnt_flags);
+
+    put_fs_context(fc);
+    return err;
 }
 
 /* Create a new mount using a superblock configuration and request it
@@ -615,468 +668,394 @@ int vfs_get_tree(struct fs_context *fc)
 static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
          unsigned int mnt_flags)
 {
-  struct vfsmount *mnt;
-  struct mountpoint *mp;
-  struct super_block *sb = fc->root->d_sb;
-  int error;
+    struct vfsmount *mnt;
+    struct mountpoint *mp;
+    struct super_block *sb = fc->root->d_sb;
+    int error;
 
-  error = security_sb_kern_mount(sb);
-  if (!error && mount_too_revealing(sb, &mnt_flags))
-    error = -EPERM;
+    mnt = vfs_create_mount(fc) {
+        struct mount *mnt;
+        struct user_namespace *fs_userns;
 
-  if (unlikely(error)) {
-    fc_drop_locked(fc);
-    return error;
-  }
+        if (!fc->root)
+            return ERR_PTR(-EINVAL);
 
-  up_write(&sb->s_umount);
+        mnt = alloc_vfsmnt(fc->source ?: "none");
+        if (!mnt)
+            return ERR_PTR(-ENOMEM);
 
-  mnt = vfs_create_mount(fc);
-  if (IS_ERR(mnt))
-    return PTR_ERR(mnt);
+        if (fc->sb_flags & SB_KERNMOUNT)
+            mnt->mnt.mnt_flags = MNT_INTERNAL;
 
-  mnt_warn_timestamp_expiry(mountpoint, mnt);
+        atomic_inc(&fc->root->d_sb->s_active);
+        mnt->mnt.mnt_sb    = fc->root->d_sb;
+        mnt->mnt.mnt_root  = dget(fc->root);
+        mnt->mnt_mountpoint  = mnt->mnt.mnt_root;
+        mnt->mnt_parent    = mnt;
 
-  mp = lock_mount(mountpoint);
-  if (IS_ERR(mp)) {
-    mntput(mnt);
-    return PTR_ERR(mp);
-  }
-  error = do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
-  unlock_mount(mp);
-  if (error < 0)
-    mntput(mnt);
-  return error;
-}
+        fs_userns = mnt->mnt.mnt_sb->s_user_ns;
+        if (!initial_idmapping(fs_userns))
+            mnt->mnt.mnt_userns = get_user_ns(fs_userns);
 
-/* vfs_create_mount - Create a mount for a configured superblock */
-struct vfsmount *vfs_create_mount(struct fs_context *fc)
-{
-  struct mount *mnt;
-  struct user_namespace *fs_userns;
-
-  if (!fc->root)
-    return ERR_PTR(-EINVAL);
-
-  mnt = alloc_vfsmnt(fc->source ?: "none");
-  if (!mnt)
-    return ERR_PTR(-ENOMEM);
-
-  if (fc->sb_flags & SB_KERNMOUNT)
-    mnt->mnt.mnt_flags = MNT_INTERNAL;
-
-  atomic_inc(&fc->root->d_sb->s_active);
-  mnt->mnt.mnt_sb    = fc->root->d_sb;
-  mnt->mnt.mnt_root  = dget(fc->root);
-  mnt->mnt_mountpoint  = mnt->mnt.mnt_root;
-  mnt->mnt_parent    = mnt;
-
-  fs_userns = mnt->mnt.mnt_sb->s_user_ns;
-  if (!initial_idmapping(fs_userns))
-    mnt->mnt.mnt_userns = get_user_ns(fs_userns);
-
-  lock_mount_hash();
-  list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
-  unlock_mount_hash();
-  return &mnt->mnt;
-}
-
-int do_add_mount(struct mount *newmnt, struct mountpoint *mp,
-      const struct path *path, int mnt_flags)
-{
-  struct mount *parent = real_mount(path->mnt);
-
-  mnt_flags &= ~MNT_INTERNAL_FLAGS;
-
-  if (unlikely(!check_mnt(parent))) {
-    /* that's acceptable only for automounts done in private ns */
-    if (!(mnt_flags & MNT_SHRINKABLE))
-      return -EINVAL;
-    /* ... and for those we'd better have mountpoint still alive */
-    if (!parent->mnt_ns)
-      return -EINVAL;
-  }
-
-  /* Refuse the same filesystem on the same mount point */
-  if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
-      path->mnt->mnt_root == path->dentry)
-    return -EBUSY;
-
-  if (d_is_symlink(newmnt->mnt.mnt_root))
-    return -EINVAL;
-
-  newmnt->mnt.mnt_flags = mnt_flags;
-  return graft_tree(newmnt, parent, mp);
-}
-
-int graft_tree(struct mount *mnt, struct mount *p, struct mountpoint *mp)
-{
-  if (mnt->mnt.mnt_sb->s_flags & SB_NOUSER)
-    return -EINVAL;
-
-  if (d_is_dir(mp->m_dentry) !=
-        d_is_dir(mnt->mnt.mnt_root))
-    return -ENOTDIR;
-
-  return attach_recursive_mnt(mnt, p, mp, false);
-}
-
-static int attach_recursive_mnt(struct mount *source_mnt,
-      struct mount *dest_mnt,
-      struct mountpoint *dest_mp,
-      bool moving)
-{
-  struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
-  HLIST_HEAD(tree_list);
-  struct mnt_namespace *ns = dest_mnt->mnt_ns;
-  struct mountpoint *smp;
-  struct mount *child, *p;
-  struct hlist_node *n;
-  int err;
-
-  /* Preallocate a mountpoint in case the new mounts need
-   * to be tucked under other mounts. */
-  smp = get_mountpoint(source_mnt->mnt.mnt_root);
-  if (IS_ERR(smp))
-    return PTR_ERR(smp);
-
-  /* Is there space to add these mounts to the mount namespace? */
-  if (!moving) {
-    err = count_mounts(ns, source_mnt);
-    if (err)
-      goto out;
-  }
-
-  if (IS_MNT_SHARED(dest_mnt)) {
-    err = invent_group_ids(source_mnt, true);
-    if (err)
-      goto out;
-    err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
-    lock_mount_hash();
-    if (err)
-      goto out_cleanup_ids;
-    for (p = source_mnt; p; p = next_mnt(p, source_mnt))
-      set_mnt_shared(p);
-  } else {
-    lock_mount_hash();
-  }
-
-  if (moving) {
-    unhash_mnt(source_mnt);
-    attach_mnt(source_mnt, dest_mnt, dest_mp);
-    touch_mnt_namespace(source_mnt->mnt_ns);
-  } else {
-    if (source_mnt->mnt_ns) {
-      /* move from anon - the caller will destroy */
-      list_del_init(&source_mnt->mnt_ns->list);
+        lock_mount_hash();
+        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
+        unlock_mount_hash();
+        return &mnt->mnt;
     }
-    mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
-    commit_tree(source_mnt);
-  }
 
-  hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
-    struct mount *q;
-    hlist_del_init(&child->mnt_hash);
-    q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
-    if (q)
-      mnt_change_mountpoint(child, smp, q);
-    /* Notice when we are propagating across user namespaces */
-    if (child->mnt_parent->mnt_ns->user_ns != user_ns)
-      lock_mnt_tree(child);
-    child->mnt.mnt_flags &= ~MNT_LOCKED;
-    commit_tree(child);
-  }
-  put_mountpoint(smp);
-  unlock_mount_hash();
+    mnt_warn_timestamp_expiry(mountpoint, mnt);
 
-  return 0;
+    mp = lock_mount(mountpoint);
+    if (IS_ERR(mp)) {
+        mntput(mnt);
+        return PTR_ERR(mp);
+    }
 
- out_cleanup_ids:
-  while (!hlist_empty(&tree_list)) {
-    child = hlist_entry(tree_list.first, struct mount, mnt_hash);
-    child->mnt_parent->mnt_ns->pending_mounts = 0;
-    umount_tree(child, UMOUNT_SYNC);
-  }
-  unlock_mount_hash();
-  cleanup_group_ids(source_mnt, NULL);
- out:
-  ns->pending_mounts = 0;
+    error = do_add_mount(real_mount(mnt)/*newmnt*/, mp, mountpoint/*path*/, mnt_flags) {
+        struct mount *parent = real_mount(path->mnt);
 
-  read_seqlock_excl(&mount_lock);
-  put_mountpoint(smp);
-  read_sequnlock_excl(&mount_lock);
+        mnt_flags &= ~MNT_INTERNAL_FLAGS;
 
-  return err;
+        /* Refuse the same filesystem on the same mount point */
+        if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
+            path->mnt->mnt_root == path->dentry)
+            return -EBUSY;
+
+        if (d_is_symlink(newmnt->mnt.mnt_root))
+            return -EINVAL;
+
+        newmnt->mnt.mnt_flags = mnt_flags;
+        return graft_tree(newmnt/*mnt*/, parent/*p*/, mp) {
+            if (mnt->mnt.mnt_sb->s_flags & SB_NOUSER)
+                return -EINVAL;
+
+            if (d_is_dir(mp->m_dentry) != d_is_dir(mnt->mnt.mnt_root))
+                return -ENOTDIR;
+
+            return attach_recursive_mnt(mnt/*source_mnt*/, p/*top_mnt*/, mp/*dst_mp*/, false) {
+                struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
+                HLIST_HEAD(tree_list);
+                struct mnt_namespace *ns = dest_mnt->mnt_ns;
+                struct mountpoint *smp;
+                struct mount *child, *p;
+                struct hlist_node *n;
+                int err;
+
+                /* Preallocate a mountpoint in case the new mounts need
+                 * to be tucked under other mounts. */
+                smp = get_mountpoint(source_mnt->mnt.mnt_root);
+                if (IS_ERR(smp))
+                    return PTR_ERR(smp);
+
+                /* Is there space to add these mounts to the mount namespace? */
+                if (!moving) {
+                    err = count_mounts(ns, source_mnt);
+                    if (err)
+                    goto out;
+                }
+
+                if (IS_MNT_SHARED(dest_mnt)) {
+                    err = invent_group_ids(source_mnt, true);
+                    if (err)
+                    goto out;
+                    err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
+                    lock_mount_hash();
+                    if (err)
+                    goto out_cleanup_ids;
+                    for (p = source_mnt; p; p = next_mnt(p, source_mnt))
+                    set_mnt_shared(p);
+                } else {
+                    lock_mount_hash();
+                }
+
+                if (moving) {
+                    unhash_mnt(source_mnt);
+                    attach_mnt(source_mnt, dest_mnt, dest_mp);
+                    touch_mnt_namespace(source_mnt->mnt_ns);
+                } else {
+                    if (source_mnt->mnt_ns) {
+                    /* move from anon - the caller will destroy */
+                    list_del_init(&source_mnt->mnt_ns->list);
+                    }
+                    mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+                    commit_tree(source_mnt);
+                }
+
+                hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
+                    struct mount *q;
+                    hlist_del_init(&child->mnt_hash);
+                    q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
+                    if (q)
+                    mnt_change_mountpoint(child, smp, q);
+                    /* Notice when we are propagating across user namespaces */
+                    if (child->mnt_parent->mnt_ns->user_ns != user_ns)
+                    lock_mnt_tree(child);
+                    child->mnt.mnt_flags &= ~MNT_LOCKED;
+                    commit_tree(child);
+                }
+                put_mountpoint(smp);
+                unlock_mount_hash();
+
+                return 0;
+
+                out_cleanup_ids:
+                while (!hlist_empty(&tree_list)) {
+                    child = hlist_entry(tree_list.first, struct mount, mnt_hash);
+                    child->mnt_parent->mnt_ns->pending_mounts = 0;
+                    umount_tree(child, UMOUNT_SYNC);
+                }
+                unlock_mount_hash();
+                cleanup_group_ids(source_mnt, NULL);
+                out:
+                ns->pending_mounts = 0;
+
+                read_seqlock_excl(&mount_lock);
+                put_mountpoint(smp);
+                read_sequnlock_excl(&mount_lock);
+
+                return err;
+            }
+        }
+    }
+    unlock_mount(mp);
+    if (error < 0)
+        mntput(mnt);
+    return error;
 }
-```
-
-```c++
-mount(dev_name, dir_name, type, flags, data);
-    copy_mount_string(); /* type, dev_name, data */
-    do_mount();
-        struct path path;
-        user_path_at(&path);
-            user_path_at_empty();
-        path_mount(&path);
-            do_new_mount();
-                struct file_system_type *type = get_fs_type(fstype);
-                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
-                vfs_parse_fs_string();
-
-                /* Create a superblock which can then later be used for mounting */
-                vfs_get_tree(fc);
-                    fc->ops->get_tree(fc); /* ext4_get_tree */
-                    struct super_block *sb = fc->root->d_sb;
-                    security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
-
-                do_new_mount_fc(fc, path, mnt_flags);
-                    struct vfsmount *mnt = vfs_create_mount(fc);
-                        struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
-                        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
-
-                    struct mountpoint *mp = lock_mount(mountpoint);
-                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
-                        struct mount *parent = real_mount(path->mnt);
-                        graft_tree(newmnt, parent, mp);
-                            attach_recursive_mnt(mnt, p, mp, false);
-                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
-                                commit_tree(source_mnt);
 ```
 
 ## alloc_file
-```c++
+
+```c
 struct file *anon_inode_getfile(const char *name,
         const struct file_operations *fops,
         void *priv, int flags)
 {
-  struct file *file;
+    struct file *file;
 
-  if (IS_ERR(anon_inode_inode))
-    return ERR_PTR(-ENODEV);
+    if (IS_ERR(anon_inode_inode))
+        return ERR_PTR(-ENODEV);
 
-  if (fops->owner && !try_module_get(fops->owner))
-    return ERR_PTR(-ENOENT);
+    if (fops->owner && !try_module_get(fops->owner))
+        return ERR_PTR(-ENOENT);
 
-  /* We know the anon_inode inode count is always greater than zero,
-   * so ihold() is safe. */
-  ihold(anon_inode_inode);
-  file = alloc_file_pseudo(anon_inode_inode, anon_inode_mnt, name,
-         flags & (O_ACCMODE | O_NONBLOCK), fops);
-  if (IS_ERR(file))
-    goto err;
+    /* We know the anon_inode inode count is always greater than zero,
+    * so ihold() is safe. */
+    ihold(anon_inode_inode);
+    file = alloc_file_pseudo(anon_inode_inode, anon_inode_mnt, name,
+        flags & (O_ACCMODE | O_NONBLOCK), fops) {
 
-  file->f_mapping = anon_inode_inode->i_mapping;
+        static const struct dentry_operations anon_ops = {
+            .d_dname = simple_dname
+        };
+        struct qstr this = QSTR_INIT(name, strlen(name));
+        struct path path;
+        struct file *file;
 
-  file->private_data = priv;
+        path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this) {
+            struct dentry *dentry = __d_alloc(sb, name) {
+                struct external_name *ext = NULL;
+                struct dentry *dentry;
+                char *dname;
+                int err;
 
-  return file;
+                dentry = kmem_cache_alloc(dentry_cache, GFP_KERNEL);
+                if (!dentry)
+                    return NULL;
 
-err:
-  iput(anon_inode_inode);
-  module_put(fops->owner);
-  return file;
-}
+                /* We guarantee that the inline name is always NUL-terminated.
+                * This way the memcpy() done by the name switching in rename
+                * will still always have a NUL at the end, even if we might
+                * be overwriting an internal NUL character */
+                dentry->d_iname[DNAME_INLINE_LEN-1] = 0;
+                if (unlikely(!name)) {
+                    name = &slash_name;
+                    dname = dentry->d_iname;
+                } else if (name->len > DNAME_INLINE_LEN-1) {
+                    size_t size = offsetof(struct external_name, name[1]);
 
-struct file *alloc_file_pseudo(struct inode *inode, struct vfsmount *mnt,
-        const char *name, int flags,
-        const struct file_operations *fops)
-{
-  static const struct dentry_operations anon_ops = {
-    .d_dname = simple_dname
-  };
-  struct qstr this = QSTR_INIT(name, strlen(name));
-  struct path path;
-  struct file *file;
+                    ext = kmalloc(size + name->len, GFP_KERNEL_ACCOUNT);
+                    if (!ext) {
+                    kmem_cache_free(dentry_cache, dentry);
+                    return NULL;
+                    }
+                    atomic_set(&ext->u.count, 1);
+                    dname = ext->name;
+                } else  {
+                    dname = dentry->d_iname;
+                }
 
-  path.dentry = d_alloc_pseudo(mnt->mnt_sb, &this);
-  if (!path.dentry)
-    return ERR_PTR(-ENOMEM);
-  if (!mnt->mnt_sb->s_d_op)
-    d_set_d_op(path.dentry, &anon_ops);
-  path.mnt = mntget(mnt);
-  d_instantiate(path.dentry, inode);
+                dentry->d_name.len = name->len;
+                dentry->d_name.hash = name->hash;
+                memcpy(dname, name->name, name->len);
+                dname[name->len] = 0;
 
-  file = alloc_file(&path, flags, fops);
-  if (IS_ERR(file)) {
-    ihold(inode);
-    path_put(&path);
-  }
-  return file;
-}
+                /* Make sure we always see the terminating NUL character */
+                smp_store_release(&dentry->d_name.name, dname); /* ^^^ */
 
-struct dentry *d_alloc_pseudo(struct super_block *sb, const struct qstr *name)
-{
-  struct dentry *dentry = __d_alloc(sb, name);
-  if (likely(dentry))
-    dentry->d_flags |= DCACHE_NORCU;
-  return dentry;
-}
+                dentry->d_lockref.count = 1;
+                dentry->d_flags = 0;
+                spin_lock_init(&dentry->d_lock);
+                seqcount_init(&dentry->d_seq);
+                dentry->d_inode = NULL;
+                dentry->d_parent = dentry;
+                dentry->d_sb = sb;
+                dentry->d_op = NULL;
+                dentry->d_fsdata = NULL;
+                INIT_HLIST_BL_NODE(&dentry->d_hash);
+                INIT_LIST_HEAD(&dentry->d_lru);
+                INIT_LIST_HEAD(&dentry->d_subdirs);
+                INIT_HLIST_NODE(&dentry->d_u.d_alias);
+                INIT_LIST_HEAD(&dentry->d_child);
+                d_set_d_op(dentry, dentry->d_sb->s_d_op);
 
-struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
-{
-  struct external_name *ext = NULL;
-  struct dentry *dentry;
-  char *dname;
-  int err;
+                if (dentry->d_op && dentry->d_op->d_init) {
+                    err = dentry->d_op->d_init(dentry);
+                    if (err) {
+                    if (dname_external(dentry))
+                        kfree(external_name(dentry));
+                    kmem_cache_free(dentry_cache, dentry);
+                    return NULL;
+                    }
+                }
 
-  dentry = kmem_cache_alloc(dentry_cache, GFP_KERNEL);
-  if (!dentry)
-    return NULL;
+                if (unlikely(ext)) {
+                    pg_data_t *pgdat = page_pgdat(virt_to_page(ext));
+                    mod_node_page_state(pgdat, NR_INDIRECTLY_RECLAIMABLE_BYTES, ksize(ext));
+                }
 
-  /* We guarantee that the inline name is always NUL-terminated.
-   * This way the memcpy() done by the name switching in rename
-   * will still always have a NUL at the end, even if we might
-   * be overwriting an internal NUL character */
-  dentry->d_iname[DNAME_INLINE_LEN-1] = 0;
-  if (unlikely(!name)) {
-    name = &slash_name;
-    dname = dentry->d_iname;
-  } else if (name->len > DNAME_INLINE_LEN-1) {
-    size_t size = offsetof(struct external_name, name[1]);
+                this_cpu_inc(nr_dentry);
 
-    ext = kmalloc(size + name->len, GFP_KERNEL_ACCOUNT);
-    if (!ext) {
-      kmem_cache_free(dentry_cache, dentry);
-      return NULL;
+                return dentry;
+            }
+            if (likely(dentry))
+                dentry->d_flags |= DCACHE_NORCU;
+            return dentry;
+        }
+        if (!path.dentry)
+            return ERR_PTR(-ENOMEM);
+        if (!mnt->mnt_sb->s_d_op)
+            d_set_d_op(path.dentry, &anon_ops);
+        path.mnt = mntget(mnt);
+
+        d_instantiate(path.dentry, inode) {
+            unsigned add_flags = d_flags_for_inode(inode);
+            WARN_ON(d_in_lookup(dentry));
+
+            spin_lock(&dentry->d_lock);
+            if (dentry->d_flags & DCACHE_LRU_LIST)
+                this_cpu_dec(nr_dentry_negative);
+            hlist_add_head(&dentry->d_u.d_alias, &inode->i_dentry);
+            raw_write_seqcount_begin(&dentry->d_seq);
+            __d_set_inode_and_type(dentry, inode, add_flags) {
+                dentry->d_inode = inode;
+                flags = READ_ONCE(dentry->d_flags);
+                flags &= ~DCACHE_ENTRY_TYPE;
+                flags |= type_flags;
+                smp_store_release(&dentry->d_flags, flags);
+            }
+            raw_write_seqcount_end(&dentry->d_seq);
+            fsnotify_update_flags(dentry);
+            spin_unlock(&dentry->d_lock);
+        }
+
+        file = alloc_file(&path, flags, fops) {
+            struct file *file;
+            file = alloc_empty_file(flags, current_cred()) {
+                static long old_max;
+                struct file *f;
+
+                /* Privileged users can go above max_files */
+                if (get_nr_files() >= files_stat.max_files && !capable(CAP_SYS_ADMIN)) {
+                    /* percpu_counters are inaccurate.  Do an expensive check before
+                    * we go and fail. */
+                    if (percpu_counter_sum_positive(&nr_files) >= files_stat.max_files)
+                    goto over;
+                }
+
+                f = __alloc_file(flags, cred) {
+                    struct file *f;
+                    int error;
+
+                    f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
+                    if (unlikely(!f))
+                        return ERR_PTR(-ENOMEM);
+
+                    f->f_cred = get_cred(cred);
+                    error = security_file_alloc(f);
+                    if (unlikely(error)) {
+                        file_free_rcu(&f->f_u.fu_rcuhead);
+                        return ERR_PTR(error);
+                    }
+
+                    atomic_long_set(&f->f_count, 1);
+                    rwlock_init(&f->f_owner.lock);
+                    spin_lock_init(&f->f_lock);
+                    mutex_init(&f->f_pos_lock);
+                    eventpoll_init_file(f) {
+                        INIT_LIST_HEAD(&file->f_ep_links);
+                        INIT_LIST_HEAD(&file->f_tfile_llink);
+                    }
+                    f->f_flags = flags;
+                    f->f_mode = OPEN_FMODE(flags);
+                    /* f->f_version: 0 */
+
+                    return f;
+                }
+                if (!IS_ERR(f))
+                    percpu_counter_inc(&nr_files);
+
+                return f;
+
+            over:
+                /* Ran out of filps - report that */
+                if (get_nr_files() > old_max) {
+                    pr_info("VFS: file-max limit %lu reached\n", get_max_files());
+                    old_max = get_nr_files();
+                }
+                return ERR_PTR(-ENFILE);
+            }
+            if (IS_ERR(file))
+                return file;
+
+            file->f_path = *path;
+            file->f_inode = path->dentry->d_inode;
+            file->f_mapping = path->dentry->d_inode->i_mapping;
+            file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
+            if ((file->f_mode & FMODE_READ) && likely(fop->read || fop->read_iter))
+                file->f_mode |= FMODE_CAN_READ;
+            if ((file->f_mode & FMODE_WRITE) && likely(fop->write || fop->write_iter))
+                file->f_mode |= FMODE_CAN_WRITE;
+            file->f_mode |= FMODE_OPENED;
+            file->f_op = fop;
+            if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
+                i_readcount_inc(path->dentry->d_inode);
+            return file;
+        }
+
+        if (IS_ERR(file)) {
+            ihold(inode);
+            path_put(&path);
+        }
+        return file;
     }
-    atomic_set(&ext->u.count, 1);
-    dname = ext->name;
-  } else  {
-    dname = dentry->d_iname;
-  }
+    if (IS_ERR(file))
+        goto err;
 
-  dentry->d_name.len = name->len;
-  dentry->d_name.hash = name->hash;
-  memcpy(dname, name->name, name->len);
-  dname[name->len] = 0;
+    file->f_mapping = anon_inode_inode->i_mapping;
 
-  /* Make sure we always see the terminating NUL character */
-  smp_store_release(&dentry->d_name.name, dname); /* ^^^ */
+    file->private_data = priv;
 
-  dentry->d_lockref.count = 1;
-  dentry->d_flags = 0;
-  spin_lock_init(&dentry->d_lock);
-  seqcount_init(&dentry->d_seq);
-  dentry->d_inode = NULL;
-  dentry->d_parent = dentry;
-  dentry->d_sb = sb;
-  dentry->d_op = NULL;
-  dentry->d_fsdata = NULL;
-  INIT_HLIST_BL_NODE(&dentry->d_hash);
-  INIT_LIST_HEAD(&dentry->d_lru);
-  INIT_LIST_HEAD(&dentry->d_subdirs);
-  INIT_HLIST_NODE(&dentry->d_u.d_alias);
-  INIT_LIST_HEAD(&dentry->d_child);
-  d_set_d_op(dentry, dentry->d_sb->s_d_op);
-
-  if (dentry->d_op && dentry->d_op->d_init) {
-    err = dentry->d_op->d_init(dentry);
-    if (err) {
-      if (dname_external(dentry))
-        kfree(external_name(dentry));
-      kmem_cache_free(dentry_cache, dentry);
-      return NULL;
-    }
-  }
-
-  if (unlikely(ext)) {
-    pg_data_t *pgdat = page_pgdat(virt_to_page(ext));
-    mod_node_page_state(pgdat, NR_INDIRECTLY_RECLAIMABLE_BYTES, ksize(ext));
-  }
-
-  this_cpu_inc(nr_dentry);
-
-  return dentry;
-}
-
-static struct file *alloc_file(const struct path *path, int flags,
-    const struct file_operations *fop)
-{
-  struct file *file;
-
-  file = alloc_empty_file(flags, current_cred());
-  if (IS_ERR(file))
     return file;
 
-  file->f_path = *path;
-  file->f_inode = path->dentry->d_inode;
-  file->f_mapping = path->dentry->d_inode->i_mapping;
-  file->f_wb_err = filemap_sample_wb_err(file->f_mapping);
-  if ((file->f_mode & FMODE_READ) && likely(fop->read || fop->read_iter))
-    file->f_mode |= FMODE_CAN_READ;
-  if ((file->f_mode & FMODE_WRITE) && likely(fop->write || fop->write_iter))
-    file->f_mode |= FMODE_CAN_WRITE;
-  file->f_mode |= FMODE_OPENED;
-  file->f_op = fop;
-  if ((file->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ)
-    i_readcount_inc(path->dentry->d_inode);
-  return file;
-}
-
-struct file *alloc_empty_file(int flags, const struct cred *cred)
-{
-  static long old_max;
-  struct file *f;
-
-  /* Privileged users can go above max_files */
-  if (get_nr_files() >= files_stat.max_files && !capable(CAP_SYS_ADMIN)) {
-    /* percpu_counters are inaccurate.  Do an expensive check before
-     * we go and fail. */
-    if (percpu_counter_sum_positive(&nr_files) >= files_stat.max_files)
-      goto over;
-  }
-
-  f = __alloc_file(flags, cred);
-  if (!IS_ERR(f))
-    percpu_counter_inc(&nr_files);
-
-  return f;
-
-over:
-  /* Ran out of filps - report that */
-  if (get_nr_files() > old_max) {
-    pr_info("VFS: file-max limit %lu reached\n", get_max_files());
-    old_max = get_nr_files();
-  }
-  return ERR_PTR(-ENFILE);
-}
-
-static struct file *__alloc_file(int flags, const struct cred *cred)
-{
-  struct file *f;
-  int error;
-
-  f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
-  if (unlikely(!f))
-    return ERR_PTR(-ENOMEM);
-
-  f->f_cred = get_cred(cred);
-  error = security_file_alloc(f);
-  if (unlikely(error)) {
-    file_free_rcu(&f->f_u.fu_rcuhead);
-    return ERR_PTR(error);
-  }
-
-  atomic_long_set(&f->f_count, 1);
-  rwlock_init(&f->f_owner.lock);
-  spin_lock_init(&f->f_lock);
-  mutex_init(&f->f_pos_lock);
-  eventpoll_init_file(f);
-  f->f_flags = flags;
-  f->f_mode = OPEN_FMODE(flags);
-  /* f->f_version: 0 */
-
-  return f;
-}
-
-void eventpoll_init_file(struct file *file)
-{
-  INIT_LIST_HEAD(&file->f_ep_links);
-  INIT_LIST_HEAD(&file->f_tfile_llink);
+err:
+    iput(anon_inode_inode);
+    module_put(fops->owner);
+    return file;
 }
 ```
 
-```c++
+```c
 anon_inode_getfile();
     alloc_file_pseudo();
         d_alloc_pseudo();
@@ -1112,7 +1091,36 @@ anon_inode_getfile();
 ```
 
 ## open
-```c++
+
+```c
+do_sys_open();
+    get_unused_fd_flags();
+    do_filp_open();
+        path_openat();
+            file = alloc_empty_file();
+            link_path_walk(s, nd); /* Name resolution, turning a pathname into the final dentry*/
+            open_last_lookups(nd, file, op);
+                /* 1. search in dcache */
+                dentry = lookup_fast(nd);
+                /* 2. search in file system */
+                dentry = lookup_open(nd, file, op, got_write);
+
+            do_open(nd, file, op);
+                vfs_open(&nd->path, file);
+                    do_dentry_open();
+                        f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
+                        path_get(&f->f_path);
+                        f->f_inode = inode;
+                        f->f_mapping = inode->i_mapping;
+                        f->f_op = fops_get(inode->i_fop);
+
+                        f->f_op->open();
+                            ext4_file_open();
+    fd_install();
+    putname();
+```
+
+```c
 struct task_struct {
   struct fs_struct      *fs;
   struct files_struct   *files;
@@ -1143,68 +1151,9 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
                 error = do_o_path(nd, flags, file);
             } else {
                 const char *s = path_init(nd, flags);
-
-                do {
-                    error = link_path_walk(s, nd) {
-
-                    }
-
-                    s = open_last_lookups(nd, file, op) {
-                        struct dentry *dir = nd->path.dentry;
-                        int open_flag = op->open_flag;
-                        bool got_write = false;
-                        struct dentry *dentry;
-                        const char *res;
-
-                        nd->flags |= op->intent;
-
-                        if (!(open_flag & O_CREAT)) {
-                            if (nd->last.name[nd->last.len])
-                            nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
-
-                            /* 1. search in dcache */
-                            dentry = lookup_fast(nd);
-                            if (likely(dentry))
-                                goto finish_lookup;
-                        } else {
-                            /* create side of things */
-                            if (nd->flags & LOOKUP_RCU) {
-                            if (!try_to_unlazy(nd))
-                                return ERR_PTR(-ECHILD);
-                            }
-                            audit_inode(nd->name, dir, AUDIT_INODE_PARENT);
-                            /* trailing slashes? */
-                            if (unlikely(nd->last.name[nd->last.len]))
-                                return ERR_PTR(-EISDIR);
-                        }
-
-                        if (open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
-                            got_write = !mnt_want_write(nd->path.mnt);
-                        }
-
-                        /* 2. search in file system */
-                        dentry = lookup_open(nd, file, op, got_write) {
-                            /* Negative dentry, just create the file */
-                            if (!dentry->d_inode && (open_flag & O_CREAT)) {
-                                error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
-                            }
-
-                            dentry = d_alloc_parallel(dir, &nd->last, &wq);
-                            struct dentry *res = dir_inode->i_op->lookup(
-                                dir_inode, dentry, nd->flags); /* ext4_lookup */
-                            path->dentry = dentry;
-                            path->mnt = nd->path.mnt;
-                        }
-
-                    finish_lookup:
-                        if (nd->depth)
-                            put_link(nd);
-                        res = step_into(nd, WALK_TRAILING, dentry);
-                        if (unlikely(res))
-                            nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
-                        return res;
-                    }
-                } while (error && s);
+                while (!(error = link_path_walk(s, nd))
+                    && (s = open_last_lookups(nd, file, op)) != NULL) {
+                }
 
                 do_open(nd, file, op) {
                     struct user_namespace *mnt_userns;
@@ -1336,35 +1285,383 @@ const struct file_operations ext4_file_operations = {
 };
 ```
 
-```c++
-do_sys_open();
-    get_unused_fd_flags();
-    do_filp_open();
-        path_openat();
-            file = alloc_empty_file();
-            link_path_walk(s, nd); /* Name resolution, turning a pathname into the final dentry*/
-            open_last_lookups(nd, file, op);
-                /* 1. search in dcache */
+<img src='../images/kernel/dcache.png' height='700' />
+
+
+### link_path_walk
+
+```c
+int link_path_walk(const char *name, struct nameidata *nd)
+{
+    int depth = 0; // depth <= nd->depth
+    int err;
+
+    nd->last_type = LAST_ROOT;
+    nd->flags |= LOOKUP_PARENT;
+    if (IS_ERR(name))
+        return PTR_ERR(name);
+    while (*name=='/')
+        name++;
+    if (!*name) {
+        nd->dir_mode = 0; // short-circuit the 'hardening' idiocy
+        return 0;
+    }
+
+    /* At this point we know we have a real path component. */
+    for(;;) {
+        struct mnt_idmap *idmap;
+        const char *link;
+        u64 hash_len;
+        int type;
+
+        idmap = mnt_idmap(nd->path.mnt);
+        err = may_lookup(idmap, nd);
+        if (err)
+            return err;
+
+        hash_len = hash_name(nd->path.dentry, name);
+
+        type = LAST_NORM;
+        if (name[0] == '.') switch (hashlen_len(hash_len)) {
+            case 2:
+                if (name[1] == '.') {
+                    type = LAST_DOTDOT;
+                    nd->state |= ND_JUMPED;
+                }
+                break;
+            case 1:
+                type = LAST_DOT;
+        }
+        if (likely(type == LAST_NORM)) {
+            struct dentry *parent = nd->path.dentry;
+            nd->state &= ~ND_JUMPED;
+            if (unlikely(parent->d_flags & DCACHE_OP_HASH)) {
+                struct qstr this = { { .hash_len = hash_len }, .name = name };
+                err = parent->d_op->d_hash(parent, &this);
+                if (err < 0)
+                    return err;
+                hash_len = this.hash_len;
+                name = this.name;
+            }
+        }
+
+        nd->last.hash_len = hash_len;
+        nd->last.name = name;
+        nd->last_type = type;
+
+        name += hashlen_len(hash_len);
+        if (!*name)
+            goto OK;
+
+        do {
+            name++;
+        } while (unlikely(*name == '/'));
+
+        if (unlikely(!*name)) {
+OK:
+            /* pathname or trailing symlink, done */
+            if (!depth) {
+                nd->dir_vfsuid = i_uid_into_vfsuid(idmap, nd->inode);
+                nd->dir_mode = nd->inode->i_mode;
+                nd->flags &= ~LOOKUP_PARENT;
+                return 0;
+            }
+            /* last component of nested symlink */
+            name = nd->stack[--depth].name;
+            link = walk_component(nd, 0);
+        } else {
+            /* not the last component */
+            link = walk_component(nd, WALK_MORE) {
+                struct dentry *dentry;
+                if (unlikely(nd->last_type != LAST_NORM)) {
+                    if (!(flags & WALK_MORE) && nd->depth)
+                        put_link(nd);
+                    return handle_dots(nd, nd->last_type);
+                }
                 dentry = lookup_fast(nd);
-                /* 2. search in file system */
-                dentry = lookup_open(nd, file, op, got_write);
+                if (unlikely(!dentry)) {
+                    dentry = lookup_slow(&nd->last, nd->path.dentry, nd->flags);
+                    if (IS_ERR(dentry))
+                        return ERR_CAST(dentry);
+                }
+                if (!(flags & WALK_MORE) && nd->depth)
+                    put_link(nd);
 
-            do_open(nd, file, op);
-                vfs_open(&nd->path, file);
-                    do_dentry_open();
-                        f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
-                        path_get(&f->f_path);
-                        f->f_inode = inode;
-                        f->f_mapping = inode->i_mapping;
-                        f->f_op = fops_get(inode->i_fop);
+                return step_into(nd, flags, dentry) {
+                    struct path path;
+                    struct inode *inode;
 
-                        f->f_op->open();
-                            ext4_file_open();
-    fd_install();
-    putname();
+                    int err = handle_mounts(nd, dentry, &path) {
+                        bool jumped;
+                        int ret;
+
+                        path->mnt = nd->path.mnt;
+                        path->dentry = dentry;
+                        if (nd->flags & LOOKUP_RCU) {
+                            unsigned int seq = nd->next_seq;
+                            if (likely(__follow_mount_rcu(nd, path)))
+                                return 0;
+                            // *path and nd->next_seq might've been clobbered
+                            path->mnt = nd->path.mnt;
+                            path->dentry = dentry;
+                            nd->next_seq = seq;
+                            if (!try_to_unlazy_next(nd, dentry))
+                                return -ECHILD;
+                        }
+                        ret = traverse_mounts(path, &jumped, &nd->total_link_count, nd->flags) {
+                            struct vfsmount *mnt = path->mnt;
+                            bool need_mntput = false;
+                            int ret = 0;
+
+                            while (flags & DCACHE_MANAGED_DENTRY) {
+                                /* Allow the filesystem to manage the transit without i_mutex
+                                 * being held. */
+                                if (flags & DCACHE_MANAGE_TRANSIT) {
+                                    ret = path->dentry->d_op->d_manage(path, false);
+                                    flags = smp_load_acquire(&path->dentry->d_flags);
+                                    if (ret < 0)
+                                        break;
+                                }
+
+                                if (flags & DCACHE_MOUNTED) { // something's mounted on it..
+                                    struct vfsmount *mounted = lookup_mnt(path) {
+                                        struct hlist_head *head = m_hash(mnt, dentry);
+                                        struct mount *p;
+
+                                        hlist_for_each_entry_rcu(p, head, mnt_hash)
+                                            if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
+                                                return p;
+                                        return NULL;
+                                    }
+                                    if (mounted) { // ... in our namespace
+                                        dput(path->dentry);
+                                        if (need_mntput)
+                                            mntput(path->mnt);
+                                        path->mnt = mounted;
+                                        path->dentry = dget(mounted->mnt_root);
+                                        // here we know it's positive
+                                        flags = path->dentry->d_flags;
+                                        need_mntput = true;
+                                        continue;
+                                    }
+                                }
+
+                                if (!(flags & DCACHE_NEED_AUTOMOUNT))
+                                    break;
+
+                                // uncovered automount point
+                                ret = follow_automount(path, count, lookup_flags);
+                                flags = smp_load_acquire(&path->dentry->d_flags);
+                                if (ret < 0)
+                                    break;
+                            }
+
+                            if (ret == -EISDIR)
+                                ret = 0;
+                            // possible if you race with several mount --move
+                            if (need_mntput && path->mnt == mnt)
+                                mntput(path->mnt);
+                            if (!ret && unlikely(d_flags_negative(flags)))
+                                ret = -ENOENT;
+                            *jumped = need_mntput;
+                            return ret;
+                        }
+                        if (jumped) {
+                            if (unlikely(nd->flags & LOOKUP_NO_XDEV))
+                                ret = -EXDEV;
+                            else
+                                nd->state |= ND_JUMPED;
+                        }
+                        if (unlikely(ret)) {
+                            dput(path->dentry);
+                            if (path->mnt != nd->path.mnt)
+                                mntput(path->mnt);
+                        }
+                        return ret;
+                    }
+
+                    if (err < 0)
+                        return ERR_PTR(err);
+                    inode = path.dentry->d_inode;
+                    if (likely(!d_is_symlink(path.dentry))
+                        || ((flags & WALK_TRAILING) && !(nd->flags & LOOKUP_FOLLOW))
+                        || (flags & WALK_NOFOLLOW)) {
+
+                        /* not a symlink or should not follow */
+                        if (nd->flags & LOOKUP_RCU) {
+                            if (read_seqcount_retry(&path.dentry->d_seq, nd->next_seq))
+                                return ERR_PTR(-ECHILD);
+                            if (unlikely(!inode))
+                                return ERR_PTR(-ENOENT);
+                        } else {
+                            dput(nd->path.dentry);
+                            if (nd->path.mnt != path.mnt)
+                                mntput(nd->path.mnt);
+                        }
+                        nd->path = path;
+                        nd->inode = inode;
+                        nd->seq = nd->next_seq;
+                        return NULL;
+                    }
+                    if (nd->flags & LOOKUP_RCU) {
+                        /* make sure that d_is_symlink above matches inode */
+                        if (read_seqcount_retry(&path.dentry->d_seq, nd->next_seq))
+                            return ERR_PTR(-ECHILD);
+                    } else {
+                        if (path.mnt == nd->path.mnt)
+                            mntget(path.mnt);
+                    }
+
+                    return pick_link(nd, &path, inode, flags) {
+                        struct saved *last;
+                        const char *res;
+                        int error = reserve_stack(nd, link);
+
+                        last = nd->stack + nd->depth++;
+                        last->link = *link;
+                        clear_delayed_call(&last->done);
+                        last->seq = nd->next_seq;
+
+                        if (flags & WALK_TRAILING) {
+                            error = may_follow_link(nd, inode);
+                            if (unlikely(error))
+                                return ERR_PTR(error);
+                        }
+
+                        if (unlikely(nd->flags & LOOKUP_NO_SYMLINKS) ||
+                                unlikely(link->mnt->mnt_flags & MNT_NOSYMFOLLOW))
+                            return ERR_PTR(-ELOOP);
+
+                        if (!(nd->flags & LOOKUP_RCU)) {
+                            touch_atime(&last->link);
+                            cond_resched();
+                        } else if (atime_needs_update(&last->link, inode)) {
+                            if (!try_to_unlazy(nd))
+                                return ERR_PTR(-ECHILD);
+                            touch_atime(&last->link);
+                        }
+
+                        error = security_inode_follow_link(link->dentry, inode,
+                                        nd->flags & LOOKUP_RCU);
+                        if (unlikely(error))
+                            return ERR_PTR(error);
+
+                        res = READ_ONCE(inode->i_link);
+                        if (!res) {
+                            const char* (*get)(struct dentry *, struct inode *,
+                                    struct delayed_call *);
+                            get = inode->i_op->get_link;
+                            if (nd->flags & LOOKUP_RCU) {
+                                res = get(NULL, inode, &last->done) ext4_get_link() {
+
+                                }
+                                if (res == ERR_PTR(-ECHILD) && try_to_unlazy(nd))
+                                    res = get(link->dentry, inode, &last->done);
+                            } else {
+                                res = get(link->dentry, inode, &last->done);
+                            }
+                            if (!res)
+                                goto all_done;
+                            if (IS_ERR(res))
+                                return res;
+                        }
+                        if (*res == '/') {
+                            error = nd_jump_root(nd);
+                            if (unlikely(error))
+                                return ERR_PTR(error);
+                            while (unlikely(*++res == '/'));
+                        }
+                        if (*res)
+                            return res;
+                    all_done: // pure jump
+                        put_link(nd);
+                        return NULL;
+                    }
+                }
+            }
+        }
+        if (unlikely(link)) {
+            if (IS_ERR(link))
+                return PTR_ERR(link);
+            /* a symlink to follow */
+            nd->stack[depth++].name = name;
+            name = link;
+            continue;
+        }
+        if (unlikely(!d_can_lookup(nd->path.dentry))) {
+            if (nd->flags & LOOKUP_RCU) {
+                if (!try_to_unlazy(nd))
+                    return -ECHILD;
+            }
+            return -ENOTDIR;
+        }
+    }
+}
 ```
 
-<img src='../images/kernel/dcache.png' height='700' />
+### open_last_lookups
+
+```c
+open_last_lookups(nd, file, op) {
+    struct dentry *dir = nd->path.dentry;
+    int open_flag = op->open_flag;
+    bool got_write = false;
+    struct dentry *dentry;
+    const char *res;
+
+    nd->flags |= op->intent;
+
+    if (!(open_flag & O_CREAT)) {
+        if (nd->last.name[nd->last.len])
+        nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+
+        /* 1. search in dcache */
+        dentry = lookup_fast(nd);
+        if (likely(dentry))
+            goto finish_lookup;
+    } else {
+        /* create side of things */
+        if (nd->flags & LOOKUP_RCU) {
+        if (!try_to_unlazy(nd))
+            return ERR_PTR(-ECHILD);
+        }
+        audit_inode(nd->name, dir, AUDIT_INODE_PARENT);
+        /* trailing slashes? */
+        if (unlikely(nd->last.name[nd->last.len]))
+            return ERR_PTR(-EISDIR);
+    }
+
+    if (open_flag & (O_CREAT | O_TRUNC | O_WRONLY | O_RDWR)) {
+        got_write = !mnt_want_write(nd->path.mnt);
+    }
+
+    /* 2. search in file system */
+    dentry = lookup_open(nd, file, op, got_write) {
+        /* Negative dentry, just create the file */
+        if (!dentry->d_inode && (open_flag & O_CREAT)) {
+            error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
+        }
+
+        dentry = d_alloc_parallel(dir, &nd->last, &wq);
+        struct dentry *res = dir_inode->i_op->lookup(
+            dir_inode, dentry, nd->flags); /* ext4_lookup */
+        path->dentry = dentry;
+        path->mnt = nd->path.mnt;
+    }
+
+finish_lookup:
+    if (nd->depth)
+        put_link(nd);
+    res = step_into(nd, WALK_TRAILING, dentry);
+    if (unlikely(res))
+        nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
+    return res;
+}
+```
+
+### do_tmpfile
+
+### do_o_path
 
 ## read-write
 
@@ -1372,7 +1669,138 @@ do_sys_open();
 
 * [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
 
-```c++
+call stack
+
+```c
+write(fd, buf, size);
+    vfs_write();
+        file->f_op->write();
+            ext4_file_write_iter();
+                if (iocb->ki_flags & IOCB_DIRECT)
+                    return ext4_dio_write_iter(iocb, from);
+                else
+                    return ext4_buffered_write_iter(iocb, from);
+
+ext4_dio_write_iter();
+    if (extend) {
+        ext4_journal_start();
+        ext4_orphan_add();
+        ext4_journal_stop();
+    }
+
+    iomap_dio_rw(iocb, from, ext4_iomap_overwrite_ops, &ext4_dio_write_ops);
+```
+
+```c
+read(fd, buf, size);
+    vfs_write();
+        file->f_op->read();
+            ext4_file_read_iter();
+                if (iocb->ki_flags & IOCB_DIRECT)
+                    return ext4_dio_read_iter(iocb, to);
+                else
+                    return generic_file_read_iter(iocb, to);
+
+/* buffered io read */
+generic_file_read_iter(iocb, iter);
+    if (iocb->ki_flags & IOCB_DIRECT) {
+        mapping->a_ops->direct_IO(iocb, iter);
+        return;
+    }
+
+    filemap_read(iocb, iter, retval);
+        filemap_get_pages(iocb, iter, &fbatch);
+            /* 1. read folio from page cache */
+            filemap_get_read_batch(mapping, index, last_index, fbatch);
+                for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
+                    folio_batch_add(fbatch, folio);
+                }
+            /* 2. readahead if necessary */
+            folio = fbatch->folios[folio_batch_count(fbatch) - 1];
+            filemap_readahead(); /* read ahead for last folio if need */
+                page_cache_async_ra();
+                    ondemand_readahead(ractl, folio, req_count);
+                        page_cache_ra_order(ractl, ra, order);
+                            read_pages(ractl);
+                                blk_start_plug(&plug);
+                                aops->readahead(rac); /* ext4_readahead */
+                                blk_finish_plug(&plug);
+
+                        try_context_readahead();
+
+                        do_page_cache_ra();
+                            page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
+                                read_pages(ractl);
+                                    --->
+
+            filemap_update_page();
+        do {
+            /* copy data to user space */
+            copy_folio_to_iter(folio, offset, bytes, iter);
+        } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
+```
+
+```c
+write(fd, buf, size);
+    vfs_write();
+        file->f_op->write();
+            ext4_file_write_iter();
+                if (iocb->ki_flags & IOCB_DIRECT)
+                    return ext4_dio_write_iter(iocb, from);
+                else
+                    return ext4_buffered_write_iter(iocb, from);
+
+/* buffered io write */
+current->backing_dev_info = inode_to_bdi(inode);
+
+generic_perform_write(struct kiocb *iocb, struct iov_iter *i);
+    do {
+        struct page *page;
+        a_ops->write_begin();
+            ext4_write_begin(struct page **pagep);
+                page = grab_cache_page_write_begin(mapping, index);
+                    /* Find and get a reference to a folio from i_pages cache */
+                    pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping));
+                        __filemap_get_folio();
+                ext4_journal_start(inode, EXT4_HT_WRITE_PAGE, needed_blocks);
+                if (ext4_should_dioread_nolock(inode))
+                    __block_write_begin(page, pos, len, ext4_get_block_unwritten);
+                else
+                    __block_write_begin(page, pos, len, ext4_get_block);
+                        create_page_buffers();
+                        mark_buffer_dirty();
+                        set_buffer_uptodate();
+                *pages = page;
+
+        flush_dcache_page(page);
+        copy_page_from_iter_atomic(page, offset, bytes, i);
+
+        a_ops->write_end();
+            ext4_write_end();
+                ext4_journal_stop();
+                block_write_end();
+                    __block_commit_write();
+                        set_buffer_uptodate(bh);
+                        mark_buffer_dirty();
+                            __mark_inode_dirty(inode, I_DIRTY_PAGES);
+
+        balance_dirty_pages_ratelimited();
+            wb_wakeup(wb);
+                mod_delayed_work(bdi_wq, &wb->dwork, 0);
+                    __queue_delayed_work(cpu, wq, dwork, delay);
+                        dwork->wq = wq;
+                        add_timer(); /* delayed_work_timer_fn */
+    } while (iov_iter_count(i));
+
+current->backing_dev_info = NULL;
+
+
+delayed_work_timer_fn();
+    struct delayed_work *dwork = from_timer(dwork, t, timer);
+    __queue_work(dwork->cpu, dwork->wq, &dwork->work);
+```
+
+```c
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
   struct fd f = fdget_pos(fd);
@@ -1497,7 +1925,7 @@ ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 * [[v5,12/12] ext4: introduce direct I/O write using iomap infrastructure](https://patchwork.ozlabs.org/project/linux-ext4/patch/c3438dad66a34a7d4e7509a5dd64c2326340a52a.1571647180.git.mbobrowski@mbobrowski.org/)
 
-```c++
+```c
 static const struct address_space_operations ext4_aops = {
   .read_folio         = ext4_read_folio,
   .readahead          = ext4_readahead,
@@ -2113,7 +2541,7 @@ ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
     i->iov_offset += maxsize;
     if (i->iov_offset == i->bvec->bv_len) {
       i->iov_offset = 0;
-      i->bvec++;
+      i->bvec;
       i->nr_segs--;
     }
     return maxsize;
@@ -2179,7 +2607,7 @@ void __bio_add_page(struct bio *bio, struct page *page,
 ```
 
 ### buffered read
-```c++
+```c
 read(fd, buf, size);
     vfs_write();
         file->f_op->read();
@@ -2709,7 +3137,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 ```
 
 ### buffered write
-```c++
+```c
 write(fd, buf, size);
     vfs_write();
         file->f_op->write();
@@ -3045,8 +3473,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 }
 ```
 
-
-```c++
+```c
 read(fd, buf, size);
     vfs_write();
         file->f_op->read();
@@ -3130,141 +3557,12 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
         iomap_dio_complete();
 ```
 
-```c++
-write(fd, buf, size);
-    vfs_write();
-        file->f_op->write();
-            ext4_file_write_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
-                    return ext4_dio_write_iter(iocb, from);
-                else
-                    return ext4_buffered_write_iter(iocb, from);
-
-ext4_dio_write_iter();
-    if (extend) {
-        ext4_journal_start();
-        ext4_orphan_add();
-        ext4_journal_stop();
-    }
-
-    iomap_dio_rw(iocb, from, ext4_iomap_overwrite_ops, &ext4_dio_write_ops);
-```
-
-```c++
-read(fd, buf, size);
-    vfs_write();
-        file->f_op->read();
-            ext4_file_read_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
-                    return ext4_dio_read_iter(iocb, to);
-                else
-                    return generic_file_read_iter(iocb, to);
-
-/* buffered io read */
-generic_file_read_iter(iocb, iter);
-    if (iocb->ki_flags & IOCB_DIRECT) {
-        mapping->a_ops->direct_IO(iocb, iter);
-        return;
-    }
-
-    filemap_read(iocb, iter, retval);
-        filemap_get_pages(iocb, iter, &fbatch);
-            /* 1. read folio from page cache */
-            filemap_get_read_batch(mapping, index, last_index, fbatch);
-                for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
-                    folio_batch_add(fbatch, folio);
-                }
-            /* 2. readahead if necessary */
-            folio = fbatch->folios[folio_batch_count(fbatch) - 1];
-            filemap_readahead(); /* read ahead for last folio if need */
-                page_cache_async_ra();
-                    ondemand_readahead(ractl, folio, req_count);
-                        page_cache_ra_order(ractl, ra, order);
-                            read_pages(ractl);
-                                blk_start_plug(&plug);
-                                aops->readahead(rac); /* ext4_readahead */
-                                blk_finish_plug(&plug);
-
-                        try_context_readahead();
-
-                        do_page_cache_ra();
-                            page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
-                                read_pages(ractl);
-                                    --->
-
-            filemap_update_page();
-        do {
-            /* copy data to user space */
-            copy_folio_to_iter(folio, offset, bytes, iter);
-        } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
-```
-
-```c++
-write(fd, buf, size);
-    vfs_write();
-        file->f_op->write();
-            ext4_file_write_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
-                    return ext4_dio_write_iter(iocb, from);
-                else
-                    return ext4_buffered_write_iter(iocb, from);
-
-/* buffered io write */
-current->backing_dev_info = inode_to_bdi(inode);
-
-generic_perform_write(struct kiocb *iocb, struct iov_iter *i);
-    do {
-        struct page *page;
-        a_ops->write_begin();
-            ext4_write_begin(struct page **pagep);
-                page = grab_cache_page_write_begin(mapping, index);
-                    /* Find and get a reference to a folio from i_pages cache */
-                    pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping));
-                        __filemap_get_folio();
-                ext4_journal_start(inode, EXT4_HT_WRITE_PAGE, needed_blocks);
-                if (ext4_should_dioread_nolock(inode))
-                    __block_write_begin(page, pos, len, ext4_get_block_unwritten);
-                else
-                    __block_write_begin(page, pos, len, ext4_get_block);
-                        create_page_buffers();
-                        mark_buffer_dirty();
-                        set_buffer_uptodate();
-                *pages = page;
-
-        flush_dcache_page(page);
-        copy_page_from_iter_atomic(page, offset, bytes, i);
-
-        a_ops->write_end();
-            ext4_write_end();
-                ext4_journal_stop();
-                block_write_end();
-                    __block_commit_write();
-                        set_buffer_uptodate(bh);
-                        mark_buffer_dirty();
-                            __mark_inode_dirty(inode, I_DIRTY_PAGES);
-
-        balance_dirty_pages_ratelimited();
-            wb_wakeup(wb);
-                mod_delayed_work(bdi_wq, &wb->dwork, 0);
-                    __queue_delayed_work(cpu, wq, dwork, delay);
-                        dwork->wq = wq;
-                        add_timer(); /* delayed_work_timer_fn */
-    } while (iov_iter_count(i));
-
-current->backing_dev_info = NULL;
-
-
-delayed_work_timer_fn();
-    struct delayed_work *dwork = from_timer(dwork, t, timer);
-    __queue_work(dwork->cpu, dwork->wq, &dwork->work);
-```
-
 ## writeback
 
 ![](../images/kernel/proc-cmwq.png)
 
 ### backing_dev_info
-```c++
+```c
 extern spinlock_t               bdi_lock;
 extern struct list_head         bdi_list;
 extern struct workqueue_struct  *bdi_wq;
@@ -3330,7 +3628,7 @@ struct wb_writeback_work {
 ```
 
 ### bdi_init
-```c++
+```c
 static int default_bdi_init(void)
 {
   int err;
@@ -3382,7 +3680,7 @@ static int cgwb_bdi_init(struct backing_dev_info *bdi)
 ```
 
 ### wb_init
-```c++
+```c
 static int wb_init(
   struct bdi_writeback *wb,
   struct backing_dev_info *bdi,
@@ -3652,7 +3950,7 @@ All devices have the corresponding device file in /dev(is devtmpfs file system),
 * [Simple Clear File IO :cn:](https://spongecaptain.cool/SimpleClearFileIO/)
 * [IO子系统全流程介绍](https://zhuanlan.zhihu.com/p/545906763)
 
-```c++
+```c
 lsmod           /* list installed modes */
 insmod *.ko     /* install mode */
 mknod filename type major minor  /* create dev file in /dev/ */
@@ -3668,20 +3966,20 @@ mknod filename type major minor  /* create dev file in /dev/ */
 ![](../images/kernel/io-sysfs.png)
 
 ## kobject
-```c++
+```c
 module_init(logibm_init);
 module_exit(logibm_exit);
 ```
 
 A kernel module consists:
 1. header
-  ```c++
+  ```c
   #include <linux/module.h>
   #include <linux/init.h>
   ```
 2. define functions, handling kernel module main logic
 3. Implement a file_operation interface
-  ```c++
+  ```c
   static const struct file_operations lp_fops = {
     .owner    = THIS_MODULE,
     .write    = lp_write,
@@ -3708,7 +4006,7 @@ A kernel module consists:
 
 ### insmod char dev
 
-```c++
+```c
 static int __init lp_init (void)
 {
   if (register_chrdev (LP_MAJOR, "lp", &lp_fops)) {
@@ -3751,7 +4049,7 @@ int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 ```
 
 ### dev_fs_type
-```c++
+```c
 rest_init();
   kernel_thread(kernel_init);
     kernel_init_freeable();
@@ -3830,7 +4128,7 @@ out:
 ```
 
 ### mount char dev
-```c++
+```c
 /* mount -t type device destination_dir
  *
  * mount -> ksys_mount -> do_mount -> do_new_mount ->
@@ -3958,7 +4256,7 @@ void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 }
 ```
 
-```c++
+```c
 mount();
   ksys_mount(); /* copy type, dev_name, data to kernel */
     do_mount(); /* get path by name */
@@ -3979,7 +4277,7 @@ mount();
 ```
 
 ### mknod char dev
-```c++
+```c
 /* mknod /dev/ttyS0 c 4 64 */
 SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
 {
@@ -4044,7 +4342,7 @@ static int shmem_mknod(
 }
 ```
 
-```c++
+```c
 mknod();
   sys_mknodat();
     user_path_create();
@@ -4060,7 +4358,7 @@ mknod();
 ```
 
 ### open char dev
-```c++
+```c
 const struct file_operations def_chr_fops = {
   .open = chrdev_open,
 };
@@ -4095,7 +4393,7 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 ```
 
 ### write char dev
-```c++
+```c
 ssize_t __vfs_write(struct file *file, const char __user *p, size_t count, loff_t *pos)
 {
   if (file->f_op->write)
@@ -4156,7 +4454,7 @@ static ssize_t lp_write(
 ![](../images/kernel/io-char-dev-write.png)
 
 ### ioctl
-```c++
+```c
 SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 {
   int error;
@@ -4307,7 +4605,7 @@ static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
 
 ![](../images/kernel/io-blk-dev-insmod-mknod-mount.png)
 
-```c++
+```c
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
   inode->i_mode = mode;
@@ -4340,7 +4638,7 @@ const struct file_operations def_blk_fops = {
 
 ### inode_hashtable
 
-```c++
+```c
 static unsigned int i_hash_mask __read_mostly;
 static unsigned int i_hash_shift __read_mostly;
 static struct hlist_head *inode_hashtable __read_mostly;
@@ -4427,7 +4725,7 @@ struct inode *find_inode_rcu(struct super_block *sb, unsigned long hashval,
 
 ### mount blk dev
 
-```c++
+```c
 /* 3rd file system, save all blk device  */
 struct super_block *blockdev_superblock;
 
@@ -4510,7 +4808,7 @@ struct gendisk {
 ```
 
 #### ext4_get_tree
-```c++
+```c
 static const struct fs_context_operations ext4_context_ops = {
     .parse_param    = ext4_parse_param,
     .get_tree       = ext4_get_tree,
@@ -4830,7 +5128,7 @@ share_extant_sb:
 ```
 
 ### device_add_disk
-```c++
+```c
 int device_register(struct device *dev)
 {
   device_initialize(dev);
@@ -5141,7 +5439,7 @@ void bdev_add(struct block_device *bdev, dev_t dev)
 }
 ```
 
-```c++
+```c
 mount(dev_name, dir_name, type, flags, data);
     copy_mount_string(); /* type, dev_name, data */
     do_mount();
@@ -5209,7 +5507,7 @@ ext4_get_tree(fc);
 ```
 
 ## direct io
-```c++
+```c
 read();
   vfs_read();
     file->f_op->write_iter(); /* ext4_file_read_iter */
@@ -5449,7 +5747,7 @@ out:
 ```
 
 ### dio_get_page
-```c++
+```c
 struct page *dio_get_page(struct dio *dio, struct dio_submit *sdio)
 {
   if (dio_pages_present(sdio) == 0) {
@@ -5574,7 +5872,7 @@ finish_or_fault:
 ```
 
 ### get_more_blocks
-```c++
+```c
 int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
          struct buffer_head *map_bh)
 {
@@ -5628,7 +5926,7 @@ int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
 ```
 
 ### submit_page_section
-```c++
+```c
 int submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
         unsigned offset, unsigned len, sector_t blocknr,
         struct buffer_head *map_bh)
@@ -5776,7 +6074,7 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 ```
 
 ## wb_workfn
-```c++
+```c
 /* wb_workfn -> wb_do_writeback -> wb_writeback
  * -> writeback_sb_inodes -> __writeback_single_inode
  * -> do_writepages -> ext4_writepages */
@@ -6500,7 +6798,7 @@ void ext4_io_submit(struct ext4_io_submit *io)
 
 <img src='../images/kernel/io-blk_queue_bio.png' height='800' />
 
-```c++
+```c
 struct request_queue {
   /* Together with queue_head for cacheline sharing */
   struct list_head        queue_head;
@@ -6596,7 +6894,7 @@ struct bio_vec {
 }
 ```
 
-```c++
+```c
 /* submit a bio to the block device layer for I/O */
 void submit_bio(struct bio *bio)
 {
@@ -7031,7 +7329,7 @@ bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
 ```
 
 ### elv_merge
-```c++
+```c
 enum elv_merge elv_merge(
   struct request_queue *q,
   struct request **req,
@@ -7105,7 +7403,7 @@ static struct request *cfq_find_rq_fmerge(
 }
 ```
 
-```c++
+```c
 __submit_bio(bio);
     blk_mq_submit_bio(bio);
         struct request_queue *q = bdev_get_queue(bio->bi_bdev);
@@ -7136,7 +7434,7 @@ __submit_bio(bio);
 
 ## init request_queue
 
-```c++
+```c
 /* Small computer system interface */
 static struct scsi_device *scsi_alloc_sdev(
   struct scsi_target *starget,
@@ -7191,7 +7489,7 @@ int blk_init_allocated_queue(struct request_queue *q)
 
 When I/O is queued to an empty device, that device enters a plugged state. This means that I/O isn't immediately dispatched to the low level device driver, instead it is held back by this plug. When a process is going to wait on the I/O to finish, the device is unplugged and request dispatching to the device driver is started. The idea behind plugging is to allow a buildup of requests to better utilize the hardware and to allow merging of sequential requests into one single larger request.
 
-```c++
+```c
 void blk_start_plug(struct blk_plug *plug)
 {
   struct task_struct *tsk = current;
@@ -7576,7 +7874,7 @@ static const struct blk_mq_ops scsi_mq_ops = {
 };
 ```
 
-```c++
+```c
 /* direct io, not used for ext4 */
 do_direct_IO();
 
@@ -7615,7 +7913,7 @@ do_direct_IO();
 ```
 
 ## call graph io
-```c++
+```c
 /* wb_workfn */
 wb_workfn();
     wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
@@ -7731,7 +8029,7 @@ writeback_inodes_sb();
             wb_wait_for_completion();
 ```
 
-```c++
+```c
 /* io scheduler */
 __submit_bio(bio);
     blk_mq_submit_bio(bio);
@@ -7770,7 +8068,7 @@ __submit_bio(bio);
             blk_mq_run_dispatch_ops(rq->q, blk_mq_try_issue_directly(rq->mq_hctx, rq));
 ```
 
-```c++
+```c
 blk_finish_plug();
     if (plug == current->plug) {
     __blk_flush_plug(plug, false);
