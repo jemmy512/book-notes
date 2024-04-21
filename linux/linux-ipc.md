@@ -7,20 +7,29 @@
     * [do_signal](#do_signal)
         * [get_signal](#get_signal)
         * [rt_sigreturn](#rt_sigreturn)
-* [POSIX shmem](#POSIX-shmem)
-    * [shmem_ops](#shmem_ops)
+
+* [posix_shmem](#posix_shmem)
+
+* [shmem_fs](#shmem_fs)
+    * [shmem_init](#shmem_init)
     * [shmem_open](#shmem_open)
     * [shmem_close](#shmem_close)
     * [shmem_fault](#shmem_fault)
-* [System V IPC](#system-v-ipc)
-    * [shm](#shm)
+
+* [posix_sem](#posix_sem)
+    * [sem_open](#sem_open)
+    * [sem_post](#sem_post)
+    * [sem_wait](#sem_wait)
+
+* [sysv_ipc](#sysv_ipc)
+    * [sysv_shm](#sysv_shm)
         * [shmget](#shmget)
         * [shmat](#shmat)
         * [shm_ops](#shm_ops)
         * [shm_open](#shm_open)
         * [shm_close](#shm_close)
         * [shm_fault](#shm_fault)
-    * [sem]
+    * [sysv_sem](#sysv_shm)
         * [semget](#semget)
         * [semctl](#semctl)
         * [semop](#semop)
@@ -647,6 +656,38 @@ int send_signal_locked(int sig, struct kernel_siginfo *info,
     int override_rlimit;
     int ret = 0, result;
 
+    /* Should SIGKILL or SIGSTOP be received by a pid namespace init? */
+    bool force = false;
+
+    if (info == SEND_SIG_NOINFO) {
+        /* Force if sent from an ancestor pid namespace
+         * return 0 if current level is higher than t's */
+        force = !task_pid_nr_ns(current, task_active_pid_ns(t));
+    } else if (info == SEND_SIG_PRIV) {
+        /* Don't ignore kernel generated signals */
+        force = true;
+    } else if (has_si_pid_and_uid(info)) {
+        /* SIGKILL and SIGSTOP is special or has ids */
+        struct user_namespace *t_user_ns;
+
+        rcu_read_lock();
+        t_user_ns = task_cred_xxx(t, user_ns);
+        if (current_user_ns() != t_user_ns) {
+            kuid_t uid = make_kuid(current_user_ns(), info->si_uid);
+            info->si_uid = from_kuid_munged(t_user_ns, uid);
+        }
+        rcu_read_unlock();
+
+        /* A kernel generated signal? */
+        force = (info->si_code == SI_KERNEL);
+
+        /* From an ancestor pid namespace? */
+        if (!task_pid_nr_ns(current, task_active_pid_ns(t))) {
+            info->si_pid = 0;
+            force = true;
+        }
+    }
+
     /* Handle magic process-wide effects of stop/continue signals.  */
     ret = prepare_signal(sig, t, force) {
         struct signal_struct *signal = p->signal;
@@ -693,7 +734,7 @@ int send_signal_locked(int sig, struct kernel_siginfo *info,
     }
 
     if (!ret)
-		goto ret;
+        goto ret;
 
     /* per-process or per-thread signal */
     pending = (type != PIDTYPE_PID) ? &t->signal->shared_pending : &t->pending;
@@ -1021,8 +1062,8 @@ static void do_signal(struct pt_regs *regs)
                         } else {
                             sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp) {
                                 SYM_CODE_START(__kernel_rt_sigreturn)
-                                    mov	x8, #__NR_rt_sigreturn /* call rt_sigreturn */
-                                    svc	#0
+                                    mov    x8, #__NR_rt_sigreturn /* call rt_sigreturn */
+                                    svc    #0
                                 SYM_CODE_END(__kernel_rt_sigreturn)
                             }
                         }
@@ -1379,11 +1420,20 @@ badframe:
 }
 ```
 
-# POSIX shmem
+# posix_shmem
 
-## shmem_ops
+# shmem_fs
 
 ```c
+static struct file_system_type shmem_fs_type = {
+    .owner              = THIS_MODULE,
+    .name               = "tmpfs",
+    .init_fs_context    = shmem_init_fs_context,
+    .parameters         = shmem_fs_parameters,
+    .kill_sb            = kill_litter_super,
+    .fs_flags           = FS_USERNS_MOUNT | FS_ALLOW_IDMAP,
+};
+
 static const struct vm_operations_struct shmem_vm_ops = {
     .fault      = shmem_fault,
     .map_pages  = filemap_map_pages,
@@ -1426,6 +1476,53 @@ static const struct inode_operations shmem_dir_inode_operations = {
     .tmpfile        = shmem_tmpfile,
     .get_offset_ctx = shmem_get_offset_ctx,
 };
+```
+
+## shmem_init
+
+```c
+int __init shmem_init(void)
+{
+    int error;
+    error = shmem_init_inodecache() {
+        shmem_inode_cachep = kmem_cache_create(
+            "shmem_inode_cache",
+            sizeof(struct shmem_inode_info),
+            0, SLAB_PANIC|SLAB_ACCOUNT, shmem_init_inode
+        );
+    }
+    error = register_filesystem(&shmem_fs_type) {
+        int res = 0;
+        struct file_system_type ** p;
+
+        if (fs->parameters && !fs_validate_description(fs->name, fs->parameters))
+            return -EINVAL;
+
+        if (fs->next)
+            return -EBUSY;
+
+        p = find_filesystem(fs->name, strlen(fs->name)) {
+            /* static struct file_system_type *file_systems; */
+            struct file_system_type **p;
+            for (p = &file_systems; *p; p = &(*p)->next) {
+                if (strncmp((*p)->name, name, len) == 0 && !(*p)->name[len]) {
+                    break;
+                }
+            }
+            return p;
+        }
+
+        res = (*p) ? -EBUSY : fs;
+
+        return res;
+    }
+
+    shm_mnt = kern_mount(&shmem_fs_type) {
+        return mnt = vfs_kern_mount(type, SB_KERNMOUNT, type->name, NULL);
+    }
+
+    return 0;
+}
 ```
 
 ## shmem_open
@@ -1558,6 +1655,7 @@ open() {
 ```
 
 ## shmem_fault
+
 ```c
 vm_fault_t shmem_fault(struct vm_fault *vmf) {
     struct vm_area_struct *vma = vmf->vma;
@@ -1817,11 +1915,167 @@ vm_fault_t shmem_fault(struct vm_fault *vmf) {
 }
 ```
 
-# System V IPC
+# posix_sem
 
-## shm
+## sem_open
 
-<img src='../images/kernel/ipc-shm.png' style='max-height:850px'/>
+glibc
+
+```c
+sem_t *__sem_open(const char *name, int oflag, ...)
+{
+    int fd;
+    sem_t *result;
+
+    struct shmdir_name dirname;
+    int ret = __shm_get_name(&dirname, name, true) {
+        return "/dev/shm/xxx";
+    }
+    if (ret != 0) {
+        return SEM_FAILED;
+    }
+
+    /* If the semaphore object has to exist simply open it.  */
+    if ((oflag & O_CREAT) == 0 || (oflag & O_EXCL) == 0) {
+    try_again:
+        fd = __open(dirname.name, (oflag & O_EXCL) | SEM_OPEN_FLAGS);
+
+        if (fd == -1) {
+            /* If we are supposed to create the file try this next.  */
+            if ((oflag & O_CREAT) != 0 && errno == ENOENT)
+                goto try_create;
+
+            /* Return.  errno is already set.  */
+        } else {
+            /* Check whether we already have this semaphore mapped and
+               create one if necessary.  */
+            result = __sem_check_add_mapping(name, fd, SEM_FAILED);
+        }
+    } else {
+        /* We have to open a temporary file first since it must have the
+           correct form before we can start using it.  */
+        mode_t mode;
+        unsigned int value;
+        va_list ap;
+
+    try_create:
+        va_start(ap, oflag);
+
+        mode = va_arg(ap, mode_t);
+        value = va_arg(ap, unsigned int);
+
+        va_end(ap);
+
+        if (value > SEM_VALUE_MAX) {
+            errno = EINVAL;
+            return SEM_FAILED;
+        }
+
+        /* Create the initial file content.  */
+        union {
+            sem_t initsem;
+            struct new_sem newsem;
+        } sem;
+
+        __new_sem_open_init(&sem.newsem, value);
+
+        /* Initialize the remaining bytes as well.  */
+        memset((char *)&sem.initsem + sizeof(struct new_sem), '\0',
+               sizeof(sem_t) - sizeof(struct new_sem));
+
+        char tmpfname[] = SHMDIR "sem.XXXXXX";
+        int retries = 0;
+#define NRETRIES 50
+        while (1) {
+            /* We really want to use mktemp here.  We cannot use mkstemp
+               since the file must be opened with a specific mode.  The
+               mode cannot later be set since then we cannot apply the
+               file create mask.  */
+            if (__mktemp(tmpfname) == NULL) {
+                return SEM_FAILED;
+            }
+
+            /* Open the file.  Make sure we do not overwrite anything.  */
+            fd = __open(tmpfname, O_CREAT | O_EXCL | SEM_OPEN_FLAGS, mode);
+            if (fd == -1) {
+                if (errno == EEXIST) {
+                    if (++retries < NRETRIES) {
+                        /* Restore the six placeholder bytes before the
+                           null terminator before the next attempt.  */
+                        memcpy(tmpfname + sizeof(tmpfname) - 7, "XXXXXX", 6);
+                        continue;
+                    }
+
+                    errno = EAGAIN;
+                }
+
+                return SEM_FAILED;
+            }
+
+            /* We got a file.  */
+            break;
+        }
+
+        if (write(fd, &sem.initsem, sizeof(sem_t)) == sizeof(sem_t)
+            /* Map the sem_t structure from the file.  */
+            && (result = (sem_t *)__mmap(NULL, sizeof(sem_t),
+                PROT_READ | PROT_WRITE, MAP_SHARED,
+                fd, 0)) != MAP_FAILED) {
+            /* Create the file.  Don't overwrite an existing file.  */
+            if (__link(tmpfname, dirname.name) != 0) {
+                /* Undo the mapping.  */
+                __munmap(result, sizeof(sem_t));
+
+                /* Reinitialize 'result'.  */
+                result = SEM_FAILED;
+
+                /* This failed.  If O_EXCL is not set and the problem was
+                   that the file exists, try again.  */
+                if ((oflag & O_EXCL) == 0 && errno == EEXIST) {
+                    /* Remove the file.  */
+                    __unlink(tmpfname);
+
+                    /* Close the file.  */
+                    __close(fd);
+
+                    goto try_again;
+                }
+            } else {
+                /* Insert the mapping into the search tree.  This also
+                   determines whether another thread sneaked by and already
+                   added such a mapping despite the fact that we created it.  */
+                result = __sem_check_add_mapping(name, fd, result);
+            }
+        }
+
+        /* Now remove the temporary name.  This should never fail.  If
+           it fails we leak a file name.  Better fix the kernel.  */
+        __unlink(tmpfname);
+    }
+
+    /* Map the mmap error to the error we need.  */
+    if (MAP_FAILED != (void *)SEM_FAILED && result == MAP_FAILED)
+        result = SEM_FAILED;
+
+    /* We don't need the file descriptor anymore.  */
+    if (fd != -1) {
+        /* Do not disturb errno.  */
+        int save = errno;
+        __close(fd);
+        errno = save;
+    }
+
+    return result;
+}
+
+strong_alias (__sem_open, sem_open)
+```
+
+## sem_post
+
+## sem_wait
+
+# ipc_namespace
 
 ```c
 struct ipc_namespace {
@@ -1907,8 +2161,7 @@ struct sem_array {
   struct sem            sems[];
 } __randomize_layout;
 
-struct shmid_kernel /* private to the kernel */
-{
+struct shmid_kernel {/* private to the kernel */
   struct kern_ipc_perm  shm_perm;
   struct file           *shm_file;
   unsigned long         shm_nattch;
@@ -1939,7 +2192,42 @@ struct msg_queue {
 } __randomize_layout;
 ```
 
-### shmget
+# sysv_shm
+
+<img src='../images/kernel/ipc-shm.png' style='max-height:850px'/>
+
+
+```c
+shmget();
+    ipcget();
+        ipcget_private();
+        ipcget_public();
+            newseg();
+                shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
+                file = shmem_kernel_file_setup(name, size, acctflag);
+                    __shmem_file_setup();
+                        shmem_get_inode();
+                        alloc_file_pseudo();
+                shp->shm_file = file;
+                ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+
+shmat();
+    do_shmat();
+        shm_obtain_object_check();
+        sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
+        file = alloc_file();
+        do_mmap_pgoff();
+            shm_mmap();
+                shmem_mmap();
+
+shm_fault();
+    shmem_fault();
+        shmem_getpage_gfp();
+            shmem_alloc_and_acct_page();
+```
+
+## shmget
+
 ```c
 SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
 {
@@ -2013,7 +2301,10 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params) {
     shp->shm_nattch = 0;
     shp->shm_creator = current;
 
+    sprintf(name, "SYSV%08x", key);
+
     file = shmem_kernel_file_setup(name, size, acctflag) {
+        /* static struct vfsmount *shm_mnt */
         return __shmem_file_setup(shm_mnt/*mnt*/, name, size, flags, S_PRIVATE) {
             struct inode *inode;
             struct file *res;
@@ -2102,7 +2393,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params) {
                 return ret;
             }
 
-            res = alloc_file_pseudo(inode, mnt, name, O_RDWR, &shmem_file_operations) {
+            res = alloc_file_pseudo(inode, mnt, name, O_RDWR, &shmem_file_operations/*fop*/) {
                 static const struct dentry_operations anon_ops = {
                     .d_dname = simple_dname
                 };
@@ -2156,29 +2447,14 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params) {
 
     return error;
 }
-
-int __init shmem_init(void)
-{
-    int error;
-    error = shmem_init_inodecache(); /* shmem means shmem fs */
-    error = register_filesystem(&shmem_fs_type);
-    shm_mnt = kern_mount(&shmem_fs_type);
-    return 0;
-}
-
-static struct file_system_type shmem_fs_type = {
-    .owner      = THIS_MODULE,
-    .name       = "tmpfs",
-    .mount      = shmem_mount,
-    .kill_sb    = kill_litter_super,
-    .fs_flags   = FS_USERNS_MOUNT,
-};
 ```
 
-### shmat
+## shmat
+
 ```c
 SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg) {
     err = do_shmat(shmid, shmaddr, shmflg, &ret, SHMLBA) {
+        ns = current->nsproxy->ipc_ns;
         struct shmid_kernel *shp = shm_obtain_object_check(ns, shmid);
         path = shp->shm_file->f_path;
         path_get(&path);
@@ -2193,6 +2469,15 @@ SYSCALL_DEFINE3(shmat, int, shmid, char __user *, shmaddr, int, shmflg) {
         sfd->file = base;
         sfd->vm_ops = NULL;
 
+        /* Why create another one?
+         * 1. In 'shmem' fs, 'shm_file' is used for managing memory files;
+         *  it plays a neutral role independent of any process.
+         * 2. the newly created 'struct file' is specifically for memory mapping,
+         *  as discussed in the section on memory mapping.
+         *  When a file on a hard disk needs to be mapped into the virtual address space,
+         *  there should be a 'struct file *vm_file' in 'vm_area_struct'
+         *  pointing to the file on the hard disk. Now that it's a memory file,
+         *  this structure cannot be omitted. */
         file = alloc_file(&path, f_mode,
             is_file_hugepages(shp->shm_file)
             ? &shm_file_operations_huge
@@ -2264,7 +2549,7 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
     }
 
     ret = call_mmap(sfd->file, vma) {/* shmem_mmap */
-        return file->f_op->mmap(file, vma) {
+        return file->f_op->mmap(file, vma) { /* shmem_file_operations */
             shmem_mmap() {
                 file_accessed(file);
                 if (inode->i_nlink)
@@ -2275,14 +2560,15 @@ static int shm_mmap(struct file *file, struct vm_area_struct *vma)
         }
     }
 
-    sfd->vm_ops = vma->vm_ops; /* shmem_vm_ops */
+    sfd->vm_ops = vma->vm_ops; /* shmem_vm_ops or shmem_anon_vm_ops */
     vma->vm_ops = &shm_vm_ops;
 
     return 0;
 }
 ```
 
-### shm_ops
+## shm_ops
+
 ```c
 struct shm_file_data {
     int                       id;
@@ -2308,7 +2594,7 @@ static const struct file_operations shm_file_operations = {
 ```
 
 
-### shm_open
+## shm_open
 
 ```c
 void shm_open(struct vm_area_struct *vma) {
@@ -2347,7 +2633,8 @@ void shm_open(struct vm_area_struct *vma) {
 }
 ```
 
-### shm_close
+## shm_close
+
 ```c
 void shm_close(struct vm_area_struct *vma) {
     struct file *file = vma->vm_file;
@@ -2383,7 +2670,8 @@ void shm_close(struct vm_area_struct *vma) {
 }
 ```
 
-### shm_fault
+## shm_fault
+
 ```c
 static int shm_fault(struct vm_fault *vmf) {
     struct file *file = vmf->vma->vm_file;
@@ -2392,54 +2680,26 @@ static int shm_fault(struct vm_fault *vmf) {
 }
 ```
 
-```c
-shmget();
-    ipcget();
-        ipcget_private();
-        ipcget_public();
-            newseg();
-                shp = kvmalloc(sizeof(*shp), GFP_KERNEL);
-                file = shmem_kernel_file_setup(name, size, acctflag);
-                    __shmem_file_setup();
-                        shmem_get_inode();
-                        alloc_file_pseudo();
-                shp->shm_file = file;
-                ipc_addid(&shm_ids(ns), &shp->shm_perm, ns->shm_ctlmni);
+# sysv_sem
 
-shmat();
-    do_shmat();
-        shm_obtain_object_check();
-        sfd = kzalloc(sizeof(*sfd), GFP_KERNEL);
-        file = alloc_file();
-        do_mmap_pgoff();
-            shm_mmap();
-                shmem_mmap();
-
-shm_fault();
-    shmem_fault();
-        shmem_getpage_gfp();
-            shmem_alloc_and_acct_page();
-```
-
-## sem
-### semget
+## semget
 ```c
 SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
 {
-  struct ipc_namespace *ns;
-  static const struct ipc_ops sem_ops = {
-    .getnew = newary,
-    .associate = sem_security,
-    .more_checks = sem_more_checks,
-  };
+    struct ipc_namespace *ns;
+    static const struct ipc_ops sem_ops = {
+        .getnew = newary,
+        .associate = sem_security,
+        .more_checks = sem_more_checks,
+    };
 
-  struct ipc_params sem_params;
-  ns = current->nsproxy->ipc_ns;
-  sem_params.key = key;
-  sem_params.flg = semflg;
-  sem_params.u.nsems = nsems;
+    struct ipc_params sem_params;
+    ns = current->nsproxy->ipc_ns;
+    sem_params.key = key;
+    sem_params.flg = semflg;
+    sem_params.u.nsems = nsems;
 
-  return ipcget(ns, &sem_ids(ns), &sem_ops, &sem_params);
+    return ipcget(ns, &sem_ids(ns), &sem_ops, &sem_params);
 }
 
 static int newary(struct ipc_namespace *ns, struct ipc_params *params)
@@ -2486,7 +2746,7 @@ struct sem {
 };
 ```
 
-### semctl
+## semctl
 ```c
 SYSCALL_DEFINE4(semctl, int, semid, int, semnum, int, cmd, unsigned long, arg)
 {
@@ -2582,7 +2842,7 @@ static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
 }
 ```
 
-### semop
+## semop
 ```c
 SYSCALL_DEFINE3(semop, int, semid, struct sembuf __user *, tsops,
     unsigned, nsops)
