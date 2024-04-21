@@ -12937,7 +12937,7 @@ out_unlock:
 * [Linux - Namespace](https://blog.csdn.net/summer_fish/article/details/134437688)
 * [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
 * [Docker 背后的内核知识 - Namespace 资源隔离](https://www.infoq.cn/article/docker-kernel-knowledge-namespace-resource-isolation/)
-
+* [Linux NameSpace 目录](https://blog.csdn.net/pwl999/article/details/117554060?spm=1001.2014.3001.5501)
 ```c
 struct task_struct {
     struct nsproxy *nsproxy;
@@ -13810,6 +13810,8 @@ int proc_do_uts_string(struct ctl_table *table, int write,
 ```
 
 ## mnt_namespace
+
+![](../images/kernel/ns-mnt.png)
 
 ```c
 struct mnt_namespace {
