@@ -399,39 +399,78 @@ struct dx_entry
 
 * [Kernel Doc: Filesystem Mount API](https://github.com/torvalds/linux/blob/master/Documentation/filesystems/mount_api.rst)
 
-Call stack
+**Call stack**
 
 ```c
-mount(dev_name, dir_name, type, flags, data);
+mount(dev_name, dir_name, type, flags, data) {
     copy_mount_string(); /* type, dev_name, data */
-    do_mount();
+    do_mount() {
         struct path path;
-        user_path_at(&path);
-            user_path_at_empty();
-        path_mount(&path);
-            do_new_mount();
+        user_path_at(&path) {
+            user_path_at_empty() {
+                filename_lookup() {
+                    path_lookupat() {
+                        link_path_walk();
+                        lookup_last();
+                    }
+                }
+            }
+        }
+        path_mount(&path) {
+            do_new_mount() {
                 struct file_system_type *type = get_fs_type(fstype);
                 struct fs_context *fc = fs_context_for_mount(type, sb_flags);
                 vfs_parse_fs_string();
 
                 /* Create a superblock which can then later be used for mounting */
-                vfs_get_tree(fc);
+                vfs_get_tree(fc) {
                     fc->ops->get_tree(fc); /* ext4_get_tree */
                     struct super_block *sb = fc->root->d_sb;
-                    security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
+                }
 
-                do_new_mount_fc(fc, path, mnt_flags);
+                do_new_mount_fc(fc, path, mnt_flags) {
                     struct vfsmount *mnt = vfs_create_mount(fc);
                         struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
                         list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
 
                     struct mountpoint *mp = lock_mount(mountpoint);
-                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags);
+                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags) {
                         struct mount *parent = real_mount(path->mnt);
-                        graft_tree(newmnt, parent, mp);
+                        graft_tree(newmnt, parent, mp) {
                             attach_recursive_mnt(mnt, p, mp, false);
                                 mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
-                                commit_tree(source_mnt);
+                                commit_tree(source_mnt) {
+                                    mnt_add_to_ns();
+                                    list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
+                                }
+                        }
+                    }
+                }
+            }
+
+            do_reconfigure_mnt() {
+
+            }
+
+            do_remount() {
+
+            }
+
+            do_loopback() {
+
+            }
+
+            do_change_type() {
+
+            }
+
+            do_move_mount_old() {
+
+            }
+        }
+    }
+}
+
 ```
 
 ```c
@@ -458,10 +497,7 @@ long do_mount(const char *dev_name, const char __user *dir_name,
     struct path path;
     int ret;
 
-    ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path) {
-        return user_path_at_empty(dfd, name, flags, path, NULL);
-    }
-
+    ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
     ret = path_mount(dev_name, &path, type_page, flags, data_page);
     path_put(&path);
     return ret;
@@ -711,6 +747,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
         return PTR_ERR(mp);
     }
 
+    /* add a mount into a namespace's mount tree */
     error = do_add_mount(real_mount(mnt)/*newmnt*/, mp, mountpoint/*path*/, mnt_flags) {
         struct mount *parent = real_mount(path->mnt);
 
@@ -732,8 +769,10 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
             if (d_is_dir(mp->m_dentry) != d_is_dir(mnt->mnt.mnt_root))
                 return -ENOTDIR;
 
-            return attach_recursive_mnt(mnt/*source_mnt*/, p/*top_mnt*/, mp/*dst_mp*/, false) {
+            return attach_recursive_mnt(mnt/*source_mnt*/, p/*top_mnt*/, mp/*dst_mp*/, false/*moving*/) {
                 struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
+                beneath = flags & MNT_TREE_BENEATH;
+                dest_mnt = (beneath) ? top_mnt->mnt_parent : top_mnt;
                 HLIST_HEAD(tree_list);
                 struct mnt_namespace *ns = dest_mnt->mnt_ns;
                 struct mountpoint *smp;
@@ -751,19 +790,19 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                 if (!moving) {
                     err = count_mounts(ns, source_mnt);
                     if (err)
-                    goto out;
+                        goto out;
                 }
 
                 if (IS_MNT_SHARED(dest_mnt)) {
                     err = invent_group_ids(source_mnt, true);
                     if (err)
-                    goto out;
+                        goto out;
                     err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
                     lock_mount_hash();
                     if (err)
-                    goto out_cleanup_ids;
+                        goto out_cleanup_ids;
                     for (p = source_mnt; p; p = next_mnt(p, source_mnt))
-                    set_mnt_shared(p);
+                        set_mnt_shared(p);
                 } else {
                     lock_mount_hash();
                 }
@@ -774,11 +813,58 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                     touch_mnt_namespace(source_mnt->mnt_ns);
                 } else {
                     if (source_mnt->mnt_ns) {
-                    /* move from anon - the caller will destroy */
-                    list_del_init(&source_mnt->mnt_ns->list);
+                        /* move from anon - the caller will destroy */
+                        list_del_init(&source_mnt->mnt_ns->list);
                     }
-                    mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
-                    commit_tree(source_mnt);
+                    mnt_set_mountpoint(dest_mnt/*mnt*/, dest_mp/*mp*/, source_mnt/*child_mnt*/) {
+                        mp->m_count++;
+                        mnt_add_count(mnt, 1);	/* essentially, that's mntget */
+                        child_mnt->mnt_mountpoint = mp->m_dentry;
+                        child_mnt->mnt_parent = mnt;
+                        child_mnt->mnt_mp = mp;
+                        hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
+                    }
+                    commit_tree(source_mnt/*mnt*/) {
+                        struct mount *parent = mnt->mnt_parent;
+                        struct mount *m;
+                        LIST_HEAD(head);
+                        struct mnt_namespace *n = parent->mnt_ns;
+
+                        list_add_tail(&head, &mnt->mnt_list);
+                        while (!list_empty(&head)) {
+                            m = list_first_entry(&head, typeof(*m), mnt_list);
+                            list_del(&m->mnt_list);
+
+                            mnt_add_to_ns(n, m) {
+                                struct rb_node **link = &ns->mounts.rb_node;
+                                struct rb_node *parent = NULL;
+
+                                mnt->mnt_ns = ns;
+                                while (*link) {
+                                    parent = *link;
+                                    if (mnt->mnt_id_unique < node_to_mount(parent)->mnt_id_unique)
+                                        link = &parent->rb_left;
+                                    else
+                                        link = &parent->rb_right;
+                                }
+                                rb_link_node(&mnt->mnt_node, parent, link);
+                                rb_insert_color(&mnt->mnt_node, &ns->mounts);
+                                mnt->mnt.mnt_flags |= MNT_ONRB;
+                            }
+                        }
+                        n->nr_mounts += n->pending_mounts;
+                        n->pending_mounts = 0;
+
+                        __attach_mnt(mnt, parent) {
+                            hlist_add_head_rcu(&mnt->mnt_hash,
+                                    m_hash(&parent->mnt, mnt->mnt_mountpoint));
+                            list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
+                        }
+                        touch_mnt_namespace(n) {
+                            ns->event = ++event;
+                            wake_up_interruptible(&ns->poll);
+                        }
+                    }
                 }
 
                 hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
@@ -786,10 +872,10 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                     hlist_del_init(&child->mnt_hash);
                     q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
                     if (q)
-                    mnt_change_mountpoint(child, smp, q);
+                        mnt_change_mountpoint(child, smp, q);
                     /* Notice when we are propagating across user namespaces */
                     if (child->mnt_parent->mnt_ns->user_ns != user_ns)
-                    lock_mnt_tree(child);
+                        lock_mnt_tree(child);
                     child->mnt.mnt_flags &= ~MNT_LOCKED;
                     commit_tree(child);
                 }
@@ -797,29 +883,10 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                 unlock_mount_hash();
 
                 return 0;
-
-                out_cleanup_ids:
-                while (!hlist_empty(&tree_list)) {
-                    child = hlist_entry(tree_list.first, struct mount, mnt_hash);
-                    child->mnt_parent->mnt_ns->pending_mounts = 0;
-                    umount_tree(child, UMOUNT_SYNC);
-                }
-                unlock_mount_hash();
-                cleanup_group_ids(source_mnt, NULL);
-                out:
-                ns->pending_mounts = 0;
-
-                read_seqlock_excl(&mount_lock);
-                put_mountpoint(smp);
-                read_sequnlock_excl(&mount_lock);
-
-                return err;
             }
         }
     }
-    unlock_mount(mp);
-    if (error < 0)
-        mntput(mnt);
+
     return error;
 }
 ```
@@ -1131,7 +1198,7 @@ struct files_struct {
   struct file __rcu * fd_array[NR_OPEN_DEFAULT];
 };
 
-SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode) {
+SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode);
 return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
     struct open_flags op;
     struct filename *tmp = getname(filename);
@@ -1319,7 +1386,19 @@ int link_path_walk(const char *name, struct nameidata *nd)
         if (err)
             return err;
 
-        hash_len = hash_name(nd->path.dentry, name);
+        hash_len = hash_name(nd->path.dentry, name) {
+            c = (unsigned char)*name;
+
+            do {
+                len++;
+                hash = partial_name_hash(c, hash);
+                c = (unsigned char)name[len];
+            } while (c && c != '/');
+
+            return hashlen_create(end_name_hash(hash), len) {
+                return ((u64)(len)<<32 | (u32)(hash));
+            }
+        }
 
         type = LAST_NORM;
         if (name[0] == '.') switch (hashlen_len(hash_len)) {
@@ -1546,14 +1625,16 @@ OK:
                         if (unlikely(error))
                             return ERR_PTR(error);
 
+                        /* symbol link */
                         res = READ_ONCE(inode->i_link);
                         if (!res) {
                             const char* (*get)(struct dentry *, struct inode *,
                                     struct delayed_call *);
                             get = inode->i_op->get_link;
                             if (nd->flags & LOOKUP_RCU) {
-                                res = get(NULL, inode, &last->done) ext4_get_link() {
-
+                                res = get(NULL, inode, &last->done) {
+                                    ext4_get_link();
+                                    shmem_get_link();
                                 }
                                 if (res == ERR_PTR(-ECHILD) && try_to_unlazy(nd))
                                     res = get(link->dentry, inode, &last->done);
