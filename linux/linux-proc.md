@@ -8081,6 +8081,47 @@ kernel_clone(struct kernel_clone_args *args) {
             p->tgid = p->pid;
         }
 
+        /* Don't start children in a dying pid namespace */
+        if (!(ns_of_pid(pid)->pid_allocated & PIDNS_ADDING)) {
+            retval = -ENOMEM;
+            goto bad_fork_cancel_cgroup;
+        }
+
+        init_task_pid_links(p);
+        if (likely(p->pid)) {
+            init_task_pid(p, PIDTYPE_PID, pid);
+            if (thread_group_leader(p)) {
+                init_task_pid(p, PIDTYPE_TGID, pid);
+                init_task_pid(p, PIDTYPE_PGID, task_pgrp(current));
+                init_task_pid(p, PIDTYPE_SID, task_session(current));
+
+                if (is_child_reaper(pid)) {
+                    ns_of_pid(pid)->child_reaper = p;
+                    p->signal->flags |= SIGNAL_UNKILLABLE;
+                }
+                p->signal->shared_pending.signal = delayed.signal;
+                p->signal->tty = tty_kref_get(current->signal->tty);
+                p->signal->has_child_subreaper = p->real_parent->signal->has_child_subreaper
+                    || p->real_parent->signal->is_child_subreaper;
+
+                list_add_tail(&p->sibling, &p->real_parent->children);
+                list_add_tail_rcu(&p->tasks, &init_task.tasks);
+                attach_pid(p, PIDTYPE_TGID);
+                attach_pid(p, PIDTYPE_PGID);
+                attach_pid(p, PIDTYPE_SID);
+                __this_cpu_inc(process_counts);
+            } else {
+                current->signal->nr_threads++;
+                current->signal->quick_threads++;
+                atomic_inc(&current->signal->live);
+                refcount_inc(&current->signal->sigcnt);
+                task_join_group_stop(p);
+                list_add_tail_rcu(&p->thread_node, &p->signal->thread_head);
+            }
+            attach_pid(p, PIDTYPE_PID);
+            nr_threads++;
+        }
+
         futex_init_task(p);
     }
 
@@ -8166,19 +8207,19 @@ struct linux_binprm {
     struct file *executable; /* Executable to pass to the interpreter */
     struct file *interpreter;
     struct file *file;
-    struct cred *cred;	/* new credentials */
-    int unsafe;		/* how unsafe this exec is (mask of LSM_UNSAFE_*) */
-    unsigned int per_clear;	/* bits to clear in current->personality */
+    struct cred *cred;  /* new credentials */
+    int unsafe;         /* how unsafe this exec is (mask of LSM_UNSAFE_*) */
+    unsigned int per_clear; /* bits to clear in current->personality */
     int argc, envc;
-    const char *filename;	/* Name of binary as seen by procps */
-    const char *interp;	/* Name of the binary really executed. Most
+    const char *filename;   /* Name of binary as seen by procps */
+    const char *interp;     /* Name of the binary really executed. Most
                 of the time same as filename, but could be
                 different for binfmt_{misc,script} */
-    const char *fdpath;	/* generated filename for execveat */
+    const char *fdpath;     /* generated filename for execveat */
     unsigned interp_flags;
-    int execfd;		/* File descriptor of the executable */
-    unsigned long loader; /* loader filename */
-    unsigned long exec; /* filename of program */
+    int execfd;         /* File descriptor of the executable */
+    unsigned long loader;   /* loader filename */
+    unsigned long exec;     /* filename of program */
 
     struct rlimit rlim_stack; /* Saved RLIMIT_STACK used during exec. */
 
@@ -8230,7 +8271,7 @@ SYSCALL_DEFINE3(execve,
 
             retval = bprm_stack_limits(bprm) {
                 limit = _STK_LIM / 4 * 3;
-	            limit = min(limit, bprm->rlim_stack.rlim_cur / 4);
+                limit = min(limit, bprm->rlim_stack.rlim_cur / 4);
                 ptr_size = (max(bprm->argc, 1) + bprm->envc) * sizeof(void *);
                 limit -= ptr_size;
                 bprm->argmin = bprm->p - limit;
@@ -8467,7 +8508,7 @@ out_free_interp:
         retval = de_thread(me);
 
         /* Ensure the files table is not shared. */
-	    retval = unshare_files();
+        retval = unshare_files();
 
         set_mm_exe_file(bprm->mm, bprm->file) {
             deny_write_access(new_exe_file);
@@ -8510,8 +8551,8 @@ out_free_interp:
         mm->arg_start = bprm->p;
 
         if (bprm->loader)
-		    bprm->loader -= stack_shift;
-	    bprm->exec -= stack_shift;
+            bprm->loader -= stack_shift;
+        bprm->exec -= stack_shift;
 
         tlb_gather_mmu(&tlb, mm);
         ret = mprotect_fixup(&vmi, &tlb, vma, &prev, vma->vm_start, vma->vm_end,
@@ -8529,7 +8570,7 @@ out_free_interp:
         stack_base = vma->vm_end - stack_expand;
 
         current->mm->start_stack = bprm->p;
-	    ret = expand_stack_locked(vma, stack_base) {
+        ret = expand_stack_locked(vma, stack_base) {
             expand_downwards(vma, address) {
 
             }
@@ -8695,7 +8736,7 @@ out_free_interp:
 
     retval = create_elf_tables(bprm, elf_ex, interp_load_addr, e_entry, phdr_addr) {
         items = (argc + 1) + (envc + 1) + 1;
-	    bprm->p = STACK_ROUND(sp, items);
+        bprm->p = STACK_ROUND(sp, items);
         sp = (elf_addr_t __user *)bprm->p;
 
         /* Now, let's put argc (and argv, envp if appropriate) on the stack */
@@ -8760,7 +8801,7 @@ out_free_interp:
     START_THREAD(elf_ex, regs, elf_entry, bprm->p) {
         start_thread(regs, elf_entry, start_stack) {
             regs->syscallno = previous_syscall;
-	        regs->pc = pc;
+            regs->pc = pc;
             regs->sp = sp;
         }
     }
@@ -12963,6 +13004,9 @@ out_unlock:
 
 # namespace
 
+* [LWN - :one: namespaces overview](https://lwn.net/Articles/531114/) [:two: the namespaces API](https://lwn.net/Articles/531381/)    [:three: PID namespaces]()    [:four: more on PID namespaces]()     [:five: user namespaces]()    [:six: more on user namespaces](https://lwn.net/Articles/540087/)     [:seven: network namespaces](https://lwn.net/Articles/580893/)
+    * [Mount namespaces and shared subtrees](https://lwn.net/Articles/689856/)
+    * [Mount namespaces, mount propagation, and unbindable mounts](https://lwn.net/Articles/690679/)
 * [Coolshell - DOCKER基础技术：LINUX NAMESPACE - :one:](https://coolshell.cn/articles/17010.html)      [:two:](https://coolshell.cn/articles/17029.html)
 * [Linux - Namespace](https://blog.csdn.net/summer_fish/article/details/134437688)
 * [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
@@ -13283,13 +13327,13 @@ SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
 * [wowotech - Linux系统如何标识进程？](http://www.wowotech.net/process_management/pid.html)
 * [Linux 内核进程管理之进程ID](https://www.cnblogs.com/hazir/p/linux_kernel_pid.html)
 
-* Q: what happens when ini process dies before other processes in a pid namespace?
-    * zap_pid_ns_processes seems kill all other process
-
 * the 1st process with pid 1 is init process in each namespace and has sepcial privilege
 * a process in one namespace cant affect processes in parent or sibling namespaces
 * If mounted, the /proc filesystem for a new PID namespace only shows processes belonging to the same namespace
 * root namespace can show all processes
+* Since the init process is essential to the functioning of the PID namespace, if the init process is terminated by SIGKILL (or it terminates for any other reason), the kernel terminates all other processes in the namespace by sending them a SIGKILL signal. [From: Namespaces in operation, part 4: more on PID namespaces](https://lwn.net/Articles/532748/)
+    * Normally, a PID namespace will also be destroyed when its init process terminates. However, there is an unusual corner case: the namespace won't be destroyed as long as a /proc/PID/ns/pid file for one of the processes in that namespaces is bind mounted or held open. However, it is not possible to create new processes in the namespace (via setns() plus fork()): the lack of an init process is detected during the fork() call, which fails with an ENOMEM error
+    * Specifying the CLONE_NEWPID flag in a call to setns/unshare() creates a new PID namespace, but does not place the caller in the new namespace. Rather, any children created by the caller will be placed in the new namespace; the first such child will become the init process for the namespace.
 
 ```c
 struct task_struct {
@@ -13375,10 +13419,10 @@ struct ns_common {
 
 static inline pid_t pid_nr(struct pid *pid)
 {
-	pid_t nr = 0;
-	if (pid)
-		nr = pid->numbers[0].nr;
-	return nr;
+    pid_t nr = 0;
+    if (pid)
+        nr = pid->numbers[0].nr;
+    return nr;
 }
 
 pid_t pid_vnr(struct pid *pid)
@@ -13410,7 +13454,7 @@ pid_t pid_vnr(struct pid *pid)
 struct pid *get_task_pid(struct task_struct *task, enum pid_type type)
 {
     struct pid *pid;
-    pid_ptr =  return (type == PIDTYPE_PID)
+    pid_ptr = (type == PIDTYPE_PID)
         ? &task->thread_pid : &task->signal->pids[type];
     pid = get_pid(rcu_dereference(*pid_ptr)) {
         if (pid)
@@ -13514,13 +13558,14 @@ SYSCALL_DEFINE1(getpgid, pid_t, pid)
 
 ```c
 struct pid_namespace *copy_pid_ns(unsigned long flags,
-	struct user_namespace *user_ns, struct pid_namespace *old_ns)
+    struct user_namespace *user_ns, struct pid_namespace *old_ns)
 {
-	if (!(flags & CLONE_NEWPID))
-		return get_pid_ns(old_ns);
-	if (task_active_pid_ns(current) != old_ns)
-		return ERR_PTR(-EINVAL);
-	return create_pid_namespace(user_ns, old_ns) {
+    if (!(flags & CLONE_NEWPID))
+        return get_pid_ns(old_ns);
+    if (task_active_pid_ns(current) != old_ns)
+        return ERR_PTR(-EINVAL);
+
+    return create_pid_namespace(user_ns, old_ns) {
         struct pid_namespace *ns;
         unsigned int level = parent_pid_ns->level + 1;
         struct ucounts *ucounts;
@@ -13703,19 +13748,19 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_s
 
 ```c
 struct uts_namespace {
-	struct new_utsname name;
-	struct user_namespace *user_ns;
-	struct ucounts *ucounts;
-	struct ns_common ns;
+    struct new_utsname name;
+    struct user_namespace *user_ns;
+    struct ucounts *ucounts;
+    struct ns_common ns;
 };
 
 struct new_utsname {
-	char sysname[__NEW_UTS_LEN + 1];
-	char nodename[__NEW_UTS_LEN + 1];
-	char release[__NEW_UTS_LEN + 1];
-	char version[__NEW_UTS_LEN + 1];
-	char machine[__NEW_UTS_LEN + 1];
-	char domainname[__NEW_UTS_LEN + 1];
+    char sysname[__NEW_UTS_LEN + 1];
+    char nodename[__NEW_UTS_LEN + 1];
+    char release[__NEW_UTS_LEN + 1];
+    char version[__NEW_UTS_LEN + 1];
+    char machine[__NEW_UTS_LEN + 1];
+    char domainname[__NEW_UTS_LEN + 1];
 };
 ```
 
@@ -13745,14 +13790,14 @@ struct ctl_table uts_kern_table[] = {
         .proc_handler   = proc_do_uts_string,
     },
     {
-        .procname	= "version",
+        .procname    = "version",
         .data       = init_uts_ns.name.version,
         .maxlen     = sizeof(init_uts_ns.name.version),
         .mode       = 0444,
         .proc_handler   = proc_do_uts_string,
     },
     {
-        .procname	= "hostname",
+        .procname    = "hostname",
         .data       = init_uts_ns.name.nodename,
         .maxlen     = sizeof(init_uts_ns.name.nodename),
         .mode       = 0644,
@@ -13800,7 +13845,7 @@ SYSCALL_DEFINE2(sethostname, char __user *, name, int, len)
 
         uts_proc_notify(UTS_PROC_HOSTNAME) {
             struct ctl_table *table = &uts_kern_table[proc];
-	        proc_sys_poll_notify(table->poll);
+            proc_sys_poll_notify(table->poll);
         }
         up_write(&uts_sem);
     }
@@ -13838,6 +13883,8 @@ int proc_do_uts_string(struct ctl_table *table, int write,
 
 ## user_namespace
 
+* the new process has a full set of capabilities in the new user namespace, it has no capabilities in the parent namespace. In particular, even if root employs clone(CLONE_NEWUSER), the resulting child process will have no capabilities in the parent namespace.
+
 ```c
 
 ```
@@ -13859,6 +13906,41 @@ struct mnt_namespace {
     unsigned int            nr_mounts; /* # of mounts in the namespace */
     unsigned int            pending_mounts;
 }
+
+struct mount {
+    struct hlist_node mnt_hash;
+    struct mount *mnt_parent;
+    struct dentry *mnt_mountpoint;
+    struct vfsmount mnt;
+
+    struct list_head mnt_mounts;    /* list of children, anchored here */
+    struct list_head mnt_child;    /* and going through their mnt_child */
+    struct list_head mnt_instance;    /* mount instance on sb->s_mounts */
+    const char *mnt_devname;    /* Name of device e.g. /dev/dsk/hda1 */
+    union {
+        struct rb_node mnt_node;    /* Under ns->mounts */
+        struct list_head mnt_list;
+    };
+    struct list_head mnt_expire;    /* link in fs-specific expiry list */
+    struct list_head mnt_share;    /* circular list of shared mounts */
+    struct list_head mnt_slave_list;/* list of slave mounts */
+    struct list_head mnt_slave;    /* slave list entry */
+    struct mount *mnt_master;    /* slave is on master->mnt_slave_list */
+    struct mnt_namespace *mnt_ns;    /* containing namespace */
+    struct mountpoint *mnt_mp;    /* where is it mounted */
+    union {
+        struct hlist_node mnt_mp_list;    /* list mounts with the same mountpoint */
+        struct hlist_node mnt_umount;
+    };
+    struct list_head mnt_umounting; /* list entry for umount propagation */
+
+    int mnt_id;            /* mount identifier, reused */
+    u64 mnt_id_unique;        /* mount ID unique until reboot */
+    int mnt_group_id;        /* peer group identifier */
+    int mnt_expiry_mark;        /* true if marked for expiry */
+    struct hlist_head mnt_pins;
+    struct hlist_head mnt_stuck_children;
+}
 ```
 
 ### copy_mnt_ns
@@ -13871,7 +13953,6 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 {
     struct mnt_namespace *new_ns;
     struct vfsmount *rootmnt = NULL, *pwdmnt = NULL;
-    struct mount *p, *q;
     struct mount *old;
     struct mount *new;
     int copy_flags;
@@ -13967,13 +14048,13 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
                 list_add_tail(&n_mnt->mnt_list, &res->mnt_list);
                 attach_mnt(n_mnt, n_prnt, o_prnt->mnt_mp, false) {
                     if (beneath) {
-                        mnt_set_mountpoint_beneath(mnt/*new_parent*/, n_prnt, mp) {
+                        mnt_set_mountpoint_beneath(mnt/*new_parent*/, n_prnt/*top_mnt*/, mp) {
                             struct mount *old_top_parent = top_mnt->mnt_parent;
                             struct mountpoint *old_top_mp = top_mnt->mnt_mp;
 
                             mnt_set_mountpoint(old_top_parent/*mnt*/, old_top_mp/*mp*/, new_parent/*child_mnt*/) {
                                 mp->m_count++;
-                                mnt_add_count(mnt, 1);	/* essentially, that'o_mnt mntget */
+                                mnt_add_count(mnt, 1);    /* essentially, that'o_mnt mntget */
                                 child_mnt->mnt_mountpoint = mp->m_dentry;
                                 child_mnt->mnt_parent = mnt;
                                 child_mnt->mnt_mp = mp;
@@ -13999,8 +14080,7 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
                     }
 
                     __attach_mnt(mnt, mnt->mnt_parent) {
-                        hlist_add_head_rcu(&mnt->mnt_hash,
-                        m_hash(&n_prnt->mnt, mnt->mnt_mountpoint));
+                        hlist_add_head_rcu(&mnt->mnt_hash, m_hash(&n_prnt->mnt, mnt->mnt_mountpoint));
                         list_add_tail(&mnt->mnt_child, &n_prnt->mnt_mounts);
                     }
                 }
@@ -14018,10 +14098,10 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 
     /* Second pass: switch the tsk->fs->* elements and mark new vfsmounts
      * as belonging to new namespace. */
-    p = old;
-    q = new;
-    while (p) {
-        mnt_add_to_ns(new_ns, q) {
+    o_mnt = old;
+    n_mnt = new;
+    while (o_mnt) {
+        mnt_add_to_ns(new_ns/*ns*/, n_mnt/*mnt*/) {
             struct rb_node **link = &ns->mounts.rb_node;
             struct rb_node *parent = NULL;
 
@@ -14040,24 +14120,256 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 
         new_ns->nr_mounts++;
         if (new_fs) {
-            if (&p->mnt == new_fs->root.mnt) {
-                new_fs->root.mnt = mntget(&q->mnt);
-                rootmnt = &p->mnt;
+            if (&o_mnt->mnt == new_fs->root.mnt) {
+                new_fs->root.mnt = mntget(&n_mnt->mnt);
+                rootmnt = &o_mnt->mnt;
             }
-            if (&p->mnt == new_fs->pwd.mnt) {
-                new_fs->pwd.mnt = mntget(&q->mnt);
-                pwdmnt = &p->mnt;
+            if (&o_mnt->mnt == new_fs->pwd.mnt) {
+                new_fs->pwd.mnt = mntget(&n_mnt->mnt);
+                pwdmnt = &o_mnt->mnt;
             }
         }
-        p = next_mnt(p, old);
-        q = next_mnt(q, new);
-        if (!q)
+        o_mnt = next_mnt(o_mnt, old);
+        n_mnt = next_mnt(n_mnt, new);
+        if (!n_mnt)
             break;
         // an mntns binding we'd skipped?
-        while (p->mnt.mnt_root != q->mnt.mnt_root)
-            p = next_mnt(skip_mnt_tree(p), old);
+        while (o_mnt->mnt.mnt_root != n_mnt->mnt.mnt_root)
+            o_mnt = next_mnt(skip_mnt_tree(o_mnt), old);
     }
 
     return new_ns;
+}
+```
+
+### propagate_mnt
+
+```c
+int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
+            struct mount *source_mnt, struct hlist_head *tree_list)
+{
+    struct mount *m, *n;
+    int ret = 0;
+
+    last_dest = dest_mnt;
+    first_source = source_mnt;
+    last_source = source_mnt;
+    list = tree_list;
+    dest_master = dest_mnt->mnt_master;
+
+    /* all peers of dest_mnt, except dest_mnt itself */
+    for (n = next_peer(dest_mnt); n != dest_mnt; n = next_peer(n)) {
+        ret = propagate_one(n, dest_mp);
+        if (ret)
+            goto out;
+    }
+
+    /* all slave groups */
+    for (m = next_group(dest_mnt, dest_mnt); m; m = next_group(m, dest_mnt)) {
+        /* everything in that slave group */
+        n = m;
+        do {
+            ret = propagate_one(n, dest_mp) {
+                struct mount *child;
+                int type;
+                /* skip ones added by this propagate_mnt() */
+                if (IS_MNT_NEW(m))
+                    return 0;
+                /* skip if mountpoint isn't covered by it */
+                if (!is_subdir(dest_mp->m_dentry, m->mnt.mnt_root))
+                    return 0;
+                if (peers(m, last_dest)) {
+                    type = CL_MAKE_SHARED;
+                } else {
+                    struct mount *n, *p;
+                    bool done;
+                    for (n = m; ; n = p) {
+                        p = n->mnt_master;
+                        if (p == dest_master || IS_MNT_MARKED(p))
+                            break;
+                    }
+                    do {
+                        struct mount *parent = last_source->mnt_parent;
+                        if (peers(last_source, first_source))
+                            break;
+                        done = parent->mnt_master == p;
+                        if (done && peers(n, parent))
+                            break;
+                        last_source = last_source->mnt_master;
+                    } while (!done);
+
+                    type = CL_SLAVE;
+                    /* beginning of peer group among the slaves? */
+                    if (IS_MNT_SHARED(m))
+                        type |= CL_MAKE_SHARED;
+                }
+
+                child = copy_tree(last_source, last_source->mnt.mnt_root, type);
+                    --->
+                if (IS_ERR(child))
+                    return PTR_ERR(child);
+                read_seqlock_excl(&mount_lock);
+                mnt_set_mountpoint(m, dest_mp, child);
+                if (m->mnt_master != dest_master)
+                    SET_MNT_MARK(m->mnt_master);
+                read_sequnlock_excl(&mount_lock);
+                last_dest = m;
+                last_source = child;
+                hlist_add_head(&child->mnt_hash, list);
+                return count_mounts(m->mnt_ns, child);
+            }
+            if (ret)
+                goto out;
+            n = next_peer(n);
+        } while (n != m);
+    }
+out:
+    read_seqlock_excl(&mount_lock);
+    hlist_for_each_entry(n, tree_list, mnt_hash) {
+        m = n->mnt_parent;
+        if (m->mnt_master != dest_mnt->mnt_master)
+            CLEAR_MNT_MARK(m->mnt_master);
+    }
+    read_sequnlock_excl(&mount_lock);
+    return ret;
+}
+```
+
+### propagate_umount
+
+```c
+int propagate_umount(struct list_head *list)
+{
+    struct mount *mnt;
+    LIST_HEAD(to_restore);
+    LIST_HEAD(to_umount);
+    LIST_HEAD(visited);
+
+    /* Find candidates for unmounting */
+    list_for_each_entry_reverse(mnt, list, mnt_list) {
+        struct mount *parent = mnt->mnt_parent;
+        struct mount *m;
+
+        /*
+        * If this mount has already been visited it is known that it's
+        * entire peer group and all of their slaves in the propagation
+        * tree for the mountpoint has already been visited and there is
+        * no need to visit them again.
+        */
+        if (!list_empty(&mnt->mnt_umounting))
+            continue;
+
+        list_add_tail(&mnt->mnt_umounting, &visited);
+        propagation_next(m, origin) {
+            /* are there any slaves of this mount? */
+            if (!IS_MNT_NEW(m) && !list_empty(&m->mnt_slave_list))
+                return first_slave(m);
+
+            while (1) {
+                struct mount *master = m->mnt_master;
+
+                if (master == origin->mnt_master) {
+                    struct mount *next = next_peer(m);
+                    return (next == origin) ? NULL : next;
+                } else if (m->mnt_slave.next != &master->mnt_slave_list)
+                    return next_slave(m);
+
+                /* back at master */
+                m = master;
+            }
+        }
+        for (m = propagation_next(parent, parent); m; m = propagation_next(m, parent)) {
+            struct mount *child = __lookup_mnt(&m->mnt, mnt->mnt_mountpoint) {
+                struct hlist_head *head = m_hash(mnt, dentry);
+                struct mount *p;
+
+                hlist_for_each_entry_rcu(p, head, mnt_hash)
+                    if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
+                        return p;
+                return NULL;
+            }
+            if (!child)
+                continue;
+
+            if (!list_empty(&child->mnt_umounting)) {
+                /*
+                * If the child has already been visited it is
+                * know that it's entire peer group and all of
+                * their slaves in the propgation tree for the
+                * mountpoint has already been visited and there
+                * is no need to visit this subtree again.
+                */
+                m = skip_propagation_subtree(m, parent);
+                continue;
+            } else if (child->mnt.mnt_flags & MNT_UMOUNT) {
+                /*
+                * We have come accross an partially unmounted
+                * mount in list that has not been visited yet.
+                * Remember it has been visited and continue
+                * about our merry way.
+                */
+                list_add_tail(&child->mnt_umounting, &visited);
+                continue;
+            }
+
+            /* Check the child and parents while progress is made */
+            __propagate_umount(child, &to_umount, &to_restore) {
+                bool progress = false;
+                struct mount *child;
+
+                /*
+                * The state of the parent won't change if this mount is
+                * already unmounted or marked as without children.
+                */
+                if (mnt->mnt.mnt_flags & (MNT_UMOUNT | MNT_MARKED))
+                    goto out;
+
+                /* Verify topper is the only grandchild that has not been
+                * speculatively unmounted.
+                */
+                list_for_each_entry(child, &mnt->mnt_mounts, mnt_child) {
+                    if (child->mnt_mountpoint == mnt->mnt.mnt_root)
+                        continue;
+                    if (!list_empty(&child->mnt_umounting) && IS_MNT_MARKED(child))
+                        continue;
+                    /* Found a mounted child */
+                    goto children;
+                }
+
+                /* Mark mounts that can be unmounted if not locked */
+                SET_MNT_MARK(mnt);
+                progress = true;
+
+                /* If a mount is without children and not locked umount it. */
+                if (!IS_MNT_LOCKED(mnt)) {
+                    umount_one(mnt, to_umount) {
+                        CLEAR_MNT_MARK(mnt);
+                        mnt->mnt.mnt_flags |= MNT_UMOUNT;
+                        list_del_init(&mnt->mnt_child);
+                        list_del_init(&mnt->mnt_umounting);
+                        move_from_ns(mnt, to_umount);
+                    }
+                } else {
+            children:
+                    list_move_tail(&mnt->mnt_umounting, to_restore);
+                }
+            out:
+                return progress;
+            }
+            while (__propagate_umount()) {
+                /* Is the parent a umount candidate? */
+                child = child->mnt_parent;
+                if (list_empty(&child->mnt_umounting))
+                    break;
+            }
+        }
+    }
+
+    umount_list(&to_umount, &to_restore);
+    restore_mounts(&to_restore);
+    cleanup_umount_visitations(&visited);
+    list_splice_tail(&to_umount, list);
+
+    return 0;
 }
 ```
