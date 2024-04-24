@@ -1218,6 +1218,7 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
                 error = do_o_path(nd, flags, file);
             } else {
                 const char *s = path_init(nd, flags);
+                    --->
                 while (!(error = link_path_walk(s, nd))
                     && (s = open_last_lookups(nd, file, op)) != NULL) {
                 }
@@ -1354,6 +1355,160 @@ const struct file_operations ext4_file_operations = {
 
 <img src='../images/kernel/dcache.png' height='700' />
 
+### path_init
+
+```c
+const char *path_init(struct nameidata *nd, unsigned flags)
+{
+	int error;
+	const char *s = nd->name->name;
+
+	/* LOOKUP_CACHED requires RCU, ask caller to retry */
+	if ((flags & (LOOKUP_RCU | LOOKUP_CACHED)) == LOOKUP_CACHED)
+		return ERR_PTR(-EAGAIN);
+
+	if (!*s)
+		flags &= ~LOOKUP_RCU;
+	if (flags & LOOKUP_RCU)
+		rcu_read_lock();
+	else
+		nd->seq = nd->next_seq = 0;
+
+	nd->flags = flags;
+	nd->state |= ND_JUMPED;
+
+	nd->m_seq = __read_seqcount_begin(&mount_lock.seqcount);
+	nd->r_seq = __read_seqcount_begin(&rename_lock.seqcount);
+	smp_rmb();
+
+	if (nd->state & ND_ROOT_PRESET) {
+		struct dentry *root = nd->root.dentry;
+		struct inode *inode = root->d_inode;
+		if (*s && unlikely(!d_can_lookup(root))) {
+			return ERR_PTR(-ENOTDIR);
+        }
+
+		nd->path = nd->root;
+		nd->inode = inode;
+		if (flags & LOOKUP_RCU) {
+			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
+			nd->root_seq = nd->seq;
+		} else {
+			path_get(&nd->path);
+		}
+		return s;
+	}
+
+	nd->root.mnt = NULL;
+
+	/* Absolute pathname -- fetch the root (LOOKUP_IN_ROOT uses nd->dfd). */
+	if (*s == '/' && !(flags & LOOKUP_IN_ROOT)) {
+		error = nd_jump_root(nd) {
+            if (unlikely(nd->flags & LOOKUP_BENEATH))
+                return -EXDEV;
+            if (unlikely(nd->flags & LOOKUP_NO_XDEV)) {
+                /* Absolute path arguments to path_init() are allowed. */
+                if (nd->path.mnt != NULL && nd->path.mnt != nd->root.mnt)
+                    return -EXDEV;
+            }
+            if (!nd->root.mnt) {
+                int error = set_root(nd) {
+                    struct fs_struct *fs = current->fs;
+
+                    if (WARN_ON(nd->flags & LOOKUP_IS_SCOPED))
+                        return -ENOTRECOVERABLE;
+
+                    if (nd->flags & LOOKUP_RCU) {
+                        unsigned seq;
+                        do {
+                            seq = read_seqcount_begin(&fs->seq);
+                            nd->root = fs->root;
+                            nd->root_seq = __read_seqcount_begin(&nd->root.dentry->d_seq);
+                        } while (read_seqcount_retry(&fs->seq, seq));
+                    } else {
+                        get_fs_root(fs, &nd->root);
+                        nd->state |= ND_ROOT_GRABBED;
+                    }
+                    return 0;
+                }
+                if (error)
+                    return error;
+            }
+            if (nd->flags & LOOKUP_RCU) {
+                struct dentry *d;
+                nd->path = nd->root;
+                d = nd->path.dentry;
+                nd->inode = d->d_inode;
+                nd->seq = nd->root_seq;
+                if (read_seqcount_retry(&d->d_seq, nd->seq))
+                    return -ECHILD;
+            } else {
+                path_put(&nd->path);
+                nd->path = nd->root;
+                path_get(&nd->path);
+                nd->inode = nd->path.dentry->d_inode;
+            }
+            nd->state |= ND_JUMPED;
+            return 0;
+        }
+		if (unlikely(error))
+			return ERR_PTR(error);
+		return s;
+	}
+
+	/* Relative pathname -- get the starting-point it is relative to. */
+	if (nd->dfd == AT_FDCWD) {
+		if (flags & LOOKUP_RCU) {
+			struct fs_struct *fs = current->fs;
+			unsigned seq;
+			do {
+				seq = read_seqcount_begin(&fs->seq);
+				nd->path = fs->pwd;
+				nd->inode = nd->path.dentry->d_inode;
+				nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
+			} while (read_seqcount_retry(&fs->seq, seq));
+		} else {
+			get_fs_pwd(current->fs, &nd->path);
+			nd->inode = nd->path.dentry->d_inode;
+		}
+	} else {
+		/* Caller must check execute permissions on the starting path component */
+		struct fd f = fdget_raw(nd->dfd);
+		struct dentry *dentry;
+
+		if (!f.file)
+			return ERR_PTR(-EBADF);
+
+		dentry = f.file->f_path.dentry;
+		if (*s && unlikely(!d_can_lookup(dentry))) {
+			fdput(f);
+			return ERR_PTR(-ENOTDIR);
+		}
+
+		nd->path = f.file->f_path;
+		if (flags & LOOKUP_RCU) {
+			nd->inode = nd->path.dentry->d_inode;
+			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
+		} else {
+			path_get(&nd->path);
+			nd->inode = nd->path.dentry->d_inode;
+		}
+		fdput(f);
+	}
+
+	/* For scoped-lookups we need to set the root to the dirfd as well. */
+	if (flags & LOOKUP_IS_SCOPED) {
+		nd->root = nd->path;
+		if (flags & LOOKUP_RCU) {
+			nd->root_seq = nd->seq;
+		} else {
+			path_get(&nd->root);
+			nd->state |= ND_ROOT_GRABBED;
+		}
+	}
+	return s;
+}
+```
 
 ### link_path_walk
 
@@ -1562,11 +1717,12 @@ OK:
                     if (err < 0)
                         return ERR_PTR(err);
                     inode = path.dentry->d_inode;
+
+                    /* not a symlink or should not follow */
                     if (likely(!d_is_symlink(path.dentry))
                         || ((flags & WALK_TRAILING) && !(nd->flags & LOOKUP_FOLLOW))
                         || (flags & WALK_NOFOLLOW)) {
 
-                        /* not a symlink or should not follow */
                         if (nd->flags & LOOKUP_RCU) {
                             if (read_seqcount_retry(&path.dentry->d_seq, nd->next_seq))
                                 return ERR_PTR(-ECHILD);
@@ -1591,6 +1747,7 @@ OK:
                             mntget(path.mnt);
                     }
 
+                    /* handle symbol link */
                     return pick_link(nd, &path, inode, flags) {
                         struct saved *last;
                         const char *res;
@@ -1625,8 +1782,7 @@ OK:
                         if (unlikely(error))
                             return ERR_PTR(error);
 
-                        /* symbol link */
-                        res = READ_ONCE(inode->i_link);
+                        res = READ_ONCE(inode->i_link); /* symbol link */
                         if (!res) {
                             const char* (*get)(struct dentry *, struct inode *,
                                     struct delayed_call *);
@@ -1661,10 +1817,11 @@ OK:
                 }
             }
         }
+
+        /* a symlink to follow */
         if (unlikely(link)) {
             if (IS_ERR(link))
                 return PTR_ERR(link);
-            /* a symlink to follow */
             nd->stack[depth++].name = name;
             name = link;
             continue;
