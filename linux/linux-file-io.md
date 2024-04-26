@@ -769,7 +769,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
             if (d_is_dir(mp->m_dentry) != d_is_dir(mnt->mnt.mnt_root))
                 return -ENOTDIR;
 
-            return attach_recursive_mnt(mnt/*source_mnt*/, p/*top_mnt*/, mp/*dst_mp*/, false/*moving*/) {
+            return attach_recursive_mnt(mnt/*source_mnt*/, p/*top_mnt*/, mp/*dest_mp*/, false/*moving*/) {
                 struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
                 beneath = flags & MNT_TREE_BENEATH;
                 dest_mnt = (beneath) ? top_mnt->mnt_parent : top_mnt;
@@ -794,7 +794,26 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                 }
 
                 if (IS_MNT_SHARED(dest_mnt)) {
-                    err = invent_group_ids(source_mnt, true);
+                    err = invent_group_ids(source_mnt, true) {
+                        struct mount *p;
+                        for (p = mnt; p; p = recurse ? next_mnt(p, mnt) : NULL) {
+                            if (!p->mnt_group_id && !IS_MNT_SHARED(p)) {
+                                int err = mnt_alloc_group_id(p) {
+                                    int res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
+                                    if (res < 0)
+                                        return res;
+                                    mnt->mnt_group_id = res;
+                                    return 0;
+                                }
+                                if (err) {
+                                    cleanup_group_ids(mnt, p);
+                                    return err;
+                                }
+                            }
+                        }
+
+                        return 0;
+                    }
                     if (err)
                         goto out;
                     err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
@@ -1541,12 +1560,16 @@ int link_path_walk(const char *name, struct nameidata *nd)
         if (err)
             return err;
 
-        hash_len = hash_name(nd->path.dentry, name) {
+        hash_len = hash_name(nd->path.dentry/*salt*/, name) {
+            hash = init_name_hash(salt) {
+                return salt;
+            }
             c = (unsigned char)*name;
-
             do {
                 len++;
-                hash = partial_name_hash(c, hash);
+                hash = partial_name_hash(c, hash) {
+                    return (prevhash + (c << 4) + (c >> 4)) * 11;
+                }
                 c = (unsigned char)name[len];
             } while (c && c != '/');
 
@@ -1583,7 +1606,9 @@ int link_path_walk(const char *name, struct nameidata *nd)
         nd->last.name = name;
         nd->last_type = type;
 
-        name += hashlen_len(hash_len);
+        name += hashlen_len(hash_len) {
+            return ((u32)((hashlen) >> 32));
+        }
         if (!*name)
             goto OK;
 
@@ -1660,8 +1685,6 @@ OK:
                                 if (flags & DCACHE_MOUNTED) { // something's mounted on it..
                                     struct vfsmount *mounted = lookup_mnt(path) {
                                         struct hlist_head *head = m_hash(mnt, dentry);
-                                        struct mount *p;
-
                                         hlist_for_each_entry_rcu(p, head, mnt_hash)
                                             if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
                                                 return p;

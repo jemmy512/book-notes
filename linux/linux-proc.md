@@ -11587,6 +11587,9 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 * [极客时间](https://time.geekbang.org/column/article/115582)
 * [Docker 背后的内核知识 - cgroups 资源限制](https://www.infoq.cn/news/docker-kernel-knowledge-cgroups-resource-isolation)
 * [Coolshell - DOCKER基础技术：LINUX CGROUP](https://coolshell.cn/articles/17049.html)
+* [Docker底层原理：Cgroup V2的使用](https://blog.csdn.net/qq_67733273/article/details/134109156)
+
+![](../images/kernel/cgroup-arch.png)
 
 * Kernel cgroup v2 https://docs.kernel.org/admin-guide/cgroup-v2.html
 * Domain cgroup:
@@ -11608,12 +11611,73 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 * Memory cgroup
     1. Migrating a process to a different cgroup doesn't move the memory usages that it instantiated while in the previous cgroup to the new cgroup.
 
-![](../images/kernel/proc-cgroup-fs.png)
+![](../images/kernel/cgroup-fs.png)
 
 ```c
 struct task_struct {
     struct css_set      *cgroups;
     struct list_head    cg_list; /* anchored to css_set mg_tasks, dying_tasks */
+};
+
+struct css_set {
+    struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT];
+    struct css_set *dom_cset;
+    struct cgroup *dfl_cgrp;
+    int nr_tasks;
+
+    struct list_head e_cset_node[CGROUP_SUBSYS_COUNT];
+
+    /* all threaded csets whose ->dom_cset points to this cset */
+    struct list_head threaded_csets;
+    struct list_head threaded_csets_node;
+
+    struct hlist_node hlist;
+
+    struct list_head cgrp_links;
+};
+
+struct cgroup_subsys_state {
+    struct cgroup *cgroup;
+    struct cgroup_subsys *ss;
+    struct list_head sibling;
+    struct list_head children;
+    int id;
+
+    unsigned int flags;
+    struct cgroup_subsys_state *parent;
+}
+
+struct cgroup {
+    /* self css with NULL ->ss, points back to this cgroup */
+    struct cgroup_subsys_state self;
+
+    unsigned long flags; /* "unsigned long" so bitops work */
+    int level;
+
+    /* Maximum allowed descent tree depth */
+    int max_depth;
+
+    struct kernfs_node *kn; /* cgroup kernfs entry */
+    struct cgroup_file procs_file; /* handle for "cgroup.procs" */
+    struct cgroup_file events_file; /* handle for "cgroup.events" */
+
+    u16 subtree_control;
+    u16 subtree_ss_mask;
+
+    /* Private pointers for each registered subsystem */
+    struct cgroup_subsys_state *subsys[CGROUP_SUBSYS_COUNT];
+
+    struct cgroup_root *root;
+
+    struct list_head cset_links;
+
+    struct list_head e_csets[CGROUP_SUBSYS_COUNT];
+
+    struct cgroup *dom_cgrp;
+    struct cgroup *old_dom_cgrp; /* used while enabling threaded */
+
+    /* All ancestors including self */
+    struct cgroup *ancestors[];
 };
 ```
 
@@ -11730,6 +11794,7 @@ int __init cgroup_init(void)
     );
 
     cgroup_setup_root(&cgrp_dfl_root, 0);
+        --->
 
     cgroup_unlock();
 
@@ -11923,7 +11988,92 @@ int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask) {
 
 ```c
 cgroup_mkdir() {
-    cgrp = cgroup_create(parent, name, mode);
+    cgrp = cgroup_create(parent, name, mode) {
+        struct cgroup_root *root = parent->root;
+        struct cgroup *cgrp, *tcgrp;
+        struct kernfs_node *kn;
+        int level = parent->level + 1;
+        int ret;
+
+        /* allocate the cgroup and its ID, 0 is reserved for the root */
+        cgrp = kzalloc(struct_size(cgrp, ancestors, (level + 1)), GFP_KERNEL);
+        if (!cgrp)
+            return ERR_PTR(-ENOMEM);
+
+        ret = percpu_ref_init(&cgrp->self.refcnt, css_release, 0, GFP_KERNEL);
+        if (ret)
+            goto out_free_cgrp;
+
+        ret = cgroup_rstat_init(cgrp);
+        if (ret)
+            goto out_cancel_ref;
+
+        /* create the directory */
+        kn = kernfs_create_dir_ns(parent->kn, name, mode,
+                    current_fsuid(), current_fsgid(),
+                    cgrp, NULL);
+        if (IS_ERR(kn)) {
+            ret = PTR_ERR(kn);
+            goto out_stat_exit;
+        }
+        cgrp->kn = kn;
+
+        init_cgroup_housekeeping(cgrp);
+
+        cgrp->self.parent = &parent->self;
+        cgrp->root = root;
+        cgrp->level = level;
+
+        ret = psi_cgroup_alloc(cgrp);
+        if (ret)
+            goto out_kernfs_remove;
+
+        ret = cgroup_bpf_inherit(cgrp);
+        if (ret)
+            goto out_psi_free;
+
+        cgrp->freezer.e_freeze = parent->freezer.e_freeze;
+        if (cgrp->freezer.e_freeze) {
+            set_bit(CGRP_FREEZE, &cgrp->flags);
+            set_bit(CGRP_FROZEN, &cgrp->flags);
+        }
+
+        spin_lock_irq(&css_set_lock);
+        for (tcgrp = cgrp; tcgrp; tcgrp = cgroup_parent(tcgrp)) {
+            cgrp->ancestors[tcgrp->level] = tcgrp;
+
+            if (tcgrp != cgrp) {
+                tcgrp->nr_descendants++;
+                if (cgrp->freezer.e_freeze)
+                    tcgrp->freezer.nr_frozen_descendants++;
+            }
+        }
+        spin_unlock_irq(&css_set_lock);
+
+        if (notify_on_release(parent))
+            set_bit(CGRP_NOTIFY_ON_RELEASE, &cgrp->flags);
+
+        if (test_bit(CGRP_CPUSET_CLONE_CHILDREN, &parent->flags))
+            set_bit(CGRP_CPUSET_CLONE_CHILDREN, &cgrp->flags);
+
+        cgrp->self.serial_nr = css_serial_nr_next++;
+
+        /* allocation complete, commit to creation */
+        list_add_tail_rcu(&cgrp->self.sibling, &cgroup_parent(cgrp)->self.children);
+        atomic_inc(&root->nr_cgrps);
+        cgroup_get_live(parent);
+
+        /*
+        * On the default hierarchy, a child doesn't automatically inherit
+        * subtree_control from the parent.  Each is configured manually.
+        */
+        if (!cgroup_on_dfl(cgrp))
+            cgrp->subtree_control = cgroup_control(cgrp);
+
+        cgroup_propagate_control(cgrp);
+
+        return cgrp;
+    }
 
     css_populate_dir(&cgrp->self/*css*/) {
         if (css->flags & CSS_VISIBLE)
@@ -12990,7 +13140,70 @@ ssize_t cgroup_subtree_control_write(
     cgrp->subtree_control |= enable;
     cgrp->subtree_control &= ~disable;
 
-    ret = cgroup_apply_control(cgrp);
+    ret = cgroup_apply_control(cgrp) {
+        int ret;
+        cgroup_propagate_control(cgrp) {
+            struct cgroup *dsct;
+            struct cgroup_subsys_state *d_css;
+
+            cgroup_for_each_live_descendant_pre(dsct, d_css, cgrp) {
+                dsct->subtree_control &= cgroup_control(dsct) {
+                    struct cgroup *parent = cgroup_parent(cgrp);
+                    u16 root_ss_mask = cgrp->root->subsys_mask;
+
+                    if (parent) {
+                        u16 ss_mask = parent->subtree_control;
+
+                        /* threaded cgroups can only have threaded controllers */
+                        if (cgroup_is_threaded(cgrp))
+                            ss_mask &= cgrp_dfl_threaded_ss_mask;
+                        return ss_mask;
+                    }
+
+                    if (cgroup_on_dfl(cgrp))
+                        root_ss_mask &= ~(cgrp_dfl_inhibit_ss_mask | cgrp_dfl_implicit_ss_mask);
+                    return root_ss_mask;
+                }
+                dsct->subtree_ss_mask =
+                    cgroup_calc_subtree_ss_mask(dsct->subtree_control, cgroup_ss_mask(dsct)/*this_ss_mask*/) {
+                        u16 cur_ss_mask = subtree_control;
+                        struct cgroup_subsys *ss;
+                        int ssid;
+
+                        cur_ss_mask |= cgrp_dfl_implicit_ss_mask;
+
+                        while (true) {
+                            u16 new_ss_mask = cur_ss_mask;
+
+                            do_each_subsys_mask(ss, ssid, cur_ss_mask) {
+                                new_ss_mask |= ss->depends_on;
+                            } while_each_subsys_mask();
+
+                            new_ss_mask &= this_ss_mask;
+
+                            if (new_ss_mask == cur_ss_mask)
+                                break;
+                            cur_ss_mask = new_ss_mask;
+                        }
+
+                        return cur_ss_mask;
+                    }
+            }
+        }
+
+        ret = cgroup_apply_control_enable(cgrp);
+        if (ret)
+            return ret;
+
+        /*
+        * At this point, cgroup_e_css_by_mask() results reflect the new csses
+        * making the following cgroup_update_dfl_csses() properly update
+        * css associations of all tasks in the subtree.
+        */
+        return cgroup_update_dfl_csses(cgrp) {
+
+        }
+    }
     cgroup_finalize_control(cgrp, ret);
     if (ret)
         goto out_unlock;
@@ -13012,6 +13225,8 @@ out_unlock:
 * [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
 * [Docker 背后的内核知识 - Namespace 资源隔离](https://www.infoq.cn/article/docker-kernel-knowledge-namespace-resource-isolation/)
 * [Linux NameSpace 目录](https://blog.csdn.net/pwl999/article/details/117554060?spm=1001.2014.3001.5501)
+
+![](../images/kernel/ns-arch.png)
 
 ```c
 struct task_struct {
@@ -14179,6 +14394,7 @@ int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
                 if (!is_subdir(dest_mp->m_dentry, m->mnt.mnt_root))
                     return 0;
                 if (peers(m, last_dest)) {
+                    /* return m1->mnt_group_id == m2->mnt_group_id && m1->mnt_group_id; */
                     type = CL_MAKE_SHARED;
                 } else {
                     struct mount *n, *p;
@@ -14372,4 +14588,15 @@ int propagate_umount(struct list_head *list)
 
     return 0;
 }
+```
+
+## cgroup_namespace
+
+```c
+struct cgroup_namespace {
+    struct ns_common        ns;
+    struct user_namespace   *user_ns;
+    struct ucounts          *ucounts;
+    struct css_set          *root_cset;
+};
 ```

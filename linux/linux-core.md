@@ -30,7 +30,7 @@
         * [spin_lock](#spin_lock)
             * [queued_spin_lock_slowpath](#queued_spin_lock_slowpath)
         * [spin_unlock](#spin_unlock)
-    * [rwlock](#rwlock)
+    * [rwspinlock](#rwspinlock)
         * [read_lock](#read_lock)
         * [write_lock](#write_lock)
     * [osq](#osq)
@@ -95,10 +95,12 @@
 
 * [Locking in the kernel](https://docs.kernel.org/locking/index.html#)
 
+![](../images/kernel/lock-type.png) TODO
+
 ## rcu
 
 * [kernel: RCU concepts](https://www.kernel.org/doc/html/latest/RCU/index.html)
-* [内核工匠 - RCU前传：从同步到RCU的引入](http://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247489093&idx=1&sn=24f159f20ffc4c698f8fa17a0fef0a6c)
+* [内核工匠 - RCU前传：从同步到RCU的引入](https://mp.weixin.qq.com/s/0wTQbrAFrRI8rrEtzHzCXw)
 * [wowo tech - RCU synchronize原理分析](http://www.wowotech.net/kernel_synchronization/223.html) [:link: RCU基础](http://www.wowotech.net/kernel_synchronization/rcu_fundamentals.html)
 
 ## futex
@@ -876,7 +878,7 @@ pi_faulted:
 ![](../images/kernel/lock-spinlock.png)
 
 * [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
-* [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247487444&idx=1&sn=b3529fb6234175b273caaacf0e816b6f)
+* [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s/viUgMAnVgC_bHyVifkHqsQ)
 * [spinlock - 术道经纬](https://www.zhihu.com/column/c_1108400140804726784) [:one: CSA spinlock](https://zhuanlan.zhihu.com/p/80727111) [:two: MCS spinlock](https://zhuanlan.zhihu.com/p/89058726) [:three: qspinlock](https://zhuanlan.zhihu.com/p/100546935) [:four: API](https://zhuanlan.zhihu.com/p/90634198) [:five: deadlock](https://zhuanlan.zhihu.com/p/103971328)
 * [wowo tech - spinklock](http://www.wowotech.net/kernel_synchronization/spinlock.html)  [qspinlock](http://www.wowotech.net/kernel_synchronization/queued_spinlock.html)
 
@@ -1235,7 +1237,7 @@ spin_unlock(spinlock_t *lock) {
 }
 ```
 
-## rwlock
+## rwspinlock
 
 Aka read write spining lock, implemented by qrwlock. While rwsem is a read write sleeping lock.
 
@@ -3309,4 +3311,4 @@ __up_write(struct rw_semaphore *sem)
 
 ## mlock
 
-* [mlock锁原理剖析 - 内核工匠](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247486877&idx=1&sn=b757dad0ceffe76d9f16cfbde07ce4d0)
+* [mlock锁原理剖析 - 内核工匠](https://mp.weixin.qq.com/s/2b7zHDXoQycoMwlPO_UUrg)
