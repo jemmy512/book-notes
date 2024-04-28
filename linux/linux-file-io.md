@@ -422,7 +422,7 @@ mount(dev_name, dir_name, type, flags, data) {
                 struct fs_context *fc = fs_context_for_mount(type, sb_flags);
                 vfs_parse_fs_string();
 
-                /* Create a superblock which can then later be used for mounting */
+                /* Get the mountable root */
                 vfs_get_tree(fc) {
                     fc->ops->get_tree(fc); /* ext4_get_tree */
                     struct super_block *sb = fc->root->d_sb;
@@ -681,15 +681,14 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
         err = -EPERM;
 
     if (!err) {
+        /* Get the mountable root */
         err = vfs_get_tree(fc) {
             struct super_block *sb;
             int error;
-            /* Get a superblock based on a single block device */
+            /* Get the mountable root in fc->root */
             error = fc->ops->get_tree(fc); /* ext4_get_tree */
             sb = fc->root->d_sb;
             sb->s_flags |= SB_BORN;
-
-            return 0;
         }
     }
     if (!err)
@@ -1900,7 +1899,31 @@ open_last_lookups(nd, file, op) {
     dentry = lookup_open(nd, file, op, got_write) {
         /* Negative dentry, just create the file */
         if (!dentry->d_inode && (open_flag & O_CREAT)) {
-            error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL);
+            error = dir_inode->i_op->create(dir_inode, dentry, mode, open_flag & O_EXCL) {
+                ext4_create() {
+                    inode = ext4_new_inode_start_handle();
+                    inode->i_op = &ext4_file_inode_operations;
+                    inode->i_fop = &ext4_file_operations;
+                    ext4_set_aops(struct inode *inode) {
+                        switch (ext4_inode_journal_mode(inode)) {
+                        case EXT4_INODE_ORDERED_DATA_MODE:
+                        case EXT4_INODE_WRITEBACK_DATA_MODE:
+                            break;
+                        case EXT4_INODE_JOURNAL_DATA_MODE:
+                            inode->i_mapping->a_ops = &ext4_journalled_aops;
+                            return;
+                        default:
+                            BUG();
+                        }
+                        if (IS_DAX(inode))
+                            inode->i_mapping->a_ops = &ext4_dax_aops;
+                        else if (test_opt(inode->i_sb, DELALLOC))
+                            inode->i_mapping->a_ops = &ext4_da_aops;
+                        else
+                            inode->i_mapping->a_ops = &ext4_aops;
+                    }
+                }
+            }
         }
 
         dentry = d_alloc_parallel(dir, &nd->last, &wq);
@@ -5713,7 +5736,7 @@ mount(dev_name, dir_name, type, flags, data);
                 struct fs_context *fc = fs_context_for_mount(type, sb_flags);
                 vfs_parse_fs_string();
 
-                /* Create a superblock which can then later be used for mounting */
+                /* Get the mountable root */
                 vfs_get_tree(fc);
                     fc->ops->get_tree(fc); /* ext4_get_tree */
                     struct super_block *sb = fc->root->d_sb;
