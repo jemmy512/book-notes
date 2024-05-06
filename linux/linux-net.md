@@ -20,6 +20,8 @@
     * [queue_is_full_len](#queue_is_full_len)
 * [shutdown](#shutdown)
 * [sk_buf](#sk_buff)
+    * [skb_clone](#skb_clone)
+    * [kfree_skb_partial](#kfree_skb_partial)
 * [write](#write)
     * [vfs layer](#vfs-layer-tx)
     * [socket layer](#socket-layer-tx)
@@ -3510,6 +3512,13 @@ __sys_shutdown();
 ```
 
 # sk_buff
+
+* [kmalloc_slab](./linux-kernel-mem.md#kmalloc)
+* [slab_alloc](./linux-kernel-mem.md#slab_alloc)
+
+* [How sk_buffs alloc work](http://vger.kernel.org/~davem/skb_data.html)
+* [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
+
 <img src='../images/kernel/net-sk_buf.png' style='max-height:850px'/>
 
 ```C++
@@ -3887,12 +3896,114 @@ sk_stream_alloc_skb()
     skb->data += len;
     skb->tail += len;
 ```
-* [kmalloc_slab](./linux-kernel-mem.md#kmalloc)
-* [slab_alloc](./linux-kernel-mem.md#slab_alloc)
 
-* [How sk_buffs alloc work](http://vger.kernel.org/~davem/skb_data.html)
-* [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
+## kfree_skb_partial
 
+```c
+void skb_release_head_state(struct sk_buff *skb)
+{
+    skb_dst_drop(skb);
+    if (skb->destructor) {
+        /* skb->destructor = skb_is_tcp_pure_ack(skb) ? __sock_wfree : tcp_wfree; */
+        skb->destructor(skb) {
+            tcp_wfree(struct sk_buff *skb) {
+                struct sock *sk = skb->sk;
+                struct tcp_sock *tp = tcp_sk(sk);
+                unsigned long flags, nval, oval;
+                struct tsq_tasklet *tsq;
+                bool empty;
+
+                /* Keep one reference on sk_wmem_alloc.
+                 * Will be released by sk_free() from here or tcp_tasklet_func() */
+                WARN_ON(refcount_sub_and_test(skb->truesize - 1, &sk->sk_wmem_alloc));
+
+                if (refcount_read(&sk->sk_wmem_alloc) >= SKB_TRUESIZE(1)
+                    && this_cpu_ksoftirqd() == current)
+                    goto out;
+
+                oval = smp_load_acquire(&sk->sk_tsq_flags);
+                do {
+                    if (!(oval & TSQF_THROTTLED) || (oval & TSQF_QUEUED))
+                        goto out;
+
+                    nval = (oval & ~TSQF_THROTTLED) | TSQF_QUEUED;
+                } while (!try_cmpxchg(&sk->sk_tsq_flags, &oval, nval));
+
+                /* queue this socket to tasklet queue */
+                tsq = this_cpu_ptr(&tsq_tasklet);
+                empty = list_empty(&tsq->head);
+                list_add(&tp->tsq_node, &tsq->head);
+                if (empty) {
+                    tasklet_schedule(&tsq->tasklet) {
+                        if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state)) {
+                            __tasklet_schedule(t) {
+                                __tasklet_schedule_common(t, &tasklet_vec, TASKLET_SOFTIRQ);
+                            }
+                        }
+                    }
+                }
+                return;
+            out:
+                sk_free(sk);
+            }
+        }
+    }
+#if IS_ENABLED(CONFIG_NF_CONNTRACK)
+    nf_conntrack_put(skb_nfct(skb));
+#endif
+    skb_ext_put(skb);
+}
+
+
+void tcp_tasklet_func(struct tasklet_struct *t)
+{
+    /* tsq: tcp small queue */
+    struct tsq_tasklet *tsq = from_tasklet(tsq,  t, tasklet);
+    LIST_HEAD(list);
+    unsigned long flags;
+    struct list_head *q, *n;
+    struct tcp_sock *tp;
+    struct sock *sk;
+
+    local_irq_save(flags);
+    list_splice_init(&tsq->head, &list);
+    local_irq_restore(flags);
+
+    list_for_each_safe(q, n, &list) {
+        tp = list_entry(q, struct tcp_sock, tsq_node);
+        list_del(&tp->tsq_node);
+
+        sk = (struct sock *)tp;
+        clear_bit(TSQ_QUEUED, &sk->sk_tsq_flags);
+
+        tcp_tsq_handler(sk) {
+            if (!sock_owned_by_user(sk)) {
+                tcp_tsq_write(sk) {
+                    if ((1 << sk->sk_state) &
+                        (TCPF_ESTABLISHED | TCPF_FIN_WAIT1 | TCPF_CLOSING |
+                            TCPF_CLOSE_WAIT  | TCPF_LAST_ACK)) {
+                        struct tcp_sock *tp = tcp_sk(sk);
+
+                        if (tp->lost_out > tp->retrans_out &&
+                            tcp_snd_cwnd(tp) > tcp_packets_in_flight(tp)) {
+                            tcp_mstamp_refresh(tp);
+                            tcp_xmit_retransmit_queue(sk);
+                        }
+
+                        tcp_write_xmit(sk, tcp_current_mss(sk), tp->nonagle,
+                                0, GFP_ATOMIC);
+                    }
+                }
+            } else if (!test_and_set_bit(TCP_TSQ_DEFERRED, &sk->sk_tsq_flags)) {
+                sock_hold(sk);
+            }
+        }
+        sk_free(sk) {
+
+        }
+    }
+}
+```
 
 # write
 
@@ -4281,6 +4392,23 @@ int skb_copy_to_page_nocache(
  * 3. slide window
  *
  * TSO: TCP Segmentation Offload */
+
+ /* In order to avoid the overhead associated
+  * with a large number of packets on the transmit path,
+  * the Linux kernel implements several optimizations:
+  * 1. TCP segmentation offload (TSO),
+  * 2. UDP fragmentation offload (UFO) and
+  * 3. generic segmentation offload (GSO).
+  *
+  * All of these optimizations allow the IP stack to create packets
+  * which are larger than the MTU of the outgoing NIC.
+  * For IPv4, packets as large as the IPv4 maximum of 65,536 bytes
+  * can be created and queued to the driver queue.
+  * In the case of TSO and UFO, the NIC hardware takes responsibility
+  * for breaking the single large packet into packets small enough
+  * to be transmitted on the physical interface.
+  * For NICs without hardware support, GSO performs the same operation
+  * in software immediately before queueing to the driver queue. */
 bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
          int push_one, gfp_t gfp)
 {
@@ -5429,6 +5557,27 @@ void arp_send_dst(
 ```
 
 ## dev layer tx
+
+* [xps: Transmit Packet Steering](https://lwn.net/Articles/412062/)
+* [Queueing in the Linux Network Stack](https://www.coverfire.com/articles/queueing-in-the-linux-network-stack/)
+* [Controlling Queue Delay - A modern AQM is just one piece of the solution to bufferbloat.](https://queue.acm.org/detail.cfm?id=2209336)
+* [Bufferbloat: Dark Buffers in the Internet](http://cacm.acm.org/magazines/2012/1/144810-bufferbloat/fulltext)
+* [Linux Advanced Routing and Traffic Control Howto (LARTC) ](http://www.lartc.org/howto/)
+* [LWN - TCP Small Queues](http://lwn.net/Articles/507065/)
+  * It limits the amount of data that can be queued for transmission by any given socket regardless of where the data is queued, so it shouldn't be fooled by buffers lurking in the queueing, traffic control, or netfilter code. That limit is set by a new sysctl knob found at:
+    > /proc/sys/net/ipv4/tcp_limit_output_bytes
+
+* [LWN - Byte Queue Limits](http://lwn.net/Articles/454390/)
+  * Byte queue limits work only at the device queue level
+
+* If the NIC driver wakes to pull packets off of the queue for transmission and the queue is empty the hardware will miss a transmission opportunity thereby reducing the throughput of the system. This is referred to as **starvation**.
+    * Note that an empty queue when the system does not have anything to transmit is not starvation – this is normal.
+* While a large queue is necessary for a busy system to maintain high throughput, it has the downside of allowing for the introduction of a large amount of **latency**.
+
+<img src='../images/kernel/net-queue-displine.png' style='max-height:850px'/>
+
+<img src='../images/kernel/net-dev-pci.png' style='max-height:850px'/>
+
 ```C++
 struct net_device {
   struct netdev_rx_queue  *_rx;
@@ -5535,11 +5684,6 @@ u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
     inet6 fe80::f816:3eff:fe75:9908/64 scope link
        valid_lft forever preferred_lft forever
 ```
-* [xps: Transmit Packet Steering](https://lwn.net/Articles/412062/)
-
-<img src='../images/kernel/net-queue-displine.png' style='max-height:850px'/>
-
-<img src='../images/kernel/net-dev-pci.png' style='max-height:850px'/>
 
 ```C++
 int __dev_xmit_skb(
@@ -6119,6 +6263,8 @@ struct ixgb_tx_desc {
   __le16        vlan;
 };
 
+/* (GRO) allows the NIC driver to combine received packets
+ * into a single large packet which is then passed to the IP stack */
 struct napi_struct {
   struct list_head  poll_list;
 
