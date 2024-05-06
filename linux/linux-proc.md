@@ -72,7 +72,7 @@
     * [parse_core](#parse_core)
 
 * [PELT](#PELT)
-    * [update_load_sum](#update_load_sum)
+    * [update_load_sum_avg](#update_load_sum_avg)
     * [update_load_avg](#update_load_avg)
         * [update_cfs_rq_load_avg](#update_cfs_rq_load_avg)
     * [rq_clock](#rq_clock)
@@ -944,6 +944,17 @@ export LD_LIBRARY_PATH=
         PREEMPT_VOLUNTARY | Voluntary Kernel Preemption (Desktop) | `system call returns` + `interrupts` + `explicit preemption points`
         PREEMPT | Preemptible Kernel (Low-Latency Desktop) |`system call returns` + `interrupts` + `all kernel code(except critical section)`
         PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
+
+* Oracle
+    * [Understanding process thread priorities in Linux](https://blogs.oracle.com/linux/post/task-priority)
+        * **static_prio**: maps the priority range used for normal tasks and is the priority according to the nice value of a task.
+            > static_prio = 120 + nice
+        * **rt_priority**: maps the priority range for real time tasks and indicates real time priority.
+            > MAX_RT_PRIO-1 - rt_priority
+            * high rt_priority value signifies high priority and in the kernel low priority value signifies high priority
+        * **normal_prio**: indicates priority of a task without any temporary priority boosting from the kernel side. For normal tasks it is the same as static_prio and for RT tasks it is directly related to rt_priority
+            * In absence of normal_prio, children of a priority boosted task will get boosted priority as well and this will cause CPU starvation for other tasks. To avoid such a situation, the kernel maintains nomral_prio of a task. Forked tasks usually get their effective prio set to normal_prio of the parent and hence don’t get boosted priority.
+        * **prio**: is the effective priority of a task and is used in all scheduling related decision makings.
 
 ```c
 /* Schedule Class:
@@ -2928,6 +2939,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
             /* If we're the current task, we must renormalise before calling update_curr(). */
             if (curr) {
+                /* udpate se: slice, vruntime, deadline */
                 place_entity(cfs_rq, se, flags) {
                     u64 vslice;
                     u64 vruntime = avg_vruntime(cfs_rq) {
@@ -4583,7 +4595,33 @@ void switched_from_fair(struct rq *rq, struct task_struct *p)
             update_load_avg(cfs_rq, se, 0);
             detach_entity_load_avg(cfs_rq, se);
             update_tg_load_avg(cfs_rq);
-            propagate_entity_cfs_rq(se);
+
+            /* Propagate the changes of the sched_entity across the tg tree to make it
+             * visible to the root */
+            propagate_entity_cfs_rq(se) {
+                struct cfs_rq *cfs_rq = cfs_rq_of(se);
+
+                if (cfs_rq_throttled(cfs_rq))
+                    return;
+
+                if (!throttled_hierarchy(cfs_rq))
+                    list_add_leaf_cfs_rq(cfs_rq);
+
+                /* Start to propagate at parent */
+                se = se->parent;
+
+                for_each_sched_entity(se) {
+                    cfs_rq = cfs_rq_of(se);
+
+                    update_load_avg(cfs_rq, se, UPDATE_TG);
+
+                    if (cfs_rq_throttled(cfs_rq))
+                        break;
+
+                    if (!throttled_hierarchy(cfs_rq))
+                        list_add_leaf_cfs_rq(cfs_rq);
+                }
+            }
         }
     }
 }
@@ -4625,8 +4663,9 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
 * [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo)      [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
 ```c
-sched_init_numa() {
-
+void __init sched_init_smp(void) {
+    sched_init_numa(void);
+    sched_init_domains(cpu_active_mask);
 }
 ```
 
@@ -4644,6 +4683,7 @@ sched_init_domains(cpu_active_mask) {
     if (!doms_cur)
         doms_cur = &fallback_doms;
     cpumask_and(doms_cur[0], cpu_map, housekeeping_cpumask(HK_TYPE_DOMAIN));
+
     err = build_sched_domains(doms_cur[0], NULL) {
         enum s_alloc alloc_state = sa_none;
         struct sched_domain *sd;
@@ -5189,7 +5229,7 @@ struct sched_avg {
 }
 ```
 
-## update_load_sum
+## update_load_sum_avg
 
 load, runnable and running function as:
 1. switch: controlling whether to update the corresponding load contribution
@@ -10698,6 +10738,7 @@ enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
             /* Refill extra burst quota even if cfs_b->idle */
             __refill_cfs_bandwidth_runtime(cfs_b) {
                 cfs_b->runtime += cfs_b->quota;
+                /* delta bewteen prev remaining runtime and current remaining runtime */
                 runtime = cfs_b->runtime_snap - cfs_b->runtime;
                 if (runtime > 0) {
                     cfs_b->burst_time += runtime;
@@ -10761,6 +10802,8 @@ enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
 ## sched_cfs_slack_timer
 
 ```c
+/* Slack time refers to periods when the CPU is not fully utilized,
+ * i.e., when there are no runnable tasks to execute */
 enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
 {
     struct cfs_bandwidth *cfs_b =
@@ -10792,6 +10835,7 @@ enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
         if (!runtime)
             return;
 
+        /* cfs_b distributes remaining runtime to throttled cfs_rq */
         distribute_cfs_runtime(cfs_b) {
             int this_cpu = smp_processor_id();
             u64 runtime, remaining = 1;
@@ -11882,8 +11926,8 @@ int __init cgroup_init_early(void)
     }
     return 0;
 }
-
 ```
+
 ```c
 int __init cgroup_init(void)
 {
@@ -12984,7 +13028,17 @@ void cpu_cgroup_attach(struct cgroup_taskset *tset)
                 tsk->sched_task_group = group;
 
                 if (tsk->sched_class->task_change_group) {
-                    tsk->sched_class->task_change_group(tsk);
+                    tsk->sched_class->task_change_group(tsk) {
+                        task_change_group_fair(struct task_struct *p) {
+                            if (READ_ONCE(p->__state) == TASK_NEW)
+                                return;
+
+                            detach_task_cfs_rq(p);
+                            p->se.avg.last_update_time = 0;
+                            set_task_rq(p, task_cpu(p));
+                            attach_task_cfs_rq(p);
+                        }
+                    }
                 } else {
                     set_task_rq(tsk, task_cpu(tsk)) {
                         struct task_group *tg = task_group(p);
@@ -14572,7 +14626,7 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 
     new = copy_tree(old/*mnt*/, old->mnt.mnt_root/*dentry*/, copy_flags) {
         /* struct mount *res, *p, *q, *r, *parent; */
-        struct mount *res, *o_prnt, *o_mnt, *o_child, *n_prnt, *n_mnt;
+        struct mount *res, *o_prnt, *o_child, *o_mnt, *n_prnt, *n_mnt;
 
         res = n_mnt = clone_mnt(mnt/*old*/, dentry/*root*/, flag) {
             struct super_block *sb = old->mnt.mnt_sb;
