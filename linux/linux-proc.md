@@ -14,7 +14,7 @@
 * [process](#process)
 * [thread](#thread)
 * [task_struct](#task_struct)
-* [schedule](#schedule)
+* [sched](#sched)
     * [voluntary schedule](#voluntary-schedule)
     * [preempt schedule](#preempt-schedule)
         * [user preempt](#user-preempt)
@@ -28,41 +28,42 @@
         * [kernel preempt](#kernel-preempt)
             * [preempt_enable](#preempt_enble)
             * [preempt_schedule_irq](#preempt_schedule_irq)
-    * [SCHED_RT](#SCHED_RR)
-        * [enqueue_task_rt](#enqueue_task_rt)
-        * [dequeue_task_rt](#dequeue_task_rt)
-        * [put_prev_task_rt](#put_prev_task_rt)
-        * [pick_next_task_rt](#pick_next_task_rt)
-        * [set_next_task_rt](#set_next_task_rt)
-        * [select_task_rq_rt](#select_task_rq_rt)
-        * [wakeup_preempt_rt](#wakeup_preempt_rt)
-        * [task_tick_rt](#task_tick_rt)
-        * [yield_task_rt](#yield_task_rt)
-        * [prio_changed_rt](#prio_changed_rt)
-        * [switched_from_rt](#switched_from_rt)
-        * [switched_to_rt](#switched_to_rq)
-        * [balance_rt](#balance_rt)
-            * [push_rt_task](#push_rt_task)
-            * [pull_rt_task](#pull_rt_task)
-    * [SCHED_CFS](#SCHED_CFS)
-        * [enqueue_task_fair](#enqueue_task_fair)
-        * [dequeue_task_fair](#dequeue_task_fair)
-        * [put_prev_task_fair](#put_prev_task_fair)
-        * [pick_next_task_fair](#pick_next_task_fair)
-        * [set_next_task_fair](#set_next_task_fair)
-        * [select_task_rq_fair](#select_task_rq_fair)
-            * [find_idlest_cpu](#find_idlest_cpu)
-                * [find_idlest_group](#find_idlest_group)
-                * [find_idlest_group_cpu](#find_idlest_group_cpu)
-            * [select_idle_sibling](#select_idle_sibling)
-        * [wakeup_preempt_fair](#wakeup_preempt_fair)
-        * [sched_vslice](#sched_vslice)
-        * [task_tick_fair](#task_tick_fair)
-        * [task_fork_fair](#task_fork_fair)
-        * [yield_task_fair](#yield_task_fair)
-        * [prio_changed_fair](#prio_changed_fair)
-        * [switched_from_fair](#switched_from_fair)
-        * [switched_to_fair](#switched_to_fair)
+
+* [SCHED_RT](#SCHED_RR)
+    * [enqueue_task_rt](#enqueue_task_rt)
+    * [dequeue_task_rt](#dequeue_task_rt)
+    * [put_prev_task_rt](#put_prev_task_rt)
+    * [pick_next_task_rt](#pick_next_task_rt)
+    * [set_next_task_rt](#set_next_task_rt)
+    * [select_task_rq_rt](#select_task_rq_rt)
+    * [wakeup_preempt_rt](#wakeup_preempt_rt)
+    * [task_tick_rt](#task_tick_rt)
+    * [yield_task_rt](#yield_task_rt)
+    * [prio_changed_rt](#prio_changed_rt)
+    * [switched_from_rt](#switched_from_rt)
+    * [switched_to_rt](#switched_to_rq)
+    * [balance_rt](#balance_rt)
+        * [push_rt_task](#push_rt_task)
+        * [pull_rt_task](#pull_rt_task)
+* [SCHED_CFS](#SCHED_CFS)
+    * [enqueue_task_fair](#enqueue_task_fair)
+    * [dequeue_task_fair](#dequeue_task_fair)
+    * [put_prev_task_fair](#put_prev_task_fair)
+    * [pick_next_task_fair](#pick_next_task_fair)
+    * [set_next_task_fair](#set_next_task_fair)
+    * [select_task_rq_fair](#select_task_rq_fair)
+        * [find_idlest_cpu](#find_idlest_cpu)
+            * [find_idlest_group](#find_idlest_group)
+            * [find_idlest_group_cpu](#find_idlest_group_cpu)
+        * [select_idle_sibling](#select_idle_sibling)
+    * [wakeup_preempt_fair](#wakeup_preempt_fair)
+    * [sched_vslice](#sched_vslice)
+    * [task_tick_fair](#task_tick_fair)
+    * [task_fork_fair](#task_fork_fair)
+    * [yield_task_fair](#yield_task_fair)
+    * [prio_changed_fair](#prio_changed_fair)
+    * [switched_from_fair](#switched_from_fair)
+    * [switched_to_fair](#switched_to_fair)
 
 * [sched_domain](#sched_domain)
 * [cpu capacity](#cpu_capacity)
@@ -131,6 +132,7 @@
     * [sched_rt_period_timer](#sched_rt_period_timer)
 
 * [cgroup](#cgroup)
+    * [cgrp_demo](#cgrp_demo)
     * [cgrou_init](#cgroup_init)
         * [cgroup_init_cftypes](#cgroup_init_cftypes)
         * [cgroup_init_subsys](#cgroup_init_subsys)
@@ -882,7 +884,7 @@ export LD_LIBRARY_PATH=
 # task_struct
 <img src='../images/kernel/proc-task-1.png' style='max-height:850px'/>
 
-# schedule
+# sched
 
 ![](../images/kernel/proc-sched-class.png)
 
@@ -1088,6 +1090,9 @@ extern const struct sched_class idle_sched_class;
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
 ![](../images/kernel/proc-sched-arch.png)
+
+---
+
 ![](../images/kernel/proc-sched-context_switch.png)
 
 ```c
@@ -1634,7 +1639,7 @@ el1t_64_irq_handler() {
 ```
 <img src='../images/kernel/proc-sched.png' style='max-height:850px'/>
 
-## SCHED_RT
+# SCHED_RT
 
 ![](../images/kernel/proc-sched-rt.png)
 
@@ -1688,7 +1693,7 @@ struct sched_rt_entity {
 
 ![](../images/kernel/proc-sched-rt-sched_rt_avg_update.png)
 
-### enqueue_task_rt
+## enqueue_task_rt
 
 ![](../images/kernel/proc-sched-rt-enque-deque-task.png)
 
@@ -1826,7 +1831,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
 }
 ```
 
-### dequeue_task_rt
+## dequeue_task_rt
 
 ```c
 static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
@@ -1939,7 +1944,7 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
 }
 ```
 
-### put_prev_task_rt
+## put_prev_task_rt
 
 ```c
 put_prev_task_rt(struct rq *rq, struct task_struct *p) {
@@ -1959,7 +1964,7 @@ put_prev_task_rt(struct rq *rq, struct task_struct *p) {
 }
 ```
 
-### pick_next_task_rt
+## pick_next_task_rt
 
 ![](../images/kernel/proc-sched-rt-pick_next_task_rt.png)
 
@@ -2010,7 +2015,7 @@ pick_next_task_rt(struct rq *rq)
     }
 ```
 
-### set_next_task_rt
+## set_next_task_rt
 
 ```c
 set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
@@ -2038,7 +2043,7 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
     }
 ```
 
-### select_task_rq_rt
+## select_task_rq_rt
 
 * [内核工匠 - Linux Scheduler之rt选核流程](https://mp.weixin.qq.com/s/DByOOnJYTA2BDrwTXSDBmQ)
 * [hellokitty2 - 调度器32 - RT选核](https://www.cnblogs.com/hellokitty2/p/15881574.html)
@@ -2242,7 +2247,7 @@ out_unlock:
     return cpu;
 ```
 
-### wakeup_preempt_rt
+## wakeup_preempt_rt
 
 ```c
 void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
@@ -2289,7 +2294,7 @@ void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
 }
 ```
 
-### task_tick_rt
+## task_tick_rt
 
 ```c
 task_tick_rt() {
@@ -2449,7 +2454,7 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 }
 ```
 
-### yield_task_rt
+## yield_task_rt
 
 ```c
 requeue_task_rt(rq, rq->curr, 0) {
@@ -2473,7 +2478,7 @@ requeue_task_rt(rq, rq->curr, 0) {
 }
 ```
 
-### prio_changed_rt
+## prio_changed_rt
 
 ```c
 prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
@@ -2503,7 +2508,7 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
 }
 ```
 
-#### switched_from_rt
+## switched_from_rt
 
 ```c
 void switched_from_rt(struct rq *rq, struct task_struct *p)
@@ -2520,7 +2525,8 @@ void switched_from_rt(struct rq *rq, struct task_struct *p)
 }
 ```
 
-#### switched_to_rt
+## switched_to_rt
+
 ```c
 
 /* When switching a task to RT, we may overload the runqueue
@@ -2544,7 +2550,7 @@ void switched_to_rt(struct rq *rq, struct task_struct *p)
 }
 ```
 
-### balance_rt
+## balance_rt
 
 * [hellokitty2 - 调度器34 - RT负载均衡](https://www.cnblogs.com/hellokitty2/p/15974333.html)
 
@@ -2576,7 +2582,7 @@ balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
     return sched_stop_runnable(rq) || sched_dl_runnable(rq) || sched_rt_runnable(rq);
 ```
 
-#### pull_rt_task
+### pull_rt_task
 
 ```c
 void pull_rt_task(struct rq *this_rq) {
@@ -2666,7 +2672,7 @@ skip:
 }
 ```
 
-#### push_rt_tasks
+### push_rt_tasks
 
 1. switched_to_rt
 
@@ -2907,7 +2913,7 @@ push_rt_tasks()
 }
 ```
 
-## SCHED_CFS
+# SCHED_CFS
 
 ![](../images/kernel/proc-sched-cfs.png)
 
@@ -3041,7 +3047,7 @@ DEFINE_SCHED_CLASS(fair) = {
 }
 ```
 
-#### enqueue_task_fair
+## enqueue_task_fair
 
 ![](../images/kernel/proc-sched-cfs-enqueue_task_fair.png)
 
@@ -3267,7 +3273,7 @@ enqueue_throttle:
 }
 ```
 
-#### dequeue_task_fair
+## dequeue_task_fair
 
 ```c
 dequeue_task_fair() {
@@ -3493,7 +3499,7 @@ dequeue_throttle:
 }
 ```
 
-#### put_prev_task_fair
+## put_prev_task_fair
 
 ```c
 put_prev_task_fair(struct rq *rq, struct task_struct *prev)
@@ -3530,7 +3536,7 @@ put_prev_task_fair(struct rq *rq, struct task_struct *prev)
     }
 ```
 
-#### pick_next_task_fair
+## pick_next_task_fair
 
 ![](../images/kernel/proc-sched-pick_next_task_fair.png)
 
@@ -3711,7 +3717,7 @@ idle:
     update_idle_rq_clock_pelt(rq);
 ```
 
-#### set_next_task_fair
+## set_next_task_fair
 
 ```c
 set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
@@ -3760,7 +3766,7 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
     }
 ```
 
-#### select_task_rq_fair
+## select_task_rq_fair
 
 * [hellokitty2 - 调度器24 - CFS任务选核](https://www.cnblogs.com/hellokitty2/p/15750931.html)
 
@@ -3926,7 +3932,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
     return new_cpu;
 ```
 
-##### find_idlest_cpu
+### find_idlest_cpu
 ```c
 new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag) {
     int new_cpu = cpu;
@@ -3977,7 +3983,7 @@ new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag) {
 }
 ```
 
-###### find_idlest_group
+#### find_idlest_group
 
 ```c
 static struct sched_group *
@@ -4158,7 +4164,7 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
 }
 ```
 
-###### find_idlest_group_cpu
+#### find_idlest_group_cpu
 
 ```c
 static int
@@ -4217,7 +4223,7 @@ find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this
 }
 ```
 
-##### select_idle_sibling
+### select_idle_sibling
 
 ```c
 new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
@@ -4371,7 +4377,7 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
 }
 ```
 
-#### wakeup_preempt_fair
+## wakeup_preempt_fair
 
 ```c
 void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_flags)
@@ -4465,75 +4471,7 @@ preempt:
 }
 ```
 
-#### sched_vslice
-
-![](../images/kernel/proc-sched-cfs-sched_vslice.png)
-![](../images/kernel/proc-sched-cfs-sched_vslice-2.png)
-
-```c
-const int sched_prio_to_weight[40] = {
- /* -20 */     88761,     71755,     56483,     46273,     36291,
- /* -15 */     29154,     23254,     18705,     14949,     11916,
- /* -10 */      9548,      7620,      6100,      4904,      3906,
- /*  -5 */      3121,      2501,      1991,      1586,      1277,
- /*   0 */      1024,       820,       655,       526,       423,
- /*   5 */       335,       272,       215,       172,       137,
- /*  10 */       110,        87,        70,        56,        45,
- /*  15 */        36,        29,        23,        18,        15,
-};
-
-sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
-    slice = sched_slice(cfs_rq, se) {
-        slice = __sched_period(nr_running + !se->on_rq) {
-            if (unlikely(nr_running > sched_nr_latency/*8*/))
-                return nr_running * sysctl_sched_base_slice/*0.75 msec*/;
-            else
-                return sysctl_sched_latency/*6ms*/;
-        }
-        for_each_sched_entity(se) {
-            struct load_weight *load;
-            struct load_weight lw;
-            struct cfs_rq *qcfs_rq;
-
-            qcfs_rq = cfs_rq_of(se);
-            load = &qcfs_rq->load;
-
-            if (unlikely(!se->on_rq)) {
-                lw = qcfs_rq->load;
-                update_load_add(&lw, se->load.weight);
-                load = &lw;
-            }
-
-            slice = __calc_delta(slice, se->load.weight, load) {
-                /* delta_exec * weight / lw.weight
-                 *   OR
-                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
-            }
-        }
-        if (sched_feat(BASE_SLICE)) {
-            if (se_is_idle(init_se) && !sched_idle_cfs_rq(cfs_rq))
-                min_gran = sysctl_sched_idle_min_granularity;
-            else
-                min_gran = sysctl_sched_base_slice;
-
-            slice = max_t(u64, slice, min_gran);
-        }
-        return slice;
-    }
-    calc_delta_fair(slice, se) {
-        if (unlikely(se->load.weight != NICE_0_LOAD)) {
-            delta = __calc_delta(delta, NICE_0_LOAD, &se->load) {
-                /* delta_exec * weight / lw.weight
-                 *   OR
-                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
-            }
-        }
-
-        return delta;
-    }
-```
-
-#### task_tick_fair
+## task_tick_fair
 
 ![](../images/kernel/proc-sched-cfs-task_tick.png)
 ![](../images/kernel/proc-sched-cfs-update_curr.png)
@@ -4625,13 +4563,13 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                     if (cfs_rq->throttled)
                         return;
 
-                    /* throttle task if cant allot runtime */
                     ret = assign_cfs_rq_runtime(cfs_rq) {
                         cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
                         __assign_cfs_rq_runtime(cfs_b, cfs_rq, sched_cfs_bandwidth_slice()) {
                             --->
                         }
                     }
+                    /* throttle task if cant assign runtime */
                     if (!ret && likely(cfs_rq->curr)) {
                         resched_curr(rq_of(cfs_rq));
                     }
@@ -4668,7 +4606,7 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
 }
 ```
 
-#### task_fork_fair
+## task_fork_fair
 
 ![](../images/kernel/proc-sched-cfs-task_fork_fair.png)
 
@@ -4686,7 +4624,7 @@ task_fork_fair(struct task_struct *p)
         --->
 ```
 
-#### yield_task_fair
+## yield_task_fair
 
 ```c
 yield_task_fair(struct rq *rq)
@@ -4708,7 +4646,7 @@ yield_task_fair(struct rq *rq)
 }
 ```
 
-#### prio_changed_fair
+## prio_changed_fair
 
 ```c
 static void
@@ -4732,7 +4670,7 @@ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
 
 ```
 
-#### switched_from_fair
+## switched_from_fair
 
 ```c
 /* detach load_avg */
@@ -4787,7 +4725,7 @@ void switched_from_fair(struct rq *rq, struct task_struct *p)
 }
 ```
 
-#### switched_to_fair
+## switched_to_fair
 
 ```c
 /* attach load_avg */
@@ -4818,12 +4756,180 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
 }
 ```
 
+## sched_vslice
+
+![](../images/kernel/proc-sched-cfs-sched_vslice.png)
+![](../images/kernel/proc-sched-cfs-sched_vslice-2.png)
+
+```c
+const int sched_prio_to_weight[40] = {
+ /* -20 */     88761,     71755,     56483,     46273,     36291,
+ /* -15 */     29154,     23254,     18705,     14949,     11916,
+ /* -10 */      9548,      7620,      6100,      4904,      3906,
+ /*  -5 */      3121,      2501,      1991,      1586,      1277,
+ /*   0 */      1024,       820,       655,       526,       423,
+ /*   5 */       335,       272,       215,       172,       137,
+ /*  10 */       110,        87,        70,        56,        45,
+ /*  15 */        36,        29,        23,        18,        15,
+};
+
+sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
+    slice = sched_slice(cfs_rq, se) {
+        slice = __sched_period(nr_running + !se->on_rq) {
+            if (unlikely(nr_running > sched_nr_latency/*8*/))
+                return nr_running * sysctl_sched_base_slice/*0.75 msec*/;
+            else
+                return sysctl_sched_latency/*6ms*/;
+        }
+        for_each_sched_entity(se) {
+            struct load_weight *load;
+            struct load_weight lw;
+            struct cfs_rq *qcfs_rq;
+
+            qcfs_rq = cfs_rq_of(se);
+            load = &qcfs_rq->load;
+
+            if (unlikely(!se->on_rq)) {
+                lw = qcfs_rq->load;
+                update_load_add(&lw, se->load.weight);
+                load = &lw;
+            }
+
+            slice = __calc_delta(slice, se->load.weight, load) {
+                /* delta_exec * weight / lw.weight
+                 *   OR
+                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
+            }
+        }
+        if (sched_feat(BASE_SLICE)) {
+            if (se_is_idle(init_se) && !sched_idle_cfs_rq(cfs_rq))
+                min_gran = sysctl_sched_idle_min_granularity;
+            else
+                min_gran = sysctl_sched_base_slice;
+
+            slice = max_t(u64, slice, min_gran);
+        }
+        return slice;
+    }
+    calc_delta_fair(slice, se) {
+        if (unlikely(se->load.weight != NICE_0_LOAD)) {
+            delta = __calc_delta(delta, NICE_0_LOAD, &se->load) {
+                /* delta_exec * weight / lw.weight
+                 *   OR
+                 * (delta_exec * (weight * lw->inv_weight)) >> WMULT_SHIFT */
+            }
+        }
+
+        return delta;
+    }
+```
+
 # sched_domain
 
 * [极致Linux内核 - Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
 * [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo)      [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
 ```c
+struct sched_domain_topology_level {
+    sched_domain_mask_f     mask;
+    sched_domain_flags_f    sd_flags;
+    int                     flags;
+    int                  numa_level;
+    struct sd_data          data;
+};
+
+static struct sched_domain_topology_level *sched_domain_topology =
+	default_topology = {
+#ifdef CONFIG_SCHED_SMT
+    { cpu_smt_mask, cpu_smt_flags, SD_INIT_NAME(SMT) },
+#endif
+
+#ifdef CONFIG_SCHED_CLUSTER
+    { cpu_clustergroup_mask, cpu_cluster_flags, SD_INIT_NAME(CLS) },
+#endif
+
+#ifdef CONFIG_SCHED_MC
+    { cpu_coregroup_mask, cpu_core_flags, SD_INIT_NAME(MC) },
+#endif
+    { cpu_cpu_mask, SD_INIT_NAME(PKG) },
+    { NULL, },
+};
+
+struct sd_data {
+    struct sched_domain *__percpu           *sd;
+    struct sched_domain_shared *__percpu    *sds;
+    struct sched_group *__percpu            *sg;
+    struct sched_group_capacity *__percpu   *sgc;
+};
+
+struct sched_domain_shared {
+    atomic_t    ref;
+    atomic_t    nr_busy_cpus;
+    int         has_idle_cores;
+    int         nr_idle_scan;
+};
+
+struct sched_domain {
+    /* These fields must be setup */
+    struct sched_domain __rcu *parent; /* top domain must be null terminated */
+    struct sched_domain __rcu *child; /* bottom domain must be null terminated */
+    struct sched_group *groups; /* the balancing groups of the domain */
+    unsigned long min_interval; /* Minimum balance interval ms */
+    unsigned long max_interval; /* Maximum balance interval ms */
+    unsigned int busy_factor; /* less balancing by factor if busy */
+    unsigned int imbalance_pct; /* No balance until over watermark */
+    unsigned int cache_nice_tries; /* Leave cache hot tasks for # tries */
+    unsigned int imb_numa_nr; /* Nr running tasks that allows a NUMA imbalance */
+
+    int nohz_idle;          /* NOHZ IDLE status */
+    int flags;              /* See SD_* */
+    int level;
+
+    /* Runtime fields. */
+    unsigned long last_balance; /* init to jiffies. units in jiffies */
+    unsigned int balance_interval; /* initialise to 1. units in ms. */
+    unsigned int nr_balance_failed; /* initialise to 0 */
+
+    /* idle_balance() stats */
+    u64 max_newidle_lb_cost;
+    unsigned long last_decay_max_lb_cost;
+
+    union {
+        void *private;  /* used during construction */
+        struct rcu_head rcu; /* used during destruction */
+    };
+    struct sched_domain_shared *shared;
+
+    unsigned int span_weight;
+    /* Span of all CPUs in this domain. */
+    unsigned long span[];
+};
+
+struct sched_group {
+    struct sched_group  *next; /* Must be a circular list */
+    atomic_t            ref;
+
+    unsigned int        group_weight;
+    unsigned int        cores;
+    struct sched_group_capacity *sgc;
+    int                 asym_prefer_cpu; /* CPU of highest priority in group */
+    int                 flags;
+
+    /* The CPUs this group covers. */
+    unsigned long       cpumask[];
+};
+
+struct sched_group_capacity {
+    atomic_t            ref;
+    unsigned long       capacity;
+    unsigned long       min_capacity; /* Min per-CPU capacity in group */
+    unsigned long       max_capacity; /* Max per-CPU capacity in group */
+    unsigned long       next_update;
+    int                 imbalance; /* XXX unrelated to capacity but shared group state */
+
+    unsigned long       cpumask[]; /* Balance mask */
+};
+
 void __init sched_init_smp(void) {
     sched_init_numa(void);
     sched_init_domains(cpu_active_mask);
@@ -5966,6 +6072,25 @@ load_balance() {
     }
 
     group = find_busiest_group(&env) {
+        update_sd_lb_stats() {
+            do {
+                update_sg_lb_stats() {
+                    for_each_cpu_and() {
+                        sgs->group_load += load;
+                        sgs->group_util += cpu_util_cfs(i)
+                        sgs->group_runnable += cpu_runnable(rq);
+                        sgs->sum_h_nr_running += ;
+                        sgs->group_type = group_classify();
+                        /* ... */
+                        if (update_sd_pick_busiest(env, sds, sg, sgs)) {
+                            sds->busiest = sg;
+                            sds->busiest_stat = *sgs;
+                        }
+                    }
+                }
+            } while (sg != env->sd->groups);
+        }
+
         /* Decision matrix according to the local and busiest group type:
          *
          * busiest \ local has_spare   fully   misfit asym imbalanced overloaded
@@ -5980,7 +6105,7 @@ load_balance() {
             /* group_type           migration_type  imbalance                       note
              *              busiest cpu
              * group_misfit_task    migrate_misfit      1                       SD_ASYM_CPUCAPACITY
-             * group_misfit_task    migrate_misfit  group_misfit_task_load
+             * group_misfit_task    migrate_load    group_misfit_task_load
 
              * group_asym_packing   migrate_task    sum_h_nr_running
              * group_smt_balance    migrate_task        1
@@ -6849,7 +6974,18 @@ struct sched_group *find_busiest_group(struct lb_env *env)
     struct sg_lb_stats *local, *busiest;
     struct sd_lb_stats sds;
 
-    init_sd_lb_stats(&sds);
+    init_sd_lb_stats(&sds) {
+        *sds = (struct sd_lb_stats){
+            .busiest = NULL,
+            .local = NULL,
+            .total_load = 0UL,
+            .total_capacity = 0UL,
+            .busiest_stat = {
+                .idle_cpus = UINT_MAX,
+                .group_type = group_has_spare,
+            },
+        };
+    }
 
     update_sd_lb_stats(env, &sds) {
         --->
@@ -11143,7 +11279,7 @@ struct cftype cpu_legacy_files[] = {
 int cpu_cfs_period_write_u64(struct cgroup_subsys_state *css,
     struct cftype *cftype, u64 cfs_period_us)
 {
-	return tg_set_cfs_period(css_tg(css), cfs_period_us) {
+ return tg_set_cfs_period(css_tg(css), cfs_period_us) {
         u64 quota, period, burst;
 
         if ((u64)cfs_period_us > U64_MAX / NSEC_PER_USEC)
@@ -12087,6 +12223,137 @@ static struct kernfs_ops cgroup_kf_ops = {
     .seq_stop           = cgroup_seqfile_stop,
     .seq_show           = cgroup_seqfile_show,
 };
+```
+
+## cgrp_demo
+
+```c
+#define _GNU_SOURCE /* See feature_test_macros(7) */
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <string.h>
+#include <fcntl.h>
+
+const int NUM_THREADS = 5;
+static char* cgrp_name = "alice";
+
+void cgrp_config(const char* name, const char* data) {
+    char file[128] = {0};
+    sprintf(file, "/sys/fs/cgroup/%s/%s", cgrp_name, name);
+    int fd = open((char*)&file, O_WRONLY | O_APPEND);
+    if (fd == -1) {
+        perror("Error opening file: ");
+        return;
+    }
+
+    if (write(fd, data, strlen(data)) == -1) {
+        perror("Error appending text to file: ");
+        close(fd);
+        return;
+    }
+
+    close(fd);
+}
+
+void create_cgroup(void) {
+    char cmd[128] = {0};
+
+    sprintf(cmd, "/sys/fs/cgroup/%s", cgrp_name);
+    if (mkdir(cmd, 0777) == -1) {
+        perror("Directory creation failed. Trying with sudo...");
+
+        sprintf(cmd, "sudo mkdir -p /sys/fs/cgroup/%s", cgrp_name);
+        if (system(cmd) == -1) {
+            perror("Error creating directory with sudo");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    cgrp_config("cpu.max", "50000 100000");
+    // sprintf(cmd, "echo \"5M\" > /sys/fs/cgroup/%s/memory.max", cgrp_name);
+
+    cgrp_config("memory.max", "5M");
+}
+
+void cgrp_attach(void)
+{
+    char tid[20] = "\n";
+    char cmd[128] = {0};
+    sprintf(tid + 1, "%d", (int)getpid());
+    cgrp_config("cgroup.procs", tid);
+}
+
+void *main_cpucgrp(void* arg)
+{
+    long tid = (long)arg;
+    printf("Hello World! It's me, thread #%ld, pid #%ld!\n", tid, syscall(SYS_gettid));
+
+    int cnt = 0;
+    while (1) {
+        cnt++;
+    }
+    pthread_exit(NULL);
+
+    return NULL;
+}
+
+void* main_memcgrp(void* arg) {
+    int size = 0;
+    int chunk_size = 1024 * 1024;
+    void *p = NULL;
+
+    while (1) {
+        if ((p = malloc(chunk_size)) == NULL) {
+            printf("out of memory!!\n");
+            break;
+        }
+        memset(p, 1, chunk_size);
+        size += chunk_size;
+        printf("[%d] - memory is allocated [%8d] bytes \n", getpid(), size);
+        sleep(1);
+    }
+
+    return NULL;
+}
+
+int main(int argc, char *argv[])
+{
+    int nr_thrd = 0;
+
+    if (argc > 1){
+        nr_thrd = atoi(argv[1]);
+    }
+    if (nr_thrd <= 0 || nr_thrd >= 100){
+        nr_thrd = NUM_THREADS;
+    }
+
+    create_cgroup();
+    cgrp_attach();
+
+    pthread_t* thrd_vec = (pthread_t*)malloc(sizeof(pthread_t)*nr_thrd);
+    for (long tid = 0; tid < nr_thrd; tid++) {
+        printf("In main: creating thread %ld\n", tid);
+        int rc = pthread_create(&thrd_vec[tid], NULL, main_cpucgrp, (void *)tid);
+        if (rc) {
+            perror("pthread_create failed: ");
+            exit(-1);
+        }
+    }
+
+    int pid = fork();
+    if (pid == 0) {
+        pthread_t mem_thrd;
+        pthread_create(&mem_thrd, NULL, main_memcgrp, NULL);
+    }
+
+    /* allow other threads to continue execution */
+    pthread_exit(NULL);
+}
 ```
 
 ## cgroup_init
