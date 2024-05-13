@@ -3102,9 +3102,6 @@ watermark | free area
 --- | ---
 ![](../images/kernel/mem-alloc_pages.png) | ![](../images/kernel/mem-free_area.png)
 
-* [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
-    * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) [:two:](https://lwn.net/Articles/591990/)
-
 ```c
 struct page *alloc_pages(gfp_t gfp_mask, unsigned int order) {
     return alloc_pages_node(numa_node_id(), gfp_mask, order) {
@@ -16911,6 +16908,9 @@ out:
 ```
 
 # out_of_memory
+
+* [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
+    * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) [:two:](https://lwn.net/Articles/591990/)
 
 ```c
 bool out_of_memory(struct oom_control *oc)

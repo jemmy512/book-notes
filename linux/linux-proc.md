@@ -1,7 +1,7 @@
 # Table of Contents
 
 <details>
-<summary>Open-Close</summary>
+<summary>Open * Close</summary>
 
 * [CPU](#cpu)
 * [bios](#bios)
@@ -40,8 +40,9 @@
     * [task_tick_rt](#task_tick_rt)
     * [yield_task_rt](#yield_task_rt)
     * [prio_changed_rt](#prio_changed_rt)
-    * [switched_from_rt](#switched_from_rt)
-    * [switched_to_rt](#switched_to_rq)
+    * [check_class_changed_rt](#check_class_changed_rt)
+        * [switched_from_rt](#switched_from_rt)
+        * [switched_to_rt](#switched_to_rq)
     * [balance_rt](#balance_rt)
         * [push_rt_task](#push_rt_task)
         * [pull_rt_task](#pull_rt_task)
@@ -57,13 +58,14 @@
             * [find_idlest_group_cpu](#find_idlest_group_cpu)
         * [select_idle_sibling](#select_idle_sibling)
     * [wakeup_preempt_fair](#wakeup_preempt_fair)
-    * [sched_vslice](#sched_vslice)
     * [task_tick_fair](#task_tick_fair)
     * [task_fork_fair](#task_fork_fair)
     * [yield_task_fair](#yield_task_fair)
     * [prio_changed_fair](#prio_changed_fair)
-    * [switched_from_fair](#switched_from_fair)
-    * [switched_to_fair](#switched_to_fair)
+    * [check_class_changed_fair](#check_class_changed_fair)
+        * [switched_from_fair](#switched_from_fair)
+        * [switched_to_fair](#switched_to_fair)
+    * [sched_vslice](#sched_vslice)
 
 * [sched_domain](#sched_domain)
 * [cpu capacity](#cpu_capacity)
@@ -1819,6 +1821,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                     if (!rq->online)
                         return;
 
+                    /* used in pull_rt_task */
                     cpumask_set_cpu(rq->cpu, rq->rd->rto_mask);
                     smp_wmb();
                     atomic_inc(&rq->rd->rto_count);
@@ -1965,16 +1968,6 @@ put_prev_task_rt(struct rq *rq, struct task_struct *p) {
 ```
 
 ## pick_next_task_rt
-
-![](../images/kernel/proc-sched-rt-pick_next_task_rt.png)
-
----
-
-![](../images/kernel/proc-sched-rt-pull_rt_task.png)
-
----
-
-![](../images/kernel/proc-sched-rt-plist.png)
 
 ```c
 pick_next_task_rt(struct rq *rq)
@@ -2508,7 +2501,26 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
 }
 ```
 
-## switched_from_rt
+## check_class_changed_rt
+
+```c
+rt_mutex_setprio()
+    check_class_changed()
+
+__sched_setscheduler()
+    check_class_changed() {
+        if (prev_class != p->sched_class) {
+            if (prev_class->switched_from) {
+                prev_class->switched_from(rq, p);
+            }
+            p->sched_class->switched_to(rq, p);
+        } else if (oldprio != p->prio || dl_task(p)) {
+            p->sched_class->prio_changed(rq, p, oldprio);
+        }
+    }
+```
+
+### switched_from_rt
 
 ```c
 void switched_from_rt(struct rq *rq, struct task_struct *p)
@@ -2525,7 +2537,7 @@ void switched_from_rt(struct rq *rq, struct task_struct *p)
 }
 ```
 
-## switched_to_rt
+### switched_to_rt
 
 ```c
 
@@ -2584,13 +2596,22 @@ balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
 
 ### pull_rt_task
 
+![](../images/kernel/proc-sched-rt-pull_rt_task.png)
+
+---
+
+![](../images/kernel/proc-sched-rt-plist.png)
+
 ```c
+/* pull a task from other cpus to this_rq */
 void pull_rt_task(struct rq *this_rq) {
     int this_cpu = this_rq->cpu, cpu;
     bool resched = false;
     struct task_struct *p, *push_task;
     struct rq *src_rq;
     int rt_overload_count = rt_overloaded(this_rq) {
+        /* inc at enqueue_task_rt
+         * dec at dequeue_pushable_task */
         return &rq->rd->rto_count;
     }
 
@@ -4481,7 +4502,8 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
     for_each_sched_entity(se) {
         cfs_rq = cfs_rq_of(se);
         entity_tick(cfs_rq, se, queued) {
-/* 1. udpate: exec_start, sum_exec, slice, vruntime, deadline, min_vruntime, bandwidth */
+/* 1. udpate: exec_start, sum_exec, slice, vruntime, deadline,
+ * cfs_rq.min_vruntime, bandwidth: cfs_rq.runtime_remaining, cfs_b.runtime */
             update_curr(cfs_rq) {
                 delta_exec = now - curr->exec_start;
                 curr->exec_start = now;
@@ -4670,7 +4692,9 @@ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
 
 ```
 
-## switched_from_fair
+## check_class_changed_fair
+
+### switched_from_fair
 
 ```c
 /* detach load_avg */
@@ -4725,7 +4749,7 @@ void switched_from_fair(struct rq *rq, struct task_struct *p)
 }
 ```
 
-## switched_to_fair
+### switched_to_fair
 
 ```c
 /* attach load_avg */
@@ -14357,7 +14381,6 @@ SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
                 new_fs ? new_fs : current->fs);
         }
 
-
         if (new_fs || new_fd || do_sysvsem || new_cred || new_nsproxy) {
             if (do_sysvsem) {
                 /* CLONE_SYSVSEM is equivalent to sys_exit(). */
@@ -14402,6 +14425,21 @@ SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
 }
 ```
 
+## clone
+
+```c
+clone() {
+    kernel_clone() {
+        copy_process() {
+            copy_namespaces() {
+                new_ns = create_new_namespaces(flags, tsk, user_ns, tsk->fs);
+                tsk->nsproxy = new_ns;
+            }
+        }
+    }
+}
+```
+
 ## pid_namespace
 
 ![](../images/kernel/ns-pid.png)
@@ -14423,8 +14461,8 @@ struct task_struct {
     pid_t               tgid;
 
     /* PID/PID hash table linkage. */
-    struct pid          *thread_pid;
-    struct hlist_node   pid_links[PIDTYPE_MAX];
+    struct pid          *thread_pid; /* pid owned by the tsk */
+    struct hlist_node   pid_links[PIDTYPE_MAX]; /* pids the tsk belongs to */
     struct list_head    thread_node;
 
     /* task group leader */
@@ -14830,8 +14868,241 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_s
 
 ## ipc_namespace
 
-```c
+* https://time.geekbang.org/column/article/104277
 
+![](../images/kernel/ipc-ipc_ids.png)
+
+Linux has multiple IPC:
+* PIEP
+* named PIPE
+* Signal
+* Message Qeueue
+* Semaphore
+* Shared Memory
+* Memory Map
+* Socket
+
+While Message Queeue, Semaphore and Shared Memory are called XSI IPC, since they come from UNIX System V IPC.
+
+Linux IPC Namespace just focus on XSI IPC and has nothing to do with other IPC mechanisms.
+
+```c
+struct ipc_namespace {
+    struct ipc_ids  ids[3];
+}
+
+#define IPC_SEM_IDS  0
+#define IPC_MSG_IDS  1
+#define IPC_SHM_IDS  2
+
+#define sem_ids(ns)  ((ns)->ids[IPC_SEM_IDS])
+#define msg_ids(ns)  ((ns)->ids[IPC_MSG_IDS])
+#define shm_ids(ns)  ((ns)->ids[IPC_SHM_IDS])
+
+struct ipc_ids {
+    int                   in_use;
+    unsigned short        seq;
+    struct rw_semaphore   rwsem;
+    struct idr            ipcs_idr;
+    int                   next_id;
+};
+
+struct idr {
+    struct radix_tree_root    idr_rt;
+    unsigned int              idr_next;
+};
+```
+
+### copy_ipcs
+
+```c
+struct ipc_namespace *copy_ipcs(unsigned long flags,
+    struct user_namespace *user_ns, struct ipc_namespace *ns)
+{
+    if (!(flags & CLONE_NEWIPC))
+        return get_ipc_ns(ns);
+    return create_ipc_ns(user_ns, ns) {
+        struct ipc_namespace *ns;
+        struct ucounts *ucounts;
+        int err;
+
+        err = -ENOSPC;
+    again:
+        ucounts = inc_ipc_namespaces(user_ns);
+        if (!ucounts) {
+            /* IPC namespaces are freed asynchronously, by free_ipc_work. */
+            if (flush_work(&free_ipc_work))
+                goto again;
+            goto fail;
+        }
+
+        err = -ENOMEM;
+        ns = kzalloc(sizeof(struct ipc_namespace), GFP_KERNEL_ACCOUNT);
+        err = ns_alloc_inum(&ns->ns);
+        ns->ns.ops = &ipcns_operations;
+
+        refcount_set(&ns->ns.count, 1);
+        ns->user_ns = get_user_ns(user_ns);
+        ns->ucounts = ucounts;
+
+        err = mq_init_ns(ns);
+        if (err)
+            goto fail_put;
+
+        err = -ENOMEM;
+        if (!setup_mq_sysctls(ns))
+            goto fail_put;
+
+        setup_ipc_sysctls(ns) {
+            struct ctl_table *tbl;
+
+            setup_sysctl_set(&ns->ipc_set, &set_root, set_is_seen);
+            tbl = kmemdup(ipc_sysctls, sizeof(ipc_sysctls), GFP_KERNEL);
+            if (tbl) {
+                int i;
+
+                for (i = 0; i < ARRAY_SIZE(ipc_sysctls); i++) {
+                    if (tbl[i].data == &init_ipc_ns.shm_ctlmax)
+                        tbl[i].data = &ns->shm_ctlmax;
+
+                    else if (tbl[i].data == &init_ipc_ns.shm_ctlall)
+                        tbl[i].data = &ns->shm_ctlall;
+
+                    else if (tbl[i].data == &init_ipc_ns.shm_ctlmni)
+                        tbl[i].data = &ns->shm_ctlmni;
+
+                    else if (tbl[i].data == &init_ipc_ns.shm_rmid_forced)
+                        tbl[i].data = &ns->shm_rmid_forced;
+
+                    else if (tbl[i].data == &init_ipc_ns.msg_ctlmax)
+                        tbl[i].data = &ns->msg_ctlmax;
+
+                    else if (tbl[i].data == &init_ipc_ns.msg_ctlmni)
+                        tbl[i].data = &ns->msg_ctlmni;
+
+                    else if (tbl[i].data == &init_ipc_ns.msg_ctlmnb)
+                        tbl[i].data = &ns->msg_ctlmnb;
+
+                    else if (tbl[i].data == &init_ipc_ns.sem_ctls)
+                        tbl[i].data = &ns->sem_ctls;
+                    else if (tbl[i].data == &init_ipc_ns.ids[IPC_SEM_IDS].next_id)
+                        tbl[i].data = &ns->ids[IPC_SEM_IDS].next_id;
+
+                    else if (tbl[i].data == &init_ipc_ns.ids[IPC_MSG_IDS].next_id)
+                        tbl[i].data = &ns->ids[IPC_MSG_IDS].next_id;
+
+                    else if (tbl[i].data == &init_ipc_ns.ids[IPC_SHM_IDS].next_id)
+                        tbl[i].data = &ns->ids[IPC_SHM_IDS].next_id;
+
+                    else
+                        tbl[i].data = NULL;
+                }
+
+                ns->ipc_sysctls = __register_sysctl_table(&ns->ipc_set, "kernel", tbl,
+                                    ARRAY_SIZE(ipc_sysctls));
+            }
+            if (!ns->ipc_sysctls) {
+                kfree(tbl);
+                retire_sysctl_set(&ns->ipc_set);
+                return false;
+            }
+
+            return true;
+        }
+
+        err = msg_init_ns(ns);
+
+        sem_init_ns(ns) {
+            ns->sc_semmsl = SEMMSL;
+            ns->sc_semmns = SEMMNS;
+            ns->sc_semopm = SEMOPM;
+            ns->sc_semmni = SEMMNI;
+            ns->used_sems = 0;
+            ipc_init_ids(&ns->ids[IPC_SEM_IDS]);
+        }
+
+        shm_init_ns(ns) {
+            ns->shm_ctlmax = SHMMAX;
+            ns->shm_ctlall = SHMALL;
+            ns->shm_ctlmni = SHMMNI;
+            ns->shm_rmid_forced = 0;
+            ns->shm_tot = 0;
+            ipc_init_ids(&shm_ids(ns)) {
+                ids->in_use = 0;
+                ids->seq = 0;
+                init_rwsem(&ids->rwsem);
+                rhashtable_init(&ids->key_ht, &ipc_kht_params);
+                idr_init(&ids->ipcs_idr);
+                ids->max_idx = -1;
+                ids->last_idx = -1;
+            }
+        }
+
+        return ns;
+    }
+}
+```
+
+### shmget
+
+```c
+SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
+{
+    struct ipc_namespace *ns;
+    static const struct ipc_ops shm_ops = {
+        .getnew = newseg,
+        .associate = shm_security,
+        .more_checks = shm_more_checks,
+    };
+
+    struct ipc_params shm_params;
+    ns = current->nsproxy->ipc_ns;
+    shm_params.key = key;
+    shm_params.flg = shmflg;
+    shm_params.u.size = size;
+
+    return ipcget(ns, &shm_ids(ns), &shm_ops, &shm_params) {
+        if (params->key == IPC_PRIVATE) {
+            return ipcget_new(ns, ids, ops, params) {
+                down_write(&ids->rwsem);
+                err = ops->getnew(ns, params);
+                up_write(&ids->rwsem);
+            }
+        } else {
+            return ipcget_public(ns, ids, ops, params) {
+                ipcp = ipc_findkey(ids, params->key) {
+                    struct kern_ipc_perm *ipcp;
+
+                    ipcp = rhashtable_lookup_fast(&ids->key_ht, &key, ipc_kht_params);
+                    if (!ipcp)
+                        return NULL;
+
+                    rcu_read_lock();
+                    ipc_lock_object(ipcp);
+                    return ipcp;
+                }
+                if (ipcp == NULL) {
+                    if (!(flg & IPC_CREAT))
+                        err = -ENOENT;
+                    else
+                        err = ops->getnew(ns, params); /* newseg */
+                } else {
+                    if (flg & IPC_CREAT && flg & IPC_EXCL)
+                        err = -EEXIST;
+                    else {
+                        err = 0;
+                    if (ops->more_checks)
+                        err = ops->more_checks(ipcp, params);
+                    }
+                    if (!err) {
+                        err = ipc_check_perms(ns, ipcp, ops, params);
+                    }
+                }
+                return err;
+            }
+        }
+    }
+}
 ```
 
 ## uts_namespace

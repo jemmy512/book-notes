@@ -2075,121 +2075,175 @@ strong_alias (__sem_open, sem_open)
 
 ## sem_wait
 
-# ipc_namespace
+# sysv_ipc_demo
+
+POSIX API
 
 ```c
-struct ipc_namespace {
-  struct ipc_ids  ids[3];
-}
+int shmget(key_t key, size_t size, int shmflag);
+void *shmat(int shmid, const void *shmaddr, int shmfalg);
+int shmctl(int shmid, int cmd, struct shmid_ds *buf);
+int shmdt(const char *shmaddr);
 
-#define IPC_SEM_IDS  0
-#define IPC_MSG_IDS  1
-#define IPC_SHM_IDS  2
-
-#define sem_ids(ns)  ((ns)->ids[IPC_SEM_IDS])
-#define msg_ids(ns)  ((ns)->ids[IPC_MSG_IDS])
-#define shm_ids(ns)  ((ns)->ids[IPC_SHM_IDS])
-
-struct ipc_ids {
-  int                   in_use;
-  unsigned short        seq;
-  struct rw_semaphore   rwsem;
-  struct idr            ipcs_idr;
-  int                   next_id;
-};
-
-struct idr {
-  struct radix_tree_root    idr_rt;
-  unsigned int              idr_next;
-};
+int semget(key_t key, int num_sems, int oflag);
+int semop(int semid, struct sembuf *sem_ops, size_t nops);
+int semctl(int semid, int semnum, int cmd, ../*union semun arg*/);
 ```
 
-<img src='../images/kernel/ipc-ipc_ids.png' style='max-height:850px'/>
-
 ```c
-struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
-{
-  struct kern_ipc_perm *out;
-  int lid = ipcid_to_idx(id);
-  out = idr_find(&ids->ipcs_idr, lid);
-  return out;
-}
+/* share.h */
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/types.h>
+#include <sys/sem.h>
+#include <string.h>
 
-static inline struct sem_array *sem_obtain_object(struct ipc_namespace *ns, int id)
-{
-  struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&sem_ids(ns), id);
-  return container_of(ipcp, struct sem_array, sem_perm);
-}
+#define MAX_NUM 128
 
-static inline struct msg_queue *msq_obtain_object(struct ipc_namespace *ns, int id)
-{
-  struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&msg_ids(ns), id);
-  return container_of(ipcp, struct msg_queue, q_perm);
-}
-
-static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, int id)
-{
-  struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&shm_ids(ns), id);
-  return container_of(ipcp, struct shmid_kernel, shm_perm);
-}
-
-struct kern_ipc_perm {
-  spinlock_t            lock;
-  bool                  deleted;
-  int                   id;
-  key_t                 key;
-  kuid_t                uid, gid, cuid, cgid;
-  umode_t               mode;
-  unsigned long         seq;
-  void                  *security;
-
-  struct rhash_head     khtnode;
-  struct rcu_head       rcu;
-  refcount_t            refcount;
+struct shm_data {
+    int data[MAX_NUM];
+    int datalength;
 };
 
-struct sem_array {
-  struct kern_ipc_perm  sem_perm;  /* permissions .. see ipc.h */
-  time_t                sem_ctime;  /* create/last semctl() time */
-  struct list_head      pending_alter;  /* pending operations */ /* that alter the array */
-  struct list_head      pending_const;  /* pending complex operations */ /* that do not alter semvals */
-  struct list_head      list_id;  /* undo requests on this array */
-  int                   sem_nsems;  /* no. of semaphores in array */
-  int                   complex_count;  /* pending complex operations */
-  unsigned int          use_global_lock;/* >0: global lock required */
+union semun {
+    int val;
+    struct semid_ds *buf;
+    unsigned short int *array;
+    struct seminfo *__buf;
+};
 
-  struct sem            sems[];
-} __randomize_layout;
+int get_shmid() {
+    int shmid;
+    key_t key;
 
-struct shmid_kernel {/* private to the kernel */
-  struct kern_ipc_perm  shm_perm;
-  struct file           *shm_file;
-  unsigned long         shm_nattch;
-  unsigned long         shm_segsz;
-  time_t                shm_atim, shm_dtim, shm_ctim;
-  pid_t                 shm_cprid, shm_lprid;
-  struct user_struct    *mlock_user;
+    if ((key = ftok("/root/sharememory/sharememorykey", 1024)) < 0) {
+        perror("ftok error");
+            return -1;
+    }
 
-  /* The task created the shm object.  NULL if the task is dead. */
-  struct task_struct    *shm_creator;
-  struct list_head      shm_clist;  /* list by creator */
-} __randomize_layout;
+    shmid = shmget(key, sizeof(struct shm_data), IPC_CREAT|0777);
+    return shmid;
+}
 
-struct msg_queue {
-  struct kern_ipc_perm  q_perm;
-  time_t                q_stime; /* last msgsnd time */
-  time_t                q_rtime; /* last msgrcv time */
-  time_t                q_ctime; /* last change time */
-  unsigned long         q_cbytes; /* current number of bytes on queue */
-  unsigned long         q_qnum; /* number of messages in queue */
-  unsigned long         q_qbytes; /* max number of bytes on queue */
-  pid_t                 q_lspid; /* pid of last msgsnd */
-  pid_t                 q_lrpid; /* last receive pid */
+int get_semid(void) {
+    int semid;
+    key_t key;
 
-  struct list_head      q_messages;
-  struct list_head      q_receivers;
-  struct list_head      q_senders;
-} __randomize_layout;
+    if ((key = ftok("/root/sharememory/semaphorekey", 1024)) < 0) {
+        perror("ftok error");
+        return -1;
+    }
+
+    semid = semget(key, 1, IPC_CREAT|0777);
+    return semid;
+}
+
+int sem_init(int semid) {
+    union semun argument;
+    unsigned short values[1];
+    values[0] = 1;
+    argument.array = values;
+    return semctl (semid, 0, SETALL, argument);
+}
+
+int sem_p(int semid) {
+    struct sembuf operations[1];
+    operations[0].sem_num = 0;
+    operations[0].sem_op = -1;
+    operations[0].sem_flg = SEM_UNDO;
+    return semop (semid, operations, 1);
+}
+
+int sem_v(int semid) {
+    struct sembuf operations[1];
+    operations[0].sem_num = 0;
+    operations[0].sem_op = 1;
+    operations[0].sem_flg = SEM_UNDO;
+    return semop(semid, operations, 1);
+}
+```
+
+```c
+/* producer */
+#include "share.h"
+
+int main() {
+    void *shm = NULL;
+    struct shm_data *shared = NULL;
+    int shmid = get_shmid();
+    int semid = get_semid();
+    int i;
+
+    shm = shmat(shmid, (void*)0, 0);
+    if (shm == (void*)-1) {
+        exit(0);
+    }
+    shared = (struct shm_data*)shm;
+    memset(shared, 0, sizeof(struct shm_data));
+    sem_init(semid);
+
+    while (1) {
+        sem_p(semid);
+        if (shared->datalength > 0) {
+            sem_v(semid);
+            sleep(1);
+        } else {
+            printf("how many integers to caculate: ");
+            scanf("%d", &shared->datalength);
+            if (shared->datalength > MAX_NUM) {
+                perror("too many integers.");
+                shared->datalength = 0;
+                sem_v(semid);
+                exit(1);
+            }
+            for (i=0;i <shared->datalength; i++) {
+                printf("Input the %d integer : ", i);
+                scanf("%d", &shared->data[i]);
+            }
+            sem_v(semid);
+        }
+    }
+}
+```
+
+```c
+/* consumer */
+#include "share.h"
+
+int main() {
+    void *shm = NULL;
+    struct shm_data *shared = NULL;
+    int shmid = get_shmid();
+    int semid = get_semid();
+    int i;
+
+    shm = shmat(shmid, (void*)0, 0);
+    if (shm == (void*)-1) {
+        exit(0);
+    }
+    shared = (struct shm_data*)shm;
+    while (1) {
+        sem_p(semid);
+        if (shared->datalength > 0) {
+            int sum = 0;
+            for (i=0; i<shared->datalength-1; i++) {
+                printf("%d+",shared->data[i]);
+                sum += shared->data[i];
+            }
+            printf("%d", shared->data[shared->datalength-1]);
+            sum += shared->data[shared->datalength-1];
+            printf("=%d\n", sum);
+            memset(shared, 0, sizeof(struct shm_data));
+            sem_v(semid);
+        } else {
+            sem_v(semid);
+            printf("no tasks, waiting.\n");
+            sleep(1);
+        }
+    }
+}
 ```
 
 # sysv_shm
@@ -2226,6 +2280,66 @@ shm_fault();
             shmem_alloc_and_acct_page();
 ```
 
+```c
+struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
+{
+    struct kern_ipc_perm *out;
+    int lid = ipcid_to_idx(id);
+    out = idr_find(&ids->ipcs_idr, lid);
+    return out;
+}
+
+static inline struct sem_array *sem_obtain_object(struct ipc_namespace *ns, int id)
+{
+    struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&sem_ids(ns), id);
+    return container_of(ipcp, struct sem_array, sem_perm);
+}
+
+static inline struct msg_queue *msq_obtain_object(struct ipc_namespace *ns, int id)
+{
+    struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&msg_ids(ns), id);
+    return container_of(ipcp, struct msg_queue, q_perm);
+}
+
+static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, int id)
+{
+    struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&shm_ids(ns), id);
+    return container_of(ipcp, struct shmid_kernel, shm_perm);
+}
+```
+
+```c
+struct kern_ipc_perm {
+    spinlock_t            lock;
+    bool                  deleted;
+    int                   id;
+    key_t                 key;
+    kuid_t                uid, gid, cuid, cgid;
+    umode_t               mode;
+    unsigned long         seq;
+    void                  *security;
+
+    struct rhash_head     khtnode;
+    struct rcu_head       rcu;
+    refcount_t            refcount;
+};
+
+struct shmid_kernel {/* private to the kernel */
+    struct kern_ipc_perm  shm_perm;
+    struct file           *shm_file;
+    unsigned long         shm_nattch;
+    unsigned long         shm_segsz;
+    time_t                shm_atim, shm_dtim, shm_ctim;
+    pid_t                 shm_cprid, shm_lprid;
+    struct user_struct    *mlock_user;
+
+    /* The task created the shm object.  NULL if the task is dead. */
+    struct task_struct    *shm_creator;
+    struct list_head      shm_clist;  /* list by creator */
+} __randomize_layout;
+
+```
+
 ## shmget
 
 ```c
@@ -2253,7 +2367,17 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
             }
         } else {
             return ipcget_public(ns, ids, ops, params) {
-                ipcp = ipc_findkey(ids, params->key);
+                ipcp = ipc_findkey(ids, params->key) {
+                    struct kern_ipc_perm *ipcp;
+
+                    ipcp = rhashtable_lookup_fast(&ids->key_ht, &key, ipc_kht_params);
+                    if (!ipcp)
+                        return NULL;
+
+                    rcu_read_lock();
+                    ipc_lock_object(ipcp);
+                    return ipcp;
+                }
                 if (ipcp == NULL) {
                     if (!(flg & IPC_CREAT))
                         err = -ENOENT;
@@ -2268,7 +2392,36 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
                         err = ops->more_checks(ipcp, params);
                     }
                     if (!err) {
-                        err = ipc_check_perms(ns, ipcp, ops, params);
+                        err = ipc_check_perms(ns, ipcp, ops, params) {
+                            int err;
+                            ret = ipcperms(ns, ipcp, params->flg) {
+                                kuid_t euid = current_euid();
+                                int requested_mode, granted_mode;
+
+                                audit_ipc_obj(ipcp);
+                                requested_mode = (flag >> 6) | (flag >> 3) | flag;
+                                granted_mode = ipcp->mode;
+                                if (uid_eq(euid, ipcp->cuid) || uid_eq(euid, ipcp->uid))
+                                    granted_mode >>= 6;
+                                else if (in_group_p(ipcp->cgid) || in_group_p(ipcp->gid))
+                                    granted_mode >>= 3;
+                                /* is there some bit set in requested_mode but not in granted_mode? */
+                                if ((requested_mode & ~granted_mode & 0007) &&
+                                    !ns_capable(ns->user_ns, CAP_IPC_OWNER))
+                                    return -1;
+
+                                return security_ipc_permission(ipcp, flag);
+                            }
+                            if (ret)
+                                err = -EACCES;
+                            else {
+                                err = ops->associate(ipcp, params->flg);
+                                if (!err)
+                                    err = ipcp->id;
+                            }
+
+                            return err;
+                        }
                     }
                 }
                 return err;
@@ -2597,6 +2750,19 @@ static const struct file_operations shm_file_operations = {
 ## shm_open
 
 ```c
+fork() {
+    tmp = vm_area_dup(mpnt);
+    if (tmp->vm_ops && tmp->vm_ops->open)
+        tmp->vm_ops->open(tmp);
+}
+
+copy_vma() {
+    new_vma = vm_area_dup(vma);
+    if (new_vma->vm_ops && new_vma->vm_ops->open)
+        new_vma->vm_ops->open(new_vma);
+}
+
+/* This is called by fork, once for every shm attach. */
 void shm_open(struct vm_area_struct *vma) {
     struct file *file = vma->vm_file;
     struct shm_file_data *sfd = shm_file_data(file);
@@ -2682,7 +2848,80 @@ static int shm_fault(struct vm_fault *vmf) {
 
 # sysv_sem
 
+<img src='../images/kernel/ipc-sem.png' style='max-height:850px'/>
+
+```c
+semget();
+  ipcget();
+    newary();
+      ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
+
+semctl();
+  semctl_main();
+    sem_obtain_object_check();
+    copy_from_user();
+    sma->sems[i].semval = sem_io[i];
+    do_smart_update();
+      do_smart_wakeup_zero();
+      update_queue();
+        perform_atomic_semop();
+        wake_up_sem_queue_prepare();
+          wake_q_add(wake_q, q->sleeper);
+    wake_up_q();
+      wake_up_process(task);
+        try_to_wake_up(p, TASK_NORMAL, 0);
+
+  semctl_setval();
+    sem_obtain_object_check();
+    curr->semval = val;
+    do_smart_update();
+    wake_up_q();
+
+semop();
+  sys_semtimedop();
+    copy_from_user();
+    sem_obtain_object_check();
+    perform_atomic_semop();
+    do_smart_update();
+    wake_up_q();
+
+    list_add_tail(&queue.list, &sma->pending_alter);
+    schedule();
+```
+
+```c
+struct sem_array {
+    struct kern_ipc_perm  sem_perm;  /* permissions .. see ipc.h */
+    time_t                sem_ctime;  /* create/last semctl() time */
+    struct list_head      pending_alter;  /* pending operations */ /* that alter the array */
+    struct list_head      pending_const;  /* pending complex operations */ /* that do not alter semvals */
+    struct list_head      list_id;  /* undo requests on this array */
+    int                   sem_nsems;  /* no. of semaphores in array */
+    int                   complex_count;  /* pending complex operations */
+    unsigned int          use_global_lock;/* >0: global lock required */
+
+    struct sem            sems[];
+} __randomize_layout;
+
+struct sem {
+    int	semval; /* current value */
+    /* PID of the process that last modified the semaphore. */
+    struct pid *sempid;
+    /* spinlock for fine-grained semtimedop */
+    spinlock_t	lock;
+
+    /* pending single-sop operations that alter the semaphore */
+    struct list_head pending_alter;
+
+    /* pending single-sop operations that do not alter the semaphore*/
+    struct list_head pending_const;
+
+    time64_t	 sem_otime;	/* candidate for sem_otime */
+}
+```
+
 ## semget
+
 ```c
 SYSCALL_DEFINE3(semget, key_t, key, int, nsems, int, semflg)
 {
@@ -2735,15 +2974,6 @@ static int newary(struct ipc_namespace *ns, struct ipc_params *params)
 
   return sma->sem_perm.id;
 }
-
-struct sem {
-  int               semval;
-  int               sempid;
-  spinlock_t        lock;
-  struct list_head  pending_alter;
-  struct list_head  pending_const;
-  time_t            sem_otime;  /* candidate for sem_otime */
-};
 ```
 
 ## semctl
@@ -2818,13 +3048,12 @@ static int semctl_main(struct ipc_namespace *ns, int semid, int semnum,
   wake_up_q(&wake_q);
 }
 
-static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum,
-    unsigned long arg)
+static int semctl_setval(struct ipc_namespace *ns, int semid, int semnum, int val)
 {
   struct sem_undo *un;
   struct sem_array *sma;
   struct sem *curr;
-  int err, val;
+  int err;
 
   DEFINE_WAKE_Q(wake_q);
 
@@ -3101,46 +3330,3 @@ struct sem_undo_list {
 ```
 
 <img src='../images/kernel/ipc-sem-2.png' style='max-height:850px'/>
-
-```c
-semget();
-  ipcget();
-    newary();
-      ipc_addid(&sem_ids(ns), &sma->sem_perm, ns->sc_semmni);
-
-semctl();
-  semctl_main();
-    sem_obtain_object_check();
-    copy_from_user();
-    sma->sems[i].semval = sem_io[i];
-    do_smart_update();
-      do_smart_wakeup_zero();
-      update_queue();
-        perform_atomic_semop();
-        wake_up_sem_queue_prepare();
-          wake_q_add(wake_q, q->sleeper);
-    wake_up_q();
-      wake_up_process(task);
-        try_to_wake_up(p, TASK_NORMAL, 0);
-
-  semctl_setval();
-    sem_obtain_object_check();
-    curr->semval = val;
-    do_smart_update();
-    wake_up_q();
-
-semop();
-  sys_semtimedop();
-    copy_from_user();
-    sem_obtain_object_check();
-    perform_atomic_semop();
-    do_smart_update();
-    wake_up_q();
-
-    list_add_tail(&queue.list, &sma->pending_alter);
-    schedule();
-```
-<img src='../images/kernel/ipc-sem.png' style='max-height:850px'/>
-
-# Q:
-1. How access shm by a vm address?
