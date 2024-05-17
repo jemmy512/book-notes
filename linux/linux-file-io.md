@@ -393,6 +393,163 @@ struct dx_entry
 ## vfs
 <img src='../images/kernel/file-arch.png' height='600' />
 
+## init_rootfs
+
+```c
+struct file_system_type rootfs_fs_type = {
+    .name               = "rootfs",
+    .init_fs_context    = rootfs_init_fs_context,
+    .kill_sb            = kill_litter_super,
+};
+
+start_kernel() {
+    vfs_caches_init(void) {
+        names_cachep = kmem_cache_create_usercopy("names_cache", PATH_MAX, 0,
+                SLAB_HWCACHE_ALIGN|SLAB_PANIC, 0, PATH_MAX, NULL);
+
+        dcache_init();
+        inode_init();
+        files_init();
+        files_maxfiles_init();
+
+        mnt_init() {
+            int err;
+
+            mnt_cache = kmem_cache_create("mnt_cache", sizeof(struct mount),
+                    0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+
+            mount_hashtable = alloc_large_system_hash("Mount-cache",
+                        sizeof(struct hlist_head),
+                        mhash_entries, 19,
+                        HASH_ZERO,
+                        &m_hash_shift, &m_hash_mask, 0, 0);
+            mountpoint_hashtable = alloc_large_system_hash("Mountpoint-cache",
+                        sizeof(struct hlist_head),
+                        mphash_entries, 19,
+                        HASH_ZERO,
+                        &mp_hash_shift, &mp_hash_mask, 0, 0);
+
+            kernfs_init();
+
+            err = sysfs_init();
+            fs_kobj = kobject_create_and_add("fs", NULL);
+
+            shmem_init();
+
+            init_rootfs();
+            init_mount_tree() {
+                struct vfsmount *mnt;
+                struct mount *m;
+                struct mnt_namespace *ns;
+                struct path root;
+
+                mnt = vfs_kern_mount(&rootfs_fs_type, 0, "rootfs", NULL) {
+                    struct fs_context *fc;
+                    struct vfsmount *mnt;
+                    int ret = 0;
+
+                    fc = fs_context_for_mount(type, flags) {
+                        fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL_ACCOUNT);
+                        if (!fc)
+                            return ERR_PTR(-ENOMEM);
+
+                        fc->purpose	= purpose;
+                        fc->sb_flags	= sb_flags;
+                        fc->sb_flags_mask = sb_flags_mask;
+                        fc->fs_type	= get_filesystem(fs_type);
+                        fc->cred	= get_current_cred();
+                        fc->net_ns	= get_net(current->nsproxy->net_ns);
+                        fc->log.prefix	= fs_type->name;
+
+                        init_fs_context = fc->fs_type->init_fs_context;
+                        ret = init_fs_context(fc) {
+                            rootfs_init_fs_context(struct fs_context *fc) {
+                                if (IS_ENABLED(CONFIG_TMPFS) && is_tmpfs) {
+                                    return shmem_init_fs_context(fc) {
+                                        struct shmem_options *ctx;
+
+                                        ctx = kzalloc(sizeof(struct shmem_options), GFP_KERNEL);
+
+                                        ctx->mode = 0777 | S_ISVTX;
+                                        ctx->uid = current_fsuid();
+                                        ctx->gid = current_fsgid();
+
+                                        fc->fs_private = ctx;
+                                        fc->ops = &shmem_fs_context_ops = {
+                                            .free               = shmem_free_fc,
+                                            .get_tree           = shmem_get_tree,
+                                            .parse_monolithic   = shmem_parse_options,
+                                            .parse_param        = shmem_parse_one,
+                                            .reconfigure        = shmem_reconfigure,
+                                        };
+                                        return 0;
+                                    }
+                                }
+
+                                return ramfs_init_fs_context(fc) {
+                                    struct ramfs_fs_info *fsi;
+
+                                    fsi = kzalloc(sizeof(*fsi), GFP_KERNEL);
+                                    fsi->mount_opts.mode = RAMFS_DEFAULT_MODE;
+                                    fc->s_fs_info = fsi;
+                                    fc->ops = &ramfs_context_ops = {
+                                        .free           = ramfs_free_fc,
+                                        .parse_param    = ramfs_parse_param,
+                                        .get_tree       = ramfs_get_tree,
+                                    };
+                                }
+                            }
+                        }
+
+                    }
+                    if (name)
+                        ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
+                    if (!ret)
+                        ret = parse_monolithic_mount_data(fc, data);
+
+                    if (!ret) {
+                        mnt = fc_mount(fc) {
+                            int err = vfs_get_tree(fc) {
+                                shmem_get_tree(struct fs_context *fc);
+
+                                ramfs_get_tree();
+                            }
+                            if (!err) {
+                                up_write(&fc->root->d_sb->s_umount);
+                                return vfs_create_mount(fc);
+                            }
+                            return ERR_PTR(err);
+                        }
+                    } else {
+                        mnt = ERR_PTR(ret);
+                    }
+
+                    put_fs_context(fc);
+                    return mnt;
+                }
+                ns = alloc_mnt_ns(&init_user_ns, false);
+                m = real_mount(mnt);
+                ns->root = m;
+                ns->nr_mounts = 1;
+                mnt_add_to_ns(ns, m);
+                init_task.nsproxy->mnt_ns = ns;
+                get_mnt_ns(ns);
+
+                root.mnt = mnt;
+                root.dentry = mnt->mnt_root;
+                mnt->mnt_flags |= MNT_LOCKED;
+
+                set_fs_pwd(current->fs, &root);
+                set_fs_root(current->fs, &root);
+            }
+        }
+
+        bdev_cache_init();
+        chrdev_init();
+    }
+}
+```
+
 ## mount
 
 <img src='../images/kernel/io-mount-example.png' height='600' />
@@ -406,20 +563,23 @@ mount(dev_name, dir_name, type, flags, data) {
     copy_mount_string(); /* type, dev_name, data */
     do_mount() {
         struct path path;
-        user_path_at(&path) {
+        user_path_at(&path) { /* search the path by name */
             user_path_at_empty() {
                 filename_lookup() {
                     path_lookupat() {
+                        path_init(nd, flags);
                         link_path_walk();
                         lookup_last();
                     }
                 }
             }
         }
+
         path_mount(&path) {
             do_new_mount() {
                 struct file_system_type *type = get_fs_type(fstype);
                 struct fs_context *fc = fs_context_for_mount(type, sb_flags);
+
                 vfs_parse_fs_string();
 
                 /* Get the mountable root */
@@ -429,20 +589,31 @@ mount(dev_name, dir_name, type, flags, data) {
                 }
 
                 do_new_mount_fc(fc, path, mnt_flags) {
-                    struct vfsmount *mnt = vfs_create_mount(fc);
+                    struct vfsmount *mnt = vfs_create_mount(fc) {
                         struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
+                        mnt->mnt.mnt_sb         = fc->root->d_sb;
+                        mnt->mnt.mnt_root       = dget(fc->root);
+                        mnt->mnt_mountpoint     = mnt->mnt.mnt_root;
+                        mnt->mnt_parent         = mnt;
                         list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
-
+                    }
+                    /* lookup the mnt in mount_hashtable and lock it*/
                     struct mountpoint *mp = lock_mount(mountpoint);
                     do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags) {
                         struct mount *parent = real_mount(path->mnt);
                         graft_tree(newmnt, parent, mp) {
-                            attach_recursive_mnt(mnt, p, mp, false);
-                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt);
+                            attach_recursive_mnt(mnt, p, mp, false) {
+                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt) {
+                                    child_mnt->mnt_mountpoint = mp->m_dentry;
+                                    child_mnt->mnt_parent = mnt;
+                                    child_mnt->mnt_mp = mp;
+                                    hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
+                                }
                                 commit_tree(source_mnt) {
                                     mnt_add_to_ns();
                                     list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
                                 }
+                            }
                         }
                     }
                 }
@@ -642,7 +813,21 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
         }
 
         init_fs_context = fc->fs_type->init_fs_context;
+        if (!init_fs_context)
+		    init_fs_context = legacy_init_fs_context;
         ret = init_fs_context(fc) {
+            legacy_init_fs_context() {
+                fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL_ACCOUNT);
+                fc->ops = &legacy_fs_context_ops {
+                    .free               = legacy_fs_context_free,
+                    .dup                = legacy_fs_context_dup,
+                    .parse_param        = legacy_parse_param,
+                    .parse_monolithic   = legacy_parse_monolithic,
+                    .get_tree           = legacy_get_tree,
+                    .reconfigure        = legacy_reconfigure,
+                };
+            }
+
             ext4_init_fs_context(struct fs_context *fc) {
                 struct ext4_fs_context *ctx;
 
@@ -666,8 +851,50 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
                 ctx->gid = current_fsgid();
 
                 fc->fs_private = ctx;
-                fc->ops = &shmem_fs_context_ops;
+                fc->ops = &shmem_fs_context_ops = {
+                    .free               = shmem_free_fc,
+                    .get_tree           = shmem_get_tree,
+                    .parse_monolithic   = shmem_parse_options,
+                    .parse_param        = shmem_parse_one,
+                    .reconfigure        = shmem_reconfigure,
+                };
             }
+        }
+
+        ret = legacy_init_fs_context() {
+            fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL_ACCOUNT);
+            if (!fc->fs_private)
+                return -ENOMEM;
+            fc->ops = &legacy_fs_context_ops {
+                .free               = legacy_fs_context_free,
+                .dup                = legacy_fs_context_dup,
+                .parse_param        = legacy_parse_param,
+                .parse_monolithic   = legacy_parse_monolithic,
+                .get_tree           = legacy_get_tree() {
+                    struct legacy_fs_context *ctx = fc->fs_private;
+                    struct super_block *sb;
+                    struct dentry *root;
+
+                    root = fc->fs_type->mount(fc->fs_type, fc->sb_flags,
+                        fc->source, ctx->legacy_data) {
+
+                        public_dev_mount() {
+
+                        }
+                    }
+
+                    if (IS_ERR(root))
+                        return PTR_ERR(root);
+
+                    sb = root->d_sb;
+                    BUG_ON(!sb);
+
+                    fc->root = root;
+                    return 0;
+                },
+                .reconfigure        = legacy_reconfigure,
+            }
+            return 0;
         }
     }
 
@@ -686,7 +913,21 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
             struct super_block *sb;
             int error;
             /* Get the mountable root in fc->root */
-            error = fc->ops->get_tree(fc); /* ext4_get_tree */
+            error = fc->ops->get_tree(fc) {
+                ext4_get_tree() {
+                    get_tree_bdev(fc, ext4_fill_super) {
+                        fc->root = dget(s->s_root);
+                    }
+                }
+
+                shmem_get_tree() {
+                    get_tree_nodev(fc, shmem_fill_super) {
+                        vfs_get_super(fc, NULL, fill_super) {
+                            fc->root = dget(sb->s_root);
+                        }
+                    }
+                }
+            }
             sb = fc->root->d_sb;
             sb->s_flags |= SB_BORN;
         }
@@ -753,8 +994,8 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
         mnt_flags &= ~MNT_INTERNAL_FLAGS;
 
         /* Refuse the same filesystem on the same mount point */
-        if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb &&
-            path->mnt->mnt_root == path->dentry)
+        if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb
+            && path->mnt->mnt_root == path->dentry)
             return -EBUSY;
 
         if (d_is_symlink(newmnt->mnt.mnt_root))
@@ -874,8 +1115,15 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                         n->pending_mounts = 0;
 
                         __attach_mnt(mnt, parent) {
-                            hlist_add_head_rcu(&mnt->mnt_hash,
-                                    m_hash(&parent->mnt, mnt->mnt_mountpoint));
+                            hlist_add_head_rcu(
+                                &mnt->mnt_hash,
+                                m_hash(&parent->mnt, mnt->mnt_mountpoint/*dentry*/) {
+                                    unsigned long tmp = ((unsigned long)mnt / L1_CACHE_BYTES);
+                                    tmp += ((unsigned long)dentry / L1_CACHE_BYTES);
+                                    tmp = tmp + (tmp >> m_hash_shift);
+                                    return &mount_hashtable[tmp & m_hash_mask];
+                                }
+                            );
                             list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
                         }
                         touch_mnt_namespace(n) {
@@ -1178,31 +1426,91 @@ anon_inode_getfile();
 ## open
 
 ```c
-do_sys_open();
+do_sys_open() {
     get_unused_fd_flags();
-    do_filp_open();
-        path_openat();
+    do_filp_open() {
+        path_openat() {
             file = alloc_empty_file();
-            link_path_walk(s, nd); /* Name resolution, turning a pathname into the final dentry*/
-            open_last_lookups(nd, file, op);
+
+            path_init(nd, flags) {
+                nd->flags = ;
+                nd->state |= ;
+                nd->root = fs->root;
+                if (*s == '/') { /* 1. Absolute pathname */
+                    nd->path = nd->root;
+                } else if (nd->dfd == AT_FDCWD) { /* 2. Relative pathname */
+                    nd->path = fs->pwd;
+                } else {
+
+                }
+                nd->inode = nd->path.dentry->d_inode;
+            }
+
+            link_path_walk(s, nd) { /* Name resolution, turning a pathname into the final dentry */
+                for (;;) {
+                    /* 1. parse one path component */
+                    hash_len = hash_name(nd->path.dentry/*salt*/, name);
+                    name += hashlen_len(hash_len);
+                    if (unlikely(!*name)) {
+                        /* 2. reach the last component */
+                        return 0;
+                    } else {
+                        /* 3. not the last component */
+                        link = walk_component(nd, WALK_MORE) {
+                            /* 3.1 handle dots */
+                            handle_dots();
+
+                            /* 3.2 step into component */
+                            step_into() {
+                                /* 3.2.1 handle mounts */
+                                handle_mounts() {
+                                    /* 3.2.1.1 handle mounted dentry */
+                                    /* 3.2.1.2 handle automount point */
+                                }
+
+                                /* 3.2.2 handle non-symlink */
+                                nd->path = path;
+                                nd->inode = inode;
+
+                                /* 3.2.3 handle symbol link */
+                                pick_link();
+                            }
+                        }
+                    }
+
+                }
+            }
+
+            open_last_lookups(nd, file, op) {
                 /* 1. search in dcache */
                 dentry = lookup_fast(nd);
                 /* 2. search in file system */
                 dentry = lookup_open(nd, file, op, got_write);
 
-            do_open(nd, file, op);
-                vfs_open(&nd->path, file);
-                    do_dentry_open();
+                step_into(nd, WALK_TRAILING, dentry);
+            }
+
+            do_open(nd, file, op) {
+                vfs_open(&nd->path, file) {
+                    do_dentry_open() {
                         f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
                         path_get(&f->f_path);
                         f->f_inode = inode;
                         f->f_mapping = inode->i_mapping;
                         f->f_op = fops_get(inode->i_fop);
 
-                        f->f_op->open();
+                        f->f_op->open() {
                             ext4_file_open();
+                        }
+                    }
+                }
+                handle_truncate();
+            }
+        }
+    }
+    fsnotify_open();
     fd_install();
-    putname();
+}
 ```
 
 ```c
@@ -1291,7 +1599,9 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
                                 f->f_mapping = inode->i_mapping;
                                 f->f_op = fops_get(inode->i_fop);
                                 open = f->f_op->open;
-                                error = open(inode, f);
+                                error = open(inode, f) {
+                                    ext4_file_open();
+                                }
                                 f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
                                 file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
                                 return 0;
@@ -1407,7 +1717,7 @@ const char *path_init(struct nameidata *nd, unsigned flags)
         }
 
 		nd->path = nd->root;
-		nd->inode = inode;
+        nd->inode = inode;
 		if (flags & LOOKUP_RCU) {
 			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
 			nd->root_seq = nd->seq;
@@ -1419,7 +1729,7 @@ const char *path_init(struct nameidata *nd, unsigned flags)
 
 	nd->root.mnt = NULL;
 
-	/* Absolute pathname -- fetch the root (LOOKUP_IN_ROOT uses nd->dfd). */
+/* 1. Absolute pathname -- fetch the root (LOOKUP_IN_ROOT uses nd->dfd). */
 	if (*s == '/' && !(flags & LOOKUP_IN_ROOT)) {
 		error = nd_jump_root(nd) {
             if (unlikely(nd->flags & LOOKUP_BENEATH))
@@ -1474,7 +1784,7 @@ const char *path_init(struct nameidata *nd, unsigned flags)
 		return s;
 	}
 
-	/* Relative pathname -- get the starting-point it is relative to. */
+/* 2. Relative pathname -- get the starting-point it is relative to. */
 	if (nd->dfd == AT_FDCWD) {
 		if (flags & LOOKUP_RCU) {
 			struct fs_struct *fs = current->fs;
@@ -1558,7 +1868,7 @@ int link_path_walk(const char *name, struct nameidata *nd)
         err = may_lookup(idmap, nd);
         if (err)
             return err;
-
+/* 1. parse one path component */
         hash_len = hash_name(nd->path.dentry/*salt*/, name) {
             hash = init_name_hash(salt) {
                 return salt;
@@ -1616,6 +1926,7 @@ int link_path_walk(const char *name, struct nameidata *nd)
         } while (unlikely(*name == '/'));
 
         if (unlikely(!*name)) {
+/* 2. reach the last component */
 OK:
             /* pathname or trailing symlink, done */
             if (!depth) {
@@ -1628,9 +1939,11 @@ OK:
             name = nd->stack[--depth].name;
             link = walk_component(nd, 0);
         } else {
-            /* not the last component */
+/* 3. not the last component */
             link = walk_component(nd, WALK_MORE) {
                 struct dentry *dentry;
+
+/* 3.1 handle dots */
                 if (unlikely(nd->last_type != LAST_NORM)) {
                     if (!(flags & WALK_MORE) && nd->depth)
                         put_link(nd);
@@ -1645,10 +1958,11 @@ OK:
                 if (!(flags & WALK_MORE) && nd->depth)
                     put_link(nd);
 
+/* 3.2 step into component */
                 return step_into(nd, flags, dentry) {
                     struct path path;
                     struct inode *inode;
-
+/* 3.2.1 handle mounts */
                     int err = handle_mounts(nd, dentry, &path) {
                         bool jumped;
                         int ret;
@@ -1680,10 +1994,15 @@ OK:
                                     if (ret < 0)
                                         break;
                                 }
-
+/* 3.2.1.1 handle mounted dentry */
                                 if (flags & DCACHE_MOUNTED) { // something's mounted on it..
                                     struct vfsmount *mounted = lookup_mnt(path) {
-                                        struct hlist_head *head = m_hash(mnt, dentry);
+                                        struct hlist_head *head = m_hash(mnt, dentry) {
+                                            unsigned long tmp = ((unsigned long)mnt / L1_CACHE_BYTES);
+                                            tmp += ((unsigned long)dentry / L1_CACHE_BYTES);
+                                            tmp = tmp + (tmp >> m_hash_shift);
+                                            return &mount_hashtable[tmp & m_hash_mask];
+                                        }
                                         hlist_for_each_entry_rcu(p, head, mnt_hash)
                                             if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
                                                 return p;
@@ -1705,7 +2024,7 @@ OK:
                                 if (!(flags & DCACHE_NEED_AUTOMOUNT))
                                     break;
 
-                                // uncovered automount point
+/* 3.2.1.2 handle automount point */
                                 ret = follow_automount(path, count, lookup_flags);
                                 flags = smp_load_acquire(&path->dentry->d_flags);
                                 if (ret < 0)
@@ -1740,7 +2059,7 @@ OK:
                         return ERR_PTR(err);
                     inode = path.dentry->d_inode;
 
-                    /* not a symlink or should not follow */
+/* 3.2.2 handle non-symlink */
                     if (likely(!d_is_symlink(path.dentry))
                         || ((flags & WALK_TRAILING) && !(nd->flags & LOOKUP_FOLLOW))
                         || (flags & WALK_NOFOLLOW)) {
@@ -1769,7 +2088,7 @@ OK:
                             mntget(path.mnt);
                     }
 
-                    /* handle symbol link */
+/* 3.2.3 handle symbol link */
                     return pick_link(nd, &path, inode, flags) {
                         struct saved *last;
                         const char *res;
@@ -1873,7 +2192,7 @@ open_last_lookups(nd, file, op) {
 
     if (!(open_flag & O_CREAT)) {
         if (nd->last.name[nd->last.len])
-        nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
+            nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
 
         /* 1. search in dcache */
         dentry = lookup_fast(nd);
@@ -1882,8 +2201,8 @@ open_last_lookups(nd, file, op) {
     } else {
         /* create side of things */
         if (nd->flags & LOOKUP_RCU) {
-        if (!try_to_unlazy(nd))
-            return ERR_PTR(-ECHILD);
+            if (!try_to_unlazy(nd))
+                return ERR_PTR(-ECHILD);
         }
         audit_inode(nd->name, dir, AUDIT_INODE_PARENT);
         /* trailing slashes? */
@@ -4101,7 +4420,7 @@ do_coredump() {
 }
 ```
 
-# alloc_fd
+## alloc_fd
 
 ```c
 static int alloc_fd(unsigned start, unsigned end, unsigned flags) {
@@ -4213,6 +4532,218 @@ out:
 	return error;
 }
 ```
+
+# FS
+
+## overlay
+
+```c
+struct file_system_type ovl_fs_type = {
+    .owner              = THIS_MODULE,
+    .name               = "overlay",
+    .init_fs_context    = ovl_init_fs_context,
+    .parameters         = ovl_parameter_spec,
+    .fs_flags           = FS_USERNS_MOUNT,
+    .kill_sb            = kill_anon_super,
+};
+
+struct fs_context_operations ovl_context_ops = {
+    .parse_monolithic   = ovl_parse_monolithic,
+    .parse_param        = ovl_parse_param,
+    .get_tree           = ovl_get_tree,
+    .reconfigure        = ovl_reconfigure,
+    .free               = ovl_free,
+};
+
+struct ovl_fs_context_layer {
+    char *name;
+    struct path path;
+};
+
+struct ovl_fs_context {
+    struct path upper;
+    struct path work;
+    size_t capacity;
+    size_t nr; /* includes nr_data */
+    size_t nr_data;
+    struct ovl_opt_set set;
+    struct ovl_fs_context_layer *lower;
+    char *lowerdir_all; /* user provided lowerdir string */
+};
+```
+
+### ovl_get_tree
+
+```c
+int ovl_get_tree(struct fs_context *fc)
+{
+    return get_tree_nodev(fc, ovl_fill_super(sb, fc) {
+        struct ovl_fs *ofs = sb->s_fs_info;
+        struct ovl_fs_context *ctx = fc->fs_private;
+        struct dentry *root_dentry;
+        struct ovl_entry *oe;
+        struct ovl_layer *layers;
+        struct cred *cred;
+        int err;
+
+        sb->s_d_op = &ovl_dentry_operations;
+
+        err = -ENOMEM;
+        ofs->creator_cred = cred = prepare_creds();
+        if (!cred)
+            goto out_err;
+
+        err = ovl_fs_params_verify(ctx, &ofs->config);
+
+        err = -ENOMEM;
+        layers = kcalloc(ctx->nr + 1, sizeof(struct ovl_layer), GFP_KERNEL);
+        ofs->config.lowerdirs = kcalloc(ctx->nr + 1, sizeof(char *), GFP_KERNEL);
+
+        ofs->layers = layers;
+        /*
+        * Layer 0 is reserved for upper even if there's no upper.
+        * config.lowerdirs[0] is used for storing the user provided colon
+        * separated lowerdir string.
+        */
+        ofs->config.lowerdirs[0] = ctx->lowerdir_all;
+        ctx->lowerdir_all = NULL;
+        ofs->numlayer = 1;
+
+        sb->s_stack_depth = 0;
+        sb->s_maxbytes = MAX_LFS_FILESIZE;
+        atomic_long_set(&ofs->last_ino, 1);
+        /* Assume underlying fs uses 32bit inodes unless proven otherwise */
+        if (ofs->config.xino != OVL_XINO_OFF) {
+            ofs->xino_mode = BITS_PER_LONG - 32;
+            if (!ofs->xino_mode) {
+                ofs->config.xino = OVL_XINO_OFF;
+            }
+        }
+
+        /* alloc/destroy_inode needed for setting up traps in inode cache */
+        sb->s_op = &ovl_super_operations;
+
+        if (ofs->config.upperdir) {
+            struct super_block *upper_sb;
+
+            err = -EINVAL;
+            if (!ofs->config.workdir) {
+                goto out_err;
+            }
+
+            err = ovl_get_upper(sb, ofs, &layers[0], &ctx->upper);
+            if (err)
+                goto out_err;
+
+            upper_sb = ovl_upper_mnt(ofs)->mnt_sb;
+            if (!ovl_should_sync(ofs)) {
+                ofs->errseq = errseq_sample(&upper_sb->s_wb_err);
+                if (errseq_check(&upper_sb->s_wb_err, ofs->errseq)) {
+                    err = -EIO;
+                    pr_err("Cannot mount volatile when upperdir has an unseen error. Sync upperdir fs to clear state.\n");
+                    goto out_err;
+                }
+            }
+
+            err = ovl_get_workdir(sb, ofs, &ctx->upper, &ctx->work);
+            if (err)
+                goto out_err;
+
+            if (!ofs->workdir)
+                sb->s_flags |= SB_RDONLY;
+
+            sb->s_stack_depth = upper_sb->s_stack_depth;
+            sb->s_time_gran = upper_sb->s_time_gran;
+        }
+        oe = ovl_get_lowerstack(sb, ctx, ofs, layers);
+
+        /* If the upper fs is nonexistent, we mark overlayfs r/o too */
+        if (!ovl_upper_mnt(ofs))
+            sb->s_flags |= SB_RDONLY;
+
+        if (!ovl_origin_uuid(ofs) && ofs->numfs > 1) {
+            ofs->config.uuid = OVL_UUID_NULL;
+        } else if (ovl_has_fsid(ofs) && ovl_upper_mnt(ofs)) {
+            /* Use per instance persistent uuid/fsid */
+            ovl_init_uuid_xattr(sb, ofs, &ctx->upper);
+        }
+
+        if (!ovl_force_readonly(ofs) && ofs->config.index) {
+            err = ovl_get_indexdir(sb, ofs, oe, &ctx->upper);
+            if (err)
+                goto out_free_oe;
+
+            /* Force r/o mount with no index dir */
+            if (!ofs->workdir)
+                sb->s_flags |= SB_RDONLY;
+        }
+
+        err = ovl_check_overlapping_layers(sb, ofs);
+
+        /* Show index=off in /proc/mounts for forced r/o mount */
+        if (!ofs->workdir) {
+            ofs->config.index = false;
+            if (ovl_upper_mnt(ofs) && ofs->config.nfs_export) {
+                ofs->config.nfs_export = false;
+            }
+        }
+
+        if (ofs->config.metacopy && ofs->config.nfs_export) {
+            ofs->config.nfs_export = false;
+        }
+
+        /*
+        * Support encoding decodable file handles with nfs_export=on
+        * and encoding non-decodable file handles with nfs_export=off
+        * if all layers support file handles.
+        */
+        if (ofs->config.nfs_export)
+            sb->s_export_op = &ovl_export_operations;
+        else if (!ofs->nofh)
+            sb->s_export_op = &ovl_export_fid_operations;
+
+        /* Never override disk quota limits or use reserved space */
+        cap_lower(cred->cap_effective, CAP_SYS_RESOURCE);
+
+        sb->s_magic = OVERLAYFS_SUPER_MAGIC;
+        sb->s_xattr = ovl_xattr_handlers(ofs);
+        sb->s_fs_info = ofs;
+    #ifdef CONFIG_FS_POSIX_ACL
+        sb->s_flags |= SB_POSIXACL;
+    #endif
+        sb->s_iflags |= SB_I_SKIP_SYNC;
+        /*
+        * Ensure that umask handling is done by the filesystems used
+        * for the the upper layer instead of overlayfs as that would
+        * lead to unexpected results.
+        */
+        sb->s_iflags |= SB_I_NOUMASK;
+        sb->s_iflags |= SB_I_EVM_UNSUPPORTED;
+
+        err = -ENOMEM;
+        root_dentry = ovl_get_root(sb, ctx->upper.dentry, oe);
+        if (!root_dentry)
+            goto out_free_oe;
+
+        sb->s_root = root_dentry;
+
+        return 0;
+    });
+}
+```
+
+### ovl_dentry_operations
+
+```c
+
+```
+
+## ext4
+
+* [Kern - ext4 Data Structures and Algorithms¶](https://www.kernel.org/doc/html/latest/filesystems/ext4/)
+* [Understanding Ext4 Disk Layout, Part 1](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-1) - [Part 2](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-2)
+* [Directory Entry Lookup in ext4](https://blogs.oracle.com/linux/post/directory-entry-lookup-in-ext4)
+* [Space Management With Large Directories in Ext4](https://blogs.oracle.com/linux/post/space-management-with-large-directories-in-ext4)
 
 # IO
 
@@ -4419,8 +4950,7 @@ out:
  * vfs_kern_mount -> mount_fs -> fs_type.mount */
 static struct file_system_type dev_fs_type = {
   .name = "devtmpfs",
-  .mount = dev_mount,
-  .kill_sb = kill_litter_super,
+  .mount = public_dev_mount,
 };
 
 static struct dentry *dev_mount(

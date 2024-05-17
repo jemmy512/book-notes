@@ -12252,7 +12252,7 @@ static struct kernfs_ops cgroup_kf_ops = {
 ## cgrp_demo
 
 ```c
-#define _GNU_SOURCE /* See feature_test_macros(7) */
+#define _GNU_SOURCE /* See feature_test_macros | */
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14106,6 +14106,21 @@ int cgroup_get_tree(struct fs_context *fc)
 
 ![](../images/kernel/ns-arch.png)
 
+Namespace | Flag |Page |Isolates
+--- | --- | --- | ---
+Cgroup | CLONE_NEWCGROUP | cgroup_namespaces | Cgroup root directory
+IPC | CLONE_NEWIPC | ipc_namespaces | System V IPC, POSIX message queues
+Network | CLONE_NEWNET | network_namespaces | Network devices, stacks, ports, etc.
+Mount | CLONE_NEWNS | mount_namespaces | Mount points
+PID | CLONE_NEWPID | pid_namespaces | Process IDs
+Time | CLONE_NEWTIME | time_namespaces | Boot and monotonic clocks
+User | CLONE_NEWUSER | user_namespaces | User and group IDs
+UTS | CLONE_NEWUTS | uts_namespaces | Hostname and NIS domain name
+
+* Namespace lifetime
+    * Absent any other factors, a namespace is automatically torn down when the last process in the namespace terminates or leaves the namespace.
+    * there are a number of other factors that may pin a namespace into existence even though it has no member processes.
+
 ```c
 struct task_struct {
     struct nsproxy *nsproxy;
@@ -14122,19 +14137,11 @@ struct nsproxy {
     struct time_namespace   *time_ns_for_children;
     struct cgroup_namespace *cgroup_ns;
 };
-
-int setns(int fd, int nstype);
-int unshare(int flags);
-
-int     copy_namespaces(unsigned long flags, struct task_struct *tsk);
-void    exit_task_namespaces(struct task_struct *tsk);
-void    switch_task_namespaces(struct task_struct *tsk, struct nsproxy *new);
-void    free_nsproxy(struct nsproxy *ns);
-int     nsproxy_cache_init(void);
 ```
 
 ## setns
 
+* The setns system call allows the calling process to join an existing namespace.  The namespace to join is specified via a file descriptor that refers to one of the `/proc/pid/ns` files described below.
 * PID Namespace
     * When setns/unshare, the caller creats a new namespace for its chilren, but the caller itself doesn't move into the new namespace.
     * The 1st process with pid 1 created by caller is init process in new namespace
@@ -14354,6 +14361,8 @@ out:
 ```
 
 ## unshare
+
+* The unshare system call moves the calling process to a new namespace.  If the flags argument of the call specifies one or more of the CLONE_NEW* flags listed above, then new namespaces are created for each flag, and the calling process is made a member of those namespaces.
 
 ```c
 SYSCALL_DEFINE1(unshare, unsigned long, unshare_flags)
@@ -14911,6 +14920,48 @@ struct idr {
     struct radix_tree_root    idr_rt;
     unsigned int              idr_next;
 };
+
+struct kern_ipc_perm *ipc_obtain_object_idr(struct ipc_ids *ids, int id)
+{
+    struct kern_ipc_perm *out;
+    int idx = ipcid_to_idx(id);
+
+    out = idr_find(&ids->ipcs_idr, idx);
+    if (!out)
+        return ERR_PTR(-EINVAL);
+
+    return out;
+}
+
+struct sem_array *sem_obtain_object(struct ipc_namespace *ns, int id)
+{
+    struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&sem_ids(ns), id);
+
+    if (IS_ERR(ipcp))
+        return ERR_CAST(ipcp);
+
+    return container_of(ipcp, struct sem_array, sem_perm);
+}
+
+struct msg_queue *msq_obtain_object(struct ipc_namespace *ns, int id)
+{
+    struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&msg_ids(ns), id);
+
+    if (IS_ERR(ipcp))
+        return ERR_CAST(ipcp);
+
+    return container_of(ipcp, struct msg_queue, q_perm);
+}
+
+struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, int id)
+{
+    struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&shm_ids(ns), id);
+
+    if (IS_ERR(ipcp))
+        return ERR_CAST(ipcp);
+
+    return container_of(ipcp, struct shmid_kernel, shm_perm);
+}
 ```
 
 ### copy_ipcs
@@ -15056,6 +15107,8 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
     };
 
     struct ipc_params shm_params;
+
+/* 1. specify searching ns */
     ns = current->nsproxy->ipc_ns;
     shm_params.key = key;
     shm_params.flg = shmflg;
@@ -15072,7 +15125,7 @@ SYSCALL_DEFINE3(shmget, key_t, key, size_t, size, int, shmflg)
             return ipcget_public(ns, ids, ops, params) {
                 ipcp = ipc_findkey(ids, params->key) {
                     struct kern_ipc_perm *ipcp;
-
+/* 2. search in the ns */
                     ipcp = rhashtable_lookup_fast(&ids->key_ht, &key, ipc_kht_params);
                     if (!ipcp)
                         return NULL;
@@ -15275,7 +15328,7 @@ struct mount {
     struct vfsmount mnt;
 
     struct list_head mnt_mounts;    /* list of children, anchored here */
-    struct list_head mnt_child;    /* and going through their mnt_child */
+    struct list_head mnt_child;    /* anchored at parent */
     struct list_head mnt_instance;    /* mount instance on sb->s_mounts */
     const char *mnt_devname;    /* Name of device e.g. /dev/dsk/hda1 */
     union {
@@ -15302,6 +15355,20 @@ struct mount {
     struct hlist_head mnt_pins;
     struct hlist_head mnt_stuck_children;
 }
+
+struct vfsmount {
+    struct dentry *mnt_root;    /* root of the mounted tree */
+    struct super_block *mnt_sb; /* pointer to superblock */
+    int mnt_flags;
+    struct mnt_idmap *mnt_idmap;
+}
+
+struct mountpoint {
+    struct hlist_node   m_hash;
+    struct dentry       *m_dentry;
+    struct hlist_head   m_list;
+    int                 m_count;
+};
 ```
 
 ### copy_mnt_ns
@@ -15317,7 +15384,7 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
     struct mount *old;
     struct mount *new;
     int copy_flags;
-
+/* 1. alloc a new mnt_namespace */
     old = ns->root;
     new_ns = alloc_mnt_ns(user_ns, false/*anon*/) {
         struct mnt_namespace *new_ns;
@@ -15351,6 +15418,7 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
     if (user_ns != ns->user_ns)
         copy_flags |= CL_SHARED_TO_SLAVE;
 
+/* 2. copy parent mnt hierarchy */
     new = copy_tree(old/*mnt*/, old->mnt.mnt_root/*dentry*/, copy_flags) {
         /* struct mount *res, *p, *q, *r, *parent; */
         struct mount *res, *o_prnt, *o_child, *o_mnt, *n_prnt, *n_mnt;
@@ -15481,7 +15549,7 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
         unlock_mount_hash();
     }
     new_ns->root = new;
-
+/* 3. add the new mnt into ns */
     /* Second pass: switch the tsk->fs->* elements and mark new vfsmounts
      * as belonging to new namespace. */
     o_mnt = old;
@@ -15922,4 +15990,200 @@ fork() {
         }
     }
 }
+```
+
+## net_ns
+
+```c
+struct net {
+    /* First cache line can be often dirtied.
+     * Do not place here read-mostly fields. */
+    /* To decide when the network namespace should be freed. */
+    refcount_t              passive;
+    spinlock_t              rules_mod_lock;
+
+    unsigned int		    dev_base_seq;	/* protected by rtnl_mutex */
+    u32			            ifindex;
+
+    spinlock_t		        nsid_lock;
+    atomic_t		        fnhe_genid;
+
+    struct list_head	    list; /* list of network namespaces */
+    /* To linked to call pernet exit
+     * methods on dead net (pernet_ops_rwsem read locked),
+     * or to unregister pernet ops (pernet_ops_rwsem write locked). */
+    struct list_head	    exit_list;
+    struct llist_node	    cleanup_list; /* namespaces on death row */
+
+#ifdef CONFIG_KEYS
+    struct key_tag		    *key_domain;
+#endif
+    struct user_namespace   *user_ns;
+    struct ucounts		    *ucounts;
+    struct idr		        netns_ids;
+
+    struct ns_common	ns;
+    struct ref_tracker_dir      refcnt_tracker;
+     /* tracker for objects not refcounted against netns */
+    struct ref_tracker_dir      notrefcnt_tracker;
+    struct list_head            dev_base_head;
+    struct proc_dir_entry       *proc_net;
+    struct proc_dir_entry       *proc_net_stat;
+
+    struct ctl_table_set	    sysctls;
+
+    struct sock                 *rtnl; /* rtnetlink socket */
+    struct sock                 *genl_sock;
+
+    struct uevent_sock          *uevent_sock; /* uevent socket */
+
+    struct hlist_head           *dev_name_head;
+    struct hlist_head           *dev_index_head;
+    struct xarray               dev_by_index;
+    struct raw_notifier_head    netdev_chain;
+
+    /* Note that @hash_mix can be read millions times per second,
+     * it is critical that it is on a read_mostly cache line. */
+    u32			                hash_mix;
+
+    struct net_device           *loopback_dev;  /* The loopback */
+
+    /* core fib_rules */
+    struct list_head	        rules_ops;
+
+    struct netns_core	        core;
+    struct netns_mib	        mib;
+    struct netns_packet	        packet;
+    struct netns_unix	        unx;
+    struct netns_nexthop        nexthop;
+    struct netns_ipv4           ipv4;
+    struct netns_ipv6           ipv6;
+    struct netns_ieee802154_lowpan	ieee802154_lowpan;
+    struct netns_sctp           sctp;
+    struct netns_nf             nf;
+    struct netns_ct             ct;
+    struct netns_nftables       nft;
+    struct netns_ft             ft;
+    struct sk_buff_head         wext_nlevents;
+
+    struct net_generic          *gen;
+
+    /* Used to store attached BPF programs */
+    struct netns_bpf                    bpf;
+
+    u64			                        net_cookie; /* written once */
+
+    struct netns_xfrm                   xfrm;
+    struct netns_ipvs                   *ipvs;
+    struct netns_mpls                   mpls;
+    struct netns_can                    can;
+    struct netns_xdp                    xdp;
+    struct netns_mctp                   mctp;
+    struct sock                         *crypto_nlsk;
+    struct netns_smc                    smc;
+    struct sock                         *diag_nlsk;
+}
+```
+
+```c
+struct net *copy_net_ns(unsigned long flags,
+            struct user_namespace *user_ns, struct net *old_net)
+{
+    struct ucounts *ucounts;
+    struct net *net;
+    int rv;
+
+    if (!(flags & CLONE_NEWNET))
+        return get_net(old_net);
+
+    ucounts = inc_net_namespaces(user_ns);
+    if (!ucounts)
+        return ERR_PTR(-ENOSPC);
+
+    net = net_alloc();
+    if (!net) {
+        rv = -ENOMEM;
+        goto dec_ucounts;
+    }
+
+    preinit_net(net);
+    refcount_set(&net->passive, 1);
+    net->ucounts = ucounts;
+    get_user_ns(user_ns);
+
+    rv = down_read_killable(&pernet_ops_rwsem);
+    if (rv < 0)
+        goto put_userns;
+
+    rv = setup_net(net, user_ns);
+
+    up_read(&pernet_ops_rwsem);
+
+    return net;
+}
+```
+
+## pernet_list
+
+```c
+struct pernet_operations loopback_net_ops = {
+    .init = loopback_net_init(struct net_device *dev) {
+        struct net_device *dev;
+        int err;
+
+        err = -ENOMEM;
+        dev = alloc_netdev(0, "lo", NET_NAME_PREDICTABLE, loopback_setup);
+
+        dev_net_set(dev, net) {
+            write_pnet(&dev->nd_net, net);
+        }
+        err = register_netdev(dev);
+        net->loopback_dev = dev;
+        return 0;
+    },
+};
+
+static struct pernet_operations netdev_net_ops = {
+    .init = netdev_init(struct net *net) {
+       INIT_LIST_HEAD(&net->dev_base_head);
+
+        net->dev_name_head = netdev_create_hash();
+        net->dev_index_head = netdev_create_hash();
+        xa_init_flags(&net->dev_by_index, XA_FLAGS_ALLOC1);
+        RAW_INIT_NOTIFIER_HEAD(&net->netdev_chain);
+
+        return 0;
+    },
+    .exit = netdev_exit,
+};
+
+static struct pernet_operations fou_net_ops = {
+    .init = fou_init_net(struct net *net) {
+        struct fou_net *fn = net_generic(net, fou_net_id);
+        INIT_LIST_HEAD(&fn->fou_list);
+        mutex_init(&fn->fou_lock);
+        return 0;
+    },
+    .exit = fou_exit_net,
+    .id   = &fou_net_id,
+    .size = sizeof(struct fou_net),
+};
+```
+
+# docker
+
+* [sparkdev](https://www.cnblogs.com/sparkdev/category/927855.html)
+    * [Docker 镜像](https://www.cnblogs.com/sparkdev/p/8901728.html) - [镜像之进阶篇 ](https://www.cnblogs.com/sparkdev/p/9092082.html) - [镜像之存储管理](https://www.cnblogs.com/sparkdev/p/9121188.html)
+    * [Containerd 简介](https://www.cnblogs.com/sparkdev/p/9063042.html)
+    * [Docker 网络之理解 bridge 驱动](https://www.cnblogs.com/sparkdev/p/9217310.html) - [网络之进阶篇](https://www.cnblogs.com/sparkdev/p/9198109.html)
+    * [Docker Compose 简介](https://www.cnblogs.com/sparkdev/p/9753793.html)
+    * [原理](https://www.cnblogs.com/sparkdev/p/9787915.html) - [进阶篇](https://www.cnblogs.com/sparkdev/p/9803554.html) - [引用环境变量](https://www.cnblogs.com/sparkdev/p/9826520.html)
+    * [隔离 docker 容器中的用户](https://www.cnblogs.com/sparkdev/p/9614326.html)
+
+## overly
+
+![](../images/kernel/docker-overlay.png)
+
+```sh
+mount -t overlay overlay -o lowerdir=A:B:C,upperdir=C,workdir=worker /tmp/test
 ```
