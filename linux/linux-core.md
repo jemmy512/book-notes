@@ -59,6 +59,16 @@
     * [pthread_rwlock]
     * [pthread_barrier_t]
 
+* [vdso](#vdso)
+    * [vdso_kern](#vdso_kern)
+        * [vdso_init](#vdso_init)
+        * [udpate_vsyscall](#udpate_vsyscall)
+    * [glibc](#vdso_glibc)
+        * [load_elf_binary](#load_elf_binary)
+        * [vdso_fault](#vdso_fault)
+        * [setup_vdso](#setup_vdso)
+        * [clock_gettime64](#clock_gettime64)
+
 # Core
 
 # Data structures
@@ -3312,3 +3322,472 @@ __up_write(struct rw_semaphore *sem)
 ## mlock
 
 * [mlock锁原理剖析 - 内核工匠](https://mp.weixin.qq.com/s/2b7zHDXoQycoMwlPO_UUrg)
+
+# vdso
+
+* [Unified Virtual Dynamic Shared Object (vDSO).ppt](https://lpc.events/event/7/contributions/664/attachments/509/918/Unified_vDSO_LPC_2020.pdf)
+* https://tinylab.org/riscv-syscall-part4-vdso-implementation/
+* https://zhuanlan.zhihu.com/p/611286101
+
+![](../images/kernel/vdso-setup.png)
+
+![](../images/kernel/vdso-mmap.png)
+
+```c
+static union vdso_data_store {
+    struct vdso_data    data[CS_BASES];
+    u8                  page[1U << CONFIG_PAGE_SHIFT];
+} vdso_data_store;
+
+struct vdso_data *vdso_data = vdso_data_store.data;
+
+struct vdso_data {
+    u32        seq;
+
+    s32        clock_mode;
+    u64        cycle_last;
+    u64        max_cycles;
+    u64        mask;
+    u32        mult;
+    u32        shift;
+
+    union {
+        struct vdso_timestamp       basetime[VDSO_BASES];
+        struct timens_offset        offset[VDSO_BASES];
+    };
+
+    s32        tz_minuteswest;
+    s32        tz_dsttime;
+    u32        hrtimer_res;
+    u32        __unused;
+
+    struct arch_vdso_data      arch_data;
+};
+
+struct vdso_abi_info {
+    const char                  *name;
+    const char                  *vdso_code_start;
+    const char                  *vdso_code_end;
+    unsigned long               vdso_pages;
+    struct vm_special_mapping   *dm; /* Data Mapping */
+    struct vm_special_mapping   *cm; /* Code Mapping */
+};
+
+struct vm_special_mapping {
+    const char *name;      /* The name, e.g. "[vdso]". */
+    struct page **pages;
+    vm_fault_t (*fault)(const struct vm_special_mapping *sm,
+                struct vm_area_struct *vma,
+                struct vm_fault *vmf);
+    int (*mremap)(const struct vm_special_mapping *sm,
+            struct vm_area_struct *new_vma);
+};
+
+/* arch/arm64/kernel/vdso-wrap.S
+ * build vdso.so into kernel code
+ *
+ * the start and end virt addr of vdso.so in kernel */
+vdso_start:
+    .incbin "arch/arm64/kernel/vdso/vdso.so"
+    .balign PAGE_SIZE
+vdso_end:
+
+static struct vdso_abi_info vdso_info[] __ro_after_init = {
+    [VDSO_ABI_AA64] = {
+        .name = "vdso",
+        .vdso_code_start = vdso_start,
+        .vdso_code_end = vdso_end,
+    },
+};
+```
+
+## vdso_kern
+
+### vdso_init
+
+```c
+static struct vm_special_mapping aarch64_vdso_maps[] __ro_after_init = {
+    [AA64_MAP_VVAR] = {
+        .name       = "[vvar]", /* virtual variable */
+        .fault      = vvar_fault,
+    },
+    [AA64_MAP_VDSO] = {
+        .name       = "[vdso]", /* virutal dynamic shared object */
+        /* NB: no .fault func */
+        .mremap     = vdso_mremap,
+    },
+};
+
+vdso_init(void)
+{
+    vdso_info[VDSO_ABI_AA64].dm = &aarch64_vdso_maps[AA64_MAP_VVAR];
+    vdso_info[VDSO_ABI_AA64].cm = &aarch64_vdso_maps[AA64_MAP_VDSO];
+
+    return __vdso_init(VDSO_ABI_AA64) {
+        int i;
+        struct page **vdso_pagelist;
+        unsigned long pfn;
+
+        if (memcmp(vdso_info[abi].vdso_code_start, "\177ELF", 4)) {
+            pr_err("vDSO is not a valid ELF object!\n");
+            return -EINVAL;
+        }
+
+        vdso_info[abi].vdso_pages = (
+            vdso_info[abi].vdso_code_end - vdso_info[abi].vdso_code_start
+        ) >> PAGE_SHIFT;
+
+        vdso_pagelist = kcalloc(
+            vdso_info[abi].vdso_pages, sizeof(struct page *),
+            GFP_KERNEL
+        );
+
+        /* Grab the vDSO code pages. */
+        pfn = sym_to_pfn(vdso_info[abi].vdso_code_start);
+
+        for (i = 0; i < vdso_info[abi].vdso_pages; i++) {
+            vdso_pagelist[i] = pfn_to_page(pfn + i);
+        }
+
+        vdso_info[abi].cm->pages = vdso_pagelist;
+
+        return 0;
+    }
+}
+```
+
+### udpate_vsyscall
+
+kernel updates vdso data periodically.
+
+```c
+void update_vsyscall(struct timekeeper *tk)
+{
+    struct vdso_data *vdata = __arch_get_k_vdso_data() {
+        return vdso_data;
+    }
+    struct vdso_timestamp *vdso_ts;
+    s32 clock_mode;
+    u64 nsec;
+
+    clock_mode = tk->tkr_mono.clock->vdso_clock_mode;
+    vdata[CS_HRES_COARSE].clock_mode    = clock_mode;
+    vdata[CS_RAW].clock_mode            = clock_mode;
+
+    /* CLOCK_REALTIME also required for time() */
+    vdso_ts             = &vdata[CS_HRES_COARSE].basetime[CLOCK_REALTIME];
+    vdso_ts->sec        = tk->xtime_sec;
+    vdso_ts->nsec       = tk->tkr_mono.xtime_nsec;
+
+    /* CLOCK_REALTIME_COARSE */
+    vdso_ts             = &vdata[CS_HRES_COARSE].basetime[CLOCK_REALTIME_COARSE];
+    vdso_ts->sec        = tk->xtime_sec;
+    vdso_ts->nsec       = tk->tkr_mono.xtime_nsec >> tk->tkr_mono.shift;
+
+    /* CLOCK_MONOTONIC_COARSE */
+    vdso_ts             = &vdata[CS_HRES_COARSE].basetime[CLOCK_MONOTONIC_COARSE];
+    vdso_ts->sec        = tk->xtime_sec + tk->wall_to_monotonic.tv_sec;
+    nsec                = tk->tkr_mono.xtime_nsec >> tk->tkr_mono.shift;
+    nsec                = nsec + tk->wall_to_monotonic.tv_nsec;
+    vdso_ts->sec        += __iter_div_u64_rem(nsec, NSEC_PER_SEC, &vdso_ts->nsec);
+
+    WRITE_ONCE(vdata[CS_HRES_COARSE].hrtimer_res, hrtimer_resolution);
+
+    if (clock_mode != VDSO_CLOCKMODE_NONE) {
+        update_vdso_data(vdata, tk);
+    }
+
+    __arch_update_vsyscall(vdata, tk) {
+        __arm64_update_vsyscall(struct vdso_data *vdata, struct timekeeper *tk) {
+            vdata[CS_HRES_COARSE].mask  = VDSO_PRECISION_MASK;
+            vdata[CS_RAW].mask          = VDSO_PRECISION_MASK;
+        }
+    }
+}
+```
+
+## vdso_glibc
+
+![](../images/kernel/vdso-init.png)
+
+### load_elf_binary
+
+Maps the vDSO code and data pages. Sets **`AT_SYSINFO_EHDR`** in AUXV
+
+```c
+load_elf_binary() {
+    arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp) {
+        unsigned long vdso_base, vdso_text_len, vdso_mapping_len;
+        unsigned long gp_flags = 0;
+        void *ret;
+
+        BUILD_BUG_ON(VVAR_NR_PAGES != __VVAR_PAGES);
+
+        vdso_text_len = vdso_info[abi].vdso_pages << PAGE_SHIFT;
+        /* Be sure to map the data page */
+        vdso_mapping_len = vdso_text_len + VVAR_NR_PAGES * PAGE_SIZE;
+
+        vdso_base = get_unmapped_area(NULL, 0, vdso_mapping_len, 0, 0);
+
+        /* map vvar */
+        ret = _install_special_mapping(mm, vdso_base, VVAR_NR_PAGES * PAGE_SIZE,
+            VM_READ|VM_MAYREAD|VM_PFNMAP,
+            vdso_info[abi].dm);
+
+        /* map vdso */
+        vdso_base += VVAR_NR_PAGES * PAGE_SIZE;
+        mm->context.vdso = (void *)vdso_base;
+
+        ret = _install_special_mapping(mm, vdso_base, vdso_text_len,
+            VM_READ|VM_EXEC|gp_flags|  VM_MAYREAD|VM_MAYWRITE|VM_MAYEXEC,
+            vdso_info[abi].cm) {
+
+            return __install_special_mapping(mm, addr, len, vm_flags, (void *)spec,
+                &special_mapping_vmops) {
+
+                vma = vm_area_alloc(mm);
+                vma_set_range(vma, addr, addr + len, 0);
+                vm_flags_init(vma, (vm_flags | mm->def_flags |
+                    VM_DONTEXPAND | VM_SOFTDIRTY) & ~VM_LOCKED_MASK);
+                vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+
+                vma->vm_ops = ops;
+                vma->vm_private_data = priv;
+
+                ret = insert_vm_struct(mm, vma);
+            }
+        }
+
+        return 0;
+    }
+
+    create_elf_tables() {
+        /* set vdso addr in auxiliary vector to info dynamic linker */
+        #ifdef ARCH_DLINFO
+            ARCH_DLINFO = {
+                #define ARCH_DLINFO \
+                do { \
+                    NEW_AUX_ENT(AT_SYSINFO_EHDR, (elf_addr_t)current->mm->context.vdso); \
+                    if (likely(signal_minsigstksz)) \
+                        NEW_AUX_ENT(AT_MINSIGSTKSZ, signal_minsigstksz); \
+                    else \
+                        NEW_AUX_ENT(AT_IGNORE, 0); \
+                } while (0)
+            }
+        #endif
+    }
+}
+```
+
+### vdso_fault
+
+vvar handles PTE fault in its own fault hadnler vvar_fault, while vdso has no fault handler; it just returns the phys pages to the fault framework that establishes the PTE mapping.
+
+```c
+static const struct vm_operations_struct special_mapping_vmops = {
+    .close      = special_mapping_close,
+    .fault      = special_mapping_fault,
+    .mremap     = special_mapping_mremap,
+    .name       = special_mapping_name,
+    /* vDSO code relies that VVAR can't be accessed remotely */
+    .access     = NULL,
+    .may_split  = special_mapping_split,
+};
+
+static vm_fault_t special_mapping_fault(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    pgoff_t pgoff;
+    struct page **pages;
+
+    if (vma->vm_ops == &legacy_special_mapping_vmops) {
+        pages = vma->vm_private_data;
+    } else {
+        struct vm_special_mapping *sm = vma->vm_private_data;
+
+        /* unlike vvar, vdso has no fault fn, since its
+         * physical pages are already allocated within kernel,
+         * just return sm->pages */
+        if (sm->fault) {
+            return sm->fault(sm, vmf->vma, vmf); /* vvar_fault */
+        }
+
+        pages = sm->pages;
+    }
+
+    for (pgoff = vmf->pgoff; pgoff && *pages; ++pages)
+        pgoff--;
+
+    if (*pages) {
+        struct page *page = *pages;
+        get_page(page);
+        vmf->page = page;
+        return 0;
+    }
+
+    return VM_FAULT_SIGBUS;
+}
+```
+
+```c
+vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
+    struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+    struct page *timens_page = find_timens_vvar_page(vma);
+    unsigned long pfn;
+
+    /* map timens_page or vdso_data with vma */
+    switch (vmf->pgoff) {
+    case VVAR_DATA_PAGE_OFFSET:
+        if (timens_page)
+            pfn = page_to_pfn(timens_page);
+        else
+            pfn = sym_to_pfn(vdso_data);
+        break;
+    case VVAR_TIMENS_PAGE_OFFSET:
+        if (!timens_page)
+            return VM_FAULT_SIGBUS;
+        pfn = sym_to_pfn(vdso_data);
+        break;
+    default:
+        return VM_FAULT_SIGBUS;
+    }
+
+    /* insert single pfn into user vma and establish PTE mapping */
+    return vmf_insert_pfn(vma, vmf->address, pfn);
+}
+
+static int vdso_mremap(const struct vm_special_mapping *sm,
+    struct vm_area_struct *new_vma)
+{
+    current->mm->context.vdso = (void *)new_vma->vm_start;
+
+    return 0;
+}
+```
+
+### setup_vdso
+
+dynamic linker kooks for AT_SYSINFO_EHDR in AUXV. If it is set, links the vDSO shared object
+
+Libc looks up for the function symbols in [vdso]. If the symbols are present sets the function pointer (O/W libc provides fallbacks on syscalls)
+
+```c
+/* glibc/sysdeps/aarch64/dl-start.S */
+ENTRY (_start) {
+    bl _dl_start { /* glibc/elf/rtld.c */
+        _dl_start_final() {
+            start_addr = _dl_sysdep_start (arg, &dl_main) {
+                _dl_sysdep_parse_arguments() {
+                    /*  |--------------|
+                        |   Aux Vec    |
+                        |--------------|
+                        |  Enviroment  |
+                        |--------------|
+                        |     Argv     |
+                        |--------------|
+                        |     Argc     |
+                        |--------------|
+                        |    Stack     |
+                        |              | */
+                    _dl_argc = (intptr_t) *start_argptr;
+                    _dl_argv = (char **) (start_argptr + 1);
+                    _environ = _dl_argv + _dl_argc + 1;
+                    for (char **tmp = _environ; ; ++tmp) {
+                        if (*tmp == NULL) {
+                            GLRO(dl_auxv) = (ElfW(auxv_t) *) (tmp + 1);
+                            break;
+                        }
+                    }
+
+                    _dl_parse_auxv (GLRO(dl_auxv), auxv_values) {
+                        GLRO(dl_pagesize) = auxv_values[AT_PAGESZ];
+                        GLRO(dl_platform) = (void *) auxv_values[AT_PLATFORM];
+                        GLRO(dl_hwcap) = auxv_values[AT_HWCAP];
+                        GLRO(dl_hwcap2) = auxv_values[AT_HWCAP2];
+                        GLRO(dl_hwcap3) = auxv_values[AT_HWCAP3];
+                        GLRO(dl_hwcap4) = auxv_values[AT_HWCAP4];
+                        GLRO(dl_clktck) = auxv_values[AT_CLKTCK];
+                        GLRO(dl_fpu_control) = auxv_values[AT_FPUCW];
+                        _dl_random = (void *) auxv_values[AT_RANDOM];
+                        GLRO(dl_minsigstacksize) = auxv_values[AT_MINSIGSTKSZ];
+                        GLRO(dl_sysinfo_dso) = (void *) auxv_values[AT_SYSINFO_EHDR];
+                        if (GLRO(dl_sysinfo_dso) != NULL) {
+                            GLRO(dl_sysinfo) = auxv_values[AT_SYSINFO];
+                        }
+                    }
+                }
+
+                dl_main() {
+                    setup_vdso() {
+                        l->l_phdr = ((const void *) GLRO(dl_sysinfo_dso)
+                            + GLRO(dl_sysinfo_dso)->e_phoff);
+                        l->l_phnum = GLRO(dl_sysinfo_dso)->e_phnum;
+
+                        /* dl_sysinfo_dso is the address of vsdo.so passed by kernel */
+                        l->l_map_start = (ElfW(Addr)) GLRO(dl_sysinfo_dso);
+                        l->l_addr = l->l_map_start - l->l_addr;
+                        l->l_map_end += l->l_addr;
+                        l->l_ld = (void *) ((ElfW(Addr)) l->l_ld + l->l_addr);
+                        elf_get_dynamic_info (l, false, false);
+                        _dl_setup_hash (l);
+                        l->l_relocated = 1;
+
+                        GLRO(dl_sysinfo_map) = l;
+                    }
+
+                    setup_vdso_pointers (void) {
+                        GLRO(dl_vdso_clock_gettime) = dl_vdso_vsym (HAVE_CLOCK_GETTIME_VSYSCALL);
+                        GLRO(dl_vdso_gettimeofday) = dl_vdso_vsym (HAVE_GETTIMEOFDAY_VSYSCALL);
+                        GLRO(dl_vdso_time) = dl_vdso_vsym (HAVE_TIME_VSYSCALL) {
+                            struct link_map *map = GLRO (dl_sysinfo_map);
+                            if (map == NULL)
+                                return NULL;
+
+                            /* Use a WEAK REF so we don't error out if the symbol is not found.  */
+                            ElfW (Sym) wsym = { 0 };
+                            wsym.st_info = (unsigned char) ELFW (ST_INFO (STB_WEAK, STT_NOTYPE));
+
+                            const struct r_found_version rfv = { VDSO_NAME, VDSO_HASH, 1, NULL };
+
+                            /* Search the scope of the vdso map.  */
+                            const ElfW (Sym) *ref = &wsym;
+                            lookup_t result = GLRO(dl_lookup_symbol_x)(
+                                name, map, &ref, map->l_local_scope, &rfv, 0, 0, NULL
+                            );
+                            return ref != NULL ? DL_SYMBOL_ADDRESS (result, ref) : NULL;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+### clock_gettime64
+
+![](../images/kernel/vsdo-rdwr.png)
+
+```c
+# define HAVE_CLOCK_GETTIME64_VSYSCALL	"__kernel_clock_gettime"
+
+/* find the addr of vdso symbol */
+GLRO(dl_vdso_clock_gettime64) = dl_vdso_vsym (HAVE_CLOCK_GETTIME64_VSYSCALL);
+
+__clock_gettime64 (clockid_t clock_id, struct __timespec64 *tp) {
+  int r;
+#ifdef HAVE_CLOCK_GETTIME64_VSYSCALL
+    int (*vdso_time64) (clockid_t clock_id, struct __timespec64 *tp)
+        = GLRO(dl_vdso_clock_gettime64);
+    if (vdso_time64 != NULL) {
+        r = INTERNAL_VSYSCALL_CALL (vdso_time64, 2, clock_id, tp) {
+            return vdso_time64(clock_id, tp);
+        }
+        if (r == 0)
+            return 0;
+        return INLINE_SYSCALL_ERROR_RETURN_VALUE (-r);
+    }
+#endif
+}
+```
