@@ -9128,6 +9128,13 @@ out_free_interp:
         bprm->p = STACK_ROUND(sp, items);
         sp = (elf_addr_t __user *)bprm->p;
 
+        /* Populate aux vector */
+        NEW_AUX_ENT(AT_SYSINFO_EHDR, (elf_addr_t)current->mm->context.vdso);
+        NEW_AUX_ENT(AT_CLKTCK, CLOCKS_PER_SEC);
+        NEW_AUX_ENT(AT_PHDR, phdr_addr);
+        NEW_AUX_ENT(AT_PHENT, sizeof(struct elf_phdr));
+        NEW_AUX_ENT(AT_PHNUM, exec->e_phnum);
+
         /* Now, let's put argc (and argv, envp if appropriate) on the stack */
         if (put_user(argc, sp++))
             return -EFAULT;
@@ -16123,7 +16130,7 @@ struct net *copy_net_ns(unsigned long flags,
 }
 ```
 
-## pernet_list
+### pernet_list
 
 ```c
 struct pernet_operations loopback_net_ops = {
@@ -16168,6 +16175,132 @@ static struct pernet_operations fou_net_ops = {
     .id   = &fou_net_id,
     .size = sizeof(struct fou_net),
 };
+```
+
+## time_namespace
+
+Time namespaces virtualize the values of two system clocks:
+* CLOCK_MONOTONIC, a nonsettable clock that represents monotonic time  since—as described  by  POSIX—"some unspecified  point in the past"
+
+* CLOCK_BOOTTIME, a nonsettable clock that is identical to CLOCK_MONOTONIC, except that it also includes any time that the system is suspended.
+
+```c
+struct time_namespace {
+	struct user_namespace   *user_ns;
+	struct ucounts          *ucounts;
+	struct ns_common        ns;
+	struct timens_offsets   offsets;
+	struct page             *vvar_page;
+	/* If set prevents changing offsets after any task joined namespace. */
+	bool                    frozen_offsets;
+}
+```
+
+```c
+struct time_namespace *clone_time_ns(
+    struct user_namespace *user_ns,
+    struct time_namespace *old_ns)
+{
+    struct time_namespace *ns;
+    struct ucounts *ucounts;
+    int err;
+
+    err = -ENOSPC;
+    ucounts = inc_time_namespaces(user_ns);
+    err = -ENOMEM;
+    ns = kmalloc(sizeof(*ns), GFP_KERNEL_ACCOUNT);
+    refcount_set(&ns->ns.count, 1);
+
+    ns->vvar_page = alloc_page(GFP_KERNEL_ACCOUNT | __GFP_ZERO);
+
+    err = ns_alloc_inum(&ns->ns);
+
+    ns->ucounts = ucounts;
+    ns->ns.ops = &timens_operations;
+    ns->user_ns = get_user_ns(user_ns);
+    ns->offsets = old_ns->offsets;
+    ns->frozen_offsets = false;
+    return ns;
+}
+```
+
+```c
+void timens_on_fork(struct nsproxy *nsproxy, struct task_struct *tsk)
+{
+    struct ns_common *nsc = &nsproxy->time_ns_for_children->ns;
+    struct time_namespace *ns = to_time_ns(nsc);
+
+    /* create_new_namespaces() already incremented the ref counter */
+    if (nsproxy->time_ns == nsproxy->time_ns_for_children)
+        return;
+
+    get_time_ns(ns);
+    put_time_ns(nsproxy->time_ns);
+    nsproxy->time_ns = ns;
+
+    timens_commit(tsk, ns) {
+        timens_set_vvar_page(tsk, ns) {
+            struct vdso_data *vdata;
+            unsigned int i;
+
+            if (ns == &init_time_ns)
+                return;
+
+            /* Fast-path, taken by every task in namespace except the first. */
+            if (likely(ns->frozen_offsets))
+                return;
+
+            mutex_lock(&offset_lock);
+            /* Nothing to-do: vvar_page has been already initialized. */
+            if (ns->frozen_offsets)
+                goto out;
+
+            ns->frozen_offsets = true;
+            vdata = arch_get_vdso_data(page_address(ns->vvar_page));
+
+            for (i = 0; i < CS_BASES; i++) {
+                timens_setup_vdso_data(&vdata[i], ns) {
+                    struct timens_offset *offset = vdata->offset;
+                    struct timens_offset monotonic = offset_from_ts(ns->offsets.monotonic);
+                    struct timens_offset boottime = offset_from_ts(ns->offsets.boottime) {
+                        struct timens_offset ret = {
+                            .sec = off.tv_sec;
+                            .nsec = off.tv_nsec;
+                        };
+                        return ret;
+                    }
+
+                    vdata->seq                      = 1;
+                    vdata->clock_mode               = VDSO_CLOCKMODE_TIMENS;
+                    offset[CLOCK_MONOTONIC]         = monotonic;
+                    offset[CLOCK_MONOTONIC_RAW]     = monotonic;
+                    offset[CLOCK_MONOTONIC_COARSE]  = monotonic;
+                    offset[CLOCK_BOOTTIME]          = boottime;
+                    offset[CLOCK_BOOTTIME_ALARM]    = boottime;
+                }
+            }
+        }
+
+        vdso_join_timens(tsk, ns) {
+            struct mm_struct *mm = task->mm;
+            struct vm_area_struct *vma;
+            VMA_ITERATOR(vmi, mm, 0);
+
+            /* unmap its vvar data for the old namespace */
+            for_each_vma(vmi, vma) {
+                ret = vma_is_special_mapping(vma, vdso_info[VDSO_ABI_AA64].dm) {
+                    return vma->vm_private_data == sm &&
+                    (vma->vm_ops == &special_mapping_vmops ||
+                    vma->vm_ops == &legacy_special_mapping_vmops);
+                }
+                if (ret) {
+                    /* remove user pages in a given range */
+                    zap_vma_pages(vma);
+                }
+            }
+        }
+    }
+}
 ```
 
 # docker
