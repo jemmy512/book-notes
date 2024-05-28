@@ -3335,7 +3335,7 @@ __up_write(struct rw_semaphore *sem)
                user virt space               phsy mem             kernel virt space
                 +----------+               +----------+             +----------+
                 |----------|               |          |             |          |
- DT_SYSINFO_EHDR|          |               |          |             |          |
+ DT_SYSINFO_EHDR|   AUXV   |               |          |             |          |
                 |----------|               |          |       ------|----------|vdso_end
                 |          |            /--|----------|------/      |          |
                 |          |       /----   |          |             |          |

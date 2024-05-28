@@ -65,6 +65,7 @@
     * [check_class_changed_fair](#check_class_changed_fair)
         * [switched_from_fair](#switched_from_fair)
         * [switched_to_fair](#switched_to_fair)
+    * [balance_fair](#balance_fair)
     * [sched_vslice](#sched_vslice)
 
 * [sched_domain](#sched_domain)
@@ -83,14 +84,14 @@
 * [load_balance](#load_balance)
     * [tick_balance](#tick_balance)
     * [nohz_idle_balance](#nohz_idle_balance)
-    * [newidle_balance](#newidle_balance)
-    * [do_load_balance](#do_load_balance)
+    * [sched_balance_newidle](#sched_balance_newidle)
+    * [sched_balance_rq](#sched_balance_rq)
         * [should_we_balance](#should_we_balance)
-        * [find_busiest_group](#find_busiest_group)
+        * [sched_balance_find_src_group](#sched_balance_find_src_group)
             * [update_sd_lb_stats](#update_sd_lb_stats)
             * [update_sd_pick_busiest](#update_sd_pick_busiest)
             * [calculate_imbalance](#calculate_imbalance)
-        * [find_busiest_queue](#find_busiest_queue)
+        * [sched_balance_find_src_rq](#sched_balance_find_src_rq)
         * [detach_tasks](#detach_tasks)
             * [can_migrate_task](#can_migrate_task)
 
@@ -296,7 +297,7 @@ primary_entry
 
 # start_kernel
 
-![](../images/kernel/ker-start.svg)
+![](../images/kernel/ker-start.svg) /* TODO */
 
 ```c
 /* init/main.c */
@@ -394,7 +395,6 @@ static int run_init_process(const char *init_filename)
     (const char __user *const __user *)envp_init);
 }
 ```
-<img src='../images/kernel/init-kernel.png' style='max-height:850px'/>
 
 <img src='../images/kernel/init-cpu-arch.png' style='max-height:850px'/>
 
@@ -1483,7 +1483,7 @@ void scheduler_tick(void)
 
 #ifdef CONFIG_SMP
     rq->idle_balance = idle_cpu(cpu);
-    trigger_load_balance(rq);
+    sched_balance_trigger(rq);
 #endif
 }
 ```
@@ -3726,7 +3726,7 @@ idle:
     if (!rf)
         return NULL;
 
-    new_tasks = newidle_balance(rq, rf);
+    new_tasks = sched_balance_newidle(rq, rf);
         --->
 
     if (new_tasks < 0)
@@ -4777,6 +4777,18 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
         else
             wakeup_preempt(rq, p, 0);
     }
+}
+```
+
+## balance_fair
+
+```c
+int balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+    if (rq->nr_running)
+        return 1;
+
+    return sched_balance_newidle(rq, rf) != 0;
 }
 ```
 
@@ -6066,7 +6078,7 @@ update_rq_clock(rq) {
 
         ![](../images/kernel/proc-sched-lb-tick-balance.png)
 
-    * newidle_balance
+    * sched_balance_newidle
 
         ![](../images/kernel/proc-sched-lb-newidle-balance.png)
 
@@ -6095,7 +6107,7 @@ load_balance() {
         return;
     }
 
-    group = find_busiest_group(&env) {
+    group = sched_balance_find_src_group(&env) {
         update_sd_lb_stats() {
             do {
                 update_sg_lb_stats() {
@@ -6143,7 +6155,7 @@ load_balance() {
         }
     }
 
-    busiest = find_busiest_queue(&env, group) {
+    busiest = sched_balance_find_src_rq(&env, group) {
 
     }
 
@@ -6163,7 +6175,7 @@ load_balance() {
 ```c
 void scheduler_tick(void){
     rq->idle_balance = idle_cpu(cpu);
-    trigger_load_balance(rq) {
+    sched_balance_trigger(rq) {
         if (unlikely(on_null_domain(rq) || !cpu_active(cpu_of(rq))))
             return;
 
@@ -6593,10 +6605,10 @@ nohz_idle_balance(this_rq, idle) {
 }
 ```
 
-## newidle_balance
+## sched_balance_newidle
 
 ```c
-int newidle_balance(rq, rf) {
+int sched_balance_newidle(rq, rf) {
     unsigned long next_balance = jiffies + HZ;
     int this_cpu = this_rq->cpu;
     u64 t0, t1, curr_cost = 0;
@@ -6710,12 +6722,12 @@ out:
 }
 ```
 
-## do_load_balance
+## sched_balance_rq
 
 ![](../images/kernel/proc-sched-load_balance.svg)
 
 ```c
-ret = load_balance(cpu, rq, sd, idle, &continue_balancing) {
+ret = sched_balance_rq(cpu, rq, sd, idle, &continue_balancing) {
     int ld_moved, cur_ld_moved, active_balance = 0;
     struct sched_domain *sd_parent = sd->parent;
     struct sched_group *group;
@@ -6742,8 +6754,8 @@ redo:
         goto out_balanced;
     }
 
-    group = find_busiest_group(&env);
-    busiest = find_busiest_queue(&env, group);
+    group = sched_balance_find_src_group(&env);
+    busiest = sched_balance_find_src_rq(&env, group);
 
     env.src_cpu = busiest->cpu;
     env.src_rq = busiest;
@@ -6972,7 +6984,7 @@ int should_we_balance(struct lb_env *env)
 }
 ```
 
-### find_busiest_group
+### sched_balance_find_src_group
 
 ```c
 /* Decision matrix according to the local and busiest group type:
@@ -6993,7 +7005,7 @@ int should_we_balance(struct lb_env *env)
  * nr_idle :  dst_cpu is not busy and the number of idle CPUs is quite
  *            different in groups. */
 
-struct sched_group *find_busiest_group(struct lb_env *env)
+struct sched_group *sched_balance_find_src_group(struct lb_env *env)
 {
     struct sg_lb_stats *local, *busiest;
     struct sd_lb_stats sds;
@@ -7684,10 +7696,10 @@ has_spare:
 }
 ```
 
-### find_busiest_queue
+### sched_balance_find_src_rq
 
 ```c
-struct rq *find_busiest_queue(struct lb_env *env, struct sched_group *group) {
+struct rq *sched_balance_find_src_rq(struct lb_env *env, struct sched_group *group) {
     struct rq *busiest = NULL, *rq;
     unsigned long busiest_util = 0, busiest_load = 0, busiest_capacity = 1;
     unsigned int busiest_nr = 0;

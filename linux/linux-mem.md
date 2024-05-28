@@ -1339,7 +1339,7 @@ struct page {
     __is_lm_address(__x) ? __lm_to_phys(__x) : __kimg_to_phys(__x); \
 })
 
-#define __virt_to_phys(x)	__virt_to_phys_nodebug(x)
+#define __virt_to_phys(x)   __virt_to_phys_nodebug(x)
 #define __pa(x) __virt_to_phys((unsigned long)(x))
 
 
@@ -2234,7 +2234,7 @@ int add_memory(int nid, u64 start, u64 size, mhp_t mhp_flags) {
 
             ret = create_memory_block_devices(start, size, NULL, group) {
                 start_block_id = pfn_to_block_id(PFN_DOWN(start));
-	            end_block_id = pfn_to_block_id(PFN_DOWN(start + size)) {
+                  end_block_id = pfn_to_block_id(PFN_DOWN(start + size)) {
                     return memory_block_id(pfn_to_section_nr(pfn)) {
                         return section_nr / sections_per_block;
                     }
@@ -3069,27 +3069,29 @@ struct vm_area_struct {
 # kernel virtual space
 
 ```c
-/* PAGE_OFFSET - the virtual address of the start of the linear map, at the
+/* Documentation/arch/arm64/memory.rst
+ *
+ * PAGE_OFFSET - the virtual address of the start of the linear map, at the
  *               start of the TTBR1 address space.
  * PAGE_END - the end of the linear map, where all other kernel mappings begin.
  * KIMAGE_VADDR - the virtual address of the start of the kernel image.
  * VA_BITS - the maximum number of bits for virtual addresses. */
 
- AArch64 Linux memory layout with 4KB pages + 4 levels (48-bit)::
+ AArch64 Linux memory layout with 4KB pages + 4 levels (48-bit):
 
-  Start             End                 Size        Use
+  Start                 End                 Size        Use
   -----------------------------------------------------------------------
-  0000000000000000	0000ffffffffffff    256TB       user
-  ffff000000000000	ffff7fffffffffff    128TB       kernel logical memory map
- [ffff600000000000	ffff7fffffffffff]    32TB       [kasan shadow region]
-  ffff800000000000	ffff80007fffffff      2GB       modules
-  ffff800080000000	fffffbffefffffff    124TB       vmalloc
-  fffffbfff0000000	fffffbfffdffffff    224MB       fixed mappings (top down)
-  fffffbfffe000000	fffffbfffe7fffff      8MB       [guard region]
-  fffffbfffe800000	fffffbffff7fffff     16MB       PCI I/O space
-  fffffbffff800000	fffffbffffffffff      8MB       [guard region]
-  fffffc0000000000	fffffdffffffffff      2TB       vmemmap
-  fffffe0000000000	ffffffffffffffff      2TB       [guard region]
+  0000000000000000      0000ffffffffffff    256TB       user
+  ffff000000000000      ffff7fffffffffff    128TB       kernel logical memory map
+ [ffff600000000000      ffff7fffffffffff]    32TB       [kasan shadow region]
+  ffff800000000000      ffff80007fffffff      2GB       modules
+  ffff800080000000      fffffbffefffffff    124TB       vmalloc
+  fffffbfff0000000      fffffbfffdffffff    224MB       fixed mappings (top down)
+  fffffbfffe000000      fffffbfffe7fffff      8MB       [guard region]
+  fffffbfffe800000      fffffbffff7fffff     16MB       PCI I/O space
+  fffffbffff800000      fffffbffffffffff      8MB       [guard region]
+  fffffc0000000000      fffffdffffffffff      2TB       vmemmap
+  fffffe0000000000      ffffffffffffffff      2TB       [guard region]
 ```
 
 ![](../images/kernel/mem-user-kernel-64.png)
@@ -7448,6 +7450,7 @@ do_anonymous_page(vmf) {
 
 ```c
 do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
+/* 1. allocate phys pages */
     __do_fault() {
         vma->vm_ops->fault() {
             shm_vm_ops.fault() {
@@ -7470,6 +7473,7 @@ do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
         }
     }
 
+/* 2. map phys pages with vma */
     finish_fault() {
         set_pte_range(vmf, folio, page, 1, vmf->address) {
             entry = mk_pte(page, vma->vm_page_prot);
@@ -9252,7 +9256,7 @@ vmalloc(size) {
     __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END, gfp_mask, PAGE_KERNEL, 0, node, caller) {
         struct vm_struct *area = __get_vm_area_node() {
             struct vmap_area *va;
-	        struct vm_struct *area;
+              struct vm_struct *area;
             area = kzalloc_node(sizeof(*area));
             /* Allocate a region of KVA */
             va = alloc_vmap_area(size) {
@@ -14333,15 +14337,15 @@ struct swap_info_struct {
     signed char    type;        /* index of swap_info */
     unsigned int    max;        /* extent of the swap_map */
     unsigned char *swap_map; {  /* vmalloc'ed array of usage counts */
-        #define SWAP_HAS_CACHE	0x40 /* Flag page is cached, in first swap_map */
-        #define COUNT_CONTINUED	0x80 /* Flag swap_map continuation for full count */
+        #define SWAP_HAS_CACHE  0x40 /* Flag page is cached, in first swap_map */
+        #define COUNT_CONTINUED 0x80 /* Flag swap_map continuation for full count */
         /* Special value in first swap_map */
-        #define SWAP_MAP_MAX	0x3e /* Max count */
-        #define SWAP_MAP_BAD	0x3f /* Note page is bad */
-        #define SWAP_MAP_SHMEM	0xbf /* Owned by shmem/tmpfs */
+        #define SWAP_MAP_MAX    0x3e /* Max count */
+        #define SWAP_MAP_BAD    0x3f /* Note page is bad */
+        #define SWAP_MAP_SHMEM  0xbf /* Owned by shmem/tmpfs */
 
         /* Special value in each swap_map continuation */
-        #define SWAP_CONT_MAX	0x7f /* Max count */
+        #define SWAP_CONT_MAX   0x7f /* Max count */
 
         /* refcnt, inc at try_to_unmap_one */
     }
@@ -14657,7 +14661,7 @@ int setup_swap_map_and_extents(
     unsigned long col = p->cluster_next / SWAPFILE_CLUSTER % SWAP_CLUSTER_COLS;
     unsigned long i, idx;
 
-    nr_good_pages = maxpages - 1;	/* omit header page */
+    nr_good_pages = maxpages - 1; /* omit header page */
 
     cluster_list_init(&p->free_clusters);
     cluster_list_init(&p->discard_clusters);
@@ -14738,7 +14742,7 @@ int setup_swap_map_and_extents(
 
                     first_block = probe_block;
                     first_block >>= (PAGE_SHIFT - blkbits);
-                    if (page_no) {	/* exclude the header page */
+                    if (page_no) { /* exclude the header page */
                         if (first_block < lowest_block)
                             lowest_block = first_block;
                         if (first_block > highest_block)
@@ -14784,7 +14788,7 @@ int setup_swap_map_and_extents(
                 ret = nr_extents;
                 *span = 1 + highest_block - lowest_block;
                 if (page_no == 0)
-                    page_no = 1;	/* force Empty message */
+                    page_no = 1; /* force Empty message */
                 sis->max = page_no;
                 sis->pages = page_no - 1;
                 sis->highest_bit = page_no - 1;
@@ -14962,7 +14966,7 @@ SYSCALL_DEFINE1(swapoff, const char __user *, specialfile)
     drain_mmlist();
 
     /* wait for anyone still in scan_swap_map_slots */
-    p->highest_bit = 0;		/* cuts scans short */
+    p->highest_bit = 0; /* cuts scans short */
     while (p->flags >= SWP_SCANNING) {
         spin_unlock(&p->lock);
         spin_unlock(&swap_lock);
