@@ -2020,6 +2020,9 @@ set_next_task_rt(struct rq *rq, struct task_struct *p, bool first) {
     if (!first)
         return;
 
+    /* If prev task was rt, put_prev_task() has already updated the
+     * utilization. We need to decay the passed time for rt load_avg
+     * since the time is used by non-rt task */
     if (rq->curr->sched_class != &rt_sched_class) {
         update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
     }
@@ -2623,6 +2626,7 @@ void pull_rt_task(struct rq *this_rq) {
     if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
         return;
 
+    /* rd->rto_maks is updated in enqueue_pushable_task */
     for_each_cpu(cpu, this_rq->rd->rto_mask) {
         if (this_cpu == cpu)
             continue;
@@ -3303,17 +3307,17 @@ dequeue_task_fair() {
     for_each_sched_entity() {
         dequeue_entity() {
             update_curr()
-            update_load_avg()
+            update_load_avg() /* detach {load|runnable|uitl}_{sum|avg} */
             update_entity_lag()
             __dequeue_entity() {
                 rb_erase_augmented_cached()
                 avg_vruntime_sub()
             }
             account_entity_dequeue() {
-                update_load_sub()
+                update_load_sub() /* dec load weight from cfs_rq */
             }
             return_cfs_rq_runtime()
-            update_cfs_group()
+            update_cfs_group() /* recalc group shares */
             update_min_vruntime()
         }
     }
@@ -5566,7 +5570,9 @@ load, runnable and running function as:
  *   load_avg = \Sum se->avg.load_avg */
 
 int ___update_load_sum(u64 now, struct sched_avg *sa,
-        unsigned long load, unsigned long runnable, int running)
+    unsigned long load, /* tsk nr which participant in cpu load */
+    unsigned long runnable,
+    int running)
 {
     u64 delta;
 
@@ -5625,12 +5631,17 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
         }
         sa->period_contrib = delta;
 
-        if (load)
-            sa->load_sum += load * contrib; /* scale to load */
-        if (runnable)
+        if (load) {
+            /* time passed contrib us since last time, one tsk contribution is `contrib`
+             * N task contribution is: N * contrib */
+            sa->load_sum += load * contrib; /* scale to load weight */
+        }
+        if (runnable) {
             sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT;
-        if (running) /* scale to SCHED_CAPACITY_SHIFT 1024 */
+        }
+        if (running) {/* scale to SCHED_CAPACITY_SHIFT 1024 */
             sa->util_sum += contrib << SCHED_CAPACITY_SHIFT;
+        }
 
         return periods;
     }
@@ -5641,7 +5652,7 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
 }
 
 static __always_inline void
-___update_load_avg(struct sched_avg *sa, unsigned long load/* se_weight */)
+___update_load_avg(struct sched_avg *sa, unsigned long se_weight)
 {
     u32 divider = get_pelt_divider(sa) {
         #define LOAD_AVG_MAX        47742
@@ -5649,13 +5660,10 @@ ___update_load_avg(struct sched_avg *sa, unsigned long load/* se_weight */)
         return PELT_MIN_DIVIDER + avg->period_contrib;
     }
 
-    /* ___update_load_sum also takes load arg, only one of the two loads takes affect,
-     * when one takes affect, the another is set to 1 */
-
-    /*                             contrib
-     * load_avg = --------------------------------------------- * load
+    /*                       load_sum = load * contrib
+     * load_avg = --------------------------------------------- * se_weight
      *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
-    sa->load_avg = div_u64(load * sa->load_sum, divider);
+    sa->load_avg = div_u64(se_weight * sa->load_sum, divider);
 
     /*                      runnable_sum = runnable * contrib
      * runnable_avg = --------------------------------------------- * 1024
@@ -5705,13 +5713,13 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
         if (entity_is_task(se))
             return 0;
 
-        gcfs_rq = group_cfs_rq(se); /* 1. rq se owns */
+        gcfs_rq = group_cfs_rq(se); /* 1. rq that se owns */
         if (!gcfs_rq->propagate)
             return 0;
 
         gcfs_rq->propagate = 0;
 
-        cfs_rq = cfs_rq_of(se);     /* 2. rq se belongs to */
+        cfs_rq = cfs_rq_of(se);     /* 2. rq that se belongs to */
 
         /* propagate to parent */
         add_tg_cfs_propagate(cfs_rq, gcfs_rq->prop_runnable_sum) {
