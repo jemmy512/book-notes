@@ -5503,9 +5503,9 @@ get_cpu_for_node(struct device_node *node)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 * [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
+* [](https://www.cnblogs.com/hellokitty2/p/17031629.html)
 
 ![](../images/kernel/proc-sched-cfs-pelt-segement.png)
-![](../images/kernel/proc-sched-cfs-update_load_avg.png)
 
 ---
 
@@ -5514,24 +5514,31 @@ get_cpu_for_node(struct device_node *node)
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
 
 ```c
+/* load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions:
+ * weight (priority), number of tasks, and CPU time slice occupancy. */
 struct sched_avg {
     u64                 last_update_time;
 
-    /* running + waiting, scaled to weight */
+    /* running + waiting, scaled to weight
+     * load_avg = runnable% * scale_load_down(load) */
     u64                 load_sum;
+    unsigned long       load_avg;
+
     /* runnable includes either actually running,
-     * or waiting for an available CPU */
+     * or waiting for an available CPU, scaled to cpu capabity
+     * runnable_avg = runnable% * SCHED_CAPACITY_SCALE */
     u64                 runnable_sum;
-    /* running state, scaled to 1024, no weight */
+    unsigned long       runnable_avg;
+
+    /* running state, scaled to, scaled to cpu capabity, not weight
+     * util_avg = running% * SCHED_CAPACITY_SCALE */
     u32                 util_sum;
+    unsigned long       util_avg;
 
     /* the part that was less than one pelt cycle(1024 us)
      * when last updated, unit in us */
     u32                 period_contrib;
 
-    unsigned long       load_avg;
-    unsigned long       runnable_avg;
-    unsigned long       util_avg;
     unsigned int        util_est; /* saved util before sleep */
 }
 ```
@@ -5591,6 +5598,8 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
 
     sa->last_update_time += delta << 10;
 
+    /* running is a subset of runnable (weight) so running can't be set if
+	 * runnable is clear. */
     if (!load)
         runnable = running = 0;
 
@@ -5727,6 +5736,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
             cfs_rq->prop_runnable_sum += runnable_sum;
         }
 
+        /* propagate util from gcfs_rq to gse by util_avg */
         update_tg_cfs_util(cfs_rq, se, gcfs_rq) {
             /* gcfs_rq->avg.util_avg only updated when gcfs_rq->curr != NULL,
              * which means the grp has running tasks
@@ -5757,6 +5767,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
                             cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
         }
 
+        /* propagate runnable from gcfs_rq to gse by runnable_avg */
         update_tg_cfs_runnable(cfs_rq, se, gcfs_rq) {
             long delta_sum, delta_avg = gcfs_rq->avg.runnable_avg - se->avg.runnable_avg;
             u32 new_sum, divider;
@@ -5781,6 +5792,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
                                 cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
         }
 
+        /* propagate load from gse to gcfs_rq by load_sum */
         update_tg_cfs_load(cfs_rq, se, gcfs_rq) {
             long delta_avg, running_sum, runnable_sum = gcfs_rq->prop_runnable_sum;
             unsigned long load_avg;
@@ -5795,12 +5807,12 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
             divider = get_pelt_divider(&cfs_rq->avg);
 
-            if (runnable_sum >= 0) {
+            if (runnable_sum >= 0) {    /* attach task */
                 /* Add runnable; clip at LOAD_AVG_MAX. Reflects that until
                  * the CPU is saturated running == runnable. */
                 runnable_sum += se->avg.load_sum;
                 runnable_sum = min_t(long, runnable_sum, divider);
-            } else {
+            } else {                    /* detach task */
                 /* Estimate the new unweighted runnable_sum of the gcfs_rq by
                  * assuming all tasks are equally runnable. */
                 if (scale_load_down(gcfs_rq->load.weight)) {
@@ -7846,7 +7858,41 @@ int detach_tasks(struct lb_env *env)
              * otherwise detach_tasks() will stop only after
              * detaching up to loop_max tasks. */
             load = task_h_load(p) {
-                update_cfs_rq_h_load(cfs_rq);
+                /* This needs to be done in a top-down fashion because the load of a child
+                 * group is a fraction of its parents load. */
+                update_cfs_rq_h_load(cfs_rq) {
+                    struct rq *rq = rq_of(cfs_rq);
+                    struct sched_entity *se = cfs_rq->tg->se[cpu_of(rq)];
+                    unsigned long now = jiffies;
+                    unsigned long load;
+
+                    if (cfs_rq->last_h_load_update == now)
+                        return;
+
+                    WRITE_ONCE(cfs_rq->h_load_next, NULL);
+                    for_each_sched_entity(se) {
+                        cfs_rq = cfs_rq_of(se);
+                        WRITE_ONCE(cfs_rq->h_load_next, se);
+                        if (cfs_rq->last_h_load_update == now)
+                            break;
+                    }
+
+                    if (!se) {
+                        cfs_rq->h_load = cfs_rq_load_avg(cfs_rq) {
+                            return cfs_rq->avg.load_avg;
+                        }
+                        cfs_rq->last_h_load_update = now;
+                    }
+
+                    while ((se = READ_ONCE(cfs_rq->h_load_next)) != NULL) {
+                        load = cfs_rq->h_load;
+                        load = div64_ul(load * se->avg.load_avg,
+                            cfs_rq_load_avg(cfs_rq) + 1);
+                        cfs_rq = group_cfs_rq(se);
+                        cfs_rq->h_load = load;
+                        cfs_rq->last_h_load_update = now;
+                    }
+                }
                 return div64_ul(p->se.avg.load_avg * cfs_rq->h_load,
                         cfs_rq_load_avg(cfs_rq) + 1);
             }
@@ -10852,6 +10898,7 @@ struct workqueue_struct *system_freezable_power_efficient_wq;
 * [Oracle - CFS Group Scheduling](https://blogs.oracle.com/linux/post/cfs-group-scheduling)
 * [内核工匠 - CFS组调度](https://mp.weixin.qq.com/s/BbXFZSq6xFclRahX7oPD9A)
 * [Dumpstack](http://www.dumpstack.cn/index.php/2022/04/05/726.html)
+* [调度器41—CFS组调度](../images/kernel/proc-sched-cfs-update_load_avg.png)
 
 * Group scheduling is extensively used in a myriad of use cases on different types of systems. Large enterprise systems use it for containers, user sessions etc. Embedded systems like android use it to segregate tasks of varying importance (e.g. foreground vs background) from each other.
 
