@@ -5503,7 +5503,6 @@ get_cpu_for_node(struct device_node *node)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 * [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
-* [](https://www.cnblogs.com/hellokitty2/p/17031629.html)
 
 ![](../images/kernel/proc-sched-cfs-pelt-segement.png)
 
@@ -5599,7 +5598,7 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
     sa->last_update_time += delta << 10;
 
     /* running is a subset of runnable (weight) so running can't be set if
-	 * runnable is clear. */
+	   * runnable is clear. */
     if (!load)
         runnable = running = 0;
 
@@ -6116,7 +6115,7 @@ update_rq_clock(rq) {
 **Call stack**
 
 ```c
-load_balance() {
+sched_balance_rq() {
     ret = should_we_balance(&env) {
         /* 1. check_cpumaks
          * 2. idle cpu and have no tasks and wakeup pending
@@ -6209,10 +6208,10 @@ void scheduler_tick(void){
 }
 
 init_sched_fair_class(void) {
-    open_softirq(SCHED_SOFTIRQ, run_rebalance_domains);
+    open_softirq(SCHED_SOFTIRQ, sched_balance_softirq);
 }
 
-void run_rebalance_domains(struct softirq_action *h)
+void sched_balance_softirq(struct softirq_action *h)
 {
     struct rq *this_rq = this_rq();
     enum cpu_idle_type idle = this_rq->idle_balance
@@ -6222,7 +6221,7 @@ void run_rebalance_domains(struct softirq_action *h)
         return;
     }
 
-    update_blocked_averages(this_rq->cpu) {
+    sched_balance_update_blocked_averages(this_rq->cpu) {
         bool decayed = false, done = true;
         struct rq *rq = cpu_rq(cpu);
         struct rq_flags rf;
@@ -6286,92 +6285,14 @@ void run_rebalance_domains(struct softirq_action *h)
         rq_unlock_irqrestore(rq, &rf);
     }
 
-    rebalance_domains(this_rq, idle) {
-        int continue_balancing = 1;
-        int cpu = rq->cpu;
-        int busy = idle != CPU_IDLE && !sched_idle_cpu(cpu);
-        unsigned long interval;
-        struct sched_domain *sd;
-        /* Earliest time when we have to do rebalance again */
-        unsigned long next_balance = jiffies + 60*HZ;
-        int update_next_balance = 0;
-        int need_serialize, need_decay = 0;
-        u64 max_cost = 0;
-
-        rcu_read_lock();
-        for_each_domain(cpu, sd) {
-            need_decay = update_newidle_cost(sd, 0/*cost*/)  {
-                if (cost > sd->max_newidle_lb_cost) {
-                    sd->max_newidle_lb_cost = cost;
-                    sd->last_decay_max_lb_cost = jiffies;
-                } else if (time_after(jiffies, sd->last_decay_max_lb_cost + HZ)) {
-                    sd->max_newidle_lb_cost = (sd->max_newidle_lb_cost * 253) / 256;
-                    sd->last_decay_max_lb_cost = jiffies;
-                    return true;
-                }
-
-                return false;
-            }
-            max_cost += sd->max_newidle_lb_cost;
-
-            if (!continue_balancing) {
-                if (need_decay)
-                    continue;
-                break;
-            }
-
-            interval = get_sd_balance_interval(sd, busy) {
-                unsigned long interval = sd->balance_interval;
-
-                if (cpu_busy)
-                    interval *= sd->busy_factor;
-
-                interval = msecs_to_jiffies(interval);
-                if (cpu_busy)
-                    interval -= 1;
-
-                return clamp(interval, 1UL, max_load_balance_interval);
-            }
-
-            need_serialize = sd->flags & SD_SERIALIZE;
-            if (need_serialize) {
-                if (!spin_trylock(&balancing))
-                    goto out;
-            }
-
-            if (time_after_eq(jiffies, sd->last_balance + interval)) {
-                ret = load_balance(cpu, rq, sd, idle, &continue_balancing);
-                    --->
-                if (ret) {
-                    idle = idle_cpu(cpu) ? CPU_IDLE : CPU_NOT_IDLE;
-                    busy = idle != CPU_IDLE && !sched_idle_cpu(cpu);
-                }
-                sd->last_balance = jiffies;
-                interval = get_sd_balance_interval(sd, busy);
-            }
-            if (need_serialize)
-                spin_unlock(&balancing);
-    out:
-            if (time_after(next_balance, sd->last_balance + interval)) {
-                next_balance = sd->last_balance + interval;
-                update_next_balance = 1;
-            }
-        }
-        if (need_decay) {
-            rq->max_idle_balance_cost =
-                max((u64)sysctl_sched_migration_cost, max_cost);
-        }
-        rcu_read_unlock();
-
-        if (likely(update_next_balance))
-            rq->next_balance = next_balance;
-    }
+    sched_balance_domains(this_rq, idle);
 }
 ```
 
 ## nohz_idle_balance
 
 ```c
+/* fair.c */
 static struct {
     cpumask_var_t idle_cpus_mask;
     atomic_t nr_cpus;
@@ -6586,7 +6507,7 @@ nohz_idle_balance(this_rq, idle) {
                     if (!time_after(jiffies, READ_ONCE(rq->last_blocked_load_update_tick)))
                         return true;
 
-                    update_blocked_averages(cpu);
+                    sched_balance_update_blocked_averages(cpu);
 
                     return rq->has_blocked_load;
                 }
@@ -6600,7 +6521,7 @@ nohz_idle_balance(this_rq, idle) {
                 rq_unlock_irqrestore(rq, &rf);
 
                 if (flags & NOHZ_BALANCE_KICK) {
-                    rebalance_domains(rq, CPU_IDLE);
+                    sched_balance_domains(rq, CPU_IDLE);
                         --->
                 }
             }
@@ -6686,7 +6607,7 @@ int sched_balance_newidle(rq, rf) {
     raw_spin_rq_unlock(this_rq);
 
     t0 = sched_clock_cpu(this_cpu);
-    update_blocked_averages(this_cpu);
+    sched_balance_update_blocked_averages(this_cpu);
 
     rcu_read_lock();
     for_each_domain(this_cpu, sd) {
@@ -6699,7 +6620,7 @@ int sched_balance_newidle(rq, rf) {
             break;
 
         if (sd->flags & SD_BALANCE_NEWIDLE) {
-            pulled_task = load_balance(this_cpu, this_rq, sd, CPU_NEWLY_IDLE, &continue_balancing);
+            pulled_task = sched_balance_rq(this_cpu, this_rq, sd, CPU_NEWLY_IDLE, &continue_balancing);
                 --->
             t1 = sched_clock_cpu(this_cpu);
             domain_cost = t1 - t0;
@@ -6742,9 +6663,92 @@ out:
 }
 ```
 
-## sched_balance_rq
+## sched_balance_domains
 
 ![](../images/kernel/proc-sched-load_balance.svg)
+
+```c
+sched_balance_domains(this_rq, idle) {
+    int continue_balancing = 1;
+    int cpu = rq->cpu;
+    int busy = idle != CPU_IDLE && !sched_idle_cpu(cpu);
+    unsigned long interval;
+    struct sched_domain *sd;
+    /* Earliest time when we have to do rebalance again */
+    unsigned long next_balance = jiffies + 60*HZ;
+    int update_next_balance = 0;
+    int need_serialize, need_decay = 0;
+    u64 max_cost = 0;
+
+    rcu_read_lock();
+    for_each_domain(cpu, sd) {
+        need_decay = update_newidle_cost(sd, 0/*cost*/)  {
+            if (cost > sd->max_newidle_lb_cost) {
+                sd->max_newidle_lb_cost = cost;
+                sd->last_decay_max_lb_cost = jiffies;
+            } else if (time_after(jiffies, sd->last_decay_max_lb_cost + HZ)) {
+                sd->max_newidle_lb_cost = (sd->max_newidle_lb_cost * 253) / 256;
+                sd->last_decay_max_lb_cost = jiffies;
+                return true;
+            }
+
+            return false;
+        }
+        max_cost += sd->max_newidle_lb_cost;
+
+        if (!continue_balancing) {
+            if (need_decay)
+                continue;
+            break;
+        }
+
+        interval = get_sd_balance_interval(sd, busy) {
+            unsigned long interval = sd->balance_interval;
+
+            if (cpu_busy)
+                interval *= sd->busy_factor;
+
+            interval = msecs_to_jiffies(interval);
+            if (cpu_busy)
+                interval -= 1;
+
+            return clamp(interval, 1UL, max_load_balance_interval);
+        }
+
+        need_serialize = sd->flags & SD_SERIALIZE;
+        if (need_serialize) {
+            if (!spin_trylock(&balancing))
+                goto out;
+        }
+
+        if (time_after_eq(jiffies, sd->last_balance + interval)) {
+            ret = sched_balance_rq(cpu, rq, sd, idle, &continue_balancing);
+                --->
+            if (ret) {
+                idle = idle_cpu(cpu) ? CPU_IDLE : CPU_NOT_IDLE;
+                busy = idle != CPU_IDLE && !sched_idle_cpu(cpu);
+            }
+            sd->last_balance = jiffies;
+            interval = get_sd_balance_interval(sd, busy);
+        }
+        if (need_serialize)
+            spin_unlock(&balancing);
+out:
+        if (time_after(next_balance, sd->last_balance + interval)) {
+            next_balance = sd->last_balance + interval;
+            update_next_balance = 1;
+        }
+    }
+    if (need_decay) {
+        rq->max_idle_balance_cost =
+            max((u64)sysctl_sched_migration_cost, max_cost);
+    }
+    rcu_read_unlock();
+
+    if (likely(update_next_balance))
+        rq->next_balance = next_balance;
+}
+```
 
 ```c
 ret = sched_balance_rq(cpu, rq, sd, idle, &continue_balancing) {
@@ -7407,9 +7411,9 @@ update_sd_lb_stats(env, &sds) {
                 sgs->group_load += load;
                 sgs->group_util += cpu_util_cfs(i) {
                     return cpu_util(
-                        cpu, NULL,
+                        cpu, NULL/*p*/,
                         -1, /* @dst_cpu: CPU @p migrates to, -1 if @p moves from @cpu or @p == NULL */
-                        0 /* 1 to enable boosting, otherwise 0 */
+                        0 /* @boost 1 to enable boosting, otherwise 0 */
                         ) {
                         struct cfs_rq *cfs_rq = &cpu_rq(cpu)->cfs;
                         unsigned long util = READ_ONCE(cfs_rq->avg.util_avg);
@@ -7452,8 +7456,20 @@ update_sd_lb_stats(env, &sds) {
                 if (nr_running > 1)
                     *sg_status |= SG_OVERLOAD;
 
-                if (cpu_overutilized(i))
+                ret = cpu_overutilized(i) {
+                    unsigned long  rq_util_min, rq_util_max;
+
+                    if (!sched_energy_enabled())
+                        return false;
+
+                    rq_util_min = uclamp_rq_get(cpu_rq(cpu), UCLAMP_MIN);
+                    rq_util_max = uclamp_rq_get(cpu_rq(cpu), UCLAMP_MAX);
+
+                    return !util_fits_cpu(cpu_util_cfs(cpu), rq_util_min, rq_util_max, cpu);
+                }
+                if (ret) {
                     *sg_status |= SG_OVERUTILIZED;
+                }
 
         #ifdef CONFIG_NUMA_BALANCING
                 sgs->nr_numa_running += rq->nr_numa_running;

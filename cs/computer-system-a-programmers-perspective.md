@@ -304,7 +304,7 @@ All information in a system—including disk files, programs stored in memory, u
 The only thing that distinguishes different data objects is the context in which we view them.
 
 ## 1.2 Programs Are Translated by Other Programs into Different Forms
-![](../images/caspp/1.2-compilation-system.png)
+![](../images/csapp/1.2-compilation-system.png)
 
 * Compilation System:
     1. Preprocessor Phase:
@@ -331,7 +331,7 @@ The only thing that distinguishes different data objects is the context in which
 ## 1.4 Processors Read and Interpret Instructions Stored in Memory
 
 ### 1.4.1 Hardware Organization of a System
-* ![Hadrware](../images/caspp/1.4-hardware-organization-of-a-typical-system.png)
+* ![Hadrware](../images/csapp/1.4-hardware-organization-of-a-typical-system.png)
     * CPU: Central Processing Unit
     * ALU: Arithmetic/Logic Unit
     * PC: Program counter
@@ -365,16 +365,16 @@ The only thing that distinguishes different data objects is the context in which
 ### 1.4.2 Running the hello Program
 1.  Read Command
     * Initially, the shell program is executing its instructions, waiting for us to type a command. As we type the characters “./hello” at the keyboard, the shell program reads each one into a register, and then stores it in memory
-    * ![](../images/caspp/1.4.2-1-read-command-from-keyboard.png)
+    * ![](../images/csapp/1.4.2-1-read-command-from-keyboard.png)
 2. Execute command
     * When we hit the enter key on the keyboard, the shell knows that we have finished typing the command.
     * The shell then loads the executable hello file by executing a sequence of instructions that copies the code and data in the hello object file from disk to main memory.
-    * ![](../images/caspp/1.4.2-2-load-exe-from-disk.png)
+    * ![](../images/csapp/1.4.2-2-load-exe-from-disk.png)
 3. Execute Programe
     * Using a technique known as direct memory access (DMA, discussed in Chapter 6), the data travels directly from disk to main memory, without passing through the processor
     * Once the code and data in the hello object file are loaded into memory, the processor begins executing the machine-language instructions in the hello program’s main routine.
     * These instructions copy the bytes in the “hello, world\n” string from memory to the register file, and from there to the display device, where they are displayed on the screen.
-    * ![](../images/caspp/1.4.2-3-write-output-to-display.png)
+    * ![](../images/csapp/1.4.2-3-write-output-to-display.png)
 
 ## 1.5 Caches Matter
 * An important lesson from this simple example is that a system spends a lot of time moving information from one place to another.
@@ -385,21 +385,21 @@ The only thing that distinguishes different data objects is the context in which
 
 * It might take 5 times longer for the process to access the L2 cache than the L1 cache, but this is still 5 to 10 times faster than accessing the main memory.
 
-![](../images/caspp/1.5-caches.png)
+![](../images/csapp/1.5-caches.png)
 
 ## 1.6 Storage Devices Form a Hierarchy
 The main idea of a memory hierarchy is that storage at one level serves as a cache for storage at the next lower level.
 
-![](../images/caspp/1.6-memory-hierachy.png)
+![](../images/csapp/1.6-memory-hierachy.png)
 
 ## 1.7 The Operating System Manages the Hardware
 * The operating system has two primary purposes:
     1. to protect the hardware from misuse by runaway applications
     2. to provide applications with simple and uniform mechanisms for manipulating complicated and often wildly different low-level hardware devices.
 
-![](../images/caspp/1.7-computer-system-layer.png)
+![](../images/csapp/1.7-computer-system-layer.png)
 
-![](../images/caspp/1.7-computer-system-abstraction.png)
+![](../images/csapp/1.7-computer-system-abstraction.png)
 
 * **Files** are abstractions for I/O devices
 * **virtual memory** is an abstraction for both the main memory and disk I/O devices
@@ -413,7 +413,7 @@ A **process** is the operating system’s abstraction for a running program. Mul
 
 **Context**, includes information such as the current values of the PC, the register file, and the contents of main memory.
 
-![](../images/caspp/1.7.1-process-context-switch.png)
+![](../images/csapp/1.7.1-process-context-switch.png)
 
 ### 1.7.2 Threads
 A process can actually consist of multiple execution units, called threads, each running in the context of the process and sharing the same code and global data.
@@ -422,7 +422,7 @@ It is easier to share data between multiple threads than between multiple proces
 
 ### 1.7.3 Virutal Memory
 Virtual memory is an abstraction that provides each process with the illusion that it has exclusive use of the main memory.
-![](../images/caspp/1.7.3-process-virtual-address-space.png)
+![](../images/csapp/1.7.3-process-virtual-address-space.png)
 
 ### 1.7.4 Files
 A **file** is a sequence of bytes, nothing more and nothing less. Every I/O device, including disks, keyboards, displays, and even networks, is modeled as a file.
@@ -456,7 +456,7 @@ Linus (torvalds@kruuna.helsinki.fi)
 * **concurrency** refers to the general concept of a system with multiple, simultaneous activities,
 * **parallelism** refers to the use of concurrency to make a system run faster.
 
-![](../images/caspp/1.9-inter-corei7-organization.png)
+![](../images/csapp/1.9-inter-corei7-organization.png)
 
 * **Thread-Level Concurrency**
     * **Hyperthreading**, sometimes called simultaneous multi-threading, is a technique that allows a single CPU to execute multiple flows of control.
@@ -499,7 +499,7 @@ The value of a **pointer** in C—whether it points to an integer, a structure, 
 Since a virtual address is encoded by such a word, the most important system parameter determined by the word size is the maximum size of the virtual address space.
 
 ### 2.1.3 Data Sizes
-![](../images/caspp/2.1.3-c-data-size.png)
+![](../images/csapp/2.1.3-c-data-size.png)
 
 ### 2.1.4 Addressing and Byte Ordering
 * For program objects that span multiple bytes, we must establish two conventions:
@@ -591,10 +591,10 @@ For an unsigned number x, the result of truncating it to k bits is equivalent to
 ## 3.3 Data Formts
 Due to its origins as a 16-bit architecture that expanded into a 32-bit one, Intel uses the term **word** to refer to a 16-bit data type. Based on this, they refer to 32bit quantities as **double words**. They refer to 64-bit quantities as **quad words**.
 
-![C Data Formats](../images/caspp/3.1-Sizes-of-C-data-types-in-IA32.png)
+![C Data Formats](../images/csapp/3.1-Sizes-of-C-data-types-in-IA32.png)
 
 ## 3.4 Accessing Information
-![Accessing Information](../images/caspp/3.2-IA32-integer-registers.png)
+![Accessing Information](../images/csapp/3.2-IA32-integer-registers.png)
 
 * Some instructions use fixed registers as sources and/or destinations.
 
@@ -604,10 +604,10 @@ Due to its origins as a 16-bit architecture that expanded into a 32-bit one, Int
 * When a byte instruction updates one of these single-byte “register elements,” the remaining 3 bytes of the register do not change.
 
 ### 3.4.1 Operand Specifiers
-![Operand Forms](../images/caspp/3.3-Operand-forms.png)
+![Operand Forms](../images/csapp/3.3-Operand-forms.png)
 
 ### 3.4.2 Data Movement Instructions
-![Data Movement Instructions](../images/caspp/3.4-Data-movement-instructions.png)
+![Data Movement Instructions](../images/csapp/3.4-Data-movement-instructions.png)
 
 * IA32 imposes the restriction that a move instruction cannot have both operands refer to memory locations.
     * Copying a value from one memory location to another requires two instructions:
@@ -656,7 +656,7 @@ movb $0xF, (%bl)    // Cannot use %bl as address register
 ## 3.5 Arithmatic and Logic Operations
 
 ### 3.5.1 Load Affect Address
-![integer-arithmetic-operations.png](../images/caspp/3.7-integer-arithmetic-operations.png)
+![integer-arithmetic-operations.png](../images/csapp/3.7-integer-arithmetic-operations.png)
 
 * The load effective address instruction leal is actually a variant of the movl instruction. It has the form of an instruction that reads from memory to a register, but it does not reference memory at all.
 
@@ -681,7 +681,7 @@ movb $0xF, (%bl)    // Cannot use %bl as address register
 
 ### 3.5.5 Special Arithmetic Operations
 The table describes instructions that support generating the full 64-bit product of two 32-bit numbers, as well as integer division.
-![](../images/caspp/3.5.5-apecial-arithmetic-operations.png)
+![](../images/csapp/3.5.5-apecial-arithmetic-operations.png)
 
 * For both of these, one argument must be in register %eax, and the other is given as the instruction source operand.
 * mul
@@ -729,12 +729,12 @@ The table describes instructions that support generating the full 64-bit product
 * **SF**: Sign Flag. The most recent operation yielded a negative value.
 * **OF**: Overflow Flag. The most recent operation caused a two’s-complement overflow—either negative or positive.
 
-![](../images/caspp/3.6.1-comp-test-instructions.png)
+![](../images/csapp/3.6.1-comp-test-instructions.png)
 
 ### 3.6.2 Accessing the Condition Codes
 * There are three common ways of using the condition codes:
     * we can set a single byte to 0 or 1 depending on some combination of the condition codes
-        * ![](../images/caspp/3.6.1-set-instructions.png)
+        * ![](../images/csapp/3.6.1-set-instructions.png)
         * It is important to recognize that the suffixes for these instructions denote different conditions and not different operand sizes. For example, instructions setl and setb denote “set less” and “set below,” not “set long word” or “set byte.”
     * we can conditionally jump to some other part of the program
     * we can conditionally transfer data.
@@ -742,7 +742,7 @@ The table describes instructions that support generating the full 64-bit product
 * Although all arithmetic and logical operations set the condition codes, the descriptions of the different set instructions apply to the case where a comparison instruction has been executed, setting the condition codes according to the computation t = a-b.
 
 ### 3.6.3 Jump Instructions and Their Encoding
-![](../images/caspp/3.6.3-jump-instruction.png)
+![](../images/csapp/3.6.3-jump-instruction.png)
 
 * In generating the object-code file, the assembler determines the addresses of all labeled instructions and encodes the jump targets (the addresses of the destination instructions) as part of the jump instructions.
 * In assembly code, jump targets are written using symbolic labels. The assembler, and later the linker, generate the proper encodings of the jump targets.
@@ -868,7 +868,7 @@ int test(int x, int y) {
     * That means time required by the function ranges between around 13 and 57 cycles, depending on whether or not the branch is predicted correctly.
     * On the other hand, the code compiled using conditional moves requires around 14 clock cycles regardless of the data being tested. The flow of control does not depend on data, and this makes it easier for the processor to keep its pipeline full.
 
-![](../images/caspp/3.6.6-condition-move-instruction.png)
+![](../images/csapp/3.6.6-condition-move-instruction.png)
 
 * As with the different `set` and `jump` instructions, the outcome of these instructions depends on the values of the condition codes. The source value is read from either memory or the source register, but it is copied to the destination only if the specified condition holds.
 * Implementation Deails:
@@ -942,7 +942,7 @@ In addition, it must allocate space for the local variables of the procedure on 
     by array or structure references.
     * The address operator ‘&’ is applied to a local variable, and hence we must be able to generate an address for it.
 
-![](../images/caspp/3.7.1-stack-frame.png)
+![](../images/csapp/3.7.1-stack-frame.png)
 
 ### 3.7.2 Transferring Control
 Instruction | Description
@@ -962,7 +962,7 @@ ret | Get return function address from stack and jump to
 
 * The **return address** is the address of the instruction immediately following the call in the program, so that execution will resume at this location when the called procedure returns.
 
-* ![](../images/caspp/3.7.2-instruction-of-call-ret.png)
+* ![](../images/csapp/3.7.2-instruction-of-call-ret.png)
 
     * The effect of the call is to push the return address 0x080483e1 onto the stack and to jump to the first instruction in function sum, at address 0x08048394 (Figure 3.22(b)). The execution of function sum continues until it hits the ret instruction at address 0x080483a4. This instruction pops the value 0x080483e1 from the stack and jumps to this address, resuming the execution of main just after the call instruction in sum (Figure 3.22(c)).
 
@@ -1004,7 +1004,7 @@ int caller() {
     return sum * diff;
 }
 ```
-![](../images/caspp/3.7.4-procedure-example.png)
+![](../images/csapp/3.7.4-procedure-example.png)
 
 ```c++
 caller:
@@ -1065,7 +1065,7 @@ swap_add:
     ```
 
 ### 3.8.2 Pointer Arithmetic
-![Pointer Arithemtic](../images/caspp/3.8.2-pointer-arithmetic.png)
+![Pointer Arithemtic](../images/csapp/3.8.2-pointer-arithmetic.png)
 
 * The array subscripting operation can be applied to both arrays and pointers. The array reference A[i] is identical to the expression *(A+i). It computes the address of the ith array element and then accesses this memory location.
 
@@ -1116,7 +1116,7 @@ movl    (%edx, %eax, 4),    %eax    // read from M[Xa + 4*j + 12*i]
 ## 3.11 Life in the Real World: Using the gdb Debugger
 
 ## 3.12 Out-of-Bounds Memory References and Buffer Overflow
-![](../images/caspp/3.12-stack-overflow.png)
+![](../images/csapp/3.12-stack-overflow.png)
 
 * Depending on which portions of the state are affected, the program can misbehave in several different ways:
     * If the stored value of **%ebx** is corrupted, then this register will not be restored properly, and so the caller will not be able to rely on the integrity of this register, even though it should be callee-saved.
@@ -1179,10 +1179,10 @@ movl    (%edx, %eax, 4),    %eax    // read from M[Xa + 4*j + 12*i]
 2. Condition codes: ZF, SF, OF
 3. status code Stat: some sort of exception has occurred, such as when an instruction attempts to read from an invalid memory address.
 
-![](../images/caspp/4.1.1-y86-programmer-visible-state.png)
+![](../images/csapp/4.1.1-y86-programmer-visible-state.png)
 
 ### 4.1.2 Y86 Instructions
-![](../images/caspp/4.1.2-y86-instruction-set.png)
+![](../images/csapp/4.1.2-y86-instruction-set.png)
 * The IA32 movl instruction is split into four different instructions: irmovl, rrmovl, mrmovl, and rmmovl, explicitly indicating the form of the source and destination. The source is either immediate (i), register (r), or memory (m).
 * There are four integer operation instructions as OPl: addl, subl, andl, and xorl. They operate only on register data.
 * The seven jump instructions: mp, jle, jl, je, jne, jge, and jg.
@@ -1195,9 +1195,9 @@ movl    (%edx, %eax, 4),    %eax    // read from M[Xa + 4*j + 12*i]
 * Each instruction requires between 1 and 6 bytes, depending on which fields are required. Every instruction has an initial byte identifying the instruction type.
 * This byte is split into two 4-bit parts: the high-order, or code, part, and the low-order, or function, part.
 
-![](../images/caspp/4.1.3-y86-program-register-indentifiers.png)
+![](../images/csapp/4.1.3-y86-program-register-indentifiers.png)
 
-![](../images/caspp/4.1.3-function-codes-for-y86-instruction-set.png)
+![](../images/csapp/4.1.3-function-codes-for-y86-instruction-set.png)
 * Each of the eight program registers has an associated register identifier (ID) ranging from 0 to 7. The numbering of registers in Y86 matches what is used in IA32.
 * The program registers are stored within the CPU in a register file, a small random-access memory where the register IDs serve as addresses.
 
@@ -1227,7 +1227,7 @@ Value | Name | Meaning
     * clock signals to **regulate** the updating of the memory elements
 
 ### 4.2.1 Logic Gates
-![](../images/caspp/4.2.1-logic-gate-types.png)
+![](../images/csapp/4.2.1-logic-gate-types.png)
 * Logic gates operate on single-bit quantities, not entire words.
 * Logic gates are always active. If some input to a gate changes, then within some small amount of time, the output will change accordingly.
 
@@ -1237,11 +1237,11 @@ Value | Name | Meaning
 * Logical expressions in C have the property that they might only be partially evaluated. If the outcome of an And or Or operation can be determined by just evaluating the first argument, then the second argument will not be evaluated. In contrast, combinational logic does not have any **partial evaluation rules**.
 
 ### 4.2.3 Word-Level Combinational Circuits and HCL Integer Expressions
-![](../images/caspp/4.2.3-work-level-combinational-circuits.png)
+![](../images/csapp/4.2.3-work-level-combinational-circuits.png)
 
-![](../images/caspp/4.2.3-word-level-multiplexor.png)
+![](../images/csapp/4.2.3-word-level-multiplexor.png)
 
-![](../images/caspp/4.2.3-alu.png)
+![](../images/csapp/4.2.3-alu.png)
 * **Arithmetic/logic unit (ALU)** circuit has three inputs: two data inputs labeled A and B, and a control input. Depending on the setting of the control input, the circuit will perform different arithmetic or logical operations on the data inputs.
 
 ### 4.2.4 Set Membership
@@ -1258,14 +1258,14 @@ Value | Name | Meaning
     * **Promgram register**: In machine-level programming, the registers represent a small collection of addressable words in the CPU, where the addresses consist of register IDs.
 
 * Hardware Register Operation
-    * ![](../images/caspp/4.2.5-register-operation.png)
+    * ![](../images/csapp/4.2.5-register-operation.png)
     * For most of the time, the register remains in a fixed state (shown as x), generating an output equal to its current state.
     * Signals propagate through the combinational logic preceding the register, creating a new value for the register input (shown as y), but the register output remains fixed as long as the clock is low.
     * As the clock rises, the input signals are loaded into the register as its next state (y), and this becomes the new register output until the next rising clock edge.
     * A key point is that the registers serve as barriers between the combinational logic in different parts of the circuit. Values only propagate from a register input to its output once every clock cycle at the rising clock edge.
 
 * Register File
-    * ![](../images/caspp/4.2.5-register-file.png)
+    * ![](../images/csapp/4.2.5-register-file.png)
     * This register file has two read ports, named A and B, and one write port, named W.
     * Such a multiported random-access memory allows multiple read and write operations to take place simultaneou
     * In the register file diagrammed, the circuit can read the values of two program registers and update the state of a third.
@@ -1277,7 +1277,7 @@ Value | Name | Meaning
         * If we update a register while using the same register ID on the read port, we would observe a transition from the old value to the new.
 
 * Data Memory
-    * ![](../images/caspp/5.2.5-data-memory.png)
+    * ![](../images/csapp/5.2.5-data-memory.png)
     * This memory has a single address input, a data input for writing, and a data output for reading.
     * Like the register file, **reading** from our memory operates in a manner similar to combinational logic: If we provide an address on the address input and set the write control signal to 0, then after some delay, the value stored at that address will appear on data out. The error signal will be set to 1 if the address is out of range and to 0 otherwise.
     * **Writing** to the memory is controlled by the clock: we set address to the desired address, data in to the desired value, and write to 1. When we then operate the clock, the specified location in the memory will be updated, as long as the address is valid.
@@ -1296,18 +1296,18 @@ Value | Name | Meaning
 * **PC update**: The PC is set to the address of the next instruction.
 
 * opl, rrmovl, irmolv implementation
-    * ![](../images/caspp/4.3.1-opl-rrmovl-irmolv-imp-empl.png)
+    * ![](../images/csapp/4.3.1-opl-rrmovl-irmolv-imp-empl.png)
 * rmmovl, mrmovl implementation
-    * ![](../images/caspp/4.3.1-rmmovl-mrmovl-imp-empl.png)
+    * ![](../images/csapp/4.3.1-rmmovl-mrmovl-imp-empl.png)
 * push, pop implementation
-    * ![](../images/caspp/4.3.1-push-pop-impl-empl.png)
+    * ![](../images/csapp/4.3.1-push-pop-impl-empl.png)
 * jmp, call, ret implementation
-    * ![](../images/caspp/4.3.1-jmp-call-ret-impl-empl.png)
-    * ![](../images/caspp/4.3.1-jmp-call-ret-impl-empl-2.png)
+    * ![](../images/csapp/4.3.1-jmp-call-ret-impl-empl.png)
+    * ![](../images/csapp/4.3.1-jmp-call-ret-impl-empl-2.png)
 
 ### 4.3.2 SEQ Hardware Structure
-![](../images/caspp/4.3.2-abstract-view-seq-sequential-impl.png)
-![](../images/caspp/4.3.2-detailed-view-seq-sequential-impl.png)
+![](../images/csapp/4.3.2-abstract-view-seq-sequential-impl.png)
+![](../images/csapp/4.3.2-detailed-view-seq-sequential-impl.png)
 
 
 ### 4.3.3 SEQ Timing
@@ -1327,7 +1327,7 @@ Value | Name | Meaning
 
 * E.g., we can see that some instructions (the integer operations) set the condition codes, and some instructions (the jump instructions) read these condition codes, but no instruction must both set and then read the condition codes. Even though the condition codes are not set until the clock rises to begin the next clock cycle, they will be updated before any instruction attempts to read them.
 
-* ![](../images/caspp/4.3.3-tracing-two-cycyles-exec-by-seq.png)
+* ![](../images/csapp/4.3.3-tracing-two-cycyles-exec-by-seq.png)
     * We assume the processing starts with the condition codes, listed in the order ZF, SF, and OF, set to 100.
     * At the beginning of clock cycle 3 (point 1), the state elements hold the state as updated by the second irmovl instruction (line 2 of the listing), shown in light gray. The combinational logic is shown in white, indicating that it has not yet had time to react to the changed state.
     * The clock cycle begins with address 0x00c loaded into the program counter. This causes the addl instruction (line 3 of the listing), shown in blue, to be fetched and processed. Values flow through the combinational logic, including the reading of the random-access memories.
@@ -1339,10 +1339,10 @@ Value | Name | Meaning
 * Every time the clock transitions from low to high, the processor begins executing a new instruction.
 
 ### 4.3.4 SEQ Stage Implementations
-* ![](../images/caspp/4.3.4-state-code.png)
+* ![](../images/csapp/4.3.4-state-code.png)
 
 * Fetch Stage
-    * ![](../images/caspp/4.3.4-fetch-stage.png)
+    * ![](../images/csapp/4.3.4-fetch-stage.png)
     * Code
         ```
         bool need_regids = icode in {
@@ -1351,7 +1351,7 @@ Value | Name | Meaning
         ```
     * This unit reads 6 bytes from memory at a time, using the PC as the address of the first byte (byte 0).
 * Decode and Write-Back Stages
-    * ![](../images/caspp/4.3.4-decode-write-back-stage.png)
+    * ![](../images/csapp/4.3.4-decode-write-back-stage.png)
     * Code
         ```c++
         # Code from SEQ
@@ -1381,7 +1381,7 @@ Value | Name | Meaning
         ```
     * The register file has four ports. It supports up to two simultaneous reads (on ports A and B) and two simultaneous writes (on ports E and M). Each port has both an address connection and a data connection, where the address connection is a register ID, and the data connection is a set of 32 wires serving as either an output word (for a read port) or an input word (for a write port) of the register file.
 * Execute Stage
-    * ![](../images/caspp/4.3.4-execute-stage.png)
+    * ![](../images/csapp/4.3.4-execute-stage.png)
     * Code
         ```
         int aluA = [
@@ -1404,7 +1404,7 @@ Value | Name | Meaning
         bool set_cc = icode in { IOPL };
         ```
 * Memory Stage
-    * ![](../images/caspp/4.3.4-memory-stage.png)
+    * ![](../images/csapp/4.3.4-memory-stage.png)
     *   Code
         ```
         int mem_addr = [
@@ -1434,7 +1434,7 @@ Value | Name | Meaning
         ];
         ```
 * PC Update
-    * ![](../images/caspp/4.3.4-pc-update-stage.png)
+    * ![](../images/csapp/4.3.4-pc-update-stage.png)
     * Code
         ```
         int new_pc = [
@@ -1455,8 +1455,8 @@ Value | Name | Meaning
 ### 4.4.1 Computational Pipelines
 
 ### 4.4.2 A Detailed Look at Pipeline Operation
-![](../images/caspp/4.4.2-three-way-pipeline.png)
-![](../images/caspp/4.4.2-three-way-pipeline-details.png)
+![](../images/csapp/4.4.2-three-way-pipeline.png)
+![](../images/csapp/4.4.2-three-way-pipeline-details.png)
 * Just before the rising clock at time 240 (point 1), the values computed in stage A for instruction I2 have reached the input of the first pipeline register, but its state and output remain set to those computed during stage A for instruction I1.
 * The values computed in stage B for instruction I1 have reached the input of the second pipeline register.
 * As the clock rises, these inputs are loaded into the pipeline registers, becoming the register outputs (point 2). In addition, the input to stage A is set to initiate the computation of instruction I3. The signals then propagate through the combinational logic for the different stages (point 3).
@@ -1465,35 +1465,35 @@ Value | Name | Meaning
 
 ### 4.4.3 Limitations of Pipelining
 * 1. Nonuniform Partitioning
-    * ![](../images/caspp/4.4.3-pipeline-limitation-nonuniform-partitioning.png)
+    * ![](../images/csapp/4.4.3-pipeline-limitation-nonuniform-partitioning.png)
     * The system throughput is limited by the speed of the slowest stage.
 * 2. Diminishing Returns of Deep Pipelining
-    * ![](../images/caspp/4.4.3-pipeline-limitations-deep-pipeline.png)
+    * ![](../images/csapp/4.4.3-pipeline-limitations-deep-pipeline.png)
     * In this example, we have divided the computation into six stages, in doubling the number of pipeline stages, we improve the performance by a factor of 14.29/8.33 = 1.71. Even though we have cut the time required for each computation block by a factor of 2, we do not get a doubling of the throughput, due to the delay through the pipeline registers.
     * This delay becomes a limiting factor in the throughput of the pipeline. In our new design, this delay consumes 28.6% of the total clock period.
     * Modern processors employ very deep (15 or more stages) pipelines in an attempt to maximize the processor clock rate. The processor architects divide the instruction execution into a large number of very simple steps so that each stage can have a very small delay.
 
 ### 4.4.4 Pipelining a System with Feedback
 * 3. Pipeline Limistations Logic Dependencies
-    * ![](../images/caspp/4.4.4-pipeline-limitations-logic-denpendency.png)
+    * ![](../images/csapp/4.4.4-pipeline-limitations-logic-denpendency.png)
     * It would be unacceptable to alter the system behavior as occurred in the example of Figure 4.38. Somehow we must deal with the data and control dependencies between instructions so that the resulting behavior matches the model defined by the ISA.
 
 ## 4.5 Pipelined Y86 Implementations
 
 The pipeline final implementation:
-![](../images/caspp/4.5.8-pipelne-final-imp.png)
+![](../images/csapp/4.5.8-pipelne-final-imp.png)
 
 ### 4.5.1 SEQ+: Rearranging the Computation Stages
 * As a transitional step toward a pipelined design, we must slightly rearrange the order of the five stages in SEQ so that the PC update stage comes at the beginning of the clock cycle, rather than at the end.
-* ![](../images/caspp/4.5.1-rearranging-pc.png)
+* ![](../images/csapp/4.5.1-rearranging-pc.png)
     * With SEQ (Figure 4.39(a)), the PC computation takes place at the end of the clock cycle, computing the new value for the PC register based on the values of signals computed during the current clock cycle.
     * With SEQ+ (Figure 4.39(b)), we create state registers to hold the signals computed during an instruction. Then, as a new clock cycle begins, the values propagate through the exact same logic to compute the PC for the now-current instruction. We label the registers “pIcode,” “pCnd,” and so on, to indicate that on any given cycle, they hold the control signals generated during the previous cycle.
-* ![](../images/caspp/4.5.1-seq+-hardware-structure.png)
+* ![](../images/csapp/4.5.1-seq+-hardware-structure.png)
 * One curious feature of SEQ+ is that there is no hardware register storing the program counter. Instead, the PC is computed dynamically based on some state information stored from the previous instruction. This is a small illustration of the fact that we can implement a processor in a way that differs from the conceptual model implied by the ISA, as long as the processor correctly executes arbitrary machinelanguage programs.
 
 ### 4.5.2 Inserting Pipeline Registers
 * PIPE(final pipeline see 4.5.7)
-    ![](../images/caspp/4.5.2-inserting-pipeline-registers.png)
+    ![](../images/csapp/4.5.2-inserting-pipeline-registers.png)
 * The pipeline registers are labeled as follows:
     * **F** holds a predicted value of the program counter, as will be discussed shortly.
     * **D** sits between the fetch and decode stages. It holds information about the most recently fetched instruction for processing by the decode stage.
@@ -1501,7 +1501,7 @@ The pipeline final implementation:
     * **M** sits between the execute and memory stages. It holds the results of the most recently executed instruction for processing by the memory stage. It also holds information about branch conditions and branch targets for processing conditional jumps.
     * **W** sits between the memory stage and the feedback paths that supply the computed results to the register file for writing and the return address to the PC selection logic when completing a ret instruction.
 * Example of instruction flow through pipeline.
-    * ![](../images/caspp/4.5.2-empl-instruction-flow-throuhg-pipeline.png)
+    * ![](../images/csapp/4.5.2-empl-instruction-flow-throuhg-pipeline.png)
 
 ### 4.5.3 Rearranging and Relabeling Signals
 * In the detailed structure of PIPE–, there are four white boxes labeled “stat” that hold the status codes for four different instructions.
@@ -1536,21 +1536,21 @@ The pipeline final implementation:
 * When such dependencies have the potential to cause an erroneous computation by the pipeline, they are called hazards, **data hazards** or **control hazards**.
 
 * Example:
-    * ![](../images/caspp/4.5.5-pipeline-hazard-prog-1.png)
+    * ![](../images/csapp/4.5.5-pipeline-hazard-prog-1.png)
         * After the start of cycle 7, both of the irmovl instructions have passed through the write-back stage, and so the register file holds the updated values of %edx and %eax.
         * As the addl instruction passes through the decode stage during cycle 7, it will therefore read the correct values for its source operands. The data dependencies between the two irmovl instructions and the addl instruction have not created data hazards in this example.
         * Prog1 will flow through our pipeline and get the correct results, because the three nop instructions create a delay between instructions with data dependencies
-    * ![](../images/caspp/4.5.5-pipeline-hazard-prog-2.png)
+    * ![](../images/csapp/4.5.5-pipeline-hazard-prog-2.png)
         * In this case, the crucial step occurs in cycle 6, when the addl instruction reads its operands from the register file.
         * The first irmovl instruction has passed through the write-back stage, and so program register %edx has been updated in the register file.
         * The second irmovl instruction is in the writeback stage during this cycle, and so the write to program register %eax only occurs at the start of cycle 7 as the clock rises.
         * As a result, the incorrect value zero would be read for register %eax (recall that we assume all registers are initially 0), since the pending write for this register has not yet occurred.
         * Clearly we will have to adapt our pipeline to handle this hazard properly.
-    * ![](../images/caspp/4.5.5-pipeline-hazard-prog-3.png)
+    * ![](../images/csapp/4.5.5-pipeline-hazard-prog-3.png)
         * We must examine the behavior of the pipeline during cycle 5 as the addl instruction passes through the decode stage.
         * Unfortunately, the pending write to register %edx is still in the write-back stage, and the pending write to %eax is still in the memory stage.
         * Therefore, the addl instruction would get the incorrect values for both operands.
-    * ![](../images/caspp/4.5.5-pipeline-hazard-prog-4.png)
+    * ![](../images/csapp/4.5.5-pipeline-hazard-prog-4.png)
         * We must examine the behavior of the pipeline during cycle 4 as the addl instruction passes through the decode stage.
         * Unfortunately, the pending write to register %edx is still in the memory stage, and the new value for %eax is just being computed in the execute stage.
         * Therefore, the addl instruction would get the incorrect values for both operands.
@@ -1565,18 +1565,18 @@ The pipeline final implementation:
 ### 4.5.6 Avoiding Data Hazards by Stalling
 * **Stalling**, where the processor holds back one or more instructions in the pipeline until the hazard condition no longer holds.
 * Our processor can avoid data hazards by holding back an instruction in the decode stage until the instructions generating its source operands have passed through the write-back stage. The details of this mechanism will be discussed in Section 4.5.11.
-* ![](../images/caspp/4.5.6-stalling-prog-2.png)
+* ![](../images/csapp/4.5.6-stalling-prog-2.png)
     * After decoding the addl instruction in cycle 6, the stall control logic detects a data hazard due to the pending write to register %eax in the write-back stage. It injects a bubble into execute stage and repeats the decoding of the addl instruction in cycle 7. In effect, the machine has dynamically inserted a nop instruction, giving a flow similar to that shown for prog1.
-* ![](../images/caspp/4.5.6-stalling-prog-4.png)
+* ![](../images/csapp/4.5.6-stalling-prog-4.png)
 * This mechanism can be implemented fairly easily (see Problem 4.51), but the resulting performance is not very good. There are numerous cases in which one instruction updates a register and a closely following instruction uses the same register. This will cause the pipeline to stall for up to three cycles, reducing the overall throughput significantly.
 
 ### 4.5.7 Avoiding Data Hazards by Forwarding
 * Our design for PIPE– reads source operands from the register file in the decode stage, but there can also be a pending write to one of these source registers in the write-back stage. Rather than stalling until the write has completed, it can simply pass the value that is about to be written to pipeline register E as the source operand.
-* ![](../images/caspp/4.5.7-forwarding-prog-2.png)
+* ![](../images/csapp/4.5.7-forwarding-prog-2.png)
     * In cycle 6, the decode-stage logic detects that register %eax is the source register for operand valB, and that there is also a pending write to %eax on write port E. It can therefore avoid stalling by simply using the data word supplied to port E (signal W_valE) as the value for operand valB. This technique of passing a result value directly from one pipeline stage to an earlier one is commonly known as data **forwarding**.
-* ![](../images/caspp/4.5.7-forwarding-prog-3.png)
+* ![](../images/csapp/4.5.7-forwarding-prog-3.png)
     *  In cycle 5, the decodestage logic detects a pending write to register %edx in the write-back stage and to register %eax in the memory stage. It uses these as the values for valA and valB rather than the values read from the register file.
-* ![](../images/caspp/4.5.7-forwarding-prog-4.png)
+* ![](../images/csapp/4.5.7-forwarding-prog-4.png)
     * In cycle 4, the decodestage logic detects a pending write to register %edx in the memory stage. It also detects that a new value is being computed for register %eax in the execute stage. It uses these as the values for valA and valB rather than the values read from the register file.
 * Data forwarding requires adding additional data connections and control logic to the basic hardware structure.
 * Forwarding can also be used:
@@ -1587,14 +1587,14 @@ The pipeline final implementation:
     * This gives a total of five different forwarding sources (e_valE, m_valM, M_valE, W_valM, and W_valE) and two different forwarding destinations (valA and valB).
 * Decode-stage logic can determine whether to use a value from the register file or to use a forwarded value.
 * Pipeline Final Implementation
-    ![](../images/caspp/4.5.8-pipelne-final-imp.png)
+    ![](../images/csapp/4.5.8-pipelne-final-imp.png)
 
 ### 4.5.8 Load/Use Data Hazards
 * One class of data hazards cannot be handled purely by forwarding, because memory reads occur late in the pipeline.
-* ![](../images/caspp/4.5.8-prog-5.png)
+* ![](../images/csapp/4.5.8-prog-5.png)
     * The addl instruction requires the value of the register in cycle 7, but it is not generated by the mrmovl instruction until cycle 8. In order to “forward” from the mrmovl to the addl, the forwarding logic would have to make the value go backward in time! But this is clearly impossible,
     * We can avoid a load/use data hazard with a combination of stalling and forwarding. This requires modifications of the control logic, but it can use existing bypass paths.
-* ![](../images/caspp/4.5.8-prog-5-solution.png)
+* ![](../images/csapp/4.5.8-prog-5-solution.png)
     * By stalling the addl instruction for one cycle in the decode stage, the value for valB can be forwarded from the mrmovl instruction in the memory stage to the addl instruction in the decode stage.
 * This use of a stall to handle a load/use hazard is called a **load interlock**. Load interlocks combined with forwarding suffice to handle all possible forms of data hazards. Since only load interlocks reduce the pipeline throughput, we can nearly achieve our throughput goal of issuing one new instruction on every clock cycle.
 
@@ -1634,7 +1634,7 @@ The pipeline final implementation:
 
 ### 4.5.10 PIPE Stage Implementations
 * PC Selection and Fetch Stage
-    * ![](../images/caspp/4.5.10-pipe-stage-impl-fetch.png)
+    * ![](../images/csapp/4.5.10-pipe-stage-impl-fetch.png)
     * Code
         ```
         int f_pc = [
@@ -1657,7 +1657,7 @@ The pipeline final implementation:
         ];
         ```
 * Decode and Write-Back Stages
-    * ![](../images/caspp/4.5.10-pipe-stage-impl-decode.png)
+    * ![](../images/csapp/4.5.10-pipe-stage-impl-decode.png)
     * No instruction requires both valP and the value read from register port A, and so these two can be merged to form the signal valA for later stages. The block labeled “Sel+Fwd A” performs this task and also implements the forwarding logic for source operand valA.
     * The block labeled “Fwd B” implements the forwarding logic for source operand valB.
     * The register write locations are specified by the dstE and dstM signals from the write-back stage rather than from the decode stage, since it is writing the results of the instruction currently in the write-back stage.
@@ -1706,11 +1706,11 @@ The pipeline final implementation:
 
 * Execute Stage
 
-* ![](../images/caspp/4.5.10-pipe-stage-impl-exec.png)
+* ![](../images/csapp/4.5.10-pipe-stage-impl-exec.png)
 
 * Memory Stage
 
-    * ![](../images/caspp/4.5.10-pipe-stage-impl-memory.png)
+    * ![](../images/csapp/4.5.10-pipe-stage-impl-memory.png)
 
 ### 4.5.11 Pipeline Control Logic
 * Pipeline control logic must handle the following four control cases for which other mechanisms, such as data forwarding and branch prediction, do not suffice:
@@ -1734,10 +1734,10 @@ The pipeline final implementation:
             0x030: .pos 0x30
             0x030: Stack:                   # Stack: Stack pointer
             ```
-        * ![](../images/caspp/4.5.11-prog-7.png)
+        * ![](../images/csapp/4.5.11-prog-7.png)
 
             * The pipeline should stall while the ret passes through the decode, execute, and memory stages, injecting three bubbles in the process. The PC selection logic will choose the return address as the instruction fetch address once the ret reaches the write-back stage (cycle 7).
-        * ![](../images/caspp/4.5.11-prog-7-2.png)
+        * ![](../images/csapp/4.5.11-prog-7-2.png)
             * The fetch stage repeatedly fetches the rrmovl instruction following the ret instruction, but then the pipeline control logic injects a bubble into the decode stage rather than allowing the rrmovl instruction to proceed. The resulting behavior is equivalent to that shown in Figure 4.60.
             * The key observation here is that there is no way to inject a bubble into the fetch stage of our pipeline. On every cycle, the fetch stage reads some instruction from the instruction memory.
 * Looking at the HCL code for implementing the PC prediction logic in Section 4.5.10, we can see that for the ret instruction the new value of the PC is predicted to be valP, the address of the following instruction. In our example program, this would be 0x021, the address of the rrmovl instruction following the ret. This prediction is not correct for this example, nor would it be for most cases.
@@ -1759,13 +1759,13 @@ The pipeline final implementation:
             0x01a:    halt
             ```
         *  As before, the instructions are listed in the order they enter the pipeline, rather than the order they occur in the program.
-    * ![](../images/caspp/4.5.11-prog-8.png)
+    * ![](../images/csapp/4.5.11-prog-8.png)
 
         * The pipeline predicts branches will be taken and so starts fetching instructions at the jump target. Two instructions are fetched before the misprediction is detected in cycle 4 when the jump instruction flows through the execute stage. In cycle 5, the pipeline cancels the two target instructions by injecting bubbles into the decode and execute stages, and it also fetches the instruction following the jump.
     * We can simply cancel (sometimes called instruction squashing) the two misfetched instructions by `injecting bubbles` into the decode and execute instructions on the following cycle while also fetching the instruction following the jump instruction. The two misfetched instructions will then simply disappear from the pipeline.
 
     * Exception
-        * ![](../images/caspp/4.5.11-prog-10.png)
+        * ![](../images/csapp/4.5.11-prog-10.png)
             * On cycle 6, the invalid memory reference by the pushl instruction causes the updating of the condition codes to be disabled. The pipeline starts injecting bubbles into the memory stage and stalling the excepting instruction in the write-back stage.
         * Achieving excpetion handling effects is complicated by the facts that
             * exceptions are **detected** during two different stages (**fetch and memory**) of program execution
@@ -1792,7 +1792,7 @@ The pipeline final implementation:
 
 * Pipeline Control Mechanisms
     * Low-level mechanisms that allow the pipeline control logic to hold back an instruction in a pipeline register or to inject a bubble into the pipeline.
-    * ![](../images/caspp/4.5.11-additional-pipeline-reg-ops.png)
+    * ![](../images/csapp/4.5.11-additional-pipeline-reg-ops.png)
         * (a) Under normal conditions, the state and output of the register are set to the value at the input when the clock rises.
         * (b) When operated in stall mode, the state is held fixed at its previous value.
         * (c) When operated in bubble mode, the state is overwritten with that of a nop operation.
@@ -1824,7 +1824,7 @@ The pipeline final implementation:
         Desired | stall | stall | bubble | normal | normal
 
 * Control Logic Implementation
-    * ![](../images/caspp/4.5.11-pipeline-control-logic.png)
+    * ![](../images/csapp/4.5.11-pipeline-control-logic.png)
     * Based on signals from the pipeline registers and pipeline stages, the control logic generates stall and bubble control signals for the pipeline registers, and also determines whether the condition code registers should be updated.
     ```
     bool F_stall =
@@ -1950,7 +1950,7 @@ The pipeline final implementation:
     * The **latency bound** is encountered when a series of operations must be performed in strict sequence, because the result of one operation is required before the next one can begin. This bound can limit program performance when the data dependencies in the code limit the ability of the processor to exploit instruction-level parallelism.
     * The **throughput bound** characterizes the raw computing capacity of the processor’s functional units. This bound becomes the ultimate limit on program performance.
 ### 5.7.1 Overall Operation
-* ![](../images/caspp/5.7-block-diagram-modern-processor.png)
+* ![](../images/csapp/5.7-block-diagram-modern-processor.png)
 * It is described in the industry as being `superscalar`, which means it can perform multiple operations on every clock cycle, and `out-of-order`, meaning that the order in which instructions execute need not correspond to their ordering in the machine-level program.
 * The overall design has two main parts:
     * the **instruction control unit (ICU)**, which is responsible for reading a sequence of instructions from memory and generating from these a set of primitive operations to perform on program data
@@ -1995,18 +1995,18 @@ The pipeline final implementation:
             cmpq    %rdx,               %rbp    // compare limit: i
             jg      .L488                       // if >, goto loop
         ```
-    * ![](../images/caspp/5.7.3-inner-loop.png)
+    * ![](../images/csapp/5.7.3-inner-loop.png)
         * we can classify the registers that are accessed into four categories:
             * Read-only: These are used as source values, either as data or to compute memory addresses, but they are not modified within the loop. The readonly registers for the loop combine4 are %rax and %rcx.
             * Write-only: These are used as the destinations of data-movement operations. There are no such registers in this loop.
             * Local: These are updated and used within the loop, but there is no dependency from one iteration to another. The condition code registers are examples for this loop: they are updated by the cmp operation and used by the jg operation, but this dependency is contained within individual iterations.
             * Loop: These are both used as source values and as destinations for the loop, with the value generated in one iteration being used in another. We can see that %rdx and %xmm0 are loop registers for combine4, corresponding to program values i and acc.
         * As we will see, the chains of operations between loop registers determine the performance-limiting data dependencies.
-    * ![](../images/caspp/5.7.3-inner-loop-data-flow-1.png)
+    * ![](../images/csapp/5.7.3-inner-loop-data-flow-1.png)
         * (a) We rearrange the operators to more clearly show the data dependencies
         * (b) show only those operations that use values from one iteration to produce new values for the next.
 
-    * ![](../images/caspp/5.7.3-inner-loop-data-flow-2.png)
+    * ![](../images/csapp/5.7.3-inner-loop-data-flow-2.png)
 
     * Given that single-precision multiplication has a latency of 4 cycles, while integer addition has latency 1, we can see that the chain on the left will form a critical path, requiring 4n cycles to execute. The chain on the left would require only n cycles to execute, and so it does not limit the program performance.
 
@@ -2040,11 +2040,11 @@ The pipeline final implementation:
         *dest = acc;
     }
     ```
-* ![](../images/caspp/5.8-three-float-point-op-1.png)
+* ![](../images/csapp/5.8-three-float-point-op-1.png)
 
     * mulss instructions each get translated into two operations: one to load an array element from memory, and one to multiply this value by the accumulated value. We see here that register %xmm0 gets read and written twice in each execution of the loop.
-* ![](../images/caspp/5.8-three-float-point-op-2.png)
-* ![](../images/caspp/5.8-three-float-point-op-3.png)
+* ![](../images/csapp/5.8-three-float-point-op-2.png)
+* ![](../images/csapp/5.8-three-float-point-op-3.png)
 
 * Even though the loop has been unrolled by a factor of 2, there are still n mul operations along the critical path.
 
@@ -2081,9 +2081,9 @@ The pipeline final implementation:
             *dest = acc0 OP acc1;
         }
         ```
-* ![](../images/caspp/5.9.1-multiple-accumulator-1.png)
-* ![](../images/caspp/5.9.1-multiple-accumulator-2.png)
-* ![](../images/caspp/5.9.1-multiple-accumulator-3.png)
+* ![](../images/csapp/5.9.1-multiple-accumulator-1.png)
+* ![](../images/csapp/5.9.1-multiple-accumulator-2.png)
+* ![](../images/csapp/5.9.1-multiple-accumulator-3.png)
 
 * Understand the performance of combine6
     * As with combine5, the inner loop contains two mulss operations, but these instructions translate into mul operations that read and write separate registers, with no data dependency between them(Figure b). We then replicate this template n/2 times (Figure a), modeling the execution of the function on a vector of length n.
@@ -2124,15 +2124,15 @@ The pipeline final implementation:
     Latency bound |  |  | 2.00 | 1.51 | 1.50 | 2.00 | 2.97
     Throughput bound |  |  | 2.00 | 1.51 | 1.50 | 2.00 | 2.97
 
-* ![](../images/caspp/5.9.2-reassociatation-4.png)
+* ![](../images/csapp/5.9.2-reassociatation-4.png)
 
     * CPE performance for k-way loop unrolling with reassociation. All of the 4.00 CPEs improve with this transformation, up to the limiting value of 1.00.
-* ![](../images/caspp/5.9.2-reassociatation-1.png)
+* ![](../images/csapp/5.9.2-reassociatation-1.png)
     * The load operations resulting from the movss and the first mulss instructions load vector elements i and i + 1 from memory, and the first mul operation multiplies them together.
     * The second mul operation then multiples this result by the accumulated value acc.
-* ![](../images/caspp/5.9.2-reassociatation-2.png)
+* ![](../images/csapp/5.9.2-reassociatation-2.png)
 
-* ![](../images/caspp/5.9.2-reassociatation-3.png)
+* ![](../images/csapp/5.9.2-reassociatation-3.png)
 
 * Explain the surprising improvement we saw with simple loop unrolling (combine5) for the case of integer multiplication:
     *  In compiling this code, gcc performed the reassociation that we have shown in combine7, and hence it achieved the same performance.
@@ -2243,16 +2243,16 @@ The pipeline final implementation:
     }
     ```
 
-* ![](../images/caspp/5.12.2-read-store-operation.png)
+* ![](../images/csapp/5.12.2-read-store-operation.png)
 
 * The **write/read dependency** causes a slowdown in the processing.
 
-* ![](../images/caspp/5.12.2-load-store-units.png)
+* ![](../images/csapp/5.12.2-load-store-units.png)
     * The store unit maintains a buffer of pending writes. The load unit must check its address with those in the store unit to detect a write/read dependency.
     * The store unit contains a store buffer containing the addresses and data of the store operations that have been issued to the store unit, but have not yet been completed, where completion involves updating the data cache. This buffer is provided so that a series of store operations can be executed without having to wait for each one to update the cache.
     * When a load operation occurs, it must check the entries in the store buffer for matching addresses. If it finds a match (meaning that any of the bytes being written have the same address as any of the bytes being read), it retrieves the corresponding data entry as the result of the load operation.
 
-* ![](../images/caspp/5.12.2-load-store-asm-1.png)
+* ![](../images/csapp/5.12.2-load-store-asm-1.png)
     * The instruction `movl %eax,(%ecx)` is translated into two operations:
         * The **s_addr** instruction computes the address for the store operation, creates an entry in the store buffer, and sets the address field for that entry.
         * The **s_data** operation sets the data field for the entry.
@@ -2263,13 +2263,13 @@ The pipeline final implementation:
         * The figure shows a dashed arc between the s_data and load operations. This dependency is conditional:
             * if the two addresses match, the load operation must wait until the s_data has deposited its result into the store buffer
             * if the two addresses differ, the two operations can proceed independently.
-* ![](../images/caspp/5.12.2-load-store-asm-2.png)
+* ![](../images/csapp/5.12.2-load-store-asm-2.png)
     *  The arc labeled :one: represents the requirement that the store address must be computed before the data can be stored.
     * The arc labeled :two: represents the need for the load operation to compare its address with that for any pending store operations.
     * The dashed arc labeled :three: represents the conditional data dependency that arises when the load and store addresses match.
     * (b) The data-flow graph shows just two chains of dependencies: the one on the left, with data values being stored, loaded, and incremented (only for the case of matching addresses), and the one on the right, decrementing variable cnt.
 
-* ![](../images/caspp/5.12.2-load-store-asm-3.png)
+* ![](../images/csapp/5.12.2-load-store-asm-3.png)
     * When the two addresses do not match, the only critical path is formed by the decrementing of cnt (Example A). When they do match, the chain of data being stored, loaded, and incremented forms the critical path (Example B).
     * Example A, with differing source and destination addresses, the load and store operations can proceed independently, and hence the only critical path is formed by the decrementing of variable cnt. This would lead us to predict a CPE of just 1.00, rather than the measured CPE of 2.00.
     * Example B, with matching source and destination addresses, the data dependency between the s_data and load instructions causes a critical path to form involving data being stored, loaded, and incremented. We found that these three operations in sequence require a total of 6 clock cycles.
@@ -2323,14 +2323,18 @@ The pipeline final implementation:
 * **Storage technology**: Different storage technologies have widely different access times. Faster technologies cost more per byte than slower ones and have less capacity. The gap between CPU and main memory speed is widening.
 * **Computer software**: Well-written programs tend to exhibit good locality.
 
-* ![](../images/caspp/1.6-memory-hierachy.png)
+![](../images/csapp/1.6-memory-hierachy-2.png)
+
+---
+
+* ![](../images/csapp/1.6-memory-hierachy.png)
     * At the highest level (L0) are a small number of fast CPU registers that the CPU can access in a `single clock cycle`.
     * Next are one or more small to moderate-sized SRAM-based cache memories that can be accessed in a `few CPU clock cycles`.
     * These are followed by a large DRAM-based main memory that can be accessed in tens to `hundreds of clock cycles`.
     * Next are slow but enormous local disks.
     * Finally, some systems even include an additional level of disks on remote servers that can be accessed over a network.
-* ![](../images/caspp/1.6-memory-performance.png)
-* ![](../images/caspp/1.6-cache-hierarchy-latency.png)
+* ![](../images/csapp/1.6-memory-performance.png)
+* ![](../images/csapp/1.6-cache-hierarchy-latency.png)
 
 ### 6.3.1 Caching in the Memory Hierarchy
 * The central idea of a `memory hierarchy` is that for each k, the faster and smaller storage device at level k serves as a cache for the larger and slower storage device at level k + 1
@@ -2353,29 +2357,29 @@ The pipeline final implementation:
 ### 6.3.2 Summary of Memory Hierarchy Concepts
 * **Exploiting temporal locality**. Because of temporal locality, the same data objects are likely to be reused multiple times. Once a data object has been copied into the cache on the first miss, we can expect a number of subsequent hits on that object. Since the cache is faster than the storage at the next lower level, these subsequent hits can be served much faster than the original miss.
 * **Exploiting spatial locality**. Blocks usually contain multiple data objects. Because of spatial locality, we can expect that the cost of copying a block after a miss will be amortized by subsequent references to other objects within that block.
-* ![](../images/caspp/6.3.2-the-ubiquity-of-caching.png)
+* ![](../images/csapp/6.3.2-the-ubiquity-of-caching.png)
 
 
 ## 6.4 Cache Memories
-* ![](../images/caspp/6.4-cache-memories.png)
+* ![](../images/csapp/6.4-cache-memories.png)
 
 ### 6.4.1 Generic Cache Memory Organization
-* ![](../images/caspp/6.4.1-general-organization-of-cache.png)
+* ![](../images/csapp/6.4.1-general-organization-of-cache.png)
 * How does the cache know whether it contains a copy of the word at address A?
     * The cache is organized so that it can find the requested word by simply inspecting the bits of the address, similar to a hash table with an extremely simple hash function.
     * The parameters S and B induce a partitioning of the m address bits into the three fields (b). The `s set index` bits in A form an index into the array of S sets. The first set is set 0, the second set is set 1, and so on. When interpreted as an unsigned integer, the set index bits tell us which set the word must be stored in.
     * Once we know which set the word must be contained in, the `t tag bits` in A tell us which line (if any) in the set contains the word. A line in the set contains the word if and only if the valid bit is set and the tag bits in the line match the tag bits in the address A.
     * Once we have located the line identified by the tag in the set identified by the set index, then the `b block offset bits` give us the offset of the word in the B-byte data block.
-* ![](../images/caspp/6.4.1-cache-paramters.png)
+* ![](../images/csapp/6.4.1-cache-paramters.png)
 
 ### 6.4.2 Direct-Mapped Caches
 * Caches are grouped into different classes based on E, the number of cache lines per set. A cache with exactly one line per set (E = 1) is known as a **direct-mapped cache**.
 
 * The process that a cache goes through of determining whether a request is a hit or a miss and then extracting the requested word consists of three steps:
     1. Set Selection in Direct-Mapped Caches
-        * ![](../images/caspp/6.4.2-set-selection.png)
+        * ![](../images/csapp/6.4.2-set-selection.png)
     2. Line Matching in Direct-Mapped Caches
-        * ![](../images/caspp/6.4.2-line-matching.png)
+        * ![](../images/csapp/6.4.2-line-matching.png)
     3. Word Selection in Direct-Mapped Caches
     4. Line Replacement on Misses in Direct-Mapped
         * If the cache misses, then it needs to retrieve the requested block from the next level in the memory hierarchy and store the new block in one of the cache lines of the set indicated by the set index bits.
@@ -2401,23 +2405,23 @@ The pipeline final implementation:
         }
         ```
     *  a block is 16 bytes, the cache consists of two sets, a total cache size of 32 bytes
-    * ![](../images/caspp/6.4.2-conflict-miss-1.png)
+    * ![](../images/csapp/6.4.2-conflict-miss-1.png)
     * In fact each subsequent reference to x and y will result in a conflict miss as we thrash back and forth between blocks of x and y. The term **thrashing** describes any situation where a cache is repeatedly loading and evicting the same sets of cache blocks.
     * Thrashing is easy for programmers to fix once they recognize what is going on. One easy solution is to put B bytes of padding at the end of each array. For example, instead of defining x to be float x[8], we define it to be float x[12].
-    * ![](../images/caspp/6.4.2-conflict-miss-2.png)
+    * ![](../images/csapp/6.4.2-conflict-miss-2.png)
 
 * Why index with the middle bits?
     * If the high-order bits are used as an index, then some contiguous memory blocks will map to the same cache set.
-    * ![](../images/caspp/6.4.2-cache-index-with-middle-bits.png)
+    * ![](../images/csapp/6.4.2-cache-index-with-middle-bits.png)
 
 ### 6.4.3 Set Associative Caches
 * The problem with conflict misses in direct-mapped caches stems from the constraint that each set has exactly one line (or in our terminology, E = 1). A set associative cache relaxes this constraint so each set holds more than one cache line. A cache with 1 < E < C/B is often called an **E-way set associative cache**.
 
 * Set Selection in Set Associative Caches
-    * ![](../images/caspp/6.4.3-set-selection.png)
+    * ![](../images/csapp/6.4.3-set-selection.png)
 
 * Line Matching and Word Selection in Set Associative Caches
-    ![](../images/caspp/6.4.3-line-matching.png)
+    ![](../images/csapp/6.4.3-line-matching.png)
     * An associative memory is an array of (key, value) pairs that takes as input the key and returns a value from one of the (key, value) pairs that matches the input key. Thus, we can think of each set in a set associative cache as a small associative memory where the keys are the concatenation of the tag and valid bits, and the values are the contents of a block.
     * Any line in the set can contain any of the memory blocks that map to that set. So the cache must search each line in the set, searching for a valid line whose tag matches the tag in the address.
 
@@ -2428,19 +2432,19 @@ The pipeline final implementation:
 * A fully associative cache consists of a single set (i.e., E = C/B) that contains all of the cache lines.
 
 * Set Selection in Fully Associative Caches
-    * ![](../images/caspp/6.4.4-set-selection.png)
+    * ![](../images/csapp/6.4.4-set-selection.png)
 
 * Line Matching and Word Selection in Fully Associative Caches
-    * ![](../images/caspp/6.4.4-line-matching.png)
+    * ![](../images/csapp/6.4.4-line-matching.png)
     * The cache circuitry must search for many matching tags in parallel, it is difficult and expensive to build an associative cache that is both large and fast. As a result, fully associative caches are only appropriate for small caches, such as the translation lookaside buffers (TLBs).
 
 ### 6.4.5 Issues with Writes
 * If write hit
     * **Write-through**, is to immediately write w’s cache block to the next lower level. While simple, write-through has the disadvantage of causing bus traffic with every write.
-        * ![](../images/caspp/cache-rw-through.png)
+        * ![](../images/csapp/cache-rw-through.png)
 
     * **Write-back**, defers the update as long as possible by writing the updated block to the next lower level only when it is evicted from the cache by the replacement algorithm. Because of locality, write-back can significantly reduce the amount of bus traffic, but it has the disadvantage of additional complexity. The cache must maintain an additional dirty bit for each cache line that indicates whether or not the cache block has been modified.
-        * ![](../images/caspp/cache-rw-back.png)
+        * ![](../images/csapp/cache-rw-back.png)
 
 * If wite miss
     * **Write-allocate**, loads the corresponding block from the next lower level into the cache and then updates the cache block. Write-allocate tries to exploit spatial locality of writes, but it has the disadvantage that every miss results in a block transfer from the next lower level to cache.
@@ -2450,8 +2454,8 @@ The pipeline final implementation:
 
 ### 6.4.6 Anatomy of a Real Cache Hierarchy
 * Inter Core i7
-    * ![](../images/caspp/6.4.6-intel-core-i7-cache-hierarchy.png)
-    * ![](../images/caspp/6.4.6-intel-core-i7-cache-characteristic.png)
+    * ![](../images/csapp/6.4.6-intel-core-i7-cache-hierarchy.png)
+    * ![](../images/csapp/6.4.6-intel-core-i7-cache-characteristic.png)
 * The two caches are often optimized to different access patterns and can have different block sizes, associativities, and capacities. Also, having separate caches ensures that data accesses do not create conflict misses with instruction accesses, and vice versa, at the cost of a potential increase in capacity misses.
 
 ### 6.4.7 Performance Impact of Cache Parameters
@@ -2485,17 +2489,17 @@ The pipeline final implementation:
 
 ### 6.6.1 The Memory Mountain
 * Every computer has a unique memory mountain that characterizes the capabilities of its memory system.
-* ![](../images/caspp/6.6.1-intel-core-i7-memory-mountain.png)
+* ![](../images/csapp/6.6.1-intel-core-i7-memory-mountain.png)
 
 ### 6.6.2 Rearranging Loops to Increase Spatial Locality
-* ![](../images/caspp/6.6.2.png)
+* ![](../images/csapp/6.6.2.png)
 * Assumptions:
     * Each array is an n × n array of double, with sizeof(double) == 8.
     * There is a single cache with a 32-byte block size (B = 32).
     * The array size n is so large that a single matrix row does not fit in the L1 cache.
     * The compiler stores local variables in registers, and thus references to local variables inside loops do not require any load or store instructions.
-* ![](../images/caspp/6.6.2-2.png)
-* ![](../images/caspp/6.6.2-3.png)
+* ![](../images/csapp/6.6.2-2.png)
+* ![](../images/csapp/6.6.2-3.png)
 
 * Using blocking to increase temporal locality
     * The general idea of blocking is to organize the data structures in a program into large chunks called **blocks**. (In this context, “block” refers to an application-level chunk of data, not to a cache block.) The program is structured so that it loads a chunk into the L1 cache, does all the reads and writes that it needs to on that chunk, then discards the chunk, loads in the next chunk, and so on.
@@ -2622,7 +2626,7 @@ gcc -o p2 main2.c ./libvector.so
 
 ## 7.4 Relocatable Object Files
 * [Executable and Linkable Format (ELF)](http://www.skyfree.org/linux/references/ELF_Format.pdf)
-* ![](../images/caspp/7.4-relocatable-file.png)
+* ![](../images/csapp/7.4-relocatable-file.png)
 * The **ELF header** begins with a 16-byte sequence that describes the `word size` and `byte ordering` of the system that generated the file.
     * The rest of the ELF header contains `size of the ELF header`, the `object file type` (e.g., relocatable, executable, or shared), the `machine type` (e.g., IA32), the `file offset` of the section header table, and the `size and number of entries` in the section header table.
     * The locations and sizes of the various sections are described by the **section header table**, which contains a fixed sized entry for each section in the object file.
@@ -2700,7 +2704,7 @@ gcc -o p2 main2.c ./libvector.so
     gcc -O2 -c main2.c
     gcc -static -o p2 main2.o ./libvector.a
     ```
-* ![](../images/caspp/7.6.2-linking-static-libraries.png)
+* ![](../images/csapp/7.6.2-linking-static-libraries.png)
 
 ### 7.6.3 How Linkers Use Static Libraries to Resolve References
 * During the symbol resolution phase, the linker scans the relocatable object files and archives left to right in the same sequential order that they appear on the compiler driver’s command line. (The driver automatically translates any .c files on the command line into .o files.) During this scan, the linker maintains a **set E** of relocatable object files that will be merged to form the executable, a **set U** of unresolved symbols (i.e., symbols referred to, but not yet defined), and a **set D** of symbols that have been defined in previous input files. Initially, E, U, and D are empty.
@@ -2750,19 +2754,19 @@ gcc -o p2 main2.c ./libvector.so
 * Relocating Absolute References
 
 ## 7.8 Executable Object Files
-* ![](../images/caspp/7.8-executable-object-file.png)
+* ![](../images/csapp/7.8-executable-object-file.png)
 * The **ELF header** describes the overall format of the file. It also includes the program’s `entry point`, which is the address of the first instruction to execute when the program runs.
 * The **.init** section defines a small function, called `_init`, that will be called by the program’s initialization code. Since the executable is fully linked (relocated), it needs no .rel sections.
 * ELF executables are designed to be easy to load into memory, with contiguous chunks of the executable file mapped to contiguous memory segments. This mapping is described by the **segment header table**.
 * Stack orgnization when a program starts
-    * ![](../images/caspp/8.4.5-stack-orgnization-when-program-start.png)
+    * ![](../images/csapp/8.4.5-stack-orgnization-when-program-start.png)
 
 ## 7.9 Loading Executable Object Files
 * After input ./p, the shell assumes that p is an executable object file, which it runs for us by invoking some memory-resident operating system code known as the **loader**. Any Unix program can invoke the loader by calling the execve function which we will describe in detail in Section 8.4.5.
 
     * The interesting point is that the loader never actually copies any data from disk into memory. The data is paged in automatically and on demand by the virtual memory system the first time each page is referenced, either by the CPU when it fetches an instruction, or by an executing instruction when it references a memory location. [Chapter 9.4]
 * The **loader** copies the code and data in the executable object file from disk into memory, and then runs the program by jumping to its first instruction, or `entry point`. This process of copying the program into memory and then running it is known as **loading**.
-* ![](../images/caspp/7.9-linux-run-time-memory-image.png)
+* ![](../images/csapp/7.9-linux-run-time-memory-image.png)
 * When the loader runs, it creates the memory image. Guided by the `segment header table` in the executable, it copies chunks of the executable into the code and data segments. Next, the loader jumps to the program’s entry point, which is always the address of the **_start symbol**. The startup code at the _start address is defined in the object file [**crt1.o**](https://docs.oracle.com/cd/E88353_01/html/E37853/crti.o-7.html) (C run time) and is the same for all C programs.
 * Start up code
     ```c++
@@ -2883,7 +2887,7 @@ gcc -o p2 main2.c ./libvector.so
         hlt
     ```
 
-* ![](../images/caspp/7.9-linux-crt.png)
+* ![](../images/csapp/7.9-linux-crt.png)
 
 ## 7.10 Dynamic Linking with Shared Libraries
 * **Shared libraries** are modern innovations that address the disadvantages of static libraries. A shared library is an object module that, at run time, can be loaded at an arbitrary memory address and linked with a program in memory. This process is known as **dynamic linking** and is performed by a program called a **dynamic linker**.
@@ -2897,7 +2901,7 @@ gcc -o p2 main2.c ./libvector.so
     ```
     * It is important to realize that none of the code or data sections from libvector.so are actually copied into the executable p2 at this point. Instead, the linker copies some relocation and symbol table information that will allow references to code and data in libvector.so to be resolved at run time.
 
-* ![](../images/caspp/7.10-dynamic-linking-with-shared-libraries.png)
+* ![](../images/csapp/7.10-dynamic-linking-with-shared-libraries.png)
 * It notices that p2 contains a `.interp` section, which contains the path name of the **dynamic linker**, which is itself a shared object (e.g., ld-linux.so on Linux systems)
 * The loader loads and runs the dynamic linker. The dynamic linker then finishes the linking task by performing the following relocations:
     * Relocating the text and data of libc.so into some memory segment.
@@ -2944,7 +2948,7 @@ gcc -o p2 main2.c ./libvector.so
         ```
     *  **lazy binding** defers the binding of procedure addresses until the first time the procedure is called
     * If an object module calls any functions that are defined in shared libraries, then it has its own **GOT** and **procedure linkage table (PLT)**. The GOT is part of the `.data section`. The PLT is part of the `.text section`.
-    * ![](../images/caspp/7.12-got-plt.png)
+    * ![](../images/csapp/7.12-got-plt.png)
         * GOT[0] contains the address of the .dynamic segment, which contains information that the dynamic linker uses to bind procedure addresses, such as the location of the `symbol table` and `relocation information`.
         * GOT[1] contains some information that defines this module.
         * GOT[2] contains an entry point into the lazy binding code of the `dynamic linker`.
@@ -2971,7 +2975,7 @@ gcc -o p2 main2.c ./libvector.so
 
 ### 8.1.1 Exception Handling
 * The exception number is an index into the exception table, whose starting address is contained in a special CPU register called the **exception table base register**.
-    * ![](../images/caspp/8.1.1-exception-table-base-register.png)
+    * ![](../images/csapp/8.1.1-exception-table-base-register.png)
 
 * An exception is akin to a procedure call, but with some important differences:
     * As with a procedure call, the processor `pushes a return address` on the stack before branching to the handler. However, depending on the class of exception, the return address is either the current instruction or the next instruction.
@@ -3039,7 +3043,7 @@ If the parent process terminates without reaping its zombie children, the kernel
 * Unlike fork, which is called once but returns twice, execve is called once and never returns.
 * Stack orgnization when a program starts
 
-    * ![](../images/caspp/8.4.5-stack-orgnization-when-program-start.png)
+    * ![](../images/csapp/8.4.5-stack-orgnization-when-program-start.png)
 
 
 ### 8.4.6 Using fork and execve to Run Programs
@@ -3064,7 +3068,7 @@ Instead, they return prematurely to the calling application with an error condit
 
 ### Linux Signal Handling
 
-![Linux Signal handling](../images/caspp/csapp-linux-sig-handle.png)
+![Linux Signal handling](../images/csapp/csapp-linux-sig-handle.png)
 
 ## 8.6 Nonlocal Jumps
 
@@ -3079,7 +3083,7 @@ virtual memory provides three important capabilities:
 * It protects the address space of each process from corruption by other processes.
 
 ## 9.1 Physical and Virtual Addressing
-* ![](../images/caspp/9.1-virtual-addressing.png)
+* ![](../images/csapp/9.1-virtual-addressing.png)
 
 ## 9.2 Address Spaces
 * If the integers in the address space are consecutive, then we say that it is a **linear address space**.
@@ -3097,7 +3101,7 @@ virtual memory provides three important capabilities:
 * Due to the large miss penalty, DRAM caches are `fully associative`, that is, any virtual page can be placed in any physical page.
 
 ### 9.3.2 Page Tables
-* ![](../images/caspp/9.3.2-page-table.png)
+* ![](../images/csapp/9.3.2-page-table.png)
 
 ### 9.3.3 Page Hits
 
@@ -3111,27 +3115,27 @@ virtual memory provides three important capabilities:
 * If the working set size exceeds the size of physical memory, then the program can produce an unfortunate situation known as `thrashing`, where pages are swapped in and out continuously.
 
 ## 9.4 VM as a Tool for Memory Management
-* ![](../images/caspp/9.4.-process-virtual-space.png)
+* ![](../images/csapp/9.4.-process-virtual-space.png)
 * **Simplifying linking**. A separate address space allows each process to use the same basic format for its memory image, regardless of where the code and data actually reside in physical memory. Such uniformity greatly simplifies the design and implementation of linkers, allowing them to produce fully linked executables that are independent of the ultimate location of the code and data in physical memory.
 * **Simplifying loading**. Virtual memory also makes it easy to load executable and shared object files into memory.
 * **Simplifying sharing**. Separate address spaces provide the operating system with a consistent mechanism for managing sharing between user processes and the operating system itself.
 * **Simplifying memory allocation**. When a program running in a user process requests additional heap space (e.g., as a result of calling malloc), the operating system allocates an appropriate number, say, k, of contiguous virtual memory pages, and maps them to k arbitrary physical pages located anywhere in physical memory. Because of the way page tables work, there is no need for the operating system to locate k contiguous pages of physical memory. The pages can be scattered randomly in physical memory.
 
 ## 9.5 VM as a Tool for Memory Protection
-* ![](../images/caspp/9.5-memory-protection.png)
+* ![](../images/csapp/9.5-memory-protection.png)
 
 ## 9.6 Address Translation
-* ![](../images/caspp/9.6-address-translation-symbols.png)
-* ![](../images/caspp/9.6-address-translation.png)
+* ![](../images/csapp/9.6-address-translation-symbols.png)
+* ![](../images/csapp/9.6-address-translation.png)
 
-* Page Hit ![](../images/caspp/9.6-page-hit.png)
+* Page Hit ![](../images/csapp/9.6-page-hit.png)
     1. The processor generates a virtual address and sends it to the MMU.
     2. The MMU generates the PTE address and requests it from the cache/main memory.
     3. The cache/main memory returns the PTE to the MMU.
     4. The MMU constructs the physical address and sends it to cache/main memory.
     5. The cache/main memory returns the requested data word to the processor.
 
-* Page Fault ![](../images/caspp/9.6-page-fault.png)
+* Page Fault ![](../images/csapp/9.6-page-fault.png)
     1. The same as Steps 1 to 3 in Page Hit.
     2. The same as Steps 1 to 3 in Page Hit.
     3. The same as Steps 1 to 3 in Page Hit.
@@ -3141,69 +3145,69 @@ virtual memory provides three important capabilities:
     7. The fault handler returns to the original process, causing the faulting instruction to be restarted. The CPU resends the offending virtual address to the MMU. Because the virtual page is now cached in physical memory, there is a hit, and after the MMU performs the steps, the main memory returns the requested word to the processor.
 
 ### 9.6.1 Integrating Caches and VM
-* ![](../images/caspp/9.6.1-cahches-vm.png)
+* ![](../images/csapp/9.6.1-cahches-vm.png)
 * Most systems use `physical addresses` to access the SRAM cache. With physical addressing, it is straightforward for multiple processes to have blocks in the cache at the same time and to share blocks from the same virtual pages. Further, the cache does not have to deal with protection issues because access rights are checked as part of the address translation process.
 * The main idea is that the address translation occurs before the cache lookup. Notice that page table entries can be cached, just like any other data words.
 
 ### 9.6.2 Speeding up Address Translation with a TLB
 * A TLB is a small, virtually addressed cache where each line holds a block consisting of a single PTE. A TLB usually has a high degree of associativity.
 * TLB has T = 2^t sets, then the TLB index (TLBI) consists of the t least significant bits of the VPN, and the TLB tag (TLBT) consists of the remaining bits in the VPN.
-    * ![](../images/caspp/9.6.2-tlb.png)
-* TLB Hit ![](../images/caspp/9.6.2-tlb-hit.png)
+    * ![](../images/csapp/9.6.2-tlb.png)
+* TLB Hit ![](../images/csapp/9.6.2-tlb-hit.png)
     1. The CPU generates a virtual address.
     2. The MMU fetches the appropriate PTE from the TLB.
     3. The MMU fetches the appropriate PTE from the TLB.
     4. The MMU translates the virtual address to a physical address and sends it to the cache/main memory.
     5. The cache/main memory returns the requested data word to the CPU.
 
-* TLB Miss ![](../images/caspp/9.6.2-tlb-miss.png)
+* TLB Miss ![](../images/csapp/9.6.2-tlb-miss.png)
     * When there is a TLB miss, then the MMU must fetch the PTE from the L1 cache. The newly fetched PTE is stored in the TLB, possibly overwriting an existing entry.
 
 ### 9.6.3 Multi-Level Page Tables
 * If we had a 32-bit address space, 4 KB pages, and a 4-byte PTE, then we would need a 4 MB page table resident in memory at all times, even if the application referenced only a small chunk of the virtual address space.
 * The common approach for compacting the page table is to use a hierarchy of page tables instead.
-* ![](../images/caspp/9.6.3-two-level-page-table-hierarchy.png)
+* ![](../images/csapp/9.6.3-two-level-page-table-hierarchy.png)
     * This scheme reduces memory requirements in two ways:
         * If a PTE in the level 1 table is null, then the corresponding level 2 page table does not even have to exist. This represents a significant potential savings, since most of the 4 GB virtual address space for a typical program is unallocated.
         * Only the level 1 table needs to be in main memory at all times. The level 2 page tables can be created and paged in and out by the VM system as they are needed, which reduces pressure on main memory.
-* ![](../images/caspp/9.6.3-two-level-page-table-hierarchy.png)
+* ![](../images/csapp/9.6.3-two-level-page-table-hierarchy.png)
     * Accessing k PTEs may seem expensive and impractical at first glance. However, the TLB comes to the rescue here by caching PTEs from the page tables at the different levels. In practice, address translation with multi-level page tables is not significantly slower than with single-level page tables.
 
 ### 9.6.4 Putting It Together: End-to-end Address Translation
-* ![](../images/caspp/9.6.4-virtual-physical-address.png)
+* ![](../images/csapp/9.6.4-virtual-physical-address.png)
     * Assume 14-bit virtual addresses (n = 14), 12-bit physical addresses (m = 12), and 64-byte pages (P = 64), 1-byte word.
-* ![](../images/caspp/9.6.4-tlb.png)
+* ![](../images/csapp/9.6.4-tlb.png)
     * TLB: Four sets, 16 entries, four-way set associative
-* ![](../images/caspp/9.6.4-page-table.png)
+* ![](../images/csapp/9.6.4-page-table.png)
     * Page table: Only the first 16 PTEs are shown
-* ![](../images/caspp/9.6.4-cache.png)
+* ![](../images/csapp/9.6.4-cache.png)
     * Cache: Sixteen sets, 4-byte blocks, direct mapped
 
 
 ## 9.7 Case Study: The Intel Core i7/Linux Memory System
-* ![](../images/caspp/9.7-intel-core-i7-memory-system.png)
+* ![](../images/csapp/9.7-intel-core-i7-memory-system.png)
     * The TLBs are `virtually addressed`, and four-way set associative.
     * The L1, L2, and L3 caches are `physically addressed`, and eight-way set associative, with a block size of 64 bytes.
     * Reference: [Intel QuickPath Interconnect](https://en.wikipedia.org/wiki/Intel_QuickPath_Interconnect)
 
 ### 9.7.1 Core i7 Address Translation
-* Summary of Core i7 address translation ![](../images/caspp/9.7.1-core-i7-address-translation.png)
+* Summary of Core i7 address translation ![](../images/csapp/9.7.1-core-i7-address-translation.png)
     * The **CR3** control register points to the beginning of the level 1 (L1) page table. The value of CR3 is part of each process context, and is restored during each context switch.
-* Format of level 1, level 2, and level 3 page table entries ![](../images/caspp/9.7.1-format-level-1-2-3-page-table-entries.png)
+* Format of level 1, level 2, and level 3 page table entries ![](../images/csapp/9.7.1-format-level-1-2-3-page-table-entries.png)
     * Each entry references a 4 KB child page table.
-* Format of level 4 page table entries ![](../images/caspp/9.7.1-format-level-4-page-table-entry.png)
+* Format of level 4 page table entries ![](../images/csapp/9.7.1-format-level-4-page-table-entry.png)
     * The XD (execute disable) bit, which was introduced in 64-bit systems, can be used to disable instruction fetches from individual memory pages. This is an important new feature that allows the operating system kernel to reduce the risk of buffer overflow attacks by restricting execution to the read-only text segment.
-* Core i7 page table translation ![](../images/caspp/9.7.1-page-table-translation.png)
+* Core i7 page table translation ![](../images/csapp/9.7.1-page-table-translation.png)
 
 ### 9.7.2 Linux Virtual Memory System
-* ![](../images/caspp/9.7.2-linux-virtual-memory-1.png)
+* ![](../images/csapp/9.7.2-linux-virtual-memory-1.png)
 * Linux Virtual Memory Areas
-    * ![](../images/caspp/9.7.2-linux-virtual-memory-2.png)
+    * ![](../images/csapp/9.7.2-linux-virtual-memory-2.png)
     * **pgd** points to the base of the level 1 table (the page global directory)
     * **mmap** points to a list of vm_area_structs (area structs), each of which characterizes an area of the current virtual address space.
     * When the kernel runs this process, it stores pgd in the **CR3** control register.
 * Linux Page Fault Exception Handling
-    * ![](../images/caspp/9.7.2-linux-page-fault.png)
+    * ![](../images/csapp/9.7.2-linux-page-fault.png)
     1. Is virtual address A legal, does A lie within an area defined by some area struct?
         * The fault handler searches the list of area structs, comparing A with the vm_start and vm_end in each area struct. If the instruction is not legal, then the fault handler triggers a segmentation fault, which terminates the process.
     2. Is the attempted memory access legal, does the process have permission to read, write, or execute the pages in this area?
@@ -3222,7 +3226,7 @@ virtual memory provides three important capabilities:
 ### 9.8.1 Shared Objects Revisited
 * An object can be mapped into an area of virtual memory as either a **shared object** or a **private object**.
 * Private objects are mapped into virtual memory using a clever technique known as **copy-on-write**.
-    * ![](../images/caspp/9.8.1-copy-on-write.png)
+    * ![](../images/csapp/9.8.1-copy-on-write.png)
 
 ### 9.8.2 The fork Function Revisited
 1. When the fork function is called by the current process, the kernel creates various data structures for the new process and assigns it a unique `PID`.
@@ -3273,9 +3277,9 @@ virtual memory provides three important capabilities:
     4. **Coalescing**: What do we do with a block that has just been freed?
 
 ### 9.9.6 Implicit Free Lists
-* ![9.9.6-format-heap-block.png](../images/caspp/9.9.6-format-heap-block.png)
+* ![9.9.6-format-heap-block.png](../images/csapp/9.9.6-format-heap-block.png)
 
-* ![9.9.6-implicit-free-list.png](../images/caspp/9.9.6-implicit-free-list.png)
+* ![9.9.6-implicit-free-list.png](../images/csapp/9.9.6-implicit-free-list.png)
 
 * A significant disadvantage
     * is that the cost of any operation, such as placing allocated blocks, that requires a search of the free list will be linear in the total number of allocated and free blocks in the heap.
@@ -3310,9 +3314,9 @@ virtual memory provides three important capabilities:
 
 * The idea of boundary tags is a simple and elegant one that generalizes to many different types of allocators and free list organizations. However, there is a potential disadvantage. Requiring each block to contain both a header and a footer can introduce significant memory overhead if an application manipulates many small blocks.
 
-![9.9.11-format-heap-block-boundary-tag](../images/caspp/9.9.11-format-heap-block-boundary-tag.png)
+![9.9.11-format-heap-block-boundary-tag](../images/csapp/9.9.11-format-heap-block-boundary-tag.png)
 
-![9.9.11-colaescing-with-boundary-tags.png](../images/caspp/9.9.11-colaescing-with-boundary-tags.png)
+![9.9.11-colaescing-with-boundary-tags.png](../images/csapp/9.9.11-colaescing-with-boundary-tags.png)
 
 ### 9.9.13 Explicit Free Lists
 Because block allocation time is linear in the total number of heap blocks, the implicit free list is not appropriate for a general-purpose allocator.
@@ -3320,7 +3324,7 @@ Because block allocation time is linear in the total number of heap blocks, the 
 * Using a doubly linked list instead of an implicit free list reduces the `first fit` allocation time from linear in the total number of blocks to linear in the number of free blocks. However, the time to `free a block` can be either linear or constant, depending on the policy we choose for ordering the blocks in the free list.
 
 * There is one somewhat subtle aspect. The free list format we have chosen—with its prologue and epilogue blocks that are always marked as allocated—allows us to ignore the potentially troublesome edge conditions where the requested block bp is at the beginning or end of the heap.
-* ![](../images/caspp/9.9.13-doubly-linked-free-list.png)
+* ![](../images/csapp/9.9.13-doubly-linked-free-list.png)
 
 ### 9.9.14 Segregated Free Lists
 * Simple Segregated Storage
@@ -3444,10 +3448,10 @@ ssize_t rio_writen(int fd, void* userbuf, size_t n) {
     * **Descriptor table**. Each process has its own separate descriptor table whose entries are indexed by the process’s open file descriptors. Each open descriptor entry points to an entry in the file table.
     * **File table**. The set of open files is represented by a file table that is shared by all processes. Each file table entry consists of (for our purposes) the current file position, a reference count of the number of descriptor entries that currently point to it, and a pointer to an entry in the v-node table. Closing a descriptor decrements the reference count in the associated file table entry. The kernel will not delete the file table entry until its reference count is zero.
     * **v-node table**. Like the file table, the v-node table is shared by all processes. Each entry contains most of the information in the stat structure, including the st_mode and st_size members.
-* ![](../images/caspp/10.6-kernel-data-structures-for-open-files.png)
+* ![](../images/csapp/10.6-kernel-data-structures-for-open-files.png)
 
 ## 10.7 I/O Redirection
-* ![](../images/caspp/10.7-io-redirection.png)
+* ![](../images/csapp/10.7-io-redirection.png)
 
 ## 10.8 Standard I/O
 ## 10.9 Putting It Together: Which I/O Functions Should I Use?
@@ -3596,7 +3600,7 @@ Questions:
 * [System Bus](https://en.wikipedia.org/wiki/System_bus)
 * [Local Bus](https://en.wikipedia.org/wiki/Local_bus)
 * [Expansin Bus/card](https://en.wikipedia.org/wiki/Expansion_card)
-* ![](../images/caspp/bus-1.png) ![](../images/caspp/bus-2.png)
+* ![](../images/csapp/bus-1.png) ![](../images/csapp/bus-2.png)
 
 # Appendix
 * [CMU Lab](http://csapp.cs.cmu.edu/3e/labs.html)
