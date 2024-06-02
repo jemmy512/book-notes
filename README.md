@@ -102,6 +102,7 @@
 
 
 # Others
+* [Make linux kernel :cn:](./make-kernel.md)
 * [Debug kernel with VS Code](./linux/vscode-debug-kernel.md)
 
 # English
