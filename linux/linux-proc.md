@@ -19,7 +19,7 @@
     * [preempt schedule](#preempt-schedule)
         * [user preempt](#user-preempt)
             * [set_tsk_need_resched](#set_tsk_need_resched)
-                * [scheduler_tick](#scheduler_tick)
+                * [sched_tick](#sched_tick)
                 * [try_to_wake_up](#try_to_wake_upp)
                 * [sched_setscheduler](#sched_setscheduler)
             * [prempt time](#preempt-time)
@@ -53,9 +53,9 @@
     * [pick_next_task_fair](#pick_next_task_fair)
     * [set_next_task_fair](#set_next_task_fair)
     * [select_task_rq_fair](#select_task_rq_fair)
-        * [find_idlest_cpu](#find_idlest_cpu)
-            * [find_idlest_group](#find_idlest_group)
-            * [find_idlest_group_cpu](#find_idlest_group_cpu)
+        * [sched_balance_find_dst_cpu](#sched_balance_find_dst_cpu)
+            * [sched_balance_find_dst_group](#sched_balance_find_dst_group)
+            * [sched_balance_find_dst_group_cpu](#sched_balance_find_dst_group_cpu)
         * [select_idle_sibling](#select_idle_sibling)
     * [wakeup_preempt_fair](#wakeup_preempt_fair)
     * [task_tick_fair](#task_tick_fair)
@@ -1458,10 +1458,10 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
 
 ![](../images/kernel/proc-preempt-user-mark.png)
 
-##### scheduler_tick
+##### sched_tick
 
 ```c
-void scheduler_tick(void)
+void sched_tick(void)
 {
     int cpu = smp_processor_id();
     struct rq *rq = cpu_rq(cpu);
@@ -3840,6 +3840,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
                 return new_cpu;
             new_cpu = prev_cpu;
         }
+
 /* 2. calc wake affine */
         /* Detect M:N waker/wakee relationships via a switching-frequency heuristic. */
         ret = wake_wide(p) {
@@ -3857,7 +3858,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
         want_affine = !ret && cpumask_test_cpu(cpu, p->cpus_ptr);
     }
 
-    rcu_read_lock();
+/* 3. find new cpu if want_affine */
     for_each_domain(cpu, tmp) {
         if (want_affine && (tmp->flags & SD_WAKE_AFFINE)
             && cpumask_test_cpu(prev_cpu, sched_domain_span(tmp))) {
@@ -3865,7 +3866,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
             if (cpu != prev_cpu) {
                 new_cpu = wake_affine(tmp, p, cpu/*this_cpu*/, prev_cpu, sync) {
                     int target = nr_cpumask_bits;
-/* 3. wake affine idle */
+/* 3.1 wake affine idle */
                     /* only considers 'now', it check if the waking CPU is
                      * cache-affine and is (or    will be) idle */
                     if (sched_feat(WA_IDLE)) {
@@ -3885,7 +3886,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
                             return nr_cpumask_bits;
                         }
                     }
-/* 4. wake affine weight */
+/* 3.2 wake affine weight */
                     /* considers the weight to reflect the average
                      * scheduling latency of the CPUs. This seems to work
                      * for the overloaded case. */
@@ -3925,13 +3926,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
                         }
                     }
 
-                    schedstat_inc(p->stats.nr_wakeups_affine_attempts);
-                    if (target != this_cpu)
-                        return prev_cpu;
-
-                    schedstat_inc(sd->ttwu_move_affine);
-                    schedstat_inc(p->stats.nr_wakeups_affine);
-                    return target;
+                    return (target != this_cpu) ? prev_cpu : target;
                 }
             }
 
@@ -3939,27 +3934,31 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
             break;
         }
 
-        if (tmp->flags & sd_flag)
+        if (tmp->flags & sd_flag) {
             sd = tmp;
-        else if (!want_affine)
+        } else if (!want_affine) {
             break;
+        }
     }
-/* 5. find idlest cpu */
-    if (unlikely(sd)) { /* Slow path, only true for WF_EXEC and WF_FORK */
-        new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag)
+
+    if (unlikely(sd)) {
+/* 4. Slow path, no wake_affine, only for WF_EXEC and WF_FORK
+ * Balances load by selecting the idlest CPU in the idlest group */
+        new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag)
             --->
-    } else if (wake_flags & WF_TTWU) { /* Fast path */
+    } else if (wake_flags & WF_TTWU) {
+/* 5. Fast path, select idle sibling CPU if the domain has SD_WAKE_AFFINE set. */
         new_cpu = select_idle_sibling(p, prev_cpu, new_cpu)
             --->
     }
-    rcu_read_unlock();
 
     return new_cpu;
 ```
 
-### find_idlest_cpu
+### sched_balance_find_dst_cpu
+
 ```c
-new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag) {
+new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag) {
     int new_cpu = cpu;
 
     if (!cpumask_intersects(sched_domain_span(sd), p->cpus_ptr))
@@ -3979,14 +3978,14 @@ new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag) {
             continue;
         }
 
-        group = find_idlest_group(sd, p, cpu)
+        group = sched_balance_find_dst_group(sd, p, cpu)
             --->
         if (!group) {
             sd = sd->child;
             continue;
         }
 
-        new_cpu = find_idlest_group_cpu(group, p, cpu)
+        new_cpu = sched_balance_find_dst_group_cpu(group, p, cpu)
             --->
         if (new_cpu == cpu) {
             sd = sd->child;
@@ -4008,11 +4007,11 @@ new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag) {
 }
 ```
 
-#### find_idlest_group
+#### sched_balance_find_dst_group
 
 ```c
 static struct sched_group *
-find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
+sched_balance_find_dst_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
 {
     struct sched_group *idlest = NULL, *local = NULL, *group = sd->groups;
     struct sg_lb_stats local_sgs, tmp_sgs;
@@ -4084,7 +4083,51 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
                 sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE) / sgs->group_capacity;
         }
 
-        if (!local_group && update_pick_idlest(idlest, &idlest_sgs, group, sgs)) {
+        ret = update_pick_idlest(idlest, &idlest_sgs, group, sgs) {
+            if (sgs->group_type < idlest_sgs->group_type)
+                return true;
+
+            if (sgs->group_type > idlest_sgs->group_type)
+                return false;
+
+            switch (sgs->group_type) {
+            case group_overloaded:
+            case group_fully_busy:
+                /* Select the group with lowest avg_load. */
+                if (idlest_sgs->avg_load <= sgs->avg_load)
+                    return false;
+                break;
+
+            case group_imbalanced:
+            case group_asym_packing:
+            case group_smt_balance:
+                /* Those types are not used in the slow wakeup path */
+                return false;
+
+            case group_misfit_task:
+                /* Select group with the highest max capacity */
+                if (idlest->sgc->max_capacity >= group->sgc->max_capacity)
+                    return false;
+                break;
+
+            case group_has_spare:
+                /* Select group with most idle CPUs */
+                if (idlest_sgs->idle_cpus > sgs->idle_cpus)
+                    return false;
+
+                /* Select group with lowest group_util */
+                if (idlest_sgs->idle_cpus == sgs->idle_cpus
+                    && idlest_sgs->group_util <= sgs->group_util) {
+
+                    return false;
+                }
+
+                break;
+            }
+
+            return true;
+        }
+        if (!local_group && ret) {
             idlest = group;
             idlest_sgs = *sgs;
         }
@@ -4189,11 +4232,12 @@ find_idlest_group(struct sched_domain *sd, struct task_struct *p, int this_cpu)
 }
 ```
 
-#### find_idlest_group_cpu
+#### sched_balance_find_dst_group_cpu
 
 ```c
+/* find out shallowest_idle_cpu or least_loaded_cpu */
 static int
-find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
+sched_balance_find_dst_group_cpu(struct sched_group *group, struct task_struct *p, int this_cpu)
 {
     unsigned long load, min_load = ULONG_MAX;
     unsigned int min_exit_latency = UINT_MAX;
@@ -4206,7 +4250,7 @@ find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this
     if (group->group_weight == 1)
         return cpumask_first(sched_group_span(group));
 
-    /* Traverse only the allowed CPUs */
+    /* Traverse only the allowed CPUs*/
     for_each_cpu_and(i, sched_group_span(group), p->cpus_ptr) {
         struct rq *rq = cpu_rq(i);
 
@@ -4251,6 +4295,8 @@ find_idlest_group_cpu(struct sched_group *group, struct task_struct *p, int this
 ### select_idle_sibling
 
 ```c
+/* select idle sibling of target if both prev and target are not:
+ * idle, share cache and capacity fit */
 new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
     bool has_idle_core = false;
     struct sched_domain *sd;
@@ -4264,14 +4310,13 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
         util_max = uclamp_eff_value(p, UCLAMP_MAX);
     }
 
-    lockdep_assert_irqs_disabled();
-
+    /* return target cpu if it's idle and capacity fit */
     if ((available_idle_cpu(target) || sched_idle_cpu(target))
         && asym_fits_cpu(task_util, util_min, util_max, target)) {
         return target;
     }
 
-    /* If the previous CPU is cache affine and idle, don't be stupid: */
+    /* return prev cpu if it's idle, share cached and capacity fit */
     if (prev != target && cpus_share_cache(prev, target)
         && (available_idle_cpu(prev) || sched_idle_cpu(prev))
         && asym_fits_cpu(task_util, util_min, util_max, prev))
@@ -4302,13 +4347,13 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
     if (sched_asym_cpucap_active()) {
         sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, target));
         if (sd) {
-            i = select_idle_capacity(p, sd, target) {
-
-            }
+            /* Scan the asym_capacity domain for idle CPUs */
+            i = select_idle_capacity(p, sd, target);
             return ((unsigned)i < nr_cpumask_bits) ? i : target;
         }
     }
 
+     /* Scan the sd_llc domain for idle CPUs */
     sd = rcu_dereference(per_cpu(sd_llc, target));
     if (!sd)
         return target;
@@ -4376,14 +4421,44 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
 
         for_each_cpu_wrap(cpu, cpus, target + 1) {
             if (has_idle_core) {
-                i = select_idle_core(p, cpu, cpus, &idle_cpu);
+                i = select_idle_core(p, cpu, cpus, &idle_cpu) {
+                    bool idle = true;
+                    int cpu;
+
+                    for_each_cpu(cpu, cpu_smt_mask(core)) {
+                        if (!available_idle_cpu(cpu)) {
+                            idle = false;
+                            if (*idle_cpu == -1) {
+                                if (sched_idle_cpu(cpu) && cpumask_test_cpu(cpu, cpus)) {
+                                    *idle_cpu = cpu;
+                                    break;
+                                }
+                                continue;
+                            }
+                            break;
+                        }
+                        if (*idle_cpu == -1 && cpumask_test_cpu(cpu, cpus))
+                            *idle_cpu = cpu;
+                    }
+
+                    if (idle)
+                        return core;
+
+                    cpumask_andnot(cpus, cpus, cpu_smt_mask(core));
+                    return -1;
+                }
                 if ((unsigned int)i < nr_cpumask_bits)
                     return i;
-
             } else {
                 if (--nr <= 0)
                     return -1;
-                idle_cpu = __select_idle_cpu(cpu, p);
+                idle_cpu = __select_idle_cpu(cpu, p) {
+                    if ((available_idle_cpu(cpu) || sched_idle_cpu(cpu))
+                        && sched_cpu_cookie_match(cpu_rq(cpu), p))
+                        return cpu;
+
+                    return -1;
+                }
                 if ((unsigned int)idle_cpu < nr_cpumask_bits)
                     break;
             }
@@ -6192,7 +6267,7 @@ sched_balance_rq() {
 ## tick_balance
 
 ```c
-void scheduler_tick(void){
+void sched_tick(void){
     rq->idle_balance = idle_cpu(cpu);
     sched_balance_trigger(rq) {
         if (unlikely(on_null_domain(rq) || !cpu_active(cpu_of(rq))))
@@ -6739,6 +6814,7 @@ out:
             update_next_balance = 1;
         }
     }
+
     if (need_decay) {
         rq->max_idle_balance_cost =
             max((u64)sysctl_sched_migration_cost, max_cost);
@@ -11778,6 +11854,7 @@ cpu_shares_write_u64() {
                 for_each_sched_entity(se) {
                     update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
                     update_cfs_group(se);
+                        --->
                 }
                 rq_unlock_irqrestore(rq, &rf);
             }
