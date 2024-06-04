@@ -133,6 +133,7 @@
 * [rt_bandwidth](#rt_bandwidth)
     * [tg_set_rt_bandwidth](#tg_set_rt_bandwidth)
     * [sched_rt_period_timer](#sched_rt_period_timer)
+    * [sched_rt_runtime_exceeded](#sched_rt_runtime_exceeded)
 
 * [cgroup](#cgroup)
     * [cgrp_demo](#cgrp_demo)
@@ -1059,7 +1060,7 @@ struct sched_class {
                 struct rq_flags *rf);
     void (*put_prev_task) (struct rq *rq, struct task_struct *p);
 
-    void (*set_curr_task) (struct rq *rq);
+    void (*set_next_task) (struct rq *rq, struct task_struct *p, bool first);
     void (*task_tick) (struct rq *rq, struct task_struct *p, int queued);
     void (*task_fork) (struct task_struct *p);
     void (*task_dead) (struct task_struct *p);
@@ -2362,56 +2363,7 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
             if (sched_rt_runtime(rt_rq) != RUNTIME_INF) {
                 raw_spin_lock(&rt_rq->rt_runtime_lock);
                 rt_rq->rt_time += delta_exec;
-                exceeded = sched_rt_runtime_exceeded(rt_rq) {
-                    u64 runtime = sched_rt_runtime(rt_rq);
-
-                    if (rt_rq->rt_throttled)
-                        return rt_rq_throttled(rt_rq);
-
-                    if (runtime >= sched_rt_period(rt_rq))
-                        return 0;
-
-                    balance_runtime(rt_rq);
-                        --->
-                    runtime = sched_rt_runtime(rt_rq);
-                    if (runtime == RUNTIME_INF)
-                        return 0;
-
-                    if (rt_rq->rt_time > runtime) {
-                        struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
-
-                        if (likely(rt_b->rt_runtime)) {
-                            rt_rq->rt_throttled = 1;
-                            printk_deferred_once("sched: RT throttling activated\n");
-                        } else {
-                            /* In case we did anyway, make it go away,
-                             * replenishment is a joke, since it will replenish us
-                             * with exactly 0 ns. */
-                            rt_rq->rt_time = 0;
-                        }
-
-                        if (rt_rq_throttled(rt_rq)) {
-                            /* sched_rt_rq_enqueue at sched_rt_period_timer */
-                            sched_rt_rq_dequeue(rt_rq) {
-                                struct sched_rt_entity *rt_se;
-                                int cpu = cpu_of(rq_of_rt_rq(rt_rq));
-
-                                rt_se = rt_rq->tg->rt_se[cpu];
-
-                                if (!rt_se) {
-                                    dequeue_top_rt_rq(rt_rq, rt_rq->rt_nr_running);
-                                    /* Kick cpufreq (see the comment in kernel/sched/sched.h). */
-                                    cpufreq_update_util(rq_of_rt_rq(rt_rq), 0);
-                                }
-                                else if (on_rt_rq(rt_se))
-                                    dequeue_rt_entity(rt_se, 0);
-                            }
-                            return 1;
-                        }
-                    }
-
-                    return 0;
-                }
+                exceeded = sched_rt_runtime_exceeded(rt_rq);
                 if (exceeded)
                     resched_curr(rq);
                 raw_spin_unlock(&rt_rq->rt_runtime_lock);
@@ -3242,7 +3194,23 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
             se->on_rq = 1;
 
             if (cfs_rq->nr_running == 1) {
-                check_enqueue_throttle(cfs_rq);
+                check_enqueue_throttle(cfs_rq) {
+                    if (!cfs_bandwidth_used())
+                        return;
+
+                    /* an active group must be handled by the update_curr()->put() path */
+                    if (!cfs_rq->runtime_enabled || cfs_rq->curr)
+                        return;
+
+                    /* ensure the group is not already throttled */
+                    if (cfs_rq_throttled(cfs_rq))
+                        return;
+
+                    /* update runtime allocation */
+                    account_cfs_rq_runtime(cfs_rq, 0);
+                    if (cfs_rq->runtime_remaining <= 0)
+                        throttle_cfs_rq(cfs_rq);
+                }
                 if (!throttled_hierarchy(cfs_rq)) {
                     list_add_leaf_cfs_rq(cfs_rq);
                 } else {
@@ -3375,7 +3343,15 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
             if (se != cfs_rq->curr) {
                 __dequeue_entity(cfs_rq, se) {
                     rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline, &min_vruntime_cb);
-                    avg_vruntime_sub(cfs_rq, se);
+                    avg_vruntime_sub(cfs_rq, se) {
+                        unsigned long weight = scale_load_down(se->load.weight);
+                        s64 key = entity_key(cfs_rq, se) {
+                            return (s64)(se->vruntime - cfs_rq->min_vruntime);
+                        }
+
+                        cfs_rq->avg_vruntime -= key * weight;
+                        cfs_rq->avg_load -= weight;
+                    }
                 }
             }
             se->on_rq = 0;
@@ -11163,6 +11139,8 @@ struct task_group *sched_create_group(struct task_group *parent) {
 
 ![](../images/kernel/proc-sched-cfs-period-quota.png)
 
+![](../images/kernel/proc-sched-cfs-init_cfs_bandwidth.png)
+
 * [LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
     * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
 
@@ -11193,8 +11171,6 @@ struct cfs_bandwidth {
 ```
 
 ## init_cfs_bandwidth
-
-![](../images/kernel/proc-sched-cfs-init_cfs_bandwidth.png)
 
 ```c
 void init_cfs_bandwidth(struct cfs_bandwidth *cfs_b, struct cfs_bandwidth *parent)
@@ -11913,7 +11889,6 @@ void update_cfs_group(struct sched_entity *se) {
             dequeue_load_avg(cfs_rq, se);
 
             if (!se->on_rq) {
-                /* old_vlag * old_weight == new_vlag * new_weight */
                 se->vlag = div_s64(se->vlag * se->load.weight, weight);
             } else {
                 reweight_eevdf(cfs_rq, se, weight) {
@@ -11921,12 +11896,13 @@ void update_cfs_group(struct sched_entity *se) {
                     u64 avruntime = avg_vruntime(cfs_rq);
                     s64 vlag, vslice;
 
+                    /* old_vlag * old_weight == new_vlag * new_weight */
                     if (avruntime != se->vruntime) {
                         vlag = (s64)(avruntime - se->vruntime);
                         vlag = div_s64(vlag * old_weight, weight);
                         se->vruntime = avruntime - vlag;
                     }
-
+                    /* old_vslice * old_weight == new_vslice * new_weight */
                     vslice = (s64)(se->deadline - avruntime);
                     vslice = div_s64(vslice * old_weight, weight);
                     se->deadline = avruntime + vslice;
@@ -12122,56 +12098,8 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 
                     raw_spin_lock(&rt_rq->rt_runtime_lock);
                     if (rt_rq->rt_throttled) {
-                        balance_runtime(rt_rq) {
-                            if (!sched_feat(RT_RUNTIME_SHARE))
-                                return;
-
-                            if (rt_rq->rt_time > rt_rq->rt_runtime) {
-                                raw_spin_unlock(&rt_rq->rt_runtime_lock);
-                                /* borrow some from our neighbours. */
-                                do_balance_runtime(rt_rq) {
-                                    struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
-                                    struct root_domain *rd = rq_of_rt_rq(rt_rq)->rd;
-                                    int i, weight;
-                                    u64 rt_period;
-
-                                    weight = cpumask_weight(rd->span);
-
-                                    raw_spin_lock(&rt_b->rt_runtime_lock);
-                                    rt_period = ktime_to_ns(rt_b->rt_period);
-                                    for_each_cpu(i, rd->span) {
-                                        struct rt_rq *iter = sched_rt_period_rt_rq(rt_b, i);
-                                        s64 diff;
-
-                                        if (iter == rt_rq)
-                                            continue;
-
-                                        raw_spin_lock(&iter->rt_runtime_lock);
-                                        if (iter->rt_runtime == RUNTIME_INF)
-                                            goto next;
-
-                                        /* From runqueues with spare time, take 1/n part of their
-                                         * spare time, but no more than our period. */
-                                        diff = iter->rt_runtime - iter->rt_time;
-                                        if (diff > 0) {
-                                            diff = div_u64((u64)diff, weight);
-                                            if (rt_rq->rt_runtime + diff > rt_period)
-                                                diff = rt_period - rt_rq->rt_runtime;
-                                            iter->rt_runtime -= diff;
-                                            rt_rq->rt_runtime += diff;
-                                            if (rt_rq->rt_runtime == rt_period) {
-                                                raw_spin_unlock(&iter->rt_runtime_lock);
-                                                break;
-                                            }
-                                        }
-                                next:
-                                        raw_spin_unlock(&iter->rt_runtime_lock);
-                                    }
-                                    raw_spin_unlock(&rt_b->rt_runtime_lock);
-                                }
-                                raw_spin_lock(&rt_rq->rt_runtime_lock);
-                            }
-                        }
+                        balance_runtime(rt_rq);
+                            --->
                     }
                     runtime = rt_rq->rt_runtime;
                     rt_rq->rt_time -= min(rt_rq->rt_time, overrun * runtime);
@@ -12233,6 +12161,110 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 }
 ```
 
+### sched_rt_runtime_exceeded
+
+```c
+sched_rt_runtime_exceeded(rt_rq) {
+    u64 runtime = sched_rt_runtime(rt_rq);
+
+    if (rt_rq->rt_throttled)
+        return rt_rq_throttled(rt_rq);
+
+    if (runtime >= sched_rt_period(rt_rq))
+        return 0;
+
+    balance_runtime(rt_rq) {
+        if (!sched_feat(RT_RUNTIME_SHARE))
+            return;
+        /* curr run time > max run time */
+        if (rt_rq->rt_time > rt_rq->rt_runtime) {
+            raw_spin_unlock(&rt_rq->rt_runtime_lock);
+            /* borrow some from our neighbours. */
+            do_balance_runtime(rt_rq) {
+                struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+                struct root_domain *rd = rq_of_rt_rq(rt_rq)->rd;
+                int i, weight;
+                u64 rt_period;
+
+                /* count of bits set in *srcp */
+                weight = cpumask_weight(rd->span);
+
+                raw_spin_lock(&rt_b->rt_runtime_lock);
+                rt_period = ktime_to_ns(rt_b->rt_period);
+                for_each_cpu(i, rd->span) {
+                    struct rt_rq *iter = sched_rt_period_rt_rq(rt_b, i);
+                    s64 diff;
+
+                    if (iter == rt_rq)
+                        continue;
+
+                    raw_spin_lock(&iter->rt_runtime_lock);
+                    if (iter->rt_runtime == RUNTIME_INF)
+                        goto next;
+
+                    /* From runqueues with spare time, take 1/n part of their
+                     * spare time, but no more than our period. */
+                    diff = iter->rt_runtime - iter->rt_time;
+                    if (diff > 0) {
+                        diff = div_u64((u64)diff, weight);
+                        if (rt_rq->rt_runtime + diff > rt_period)
+                            diff = rt_period - rt_rq->rt_runtime;
+                        iter->rt_runtime -= diff;
+                        rt_rq->rt_runtime += diff;
+                        if (rt_rq->rt_runtime == rt_period) {
+                            raw_spin_unlock(&iter->rt_runtime_lock);
+                            break;
+                        }
+                    }
+            next:
+                    raw_spin_unlock(&iter->rt_runtime_lock);
+                }
+                raw_spin_unlock(&rt_b->rt_runtime_lock);
+            }
+            raw_spin_lock(&rt_rq->rt_runtime_lock);
+        }
+    }
+
+    runtime = sched_rt_runtime(rt_rq);
+    if (runtime == RUNTIME_INF)
+        return 0;
+
+    if (rt_rq->rt_time > runtime) {
+        struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+
+        if (likely(rt_b->rt_runtime)) {
+            rt_rq->rt_throttled = 1;
+            printk_deferred_once("sched: RT throttling activated\n");
+        } else {
+            /* In case we did anyway, make it go away,
+                * replenishment is a joke, since it will replenish us
+                * with exactly 0 ns. */
+            rt_rq->rt_time = 0;
+        }
+
+        if (rt_rq_throttled(rt_rq)) {
+            /* sched_rt_rq_enqueue at sched_rt_period_timer */
+            sched_rt_rq_dequeue(rt_rq) {
+                struct sched_rt_entity *rt_se;
+                int cpu = cpu_of(rq_of_rt_rq(rt_rq));
+
+                rt_se = rt_rq->tg->rt_se[cpu];
+
+                if (!rt_se) {
+                    dequeue_top_rt_rq(rt_rq, rt_rq->rt_nr_running);
+                    /* Kick cpufreq (see the comment in kernel/sched/sched.h). */
+                    cpufreq_update_util(rq_of_rt_rq(rt_rq), 0);
+                }
+                else if (on_rt_rq(rt_se))
+                    dequeue_rt_entity(rt_se, 0);
+            }
+            return 1;
+        }
+    }
+
+    return 0;
+}
+```
 # cgroup
 
 * [LWN - Understanding the new control groups API](https://lwn.net/Articles/679786/)
