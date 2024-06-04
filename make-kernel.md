@@ -121,6 +121,30 @@ cd busybox-1.33.1/_install/lib
 cp /usr/aarch64-linux-gnu/lib/*.so*  -a .
 ```
 
+## bash
+
+有些内核测试脚本需要bash才能执行，busybox里面自带的是sh，只能支持posix的标准shell，因此需要自己下载编译bash，并安装到内核的root目录下
+
+```sh
+wget https://ftp.gnu.org/gnu/bash/bash-5.0.tar.gz
+tar xf bash-5.0.tar.gz
+cd bash-5.0
+./configure --host=aarch64-linux-gnu --prefix=/home/xxx/linux/linux-stable/root
+make
+make install
+```
+
+fmt
+
+```sh
+wget http://ftp.gnu.org/gnu/coreutils/coreutils-8.32.tar.xz
+tar xf coreutils-8.32.tar.xz
+cd coreutils-8.32
+./configure --host=aarch64-linux-gnu --disable-nls  --prefix=/home/xxx/linux/linux-stable/root/gnu
+make
+make install
+```
+
 # 编译内核
 ## 配置内核
 
@@ -10381,3 +10405,71 @@ diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
     ]
 }
 ```
+
+
+# 提交代码
+
+修改~/.gitconfig:
+
+```sh
+[user]
+    name = xxx
+    email = xxx@gmail.com
+[sendemail]
+    smtpserver = /usr/bin/msmtp
+```
+
+
+修改~/.msmtprc
+```sh
+defaults
+auth           on
+tls            on
+tls_trust_file /etc/ssl/certs/ca-certificates.crt
+logfile        ~/.msmtp.log
+
+account        gmail
+host           smtp.gmail.com
+port           587
+from           xxx@gmail.com
+user           xxx@gmail.com
+password       xxx
+```
+
+```sh
+sudo apt-get install msmtp
+
+chmod 600 ~/.msmtprc
+sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
+
+git config --global user.name "xxx"
+git config --global user.email "xxx@gmail.com"
+```
+
+第一次提交
+```sh
+cd linux
+
+git add fs/namespace.c
+git commit -s
+git format-patch origin
+./scripts/checkpatch.pl  0001-Improving-readability-of-copy_tree.patch
+
+./scripts/get_maintainer.pl -f fs/namespace.c
+
+git send-email --to longman@redhat.com --to viro@zeniv.linux.org.uk --cc brauner@kernel.org 0001-Improving-readability-of-copy_tree.patch
+```
+
+第二次提交
+```sh
+git add kernel/cgroup/cpuset.c
+git commit --amend
+git format-patch -v2 origin
+
+git send-email --to longman@redhat.com --cc lizefan.x@bytedance.com --in-reply-to=<message-id> v2-0001-xxx.patch
+```
+
+# Q&A
+
+1.如果启动的时候发现rcS里面的配置没有生效，即没有映射/sys /tmp /proc等，需要将rcS修改为可执行权限
+2.如果发现无法进入shell，可能是在root/dev下面没有console和null，这个拷贝需要sudo
