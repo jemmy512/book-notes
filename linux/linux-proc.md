@@ -5559,7 +5559,7 @@ get_cpu_for_node(struct device_node *node)
 
 ---
 
-![](../imeage/kernel/proc-pelt_last_update_time.png) /* EXPORT */
+![](../imeage/kernel/proc-sched_last_update_time.svg) /* EXPORT */
 
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
 
@@ -6137,7 +6137,7 @@ update_rq_clock(rq) {
 
 # load_balance
 
-![](../images/kernel/proc-load_balance.svg)
+![](../images/kernel/proc-load_balance.svg) /* EXPORT */
 
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
 
@@ -12161,9 +12161,15 @@ enum hrtimer_restart sched_rt_period_timer(struct hrtimer *timer)
 }
 ```
 
-### sched_rt_runtime_exceeded
+## sched_rt_runtime_exceeded
 
 ```c
+task_tick_rt() {
+    update_curr_rt() {
+        sched_rt_runtime_exceeded();
+    }
+}
+
 sched_rt_runtime_exceeded(rt_rq) {
     u64 runtime = sched_rt_runtime(rt_rq);
 
@@ -12237,8 +12243,8 @@ sched_rt_runtime_exceeded(rt_rq) {
             printk_deferred_once("sched: RT throttling activated\n");
         } else {
             /* In case we did anyway, make it go away,
-                * replenishment is a joke, since it will replenish us
-                * with exactly 0 ns. */
+             * replenishment is a joke, since it will replenish us
+             * with exactly 0 ns. */
             rt_rq->rt_time = 0;
         }
 
@@ -12265,6 +12271,7 @@ sched_rt_runtime_exceeded(rt_rq) {
     return 0;
 }
 ```
+
 # cgroup
 
 * [LWN - Understanding the new control groups API](https://lwn.net/Articles/679786/)
@@ -13044,14 +13051,29 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
                                     if (!cgrp)
                                         return NULL;
                                 }
-                                return cgroup_css(cgrp, ss);
+                                return cgroup_css(cgrp, ss) {
+                                    if (CGROUP_HAS_SUBSYS_CONFIG && ss)
+                                        return cgrp->subsys[ss->id];
+                                    else
+                                        return &cgrp->self;
+                                }
                             }
                         } else {
                             template[i] = old_cset->subsys[i];
                         }
                     }
 
-                    key = css_set_hash(template);
+                    key = css_set_hash(template) {
+                        unsigned long key = 0UL;
+                        struct cgroup_subsys *ss;
+                        int i;
+
+                        for_each_subsys(ss, i)
+                            key += (unsigned long)css[i];
+                        key = (key >> 16) ^ key;
+
+                        return key;
+                    }
                     hash_for_each_possible(css_set_table, cset, hlist, key) {
                         if (!compare_css_sets(cset, old_cset, cgrp, template)) {
                             continue;
@@ -13068,6 +13090,7 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
                 if (cset)
                     return cset;
 
+                /* not find an existing cset, alloc a new one */
                 cset = kzalloc(sizeof(*cset), GFP_KERNEL);
                 allocate_cgrp_cset_links(cgroup_root_count, &tmp_links);
                 memcpy(cset->subsys, template, sizeof(cset->subsys));
@@ -13096,7 +13119,6 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
 
                 css_set_count++;
 
-                /* Add @cset to the hash table */
                 key = css_set_hash(cset->subsys);
                 hash_add(css_set_table, &cset->hlist, key);
 
@@ -13262,8 +13284,9 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
             put_css_set_locked(cset);
         }
 
-        list_for_each_entry_safe(cset, tmp_cset, &mgctx->preloaded_dst_csets,
-                    mg_dst_preload_node) {
+        list_for_each_entry_safe(cset, tmp_cset,
+            &mgctx->preloaded_dst_csets, mg_dst_preload_node) {
+
             cset->mg_src_cgrp = NULL;
             cset->mg_dst_cgrp = NULL;
             cset->mg_dst_cset = NULL;
@@ -13422,6 +13445,8 @@ int mem_cgroup_resize_max(struct mem_cgroup *memcg,
 ```
 
 ### mem_cgroup_charge
+
+![](../images/kernel/cgroup-mem_cgroup_charge.svg) /* EXPORT */
 
 ```c
 mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
