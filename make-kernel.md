@@ -10406,19 +10406,46 @@ diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
 }
 ```
 
-
-# 提交代码
-
-修改~/.gitconfig:
-
-```sh
-[user]
-    name = xxx
-    email = xxx@gmail.com
-[sendemail]
-    smtpserver = /usr/bin/msmtp
+或者配置到 xxx.code-workspace:
+```json
+{
+    "launch": {
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "name": "kernel debug",
+                "type": "cppdbg",
+                "request": "launch",
+                "program": "/code/linux/vmlinux",
+                "cwd": "${workspaceFolder}",
+                "MIMode": "gdb",
+                "miDebuggerPath":"/usr/bin/gdb-multiarch",
+                "miDebuggerServerAddress": "localhost:6688",
+                "stopAtEntry": true,
+                "setupCommands": [
+                    {
+                        "description": "enable pretty print for gdb",
+                        "text": "-enable-pretty-printing",
+                        "ignoreFailures": true
+                    }
+                ]
+            }
+        ]
+    }
+}
 ```
 
+# mail 配置
+
+Configuring Custom SMTP Settings for Gmail
+1. In your Google/Gmail account, go to svgexport-10Settings - See all settings.
+2. Select the Forwarding and POP/IMAP tab.
+3. Under the IMAP access section, toggle on the option to Enable IMAP.
+
+Enable 2-Step Verification
+1. Navigate to your [Google Account: App Passwords](https://myaccount.google.com/apppasswords)
+2 Name your app Accredible, then click the Create button.
+3. A new app password will be generated for you. Copy this password.
 
 修改~/.msmtprc
 ```sh
@@ -10442,32 +10469,51 @@ sudo apt-get install msmtp
 chmod 600 ~/.msmtprc
 sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
 
+```
+
+# 提交代码
+
+修改~/.gitconfig:
+```sh
+[user]
+    name = xxx
+    email = xxx@gmail.com
+[sendemail]
+    smtpserver = /usr/bin/msmtp
+```
+
+```sh
 git config --global user.name "xxx"
 git config --global user.email "xxx@gmail.com"
 ```
 
-第一次提交
+首次提交
+
 ```sh
 cd linux
 
-git add fs/namespace.c
+git add xxx.c
 git commit -s
 git format-patch origin
-./scripts/checkpatch.pl  0001-Improving-readability-of-copy_tree.patch
 
-./scripts/get_maintainer.pl -f fs/namespace.c
+./scripts/checkpatch.pl  0001-xxx.patch
+./scripts/get_maintainer.pl 0001-xxx.patch
 
-git send-email --to longman@redhat.com --to viro@zeniv.linux.org.uk --cc brauner@kernel.org 0001-Improving-readability-of-copy_tree.patch
+git send-email --to=xxx@gmail.com --cc=xxx@gmail.com 0001-xxx.patch
 ```
 
-第二次提交
+后续提交
+
 ```sh
-git add kernel/cgroup/cpuset.c
-git commit --amend
+git add fs/namespace.c
+git commit -s --amend
 git format-patch -v2 origin
 
-git send-email --to longman@redhat.com --cc lizefan.x@bytedance.com --in-reply-to=<message-id> v2-0001-xxx.patch
+git send-email --to=xxx@gmail.com --cc=xxx@gmail.com --in-reply-to=<message-id> --annotate v2-0001-xxx.patch
 ```
+
+* `--annotate` 回复代码comment
+* `--in-reply-to` message id 可以在 https://lore.kernel.org/all/ 根据patch名字找到
 
 # Q&A
 
