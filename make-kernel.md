@@ -10473,6 +10473,9 @@ sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
 
 # 提交代码
 
+* https://blog.xzr.moe/archives/293/
+* https://tinylab.org/mailing-list-intro/
+
 修改~/.gitconfig:
 ```sh
 [user]
@@ -10509,10 +10512,19 @@ git add fs/namespace.c
 git commit -s --amend
 git format-patch -v2 origin
 
-git send-email --to=xxx@gmail.com --cc=xxx@gmail.com --in-reply-to=<message-id> --annotate v2-0001-xxx.patch
+./scripts/checkpatch.pl  0001-xxx.patch
+
+git send-email \
+   --in-reply-to=<message-id> \
+   --to=dnlplm@xxx.yyy \
+   --cc=bjorn@xxx.yyy \
+   --subject='Re: [PATCH net 1/1] xxx' \
+   /path/to/YOUR_REPLY_PATCH
 ```
 
-* `--annotate` 回复代码comment
+* `-<n>` 最近的n次commit都分别打成patch
+* `--cover-latter` 为最近n次提交的patch生成一个 [PATCH 0/n] 的介绍
+* `--annotate` 回复代码 comment
 * `--in-reply-to` message id 可以在 https://lore.kernel.org/all/ 根据patch名字找到
 
 # Q&A
