@@ -956,7 +956,7 @@ export LD_LIBRARY_PATH=
             > static_prio = 120 + nice
         * **rt_priority**: maps the priority range for real time tasks and indicates real time priority.
             > MAX_RT_PRIO-1 - rt_priority
-            * high rt_priority value signifies high priority and in the kernel low priority value signifies high priority
+            * POSIX high rt_priority value signifies high priority  while linux low priority value signifies high priority
         * **normal_prio**: indicates priority of a task without any temporary priority boosting from the kernel side. For normal tasks it is the same as static_prio and for RT tasks it is directly related to rt_priority
             * In absence of normal_prio, children of a priority boosted task will get boosted priority as well and this will cause CPU starvation for other tasks. To avoid such a situation, the kernel maintains nomral_prio of a task. Forked tasks usually get their effective prio set to normal_prio of the parent and hence don’t get boosted priority.
         * **prio**: is the effective priority of a task and is used in all scheduling related decision makings.
@@ -2201,13 +2201,13 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                 if (sd->flags & SD_WAKE_AFFINE) {
                     int best_cpu;
 
-                    /* 1.3.1 sd find this_cpu */
+                    /* 1.3.1 pick this_cpu which is in (lowest_mask & sched_domain) */
                     if (this_cpu != -1 && cpumask_test_cpu(this_cpu, sched_domain_span(sd))) {
                         rcu_read_unlock();
                         return this_cpu;
                     }
 
-                    /* 1.3.2 pick any cpu from sched domain if best_cpu < nr_cpu_ids */
+                    /* 1.3.2 pick any cpu which from both (sched domain & lowest_mask) */
                     best_cpu = cpumask_any_and_distribute(lowest_mask, sched_domain_span(sd));
                     if (best_cpu < nr_cpu_ids) {
                         rcu_read_unlock();
@@ -3284,7 +3284,7 @@ dequeue_task_fair() {
             account_entity_dequeue() {
                 update_load_sub() /* dec load weight from cfs_rq */
             }
-            return_cfs_rq_runtime()
+            return_cfs_rq_runtime() /* return excess runtime on last dequeue */
             update_cfs_group() /* recalc group shares */
             update_min_vruntime()
         }
@@ -3941,7 +3941,21 @@ new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag) {
         return prev_cpu;
 
     if (!(sd_flag & SD_BALANCE_FORK)) {
-        sync_entity_load_avg(&p->se);
+        sync_entity_load_avg(&p->se) {
+            struct cfs_rq *cfs_rq = cfs_rq_of(se);
+            u64 last_update_time;
+
+            last_update_time = cfs_rq_last_update_time(cfs_rq);
+            __update_load_avg_blocked_se(last_update_time, se) {
+                if (___update_load_sum(now, &se->avg, 0, 0, 0)) {
+                    ___update_load_avg(&se->avg, se_weight(se));
+                    trace_pelt_se_tp(se);
+                    return 1;
+                }
+
+                return 0;
+            }
+        }
     }
 
     while (sd) {
@@ -4748,6 +4762,18 @@ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
 ```
 
 ## check_class_changed_fair
+
+```c
+check_class_changed(rq, p, prev_class, oldprio) {
+    if (prev_class != p->sched_class) {
+        if (prev_class->switched_from)
+            prev_class->switched_from(rq, p);
+
+        p->sched_class->switched_to(rq, p);
+    } else if (oldprio != p->prio || dl_task(p))
+        p->sched_class->prio_changed(rq, p, oldprio);
+}
+```
 
 ### switched_from_fair
 
@@ -5562,6 +5588,63 @@ get_cpu_for_node(struct device_node *node)
 ![](../imeage/kernel/proc-sched_last_update_time.svg) /* EXPORT */
 
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
+* the 3.8 scheduler will simply maintain a separate sum of the `blocked load` contained in each cfs_rq (control-group run queue) structure. When a process blocks, its load is subtracted from the total runnable load value and added to the blocked load instead.
+* `Throttled processes` thus cannot contribute to load, so removing their contribution while they languish makes sense. But allowing their load contribution to decay while they are waiting to be allowed to run again would tend to skew their contribution downward. So, in the throttled case, time simply stops for the affected processes until they emerge from the throttled state.
+
+* cfs_rq attach/detach load_avg
+    * Dont detach load_avg if a task sleep
+    * Detach load_avg when changing sched class, group, cpu
+
+    ```c
+    dequeue_entity(cfs_rq, se, flags) {
+        int action = UPDATE_TG;
+
+        /* detach load_avg only if task is migrating whne dequeue_entity */
+        if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
+            action |= DO_DETACH;
+
+        update_curr(cfs_rq);
+        update_load_avg(cfs_rq, se, action);
+    }
+    ```
+
+    ```c
+    enqueue_entity(cfs_rq, se, flags) {
+        update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH) {
+            /* last_update_time is set to 0 when changing group or cpu */
+            if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
+                attach_entity_load_avg(cfs_rq, se);
+            }
+        }
+    }
+    ```
+
+    ```c
+    /* cpu change */
+    migrate_task_rq_fair(struct task_struct *p, int new_cpu) {
+        struct sched_entity *se = &p->se;
+        se->avg.last_update_time = 0;
+    }
+
+    /* group change */
+    task_change_group_fair(struct task_struct *p) {
+        detach_task_cfs_rq(p);
+        p->se.avg.last_update_time = 0;
+    }
+
+    /* sched class change */
+    check_class_changed(rq, p, prev_class, oldprio) {
+        if (prev_class != p->sched_class) {
+            if (prev_class->switched_from) {
+                prev_class->switched_from(rq, p) {
+                    switched_from_fair() {
+                        detach_task_cfs_rq(p);
+                    }
+                }
+            }
+        }
+    }
+    ```
 
 ```c
 /* load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions:
@@ -5957,7 +6040,9 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
             }
         }
     } else if (flags & DO_DETACH) {
-        /* detach this entity from its cfs_rq load avg */
+        /* detach this entity from its cfs_rq load avg
+         * DO_DETACH means we're here from dequeue_entity()
+         * and we are migrating task out of the CPU. */
         detach_entity_load_avg(cfs_rq, se) {
             dequeue_load_avg(cfs_rq, se) {
                 sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
@@ -7566,11 +7651,24 @@ update_sd_lb_stats(env, &sds) {
                 sgs->group_smt_balance = 1;
 
             sgs->group_type = group_classify(env->sd->imbalance_pct, group, sgs) {
-                if (group_is_overloaded(imbalance_pct, sgs))
+                if (group_is_overloaded(imbalance_pct, sgs) {
+                    /* nr_running, util or runnable overload */
+                    if (sgs->sum_nr_running <= sgs->group_weight)
+                        return false;
+
+                    if ((sgs->group_capacity * 100) < (sgs->group_util * imbalance_pct))
+                        return true;
+
+                    if ((sgs->group_capacity * imbalance_pct) < (sgs->group_runnable * 100))
+                        return true;
+
+                    return false;
+                }) {
                     return group_overloaded;
+                }
 
                 /* sub-sd failed to reach balance because of affinity */
-                if (sg_imbalanced(group))
+                if (sg_imbalanced(group) { return group->sgc->imbalance; })
                     return group_imbalanced;
 
                 if (sgs->group_asym_packing)
@@ -7605,8 +7703,8 @@ update_sd_lb_stats(env, &sds) {
 
             /* Computing avg_load makes sense only when group is overloaded */
             if (sgs->group_type == group_overloaded)
-                sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE) /
-                        sgs->group_capacity;
+                sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE)
+                    /  sgs->group_capacity;
         }
 
         if (local_group)
@@ -15643,11 +15741,17 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
         copy_flags |= CL_SHARED_TO_SLAVE;
 
 /* 2. copy parent mnt hierarchy */
-    new = copy_tree(old/*mnt*/, old->mnt.mnt_root/*dentry*/, copy_flags) {
-        /* struct mount *res, *p, *q, *r, *parent; */
-        struct mount *res, *o_prnt, *o_child, *o_mnt, *n_prnt, *n_mnt;
+    new = copy_tree(old/*src_root*/, old->mnt.mnt_root/*dentry*/, copy_flags) {
+        struct mount *res, *src_parent, *src_root_child, *src_mnt,
+            *dst_parent, *dst_mnt;
 
-        res = n_mnt = clone_mnt(mnt/*old*/, dentry/*root*/, flag) {
+        if (!(flag & CL_COPY_UNBINDABLE) && IS_MNT_UNBINDABLE(src_root))
+            return ERR_PTR(-EINVAL);
+
+        if (!(flag & CL_COPY_MNT_NS_FILE) && is_mnt_ns_file(dentry))
+            return ERR_PTR(-EINVAL);
+
+        res = dst_mnt = clone_mnt(src_root/*old*/, dentry, flag) {
             struct super_block *sb = old->mnt.mnt_sb;
             struct mount *mnt;
             int err;
@@ -15684,47 +15788,71 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
                 set_mnt_shared(mnt);
 
             /* stick the duplicate mount on the same expiry list
-             * as the original if that was on one */
+                * as the original if that was on one */
             if (flag & CL_EXPIRE) {
                 if (!list_empty(&old->mnt_expire))
                     list_add(&mnt->mnt_expire, &old->mnt_expire);
             }
 
             return mnt;
+
         }
+        if (IS_ERR(dst_mnt))
+            return dst_mnt;
 
-        n_mnt->mnt_mountpoint = mnt->mnt_mountpoint;
+        src_parent = src_root;
+        dst_mnt->mnt_mountpoint = src_root->mnt_mountpoint;
 
-        o_prnt = mnt;
-        list_for_each_entry(o_child, &mnt->mnt_mounts, mnt_child) {
-            if (!is_subdir(o_child->mnt_mountpoint, dentry))
+        list_for_each_entry(src_root_child, &src_root->mnt_mounts, mnt_child) {
+            if (!is_subdir(src_root_child->mnt_mountpoint, dentry))
                 continue;
 
-            for (o_mnt = o_child; o_mnt; o_mnt = next_mnt(o_mnt, o_child)) {
-                if (!(flag & CL_COPY_UNBINDABLE) && IS_MNT_UNBINDABLE(o_mnt)) {
-                    if (o_mnt->mnt.mnt_flags & MNT_LOCKED) {
+            struct mount *next_mnt(struct mount *p, struct mount *root) {
+                struct list_head *next = p->mnt_mounts.next;
+                if (next == &p->mnt_mounts) {
+                    while (1) {
+                        if (p == root)
+                            return NULL;
+                        next = p->mnt_child.next;
+                        if (next != &p->mnt_parent->mnt_mounts)
+                            break;
+                        p = p->mnt_parent;
+                    }
+                }
+                return list_entry(next, struct mount, mnt_child);
+            }
+
+            for (src_mnt = src_root_child; src_mnt;
+                src_mnt = next_mnt(src_mnt, src_root_child)) {
+                if (!(flag & CL_COPY_UNBINDABLE) &&
+                    IS_MNT_UNBINDABLE(src_mnt)) {
+                    if (src_mnt->mnt.mnt_flags & MNT_LOCKED) {
                         /* Both unbindable and locked. */
-                        n_mnt = ERR_PTR(-EPERM);
+                        dst_mnt = ERR_PTR(-EPERM);
                         goto out;
                     } else {
-                        o_mnt = skip_mnt_tree(o_mnt);
+                        src_mnt = skip_mnt_tree(src_mnt);
                         continue;
                     }
                 }
-                if (!(flag & CL_COPY_MNT_NS_FILE) && is_mnt_ns_file(o_mnt->mnt.mnt_root)) {
-                    o_mnt = skip_mnt_tree(o_mnt);
+                if (!(flag & CL_COPY_MNT_NS_FILE) &&
+                    is_mnt_ns_file(src_mnt->mnt.mnt_root)) {
+                    src_mnt = skip_mnt_tree(src_mnt);
                     continue;
                 }
-                while (o_prnt != o_mnt->mnt_parent) {
-                    o_prnt = o_prnt->mnt_parent;
-                    n_mnt = n_mnt->mnt_parent;
+                while (src_parent != src_mnt->mnt_parent) {
+                    src_parent = src_parent->mnt_parent;
+                    dst_mnt = dst_mnt->mnt_parent;
                 }
-                o_prnt = o_mnt;
-                n_prnt = n_mnt;
-                n_mnt = clone_mnt(o_prnt, o_prnt->mnt.mnt_root, flag);
 
-                list_add_tail(&n_mnt->mnt_list, &res->mnt_list);
-                attach_mnt(n_mnt, n_prnt, o_prnt->mnt_mp, false) {
+                src_parent = src_mnt;
+                dst_parent = dst_mnt;
+                dst_mnt = clone_mnt(src_mnt, src_mnt->mnt.mnt_root, flag);
+                if (IS_ERR(dst_mnt))
+                    goto out;
+                lock_mount_hash();
+                list_add_tail(&dst_mnt->mnt_list, &res->mnt_list);
+                attach_mnt(dst_mnt, dst_parent, src_parent->mnt_mp, false) {
                     if (beneath) {
                         mnt_set_mountpoint_beneath(mnt/*new_parent*/, n_prnt/*top_mnt*/, mp) {
                             struct mount *old_top_parent = top_mnt->mnt_parent;
@@ -15762,7 +15890,6 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
                         list_add_tail(&mnt->mnt_child, &n_prnt->mnt_mounts);
                     }
                 }
-                unlock_mount_hash();
             }
         }
         return res;
