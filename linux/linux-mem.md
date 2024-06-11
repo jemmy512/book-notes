@@ -3098,7 +3098,7 @@ struct vm_area_struct {
 
 # alloc_pages
 
-![](../images/kernel/mem-alloc_pages.svg)
+![](../images/kernel/mem-alloc_pages.svg) /* EXPORT */
 
 watermark | free area
 --- | ---
@@ -3385,6 +3385,7 @@ retry:
         if (test_bit(ZONE_BELOW_HIGH, &zone->flags))
             goto check_alloc_wmark;
 
+        /* fast check high wmark */
         mark = high_wmark_pages(zone);
         ret = zone_watermark_fast(zone, order, mark, ac->highest_zoneidx, alloc_flags, gfp_mask) {
             long free_pages;
@@ -3475,6 +3476,7 @@ retry:
         } else
             set_bit(ZONE_BELOW_HIGH, &zone->flags);
 
+/* check real mwark */
 check_alloc_wmark:
         mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK) {
             return (z->_watermark[i] + z->watermark_boost)
@@ -3551,7 +3553,15 @@ struct page *rmqueue(struct zone *preferred_zone,
 {
     struct page *page;
 
-    if (likely(pcp_allowed_order(order))) {
+    if (likely(pcp_allowed_order(order)) {
+        if (order <= PAGE_ALLOC_COSTLY_ORDER)
+                return true;
+        #ifdef CONFIG_TRANSPARENT_HUGEPAGE
+            if (order == HPAGE_PMD_ORDER)
+                return true;
+        #endif
+            return false;
+    }) {
         page = rmqueue_pcplist(preferred_zone, zone, order, migratetype, alloc_flags);
         if (likely(page))
             goto out;
@@ -3747,7 +3757,7 @@ struct page *rmqueue_pcplist(struct zone *preferred_zone,
                 int batch = nr_pcp_alloc(pcp, zone, order);
                 int alloced;
 
-                alloced = rmqueue_bulk(zone, order, batch, list, migratetype, alloc_flags) {
+                alloced = rmqueue_bulk(zone, order, batch/*count*/, list, migratetype, alloc_flags) {
                     unsigned long flags;
                     for (i = 0; i < count; ++i) {
                         struct page *page = __rmqueue(zone, order, migratetype, alloc_flags);
@@ -9353,6 +9363,8 @@ Q: how workingset works?
 2. writeback the modified file pages to storage device
 3. writeback annonymous pages to swapping area
 
+https://raw.githubusercontent.com/jemmy512/book-notes/master/images/kernel/mem-page_reclaim.svg
+
 ![](../images/kernel/mem-page_reclaim.svg) /* EXPORT */
 
 ![](../images/kernel/mem-page_reclaim_cases.png)
@@ -13602,8 +13614,8 @@ void fast_isolate_freepages(struct compact_control *cc)
         scan_start = true;
     }
 
-    /* Preferred point is in the top quarter of the scan space but take
-     * a pfn from the top half if the search is problematic. */
+    /* Preferred point is in the top quarter (1/4) of the scan space but take
+     * a pfn from the top half(1/2) if the search is problematic. */
     distance = (cc->free_pfn - cc->migrate_pfn);
     low_pfn = pageblock_start_pfn(cc->free_pfn - (distance >> 2));
     min_pfn = pageblock_start_pfn(cc->free_pfn - (distance >> 1));
