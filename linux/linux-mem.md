@@ -240,7 +240,7 @@
 
 # _start:
 
-* ![](../images/kernel/ker-start.svg) /* EXPORT */
+* ![](../images/kernel/ker-start.svg)
 
 ```s
 /* arch/arm64/kernel/head.S */
@@ -3099,7 +3099,7 @@ struct vm_area_struct {
 
 # alloc_pages
 
-![](../images/kernel/mem-alloc_pages.svg) /* EXPORT */
+![](../images/kernel/mem-alloc_pages.svg)
 
 watermark | free area
 --- | ---
@@ -8544,7 +8544,7 @@ out:
 
 ![](../images/kernel/mem-rmap-1.png)
 
-![](../images/kernel/mem-rmap.svg) /* EXPORT */
+![](../images/kernel/mem-rmap.svg)
 
 * [wowotech - 逆向映射的演进](http://www.wowotech.net/memory_management/reverse_mapping.html)
 * [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
@@ -9366,7 +9366,7 @@ Q: how workingset works?
 
 https://raw.githubusercontent.com/jemmy512/book-notes/master/images/kernel/mem-page_reclaim.svg
 
-![](../images/kernel/mem-page_reclaim.svg) /* EXPORT */
+![](../images/kernel/mem-page_reclaim.svg)
 
 ![](../images/kernel/mem-page_reclaim_cases.png)
 
@@ -11477,7 +11477,9 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 
 # page_migrate
 
-![](../images/kernel/mem-page_migrate.svg) /* EXPORT */
+![](../images/kernel/mem-page_migrate.svg)
+
+![](../images/kernel/mem-page_migrate.png)
 
 Type | Note
 --- | ---
