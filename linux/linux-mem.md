@@ -140,6 +140,7 @@
         * [isolate_migratepages_block](#isolate_migratepages_block)
     * [isolate_freepages](#isolate_freepages)
         * [fast_isolate_freepages](#fast_isolate_freepages)
+        * [isolate_freepages_block](#isolate_freepages_block)
 
 * [kcompactd](#kcompactd)
 * [kswapd](#kswapd)
@@ -239,7 +240,7 @@
 
 # _start:
 
-* Rebuild ![](../images/kernel/ker-start.svg) /* EXPORT */
+* ![](../images/kernel/ker-start.svg) /* EXPORT */
 
 ```s
 /* arch/arm64/kernel/head.S */
@@ -11476,7 +11477,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 
 # page_migrate
 
-![](../images/kernel/mem-page_migrate.svg)
+![](../images/kernel/mem-page_migrate.svg) /* EXPORT */
 
 Type | Note
 --- | ---
@@ -11737,7 +11738,7 @@ out:
 
 ```c
 rc = migrate_folio_unmap(get_new_folio, put_new_folio,
-    private, folio, &dst, mode, reason,
+    private, folio/*src*/, &dst, mode, reason,
     ret_folios) {
 
     if (folio_ref_count(src) == 1) {
@@ -12350,7 +12351,7 @@ int migrate_folio(struct address_space *mapping, struct folio *dst,
 }
 ```
 
-### remove_migration_ptes
+#### remove_migration_ptes
 
 ```c
 void remove_migration_ptes(struct folio *src, struct folio *dst, bool locked)
@@ -12695,7 +12696,7 @@ enum compact_result compact_finished(struct compact_control *cc)
         const int migratetype = cc->migratetype;
         int ret;
 
-        /* Compaction run completes if the migrate and free scanner meet */
+        /* 1. Compaction run completes if the migrate and free scanner meet */
         if (compact_scanners_met(cc)) {
             reset_cached_positions(cc->zone) {
                 zone->compact_cached_migrate_pfn[0] = zone->zone_start_pfn;
@@ -12704,15 +12705,16 @@ enum compact_result compact_finished(struct compact_control *cc)
             }
 
             /* Mark that the PG_migrate_skip information should be cleared
-            * by kswapd when it goes to sleep. kcompactd does not set the
-            * flag itself as the decision to be clear should be directly
-            * based on an allocation request. */
+             * by kswapd when it goes to sleep. kcompactd does not set the
+             * flag itself as the decision to be clear should be directly
+             * based on an allocation request. */
             if (cc->direct_compaction)
                 cc->zone->compact_blockskip_flush = true;
 
             return (cc->whole_zone) ? COMPACT_COMPLETE : COMPACT_PARTIAL_SKIPPED;
         }
 
+        /* 2. proactive mode: 1. swapd is running 2. fragementation score under wmark */
         if (cc->proactive_compaction) {
             int score, wmark_low;
             pg_data_t *pgdat;
@@ -12737,28 +12739,28 @@ enum compact_result compact_finished(struct compact_control *cc)
             return COMPACT_CONTINUE;
 
         /* Always finish scanning a pageblock to reduce the possibility of
-        * fallbacks in the future. This is particularly important when
-        * migration source is unmovable/reclaimable but it's not worth
-        * special casing. */
+         * fallbacks in the future. This is particularly important when
+         * migration source is unmovable/reclaimable but it's not worth
+         * special casing. */
         if (!pageblock_aligned(cc->migrate_pfn))
             return COMPACT_CONTINUE;
 
-        /* Direct compactor: Is a suitable page free? */
+        /* 3. Direct compactor */
         ret = COMPACT_NO_SUITABLE_PAGE;
         for (order = cc->order; order < NR_PAGE_ORDERS; order++) {
             struct free_area *area = &cc->zone->free_area[order];
             bool can_steal;
 
-            /* Job done if page is free of the right migratetype */
+            /* 3.1 Job done if page is free of the right migratetype */
             if (!free_area_empty(area, migratetype))
                 return COMPACT_SUCCESS;
 
-            /* MIGRATE_MOVABLE can fallback on MIGRATE_CMA */
+            /* 3.2 MIGRATE_MOVABLE can fallback on MIGRATE_CMA */
             if (migratetype == MIGRATE_MOVABLE && !free_area_empty(area, MIGRATE_CMA)) {
                 return COMPACT_SUCCESS;
             }
 
-            /* Job done if allocation would steal freepages from
+            /* 3.3 Job done if allocation would steal freepages from
              * other migratetype buddy lists. */
             if (find_suitable_fallback(area, order, migratetype, true, &can_steal) != -1) {
                 return COMPACT_SUCCESS;
@@ -12819,10 +12821,15 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
         }
 
         /* If isolation recently failed, do not retry. Only check the
-        * pageblock once. COMPACT_CLUSTER_MAX causes a pageblock
-        * to be visited multiple times. Assume skip was checked
-        * before making it "skip" so other compaction instances do
-        * not scan the same block. */
+         * pageblock once. COMPACT_CLUSTER_MAX causes a pageblock
+         * to be visited multiple times. Assume skip was checked
+         * before making it "skip" so other compaction instances do
+         * not scan the same block. */
+        bool isolation_suitable(struct compact_control *cc, struct page *page) {
+            if (cc->ignore_skip_hint)
+                return true;
+            return !get_pageblock_skip(page);
+        }
         if ((pageblock_aligned(low_pfn) || low_pfn == cc->zone->zone_start_pfn)
             && !fast_find_block && !isolation_suitable(cc, page)) {
 
@@ -12865,8 +12872,8 @@ isolate_migrate_t isolate_migratepages(struct compact_control *cc)
         }
 
         /* Either we isolated something and proceed with migration. Or
-        * we failed and compact_zone should decide if we should
-        * continue or not. */
+         * we failed and compact_zone should decide if we should
+         * continue or not. */
         break;
     }
 
@@ -13057,18 +13064,18 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
                 break;
 
             /* We failed to isolate in the previous order-aligned
-            * block. Set the new boundary to the end of the
-            * current block. Note we can't simply increase
-            * next_skip_pfn by 1 << order, as low_pfn might have
-            * been incremented by a higher number due to skipping
-            * a compound or a high-order buddy page in the
-            * previous loop iteration. */
+             * block. Set the new boundary to the end of the
+             * current block. Note we can't simply increase
+             * next_skip_pfn by 1 << order, as low_pfn might have
+             * been incremented by a higher number due to skipping
+             * a compound or a high-order buddy page in the
+             * previous loop iteration. */
             next_skip_pfn = block_end_pfn(low_pfn, cc->order);
         }
 
         /* Periodically drop the lock (if held) regardless of its
-        * contention, to give chance to IRQs. Abort completely if
-        * a fatal signal is pending. */
+         * contention, to give chance to IRQs. Abort completely if
+         * a fatal signal is pending. */
         if (!(low_pfn % COMPACT_CLUSTER_MAX)) {
             if (locked) {
                 unlock_page_lruvec_irqrestore(locked, flags);
@@ -13090,9 +13097,9 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
         page = pfn_to_page(low_pfn);
 
         /* Check if the pageblock has already been marked skipped.
-        * Only the first PFN is checked as the caller isolates
-        * COMPACT_CLUSTER_MAX at a time so the second call must
-        * not falsely conclude that the block should be skipped. */
+         * Only the first PFN is checked as the caller isolates
+         * COMPACT_CLUSTER_MAX at a time so the second call must
+         * not falsely conclude that the block should be skipped. */
         if (!valid_page && (pageblock_aligned(low_pfn) || low_pfn == cc->zone->zone_start_pfn)) {
             if (!isolation_suitable(cc, page)) {
                 low_pfn = end_pfn;
@@ -13111,7 +13118,7 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             ret = isolate_or_dissolve_huge_page(page, &cc->migratepages);
 
             /* Fail isolation in case isolate_or_dissolve_huge_page()
-            * reports an error. In case of -ENOMEM, abort right away. */
+             * reports an error. In case of -ENOMEM, abort right away. */
             if (ret < 0) {
                 /* Do not report -EBUSY down the chain */
                 if (ret == -EBUSY)
@@ -13123,16 +13130,16 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
 
             if (PageHuge(page)) {
                 /* Hugepage was successfully isolated and placed
-                * on the cc->migratepages list. */
+                 * on the cc->migratepages list. */
                 folio = page_folio(page);
                 low_pfn += folio_nr_pages(folio) - 1;
                 goto isolate_success_no_list;
             }
 
             /* Ok, the hugepage was dissolved. Now these pages are
-            * Buddy and cannot be re-allocated because they are
-            * isolated. Fall-through as the check below handles
-            * Buddy pages. */
+             * Buddy and cannot be re-allocated because they are
+             * isolated. Fall-through as the check below handles
+             * Buddy pages. */
         }
 
         if (PageBuddy(page)) {
@@ -13231,8 +13238,8 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             locked = lruvec;
 
             /* Try get exclusive access under lock. If marked for
-            * skip, the scan is aborted unless the current context
-            * is a rescan to reach the end of the pageblock. */
+             * skip, the scan is aborted unless the current context
+             * is a rescan to reach the end of the pageblock. */
             if (!skip_updated && valid_page) {
                 skip_updated = true;
                 if (test_and_set_skip(cc, valid_page) && !cc->finish_pageblock) {
@@ -13291,8 +13298,8 @@ isolate_fail:
             continue;
 
         /* We have isolated some pages, but then failed. Release them
-        * instead of migrating, as we cannot form the cc->order buddy
-        * page anyway. */
+         * instead of migrating, as we cannot form the cc->order buddy
+         * page anyway. */
         if (nr_isolated) {
             if (locked) {
                 unlock_page_lruvec_irqrestore(locked, flags);
@@ -13315,7 +13322,7 @@ isolate_fail:
     }
 
     /* The PageBuddy() check could have potentially brought us outside
-    * the range to be scanned. */
+     * the range to be scanned. */
     if (unlikely(low_pfn > end_pfn))
         low_pfn = end_pfn;
 
@@ -13330,14 +13337,15 @@ isolate_abort:
     }
 
     /* Update the cached scanner pfn once the pageblock has been scanned.
-    * Pages will either be migrated in which case there is no point
-    * scanning in the near future or migration failed in which case the
-    * failure reason may persist. The block is marked for skipping if
-    * there were no pages isolated in the block or if the block is
-    * rescanned twice in a row. */
+     * Pages will either be migrated in which case there is no point
+     * scanning in the near future or migration failed in which case the
+     * failure reason may persist. The block is marked for skipping if
+     * there were no pages isolated in the block or if the block is
+     * rescanned twice in a row. */
     if (low_pfn == end_pfn && (!nr_isolated || cc->finish_pageblock)) {
-        if (!cc->no_set_skip_hint && valid_page && !skip_updated)
+        if (!cc->no_set_skip_hint && valid_page && !skip_updated) {
             set_pageblock_skip(valid_page);
+        }
         update_cached_migrate(cc, low_pfn);
     }
 
@@ -13416,115 +13424,7 @@ void isolate_freepages(struct compact_control *cc)
 
         /* Found a block suitable for isolating free pages from. */
         nr_isolated = isolate_freepages_block(cc, &isolate_start_pfn/*start_pfn*/,
-            block_end_pfn, freelist, stride, false/*strict*/) {
-
-            if (strict)
-                stride = 1;
-
-            page = pfn_to_page(blockpfn);
-
-            for (; blockpfn < end_pfn; blockpfn += stride, page += stride) {
-                int isolated;
-
-                if (!(blockpfn % COMPACT_CLUSTER_MAX)
-                    && compact_unlock_should_abort(&cc->zone->lock, flags, &locked, cc))
-                    break;
-
-                nr_scanned++;
-
-                if (PageCompound(page)) {
-                    const unsigned int order = compound_order(page);
-                    if (blockpfn + (1UL << order) <= end_pfn) {
-                        blockpfn += (1UL << order) - 1;
-                        page += (1UL << order) - 1;
-                        nr_scanned += (1UL << order) - 1;
-                    }
-
-                    goto isolate_fail;
-                }
-
-                if (!PageBuddy(page))
-                    goto isolate_fail;
-
-                /* If we already hold the lock, we can skip some rechecking. */
-                if (!locked) {
-                    locked = compact_lock_irqsave(&cc->zone->lock, &flags, cc);
-
-                    /* Recheck this is a buddy page under lock */
-                    if (!PageBuddy(page))
-                        goto isolate_fail;
-                }
-
-                /* Found a free page, will break it into order-0 pages */
-                order = buddy_order(page);
-                isolated = __isolate_free_page(page, order) {
-                    struct zone *zone = page_zone(page);
-                    int mt = get_pageblock_migratetype(page);
-
-                    if (!is_migrate_isolate(mt)) {
-                        unsigned long watermark;
-                        watermark = zone->_watermark[WMARK_MIN] + (1UL << order);
-                        if (!zone_watermark_ok(zone, 0, watermark, 0, ALLOC_CMA))
-                            return 0;
-
-                        __mod_zone_freepage_state(zone, -(1UL << order), mt);
-                    }
-
-                    del_page_from_free_list(page, zone, order);
-
-                    if (order >= pageblock_order - 1) {
-                        struct page *endpage = page + (1 << order) - 1;
-                        for (; page < endpage; page += pageblock_nr_pages) {
-                            int mt = get_pageblock_migratetype(page);
-                            if (migratetype_is_mergeable(mt))
-                                set_pageblock_migratetype(page, MIGRATE_MOVABLE);
-                        }
-                    }
-
-                    return 1UL << order;
-                }
-                if (!isolated)
-                    break;
-                set_page_private(page, order);
-
-                nr_scanned += isolated - 1;
-                total_isolated += isolated;
-                cc->nr_freepages += isolated;
-
-                list_add_tail(&page->lru, freelist);
-
-                if (!strict && cc->nr_migratepages <= cc->nr_freepages) {
-                    blockpfn += isolated;
-                    break;
-                }
-                /* Advance to the end of split page */
-                blockpfn += isolated - 1;
-                page += isolated - 1;
-                continue;
-
-        isolate_fail:
-                if (strict)
-                    break;
-            }
-
-            if (locked)
-                spin_unlock_irqrestore(&cc->zone->lock, flags);
-
-            /* Be careful to not go outside of the pageblock. */
-            if (unlikely(blockpfn > end_pfn))
-                blockpfn = end_pfn;
-
-            /* Record how far we have got within the block */
-            *start_pfn = blockpfn;
-
-            if (strict && blockpfn < end_pfn)
-                total_isolated = 0;
-
-            cc->total_free_scanned += nr_scanned;
-            if (total_isolated)
-                count_compact_events(COMPACTISOLATED, total_isolated);
-            return total_isolated;
-        }
+            block_end_pfn, freelist, stride, false/*strict*/);
 
         /* Update the skip hint if the full pageblock was scanned */
         if (isolate_start_pfn == block_end_pfn)
@@ -13772,10 +13672,128 @@ void fast_isolate_freepages(struct compact_control *cc)
 }
 ```
 
+### isolate_freepages_block
+
+```c
+isolate_freepages_block(cc, &isolate_start_pfn/*start_pfn*/,
+    block_end_pfn, freelist, stride, false/*strict*/) {
+
+    if (strict)
+        stride = 1;
+
+    page = pfn_to_page(blockpfn);
+
+    for (; blockpfn < end_pfn; blockpfn += stride, page += stride) {
+        int isolated;
+
+        if (!(blockpfn % COMPACT_CLUSTER_MAX)
+            && compact_unlock_should_abort(&cc->zone->lock, flags, &locked, cc))
+            break;
+
+        nr_scanned++;
+
+        if (PageCompound(page)) {
+            const unsigned int order = compound_order(page);
+            if (blockpfn + (1UL << order) <= end_pfn) {
+                blockpfn += (1UL << order) - 1;
+                page += (1UL << order) - 1;
+                nr_scanned += (1UL << order) - 1;
+            }
+
+            goto isolate_fail;
+        }
+
+        if (!PageBuddy(page))
+            goto isolate_fail;
+
+        /* If we already hold the lock, we can skip some rechecking. */
+        if (!locked) {
+            locked = compact_lock_irqsave(&cc->zone->lock, &flags, cc);
+
+            /* Recheck this is a buddy page under lock */
+            if (!PageBuddy(page))
+                goto isolate_fail;
+        }
+
+        /* Found a free page, will break it into order-0 pages */
+        order = buddy_order(page);
+        isolated = __isolate_free_page(page, order) {
+            struct zone *zone = page_zone(page);
+            int mt = get_pageblock_migratetype(page);
+
+            if (!is_migrate_isolate(mt)) { /* migratetype == MIGRATE_ISOLATE */
+                unsigned long watermark;
+                watermark = zone->_watermark[WMARK_MIN] + (1UL << order);
+                if (!zone_watermark_ok(zone, 0, watermark, 0, ALLOC_CMA))
+                    return 0;
+
+                __mod_zone_freepage_state(zone, -(1UL << order), mt);
+            }
+
+            del_page_from_free_list(page, zone, order);
+
+            if (order >= pageblock_order - 1) {
+                struct page *endpage = page + (1 << order) - 1;
+                for (; page < endpage; page += pageblock_nr_pages) {
+                    int mt = get_pageblock_migratetype(page);
+                    if (migratetype_is_mergeable(mt)) {
+                        set_pageblock_migratetype(page, MIGRATE_MOVABLE);
+                    }
+                }
+            }
+
+            return 1UL << order;
+        }
+        if (!isolated)
+            break;
+        set_page_private(page, order);
+
+        nr_scanned += isolated - 1;
+        total_isolated += isolated;
+        cc->nr_freepages += isolated;
+
+        list_add_tail(&page->lru, freelist);
+
+        if (!strict && cc->nr_migratepages <= cc->nr_freepages) {
+            blockpfn += isolated;
+            break;
+        }
+        /* Advance to the end of split page */
+        blockpfn += isolated - 1;
+        page += isolated - 1;
+        continue;
+
+isolate_fail:
+        if (strict)
+            break;
+    }
+
+    if (locked)
+        spin_unlock_irqrestore(&cc->zone->lock, flags);
+
+    /* Be careful to not go outside of the pageblock. */
+    if (unlikely(blockpfn > end_pfn))
+        blockpfn = end_pfn;
+
+    /* Record how far we have got within the block */
+    *start_pfn = blockpfn;
+
+    if (strict && blockpfn < end_pfn)
+        total_isolated = 0;
+
+    cc->total_free_scanned += nr_scanned;
+    if (total_isolated)
+        count_compact_events(COMPACTISOLATED, total_isolated);
+    return total_isolated;
+}
+```
+
 # kcompactd
 
 * The conditions to wakeup kcompactd
     1. Before kswapd run
+
+        wakeup_kcompactd if the failure of kswapd comes from external fragments not low memory.
 
         ```c
         void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
@@ -13793,9 +13811,9 @@ void fast_isolate_freepages(struct compact_control *cc)
         }
         ```
 
-        wakeup_kcompactd if the failure of kswapd comes from external fragments not low memory.
-
     2. When kswapd run
+
+        During the memory allocation process, if "memory stealing" occurs, memory recycling may be triggered at the end of the allocation, and memory compaction may be triggered during the memory recycling process. This is a logic to reduce the risk of memory fragmentation in advance.
 
         ```c
         steal_suitable_fallback(zone, page, alloc_flags, start_migratetype, can_steal) {
@@ -13841,13 +13859,16 @@ void fast_isolate_freepages(struct compact_control *cc)
 
     3. After kswapd run
 
+        After kswapd is finished running, it will routinely clear the cache information related to memory compaction, triggering memory compaction;
+
         ```c
         void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
             unsigned int highest_zoneidx) {
 
+            /* Return true if high watermarks have been met.
+             * Since we have freed the memory, now we should compact it to make
+             * allocation of the requested order possible. */
             if (prepare_kswapd_sleep(pgdat, reclaim_order, highest_zoneidx)) {
-                /* We have freed the memory, now we should compact it to make
-                 * allocation of the requested order possible. */
                 wakeup_kcompactd(pgdat, alloc_order, highest_zoneidx);
             }
         }
@@ -13871,12 +13892,16 @@ int kcompactd(void *p)
     pgdat->kcompactd_max_order = 0;
     pgdat->kcompactd_highest_zoneidx = pgdat->nr_zones - 1;
 
+    /* test_bit(KTHREAD_SHOULD_STOP, &to_kthread(current)->flags); */
     while (!kthread_should_stop()) {
         unsigned long pflags;
 
         if (!sysctl_compaction_proactiveness)
             timeout = MAX_SCHEDULE_TIMEOUT;
-        ret = wait_event_freezable_timeout(pgdat->kcompactd_wait, kcompactd_work_requested(pgdat), timeout);
+        ret = wait_event_freezable_timeout(pgdat->kcompactd_wait, kcompactd_work_requested(pgdat) {
+            return pgdat->kcompactd_max_order > 0 || kthread_should_stop() ||
+                pgdat->proactive_compact_trigger;
+        }, timeout);
         if (ret && !pgdat->proactive_compact_trigger) {
             kcompactd_do_work(pgdat) {
                 int zoneid;
@@ -13899,6 +13924,7 @@ int kcompactd(void *p)
                     if (compaction_deferred(zone, cc.order))
                         continue;
 
+                    /* check fragmentation index is under wmark */
                     ret = compaction_suit_allocation_order(zone, cc.order, zoneid, ALLOC_WMARK_MIN) {
                         unsigned long watermark;
 
@@ -13994,6 +14020,7 @@ int kcompactd(void *p)
                     pgdat->kcompactd_highest_zoneidx = pgdat->nr_zones - 1;
             }
             timeout = default_timeout;
+
             continue;
         }
 
@@ -14022,7 +14049,7 @@ int kcompactd(void *p)
                             return extfrag_for_order(zone, COMPACTION_HPAGE_ORDER) {
                                 struct contig_page_info info;
 
-                                fill_contig_page_info(zone, order, &info) {
+                                fill_contig_page_info(zone, order/*suitable_order*/, &info) {
                                     unsigned int order;
 
                                     info->free_pages = 0;
@@ -14033,9 +14060,10 @@ int kcompactd(void *p)
                                         unsigned long blocks = data_race(zone->free_area[order].nr_free);
                                         info->free_blocks_total += blocks;
                                         info->free_pages += blocks << order;
-                                        if (order >= suitable_order)
-                                            info->free_blocks_suitable +=
-                                                blocks << (order - suitable_order);
+                                        if (order >= suitable_order) {
+                                            info->free_blocks_suitable
+                                                += blocks << (order - suitable_order);
+                                        }
                                     }
                                 }
                                 if (info.free_pages == 0)
