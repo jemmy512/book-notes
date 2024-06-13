@@ -236,6 +236,25 @@
 * Kernel Exploring
     * [内存管理的不同粒度](https://richardweiyang-2.gitbook.io/kernel-exploring/00-memory_a_bottom_up_view/13-physical-layer-partition)
 
+        ```
+                    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        slub        | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | | |
+                    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+        page        |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |   |
+                    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+        page_block  |       |       |       |       |       |       |       |       |
+                    +-------+-------+-------+-------+-------+-------+-------+-------+
+        mem_section |               |               |               |               |
+                    +---------------+---------------+---------------+---------------+
+        memory_block|                               |                               |
+                    +-------------------------------+-------------------------------+
+        memblock    |                                                               |
+                    +---------------------------------------------------------------+
+        e820        |                                                               |
+                    +---------------------------------------------------------------+
+
+        ```
+
 ---
 
 # _start:
@@ -3099,7 +3118,7 @@ struct vm_area_struct {
 
 # alloc_pages
 
-![](../images/kernel/mem-alloc_pages.svg)
+![](../images/kernel/mem-alloc_pages.svg) /* EXPORT */
 
 watermark | free area
 --- | ---
@@ -4028,7 +4047,97 @@ do_steal:
 ### node_reclaim
 
 ```c
+int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
+{
+    int ret;
 
+    /*
+    * Node reclaim reclaims unmapped file backed pages and
+    * slab pages if we are over the defined limits.
+    *
+    * A small portion of unmapped file backed pages is needed for
+    * file I/O otherwise pages read by file I/O will be immediately
+    * thrown out if the node is overallocated. So we do not reclaim
+    * if less than a specified percentage of the node is used by
+    * unmapped file backed pages.
+    */
+    if (node_pagecache_reclaimable(pgdat) <= pgdat->min_unmapped_pages &&
+        node_page_state_pages(pgdat, NR_SLAB_RECLAIMABLE_B) <=
+        pgdat->min_slab_pages)
+        return NODE_RECLAIM_FULL;
+
+    /*
+    * Do not scan if the allocation should not be delayed.
+    */
+    if (!gfpflags_allow_blocking(gfp_mask) || (current->flags & PF_MEMALLOC))
+        return NODE_RECLAIM_NOSCAN;
+
+    /*
+    * Only run node reclaim on the local node or on nodes that do not
+    * have associated processors. This will favor the local processor
+    * over remote processors and spread off node memory allocations
+    * as wide as possible.
+    */
+    if (node_state(pgdat->node_id, N_CPU) && pgdat->node_id != numa_node_id())
+        return NODE_RECLAIM_NOSCAN;
+
+    if (test_and_set_bit(PGDAT_RECLAIM_LOCKED, &pgdat->flags))
+        return NODE_RECLAIM_NOSCAN;
+
+    ret = __node_reclaim(pgdat, gfp_mask, order) {
+        /* Minimum pages needed in order to stay on node */
+        const unsigned long nr_pages = 1 << order;
+        struct task_struct *p = current;
+        unsigned int noreclaim_flag;
+        struct scan_control sc = {
+            .nr_to_reclaim = max(nr_pages, SWAP_CLUSTER_MAX),
+            .gfp_mask = current_gfp_context(gfp_mask),
+            .order = order,
+            .priority = NODE_RECLAIM_PRIORITY,
+            .may_writepage = !!(node_reclaim_mode & RECLAIM_WRITE),
+            .may_unmap = !!(node_reclaim_mode & RECLAIM_UNMAP),
+            .may_swap = 1,
+            .reclaim_idx = gfp_zone(gfp_mask),
+        };
+        unsigned long pflags;
+
+        cond_resched();
+        psi_memstall_enter(&pflags);
+        delayacct_freepages_start();
+        fs_reclaim_acquire(sc.gfp_mask);
+        /*
+        * We need to be able to allocate from the reserves for RECLAIM_UNMAP
+        */
+        noreclaim_flag = memalloc_noreclaim_save();
+        set_task_reclaim_state(p, &sc.reclaim_state);
+
+        if (node_pagecache_reclaimable(pgdat) > pgdat->min_unmapped_pages ||
+            node_page_state_pages(pgdat, NR_SLAB_RECLAIMABLE_B) > pgdat->min_slab_pages) {
+            /*
+            * Free memory by calling shrink node with increasing
+            * priorities until we have enough memory freed.
+            */
+            do {
+                shrink_node(pgdat, &sc);
+                    --->
+            } while (sc.nr_reclaimed < nr_pages && --sc.priority >= 0);
+        }
+
+        set_task_reclaim_state(p, NULL);
+        memalloc_noreclaim_restore(noreclaim_flag);
+        fs_reclaim_release(sc.gfp_mask);
+        psi_memstall_leave(&pflags);
+        delayacct_freepages_end();
+
+        return sc.nr_reclaimed >= nr_pages;
+    }
+    clear_bit(PGDAT_RECLAIM_LOCKED, &pgdat->flags);
+
+    if (!ret)
+        count_vm_event(PGSCAN_ZONE_RECLAIM_FAILED);
+
+    return ret;
+}
 ```
 
 ## alloc_pages_slowpath
@@ -7530,6 +7639,8 @@ do_shared_fault() {
 
 ## do_swap_page
 
+![](../images/kernel/mem-fault-do_swap_fault.png)
+
 ```c
 vm_fault_t do_swap_page(struct vm_fault *vmf)
 {
@@ -7764,10 +7875,6 @@ out_release:
 ```
 
 ## do_wp_page
-
-![](../images/kernel/mem-fault-do_swap_fault.png)
-
----
 
 ![](../images/kernel/mem-fault-do_wp_page.png)
 
@@ -9364,8 +9471,6 @@ Q: how workingset works?
 2. writeback the modified file pages to storage device
 3. writeback annonymous pages to swapping area
 
-https://raw.githubusercontent.com/jemmy512/book-notes/master/images/kernel/mem-page_reclaim.svg
-
 ![](../images/kernel/mem-page_reclaim.svg)
 
 ![](../images/kernel/mem-page_reclaim_cases.png)
@@ -9779,8 +9884,8 @@ __perform_reclaim(gfp_mask, order, ac) {
                     pg_data_t *first_pgdat = NULL;
 
                     /* If the number of buffer_heads in the machine exceeds the maximum
-                    * allowed level, force direct reclaim to scan the highmem zone as
-                    * highmem pages could be pinning lowmem pages storing buffer_heads */
+                     * allowed level, force direct reclaim to scan the highmem zone as
+                     * highmem pages could be pinning lowmem pages storing buffer_heads */
                     orig_mask = sc->gfp_mask;
                     if (buffer_heads_over_limit) {
                         sc->gfp_mask |= __GFP_HIGHMEM;
@@ -10063,10 +10168,10 @@ again:
     }
 
     /* Tag a node/memcg as congested if all the dirty pages were marked
-    * for writeback and immediate reclaim (counted in nr.congested).
-    *
-    * Legacy memcg will stall in page writeback so avoid forcibly
-    * stalling in reclaim_throttle(). */
+     * for writeback and immediate reclaim (counted in nr.congested).
+     *
+     * Legacy memcg will stall in page writeback so avoid forcibly
+     * stalling in reclaim_throttle(). */
     if (sc->nr.dirty && sc->nr.dirty == sc->nr.congested) {
         if (cgroup_reclaim(sc) && writeback_throttling_sane(sc))
             set_bit(LRUVEC_CGROUP_CONGESTED, &target_lruvec->flags);
@@ -10149,6 +10254,7 @@ shrink_node_memcgs(pgdat, sc) {
             }
 
             get_scan_count(lruvec, sc, nr);
+                --->
 
             /* Record the original scan target for proportional adjustments later */
             memcpy(targets, nr, sizeof(nr));
@@ -10414,7 +10520,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 
     spin_unlock_irq(&lruvec->lru_lock);
 
-    /* 2. filter the folios which should sitll be active/inactive */
+    /* 2. filter the folios which should still be active/inactive */
     while (!list_empty(&l_hold)) {
         struct folio *folio;
 
@@ -10422,6 +10528,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
         folio = lru_to_folio(&l_hold);
         list_del(&folio->lru);
 
+        /* 2.1 move to unevictable list */
         if (unlikely(!folio_evictable(folio))) {
             folio_putback_lru(folio);
             continue;
@@ -10434,7 +10541,8 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
             }
         }
 
-        /* Referenced or rmap lock contention: rotate */
+        /* 2.2 rotate to active list
+         * Referenced or rmap lock contention: rotate */
         if (folio_referenced(folio, 0, sc->target_mem_cgroup, &vm_flags) != 0) {
             /* Identify referenced, file-backed active folios and
              * give them one more trip around the active list. */
@@ -10445,6 +10553,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
             }
         }
 
+        /* 2.3 move to inactive list */
         folio_clear_active(folio);    /* we are de-activating */
         folio_set_workingset(folio);
         list_add(&folio->lru, &l_inactive);
@@ -10452,17 +10561,20 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 
     spin_lock_irq(&lruvec->lru_lock);
 
-    /* 3. move folios can be moved to active/inactive lru
-     * return the folios can be freed to buddy */
+    /* 3. moves folios from private @list to appropriate LRU list.
+     * Returns the number of pages moved to the given lruvec */
     nr_activate = move_folios_to_lru(lruvec, &l_active);
     nr_deactivate = move_folios_to_lru(lruvec, &l_inactive/*list*/) {
         int nr_pages, nr_moved = 0;
-        LIST_HEAD(folios_to_free);
+        struct folio_batch free_folios;
 
+        folio_batch_init(&free_folios);
         while (!list_empty(list)) {
             struct folio *folio = lru_to_folio(list);
+
             list_del(&folio->lru);
 
+            /* 3.1 move to unevictable list */
             if (unlikely(!folio_evictable(folio))) {
                 spin_unlock_irq(&lruvec->lru_lock);
                 folio_putback_lru(folio);
@@ -10472,29 +10584,37 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 
             folio_set_lru(folio);
 
+            /* 3.2 move to buddy system */
             if (unlikely(folio_put_testzero(folio))) {
                 __folio_clear_lru_flags(folio);
 
-                if (unlikely(folio_test_large(folio))) {
+                if (folio_test_large(folio) && folio_test_large_rmappable(folio)) {
+                    folio_undo_large_rmappable(folio);
+                }
+                if (folio_batch_add(&free_folios, folio) == 0) {
                     spin_unlock_irq(&lruvec->lru_lock);
-                    destroy_large_folio(folio);
+                    mem_cgroup_uncharge_folios(&free_folios);
+                    free_unref_folios(&free_folios);
                     spin_lock_irq(&lruvec->lru_lock);
-                } else {
-                    list_add(&folio->lru, &folios_to_free);
                 }
 
                 continue;
             }
 
+            /* 3.3 move to active/inactive list */
             lruvec_add_folio(lruvec, folio);
             nr_pages = folio_nr_pages(folio);
             nr_moved += nr_pages;
-
             if (folio_test_active(folio))
                 workingset_age_nonresident(lruvec, nr_pages);
         }
 
-        list_splice(&folios_to_free, list);
+        if (free_folios.nr) {
+            spin_unlock_irq(&lruvec->lru_lock);
+            mem_cgroup_uncharge_folios(&free_folios);
+            free_unref_folios(&free_folios);
+            spin_lock_irq(&lruvec->lru_lock);
+        }
 
         return nr_moved;
     }
@@ -10508,8 +10628,37 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
     __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
     spin_unlock_irq(&lruvec->lru_lock);
 
-    if (nr_rotated)
-        lru_note_cost(lruvec, file, 0, nr_rotated);
+    if (nr_rotated) {
+        lru_note_cost(lruvec, file, 0/*nr_io*/, nr_rotated) {
+            unsigned long cost = nr_io * SWAP_CLUSTER_MAX + nr_rotated;
+
+            do {
+                unsigned long lrusize;
+
+                if (file)
+                    lruvec->file_cost += cost;
+                else
+                    lruvec->anon_cost += cost;
+
+                 /* Decay previous events
+                  *
+                  * Because workloads change over time (and to avoid
+                  * overflow) we keep these statistics as a floating
+                  * average, which ends up weighing recent refaults
+                  * more than old ones. */
+                lrusize = lruvec_page_state(lruvec, NR_INACTIVE_ANON) +
+                    lruvec_page_state(lruvec, NR_ACTIVE_ANON) +
+                    lruvec_page_state(lruvec, NR_INACTIVE_FILE) +
+                    lruvec_page_state(lruvec, NR_ACTIVE_FILE);
+
+                if (lruvec->file_cost + lruvec->anon_cost > lrusize / 4) {
+                    lruvec->file_cost /= 2;
+                    lruvec->anon_cost /= 2;
+                }
+                spin_unlock_irq(&lruvec->lru_lock);
+            } while ((lruvec = parent_lruvec(lruvec)));
+        }
+    }
 
     /* 4. free candicate folios to buddy */
     mem_cgroup_uncharge_list(&l_active);
