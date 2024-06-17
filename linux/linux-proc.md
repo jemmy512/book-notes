@@ -188,7 +188,7 @@
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-
+    
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -719,7 +719,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
         lea SYS_ify (syscall_name), %rax; \
         syscall
-
+    
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -728,7 +728,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-
+        
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -748,16 +748,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-
+        
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-
+        
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-
+        
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -776,12 +776,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-
+        
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-
+        
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -3551,6 +3551,7 @@ again:
     if (!prev || prev->sched_class != &fair_sched_class)
         goto simple;
 
+/* 1. prev task is fair_sched_class */
     do {
         struct sched_entity *curr = cfs_rq->curr;
 
@@ -3560,7 +3561,7 @@ again:
             else
                 curr = NULL;
 
-            /* do the throttle and dequeue its entity in the parent(s) */
+            /* bandwidth check, throttle and dequeue cfs_rq if runtime is used up */
             if (unlikely(check_cfs_rq_runtime(cfs_rq))) {
                 cfs_rq = &rq->cfs;
 
@@ -3606,7 +3607,7 @@ again:
     goto done;
 
 simple:
-
+/* 2. prev task is not fair_sched_class */
     if (prev) {
         put_prev_task(rq, prev)
             --->
@@ -3635,7 +3636,7 @@ simple:
                 return cfs_rq->next;
 
             return pick_eevdf(cfs_rq) {
-                /* the root note of the rbt */
+                /* the root node of the rbt */
                 struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
                 struct sched_entity *curr = cfs_rq->curr;
                 struct sched_entity *best = NULL;
@@ -4571,8 +4572,12 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
     for_each_sched_entity(se) {
         cfs_rq = cfs_rq_of(se);
         entity_tick(cfs_rq, se, queued) {
-/* 1. udpate: exec_start, sum_exec, slice, vruntime, deadline,
- * cfs_rq.min_vruntime, bandwidth: cfs_rq.runtime_remaining, cfs_b.runtime */
+/* 1. udpate:
+ * se: exec_start, sum_exec, slice, vruntime, deadline,
+ * cfs_rq: min_vruntime, runtime_remaining
+ * cfs_b: runtime
+ * load_avg
+ * cfs_group:  weight */
             update_curr(cfs_rq) {
                 delta_exec = now - curr->exec_start;
                 curr->exec_start = now;
@@ -4581,14 +4586,17 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                 curr->vruntime += calc_delta_fair(delta_exec, curr);
 
                 update_deadline(cfs_rq, curr) {
+                    /* check time slice usage */
                     if ((s64)(se->vruntime - se->deadline) < 0)
                         return;
+
+                    /* The task has consumed its request,
+                     * update slice, deadline and resched */
                     se->slice = sysctl_sched_base_slice;
 
                     /* EEVDF: vd_i = ve_i + r_i / w_i */
                     se->deadline = se->vruntime + calc_delta_fair(se->slice, se);
 
-                    /* The task has consumed its request, reschedule. */
                     if (cfs_rq->nr_running > 1) {
                         resched_curr(rq_of(cfs_rq));
                         clear_buddies(cfs_rq, se);
@@ -5598,11 +5606,11 @@ get_cpu_for_node(struct device_node *node)
     ```c
     dequeue_entity(cfs_rq, se, flags) {
         int action = UPDATE_TG;
-
+    
         /* detach load_avg only if task is migrating whne dequeue_entity */
         if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
             action |= DO_DETACH;
-
+    
         update_curr(cfs_rq);
         update_load_avg(cfs_rq, se, action);
     }
@@ -5625,13 +5633,13 @@ get_cpu_for_node(struct device_node *node)
         struct sched_entity *se = &p->se;
         se->avg.last_update_time = 0;
     }
-
+    
     /* group change */
     task_change_group_fair(struct task_struct *p) {
         detach_task_cfs_rq(p);
         p->se.avg.last_update_time = 0;
     }
-
+    
     /* sched class change */
     check_class_changed(rq, p, prev_class, oldprio) {
         if (prev_class != p->sched_class) {

@@ -120,9 +120,13 @@
         * [shrink_node_memcgs](#shrink_node_memcgs)
             * [get_scan_count](#get_scan_count)
         * [shrink_active_list](#shrink_active_list)
+            * [isolate_lru_folios](#isolate_lru_folios)
+            * [move_folios_to_lru](#move_folios_to_lru)
         * [shrink_inactive_list](#shrink_inactive_list)
-        * [shrink_folio_list](#shrink_folio_list)
+            * [shrink_folio_list](#shrink_folio_list)
+                * [remove_mapping](#remove_mapping)
         * [shrink_slab](#shrink_slab)
+            * [shrink_slab_memcg](#shrink_slab_memcg)
     * [vmpressure](#vmpressure)
 
 * [page_migrate](#page_migrate)
@@ -1230,7 +1234,8 @@ struct page {
             struct address_space *mapping;
             /* 1. anon mapping: page offset in user virtual address space
              * 2. file mapping: page offset in file
-             * 3. migration type */
+             * 3. migration type
+             * 4. swap_entry_t */
             pgoff_t index;
             unsigned long private; /* struct buffer_head */
         };
@@ -5449,8 +5454,6 @@ SLAB_MATCH(memcg_data, memcg_data);
 
 ![](../images/kernel/mem-slab_alloc.png)
 
-![](../images/kernel/mem-slab_alloc-2.png)
-
 ```c
 kmem_cache_alloc(s, flags) {
     __kmem_cache_alloc_lru(s, lru, flags)
@@ -5534,6 +5537,8 @@ redo:
                 return freelist;
 
             deactivate_slab: /* Finishes removing the cpu slab, merges cpu's freelist with slab's freelist */
+                struct slab new;
+                struct slab old;
                 if (slab != c->slab) {
                     local_unlock_irqrestore(&s->cpu_slab->lock, flags);
                     goto reread_slab;
@@ -5576,6 +5581,7 @@ redo:
                         new.frozen = 0;
                         if (freelist_tail) {
                             new.inuse -= free_delta;
+                            /* set freepointer of freelist_tail is old.freelist */
                             set_freepointer(s, freelist_tail, old.freelist);
                             new.freelist = freelist;
                         } else {
@@ -5590,7 +5596,9 @@ redo:
                     /* Stage three: Manipulate the slab list based on the updated state. */
                     if (!new.inuse && n->nr_partial >= s->min_partial) {
                         discard_slab(s, slab) {
-                            free_slab(s, slab);
+                            free_slab(s, slab) {
+                                __free_page();
+                            }
                         }
                     } else if (new.freelist) {
                         add_partial(n, slab, tail) {
@@ -5682,6 +5690,7 @@ redo:
                             if (!partial) {
                                 partial = slab;
                             } else {
+                                /* Put a slab into a partial slab slot if available */
                                 put_cpu_partial(s, slab, 0);
                                 partial_slabs++;
                             }
@@ -5691,7 +5700,7 @@ redo:
                             }
                         }
 
-                        return obj;
+                        return partial;
                     }
 
                     if (obj)
@@ -5785,10 +5794,13 @@ redo:
 
                         kasan_poison_slab(slab);
 
-                        start = slab_address(slab);
+                        start = slab_address(slab) {
+                            return folio_address(slab_folio(slab));
+                        }
 
                         setup_slab_debug(s, slab, start);
 
+                        /* Shuffle the single linked freelist based on a random pre-computed sequence */
                         shuffle = shuffle_freelist(s, slab);
 
                         if (!shuffle) {
@@ -5797,7 +5809,13 @@ redo:
                                     p += s->red_left_pad;
                                 return p;
                             }
-                            start = setup_object(s, start);
+                            start = setup_object(s, start) {
+                                object = kasan_init_slab_obj(s, object);
+                                if (unlikely(s->ctor)) {
+                                    s->ctor(object);
+                                }
+                                return object;
+                            }
                             slab->freelist = start;
                             for (idx = 0, p = start; idx < slab->objects - 1; idx++) {
                                 next = p + s->size;
@@ -7789,6 +7807,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
     arch_swap_restore(entry, folio);
 
+    /* Remove the swap entry and conditionally try to free up the swapcache. */
     swap_free(entry)
         --->
     ret = should_try_to_free_swap(folio, vma, vmf->flags) {
@@ -8696,7 +8715,8 @@ struct page {
     union {
         /* 1. anon mapping: page offset in user virtual address space
          * 2. file mapping: page offset in file
-         * 3. migration type */
+         * 3. migration type
+         * 4. swap_entry_t */
         pgoff_t index;
         union {
             atomic_t _mapcount;
@@ -9493,14 +9513,14 @@ struct lruvec {
     struct list_head        lists[NR_LRU_LISTS];
     spinlock_t              lru_lock;
 
-    unsigned long            anon_cost;
-    unsigned long            file_cost;
+    unsigned long           anon_cost;
+    unsigned long           file_cost;
 
-    atomic_long_t            nonresident_age;
+    atomic_long_t           nonresident_age;
 
-    unsigned long            refaults[ANON_AND_FILE];
+    unsigned long           refaults[ANON_AND_FILE];
 
-    unsigned long            flags;
+    unsigned long           flags;
 
     struct pglist_data      *pgdat;
 };
@@ -9586,6 +9606,8 @@ void folio_mark_accessed(struct folio *folio)
 ## folio_batch
 
 ```c
+#define PAGEVEC_SIZE        31
+
 struct folio_batch {
     unsigned char nr;
     bool percpu_pvec_drained;
@@ -10564,60 +10586,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
     /* 3. moves folios from private @list to appropriate LRU list.
      * Returns the number of pages moved to the given lruvec */
     nr_activate = move_folios_to_lru(lruvec, &l_active);
-    nr_deactivate = move_folios_to_lru(lruvec, &l_inactive/*list*/) {
-        int nr_pages, nr_moved = 0;
-        struct folio_batch free_folios;
-
-        folio_batch_init(&free_folios);
-        while (!list_empty(list)) {
-            struct folio *folio = lru_to_folio(list);
-
-            list_del(&folio->lru);
-
-            /* 3.1 move to unevictable list */
-            if (unlikely(!folio_evictable(folio))) {
-                spin_unlock_irq(&lruvec->lru_lock);
-                folio_putback_lru(folio);
-                spin_lock_irq(&lruvec->lru_lock);
-                continue;
-            }
-
-            folio_set_lru(folio);
-
-            /* 3.2 move to buddy system */
-            if (unlikely(folio_put_testzero(folio))) {
-                __folio_clear_lru_flags(folio);
-
-                if (folio_test_large(folio) && folio_test_large_rmappable(folio)) {
-                    folio_undo_large_rmappable(folio);
-                }
-                if (folio_batch_add(&free_folios, folio) == 0) {
-                    spin_unlock_irq(&lruvec->lru_lock);
-                    mem_cgroup_uncharge_folios(&free_folios);
-                    free_unref_folios(&free_folios);
-                    spin_lock_irq(&lruvec->lru_lock);
-                }
-
-                continue;
-            }
-
-            /* 3.3 move to active/inactive list */
-            lruvec_add_folio(lruvec, folio);
-            nr_pages = folio_nr_pages(folio);
-            nr_moved += nr_pages;
-            if (folio_test_active(folio))
-                workingset_age_nonresident(lruvec, nr_pages);
-        }
-
-        if (free_folios.nr) {
-            spin_unlock_irq(&lruvec->lru_lock);
-            mem_cgroup_uncharge_folios(&free_folios);
-            free_unref_folios(&free_folios);
-            spin_lock_irq(&lruvec->lru_lock);
-        }
-
-        return nr_moved;
-    }
+    nr_deactivate = move_folios_to_lru(lruvec, &l_inactive);
 
     /* Keep all free folios in l_active list */
     list_splice(&l_inactive, &l_active);
@@ -10666,7 +10635,7 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
 }
 ```
 
-### isolate_lru_folios
+#### isolate_lru_folios
 
 ```c
 unsigned long isolate_lru_folios(unsigned long nr_to_scan,
@@ -10753,6 +10722,67 @@ move:
 }
 ```
 
+#### move_folios_to_lru
+
+```c
+/* Moves folios from private @list to appropriate LRU list.
+ * Returns the number of pages moved to the given lruvec. */
+move_folios_to_lru(lruvec, list) {
+    int nr_pages, nr_moved = 0;
+    struct folio_batch free_folios;
+
+    folio_batch_init(&free_folios);
+    while (!list_empty(list)) {
+        struct folio *folio = lru_to_folio(list);
+
+        list_del(&folio->lru);
+
+        /* 3.1 move to unevictable list */
+        if (unlikely(!folio_evictable(folio))) {
+            spin_unlock_irq(&lruvec->lru_lock);
+            folio_putback_lru(folio);
+            spin_lock_irq(&lruvec->lru_lock);
+            continue;
+        }
+
+        folio_set_lru(folio);
+
+        /* 3.2 move to buddy system */
+        if (unlikely(folio_put_testzero(folio))) {
+            __folio_clear_lru_flags(folio);
+
+            if (folio_test_large(folio) && folio_test_large_rmappable(folio)) {
+                folio_undo_large_rmappable(folio);
+            }
+            if (folio_batch_add(&free_folios, folio) == 0) {
+                spin_unlock_irq(&lruvec->lru_lock);
+                mem_cgroup_uncharge_folios(&free_folios);
+                free_unref_folios(&free_folios);
+                spin_lock_irq(&lruvec->lru_lock);
+            }
+
+            continue;
+        }
+
+        /* 3.3 move to active/inactive list */
+        lruvec_add_folio(lruvec, folio);
+        nr_pages = folio_nr_pages(folio);
+        nr_moved += nr_pages;
+        if (folio_test_active(folio))
+            workingset_age_nonresident(lruvec, nr_pages);
+    }
+
+    if (free_folios.nr) {
+        spin_unlock_irq(&lruvec->lru_lock);
+        mem_cgroup_uncharge_folios(&free_folios);
+        free_unref_folios(&free_folios);
+        spin_lock_irq(&lruvec->lru_lock);
+    }
+
+    return nr_moved;
+}
+```
+
 ### shrink_inactive_list
 
 ![](../images/kernel/mem-page_reclaim-shrink_inactive_list.png)
@@ -10805,6 +10835,7 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
 
     spin_lock_irq(&lruvec->lru_lock);
     move_folios_to_lru(lruvec, &folio_list);
+        --->
 
     __mod_node_page_state(pgdat, NR_ISOLATED_ANON + file, -nr_taken);
     item = PGSTEAL_KSWAPD + reclaimer_offset();
@@ -10837,9 +10868,9 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
 }
 ```
 
-### shrink_folio_list
+#### shrink_folio_list
 
-![](../images/kernel/mem-shrink_folio_list.png)
+![](../images/kernel/mem-page_reclaim-shrink_folio_list.png)
 
 ```c
 unsigned int shrink_folio_list(struct list_head *folio_list,
@@ -10879,7 +10910,7 @@ retry:
         /* Account the number of base pages */
         sc->nr_scanned += nr_pages;
 
-/* rotate to active list */
+/* 1. rotate to active list */
         if (unlikely(!folio_evictable(folio)))
             goto activate_locked;
 
@@ -10891,7 +10922,7 @@ retry:
             && folio_mapped(folio) && folio_test_referenced(folio))
             goto keep_locked;
 
-/* check writeback page */
+/* 2. check writeback page */
         folio_check_dirty_writeback(folio, &dirty, &writeback);
         if (dirty || writeback)
             stat->nr_dirty += nr_pages;
@@ -10957,7 +10988,8 @@ retry:
             continue;
         }
 
-/* add anno swapbacked folio to swapcache */
+/* 3. add anno swapbacked folio to swap cache
+ * and mark PG_swapcache PG_dirty */
         if (folio_test_anon(folio) && folio_test_swapbacked(folio)) {
             if (!folio_test_swapcache(folio)) {
                 if (!(sc->gfp_mask & __GFP_IO))
@@ -10970,6 +11002,7 @@ retry:
                     if (!folio_entire_mapcount(folio) && split_folio_to_list(folio, folio_list))
                         goto activate_locked;
                 }
+
                 if (!add_to_swap(folio)) { /* add failed */
                     if (!folio_test_large(folio))
                         goto activate_locked_split;
@@ -10991,7 +11024,7 @@ retry:
             nr_pages = 1;
         }
 
-/* unmap mapped folio */
+/* 4. unmap mapped folio */
         /* The folio is mapped into the page tables of one or more
          * processes. Try to unmap it here. */
         if (folio_mapped(folio)) {
@@ -11014,7 +11047,7 @@ retry:
         if (folio_maybe_dma_pinned(folio))
             goto activate_locked;
 
-/* writeback diry folio */
+/* 5. writeback diry folio includes swap cache and file cache */
         mapping = folio_mapping(folio);
         if (folio_test_dirty(folio)) {
             /* dont writeback:
@@ -11064,7 +11097,7 @@ retry:
             }
         }
 
-/* free folio buffer */
+/* 6. free folio buffer */
         /* If the folio has buffers, try to free the buffer
          * mappings associated with this folio. If we succeed
          * we try to free the folio as well. */
@@ -11087,7 +11120,7 @@ retry:
             }
         }
 
-/* remove_mapping from swapcache or filecache */
+/* 7. remove_mapping from swapcache or filecache */
         if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
             if (!folio_ref_freeze(folio, 1))
                 goto keep_locked;
@@ -11152,9 +11185,9 @@ keep:
 
     pgactivate = stat->nr_activate[0] + stat->nr_activate[1];
 
-    mem_cgroup_uncharge_list(&free_folios);
+    mem_cgroup_uncharge_folios(&free_folios);
     try_to_unmap_flush();
-    free_unref_page_list(&free_folios);
+    free_unref_folios(&free_folios);
 
     list_splice(&ret_folios, folio_list);
     count_vm_events(PGACTIVATE, pgactivate);
@@ -11165,7 +11198,7 @@ keep:
 }
 ```
 
-## remove_mapping
+##### remove_mapping
 
 ```c
 /* remove mapping from swapcache or filecache */
@@ -11190,7 +11223,7 @@ int __remove_mapping(struct address_space *mapping, struct folio *folio,
         folio_ref_unfreeze(folio, refcount);
         goto cannot_free;
     }
-
+/* 1. swap cache */
     if (folio_test_swapcache(folio)) {
         swp_entry_t swap = folio->swap;
 
@@ -11203,6 +11236,7 @@ int __remove_mapping(struct address_space *mapping, struct folio *folio,
         xa_unlock_irq(&mapping->i_pages);
         put_swap_folio(folio, swap);
     } else {
+/* 2. file cache */
         void (*free_folio)(struct folio *);
 
         free_folio = mapping->a_ops->free_folio;
@@ -11406,7 +11440,7 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
 }
 ```
 
-## shrink_slab_memcg
+#### shrink_slab_memcg
 
 ```c
 unsigned long shrink_slab_memcg(gfp_t gfp_mask, int nid,
@@ -14275,6 +14309,8 @@ int kcompactd(void *p)
 
 * [kswapd介绍 - 内核工匠](https://mp.weixin.qq.com/s/1iVJC8Ca5OQfdEIYQW-4GQ)
 
+![](../images/kernel/mem-kswapd.png)
+
 ```c
 int kswapd(void *p)
 {
@@ -14356,7 +14392,33 @@ kswapd_try_sleep:
                     }
                 }
 
-                balanced = pgdat_balanced(pgdat, sc.order, highest_zoneidx);
+                balanced = pgdat_balanced(pgdat, sc.order, highest_zoneidx) {
+                    int i;
+                    unsigned long mark = -1;
+                    struct zone *zone;
+
+                    /* Check watermarks bottom-up as lower zones are more likely to
+                     * meet watermarks. */
+                    for (i = 0; i <= highest_zoneidx; i++) {
+                        zone = pgdat->node_zones + i;
+
+                        if (!managed_zone(zone))
+                            continue;
+
+                        if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING)
+                            mark = wmark_pages(zone, WMARK_PROMO);
+                        else
+                            mark = high_wmark_pages(zone);
+                        if (zone_watermark_ok_safe(zone, order, mark, highest_zoneidx))
+                            return true;
+                    }
+
+                    /* a node has no managed zone within highest_zoneidx */
+                    if (mark == -1)
+                        return true;
+
+                    return false;
+                }
                 if (!balanced && nr_boost_reclaim) {
                     nr_boost_reclaim = 0;
                     goto restart;
@@ -14425,8 +14487,8 @@ kswapd_try_sleep:
                     raise_priority = false;
 
                 /* If the low watermark is met there is no need for processes
-                * to be throttled on pfmemalloc_wait as they should not be
-                * able to safely make forward progress. Wake them */
+                 * to be throttled on pfmemalloc_wait as they should not be
+                 * able to safely make forward progress. Wake them */
                 if (waitqueue_active(&pgdat->pfmemalloc_wait) && allow_direct_reclaim(pgdat))
                     wake_up_all(&pgdat->pfmemalloc_wait);
 
@@ -14498,9 +14560,31 @@ kswapd_try_sleep:
 
 # swap
 
+* https://blog.csdn.net/qkhhyga2016/article/details/88722458
+
 ![](../images/kernel/mem-swap-arch.png)
 
-* https://blog.csdn.net/qkhhyga2016/article/details/88722458
+```md
++-----------------------------------------------------+
+| +-----------------------------------------------+   |
+| |                 memory management             |   |
+| +-----------------------------------------------+   |
+|                          +-----------------------+  |
+|                          |    +--------------+   |  |
+|    +--------------+      |    |  swap core   |   |  |
+|    |  swap cache  |      |    +--------------+   |  |
+|    +--------------+      |    +--------------+   |  |
+|                          |    | block driver |   |  |
+|                          |    +--------------+   |  |
+|  ------------------------------------------------|  |
+|                          |                       |  |
+|   +----------------+     | +------+   +-------+  |  |
+|   |      ddr       |     | |disk 1|   |disk 2 |  |  |
+|   +----------------+     | +------+   +-------+  |  |
+|                          +-----------------------+  |
++-----------------------------------------------------+
+
+```
 
 ```c
 /* One swap address space for each 64M swap space */
@@ -14520,6 +14604,7 @@ struct swap_info_struct *swap_info[MAX_SWAPFILES];
 static PLIST_HEAD(swap_active_head);
 static struct plist_head *swap_avail_heads;
 
+/* Describe a swap partition */
 struct swap_info_struct {
     struct percpu_ref users;    /* indicate and keep swap device valid. */
     unsigned long    flags;     /* SWP_USED etc: see above */
@@ -14568,6 +14653,8 @@ struct swap_info_struct {
     struct plist_node       avail_lists[];
 };
 
+/* Describe multiple consecutive storage blocks
+ * and the mapping relationship with the sectors in the block device */
 struct swap_extent {
     struct rb_node  rb_node; /* insert into swap_extent_root */
     pgoff_t         start_page;
@@ -14599,6 +14686,7 @@ static const struct address_space_operations swap_aops = {
     .migrate_folio  = migrate_folio,
 };
 
+/* a address_space manages 64MB sized swap cache space */
 struct address_space *swapper_spaces[MAX_SWAPFILES];
 static unsigned int nr_swapper_spaces[MAX_SWAPFILES];
 
@@ -15571,18 +15659,16 @@ bool add_to_swap(struct folio *folio)
                     entry = cache->slots[cache->cur];
                     cache->slots[cache->cur++].val = 0;
                     cache->nr--;
-                } else if (refill_swap_slots_cache(cache)) {
+                } else if (refill_swap_slots_cache(cache) {
+                    if (!use_swap_slot_cache)
+                        return 0;
+                    cache->cur = 0;
+                    if (swap_slot_cache_active)
+                        cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE, cache->slots, 1);
+                            --->
+                    return cache->nr;
+                }) {
                     goto repeat;
-                    refill_swap_slots_cache(cache) {
-                        if (!use_swap_slot_cache)
-                            return 0;
-
-                        cache->cur = 0;
-                        if (swap_slot_cache_active)
-                            cache->nr = get_swap_pages(SWAP_SLOTS_CACHE_SIZE, cache->slots, 1);
-                                --->
-                        return cache->nr;
-                    }
                 }
             }
             if (entry.val)
@@ -15601,7 +15687,10 @@ bool add_to_swap(struct folio *folio)
     err = add_to_swap_cache(folio, entry,
         __GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN, NULL) {
 
-        struct address_space *address_space = swap_address_space(entry);
+        struct address_space *address_space = swap_address_space(entry) {
+            return &swapper_spaces[swp_type(entry)][swp_offset(entry)
+		        >> SWAP_ADDRESS_SPACE_SHIFT];
+        }
         pgoff_t idx = swp_offset(entry);
         XA_STATE_ORDER(xas, &address_space->i_pages, idx, folio_order(folio));
         unsigned long i, nr = folio_nr_pages(folio);
@@ -15656,8 +15745,8 @@ fail:
 ###  get_swap_pages
 
 ```c
-int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_size)
-    unsigned long size = swap_entry_size(entry_size);
+int get_swap_pages(int n_goal, swp_entry_t swp_entries[], int entry_order) {
+    unsigned long size = 1 << swap_entry_order(entry_order); /* nr_page = 1 << page_order */
     struct swap_info_struct *si, *next;
     long avail_pgs;
     int n_ret = 0;
@@ -15685,6 +15774,7 @@ start_over:
                 spin_unlock(&si->lock);
                 goto nextsi;
             }
+          	/* this swap partition is used up, rm it from available list */
             __del_from_avail_list(si);
             spin_unlock(&si->lock);
             goto nextsi;
@@ -15735,6 +15825,9 @@ scan_swap_map_slots(
 
     si->flags += SWP_SCANNING;
 
+    /* Use percpu scan base for SSD to reduce lock contention on
+	 * cluster and swap cache.  For HDD, sequential access is more
+	 * important. */
     if (si->flags & SWP_SOLIDSTATE)
         scan_base = this_cpu_read(*si->cluster_next_cpu);
     else
@@ -15755,9 +15848,9 @@ scan_swap_map_slots(
 
         /* Locate the first empty (unaligned) cluster */
         for (; last_in_cluster <= si->highest_bit; offset++) {
-            if (si->swap_map[offset])
+            if (si->swap_map[offset]) {/* swp_map[offset] != 0 means inuse */
                 last_in_cluster = offset + SWAPFILE_CLUSTER;
-            else if (offset == last_in_cluster) {
+            } else if (offset == last_in_cluster) {
                 spin_lock(&si->lock);
                 offset -= SWAPFILE_CLUSTER - 1;
                 si->cluster_next = offset;
@@ -15776,7 +15869,7 @@ scan_swap_map_slots(
     }
 
 checks:
-    if (si->cluster_info) {
+    if (si->cluster_info) { /* SSD */
         /* avoid using a free cluster in the middle of free cluster list */
         scan_swap_map_ssd_cluster_conflict(si, offset) {
             struct percpu_cluster *percpu_cluster;
@@ -15884,8 +15977,8 @@ checks:
     /* try to get more slots in cluster */
     if (si->cluster_info) {
         if (scan_swap_map_try_ssd_cluster(si, &offset, &scan_base)) {
+            /* return true for successful scan */
             goto checks;
-
         }
     } else if (si->cluster_nr && !si->swap_map[++offset]) {
         /* non-ssd case, still more slots in cluster? */
@@ -16085,6 +16178,7 @@ n_ret = swap_alloc_cluster(si, swp_entries/*slot*/) {
 ## swap_free
 
 ```c
+/* free a swap entry to cpu swap slot cache, and global entry pool if cpu slot cache is full */
 void swap_free(swp_entry_t entry)
 {
     struct swap_info_struct *p;
@@ -16106,7 +16200,7 @@ void swap_free(swp_entry_t entry)
         unsigned char usage;
 
         ci = lock_cluster_or_swap_info(p, offset);
-        usage = __swap_entry_free_locked(p, offset, 1) {
+        usage = __swap_entry_free_locked(p, offset, 1/*usage*/) {
             unsigned char count;
             unsigned char has_cache;
 
@@ -16156,130 +16250,130 @@ void swap_free(swp_entry_t entry)
                         goto direct_free;
                     }
                     if (cache->n_ret >= SWAP_SLOTS_CACHE_SIZE) {
-                        /* Return slots to global pool. */
-                        swapcache_free_entries(cache->slots_ret/*entries*/, cache->n_ret/*n*/) {
-                            struct swap_info_struct *p, *prev;
-                            int i;
-
-                            if (n <= 0)
-                                return;
-
-                            prev = NULL;
-                            p = NULL;
-
-                            if (nr_swapfiles > 1) {
-                                sort(entries, n, sizeof(entries[0]), swp_entry_cmp, NULL);
-                            }
-                            for (i = 0; i < n; ++i) {
-                                p = swap_info_get_cont(entries[i], prev);
-                                swap_entry_free(p, entries[i]/*entry*/) {
-                                    struct swap_cluster_info *ci;
-                                    unsigned long offset = swp_offset(entry);
-                                    unsigned char count;
-
-                                    ci = lock_cluster(p, offset);
-                                    count = p->swap_map[offset];
-                                    VM_BUG_ON(count != SWAP_HAS_CACHE);
-                                    p->swap_map[offset] = 0;
-
-                                    dec_cluster_info_page(p, p->cluster_info, offset) {
-                                        unsigned long idx = page_nr / SWAPFILE_CLUSTER;
-
-                                        VM_BUG_ON(cluster_count(&cluster_info[idx]) == 0);
-                                        cluster_set_count(&cluster_info[idx], cluster_count(&cluster_info[idx]) - 1);
-
-                                        if (cluster_count(&cluster_info[idx]) == 0) {
-                                            free_cluster(p, idx) {
-                                                struct swap_cluster_info *ci = si->cluster_info + idx;
-                                                if ((si->flags & (SWP_WRITEOK | SWP_PAGE_DISCARD))
-                                                    == (SWP_WRITEOK | SWP_PAGE_DISCARD)) {
-
-                                                    swap_cluster_schedule_discard(si, idx);
-                                                    return;
-                                                }
-
-                                                __free_cluster(si, idx) {
-                                                    struct swap_cluster_info *ci = si->cluster_info;
-
-                                                    cluster_set_flag(ci + idx, CLUSTER_FLAG_FREE);
-                                                    cluster_list_add_tail(&si->free_clusters, ci, idx);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    unlock_cluster(ci);
-
-                                    mem_cgroup_uncharge_swap(entry, 1);
-                                    swap_range_free(p, offset, 1) {
-                                        unsigned long begin = offset;
-                                        unsigned long end = offset + nr_entries - 1;
-                                        void (*swap_slot_free_notify)(struct block_device *, unsigned long);
-
-                                        if (offset < si->lowest_bit)
-                                            si->lowest_bit = offset;
-                                        if (end > si->highest_bit) {
-                                            bool was_full = !si->highest_bit;
-
-                                            WRITE_ONCE(si->highest_bit, end);
-                                            if (was_full && (si->flags & SWP_WRITEOK))
-                                                add_to_avail_list(si);
-                                        }
-                                        atomic_long_add(nr_entries, &nr_swap_pages);
-                                        WRITE_ONCE(si->inuse_pages, si->inuse_pages - nr_entries);
-                                        if (si->flags & SWP_BLKDEV)
-                                            swap_slot_free_notify =
-                                                si->bdev->bd_disk->fops->swap_slot_free_notify;
-                                        else
-                                            swap_slot_free_notify = NULL;
-
-                                        while (offset <= end) {
-                                            arch_swap_invalidate_page(si->type, offset);
-                                            zswap_invalidate(si->type, offset);
-                                            if (swap_slot_free_notify)
-                                                swap_slot_free_notify(si->bdev, offset);
-                                            offset++;
-                                        }
-                                        clear_shadow_from_swap_cache(si->type, begin, end) {
-                                            unsigned long curr = begin;
-                                            void *old;
-
-                                            for (;;) {
-                                                swp_entry_t entry = swp_entry(type, curr);
-                                                struct address_space *address_space = swap_address_space(entry);
-                                                XA_STATE(xas, &address_space->i_pages, curr);
-
-                                                xas_set_update(&xas, workingset_update_node);
-
-                                                xa_lock_irq(&address_space->i_pages);
-                                                xas_for_each(&xas, old, end) {
-                                                    if (!xa_is_value(old))
-                                                        continue;
-                                                    xas_store(&xas, NULL);
-                                                }
-                                                xa_unlock_irq(&address_space->i_pages);
-
-                                                /* search the next swapcache until we meet end */
-                                                curr >>= SWAP_ADDRESS_SPACE_SHIFT;
-                                                curr++;
-                                                curr <<= SWAP_ADDRESS_SPACE_SHIFT;
-                                                if (curr > end)
-                                                    break;
-                                            }
-                                        }
-                                    }
-                                }
-                                prev = p;
-                            }
-                            if (p)
-                                spin_unlock(&p->lock);
-                        }
+                        swapcache_free_entries(cache->slots_ret, cache->n_ret);
                         cache->n_ret = 0;
                     }
                     cache->slots_ret[cache->n_ret++] = entry;
                     spin_unlock_irq(&cache->free_lock);
                 } else {
             direct_free:
-                    swapcache_free_entries(&entry, 1);
+                    /* Return slots to global pool. */
+                    swapcache_free_entries(&entry/*entries*/, 1/*n*/) {
+                        struct swap_info_struct *p, *prev;
+                        int i;
+
+                        if (n <= 0)
+                            return;
+
+                        prev = NULL;
+                        p = NULL;
+
+                        if (nr_swapfiles > 1) {
+                            sort(entries, n, sizeof(entries[0]), swp_entry_cmp, NULL);
+                        }
+                        for (i = 0; i < n; ++i) {
+                            p = swap_info_get_cont(entries[i], prev);
+                            swap_entry_free(p, entries[i]/*entry*/) {
+                                struct swap_cluster_info *ci;
+                                unsigned long offset = swp_offset(entry);
+                                unsigned char count;
+
+                                ci = lock_cluster(p, offset);
+                                count = p->swap_map[offset];
+                                VM_BUG_ON(count != SWAP_HAS_CACHE);
+                                p->swap_map[offset] = 0;
+
+                                dec_cluster_info_page(p, p->cluster_info, offset) {
+                                    unsigned long idx = page_nr / SWAPFILE_CLUSTER;
+
+                                    VM_BUG_ON(cluster_count(&cluster_info[idx]) == 0);
+                                    cluster_set_count(&cluster_info[idx], cluster_count(&cluster_info[idx]) - 1);
+
+                                    if (cluster_count(&cluster_info[idx]) == 0) {
+                                        free_cluster(p, idx) {
+                                            struct swap_cluster_info *ci = si->cluster_info + idx;
+                                            if ((si->flags & (SWP_WRITEOK | SWP_PAGE_DISCARD))
+                                                == (SWP_WRITEOK | SWP_PAGE_DISCARD)) {
+
+                                                swap_cluster_schedule_discard(si, idx);
+                                                return;
+                                            }
+
+                                            __free_cluster(si, idx) {
+                                                struct swap_cluster_info *ci = si->cluster_info;
+
+                                                cluster_set_flag(ci + idx, CLUSTER_FLAG_FREE);
+                                                cluster_list_add_tail(&si->free_clusters, ci, idx);
+                                            }
+                                        }
+                                    }
+                                }
+                                unlock_cluster(ci);
+
+                                mem_cgroup_uncharge_swap(entry, 1);
+                                swap_range_free(p, offset, 1/*nr_entries*/) {
+                                    unsigned long begin = offset;
+                                    unsigned long end = offset + nr_entries - 1;
+                                    void (*swap_slot_free_notify)(struct block_device *, unsigned long);
+
+                                    if (offset < si->lowest_bit)
+                                        si->lowest_bit = offset;
+                                    if (end > si->highest_bit) {
+                                        bool was_full = !si->highest_bit;
+
+                                        WRITE_ONCE(si->highest_bit, end);
+                                        if (was_full && (si->flags & SWP_WRITEOK))
+                                            add_to_avail_list(si);
+                                    }
+                                    atomic_long_add(nr_entries, &nr_swap_pages);
+                                    WRITE_ONCE(si->inuse_pages, si->inuse_pages - nr_entries);
+                                    if (si->flags & SWP_BLKDEV)
+                                        swap_slot_free_notify =
+                                            si->bdev->bd_disk->fops->swap_slot_free_notify;
+                                    else
+                                        swap_slot_free_notify = NULL;
+
+                                    while (offset <= end) {
+                                        arch_swap_invalidate_page(si->type, offset);
+                                        zswap_invalidate(si->type, offset);
+                                        if (swap_slot_free_notify)
+                                            swap_slot_free_notify(si->bdev, offset);
+                                        offset++;
+                                    }
+                                    clear_shadow_from_swap_cache(si->type, begin, end) {
+                                        unsigned long curr = begin;
+                                        void *old;
+
+                                        for (;;) {
+                                            swp_entry_t entry = swp_entry(type, curr);
+                                            struct address_space *address_space = swap_address_space(entry);
+                                            XA_STATE(xas, &address_space->i_pages, curr);
+
+                                            xas_set_update(&xas, workingset_update_node);
+
+                                            xa_lock_irq(&address_space->i_pages);
+                                            xas_for_each(&xas, old, end) {
+                                                if (!xa_is_value(old))
+                                                    continue;
+                                                xas_store(&xas, NULL);
+                                            }
+                                            xa_unlock_irq(&address_space->i_pages);
+
+                                            /* search the next swapcache until we meet end */
+                                            curr >>= SWAP_ADDRESS_SPACE_SHIFT;
+                                            curr++;
+                                            curr <<= SWAP_ADDRESS_SPACE_SHIFT;
+                                            if (curr > end)
+                                                break;
+                                        }
+                                    }
+                                }
+                            }
+                            prev = p;
+                        }
+                        if (p)
+                            spin_unlock(&p->lock);
+                    }
                 }
             }
         }
