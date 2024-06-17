@@ -188,7 +188,7 @@
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-    
+
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -719,7 +719,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
         lea SYS_ify (syscall_name), %rax; \
         syscall
-    
+
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -728,7 +728,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-        
+
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -748,16 +748,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-        
+
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-        
+
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-        
+
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -776,12 +776,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-        
+
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-        
+
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -5593,7 +5593,7 @@ get_cpu_for_node(struct device_node *node)
 
 ---
 
-![](../imeage/kernel/proc-sched_last_update_time.svg) /* EXPORT */
+![](../images/kernel/proc-sched-last_update_time.svg)
 
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
 * the 3.8 scheduler will simply maintain a separate sum of the `blocked load` contained in each cfs_rq (control-group run queue) structure. When a process blocks, its load is subtracted from the total runnable load value and added to the blocked load instead.
@@ -5606,11 +5606,11 @@ get_cpu_for_node(struct device_node *node)
     ```c
     dequeue_entity(cfs_rq, se, flags) {
         int action = UPDATE_TG;
-    
+
         /* detach load_avg only if task is migrating whne dequeue_entity */
         if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
             action |= DO_DETACH;
-    
+
         update_curr(cfs_rq);
         update_load_avg(cfs_rq, se, action);
     }
@@ -5633,13 +5633,13 @@ get_cpu_for_node(struct device_node *node)
         struct sched_entity *se = &p->se;
         se->avg.last_update_time = 0;
     }
-    
+
     /* group change */
     task_change_group_fair(struct task_struct *p) {
         detach_task_cfs_rq(p);
         p->se.avg.last_update_time = 0;
     }
-    
+
     /* sched class change */
     check_class_changed(rq, p, prev_class, oldprio) {
         if (prev_class != p->sched_class) {
@@ -6230,7 +6230,7 @@ update_rq_clock(rq) {
 
 # load_balance
 
-![](../images/kernel/proc-load_balance.svg) /* EXPORT */
+![](../images/kernel/proc-sched-load_balance.svg)
 
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
 
@@ -13552,7 +13552,7 @@ int mem_cgroup_resize_max(struct mem_cgroup *memcg,
 
 ### mem_cgroup_charge
 
-![](../images/kernel/cgroup-mem_cgroup_charge.svg) /* EXPORT */
+![](../images/kernel/cgroup-mem_cgroup_charge.svg)
 
 ```c
 mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)

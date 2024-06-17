@@ -3123,7 +3123,7 @@ struct vm_area_struct {
 
 # alloc_pages
 
-![](../images/kernel/mem-alloc_pages.svg) /* EXPORT */
+![](../images/kernel/mem-alloc_pages.svg)
 
 watermark | free area
 --- | ---
