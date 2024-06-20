@@ -60,10 +60,11 @@
     * [call graph](#call-graph-read)
 
 * [epoll](#epoll)
+    * [call graph](#call-graph-epoll)
     * [epoll_create](#epoll_create)
     * [epoll_ctl](#epoll_ctl)
         * [ep_insert](#ep_insert)
-            *[ep_item_poll](#ep_item_poll)
+            * [ep_item_poll](#ep_item_poll)
         * [ep_modify](#ep_modify)
         * [ep_delete](#ep_delete)
     * [epoll_wait](#epoll_wait)
@@ -71,7 +72,6 @@
     * [sock_def_write_space](#sock_def_write_space)
     * [eventpoll_init](#eventpoll_init)
     * [evetfd](#evetfd)
-    * [call graph](#call-graph-epoll)
 
 * [route](#route)
   * [route out](#route-out)
@@ -148,7 +148,7 @@
 
 <img src='../images/kernel/net-send-data-flow.png' style='max-height:850px'/>
 
-```C++
+```c
 struct socket_alloc {
   struct socket socket;
   struct inode  vfs_inode;
@@ -346,7 +346,135 @@ struct inet_sock {
 ```
 
 # socket
-```C++
+
+
+```c
+socket() {
+/* 1. create */
+    sock_create() {
+        struct socket *sock = _sock_create() {
+            sock = sock_alloc() {
+/* 1.1 create socket inode */
+                inode = new_inode_pseudo(super_block *sb) {
+                    alloc_inode(sb) {
+                        if (sb->s_op->alloc_inode) {
+                            inode = sb->s_op->alloc_inode(sb) {
+                                sock_alloc_inode() {
+                                    struct socket_alloc *ei = kmem_cache_alloc(sock_inode_cachep);
+                                    struct socket_wq *wq = kmalloc(sizeof(*wq), GFP_KERNEL);
+                                }
+                            }
+                        } else {
+                            inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);
+                        }
+                    }
+                }
+                sock = SOCKET_I(inode);
+                inode->i_op = &sockfs_inode_ops;
+            }
+
+/* 1.2 create sock */
+            pf = net_families[family]; /* get AF */
+            pf->create() { /* inet_family_ops.inet_create */
+                inet_create() {
+                    inet_protosw *answer = inetsw[sock->type]; /* get socket */
+                    sock->ops = answer->ops;
+                    struct sock *sk = sk_alloc() {
+                        sk_prot_alloc() {
+                            slab = prot->slab;
+                            if (slab)
+                                kmem_cache_alloc(slab);
+                            else
+                                kmalloc(prot->obj_size);
+                        }
+                    }
+
+/* 1.3 init sock */
+                    sock_init_data(sock, sk) {
+                        sk_init_common(sk);
+
+                        /* 1.3.1 init sock callback */
+                        sk->sk_state_change = sock_def_wakeup;
+                        sk->sk_data_ready = sock_def_readable;
+                        sk->sk_write_space = sock_def_write_space;
+
+                        sock->sk = sk;
+                        sk->sk_socket = sock;
+                    }
+
+                    /* 1.3.2 no-listen hash */
+                    sk->sk_prot->hash(sk) { /* inet_hash */
+                        if (sk->sk_state != TCP_LISTEN) {
+                            inet_ehash_nolisten(sk, osk, NULL);
+                            return 0;
+                        }
+                    }
+
+                    sk->sk_prot->init(sk) {
+                        tcp_v4_init_sock() {
+                            tcp_init_sock() {
+                                tp->out_of_order_queue = RB_ROOT;
+                                sk->tcp_rtx_queue = RB_ROOT;
+
+                                /* 1.3.3 init timers */
+                                tcp_init_xmit_timers() {
+                                    inet_csk_init_xmit_timers(sk,
+                                        &tcp_write_timer,
+                                        &tcp_delack_timer,
+                                        &tcp_keepalive_timer
+                                    );
+                                }
+
+                                /* 1.3.4 init congestion control */
+                                sk->sk_state = TCP_CLOSE;
+                                tp->snd_cwnd = TCP_INIT_CWND;
+                                tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+                                tcp_assign_congestion_control() {
+                                    icsk->icsk_ca_ops = rcu_dereference(net->ipv4.tcp_congestion_control);
+                                }
+
+                                /* 1.3.5 init rx tx buffer */
+                                sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
+                                sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
+                            }
+                        }
+                        icsk->icsk_af_ops = &ipv4_specific;
+                        tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
+                    }
+                }
+            }
+        }
+    }
+
+
+/* 2. map */
+    sock_map_fd() {
+        fd = get_unused_fd_flags();
+
+        new_file = sock_alloc_file() {
+            alloc_file_pseudo(inode, mnt, dname, flags, &socket_file_ops) {
+                d_alloc_pseudo();
+                d_set_d_op(&anon_ops);
+                alloc_file() {
+                    struct file *file = alloc_empty_file(flags, current_cred()) {
+                        kmem_cache_zalloc(filp_cachep);
+                    }
+                    file->f_path = *path;
+                    file->f_inode = path->dentry->d_inode;
+                    file->f_mapping = path->dentry->d_inode->i_mapping;
+                    file->f_op = socket_file_ops;
+                }
+            }
+            sock->file = file;
+            file->private_data = sock;
+        }
+
+        fd_install(fd, newfile);
+    }
+}
+```
+
+```c
 SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 {
   int retval;
@@ -706,7 +834,7 @@ struct proto tcp_prot = {
 }
 ```
 
-```C++
+```c
 int sock_map_fd(struct socket *sock, int flags)
 {
   struct file *newfile;
@@ -801,7 +929,7 @@ struct file *alloc_file(
 }
 ```
 
-```c++
+```c
 void sock_init_data(struct socket *sock, struct sock *sk)
 {
   sk_init_common(sk);
@@ -946,106 +1074,8 @@ void tcp_init_sock(struct sock *sk)
 }
 ```
 
-```C++
-socket();
-/* 1. create */
-  sock_create();
-    struct socket *sock = _sock_create();
-      sock = sock_alloc();
-/* 1.1 create socket inode */
-        inode = new_inode_pseudo(super_block *sb);
-          alloc_inode(sb);
-            if (sb->s_op->alloc_inode)
-              inode = sb->s_op->alloc_inode(sb);
-                sock_alloc_inode();
-                  struct socket_alloc *ei = kmem_cache_alloc(sock_inode_cachep);
-                  struct socket_wq *wq = kmalloc(sizeof(*wq), GFP_KERNEL);
-            else
-              inode = kmem_cache_alloc(inode_cachep, GFP_KERNEL);
-        sock = SOCKET_I(inode);
-        inode->i_op = &sockfs_inode_ops;
-
-/* 1.2 create sock */
-      pf = net_families[family]; /* get AF */
-      pf->create(); /* inet_family_ops.inet_create */
-        inet_create();
-          inet_protosw *answer = inetsw[sock->type]; /* get socket */
-          sock->ops = answer->ops;
-          struct sock *sk = sk_alloc();
-            sk_prot_alloc();
-              slab = prot->slab;
-              if (slab)
-                kmem_cache_alloc(slab);
-              else
-                kmalloc(prot->obj_size);
-
-/* 1.3 init sock */
-          sock_init_data(sock, sk);
-            sk_init_common(sk);
-
-            /* 1.3.1 init sock callback */
-            sk->sk_state_change = sock_def_wakeup;
-            sk->sk_data_ready = sock_def_readable;
-            sk->sk_write_space = sock_def_write_space;
-
-            sock->sk = sk;
-            sk->sk_socket = sock;
-
-          /* 1.3.2 no-listen hash */
-          sk->sk_prot->hash(sk); /* inet_hash */
-            if (sk->sk_state != TCP_LISTEN) {
-              inet_ehash_nolisten(sk, osk, NULL);
-              return 0;
-            }
-
-          sk->sk_prot->init(sk);
-            tcp_v4_init_sock();
-              tcp_init_sock();
-                tp->out_of_order_queue = RB_ROOT;
-                sk->tcp_rtx_queue = RB_ROOT;
-
-                /* 1.3.3 init timers */
-                tcp_init_xmit_timers();
-                  inet_csk_init_xmit_timers(sk, &tcp_write_timer, &tcp_delack_timer, &tcp_keepalive_timer);
-
-                /* 1.3.4 init congestion control */
-                sk->sk_state = TCP_CLOSE;
-                tp->snd_cwnd = TCP_INIT_CWND;
-                tp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
-                tcp_assign_congestion_control();
-                  icsk->icsk_ca_ops = rcu_dereference(net->ipv4.tcp_congestion_control);
-
-                /* 1.3.5 init rx tx buffer */
-                sk->sk_sndbuf = sock_net(sk)->ipv4.sysctl_tcp_wmem[1];
-                sk->sk_rcvbuf = sock_net(sk)->ipv4.sysctl_tcp_rmem[1];
-
-            icsk->icsk_af_ops = &ipv4_specific;
-            tcp_sk(sk)->af_specific = &tcp_sock_ipv4_specific;
-
-
-  /* 2. map */
-  sock_map_fd();
-    fd = get_unused_fd_flags();
-
-    new_file = sock_alloc_file();
-      alloc_file_pseudo(inode, mnt, dname, flags, &socket_file_ops);
-        d_alloc_pseudo();
-        d_set_d_op(&anon_ops);
-        alloc_file();
-          struct file *file = alloc_empty_file(flags, current_cred());
-            kmem_cache_zalloc(filp_cachep);
-          file->f_path = *path;
-          file->f_inode = path->dentry->d_inode;
-          file->f_mapping = path->dentry->d_inode->i_mapping;
-          file->f_op = socket_file_ops;
-      sock->file = file;
-      file->private_data = sock;
-
-    fd_install(fd, newfile);
-```
-
 # bind
-```C++
+```c
 SYSCALL_DEFINE3(bind, int, fd, struct sockaddr __user *, umyaddr, int, addrlen)
 {
   struct socket *sock;
@@ -1114,7 +1144,51 @@ int __inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 ```
 
 # listen
-```C++
+
+
+```c
+listen() {
+    sockfd_lookup_light();
+    sock->ops->listen() { /*inet_stream_ops.listen */
+        inet_listen() {
+            inet_csk_listen_start() {
+                /* allock request sock queue */
+                reqsk_queue_alloc() {
+                    queue->fastopenq.rskq_rst_head = NULL;
+                    queue->fastopenq.rskq_rst_tail = NULL;
+                    queue->fastopenq.qlen = 0;
+                }
+
+                inet_csk_delack_init(sk);
+                sk_state_store(sk, TCP_LISTEN);
+
+                sk->sk_prot->get_port();
+
+                /* insert into lhash2 */
+                sk->sk_prot->hash(sk) {
+                    inet_hash() {
+                        if (sk->sk_state != TCP_LISTEN) {
+                            inet_ehash_nolisten(sk, osk);
+                            return 0;
+                        }
+
+                        if (sk->sk_reuseport) {
+                            inet_reuseport_add_sock();
+                            return;
+                        }
+
+                        struct inet_listen_hashbucket* ilb2 = inet_lhash2_bucket_sk(hashinfo, sk);
+                        __sk_nulls_add_node_rcu(sk, &ilb2->nulls_head);
+                    }
+                }
+            }
+            sk->sk_max_ack_backlog = backlog;
+        }
+    }
+}
+```
+
+```c
 SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 {
   struct socket *sock;
@@ -1294,45 +1368,258 @@ void inet_hash2(struct inet_hashinfo *h, struct sock *sk)
 }
 ```
 
-```C++
-listen();
-  sockfd_lookup_light();
-  sock->ops->listen(); /*inet_stream_ops.listen */
-    inet_listen();
-      inet_csk_listen_start();
-        /* allock request sock queue */
-        reqsk_queue_alloc();
-          queue->fastopenq.rskq_rst_head = NULL;
-          queue->fastopenq.rskq_rst_tail = NULL;
-          queue->fastopenq.qlen = 0;
-
-        inet_csk_delack_init(sk);
-        sk_state_store(sk, TCP_LISTEN);
-
-        sk->sk_prot->get_port();
-
-        /* insert into lhash2 */
-        sk->sk_prot->hash(sk);
-          inet_hash();
-            if (sk->sk_state != TCP_LISTEN)
-              inet_ehash_nolisten(sk, osk);
-              return 0;
-
-            if (sk->sk_reuseport)
-              inet_reuseport_add_sock();
-              return;
-
-            struct inet_listen_hashbucket* ilb2 = inet_lhash2_bucket_sk(hashinfo, sk);
-            __sk_nulls_add_node_rcu(sk, &ilb2->nulls_head);
-
-      sk->sk_max_ack_backlog = backlog;
-```
-
 # connect
+
 <img src='../images/kernel/net-hand-shake.png' style='max-height:850px'/>
 
+
+```c
+send:
+connect() {
+    sock = sockfd_lookup_light();
+    sock->ops->connect(sock) {
+        __inet_stream_connect() {
+            sk->sk_prot->connect() { /* SS_UNCONNECTED */
+                tcp_v4_connect() {
+                    ip_route_connect();
+                    inet_hash_connect();
+                    secure_tcp_seq();
+                    secure_tcp_ts_off();
+                    tcp_set_state(sk, TCP_SYN_SENT);
+
+                    tcp_connect() {
+                        tcp_connect_init() {
+                            tcp_select_initial_window();
+                            tp->snd_una = tp->write_seq;
+                            tp->snd_nxt = tp->write_seq;
+                        }
+
+                        sk_stream_alloc_skb();
+                        tcp_init_nondata_skb(TCPHDR_SYN);
+                        tcp_transmit_skb();
+                        tcp_send_head();
+                        inet_csk_reset_xmit_timer();
+                    }
+                }
+            }
+
+            if (!(flags & O_NONBLOCK)) {
+                inet_wait_for_connect()
+                    /* woken up by sk->sk_state_change() at tcp_rcv_synsent_state_process */
+            }
+        }
+    }
+}
+
+
+
+receive:
+tcp_v4_rcv() {
+    sk = __inet_lookup_skb() {
+        __inet_lookup_established();
+        __inet_lookup_listener();
+    }
+
+    if (sk->sk_state == TCP_NEW_SYN_RECV) {
+        struct request_sock *req = inet_reqsk(sk);
+        sk = req->rsk_listener;
+
+        newsk = tcp_check_req() {
+            child = inet_csk(sk)->icsk_af_ops->syn_recv_sock() {
+                tcp_v4_syn_recv_sock() {
+                    if (sk_acceptq_is_full());
+                        goto drop;
+                    newsk = tcp_create_openreq_child(sk, req, skb) {
+                        inet_csk_clone_lock() {
+                            inet_sk_set_state(newsk, TCP_SYN_RECV) {
+                                sk->sk_state = TCP_SYN_RECV;
+                            }
+                        tcp_init_xmit_timers();
+                        }
+                    }
+
+                    inet_ehash_nolisten() {
+                        inet_ehash_insert() { /* hash insert the new sk and remove the old request_sk */
+                            inet_ehash_bucket(hashinfo, sk->sk_hash);
+                            __sk_nulls_add_node_rcu();
+                                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+                            if (osk)
+                                sk_nulls_del_node_init_rcu(osk);
+                        }
+                    }
+                }
+            }
+
+            inet_csk_complete_hashdance(child) {
+                inet_csk_reqsk_queue_drop() {
+                    reqsk_queue_unlink() {
+                        __sk_nulls_del_node_init_rcu(sk) {
+                            hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
+                        }
+                    }
+                    reqsk_queue_removed() {
+                        --icsk_accept_queue.yong;
+                        --icsk_accept_queue.qlen;
+                    }
+                }
+                reqsk_queue_removed();
+
+                inet_csk_reqsk_queue_add() {
+                    sk->rskq_accept_tail = reqst_sk;
+                    sk_acceptq_added() {
+                        icsk_accept_queue->rskq_accept_tail = req;
+                        sk_acceptq_added();
+                            ++sk->sk_ack_backlog
+                    }
+                }
+            }
+        }
+
+        tcp_child_process() {
+            if (!sock_owned_by_user(child)) {
+                tcp_rcv_state_process(child, skb);
+                sk_listener->sk_data_ready() /* sock_def_readable */
+            } else {
+                __sk_add_backlog(child, skb);
+            }
+        }
+    }
+
+    tcp_filter(sk, skb);
+    tcp_v4_fill_cb(skb, iph, th);
+
+    tcp_v4_do_rcv() {
+        tcp_rcv_state_process() {
+            if (sk->sk_state == TCP_LISTEN) {
+                icsk->icsk_af_ops->conn_request() { /* ipv4_specific.conn_request */
+                    tcp_v4_conn_request() {
+                        tcp_conn_request() {
+                            if (inet_csk_reqsk_queue_is_full(sk));
+                                drop;
+                            if (sk_acceptq_is_full(sk));
+                                drop;
+
+                            inet_reqsk_alloc() {
+                                sk = kmem_cache_alloc(request_sock_ops->slab)
+                                sk->sk_state = TCP_NEW_SYN_RECV;
+                            }
+
+                            dst = af_ops->route_req(sk, skb, &fl, req);
+                            if (!dst)
+                                drop;
+
+                            af_ops->init_req(req, sk, skb) {
+                                tcp_v4_init_req() {
+                                    sk_rcv_saddr_set();
+                                    sk_daddr_set();
+                                }
+                            }
+
+
+                            if (fastopen) {
+                                af_ops->send_synack();
+                                inet_csk_reqsk_queue_add() {
+                                    sk->rskq_accept_tail = reqst_sk;
+                                    sk_acceptq_added() {
+                                        icsk_accept_queue->rskq_accept_tail = req;
+                                        sk_acceptq_added() {
+                                            ++sk->sk_ack_backlog
+                                        }
+                                    }
+                                }
+                                sk->sk_data_ready(sk);
+                            } else {
+                                inet_csk_reqsk_queue_hash_add() {
+                                    reqsk_queue_hash_req() {
+                                        timer_setup();
+                                        mod_timer(&req->rsk_timer, jiffies + timeout);
+                                        inet_ehash_insert() { /* add to established hash table */
+                                            inet_ehash_bucket(hashinfo, sk->sk_hash);
+                                            __sk_nulls_add_node_rcu() {
+                                                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+                                            }
+                                            if (osk);
+                                                sk_nulls_del_node_init_rcu(osk);
+                                        }
+                                    }
+                                    inet_csk_reqsk_queue_added() {
+                                        ++icsk_accept_queue->young;
+                                        --icsk_accept_queue->qlen;
+                                    }
+                                }
+
+                                af_ops->send_synack() {
+                                    tcp_v4_send_synack();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (sk->sk_state == TCP_SYN_SENT) {
+                tcp_rcv_synsent_state_process() {
+                    tcp_ack(sk, skb, FLAG_SLOWPATH);
+                    tcp_finish_connect(sk, skb) {
+                            tcp_set_state(sk, TCP_ESTABLISHED);
+                            tcp_init_transfer() {
+                                tcp_call_bpf(sk, bpf_op, 0, NULL);
+                                tcp_init_congestion_control(sk);
+                                tcp_init_buffer_space(sk);
+                            }
+                            inet_csk_reset_keepalive_timer();
+
+                            sk->sk_state_change() {
+                                /* wakup `connect` slept at inet_wait_for_connect */
+                                sock_def_wakeup();
+                            }
+                    tcp_send_ack(sk);
+                    }
+                }
+
+                tcp_data_snd_check(sk);
+                return 0;
+            }
+
+            tcp_check_req(); /* tp->fastopen_rsk */
+
+            /* Step 1 2 3 4 */
+            tcp_validate_incoming() {
+                /* RFC1323: H1. Apply PAWS check first. */
+                /* Step 1: check sequence number */
+                /* Step 2: check RST bit */
+                /* Step 3: check security and precedence [ignored] */
+                /* Step 4: Check for a SYN RFC 5961 4.2 : Send a challenge ack */
+            }
+
+            /* step 5: check the ACK field */
+            tcp_ack();
+
+            if (sk->sk_state == TCP_SYN_RECV) {
+                tcp_init_transfer();
+                    tcp_init_buffer_space();
+                    tcp_init_congestion_control(sk);
+                tcp_set_state(sk, TCP_ESTABLISHED);
+
+                sk->sk_state_change() {
+                    sock_def_wakeup() {
+                        wake_up_interruptible_all() {
+                            __wake_up() {
+                                __wake_up_common_lock() {
+                                    __wake_up_common();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
 ## send
-```C++
+```c
 SYSCALL_DEFINE3(connect, int, fd, struct sockaddr __user *, uservaddr, int, addrlen)
 {
   struct socket *sock;
@@ -1567,7 +1854,7 @@ long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
 * [wait_woken](./linux-kernel.md#wait_woken)
 
 ## receive
-```C++
+```c
 struct net_protocol tcp_protocol = {
   .early_demux          =  tcp_v4_early_demux,
   .early_demux_handler  =  tcp_v4_early_demux,
@@ -1826,7 +2113,7 @@ discard:
 
 * [tcp/dccp: lockless listener](https://lwn.net/Articles/659199/)
 
-```c++
+```c
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
   .send_check        = tcp_v4_send_check,
@@ -2097,7 +2384,7 @@ void tcp_v4_init_req(struct request_sock *req,
 * [wake_up](./linux-kernel.md#wake_up)
 
 ### tcp_rcv_synsent_state_process
-```c++
+```c
 int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
   const struct tcphdr *th)
 {
@@ -2327,7 +2614,7 @@ void tcp_finish_connect(struct sock *sk, struct sk_buff *skb)
 ```
 
 ### tcp_check_req
-```c++
+```c
 /* Process an incoming packet for SYN_RECV sockets represented as a
  * request_sock. Normally sk is the listener socket but for
  * TFO (TCP Fast Open) it points to the child socket. */
@@ -2730,198 +3017,59 @@ sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
 }
 ```
 
-## call-graph-connect
-```C++
-send:
-connect();
-  sock = sockfd_lookup_light();
-  sock->ops->connect(sock);
-    __inet_stream_connect();
-      sk->sk_prot->connect(); /* SS_UNCONNECTED */
-        tcp_v4_connect();
-          ip_route_connect();
-          inet_hash_connect();
-          secure_tcp_seq();
-          secure_tcp_ts_off();
-          tcp_set_state(sk, TCP_SYN_SENT);
-
-          tcp_connect();
-            tcp_connect_init();
-              tcp_select_initial_window();
-              tp->snd_una = tp->write_seq;
-              tp->snd_nxt = tp->write_seq;
-
-            sk_stream_alloc_skb();
-            tcp_init_nondata_skb(TCPHDR_SYN);
-            tcp_transmit_skb();
-            tcp_send_head();
-            inet_csk_reset_xmit_timer();
-
-      if (!(flags & O_NONBLOCK))
-        inet_wait_for_connect()
-          /* woken up by sk->sk_state_change() at tcp_rcv_synsent_state_process */
-
-receive:
-tcp_v4_rcv();
-  sk = __inet_lookup_skb();
-    __inet_lookup_established();
-    __inet_lookup_listener();
-
-  if (sk->sk_state == TCP_NEW_SYN_RECV) {
-    struct request_sock *req = inet_reqsk(sk);
-    sk = req->rsk_listener;
-
-    newsk = tcp_check_req();
-      child = inet_csk(sk)->icsk_af_ops->syn_recv_sock();
-        tcp_v4_syn_recv_sock();
-          if (sk_acceptq_is_full());
-            goto drop;
-          newsk = tcp_create_openreq_child(sk, req, skb);
-            inet_csk_clone_lock();
-              inet_sk_set_state(newsk, TCP_SYN_RECV);
-                sk->sk_state = TCP_SYN_RECV;
-            tcp_init_xmit_timers();
-
-          inet_ehash_nolisten();
-            inet_ehash_insert(); /* hash insert the new sk and remove the old request_sk */
-              inet_ehash_bucket(hashinfo, sk->sk_hash);
-              __sk_nulls_add_node_rcu();
-                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
-              if (osk)
-                sk_nulls_del_node_init_rcu(osk);
-
-      inet_csk_complete_hashdance(child);
-        inet_csk_reqsk_queue_drop();
-          reqsk_queue_unlink();
-            __sk_nulls_del_node_init_rcu(sk);
-              hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
-          reqsk_queue_removed();
-            --icsk_accept_queue.yong;
-            --icsk_accept_queue.qlen;
-        reqsk_queue_removed();
-
-        inet_csk_reqsk_queue_add();
-          sk->rskq_accept_tail = reqst_sk;
-          sk_acceptq_added();
-            icsk_accept_queue->rskq_accept_tail = req;
-            sk_acceptq_added();
-              ++sk->sk_ack_backlog
-
-    tcp_child_process();
-      if (!sock_owned_by_user(child))
-        tcp_rcv_state_process(child, skb);
-        sk_listener->sk_data_ready() /* sock_def_readable */
-      else
-        __sk_add_backlog(child, skb);
-  }
-
-  tcp_filter(sk, skb);
-  tcp_v4_fill_cb(skb, iph, th);
-
-  tcp_v4_do_rcv();
-    tcp_rcv_state_process();
-      if (sk->sk_state == TCP_LISTEN) {
-        icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
-          tcp_v4_conn_request();
-            tcp_conn_request();
-              if (inet_csk_reqsk_queue_is_full(sk));
-                drop;
-              if (sk_acceptq_is_full(sk));
-                drop;
-
-              inet_reqsk_alloc();
-                sk = kmem_cache_alloc(request_sock_ops->slab)
-                sk->sk_state = TCP_NEW_SYN_RECV;
-
-              dst = af_ops->route_req(sk, skb, &fl, req);
-              if (!dst)
-                drop;
-
-              af_ops->init_req(req, sk, skb);
-                tcp_v4_init_req();
-                  sk_rcv_saddr_set();
-                  sk_daddr_set();
+# accept
 
 
-              if (fastopen) {
-                af_ops->send_synack();
-                inet_csk_reqsk_queue_add();
-                  sk->rskq_accept_tail = reqst_sk;
-                  sk_acceptq_added();
-                    icsk_accept_queue->rskq_accept_tail = req;
-                    sk_acceptq_added();
-                      ++sk->sk_ack_backlog
-                sk->sk_data_ready(sk);
-              } else {
-                inet_csk_reqsk_queue_hash_add();
-                  reqsk_queue_hash_req();
-                    timer_setup();
-                    mod_timer(&req->rsk_timer, jiffies + timeout);
-                    inet_ehash_insert(); /* add to established hash table */
-                      inet_ehash_bucket(hashinfo, sk->sk_hash);
-                      __sk_nulls_add_node_rcu();
-                        hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
-                      if (osk);
-                        sk_nulls_del_node_init_rcu(osk);
-                  inet_csk_reqsk_queue_added();
-                    ++icsk_accept_queue->young;
-                    --icsk_accept_queue->qlen;
+```c
+accpet() {
+    __sys_accept4() {
+        sockfd_lookup_light();
+        newsock = sock_alloc();
+        newfd = get_unused_fd_flags();
+        newfile = sock_alloc_file(sock) {
+            alloc_file_pseudo(SOCK_INODE(sock), sock_mnt, dname);
+        }
 
-                af_ops->send_synack();
-                  tcp_v4_send_synack();
-              }
-      }
+        sock->ops->accept() { /* inet_stream_ops.accept */
+            inet_accept() {
+                sk1->sk_prot->accept() { /* tcp_prot.accept */
+                    inet_csk_accept() {
+                        reqsk_queue_empty() {
+                            /* wakeup by sk_listener->sk_data_ready() sock_def_readable in TCP_NEW_SYN_RECV */
+                            inet_csk_wait_for_connect() {
+                                prepare_to_wait_exclusive() {
+                                    wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+                                    __add_wait_queue_entry_tail(wq_head, wq_entry);
+                                }
+                                schedule_timeout();
+                                finish_wait() {
+                                    list_del_init(&wq_entry->entry);
+                                }
+                            }
+                        }
 
-      if (sk->sk_state == TCP_SYN_SENT) {
-        tcp_rcv_synsent_state_process();
-            tcp_ack(sk, skb, FLAG_SLOWPATH);
-            tcp_finish_connect(sk, skb);
-                tcp_set_state(sk, TCP_ESTABLISHED);
-                tcp_init_transfer();
-                      tcp_call_bpf(sk, bpf_op, 0, NULL);
-                      tcp_init_congestion_control(sk);
-                      tcp_init_buffer_space(sk);
-                inet_csk_reset_keepalive_timer();
+                        reqsk_queue_remove() {
+                            WRITE_ONCE(queue->rskq_accept_head, req->dl_next);
+                            sk_acceptq_removed() {
+                                --sk->sk_ack_backlog;
+                            }
+                        }
+                    }
+                }
 
-                sk->sk_state_change();
-                    /* wakup `connect` slept at inet_wait_for_connect */
-                    sock_def_wakeup();
-            tcp_send_ack(sk);
-
-        tcp_data_snd_check(sk);
-        return 0;
-      }
-
-      tcp_check_req(); /* tp->fastopen_rsk */
-
-      /* Step 1 2 3 4 */
-      tcp_validate_incoming();
-        /* RFC1323: H1. Apply PAWS check first. */
-        /* Step 1: check sequence number */
-        /* Step 2: check RST bit */
-        /* Step 3: check security and precedence [ignored] */
-        /* Step 4: Check for a SYN RFC 5961 4.2 : Send a challenge ack */
-
-      /* step 5: check the ACK field */
-      tcp_ack();
-
-      if (sk->sk_state == TCP_SYN_RECV) {
-        tcp_init_transfer();
-          tcp_init_buffer_space();
-          tcp_init_congestion_control(sk);
-        tcp_set_state(sk, TCP_ESTABLISHED);
-
-        sk->sk_state_change();
-          sock_def_wakeup();
-            wake_up_interruptible_all();
-              __wake_up();
-                __wake_up_common_lock();
-                  __wake_up_common();
-      }
+                sock_graft(sk2, newsock) {
+                    newsock->sk = sk2;
+                }
+                newsock->state = SS_CONNECTED;
+            }
+        }
+        move_addr_to_user();
+        fd_install(newfd, newfile);
+    }
+}
 ```
 
-# accept
-```C++
+```c
 SYSCALL_DEFINE3(accept, int, fd, struct sockaddr __user *, upeer_sockaddr,
     int __user *, upeer_addrlen)
 {
@@ -3083,44 +3231,9 @@ void finish_wait(
 }
 ```
 
-```C++
-accpet();
-  __sys_accept4();
-    sockfd_lookup_light();
-    newsock = sock_alloc();
-    newfd = get_unused_fd_flags();
-    newfile = sock_alloc_file(sock);
-      alloc_file_pseudo(SOCK_INODE(sock), sock_mnt, dname);
-
-    sock->ops->accept(); /* inet_stream_ops.accept */
-      inet_accept();
-        sk1->sk_prot->accept(); /* tcp_prot.accept */
-          inet_csk_accept();
-            reqsk_queue_empty();
-              /* wakeup by sk_listener->sk_data_ready() sock_def_readable in TCP_NEW_SYN_RECV */
-              inet_csk_wait_for_connect();
-                prepare_to_wait_exclusive();
-                  wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
-                  __add_wait_queue_entry_tail(wq_head, wq_entry);
-                schedule_timeout();
-                finish_wait();
-                  list_del_init(&wq_entry->entry);
-
-            reqsk_queue_remove();
-              WRITE_ONCE(queue->rskq_accept_head, req->dl_next);
-              sk_acceptq_removed();
-                --sk->sk_ack_backlog;
-
-        sock_graft(sk2, newsock);
-          newsock->sk = sk2;
-        newsock->state = SS_CONNECTED;
-    move_addr_to_user();
-    fd_install(newfd, newfile);
-```
-
 # accept queue
 
-```c++
+```c
 struct inet_hashinfo {
   struct inet_ehash_bucket  *ehash;
   spinlock_t                *ehash_locks;
@@ -3141,7 +3254,7 @@ struct inet_hashinfo {
 ```
 
 ## inet_csk_reqsk_queue_hash_add
-```c++
+```c
 /* 1st handshake, invoked by tcp_conn_request, when first SYN arrives to server and fastopen is off
  * add the request_sock into the half-accept queue */
 void inet_csk_reqsk_queue_hash_add(
@@ -3203,7 +3316,7 @@ void reqsk_queue_added(struct request_sock_queue *queue)
 ```
 
 ## inet_ehash_nolisten
-```c++
+```c
 /* 3rd handshake, invoked by tcp_v4_syn_recv_sock when thres-way handshake completed at server
  * add socket hashinfo */
 bool inet_ehash_nolisten(struct sock *sk, struct sock *osk)
@@ -3223,7 +3336,7 @@ bool inet_ehash_nolisten(struct sock *sk, struct sock *osk)
 ```
 
 ## inet_csk_reqsk_queue_drop
-```c++
+```c
 /* 3rd handshake, invoked at inet_csk_complete_hashdance
  * remove the request_sock from half-accept quque */
 void inet_csk_reqsk_queue_drop_and_put(struct sock *sk, struct request_sock *req)
@@ -3288,7 +3401,7 @@ void reqsk_queue_removed(struct request_sock_queue *queue, const struct request_
 ```
 
 ## inet_csk_reqsk_queue_add
-```c++
+```c
 /* 3rd handshake, invoked by tcp_conn_request, when first SYN arrives to server and fastopen is on
  * add the new connected sock into the accept queue */
 sock *inet_csk_reqsk_queue_add(struct sock *sk, struct request_sock *req, struct sock *child)
@@ -3320,7 +3433,7 @@ void sk_acceptq_added(struct sock *sk)
 ```
 
 ## reqsk_queue_remove
-```c++
+```c
 /* invoked by accept, remove the connected soket from accept queue */
 request_sock *reqsk_queue_remove(struct request_sock_queue *queue, struct sock *parent)
 {
@@ -3345,7 +3458,7 @@ void sk_acceptq_removed(struct sock *sk)
 ```
 
 ## queue_is_full_len
-```c++
+```c
 bool sk_acceptq_is_full(const struct sock *sk)
 {
   return sk->sk_ack_backlog > sk->sk_max_ack_backlog;
@@ -3373,7 +3486,7 @@ int reqsk_queue_len_young(const struct request_sock_queue *queue)
 ```
 
 # shutdown
-```c++
+```c
 SYSCALL_DEFINE2(shutdown, int, fd, int, how)
 {
   return __sys_shutdown(fd, how);
@@ -3498,7 +3611,7 @@ const unsigned char new_state[16] = {
 };
 ```
 
-```c++
+```c
 __sys_shutdown();
   sock->ops->shutdown();
     inet_shutdown();
@@ -3521,7 +3634,7 @@ __sys_shutdown();
 
 <img src='../images/kernel/net-sk_buf.png' style='max-height:850px'/>
 
-```C++
+```c
 struct sk_buff {
   union {
     struct {
@@ -3801,7 +3914,7 @@ void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
 ```
 
 ## skb_clone
-```c++
+```c
 
 /* Duplicate an &sk_buff. The new one is not owned by a socket. Both
  * copies share the same packet data but not structure. The new
@@ -3870,7 +3983,7 @@ struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 }
 ```
 
-```c++
+```c
 sk_stream_alloc_skb()
   size = ALIGN(size, 4)
   skb = alloc_skb_fclone()
@@ -4008,6 +4121,7 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 # write
 
 * [Monitoring and Tuning the Linux Networking Stack: Sending Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-sending-data/)
+* [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
 <img src='../images/kernel/net-read-write-route-bridge.png' style='max-height:850px'/>
 
@@ -4015,9 +4129,212 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 
 <img src='../images/kernel/net-write.png'/>
 
+```c
+/* vfs layer */
+SYSCALL_DEFINE3(write, fd, buf, count) {
+    vfs_write(file, buf, counts) {
+        file->f_op->write_iter(kio, iter);
+    }
+}
+
+/* socket layer */
+sock_write_iter() {
+    sock_sendmsg() {
+        sock_sendmsg_nosec() {
+            sock->ops->sendmsg() {
+                inet_stream_ops.sendmsg() {
+                    sk->sk_prot->sendmsg(); /* tcp_prot.sendmsg */
+                }
+            }
+        }
+    }
+}
+
+/* tcp layer */
+tcp_sendmsg() {
+    /* 1. wait for connection */
+    if (!TCPF_ESTABLISHED) {
+        sk_stream_wait_connect();
+    }
+
+    /* 2. alloc skb & insert into sk_write_queue */
+    skb = sk_stream_alloc_skb(); /* alloc new one if null */
+    skb_entail(sk, skb); /* add into sk->sk_write_queue */
+
+    /* 3. copy data */
+    if (skb_availroom(skb) > 0 && !zc) {    /* 3.1 copy to skb */
+        skb_add_data_nocache();
+    } else if (!zc) {                       /* 3.2 copy to page_frag */
+        struct page_frag *pfrag = sk_page_frag(sk);
+        sk_page_frag_refill(sk, pfrag);
+        skb_copy_to_page_nocache();
+    } else {                                /* 3.3 zero copy */
+        skb_zerocopy_iter_stream();
+    }
+
+    /* 4. send data */
+    if (!msg_data_left(msg) || forced_push(tp) || skb == tcp_send_head(sk)) {
+        tcp_write_xmit() {
+            max_segs = tcp_tso_segs();
+            tso_segs = tcp_init_tso_segs();
+
+            /* 4.1 congestion control */
+            tcp_cwnd_test();
+            tcp_snd_wnd_test();
+            tcp_nagle_test();
+            tcp_tso_should_defer();
+
+            /* 4.2 fragment */
+            limit = tcp_mss_split_point();
+            tso_fragment() {
+                skb_split() {
+                    skb_split_inside_header();
+                    skb_split_no_header();
+                }
+            }
+
+            /* 4.3 build TCP header */
+            tcp_transmit_skb() {
+                /* 4.5 send msg */
+                icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+            }
+
+            /* 4.4 add into retransmit */
+            tcp_event_new_data_sent() {
+                __skb_unlink(skb, &sk->sk_write_queue);
+                tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
+                tcp_rearm_rto(sk);
+            }
+
+            tcp_cwnd_validate() {
+                tcp_cwnd_application_limited();
+            }
+        }
+    }
+}
+
+/* ip layer */
+ipv4_specific.ip_queue_xmit() {
+    /* 1. get route table */
+    rt = ip_route_output_ports() {
+        ip_route_output_key_hash_rcu() {
+            fib_lookup();
+            __mkroute_output() {
+                rt_dst_alloc();
+            }
+        }
+    }
+    skb_dst_set_noref(skb, &rt->dst);
+
+    /* 2. build IP header */
+    ip_local_out() {
+        /* 3. netfilter */
+        nf_hook();                        /* NF_INET_LOCAL_OUT */
+        dst_out() {
+            skb_dst(skb)->output() {
+                ip_output() { /* ipv4_dst_ops.output() */
+                    NF_HOOK_COND(); /* NF_INET_POST_ROUTING */
+                    ip_finish_output() {
+                        if (skb->len > mtu)
+                            return ip_fragment(sk, ip_finish_output2)
+                        ip_finish_output2();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* mac layer */
+ip_finish_output2() {
+    exthop = rt_nexthop(rt, ip_hdr(skb)->daddr);
+    neigh = ipv4_neigh_lookup_noref(dev, nexthop);
+    neigh_output(neigh, skb) {
+        neigh->output() {
+            neigh_resolve_output() { /* arp_hh_ops.output */
+                ret = neigh_event_send() {
+                    __skb_queue_tail(&neigh->arp_queue, skb);
+                    neigh_probe() {
+                        arp_send_dst() {
+                            skb = arp_create();
+                            arp_xmit(skb); /* arp_rcv */
+                        }
+                    }
+                }
+                if (!ret) {
+                    dev_queue_xmit(skb);
+                }
+            }
+        }
+    }
+}
+
+
+/* dev layer */
+__dev_queue_xmit() {
+    struct net_device *dev = skb->dev;
+    struct netdev_queue *txq = netdev_pick_tx(dev, skb);
+    struct Qdisc *q = rcu_derefence_bh(txq->qdisc);
+    __dev_xmit_skb(skb, q, dev, txq) {
+        q->enqueue(skb, q, &to_free);
+        if (qdisc_run_begin(q)) { /* check if qdisc is alreay running */
+            __qdisc_run(q) {
+                qdisc_restart(q, &pakcets) {
+                    skb = dequeue_skb(q, &validate, packets); /* may dequeue bulk sbk */
+                    sch_direct_xmit(skb, q, dev, txq, root_lock, validate) {
+                        dev_hard_start_xmit() {
+                            while (skb) {
+                                xmit_one() {
+                                    netdev_start_xmit() {
+                                        __netdev_start_xmit() {
+                                            net_device_ops->ndo_start_xmit(skb, dev) {
+                                                ixgb_xmit_frame();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!dev_xmit_complete(ret)) {
+                            /* Driver returned NETDEV_TX_BUSY - requeue skb */
+                            ret = dev_requeue_skb(skb, q);
+                        }
+                    }
+                }
+                while (qdisc_restart(...)) {
+                    if (quota <= 0 || need_resched()) {
+                        __netif_reschedule(q) {
+                            *this_cpu_ptr(&softnet_data)->output_queue_tailp = q;
+
+                            raise_softirq_irqoff(NET_TX_SOFTIRQ) { /* return to user space */
+                                net_tx_action() { /* NET_TX_SOFTIRQ */
+                                    qdisc_run(q) {
+                                        if (qdisc_run_begin(q)) {
+                                            __qdisc_run(q);
+                                            qdisc_run_end(q) {
+                                                __clear_bit(__QDISC_STATE2_RUNNING, &qdisc->state2);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                qdisc_run_end(q);
+            }
+        }
+
+    }
+}
+
+/* driver layer */
+ixgb_xmit_frame();
+```
+
 ## vfs layer tx
 
-```C++
+```c
 SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
     size_t, count)
 {
@@ -4089,7 +4406,7 @@ ssize_t sock_write_iter(struct kiocb *iocb, struct iov_iter *from)
 ```
 
 ## socket layer tx
-```C++
+```c
 /* sock_sendmsg -> */
 int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
 {
@@ -4107,7 +4424,7 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 ## tcp layer tx
 
 ### copy data
-```C++
+```c
 /* tcp_prot.sendmsg, copy data to skb */
 int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 {
@@ -4555,7 +4872,7 @@ void tcp_set_skb_tso_segs(struct sk_buff *skb, unsigned int mss_now)
 ```
 
 ### tso_fragment
-```c++
+```c
 /* Returns the portion of skb which can be sent right away */
 unsigned int tcp_mss_split_point(
   const struct sock *sk,
@@ -4735,7 +5052,7 @@ void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 ```
 
 ### tcp_transmit_skb
-```c++
+```c
 /* This routine actually transmits TCP packets queued in by
  * tcp_do_sendmsg().  This is used by both the initial
  * transmission and possible later retransmissions.
@@ -4878,7 +5195,7 @@ int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 ```
 
 ## ip layer tx
-```C++
+```c
 const struct inet_connection_sock_af_ops ipv4_specific = {
   .queue_xmit        = ip_queue_xmit,
   .send_check        = tcp_v4_send_check,
@@ -4964,7 +5281,7 @@ packet_routed:
 <img src='../images/kernel/net-ip-header.png' style='max-height:850px'/>
 
 ### send package
-```C++
+```c
 int ip_local_out(
   struct net *net, struct sock *sk, struct sk_buff *skb)
 {
@@ -5038,7 +5355,7 @@ int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 ```
 
 ### skb_gso_segment
-```c++
+```c
 int ip_finish_output_gso(struct net *net, struct sock *sk,
         struct sk_buff *skb, unsigned int mtu)
 {
@@ -5126,7 +5443,7 @@ struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
 ```
 
 #### skb_mac_gso_segment
-```c++
+```c
 struct sk_buff *skb_mac_gso_segment(struct sk_buff *skb,
             netdev_features_t features)
 {
@@ -5156,7 +5473,7 @@ struct sk_buff *skb_mac_gso_segment(struct sk_buff *skb,
 ```
 
 #### inet_gso_segment
-```c++
+```c
 struct sk_buff *inet_gso_segment(struct sk_buff *skb,
          netdev_features_t features)
 {
@@ -5255,7 +5572,7 @@ out:
 ```
 
 #### tcp4_gso_segment
-```c++
+```c
 struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
           netdev_features_t features)
 {
@@ -5284,7 +5601,7 @@ struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
 ### ip_fragment
 
 ## mac layer tx
-```c++
+```c
 /* ip_finish_output -> */
 int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
@@ -5331,7 +5648,7 @@ struct neigh_table arp_tbl = {
 ```
 
 ### neighbour
-```C++
+```c
 struct neighbour *__neigh_create(struct neigh_table *tbl,
   const void *pkey, struct net_device *dev, bool want_ref)
 {
@@ -5429,7 +5746,7 @@ const struct neigh_ops arp_hh_ops = {
 ```
 
 ### neigh_output
-```C++
+```c
 int neigh_output(struct neighbour *n, struct sk_buff *skb)
 {
   return n->output(n, skb);
@@ -5578,7 +5895,7 @@ void arp_send_dst(
 
 <img src='../images/kernel/net-dev-pci.png' style='max-height:850px'/>
 
-```C++
+```c
 struct net_device {
   struct netdev_rx_queue  *_rx;
   struct netdev_queue     *_tx;
@@ -5685,7 +6002,7 @@ u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
        valid_lft forever preferred_lft forever
 ```
 
-```C++
+```c
 int __dev_xmit_skb(
   struct sk_buff *skb,
   struct Qdisc *q,
@@ -5882,7 +6199,7 @@ void qdisc_run(struct Qdisc *q)
 ```
 
 ## driver layer tx
-```C++
+```c
 /* internet trasaction gigabit */
 /* drivers/net/ethernet/intel/ixgb/ixgb_main.c */
 const struct net_device_ops ixgb_netdev_ops = {
@@ -5915,173 +6232,484 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 }
 ```
 
-## call-graph-write
-```C++
-/* vfs layer */
-SYSCALL_DEFINE3(write, fd, buf, count);
-  vfs_write(file, buf, counts);
-    file->f_op->write_iter(kio, iter);
-
-/* socket layer */
-sock_write_iter();
-  sock_sendmsg();
-    sock_sendmsg_nosec();
-      sock->ops->sendmsg();
-        inet_stream_ops.sendmsg();
-          sk->sk_prot->sendmsg(); /* tcp_prot.sendmsg */
-
-/* tcp layer */
-tcp_sendmsg();
-  /* 1. wait for connection */
-  if (!TCPF_ESTABLISHED)
-    sk_stream_wait_connect();
-
-  /* 2. alloc skb & insert into sk_write_queue */
-  skb = sk_stream_alloc_skb(); /* alloc new one if null */
-  skb_entail(sk, skb); /* add into sk->sk_write_queue */
-
-  /* 3. copy data */
-  if (skb_availroom(skb) > 0 && !zc) { /* 3.1 copy to skb */
-    skb_add_data_nocache();
-  } else if (!zc) {                    /* 3.2 copy to page_frag */
-    struct page_frag *pfrag = sk_page_frag(sk);
-    sk_page_frag_refill(sk, pfrag);
-    skb_copy_to_page_nocache();
-  } else {                             /* 3.3 zero copy */
-    skb_zerocopy_iter_stream();
-  }
-
-  /* 4. send data */
-  if (!msg_data_left(msg) || forced_push(tp) || skb == tcp_send_head(sk)) {
-    tcp_write_xmit();
-      max_segs = tcp_tso_segs();
-      tso_segs = tcp_init_tso_segs();
-
-      /* 4.1 congestion control */
-      tcp_cwnd_test();
-      tcp_snd_wnd_test();
-      tcp_nagle_test();
-      tcp_tso_should_defer();
-
-      /* 4.2 fragment */
-      limit = tcp_mss_split_point();
-      tso_fragment();
-        skb_split();
-          skb_split_inside_header();
-          skb_split_no_header();
-
-      /* 4.3 build TCP header */
-      tcp_transmit_skb();
-        /* 4.5 send msg */
-        icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
-
-      /* 4.4 add into retransmit */
-      tcp_event_new_data_sent();
-        __skb_unlink(skb, &sk->sk_write_queue);
-        tcp_rbtree_insert(&sk->tcp_rtx_queue, skb);
-        tcp_rearm_rto(sk);
-
-      tcp_cwnd_validate();
-        tcp_cwnd_application_limited();
-  }
-
-/* ip layer */
-ipv4_specific.ip_queue_xmit();
-    /* 1. get route table */
-    rt = ip_route_output_ports();
-      ip_route_output_key_hash_rcu();
-        fib_lookup();
-        __mkroute_output();
-          rt_dst_alloc();
-    skb_dst_set_noref(skb, &rt->dst);
-
-    /* 2. build IP header */
-    ip_local_out();
-      /* 3. netfilter */
-      nf_hook();            /* NF_INET_LOCAL_OUT */
-      dst_out();
-        skb_dst(skb)->output();
-          ip_output(); /* ipv4_dst_ops.output() */
-            NF_HOOK_COND(); /* NF_INET_POST_ROUTING */
-            ip_finish_output();
-              if (skb->len > mtu)
-                return ip_fragment(sk, ip_finish_output2)
-              ip_finish_output2();
-
-/* mac layer */
-ip_finish_output2();
-  exthop = rt_nexthop(rt, ip_hdr(skb)->daddr);
-  neigh = ipv4_neigh_lookup_noref(dev, nexthop);
-  neigh_output(neigh, skb);
-    neigh->output();
-      neigh_resolve_output(); /* arp_hh_ops.output */
-        if (!neigh_event_send())
-            __skb_queue_tail(&neigh->arp_queue, skb);
-            neigh_probe();
-              arp_send_dst();
-                skb = arp_create();
-                arp_xmit(skb); /* arp_rcv */
-        {
-          dev_queue_xmit(skb);
-        }
-
-/* dev layer */
-__dev_queue_xmit();
-  struct net_device *dev = skb->dev;
-  struct netdev_queue *txq = netdev_pick_tx(dev, skb);
-  struct Qdisc *q = rcu_derefence_bh(txq->qdisc);
-  __dev_xmit_skb(skb, q, dev, txq);
-    q->enqueue(skb, q, &to_free);
-    if (qdisc_run_begin(q)) { /* check if qdisc is alreay running */
-      __qdisc_run(q);
-        while (qdisc_restart(q, &pakcets))
-          skb = dequeue_skb(q, &validate, packets); /* may dequeue bulk sbk */
-          sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
-            dev_hard_start_xmit();
-              while (skb) {
-                xmit_one();
-                  netdev_start_xmit();
-                    __netdev_start_xmit();
-                      net_device_ops->ndo_start_xmit(skb, dev);
-                        ixgb_xmit_frame();
-              }
-            if (!dev_xmit_complete(ret)) {
-              /* Driver returned NETDEV_TX_BUSY - requeue skb */
-              ret = dev_requeue_skb(skb, q);
-            }
-        {
-          if (quota <= 0 || need_resched()) {
-            __netif_reschedule(q);
-              *this_cpu_ptr(&softnet_data)->output_queue_tailp = q;
-
-              raise_softirq_irqoff(NET_TX_SOFTIRQ); /* return to user space */
-                net_tx_action(); /* NET_TX_SOFTIRQ */
-                  qdisc_run(q);
-                    if (qdisc_run_begin(q)) {
-                      __qdisc_run(q);
-                      qdisc_run_end(q);
-                        __clear_bit(__QDISC_STATE2_RUNNING, &qdisc->state2);
-                    }
-          }
-        }
-        qdisc_run_end(q);
-    }
-
-/* driver layer */
-ixgb_xmit_frame();
-```
-* [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
-
 # read
 
 * [Monitoring and Tuning the Linux Networking Stack: Receiving Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-receiving-data/)
 * [Illustrated Guide to Monitoring and Tuning the Linux Networking Stack: Receiving Data](https://blog.packagecloud.io/illustrated-guide-monitoring-tuning-linux-networking-stack-receiving-data/)
+* [NAPI description on Linux Foundation](https://wiki.linuxfoundation.org/networking/napi)
 
 <img src='../images/kernel/net-read-write-route-bridge.png' style='max-height:850px'/>
 
 ---
 
 <img src='../images/kernel/net-read.png'/>
+
+
+```c
+/* driver layer */
+ixgb_intr(int irq, void *data) {
+    IXGB_WRITE_REG(&adapter->hw, IMC, ~0);    /* disable irq */
+    __napi_schedule() {
+        list_add_tail(&napi->poll_list, &sd->poll_list)
+        __raise_softirq_irqoff(NET_RX_SOFTIRQ) {
+            net_rx_action() {
+                LIST_HEAD(list);
+                list_splice_init(&sd->poll_list, &list)
+
+                napi_poll() {
+                    ixgb_clean_tx_irq(adapter); /* dma_unmap_page */
+                    ixgb_clean_rx_irq(adapter, &work_done, budget) {
+                        netif_receive_skb(skb);
+                            --->
+                    }
+
+                    if (work_done < budget) {
+                        napi_complete_done(napi, work_done);
+                        if (!test_bit(__IXGB_DOWN, &adapter->flags)) {
+                            ixgb_irq_enable(adapter) {/* re-enable irq */
+                                IXGB_WRITE_REG(&adapter->hw, IMC, val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* mac layer */
+netif_receive_skb() {
+    __netif_receive_skb_core()
+        /* 1. deliver ptype_all */
+        list_for_each_entry_rcu(ptype, &ptype_all, list) {
+            if (pt_prev)
+                deliver_skb(skb, pt_prev, orig_dev);
+        }
+
+        /* 2. vlan handle */
+        vlan_do_receive(&skb);
+
+        /* 3. bridge handle */
+        rx_handler = rcu_dereference(skb->dev->rx_handler); /* br_handle_frame */
+        rx_handler(&skb);
+
+        /* 4. deliver only when ptype match exactly */
+        deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type, &ptype_base[ntohs(type) & PTYPE_HASH_MASK]);
+}
+
+/* ip layer */
+ip_rcv() {
+    NF_HOOK(NF_INET_PRE_ROUTING) {              /* 1. NF_INET_PRE_ROUTING */
+        ip_rcv_finish() {
+            ip_rcv_finish_core() {
+                ip_route_input_noref()          /* 2. route */
+            }
+            dst_input() {
+                ip_local_deliver() {
+                    ip_defrag()                 /* 3. defragment */
+                    NF_HOOK(NF_INET_LOCAL_IN)   /* 4. NF_INET_LOCAL_IN */
+                    ip_local_deliver_finish() {
+                        inet_protos[protocol]->handler() {
+                            net_protocol->handler()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* tcp layer */
+tcp_v4_rcv() {
+    sk = __inet_lookup_skb() {
+        __inet_lookup_established();
+        __inet_lookup_listener();
+    }
+
+process:
+    if (sk->sk_state == TCP_TIME_WAIT)
+        goto do_time_wait;
+
+    /* handle half-connection sock */
+    if (sk->sk_state == TCP_NEW_SYN_RECV) {
+        struct request_sock *req = inet_reqsk(sk);
+        sk = req->rsk_listener;
+
+        newsk = tcp_check_req() {
+            /* 1. alloc sock and insert into ehash */
+            child = inet_csk(sk)->icsk_af_ops->syn_recv_sock() {
+                tcp_v4_syn_recv_sock() {
+                    if (sk_acceptq_is_full());
+                        goto drop;
+                    newsk = tcp_create_openreq_child(sk, req, skb) {
+                        inet_csk_clone_lock() {
+                            struct proto *prot = READ_ONCE(sk->sk_prot);
+                            newsk = sk_prot_alloc(prot, priority, sk->sk_family) {
+                                slab = prot->slab;
+                                newsk = kmem_cache_alloc(slab, priority & ~__GFP_ZERO);
+                            }
+                            sock_copy(newsk, sk);
+                            inet_sk_set_state(newsk, TCP_SYN_RECV) {
+                                sk->sk_state = TCP_SYN_RECV;
+                            }
+                        }
+                        tcp_init_xmit_timers();
+                    }
+
+                    inet_ehash_nolisten() {
+                        inet_ehash_insert() { /* hash insert the new sk and remove the old request_sk */
+                            inet_ehash_bucket(hashinfo, sk->sk_hash);
+                            __sk_nulls_add_node_rcu() {
+                                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+                            }
+                            if (osk) {
+                                sk_nulls_del_node_init_rcu(osk);
+                            }
+                        }
+                    }
+                }
+            }
+
+            inet_csk_complete_hashdance(child) {
+                /* 2. remove from request queue */
+                inet_csk_reqsk_queue_drop() {
+                    reqsk_queue_unlink() {
+                        __sk_nulls_del_node_init_rcu(sk);
+                            hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
+                    }
+                    reqsk_queue_removed() {
+                        --icsk_accept_queue.yong;
+                        --icsk_accept_queue.qlen;
+                    }
+                }
+                reqsk_queue_removed();
+
+                /* 3. insert into accept queue */
+                inet_csk_reqsk_queue_add() {
+                    sk->rskq_accept_tail = reqst_sk;
+                    sk_acceptq_added() {
+                        icsk_accept_queue->rskq_accept_tail = req;
+                        sk_acceptq_added();
+                            ++sk->sk_ack_backlog
+                    }
+                }
+            }
+        }
+
+        tcp_child_process() {
+            if (!sock_owned_by_user(child)) {
+                tcp_rcv_state_process(child, skb);
+                sk_listener->sk_data_ready() /* sock_def_readable, wakeup accept->inet_csk_wait_for_connect */
+            } else {
+                __sk_add_backlog(child, skb);
+            }
+        }
+    }
+
+    tcp_filter(sk, skb);
+    tcp_v4_fill_cb(skb, iph, th);
+
+    tcp_v4_do_rcv() {
+        /* Fast Path */
+        if (sk->sk_state == TCP_ESTABLISHED) {
+            tcp_rcv_established() {
+                trace_tcp_probe(sk, skb);
+                tcp_checksum_complete(skb);
+
+                tcp_data_queue(sk, skb) {
+                    /* 1. [seq = rcv_next < end_seq < win] ACK  */
+                    /* 2. [seq < end_seq < rcv_next < win] DACK */
+                    /* 3. [rcv_next < win < seq < end_seq] DROP */
+                    /* 4. [seq < rcv_next < end_seq < win] OFO  */
+                    /* 5. [rcv_next < seq < end_seq < win] DACK */
+                }
+                tcp_data_snd_check(sk) {
+                    tcp_check_space() {
+                        if (SOCK_QUEUE_SHRUNK && SOCK_NOSPACE) {
+                            sk->sk_write_space(sk); {
+                                sock_def_write_space();
+                            }
+                        }
+                    }
+                }
+                tcp_ack_snd_check(sk);
+                return 0;
+            }
+        }
+
+        /* Slow Path */
+        tcp_rcv_state_process() {
+            if (sk->sk_state == TCP_LISTEN) {
+                icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
+                    tcp_v4_conn_request() {
+                        tcp_conn_request() {
+                            /* 1. check reqsk queue and accept queue */
+                            if (inet_csk_reqsk_queue_is_full(sk));
+                                drop;
+                            if (sk_acceptq_is_full(sk));
+                                drop;
+
+                            /* 2. allock reqsk and init */
+                            inet_reqsk_alloc();
+                                sk->sk_state = TCP_NEW_SYN_RECV;
+
+                            af_ops->init_req(req, sk, skb) {
+                                tcp_v4_init_req();
+                                    sk_rcv_saddr_set();
+                                    sk_daddr_set();
+                            }
+
+                            /* 3. insert into ehash */
+                            if (fastopen) {
+                                inet_csk_reqsk_queue_add() {
+                                    sk->rskq_accept_tail = reqst_sk;
+                                    sk_acceptq_added() {
+                                        icsk_accept_queue->rskq_accept_tail = req;
+                                        sk_acceptq_added();
+                                            ++sk->sk_ack_backlog
+                                    }
+                                }
+                            } else  {
+                                inet_csk_reqsk_queue_hash_add() {
+                                    reqsk_queue_hash_req() {
+                                        timer_setup();
+                                        mod_timer(&req->rsk_timer, jiffies + timeout);
+                                        inet_ehash_insert() {
+                                            inet_ehash_bucket(hashinfo, sk->sk_hash);
+                                            __sk_nulls_add_node_rcu();
+                                                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
+                                            if (osk);
+                                                sk_nulls_del_node_init_rcu(osk);
+                                        }
+                                    }
+                                    inet_csk_reqsk_queue_added() {
+                                        ++icsk_accept_queue->young;
+                                        --icsk_accept_queue->qlen;
+                                    }
+                                }
+                            }
+
+                            /* 4. send synack */
+                            af_ops->send_synack() {
+                                tcp_v4_send_synack();
+                            }
+                        }
+                    }
+                return 0;
+            } /* TCP_LISTEN */
+
+            if (sk->sk_state == TCP_SYN_SENT) {
+                tcp_rcv_synsent_state_process() {
+                    tcp_finish_connect(sk, skb) {
+                        tcp_set_state(sk, TCP_ESTABLISHED);
+                        tcp_init_transfer() {
+                            tcp_init_buffer_space();
+                            tcp_init_congestion_control(sk);
+                        }
+                        inet_csk_reset_keepalive_timer();
+                    }
+
+                    sk->sk_state_change() {
+                        /* wakup `connect` slept at inet_wait_for_connect */
+                        sock_def_wakeup();
+                    }
+                    tcp_send_ack(sk);
+                    tcp_set_state(sk, TCP_ESTABLISHED);
+                }
+
+                tcp_data_snd_check(sk);
+                return 0;
+            } /* TCP_SYN_SENT */
+
+            tcp_check_req(); /* tp->fastopen_rsk */
+
+            /* Step 1 2 3 4 */
+            tcp_validate_incoming() {
+                /* RFC1323: H1. Apply PAWS check first. */
+                /* Step 1: check sequence number */
+                /* Step 2: check RST bit */
+                /* Step 3: check security and precedence [ignored] */
+                /* Step 4: Check for a SYN RFC 5961 4.2 : Send a challenge ack */
+            }
+
+            /* step 5: check the ACK field */
+            tcp_ack() {
+                tcp_clean_rtx_queue();
+                tcp_set_xmit_timer();
+                tcp_cong_control() {
+                    if (tcp_in_cwnd_reduction(sk)) {
+                        /* Reduce cwnd if state mandates */
+                        tcp_cwnd_reduction(sk, acked_sacked, rs->losses, flag);
+                    } else if (tcp_may_raise_cwnd(sk, flag)) {
+                        /* Advance cwnd if state allows */
+                        tcp_cong_avoid(sk, ack, acked_sacked);
+                    }
+                    tcp_update_pacing_rate(sk);
+                }
+                tcp_xmit_recovery();
+            }
+
+            if (sk->sk_state == TCP_SYN_RECV) {
+                tcp_init_transfer() {
+                    tcp_snd_cwnd_set();
+                    tcp_init_buffer_space()
+                    tcp_init_congestion_control();
+                }
+                tcp_set_state(sk, TCP_ESTABLISHED);
+
+                sk->sk_state_change() {
+                    sock_def_wakeup() {
+                        wake_up_interruptible_all() {
+                            __wake_up() {
+                                __wake_up_common_lock() {
+                                    __wake_up_common();
+                                }
+                            }
+                        }
+                    }
+                }
+            } /* TCP_SYN_RECV */
+
+            if (sk->sk_state == TCP_LAST_ACK)
+                tcp_done();
+
+            if (sk->sk_state == TCP_FIN_WAIT1) {
+                tcp_set_state(sk, TCP_FIN_WAIT2);
+                sk->sk_shutdown |= SEND_SHUTDOWN;
+                tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+                sk->sk_state_change(); /* Wake up lingering close() */
+                tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+            }
+
+            if (sk->sk_state == TCP_FIN_WAIT2) {
+                if (sk->sk_shutdown & RCV_SHUTDOWN);
+                    tcp_reset();
+            }
+
+            if (sk->sk_state == TCP_ESTABLISHED) {
+                tcp_data_queue();
+            }
+
+            if (sk->sk_state == TCP_CLOSING) {
+                tcp_time_wait(sk, TCP_TIME_WAIT, 0);
+            }
+
+            /* Step 6: check the URG bit */
+            tcp_urg(sk, skb, th);
+        }
+    }
+
+    if (!sock_owned_by_user(sk)) {
+        ret = tcp_v4_do_rcv(sk, skb);
+    } else if (tcp_add_backlog(sk, skb)) {
+        goto discard_and_relse;
+    }
+
+do_time_wait:
+    if (sk->sk_state == TCP_TIME_WAIT) {
+        tcp_v4_fill_cb(skb, iph, th);
+        switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
+            case TCP_TW_SYN: {
+                /* reuse connection transition to SYN_RECV */
+                goto process;
+            }
+            case TCP_TW_ACK: {
+                /* send last ack */
+                tcp_v4_timewait_ack(sk, skb);
+                break;
+            }
+            case TCP_TW_RST: {
+                tcp_v4_send_reset(sk, skb);
+                inet_twsk_deschedule_put(inet_twsk(sk));
+                goto discard_it;
+            }
+            case TCP_TW_SUCCESS: {
+
+            }
+        }
+    }
+}
+
+tcp_data_queue() {
+    /* 1. ACK [seq = rcv_next < end_seq < win] */
+        tcp_queue_rcv();
+        tcp_event_data_recv();
+            tcp_grow_window();
+        tcp_ofo_queue(sk); /* put data from the out_of_order queue into the receive_queue */
+
+        kfree_skb_partial();
+        tcp_data_ready() { /* wakeup `sk_wait_data` */
+            sk->sk_data_ready();
+                sock_def_readable();
+        }
+
+    /* 2. DROP [seq < end_seq < rcv_next < win] */
+        tcp_dsack_set();
+        tcp_enter_quickack_mode();
+        inet_csk_schedule_ack(sk);
+        tcp_drop();
+
+    /* 3. DROP [rcv_next < win < seq < end_seq] */
+        tcp_enter_quickack_mode();
+        inet_csk_schedule_ack(sk);
+        tcp_drop();
+
+    /* 4. OFO [seq < rcv_next < end_seq < win] */
+        tcp_dsack_set();
+
+    /* 5. DACK [rcv_next < seq < end_seq < win] */
+        tcp_data_queue_ofo();
+}
+
+/* vfs layer */
+SYSCALL_DEFINE3(read, fd, buf, count) {
+    vfs_read(file, buf, counts);
+        file->f_op->read_iter(kio, iter);
+}
+
+sock_read_iter() {
+    sock_recvmsg() {
+        sock->ops->recvmsg() {
+            inet_recvmsg() {
+                sk->sk_prot->recvmsg() {
+                    tcp_recvmsg() {
+                        skb_peek_tail(&sk->sk_receive_queue)
+                        skb_queue_walk(&sk->sk_receive_queue, skb) {
+                            if (sk->sk_shutdown & RCV_SHUTDOWN)
+                                break;
+                            skb_copy_datagram_msg() /* copy data to user space */
+                            tcp_rcv_space_adjust()    /* adjust receive buffer space */
+
+                            sk_wait_data() { /* waiting for data, waked up by `tcp_data_ready` */
+                                sk_wait_event() {
+                                    wait_woken()
+                                        schedule_timeout()
+                                }
+                                woken_wake_function() {
+                                    default_wake_function()
+                                        try_to_wake_up()
+                                }
+                            }
+                        }
+
+                        tcp_cleanup_rbuf()
+
+                        /* process backlog */
+                        release_sock(sk) {
+                            sk_backlog_rcv() {
+                                sk->sk_backlog_rcv() {
+                                    tcp_v4_do_rcv()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+* [try_to_wake_up](./linux-kernel.md#ttwu)
 
 ## driver layer rx
 
@@ -6103,7 +6731,7 @@ NAPI Usage:
 
 <img src='../images/kernel/net-desc-ring-2.png' style='max-height:850px'/>
 
-```c++
+```c
 struct pci_dev {
   struct device     dev;      /* Generic device interface */
   struct pci_driver *driver;  /* Driver bound to this device */
@@ -6285,7 +6913,7 @@ struct napi_struct {
 };
 ```
 
-```C++
+```c
 MODULE_AUTHOR("Intel Corporation, <linux.nics@intel.com>");
 MODULE_DESCRIPTION("Intel(R) PRO/10GbE Network Driver");
 MODULE_LICENSE("GPL");
@@ -6376,7 +7004,7 @@ void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 }
 ```
 
-```C++
+```c
 /* internet trasaction gigabyte
   drivers/net/ethernet/intel/ixgb/ixgb_main.c */
 const struct net_device_ops ixgb_netdev_ops = {
@@ -6723,27 +7351,22 @@ void ixgb_check_copybreak(struct napi_struct *napi,
     return;
 
   skb_copy_to_linear_data_offset(
-    new_skb, -NET_IP_ALIGN,
-    (*skb)->data - NET_IP_ALIGN,
-    length + NET_IP_ALIGN
-  );
+    new_skb, /*skb*/
+    -NET_IP_ALIGN, /* offset */
+    (*skb)->data - NET_IP_ALIGN, /* from */
+    length + NET_IP_ALIGN /* len */
+  ) {
+    memcpy(skb->data + offset, from, len);
+  }
   /* save the skb in buffer_info as good */
   buffer_info->skb = *skb;
   *skb = new_skb;
 }
-
-void skb_copy_to_linear_data_offset(
-  struct sk_buff *skb,
-  const int offset,
-  const void *from,
-  const unsigned int len)
-{
-  memcpy(skb->data + offset, from, len);
-}
 ```
 
 ## mac layer rx
-```C++
+
+```c
 /* netif_receive_skb -> netif_receive_skb_internal ->
  * __netif_receive_skb -> __netif_receive_skb_core */
 int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc, struct packet_type **ppt_prev)
@@ -6982,7 +7605,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 ```
 
 ### vlan_do_receive
-```c++
+```c
 bool vlan_do_receive(struct sk_buff **skbp)
 {
   struct sk_buff *skb = *skbp;
@@ -7090,7 +7713,7 @@ int __vlan_insert_inner_tag(struct sk_buff *skb,
 [:link: br_handle_frame](#br_handle_frame)
 
 ## ip layer rx
-```C++
+```c
 /*1. pre nf
   2. route
   2. defragment
@@ -7193,7 +7816,8 @@ int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_buff *sk
 ```
 
 ## tcp layer rx
-```C++
+
+```c
 struct net_protocol *inet_protos[MAX_INET_PROTOS];
 
 struct net_protocol {
@@ -7236,7 +7860,8 @@ struct net_protocol udp_protocol = {
 ```
 
 ### tcp_v4_rcv-TCP_NEW_SYN_RECV
-```c++
+
+```c
 int tcp_v4_rcv(struct sk_buff *skb)
 {
   struct net *net = dev_net(skb->dev);
@@ -7450,7 +8075,7 @@ int tcp_child_process(struct sock *parent, struct sock *child,
 ```
 
 ### tcp_v4_do_rcv-TCP_ESTABLISHED
-```c++
+```c
 int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
   struct sock *rsk;
@@ -7681,7 +8306,7 @@ discard:
 ```
 
 ### tcp_rcv_state_process
-```c++
+```c
 int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -8024,7 +8649,7 @@ discard:
 ```
 
 ### tcp_data_queue
-```c++
+```c
 /* tcp_rcv_established ->
  * Queues:
  * 1. backlog, push back when user is reading
@@ -8304,7 +8929,7 @@ void tcp_ofo_queue(struct sock *sk)
 ```
 
 ## vfs layer rx
-```C++
+```c
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 {
   struct fd f = fdget_pos(fd);
@@ -8348,7 +8973,7 @@ const struct file_operations socket_file_ops = {
 ```
 
 ## socket layer rx
-```C++
+```c
 ssize_t sock_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
   struct file *file = iocb->ki_filp;
@@ -8757,383 +9382,6 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 * [wait_woken](./linux-kernel.md#wait_woken)
 * [wake_up](./linux-kernel.md#wake_up)
 
-## call-graph-read
-```c++
-/* driver layer */
-ixgb_intr(int irq, void *data)
-  IXGB_WRITE_REG(&adapter->hw, IMC, ~0);  /* disable irq */
-  __napi_schedule()
-    list_add_tail(&napi->poll_list, &sd->poll_list)
-    __raise_softirq_irqoff(NET_RX_SOFTIRQ)
-      net_rx_action()
-        LIST_HEAD(list);
-        list_splice_init(&sd->poll_list, &list)
-
-        napi_poll()
-          ixgb_clean_tx_irq(adapter); /* dma_unmap_page */
-          ixgb_clean_rx_irq(adapter, &work_done, budget);
-            netif_receive_skb(skb);
-
-          if (work_done < budget) {
-            napi_complete_done(napi, work_done);
-            if (!test_bit(__IXGB_DOWN, &adapter->flags))
-              ixgb_irq_enable(adapter); /* re-enable irq */
-                IXGB_WRITE_REG(&adapter->hw, IMC, val);
-          }
-
-/* mac layer */
-netif_receive_skb()
-  __netif_receive_skb_core()
-    /* 1. deliver ptype_all */
-    list_for_each_entry_rcu(ptype, &ptype_all, list) {
-        if (pt_prev)
-            deliver_skb(skb, pt_prev, orig_dev);
-    }
-
-    /* 2. vlan handle */
-    vlan_do_receive(&skb);
-
-    /* 3. bridge handle */
-    rx_handler = rcu_dereference(skb->dev->rx_handler); /* br_handle_frame */
-    rx_handler(&skb);
-
-    /* 4. deliver only when ptype match exactly */
-    deliver_ptype_list_skb(skb, &pt_prev, orig_dev, type, &ptype_base[ntohs(type) & PTYPE_HASH_MASK]);
-
-/* ip layer */
-ip_rcv()
-    NF_HOOK(NF_INET_PRE_ROUTING)                    /* 1. NF_INET_PRE_ROUTING */
-        ip_rcv_finish()
-            ip_rcv_finish_core()
-                ip_route_input_noref()              /* 2. route */
-            dst_input()
-                ip_local_deliver()
-                    ip_defrag()                     /* 3. defragment */
-                    NF_HOOK(NF_INET_LOCAL_IN)       /* 4. NF_INET_LOCAL_IN */
-                    ip_local_deliver_finish()
-                        inet_protos[protocol]->handler()
-                            net_protocol->handler()
-
-/* tcp layer */
-tcp_v4_rcv();
-  sk = __inet_lookup_skb();
-    __inet_lookup_established();
-    __inet_lookup_listener();
-
-process:
-  if (sk->sk_state == TCP_TIME_WAIT)
-    goto do_time_wait;
-
-  if (sk->sk_state == TCP_NEW_SYN_RECV) {
-    struct request_sock *req = inet_reqsk(sk);
-    sk = req->rsk_listener;
-
-    newsk = tcp_check_req();
-      /* 1. alloc sock and insert into ehash */
-      child = inet_csk(sk)->icsk_af_ops->syn_recv_sock();
-        tcp_v4_syn_recv_sock();
-          if (sk_acceptq_is_full());
-            goto drop;
-          newsk = tcp_create_openreq_child(sk, req, skb);
-            inet_csk_clone_lock();
-              struct proto *prot = READ_ONCE(sk->sk_prot);
-              newsk = sk_prot_alloc(prot, priority, sk->sk_family);
-                slab = prot->slab;
-                newsk = kmem_cache_alloc(slab, priority & ~__GFP_ZERO);
-              sock_copy(newsk, sk);
-              inet_sk_set_state(newsk, TCP_SYN_RECV);
-                sk->sk_state = TCP_SYN_RECV;
-            tcp_init_xmit_timers();
-
-          inet_ehash_nolisten();
-            inet_ehash_insert(); /* hash insert the new sk and remove the old request_sk */
-              inet_ehash_bucket(hashinfo, sk->sk_hash);
-              __sk_nulls_add_node_rcu();
-                hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
-              if (osk)
-                sk_nulls_del_node_init_rcu(osk);
-
-      inet_csk_complete_hashdance(child);
-        /* 2. remove from request queue */
-        inet_csk_reqsk_queue_drop();
-          reqsk_queue_unlink();
-            __sk_nulls_del_node_init_rcu(sk);
-              hlist_nulls_del_init_rcu(&sk->sk_nulls_node);
-          reqsk_queue_removed();
-            --icsk_accept_queue.yong;
-            --icsk_accept_queue.qlen;
-        reqsk_queue_removed();
-
-        /* 3. insert into accept queue */
-        inet_csk_reqsk_queue_add();
-          sk->rskq_accept_tail = reqst_sk;
-          sk_acceptq_added();
-            icsk_accept_queue->rskq_accept_tail = req;
-            sk_acceptq_added();
-              ++sk->sk_ack_backlog
-
-    tcp_child_process();
-      if (!sock_owned_by_user(child))
-        tcp_rcv_state_process(child, skb);
-        sk_listener->sk_data_ready() /* sock_def_readable, wakeup accept->inet_csk_wait_for_connect */
-      else
-        __sk_add_backlog(child, skb);
-  }
-
-  tcp_filter(sk, skb);
-  tcp_v4_fill_cb(skb, iph, th);
-
-  tcp_v4_do_rcv();
-    /* Fast Path */
-    if (sk->sk_state == TCP_ESTABLISHED) {
-      tcp_rcv_established();
-        trace_tcp_probe(sk, skb);
-        tcp_checksum_complete(skb);
-
-        tcp_data_queue(sk, skb);
-          /* 1. [seq = rcv_next < end_seq < win] ACK  */
-          /* 2. [seq < end_seq < rcv_next < win] DACK */
-          /* 3. [rcv_next < win < seq < end_seq] DROP */
-          /* 4. [seq < rcv_next < end_seq < win] OFO  */
-          /* 5. [rcv_next < seq < end_seq < win] DACK */
-        tcp_data_snd_check(sk);
-          tcp_check_space();
-            if (SOCK_QUEUE_SHRUNK && SOCK_NOSPACE) {
-              sk->sk_write_space(sk);
-                sock_def_write_space();
-            }
-        tcp_ack_snd_check(sk);
-        return 0;
-    }
-
-    /* Slow Path */
-    tcp_rcv_state_process();
-      if (sk->sk_state == TCP_LISTEN) {
-        icsk->icsk_af_ops->conn_request(); /* ipv4_specific.conn_request */
-          tcp_v4_conn_request();
-            tcp_conn_request();
-              /* 1. check reqsk queue and accept queue */
-              if (inet_csk_reqsk_queue_is_full(sk));
-                drop;
-              if (sk_acceptq_is_full(sk));
-                drop;
-
-              /* 2. allock reqsk and init */
-              inet_reqsk_alloc();
-                sk->sk_state = TCP_NEW_SYN_RECV;
-
-              af_ops->init_req(req, sk, skb);
-                tcp_v4_init_req();
-                  sk_rcv_saddr_set();
-                  sk_daddr_set();
-
-              /* 3. insert into ehash */
-              if (fastopen);
-                inet_csk_reqsk_queue_add();
-                  sk->rskq_accept_tail = reqst_sk;
-                  sk_acceptq_added();
-                    icsk_accept_queue->rskq_accept_tail = req;
-                    sk_acceptq_added();
-                      ++sk->sk_ack_backlog
-              else
-                inet_csk_reqsk_queue_hash_add();
-                  reqsk_queue_hash_req();
-                    timer_setup();
-                    mod_timer(&req->rsk_timer, jiffies + timeout);
-                    inet_ehash_insert();
-                      inet_ehash_bucket(hashinfo, sk->sk_hash);
-                      __sk_nulls_add_node_rcu();
-                        hlist_nulls_add_head_rcu(&sk->sk_nulls_node, list);
-                      if (osk);
-                        sk_nulls_del_node_init_rcu(osk);
-                  inet_csk_reqsk_queue_added();
-                    ++icsk_accept_queue->young;
-                    --icsk_accept_queue->qlen;
-
-              /* 4. send synack */
-              af_ops->send_synack();
-                tcp_v4_send_synack();
-        return 0;
-      } /* TCP_LISTEN */
-
-      if (sk->sk_state == TCP_SYN_SENT) {
-        tcp_rcv_synsent_state_process();
-          tcp_finish_connect(sk, skb);
-            tcp_set_state(sk, TCP_ESTABLISHED);
-            tcp_init_transfer();
-              tcp_init_buffer_space();
-              tcp_init_congestion_control(sk);
-            inet_csk_reset_keepalive_timer();
-
-          sk->sk_state_change();
-            /* wakup `connect` slept at inet_wait_for_connect */
-            sock_def_wakeup();
-          tcp_send_ack(sk);
-          tcp_set_state(sk, TCP_ESTABLISHED);
-
-        tcp_data_snd_check(sk);
-        return 0;
-      } /* TCP_SYN_SENT */
-
-      tcp_check_req(); /* tp->fastopen_rsk */
-
-      /* Step 1 2 3 4 */
-      tcp_validate_incoming();
-        /* RFC1323: H1. Apply PAWS check first. */
-        /* Step 1: check sequence number */
-        /* Step 2: check RST bit */
-        /* Step 3: check security and precedence [ignored] */
-        /* Step 4: Check for a SYN RFC 5961 4.2 : Send a challenge ack */
-
-      /* step 5: check the ACK field */
-      tcp_ack();
-        tcp_clean_rtx_queue();
-        tcp_set_xmit_timer();
-        tcp_cong_control();
-          if (tcp_in_cwnd_reduction(sk)) {
-            /* Reduce cwnd if state mandates */
-            tcp_cwnd_reduction(sk, acked_sacked, rs->losses, flag);
-          } else if (tcp_may_raise_cwnd(sk, flag)) {
-            /* Advance cwnd if state allows */
-            tcp_cong_avoid(sk, ack, acked_sacked);
-          }
-          tcp_update_pacing_rate(sk);
-        tcp_xmit_recovery();
-
-      if (sk->sk_state == TCP_SYN_RECV) {
-        tcp_init_transfer();
-          tcp_snd_cwnd_set();
-          tcp_init_buffer_space()
-          tcp_init_congestion_control();
-        tcp_set_state(sk, TCP_ESTABLISHED);
-
-        sk->sk_state_change();
-          sock_def_wakeup();
-            wake_up_interruptible_all();
-              __wake_up();
-                __wake_up_common_lock();
-                  __wake_up_common();
-      } /* TCP_SYN_RECV */
-
-      if (sk->sk_state == TCP_LAST_ACK)
-        tcp_done();
-
-      if (sk->sk_state == TCP_FIN_WAIT1)
-        tcp_set_state(sk, TCP_FIN_WAIT2);
-        sk->sk_shutdown |= SEND_SHUTDOWN;
-        tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
-        sk->sk_state_change(); /* Wake up lingering close() */
-        tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
-
-      if (sk->sk_state == TCP_FIN_WAIT2);
-        if (sk->sk_shutdown & RCV_SHUTDOWN);
-          tcp_reset();
-
-      if (sk->sk_state == TCP_ESTABLISHED);
-        tcp_data_queue();
-
-      if (sk->sk_state == TCP_CLOSING)
-        tcp_time_wait(sk, TCP_TIME_WAIT, 0);
-
-      /* Step 6: check the URG bit */
-      tcp_urg(sk, skb, th);
-
-  if (!sock_owned_by_user(sk)) {
-    ret = tcp_v4_do_rcv(sk, skb);
-  } else if (tcp_add_backlog(sk, skb)) {
-    goto discard_and_relse;
-  }
-
-do_time_wait:
-  if (sk->sk_state == TCP_TIME_WAIT) {
-    tcp_v4_fill_cb(skb, iph, th);
-    switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
-      case TCP_TW_SYN: {
-        /* reuse connection transition to SYN_RECV */
-        goto process;
-      }
-      case TCP_TW_ACK: {
-        /* send last ack */
-        tcp_v4_timewait_ack(sk, skb);
-        break;
-      }
-      case TCP_TW_RST: {
-        tcp_v4_send_reset(sk, skb);
-        inet_twsk_deschedule_put(inet_twsk(sk));
-        goto discard_it;
-      }
-      case TCP_TW_SUCCESS: {
-
-      }
-    }
-  }
-
-tcp_data_queue();
-  /* 1. ACK [seq = rcv_next < end_seq < win] */
-    tcp_queue_rcv();
-    tcp_event_data_recv();
-      tcp_grow_window();
-    tcp_ofo_queue(sk); /* put data from the out_of_order queue into the receive_queue */
-
-    kfree_skb_partial();
-    tcp_data_ready(); /* wakeup `sk_wait_data` */
-      sk->sk_data_ready();
-        sock_def_readable();
-
-  /* 2. DROP [seq < end_seq < rcv_next < win] */
-    tcp_dsack_set();
-    tcp_enter_quickack_mode();
-    inet_csk_schedule_ack(sk);
-    tcp_drop();
-
-  /* 3. DROP [rcv_next < win < seq < end_seq] */
-    tcp_enter_quickack_mode();
-    inet_csk_schedule_ack(sk);
-    tcp_drop();
-
-  /* 4. OFO [seq < rcv_next < end_seq < win] */
-    tcp_dsack_set();
-
-  /* 5. DACK [rcv_next < seq < end_seq < win] */
-    tcp_data_queue_ofo();
-
-/* vfs layer */
-SYSCALL_DEFINE3(read, fd, buf, count);
-  vfs_read(file, buf, counts);
-    file->f_op->read_iter(kio, iter);
-
-sock_read_iter()
-  sock_recvmsg()
-    sock->ops->recvmsg()
-      inet_recvmsg()
-        sk->sk_prot->recvmsg()
-          tcp_recvmsg()
-            skb_peek_tail(&sk->sk_receive_queue)
-            skb_queue_walk(&sk->sk_receive_queue, skb)
-              if (sk->sk_shutdown & RCV_SHUTDOWN)
-                break;
-              skb_copy_datagram_msg() /* copy data to user space */
-              tcp_rcv_space_adjust()  /* adjust receive buffer space */
-
-              sk_wait_data() /* waiting for data, waked up by `tcp_data_ready` */
-                sk_wait_event()
-                  wait_woken()
-                    schedule_timeout()
-                woken_wake_function()
-                  default_wake_function()
-                    try_to_wake_up()
-
-            tcp_cleanup_rbuf()
-
-            /* process backlog */
-            release_sock(sk)
-              sk_backlog_rcv()
-                sk->sk_backlog_rcv()
-                  tcp_v4_do_rcv()
-```
-* [try_to_wake_up](./linux-kernel.md#ttwu)
-* [NAPI description on Linux Foundation](https://wiki.linuxfoundation.org/networking/napi)
-
 # route
 <img src='../images/kernel/net-filter.png' style='max-height:850px'/>
 
@@ -9153,7 +9401,7 @@ sock_read_iter()
 
 <img src='../images/kernel/net-route.png' style='max-height:850px'/>
 
-```c++
+```c
 struct net {
   struct netns_ipv4    ipv4;
 };
@@ -9241,7 +9489,7 @@ struct fib_result {
 ```
 
 ## route out
-```C++
+```c
 struct rtable *ip_route_output_ports(
   struct net *net, struct flowi4 *fl4,
   struct sock *sk,
@@ -9495,7 +9743,7 @@ void rt_set_nexthop(struct rtable *rt, __be32 daddr,
 
 <img src='../images/kernel/net-forwarding-table.png' style='max-height:850px'/>
 
-```C++
+```c
 # Linux Server A
 default via 192.168.1.1 dev eth0
 192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.100 metric 100
@@ -9510,7 +9758,7 @@ default via 192.168.2.1 dev eth0
 ```
 
 ## route in
-```c++
+```c
 int ip_route_input_noref(struct sk_buff *skb, __be32 daddr, __be32 saddr,
        u8 tos, struct net_device *dev)
 {
@@ -9840,7 +10088,7 @@ void skb_dst_set(struct sk_buff *skb, struct dst_entry *dst)
 ```
 
 ## fib_lookup
-```c++
+```c
 /* FIB: Forwarding Information Base*/
 int fib_lookup(struct net *net, struct flowi4 *flp,
            struct fib_result *res, unsigned int flags)
@@ -10068,7 +10316,7 @@ found:
 ```
 
 ## rt_dst_alloc
-```C++
+```c
 struct rtable {
   struct dst_entry  dst;
   int               rt_genid;
@@ -10315,7 +10563,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
      Physical Network  (192.168.3.0/24)
 ```
 
-```c++
+```c
 struct net_bridge {
   struct list_head      port_list;
   struct net_device     *dev;
@@ -10354,7 +10602,7 @@ const struct net_device_ops br_netdev_ops = {
 ```
 
 ## br_add_bridge
-```c++
+```c
 int br_add_bridge(struct net *net, const char *name)
 {
   struct net_device *dev;
@@ -10374,7 +10622,7 @@ int br_add_bridge(struct net *net, const char *name)
 ```
 
 ## br_add_if
-```c++
+```c
 int br_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
   struct net_bridge *br = netdev_priv(dev);
@@ -10560,7 +10808,7 @@ int netdev_rx_handler_register(struct net_device *dev,
 ```
 
 ## br_handle_frame
-```c++
+```c
 rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 {
   struct net_bridge_port *p;
@@ -10775,7 +11023,7 @@ drop:
 ```
 
 ### br_forward
-```c++
+```c
 void br_forward(const struct net_bridge_port *to,
     struct sk_buff *skb, bool local_rcv, bool local_orig)
 {
@@ -10887,7 +11135,7 @@ drop:
 ```
 
 ### br_pass_frame_up
-```c++
+```c
 
 int br_pass_frame_up(struct sk_buff *skb)
 {
@@ -10925,7 +11173,7 @@ int br_netif_receive_skb(struct net *net, struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-```c++
+```c
 br_add_bridge()
     struct net_device* dev = alloc_netdev(sizeof(struct net_bridge));
     dev_net_set(dev, net);
@@ -10991,7 +11239,7 @@ br_handle_frame()
          Physical Network
 ```
 
-```c++
+```c
 static const struct net_device_ops veth_netdev_ops = {
   .ndo_init            = veth_dev_init,
   .ndo_open            = veth_open,
@@ -11026,7 +11274,7 @@ static LIST_HEAD(link_ops);
 ```
 
 ## veth_newlink
-```c++
+```c
 /* ip link add veth0 type veth peer name veth1 */
 int veth_newlink(struct net *src_net, struct net_device *dev,
       struct nlattr *tb[], struct nlattr *data[],
@@ -11135,7 +11383,7 @@ err_register_peer:
 ```
 
 ## veth_setup
-```c++
+```c
 void veth_setup(struct net_device *dev)
 {
   ether_setup(dev);
@@ -11166,7 +11414,7 @@ void veth_setup(struct net_device *dev)
 ```
 
 ## veth_xmit
-```c++
+```c
 int dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
    struct netdev_queue *txq)
 {
@@ -11333,7 +11581,7 @@ drop:
 
 # congestion control
 
-```c++
+```c
 [root@VM-16-17-centos ~]# cat /proc/sys/net/ipv4/tcp_congestion_control
 cubic
 ```
@@ -11405,7 +11653,7 @@ tcp_fastretrans_alert() is entered:
 
 * And the most logically complicated part of algorithm is undo heuristics. We detect false retransmits due to both too early fast retransmit (reordering) and underestimated RTO, analyzing timestamps and D-SACKs. When we detect that some segments were retransmitted by mistake and CWND reduction was wrong, we undo window reduction and abort recovery phase. This logic is hidden inside several functions named tcp_try_undo_<something>.
 
-```c++
+```c
 enum tcp_ca_state {
   TCP_CA_Open = 0,
 #define TCPF_CA_Open  (1<<TCP_CA_Open)
@@ -11433,7 +11681,7 @@ void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
 
 During the Recovery state, the size of the congestion window is reduced by one segment for every new acknowledgment, similar to the CWR state. This window reduction process terminates when the congestion window size equal to ssthresh, which is half of the window size when entering the Recovery state (sshresh = cwnd / 2). The congestion window does not increase during recovery, and the sender retransmits segments marked as lost, or marks forward transmission on new data according to the packet conservation principle. The sender remains in the Recovery state until all data segments being sent when entering the Recovery state are successfully acknowledged (snd_una > high_seq), after which the sender resumes the OPEN state, and the retransmission timeout may interrupt the Recovery state.
 
-```c++
+```c
 void tcp_enter_recovery(struct sock *sk, bool ece_ack)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -11476,7 +11724,7 @@ void tcp_init_cwnd_reduction(struct sock *sk)
 
 When receiving a congestion notification, the sender does not reduce the congestion window immediately, but reduces the congestion window by one segment for every new ACK until the size of the window is halved. The sender will not have significant retransmissions in the process of reducing the congestion window size.
 
-```c++
+```c
 void tcp_enter_cwr(struct sock *sk)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -11512,7 +11760,7 @@ void tcp_ecn_queue_cwr(struct tcp_sock *tp)
 ```
 
 ### TCP_CA_Loss
-```c++
+```c
 void tcp_enter_loss(struct sock *sk)
 {
   const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -11558,7 +11806,7 @@ void tcp_enter_loss(struct sock *sk)
 
 In this state, the congestion window is not adjusted, but each newly arrived segment triggers the sending of a new data segment. Therefore, TCP senders follow the packet conservation principle, which states that a new packet is only sent after an old packet has left the network.
 
-```c++
+```c
 void tcp_try_keep_open(struct sock *sk)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -11576,7 +11824,7 @@ void tcp_try_keep_open(struct sock *sk)
 
 ## ecn
 <img src='../images/kernel/net-ecn-ip.png' style='max-height:850px'/>
-```c++
+```c
 /* ECE: Echo of Congestion Encountered */
 enum {
   INET_ECN_NOT_ECT = 0, /* tos 00 - Non ECN-Capable Transport, Non-ECT */
@@ -11612,7 +11860,7 @@ int IP_ECN_set_ce(struct iphdr *iph)
 ```
 
 <img src='../images/kernel/net-ecn-tcp.png' style='max-height:850px'/>
-```c++
+```c
 /* tcp support */
 #define TCPHDR_FIN 0x01
 #define TCPHDR_SYN 0x02
@@ -11627,7 +11875,7 @@ int IP_ECN_set_ce(struct iphdr *iph)
 ```
 
 ## tcp_congestion_ops
-```c++
+```c
 struct tcp_congestion_ops {
   struct list_head  list;
   u32 key;
@@ -11715,7 +11963,7 @@ struct bictcp {
 ```
 
 ### bictcp_init
-```c++
+```c
 void bictcp_init(struct sock *sk)
 {
   struct bictcp *ca = inet_csk_ca(sk);
@@ -11757,7 +12005,7 @@ void bictcp_hystart_reset(struct sock *sk)
 ```
 
 ### ssthresh
-```c++
+```c
 
 void tcp_init_cwnd_reduction(struct sock *sk)
 {
@@ -11795,7 +12043,7 @@ u32 bictcp_recalc_ssthresh(struct sock *sk)
 ```
 
 ### cong_avoid
-```c++
+```c
 void bictcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -11950,7 +12198,7 @@ void tcp_cong_avoid_ai(struct tcp_sock *tp, u32 w, u32 acked)
 }
 ```
 
-```c++
+```c
 sk->sk_prot->init(sk)
   tcp_init_sock(sk);
     tcp_assign_congestion_control(sk);
@@ -11994,7 +12242,7 @@ void tcp_reno_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 }
 ```
 
-```c++
+```c
 tcp_rcv_state_process();
   if (!inet_csk(sk)->icsk_ca_ops->cong_control)
     tcp_update_pacing_rate(sk);
@@ -12033,7 +12281,7 @@ void tcp_update_pacing_rate(struct sock *sk)
 ```
 
 ### cwnd_event
-```c++
+```c
 void tcp_data_queue(struct sock *sk, struct sk_buff *skb)
 {
   if (skb->len)
@@ -12124,7 +12372,7 @@ void bictcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 ```
 
 ### pkts_acked
-```c++
+```c
 int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 {
     tcp_clean_rtx_queue(sk, prior_fack, prior_snd_una, &sack_state);
@@ -12206,7 +12454,7 @@ void hystart_update(struct sock *sk, u32 delay)
 ```
 
 ### hystart
-```c++
+```c
 void bictcp_hystart_reset(struct sock *sk)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -12220,7 +12468,7 @@ void bictcp_hystart_reset(struct sock *sk)
 ```
 
 ### set_state
-```c++
+```c
 void tcp_set_ca_state(struct sock *sk, const u8 ca_state)
 {
   struct inet_connection_sock *icsk = inet_csk(sk);
@@ -12240,7 +12488,7 @@ void bictcp_state(struct sock *sk, u8 new_state)
 ```
 
 ## tcp_ack
-```c++
+```c
 /* check the ACK field */
 int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 {
@@ -12583,7 +12831,7 @@ int tcp_clean_rtx_queue(struct sock *sk, u32 prior_fack,
 ```
 
 ## tcp_fastretrans_alert
-```c++
+```c
 /* Process an event, which can update packets-in-flight not trivially.
  * Main goal of this function is to calculate new estimate for left_out,
  * taking into account both packets sitting in receiver's buffer and
@@ -12867,7 +13115,7 @@ void tcp_skb_mark_lost(struct tcp_sock *tp, struct sk_buff *skb)
 ```
 
 ## tcp_cong_control
-```c++
+```c
 int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)
 {
   tcp_cong_control(sk, ack, delivered, flag, sack_state.rate);
@@ -12935,13 +13183,13 @@ bool tcp_may_raise_cwnd(const struct sock *sk, const int flag)
 ```
 
 ## tcp_slow_start
-```c++
+```c
 tcp_cong_avoid();
     bictcp_cong_avoid();
         tcp_slow_start();
 ```
 
-```c++
+```c
 bool tcp_in_slow_start(const struct tcp_sock *tp)
 {
   return tp->snd_cwnd < tp->snd_ssthresh;
@@ -12961,7 +13209,7 @@ u32 tcp_slow_start(struct tcp_sock *tp, u32 acked)
 
 ## tcp_cong_avoid
 
-```c++
+```c
 void tcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
   const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -12974,7 +13222,7 @@ void tcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 [:point_right: bictcp_cong_avoid](#cong_avoid)
 
 ## tcp_xmit_recovery
-```c++
+```c
 /* tcp_cong_control has updated the cwnd already. So if we're in
  * loss recovery then now we do any new sends (for FRTO) or
  * retransmits (for CA_Loss or CA_recovery) that make sense. */
@@ -13067,7 +13315,7 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 ```
 
 ## tcp_cwnd_test
-```c++
+```c
 /* Can at least one segment of SKB be sent right now, according to the
  * congestion window rules?  If so, return how many segments are allowed. */
 unsigned int tcp_cwnd_test(const struct tcp_sock *tp,
@@ -13102,7 +13350,7 @@ unsigned int tcp_packets_in_flight(const struct tcp_sock *tp)
 ```
 
 ## tcp_cwnd_validate
-```c++
+```c
 void tcp_cwnd_validate(struct sock *sk, bool is_cwnd_limited)
 {
   const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
@@ -13147,7 +13395,7 @@ void tcp_cwnd_validate(struct sock *sk, bool is_cwnd_limited)
 }
 ```
 
-```c++
+```c
 tcp_ack();
     int rexmit = REXMIT_NONE;
 
@@ -13256,7 +13504,7 @@ tcp_ack();
 # retransmit
 ## timer_lifecycle
 ### timer_init
-```c++
+```c
 /* sk->sk_prot->init(sk) */
 int tcp_v4_init_sock(struct sock *sk)
 {
@@ -13347,7 +13595,7 @@ void inet_csk_init_xmit_timers(struct sock *sk,
 ```
 
 ### timer_reset
-```c++
+```c
 /*
 1. tcp_event_new_data_sent
 2. case TCP_SYN_RECV
@@ -13415,7 +13663,7 @@ void sk_reset_timer(struct sock *sk, struct timer_list* timer,
 ```
 
 ### timer_clear
-```c++
+```c
 void inet_csk_clear_xmit_timer(struct sock *sk, const int what)
 {
   struct inet_connection_sock *icsk = inet_csk(sk);
@@ -13450,7 +13698,7 @@ void sk_stop_timer(struct sock *sk, struct timer_list* timer)
 ```
 
 ## tcp_write_timer
-```c++
+```c
 void tcp_write_timer(struct timer_list *t)
 {
   struct inet_connection_sock *icsk = from_timer(icsk, t, icsk_retransmit_timer);
@@ -13678,7 +13926,7 @@ int tcp_write_timeout(struct sock *sk)
 ```
 
 ### tcp_retransmit_skb
-```c++
+```c
 int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -13802,7 +14050,7 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 ```
 
 ## tcp_delack_timer
-```c++
+```c
 void tcp_delack_timer(struct timer_list *t)
 {
   struct inet_connection_sock *icsk = from_timer(icsk, t, icsk_delack_timer);
@@ -13862,18 +14110,18 @@ int inet_csk_ack_scheduled(const struct sock *sk)
 ```
 
 ## tcp_keepalive_timer
-```c++
+```c
 ```
 
 ## reqsk_timer_handler
-```c++
+```c
 ```
 
 ## fast retransmit
 
 # tcpdump
 ## register_prot_hook
-```c++
+```c
 /* strace tcpdump -i eth0 */
 /* pcap_can_set_rfmon_linux */
 socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))
@@ -14016,7 +14264,7 @@ struct list_head *ptype_head(const struct packet_type *pt)
 ```
 
 ## tcpdump_rcv
-```c++
+```c
 /* net/core/dev.c */
 int __netif_receive_skb_core(struct sk_buff *skb, bool pfmemalloc)
 {
@@ -14183,7 +14431,7 @@ u32 bpf_prog_run_clear_cb(const struct bpf_prog *prog, struct sk_buff *skb)
 ```
 
 ## tcpdump_snd
-```c++
+```c
 int xmit_one(struct sk_buff *skb, struct net_device *dev,
         struct netdev_queue *txq, bool more)
 {
@@ -14260,7 +14508,7 @@ out_unlock:
 }
 ```
 
-```c++
+```c
 socket();
   sock_create();
     _sock_create();
@@ -14307,7 +14555,7 @@ xmit_one()
 # ACK, SYN, FIN
 
 ## tcp_send_ack
-```c++
+```c
 void tcp_send_ack(struct sock *sk)
 {
   __tcp_send_ack(sk, tcp_sk(sk)->rcv_nxt);
@@ -14362,7 +14610,7 @@ void tcp_init_nondata_skb(struct sk_buff *skb, u32 seq, u8 flags)
 ```
 
 ## tcp_send_delayed_ack
-```c++
+```c
 tcp_v4_do_rcv();
   tcp_rcv_established();
     __tcp_ack_snd_check();
@@ -14372,7 +14620,7 @@ tcp_v4_do_rcv();
 ## tcp_send_synack
 
 ## tcp_fin
-```c++
+```c
 /* Process the FIN bit. This now behaves as it is supposed to work
  *  and the FIN takes effect when it is validly part of sequence
  *  space. Not before when we get holes.
@@ -14515,7 +14763,7 @@ void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
 ```
 
 ## tcp_send_fin
-```c++
+```c
 void tcp_send_fin(struct sock *sk)
 {
     struct sk_buff *skb, *tskb = tcp_write_queue_tail(sk);
@@ -14581,7 +14829,7 @@ void __tcp_push_pending_frames(
 
 <img src='../images/kernel/net-epoll-thread-model.png' style='max-height:850px'/>
 
-```c++
+```c
 typedef union epoll_data {
   void     *ptr;
   int      fd;
@@ -14652,8 +14900,231 @@ struct eventpoll {
 };
 ```
 
+## call-graph-epoll
+
+```c
+/* epoll_create */
+epoll_create() {
+    do_epoll_create() {
+        ep_alloc();
+        get_unused_fd_flags();
+        anon_inode_getfile();
+        fd_install();
+    }
+}
+
+/* epoll_ctl - EPOLL_CTL_ADD */
+ep_insert() {
+    struct ep_pqueue epq;
+    kmem_cache_alloc(epi_cache);
+    init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
+    revents = ep_item_poll(epi, &pt, 1) {
+        if (!is_file_epoll(epi->ffd.file)) { /* return f->f_op == &eventpoll_fops; */
+            vfs_poll(file,  &epq.pt, 1) {
+                file->f_op->poll() {
+                    sock_poll(struct file *file, poll_table *wait) {
+                        sock->ops->poll(); /* tcp_poll() */
+                        /* 1. register observer
+                         * pass _qproc NULL if only polling */
+                        sock_poll_wait() {
+                            if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
+                                poll_wait(filp, &sock->wq->wait, p) {
+                                    if (p && p->_qproc && wait_address) {
+                                        p->_qproc() {
+                                            init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
+                                            add_wait_queue(whead, &pwq->wait);
+                                        }
+                                    }
+                                }
+                        }
+                        /* 2. poll listen socket */
+                        if (state == TCP_LISTEN) {
+                            return inet_csk_listen_poll(sk) {
+                                return !reqsk_queue_empty(&inet_csk(sk)->icsk_accept_queue)
+                                    ? (EPOLLIN | EPOLLRDNORM) : 0;
+                            }
+                        }
+
+                        /* 3. poll ready events */
+                        if (tcp_stream_is_readable(tp, target, sk))
+                            mask |= EPOLLIN | EPOLLRDNORM;
+                        if (sk_stream_is_writeable(sk))
+                            mask |= EPOLLOUT | EPOLLWRNORM;
+                        return mask;
+                    }
+                    eventfd_poll(struct file *file, poll_table *wait) {
+                        poll_wait(struct file * filp, wait_queue_head_t * queue, poll_table *pt)
+                            pt->_qproc(filep, queue, pt) {
+                                /* ep_ptable_queue_proc,
+                                 * virqfd_ptable_queue_proc,
+                                 * irqfd_ptable_queue_proc,
+                                 * memcg_event_ptable_queue_proc */
+                            }
+                        if (count > 0)
+                            events |= EPOLLIN;
+                        if (count == ULLONG_MAX)
+                            events |= EPOLLERR;
+                        if (ULLONG_MAX - 1 > count)
+                            events |= EPOLLOUT;
+
+                        return events;
+                    }
+                }
+            }
+        } else {
+            poll_wait(epi->ffd.file, &ep->poll_wait, pt);
+            return ep_scan_ready_list(ep_read_events_proc);
+        }
+    }
+
+    list_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);
+    ep_rbtree_insert(ep, epi);
+
+    if (revents && !ep_is_linked(epi)) {
+        wake_up_locked(&ep->wq);
+        ep_poll_safewake(&ep->poll_wait);
+    }
+}
+
+/* epoll_ctl - EPOLL_CTL_DEL */
+ep_remove() {
+
+}
+
+/* epoll_ctl - EPOLL_CTL_MOD */
+ep_modify();
+    poll_table pt;
+    init_poll_funcptr(&pt, NULL);
+    if (ep_item_poll(epi, &pt, 1)) {
+        spin_lock_irq(&ep->wq.lock);
+        if (!ep_is_linked(epi)) {
+            list_add_tail(&epi->rdllink, &ep->rdllist);
+            ep_pm_stay_awake(epi);
+
+            if (waitqueue_active(&ep->wq))
+                wake_up_locked(&ep->wq);
+            if (waitqueue_active(&ep->poll_wait))
+                pwake++;
+        }
+        spin_unlock_irq(&ep->wq.lock);
+    }
+
+/* epoll_wait */
+epoll_wait() {
+    do_epoll_wait() {
+        ep_poll() {
+            /* 0. wait for ready events */
+            init_waitqueue_entry(&wait, default_wake_function);
+            __add_wait_queue_exclusive(&ep->wq, &wait);
+                wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
+                __add_wait_queue(wq_head, wq_entry);
+            while (!ep_events_available(ep)) {
+                schedule_hrtimeout_range();
+                    __remove_wait_queue(&ep->wq, &wait);
+            }
+
+            ep_send_events() {
+                /* 1. send ready events to user space */
+                for (ep->rdlist) {
+                    init_poll_funcptr(&pt, NULL);
+                    revents = ep_item_poll(epi, &pt, 1) {
+                        if (tcp_stream_is_readable(tp, target, sk))
+                            revents |= EPOLLIN | EPOLLRDNORM;
+                        if (sk_stream_is_writeable(sk))
+                            revents |= EPOLLOUT | EPOLLWRNORM;
+                        return revents & epi->event.events;
+                    }
+
+                    if (revents) {
+                        if (__put_user(revents, &uevent->events));
+                            list_add(&epi->rdllink, head);
+
+                        if (epi->event.events & EPOLLONESHOT)
+                            epi->event.events &= EP_PRIVATE_BITS;
+                        else if (!(epi->event.events & EPOLLET)) {
+                            list_add_tail(&epi->rdllink, &ep->rdllist);
+                            ep_pm_stay_awake(epi);
+                        }
+                    }
+                }
+
+                /* 2. link overflow events */
+                for (ep->ovflist) {
+                    if (!ep_is_linked(epi)) {
+                        list_add_tail(&epi->rdllink, &ep->rdllist);
+                    }
+                }
+
+                /* 3. wake up observers */
+                if (!list_empty(&ep->rdllist)) {
+                    wake_up_locked(&ep->wq);
+                    ep_poll_safewake(&ep->poll_wait);
+                        __wake_up_common_lock();
+                }
+            }
+        }
+    }
+}
+
+/* wake epoll_wait */
+tcp_data_ready() {
+    sk->sk_data_ready(sk) {
+        sock_def_readable() {
+            if (skwq_has_sleeper(wq)) {
+                wake_up_interruptible_sync_poll() {
+                    __wake_up_common() {
+
+                        list_for_each_entry_safe_from(curr, next, &wq_head->head) {
+                            ret = curr->func(curr, mode, wake_flags, key) {
+                                ep_poll_callback() {
+                                    /* 1. check EPOLLONCESHOT */
+                                    if (!(epi->event.events & ~EP_PRIVATE_BITS))
+                                        return;
+                                    /* 2. check interested events */
+                                    if (!(pollflags & epi->event.events))
+                                        return;
+                                    /* 3. add to epoll ready list */
+                                    if (!ep_is_linked(epi))
+                                        list_add_tail(&epi->rdllink, &ep->rdllist);
+                                    /* 4. wake up */
+                                    wake_up_locked(&ep->wq);
+                                        __wake_up_common();
+                                    ep_poll_safewake(&ep->poll_wait);
+                                        wake_up_poll();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+tcp_rcv_state_process() {
+    tcp_data_snd_check() {
+        tcp_check_space() {
+            if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
+                /* sock tranfroms from non-writale(SOCK_NOSPACE) to writable(SOCK_QUEUE_SHRUNK) */
+                if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
+                    tcp_new_space(sk) {
+                        if (tcp_should_expand_sndbuf(sk)) {
+                            tcp_sndbuf_expand(sk);
+                            tp->snd_cwnd_stamp = tcp_jiffies32;
+                        }
+
+                        sk->sk_write_space(sk); /* sock_def_write_space */
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
 ## epoll_create
-```C++
+
+```c
 SYSCALL_DEFINE1(epoll_create, int, size)
 {
   if (size <= 0)
@@ -14717,7 +15188,7 @@ free_uid:
 ```
 
 ## epoll_ctl
-```C++
+```c
 SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
     struct epoll_event __user *, event)
 {
@@ -14819,7 +15290,7 @@ error_return:
 ```
 
 ### ep_insert
-```C++
+```c
 struct ep_pqueue {
   poll_table      pt;
   struct epitem   *epi;
@@ -14918,7 +15389,7 @@ int ep_insert(
 
 #### ep_item_poll
 
-```c++
+```c
 __poll_t ep_item_poll(const struct epitem *epi, poll_table *pt, int depth)
 {
   struct file *file = epi->ffd.file;
@@ -15091,7 +15562,7 @@ struct wait_queue_entry {
 ```
 
 ### ep_modify
-```C++
+```c
 int ep_modify(struct eventpoll *ep, struct epitem *epi,
          const struct epoll_event *event)
 {
@@ -15135,12 +15606,12 @@ int ep_modify(struct eventpoll *ep, struct epitem *epi,
 ```
 
 ### ep_delete
-```C++
+```c
 
 ```
 
 ## epoll_wait
-```C++
+```c
 SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
     int, maxevents, int, timeout)
 {
@@ -15257,6 +15728,9 @@ int ep_send_events(struct eventpoll *ep,
   if (fatal_signal_pending(current))
     return -EINTR;
 
+  /* ep_item_poll will add epi into ep wait queue if pt has _pqproc,
+   * since epi has already added in ep_insert, we just check ready events
+   * here, so set _qproc to NULL */
   init_poll_funcptr(&pt, NULL);
 
   mutex_lock(&ep->mtx);
@@ -15337,7 +15811,7 @@ void ep_done_scan(struct eventpoll *ep, struct list_head *txlist)
 ```
 
 ## sock_def_readable
-```C++
+```c
 /* tcp_rcv_established -> tcp_data_queue -> */
 void tcp_data_ready(struct sock *sk)
 {
@@ -15468,7 +15942,7 @@ void __wake_up_locked(
 * [__wake_up_common](./linux-kernel.md#wake_up)
 
 ## sock_def_write_space
-```c++
+```c
 /* tcp_rcv_established -> */
 /* tcp_rcv_state_process -> */
 void tcp_data_snd_check(struct sock *sk)
@@ -15531,7 +16005,7 @@ void sock_def_write_space(struct sock *sk)
 ```
 
 ## evetfd
-```c++
+```c
 static const struct file_operations eventfd_fops = {
   .release    = eventfd_release,
   .poll       = eventfd_poll,
@@ -15541,7 +16015,7 @@ static const struct file_operations eventfd_fops = {
 };
 ```
 
-```c++
+```c
 SYSCALL_DEFINE2(eventfd2, unsigned int, count, int, flags)
 {
   return do_eventfd(count, flags);
@@ -15719,7 +16193,7 @@ static ssize_t eventfd_write(struct file *file, const char __user *buf, size_t c
 ```
 
 ## eventpoll_init
-```c++
+```c
 int __init eventpoll_init(void)
 {
   struct sysinfo si;
@@ -15744,192 +16218,6 @@ int __init eventpoll_init(void)
 }
 ```
 
-## call-graph-epoll
-```c++
-/* epoll_create */
-epoll_create();
-    do_epoll_create();
-        ep_alloc();
-        get_unused_fd_flags();
-        anon_inode_getfile();
-        fd_install();
-
-/* epoll_ctl */
-epoll_ctl();
-    ep_insert();
-        struct ep_pqueue epq;
-        kmem_cache_alloc(epi_cache);
-        init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
-        revents = ep_item_poll(epi, &pt, 1);
-            if (!is_file_epoll(epi->ffd.file)) /* return f->f_op == &eventpoll_fops; */
-                vfs_poll(file,  &epq.pt, 1);
-                    file->f_op->poll();
-                        {
-                          sock_poll(struct file *file, poll_table *wait)
-                            sock->ops->poll(); /* tcp_poll() */
-                                /* 1. register observer */
-                                sock_poll_wait();
-                                    if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
-                                        poll_wait(filp, &sock->wq->wait, p);
-                                            p->_qproc();
-                                                init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
-                                                add_wait_queue(whead, &pwq->wait);
-
-                                /* 2. poll listen socket */
-                                if (state == TCP_LISTEN)
-                                    return inet_csk_listen_poll(sk) {
-                                        return !reqsk_queue_empty(&inet_csk(sk)->icsk_accept_queue)
-                                          ? (EPOLLIN | EPOLLRDNORM) : 0;
-                                    }
-
-                                /* 3. poll ready events */
-                                if (tcp_stream_is_readable(tp, target, sk))
-                                    mask |= EPOLLIN | EPOLLRDNORM;
-                                if (sk_stream_is_writeable(sk))
-                                    mask |= EPOLLOUT | EPOLLWRNORM;
-                                return mask;
-                        }, {
-                          eventfd_poll(struct file *file, poll_table *wait)
-                              poll_wait(struct file * filp, wait_queue_head_t * queue, poll_table *pt)
-                                  pt->_qproc(filep, queue, pt);
-                                      /* ep_ptable_queue_proc,
-                                      * virqfd_ptable_queue_proc,
-                                      * irqfd_ptable_queue_proc,
-                                      * memcg_event_ptable_queue_proc */
-                              if (count > 0)
-                                  events |= EPOLLIN;
-                              if (count == ULLONG_MAX)
-                                  events |= EPOLLERR;
-                              if (ULLONG_MAX - 1 > count)
-                                  events |= EPOLLOUT;
-
-                              return events;
-                        }
-
-            else
-                poll_wait(epi->ffd.file, &ep->poll_wait, pt);
-                return ep_scan_ready_list(ep_read_events_proc);
-
-        list_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);
-        ep_rbtree_insert(ep, epi);
-
-        if (revents && !ep_is_linked(epi))
-            wake_up_locked(&ep->wq);
-            ep_poll_safewake(&ep->poll_wait);
-
-ep_remove();
-
-ep_modify();
-    poll_table pt;
-    init_poll_funcptr(&pt, NULL);
-    if (ep_item_poll(epi, &pt, 1)) {
-        spin_lock_irq(&ep->wq.lock);
-        if (!ep_is_linked(epi)) {
-            list_add_tail(&epi->rdllink, &ep->rdllist);
-            ep_pm_stay_awake(epi);
-
-            if (waitqueue_active(&ep->wq))
-                wake_up_locked(&ep->wq);
-            if (waitqueue_active(&ep->poll_wait))
-                pwake++;
-        }
-        spin_unlock_irq(&ep->wq.lock);
-    }
-
-/* epoll_wait */
-epoll_wait();
-    do_epoll_wait();
-        ep_poll();
-            /* 0. wait for ready events */
-            init_waitqueue_entry(&wait, default_wake_function);
-            __add_wait_queue_exclusive(&ep->wq, &wait);
-                wq_entry->flags |= WQ_FLAG_EXCLUSIVE;
-                __add_wait_queue(wq_head, wq_entry);
-            while (!ep_events_available(ep))
-                schedule_hrtimeout_range();
-                    __remove_wait_queue(&ep->wq, &wait);
-
-            ep_send_events();
-                /* 1. send ready events to user space */
-                for (ep->rdlist) {
-                    revents = ep_item_poll(epi, &pt, 1);
-                        if (tcp_stream_is_readable(tp, target, sk))
-                            revents |= EPOLLIN | EPOLLRDNORM;
-                        if (sk_stream_is_writeable(sk))
-                            revents |= EPOLLOUT | EPOLLWRNORM;
-                        return revents & epi->event.events;
-
-                    if (revents) {
-                        if (__put_user(revents, &uevent->events));
-                            list_add(&epi->rdllink, head);
-
-                        if (epi->event.events & EPOLLONESHOT)
-                            epi->event.events &= EP_PRIVATE_BITS;
-                        else if (!(epi->event.events & EPOLLET)) {
-                            list_add_tail(&epi->rdllink, &ep->rdllist);
-                            ep_pm_stay_awake(epi);
-                        }
-                    }
-                }
-
-                /* 2. link overflow events */
-                for (ep->ovflist) {
-                    if (!ep_is_linked(epi)) {
-                        list_add_tail(&epi->rdllink, &ep->rdllist);
-                    }
-                }
-
-                /* 3. wake up observers */
-                if (!list_empty(&ep->rdllist)) {
-                    wake_up_locked(&ep->wq);
-                    ep_poll_safewake(&ep->poll_wait);
-                        __wake_up_common_lock();
-                }
-
-/* wake epoll_wait */
-tcp_data_ready();
-    sk->sk_data_ready(sk);
-        sock_def_readable();
-            if (skwq_has_sleeper(wq));
-                wake_up_interruptible_sync_poll();
-                    __wake_up_common();
-
-                        list_for_each_entry_safe_from(curr, next, &wq_head->head) {
-                            ret = curr->func(curr, mode, wake_flags, key);
-                                ep_poll_callback();
-                                    /* 1. check EPOLLONCESHOT */
-                                    if (!(epi->event.events & ~EP_PRIVATE_BITS))
-                                        return;
-                                    /* 2. check intrested events */
-                                    if (!(pollflags & epi->event.events))
-                                        return;
-                                    /* 3. add to epoll ready list */
-                                    if (!ep_is_linked(epi))
-                                        list_add_tail(&epi->rdllink, &ep->rdllist);
-                                    /* 4. wake up */
-                                    wake_up_locked(&ep->wq);
-                                        __wake_up_common();
-                                    ep_poll_safewake(&ep->poll_wait);
-                                        wake_up_poll();
-                        }
-
-tcp_rcv_state_process();
-    tcp_data_snd_check();
-        tcp_check_space();
-            if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
-                /* sock tranfroms from non-writale(SOCK_NOSPACE) to writable(SOCK_QUEUE_SHRUNK) */
-                if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
-                    tcp_new_space(sk);
-                        if (tcp_should_expand_sndbuf(sk)) {
-                            tcp_sndbuf_expand(sk);
-                            tp->snd_cwnd_stamp = tcp_jiffies32;
-                        }
-
-                        sk->sk_write_space(sk); /* sock_def_write_space */
-                }
-            }
-```
-
 ## Reference:
 * [Segmentation Offloads](https://www.kernel.org/doc/html/latest/networking/segmentation-offloads.html)
 * Epoll is fundamentally broken [:link: Part 1 ](https://idea.popcount.org/2017-02-20-epoll-is-fundamentally-broken-12) [:link: Part 2 ](https://idea.popcount.org/2017-03-20-epoll-is-fundamentally-broken-22)
@@ -15947,7 +16235,7 @@ tcp_rcv_state_process();
 1. Trie tree implementaion to in FIB
 
 # inet_init
-```c++
+```c
 /* include/linux/init.h */
 #define ___define_initcall(fn, id, __sec) \
   static initcall_t __initcall_##fn##id __used \
@@ -16240,7 +16528,7 @@ fail:
 }
 ```
 
-```c++
+```c
 inet_init()
     proto_register(&tcp_prot, 1);
     sock_register(&inet_family_ops);
@@ -16274,7 +16562,7 @@ inet_init()
 ```
 
 # net_dev_init
-```c++
+```c
 static int __init net_dev_init(void)
 {
   int i, rc = -ENOMEM;
