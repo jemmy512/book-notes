@@ -10525,6 +10525,7 @@ git send-email \
 * `-<n>` 最近的n次commit都分别打成patch
 * `--cover-latter` 为最近n次提交的patch生成一个 [PATCH 0/n] 的介绍
 * `--annotate` 回复代码 comment
+* `--subject-prefix="PATCH <MOD NAME>"`
 * `--in-reply-to` message id 可以在 https://lore.kernel.org/all/ 根据patch名字找到
 
 # Q&A
