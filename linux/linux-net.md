@@ -137,6 +137,15 @@
 * [Linux Kernel TCP/IP Stack :cn:](https://mp.weixin.qq.com/s/EAEzLbsRIWyAv2x8tR3gNA)
 * [十年码农内功 - 网络收发包详细流程图](https://mp.weixin.qq.com/s/JXYNQlGffSgwmQfxIi0ryQ)
 * [The TTY demystified](http://www.linusakesson.net/programming/tty/index.php)
+* [NAT - Network Address Translation](https://www.karlrupp.net/en/computer/nat_tutorial)
+* [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
+* [Introduction to modern network load balancing and proxying](https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236)
+* [[译] [论文] BBR：基于拥塞（而非丢包）的拥塞控制（ACM, 2017）](http://arthurchiao.art/blog/bbr-paper-zh/)
+* [Linux 网络栈原理、监控与调优：前言（2022）](http://arthurchiao.art/blog/linux-net-stack-zh/)
+    * [Linux 网络栈接收数据（RX）：配置调优（2022）](http://arthurchiao.art/blog/linux-net-stack-tuning-rx-zh/)
+    * [Linux 网络栈接收数据（RX）：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-net-stack-implementation-rx-zh/)
+    * [Linux 中断（IRQ/softirq）基础：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
+    * []()
 
 <img src='../images/kernel/kernel-structual.svg' style='max-height:850px'/>
 

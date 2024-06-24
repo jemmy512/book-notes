@@ -576,6 +576,8 @@ bringup_cpu() {
 
 # syscall
 
+* [The Definitive Guide to Linux System Calls](https://blog.packagecloud.io/the-definitive-guide-to-linux-system-calls/)
+
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
 ```c
@@ -12388,6 +12390,7 @@ sched_rt_runtime_exceeded(rt_rq) {
 
 # cgroup
 
+* [Control Group v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
 * [LWN - Understanding the new control groups API](https://lwn.net/Articles/679786/)
 * [开发内功修炼 - cgroup](https://mp.weixin.qq.com/s/rUQLM8WfjMqa__Nvhjhmxw)
 * [奇小葩 - linux cgroup](https://blog.csdn.net/u012489236/category_11288796.html)
@@ -12395,6 +12398,7 @@ sched_rt_runtime_exceeded(rt_rq) {
 * [Docker 背后的内核知识 - cgroups 资源限制](https://www.infoq.cn/news/docker-kernel-knowledge-cgroups-resource-isolation)
 * [Coolshell - DOCKER基础技术：LINUX CGROUP](https://coolshell.cn/articles/17049.html)
 * [Docker底层原理：Cgroup V2的使用](https://blog.csdn.net/qq_67733273/article/details/134109156)
+* [k8s 基于 cgroup 的资源限额（capacity enforcement）：模型设计与代码实现（2023）](https://arthurchiao.art/blog/k8s-cgroup-zh/)
 
 ![](../images/kernel/cgroup-arch.png)
 

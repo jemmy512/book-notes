@@ -45,6 +45,11 @@
     * [blk_plug](#blk_plug)
     * [call graph](#call-graph-io)
 
+* [[译] Linux 异步 I/O 框架 io_uring：基本原理、程序示例与性能压测（2020）](http://arthurchiao.art/blog/intro-to-io-uring-zh/)
+    * [An Introduction to the io_uring Asynchronous I/O Framework, Oracle, 2020](https://medium.com/oracledevs/an-introduction-to-the-io-uring-asynchronous-i-o-framework-fad002d7dfc1)
+    * [How io_uring and eBPF Will Revolutionize Programming in Linux, ScyllaDB, 2020](https://thenewstack.io/how-io_uring-and-ebpf-will-revolutionize-programming-in-linux)
+
+
 <img src='../images/kernel/kernel-structual.svg'/>
 
 ---
