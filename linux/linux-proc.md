@@ -115,7 +115,14 @@
 * [kthreadd](#kthreadd)
 
 * [cmwq](#cmwq)
+    * [workqueue_init](#workqueue_init)
+    * [alloc_workqueue](#alloc_workqueue)
+    * [alloc_unbound_pwq](#alloc_unbound_pwq)
+    * [create_worker](#create_worker)
+    * [worker_thread](#worker_thread)
+    * [queue_work](#queue_work)
     * [wq-struct](#wq-struct)
+
 
 * [task_group](#task_group)
     * [sched_create_group](#sched_create_group)
@@ -893,6 +900,7 @@ export LD_LIBRARY_PATH=
 
 ![](../images/kernel/proc-sched-class.png)
 
+* [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 * [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
 * [Kernel Index Sched - LWN](https://lwn.net/Kernel/Index/#Scheduler)
     * [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
@@ -962,6 +970,7 @@ export LD_LIBRARY_PATH=
         * **normal_prio**: indicates priority of a task without any temporary priority boosting from the kernel side. For normal tasks it is the same as static_prio and for RT tasks it is directly related to rt_priority
             * In absence of normal_prio, children of a priority boosted task will get boosted priority as well and this will cause CPU starvation for other tasks. To avoid such a situation, the kernel maintains nomral_prio of a task. Forked tasks usually get their effective prio set to normal_prio of the parent and hence don’t get boosted priority.
         * **prio**: is the effective priority of a task and is used in all scheduling related decision makings.
+
 ```c
 /* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
@@ -1713,13 +1722,14 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
     enqueue_rt_entity(rt_se, flags) {
         update_stats_enqueue_rt(rt_rq_of_se(rt_se), rt_se, flags);
 
+/* 1. dequeue rt stack */
         /* Because the prio of an upper entry depends on the lower
          * entries, we must remove entries top - down. */
         dequeue_rt_stack(rt_se, flags);
 
         for_each_sched_rt_entity(rt_se) {
             __enqueue_rt_entity(rt_se, flags) {
-/* 1. insert into list */
+/* 2. insert into prio list */
                 if (flags & ENQUEUE_HEAD)
                     list_add(&rt_se->run_list, queue);
                 else
@@ -1734,7 +1744,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
 
                     rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
                     rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
-/* 2. update cpu prio vec */
+/* 3. update cpu prio vec */
                     inc_rt_prio(rt_rq, prio) {
                         int prev_prio = rt_rq->highest_prio.curr;
 
@@ -1808,7 +1818,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
         }
     }
 
-/* 3. enqueue pushable task */
+/* 4. enqueue pushable task */
     if (!task_current(rq, p) && p->nr_cpus_allowed > 1) {
         enqueue_pushable_task(rq, p) {
             plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
@@ -1849,6 +1859,7 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
 
         update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
 
+/* 1. dequeue rt stack */
         dequeue_rt_stack(rt_se, flags) {
             /* Because the prio of an upper entry depends on the lower
              * entries, we must remove entries top - down. */
@@ -1864,7 +1875,7 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                     __dequeue_rt_entity(rt_se, flags) {
                         struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
                         struct rt_prio_array *array = &rt_rq->active;
-/* 1. remove from list */
+/* 2. remove from prio list */
                         if (move_entity(flags)) {
                             __delist_rt_entity(rt_se, array) {
                                 list_del_init(&rt_se->run_list);
@@ -1881,7 +1892,7 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                         dec_rt_tasks(rt_se, rt_rq) {
                             rt_rq->rt_nr_running -= rt_se_nr_running(rt_se);
                             rt_rq->rr_nr_running -= rt_se_rr_nr_running(rt_se);
-/* 2. update cpu prio vec */
+/* 3. update cpu prio vec */
                             dec_rt_prio(rt_rq, rt_se_prio(rt_se)/*prio*/) {
                                 int prev_prio = rt_rq->highest_prio.curr;
 
@@ -1931,7 +1942,7 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
         enqueue_top_rt_rq(&rq->rt);
             --->
     }
-/* 3. dequeue_pushable_task */
+/* 4. dequeue_pushable_task */
     dequeue_pushable_task(rq, p) {
         plist_del(&p->pushable_tasks, &rq->rt.pushable_tasks);
 
@@ -10625,6 +10636,7 @@ static int kthread(void *_create)
 * [Kernel Doc](https://docs.kernel.org/core-api/workqueue.html)
 
 * Wowo Tech [:one: Basic Concept](http://www.wowotech.net/irq_subsystem/workqueue.html) [:two: Overview](http://www.wowotech.net/irq_subsystem/cmwq-intro.html)  [:three: Code Anatomy](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html)  [:four: Handle Work](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
+* [[PATCHSET wq/for-6.9] workqueue: Implement BH workqueue and convert several tasklet users](https://lore.kernel.org/all/20240130091300.2968534-1-tj@kernel.org/)
 
 <img src='../images/kernel/proc-cmwq.png' style='max-height:850px'/>
 
@@ -10648,264 +10660,7 @@ static int kthread(void *_create)
 * http://kernel.meizu.com/linux-workqueue.html :cn:
 
 
-```c
-start_kernel();
-    workqueue_init_early();
-        pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
 
-        for_each_possible_cpu(cpu)
-            for_each_cpu_worker_pool()
-                init_worker_pool();
-                    timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
-                    timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
-                    alloc_workqueue_attrs();
-
-        system_wq = alloc_workqueue("events");
-        system_highpri_wq = alloc_workqueue("events_highpri");
-        system_long_wq = alloc_workqueue("events_long");
-        system_freezable_wq = alloc_workqueue("events_freezable");
-        system_power_efficient_wq = alloc_workqueue("events_power_efficient");
-        system_freezable_power_efficient_wq = alloc_workqueue("events_freezable_power_efficient");
-        alloc_workqueue();
-            --->
-
-    rest_init();
-        kernel_thread(kernel_init);
-            kernel_init();
-                kernel_init_freeable();
-                    workqueue_init();
-                        wq_numa_init();
-                            wq_numa_possible_cpumask = tbl;
-                        for_each_online_cpu(cpu);
-                            for_each_cpu_worker_pool(pool, cpu);
-                                create_worker(pool); /* each pool has at leat one worker */
-                        hash_for_each(unbound_pool_hash, bkt, pool, hash_node)
-                            create_worker(pool);
-                        wq_watchdog_init();
-
-alloc_workqueue();
-    struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
-    alloc_and_link_pwqs();
-        if (!(wq->flags & WQ_UNBOUND)) {
-            wq->cpu_pwqs = alloc_percpu(struct pool_workqueue);
-            for_each_possible_cpu(cpu) {
-                init_pwq(pwq, wq);
-                    pwq->pool = &cpu_pools[priority];
-                    pwq->wq = wq;
-                link_pwq();
-                    pwq_adjust_max_active();
-                    list_add_rcu(&pwq->pwqs_node, &wq->pwqs);
-            }
-        } else if (wq->flags & __WQ_ORDERED) {
-            apply_workqueue_attrs(wq, ordered_wq_attrs[priority]);
-        } else {
-            apply_workqueue_attrs(wq, unbound_std_wq_attrs[priority]);
-                apply_wqattrs_prepare(wq, attrs);
-                    apply_wqattrs_ctx* ctx = kzalloc(struct_size(ctx, pwq_tbl, nr_node_ids), GFP_KERNEL);
-                    ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
-                        --->
-                    for_each_node(node) {
-                        if (wq_calc_node_cpumask(new_attrs, node, -1, tmp_attrs->cpumask)) {
-                            ctx->pwq_tbl[node] = alloc_unbound_pwq(wq, tmp_attrs);
-                        } else {
-                            ctx->dfl_pwq->refcnt++;
-                            ctx->pwq_tbl[node] = ctx->dfl_pwq;
-                        }
-                    }
-                apply_wqattrs_commit(ctx);
-                    for_each_node(node)
-                        ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node, ctx->pwq_tbl[node] /*pwq*/);
-                            link_pwq(pwq);
-                            rcu_assign_pointer(wq->numa_pwq_tbl[node], pwq);
-                        link_pwq(ctx->dfl_pwq);
-                        swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
-                apply_wqattrs_cleanup(ctx);
-        }
-    for_each_pwq(pwq, wq)
-        pwq_adjust_max_active(pwq);
-    init_rescuer();
-    list_add_tail_rcu(&wq->list, &workqueues);
-
-alloc_unbound_pwq();
-    worker_pool* pool = get_unbound_pool();
-        hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
-            if (wqattrs_equal(pool->attrs, attrs)) {
-                pool->refcnt++;
-                return pool;
-            }
-        }
-
-        for_each_node(node) {
-            if (cpumask_subset(attrs->cpumask, wq_numa_possible_cpumask[node])) {
-                target_node = node;
-                break;
-            }
-        }
-        pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
-        init_worker_pool(pool);
-            timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
-            timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
-            alloc_workqueue_attrs();
-        copy_workqueue_attrs(pool->attrs, attrs);
-        create_worker(pool);
-            --->
-        hash_add(unbound_pool_hash, &pool->hash_node, hash);
-
-    pwq = kmem_cache_alloc_node(pwq_cache);
-    init_pwq(pwq, wq, pool);
-        pwq->pool = pool;
-        pwq->wq = wq;
-
-create_worker(pool);
-    woker = alloc_worker(pool->node);
-        worker->flags = WORKER_PREP;
-    worker->task = kthread_create_on_node(worker_thread);
-        kthreadd();
-            create_kthread();
-                kernel_thread();
-                    _do_fork();
-        wake_up_process(kthreadd_task); /* kthreadd */
-        wait_for_completion_killable(&done);
-    worker_attach_to_pool();
-    worker_enter_idle(worker);
-        pool->nr_idle++;
-    wake_up_process(worker->task);
-        try_to_wake_up();
-
-worker_thread();
-woke_up:
-    if (worker->flags & WORKER_DIE) {
-        kfree(worker);
-        return;
-    }
-
-    worker_leave_idle();
-        pool->nr_idle--;
-        worker_clr_flags(worker, WORKER_IDLE);
-            worker->flags &= ~flags;
-            if ((flags & WORKER_NOT_RUNNING) && (oflags & WORKER_NOT_RUNNING))
-                if (!(worker->flags & WORKER_NOT_RUNNING))
-                    atomic_inc(&pool->nr_running);
-
-    /* keep only one running worker for non-cpu-intensive workqueue */
-    if (!need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
-        goto sleep;
-
-    if (!may_start_working()) /* pool->nr_idle */
-        manage_workers();
-            maybe_create_worker();
-                mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INITIAL_TIMEOUT);
-                create_worker();
-                    --->
-            wake_up(&wq_manager_wait);
-
-    /* nr_running is inced when entering and deced when leaving */
-    worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);         /* 1.1 [nr_running]++ == 1 */
-
-    do {
-        work = list_first_entry(&pool->worklist, struct work_struct, entry);
-        if (likely(!(*work_data_bits(work) & WORK_STRUCT_LINKED))) {
-            process_one_work(worker, work);
-            if (unlikely(!list_empty(&worker->scheduled)))
-                process_scheduled_works(worker);
-        } else {
-            move_linked_works(work, &worker->scheduled, NULL);
-            process_scheduled_works(worker);
-        }
-
-        process_one_work();
-            if (unlikely(cpu_intensive))
-                worker_set_flags(worker, WORKER_CPU_INTENSIVE);     /* 2.1 [nr_running]-- == 0 */
-                    worker->flags |= flags;
-                    if ((flags & WORKER_NOT_RUNNING) && !(worker->flags & WORKER_NOT_RUNNING)) {
-                        atomic_dec(&pool->nr_running);
-                    }
-
-            if (need_more_worker(pool)) /* !list_empty(&pool->worklist) && !pool->nr_running */
-                wake_up_worker(pool);
-                    try_to_wake_up();
-
-            worker->current_func(work);
-
-            if (unlikely(cpu_intensive))
-                worker_clr_flags(worker, WORKER_CPU_INTENSIVE);     /* 2.1 [nr_running]++ == 1 */
-
-            pwq_dec_nr_in_flight();
-                pwq->nr_active--;
-                if (!list_empty(&pwq->inactive_works))
-                    if (pwq->nr_active < pwq->max_active)
-                        pwq_activate_first_inactive(pwq);
-                            move_linked_works(work, &pwq->pool->worklist, NULL);
-                            pwq->nr_active++;
-    } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
-
-    worker_set_flags(worker, WORKER_PREP);                          /* 1.2 [nr_running]-- == 0 */
-    worker_enter_idle(worker);
-        pool->nr_idle++;
-
-    schedule();
-        if (prev->flags & PF_WQ_WORKER)
-            to_wakeup = wq_worker_sleeping()
-                if (pool->cpu != raw_smp_processor_id())
-                    return NULL;
-                /* only wakeup idle thread when running task is going to suspend in process_one_work */
-                if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist))
-                    to_wakeup = first_idle_worker(pool);
-            try_to_wake_up_local(to_wakeup, &rf);
-
-    goto woke_up;
-
-schedule_work();
-    queue_work();
-        queue_work_on(cpu, wq, work);
-            if (wq->flags & WQ_UNBOUND) {
-                if (req_cpu == WORK_CPU_UNBOUND)
-                    cpu = wq_select_unbound_cpu(raw_smp_processor_id());
-                pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
-            } else {
-                if (req_cpu == WORK_CPU_UNBOUND)
-                    cpu = raw_smp_processor_id();
-                pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
-            }
-
-            if (likely(pwq->nr_active < pwq->max_active)) {
-                pwq->nr_active++;
-                worklist = &pwq->pool->worklist;
-            } else {
-                work_flags |= WORK_STRUCT_DELAYED;
-                worklist = &pwq->inactive_works;
-            }
-
-            insert_work(pwq, work, worklist, work_flags);
-                list_add_tail(&work->entry, head);
-                if (__need_more_worker(pool)) /* return !pool->nr_running */
-                    wake_up_worker(pool);
-                        try_to_wake_up();
-
-idle_worker_timeout();
-    while (too_many_workers(pool)) {
-        mod_timer(&pool->idle_timer, expires);
-        destroy_worker(worker);
-            pool->nr_workers--;
-            pool->nr_idle--;
-            list_del_init(&worker->entry);
-            worker->flags |= WORKER_DIE;
-            wake_up_process(worker->task);
-    }
-
-pool_mayday_timeout();
-    if (need_to_create_worker(pool)) /* need_more_worker(pool) && !may_start_working(pool) */
-        send_mayday(work);
-            list_add_tail(&pwq->mayday_node, &wq->maydays);
-            wake_up_process(wq->rescuer->task);
-    mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
-```
-
-Reference:
-* [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
-
-
-## wq-struct
 ```c
 struct workqueue_struct {
   struct list_head      pwqs;  /* WR: all pwqs of this wq */
@@ -10922,6 +10677,9 @@ struct workqueue_struct {
 /* The per-pool workqueue. */
 struct pool_workqueue {
   struct worker_pool      *pool;    /* I: the associated pool */
+  /* When pwq->nr_active >= max_active, new work item is queued to
+   * pwq->inactive_works instead of pool->worklist and marked with
+   * WORK_STRUCT_INACTIVE. */
   struct list_head        inactive_works;  /* L: inactive works */
   struct list_head        mayday_node;  /* MD: node on wq->maydays */
   struct list_head        pwqs_node;  /* WR: node on wq->pwqs */
@@ -11075,6 +10833,441 @@ struct workqueue_struct *system_unbound_wq;
 struct workqueue_struct *system_freezable_wq;
 struct workqueue_struct *system_power_efficient_wq;
 struct workqueue_struct *system_freezable_power_efficient_wq;
+```
+
+
+## workqueue_init
+
+```c
+start_kernel();
+    workqueue_init_early() {
+        int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
+        void (*irq_work_fns[2])(struct irq_work *) = {
+            bh_pool_kick_normal,
+            bh_pool_kick_highpri
+        };
+        pwq_cache = KMEM_CACHE(pool_workqueue, SLAB_PANIC);
+
+        /* initialize BH and CPU pools */
+        for_each_possible_cpu(cpu) {
+            i = 0;
+            for_each_bh_worker_pool(pool, cpu) {
+                init_cpu_worker_pool(pool, cpu, std_nice[i]);
+                pool->flags |= POOL_BH;
+                init_irq_work(bh_pool_irq_work(pool), irq_work_fns[i]) {
+                    *work = IRQ_WORK_INIT(func);
+                }
+                i++;
+            }
+
+            i = 0;
+            for_each_cpu_worker_pool(pool, cpu) {
+                init_cpu_worker_pool(pool, cpu, std_nice[i++]) {
+                    init_worker_pool(pool) {
+                        timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
+                        timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
+                        alloc_workqueue_attrs();
+                    }
+                }
+            }
+        }
+
+        system_wq = alloc_workqueue("events");
+        system_highpri_wq = alloc_workqueue("events_highpri");
+        system_long_wq = alloc_workqueue("events_long");
+        system_freezable_wq = alloc_workqueue("events_freezable");
+        system_power_efficient_wq = alloc_workqueue("events_power_efficient");
+        system_freezable_power_efficient_wq = alloc_workqueue("events_freezable_power_efficient");
+        alloc_workqueue();
+            --->
+    }
+
+    rest_init() {
+        kernel_thread(kernel_init) {
+            kernel_init() {
+                kernel_init_freeable() {
+                    workqueue_init() {
+                        wq_numa_init() {
+                            wq_numa_possible_cpumask = tbl;
+                        }
+                        for_each_online_cpu(cpu) {
+                            for_each_cpu_worker_pool(pool, cpu) {
+                                create_worker(pool); /* each pool has at leat one worker */
+                            }
+                        }
+                        hash_for_each(unbound_pool_hash, bkt, pool, hash_node) {
+                            create_worker(pool);
+                        }
+                        wq_watchdog_init();
+                    }
+                }
+            }
+        }
+    }
+```
+
+## alloc_workqueue
+
+```c
+alloc_workqueue() {
+    struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
+    alloc_and_link_pwqs() {
+        if (!(wq->flags & WQ_UNBOUND)) {
+            wq->cpu_pwqs = alloc_percpu(struct pool_workqueue*);
+            for_each_possible_cpu(cpu) {
+                struct worker_pool* pool = &(per_cpu_ptr(pools, cpu)[highpri]);
+                struct pool_workqueue** pwq_p = per_cpu_ptr(wq->cpu_pwq, cpu);
+                *pwq_p = kmem_cache_alloc_node(pwq_cache);
+
+                init_pwq(*pwq_p, wq, pool) {
+                    pwq->pool = pool;
+                    pwq->wq = wq;
+                    pwq->flush_color = -1;
+                    pwq->refcnt = 1;
+                    INIT_LIST_HEAD(&pwq->inactive_works);
+                    INIT_LIST_HEAD(&pwq->pending_node);
+                    INIT_LIST_HEAD(&pwq->pwqs_node);
+                    INIT_LIST_HEAD(&pwq->mayday_node);
+                    kthread_init_work(&pwq->release_work, pwq_release_workfn);
+                }
+                link_pwq(*pwq_p) {
+                    list_add_rcu(&pwq->pwqs_node, &wq->pwqs);
+                }
+            }
+        } else if (wq->flags & __WQ_ORDERED) {
+            apply_workqueue_attrs(wq, ordered_wq_attrs[priority]);
+        } else {
+            apply_workqueue_attrs(wq, unbound_std_wq_attrs[priority]) {
+                apply_wqattrs_prepare(wq, attrs) {
+                    apply_wqattrs_ctx* ctx = kzalloc(struct_size(ctx, pwq_tbl, nr_node_ids), GFP_KERNEL);
+                    ctx->dfl_pwq = alloc_unbound_pwq(wq, new_attrs);
+                        --->
+                    for_each_node(node) {
+                        if (wq_calc_node_cpumask(new_attrs, node, -1, tmp_attrs->cpumask)) {
+                            ctx->pwq_tbl[node] = alloc_unbound_pwq(wq, tmp_attrs);
+                        } else {
+                            ctx->dfl_pwq->refcnt++;
+                            ctx->pwq_tbl[node] = ctx->dfl_pwq;
+                        }
+                    }
+                }
+                apply_wqattrs_commit(ctx) {
+                    for_each_node(node) {
+                        ctx->pwq_tbl[node] = numa_pwq_tbl_install(ctx->wq, node, ctx->pwq_tbl[node] /*pwq*/) {
+                            link_pwq(pwq);
+                            rcu_assign_pointer(wq->numa_pwq_tbl[node], pwq);
+                        }
+                        link_pwq(ctx->dfl_pwq);
+                        swap(ctx->wq->dfl_pwq, ctx->dfl_pwq);
+                    }
+                }
+                apply_wqattrs_cleanup(ctx);
+            }
+        }
+    }
+    init_rescuer();
+    list_add_tail_rcu(&wq->list, &workqueues);
+}
+```
+
+## alloc_unbound_pwq
+
+```c
+alloc_unbound_pwq() {
+    worker_pool* pool = get_unbound_pool() {
+        hash_for_each_possible(unbound_pool_hash, pool, hash_node, hash) {
+            if (wqattrs_equal(pool->attrs, attrs)) {
+                pool->refcnt++;
+                return pool;
+            }
+        }
+
+        for_each_node(node) {
+            if (cpumask_subset(attrs->cpumask, wq_numa_possible_cpumask[node])) {
+                target_node = node;
+                break;
+            }
+        }
+        pool = kzalloc_node(sizeof(*pool), GFP_KERNEL, target_node);
+        init_worker_pool(pool) {
+            timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
+            timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
+            alloc_workqueue_attrs();
+        }
+        copy_workqueue_attrs(pool->attrs, attrs);
+        create_worker(pool);
+            --->
+        hash_add(unbound_pool_hash, &pool->hash_node, hash);
+    }
+    pwq = kmem_cache_alloc_node(pwq_cache);
+    init_pwq(pwq, wq, pool) {
+        pwq->pool = pool;
+        pwq->wq = wq;
+    }
+}
+```
+
+## create_worker
+
+```c
+create_worker(pool) {
+    woker = alloc_worker(pool->node) {
+        worker->flags = WORKER_PREP;
+    }
+    worker->task = kthread_create_on_node(worker_thread) {
+        kthreadd() {
+            create_kthread() {
+                kernel_thread() {
+                    _do_fork();
+                }
+            }
+        }
+        wake_up_process(kthreadd_task); /* kthreadd */
+        wait_for_completion_killable(&done);
+    }
+    worker_attach_to_pool();
+    worker_enter_idle(worker) {
+        pool->nr_idle++;
+    }
+    wake_up_process(worker->task) {
+        try_to_wake_up();
+    }
+}
+```
+
+## worker_thread
+
+```c
+worker_thread() {
+woke_up:
+    if (worker->flags & WORKER_DIE) {
+        kfree(worker);
+        return;
+    }
+
+    worker_leave_idle() {
+        pool->nr_idle--;
+        worker_clr_flags(worker, WORKER_IDLE) {
+            worker->flags &= ~flags;
+            if ((flags & WORKER_NOT_RUNNING) && (oflags & WORKER_NOT_RUNNING)) {
+                if (!(worker->flags & WORKER_NOT_RUNNING)) {
+                    atomic_inc(&pool->nr_running);
+                }
+            }
+        }
+    }
+
+recheck:
+    /* keep only one running worker for non-cpu-intensive workqueue */
+    if (!need_more_worker(pool))  {/* !list_empty(&pool->worklist) && !pool->nr_running */
+        goto sleep;
+    }
+
+    if (!may_start_working() /* pool->nr_idle */ && manage_workers() {
+        maybe_create_worker() {
+            mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INITIAL_TIMEOUT);
+            create_worker()
+                --->
+        }
+        wake_up(&wq_manager_wait);
+    }) {
+        goto recheck;
+    }
+
+    /* nr_running is inced when entering and deced when leaving */
+    worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);         /* 1.1 [nr_running]++ == 1 */
+
+    do {
+        struct work_struct *work = list_first_entry(&pool->worklist, struct work_struct, entry);
+
+        ret = assign_work(work, worker, NULL) {
+            struct worker_pool *pool = worker->pool;
+            struct worker *collision = find_worker_executing_work(pool, work);
+            if (unlikely(collision)) {
+                move_linked_works(work, &collision->scheduled, nextp);
+                return false;
+            }
+
+            move_linked_works(work, &worker->scheduled, nextp);
+            return true;
+        }
+        if (ret) {
+            process_scheduled_works(worker) {
+                struct work_struct *work;
+                bool first = true;
+
+                while ((work = list_first_entry_or_null(&worker->scheduled, struct work_struct, entry))) {
+                    if (first) {
+                        worker->pool->watchdog_ts = jiffies;
+                        first = false;
+                    }
+
+                    process_one_work(worker, work) {
+                        hash_add(pool->busy_hash, &worker->hentry, (unsigned long)work);
+                        list_del_init(&work->entry);
+
+                        worker->current_work = work;
+                        worker->current_func = work->func;
+                        worker->current_pwq = pwq;
+
+                        if (pwq->wq->flags & WQ_CPU_INTENSIVE) {
+                            worker_set_flags(worker, WORKER_CPU_INTENSIVE) {     /* 2.1 [nr_running]-- == 0 */
+                                worker->flags |= flags;
+                                if ((flags & WORKER_NOT_RUNNING) && !(worker->flags & WORKER_NOT_RUNNING)) {
+                                    atomic_dec(&pool->nr_running);
+                                }
+                            }
+                        }
+
+                        kick_pool(pool) {
+                            struct worker *worker = first_idle_worker(pool);
+                            struct task_struct *p;
+
+                            /* !list_empty(&pool->worklist) && !pool->nr_running */
+                            if (!need_more_worker(pool) || !worker)
+                                return false;
+
+                            if (pool->flags & POOL_BH) {
+                                kick_bh_pool(pool);
+                                return true;
+                            }
+
+                            p = worker->task;
+
+                            if (!pool->attrs->affn_strict &&
+                                !cpumask_test_cpu(p->wake_cpu, pool->attrs->__pod_cpumask)) {
+                                struct work_struct *work = list_first_entry(&pool->worklist,
+                                                struct work_struct, entry);
+                                int wake_cpu = cpumask_any_and_distribute(pool->attrs->__pod_cpumask,
+                                                    cpu_online_mask);
+                                if (wake_cpu < nr_cpu_ids) {
+                                    p->wake_cpu = wake_cpu;
+                                    get_work_pwq(work)->stats[PWQ_STAT_REPATRIATED]++;
+                                }
+                            }
+
+                            wake_up_process(p);
+                            return true;
+                        }
+
+                        worker->current_func(work);
+
+                        if (pwq->wq->flags & WQ_CPU_INTENSIVE) {
+                            worker_clr_flags(worker, WORKER_CPU_INTENSIVE);     /* 2.1 [nr_running]++ == 1 */
+                        }
+
+                        pwq_dec_nr_in_flight() {
+                            if (!(work_data & WORK_STRUCT_INACTIVE)) {
+                                pwq_dec_nr_active(pwq) {
+                                    struct wq_node_nr_active *nna = wq_node_nr_active(pwq->wq, pool->node);
+                                    pwq->nr_active--;
+                                    if (!nna) {
+                                        pwq_activate_first_inactive(pwq, false) {
+                                            struct work_struct *work =
+                                                list_first_entry_or_null(&pwq->inactive_works, struct work_struct, entry);
+                                            if (work && pwq_tryinc_nr_active(pwq, fill)) {
+                                                __pwq_activate_work(pwq, work) {
+                                                    move_linked_works(work, &pwq->pool->worklist, NULL);
+                                                    __clear_bit(WORK_STRUCT_INACTIVE_BIT, wdb);
+                                                }
+                                                return true;
+                                            } else {
+                                                return false;
+                                            }
+                                        }
+                                        return;
+                                    }
+                                }
+                            }
+
+                            pwq->nr_in_flight[color]--;
+                        }
+                    }
+                }
+            }
+        }
+    } while (keep_working(pool)); /* !list_empty(&pool->worklist) && atomic_read(&pool->nr_running) <= 1; */
+
+    worker_set_flags(worker, WORKER_PREP);                          /* 1.2 [nr_running]-- == 0 */
+    worker_enter_idle(worker) {
+        pool->nr_idle++;
+    }
+
+    schedule() {
+        if (prev->flags & PF_WQ_WORKER) {
+            to_wakeup = wq_worker_sleeping() {
+                if (pool->cpu != raw_smp_processor_id())
+                    return NULL;
+                /* only wakeup idle thread when running task is going to suspend in process_one_work */
+                if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist)) {
+                    to_wakeup = first_idle_worker(pool);
+                }
+                try_to_wake_up_local(to_wakeup, &rf);
+            }
+        }
+    }
+
+    goto woke_up;
+}
+```
+
+## queue_work
+
+```c
+schedule_work(wq, work) {
+    queue_work(WORK_CPU_UNBOUND, wq, work) {
+        queue_work_on(cpu, wq, work) {
+            if (wq->flags & WQ_UNBOUND) {
+                if (req_cpu == WORK_CPU_UNBOUND)
+                    cpu = wq_select_unbound_cpu(raw_smp_processor_id());
+                pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
+            } else {
+                if (req_cpu == WORK_CPU_UNBOUND)
+                    cpu = raw_smp_processor_id();
+                pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
+            }
+
+            if (likely(pwq->nr_active < pwq->max_active)) {
+                pwq->nr_active++;
+                worklist = &pwq->pool->worklist;
+            } else {
+                work_flags |= WORK_STRUCT_DELAYED;
+                worklist = &pwq->inactive_works;
+            }
+
+            insert_work(pwq, work, worklist, work_flags) {
+                list_add_tail(&work->entry, head);
+                if (__need_more_worker(pool))  {/* return !pool->nr_running */
+                    wake_up_worker(pool);
+                        try_to_wake_up();
+                }
+            }
+        }
+    }
+}
+
+idle_worker_timeout() {
+    while (too_many_workers(pool)) {
+        mod_timer(&pool->idle_timer, expires);
+        destroy_worker(worker) {
+            pool->nr_workers--;
+            pool->nr_idle--;
+            list_del_init(&worker->entry);
+            worker->flags |= WORKER_DIE;
+            wake_up_process(worker->task);
+        }
+    }
+}
+
+pool_mayday_timeout() {
+    if (need_to_create_worker(pool)) { /* need_more_worker(pool) && !may_start_working(pool) */
+        send_mayday(work) {
+            list_add_tail(&pwq->mayday_node, &wq->maydays);
+            wake_up_process(wq->rescuer->task);
+        }
+    }
+    mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
+}
 ```
 
 # task_group
