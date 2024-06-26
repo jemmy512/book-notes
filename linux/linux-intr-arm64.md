@@ -148,7 +148,7 @@ SYM_CODE_END(el\el\ht\()_\regsize\()_\label)
     .if    \regsize == 32
     mov    w0, w0                // zero upper 32 bits of x0
     .endif
-
+    /* save the regs context of current task on the top of stack */
     stp    x0, x1, [sp, #16 * 0]
     stp    x2, x3, [sp, #16 * 1]
     stp    x4, x5, [sp, #16 * 2]

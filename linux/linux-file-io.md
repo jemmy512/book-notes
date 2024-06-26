@@ -8734,7 +8734,7 @@ do_direct_IO();
 ## call graph io
 ```c
 /* wb_workfn */
-wb_workfn();
+wb_workfn() {
     wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
         while ((work = get_next_work_item(wb)) != NULL) {
             wb_writeback() {
@@ -8811,15 +8811,47 @@ wb_workfn();
             }
         }
 
-        wb_check_start_all(wb);
-            struct wb_writeback_work work = { };
-            wb_writeback(wb, &work);
-        wb_check_old_data_flush(wb);
-            struct wb_writeback_work work = { };
-            wb_writeback(wb, &work);
-        wb_check_background_flush(wb);
-            struct wb_writeback_work work = { };
-            wb_writeback(wb, &work);
+        wb_check_start_all(wb) {
+            nr_pages = get_nr_dirty_pages();
+            if (nr_pages) {
+                struct wb_writeback_work work = {
+                    .nr_pages	= wb_split_bdi_pages(wb, nr_pages),
+                    .sync_mode	= WB_SYNC_NONE,
+                    .range_cyclic	= 1,
+                    .reason		= wb->start_all_reason,
+                };
+
+                nr_pages = wb_writeback(wb, &work);
+            }
+        }
+        wb_check_old_data_flush(wb) {
+            nr_pages = get_nr_dirty_pages();
+
+            if (nr_pages) {
+                struct wb_writeback_work work = {
+                    .nr_pages	= nr_pages,
+                    .sync_mode	= WB_SYNC_NONE,
+                    .for_kupdate	= 1,
+                    .range_cyclic	= 1,
+                    .reason		= WB_REASON_PERIODIC,
+                };
+
+                return wb_writeback(wb, &work);
+            }
+        }
+        wb_check_background_flush(wb) {
+            if (wb_over_bg_thresh(wb)) {
+                struct wb_writeback_work work = {
+                    .nr_pages	= LONG_MAX,
+                    .sync_mode	= WB_SYNC_NONE,
+                    .for_background	= 1,
+                    .range_cyclic	= 1,
+                    .reason		= WB_REASON_BACKGROUND,
+                };
+
+                return wb_writeback(wb, &work);
+            }
+        }
 
     if (!list_empty(&wb->work_list))
         wb_wakeup(wb);
@@ -8829,23 +8861,26 @@ wb_workfn();
         wb_wakeup_delayed(wb);
             queue_delayed_work();
                 --->
+}
 
-writeback_inodes_sb();
-    writeback_inodes_sb_nr();
-        get_nr_dirty_pages();
-        __writeback_inodes_sb_nr(); /* wb_writeback_work */
-            struct wb_writeback_work work = { };
-            /* split a wb_writeback_work to all wb's of a bdi */
-            bdi_split_work_to_wbs();
-                /* split nr_pages to write according to bandwidth */
-                wb_split_bdi_pages();
-                wb_queue_work();
-                    list_add_tail(&work->list, &wb->work_list);
-                    mod_delayed_work(bdi_wq, &wb->dwork, 0);
-                        mod_delayed_work_on();
-                            __queue_delayed_work();
-                                add_timer(); /* delayed_work_timer_fn */
-            wb_wait_for_completion();
+sync_filesystem() {
+    writeback_inodes_sb();
+        writeback_inodes_sb_nr();
+            get_nr_dirty_pages();
+            __writeback_inodes_sb_nr(); /* wb_writeback_work */
+                struct wb_writeback_work work = { };
+                /* split a wb_writeback_work to all wb's of a bdi */
+                bdi_split_work_to_wbs();
+                    /* split nr_pages to write according to bandwidth */
+                    wb_split_bdi_pages();
+                    wb_queue_work();
+                        list_add_tail(&work->list, &wb->work_list);
+                        mod_delayed_work(bdi_wq, &wb->dwork, 0);
+                            mod_delayed_work_on();
+                                __queue_delayed_work();
+                                    add_timer(); /* delayed_work_timer_fn */
+                wb_wait_for_completion();
+}
 ```
 
 ```c

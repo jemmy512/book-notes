@@ -803,7 +803,22 @@ out_set:
         struct task_struct *t;
 
         /* Now find a thread we can wake up to take the signal off the queue. */
-        if (wants_signal(sig, p)) {
+        ret = wants_signal(sig, p) {
+            if (sigismember(&p->blocked, sig))
+                return false;
+
+            if (p->flags & PF_EXITING)
+                return false;
+
+            if (sig == SIGKILL)
+                return true;
+
+            if (task_is_stopped_or_traced(p))
+                return false;
+
+            return task_curr(p) || !task_sigpending(p);
+        }
+        if (ret) {
             t = p;
         } else if (!group || thread_group_empty(p)) {
             return;
@@ -870,18 +885,20 @@ ret:
 ## do_signal
 
 ```c
-static void exit_to_usermode_loop(struct pt_regs *regs, u32 cached_flags)
+static void exit_to_user_mode_prepare(struct pt_regs *regs, u32 cached_flags)
 {
-    while (true) {
-        if (cached_flags & _TIF_NEED_RESCHED)
-            schedule();
+    do_notify_resume(regs, flags) {
+        while (true) {
+            if (cached_flags & _TIF_NEED_RESCHED)
+                schedule();
 
-        /* deal with pending signal delivery */
-        if (cached_flags & _TIF_SIGPENDING)
-            do_signal(regs);
+            /* deal with pending signal delivery */
+            if (cached_flags & _TIF_SIGPENDING)
+                do_signal(regs);
 
-        if (!(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
-            break;
+            if (!(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
+                break;
+        }
     }
 }
 
@@ -977,6 +994,7 @@ static void do_signal(struct pt_regs *regs)
                     sp = round_down(sp - sizeof(struct frame_record), 16);
                     user->next_frame = (struct frame_record __user *)sp;
 
+                    /* alloc sig frame on stack */
                     sp = round_down(sp, 16) - sigframe_size(user);
                     user->sigframe = (struct rt_sigframe __user *)sp;
 
@@ -1191,7 +1209,16 @@ relock:
         signr = dequeue_synchronous_signal(&ksig->info);
         if (!signr) {
             /* dequeue from tsk->pending and tsk->signal->shared_pending */
-            signr = dequeue_signal(current, &current->blocked, &ksig->info, &type);
+            signr = dequeue_signal(current, &current->blocked, &ksig->info, &type) {
+                signr = __dequeue_signal(&tsk->pending, mask, info, &resched_timer);
+                if (!signr) {
+                    *type = PIDTYPE_TGID;
+                    signr = __dequeue_signal(&tsk->signal->shared_pending,
+                                mask, info, &resched_timer);
+                }
+
+                return signr;
+            }
         }
 
         if (!signr)
