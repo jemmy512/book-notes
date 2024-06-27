@@ -140,12 +140,12 @@ struct mount {
   struct list_head      mnt_list;
   struct mountpoint*    mnt_mp;     /* where is it mounted */
 
-  struct list_head      mnt_expire;	/* link in fs-specific expiry list */
-  struct list_head      mnt_share;	/* circular list of shared mounts */
+  struct list_head      mnt_expire; /* link in fs-specific expiry list */
+  struct list_head      mnt_share; /* circular list of shared mounts */
   struct list_head      mnt_slave_list;/* list of slave mounts */
-  struct list_head      mnt_slave;	/* slave list entry */
-  struct mount*         mnt_master;	/* slave is on master->mnt_slave_list */
-  struct mnt_namespace* mnt_ns;	/* containing namespace */
+  struct list_head      mnt_slave; /* slave list entry */
+  struct mount*         mnt_master; /* slave is on master->mnt_slave_list */
+  struct mnt_namespace* mnt_ns; /* containing namespace */
 };
 
 struct mountpoint {
@@ -458,13 +458,13 @@ start_kernel() {
                         if (!fc)
                             return ERR_PTR(-ENOMEM);
 
-                        fc->purpose	= purpose;
-                        fc->sb_flags	= sb_flags;
+                        fc->purpose     = purpose;
+                        fc->sb_flags    = sb_flags;
                         fc->sb_flags_mask = sb_flags_mask;
-                        fc->fs_type	= get_filesystem(fs_type);
-                        fc->cred	= get_current_cred();
-                        fc->net_ns	= get_net(current->nsproxy->net_ns);
-                        fc->log.prefix	= fs_type->name;
+                        fc->fs_type     = get_filesystem(fs_type);
+                        fc->cred        = get_current_cred();
+                        fc->net_ns      = get_net(current->nsproxy->net_ns);
+                        fc->log.prefix  = fs_type->name;
 
                         init_fs_context = fc->fs_type->init_fs_context;
                         ret = init_fs_context(fc) {
@@ -799,13 +799,13 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
 
     fc = fs_context_for_mount(type, sb_flags) {
         fc = kzalloc(sizeof(struct fs_context));
-        fc->purpose	= purpose;
-        fc->sb_flags	= sb_flags;
+        fc->purpose     = purpose;
+        fc->sb_flags    = sb_flags;
         fc->sb_flags_mask = sb_flags_mask;
-        fc->fs_type	= get_filesystem(fs_type);
-        fc->cred	= get_current_cred();
-        fc->net_ns	= get_net(current->nsproxy->net_ns);
-        fc->log.prefix	= fs_type->name;
+        fc->fs_type     = get_filesystem(fs_type);
+        fc->cred        = get_current_cred();
+        fc->net_ns      = get_net(current->nsproxy->net_ns);
+        fc->log.prefix  = fs_type->name;
 
         mutex_init(&fc->uapi_mutex);
 
@@ -819,7 +819,7 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
 
         init_fs_context = fc->fs_type->init_fs_context;
         if (!init_fs_context)
-		    init_fs_context = legacy_init_fs_context;
+            init_fs_context = legacy_init_fs_context;
         ret = init_fs_context(fc) {
             legacy_init_fs_context() {
                 fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL_ACCOUNT);
@@ -1082,7 +1082,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                     }
                     mnt_set_mountpoint(dest_mnt/*mnt*/, dest_mp/*mp*/, source_mnt/*child_mnt*/) {
                         mp->m_count++;
-                        mnt_add_count(mnt, 1);	/* essentially, that's mntget */
+                        mnt_add_count(mnt, 1); /* essentially, that's mntget */
                         child_mnt->mnt_mountpoint = mp->m_dentry;
                         child_mnt->mnt_parent = mnt;
                         child_mnt->mnt_mp = mp;
@@ -1666,7 +1666,7 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
                 return __fsnotify_parent(dentry, mask, data, data_type);
 
             notify_child:
-	            return fsnotify(mask, data, data_type, NULL, NULL, inode, 0);
+                return fsnotify(mask, data, data_type, NULL, NULL, inode, 0);
             }
         }
     }
@@ -1693,50 +1693,50 @@ const struct file_operations ext4_file_operations = {
 ```c
 const char *path_init(struct nameidata *nd, unsigned flags)
 {
-	int error;
-	const char *s = nd->name->name;
+    int error;
+    const char *s = nd->name->name;
 
-	/* LOOKUP_CACHED requires RCU, ask caller to retry */
-	if ((flags & (LOOKUP_RCU | LOOKUP_CACHED)) == LOOKUP_CACHED)
-		return ERR_PTR(-EAGAIN);
+    /* LOOKUP_CACHED requires RCU, ask caller to retry */
+    if ((flags & (LOOKUP_RCU | LOOKUP_CACHED)) == LOOKUP_CACHED)
+        return ERR_PTR(-EAGAIN);
 
-	if (!*s)
-		flags &= ~LOOKUP_RCU;
-	if (flags & LOOKUP_RCU)
-		rcu_read_lock();
-	else
-		nd->seq = nd->next_seq = 0;
+    if (!*s)
+        flags &= ~LOOKUP_RCU;
+    if (flags & LOOKUP_RCU)
+        rcu_read_lock();
+    else
+        nd->seq = nd->next_seq = 0;
 
-	nd->flags = flags;
-	nd->state |= ND_JUMPED;
+    nd->flags = flags;
+    nd->state |= ND_JUMPED;
 
-	nd->m_seq = __read_seqcount_begin(&mount_lock.seqcount);
-	nd->r_seq = __read_seqcount_begin(&rename_lock.seqcount);
-	smp_rmb();
+    nd->m_seq = __read_seqcount_begin(&mount_lock.seqcount);
+    nd->r_seq = __read_seqcount_begin(&rename_lock.seqcount);
+    smp_rmb();
 
-	if (nd->state & ND_ROOT_PRESET) {
-		struct dentry *root = nd->root.dentry;
-		struct inode *inode = root->d_inode;
-		if (*s && unlikely(!d_can_lookup(root))) {
-			return ERR_PTR(-ENOTDIR);
+    if (nd->state & ND_ROOT_PRESET) {
+        struct dentry *root = nd->root.dentry;
+        struct inode *inode = root->d_inode;
+        if (*s && unlikely(!d_can_lookup(root))) {
+            return ERR_PTR(-ENOTDIR);
         }
 
-		nd->path = nd->root;
+        nd->path = nd->root;
         nd->inode = inode;
-		if (flags & LOOKUP_RCU) {
-			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
-			nd->root_seq = nd->seq;
-		} else {
-			path_get(&nd->path);
-		}
-		return s;
-	}
+        if (flags & LOOKUP_RCU) {
+            nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
+            nd->root_seq = nd->seq;
+        } else {
+            path_get(&nd->path);
+        }
+        return s;
+    }
 
-	nd->root.mnt = NULL;
+    nd->root.mnt = NULL;
 
 /* 1. Absolute pathname -- fetch the root (LOOKUP_IN_ROOT uses nd->dfd). */
-	if (*s == '/' && !(flags & LOOKUP_IN_ROOT)) {
-		error = nd_jump_root(nd) {
+    if (*s == '/' && !(flags & LOOKUP_IN_ROOT)) {
+        error = nd_jump_root(nd) {
             if (unlikely(nd->flags & LOOKUP_BENEATH))
                 return -EXDEV;
             if (unlikely(nd->flags & LOOKUP_NO_XDEV)) {
@@ -1784,62 +1784,62 @@ const char *path_init(struct nameidata *nd, unsigned flags)
             nd->state |= ND_JUMPED;
             return 0;
         }
-		if (unlikely(error))
-			return ERR_PTR(error);
-		return s;
-	}
+        if (unlikely(error))
+            return ERR_PTR(error);
+        return s;
+    }
 
 /* 2. Relative pathname -- get the starting-point it is relative to. */
-	if (nd->dfd == AT_FDCWD) {
-		if (flags & LOOKUP_RCU) {
-			struct fs_struct *fs = current->fs;
-			unsigned seq;
-			do {
-				seq = read_seqcount_begin(&fs->seq);
-				nd->path = fs->pwd;
-				nd->inode = nd->path.dentry->d_inode;
-				nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
-			} while (read_seqcount_retry(&fs->seq, seq));
-		} else {
-			get_fs_pwd(current->fs, &nd->path);
-			nd->inode = nd->path.dentry->d_inode;
-		}
-	} else {
-		/* Caller must check execute permissions on the starting path component */
-		struct fd f = fdget_raw(nd->dfd);
-		struct dentry *dentry;
+    if (nd->dfd == AT_FDCWD) {
+        if (flags & LOOKUP_RCU) {
+            struct fs_struct *fs = current->fs;
+            unsigned seq;
+            do {
+                seq = read_seqcount_begin(&fs->seq);
+                nd->path = fs->pwd;
+                nd->inode = nd->path.dentry->d_inode;
+                nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
+            } while (read_seqcount_retry(&fs->seq, seq));
+        } else {
+            get_fs_pwd(current->fs, &nd->path);
+            nd->inode = nd->path.dentry->d_inode;
+        }
+    } else {
+        /* Caller must check execute permissions on the starting path component */
+        struct fd f = fdget_raw(nd->dfd);
+        struct dentry *dentry;
 
-		if (!f.file)
-			return ERR_PTR(-EBADF);
+        if (!f.file)
+            return ERR_PTR(-EBADF);
 
-		dentry = f.file->f_path.dentry;
-		if (*s && unlikely(!d_can_lookup(dentry))) {
-			fdput(f);
-			return ERR_PTR(-ENOTDIR);
-		}
+        dentry = f.file->f_path.dentry;
+        if (*s && unlikely(!d_can_lookup(dentry))) {
+            fdput(f);
+            return ERR_PTR(-ENOTDIR);
+        }
 
-		nd->path = f.file->f_path;
-		if (flags & LOOKUP_RCU) {
-			nd->inode = nd->path.dentry->d_inode;
-			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
-		} else {
-			path_get(&nd->path);
-			nd->inode = nd->path.dentry->d_inode;
-		}
-		fdput(f);
-	}
+        nd->path = f.file->f_path;
+        if (flags & LOOKUP_RCU) {
+            nd->inode = nd->path.dentry->d_inode;
+            nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
+        } else {
+            path_get(&nd->path);
+            nd->inode = nd->path.dentry->d_inode;
+        }
+        fdput(f);
+    }
 
-	/* For scoped-lookups we need to set the root to the dirfd as well. */
-	if (flags & LOOKUP_IS_SCOPED) {
-		nd->root = nd->path;
-		if (flags & LOOKUP_RCU) {
-			nd->root_seq = nd->seq;
-		} else {
-			path_get(&nd->root);
-			nd->state |= ND_ROOT_GRABBED;
-		}
-	}
-	return s;
+    /* For scoped-lookups we need to set the root to the dirfd as well. */
+    if (flags & LOOKUP_IS_SCOPED) {
+        nd->root = nd->path;
+        if (flags & LOOKUP_RCU) {
+            nd->root_seq = nd->seq;
+        } else {
+            path_get(&nd->root);
+            nd->state |= ND_ROOT_GRABBED;
+        }
+    }
+    return s;
 }
 ```
 
@@ -4170,6 +4170,9 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
 ![](../images/kernel/proc-cmwq.png)
 
 ### backing_dev_info
+
+![](../images/kernel/io-mark_inode_dirty.png)
+
 ```c
 extern spinlock_t               bdi_lock;
 extern struct list_head         bdi_list;
@@ -4189,13 +4192,13 @@ struct backing_dev_info {
 };
 
 struct bdi_writeback {
-  struct list_head    work_list;
-  struct delayed_work dwork;    /* work item used for writeback */
-
-  struct list_head    b_dirty;     /* dirty inodes */
-  struct list_head    b_io;        /* parked for writeback */
-  struct list_head    b_more_io;   /* parked for more writeback */
-  struct list_head    b_dirty_time;/* time stamps are dirty */
+  struct list_head    work_list; /* Tasks requiring high-priority write-back for BDI devices */
+  struct delayed_work dwork;     /* work item used for writeback */
+  struct list_head    b_dirty;   /* Dirty inodes marked by mark_inode_dirty */
+  struct list_head    b_io;      /* parked for writeback, meet the write-back mode timeout
+    requirements from the b_dirty list and places them in the b_bio list. */
+  struct list_head    b_more_io; /* does not match the work write-back mode */
+  struct list_head    b_dirty_time;/*  inodes that time stamp is dirty */
 
   struct list_head    bdi_node;    /* anchored at bdi->wb_list */
 };
@@ -4288,6 +4291,7 @@ static int cgwb_bdi_init(struct backing_dev_info *bdi)
 ```
 
 ### wb_init
+
 ```c
 static int wb_init(
   struct bdi_writeback *wb,
@@ -4310,14 +4314,21 @@ static int wb_init(
   spin_lock_init(&wb->work_lock);
   INIT_LIST_HEAD(&wb->work_list);
   INIT_DELAYED_WORK(&wb->dwork, wb_workfn);
+  INIT_DELAYED_WORK(&wb->bw_dwork, wb_update_bandwidth_workfn);
   wb->dirty_sleep = jiffies;
 }
 
-#define __INIT_DELAYED_WORK(_work, _func, _tflags)      \
-  do {                \
-    INIT_WORK(&(_work)->work, (_func));      \
-    __setup_timer(&(_work)->timer, delayed_work_timer_fn,  \
-            (unsigned long)(_work),      \
+#define __INIT_DELAYED_WORK(_work, _func, _tflags) \
+    do { \
+        INIT_WORK(&(_work)->work, (_func)); \
+        __init_timer(&(_work)->timer, \
+                delayed_work_timer_fn, \
+                (_tflags) | TIMER_IRQSAFE); \
+    } while (0)
+
+#define INIT_DELAYED_WORK(_work, _func) \
+    __INIT_DELAYED_WORK(_work, _func, 0)
+
 /* wb_workfn -> wb_do_writeback -> wb_writeback -> writeback_sb_inodes */
 /* -> __writeback_single_inode -> do_writepages -> ext4_writepages */
 /* ---> see ext4_writepages in IO management */
@@ -4353,12 +4364,12 @@ do_coredump() {
     struct core_state core_state;
 
     struct coredump_params cprm = {
-		.siginfo = siginfo,
-		.limit = rlimit(RLIMIT_CORE),
-		.mm_flags = mm->flags,
-		.vma_meta = NULL,
-		.cpu = raw_smp_processor_id(),
-	};
+        .siginfo = siginfo,
+        .limit = rlimit(RLIMIT_CORE),
+        .mm_flags = mm->flags,
+        .vma_meta = NULL,
+        .cpu = raw_smp_processor_id(),
+    };
 
     coredump_wait(siginfo->si_signo, &core_state) {
 
@@ -4429,28 +4440,28 @@ do_coredump() {
 
 ```c
 static int alloc_fd(unsigned start, unsigned end, unsigned flags) {
-	struct files_struct *files = current->files;
-	unsigned int fd;
-	int error;
-	struct fdtable *fdt;
+    struct files_struct *files = current->files;
+    unsigned int fd;
+    int error;
+    struct fdtable *fdt;
 
-	spin_lock(&files->file_lock);
+    spin_lock(&files->file_lock);
 
 repeat:
-	fdt = files_fdtable(files);
-	fd = start;
-	if (fd < files->next_fd)
-		fd = files->next_fd;
+    fdt = files_fdtable(files);
+    fd = start;
+    if (fd < files->next_fd)
+        fd = files->next_fd;
 
-	if (fd < fdt->max_fds) {
-		fd = find_next_fd(fdt, fd) {
+    if (fd < fdt->max_fds) {
+        fd = find_next_fd(fdt, fd) {
 
         }
     }
 
-	error = -EMFILE;
+    error = -EMFILE;
 
-	error = expand_files(files, fd) {
+    error = expand_files(files, fd) {
         struct fdtable *fdt;
         int expanded = 0;
 
@@ -4513,28 +4524,28 @@ repeat:
         return expanded;
     }
 
-	if (start <= files->next_fd) {
-		files->next_fd = fd + 1;
+    if (start <= files->next_fd) {
+        files->next_fd = fd + 1;
     }
 
-	__set_open_fd(fd, fdt);
-	if (flags & O_CLOEXEC)
-		__set_close_on_exec(fd, fdt);
-	else
-		__clear_close_on_exec(fd, fdt);
-	error = fd;
+    __set_open_fd(fd, fdt);
+    if (flags & O_CLOEXEC)
+        __set_close_on_exec(fd, fdt);
+    else
+        __clear_close_on_exec(fd, fdt);
+    error = fd;
 
 #if 1
-	/* Sanity check */
-	if (rcu_access_pointer(fdt->fd[fd]) != NULL) {
-		printk(KERN_WARNING "alloc_fd: slot %d not NULL!\n", fd);
-		rcu_assign_pointer(fdt->fd[fd], NULL);
-	}
+    /* Sanity check */
+    if (rcu_access_pointer(fdt->fd[fd]) != NULL) {
+        printk(KERN_WARNING "alloc_fd: slot %d not NULL!\n", fd);
+        rcu_assign_pointer(fdt->fd[fd], NULL);
+    }
 #endif
 
 out:
-	spin_unlock(&files->file_lock);
-	return error;
+    spin_unlock(&files->file_lock);
+    return error;
 }
 ```
 
@@ -6326,6 +6337,58 @@ ext4_get_tree(fc);
 ```
 
 ## direct io
+
+
+```c
+/* direct io, not used for ext4 */
+do_direct_IO() {
+    dio_get_page() {
+        dio_refill_pages();
+        get_user_pages_fast() {
+            get_user_pages_unlocked();
+            own_read(&mm->mmap_sem) {
+                __get_user_pages_locked();
+                find_vma(mm, start);
+                virt_to_page(start);
+            }
+            up_read(&mm->mmap_sem);
+        }
+    }
+
+    get_more_blocks() {
+        ext4_dio_get_block();
+        _ext4_get_block() {
+            ext4_map_blocks();
+            ext4_es_lookup_extent() {
+                ext4_ext_map_blocks();
+            }
+        }
+    }
+
+    submit_page_section() {
+        dio_send_cur_page() { /* prepare bio data */
+            dio_new_bio() {
+                dio_bio_alloc();
+            }
+            dio_bio_add_page();
+        }
+
+        dio_bio_submit() {
+            submit_bio();
+        }
+    }
+
+    dio_await_completion(dio);
+    dio_complete() {
+        ext4_end_io_dio() {
+            ext4_put_io_end();
+        }
+    }
+
+    blk_finish_plug();
+}
+```
+
 ```c
 read();
   vfs_read();
@@ -6893,6 +6956,224 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 ```
 
 ## wb_workfn
+
+![](../images/kernel/proc-cmwq.png)
+
+writeback cases:
+1. Periodic Write-back
+    * /proc/sys/vm/ directory, such as:
+    * **dirty_writeback_centisecs**: The interval between periodic write-back operations.
+	* **dirty_expire_centisecs**: The age at which dirty pages are considered old enough to be written back.
+
+2. Memory Pressure
+    * **dirty_ratio**: The maximum percentage of system memory that can be filled with dirty pages before the kernel starts writing them back to disk.
+	* **dirty_background_ratio**: The percentage of system memory filled with dirty pages at which the background write-back process kicks in.
+
+3. Explicit Sync Operations
+    * **fsync**(): Forces a write-back of all dirty pages associated with a file descriptor to the storage device.
+	* **fdatasync**(): Similar to fsync(), but only flushes the file’s data, not its metadata.
+	* **sync**(): Forces a write-back of all dirty pages in the system, affecting all files.
+
+4. Unmounting Filesystems
+
+5. File Close Operation
+    * If the file has been opened with the **O_SYNC** flag or similar flags that request synchronous I/O operations.
+
+6. Direct Write-through or Write-back Modes
+    * Certain filesystems or storage configurations (like RAID controllers or specific types of networked storage) can be set up to use write-through or write-back caching modes, which influence when and how dirty pages are written back to the storage device.
+
+```c
+wb_workfn() {
+    wb_do_writeback() { /* traverse Struct.1.wb_writeback_work */
+        /* 1. wb work_list which has highest prio */
+        while ((work = get_next_work_item(wb)) != NULL) {
+            wb_writeback() {
+                struct blk_plug plug;
+                blk_start_plug(plug);
+                current->plug = plug;
+
+                if (list_empty(&wb->b_io)) {
+                    queue_io(wb, work, dirtied_before) {
+                        list_splice_init(&wb->b_more_io, &wb->b_io);
+                        move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
+                        move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
+                    }
+                }
+
+                if (work->sb) {
+                    /* traverse wb->b_io, which is inode list */
+                    progress = writeback_sb_inodes(); /* Struct.2.writeback_control */
+                        while (!list_empty(&wb->b_io)) {
+                            __writeback_single_inode();
+                                do_writepages() {
+                                    if (mapping->a_ops->writepages) {
+                                        mapping->a_ops->writepages(mapping, wbc) {
+                                            ext4_writepages() { /* Struct.3.mpage_da_data */
+                                                blk_start_plug(&plug);
+                                                /* 1. find page cache data */
+                                                mpage_prepare_extent_to_map() {
+                                                    /* 1.1 find dirty pages */
+                                                    pagevec_lookup_range_tag() { /* PAGECACHE_TAG_{TOWRITE, DIRTY} */
+                                                        find_get_pages_range_tag();
+                                                            /* find in i_pages xarray */
+                                                    }
+
+                                                    /* Wait for a folio to finish writeback */
+                                                    wait_on_page_writeback() {
+                                                        wait_on_page_bit(page, PG_writeback) {
+                                                            io_schedule() {
+                                                                schedule();
+                                                            }
+                                                        }
+                                                    }
+
+                                                    /* 1.2. submit page buffers for IO */
+                                                    mpage_process_page_bufs() {
+                                                        mpage_add_bh_to_extent();
+                                                        mpage_submit_page() {
+                                                            ext4_bio_write_page() {
+                                                                io_submit_add_bh() { /* Struct.4.buffer_head */
+                                                                    io_submit_init_bio() { /* init bio */
+                                                                        bio_alloc();
+                                                                        wbc_init_bio();
+                                                                    }
+                                                                    bio_add_page();
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                /* 2. submit io data */
+                                                ext4_io_submit() {
+                                                    submit_bio();
+                                                }
+                                                blk_start_unplug(&plug);
+                                            }
+                                        }
+                                    } else {
+                                        generic_writepages(mapping, wbc);
+                                    }
+                                }
+
+                                bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
+                                if ((inode->i_state & I_DIRTY_TIME)
+                                    && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
+                                {
+                                    mark_inode_dirty_sync(inode);
+                                }
+                        }
+                } else {
+                    progress = __writeback_inodes_wb();
+                        writeback_sb_inodes();
+                }
+
+                if (progress)
+                    continue;
+
+                blk_finish_plug();
+
+                inode_sleep_on_writeback();
+            }
+        }
+
+        /* 2. wb trigger by memory reclaim */
+        wb_check_start_all(wb) {
+            if (!test_bit(WB_start_all, &wb->state))
+                return 0;
+
+            nr_pages = get_nr_dirty_pages();
+            if (nr_pages) {
+                struct wb_writeback_work work = {
+                    .nr_pages       = wb_split_bdi_pages(wb, nr_pages),
+                    .sync_mode      = WB_SYNC_NONE,
+                    .range_cyclic   = 1,
+                    .reason         = wb->start_all_reason,
+                };
+
+                nr_pages = wb_writeback(wb, &work);
+            }
+        }
+        /* 3. wb periodically */
+        wb_check_old_data_flush(wb) {
+            expired = wb->last_old_flush +
+                msecs_to_jiffies(dirty_writeback_interval * 10);
+            if (time_before(jiffies, expired))
+                return 0;
+
+            nr_pages = get_nr_dirty_pages();
+
+            if (nr_pages) {
+                struct wb_writeback_work work = {
+                    .nr_pages       = nr_pages,
+                    .sync_mode      = WB_SYNC_NONE,
+                    .for_kupdate    = 1,
+                    .range_cyclic   = 1,
+                    .reason         = WB_REASON_PERIODIC,
+                };
+
+                return wb_writeback(wb, &work);
+            }
+        }
+        /* 4. wb backgroud */
+        wb_check_background_flush(wb) {
+            if (wb_over_bg_thresh(wb)) {
+                struct wb_writeback_work work = {
+                    .nr_pages       = LONG_MAX,
+                    .sync_mode      = WB_SYNC_NONE,
+                    .for_background = 1,
+                    .range_cyclic   = 1,
+                    .reason         = WB_REASON_BACKGROUND,
+                };
+
+                return wb_writeback(wb, &work);
+            }
+        }
+    }
+
+    if (!list_empty(&wb->work_list)) {
+        wb_wakeup(wb) {
+            mod_delayed_work() {
+                --->
+            }
+        }
+    } else if (wb_has_dirty_io(wb) && dirty_writeback_interval) {
+        wb_wakeup_delayed(wb) {
+            queue_delayed_work() {
+                --->
+            }
+        }
+    }
+}
+
+sync_filesystem() {
+    writeback_inodes_sb() {
+        writeback_inodes_sb_nr() {
+            get_nr_dirty_pages();
+            __writeback_inodes_sb_nr() { /* wb_writeback_work */
+                struct wb_writeback_work work = { };
+                /* split a wb_writeback_work to all wb's of a bdi */
+                bdi_split_work_to_wbs() {
+                    /* split nr_pages to write according to bandwidth */
+                    wb_split_bdi_pages();
+                    wb_queue_work() {
+                        list_add_tail(&work->list, &wb->work_list);
+                        mod_delayed_work(bdi_wq, &wb->dwork, 0) {
+                            mod_delayed_work_on() {
+                                __queue_delayed_work() {
+                                    add_timer(); /* delayed_work_timer_fn */
+                                }
+                            }
+                        }
+                    }
+                }
+                wb_wait_for_completion();
+            }
+        }
+    }
+}
+```
+
 ```c
 /* wb_workfn -> wb_do_writeback -> wb_writeback
  * -> writeback_sb_inodes -> __writeback_single_inode
@@ -7617,6 +7898,55 @@ void ext4_io_submit(struct ext4_io_submit *io)
 
 <img src='../images/kernel/io-blk_queue_bio.png' height='800' />
 
+
+```c
+/* io scheduler */
+__submit_bio(bio) {
+    blk_mq_submit_bio(bio) {
+        struct request_queue *q = bdev_get_queue(bio->bi_bdev);
+
+        bio_set_ioprio(bio);
+        struct request *rq = blk_mq_get_cached_request(q) {
+            rq = rq_list_peek(&plug->cached_rq) {
+                rq = rq_list_peek(&plug->cached_rq);
+                if (!rq || rq->q != q)
+                    return NULL;
+
+                if (blk_mq_attempt_bio_merge()) {
+                    blk_mq_sched_bio_merge(q, bio, nr_segs) {
+                        struct elevator_queue *e = q->elevator;
+                        e->type->ops.bio_merge(q, bio, nr_segs) {
+                            bfq_bio_merge() {
+                                blk_mq_sched_try_merge() {
+                                    elv_merge(q, &rq, bio);
+                                    bio_attempt_back_merge();
+                                    bio_attempt_front_merge();
+                                }
+                            }
+                        }
+                    }
+                    *bio = NULL;
+                    return;
+                }
+
+                plug->cached_rq = rq_list_next(rq);
+            }
+        }
+
+        rq = blk_mq_get_new_requests(q) {
+            rq = __blk_mq_alloc_requests(&data);
+        }
+
+        if (plug)
+            blk_add_rq_to_plug(plug, rq); /* request is scheduled to device derive when blk_finish_plug */
+        else if (rq->rq_flags & RQF_ELV)
+            blk_mq_sched_insert_request(rq, false, true, true);
+        else
+            blk_mq_run_dispatch_ops(rq->q, blk_mq_try_issue_directly(rq->mq_hctx, rq));
+    }
+}
+```
+
 ```c
 struct request_queue {
   /* Together with queue_head for cacheline sharing */
@@ -8309,6 +8639,39 @@ int blk_init_allocated_queue(struct request_queue *q)
 When I/O is queued to an empty device, that device enters a plugged state. This means that I/O isn't immediately dispatched to the low level device driver, instead it is held back by this plug. When a process is going to wait on the I/O to finish, the device is unplugged and request dispatching to the device driver is started. The idea behind plugging is to allow a buildup of requests to better utilize the hardware and to allow merging of sequential requests into one single larger request.
 
 ```c
+blk_finish_plug();
+    if (plug == current->plug) {
+    __blk_flush_plug(plug, false);
+        blk_mq_flush_plug_list();
+            struct request_queue *q = rq->q;
+            if (!multiple_queues && !has_elevator && !from_schedule) {
+                if (__blk_mq_flush_plug_list(q, plug))
+                    q->mq_ops->queue_rqs(&plug->mq_list);
+                    return;
+
+                if (blk_mq_plug_issue_direct(plug, false))
+                    return;
+            }
+
+            blk_mq_dispatch_plug_list();
+                blk_mq_sched_insert_requests();
+                    struct elevator_queue *e = hctx->queue->elevator;
+                    e->type->ops.insert_requests(hctx, list, false);
+
+                    blk_mq_run_hw_queue();
+                        __blk_mq_delay_run_hw_queue();
+                            __blk_mq_run_hw_queue();
+                                blk_mq_sched_dispatch_requests();
+                                    __blk_mq_sched_dispatch_requests();
+                                        blk_mq_dispatch_rq_list();
+                                            q->mq_ops->queue_rq(hctx, &bd);
+                                            q->mq_ops->commit_rqs(hctx);
+
+    current->plug = NULL;
+  }
+```
+
+```c
 void blk_start_plug(struct blk_plug *plug)
 {
   struct task_struct *tsk = current;
@@ -8691,268 +9054,6 @@ static const struct blk_mq_ops scsi_mq_ops = {
   .queue_rq  = scsi_queue_rq,
   .complete  = scsi_complete,
 };
-```
-
-```c
-/* direct io, not used for ext4 */
-do_direct_IO();
-
-    dio_get_page();
-        dio_refill_pages();
-        get_user_pages_fast();
-            get_user_pages_unlocked();
-            own_read(&mm->mmap_sem);
-                __get_user_pages_locked();
-                find_vma(mm, start);
-                virt_to_page(start);
-            up_read(&mm->mmap_sem);
-
-    get_more_blocks();
-        ext4_dio_get_block();
-        _ext4_get_block();
-            ext4_map_blocks();
-            ext4_es_lookup_extent();
-                ext4_ext_map_blocks();
-
-    submit_page_section();
-        dio_send_cur_page(); /* prepare bio data */
-            dio_new_bio();
-                dio_bio_alloc();
-            dio_bio_add_page();
-
-        dio_bio_submit();
-            submit_bio();
-
-    dio_await_completion(dio);
-    dio_complete();
-        ext4_end_io_dio();
-            ext4_put_io_end();
-
-    blk_finish_plug();
-```
-
-## call graph io
-```c
-/* wb_workfn */
-wb_workfn() {
-    wb_do_writeback(); /* traverse Struct.1.wb_writeback_work */
-        while ((work = get_next_work_item(wb)) != NULL) {
-            wb_writeback() {
-                struct blk_plug plug;
-                blk_start_plug(plug);
-                   current->plug = plug;
-
-                if (list_empty(&wb->b_io))
-                    queue_io(wb, work, dirtied_before);
-                        list_splice_init(&wb->b_more_io, &wb->b_io);
-                        move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
-                        move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
-
-                if (work->sb) {
-                    /* traverse wb->b_io, which is inode list */
-                    progress = writeback_sb_inodes(); /* Struct.2.writeback_control */
-                        while (!list_empty(&wb->b_io)) {
-                            __writeback_single_inode();
-                                do_writepages() {
-                                    if (mapping->a_ops->writepages) {
-                                        mapping->a_ops->writepages(mapping, wbc);
-                                            ext4_writepages(); /* Struct.3.mpage_da_data */
-                                                blk_start_plug(&plug);
-                                                /* 1. find page cache data */
-                                                mpage_prepare_extent_to_map();
-                                                    /* 1.1 find dirty pages */
-                                                    pagevec_lookup_range_tag(); /* PAGECACHE_TAG_{TOWRITE, DIRTY} */
-                                                        find_get_pages_range_tag();
-                                                            /* find in i_pages xarray */
-
-                                                    wait_on_page_writeback();
-                                                        wait_on_page_bit(page, PG_writeback);
-                                                            io_schedule();
-                                                                schedule();
-
-                                                    /* 1.2. submit page buffers for IO */
-                                                    mpage_process_page_bufs();
-                                                        mpage_add_bh_to_extent();
-                                                        mpage_submit_page();
-                                                            ext4_bio_write_page();
-                                                                io_submit_add_bh(); /* Struct.4.buffer_head */
-                                                                    io_submit_init_bio(); /* init bio */
-                                                                        bio_alloc();
-                                                                        wbc_init_bio();
-                                                                    bio_add_page();
-
-                                                /* 2. submit io data */
-                                                ext4_io_submit();
-                                                    submit_bio();
-                                                blk_start_unplug(&plug);
-                                    } else {
-                                        generic_writepages(mapping, wbc);
-                                    }
-                                }
-
-                                bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
-                                if ((inode->i_state & I_DIRTY_TIME)
-                                    && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
-                                {
-                                    mark_inode_dirty_sync(inode);
-                                }
-                        }
-                } else {
-                    progress = __writeback_inodes_wb();
-                        writeback_sb_inodes();
-                }
-
-                if (progress)
-                    continue;
-
-                blk_finish_plug();
-
-                inode_sleep_on_writeback();
-            }
-        }
-
-        wb_check_start_all(wb) {
-            nr_pages = get_nr_dirty_pages();
-            if (nr_pages) {
-                struct wb_writeback_work work = {
-                    .nr_pages	= wb_split_bdi_pages(wb, nr_pages),
-                    .sync_mode	= WB_SYNC_NONE,
-                    .range_cyclic	= 1,
-                    .reason		= wb->start_all_reason,
-                };
-
-                nr_pages = wb_writeback(wb, &work);
-            }
-        }
-        wb_check_old_data_flush(wb) {
-            nr_pages = get_nr_dirty_pages();
-
-            if (nr_pages) {
-                struct wb_writeback_work work = {
-                    .nr_pages	= nr_pages,
-                    .sync_mode	= WB_SYNC_NONE,
-                    .for_kupdate	= 1,
-                    .range_cyclic	= 1,
-                    .reason		= WB_REASON_PERIODIC,
-                };
-
-                return wb_writeback(wb, &work);
-            }
-        }
-        wb_check_background_flush(wb) {
-            if (wb_over_bg_thresh(wb)) {
-                struct wb_writeback_work work = {
-                    .nr_pages	= LONG_MAX,
-                    .sync_mode	= WB_SYNC_NONE,
-                    .for_background	= 1,
-                    .range_cyclic	= 1,
-                    .reason		= WB_REASON_BACKGROUND,
-                };
-
-                return wb_writeback(wb, &work);
-            }
-        }
-
-    if (!list_empty(&wb->work_list))
-        wb_wakeup(wb);
-            mod_delayed_work();
-                --->
-    else if (wb_has_dirty_io(wb) && dirty_writeback_interval)
-        wb_wakeup_delayed(wb);
-            queue_delayed_work();
-                --->
-}
-
-sync_filesystem() {
-    writeback_inodes_sb();
-        writeback_inodes_sb_nr();
-            get_nr_dirty_pages();
-            __writeback_inodes_sb_nr(); /* wb_writeback_work */
-                struct wb_writeback_work work = { };
-                /* split a wb_writeback_work to all wb's of a bdi */
-                bdi_split_work_to_wbs();
-                    /* split nr_pages to write according to bandwidth */
-                    wb_split_bdi_pages();
-                    wb_queue_work();
-                        list_add_tail(&work->list, &wb->work_list);
-                        mod_delayed_work(bdi_wq, &wb->dwork, 0);
-                            mod_delayed_work_on();
-                                __queue_delayed_work();
-                                    add_timer(); /* delayed_work_timer_fn */
-                wb_wait_for_completion();
-}
-```
-
-```c
-/* io scheduler */
-__submit_bio(bio);
-    blk_mq_submit_bio(bio);
-        struct request_queue *q = bdev_get_queue(bio->bi_bdev);
-
-        bio_set_ioprio(bio);
-        struct request *rq = blk_mq_get_cached_request(q);
-            rq = rq_list_peek(&plug->cached_rq);
-                rq = rq_list_peek(&plug->cached_rq);
-                if (!rq || rq->q != q)
-                    return NULL;
-
-                if (blk_mq_attempt_bio_merge()) {
-                    blk_mq_sched_bio_merge(q, bio, nr_segs);
-                        struct elevator_queue *e = q->elevator;
-                        e->type->ops.bio_merge(q, bio, nr_segs);
-                            bfq_bio_merge();
-                                blk_mq_sched_try_merge();
-                                    elv_merge(q, &rq, bio);
-                                    bio_attempt_back_merge();
-                                    bio_attempt_front_merge();
-                    *bio = NULL;
-                    return;
-                }
-
-                plug->cached_rq = rq_list_next(rq);
-
-        rq = blk_mq_get_new_requests(q);
-            rq = __blk_mq_alloc_requests(&data);
-
-        if (plug)
-            blk_add_rq_to_plug(plug, rq); /* request is scheduled to device derive when blk_finish_plug */
-        else if (rq->rq_flags & RQF_ELV)
-            blk_mq_sched_insert_request(rq, false, true, true);
-        else
-            blk_mq_run_dispatch_ops(rq->q, blk_mq_try_issue_directly(rq->mq_hctx, rq));
-```
-
-```c
-blk_finish_plug();
-    if (plug == current->plug) {
-    __blk_flush_plug(plug, false);
-        blk_mq_flush_plug_list();
-            struct request_queue *q = rq->q;
-            if (!multiple_queues && !has_elevator && !from_schedule) {
-                if (__blk_mq_flush_plug_list(q, plug))
-                    q->mq_ops->queue_rqs(&plug->mq_list);
-                    return;
-
-                if (blk_mq_plug_issue_direct(plug, false))
-                    return;
-            }
-
-            blk_mq_dispatch_plug_list();
-                blk_mq_sched_insert_requests();
-                    struct elevator_queue *e = hctx->queue->elevator;
-                    e->type->ops.insert_requests(hctx, list, false);
-
-                    blk_mq_run_hw_queue();
-                        __blk_mq_delay_run_hw_queue();
-                            __blk_mq_run_hw_queue();
-                                blk_mq_sched_dispatch_requests();
-                                    __blk_mq_sched_dispatch_requests();
-                                        blk_mq_dispatch_rq_list();
-                                            q->mq_ops->queue_rq(hctx, &bd);
-                                            q->mq_ops->commit_rqs(hctx);
-
-    current->plug = NULL;
-  }
 ```
 
 ## Q:
