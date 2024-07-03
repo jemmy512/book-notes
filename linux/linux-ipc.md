@@ -885,6 +885,56 @@ ret:
 ## do_signal
 
 ```c
+struct rt_sigframe_user_layout {
+    struct rt_sigframe {
+        struct siginfo {
+            union {
+                __SIGINFO;
+                int _si_pad[SI_MAX_SIZE/sizeof(int)];
+            };
+        } info;
+
+        struct ucontext {
+            unsigned long   uc_flags;
+            struct ucontext *uc_link;
+            stack_t         uc_stack;
+            sigset_t        uc_sigmask;
+            /* glibc uses a 1024-bit sigset_t */
+            __u8 __unused[1024 / 8 - sizeof(sigset_t)];
+            /* last for future expansion */
+            struct sigcontext {
+                __u64 fault_address;
+                __u64 regs[31]; /* AArch64 registers */
+                __u64 sp;
+                __u64 pc;
+                __u64 pstate;
+                /* 4K reserved for FP/SIMD state and future expansion */
+                __u8 __reserved[4096];
+            } uc_mcontext;
+        } uc;
+    } *sigframe;
+
+    struct frame_record {
+        u64 fp;
+        u64 lr;
+    } *next_frame;
+
+    unsigned long size;     /* size of allocated sigframe data */
+    unsigned long limit;    /* largest allowed size */
+
+    unsigned long fpsimd_offset;
+    unsigned long esr_offset;
+    unsigned long sve_offset;
+    unsigned long tpidr2_offset;
+    unsigned long za_offset;
+    unsigned long zt_offset;
+    unsigned long fpmr_offset;
+    unsigned long extra_offset;
+    unsigned long end_offset;
+};
+```
+
+```c
 static void exit_to_user_mode_prepare(struct pt_regs *regs, u32 cached_flags)
 {
     do_notify_resume(regs, flags) {
@@ -1358,7 +1408,13 @@ out:
 ```c
 SYSCALL_DEFINE0(rt_sigreturn)
 {
-    struct pt_regs *regs = current_pt_regs();
+    struct pt_regs *regs = current_pt_regs() {
+        #define current_pt_regs() task_pt_regs(current) {
+            #define task_pt_regs(p) \
+                ((struct pt_regs *)(THREAD_SIZE + task_stack_page(p)) - 1)
+            #define task_stack_page(p) ((void *)(task)->stack)
+        }
+    }
     struct rt_sigframe __user *frame;
 
     /* Always make any pending restarted system calls return -EINTR */

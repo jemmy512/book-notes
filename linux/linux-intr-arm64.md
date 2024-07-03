@@ -84,6 +84,7 @@ SYM_CODE_END(vectors)
 .Lskip_tramp_vectors_cleanup\@:
     .endif /* \el == 0 */
 
+    /* alloc stack space for pt_regs */
     sub    sp, sp, #PT_REGS_SIZE
 #ifdef CONFIG_VMAP_STACK
     add    sp, sp, x0            // sp' = sp + x0
@@ -119,6 +120,7 @@ SYM_CODE_END(vectors)
 ```
 
 ## entry_handler
+
 ```c
 entry_handler    1, h, 64, sync
 entry_handler    1, h, 64, irq
@@ -128,7 +130,7 @@ entry_handler    1, h, 64, error
     .macro entry_handler el:req, ht:req, regsize:req, label:req
 SYM_CODE_START_LOCAL(el\el\ht\()_\regsize\()_\label)
     kernel_entry \el, \regsize
-    mov    x0, sp
+    mov    x0, sp /* sp passed as arg to el_ht_handler */
     bl    el\el\ht\()_\regsize\()_\label\()_handler
     .if \el == 0
     b    ret_to_user
@@ -182,15 +184,13 @@ SYM_CODE_END(el\el\ht\()_\regsize\()_\label)
 
 #ifdef CONFIG_ARM64_PTR_AUTH
 alternative_if ARM64_HAS_ADDRESS_AUTH
-    /*
-     * Enable IA for in-kernel PAC if the task had it disabled. Although
+    /* Enable IA for in-kernel PAC if the task had it disabled. Although
      * this could be implemented with an unconditional MRS which would avoid
      * a load, this was measured to be slower on Cortex-A75 and Cortex-A76.
      *
      * Install the kernel IA key only if IA was enabled in the task. If IA
      * was disabled on kernel exit then we would have left the kernel IA
-     * installed so there is no need to install it again.
-     */
+     * installed so there is no need to install it again. */
     tbz    x0, SCTLR_ELx_ENIA_SHIFT, 1f
     __ptrauth_keys_install_kernel_nosync tsk, x20, x22, x23
     b    2f
@@ -267,18 +267,17 @@ alternative_else_nop_endif
 .Lskip_pmr_save\@:
 #endif
 
-    /*
-     * Registers that may be useful after this macro is invoked:
+    /* Registers that may be useful after this macro is invoked:
      *
      * x20 - ICC_PMR_EL1
      * x21 - aborted SP
      * x22 - aborted PC
-     * x23 - aborted PSTATE
-    */
+     * x23 - aborted PSTATE */
     .endm
 ```
 
 ## ret_to_kernel
+
 ```c
 SYM_CODE_START_LOCAL(ret_to_kernel)
     kernel_exit 1

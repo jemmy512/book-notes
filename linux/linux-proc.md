@@ -3980,6 +3980,7 @@ new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag) {
         }
     }
 
+  	/* search sd in top down order */
     while (sd) {
         struct sched_group *group;
         struct sched_domain *tmp;

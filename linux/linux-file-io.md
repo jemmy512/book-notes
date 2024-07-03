@@ -4169,9 +4169,23 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
 
 ![](../images/kernel/proc-cmwq.png)
 
-### backing_dev_info
+```c
+                             +--- indoe->sb != sb <-+
+                             |                      |
+                             v                      |
+                      |--> b_dirty -------------->b_io ---------+
+                      |          dirty time >= 30s |            |
+                      |                            |            |
+ mark_inode_dirty-----+                            |  inode.stat != wb.stat
+                      |                            |            v
+                      |--> b_dirty_time	           |      b_more_io
+                                |                  |            |
+                      dirty time >= 12H            |            |
+                                |                  v            |
+                                +--> writeback_single_inode <---+
+```
 
-![](../images/kernel/io-mark_inode_dirty.png)
+### backing_dev_info
 
 ```c
 extern spinlock_t               bdi_lock;
@@ -4181,7 +4195,7 @@ extern struct workqueue_struct  *bdi_wq;
 struct backing_dev_info {
   struct list_head      bdi_list;
   struct bdi_writeback  wb;      /* the root writeback info for this bdi */
-  struct list_head      wb_list; /* list of all wbs */
+  struct list_head      wb_list; /* list of all wbs e.g., cgroup wb */
 
   wait_queue_head_t     wb_waitq;
 
@@ -6993,6 +7007,7 @@ wb_workfn() {
                 current->plug = plug;
 
                 if (list_empty(&wb->b_io)) {
+                    /* Queue all expired dirty inodes for io, eldest first. */
                     queue_io(wb, work, dirtied_before) {
                         list_splice_init(&wb->b_more_io, &wb->b_io);
                         move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
@@ -7002,9 +7017,9 @@ wb_workfn() {
 
                 if (work->sb) {
                     /* traverse wb->b_io, which is inode list */
-                    progress = writeback_sb_inodes(); /* Struct.2.writeback_control */
+                    progress = writeback_sb_inodes() { /* Struct.2.writeback_control */
                         while (!list_empty(&wb->b_io)) {
-                            __writeback_single_inode();
+                            __writeback_single_inode() {
                                 do_writepages() {
                                     if (mapping->a_ops->writepages) {
                                         mapping->a_ops->writepages(mapping, wbc) {
@@ -7062,7 +7077,9 @@ wb_workfn() {
                                 {
                                     mark_inode_dirty_sync(inode);
                                 }
+                            }
                         }
+                    }
                 } else {
                     progress = __writeback_inodes_wb();
                         writeback_sb_inodes();
