@@ -2834,39 +2834,8 @@ push_rt_tasks()
             }
         }
 
-        set_task_cpu(next_task, lowest_rq->cpu) {
-            if (task_cpu(p) != new_cpu) {
-                if (p->sched_class->migrate_task_rq) {
-                    p->sched_class->migrate_task_rq(p, new_cpu);
-                }
-                p->se.nr_migrations++;
-                rseq_migrate(p);
-                sched_mm_cid_migrate_from(p);
-                perf_event_task_migrate(p);
-            }
+        set_task_cpu(next_task, lowest_rq->cpu);
 
-            __set_task_cpu(p, new_cpu) {
-                set_task_rq(p, cpu) {
-                    struct task_group *tg = task_group(p);
-
-                    set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]) {
-                        p_last_update_time = cfs_rq_last_update_time(prev);
-                        n_last_update_time = cfs_rq_last_update_time(next);
-
-                        __update_load_avg_blocked_se(p_last_update_time, se);
-                        se->avg.last_update_time = n_last_update_time;
-                    }
-                    p->se.cfs_rq = tg->cfs_rq[cpu];
-                    p->se.parent = tg->se[cpu];
-                    p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
-
-                    p->rt.rt_rq  = tg->rt_rq[cpu];
-                    p->rt.parent = tg->rt_se[cpu];
-                }
-                WRITE_ONCE(task_thread_info(p)->cpu, cpu);
-                p->wake_cpu = cpu;
-            }
-        }
         activate_task(lowest_rq, next_task, 0) {
             if (task_on_rq_migrating(p))
                 flags |= ENQUEUE_MIGRATED;
@@ -3338,8 +3307,8 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
             if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
                 action |= DO_DETACH;
-
             update_curr(cfs_rq);
+            /* only detach load_avg/runnable_avg/util_avg when a se is migrating */
             update_load_avg(cfs_rq, se, action);
 
             update_stats_dequeue_fair(cfs_rq, se, flags);
@@ -3383,7 +3352,7 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                     cfs_rq->idle_nr_running--;
             }
 
-            /* return excess runtime on last dequeue */
+            /* return excess runtime when last se dequeue */
             return_cfs_rq_runtime(cfs_rq) {
                 if (!cfs_bandwidth_used())
                     return;
@@ -3424,7 +3393,7 @@ dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                 update_idle_cfs_rq_clock_pelt(cfs_rq);
         }
 
-        cfs_rq->h_nr_running--;
+        cfs_rq->h_nr_running--; /* dequeue runnable_avg */
         cfs_rq->idle_h_nr_running -= idle_h_nr_running;
 
         if (cfs_rq_is_idle(cfs_rq))
@@ -5610,20 +5579,36 @@ get_cpu_for_node(struct device_node *node)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 * [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
+* [Linux 核心設計: Scheduler(4): PELT](https://hackmd.io/@RinHizakura/Bk4y_5o-9)
 
-![](../images/kernel/proc-sched-cfs-pelt-segement.png)
+![](../images/kernel/proc-sched-pelt-segement.png)
+
+![](../images/kernel/proc-sched-pelt-update_load_avg.png)
+
+![](../images/kernel/proc-sched-pelt-calc.png)
 
 ---
 
-![](../images/kernel/proc-sched-last_update_time.svg)
+![](../images/kernel/proc-sched-pelt-last_update_time.svg)
 
+load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions:
+1. **weight (priority)**
+2. **number of tasks on run queue**
+3. **CPU time slice occupancy**
+
+---
+
+* An entity's **contribution** to the system load in a period pi is just **the portion of that period** that the entity was runnable - either actually running, or waiting for an available CPU.
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
 * the 3.8 scheduler will simply maintain a separate sum of the `blocked load` contained in each cfs_rq (control-group run queue) structure. When a process blocks, its load is subtracted from the total runnable load value and added to the blocked load instead.
 * `Throttled processes` thus cannot contribute to load, so removing their contribution while they languish makes sense. But allowing their load contribution to decay while they are waiting to be allowed to run again would tend to skew their contribution downward. So, in the throttled case, time simply stops for the affected processes until they emerge from the throttled state.
 
+* [sched/pelt: Add a new runnable average signal](https://github.com/torvalds/linux/commit/9f68395333ad7f5bfe2f83473fed363d4229f11c) - Now that runnable_load_avg has been removed, we can replace it by a new signal that will highlight the runnable pressure on a cfs_rq. This signal track the waiting time of tasks on rq and can help to better define the state of rqs.
+    * The new runnable_avg will track the runnable time of a task which simply adds the waiting time to the running time.
+
 * cfs_rq attach/detach load_avg
-    * Dont detach load_avg if a task sleep
-    * Detach load_avg when changing sched class, group, cpu
+    * Dont detach load_avg if a task sleep, but detach runnable_avg since runnable just count nr of se.on_rq
+    * Detach load_avg, runnable_avg and util_avg when changing sched class, group or cpu
 
     ```c
     dequeue_entity(cfs_rq, se, flags) {
@@ -5677,18 +5662,15 @@ get_cpu_for_node(struct device_node *node)
     ```
 
 ```c
-/* load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions:
- * weight (priority), number of tasks, and CPU time slice occupancy. */
 struct sched_avg {
     u64                 last_update_time;
 
-    /* running + waiting, scaled to weight
+    /* running + waiting + blocked time, scaled to weight
      * load_avg = runnable% * scale_load_down(load) */
     u64                 load_sum;
     unsigned long       load_avg;
 
-    /* runnable includes either actually running,
-     * or waiting for an available CPU, scaled to cpu capabity
+    /* running + waiting time, scaled to cpu capabity
      * runnable_avg = runnable% * SCHED_CAPACITY_SCALE */
     u64                 runnable_sum;
     unsigned long       runnable_avg;
@@ -5739,6 +5721,46 @@ load, runnable and running function as:
  *   load_sum = \Sum se_weight(se) * se->avg.load_sum
  *   load_avg = \Sum se->avg.load_avg */
 
+int __update_load_avg_blocked_se(u64 now, struct sched_entity *se)
+{
+    if (___update_load_sum(now, &se->avg, 0, 0, 0)) {
+        ___update_load_avg(&se->avg, se_weight(se));
+        trace_pelt_se_tp(se);
+        return 1;
+    }
+
+    return 0;
+}
+
+int __update_load_avg_se(u64 now, struct cfs_rq *cfs_rq, struct sched_entity *se)
+{
+    if (___update_load_sum(now, &se->avg, !!se->on_rq, se_runnable(se),
+                cfs_rq->curr == se)) {
+
+        ___update_load_avg(&se->avg, se_weight(se));
+        cfs_se_util_change(&se->avg);
+        trace_pelt_se_tp(se);
+        return 1;
+    }
+
+    return 0;
+}
+
+int __update_load_avg_cfs_rq(u64 now, struct cfs_rq *cfs_rq)
+{
+    if (___update_load_sum(now, &cfs_rq->avg,
+                scale_load_down(cfs_rq->load.weight),
+                cfs_rq->h_nr_running,
+                cfs_rq->curr != NULL)) {
+        /* Since cfs_rq->load.weight is multipled in load_sum, just past 1 */
+        ___update_load_avg(&cfs_rq->avg, 1);
+        trace_pelt_cfs_tp(cfs_rq);
+        return 1;
+    }
+
+    return 0;
+}
+
 int ___update_load_sum(u64 now, struct sched_avg *sa,
     unsigned long load, /* tsk nr which participant in cpu load */
     unsigned long runnable,
@@ -5754,15 +5776,14 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
         return 0;
     }
 
-    /* ns -> us */
-    delta >>= 10;
+    delta >>= 10; /* convert ns to us */
     if (!delta) /* less than 1us, return */
         return 0;
 
     sa->last_update_time += delta << 10;
 
     /* running is a subset of runnable (weight) so running can't be set if
-	   * runnable is clear. */
+     * runnable is clear. */
     if (!load)
         runnable = running = 0;
 
@@ -5804,11 +5825,11 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
         sa->period_contrib = delta;
 
         if (load) {
-            /* time passed contrib us since last time, one tsk contribution is `contrib`
-             * N task contribution is: N * contrib */
             sa->load_sum += load * contrib; /* scale to load weight */
         }
         if (runnable) {
+            /* time passed `contrib us` since last time, one tsk contributes `contrib` us,
+             * N task contribute `N * contrib` us */
             sa->runnable_sum += runnable * contrib << SCHED_CAPACITY_SHIFT;
         }
         if (running) {/* scale to SCHED_CAPACITY_SHIFT 1024 */
@@ -5832,12 +5853,15 @@ ___update_load_avg(struct sched_avg *sa, unsigned long se_weight)
         return PELT_MIN_DIVIDER + avg->period_contrib;
     }
 
-    /*                       load_sum = load * contrib
+    /* task se: load = !!se->on_rq,         se_weight = se->load.weight
+     * grp  se: load = cfs_rq->load.weight, se_weight = 1
+     *
+     *                      load_sum = load * contrib
      * load_avg = --------------------------------------------- * se_weight
      *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
     sa->load_avg = div_u64(se_weight * sa->load_sum, divider);
 
-    /*                      runnable_sum = runnable * contrib
+    /*                      runnable_sum = runnable_nr * contrib
      * runnable_avg = --------------------------------------------- * 1024
      *              LOAD_AVG_MAX - (1024 - sa->period_contrib) */
     sa->runnable_avg = div_u64(sa->runnable_sum, divider);
@@ -8501,7 +8525,77 @@ try_to_wake_up() {
         else
             cpu = cpumask_any(p->cpus_ptr);
     }
-    set_task_cpu(p, cpu);
+    set_task_cpu(p, cpu) {
+        if (task_cpu(p) != new_cpu) {
+            if (p->sched_class->migrate_task_rq) {
+                p->sched_class->migrate_task_rq(p, new_cpu) {
+                    migrate_task_rq_fair(struct task_struct *p, int new_cpu) {
+                        struct sched_entity *se = &p->se;
+
+                        if (!task_on_rq_migrating(p)) {
+                            remove_entity_load_avg(se) {
+                                struct cfs_rq *cfs_rq = cfs_rq_of(se);
+                                unsigned long flags;
+
+                                sync_entity_load_avg(se) {
+                                    struct cfs_rq *cfs_rq = cfs_rq_of(se);
+                                    u64 last_update_time = cfs_rq_last_update_time(cfs_rq);
+                                    __update_load_avg_blocked_se(last_update_time, se) {
+                                        if (___update_load_sum(now, &se->avg, 0, 0, 0)) {
+                                            ___update_load_avg(&se->avg, se_weight(se));
+                                            trace_pelt_se_tp(se);
+                                            return 1;
+                                        }
+
+                                        return 0;
+                                    }
+                                }
+
+                                raw_spin_lock_irqsave(&cfs_rq->removed.lock, flags);
+                                ++cfs_rq->removed.nr;
+                                cfs_rq->removed.util_avg	+= se->avg.util_avg;
+                                cfs_rq->removed.load_avg	+= se->avg.load_avg;
+                                cfs_rq->removed.runnable_avg	+= se->avg.runnable_avg;
+                                raw_spin_unlock_irqrestore(&cfs_rq->removed.lock, flags);
+                            }
+                            migrate_se_pelt_lag(se);
+                        }
+
+                        /* Tell new CPU we are migrated */
+                        se->avg.last_update_time = 0;
+
+                        update_scan_period(p, new_cpu);
+                    }
+                }
+            }
+            p->se.nr_migrations++;
+            rseq_migrate(p);
+            sched_mm_cid_migrate_from(p);
+            perf_event_task_migrate(p);
+        }
+
+        __set_task_cpu(p, new_cpu) {
+            set_task_rq(p, cpu) {
+                struct task_group *tg = task_group(p);
+
+                set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]) {
+                    p_last_update_time = cfs_rq_last_update_time(prev);
+                    n_last_update_time = cfs_rq_last_update_time(next);
+
+                    __update_load_avg_blocked_se(p_last_update_time, se);
+                    se->avg.last_update_time = n_last_update_time;
+                }
+                p->se.cfs_rq = tg->cfs_rq[cpu];
+                p->se.parent = tg->se[cpu];
+                p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
+
+                p->rt.rt_rq  = tg->rt_rq[cpu];
+                p->rt.parent = tg->rt_se[cpu];
+            }
+            WRITE_ONCE(task_thread_info(p)->cpu, cpu);
+            p->wake_cpu = cpu;
+        }
+    }
 
     ttwu_queue(p, cpu, wake_flags) {
         ttwu_do_activate(rq, p, wake_flags, &rf) {
@@ -11276,7 +11370,7 @@ pool_mayday_timeout() {
 * [Oracle - CFS Group Scheduling](https://blogs.oracle.com/linux/post/cfs-group-scheduling)
 * [内核工匠 - CFS组调度](https://mp.weixin.qq.com/s/BbXFZSq6xFclRahX7oPD9A)
 * [Dumpstack](http://www.dumpstack.cn/index.php/2022/04/05/726.html)
-* [调度器41—CFS组调度](../images/kernel/proc-sched-cfs-update_load_avg.png)
+* [调度器41-CFS组调度](https://www.cnblogs.com/hellokitty2/p/17031629.html)
 
 * Group scheduling is extensively used in a myriad of use cases on different types of systems. Large enterprise systems use it for containers, user sessions etc. Embedded systems like android use it to segregate tasks of varying importance (e.g. foreground vs background) from each other.
 
@@ -16738,7 +16832,7 @@ static struct pernet_operations fou_net_ops = {
 ## time_namespace
 
 Time namespaces virtualize the values of two system clocks:
-* CLOCK_MONOTONIC, a nonsettable clock that represents monotonic time  since—as described  by  POSIX—"some unspecified  point in the past"
+* CLOCK_MONOTONIC, a nonsettable clock that represents monotonic time  since-as described  by  POSIX-"some unspecified  point in the past"
 
 * CLOCK_BOOTTIME, a nonsettable clock that is identical to CLOCK_MONOTONIC, except that it also includes any time that the system is suspended.
 
