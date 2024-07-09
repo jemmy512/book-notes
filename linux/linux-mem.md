@@ -16531,6 +16531,7 @@ kernel_clone()
 
                         mm->map_count++;
                         if (!(tmp->vm_flags & VM_WIPEONFORK))
+                            /* set cow at copy_present_pte */
                             retval = copy_page_range(tmp, mpnt);
                                 --->
 
@@ -16835,7 +16836,12 @@ again:
             if (is_cow_mapping(vm_flags) && pte_write(pte)) {
                 ptep_set_wrprotect(src_mm, addr, src_pte);
                 pte = pte_wrprotect(pte) {
-                    pte_val(pte) |= _PAGE_FOW;
+                    if (pte_hw_dirty(pte))
+                        pte = set_pte_bit(pte, __pgprot(PTE_DIRTY));
+
+                    pte = clear_pte_bit(pte, __pgprot(PTE_WRITE));
+                    pte = set_pte_bit(pte, __pgprot(PTE_RDONLY));
+                    return pte;
                 }
             }
             VM_BUG_ON(page && folio_test_anon(folio) && PageAnonExclusive(page));

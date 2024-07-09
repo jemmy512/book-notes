@@ -326,8 +326,8 @@ static int fifo_open(struct inode *inode, struct file *filp)
 
 ```c
 struct task_struct {
-    struct signal_struct    *signal;
-    struct sighand_struct   *sighand;
+    struct signal_struct    *signal;  /* sharedb by threads */
+    struct sighand_struct   *sighand; /* per thread */
     struct sigpending       pending;
 
     sigset_t                blocked;

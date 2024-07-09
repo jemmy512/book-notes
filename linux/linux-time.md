@@ -155,6 +155,74 @@ tick_handle_periodic() {
     tick_periodic() {
         do_timer() {
             jiffies_64 += ticks;
+            calc_global_load() {
+                unsigned long sample_window;
+                long active, delta;
+
+                sample_window = READ_ONCE(calc_load_update);
+                if (time_before(jiffies, sample_window + 10))
+                    return;
+
+                delta = calc_load_nohz_read() {
+                    int idx = calc_load_read_idx();
+                    long delta = 0;
+
+                    if (atomic_long_read(&calc_load_nohz[idx]))
+                        delta = atomic_long_xchg(&calc_load_nohz[idx], 0);
+
+                    return delta;
+                }
+                if (delta)
+                    atomic_long_add(delta, &calc_load_tasks);
+
+                active = atomic_long_read(&calc_load_tasks);
+                active = active > 0 ? active * FIXED_1 : 0;
+
+                #define FSHIFT      11          /* nr of bits of precision */
+                #define FIXED_1     (1<<FSHIFT) /* 1.0 as fixed-point */
+                #define LOAD_FREQ   (5*HZ+1)    /* 5 sec intervals */
+                #define EXP_1       1884        /* 1/exp(5sec/1min) as fixed-point */
+                #define EXP_5       2014        /* 1/exp(5sec/5min) */
+                #define EXP_15      2037        /* 1/exp(5sec/15min) */
+
+                /* a1 = a0 * e + a * (1 - e) */
+                avenrun[0] = calc_load(avenrun[0], EXP_1, active);
+                avenrun[1] = calc_load(avenrun[1], EXP_5, active);
+                avenrun[2] = calc_load(avenrun[2], EXP_15, active) {
+                    unsigned long newload;
+
+                    newload = load * exp + active * (FIXED_1 - exp);
+                    if (active >= load)
+                        newload += FIXED_1-1;
+
+                    return newload / FIXED_1;
+                }
+
+                WRITE_ONCE(calc_load_update, sample_window + LOAD_FREQ);
+
+                calc_global_nohz() {
+                    unsigned long sample_window;
+                    long delta, active, n;
+
+                    sample_window = READ_ONCE(calc_load_update);
+                    if (!time_before(jiffies, sample_window + 10)) {
+                        delta = jiffies - sample_window - 10;
+                        n = 1 + (delta / LOAD_FREQ);
+
+                        active = atomic_long_read(&calc_load_tasks);
+                        active = active > 0 ? active * FIXED_1 : 0;
+
+                        avenrun[0] = calc_load_n(avenrun[0], EXP_1, active, n);
+                        avenrun[1] = calc_load_n(avenrun[1], EXP_5, active, n);
+                        avenrun[2] = calc_load_n(avenrun[2], EXP_15, active, n);
+
+                        WRITE_ONCE(calc_load_update, sample_window + n * LOAD_FREQ);
+                    }
+
+                    smp_wmb();
+                    calc_load_idx++;
+                }
+            }
         }
 
         update_wall_time();

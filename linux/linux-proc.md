@@ -171,7 +171,75 @@
 <img src='../images/kernel/kernel-structual.svg' style='max-height:850px'/>
 
 
+In ARMv8-A AArch64 architecture, there are several types of registers. Below is an overview of the main registers used in this architecture:
+* General-Purpose Registers
+    - **x0 - x30**: These are the 64-bit general-purpose registers.
+    - **x0 - x7**: Argument and result registers.
+    - **x8**: Indirect result location register.
+    - **x9 - x15**: Temporary registers.
+    - **x16 - x17**: Intra-procedure call temporary registers.
+    - **x18**: Platform register (may be used as a temporary register in some platforms).
+    - **x19 - x28**: Callee-saved registers.
+    - **x29**: Frame pointer (FP).
+    - **x30**: Link register (LR).
+    - **w0 - w30**: The lower 32 bits of the x0 - x30 registers.
+
+* Stack Pointer Registers
+
+    - **sp (stack pointer)**: Points to the top of the current stack.
+    - **xzr/wzr (zero register)**: Reads as zero and discards writes (xzr for 64-bit, wzr for 32-bit).
+
+* Special-Purpose Registers
+
+    - **PC (program counter)**: Holds the address of the next instruction to be executed.
+    - **PSTATE (processor state register)**: Contains flags and control bits.
+    - **NZCV (condition flags)**: Stored in the PSTATE register.
+        - **N (Negative)**: Set if the result of the operation was negative.
+        - **Z (Zero)**: Set if the result of the operation was zero.
+        - **C (Carry)**: Set if the operation resulted in a carry.
+        - **V (Overflow)**: Set if the operation resulted in an overflow.
+
+* SIMD and Floating-Point Registers
+
+    - **v0 - v31**: These are the 128-bit SIMD and floating-point registers.
+    - **d0 - d31**: The lower 64 bits of the v0 - v31 registers.
+    - **s0 - s31**: The lower 32 bits of the v0 - v31 registers.
+    - **h0 - h31**: The lower 16 bits of the v0 - v31 registers.
+    - **b0 - b31**: The lower 8 bits of the v0 - v31 registers.
+
+* System Registers
+
+    - **SPSR (Saved Program Status Register)**: Holds the saved processor state when an exception is taken.
+    - **ELR (Exception Link Register)**: Holds the address to return to after an exception.
+    - **TPIDR_EL0**: Thread ID register for EL0.
+    - **TPIDR_EL1**: Thread ID register for EL1.
+    - **CNTVCT_EL0**: Virtual counter-timer.
+    - **CNTFRQ_EL0**: Counter-timer frequency.
+
+* Exception Level Registers
+
+    - **SP_EL0**: Stack pointer for EL0.
+    - **SP_EL1**: Stack pointer for EL1.
+    - **SP_EL2**: Stack pointer for EL2.
+    - **SP_EL3**: Stack pointer for EL3.
+    - **ELR_EL1**: Exception Link Register for EL1.
+    - **ELR_EL2**: Exception Link Register for EL2.
+    - **ELR_EL3**: Exception Link Register for EL3.
+    - **SPSR_EL1**: Saved Program Status Register for EL1.
+    - **SPSR_EL2**: Saved Program Status Register for EL2.
+    - **SPSR_EL3**: Saved Program Status Register for EL3.
+
+* Summary
+
+    - **General-purpose registers**: x0 - x30 (64-bit) and w0 - w30 (32-bit).
+    - **Stack pointer**: sp.
+    - **Special-purpose**: xzr/wzr, PC, PSTATE, NZCV.
+    - **SIMD and floating-point registers**: v0 - v31.
+    - **System registers**: Various registers for control and status.
+    - **Exception level registers**: SP_EL0 - SP_EL3, ELR_EL1 - ELR_EL3, SPSR_EL1 - SPSR_EL3.
+
 # cpu
+
 <img src='../images/kernel/init-cpu.png' style='max-height:850px'/>
 
 <img src='../images/kernel/init-cpu-2.png' style='max-height:850px'/>
@@ -916,6 +984,8 @@ export LD_LIBRARY_PATH=
             * [[PATCH 07/15] sched/smp: Use lag to simplify cross-runqueue placement](https://github.com/torvalds/linux/commit/e8f331bcc270354a803c2127c486190d33eac441)
             * [[PATCH 08/15] sched: Commit to EEVDF](https://github.com/torvalds/linux/commit/5e963f2bd4654a202a8a05aa3a86cb0300b10e6c)
             * ![](../images/kernel/proc-sched-cfs-eevdf.png)
+        * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
+        * [Linux 核心設計: Scheduler(5): EEVDF Scheduler](https://hackmd.io/@RinHizakura/SyG4t5u1a)
     * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
     * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
     * [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
@@ -927,6 +997,7 @@ export LD_LIBRARY_PATH=
     * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
     * [5. CFS调度器](https://www.cnblogs.com/LoyenWang/p/12495319.html)
     * [6. 实时调度器](https://www.cnblogs.com/LoyenWang/p/12584345.html)
+    * [Linux进程调度器-CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
 
 * [Wowo Tech](http://www.wowotech.net/sort/process_management)
     * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)     [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)   [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
@@ -991,7 +1062,18 @@ export LD_LIBRARY_PATH=
 #define DEFAULT_PRIO        (MAX_RT_PRIO + NICE_WIDTH / 2)
 
 struct task_struct {
-    struct thread_info        thread_info;
+    struct thread_info {
+        unsigned long       flags;  /* TIF_SIGPENDING, TIF_NEED_RESCHED */
+        u64                 ttbr0;
+        union {
+            u64             preempt_count;  /* 0 => preemptible, <0 => bug */
+            struct {
+                u32         count;
+                u32         need_resched;
+            } preempt;
+        };
+        u32                 cpu;
+    } thread_info;
 
     int                       on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
 
@@ -1013,29 +1095,27 @@ struct task_struct {
     void                      *stack; /* kernel stack */
 
     /* CPU-specific state of this task: */
-    struct thread_struct      thread;
-};
+    /* arch/arm64/include/asm/thread_info.h */
+    struct thread_struct {
+        struct cpu_context {
+            unsigned long x19;
+            unsigned long x20;
+            unsigned long x21;
+            unsigned long x22;
+            unsigned long x23;
+            unsigned long x24;
+            unsigned long x25;
+            unsigned long x26;
+            unsigned long x27;
+            unsigned long x28;
+            unsigned long fp;
+            unsigned long sp;
+            unsigned long pc;
+        } cpu_context;
 
-struct thread_info {
-    unsigned long       flags;  /* TIF_SIGPENDING, TIF_NEED_RESCHED */
-    u64                 ttbr0;
-    union {
-        u64             preempt_count;  /* 0 => preemptible, <0 => bug */
-        struct {
-            u32         count;
-            u32         need_resched;
-        } preempt;
-    };
-    u32                 cpu;
-};
-
-
-/* arch/arm64/include/asm/thread_info.h */
-struct thread_struct {
-    struct cpu_context    cpu_context;    /* cpu context */
-
-    unsigned long        fault_address;    /* fault info */
-    unsigned long        fault_code;    /* ESR_EL1 value */
+        unsigned long        fault_address;    /* fault info */
+        unsigned long        fault_code;    /* ESR_EL1 value */
+    } thread;
 };
 
 struct rq {
@@ -1053,6 +1133,7 @@ struct rq {
     struct task_struct *curr, *idle, *stop;
 };
 ```
+
 <img src='../images/kernel/proc-sched-entity-rq.png' style='max-height:850px'/>
 
 ```c
@@ -1464,6 +1545,10 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
 
 ## preempt schedule
 
+![](../images/kernel/proc-preempt-kernel.png)
+
+![](../images/kernel/proc-preempt_count.png)
+
 ### user preempt
 
 #### set_tsk_need_resched
@@ -1487,7 +1572,31 @@ void sched_tick(void)
     update_rq_clock(rq);
     curr->sched_class->task_tick(rq, curr, 0); /* task_tick_fair */
     cpu_load_update_active(rq);
-    calc_global_load_tick(rq);
+
+    calc_global_load_tick(rq) {
+        long delta;
+
+        if (time_before(jiffies, this_rq->calc_load_update))
+            return;
+
+        delta  = calc_load_fold_active(this_rq, 0) {
+            long nr_active, delta = 0;
+
+            nr_active = this_rq->nr_running - adjust;
+            nr_active += (int)this_rq->nr_uninterruptible;
+
+            if (nr_active != this_rq->calc_load_active) {
+                delta = nr_active - this_rq->calc_load_active;
+                this_rq->calc_load_active = nr_active;
+            }
+
+            return delta;
+        }
+        if (delta)
+            atomic_long_add(delta, &calc_load_tasks);
+
+        this_rq->calc_load_update += LOAD_FREQ;
+    }
 
     rq_unlock(rq, &rf);
 
@@ -1569,11 +1678,7 @@ irqentry_exit() {
 
 ### kernel preempt
 
-![](../images/kernel/proc-preempt-kernel.png)
-
 ![](../images/kernel/proc-preempt-kernel-exec.png)
-
-![](../images/kernel/proc-preempt_count.png)
 
 #### preempt_enble
 
@@ -2244,7 +2349,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
             return -1;
         }
 
-        /* 2. pick tsk cpu: target lowest target cpu is incapable */
+        /* 2. pick tsk cpu: lowest target cpu is incapable */
         if (!test && target != -1 && !rt_task_fits_capacity(p, target))
             goto out_unlock;
 
@@ -4627,8 +4732,15 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                             s64 delta = (s64)(vruntime - min_vruntime);
                             if (delta > 0) {
                                 avg_vruntime_update(cfs_rq, delta) {
-                                    /* TODO: why?
-                                     * v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load */
+                                    /* v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load
+                                     *
+                                     * time line: v0 -> v0' -> vi
+                                     * avg_vruntime_new = \Sum ((v_i - v0') * w_i)
+                                     *  = \Sum ((v_i - v0) - (v0' - v0)) * w_i
+                                     *  = \Sum ((v_i - v0) * w_i) - \Sum ((v0' - v0) * w_i)
+                                     *  = avg_vruntime_old - (v0' - v0) * avg_load
+                                     *
+                                     * \Sum w_i is the total weight of all tasks, it is equivalent to avg_load */
                                     cfs_rq->avg_vruntime -= cfs_rq->avg_load * delta;
                                 }
                                 min_vruntime = vruntime;
@@ -5115,7 +5227,7 @@ sched_init_domains(cpu_active_mask) {
                                 | 0*SD_BALANCE_WAKE
                                 | 1*SD_WAKE_AFFINE
                                 | 0*SD_SHARE_CPUCAPACITY
-                                | 0*SD_SHARE_PKG_RESOURCES
+                                | 0*SD_SHARE_LLC
                                 | 0*SD_SERIALIZE
                                 | 1*SD_PREFER_SIBLING
                                 | 0*SD_NUMA
@@ -5141,7 +5253,7 @@ sched_init_domains(cpu_active_mask) {
                         if (sd->flags & SD_SHARE_CPUCAPACITY) {
                             sd->imbalance_pct = 110;
 
-                        } else if (sd->flags & SD_SHARE_PKG_RESOURCES) {
+                        } else if (sd->flags & SD_SHARE_LLC) {
                             sd->imbalance_pct = 117;
                             sd->cache_nice_tries = 1;
                         } else if (sd->flags & SD_NUMA) {
@@ -5159,7 +5271,7 @@ sched_init_domains(cpu_active_mask) {
 
                         /* For all levels sharing cache; connect a sched_domain_shared
                          * instance. */
-                        if (sd->flags & SD_SHARE_PKG_RESOURCES) {
+                        if (sd->flags & SD_SHARE_LLC) {
                             sd->shared = *per_cpu_ptr(sdd->sds, sd_id);
                             atomic_inc(&sd->shared->ref);
                             atomic_set(&sd->shared->nr_busy_cpus, sd_weight);
@@ -5226,8 +5338,8 @@ sched_init_domains(cpu_active_mask) {
             for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
                 struct sched_domain *child = sd->child;
 
-                if (!(sd->flags & SD_SHARE_PKG_RESOURCES) && child &&
-                    (child->flags & SD_SHARE_PKG_RESOURCES)) {
+                if (!(sd->flags & SD_SHARE_LLC) && child &&
+                    (child->flags & SD_SHARE_LLC)) {
                     struct sched_domain __rcu *top_p;
                     unsigned int nr_llcs;
 
@@ -5607,14 +5719,14 @@ load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions
     * The new runnable_avg will track the runnable time of a task which simply adds the waiting time to the running time.
 
 * cfs_rq attach/detach load_avg
-    * Dont detach load_avg if a task sleep, but detach runnable_avg since runnable just count nr of se.on_rq
+    * Dont detach load_avg and util_avg when a task sleeps, but detach runnable_avg since runnable is the count nr of se.on_rq
     * Detach load_avg, runnable_avg and util_avg when changing sched class, group or cpu
 
     ```c
     dequeue_entity(cfs_rq, se, flags) {
         int action = UPDATE_TG;
 
-        /* detach load_avg only if task is migrating whne dequeue_entity */
+        /* detach load_avg only if task is migrating when dequeue_entity */
         if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
             action |= DO_DETACH;
 
@@ -5638,7 +5750,7 @@ load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions
     /* cpu change */
     migrate_task_rq_fair(struct task_struct *p, int new_cpu) {
         struct sched_entity *se = &p->se;
-        se->avg.last_update_time = 0;
+        se->avg.last_update_time = 0; /* set to 0, attach load avg at enqueue_entity */
     }
 
     /* group change */
@@ -5675,7 +5787,7 @@ struct sched_avg {
     u64                 runnable_sum;
     unsigned long       runnable_avg;
 
-    /* running state, scaled to, scaled to cpu capabity, not weight
+    /* running state, scaled to cpu capabity
      * util_avg = running% * SCHED_CAPACITY_SCALE */
     u32                 util_sum;
     unsigned long       util_avg;
@@ -5762,13 +5874,11 @@ int __update_load_avg_cfs_rq(u64 now, struct cfs_rq *cfs_rq)
 }
 
 int ___update_load_sum(u64 now, struct sched_avg *sa,
-    unsigned long load, /* tsk nr which participant in cpu load */
+    unsigned long load,
     unsigned long runnable,
     int running)
 {
-    u64 delta;
-
-    delta = now - sa->last_update_time /* ns */;
+    u64 delta = now - sa->last_update_time /* ns */;
 
     /* s64 ns clock overflow */
     if ((s64)delta < 0) {
@@ -5795,12 +5905,12 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
         periods = delta / 1024; /* A period is 1024us (~1ms) */
 
         if (periods) {
-            /* Step 1: decay old *_sum if we crossed period boundaries. */
+            /* 1: decay old *_sum */
             sa->load_sum = decay_load(sa->load_sum, periods);
             sa->runnable_sum = decay_load(sa->runnable_sum, periods);
             sa->util_sum = decay_load((u64)(sa->util_sum), periods);
 
-            /* Step 2: calc new load: d1 + d2 + d3 */
+            /* 2: calc new load: d1 + d2 + d3 */
             delta %= 1024;
             if (load) {
                 contrib = __accumulate_pelt_segments(periods, 1024 - sa->period_contrib/*d1*/, delta/*d3*/) {
@@ -5815,7 +5925,15 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
                      *
                      *              inf        inf
                      *    = 1024 ( \Sum y^n - \Sum y^n - y^0 )
-                     *              n=0        n=p */
+                     *              n=0        n=p
+                     *
+                     *              inf            inf
+                     *    = 1024 ( \Sum y^n - y^p \Sum y^n - y^0 )
+                     *              n=0            n=0
+                     *
+                     *                        inf
+                     * LOAD_AVG_MAX = 1024 * \Sum y^n
+                     *                        n=0       */
                     c2 = LOAD_AVG_MAX - decay_load(LOAD_AVG_MAX, periods) - 1024;
 
                     return c1 + c2 + c3;
@@ -5876,7 +5994,6 @@ ___update_load_avg(struct sched_avg *sa, unsigned long se_weight)
 ## update_load_avg
 
 ```c
-/* Update task and its cfs_rq load average */
 void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
     u64 now = cfs_rq_clock_pelt(cfs_rq);
@@ -6054,8 +6171,8 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
             se->avg.util_sum = se->avg.util_avg * divider;
             se->avg.runnable_sum = se->avg.runnable_avg * divider;
-
             se->avg.load_sum = se->avg.load_avg * divider;
+
             if (se_weight(se) < se->avg.load_sum)
                 se->avg.load_sum = div_u64(se->avg.load_sum, se_weight(se));
             else
@@ -6175,8 +6292,7 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
         sa->runnable_sum = max_t(u32, sa->runnable_sum,
                             sa->runnable_avg * PELT_MIN_DIVIDER);
 
-        add_tg_cfs_propagate(cfs_rq,
-            -(long)(removed_runnable * divider) >> SCHED_CAPACITY_SHIFT);
+        add_tg_cfs_propagate(cfs_rq, -(long)(removed_runnable * divider) >> SCHED_CAPACITY_SHIFT);
 
         decayed = 1;
     }
@@ -6205,7 +6321,7 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
 ```c
 struct rq {
     u64             clock;  /* real clock of rq */
-    u64             clock_task; /* update only when task running */
+    u64             clock_task; /* task running clock */
     /* based on clock_task, align to the largest core with highest frequency
      * only updated when task running exclude intr and idle time */
     u64             clock_pelt;
@@ -6282,7 +6398,8 @@ update_rq_clock(rq) {
 
 ---
 
-1. Load balance
+Load balance trigger time:
+1. From CPU perspective:
     * tick_balance
 
         ![](../images/kernel/proc-sched-lb-tick-balance.png)
@@ -6295,7 +6412,7 @@ update_rq_clock(rq) {
 
         ![](../images/kernel/proc-sched-lb-nohzidle-balance.png)
 
-2. Task placement - select_task_rq
+2. Form task perspective: select_task_rq
     * try_to_wake_up
     * wake_up_new_task
     * sched_exec
@@ -6611,7 +6728,7 @@ out:
                             return 0;
                         if (rq->ttwu_pending)
                             return 0;
-                        return 1;;
+                        return 1;
                     }
                     if (ret)
                         return ilb;
@@ -7328,6 +7445,11 @@ calculate_imbalance(env, &sds) {
     local = &sds->local_stat;
     busiest = &sds->busiest_stat;
 
+/* 1. handle busiest state:
+ * group_misfit_task,
+ * group_asym_packing,
+ * group_smt_balance,
+ * group_imbalanced */
     if (busiest->group_type == group_misfit_task) {
         if (env->sd->flags & SD_ASYM_CPUCAPACITY) {
             /* Set imbalance to allow misfit tasks to be balanced. */
@@ -7363,10 +7485,9 @@ calculate_imbalance(env, &sds) {
         return;
     }
 
+/* 2. local group_has_spare */
     if (local->group_type == group_has_spare) {
-        if ((busiest->group_type > group_fully_busy)
-            && !(env->sd->flags & SD_SHARE_PKG_RESOURCES)) {
-
+        if ((busiest->group_type > group_fully_busy) && !(env->sd->flags & SD_SHARE_LLC)) {
             env->migration_type = migrate_util;
             env->imbalance = max(local->group_capacity, local->group_util) -
                     local->group_util;
@@ -7438,8 +7559,7 @@ calculate_imbalance(env, &sds) {
         return;
     }
 
-    /* Local is fully busy but has to take more load to relieve the
-     * busiest group */
+/* 3. Local is fully busy but has to take more load to relieve the busiest group */
     if (local->group_type < group_overloaded) {
         /* Local will become overloaded so the avg_load metrics are
          * finally needed. */
@@ -7464,6 +7584,7 @@ calculate_imbalance(env, &sds) {
         }
     }
 
+/* 4. migrate average load */
     /* Both group are or will become overloaded and we're trying to get all
      * the CPUs to the average_load, so we don't want to push ourselves
      * above the average load, nor do we wish to reduce the max loaded CPU
@@ -8759,16 +8880,20 @@ kernel_clone(struct kernel_clone_args *args) {
         copy_mm();
         copy_namespaces();
         copy_io();
-        copy_thread(clone_flags, stack_start/*sp*/, stack_size/*arg*/, p, tls) {
+        copy_thread(p, args) {
             unsigned long clone_flags = args->flags;
             unsigned long stack_start = args->stack;
             unsigned long tls = args->tls;
-            struct pt_regs *childregs = task_pt_regs(p);
+            struct pt_regs *childregs = task_pt_regs(p) {
+                ((struct pt_regs *)(THREAD_SIZE + task_stack_page(p)) - 1)
+            }
 
             memset(&p->thread.cpu_context, 0, sizeof(struct cpu_context));
 
             if (likely(!args->fn)) {
-                *childregs = *current_pt_regs();
+                *childregs = *current_pt_regs() {
+                    return task_pt_regs(current);
+                }
                 childregs->regs[0] = 0;
 
                 *task_user_tls(p) = read_sysreg(tpidr_el0);

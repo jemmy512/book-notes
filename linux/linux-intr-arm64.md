@@ -5,8 +5,7 @@
 
 * [中断管理 - LoyenWang](https://www.cnblogs.com/LoyenWang/category/1777370.html)
     * [1. 中断控制器及驱动分析](https://www.cnblogs.com/LoyenWang/p/12249106.html)
-    * [2. 通用框架处理](https://www.cnblogs.com/LoyenWang/p/12316660.html)
-
+    * [2. 通用框架处理](https://www.cnblogs.com/LoyenWang/p/13052677.html)
 
 * [IRQ Subsystem - WOWO TECH](http://www.wowotech.net/sort/irq_subsystem)
     * [1. 综述](http://www.wowotech.net/irq_subsystem/interrupt_subsystem_architecture.html)
@@ -47,7 +46,7 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 
 ```c
 SYM_CODE_START(vectors)
-    // t: thread, h: handler
+    // t: thread(user) mode, h: handler(kernel) mode
     kernel_ventry    1, t, 64, sync     // Synchronous EL1t
     kernel_ventry    1, t, 64, irq      // IRQ EL1t
     kernel_ventry    1, t, 64, fiq      // FIQ EL1t
@@ -431,6 +430,7 @@ asmlinkage void el1t_64_error_handler(struct pt_regs *regs);
 ```
 
 # 64_irq_handler
+
 ```c
 el0t_64_irq_handler(struct pt_regs *regs) {
     el0_interrupt(regs, handle_arch_irq) {
@@ -602,8 +602,10 @@ el1h_64_irq_handler(struct pt_regs *regs) {
 ```
 
 # 64_sync_handler
+
 ```c
-void noinstr el0t_64_sync_handler(struct pt_regs *regs) {
+/* sync exception happens in user mode */
+void el0t_64_sync_handler(struct pt_regs *regs) {
     unsigned long esr = read_sysreg(esr_el1);
 
     switch (ESR_ELx_EC(esr)) {
@@ -699,7 +701,8 @@ void noinstr el0t_64_sync_handler(struct pt_regs *regs) {
 ```
 
 ```c
-void noinstr el1h_64_sync_handler(struct pt_regs *regs) {
+/* sync exception happens in kernel mode */
+void el1h_64_sync_handler(struct pt_regs *regs) {
     unsigned long esr = read_sysreg(esr_el1);
 
     switch (ESR_ELx_EC(esr)) {
