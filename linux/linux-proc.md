@@ -238,6 +238,80 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     - **System registers**: Various registers for control and status.
     - **Exception level registers**: SP_EL0 - SP_EL3, ELR_EL1 - ELR_EL3, SPSR_EL1 - SPSR_EL3.
 
+* [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
+* [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
+* [Kernel Index Sched - LWN](https://lwn.net/Kernel/Index/#Scheduler)
+    * [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
+    * [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
+        * [Scheduling domains](https://lwn.net/Articles/80911/)
+    * [LWN Index - CFS scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
+        * [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
+            * [[PATCH 00/15] sched: EEVDF and latency-nice and/or slice-attr](https://lore.kernel.org/all/20230531115839.089944915@infradead.org/#t)
+            * [[PATCH 01/15] sched/fair: Add cfs_rq::avg_vruntime](https://github.com/torvalds/linux/commit/af4cf40470c22efa3987200fd19478199e08e103)
+            * [[PATCH 03/15] sched/fair: Add lag based placement](https://github.com/torvalds/linux/commit/86bfbb7ce4f67a88df2639198169b685668e7349)
+            * [[PATCH 04/15] rbtree: Add rb_add_augmented_cached() helper](https://github.com/torvalds/linux/commit/99d4d26551b56f4e523dd04e4970b94aa796a64e)
+            * [[PATCH 05/15] sched/fair: Implement an EEVDF like policy](https://github.com/torvalds/linux/commit/147f3efaa24182a21706bca15eab2f3f4630b5fe)
+            * [[PATCH 07/15] sched/smp: Use lag to simplify cross-runqueue placement](https://github.com/torvalds/linux/commit/e8f331bcc270354a803c2127c486190d33eac441)
+            * [[PATCH 08/15] sched: Commit to EEVDF](https://github.com/torvalds/linux/commit/5e963f2bd4654a202a8a05aa3a86cb0300b10e6c)
+            * ![](../images/kernel/proc-sched-cfs-eevdf.png)
+        * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
+        * [Linux 核心設計: Scheduler(5): EEVDF Scheduler](https://hackmd.io/@RinHizakura/SyG4t5u1a)
+    * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
+    * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
+    * [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
+
+* [进程调度 - LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
+    * [1. 基础](https://www.cnblogs.com/LoyenWang/p/12249106.html)
+    * [2. CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
+    * [3. 进程切换](https://www.cnblogs.com/LoyenWang/p/12386281.html)
+    * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
+    * [5. CFS调度器](https://www.cnblogs.com/LoyenWang/p/12495319.html)
+    * [6. 实时调度器](https://www.cnblogs.com/LoyenWang/p/12584345.html)
+    * [Linux进程调度器-CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
+
+* [Wowo Tech](http://www.wowotech.net/sort/process_management)
+    * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)     [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)   [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
+    * [CFS调度器 - 组调度](http://www.wowotech.net/process_management/449.html)
+    * [CFS调度器 - 带宽控制](http://www.wowotech.net/process_management/451.html)
+    * [CFS调度器 - 总结](http://www.wowotech.net/process_management/452.html)
+    * [ARM Linux上的系统调用代码分析](http://www.wowotech.net/process_management/syscall-arm.html)
+    * [Linux调度器 - 用户空间接口](http://www.wowotech.net/process_management/scheduler-API.html)
+    * [schedutil governor情景分析](http://www.wowotech.net/process_management/schedutil_governor.html)
+    * [TLB flush](http://www.wowotech.net/memory_management/tlb-flush.html)
+
+* [hellokitty2 进程管理](https://www.cnblogs.com/hellokitty2/category/1791168.html)
+
+* [CHENG Jian Linux进程管理与调度](https://kernel.blog.csdn.net/article/details/51456569)
+    * [WAKE_AFFINE](https://blog.csdn.net/gatieme/article/details/106315848)
+    * [用户抢占和内核抢占](https://blog.csdn.net/gatieme/article/details/51872618)
+
+* [汪辰]
+    * [Linux 内核的抢占模型](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
+    * [Linux "PREEMPT_RT" 抢占模式分析报告](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230806-linux-preempt-rt.md#/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
+    * [实时 Linux(Real-Time Linux)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230727-rt-linux.md)
+    * [Linux 调度器(Schedular)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230801-linux-scheduler.md)
+
+* [PREEMPT_RT Linux](https://wiki.linuxfoundation.org/realtime/start)
+    * [LWN - A realtime preemption overview](https://lwn.net/Articles/146861/)
+    * [Preemption Models](https://wiki.linuxfoundation.org/realtime/documentation/technical_basics/preemption_models)
+        Model | Case | Preempt Points
+        --- | --- | ---
+        PREEMPT_NONE | No Forced Preemption (server) | `system call returns` + `interrupts`
+        PREEMPT_VOLUNTARY | Voluntary Kernel Preemption (Desktop) | `system call returns` + `interrupts` + `explicit preemption points`
+        PREEMPT | Preemptible Kernel (Low-Latency Desktop) |`system call returns` + `interrupts` + `all kernel code(except critical section)`
+        PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
+
+* [Oracle Linux Blog](https://blogs.oracle.com/linux/category/lnx-linux-kernel-development)
+    * [Understanding process thread priorities in Linux](https://blogs.oracle.com/linux/post/task-priority)
+        * **static_prio**: maps the priority range used for normal tasks and is the priority according to the nice value of a task.
+            > static_prio = 120 + nice
+        * **rt_priority**: maps the priority range for real time tasks and indicates real time priority.
+            > MAX_RT_PRIO-1 - rt_priority
+            * POSIX high rt_priority value signifies high priority  while linux low priority value signifies high priority
+        * **normal_prio**: indicates priority of a task without any temporary priority boosting from the kernel side. For normal tasks it is the same as static_prio and for RT tasks it is directly related to rt_priority
+            * In absence of normal_prio, children of a priority boosted task will get boosted priority as well and this will cause CPU starvation for other tasks. To avoid such a situation, the kernel maintains nomral_prio of a task. Forked tasks usually get their effective prio set to normal_prio of the parent and hence don’t get boosted priority.
+        * **prio**: is the effective priority of a task and is used in all scheduling related decision makings.
+
 # cpu
 
 <img src='../images/kernel/init-cpu.png' style='max-height:850px'/>
@@ -656,6 +730,8 @@ bringup_cpu() {
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
 ```c
+/* arch/arm64/include/asm/ptrace.h
+ * arch/x86/include/asm/ptrace.h */
 struct pt_regs {
     union {
         struct user_pt_regs user_regs;
@@ -693,63 +769,67 @@ struct user_pt_regs {
 ```
 
 ```c
-/* arch/x86/include/asm/ptrace.h */
-struct pt_regs {
-/* C ABI says these regs are callee-preserved. They aren't saved on kernel entry
- * unless syscall needs a complete, fully filled "struct pt_regs". */
-  unsigned long r15;
-  unsigned long r14;
-  unsigned long r13;
-  unsigned long r12;
-  unsigned long bp;
-  unsigned long bx;
-/* These regs are callee-clobbered. Always saved on kernel entry. */
-  unsigned long r11;
-  unsigned long r10;
-  unsigned long r9;
-  unsigned long r8;
-  unsigned long ax;
-  unsigned long cx;
-  unsigned long dx;
-  unsigned long si;
-  unsigned long di;
-/* On syscall entry, this is syscall#. On CPU exception, this is error code.
- * On hw interrupt, it's IRQ number: */
-  unsigned long orig_ax;
-/* Return frame for iretq */
-  unsigned long ip;
-  unsigned long cs;
-  unsigned long flags;
-  unsigned long sp;
-  unsigned long ss;
-/* top of stack page */
+/* arch/arm64/kernel/sys.c */
+#undef __SYSCALL
+#define __SYSCALL(nr, sym)	asmlinkage long __arm64_##sym(const struct pt_regs *);
+#include <asm/unistd.h>
+
+#undef __SYSCALL
+#define __SYSCALL(nr, sym)	[nr] = __arm64_##sym,
+
+const syscall_fn_t sys_call_table[__NR_syscalls] = {
+    [0 ... __NR_syscalls - 1] = __arm64_sys_ni_syscall,
+#include <asm/unistd.h>
 };
 
-/* This is the structure pointed to by thread.sp for an inactive task.
- * The order of the fields must match the code in __switch_to_asm(). */
-struct inactive_task_frame {
-  unsigned long flags;
-#ifdef CONFIG_X86_64
-  unsigned long r15;
-  unsigned long r14;
-  unsigned long r13;
-  unsigned long r12;
-#else
-  unsigned long si;
-  unsigned long di;
-#endif
-  unsigned long bx;
+/* include/linux/syscalls.h */
+#define SYSCALL_DEFINE1(name, ...) SYSCALL_DEFINEx(1, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE2(name, ...) SYSCALL_DEFINEx(2, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE3(name, ...) SYSCALL_DEFINEx(3, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE4(name, ...) SYSCALL_DEFINEx(4, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE5(name, ...) SYSCALL_DEFINEx(5, _##name, __VA_ARGS__)
+#define SYSCALL_DEFINE6(name, ...) SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
 
-  /* These two fields must be together.
-   * They form a stack frame header, needed by get_frame_pointer(). */
-  unsigned long bp;
-  unsigned long ret_addr;
-};
+#define SYSCALL_DEFINE_MAXARGS	6
 
-struct fork_frame {
-  struct inactive_task_frame frame;
-  struct pt_regs regs;
-};
+#define SYSCALL_DEFINEx(x, sname, ...)				\
+    SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
+    __SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
+
+
+#define __SYSCALL_DEFINEx(x, name, ...) \
+    asmlinkage long __arm64_sys##name(const struct pt_regs *regs); \
+    \
+    ALLOW_ERROR_INJECTION(__arm64_sys##name, ERRNO); \
+    \
+    static long __se_sys##name(__MAP(x,__SC_LONG,__VA_ARGS__)); \
+    \
+    static inline long __do_sys##name(__MAP(x,__SC_DECL,__VA_ARGS__)); \
+    \
+    asmlinkage long __arm64_sys##name(const struct pt_regs *regs) { \
+        return __se_sys##name(SC_ARM64_REGS_TO_ARGS(x,__VA_ARGS__)); \
+    } \
+    \
+    static long __se_sys##name(__MAP(x,__SC_LONG,__VA_ARGS__)) { \
+        long ret = __do_sys##name(__MAP(x,__SC_CAST,__VA_ARGS__)); \
+        __MAP(x,__SC_TEST,__VA_ARGS__); \
+        __PROTECT(x, ret,__MAP(x,__SC_ARGS,__VA_ARGS__)); \
+        return ret; \
+    } \
+    \
+    static inline long __do_sys##name(__MAP(x,__SC_DECL,__VA_ARGS__))
+
+/* __MAP - apply a macro to syscall arguments
+ * __MAP(n, m, t1, a1, t2, a2, ..., tn, an) will expand to
+ *    m(t1, a1), m(t2, a2), ..., m(tn, an) */
+#define __MAP0(m,...)
+#define __MAP1(m,t,a,...) m(t,a)
+#define __MAP2(m,t,a,...) m(t,a), __MAP1(m,__VA_ARGS__)
+#define __MAP3(m,t,a,...) m(t,a), __MAP2(m,__VA_ARGS__)
+#define __MAP4(m,t,a,...) m(t,a), __MAP3(m,__VA_ARGS__)
+#define __MAP5(m,t,a,...) m(t,a), __MAP4(m,__VA_ARGS__)
+#define __MAP6(m,t,a,...) m(t,a), __MAP5(m,__VA_ARGS__)
+#define __MAP(n,...) __MAP##n(__VA_ARGS__)
 ```
 
 ## glibc
@@ -782,6 +862,20 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 <img src='../images/kernel/init-syscall-stack.png' style='max-height:850px'/>
 
 * glibc
+    ```c
+    /* glibc/sysdeps/unix/sysv/linux/aarch64/sysdep.h */
+    # define PSEUDO(name, syscall_name, args) \
+        .text; \
+        ENTRY (name); \
+        DO_CALL (syscall_name, args); \
+        cmn x0, #4095; \
+        b.cs .Lsyscall_error;
+
+    # define DO_CALL(syscall_name, args) \
+        mov x8, SYS_ify (syscall_name); \
+        svc 0
+    ```
+
     ```c
     /* glibc-2.28/sysdeps/unix/x86_64/sysdep.h
     The Linux/x86-64 kernel expects the system call parameters in
@@ -968,80 +1062,6 @@ export LD_LIBRARY_PATH=
 
 ![](../images/kernel/proc-sched-class.png)
 
-* [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
-* [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
-* [Kernel Index Sched - LWN](https://lwn.net/Kernel/Index/#Scheduler)
-    * [LWN Index - Realtime](https://lwn.net/Kernel/Index/#Realtime)
-    * [LWN Index - Scheduler](https://lwn.net/Kernel/Index/#Scheduler)
-        * [Scheduling domains](https://lwn.net/Articles/80911/)
-    * [LWN Index - CFS scheduler](https://lwn.net/Kernel/Index/#Scheduler-Completely_fair_scheduler)
-        * [An EEVDF CPU scheduler for Linux](https://lwn.net/Articles/925371/)
-            * [[PATCH 00/15] sched: EEVDF and latency-nice and/or slice-attr](https://lore.kernel.org/all/20230531115839.089944915@infradead.org/#t)
-            * [[PATCH 01/15] sched/fair: Add cfs_rq::avg_vruntime](https://github.com/torvalds/linux/commit/af4cf40470c22efa3987200fd19478199e08e103)
-            * [[PATCH 03/15] sched/fair: Add lag based placement](https://github.com/torvalds/linux/commit/86bfbb7ce4f67a88df2639198169b685668e7349)
-            * [[PATCH 04/15] rbtree: Add rb_add_augmented_cached() helper](https://github.com/torvalds/linux/commit/99d4d26551b56f4e523dd04e4970b94aa796a64e)
-            * [[PATCH 05/15] sched/fair: Implement an EEVDF like policy](https://github.com/torvalds/linux/commit/147f3efaa24182a21706bca15eab2f3f4630b5fe)
-            * [[PATCH 07/15] sched/smp: Use lag to simplify cross-runqueue placement](https://github.com/torvalds/linux/commit/e8f331bcc270354a803c2127c486190d33eac441)
-            * [[PATCH 08/15] sched: Commit to EEVDF](https://github.com/torvalds/linux/commit/5e963f2bd4654a202a8a05aa3a86cb0300b10e6c)
-            * ![](../images/kernel/proc-sched-cfs-eevdf.png)
-        * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
-        * [Linux 核心設計: Scheduler(5): EEVDF Scheduler](https://hackmd.io/@RinHizakura/SyG4t5u1a)
-    * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
-    * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
-    * [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
-
-* [进程调度 - LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
-    * [1. 基础](https://www.cnblogs.com/LoyenWang/p/12249106.html)
-    * [2. CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
-    * [3. 进程切换](https://www.cnblogs.com/LoyenWang/p/12386281.html)
-    * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
-    * [5. CFS调度器](https://www.cnblogs.com/LoyenWang/p/12495319.html)
-    * [6. 实时调度器](https://www.cnblogs.com/LoyenWang/p/12584345.html)
-    * [Linux进程调度器-CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
-
-* [Wowo Tech](http://www.wowotech.net/sort/process_management)
-    * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)     [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)   [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
-    * [CFS调度器 - 组调度](http://www.wowotech.net/process_management/449.html)
-    * [CFS调度器 - 带宽控制](http://www.wowotech.net/process_management/451.html)
-    * [CFS调度器 - 总结](http://www.wowotech.net/process_management/452.html)
-    * [ARM Linux上的系统调用代码分析](http://www.wowotech.net/process_management/syscall-arm.html)
-    * [Linux调度器 - 用户空间接口](http://www.wowotech.net/process_management/scheduler-API.html)
-    * [schedutil governor情景分析](http://www.wowotech.net/process_management/schedutil_governor.html)
-    * [TLB flush](http://www.wowotech.net/memory_management/tlb-flush.html)
-
-* [hellokitty2 进程管理](https://www.cnblogs.com/hellokitty2/category/1791168.html)
-
-* [CHENG Jian Linux进程管理与调度](https://kernel.blog.csdn.net/article/details/51456569)
-    * [WAKE_AFFINE](https://blog.csdn.net/gatieme/article/details/106315848)
-    * [用户抢占和内核抢占](https://blog.csdn.net/gatieme/article/details/51872618)
-
-* [汪辰]
-    * [Linux 内核的抢占模型](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
-    * [Linux "PREEMPT_RT" 抢占模式分析报告](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230806-linux-preempt-rt.md#/aosp-riscv/working-group/blob/master/articles/20230805-linux-preemption-models.md)
-    * [实时 Linux(Real-Time Linux)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230727-rt-linux.md)
-    * [Linux 调度器(Schedular)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230801-linux-scheduler.md)
-
-* [PREEMPT_RT Linux](https://wiki.linuxfoundation.org/realtime/start)
-    * [LWN - A realtime preemption overview](https://lwn.net/Articles/146861/)
-    * [Preemption Models](https://wiki.linuxfoundation.org/realtime/documentation/technical_basics/preemption_models)
-        Model | Case | Preempt Points
-        --- | --- | ---
-        PREEMPT_NONE | No Forced Preemption (server) | `system call returns` + `interrupts`
-        PREEMPT_VOLUNTARY | Voluntary Kernel Preemption (Desktop) | `system call returns` + `interrupts` + `explicit preemption points`
-        PREEMPT | Preemptible Kernel (Low-Latency Desktop) |`system call returns` + `interrupts` + `all kernel code(except critical section)`
-        PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
-
-* [Oracle Linux Blog](https://blogs.oracle.com/linux/category/lnx-linux-kernel-development)
-    * [Understanding process thread priorities in Linux](https://blogs.oracle.com/linux/post/task-priority)
-        * **static_prio**: maps the priority range used for normal tasks and is the priority according to the nice value of a task.
-            > static_prio = 120 + nice
-        * **rt_priority**: maps the priority range for real time tasks and indicates real time priority.
-            > MAX_RT_PRIO-1 - rt_priority
-            * POSIX high rt_priority value signifies high priority  while linux low priority value signifies high priority
-        * **normal_prio**: indicates priority of a task without any temporary priority boosting from the kernel side. For normal tasks it is the same as static_prio and for RT tasks it is directly related to rt_priority
-            * In absence of normal_prio, children of a priority boosted task will get boosted priority as well and this will cause CPU starvation for other tasks. To avoid such a situation, the kernel maintains nomral_prio of a task. Forked tasks usually get their effective prio set to normal_prio of the parent and hence don’t get boosted priority.
-        * **prio**: is the effective priority of a task and is used in all scheduling related decision makings.
-
 ```c
 /* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
@@ -1180,15 +1200,44 @@ extern const struct sched_class idle_sched_class;
 <img src='../images/kernel/proc-sched-cpu-rq-class-entity-task.png' style='max-height:850px'/>
 
 ## voluntary schedule
+
 <img src="../images/kernel/proc-sched-context-swith.png" style="max-height:850px"/>
 
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
-![](../images/kernel/proc-sched-arch.png)
+__sched | context_switch
+--- | ---
+![](../images/kernel/proc-sched-arch.png) | ![](../images/kernel/proc-sched-context_switch.png)
 
----
+```c
+asmlinkage __visible void __sched schedule(void)
+{
+    do {
+        /* Disabling preemption before acquiring the spinlock ensures that
+         * the current task will not be preempted while it is about to enter
+         * or already within the critical section protected by the spinlock. */
+        preempt_disable();  /* prev disables preemption */
+        raw_spin_lock_irq(&rq->lock); /* prev acquires the rq lock and disables interrupts */
+        next = select_next_task();
+        switch_to(prev, next, prev);
+        raw_spin_unlock_irq(&rq->lock); /* next releases the lock and enables interrupts */
+        sched_preempt_enable_no_resched();  /* next re-enables preemption */
+    } while (need_resched());
+}
+```
 
-![](../images/kernel/proc-sched-context_switch.png)
+Reordering preempt_disable and raw_spin_lock_irq(&rq->lock) cloud leads to several issues?
+1. Race Condition Risk:
+
+    If the task is preempted between acquiring the spinlock and calling preempt_disable(), another task could potentially try to acquire the same spinlock, leading to a deadlock or race condition.
+
+2.	Interrupt Handling:
+
+    Interrupts would be disabled by the raw_spin_lock_irq() call, but if the task is preempted before preempt_disable() is called, an interrupt handler might run on another CPU and interact with the same critical section, leading to inconsistent states.
+
+3.	Kernel Stability:
+
+    The specific order ensures that once preemption is disabled, the task remains in control until it safely acquires the spinlock and disables interrupts. This maintains the atomicity of the critical section and ensures kernel stability.
 
 ```c
 schedule(void) {
@@ -1328,20 +1377,14 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
              *   user ->   user   switch */
             if (!next->mm) { /* to kernel task */
                 enter_lazy_tlb(prev->active_mm, next) {
-                    update_saved_ttbr0(tsk, &init_mm) {
-                        if (mm == &init_mm)
-                            ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
-                        else
-                            ttbr = phys_to_ttbr(virt_to_phys(mm->pgd)) | ASID(mm) << 48;
-
-                        WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
-                    }
+                    /* empty on arm64 */
                 }
-
                 next->active_mm = prev->active_mm;
 
                 if (prev->mm) {/* from user */
                     mmgrab_lazy_tlb(prev->active_mm) {
+                        /* kernel(next) task reuses user(prev) task' mm,
+                         * inc refcnt to avoid the free of user mm */
                         atomic_inc(&mm->mm_count);
                     }
                 } else {
@@ -1363,16 +1406,28 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                                 }
 
                                 check_and_switch_context(next) {
-                                    local_flush_tlb_all() {
-                                        __tlbi(vmalle1);
+                                    if (!asid_gen_match(asid)) {
+                                        asid = new_context(mm);
+                                        atomic64_set(&mm->context.id, asid);
                                     }
+
+                                    if (cpumask_test_and_clear_cpu(cpu, &tlb_flush_pending)) {
+                                        local_flush_tlb_all() {
+                                            __tlbi(vmalle1);
+                                        }
+                                    }
+
+                                    atomic64_set(this_cpu_ptr(&active_asids), asid);
 
                                     cpu_switch_mm(mm->pgd, mm) {
                                         BUG_ON(pgd == swapper_pg_dir);
                                         cpu_set_reserved_ttbr0();
                                             --->
                                         cpu_do_switch_mm(virt_to_phys(pgd)/*pgd_phys*/, mm) {
+                                            /* Set ASID in TTBR1 since TCR.A1 is set */
                                             ttbr1 = read_sysreg(ttbr1_el1);
+                                            ttbr1 &= ~TTBR_ASID_MASK;
+                                            ttbr1 |= FIELD_PREP(TTBR_ASID_MASK, asid);
                                             write_sysreg(ttbr1, ttbr1_el1);
                                             isb();
                                             ttbr0 = phys_to_ttbr(pgd_phys);
@@ -1383,14 +1438,21 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                             }
                         }
 
-                        update_saved_ttbr0(tsk, next);
-                            --->
+                        update_saved_ttbr0(tsk, next) {
+                            if (mm == &init_mm)
+                                ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+                            else
+                                ttbr = phys_to_ttbr(virt_to_phys(mm->pgd)) | ASID(mm) << 48;
+
+                            WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
+                        }
                     }
                 }
                 lru_gen_use_mm(next->mm);
 
                 if (!prev->mm) { /* from kernel */
-                    /* will mmdrop_lazy_tlb() in finish_task_switch(). */
+                    /* kernel task no longer uses user mm, mark it
+                     * and free it in finish_task_switch(). */
                     rq->prev_mm = prev->active_mm;
                     prev->active_mm = NULL;
                 }
@@ -1442,6 +1504,7 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                             scs_load_current
                             ret
                     }
+                    return last; /* lr points here when a task scheduled in */
                 }
             }
 
@@ -1473,31 +1536,7 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                     mmdrop_lazy_tlb_sched(mm) {
                         mmdrop_sched(mm) {
                             if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
-                                __mmdrop(mm) {
-                                    cleanup_lazy_tlbs(mm);
-
-                                    WARN_ON_ONCE(mm == current->active_mm);
-                                    mm_free_pgd(mm) {
-                                        pgd_free(mm, mm->pgd) {
-                                            if (PGD_SIZE == PAGE_SIZE)
-                                                free_page((unsigned long)pgd);
-                                            else
-                                                kmem_cache_free(pgd_cache, pgd);
-                                        }
-                                    }
-                                    destroy_context(mm);
-                                    mmu_notifier_subscriptions_destroy(mm);
-                                    check_mm(mm);
-                                    put_user_ns(mm->user_ns);
-                                    mm_pasid_drop(mm);
-                                    mm_destroy_cid(mm);
-
-                                    for (i = 0; i < NR_MM_COUNTERS; i++)
-                                        percpu_counter_destroy(&mm->rss_stat[i]);
-                                    free_mm(mm) {
-                                        kmem_cache_free(mm_cachep, (mm));
-                                    }
-                                }
+                                __mmdrop(mm);
                             }
                         }
                     }
@@ -1545,9 +1584,9 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
 
 ## preempt schedule
 
-![](../images/kernel/proc-preempt-kernel.png)
-
-![](../images/kernel/proc-preempt_count.png)
+preempt mode | preempt_count
+--- | ---
+![](../images/kernel/proc-preempt-kernel.png) | ![](../images/kernel/proc-preempt_count.png)
 
 ### user preempt
 
@@ -2240,7 +2279,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
 
                     /* 1.1 find lowest cpus from vec[0, idx] */
                     for (idx = 0; idx < task_pri; idx++) {
-                        /* 1.1.1 mask p and vec*/
+                        /* 1.1.1 mask p and vec */
                         ret = __cpupri_find(cp, p, lowest_mask, idx) {
                             struct cpupri_vec *vec  = &cp->pri_to_cpu[idx];
                             int skip = 0;
@@ -2353,7 +2392,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
         if (!test && target != -1 && !rt_task_fits_capacity(p, target))
             goto out_unlock;
 
-        /* 3. pick target cpu: p prio is higher than the prio of task from target cpu */
+        /* 3. pick target cpu: p prio is higher than the highest prio of target cpu */
         if (target != -1 && p->prio < cpu_rq(target)->rt.highest_prio.curr)
             cpu = target;
     }
@@ -2601,8 +2640,7 @@ void switched_from_rt(struct rq *rq, struct task_struct *p)
     /* If there are other RT tasks then we will reschedule
      * and the scheduling of the other RT tasks will handle
      * the balancing. But if we are the last RT task
-     * we may need to handle the pulling of RT tasks
-     * now. */
+     * we may need to handle the pulling of RT tasks now. */
     if (!task_on_rq_queued(p) || rq->rt.rt_nr_running)
         return;
 
@@ -2676,7 +2714,7 @@ balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
 ![](../images/kernel/proc-sched-rt-plist.png)
 
 ```c
-/* pull a task from other cpus to this_rq */
+/* pull tasks which has lower prio than this_rq from other cpus */
 void pull_rt_task(struct rq *this_rq) {
     int this_cpu = this_rq->cpu, cpu;
     bool resched = false;
@@ -2690,8 +2728,6 @@ void pull_rt_task(struct rq *this_rq) {
 
     if (likely(!rt_overload_count))
         return;
-
-    smp_rmb();
 
     if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
         return;
@@ -2727,6 +2763,7 @@ void pull_rt_task(struct rq *this_rq) {
         }
 
         if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
+          	/* dont pull tasks which prio is higher than src_rq curr prio */
             if (p->prio < src_rq->curr->prio)
                 goto skip;
 

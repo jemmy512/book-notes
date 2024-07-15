@@ -17824,9 +17824,9 @@ void exit_mm(void)
                 mmdrop(mm) {
                     if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
                         __mmdrop(mm) {
-                            /* Ensure no CPUs are using this as their lazy tlb mm */
                             cleanup_lazy_tlbs(mm);
 
+                            WARN_ON_ONCE(mm == current->active_mm);
                             mm_free_pgd(mm) {
                                 pgd_free(mm, mm->pgd) {
                                     if (PGD_SIZE == PAGE_SIZE)
@@ -17841,9 +17841,13 @@ void exit_mm(void)
                             put_user_ns(mm->user_ns);
                             mm_pasid_drop(mm);
                             mm_destroy_cid(mm);
-                            percpu_counter_destroy_many(mm->rss_stat, NR_MM_COUNTERS);
 
-                            free_mm(mm);
+                            for (i = 0; i < NR_MM_COUNTERS; i++) {
+                                percpu_counter_destroy(&mm->rss_stat[i]);
+                            }
+                            free_mm(mm) {
+                                kmem_cache_free(mm_cachep, (mm));
+                            }
                         }
                     }
                 }
