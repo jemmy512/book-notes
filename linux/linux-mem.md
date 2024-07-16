@@ -568,50 +568,67 @@ arm64_memblock_init() {
 
 ```c
 /* arch/arm64/mm/mmu.c */
-paging_init()
-    pgd_t *pgdp = pgd_set_fixmap(__pa_symbol(swapper_pg_dir));
-
-    map_kernel(pgdp);
-        map_kernel_segment(pgdp, _stext, _etext, text_prot) {
-            __create_pgd_mapping(pgdp, phys, virt, size)
-                --->
-            vm_area_add_early(vma) {
-            vm->next = *p;
-                *p = vm;
-            }
-        }
-
-        map_kernel_segment(pgdp, __start_rodata, __inittext_begin);
-        map_kernel_segment(pgdp, __inittext_begin, __inittext_end);
-        map_kernel_segment(pgdp, __initdata_begin, __initdata_end);
-        map_kernel_segment(pgdp, _data, _end);
-
-        fixmap_copy(pgdp);
-
-    /* map all the memory banks */
-    map_mem(pgdp) {
+paging_init() {
+    /* The linear map, maps all the memory banks */
+    map_mem(swapper_pg_dir) {
         memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
         for_each_mem_range(i, &start, &end) {
-            if (start >= end)
-                break;
-            __map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL), flags);
-                __create_pgd_mapping(pgdp, phys, virt, size);
+            __map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL), flags) {
+                __create_pgd_mapping(pgdp, start, __phys_to_virt(start), end - start, prot, early_pgtable_alloc, flags) {
                     --->
+                }
+            }
         }
+        __map_memblock(pgdp, kernel_start, kernel_end, PAGE_KERNEL, NO_CONT_MAPPINGS);
+        memblock_clear_nomap(kernel_start, kernel_end - kernel_start);
     }
-
-    pgd_clear_fixmap();
-
-    cpu_replace_ttbr1(lm_alias(swapper_pg_dir), init_idmap_pg_dir);
-    init_mm.pgd = swapper_pg_dir;
-
-    /* free boot memory block */
-    memblock_phys_free(init_pg_dir, size);
-        memblock_remove_range(&memblock.reserved, base, size)
 
     memblock_allow_resize();
 
-    create_idmap();
+	create_idmap();
+
+    declare_kernel_vmas() {
+        static struct vm_struct vmlinux_seg[KERNEL_SEGMENT_COUNT];
+
+        declare_vma(&vmlinux_seg[0], _stext, _etext, VM_NO_GUARD);
+        declare_vma(&vmlinux_seg[1], __start_rodata, __inittext_begin, VM_NO_GUARD);
+        declare_vma(&vmlinux_seg[2], __inittext_begin, __inittext_end, VM_NO_GUARD);
+        declare_vma(&vmlinux_seg[3], __initdata_begin, __initdata_end, VM_NO_GUARD);
+        declare_vma(&vmlinux_seg[4]/*vma*/, _data/*start*/, _end/*end*/, 0/*vm_flags*/) {
+            phys_addr_t pa_start = __pa_symbol(va_start);
+            unsigned long size = va_end - va_start;
+
+            BUG_ON(!PAGE_ALIGNED(pa_start));
+            BUG_ON(!PAGE_ALIGNED(size));
+
+            if (!(vm_flags & VM_NO_GUARD))
+                size += PAGE_SIZE;
+
+            vma->addr	= va_start;
+            vma->phys_addr	= pa_start;
+            vma->size	= size;
+            vma->flags	= VM_MAP | vm_flags;
+            vma->caller	= __builtin_return_address(0);
+
+            vm_area_add_early(vma/*vm*/) {
+                struct vm_struct *tmp, **p;
+
+                BUG_ON(vmap_initialized);
+                for (p = &vmlist; (tmp = *p) != NULL; p = &tmp->next) {
+                    if (tmp->addr >= vm->addr) {
+                        BUG_ON(tmp->addr < vm->addr + vm->size);
+                        break;
+                    } else
+                        BUG_ON(tmp->addr + tmp->size > vm->addr);
+                }
+                vm->next = *p;
+                *p = vm;
+            }
+        }
+    }
+}
+
+static struct vm_struct *vmlist __initdata;
 ```
 
 ## bootmem_init
@@ -1328,9 +1345,12 @@ struct page {
 
 # sparsemem
 
-[Pic Source](https://zhuanlan.zhihu.com/p/220068494) ![](../images/kernel/mem-sparsemem-arch.png)
-
 * [Physical Memory Model: FLATE - SPARSE](https://docs.kernel.org/mm/memory-model.html)
+
+[Pic Source](https://zhuanlan.zhihu.com/p/220068494)
+![](../images/kernel/mem-sparsemem-arch.png)
+
+![](../images/kernel/mem-sparsemem-phys-pfn-virt.svg)
 
 ```c
 #ifdef CONFIG_SPARSEMEM_EXTREME
@@ -1367,6 +1387,11 @@ struct page {
 #define __virt_to_phys(x)   __virt_to_phys_nodebug(x)
 #define __pa(x) __virt_to_phys((unsigned long)(x))
 
+#define __phys_to_virt(x)   ((unsigned long)((x) - PHYS_OFFSET) | PAGE_OFFSET)
+#define __phys_to_kimg(x)   ((unsigned long)((x) + kimage_voffset))
+
+#define page_to_phys(page)  (__pfn_to_phys(page_to_pfn(page)))
+#define phys_to_page(phys)  (pfn_to_page(__phys_to_pfn(phys)))
 
 #if defined(CONFIG_FLATMEM)
 
@@ -7442,35 +7467,50 @@ el1h_64_sync_handler() {
                     return fault_info + (esr & ESR_ELx_FSC);
                 }
                 inf->fn(far, esr, regs)->do_translation_fault() {
-                    do_page_fault() {
-                        vma = lock_vma_under_rcu(mm, addr);
+                    unsigned long addr = untagged_addr(far);
 
-                        __do_page_fault() {
-                            fault = handle_mm_fault()
-                                --->
-                            if (fault & VM_FAULT_OOM) {
-                                pagefault_out_of_memory() {
+                    if (is_ttbr0_addr(addr)) { /* return addr < TASK_SIZE; */
+                        return do_page_fault() {
+                            vma = lock_vma_under_rcu(mm, addr);
 
+                            __do_page_fault() {
+                                fault = handle_mm_fault()
+                                    --->
+                                if (fault & VM_FAULT_OOM) {
+                                    pagefault_out_of_memory() {
+
+                                    }
+                                    return 0;
                                 }
-                                return 0;
+
+                                if (fault & VM_FAULT_SIGBUS) {
+                                    arm64_force_sig_fault(SIGBUS, BUS_ADRERR, far, inf->name);
+                                } else if (fault & (VM_FAULT_HWPOISON_LARGE | VM_FAULT_HWPOISON)) {
+                                    unsigned int lsb;
+
+                                    lsb = PAGE_SHIFT;
+                                    if (fault & VM_FAULT_HWPOISON_LARGE)
+                                        lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
+
+                                    arm64_force_sig_mceerr(BUS_MCEERR_AR, far, lsb, inf->name);
+                                } else {
+                                    arm64_force_sig_fault(SIGSEGV,
+                                        fault == VM_FAULT_BADACCESS ? SEGV_ACCERR : SEGV_MAPERR,
+                                        far, inf->name
+                                    );
+                                }
                             }
+                        }
+                    }
 
-                            if (fault & VM_FAULT_SIGBUS) {
-                                arm64_force_sig_fault(SIGBUS, BUS_ADRERR, far, inf->name);
-                            } else if (fault & (VM_FAULT_HWPOISON_LARGE | VM_FAULT_HWPOISON)) {
-                                unsigned int lsb;
-
-                                lsb = PAGE_SHIFT;
-                                if (fault & VM_FAULT_HWPOISON_LARGE)
-                                    lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
-
-                                arm64_force_sig_mceerr(BUS_MCEERR_AR, far, lsb, inf->name);
-                            } else {
-                                arm64_force_sig_fault(SIGSEGV,
-                                    fault == VM_FAULT_BADACCESS ? SEGV_ACCERR : SEGV_MAPERR,
-                                    far, inf->name
-                                );
-                            }
+                    do_bad_area(addr, fsr, regs) {
+                        unsigned long addr = untagged_addr(far);
+                        if (user_mode(regs)) {
+                            const struct fault_info *inf = esr_to_fault_info(esr);
+                            set_thread_esr(addr, esr);
+                            arm64_force_sig_fault(inf->sig, inf->code, far, inf->name);
+                        } else {
+                            __do_kernel_fault(addr, esr, regs);
                         }
                     }
                 }
@@ -8032,6 +8072,85 @@ do_wp_page(vmf) {
 
 ```c
 
+```
+
+## do_kernel_fault
+
+```c
+__do_kernel_fault(unsigned long addr, unsigned long esr,
+    struct pt_regs *regs)
+{
+    const char *msg;
+
+    /*
+    * Are we prepared to handle this kernel fault?
+    * We are almost certainly not prepared to handle instruction faults.
+    */
+    if (!is_el1_instruction_abort(esr) && fixup_exception(regs))
+        return;
+
+    if (WARN_RATELIMIT(is_spurious_el1_translation_fault(addr, esr, regs),
+        "Ignoring spurious kernel translation fault at virtual address %016lx\n", addr))
+        return;
+
+    if (is_el1_mte_sync_tag_check_fault(esr)) {
+        do_tag_recovery(addr, esr, regs);
+
+        return;
+    }
+
+    if (is_el1_permission_fault(addr, esr, regs)) {
+        if (esr & ESR_ELx_WNR)
+            msg = "write to read-only memory";
+        else if (is_el1_instruction_abort(esr))
+            msg = "execute from non-executable memory";
+        else
+            msg = "read from unreadable memory";
+    } else if (addr < PAGE_SIZE) {
+        msg = "NULL pointer dereference";
+    } else {
+        if (esr_fsc_is_translation_fault(esr) &&
+            kfence_handle_page_fault(addr, esr & ESR_ELx_WNR, regs))
+            return;
+
+        msg = "paging request";
+    }
+
+    if (efi_runtime_fixup_exception(regs, msg))
+        return;
+
+    die_kernel_fault(msg, addr, esr, regs);
+}
+
+bool fixup_exception(struct pt_regs *regs)
+{
+    const struct exception_table_entry *ex;
+
+    ex = search_exception_tables(instruction_pointer(regs));
+    if (!ex)
+        return false;
+
+    switch (ex->type) {
+    case EX_TYPE_BPF:
+        return ex_handler_bpf(ex, regs);
+    case EX_TYPE_UACCESS_ERR_ZERO:
+    case EX_TYPE_KACCESS_ERR_ZERO:
+        return ex_handler_uaccess_err_zero(ex, regs) {
+            int reg_err = FIELD_GET(EX_DATA_REG_ERR, ex->data);
+            int reg_zero = FIELD_GET(EX_DATA_REG_ZERO, ex->data);
+
+            pt_regs_write_reg(regs, reg_err, -EFAULT);
+            pt_regs_write_reg(regs, reg_zero, 0);
+
+            regs->pc = get_ex_fixup(ex);
+            return true;
+        }
+    case EX_TYPE_LOAD_UNALIGNED_ZEROPAD:
+        return ex_handler_load_unaligned_zeropad(ex, regs);
+    }
+
+    BUG();
+}
 ```
 
 # munmap
@@ -9490,6 +9609,14 @@ Q: how workingset works?
 1. directly free the unmodified file pages
 2. writeback the modified file pages to storage device
 3. writeback annonymous pages to swapping area
+
+memory candidate for linux memory reclaim:
+1. **Page Cache**: This is memory used to cache files and block device data. When the system is under memory pressure, the kernel can reclaim page cache pages, as they can be re-read from disk if needed.
+2. **Swap Cache**: These are pages that have been swapped out to disk but are still cached in memory. If memory is needed, these pages can be reclaimed, as they can be retrieved from the swap area on disk.
+3. **Inactive Pages**: Pages that have not been accessed recently. The kernel maintains lists of active and inactive pages, and inactive pages are more likely to be reclaimed than active pages.
+4. **Anonymous Pages**: These are pages used by processes that do not map to any file (e.g., heap and stack memory). If these pages are not actively used, they can be swapped out to disk.
+5. **Slab Cache**: Memory allocated for kernel objects and data structures. While this memory is often actively used, some of it can be reclaimed if it becomes unused or if memory pressure is high.
+6. **Clean Pages**: Pages that have not been modified and contain data that can be reloaded from disk. These are easier to reclaim than dirty pages, which would need to be written to disk before being freed.
 
 ![](../images/kernel/mem-page_reclaim.svg)
 
@@ -11305,6 +11432,111 @@ cannot_free:
 }
 ```
 
+## shrinker
+
+```c
+struct shrinker {
+    unsigned long (*count_objects)(
+        struct shrinker *, struct shrink_control *sc);
+    unsigned long (*scan_objects)(
+        struct shrinker *, struct shrink_control *sc);
+
+    long batch;	/* reclaim batch size, 0 = default */
+    int seeks;	/* seeks to recreate an obj */
+    unsigned flags;
+
+    refcount_t refcount;
+    struct completion done;	/* use to wait for refcount to reach 0 */
+    struct rcu_head rcu;
+
+    void *private_data;
+
+    /* These are for internal use */
+    struct list_head list;
+#ifdef CONFIG_MEMCG
+    /* ID in shrinker_idr */
+    int id;
+#endif
+
+    /* objs pending delete, per node */
+    atomic_long_t *nr_deferred;
+};
+```
+
+```c
+shrinker_register(sbi->s_es_shrinker); /* shrinker to reclaim extents from extent status tree */
+shrinker_register(s->s_shrink); /* per-sb shrinker handle */
+shrinker_register(huge_zero_page_shrinker);
+shrinker_register(deferred_split_shrinker);
+shrinker_register(vmap_node_shrinker); /* for vmalloc vmap node */
+shrinker_register(workingset_shadow_shrinker);
+shrinker_register(pool->shrinker); /* mm-zspool */
+shrinker_register(zswap_shrinker);
+```
+
+```c
+static struct ctl_table kern_table[] = {
+    {
+        .procname   = "drop_caches",
+        .data       = &sysctl_drop_caches,
+        .maxlen     = sizeof(int),
+        .mode       = 0200,
+        .proc_handler   = drop_caches_sysctl_handler,
+        .extra1     = SYSCTL_ONE,
+        .extra2     = SYSCTL_FOUR,
+    }
+};
+
+int drop_caches_sysctl_handler(struct ctl_table *table, int write,
+		void *buffer, size_t *length, loff_t *ppos)
+{
+    int ret;
+
+    ret = proc_dointvec_minmax(table, write, buffer, length, ppos);
+    if (ret)
+        return ret;
+    if (write) {
+        static int stfu;
+
+        if (sysctl_drop_caches & 1) {
+            lru_add_drain_all();
+            iterate_supers(drop_pagecache_sb, NULL);
+            count_vm_event(DROP_PAGECACHE);
+        }
+        if (sysctl_drop_caches & 2) {
+            drop_slab() {
+                int nid;
+                int shift = 0;
+                unsigned long freed;
+
+                do {
+                    freed = 0;
+                    for_each_online_node(nid) {
+                        if (fatal_signal_pending(current))
+                            return;
+
+                        freed += drop_slab_node(nid) {
+                            unsigned long freed = 0;
+                            struct mem_cgroup *memcg = NULL;
+
+                            memcg = mem_cgroup_iter(NULL, NULL, NULL);
+                            do {
+                                freed += shrink_slab(GFP_KERNEL, nid, memcg, 0);
+                            } while ((memcg = mem_cgroup_iter(NULL, memcg, NULL)) != NULL);
+
+                            return freed;
+                        }
+                    }
+                } while ((freed >> shift++) > 1);
+            }
+            count_vm_event(DROP_SLAB);
+        }
+        stfu |= sysctl_drop_caches & 4;
+    }
+    return 0;
+}
+```
+
 ### shrink_slab
 
 ```c
@@ -11316,31 +11548,12 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
     if (!mem_cgroup_disabled() && !mem_cgroup_is_root(memcg))
         return shrink_slab_memcg(gfp_mask, nid, memcg, priority);
 
-    /* lockless algorithm of global shrink.
-    *
-    * In the unregistration setp, the shrinker will be freed asynchronously
-    * via RCU after its refcount reaches 0. So both rcu_read_lock() and
-    * shrinker_try_get() can be used to ensure the existence of the shrinker.
-    *
-    * So in the global shrink:
-    *  step 1: use rcu_read_lock() to guarantee existence of the shrinker
-    *          and the validity of the shrinker_list walk.
-    *  step 2: use shrinker_try_get() to try get the refcount, if successful,
-    *          then the existence of the shrinker can also be guaranteed,
-    *          so we can release the RCU lock to do do_shrink_slab() that
-    *          may sleep.
-    *  step 3: *MUST* to reacquire the RCU lock before calling shrinker_put(),
-    *          which ensures that neither this shrinker nor the next shrinker
-    *          will be freed in the next traversal operation.
-    *  step 4: do shrinker_put() paired with step 2 to put the refcount,
-    *          if the refcount reaches 0, then wake up the waiter in
-    *          shrinker_free() by calling complete(). */
     rcu_read_lock();
     list_for_each_entry_rcu(shrinker, &shrinker_list, list) {
         struct shrink_control sc = {
-            .gfp_mask = gfp_mask,
-            .nid = nid,
-            .memcg = memcg,
+            .gfp_mask   = gfp_mask,
+            .nid        = nid,
+            .memcg      = memcg,
         };
 
         if (!shrinker_try_get(shrinker))
@@ -11382,19 +11595,6 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
             total_scan += delta;
             total_scan = min(total_scan, (2 * freeable));
 
-            /* Normally, we should not scan less than batch_size objects in one
-            * pass to avoid too frequent shrinker calls, but if the slab has less
-            * than batch_size objects in total and we are really tight on memory,
-            * we will try to reclaim all available objects, otherwise we can end
-            * up failing allocations although there are plenty of reclaimable
-            * objects spread over several slabs with usage less than the
-            * batch_size.
-            *
-            * We detect the "tight on memory" situations by looking at the total
-            * number of objects we want to scan (total_scan). If it is greater
-            * than the total number of objects on slab (freeable), we must be
-            * scanning at high prio and therefore should try to reclaim as much as
-            * possible. */
             while (total_scan >= batch_size || total_scan >= freeable) {
                 unsigned long ret;
                 unsigned long nr_to_scan = min(batch_size, total_scan);
@@ -11406,23 +11606,28 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
                     break;
                 freed += ret;
 
-                count_vm_events(SLABS_SCANNED, shrinkctl->nr_scanned);
                 total_scan -= shrinkctl->nr_scanned;
                 scanned += shrinkctl->nr_scanned;
 
                 cond_resched();
             }
 
-            /* The deferred work is increased by any new work (delta) that wasn't
-            * done, decreased by old deferred work that was done now.
-            *
-            * And it is capped to two times of the freeable items. */
             next_deferred = max_t(long, (nr + delta - scanned), 0);
             next_deferred = min(next_deferred, (2 * freeable));
 
             /* move the unused scan count back into the shrinker in a
             * manner that handles concurrent updates. */
-            new_nr = add_nr_deferred(next_deferred, shrinker, shrinkctl);
+            new_nr = add_nr_deferred(next_deferred, shrinker, shrinkctl) {
+                int nid = sc->nid;
+
+                if (!(shrinker->flags & SHRINKER_NUMA_AWARE))
+                    nid = 0;
+
+                if (sc->memcg && (shrinker->flags & SHRINKER_MEMCG_AWARE))
+                    return add_nr_deferred_memcg(nr, nid, shrinker, sc->memcg);
+
+                return atomic_long_add_return(nr, &shrinker->nr_deferred[nid]);
+            }
 
             return freed;
         }
@@ -11440,7 +11645,7 @@ unsigned long shrink_slab(gfp_t gfp_mask, int nid, struct mem_cgroup *memcg, int
 }
 ```
 
-#### shrink_slab_memcg
+### shrink_slab_memcg
 
 ```c
 unsigned long shrink_slab_memcg(gfp_t gfp_mask, int nid,
@@ -11488,61 +11693,7 @@ again:
             if (!memcg_kmem_online() && !(shrinker->flags & SHRINKER_NONSLAB))
                 continue;
 
-            ret = do_shrink_slab(&sc, shrinker, priority) {
-                long batch_size = shrinker->batch
-                    ? shrinker->batch : SHRINK_BATCH;
-                long scanned = 0, next_deferred;
-
-                freeable = shrinker->count_objects(shrinker, shrinkctl);
-                if (freeable == 0 || freeable == SHRINK_EMPTY)
-                    return freeable;
-
-                nr = xchg_nr_deferred(shrinker, shrinkctl);
-
-                if (shrinker->seeks) {
-                    delta = freeable >> priority;
-                    delta *= 4;
-                    do_div(delta, shrinker->seeks);
-                } else {
-                    delta = freeable / 2;
-                }
-
-                total_scan = nr >> priority;
-                total_scan += delta;
-                total_scan = min(total_scan, (2 * freeable));
-
-                while (total_scan >= batch_size || total_scan >= freeable) {
-                    unsigned long ret;
-                    unsigned long nr_to_scan = min(batch_size, total_scan);
-
-                    shrinkctl->nr_to_scan = nr_to_scan;
-                    shrinkctl->nr_scanned = nr_to_scan;
-                    ret = shrinker->scan_objects(shrinker, shrinkctl);
-                    if (ret == SHRINK_STOP)
-                        break;
-                    freed += ret;
-
-                    count_vm_events(SLABS_SCANNED, shrinkctl->nr_scanned);
-                    total_scan -= shrinkctl->nr_scanned;
-                    scanned += shrinkctl->nr_scanned;
-
-                    cond_resched();
-                }
-
-                /* The deferred work is increased by any new work (delta) that wasn't
-                * done, decreased by old deferred work that was done now.
-                *
-                * And it is capped to two times of the freeable items. */
-                next_deferred = max_t(long, (nr + delta - scanned), 0);
-                next_deferred = min(next_deferred, (2 * freeable));
-
-                /* move the unused scan count back into the shrinker in a
-                * manner that handles concurrent updates. */
-                new_nr = add_nr_deferred(next_deferred, shrinker, shrinkctl);
-
-                trace_mm_shrink_slab_end(shrinker, shrinkctl->nid, freed, nr, new_nr, total_scan);
-                return freed;
-            }
+            ret = do_shrink_slab(&sc, shrinker, priority);
             if (ret == SHRINK_EMPTY) {
                 clear_bit(offset, unit->map);
                 smp_mb__after_atomic();
@@ -11561,6 +11712,159 @@ again:
     }
 unlock:
     rcu_read_unlock();
+    return freed;
+}
+```
+
+### super_shrinker
+
+```c
+struct super_block {
+    struct list_lru     s_dentry_lru;
+    struct list_lru     s_inode_lru;
+    struct rcu_head     rcu;
+    struct work_struct  destroy_work;
+};
+```
+
+```c
+struct super_block *sget_fc(struct fs_context *fc,
+    int (*test)(struct super_block *, struct fs_context *),
+    int (*set)(struct super_block *, struct fs_context *))
+{
+    struct super_block *s = NULL;
+
+    s = alloc_super(fc->fs_type, fc->sb_flags, user_ns) {
+        struct super_block *s = kzalloc(sizeof(struct super_block), GFP_KERNEL);
+        s->s_shrink = shrinker_alloc(SHRINKER_NUMA_AWARE | SHRINKER_MEMCG_AWARE,
+                    "sb-%s", type->name);
+
+        s->s_shrink->scan_objects = super_cache_scan;
+        s->s_shrink->count_objects = super_cache_count;
+        s->s_shrink->batch = 1024;
+        s->s_shrink->private_data = s;
+    }
+
+    shrinker_register(s->s_shrink);
+    return s;
+}
+
+unsigned long super_cache_scan(struct shrinker *shrink,
+    struct shrink_control *sc)
+{
+    struct super_block *sb;
+    long	fs_objects = 0;
+    long	total_objects;
+    long	freed = 0;
+    long	dentries;
+    long	inodes;
+
+    sb = shrink->private_data;
+
+    /*
+    * Deadlock avoidance.  We may hold various FS locks, and we don't want
+    * to recurse into the FS that called us in clear_inode() and friends..
+    */
+    if (!(sc->gfp_mask & __GFP_FS))
+        return SHRINK_STOP;
+
+    if (!super_trylock_shared(sb))
+        return SHRINK_STOP;
+
+    if (sb->s_op->nr_cached_objects)
+        fs_objects = sb->s_op->nr_cached_objects(sb, sc);
+
+    inodes = list_lru_shrink_count(&sb->s_inode_lru, sc);
+    dentries = list_lru_shrink_count(&sb->s_dentry_lru, sc);
+    total_objects = dentries + inodes + fs_objects + 1;
+    if (!total_objects)
+        total_objects = 1;
+
+    /* proportion the scan between the caches */
+    dentries = mult_frac(sc->nr_to_scan, dentries, total_objects);
+    inodes = mult_frac(sc->nr_to_scan, inodes, total_objects);
+    fs_objects = mult_frac(sc->nr_to_scan, fs_objects, total_objects);
+
+    /*
+    * prune the dcache first as the icache is pinned by it, then
+    * prune the icache, followed by the filesystem specific caches
+    *
+    * Ensure that we always scan at least one object - memcg kmem
+    * accounting uses this to fully empty the caches.
+    */
+    sc->nr_to_scan = dentries + 1;
+    freed = prune_dcache_sb(sb, sc) {
+        LIST_HEAD(dispose);
+        long freed;
+
+        freed = list_lru_shrink_walk(&sb->s_dentry_lru, sc, dentry_lru_isolate, &dispose);
+        shrink_dentry_list(&dispose) {
+            while (!list_empty(list)) {
+                struct dentry *dentry;
+
+                dentry = list_entry(list->prev, struct dentry, d_lru);
+                spin_lock(&dentry->d_lock);
+                rcu_read_lock();
+                if (!lock_for_kill(dentry)) {
+                    bool can_free;
+                    rcu_read_unlock();
+                    d_shrink_del(dentry);
+                    can_free = dentry->d_flags & DCACHE_DENTRY_KILLED;
+                    spin_unlock(&dentry->d_lock);
+                    if (can_free)
+                        dentry_free(dentry);
+                    continue;
+                }
+                d_shrink_del(dentry) {
+                    D_FLAG_VERIFY(dentry, DCACHE_SHRINK_LIST | DCACHE_LRU_LIST);
+                    list_del_init(&dentry->d_lru);
+                    dentry->d_flags &= ~(DCACHE_SHRINK_LIST | DCACHE_LRU_LIST);
+                    this_cpu_dec(nr_dentry_unused);
+                }
+
+                shrink_kill(dentry) {
+                    do {
+                        rcu_read_unlock();
+                        victim = __dentry_kill(victim);
+                            --->
+                        rcu_read_lock();
+                    } while (victim && lock_for_kill(victim));
+                    rcu_read_unlock();
+                    if (victim)
+                        spin_unlock(&victim->d_lock);
+                }
+            }
+        }
+        return freed;
+    }
+
+    sc->nr_to_scan = inodes + 1;
+    freed += prune_icache_sb(sb, sc) {
+        LIST_HEAD(freeable);
+        long freed;
+
+        freed = list_lru_shrink_walk(&sb->s_inode_lru, sc, inode_lru_isolate, &freeable);
+        dispose_list(&freeable) {
+            while (!list_empty(head)) {
+                struct inode *inode;
+
+                inode = list_first_entry(head, struct inode, i_lru);
+                list_del_init(&inode->i_lru);
+
+                evict(inode);
+                    --->
+                cond_resched();
+            }
+        }
+        return freed;
+    }
+
+    if (fs_objects) {
+        sc->nr_to_scan = fs_objects + 1;
+        freed += sb->s_op->free_cached_objects(sb, sc);
+    }
+
+    super_unlock_shared(sb);
     return freed;
 }
 ```
