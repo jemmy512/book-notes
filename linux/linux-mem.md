@@ -177,7 +177,7 @@
 ![](../images/kernel/kernel-structual.svg)
 
 * [:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
-    * [Memory Layout on AArch64 Linux](https://www.kernel.org/doc/html/latest/arm64/memory.html)
+    * [Memory Layout on AArch64 Linux](https://docs.kernel.org/arch/arm64/memory.html)
 
 * Folio
     * [LWN Series - Folio](https://lwn.net/Kernel/Index/#Memory_management-Folios)
@@ -258,6 +258,8 @@
                     +---------------------------------------------------------------+
 
         ```
+
+* [Linux watermark 内存水位](https://mp.weixin.qq.com/s/vCUfMgLAXshWhWa65SN_wA)
 
 ---
 
@@ -872,7 +874,15 @@ arch_numa_init() {
 ## node
 
 ```c
-struct pglist_data *node_data[MAX_NUMNODES];
+/* drivers/base/arch_numa.c */
+struct pglist_data *node_data[MAX_NUMNODES] __read_mostly;
+EXPORT_SYMBOL(node_data);
+nodemask_t numa_nodes_parsed __initdata;
+static int cpu_to_node_map[NR_CPUS] = { [0 ... NR_CPUS-1] = NUMA_NO_NODE };
+
+static int numa_distance_cnt;
+static u8 *numa_distance;
+bool numa_off;
 
 typedef struct pglist_data {
     struct zone node_zones[MAX_NR_ZONES];
@@ -3093,6 +3103,14 @@ struct mm_struct {
 
     struct vm_area_struct *mmap;    /* list of VMAs */
     struct rb_root mm_rb;
+
+    /* Architecture-specific MM context */
+    mm_context_t {
+        atomic64_t  id;
+        refcount_t  pinned;
+        void        *vdso;
+        unsigned long   flags;
+    } context;
 };
 
 struct vm_area_struct {
@@ -6560,7 +6578,7 @@ mmap() {
             do_mmap(file, addr, len, prot, flag, 0, pgoff, &populate, &uf) {
                 get_unmapped_area() {
                     get_area = current->mm->get_unmapped_area;
-                    if (file->f_op->get_unmapped_area) {
+                    if (file->f_op ->get_unmapped_area) {
                         get_area = file->f_op->get_unmapped_area {
                             __thp_get_unmapped_area() {
                                 current->mm->get_unmapped_area();

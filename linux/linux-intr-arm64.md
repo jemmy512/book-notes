@@ -46,7 +46,8 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 
 ```c
 SYM_CODE_START(vectors)
-    // t: thread(user) mode, h: handler(kernel) mode
+    /* ELxt: Exception Level x using the thread stack pointer (SP_EL0)
+     * ELxh: Exception Level x using the handler stack pointer (SP_EL1) */
     kernel_ventry    1, t, 64, sync     // Synchronous EL1t
     kernel_ventry    1, t, 64, irq      // IRQ EL1t
     kernel_ventry    1, t, 64, fiq      // FIQ EL1t
@@ -83,7 +84,7 @@ SYM_CODE_END(vectors)
 .Lskip_tramp_vectors_cleanup\@:
     .endif /* \el == 0 */
 
-    /* alloc stack space for pt_regs */
+    /* 1. alloc stack space for pt_regs */
     sub    sp, sp, #PT_REGS_SIZE
 #ifdef CONFIG_VMAP_STACK
     add    sp, sp, x0            // sp' = sp + x0
@@ -113,6 +114,7 @@ SYM_CODE_END(vectors)
     sub    sp, sp, x0
     mrs    x0, tpidrro_el0
 #endif
+    /* 2. call entry_handler */
     b    el\el\ht\()_\regsize\()_\label
 .org .Lventry_start\@ + 128    // Did we overflow the ventry slot?
     .endm
@@ -128,9 +130,12 @@ entry_handler    1, h, 64, error
 
     .macro entry_handler el:req, ht:req, regsize:req, label:req
 SYM_CODE_START_LOCAL(el\el\ht\()_\regsize\()_\label)
+    /* 1. save context */
     kernel_entry \el, \regsize
     mov    x0, sp /* sp passed as arg to el_ht_handler */
+    /* 2. call handler */
     bl    el\el\ht\()_\regsize\()_\label\()_handler
+    /* 3. return user/kernel space */
     .if \el == 0
     b    ret_to_user
     .else
@@ -360,6 +365,7 @@ alternative_else_nop_endif
     apply_ssbd 0, x0, x1
     .endif
 
+    /* restore context */
     msr    elr_el1, x21            // set up the return data
     msr    spsr_el1, x22
     ldp    x0, x1, [sp, #16 * 0]
@@ -384,6 +390,7 @@ alternative_if_not ARM64_UNMAP_KERNEL_AT_EL0
     add    sp, sp, #PT_REGS_SIZE        // restore sp
 
     eret
+
 alternative_else_nop_endif
 #ifdef CONFIG_UNMAP_KERNEL_AT_EL0
     msr    far_el1, x29
@@ -423,10 +430,15 @@ SYM_CODE_END(ret_to_user)
 
 ```c
 /* arch/arm64/include/asm/exception.h */
-asmlinkage void el1t_64_sync_handler(struct pt_regs *regs);
-asmlinkage void el1t_64_irq_handler(struct pt_regs *regs);
-asmlinkage void el1t_64_fiq_handler(struct pt_regs *regs);
-asmlinkage void el1t_64_error_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_sync_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_irq_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_fiq_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_error_handler(struct pt_regs *regs);
+
+asmlinkage void el0t_64_sync_handler(struct pt_regs *regs);
+asmlinkage void el0t_64_irq_handler(struct pt_regs *regs);
+asmlinkage void el0t_64_fiq_handler(struct pt_regs *regs);
+asmlinkage void el0t_64_error_handler(struct pt_regs *regs);
 ```
 
 # 64_irq_handler
@@ -477,7 +489,15 @@ el0t_64_irq_handler(struct pt_regs *regs) {
         }
 
         do_interrupt_handler(regs, handler) {
+            struct pt_regs *old_regs = set_irq_regs(regs);
 
+            if (on_thread_stack()) {
+                call_on_irq_stack(regs, handler);
+            } else {
+                handler(regs);
+            }
+
+            set_irq_regs(old_regs);
         }
 
         irq_exit_rcu() {
@@ -604,7 +624,7 @@ el1h_64_irq_handler(struct pt_regs *regs) {
 # 64_sync_handler
 
 ```c
-/* sync exception happens in user mode */
+/* sync exception using thread stack */
 void el0t_64_sync_handler(struct pt_regs *regs) {
     unsigned long esr = read_sysreg(esr_el1);
 
@@ -701,7 +721,7 @@ void el0t_64_sync_handler(struct pt_regs *regs) {
 ```
 
 ```c
-/* sync exception happens in kernel mode */
+/* sync exception using handler stack */
 void el1h_64_sync_handler(struct pt_regs *regs) {
     unsigned long esr = read_sysreg(esr_el1);
 
@@ -735,6 +755,81 @@ void el1h_64_sync_handler(struct pt_regs *regs) {
         break;
     default:
         __panic_unhandled(regs, "64-bit el1h sync", esr);
+    }
+}
+```
+
+## gic_handle_irq
+
+```c
+set_handle_irq(gic_handle_irq);
+
+el0_interrupt(regs, handle_arch_irq);
+
+void (*handle_arch_irq)(struct pt_regs *) __ro_after_init = default_handle_irq;
+void (*handle_arch_fiq)(struct pt_regs *) __ro_after_init = default_handle_fiq;
+
+int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+{
+    if (handle_arch_irq != default_handle_irq)
+        return -EBUSY;
+
+    handle_arch_irq = handle_irq;
+    pr_info("Root IRQ handler: %ps\n", handle_irq);
+    return 0;
+}
+
+static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
+{
+	if (unlikely(gic_supports_nmi() && !interrupts_enabled(regs))) {
+		__gic_handle_irq_from_irqsoff(regs);
+
+    } else {
+		__gic_handle_irq_from_irqson(regs) {
+            bool is_nmi;
+            u32 irqnr;
+
+            irqnr = gic_read_iar();
+
+            is_nmi = gic_rpr_is_nmi_prio();
+
+            if (is_nmi) {
+                nmi_enter();
+                __gic_handle_nmi(irqnr, regs);
+                nmi_exit();
+            }
+
+            if (gic_prio_masking_enabled()) {
+                gic_pmr_mask_irqs();
+                gic_arch_enable_irqs();
+            }
+
+            if (!is_nmi) {
+                __gic_handle_irq(irqnr, regs) {
+                    if (gic_irqnr_is_special(irqnr))
+                        return;
+
+                    gic_complete_ack(irqnr) {
+                        if (static_branch_likely(&supports_deactivate_key)) {
+                            write_gicreg(irqnr, ICC_EOIR1_EL1);
+                        }
+
+                        isb();
+                    }
+
+                    ret = generic_handle_domain_irq(gic_data.domain, irqnr) {
+                        struct irq_desc desc = irq_resolve_mapping(domain, hwirq, NULL/*irq*/) {
+
+                        }
+                        return handle_irq_desc(desc);
+                    }
+                    if (ret) {
+                        WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
+                        gic_deactivate_unhandled(irqnr);
+                    }
+                }
+            }
+        }
     }
 }
 ```

@@ -884,6 +884,55 @@ ret:
 
 ## do_signal
 
+Signal handling in Linux occurs at specific points during process execution. Here are the key signal handling points in Linux:
+
+1. Kernel to User-space Transitions:
+   - This includes returns from system calls and interrupts.
+   - It's the most common and reliable point for signal handling.
+
+2. User-space to Kernel-space Transitions:
+   - When a process enters the kernel, it may check for pending signals before proceeding.
+
+3. Process Resumption:
+   - When a process resumes after being stopped or blocked.
+
+4. Timer Expiration:
+   - Including both interval timers and scheduling timers.
+
+5. Context Switches:
+   - When the scheduler switches between processes.
+
+6. Explicit Signal Waits:
+   - System calls like pause() or sigsuspend() that explicitly wait for signals.
+
+7. Process Creation and Termination:
+   - After fork()/clone() and during process exit.
+
+8. Real-time Signal Delivery:
+   - Which may have different delivery semantics than standard signals.
+
+9. Debugger-related Operations:
+   - When a process is being debugged.
+
+10. Inter-processor Interrupts (IPIs):
+    - In multiprocessor systems, for cross-CPU signal delivery.
+
+11. Preemption Points:
+    - In preemptible kernels, certain points allow for preemption and signal checking.
+
+12. After Certain Exceptions:
+    - Such as page faults, when returning to the original context.
+
+13. During Specific I/O Operations:
+    - Some I/O operations may include signal checking points.
+
+14. Process Group and Session Operations:
+    - When processes change groups or sessions.
+
+This revised list eliminates the redundancies and provides a more streamlined view of the key signal handling points in Linux. It's important to note that the exact behavior can vary based on kernel version and configuration, but these points cover the main scenarios where signal handling can occur.
+
+Thank you for your attention to detail. It's crucial to provide clear and non-redundant information, especially on technical topics like this.
+
 ```c
 struct rt_sigframe_user_layout {
     struct rt_sigframe {

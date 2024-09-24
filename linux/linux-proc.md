@@ -753,7 +753,7 @@ struct pt_regs {
     u64 sdei_ttbr1;
     /* Only valid when ARM64_HAS_GIC_PRIO_MASKING is enabled. */
     u64 pmr_save;
-    u64 stackframe[2];
+    u64 stackframe[2]; /* store FP and LR */
 
     /* Only valid for some EL1 exceptions. */
     u64 lockdep_hardirqs;
@@ -1062,6 +1062,74 @@ export LD_LIBRARY_PATH=
 
 ![](../images/kernel/proc-sched-class.png)
 
+* User Space Tasks Preemption Schedule Points:
+
+    1. System Call Returns:
+
+        When returning from a system call to user space.
+
+    2. Interrupt Returns:
+
+        When returning from an interrupt handler to user space.
+
+    3. Signal Delivery:
+
+        When a signal is delivered to a user space process.
+
+    4. Timer Expiration:
+
+        When a timer interrupt occurs (for time-slice based scheduling).
+
+    5. I/O Completion:
+
+        When an I/O operation completes and potentially wakes up a waiting process.
+
+    6. Explicit Yield:
+
+        When a process voluntarily yields the CPU (e.g., using sched_yield()).
+
+* Kernel Space Tasks Preemption Schedule Points:
+
+    1. Explicit Preemption Points:
+
+        Calls to schedule() or similar functions within kernel code.
+
+    2. Returning from Interrupt Context:
+
+        After processing an interrupt, before returning to the previous context.
+
+    3. Releasing Locks:
+
+        After releasing certain types of locks that may have been preventing preemption.
+
+    4. Preempt Enable/Disable Boundaries:
+
+        When re-enabling preemption after it was explicitly disabled.
+
+    5. Completion of Bottom Halves:
+
+        After processing deferred work (e.g., softirqs, tasklets).
+
+    6. Long-running Loops:
+
+        Some kernel loops explicitly check for need_resched() and call schedule() if necessary.
+
+    7. Memory Allocation/Deallocation:
+
+        Some memory operations may include preemption points.
+
+    8. End of Timer Callbacks:
+
+        After executing kernel timer callbacks.
+
+    9. Waking Up Higher Priority Tasks:
+
+        When a kernel operation wakes up a higher priority task.
+
+    10. Entering/Exiting Critical Sections:
+
+        Some implementations check for pending preemptions when entering or exiting critical sections.
+
 ```c
 /* Schedule Class:
  * Real time schedule: SCHED_FIFO, SCHED_RR, SCHED_DEADLINE
@@ -1153,6 +1221,17 @@ struct rq {
     struct task_struct *curr, *idle, *stop;
 };
 ```
+
+**pt_regs** (processor register) VS **cpu_context**:
+
+- Before a user space task can be scheduled out, there must always be a transition to kernel space. This can happen through various mechanisms:
+    1. System calls
+    2. Interrupts (e.g., timer interrupts used for preemptive multitasking)
+    3. Exceptions (e.g., page faults)
+- The full user space context is saved in pt_regs which is usually at the top of the kernel stack for that process.
+- The cpu_context in thread_struct holds the kernel execution context when a task is scheduled out.
+- The scheduler uses the information in cpu_context to resume a task's execution in kernel space.
+- When returning to user space, the kernel uses the saved pt_regs to restore the full user space context.
 
 <img src='../images/kernel/proc-sched-entity-rq.png' style='max-height:850px'/>
 
@@ -1460,13 +1539,19 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
 
             switch_to(prev, next, prev) {
                 __switch_to() {
+                    /* Switches the floating-point and SIMD (Single Instruction, Multiple Data)
+                     * context to the next task. */
                     fpsimd_thread_switch(next);
+                    /* Handles the Thread Local Storage (TLS) switch for the next task. */
                     tls_thread_switch(next);
+                    /* Manages hardware breakpoint settings for the next task. */
                     hw_breakpoint_thread_switch(next);
+                    /* Switches the Context ID Register (CONTEXTIDR) for the next task. */
                     contextidr_thread_switch(next);
                     entry_task_switch(next) {
                         __this_cpu_write(__entry_task, next);
                     }
+                    /* Handles the Speculative Store Bypass Safe (SSBS) state switch. */
                     ssbs_thread_switch(next);
                     erratum_1418040_thread_switch(next);
                     ptrauth_thread_switch_user(next);
@@ -1495,10 +1580,11 @@ __schedule(SM_NONE) {/* kernel/sched/core.c */
                             ldp    x25, x26, [x8], #16
                             ldp    x27, x28, [x8], #16
                             ldp    x29, x9, [x8], #16
-                            ldr    lr, [x8]
+                            ldr    lr, [x8] /* calc next task cpu_context addr */
                             mov    sp, x9
                             msr    sp_el0, x1
 
+                            /* Installs pointer authentication keys for the kernel */
                             ptrauth_keys_install_kernel x1, x8, x9, x10
                             scs_save x0
                             scs_load_current
@@ -1800,6 +1886,76 @@ el1t_64_irq_handler() {
 # SCHED_RT
 
 ![](../images/kernel/proc-sched-rt.png)
+
+The PREEMPT_RT patch set implements real-time capabilities in Linux through several key modifications to the kernel. Here's a detailed explanation of how PREEMPT_RT achieves this:
+
+1. Fully Preemptible Kernel:
+   - Converts most spinlocks to RT-mutexes, allowing preemption even when locks are held.
+   - Implements "sleeping spinlocks" to allow context switches during lock contention.
+   - Makes interrupt handlers preemptible by converting them to kernel threads.
+
+2. High-Resolution Timers:
+   - Replaces the standard timer wheel with high-resolution timers (hrtimers).
+   - Provides microsecond or nanosecond resolution for timers and scheduling.
+
+3. Priority Inheritance:
+   - Implements a comprehensive priority inheritance mechanism.
+   - Helps prevent priority inversion scenarios in real-time tasks.
+
+4. Threaded Interrupt Handlers:
+   - Converts hardirq handlers into threaded interrupt handlers.
+   - Allows interrupt handlers to be preempted by higher-priority tasks.
+
+5. Real-Time Scheduler:
+   - Enhances the existing SCHED_FIFO and SCHED_RR policies.
+   - Implements a more deterministic scheduling algorithm for real-time tasks.
+
+6. Preemptible RCU (Read-Copy-Update):
+   - Modifies RCU to allow preemption during read-side critical sections.
+
+7. Latency Reduction:
+   - Identifies and modifies long non-preemptible sections in the kernel.
+   - Introduces preemption points in long-running kernel operations.
+
+8. Interrupt Threading:
+   - Moves interrupt processing to kernel threads, making them schedulable.
+   - Allows for prioritization of interrupt handling.
+
+9. Locking Mechanisms:
+   - Introduces rtmutex (real-time mutex) as a fundamental locking primitive.
+   - Implements priority inheritance for mutexes and spinlocks.
+
+10. Critical Section Management:
+    - Reduces the size of critical sections where possible.
+    - Implements fine-grained locking to minimize non-preemptible code paths.
+
+11. Real-Time Throttling:
+    - Implements mechanisms to prevent real-time tasks from monopolizing the CPU.
+
+12. Sleeping in Atomic Contexts:
+    - Allows certain operations that traditionally required spinlocks to sleep, improving system responsiveness.
+
+13. Improved Timer Handling:
+    - Implements more precise timer management to reduce scheduling latencies.
+
+14. Preemptible Kernel-Level Threads:
+    - Makes kernel threads preemptible, allowing real-time tasks to run when needed.
+
+15. Real-Time Bandwidth Control:
+    - Implements mechanisms to control CPU usage of real-time tasks to prevent system lockup.
+
+16. Forced Preemption:
+    - Introduces mechanisms to force preemption in long-running kernel code paths.
+
+17. Debugging and Tracing:
+    - Enhances existing tools and adds new ones for debugging real-time behavior.
+
+Key Implementation Challenges:
+
+1. Maintaining system stability while increasing preemptibility.
+2. Balancing real-time performance with overall system throughput.
+3. Ensuring backwards compatibility with existing applications and drivers.
+4. Managing increased complexity in synchronization and locking mechanisms.
 
 ```c
 struct rt_rq {
@@ -3150,7 +3306,7 @@ DEFINE_SCHED_CLASS(fair) = {
 
 ## enqueue_task_fair
 
-![](../images/kernel/proc-sched-cfs-enqueue_task_fair.png)
+![](../images/kernel/proc-sched-cfs-enqueue_task_fair.svg)
 
 ```c
 enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
@@ -3289,7 +3445,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                         cfs_rq->avg_vruntime += key * weight;
                         cfs_rq->avg_load += weight;
                     }
-                    se->min_vruntime = se->deadline;
+                    se->min_vruntime = se->vruntime;
 
                     RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
                         run_node, min_vruntime, min_vruntime_update);
@@ -3301,7 +3457,7 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
                         u64 old_min_vruntime = se->min_vruntime;
                         struct rb_node *node = &se->run_node;
 
-                        se->min_vruntime = se->deadline;
+                        se->min_vruntime = se->vruntime;;
                         __min_vruntime_update(se, node->rb_right);
                         __min_vruntime_update(se, node->rb_left) {
                             if (node) {
@@ -3767,51 +3923,66 @@ simple:
             if (sched_feat(NEXT_BUDDY) && cfs_rq->next && ret)
                 return cfs_rq->next;
 
+            /* EEVDF selects the best runnable task from two criteria:
+             *  1) the task must be eligible (must be owed service)
+             *  2) from those tasks that meet 1), we select the one
+             *     with the earliest virtual deadline. */
             return pick_eevdf(cfs_rq) {
-                /* the root node of the rbt */
                 struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
+                struct sched_entity *se = __pick_first_entity(cfs_rq);
                 struct sched_entity *curr = cfs_rq->curr;
                 struct sched_entity *best = NULL;
+
+                /* We can safely skip eligibility check if there is only one entity
+                 * in this cfs_rq, saving some cycles. */
+                if (cfs_rq->nr_running == 1)
+                    return curr && curr->on_rq ? curr : se;
 
                 if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
                     curr = NULL;
 
+                /* Once selected, run a task until it either becomes non-eligible or
+                 * until it gets a new slice. See the HACK in set_next_entity(). */
                 if (sched_feat(RUN_TO_PARITY) && curr && curr->vlag == curr->deadline)
                     return curr;
 
+                /* Pick the leftmost entity if it's eligible */
+                if (se && entity_eligible(cfs_rq, se)) {
+                    best = se;
+                    goto found;
+                }
+
+                /* Heap search for the EEVD entity */
                 while (node) {
-                    struct sched_entity *se = __node_2_se(node);
+                    struct rb_node *left = node->rb_left;
 
-                    if (!entity_eligible(cfs_rq, se)) {
-                        node = node->rb_left;
+                    /* Eligible entities in left subtree are always better
+                     * choices, since they have earlier deadlines. */
+                    if (left && vruntime_eligible(cfs_rq,
+                                __node_2_se(left)->min_vruntime)) {
+                        node = left;
                         continue;
                     }
 
-                    if (!best || deadline_gt(deadline, best, se)) {
+                    se = __node_2_se(node);
+
+                    /* The left subtree either is empty or has no eligible
+                     * entity, so check the current node since it is the one
+                     * with earliest deadline that might be eligible. */
+                    if (entity_eligible(cfs_rq, se)) {
                         best = se;
-                        if (best->deadline == best->min_vruntime)
-                            break;
-                    }
-
-                    if (node->rb_left &&
-                        __node_2_se(node->rb_left)->min_vruntime == se->min_vruntime) {
-                        node = node->rb_left;
-                        continue;
+                        break;
                     }
 
                     node = node->rb_right;
                 }
 
-                if (!best || (curr && deadline_gt(deadline, best, curr)))
+            found:
+                if (!best || (curr && entity_before(curr, best) {
+                        (s64)(a->deadline - b->deadline) < 0
+                    })
+                )
                     best = curr;
-
-                if (unlikely(!best)) {
-                    /* pick the left most node */
-                    struct sched_entity *left = __pick_first_entity(cfs_rq);
-                    if (left) {
-                        return left;
-                    }
-                }
 
                 return best;
             }
@@ -4736,7 +4907,7 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                     }
                 }
                 update_min_vruntime(cfs_rq) {
-                    struct sched_entity *se = __pick_first_entity(cfs_rq);
+                    struct sched_entity *se = __pick_first_entity(cfs_rq); /* leftmost */
                     struct sched_entity *curr = cfs_rq->curr;
 
                     u64 vruntime = cfs_rq->min_vruntime;
@@ -4750,9 +4921,9 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
 
                     if (se) {
                         if (!curr) {
-                            vruntime = se->vruntime;
+                            vruntime = se->min_vruntime;
                         } else {
-                            vruntime = min_vruntime(vruntime, se->vruntime/*vruntime*/) {
+                            vruntime = min_vruntime(vruntime, se->min_vruntime/*vruntime*/) {
                                 s64 delta = (s64)(vruntime - min_vruntime);
                                 if (delta < 0) {
                                     min_vruntime = vruntime;
@@ -5740,10 +5911,53 @@ get_cpu_for_node(struct device_node *node)
 
 ![](../images/kernel/proc-sched-pelt-last_update_time.svg)
 
-load_avg, runnable_avg, and util_avg describe the CPU load from three dimensions:
-1. **weight (priority)**
-2. **number of tasks on run queue**
-3. **CPU time slice occupancy**
+To explain PELT (Per-Entity Load Tracking) effectively in an interview, you should focus on its key concepts, importance, and how it works. Here's a structured approach:
+
+1. Definition:
+   "PELT is a mechanism in the Linux kernel that tracks and estimates the load and CPU utilization of individual tasks and CPUs over time."
+
+2. Purpose:
+   "It's used to make informed decisions about task scheduling, load balancing, and CPU frequency scaling."
+
+3. Key Metrics:
+   "PELT tracks three main metrics:
+   - load_avg: Overall system load
+   - runnable_avg: Time spent runnable (running or waiting to run)
+   - util_avg: Actual CPU utilization"
+
+4. Core Concept:
+   "PELT uses an exponentially weighted moving average (EWMA) to calculate these metrics, giving more weight to recent activity while still considering historical data."
+
+5. How it Works:
+   - "PELT updates its metrics at regular intervals (usually every scheduler tick) and on specific events like task switches."
+   - "It applies a decay function to gradually reduce the impact of past events."
+   - "The calculations use fixed-point arithmetic for efficiency."
+
+6. Importance:
+   "PELT is crucial for:
+   - Effective load balancing across CPUs
+   - Intelligent task placement in heterogeneous systems (like big.LITTLE architectures)
+   - Efficient CPU frequency scaling
+   - Accurate reporting of system load"
+
+7. Advantages:
+   "PELT provides a smooth, continuous representation of load and utilization, adapting quickly to changes while maintaining historical context."
+
+8. Real-world Application:
+   "For example, in a multi-core system, PELT helps decide which CPU should handle a new task based on the current load distribution."
+
+9. Challenges:
+   "Tuning PELT involves balancing responsiveness to changes with stability in measurements, and managing computational overhead."
+
+10. Recent Developments (if applicable):
+    "Recent Linux kernel versions have introduced refinements to PELT, such as improved handling of idle CPUs."
+
+ VS | load_avg | runnable_avg | util_avg
+--- | --- | --- | ---
+Scope | includes both runnable and I/O-bound tasks | only includes runnable tasks | focuses on actual CPU usage.
+Purpose | is a general system load indicator | more specific to CPU scheduling needs | used for performance and power management decisions
+Interpretation | A high load_avg might not necessarily mean high CPU usage if many tasks are I/O-bound | A high runnable_avg more directly indicates CPU contention | A high util_avg directly shows high CPU usage
+Kernel usage | mainly used for user-space reporting | used more extensively within | the kernel for various algorithms and decisions.
 
 ---
 
@@ -8794,7 +9008,23 @@ try_to_wake_up() {
 
                         if (set_nr_and_not_polling(curr)) {
                             smp_send_reschedule(cpu) {
-                                arch_smp_send_reschedule(cpu);
+                                arch_smp_send_reschedule(cpu) {
+                                    smp_cross_call(cpumask_of(cpu), IPI_RESCHEDULE) {
+                                        void do_handle_IPI(int ipinr) {
+                                            unsigned int cpu = smp_processor_id();
+                                            switch (ipinr) {
+                                            case IPI_RESCHEDULE:
+                                                scheduler_ipi() {
+                                                    preempt_fold_need_resched() {
+                                                        if (tif_need_resched())
+                                                            set_preempt_need_resched();
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

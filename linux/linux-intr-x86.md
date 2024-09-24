@@ -1692,6 +1692,18 @@ void raise_softirq_irqoff(unsigned int nr)
     wakeup_softirqd();
 }
 
+static __always_inline int preempt_count(void)
+{
+  return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
+}
+
+/* Bits Description
+0-7   Preemption counter (max value = 255)
+8-15  Softirq counter (max value = 255).
+16-27 Hardirq counter (max value = 4096)
+28    PREEMPT_ACTIVE flag */
+DECLARE_PER_CPU(int, __preempt_count);
+
 #define hardirq_count() (preempt_count() & HARDIRQ_MASK)
 #define softirq_count() (preempt_count() & SOFTIRQ_MASK)
 #define irq_count() (preempt_count() & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK))
@@ -1728,18 +1740,6 @@ DEFINE_PER_CPU_ALIGNED(irq_cpustat_t, irq_stat);
 #define softirq_count() (preempt_count() & SOFTIRQ_MASK)
 #define irq_count() (preempt_count() & (HARDIRQ_MASK | SOFTIRQ_MASK | NMI_MASK))
 
-static __always_inline int preempt_count(void)
-{
-  return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
-}
-
-DECLARE_PER_CPU(int, __preempt_count);
-/* Bits Description
-0-7   Preemption counter (max value = 255)
-8-15  Softirq counter (max value = 255).
-16-27 Hardirq counter (max value = 4096)
-28    PREEMPT_ACTIVE flag */
-
 void wakeup_softirqd(void)
 {
   struct task_struct *tsk = __this_cpu_read(ksoftirqd);
@@ -1757,7 +1757,10 @@ To summarize, each softirq goes through the following stages:
 
 # tasklet
 
+* [LWN - The end of tasklets](https://lwn.net/Articles/960041/)
+
 ## open TASKLET_SOFTIRQ
+
 ```c
 static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
 static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
@@ -1771,7 +1774,7 @@ struct tasklet_struct
 {
   struct tasklet_struct *next;
   unsigned long         state;
-  atomic_t              count;
+  atomic_t              count; /* 0 enabled, non-0 disabled */
   void (*func)(unsigned long);
   unsigned long         data;
 };

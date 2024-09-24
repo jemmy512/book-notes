@@ -1913,6 +1913,44 @@ void __sched mutex_unlock(struct mutex *lock) {
 
 ## rtmutex
 
+RT-mutexes (Real-Time Mutexes) have several important features that make them suitable for use in real-time operating systems. Here are the key features of RT-mutexes:
+
+1. Priority Inheritance:
+   - Prevents priority inversion by allowing a lower-priority task holding the mutex to temporarily inherit the priority of a higher-priority task waiting for the mutex.
+
+2. Bounded Priority Inversion:
+   - Limits the duration of priority inversion, ensuring that high-priority tasks are not blocked indefinitely by lower-priority tasks.
+
+3. Preemptibility:
+   - Unlike some traditional mutexes, RT-mutexes can be preempted, allowing higher-priority tasks to run even if a lower-priority task holds the mutex.
+
+4. Deadlock Prevention:
+   - Implements mechanisms to help prevent deadlocks, especially in scenarios involving nested locks.
+
+5. Fast Path for Uncontended Lock:
+   - Optimized for quick acquisition when there's no contention, which is common in many real-time scenarios.
+
+6. Support for Recursive Locking:
+   - Allows the same task to lock the mutex multiple times without causing a deadlock.
+
+7. Robust Futex Implementation:
+   - Often implemented using futexes (Fast Userspace muTexes) for efficient operation in both user and kernel space.
+
+8. Priority Ceiling Protocol Support:
+   - Some RT-mutex implementations support the priority ceiling protocol, which can further reduce priority inversion.
+
+9. FIFO Ordering:
+   - Ensures fairness by typically using FIFO (First-In-First-Out) ordering for tasks waiting on the mutex.
+
+10. Kernel Preemption Points:
+    - Designed to work well with kernel preemption points, maintaining system responsiveness.
+
+11. Debugging Features:
+    - Often come with additional debugging and tracing capabilities to help diagnose issues in real-time systems.
+
+12. Adaptive Spinning:
+    - Some implementations use adaptive spinning techniques to reduce context switches in short-term lock contentions.
+
 ![](../images/kernel/lock-rt-mutex.png)
 
 ---
