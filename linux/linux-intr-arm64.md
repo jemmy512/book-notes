@@ -494,7 +494,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
             if (on_thread_stack()) {
                 call_on_irq_stack(regs, handler);
             } else {
-                handler(regs);
+                handler(regs); /* gic_handle_irq */
             }
 
             set_irq_regs(old_regs);
@@ -503,11 +503,27 @@ el0t_64_irq_handler(struct pt_regs *regs) {
         irq_exit_rcu() {
             account_hardirq_exit(current) {
                 vtime_account_hardirq(tsk);
-	            irqtime_account_irq(tsk, 0);
+                irqtime_account_irq(tsk, 0);
             }
             preempt_count_sub(HARDIRQ_OFFSET);
-            if (!in_interrupt() && local_softirq_pending())
-                invoke_softirq();
+            if (!in_interrupt() && local_softirq_pending()) {
+            #ifdef CONFIG_PREEMPT_RT
+                /* PREEMPT_RT kernel just wakes up softirqd */
+                static inline void invoke_softirq(void) {
+                    if (should_wake_ksoftirqd() { return !this_cpu_read(softirq_ctrl.cnt) }) {
+                        wakeup_softirqd();
+                    }
+                }
+            #else
+                /* standard kernel invokes softirq to handle the irqs */
+                static inline void invoke_softirq(void) {
+                    if (!force_irqthreads() || !__this_cpu_read(ksoftirqd)) {
+                        __do_softirq();
+                    } else {
+                        wakeup_softirqd();
+                    }
+                }
+            }
 
             tick_irq_exit();
         }
@@ -613,6 +629,75 @@ el1h_64_irq_handler(struct pt_regs *regs) {
                     } else {
                         if (regs->exit_rcu)
                             ct_irq_exit();
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+## gic_handle_irq
+
+```c
+set_handle_irq(gic_handle_irq);
+
+void (*handle_arch_irq)(struct pt_regs *) __ro_after_init = default_handle_irq;
+void (*handle_arch_fiq)(struct pt_regs *) __ro_after_init = default_handle_fiq;
+
+int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+{
+    if (handle_arch_irq != default_handle_irq)
+        return -EBUSY;
+
+    handle_arch_irq = handle_irq;
+    pr_info("Root IRQ handler: %ps\n", handle_irq);
+    return 0;
+}
+
+/* el0_irq -> irq_handler */
+static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
+{
+	if (unlikely(gic_supports_nmi() && !interrupts_enabled(regs))) {
+		__gic_handle_irq_from_irqsoff(regs);
+
+    } else {
+        __gic_handle_irq_from_irqson(regs) {
+            bool is_nmi;
+            u32 irqnr;
+
+            irqnr = gic_read_iar();
+
+            is_nmi = gic_rpr_is_nmi_prio();
+
+            if (is_nmi) {
+                nmi_enter();
+                __gic_handle_nmi(irqnr, regs);
+                nmi_exit();
+            }
+
+            if (gic_prio_masking_enabled()) {
+                gic_pmr_mask_irqs();
+                gic_arch_enable_irqs();
+            }
+
+            if (!is_nmi) {
+                __gic_handle_irq(irqnr, regs) {
+                    if (gic_irqnr_is_special(irqnr))
+                        return;
+
+                    gic_complete_ack(irqnr) {
+                        if (static_branch_likely(&supports_deactivate_key)) {
+                            write_gicreg(irqnr, ICC_EOIR1_EL1);
+                        }
+
+                        isb();
+                    }
+
+                    ret = generic_handle_domain_irq(gic_data.domain, irqnr);
+                    if (ret) {
+                        WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
+                        gic_deactivate_unhandled(irqnr);
                     }
                 }
             }
@@ -755,81 +840,6 @@ void el1h_64_sync_handler(struct pt_regs *regs) {
         break;
     default:
         __panic_unhandled(regs, "64-bit el1h sync", esr);
-    }
-}
-```
-
-## gic_handle_irq
-
-```c
-set_handle_irq(gic_handle_irq);
-
-el0_interrupt(regs, handle_arch_irq);
-
-void (*handle_arch_irq)(struct pt_regs *) __ro_after_init = default_handle_irq;
-void (*handle_arch_fiq)(struct pt_regs *) __ro_after_init = default_handle_fiq;
-
-int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
-{
-    if (handle_arch_irq != default_handle_irq)
-        return -EBUSY;
-
-    handle_arch_irq = handle_irq;
-    pr_info("Root IRQ handler: %ps\n", handle_irq);
-    return 0;
-}
-
-static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
-{
-	if (unlikely(gic_supports_nmi() && !interrupts_enabled(regs))) {
-		__gic_handle_irq_from_irqsoff(regs);
-
-    } else {
-		__gic_handle_irq_from_irqson(regs) {
-            bool is_nmi;
-            u32 irqnr;
-
-            irqnr = gic_read_iar();
-
-            is_nmi = gic_rpr_is_nmi_prio();
-
-            if (is_nmi) {
-                nmi_enter();
-                __gic_handle_nmi(irqnr, regs);
-                nmi_exit();
-            }
-
-            if (gic_prio_masking_enabled()) {
-                gic_pmr_mask_irqs();
-                gic_arch_enable_irqs();
-            }
-
-            if (!is_nmi) {
-                __gic_handle_irq(irqnr, regs) {
-                    if (gic_irqnr_is_special(irqnr))
-                        return;
-
-                    gic_complete_ack(irqnr) {
-                        if (static_branch_likely(&supports_deactivate_key)) {
-                            write_gicreg(irqnr, ICC_EOIR1_EL1);
-                        }
-
-                        isb();
-                    }
-
-                    ret = generic_handle_domain_irq(gic_data.domain, irqnr) {
-                        struct irq_desc desc = irq_resolve_mapping(domain, hwirq, NULL/*irq*/) {
-
-                        }
-                        return handle_irq_desc(desc);
-                    }
-                    if (ret) {
-                        WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
-                        gic_deactivate_unhandled(irqnr);
-                    }
-                }
-            }
-        }
     }
 }
 ```

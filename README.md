@@ -3,7 +3,7 @@
 * [Memory Management](./linux/linux-mem.md)
 * [Network System](./linux/linux-net.md)
 * [File & IO System](./linux/linux-file-io.md)
-* Interrupt [ARM 64](./linux/linux-intr-arm64.md) :heavy_minus_sign: [x86](./linux/linux-intr-arm64.md)
+* Interrupt [core](./linux/linux-intr.md)   [ARM 64](./linux/linux-intr-arm64.md) :heavy_minus_sign:    [x86](./linux/linux-intr-arm64.md)
 * [Core](./linux/linux-core.md)
 * [IPC](./linux/linux-ipc.md)
 * [Time](./linux/linux-time.md)

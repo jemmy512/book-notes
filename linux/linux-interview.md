@@ -623,3 +623,86 @@ Key Implementation Challenges:
 2. Balancing real-time performance with overall system throughput.
 3. Ensuring backwards compatibility with existing applications and drivers.
 4. Managing increased complexity in synchronization and locking mechanisms.
+
+
+# EEVDF
+
+1. Origin and Purpose:
+   - Proposed by Josh Triplett in 2023 as an alternative to CFS.
+   - Aims to provide better fairness and responsiveness, especially for mixed workloads.
+
+2. Core Concepts:
+   - Virtual Deadline: A calculated time by which a task should ideally run next.
+   - Eligibility Time: The earliest time a task can run again after its last execution.
+   - Combines aspects of Earliest Deadline First (EDF) and fair queueing algorithms.
+
+3. Key Differences from CFS:
+   - Uses virtual deadlines instead of virtual runtime.
+   - Explicitly tracks task eligibility to prevent starvation.
+   - Aims for more precise control over task execution order.
+
+4. Advantages:
+   - Potentially better handling of mixed I/O and CPU-bound workloads.
+   - Improved fairness in resource allocation.
+   - More predictable scheduling decisions.
+   - Could reduce scheduling latency for interactive tasks.
+
+5. Implementation Challenges:
+   - Integrating with existing Linux scheduler framework.
+   - Ensuring scalability on many-core systems.
+   - Maintaining compatibility with existing userspace APIs.
+   - Handling corner cases and diverse workloads efficiently.
+
+6. Technical Details:
+   - Uses a time-ordered data structure (likely a red-black tree) to manage tasks.
+   - Calculates virtual deadlines based on task priority and runtime behavior.
+   - Incorporates task sleep time into scheduling decisions.
+
+7. Potential Impact:
+   - Could significantly change how Linux manages task scheduling.
+   - May improve responsiveness for desktop and interactive workloads.
+   - Could benefit real-time-like workloads without full SCHED_FIFO guarantees.
+
+8. Current Status:
+   - As of 2024, still in experimental/proposal stage.
+   - Not yet merged into mainline Linux kernel.
+   - Active discussion and development in the Linux kernel community.
+
+9. Comparison with Other Schedulers:
+   - Unlike CFS, doesn't rely on tracking cumulative runtime.
+   - Shares some conceptual similarities with real-time schedulers but for general-purpose use.
+   - Aims to provide some benefits of deadline-based scheduling without full RT overhead.
+
+10. Performance Considerations:
+    - May have different CPU utilization patterns compared to CFS.
+    - Potentially lower scheduling overhead in some scenarios.
+    - Could improve multi-core scaling in certain workloads.
+
+11. Configuration and Tuning:
+    - Would likely introduce new syscalls or /proc interfaces for configuration.
+    - Might require new tools or extensions to existing ones (like nice, chrt) for userspace control.
+
+12. Integration Aspects:
+    - Need to consider interaction with cgroups and namespaces.
+    - Implications for power management and CPU frequency scaling.
+    - Potential impacts on existing tracing and debugging tools.
+
+13. Development Process:
+    - Requires extensive testing across various hardware and workloads.
+    - Likely to go through multiple iterations based on community feedback.
+    - May initially be introduced as an optional scheduler for testing.
+
+14. Theoretical Foundations:
+    - Builds on concepts from real-time systems theory.
+    - Incorporates ideas from fair queueing in network scheduling.
+
+15. Potential Limitations:
+    - May introduce new complexities in scheduler behavior.
+    - Could require adjustments in application design for optimal performance.
+    - Might have different trade-offs compared to CFS for certain workload types.
+
+16. Future Directions:
+    - Possible extensions to handle more specialized scheduling needs.
+    - Potential for hybrid approaches combining EEVDF with other scheduling paradigms.
+
+This comprehensive overview covers the key aspects of EEVDF in the Linux context, from its conceptual foundations to practical implementation considerations and potential future developments. The actual implementation and integration of EEVDF into the Linux kernel remain active areas of research and development in the kernel community.

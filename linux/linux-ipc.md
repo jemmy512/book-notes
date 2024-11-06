@@ -777,8 +777,9 @@ int send_signal_locked(int sig, struct kernel_siginfo *info,
 
 out_set:
     signalfd_notify(t, sig) {
-        if (unlikely(waitqueue_active(&tsk->sighand->signalfd_wqh)))
-        wake_up(&tsk->sighand->signalfd_wqh);
+        if (unlikely(waitqueue_active(&tsk->sighand->signalfd_wqh))) {
+            wake_up(&tsk->sighand->signalfd_wqh);
+        }
     }
 
     sigaddset(&pending->signal, sig);
