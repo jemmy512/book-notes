@@ -293,6 +293,7 @@ A saga is a sequence of local transactions that updates each service and publish
             2. Complexity: data routing(Range, Hash, Configuration), join, count, order by
 3. Cache
     * Issues
+        ![](../images/cache-problem.png)
         1. **Cache Penetration**: the data to be searched doesn't exist at DB and the returned empty result set is not cached as well and hence every search for the key will hit the DB eventually.
             1. Cache empty/null result
             2. Bloom filter

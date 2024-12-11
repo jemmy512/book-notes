@@ -2,6 +2,8 @@ TODO:
     1. 3.4, 3.5, 3.6 look back
         2. 4.2 look back
 
+![](../images/cpp/oop.png)
+
 # 1. Object Lessons
 
 * Layout costs for Adding Encapsulation:
