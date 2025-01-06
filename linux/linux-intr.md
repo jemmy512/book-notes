@@ -1,4 +1,27 @@
-# request_irq
+* [中断管理 - LoyenWang](https://www.cnblogs.com/LoyenWang/category/1777370.html)
+    * [1. 中断控制器及驱动分析](https://www.cnblogs.com/LoyenWang/p/12249106.html)
+    * [2. 通用框架处理](https://www.cnblogs.com/LoyenWang/p/13052677.html)
+
+* [IRQ Subsystem - WOWO TECH](http://www.wowotech.net/sort/irq_subsystem)
+    * [1. 综述](http://www.wowotech.net/irq_subsystem/interrupt_subsystem_architecture.html)
+    * [2. IRQ Domain介绍](http://www.wowotech.net/irq_subsystem/irq-domain.html)
+    * [3. IRQ number和中断描述符](http://www.wowotech.net/irq_subsystem/interrupt_descriptor.html)
+    * [4. High level irq event handler](http://www.wowotech.net/irq_subsystem/High_level_irq_event_handler.html)
+    * [5. 驱动申请中断API](http://www.wowotech.net/irq_subsystem/request_threaded_irq.html)
+    * [6. ARM中断处理过程](http://www.wowotech.net/irq_subsystem/irq_handler.html)
+    * [7. GIC代码分析](http://www.wowotech.net/irq_subsystem/gic_driver.html)
+    * [8. 中断唤醒系统流程](http://www.wowotech.net/irq_subsystem/irq_handle_procedure.html)
+    * [softirq](http://www.wowotech.net/irq_subsystem/soft-irq.html)
+    * [tasklet](http://www.wowotech.net/irq_subsystem/tasklet.html)
+    * [ARMv8 异常处理简介](https://mp.weixin.qq.com/s/dZEMB4_Xmgd8f7GO7c8Oag)
+
+* [深入分析linux内核源码：中断子系统详解](https://mp.weixin.qq.com/s/8BV0aQMeBtqUlKrpa8QZeg)
+
+![](../images/kernel/intr-arch-layer.png)
+
+---
+
+![](../images/kernel/intr-irq_desc.png)
 
 ```c
 /* The interrupt vector interrupt controller sent to
@@ -34,7 +57,464 @@ struct irqaction {
     const char          *name;
     struct proc_dir_entry *dir;
 };
+```
 
+# init_IRQ
+
+```c
+void __init init_IRQ(void)
+{
+    init_irq_stacks();
+    init_irq_scs();
+    irqchip_init() {
+        of_irq_init(__irqchip_of_table/* matches */) {
+            const struct of_device_id *match;
+            struct device_node *np, *parent = NULL;
+            struct of_intc_desc *desc, *temp_desc;
+            struct list_head intc_desc_list, intc_parent_list;
+
+            INIT_LIST_HEAD(&intc_desc_list);
+            INIT_LIST_HEAD(&intc_parent_list);
+
+            for_each_matching_node_and_match(np, matches, &match) {
+                if (!of_property_read_bool(np, "interrupt-controller") ||
+                        !of_device_is_available(np))
+                    continue;
+
+                if (WARN(!match->data, "of_irq_init: no init function for %s\n",
+                    match->compatible))
+                    continue;
+
+                /*
+                * Here, we allocate and populate an of_intc_desc with the node
+                * pointer, interrupt-parent device_node etc.
+                */
+                desc = kzalloc(sizeof(*desc), GFP_KERNEL);
+                if (!desc) {
+                    of_node_put(np);
+                    goto err;
+                }
+
+                desc->irq_init_cb = match->data;
+                desc->dev = of_node_get(np);
+                /*
+                * interrupts-extended can reference multiple parent domains.
+                * Arbitrarily pick the first one; assume any other parents
+                * are the same distance away from the root irq controller.
+                */
+                desc->interrupt_parent = of_parse_phandle(np, "interrupts-extended", 0);
+                if (!desc->interrupt_parent)
+                    desc->interrupt_parent = of_irq_find_parent(np);
+                if (desc->interrupt_parent == np) {
+                    of_node_put(desc->interrupt_parent);
+                    desc->interrupt_parent = NULL;
+                }
+                list_add_tail(&desc->list, &intc_desc_list);
+            }
+
+            /*
+            * The root irq controller is the one without an interrupt-parent.
+            * That one goes first, followed by the controllers that reference it,
+            * followed by the ones that reference the 2nd level controllers, etc.
+            */
+            while (!list_empty(&intc_desc_list)) {
+                /*
+                * Process all controllers with the current 'parent'.
+                * First pass will be looking for NULL as the parent.
+                * The assumption is that NULL parent means a root controller.
+                */
+                list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
+                    int ret;
+
+                    if (desc->interrupt_parent != parent)
+                        continue;
+
+                    list_del(&desc->list);
+
+                    of_node_set_flag(desc->dev, OF_POPULATED);
+
+                    ret = desc->irq_init_cb(desc->dev, desc->interrupt_parent) {
+                        gic_of_init(); /* for gic_v3 */
+                    }
+                    if (ret) {
+                        pr_err("%s: Failed to init %pOF (%p), parent %p\n",
+                            __func__, desc->dev, desc->dev,
+                            desc->interrupt_parent);
+                        of_node_clear_flag(desc->dev, OF_POPULATED);
+                        kfree(desc);
+                        continue;
+                    }
+
+                    /*
+                    * This one is now set up; add it to the parent list so
+                    * its children can get processed in a subsequent pass.
+                    */
+                    list_add_tail(&desc->list, &intc_parent_list);
+                }
+
+                /* Get the next pending parent that might have children */
+                desc = list_first_entry_or_null(&intc_parent_list,
+                                typeof(*desc), list);
+                if (!desc) {
+                    pr_err("of_irq_init: children remain, but no parents\n");
+                    break;
+                }
+                list_del(&desc->list);
+                parent = desc->dev;
+                kfree(desc);
+            }
+
+            list_for_each_entry_safe(desc, temp_desc, &intc_parent_list, list) {
+                list_del(&desc->list);
+                kfree(desc);
+            }
+        err:
+            list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
+                list_del(&desc->list);
+                of_node_put(desc->dev);
+                kfree(desc);
+            }
+        }
+
+        acpi_probe_device_table(irqchip);
+        #define acpi_probe_device_table(t)  \
+        ({  \
+            extern struct acpi_probe_entry ACPI_PROBE_TABLE(t), \
+                                    ACPI_PROBE_TABLE_END(t);    \
+            __acpi_probe_device_table(&ACPI_PROBE_TABLE(t),     \
+                        (&ACPI_PROBE_TABLE_END(t) - \
+                        &ACPI_PROBE_TABLE(t)));     \
+        })
+    }
+
+    if (system_uses_irq_prio_masking()) {
+        /*
+        * Now that we have a stack for our IRQ handler, set
+        * the PMR/PSR pair to a consistent state.
+        */
+        WARN_ON(read_sysreg(daif) & PSR_A_BIT);
+        local_daif_restore(DAIF_PROCCTX_NOIRQ);
+    }
+}
+```
+
+# gic_v3
+
+![](../images/kernel/intr-gic_chip_data.png)
+
+Main Components:
+- Distributor (GICD)
+
+    Primary Functions:
+    - Manages Shared Peripheral Interrupts (SPIs)
+    - Controls interrupt routing to Redistributors
+    - Handles interrupt prioritization
+    - Manages interrupt enable/disable
+
+    Key Operations:
+    - Group assignment (G0/G1S/G1NS)
+    - Priority assignment
+    - Target processor selection
+    - Interrupt enabling/disabling
+    - Security state control
+
+- Redistributor (GICR) - one per PE
+
+    Primary Functions:
+    - One per Processing Element (PE)
+    - Manages SGIs and PPIs
+    - Controls power management
+    - Handles LPI configuration
+
+    Key Features:
+    - Local interrupt routing
+    - Wake-up logic
+    - PE interface management
+    - LPI configuration tables
+    - PPIs/SGIs configuration
+
+- CPU Interface (GICR_SGI/GICR_PPI)
+
+    Primary Functions:
+    - Presents interrupts to PE
+    - Handles interrupt acknowledgment
+    - Manages EOI (End Of Interrupt)
+    - Controls priority masking
+
+    Key Registers:
+    - ICC_IAR: Interrupt Acknowledge
+    - ICC_EOIR: End of Interrupt
+    - ICC_PMR: Priority Mask
+    - ICC_BPR: Binary Point
+    - ICC_RPR: Running Priority
+
+- ITS (Interrupt Translation Service)
+
+    Primary Functions:
+    - MSI/MSI-X interrupt translation
+    - Device ID management
+    - Event ID to LPI mapping
+    - Collection management
+
+    Key Operations:
+    - MAPD: Device mapping
+    - MAPC: Collection mapping
+    - MAPTI: Translation mapping
+    - MOVI: Interrupt movement
+    - DISCARD: Entry removal
+
+Interrupt Types:
+- SGI (Software Generated Interrupts): 0-15
+- PPI (Private Peripheral Interrupts): 16-31
+- SPI (Shared Peripheral Interrupts): 32-1019
+- LPI (Locality-specific Peripheral Interrupts): 8192+
+
+```c
+IRQCHIP_DECLARE(gic_v3, "arm,gic-v3", gic_of_init);
+
+#define IRQCHIP_DECLARE(name, compat, fn)	\
+    OF_DECLARE_2(irqchip, name, compat, typecheck_irq_init_cb(fn))
+
+#define OF_DECLARE_2(table, name, compat, fn) \
+    _OF_DECLARE(table, name, compat, fn, of_init_fn_2)
+
+#define _OF_DECLARE(table, name, compat, fn, fn_type)			\
+    static const struct of_device_id __of_table_##name		\
+        __used __section("__" #table "_of_table")		\
+        __aligned(__alignof__(struct of_device_id))		\
+        = { .compatible = compat,				\
+            .data = (fn == (fn_type)NULL) ? fn : fn  }
+```
+
+## gic_of_init
+
+![](../images/kernel/intr-gic_of_init.png)
+
+```c
+int __init
+gic_of_init(struct device_node *node, struct device_node *parent)
+{
+    struct gic_chip_data *gic;
+    int irq, ret;
+
+    gic = &gic_data[gic_cnt];
+
+    ret = gic_of_setup(gic, node);
+
+    if (gic_cnt == 0 && !gic_check_eoimode(node, &gic->raw_cpu_base))
+        static_branch_disable(&supports_deactivate_key);
+
+    ret = __gic_init_bases(gic, &node->fwnode) {
+        if (gic == &gic_data[0]) {
+            for (i = 0; i < NR_GIC_CPU_IF; i++)
+                gic_cpu_map[i] = 0xff;
+
+            set_handle_irq(gic_handle_irq); /* called at do_interrupt_handler */
+        }
+
+        ret = gic_init_bases(gic, handle);
+        if (gic == &gic_data[0])
+            gic_smp_init();
+
+        return ret;
+    }
+
+    if (!gic_cnt) {
+        gic_init_physaddr(node);
+        gic_of_setup_kvm_info(node);
+    }
+
+    if (parent) {
+        irq = irq_of_parse_and_map(node, 0);
+        gic_cascade_irq(gic_cnt, irq);
+    }
+
+    if (IS_ENABLED(CONFIG_ARM_GIC_V2M))
+        gicv2m_init(&node->fwnode, gic_data[gic_cnt].domain);
+
+    gic_cnt++;
+    return 0;
+}
+```
+
+### gic_smp_init
+
+```c
+void __init gic_smp_init(void)
+{
+    struct irq_fwspec sgi_fwspec = {
+        .fwnode         = gic_data.fwnode,
+        .param_count    = 1,
+    };
+    int base_sgi;
+
+    cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN,
+                "irqchip/arm/gicv3:checkrdist",
+                gic_check_rdist, NULL);
+
+    cpuhp_setup_state_nocalls(CPUHP_AP_IRQ_GIC_STARTING,
+                "irqchip/arm/gicv3:starting",
+                gic_starting_cpu, NULL);
+
+    /* Register all 8 non-secure SGIs */
+    base_sgi = irq_domain_alloc_irqs(gic_data.domain, 8, NUMA_NO_NODE, &sgi_fwspec);
+    if (WARN_ON(base_sgi <= 0))
+        return;
+
+    set_smp_ipi_range(base_sgi, 8);
+}
+
+set_smp_ipi_range(int ipi_base, int n) {
+    int i;
+
+    nr_ipi = min(n, MAX_IPI);
+
+    for (i = 0; i < nr_ipi; i++) {
+        int err;
+
+        err = request_percpu_irq(ipi_base + i, ipi_handler,
+                     "IPI", &irq_stat);
+        WARN_ON(err);
+
+        ipi_desc[i] = irq_to_desc(ipi_base + i);
+        irq_set_status_flags(ipi_base + i, IRQ_HIDDEN);
+    }
+
+    ipi_irq_base = ipi_base;
+
+    /* Setup the boot CPU immediately */
+    ipi_setup(smp_processor_id());
+}
+```
+
+## gic_handle_irq
+
+![](../images/kernel/intr-gic_handle_irq.png)
+
+```c
+gic_of_init() {
+    gic_init_bases() {
+        set_handle_irq(gic_handle_irq);
+    }
+}
+
+void (*handle_arch_irq)(struct pt_regs *) __ro_after_init = default_handle_irq;
+void (*handle_arch_fiq)(struct pt_regs *) __ro_after_init = default_handle_fiq;
+
+int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+{
+    if (handle_arch_irq != default_handle_irq)
+        return -EBUSY;
+
+    handle_arch_irq = handle_irq;
+    pr_info("Root IRQ handler: %ps\n", handle_irq);
+    return 0;
+}
+
+/* el0_irq -> irq_handler */
+static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
+{
+	if (unlikely(gic_supports_nmi() && !interrupts_enabled(regs))) {
+		__gic_handle_irq_from_irqsoff(regs);
+
+    } else {
+        __gic_handle_irq_from_irqson(regs) {
+            bool is_nmi;
+            u32 irqnr;
+
+            irqnr = gic_read_iar();
+
+            is_nmi = gic_rpr_is_nmi_prio();
+
+            if (is_nmi) {
+                nmi_enter();
+                __gic_handle_nmi(irqnr, regs);
+                nmi_exit();
+            }
+
+            if (gic_prio_masking_enabled()) {
+                gic_pmr_mask_irqs();
+                gic_arch_enable_irqs();
+            }
+
+            if (!is_nmi) {
+                __gic_handle_irq(irqnr, regs) {
+                    if (gic_irqnr_is_special(irqnr))
+                        return;
+
+                    gic_complete_ack(irqnr) {
+                        if (static_branch_likely(&supports_deactivate_key)) {
+                            write_gicreg(irqnr, ICC_EOIR1_EL1);
+                        }
+
+                        isb();
+                    }
+
+                    ret = generic_handle_domain_irq(gic_data.domain, irqnr);
+                    if (ret) {
+                        WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
+                        gic_deactivate_unhandled(irqnr);
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+# generic_handle_domain_irq
+
+![](../images/kernel/intr-handle_irq_desc.png)
+
+---
+
+![](../images/kernel/intr-irq_wake_thread.png)
+
+```c
+int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
+{
+    struct irq_desc desc = irq_resolve_mapping(domain, hwirq, NULL/*irq*/) {
+
+    }
+    return handle_irq_desc(desc) {
+        generic_handle_irq_desc(desc) {
+            desc->handle_irq(desc) {
+                irqreturn_t retval = IRQ_NONE;
+                unsigned int irq = desc->irq_data.irq;
+                struct irqaction *action;
+
+                record_irq_time(desc);
+
+                for_each_action_of_desc(desc, action) {
+                    irqreturn_t res;
+                    res = act
+                    /* hanlder points to real hanlder for non-threaded handler,
+                     * return IRQ_WAKE_THREAD for threaded handler */
+                    res = action->handler(irq, action->dev_id);
+
+                    switch (res) {
+                    case IRQ_WAKE_THREAD:
+                        __irq_wake_thread(desc, action);
+                    case IRQ_HANDLED:
+                        *flags |= action->flags;
+                        break;
+                    default:
+                        break;
+                    }
+                    retval |= res;
+                }
+                return retval;
+            }
+        }
+    }
+}
+```
+
+# request_irq
+
+![](../images/kernel/intr-request_irq.png)
+
+```c
 static int logibm_open(struct input_dev *dev)
 {
     if (request_irq(logibm_irq, logibm_interrupt, 0, "logibm", NULL)) {
@@ -52,9 +532,9 @@ static irqreturn_t logibm_interrupt(int irq, void *dev_id)
 irqreturn_t (*irq_handler_t)(int irq, void * dev_id);
 
 enum irqreturn {
-    IRQ_NONE    = (0 << 0),
-    IRQ_HANDLED    = (1 << 0),
-    IRQ_WAKE_THREAD    = (1 << 1),
+    IRQ_NONE            = (0 << 0),
+    IRQ_HANDLED         = (1 << 0),
+    IRQ_WAKE_THREAD     = (1 << 1),
 };
 
 static inline int request_irq(
@@ -134,62 +614,274 @@ static int setup_irq_thread(
 }
 ```
 
-# generic_handle_domain_irq
+## request_percpu_irq
 
 ```c
-/* drivers/irqchip/irq-gic-v3.c */
-static void __gic_handle_irq(u32 irqnr, struct pt_regs *regs)
-{
-    if (gic_irqnr_is_special(irqnr))
-        return;
+request_percpu_irq(unsigned int irq, irq_handler_t handler,
+           const char *devname, void __percpu *percpu_dev_id) {
+    return __request_percpu_irq(irq, handler, 0, devname, percpu_dev_id) {
+        desc = irq_to_desc(irq);
 
-    gic_complete_ack(irqnr);
+        action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+        action->handler = handler;
+        action->flags = flags | IRQF_PERCPU | IRQF_NO_SUSPEND;
+        action->name = devname;
+        action->percpu_dev_id = dev_id;
 
-    if (generic_handle_domain_irq(gic_data.domain, irqnr)) {
-        WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
-        gic_deactivate_unhandled(irqnr);
-    }
-}
+        retval = irq_chip_pm_get(&desc->irq_data);
 
-int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
-{
-    struct irq_desc desc = irq_resolve_mapping(domain, hwirq, NULL/*irq*/) {
+        retval = __setup_irq(irq, desc, action /*new*/) {
+            new->irq = irq;
 
-    }
-    return handle_irq_desc(desc) {
-        generic_handle_irq_desc(desc) {
-            desc->handle_irq(desc) {
-                irqreturn_t retval = IRQ_NONE;
-                unsigned int irq = desc->irq_data.irq;
-                struct irqaction *action;
-
-                record_irq_time(desc);
-
-                for_each_action_of_desc(desc, action) {
-                    irqreturn_t res;
-                    res = act
-                    /* hanlder points to real hanlder for non-threaded handler,
-                     * return IRQ_WAKE_THREAD for threaded handler */
-                    res = action->handler(irq, action->dev_id);
-
-                    switch (res) {
-                    case IRQ_WAKE_THREAD:
-                        __irq_wake_thread(desc, action);
-                    case IRQ_HANDLED:
-                        *flags |= action->flags;
-                        break;
-                    default:
-                        break;
-                    }
-                    retval |= res;
+            nested = irq_settings_is_nested_thread(desc);
+            if (nested) {
+                if (!new->thread_fn) {
+                    ret = -EINVAL;
+                    goto out_mput;
                 }
-                return retval;
+                new->handler = irq_nested_primary_handler;
+            } else {
+                if (irq_settings_can_thread(desc)) {
+                    ret = irq_setup_forced_threading(new);
+                    if (ret)
+                        goto out_mput;
+                }
             }
+
+            /* Create a handler thread when a thread function is supplied
+             * and the interrupt does not nest into another interrupt thread. */
+            if (new->thread_fn && !nested) {
+                ret = setup_irq_thread(new, irq, false) {
+                    kthread_create(irq_thread, new, "irq/%d-%s", irq, new->name);
+                }
+                if (ret)
+                    goto out_mput;
+                if (new->secondary) {
+                    ret = setup_irq_thread(new->secondary, irq, true);
+                    if (ret)
+                        goto out_thread;
+                }
+            }
+
+            if (desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)
+                new->flags &= ~IRQF_ONESHOT;
+
+            mutex_lock(&desc->request_mutex);
+
+            chip_bus_lock(desc);
+
+            /* First installed action requests resources. */
+            if (!desc->action) {
+                ret = irq_request_resources(desc);
+                if (ret) {
+                    goto out_bus_unlock;
+                }
+            }
+
+            raw_spin_lock_irqsave(&desc->lock, flags);
+            old_ptr = &desc->action;
+            old = *old_ptr;
+            if (old) {
+                unsigned int oldtype;
+
+                if (desc->istate & IRQS_NMI) {
+                    ret = -EINVAL;
+                    goto out_unlock;
+                }
+
+                if (irqd_trigger_type_was_set(&desc->irq_data)) {
+                    oldtype = irqd_get_trigger_type(&desc->irq_data);
+                } else {
+                    oldtype = new->flags & IRQF_TRIGGER_MASK;
+                    irqd_set_trigger_type(&desc->irq_data, oldtype);
+                }
+
+                if (!((old->flags & new->flags) & IRQF_SHARED) ||
+                    (oldtype != (new->flags & IRQF_TRIGGER_MASK)) ||
+                    ((old->flags ^ new->flags) & IRQF_ONESHOT))
+                    goto mismatch;
+
+                /* All handlers must agree on per-cpuness */
+                if ((old->flags & IRQF_PERCPU) !=
+                    (new->flags & IRQF_PERCPU))
+                    goto mismatch;
+
+                /* add new interrupt at end of irq queue */
+                do {
+                    thread_mask |= old->thread_mask;
+                    old_ptr = &old->next;
+                    old = *old_ptr;
+                } while (old);
+                shared = 1;
+            }
+
+            /*
+            * Setup the thread mask for this irqaction for ONESHOT. For
+            * !ONESHOT irqs the thread mask is 0 so we can avoid a
+            * conditional in irq_wake_thread().
+            */
+            if (new->flags & IRQF_ONESHOT) {
+                /*
+                * Unlikely to have 32 resp 64 irqs sharing one line,
+                * but who knows.
+                */
+                if (thread_mask == ~0UL) {
+                    ret = -EBUSY;
+                    goto out_unlock;
+                }
+                /*
+                * The thread_mask for the action is or'ed to
+                * desc->thread_active to indicate that the
+                * IRQF_ONESHOT thread handler has been woken, but not
+                * yet finished. The bit is cleared when a thread
+                * completes. When all threads of a shared interrupt
+                * line have completed desc->threads_active becomes
+                * zero and the interrupt line is unmasked. See
+                * handle.c:irq_wake_thread() for further information.
+                *
+                * If no thread is woken by primary (hard irq context)
+                * interrupt handlers, then desc->threads_active is
+                * also checked for zero to unmask the irq line in the
+                * affected hard irq flow handlers
+                * (handle_[fasteoi|level]_irq).
+                *
+                * The new action gets the first zero bit of
+                * thread_mask assigned. See the loop above which or's
+                * all existing action->thread_mask bits.
+                */
+                new->thread_mask = 1UL << ffz(thread_mask);
+
+            } else if (new->handler == irq_default_primary_handler &&
+                !(desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)) {
+                /*
+                * The interrupt was requested with handler = NULL, so
+                * we use the default primary handler for it. But it
+                * does not have the oneshot flag set. In combination
+                * with level interrupts this is deadly, because the
+                * default primary handler just wakes the thread, then
+                * the irq lines is reenabled, but the device still
+                * has the level irq asserted. Rinse and repeat....
+                *
+                * While this works for edge type interrupts, we play
+                * it safe and reject unconditionally because we can't
+                * say for sure which type this interrupt really
+                * has. The type flags are unreliable as the
+                * underlying chip implementation can override them.
+                */
+                pr_err("Threaded irq requested with handler=NULL and !ONESHOT for %s (irq %d)\n",
+                    new->name, irq);
+                ret = -EINVAL;
+                goto out_unlock;
+            }
+
+            if (!shared) {
+                /* Setup the type (level, edge polarity) if configured: */
+                if (new->flags & IRQF_TRIGGER_MASK) {
+                    ret = __irq_set_trigger(desc,
+                                new->flags & IRQF_TRIGGER_MASK);
+
+                    if (ret)
+                        goto out_unlock;
+                }
+
+                /*
+                * Activate the interrupt. That activation must happen
+                * independently of IRQ_NOAUTOEN. request_irq() can fail
+                * and the callers are supposed to handle
+                * that. enable_irq() of an interrupt requested with
+                * IRQ_NOAUTOEN is not supposed to fail. The activation
+                * keeps it in shutdown mode, it merily associates
+                * resources if necessary and if that's not possible it
+                * fails. Interrupts which are in managed shutdown mode
+                * will simply ignore that activation request.
+                */
+                ret = irq_activate(desc);
+                if (ret)
+                    goto out_unlock;
+
+                desc->istate &= ~(IRQS_AUTODETECT | IRQS_SPURIOUS_DISABLED | \
+                        IRQS_ONESHOT | IRQS_WAITING);
+                irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
+
+                if (new->flags & IRQF_PERCPU) {
+                    irqd_set(&desc->irq_data, IRQD_PER_CPU);
+                    irq_settings_set_per_cpu(desc);
+                    if (new->flags & IRQF_NO_DEBUG)
+                        irq_settings_set_no_debug(desc);
+                }
+
+                if (noirqdebug)
+                    irq_settings_set_no_debug(desc);
+
+                if (new->flags & IRQF_ONESHOT)
+                    desc->istate |= IRQS_ONESHOT;
+
+                /* Exclude IRQ from balancing if requested */
+                if (new->flags & IRQF_NOBALANCING) {
+                    irq_settings_set_no_balancing(desc);
+                    irqd_set(&desc->irq_data, IRQD_NO_BALANCING);
+                }
+
+                if (!(new->flags & IRQF_NO_AUTOEN) &&
+                    irq_settings_can_autoenable(desc)) {
+                    irq_startup(desc, IRQ_RESEND, IRQ_START_COND);
+                } else {
+                    /*
+                    * Shared interrupts do not go well with disabling
+                    * auto enable. The sharing interrupt might request
+                    * it while it's still disabled and then wait for
+                    * interrupts forever.
+                    */
+                    WARN_ON_ONCE(new->flags & IRQF_SHARED);
+                    /* Undo nested disables: */
+                    desc->depth = 1;
+                }
+
+            } else if (new->flags & IRQF_TRIGGER_MASK) {
+                unsigned int nmsk = new->flags & IRQF_TRIGGER_MASK;
+                unsigned int omsk = irqd_get_trigger_type(&desc->irq_data);
+
+                if (nmsk != omsk)
+                    /* hope the handler works with current  trigger mode */
+                    pr_warn("irq %d uses trigger mode %u; requested %u\n",
+                        irq, omsk, nmsk);
+            }
+
+            *old_ptr = new;
+
+            irq_pm_install_action(desc, new);
+
+            /* Reset broken irq detection when installing new handler */
+            desc->irq_count = 0;
+            desc->irqs_unhandled = 0;
+
+            /*
+            * Check whether we disabled the irq via the spurious handler
+            * before. Reenable it and give it another chance.
+            */
+            if (shared && (desc->istate & IRQS_SPURIOUS_DISABLED)) {
+                desc->istate &= ~IRQS_SPURIOUS_DISABLED;
+                __enable_irq(desc);
+            }
+
+            raw_spin_unlock_irqrestore(&desc->lock, flags);
+            chip_bus_sync_unlock(desc);
+            mutex_unlock(&desc->request_mutex);
+
+            irq_setup_timings(desc, new);
+
+            wake_up_and_wait_for_irq_thread_ready(desc, new);
+            wake_up_and_wait_for_irq_thread_ready(desc, new->secondary);
+
+            register_irq_proc(irq, desc);
+            new->dir = NULL;
+            register_handler_proc(irq, new);
+            return 0;
         }
+
+        return retval;
     }
 }
-
-
 ```
 
 # softirq
