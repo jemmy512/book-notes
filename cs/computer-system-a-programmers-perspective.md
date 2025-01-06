@@ -1289,7 +1289,8 @@ Value | Name | Meaning
     * From the instruction it extracts the two 4-bit portions of the instruction specifier byte, referred to as `icode` (the instruction code) and `ifun` (the instruction function).
     * It possibly fetches a register specifier byte, giving one or both of the register operand specifiers `rA` and `rB`.
     * It also possibly fetches a 4-byte constant word `valC`. It computes `valP` to be the address of the instruction following the current one in sequential order. That is, valP equals the value of the PC plus the length of the fetched instruction.
-* **Decode**: The decode stage reads up to two operands from the register file, giving values ``valA`` and/or ``valB``. Typically, it reads the registers designated by instruction fields rA and rB, but for some instructions it reads register %esp.
+* **Decode**: The instruction is decoded to determine the operation to perform and the source/destination registers.
+    * The decode stage reads up to two operands from the register file(wrote in previous WB stage), giving values ``valA`` and/or ``valB``. Typically, it reads the registers designated by instruction fields rA and rB, but for some instructions it reads register %esp.
 * **Execute**: In the execute stage, the arithmetic/logic unit (ALU) either performs the operation specified by the instruction (according to the value of ifun), `computes the effective address` of a memory reference, or `increments or decrements the stack pointer`. We refer to the resulting value as `valE`. The `condition codes` are possibly set. For a jump instruction, the stage tests the condition codes and branch condition (given by ifun) to see whether or not the branch should be taken.
 * **Memory**: The memory stage may write data to memory, or it may read data from memory. We refer to the value read as `valM`.
 * **Write back**: The write-back stage writes up to two results to the register file.
@@ -1530,6 +1531,13 @@ The pipeline final implementation:
 * We will return to the handling of jump and return instructions when we complete the pipeline control logic in Section 4.5.11.
 
 ### 4.5.5 Pipeline Hazards
+
+| **Hazard Type** | **Cause** | **Solution** |
+--- | --- | ---
+| **Structural** | Resource conflicts (e.g., shared memory or ALU). | Add more resources, stall pipeline.
+| **Data (RAW/WAR/WAW)** | Instruction dependencies (e.g., one instruction depends on another). | Use forwarding, stalls, or instruction reordering.
+| **Control** | Branches or jumps disrupt the fetch stage. | Use branch prediction, delayed branching, or flushing.
+
 * Dependencies can take two forms:
     * data dependencies, where the results computed by one instruction are used as the data for a following instruction
     * control dependencies, where one instruction determines the location of the following instruction, such as when executing a jump, call, or return.
