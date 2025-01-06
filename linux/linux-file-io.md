@@ -49,12 +49,13 @@
     * [An Introduction to the io_uring Asynchronous I/O Framework, Oracle, 2020](https://medium.com/oracledevs/an-introduction-to-the-io-uring-asynchronous-i-o-framework-fad002d7dfc1)
     * [How io_uring and eBPF Will Revolutionize Programming in Linux, ScyllaDB, 2020](https://thenewstack.io/how-io_uring-and-ebpf-will-revolutionize-programming-in-linux)
 
-
 <img src='../images/kernel/kernel-structual.svg'/>
 
 ---
 
-<img src='../images/kernel/file-arch.png' height='600' />
+File System | Layer
+--- | ---
+<img src='../images/kernel/file-arch-0.png' height='600' /> | <img src='../images/kernel/file-arch.png' height='600' />
 
 # File Management
 
