@@ -101,6 +101,73 @@
 
 * [memory-barrier - wowo tech :one:](http://www.wowotech.net/kernel_synchronization/memory-barrier.html)    [:link: :two:](https://mp.weixin.qq.com/s/s6AvLiVVkoMX4dIGpqmXYA)
 
+* [Memory Model and Synchronization Primitive - Part 1: Memory Barrier](https://www.alibabacloud.com/blog/597460)    [Part 2: Memory Model](https://www.alibabacloud.com/blog/memory-model-and-synchronization-primitive---part-2-memory-model_597461)
+
+Feature | DMB | DSB
+--- | --- | ---
+**Ordering** | Guarantees Ordering | Guarantees Ordering
+**Completion** | Conditionly guarantees complemtion only when other cores access the memory(MESI sync data). Otherwise, a store operation might still be pending in a local write buffer | Proactivley guarantees completion of memory accesses.
+**Global Visibility** | Relies on MESI protocol for visibility; does not guarantee global visibility. | Ensures global visibility by stalling the core until the MESI protocol completes all necessary actions.
+**MESI Interaction** | Cache lines may remain in the **M** state until invalidated or accessed by another core. | Cache lines are transitioned to **S** or written back to memory, ensuring visibility.
+**Write-Back to Memory** | Does not force dirty cache lines in the **M (Modified)** state to be written back. | Forces dirty cache lines in the **M (Modified)** state to be written back if necessary.
+**Scope** | Configurable (ISH, OSH, NSH, ST). | Configurable (ISH, OSH, NSH, ST).
+**Performance** | Lower overhead. | Higher overhead.
+**Use Cases** | When ordering of memory accesses is required, but completion is not strictly necessary. | When ordering and completion of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
+**Core Stalling** | Does not stall the core; subsequent instructions may execute immediately. | Stalls the core until all memory operations are globally visible. |
+
+---
+
+**A. DMB Behavior Under MESI**
+- **Purpose**:
+  - DMB ensures the **ordering of memory operations** within the issuing core.
+  - It does not enforce **completion** of memory operations or ensure **global visibility** of writes.
+
+- **How DMB Works with MESI**:
+  - DMB ensures that memory operations before the barrier are **completed locally** (e.g., written to the write buffer) **before** operations after the barrier are issued.
+  - Under MESI, this means:
+    - Stores may remain in the **M (Modified)** state in the local cache or in the write buffer.
+    - The actual propagation of cache lines to other cores (e.g., transitioning from **M** to **S** or invalidating other cores' caches) is deferred until the cache line is explicitly flushed or accessed by another core.
+    - DMB does not force a write-back to memory or shared caches.
+
+- **Implication**:
+  - DMB relies on the MESI protocol to propagate changes to other cores if needed. For example, if another core attempts to read a cache line that is in the **M** state, the MESI protocol ensures that the line is invalidated or updated.
+  - However, if no other core accesses the cache line, the changes may remain local, and DMB does not guarantee that they are globally visible.
+
+---
+
+**B. DSB Behavior Under MESI**
+- **Purpose**:
+  - DSB ensures both **ordering** and **completion** of memory operations, and guarantees **global visibility** of writes before any further instructions are executed.
+
+- **How DSB Works with MESI**:
+  - DSB forces all pending memory operations to **complete** before the barrier:
+    - Stores are written back to main memory or shared caches (if needed) to ensure global visibility.
+    - Cache lines in the **M (Modified)** state are either written back to main memory or transitioned to the **S (Shared)** state, ensuring that other cores can observe the updates.
+  - DSB also ensures that all invalidations, updates, or write-backs required by the MESI protocol are completed before subsequent instructions are executed.
+
+- **Implication**:
+  - DSB ensures that all memory operations before the barrier are globally visible to other cores or devices.
+  - This is achieved by stalling the issuing core until the MESI protocol has completed all necessary actions (e.g., transitioning cache lines, propagating invalidations).
+
+---
+
+**Domain** | **Scope** | **Use Case**
+--- | --- | ---
+**Non-Shareable**  | Memory visible only to the issuing processor | Temporary or private data buffers accessed by a single core.
+**Inner-Shareable**| Shared within a processor cluster | Shared memory for threads or cores in the same cluster.
+**Outer-Shareable**| Shared across multiple clusters | Shared memory in multi-cluster systems (e.g., CPU-GPU or multi-CPU clusters).
+
+
+**Memory barriers only ensure:**
+* Within-core ordering: Operations before the barrier complete before operations after the barrier.
+* Cross-core visibility: Data becomes visible to other cores once the barrier completes.
+
+**CPUs delay write-backs and synchronization for performance reasons, including:**
+* Write-back caching: Writes are delayed until eviction or explicit synchronization.
+* Lazy synchronization: Cache coherence protocols like MESI delay synchronization until necessary.
+* Write buffers: Store operations are buffered and completed later to avoid stalling the CPU.
+* Out-of-order execution: Memory operations can be reordered unless explicitly constrained.
+
 # locking
 
 * [Locking in the kernel](https://docs.kernel.org/locking/index.html#)
@@ -3829,7 +3896,7 @@ ENTRY (_start) {
 ![](../images/kernel/vsdo-rdwr.png)
 
 ```c
-# define HAVE_CLOCK_GETTIME64_VSYSCALL	"__kernel_clock_gettime"
+# define HAVE_CLOCK_GETTIME64_VSYSCALL "__kernel_clock_gettime"
 
 /* find the addr of vdso symbol */
 GLRO(dl_vdso_clock_gettime64) = dl_vdso_vsym (HAVE_CLOCK_GETTIME64_VSYSCALL);
