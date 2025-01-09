@@ -103,6 +103,18 @@
 
 * [Memory Model and Synchronization Primitive - Part 1: Memory Barrier](https://www.alibabacloud.com/blog/597460)    [Part 2: Memory Model](https://www.alibabacloud.com/blog/memory-model-and-synchronization-primitive---part-2-memory-model_597461)
 
+| **Type** | **Compiler Barrier** (`barrier()`) | **Memory Barrier** (`smp_mb()`, `smp_rmb()`, etc.) |
+| --- | --- | --- |
+| **Scope** | Only affects compiler optimizations. | Affects both compiler and CPU (hardware-level) reordering. |
+| **Effect on Caches** | Does not flush or reload caches. | Ensures memory operations are visible across CPUs. |
+| **Forces Reload** | Ensures variables are reloaded *if accessed*.  | Guarantees memory ordering across multiple CPUs or threads.|
+| **Use Case** | Single-CPU scenarios or preventing compiler optimizations. | Multi-CPU synchronization and hardware-level memory consistency. |
+- A **compiler barrier** does **not automatically reread all cached variables**.
+- It prevents the compiler from reordering instructions and forces the compiler to assume that memory might have changed.
+- Variables will only be reread from memory if they are explicitly accessed after the barrier.
+- To explicitly reload a variable from memory, you can use READ_ONCE() alongside a barrier().
+- For hardware-level memory consistency, use **memory barriers** like `smp_mb()` instead of a compiler barrier.
+
 Feature | DMB | DSB
 --- | --- | ---
 **Ordering** | Guarantees Ordering | Guarantees Ordering
