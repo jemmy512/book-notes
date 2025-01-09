@@ -2371,6 +2371,59 @@ The pipeline final implementation:
 ## 6.4 Cache Memories
 * ![](../images/csapp/6.4-cache-memories.png)
 
+
+![](../images/csapp/6.4-cache-write-buffer.png)
+* From [:link:](https://www.researchgate.net/publication/228824849_Memory_Barriers_a_Hardware_View_for_Software_Hackers)
+
+---
+
+**1. Cache Line and Write Buffer Overview**
+
+**Cache Line**
+- A **cache line** is the smallest unit of data that can be transferred between the CPU cache and main memory.
+- When a CPU modifies data, it often updates the cached copy of that data in the cache line, assuming the data is present in the cache.
+
+**Write Buffer**
+- A **write buffer** is a hardware mechanism that temporarily stores write operations before they are written to main memory.
+- Write buffers improve performance by allowing the CPU to continue executing instructions without waiting for slow memory writes to complete.
+
+---
+
+**2. CPU Writing Data: Cache Line vs Write Buffer**
+
+When the CPU writes data, the destination of the write depends on the cache hierarchy and the memory subsystem:
+
+**Case 1: Data is Cached (Write-Through or Write-Back Policy)**
+
+**Write-Back Cache**
+- In a **write-back cache**, when the CPU modifies data, the new data is written to the **cache line** in the CPU cache (e.g., L1 cache).
+- The modified cache line is marked as "dirty," meaning it contains data that has been modified but not yet written to main memory.
+- The dirty data will only be written back to main memory (or the next level of cache) when:
+  1. The cache line is evicted (replaced with another data block).
+  2. A cache coherence protocol (e.g., MESI) requires it.
+
+**Write-Through Cache**
+- In a **write-through cache**, when the CPU modifies data, the new data is written to both:
+  1. The **cache line** in the CPU cache.
+  2. The **write buffer**, which ensures it is written to main memory (or a lower-level cache).
+
+Write-through caches ensure that memory is always up to date but can be slower than write-back caches. The write buffer mitigates this slowdown by allowing the CPU to continue executing while the write is processed in the background.
+
+---
+
+**Case 2: Data is Not Cached**
+- If the data being written is **not cached** (e.g., due to a cache miss, specific memory-mapped I/O, or uncached memory regions), the write operation bypasses the cache entirely.
+- In this case, the data is placed directly into the **write buffer**, and the write buffer handles transferring the data to main memory.
+
+---
+
+**Write Buffer Behavior**
+- The write buffer temporarily stores write operations and can combine multiple writes to the same memory address (write coalescing) to reduce memory traffic.
+- The write buffer may delay writes to memory to prioritize other memory operations or to avoid memory bus contention.
+- Once the memory subsystem is ready, the write buffer flushes its contents to main memory.
+
+---
+
 ### 6.4.1 Generic Cache Memory Organization
 * ![](../images/csapp/6.4.1-general-organization-of-cache.png)
 * How does the cache know whether it contains a copy of the word at address A?
