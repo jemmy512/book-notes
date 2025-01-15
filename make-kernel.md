@@ -9,7 +9,7 @@ sudo apt-get install gcc-aarch64-linux-gnu libncurses5-dev  build-essential git 
 # 下载linux最新代码
 
 ```sh
-git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git ./linux &
 ```
 
 # 制作根文件系统
