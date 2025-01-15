@@ -2276,7 +2276,7 @@ finish_lookup:
 
 ![](../images/kernel/file-read-write.png)
 
-* [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
+* [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) ⊙ [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
 
 call stack
 
@@ -4786,11 +4786,11 @@ int ovl_get_tree(struct fs_context *fc)
 
 All devices have the corresponding device file in /dev(is devtmpfs file system), which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
 
-* [A block layer introduction :one: the bio layer](https://lwn.net/Articles/736534/) [:two: the request layer](https://lwn.net/Articles/738449/)
+* [A block layer introduction :one: the bio layer](https://lwn.net/Articles/736534/) ⊙ [:two: the request layer](https://lwn.net/Articles/738449/)
 * [Linux Multi-Queue Block IO Queueing Mechanism (blk-mq) Details](https://www.thomas-krenn.com/en/wiki/Linux_Multi-Queue_Block_IO_Queueing_Mechanism_(blk-mq))
 * [Linux Block MQ – simple walkthrough](https://miuv.blog/2017/10/21/linux-block-mq-simple-walkthrough/)
 * [Multi-Queue on block layer in Linux Kernel](https://hyunyoung2.github.io/2016/09/14/Multi_Queue/)
-* [OPW, Linux: The block I/O layer, :one: Base concepts ](http://ari-ava.blogspot.com/2014/06/opw-linux-block-io-layer-part-1-base.html) [:two: The request interface](http://ari-ava.blogspot.com/2014/06/opw-linux-block-io-layer-part-2-request.html) [:three: The make request interface](http://ari-ava.blogspot.com/2014/07/opw-linux-block-io-layer-part-3-make.html) [:four: The multi-queue interface](http://ari-ava.blogspot.com/2014/07/opw-linux-block-io-layer-part-4-multi.html)
+* [OPW, Linux: The block I/O layer, :one: Base concepts ](http://ari-ava.blogspot.com/2014/06/opw-linux-block-io-layer-part-1-base.html) ⊙ [:two: The request interface](http://ari-ava.blogspot.com/2014/06/opw-linux-block-io-layer-part-2-request.html) ⊙ [:three: The make request interface](http://ari-ava.blogspot.com/2014/07/opw-linux-block-io-layer-part-3-make.html) ⊙ [:four: The multi-queue interface](http://ari-ava.blogspot.com/2014/07/opw-linux-block-io-layer-part-4-multi.html)
 * [Linux Block IO: Introducing Multi-queue SSD Access on Multi-core Systems.pdf](https://kernel.dk/systor13-final18.pdf)
 * [The multiqueue block layer](https://lwn.net/Articles/552904/)
 * [Simple Clear File IO :cn:](https://spongecaptain.cool/SimpleClearFileIO/)

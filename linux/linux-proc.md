@@ -271,7 +271,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     * [Linux进程调度器-CPU负载](https://www.cnblogs.com/LoyenWang/p/12316660.html)
 
 * [Wowo Tech](http://www.wowotech.net/sort/process_management)
-    * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html)     [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html)   [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
+    * [进程切换分析 - :one:基本框架](http://www.wowotech.net/process_management/context-switch-arch.html) ⊙ [:two:TLB处理](http://www.wowotech.net/process_management/context-switch-tlb.html) ⊙ [:three:同步处理](http://www.wowotech.net/process_management/scheudle-sync.html)
     * [CFS调度器 - 组调度](http://www.wowotech.net/process_management/449.html)
     * [CFS调度器 - 带宽控制](http://www.wowotech.net/process_management/451.html)
     * [CFS调度器 - 总结](http://www.wowotech.net/process_management/452.html)
@@ -553,7 +553,7 @@ static int run_init_process(const char *init_filename)
 ## smp_boot
 
 * [ARM64 的多核启动流程分析](https://zhuanlan.zhihu.com/p/512099688?utm_id=0)
-* [ARM64 SMP多核启动 spin-table](https://mp.weixin.qq.com/s/4T4WcbG5rMpHFtU8-xxTbg) [PSCI](https://mp.weixin.qq.com/s/NaEvCuSDJMQ2dsN5rJ6GqA)
+* [ARM64 SMP多核启动 spin-table](https://mp.weixin.qq.com/s/4T4WcbG5rMpHFtU8-xxTbg) ⊙ [PSCI](https://mp.weixin.qq.com/s/NaEvCuSDJMQ2dsN5rJ6GqA)
 
 ```c
 SYM_FUNC_START(secondary_holding_pen)
@@ -5373,7 +5373,7 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 # sched_domain
 
 * [极致Linux内核 - Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
-* [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo)      [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
+* [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo) ⊙ [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
 ```c
 struct sched_domain_topology_level {
@@ -6122,7 +6122,7 @@ get_cpu_for_node(struct device_node *node)
 # PELT
 
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
-* [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html)     [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
+* [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html) ⊙ [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 * [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
 * [Linux 核心設計: Scheduler(4): PELT](https://hackmd.io/@RinHizakura/Bk4y_5o-9)
 
@@ -6185,6 +6185,12 @@ Interpretation | A high load_avg might not necessarily mean high CPU usage if ma
 Kernel usage | mainly used for user-space reporting | used more extensively within | the kernel for various algorithms and decisions.
 
 ---
+
+* load_avg vs runnable_avg vs util_avg
+    * **load_avg**: This metric considers the task's weight (se.load.weight) when the task is runnable or running. If the task is not runnable (e.g., blocked or sleeping), its weight is considered 0. This metric is used to represent the traditional "load" concept, which is influenced by the task's priority (nice value).
+    * **runnable_avg**: This metric is similar to load_avg but it doesn't consider the task's weight. When the task is runnable or running, its weight is considered 1, and 0 otherwise. This metric provides a more direct measure of how many tasks are runnable, regardless of their priority.
+
+    * **util_avg**: This metric only considers the task's weight when it is actually running on a CPU. If the task is runnable but not currently running, or if it is not runnable at all, its weight is considered 0. This metric represents the actual CPU utilization caused by the task.
 
 * An entity's **contribution** to the system load in a period pi is just **the portion of that period** that the entity was runnable - either actually running, or waiting for an available CPU.
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
@@ -6870,7 +6876,7 @@ update_rq_clock(rq) {
 
 ![](../images/kernel/proc-sched-load_balance.svg)
 
-* [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html)    [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html)    [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html)    [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html)    [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
+* [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
 
 ---
 
@@ -11347,7 +11353,7 @@ static int kthread(void *_create)
 
 * [Kernel Doc](https://docs.kernel.org/core-api/workqueue.html)
 
-* Wowo Tech [:one: Basic Concept](http://www.wowotech.net/irq_subsystem/workqueue.html) [:two: Overview](http://www.wowotech.net/irq_subsystem/cmwq-intro.html)  [:three: Code Anatomy](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html)  [:four: Handle Work](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
+* Wowo Tech [:one: Basic Concept](http://www.wowotech.net/irq_subsystem/workqueue.html) ⊙ [:two: Overview](http://www.wowotech.net/irq_subsystem/cmwq-intro.html) ⊙ [:three: Code Anatomy](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html) ⊙ [:four: Handle Work](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
 * [[PATCHSET wq/for-6.9] workqueue: Implement BH workqueue and convert several tasklet users](https://lore.kernel.org/all/20240130091300.2968534-1-tj@kernel.org/)
 
 <img src='../images/kernel/proc-cmwq.png' style='max-height:850px'/>
@@ -15345,7 +15351,7 @@ int cgroup_get_tree(struct fs_context *fc)
     * [:seven: network namespaces](https://lwn.net/Articles/580893/)
     * [Mount namespaces and shared subtrees](https://lwn.net/Articles/689856/)
     * [Mount namespaces, mount propagation, and unbindable mounts](https://lwn.net/Articles/690679/)
-* [Coolshell - DOCKER基础技术：LINUX NAMESPACE - :one:](https://coolshell.cn/articles/17010.html)      [:two:](https://coolshell.cn/articles/17029.html)
+* [Coolshell - DOCKER基础技术：LINUX NAMESPACE - :one:](https://coolshell.cn/articles/17010.html) ⊙ [:two:](https://coolshell.cn/articles/17029.html)
 * [Linux - Namespace](https://blog.csdn.net/summer_fish/article/details/134437688)
 * [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
 * [Docker 背后的内核知识 - Namespace 资源隔离](https://www.infoq.cn/article/docker-kernel-knowledge-namespace-resource-isolation/)

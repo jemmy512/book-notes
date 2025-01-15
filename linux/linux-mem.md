@@ -191,7 +191,7 @@
     * [Memory Model: FLATE, SPARSE](http://www.wowotech.net/memory_management/memory_model.html)
     * [Fix Map](http://www.wowotech.net/memory_management/fixmap.html)
     * [TLB Flush](http://www.wowotech.net/memory_management/tlb-flush.html)
-    * [Memory Init :one:](http://www.wowotech.net/memory_management/mm-init-1.html)     [:two: - identity mapping & kernel image mapping ](http://www.wowotech.net/memory_management/__create_page_tables_code_analysis.html)   [:three: - Memory Layout](http://www.wowotech.net/memory_management/memory-layout.html)     [:four: - mapping](http://www.wowotech.net/memory_management/mem_init_3.html)
+    * [Memory Init :one:](http://www.wowotech.net/memory_management/mm-init-1.html) ⊙ [:two: - identity mapping & kernel image mapping ](http://www.wowotech.net/memory_management/__create_page_tables_code_analysis.html) ⊙ [:three: - Memory Layout](http://www.wowotech.net/memory_management/memory-layout.html) ⊙ [:four: - mapping](http://www.wowotech.net/memory_management/mem_init_3.html)
     * [CMA](http://www.wowotech.net/memory_management/cma.html)
     * [Dynamic DMA mapping Guide](http://www.wowotech.net/memory_management/DMA-Mapping-api.html)
     * [Page Reclaim](http://www.wowotech.net/memory_management/page_reclaim_basic.html)
@@ -220,7 +220,7 @@
 * [内存管理2：ARM64 linux虚拟内存布局是怎样的](https://zhuanlan.zhihu.com/p/407063888)
 
 * Cache
-    * [深入学习Cache系列 :one: :link:](https://mp.weixin.qq.com/s/0_TRtwVxWW2B-izGFwykOw) [:two: :link:](https://mp.weixin.qq.com/s/zN1BlEL378YSSKlcL96MGQ) [:three: :link:](https://mp.weixin.qq.com/s/84BAFSCjasJBFDiN-XXUMg)
+    * [深入学习Cache系列 :one: :link:](https://mp.weixin.qq.com/s/0_TRtwVxWW2B-izGFwykOw) ⊙ [:two: :link:](https://mp.weixin.qq.com/s/zN1BlEL378YSSKlcL96MGQ) ⊙ [:three: :link:](https://mp.weixin.qq.com/s/84BAFSCjasJBFDiN-XXUMg)
 
 * [深入理解Linux内核之mmu-gather操作](https://blog.csdn.net/youzhangjing_/article/details/127703682)
 
@@ -5412,7 +5412,7 @@ void kmem_cache_init(void)
 
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
     * [The SLUB allocator ](https://lwn.net/Articles/229984/)
-* [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1)    [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2)  [:three: - KASan :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3)    [:four: - KFENCE :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
+* [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1) ⊙ [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2) ⊙ [:three: - KASan :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3) ⊙ [:four: - KFENCE :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
 
 * bin 的技术小屋
     * [80 张图带你一步一步推演 slab 内存池的设计与实现](https://mp.weixin.qq.com/s/yHF5xBm5yMXDAHmE_noeCg)
@@ -6500,7 +6500,7 @@ __remove_pgd_mapping()
 
 # mmap
 
-* bin 的技术小屋 [原理](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw)   [源码](https://mp.weixin.qq.com/s/BY3OZ6rkYYyQil_webt7Xg)
+* bin 的技术小屋 [原理](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw) ⊙ [源码](https://mp.weixin.qq.com/s/BY3OZ6rkYYyQil_webt7Xg)
 
 ![](../images/kernel/mem-mmap.svg)
 
@@ -17527,7 +17527,7 @@ out:
 # out_of_memory
 
 * [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
-    * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) [:two:](https://lwn.net/Articles/591990/)
+    * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) ⊙ [:two:](https://lwn.net/Articles/591990/)
 
 ```c
 bool out_of_memory(struct oom_control *oc)
