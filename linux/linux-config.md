@@ -511,3 +511,98 @@ Tcp memory | tcp_mem(unit: page)
 1. tcp_tw_reuse + tcp_timestamps
 2. tcp_tw_recycle
 3. tcp_max_tw_buckets
+
+# swap
+
+[How To Add Swap Space on Ubuntu 22.04](https://www.digitalocean.com/community/tutorials/how-to-add-swap-space-on-ubuntu-22-04#step-1-checking-the-system-for-swap-information)
+
+1. Step 1 – Checking the System for Swap Information
+
+    > sudo swapon --show
+
+    > free -h
+
+    ```text
+    Output
+                total        used        free      shared  buff/cache   available
+    Mem:          981Mi       122Mi       647Mi       0.0Ki       211Mi       714Mi
+    Swap:            0B          0B          0B
+    ```
+
+2. Step 2 – Checking Available Space on the Hard Drive Partition
+
+    > df -h
+
+    ```text
+    Output
+    Filesystem      Size  Used Avail Use% Mounted on
+    udev            474M     0  474M   0% /dev
+    tmpfs            99M  932K   98M   1% /run
+    /dev/vda1        25G  1.4G   23G   7% /
+    tmpfs           491M     0  491M   0% /dev/shm
+    tmpfs           5.0M     0  5.0M   0% /run/lock
+    tmpfs           491M     0  491M   0% /sys/fs/cgroup
+    /dev/vda15      105M  3.9M  101M   4% /boot/efi
+    /dev/loop0       55M   55M     0 100% /snap/core18/1705
+    /dev/loop1       69M   69M     0 100% /snap/lxd/14804
+    /dev/loop2       28M   28M     0 100% /snap/snapd/7264
+    tmpfs            99M     0   99M   0% /run/user/1000
+    ```
+
+3. Step 3 – Creating a Swap File
+
+    > sudo fallocate -l 1G /swapfile
+    > ls -lh /swapfile
+
+4. Step 4 – Enabling the Swap File
+
+    > sudo chmod 600 /swapfile
+    > ls -lh /swapfile
+    > sudo mkswap /swapfile
+
+    ```text
+    Output
+    Setting up swapspace version 1, size = 1024 MiB (1073737728 bytes)
+    no label, UUID=6e965805-2ab9-450f-aed6-577e74089dbf
+    ```
+
+    > sudo swapon /swapfile
+    > sudo swapon --show
+
+    ```text
+    Output
+    NAME      TYPE  SIZE USED PRIO
+    /swapfile file 1024M   0B   -2
+    ```
+
+    > free -h
+
+    ```text
+    Output
+                total        used        free      shared  buff/cache   available
+    Mem:          981Mi       123Mi       644Mi       0.0Ki       213Mi       714Mi
+    Swap:         1.0Gi          0B       1.0Gi
+    ```
+
+5. Step 5 – Making the Swap File Permanent
+
+    Back up the /etc/fstab file in case anything goes wrong:
+    > sudo cp /etc/fstab /etc/fstab.bak
+
+    Add the swap file information to the end of your /etc/fstab file by typing:
+    > echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+6. Step 6 – Tuning your Swap Settings
+
+    1. The **swappiness** parameter configures how often your system swaps data out of RAM to the swap space. This is a value between 0 and 100 that represents a percentage.
+
+        We can see the current swappiness value by typing:
+        > cat /proc/sys/vm/swappiness
+
+        At the bottom of `/etc/sysctl.conf`, you can add:
+        > vm.swappiness=10
+
+    2. Adjusting the **Cache Pressure** Setting
+
+        At the bottom of `/etc/sysctl.conf`, add the line that specifies your new value:
+        > vm.vfs_cache_pressure=50

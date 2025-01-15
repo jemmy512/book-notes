@@ -25,7 +25,7 @@ cd busybox-1.33.1
 ```
 
 打开静态库编译选项
-> make menuconfig Settings --->  [*] Build static binary (no shared libs)
+> make menuconfig ---> Settings --->  [*] Build static binary (no shared libs)
 
 指定编译工具
 > export ARCH=arm64 export CROSS_COMPILE=aarch64-linux-gnu-
@@ -137,9 +137,9 @@ make install
 fmt
 
 ```sh
-wget http://ftp.gnu.org/gnu/coreutils/coreutils-8.32.tar.xz
-tar xf coreutils-8.32.tar.xz
-cd coreutils-8.32
+wget http://ftp.gnu.org/gnu/coreutils/coreutils-9.0.tar.xz
+tar xf coreutils-9.0.tar.xz
+cd coreutils-9.0
 ./configure --host=aarch64-linux-gnu --disable-nls  --prefix=/home/xxx/linux/linux-stable/root/gnu
 make
 make install
