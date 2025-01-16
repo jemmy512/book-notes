@@ -1268,7 +1268,7 @@ static int brk_handler(unsigned long unused, unsigned long esr,
     if (ret == DBG_HOOK_HANDLED)
         return 0;
 
-  	/* If not handled by hook, send TRAP_BRKPT to task */
+    /* If not handled by hook, send TRAP_BRKPT to task */
     if (user_mode(regs)) {
         send_user_sigtrap(TRAP_BRKPT) {
             struct pt_regs *regs = current_pt_regs();
@@ -2242,7 +2242,7 @@ In ARM64 (AArch64) architecture, the **literal pool** is a region of memory used
 ```c
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
 SYM_CODE_START(ftrace_caller)
-	bti	c
+    bti c
 
     /* The literal pointer to the ops is at an 8-byte aligned boundary
      * which is either 12 or 16 bytes before the BL instruction in the call
@@ -2256,11 +2256,11 @@ SYM_CODE_START(ftrace_caller)
 
 /* 1. load ftrace_ops */
     /* aligns the LR value (x30) to the nearest 8-byte boundary by clearing the lower 3 bits. */
-    bic	x11, x30, 0x7
+    bic x11, x30, 0x7
     /* subtracts 4 * AARCH64_INSN_SIZE (typically 4 * 4 = 16 bytes)
      * from x11 to locate the ftrace_ops pointer.
      * The ftrace_ops pointer is stored 16 bytes before the aligned LR. */
-    ldr	x11, [x11, #-(4 * AARCH64_INSN_SIZE)] // op
+    ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)] // op
 
 /* 2. save context */
     /* Save original SP, function arguments
@@ -2271,15 +2271,15 @@ SYM_CODE_START(ftrace_caller)
 
 /* 4. call ftrace_ops */
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
-        mov	x2, x11					// op
-        ldr	x4, [x2, #FTRACE_OPS_FUNC]		// op->func
-        blr	x4					// op->func(ip, parent_ip, op, regs)
+        mov x2, x11                     // op
+        ldr x4, [x2, #FTRACE_OPS_FUNC]  // op->func
+        blr x4                          // op->func(ip, parent_ip, op, regs)
     #else
-        ldr_l   x2, function_trace_op			// op
+        ldr_l   x2, function_trace_op   // op
 
     SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)
         /* Wont be replaced with "bl xxx" */
-        bl      ftrace_stub				// func(ip, parent_ip, op, regs)
+        bl      ftrace_stub             // func(ip, parent_ip, op, regs)
     #endif
 
 /* 5. restore context */
@@ -2294,16 +2294,16 @@ SYM_CODE_END(ftrace_caller)
 SYM_FUNC_START(ftrace_caller)
     mcount_enter
 
-    mcount_get_pc0	x0		//     function's pc
-    mcount_get_lr	x1		//     function's lr
+    mcount_get_pc0  x0      //  function's pc
+    mcount_get_lr   x1      //  function's lr
 
-SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)	// tracer(pc, lr);
+SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)  // tracer(pc, lr);
     nop             // This will be replaced with "bl xxx"
                     // where xxx can be any kind of tracer.
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 SYM_INNER_LABEL(ftrace_graph_call, SYM_L_GLOBAL) // ftrace_graph_caller();
-    nop				// If enabled, this will be replaced
+    nop             // If enabled, this will be replaced
                     // "b ftrace_graph_caller"
 #endif
 
@@ -2959,6 +2959,15 @@ struct tracepoint {
 #define TRACE_EVENT(name, proto, args, struct, assign, print) \
     DECLARE_TRACE(name, PARAMS(proto), PARAMS(args))
 
+#define TRACE_EVENT(name, proto, args, tstruct, assign, print) \
+    DECLARE_EVENT_CLASS(name,   \
+                PARAMS(proto),  \
+                PARAMS(args),   \
+                PARAMS(tstruct),\
+                PARAMS(assign), \
+                PARAMS(print)); \
+    DEFINE_EVENT(name, name, PARAMS(proto), PARAMS(args));
+
 #define DECLARE_TRACE(name, proto, args) \
     __DECLARE_TRACE(name, PARAMS(proto), PARAMS(args), \
             cpu_online(raw_smp_processor_id()), \
@@ -2987,6 +2996,18 @@ struct tracepoint {
                 "RCU not watching for tracepoint"); \
         } \
     }
+
+#define __DO_TRACE_CALL(name, args) \
+    do {    \
+        struct tracepoint_func *it_func_ptr;    \
+        void *__data;   \
+        it_func_ptr =   \
+            rcu_dereference_raw((&__tracepoint_##name)->funcs); \
+        if (it_func_ptr) {  \
+            __data = (it_func_ptr)->data;   \
+            static_call(tp_func_##name)(__data, args);  \
+        }   \
+    } while (0)
 
 #define __DECLARE_TRACE_COMMON(name, proto, args, data_proto) \
     extern int __traceiter_##name(data_proto); \
@@ -3083,4 +3104,332 @@ TRACE_EVENT(sched_switch,
         __entry->next_comm, __entry->next_pid, __entry->next_prio
     )
 );
+```
+
+# static_key
+
+```c
+extern struct jump_entry __start___jump_table[];
+extern struct jump_entry __stop___jump_table[];
+
+struct static_key {
+	atomic_t enabled;
+#ifdef CONFIG_JUMP_LABEL
+/* bit 0 => 1 if key is initially true
+ *	        0 if initially false
+ * bit 1 => 1 if points to struct static_key_mod
+ *	        0 if points to struct jump_entry */
+    union {
+        unsigned long type;
+        struct jump_entry *entries;
+        struct static_key_mod *next;
+    };
+#endif	/* CONFIG_JUMP_LABEL */
+};
+
+struct jump_entry {
+    s32 code;    /* Relative offset to the jump instruction */
+    s32 target;  /* branch target code */
+    long key;    /* static_key address */
+};
+
+/* Combine the right initial value (type) with the right branch order
+ * to generate the desired result.
+ *
+ * type\branch| likely (1)              |   unlikely (0)
+ * -----------+-------------------------+------------------
+ *            |                         |
+ *  true (1)  |     ...                 |   ...
+ *            |     NOP                 |   JMP L
+ *            |     <br-stmts>          |   1: ...
+ *            |     L: ...              |
+ *            |                         |
+ *            |                         |   L: <br-stmts>
+ *            |                         |   jmp 1b
+ *            |                         |
+ * -----------+-----------------------+------------------
+ *            |                         |
+ *  false (0) |     ...                 |   ...
+ *            |    JMP L                |   NOP
+ *            |    <br-stmts>           |   1: ...
+ *            |     L: ...              |
+ *            |                         |
+ *            |                         |   L: <br-stmts>
+ *            |                         |   jmp 1b
+ *            |                         |
+ * -----------+-----------------------+------------------
+ *
+ * The initial value is encoded in the LSB of static_key::entries,
+ * type: 0 = false, 1 = true.
+ *
+ * The branch type is encoded in the LSB of jump_entry::key,
+ * branch: 0 = unlikely, 1 = likely.
+ *
+ * This gives the following logic table:
+ *
+ * enabled  type    branch  instuction
+ * -------------------------+-----------
+ *  0       0       0       | NOP
+ *  0       0       1       | JMP
+ *  0       1       0       | NOP
+ *  0       1       1       | JMP
+ *
+ *  1       0       0       | JMP
+ *  1       0       1       | NOP
+ *  1       1       0       | JMP
+ *  1       1       1       | NOP
+ *
+ * Which gives the following functions:
+ *
+ *   dynamic: instruction = enabled ^ branch
+ *   static:  instruction = type ^ branch
+ *
+ * See jump_label_type() / jump_label_init_type(). */
+```
+
+```c
+void foo(void) {
+    if (static_branch_likely(&key)) {
+        do_key_enbled();
+        return;
+    }
+
+    do_key_disabled();
+}
+
+foo:
+    stp     x29, x30, [sp, #-16]!   /* Function prologue */
+    mov     x29, sp
+
+/* After patching (key enabled):
+ * 1:  b       enabled_path */
+1:  nop                             /* Patchable instruction */
+    b       disabled_path           /* Fall through to disabled path */
+
+enabled_path:
+    bl      do_key_enabled
+    ldp     x29, x30, [sp], #16
+    ret
+
+disabled_path:
+    bl      do_key_disabled
+    ldp     x29, x30, [sp], #16
+    ret
+```
+
+## jump_label_init
+
+```c
+void __init jump_label_init(void)
+{
+    struct jump_entry *iter_start = __start___jump_table;
+    struct jump_entry *iter_stop = __stop___jump_table;
+    struct static_key *key = NULL;
+    struct jump_entry *iter;
+
+    if (static_key_initialized)
+        return;
+
+    cpus_read_lock();
+    jump_label_lock();
+    jump_label_sort_entries(iter_start, iter_stop);
+
+    for (iter = iter_start; iter < iter_stop; iter++) {
+        struct static_key *iterk;
+        bool in_init;
+
+        /* rewrite NOPs */
+        if (jump_label_type(iter) == JUMP_LABEL_NOP)
+            arch_jump_label_transform_static(iter, JUMP_LABEL_NOP);
+
+        in_init = init_section_contains((void *)jump_entry_code(iter), 1) {
+            return memory_contains(__init_begin, __init_end, virt, size);
+        }
+
+        jump_entry_set_init(iter, in_init/*set*/) {
+            if (set)
+                entry->key |= 2;
+            else
+                entry->key &= ~2;
+        }
+
+        iterk = jump_entry_key(iter) {
+            return (struct static_key *)((unsigned long)entry->key & ~3UL);
+        }
+        if (iterk == key)
+            continue;
+
+        key = iterk;
+        static_key_set_entries(key, iter) {
+            unsigned long type;
+
+            WARN_ON_ONCE((unsigned long)entries & JUMP_TYPE_MASK);
+            type = key->type & JUMP_TYPE_MASK;
+            key->entries = entries;
+            key->type |= type;
+        }
+    }
+    static_key_initialized = true;
+    jump_label_unlock();
+    cpus_read_unlock();
+}
+```
+
+## static_key_enable
+
+```c
+void static_key_enable(struct static_key *key)
+{
+    cpus_read_lock();
+    static_key_enable_cpuslocked(key) {
+        STATIC_KEY_CHECK_USE(key);
+        lockdep_assert_cpus_held();
+
+        if (atomic_read(&key->enabled) > 0) {
+            WARN_ON_ONCE(atomic_read(&key->enabled) != 1);
+            return;
+        }
+
+        jump_label_lock();
+        if (atomic_read(&key->enabled) == 0) {
+            atomic_set(&key->enabled, -1);
+
+            jump_label_update(key) {
+                struct jump_entry *stop = __stop___jump_table;
+                bool init = system_state < SYSTEM_RUNNING;
+                struct jump_entry {
+                    s32 code;
+                    s32 target;
+                    long key;
+                } *entry;
+            #ifdef CONFIG_MODULES
+                struct module *mod;
+
+                if (static_key_linked(key)) {
+                    __jump_label_mod_update(key);
+                    return;
+                }
+
+                preempt_disable();
+                mod = __module_address((unsigned long)key);
+                if (mod) {
+                    stop = mod->jump_entries + mod->num_jump_entries;
+                    init = mod->state == MODULE_STATE_COMING;
+                }
+                preempt_enable();
+            #endif
+                entry = static_key_entries(key) {
+                    WARN_ON_ONCE(key->type & JUMP_TYPE_LINKED);
+                    return (struct jump_entry *)(key->type & ~JUMP_TYPE_MASK);
+                }
+                /* if there are no users, entry can be NULL */
+                if (entry) {
+                    __jump_label_update(key, entry, stop, init) {
+                        for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
+                            if (!jump_label_can_update(entry, init))
+                                continue;
+
+                            /* arch/arm64/kernel/jump_label.c */
+                            ret = arch_jump_label_transform_queue(entry, jump_label_type(entry)) {
+                                void *addr = (void *)jump_entry_code(entry);
+                                u32 insn;
+
+                                if (type == JUMP_LABEL_JMP) {
+                                    insn = aarch64_insn_gen_branch_imm(jump_entry_code(entry),
+                                                    jump_entry_target(entry),
+                                                    AARCH64_INSN_BRANCH_NOLINK);
+                                } else {
+                                    insn = aarch64_insn_gen_nop();
+                                }
+
+                                aarch64_insn_patch_text_nosync(addr, insn);
+                                return true;
+                            }
+                            if (!ret) {
+                                /* Queue is full: Apply the current queue and try again. */
+                                arch_jump_label_transform_apply();
+                                BUG_ON(!arch_jump_label_transform_queue(entry, jump_label_type(entry)));
+                            }
+                        }
+                        arch_jump_label_transform_apply();
+                    }
+                }
+            }
+            /* See static_key_slow_inc(). */
+            atomic_set_release(&key->enabled, 1);
+        }
+        jump_label_unlock();
+    }
+    cpus_read_unlock();
+}
+```
+
+## static_branch_likely
+
+```c
+#define static_branch_likely(x) \
+({  \
+    bool branch;    \
+    if (__builtin_types_compatible_p(typeof(*x), struct static_key_true))   \
+        branch = !arch_static_branch(&(x)->key, true);  \
+    else if (__builtin_types_compatible_p(typeof(*x), struct static_key_false)) \
+        branch = !arch_static_branch_jump(&(x)->key, true); \
+    else    \
+        branch = ____wrong_branch_error();  \
+    likely_notrace(branch); \
+})
+```
+
+```c
+static __always_inline bool arch_static_branch(
+    struct static_key * const key,
+    const bool branch)
+{
+    char *k = &((char *)key)[branch];
+
+    asm goto(
+        ARCH_STATIC_BRANCH_ASM("%c0", "%l[l_yes]")
+        :  :  "i"(k) :  : l_yes
+    );
+
+    return false;
+l_yes:
+    return true;
+}
+
+/* This macro generates a jump table entry for the static branch.
+ * The jump table allows the kernel to dynamically modify branch destinations. */
+#define ARCH_STATIC_BRANCH_ASM(key, label)  \
+    "1: nop\n\t"    \
+    JUMP_TABLE_ENTRY(key, label)
+
+/* long 1b - ., # the nop instruction (the "default" branch location)
+ * label - .    # the destination label for the branch.
+ * These offsets are relative to the current position (.).
+ *
+ * .quad key - . # the offset of the static key,
+ * which the kernel uses to decide the branch target */
+#define JUMP_TABLE_ENTRY(key, label)    \
+    ".pushsection   __jump_table, \"aw\"\n\t"   \
+    ".align         3\n\t"  \
+    ".long          1b - ., " label " - .\n\t"  \
+    ".quad          " key " - .\n\t"    \
+    ".popsection\n\t"
+
+static __always_inline bool arch_static_branch_jump(struct static_key * const key,
+                            const bool branch)
+{
+    char *k = &((char *)key)[branch];
+
+    /* k is passed as an immediate input ("i"),
+     * representing the address of the static key. */
+    asm goto(
+        "1:	b       %l[l_yes]   \n\t"   /* jumps to the label l_yes. */
+        JUMP_TABLE_ENTRY("%c0", "%l[l_yes]")
+        :  :  "i"(k) :  : l_yes
+        );
+    return false;
+l_yes:
+    return true;
+}
 ```
