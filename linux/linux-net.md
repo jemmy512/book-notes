@@ -107,7 +107,7 @@
     * [tcp_cwnd_test](#tcp_cwnd_test)
     * [tcp_cwnd_validate](#tcp_cwnd_validate)
 
-* [retransmit](#retransmit)
+* [tcp_timer](#tcp_timer)
     * [timer_lifecycle](#timer_lifecycle)
       * [timer_init](#timer_init)
       * [timer_reset](#timer_reset)
@@ -128,6 +128,7 @@
     * [tcp_send_synack](#tcp_send_synack)
     * [tcp_fin](#tcp_fin)
     * [tcp_send_fin](#tcp_send_fin)
+* [tcp timer](#tcp_timer)
 * [inet_init](#inet_init)
 * [net_dev_init](#net_dev_init)
 
@@ -13510,7 +13511,20 @@ tcp_ack();
 * [Cubic with Faster Convergence: An Improved Cubic Fast Convergence Mechanism](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwiwgpvBjOP1AhWUgMYKHVfUAEIQFnoECBcQAw&url=https%3A%2F%2Fwww.atlantis-press.com%2Farticle%2F4642.pdf&usg=AOvVaw1hU80iGNUiyn7QUU43T2rq)
 
 
-# retransmit
+# tcp_timer
+
+[深入探讨TCP中使用的定时器](https://mp.weixin.qq.com/s/VqkffGmZjHu9jMnx-0nAzw)
+
+定时器分类 | 定时器 | 定时器成员 | 所在结构体 | 超时处理函数
+--- | --- | --- | --- | ---
+建立连接过程 | syn + ack 定时器 | rsk_timer | struct request_sock | reqsk_timer_handler()
+数据传输过程 | 重传定时器 | icsk_retransmit_timer | struct inet_connection_sock | tcp_write_timer() 
+数据传输过程 | 延时 ack 定时器 | icsk_delack_timer | struct inet_connection_sock | tcp_delack_timer()
+数据传输过程 | 保活定时器 | sk_timer | struct sock | tcp_keepalive_timer()
+数据传输过程 | 窗口探测定时器 | icsk_retransmit_timer | struct inet_connection_sock | tcp_probe_timer()
+断开连接过程 | TIME_WAIT 定时器 | tw_timer | struct inet_timewait_sock | tw_timer_handler()
+
+
 ## timer_lifecycle
 ### timer_init
 ```c
