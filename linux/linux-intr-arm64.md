@@ -28,6 +28,14 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
     isb
 ```
 
+| **Aspect** | **Synchronous Exception** | **IRQ** | **FIQ** | **SError** |
+| --- | --- | --- | --- | --- |
+| **Trigger** | Caused by instruction execution. | Triggered by hardware devices. | Triggered by high-priority devices. | Triggered by hardware/system errors. |
+| **Sync/Async** | Synchronous. | Asynchronous. | Asynchronous. | Asynchronous. |
+| **Priority** | N/A | Lower than FIQ. | Higher than IRQ. | N/A (critical errors). |
+| **Use Case** | Faults, traps, system calls. | General hardware interrupts. | Time-sensitive interrupts. | Hardware/system failure reporting. |
+| **Handling Speed** | Immediate. | Slower than FIQ. | Faster due to dedicated registers. | Depends on the system state. |
+
 ```c
 SYM_CODE_START(vectors)
     /* ELxt: Exception Level x using the thread stack pointer (SP_EL0)
@@ -429,7 +437,7 @@ asmlinkage void el0t_64_error_handler(struct pt_regs *regs);
 
 ```c
 el0t_64_irq_handler(struct pt_regs *regs) {
-    el0_interrupt(regs, handle_arch_irq) {
+    el0_interrupt(regs, handle_arch_irq = gic_handle_irq) {
         enter_from_user_mode(regs);
 
         write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
@@ -818,5 +826,370 @@ irqreturn_t ipi_handler(int irq, void *data) {
             trace_ipi_exit(ipi_types[ipinr]);
     }
     return IRQ_HANDLED;
+}
+```
+
+# gic_v3
+
+![](../images/kernel/intr-gic_chip_data.png)
+
+Main Components:
+- Distributor (GICD)
+
+    Primary Functions:
+    - Manages Shared Peripheral Interrupts (SPIs)
+    - Controls interrupt routing to Redistributors
+    - Handles interrupt prioritization
+    - Manages interrupt enable/disable
+
+    Key Operations:
+    - Group assignment (G0/G1S/G1NS)
+    - Priority assignment
+    - Target processor selection
+    - Interrupt enabling/disabling
+    - Security state control
+
+- Redistributor (GICR) - one per PE
+
+    Primary Functions:
+    - One per Processing Element (PE)
+    - Manages SGIs and PPIs
+    - Controls power management
+    - Handles LPI configuration
+
+    Key Features:
+    - Local interrupt routing
+    - Wake-up logic
+    - PE interface management
+    - LPI configuration tables
+    - PPIs/SGIs configuration
+
+- CPU Interface (GICR_SGI/GICR_PPI)
+
+    Primary Functions:
+    - Presents interrupts to PE
+    - Handles interrupt acknowledgment
+    - Manages EOI (End Of Interrupt)
+    - Controls priority masking
+
+    Key Registers:
+    - ICC_IAR: Interrupt Acknowledge
+    - ICC_EOIR: End of Interrupt
+    - ICC_PMR: Priority Mask
+    - ICC_BPR: Binary Point
+    - ICC_RPR: Running Priority
+
+- ITS (Interrupt Translation Service)
+
+    Primary Functions:
+    - MSI/MSI-X interrupt translation
+    - Device ID management
+    - Event ID to LPI mapping
+    - Collection management
+
+    Key Operations:
+    - MAPD: Device mapping
+    - MAPC: Collection mapping
+    - MAPTI: Translation mapping
+    - MOVI: Interrupt movement
+    - DISCARD: Entry removal
+
+Interrupt Types:
+- SGI (Software Generated Interrupts): 0-15
+- PPI (Private Peripheral Interrupts): 16-31
+- SPI (Shared Peripheral Interrupts): 32-1019
+- LPI (Locality-specific Peripheral Interrupts): 8192+
+
+```c
+IRQCHIP_DECLARE(gic_v3, "arm,gic-v3", gic_of_init);
+
+#define IRQCHIP_DECLARE(name, compat, fn)	\
+    OF_DECLARE_2(irqchip, name, compat, typecheck_irq_init_cb(fn))
+
+#define OF_DECLARE_2(table, name, compat, fn) \
+    _OF_DECLARE(table, name, compat, fn, of_init_fn_2)
+
+#define _OF_DECLARE(table, name, compat, fn, fn_type)			\
+    static const struct of_device_id __of_table_##name		\
+        __used __section("__" #table "_of_table")		\
+        __aligned(__alignof__(struct of_device_id))		\
+        = { .compatible = compat,				\
+            .data = (fn == (fn_type)NULL) ? fn : fn  }
+```
+
+## gic_of_init
+
+![](../images/kernel/intr-gic_of_init.png)
+
+```c
+int __init
+gic_of_init(struct device_node *node, struct device_node *parent)
+{
+    struct gic_chip_data *gic;
+    int irq, ret;
+
+    gic = &gic_data[gic_cnt];
+
+    ret = gic_of_setup(gic, node);
+
+    if (gic_cnt == 0 && !gic_check_eoimode(node, &gic->raw_cpu_base))
+        static_branch_disable(&supports_deactivate_key);
+
+    ret = __gic_init_bases(gic, &node->fwnode) {
+        if (gic == &gic_data[0]) {
+            for (i = 0; i < NR_GIC_CPU_IF; i++)
+                gic_cpu_map[i] = 0xff;
+
+            set_handle_irq(gic_handle_irq); /* called at do_interrupt_handler */
+        }
+
+        ret = gic_init_bases(gic, handle);
+        if (gic == &gic_data[0])
+            gic_smp_init();
+
+        return ret;
+    }
+
+    if (!gic_cnt) {
+        gic_init_physaddr(node);
+        gic_of_setup_kvm_info(node);
+    }
+
+    if (parent) {
+        irq = irq_of_parse_and_map(node, 0);
+        gic_cascade_irq(gic_cnt, irq);
+    }
+
+    if (IS_ENABLED(CONFIG_ARM_GIC_V2M))
+        gicv2m_init(&node->fwnode, gic_data[gic_cnt].domain);
+
+    gic_cnt++;
+    return 0;
+}
+```
+
+### gic_smp_init
+
+```c
+void __init gic_smp_init(void)
+{
+    struct irq_fwspec sgi_fwspec = {
+        .fwnode         = gic_data.fwnode,
+        .param_count    = 1,
+    };
+    int base_sgi;
+
+    cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN,
+                "irqchip/arm/gicv3:checkrdist",
+                gic_check_rdist, NULL);
+
+    cpuhp_setup_state_nocalls(CPUHP_AP_IRQ_GIC_STARTING,
+                "irqchip/arm/gicv3:starting",
+                gic_starting_cpu, NULL);
+
+    /* Register all 8 non-secure SGIs */
+    base_sgi = irq_domain_alloc_irqs(gic_data.domain, 8, NUMA_NO_NODE, &sgi_fwspec);
+    if (WARN_ON(base_sgi <= 0))
+        return;
+
+    set_smp_ipi_range(base_sgi, 8);
+}
+
+set_smp_ipi_range(int ipi_base, int n) {
+    int i;
+
+    nr_ipi = min(n, MAX_IPI);
+
+    for (i = 0; i < nr_ipi; i++) {
+        int err;
+
+        err = request_percpu_irq(ipi_base + i, ipi_handler,
+                     "IPI", &irq_stat);
+        WARN_ON(err);
+
+        ipi_desc[i] = irq_to_desc(ipi_base + i);
+        irq_set_status_flags(ipi_base + i, IRQ_HIDDEN);
+    }
+
+    ipi_irq_base = ipi_base;
+
+    /* Setup the boot CPU immediately */
+    ipi_setup(smp_processor_id());
+}
+```
+
+## gic_handle_irq
+
+![](../images/kernel/intr-gic_handle_irq.png)
+
+```c
+gic_of_init() {
+    gic_init_bases() {
+        set_handle_irq(gic_handle_irq);
+    }
+}
+
+void (*handle_arch_irq)(struct pt_regs *) __ro_after_init = default_handle_irq;
+void (*handle_arch_fiq)(struct pt_regs *) __ro_after_init = default_handle_fiq;
+
+int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+{
+    if (handle_arch_irq != default_handle_irq)
+        return -EBUSY;
+
+    handle_arch_irq = handle_irq;
+    pr_info("Root IRQ handler: %ps\n", handle_irq);
+    return 0;
+}
+
+/* el0_irq -> irq_handler */
+static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
+{
+	if (unlikely(gic_supports_nmi() && !interrupts_enabled(regs))) {
+		__gic_handle_irq_from_irqsoff(regs);
+
+    } else {
+        __gic_handle_irq_from_irqson(regs) {
+            bool is_nmi;
+            u32 irqnr;
+
+            irqnr = gic_read_iar();
+
+            is_nmi = gic_rpr_is_nmi_prio();
+
+            if (is_nmi) {
+                nmi_enter();
+                __gic_handle_nmi(irqnr, regs);
+                nmi_exit();
+            }
+
+            if (gic_prio_masking_enabled()) {
+                gic_pmr_mask_irqs();
+                gic_arch_enable_irqs();
+            }
+
+            if (!is_nmi) {
+                __gic_handle_irq(irqnr, regs) {
+                    if (gic_irqnr_is_special(irqnr))
+                        return;
+
+                    gic_complete_ack(irqnr) {
+                        if (static_branch_likely(&supports_deactivate_key)) {
+                            write_gicreg(irqnr, ICC_EOIR1_EL1);
+                        }
+
+                        isb();
+                    }
+
+                    ret = generic_handle_domain_irq(gic_data.domain, irqnr);
+                    if (ret) {
+                        WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
+                        gic_deactivate_unhandled(irqnr);
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+# generic_handle_domain_irq
+
+![](../images/kernel/intr-handle_irq_desc.png)
+
+---
+
+![](../images/kernel/intr-irq_wake_thread.png)
+
+```c
+int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
+{
+    struct irq_desc desc = irq_resolve_mapping(domain, hwirq, NULL/*irq*/) {
+
+    }
+    return handle_irq_desc(desc) {
+        generic_handle_irq_desc(desc) {
+            desc->handle_irq(desc)
+            = handle_fasteoi_irq(struct irq_desc *desc) {
+
+            }
+            = handle_percpu_irq(struct irq_desc *desc) {
+
+            }
+            = handle_level_irq(struct irq_desc *desc) {
+                raw_spin_lock(&desc->lock);
+                mask_ack_irq(desc) {
+                    if (desc->irq_data.chip->irq_mask_ack) {
+                        desc->irq_data.chip->irq_mask_ack(&desc->irq_data);
+                        irq_state_set_masked(desc);
+                    } else {
+                        mask_irq(desc);
+                        if (desc->irq_data.chip->irq_ack)
+                            desc->irq_data.chip->irq_ack(&desc->irq_data);
+                    }
+                }
+
+                if (!irq_may_run(desc))
+                    goto out_unlock;
+
+                desc->istate &= ~(IRQS_REPLAY | IRQS_WAITING);
+
+                if (unlikely(!desc->action || irqd_irq_disabled(&desc->irq_data))) {
+                    desc->istate |= IRQS_PENDING;
+                    goto out_unlock;
+                }
+
+                handle_irq_event(desc) {
+                    irqreturn_t ret;
+
+                    desc->istate &= ~IRQS_PENDING;
+                    irqd_set(&desc->irq_data, IRQD_IRQ_INPROGRESS);
+                    raw_spin_unlock(&desc->lock);
+
+                    ret = handle_irq_event_percpu(desc) {
+                        irqreturn_t retval;
+
+                        retval = __handle_irq_event_percpu(desc) {
+                            irqreturn_t retval = IRQ_NONE;
+                            unsigned int irq = desc->irq_data.irq;
+                            struct irqaction *action;
+
+                            record_irq_time(desc);
+
+                            for_each_action_of_desc(desc, action) {
+                                irqreturn_t res;
+                                res = act
+                                /* hanlder points to real hanlder for non-threaded handler,
+                                 * return IRQ_WAKE_THREAD for threaded handler */
+                                res = action->handler(irq, action->dev_id);
+
+                                switch (res) {
+                                case IRQ_WAKE_THREAD:
+                                    __irq_wake_thread(desc, action);
+                                case IRQ_HANDLED:
+                                    *flags |= action->flags;
+                                    break;
+                                default:
+                                    break;
+                                }
+                                retval |= res;
+                            }
+                            return retval;
+                        }
+
+                        add_interrupt_randomness(desc->irq_data.irq);
+
+                        if (!irq_settings_no_debug(desc))
+                            note_interrupt(desc, retval);
+                        return retval;
+                    }
+
+                    raw_spin_lock(&desc->lock);
+                    irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
+                    return ret;
+                }
+            }
+        }
+    }
 }
 ```
