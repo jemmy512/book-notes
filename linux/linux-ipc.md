@@ -318,17 +318,18 @@ static int fifo_open(struct inode *inode, struct file *filp)
 
 # signal
 
-<img src='../images/kernel/ipc-signal-register-handler.png' style='max-height:850px'/>
+<img src='../images/kernel/sig-handle.png' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/sig-handle.png' style='max-height:850px'/>
+<img src='../images/kernel/ipc-signal-register-handler.png' style='max-height:550px'/>
 
 ```c
 struct task_struct {
-    struct signal_struct    *signal;  /* sharedb by threads */
-    struct sighand_struct   *sighand; /* per thread */
-    struct sigpending       pending;
+    struct signal_struct    *signal;    /* shared among threads */
+    /* shared among threads when forking whit CLONE_SIGHAND */
+    struct sighand_struct   *sighand;
+    struct sigpending       pending;    /* per thread */
 
     sigset_t                blocked;
     sigset_t                real_blocked;
@@ -340,18 +341,19 @@ struct task_struct {
 };
 
 struct signal_struct {
-    struct list_head  thread_head;
+    struct list_head    thread_head;
 
-    wait_queue_head_t    wait_chldexit;  /* for wait4() */
+    wait_queue_head_t   wait_chldexit;  /* for wait4() */
     struct task_struct  *curr_target;
-    struct sigpending    shared_pending;
-    struct hlist_head    multiprocess;
+    struct sigpending   shared_pending;
+    struct hlist_head   multiprocess;
 
-    int                  posix_timer_id;
+    int                 posix_timer_id;
     struct list_head    posix_timers;
     struct hrtimer      real_timer;
     ktime_t             it_real_incr;
     struct cpu_itimer   it[2];
+
     struct thread_group_cputimer  cputimer;
     struct task_cputime           cputime_expires;
 
@@ -360,11 +362,11 @@ struct signal_struct {
 
     struct tty_struct *tty; /* NULL if no tty */
 
-    struct prev_cputime prev_cputime;
-    struct task_io_accounting ioac;
-    unsigned long long sum_sched_runtime;
-    struct rlimit rlim[RLIM_NLIMITS];
-    struct mm_struct *oom_mm;
+    struct prev_cputime         prev_cputime;
+    struct task_io_accounting   ioac;
+    unsigned long long          sum_sched_runtime;
+    struct rlimit               rlim[RLIM_NLIMITS];
+    struct mm_struct            *oom_mm;
 };
 
 struct sighand_struct {
@@ -386,10 +388,37 @@ struct sigaction {
 };
 ```
 
-
 **sigpending fields**
 
 ```c
+struct sigpending {
+    struct list_head list; /* list of sigqueue */
+    sigset_t signal;
+};
+
+typedef struct {
+    unsigned long sig[_NSIG_WORDS];
+} sigset_t;
+
+struct sigqueue {
+    struct list_head    list;
+    int                 flags;
+    kernel_siginfo_t    info;
+    struct ucounts      *ucounts;
+};
+
+typedef struct kernel_siginfo {
+    __SIGINFO;
+} kernel_siginfo_t;
+
+#define __SIGINFO \
+struct { \
+    int si_signo; \ /* tells you the type of signal  */
+    int si_code; \  /* gives context about why sig happened */
+    int si_errno; \ /* provides additional error information related to the signal */
+    union __sifields _sifields; \
+}
+
 union __sifields {
     /* kill() */
     struct {
@@ -414,40 +443,12 @@ union __sifields {
 
     /* SIGCHLD */
     struct {
-        __kernel_pid_t _pid;    /* which child */
+        __kernel_pid_t _pid;    /* child pid */
         __kernel_uid32_t _uid;  /* sender's uid */
         int _status;            /* exit code */
         __ARCH_SI_CLOCK_T _utime;
         __ARCH_SI_CLOCK_T _stime;
     } _sigchld;
-};
-
-#define __SIGINFO \
-struct { \
-    int si_signo; \
-    int si_code; \
-    int si_errno; \
-    union __sifields _sifields; \
-}
-
-typedef struct kernel_siginfo {
-    __SIGINFO;
-} kernel_siginfo_t;
-
-struct sigqueue {
-    struct list_head    list;
-    int                 flags;
-    kernel_siginfo_t    info;
-    struct ucounts      *ucounts;
-};
-
-typedef struct {
-    unsigned long sig[_NSIG_WORDS];
-} sigset_t;
-
-struct sigpending {
-    struct list_head list; /* list of sigqueue */
-    sigset_t signal;
 };
 ```
 
@@ -460,6 +461,7 @@ int sigaction(int signum, const struct sigaction *act, struct sigaction *oldact)
 ## sigaction
 
 ```c
+/* glibc/sysdeps/posix/sysv_signal.c */
 #define signal __sysv_signal
 
 __sighandler_t __sysv_signal (int sig, __sighandler_t handler)
@@ -554,6 +556,7 @@ out:
 ```
 
 ## do_send_sig_info
+
 ```c
 group_send_sig_info()
     check_kill_permission(sig, info, p);
@@ -790,10 +793,11 @@ out_set:
         hlist_for_each_entry(delayed, &t->signal->multiprocess, node) {
             sigset_t *signal = &delayed->signal;
             /* Can't queue both a stop and a continue signal */
-            if (sig == SIGCONT)
+            if (sig == SIGCONT) {
                 sigdelsetmask(signal, SIG_KERNEL_STOP_MASK);
-            else if (sig_kernel_stop(sig))
+            } else if (sig_kernel_stop(sig)) {
                 sigdelset(signal, SIGCONT);
+            }
             sigaddset(signal, sig);
         }
     }
@@ -819,11 +823,12 @@ out_set:
 
             return task_curr(p) || !task_sigpending(p);
         }
-        if (ret) {
+        if (ret) { /* prefer current */
             t = p;
         } else if (!group || thread_group_empty(p)) {
             return;
         } else {
+            /* try to find a suitable thread. */
             t = signal->curr_target;
             while (!wants_signal(sig, t)) {
                 t = next_thread(t);
@@ -834,16 +839,20 @@ out_set:
             signal->curr_target = t;
         }
 
-        if (sig_fatal(p, sig) &&
-            (signal->core_state || !(signal->flags & SIGNAL_GROUP_EXIT))
+        /* kill fatal signal rather than sending it */
+        #define sig_fatal(t, signr) \
+            (!siginmask(signr, SIG_KERNEL_IGNORE_MASK|SIG_KERNEL_STOP_MASK) && \
+            (t)->sighand->action[(signr)-1].sa.sa_handler == SIG_DFL)
+        if (sig_fatal(p, sig)
+            && (signal->core_state || !(signal->flags & SIGNAL_GROUP_EXIT))
             && !sigismember(&t->real_blocked, sig)
             && (sig == SIGKILL || !p->ptrace)) {
             /* This signal will be fatal to the whole group. */
             if (!sig_kernel_coredump(sig)) {
-                /* Start a group exit and wake everybody up. */
                 signal->flags = SIGNAL_GROUP_EXIT;
                 signal->group_exit_code = sig;
                 signal->group_stop_count = 0;
+                /* kill each thread for fatal signal */
                 __for_each_thread(signal, t) {
                     task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK);
                     sigaddset(&t->pending.signal, SIGKILL);
@@ -1081,6 +1090,7 @@ static void do_signal(struct pt_regs *regs)
                         return err;
 
                     sp = sp_top = sigsp(regs->sp, ksig) {
+                        /* ss: signal stack */
                         if (unlikely((ksig->ka.sa.sa_flags & SA_ONSTACK)) && ! sas_ss_flags(sp)) {
                             #ifdef CONFIG_STACK_GROWSUP
                                 return current->sas_ss_sp;
@@ -1240,7 +1250,7 @@ bool get_signal(struct ksignal *ksig)
 
 relock:
     spin_lock_irq(&sighand->siglock);
-
+/* 1. handle CLD signal */
     if (unlikely(signal->flags & SIGNAL_CLD_MASK)) {
         int why;
 
@@ -1300,6 +1310,7 @@ relock:
             cgroup_leave_frozen(false);
             goto relock;
         }
+/* 2. dequeue pending sig from thread-wide or process-wide queue */
 
         /* Signals generated by the execution of an instruction
          * need to be delivered before any other pending signals
@@ -1308,7 +1319,7 @@ relock:
         type = PIDTYPE_PID;
         signr = dequeue_synchronous_signal(&ksig->info);
         if (!signr) {
-            /* dequeue from tsk->pending and tsk->signal->shared_pending */
+            /* dequeue from per-tsk pending queue and shared process pend queue */
             signr = dequeue_signal(current, &current->blocked, &ksig->info, &type) {
                 signr = __dequeue_signal(&tsk->pending, mask, info, &resched_timer);
                 if (!signr) {
@@ -1323,14 +1334,14 @@ relock:
 
         if (!signr)
             break; /* will return 0 */
-
+/* 3. ptrace_signal */
         if (unlikely(current->ptrace) && (signr != SIGKILL) &&
             !(sighand->action[signr -1].sa.sa_flags & SA_IMMUTABLE)) {
             signr = ptrace_signal(signr, &ksig->info, type);
             if (!signr)
                 continue;
         }
-
+/* 4. do user registered sighand */
         ka = &sighand->action[signr-1];
 
         if (ka->sa.sa_handler == SIG_IGN)
@@ -1344,7 +1355,7 @@ relock:
             break; /* will return non-zero "signr" value */
         }
 
-        /* Now we are doing the default action for this signal. */
+/* 5. do default action (grp exit) for this signal. */
         if (sig_kernel_ignore(signr)) /* Default is nothing. */
             continue;
 
@@ -1398,7 +1409,6 @@ relock:
         if (current->flags & PF_USER_WORKER)
             goto out;
 
-        /* Death signals, no core dump. */
         do_group_exit(ksig->info.si_signo) {
             struct signal_struct *sig = current->signal;
 
@@ -1453,7 +1463,7 @@ out:
 }
 ```
 
-### rt_sigreturn
+## rt_sigreturn
 
 ```c
 SYSCALL_DEFINE0(rt_sigreturn)
@@ -1489,9 +1499,9 @@ SYSCALL_DEFINE0(rt_sigreturn)
         if (err == 0)
             set_current_blocked(&set);
 
-        for (i = 0; i < 31; i++)
-            __get_user_error(regs->regs[i], &sf->uc.uc_mcontext.regs[i],
-                    err);
+        for (i = 0; i < 31; i++) {
+            __get_user_error(regs->regs[i], &sf->uc.uc_mcontext.regs[i], err);
+        }
         __get_user_error(regs->sp, &sf->uc.uc_mcontext.sp, err);
         __get_user_error(regs->pc, &sf->uc.uc_mcontext.pc, err);
         __get_user_error(regs->pstate, &sf->uc.uc_mcontext.pstate, err);
