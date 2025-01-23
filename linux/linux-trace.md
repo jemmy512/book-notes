@@ -19,6 +19,8 @@
 
 # ptrace
 
+![](../images/kernel/trace-ss-brk-handler.png)
+
 ```c
 SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
         unsigned long, data)
@@ -27,10 +29,11 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
     long ret;
 
     if (request == PTRACE_TRACEME) {
+        /* 1. mark curret PT_TRACED
+         * 2. ptrace_link current with its real parent */
         ret = ptrace_traceme() {
             int ret = -EPERM;
             write_lock_irq(&tasklist_lock);
-            /* Are we already being traced? */
             if (!current->ptrace) {
                 ret = security_ptrace_traceme(current->parent);
                 /*
@@ -51,10 +54,6 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
     }
 
     child = find_get_task_by_vpid(pid);
-    if (!child) {
-        ret = -ESRCH;
-        goto out;
-    }
 
     if (request == PTRACE_ATTACH || request == PTRACE_SEIZE) {
         ret = ptrace_attach(child, request, addr, data);
@@ -83,9 +82,7 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
             case PTRACE_POKEDATA:
                 return generic_ptrace_pokedata(child, addr, data);
 
-        #ifdef PTRACE_OLDSETOPTIONS
             case PTRACE_OLDSETOPTIONS:
-        #endif
             case PTRACE_SETOPTIONS:
                 ret = ptrace_setoptions(child, data);
                 break;
@@ -323,7 +320,9 @@ out:
 ```
 
 ## PTRACE_ATTACH
+
 ```c
+/* ptrace_link tracee to tracer */
 static int ptrace_attach(struct task_struct *task, long request,
             unsigned long addr,
             unsigned long flags)
@@ -435,10 +434,11 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
     if (has_syscall_work(flags)) {
         if (scno == NO_SYSCALL)
             syscall_set_return_value(current, regs, -ENOSYS, 0);
+
         scno = syscall_trace_enter(regs) {
             unsigned long flags = read_thread_flags();
             if (flags & (_TIF_SYSCALL_EMU | _TIF_SYSCALL_TRACE)) {
-                report_syscall(regs, PTRACE_SYSCALL_ENTER) {
+                report_syscall(regs, PTRACE_SYSCALL_ENTER/*dir*/) {
                     int regno;
                     unsigned long saved_reg;
 
@@ -456,7 +456,7 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
                                     return 0;
 
                                 /* Notify tracer ptrace event */
-                                signr = ptrace_notify(SIGTRAP | ((ptrace & PT_TRACESYSGOOD) ? 0x80 : 0), message) {
+                                signr = ptrace_notify(SIGTRAP | ((ptrace & PT_TRACESYSGOOD) ? 0x80 : 0)/*exit_code*/, message) {
                                     int signr;
 
                                     BUG_ON((exit_code & (0x7f | ~0xffff)) != SIGTRAP);
@@ -473,7 +473,7 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
                                         info.si_pid = task_pid_vnr(current);
                                         info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
 
-                                        /* Let the debugger run.  */
+                                        /* Let the debugger run. */
                                         return ptrace_stop(exit_code, why, message, &info) {
                                             bool gstop_done = false;
 
@@ -486,7 +486,7 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
                                             if (!current->ptrace || __fatal_signal_pending(current))
                                                 return exit_code;
 
-                                            /* 1. set curretn TASK_TRACED */
+                                            /* 1. set curretn TASK_TRACED so scheduler wont run this task */
                                             set_special_state(TASK_TRACED);
                                             current->jobctl |= JOBCTL_TRACED;
 
@@ -591,6 +591,40 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
 
 ## PTRACE_SINGLESTEP
 
+**What Happens in `PTRACE_SINGLESTEP`**
+1. **Setup for Single-Stepping**:
+   - The tracer (parent process) requests the kernel to enable single-stepping on the tracee (child process) by issuing the `PTRACE_SINGLESTEP` request.
+   - Single-stepping is a debugging feature where the tracee executes one instruction and then stops, trapping into the kernel.
+
+2. **Tracee Executes One Instruction**:
+   - After the tracer invokes `PTRACE_SINGLESTEP`, the tracee is allowed to execute a single machine instruction.
+   - The CPU hardware or kernel sets up the appropriate mechanism (e.g., hardware instruction breakpoint or trap flag in the CPU) to generate a trap after the instruction.
+
+3. **Tracee Traps into the Kernel**:
+   - Once the tracee completes the single instruction, the CPU generates a **trap exception**. This exception is handled by the kernel in the tracee’s context.
+   - The kernel's `single_step_handler` function (or its architecture-specific equivalent) handles this exception. The kernel recognizes that this is a single-step trap by ESR register.
+
+4. **Kernel Sends `SIGTRAP`**:
+   - After handling the single-step trap, the kernel sends a **`SIGTRAP` signal** with the `TRAP_TRACE` code to the tracee to notify it about the single-step event.
+   - The `SIGTRAP` signal is queued for the tracee.
+
+5. **Tracee Stops and Notifies the Tracer**:
+   - The tracee `do_signal` when exiting `single_step_handler`, and notifies the tracer (e.g., via `waitpid()` or `waitid()`) that the tracee has stopped due to the single-step event by sending `SIGCLD` signal. Tracee call `schedule` to stop.
+   - Tracer is notified in kernel mode in do_signal not the signal handler of tracee in user space
+
+6. **Tracer Handles the Event**:
+   - The tracer inspects the tracee's state using `ptrace()` (e.g., by reading registers or memory).
+   - The tracer can then decide what to do next (e.g., continue execution, single-step again, or inspect the tracee further).
+
+---
+
+**How `SIGTRAP` Works in This Context**
+
+- The `SIGTRAP` signal is special in the context of `ptrace`. It is used to communicate events (e.g., single-stepping, breakpoints) between the kernel and the tracer.
+- For `PTRACE_SINGLESTEP`, the `SIGTRAP` signal is not delivered to a user-space signal handler in the tracee. Instead, it is caught by the kernel and used to stop the tracee and notify the tracer.
+- The tracee remains in a stopped state until the tracer resumes it (e.g., with `PTRACE_CONT`, `PTRACE_SINGLESTEP`, etc.).
+---
+
 ### user_enable_single_step
 
 ```c
@@ -624,19 +658,17 @@ int ptrace_resume(struct task_struct *child, long request,
             if (!test_and_set_ti_thread_flag(ti, TIF_SINGLESTEP))
                 set_regs_spsr_ss(task_pt_regs(task));
         }
-    } else {
+    } else { /* PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SYSEMU */
         user_disable_single_step(child);
     }
 
-    /*
-    * Change ->exit_code and ->state under siglock to avoid the race
-    * with wait_task_stopped() in between; a non-zero ->exit_code will
-    * wrongly look like another report from tracee.
-    *
-    * Note that we need siglock even if ->exit_code == data and/or this
-    * status was not reported yet, the new status must not be cleared by
-    * wait_task_stopped() after resume.
-    */
+    /* Change ->exit_code and ->state under siglock to avoid the race
+     * with wait_task_stopped() in between; a non-zero ->exit_code will
+     * wrongly look like another report from tracee.
+     *
+     * Note that we need siglock even if ->exit_code == data and/or this
+     * status was not reported yet, the new status must not be cleared by
+     * wait_task_stopped() after resume. */
     spin_lock_irq(&child->sighand->siglock);
     child->exit_code = data;
     child->jobctl &= ~JOBCTL_TRACED;
@@ -713,7 +745,7 @@ void noinstr el1h_64_sync_handler(struct pt_regs *regs)
                     }
                 }
 
-                /* single_step_handler, brk_handler */
+                /* brk_handler, single_step_handler */
                 if (inf->fn(addr_if_watchpoint, esr, regs)) {
                     arm64_notify_die(inf->name, regs, inf->sig, inf->code, pc, esr);
                 }
@@ -735,19 +767,35 @@ void noinstr el1h_64_sync_handler(struct pt_regs *regs)
 ### single_step_handler
 
 ```c
+void register_kernel_step_hook(struct step_hook *hook)
+{
+    register_debug_hook(&hook->node, &kernel_step_hook);
+}
+
 int single_step_handler(unsigned long unused, unsigned long esr,
                 struct pt_regs *regs)
 {
     bool handler_found = false;
 
-    /*
-    * If we are stepping a pending breakpoint, call the hw_breakpoint
-    * handler first.
-    */
     if (!reinstall_suspended_bps(regs))
         return 0;
 
-    if (!handler_found && call_step_hook(regs, esr) == DBG_HOOK_HANDLED)
+    ret = call_step_hook(regs, esr) {
+        struct step_hook *hook;
+        struct list_head *list;
+        int retval = DBG_HOOK_ERROR;
+
+        list = user_mode(regs) ? &user_step_hook : &kernel_step_hook;
+
+        list_for_each_entry_rcu(hook, list, node)	{
+            retval = hook->fn(regs, esr);
+            if (retval == DBG_HOOK_HANDLED)
+                break;
+        }
+
+        return retval;
+    }
+    if (!handler_found && ret == DBG_HOOK_HANDLED)
         handler_found = true;
 
     if (!handler_found && user_mode(regs)) {
@@ -782,10 +830,87 @@ int single_step_handler(unsigned long unused, unsigned long esr,
 }
 ```
 
+### do_signal
+
 ```c
 void do_signal(struct pt_regs *regs)
 {
-    if (get_signal(&ksig)) {
+    ret = get_signal(&ksig) {
+        for (;;) {
+            type = PIDTYPE_PID;
+            signr = dequeue_synchronous_signal(&ksig->info);
+            if (!signr)
+                signr = dequeue_signal(&current->blocked, &ksig->info, &type);
+
+            if (!signr)
+                break; /* will return 0 */
+
+            /* handle singals in ptrace state */
+            if (unlikely(current->ptrace) && (signr != SIGKILL) &&
+                !(sighand->action[signr -1].sa.sa_flags & SA_IMMUTABLE)) {
+                signr = ptrace_signal(signr, &ksig->info, type) {
+                    current->jobctl |= JOBCTL_STOP_DEQUEUED;
+
+/* 1. Tracer's First notification:
+ *  Happens when the signal is detected for the tracee.
+ *  Allows the tracer to control whether the signal is canceled, modified, or delivered. */
+                    /* 1. notify tracer 2. schedule current */
+                    signr = ptrace_stop(signr, CLD_TRAPPED, 0, info);
+
+                    /* We're back. Tracer may call ptrace(PTRACE_CONT, pid, 0, signal = 0) to cancel */
+                    if (signr == 0) {
+                        return signr;
+                    }
+
+                    /* Update the siginfo structure if the signal has
+                     * changed.  If the debugger wanted something
+                     * specific in the siginfo structure then it should
+                     * have updated *info via PTRACE_SETSIGINFO. */
+                    if (signr != info->si_signo) {
+                        clear_siginfo(info);
+                        info->si_signo = signr;
+                        info->si_errno = 0;
+                        info->si_code = SI_USER;
+                        rcu_read_lock();
+                        info->si_pid = task_pid_vnr(current->parent);
+                        info->si_uid = from_kuid_munged(current_user_ns(),
+                                        task_uid(current->parent));
+                        rcu_read_unlock();
+                    }
+
+                    /* If the (new) signal is now blocked, requeue it.  */
+                    if (sigismember(&current->blocked, signr) ||
+                        fatal_signal_pending(current)) {
+                        send_signal_locked(signr, info, current, type);
+                        signr = 0;
+                    }
+
+                    return signr;
+                }
+
+                if (!signr)
+                    continue;
+            }
+
+            ka = &sighand->action[signr-1];
+
+            if (ka->sa.sa_handler == SIG_IGN) /* Do nothing.  */
+                continue;
+            if (ka->sa.sa_handler != SIG_DFL) {
+                /* Run the handler.  */
+                ksig->ka = *ka;
+
+                if (ka->sa.sa_flags & SA_ONESHOT)
+                    ka->sa.sa_handler = SIG_DFL;
+
+                break; /* will return non-zero "signr" value */
+            }
+        }
+
+        return sig > 0;
+    }
+
+    if (ret) {
         handle_signal(&ksig, regs) {
             sigset_t *oldset = sigmask_to_save();
             int usig = ksig->sig;
@@ -802,6 +927,14 @@ void do_signal(struct pt_regs *regs)
                     force_sigsegv(ksig->sig);
                 } else {
                     signal_delivered(ksig, stepping) {
+/* 2. Tracer's Second notification:
+ *  Happens after the kernel prepares the rt frame for the signal handler
+ *  but before the tracee actually begins executing the signal handler.
+ *
+ *  Only occurs when 1. tracee has sighandler 2. tracee in single-stepping mode
+ *
+ *  Allow the tracer to track the tracee's execution
+ *  in single-step mode while handling a signal. */
                         if (stepping) {
                             ptrace_notify(SIGTRAP, 0) {
                                 --->
@@ -816,7 +949,98 @@ void do_signal(struct pt_regs *regs)
 }
 ```
 
+## PTRACE_POKETEXT
+
+1. GDB implements breakpoints on ARM64 by replacing the target instruction with the **BRK** instruction.
+2. When the program executes the BRK, it generates a trap exception, and the kernel notifies GDB.
+3. GDB temporarily restores the original instruction, single-steps over it, and reinserts the breakpoint to allow seamless debugging.
+4. ARM64-specific considerations include instruction alignment, shared library handling, and optional hardware breakpoints.
+
+```c
+int generic_ptrace_pokedata(struct task_struct *tsk, unsigned long addr,
+                unsigned long data)
+{
+    int copied;
+
+    copied = ptrace_access_vm(tsk, addr, &data, sizeof(data),
+        FOLL_FORCE | FOLL_WRITE) {
+
+        struct mm_struct *mm;
+        int ret;
+
+        mm = get_task_mm(tsk);
+        if (!mm)
+            return 0;
+
+        if (!tsk->ptrace ||
+            (current != tsk->parent) ||
+            ((get_dumpable(mm) != SUID_DUMP_USER) &&
+            !ptracer_capable(tsk, mm->user_ns))) {
+            mmput(mm);
+            return 0;
+        }
+
+        ret = access_remote_vm(mm, addr, buf, len, gup_flags) {
+            return __access_remote_vm(mm, addr, buf, len, gup_flags) {
+                void *old_buf = buf;
+                int write = gup_flags & FOLL_WRITE;
+
+                if (mmap_read_lock_killable(mm))
+                    return 0;
+
+                /* Untag the address before looking up the VMA */
+                addr = untagged_addr_remote(mm, addr);
+
+                /* Avoid triggering the temporary warning in __get_user_pages */
+                if (!vma_lookup(mm, addr) && !expand_stack(mm, addr))
+                    return 0;
+
+                /* ignore errors, just check how much was successfully transferred */
+                while (len) {
+                    int bytes, offset;
+                    void *maddr;
+                    struct vm_area_struct *vma = NULL;
+                    struct page *page = get_user_page_vma_remote(
+                        mm, addr, gup_flags, &vma
+                    );
+
+                    if (IS_ERR(page)) {
+                        /* ... */
+                    } else {
+                        bytes = len;
+                        offset = addr & (PAGE_SIZE-1);
+                        if (bytes > PAGE_SIZE-offset)
+                            bytes = PAGE_SIZE-offset;
+
+                        maddr = kmap_local_page(page);
+                        if (write) { /* PTRACE_POKETEXT */
+                            copy_to_user_page(vma, page, addr, maddr + offset, buf, bytes);
+                            set_page_dirty_lock(page);
+                        } else {     /* PTRACE_PEEKTEXT */
+                            copy_from_user_page(vma, page, addr, buf, maddr + offset, bytes);
+                        }
+                        unmap_and_put_page(page, maddr);
+                    }
+                    len -= bytes;
+                    buf += bytes;
+                    addr += bytes;
+                }
+                mmap_read_unlock(mm);
+
+                return buf - old_buf;
+            }
+        }
+        mmput(mm);
+
+        return ret;
+    }
+    return (copied == sizeof(data)) ? 0 : -EIO;
+}
+```
+
 # kprobe
+
+![](../images/kernel/trace-ss-brk-handler.png)
 
 Feature | ftrace | kprobes
 --- | --- | ---
@@ -1404,6 +1628,8 @@ kprobe_breakpoint_ss_handler(struct pt_regs *regs, unsigned long esr)
 
 # kretprobe
 
+![](../images/kernel/trace-ss-brk-handler.png)
+
 ```c
 struct kretprobe {
     struct kprobe       kp;
@@ -1421,6 +1647,51 @@ struct kretprobe {
 ```
 
 # kprobe_events
+
+```text
+ p[:[GRP/][EVENT]] [MOD:]SYM[+offs]|MEMADDR [FETCHARGS]        : Set a probe
+ r[MAXACTIVE][:[GRP/][EVENT]] [MOD:]SYM[+0] [FETCHARGS]        : Set a return probe
+ p[:[GRP/][EVENT]] [MOD:]SYM[+0]%return [FETCHARGS]    : Set a return probe
+ -:[GRP/][EVENT]                                               : Clear a probe
+
+GRP            : Group name. If omitted, use "kprobes" for it.
+EVENT          : Event name. If omitted, the event name is generated
+                 based on SYM+offs or MEMADDR.
+MOD            : Module name which has given SYM.
+SYM[+offs]     : Symbol+offset where the probe is inserted.
+SYM%return     : Return address of the symbol
+MEMADDR        : Address where the probe is inserted.
+MAXACTIVE      : Maximum number of instances of the specified function that
+                 can be probed simultaneously, or 0 for the default value
+                 as defined in Documentation/trace/kprobes.rst section 1.3.1.
+
+FETCHARGS      : Arguments. Each probe can have up to 128 args.
+ %REG          : Fetch register REG
+ @ADDR         : Fetch memory at ADDR (ADDR should be in kernel)
+ @SYM[+|-offs] : Fetch memory at SYM +|- offs (SYM should be a data symbol)
+ $stackN       : Fetch Nth entry of stack (N >= 0)
+ $stack        : Fetch stack address.
+ $argN         : Fetch the Nth function argument. (N >= 1) (\*1)
+ $retval       : Fetch return value.(\*2)
+ $comm         : Fetch current task comm.
+ +|-[u]OFFS(FETCHARG) : Fetch memory at FETCHARG +|- OFFS address.(\*3)(\*4)
+ \IMM          : Store an immediate value to the argument.
+ NAME=FETCHARG : Set NAME as the argument name of FETCHARG.
+ FETCHARG:TYPE : Set TYPE as the type of FETCHARG. Currently, basic types
+                 (u8/u16/u32/u64/s8/s16/s32/s64), hexadecimal types
+                 (x8/x16/x32/x64), VFS layer common type(%pd/%pD), "char",
+                 "string", "ustring", "symbol", "symstr" and bitfield are
+                 supported.
+
+ (\*1) only for the probe on function entry (offs == 0). Note, this argument access
+       is best effort, because depending on the argument type, it may be passed on
+       the stack. But this only support the arguments via registers.
+ (\*2) only for return probe. Note that this is also best effort. Depending on the
+       return value type, it might be passed via a pair of registers. But this only
+       accesses one register.
+ (\*3) this is useful for fetching a field of data structures.
+ (\*4) "u" means user-space dereference. See :ref:`user_mem_access`.
+```
 
 ```c
 static const struct file_operations kprobe_events_ops = {
@@ -2316,6 +2587,10 @@ SYM_FUNC_END(ftrace_caller)
 ### trace_init
 
 ```c
+/* Global variables */
+static struct ftrace_page    *ftrace_pages_start;
+static struct ftrace_page    *ftrace_pages;
+
 /* Basic structures for ftrace pages (kernel/trace/ftrace.c) */
 struct ftrace_page {
     struct ftrace_page    *next;    /* Next page */
@@ -2323,10 +2598,6 @@ struct ftrace_page {
     int            index;           /* Current record index */
     int            size;            /* Number of records in page */
 };
-
-/* Global variables */
-static struct ftrace_page    *ftrace_pages_start;
-static struct ftrace_page    *ftrace_pages;
 
 /* Record for each traced function */
 struct dyn_ftrace {
@@ -2383,8 +2654,16 @@ void __init ftrace_init(void)
 
     /* | Compiled | Disabled   | Enabled    |
      * +----------+------------+------------+
+     * |        Literal Pool   | ftrace_op  |
      * | NOP      | MOV X9, LR | MOV X9, LR |
      * | NOP      | NOP        | BL <entry> | */
+
+    /* Identify and process locations of function call sites that can be traced.
+     *
+     * Replace specific instructions at these function call locations
+     * with calls to the Ftrace trampoline handler (e.g., ftrace_caller).
+     *
+     * Enable or disable function tracing in a dynamic and efficient way. */
     ret = ftrace_process_locs(NULL, __start_mcount_loc, __stop_mcount_loc);
 
     last_ftrace_enabled = ftrace_enabled = 1;
@@ -2411,7 +2690,7 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
     if (unlikely(ftrace_disabled))
         return -ENODEV;
 
-    /* add to global ftrace_ops_list
+/* 1. add to global ftrace_ops_list
      * ftraced funciont own frace_ops is encoded in trampoline
      * at ftrace_make_call */
     ret = __register_ftrace_function(ops);
@@ -2420,6 +2699,7 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
 
     ops->flags |= FTRACE_OPS_FL_ENABLED | FTRACE_OPS_FL_ADDING;
 
+/* 2. handle ipmodify */
     ret = ftrace_hash_ipmodify_enable(ops) {
         struct ftrace_hash *hash = ops->func_hash->filter_hash;
 
@@ -2498,6 +2778,7 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
     if (ftrace_hash_rec_enable(ops))
         command |= FTRACE_UPDATE_CALLS;
 
+/* 3. enable ftrace by iterate whole ftrace_ops_list */
     ftrace_startup_enable(command);
 
     ops->flags &= ~FTRACE_OPS_FL_ADDING;
@@ -2507,15 +2788,6 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
 ```
 
 ### ftrace_startup_enable
-
-```text
-traced_function
-    ftrace_caller
-        1. Check if function matches any ops->filter
-           - call ops->func if match
-        2. If no ops match & ftrace_trace_function != stub
-           - call ftrace_trace_function
-```
 
 ```c
 ftrace_startup_enable(command) {
@@ -2936,6 +3208,27 @@ int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
 
 ## trace_event
 
+| **Event Type** | **Description** |
+| --- | --- |
+| **Syscalls**           | Events triggered by system calls (e.g., `sys_enter`, `sys_exit`) to track entry and exit points of syscalls. |
+| **IRQ Events** | Events related to hardware interrupts, such as `irq_handler_entry` and `irq_handler_exit`. |
+| **SoftIRQ Events** | Events for software interrupts, such as `softirq_entry` and `softirq_exit`. |
+| **Sched Events** | Events related to the scheduler, such as `sched_switch`, `sched_wakeup`, and `sched_process_exit`. |
+| **Process Events** | Events related to process lifecycle, such as `task_newtask` and `task_rename`. |
+| **Memory Events** | Events related to memory management, such as `kmalloc`, `kmem_cache_alloc`, and `mm_page_alloc`. |
+| **Block I/O Events** | Events related to block I/O operations, such as `block_rq_insert`, `block_rq_complete`, and `block_bio_queue`.|
+| **Network Events** | Events for networking activities, such as `net_dev_xmit`, `netif_receive_skb`, and `tcp_probe`. |
+| **Filesystem Events** | Events related to filesystems, such as `vfs_read`, `vfs_write`, and `file_open`. |
+| **Power Management** | Events related to power states, such as `cpu_idle` and `cpu_frequency`. |
+| **Timer Events** | Events for timer-related activities, such as `timer_start` and `timer_expire_entry`. |
+| **Workqueue Events** | Events related to workqueues, such as `workqueue_execute_start` and `workqueue_execute_end`. |
+| **Thermal Events** | Events related to thermal management, such as `thermal_temperature` and `thermal_power_cpu_limit`. |
+| **Device Events** | Events for device-specific operations, such as `devfreq_switch` and `i2c_read_transfer`. |
+| **Lock Events** | Events for locking mechanisms, such as `lock_acquire`, `lock_release`, and `lock_contended`. |
+| **Module Events** | Events related to kernel modules, such as `module_load` and `module_free`. |
+
+TracePoints employee **static key** to eliminate **branch check/mispredict** overhead.
+
 ```c
 struct tracepoint {
     const char *name;       /* Tracepoint name */
@@ -3108,9 +3401,19 @@ TRACE_EVENT(sched_switch,
 
 # static_key
 
+1. At compiple time, compiler adds add a **jump_entry** in **_jump_table section** for each `static_branch_likely/unlikey` call
+2. At runnning time, `jump_label_init` sorts **jump_entry** by key so entries of same key are placed together, and points the `entries` filed of **static_key** to first entry, establishes `N:1` relationship between **jump_entry table**(sorted by key) and **key**
+3. `static_key_enable/disable` modify branch condition code with **NOP** or **b label**
+
 ```c
 extern struct jump_entry __start___jump_table[];
 extern struct jump_entry __stop___jump_table[];
+
+struct jump_entry {
+    s32 code;    /* Relative offset to the jump instruction */
+    s32 target;  /* branch target code */
+    long key;    /* static_key address */
+};
 
 struct static_key {
 	atomic_t enabled;
@@ -3121,16 +3424,10 @@ struct static_key {
  *	        0 if points to struct jump_entry */
     union {
         unsigned long type;
-        struct jump_entry *entries;
+        struct jump_entry *entries; /* a key has multiple jump_entry */
         struct static_key_mod *next;
     };
 #endif	/* CONFIG_JUMP_LABEL */
-};
-
-struct jump_entry {
-    s32 code;    /* Relative offset to the jump instruction */
-    s32 target;  /* branch target code */
-    long key;    /* static_key address */
 };
 
 /* Combine the right initial value (type) with the right branch order
@@ -3232,8 +3529,11 @@ void __init jump_label_init(void)
 
     cpus_read_lock();
     jump_label_lock();
+
+    /* 1. sort Entrires by key. */
     jump_label_sort_entries(iter_start, iter_stop);
 
+    /* 2. iterate jump table to init key */
     for (iter = iter_start; iter < iter_stop; iter++) {
         struct static_key *iterk;
         bool in_init;
@@ -3256,6 +3556,8 @@ void __init jump_label_init(void)
         iterk = jump_entry_key(iter) {
             return (struct static_key *)((unsigned long)entry->key & ~3UL);
         }
+
+        /* 2.1 just init key at the 1st iteration of a jump_entry which has the same key */
         if (iterk == key)
             continue;
 
@@ -3325,6 +3627,7 @@ void static_key_enable(struct static_key *key)
                 /* if there are no users, entry can be NULL */
                 if (entry) {
                     __jump_label_update(key, entry, stop, init) {
+                        /* all jump_entry for a key are placed together since entrires are sorted by key */
                         for (; (entry < stop) && (jump_entry_key(entry) == key); entry++) {
                             if (!jump_label_can_update(entry, init))
                                 continue;
@@ -3335,9 +3638,11 @@ void static_key_enable(struct static_key *key)
                                 u32 insn;
 
                                 if (type == JUMP_LABEL_JMP) {
-                                    insn = aarch64_insn_gen_branch_imm(jump_entry_code(entry),
-                                                    jump_entry_target(entry),
-                                                    AARCH64_INSN_BRANCH_NOLINK);
+                                    insn = aarch64_insn_gen_branch_imm(
+                                        jump_entry_code(entry),
+                                        jump_entry_target(entry),
+                                        AARCH64_INSN_BRANCH_NOLINK
+                                    );
                                 } else {
                                     insn = aarch64_insn_gen_nop();
                                 }
@@ -3380,7 +3685,18 @@ void static_key_enable(struct static_key *key)
 })
 ```
 
+The asm goto in arch_static_branch_jump() sets up two possible control flow paths:
+1. **Default path** (no jump): This is the path the program takes if the branch condition is false (i.e., the jump does not occur). This corresponds to the code **before the l_yes label**.
+2. **Jump path**: This is the path the program takes if the branch condition is true (i.e., the jump to l_yes happens). This corresponds to the code at and **after the l_yes label**.
+
 ```c
+/* asm goto (
+ *      assembler template
+ *      : output operands
+ *      : input operands
+ *      : clobbered registers that are modified by the assembly code.
+ *      : goto labels
+ * ); */
 static __always_inline bool arch_static_branch(
     struct static_key * const key,
     const bool branch)
