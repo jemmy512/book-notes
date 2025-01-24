@@ -446,19 +446,7 @@ setup_arch(&command_line);
         init_mm.brk = (unsigned long)brk;
     }
 
-    early_fixmap_init() {
-        unsigned long addr = FIXADDR_TOT_START;
-
-        early_fixmap_init_pud(p4dp, addr, end);
-            early_fixmap_init_pmd(pudp, addr, end);
-                early_fixmap_init_pte(pmdp, addr);
-                    if (pmd_none(pmd)) {
-                        ptep = bm_pte[BM_PTE_TABLE_IDX(addr)];
-                        __pmd_populate(pmdp, __pa_symbol(ptep), PMD_TYPE_TABLE);
-                    }
-
-
-    }
+    early_fixmap_init();
 
     early_ioremap_init();
 
@@ -472,6 +460,75 @@ setup_arch(&command_line);
 
     bootmem_init();
         --->
+```
+
+## early_fixmap_init
+
+![](../images/kernel/mem-fix-map.png)
+
+```c
+static pte_t bm_pte[NR_BM_PTE_TABLES][PTRS_PER_PTE] __page_aligned_bss;
+static pmd_t bm_pmd[PTRS_PER_PMD] __page_aligned_bss __maybe_unused;
+static pud_t bm_pud[PTRS_PER_PUD] __page_aligned_bss __maybe_unused;
+
+void __init early_fixmap_init(void)
+{
+    unsigned long addr = FIXADDR_TOT_START;
+    unsigned long end = FIXADDR_TOP;
+
+    pgd_t *pgdp = pgd_offset_k(addr) {
+        pgd_offset(&init_mm, (address)) {
+            pgd_offset_pgd((mm)->pgd, (address)) {
+                return (pgd + pgd_index(address));
+            }
+        }
+    }
+    p4d_t *p4dp = p4d_offset_kimg(pgdp, addr) {
+        if (!pgtable_l5_enabled()) {
+            return pgd_to_folded_p4d(pgdp, addr);
+        }
+        return (p4d_t *)__phys_to_kimg(p4d_offset_phys(pgdp, addr)) {
+            return ((unsigned long)((x) + kimage_voffset))
+        }
+    }
+
+    early_fixmap_init_pud(p4dp, addr, end) {
+        p4d_t p4d = READ_ONCE(*p4dp);
+        pud_t *pudp;
+
+        if (p4d_none(p4d)) {
+            __p4d_populate(p4dp, __pa_symbol(bm_pud), P4D_TYPE_TABLE | P4D_TABLE_AF) {
+                set_p4d(p4dp, __p4d(__phys_to_p4d_val(pudp) | prot));
+            }
+        }
+
+        pudp = pud_offset_kimg(p4dp, addr);
+        early_fixmap_init_pmd(pudp, addr, end) {
+            unsigned long next;
+            pud_t pud = READ_ONCE(*pudp);
+            pmd_t *pmdp;
+
+            if (pud_none(pud))
+                __pud_populate(pudp, __pa_symbol(bm_pmd), PUD_TYPE_TABLE | PUD_TABLE_AF);
+
+            pmdp = pmd_offset_kimg(pudp, addr);
+            do {
+                next = pmd_addr_end(addr, end);
+                early_fixmap_init_pte(pmdp, addr) {
+                    pmd_t pmd = READ_ONCE(*pmdp);
+                    pte_t *ptep;
+
+                    if (pmd_none(pmd)) {
+                        ptep = bm_pte[BM_PTE_TABLE_IDX(addr)];
+                        __pmd_populate(pmdp, __pa_symbol(ptep), PMD_TYPE_TABLE | PMD_TABLE_AF) {
+                            set_pmd(pmdp, __pmd(__phys_to_pmd_val(ptep) | prot));
+                        }
+                    }
+                }
+            } while (pmdp++, addr = next, addr != end);
+        }
+    }
+}
 ```
 
 ## setup_machine_fdt
