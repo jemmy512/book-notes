@@ -727,6 +727,7 @@ bringup_cpu() {
 # syscall
 
 * [The Definitive Guide to Linux System Calls](https://blog.packagecloud.io/the-definitive-guide-to-linux-system-calls/)
+* [Linux系统调用：深入解析Hook技术](https://mp.weixin.qq.com/s/W3LYAFpuddA2a96k0iiczw)
 
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
@@ -5375,6 +5376,101 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 * [极致Linux内核 - Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
 * [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo) ⊙ [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
+| **Aspect** | **SMT (Simultaneous Multi-Threading)** | **CLS (Cluster Level Scheduling)** | **MC (Multi-Core)** | **PKG (Package)** |
+|---|---|---|---|---|
+| **Scope** | Logical CPUs (threads) in a single core. | A group of cores that share resources (e.g., L2 or L3 cache). | All cores within a physical package (socket). | All CPUs in a processor package. |
+| **Configuration** | Enabled with `CONFIG_SCHED_SMT`. | Enabled with `CONFIG_SCHED_CLUSTER`. | Enabled with `CONFIG_SCHED_MC`. | Always included (default). |
+| **Purpose** | Optimize task placement between sibling threads (logical CPUs). | Optimize task placement across cores in a cluster. | Optimize task placement across all cores in a socket. | Balance task loads across sockets. |
+| **Shared Resources** | Execution pipelines, L1 cache. | L2 or L3 cache. | L3 cache or interconnects. | Memory controller, inter-socket links. |
+| **Granularity** | Finest (threads). | Intermediate (clusters). | Coarse (cores). | Coarsest (package/socket). |
+| **Load Balancing** | Between sibling threads. | Between cores in a cluster. | Between cores in a socket. | Between sockets in multi-socket systems. |
+| **Use Case** | Hyperthreading (Intel, AMD SMT). | ARM big.LITTLE or similar designs. | Multi-core processors. | Multi-socket NUMA systems. |
+| **Example Topology** | A single core with 2 threads (logical CPUs). | ARM clusters with 4 LITTLE cores and 4 big cores. | 8-core processor in a single socket. | Dual sockets with multiple cores. |
+
+---
+
+Consider the following system:
+- **2 sockets** (packages).
+- Each socket has **4 cores**.
+- Each core has **2 threads** (SMT enabled).
+- The system supports ARM-style clusters (e.g., `CONFIG_SCHED_CLUSTER` is enabled).
+
+The scheduler topology would look like this:
+
+| **Domain** | **Hierarchy Level** | **Example CPUs in Domain** |
+|---|---|---|
+| **SMT** | Thread-level | CPU 0, CPU 1 (threads of Core 0, Socket 0). |
+| **CLS** | Cluster-level | CPUs 0-3 (Cluster 0 in Socket 0). |
+| **MC** | Core-level | CPUs 0-7 (All cores in Socket 0). |
+| **PKG** | Package-level | CPUs 0-7 (Socket 0) and CPUs 8-15 (Socket 1). |
+
+![](../images/kernel/proc-sched_domain-arch.png)
+
+```text
+System (Global View)
+└── sched_domain (Package Level: PKG)
+    ├── sched_group (Socket 0: CPUs 0-7)
+    │   └── CPUs: 0, 1, 2, 3, 4, 5, 6, 7
+    └── sched_group (Socket 1: CPUs 8-15)
+        └── CPUs: 8, 9, 10, 11, 12, 13, 14, 15
+
+Socket 0 (Package View: PKG)
+└── sched_domain (Core Level: MC)
+    ├── sched_group (Core 0: CPUs 0-1)
+    │   └── CPUs: 0, 1
+    ├── sched_group (Core 1: CPUs 2-3)
+    │   └── CPUs: 2, 3
+    ├── sched_group (Core 2: CPUs 4-5)
+    │   └── CPUs: 4, 5
+    └── sched_group (Core 3: CPUs 6-7)
+        └── CPUs: 6, 7
+
+Core 0 (Thread View: SMT)
+└── sched_domain (Thread Level: SMT)
+    ├── sched_group (Thread 0: CPU 0)
+    │   └── CPU: 0
+    └── sched_group (Thread 1: CPU 1)
+        └── CPU: 1
+```
+
+---
+
+```text
+System (2 Sockets)
+├── Package (PKG) Level: Socket 0
+│   ├── Cluster (CLS) Level: Cluster 0
+│   │   ├── Core 0
+│   │   │   ├── Thread 0 (CPU 0)
+│   │   │   └── Thread 1 (CPU 1)
+│   │   ├── Core 1
+│   │   │   ├── Thread 0 (CPU 2)
+│   │   │   └── Thread 1 (CPU 3)
+│   ├── Cluster (CLS) Level: Cluster 1
+│   │   ├── Core 2
+│   │   │   ├── Thread 0 (CPU 4)
+│   │   │   └── Thread 1 (CPU 5)
+│   │   ├── Core 3
+│   │   │   ├── Thread 0 (CPU 6)
+│   │   │   └── Thread 1 (CPU 7)
+├── Package (PKG) Level: Socket 1
+│   ├── Cluster (CLS) Level: Cluster 0
+│   │   ├── Core 0
+│   │   |   ├── Thread 0 (CPU 8)
+│   │   │   └── Thread 1 (CPU 9)
+│   │   ├── Core 1
+│   │   │   ├── Thread 0 (CPU 10)
+│   │   │   └── Thread 1 (CPU 11)
+│   ├── Cluster (CLS) Level: Cluster 1
+│   │   ├── Core 2
+│   │   │   ├── Thread 0 (CPU 12)
+│   │   │   └── Thread 1 (CPU 13)
+│   │   ├── Core 3
+│   │   │   ├── Thread 0 (CPU 14)
+│   │   │   └── Thread 1 (CPU 15)
+```
+
+---
+
 ```c
 struct sched_domain_topology_level {
     sched_domain_mask_f     mask;
@@ -6136,6 +6232,19 @@ get_cpu_for_node(struct device_node *node)
 
 ![](../images/kernel/proc-sched-pelt-last_update_time.svg)
 
+
+| **Metric** | **Tracks** | **Includes Blocked Tasks?** | **Includes Runnable Tasks?** | **Includes Running Tasks?** | **Use Case** |
+| --- | --- | --- | --- | --- | --- |
+| **load_avg** | Weighted load of tasks contributing to system load (runnable + blocked). | :white_check_mark: | :white_check_mark: | :white_check_mark: | Load balancing between CPUs. |
+| **runnable_avg**  | Average time tasks spend in the runnable state. | :x: | :white_check_mark: | :white_check_mark: | Measuring CPU contention and task latency. |
+| **util_avg** | Average CPU utilization (time tasks spend running). | :x: | :x: | :white_check_mark: | CPU frequency scaling and power management. |
+* **load_avg**: This metric considers the task's weight (se.load.weight) when the task is runnable or running. If the task is not runnable (e.g., blocked or sleeping), its weight is considered 0. This metric is used to represent the **traditional "load" concept**, which is influenced by the task's priority (nice value).
+* **runnable_avg**: This metric is similar to load_avg but it doesn't consider the task's weight. When the task is runnable or running, its weight is considered 1, and 0 otherwise. This metric provides a more direct measure of **how many tasks are runnable**, regardless of their priority.
+
+* **util_avg**: This metric only considers the task's weight when it is actually running on a CPU. If the task is runnable but not currently running, or if it is not runnable at all, its weight is considered 0. This metric represents the actual **CPU utilization** caused by the task.
+
+---
+
 To explain PELT (Per-Entity Load Tracking) effectively in an interview, you should focus on its key concepts, importance, and how it works. Here's a structured approach:
 
 1. Definition:
@@ -6177,20 +6286,7 @@ To explain PELT (Per-Entity Load Tracking) effectively in an interview, you shou
 10. Recent Developments (if applicable):
     "Recent Linux kernel versions have introduced refinements to PELT, such as improved handling of idle CPUs."
 
- VS | load_avg | runnable_avg | util_avg
---- | --- | --- | ---
-Scope | includes both runnable and I/O-bound tasks | only includes runnable tasks | focuses on actual CPU usage.
-Purpose | is a general system load indicator | more specific to CPU scheduling needs | used for performance and power management decisions
-Interpretation | A high load_avg might not necessarily mean high CPU usage if many tasks are I/O-bound | A high runnable_avg more directly indicates CPU contention | A high util_avg directly shows high CPU usage
-Kernel usage | mainly used for user-space reporting | used more extensively within | the kernel for various algorithms and decisions.
-
 ---
-
-* load_avg vs runnable_avg vs util_avg
-    * **load_avg**: This metric considers the task's weight (se.load.weight) when the task is runnable or running. If the task is not runnable (e.g., blocked or sleeping), its weight is considered 0. This metric is used to represent the traditional "load" concept, which is influenced by the task's priority (nice value).
-    * **runnable_avg**: This metric is similar to load_avg but it doesn't consider the task's weight. When the task is runnable or running, its weight is considered 1, and 0 otherwise. This metric provides a more direct measure of how many tasks are runnable, regardless of their priority.
-
-    * **util_avg**: This metric only considers the task's weight when it is actually running on a CPU. If the task is runnable but not currently running, or if it is not runnable at all, its weight is considered 0. This metric represents the actual CPU utilization caused by the task.
 
 * An entity's **contribution** to the system load in a period pi is just **the portion of that period** that the entity was runnable - either actually running, or waiting for an available CPU.
 * [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
