@@ -55,11 +55,11 @@
 
 File System | Layer
 --- | ---
-<img src='../images/kernel/file-arch-0.png' height='600' /> | <img src='../images/kernel/file-arch.png' height='600' />
+<img src='../images/kernel/file-arch-0.png' height='600' /> | <img src='../images/kernel/file-arch.svg' height='600' />
 
 # File Management
 
-![](../images/kernel/file-vfs-system.png)
+![](../images/kernel/file-vfs-system.svg)
 
 * [Kernel Doc: Filesystems](https://www.kernel.org/doc/html/latest/filesystems/index.html)
 
@@ -2274,7 +2274,7 @@ finish_lookup:
 
 ## read-write
 
-![](../images/kernel/file-read-write.png)
+![](../images/kernel/file-read-write.svg)
 
 * [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) ⊙ [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
 
@@ -4168,7 +4168,7 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
 
 ## writeback
 
-![](../images/kernel/proc-cmwq.png)
+![](../images/kernel/proc-cmwq.svg)
 
 ```c
                              +--- indoe->sb != sb <-+
@@ -4782,7 +4782,7 @@ int ovl_get_tree(struct fs_context *fc)
 * [From www.thomas-krenn.com](https://www.thomas-krenn.com/en/wiki/Linux_Storage_Stack_Diagram)
 
 
-![](../images/kernel/file-read-write.png)
+![](../images/kernel/file-read-write.svg)
 
 All devices have the corresponding device file in /dev(is devtmpfs file system), which has inode, but it's not associated with any data in the storage device, it's associated with the device's drive. And this device file belongs to a special file system: devtmpfs.
 
@@ -6972,7 +6972,7 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 
 ## wb_workfn
 
-![](../images/kernel/proc-cmwq.png)
+![](../images/kernel/proc-cmwq.svg)
 
 writeback cases:
 1. Periodic Write-back
@@ -7914,7 +7914,7 @@ void ext4_io_submit(struct ext4_io_submit *io)
 
 ---
 
-<img src='../images/kernel/io-blk_queue_bio.png' height='800' />
+<img src='../images/kernel/io-blk_queue_bio.svg' height='800' />
 
 
 ```c

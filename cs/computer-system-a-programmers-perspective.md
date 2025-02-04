@@ -3129,7 +3129,7 @@ Instead, they return prematurely to the calling application with an error condit
 
 ### Linux Signal Handling
 
-![Linux Signal handling](../images/csapp/csapp-linux-sig-handle.png)
+![Linux Signal handling](../images/csapp/csapp-linux-sig-handle.svg)
 
 ## 8.6 Nonlocal Jumps
 

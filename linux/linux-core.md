@@ -194,11 +194,11 @@ Feature | DMB | DSB
 
 ## futex
 
-![](../images/kernel/lock-rt-mutex.png)
+![](../images/kernel/lock-rt-mutex.svg)
 
 ---
 
-![](../images/kernel/lock-futex-flow.png)
+![](../images/kernel/lock-futex-flow.svg)
 
 * [Kernel Index Futex - LWN](https://lwn.net/Kernel/Index/#Futex)
 * [futex问答 - wowo tech](http://www.wowotech.net/kernel_synchronization/futex.html)
@@ -964,7 +964,7 @@ pi_faulted:
 
 ---
 
-![](../images/kernel/lock-spinlock.png)
+![](../images/kernel/lock-spinlock.svg)
 
 * [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
 * [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s/viUgMAnVgC_bHyVifkHqsQ)
@@ -2030,11 +2030,11 @@ RT-mutexes (Real-Time Mutexes) have several important features that make them su
 12. Adaptive Spinning:
     - Some implementations use adaptive spinning techniques to reduce context switches in short-term lock contentions.
 
-![](../images/kernel/lock-rt-mutex.png)
+![](../images/kernel/lock-rt-mutex.svg)
 
 ---
 
-![](../images/kernel/lock-rt-mutex-flow.png)
+![](../images/kernel/lock-rt-mutex-flow.svg)
 
 * [The Evolution of Real-Time Linux](https://personal.utdallas.edu/~cxl137330/courses/fall13/RTS/papers/2a.pdf)
 * [RT Mutex Implementation Anatomy :cn:](https://www.cnblogs.com/hellokitty2/p/17010913.html)
@@ -2849,7 +2849,7 @@ struct rwsem_waiter {
 };
 ```
 
-![](../images/kernel/lock-rwsem-down-read-write.png)
+![](../images/kernel/lock-rwsem-down-read-write.svg)
 
 
 ### down_read

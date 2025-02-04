@@ -21,11 +21,11 @@
     * [tasklet_schedule](#tasklet_schedule)
 * [call graph](#call-graph-intr)
 
-<img src='../images/kernel/io-irq.png' style='max-height:850px'/>
+<img src='../images/kernel/io-irq.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/io-interrupt-vector.png' style='max-height:850px'/>
+<img src='../images/kernel/io-interrupt-vector.svg' style='max-height:850px'/>
 
 ---
 

@@ -19,7 +19,7 @@
 
 # ptrace
 
-![](../images/kernel/trace-ss-brk-handler.png)
+![](../images/kernel/trace-ss-brk-handler.svg)
 
 ```c
 SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
@@ -1040,7 +1040,7 @@ int generic_ptrace_pokedata(struct task_struct *tsk, unsigned long addr,
 
 # kprobe
 
-![](../images/kernel/trace-ss-brk-handler.png)
+![](../images/kernel/trace-ss-brk-handler.svg)
 
 Feature | ftrace | kprobes
 --- | --- | ---
@@ -1628,7 +1628,7 @@ kprobe_breakpoint_ss_handler(struct pt_regs *regs, unsigned long esr)
 
 # kretprobe
 
-![](../images/kernel/trace-ss-brk-handler.png)
+![](../images/kernel/trace-ss-brk-handler.svg)
 
 ```c
 struct kretprobe {
@@ -2454,7 +2454,7 @@ error:
 
 # ftrace
 
-![](../images/kernel/trace-frace-arch.png)
+![](../images/kernel/trace-frace-arch.svg)
 
 * [Kernel调试追踪技术之 Ftrace on ARM64](https://www.cnblogs.com/hpyu/p/14348523.html)
 * [什么是ftrace？怎么使用ftrace？](https://mp.weixin.qq.com/s/JYC-V-G3Y6Yd5LPSflBM_A)

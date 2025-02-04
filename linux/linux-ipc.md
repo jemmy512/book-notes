@@ -314,15 +314,15 @@ static int fifo_open(struct inode *inode, struct file *filp)
   }
 }
 ```
-<img src='../images/kernel/ipc-fifo.png' style='max-height:850px'/>
+<img src='../images/kernel/ipc-fifo.svg' style='max-height:850px'/>
 
 # signal
 
-<img src='../images/kernel/sig-handle.png' style='max-height:850px'/>
+<img src='../images/kernel/sig-handle.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/ipc-signal-register-handler.png' style='max-height:550px'/>
+<img src='../images/kernel/ipc-signal-register-handler.svg' style='max-height:550px'/>
 
 ```c
 struct task_struct {
@@ -2391,7 +2391,7 @@ int main() {
 
 # sysv_shm
 
-<img src='../images/kernel/ipc-shm.png' style='max-height:850px'/>
+<img src='../images/kernel/ipc-shm.svg' style='max-height:850px'/>
 
 
 ```c
@@ -2991,7 +2991,7 @@ static int shm_fault(struct vm_fault *vmf) {
 
 # sysv_sem
 
-<img src='../images/kernel/ipc-sem.png' style='max-height:850px'/>
+<img src='../images/kernel/ipc-sem.svg' style='max-height:850px'/>
 
 ```c
 semget();
@@ -3472,4 +3472,4 @@ struct sem_undo_list {
 };
 ```
 
-<img src='../images/kernel/ipc-sem-2.png' style='max-height:850px'/>
+<img src='../images/kernel/ipc-sem-2.svg' style='max-height:850px'/>

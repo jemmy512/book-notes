@@ -260,6 +260,8 @@
         ```
 
 * [Linux watermark 内存水位](https://mp.weixin.qq.com/s/vCUfMgLAXshWhWa65SN_wA)
+* 深度 Linux
+    * [探秘IOMMU：从概念到原理的深度解析](https://mp.weixin.qq.com/s/XFwaEzFgN5FVDn5wheWhkA)
 
 ---
 
@@ -464,7 +466,7 @@ setup_arch(&command_line);
 
 ## early_fixmap_init
 
-![](../images/kernel/mem-fix-map.png)
+![](../images/kernel/mem-fix-map.svg)
 
 ```c
 static pte_t bm_pte[NR_BM_PTE_TABLES][PTRS_PER_PTE] __page_aligned_bss;
@@ -5481,7 +5483,7 @@ void kmem_cache_init(void)
 
 ![](../images/kernel/mem-slub-layout.png)
 
-![](../images/kernel/mem-mng.png)
+![](../images/kernel/mem-mng.svg)
 
 
 ```c
@@ -6561,7 +6563,7 @@ __remove_pgd_mapping()
 
 ![](../images/kernel/mem-mmap.svg)
 
-![](../images/kernel/mem-mmap-vma-file-page.png)
+![](../images/kernel/mem-mmap-vma-file-page.svg)
 
 ```c
 struct mm_struct {
@@ -8860,7 +8862,7 @@ out:
 
 # rmap
 
-![](../images/kernel/mem-rmap-arch.png)
+![](../images/kernel/mem-rmap-arch.svg)
 
 ![](../images/kernel/mem-rmap-1.png)
 
@@ -14941,7 +14943,7 @@ kswapd_try_sleep:
 
 * https://blog.csdn.net/qkhhyga2016/article/details/88722458
 
-![](../images/kernel/mem-swap-arch.png)
+![](../images/kernel/mem-swap-arch.svg)
 
 ```md
 +-----------------------------------------------------+

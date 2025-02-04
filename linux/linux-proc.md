@@ -254,7 +254,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
             * [[PATCH 05/15] sched/fair: Implement an EEVDF like policy](https://github.com/torvalds/linux/commit/147f3efaa24182a21706bca15eab2f3f4630b5fe)
             * [[PATCH 07/15] sched/smp: Use lag to simplify cross-runqueue placement](https://github.com/torvalds/linux/commit/e8f331bcc270354a803c2127c486190d33eac441)
             * [[PATCH 08/15] sched: Commit to EEVDF](https://github.com/torvalds/linux/commit/5e963f2bd4654a202a8a05aa3a86cb0300b10e6c)
-            * ![](../images/kernel/proc-sched-cfs-eevdf.png)
+            * ![](../images/kernel/proc-sched-cfs-eevdf.svg)
         * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
         * [Linux 核心設計: Scheduler(5): EEVDF Scheduler](https://hackmd.io/@RinHizakura/SyG4t5u1a)
     * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
@@ -861,7 +861,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
 
 ## 64
 
-<img src='../images/kernel/init-syscall-stack.png' style='max-height:850px'/>
+<img src='../images/kernel/init-syscall-stack.svg' style='max-height:850px'/>
 
 * glibc
     ```c
@@ -1278,11 +1278,11 @@ extern const struct sched_class idle_sched_class;
  * idle_sched_class: idle */
 ```
 
-<img src='../images/kernel/proc-sched-cpu-rq-class-entity-task.png' style='max-height:850px'/>
+<img src='../images/kernel/proc-sched-cpu-rq-class-entity-task.svg' style='max-height:850px'/>
 
 ## voluntary schedule
 
-<img src="../images/kernel/proc-sched-context-swith.png" style="max-height:850px"/>
+<img src="../images/kernel/proc-sched-context-swith.svg" style="max-height:850px"/>
 
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
@@ -2835,7 +2835,7 @@ void switched_to_rt(struct rq *rq, struct task_struct *p)
 
 * [hellokitty2 - 调度器34 - RT负载均衡](https://www.cnblogs.com/hellokitty2/p/15974333.html)
 
-![](../images/kernel/proc-sched-balance_rt.png)
+![](../images/kernel/proc-sched-balance_rt.svg)
 
 ```c
 put_prev_task_balance(struct rq *rq, struct task_struct *prev,
@@ -5404,7 +5404,7 @@ The scheduler topology would look like this:
 | **MC** | Core-level | CPUs 0-7 (All cores in Socket 0). |
 | **PKG** | Package-level | CPUs 0-7 (Socket 0) and CPUs 8-15 (Socket 1). |
 
-![](../images/kernel/proc-sched_domain-arch.png)
+![](../images/kernel/proc-sched_domain-arch.svg)
 
 ```text
 System (Global View)
@@ -6224,7 +6224,7 @@ get_cpu_for_node(struct device_node *node)
 
 ![](../images/kernel/proc-sched-pelt-segement.png)
 
-![](../images/kernel/proc-sched-pelt-update_load_avg.png)
+![](../images/kernel/proc-sched-pelt-update_load_avg.svg)
 
 ![](../images/kernel/proc-sched-pelt-calc.png)
 
@@ -9015,7 +9015,7 @@ ret = can_migrate_task(p, env) {
 
 # wake_up
 
-<img src='../images/kernel/proc-wake-up.png' style='max-height:850px'/>
+<img src='../images/kernel/proc-wake-up.svg' style='max-height:850px'/>
 
 ```c
 #define wake_up(x)                        __wake_up(x, TASK_NORMAL, 1, NULL)
@@ -9401,7 +9401,7 @@ try_to_wake_up() {
 
 * [Misc on Linux fork, switch_to, and scheduling](http://lastweek.io/notes/linux/fork/)
 
-<img src="../images/kernel/proc-fork-frame.png" height="850"/>
+<img src="../images/kernel/proc-fork-frame.svg" height="850"/>
 
 <img src="../images/kernel/fork.png" style="max-height:1200px"/>
 
@@ -11452,20 +11452,20 @@ static int kthread(void *_create)
 * Wowo Tech [:one: Basic Concept](http://www.wowotech.net/irq_subsystem/workqueue.html) ⊙ [:two: Overview](http://www.wowotech.net/irq_subsystem/cmwq-intro.html) ⊙ [:three: Code Anatomy](http://www.wowotech.net/irq_subsystem/alloc_workqueue.html) ⊙ [:four: Handle Work](http://www.wowotech.net/irq_subsystem/queue_and_handle_work.html)
 * [[PATCHSET wq/for-6.9] workqueue: Implement BH workqueue and convert several tasklet users](https://lore.kernel.org/all/20240130091300.2968534-1-tj@kernel.org/)
 
-<img src='../images/kernel/proc-cmwq.png' style='max-height:850px'/>
+<img src='../images/kernel/proc-cmwq.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/proc-cmwq-flow.png' style='max-height:850px'/>
+<img src='../images/kernel/proc-cmwq-flow.svg' style='max-height:850px'/>
 
 * `nr_running`    `nr_active`    `max_active`    `CPU_INTENSIVE` control the concurrency
 ---
 
-<img src='../images/kernel/proc-cmwq-state.png' style='max-height:850px'/>
+<img src='../images/kernel/proc-cmwq-state.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/proc-cmwq-arch.png' style='max-height:850px'/>
+<img src='../images/kernel/proc-cmwq-arch.svg' style='max-height:850px'/>
 
 * [Kernel 4.19: Concurrency Managed Workqueue (cmwq)](https://www.kernel.org/doc/html/v4.19/core-api/workqueue.html)
 * http://www.wowotech.net/irq_subsystem/cmwq-intro.html :cn:
@@ -13407,7 +13407,7 @@ sched_rt_runtime_exceeded(rt_rq) {
 * [Docker底层原理：Cgroup V2的使用](https://blog.csdn.net/qq_67733273/article/details/134109156)
 * [k8s 基于 cgroup 的资源限额（capacity enforcement）：模型设计与代码实现（2023）](https://arthurchiao.art/blog/k8s-cgroup-zh/)
 
-![](../images/kernel/cgroup-arch.png)
+![](../images/kernel/cgroup-arch.svg)
 
 * Kernel cgroup v2 https://docs.kernel.org/admin-guide/cgroup-v2.html
 * Domain cgroup:
@@ -15800,7 +15800,7 @@ clone() {
 
 ## pid_namespace
 
-![](../images/kernel/ns-pid.png)
+![](../images/kernel/ns-pid.svg)
 
 * [wowotech - Linux系统如何标识进程？](http://www.wowotech.net/process_management/pid.html)
 * [Linux 内核进程管理之进程ID](https://www.cnblogs.com/hazir/p/linux_kernel_pid.html)
@@ -16228,7 +16228,7 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_s
 
 * https://time.geekbang.org/column/article/104277
 
-![](../images/kernel/ipc-ipc_ids.png)
+![](../images/kernel/ipc-ipc_ids.svg)
 
 Linux has multiple IPC:
 * PIEP
@@ -16722,7 +16722,7 @@ struct mountpoint {
 
 ### copy_mnt_ns
 
-![](../images/kernel/ns-mnt-hierarchy.png)
+![](../images/kernel/ns-mnt-hierarchy.svg)
 
 ```c
 struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,

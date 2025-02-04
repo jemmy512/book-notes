@@ -1,7 +1,7 @@
 * PPI (Private Peripheral Interrupt)
 * SPI (Shared Peripheral Interrupt)
 
-<img src='../images/kernel/time-timer.png' style='max-height:850px'/>
+<img src='../images/kernel/time-timer.svg' style='max-height:850px'/>
 
 <img src='../images/kernel/time-timer-arch.png' style='max-height:850px'/>
 

@@ -152,7 +152,7 @@
 
 ---
 
-<img src='../images/kernel/net-socket-sock.png' style='max-height:850px'/>
+<img src='../images/kernel/net-socket-sock.svg' style='max-height:850px'/>
 
 ---
 
@@ -1380,7 +1380,7 @@ void inet_hash2(struct inet_hashinfo *h, struct sock *sk)
 
 # connect
 
-<img src='../images/kernel/net-hand-shake.png' style='max-height:850px'/>
+<img src='../images/kernel/net-hand-shake.svg' style='max-height:850px'/>
 
 
 ```c
@@ -3642,7 +3642,7 @@ __sys_shutdown();
 * [How sk_buffs alloc work](http://vger.kernel.org/~davem/skb_data.html)
 * [Management of sk_buffs](https://people.cs.clemson.edu/~westall/853/notes/skbuff.pdf)
 
-<img src='../images/kernel/net-sk_buf.png' style='max-height:850px'/>
+<img src='../images/kernel/net-sk_buf.svg' style='max-height:850px'/>
 
 ```c
 struct sk_buff {
@@ -4133,11 +4133,11 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 * [Monitoring and Tuning the Linux Networking Stack: Sending Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-sending-data/)
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
-<img src='../images/kernel/net-read-write-route-bridge.png' style='max-height:850px'/>
+<img src='../images/kernel/net-read-write-route-bridge.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/net-write.png'/>
+<img src='../images/kernel/net-write.svg'/>
 
 ```c
 /* vfs layer */
@@ -5903,7 +5903,7 @@ void arp_send_dst(
 
 <img src='../images/kernel/net-queue-displine.png' style='max-height:850px'/>
 
-<img src='../images/kernel/net-dev-pci.png' style='max-height:850px'/>
+<img src='../images/kernel/net-dev-pci.svg' style='max-height:850px'/>
 
 ```c
 struct net_device {
@@ -6252,7 +6252,7 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 
 ---
 
-<img src='../images/kernel/net-read.png'/>
+<img src='../images/kernel/net-read.svg'/>
 
 
 ```c
@@ -9393,11 +9393,11 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 * [wake_up](./linux-kernel.md#wake_up)
 
 # route
-<img src='../images/kernel/net-filter.png' style='max-height:850px'/>
+<img src='../images/kernel/net-filter.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/net-filter-2.png' style='max-height:850px'/>
+<img src='../images/kernel/net-filter-2.svg' style='max-height:850px'/>
 
 ---
 
@@ -9405,11 +9405,11 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 
 ---
 
-<img src='../images/kernel/net-route-fib.png' style='max-height:850px'/>
+<img src='../images/kernel/net-route-fib.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/net-route.png' style='max-height:850px'/>
+<img src='../images/kernel/net-route.svg' style='max-height:850px'/>
 
 ```c
 struct net {
@@ -9751,7 +9751,7 @@ void rt_set_nexthop(struct rtable *rt, __be32 daddr,
 }
 ```
 
-<img src='../images/kernel/net-forwarding-table.png' style='max-height:850px'/>
+<img src='../images/kernel/net-forwarding-table.svg' style='max-height:850px'/>
 
 ```c
 # Linux Server A
@@ -10481,7 +10481,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 
 # bridge
 
-<img src='../images/kernel/net-bridge.png' style='max-height:850px'/>
+<img src='../images/kernel/net-bridge.svg' style='max-height:850px'/>
 
 [lab](https://github.com/yanfeizhang/coder-kung-fu/tree/main/tests/network/test05)
 
@@ -13518,7 +13518,7 @@ tcp_ack();
 定时器分类 | 定时器 | 定时器成员 | 所在结构体 | 超时处理函数
 --- | --- | --- | --- | ---
 建立连接过程 | syn + ack 定时器 | rsk_timer | struct request_sock | reqsk_timer_handler()
-数据传输过程 | 重传定时器 | icsk_retransmit_timer | struct inet_connection_sock | tcp_write_timer() 
+数据传输过程 | 重传定时器 | icsk_retransmit_timer | struct inet_connection_sock | tcp_write_timer()
 数据传输过程 | 延时 ack 定时器 | icsk_delack_timer | struct inet_connection_sock | tcp_delack_timer()
 数据传输过程 | 保活定时器 | sk_timer | struct sock | tcp_keepalive_timer()
 数据传输过程 | 窗口探测定时器 | icsk_retransmit_timer | struct inet_connection_sock | tcp_probe_timer()
@@ -14846,11 +14846,11 @@ void __tcp_push_pending_frames(
 
 # epoll
 
-<img src='../images/kernel/net-epoll.png' style='max-height:850px'/>
+<img src='../images/kernel/net-epoll.svg' style='max-height:850px'/>
 
 ---
 
-<img src='../images/kernel/net-epoll-thread-model.png' style='max-height:850px'/>
+<img src='../images/kernel/net-epoll-thread-model.svg' style='max-height:850px'/>
 
 ```c
 typedef union epoll_data {
