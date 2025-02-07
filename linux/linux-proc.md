@@ -1217,9 +1217,11 @@ struct rq {
     unsigned long       nr_load_updates;
     u64                 nr_switches;
 
-    struct cfs_rq cfs;
-    struct rt_rq  rt;
-    struct dl_rq  dl;
+    struct list_head    cfs_tasks;
+
+    struct cfs_rq       cfs;
+    struct rt_rq        rt;
+    struct dl_rq        dl;
     struct task_struct *curr, *idle, *stop;
 };
 ```
@@ -6289,9 +6291,9 @@ To explain PELT (Per-Entity Load Tracking) effectively in an interview, you shou
 ---
 
 * An entity's **contribution** to the system load in a period pi is just **the portion of that period** that the entity was runnable - either actually running, or waiting for an available CPU.
-* [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an instantaneous quantity - how much is a process loading the system right now? - as opposed to a cumulative property like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
-* the 3.8 scheduler will simply maintain a separate sum of the `blocked load` contained in each cfs_rq (control-group run queue) structure. When a process blocks, its load is subtracted from the total runnable load value and added to the blocked load instead.
-* `Throttled processes` thus cannot contribute to load, so removing their contribution while they languish makes sense. But allowing their load contribution to decay while they are waiting to be allowed to run again would tend to skew their contribution downward. So, in the throttled case, time simply stops for the affected processes until they emerge from the throttled state.
+* [**Load** :link:](https://lwn.net/Articles/531853/) is also meant to be an **instantaneous quantity** - how much is a process loading the system right now? - as opposed to a **cumulative property** like **CPU usage**. A long-running process that consumed vast amounts of processor time last week may have very modest needs at the moment; such a process is contributing very little to load now, despite its rather more demanding behavior in the past.
+* A **blocked task** is one that is not currently running or ready to run, such as a task that is waiting for I/O or sleeping.  When a task is blocked, its PELT metrics are updated during periodic scheduler ticks or when the task becomes runnable again.
+* **Throttled processes** thus cannot contribute to load, so removing their contribution while they languish makes sense. But allowing their load contribution to decay while they are waiting to be allowed to run again would tend to skew their contribution downward. So, in the throttled case, time simply stops for the affected processes until they emerge from the throttled state.
 
 * [sched/pelt: Add a new runnable average signal](https://github.com/torvalds/linux/commit/9f68395333ad7f5bfe2f83473fed363d4229f11c) - Now that runnable_load_avg has been removed, we can replace it by a new signal that will highlight the runnable pressure on a cfs_rq. This signal track the waiting time of tasks on rq and can help to better define the state of rqs.
     * The new runnable_avg will track the runnable time of a task which simply adds the waiting time to the running time.
@@ -6464,8 +6466,9 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
         return 0;
     }
 
-    delta >>= 10; /* convert ns to us */
-    if (!delta) /* less than 1us, return */
+    /* Converts delta from ns to units of approximately 1ms (1024ns). */
+    delta >>= 10;
+    if (!delta)
         return 0;
 
     sa->last_update_time += delta << 10;
@@ -6486,7 +6489,27 @@ int ___update_load_sum(u64 now, struct sched_avg *sa,
             /* 1: decay old *_sum */
             sa->load_sum = decay_load(sa->load_sum, periods);
             sa->runnable_sum = decay_load(sa->runnable_sum, periods);
-            sa->util_sum = decay_load((u64)(sa->util_sum), periods);
+            sa->util_sum = decay_load((u64)(sa->util_sum), periods) {
+                unsigned int local_n;
+
+                if (unlikely(n > LOAD_AVG_PERIOD * 63))
+                    return 0;
+
+                /* after bounds checking we can collapse to 32-bit */
+                local_n = n;
+
+                /* As y^PERIOD = 1/2, we can combine
+                 *    y^n = 1/2^(n/PERIOD) * y^(n%PERIOD)
+                 * With a look-up table which covers y^n (n<PERIOD)
+                 *
+                 * To achieve constant time decay_load. */
+                if (unlikely(local_n >= LOAD_AVG_PERIOD)) {
+                    val >>= local_n / LOAD_AVG_PERIOD;
+                    local_n %= LOAD_AVG_PERIOD;
+                }
+
+                return mul_u64_u32_shr(val, runnable_avg_yN_inv[local_n], 32);
+            }
 
             /* 2: calc new load: d1 + d2 + d3 */
             delta %= 1024;
@@ -6973,6 +6996,8 @@ update_rq_clock(rq) {
 ![](../images/kernel/proc-sched-load_balance.svg)
 
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
+
+![](../images/kernel/proc-sched_domain-arch.svg)
 
 ---
 
@@ -7831,24 +7856,31 @@ out:
 
 ### should_we_balance
 
+**Only the first idle CPU** (or the most suitable CPU based on the balancing rules) in a scheduling group is allowed to perform load balancing at a given time.
+
+* **Fully Idle Core Available**:
+    * If a CPU in the scheduling group is fully idle (all threads in the core are idle), that CPU is prioritized for balancing.
+    * If the CPU is the first idle CPU in the group, it performs the balancing operation.
+* **No Fully Idle Core**:
+    * If no idle core is available, the system looks for idle SMT siblings.
+    * The first idle SMT sibling within the group is selected to perform balancing.
+
+
 ```c
+/* Is newly idle or first idle cpu */
 int should_we_balance(struct lb_env *env)
 {
     struct cpumask *swb_cpus = this_cpu_cpumask_var_ptr(should_we_balance_tmpmask);
     struct sched_group *sg = env->sd->groups;
     int cpu, idle_smt = -1;
 
-    /* Ensure the balancing environment is consistent; can happen
+    /* 1. Ensure the balancing environment is consistent; can happen
      * when the softirq triggers 'during' hotplug. */
     if (!cpumask_test_cpu(env->dst_cpu, env->cpus)) {
         return 0;
     }
 
-    /* In the newly idle case, we will allow all the CPUs
-     * to do the newly idle load balance.
-     *
-     * However, we bail out if we already have tasks or a wakeup pending,
-     * to optimize wakeup latency. */
+    /* 2. Newly idle cpu without nr_running and ttwu_pending */
     if (env->idle == CPU_NEWLY_IDLE) {
         if (env->dst_rq->nr_running > 0 || env->dst_rq->ttwu_pending) {
             return 0;
@@ -7856,8 +7888,8 @@ int should_we_balance(struct lb_env *env)
         return 1;
     }
 
+    /* 3. The first idle CPU */
     cpumask_copy(swb_cpus, group_balance_mask(sg));
-    /* Try to find first idle CPU */
     for_each_cpu_and(cpu, swb_cpus, env->cpus) {
         if (!idle_cpu(cpu)) {
             continue;
@@ -7884,12 +7916,11 @@ int should_we_balance(struct lb_env *env)
         return cpu == env->dst_cpu;
     }
 
-    /* Are we the first idle CPU with busy siblings? */
     if (idle_smt != -1) {
         return idle_smt == env->dst_cpu;
     }
 
-    /* Are we the first CPU of this group ? */
+    /* 4. Fallback to the first CPU in the group */
     return group_balance_cpu(sg) == env->dst_cpu;
 }
 ```
@@ -8011,169 +8042,6 @@ force_balance:
 out_balanced:
     env->imbalance = 0;
     return NULL;
-}
-```
-
-#### calculate_imbalance
-
-```c
-calculate_imbalance(env, &sds) {
-    struct sg_lb_stats *local, *busiest;
-
-    local = &sds->local_stat;
-    busiest = &sds->busiest_stat;
-
-/* 1. handle busiest state:
- * group_misfit_task,
- * group_asym_packing,
- * group_smt_balance,
- * group_imbalanced */
-    if (busiest->group_type == group_misfit_task) {
-        if (env->sd->flags & SD_ASYM_CPUCAPACITY) {
-            /* Set imbalance to allow misfit tasks to be balanced. */
-            env->migration_type = migrate_misfit;
-            env->imbalance = 1;
-        } else {
-            /* Set load imbalance to allow moving task from cpu
-             * with reduced capacity. */
-            env->migration_type = migrate_load;
-            env->imbalance = busiest->group_misfit_task_load;
-        }
-        return;
-    }
-
-    if (busiest->group_type == group_asym_packing) {
-        /* In case of asym capacity, we will try to migrate all load to
-         * the preferred CPU. */
-        env->migration_type = migrate_task;
-        env->imbalance = busiest->sum_h_nr_running;
-        return;
-    }
-
-    if (busiest->group_type == group_smt_balance) {
-        /* Reduce number of tasks sharing CPU capacity */
-        env->migration_type = migrate_task;
-        env->imbalance = 1;
-        return;
-    }
-
-    if (busiest->group_type == group_imbalanced) {
-        env->migration_type = migrate_task;
-        env->imbalance = 1;
-        return;
-    }
-
-/* 2. local group_has_spare */
-    if (local->group_type == group_has_spare) {
-        if ((busiest->group_type > group_fully_busy) && !(env->sd->flags & SD_SHARE_LLC)) {
-            env->migration_type = migrate_util;
-            env->imbalance = max(local->group_capacity, local->group_util) -
-                    local->group_util;
-
-            if (env->idle != CPU_NOT_IDLE && env->imbalance == 0) {
-                env->migration_type = migrate_task;
-                env->imbalance = 1;
-            }
-
-            return;
-        }
-
-        if (busiest->group_weight == 1 || sds->prefer_sibling) {
-            /* When prefer sibling, evenly spread running tasks on groups. */
-            env->migration_type = migrate_task;
-            env->imbalance = sibling_imbalance(env, sds, busiest, local) {
-                int ncores_busiest, ncores_local;
-                long imbalance;
-
-                if (env->idle == CPU_NOT_IDLE || !busiest->sum_nr_running)
-                    return 0;
-
-                ncores_busiest = sds->busiest->cores;
-                ncores_local = sds->local->cores;
-
-                if (ncores_busiest == ncores_local) {
-                    imbalance = busiest->sum_nr_running;
-                    lsub_positive(&imbalance, local->sum_nr_running);
-                    return imbalance;
-                }
-
-                /* Balance such that nr_running/ncores ratio are same on both groups */
-                imbalance = ncores_local * busiest->sum_nr_running;
-                lsub_positive(&imbalance, ncores_busiest * local->sum_nr_running);
-                /* Normalize imbalance and do rounding on normalization */
-                imbalance = 2 * imbalance + ncores_local + ncores_busiest;
-                imbalance /= ncores_local + ncores_busiest;
-
-                /* Take advantage of resource in an empty sched group */
-                if (imbalance <= 1 && local->sum_nr_running == 0
-                    && busiest->sum_nr_running > 1) {
-
-                    imbalance = 2;
-                }
-
-                return imbalance;
-            }
-        } else {
-            /* If there is no overload, we just want to even the number of
-             * idle cpus. */
-            env->migration_type = migrate_task;
-            env->imbalance = max_t(long, 0, (local->idle_cpus - busiest->idle_cpus));
-        }
-
-#ifdef CONFIG_NUMA
-        /* Consider allowing a small imbalance between NUMA groups */
-        if (env->sd->flags & SD_NUMA) {
-            env->imbalance = adjust_numa_imbalance(
-                env->imbalance,
-                local->sum_nr_running + 1,
-                env->sd->imb_numa_nr
-            );
-        }
-#endif
-
-        /* Number of tasks to move to restore balance */
-        env->imbalance >>= 1;
-
-        return;
-    }
-
-/* 3. Local is fully busy but has to take more load to relieve the busiest group */
-    if (local->group_type < group_overloaded) {
-        /* Local will become overloaded so the avg_load metrics are
-         * finally needed. */
-        local->avg_load = (local->group_load * SCHED_CAPACITY_SCALE) /
-                local->group_capacity;
-
-        /* If the local group is more loaded than the selected
-         * busiest group don't try to pull any tasks. */
-        if (local->avg_load >= busiest->avg_load) {
-            env->imbalance = 0;
-            return;
-        }
-
-        sds->avg_load = (sds->total_load * SCHED_CAPACITY_SCALE) /
-                sds->total_capacity;
-
-        /* If the local group is more loaded than the average system
-         * load, don't try to pull any tasks. */
-        if (local->avg_load >= sds->avg_load) {
-            env->imbalance = 0;
-            return;
-        }
-    }
-
-/* 4. migrate average load */
-    /* Both group are or will become overloaded and we're trying to get all
-     * the CPUs to the average_load, so we don't want to push ourselves
-     * above the average load, nor do we wish to reduce the max loaded CPU
-     * below the average load. At the same time, we also don't want to
-     * reduce the group load below the group capacity. Thus we look for
-     * the minimum possible imbalance. */
-    env->migration_type = migrate_load;
-    env->imbalance = min(
-        (busiest->avg_load - sds->avg_load) * busiest->group_capacity,
-        (sds->avg_load - local->avg_load) * local->group_capacity
-    ) / SCHED_CAPACITY_SCALE;
 }
 ```
 
@@ -8303,8 +8171,9 @@ update_sd_lb_stats(env, &sds) {
                     return cpu_util(
                         cpu, NULL/*p*/,
                         -1, /* @dst_cpu: CPU @p migrates to, -1 if @p moves from @cpu or @p == NULL */
-                        0 /* @boost 1 to enable boosting, otherwise 0 */
-                        ) {
+                        0 /* @boost: 1 to enable boosting, otherwise 0 */
+                        )
+                    {
                         struct cfs_rq *cfs_rq = &cpu_rq(cpu)->cfs;
                         unsigned long util = READ_ONCE(cfs_rq->avg.util_avg);
                         unsigned long runnable;
@@ -8314,10 +8183,13 @@ update_sd_lb_stats(env, &sds) {
                             util = max(util, runnable);
                         }
 
-                        if (p && task_cpu(p) == cpu && dst_cpu != cpu)
+                        /* move task from cur_cpu to dst_cpu */
+                        if (p && task_cpu(p) == cpu && dst_cpu != cpu) {
                             lsub_positive(&util, task_util(p));
-                        else if (p && task_cpu(p) != cpu && dst_cpu == cpu)
+                        } else if (p && task_cpu(p) != cpu && dst_cpu == cpu) {
+                        /* move task from dst_cpu to cur_cpu */
                             util += task_util(p);
+                        }
 
                         if (sched_feat(UTIL_EST)) {
                             unsigned long util_est;
@@ -8635,6 +8507,169 @@ has_spare:
 }
 ```
 
+#### calculate_imbalance
+
+```c
+calculate_imbalance(env, &sds) {
+    struct sg_lb_stats *local, *busiest;
+
+    local = &sds->local_stat;
+    busiest = &sds->busiest_stat;
+
+/* 1. handle busiest state:
+ * group_misfit_task,
+ * group_asym_packing,
+ * group_smt_balance,
+ * group_imbalanced */
+    if (busiest->group_type == group_misfit_task) {
+        if (env->sd->flags & SD_ASYM_CPUCAPACITY) {
+            /* Set imbalance to allow misfit tasks to be balanced. */
+            env->migration_type = migrate_misfit;
+            env->imbalance = 1;
+        } else {
+            /* Set load imbalance to allow moving task from cpu
+             * with reduced capacity. */
+            env->migration_type = migrate_load;
+            env->imbalance = busiest->group_misfit_task_load;
+        }
+        return;
+    }
+
+    if (busiest->group_type == group_asym_packing) {
+        /* In case of asym capacity, we will try to migrate all load to
+         * the preferred CPU. */
+        env->migration_type = migrate_task;
+        env->imbalance = busiest->sum_h_nr_running;
+        return;
+    }
+
+    if (busiest->group_type == group_smt_balance) {
+        /* Reduce number of tasks sharing CPU capacity */
+        env->migration_type = migrate_task;
+        env->imbalance = 1;
+        return;
+    }
+
+    if (busiest->group_type == group_imbalanced) {
+        env->migration_type = migrate_task;
+        env->imbalance = 1;
+        return;
+    }
+
+/* 2. local group_has_spare */
+    if (local->group_type == group_has_spare) {
+        if ((busiest->group_type > group_fully_busy) && !(env->sd->flags & SD_SHARE_LLC)) {
+            env->migration_type = migrate_util;
+            env->imbalance = max(local->group_capacity, local->group_util) -
+                    local->group_util;
+
+            if (env->idle != CPU_NOT_IDLE && env->imbalance == 0) {
+                env->migration_type = migrate_task;
+                env->imbalance = 1;
+            }
+
+            return;
+        }
+
+        if (busiest->group_weight == 1 || sds->prefer_sibling) {
+            /* When prefer sibling, evenly spread running tasks on groups. */
+            env->migration_type = migrate_task;
+            env->imbalance = sibling_imbalance(env, sds, busiest, local) {
+                int ncores_busiest, ncores_local;
+                long imbalance;
+
+                if (env->idle == CPU_NOT_IDLE || !busiest->sum_nr_running)
+                    return 0;
+
+                ncores_busiest = sds->busiest->cores;
+                ncores_local = sds->local->cores;
+
+                if (ncores_busiest == ncores_local) {
+                    imbalance = busiest->sum_nr_running;
+                    lsub_positive(&imbalance, local->sum_nr_running);
+                    return imbalance;
+                }
+
+                /* Balance such that nr_running/ncores ratio are same on both groups */
+                imbalance = ncores_local * busiest->sum_nr_running;
+                lsub_positive(&imbalance, ncores_busiest * local->sum_nr_running);
+                /* Normalize imbalance and do rounding on normalization */
+                imbalance = 2 * imbalance + ncores_local + ncores_busiest;
+                imbalance /= ncores_local + ncores_busiest;
+
+                /* Take advantage of resource in an empty sched group */
+                if (imbalance <= 1 && local->sum_nr_running == 0
+                    && busiest->sum_nr_running > 1) {
+
+                    imbalance = 2;
+                }
+
+                return imbalance;
+            }
+        } else {
+            /* If there is no overload, we just want to even the number of
+             * idle cpus. */
+            env->migration_type = migrate_task;
+            env->imbalance = max_t(long, 0, (local->idle_cpus - busiest->idle_cpus));
+        }
+
+#ifdef CONFIG_NUMA
+        /* Consider allowing a small imbalance between NUMA groups */
+        if (env->sd->flags & SD_NUMA) {
+            env->imbalance = adjust_numa_imbalance(
+                env->imbalance,
+                local->sum_nr_running + 1,
+                env->sd->imb_numa_nr
+            );
+        }
+#endif
+
+        /* Number of tasks to move to restore balance */
+        env->imbalance >>= 1;
+
+        return;
+    }
+
+/* 3. Local is fully busy but has to take more load to relieve the busiest group */
+    if (local->group_type < group_overloaded) {
+        /* Local will become overloaded so the avg_load metrics are
+         * finally needed. */
+        local->avg_load = (local->group_load * SCHED_CAPACITY_SCALE) /
+                local->group_capacity;
+
+        /* If the local group is more loaded than the selected
+         * busiest group don't try to pull any tasks. */
+        if (local->avg_load >= busiest->avg_load) {
+            env->imbalance = 0;
+            return;
+        }
+
+        sds->avg_load = (sds->total_load * SCHED_CAPACITY_SCALE) /
+                sds->total_capacity;
+
+        /* If the local group is more loaded than the average system
+         * load, don't try to pull any tasks. */
+        if (local->avg_load >= sds->avg_load) {
+            env->imbalance = 0;
+            return;
+        }
+    }
+
+/* 4. migrate average load */
+    /* Both group are or will become overloaded and we're trying to get all
+     * the CPUs to the average_load, so we don't want to push ourselves
+     * above the average load, nor do we wish to reduce the max loaded CPU
+     * below the average load. At the same time, we also don't want to
+     * reduce the group load below the group capacity. Thus we look for
+     * the minimum possible imbalance. */
+    env->migration_type = migrate_load;
+    env->imbalance = min(
+        (busiest->avg_load - sds->avg_load) * busiest->group_capacity,
+        (sds->avg_load - local->avg_load) * local->group_capacity
+    ) / SCHED_CAPACITY_SCALE;
+}
+```
+
 ### sched_balance_find_src_rq
 
 ```c
@@ -8789,29 +8824,54 @@ int detach_tasks(struct lb_env *env)
                         return;
 
                     WRITE_ONCE(cfs_rq->h_load_next, NULL);
-                    for_each_sched_entity(se) {
+                    for_each_sched_entity(se) { /* se = se->parent, walk up */
                         cfs_rq = cfs_rq_of(se);
                         WRITE_ONCE(cfs_rq->h_load_next, se);
                         if (cfs_rq->last_h_load_update == now)
                             break;
                     }
 
-                    if (!se) {
+                    if (!se) { /* reach the top se */
                         cfs_rq->h_load = cfs_rq_load_avg(cfs_rq) {
                             return cfs_rq->avg.load_avg;
                         }
                         cfs_rq->last_h_load_update = now;
                     }
+                    /* load_avg: actual usage/demand
+                     * h_load: hierarchical share
+                     * ratio: (child_load_avg/parent_load_avg) gives fair proportion
+                     * multiplying by parent_h_load maintains total system load */
 
-                    while ((se = READ_ONCE(cfs_rq->h_load_next)) != NULL) {
+                     /* why we need h_load in addition to load_avg:
+                      *
+                      * load_avg: Local load within a group
+                      * h_load: Global load considering entire hierarchy path
+                      *
+                      * Example:
+                      * Group A (weight: 1024)
+                      *     |- Subgroup B (weight: 512, 50%)
+                      *         |- Task C (weight: 256, 50% of B)
+                      *
+                      * With only load_avg:
+                      * - C's load_avg only shows 50% of B
+                      * - Loses information about B being 50% of A
+                      *
+                      * With h_load:
+                      * - C's h_load = A's load * 50% * 50%
+                      * - Preserves complete hierarchical proportion */
+                    while ((se = READ_ONCE(cfs_rq->h_load_next)) != NULL) { /* walk down*/
                         load = cfs_rq->h_load;
-                        load = div64_ul(load * se->avg.load_avg,
-                            cfs_rq_load_avg(cfs_rq) + 1);
-                        cfs_rq = group_cfs_rq(se);
+                        load = div64_ul(load * se->avg.load_avg, cfs_rq_load_avg(cfs_rq) + 1);
+                        cfs_rq = group_cfs_rq(se) {
+                            return grp->my_q;
+                        }
                         cfs_rq->h_load = load;
                         cfs_rq->last_h_load_update = now;
                     }
                 }
+
+                /* Since root se's cfs_rq->h_load = cfs_rq_load_avg(cfs_rq),
+                 * the formula can represents the load proportion of the whole hierarchy */
                 return div64_ul(p->se.avg.load_avg * cfs_rq->h_load,
                         cfs_rq_load_avg(cfs_rq) + 1);
             }
