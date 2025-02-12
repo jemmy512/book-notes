@@ -4081,6 +4081,8 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
 
 * [hellokitty2 - 调度器24 - CFS任务选核](https://www.cnblogs.com/hellokitty2/p/15750931.html)
 
+![](../images/kernel/proc-wake-up.svg)
+
 ```c
 /* wake up select
  * 1. Previous CPU Preference
@@ -4655,7 +4657,7 @@ sched_balance_find_dst_group_cpu(struct sched_group *group, struct task_struct *
     if (group->group_weight == 1)
         return cpumask_first(sched_group_span(group));
 
-    /* Traverse only the allowed CPUs*/
+    /* Traverse only the allowed CPUs */
     for_each_cpu_and(i, sched_group_span(group), p->cpus_ptr) {
         struct rq *rq = cpu_rq(i);
 
@@ -4714,13 +4716,13 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
         util_max = uclamp_eff_value(p, UCLAMP_MAX);
     }
 
-    /* 1. return target cpu if it's idle and capacity fit */
+    /* 1. check target cpu: idle and capacity fit */
     if ((available_idle_cpu(target) || sched_idle_cpu(target))
         && asym_fits_cpu(task_util, util_min, util_max, target)) {
         return target;
     }
 
-    /* 2. return prev cpu if it's idle, capacity fit and share cached */
+    /* 2. check prev cpu: idle, capacity fit, shared cache */
     if (prev != target && cpus_share_cache(prev, target)
         && (available_idle_cpu(prev) || sched_idle_cpu(prev))
         && asym_fits_cpu(task_util, util_min, util_max, prev))
@@ -4734,7 +4736,7 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
         return prev;
     }
 
-    /* 3. Check a recently used CPU as a potential idle candidate: */
+    /* 3. Check a recently used CPU: shared cache, idle, capacity fit */
     recent_used_cpu = p->recent_used_cpu;
     p->recent_used_cpu = prev;
     if (recent_used_cpu != prev
@@ -4767,11 +4769,14 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
      * prev is shared cache with target */
     if (sched_smt_active()) {
         has_idle_core = test_idle_cores(target);
-        if (!has_idle_core && cpus_share_cache(prev, target)) {
-            i = select_idle_smt(p, prev/*target*/) {
+        if (!has_idle_core && cpus_share_cache(prev, sd, target)) {
+            i = select_idle_smt(p, sd, prev/*target*/) {
                 int cpu;
                 for_each_cpu_and(cpu, cpu_smt_mask(target), p->cpus_ptr) {
                     if (cpu == target)
+                        continue;
+                    /* isolated cpu is removed from sd */
+                    if (!cpumask_test_cpu(cpu, sched_domain_span(sd)))
                         continue;
                     if (available_idle_cpu(cpu) || sched_idle_cpu(cpu))
                         return cpu;
@@ -5482,12 +5487,6 @@ struct sched_domain_topology_level {
     struct sd_data          data;
 };
 
-/* Domain Levels:
- * CPU Core (Level 0): Individual CPU cores
- * SMT (Level 1): Simultaneous Multi-Threading siblings
- * MC (Level 2): Multi-core/physical package
- * LLC/NUMA (Level 3): Last Level Cache/NUMA nodes */
-
 #define SD_SIBLING_FLAGS (SD_SHARE_CPUCAPACITY | \
                          SD_SHARE_PKG_RESOURCES | \
                          SD_PREFER_SIBLING | \
@@ -5528,6 +5527,15 @@ static struct sched_domain_topology_level *sched_domain_topology =
     { cpu_cpu_mask, SD_INIT_NAME(PKG) },
     { NULL, },
 };
+
+DEFINE_PER_CPU(struct sched_domain __rcu *, sd_llc);
+DEFINE_PER_CPU(int, sd_llc_size); /* nr of cpus */
+DEFINE_PER_CPU(int, sd_llc_id); /* id of 1st cpu */
+DEFINE_PER_CPU(int, sd_share_id);
+DEFINE_PER_CPU(struct sched_domain_shared __rcu *, sd_llc_shared);
+DEFINE_PER_CPU(struct sched_domain __rcu *, sd_numa);
+DEFINE_PER_CPU(struct sched_domain __rcu *, sd_asym_packing);
+DEFINE_PER_CPU(struct sched_domain __rcu *, sd_asym_cpucapacity);
 
 struct sd_data {
     struct sched_domain *__percpu           *sd;
@@ -6226,6 +6234,28 @@ get_cpu_for_node(struct device_node *node)
 
 ![](../images/kernel/proc-sched-pelt-segement.png)
 
+```c
+/* Accumulate the three separate parts of the sum; d1 the remainder
+ * of the last (incomplete) period, d2 the span of full periods and d3
+ * the remainder of the (incomplete) current period.
+ *
+ *           d1          d2           d3
+ *           ^           ^            ^
+ *           |           |            |
+ *         |<->|<----------------->|<--->|
+ * ... |---x---|------| ... |------|-----x (now)
+ *
+ *                           p-1
+ * u' = (u + d1) y^p + 1024 \Sum y^n + d3 y^0
+ *                           n=1
+ *
+ *    = u y^p                               (Step 1)
+ *
+ *                       p-1
+ *      + d1 y^p + 1024 \Sum y^n + d3 y^0   (Step 2)
+ *                       n=1                */
+```
+
 ![](../images/kernel/proc-sched-pelt-update_load_avg.svg)
 
 ![](../images/kernel/proc-sched-pelt-calc.png)
@@ -6244,49 +6274,6 @@ get_cpu_for_node(struct device_node *node)
 * **runnable_avg**: This metric is similar to load_avg but it doesn't consider the task's weight. When the task is runnable or running, its weight is considered 1, and 0 otherwise. This metric provides a more direct measure of **how many tasks are runnable**, regardless of their priority.
 
 * **util_avg**: This metric only considers the task's weight when it is actually running on a CPU. If the task is runnable but not currently running, or if it is not runnable at all, its weight is considered 0. This metric represents the actual **CPU utilization** caused by the task.
-
----
-
-To explain PELT (Per-Entity Load Tracking) effectively in an interview, you should focus on its key concepts, importance, and how it works. Here's a structured approach:
-
-1. Definition:
-   "PELT is a mechanism in the Linux kernel that tracks and estimates the load and CPU utilization of individual tasks and CPUs over time."
-
-2. Purpose:
-   "It's used to make informed decisions about task scheduling, load balancing, and CPU frequency scaling."
-
-3. Key Metrics:
-   "PELT tracks three main metrics:
-   - load_avg: Overall system load
-   - runnable_avg: Time spent runnable (running or waiting to run)
-   - util_avg: Actual CPU utilization"
-
-4. Core Concept:
-   "PELT uses an exponentially weighted moving average (EWMA) to calculate these metrics, giving more weight to recent activity while still considering historical data."
-
-5. How it Works:
-   - "PELT updates its metrics at regular intervals (usually every scheduler tick) and on specific events like task switches."
-   - "It applies a decay function to gradually reduce the impact of past events."
-   - "The calculations use fixed-point arithmetic for efficiency."
-
-6. Importance:
-   "PELT is crucial for:
-   - Effective load balancing across CPUs
-   - Intelligent task placement in heterogeneous systems (like big.LITTLE architectures)
-   - Efficient CPU frequency scaling
-   - Accurate reporting of system load"
-
-7. Advantages:
-   "PELT provides a smooth, continuous representation of load and utilization, adapting quickly to changes while maintaining historical context."
-
-8. Real-world Application:
-   "For example, in a multi-core system, PELT helps decide which CPU should handle a new task based on the current load distribution."
-
-9. Challenges:
-   "Tuning PELT involves balancing responsiveness to changes with stability in measurements, and managing computational overhead."
-
-10. Recent Developments (if applicable):
-    "Recent Linux kernel versions have introduced refinements to PELT, such as improved handling of idle CPUs."
 
 ---
 
@@ -6358,7 +6345,9 @@ struct sched_avg {
     u64                 last_update_time;
 
     /* running + waiting + blocked time, scaled to weight
-     * load_avg = runnable% * scale_load_down(load) */
+     * load_avg = runnable% * scale_load_down(load)
+     * For tsk se, it's time contribution
+     * For task group, it's time contribution * load */
     u64                 load_sum;
     unsigned long       load_avg;
 
@@ -6600,6 +6589,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     u64 now = cfs_rq_clock_pelt(cfs_rq);
     int decayed;
 
+/* 1. udpate se load avg */
     /* a new forked or migrated task's last_update_time is 0 */
     if (se->avg.last_update_time && !(flags & SKIP_AGE_LOAD)) {
         __update_load_avg_se(now, cfs_rq, se) {
@@ -6618,146 +6608,16 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
             }
         }
     }
-
+/* 2. update cfs_rq load avg */
     /* decayed indicates wheather load has been updated and freq needs to be updated */
     decayed = update_cfs_rq_load_avg(now, cfs_rq);
+
+/* 3. update tg cfs util-load-runnable */
+    /* propogate form child gcfs_rq -> child se -> parent cfs_rq */
     decayed |= propagate_entity_load_avg(se) {
-        struct cfs_rq *cfs_rq, *gcfs_rq;
 
-        if (entity_is_task(se))
-            return 0;
-
-        gcfs_rq = group_cfs_rq(se); /* 1. rq that se owns */
-        if (!gcfs_rq->propagate)
-            return 0;
-
-        gcfs_rq->propagate = 0;
-
-        cfs_rq = cfs_rq_of(se);     /* 2. rq that se belongs to */
-
-        /* propagate to parent */
-        add_tg_cfs_propagate(cfs_rq, gcfs_rq->prop_runnable_sum) {
-            cfs_rq->propagate = 1;
-            cfs_rq->prop_runnable_sum += runnable_sum;
-        }
-
-        /* propagate util from gcfs_rq to gse by util_avg */
-        update_tg_cfs_util(cfs_rq, se, gcfs_rq) {
-            /* gcfs_rq->avg.util_avg only updated when gcfs_rq->curr != NULL,
-             * which means the grp has running tasks
-             *
-             * se->avg.util_avg only updated when cfs_rq->curr == se,
-             * which means cfs_rq picks se to run */
-            long delta_sum, delta_avg = gcfs_rq->avg.util_avg - se->avg.util_avg;
-            u32 new_sum, divider;
-
-            /* Nothing to update */
-            if (!delta_avg)
-                return;
-
-            divider = get_pelt_divider(&cfs_rq->avg);
-
-            /* Set new sched_entity's utilization */
-            se->avg.util_avg = gcfs_rq->avg.util_avg;
-            new_sum = se->avg.util_avg * divider;
-            delta_sum = (long)new_sum - (long)se->avg.util_sum;
-            se->avg.util_sum = new_sum;
-
-            /* Update parent cfs_rq utilization */
-            add_positive(&cfs_rq->avg.util_avg, delta_avg);
-            add_positive(&cfs_rq->avg.util_sum, delta_sum);
-
-            /* See update_cfs_rq_load_avg() */
-            cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
-                            cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
-        }
-
-        /* propagate runnable from gcfs_rq to gse by runnable_avg */
-        update_tg_cfs_runnable(cfs_rq, se, gcfs_rq) {
-            long delta_sum, delta_avg = gcfs_rq->avg.runnable_avg - se->avg.runnable_avg;
-            u32 new_sum, divider;
-
-            /* Nothing to update */
-            if (!delta_avg)
-                return;
-
-            divider = get_pelt_divider(&cfs_rq->avg);
-
-            /* Set new sched_entity's runnable */
-            se->avg.runnable_avg = gcfs_rq->avg.runnable_avg;
-            new_sum = se->avg.runnable_avg * divider;
-            delta_sum = (long)new_sum - (long)se->avg.runnable_sum;
-            se->avg.runnable_sum = new_sum;
-
-            /* Update parent cfs_rq runnable */
-            add_positive(&cfs_rq->avg.runnable_avg, delta_avg);
-            add_positive(&cfs_rq->avg.runnable_sum, delta_sum);
-            /* See update_cfs_rq_load_avg() */
-            cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
-                                cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
-        }
-
-        /* propagate load from gse to gcfs_rq by load_sum */
-        update_tg_cfs_load(cfs_rq, se, gcfs_rq) {
-            long delta_avg, running_sum, runnable_sum = gcfs_rq->prop_runnable_sum;
-            unsigned long load_avg;
-            u64 load_sum = 0;
-            s64 delta_sum;
-            u32 divider;
-
-            if (!runnable_sum)
-                return;
-
-            gcfs_rq->prop_runnable_sum = 0;
-
-            divider = get_pelt_divider(&cfs_rq->avg);
-
-            if (runnable_sum >= 0) {    /* attach task */
-                /* Add runnable; clip at LOAD_AVG_MAX. Reflects that until
-                 * the CPU is saturated running == runnable. */
-                runnable_sum += se->avg.load_sum;
-                runnable_sum = min_t(long, runnable_sum, divider);
-            } else {                    /* detach task */
-                /* Estimate the new unweighted runnable_sum of the gcfs_rq by
-                 * assuming all tasks are equally runnable. */
-                if (scale_load_down(gcfs_rq->load.weight)) {
-                    load_sum = div_u64(gcfs_rq->avg.load_sum,
-                        scale_load_down(gcfs_rq->load.weight));
-                }
-
-                /* But make sure to not inflate se's runnable */
-                runnable_sum = min(se->avg.load_sum, load_sum);
-            }
-
-            /* runnable_sum can't be lower than running_sum
-             * Rescale running sum to be in the same range as runnable sum
-             * running_sum is in [0 : LOAD_AVG_MAX <<  SCHED_CAPACITY_SHIFT]
-             * runnable_sum is in [0 : LOAD_AVG_MAX] */
-            running_sum = se->avg.util_sum >> SCHED_CAPACITY_SHIFT;
-            runnable_sum = max(runnable_sum, running_sum);
-
-            load_sum = se_weight(se) * runnable_sum;
-            load_avg = div_u64(load_sum, divider);
-
-            delta_avg = load_avg - se->avg.load_avg;
-            if (!delta_avg)
-                return;
-
-            delta_sum = load_sum - (s64)se_weight(se) * se->avg.load_sum;
-
-            se->avg.load_sum = runnable_sum;
-            se->avg.load_avg = load_avg;
-            add_positive(&cfs_rq->avg.load_avg, delta_avg);
-            add_positive(&cfs_rq->avg.load_sum, delta_sum);
-            /* See update_cfs_rq_load_avg() */
-            cfs_rq->avg.load_sum = max_t(u32, cfs_rq->avg.load_sum,
-                            cfs_rq->avg.load_avg * PELT_MIN_DIVIDER);
-        }
-
-        return 1;
-    }
-
-    /* new forked or migrated task */
+/* 4. attach/detach entity load avg */
+    /* last_update_time == 0: new forked or migrated task */
     if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
         /* attach this entity to its cfs_rq load avg
          *
@@ -6793,6 +6653,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
             cfs_rq_util_change(cfs_rq, 0);
         }
 
+/* 5. update tg load avg */
         update_tg_load_avg(cfs_rq) {
             long delta;
             u64 now;
@@ -6917,6 +6778,148 @@ update_cfs_rq_load_avg(u64 now, struct cfs_rq *cfs_rq)
 }
 ```
 
+### propagate_entity_load_avg
+
+```c
+decayed |= propagate_entity_load_avg(se) {
+    struct cfs_rq *cfs_rq, *gcfs_rq;
+
+    if (entity_is_task(se))
+        return 0;
+
+    gcfs_rq = group_cfs_rq(se); /* 1. rq that se owns */
+    if (!gcfs_rq->propagate)
+        return 0;
+
+    gcfs_rq->propagate = 0;
+
+    cfs_rq = cfs_rq_of(se);     /* 2. rq that se belongs to */
+
+    /* 3.1 propagate to parent cfs_rq */
+    add_tg_cfs_propagate(cfs_rq, gcfs_rq->prop_runnable_sum) {
+        cfs_rq->propagate = 1;
+        cfs_rq->prop_runnable_sum += runnable_sum;
+    }
+
+    /* 3.2 propagate util from child gcfs_rq -> child se -> parent cfs_rq */
+    update_tg_cfs_util(cfs_rq, se, gcfs_rq) {
+        /* gcfs_rq->avg.util_avg only updated when gcfs_rq->curr != NULL,
+         * which means the grp has running tasks
+         *
+         * se->avg.util_avg only updated when cfs_rq->curr == se,
+         * which means cfs_rq picks se to run */
+        long delta_sum, delta_avg = gcfs_rq->avg.util_avg - se->avg.util_avg;
+        u32 new_sum, divider;
+
+        /* Nothing to update */
+        if (!delta_avg)
+            return;
+
+        divider = get_pelt_divider(&cfs_rq->avg);
+
+        /* Set new sched_entity's utilization */
+        se->avg.util_avg = gcfs_rq->avg.util_avg;
+        new_sum = se->avg.util_avg * divider;
+        delta_sum = (long)new_sum - (long)se->avg.util_sum;
+        se->avg.util_sum = new_sum;
+
+        /* Update parent cfs_rq utilization */
+        add_positive(&cfs_rq->avg.util_avg, delta_avg);
+        add_positive(&cfs_rq->avg.util_sum, delta_sum);
+
+        /* See update_cfs_rq_load_avg() */
+        cfs_rq->avg.util_sum = max_t(u32, cfs_rq->avg.util_sum,
+                        cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
+    }
+
+    /* 3.3 propagate runnable from child gcfs_rq -> child se -> parent cfs_rq */
+    update_tg_cfs_runnable(cfs_rq, se, gcfs_rq) {
+        long delta_sum, delta_avg = gcfs_rq->avg.runnable_avg - se->avg.runnable_avg;
+        u32 new_sum, divider;
+
+        /* Nothing to update */
+        if (!delta_avg)
+            return;
+
+        divider = get_pelt_divider(&cfs_rq->avg);
+
+        /* Set new sched_entity's runnable */
+        se->avg.runnable_avg = gcfs_rq->avg.runnable_avg;
+        new_sum = se->avg.runnable_avg * divider;
+        delta_sum = (long)new_sum - (long)se->avg.runnable_sum;
+        se->avg.runnable_sum = new_sum;
+
+        /* Update parent cfs_rq runnable */
+        add_positive(&cfs_rq->avg.runnable_avg, delta_avg);
+        add_positive(&cfs_rq->avg.runnable_sum, delta_sum);
+        /* See update_cfs_rq_load_avg() */
+        cfs_rq->avg.runnable_sum = max_t(u32, cfs_rq->avg.runnable_sum,
+                            cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
+    }
+
+    /* 3.4 propagate load from child gcfs_rq -> child se -> parent cfs_rq */
+    update_tg_cfs_load(cfs_rq, se, gcfs_rq) {
+        long delta_avg, running_sum, runnable_sum = gcfs_rq->prop_runnable_sum;
+        unsigned long load_avg;
+        u64 load_sum = 0;
+        s64 delta_sum;
+        u32 divider;
+
+        if (!runnable_sum)
+            return;
+
+        gcfs_rq->prop_runnable_sum = 0;
+
+        divider = get_pelt_divider(&cfs_rq->avg);
+
+        if (runnable_sum >= 0) {    /* attach task */
+            /* Add runnable; clip at LOAD_AVG_MAX. Reflects that until
+             * the CPU is saturated running == runnable. */
+            runnable_sum += se->avg.load_sum;
+            runnable_sum = min_t(long, runnable_sum, divider);
+        } else {                    /* detach task */
+            /* Estimate the new unweighted runnable_sum of the gcfs_rq by
+             * assuming all tasks are equally runnable. */
+            if (scale_load_down(gcfs_rq->load.weight)) {
+                /* gcfs_rq avg.load_sum Accumulates Weighted Contributions Over Time
+                 * while tsk se does not */
+                load_sum = div_u64(gcfs_rq->avg.load_sum,
+                    scale_load_down(gcfs_rq->load.weight));
+            }
+
+            /* But make sure to not inflate se's runnable */
+            runnable_sum = min(se->avg.load_sum, load_sum);
+        }
+
+        /* runnable_sum can't be lower than running_sum
+         * Rescale running sum to be in the same range as runnable sum
+         * running_sum is in  [0 : LOAD_AVG_MAX <<  SCHED_CAPACITY_SHIFT]
+         * runnable_sum is in [0 : LOAD_AVG_MAX] */
+        running_sum = se->avg.util_sum >> SCHED_CAPACITY_SHIFT;
+        runnable_sum = max(runnable_sum, running_sum);
+
+        load_sum = se_weight(se) * runnable_sum;
+        load_avg = div_u64(load_sum, divider);
+
+        delta_avg = load_avg - se->avg.load_avg;
+        if (!delta_avg)
+            return;
+
+        delta_sum = load_sum - (s64)se_weight(se) * se->avg.load_sum;
+
+        se->avg.load_sum = runnable_sum;
+        se->avg.load_avg = load_avg;
+        add_positive(&cfs_rq->avg.load_avg, delta_avg);
+        add_positive(&cfs_rq->avg.load_sum, delta_sum);
+        /* See update_cfs_rq_load_avg() */
+        cfs_rq->avg.load_sum = max_t(u32, cfs_rq->avg.load_sum,
+                        cfs_rq->avg.load_avg * PELT_MIN_DIVIDER);
+    }
+
+    return 1;
+}
+```
+
 ## rq_clock
 
 ```c
@@ -6993,13 +6996,13 @@ update_rq_clock(rq) {
 
 # load_balance
 
-![](../images/kernel/proc-sched-load_balance.svg)
-
 * [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
 
-![](../images/kernel/proc-sched_domain-arch.svg)
+![](../images/kernel/proc-sched-load_balance.svg)
 
 ---
+
+![](../images/kernel/proc-sched_domain-arch.svg)
 
 Load balance trigger time:
 1. From CPU perspective:
@@ -8281,9 +8284,11 @@ update_sd_lb_stats(env, &sds) {
                     if (sgs->sum_nr_running <= sgs->group_weight)
                         return false;
 
+                    /* group_uitl > (group_capabity * 100 / imbalance_pct) */
                     if ((sgs->group_capacity * 100) < (sgs->group_util * imbalance_pct))
                         return true;
 
+                    /* group_runnable > (group_capabity * imbalance / 100) */
                     if ((sgs->group_capacity * imbalance_pct) < (sgs->group_runnable * 100))
                         return true;
 
@@ -8329,7 +8334,7 @@ update_sd_lb_stats(env, &sds) {
             /* Computing avg_load makes sense only when group is overloaded */
             if (sgs->group_type == group_overloaded)
                 sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE)
-                    /  sgs->group_capacity;
+                    / sgs->group_capacity;
         }
 
         if (local_group)
@@ -9075,7 +9080,7 @@ ret = can_migrate_task(p, env) {
 
 # wake_up
 
-<img src='../images/kernel/proc-wake-up.svg' style='max-height:850px'/>
+![](../images/kernel/proc-wake-up.svg)
 
 ```c
 #define wake_up(x)                        __wake_up(x, TASK_NORMAL, 1, NULL)
@@ -9164,6 +9169,8 @@ static int __wake_up_common(
 ```
 
 # wait_woken
+
+![](../images/kernel/proc-wake-up.svg)
 
 ```c
 long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
@@ -9266,6 +9273,9 @@ struct wait_queue_entry {
 ```
 
 # try_to_wake_up
+
+![](../images/kernel/proc-wake-up.svg)
+
 ```c
 /* try_to_wake_up -> ttwu_queue -> ttwu_do_activate -> ttwu_do_wakeup
  * -> wakeup_preempt -> resched_curr */
