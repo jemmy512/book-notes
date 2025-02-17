@@ -975,6 +975,18 @@ ZONE_HIGHMEM | 896 MiB - End
 
 ## zone
 
+| Migration Type | Description | Usage Example |
+|---|---|---|
+| `MIGRATE_UNMOVABLE`| Pages that cannot be relocated. | Kernel data structures. |
+| `MIGRATE_MOVABLE`  | Pages that can be moved. | User-space memory, file caches. |
+| `MIGRATE_RECLAIMABLE`| Pages that can be reclaimed under pressure.| Caches, temporary data structures.|
+| `MIGRATE_PCPTYPES` | Number of PCP list migration types. | Used internally by the kernel. |
+| `MIGRATE_HIGHATOMIC`| Reserved for high-order atomic allocations.| High-order kernel allocations. |
+| `MIGRATE_CMA` | Reserved for contiguous memory allocations.| DMA for multimedia devices. |
+| `MIGRATE_ISOLATE` | Reserved and isolated memory. | Memory hotplug or offlining. |
+| `MIGRATE_TYPES` | Total number of migration types. | Used for array sizing. |
+
+
 ```c
 struct zone {
     struct pglist_data  *zone_pgdat;
