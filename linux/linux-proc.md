@@ -259,8 +259,6 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
             * [[PATCH 00/24] Complete EEVDF](https://lore.kernel.org/all/20240727102732.960974693@infradead.org/)
             * [Completing the EEVDF scheduler](https://lwn.net/Articles/969062/) `Delayed Dequeue` ⊙ `Wakeup Preemption`
 
-            ![](../images/kernel/proc-sched-cfs-eevdf.svg)
-
         * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
         * [Linux 核心設計: Scheduler(5): EEVDF Scheduler 1](https://hackmd.io/@RinHizakura/SyG4t5u1a) ⊙ [2](https://hackmd.io/@RinHizakura/HkyEtNkjA)
     * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
@@ -779,11 +777,11 @@ struct user_pt_regs {
 ```c
 /* arch/arm64/kernel/sys.c */
 #undef __SYSCALL
-#define __SYSCALL(nr, sym)	asmlinkage long __arm64_##sym(const struct pt_regs *);
+#define __SYSCALL(nr, sym)  asmlinkage long __arm64_##sym(const struct pt_regs *);
 #include <asm/unistd.h>
 
 #undef __SYSCALL
-#define __SYSCALL(nr, sym)	[nr] = __arm64_##sym,
+#define __SYSCALL(nr, sym)  [nr] = __arm64_##sym,
 
 const syscall_fn_t sys_call_table[__NR_syscalls] = {
     [0 ... __NR_syscalls - 1] = __arm64_sys_ni_syscall,
@@ -798,10 +796,10 @@ const syscall_fn_t sys_call_table[__NR_syscalls] = {
 #define SYSCALL_DEFINE5(name, ...) SYSCALL_DEFINEx(5, _##name, __VA_ARGS__)
 #define SYSCALL_DEFINE6(name, ...) SYSCALL_DEFINEx(6, _##name, __VA_ARGS__)
 
-#define SYSCALL_DEFINE_MAXARGS	6
+#define SYSCALL_DEFINE_MAXARGS  6
 
-#define SYSCALL_DEFINEx(x, sname, ...)				\
-    SYSCALL_METADATA(sname, x, __VA_ARGS__)			\
+#define SYSCALL_DEFINEx(x, sname, ...)  \
+    SYSCALL_METADATA(sname, x, __VA_ARGS__) \
     __SYSCALL_DEFINEx(x, sname, __VA_ARGS__)
 
 
@@ -1019,7 +1017,7 @@ entry_SYSCALL_64()
 
 # process
 
-![](../images/kernel/proc-process-management.svg)
+![](../images/kernel/proc-management.svg)
 
 <img src='../images/kernel/proc-compile.png' style='max-height:850px'/>
 
@@ -1335,11 +1333,11 @@ Reordering preempt_disable and raw_spin_lock_irq(&rq->lock) cloud leads to sever
 
     If the task is preempted between acquiring the spinlock and calling preempt_disable(), another task could potentially try to acquire the same spinlock, leading to a deadlock or race condition.
 
-2.	Interrupt Handling:
+2. Interrupt Handling:
 
     Interrupts would be disabled by the raw_spin_lock_irq() call, but if the task is preempted before preempt_disable() is called, an interrupt handler might run on another CPU and interact with the same critical section, leading to inconsistent states.
 
-3.	Kernel Stability:
+3. Kernel Stability:
 
     The specific order ensures that once preemption is disabled, the task remains in control until it safely acquires the spinlock and disables interrupts. This maintains the atomicity of the critical section and ensures kernel stability.
 
@@ -1401,7 +1399,7 @@ __schedule(sched_mode) { /* kernel/sched/core.c */
         hrtick_clear(rq);
 
     local_irq_disable();
-	rcu_note_context_switch(preempt);
+    rcu_note_context_switch(preempt);
 
     /* Promote REQ to ACT */
     rq->clock_update_flags <<= 1;
@@ -2200,7 +2198,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                     int *currpri = &cp->cpu_to_pri[cpu];
                                     int oldpri = *currpri;
 
-                                  	/* 1. Set which CPU runs at the specified priority */
+                                    /* 1. Set which CPU runs at the specified priority */
                                     newpri = convert_prio(newpri);
                                     if (newpri == oldpri) {
                                         return;
@@ -2217,7 +2215,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                         cpumask_clear_cpu(cpu, vec->mask);
                                     }
 
-                                  	/* 2. Set the priority level the CPU runs at */
+                                    /* 2. Set the priority level the CPU runs at */
                                     *currpri = newpri;
                                 }
                             }
@@ -2349,6 +2347,8 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                 }
 
                                 dec_rt_prio_smp(rt_rq, prio, prev_prio) {
+                                    /* If no rt tasks, set highest_prio.curr = MAX_RT_PRIO-1,
+                                     * which has 0 idx in cpupri.pri_to_cpu[] means cfs cpu */
                                     if (rq->online && rt_rq->highest_prio.curr != prev_prio) {
                                         cpupri_set(&rq->rd->cpupri, rq->cpu, rt_rq->highest_prio.curr);
                                     }
@@ -2576,6 +2576,9 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                     }
                     int idx, cpu;
 
+                    /* If no rt tasks, set highest_prio.curr = MAX_RT_PRIO-1
+                     * MAX_RT_PRIO-1 has 0 idx in cpupri.pri_to_cpu[] means cfs cpu */
+
                     /* 1.1 find lowest cpus from vec[0, idx] */
                     for (idx = 0; idx < task_pri; idx++) {
                         /* 1.1.1 mask p and vec */
@@ -2748,6 +2751,8 @@ void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
 ```
 
 ## task_tick_rt
+
+![](../images/kernel/proc-sched-se-info.svg)
 
 ```c
 task_tick_rt() {
@@ -3062,7 +3067,7 @@ void pull_rt_task(struct rq *this_rq) {
         }
 
         if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
-          	/* dont pull tasks which prio is higher than src_rq curr prio */
+            /* dont pull tasks which prio is higher than src_rq curr prio */
             if (p->prio < src_rq->curr->prio)
                 goto skip;
 
@@ -3242,8 +3247,8 @@ retry:
 
         task = pick_next_pushable_task(rq);
         if (task == next_task) {
-          	/* we failed to find a run-queue to push next_task to.
-          	 * Do not retry in this case, since
+            /* we failed to find a run-queue to push next_task to.
+             * Do not retry in this case, since
              * other CPUs will pull from us when ready. */
             goto out;
         }
@@ -3258,7 +3263,7 @@ retry:
     }
 
     deactivate_task(rq, next_task, 0) {
-        p->on_rq = (flags & DEQUEUE_SLEEP) ? 0 : TASK_ON_RQ_MIGRATING;
+        WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
         dequeue_task(rq, p, flags) {
             if (sched_core_enabled(rq)) {
                 sched_core_dequeue(rq, p, flags);
@@ -3341,6 +3346,8 @@ out:
 
 CFS focuses on distributing CPU time fairly in a weighted manner, but does not handle latency requirements well. The nice value in CFS can only give tasks more CPU time, but it cannot express the task's expectation of the delay in obtaining CPU resources. Even though realtime class (rt_sched_class) can be selected for latency-sensitive tasks in CFS, the latter is a privileged option, which means that excessive use of it may adversely affect other parts of the system.
 
+![](../images/kernel/proc-sched-se-info.svg)
+
 ```c
 struct sched_entity {
     struct load_weight      load;
@@ -3406,9 +3413,6 @@ struct cfs_rq {
 #ifdef CONFIG_SMP
     /* CFS load tracking */
     struct sched_avg        avg;
-#ifndef CONFIG_64BIT
-    u64                     last_update_time_copy;
-#endif
 
     struct {
         raw_spinlock_t      lock ____cacheline_aligned;
@@ -3928,15 +3932,15 @@ static bool dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
  *  1 - dequeue complete */
 bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
     bool was_sched_idle = sched_idle_rq(rq);
-	int rq_h_nr_queued = rq->cfs.h_nr_queued;
-	bool task_sleep = flags & DEQUEUE_SLEEP;
-	bool task_delayed = flags & DEQUEUE_DELAYED;
-	struct task_struct *p = NULL;
-	int h_nr_idle = 0;
-	int h_nr_queued = 0;
-	int h_nr_runnable = 0;
-	struct cfs_rq *cfs_rq;
-	u64 slice = 0;
+    int rq_h_nr_queued = rq->cfs.h_nr_queued;
+    bool task_sleep = flags & DEQUEUE_SLEEP;
+    bool task_delayed = flags & DEQUEUE_DELAYED;
+    struct task_struct *p = NULL;
+    int h_nr_idle = 0;
+    int h_nr_queued = 0;
+    int h_nr_runnable = 0;
+    struct cfs_rq *cfs_rq;
+    u64 slice = 0;
 
     if (entity_is_task(se)) {
         p = task_of(se);
@@ -4014,9 +4018,9 @@ bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
     sub_nr_running(rq, 1);
 
     if (rq_h_nr_queued && !rq->cfs.h_nr_queued)
-				dl_server_stop(&rq->fair_server);
+                dl_server_stop(&rq->fair_server);
 
-	/* balance early to pull high priority tasks */
+    /* balance early to pull high priority tasks */
     if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
         rq->next_balance = jiffies;
 
@@ -4774,7 +4778,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
         new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag)
             --->
     } else if (wake_flags & WF_TTWU) {
-/* 4. Fast path, select idle sibling CPU if the domain has SD_WAKE_AFFINE set. */
+/* 4. Fast path, select idle sibling CPU from sd_llc if the domain has SD_WAKE_AFFINE set. */
         new_cpu = select_idle_sibling(p, prev_cpu, new_cpu)
             --->
     }
@@ -4809,7 +4813,7 @@ new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag) {
         }
     }
 
-  	/* search sd downwards
+      /* search sd downwards
      * sd the highest sd with sd_flag */
     while (sd) {
         struct sched_group *group;
@@ -4839,13 +4843,13 @@ new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag) {
         weight = sd->span_weight;
         sd = NULL;
         for_each_domain(cpu, tmp) {
-          	/* Ensures we don't go beyond the original domain's scope
+            /* Ensures we don't go beyond the original domain's scope
              * span_weight represents number of CPUs in domain
              * Larger span_weight means higher/broader domain level */
             if (weight <= tmp->span_weight)
                 break;
 
-          	/* Checks if domain supports required operation (sd_flag)
+            /* Checks if domain supports required operation (sd_flag)
              * Updates sd if domain is suitable
              * Keeps track of last valid domain */
             if (tmp->flags & sd_flag)
@@ -5349,7 +5353,7 @@ void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_fl
     if (unlikely(throttled_hierarchy(cfs_rq_of(pse))))
         return;
 
-	if (sched_feat(NEXT_BUDDY) && !(wake_flags & WF_FORK) && !pse->sched_delayed) {
+    if (sched_feat(NEXT_BUDDY) && !(wake_flags & WF_FORK) && !pse->sched_delayed) {
         set_next_buddy(pse);
     }
 
@@ -5357,7 +5361,7 @@ void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_fl
         return;
 
     if (!sched_feat(WAKEUP_PREEMPTION))
-		return;
+        return;
 
     find_matching_se(&se, &pse) {
         int se_depth, pse_depth;
@@ -5388,7 +5392,7 @@ void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_fl
     }
     WARN_ON_ONCE(!pse);
 
-/* 2. cmp idle stat of matching se */
+/* 1. cmp idle stat of matching se */
     cse_is_idle = se_is_idle(se);
     pse_is_idle = se_is_idle(pse);
 
@@ -5425,9 +5429,9 @@ void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_fl
         return false;
     }
     if (ret && se->vlag == se->deadline)
-		se->vlag = se->deadline + 1;
+        se->vlag = se->deadline + 1;
 
-/* 3. pick_eevdf */
+/* 2. pick_eevdf */
     /* XXX pick_eevdf(cfs_rq) != se ? */
     if (pick_eevdf(cfs_rq) == pse) {
         goto preempt;
@@ -5443,7 +5447,8 @@ preempt:
 ## task_tick_fair
 
 ![](../images/kernel/proc-sched-cfs-task_tick.png)
-![](../images/kernel/proc-sched-cfs-update_curr.png)
+
+![](../images/kernel/proc-sched-se-info.svg)
 
 ```c
 task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
@@ -5910,6 +5915,15 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 ---
 
+|  | SMT Doamin | CLS Domain | MC Domain | PGK Domain |
+| --- | --- | --- | --- | --- |
+| **SD_BALANCE_FORK** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **SD_BALANCE_EXEC** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **SD_BALANCE_WAKE** |:white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **SD_WAKE_AFFINE**  | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **SD_BALANCE_NEWIDLE** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **SD_SHARE_CPUCAPACITY** | :white_check_mark: | | | |
+
 Consider the following system:
 - **2 sockets** (packages).
 - Each socket has **4 cores**.
@@ -5997,36 +6011,12 @@ struct sched_domain_topology_level {
     sched_domain_mask_f     mask;
     sched_domain_flags_f    sd_flags;
     int                     flags;
-    int                  		numa_level;
+    int                     numa_level;
     struct sd_data          data;
 };
 
-#define SD_SIBLING_FLAGS (SD_SHARE_CPUCAPACITY | \
-                         SD_SHARE_PKG_RESOURCES | \
-                         SD_PREFER_SIBLING | \
-                         SD_OVERLAP)
-
-#define SD_MC_FLAGS (SD_LOAD_BALANCE | \
-                    SD_BALANCE_NEWIDLE | \
-                    SD_BALANCE_EXEC | \
-                    SD_BALANCE_FORK | \
-                    SD_WAKE_AFFINE)
-
-#define SD_DIE_FLAGS (SD_LOAD_BALANCE | \
-                     SD_BALANCE_NEWIDLE | \
-                     SD_BALANCE_EXEC | \
-                     SD_BALANCE_FORK | \
-                     SD_WAKE_AFFINE | \
-                     SD_SHARE_PKG_RESOURCES)
-
-#define SD_NUMA_FLAGS (SD_LOAD_BALANCE | \
-                      SD_BALANCE_NEWIDLE | \
-                      SD_SERIALIZE | \
-                      SD_NUMA | \
-                      SD_ASYM_PACKING)
-
 static struct sched_domain_topology_level *sched_domain_topology =
-	default_topology = {
+    default_topology = {
 #ifdef CONFIG_SCHED_SMT
     { cpu_smt_mask, cpu_smt_flags, SD_INIT_NAME(SMT) },
 #endif
@@ -6770,7 +6760,7 @@ get_cpu_for_node(struct device_node *node)
  *                       n=1                */
 ```
 
-![](../images/kernel/proc-sched-pelt-update_load_avg.svg)
+![](../images/kernel/proc-sched-cfs-eevdf.svg)
 
 ![](../images/kernel/proc-sched-pelt-calc.png)
 
@@ -7978,6 +7968,37 @@ nohz_idle_balance(this_rq, idle) {
 ## sched_balance_newidle
 
 ```c
+int balance_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+    if (rq->nr_running)
+        return 1;
+
+    return sched_balance_newidle(rq, rf) != 0;
+}
+
+pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+    struct sched_entity *se;
+    struct task_struct *p;
+    int new_tasks;
+
+again:
+    p = pick_task_fair(rq);
+    if (!p)
+        goto idle;
+    se = &p->se;
+
+    /* ... */
+
+idle:
+    if (!rf)
+        return NULL;
+
+    new_tasks = sched_balance_newidle(rq, rf);
+}
+```
+
+```c
 int sched_balance_newidle(rq, rf) {
     unsigned long next_balance = jiffies + HZ;
     int this_cpu = this_rq->cpu;
@@ -8610,7 +8631,7 @@ update_sd_lb_stats(env, &sds) {
                                     return 1;
 
                                 used = cpu_util_rt(rq);
-                              	used += cpu_util_dl(rq);
+                                used += cpu_util_dl(rq);
 
                                 if (unlikely(used >= max))
                                     return 1;
@@ -9621,22 +9642,13 @@ void __wake_up(
 {
     __wake_up_common_lock(wq_head, mode, nr_exclusive, 0, key) {
         unsigned long flags;
-        wait_queue_entry_t bookmark;
-
-        bookmark.flags = 0;
-        bookmark.private = NULL;
-        bookmark.func = NULL;
-        INIT_LIST_HEAD(&bookmark.entry);
+        int remaining;
 
         spin_lock_irqsave(&wq_head->lock, flags);
-        nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
+        remaining = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key);
         spin_unlock_irqrestore(&wq_head->lock, flags);
 
-        while (bookmark.flags & WQ_FLAG_BOOKMARK) {
-            spin_lock_irqsave(&wq_head->lock, flags);
-            nr_exclusive = __wake_up_common(wq_head, mode, nr_exclusive, wake_flags, key, &bookmark);
-            spin_unlock_irqrestore(&wq_head->lock, flags);
-        }
+        return nr_exclusive - remaining;
     }
 }
 
@@ -9646,17 +9658,10 @@ static int __wake_up_common(
   wait_queue_entry_t *bookmark)
 {
     wait_queue_entry_t *curr, *next;
-    int cnt = 0;
 
     lockdep_assert_held(&wq_head->lock);
 
-    if (bookmark && (bookmark->flags & WQ_FLAG_BOOKMARK)) {
-        curr = list_next_entry(bookmark, entry);
-
-        list_del(&bookmark->entry);
-        bookmark->flags = 0;
-    } else
-        curr = list_first_entry(&wq_head->head, wait_queue_entry_t, entry);
+    curr = list_first_entry(&wq_head->head, wait_queue_entry_t, entry);
 
     if (&curr->entry == &wq_head->head)
         return nr_exclusive;
@@ -9665,24 +9670,11 @@ static int __wake_up_common(
         unsigned flags = curr->flags;
         int ret;
 
-        if (flags & WQ_FLAG_BOOKMARK)
-            continue;
-
-        /* ep_poll_callback, default_wake_func, woken_wake_function */
         ret = curr->func(curr, mode, wake_flags, key);
         if (ret < 0)
             break;
-        /* WQ_FLAG_EXCLUSIVE : fix Thundering Herd problem */
         if (ret && (flags & WQ_FLAG_EXCLUSIVE) && !--nr_exclusive)
             break;
-
-        if (bookmark && (++cnt > WAITQUEUE_WALK_BREAK_CNT)
-            && (&next->entry != &wq_head->head)) {
-
-            bookmark->flags = WQ_FLAG_BOOKMARK;
-            list_add_tail(&bookmark->entry, &next->entry);
-            break;
-        }
     }
 
     return nr_exclusive;
@@ -9781,9 +9773,11 @@ void process_timeout(struct timer_list *t)
 }
 
 /* wait_queue_entry::flags */
-#define WQ_FLAG_EXCLUSIVE  0x01
-#define WQ_FLAG_WOKEN      0x02
-#define WQ_FLAG_BOOKMARK   0x04
+#define WQ_FLAG_EXCLUSIVE   0x01
+#define WQ_FLAG_WOKEN       0x02
+#define WQ_FLAG_CUSTOM      0x04
+#define WQ_FLAG_DONE        0x08
+#define WQ_FLAG_PRIORITY    0x10
 
 struct wait_queue_entry {
     unsigned int      flags;
@@ -9802,6 +9796,8 @@ struct wait_queue_entry {
  * -> wakeup_preempt -> resched_curr */
 
 try_to_wake_up() {
+    wake_flags |= WF_TTWU;
+
     if (p == current) {
         ttwu_do_wakeup(p) {
             WRITE_ONCE(p->__state, TASK_RUNNING);
@@ -9841,7 +9837,7 @@ try_to_wake_up() {
         ttwu_queue_wakelist(p, task_cpu(p), wake_flags))
         break;
 
-    cpu = select_task_rq(p, p->wake_cpu, wake_flags | WF_TTWU) {
+    cpu = select_task_rq(p, p->wake_cpu, &wake_flags) {
         if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p))
             cpu = p->sched_class->select_task_rq(p, cpu, wake_flags);
         else
@@ -9884,9 +9880,9 @@ try_to_wake_up() {
 
                                     raw_spin_lock_irqsave(&cfs_rq->removed.lock, flags);
                                     ++cfs_rq->removed.nr;
-                                    cfs_rq->removed.util_avg	+= se->avg.util_avg;
-                                    cfs_rq->removed.load_avg	+= se->avg.load_avg;
-                                    cfs_rq->removed.runnable_avg	+= se->avg.runnable_avg;
+                                    cfs_rq->removed.util_avg        += se->avg.util_avg;
+                                    cfs_rq->removed.load_avg        += se->avg.load_avg;
+                                    cfs_rq->removed.runnable_avg    += se->avg.runnable_avg;
                                     raw_spin_unlock_irqrestore(&cfs_rq->removed.lock, flags);
                                 }
                                 migrate_se_pelt_lag(se);
@@ -10036,10 +10032,25 @@ try_to_wake_up() {
 # fork
 
 * [Misc on Linux fork, switch_to, and scheduling](http://lastweek.io/notes/linux/fork/)
+* [man fork, inheritance behavior](https://man7.org/linux/man-pages/man2/fork.2.html)
 
-<img src="../images/kernel/proc-fork-frame.svg" height="850"/>
+| Resource/Behavior | Process (fork-like) Flags | Thread (pthread-like) Flags|
+| :---: | :---: | :---: |
+| CLONE_VM | Separate | :white_check_mark:|
+| CLONE_FILES | Copied | :white_check_mark:|
+| CLONE_FS | Copied | :white_check_mark:|
+| CLONE_SIGHAND | Copied | :white_check_mark:|
+| CLONE_THREAD | New | :white_check_mark:|
+| SIGCHLD (exit sig) | :white_check_mark: ||
+| CLONE_SETTLS | | :white_check_mark:|
+| CLONE_CHILD_SETTID | :white_check_mark: | :white_check_mark:|
+| CLONE_CHILD_CLEARTID | :white_check_mark: | :white_check_mark:|
+| CLONE_SYSVSEM |  | :white_check_mark:|
+| PATH | sysdeps/unix/sysv/linux/arch-fork.h | nptl/pthread_create.c|
 
-<img src="../images/kernel/fork.png" style="max-height:1200px"/>
+Fork Frame | Fork Flow
+--- | ---
+<img src="../images/kernel/proc-fork-frame.svg" style="max-height:750px"/> | <img src="../images/kernel/proc-sched-fork.svg" style="max-height:850px"/>
 
 <img src="../images/kernel/proc-fork-pthread-create.png" style="max-height:850px"/>
 
@@ -12903,6 +12914,12 @@ struct task_group *sched_create_group(struct task_group *parent) {
 * [LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
     * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
 
+kernel build .config:
+```sh
+CONFIG_CFS_BANDWIDTH=y
+CONFIG_FAIR_GROUP_SCHED=y  # Prerequisite
+```
+
 ```c
 struct cfs_bandwidth {
     raw_spinlock_t      lock;
@@ -13406,8 +13423,8 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
     }, tg_nop, (void *)rq);
 
     queued_delta = cfs_rq->h_nr_queued;
-	runnable_delta = cfs_rq->h_nr_runnable;
-	idle_delta = cfs_rq->h_nr_idle;
+    runnable_delta = cfs_rq->h_nr_runnable;
+    idle_delta = cfs_rq->h_nr_idle;
 
     for_each_sched_entity(se) {
         struct cfs_rq *qcfs_rq = cfs_rq_of(se) {
@@ -13425,8 +13442,8 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
             idle_delta = cfs_rq->h_nr_queued;
 
         qcfs_rq->h_nr_queued -= queued_delta;
-		qcfs_rq->h_nr_runnable -= runnable_delta;
-		qcfs_rq->h_nr_idle -= idle_delta;
+        qcfs_rq->h_nr_runnable -= runnable_delta;
+        qcfs_rq->h_nr_idle -= idle_delta;
 
         /* parent cfs_rq has more than one se, stop dequeue parent */
         if (qcfs_rq->load.weight) {
@@ -13712,6 +13729,17 @@ void update_cfs_group(struct sched_entity *se) {
 ```
 
 # rt_bandwidth
+
+kernel build .config:
+```sh
+CONFIG_FAIR_GROUP_SCHED=y
+CONFIG_RT_GROUP_SCHED=y
+```
+
+Global RT Bandwidth:
+```sh
+/proc/sys/kernel/sched_rt_runtime_us
+```
 
 ```c
 struct rt_bandwidth {
@@ -18046,27 +18074,27 @@ struct net {
     refcount_t              passive;
     spinlock_t              rules_mod_lock;
 
-    unsigned int		    dev_base_seq;	/* protected by rtnl_mutex */
-    u32			            ifindex;
+    unsigned int            dev_base_seq;   /* protected by rtnl_mutex */
+    u32                     ifindex;
 
-    spinlock_t		        nsid_lock;
-    atomic_t		        fnhe_genid;
+    spinlock_t              nsid_lock;
+    atomic_t                fnhe_genid;
 
-    struct list_head	    list; /* list of network namespaces */
+    struct list_head        list; /* list of network namespaces */
     /* To linked to call pernet exit
      * methods on dead net (pernet_ops_rwsem read locked),
      * or to unregister pernet ops (pernet_ops_rwsem write locked). */
-    struct list_head	    exit_list;
-    struct llist_node	    cleanup_list; /* namespaces on death row */
+    struct list_head        exit_list;
+    struct llist_node       cleanup_list; /* namespaces on death row */
 
 #ifdef CONFIG_KEYS
-    struct key_tag		    *key_domain;
+    struct key_tag          *key_domain;
 #endif
     struct user_namespace   *user_ns;
-    struct ucounts		    *ucounts;
-    struct idr		        netns_ids;
+    struct ucounts          *ucounts;
+    struct idr              netns_ids;
 
-    struct ns_common	ns;
+    struct ns_common    ns;
     struct ref_tracker_dir      refcnt_tracker;
      /* tracker for objects not refcounted against netns */
     struct ref_tracker_dir      notrefcnt_tracker;
@@ -18074,7 +18102,7 @@ struct net {
     struct proc_dir_entry       *proc_net;
     struct proc_dir_entry       *proc_net_stat;
 
-    struct ctl_table_set	    sysctls;
+    struct ctl_table_set        sysctls;
 
     struct sock                 *rtnl; /* rtnetlink socket */
     struct sock                 *genl_sock;
@@ -18088,21 +18116,21 @@ struct net {
 
     /* Note that @hash_mix can be read millions times per second,
      * it is critical that it is on a read_mostly cache line. */
-    u32			                hash_mix;
+    u32                         hash_mix;
 
     struct net_device           *loopback_dev;  /* The loopback */
 
     /* core fib_rules */
-    struct list_head	        rules_ops;
+    struct list_head            rules_ops;
 
-    struct netns_core	        core;
-    struct netns_mib	        mib;
-    struct netns_packet	        packet;
-    struct netns_unix	        unx;
+    struct netns_core           core;
+    struct netns_mib            mib;
+    struct netns_packet         packet;
+    struct netns_unix           unx;
     struct netns_nexthop        nexthop;
     struct netns_ipv4           ipv4;
     struct netns_ipv6           ipv6;
-    struct netns_ieee802154_lowpan	ieee802154_lowpan;
+    struct netns_ieee802154_lowpan  ieee802154_lowpan;
     struct netns_sctp           sctp;
     struct netns_nf             nf;
     struct netns_ct             ct;
@@ -18115,7 +18143,7 @@ struct net {
     /* Used to store attached BPF programs */
     struct netns_bpf                    bpf;
 
-    u64			                        net_cookie; /* written once */
+    u64                                 net_cookie; /* written once */
 
     struct netns_xfrm                   xfrm;
     struct netns_ipvs                   *ipvs;
@@ -18223,13 +18251,13 @@ Time namespaces virtualize the values of two system clocks:
 
 ```c
 struct time_namespace {
-	struct user_namespace   *user_ns;
-	struct ucounts          *ucounts;
-	struct ns_common        ns;
-	struct timens_offsets   offsets;
-	struct page             *vvar_page;
-	/* If set prevents changing offsets after any task joined namespace. */
-	bool                    frozen_offsets;
+    struct user_namespace   *user_ns;
+    struct ucounts          *ucounts;
+    struct ns_common        ns;
+    struct timens_offsets   offsets;
+    struct page             *vvar_page;
+    /* If set prevents changing offsets after any task joined namespace. */
+    bool                    frozen_offsets;
 }
 ```
 
