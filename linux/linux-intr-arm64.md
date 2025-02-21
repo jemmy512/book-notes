@@ -4,6 +4,8 @@
 
 ![](../images/kernel/intr-gic_handle_irq.png)
 
+![](../images/kernel/intr-arch.svg)
+
 # vectors
 
 ```c
