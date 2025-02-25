@@ -259,6 +259,11 @@
 
         ```
 
+        * Migrate Types: Each pageblock has a single migrate type (e.g., MIGRATE_UNMOVABLE), set via **set_pageblock_migratetype**(). This ties to gfp_migratetype() we discussed.
+        * Zonelist: Pageblocks exist within zones (e.g., ZONE_NORMAL). The allocator walks the zonelist, and compaction operates on pageblocks within those zones.
+        * __gfp_pfmemalloc_flags: If ALLOC_NO_WATERMARKS is returned, the allocator might split a pageblock from a reserve pool (e.g., MIGRATE_HIGHATOMIC).
+        * Buddy System: Pageblocks are a higher-level abstraction over the buddy’s free lists, aiding bulk management.
+
 * [Linux watermark 内存水位](https://mp.weixin.qq.com/s/vCUfMgLAXshWhWa65SN_wA)
 * 深度 Linux
     * [探秘IOMMU：从概念到原理的深度解析](https://mp.weixin.qq.com/s/XFwaEzFgN5FVDn5wheWhkA)
@@ -975,20 +980,62 @@ ZONE_HIGHMEM | 896 MiB - End
 
 ## zone
 
-| Migration Type | Description | Usage Example |
-|---|---|---|
-| `MIGRATE_UNMOVABLE`| Pages that cannot be relocated. | Kernel data structures. |
-| `MIGRATE_MOVABLE`  | Pages that can be moved. | User-space memory, file caches. |
-| `MIGRATE_RECLAIMABLE`| Pages that can be reclaimed under pressure.| Caches, temporary data structures.|
-| `MIGRATE_PCPTYPES` | Number of PCP list migration types. | Used internally by the kernel. |
-| `MIGRATE_HIGHATOMIC`| Reserved for high-order atomic allocations.| High-order kernel allocations. |
-| `MIGRATE_CMA` | Reserved for contiguous memory allocations.| DMA for multimedia devices. |
-| `MIGRATE_ISOLATE` | Reserved and isolated memory. | Memory hotplug or offlining. |
-| `MIGRATE_TYPES` | Total number of migration types. | Used for array sizing. |
+| **Type** | **Definition**  | **Usage** |
+| --- | --- | --- |
+| `MIGRATE_UNMOVABLE`   | Pages that cannot be moved to another physical location. | Used for stable, critical allocations like kernel data or pinned DMA buffers. |
+| `MIGRATE_MOVABLE`     | Pages that can be migrated to another physical location. | Helps defragment memory for large allocations (e.g., user-space pages with `__GFP_MOVABLE`). |
+| `MIGRATE_RECLAIMABLE` | Pages that can be freed but not moved. | Reclaimed under memory pressure (e.g., slab caches with `__GFP_RECLAIMABLE`). |
+| `MIGRATE_PCPTYPES`    | Marker for the number of types in per-CPU page lists. | Defines scope of fast pcp caches (`UNMOVABLE`, `MOVABLE`, `RECLAIMABLE`). |
+| `MIGRATE_HIGHATOMIC`  | Reserve pool for high-priority atomic allocations. | Emergency pool for critical needs (e.g., `GFP_ATOMIC` with `ALLOC_HIGHATOMIC`). |
+| `MIGRATE_CMA`         | Pages reserved for the Contiguous Memory Allocator. | Supports large, contiguous allocations for devices like GPUs (movable).
 
+```c
+/* The zone fallback order is MOVABLE=>HIGHMEM=>NORMAL=>DMA32=>DMA. */
+
+Node 0                 Node 1
+[CPU 0]                [CPU 1]
+  |                      |
+  v                      v
++----------------+     +----------------+
+| ZONE_NORMAL    |     | ZONE_NORMAL    |
+| (3.984 GB)     |     | (3.984 GB)     |
+| Buddy Free     |     | Buddy Free     |
+| Lists:         |     | Lists:         |
+| - UNMOVABLE    |     | - UNMOVABLE    |
+| - MOVABLE      |     | - MOVABLE      |
+| - RECLAIMABLE  |     | - RECLAIMABLE  |
+| - HIGHATOMIC   |     | - HIGHATOMIC   |
++----------------+     +----------------+
+| ZONE_DMA       |     | ZONE_DMA       |
+| (16 MB)        |     | (16 MB)        |
+| Buddy Free     |     | Buddy Free     |
+| Lists (similar)|     | Lists (similar)|
++----------------+     +----------------+
+  |                      |
+  +--- Zonelist -       -+---- Zonelist --+
+  |    Node 0            |    Node 1      |
+  v                      v                |
++----------------+     +----------------+ |
+| 1. N0 NORMAL   |     | 1. N1 NORMAL   | |
+| 2. N0 DMA      |     | 2. N1 DMA      | | Priority Order
+| 3. N1 NORMAL   |     | 3. N0 NORMAL   | | for Allocation
+| 4. N1 DMA      |     | 4. N0 DMA      | |
++----------------+     +----------------+ |
+Dist: 10 (local)       Dist: 10 (local)   |
+      20 (remote)            20 (remote)  v
+```
 
 ```c
 struct zone {
+    /* zone watermarks, access with *_wmark_pages(zone) macros */
+    unsigned long _watermark[NR_WMARK];
+    unsigned long watermark_boost;
+
+    unsigned long nr_reserved_highatomic;
+    unsigned long nr_free_highatomic;
+
+    long lowmem_reserve[MAX_NR_ZONES];
+
     struct pglist_data  *zone_pgdat;
     struct per_cpu_pageset *pageset; /* hot/cold page */
 
@@ -1005,6 +1052,9 @@ struct zone {
 
     /* Primarily protects free_area */
     spinlock_t    lock;
+
+    atomic_long_t   vm_stat[NR_VM_ZONE_STAT_ITEMS];
+    atomic_long_t   vm_numa_event[NR_VM_NUMA_EVENT_ITEMS];
 };
 
 struct per_cpu_pageset {
@@ -1035,7 +1085,7 @@ enum migratetype {
 
 ### zone_sizes_init
 
-* start_kernel -> setup_arch -> bootmem_init -> zone_sizes_init
+* <code style="color : yellowgreen">start_kernel</code> -> <code style="color : yellowgreen">setup_arch</code> -> <code style="color : yellowgreen">bootmem_init</code> -> <code style="color : yellowgreen">zone_sizes_init</code>
 
 ```c
 zone_sizes_init() {
@@ -3344,7 +3394,30 @@ bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
     }
 
     ac->nodemask = nodemask;
+    /* MIGRATE_UNMOVABLE (0): Pages can’t be moved (default if no flags match).
+     *      Input: GFP_KERNEL (typically __GFP_RECLAIM | __GFP_ZERO,
+     *          no __GFP_MOVABLE or __GFP_RECLAIMABLE):
+     *      gfp_flags & GFP_MOVABLE_MASK = 0
+     *      0 >> 3 = 0
+     *      Result: MIGRATE_UNMOVABLE
+     * MIGRATE_MOVABLE (1): Pages can be migrated (if __GFP_MOVABLE is set).
+     * MIGRATE_RECLAIMABLE (2): Pages can be reclaimed (if __GFP_RECLAIMABLE is set).
+     * MIGRATE_HIGHATOMIC (3): A special case.
+     *      Input: __GFP_MOVABLE | __GFP_RECLAIMABLE (e.g., 0x8 | 0x10 = 0x18):
+     *      gfp_flags & GFP_MOVABLE_MASK = 0x18
+     *      0x18 >> 3 = 3
+     *      Result: MIGRATE_HIGHATOMIC (but triggers the VM_WARN_ON). */
     ac->migratetype = gfp_migratetype(gfp_mask) {
+        enum {
+            ___GFP_DMA_BIT          = 0,
+            ___GFP_HIGHMEM_BIT      = 1,
+            ___GFP_DMA32_BIT        = 2,
+            ___GFP_MOVABLE_BIT      = 3,
+            ___GFP_RECLAIMABLE_BIT  = 4,
+            ___GFP_HIGH_BIT         = 5,
+        };
+        #define GFP_MOVABLE_MASK (__GFP_RECLAIMABLE|__GFP_MOVABLE)
+        #define GFP_MOVABLE_SHIFT 3
         return (gfp_flags & GFP_MOVABLE_MASK) >> GFP_MOVABLE_SHIFT;
     }
 
@@ -3446,7 +3519,7 @@ bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
     ac->spread_dirty_pages = (gfp_mask & __GFP_WRITE);
 
     /* The preferred zone is used for statistics but crucially it is
-     * also used as the starting point for the zonelist iterator. It
+     * also used as the `starting point` for the zonelist iterator. It
      * may get reset for allocations that ignore memory policies. */
     ac->preferred_zoneref = first_zones_zonelist(
         ac->zonelist, ac->highest_zoneidx, ac->nodemask
@@ -3538,7 +3611,16 @@ retry:
                 long reserved;
 
                 usable_free = free_pages;
-                reserved = __zone_watermark_unusable_free(z, 0, alloc_flags);
+                reserved = __zone_watermark_unusable_free(z, 0, alloc_flags) {
+                    long unusable_free = (1 << order) - 1;
+                    if (likely(!(alloc_flags & ALLOC_RESERVES))) {
+                        unusable_free += READ_ONCE(z->nr_free_highatomic);
+                    }
+                    if (!(alloc_flags & ALLOC_CMA)) {
+                        unusable_free += zone_page_state(z, NR_FREE_CMA_PAGES);
+                    }
+                    return unusable_free;
+                }
 
                 /* reserved may over estimate high-atomic reserves. */
                 usable_free -= min(usable_free, reserved);
@@ -3554,6 +3636,7 @@ retry:
                 free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags);
 
                 if (unlikely(alloc_flags & ALLOC_RESERVES)) {
+                    /* __GFP_HIGH set. Allow access to 50% of the min watermark. */
                     if (alloc_flags & ALLOC_MIN_RESERVE) {
                         min -= min / 2;
                         if (alloc_flags & ALLOC_NON_BLOCK) {
@@ -3633,8 +3716,11 @@ check_alloc_wmark:
             if (alloc_flags & ALLOC_NO_WATERMARKS)
                 goto try_this_zone;
 
-            if (!node_reclaim_enabled() ||
-                !zone_allows_reclaim(ac->preferred_zoneref->zone, zone))
+            ret = zone_allows_reclaim(ac->preferred_zoneref->zone, zone) {
+                return node_distance(zone_to_nid(local_zone), zone_to_nid(zone))
+                    <= node_reclaim_distance;
+            }
+            if (!node_reclaim_enabled() || !ret)
                 continue;
 
             ret = node_reclaim(zone->zone_pgdat, gfp_mask, order);
@@ -4025,6 +4111,7 @@ find_smallest:
 do_steal:
     page = get_page_from_free_area(area, fallback_mt);
 
+    /* whether to steal just one page or an entire pageblock */
     steal_suitable_fallback(zone, page, alloc_flags,
         start_migratetype/*start_type*/, can_steal/*whole_block*/) {
 
@@ -4039,16 +4126,20 @@ do_steal:
         if (is_migrate_highatomic(old_block_type))
             goto single_page;
 
+    /* 1. steal whole page_block */
         /* Take ownership for orders >= pageblock_order */
         if (current_order >= pageblock_order) {
-            change_pageblock_range(page, current_order, start_type/*migratetype*/) {
+            del_page_from_free_list(page, zone, current_order, block_type);
+            change_pageblock_range(page, current_order, start_type) {
                 int nr_pageblocks = 1 << (start_order - pageblock_order);
                 while (nr_pageblocks--) {
                     set_pageblock_migratetype(pageblock_page, migratetype);
                     pageblock_page += pageblock_nr_pages;
                 }
             }
-            goto single_page;
+            nr_added = expand(zone, page, order, current_order, start_type);
+            account_freepages(zone, nr_added, start_type);
+            return page;
         }
 
         /* Boost watermarks to increase reclaim pressure to reduce the
@@ -4061,49 +4152,47 @@ do_steal:
         if (!whole_block)
             goto single_page;
 
-        free_pages = move_freepages_block(zone, page, start_type/*migratetype*/, &movable_pages/*num_movable*/) {
-            unsigned long start_pfn, end_pfn, pfn;
+        /* moving whole block can fail due to zone boundary conditions */
+        ret = prep_move_freepages_block(zone, page,
+            &start_pfn, &free_pages/*num_free*/, &movable_pages/*num_movable*/) {
 
-            if (num_movable)
-                *num_movable = 0;
+            unsigned long pfn, start, end;
 
             pfn = page_to_pfn(page);
-            start_pfn = pageblock_start_pfn(pfn);
-            end_pfn = pageblock_end_pfn(pfn) - 1;
+            start = pageblock_start_pfn(pfn);
+            end = pageblock_end_pfn(pfn);
 
-            /* Do not cross zone boundaries */
-            if (!zone_spans_pfn(zone, start_pfn))
-                start_pfn = pfn;
-            if (!zone_spans_pfn(zone, end_pfn))
-                return 0;
+            if (!zone_spans_pfn(zone, start))
+                return false;
+            if (!zone_spans_pfn(zone, end - 1))
+                return false;
 
-            return move_freepages(zone, start_pfn, end_pfn, migratetype, num_movable) {
-                for (pfn = start_pfn; pfn <= end_pfn;) {
+            *start_pfn = start;
+
+            if (num_free) {
+                *num_free = 0;
+                *num_movable = 0;
+                for (pfn = start; pfn < end;) {
                     page = pfn_to_page(pfn);
-                    if (!PageBuddy(page)) {
-                        /* We assume that pages that could be isolated for
-                         * migration are movable. But we don't actually try
-                         * isolating, as that would be expensive. */
-                        if (num_movable && (PageLRU(page) || __PageMovable(page)))
-                            (*num_movable)++;
-                        pfn++;
+                    if (PageBuddy(page)) {
+                        int nr = 1 << buddy_order(page);
+
+                        *num_free += nr;
+                        pfn += nr;
                         continue;
                     }
-
-                    order = buddy_order(page);
-                    move_to_free_list(page, zone, order, migratetype) {
-                        struct free_area *area = &zone->free_area[order];
-                        list_move_tail(&page->buddy_list, &area->free_list[migratetype]);
-                    }
-                    pfn += 1 << order;
-                    pages_moved += 1 << order;
+                    /* We assume that pages that could be isolated for
+                     * migration are movable. But we don't actually try
+                     * isolating, as that would be expensive. */
+                    if (PageLRU(page) || __PageMovable(page))
+                        (*num_movable)++;
+                    pfn++;
                 }
-
-                return pages_moved;
             }
+
+            return true;
         }
-        /* moving whole block can fail due to zone boundary conditions */
-        if (!free_pages)
+        if (!ret)
             goto single_page;
 
         /* Determine how many pages are compatible with our allocation.
@@ -4124,39 +4213,81 @@ do_steal:
         }
         /* If a sufficient number of pages in the block are either free or of
          * compatible migratability as our allocation, claim the whole block. */
-        if (free_pages + alike_pages >= (1 << (pageblock_order-1)) ||
-                page_group_by_mobility_disabled) {
-            set_pageblock_migratetype(page, start_type) {
-                if (unlikely(page_group_by_mobility_disabled && migratetype < MIGRATE_PCPTYPES))
-                    migratetype = MIGRATE_UNMOVABLE;
+        if (free_pages + alike_pages >= (1 << (pageblock_order-1)) || page_group_by_mobility_disabled) {
+            __move_freepages_block(zone, start_pfn, block_type, start_type) {
+                struct page *page;
+                unsigned long pfn, end_pfn;
+                unsigned int order;
+                int pages_moved = 0;
 
-                set_pfnblock_flags_mask(page, (unsigned long)migratetype/*flag*/,
-                            page_to_pfn(page)/*pfn*/, MIGRATETYPE_MASK/*mask*/) {
-                    unsigned long *bitmap;
-                    unsigned long bitidx, word_bitidx;
-                    unsigned long word;
+                VM_WARN_ON(start_pfn & (pageblock_nr_pages - 1));
+                end_pfn = pageblock_end_pfn(start_pfn);
 
-                    bitmap = get_pageblock_bitmap(page, pfn);
-                    bitidx = pfn_to_bitidx(page, pfn);
-                    word_bitidx = bitidx / BITS_PER_LONG;
-                    bitidx &= (BITS_PER_LONG-1);
+                for (pfn = start_pfn; pfn < end_pfn;) {
+                    page = pfn_to_page(pfn);
+                    if (!PageBuddy(page)) {
+                        pfn++;
+                        continue;
+                    }
 
-                    mask <<= bitidx;
-                    flags <<= bitidx;
+                    /* Make sure we are not inadvertently changing nodes */
+                    VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
+                    VM_BUG_ON_PAGE(page_zone(page) != zone, page);
 
-                    word = READ_ONCE(bitmap[word_bitidx]);
-                    while (!try_cmpxchg(&bitmap[word_bitidx], &word, (word & ~mask) | flags));
+                    order = buddy_order(page);
+
+                    move_to_free_list(page, zone, order, old_mt, new_mt);
+
+                    pfn += 1 << order;
+                    pages_moved += 1 << order;
                 }
+
+                set_pageblock_migratetype(pfn_to_page(start_pfn), new_mt/*migratetype*/) {
+                    if (unlikely(page_group_by_mobility_disabled && migratetype < MIGRATE_PCPTYPES))
+                        migratetype = MIGRATE_UNMOVABLE;
+
+                    set_pfnblock_flags_mask(page, (unsigned long)migratetype/*flag*/,
+                                page_to_pfn(page)/*pfn*/, MIGRATETYPE_MASK/*mask*/) {
+                        unsigned long *bitmap;
+                        unsigned long bitidx, word_bitidx;
+                        unsigned long word;
+
+                        bitmap = get_pageblock_bitmap(page, pfn);
+                        bitidx = pfn_to_bitidx(page, pfn);
+                        word_bitidx = bitidx / BITS_PER_LONG;
+                        bitidx &= (BITS_PER_LONG-1);
+
+                        mask <<= bitidx;
+                        flags <<= bitidx;
+
+                        word = READ_ONCE(bitmap[word_bitidx]);
+                        while (!try_cmpxchg(&bitmap[word_bitidx], &word, (word & ~mask) | flags));
+                    }
+                }
+
+                return pages_moved;
             }
+            return __rmqueue_smallest(zone, order, start_type);
         }
-
-        return;
-
+    /* 2. steal single page */
     single_page:
-        move_to_free_list(page, zone, current_order, start_type) {
-            struct free_area *area = &zone->free_area[order];
-            list_move_tail(&page->buddy_list, &area->free_list[migratetype]);
+        page_del_and_expand(zone, page, order, current_order, block_type) {
+            int nr_pages = 1 << high;
+
+            __del_page_from_free_list(page, zone, high, migratetype) {
+                if (page_reported(page))
+                    __ClearPageReported(page);
+
+                list_del(&page->buddy_list);
+                __ClearPageBuddy(page);
+                set_page_private(page, 0);
+                zone->free_area[order].nr_free--;
+            }
+            nr_pages -= expand(zone, page, low, high, migratetype);
+            account_freepages(zone, -nr_pages, migratetype);
         }
+
+        return page;
     }
 
     return true;
@@ -4287,8 +4418,8 @@ restart:
     zonelist_iter_cookie = zonelist_iter_begin();
 
     /* The fast path uses conservative alloc_flags to succeed only until
-    * kswapd needs to be woken up, and to avoid the cost of setting up
-    * alloc_flags precisely. So we do that now. */
+     * kswapd needs to be woken up, and to avoid the cost of setting up
+     * alloc_flags precisely. So we do that now. */
     alloc_flags = gfp_to_alloc_flags(gfp_mask, order) {
         unsigned int alloc_flags = ALLOC_WMARK_MIN | ALLOC_CPUSET;
 
@@ -4382,6 +4513,9 @@ retry:
     if (alloc_flags & ALLOC_KSWAPD)
         wake_all_kswapds(order, gfp_mask, ac);
 
+    /* "Process Flag: Memory Allocation" and signals that this task is special
+     * when it comes to memory allocation—it’s allowed to bypass normal restrictions
+     * and tap into reserved memory pools. */
     reserve_flags = __gfp_pfmemalloc_flags(gfp_mask) {
         if (unlikely(gfp_mask & __GFP_NOMEMALLOC))
             return 0;
@@ -4396,7 +4530,7 @@ retry:
                 return ALLOC_OOM;
         }
 
-        return 0;
+        return 0; /* normal mem alloc */
     }
     if (reserve_flags)
         alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags) |
