@@ -327,6 +327,33 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 
 # bios
 * ![](../images/kernel/init-bios.png)
+
+**UEFI** initializes hardware and hands off to the OS loader (e.g., GRUB).
+|**Stage**|**Description**|
+|-|-|
+|**SEC (Security)**|Initializes CPU, temporary memory (cache-as-RAM), and security (e.g., TPM).|
+|**PEI (Pre-EFI)**|Sets up permanent RAM, configures chipset, builds HOBs (early memory map).|
+|**DXE (Driver Exec)**|Loads drivers, finalizes memory map, offers Boot Services (e.g., `GetMemoryMap`).|
+|**BDS (Boot Device)**|Selects boot device (e.g., GRUB on ESP) from NVRAM variables.|
+|**TSL (Transient)**|Runs OS loader (e.g., GRUB) until `ExitBootServices()`.|
+|**RT (Runtime)**|Post-boot services (e.g., variables, time) for OS; memory reserved.|
+
+- **Memory Role**: Maps RAM (e.g., `EfiConventionalMemory`) for kernel’s zonelists and buddy system.
+
+**GRUB loads the kernel after UEFI hands off.**
+|**Stage**|**Description**|
+|-|-|
+|**UEFI Load**|UEFI executes `grubx64.efi` from ESP using Boot Services.|
+|**Core Image**|`grubx64.efi` loads core image, minimal drivers (e.g., FAT) in UEFI memory.|
+|**Modules/Config**|Loads `grub.cfg` and modules (e.g., `linux.mod`) from `/boot/grub`.|
+|**User Interaction**|Optional menu (via `normal` module); skips if timeout=0.|
+|**Kernel Load**|Copies kernel (e.g., `vmlinuz`) and initrd to RAM via `AllocatePages()`.|
+|**Handoff**|Calls `ExitBootServices()`, passes memory map, jumps to kernel entry point.|
+
+- **Memory Role**: Uses UEFI-allocated memory, hands `EfiConventionalMemory` to kernel for buddy system setup.
+- UEFI’s memory map becomes the kernel’s starting point—zonelists, pageblocks (e.g., 4 MB), and migrate types (e.g., `MIGRATE_UNMOVABLE` for runtime regions) kick in post-handoff.
+---
+
 * When power on, set CS to 0xFFFF, IP to 0x0000, the first instruction points to 0xFFFF0 within ROM, a JMP comamand will jump to ROM do init work, BIOS starts.
 * Then BIOS checks the health state of each hardware.
 * Grub2 (Grand Unified Bootloader Version 2)
@@ -12940,9 +12967,9 @@ struct cfs_bandwidth {
 
     int                 nr_periods;
     int                 nr_throttled;
-    int                 nr_burst;
+    int                 nr_burst;		/* number of overrun */
     u64                 throttled_time;
-    u64                 burst_time; /* the maximum accumulated run-time in ms */
+    u64                 burst_time; /* accumulative overrun time */
 };
 
 strucr cfs_rq {
@@ -13359,6 +13386,7 @@ int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 ![](../images/kernel/proc-sched-cfs-throttle_cfs_rq.png)
 
 ```c
+/* only called when cfs_rq->runtime_remaining < 0 */
 bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 {
     struct rq *rq = rq_of(cfs_rq);
@@ -13370,9 +13398,8 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
     ret = __assign_cfs_rq_runtime(cfs_b, cfs_rq, 1/*target_runtime*/) {
         u64 min_amount, amount = 0;
 
-        /* note: this is a positive sum as runtime_remaining <= 0
-         * cfs_rq has target_runtime, it has remaining time (runtime_remaining),
-         * so now just need to alloc (target_runtime -  runtime_remaining) */
+        /* note: throttle_cfs_rq is only call when runtime_remaining < 0
+         * this is a positive sum as runtime_remaining <= 0 */
         min_amount = target_runtime - cfs_rq->runtime_remaining;
 
         if (cfs_b->quota == RUNTIME_INF)
@@ -13744,15 +13771,15 @@ Global RT Bandwidth:
 ```c
 struct rt_bandwidth {
     raw_spinlock_t  rt_runtime_lock;
-    ktime_t         rt_period; /* timer interval of checking */
-    u64             rt_runtime; /* remaining run time */
+    ktime_t         rt_period; 	/* timer interval of checking */
+    u64             rt_runtime; /* quota of running time */
     struct hrtimer  rt_period_timer;
     unsigned int    rt_period_active;
 };
 
 struct rt_rq {
-    u64             rt_time;
-    u64             rt_runtime;
+    u64             rt_time;		/* a accumulative running time */
+    u64             rt_runtime;	/* quota of running time */
 };
 ```
 
