@@ -54,7 +54,7 @@
         * [alloc_pages_may_oom](#alloc_pages_may_oom)
 
 * [free_pages](#free_pages)
-    * [free_unref_page](#free_unref_page)
+    * [free_frozen_pages](#free_frozen_pages)
     * [free_one_page](#free_one_page)
 
 * [kmem_cache](#kmem_cache)
@@ -651,7 +651,7 @@ paging_init() {
 
     memblock_allow_resize();
 
-	create_idmap();
+    create_idmap();
 
     declare_kernel_vmas() {
         static struct vm_struct vmlinux_seg[KERNEL_SEGMENT_COUNT];
@@ -670,11 +670,11 @@ paging_init() {
             if (!(vm_flags & VM_NO_GUARD))
                 size += PAGE_SIZE;
 
-            vma->addr	= va_start;
-            vma->phys_addr	= pa_start;
-            vma->size	= size;
-            vma->flags	= VM_MAP | vm_flags;
-            vma->caller	= __builtin_return_address(0);
+            vma->addr       = va_start;
+            vma->phys_addr  = pa_start;
+            vma->size       = size;
+            vma->flags      = VM_MAP | vm_flags;
+            vma->caller     = __builtin_return_address(0);
 
             vm_area_add_early(vma/*vm*/) {
                 struct vm_struct *tmp, **p;
@@ -1039,6 +1039,8 @@ struct zone {
     struct pglist_data  *zone_pgdat;
     struct per_cpu_pageset *pageset; /* hot/cold page */
 
+    unsigned long    *pageblock_flags /* track migratetype of each pageblock */
+
     unsigned long    zone_start_pfn;
     unsigned long    managed_pages; /* managed_pages = present_pages - reserved_pages */
     unsigned long    spanned_pages; /* spanned_pages = zone_end_pfn - zone_start_pfn */
@@ -1061,7 +1063,8 @@ struct per_cpu_pageset {
     struct per_cpu_pages pcp;
     s8 expire;
     u16 vm_numa_stat_diff[NR_VM_NUMA_STAT_ITEMS];
-}
+};
+
 struct per_cpu_pages {
     int count; /* number of pages in the list */
     int high;  /* high watermark, emptying needed */
@@ -1080,6 +1083,17 @@ enum migratetype {
     MIGRATE_CMA,
     MIGRATE_ISOLATE,
     MIGRATE_TYPES
+};
+
+#define PB_migratetype_bits 3
+/* Bit indices that affect a whole block of pages */
+enum pageblock_bits {
+    PB_migrate,
+    PB_migrate_end = PB_migrate + PB_migratetype_bits - 1,
+    /* 3 bits required for migrate types */
+    PB_migrate_skip,/* If set the block is skipped by compaction */
+
+    NR_PAGEBLOCK_BITS
 };
 ```
 
@@ -1369,6 +1383,39 @@ build_all_zonelists(NULL) {
     * [Struct slab comes to 5.17 ](https://lwn.net/Articles/881039/)
     * [The proper time to split struct page](https://lwn.net/Articles/937839/)
 
+| **Context** | <span style="color:yellowgreen">index Usage</span> | <span style="color:yellowgreen">private Usage</span> |
+| :-: | :-: | :-: |
+| **File-Backed Pages** | page offset within the file (measured in pages). | filesystem-specific metadata (e.g., journaling info). |
+| **Anonymous Pages** |  | |
+| **Swap Cache Pages** | `swp_entry_t` (location in swap space). |  |
+| **Device-Backed Pages** | device-specific offsets or identifiers. | device-specific data (e.g., DMA or driver info). |
+| **Buffer Pages** | | Buffer head pointer |
+| **Writeback Pages** | May store the offset for tracking page in writeback operations. | flags or state related to writeback processes. |
+| **VMA (File-Backed)** | Offset within the file, relative to the VMA’s vm_pgoff, used for address translation. | Typically 0 or buffer-related data (e.g., buffer_head) if the page is part of a file mapping.
+| **VMA (Anonymous)** | Offset within the VMA (relative to start), used during fault handling; less meaningful unless swapped. | 0 unless swapped, then holds swp_entry_t when in swap cache.
+| **Networking** | Rarely used. | custom metadata for network-related operations (e.g., zero-copy). |
+| **Buddy Pages** | | Buddy order |
+| **Slab Pages** | | kmem_cache pointer |
+| **Huge Pages** | offset of the huge page in its mapping. | metadata about the huge page (e.g., reference count). |
+| **Compound Head** | Offset within the compound page mapping | metadata for managing compound pages (e.g., ref count). |
+| **Compound Tail** | Compound head pointer | Offset to head |
+
+---
+**Page Table Flags in 4KB Granule**
+|Flag|Bits|Purpose|Common Values|
+| :-: | :-: | :-: | :-: |
+|PTE_VALID|0|Valid entry|1 (valid), 0 (invalid)|
+|PTE_TABLE|1|Table vs. page|0 (page at PTE level)|
+|PTE_MT|2-4|Memory type (AttrIndx)|0-7 (e.g., Normal, Device)|
+|PTE_NS|5|Non-secure|1 (non-secure)|
+|PTE_AP|6-7|Access permissions|00, 01, 10, 11|
+|PTE_SH|8-9|Shareability|11 (inner shareable)|
+|PTE_AF|10|Access flag|1 (accessed)|
+|PTE_NG|11|Not global|1 (user), 0 (kernel)|
+|Physical Addr|12-47|Physical page address|Page frame number|
+|PTE_DIRTY|(SW)|Software dirty bit|1 (dirty)|
+|PTE_YOUNG|(SW)|Software access bit|1 (recently accessed)|
+
 ```c
 struct page {
     /* Atomic flags + zone number, some possibly updated asynchronously */
@@ -1417,7 +1464,6 @@ struct page {
                 };
             };
         };
-
 
         /* 3. Tail pages of compound page */
         struct {
@@ -3302,6 +3348,9 @@ struct page *alloc_pages(gfp_t gfp_mask, unsigned int order) {
             gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
             struct alloc_context ac = { };
 
+            if (WARN_ON_ONCE_GFP(order > MAX_PAGE_ORDER, gfp))
+                return NULL;
+
             gfp &= gfp_allowed_mask;
             gfp = current_gfp_context(gfp) {
                 unsigned int pflags = READ_ONCE(current->flags);
@@ -3613,6 +3662,7 @@ retry:
                 usable_free = free_pages;
                 reserved = __zone_watermark_unusable_free(z, 0, alloc_flags) {
                     long unusable_free = (1 << order) - 1;
+                    /* #define ALLOC_RESERVES (ALLOC_NON_BLOCK|ALLOC_MIN_RESERVE|ALLOC_HIGHATOMIC|ALLOC_OOM) */
                     if (likely(!(alloc_flags & ALLOC_RESERVES))) {
                         unusable_free += READ_ONCE(z->nr_free_highatomic);
                     }
@@ -4873,19 +4923,32 @@ out:
 ![](../images/kernel/mem-free_pages.svg)
 
 ```c
-void free_the_page(struct page *page, unsigned int order)
+void free_pages(unsigned long addr, unsigned int order)
 {
-    if (pcp_allowed_order(order)) /* Via pcp? */
-        free_unref_page(page, order);
-    else
-        __free_pages_ok(page, order, FPI_NONE);
+    if (addr != 0) {
+        VM_BUG_ON(!virt_addr_valid((void *)addr));
+        __free_pages(virt_to_page((void *)addr), order) {
+            /* get PageHead before we drop reference */
+            int head = PageHead(page);
+            struct alloc_tag *tag = pgalloc_tag_get(page);
+
+            if (put_page_testzero(page)) {
+                free_frozen_pages(page, order);
+            } else if (!head) {
+                pgalloc_tag_sub_pages(tag, (1 << order) - 1);
+                while (order-- > 0) {
+                    free_frozen_pages(page + (1 << order), order);
+                }
+            }
+        }
+    }
 }
 ```
 
-## free_unref_page
+## free_frozen_pages
 
 ```c
-void free_unref_page(struct page *page, unsigned int order)
+void free_frozen_pages(struct page *page, unsigned int order)
 {
     unsigned long __maybe_unused UP_flags;
     struct per_cpu_pages *pcp;
@@ -4893,10 +4956,16 @@ void free_unref_page(struct page *page, unsigned int order)
     unsigned long pfn = page_to_pfn(page);
     int migratetype, pcpmigratetype;
 
-    if (!free_unref_page_prepare(page, pfn, order))
+    if (!pcp_allowed_order(order)) {
+        __free_pages_ok(page, order, FPI_NONE);
+        return;
+    }
+
+    if (!free_pages_prepare(page, order))
         return;
 
-    migratetype = pcpmigratetype = get_pcppage_migratetype(page);
+    zone = page_zone(page);
+    migratetype = get_pfnblock_migratetype(page, pfn);
     if (unlikely(migratetype >= MIGRATE_PCPTYPES)) {
         if (unlikely(is_migrate_isolate(migratetype))) {
             free_one_page(page_zone(page), page, pfn, order, migratetype, FPI_NONE);
@@ -4905,11 +4974,10 @@ void free_unref_page(struct page *page, unsigned int order)
         pcpmigratetype = MIGRATE_MOVABLE;
     }
 
-    zone = page_zone(page);
     pcp_trylock_prepare(UP_flags);
     pcp = pcp_spin_trylock(zone->per_cpu_pageset);
     if (pcp) {
-        free_unref_page_commit(zone, pcp, page, pcpmigratetype, order) {
+        free_frozen_page_commit(zone, pcp, page, pcpmigratetype, order) {
             int high, batch;
             int pindex;
             bool free_high = false;
@@ -4997,18 +5065,11 @@ void free_unref_page(struct page *page, unsigned int order)
 ```c
 void __free_pages_ok(struct page *page, unsigned int order, fpi_t fpi_flags)
 {
-    int migratetype;
     unsigned long pfn = page_to_pfn(page);
     struct zone *zone = page_zone(page);
 
-    if (!free_pages_prepare(page, order, fpi_flags))
-        return;
-
-    migratetype = get_pfnblock_migratetype(page, pfn);
-
-    free_one_page(zone, page, pfn, order, migratetype, fpi_flags);
-
-    __count_vm_events(PGFREE, 1 << order);
+    if (free_pages_prepare(page, order))
+        free_one_page(zone, page, pfn, order, fpi_flags);
 }
 ```
 
@@ -5016,90 +5077,117 @@ void __free_pages_ok(struct page *page, unsigned int order, fpi_t fpi_flags)
 free_one_page(zone, page, pfn, order, migratetype, FPI_NONE) {
     unsigned long flags;
 
-    spin_lock_irqsave(&zone->lock, flags);
-    if (unlikely(has_isolate_pageblock(zone) ||
-        is_migrate_isolate(migratetype))) {
-        migratetype = get_pfnblock_migratetype(page, pfn);
+    split_large_buddy(zone, page, pfn, order, fpi_flags) {
+        unsigned long end = pfn + (1 << order);
+
+        VM_WARN_ON_ONCE(!IS_ALIGNED(pfn, 1 << order));
+        /* Caller removed page from freelist, buddy info cleared! */
+        VM_WARN_ON_ONCE(PageBuddy(page));
+
+        if (order > pageblock_order)
+            order = pageblock_order;
+
+        do {
+            int mt = get_pfnblock_migratetype(page, pfn);
+
+            __free_one_page(page, pfn, zone, order, mt, fpi) {
+                --->
+            }
+            pfn += 1 << order;
+            if (pfn == end)
+                break;
+            page = pfn_to_page(pfn);
+        } while (1);
     }
-    __free_one_page(page, pfn, zone, order, migratetype, fpi_flags) {
-        while (order < MAX_PAGE_ORDER) {
-            if (compaction_capture(capc, page, order, migratetype)) {
-                __mod_zone_freepage_state(zone, -(1 << order), migratetype);
-                return;
+}
+```
+
+```c
+__free_one_page(page, pfn, zone, order, migratetype, fpi_flags) {
+    struct capture_control *capc = task_capc(zone);
+
+    while (order < MAX_PAGE_ORDER) {
+        int buddy_mt = migratetype;
+
+        if (compaction_capture(capc, page, order, migratetype)) {
+            __mod_zone_freepage_state(zone, -(1 << order), migratetype);
+            return;
+        }
+
+        buddy = find_buddy_page_pfn(page, pfn, order, &buddy_pfn) {
+            unsigned long __buddy_pfn = __find_buddy_pfn(pfn, order) {
+                return page_pfn ^ (1 << order);
+            }
+            struct page *buddy;
+
+            buddy = page + (__buddy_pfn - pfn);
+            if (buddy_pfn) {
+                *buddy_pfn = __buddy_pfn;
             }
 
-            buddy = find_buddy_page_pfn(page, pfn, order, &buddy_pfn) {
-                unsigned long __buddy_pfn = __find_buddy_pfn(pfn, order) {
-                    return page_pfn ^ (1 << order);
-                }
-                struct page *buddy;
+            ret = page_is_buddy(page, buddy, order){
+                if (!page_is_guard(buddy) && !PageBuddy(buddy))
+                    return false;
+                if (buddy_order(buddy) != order)
+                    return false;
+                if (page_zone_id(page) != page_zone_id(buddy))
+                    return false;
 
-                buddy = page + (__buddy_pfn - pfn);
-                if (buddy_pfn) {
-                    *buddy_pfn = __buddy_pfn;
-                }
+                VM_BUG_ON_PAGE(page_count(buddy) != 0, buddy);
 
-                ret = page_is_buddy(page, buddy, order){
-                    if (!page_is_guard(buddy) && !PageBuddy(buddy))
-                        return false;
-                    if (buddy_order(buddy) != order)
-                        return false;
-                    if (page_zone_id(page) != page_zone_id(buddy))
-                        return false;
-
-                    VM_BUG_ON_PAGE(page_count(buddy) != 0, buddy);
-
-                    return true;
-                }
-                if (ret) {
-                    return buddy;
-                }
-                return NULL;
+                return true;
             }
-            if (!buddy)
+            if (ret) {
+                return buddy;
+            }
+            return NULL;
+        }
+        if (!buddy)
+            goto done_merging;
+
+        if (unlikely(order >= pageblock_order)) {
+            int buddy_mt = get_pfnblock_migratetype(buddy, buddy_pfn);
+
+            if (migratetype != buddy_mt
+                    && (!migratetype_is_mergeable(migratetype) ||
+                        !migratetype_is_mergeable(buddy_mt)))
                 goto done_merging;
-
-            if (unlikely(order >= pageblock_order)) {
-                int buddy_mt = get_pfnblock_migratetype(buddy, buddy_pfn);
-
-                if (migratetype != buddy_mt
-                        && (!migratetype_is_mergeable(migratetype) ||
-                            !migratetype_is_mergeable(buddy_mt)))
-                    goto done_merging;
-            }
-
-            if (page_is_guard(buddy))
-                clear_page_guard(zone, buddy, order, migratetype);
-            else
-                del_page_from_free_list(buddy, zone, order);
-            combined_pfn = buddy_pfn & pfn;
-            page = page + (combined_pfn - pfn);
-            pfn = combined_pfn;
-            order++;
         }
 
-    done_merging:
-        set_buddy_order(page, order);
-
-        if (fpi_flags & FPI_TO_TAIL)
-            to_tail = true;
-        else if (is_shuffle_order(order))
-            to_tail = shuffle_pick_tail();
+        if (page_is_guard(buddy))
+            clear_page_guard(zone, buddy, order, migratetype);
         else
-            to_tail = buddy_merge_likely(pfn, buddy_pfn, page, order);
+            del_page_from_free_list(buddy, zone, order);
 
-        if (to_tail)
-            add_to_free_list_tail(page, zone, order, migratetype);
-        else
-            add_to_free_list(page, zone, order, migratetype);
-
-        /* Notify page reporting subsystem of freed page */
-        if (!(fpi_flags & FPI_SKIP_REPORT_NOTIFY)) {
-            page_reporting_notify_free(order);
+        if (unlikely(buddy_mt != migratetype)) {
+            set_pageblock_migratetype(buddy, migratetype);
         }
+
+        combined_pfn = buddy_pfn & pfn;
+        page = page + (combined_pfn - pfn);
+        pfn = combined_pfn;
+        order++;
     }
 
-    spin_unlock_irqrestore(&zone->lock, flags);
+done_merging:
+    set_buddy_order(page, order);
+
+    if (fpi_flags & FPI_TO_TAIL)
+        to_tail = true;
+    else if (is_shuffle_order(order))
+        to_tail = shuffle_pick_tail();
+    else
+        to_tail = buddy_merge_likely(pfn, buddy_pfn, page, order);
+
+    if (to_tail)
+        add_to_free_list_tail(page, zone, order, migratetype);
+    else
+        add_to_free_list(page, zone, order, migratetype);
+
+    /* Notify page reporting subsystem of freed page */
+    if (!(fpi_flags & FPI_SKIP_REPORT_NOTIFY)) {
+        page_reporting_notify_free(order);
+    }
 }
 ```
 
@@ -7621,6 +7709,10 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
 
 # page_fault
 
+![](../images/kernel/intr-arch.svg)
+
+---
+
 ![](../images/kernel/mem-page-fault.png)
 
 ![](../images/kernel/mem-fault-0.png)
@@ -7771,16 +7863,15 @@ handle_mm_fault(vma, address, flags, regs);
                         /* 2. file fault */
                         return do_fault(vmf) {
                             /* 2.1 read fault */
-                            do_read_fault();
-                                --->
-
-                            /* 2.2 cow fault */
-                            do_cow_fault();
-                                --->
-
-                            /* 2.3 shared fault */
-                            do_shared_fault();
-                                --->
+                            if (!(vmf->flags & FAULT_FLAG_WRITE)) {
+                                do_read_fault();
+                            } else if (!(vma->vm_flags & VM_SHARED)) {
+                                /* 2.2 cow fault */
+                                do_cow_fault();
+                            } else {
+                                /* 2.3 shared fault */
+                                do_shared_fault();
+                            }
                         }
                     }
                 }
@@ -7939,6 +8030,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
     if (!pte_unmap_same(vmf))
         goto out;
 
+/* 1. find swp_entry */
     entry = pte_to_swp_entry(vmf->orig_pte);
     if (unlikely(non_swap_entry(entry))) {
         if (is_migration_entry(entry)) {
@@ -7956,6 +8048,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
     if (unlikely(!si))
         goto out;
 
+/* 2. get swp cache page */
     folio = swap_cache_get_folio(entry, vma, vmf->address);
     if (folio) {
         page = folio_file_page(folio, swp_offset(entry));
@@ -7963,7 +8056,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
     swapcache = folio;
 
     if (!folio) {
-        /* the 1st time of page fault */
+        /* the 1st time of page fault: for shared swap cache between processes */
         if (data_race(si->flags & SWP_SYNCHRONOUS_IO) && __swap_count(entry) == 1) {
             folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE, 0, vma, vmf->address, false);
             page = &folio->page;
@@ -8070,7 +8163,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
     arch_swap_restore(entry, folio);
 
-    /* Remove the swap entry and conditionally try to free up the swapcache. */
+/* 3. free the swap entry and conditionally try to free up the swapcache. */
     swap_free(entry)
         --->
     ret = should_try_to_free_swap(folio, vma, vmf->flags) {
@@ -8114,6 +8207,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
         folio_add_anon_rmap_pte(folio, page, vma, vmf->address, rmap_flags);
     }
 
+/* 4. set pte, build mapping */
     set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
     arch_do_swap_page(vma->vm_mm, vma, vmf->address, pte, vmf->orig_pte);
 
@@ -8139,6 +8233,7 @@ out:
     if (si)
         put_swap_device(si);
     return ret;
+
 out_nomap:
     if (vmf->pte)
         pte_unmap_unlock(vmf->pte, vmf->ptl);
@@ -8162,28 +8257,78 @@ out_release:
 
 ---
 
-![](../images/kernel/mem-fault-wp_page_copy.png)
-
+![](../images/kernel/mem-fault-wp_page_copy.png) |
 
 ```c
 do_wp_page(vmf) {
-    vmf->page = vm_normal_page()
-    folio = page_folio(vmf->page)
+    const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+    struct vm_area_struct *vma = vmf->vma;
+    struct folio *folio = NULL;
+    pte_t pte;
 
-    /* Shared mapping */
+    if (likely(!unshare)) {
+        if (userfaultfd_pte_wp(vma, ptep_get(vmf->pte))) {
+            if (!userfaultfd_wp_async(vma)) {
+                pte_unmap_unlock(vmf->pte, vmf->ptl);
+                return handle_userfault(vmf, VM_UFFD_WP);
+            }
+
+            pte = pte_clear_uffd_wp(ptep_get(vmf->pte));
+
+            set_pte_at(vma->vm_mm, vmf->address, vmf->pte, pte);
+
+            vmf->orig_pte = pte;
+        }
+
+        /* Userfaultfd write-protect can defer flushes. Ensure the TLB
+         * is flushed in this case before copying. */
+        if (unlikely(userfaultfd_wp(vmf->vma) && mm_tlb_flush_pending(vmf->vma->vm_mm)))
+            flush_tlb_page(vmf->vma, vmf->address);
+    }
+
+    /* gets the page associated with a pte. */
+    vmf->page = vm_normal_page(vma, vmf->address, vmf->orig_pte);
+
+    if (vmf->page)
+        folio = page_folio(vmf->page);
+
+/* 1. Shared mapping */
     if (vma->vm_flags & (VM_SHARED | VM_MAYSHARE)) {
         if (!vmf->page) {
+/* 1.1 pfn shared mapping: Page-ranges managed without "struct page", just pure PFN  */
             return wp_pfn_shared(vmf) {
+                struct vm_area_struct *vma = vmf->vma;
 
+                if (vma->vm_ops && vma->vm_ops->pfn_mkwrite) {
+                    vm_fault_t ret;
+
+                    pte_unmap_unlock(vmf->pte, vmf->ptl);
+                    ret = vmf_can_call_fault(vmf);
+                    if (ret)
+                        return ret;
+
+                    vmf->flags |= FAULT_FLAG_MKWRITE;
+                    /* Validate Access: Ensures the write is allowed (e.g., within bounds, permissions).
+                     * Prepare Memory: May notify hardware (e.g., GPU) or update metadata.
+                     * Update PTE: Sets PTE_WRITABLE (e.g., AP = 01 on ARM64) to allow the write.
+                     * Dirty Tracking: Optional, driver-specific; no address_space for PFN mappings, so dirtying is handled differently (e.g., via hardware or driver state). */
+                    ret = vma->vm_ops->pfn_mkwrite(vmf);
+                    if (ret & (VM_FAULT_ERROR | VM_FAULT_NOPAGE))
+                        return ret;
+                    return finish_mkwrite_fault(vmf, NULL);
+                }
+                wp_page_reuse(vmf, NULL);
+                return 0;
             }
         }
+/* 1.2 page shared mapping */
         return wp_page_shared(vmf, folio) {
             do_page_mkwrite();
         }
     }
 
-    /* Private mapping
-     * the last proc can reuse the folio, others need COW */
+/* 2. Private mapping
+ * 2.1 the last proc can reuse the folio */
     if (folio && folio_test_anon(folio) &&
         (PageAnonExclusive(vmf->page) || wp_can_reuse_anon_folio(folio, vma))) {
         if (!PageAnonExclusive(vmf->page))
@@ -8199,6 +8344,7 @@ do_wp_page(vmf) {
         return 0;
     }
 
+/* 2.2. others need COW */
     return wp_page_copy(vmf) {
         const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
 
@@ -8208,11 +8354,13 @@ do_wp_page(vmf) {
         if (unlikely(ret))
             goto out;
 
+/* 2.2.1 alloc new folio */
         pfn_is_zero = is_zero_pfn(pte_pfn(vmf->orig_pte));
         new_folio = folio_prealloc(mm, vma, vmf->address, pfn_is_zero);
         if (!new_folio)
             goto oom;
 
+/* 2.2.2 copy user */
         if (!pfn_is_zero) {
             int err;
             err = __wp_page_copy_user(&new_folio->page, vmf->page, vmf);
@@ -8234,6 +8382,7 @@ do_wp_page(vmf) {
                     (vmf->address & PAGE_MASK) + PAGE_SIZE);
         mmu_notifier_invalidate_range_start(&range);
 
+/* 2.2.3 set pte */
         vmf->pte = pte_offset_map_lock(mm, vmf->pmd, vmf->address, &vmf->ptl);
         if (likely(vmf->pte && pte_same(ptep_get(vmf->pte), vmf->orig_pte))) {
             flush_cache_page(vma, vmf->address, pte_pfn(vmf->orig_pte));
@@ -8248,9 +8397,9 @@ do_wp_page(vmf) {
                 entry = maybe_mkwrite(pte_mkdirty(entry), vma);
             }
 
+/* 2.2.4 rmap, lru, cgroup, mmu_notifier */
             ptep_clear_flush(vma, vmf->address, vmf->pte);
             folio_add_new_anon_rmap(new_folio, vma, vmf->address);
-                --->
             folio_add_lru_vma(new_folio, vma);
 
             BUG_ON(unshare && pte_write(entry));
@@ -8305,10 +8454,8 @@ __do_kernel_fault(unsigned long addr, unsigned long esr,
 {
     const char *msg;
 
-    /*
-    * Are we prepared to handle this kernel fault?
-    * We are almost certainly not prepared to handle instruction faults.
-    */
+    /* Are we prepared to handle this kernel fault?
+     * We are almost certainly not prepared to handle instruction faults. */
     if (!is_el1_instruction_abort(esr) && fixup_exception(regs))
         return;
 
@@ -8344,7 +8491,38 @@ __do_kernel_fault(unsigned long addr, unsigned long esr,
 
     die_kernel_fault(msg, addr, esr, regs);
 }
+```
 
+```c
+struct exception_table_entry
+{
+    int insn, fixup;
+    short type, data;
+};
+
+#define __ASM_EXTABLE_RAW(insn, fixup, type, data)  \
+    .pushsection    __ex_table, "a";                \
+    .align        2;                                \
+    .long        ((insn) - .);                      \
+    .long        ((fixup) - .);                     \
+    .short        (type);                           \
+    .short        (data);                           \
+    .popsection;
+
+start_kernel() {
+    /* Sort the kernel's built-in exception table */
+    void __init sort_main_extable(void)
+    {
+        if (main_extable_sort_needed &&
+            &__stop___ex_table > &__start___ex_table) {
+            pr_notice("Sorting __ex_table...\n");
+            sort_extable(__start___ex_table, __stop___ex_table);
+        }
+    }
+}
+```
+
+```c
 bool fixup_exception(struct pt_regs *regs)
 {
     const struct exception_table_entry *ex;
@@ -9011,8 +9189,6 @@ out:
 ![](../images/kernel/mem-rmap-arch.svg)
 
 ![](../images/kernel/mem-rmap-1.png)
-
-![](../images/kernel/mem-rmap.svg)
 
 * [wowotech - 逆向映射的演进](http://www.wowotech.net/memory_management/reverse_mapping.html)
 * [五花肉 - linux内核反向映射(RMAP)技术分析 - 知乎](https://zhuanlan.zhihu.com/p/564867734)
@@ -9833,13 +10009,26 @@ Q: how workingset works?
 2. writeback the modified file pages to storage device
 3. writeback annonymous pages to swapping area
 
-memory candidate for linux memory reclaim:
-1. **Page Cache**: This is memory used to cache files and block device data. When the system is under memory pressure, the kernel can reclaim page cache pages, as they can be re-read from disk if needed.
-2. **Swap Cache**: These are pages that have been swapped out to disk but are still cached in memory. If memory is needed, these pages can be reclaimed, as they can be retrieved from the swap area on disk.
-3. **Inactive Pages**: Pages that have not been accessed recently. The kernel maintains lists of active and inactive pages, and inactive pages are more likely to be reclaimed than active pages.
-4. **Anonymous Pages**: These are pages used by processes that do not map to any file (e.g., heap and stack memory). If these pages are not actively used, they can be swapped out to disk.
-5. **Slab Cache**: Memory allocated for kernel objects and data structures. While this memory is often actively used, some of it can be reclaimed if it becomes unused or if memory pressure is high.
-6. **Clean Pages**: Pages that have not been modified and contain data that can be reloaded from disk. These are easier to reclaim than dirty pages, which would need to be written to disk before being freed.
+**Memory candidate for page reclaim:**
+
+| Type | Location | Reclaim Method | Key Challenge |
+| :-: |:-: |:-: |:-: |
+| Anonymous | LRU anon lists | Swap to disk | I/O overhead, pinned pages |
+| File-Backed | LRU file lists | Drop, writeback, unmap | Dirty page I/O |
+| Slab Cache | Shrinker-managed | Subsystem-specific free | Partial page reclaim |
+| Unevictable | Unevictable LRU | Skipped (special cases) | Requires unlocking |
+| Huge Pages | Compound pages | Split or free to pool | Splitting overhead |
+| Free Pages | Buddy free lists | Compaction | Fragmentation |
+| Movable Non-LRU | Subsystem-managed | Custom migration | Subsystem cooperation |
+
+1. **File Page Cache**: This is memory used to cache files and block device data. When the system is under memory pressure, the kernel can reclaim page cache pages, as they can be re-read from disk if needed.
+2. **Anonymous Pages**: These are pages used by processes that do not map to any file (e.g., heap and stack memory). If these pages are not actively used, they can be swapped out to disk.
+3. **Swap Cache**: These are pages that have been swapped out to disk but are still cached in memory. If memory is needed, these pages can be reclaimed, as they can be retrieved from the swap area on disk.
+4. **Slab Cache**: Memory allocated for kernel objects and data structures (e.g., **inodes**, **dentries**, or **buffers**). While this memory is often actively used, some of it can be reclaimed if it becomes unused or if memory pressure is high.
+5. **Movable Non-LRU Pages**: Pages not on LRU lists but marked as movable by subsystems (e.g., device drivers, balloon drivers). Managed by custom migration callbacks (e.g., isolate_movable_page).
+
+    * Reclaim Process: Isolated via isolate_movable_page if the subsystem allows it (e.g., in isolate_migratepages_block).
+
 
 ![](../images/kernel/mem-page_reclaim.svg)
 
@@ -11664,12 +11853,12 @@ struct shrinker {
     unsigned long (*scan_objects)(
         struct shrinker *, struct shrink_control *sc);
 
-    long batch;	/* reclaim batch size, 0 = default */
-    int seeks;	/* seeks to recreate an obj */
+    long batch; /* reclaim batch size, 0 = default */
+    int seeks;  /* seeks to recreate an obj */
     unsigned flags;
 
     refcount_t refcount;
-    struct completion done;	/* use to wait for refcount to reach 0 */
+    struct completion done; /* use to wait for refcount to reach 0 */
     struct rcu_head rcu;
 
     void *private_data;
@@ -11711,7 +11900,7 @@ static struct ctl_table kern_table[] = {
 };
 
 int drop_caches_sysctl_handler(struct ctl_table *table, int write,
-		void *buffer, size_t *length, loff_t *ppos)
+        void *buffer, size_t *length, loff_t *ppos)
 {
     int ret;
 
@@ -11976,11 +12165,11 @@ unsigned long super_cache_scan(struct shrinker *shrink,
     struct shrink_control *sc)
 {
     struct super_block *sb;
-    long	fs_objects = 0;
-    long	total_objects;
-    long	freed = 0;
-    long	dentries;
-    long	inodes;
+    long    fs_objects = 0;
+    long    total_objects;
+    long    freed = 0;
+    long    dentries;
+    long    inodes;
 
     sb = shrink->private_data;
 
@@ -13155,9 +13344,25 @@ bool remove_migration_pte(struct folio *folio,
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
 
-![](../images/kernel/mem-page_compact-points.png)
+---
 
-![](../images/kernel/mem-page_compact-cases.png)
+| A | B |
+| - | - |
+| ![](../images/kernel/mem-page_compact-points.png) | ![](../images/kernel/mem-page_compact-cases.png) |
+
+* **MIGRATE_ASYNC** means never block
+* **MIGRATE_SYNC_LIGHT** allow blocking on most operations but not ->writepage as the potential stall time is too significant
+* **MIGRATE_SYNC** will block when migrating pages
+
+---
+
+| Aspect | Dirty Pages | Writable Pages |
+| :-: | :-: | :-: |
+| Definition | Modified in memory, not synced to disk. | Pages with write permission (dirty or clean). |
+| State | Always writable and modified. | May be clean or dirty. |
+| Migration Handling | May require writeback or special care. | Requires PTE updates, locking; simpler if clean. |
+| Compaction Impact | Skipped in MIGRATE_ASYNC if complex.  | Movable if locked, regardless of dirtiness. |
+| Examples | Modified file pages, swapped anon pages. | Process heap, stack, or file mappings. |
 
 ```c
 struct zone {
@@ -13176,6 +13381,46 @@ struct zone {
     bool                compact_blockskip_flush;
 };
 
+struct compact_control {
+    struct list_head freepages[NR_PAGE_ORDERS]; /* List of free pages to migrate to */
+    struct list_head migratepages;  /* List of pages being migrated */
+    unsigned int nr_freepages;      /* Number of isolated free pages */
+    unsigned int nr_migratepages;   /* Number of pages to migrate */
+    unsigned long free_pfn;         /* isolate_freepages search base */
+
+    /* Acts as an in/out parameter to page isolation for migration.
+    * isolate_migratepages uses it as a search base.
+    * isolate_migratepages_block will update the value to the next pfn
+    * after the last isolated one. */
+    unsigned long migrate_pfn;
+    unsigned long fast_start_pfn;   /* a pfn to start linear scan from */
+    struct zone *zone;
+    unsigned long total_migrate_scanned;
+    unsigned long total_free_scanned;
+    unsigned short fast_search_fail;/* failures to use free list searches */
+    short search_order;             /* order to start a fast search at */
+    const gfp_t gfp_mask;           /* gfp mask of a direct compactor */
+    int order;                      /* order a direct compactor needs */
+    int migratetype;                /* migratetype of direct compactor */
+    const unsigned int alloc_flags; /* alloc flags of a direct compactor */
+    const int highest_zoneidx;       /* zone index of a direct compactor */
+    enum migrate_mode mode;         /* Async or sync migration mode */
+    bool ignore_skip_hint;          /* Scan blocks even if marked skip */
+    bool no_set_skip_hint;          /* Don't mark blocks for skipping */
+    bool ignore_block_suitable;     /* Scan blocks considered unsuitable */
+    bool direct_compaction;         /* False from kcompactd or /proc/... */
+    bool proactive_compaction;      /* kcompactd proactive compaction */
+    bool whole_zone;                /* Whole zone should/has been scanned */
+    bool contended;                 /* Signal lock contention */
+    bool finish_pageblock;          /* Scan the remainder of a pageblock. Used
+                    * when there are potentially transient
+                    * isolation or migration failures to
+                    * ensure forward progress.
+                    */
+    bool alloc_contig;              /* alloc_contig_range allocation */
+};
+```
+
 ```c
 status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highest_zoneidx, capture) {
     enum compact_result ret;
@@ -13185,7 +13430,7 @@ status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highes
         .gfp_mask = gfp_mask, /* compact file pages for __GFP_FS */
         .zone = zone,
         /* not compact dirty and writing page for MIGRATE_ASYNC & MIGRATE_SYNC_LIGHT */
-        .mode = (prio == COMPACT_PRIO_ASYNC) ? MIGRATE_ASYNC :    MIGRATE_SYNC_LIGHT,
+        .mode = (prio == COMPACT_PRIO_ASYNC) ? MIGRATE_ASYNC : MIGRATE_SYNC_LIGHT,
         .alloc_flags = alloc_flags,
         .highest_zoneidx = highest_zoneidx,
         .direct_compaction = true,
@@ -13368,7 +13613,7 @@ status = compact_zone_order(zone, order, gfp_mask, prio, alloc_flags, ac->highes
 
     out:
         /* Release free pages and update where the free scanner should restart,
-        * so we don't leave any returned pages behind in the next attempt. */
+         * so we don't leave any returned pages behind in the next attempt. */
         if (cc->nr_freepages > 0) {
             unsigned long free_pfn = release_freepages(&cc->freepages);
 
@@ -13408,7 +13653,7 @@ enum compact_result compact_finished(struct compact_control *cc)
         const int migratetype = cc->migratetype;
         int ret;
 
-        /* 1. Compaction run completes if the migrate and free scanner meet */
+/* 1. Compaction run completes if the migrate and free scanner meet */
         if (compact_scanners_met(cc)) {
             reset_cached_positions(cc->zone) {
                 zone->compact_cached_migrate_pfn[0] = zone->zone_start_pfn;
@@ -13426,7 +13671,7 @@ enum compact_result compact_finished(struct compact_control *cc)
             return (cc->whole_zone) ? COMPACT_COMPLETE : COMPACT_PARTIAL_SKIPPED;
         }
 
-        /* 2. proactive mode: 1. swapd is running 2. fragementation score under wmark */
+/* 2. proactive mode: fragementation score under wmark */
         if (cc->proactive_compaction) {
             int score, wmark_low;
             pg_data_t *pgdat;
@@ -13435,7 +13680,7 @@ enum compact_result compact_finished(struct compact_control *cc)
             if (kswapd_is_running(pgdat))
                 return COMPACT_PARTIAL_SKIPPED;
 
-            score = fragmentation_score_zone(cc->zone);
+              score = fragmentation_score_zone(cc->zone);
                 --->
             wmark_low = fragmentation_score_wmark(true);
                 --->
@@ -13457,7 +13702,7 @@ enum compact_result compact_finished(struct compact_control *cc)
         if (!pageblock_aligned(cc->migrate_pfn))
             return COMPACT_CONTINUE;
 
-        /* 3. Direct compactor */
+/* 3. Direct compactor */
         ret = COMPACT_NO_SUITABLE_PAGE;
         for (order = cc->order; order < NR_PAGE_ORDERS; order++) {
             struct free_area *area = &cc->zone->free_area[order];
@@ -13494,8 +13739,6 @@ enum compact_result compact_finished(struct compact_control *cc)
 ```
 
 ## isolate_migratepages
-
-![](../images/kernel/mem-isolate_migratepages-flow.png)
 
 ```c
 isolate_migrate_t isolate_migratepages(struct compact_control *cc)
@@ -13613,35 +13856,41 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
     int order;
     bool found_block = false;
 
+/* 1. Initialization and Early Checks: */
+
     /* Skip hints are relied on to avoid repeats on the fast search */
     if (cc->ignore_skip_hint)
         return pfn;
 
     /* If the pageblock should be finished then do not select a different
-    * pageblock. */
+     * pageblock. */
     if (cc->finish_pageblock)
         return pfn;
 
-    /* If the migrate_pfn is not at the start of a zone or the start
+    /* continus scan:
+    * If the migrate_pfn is not at the start of a zone or the start
     * of a pageblock then assume this is a continuation of a previous
     * scan restarted due to COMPACT_CLUSTER_MAX. */
     if (pfn != cc->zone->zone_start_pfn && pfn != pageblock_start_pfn(pfn))
         return pfn;
 
-    /* For smaller orders, just linearly scan as the number of pages
+/* 2. Small Order Optimization:
+    * For smaller orders, just linearly scan as the number of pages
     * to migrate should be relatively small and does not necessarily
     * justify freeing up a large block for a small allocation. */
     if (cc->order <= PAGE_ALLOC_COSTLY_ORDER)
         return pfn;
 
-    /* Only allow kcompactd and direct requests for movable pages to
+/* 3. Direct Compaction Restriction
+    * Only allow kcompactd and direct requests for movable pages to
     * quickly clear out a MOVABLE pageblock for allocation. This
     * reduces the risk that a large movable pageblock is freed for
     * an unmovable/reclaimable small allocation. */
     if (cc->direct_compaction && cc->migratetype != MIGRATE_MOVABLE)
         return pfn;
 
-    /* When starting the migration scanner, pick any pageblock within the
+/* 4. Search Space Determination:
+    * When starting the migration scanner, pick any pageblock within the
     * first half of the search space. Otherwise try and pick a pageblock
     * within the first eighth to reduce the chances that a migration
     * target later becomes a source. */
@@ -13650,6 +13899,7 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
         distance >>= 2;
     high_pfn = pageblock_start_pfn(cc->migrate_pfn + distance);
 
+/* 5. Fast Search Loop: */
     for (order = cc->order - 1;
         order >= PAGE_ALLOC_COSTLY_ORDER && !found_block && nr_scanned < limit;
         order--) {
@@ -13718,12 +13968,13 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
 
 ### isolate_migratepages_block
 
-1. Not isolate huge pages, but alloc_contig_range may dissolve hugetlbfs
-2. Not isolate free buddy pages
-3. non-LRU page allocated for kernel usage, can be isolated if the developer impelements isolate_page, migratepage and putback_page operations
-4. Not isolatte pinned pages
-5. Only isolate annonymous pages for GFP_NOFS
+1. Not isolate **huge pages**, but **alloc_contig_range** may dissolve hugetlbfs
+2. Not isolate **free buddy pages**
+3. **non-LRU** page allocated for kernel usage, can be isolated if the developer impelements isolate_page, migratepage and putback_page operations
+4. Not isolate **pinned pages**
+5. Not isolate file-mapped page on GFP_NOFS
 6. Isolation affected by policy: ISOLATE_ASYNC_MIGRATE wont isolate dirty pages and writing pages
+7. **Direct && Async** compact will skip the whole order-aligned page block on any failure within the block and put back any isolated pages. This behavior is contorled by `skip_on_failur` local varible.
 
 ```c
 int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn,
@@ -13738,6 +13989,8 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
     struct page *page = NULL, *valid_page = NULL;
     struct address_space *mapping;
     unsigned long start_pfn = low_pfn;
+    /* skip to the end of the current order-aligned block
+     * if isolating a page fails, rather than continuing PFN-by-PFN within that block. */
     bool skip_on_failure = false;
     unsigned long next_skip_pfn = 0;
     bool skip_updated = false;
@@ -13769,9 +14022,9 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
 
         if (skip_on_failure && low_pfn >= next_skip_pfn) {
             /* We have isolated all migration candidates in the
-            * previous order-aligned block, and did not skip it due
-            * to failure. We should migrate the pages now and
-            * hopefully succeed compaction. */
+             * previous order-aligned block, and did not skip it due
+             * to failure. We should migrate the pages now and
+             * hopefully succeed compaction. */
             if (nr_isolated)
                 break;
 
@@ -14006,6 +14259,8 @@ isolate_fail_put:
         folio_put(folio);
 
 isolate_fail:
+        /* skip the remainder of the page block if !skip_on_failure
+         * which is !(direct_compact && MIGRATE_ASYNC) */
         if (!skip_on_failure && ret != -ENOMEM)
             continue;
 
@@ -14025,7 +14280,7 @@ isolate_fail:
         if (low_pfn < next_skip_pfn) {
             low_pfn = next_skip_pfn - 1;
             /* The check near the loop beginning would have updated
-            * next_skip_pfn too, but this is a bit simpler. */
+             * next_skip_pfn too, but this is a bit simpler. */
             next_skip_pfn += 1UL << cc->order;
         }
 
@@ -14131,7 +14386,7 @@ void isolate_freepages(struct compact_control *cc)
         if (!ret)
             continue;
 
-        if (!isolation_suitable(cc, page))
+        if (!isolation_suitable(cc, page)) /* PB_migrate_skip */
             continue;
 
         /* Found a block suitable for isolating free pages from. */
@@ -14415,6 +14670,7 @@ isolate_freepages_block(cc, &isolate_start_pfn/*start_pfn*/,
             goto isolate_fail;
         }
 
+        /* only return true for the head page of a free buddy block */
         if (!PageBuddy(page))
             goto isolate_fail;
 
@@ -14427,7 +14683,8 @@ isolate_freepages_block(cc, &isolate_start_pfn/*start_pfn*/,
                 goto isolate_fail;
         }
 
-        /* Found a free page, will break it into order-0 pages */
+        /* If (!PageBuddy(page)) ensures this is the head pages of a free buddy block
+         * Found a free page, will break it into order-0 pages */
         order = buddy_order(page);
         isolated = __isolate_free_page(page, order) {
             struct zone *zone = page_zone(page);
@@ -14473,6 +14730,7 @@ isolate_freepages_block(cc, &isolate_start_pfn/*start_pfn*/,
         /* Advance to the end of split page */
         blockpfn += isolated - 1;
         page += isolated - 1;
+
         continue;
 
 isolate_fail:
@@ -16216,7 +16474,7 @@ bool add_to_swap(struct folio *folio)
 
         struct address_space *address_space = swap_address_space(entry) {
             return &swapper_spaces[swp_type(entry)][swp_offset(entry)
-		        >> SWAP_ADDRESS_SPACE_SHIFT];
+                >> SWAP_ADDRESS_SPACE_SHIFT];
         }
         pgoff_t idx = swp_offset(entry);
         XA_STATE_ORDER(xas, &address_space->i_pages, idx, folio_order(folio));
@@ -16301,7 +16559,7 @@ start_over:
                 spin_unlock(&si->lock);
                 goto nextsi;
             }
-          	/* this swap partition is used up, rm it from available list */
+              /* this swap partition is used up, rm it from available list */
             __del_from_avail_list(si);
             spin_unlock(&si->lock);
             goto nextsi;
@@ -16353,8 +16611,8 @@ scan_swap_map_slots(
     si->flags += SWP_SCANNING;
 
     /* Use percpu scan base for SSD to reduce lock contention on
-	 * cluster and swap cache.  For HDD, sequential access is more
-	 * important. */
+     * cluster and swap cache.  For HDD, sequential access is more
+     * important. */
     if (si->flags & SWP_SOLIDSTATE)
         scan_base = this_cpu_read(*si->cluster_next_cpu);
     else
