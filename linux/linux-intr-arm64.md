@@ -40,8 +40,8 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 
 ```c
 SYM_CODE_START(vectors)
-    /* ELxt: Exception Level x using the thread stack pointer (SP_EL0)
-     * ELxh: Exception Level x using the handler stack pointer (SP_EL1) */
+    /* t: a thread/task context (normal kernel or user execution).
+     * h: a hypervisor or higher-privilege context (e.g., EL2 handling). */
     kernel_ventry    1, t, 64, sync     // Synchronous EL1t
     kernel_ventry    1, t, 64, irq      // IRQ EL1t
     kernel_ventry    1, t, 64, fiq      // FIQ EL1t
@@ -62,6 +62,11 @@ SYM_CODE_START(vectors)
     kernel_ventry    0, t, 32, fiq      // FIQ 32-bit EL0
     kernel_ventry    0, t, 32, error    // Error 32-bit EL0
 SYM_CODE_END(vectors)
+
+UNHANDLED(el1t, 64, sync)
+UNHANDLED(el1t, 64, irq)
+UNHANDLED(el1t, 64, fiq)
+UNHANDLED(el1t, 64, error)
 
 .macro kernel_ventry, el:req, ht:req, regsize:req, label:req
     .align 7
