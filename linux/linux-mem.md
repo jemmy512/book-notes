@@ -1029,6 +1029,9 @@ Dist: 10 (local)       Dist: 10 (local)   |
 struct zone {
     /* zone watermarks, access with *_wmark_pages(zone) macros */
     unsigned long _watermark[NR_WMARK];
+    /* temporarily increases the effective low watermark
+     * for a memory zone to trigger more aggressive reclaim or compaction
+     * to prevent allocation failures for high-order pages  */
     unsigned long watermark_boost;
 
     unsigned long nr_reserved_highatomic;
@@ -4351,33 +4354,27 @@ int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
 {
     int ret;
 
-    /*
-    * Node reclaim reclaims unmapped file backed pages and
+    /* Node reclaim reclaims unmapped file backed pages and
     * slab pages if we are over the defined limits.
     *
     * A small portion of unmapped file backed pages is needed for
     * file I/O otherwise pages read by file I/O will be immediately
     * thrown out if the node is overallocated. So we do not reclaim
     * if less than a specified percentage of the node is used by
-    * unmapped file backed pages.
-    */
+    * unmapped file backed pages. */
     if (node_pagecache_reclaimable(pgdat) <= pgdat->min_unmapped_pages &&
         node_page_state_pages(pgdat, NR_SLAB_RECLAIMABLE_B) <=
         pgdat->min_slab_pages)
         return NODE_RECLAIM_FULL;
 
-    /*
-    * Do not scan if the allocation should not be delayed.
-    */
+    /* Do not scan if the allocation should not be delayed. */
     if (!gfpflags_allow_blocking(gfp_mask) || (current->flags & PF_MEMALLOC))
         return NODE_RECLAIM_NOSCAN;
 
-    /*
-    * Only run node reclaim on the local node or on nodes that do not
+    /* Only run node reclaim on the local node or on nodes that do not
     * have associated processors. This will favor the local processor
     * over remote processors and spread off node memory allocations
-    * as wide as possible.
-    */
+    * as wide as possible. */
     if (node_state(pgdat->node_id, N_CPU) && pgdat->node_id != numa_node_id())
         return NODE_RECLAIM_NOSCAN;
 
@@ -4405,18 +4402,14 @@ int node_reclaim(struct pglist_data *pgdat, gfp_t gfp_mask, unsigned int order)
         psi_memstall_enter(&pflags);
         delayacct_freepages_start();
         fs_reclaim_acquire(sc.gfp_mask);
-        /*
-        * We need to be able to allocate from the reserves for RECLAIM_UNMAP
-        */
+        /* We need to be able to allocate from the reserves for RECLAIM_UNMAP */
         noreclaim_flag = memalloc_noreclaim_save();
         set_task_reclaim_state(p, &sc.reclaim_state);
 
         if (node_pagecache_reclaimable(pgdat) > pgdat->min_unmapped_pages ||
             node_page_state_pages(pgdat, NR_SLAB_RECLAIMABLE_B) > pgdat->min_slab_pages) {
-            /*
-            * Free memory by calling shrink node with increasing
-            * priorities until we have enough memory freed.
-            */
+            /* Free memory by calling shrink node with increasing
+            * priorities until we have enough memory freed. */
             do {
                 shrink_node(pgdat, &sc);
                     --->
@@ -10003,6 +9996,14 @@ __vmalloc_area_node(area, gfp_mask, prot, shift, node) {
 
 # page_reclaim
 
+![](../images/kernel/mem-page_reclaim.svg)
+
+![](../images/kernel/mem-page_reclaim_cases.png)
+
+![](../images/kernel/mem-page_reclaim-lruvec.png)
+
+* [Overview of Memory Reclaim in the Current Upstream Kernel.pdf](https://lpc.events/event/11/contributions/896/attachments/793/1493/slides-r2.pdf)
+
 Q: how workingset works?
 
 1. directly free the unmodified file pages
@@ -10029,20 +10030,28 @@ Q: how workingset works?
 
     * Reclaim Process: Isolated via isolate_movable_page if the subsystem allows it (e.g., in isolate_migratepages_block).
 
-
-![](../images/kernel/mem-page_reclaim.svg)
-
-![](../images/kernel/mem-page_reclaim_cases.png)
-
-![](../images/kernel/mem-page_reclaim-lruvec.png)
-
-* [Overview of Memory Reclaim in the Current Upstream Kernel.pdf](https://lpc.events/event/11/contributions/896/attachments/793/1493/slides-r2.pdf)
-
 ## lru
 
 * [linux内存回收之 File page的 lru list算法原理](https://zhuanlan.zhihu.com/p/421298579)
 
 ```c
+enum pgdat_flags {
+    /* reclaim scanning has recently found many dirty file pages at the tail of the LRU. */
+    PGDAT_DIRTY,
+
+    /* reclaim scanning has recently found many pages under writeback */
+    PGDAT_WRITEBACK,
+
+    PGDAT_RECLAIM_LOCKED, /* prevents concurrent reclaim */
+};
+
+enum zone_flags {
+    ZONE_BOOSTED_WATERMARK, /* zone recently boosted watermarks.
+                     * Cleared when kswapd is woken. */
+    ZONE_RECLAIM_ACTIVE, /* kswapd may be scanning the zone. */
+    ZONE_BELOW_HIGH,    /* zone is below high watermark. */
+};
+
 typedef struct pglist_data {
     struct lruvec           lruvec;
     struct task_struct*     kswapd;
@@ -10245,6 +10254,14 @@ void lru_add_drain(void)
 
 ## workingset
 
+**Shadow Entries:**
+* When a page is evicted (e.g., file page dropped or anon page swapped), a shadow entry is stored in the page cache’s radix tree (struct address_space->i_pages) or swap cache.
+* This entry records the eviction timestamp (an lruvec counter) rather than the full struct page.
+
+
+
+### workingset_refault
+
 ```c
 void workingset_refault(struct folio *folio, void *shadow)
 {
@@ -10276,48 +10293,15 @@ void workingset_refault(struct folio *folio, void *shadow)
     /* Folio was active prior to eviction */
     if (workingset) {
         folio_set_workingset(folio);
-        lru_note_cost_refault(folio);
+        lru_note_cost_refault(folio) {
+            lru_note_cost(
+                folio_lruvec(folio),
+                folio_is_file_lru(folio),
+                folio_nr_pages(folio),
+                0
+            );
+        }
         mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + file, nr);
-    }
-}
-
-/* folio_mark_accessed -> workingset_activation */
-void workingset_activation(struct folio *folio)
-{
-    struct mem_cgroup *memcg;
-
-    rcu_read_lock();
-
-    memcg = folio_memcg_rcu(folio);
-    if (!mem_cgroup_disabled() && !memcg)
-        goto out;
-    workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio));
-out:
-    rcu_read_unlock();
-}
-
-/* shrink_folio_list -> __remove_mapping -> workingset_eviction */
-void *workingset_eviction(struct folio *folio, struct mem_cgroup *target_memcg)
-{
-    struct pglist_data *pgdat = folio_pgdat(folio);
-    unsigned long eviction;
-    struct lruvec *lruvec;
-    int memcgid;
-
-    lruvec = mem_cgroup_lruvec(target_memcg, pgdat);
-    /* XXX: target_memcg can be NULL, go through lruvec */
-    memcgid = mem_cgroup_id(lruvec_memcg(lruvec));
-    eviction = atomic_long_read(&lruvec->nonresident_age);
-    eviction >>= bucket_order;
-    workingset_age_nonresident(lruvec, folio_nr_pages(folio));
-
-    return pack_shadow(memcgid, pgdat, eviction, folio_test_workingset(folio)) {
-        eviction &= EVICTION_MASK;
-        eviction = (eviction << MEM_CGROUP_ID_SHIFT) | memcgid;
-        eviction = (eviction << NODES_SHIFT) | pgdat->node_id;
-        eviction = (eviction << WORKINGSET_SHIFT) | workingset;
-
-        return xa_mk_value(eviction);
     }
 }
 
@@ -10384,6 +10368,54 @@ bool workingset_test_recent(void *shadow, bool file, bool *workingset)
 }
 ```
 
+### workingset_activation
+
+```c
+/* folio_mark_accessed -> workingset_activation */
+void workingset_activation(struct folio *folio)
+{
+    struct mem_cgroup *memcg;
+
+    rcu_read_lock();
+
+    memcg = folio_memcg_rcu(folio);
+    if (!mem_cgroup_disabled() && !memcg)
+        goto out;
+    workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio));
+out:
+    rcu_read_unlock();
+}
+```
+
+### workingset_eviction
+
+```c
+/* shrink_folio_list -> __remove_mapping -> workingset_eviction */
+void *workingset_eviction(struct folio *folio, struct mem_cgroup *target_memcg)
+{
+    struct pglist_data *pgdat = folio_pgdat(folio);
+    unsigned long eviction;
+    struct lruvec *lruvec;
+    int memcgid;
+
+    lruvec = mem_cgroup_lruvec(target_memcg, pgdat);
+    /* XXX: target_memcg can be NULL, go through lruvec */
+    memcgid = mem_cgroup_id(lruvec_memcg(lruvec));
+    eviction = atomic_long_read(&lruvec->nonresident_age);
+    eviction >>= bucket_order;
+    workingset_age_nonresident(lruvec, folio_nr_pages(folio));
+
+    return pack_shadow(memcgid, pgdat, eviction, folio_test_workingset(folio)) {
+        eviction &= EVICTION_MASK;
+        eviction = (eviction << MEM_CGROUP_ID_SHIFT) | memcgid;
+        eviction = (eviction << NODES_SHIFT) | pgdat->node_id;
+        eviction = (eviction << WORKINGSET_SHIFT) | workingset;
+
+        return xa_mk_value(eviction);
+    }
+}
+```
+
 ## perform_reclaim
 
 ```c
@@ -10406,7 +10438,10 @@ __perform_reclaim(gfp_mask, order, ac) {
             .reclaim_idx = gfp_zone(gfp_mask),
             .order = order,
             .nodemask = nodemask,
-            .priority = DEF_PRIORITY, /* Scan (total_size >> priority) pages at once */
+            /* #define DEF_PRIORITY 12
+             * implies that we will scan 1/4096th of the
+             * queues ("queue_length >> 12") during an aging round. */
+            .priority = DEF_PRIORITY,
             .may_writepage = !laptop_mode,
             .may_unmap = 1,
             .may_swap = 1,
@@ -10685,7 +10720,28 @@ shrink_node(zone->zone_pgdat, sc) {
         return;
     }
 
-    target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat);
+    target_lruvec = mem_cgroup_lruvec(sc->target_mem_cgroup, pgdat) {
+        struct mem_cgroup_per_node *mz;
+        struct lruvec *lruvec;
+
+        if (mem_cgroup_disabled()) {
+            lruvec = &pgdat->__lruvec;
+            goto out;
+        }
+
+        if (!memcg)
+            memcg = root_mem_cgroup;
+
+        mz = memcg->nodeinfo[pgdat->node_id];
+        lruvec = &mz->lruvec;
+    out:
+        /* Since a node can be onlined after the mem_cgroup was created,
+         * we have to be prepared to initialize lruvec->pgdat here;
+         * and if offlined then reonlined, we need to reinitialize it. */
+        if (unlikely(lruvec->pgdat != pgdat))
+            lruvec->pgdat = pgdat;
+        return lruvec;
+    }
 
 again:
     memset(&sc->nr, 0, sizeof(sc->nr));
@@ -10753,7 +10809,43 @@ again:
         reclaim_throttle(pgdat, VMSCAN_THROTTLE_CONGESTED);
     }
 
-    if (should_continue_reclaim(pgdat, nr_node_reclaimed, sc))
+    ret = should_continue_reclaim(pgdat, nr_node_reclaimed, sc) {
+        unsigned long pages_for_compaction;
+        unsigned long inactive_lru_pages;
+        int z;
+
+        /* If not in reclaim/compaction mode, stop */
+        if (!in_reclaim_compaction(sc))
+            return false;
+
+        if (!nr_reclaimed)
+            return false;
+
+        /* If compaction would go ahead or the allocation would succeed, stop */
+        for (z = 0; z <= sc->reclaim_idx; z++) {
+            struct zone *zone = &pgdat->node_zones[z];
+            if (!managed_zone(zone))
+                continue;
+
+            /* Allocation can already succeed, nothing to do */
+            if (zone_watermark_ok(zone, sc->order, min_wmark_pages(zone),
+                        sc->reclaim_idx, 0))
+                return false;
+
+            if (compaction_suitable(zone, sc->order, sc->reclaim_idx))
+                return false;
+        }
+
+        /* If we have not reclaimed enough pages for compaction and the
+         * inactive lists are large enough, continue reclaiming */
+        pages_for_compaction = compact_gap(sc->order);
+        inactive_lru_pages = node_page_state(pgdat, NR_INACTIVE_FILE);
+        if (can_reclaim_anon_pages(NULL, pgdat->node_id, sc))
+            inactive_lru_pages += node_page_state(pgdat, NR_INACTIVE_ANON);
+
+        return inactive_lru_pages > pages_for_compaction;
+    }
+    if (ret)
         goto again;
 
     if (reclaimable)
@@ -10834,6 +10926,9 @@ shrink_node_memcgs(pgdat, sc) {
                         nr[lru] -= nr_to_scan;
                         nr_reclaimed += shrink_list(lru, nr_to_scan, lruvec, sc) {
                             if (is_active_lru(lru)) {
+                                /* may_deactivate       is_file_lru
+                                 * DEACTIVATE_ANON 01   1 << 0 = 01
+                                 * DEACTIVATE_FILE 10   1 << 1 = 10 */
                                 if (sc->may_deactivate & (1 << is_file_lru(lru)))
                                     shrink_active_list(nr_to_scan, lruvec, sc, lru);
                                 else
@@ -10937,11 +11032,13 @@ void get_scan_count(struct lruvec *lruvec, struct scan_control *sc, unsigned lon
         goto out;
     }
 
+    /* Near OOM, priority decrease from DEAFULT to 0 */
     if (!sc->priority && swappiness) {
         scan_balance = SCAN_EQUAL;
         goto out;
     }
 
+    /* Few File Pages */
     if (sc->file_is_tiny) {
         scan_balance = SCAN_ANON;
         goto out;
@@ -10954,10 +11051,12 @@ void get_scan_count(struct lruvec *lruvec, struct scan_control *sc, unsigned lon
 
     scan_balance = SCAN_FRACT;
 
+      /* This "weighted" approach ensures neither anon nor file reclaim
+       * completely dominates the decision, even if one of them has very low or zero cost. */
     total_cost = sc->anon_cost + sc->file_cost;
-    anon_cost = total_cost + sc->anon_cost;
-    file_cost = total_cost + sc->file_cost;
-    total_cost = anon_cost + file_cost;
+    anon_cost = total_cost + sc->anon_cost; /* anon_cost = 2*anon + file */
+    file_cost = total_cost + sc->file_cost; /* file_cost = 2*file + anon */
+    total_cost = anon_cost + file_cost;            /* total_cost = 3*(anon + file) */
 
     ap = swappiness * (total_cost + 1);
     ap /= anon_cost + 1;
@@ -11045,6 +11144,52 @@ out:
         nr[lru] = scan;
     }
 }
+
+void lru_note_cost(struct lruvec *lruvec, bool file,
+        unsigned int nr_io, unsigned int nr_rotated)
+{
+    unsigned long cost;
+
+    /* Reflect the relative cost of incurring IO and spending CPU
+    * time on rotations. This doesn't attempt to make a precise
+    * comparison, it just says: if reloads are about comparable
+    * between the LRU lists, or rotations are overwhelmingly
+    * different between them, adjust scan balance for CPU work. */
+    cost = nr_io * SWAP_CLUSTER_MAX + nr_rotated;
+
+    do {
+        unsigned long lrusize;
+
+        /* Hold lruvec->lru_lock is safe here, since
+        * 1) The pinned lruvec in reclaim, or
+        * 2) From a pre-LRU page during refault (which also holds the
+        *    rcu lock, so would be safe even if the page was on the LRU
+        *    and could move simultaneously to a new lruvec). */
+        spin_lock_irq(&lruvec->lru_lock);
+        /* Record cost event */
+        if (file)
+            lruvec->file_cost += cost;
+        else
+            lruvec->anon_cost += cost;
+
+        /* Decay previous events
+        *
+        * Because workloads change over time (and to avoid
+        * overflow) we keep these statistics as a floating
+        * average, which ends up weighing recent refaults
+        * more than old ones. */
+        lrusize = lruvec_page_state(lruvec, NR_INACTIVE_ANON) +
+            lruvec_page_state(lruvec, NR_ACTIVE_ANON) +
+            lruvec_page_state(lruvec, NR_INACTIVE_FILE) +
+            lruvec_page_state(lruvec, NR_ACTIVE_FILE);
+
+        if (lruvec->file_cost + lruvec->anon_cost > lrusize / 4) {
+            lruvec->file_cost /= 2;
+            lruvec->anon_cost /= 2;
+        }
+        spin_unlock_irq(&lruvec->lru_lock);
+    } while ((lruvec = parent_lruvec(lruvec)));
+}
 ```
 
 ### shrink_active_list
@@ -11127,9 +11272,6 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
     nr_activate = move_folios_to_lru(lruvec, &l_active);
     nr_deactivate = move_folios_to_lru(lruvec, &l_inactive);
 
-    /* Keep all free folios in l_active list */
-    list_splice(&l_inactive, &l_active);
-
     __count_vm_events(PGDEACTIVATE, nr_deactivate);
     __count_memcg_events(lruvec_memcg(lruvec), PGDEACTIVATE, nr_deactivate);
 
@@ -11137,40 +11279,8 @@ shrink_active_list(nr_to_scan, lruvec, sc, lru) {
     spin_unlock_irq(&lruvec->lru_lock);
 
     if (nr_rotated) {
-        lru_note_cost(lruvec, file, 0/*nr_io*/, nr_rotated) {
-            unsigned long cost = nr_io * SWAP_CLUSTER_MAX + nr_rotated;
-
-            do {
-                unsigned long lrusize;
-
-                if (file)
-                    lruvec->file_cost += cost;
-                else
-                    lruvec->anon_cost += cost;
-
-                 /* Decay previous events
-                  *
-                  * Because workloads change over time (and to avoid
-                  * overflow) we keep these statistics as a floating
-                  * average, which ends up weighing recent refaults
-                  * more than old ones. */
-                lrusize = lruvec_page_state(lruvec, NR_INACTIVE_ANON) +
-                    lruvec_page_state(lruvec, NR_ACTIVE_ANON) +
-                    lruvec_page_state(lruvec, NR_INACTIVE_FILE) +
-                    lruvec_page_state(lruvec, NR_ACTIVE_FILE);
-
-                if (lruvec->file_cost + lruvec->anon_cost > lrusize / 4) {
-                    lruvec->file_cost /= 2;
-                    lruvec->anon_cost /= 2;
-                }
-                spin_unlock_irq(&lruvec->lru_lock);
-            } while ((lruvec = parent_lruvec(lruvec)));
-        }
+        lru_note_cost(lruvec, file, 0/*nr_io*/, nr_rotated);
     }
-
-    /* 4. free candicate folios to buddy */
-    mem_cgroup_uncharge_list(&l_active);
-    free_unref_page_list(&l_active);
 }
 ```
 
@@ -11385,8 +11495,6 @@ shrink_inactive_list(nr_to_scan, lruvec, sc, lru) {
     spin_unlock_irq(&lruvec->lru_lock);
 
     lru_note_cost(lruvec, file, stat.nr_pageout, nr_scanned - nr_reclaimed);
-    mem_cgroup_uncharge_list(&folio_list);
-    free_unref_page_list(&folio_list);
 
     if (stat.nr_unqueued_dirty == nr_taken) {
         wakeup_flusher_threads(WB_REASON_VMSCAN);
@@ -11461,7 +11569,7 @@ retry:
             && folio_mapped(folio) && folio_test_referenced(folio))
             goto keep_locked;
 
-/* 2. check writeback page */
+/* 2. check anon/file writeback page */
         folio_check_dirty_writeback(folio, &dirty, &writeback);
         if (dirty || writeback)
             stat->nr_dirty += nr_pages;
@@ -11472,8 +11580,8 @@ retry:
         if (writeback && folio_test_reclaim(folio))
             stat->nr_congested += nr_pages;
 
-        if (folio_test_writeback(folio)) {
-            /* Case 1 above:
+        if (folio_test_writeback(folio)) { /* page is undder writeback */
+            /* Case 1 above: too many writeback pages
              * folios are being queued for I/O but
              * are being recycled through the LRU before the I/O can complete.*/
             if (current_is_kswapd() &&
@@ -11504,16 +11612,17 @@ retry:
             }
         }
 
+/* 3. check_references */
         if (!ignore_references)
             references = folio_check_references(folio, sc);
 
         switch (references) {
-        case FOLIOREF_ACTIVATE:
+        case FOLIOREF_ACTIVATE: /* hot page: pte_refcnt > 1 && PG_referenced */
             goto activate_locked;
-        case FOLIOREF_KEEP:
+        case FOLIOREF_KEEP:     /* warm page: pte_refcnt > 0 */
             stat->nr_ref_keep += nr_pages;
             goto keep_locked;
-        case FOLIOREF_RECLAIM:
+        case FOLIOREF_RECLAIM:  /* cold page: pte_refcnt == 0 */
         case FOLIOREF_RECLAIM_CLEAN:
             ; /* try to reclaim the folio below */
         }
@@ -11527,7 +11636,7 @@ retry:
             continue;
         }
 
-/* 3. add anno swapbacked folio to swap cache
+/* 4. add anno swapbacked folio to swap cache
  * and mark PG_swapcache PG_dirty */
         if (folio_test_anon(folio) && folio_test_swapbacked(folio)) {
             if (!folio_test_swapcache(folio)) {
@@ -11563,7 +11672,7 @@ retry:
             nr_pages = 1;
         }
 
-/* 4. unmap mapped folio */
+/* 5. unmap user space mapped folio */
         /* The folio is mapped into the page tables of one or more
          * processes. Try to unmap it here. */
         if (folio_mapped(folio)) {
@@ -11586,7 +11695,7 @@ retry:
         if (folio_maybe_dma_pinned(folio))
             goto activate_locked;
 
-/* 5. writeback diry folio includes swap cache and file cache */
+/* 6. writeback diry anon/file page cache */
         mapping = folio_mapping(folio);
         if (folio_test_dirty(folio)) {
             /* dont writeback:
@@ -11636,7 +11745,7 @@ retry:
             }
         }
 
-/* 6. free folio buffer */
+/* 7. free folio buffer */
         /* If the folio has buffers, try to free the buffer
          * mappings associated with this folio. If we succeed
          * we try to free the folio as well. */
@@ -11659,7 +11768,7 @@ retry:
             }
         }
 
-/* 7. remove_mapping from swapcache or filecache */
+/* 8. remove address space mapping from swapcache or filecache */
         if (folio_test_anon(folio) && !folio_test_swapbacked(folio)) {
             if (!folio_ref_freeze(folio, 1))
                 goto keep_locked;
@@ -11681,6 +11790,7 @@ free_it:
             try_to_unmap_flush();
             free_unref_folios(&free_folios);
         }
+
         continue;
 
 activate_locked_split:
@@ -11805,6 +11915,7 @@ int __remove_mapping(struct address_space *mapping, struct folio *folio,
                 if (WARN_ON_ONCE(folio_test_dirty(folio) && mapping_can_writeback(mapping)))
                     folio_account_cleaned(folio, inode_to_wb(mapping->host));
             }
+
             page_cache_delete(mapping, folio, shadow) {
                 XA_STATE(xas, &mapping->i_pages, folio->index);
                 long nr = 1;
@@ -12173,10 +12284,8 @@ unsigned long super_cache_scan(struct shrinker *shrink,
 
     sb = shrink->private_data;
 
-    /*
-    * Deadlock avoidance.  We may hold various FS locks, and we don't want
-    * to recurse into the FS that called us in clear_inode() and friends..
-    */
+    /* Deadlock avoidance.  We may hold various FS locks, and we don't want
+    * to recurse into the FS that called us in clear_inode() and friends.. */
     if (!(sc->gfp_mask & __GFP_FS))
         return SHRINK_STOP;
 
@@ -12197,13 +12306,11 @@ unsigned long super_cache_scan(struct shrinker *shrink,
     inodes = mult_frac(sc->nr_to_scan, inodes, total_objects);
     fs_objects = mult_frac(sc->nr_to_scan, fs_objects, total_objects);
 
-    /*
-    * prune the dcache first as the icache is pinned by it, then
+    /* prune the dcache first as the icache is pinned by it, then
     * prune the icache, followed by the filesystem specific caches
     *
     * Ensure that we always scan at least one object - memcg kmem
-    * accounting uses this to fully empty the caches.
-    */
+    * accounting uses this to fully empty the caches. */
     sc->nr_to_scan = dentries + 1;
     freed = prune_dcache_sb(sb, sc) {
         LIST_HEAD(dispose);
@@ -12489,6 +12596,7 @@ int migrate_pages_batch(struct list_head *from,
     LIST_HEAD(dst_folios);
     bool nosplit = (reason == MR_NUMA_MISPLACED);
 
+/* 1. unmap src folios */
     for (pass = 0; pass < nr_pass && retry; pass++) {
         retry = 0;
         thp_retry = 0;
@@ -12574,6 +12682,7 @@ move:
     /* Flush TLBs for all unmapped folios */
     try_to_unmap_flush();
 
+/* 2. move src to dst */
     retry = 1;
     for (pass = 0; pass < nr_pass && retry; pass++) {
         retry = 0;
@@ -12615,7 +12724,8 @@ move:
 
     rc = rc_saved ? : nr_failed;
 out:
-    /* Cleanup remaining folios */
+
+/*3.  Cleanup remaining folios */
     dst = list_first_entry(&dst_folios, struct folio, lru);
     dst2 = list_next_entry(dst, lru);
     list_for_each_entry_safe(folio, folio2, &unmap_folios, lru) {
@@ -12635,7 +12745,7 @@ out:
 }
 ```
 
-### migrate_folio_unmap
+## migrate_folio_unmap
 
 ```c
 rc = migrate_folio_unmap(get_new_folio, put_new_folio,
@@ -12728,7 +12838,7 @@ out:
 }
 ```
 
-#### try_to_migrate
+### try_to_migrate
 
 ```c
 void try_to_migrate(struct folio *folio, enum ttu_flags flags)
@@ -12904,7 +13014,7 @@ bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
 }
 ```
 
-### migrate_folio_move
+## migrate_folio_move
 
 ```c
 /* Migrate the folio to the newly allocated folio in dst. */
@@ -12930,6 +13040,10 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
     list_del(&dst->lru);
 
     rc = move_to_new_folio(dst, src, mode) {
+        bool is_lru = !__folio_test_movable(src) {
+            return ((unsigned long)folio->mapping & PAGE_MAPPING_FLAGS)
+                == PAGE_MAPPING_MOVABLE;
+        }
         if (likely(is_lru)) {
             struct address_space *mapping = folio_mapping(src);
 
@@ -13027,232 +13141,217 @@ out:
 }
 ```
 
-#### migrate_folio
+### migrate_folio
 
 ```c
 int migrate_folio(struct address_space *mapping, struct folio *dst,
     struct folio *src, enum migrate_mode mode)
 {
-    return migrate_folio_extra(mapping, dst, src, mode, 0) {
-        int rc = folio_migrate_mapping(mapping, dst, src, extra_count) {
-            XA_STATE(xas, &mapping->i_pages, folio_index(folio));
-            struct zone *oldzone, *newzone;
-            int dirty;
-            int expected_count = folio_expected_refs(mapping, folio) + extra_count;
-            long nr = folio_nr_pages(folio);
-            long entries, i;
+    int rc, expected_count = folio_expected_refs(mapping, src);
 
-            if (!mapping) { /* Anonymous page without mapping */
-                if (folio_ref_count(folio) != expected_count)
-                    return -EAGAIN;
+    /* Check whether src does not have extra refs before we do more work */
+    if (folio_ref_count(src) != expected_count)
+        return -EAGAIN;
 
-                /* No turning back from here */
-                newfolio->index = folio->index;
-                newfolio->mapping = folio->mapping;
-                if (folio_test_swapbacked(folio))
-                    __folio_set_swapbacked(newfolio);
+    rc = folio_mc_copy(dst, src);
+    if (unlikely(rc))
+        return rc;
 
-                return MIGRATEPAGE_SUCCESS;
-            }
+    int rc = folio_migrate_mapping(mapping, dst, src, extra_count);
+    if (rc != MIGRATEPAGE_SUCCESS)
+        return rc;
 
-            oldzone = folio_zone(folio);
-            newzone = folio_zone(newfolio);
+    if (src_private)
+        folio_attach_private(dst, folio_detach_private(src));
 
-            xas_lock_irq(&xas);
-            if (!folio_ref_freeze(folio, expected_count)) {
-                xas_unlock_irq(&xas);
-                return -EAGAIN;
-            }
+    folio_migrate_flags(dst, src) {
+        int cpupid;
 
-            newfolio->index = folio->index;
-            newfolio->mapping = folio->mapping;
-            folio_ref_add(newfolio, nr); /* add cache reference */
-            if (folio_test_swapbacked(folio)) {
-                __folio_set_swapbacked(newfolio);
-                if (folio_test_swapcache(folio)) {
-                    folio_set_swapcache(newfolio);
-                    newfolio->private = folio_get_private(folio);
-                }
-                entries = nr;
-            } else {
-                VM_BUG_ON_FOLIO(folio_test_swapcache(folio), folio);
-                entries = 1;
-            }
+        if (folio_test_error(folio))
+            folio_set_error(newfolio);
+        if (folio_test_referenced(folio))
+            folio_set_referenced(newfolio);
+        if (folio_test_uptodate(folio))
+            folio_mark_uptodate(newfolio);
+        if (folio_test_clear_active(folio)) {
+            VM_BUG_ON_FOLIO(folio_test_unevictable(folio), folio);
+            folio_set_active(newfolio);
+        } else if (folio_test_clear_unevictable(folio))
+            folio_set_unevictable(newfolio);
+        if (folio_test_workingset(folio))
+            folio_set_workingset(newfolio);
+        if (folio_test_checked(folio))
+            folio_set_checked(newfolio);
+        /* PG_anon_exclusive (-> PG_mappedtodisk) is always migrated via
+            * migration entries. We can still have PG_anon_exclusive set on an
+            * effectively unmapped and unreferenced first sub-pages of an
+            * anonymous THP: we can simply copy it here via PG_mappedtodisk. */
+        if (folio_test_mappedtodisk(folio))
+            folio_set_mappedtodisk(newfolio);
 
-            /* Move dirty while page refs frozen and newpage not yet exposed */
-            dirty = folio_test_dirty(folio);
-            if (dirty) {
-                folio_clear_dirty(folio);
-                folio_set_dirty(newfolio);
-            }
+        /* Move dirty on pages not done by folio_migrate_mapping() */
+        if (folio_test_dirty(folio))
+            folio_set_dirty(newfolio);
 
-            /* Swap cache still stores N entries instead of a high-order entry */
-            for (i = 0; i < entries; i++) {
-                xas_store(&xas, newfolio);
-                xas_next(&xas);
-            }
+        if (folio_test_young(folio))
+            folio_set_young(newfolio);
+        if (folio_test_idle(folio))
+            folio_set_idle(newfolio);
 
-            /* Drop cache reference from old page by unfreezing
-             * to one less reference.
-             * We know this isn't the last reference. */
-            folio_ref_unfreeze(folio, expected_count - nr);
+        /* Copy NUMA information to the new page, to prevent over-eager
+            * future migrations of this same page. */
+        cpupid = folio_xchg_last_cpupid(folio, -1);
+        /* For memory tiering mode, when migrate between slow and fast
+            * memory node, reset cpupid, because that is used to record
+            * page access time in slow memory node. */
+        if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) {
+            bool f_toptier = node_is_toptier(folio_nid(folio));
+            bool t_toptier = node_is_toptier(folio_nid(newfolio));
 
-            xas_unlock(&xas);
-            /* Leave irq disabled to prevent preemption while updating stats */
-
-            if (newzone != oldzone) {
-                struct lruvec *old_lruvec, *new_lruvec;
-                struct mem_cgroup *memcg;
-
-                memcg = folio_memcg(folio);
-                old_lruvec = mem_cgroup_lruvec(memcg, oldzone->zone_pgdat);
-                new_lruvec = mem_cgroup_lruvec(memcg, newzone->zone_pgdat);
-
-                __mod_lruvec_state(old_lruvec, NR_FILE_PAGES, -nr);
-                __mod_lruvec_state(new_lruvec, NR_FILE_PAGES, nr);
-                if (folio_test_swapbacked(folio) && !folio_test_swapcache(folio)) {
-                    __mod_lruvec_state(old_lruvec, NR_SHMEM, -nr);
-                    __mod_lruvec_state(new_lruvec, NR_SHMEM, nr);
-
-                    if (folio_test_pmd_mappable(folio)) {
-                        __mod_lruvec_state(old_lruvec, NR_SHMEM_THPS, -nr);
-                        __mod_lruvec_state(new_lruvec, NR_SHMEM_THPS, nr);
-                    }
-                }
-        #ifdef CONFIG_SWAP
-                if (folio_test_swapcache(folio)) {
-                    __mod_lruvec_state(old_lruvec, NR_SWAPCACHE, -nr);
-                    __mod_lruvec_state(new_lruvec, NR_SWAPCACHE, nr);
-                }
-        #endif
-                if (dirty && mapping_can_writeback(mapping)) {
-                    __mod_lruvec_state(old_lruvec, NR_FILE_DIRTY, -nr);
-                    __mod_zone_page_state(oldzone, NR_ZONE_WRITE_PENDING, -nr);
-                    __mod_lruvec_state(new_lruvec, NR_FILE_DIRTY, nr);
-                    __mod_zone_page_state(newzone, NR_ZONE_WRITE_PENDING, nr);
-                }
-            }
-            local_irq_enable();
-
-            return MIGRATEPAGE_SUCCESS;
+            if (f_toptier != t_toptier)
+                cpupid = -1;
         }
+        folio_xchg_last_cpupid(newfolio, cpupid);
 
-        if (rc != MIGRATEPAGE_SUCCESS)
-            return rc;
+        folio_migrate_ksm(newfolio, folio);
+        /* Please do not reorder this without considering how mm/ksm.c's
+            * get_ksm_page() depends upon ksm_migrate_page() and PageSwapCache(). */
+        if (folio_test_swapcache(folio))
+            folio_clear_swapcache(folio);
+        folio_clear_private(folio);
 
-        if (mode != MIGRATE_SYNC_NO_COPY) {
-            folio_migrate_copy(dst, src) {
-                folio_copy(newfolio, folio) {
-                    long i = 0;
-                    long nr = folio_nr_pages(src);
+        /* page->private contains hugetlb specific flags */
+        if (!folio_test_hugetlb(folio))
+            folio->private = NULL;
 
-                    for (;;) {
-                        copy_highpage(folio_page(dst, i), folio_page(src, i)) {
-                            void *kto = page_address(to);
-                            void *kfrom = page_address(from);
+        /* If any waiters have accumulated on the new page then
+        * wake them up. */
+        if (folio_test_writeback(newfolio))
+            folio_end_writeback(newfolio);
 
-                            copy_page(kto, kfrom);
+        /* PG_readahead shares the same bit with PG_reclaim.  The above
+            * end_page_writeback() may clear PG_readahead mistakenly, so set the
+            * bit after that. */
+        if (folio_test_readahead(folio))
+            folio_set_readahead(newfolio);
 
-                            if (kasan_hw_tags_enabled())
-                                page_kasan_tag_reset(to);
+        folio_copy_owner(newfolio, folio);
 
-                            if (system_supports_mte() && page_mte_tagged(from)) {
-                                /* It's a new page, shouldn't have been tagged yet */
-                                WARN_ON_ONCE(!try_page_mte_tagging(to));
-                                mte_copy_page_tags(kto, kfrom);
-                                set_page_mte_tagged(to);
-                            }
-                        }
-                        if (++i == nr)
-                            break;
-                        cond_resched();
-                    }
-                }
-                folio_migrate_flags(newfolio, folio);
-            }
-        } else {
-            folio_migrate_flags(dst, src) {
-                int cpupid;
-
-                if (folio_test_error(folio))
-                    folio_set_error(newfolio);
-                if (folio_test_referenced(folio))
-                    folio_set_referenced(newfolio);
-                if (folio_test_uptodate(folio))
-                    folio_mark_uptodate(newfolio);
-                if (folio_test_clear_active(folio)) {
-                    VM_BUG_ON_FOLIO(folio_test_unevictable(folio), folio);
-                    folio_set_active(newfolio);
-                } else if (folio_test_clear_unevictable(folio))
-                    folio_set_unevictable(newfolio);
-                if (folio_test_workingset(folio))
-                    folio_set_workingset(newfolio);
-                if (folio_test_checked(folio))
-                    folio_set_checked(newfolio);
-                /* PG_anon_exclusive (-> PG_mappedtodisk) is always migrated via
-                 * migration entries. We can still have PG_anon_exclusive set on an
-                 * effectively unmapped and unreferenced first sub-pages of an
-                 * anonymous THP: we can simply copy it here via PG_mappedtodisk. */
-                if (folio_test_mappedtodisk(folio))
-                    folio_set_mappedtodisk(newfolio);
-
-                /* Move dirty on pages not done by folio_migrate_mapping() */
-                if (folio_test_dirty(folio))
-                    folio_set_dirty(newfolio);
-
-                if (folio_test_young(folio))
-                    folio_set_young(newfolio);
-                if (folio_test_idle(folio))
-                    folio_set_idle(newfolio);
-
-                /* Copy NUMA information to the new page, to prevent over-eager
-                 * future migrations of this same page. */
-                cpupid = folio_xchg_last_cpupid(folio, -1);
-                /* For memory tiering mode, when migrate between slow and fast
-                 * memory node, reset cpupid, because that is used to record
-                 * page access time in slow memory node. */
-                if (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) {
-                    bool f_toptier = node_is_toptier(folio_nid(folio));
-                    bool t_toptier = node_is_toptier(folio_nid(newfolio));
-
-                    if (f_toptier != t_toptier)
-                        cpupid = -1;
-                }
-                folio_xchg_last_cpupid(newfolio, cpupid);
-
-                folio_migrate_ksm(newfolio, folio);
-                /* Please do not reorder this without considering how mm/ksm.c's
-                 * get_ksm_page() depends upon ksm_migrate_page() and PageSwapCache(). */
-                if (folio_test_swapcache(folio))
-                    folio_clear_swapcache(folio);
-                folio_clear_private(folio);
-
-                /* page->private contains hugetlb specific flags */
-                if (!folio_test_hugetlb(folio))
-                    folio->private = NULL;
-
-                /* If any waiters have accumulated on the new page then
-                * wake them up. */
-                if (folio_test_writeback(newfolio))
-                    folio_end_writeback(newfolio);
-
-                /* PG_readahead shares the same bit with PG_reclaim.  The above
-                 * end_page_writeback() may clear PG_readahead mistakenly, so set the
-                 * bit after that. */
-                if (folio_test_readahead(folio))
-                    folio_set_readahead(newfolio);
-
-                folio_copy_owner(newfolio, folio);
-
-                mem_cgroup_migrate(folio, newfolio);
-            }
-        }
-        return MIGRATEPAGE_SUCCESS;
+        mem_cgroup_migrate(folio, newfolio);
     }
+
+    return MIGRATEPAGE_SUCCESS;
 }
 ```
 
-#### remove_migration_ptes
+#### folio_migrate_mapping
+
+```c
+int rc = folio_migrate_mapping(mapping, dst, src, extra_count) {
+    XA_STATE(xas, &mapping->i_pages, folio_index(folio));
+    struct zone *oldzone, *newzone;
+    int dirty;
+    int expected_count = folio_expected_refs(mapping, folio) + extra_count;
+    long nr = folio_nr_pages(folio);
+    long entries, i;
+
+    if (!mapping) { /* Anonymous page without mapping */
+        if (folio_ref_count(folio) != expected_count)
+            return -EAGAIN;
+
+        /* No turning back from here */
+        newfolio->index = folio->index;
+        newfolio->mapping = folio->mapping;
+        if (folio_test_swapbacked(folio))
+            __folio_set_swapbacked(newfolio);
+
+        return MIGRATEPAGE_SUCCESS;
+    }
+
+    oldzone = folio_zone(folio);
+    newzone = folio_zone(newfolio);
+
+    xas_lock_irq(&xas);
+    if (!folio_ref_freeze(folio, expected_count)) {
+        xas_unlock_irq(&xas);
+        return -EAGAIN;
+    }
+
+    newfolio->index = folio->index;
+    newfolio->mapping = folio->mapping;
+    folio_ref_add(newfolio, nr); /* add cache reference */
+    if (folio_test_swapbacked(folio)) {
+        __folio_set_swapbacked(newfolio);
+        if (folio_test_swapcache(folio)) {
+            folio_set_swapcache(newfolio);
+            newfolio->private = folio_get_private(folio);
+        }
+        entries = nr;
+    } else {
+        VM_BUG_ON_FOLIO(folio_test_swapcache(folio), folio);
+        entries = 1;
+    }
+
+    /* Move dirty while page refs frozen and newpage not yet exposed */
+    dirty = folio_test_dirty(folio);
+    if (dirty) {
+        folio_clear_dirty(folio);
+        folio_set_dirty(newfolio);
+    }
+
+    /* Swap cache still stores N entries instead of a high-order entry */
+    for (i = 0; i < entries; i++) {
+        xas_store(&xas, newfolio);
+        xas_next(&xas);
+    }
+
+    /* Drop cache reference from old page by unfreezing
+        * to one less reference.
+        * We know this isn't the last reference. */
+    folio_ref_unfreeze(folio, expected_count - nr);
+
+    xas_unlock(&xas);
+    /* Leave irq disabled to prevent preemption while updating stats */
+
+    if (newzone != oldzone) {
+        struct lruvec *old_lruvec, *new_lruvec;
+        struct mem_cgroup *memcg;
+
+        memcg = folio_memcg(folio);
+        old_lruvec = mem_cgroup_lruvec(memcg, oldzone->zone_pgdat);
+        new_lruvec = mem_cgroup_lruvec(memcg, newzone->zone_pgdat);
+
+        __mod_lruvec_state(old_lruvec, NR_FILE_PAGES, -nr);
+        __mod_lruvec_state(new_lruvec, NR_FILE_PAGES, nr);
+        if (folio_test_swapbacked(folio) && !folio_test_swapcache(folio)) {
+            __mod_lruvec_state(old_lruvec, NR_SHMEM, -nr);
+            __mod_lruvec_state(new_lruvec, NR_SHMEM, nr);
+
+            if (folio_test_pmd_mappable(folio)) {
+                __mod_lruvec_state(old_lruvec, NR_SHMEM_THPS, -nr);
+                __mod_lruvec_state(new_lruvec, NR_SHMEM_THPS, nr);
+            }
+        }
+#ifdef CONFIG_SWAP
+        if (folio_test_swapcache(folio)) {
+            __mod_lruvec_state(old_lruvec, NR_SWAPCACHE, -nr);
+            __mod_lruvec_state(new_lruvec, NR_SWAPCACHE, nr);
+        }
+#endif
+        if (dirty && mapping_can_writeback(mapping)) {
+            __mod_lruvec_state(old_lruvec, NR_FILE_DIRTY, -nr);
+            __mod_zone_page_state(oldzone, NR_ZONE_WRITE_PENDING, -nr);
+            __mod_lruvec_state(new_lruvec, NR_FILE_DIRTY, nr);
+            __mod_zone_page_state(newzone, NR_ZONE_WRITE_PENDING, nr);
+        }
+    }
+    local_irq_enable();
+
+    return MIGRATEPAGE_SUCCESS;
+}
+```
+
+### remove_migration_ptes
 
 ```c
 void remove_migration_ptes(struct folio *src, struct folio *dst, bool locked)
@@ -13415,8 +13514,7 @@ struct compact_control {
     bool finish_pageblock;          /* Scan the remainder of a pageblock. Used
                     * when there are potentially transient
                     * isolation or migration failures to
-                    * ensure forward progress.
-                    */
+                    * ensure forward progress. */
     bool alloc_contig;              /* alloc_contig_range allocation */
 };
 ```
@@ -15226,7 +15324,30 @@ kswapd_try_sleep:
                 /* Do some background aging, to give pages a chance to be
                  * referenced before reclaiming. All pages are rotated
                  * regardless of classzone as this is about consistent aging. */
-                kswapd_age_node(pgdat, &sc);
+                kswapd_age_node(pgdat, &sc) {
+                    struct mem_cgroup *memcg;
+                    struct lruvec *lruvec;
+
+                    if (lru_gen_enabled()) {
+                        lru_gen_age_node(pgdat, sc);
+                        return;
+                    }
+
+                    if (!can_age_anon_pages(pgdat, sc))
+                        return;
+
+                    lruvec = mem_cgroup_lruvec(NULL, pgdat);
+                    if (!inactive_is_low(lruvec, LRU_INACTIVE_ANON))
+                        return;
+
+                    memcg = mem_cgroup_iter(NULL, NULL, NULL);
+                    do {
+                        lruvec = mem_cgroup_lruvec(memcg, pgdat);
+                        shrink_active_list(SWAP_CLUSTER_MAX, lruvec,
+                                sc, LRU_ACTIVE_ANON);
+                        memcg = mem_cgroup_iter(NULL, memcg, NULL);
+                    } while (memcg);
+                }
 
                 /* If we're getting trouble reclaiming, start doing writepage
                 * even in laptop mode. */
@@ -15281,6 +15402,7 @@ kswapd_try_sleep:
                 __fs_reclaim_release(_THIS_IP_);
                 ret = try_to_freeze();
                 __fs_reclaim_acquire(_THIS_IP_);
+
                 if (ret || kthread_should_stop())
                     break;
 
@@ -16963,7 +17085,8 @@ n_ret = swap_alloc_cluster(si, swp_entries/*slot*/) {
 ## swap_free
 
 ```c
-/* free a swap entry to cpu swap slot cache, and global entry pool if cpu slot cache is full */
+/* free a swap entry to cpu swap slot cache,
+ * and global entry pool if cpu slot cache is full */
 void swap_free(swp_entry_t entry)
 {
     struct swap_info_struct *p;
@@ -17217,6 +17340,148 @@ bool folio_free_swap(struct folio *folio) {
 
     folio_set_dirty(folio);
     return true;
+```
+
+## swap_writepage
+
+```c
+static pageout_t pageout(struct folio *folio, struct address_space *mapping,
+             struct swap_iocb **plug, struct list_head *folio_list)
+{
+    /* If the folio is dirty, only perform writeback if that write
+     * will be non-blocking.  To prevent this allocation from being
+     * stalled by pagecache activity.  But note that there may be
+     * stalls if we need to run get_block().  We could test
+     * PagePrivate for that.
+     *
+     * If this process is currently in __generic_file_write_iter() against
+     * this folio's queue, we can perform writeback even if that
+     * will block.
+     *
+     * If the folio is swapcache, write it back even if that would
+     * block, for some throttling. This happens by accident, because
+     * swap_backing_dev_info is bust: it doesn't reflect the
+     * congestion state of the swapdevs.  Easy to fix, if needed. */
+    if (!is_page_cache_freeable(folio))
+        return PAGE_KEEP;
+
+    if (!mapping) {
+        /* Some data journaling orphaned folios can have
+         * folio->mapping == NULL while being dirty with clean buffers. */
+        if (folio_test_private(folio)) {
+            if (try_to_free_buffers(folio)) {
+                folio_clear_dirty(folio);
+                pr_info("%s: orphaned folio\n", __func__);
+                return PAGE_CLEAN;
+            }
+        }
+        return PAGE_KEEP;
+    }
+    if (mapping->a_ops->writepage == NULL)
+        return PAGE_ACTIVATE;
+
+    if (folio_clear_dirty_for_io(folio)) {
+        int res;
+        struct writeback_control wbc = {
+            .sync_mode = WB_SYNC_NONE,
+            .nr_to_write = SWAP_CLUSTER_MAX,
+            .range_start = 0,
+            .range_end = LLONG_MAX,
+            .for_reclaim = 1,
+            .swap_plug = plug,
+        };
+
+        /* The large shmem folio can be split if CONFIG_THP_SWAP is
+         * not enabled or contiguous swap entries are failed to
+         * allocate. */
+        if (shmem_mapping(mapping) && folio_test_large(folio))
+            wbc.list = folio_list;
+
+        folio_set_reclaim(folio);
+        res = mapping->a_ops->writepage(&folio->page, &wbc);
+        if (res < 0)
+            handle_write_error(mapping, folio, res);
+        if (res == AOP_WRITEPAGE_ACTIVATE) {
+            folio_clear_reclaim(folio);
+            return PAGE_ACTIVATE;
+        }
+
+        if (!folio_test_writeback(folio)) {
+            /* synchronous write or broken a_ops? */
+            folio_clear_reclaim(folio);
+        }
+        trace_mm_vmscan_write_folio(folio);
+        node_stat_add_folio(folio, NR_VMSCAN_WRITE);
+        return PAGE_SUCCESS;
+    }
+
+    return PAGE_CLEAN;
+}
+```
+
+```c
+int swap_writepage(struct page *page, struct writeback_control *wbc)
+{
+    struct folio *folio = page_folio(page);
+    int ret;
+
+    if (folio_free_swap(folio)) {
+        folio_unlock(folio);
+        return 0;
+    }
+    /* Arch code may have to preserve more data than just the page
+     * contents, e.g. memory tags. */
+    ret = arch_prepare_to_swap(folio);
+    if (ret) {
+        folio_mark_dirty(folio);
+        folio_unlock(folio);
+        return ret;
+    }
+
+    /* Use a bitmap (zeromap) to avoid doing IO for zero-filled pages.
+     * The bits in zeromap are protected by the locked swapcache folio
+     * and atomic updates are used to protect against read-modify-write
+     * corruption due to other zero swap entries seeing concurrent updates. */
+    if (is_folio_zero_filled(folio)) {
+        swap_zeromap_folio_set(folio);
+        folio_unlock(folio);
+        return 0;
+    } else {
+        /* Clear bits this folio occupies in the zeromap to prevent
+         * zero data being read in from any previous zero writes that
+         * occupied the same swap entries. */
+        swap_zeromap_folio_clear(folio);
+    }
+    if (zswap_store(folio)) {
+        count_mthp_stat(folio_order(folio), MTHP_STAT_ZSWPOUT);
+        folio_unlock(folio);
+        return 0;
+    }
+    if (!mem_cgroup_zswap_writeback_enabled(folio_memcg(folio))) {
+        folio_mark_dirty(folio);
+        return AOP_WRITEPAGE_ACTIVATE;
+    }
+
+    __swap_writepage(folio, wbc) {
+        struct swap_info_struct *sis = swp_swap_info(folio->swap);
+
+        VM_BUG_ON_FOLIO(!folio_test_swapcache(folio), folio);
+        /* ->flags can be updated non-atomicially (scan_swap_map_slots),
+        * but that will never affect SWP_FS_OPS, so the data_race
+        * is safe. */
+        if (data_race(sis->flags & SWP_FS_OPS))
+            swap_writepage_fs(folio, wbc);
+
+        /* ->flags can be updated non-atomicially (scan_swap_map_slots),
+        * but that will never affect SWP_SYNCHRONOUS_IO, so the data_race
+        * is safe. */
+        else if (data_race(sis->flags & SWP_SYNCHRONOUS_IO))
+            swap_writepage_bdev_sync(folio, wbc, sis);
+        else
+            swap_writepage_bdev_async(folio, wbc, sis);
+    }
+    return 0;
+}
 ```
 
 # fork
