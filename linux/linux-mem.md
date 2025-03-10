@@ -3342,6 +3342,27 @@ watermark | free area
 --- | ---
 ![](../images/kernel/mem-alloc_pages.png) | ![](../images/kernel/mem-free_area.png)
 
+---
+
+![](../images/kernel/mem-alloc-watermark.png)
+
+```c
+#define ALLOC_OOM            ALLOC_NO_WATERMARKS
+#define ALLOC_NON_BLOCK     0x10 /* Caller cannot block. Allow access
+                                * to 25% of the min watermark or
+                                * 62.5% if __GFP_HIGH is set. */
+#define ALLOC_MIN_RESERVE   0x20 /* __GFP_HIGH set. Allow access to 50%
+                                * of the min watermark. */
+#define ALLOC_CPUSET        0x40 /* check for correct cpuset */
+#define ALLOC_CMA           0x80 /* allow allocations from CMA areas */
+#define ALLOC_NOFRAGMENT    0x100 /* avoid mixing pageblock types */
+#define ALLOC_HIGHATOMIC    0x200 /* Allows access to MIGRATE_HIGHATOMIC */
+#define ALLOC_KSWAPD        0x800 /* allow waking of kswapd, __GFP_KSWAPD_RECLAIM set */
+
+/* Flags that allow allocations below the min watermark. */
+#define ALLOC_RESERVES (ALLOC_NON_BLOCK|ALLOC_MIN_RESERVE|ALLOC_HIGHATOMIC|ALLOC_OOM)
+```
+
 ```c
 struct page *alloc_pages(gfp_t gfp_mask, unsigned int order) {
     return alloc_pages_node(numa_node_id(), gfp_mask, order) {
@@ -3651,101 +3672,7 @@ retry:
 
         /* fast check high wmark */
         mark = high_wmark_pages(zone);
-        ret = zone_watermark_fast(zone, order, mark, ac->highest_zoneidx, alloc_flags, gfp_mask) {
-            long free_pages;
-
-            free_pages = zone_page_state(z, NR_FREE_PAGES);
-
-            /* Fast check for order-0 only. If this fails then the reserves
-             * need to be calculated. */
-            if (!order) {
-                long usable_free;
-                long reserved;
-
-                usable_free = free_pages;
-                reserved = __zone_watermark_unusable_free(z, 0, alloc_flags) {
-                    long unusable_free = (1 << order) - 1;
-                    /* #define ALLOC_RESERVES (ALLOC_NON_BLOCK|ALLOC_MIN_RESERVE|ALLOC_HIGHATOMIC|ALLOC_OOM) */
-                    if (likely(!(alloc_flags & ALLOC_RESERVES))) {
-                        unusable_free += READ_ONCE(z->nr_free_highatomic);
-                    }
-                    if (!(alloc_flags & ALLOC_CMA)) {
-                        unusable_free += zone_page_state(z, NR_FREE_CMA_PAGES);
-                    }
-                    return unusable_free;
-                }
-
-                /* reserved may over estimate high-atomic reserves. */
-                usable_free -= min(usable_free, reserved);
-                if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])
-                    return true;
-            }
-
-            /* Return true if free base pages are above 'mark' */
-            ret = __zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags, free_pages) {
-                long min = mark;
-                int o;
-
-                free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags);
-
-                if (unlikely(alloc_flags & ALLOC_RESERVES)) {
-                    /* __GFP_HIGH set. Allow access to 50% of the min watermark. */
-                    if (alloc_flags & ALLOC_MIN_RESERVE) {
-                        min -= min / 2;
-                        if (alloc_flags & ALLOC_NON_BLOCK) {
-                            min -= min / 4;
-                        }
-                    }
-                    if (alloc_flags & ALLOC_OOM) {
-                        min -= min / 2;
-                    }
-                }
-
-                if (free_pages <= min + z->lowmem_reserve[highest_zoneidx])
-                    return false;
-
-                if (!order)
-                    return true;
-
-                for (o = order; o < NR_PAGE_ORDERS; o++) {
-                    struct free_area *area = &z->free_area[o];
-                    int mt;
-
-                    if (!area->nr_free)
-                        continue;
-
-                    for (mt = 0; mt < MIGRATE_PCPTYPES; mt++) {
-                        if (!free_area_empty(area, mt))
-                            return true;
-                    }
-                    if ((alloc_flags & ALLOC_CMA) && !free_area_empty(area, MIGRATE_CMA)) {
-                        return true;
-                    }
-                    if ((alloc_flags & (ALLOC_HIGHATOMIC|ALLOC_OOM)) &&
-                        !free_area_empty(area, MIGRATE_HIGHATOMIC)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-            if (ret) {
-                return true;
-            }
-
-            /* Ignore watermark boosting for __GFP_HIGH order-0 allocations
-             * when checking the min watermark. The min watermark is the
-             * point where boosting is ignored so that kswapd is woken up
-             * when below the low watermark. */
-            if (unlikely(!order && (alloc_flags & ALLOC_MIN_RESERVE) && z->watermark_boost
-                && ((alloc_flags & ALLOC_WMARK_MASK) == WMARK_MIN))) {
-
-                mark = z->_watermark[WMARK_MIN];
-                return __zone_watermark_ok(z, order, mark, highest_zoneidx,
-                            alloc_flags, free_pages);
-            }
-
-            return false;
-        }
+        ret = zone_watermark_fast(zone, order, mark, ac->highest_zoneidx, alloc_flags, gfp_mask);
         if (ret) {
             goto try_this_zone;
         } else
@@ -3818,6 +3745,109 @@ try_this_zone:
     }
 
     return NULL;
+}
+```
+
+### zone_watermark_ok
+
+```c
+static inline bool zone_watermark_fast(
+    struct zone *z, unsigned int order,
+    unsigned long mark, int highest_zoneidx,
+    unsigned int alloc_flags, gfp_t gfp_mask) {
+
+    long free_pages;
+    free_pages = zone_page_state(z, NR_FREE_PAGES);
+
+    /* Fast check for order-0 only. If this fails then the reserves
+     * need to be calculated. */
+    if (!order) {
+        long usable_free;
+        long reserved;
+
+        usable_free = free_pages;
+        reserved = __zone_watermark_unusable_free(z, 0, alloc_flags);
+            --->
+        /* reserved may over estimate high-atomic reserves. */
+        usable_free -= min(usable_free, reserved);
+        if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])
+            return true;
+    }
+
+    /* Return true if free base pages are above 'mark' */
+    ret = __zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags, free_pages) {
+        long min = mark;
+        int o;
+
+        free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags) {
+            long unusable_free = (1 << order) - 1;
+            /* #define ALLOC_RESERVES (ALLOC_NON_BLOCK|ALLOC_MIN_RESERVE|ALLOC_HIGHATOMIC|ALLOC_OOM) */
+            if (likely(!(alloc_flags & ALLOC_RESERVES))) {
+                unusable_free += READ_ONCE(z->nr_free_highatomic);
+            }
+            if (!(alloc_flags & ALLOC_CMA)) {
+                unusable_free += zone_page_state(z, NR_FREE_CMA_PAGES);
+            }
+            return unusable_free;
+        }
+
+        if (unlikely(alloc_flags & ALLOC_RESERVES)) {
+            /* __GFP_HIGH set. Allow access to 50% of the min watermark. */
+            if (alloc_flags & ALLOC_MIN_RESERVE) {
+                min -= min / 2;
+                if (alloc_flags & ALLOC_NON_BLOCK) {
+                    min -= min / 4;
+                }
+            }
+            if (alloc_flags & ALLOC_OOM) {
+                min -= min / 2;
+            }
+        }
+
+        if (free_pages <= min + z->lowmem_reserve[highest_zoneidx])
+            return false;
+
+        if (!order)
+            return true;
+
+        for (o = order; o < NR_PAGE_ORDERS; o++) {
+            struct free_area *area = &z->free_area[o];
+            int mt;
+
+            if (!area->nr_free)
+                continue;
+
+            for (mt = 0; mt < MIGRATE_PCPTYPES; mt++) {
+                if (!free_area_empty(area, mt))
+                    return true;
+            }
+            if ((alloc_flags & ALLOC_CMA) && !free_area_empty(area, MIGRATE_CMA)) {
+                return true;
+            }
+            if ((alloc_flags & (ALLOC_HIGHATOMIC|ALLOC_OOM)) &&
+                !free_area_empty(area, MIGRATE_HIGHATOMIC)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if (ret) {
+        return true;
+    }
+
+    /* Ignore watermark boosting for __GFP_HIGH order-0 allocations
+     * when checking the min watermark. The min watermark is the
+     * point where boosting is ignored so that kswapd is woken up
+     * when below the low watermark. */
+    if (unlikely(!order && (alloc_flags & ALLOC_MIN_RESERVE) && z->watermark_boost
+        && ((alloc_flags & ALLOC_WMARK_MASK) == WMARK_MIN))) {
+
+        mark = z->_watermark[WMARK_MIN];
+        return __zone_watermark_ok(z, order, mark, highest_zoneidx,
+                    alloc_flags, free_pages);
+    }
+
+    return false;
 }
 ```
 
@@ -8156,7 +8186,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
     arch_swap_restore(entry, folio);
 
-/* 3. free the swap entry and conditionally try to free up the swapcache. */
+/* 3. free the swap entry and swap cache for last reference. */
     swap_free(entry)
         --->
     ret = should_try_to_free_swap(folio, vma, vmf->flags) {
@@ -10488,6 +10518,7 @@ __perform_reclaim(gfp_mask, order, ac) {
                         sc->reclaim_idx = gfp_zone(sc->gfp_mask);
                     }
 
+                    /* iterate zones within a node from high to low zone */
                     for_each_zone_zonelist_nodemask(zone, z, zonelist, sc->reclaim_idx, sc->nodemask) {
                         /* Take care memory controller reclaiming has small influence
                          * to global LRU. */
@@ -10752,6 +10783,7 @@ again:
     prepare_scan_control(pgdat, sc);
 
     shrink_node_memcgs(pgdat, sc);
+  		--->
 
     flush_reclaim_state(sc);
 
@@ -11302,6 +11334,8 @@ unsigned long isolate_lru_folios(unsigned long nr_to_scan,
 
     total_scan = 0;
     scan = 0;
+
+    /* iterate list from old data to new data */
     while (scan < nr_to_scan && !list_empty(src)) {
         struct list_head *move_to = src;
         struct folio *folio;
@@ -11549,6 +11583,7 @@ retry:
         folio = lru_to_folio(folio_list);
         list_del(&folio->lru);
 
+/* 1. Initial Checks and Skipping : locked, unevictable, unmappable folio */
         if (!folio_trylock(folio))
             goto keep;
 
@@ -11557,7 +11592,6 @@ retry:
         /* Account the number of base pages */
         sc->nr_scanned += nr_pages;
 
-/* 1. rotate to active list */
         if (unlikely(!folio_evictable(folio)))
             goto activate_locked;
 
@@ -11569,7 +11603,6 @@ retry:
             && folio_mapped(folio) && folio_test_referenced(folio))
             goto keep_locked;
 
-/* 2. check anon/file writeback page */
         folio_check_dirty_writeback(folio, &dirty, &writeback);
         if (dirty || writeback)
             stat->nr_dirty += nr_pages;
@@ -11580,8 +11613,9 @@ retry:
         if (writeback && folio_test_reclaim(folio))
             stat->nr_congested += nr_pages;
 
-        if (folio_test_writeback(folio)) { /* page is undder writeback */
-            /* Case 1 above: too many writeback pages
+/* 2. check anon/file writeback page */
+        if (folio_test_writeback(folio)) { /* anon/file page is under writeback */
+            /* Case 1 above: Excessive Writeback
              * folios are being queued for I/O but
              * are being recycled through the LRU before the I/O can complete.*/
             if (current_is_kswapd() &&
@@ -11590,13 +11624,13 @@ retry:
                 stat->nr_immediate += nr_pages; /* do immediate reclaim */
                 goto activate_locked;
 
-            /* Case 2 above:
+            /* Case 2 above: No FS/IO or Not Marked for Reclaim
              * Global or new memcg reclaim encounters a folio that is
              * not marked for immediate reclaim, or the caller does not
              * have __GFP_FS */
             } else if (writeback_throttling_sane(sc) ||
                 !folio_test_reclaim(folio) ||
-                !may_enter_fs(folio, sc->gfp_mask)) {
+                !may_enter_fs(folio, sc->gfp_mask)) { /* __GFP_FS __GFP_IO */
 
                 folio_set_reclaim(folio);
                 stat->nr_writeback += nr_pages;
@@ -11612,7 +11646,7 @@ retry:
             }
         }
 
-/* 3. check_references */
+/* 3. check pte refcnt and PG_referenced */
         if (!ignore_references)
             references = folio_check_references(folio, sc);
 
@@ -13045,6 +13079,7 @@ static int migrate_folio_move(free_folio_t put_new_folio, unsigned long private,
                 == PAGE_MAPPING_MOVABLE;
         }
         if (likely(is_lru)) {
+            /* file or swap address space */
             struct address_space *mapping = folio_mapping(src);
 
             if (!mapping) {
@@ -13442,6 +13477,22 @@ bool remove_migration_pte(struct folio *folio,
 ![](../images/kernel/mem-page_compact.svg)
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
+
+---
+
+**Compaction Eligible Page Types**
+1. Anonymous Pages: Process-private memory (e.g., heap, stack).
+2. File-Backed Pages (Page Cache): Pages caching file data (mapping to address_space).
+3. Swap-Cached Pages: Pages in swap cache (PG_swapcache), backed by swap.
+4. Compound Pages (THP, Hugetlbfs): Large pages (e.g., 2MB THP).
+
+**Compaction Ineligible Page Types**
+* Kernel Pages (Slab): PG_slab pages (e.g., kmalloc() buffers) are non-movable.
+* Locked Pages: PG_mlocked (via mlock()) or PG_locked (in I/O).
+* Unevictable Pages: PG_unevictable (e.g., mlocked, kernel-reserved).
+* Pinned Pages: DMA or device-mapped pages (PG_uncached).
+* Free Pages: Already in buddy allocator, not migrated.
+* Hardware Poisoned: PG_hwpoison pages with errors.
 
 ---
 
@@ -14225,6 +14276,7 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
         }
 
         if (!PageLRU(page)) {
+            /* non-LRU but page->mapping & PAGE_MAPPING_MOVABLE page */
             if (unlikely(__PageMovable(page)) && !PageIsolated(page)) {
                 if (locked) {
                     unlock_page_lruvec_irqrestore(locked, flags);
@@ -17398,7 +17450,10 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
             wbc.list = folio_list;
 
         folio_set_reclaim(folio);
-        res = mapping->a_ops->writepage(&folio->page, &wbc);
+        res = mapping->a_ops->writepage(&folio->page, &wbc) {
+            swap_aops.migrate_folio = migrate_folio;
+            ext4_aops.migrate_foli0 = buffer_migrate_folio;
+        }
         if (res < 0)
             handle_write_error(mapping, folio, res);
         if (res == AOP_WRITEPAGE_ACTIVATE) {
