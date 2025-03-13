@@ -10062,7 +10062,7 @@ try_to_wake_up() {
 * [man fork, inheritance behavior](https://man7.org/linux/man-pages/man2/fork.2.html)
 
 | Resource/Behavior | Process (fork-like) Flags | Thread (pthread-like) Flags|
-| :---: | :---: | :---: |
+| :-: | :-: | :-: |
 | CLONE_VM | Separate | :white_check_mark:|
 | CLONE_FILES | Copied | :white_check_mark:|
 | CLONE_FS | Copied | :white_check_mark:|
@@ -10075,7 +10075,7 @@ try_to_wake_up() {
 | CLONE_SYSVSEM |  | :white_check_mark:|
 | PATH | sysdeps/unix/sysv/linux/arch-fork.h | nptl/pthread_create.c|
 
-Fork Frame | Fork Flow
+x86 Fork Frame | Fork Flow
 --- | ---
 <img src="../images/kernel/proc-fork-frame.svg" style="max-height:750px"/> | <img src="../images/kernel/proc-sched-fork.svg" style="max-height:850px"/>
 
@@ -10141,6 +10141,8 @@ kernel_clone(struct kernel_clone_args *args) {
                 }
             }
         }
+        /* The child inherits the parent’s file descriptor table (struct files_struct),
+         * sharing the same struct file */
         copy_files();
         copy_fs();
         copy_sighand();

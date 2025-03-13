@@ -55,7 +55,7 @@
 
 File System | Layer
 --- | ---
-<img src='../images/kernel/file-arch-0.png' height='600' /> | <img src='../images/kernel/file-arch.svg' height='600' />
+<img src='../images/kernel/file-arch-0.png' height='600'/> | <img src='../images/kernel/file-arch.svg' height='600'/>
 
 # File Management
 
@@ -222,12 +222,25 @@ struct ext4_inode {
   __le32  i_size_high;
 };
 ```
-<img src='../images/kernel/file-inode-blocks.png' height='700' />
+<img src='../images/kernel/file-inode-blocks.png' height='700'/>
 
 ## extent
 
 ```c
-/* Each block (leaves and indexes), even inode-stored has header. */
+struct ext4_inode_info {
+    __le32              i_data[15];       /* unconverted */
+    struct inode        vfs_inode;
+
+    /* extents status tree */
+    struct ext4_es_tree i_es_tree;
+    rwlock_t            i_es_lock;
+    struct list_head    i_es_list;
+    unsigned int        i_es_all_nr;   /* protected by i_es_lock */
+    unsigned int        i_es_shk_nr;   /* protected by i_es_lock */
+};
+
+/* Stored in i_block[], indicates the number of extents or index entries and the tree depth.
+ * Each block (leaves and indexes), even inode-stored has header. */
 struct ext4_extent_header {
   __le16  eh_magic;  /* probably will support different formats */
   __le16  eh_entries;  /* number of valid entries */
@@ -236,7 +249,7 @@ struct ext4_extent_header {
   __le32  eh_generation;  /* generation of the tree */
 };
 
-/* leaf node in the tree */
+/* Point to disk blocks containing more extents or deeper index nodes (for large files) */
 struct ext4_extent_idx {
   __le32  ei_block;  /* index covers logical blocks from 'block' */
   __le32  ei_leaf_lo;  /* pointer to the physical block of the next *
@@ -245,6 +258,7 @@ struct ext4_extent_idx {
   __u16  ei_unused;
 };
 
+/* Store actual mappings (logical - physical) */
 struct ext4_extent {
   __le32  ee_block;  /* first logical block extent covers */
   /* the most significant bit used as a flag to identify whether
@@ -254,6 +268,7 @@ struct ext4_extent {
   __le32  ee_start_lo;  /* low 32 bits of physical block */
 };
 ```
+
 * the `ee_len` is 16 bits, one bit indicates validation, so one ext4_extent can represent 2^15 blocks data, each block is 4k, the total data is 2^15 * 2^12 = 2^27 bits = 128MB.
 
 ![](../images/kernel/mem-extents.png)
@@ -325,7 +340,7 @@ struct ext4_super_block {
 struct super_block {
   struct list_head               s_list; /* Keep first */
   struct dentry                  *s_root;
-  struct file_system_type         *s_type;
+  struct file_system_type        *s_type;
   const struct super_operations  *s_op;
 
   dev_t                   s_dev;
@@ -334,7 +349,7 @@ struct super_block {
 
   unsigned char      s_blocksize_bits;
   unsigned long      s_blocksize;
-  loff_t              s_maxbytes;  /* Max file size */
+  loff_t             s_maxbytes;  /* Max file size */
   struct hlist_node  s_instances;
 
   struct list_head  s_mounts; /* list of mounts; _not_ for fs use */
@@ -394,10 +409,10 @@ struct dx_entry
  ln [args] [dst] [src]
 ```
 
-<img src='../images/kernel/file-link.png' height='600' />
+<img src='../images/kernel/file-link.png' height='600'/>
 
 ## vfs
-<img src='../images/kernel/file-arch.png' height='600' />
+<img src='../images/kernel/file-arch.png' height='600'/>
 
 ## init_rootfs
 
@@ -558,7 +573,7 @@ start_kernel() {
 
 ## mount
 
-<img src='../images/kernel/io-mount-example.png' height='600' />
+<img src='../images/kernel/io-mount-example.png' height='600'/>
 
 * [Kernel Doc: Filesystem Mount API](https://github.com/torvalds/linux/blob/master/Documentation/filesystems/mount_api.rst)
 
@@ -1687,7 +1702,7 @@ const struct file_operations ext4_file_operations = {
 };
 ```
 
-<img src='../images/kernel/dcache.png' height='700' />
+<img src='../images/kernel/dcache.png' height='700'/>
 
 ### path_init
 
@@ -2281,16 +2296,21 @@ finish_lookup:
 call stack
 
 ```c
-write(fd, buf, size);
-    vfs_write();
-        file->f_op->write();
-            ext4_file_write_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
+write(fd, buf, size) {
+    vfs_write() {
+        file->f_op->write() {
+            ext4_file_write_iter() {
+                if (iocb->ki_flags & IOCB_DIRECT) {
                     return ext4_dio_write_iter(iocb, from);
-                else
+                } else  {
                     return ext4_buffered_write_iter(iocb, from);
+                }
+            }
+        }
+    }
+}
 
-ext4_dio_write_iter();
+ext4_dio_write_iter() {
     if (extend) {
         ext4_journal_start();
         ext4_orphan_add();
@@ -2298,115 +2318,179 @@ ext4_dio_write_iter();
     }
 
     iomap_dio_rw(iocb, from, ext4_iomap_overwrite_ops, &ext4_dio_write_ops);
+}
 ```
 
 ```c
-read(fd, buf, size);
-    vfs_write();
-        file->f_op->read();
-            ext4_file_read_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
+read(fd, buf, size) {
+    vfs_write() {
+        file->f_op->read() {
+            ext4_file_read_iter() {
+                if (iocb->ki_flags & IOCB_DIRECT) {
                     return ext4_dio_read_iter(iocb, to);
-                else
+                } else {
                     return generic_file_read_iter(iocb, to);
+                }
+            }
+        }
+    }
+}
 
 /* buffered io read */
-generic_file_read_iter(iocb, iter);
+generic_file_read_iter(iocb, iter) {
     if (iocb->ki_flags & IOCB_DIRECT) {
         mapping->a_ops->direct_IO(iocb, iter);
         return;
     }
 
-    filemap_read(iocb, iter, retval);
-        filemap_get_pages(iocb, iter, &fbatch);
+    filemap_read(iocb, iter, retval) {
+        filemap_get_pages(iocb, iter, &fbatch) {
             /* 1. read folio from page cache */
-            filemap_get_read_batch(mapping, index, last_index, fbatch);
+            filemap_get_read_batch(mapping, index, last_index, fbatch) {
                 for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
                     folio_batch_add(fbatch, folio);
                 }
+            }
             /* 2. readahead if necessary */
             folio = fbatch->folios[folio_batch_count(fbatch) - 1];
-            filemap_readahead(); /* read ahead for last folio if need */
-                page_cache_async_ra();
-                    ondemand_readahead(ractl, folio, req_count);
-                        page_cache_ra_order(ractl, ra, order);
-                            read_pages(ractl);
+            filemap_readahead() { /* read ahead for last folio if need */
+                page_cache_async_ra() {
+                    ondemand_readahead(ractl, folio, req_count) {
+                        page_cache_ra_order(ractl, ra, order) {
+                            read_pages(ractl) {
                                 blk_start_plug(&plug);
                                 aops->readahead(rac); /* ext4_readahead */
                                 blk_finish_plug(&plug);
+                            }
+                        }
 
                         try_context_readahead();
 
-                        do_page_cache_ra();
-                            page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
-                                read_pages(ractl);
+                        do_page_cache_ra() {
+                            page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size) {
+                                read_pages(ractl) {
                                     --->
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             filemap_update_page();
+        }
         do {
             /* copy data to user space */
             copy_folio_to_iter(folio, offset, bytes, iter);
         } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
+    }
+}
 ```
 
 ```c
-write(fd, buf, size);
-    vfs_write();
-        file->f_op->write();
-            ext4_file_write_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
+write(fd, buf, size) {
+    vfs_write() {
+        file->f_op->write() {
+            ext4_file_write_iter() {
+                if (iocb->ki_flags & IOCB_DIRECT) {
                     return ext4_dio_write_iter(iocb, from);
-                else
+                } else {
                     return ext4_buffered_write_iter(iocb, from);
+                }
+            }
+        }
+    }
+}
 
 /* buffered io write */
 current->backing_dev_info = inode_to_bdi(inode);
 
-generic_perform_write(struct kiocb *iocb, struct iov_iter *i);
+generic_perform_write(struct kiocb *iocb, struct iov_iter *i) {
     do {
         struct page *page;
-        a_ops->write_begin();
-            ext4_write_begin(struct page **pagep);
-                page = grab_cache_page_write_begin(mapping, index);
+        a_ops->write_begin() {
+            ext4_write_begin(struct page **pagep) {
+                page = grab_cache_page_write_begin(mapping, index) {
                     /* Find and get a reference to a folio from i_pages cache */
-                    pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping));
+                    pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping)) {
                         __filemap_get_folio();
+                    }
+                }
                 ext4_journal_start(inode, EXT4_HT_WRITE_PAGE, needed_blocks);
-                if (ext4_should_dioread_nolock(inode))
+                if (ext4_should_dioread_nolock(inode))  {
                     __block_write_begin(page, pos, len, ext4_get_block_unwritten);
-                else
-                    __block_write_begin(page, pos, len, ext4_get_block);
-                        create_page_buffers();
+                } else {
+                    __block_write_begin(page, pos, len, ext4_get_block) {
+                        head = folio_create_buffers(folio, inode, 0);
+                        for (bh = head, block_start = 0; bh != head || !block_start; block++, block_start=block_end, bh = bh->b_this_page) {
+                            ext4_get_block() {
+                                ret = ext4_map_blocks() {
+                                    ext4_es_lookup_extent(&es); /* looks up an extent in extent status tree */
+                                    map->m_pblk = ext4_es_pblock(&es) + map->m_lblk - es.es_lblk;
+                                    map->m_flags |= ext4_es_is_written(&es) ? EXT4_MAP_MAPPED : EXT4_MAP_UNWRITTEN;
+                                    map->m_len = retval;
+                                }
+
+                                if (ret > 0) {
+                                    return ret;
+                                }
+
+                                ext4_map_create_blocks() {
+                                    if (EXT4_INODE_EXTENTS) {
+                                        ext4_ext_map_blocks();
+                                    } else {
+                                        ext4_ind_map_blocks();
+                                    }
+                                    ext4_es_insert_extent();
+                                }
+                            }
+                        }
                         mark_buffer_dirty();
                         set_buffer_uptodate();
+                    }
+                }
                 *pages = page;
+            }
+        }
 
         flush_dcache_page(page);
         copy_page_from_iter_atomic(page, offset, bytes, i);
 
-        a_ops->write_end();
-            ext4_write_end();
+        a_ops->write_end() {
+            ext4_write_end() {
                 ext4_journal_stop();
-                block_write_end();
-                    __block_commit_write();
+                block_write_end() {
+                    __block_commit_write() {
                         set_buffer_uptodate(bh);
-                        mark_buffer_dirty();
+                        mark_buffer_dirty() {
                             __mark_inode_dirty(inode, I_DIRTY_PAGES);
+                        }
+                    }
+                }
+            }
+        }
 
-        balance_dirty_pages_ratelimited();
-            wb_wakeup(wb);
-                mod_delayed_work(bdi_wq, &wb->dwork, 0);
-                    __queue_delayed_work(cpu, wq, dwork, delay);
+
+        balance_dirty_pages_ratelimited() {
+            wb_wakeup(wb) {
+                mod_delayed_work(bdi_wq, &wb->dwork, 0) {
+                    __queue_delayed_work(cpu, wq, dwork, delay) {
                         dwork->wq = wq;
                         add_timer(); /* delayed_work_timer_fn */
+                    }
+                }
+            }
+        }
     } while (iov_iter_count(i));
+}
 
 current->backing_dev_info = NULL;
 
 
-delayed_work_timer_fn();
+delayed_work_timer_fn() {
     struct delayed_work *dwork = from_timer(dwork, t, timer);
     __queue_work(dwork->cpu, dwork->wq, &dwork->work);
+}
 ```
 
 ```c
@@ -2703,7 +2787,11 @@ out:
 
   return ret;
 }
+```
 
+#### iomap_dio_rw
+
+```c
 ssize_t
 iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
     const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
@@ -3216,16 +3304,97 @@ void __bio_add_page(struct bio *bio, struct page *page,
 ```
 
 ### buffered read
-```c
-read(fd, buf, size);
-    vfs_write();
-        file->f_op->read();
-            ext4_file_read_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
-                    return ext4_dio_read_iter(iocb, to);
-                else
-                    return generic_file_read_iter(iocb, to);
 
+```c
+read(fd, buf, size) {
+    vfs_write() {
+        file->f_op->read() {
+            ext4_file_read_iter() {
+                if (iocb->ki_flags & IOCB_DIRECT) {
+                    return ext4_dio_read_iter(iocb, to);
+                } else {
+                    return generic_file_read_iter(iocb, to);
+                }
+            }
+        }
+    }
+}
+
+/* direct io read */
+ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
+    if (!ext4_dio_supported(iocb, to)) {
+        iocb->ki_flags &= ~IOCB_DIRECT;
+        return generic_file_read_iter(iocb, to);
+    }
+
+    iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL);
+        struct blk_plug plug;
+        struct iomap_dio *dio = kmalloc(sizeof(*dio));
+        dio->submit.iter = iter; /* iter: user data */
+
+        blk_start_plug(&plug);
+        while ((ret = iomap_iter(&iomi, ops)) > 0) { /* iterate over a ranges in a file */
+            iomi.processed = iomap_dio_iter(&iomi, dio);
+                iomap_dio_bio_iter();
+                    nr_pages = bio_iov_vecs_to_alloc();
+                    do {
+                        struct bio *bio = iomap_dio_alloc_bio();
+                        bio_iov_iter_get_pages(); /* add user or kernel pages to a bio */
+                            unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
+                            unsigned short entries_left = bio->bi_max_vecs - bio->bi_vcnt;
+                            struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
+                            struct page **pages = (struct page **)bv;
+
+                            size = iov_iter_get_pages2(iter, pages);
+                                /* alloc page* array to hold user iov iter */
+                                int n = want_pages_array(pages, maxsize, *start, maxpages);
+                                    kvmalloc_array(count, sizeof(struct page *));
+                                page = first_bvec_segment(i, &maxsize, start);
+                                p = *pages;
+                                /* add user iov iter to the allocated array*/
+                                for (int k = 0; k < n; k++)
+                                    get_page(p[k] = page + k);
+
+                            for (left = size, i = 0; left > 0; left -= len, i++) {
+                                struct page *page = pages[i];
+                                len = min_t(size_t, PAGE_SIZE - offset, left);
+                                if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
+                                    bio_iov_add_zone_append_page(bio, page, len, offset);
+                                } else
+                                    /* add user iov iter page* into the bio iov */
+                                    bio_iov_add_page(bio, page, len, offset);
+                                        struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
+                                        bv->bv_page = page;
+                                        bv->bv_offset = off;
+                                        bv->bv_len = len;
+
+                                offset = 0;
+                            }
+                        nr_pages = bio_iov_vecs_to_alloc();
+                        iomap_dio_submit_bio();
+                            if (dio->dops && dio->dops->submit_io)
+                                dio->dops->submit_io(iter, bio, pos);
+                            else
+                                submit_bio(bio);
+                                    --->
+                    } while (nr_pages);
+            iocb->ki_flags &= ~IOCB_HIPRI;
+        }
+
+        blk_finish_plug(&plug);
+
+        dio->wait_for_completion = wait_for_completion;
+
+        for (;;) {
+            set_current_state(TASK_UNINTERRUPTIBLE);
+            blk_io_schedule();
+        }
+        __set_current_state(TASK_RUNNING);
+
+        iomap_dio_complete();
+```
+
+```c
 ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
   size_t count = iov_iter_count(iter);
@@ -3746,15 +3915,21 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 ```
 
 ### buffered write
+
 ```c
-write(fd, buf, size);
-    vfs_write();
-        file->f_op->write();
-            ext4_file_write_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
+write(fd, buf, size) {
+    vfs_write() {
+        file->f_op->write() {
+            ext4_file_write_iter() {
+                if (iocb->ki_flags & IOCB_DIRECT) {
                     return ext4_dio_write_iter(iocb, from);
-                else
+                } else {
                     return ext4_buffered_write_iter(iocb, from);
+                }
+            }
+        }
+    }
+}
 
 ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
           struct iov_iter *from)
@@ -3974,6 +4149,75 @@ retry_journal:
   return ret;
 }
 
+int ext4_get_block(struct inode *inode, sector_t iblock,
+        struct buffer_head *bh, int create)
+{
+    return _ext4_get_block(inode, iblock, bh,
+                create ? EXT4_GET_BLOCKS_CREATE : 0) {
+
+        struct ext4_map_blocks map;
+        int ret = 0;
+
+        if (ext4_has_inline_data(inode))
+            return -ERANGE;
+
+        map.m_lblk = iblock;
+        map.m_len = bh->b_size >> inode->i_blkbits;
+
+        /* translating a logical block number (m_lblk) within a file
+         * to a physical block number (m_pblk) on disk. */
+        ret = ext4_map_blocks(ext4_journal_current_handle(), inode, &map, flags) {
+            if (!(EXT4_SB(inode->i_sb)->s_mount_state & EXT4_FC_REPLAY) &&
+                ext4_es_lookup_extent(inode, map->m_lblk, NULL, &es)) {
+
+                if (ext4_es_is_written(&es) || ext4_es_is_unwritten(&es)) {
+                    map->m_pblk = ext4_es_pblock(&es) + map->m_lblk - es.es_lblk;
+                    map->m_flags |= ext4_es_is_written(&es) ? EXT4_MAP_MAPPED : EXT4_MAP_UNWRITTEN;
+                    retval = es.es_len - (map->m_lblk - es.es_lblk);
+                    if (retval > map->m_len)
+                        retval = map->m_len;
+                    map->m_len = retval;
+                }
+
+                goto found;
+            }
+
+
+        found:
+            if (retval > 0 && map->m_flags & EXT4_MAP_MAPPED) {
+                ret = check_block_validity(inode, map);
+                if (ret != 0)
+                    return ret;
+            }
+
+            retval = ext4_map_create_blocks(handle, inode, map, flags) {
+                if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)) {
+                    retval = ext4_ext_map_blocks(handle, inode, map, flags);
+                } else {
+                    retval = ext4_ind_map_blocks(handle, inode, map, flags);
+                }
+            }
+        }
+
+        if (ret > 0) {
+            map_bh(bh, inode->i_sb, map.m_pblk) {
+                set_buffer_mapped(bh);
+                bh->b_bdev = sb->s_bdev;
+                bh->b_blocknr = block;
+                bh->b_size = sb->s_blocksize;
+            }
+            ext4_update_bh_state(bh, map.m_flags);
+            bh->b_size = inode->i_sb->s_blocksize * map.m_len;
+            ret = 0;
+        } else if (ret == 0) {
+            /* hole case, need to fill in bh->b_size */
+            bh->b_size = inode->i_sb->s_blocksize * map.m_len;
+        }
+
+        return ret;
+    }
+}
+
 struct page *grab_cache_page_write_begin(struct address_space *mapping,
           pgoff_t index)
 {
@@ -4082,90 +4326,6 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 }
 ```
 
-```c
-read(fd, buf, size);
-    vfs_write();
-        file->f_op->read();
-            ext4_file_read_iter();
-                if (iocb->ki_flags & IOCB_DIRECT)
-                    return ext4_dio_read_iter(iocb, to);
-                else
-                    return generic_file_read_iter(iocb, to);
-
-/* direct io read */
-ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
-    if (!ext4_dio_supported(iocb, to)) {
-        iocb->ki_flags &= ~IOCB_DIRECT;
-        return generic_file_read_iter(iocb, to);
-    }
-
-    iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL);
-        struct blk_plug plug;
-        struct iomap_dio *dio = kmalloc(sizeof(*dio));
-        dio->submit.iter = iter; /* iter: user data */
-
-        blk_start_plug(&plug);
-        while ((ret = iomap_iter(&iomi, ops)) > 0) { /* iterate over a ranges in a file */
-            iomi.processed = iomap_dio_iter(&iomi, dio);
-                iomap_dio_bio_iter();
-                    nr_pages = bio_iov_vecs_to_alloc();
-                    do {
-                        struct bio *bio = iomap_dio_alloc_bio();
-                        bio_iov_iter_get_pages(); /* add user or kernel pages to a bio */
-                            unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
-                            unsigned short entries_left = bio->bi_max_vecs - bio->bi_vcnt;
-                            struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
-                            struct page **pages = (struct page **)bv;
-
-                            size = iov_iter_get_pages2(iter, pages);
-                                /* alloc page* array to hold user iov iter */
-                                int n = want_pages_array(pages, maxsize, *start, maxpages);
-                                    kvmalloc_array(count, sizeof(struct page *));
-                                page = first_bvec_segment(i, &maxsize, start);
-                                p = *pages;
-                                /* add user iov iter to the allocated array*/
-                                for (int k = 0; k < n; k++)
-                                    get_page(p[k] = page + k);
-
-                            for (left = size, i = 0; left > 0; left -= len, i++) {
-                                struct page *page = pages[i];
-                                len = min_t(size_t, PAGE_SIZE - offset, left);
-                                if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
-                                    bio_iov_add_zone_append_page(bio, page, len, offset);
-                                } else
-                                    /* add user iov iter page* into the bio iov */
-                                    bio_iov_add_page(bio, page, len, offset);
-                                        struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
-                                        bv->bv_page = page;
-                                        bv->bv_offset = off;
-                                        bv->bv_len = len;
-
-                                offset = 0;
-                            }
-                        nr_pages = bio_iov_vecs_to_alloc();
-                        iomap_dio_submit_bio();
-                            if (dio->dops && dio->dops->submit_io)
-                                dio->dops->submit_io(iter, bio, pos);
-                            else
-                                submit_bio(bio);
-                                    --->
-                    } while (nr_pages);
-            iocb->ki_flags &= ~IOCB_HIPRI;
-        }
-
-        blk_finish_plug(&plug);
-
-        dio->wait_for_completion = wait_for_completion;
-
-        for (;;) {
-            set_current_state(TASK_UNINTERRUPTIBLE);
-            blk_io_schedule();
-        }
-        __set_current_state(TASK_RUNNING);
-
-        iomap_dio_complete();
-```
-
 ## writeback
 
 ![](../images/kernel/proc-cmwq.svg)
@@ -4179,7 +4339,7 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
                       |                            |            |
  mark_inode_dirty-----+                            |  inode.stat != wb.stat
                       |                            |            v
-                      |--> b_dirty_time	           |      b_more_io
+                      |--> b_dirty_time               |      b_more_io
                                 |                  |            |
                       dirty time >= 12H            |            |
                                 |                  v            |
@@ -4206,6 +4366,7 @@ struct backing_dev_info {
   struct timer_list     laptop_mode_wb_timer;
 };
 
+/* Manages writeback operations for specific inode groups */
 struct bdi_writeback {
   struct list_head    work_list; /* Tasks requiring high-priority write-back for BDI devices */
   struct delayed_work dwork;     /* work item used for writeback */
@@ -4235,6 +4396,7 @@ struct work_struct {
   work_func_t       func;
 };
 
+/* Represents a specific writeback operation task */
 struct wb_writeback_work {
   long                      nr_pages;
   struct super_block        *sb;
@@ -4508,8 +4670,7 @@ repeat:
             new_fdt = alloc_fdtable(nr);
 
             /* make sure all fd_install() have seen resize_in_progress
-            * or have finished their rcu_read_lock_sched() section.
-            */
+            * or have finished their rcu_read_lock_sched() section. */
             if (atomic_read(&files->count) > 1)
                 synchronize_rcu();
 
@@ -4631,11 +4792,9 @@ int ovl_get_tree(struct fs_context *fc)
         ofs->config.lowerdirs = kcalloc(ctx->nr + 1, sizeof(char *), GFP_KERNEL);
 
         ofs->layers = layers;
-        /*
-        * Layer 0 is reserved for upper even if there's no upper.
+        /* Layer 0 is reserved for upper even if there's no upper.
         * config.lowerdirs[0] is used for storing the user provided colon
-        * separated lowerdir string.
-        */
+        * separated lowerdir string. */
         ofs->config.lowerdirs[0] = ctx->lowerdir_all;
         ctx->lowerdir_all = NULL;
         ofs->numlayer = 1;
@@ -4723,11 +4882,9 @@ int ovl_get_tree(struct fs_context *fc)
             ofs->config.nfs_export = false;
         }
 
-        /*
-        * Support encoding decodable file handles with nfs_export=on
+        /* Support encoding decodable file handles with nfs_export=on
         * and encoding non-decodable file handles with nfs_export=off
-        * if all layers support file handles.
-        */
+        * if all layers support file handles. */
         if (ofs->config.nfs_export)
             sb->s_export_op = &ovl_export_operations;
         else if (!ofs->nofh)
@@ -4743,11 +4900,9 @@ int ovl_get_tree(struct fs_context *fc)
         sb->s_flags |= SB_POSIXACL;
     #endif
         sb->s_iflags |= SB_I_SKIP_SYNC;
-        /*
-        * Ensure that umask handling is done by the filesystems used
+        /* Ensure that umask handling is done by the filesystems used
         * for the the upper layer instead of overlayfs as that would
-        * lead to unexpected results.
-        */
+        * lead to unexpected results. */
         sb->s_iflags |= SB_I_NOUMASK;
         sb->s_iflags |= SB_I_EVM_UNSUPPORTED;
 
@@ -5603,10 +5758,11 @@ struct bdev_inode {
   struct inode          vfs_inode;
 };
 
+/* Represents a partition or whole disk that can be accessed */
 struct block_device {
   sector_t                  bd_start_sect;
   sector_t                  bd_nr_sectors;
-  struct inode*             bd_inode;  /* will die */
+  struct address_space*     bd_mapping;
   struct super_block*       bd_super;
   struct request_queue*     bd_queue;
   dev_t                     bd_dev;
@@ -5634,6 +5790,7 @@ struct block_device {
   struct partition_meta_info* bd_meta_info;
 }
 
+/* Represents a physical disk device in the kernel */
 struct gendisk {
   int                       major; /* major number of driver */
   int                       first_minor;
@@ -6081,10 +6238,8 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
     if (get_capacity(disk))
       disk_scan_partitions(disk, FMODE_READ);
 
-    /*
-     * Announce the disk and partitions after all partitions are
-     * created. (for hidden disks uevents remain suppressed forever)
-     */
+    /* Announce the disk and partitions after all partitions are
+     * created. (for hidden disks uevents remain suppressed forever) */
     dev_set_uevent_suppress(ddev, 0);
     disk_uevent(disk, KOBJ_ADD);
   }
@@ -6122,8 +6277,7 @@ int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
  * Rule of thumb is: if device_add() succeeds, you should call
  * device_del() when you want to get rid of it. If device_add() has
  * *not* succeeded, use *only* put_device() to drop the reference
- * count.
- */
+ * count. */
 int device_add(struct device *dev)
 {
   struct device *parent;
@@ -6142,11 +6296,9 @@ int device_add(struct device *dev)
       goto done;
   }
 
-  /*
-   * for statically allocated devices, which should all be converted
+  /* for statically allocated devices, which should all be converted
    * some day, we need to initialize the name. We prevent reading back
-   * the name, and force the use of dev_name()
-   */
+   * the name, and force the use of dev_name() */
   if (dev->init_name) {
     dev_set_name(dev, "%s", dev->init_name);
     dev->init_name = NULL;
@@ -6218,15 +6370,13 @@ int device_add(struct device *dev)
   }
 
   /* Notify clients of device addition.  This call must come
-   * after dpm_sysfs_add() and before kobject_uevent().
-   */
+   * after dpm_sysfs_add() and before kobject_uevent(). */
   if (dev->bus)
     blocking_notifier_call_chain(&dev->bus->p->bus_notifier, BUS_NOTIFY_ADD_DEVICE, dev);
 
   kobject_uevent(&dev->kobj, KOBJ_ADD);
 
-  /*
-   * Check if any of the other devices (consumers) have been waiting for
+  /* Check if any of the other devices (consumers) have been waiting for
    * this device (supplier) to be added so that they can create a device
    * link to it.
    *
@@ -6235,8 +6385,7 @@ int device_add(struct device *dev)
    *
    * But this also needs to happen before bus_probe_device() to make sure
    * waiting consumers can link to it before the driver is bound to the
-   * device and the driver sync_state callback is called for this device.
-   */
+   * device and the driver sync_state callback is called for this device. */
   if (dev->fwnode && !dev->fwnode->dev) {
     dev->fwnode->dev = dev;
     fw_devlink_link_device(dev);
@@ -6244,11 +6393,9 @@ int device_add(struct device *dev)
 
   bus_probe_device(dev);
 
-  /*
-   * If all driver registration is done and a newly added device doesn't
+  /* If all driver registration is done and a newly added device doesn't
    * match with any driver, don't block its consumers from probing in
-   * case the consumer device is able to operate without this supplier.
-   */
+   * case the consumer device is able to operate without this supplier. */
   if (dev->fwnode && fw_devlink_drv_reg_done && !dev->can_match)
     fw_devlink_unblock_consumers(dev);
 
@@ -6975,19 +7122,22 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 ![](../images/kernel/proc-cmwq.svg)
 
 writeback cases:
-1. Periodic Write-back
-    * /proc/sys/vm/ directory, such as:
-    * **dirty_writeback_centisecs**: The interval between periodic write-back operations.
-	* **dirty_expire_centisecs**: The age at which dirty pages are considered old enough to be written back.
+1. Periodic Write-back: `/proc/sys/vm/`
+    * **dirty_background_ratio**: The percentage of total system memory (or "dirtyable" memory) at which the kernel starts **background writeback** of dirty pages.
+    * **dirty_background_bytes**: An absolute limit (in bytes) for dirty pages before **background writeback** starts, overriding dirty_background_ratio if set.
+    * **dirty_ratio**: The percentage of total system memory at which a process generating dirty pages (e.g., via write()) is forced to perform **synchronous writeback**.
+    * **dirty_bytes**: An absolute limit (in bytes) for dirty pages before a writing process is forced to perform **synchronous writeback**, overriding dirty_ratio if set.
+    * **dirty_expire_centisecs**: The maximum age (in centiseconds) a dirty page can remain in memory before it’s written back to disk.
+    * **dirty_writeback_centisecs**: The interval (in centiseconds) at which the kernel’s writeback threads wake up to check for dirty pages to flush.
 
 2. Memory Pressure
     * **dirty_ratio**: The maximum percentage of system memory that can be filled with dirty pages before the kernel starts writing them back to disk.
-	* **dirty_background_ratio**: The percentage of system memory filled with dirty pages at which the background write-back process kicks in.
+    * **dirty_background_ratio**: The percentage of system memory filled with dirty pages at which the background write-back process kicks in.
 
 3. Explicit Sync Operations
     * **fsync**(): Forces a write-back of all dirty pages associated with a file descriptor to the storage device.
-	* **fdatasync**(): Similar to fsync(), but only flushes the file’s data, not its metadata.
-	* **sync**(): Forces a write-back of all dirty pages in the system, affecting all files.
+    * **fdatasync**(): Similar to fsync(), but only flushes the file’s data, not its metadata.
+    * **sync**(): Forces a write-back of all dirty pages in the system, affecting all files.
 
 4. Unmounting Filesystems
 
@@ -7002,96 +7152,136 @@ wb_workfn() {
     wb_do_writeback() { /* traverse Struct.1.wb_writeback_work */
         /* 1. wb work_list which has highest prio */
         while ((work = get_next_work_item(wb)) != NULL) {
-            wb_writeback() {
-                struct blk_plug plug;
-                blk_start_plug(plug);
-                current->plug = plug;
+            wb_writeback(wb, work) {
+                for (;;) {
+                    struct blk_plug plug;
+                    blk_start_plug(plug);
+                    current->plug = plug;
 
-                if (list_empty(&wb->b_io)) {
-                    /* Queue all expired dirty inodes for io, eldest first. */
-                    queue_io(wb, work, dirtied_before) {
-                        list_splice_init(&wb->b_more_io, &wb->b_io);
-                        move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
-                        move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
+                    if (list_empty(&wb->b_io)) {
+                        /* Queue all expired dirty inodes for io, eldest first. */
+                        queue_io(wb, work, dirtied_before) {
+                            list_splice_init(&wb->b_more_io, &wb->b_io);
+                            move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
+                            move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
+                        }
                     }
-                }
 
-                if (work->sb) {
-                    /* traverse wb->b_io, which is inode list */
-                    progress = writeback_sb_inodes() { /* Struct.2.writeback_control */
-                        while (!list_empty(&wb->b_io)) {
-                            __writeback_single_inode() {
-                                do_writepages() {
-                                    if (mapping->a_ops->writepages) {
-                                        mapping->a_ops->writepages(mapping, wbc) {
-                                            ext4_writepages() { /* Struct.3.mpage_da_data */
-                                                blk_start_plug(&plug);
-                                                /* 1. find page cache data */
-                                                mpage_prepare_extent_to_map() {
-                                                    /* 1.1 find dirty pages */
-                                                    pagevec_lookup_range_tag() { /* PAGECACHE_TAG_{TOWRITE, DIRTY} */
-                                                        find_get_pages_range_tag();
-                                                            /* find in i_pages xarray */
-                                                    }
+                    if (work->sb) {
+                        /* traverse wb->b_io, which is inode list */
+                        progress = writeback_sb_inodes() { /* Struct.2.writeback_control */
+                            while (!list_empty(&wb->b_io)) {
+                                struct inode *inode = wb_inode(wb->b_io.prev);
+                                __writeback_single_inode(inode, &wbc) {
+                                    do_writepages() {
+                                        while (1) {
+                                            if (mapping->a_ops->writepages) {
+                                                mapping->a_ops->writepages(mapping, wbc) {
+                                                    ext4_writepages() { /* Struct.3.mpage_da_data */
+                                                        blk_start_plug(&plug);
+                                                        /* 1. find page cache data */
+                                                        mpage_prepare_extent_to_map() {
+                                                            struct pagevec pvec;
+                                                            pgoff_t index = mpd->first_page;
+                                                            pgoff_t end = mpd->last_page;
 
-                                                    /* Wait for a folio to finish writeback */
-                                                    wait_on_page_writeback() {
-                                                        wait_on_page_bit(page, PG_writeback) {
-                                                            io_schedule() {
-                                                                schedule();
-                                                            }
-                                                        }
-                                                    }
+                                                            while (index <= end) {
+                                                                /* 1.1 find dirty pages */
+                                                                nr_pages = pagevec_lookup_range_tag(&pvec) { /* PAGECACHE_TAG_{TOWRITE, DIRTY} */
+                                                                    find_get_pages_range_tag();
+                                                                        /* find in i_pages xarray */
+                                                                }
 
-                                                    /* 1.2. submit page buffers for IO */
-                                                    mpage_process_page_bufs() {
-                                                        mpage_add_bh_to_extent();
-                                                        mpage_submit_page() {
-                                                            ext4_bio_write_page() {
-                                                                io_submit_add_bh() { /* Struct.4.buffer_head */
-                                                                    io_submit_init_bio() { /* init bio */
-                                                                        bio_alloc();
-                                                                        wbc_init_bio();
+                                                                for (i = 0; i < nr_pages; i++) {
+                                                                    struct page *page = pvec.pages[i];
+                                                                    /* Wait for a folio to finish writeback */
+                                                                    wait_on_page_writeback() {
+                                                                        wait_on_page_bit(page, PG_writeback) {
+                                                                            io_schedule() {
+                                                                                schedule();
+                                                                            }
+                                                                        }
                                                                     }
-                                                                    bio_add_page();
+
+                                                                    /* converts the page index to a logical block number */
+                                                                    lblk = ((ext4_lblk_t)page->index) << (PAGE_SHIFT - blkbits);
+                                                                    head = page_buffers(page);
+
+                                                                    /* 1.2. submit page buffers for IO or add them to extent */
+                                                                    mpage_process_page_bufs(mpd, head, head, lblk) {
+                                                                        do {
+                                                                            if (lblk >= blocks || !mpage_add_bh_to_extent()) {
+                                                                                break;
+                                                                            }
+                                                                        } while (lblk++, (bh = bh->b_this_page) != head);
+
+                                                                        mpage_submit_page(mpd, head->b_page) {
+                                                                            ext4_bio_write_page() {
+                                                                                do {
+                                                                                    io_submit_add_bh() { /* Struct.4.buffer_head */
+                                                                                        io_submit_init_bio() { /* init bio */
+                                                                                            bio = bio_alloc();
+                                                                                            /* physical sector nr */
+                                                                                            bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+                                                                                            wbc_init_bio();
+                                                                                        }
+                                                                                        bio_add_page() {
+                                                                                            bv->bv_page = page;
+                                                                                            bv->bv_offset = off;
+                                                                                            bv->bv_len = len;
+
+                                                                                            bio->bi_iter.bi_size += len;
+                                                                                            bio->bi_vcnt++;
+                                                                                        }
+                                                                                    }
+                                                                                } while ((bh = bh->b_this_page) != head);
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
+
+                                                        /* 2. submit io data */
+                                                        ext4_io_submit() {
+                                                            submit_bio();
+                                                        }
+                                                        blk_start_unplug(&plug);
                                                     }
                                                 }
-
-                                                /* 2. submit io data */
-                                                ext4_io_submit() {
-                                                    submit_bio();
-                                                }
-                                                blk_start_unplug(&plug);
+                                            } else {
+                                                generic_writepages(mapping, wbc);
                                             }
-                                        }
-                                    } else {
-                                        generic_writepages(mapping, wbc);
-                                    }
-                                }
 
-                                bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
-                                if ((inode->i_state & I_DIRTY_TIME)
-                                    && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
-                                {
-                                    mark_inode_dirty_sync(inode);
+                                            if ((ret != -ENOMEM) || (wbc->sync_mode != WB_SYNC_ALL))
+                                                break;
+                                        }
+                                    }
+
+                                    bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
+                                    if ((inode->i_state & I_DIRTY_TIME)
+                                        && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
+                                    {
+                                        mark_inode_dirty_sync(inode);
+                                    }
                                 }
                             }
                         }
+                    } else {
+                        progress = __writeback_inodes_wb();
+                            writeback_sb_inodes();
                     }
-                } else {
-                    progress = __writeback_inodes_wb();
-                        writeback_sb_inodes();
+
+                    if (progress)
+                        continue;
+
+                    if (list_empty(&wb->b_more_io))
+                        break;
+
+                    blk_finish_plug();
+
+                    inode_sleep_on_writeback();
                 }
-
-                if (progress)
-                    continue;
-
-                blk_finish_plug();
-
-                inode_sleep_on_writeback();
             }
         }
 
@@ -7112,6 +7302,7 @@ wb_workfn() {
                 nr_pages = wb_writeback(wb, &work);
             }
         }
+
         /* 3. wb periodically */
         wb_check_old_data_flush(wb) {
             expired = wb->last_old_flush +
@@ -7133,6 +7324,7 @@ wb_workfn() {
                 return wb_writeback(wb, &work);
             }
         }
+
         /* 4. wb backgroud */
         wb_check_background_flush(wb) {
             if (wb_over_bg_thresh(wb)) {
@@ -7172,9 +7364,10 @@ sync_filesystem() {
                 struct wb_writeback_work work = { };
                 /* split a wb_writeback_work to all wb's of a bdi */
                 bdi_split_work_to_wbs() {
+                    struct wb_writeback_work *work =  kmalloc(sizeof(*work), GFP_ATOMIC);
                     /* split nr_pages to write according to bandwidth */
                     wb_split_bdi_pages();
-                    wb_queue_work() {
+                    wb_queue_work(wb, work) {
                         list_add_tail(&work->list, &wb->work_list);
                         mod_delayed_work(bdi_wq, &wb->dwork, 0) {
                             mod_delayed_work_on() {
@@ -7489,6 +7682,7 @@ static int ext4_writepages(
   ext4_io_submit(&mpd.io_submit);
 }
 
+/* mpage : multi-page I/O */
 struct mpage_da_data {
   struct inode              *inode;
   struct writeback_control  *wbc;
@@ -7503,10 +7697,10 @@ struct mpage_da_data {
 };
 
 struct ext4_map_blocks {
-  ext4_fsblk_t m_pblk;
-  ext4_lblk_t  m_lblk;
-  unsigned int m_len;
-  unsigned int m_flags;
+  ext4_fsblk_t m_pblk;  /* Physical block number */
+  ext4_lblk_t  m_lblk;  /* Logical block number */
+  unsigned int m_len;   /* Length of the block mapping (in blocks) */
+  unsigned int m_flags; /* Flags indicating mapping status or properties */
 };
 
 struct ext4_io_submit {
@@ -7516,7 +7710,22 @@ struct ext4_io_submit {
   sector_t                  io_next_block;
 };
 
-/* find & lock contiguous range of dirty pages and underlying extent to map */
+/* For converting unwritten extents on a work queue. 'handle' is used for
+ * buffered writeback. */
+typedef struct ext4_io_end {
+    struct list_head    list;       /* per-file finished IO list */
+    handle_t            *handle;    /* handle reserved for extent conversion */
+    struct inode        *inode;     /* file being written to */
+    struct bio          *bio;       /* Linked list of completed bios covering the extent */
+    unsigned int        flag;       /* unwritten or not */
+    refcount_t          count;      /* reference counter */
+    struct list_head    list_vec;   /* list of ext4_io_end_vec */
+} ext4_io_end_t;
+
+/* Prepares a batch of dirty pages (in the form of an extent)
+ * to be mapped to disk blocks during writeback,
+ * minimizing I/O operations and leveraging ext4’s extent-based block allocation. */
+
 /* mpage_prepare_extent_to_map -> mpage_process_page_bufs -> */
 /* mpage_submit_page -> ext4_bio_write_page -> io_submit_add_bh */
 static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
@@ -7554,8 +7763,11 @@ static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
         mpd->first_page = page->index;
       mpd->next_page = page->index + 1;
 
+      /* converts the page index to a logical block number */
       lblk = ((ext4_lblk_t)page->index) << (PAGE_SHIFT - blkbits);
-      head = page_buffers(page);
+      head = page_buffers(page) {
+        return page_private(page)
+      };
       err = mpage_process_page_bufs(mpd, head, head, lblk);
 
       left--;
@@ -7883,6 +8095,7 @@ static int io_submit_init_bio(
   if (!bio)
     return -ENOMEM;
   wbc_init_bio(io->io_wbc, bio);
+  /* physical sector nr which is get in _ext4_get_block() */
   bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
   bio->bi_bdev = bh->b_bdev;
   bio->bi_end_io = ext4_end_bio;
@@ -7908,13 +8121,16 @@ void ext4_io_submit(struct ext4_io_submit *io)
 ```
 
 ## submit_bio
-<img src='../images/kernel/io-bio.png' height='800' />
 
-![](../images/kernel/io-bio-request.png)
+![](../images/kernel/proc-cmwq.svg)
 
 ---
 
-<img src='../images/kernel/io-blk_queue_bio.svg' height='800' />
+<img src='../images/kernel/io-bio.png' height='800'/>
+
+---
+
+<img src='../images/kernel/io-blk_queue_bio.svg' height='800'/>
 
 
 ```c
@@ -7930,50 +8146,68 @@ __submit_bio(bio) {
                 if (!rq || rq->q != q)
                     return NULL;
 
-                if (blk_mq_attempt_bio_merge()) {
-                    blk_mq_sched_bio_merge(q, bio, nr_segs) {
-                        struct elevator_queue *e = q->elevator;
-                        e->type->ops.bio_merge(q, bio, nr_segs) {
-                            bfq_bio_merge() {
-                                blk_mq_sched_try_merge() {
-                                    elv_merge(q, &rq, bio);
-                                    bio_attempt_back_merge();
-                                    bio_attempt_front_merge();
-                                }
-                            }
-                        }
-                    }
-                    *bio = NULL;
-                    return;
-                }
-
                 plug->cached_rq = rq_list_next(rq);
             }
         }
 
-        rq = blk_mq_get_new_requests(q) {
-            rq = __blk_mq_alloc_requests(&data);
+        /* Allocate a new request */
+        if (rq) {
+            rq = blk_mq_get_new_requests(q) {
+                rq = __blk_mq_alloc_requests(&data);
+            }
         }
 
-        if (plug)
-            blk_add_rq_to_plug(plug, rq); /* request is scheduled to device derive when blk_finish_plug */
+        /* Try to merge with an existing request */
+        blk_mq_attempt_bio_merge() {
+            blk_mq_sched_bio_merge(q, bio, nr_segs) {
+                struct elevator_queue *e = q->elevator;
+                if (e->type->ops.bio_merge) {
+                    e->type->ops.bio_merge(q, bio, nr_segs) {
+                        bfq_bio_merge() {
+                            blk_mq_sched_try_merge() {
+                                elv_merge(q, &rq, bio);
+                                bio_attempt_back_merge();
+                                bio_attempt_front_merge();
+                            }
+                        }
+                    }
+                } else {
+                    /* Map bio to a hardware queue */
+                    blk_mq_map_queue();
+                    blk_bio_list_merge();
+                }
+            }
+            *bio = NULL;
+        }
+
+        /* Associate bio with request */
+        blk_mq_bio_to_request();
+
+        /* Queue the request */
+        if (plug) /* request is scheduled to device derive when blk_finish_plug */
+            blk_add_rq_to_plug(plug, rq);
         else if (rq->rq_flags & RQF_ELV)
             blk_mq_sched_insert_request(rq, false, true, true);
-        else
-            blk_mq_run_dispatch_ops(rq->q, blk_mq_try_issue_directly(rq->mq_hctx, rq));
+        else /* send request to device derive directly */
+            blk_mq_run_dispatch_ops(
+                rq->q,
+                blk_mq_try_issue_directly(rq->mq_hctx, rq) {
+                    q->mq_ops->queue_rq(hctx, &bd)
+                }
+            );
     }
 }
 ```
 
 ```c
 struct request_queue {
-  /* Together with queue_head for cacheline sharing */
-  struct list_head        queue_head;
-  struct request          *last_merge;
-  struct elevator_queue   *elevator;
-  request_fn_proc         *request_fn;
-  make_request_fn         *make_request_fn;
-}
+    /* Together with queue_head for cacheline sharing */
+    struct list_head        queue_head;
+    struct request          *last_merge;
+    struct elevator_queue   *elevator;
+    request_fn_proc         *request_fn;
+    make_request_fn         *make_request_fn;
+};
 
 /* The number of allocated requests: /sys/block/<device>/queue/nr_requests
  * The number of in-flight requests: /sys/block/<device>/inflight */
@@ -8379,6 +8613,7 @@ bool blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio,
   }
 
   ctx = blk_mq_get_ctx(q);
+  /* Map bio to a hardware queue */
   hctx = blk_mq_map_queue(q, bio->bi_opf, ctx);
   type = hctx->type;
   if (!(hctx->flags & BLK_MQ_F_SHOULD_MERGE) ||
@@ -8496,6 +8731,7 @@ bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
 ```
 
 ### elv_merge
+
 ```c
 enum elv_merge elv_merge(
   struct request_queue *q,
@@ -8570,33 +8806,23 @@ static struct request *cfq_find_rq_fmerge(
 }
 ```
 
+### blk_mq_run_work_fn
+
 ```c
-__submit_bio(bio);
-    blk_mq_submit_bio(bio);
-        struct request_queue *q = bdev_get_queue(bio->bi_bdev);
+static struct blk_mq_hw_ctx *
+blk_mq_alloc_hctx(struct request_queue *q, struct blk_mq_tag_set *set, int node)
+{
+    INIT_DELAYED_WORK(&hctx->run_work, blk_mq_run_work_fn);
+}
 
-        bio_set_ioprio(bio);
-        struct request *rq = blk_mq_get_cached_request(q);
-            rq = rq_list_peek(&plug->cached_rq);
-                blk_mq_attempt_bio_merge();
-                    blk_mq_sched_bio_merge(q, bio, nr_segs);
-                        struct elevator_queue *e = q->elevator;
-                        e->type->ops.bio_merge(q, bio, nr_segs);
-                            bfq_bio_merge();
-                                blk_mq_sched_try_merge();
-                                    elv_merge(q, &rq, bio);
-                                    bio_attempt_back_merge();
-                                    bio_attempt_front_merge();
+static void blk_mq_run_work_fn(struct work_struct *work)
+{
+    struct blk_mq_hw_ctx *hctx =
+        container_of(work, struct blk_mq_hw_ctx, run_work.work);
 
-        rq = blk_mq_get_new_requests(q);
-            rq = __blk_mq_alloc_requests(&data);
-
-        if (plug)
-            blk_add_rq_to_plug(plug, rq);
-        else if (rq->rq_flags & RQF_ELV)
-            blk_mq_sched_insert_request(rq, false, true, true);
-        else
-            blk_mq_run_dispatch_ops(rq->q, blk_mq_try_issue_directly(rq->mq_hctx, rq));
+    blk_mq_run_dispatch_ops(hctx->queue,
+                blk_mq_sched_dispatch_requests(hctx));
+}
 ```
 
 ## init request_queue
@@ -8650,15 +8876,16 @@ int blk_init_allocated_queue(struct request_queue *q)
 ```
 
 ## blk_plug
+
 * [WLN.net: Block Layer Plugging](https://lwn.net/Kernel/Index/#Block_layer-Plugging)
 
- A plugged queue passes no requests to the underlying device; it allows them to accumulate, instead, so that the I/O scheduler has a chance to reorder them and optimize performance.
+A plugged queue passes no requests to the underlying device; it allows them to accumulate, instead, so that the I/O scheduler has a chance to reorder them and optimize performance.
 
 When I/O is queued to an empty device, that device enters a plugged state. This means that I/O isn't immediately dispatched to the low level device driver, instead it is held back by this plug. When a process is going to wait on the I/O to finish, the device is unplugged and request dispatching to the device driver is started. The idea behind plugging is to allow a buildup of requests to better utilize the hardware and to allow merging of sequential requests into one single larger request.
 
 ```c
 blk_finish_plug();
-    if (plug == current->plug) {
+if (plug == current->plug) {
     __blk_flush_plug(plug, false);
         blk_mq_flush_plug_list();
             struct request_queue *q = rq->q;
@@ -8686,7 +8913,7 @@ blk_finish_plug();
                                             q->mq_ops->commit_rqs(hctx);
 
     current->plug = NULL;
-  }
+}
 ```
 
 ```c
@@ -9067,10 +9294,10 @@ out:
 }
 
 static const struct blk_mq_ops scsi_mq_ops = {
-  .get_budget  = scsi_mq_get_budget,
-  .put_budget  = scsi_mq_put_budget,
-  .queue_rq  = scsi_queue_rq,
-  .complete  = scsi_complete,
+    .get_budget   = scsi_mq_get_budget,
+    .put_budget   = scsi_mq_put_budget,
+    .queue_rq     = scsi_queue_rq,
+    .complete     = scsi_complete,
 };
 ```
 
