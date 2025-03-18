@@ -1114,6 +1114,7 @@ void wakeup_softirqd(void)
 # tasklet
 
 * [LWN - The end of tasklets](https://lwn.net/Articles/960041/)
+* [\[PATCH 3/8\] workqueue: Implement BH workqueues to eventually replace tasklets](https://lore.kernel.org/all/20240130091300.2968534-4-tj@kernel.org/)
 
 ## tasklet_action
 
