@@ -12153,15 +12153,17 @@ static int kthread(void *_create)
 
 ```c
 struct workqueue_struct {
-  struct list_head      pwqs;  /* WR: all pwqs of this wq */
-  struct list_head      list;  /* PR: list of all workqueues */
+    /* Bound Workqueues: Many pool_workqueue Instances
+    * Unbound Workqueues: One pool_workqueue Instance */
+    struct list_head      pwqs;  /* WR: all pwqs of this wq */
+    struct list_head      list;  /* PR: list of all workqueues */
 
-  struct list_head      maydays; /* MD: pwqs requesting rescue */
-  struct worker         *rescuer; /* I: rescue worker */
+    struct list_head      maydays; /* MD: pwqs requesting rescue */
+    struct worker         *rescuer; /* I: rescue worker */
 
-  struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
-  struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
-  struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
+    struct pool_workqueue *dfl_pwq; /* PW: only for unbound wqs */
+    struct pool_workqueue *cpu_pwqs; /* I: per-cpu pwqs */
+    struct pool_workqueue *numa_pwq_tbl[]; /* PWR: unbound pwqs indexed by node */
 };
 
 /* The per-pool workqueue. */
@@ -12302,6 +12304,12 @@ kworker/<unbound>:<worker-id-in-pool><High priority>
 ```
 
 ```c
+/* to raise softirq for the BH worker pools on other CPUs */
+static DEFINE_PER_CPU_SHARED_ALIGNED(struct irq_work [NR_STD_WORKER_POOLS], bh_pool_irq_works);
+
+/* the BH worker pools */
+static DEFINE_PER_CPU_SHARED_ALIGNED(struct worker_pool [NR_STD_WORKER_POOLS], bh_worker_pools);
+
 /* the per-cpu worker pools */
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct worker_pool [NR_STD_WORKER_POOLS], cpu_worker_pools);
 
@@ -12398,6 +12406,8 @@ start_kernel();
 
 ## alloc_workqueue
 
+* All bound workqueues—those created with the default behavior or explicitly tied to a CPU—share these per-CPU worker pools.
+
 ```c
 alloc_workqueue() {
     struct workqueue_struct* wq = kzalloc(sizeof(*wq) + tbl_size, GFP_KERNEL);
@@ -12462,6 +12472,9 @@ alloc_workqueue() {
 
 ## alloc_unbound_pwq
 
+* Unbound workqueues don’t tie their work items to a specific CPU’s worker pool. Instead, they use separate, dynamically configurable worker pools that aren’t bound to any single CPU.
+* These unbound pools are managed independently and aren’t shared with the per-CPU pools used by bound workqueues. Their concurrency and CPU affinity can be customized via apply_workqueue_attrs().
+
 ```c
 alloc_unbound_pwq() {
     worker_pool* pool = get_unbound_pool() {
@@ -12489,7 +12502,9 @@ alloc_unbound_pwq() {
             --->
         hash_add(unbound_pool_hash, &pool->hash_node, hash);
     }
+
     pwq = kmem_cache_alloc_node(pwq_cache);
+
     init_pwq(pwq, wq, pool) {
         pwq->pool = pool;
         pwq->wq = wq;
@@ -12545,6 +12560,7 @@ woke_up:
                 }
             }
         }
+        list_del_init(&worker->entry);
     }
 
 recheck:
@@ -12680,7 +12696,14 @@ recheck:
 
     worker_set_flags(worker, WORKER_PREP);                          /* 1.2 [nr_running]-- == 0 */
     worker_enter_idle(worker) {
+        worker->flags |= WORKER_IDLE;
         pool->nr_idle++;
+        worker->last_active = jiffies;
+        list_add(&worker->entry, &pool->idle_list);
+        if (too_many_workers(pool) && !timer_pending(&pool->idle_timer)) {
+            mod_timer(&pool->idle_timer, jiffies + IDLE_WORKER_TIMEOUT);
+        }
+
     }
 
     schedule() {
@@ -12707,15 +12730,31 @@ recheck:
 schedule_work(wq, work) {
     queue_work(WORK_CPU_UNBOUND, wq, work) {
         queue_work_on(cpu, wq, work) {
-            if (wq->flags & WQ_UNBOUND) {
-                if (req_cpu == WORK_CPU_UNBOUND)
+            if (req_cpu == WORK_CPU_UNBOUND) {
+                if (wq->flags & WQ_UNBOUND)
                     cpu = wq_select_unbound_cpu(raw_smp_processor_id());
-                pwq = unbound_pwq_by_node(wq, cpu_to_node(cpu));
-            } else {
-                if (req_cpu == WORK_CPU_UNBOUND)
+                else
                     cpu = raw_smp_processor_id();
-                pwq = per_cpu_ptr(wq->cpu_pwqs, cpu);
             }
+
+            pwq = rcu_dereference(*per_cpu_ptr(wq->cpu_pwq, cpu));
+            pool = pwq->pool;
+
+            last_pool = get_work_pool(work);
+            if (last_pool && last_pool != pool && !(wq->flags & __WQ_ORDERED)) {
+                struct worker *worker = find_worker_executing_work(last_pool, work);
+
+                if (worker && worker->current_pwq->wq == wq) {
+                    pwq = worker->current_pwq;
+                    pool = pwq->pool;
+                    WARN_ON_ONCE(pool != last_pool);
+                } else {
+                    /* meh... not running there, queue here */
+                }
+            }
+
+            pwq->nr_in_flight[pwq->work_color]++;
+            work_flags = work_color_to_flags(pwq->work_color);
 
             if (likely(pwq->nr_active < pwq->max_active)) {
                 pwq->nr_active++;
