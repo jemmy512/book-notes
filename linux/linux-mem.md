@@ -256,7 +256,7 @@
                     +---------------------------------------------------------------+
         e820        |                                                               |
                     +---------------------------------------------------------------+
-
+        
         ```
 
         * Migrate Types: Each pageblock has a single migrate type (e.g., MIGRATE_UNMOVABLE), set via **set_pageblock_migratetype**(). This ties to gfp_migratetype() we discussed.
@@ -14984,7 +14984,7 @@ isolate_fail:
         ```c
         void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
             unsigned int highest_zoneidx) {
-
+        
             /* Return true if high watermarks have been met.
              * Since we have freed the memory, now we should compact it to make
              * allocation of the requested order possible. */
@@ -18970,3 +18970,65 @@ void exit_mm(void)
     }
 }
 ```
+
+
+# Tuning
+
+## Tunable Parameters
+Option | Default | Description
+:-- | :-: | :-:
+vm.dirty_background_bytes | 0 | Amount of dirty memory to trigger pdflush background write-back
+vm.dirty_background_ratio | 10 | Percentage of dirty system memory to trigger pdflush background write-back
+vm.dirty_bytes | 0 | Amount of dirty memory that causes a writing process to start write-back
+vm.dirty_ratio | 20 | Ratio of dirty system memory to cause a writing process to begin write-back
+vm.dirty_expire_centisecs | 3,000 | Minimum time for dirty memory to be eligible for pdflush (promotes write cancellation)
+vm.dirty_writeback_centisecs | 500 | pdflush wake-up interval (0 to disable)
+vm.min_free_kbytes | dynamic | sets the desired free memory amount (some kernel atomic allocations can consume this)
+vm.watermark_scale_factor | 10 | The distance between kswapd watermarks (min, low, high) that control waking up and sleeping (unit is fractions of 10000, such that 10 means 0.1% of system memory)
+vm.watermark_boost_factor | 5000 | How far past the high watermark kswapd scans when memory is fragmented (recent fragmentation events occurred); unit is fractions of 10000, so 5000 means kswapd can boost up to 150% of the high watermark; 0 to disable
+vm.percpu_pagelist_fraction | 0 | This can override the default max fraction of pages that can be allocated to per-cpu page lists (a value of 10 limits to 1/10th of pages)
+vm.overcommit_memory | 0 | 0 = Use a heuristic to allow reasonable overcommits; 1 = always overcommit; 2 = don’t overcommit
+vm.swappiness | 60 | The degree to favor swapping (paging) for freeing memory over reclaiming it from the page cache
+vm.vfs_cache_pressure | 100 | The degree to reclaim cached directory and inode objects; lower values retain them more; 0 means never reclaim—can easily lead to out-of-memory conditions
+kernel.numa_balancing | 1 |  Enables automatic NUMA page balancing
+kernel.numa_balancing_scan_size_mb  | 256 | How many Mbytes of pages are scanned for each NUMA balancing scan
+
+## Multiple Page Sizes
+
+```sh
+echo 50 > /proc/sys/vm/nr_hugepages
+grep Huge /proc/meminfo
+AnonHugePages: 0 kB
+HugePages_Total: 50
+HugePages_Free: 50
+HugePages_Rsvd: 0
+HugePages_Surp: 0
+Hugepagesize: 2048 kB
+```
+
+```sh
+mkdir /mnt/hugetlbfs
+mount -t hugetlbfs none /mnt/hugetlbfs -o pagesize=2048K
+```
+
+## Allocators
+
+```sh
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4
+```
+
+## NUMA Binding
+
+bind processes to NUMA nodes.
+```sh
+numactl --membind=0 3161
+```
+
+## Resource Controls
+
+* **memory.limit_in_bytes**: The maximum allowed user memory, including file cache usage, in bytes
+* **memory.memsw.limit_in_bytes**: The maximum allowed memory and swap space, in bytes(when swap is in use)
+* **memory.kmem.limit_in_bytes**: The maximum allowed kernel memory, in bytes
+* **memory.tcp.limit_in_bytes**: The maximum tcp buffer memory, in bytes.
+* **memory.swappiness**: Similar to vm.swappiness described earlier but can be set for a cgroup
+* **memory.oom_control**: Can be set to 0, to allow the OOM killer for this cgroup, or 1, to disable it

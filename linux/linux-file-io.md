@@ -9312,3 +9312,28 @@ static const struct blk_mq_ops scsi_mq_ops = {
 8. Details of `dio_get_page()` and `get_more_blocks()`?
 9. Who will call `delayed_work_timer_fn` and `wb_workfn`?
 10. How data flow: `wb_writeback_work` -> `writeback_control` -> `mpage_da_data` -> `buffer_head` -> `bio` works?
+
+
+# Tuning
+
+## Application Calls
+
+performance of synchronous write workloads can be improved by using **fsync**(2) to flush a logical group of writes, instead of individually when using the O_DSYNC/O_RSYNC open(2) flags
+
+
+```sh
+int posix_fadvise(int fd, off_t offset, off_t len, int advice);
+int madvise(void *addr, size_t length, int advice);
+```
+
+Advice | Description
+- | -
+POSIX_FADV_SEQUENTIAL | The specified data range will be accessed sequentially.
+POSIX_FADV_RANDOM | The specified data range will be accessed randomly.
+POSIX_FADV_NOREUSE | The data will not be reused.
+POSIX_FADV_WILLNEED | The data will be used again in the near future.
+POSIX_FADV_DONTNEED | The data will not be used again in the near future.
+MADV_RANDOM | Offsets will be accessed in random order.
+MADV_SEQUENTIAL | Offsets will be accessed in sequential order.
+MADV_WILLNEED | Data will be needed again (please cache).
+MADV_DONTNEED | Data will not be needed again (no need to cache).

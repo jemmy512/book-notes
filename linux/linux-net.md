@@ -344,8 +344,7 @@ struct inet_sock {
                 recverr_rfc4884:1,
                 defer_connect:1; /* Indicates that fastopen_connect is set
                 * and cookie exists so we defer connect
-                * until first data frame is written
-                */
+                * until first data frame is written */
   __u8          rcv_tos;
   __u8          convert_csum;
   int           uc_index;
@@ -1202,125 +1201,123 @@ listen() {
 ```c
 SYSCALL_DEFINE2(listen, int, fd, int, backlog)
 {
-  struct socket *sock;
-  int err, fput_needed;
-  int somaxconn;
+    struct socket *sock;
+    int err, fput_needed;
+    int somaxconn;
 
-  sock = sockfd_lookup_light(fd, &err, &fput_needed);
-  if (sock) {
-    somaxconn = sock_net(sock->sk)->core.sysctl_somaxconn;
-    if ((unsigned int)backlog > somaxconn)
-      backlog = somaxconn;
-    err = sock->ops->listen(sock, backlog);
-    fput_light(sock->file, fput_needed);
-  }
-  return err;
+    sock = sockfd_lookup_light(fd, &err, &fput_needed);
+    if (sock) {
+        somaxconn = sock_net(sock->sk)->core.sysctl_somaxconn;
+        if ((unsigned int)backlog > somaxconn)
+            backlog = somaxconn;
+        err = sock->ops->listen(sock, backlog);
+        fput_light(sock->file, fput_needed);
+    }
+    return err;
 }
 
 /* inet_stream_ops.listen */
 int inet_listen(struct socket *sock, int backlog)
 {
-  struct sock *sk = sock->sk;
-  unsigned char old_state;
-  int err, tcp_fastopen;
+    struct sock *sk = sock->sk;
+    unsigned char old_state;
+    int err, tcp_fastopen;
 
-  lock_sock(sk);
+    lock_sock(sk);
 
-  err = -EINVAL;
-  if (sock->state != SS_UNCONNECTED || sock->type != SOCK_STREAM)
-    goto out;
+    err = -EINVAL;
+    if (sock->state != SS_UNCONNECTED || sock->type != SOCK_STREAM)
+        goto out;
 
-  old_state = sk->sk_state;
-  if (!((1 << old_state) & (TCPF_CLOSE | TCPF_LISTEN)))
-    goto out;
+    old_state = sk->sk_state;
+    if (!((1 << old_state) & (TCPF_CLOSE | TCPF_LISTEN)))
+        goto out;
 
-  /* Really, if the socket is already in listen state
-   * we can only allow the backlog to be adjusted.
-   */
-  if (old_state != TCP_LISTEN) {
-    /* Enable TFO w/o requiring TCP_FASTOPEN socket option.
-     * Note that only TCP sockets (SOCK_STREAM) will reach here.
-     * Also fastopen backlog may already been set via the option
-     * because the socket was in TCP_LISTEN state previously but
-     * was shutdown() rather than close().
-     */
-    tcp_fastopen = sock_net(sk)->ipv4.sysctl_tcp_fastopen;
-    if ((tcp_fastopen & TFO_SERVER_WO_SOCKOPT1) &&
-        (tcp_fastopen & TFO_SERVER_ENABLE) &&
-        !inet_csk(sk)->icsk_accept_queue.fastopenq.max_qlen)
-    {
-      fastopen_queue_tune(sk, backlog);
-      tcp_fastopen_init_key_once(sock_net(sk));
+    /* Really, if the socket is already in listen state
+     * we can only allow the backlog to be adjusted. */
+    if (old_state != TCP_LISTEN) {
+        /* Enable TFO w/o requiring TCP_FASTOPEN socket option.
+        * Note that only TCP sockets (SOCK_STREAM) will reach here.
+        * Also fastopen backlog may already been set via the option
+        * because the socket was in TCP_LISTEN state previously but
+        * was shutdown() rather than close(). */
+        tcp_fastopen = sock_net(sk)->ipv4.sysctl_tcp_fastopen;
+        if ((tcp_fastopen & TFO_SERVER_WO_SOCKOPT1) &&
+            (tcp_fastopen & TFO_SERVER_ENABLE) &&
+            !inet_csk(sk)->icsk_accept_queue.fastopenq.max_qlen)
+        {
+            fastopen_queue_tune(sk, backlog);
+            tcp_fastopen_init_key_once(sock_net(sk));
+        }
+
+        err = inet_csk_listen_start(sk, backlog);
+        if (err)
+            goto out;
+        tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_LISTEN_CB, 0, NULL);
     }
-
-    err = inet_csk_listen_start(sk, backlog);
-    if (err)
-      goto out;
-    tcp_call_bpf(sk, BPF_SOCK_OPS_TCP_LISTEN_CB, 0, NULL);
-  }
-  sk->sk_max_ack_backlog = backlog;
-  err = 0;
+    sk->sk_max_ack_backlog = backlog;
+    err = 0;
 
 out:
-  release_sock(sk);
-  return err;
+    release_sock(sk);
+    return err;
 }
 
 int inet_csk_listen_start(struct sock *sk, int backlog)
 {
-  struct inet_connection_sock *icsk = inet_csk(sk);
-  struct inet_sock *inet = inet_sk(sk);
-  int err = -EADDRINUSE;
+    struct inet_connection_sock *icsk = inet_csk(sk);
+    struct inet_sock *inet = inet_sk(sk);
+    int err = -EADDRINUSE;
 
-  reqsk_queue_alloc(&icsk->icsk_accept_queue); /* FIFO of established children */
+    reqsk_queue_alloc(&icsk->icsk_accept_queue); /* FIFO of established children */
 
-  sk->sk_max_ack_backlog = backlog;            /* listen backlog set in listen() */
-  sk->sk_ack_backlog = 0;                      /* current listen backlog */
-  inet_csk_delack_init(sk);
+    sk->sk_max_ack_backlog = backlog;            /* listen backlog set in listen() */
+    sk->sk_ack_backlog = 0;                      /* current listen backlog */
+    inet_csk_delack_init(sk);
 
-  sk_state_store(sk, TCP_LISTEN);
-  /* socket enters to hash table only after validation is complete */
-  if (!sk->sk_prot->get_port(sk, inet->inet_num)) {
-    inet->inet_sport = htons(inet->inet_num);
+    sk_state_store(sk, TCP_LISTEN);
+    /* socket enters to hash table only after validation is complete */
+    if (!sk->sk_prot->get_port(sk, inet->inet_num)) {
+        inet->inet_sport = htons(inet->inet_num);
 
-    sk_dst_reset(sk);
-    err = sk->sk_prot->hash(sk);
+        sk_dst_reset(sk);
+        err = sk->sk_prot->hash(sk);
 
-    if (likely(!err))
-      return 0;
-  }
+        if (likely(!err))
+        return 0;
+    }
 
-  inet_sk_set_state(sk, TCP_CLOSE);
-  return err;
+    inet_sk_set_state(sk, TCP_CLOSE);
+    return err;
 }
 
 void reqsk_queue_alloc(struct request_sock_queue *queue)
 {
-  spin_lock_init(&queue->rskq_lock);
+    spin_lock_init(&queue->rskq_lock);
 
-  spin_lock_init(&queue->fastopenq.lock);
-  queue->fastopenq.rskq_rst_head = NULL;
-  queue->fastopenq.rskq_rst_tail = NULL;
-  queue->fastopenq.qlen = 0;
+    spin_lock_init(&queue->fastopenq.lock);
+    queue->fastopenq.rskq_rst_head = NULL;
+    queue->fastopenq.rskq_rst_tail = NULL;
+    queue->fastopenq.qlen = 0;
 
-  queue->rskq_accept_head = NULL;
+    queue->rskq_accept_head = NULL;
 }
 
 struct proto tcp_prot = {
-  .hash = inet_hash;
+    .hash = inet_hash;
 }
 
 int inet_hash(struct sock *sk)
 {
-  int err = 0;
+    int err = 0;
 
-  if (sk->sk_state != TCP_CLOSE) {
-    local_bh_disable();
-    err = __inet_hash(sk, NULL);
-    local_bh_enable();
-  }
+    if (sk->sk_state != TCP_CLOSE) {
+        local_bh_disable();
+        err = __inet_hash(sk, NULL);
+        local_bh_enable();
+    }
 
-  return err;
+    return err;
 }
 
 /* net/ipv4/tcp_ipv4.c */
@@ -1328,54 +1325,54 @@ struct inet_hashinfo tcp_hashinfo;
 
 int __inet_hash(struct sock *sk, struct sock *osk)
 {
-  struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo; /* tcp_hashinfo; */
-  struct inet_listen_hashbucket *ilb;
-  int err = 0;
+    struct inet_hashinfo *hashinfo = sk->sk_prot->h.hashinfo; /* tcp_hashinfo; */
+    struct inet_listen_hashbucket *ilb;
+    int err = 0;
 
-  if (sk->sk_state != TCP_LISTEN) {
-    inet_ehash_nolisten(sk, osk);
-    return 0;
-  }
+    if (sk->sk_state != TCP_LISTEN) {
+        inet_ehash_nolisten(sk, osk);
+        return 0;
+    }
 
-  ilb = &hashinfo->listening_hash[inet_sk_listen_hashfn(sk)];
+    ilb = &hashinfo->listening_hash[inet_sk_listen_hashfn(sk)];
 
-  spin_lock(&ilb->lock);
-  if (sk->sk_reuseport) {
-    err = inet_reuseport_add_sock(sk, ilb);
-    if (err)
-      goto unlock;
-  }
-  if (IS_ENABLED(CONFIG_IPV6) && sk->sk_reuseport && sk->sk_family == AF_INET6)
-    __sk_nulls_add_node_tail_rcu(sk, &ilb->nulls_head);
-  else
-    __sk_nulls_add_node_rcu(sk, &ilb->nulls_head);
+    spin_lock(&ilb->lock);
+    if (sk->sk_reuseport) {
+        err = inet_reuseport_add_sock(sk, ilb);
+        if (err)
+        goto unlock;
+    }
+    if (IS_ENABLED(CONFIG_IPV6) && sk->sk_reuseport && sk->sk_family == AF_INET6)
+        __sk_nulls_add_node_tail_rcu(sk, &ilb->nulls_head);
+    else
+        __sk_nulls_add_node_rcu(sk, &ilb->nulls_head);
 
-  inet_hash2(hashinfo, sk);
-  ilb->count++;
-  sock_set_flag(sk, SOCK_RCU_FREE);
-  sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
+    inet_hash2(hashinfo, sk);
+    ilb->count++;
+    sock_set_flag(sk, SOCK_RCU_FREE);
+    sock_prot_inuse_add(sock_net(sk), sk->sk_prot, 1);
 unlock:
-  spin_unlock(&ilb->lock);
+    spin_unlock(&ilb->lock);
 
-  return err;
+    return err;
 }
 
 void inet_hash2(struct inet_hashinfo *h, struct sock *sk)
 {
-  struct inet_listen_hashbucket *ilb2;
+    struct inet_listen_hashbucket *ilb2;
 
-  if (!h->lhash2)
-    return;
+    if (!h->lhash2)
+        return;
 
-  ilb2 = inet_lhash2_bucket_sk(h, sk);
+    ilb2 = inet_lhash2_bucket_sk(h, sk);
 
-  spin_lock(&ilb2->lock);
-  if (sk->sk_reuseport && sk->sk_family == AF_INET6)
-    hlist_add_tail_rcu(&inet_csk(sk)->icsk_listen_portaddr_node, &ilb2->head);
-  else
-    hlist_add_head_rcu(&inet_csk(sk)->icsk_listen_portaddr_node, &ilb2->head);
-  ilb2->count++;
-  spin_unlock(&ilb2->lock);
+    spin_lock(&ilb2->lock);
+    if (sk->sk_reuseport && sk->sk_family == AF_INET6)
+        hlist_add_tail_rcu(&inet_csk(sk)->icsk_listen_portaddr_node, &ilb2->head);
+    else
+        hlist_add_head_rcu(&inet_csk(sk)->icsk_listen_portaddr_node, &ilb2->head);
+    ilb2->count++;
+    spin_unlock(&ilb2->lock);
 }
 ```
 
@@ -5609,8 +5606,7 @@ int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
     }
 
     /* if egress device is enslaved to an L3 master device pass the
-    * skb to its handler for processing
-    */
+    * skb to its handler for processing */
     skb = l3mdev_ip_out(sk, skb);
     if (unlikely(!skb))
         return 0;
@@ -5733,8 +5729,7 @@ struct sk_buff *__skb_gso_segment(struct sk_buff *skb,
 
     /* Only report GSO partial support if it will enable us to
     * support segmentation on this frame without needing additional
-    * work.
-    */
+    * work. */
     if (features & NETIF_F_GSO_PARTIAL) {
         netdev_features_t partial_features = NETIF_F_GSO_ROBUST;
         struct net_device *dev = skb->dev;
@@ -7810,33 +7805,32 @@ int netif_receive_skb(struct sk_buff *skb)
                 if (!netif_running(skb->dev))
                     goto drop;
 
+                qlen = skb_queue_len_lockless(&sd->input_pkt_queue);
+                max_backlog = READ_ONCE(net_hotdata.max_backlog); /* sysctl netdev_max_backlog */
+                if (unlikely(qlen > max_backlog))
+                    goto cpu_backlog_drop;
+
+                backlog_lock_irq_save(sd, &flags);
                 qlen = skb_queue_len(&sd->input_pkt_queue);
-                if (qlen <= netdev_max_backlog && !skb_flow_limit(skb, qlen)) {
-                    if (qlen) {
-            enqueue:
-                        __skb_queue_tail(&sd->input_pkt_queue, skb);
-                        input_queue_tail_incr_save(sd, qtail);
-                        rps_unlock(sd);
-                        local_irq_restore(flags);
-                        return NET_RX_SUCCESS;
+                if (qlen <= max_backlog && !skb_flow_limit(skb, qlen)) {
+                    if (!qlen) {
+                        if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state))
+                            napi_schedule_rps(sd);
                     }
-                    /* skb in input_pkt_queue are hanlded by sd->backlog initialized by
-                     * sd->backlog.poll = process_backlog; */
-                    if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state)) {
-                        if (!rps_ipi_queued(sd))
-                            ____napi_schedule(sd, &sd->backlog);
-                    }
-                    goto enqueue;
+                    __skb_queue_tail(&sd->input_pkt_queue, skb);
+                    tail = rps_input_queue_tail_incr(sd);
+                    backlog_unlock_irq_restore(sd, &flags);
+
+                    /* save the tail outside of the critical section */
+                    rps_input_queue_tail_save(qtail, tail);
+                    return NET_RX_SUCCESS;
                 }
 
-            drop:
-                sd->dropped++;
-                rps_unlock(sd);
-
-                local_irq_restore(flags);
-
-                atomic_long_inc(&skb->dev->rx_dropped);
-                kfree_skb(skb);
+            cpu_backlog_drop:
+                atomic_inc(&sd->dropped);
+            bad_dev:
+                dev_core_stats_rx_dropped_inc(skb->dev);
+                kfree_skb_reason(skb, reason);
                 return NET_RX_DROP;
             }
             rcu_read_unlock();
@@ -7850,15 +7844,13 @@ int netif_receive_skb(struct sk_buff *skb)
         if (sk_memalloc_socks() && skb_pfmemalloc(skb)) {
             unsigned int noreclaim_flag;
 
-            /*
-            * PFMEMALLOC skbs are special, they should
+            /* PFMEMALLOC skbs are special, they should
             * - be delivered to SOCK_MEMALLOC sockets only
             * - stay away from userspace
             * - have bounded memory usage
             *
             * Use PF_MEMALLOC as this saves us from propagating the allocation
-            * context down to all allocation sites.
-            */
+            * context down to all allocation sites. */
             noreclaim_flag = memalloc_noreclaim_save();
             ret = __netif_receive_skb_one_core(skb, true);
             memalloc_noreclaim_restore(noreclaim_flag);
@@ -8338,8 +8330,7 @@ int ip_rcv_finish_core(struct net *net,
         * This doesn't explicitly say L2 *broadcast*, but broadcast is
         * in a way a form of multicast and the most common use case for
         * this is 802.11 protecting against cross-station spoofing (the
-        * so-called "hole-196" attack) so do it for both.
-        */
+        * so-called "hole-196" attack) so do it for both. */
         if (in_dev && IN_DEV_ORCONF(in_dev, DROP_UNICAST_IN_L2_MULTICAST)) {
             drop_reason = SKB_DROP_REASON_UNICAST_IN_L2_MULTICAST;
             goto drop;
@@ -8485,12 +8476,10 @@ lookup:
             }
             sk = nsk;
             /* reuseport_migrate_sock() has already held one sk_refcnt
-            * before returning.
-            */
+            * before returning. */
         } else {
             /* We own a reference on the listener, increase it again
-            * as we might lose it too soon.
-            */
+            * as we might lose it too soon. */
             sock_hold(sk);
         }
 
@@ -15838,8 +15827,8 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
             if (is_file_epoll(tf.file)) {
                 error = -ELOOP;
                 if (ep_loop_check(ep, tf.file) != 0) {
-                clear_tfile_check_list();
-                goto error_tgt_fput;
+                    clear_tfile_check_list();
+                    goto error_tgt_fput;
                 }
             } else {
                 list_add(&tf.file->f_tfile_llink, &tfile_check_list);
@@ -15902,6 +15891,7 @@ error_return:
 ```
 
 ### ep_insert
+
 ```c
 struct ep_pqueue {
     poll_table      pt;
@@ -16194,8 +16184,10 @@ int ep_poll(
         __set_current_state(TASK_INTERRUPTIBLE);
 
         eavail = ep_events_available(ep);
-        if (!eavail)
+        if (!eavail) {
+            /* both add and wake up wait_queue in exclusive mode */
             __add_wait_queue_exclusive(&ep->wq, &wait);
+        }
 
         write_unlock_irq(&ep->lock);
 
@@ -16253,8 +16245,7 @@ void ep_busy_loop(struct eventpoll *ep, int nonblock)
                     unsigned long val = READ_ONCE(napi->state);
 
                     /* If multiple threads are competing for this napi,
-                    * we avoid dirtying napi->state as much as we can.
-                    */
+                    * we avoid dirtying napi->state as much as we can. */
                     if (val & (NAPIF_STATE_DISABLE | NAPIF_STATE_SCHED | NAPIF_STATE_IN_BUSY_POLL)) {
                         if (flags & NAPI_F_PREFER_BUSY_POLL)
                             set_bit(NAPI_STATE_PREFER_BUSY_POLL, &napi->state);
@@ -16494,6 +16485,9 @@ __poll_t tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
 
     if (sk->sk_shutdown == SHUTDOWN_MASK || state == TCP_CLOSE)
         mask |= EPOLLHUP;
+    /* there might still be data in the receive buffer (sk->sk_receive_queue)
+     * that hasn’t been read yet. Reporting EPOLLIN ensures the application
+     * can drain this data before hitting EOF (read returns 0). */
     if (sk->sk_shutdown & RCV_SHUTDOWN)
         mask |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
 
@@ -16545,9 +16539,11 @@ __poll_t tcp_poll(struct file *file, struct socket *sock, poll_table *wait)
                 set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
                 smp_mb__after_atomic();
                 if (sk_stream_is_writeable(sk))
-                mask |= EPOLLOUT | EPOLLWRNORM;
+                    mask |= EPOLLOUT | EPOLLWRNORM;
             }
         } else {
+            /* Reported despite writes failing, likely for compatibility
+             * or to signal the shutdown state. */
             mask |= EPOLLOUT | EPOLLWRNORM;
         }
 
@@ -16568,10 +16564,11 @@ void sock_poll_wait(struct file *filp, struct socket *sock, poll_table *p)
 {
     if (!poll_does_not_wait(p)) {
         poll_wait(filp, &sock->wq->wait, p) {
-            if (p && p->_qproc && wait_address)
-            /* ep_ptable_queue_proc      virqfd_ptable_queue_proc
-             * irqfd_ptable_queue_proc   memcg_event_ptable_queue_proc */
-            p->_qproc(filp, wait_address, p);
+            if (p && p->_qproc && wait_address) {
+                /* ep_ptable_queue_proc      virqfd_ptable_queue_proc
+                 * irqfd_ptable_queue_proc   memcg_event_ptable_queue_proc */
+                p->_qproc(filp, wait_address, p);
+            }
         }
         smp_mb();
     }
@@ -16732,11 +16729,12 @@ int ep_poll_callback(
                 break;
             }
         }
-        /* wake up epoll_wait */
-        if (sync)
+        /* wake up epoll_wait, exclusive 1 */
+        if (sync) {
             wake_up_sync(&ep->wq);
-        else
+        } else {
             wake_up(&ep->wq);
+        }
     }
 
     if (waitqueue_active(&ep->poll_wait))
@@ -16745,7 +16743,7 @@ int ep_poll_callback(
 out_unlock:
     spin_unlock_irqrestore(&ep->wq.lock, flags);
 
-    /* Nested epoll Support  */
+    /* Nested epoll Support */
     if (pwake)
         ep_poll_safewake(&ep->poll_wait);
 
@@ -16757,7 +16755,7 @@ out_unlock:
         smp_store_release(&ep_pwq_from_wait(wait)->whead, NULL);
     }
 
-  return ewake;
+    return ewake;
 }
 
 void __wake_up_locked(
@@ -16766,69 +16764,57 @@ void __wake_up_locked(
     __wake_up_common(wq_head, mode, nr, 0, NULL, NULL);
 }
 ```
+
 * [__wake_up_common](./linux-kernel.md#wake_up)
 
 ## sock_def_write_space
 
 ```c
-/* tcp_rcv_established -> */
-/* tcp_rcv_state_process -> */
+/* tcp_rcv_established ->
+ * tcp_rcv_state_process -> */
 void tcp_data_snd_check(struct sock *sk)
 {
     tcp_push_pending_frames(sk);
     tcp_check_space(sk);
 }
 
+/* tcp_event_new_data_sent -> */
 void tcp_check_space(struct sock *sk)
 {
-    if (sock_flag(sk, SOCK_QUEUE_SHRUNK)) {
-        sock_reset_flag(sk, SOCK_QUEUE_SHRUNK);
-        /* pairs with tcp_poll() */
-        smp_mb();
-        if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
-            tcp_new_space(sk);
-            if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags))
-                tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
+    smp_mb();
+    if (sk->sk_socket && test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
+        tcp_new_space(sk) {
+            struct tcp_sock *tp = tcp_sk(sk);
+
+            if (tcp_should_expand_sndbuf(sk)) {
+                tcp_sndbuf_expand(sk);
+                tp->snd_cwnd_stamp = tcp_jiffies32;
+            }
+
+            sk->sk_write_space(sk) = sock_def_write_space(struct sock *sk) {
+                struct socket_wq *wq;
+
+                rcu_read_lock();
+
+                /* Do not wake up a writer until he can make "significant"
+                * progress.  --DaveM */
+                if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
+                    wq = rcu_dereference(sk->sk_wq);
+                    if (skwq_has_sleeper(wq))
+                        wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
+
+                    /* Should agree with poll, otherwise some programs break */
+                    if (sock_writeable(sk)) /* sk->sk_wmem_alloc < (sk->sk_sndbuf >> 1) */
+                        sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
+                }
+
+                rcu_read_unlock();
+            }
+        }
+        if (!test_bit(SOCK_NOSPACE, &sk->sk_socket->flags)) {
+            tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
         }
     }
-}
-
-/* When incoming ACK allowed to free some skb from write_queue,
- * we remember this event in flag SOCK_QUEUE_SHRUNK and wake up socket
- * on the exit from tcp input handler.
- *
- * PROBLEM: sndbuf expansion does not work well with largesend. */
-void tcp_new_space(struct sock *sk)
-{
-    struct tcp_sock *tp = tcp_sk(sk);
-
-    if (tcp_should_expand_sndbuf(sk)) {
-        tcp_sndbuf_expand(sk);
-        tp->snd_cwnd_stamp = tcp_jiffies32;
-    }
-
-    sk->sk_write_space(sk); /* sock_def_write_space */
-}
-
-void sock_def_write_space(struct sock *sk)
-{
-    struct socket_wq *wq;
-
-    rcu_read_lock();
-
-    /* Do not wake up a writer until he can make "significant"
-    * progress.  --DaveM */
-    if ((refcount_read(&sk->sk_wmem_alloc) << 1) <= sk->sk_sndbuf) {
-        wq = rcu_dereference(sk->sk_wq);
-        if (skwq_has_sleeper(wq))
-            wake_up_interruptible_sync_poll(&wq->wait, EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND);
-
-        /* Should agree with poll, otherwise some programs break */
-        if (sock_writeable(sk)) /* sk->sk_wmem_alloc < (sk->sk_sndbuf >> 1) */
-            sk_wake_async(sk, SOCK_WAKE_SPACE, POLL_OUT);
-    }
-
-    rcu_read_unlock();
 }
 ```
 
@@ -17021,29 +17007,223 @@ static ssize_t eventfd_write(struct file *file, const char __user *buf, size_t c
 }
 ```
 
+## signalfd
+
+Will a User-Registered Signal Handler Be Triggered with signalfd Set?
+* The short answer is no, a user-registered signal handler will not be triggered for signals handled by signalfd, provided those signals are blocked as part of the signalfd setup. Here’s why:
+
+When you set up signalfd, you typically block the signals you want it to handle:
+
+```c
+sigset_t mask;
+sigemptyset(&mask);
+sigaddset(&mask, SIGINT);
+sigprocmask(SIG_BLOCK, &mask, NULL); // Block SIGINT
+int sfd = signalfd(-1, &mask, 0);
+```
+
+A blocked signal is not delivered to the process’s signal handler. Instead, it remains queued until it’s handled (e.g., read from the signalfd file descriptor) or unblocked.
+
+```c
+static const struct file_operations signalfd_fops = {
+    .show_fdinfo    = signalfd_show_fdinfo,
+    .release        = signalfd_release,
+    .poll           = signalfd_poll,
+    .read_iter      = signalfd_read_iter,
+    .llseek         = noop_llseek,
+};
+```
+
+### do_signalfd
+
+```c
+static int do_signalfd4(int ufd, sigset_t *mask, int flags)
+{
+    struct signalfd_ctx *ctx;
+
+    /* Check the SFD_* constants for consistency.  */
+    BUILD_BUG_ON(SFD_CLOEXEC != O_CLOEXEC);
+    BUILD_BUG_ON(SFD_NONBLOCK != O_NONBLOCK);
+
+    if (flags & ~(SFD_CLOEXEC | SFD_NONBLOCK))
+        return -EINVAL;
+
+    sigdelsetmask(mask, sigmask(SIGKILL) | sigmask(SIGSTOP));
+    signotset(mask);
+
+    if (ufd == -1) {
+        struct file *file;
+
+        ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+        if (!ctx)
+            return -ENOMEM;
+
+        ctx->sigmask = *mask;
+
+        ufd = get_unused_fd_flags(flags & O_CLOEXEC);
+        if (ufd < 0) {
+            kfree(ctx);
+            return ufd;
+        }
+
+        file = anon_inode_getfile("[signalfd]", &signalfd_fops, ctx,
+                    O_RDWR | (flags & O_NONBLOCK));
+        if (IS_ERR(file)) {
+            put_unused_fd(ufd);
+            kfree(ctx);
+            return PTR_ERR(file);
+        }
+        file->f_mode |= FMODE_NOWAIT;
+
+        fd_install(ufd, file);
+    } else {
+        CLASS(fd, f)(ufd);
+        if (fd_empty(f))
+            return -EBADF;
+        ctx = fd_file(f)->private_data;
+        if (fd_file(f)->f_op != &signalfd_fops)
+            return -EINVAL;
+        spin_lock_irq(&current->sighand->siglock);
+        ctx->sigmask = *mask;
+        spin_unlock_irq(&current->sighand->siglock);
+
+        wake_up(&current->sighand->signalfd_wqh);
+    }
+
+    return ufd;
+}
+```
+
+### signalfd_notify
+
+```c
+do_send_signal_info() {
+    /* wake up signalfd_wqh when signal arrives */
+    signalfd_notify(t, sig) {
+        if (unlikely(waitqueue_active(&tsk->sighand->signalfd_wqh))) {
+            wake_up(&tsk->sighand->signalfd_wqh);
+        }
+    }
+}
+```
+
+```c
+/* signalfd_notify -> ep_poll_callback -> epoll_wait -> ep_item_poll */
+static __poll_t signalfd_poll(struct file *file, poll_table *wait)
+{
+    struct signalfd_ctx *ctx = file->private_data;
+    __poll_t events = 0;
+
+    poll_wait(file, &current->sighand->signalfd_wqh, wait);
+
+    spin_lock_irq(&current->sighand->siglock);
+    if (next_signal(&current->pending, &ctx->sigmask) ||
+        next_signal(&current->signal->shared_pending, &ctx->sigmask))
+        events |= EPOLLIN;
+    spin_unlock_irq(&current->sighand->siglock);
+
+    return events;
+}
+```
+
+### signalfd_read_iter
+
+```c
+static ssize_t signalfd_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+    struct file *file = iocb->ki_filp;
+    struct signalfd_ctx *ctx = file->private_data;
+    size_t count = iov_iter_count(to);
+    ssize_t ret, total = 0;
+    kernel_siginfo_t info;
+    bool nonblock;
+
+    count /= sizeof(struct signalfd_siginfo);
+    if (!count)
+        return -EINVAL;
+
+    nonblock = file->f_flags & O_NONBLOCK || iocb->ki_flags & IOCB_NOWAIT;
+    do {
+        ret = signalfd_dequeue(ctx, &info, nonblock) {
+            enum pid_type type;
+            ssize_t ret;
+            DECLARE_WAITQUEUE(wait, current);
+
+            spin_lock_irq(&current->sighand->siglock);
+            ret = dequeue_signal(&ctx->sigmask, info, &type);
+            switch (ret) {
+            case 0:
+                if (!nonblock)
+                    break;
+                ret = -EAGAIN;
+                fallthrough;
+            default:
+                spin_unlock_irq(&current->sighand->siglock);
+                return ret;
+            }
+
+            /* block IO */
+
+            add_wait_queue(&current->sighand->signalfd_wqh, &wait);
+
+            for (;;) {
+                set_current_state(TASK_INTERRUPTIBLE);
+                ret = dequeue_signal(&ctx->sigmask, info, &type);
+                if (ret != 0)
+                    break;
+                if (signal_pending(current)) {
+                    ret = -ERESTARTSYS;
+                    break;
+                }
+                spin_unlock_irq(&current->sighand->siglock);
+                schedule();
+                spin_lock_irq(&current->sighand->siglock);
+            }
+            spin_unlock_irq(&current->sighand->siglock);
+
+            remove_wait_queue(&current->sighand->signalfd_wqh, &wait);
+            __set_current_state(TASK_RUNNING);
+
+            return ret;
+        }
+        if (unlikely(ret <= 0))
+            break;
+
+        ret = signalfd_copyinfo(to, &info);
+        if (ret < 0)
+            break;
+        total += ret;
+        nonblock = 1;
+    } while (--count);
+
+    return total ? total: ret;
+}
+```
+
 ## eventpoll_init
+
 ```c
 int __init eventpoll_init(void)
 {
-  struct sysinfo si;
+    struct sysinfo si;
 
-  si_meminfo(&si);
+    si_meminfo(&si);
 
-  max_user_watches = (((si.totalram - si.totalhigh) / 25) << PAGE_SHIFT) / EP_ITEM_COST;
+    max_user_watches = (((si.totalram - si.totalhigh) / 25) << PAGE_SHIFT) / EP_ITEM_COST;
 
-  /* Allocates slab cache used to allocate "struct epitem" items */
-  epi_cache = kmem_cache_create("eventpoll_epi", sizeof(struct epitem),
-      0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+    /* Allocates slab cache used to allocate "struct epitem" items */
+    epi_cache = kmem_cache_create("eventpoll_epi", sizeof(struct epitem),
+        0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
 
-  /* Allocates slab cache used to allocate "struct eppoll_entry" */
-  pwq_cache = kmem_cache_create("eventpoll_pwq",
-    sizeof(struct eppoll_entry), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
-  epoll_sysctls_init();
+    /* Allocates slab cache used to allocate "struct eppoll_entry" */
+    pwq_cache = kmem_cache_create("eventpoll_pwq",
+        sizeof(struct eppoll_entry), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
+    epoll_sysctls_init();
 
-  ephead_cache = kmem_cache_create("ep_head",
-    sizeof(struct epitems_head), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
+    ephead_cache = kmem_cache_create("ep_head",
+        sizeof(struct epitems_head), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
 
-  return 0;
+    return 0;
 }
 ```
 
@@ -17461,3 +17641,83 @@ void open_softirq(int nr, void (*action)(struct softirq_action *))
   softirq_vec[nr].action = action;
 }
 ```
+
+# Tunning
+
+## System-Wide
+
+On Linux, system-wide tunable parameters can be viewed and set using the sysctl(8) command and written to /etc/sysctl.conf. They can also be read and written from the /proc file system, under **/proc/sys/net**.
+
+```sh
+# Enabling auto-tuning of the TCP receive buffer:
+net.ipv4.tcp_moderate_rcvbuf = 1
+
+# Setting the auto-tuning parameters for the TCP read and write buffers:
+# the minimum, default, and maximum number of bytes to use
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+
+# Socket and TCP Buffers
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+
+# TCP Backlog
+# First backlog queue, for half-open connections:
+net.ipv4.tcp_max_syn_backlog = 4096
+# Second backlog queue, the listen backlog, for passing connections to accept(2):
+net.core.somaxconn = 1024
+
+# TCP Port
+net.ipv4.ip_local_port_range = 1024 65535
+
+# Device Backlog
+# Increasing the length of the network device backlog queue, per CPU:
+net.core.netdev_max_backlog = 10000
+
+# TCP Congestion Control
+# Linux supports pluggable congestion-control algorithms. Listing those currently available:
+sysctl net.ipv4.tcp_available_congestion_control
+net.ipv4.tcp_available_congestion_control = reno cubic
+
+modprobe tcp_htcp
+sysctl net.ipv4.tcp_available_congestion_control
+net.ipv4.tcp_available_congestion_control = reno cubic htcp
+
+# TCP Options
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_fack = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_tw_recycle = 0
+
+# ECN Explicit Congestion Notification
+# 0 to disable ECN
+# 1 to allow for incoming connections and request ECN on outgoing connections
+# 2 to allow for incoming and not request ECN on outgoing.
+net.ipv4.tcp_ecn = 1
+
+# Byte Queue Limits
+grep . /sys/devices/pci.../net/ens5/queues/tx-0/byte_queue_limits/limit*
+/sys/devices/pci.../net/ens5/queues/tx-0/byte_queue_limits/limit:16654
+/sys/devices/pci.../net/ens5/queues/tx-0/byte_queue_limits/limit_max:1879048192
+/sys/devices/pci.../net/ens5/queues/tx-0/byte_queue_limits/limit_min:0
+
+# Queueing Disciplines
+# list the qdiscs on your system using:
+man -k tc-
+sysctl net.core.default_qdisc
+net.core.default_qdisc = fq_codel
+```
+
+## Socket Options
+
+Option Name | Description
+- | -
+SO_SNDBUF, SO_RCVBUF | Send and receive buffer sizes (these can be tuned up to the system limits described earlier; there is also SO_SNDBUFFORCE to override the send limit).
+SO_REUSEPORT | Allows multiple processes or threads to bind to the same port, allowing the kernel to distribute load across them for scalability (since Linux 3.9).
+SO_MAX_PACING_RATE | Sets the maximum pacing rate, in bytes per second (see tc-fq(8)).
+SO_LINGER | Can be used to reduce TIME_WAIT latency.
+SO_TXTIME | Request time-based packet transmission, where deadlines can be supplied (since Linux 4.19) [Corbet 18c] (used for UDP pacing [Bruijn 18]).
+TCP_NODELAY | Disables Nagle, sending segments as soon as possible. This may improve latency at the cost of higher network utilization (more packets).
+TCP_CORK | Pause transmission until full packets can be sent, improving throughput. (There is also a system-wide setting for the kernel to automatically attempt corking: net.ipv4.tcp_autocorking.)
+TCP_QUICKACK | Send ACKs immediately (can increase send bandwidth).
+TCP_CONGESTION | Congestion control algorithm for the socket.

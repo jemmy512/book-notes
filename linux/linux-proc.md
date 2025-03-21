@@ -18453,3 +18453,91 @@ void timens_on_fork(struct nsproxy *nsproxy, struct task_struct *tsk)
 ```sh
 mount -t overlay overlay -o lowerdir=A:B:C,upperdir=C,workdir=worker /tmp/test
 ```
+
+# Tuning
+
+## Compiler Options
+
+## Scheduling Priority and Class
+
+## Scheduler Options
+
+Option | Default | Description
+:-- | :-: | :--
+CONFIG_CGROUP_SCHED | y | Allows tasks to be grouped, allocating CPU time on a group basis
+CONFIG_FAIR_GROUP_SCHED | y | Allows CFS tasks to be grouped
+CONFIG_RT_GROUP_SCHED | n | Allows real-time tasks to be grouped
+CONFIG_SCHED_AUTOGROUP | y | Automatically identifies and creates task groups (e.g., build jobs)
+CONFIG_SCHED_SMT | y | Hyperthreading support
+CONFIG_SCHED_MC | y | Multicore support
+CONFIG_HZ | 250 | Sets kernel clock rate (timer interrupt)
+CONFIG_NO_HZ | y | Tickless kernel behavior
+CONFIG_SCHED_HRTICK | y | Use high-resolution timers
+CONFIG_PREEMPT | n | Full kernel preemption (except spin lock regions and interrupts)
+CONFIG_PREEMPT_NONE | n | No preemption
+CONFIG_PREEMPT_VOLUNTARY | y | Preemption at voluntary kernel code points
+
+---
+
+Linux scheduler sysctl(8) tunables which can also be set from /proc/sys/sched.
+sysctl | Default | Description
+:-: | :-: | :-:
+kernel.sched_cfs_bandwidth_slice_us | 5000 | CPU time quanta used for CFS bandwidth calculations.
+kernel.sched_latency_ns | 12000000 | Targeted preemption latency. Increasing this can increase a task’s time on-CPU, at the cost of preemption latency.
+kernel.sched_migration_cost_ns | 500000 | Task migration latency cost, used for affinity calculations. Tasks that have run more recently than this value are considered cache hot.
+kernel.sched_nr_migrate | 32 | Sets how many tasks can be migrated at a time for load balancing.
+kernel.sched_schedstats | 0 | Enables additional scheduler statistics, including sched:sched_stat* tracepoints.
+
+## Scaling Governors
+
+Linux supports different CPU scaling governors that control the CPU clock frequencies via soft-
+ware (the kernel). These can be set via /sys files. For example, for CPU 0:
+```sh
+# cat /sys/devices/system/cpu/cpufreq/policy0/scaling_available_governors
+performance powersave
+# cat /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+powersave
+
+This is an example of an untuned system: the current governor is “powersave,” which will use
+lower CPU frequencies to save power. This can be set to “performance” to always use the maxi-
+mum frequency. For example:
+
+```sh
+# echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor
+```
+
+## Power States
+
+Processor power states can be enabled and disabled using the cpupower(1) tool. As seen earlier
+in Section 6.6.21, Other Tools, deeper sleep states can have high exit latency (890 μs for C10
+was shown). Individual states can be disabled using -d, and -D latency will disable all states
+with higher exit latency than that given (in microseconds). This allows you to fine-tune which
+lower-power states may be used, disabling those with excessive latency.
+
+## CPU Binding
+
+```sh
+taskset -pc 7-10 10790
+pid 10790's current affinity list: 0-15
+pid 10790's new affinity list: 7-10
+```
+
+## Exclusive CPU Sets
+
+Linux provides cpusets, which allow CPUs to be grouped and processes assigned to them. performance can be further improved by making the cpuset exclusive, preventing other processes from using it.
+
+```sh
+mount -t cgroup -ocpuset cpuset /sys/fs/cgroup/cpuset # may not be necessary
+cd /sys/fs/cgroup/cpuset
+mkdir prodset                   # create a cpuset called "prodset"
+cd prodset
+echo 7-10 > cpuset.cpus         # assign CPUs 7-10
+echo 1 > cpuset.cpu_exclusive   # make prodset exclusive
+echo 1159 > tasks               # assign PID 1159 to prodset
+```
+
+## Resource Controls
+
+control groups (cgroups), which can also control resource usage by processes or groups of processes.
+
+CPU usage can be controlled using shares, and the CFS scheduler allows fixed limits to be imposed (CPU bandwidth), in terms of allocating microseconds of CPU cycles per interval.
