@@ -146,7 +146,7 @@
     * [Linux 网络栈接收数据（RX）：配置调优（2022）](http://arthurchiao.art/blog/linux-net-stack-tuning-rx-zh/)
     * [Linux 网络栈接收数据（RX）：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-net-stack-implementation-rx-zh/)
     * [Linux 中断（IRQ/softirq）基础：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
-    * []()
+* [Linux Network Performance Ultimate Guide](https://ntk148v.github.io/posts/linux-network-performance-ultimate-guide/)
 
 <img src='../images/kernel/kernel-structual.svg' style='max-height:850px'/>
 
@@ -6574,6 +6574,8 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 
 <img src='../images/kernel/net-filter-3.png' style='max-height:850px'/>
 
+<img src='../images/kernel/net-read-flow.png' style='max-height:850px'/>
+
 ---
 
 <img src='../images/kernel/net-read.svg'/>
@@ -7098,9 +7100,19 @@ NAPI Usage:
 
 <img src='../images/kernel/net-rx_ring.png' style='max-height:850px'/>
 
-<img src='../images/kernel/net-desc-ring-1.png' style='max-height:850px'/>
+Ring | Buffer
+:-: | :-:
+<img src='../images/kernel/net-desc-ring-1.png' style='max-height:550px'/> | <img src='../images/kernel/net-desc-ring-2.png' style='max-height:850px'/>
 
-<img src='../images/kernel/net-desc-ring-2.png' style='max-height:850px'/>
+| Aspect | NIC Multiple Queues | Kernel Ring Buffer |
+| :-: | :-: | :-: |
+| Location | NIC hardware | Kernel memory |
+| Scope | Multiple queues per NIC (e.g., 4 RX, 4 TX) | One ring buffer per queue per NIC |
+| Purpose | Load balancing across CPU cores | Packet staging and kernel processing |
+| Data Structure | Hardware ring buffers of descriptors | Software circular buffer of descriptors |
+| Control | NIC firmware/hardware + driver config | Kernel network driver |
+| Scalability | Scales with CPU cores via parallel queues | Scales with queue size and batching |
+| Interaction | Feeds packets into kernel ring buffers | Receives packets from NIC queues |
 
 ```c
 struct pci_dev {
