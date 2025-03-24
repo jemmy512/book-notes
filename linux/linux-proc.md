@@ -124,47 +124,6 @@
     * [queue_work](#queue_work)
     * [wq-struct](#wq-struct)
 
-
-* [task_group](#task_group)
-    * [sched_create_group](#sched_create_group)
-
-* [cfs_bandwidth](#cfs_bandwidth)
-    * [init_cfs_bandwidth](#init_cfs_bandwidth)
-    * [sched_cfs_period_timer](#sched_cfs_period_timer)
-    * [sched_cfs_slack_timer](#sched_cfs_slack_timer)
-    * [tg_set_cfs_bandwidth](#tg_set_cfs_bandwidth)
-    * [throttle_cfs_rq](#throttle_cfs_rq)
-    * [unthrottle_cfs_rq](#unthrottle_cfs_rq)
-    * [sched_group_set_shares](#sched_group_set_shares)
-    * [update_cfs_group](#update_cfs_group)
-
-* [rt_bandwidth](#rt_bandwidth)
-    * [tg_set_rt_bandwidth](#tg_set_rt_bandwidth)
-    * [sched_rt_period_timer](#sched_rt_period_timer)
-    * [sched_rt_runtime_exceeded](#sched_rt_runtime_exceeded)
-
-* [cgroup](#cgroup)
-    * [cgrp_demo](#cgrp_demo)
-    * [cgrou_init](#cgroup_init)
-        * [cgroup_init_cftypes](#cgroup_init_cftypes)
-        * [cgroup_init_subsys](#cgroup_init_subsys)
-        * [cgroup_setup_root](#cgroup_setup_root)
-    * [cgroup_create](#cgroup_create)
-    * [cgroup_attach_task](#cgroup_attach_task)
-    * [cgroup_fork](#cgroup_fork)
-    * [mem_cgroup](#mem_cgroup)
-        * [mem_cgroup_write](#mem_cgroup_write)
-        * [mem_cgroup_charge](#mem_cgroup_charge)
-        * [mem_cgroup_can_attach](#mem_cgroup_can_attach)
-        * [mem_cgroup_post_attach](#mem_cgroup_post_attach)
-    * [cpu_cgroup](#cpu_cgroup)
-        * [cpu_cgroup_css_alloc](#cpu_cgroup_css_alloc)
-        * [cpu_cgroup_attach](#cpu_cgroup_attach)
-        * [cpu_weight_write_u64](#cpu_weight_write_u64)
-        * [cpu_max_write](#cpu_max_write)
-    * [cgroup_fork](#cgroup_fork)
-    * [cgroup_subtree_control_write](#cgroup_subtree_control_write)
-
 </details>
 
 * [LWN Kernel Index](https://lwn.net/Kernel/Index/)
@@ -3365,6 +3324,38 @@ out:
 
     return ret;
 }
+```
+
+## rt_sysctl
+
+```c
+static const struct ctl_table sched_rt_sysctls[] = {
+    {
+        .procname       = "sched_rt_period_us",
+        .data           = &sysctl_sched_rt_period,
+        .maxlen         = sizeof(int),
+        .mode           = 0644,
+        .proc_handler   = sched_rt_handler,
+        .extra1         = SYSCTL_ONE,
+        .extra2         = SYSCTL_INT_MAX,
+    },
+    {
+        .procname       = "sched_rt_runtime_us",
+        .data           = &sysctl_sched_rt_runtime,
+        .maxlen         = sizeof(int),
+        .mode           = 0644,
+        .proc_handler   = sched_rt_handler,
+        .extra1         = SYSCTL_NEG_ONE,
+        .extra2         = (void *)&sysctl_sched_rt_period,
+    },
+    {
+        .procname       = "sched_rr_timeslice_ms",
+        .data           = &sysctl_sched_rr_timeslice,
+        .maxlen         = sizeof(int),
+        .mode           = 0644,
+        .proc_handler   = sched_rr_handler,
+    },
+};
 ```
 
 # SCHED_CFS
@@ -12796,180 +12787,6 @@ pool_mayday_timeout() {
         }
     }
     mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
-}
-```
-
-# task_group
-
-* [Oracle - CFS Group Scheduling](https://blogs.oracle.com/linux/post/cfs-group-scheduling)
-* [内核工匠 - CFS组调度](https://mp.weixin.qq.com/s/BbXFZSq6xFclRahX7oPD9A)
-* [Dumpstack](http://www.dumpstack.cn/index.php/2022/04/05/726.html)
-* [调度器41-CFS组调度](https://www.cnblogs.com/hellokitty2/p/17031629.html)
-
-* Group scheduling is extensively used in a myriad of use cases on different types of systems. Large enterprise systems use it for containers, user sessions etc. Embedded systems like android use it to segregate tasks of varying importance (e.g. foreground vs background) from each other.
-
-![](../images/kernel/proc-sched-task_group.png)
-
----
-
-![](../images/kernel/proc-sched-task_group-2.png)
-
----
-
-![](../images/kernel/proc-sched-task_group-3.png)
-
----
-
-![](../images/kernel/proc-sched-task_group-4.png)
-
----
-
-![](../images/kernel/proc-sched-task-group-period-quota.png)
-
-
-```c
-struct task_group {
-    struct cgroup_subsys_state  css;
-
-#ifdef CONFIG_FAIR_GROUP_SCHED
-    struct sched_entity         **se;
-    struct cfs_rq               **cfs_rq;
-    unsigned long               shares;
-    int                         idle;
-    atomic_long_t               load_avg;
-#endif
-
-#ifdef CONFIG_RT_GROUP_SCHED
-    struct sched_rt_entity      **rt_se;
-    struct rt_rq                **rt_rq;
-    struct rt_bandwidth         rt_bandwidth;
-#endif
-
-    struct rcu_head             rcu;
-    struct list_head            list;
-
-    struct task_group           *parent;
-    struct list_head            siblings;
-    struct list_head            children;
-
-#ifdef CONFIG_SCHED_AUTOGROUP
-    struct autogroup            *autogroup;
-#endif
-
-    struct cfs_bandwidth        cfs_bandwidth;
-};
-```
-
-## sched_create_group
-
-```c
-struct task_group *sched_create_group(struct task_group *parent) {
-    struct task_group *tg;
-
-    tg = kmem_cache_alloc(task_group_cache, GFP_KERNEL | __GFP_ZERO);
-
-    alloc_fair_sched_group(tg, parent) {
-        tg->cfs_rq = kcalloc(nr_cpu_ids, sizeof(cfs_rq), GFP_KERNEL);
-
-        tg->se = kcalloc(nr_cpu_ids, sizeof(se), GFP_KERNEL);
-
-        tg->shares = NICE_0_LOAD;
-
-        init_cfs_bandwidth(tg_cfs_bandwidth(tg), tg_cfs_bandwidth(parent)) {
-            --->
-        }
-
-        for_each_possible_cpu(i) {
-            cfs_rq = kzalloc_node(sizeof(struct cfs_rq), GFP_KERNEL, cpu_to_node(i));
-            se = kzalloc_node(sizeof(struct sched_entity_stats), GFP_KERNEL, cpu_to_node(i));
-
-            init_cfs_rq(cfs_rq) {
-                cfs_rq->tasks_timeline = RB_ROOT_CACHED;
-                cfs_rq->min_vruntime = (u64)(-(1LL << 20));
-                raw_spin_lock_init(&cfs_rq->removed.lock);
-            }
-
-            init_tg_cfs_entry(tg, cfs_rq, se, i/*cpu*/, parent->se[i]/*parent*/) {
-                struct rq *rq = cpu_rq(cpu);
-
-                cfs_rq->tg = tg;
-                cfs_rq->rq = rq;
-                init_cfs_rq_runtime(cfs_rq) {
-                    cfs_rq->runtime_enabled = 0;
-                    INIT_LIST_HEAD(&cfs_rq->throttled_list);
-                    INIT_LIST_HEAD(&cfs_rq->throttled_csd_list);
-                }
-
-                tg->cfs_rq[cpu] = cfs_rq;
-                tg->se[cpu] = se;
-
-                /* se could be NULL for root_task_group */
-                if (!se)
-                    return;
-
-                if (!parent) {
-                    se->cfs_rq = &rq->cfs;
-                    se->depth = 0;
-                } else {
-                    se->cfs_rq = parent->my_q;
-                    se->depth = parent->depth + 1;
-                }
-
-                se->my_q = cfs_rq;
-                /* guarantee group entities always have weight */
-                update_load_set(&se->load/*lw*/, NICE_0_LOAD/*w*/) {
-                    lw->weight = w;
-                    lw->inv_weight = 0;
-                }
-                se->parent = parent;
-            }
-            init_entity_runnable_average(se);
-        }
-    }
-
-    alloc_rt_sched_group(tg, parent) {
-        struct rt_rq *rt_rq;
-        struct sched_rt_entity *rt_se;
-        int i;
-
-        tg->rt_rq = kcalloc(nr_cpu_ids, sizeof(rt_rq), GFP_KERNEL);
-        tg->rt_se = kcalloc(nr_cpu_ids, sizeof(rt_se), GFP_KERNEL);
-
-        init_rt_bandwidth(&tg->rt_bandwidth,
-                ktime_to_ns(def_rt_bandwidth.rt_period), 0);
-
-        for_each_possible_cpu(i) {
-            rt_rq = kzalloc_node(sizeof(struct rt_rq), GFP_KERNEL, cpu_to_node(i));
-            rt_se = kzalloc_node(sizeof(struct sched_rt_entity), GFP_KERNEL, cpu_to_node(i));
-
-            init_rt_rq(rt_rq);
-            rt_rq->rt_runtime = tg->rt_bandwidth.rt_runtime;
-            init_tg_rt_entry(tg, rt_rq, rt_se, i/*cpu*/, parent->rt_se[i]/*parent*/) {
-                struct rq *rq = cpu_rq(cpu);
-
-                rt_rq->highest_prio.curr = MAX_RT_PRIO-1;
-                rt_rq->rt_nr_boosted = 0;
-                rt_rq->rq = rq;
-                rt_rq->tg = tg;
-
-                tg->rt_rq[cpu] = rt_rq;
-                tg->rt_se[cpu] = rt_se;
-
-                if (!parent)
-                    rt_se->rt_rq = &rq->rt;
-                else
-                    rt_se->rt_rq = parent->my_q;
-
-                rt_se->my_q = rt_rq;
-                rt_se->parent = parent;
-                INIT_LIST_HEAD(&rt_se->run_list);
-            }
-        }
-    }
-
-    alloc_uclamp_sched_group(tg, parent);
-
-    return tg;
 }
 ```
 

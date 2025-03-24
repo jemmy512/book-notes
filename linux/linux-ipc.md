@@ -1038,7 +1038,9 @@ static void do_signal(struct pt_regs *regs)
     unsigned long continue_addr = 0, restart_addr = 0;
     int retval = 0;
     struct ksignal ksig;
-    bool syscall = in_syscall(regs);
+    bool syscall = in_syscall(regs) {
+        return regs->syscallno != NO_SYSCALL;
+    }
 
     /* If we were from a system call, check for system call restarting... */
     if (syscall) {

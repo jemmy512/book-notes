@@ -256,7 +256,7 @@
                     +---------------------------------------------------------------+
         e820        |                                                               |
                     +---------------------------------------------------------------+
-        
+
         ```
 
         * Migrate Types: Each pageblock has a single migrate type (e.g., MIGRATE_UNMOVABLE), set via **set_pageblock_migratetype**(). This ties to gfp_migratetype() we discussed.
@@ -10028,7 +10028,7 @@ __vmalloc_area_node(area, gfp_mask, prot, shift, node) {
 
 ![](../images/kernel/mem-page_reclaim.svg)
 
-![](../images/kernel/mem-page_reclaim_cases.png)
+---
 
 ![](../images/kernel/mem-page_reclaim-lruvec.png)
 
@@ -14984,7 +14984,7 @@ isolate_fail:
         ```c
         void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
             unsigned int highest_zoneidx) {
-        
+
             /* Return true if high watermarks have been met.
              * Since we have freed the memory, now we should compact it to make
              * allocation of the requested order possible. */

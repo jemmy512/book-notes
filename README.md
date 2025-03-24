@@ -1,15 +1,18 @@
 # Linux Kernel
+
 * [Process Management](./linux/linux-proc.md)
 * [Memory Management](./linux/linux-mem.md)
 * [Network System](./linux/linux-net.md)
 * [File & IO System](./linux/linux-file-io.md)
-* Interrupt [core](./linux/linux-intr.md) ⊙ [ARM 64](./linux/linux-intr-arm64.md) ⊙ [x86](./linux/linux-intr-arm64.md)
+* [Interrupt Core](./linux/linux-intr.md) ⊙ [ARM 64](./linux/linux-intr-arm64.md) ⊙ [X86](./linux/linux-intr-x86.md)
 * [Core](./linux/linux-core.md)
 * [IPC](./linux/linux-ipc.md)
 * [Time](./linux/linux-time.md)
+* [Cloud](./linux/linux-cloud.md)
 * [Tracing](./linux/linux-trace.md)
 
 # Architecture & Design
+
 * [Clean Architecture :soon:]()
 * [Domain Driven Design :soon:](./arch/domain-driven-design.md)
 * [Designing Distributed Systems](./arch/designing-distributed-systems.md)
@@ -61,6 +64,7 @@
     * [Distributed Systems, 3rd Edition :soon:](https://www.distributed-systems.net/index.php/books/ds3/)
 
 # Software Engineering
+
 * [Design Patterns :soon:](./se/design-patterns.md)
 * [Clean Code](./se/clean-code.md)
 * [Refactor V2](./se/refactoring-2.md)
@@ -68,11 +72,13 @@
 * [Working Effectively with Legacy Code :soon:](./se/working-effectively-with-legacy-code.md)
 
 # C
+
 * [The C Programming Language :soon:](./c/the-c-programming-language.md)
 * [Expert C Programming: Deep C Secrets :soon:](./c/expert-c-programming.md)
 * [C Traps and Pitfalls :soon:](./c/c-traps-and-pitfalls.md)
 
 # C++
+
 * [C++ Core Guildlines](./cpp/cpp-core-guidelines.md)
 * [C++ Primer](./cpp/cpp-primer.md)
 * [Inside the C++ Object Model](./cpp/inside-the-cpp-object-model.md)
@@ -90,6 +96,7 @@
 * [GCC: new allocator malloc](https://github.com/Jemmy512/software-engineer/blob/master/OpenSource/new-allocator-malloc.md)
 
 # Linux
+
 * [Linux Programming](./linux/linux-programming.md)
 * [Understanding Linux Kernel](./linux/understanding-linux-kernel.md)
 * [Linux Kernel Development](./linux/linux-kernel-development.md)
@@ -103,8 +110,10 @@
 
 
 # Others
+
 * [Make linux kernel :cn:](./make-kernel.md)
 * [Debug kernel with VS Code](./linux/vscode-debug-kernel.md)
 
 # English
-[英语语法新思维: 初级教程+中级教程+高级教程](./eng/new-perspective-grammar.md)
+
+[英语语法新思维: 初级 + 中级 + 高级](./eng/new-perspective-grammar.md)
