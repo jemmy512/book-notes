@@ -5614,8 +5614,8 @@ int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
     skb->protocol = htons(ETH_P_IP);
 
     return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
-		       net, sk, skb, NULL, skb_dst(skb)->dev,
-		       dst_output);
+               net, sk, skb, NULL, skb_dst(skb)->dev,
+               dst_output);
 }
 
 int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -7083,21 +7083,6 @@ sock_read_iter() {
 
 <img src='../images/kernel/net-dev-pci.svg' style='max-height:850px'/>
 
-* You can interpret a struct pci_dev as a representation of a struct net_device at the PCI level, but with some important nuances.
-* The struct pci_dev represents the underlying PCI hardware device (e.g., a network interface card or NIC), while the struct net_device represents the network interface at the kernel’s networking layer.
-* They are not the same object—they serve different purposes at different layers.
-
-
-NAPI Usage:
-1. embed `struct napi_struct` in the driver's private structure
-2. initialise and register before the net device itself, using `netif_napi_add`, and unregistered after the net device, using `netif_napi_del`
-3. changes to driver's interrupt handler
-    * disabling interrupts
-    * tell the networking subsystem to poll your driver shortly to pick up all available packets by `napi_schedule`
-4. create a `poll` method for your driver; it's job is to obtain packets from the network interface and feed them into the kernel
-    * The poll() function must return the amount of work done.
-    * If and only if the return value is less than the budget, your driver must reenable interrupts and turn off polling by `napi_complete`
-
 <img src='../images/kernel/net-rx_ring.png' style='max-height:850px'/>
 
 Ring | Buffer
@@ -7113,6 +7098,22 @@ Ring | Buffer
 | Control | NIC firmware/hardware + driver config | Kernel network driver |
 | Scalability | Scales with CPU cores via parallel queues | Scales with queue size and batching |
 | Interaction | Feeds packets into kernel ring buffers | Receives packets from NIC queues |
+
+
+* You can interpret a struct pci_dev as a representation of a struct net_device at the PCI level, but with some important nuances.
+* The struct pci_dev represents the underlying PCI hardware device (e.g., a network interface card or NIC), while the struct net_device represents the network interface at the kernel’s networking layer.
+* They are not the same object—they serve different purposes at different layers.
+
+
+NAPI Usage:
+1. embed `struct napi_struct` in the driver's private structure
+2. initialise and register before the net device itself, using `netif_napi_add`, and unregistered after the net device, using `netif_napi_del`
+3. changes to driver's interrupt handler
+    * disabling interrupts
+    * tell the networking subsystem to poll your driver shortly to pick up all available packets by `napi_schedule`
+4. create a `poll` method for your driver; it's job is to obtain packets from the network interface and feed them into the kernel
+    * The poll() function must return the amount of work done.
+    * If and only if the return value is less than the budget, your driver must reenable interrupts and turn off polling by `napi_complete`
 
 ```c
 struct pci_dev {
@@ -7199,7 +7200,7 @@ struct ixgb_adapter {
     struct work_struct tx_timeout_task;
 
     /* TX */
-    struct ixgb_desc_ring tx_ring ____cacheline_aligned_in_smp;
+    struct ixgb_desc_ring tx_ring;
     unsigned int restart_queue;
     unsigned long timeo_start;
     u32 tx_cmd_type;
@@ -7277,7 +7278,7 @@ struct ixgb_tx_desc {
 /* (GRO) allows the NIC driver to combine received packets
  * into a single large packet which is then passed to the IP stack */
 struct napi_struct {
-    struct list_head  poll_list;
+    struct list_head  poll_list; /* archoed */
 
     unsigned long     state;
     int               weight;
@@ -7555,19 +7556,65 @@ void net_rx_action(struct softirq_action *h)
 out:
     __kfree_skb_flush();
 }
+```
 
+|Queue|Key Functions|Purpose|
+|-----|-------------|-------|
+|poll_list|`napi_schedule()`, `net_rx_action()`, `napi_complete_done()`|Holds NAPI contexts for polling|
+|process_queue|`enqueue_to_backlog()`, `net_rx_action()`, `__netif_receive_skb_core()`|Packets for softIRQ processing|
+|input_pkt_queue|`netif_rx()`, `enqueue_to_backlog()`, `net_rx_action()`, `dev_gro_receive()`|Incoming packets before processing|
+|completion_queue|`net_tx_action()`, `kfree_skb()`, `napi_gro_complete()`|Processed packets awaiting cleanup|
+|xfrm_backlog|`xfrm_input()`, `xfrm_offload()`, `net_rx_action()`|IPsec offload packet queue|
+|defer_list|`net_defer_list_add()`, `net_defer_process()`, `smp_call_function_single_async()`|Deferred packets for later processing|
+
+```c
 /* Incoming packets are placed on per-CPU queues */
 struct softnet_data {
-    struct list_head      poll_list;     /* napi_struct list ready for polling */
+    struct list_head    poll_list;  /* napi_struct list ready for polling */
 
-    struct Qdisc          *output_queue; /* send queue */
-    struct Qdisc          **output_queue_tailp;
+    struct sk_buff_head process_queue; /*  Queue of packets to be processed in the softIRQ context */
 
-    struct sk_buff        *completion_queue;
-    struct sk_buff_head   process_queue;
+    struct napi_struct  backlog; /* handle skbs in input_pkt_queue */
+    struct sk_buff_head input_pkt_queue; /* Queue for incoming packets before they’re processed. */
 
-    struct sk_buff_head   input_pkt_queue; /* enqueue_to_backlog */
-    struct napi_struct    backlog;  /* handle skbs in input_pkt_queue */
+    struct sk_buff_head xfrm_backlog;    /* Backlog for XFRM (IPsec) offloaded packets */
+
+    /* stats */
+    unsigned int        processed;
+    unsigned int        time_squeeze;
+
+#ifdef CONFIG_RPS
+    struct softnet_data *rps_ipi_list;  /* Linked list of softnet_data structures for inter-CPU packet steering. */
+#endif
+
+    unsigned int        received_rps;
+    bool                in_net_rx_action; /* Flag indicating if this CPU is currently in the network receive path. */
+    bool                in_napi_threaded_poll; /* Flag indicating if NAPI polling is running in a threaded context. */
+
+#ifdef CONFIG_NET_FLOW_LIMIT
+    struct sd_flow_limit __rcu *flow_limit;
+#endif
+    struct Qdisc        *output_queue;
+    struct Qdisc        **output_queue_tailp;
+    struct sk_buff      *completion_queue; /* Queue of packets that have been processed and are awaiting */
+
+    struct netdev_xmit xmit; /* Structure for tracking transmit-related data (specific fields depend on kernel version). */
+
+#ifdef CONFIG_RPS
+    call_single_data_t      csd; /* Structure for sending inter-CPU calls (e.g., IPIs for RPS). */
+    struct softnet_data     *rps_ipi_next; /* Pointer to the next CPU’s softnet_data in the RPS chain. */
+    unsigned int            cpu;
+    unsigned int            input_queue_head; /* Indices for managing the input packet queue, aligned for cache efficiency. */
+    unsigned int            input_queue_tail;
+#endif
+
+
+    atomic_t            dropped;
+    spinlock_t          defer_lock;
+    int                 defer_count;
+    int                 defer_ipi_scheduled;
+    struct sk_buff      *defer_list;
+    call_single_data_t  defer_csd;
 };
 
 /* napi_poll -> ixgbe_poll -> */
@@ -11082,7 +11129,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 +----------------------------------------------------------------+
 |                                                                |
 |       +------------------------------------------------+       |
-|       |             Newwork Protocol Stack             |       |
+|       |             Network Protocol Stack             |       |
 |       +------------------------------------------------+       |
 |                         ↑                           ↑          |
 |.........................|...........................|..........|
@@ -11107,7 +11154,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 |                          Host                                  |              VirtualMachine1            |              VirtualMachine2            |
 |                                                                |                                         |                                         |
 |       +------------------------------------------------+       |       +-------------------------+       |       +-------------------------+       |
-|       |             Newwork Protocol Stack             |       |       |  Newwork Protocol Stack |       |       |  Newwork Protocol Stack |       |
+|       |             Network Protocol Stack             |       |       |  Network Protocol Stack |       |       |  Network Protocol Stack |       |
 |       +------------------------------------------------+       |       +-------------------------+       |       +-------------------------+       |
 |                          ↑                                     |                   ↑                     |                    ↑                    |
 |..........................|.....................................|...................|.....................|....................|....................|
@@ -11138,7 +11185,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 |                          Host                                  |              Container 1                |              Container 2                |
 |                                                                |                                         |                                         |
 |       +------------------------------------------------+       |       +-------------------------+       |       +-------------------------+       |
-|       |             Newwork Protocol Stack             |       |       |  Newwork Protocol Stack |       |       |  Newwork Protocol Stack |       |
+|       |             Network Protocol Stack             |       |       |  Network Protocol Stack |       |       |  Network Protocol Stack |       |
 |       +------------------------------------------------+       |       +-------------------------+       |       +-------------------------+       |
 |            ↑             ↑                                     |                   ↑                     |                    ↑                    |
 |............|.............|.....................................|...................|.....................|....................|....................|
@@ -11828,7 +11875,7 @@ br_handle_frame()
 +----------------------------------------------------------------+
 |                                                                |
 |       +------------------------------------------------+       |
-|       |             Newwork Protocol Stack             |       |
+|       |             Network Protocol Stack             |       |
 |       +------------------------------------------------+       |
 |              ↑               ↑               ↑                 |
 |..............|...............|...............|.................|
@@ -12124,7 +12171,7 @@ static int netif_rx_internal(struct sk_buff *skb)
 |.................|.................|......................|.....|
 |                 ↓                 ↓                      |     |
 |             +------------------------+                 4 |     |
-|             | Newwork Protocol Stack |                   |     |
+|             | Network Protocol Stack |                   |     |
 |             +------------------------+                   |     |
 |                | 7                 | 3                   |     |
 |................|...................|.....................|.....|
@@ -16223,14 +16270,14 @@ int ep_poll(
 void ep_busy_loop(struct eventpoll *ep, int nonblock)
 {
     unsigned int napi_id = READ_ONCE(ep->napi_id);
-	u16 budget = READ_ONCE(ep->busy_poll_budget);
-	bool prefer_busy_poll = READ_ONCE(ep->prefer_busy_poll);
+    u16 budget = READ_ONCE(ep->busy_poll_budget);
+    bool prefer_busy_poll = READ_ONCE(ep->prefer_busy_poll);
 
-	if (!budget)
-		budget = BUSY_POLL_BUDGET;
+    if (!budget)
+        budget = BUSY_POLL_BUDGET;
 
-	if (napi_id >= MIN_NAPI_ID && ep_busy_loop_on(ep)) {
-		napi_busy_loop(napi_id, nonblock ? NULL : ep_busy_loop_end, ep, prefer_busy_poll, budget) {
+    if (napi_id >= MIN_NAPI_ID && ep_busy_loop_on(ep)) {
+        napi_busy_loop(napi_id, nonblock ? NULL : ep_busy_loop_end, ep, prefer_busy_poll, budget) {
             unsigned long start_time = loop_end ? busy_loop_current_time() : 0;
             int (*napi_poll)(struct napi_struct *napi, int budget);
             struct bpf_net_context __bpf_net_ctx, *bpf_net_ctx;
@@ -16307,11 +16354,11 @@ void ep_busy_loop(struct eventpoll *ep, int nonblock)
                 preempt_enable();
         }
 
-		if (ep_events_available(ep))
-			return true;
+        if (ep_events_available(ep))
+            return true;
 
-		if (prefer_busy_poll) {
-			napi_resume_irqs(napi_id) {
+        if (prefer_busy_poll) {
+            napi_resume_irqs(napi_id) {
                 struct napi_struct *napi;
 
                 rcu_read_lock();
@@ -16326,10 +16373,10 @@ void ep_busy_loop(struct eventpoll *ep, int nonblock)
                 rcu_read_unlock();
             }
         }
-		ep->napi_id = 0;
-		return false;
-	}
-	return false;
+        ep->napi_id = 0;
+        return false;
+    }
+    return false;
 }
 ```
 
@@ -16618,7 +16665,7 @@ void ep_ptable_queue_proc(
 
 /* Wait structure used by the poll hooks */
 struct eppoll_entry {
-	/* List header used to link this structure to the "struct epitem" */
+    /* List header used to link this structure to the "struct epitem" */
     struct eppoll_entry *next;
 
     /* The "base" pointer is set to the container "struct epitem" */
@@ -17586,10 +17633,28 @@ inet_init()
 
 <img src='../images/kernel/net-dev-pci.svg' style='max-height:850px'/>
 
+
+|Device Type|Physical/Virtual|Purpose|Example Use Case|
+|-----------|----------------|-------|----------------|
+|Ethernet (eth0)|Physical|Wired networking|LAN connection|
+|Wireless (wlan0)|Physical|Wireless networking|Wi-Fi access|
+|Loopback (lo)|Virtual|Localhost communication|Testing services|
+|Bridge (br0)|Virtual|Connect multiple interfaces|Container/VM networking|
+|Veth|Virtual|Namespace connectivity|Container-to-bridge link|
+|TUN/TAP|Virtual|VPN or VM networking|OpenVPN, QEMU|
+|Macvlan|Virtual|Direct LAN IP assignment|Container IPs on network|
+|VXLAN|Virtual|Overlay networking|Cloud multi-host setups|
+|Bonding (bond0)|Virtual|NIC aggregation|High availability|
+|VLAN (eth0.10)|Virtual|Network segmentation|VLAN tagging|
+
 ```c
 static int __init net_dev_init(void)
 {
     int i, rc = -ENOMEM;
+
+    BUG_ON(!dev_boot_phase);
+
+    net_dev_struct_check();
 
     if (dev_proc_init())
         goto out;
@@ -17597,38 +17662,45 @@ static int __init net_dev_init(void)
     if (netdev_kobject_init())
         goto out;
 
-    INIT_LIST_HEAD(&ptype_all);
     for (i = 0; i < PTYPE_HASH_SIZE; i++)
         INIT_LIST_HEAD(&ptype_base[i]);
-
-    INIT_LIST_HEAD(&offload_base);
 
     if (register_pernet_subsys(&netdev_net_ops))
         goto out;
 
-    for_each_possible_cpu(i) {
-        struct work_struct *flush = per_cpu_ptr(&flush_works, i);
-        struct softnet_data *sd = &per_cpu(softnet_data, i);
+    /*    Initialise the packet receive queues. */
+    flush_backlogs_fallback = flush_backlogs_alloc() {
+        return kmalloc(struct_size_t(struct flush_backlogs, w, nr_cpu_ids), GFP_KERNEL);
+    }
+    if (!flush_backlogs_fallback)
+        goto out;
 
-        INIT_WORK(flush, flush_backlog);
+    for_each_possible_cpu(i) {
+        struct softnet_data *sd = &per_cpu(softnet_data, i);
 
         skb_queue_head_init(&sd->input_pkt_queue);
         skb_queue_head_init(&sd->process_queue);
-    #ifdef CONFIG_XFRM_OFFLOAD
+
         skb_queue_head_init(&sd->xfrm_backlog);
-    #endif
         INIT_LIST_HEAD(&sd->poll_list);
         sd->output_queue_tailp = &sd->output_queue;
-    #ifdef CONFIG_RPS
-        sd->csd.func = rps_trigger_softirq;
-        sd->csd.info = sd;
+
+        INIT_CSD(&sd->csd, rps_trigger_softirq, sd);
         sd->cpu = i;
-    #endif
+
+        INIT_CSD(&sd->defer_csd, trigger_rx_softirq, sd);
+        spin_lock_init(&sd->defer_lock);
 
         init_gro_hash(&sd->backlog);
         sd->backlog.poll = process_backlog;
         sd->backlog.weight = weight_p;
+        INIT_LIST_HEAD(&sd->backlog.poll_list);
+
+        if (net_page_pool_create(i))
+            goto out;
     }
+    if (use_backlog_threads())
+        smpboot_register_percpu_thread(&backlog_threads);
 
     dev_boot_phase = 0;
 
@@ -17639,18 +17711,34 @@ static int __init net_dev_init(void)
         goto out;
 
     open_softirq(NET_TX_SOFTIRQ, net_tx_action);
-    open_softirq(NET_RX_SOFTIRQ, net_rx_action);
+    open_softirq(NET_RX_SOFTIRQ, net_rx_action) {
+        softirq_vec[nr].action = action;
+    }
 
-    rc = cpuhp_setup_state_nocalls(CPUHP_NET_DEV_DEAD, "net/dev:dead", NULL, dev_cpu_dead);
+    rc = cpuhp_setup_state_nocalls(CPUHP_NET_DEV_DEAD, "net/dev:dead",
+                    NULL, dev_cpu_dead);
     WARN_ON(rc < 0);
     rc = 0;
-    out:
-    return rc;
-}
 
-void open_softirq(int nr, void (*action)(struct softirq_action *))
-{
-  softirq_vec[nr].action = action;
+    /* avoid static key IPIs to isolated CPUs */
+    if (housekeeping_enabled(HK_TYPE_MISC))
+        net_enable_timestamp();
+out:
+    if (rc < 0) {
+        for_each_possible_cpu(i) {
+            struct page_pool *pp_ptr;
+
+            pp_ptr = per_cpu(system_page_pool, i);
+            if (!pp_ptr)
+                continue;
+
+            xdp_unreg_page_pool(pp_ptr);
+            page_pool_destroy(pp_ptr);
+            per_cpu(system_page_pool, i) = NULL;
+        }
+    }
+
+    return rc;
 }
 ```
 

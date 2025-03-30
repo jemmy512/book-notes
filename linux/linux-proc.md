@@ -3329,6 +3329,27 @@ out:
 ## rt_sysctl
 
 ```c
+/* default timeslice is 100 msecs (used only for SCHED_RR tasks).
+ * Timeslices get refilled after they expire. */
+#define RR_TIMESLICE		(100 * HZ / 1000)
+
+/* Real-Time Scheduling Class (mapped to the SCHED_FIFO and SCHED_RR
+ * policies) */
+int sched_rr_timeslice = RR_TIMESLICE;
+
+/* More than 4 hours if BW_SHIFT equals 20. */
+static const u64 max_rt_runtime = MAX_BW;
+
+/* period over which we measure -rt task CPU usage in us.
+ * default: 1s */
+int sysctl_sched_rt_period = 1000000;
+
+/* part of the period that we allow rt tasks to run in us.
+ * default: 0.95s */
+int sysctl_sched_rt_runtime = 950000;
+
+static int sysctl_sched_rr_timeslice = (MSEC_PER_SEC * RR_TIMESLICE) / HZ;
+
 static const struct ctl_table sched_rt_sysctls[] = {
     {
         .procname       = "sched_rt_period_us",
@@ -6502,11 +6523,9 @@ void __init init_cpu_topology(void)
         ret = of_have_populated_dt() && parse_dt_topology();
 
     if (ret) {
-        /*
-        * Discard anything that was parsed if we hit an error so we
+        /* Discard anything that was parsed if we hit an error so we
         * don't use partial information. But do not return yet to give
-        * arch-specific early cache level detection a chance to run.
-        */
+        * arch-specific early cache level detection a chance to run. */
         reset_cpu_topology();
     }
 
@@ -7604,8 +7623,7 @@ sched_balance_rq() {
              *              local cpu
              * group_has_spare      migrate_util
              * group_has_spare      migrate_task        1
-             * group_overloaded     migrate_load    average_load delta
-            */
+             * group_overloaded     migrate_load    average_load delta */
         }
     }
 
@@ -11984,6 +12002,17 @@ void exit_notify(struct task_struct *tsk, int group_dead)
 ```
 
 # kthreadd
+
+|Type|Scope|Examples|Purpose|
+| :-: | :-: | :-:  :-: | :-: |
+|System Daemons|User Space|`systemd`, `cron`|Core system services|
+|Network Daemons|User Space|`sshd`, `httpd`|Network service provision|
+|Hardware Daemons|User Space|`cupsd`, `udevd`|Hardware interaction|
+|User Daemons|User Space|User-defined|User-specific tasks|
+|Housekeeping|Kernel Space|`kswapd`, `kworker`|Resource management|
+|Filesystem|Kernel Space|`jbd2`, `pdflush`|Filesystem operations|
+|Device Management|Kernel Space|`khubd`, `kblockd`|Hardware event handling|
+|Scheduling|Kernel Space|`kthreadd`|Thread management|
 
 ```c
 /* kernel/kthread.c */

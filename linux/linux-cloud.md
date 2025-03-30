@@ -53,6 +53,8 @@
 
 ![](../images/kernel/cgroup-arch.svg)
 
+---
+
 ![](../images/kernel/cgroup-fs.png)
 
 ## Core Rules of Cgroup v2
@@ -60,6 +62,7 @@
 * Kernel cgroup v2 https://docs.kernel.org/admin-guide/cgroup-v2.html
 * In cgroup v2, a task cannot be managed by subsystems from different cgroups.
 * cgroup v2’s CPU controller cannot manage RT processes in non-root cgroups when CONFIG_RT_GROUP_SCHED is enabled, requiring all RT processes to be in the root cgroup to enable it.
+
 * Domain cgroup:
 
     1. migrate: Controllers which are not in active use in the v2 hierarchy can be bound to other hierarchies.
@@ -71,18 +74,21 @@
 
 * Threaded cgroup:
 
-    1. threads of a process can be put in different cgroups and are not subject to the no internal process constraint - threaded controllers can be enabled on non-leaf cgroups whether they have threads in them or not.
-    2. As the threaded domain cgroup hosts all the domain resource consumptions of the subtree, it is considered to have internal resource consumptions whether there are processes in it or not and can't have populated child cgroups which aren't threaded.  Because the root cgroup is not subject to no internal process constraint, it can serve both as a threaded domain and a parent to domain cgroups.
+    1. Inside a threaded subtree, threads of a process can be put in different cgroups and are not subject to the `no internal process constraint` - threaded controllers can be enabled on non-leaf cgroups whether they have threads in them or not.
+    2. As the threaded domain cgroup hosts all the domain resource consumptions of the subtree, it is considered to have internal resource consumptions whether there are processes in it or not and `can't have populated child cgroups which aren't threaded`.  Because the root cgroup is not subject to no internal process constraint, it can serve both as a threaded domain and a parent to domain cgroups.
     3. As the cgroup will join the parent's resource domain.  The parent  must either be a valid (threaded) domain or a threaded cgroup.
     4. A domain cgroup is turned into a threaded domain when one of its child cgroup becomes threaded or threaded controllers are enabled
     5. The threaded domain cgroup serves as the resource domain for the whole subtree, and, while the threads can be scattered across the subtree
     6. Cgroup Type: A subtree can be configured as "threaded" by writing threaded to cgroup.type in a cgroup, allowing thread-level granularity.
     7. The root of a threaded subtree, that is, the nearest ancestor which is not threaded, is called **threaded domain** and serves as the resource domain for the entire subtree.
-    8. A threaded domain cgroup cannot have a domain child cgroup in cgroups v2
+    8. Once threaded, the cgroup can't be made a domain again. To enable the thread mode, the following conditions must be met.
+
+        - As the cgroup will join the parent's resource domain.  The parent must either be a valid (threaded) domain or a threaded cgroup.
+
+        - When the parent is an unthreaded domain, it must not have any domain controllers enabled or populated domain children.  The root is exempt from this requirement.
 
 * Memory cgroup
     1. Migrating a process to a different cgroup doesn't move the memory usages that it instantiated while in the previous cgroup to the new cgroup.
-
 * [Oracle - Libcgroup Abstraction Layer](https://blogs.oracle.com/linux/post/libcgroup-abstraction-layer)
     * **Unified hierarchy** - All the cgroup controllers are now mounted under a single cgroup hierarchy. (In cgroup v1, each controller was typically mounted as a separate path under /sys/fs/cgroup).
     * **Leaf-node rule** - In cgroup v1, processes could be located anywhere within the cgroup hierarchy, and processes could be siblings to cgroups. In cgroup v2, processes can only exist in leaf nodes of the hierarchy, and the kernel rigorously enforces this.
@@ -92,17 +98,19 @@
 
 ---
 
+The rules are Enforce at [cgroup_attach_permissions](#cgroup_attach_permissions)
+
 1. **Unified Hierarchy**
     * There is a single cgroup hierarchy mounted at one location (e.g., /sys/fs/cgroup/), and all subsystems (e.g., cpu, memory, io, pids) are managed within this tree.
 
-2. **Task crossing cgroup**
-    * Domain: Each task (process or thread) is associated with exactly one cgroup at a time across all subsystems.
-    * Thread domian:
+2. **Task css_set crossing cgroup**
+    * Domain mode: Each task (process or thread) is associated with exactly one cgroup at a time across all subsystems.
+    * Threaded mode:
 
         Placement Type | Allowed? | Explanation
         :-: | :-: | :-:
         Horizontal (Siblings) | Yes | Threads of a process can be placed in different sibling cgroups within the same threaded domain.
-        Vertical (Parent/Child) | No | Threads of a process cannot belong to both a parent cgroup and its child cgroup.
+        Vertical (Parent/Child) | No | Threads of a process cannot belong to both a parent cgroup and its child cgroup if the parent and child are in different domains.
         Outside Threaded Domain | No | Threads cannot belong to cgroups outside the threaded domain.
 
 9. **Domain: No Internal Process Constraint**
@@ -119,16 +127,11 @@
     * The root cgroup (/sys/fs/cgroup/) has all available controllers enabled by default.
 
 5. **Task Placement in Domain Mode**
-    * Rule: In "domain" mode (default), tasks (processes) can reside in any cgroup, whether it’s a leaf node or a parent (intermediate) node.
 
-6. **Threaded Mode Restrictions**
-    * Rule: In "threaded" mode, only leaf nodes can contain tasks (threads), and parent nodes in the threaded subtree cannot.
-
-        ```sh
-        echo <tid> > /sys/fs/cgroup/threaded/leaf/cgroup.threads
-        ```
-
-    * Intermediate nodes become "threaded domain" cgroups, managing limits but not holding tasks.
+    * Rule: In domain mode, tasks can only reside in:
+        * Leaf cgroups (that have no children), OR
+        * Internal cgroups that have NO controllers enabled in their subtree_control
+    * Once you write to a cgroup's subtree_control to enable controllers, that cgroup can no longer contain tasks directly
 
 7. **No Tasks in Parents with Enabled Controllers**
     * Rule: While not a strict kernel requirement, some systems (e.g., systemd) enforce that tasks reside only in leaf nodes when controllers are enabled in a parent.
@@ -452,10 +455,12 @@ struct cgroup {
 
     struct list_head e_csets[CGROUP_SUBSYS_COUNT];
 
+    /* The domain this cgroup belongs to in threaded mode */
     struct cgroup *dom_cgrp;
     struct cgroup *old_dom_cgrp; /* used while enabling threaded */
 
-    /* All ancestors including self */
+    /* refer to all the cgroups above it in the hierarchy,
+     * from its immediate parent up to the root. */
     struct cgroup *ancestors[];
 };
 
@@ -935,7 +940,201 @@ cgroup_mkdir() {
 }
 ```
 
+### cgroup_procs_write
+
+```c
+static ssize_t __cgroup_procs_write(struct kernfs_open_file *of, char *buf,
+                    bool threadgroup)
+{
+    struct cgroup_file_ctx *ctx = of->priv;
+    struct cgroup *src_cgrp, *dst_cgrp;
+    struct task_struct *task;
+    const struct cred *saved_cred;
+    ssize_t ret;
+    bool threadgroup_locked;
+
+    dst_cgrp = cgroup_kn_lock_live(of->kn, false);
+    if (!dst_cgrp)
+        return -ENODEV;
+
+    task = cgroup_procs_write_start(buf, threadgroup, &threadgroup_locked);
+    ret = PTR_ERR_OR_ZERO(task);
+    if (ret)
+        goto out_unlock;
+
+    /* find the source cgroup */
+    spin_lock_irq(&css_set_lock);
+    src_cgrp = task_cgroup_from_root(task, &cgrp_dfl_root);
+    spin_unlock_irq(&css_set_lock);
+
+    /* Process and thread migrations follow same delegation rule. Check
+    * permissions using the credentials from file open to protect against
+    * inherited fd attacks. */
+    saved_cred = override_creds(of->file->f_cred);
+    ret = cgroup_attach_permissions(src_cgrp, dst_cgrp,
+                    of->file->f_path.dentry->d_sb,
+                    threadgroup, ctx->ns);
+    revert_creds(saved_cred);
+    if (ret)
+        goto out_finish;
+
+    ret = cgroup_attach_task(dst_cgrp, task, threadgroup);
+
+out_finish:
+    cgroup_procs_write_finish(task, threadgroup_locked);
+out_unlock:
+    cgroup_kn_unlock(of->kn);
+
+    return ret;
+}
+```
+
+#### cgroup_attach_permissions
+
+```c
+static int cgroup_attach_permissions(struct cgroup *src_cgrp,
+                    struct cgroup *dst_cgrp,
+                    struct super_block *sb, bool threadgroup,
+                    struct cgroup_namespace *ns)
+{
+    int ret = 0;
+
+    ret = cgroup_procs_write_permission(src_cgrp, dst_cgrp, sb, ns) {
+        struct cgroup *com_cgrp = src_cgrp;
+        int ret;
+
+        lockdep_assert_held(&cgroup_mutex);
+
+        /* find the common ancestor */
+        bool cgroup_is_descendant(cgrp, ancestor) {
+            if (cgrp->root != ancestor->root || cgrp->level < ancestor->level)
+                return false;
+            return cgrp->ancestors[ancestor->level] == ancestor;
+        }
+        while (!cgroup_is_descendant(dst_cgrp, com_cgrp))
+            com_cgrp = cgroup_parent(com_cgrp);
+
+        /* %current should be authorized to migrate to the common ancestor */
+        ret = cgroup_may_write(com_cgrp, sb) {
+            int ret;
+            struct inode *inode;
+
+            lockdep_assert_held(&cgroup_mutex);
+
+            inode = kernfs_get_inode(sb, cgrp->procs_file.kn);
+            if (!inode)
+                return -ENOMEM;
+
+            ret = inode_permission(&nop_mnt_idmap, inode, MAY_WRITE);
+            iput(inode);
+            return ret;
+        }
+        if (ret)
+            return ret;
+
+        /* If namespaces are delegation boundaries, %current must be able
+         * to see both source and destination cgroups from its namespace. */
+        if ((cgrp_dfl_root.flags & CGRP_ROOT_NS_DELEGATE) &&
+            (!cgroup_is_descendant(src_cgrp, ns->root_cset->dfl_cgrp) ||
+            !cgroup_is_descendant(dst_cgrp, ns->root_cset->dfl_cgrp)))
+            return -ENOENT;
+
+        return 0;
+    }
+    if (ret)
+        return ret;
+
+    /* verify whether a cgroup can be migration destination */
+    ret = cgroup_migrate_vet_dst(dst_cgrp) {
+        /* v1 doesn't have any restriction */
+        if (!cgroup_on_dfl(dst_cgrp) { return cgrp->root == &cgrp_dfl_root })
+            return 0;
+
+        /* verify @dst_cgrp can host resources */
+        ret = cgroup_is_valid_domain(dst_cgrp->dom_cgrp) {
+            /* Q: how to write tid to cgroup.threads if return false here */
+            /* the cgroup itself can be a thread root */
+            if (cgroup_is_threaded(cgrp) { return cgrp->dom_cgrp != cgrp; })
+                return false;
+
+            /* but the ancestors can't be unless mixable:
+             * cant be domain cgrp and threaded cgrp at same time */
+            while ((cgrp = cgroup_parent(cgrp))) {
+                is_mixable = cgroup_is_mixable(cgrp) { /* only root can be mixable */
+                    return !cgroup_parent(cgrp)
+                }
+                is_trd_root = cgroup_is_thread_root(cgrp) {
+                    /* thread root should be a domain */
+                    if (cgroup_is_threaded(cgrp))
+                        return false;
+
+                    /* a domain w/ threaded children is a thread root */
+                    if (cgrp->nr_threaded_children)
+                        return true;
+
+                    /* A domain which has tasks and explicit threaded controllers
+                     * enabled is a thread root. */
+                    if (cgroup_has_tasks(cgrp) &&
+                        (cgrp->subtree_control & cgrp_dfl_threaded_ss_mask))
+                        return true;
+
+                    return false;
+                }
+                if (!is_mixable && is_trd_root)
+                    return false;
+                if (cgroup_is_threaded(cgrp))
+                    return false;
+            }
+
+            return true;
+        }
+        if (!ret)
+            return -EOPNOTSUPP;
+
+        /* If @dst_cgrp is already or can become a thread root or is
+         * threaded, it doesn't matter. */
+        ret = cgroup_can_be_thread_root(dst_cgrp) {
+            /* mixables don't care */
+            if (cgroup_is_mixable(cgrp))
+                return true;
+
+            /* domain roots can't be nested under threaded */
+            if (cgroup_is_threaded(cgrp))
+                return false;
+
+            /* can only have either domain or threaded children */
+            if (cgrp->nr_populated_domain_children)
+                return false;
+
+            /* and no domain controllers can be enabled */
+            if (cgrp->subtree_control & ~cgrp_dfl_threaded_ss_mask)
+                return false;
+
+            return true;
+        }
+        if (ret || cgroup_is_threaded(dst_cgrp))
+            return 0;
+
+        /* apply no-internal-process constraint */
+        if (dst_cgrp->subtree_control)
+            return -EBUSY;
+
+        return 0;
+    }
+    if (ret)
+        return ret;
+
+    /* check: Outside Domain. src and dst must be in same domain */
+    if (!threadgroup && (src_cgrp->dom_cgrp != dst_cgrp->dom_cgrp))
+        ret = -EOPNOTSUPP;
+
+    return ret;
+}
+```
+
 ### cgroup_attach_task
+
+![](../images/kernel/cgroup_attach_task.svg)
 
 Cgroups don't typically perform a retroactive transfer of already accumulated resource usage from the "old" cgroup to the "new" cgroup.
 
@@ -955,28 +1154,54 @@ write() {
                 cgroup_attach_task() {
                     /* 1. prepare src csets */
                     do {
-                        cgroup_migrate_add_src();
+                        cgroup_migrate_add_src() {
+                            src_cset->mg_src_cgrp = src_cgrp;
+                            src_cset->mg_dst_cgrp = dst_cgrp;
+                            list_add_tail(&src_cset->mg_src_preload_node, &mgctx->preloaded_src_csets);
+                        }
                     } while_each_thread(leader, task);
 
                     /* 2. prepare dst csets and commit */
-                    cgroup_migrate_prepare_dst();
+                    cgroup_migrate_prepare_dst() {
+                        list_for_each_entry_safe(src_cset, tmp_cset, &mgctx->preloaded_src_csets, mg_src_preload_node) {
+                            src_cset->mg_dst_cset = dst_cset;
+                            list_add_tail(&dst_cset->mg_dst_preload_node, &mgctx->preloaded_dst_csets);
+                        }
+                    }
 
                     /* 3. do migrate */
                     cgroup_migrate() {
-                        /* 3.1 add task to mgctx */
-                        cgroup_migrate_add_task();
+                        /* 3.1 add task to cset->mg_tasks, src/dst_cset to mgctx */
+                        cgroup_migrate_add_task() {
+                            list_move_tail(&task->cg_list, &cset->mg_tasks);
+                            list_add_tail(&cset->mg_node, &mgctx->tset.src_csets);
+                            list_add_tail(&cset->mg_dst_cset->mg_node, &mgctx->tset.dst_csets);
+                        }
 
                         cgroup_migrate_execute() {
                             /* 3.2 test can attach */
                             do_each_subsys_mask(ss, ssid) {
                                 if (ss->can_attach) {
-
+                                    cpu_cgroup_can_attach();
                                 }
                             } while_each_subsys_mask();
 
                             /* 3.3 css_set_move_task */
-                            for_each() {
-                                css_set_move_task();
+                            list_for_each_entry(cset, &tset->src_csets, mg_node) {
+                                list_for_each_entry_safe(task, tmp_task, &cset->mg_tasks, cg_list) {
+                                    css_set_move_task() {
+                                        if (from_cset) {
+                                            list_del_init(&task->cg_list);
+                                        }
+                                        if (to_cset) {
+                                            cgroup_move_task(task, to_cset) {
+                                                rcu_assign_pointer(task->cgroups, to);
+                                            }
+                                            list_add_tail(&task->cg_list, use_mg_tasks
+                                                ? &to_cset->mg_tasks : &to_cset->tasks);
+                                        }
+                                    }
+                                }
                             }
 
                             /* 3.4 do attach */
@@ -1052,7 +1277,25 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
     do {
         cgroup_migrate_add_src(task_css_set(task), dst_cgrp, &mgctx) {
             /* src and dst must under same root */
-            src_cgrp = cset_cgroup_from_root(src_cset, dst_cgrp->root);
+            src_cgrp = cset_cgroup_from_root(src_cset, dst_cgrp->root) {
+                struct cgroup *res_cgroup = NULL;
+
+                if (cset == &init_css_set) {
+                    res_cgroup = &root->cgrp;
+                } else if (root == &cgrp_dfl_root) {
+                    res_cgroup = cset->dfl_cgrp;
+                } else {
+                    struct cgrp_cset_link *link;
+                    list_for_each_entry(link, &cset->cgrp_links, cgrp_link) {
+                        struct cgroup *c = link->cgrp;
+                        if (c->root == root) {
+                            res_cgroup = c;
+                            break;
+                        }
+                    }
+                }
+                return res_cgroup;
+            }
             src_cset->mg_src_cgrp = src_cgrp;
             src_cset->mg_dst_cgrp = dst_cgrp;
             list_add_tail(&src_cset->mg_src_preload_node, &mgctx->preloaded_src_csets);
@@ -1108,7 +1351,7 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
 
 /* 3. do migrate */
     ret = cgroup_migrate(leader, threadgroup, &mgctx) {
-    /* 3.1 add task to mgctx */
+    /* 3.1 add task to cset->mg_tasks, src/dst_cset to mgctx */
         task = leader;
         do {
             cgroup_migrate_add_task(task, mgctx) {
@@ -1139,7 +1382,26 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
                     if (ss->can_attach) {
                         tset->ssid = ssid;
                         ret = ss->can_attach(tset) {
-                            cpu_cgroup_can_attach();
+                            cpu_cgroup_can_attach() {
+                            #ifdef CONFIG_RT_GROUP_SCHED
+                                struct task_struct *task;
+                                struct cgroup_subsys_state *css;
+
+                                cgroup_taskset_for_each(task, css, tset) {
+                                    ret = sched_rt_can_attach(css_tg(css), task) {
+                                        /* Don't accept real-time tasks
+                                         * when there is no way for them to run */
+                                        if (rt_task(tsk) && tg->rt_bandwidth.rt_runtime == 0)
+                                            return 0;
+
+                                        return 1;
+                                    }
+                                    if (!ret)
+                                        return -EINVAL;
+                                }
+                            #endif
+                                return scx_cgroup_can_attach(tset);
+                            }
                         }
                         if (ret) {
                             failed_ssid = ssid;
@@ -1203,7 +1465,9 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
 
 /* 4. cleanup after attach */
     cgroup_migrate_finish(&mgctx) {
-        list_for_each_entry_safe(cset, tmp_cset, &mgctx->preloaded_src_csets, mg_src_preload_node) {
+        list_for_each_entry_safe(cset, tmp_cset,
+            &mgctx->preloaded_src_csets, mg_src_preload_node) {
+
             cset->mg_src_cgrp = NULL;
             cset->mg_dst_cgrp = NULL;
             cset->mg_dst_cset = NULL;
@@ -1459,7 +1723,7 @@ int sched_cgroup_fork(struct task_struct *p, struct kernel_clone_args *kargs)
     unsigned long flags;
 
     /* Because we're not yet on the pid-hash, p->pi_lock isn't strictly
-    * required yet, but lockdep gets upset if rules are violated. */
+     * required yet, but lockdep gets upset if rules are violated. */
     raw_spin_lock_irqsave(&p->pi_lock, flags);
 #ifdef CONFIG_CGROUP_SCHED
     if (1) {
@@ -1592,8 +1856,7 @@ ssize_t cgroup_subtree_control_write(
         if (tok[0] == '\0')
             continue;
         do_each_subsys_mask(ss, ssid, ~cgrp_dfl_inhibit_ss_mask) {
-            if (!cgroup_ssid_enabled(ssid) ||
-                strcmp(tok + 1, ss->name))
+            if (!cgroup_ssid_enabled(ssid) || strcmp(tok + 1, ss->name))
                 continue;
 
             if (*tok == '+') {
@@ -1897,25 +2160,8 @@ int cgroup_get_tree(struct fs_context *fc)
             cgroup_lock();
             spin_lock_irq(&css_set_lock);
 
-            cgrp = cset_cgroup_from_root(ctx->ns->root_cset/*cset*/, ctx->root/*root*/) {
-                struct cgroup *res_cgroup = NULL;
-
-                if (cset == &init_css_set) {
-                    res_cgroup = &root->cgrp;
-                } else if (root == &cgrp_dfl_root) {
-                    res_cgroup = cset->dfl_cgrp;
-                } else {
-                    struct cgrp_cset_link *link;
-                    list_for_each_entry(link, &cset->cgrp_links, cgrp_link) {
-                        struct cgroup *c = link->cgrp;
-                        if (c->root == root) {
-                            res_cgroup = c;
-                            break;
-                        }
-                    }
-                }
-                return res_cgroup;
-            }
+            cgrp = cset_cgroup_from_root(ctx->ns->root_cset/*cset*/, ctx->root/*root*/);
+                --->
 
             nsdentry = kernfs_node_dentry(cgrp->kn, sb);
             fc->root = nsdentry;
@@ -2127,6 +2373,66 @@ int mem_cgroup_resize_max(struct mem_cgroup *memcg,
 }
 ```
 
+### mem_cgroup_attach
+
+```c
+static void mem_cgroup_attach(struct cgroup_taskset *tset)
+{
+    mem_cgroup_lru_gen_attach(tset) {
+        struct task_struct *task;
+        struct cgroup_subsys_state *css;
+
+        /* find the first leader if there is any */
+        cgroup_taskset_for_each_leader(task, css, tset)
+            break;
+
+        if (!task)
+            return;
+
+        task_lock(task);
+        if (task->mm && READ_ONCE(task->mm->owner) == task) {
+            lru_gen_migrate_mm(task->mm) {
+                struct mem_cgroup *memcg;
+                struct task_struct *task = rcu_dereference_protected(mm->owner, true);
+
+                VM_WARN_ON_ONCE(task->mm != mm);
+                lockdep_assert_held(&task->alloc_lock);
+
+                /* for mm_update_next_owner() */
+                if (mem_cgroup_disabled())
+                    return;
+
+                /* migration can happen before addition */
+                if (!mm->lru_gen.memcg)
+                    return;
+
+                rcu_read_lock();
+                memcg = mem_cgroup_from_task(task);
+                rcu_read_unlock();
+                if (memcg == mm->lru_gen.memcg)
+                    return;
+
+                VM_WARN_ON_ONCE(list_empty(&mm->lru_gen.list));
+
+                lru_gen_del_mm(mm);
+                lru_gen_add_mm(mm);
+            }
+        }
+        task_unlock(task);
+    }
+
+    mem_cgroup_kmem_attach(tset) {
+        struct task_struct *task;
+        struct cgroup_subsys_state *css;
+
+        cgroup_taskset_for_each(task, css, tset) {
+            /* atomically set the update bit */
+            set_bit(CURRENT_OBJCG_UPDATE_BIT, (unsigned long *)&task->objcg);
+        }
+    }
+}
+```
+
 ### mem_cgroup_charge
 
 ![](../images/kernel/cgroup-mem_cgroup_charge.svg)
@@ -2213,6 +2519,21 @@ static struct cftype cpu_files[] = {
         .write_s64 = cpu_idle_write_s64,
     },
     { }    /* terminate */
+};
+
+struct cftype cpu_legacy_files[] = {
+#ifdef CONFIG_RT_GROUP_SCHED
+    {
+        .name = "rt_runtime_us",
+        .read_s64 = cpu_rt_runtime_read,
+        .write_s64 = cpu_rt_runtime_write,
+    },
+    {
+        .name = "rt_period_us",
+        .read_u64 = cpu_rt_period_read_uint,
+        .write_u64 = cpu_rt_period_write_uint,
+    },
+#endif
 };
 ```
 
@@ -2668,42 +2989,6 @@ enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
 ![](../images/kernel/proc-sched-cfs-tg_set_cfs_bandwidth.png)
 
 ```c
-struct cftype cpu_legacy_files[] = {
-    {
-        .name = "shares",
-        .read_u64 = cpu_shares_read_u64,
-        .write_u64 = cpu_shares_write_u64,
-    },
-    {
-        .name = "idle",
-        .read_s64 = cpu_idle_read_s64,
-        .write_s64 = cpu_idle_write_s64,
-    },
-    {
-        .name = "cfs_quota_us",
-        .read_s64 = cpu_cfs_quota_read_s64,
-        .write_s64 = cpu_cfs_quota_write_s64,
-    },
-    {
-        .name = "cfs_period_us",
-        .read_u64 = cpu_cfs_period_read_u64,
-        .write_u64 = cpu_cfs_period_write_u64,
-    },
-    {
-        .name = "cfs_burst_us",
-        .read_u64 = cpu_cfs_burst_read_u64,
-        .write_u64 = cpu_cfs_burst_write_u64,
-    },
-    {
-        .name = "stat",
-        .seq_show = cpu_cfs_stat_show,
-    },
-    {
-        .name = "stat.local",
-        .seq_show = cpu_cfs_local_stat_show,
-    },
-};
-
 int cpu_cfs_period_write_u64(struct cgroup_subsys_state *css,
     struct cftype *cftype, u64 cfs_period_us)
 {
@@ -2823,11 +3108,100 @@ int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 }
 ```
 
+#### account_cfs_rq_runtime
+
+```c
+void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
+{
+    if (!cfs_bandwidth_used() || !cfs_rq->runtime_enabled)
+        return;
+
+    __account_cfs_rq_runtime(cfs_rq, delta_exec) {
+        /* dock delta_exec before expiring quota (as it could span periods) */
+        cfs_rq->runtime_remaining -= delta_exec;
+
+        if (likely(cfs_rq->runtime_remaining > 0))
+            return;
+
+        if (cfs_rq->throttled)
+            return;
+        /* if we're unable to extend our runtime we resched so that the active
+        * hierarchy can be throttled */
+        ret = assign_cfs_rq_runtime(cfs_rq) {
+            struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
+            int ret;
+
+            raw_spin_lock(&cfs_b->lock);
+            slice =  sched_cfs_bandwidth_slice() {
+                return (u64)sysctl_sched_cfs_bandwidth_slice * NSEC_PER_USEC;
+            }
+            ret = __assign_cfs_rq_runtime(cfs_b, cfs_rq, slice/*target_runtime*/) {
+                u64 min_amount, amount = 0;
+
+                lockdep_assert_held(&cfs_b->lock);
+
+                /* note: this is a positive sum as runtime_remaining <= 0 */
+                min_amount = target_runtime - cfs_rq->runtime_remaining;
+
+                if (cfs_b->quota == RUNTIME_INF)
+                    amount = min_amount;
+                else {
+                    start_cfs_bandwidth(cfs_b) {
+                        lockdep_assert_held(&cfs_b->lock);
+
+                        if (cfs_b->period_active)
+                            return;
+
+                        cfs_b->period_active = 1;
+                        hrtimer_forward_now(&cfs_b->period_timer, cfs_b->period);
+                        hrtimer_start_expires(&cfs_b->period_timer, HRTIMER_MODE_ABS_PINNED);
+                    }
+
+                    if (cfs_b->runtime > 0) {
+                        amount = min(cfs_b->runtime, min_amount);
+                        cfs_b->runtime -= amount;
+                        cfs_b->idle = 0;
+                    }
+                }
+
+                cfs_rq->runtime_remaining += amount;
+
+                return cfs_rq->runtime_remaining > 0;
+            }
+            raw_spin_unlock(&cfs_b->lock);
+
+            return ret;
+        }
+        if (!ret && likely(cfs_rq->curr))
+            resched_curr(rq_of(cfs_rq));
+    }
+}
+```
+
 #### throttle_cfs_rq
 
 ![](../images/kernel/proc-sched-cfs-throttle_cfs_rq.png)
 
 ```c
+static void check_enqueue_throttle(struct cfs_rq *cfs_rq)
+{
+    if (!cfs_bandwidth_used())
+        return;
+
+    /* an active group must be handled by the update_curr()->put() path */
+    if (!cfs_rq->runtime_enabled || cfs_rq->curr)
+        return;
+
+    /* ensure the group is not already throttled */
+    if (cfs_rq_throttled(cfs_rq))
+        return;
+
+    /* update runtime allocation */
+    account_cfs_rq_runtime(cfs_rq, 0);
+    if (cfs_rq->runtime_remaining <= 0)
+        throttle_cfs_rq(cfs_rq);
+}
+
 /* only called when cfs_rq->runtime_remaining < 0 */
 bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
 {
@@ -3200,6 +3574,8 @@ void update_cfs_group(struct sched_entity *se) {
 ### rt_bandwidth
 
 Only applied to cgrou v1 but not v2.
+
+cgroup v2’s unified hierarchy delegates RT scheduling configuration to the system-wide level (via /proc/sys/kernel/sched_rt_runtime_us and /proc/sys/kernel/sched_rt_period_us) rather than per-cgroup control.
 
 kernel build .config:
 ```sh
@@ -4605,7 +4981,7 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_s
 ![](../images/kernel/ipc-ipc_ids.svg)
 
 Linux has multiple IPC:
-* PIEP
+* PIPE
 * named PIPE
 * Signal
 * Message Qeueue
@@ -4695,6 +5071,7 @@ struct ipc_namespace *copy_ipcs(unsigned long flags,
 {
     if (!(flags & CLONE_NEWIPC))
         return get_ipc_ns(ns);
+  
     return create_ipc_ns(user_ns, ns) {
         struct ipc_namespace *ns;
         struct ucounts *ucounts;
