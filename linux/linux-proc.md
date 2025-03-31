@@ -7155,7 +7155,8 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 
 /* 3. update tg cfs util-load-runnable */
     /* propogate form child gcfs_rq -> child se -> parent cfs_rq */
-    decayed |= propagate_entity_load_avg(se) {
+    decayed |= propagate_entity_load_avg(se);
+        --->
 
 /* 4. attach/detach entity load avg */
     /* last_update_time == 0: new forked or migrated task */

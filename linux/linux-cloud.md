@@ -14,7 +14,13 @@
 
     * [mem_cgroup](#mem_cgroup)
         * [mem_cgroup_write](#mem_cgroup_write)
+        * [mem_cgroup_attach](#mem_cgroup_attach)
         * [mem_cgroup_charge](#mem_cgroup_charge)
+        * [mem_cgroup_try_charge_swap](#mem_cgroup_try_charge_swap)
+        * [memory_reclaim](#memory_reclaim)
+        * [mem_cgroup_oom](#mem_cgroup_oom)
+        * [mem_cgroup_swapout](#mem_cgroup_swapout)
+        * [mem_cgroup_pressure](#mem_cgroup_pressure)
 
     * [cpu_cgroup](#cpu_cgroup)
         * [cpu_cgroup_css_alloc](#cpu_cgroup_css_alloc)
@@ -189,68 +195,68 @@ The rules are Enforce at [cgroup_attach_permissions](#cgroup_attach_permissions)
 # cgroup v2
 /sys/fs/cgroup/ # Contains global control files and enabled controllers.
 └── mygroup/ # Each sub-cgroup can enable a subset of controllers available in its parent.
-    ├── cgroup.procs
-    ├── cgroup.controllers  (e.g., "cpu memory")
-    ├── cgroup.subtree_control  (e.g., "cpu")
-    ├── cpu.max
-    ├── cpu.stat
-    ├── cpu.weight
-    ├── memory.max: Maximum memory limit.
-    ├── memory.current: Current memory usage.
-    ├── memory.events: Memory-related events (e.g., OOM).
-    ├── io.max: I/O limits (replaces blkio subsystem).
-    ├── pids.max: Maximum number of PIDs.
-    ├── pids.current: Current number of PIDs.
-    └── subgroup/
-        ├── cgroup.procs
-        ├── cgroup.controllers  (e.g., "cpu")
-        ├── cgroup.subtree_control
-        └── cpu.max
-├── cpu.idle # Controls whether tasks in the cgroup are forced into an idle state
+│   ├── cgroup.procs
+│   ├── cgroup.controllers  (e.g., "cpu memory")
+│   ├── cgroup.subtree_control  (e.g., "cpu")
+│   ├── cpu.max
+│   ├── cpu.stat
+│   ├── cpu.weight
+│   ├── memory.max: Maximum memory limit.
+│   ├── memory.current: Current memory usage.
+│   ├── memory.events: Memory-related events (e.g., OOM).
+│   ├── io.max: I/O limits (replaces blkio subsystem).
+│   ├── pids.max: Maximum number of PIDs.
+│   ├── pids.current: Current number of PIDs.
+│   └── subgroup/
+│       ├── cgroup.procs
+│       ├── cgroup.controllers  (e.g., "cpu")
+│       ├── cgroup.subtree_control
+│       └── cpu.max
+├── cgroup.controllers
+├── cgroup.procs # Lists PGIDs of processes in this cgroup; write a PGID to move a process here.
+├── cgroup.threads # Lists TIDs of threads in this cgroup; write a TID to move a thread here.
+├── cgroup.subtree_control # Lists controllers enabled for child cgroups (e.g., cpu memory); write +cpu or -memory to enable/disable.
+├── cgroup.type # Indicates the cgroup type (domain, threaded, domain threaded, or domain invalid), controlling thread vs. process granularity.
+├── cgroup.max.depth # Limits the maximum depth of the cgroup hierarchy
+├── cgroup.max.descendants # Limits the total number of descendant cgroups
+├── cgroup.freeze # Writing 1 freezes all tasks in the cgroup
+├── cgroup.pressure
+├── cgroup.stat
+├── cgroup.kill # Writing 1 terminates all processes in the cgroup
+├── cgroup.events
+├──
 ├── cpu.max # CPU bandwidth limit (quota and period, e.g., "100000 1000000").
 ├── cpu.max.burst # Allows temporary bursts beyond cpu.max quota (in µs)
 ├── cpu.weight  # Sets the relative CPU share for the cgroup (range: 1–10000, default 100)
 ├── cpu.weight.nice # Maps the cgroup’s CPU priority to a "nice" value (-20 to 19)
+├── cpu.idle # Controls whether tasks in the cgroup are forced into an idle state
 ├── cpu.pressure # Reports Pressure Stall Information (PSI) for CPU, showing delays due to CPU contention
 ├── cpu.stat # Provides CPU usage statistics (e.g., user time, system time, throttled time)
 ├── cpu.stat.local # Similar to cpu.stat, but reports stats only for tasks directly in this cgroup, excluding descendants.
 ├── cpu.uclamp.max # Sets an upper bound on CPU utilization clamping
 ├── cpu.uclamp.min
 ├──
-├── memory.events # Logs memory-related events (e.g., low, high, max, oom) for this cgroup and its descendants.
-├── memory.events.local
-├── memory.swap.current # Reports current swap usage (in bytes) by tasks in this cgroup.
-├── memory.swap.events # Logs swap-specific events (e.g., swap_high, swap_max) for this cgroup.
-├── memory.swap.high
-├── memory.swap.max # Limits swap usage for the cgroup.
-├── memory.swap.peak
 ├── memory.max # hard memory limit (in bytes). Exceeding this triggers the OOM killer.
 ├── memory.high # memory threshold for proactive reclaim
 ├── memory.low # memory protection threshold against reclaim
 ├── memory.min # guaranteed minimum memory amount (in bytes) that won’t be reclaimed, even under pressure.
-├── memory.peak # Reports the historical maximum memory usage (in bytes) since the cgroup was created.
-├── memory.current # Reports current memory usage.
-├── memory.reclaim # Writing a value (in bytes) triggers manual memory reclamation from this cgroup without killing processes.
+├── memory.swap.high
+├── memory.swap.max # Limits swap usage for the cgroup.
+├── memory.swap.peak
+├── memory.swap.current # Reports current swap usage (in bytes) by tasks in this cgroup.
+├── memory.swap.events # Logs swap-specific events (e.g., swap_high, swap_max) for this cgroup.
 ├── memory.zswap.current
 ├── memory.zswap.writeback
 ├── memory.zswap.max
+├── memory.events # Logs memory-related events (e.g., low, high, max, oom) for this cgroup and its descendants.
+├── memory.events.local
+├── memory.peak # Reports the historical maximum memory usage (in bytes) since the cgroup was created.
+├── memory.current # Reports current memory usage.
+├── memory.reclaim # Writing a value (in bytes) triggers manual memory reclamation from this cgroup without killing processes.
 ├── memory.numa_stat
 ├── memory.oom.group # If set to 1, an OOM event kills all processes in the cgroup together; 0 kills individually (default).
 ├── memory.stat
 ├── memory.pressure
-├──
-├── cgroup.controllers
-├── cgroup.events
-├── cgroup.freeze # Writing 1 freezes all tasks in the cgroup
-├── cgroup.kill # Writing 1 terminates all processes in the cgroup
-├── cgroup.max.depth # Limits the maximum depth of the cgroup hierarchy
-├── cgroup.max.descendants # Limits the total number of descendant cgroups
-├── cgroup.pressure
-├── cgroup.procs # Lists PGIDs of processes in this cgroup; write a PGID to move a process here.
-├── cgroup.stat
-├── cgroup.subtree_control # Lists controllers enabled for child cgroups (e.g., cpu memory); write +cpu or -memory to enable/disable.
-├── cgroup.threads # Lists TIDs of threads in this cgroup; write a TID to move a thread here.
-├── cgroup.type # Indicates the cgroup type (domain, threaded, domain threaded, or domain invalid), controlling thread vs. process granularity.
 ├──
 ├── pids.current # Reports the current number of PIDs (processes and threads) in this cgroup.
 ├── pids.events
@@ -2181,6 +2187,8 @@ int cgroup_get_tree(struct fs_context *fc)
 
 ## mem_cgroup
 
+![](../images/kernel/cgroup-mem_cgroup_charge.svg)
+
 ```c
 struct mem_cgroup {
     struct cgroup_subsys_state css;
@@ -2248,7 +2256,7 @@ struct cgroup_subsys memory_cgrp_subsys = {
     .early_init = 0,
 };
 
-struct cftype mem_cgroup_legacy_files[] = {
+static struct cftype mem_cgroup_legacy_files[] = {
     {
         .name = "usage_in_bytes",
         .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
@@ -2266,6 +2274,73 @@ struct cftype mem_cgroup_legacy_files[] = {
         .read_u64 = mem_cgroup_read_u64,
     }
     { },
+};
+
+static struct cftype memory_files[] = {
+    	{
+            .name = "min",
+            .flags = CFTYPE_NOT_ON_ROOT,
+            .seq_show = memory_min_show,
+            .write = memory_min_write,
+        },
+        {
+            .name = "low",
+            .flags = CFTYPE_NOT_ON_ROOT,
+            .seq_show = memory_low_show,
+            .write = memory_low_write,
+        },
+        {
+            .name = "high",
+            .flags = CFTYPE_NOT_ON_ROOT,
+            .seq_show = memory_high_show,
+            .write = memory_high_write,
+        },
+        {
+            .name = "max",
+            .flags = CFTYPE_NOT_ON_ROOT,
+            .seq_show = memory_max_show,
+            .write = memory_max_write,
+        },
+};
+
+static struct cftype swap_files[] = {
+    {
+        .name = "swap.current",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = swap_current_read,
+    },
+    {
+        .name = "swap.high",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = swap_high_show,
+        .write = swap_high_write,
+    },
+    {
+        .name = "swap.max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = swap_max_show,
+        .write = swap_max_write,
+    },
+};
+
+static struct cftype zswap_files[] = {
+    {
+        .name = "zswap.current",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = zswap_current_read,
+    },
+    {
+        .name = "zswap.max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = zswap_max_show,
+        .write = zswap_max_write,
+    },
+    {
+        .name = "zswap.writeback",
+        .seq_show = zswap_writeback_show,
+        .write = zswap_writeback_write,
+    },
+    { }	/* terminate */
 };
 ```
 
@@ -2446,22 +2521,191 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
     memcg = get_mem_cgroup_from_mm(mm);
     ret = charge_memcg(folio, memcg, gfp) {
         ret = try_charge(memcg, gfp, folio_nr_pages(folio)) {
+            unsigned int batch = max(MEMCG_CHARGE_BATCH, nr_pages);
+            int nr_retries = MAX_RECLAIM_RETRIES;
+            struct mem_cgroup *mem_over_limit;
+            struct page_counter *counter;
+            unsigned long nr_reclaimed;
+            bool passed_oom = false;
+            unsigned int reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
+            bool drained = false;
+            bool raised_max_event = false;
+            unsigned long pflags;
+
+        retry:
+        /* 1. Initial Attempt with Stock, per-cpu optimization */
+            if (consume_stock(memcg, nr_pages))
+                return 0;
+
+        /* 2. Try Charging the Counters: */
+            if (!do_memsw_account() || page_counter_try_charge(&memcg->memsw, batch, &counter)) {
+                if (page_counter_try_charge(&memcg->memory, batch, &counter))
+                    goto done_restock;
+                if (do_memsw_account())
+                    page_counter_uncharge(&memcg->memsw, batch);
+                mem_over_limit = mem_cgroup_from_counter(counter, memory);
+            } else {
+                mem_over_limit = mem_cgroup_from_counter(counter, memsw);
+                reclaim_options &= ~MEMCG_RECLAIM_MAY_SWAP;
+            }
+
+            if (batch > nr_pages) {
+                batch = nr_pages;
+                goto retry;
+            }
+
+        /* 3. Special Cases: */
+            if (unlikely(current->flags & PF_MEMALLOC))
+                goto force;
+
+            if (unlikely(task_in_memcg_oom(current)))
+                goto nomem;
+
+            if (!gfpflags_allow_blocking(gfp_mask))
+                goto nomem;
+
+        /* 4. Reclaim Process: */
+            memcg_memory_event(mem_over_limit, MEMCG_MAX);
+            raised_max_event = true;
+
+            psi_memstall_enter(&pflags);
+            nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages, gfp_mask, reclaim_options, NULL);
+            psi_memstall_leave(&pflags);
+
+            if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
+                goto retry;
+
+            if (!drained) {
+                drain_all_stock(mem_over_limit);
+                drained = true;
+                goto retry;
+            }
+
+            if (gfp_mask & __GFP_NORETRY)
+                goto nomem;
+            /* Even though the limit is exceeded at this point, reclaim
+             * may have been able to free some pages.  Retry the charge
+             * before killing the task.
+             *
+             * Only for regular pages, though: huge pages are rather
+             * unlikely to succeed so close to the limit, and we fall back
+             * to regular pages anyway in case of failure. */
+            if (nr_reclaimed && nr_pages <= (1 << PAGE_ALLOC_COSTLY_ORDER))
+                goto retry;
+
+            if (nr_retries--)
+                goto retry;
+
+            if (gfp_mask & __GFP_RETRY_MAYFAIL)
+                goto nomem;
+
+            /* Avoid endless loop for tasks bypassed by the oom killer */
+            if (passed_oom && task_is_dying())
+                goto nomem;
+
+        /* 5. OOM Handling: */
+            if (mem_cgroup_oom(mem_over_limit, gfp_mask, get_order(nr_pages * PAGE_SIZE))) {
+                passed_oom = true;
+                nr_retries = MAX_RECLAIM_RETRIES;
+                goto retry;
+            }
+
+        nomem:
+            /* Memcg doesn't have a dedicated reserve for atomic
+            * allocations. But like the global atomic pool, we need to
+            * put the burden of reclaim on regular allocation requests
+            * and let these go through as privileged allocations. */
+            if (!(gfp_mask & (__GFP_NOFAIL | __GFP_HIGH)))
+                return -ENOMEM;
+        force:
+            /* If the allocation has to be enforced, don't forget to raise
+            * a MEMCG_MAX event. */
+            if (!raised_max_event)
+                memcg_memory_event(mem_over_limit, MEMCG_MAX);
+
+            /* The allocation either can't fail or will lead to more memory
+            * being freed very soon.  Allow memory usage go over the limit
+            * temporarily by force charging it. */
             page_counter_charge(&memcg->memory, nr_pages);
+            if (do_memsw_account())
+                page_counter_charge(&memcg->memsw, nr_pages);
+
+            return 0;
+
+        done_restock:
+            if (batch > nr_pages) {
+                refill_stock(memcg, batch - nr_pages) {
+                    struct memcg_stock_pcp *stock;
+                    unsigned int stock_pages;
+
+                    stock = this_cpu_ptr(&memcg_stock);
+                    if (READ_ONCE(stock->cached) != memcg) { /* reset if necessary */
+                        drain_stock(stock);
+                        css_get(&memcg->css);
+                        WRITE_ONCE(stock->cached, memcg);
+                    }
+                    stock_pages = READ_ONCE(stock->nr_pages) + nr_pages;
+                    WRITE_ONCE(stock->nr_pages, stock_pages);
+
+                    if (stock_pages > MEMCG_CHARGE_BATCH)
+                        drain_stock(stock);
+                }
+            }
+
+            /* If the hierarchy is above the normal consumption range, schedule
+            * reclaim on returning to userland.  We can perform reclaim here
+            * if __GFP_RECLAIM but let's always punt for simplicity and so that
+            * GFP_KERNEL can consistently be used during reclaim.  @memcg is
+            * not recorded as it most likely matches current's and won't
+            * change in the meantime.  As high limit is checked again before
+            * reclaim, the cost of mismatch is negligible. */
+            do {
+                bool mem_high, swap_high;
+
+                mem_high = page_counter_read(&memcg->memory) >
+                    READ_ONCE(memcg->memory.high);
+                swap_high = page_counter_read(&memcg->swap) >
+                    READ_ONCE(memcg->swap.high);
+
+                /* Don't bother a random interrupted task */
+                if (!in_task()) {
+                    if (mem_high) {
+                        schedule_work(&memcg->high_work);
+                        break;
+                    }
+                    continue;
+                }
+
+                if (mem_high || swap_high) {
+                    /* The allocating tasks in this cgroup will need to do
+                    * reclaim or be throttled to prevent further growth
+                    * of the memory or swap footprints.
+                    *
+                    * Target some best-effort fairness between the tasks,
+                    * and distribute reclaim work and delay penalties
+                    * based on how much each task is actually allocating. */
+                    current->memcg_nr_pages_over_high += batch;
+                    set_notify_resume(current);
+                    break;
+                }
+            } while ((memcg = parent_mem_cgroup(memcg)));
+
+            /* Reclaim is set up above to be called from the userland
+            * return path. But also attempt synchronous reclaim to avoid
+            * excessive overrun while the task is still inside the
+            * kernel. If this is successful, the return path will see it
+            * when it rechecks the overage and simply bail out. */
+            if (current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH &&
+                !(current->flags & PF_MEMALLOC) && gfpflags_allow_blocking(gfp_mask))
+                mem_cgroup_handle_over_high(gfp_mask);
+            return 0;
         }
         if (ret)
             goto out;
+    }
 
-        mem_cgroup_commit_charge(folio, memcg) {
-            css_get(&memcg->css);
-            commit_charge(folio, memcg) {
-                folio->memcg_data = (unsigned long)memcg;
-            }
-
-            local_irq_disable();
-            mem_cgroup_charge_statistics(memcg, folio_nr_pages(folio));
-            memcg_check_events(memcg, folio_nid(folio));
-            local_irq_enable();
-        }
+    commit_charge(folio, memcg) {
+        folio->memcg_data = (unsigned long)memcg;
     }
     css_put(&memcg->css);
 
@@ -2469,12 +2713,170 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
 }
 ```
 
+### mem_cgroup_try_charge_swap
+
+![](../images/kernel/cgroup-mem_cgroup_charge.svg)
+
+```c
+static inline int mem_cgroup_try_charge_swap(struct folio *folio,
+        swp_entry_t entry)
+{
+    if (mem_cgroup_disabled())
+        return 0;
+
+    return __mem_cgroup_try_charge_swap(folio, entry) {
+        unsigned int nr_pages = folio_nr_pages(folio);
+        struct page_counter *counter;
+        struct mem_cgroup *memcg;
+
+        if (do_memsw_account())
+            return 0;
+
+        memcg = folio_memcg(folio);
+
+        VM_WARN_ON_ONCE_FOLIO(!memcg, folio);
+        if (!memcg)
+            return 0;
+
+        if (!entry.val) {
+            memcg_memory_event(memcg, MEMCG_SWAP_FAIL);
+            return 0;
+        }
+
+        memcg = mem_cgroup_id_get_online(memcg);
+
+        if (!mem_cgroup_is_root(memcg) && !page_counter_try_charge(&memcg->swap, nr_pages, &counter)) {
+            memcg_memory_event(memcg, MEMCG_SWAP_MAX);
+            memcg_memory_event(memcg, MEMCG_SWAP_FAIL);
+            mem_cgroup_id_put(memcg);
+            return -ENOMEM;
+        }
+
+        /* Get references for the tail pages, too */
+        if (nr_pages > 1)
+            mem_cgroup_id_get_many(memcg, nr_pages - 1);
+        mod_memcg_state(memcg, MEMCG_SWAP, nr_pages);
+
+        swap_cgroup_record(folio, entry);
+
+        return 0;
+    }
+}
+```
+
 ### memory_reclaim
+
+```c
+static struct cftype memory_files[] = {
+    {
+        .name = "reclaim",
+        .flags = CFTYPE_NS_DELEGATABLE,
+        .write = memory_reclaim,
+    }
+};
+```
 
 ### mem_cgroup_oom
 
-### mem_cgroup_pressure
+Ref: [linux-mem.md - out_of_memory](./linux-mem.md#out_of_memory)
 
+```c
+static bool mem_cgroup_oom(struct mem_cgroup *memcg, gfp_t mask, int order)
+{
+    bool locked, ret;
+
+    if (order > PAGE_ALLOC_COSTLY_ORDER)
+        return false;
+
+    memcg_memory_event(memcg, MEMCG_OOM);
+
+    if (!memcg1_oom_prepare(memcg, &locked))
+        return false;
+
+    ret = mem_cgroup_out_of_memory(memcg, mask, order) {
+        struct oom_control oc = {
+            .zonelist = NULL,
+            .nodemask = NULL,
+            .memcg = memcg,
+            .gfp_mask = gfp_mask,
+            .order = order,
+        };
+        bool ret = true;
+
+        if (mutex_lock_killable(&oom_lock))
+            return true;
+
+        if (mem_cgroup_margin(memcg) >= (1 << order))
+            goto unlock;
+
+        /* A few threads which were not waiting at mutex_lock_killable() can
+        * fail to bail out. Therefore, check again after holding oom_lock. */
+        ret = task_is_dying() || out_of_memory(&oc);
+
+    unlock:
+        mutex_unlock(&oom_lock);
+        return ret;
+    }
+
+    memcg1_oom_finish(memcg, locked);
+
+    return ret;
+}
+```
+
+### mem_cgroup_swapout
+
+```c
+void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
+{
+    struct mem_cgroup *memcg, *swap_memcg;
+    unsigned int nr_entries;
+
+    VM_BUG_ON_FOLIO(folio_test_lru(folio), folio);
+    VM_BUG_ON_FOLIO(folio_ref_count(folio), folio);
+
+    if (mem_cgroup_disabled())
+        return;
+
+    if (!do_memsw_account())
+        return;
+
+    memcg = folio_memcg(folio);
+
+    VM_WARN_ON_ONCE_FOLIO(!memcg, folio);
+    if (!memcg)
+        return;
+
+    /* In case the memcg owning these pages has been offlined and doesn't
+    * have an ID allocated to it anymore, charge the closest online
+    * ancestor for the swap instead and transfer the memory+swap charge. */
+    swap_memcg = mem_cgroup_id_get_online(memcg);
+    nr_entries = folio_nr_pages(folio);
+    /* Get references for the tail pages, too */
+    if (nr_entries > 1)
+        mem_cgroup_id_get_many(swap_memcg, nr_entries - 1);
+    mod_memcg_state(swap_memcg, MEMCG_SWAP, nr_entries);
+
+    swap_cgroup_record(folio, entry);
+
+    folio_unqueue_deferred_split(folio);
+    folio->memcg_data = 0;
+
+    if (!mem_cgroup_is_root(memcg))
+        page_counter_uncharge(&memcg->memory, nr_entries);
+
+    if (memcg != swap_memcg) {
+        if (!mem_cgroup_is_root(swap_memcg))
+            page_counter_charge(&swap_memcg->memsw, nr_entries);
+        page_counter_uncharge(&memcg->memsw, nr_entries);
+    }
+
+    memcg1_swapout(folio, memcg);
+    css_put(&memcg->css);
+}
+```
+
+### mem_cgroup_pressure
 
 ## cpu_cgroup
 
@@ -3211,7 +3613,7 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
     long task_delta, idle_task_delta, dequeue = 1;
 
     raw_spin_lock(&cfs_b->lock);
-    ret = __assign_cfs_rq_runtime(cfs_b, cfs_rq, 1/*target_runtime*/) {
+    ret = __assign_cfs_rq_runtime(cfs_b, cfs_rq, 1/*target_runtime ns*/) {
         u64 min_amount, amount = 0;
 
         /* note: throttle_cfs_rq is only call when runtime_remaining < 0
@@ -3279,7 +3681,7 @@ bool throttle_cfs_rq(struct cfs_rq *cfs_rq)
         flags = DEQUEUE_SLEEP | DEQUEUE_SPECIAL;
         if (se->sched_delayed)
             flags |= DEQUEUE_DELAYED;
-        dequeue_entity(qcfs_rq, se, DEQUEUE_SLEEP);
+        dequeue_entity(qcfs_rq, se, flags);
 
         if (cfs_rq_is_idle(group_cfs_rq(se)))
             idle_delta = cfs_rq->h_nr_queued;
@@ -5071,7 +5473,7 @@ struct ipc_namespace *copy_ipcs(unsigned long flags,
 {
     if (!(flags & CLONE_NEWIPC))
         return get_ipc_ns(ns);
-  
+
     return create_ipc_ns(user_ns, ns) {
         struct ipc_namespace *ns;
         struct ucounts *ucounts;

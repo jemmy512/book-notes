@@ -18312,7 +18312,39 @@ out:
 * [LWN Index - Out-of-memory handling](https://lwn.net/Kernel/Index/#Memory_management-Out-of-memory_handling)
     * [User-space out-of-memory handling :one:](https://lwn.net/Articles/590960/) ⊙ [:two:](https://lwn.net/Articles/591990/)
 
+* Tuning and Debugging
+    * View Scores: Check `/proc/<pid>/oom_score` for each process.
+    * Adjust Priority: Write to `/proc/<pid>/oom_score_adj` (e.g., echo -500 > /proc/1234/oom_score_adj to protect PID 1234).
+    * Logs: Use `dmesg` or `journalctl` to see OOM events.
+    * Disable: Set `vm.oom_kill_allocating_task = 1` to kill the allocating process instead of scoring, or increase memory/swap to avoid OOM entirely.
+
 ```c
+struct oom_control {
+    /* Used to determine cpuset */
+    struct zonelist *zonelist;
+
+    /* Used to determine mempolicy */
+    nodemask_t *nodemask;
+
+    /* Memory cgroup in which oom is invoked, or NULL for global oom */
+    struct mem_cgroup *memcg;
+
+    /* Used to determine cpuset and node locality requirement */
+    const gfp_t gfp_mask;
+
+    /* order == -1 means the oom kill is required by sysrq, otherwise only
+     * for display purposes. */
+    const int order;
+
+    /* Used by oom implementation, do not set */
+    unsigned long totalpages;
+    struct task_struct *chosen;
+    long chosen_points;
+
+    /* Used to print the constraint info. */
+    enum oom_constraint constraint;
+};
+
 bool out_of_memory(struct oom_control *oc)
 {
     unsigned long freed = 0;
@@ -18428,6 +18460,7 @@ bool out_of_memory(struct oom_control *oc)
     }
 
     select_bad_process(oc);
+        --->
     if (!oc->chosen) {
         dump_header(oc);
     }
@@ -18608,8 +18641,13 @@ void select_bad_process(struct oom_control *oc)
 
                     /* The baseline for the badness score is the proportion of RAM that each
                      * task's rss, pagetable and swap space use */
-                    points = get_mm_rss(p->mm) + get_mm_counter(p->mm, MM_SWAPENTS) +
-                        mm_pgtables_bytes(p->mm) / PAGE_SIZE;
+                    points = get_mm_rss(p->mm) {
+                        return get_mm_counter(mm, MM_FILEPAGES) +
+                            get_mm_counter(mm, MM_ANONPAGES) +
+                            get_mm_counter(mm, MM_SHMEMPAGES);
+                    }
+                    + get_mm_counter(p->mm, MM_SWAPENTS)
+                    + mm_pgtables_bytes(p->mm) / PAGE_SIZE;
                     task_unlock(p);
 
                     /* Normalize to oom_score_adj units */
@@ -18640,6 +18678,38 @@ void select_bad_process(struct oom_control *oc)
                 break;
         }
         rcu_read_unlock();
+    }
+}
+```
+
+### mem_cgroup_scan_tasks
+
+```c
+void mem_cgroup_scan_tasks(struct mem_cgroup *memcg,
+    int (*fn)(struct task_struct *, void *), void *arg)
+{
+    struct mem_cgroup *iter;
+    int ret = 0;
+    int i = 0;
+
+    BUG_ON(mem_cgroup_is_root(memcg));
+
+    for_each_mem_cgroup_tree(iter, memcg) {
+        struct css_task_iter it;
+        struct task_struct *task;
+
+        css_task_iter_start(&iter->css, CSS_TASK_ITER_PROCS, &it);
+        while (!ret && (task = css_task_iter_next(&it))) {
+            /* Avoid potential softlockup warning */
+            if ((++i & 1023) == 0)
+                cond_resched();
+            ret = fn(task, arg);
+        }
+        css_task_iter_end(&it);
+        if (ret) {
+            mem_cgroup_iter_break(memcg, iter);
+            break;
+        }
     }
 }
 ```
