@@ -3528,7 +3528,7 @@ void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
         if (cfs_rq->throttled)
             return;
         /* if we're unable to extend our runtime we resched so that the active
-        * hierarchy can be throttled */
+         * hierarchy can be throttled */
         ret = assign_cfs_rq_runtime(cfs_rq) {
             struct cfs_bandwidth *cfs_b = tg_cfs_bandwidth(cfs_rq->tg);
             int ret;
@@ -3578,6 +3578,9 @@ void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
             resched_curr(rq_of(cfs_rq));
     }
 }
+
+if (cfs_rq->runtime_remaining <= 0)
+    throttle_cfs_rq(cfs_rq);
 ```
 
 #### throttle_cfs_rq
@@ -3977,17 +3980,12 @@ void update_cfs_group(struct sched_entity *se) {
 
 Only applied to cgrou v1 but not v2.
 
-cgroup v2’s unified hierarchy delegates RT scheduling configuration to the system-wide level (via /proc/sys/kernel/sched_rt_runtime_us and /proc/sys/kernel/sched_rt_period_us) rather than per-cgroup control.
+cgroup v2’s unified hierarchy delegates RT scheduling configuration to the system-wide level (via `/proc/sys/kernel/sched_rt_runtime_us` and `/proc/sys/kernel/sched_rt_period_us`) rather than per-cgroup control.
 
 kernel build .config:
 ```sh
 CONFIG_FAIR_GROUP_SCHED=y
 CONFIG_RT_GROUP_SCHED=y
-```
-
-Global RT Bandwidth:
-```sh
-/proc/sys/kernel/sched_rt_runtime_us
 ```
 
 ```c
@@ -4421,6 +4419,10 @@ sched_rt_runtime_exceeded(rt_rq) {
 * [调度器41-CFS组调度](https://www.cnblogs.com/hellokitty2/p/17031629.html)
 
 * Group scheduling is extensively used in a myriad of use cases on different types of systems. Large enterprise systems use it for containers, user sessions etc. Embedded systems like android use it to segregate tasks of varying importance (e.g. foreground vs background) from each other.
+
+![](../images/kernel/proc-task-group-arch.svg)
+
+---
 
 ![](../images/kernel/proc-sched-task_group.png)
 

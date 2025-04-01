@@ -328,7 +328,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-
+    
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -862,7 +862,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         DO_CALL (syscall_name, args); \
         cmn x0, #4095; \
         b.cs .Lsyscall_error;
-
+    
     # define DO_CALL(syscall_name, args) \
         mov x8, SYS_ify (syscall_name); \
         svc 0
@@ -882,7 +882,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
         lea SYS_ify (syscall_name), %rax; \
         syscall
-
+    
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -891,7 +891,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-
+        
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -911,16 +911,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-
+        
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-
+        
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-
+        
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -939,12 +939,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-
+        
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-
+        
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -3386,6 +3386,10 @@ static const struct ctl_table sched_rt_sysctls[] = {
 CFS focuses on distributing CPU time fairly in a weighted manner, but does not handle latency requirements well. The nice value in CFS can only give tasks more CPU time, but it cannot express the task's expectation of the delay in obtaining CPU resources. Even though realtime class (rt_sched_class) can be selected for latency-sensitive tasks in CFS, the latter is a privileged option, which means that excessive use of it may adversely affect other parts of the system.
 
 ![](../images/kernel/proc-sched-se-info.svg)
+
+---
+
+![](../images/kernel/proc-sched-cfs-eevdf.svg)
 
 ```c
 struct sched_entity {
@@ -6775,6 +6779,18 @@ get_cpu_for_node(struct device_node *node)
 
 ![](../images/kernel/proc-sched-pelt-segement.png)
 
+---
+
+![](../images/kernel/proc-sched-cfs-pelt.svg)
+
+---
+
+![](../images/kernel/proc-sched-pelt-calc.png)
+
+---
+
+![](../images/kernel/proc-sched-pelt-last_update_time.svg)
+
 ```c
 /* Accumulate the three separate parts of the sum; d1 the remainder
  * of the last (incomplete) period, d2 the span of full periods and d3
@@ -6796,15 +6812,6 @@ get_cpu_for_node(struct device_node *node)
  *      + d1 y^p + 1024 \Sum y^n + d3 y^0   (Step 2)
  *                       n=1                */
 ```
-
-![](../images/kernel/proc-sched-cfs-eevdf.svg)
-
-![](../images/kernel/proc-sched-pelt-calc.png)
-
----
-
-![](../images/kernel/proc-sched-pelt-last_update_time.svg)
-
 
 | **Metric** | **Tracks** | **Includes Blocked Tasks?** | **Includes Runnable Tasks?** | **Includes Running Tasks?** | **Use Case** |
 | --- | --- | --- | --- | --- | --- |
@@ -6833,11 +6840,11 @@ get_cpu_for_node(struct device_node *node)
     ```c
     dequeue_entity(cfs_rq, se, flags) {
         int action = UPDATE_TG;
-
+    
         /* detach load_avg only if task is migrating when dequeue_entity */
         if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
             action |= DO_DETACH;
-
+    
         update_curr(cfs_rq);
         update_load_avg(cfs_rq, se, action);
     }
@@ -6860,13 +6867,13 @@ get_cpu_for_node(struct device_node *node)
         struct sched_entity *se = &p->se;
         se->avg.last_update_time = 0; /* set to 0, attach load avg at enqueue_entity */
     }
-
+    
     /* group change */
     task_change_group_fair(struct task_struct *p) {
         detach_task_cfs_rq(p);
         p->se.avg.last_update_time = 0;
     }
-
+    
     /* sched class change */
     check_class_changed(rq, p, prev_class, oldprio) {
         if (prev_class != p->sched_class) {

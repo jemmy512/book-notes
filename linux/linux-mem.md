@@ -8055,7 +8055,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
 
 /* 1. find swp_entry */
     entry = pte_to_swp_entry(vmf->orig_pte);
-    if (unlikely(non_swap_entry(entry))) {
+    if (unlikely(non_swap_entry(entry) { return swp_type(entry) >= MAX_SWAPFILES })) {
         if (is_migration_entry(entry)) {
             migration_entry_wait(vma->vm_mm, vmf->pmd, vmf->address);
         } else if (is_pte_marker_entry(entry)) {
@@ -8079,7 +8079,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
     swapcache = folio;
 
     if (!folio) {
-        /* the 1st time of page fault: for shared swap cache between processes */
+        /* the 1st time of swp fault: for shared swap cache between processes */
         if (data_race(si->flags & SWP_SYNCHRONOUS_IO) && __swap_count(entry) == 1) {
             folio = vma_alloc_folio(GFP_HIGHUSER_MOVABLE, 0, vma, vmf->address, false);
             page = &folio->page;
@@ -10057,8 +10057,7 @@ Q: how workingset works?
 3. **Swap Cache**: These are pages that have been swapped out to disk but are still cached in memory. If memory is needed, these pages can be reclaimed, as they can be retrieved from the swap area on disk.
 4. **Slab Cache**: Memory allocated for kernel objects and data structures (e.g., **inodes**, **dentries**, or **buffers**). While this memory is often actively used, some of it can be reclaimed if it becomes unused or if memory pressure is high.
 5. **Movable Non-LRU Pages**: Pages not on LRU lists but marked as movable by subsystems (e.g., device drivers, balloon drivers). Managed by custom migration callbacks (e.g., isolate_movable_page).
-
-    * Reclaim Process: Isolated via isolate_movable_page if the subsystem allows it (e.g., in isolate_migratepages_block).
+* Reclaim Process: Isolated via isolate_movable_page if the subsystem allows it (e.g., in isolate_migratepages_block).
 
 ## lru
 
@@ -10288,8 +10287,6 @@ void lru_add_drain(void)
 * When a page is evicted (e.g., file page dropped or anon page swapped), a shadow entry is stored in the page cache’s radix tree (struct address_space->i_pages) or swap cache.
 * This entry records the eviction timestamp (an lruvec counter) rather than the full struct page.
 
-
-
 ### workingset_refault
 
 ```c
@@ -10411,7 +10408,13 @@ void workingset_activation(struct folio *folio)
     memcg = folio_memcg_rcu(folio);
     if (!mem_cgroup_disabled() && !memcg)
         goto out;
-    workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio));
+
+    workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio)) {
+        do {
+            atomic_long_add(nr_pages, &lruvec->nonresident_age);
+        } while ((lruvec = parent_lruvec(lruvec)));
+    }
+
 out:
     rcu_read_unlock();
 }
@@ -10433,7 +10436,11 @@ void *workingset_eviction(struct folio *folio, struct mem_cgroup *target_memcg)
     memcgid = mem_cgroup_id(lruvec_memcg(lruvec));
     eviction = atomic_long_read(&lruvec->nonresident_age);
     eviction >>= bucket_order;
-    workingset_age_nonresident(lruvec, folio_nr_pages(folio));
+    workingset_age_nonresident(lruvec, folio_nr_pages(folio)) {
+        do {
+            atomic_long_add(nr_pages, &lruvec->nonresident_age);
+        } while ((lruvec = parent_lruvec(lruvec)));
+    }
 
     return pack_shadow(memcgid, pgdat, eviction, folio_test_workingset(folio)) {
         eviction &= EVICTION_MASK;
