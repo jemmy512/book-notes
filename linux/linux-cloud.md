@@ -240,6 +240,7 @@ The rules are Enforce at [cgroup_attach_permissions](#cgroup_attach_permissions)
 ├── memory.high # memory threshold for proactive reclaim
 ├── memory.low # memory protection threshold against reclaim
 ├── memory.min # guaranteed minimum memory amount (in bytes) that won’t be reclaimed, even under pressure.
+├── memory.current # Reports current memory usage. (anon + file backed)
 ├── memory.swap.high
 ├── memory.swap.max # Limits swap usage for the cgroup.
 ├── memory.swap.peak
@@ -251,12 +252,14 @@ The rules are Enforce at [cgroup_attach_permissions](#cgroup_attach_permissions)
 ├── memory.events # Logs memory-related events (e.g., low, high, max, oom) for this cgroup and its descendants.
 ├── memory.events.local
 ├── memory.peak # Reports the historical maximum memory usage (in bytes) since the cgroup was created.
-├── memory.current # Reports current memory usage.
 ├── memory.reclaim # Writing a value (in bytes) triggers manual memory reclamation from this cgroup without killing processes.
 ├── memory.numa_stat
 ├── memory.oom.group # If set to 1, an OOM event kills all processes in the cgroup together; 0 kills individually (default).
 ├── memory.stat
 ├── memory.pressure
+├──     # some: The percentage of time that at least one task in the cgroup is stalled waiting for memory.
+├──     # full: The percentage of time that all non-idle tasks in the cgroup are stalled waiting for memory (i.e., the cgroup is completely blocked).
+├──     # avg: A moving average of the pressure over different time windows (e.g., 10s, 60s, 300s).
 ├──
 ├── pids.current # Reports the current number of PIDs (processes and threads) in this cgroup.
 ├── pids.events
@@ -4645,6 +4648,7 @@ struct nsproxy {
 ## setns
 
 * The setns system call allows the calling process to join an existing namespace.  The namespace to join is specified via a file descriptor that refers to one of the `/proc/pid/ns` files described below.
+* A process can't join a `new mount namespace`, `User namespaces` if it is sharing filesystem-related attributes (the attributes whose sharing is controlled by the clone(2) `CLONE_FS` flag) with another process.
 * PID Namespace
     * When setns/unshare, the caller creats a new namespace for its chilren, but the caller itself doesn't move into the new namespace.
     * The 1st process with pid 1 created by caller is init process in new namespace
@@ -4662,8 +4666,10 @@ SYSCALL_DEFINE2(setns, int, fd, int, flags)
     if (!f.file)
         return -EBADF;
 
-    if (proc_ns_file(f.file)) {
-        ns = get_proc_ns(file_inode(f.file));
+    if (proc_ns_file(f.file) { return file->f_op == &ns_file_operations }) {
+        ns = get_proc_ns(file_inode(f.file)) {
+            return ((struct ns_common *)(inode)->i_private);
+        }
         if (flags && (ns->ops->type != flags)) {
             err = -EINVAL;
         }
@@ -4944,7 +4950,66 @@ clone() {
     kernel_clone() {
         copy_process() {
             copy_namespaces() {
-                new_ns = create_new_namespaces(flags, tsk, user_ns, tsk->fs);
+                new_ns = create_new_namespaces(flags, tsk, user_ns, tsk->fs)
+                    --->
+
+                if ((flags & CLONE_VM) == 0) {
+                    timens_on_fork(new_ns, tsk) {
+                        struct ns_common *nsc = &nsproxy->time_ns_for_children->ns;
+                        struct time_namespace *ns = to_time_ns(nsc);
+
+                        /* create_new_namespaces() already incremented the ref counter */
+                        if (nsproxy->time_ns == nsproxy->time_ns_for_children)
+                            return;
+
+                        get_time_ns(ns);
+                        put_time_ns(nsproxy->time_ns);
+                        nsproxy->time_ns = ns;
+
+                        timens_commit(tsk, ns) {
+                            timens_set_vvar_page(tsk, ns) {
+                                struct vdso_time_data *vdata;
+                                struct vdso_clock *vc;
+                                unsigned int i;
+
+                                if (ns == &init_time_ns)
+                                    return;
+
+                                /* Fast-path, taken by every task in namespace except the first. */
+                                if (likely(ns->frozen_offsets))
+                                    return;
+
+                                mutex_lock(&offset_lock);
+                                /* Nothing to-do: vvar_page has been already initialized. */
+                                if (ns->frozen_offsets)
+                                    goto out;
+
+                                ns->frozen_offsets = true;
+                                vdata = page_address(ns->vvar_page);
+                                vc = vdata->clock_data;
+
+                                for (i = 0; i < CS_BASES; i++)
+                                    timens_setup_vdso_clock_data(&vc[i], ns);
+                            }
+
+                            vdso_join_timens(tsk, ns) {
+                                struct mm_struct *mm = task->mm;
+                                struct vm_area_struct *vma;
+                                VMA_ITERATOR(vmi, mm, 0);
+
+                                mmap_read_lock(mm);
+                                for_each_vma(vmi, vma) {
+                                    if (vma_is_special_mapping(vma, &vdso_vvar_mapping)) {
+                                        /* cleared and then will be re-faulted */
+                                        zap_vma_pages(vma);
+                                    }
+                                }
+                                mmap_read_unlock(mm);
+                            }
+                        }
+                    }
+                }
+
                 tsk->nsproxy = new_ns;
             }
         }
@@ -5285,6 +5350,7 @@ struct pid_namespace *copy_pid_ns(unsigned long flags,
 ### alloc_pid
 
 ```c
+/* fork -> copy_process -> */
 struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid, size_t set_tid_size)
 {
     struct pid *pid;
