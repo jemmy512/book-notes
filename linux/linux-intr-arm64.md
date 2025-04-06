@@ -1029,6 +1029,14 @@ set_smp_ipi_range(int ipi_base, int n) {
 
 ![](../images/kernel/intr-gic_handle_irq.png)
 
+---
+
+![](../images/kernel/intr-handle_irq_desc.png)
+
+---
+
+![](../images/kernel/intr-irq_wake_thread.png)
+
 ```c
 gic_of_init() {
     gic_init_bases() {
@@ -1089,6 +1097,7 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
                     }
 
                     ret = generic_handle_domain_irq(gic_data.domain, irqnr);
+                        --->
                     if (ret) {
                         WARN_ONCE(true, "Unexpected interrupt (irqnr %u)\n", irqnr);
                         gic_deactivate_unhandled(irqnr);
@@ -1100,13 +1109,7 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 }
 ```
 
-# generic_handle_domain_irq
-
-![](../images/kernel/intr-handle_irq_desc.png)
-
----
-
-![](../images/kernel/intr-irq_wake_thread.png)
+### generic_handle_domain_irq
 
 ```c
 int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
@@ -1123,6 +1126,12 @@ int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
             = handle_percpu_irq(struct irq_desc *desc) {
 
             }
+
+            /* Signal: Triggered by a transition (rising or falling edge) on the interrupt line.
+             * Handler: Acknowledges the interrupt (e.g., via GIC EOI),
+             *      no need to clear the source to stop the signal. */
+
+            /* Active as long as the condition persists (e.g., high or low voltage level). */
             = handle_level_irq(struct irq_desc *desc) {
                 raw_spin_lock(&desc->lock);
                 mask_ack_irq(desc) {

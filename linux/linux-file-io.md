@@ -4521,7 +4521,7 @@ void delayed_work_timer_fn(struct timer_list *t)
 
 ### queue_work
 
-* [linux-kernel.md schedule_work](./linux-kernel.md#schedule_work)
+* [linux-proc.md schedule_work](./linux-proc.md#schedule_work)
 
 Direct IO and buffered IO will eventally call `submit_bio`.
 

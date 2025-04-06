@@ -289,7 +289,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 
 **UEFI** initializes hardware and hands off to the OS loader (e.g., GRUB).
 |**Stage**|**Description**|
-|-|-|
+|:-:|:-:|
 |**SEC (Security)**|Initializes CPU, temporary memory (cache-as-RAM), and security (e.g., TPM).|
 |**PEI (Pre-EFI)**|Sets up permanent RAM, configures chipset, builds HOBs (early memory map).|
 |**DXE (Driver Exec)**|Loads drivers, finalizes memory map, offers Boot Services (e.g., `GetMemoryMap`).|
@@ -301,7 +301,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 
 **GRUB loads the kernel after UEFI hands off.**
 |**Stage**|**Description**|
-|-|-|
+|:-:|:-:|
 |**UEFI Load**|UEFI executes `grubx64.efi` from ESP using Boot Services.|
 |**Core Image**|`grubx64.efi` loads core image, minimal drivers (e.g., FAT) in UEFI memory.|
 |**Modules/Config**|Loads `grub.cfg` and modules (e.g., `linux.mod`) from `/boot/grub`.|
@@ -328,7 +328,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
         search --no-floppy --fs-uuid --set=root --hint='hd0,msdos1' b1aceb95-6b9e-464a-a589-bed66220ebee
       else search --no-floppy --fs-uuid --set=root b1aceb95-6b9e-464a-a589-bed66220ebee
       fi
-    
+
       linux16 /boot/vmlinuz-3.10.0-862.el7.x86_64 root=UUID=b1aceb95-6b9e-464a-a589-bed66220ebee ro console=tty0 console=ttyS0,115200 crashkernel=auto net.ifnames=0 biosdevname=0 rhgb quiet
       initrd16 /boot/initramfs-3.10.0-862.el7.x86_64.img
     }
@@ -862,7 +862,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         DO_CALL (syscall_name, args); \
         cmn x0, #4095; \
         b.cs .Lsyscall_error;
-    
+
     # define DO_CALL(syscall_name, args) \
         mov x8, SYS_ify (syscall_name); \
         svc 0
@@ -882,7 +882,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     #define DO_CALL(syscall_name, args) \
         lea SYS_ify (syscall_name), %rax; \
         syscall
-    
+
     /* glibc-2.28/sysdeps/unix/sysv/linux/x86_64/sysdep.h */
     #define SYS_ify(syscall_name)  __NR_##syscall_name
     ```
@@ -891,7 +891,7 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     1. declare syscall table: arch/x86/entry/syscalls/syscall_64.tbl
         ```c
         # 64-bit system call numbers and entry vectors
-        
+
         # The __x64_sys_*() stubs are created on-the-fly for sys_*() system calls
         # The abi is "common", "64" or "x32" for this file.
         #
@@ -911,16 +911,16 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
         #define __NR_read               3
         #define __NR_write              4
         #define __NR_open               5
-        
+
         /* 2.2 arch/x86/entry/syscalls/syscalltbl.sh
         * generates __SYSCALL_64(x, y) into asm/syscalls_64.h */
         __SYSCALL_64(__NR_open, __x64_sys_read)
         __SYSCALL_64(__NR_write, __x64_sys_write)
         __SYSCALL_64(__NR_open, __x64_sys_open)
-        
+
         /* arch/x86/entry/syscall_64.c */
         #define __SYSCALL_64(nr, sym, qual) [nr] = sym
-        
+
         asmlinkage const sys_call_ptr_t sys_call_table[__NR_syscall_max+1] = {
             /* Smells like a compiler bug -- it doesn't work
             * when the & below is removed. */
@@ -939,12 +939,12 @@ T_PSEUDO_END (SYSCALL_SYMBOL)
     4. define implemenation: fs/open.c
         ```c
         #include <linux/syscalls.h>
-        
+
         SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
         {
             if (force_o_largefile())
                 flags |= O_LARGEFILE;
-        
+
             return do_sys_open(AT_FDCWD, filename, flags, mode);
         }
         ```
@@ -5946,7 +5946,7 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 * [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo) ⊙ [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
 | **Aspect** | **SMT (Simultaneous Multi-Threading)** | **CLS (Cluster Level Scheduling)** | **MC (Multi-Core)** | **PKG (Package)** |
-|---|---|---|---|---|
+|:-:|:-:|:-:|:-:|:-:|
 | **Scope** | Logical CPUs (threads) in a single core. | A group of cores that share resources (e.g., L2 or L3 cache). | All cores within a physical package (socket). | All CPUs in a processor package. |
 | **Configuration** | Enabled with `CONFIG_SCHED_SMT`. | Enabled with `CONFIG_SCHED_CLUSTER`. | Enabled with `CONFIG_SCHED_MC`. | Always included (default). |
 | **Purpose** | Optimize task placement between sibling threads (logical CPUs). | Optimize task placement across cores in a cluster. | Optimize task placement across all cores in a socket. | Balance task loads across sockets. |
@@ -5959,7 +5959,7 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 ---
 
 |  | SMT Doamin | CLS Domain | MC Domain | PGK Domain |
-| --- | --- | --- | --- | --- |
+| :-: | :-: | :-: | :-: | :-: |
 | **SD_BALANCE_FORK** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **SD_BALANCE_EXEC** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **SD_BALANCE_WAKE** |:white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
@@ -5976,7 +5976,7 @@ Consider the following system:
 The scheduler topology would look like this:
 
 | **Domain** | **Hierarchy Level** | **Example CPUs in Domain** |
-|---|---|---|
+|:-:|:-:|:-:|
 | **SMT** | Thread-level | CPU 0, CPU 1 (threads of Core 0, Socket 0). |
 | **CLS** | Cluster-level | CPUs 0-3 (Cluster 0 in Socket 0). |
 | **MC** | Core-level | CPUs 0-7 (All cores in Socket 0). |
@@ -6840,11 +6840,11 @@ get_cpu_for_node(struct device_node *node)
     ```c
     dequeue_entity(cfs_rq, se, flags) {
         int action = UPDATE_TG;
-    
+
         /* detach load_avg only if task is migrating when dequeue_entity */
         if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
             action |= DO_DETACH;
-    
+
         update_curr(cfs_rq);
         update_load_avg(cfs_rq, se, action);
     }
@@ -6867,13 +6867,13 @@ get_cpu_for_node(struct device_node *node)
         struct sched_entity *se = &p->se;
         se->avg.last_update_time = 0; /* set to 0, attach load avg at enqueue_entity */
     }
-    
+
     /* group change */
     task_change_group_fair(struct task_struct *p) {
         detach_task_cfs_rq(p);
         p->se.avg.last_update_time = 0;
     }
-    
+
     /* sched class change */
     check_class_changed(rq, p, prev_class, oldprio) {
         if (prev_class != p->sched_class) {

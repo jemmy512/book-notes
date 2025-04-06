@@ -572,6 +572,10 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
 }
 ```
 
+# free_irq
+
+# enable-disable_irq
+
 # softirq
 
 VS | standard kernel | PREEMPT_RT kernel
