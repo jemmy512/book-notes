@@ -7787,6 +7787,34 @@ struct address_space {
 };
 ```
 
+ARM ESR Layout:
+```c
++---------+---------+--------------------------------------------------+
+| Bits    | Field   | Description                                      |
++---------+---------+--------------------------------------------------+
+| [63:32] | RES0    | Reserved, must be 0                              |
+| [31:26] | EC      | Exception Class (6 bits)                         |
+|         |         | - 0x00: Unknown reason                           |
+|         |         | - 0x01: Trapped WFI/WFE                          |
+|         |         | - 0x0E: Illegal Execution State                  |
+|         |         | - 0x15: SVC instruction                          |
+|         |         | - 0x22: Instruction Abort (lower EL)             |
+|         |         | - 0x24: Data Abort (lower EL)                    |
+|         |         | - 0x3C: IRQ (from same EL)                       |
+|         |         | - 0x3F: Other (see ARM ARM for full list)        |
++---------+---------+--------------------------------------------------+
+| [25]    | IL      | Instruction Length                               |
+|         |         | - 0: 16-bit instruction                         |
+|         |         | - 1: 32-bit instruction                         |
++---------+---------+--------------------------------------------------+
+| [24:0]  | ISS     | Instruction-Specific Syndrome (25 bits)          |
+|         |         | (Format depends on EC value)                    |
+|         |         | e.g., for Data/Instruction Aborts:               |
+|         |         | - [24]: DFSC (Data Fault Status Code) present    |
+|         |         | - [5:0]: DFSC/IFSC (Fault Status Code)           |
++---------+---------+--------------------------------------------------+
+```
+
 ```c
 /* arm64
  * arch/arm64/mm/fault.c */
