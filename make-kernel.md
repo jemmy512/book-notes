@@ -215,7 +215,7 @@ linux内核源码可以在github上直接下载。
 我们将之前制作好的根文件系统cp到root目录下：
 ```sh
 cd linux
-cp -r ../busybox-1.33.1/_install root
+cp -r ../busybox-1.33.1/_install/* root
 ```
 
 根据arch/arm64/configs/defconfig 文件生成.config:
@@ -228,7 +228,7 @@ make defconfig ARCH=arm64
 
 ```s
 CONFIG_DEBUG_INFO=y
-CONFIG_INITRAMFS_SOURCE="/code/rootfs"
+CONFIG_INITRAMFS_SOURCE="../ramfs" # the root dir of the ramfs
 CONFIG_INITRAMFS_ROOT_UID=0
 CONFIG_INITRAMFS_ROOT_GID=0
 CONFIG_DEBUG_SECTION_MISMATCH=y #调试时禁止内联。
@@ -319,6 +319,10 @@ qemu-system-aarch64 \
     -append "root=/dev/vda rw nokaslr console=ttyAMA0 loglevel=8" \
     -nographic
 ```
+
+1.如果启动的时候发现rcS里面的配置没有生效，即没有映射/sys /tmp /proc等，需要将rcS修改为可执行权限
+2.如果发现无法进入shell，可能是在root/dev下面没有console和null，这个拷贝需要sudo
+
 
 ## gdb调试
 
@@ -453,10 +457,10 @@ password       xxx
 
 ```sh
 sudo apt-get install msmtp
+sudo apt install git-email
 
 chmod 600 ~/.msmtprc
 sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
-
 ```
 
 # 提交代码
@@ -464,7 +468,7 @@ sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
 * https://blog.xzr.moe/archives/293/
 * https://tinylab.org/mailing-list-intro/
 
-修改~/.gitconfig:
+修改~/.gitconfig
 ```sh
 [user]
     name = xxx
@@ -516,13 +520,6 @@ git send-email \
 * `--subject-prefix="PATCH <MOD NAME>"`
 * `--in-reply-to` message id 可以在 https://lore.kernel.org/all/ 根据patch名字找到
 
-# Q&A
-
-1.如果启动的时候发现rcS里面的配置没有生效，即没有映射/sys /tmp /proc等，需要将rcS修改为可执行权限
-2.如果发现无法进入shell，可能是在root/dev下面没有console和null，这个拷贝需要sudo
-
-
-
 # macos
 
 brew install aarch64-linux-gnu-binutils
@@ -536,3 +533,114 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 echo 'export PATH="/opt/homebrew/opt/ncurses/bin:$PATH"' >> /Users/jemmy/.zshrc
 export LDFLAGS="-L/opt/homebrew/opt/ncurses/lib"
 export CPPFLAGS="-I/opt/homebrew/opt/ncurses/include"
+
+
+# vpn
+
+## download clash
+
+* [clash-linux-amd64-v1.18.0.gz - 适用于 x86 / x64 架构的 Linux 系统](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-amd64-v1.18.0.gz)
+* [clash-linux-arm64-v1.18.0.gz - 适用于 ARM 架构的 Linux](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-arm64-v1.18.0.gz)
+* [clash-darwin-amd64-v1.18.0.gz - 适用于 intel 芯片的 macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-amd64-v1.18.0.gz)
+* [clash-darwin-arm64-v1.18.0.gz - 适用于 Apple silicon 芯片的 macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-arm64-v1.18.0.gz)
+
+
+```sh
+# 请注意将文件名替换为自己实际下载的文件名称
+gzip -dk clash-*-*-v1.18.0.gz # 解压压缩包
+chmod +x clash-*-*-v1.18.0 # 赋与可执行权限
+cp clash-*-*-v1.18.0 /usr/local/bin/clash # 添加到用户可执行文件目录
+
+mkdir /usr/local/etc/clash # 创建配置文件夹
+wget -P /usr/local/etc/clash https://***.*/feeds/***/clash.yml # 下载订阅文件到本地请将链接替换为实际复制的配置链接
+mv /usr/local/etc/clash/clash.yml /usr/local/etc/clash/config.yaml
+
+# run clash
+clash -d /usr/local/etc/clash # default 127.0.0.1:7890
+```
+
+## config terminal
+
+* config terminal
+
+    ```sh
+    # ~/.bashrc
+    export socks5='socks5://127.0.0.1:7891'
+    export http_proxy='http://127.0.0.1:7890'
+    export https_proxy='http://127.0.0.1:7890'
+    ```
+
+* config github
+
+    ```sh
+    # ~/.ssh/config
+    Host github.com
+        Hostname github.com
+        ProxyCommand nc -x localhost:7890 %h %p
+        # git-for-windows 下可以用 connect 代替 nc
+        # ProxyCommand connect -S localhost:1085 %h %p
+
+    ```
+## clash.service
+
+```sh
+# sudo touch /etc/systemd/system/clash.service
+[Unit]
+Description=Clash VPN Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/clash -d /etc/clash
+Restart=on-failure
+User=nobody
+Group=nogroup
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable clash.service
+sudo systemctl start clash.service
+sudo systemctl status clash.service
+sudo systemctl stop clash.service
+```
+
+# ssh
+
+```sh
+sudo apt install openssh-server
+sudo service ssh status
+sudo service ssh start
+sudo nano /etc/ssh/sshd_config
+sudo systemctl restart sshd.service
+
+sudo passed # set root user pwd
+
+ssh [username]@[public_IP] -p[port_number]
+```
+
+Avoid SSH timeout from the server
+
+```sh
+# /etc/ssh/sshd_config
+TCPKeepAlive no
+ClientAliveInterval 300
+ClientAliveCountMax 2400
+
+PermitRootLogin yes # allow root user ssh login
+````
+
+Avoid SSH timeout from the client
+
+```sh
+# ~/.ssh/config
+ServerAliveInterval 300
+```
+
+# install ubuntu on mac
+
+* [Getting Wi-Fi and Bluetooth to work](https://wiki.t2linux.org/guides/wifi-bluetooth/)
+* [Install drivers for the fan (if not working automatically or want to force a certain speed)](https://wiki.t2linux.org/guides/fan/)
