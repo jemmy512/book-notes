@@ -573,6 +573,8 @@ start_kernel() {
 
 ## mount
 
+![](../images/kernel/io-mount.svg)
+
 <img src='../images/kernel/io-mount-example.png' height='600'/>
 
 * [Kernel Doc: Filesystem Mount API](https://github.com/torvalds/linux/blob/master/Documentation/filesystems/mount_api.rst)
@@ -698,64 +700,64 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 int path_mount(const char *dev_name, struct path *path,
     const char *type_page, unsigned long flags, void *data_page)
 {
-  unsigned int mnt_flags = 0, sb_flags;
-  int ret;
+    unsigned int mnt_flags = 0, sb_flags;
+    int ret;
 
-  /* Discard magic */
-  if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
-    flags &= ~MS_MGC_MSK;
+    /* Discard magic */
+    if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
+        flags &= ~MS_MGC_MSK;
 
-  /* Default to relatime unless overriden */
-  if (!(flags & MS_NOATIME))
-    mnt_flags |= MNT_RELATIME;
+    /* Default to relatime unless overriden */
+    if (!(flags & MS_NOATIME))
+        mnt_flags |= MNT_RELATIME;
 
-  /* Separate the per-mountpoint flags */
-  if (flags & MS_NOSUID)
-    mnt_flags |= MNT_NOSUID;
-  if (flags & MS_NODEV)
-    mnt_flags |= MNT_NODEV;
-  if (flags & MS_NOEXEC)
-    mnt_flags |= MNT_NOEXEC;
-  if (flags & MS_NOATIME)
-    mnt_flags |= MNT_NOATIME;
-  if (flags & MS_NODIRATIME)
-    mnt_flags |= MNT_NODIRATIME;
-  if (flags & MS_STRICTATIME)
-    mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
-  if (flags & MS_RDONLY)
-    mnt_flags |= MNT_READONLY;
-  if (flags & MS_NOSYMFOLLOW)
-    mnt_flags |= MNT_NOSYMFOLLOW;
+    /* Separate the per-mountpoint flags */
+    if (flags & MS_NOSUID)
+        mnt_flags |= MNT_NOSUID;
+    if (flags & MS_NODEV)
+        mnt_flags |= MNT_NODEV;
+    if (flags & MS_NOEXEC)
+        mnt_flags |= MNT_NOEXEC;
+    if (flags & MS_NOATIME)
+        mnt_flags |= MNT_NOATIME;
+    if (flags & MS_NODIRATIME)
+        mnt_flags |= MNT_NODIRATIME;
+    if (flags & MS_STRICTATIME)
+        mnt_flags &= ~(MNT_RELATIME | MNT_NOATIME);
+    if (flags & MS_RDONLY)
+        mnt_flags |= MNT_READONLY;
+    if (flags & MS_NOSYMFOLLOW)
+        mnt_flags |= MNT_NOSYMFOLLOW;
 
-  /* The default atime for remount is preservation */
-  if ((flags & MS_REMOUNT) &&
-      ((flags & (MS_NOATIME | MS_NODIRATIME | MS_RELATIME |
-           MS_STRICTATIME)) == 0)) {
-    mnt_flags &= ~MNT_ATIME_MASK;
-    mnt_flags |= path->mnt->mnt_flags & MNT_ATIME_MASK;
-  }
+    /* The default atime for remount is preservation */
+    if ((flags & MS_REMOUNT) &&
+        ((flags & (MS_NOATIME | MS_NODIRATIME | MS_RELATIME |
+            MS_STRICTATIME)) == 0)) {
+        mnt_flags &= ~MNT_ATIME_MASK;
+        mnt_flags |= path->mnt->mnt_flags & MNT_ATIME_MASK;
+    }
 
-  sb_flags = flags & (SB_RDONLY |
-          SB_SYNCHRONOUS |
-          SB_MANDLOCK |
-          SB_DIRSYNC |
-          SB_SILENT |
-          SB_POSIXACL |
-          SB_LAZYTIME |
-          SB_I_VERSION);
+    sb_flags = flags & (SB_RDONLY |
+            SB_SYNCHRONOUS |
+            SB_MANDLOCK |
+            SB_DIRSYNC |
+            SB_SILENT |
+            SB_POSIXACL |
+            SB_LAZYTIME |
+            SB_I_VERSION);
 
-  if ((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND))
-    return do_reconfigure_mnt(path, mnt_flags);
-  if (flags & MS_REMOUNT)
-    return do_remount(path, flags, sb_flags, mnt_flags, data_page);
-  if (flags & MS_BIND)
-    return do_loopback(path, dev_name, flags & MS_REC);
-  if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
-    return do_change_type(path, flags);
-  if (flags & MS_MOVE)
-    return do_move_mount_old(path, dev_name);
+    if ((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND))
+        return do_reconfigure_mnt(path, mnt_flags);
+    if (flags & MS_REMOUNT)
+        return do_remount(path, flags, sb_flags, mnt_flags, data_page);
+    if (flags & MS_BIND)
+        return do_loopback(path, dev_name, flags & MS_REC);
+    if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
+        return do_change_type(path, flags);
+    if (flags & MS_MOVE)
+        return do_move_mount_old(path, dev_name);
 
-  return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
+    return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
           data_page);
 }
 ```
@@ -780,7 +782,14 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
             struct file_system_type *fs;
 
             read_lock(&file_systems_lock);
-            fs = *(find_filesystem(name, len));
+            ret = find_filesystem(name, len) {
+                struct file_system_type **p;
+                for (p = &file_systems; *p; p = &(*p)->next)
+                    if (strncmp((*p)->name, name, len) == 0 && !(*p)->name[len])
+                        break;
+                return p;
+            }
+            fs = *(ret);
             if (fs && !try_module_get(fs->owner))
                 fs = NULL;
             read_unlock(&file_systems_lock);
@@ -789,8 +798,7 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
         if (!fs && (request_module("fs-%.*s", len, name) == 0)) {
             fs = __get_fs_type(name, len);
             if (!fs)
-                pr_warn_once("request_module fs-%.*s succeeded, but still no fs?\n",
-                        len, name);
+                pr_warn_once("request_module fs-%.*s succeeded, but still no fs?\n", len, name);
         }
 
         if (dot && fs && !(fs->fs_flags & FS_HAS_SUBTYPE)) {
@@ -857,7 +865,12 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
                     return -ENOMEM;
 
                 fc->fs_private = ctx;
-                fc->ops = &ext4_context_ops;
+                fc->ops = &ext4_context_ops = {
+                    .parse_param    = ext4_parse_param,
+                    .get_tree       = ext4_get_tree,
+                    .reconfigure    = ext4_reconfigure,
+                    .free           = ext4_fc_free,
+                };
             }
 
             shmem_init_fs_context(struct fs_context *fc) {
@@ -1043,7 +1056,69 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 
                 /* Preallocate a mountpoint in case the new mounts need
                  * to be tucked under other mounts. */
-                smp = get_mountpoint(source_mnt->mnt.mnt_root);
+                smp = get_mountpoint(source_mnt->mnt.mnt_root) {
+                    struct mountpoint *mp, *new = NULL;
+                    int ret;
+
+                    if (d_mountpoint(dentry) { return dentry->d_flags & DCACHE_MOUNTED; }) {
+                        /* might be worth a WARN_ON() */
+                        if (d_unlinked(dentry))
+                            return ERR_PTR(-ENOENT);
+                mountpoint:
+                        read_seqlock_excl(&mount_lock);
+                        mp = lookup_mountpoint(dentry) {
+                            struct hlist_head *chain = mp_hash(dentry) {
+                                unsigned long tmp = ((unsigned long)dentry / L1_CACHE_BYTES);
+                                tmp = tmp + (tmp >> mp_hash_shift);
+                                return &mountpoint_hashtable[tmp & mp_hash_mask];
+                            }
+                            struct mountpoint *mp;
+
+                            hlist_for_each_entry(mp, chain, m_hash) {
+                                if (mp->m_dentry == dentry) {
+                                    mp->m_count++;
+                                    return mp;
+                                }
+                            }
+                            return NULL;
+                        }
+                        read_sequnlock_excl(&mount_lock);
+                        if (mp)
+                            goto done;
+                    }
+
+                    if (!new)
+                        new = kmalloc(sizeof(struct mountpoint), GFP_KERNEL);
+                    if (!new)
+                        return ERR_PTR(-ENOMEM);
+
+
+                    /* Exactly one processes may set d_mounted */
+                    ret = d_set_mounted(dentry);
+
+                    /* Someone else set d_mounted? */
+                    if (ret == -EBUSY)
+                        goto mountpoint;
+
+                    /* The dentry is not available as a mountpoint? */
+                    mp = ERR_PTR(ret);
+                    if (ret)
+                        goto done;
+
+                    /* Add the new mountpoint to the hash table */
+                    read_seqlock_excl(&mount_lock);
+                    new->m_dentry = dget(dentry);
+                    new->m_count = 1;
+                    hlist_add_head(&new->m_hash, mp_hash(dentry));
+                    INIT_HLIST_HEAD(&new->m_list);
+                    read_sequnlock_excl(&mount_lock);
+
+                    mp = new;
+                    new = NULL;
+                done:
+                    kfree(new);
+                    return mp;
+                }
                 if (IS_ERR(smp))
                     return PTR_ERR(smp);
 
@@ -1078,6 +1153,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                     if (err)
                         goto out;
                     err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
+                        --->
                     lock_mount_hash();
                     if (err)
                         goto out_cleanup_ids;
@@ -2024,9 +2100,11 @@ OK:
                                             tmp = tmp + (tmp >> m_hash_shift);
                                             return &mount_hashtable[tmp & m_hash_mask];
                                         }
-                                        hlist_for_each_entry_rcu(p, head, mnt_hash)
+                                        struct mount *p;
+                                        hlist_for_each_entry_rcu(p, head, mnt_hash) {
                                             if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
-                                                return p;
+                                                return p->mnt;
+                                        }
                                         return NULL;
                                     }
                                     if (mounted) { // ... in our namespace
@@ -2078,6 +2156,7 @@ OK:
 
                     if (err < 0)
                         return ERR_PTR(err);
+
                     inode = path.dentry->d_inode;
 
 /* 3.2.2 handle non-symlink */
@@ -2277,6 +2356,7 @@ finish_lookup:
     if (nd->depth)
         put_link(nd);
     res = step_into(nd, WALK_TRAILING, dentry);
+        --->
     if (unlikely(res))
         nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
     return res;

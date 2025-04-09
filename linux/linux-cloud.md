@@ -5875,7 +5875,7 @@ int proc_do_uts_string(struct ctl_table *table, int write,
 
 ## mnt_namespace
 
-![](../images/kernel/ns-mnt.png)
+![](../images/kernel/io-mount.svg)
 
 ```c
 struct mnt_namespace {
@@ -6043,7 +6043,6 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
             }
 
             return mnt;
-
         }
         if (IS_ERR(dst_mnt))
             return dst_mnt;

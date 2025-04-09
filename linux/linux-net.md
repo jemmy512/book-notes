@@ -1,5 +1,8 @@
 # Table of Contents
 
+<details>
+<summary>Open * Close</summary>
+
 * [socket](#socket)
 * [bind](#bind)
 * [listen](#listen)
@@ -135,6 +138,8 @@
 * [inet_init](#inet_init)
 * [net_dev_init](#net_dev_init)
 
+</details>
+
 ---
 
 * [Linux Thundering Herd Problem :cn:](https://mp.weixin.qq.com/s/dQWKBujtPcazzw7zacP1lg)
@@ -161,6 +166,23 @@
 ---
 
 <img src='../images/kernel/net-send-data-flow.png' style='max-height:850px'/>
+
+|**Device**|**Function**|**Key Feature**|
+|:-:|:-:|:-:|
+|Router|Connects different networks, directs data packets|Uses IP addresses, often includes Wi-Fi|
+|Switch|Connects devices within a network|Uses MAC addresses, efficient data flow|
+|Hub|Connects multiple devices, broadcasts data|Outdated, less efficient than switches|
+|Access Point (AP)|Provides wireless connectivity to a wired network|Extends Wi-Fi coverage|
+|Modem|Converts digital/analog signals for internet access|Connects to ISP (cable, DSL, fiber)|
+|Firewall|Monitors and controls network traffic for security|Can be hardware or software|
+|Bridge|Connects two network segments into one|Filters traffic by MAC addresses|
+|Gateway|Links networks with different protocols|Often a router, translates network types|
+|Network Interface Card (NIC)|Connects a device to a network (wired/wireless)|Essential for network access|
+|Repeater|Amplifies/regenerates signals to extend range|Boosts Wi-Fi or wired signals|
+|Load Balancer|Distributes traffic across multiple servers|Optimizes performance, prevents overload|
+|Wireless Controller|Manages multiple access points in large Wi-Fi networks|Centralizes control in enterprises|
+|Network Attached Storage (NAS)|Provides file storage and sharing over a network|Acts as a networked file server|
+|Proxy Server|Intermediary between users and the internet|Enhances security, caches data|
 
 ```c
 struct socket_alloc {
@@ -17541,9 +17563,30 @@ int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
         init_poll_funcptr(&pwq->pt,
             __pollwait = [](struct file *filp, wait_queue_head_t *wait_address, poll_table *p) {
                 struct poll_wqueues *pwq = container_of(p, struct poll_wqueues, pt);
-                struct poll_table_entry *entry = poll_get_entry(pwq);
+                struct poll_table_entry *entry = poll_get_entry(pwq) {
+                    struct poll_table_page *table = p->table;
+                    if (p->inline_index < N_INLINE_POLL_ENTRIES)
+                        return p->inline_entries + p->inline_index++;
+
+                    if (!table || POLL_TABLE_FULL(table)) {
+                        struct poll_table_page *new_table;
+
+                        new_table = (struct poll_table_page *) __get_free_page(GFP_KERNEL);
+                        if (!new_table) {
+                            p->error = -ENOMEM;
+                            return NULL;
+                        }
+                        new_table->entry = new_table->entries;
+                        new_table->next = table;
+                        p->table = new_table;
+                        table = new_table;
+                    }
+
+                    return table->entry++;
+                }
                 if (!entry)
                     return;
+
                 entry->filp = get_file(filp);
                 entry->wait_address = wait_address;
                 entry->key = p->_key;
@@ -17555,6 +17598,7 @@ int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
                         entry = container_of(wait, struct poll_table_entry, wait);
                         if (key && !(key_to_poll(key) & entry->key))
                             return 0;
+
                         return __pollwake(wait, mode, sync, key) {
                             struct poll_wqueues *pwq = wait->private;
                             DECLARE_WAITQUEUE(dummy_wait, pwq->polling_task);
@@ -17613,6 +17657,7 @@ int do_select(int n, fd_set_bits *fds, struct timespec64 *end_time)
                     break;
                 if (!(bit & all_bits))
                     continue;
+
                 mask = select_poll_one(i, wait, in, out, bit, busy_flag) {
                     CLASS(fd, f)(fd);
 
@@ -17789,6 +17834,7 @@ SYSCALL_DEFINE3(poll, struct pollfd __user *, ufds, unsigned int, nfds,
         }
 
         poll_initwait(&table);
+            --->
         fdcount = do_poll(head, &table, end_time);
         poll_freewait(&table);
 

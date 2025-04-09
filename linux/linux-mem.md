@@ -1,5 +1,8 @@
 # Table of Contents
 
+<details>
+<summary>Open * Close</summary>
+
 * [_start:](#_start)
 
 * [setu_arch](#setup_arch)
@@ -173,6 +176,8 @@
     * [oom_reaper](#oom_reaper)
     * [select_bad_process](#select_bad_process)
     * [oom_kill_process](#oom_kill_process)
+
+</details>
 
 ![](../images/kernel/kernel-structual.svg)
 
