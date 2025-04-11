@@ -1,22 +1,26 @@
-# 安装编译工具链
+# install toolchain
 
-由于Ubuntu是X86架构，为了编译arm64的文件，需要安装交叉编译工具链
+Need to install cross-compiling toolchain since Ubunut is x86_64 arch.
 
 ```sh
+# arm
 sudo apt-get install gcc-aarch64-linux-gnu libncurses5-dev  build-essential git bison flex libssl-dev
+
+# x86_64
+sudo apt install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc git
 ```
 
-# 下载linux最新代码
+# download kernel
 
 ```sh
 nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git ./linux &
 ```
 
-# 制作根文件系统
+# make ramfs
 
-linux的启动需要配合根文件系统，这里我们利用busybox来制作一个简单的根文件系统
+Linux needs root fs to start, we can do this by make a ramfs by busybox.
 
-## 编译busybox
+## make busybox
 
 ```sh
 wget  https://busybox.net/downloads/busybox-1.33.1.tar.bz2
@@ -24,112 +28,117 @@ tar -xjf busybox-1.33.1.tar.bz2
 cd busybox-1.33.1
 ```
 
-打开静态库编译选项
-```sh
-make menuconfig ---> Settings --->  [*] Build static binary (no shared libs)
-```
+* config busybox
 
-指定编译工具
-```sh
-export ARCH=arm64 export CROSS_COMPILE=aarch64-linux-gnu-
-```
+    ```sh
+    make menuconfig ---> Settings --->  [*] Build static binary (no shared libs)
+    ```
 
-编译
-```sh
-make install
-```
+* specify compiler platform
 
-编译完成，在busybox目录下生成_install目录
+    ```sh
+    export ARCH=arm64 export CROSS_COMPILE=aarch64-linux-gnu-
+    ```
+* make
 
-## 定制文件系统
+    ```sh
+    make install
+    ```
 
-为了init进程能正常启动， 需要再额外进行一些配置
+_install dir under busybox is generated after successful make
 
-根目录添加etc、dev和lib目录
+## config ramfs
 
-```sh
-cd busybox-1.33.1/_install
-mkdir etc dev lib
-ls
-# bin  dev  etc  lib  linuxrc  sbin  usr
-```
+We need additional config to start init process:
 
-在etc分别创建文件：
-```sh
-cd busybox-1.33.1/_install/etc
-touch profile inittab fstab
-```
+* mkdir mkdir etc dev lib
 
-profile 文件内容：
-```sh
-#!/bin/sh
-export HOSTNAME=bryant
-export USER=root
-export HOME=/home
-export PS1="[$USER@$HOSTNAME \W]\# "
-PATH=/bin:/sbin:/usr/bin:/usr/sbin
-LD_LIBRARY_PATH=/lib:/usr/lib:$LD_LIBRARY_PATH
-export PATH LD_LIBRARY_PATH
-```
+    ```sh
+    cd busybox-1.33.1/_install
+    mkdir -p etc/init.d dev lib
+    ls
+    # bin  dev  etc  lib  linuxrc  sbin  usr
+    ```
 
-inittab 文件内容：
-```sh
-::sysinit:/etc/init.d/rcS
-::respawn:-/bin/sh
-::askfirst:-/bin/sh
-::ctrlaltdel:/bin/umount -a -r
-```
+* vim etc/profile
 
-fstab 文件内容：
-```sh
-#device  mount-point    type     options   dump   fsck order
-proc /proc proc defaults 0 0
-tmpfs /tmp tmpfs defaults 0 0
-sysfs /sys sysfs defaults 0 0
-tmpfs /dev tmpfs defaults 0 0
-debugfs /sys/kernel/debug debugfs defaults 0 0
-kmod_mount /mnt 9p trans=virtio 0 0
-```
+    ```sh
+    #!/bin/sh
+    export HOSTNAME=jemmy
+    export USER=root
+    export HOME=/home
+    export PS1="[$USER@$HOSTNAME \W]\# "
+    PATH=/bin:/sbin:/usr/bin:/usr/sbin
+    LD_LIBRARY_PATH=/lib:/usr/lib:$LD_LIBRARY_PATH
+    export PATH LD_LIBRARY_PATH
+    ```
 
-init.d/rcS 文件内容：
-```sh
-mkdir -p /sys
-mkdir -p /tmp
-mkdir -p /proc
-mkdir -p /mnt
-/bin/mount -a
-mkdir -p /dev/pts
-mount -t devpts devpts /dev/pts
-mkdir -p /proc/sys/kernel/hotplug
-echo /sbin/mdev > /proc/sys/kernel/hotplug
-mdev -s
-```
+* vim etc/inittab
 
-这里对这几个文件做一点说明：
-1. busybox 作为linuxrc启动后， 会读取/etc/profile, 这里面设置了一些环境变量和shell的属性
-2. 根据/etc/fstab提供的挂载信息， 进行文件系统的挂载
-3. busybox 会从 /etc/inittab中读取sysinit并执行， 这里sysinit指向了/etc/init.d/rcS
-4. /etc/init.d/rcS 中 ，mdev -s 这条命令很重要， 它会扫描/sys目录，查找字符设备和块设备，并在/dev下mknod
+    ```sh
+    ::sysinit:/etc/init.d/rcS
+    ::respawn:-/bin/sh
+    ::askfirst:-/bin/sh
+    ::ctrlaltdel:/bin/umount -a -r
+    ```
 
-修改rcS的执行权限：
-```sh
-chmod 0777 rcS
-```
+* vim etc/fstab
 
-dev目录：
-```sh
-cd busybox-1.33.1/_install/dev
-sudo mknod console c 5 1
-sudo mknod /dev/null c 1 3
-```
-这一步很重要， 没有console这个文件， 用户态的输出没法打印到串口上
+    ```sh
+    #device  mount-point        type     options    dump fsck order
+    proc    /proc               proc    defaults    0   0
+    tmpfs   /tmp                tmpfs   defaults    0   0
+    sysfs   /sys                sysfs   defaults    0   0
+    tmpfs   /dev                tmpfs   defaults    0   0
+    debugfs /sys/kernel/debug   debugfs defaults    0   0
+    kmod_mount /mnt             9p      trans=virtio 0  0
+    ```
 
-lib目录：拷贝lib库，支持动态编译的应用程序运行：
-```sh
-cd busybox-1.33.1/_install/lib
-cp /usr/aarch64-linux-gnu/lib/*.so*  -a .
-```
-## diskfs
+* vim etc/init.d/rcS
+
+    ```sh
+    mkdir -p /sys
+    mkdir -p /tmp
+    mkdir -p /proc
+    mkdir -p /mnt
+    /bin/mount -a
+    mkdir -p /dev/pts
+    mount -t devpts devpts /dev/pts
+    mkdir -p /proc/sys/kernel/hotplug
+    echo /sbin/mdev > /proc/sys/kernel/hotplug
+    mdev -s
+    ```
+
+    ```sh
+    chmod 0777 etc/init.d/rcS
+    ```
+
+* Note:
+    1. busybox 作为linuxrc启动后， 会读取/etc/profile, 这里面设置了一些环境变量和shell的属性
+    2. 根据/etc/fstab提供的挂载信息， 进行文件系统的挂载
+    3. busybox 会从 /etc/inittab中读取sysinit并执行， 这里sysinit指向了/etc/init.d/rcS
+    4. /etc/init.d/rcS 中 ，mdev -s 这条命令很重要， 它会扫描/sys目录，查找字符设备和块设备，并在/dev下mknod
+
+* dev dir
+
+    ```sh
+    cd busybox-1.33.1/_install/dev
+    sudo mknod console c 5 1
+    sudo mknod /dev/null c 1 3
+    ```
+
+    这一步很重要， 没有console这个文件， 用户态的输出没法打印到串口上
+
+* lib dir
+
+    copy system lib to lib
+
+    ```sh
+    cd busybox-1.33.1/_install/lib
+    cp /usr/aarch64-linux-gnu/lib/*.so*  -a .
+    ```
+
+# make diskfs
 
 1. Create an Empty Disk Image
 
@@ -172,8 +181,6 @@ cp /usr/aarch64-linux-gnu/lib/*.so*  -a .
     sudo umount mnt
     ```
 
-
-
 6. kernel .config
 
     ```sh
@@ -207,97 +214,50 @@ make
 make install
 ```
 
-# 编译内核
-## 配置内核
+# make kernel
+
+## config
 
 linux内核源码可以在github上直接下载。
 
 我们将之前制作好的根文件系统cp到root目录下：
+
+copy the ramfs to ../ramfs
 ```sh
 cd linux
-cp -r ../busybox-1.33.1/_install/* root
+cp -r ../busybox-1.33.1/_install/* ../ramfs
 ```
 
-根据arch/arm64/configs/defconfig 文件生成.config:
+generate .config by arch/arm64/configs/defconfig
 
 ```shell
 make defconfig ARCH=arm64
 ```
 
-将下面的配置加入.config文件中
+Add additional config to .config:
 
 ```s
 CONFIG_DEBUG_INFO=y
 CONFIG_INITRAMFS_SOURCE="../ramfs" # the root dir of the ramfs
 CONFIG_INITRAMFS_ROOT_UID=0
 CONFIG_INITRAMFS_ROOT_GID=0
-CONFIG_DEBUG_SECTION_MISMATCH=y #调试时禁止内联。
+CONFIG_DEBUG_SECTION_MISMATCH=y # prohibit inline while debuging
 ```
 
-## 修改优化等级
-
-将优化等级修改为-O1，如果修改为-O0会编译不过去。同时在.config中增加CONFIG_DEBUG_SECTION_MISMATCH=y，调试时禁止内联。
-
-```diff
-diff --git a/Makefile b/Makefile
-index 0992f827888d..87b2642baf52 100644
---- a/Makefile
-+++ b/Makefile
-@@ -452,7 +452,7 @@ HOSTRUSTC = rustc
- HOSTPKG_CONFIG = pkg-config
-
- KBUILD_USERHOSTCFLAGS := -Wall -Wmissing-prototypes -Wstrict-prototypes \
--                        -O2 -fomit-frame-pointer -std=gnu11 \
-+                        -O1 -fomit-frame-pointer -std=gnu11 \
-                         -Wdeclaration-after-statement
- KBUILD_USERCFLAGS  := $(KBUILD_USERHOSTCFLAGS) $(USERCFLAGS)
- KBUILD_USERLDFLAGS := $(USERLDFLAGS)
-@@ -474,7 +474,7 @@ export rust_common_flags := --edition=2021 \
-                            -Wclippy::dbg_macro
-
- KBUILD_HOSTCFLAGS   := $(KBUILD_USERHOSTCFLAGS) $(HOST_LFS_CFLAGS) $(HOSTCFLAGS)
--KBUILD_HOSTCXXFLAGS := -Wall -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
-+KBUILD_HOSTCXXFLAGS := -Wall -O1 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
- KBUILD_HOSTRUSTFLAGS := $(rust_common_flags) -O -Cstrip=debuginfo \
-                        -Zallow-features= $(HOSTRUSTFLAGS)
- KBUILD_HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) $(HOSTLDFLAGS)
-@@ -821,7 +821,7 @@ KBUILD_CFLAGS       += $(call cc-disable-warning, format-overflow)
- KBUILD_CFLAGS  += $(call cc-disable-warning, address-of-packed-member)
-
- ifdef CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
--KBUILD_CFLAGS += -O2
-+KBUILD_CFLAGS += -O1
- KBUILD_RUSTFLAGS += -Copt-level=2
- else ifdef CONFIG_CC_OPTIMIZE_FOR_SIZE
- KBUILD_CFLAGS += -Os
-diff --git a/include/linux/compiler_types.h b/include/linux/compiler_types.h
-index eb0466236661..e650b0d66f01 100644
---- a/include/linux/compiler_types.h
-+++ b/include/linux/compiler_types.h
-@@ -354,7 +354,7 @@ struct ftrace_likely_data {
-  * compiler has support to do so.
-  */
- #define compiletime_assert(condition, msg) \
--       _compiletime_assert(condition, msg, __compiletime_assert_, __COUNTER__)
-+       do { } while (0)
-
- #define compiletime_assert_atomic_type(t)                              \
-        compiletime_assert(__native_word(t),                            \
-diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
-```
-
-## 执行编译
+## make
 
 ```sh
-make ARCH=arm64 Image -j$(nproc)  CROSS_COMPILE=aarch64-linux-gnu-
+make -j$(nproc) ARCH=arm64 Image  CROSS_COMPILE=aarch64-linux-gnu-
 ```
 
-这里指定target为Image 会只编译kernel, 不会编译modules， 这样会增加编译速度遇到选择直接按回车默认。
+To speed up compile we only build Image, exclude modules.
 
-## 启动内核
+Just press Enter to accept the default when encounter a choice.
 
-With ramfs
+## start
+
 ```sh
+# with ramfs root fs
 qemu-system-aarch64 \
     -m 4096M -smp 8 \
     -cpu cortex-a57 \
@@ -305,13 +265,10 @@ qemu-system-aarch64 \
     -kernel arch/arm64/boot/Image \
     -append "rdinit=/linuxrc nokaslr console=ttyAMA0 loglevel=8" \
     -nographic
-```
 
-With diskfs
-```sh
+# with diskfs as root fs
 qemu-system-aarch64 \
-    -m 4096M \
-    -smp 8 \
+    -m 4096M -smp 8 \
     -cpu cortex-a57 \
     -machine virt \
     -kernel arch/arm64/boot/Image \
@@ -320,11 +277,7 @@ qemu-system-aarch64 \
     -nographic
 ```
 
-1.如果启动的时候发现rcS里面的配置没有生效，即没有映射/sys /tmp /proc等，需要将rcS修改为可执行权限
-2.如果发现无法进入shell，可能是在root/dev下面没有console和null，这个拷贝需要sudo
-
-
-## gdb调试
+## gdb
 
 vs code installs c/c++ plugin
 
@@ -336,7 +289,8 @@ qemu-system-aarch64 \
     -nographic -S -gdb tcp::6688
 ```
 
-创建./vscode/launch.json:
+./vscode/launch.json:
+
 ```json
 {
     // Use IntelliSense to learn about possible attributes.
@@ -366,7 +320,8 @@ qemu-system-aarch64 \
 }
 ```
 
-或者配置到 xxx.code-workspace:
+or config it to xxx.code-workspace:
+
 ```json
 {
     "launch": {
@@ -395,6 +350,19 @@ qemu-system-aarch64 \
 }
 ```
 
+## cleanup
+
+```sh
+# Removes most generated files (e.g., object files, binaries) but keeps the configuration (.config)
+make clean
+
+# Removes all generated files, including the .config file and backup files, returning the source tree to a pristine state
+make mrproper
+
+# Goes even further than mrproper by removing editor backup files, patch files, and other miscellaneous leftovers.
+make distclean
+```
+
 # ltp
 
 ```sh
@@ -412,7 +380,7 @@ sudo /opt/ltp/runltp -f sched
 sudo /opt/ltp/bin/ltp -t rt_sched
 ```
 
-# mail 配置
+# mail config
 
 Configuring Custom SMTP Settings for Gmail
 1. In your Google/Gmail account, go to svgexport-10Settings - See all settings.
@@ -421,12 +389,22 @@ Configuring Custom SMTP Settings for Gmail
 
 Enable 2-Step Verification
 1. Navigate to your [Google Account: App Passwords](https://myaccount.google.com/apppasswords)
-2 Name your app Accredible, then click the Create button.
+2. Name your app Accredible, then click the Create button.
 3. A new app password will be generated for you. Copy this password.
 
 ## .gitconfig
 
 ```sh
+# /etc/.gitconfig  # system-wide config
+[b4]
+    midmask = https://lore.kernel.org/%s
+    thread = true
+    save-to = /var/cache/b4/%s.mbox
+
+[user]
+    name = xxx
+    email = xxx@gmail.com
+
 [sendemail]
 	smtpServer = smtp.gmail.com
 	smtpServerPort = 587
@@ -439,22 +417,6 @@ Enable 2-Step Verification
 
 ## msmtprc
 
-修改~/.msmtprc
-```sh
-defaults
-auth           on
-tls            on
-tls_trust_file /etc/ssl/certs/ca-certificates.crt
-logfile        ~/.msmtp.log
-
-account        gmail
-host           smtp.gmail.com
-port           587
-from           xxx@gmail.com
-user           xxx@gmail.com
-password       xxx
-```
-
 ```sh
 sudo apt-get install msmtp
 sudo apt install git-email
@@ -463,103 +425,86 @@ chmod 600 ~/.msmtprc
 sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
 ```
 
-# 提交代码
+# send patch
 
 * https://blog.xzr.moe/archives/293/
 * https://tinylab.org/mailing-list-intro/
 
-修改~/.gitconfig
-```sh
-[user]
-    name = xxx
-    email = xxx@gmail.com
-[sendemail]
-    smtpserver = /usr/bin/msmtp
-```
+* config ~/.gitconfig
+    ```sh
+    [user]
+        name = xxx
+        email = xxx@gmail.com
+    ```
 
-```sh
-git config --global user.name "xxx"
-git config --global user.email "xxx@gmail.com"
-```
+    ```sh
+    git config --global user.name "xxx"
+    git config --global user.email "xxx@gmail.com"
+    ```
 
-首次提交
+* First send
 
-```sh
-cd linux
+    ```sh
+    cd linux
 
-git add xxx.c
-git commit -s
-git format-patch -<n> -v<n> origin
+    git add xxx.c
+    git commit -s
+    git format-patch -<n> -v<n> origin --cover-letter
 
-./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
-./scripts/get_maintainer.pl v2-0001-xxx.patch v2-0002-xxx.patch
+    ./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
+    ./scripts/get_maintainer.pl v2-0001-xxx.patch v2-0002-xxx.patch
 
-git send-email --to=xxx@gmail.com --cc=xxx@gmail.com v2-0001-xxx.patch
-```
+    git send-email --to=xxx@gmail.com --cc=xxx@gmail.com v2-0001-xxx.patch
+    ```
 
-后续提交
+* subsequent send
 
-```sh
-git add fs/namespace.c
-git commit -s --amend --no-edit
-git format-patch -v2 origin
+    ```sh
+    git add fs/namespace.c
+    git commit -s --amend --no-edit
+    git format-patch -v2 origin
 
-./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
+    ./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
 
-git send-email \
-   --in-reply-to=<message-id> \
-   --to=dnlplm@xxx.yyy \
-   --cc=bjorn@xxx.yyy \
-   --subject='Re: [PATCH net 1/1] xxx' \
-   ./v2-0001-xxx.patch ./v2-0002-xxx.patch
-```
+    git send-email \
+    --in-reply-to=<message-id> \
+    --to=dnlplm@xxx.yyy \
+    --cc=bjorn@xxx.yyy \
+    --subject='Re: [PATCH net 1/1] xxx' \
+    ./v2-0001-xxx.patch ./v2-0002-xxx.patch
+    ```
 
-* `-<n>` 最近的n次commit都分别打成patch
-* `--cover-latter` 为最近n次提交的patch生成一个 [PATCH 0/n] 的介绍
-* `--annotate` 回复代码 comment
+* `-<n>`: The latest n commits are all patched
+* `--cover-latter`: Generate a [PATCH 0/n] introduction for the latest n patches
+* `--annotate`: Reply code comment
 * `--subject-prefix="PATCH <MOD NAME>"`
-* `--in-reply-to` message id 可以在 https://lore.kernel.org/all/ 根据patch名字找到
-
-# macos
-
-brew install aarch64-linux-gnu-binutils
-brew tap messense/macos-cross-toolchains
-brew install aarch64-unknown-linux-gnu
-
-aarch64-linux-gnu-gcc --version
-
-export CROSS_COMPILE=aarch64-linux-gnu-
-
-echo 'export PATH="/opt/homebrew/opt/ncurses/bin:$PATH"' >> /Users/jemmy/.zshrc
-export LDFLAGS="-L/opt/homebrew/opt/ncurses/lib"
-export CPPFLAGS="-I/opt/homebrew/opt/ncurses/include"
-
-
+* `--in-reply-to`: Message id can be found at https://lore.kernel.org/all/ according to the patch name
 # vpn
 
-## download clash
+## download
 
-* [clash-linux-amd64-v1.18.0.gz - 适用于 x86 / x64 架构的 Linux 系统](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-amd64-v1.18.0.gz)
-* [clash-linux-arm64-v1.18.0.gz - 适用于 ARM 架构的 Linux](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-arm64-v1.18.0.gz)
-* [clash-darwin-amd64-v1.18.0.gz - 适用于 intel 芯片的 macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-amd64-v1.18.0.gz)
-* [clash-darwin-arm64-v1.18.0.gz - 适用于 Apple silicon 芯片的 macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-arm64-v1.18.0.gz)
+* [clash-linux-amd64-v1.18.0.gz - For x86 / x64 Linux](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-amd64-v1.18.0.gz)
+* [clash-linux-arm64-v1.18.0.gz - For ARM Linux](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-arm64-v1.18.0.gz)
+* [clash-darwin-amd64-v1.18.0.gz - For intel macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-amd64-v1.18.0.gz)
+* [clash-darwin-arm64-v1.18.0.gz - For Apple silicon macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-arm64-v1.18.0.gz)
 
 
 ```sh
-# 请注意将文件名替换为自己实际下载的文件名称
-gzip -dk clash-*-*-v1.18.0.gz # 解压压缩包
-chmod +x clash-*-*-v1.18.0 # 赋与可执行权限
-cp clash-*-*-v1.18.0 /usr/local/bin/clash # 添加到用户可执行文件目录
+gzip -dk clash-*-*-v1.18.0.gz
+chmod +x clash-*-*-v1.18.0
+cp clash-*-*-v1.18.0 /usr/local/bin/clash
 
-mkdir /usr/local/etc/clash # 创建配置文件夹
-wget -P /usr/local/etc/clash https://***.*/feeds/***/clash.yml # 下载订阅文件到本地请将链接替换为实际复制的配置链接
+mkdir /usr/local/etc/clash
+# download proxy nodes
+wget -P /usr/local/etc/clash https://***.*/feeds/***/clash.yml
 mv /usr/local/etc/clash/clash.yml /usr/local/etc/clash/config.yaml
 
 # run clash
+# Country.mmdb may cant download, copy it from other place
 clash -d /usr/local/etc/clash # default 127.0.0.1:7890
 ```
 
-## config terminal
+## config
 
 * config terminal
 
@@ -577,10 +522,10 @@ clash -d /usr/local/etc/clash # default 127.0.0.1:7890
     Host github.com
         Hostname github.com
         ProxyCommand nc -x localhost:7890 %h %p
-        # git-for-windows 下可以用 connect 代替 nc
+        # git-for-windows can replace nc with connect
         # ProxyCommand connect -S localhost:1085 %h %p
-
     ```
+
 ## clash.service
 
 ```sh
@@ -640,7 +585,220 @@ Avoid SSH timeout from the client
 ServerAliveInterval 300
 ```
 
-# install ubuntu on mac
+# ubuntu on mac
 
+* [Linux support for Apple devices with the T2 security chip](https://t2linux.org/#Installation)
 * [Getting Wi-Fi and Bluetooth to work](https://wiki.t2linux.org/guides/wifi-bluetooth/)
 * [Install drivers for the fan (if not working automatically or want to force a certain speed)](https://wiki.t2linux.org/guides/fan/)
+
+# frp
+
+* [GitHub Doc](https://github.com/fatedier/frp/blob/dev/README.md)
+* download: https://github.com/fatedier/frp/releases
+
+    ```sh
+    cd /user/local/bin
+    wget xxxx
+    gunzip xxx # tar -zvf xxx
+
+    # mv frpc to clinet: /usr/local/bin
+    # mv frps to server: /usr/local/bin
+    ```
+
+## server
+
+* config frps.toml
+
+    ```sh
+    mkdir -p /usr/local/etc/frps
+    vim /usr/local/etc/frpc/frps.toml
+    ```
+
+    ```sh
+    [common]
+    # frp listen port
+    bind_port = 7000
+    token = 52010
+
+    # frp management port
+    dashboard_port = 7500
+    dashboard_user = admin
+    dashboard_pwd = admin
+    enable_prometheus = true
+
+    # frp log config
+    log_file = /var/log/frps.log
+    log_level = info
+    log_max_days = 3
+    ```
+* create frps.service
+
+    ```sh
+    sudo vim /etc/systemd/system/frps.service
+    ```
+
+    ```sh
+    [Unit]
+    # service name
+    Description = frp server
+    After = network.target syslog.target
+    Wants = network.target
+
+    [Service]
+    Type = simple
+    ExecStart = /usr/local/bin/frps -c /usr/local/etc/frps/frps.toml
+    Restart=on-failure
+    RestartSec=20s
+    StartLimitIntervalSec=60s
+    StartLimitBurst=3
+
+    [Install]
+    WantedBy = multi-user.target
+    ```
+
+* enable service
+
+    ```sh
+    sudo systemctl daemon-reload
+    sudo systemctl enable frps
+    sudo systemctl start frps
+    ```
+
+## client
+
+* config frpc.toml
+
+    ```sh
+    mkdir -p /usr/local/etc/frpc
+    vim /usr/local/etc/frpc/frpc.toml
+    ```
+
+    ```sh
+    serverAddr = "139.196.161.94"
+    # serverPort is used for communication between frps and frpc
+    serverPort = 7000
+
+    [[proxies]]
+    name = "ssh"
+    type = "tcp"
+    localIP = "127.0.0.1"
+    # localPort (listened on the client) and remotePort (exposed on the server)
+    # are used for traffic going in and out of the frp system
+    localPort = 22
+    remotePort = 6000
+    ```
+
+* config frpc.service
+
+    ```sh
+    sudo vim /etc/systemd/system/frpc.service
+    ```
+
+    ```sh
+    [Unit]
+    # service name
+    Description = frp client
+    After = network.target syslog.target
+    Wants = network.target
+
+    [Service]
+    Type = simple
+    ExecStart = /usr/local/bin/frpc -c /usr/local/etc/frpc/frpc.toml
+    Restart=on-failure
+    RestartSec=20s
+    StartLimitIntervalSec=60s
+    StartLimitBurst=3
+
+    [Install]
+    WantedBy = multi-user.target
+    ```
+
+* enable service
+
+    ```sh
+    sudo systemctl daemon-reload
+    sudo systemctl enable frpc
+    sudo systemctl start frpc
+    ```
+
+## test
+
+```sh
+ssh -o Port=6000 user@server-ip-addr
+```
+
+```sh
+# ~/.ssh/config
+Host mbp2018-remote
+  HostName server-ip-addr
+  User root
+  Port 6000
+```
+
+# prevent mac from auto sleep
+
+
+```sh
+sudo vim /etc/systemd/logind.conf
+```
+
+```sh
+# Controls the action when the lid is closed (on battery or AC).
+HandleLidSwitch=ignore
+
+# Applies when the laptop is on AC power.
+HandleLidSwitchExternalPower=ignore
+
+# Applies when connected to a dock or external display (if applicable).
+HandleLidSwitchDocked=ignore
+```
+
+```sh
+sudo systemctl restart systemd-logind
+sudo reboot
+```
+
+# vscode
+
+## gtags
+
+```sh
+sudo apt install global
+```
+
+[VS Code install C/C++ GNU Global plugin](https://marketplace.visualstudio.com/items/?itemName=jaycetyle.vscode-gnu-global)
+
+VS code config:
+```sh
+# ubuntu
+"gnuGlobal.globalExecutable": "/usr/bin/global",
+"gnuGlobal.gtagsExecutable": "/usr/bin/gtags",
+
+# macOS M chip
+"gnuGlobal.globalExecutable": "/opt/homebrew/bin/global",
+"gnuGlobal.gtagsExecutable": "/opt/homebrew/bin/gtags",
+```
+
+# replace ubuntu kernel
+
+```sh
+# cp kernel config from current system
+cp /boot/config-$(uname -r) .config
+
+# reset config in .config
+CONFIG_SYSTEM_TRUSTED_KEYS=""
+CONFIG_SYSTEM_REVOCATION_KEYS=""
+```
+
+```sh
+make -j$(nproc)
+make modules -j$(nproc)
+
+sudo make modules_install
+sudo make install
+
+sudo update-grub
+sudo reboot
+
+uname -r
+```
