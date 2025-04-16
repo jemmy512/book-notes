@@ -13,7 +13,8 @@ sudo apt install -y build-essential libncurses-dev bison flex libssl-dev libelf-
 # download kernel
 
 ```sh
-nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git ./linux &
+makdir -P /code && cd /code
+nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git /code/linux &
 ```
 
 # make ramfs
@@ -23,10 +24,16 @@ Linux needs root fs to start, we can do this by make a ramfs by busybox.
 ## make busybox
 
 ```sh
-wget  https://busybox.net/downloads/busybox-1.33.1.tar.bz2
-tar -xjf busybox-1.33.1.tar.bz2
-cd busybox-1.33.1
+wget -P /code/ https://busybox.net/downloads/busybox-1.33.1.tar.bz2
+tar -xjf busybox-1.33.1.tar.bz2 -C /code/
+cd /code/busybox-1.33.1/
 ```
+
+* specify compiler platform
+
+    ```sh
+    export ARCH=arm64 export CROSS_COMPILE=aarch64-linux-gnu-
+    ```
 
 * config busybox
 
@@ -34,11 +41,6 @@ cd busybox-1.33.1
     make menuconfig ---> Settings --->  [*] Build static binary (no shared libs)
     ```
 
-* specify compiler platform
-
-    ```sh
-    export ARCH=arm64 export CROSS_COMPILE=aarch64-linux-gnu-
-    ```
 * make
 
     ```sh
@@ -54,7 +56,7 @@ We need additional config to start init process:
 * mkdir mkdir etc dev lib
 
     ```sh
-    cd busybox-1.33.1/_install
+    cd /codebusybox-1.33.1/_install
     mkdir -p etc/init.d dev lib
     ls
     # bin  dev  etc  lib  linuxrc  sbin  usr
@@ -134,9 +136,15 @@ We need additional config to start init process:
     copy system lib to lib
 
     ```sh
-    cd busybox-1.33.1/_install/lib
+    cd /code/busybox-1.33.1/_install/lib
     cp /usr/aarch64-linux-gnu/lib/*.so*  -a .
     ```
+
+copy the ramfs to /code/ramfs:
+
+```sh
+cp -r /code/busybox-1.33.1/_install/* /code/ramfs
+```
 
 # make diskfs
 
@@ -152,7 +160,6 @@ We need additional config to start init process:
     ```sh
     mkfs.ext4 rootfs.ext4
     ```
-
 
 3. Mount and Populate the Image
 
@@ -179,15 +186,6 @@ We need additional config to start init process:
 
     ```sh
     sudo umount mnt
-    ```
-
-6. kernel .config
-
-    ```sh
-    CONFIG_BLK_DEV_INITRD=n
-    CONFIG_INITRAMFS_SOURCE=""
-    CONFIG_EXT4_FS=y
-    CONFIG_VIRTIO_BLK=y
     ```
 
 ## bash
@@ -218,31 +216,30 @@ make install
 
 ## config
 
-linux内核源码可以在github上直接下载。
-
-我们将之前制作好的根文件系统cp到root目录下：
-
-copy the ramfs to ../ramfs
-```sh
-cd linux
-cp -r ../busybox-1.33.1/_install/* ../ramfs
-```
-
 generate .config by arch/arm64/configs/defconfig
 
 ```shell
 make defconfig ARCH=arm64
 ```
 
-Add additional config to .config:
+* .config for ramfs:
 
-```s
-CONFIG_DEBUG_INFO=y
-CONFIG_INITRAMFS_SOURCE="../ramfs" # the root dir of the ramfs
-CONFIG_INITRAMFS_ROOT_UID=0
-CONFIG_INITRAMFS_ROOT_GID=0
-CONFIG_DEBUG_SECTION_MISMATCH=y # prohibit inline while debuging
-```
+    ```sh
+    CONFIG_DEBUG_INFO=y
+    CONFIG_INITRAMFS_SOURCE="../ramfs" # the root dir of the ramfs
+    CONFIG_INITRAMFS_ROOT_UID=0
+    CONFIG_INITRAMFS_ROOT_GID=0
+    CONFIG_DEBUG_SECTION_MISMATCH=y # prohibit inline while debuging
+    ```
+
+* .config for diskfs
+
+    ```sh
+    CONFIG_BLK_DEV_INITRD=n
+    CONFIG_INITRAMFS_SOURCE=""
+    CONFIG_EXT4_FS=y
+    CONFIG_VIRTIO_BLK=y
+    ```
 
 ## make
 
@@ -257,7 +254,7 @@ Just press Enter to accept the default when encounter a choice.
 ## start
 
 ```sh
-# with ramfs root fs
+# with ramfs as root fs
 qemu-system-aarch64 \
     -m 4096M -smp 8 \
     -cpu cortex-a57 \
@@ -279,7 +276,7 @@ qemu-system-aarch64 \
 
 ## gdb
 
-vs code installs c/c++ plugin
+[vs code installs c/c++ plugin](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools)
 
 ```sh
 qemu-system-aarch64 \
@@ -320,31 +317,14 @@ qemu-system-aarch64 \
 }
 ```
 
-or config it to xxx.code-workspace:
+or config "configurations" to xxx.code-workspace:
 
 ```json
 {
     "launch": {
         "version": "0.2.0",
         "configurations": [
-            {
-                "name": "kernel debug",
-                "type": "cppdbg",
-                "request": "launch",
-                "program": "/code/linux/vmlinux",
-                "cwd": "${workspaceFolder}",
-                "MIMode": "gdb",
-                "miDebuggerPath":"/usr/bin/gdb-multiarch",
-                "miDebuggerServerAddress": "localhost:6688",
-                "stopAtEntry": true,
-                "setupCommands": [
-                    {
-                        "description": "enable pretty print for gdb",
-                        "text": "-enable-pretty-printing",
-                        "ignoreFailures": true
-                    }
-                ]
-            }
+            ...
         ]
     }
 }
@@ -430,19 +410,7 @@ sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
 * https://blog.xzr.moe/archives/293/
 * https://tinylab.org/mailing-list-intro/
 
-* config ~/.gitconfig
-    ```sh
-    [user]
-        name = xxx
-        email = xxx@gmail.com
-    ```
-
-    ```sh
-    git config --global user.name "xxx"
-    git config --global user.email "xxx@gmail.com"
-    ```
-
-* First send
+* send at first time
 
     ```sh
     cd linux
@@ -457,12 +425,12 @@ sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
     git send-email --to=xxx@gmail.com --cc=xxx@gmail.com v2-0001-xxx.patch
     ```
 
-* subsequent send
+* send at subsequent time
 
     ```sh
     git add fs/namespace.c
     git commit -s --amend --no-edit
-    git format-patch -v2 origin
+    git format-patch -<n> -v<n> origin
 
     ./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
 
@@ -479,6 +447,7 @@ sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
 * `--annotate`: Reply code comment
 * `--subject-prefix="PATCH <MOD NAME>"`
 * `--in-reply-to`: Message id can be found at https://lore.kernel.org/all/ according to the patch name
+
 # vpn
 
 ## download
@@ -529,7 +498,7 @@ clash -d /usr/local/etc/clash # default 127.0.0.1:7890
 ## clash.service
 
 ```sh
-# sudo touch /etc/systemd/system/clash.service
+# sudo vim /etc/systemd/system/clash.service
 [Unit]
 Description=Clash VPN Daemon
 After=network.target
@@ -538,6 +507,9 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/clash -d /etc/clash
 Restart=on-failure
+RestartSec=20s
+StartLimitIntervalSec=60s
+StartLimitBurst=3
 User=nobody
 Group=nogroup
 
@@ -763,6 +735,10 @@ sudo reboot
 ## gtags
 
 ```sh
+# macOs
+brew install global
+
+# ubuntu
 sudo apt install global
 ```
 
@@ -771,19 +747,31 @@ sudo apt install global
 VS code config:
 ```sh
 # ubuntu
-"gnuGlobal.globalExecutable": "/usr/bin/global",
 "gnuGlobal.gtagsExecutable": "/usr/bin/gtags",
+"gnuGlobal.globalExecutable": "/usr/bin/global",
 
 # macOS M chip
-"gnuGlobal.globalExecutable": "/opt/homebrew/bin/global",
 "gnuGlobal.gtagsExecutable": "/opt/homebrew/bin/gtags",
+"gnuGlobal.globalExecutable": "/opt/homebrew/bin/global",
+
+# macOs Intel chip
+"gnuGlobal.gtagsExecutable": "/usr/local/bin/gtags",
+"gnuGlobal.globalExecutable": "/usr/local/bin/global",
 ```
 
-# replace ubuntu kernel
+Usge:
+```sh
+# execute cmd in the root directory of the code
+gtags -i
+
+# enter F12 in vs code to goto the definition of symbol
+```
+
+# update ubuntu kernel
 
 ```sh
 # cp kernel config from current system
-cp /boot/config-$(uname -r) .config
+cp /boot/config-$(uname -r) /code/linux/.config
 
 # reset config in .config
 CONFIG_SYSTEM_TRUSTED_KEYS=""
