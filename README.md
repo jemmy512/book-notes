@@ -1,3 +1,8 @@
+# Kernel Contribution List
+
+* [Fri, 11 Apr 2025, [PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor()](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/)
+* [Fri,  7 Jun 2024, [PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/)
+
 # Linux Kernel
 
 * [Process Management](./linux/linux-proc.md)
