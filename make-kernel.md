@@ -14,7 +14,7 @@ sudo apt install -y build-essential libncurses-dev bison flex libssl-dev libelf-
 
 ```sh
 makdir -P /code && cd /code
-nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git /code/linux &
+nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
 ```
 
 # make ramfs
@@ -64,6 +64,8 @@ We need additional config to start init process:
 
 * vim etc/profile
 
+    This is a shell configuration file executed when a user logs into a shell
+
     ```sh
     #!/bin/sh
     export HOSTNAME=jemmy
@@ -77,14 +79,19 @@ We need additional config to start init process:
 
 * vim etc/inittab
 
+    This is the configuration file for the init process (PID 1), which is the first process started by the Linux kernel during boot. It tells init how to manage system initialization, runlevels, and processes.
+
     ```sh
-    ::sysinit:/etc/init.d/rcS
-    ::respawn:-/bin/sh
+    ::sysinit:/etc/init.d/rcS   #Runs the /etc/init.d/rcS script at boot.
+    ::respawn:-/bin/sh          # Starts a login shell
     ::askfirst:-/bin/sh
-    ::ctrlaltdel:/bin/umount -a -r
+    ::ctrlaltdel:/bin/umount -a -r  # Defines behavior for Ctrl+Alt+Del
+    # ::ctrlaltdel:/sbin/reboot
     ```
 
 * vim etc/fstab
+
+    This file lists filesystems to be mounted during boot, specifying their mount points, types, and options.
 
     ```sh
     #device  mount-point        type     options    dump fsck order
@@ -97,6 +104,8 @@ We need additional config to start init process:
     ```
 
 * vim etc/init.d/rcS
+
+    This is a shell script executed during system initialization (often triggered by inittab’s sysinit entry). It performs early setup tasks.
 
     ```sh
     mkdir -p /sys
@@ -129,7 +138,7 @@ We need additional config to start init process:
     sudo mknod /dev/null c 1 3
     ```
 
-    这一步很重要， 没有console这个文件， 用户态的输出没法打印到串口上
+    Without console, user output can't print
 
 * lib dir
 
@@ -716,9 +725,11 @@ sudo vim /etc/systemd/logind.conf
 
 ```sh
 # Controls the action when the lid is closed (on battery or AC).
+# HandleLidSwitch=suspend
 HandleLidSwitch=ignore
 
 # Applies when the laptop is on AC power.
+# HandleLidSwitchExternalPower=suspend
 HandleLidSwitchExternalPower=ignore
 
 # Applies when connected to a dock or external display (if applicable).
@@ -726,6 +737,9 @@ HandleLidSwitchDocked=ignore
 ```
 
 ```sh
+# turn off screen, default 6534
+echo 0 > /sys/class/backlight/gmux_backlight/brightness
+
 sudo systemctl restart systemd-logind
 sudo reboot
 ```
@@ -782,11 +796,48 @@ CONFIG_SYSTEM_REVOCATION_KEYS=""
 make -j$(nproc)
 make modules -j$(nproc)
 
-sudo make modules_install
-sudo make install
-
-sudo update-grub
-sudo reboot
+sudo make modules_install && sudo make install && sudo update-grub && sudo reboot
 
 uname -r
+```
+
+# new partition
+
+```sh
+# Identify the new partition:
+sudo fdisk -l
+
+# Format the partition as ext4:
+sudo mkfs.ext4 /dev/nvme0n1p4
+
+# Verify the filesystem:
+sudo fsck /dev/nvme0n1p4
+
+# Temporarily mount the new partition to test:
+sudo mount /dev/nvme0n1p4 /code
+
+# Verify the mount:
+df -h /code
+
+# Adjust permissions:
+sudo chown yourusername:yourusername /code
+sudo chmod u+rw /code
+
+# Make the Mount Permanent
+# Get the UUID of the new partition:
+lsblk -f
+
+# Edit /etc/fstab:
+sudo nano /etc/fstab
+
+# Add an entry:
+UUID=123e4567-e89b-12d3-a456-426614174000 /code ext4 defaults 0 2
+# defaults: Standard mount options.
+# 0 2: No fsck for non-root, check order 2.
+
+# Test the fstab, If no errors, the configuration is correct.
+sudo mount -a
+
+# Verify:
+df -h /code
 ```
