@@ -235,7 +235,7 @@ make defconfig ARCH=arm64
 
     ```sh
     CONFIG_DEBUG_INFO=y
-    CONFIG_INITRAMFS_SOURCE="../ramfs" # the root dir of the ramfs
+    CONFIG_INITRAMFS_SOURCE="/code/ramfs" # the root dir of the ramfs
     CONFIG_INITRAMFS_ROOT_UID=0
     CONFIG_INITRAMFS_ROOT_GID=0
     CONFIG_DEBUG_SECTION_MISMATCH=y # prohibit inline while debuging
@@ -384,7 +384,7 @@ Enable 2-Step Verification
 ## .gitconfig
 
 ```sh
-# /etc/.gitconfig  # system-wide config
+# /etc/gitconfig  # system-wide config
 [b4]
     midmask = https://lore.kernel.org/%s
     thread = true
@@ -402,6 +402,10 @@ Enable 2-Step Verification
 	smtpPass = xxx
 	suppresscc = self
 	confirm = always
+[https]
+	proxy = http://localhost:7890
+[http]
+	proxy = http://localhost:7890
 ```
 
 ## msmtprc
@@ -482,6 +486,13 @@ mv /usr/local/etc/clash/clash.yml /usr/local/etc/clash/config.yaml
 clash -d /usr/local/etc/clash # default 127.0.0.1:7890
 ```
 
+Test
+```sh
+curl --proxy http://localhost:7890 https://kernel.org
+
+curl --proxy http://localhost:7890 https://github.com
+```
+
 ## config
 
 * config terminal
@@ -502,6 +513,21 @@ clash -d /usr/local/etc/clash # default 127.0.0.1:7890
         ProxyCommand nc -x localhost:7890 %h %p
         # git-for-windows can replace nc with connect
         # ProxyCommand connect -S localhost:1085 %h %p
+
+    Host kernel.org
+        Hostname kernel.org
+        ProxyCommand nc -x localhost:7890 %h %p
+    ```
+
+* config apt
+
+    ```sh
+    # /etc/apt/apt.conf.d/95proxies
+    Acquire::http::Proxy "http://127.0.0.1:7890/";
+    Acquire::https::Proxy "http://127.0.0.1:7890/";
+
+    # update apt cache
+    sudo apt-get update
     ```
 
 ## clash.service
@@ -514,7 +540,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/clash -d /etc/clash
+ExecStart=/usr/local/bin/clash -d /usr/local/etc/clash
 Restart=on-failure
 RestartSec=20s
 StartLimitIntervalSec=60s
@@ -543,7 +569,7 @@ sudo service ssh start
 sudo nano /etc/ssh/sshd_config
 sudo systemctl restart sshd.service
 
-sudo passed # set root user pwd
+sudo passwd root # set root user pwd
 
 ssh [username]@[public_IP] -p[port_number]
 ```
@@ -572,13 +598,166 @@ ServerAliveInterval 300
 * [Getting Wi-Fi and Bluetooth to work](https://wiki.t2linux.org/guides/wifi-bluetooth/)
 * [Install drivers for the fan (if not working automatically or want to force a certain speed)](https://wiki.t2linux.org/guides/fan/)
 
+## Remove GUI
+
+```sh
+sudo apt purge ubuntu-desktop gnome-shell gdm3
+sudo apt autoremove
+
+# Set the system to boot into multi-user (non-GUI) mode:
+sudo systemctl set-default multi-user.target
+```
+
+## Power Management:
+
+Install tlp to optimize battery life:
+```sh
+sudo apt install tlp
+sudo systemctl enable tlp
+```
+
+## network
+
+static ip:
+```yaml
+# /etc/netplan/01-netcfg.yaml
+# /etc/netplan/90-NM-e3f02c4a-7917-42a7-811c-c01f902752db.yaml
+network:
+  version: 2
+  renderer: NetworkManager
+  wifis:
+    wlp3s0:
+      addresses:
+        - 192.168.1.100/24
+      gateway4: 192.168.1.1
+      nameservers:
+        addresses: [192.168.1.1, 114.114.114.114, 8.8.8.8, 8.8.4.4]
+      access-points:
+        "Jemmy_5G":
+          auth:
+            key-management: "psk"
+            password: "jm123456"
+      networkmanager:
+        uuid: "e3f02c4a-7917-42a7-811c-c01f902752db"
+        name: "Jemmy_5G"
+```
+
+If using networkd, disable NetworkManager to avoid conflicts:
+```sh
+sudo systemctl disable NetworkManager
+sudo systemctl stop NetworkManager # ssh will disconnect
+sudo systemctl enable systemd-networkd
+sudo systemctl start systemd-networkd
+```
+
+Apply the Configuration
+```sh
+sudo chmod 600 /etc/netplan/01-network-manager-all.yaml
+
+sudo netplan generate
+sudo netplan apply
+```
+
+Verify the Static IP
+```sh
+ip addr show wlp3s0
+ping 8.8.8.8
+ping google.com
+```
+
+## Firewall (UFW):
+
+```sh
+sudo apt install ufw
+sudo ufw allow OpenSSH
+sudo ufw enable
+```
+
+## screen off
+
+```sh
+gsettings get org.gnome.desktop.session idle-delay
+
+# set screen turn off after 30s inactivity
+gsettings set org.gnome.desktop.session idle-delay 30
+```
+
+```sh
+sudo nano /etc/default/grub
+
+# Modify or add the consoleblank parameter in the GRUB_CMDLINE_LINUX_DEFAULT line:
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash consosystemctl status display-managerleblank=30"
+
+sudo update-grub
+```
+
+## Troubleshooting
+
+* The brightness of the screen is not fully dark, or screen shows nothing after reboot:
+
+    ```sh
+    # restart display-manager
+    systemctl restart display-manager
+    ```
+
+* errors in systemctl status display-manager
+
+    ```sh
+    systemctl status display-manager
+
+    gkr-pam: couldn't unlock the login keyring.
+    gdm3[4388]: Gdm: on_display_added: assertion 'GDM_IS_REMOTE_DISPLAY (display)' failed
+    gdm3[4388]: Gdm: on_display_removed: assertion 'GDM_IS_REMOTE_DISPLAY (display)' failed
+    ```
+
+    * Fix Keyring Issue
+
+        ```sh
+        rm -rf ~/.local/share/keyrings/*
+
+        # /etc/pam.d/gdm-password and /etc/pam.d/gdm-launch-environment
+        auth    optional    pam_gnome_keyring.so
+        session optional    pam_gnome_keyring.so auto_start
+
+        sudo systemctl restart display-manager
+        ```
+
+    * Address GDM Assertion Failures
+
+        ```sh
+        # /etc/gdm3/custom.conf
+        [daemon]
+        # Ensure Wayland or Xorg is correctly set
+        # If you’re not using Wayland, set WaylandEnable=false and test.
+        WaylandEnable=true
+
+        sudo systemctl restart display-manager
+        ```
+
+    * Reinstall GDB
+
+        If the above steps don’t resolve the issue, reinstall GDM:
+        ```sh
+        sudo apt install --reinstall gdm3
+        sudo systemctl restart display-manager
+        ```
+
+    * Fallback to Another Display Manager
+
+        ```sh
+        sudo apt install lightdm
+        sudo systemctl disable gdm3
+        sudo systemctl enable lightdm
+        sudo systemctl start lightdm
+        ````
+
 # frp
 
 * [GitHub Doc](https://github.com/fatedier/frp/blob/dev/README.md)
 * download: https://github.com/fatedier/frp/releases
 
     ```sh
-    cd /user/local/bin
+    cd /usr/local/bin
     wget xxxx
     gunzip xxx # tar -zvf xxx
 
@@ -737,8 +916,10 @@ HandleLidSwitchDocked=ignore
 ```
 
 ```sh
-# turn off screen, default 6534
+# turn off screen, max 65535
 echo 0 > /sys/class/backlight/gmux_backlight/brightness
+
+cat /sys/class/backlight/gmux_backlight/max_brightness
 
 sudo systemctl restart systemd-logind
 sudo reboot
@@ -808,19 +989,19 @@ uname -r
 sudo fdisk -l
 
 # Format the partition as ext4:
-sudo mkfs.ext4 /dev/nvme0n1p4
+sudo mkfs.ext4 /dev/nvme0n1p3
 
 # Verify the filesystem:
-sudo fsck /dev/nvme0n1p4
+sudo fsck /dev/nvme0n1p3
 
 # Temporarily mount the new partition to test:
-sudo mount /dev/nvme0n1p4 /code
+sudo mount /dev/nvme0n1p3 /code
 
 # Verify the mount:
 df -h /code
 
 # Adjust permissions:
-sudo chown yourusername:yourusername /code
+sudo chown root:root /code
 sudo chmod u+rw /code
 
 # Make the Mount Permanent
@@ -831,7 +1012,7 @@ lsblk -f
 sudo nano /etc/fstab
 
 # Add an entry:
-UUID=123e4567-e89b-12d3-a456-426614174000 /code ext4 defaults 0 2
+UUID=4b363ad7-7792-4bdf-b2cb-069a8c278e4e /code ext4 defaults 0 2
 # defaults: Standard mount options.
 # 0 2: No fsck for non-root, check order 2.
 
