@@ -683,10 +683,11 @@ gsettings set org.gnome.desktop.session idle-delay 30
 ```
 
 ```sh
+sudo sh -c 'echo 30 > /sys/module/kernel/parameters/consoleblank'
+# To make this persistent
 sudo nano /etc/default/grub
-
 # Modify or add the consoleblank parameter in the GRUB_CMDLINE_LINUX_DEFAULT line:
-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash consosystemctl status display-managerleblank=30"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash consoleblank=30"
 
 sudo update-grub
 ```
@@ -750,6 +751,30 @@ sudo update-grub
         sudo systemctl enable lightdm
         sudo systemctl start lightdm
         ````
+## change boot menuentry
+
+look up entry index in /boot/grub/grub.cfg:
+```sh
+menuentry 'Ubuntu                                                       # 0
+submenu 'Advanced options for Ubuntu' $menuentry_id_option
+    menuentry 'Ubuntu, with Linux 6.15.0-rc2+'                          # 1>0
+    menuentry 'Ubuntu, with Linux 6.15.0-rc2+ (recovery mode)'          # 1>1
+    menuentry 'Ubuntu, with Linux 6.11.0-21-generic'                    # 1>2
+    menuentry 'Ubuntu, with Linux 6.11.0-21-generic (recovery mode)'    # 1>3
+menuentry "Memory test (memtest86+x64.efi)"                             # 2
+menuentry 'Memory test (memtest86+x64.efi, serial console)'             # 3
+```
+
+set defualt entry in /etc/default/grub
+```sh
+GRUB_DEFAULT="1>2" # set entry to "menuentry 'Ubuntu, with Linux 6.11.0-21-generic'"
+```
+
+```sh
+update-grub
+
+reboot
+```
 
 # frp
 
@@ -979,8 +1004,22 @@ make modules -j$(nproc)
 
 sudo make modules_install && sudo make install && sudo update-grub && sudo reboot
 
-uname -r
+uname -a
 ```
+
+| key | value
+| :-: | :-:
+| Linux | Kernel name: Indicates the operating system kernel is Linux, managing hardware and resources.
+| jemmy | Hostname: The unique name of the machine, "jemmy," used for network or local identification.
+| 6.15.0-rc2+ | Kernel version: Breaks down as 6.15.0 (major.minor.patch), rc2 (Release Candidate 2, a pre-release test version), + (custom patches or modifications applied).
+| #10 | Build number: The 10th build of this kernel configuration on this system.
+| SMP | Symmetric Multiprocessing: Kernel supports multiple CPU cores for parallel processing.
+| PREEMPT_RT | Preempt Real-Time: Kernel is patched for real-time capabilities, prioritizing low-latency task scheduling for time-critical applications.
+| Sun Apr 20 14:59:36 CST 2025  | Build timestamp: When the kernel was compiled (April 20, 2025, at 14:59:36 China Standard Time).
+| x86_64 | CPU architecture (running): The kernel is running on a 64-bit x86 processor.
+| x86_64 | Compiled architecture: The kernel was compiled for a 64-bit x86 architecture.
+| x86_64 | User-space architecture: User programs interact with the system as 64-bit applications.
+| GNU/Linux | OS flavor: Indicates a Linux system using GNU userland tools (standard utilities and libraries).
 
 # new partition
 
