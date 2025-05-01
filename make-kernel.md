@@ -272,6 +272,9 @@ qemu-system-aarch64 \
     -append "rdinit=/linuxrc nokaslr console=ttyAMA0 loglevel=8" \
     -nographic
 
+# terminate qemu
+ctl + a, x
+
 # with diskfs as root fs
 qemu-system-aarch64 \
     -m 4096M -smp 8 \
@@ -753,7 +756,7 @@ sudo update-grub
         ````
 ## change boot menuentry
 
-look up entry index in /boot/grub/grub.cfg:
+look up entry index in [/boot/grub/grub.cfg](/boot/grub/grub.cfg)
 ```sh
 menuentry 'Ubuntu                                                       # 0
 submenu 'Advanced options for Ubuntu' $menuentry_id_option
@@ -765,7 +768,7 @@ menuentry "Memory test (memtest86+x64.efi)"                             # 2
 menuentry 'Memory test (memtest86+x64.efi, serial console)'             # 3
 ```
 
-set defualt entry in /etc/default/grub
+set defualt entry in [/etc/default/grub](/etc/default/grub)
 ```sh
 GRUB_DEFAULT="1>2" # set entry to "menuentry 'Ubuntu, with Linux 6.11.0-21-generic'"
 ```
@@ -991,7 +994,7 @@ gtags -i
 
 ```sh
 # cp kernel config from current system
-cp /boot/config-$(uname -r) /code/linux/.config
+cp /boot/config-$(uname -r) /code/ubuntu/.config
 
 # reset config in .config
 CONFIG_SYSTEM_TRUSTED_KEYS=""
