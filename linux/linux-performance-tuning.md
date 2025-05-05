@@ -1,5 +1,7 @@
 ![](https://www.brendangregg.com/Perf/linux_perf_tools_full.png)
 
+[Red Hat Performance Tuning Guide](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/6/html/performance_tuning_guide/index)
+
 # CPU Performance Tunning
 
 # Memory Performance Tunning
