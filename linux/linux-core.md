@@ -99,12 +99,12 @@
 
 ## barrier
 
-* [memory-barrier - wowo tech :one:](http://www.wowotech.net/kernel_synchronization/memory-barrier.html)    [:link: :two:](https://mp.weixin.qq.com/s/s6AvLiVVkoMX4dIGpqmXYA)
+* [memory-barrier - wowo tech :one:](http://www.wowotech.net/kernel_synchronization/memory-barrier.html) ⊙ [:link: :two:](https://mp.weixin.qq.com/s/s6AvLiVVkoMX4dIGpqmXYA)
 
-* [Memory Model and Synchronization Primitive - Part 1: Memory Barrier](https://www.alibabacloud.com/blog/597460)    [Part 2: Memory Model](https://www.alibabacloud.com/blog/memory-model-and-synchronization-primitive---part-2-memory-model_597461)
+* [Memory Model and Synchronization Primitive - Part 1: Memory Barrier](https://www.alibabacloud.com/blog/597460) ⊙ [Part 2: Memory Model](https://www.alibabacloud.com/blog/memory-model-and-synchronization-primitive---part-2-memory-model_597461)
 
 | **Type** | **Compiler Barrier** (`barrier()`) | **Memory Barrier** (`smp_mb()`, `smp_rmb()`, etc.) |
-| --- | --- | --- |
+| :-: | :-: | :-: |
 | **Scope** | Only affects compiler optimizations. | Affects both compiler and CPU (hardware-level) reordering. |
 | **Effect on Caches** | Does not flush or reload caches. | Ensures memory operations are visible across CPUs. |
 | **Forces Reload** | Ensures variables are reloaded *if accessed*.  | Guarantees memory ordering across multiple CPUs or threads.|
@@ -115,8 +115,8 @@
 - To explicitly reload a variable from memory, you can use READ_ONCE() alongside a barrier().
 - For hardware-level memory consistency, use **memory barriers** like `smp_mb()` instead of a compiler barrier.
 
-Feature | DMB | DSB
---- | --- | ---
+Feature | (Data Memory Barrier)DMB | (Data Synchronization Barrier)DSB
+:-: | :-: | :-:
 **Ordering** | Guarantees Ordering | Guarantees Ordering
 **Completion** | Conditionly guarantees complemtion only when other cores access the memory(MESI sync data). Otherwise, a store operation might still be pending in a local write buffer | Proactivley guarantees completion of memory accesses.
 **Global Visibility** | Relies on MESI protocol for visibility; does not guarantee global visibility. | Ensures global visibility by stalling the core until the MESI protocol completes all necessary actions.
@@ -124,8 +124,8 @@ Feature | DMB | DSB
 **Write-Back to Memory** | Does not force dirty cache lines in the **M (Modified)** state to be written back. | Forces dirty cache lines in the **M (Modified)** state to be written back if necessary.
 **Scope** | Configurable (ISH, OSH, NSH, ST). | Configurable (ISH, OSH, NSH, ST).
 **Performance** | Lower overhead. | Higher overhead.
-**Use Cases** | When ordering of memory accesses is required, but completion is not strictly necessary. | When ordering and completion of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
-**Core Stalling** | Does not stall the core; subsequent instructions may execute immediately. | Stalls the core until all memory operations are globally visible. |
+**Use Cases** | When **ordering **of memory accesses is required, but **completion **is not strictly necessary. | When **ordering **and **completion **of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
+**Core Stalling** | Does not stall the core; subsequent instructions may execute immediately. | Stalls the core until all memory operations are globally visible.
 
 ---
 
@@ -164,7 +164,7 @@ Feature | DMB | DSB
 ---
 
 **Domain** | **Scope** | **Use Case**
---- | --- | ---
+:-: | :-: | :-:
 **Non-Shareable**  | Memory visible only to the issuing processor | Temporary or private data buffers accessed by a single core.
 **Inner-Shareable**| Shared within a processor cluster | Shared memory for threads or cores in the same cluster.
 **Outer-Shareable**| Shared across multiple clusters | Shared memory in multi-cluster systems (e.g., CPU-GPU or multi-CPU clusters).
