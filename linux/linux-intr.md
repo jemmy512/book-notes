@@ -23,6 +23,10 @@
 
 ![](../images/kernel/intr-irq_desc.png)
 
+---
+
+![](../images/kernel/proc-preempt_count.png)
+
 ```c
 /* The interrupt vector interrupt controller sent to
  * each cpu is per cpu local variable, but the abstract
@@ -59,6 +63,39 @@ struct irqaction {
 };
 ```
 
+**Primary cases where hardware IRQs are disabled:**
+1. **Critical Sections in Interrupt Handlers**:
+   - **Why**: During the top half of an interrupt service routine (ISR), the kernel may disable IRQs on the current CPU to prevent other interrupts from interfering with time-sensitive operations or shared data access.
+   - **Mechanism**: The kernel uses `local_irq_disable()` or `spin_lock_irq()` to disable IRQs locally.
+2. **Protecting Shared Kernel Data Structures**:
+   - **Why**: In symmetric multiprocessing (SMP) systems, multiple CPUs may access shared kernel resources (e.g., task queues, memory management structures). Disabling IRQs prevents interrupt handlers on the same CPU from preempting and corrupting these structures.
+   - **Example**: When updating the scheduler’s runqueue, the kernel disables IRQs to ensure atomic operations.
+   - **Mechanism**: Spinlocks with IRQ disabling (e.g., `spin_lock_irqsave()`) are used to protect critical sections.
+3. **Atomic Operations in Kernel Code**:
+   - **Why**: Certain kernel operations require uninterrupted execution to maintain consistency, especially in non-preemptible contexts or when manipulating hardware registers.
+   - **Example**: When configuring an interrupt controller (e.g., APIC) or initializing a device, IRQs are disabled to prevent interrupts from triggering before setup is complete.
+   - **Mechanism**: `local_irq_disable()` or `cli` (on x86) is used for short, atomic operations.
+4. **Preventing Nested Interrupts**:
+   - **Why**: Nested interrupts (an interrupt occurring during another interrupt’s handling) can lead to stack overflows or complex race conditions, especially for high-frequency IRQs.
+   - **Example**: During handling of a high-priority timer interrupt, the kernel may disable other IRQs to avoid nested interrupt storms.
+   - **Mechanism**: The kernel automatically disables IRQs on the current CPU when entering an ISR, or explicitly via `local_irq_disable()`.
+5. **System Boot and Initialization**:
+   - **Why**: During early boot or hardware initialization, the kernel disables IRQs to ensure a controlled environment while setting up critical components like the interrupt controller, CPU, or memory management.
+   - **Example**: When initializing the APIC or IDT, IRQs are disabled to prevent premature interrupt triggers.
+   - **Mechanism**: IRQs are disabled globally or locally via low-level assembly (e.g., `cli`) or kernel functions.
+6. **Power Management and CPU Idle States**:
+   - **Why**: When entering low-power CPU states (e.g., C-states) or during suspend/resume operations, IRQs are disabled to prevent interrupts from waking the CPU or interfering with power transitions.
+   - **Example**: Before entering a deep idle state, the kernel disables IRQs to ensure no interrupts disrupt the transition.
+   - **Mechanism**: `local_irq_disable()` or architecture-specific power management code.
+7. **Debugging and Error Handling**:
+   - **Why**: In cases of severe errors (e.g., kernel panic, oops), the kernel may disable IRQs to halt interrupt activity and safely log diagnostic information or enter a debugger.
+   - **Example**: During a kernel panic, IRQs are disabled to prevent further interrupts from complicating recovery or logging.
+   - **Mechanism**: `local_irq_disable()` or panic-specific code.
+8. **Real-Time or Latency-Sensitive Operations**:
+   - **Why**: In real-time systems or latency-sensitive tasks, IRQs may be disabled briefly to ensure deterministic execution of critical code.
+   - **Example**: In a real-time kernel (PREEMPT_RT), IRQs might be disabled during a high-priority task to avoid preemption.
+   - **Mechanism**: Controlled use of `local_irq_disable()` or real-time scheduling policies.
+
 # init_IRQ
 
 ```c
@@ -85,10 +122,8 @@ void __init init_IRQ(void)
                     match->compatible))
                     continue;
 
-                /*
-                * Here, we allocate and populate an of_intc_desc with the node
-                * pointer, interrupt-parent device_node etc.
-                */
+                /* Here, we allocate and populate an of_intc_desc with the node
+                * pointer, interrupt-parent device_node etc. */
                 desc = kzalloc(sizeof(*desc), GFP_KERNEL);
                 if (!desc) {
                     of_node_put(np);
@@ -97,11 +132,9 @@ void __init init_IRQ(void)
 
                 desc->irq_init_cb = match->data;
                 desc->dev = of_node_get(np);
-                /*
-                * interrupts-extended can reference multiple parent domains.
+                /* interrupts-extended can reference multiple parent domains.
                 * Arbitrarily pick the first one; assume any other parents
-                * are the same distance away from the root irq controller.
-                */
+                * are the same distance away from the root irq controller. */
                 desc->interrupt_parent = of_parse_phandle(np, "interrupts-extended", 0);
                 if (!desc->interrupt_parent)
                     desc->interrupt_parent = of_irq_find_parent(np);
@@ -112,17 +145,13 @@ void __init init_IRQ(void)
                 list_add_tail(&desc->list, &intc_desc_list);
             }
 
-            /*
-            * The root irq controller is the one without an interrupt-parent.
+            /* The root irq controller is the one without an interrupt-parent.
             * That one goes first, followed by the controllers that reference it,
-            * followed by the ones that reference the 2nd level controllers, etc.
-            */
+            * followed by the ones that reference the 2nd level controllers, etc. */
             while (!list_empty(&intc_desc_list)) {
-                /*
-                * Process all controllers with the current 'parent'.
+                /* Process all controllers with the current 'parent'.
                 * First pass will be looking for NULL as the parent.
-                * The assumption is that NULL parent means a root controller.
-                */
+                * The assumption is that NULL parent means a root controller. */
                 list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
                     int ret;
 
@@ -145,10 +174,8 @@ void __init init_IRQ(void)
                         continue;
                     }
 
-                    /*
-                    * This one is now set up; add it to the parent list so
-                    * its children can get processed in a subsequent pass.
-                    */
+                    /* This one is now set up; add it to the parent list so
+                    * its children can get processed in a subsequent pass. */
                     list_add_tail(&desc->list, &intc_parent_list);
                 }
 
@@ -188,10 +215,8 @@ void __init init_IRQ(void)
     }
 
     if (system_uses_irq_prio_masking()) {
-        /*
-        * Now that we have a stack for our IRQ handler, set
-        * the PMR/PSR pair to a consistent state.
-        */
+        /* Now that we have a stack for our IRQ handler, set
+        * the PMR/PSR pair to a consistent state. */
         WARN_ON(read_sysreg(daif) & PSR_A_BIT);
         local_daif_restore(DAIF_PROCCTX_NOIRQ);
     }
@@ -241,7 +266,9 @@ int request_threaded_irq(
     struct irq_desc *desc;
     int retval;
 
-    desc = irq_to_desc(irq);
+    desc = irq_to_desc(irq) {
+        return mtree_load(&sparse_irqs, irq);
+    }
 
     action = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
     action->handler = handler;
@@ -403,22 +430,17 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
                 shared = 1;
             }
 
-            /*
-            * Setup the thread mask for this irqaction for ONESHOT. For
+            /* Setup the thread mask for this irqaction for ONESHOT. For
             * !ONESHOT irqs the thread mask is 0 so we can avoid a
-            * conditional in irq_wake_thread().
-            */
+            * conditional in irq_wake_thread(). */
             if (new->flags & IRQF_ONESHOT) {
-                /*
-                * Unlikely to have 32 resp 64 irqs sharing one line,
-                * but who knows.
-                */
+                /* Unlikely to have 32 resp 64 irqs sharing one line,
+                * but who knows. */
                 if (thread_mask == ~0UL) {
                     ret = -EBUSY;
                     goto out_unlock;
                 }
-                /*
-                * The thread_mask for the action is or'ed to
+                /* The thread_mask for the action is or'ed to
                 * desc->thread_active to indicate that the
                 * IRQF_ONESHOT thread handler has been woken, but not
                 * yet finished. The bit is cleared when a thread
@@ -435,14 +457,12 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
                 *
                 * The new action gets the first zero bit of
                 * thread_mask assigned. See the loop above which or's
-                * all existing action->thread_mask bits.
-                */
+                * all existing action->thread_mask bits. */
                 new->thread_mask = 1UL << ffz(thread_mask);
 
             } else if (new->handler == irq_default_primary_handler &&
                 !(desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)) {
-                /*
-                * The interrupt was requested with handler = NULL, so
+                /* The interrupt was requested with handler = NULL, so
                 * we use the default primary handler for it. But it
                 * does not have the oneshot flag set. In combination
                 * with level interrupts this is deadly, because the
@@ -454,8 +474,7 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
                 * it safe and reject unconditionally because we can't
                 * say for sure which type this interrupt really
                 * has. The type flags are unreliable as the
-                * underlying chip implementation can override them.
-                */
+                * underlying chip implementation can override them. */
                 pr_err("Threaded irq requested with handler=NULL and !ONESHOT for %s (irq %d)\n",
                     new->name, irq);
                 ret = -EINVAL;
@@ -472,8 +491,7 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
                         goto out_unlock;
                 }
 
-                /*
-                * Activate the interrupt. That activation must happen
+                /* Activate the interrupt. That activation must happen
                 * independently of IRQ_NOAUTOEN. request_irq() can fail
                 * and the callers are supposed to handle
                 * that. enable_irq() of an interrupt requested with
@@ -481,8 +499,7 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
                 * keeps it in shutdown mode, it merily associates
                 * resources if necessary and if that's not possible it
                 * fails. Interrupts which are in managed shutdown mode
-                * will simply ignore that activation request.
-                */
+                * will simply ignore that activation request. */
                 ret = irq_activate(desc);
                 if (ret)
                     goto out_unlock;
@@ -514,12 +531,10 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
                     irq_settings_can_autoenable(desc)) {
                     irq_startup(desc, IRQ_RESEND, IRQ_START_COND);
                 } else {
-                    /*
-                    * Shared interrupts do not go well with disabling
+                    /* Shared interrupts do not go well with disabling
                     * auto enable. The sharing interrupt might request
                     * it while it's still disabled and then wait for
-                    * interrupts forever.
-                    */
+                    * interrupts forever. */
                     WARN_ON_ONCE(new->flags & IRQF_SHARED);
                     /* Undo nested disables: */
                     desc->depth = 1;
@@ -543,10 +558,8 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
             desc->irq_count = 0;
             desc->irqs_unhandled = 0;
 
-            /*
-            * Check whether we disabled the irq via the spurious handler
-            * before. Reenable it and give it another chance.
-            */
+            /* Check whether we disabled the irq via the spurious handler
+            * before. Reenable it and give it another chance. */
             if (shared && (desc->istate & IRQS_SPURIOUS_DISABLED)) {
                 desc->istate &= ~IRQS_SPURIOUS_DISABLED;
                 __enable_irq(desc);
@@ -572,22 +585,227 @@ request_percpu_irq(unsigned int irq, irq_handler_t handler,
 }
 ```
 
+## register_irq_proc
+
+```c
+void register_irq_proc(unsigned int irq, struct irq_desc *desc)
+{
+    static DEFINE_MUTEX(register_lock);
+    void __maybe_unused *irqp = (void *)(unsigned long) irq;
+    char name [MAX_NAMELEN];
+
+    if (!root_irq_dir || (desc->irq_data.chip == &no_irq_chip))
+        return;
+
+    /*
+    * irq directories are registered only when a handler is
+    * added, not when the descriptor is created, so multiple
+    * tasks might try to register at the same time.
+    */
+    mutex_lock(&register_lock);
+
+    if (desc->dir)
+        goto out_unlock;
+
+    sprintf(name, "%d", irq);
+
+    /* create /proc/irq/1234 */
+    desc->dir = proc_mkdir(name, root_irq_dir);
+    if (!desc->dir)
+        goto out_unlock;
+
+#ifdef CONFIG_SMP
+    umode_t umode = S_IRUGO;
+
+    if (irq_can_set_affinity_usr(desc->irq_data.irq))
+        umode |= S_IWUSR;
+
+    /* create /proc/irq/<irq>/smp_affinity */
+    proc_create_data("smp_affinity", umode, desc->dir,
+            &irq_affinity_proc_ops, irqp);
+
+    /* create /proc/irq/<irq>/affinity_hint */
+    proc_create_single_data("affinity_hint", 0444, desc->dir,
+            irq_affinity_hint_proc_show, irqp);
+
+    /* create /proc/irq/<irq>/smp_affinity_list */
+    proc_create_data("smp_affinity_list", umode, desc->dir,
+            &irq_affinity_list_proc_ops, irqp);
+
+    proc_create_single_data("node", 0444, desc->dir, irq_node_proc_show,
+            irqp);
+# ifdef CONFIG_GENERIC_IRQ_EFFECTIVE_AFF_MASK
+    proc_create_single_data("effective_affinity", 0444, desc->dir,
+            irq_effective_aff_proc_show, irqp);
+    proc_create_single_data("effective_affinity_list", 0444, desc->dir,
+            irq_effective_aff_list_proc_show, irqp);
+# endif
+
+#endif
+    proc_create_single_data("spurious", 0444, desc->dir,
+            irq_spurious_proc_show, (void *)(long)irq);
+
+out_unlock:
+    mutex_unlock(&register_lock);
+}
+```
+
+### irq_affinity_proc_ops
+
+```c
+static const struct proc_ops irq_affinity_proc_ops = {
+    .proc_open      = irq_affinity_proc_open,
+    .proc_read      = seq_read,
+    .proc_lseek	    = seq_lseek,
+    .proc_release   = single_release,
+    .proc_write     = irq_affinity_proc_write,
+};
+```
+
 # free_irq
 
-# enable-disable_irq
+Free an interrupt allocated with request_irq
+
+# enable_irq
+
+Enable or disable a specific IRQ line.
+
+```c
+void enable_irq(unsigned int irq)
+{
+    unsigned long flags;
+    struct irq_desc *desc = irq_get_desc_buslock(irq, &flags, IRQ_GET_DESC_CHECK_GLOBAL);
+
+    if (!desc)
+        return;
+    if (WARN(!desc->irq_data.chip,
+        KERN_ERR "enable_irq before setup/request_irq: irq %u\n", irq))
+        goto out;
+
+    __enable_irq(desc) {
+        switch (desc->depth) {
+        case 0:
+    err_out:
+            WARN(1, KERN_WARNING "Unbalanced enable for IRQ %d\n", irq_desc_get_irq(desc));
+            break;
+        case 1: {
+            if (desc->istate & IRQS_SUSPENDED)
+                goto err_out;
+            /* Prevent probing on this irq: */
+            irq_settings_set_noprobe(desc);
+            irq_startup(desc, IRQ_RESEND, IRQ_START_FORCE) {
+                struct irq_data *d = irq_desc_get_irq_data(desc);
+                const struct cpumask *aff = irq_data_get_affinity_mask(d);
+                int ret = 0;
+
+                desc->depth = 0;
+
+                if (irqd_is_started(d)) {
+                    irq_enable(desc) {
+                        if (!irqd_irq_disabled(&desc->irq_data)) {
+                            unmask_irq(desc);
+                        } else {
+                            irq_state_clr_disabled(desc);
+                            if (desc->irq_data.chip->irq_enable) {
+                                desc->irq_data.chip->irq_enable(&desc->irq_data);
+                                irq_state_clr_masked(desc);
+                            } else {
+                                unmask_irq(desc);
+                            }
+                        }
+                    }
+                } else {
+                    switch (__irq_startup_managed(desc, aff, force)) {
+                    case IRQ_STARTUP_NORMAL:
+                        if (d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP)
+                            irq_setup_affinity(desc);
+                        ret = __irq_startup(desc);
+                        if (!(d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP))
+                            irq_setup_affinity(desc);
+                        break;
+                    case IRQ_STARTUP_MANAGED:
+                        irq_do_set_affinity(d, aff, false);
+                        ret = __irq_startup(desc);
+                        break;
+                    case IRQ_STARTUP_ABORT:
+                        irqd_set_managed_shutdown(d);
+                        return 0;
+                    }
+                }
+                if (resend)
+                    check_irq_resend(desc, false);
+
+                return ret;
+            }
+            break;
+        }
+        default:
+            desc->depth--;
+        }
+    }
+out:
+    irq_put_desc_busunlock(desc, flags);
+}
+```
+
+# local_irq_disable
+
+Disable or enable all IRQs on the current CPU
+
+* **irq_enter()** Marks the entry into an interrupt context (hard IRQ context) in the Linux kernel, updating the kernel’s internal state (preempt_count) to reflect that it is processing a hardware interrupt.
+* **local_irq_disable()** Disables **all hw irq** on the local CPU, preventing the CPU from being interrupted by any hardware IRQs (e.g., from the GIC) until interrupts are re-enabled.
+* **irq_mask** is a callback in the struct irq_chip (include/linux/irq.h) implemented by an interrupt controller driver (e.g., GICv3) to disable a specific interrupt at the hardware level.
+
+Feature | irq_enter() | local_irq_disable()
+ :-: | :-: | :-:
+Purpose | Marks entry into a hard IRQ context | Disables hardware interrupts on the CPU
+Scope | Software state (kernel context tracking) | Hardware state (CPU interrupt enable)
+Effect on HWIRQs | No effect on HWIRQs or GIC | Prevents CPU from handling HWIRQs
+Effect on SoftIRQs | Indirectly disables softIRQs via preempt_count | Indirectly disables softIRQs via preempt_count
+When Called | At the start of IRQ handling (arch code) | In critical sections or IRQ handlers
+Hardware Interaction | None (purely software) | Modifies CPU’s IRQ enable bit (e.g., CPSR)
+Typical Context | Interrupt entry (hard IRQ context) | Any context needing IRQ protection
+Paired Function | irq_exit() | local_irq_enable()
+Preempt Count | Increments hardirq count | Increments disable count
+
+```c
+#define local_irq_disable() do { raw_local_irq_disable(); } while (0)
+
+#define raw_local_irq_disable() arch_local_irq_disable()
+
+static inline void arch_local_irq_disable(void)
+{
+    if (system_uses_irq_prio_masking()) {
+        __pmr_local_irq_disable();
+    } else {
+        __daif_local_irq_disable() {
+            barrier();
+            asm volatile("msr daifset, #3");
+            barrier();
+        }
+    }
+}
+
+```
+
+# local_irq_save
+
+Save the current IRQ state and disable IRQs, then restore the original state.
+
+# irq_set_affinity
 
 # softirq
 
 VS | standard kernel | PREEMPT_RT kernel
---- | --- | ---
+:-: | :-: | :-:
 Interrupt bottom half | invokes softirq to handle the irqs | just wakes up ksoftirqd
-__local_bh_enable_ip  | call do_softirq if not in irq ctx | call do_softirq in preemptable and irq enabled ctx otherwise wakeup ksoftirqd
+local_bh_enable  | call do_softirq if not in irq ctx and preept on | call do_softirq in preemptable and irq enabled ctx otherwise wakeup ksoftirqd
 ksoftirqd prio | bh > RT > ksoftirqd == fair | bh > ksoftirqd == RT > fair
 ksoftirqd preemptable | preempted only by hard irq | fully preemptable
 mutual exclusion | by disabling bh | by disabling preemption
 softirq ctrl & preemption | diable softirq will disalbe preemption | decouple the binding
 
-soft interrupt execution point:
+soft interrupt execution points:
 1. Interrupt bottom half
 
     After the hard interrupt is processed, call **irq_exit** to exit. If it is detected that there is a soft interrupt to be processed, call **invoke_softirq** function to process the soft interrupt.
@@ -620,7 +838,9 @@ soft interrupt execution point:
         }
     ```
 
-2. If the soft interrupt is not processed at the previous execution point, wake up ksoftirqd and process it in ksoftirqd. The ksoftirqd thread is a normal thread of the default priority fair scheduling class
+2. ksoftirqd Kernel Threads:
+
+    If the soft interrupt is not processed at the previous execution point, wake up ksoftirqd and process it in ksoftirqd. The ksoftirqd thread is a normal thread of the default priority fair scheduling class
 
     ```c
     handle_softirqs(void){
@@ -643,7 +863,7 @@ soft interrupt execution point:
     }
     ```
 
-3. Some mutual exclusion mechanisms that close the bottom half (such as spin_lock_bh/spin_unlock_bh), when the outermost bottom half is enabled Call **__local_bh_enable_ip** function, if not in the interrupt context, call do_softirq() to process the soft interrupt
+3. Some mutual exclusion mechanisms that close the bottom half (such as spin_lock_bh/spin_unlock_bh), when the outermost bottom half is enabled Call **local_bh_enable** function, if not in the interrupt context, call do_softirq() to process the soft interrupt
 
     ```c
     void __local_bh_enable_ip(unsigned long ip, unsigned int cnt) {
@@ -694,8 +914,8 @@ int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
     for_each_online_cpu(cpu) {
         ret = __smpboot_create_thread(plug_thread, cpu);
         if (ret) {
-        smpboot_destroy_threads(plug_thread);
-        goto out;
+            smpboot_destroy_threads(plug_thread);
+            goto out;
         }
         smpboot_unpark_thread(plug_thread, cpu);
     }
@@ -923,8 +1143,8 @@ void handle_softirqs(void)
     int softirq_bit;
 
     /* Mask out PF_MEMALLOC s current task context is borrowed for the
-    * softirq. A softirq handled such as network RX might set PF_MEMALLOC
-    * again if the socket is related to swap */
+     * softirq. A softirq handled such as network RX might set PF_MEMALLOC
+     * again if the socket is related to swap */
     current->flags &= ~PF_MEMALLOC;
 
     pending = local_softirq_pending();
@@ -960,10 +1180,12 @@ restart:
     rcu_bh_qs();
     local_irq_disable();
 
+    /* To prevent excessive latency, handle_softirqs() limits the time spent processing softIRQs
+     * and may defer remaining work to the ksoftirqd kernel thread. */
     pending = local_softirq_pending();
     if (pending) {
         if (time_before(jiffies, end) && !need_resched() && --max_restart)
-        goto restart;
+            goto restart;
 
         wakeup_softirqd();
     }
@@ -992,8 +1214,7 @@ void __init softirq_init(void)
     open_softirq(HI_SOFTIRQ, tasklet_hi_action);
 }
 
-enum
-{
+enum {
     HI_SOFTIRQ=0,
     TIMER_SOFTIRQ,
     NET_TX_SOFTIRQ,
@@ -1022,12 +1243,13 @@ void open_softirq(int nr, void (*action)(struct softirq_action *))
 
 ## raise_softirq_irqoff
 
+![](../images/kernel/proc-preempt_count.png)
+
 To summarize, each softirq goes through the following stages:
 * Registration of a softirq with the `open_softirq` function.
 * Activation of a softirq by marking it as deferred with the `raise_softirq` function.
 * After this, all marked softirqs will be triggered in the next time the Linux kernel schedules a round of executions of deferrable functions.
 * And execution of the deferred functions that have the same type.
-
 
 ```c
 void raise_softirq_irqoff(unsigned int nr)
@@ -1057,6 +1279,7 @@ DECLARE_PER_CPU(int, __preempt_count);
 typedef struct {
     unsigned int __softirq_pending;
 } ____cacheline_aligned irq_cpustat_t;
+
 DEFINE_PER_CPU_ALIGNED(irq_cpustat_t, irq_stat);
 
 /* 3. per task data */
@@ -1112,6 +1335,79 @@ void wakeup_softirqd(void)
 
     if (tsk && tsk->state != TASK_RUNNING)
         wake_up_process(tsk);
+}
+```
+
+## local_bh_enable
+
+```c
+static inline void local_bh_enable(void)
+{
+    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET) {
+        bool preempt_on = preemptible();
+        unsigned long flags;
+        u32 pending;
+        int curcnt;
+
+        WARN_ON_ONCE(in_hardirq());
+        lockdep_assert_irqs_enabled();
+
+        lock_map_release(&bh_lock_map);
+
+        local_irq_save(flags);
+        curcnt = __this_cpu_read(softirq_ctrl.cnt);
+
+        /* If this is not reenabling soft interrupts, no point in trying to
+         * run pending ones. */
+        if (curcnt != cnt)
+            goto out;
+
+        pending = local_softirq_pending() {
+        		return __this_cpu_read(local_softirq_pending_ref);
+        }
+        if (!pending)
+            goto out;
+
+        /* If this was called from non preemptible context, wake up the
+         * softirq daemon. */
+        if (!preempt_on) {
+            wakeup_softirqd();
+            goto out;
+        }
+
+        /* Adjust softirq count to SOFTIRQ_OFFSET which makes
+         * in_serving_softirq() become true. */
+        cnt = SOFTIRQ_OFFSET;
+        __local_bh_enable(cnt, false) {
+            unsigned long flags;
+            int newcnt;
+
+            DEBUG_LOCKS_WARN_ON(current->softirq_disable_cnt !=
+                        this_cpu_read(softirq_ctrl.cnt));
+
+            if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && softirq_count() == cnt) {
+                raw_local_irq_save(flags);
+                lockdep_softirqs_on(_RET_IP_);
+                raw_local_irq_restore(flags);
+            }
+
+            newcnt = __this_cpu_sub_return(softirq_ctrl.cnt, cnt);
+            current->softirq_disable_cnt = newcnt;
+
+            if (!newcnt && unlock) {
+                rcu_read_unlock();
+                local_unlock(&softirq_ctrl.lock);
+            }
+        }
+
+        __do_softirq() {
+            handle_softirqs(false); --->
+        }
+
+    out:
+        __local_bh_enable(cnt, preempt_on);
+        local_irq_restore(flags);
+    }
 }
 ```
 
