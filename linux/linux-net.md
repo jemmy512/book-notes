@@ -156,7 +156,42 @@
     * [Linux 中断（IRQ/softirq）基础：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
 * [Linux Network Performance Ultimate Guide](https://ntk148v.github.io/posts/linux-network-performance-ultimate-guide/)
 
+---
+
 <img src='../images/kernel/kernel-structual.svg' style='max-height:850px'/>
+
+---
+
+![](../images/kernel/net-read-write-route-bridge.svg)
+
+* Each RX queue is associated with a separate IRQ, which can be routed to a different CPU.
+
+| Concept | Type | Primary Function | Key Feature |
+| :-: | :-: | :-: | :-: |
+| **RSS** | Hardware | Distributes packets across NIC queues | Hardware-based load balancing via hash |
+| **RPS** | Software | Distributes received packets across CPUs | Software-based load balancing |
+| **RFS** | Software | Steers packets to application’s CPU | Improves cache locality with flow table |
+| **aRFS** | Hardware | Hardware-accelerated packet steering | Uses NIC filters for application locality |
+| **LRO** | Hardware | Aggregates packets in NIC | Hardware-based packet coalescing |
+| **GRO** | Software | Aggregates incoming packets into larger ones | Software-based packet coalescing |
+| **XPS** | Software | Maps CPUs to transmit queues | Optimizes transmit queue selection |
+| **TSO/GSO** | Hardware/Software | Segments large packets for transmission | Offloads segmentation to NIC or kernel |
+| **NAPI** | Software | Polling-based packet processing | Reduces interrupt overhead in high traffic |
+| **BQL** | Software | Limits transmit queue buffering | Self-tuning for low-latency transmission |
+| **QDisc** | Software | Manages transmit traffic | Configurable traffic prioritization |
+| **Interrupt Coalescing** | Hardware | Batches NIC interrupts | Reduces CPU overhead with tunable batching |
+
+* **GRO**: Enabled/disabled via `ethtool -K <interface> gro on|off`. Requires NAPI driver support.
+* **RPS**: Configured via `/sys/class/net/<device>/queues/rx-<queue>/rps_cpus` with CPU bitmaps. Disabled by default (set to 0).
+* **RFS**: Enabled by setting `/proc/sys/net/core/rps_sock_flow_entries` and `/sys/class/net/<device>/queues/rx-<queue>/rps_flow_cnt`.
+* **aRFS**: Requires NIC support for ntuple filters (`ethtool -K <interface> ntuple on`) and driver support for ndo_rx_flow_steer.
+* **XPS**: Configured via `/sys/class/net/<device>/queues/tx-<queue>/xps_cpus`.
+* **LRO**: Enabled/disabled via `ethtool -K <interface> lro on|off`, but often disabled when GRO is available.
+* **TSO/GSO**: Enabled/disabled via `ethtool -K <interface> tso|gso on|off`.
+* **NAPI**: Enabled by default in modern drivers; no manual configuration typically needed.
+* **BQL**: Self-tuning, but limits can be adjusted via ethtool or driver parameters.
+* **QDisc**: Configured via the tc command for advanced traffic control.
+* **Interrupt Coalescing**: Tuned via `ethtool -C <interface> rx-usecs <value>` or driver-specific settings.
 
 ---
 
@@ -167,22 +202,22 @@
 
 <img src='../images/kernel/net-send-data-flow.png' style='max-height:850px'/>
 
-|**Device**|**Function**|**Key Feature**|
-|:-:|:-:|:-:|
-|Router|Connects different networks, directs data packets|Uses IP addresses, often includes Wi-Fi|
-|Switch|Connects devices within a network|Uses MAC addresses, efficient data flow|
-|Hub|Connects multiple devices, broadcasts data|Outdated, less efficient than switches|
-|Access Point (AP)|Provides wireless connectivity to a wired network|Extends Wi-Fi coverage|
-|Modem|Converts digital/analog signals for internet access|Connects to ISP (cable, DSL, fiber)|
-|Firewall|Monitors and controls network traffic for security|Can be hardware or software|
-|Bridge|Connects two network segments into one|Filters traffic by MAC addresses|
-|Gateway|Links networks with different protocols|Often a router, translates network types|
-|Network Interface Card (NIC)|Connects a device to a network (wired/wireless)|Essential for network access|
-|Repeater|Amplifies/regenerates signals to extend range|Boosts Wi-Fi or wired signals|
-|Load Balancer|Distributes traffic across multiple servers|Optimizes performance, prevents overload|
-|Wireless Controller|Manages multiple access points in large Wi-Fi networks|Centralizes control in enterprises|
-|Network Attached Storage (NAS)|Provides file storage and sharing over a network|Acts as a networked file server|
-|Proxy Server|Intermediary between users and the internet|Enhances security, caches data|
+| **Device** | **Function** | **Key Feature** |
+| :-: | :-: | :-: |
+| **Router** | Connects different networks, directs data packets | Uses IP addresses, often includes Wi-Fi |
+| **Switch** | Connects devices within a network | Uses MAC addresses, efficient data flow |
+| **Hub** | Connects multiple devices, broadcasts data | Outdated, less efficient than switches |
+| **Access Point (AP)** | Provides wireless connectivity to a wired network | Extends Wi-Fi coverage |
+| **Modem** | Converts digital/analog signals for internet access | Connects to ISP (cable, DSL, fiber) |
+| **Firewall** | Monitors and controls network traffic for security | Can be hardware or software |
+| **Bridge** | Connects two network segments into one | Filters traffic by MAC addresses |
+| **Gateway** | Links networks with different protocols | Often a router, translates network types |
+| **Network Interface Card (NIC)** | Connects a device to a network (wired/wireless) | Essential for network access |
+| **Repeater** | Amplifies/regenerates signals to extend range | Boosts Wi-Fi or wired signals |
+| **Load Balancer** | Distributes traffic across multiple servers | Optimizes performance, prevents overload |
+| **Wireless Controller** | Manages multiple access points in large Wi-Fi networks | Centralizes control in enterprises |
+| **Network Attached Storage (NAS)** | Provides file storage and sharing over a network | Acts as a networked file server |
+| **Proxy Server** | Intermediary between users and the internet | Enhances security, caches data |
 
 ```c
 struct socket_alloc {
@@ -3138,12 +3173,12 @@ SYSCALL_DEFINE4(accept4, int, fd, struct sockaddr __user *, upeer_sockaddr,
 /* inet_stream_ops.accept */
 int inet_accept(struct socket *sock, struct socket *newsock, int flags, bool kern)
 {
-  struct sock *sk1 = sock->sk;
-  int err = -EINVAL;
-  struct sock *sk2 = sk1->sk_prot->accept(sk1, flags, &err, kern);
-  sock_rps_record_flow(sk2);
-  sock_graft(sk2, newsock);
-  newsock->state = SS_CONNECTED;
+    struct sock *sk1 = sock->sk;
+    int err = -EINVAL;
+    struct sock *sk2 = sk1->sk_prot->accept(sk1, flags, &err, kern);
+    sock_rps_record_flow(sk2);
+    sock_graft(sk2, newsock);
+    newsock->state = SS_CONNECTED;
 }
 
 /* tcp_prot.accept */
@@ -4160,7 +4195,7 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 * [Monitoring and Tuning the Linux Networking Stack: Sending Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-sending-data/)
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 
-<img src='../images/kernel/net-read-write-route-bridge.svg' style='max-height:850px'/>
+![](../images/kernel/net-read-write-route-bridge.svg)
 
 ---
 
@@ -6593,7 +6628,7 @@ ixgb_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 | Socket Backlog Queue | Linked list | Per listen socket | Buffer pending connections | accept() |
 | Process Queue | Linked list | Per CPU | Threaded deferred processing | NAPI thread |
 
-<img src='../images/kernel/net-read-write-route-bridge.svg' style='max-height:850px'/>
+![](../images/kernel/net-read-write-route-bridge.svg)
 
 ---
 
@@ -7063,6 +7098,7 @@ SYSCALL_DEFINE3(read, fd, buf, count) {
 sock_read_iter() {
     sock_recvmsg() {
         sock->ops->recvmsg() {
+            sock_rps_record_flow(); /* RPS, RFS */
             inet_recvmsg() {
                 sk->sk_prot->recvmsg() {
                     tcp_recvmsg() {
@@ -7873,6 +7909,7 @@ int netif_receive_skb(struct sk_buff *skb)
     /* 0. RPS handling */
     if (static_branch_unlikely(&rps_needed)) {
         struct rps_dev_flow voidflow, *rflow = &voidflow;
+        /* RPS is recored at sock_rps_record_flow_hash */
         int cpu = get_rps_cpu(skb->dev, skb, &rflow);
 
         if (cpu >= 0) {
@@ -9672,6 +9709,34 @@ int inet_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
     struct sock *sk = sock->sk;
     int addr_len = 0;
     int err;
+
+    if (likely(!(flags & MSG_ERRQUEUE))) {
+        sock_rps_record_flow(sk) {
+            if (static_branch_unlikely(&rfs_needed)) {
+                if (sk->sk_state == TCP_ESTABLISHED) {
+                    sock_rps_record_flow_hash(READ_ONCE(sk->sk_rxhash)) { /* Used at get_rps_cpu */
+                        struct rps_sock_flow_table *sock_flow_table;
+
+                        if (!hash)
+                            return;
+                        rcu_read_lock();
+                        sock_flow_table = rcu_dereference(net_hotdata.rps_sock_flow_table);
+                        if (sock_flow_table) {
+                            rps_record_sock_flow(sock_flow_table, hash) {
+                                unsigned int index = hash & table->mask;
+                                u32 val = hash & ~net_hotdata.rps_cpu_mask;
+
+                                val |= raw_smp_processor_id();
+                                if (READ_ONCE(table->ents[index]) != val)
+                                    WRITE_ONCE(table->ents[index], val);
+                            }
+                        }
+                        rcu_read_unlock();
+                    }
+                }
+            }
+        }
+    }
 
     err = sk->sk_prot->recvmsg(sk, msg, size, flags & MSG_DONTWAIT,
            flags & ~MSG_DONTWAIT, &addr_len);
