@@ -529,10 +529,34 @@ el0t_64_irq_handler(struct pt_regs *regs) {
                     }
                 }
             #else
-                /* standard kernel invokes softirq to handle the irqs */
+                /* standard kernel __do_softirq to handle the irqs and wakes up
+                 * ksoftirqd if softirq execution MAX_SOFTIRQ_TIME timeout */
                 static inline void invoke_softirq(void) {
                     if (!force_irqthreads() || !__this_cpu_read(ksoftirqd)) {
-                        __do_softirq();
+                        __do_softirq() {
+                            handle_softirqs(false) {
+                                end = jiffies + MAX_SOFTIRQ_TIME;
+                                pending = local_softirq_pending();
+                                h = softirq_vec;
+
+                                /* run in interrupt conext in bottom-half
+                                 * with local irq disabled, non-preemptible, and non-blocking */
+                                while ((softirq_bit = ffs(pending))) {
+                                    h->action(h); /* soft irq handler, e.g., net_rx_action, net_tx_action */
+                                    h++;
+                                    pending >>= softirq_bit;
+                                }
+
+                                /* run in process context in ksoftirqd */
+                                pending = local_softirq_pending();
+                                if (pending) {
+                                    if (time_before(jiffies, end) && !need_resched() && --max_restart)
+                                    goto restart;
+
+                                    wakeup_softirqd();
+                                }
+                            }
+                        }
                     } else {
                         wakeup_softirqd();
                     }
@@ -1012,6 +1036,10 @@ static struct irq_chip gic_chip = {
 ![](../images/kernel/intr-gic_of_init.png)
 
 ```c
+static struct gic_chip_data gic_data __read_mostly;
+```
+
+```c
 int __init
 gic_of_init(struct device_node *node, struct device_node *parent)
 {
@@ -1153,11 +1181,43 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 
             irqnr = gic_read_iar();
 
-            is_nmi = gic_rpr_is_nmi_prio();
+            is_nmi = gic_rpr_is_nmi_prio() {
+                if (!gic_supports_nmi())
+                    return false;
+                return unlikely(gic_read_rpr() == GICV3_PRIO_NMI);
+            }
 
             if (is_nmi) {
-                nmi_enter();
-                __gic_handle_nmi(irqnr, regs);
+                nmi_enter() {
+                    __nmi_enter() {
+                        lockdep_off();
+                        arch_nmi_enter();
+                        BUG_ON(in_nmi() == NMI_MASK);
+                        __preempt_count_add(NMI_OFFSET + HARDIRQ_OFFSET);
+                    }
+                    lockdep_hardirq_enter();
+                    ct_nmi_enter();
+                    instrumentation_begin();
+                    ftrace_nmi_enter();
+                    instrumentation_end();
+
+                }
+
+                __gic_handle_nmi(irqnr, regs) {
+                    if (gic_irqnr_is_special(irqnr))
+                        return;
+
+                    gic_complete_ack(irqnr);
+
+                    ret = generic_handle_domain_nmi(gic_data.domain, irqnr) {
+                        WARN_ON_ONCE(!in_nmi());
+                        return handle_irq_desc(irq_resolve_mapping(domain, hwirq));
+                    }
+                    if (ret) {
+                        WARN_ONCE(true, "Unexpected pseudo-NMI (irqnr %u)\n", irqnr);
+                        gic_deactivate_unhandled(irqnr);
+                    }
+                }
                 nmi_exit();
             }
 

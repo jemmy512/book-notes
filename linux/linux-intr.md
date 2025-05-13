@@ -753,8 +753,8 @@ out:
 Disable or enable all IRQs on the current CPU
 
 * **irq_enter()** Marks the entry into an interrupt context (hard IRQ context) in the Linux kernel, updating the kernel’s internal state (preempt_count) to reflect that it is processing a hardware interrupt.
-* **local_irq_disable()** Disables **all hw irq** on the local CPU, preventing the CPU from being interrupted by any hardware IRQs (e.g., from the GIC) until interrupts are re-enabled.
-* **irq_mask** is a callback in the struct irq_chip (include/linux/irq.h) implemented by an interrupt controller driver (e.g., GICv3) to disable a specific interrupt at the hardware level.
+* **local_irq_disable()** Disables **all hw irq** on the **local CPU level**, preventing the CPU from being interrupted by any hardware IRQs (e.g., from the GIC) until interrupts are re-enabled.
+* **irq_mask** is a callback in the struct irq_chip (include/linux/irq.h) implemented by an interrupt controller driver (e.g., GICv3) to disable a **specific interrupt line** at the **intr controller level**.
 
 Feature | irq_enter() | local_irq_disable()
  :-: | :-: | :-:
@@ -805,8 +805,8 @@ ksoftirqd preemptable | preempted only by hard irq | fully preemptable
 mutual exclusion | by disabling bh | by disabling preemption
 softirq ctrl & preemption | diable softirq will disalbe preemption | decouple the binding
 
-soft interrupt execution points:
-1. Interrupt bottom half
+**softirq execution points:**
+1. **Interrupt bottom half**
 
     After the hard interrupt is processed, call **irq_exit** to exit. If it is detected that there is a soft interrupt to be processed, call **invoke_softirq** function to process the soft interrupt.
 
@@ -838,21 +838,25 @@ soft interrupt execution points:
         }
     ```
 
-2. ksoftirqd Kernel Threads:
+2. **ksoftirqd Kernel Threads**:
 
     If the soft interrupt is not processed at the previous execution point, wake up ksoftirqd and process it in ksoftirqd. The ksoftirqd thread is a normal thread of the default priority fair scheduling class
 
     ```c
-    handle_softirqs(void){
+    handle_softirqs(void) {
+        end = jiffies + MAX_SOFTIRQ_TIME;
         pending = local_softirq_pending();
         h = softirq_vec;
 
+        /* 1. run in interrupt context in bottom-half
+         * with local irq disabled, non-preemptible, and non-blocking */
         while ((softirq_bit = ffs(pending))) {
             h->action(h); /* soft irq handler, e.g., net_rx_action, net_tx_action */
             h++;
             pending >>= softirq_bit;
         }
 
+        /* 2. run in process context in ksoftirqd */
         pending = local_softirq_pending();
         if (pending) {
             if (time_before(jiffies, end) && !need_resched() && --max_restart)
@@ -863,7 +867,9 @@ soft interrupt execution points:
     }
     ```
 
-3. Some mutual exclusion mechanisms that close the bottom half (such as spin_lock_bh/spin_unlock_bh), when the outermost bottom half is enabled Call **local_bh_enable** function, if not in the interrupt context, call do_softirq() to process the soft interrupt
+3. **local_bh_enable**
+
+    Some mutual exclusion mechanisms that close the bottom half (such as spin_lock_bh/spin_unlock_bh), when the outermost bottom half is enabled Call **local_bh_enable** function, if not in the interrupt context, call do_softirq() to process the soft interrupt
 
     ```c
     void __local_bh_enable_ip(unsigned long ip, unsigned int cnt) {
@@ -1132,7 +1138,7 @@ struct softirq_action
     void (*action)(struct softirq_action *);
 };
 
-void handle_softirqs(void)
+void handle_softirqs(bool ksirqd)
 {
     unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
     unsigned long old_flags = current->flags;
@@ -1161,6 +1167,8 @@ restart:
 
     h = softirq_vec;
 
+    /* 1. run in interrupt conext in bottom-half
+     * with local irq disabled, non-preemptible, and non-blocking */
     while ((softirq_bit = ffs(pending))) {
         unsigned int vec_nr;
         int prev_count;
@@ -1180,7 +1188,9 @@ restart:
     rcu_bh_qs();
     local_irq_disable();
 
-    /* To prevent excessive latency, handle_softirqs() limits the time spent processing softIRQs
+    /* 2. run in process context in ksoftirqd
+     *
+     * To prevent excessive latency, handle_softirqs() limits the time spent processing softIRQs
      * and may defer remaining work to the ksoftirqd kernel thread. */
     pending = local_softirq_pending();
     if (pending) {
@@ -1341,9 +1351,20 @@ void wakeup_softirqd(void)
 ## local_bh_enable
 
 ```c
+#ifdef CONFIG_PREEMPT_RT
+
+struct softirq_ctrl {
+    local_lock_t    lock;
+    int             cnt;
+};
+
+static DEFINE_PER_CPU(struct softirq_ctrl, softirq_ctrl) = {
+    .lock   = INIT_LOCAL_LOCK(softirq_ctrl.lock),
+};
+
 static inline void local_bh_enable(void)
 {
-    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET) {
+    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET/*cnt*/) {
         bool preempt_on = preemptible();
         unsigned long flags;
         u32 pending;
@@ -1363,7 +1384,7 @@ static inline void local_bh_enable(void)
             goto out;
 
         pending = local_softirq_pending() {
-        		return __this_cpu_read(local_softirq_pending_ref);
+            return __this_cpu_read(local_softirq_pending_ref);
         }
         if (!pending)
             goto out;
@@ -1382,8 +1403,8 @@ static inline void local_bh_enable(void)
             unsigned long flags;
             int newcnt;
 
-            DEBUG_LOCKS_WARN_ON(current->softirq_disable_cnt !=
-                        this_cpu_read(softirq_ctrl.cnt));
+            DEBUG_LOCKS_WARN_ON(current->softirq_disable_cnt
+                != this_cpu_read(softirq_ctrl.cnt));
 
             if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && softirq_count() == cnt) {
                 raw_local_irq_save(flags);
@@ -1409,6 +1430,8 @@ static inline void local_bh_enable(void)
         local_irq_restore(flags);
     }
 }
+
+#endif /* CONFIG_PREEMPT_RT */
 ```
 
 # tasklet
