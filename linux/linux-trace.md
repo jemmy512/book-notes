@@ -17,9 +17,45 @@
 
 ![](../images/kernel/trace-arch.png)
 
+# arm64 dbg insn
+
+* ARM64 supports up to 16 breakpoints (**DBGBVRn/DBGBCRn**) and 16 watchpoints (**DBGWVRn/DBGWCRn**), managed by the kernel’s hw_breakpoint subsystem.
+
+```c
+/* 1. Breakpoint Instructions: */
+    // Software Breakpoints
+    BRK #imm16    // Breakpoint with 16-bit immediate
+    HLT #imm16    // Halt with 16-bit immediate
+
+    // Example usage:
+    BRK #0        // Common debugger breakpoint
+    BRK #0xF000   // User-defined breakpoint
+
+/* 2. Debug Registers: */
+    /* Debug Control Registers */
+    #define MDSCR_EL1    // Debug System Control Register
+    #define DBGBVR_EL1   // Breakpoint Value Registers
+    #define DBGBCR_EL1   // Breakpoint Control Registers
+    #define DBGWVR_EL1   // Watchpoint Value Registers
+    #define DBGWCR_EL1   // Watchpoint Control Registers
+
+    /* MDSCR_EL1 bits */
+    #define MDSCR_SS     (1 << 0)    // Single Step
+    #define MDSCR_KDE    (1 << 13)   // Kernel Debug Enable
+    #define MDSCR_MDE    (1 << 15)   // Monitor Debug Enable
+```
+
 # ptrace
 
 ![](../images/kernel/trace-ss-brk-handler.svg)
+
+**Key ptrace Operations on ARM64**:
+* **PTRACE_ATTACH/PTRACE_TRACEME**: Attach to or start tracing a process.
+* **PTRACE_CONT/PTRACE_SINGLESTEP**: Resume or step execution.
+* **PTRACE_GETREGS/PTRACE_SETREGS**: Read/write ARM64 registers.
+* **PTRACE_PEEKTEXT/PTRACE_POKETEXT**: Read/write process memory.
+* **PTRACE_POKEUSER**: Configure hardware breakpoints/watchpoints.
+* **PTRACE_GETSIGINFO**: Retrieve debug event details (e.g., breakpoint hit).
 
 ```c
 SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
@@ -36,11 +72,9 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
             write_lock_irq(&tasklist_lock);
             if (!current->ptrace) {
                 ret = security_ptrace_traceme(current->parent);
-                /*
-                * Check PF_EXITING to ensure ->real_parent has not passed
-                * exit_ptrace(). Otherwise we don't report the error but
-                * pretend ->real_parent untraces us right after return.
-                */
+                /* Check PF_EXITING to ensure ->real_parent has not passed
+                 * exit_ptrace(). Otherwise we don't report the error but
+                 * pretend ->real_parent untraces us right after return. */
                 if (!ret && !(current->real_parent->flags & PF_EXITING)) {
                     current->ptrace = PT_PTRACED;
                     ptrace_link(current, current->real_parent);
@@ -142,11 +176,9 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
 
                 sigdelsetmask(&new_set, sigmask(SIGKILL)|sigmask(SIGSTOP));
 
-                /*
-                * Every thread does recalc_sigpending() after resume, so
+                /* Every thread does recalc_sigpending() after resume, so
                 * retarget_shared_pending() and recalc_sigpending() are not
-                * called here.
-                */
+                * called here. */
                 spin_lock_irq(&child->sighand->siglock);
                 child->blocked = new_set;
                 spin_unlock_irq(&child->sighand->siglock);
@@ -158,25 +190,21 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
             }
 
             case PTRACE_INTERRUPT:
-                /*
-                * Stop tracee without any side-effect on signal or job
+                /* Stop tracee without any side-effect on signal or job
                 * control.  At least one trap is guaranteed to happen
                 * after this request.  If @child is already trapped, the
                 * current trap is not disturbed and another trap will
                 * happen after the current trap is ended with PTRACE_CONT.
                 *
                 * The actual trap might not be PTRACE_EVENT_STOP trap but
-                * the pending condition is cleared regardless.
-                */
+                * the pending condition is cleared regardless. */
                 if (unlikely(!seized || !lock_task_sighand(child, &flags)))
                     break;
 
-                /*
-                * INTERRUPT doesn't disturb existing trap sans one
+                /* INTERRUPT doesn't disturb existing trap sans one
                 * exception.  If ptracer issued LISTEN for the current
                 * STOP, this INTERRUPT should clear LISTEN and re-trap
-                * tracee into STOP.
-                */
+                * tracee into STOP. */
                 if (likely(task_set_jobctl_pending(child, JOBCTL_TRAP_STOP)))
                     ptrace_signal_wake_up(child, child->jobctl & JOBCTL_LISTENING);
 
@@ -185,24 +213,20 @@ SYSCALL_DEFINE4(ptrace, long, request, long, pid, unsigned long, addr,
                 break;
 
             case PTRACE_LISTEN:
-                /*
-                * Listen for events.  Tracee must be in STOP.  It's not
+                /* Listen for events.  Tracee must be in STOP.  It's not
                 * resumed per-se but is not considered to be in TRACED by
                 * wait(2) or ptrace(2).  If an async event (e.g. group
                 * stop state change) happens, tracee will enter STOP trap
                 * again.  Alternatively, ptracer can issue INTERRUPT to
-                * finish listening and re-trap tracee into STOP.
-                */
+                * finish listening and re-trap tracee into STOP. */
                 if (unlikely(!seized || !lock_task_sighand(child, &flags)))
                     break;
 
                 si = child->last_siginfo;
                 if (likely(si && (si->si_code >> 8) == PTRACE_EVENT_STOP)) {
                     child->jobctl |= JOBCTL_LISTENING;
-                    /*
-                    * If NOTIFY is set, it means event happened between
-                    * start of this trap and now.  Trigger re-trap.
-                    */
+                    /* If NOTIFY is set, it means event happened between
+                    * start of this trap and now.  Trigger re-trap. */
                     if (child->jobctl & JOBCTL_TRAP_NOTIFY)
                         ptrace_signal_wake_up(child, true);
                     ret = 0;
@@ -343,11 +367,9 @@ static int ptrace_attach(struct task_struct *task, long request,
     if (same_thread_group(task, current))
         return -EPERM;
 
-    /*
-    * Protect exec's credential calculations against our interference;
+    /* Protect exec's credential calculations against our interference;
     * SUID, SGID and LSM creds get determined differently
-    * under ptrace.
-    */
+    * under ptrace. */
     scoped_cond_guard (mutex_intr, return -ERESTARTNOINTR,
             &task->signal->cred_guard_mutex) {
 
@@ -385,13 +407,11 @@ static int ptrace_attach(struct task_struct *task, long request,
         }
     }
 
-    /*
-    * We do not bother to change retval or clear JOBCTL_TRAPPING
+    /* We do not bother to change retval or clear JOBCTL_TRAPPING
     * if wait_on_bit() was interrupted by SIGKILL. The tracer will
     * not return to user-mode, it will exit and clear this bit in
     * __ptrace_unlink() if it wasn't already cleared by the tracee;
-    * and until then nobody can ptrace this task.
-    */
+    * and until then nobody can ptrace this task. */
     wait_on_bit(&task->jobctl, JOBCTL_TRAPPING_BIT, TASK_KILLABLE);
     proc_ptrace_connector(task, PTRACE_ATTACH);
 
@@ -400,6 +420,22 @@ static int ptrace_attach(struct task_struct *task, long request,
 ```
 
 ## PTRACE_SYSCALL
+
+```c
+int ptrace_request(struct task_struct *child, long request,
+        unsigned long addr, unsigned long data)
+{
+    switch (request) {
+        case PTRACE_SINGLESTEP:
+        case PTRACE_SINGLEBLOCK:
+        case PTRACE_SYSEMU:
+        case PTRACE_SYSEMU_SINGLESTEP:
+        case PTRACE_SYSCALL:
+        case PTRACE_CONT:
+            return ptrace_resume(child, request, data);
+    }
+}
+```
 
 ```c
 /* Set SYSCALL_TRACE flag for tracee */
@@ -559,11 +595,9 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
                     } else {
                         regs->regs[regno] = saved_reg;
 
-                        /*
-                        * Signal a pseudo-step exception since we are stepping but
+                        /* Signal a pseudo-step exception since we are stepping but
                         * tracer modifications to the registers may have rewound the
-                        * state machine.
-                        */
+                        * state machine. */
                         ptrace_report_syscall_exit(regs, 1);
                     }
                 }
@@ -584,7 +618,7 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
             return regs->syscallno;
         }
         if (scno == NO_SYSCALL)
-            goto trace_exit;
+            goto trace_fn_exit;
     }
 }
 ```
@@ -628,6 +662,22 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
 ### user_enable_single_step
 
 ```c
+int ptrace_request(struct task_struct *child, long request,
+        unsigned long addr, unsigned long data)
+{
+    switch (request) {
+        case PTRACE_SINGLESTEP:
+        case PTRACE_SINGLEBLOCK:
+        case PTRACE_SYSEMU:
+        case PTRACE_SYSEMU_SINGLESTEP:
+        case PTRACE_SYSCALL:
+        case PTRACE_CONT:
+            return ptrace_resume(child, request, data);
+    }
+}
+```
+
+```c
 int ptrace_resume(struct task_struct *child, long request,
             unsigned long data)
 {
@@ -656,10 +706,12 @@ int ptrace_resume(struct task_struct *child, long request,
         user_enable_single_step(child) {
             struct thread_info *ti = task_thread_info(task);
             if (!test_and_set_ti_thread_flag(ti, TIF_SINGLESTEP))
-                set_regs_spsr_ss(task_pt_regs(task));
+                set_regs_spsr_ss(task_pt_regs(task)); /* Enable CPU SS dbg bit */
         }
     } else { /* PTRACE_CONT, PTRACE_SYSCALL, PTRACE_SYSEMU */
-        user_disable_single_step(child);
+        user_disable_single_step(child) {
+            clear_ti_thread_flag(task_thread_info(task), TIF_SINGLESTEP);
+        }
     }
 
     /* Change ->exit_code and ->state under siglock to avoid the race
@@ -840,12 +892,10 @@ int single_step_handler(unsigned long unused, unsigned long esr,
                         "User debug trap");
         }
 
-        /*
-        * ptrace will disable single step unless explicitly
+        /* ptrace will disable single step unless explicitly
         * asked to re-enable it. For other clients, it makes
         * sense to leave it enabled (i.e. rewind the controls
-        * to the active-not-pending state).
-        */
+        * to the active-not-pending state). */
         user_rewind_single_step(current);
     } else if (!handler_found) {
         pr_warn("Unexpected kernel single-step exception at EL1\n");
@@ -1066,12 +1116,582 @@ int generic_ptrace_pokedata(struct task_struct *tsk, unsigned long addr,
 }
 ```
 
+## PTRACE_SETREGSET
+
+```c
+struct user_regset_view {
+    const char                  *name;
+    const struct user_regset    *regsets;
+    unsigned int                n;
+    u32             e_flags;
+    u16             e_machine;
+    u8              ei_osabi;
+};
+
+struct user_regset {
+    user_regset_get2_fn         *regset_get;
+    user_regset_set_fn          *set;
+    user_regset_active_fn       *active;
+    user_regset_writeback_fn    *writeback;
+    unsigned int                n;
+    unsigned int                size;
+    unsigned int                align;
+    unsigned int                bias;
+    unsigned int                core_note_type;
+};
+
+static const struct user_regset_view user_aarch64_view = {
+    .name = "aarch64",
+    .e_machine = EM_AARCH64,
+    .regsets = aarch64_regsets,
+    .n = ARRAY_SIZE(aarch64_regsets)
+};
+
+static const struct user_regset aarch64_regsets[] = {
+    [REGSET_GPR] = {
+        .core_note_type = NT_PRSTATUS,
+        .n = sizeof(struct user_pt_regs) / sizeof(u64),
+        .size = sizeof(u64),
+        .align = sizeof(u64),
+        .regset_get = gpr_get,
+        .set = gpr_set
+    },
+    [REGSET_FPR] = {
+        .core_note_type = NT_PRFPREG,
+        .n = sizeof(struct user_fpsimd_state) / sizeof(u32),
+        /* We pretend we have 32-bit registers because the fpsr and
+        * fpcr are 32-bits wide. */
+        .size = sizeof(u32),
+        .align = sizeof(u32),
+        .active = fpr_active,
+        .regset_get = fpr_get,
+        .set = fpr_set
+    },
+    [REGSET_TLS] = {
+        .core_note_type = NT_ARM_TLS,
+        .n = 2,
+        .size = sizeof(void *),
+        .align = sizeof(void *),
+        .regset_get = tls_get,
+        .set = tls_set,
+    },
+#ifdef CONFIG_HAVE_HW_BREAKPOINT
+    [REGSET_HW_BREAK] = {
+        .core_note_type = NT_ARM_HW_BREAK,
+        .n = sizeof(struct user_hwdebug_state) / sizeof(u32),
+        .size = sizeof(u32),
+        .align = sizeof(u32),
+        .regset_get = hw_break_get,
+        .set = hw_break_set,
+    },
+    [REGSET_HW_WATCH] = {
+        .core_note_type = NT_ARM_HW_WATCH,
+        .n = sizeof(struct user_hwdebug_state) / sizeof(u32),
+        .size = sizeof(u32),
+        .align = sizeof(u32),
+        .regset_get = hw_break_get,
+        .set = hw_break_set,
+    },
+#endif
+    [REGSET_SYSTEM_CALL] = {
+        .core_note_type = NT_ARM_SYSTEM_CALL,
+        .n = 1,
+        .size = sizeof(int),
+        .align = sizeof(int),
+        .regset_get = system_call_get,
+        .set = system_call_set,
+    },
+    [REGSET_FPMR] = {
+        .core_note_type = NT_ARM_FPMR,
+        .n = 1,
+        .size = sizeof(u64),
+        .align = sizeof(u64),
+        .regset_get = fpmr_get,
+        .set = fpmr_set,
+    },
+#ifdef CONFIG_ARM64_SVE
+    [REGSET_SVE] = { /* Scalable Vector Extension */
+        .core_note_type = NT_ARM_SVE,
+        .n = DIV_ROUND_UP(SVE_PT_SIZE(ARCH_SVE_VQ_MAX,
+                        SVE_PT_REGS_SVE),
+                SVE_VQ_BYTES),
+        .size = SVE_VQ_BYTES,
+        .align = SVE_VQ_BYTES,
+        .regset_get = sve_get,
+        .set = sve_set,
+    },
+#endif
+#ifdef CONFIG_ARM64_SME
+    [REGSET_SSVE] = { /* Streaming mode SVE */
+        .core_note_type = NT_ARM_SSVE,
+        .n = DIV_ROUND_UP(SVE_PT_SIZE(SME_VQ_MAX, SVE_PT_REGS_SVE),
+                SVE_VQ_BYTES),
+        .size = SVE_VQ_BYTES,
+        .align = SVE_VQ_BYTES,
+        .regset_get = ssve_get,
+        .set = ssve_set,
+    },
+    [REGSET_ZA] = { /* SME ZA */
+        .core_note_type = NT_ARM_ZA,
+        /* ZA is a single register but it's variably sized and
+        * the ptrace core requires that the size of any data
+        * be an exact multiple of the configured register
+        * size so report as though we had SVE_VQ_BYTES
+        * registers. These values aren't exposed to
+        * userspace. */
+        .n = DIV_ROUND_UP(ZA_PT_SIZE(SME_VQ_MAX), SVE_VQ_BYTES),
+        .size = SVE_VQ_BYTES,
+        .align = SVE_VQ_BYTES,
+        .regset_get = za_get,
+        .set = za_set,
+    },
+    [REGSET_ZT] = { /* SME ZT */
+        .core_note_type = NT_ARM_ZT,
+        .n = 1,
+        .size = ZT_SIG_REG_BYTES,
+        .align = sizeof(u64),
+        .regset_get = zt_get,
+        .set = zt_set,
+    },
+#endif
+#ifdef CONFIG_ARM64_PTR_AUTH
+    [REGSET_PAC_MASK] = {
+        .core_note_type = NT_ARM_PAC_MASK,
+        .n = sizeof(struct user_pac_mask) / sizeof(u64),
+        .size = sizeof(u64),
+        .align = sizeof(u64),
+        .regset_get = pac_mask_get,
+        /* this cannot be set dynamically */
+    },
+    [REGSET_PAC_ENABLED_KEYS] = {
+        .core_note_type = NT_ARM_PAC_ENABLED_KEYS,
+        .n = 1,
+        .size = sizeof(long),
+        .align = sizeof(long),
+        .regset_get = pac_enabled_keys_get,
+        .set = pac_enabled_keys_set,
+    },
+#ifdef CONFIG_CHECKPOINT_RESTORE
+    [REGSET_PACA_KEYS] = {
+        .core_note_type = NT_ARM_PACA_KEYS,
+        .n = sizeof(struct user_pac_address_keys) / sizeof(__uint128_t),
+        .size = sizeof(__uint128_t),
+        .align = sizeof(__uint128_t),
+        .regset_get = pac_address_keys_get,
+        .set = pac_address_keys_set,
+    },
+    [REGSET_PACG_KEYS] = {
+        .core_note_type = NT_ARM_PACG_KEYS,
+        .n = sizeof(struct user_pac_generic_keys) / sizeof(__uint128_t),
+        .size = sizeof(__uint128_t),
+        .align = sizeof(__uint128_t),
+        .regset_get = pac_generic_keys_get,
+        .set = pac_generic_keys_set,
+    },
+#endif
+#endif
+
+#ifdef CONFIG_ARM64_TAGGED_ADDR_ABI
+    [REGSET_TAGGED_ADDR_CTRL] = {
+        .core_note_type = NT_ARM_TAGGED_ADDR_CTRL,
+        .n = 1,
+        .size = sizeof(long),
+        .align = sizeof(long),
+        .regset_get = tagged_addr_ctrl_get,
+        .set = tagged_addr_ctrl_set,
+    },
+#endif
+
+#ifdef CONFIG_ARM64_POE
+    [REGSET_POE] = {
+        .core_note_type = NT_ARM_POE,
+        .n = 1,
+        .size = sizeof(long),
+        .align = sizeof(long),
+        .regset_get = poe_get,
+        .set = poe_set,
+    },
+#endif
+
+#ifdef CONFIG_ARM64_GCS
+    [REGSET_GCS] = {
+        .core_note_type = NT_ARM_GCS,
+        .n = sizeof(struct user_gcs) / sizeof(u64),
+        .size = sizeof(u64),
+        .align = sizeof(u64),
+        .regset_get = gcs_get,
+        .set = gcs_set,
+    },
+#endif
+};
+```
+
+```c
+int ptrace_request(struct task_struct *child, long request,
+		   unsigned long addr, unsigned long data)
+{
+	switch (request) {
+        case PTRACE_GETREGSET:
+        case PTRACE_SETREGSET: {
+            struct iovec kiov;
+            struct iovec __user *uiov = datavp;
+
+            if (!access_ok(uiov, sizeof(*uiov)))
+                return -EFAULT;
+
+            if (__get_user(kiov.iov_base, &uiov->iov_base) ||
+                __get_user(kiov.iov_len, &uiov->iov_len))
+                return -EFAULT;
+
+            ret = ptrace_regset(child, request, addr, &kiov);
+            if (!ret)
+                ret = __put_user(kiov.iov_len, &uiov->iov_len);
+            break;
+        }
+    }
+}
+
+static int ptrace_regset(struct task_struct *task, int req, unsigned int type,
+            struct iovec *kiov)
+{
+    const struct user_regset_view *view = task_user_regset_view(task) {
+        return &user_aarch64_view;
+    }
+    const struct user_regset *regset = find_regset(view, type) {
+        const struct user_regset *regset;
+        int n;
+
+        for (n = 0; n < view->n; ++n) {
+            regset = view->regsets + n;
+            if (regset->core_note_type == type)
+                return regset;
+        }
+
+        return NULL;
+    }
+    int regset_no;
+
+    if (!regset || (kiov->iov_len % regset->size) != 0)
+        return -EINVAL;
+
+    regset_no = regset - view->regsets;
+    kiov->iov_len = min(kiov->iov_len,
+                (__kernel_size_t) (regset->n * regset->size));
+
+    if (req == PTRACE_GETREGSET)
+        return copy_regset_to_user(task, view, regset_no, 0, kiov->iov_len, kiov->iov_base);
+    else
+        return copy_regset_from_user(task, view, regset_no, 0, kiov->iov_len, kiov->iov_base);
+}
+```
+
+### hw_break_get
+
+```c
+static int hw_break_get(struct task_struct *target,
+            const struct user_regset *regset,
+            struct membuf to)
+{
+    unsigned int note_type = regset->core_note_type;
+    int ret, idx = 0;
+    u32 info, ctrl;
+    u64 addr;
+
+    /* Resource info */
+    ret = ptrace_hbp_get_resource_info(note_type, &info);
+    if (ret)
+        return ret;
+
+    membuf_write(&to, &info, sizeof(info));
+    membuf_zero(&to, sizeof(u32));
+    /* (address, ctrl) registers */
+    while (to.left) {
+        ret = ptrace_hbp_get_addr(note_type, target, idx, &addr);
+        if (ret)
+            return ret;
+        ret = ptrace_hbp_get_ctrl(note_type, target, idx, &ctrl);
+        if (ret)
+            return ret;
+        membuf_store(&to, addr);
+        membuf_store(&to, ctrl);
+        membuf_zero(&to, sizeof(u32));
+        idx++;
+    }
+    return 0;
+}
+
+
+struct task_struct {
+    struct thread_struct {
+        struct cpu_context  cpu_context;    /* cpu context */
+        struct debug_info {
+        #ifdef CONFIG_HAVE_HW_BREAKPOINT
+            /* Have we suspended stepping by a debugger? */
+            int                 suspended_step;
+            /* Allow breakpoints and watchpoints to be disabled for this thread. */
+            int                 bps_disabled;
+            int                 wps_disabled;
+            /* Hardware breakpoints pinned to this task. */
+            struct perf_event   *hbp_break[ARM_MAX_BRP];
+            struct perf_event   *hbp_watch[ARM_MAX_WRP];
+         #endif
+        } debug;          /* debugging */
+    };
+};
+
+static int ptrace_hbp_get_addr(unsigned int note_type,
+                struct task_struct *tsk,
+                unsigned long idx,
+                u64 *addr)
+{
+    struct perf_event *bp = ptrace_hbp_get_event(note_type, tsk, idx) {
+        struct perf_event *bp = ERR_PTR(-EINVAL);
+
+        switch (note_type) {
+        case NT_ARM_HW_BREAK:
+            if (idx >= ARM_MAX_BRP)
+                goto out;
+            idx = array_index_nospec(idx, ARM_MAX_BRP);
+            bp = tsk->thread.debug.hbp_break[idx];
+            break;
+
+        case NT_ARM_HW_WATCH:
+            if (idx >= ARM_MAX_WRP)
+                goto out;
+            idx = array_index_nospec(idx, ARM_MAX_WRP);
+            bp = tsk->thread.debug.hbp_watch[idx];
+            break;
+        }
+
+    out:
+        return bp;
+    }
+
+    if (IS_ERR(bp))
+        return PTR_ERR(bp);
+
+    *addr = bp ? counter_arch_bp(bp)->address : 0;
+    return 0;
+}
+```
+
+## GDB
+
+1. **Register Access**
+
+    ```c
+    /* ARM64 Register Structure */
+    struct user_pt_regs {
+        __u64 regs[31];  // x0-x30
+        __u64 sp;        // Stack pointer
+        __u64 pc;        // Program counter
+        __u64 pstate;    // Processor state
+    };
+
+    /* Reading registers */
+    static int gdb_get_registers(pid_t pid, struct user_pt_regs *regs)
+    {
+        struct iovec iov;
+        iov.iov_base = regs;
+        iov.iov_len = sizeof(*regs);
+
+        return ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, &iov);
+    }
+
+    /* Writing registers */
+    static int gdb_set_registers(pid_t pid, struct user_pt_regs *regs)
+    {
+        struct iovec iov;
+        iov.iov_base = regs;
+        iov.iov_len = sizeof(*regs);
+
+        return ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, &iov);
+    }
+    ```
+
+2. **Memory Access**
+
+    ```c
+    /* Reading memory */
+    static int gdb_read_memory(pid_t pid, unsigned long addr, void *buf, size_t len)
+    {
+        unsigned long *dst = (unsigned long *)buf;
+        unsigned long *src = (unsigned long *)addr;
+
+        for (size_t i = 0; i < len/sizeof(long); i++) {
+            dst[i] = ptrace(PTRACE_PEEKTEXT, pid, src + i, NULL);
+            if (errno)
+                return -1;
+        }
+        return 0;
+    }
+
+    /* Writing memory */
+    static int gdb_write_memory(pid_t pid, unsigned long addr, void *buf, size_t len)
+    {
+        unsigned long *src = (unsigned long *)buf;
+        unsigned long *dst = (unsigned long *)addr;
+
+        for (size_t i = 0; i < len/sizeof(long); i++) {
+            if (ptrace(PTRACE_POKETEXT, pid, dst + i, src[i]) == -1)
+                return -1;
+        }
+        return 0;
+    }
+    ```
+
+3. **Breakpoint Handling**
+
+    ```c
+    /* ARM64 breakpoint instruction (BRK #0) */
+    #define ARM64_BREAKPOINT_INSTRUCTION 0xd4200000
+
+    struct gdb_breakpoint {
+        unsigned long addr;
+        unsigned long original_instruction;
+    };
+
+    /* Setting breakpoint */
+    static int set_breakpoint(pid_t pid, struct gdb_breakpoint *bp)
+    {
+        // Save original instruction
+        bp->original_instruction = ptrace(PTRACE_PEEKTEXT, pid, bp->addr, NULL);
+
+        // Insert breakpoint
+        ptrace(PTRACE_POKETEXT, pid, bp->addr, ARM64_BREAKPOINT_INSTRUCTION);
+
+        return 0;
+    }
+
+    /* Handling breakpoint hit */
+    static int handle_breakpoint(pid_t pid, struct gdb_breakpoint *bp)
+    {
+        struct user_pt_regs regs;
+
+        // Get current registers
+        gdb_get_registers(pid, &regs);
+
+        // Restore original instruction
+        ptrace(PTRACE_POKETEXT, pid, bp->addr, bp->original_instruction);
+
+        // Adjust PC back to breakpoint
+        regs.pc -= 4;
+        gdb_set_registers(pid, &regs);
+
+        return 0;
+    }
+    ```
+
+4. **Single Step**
+
+    ```c
+    /* Single step implementation */
+    static int single_step(pid_t pid)
+    {
+        struct user_pt_regs regs;
+
+        // Enable single step mode
+        gdb_get_registers(pid, &regs);
+        regs.pstate |= PSR_SS_BIT;  // Set single step bit
+        gdb_set_registers(pid, &regs);
+
+        // Execute one instruction
+        ptrace(PTRACE_CONT, pid, NULL, NULL);
+
+        // Wait for SIGTRAP
+        waitpid(pid, NULL, 0);
+
+        // Disable single step mode
+        gdb_get_registers(pid, &regs);
+        regs.pstate &= ~PSR_SS_BIT;  // Clear single step bit
+        gdb_set_registers(pid, &regs);
+
+        return 0;
+    }
+    ```
+
+5. **Hardware Breakpoints**
+
+    ```c
+    /* ARM64 Debug Registers */
+    struct user_hwdebug_state {
+        __u32 dbg_info;
+        __u32 pad;
+        struct {
+            __u64 addr;
+            __u32 ctrl;
+            __u32 pad;
+        } dbg_regs[16];
+    };
+
+    /* Setting hardware breakpoint */
+    static int set_hw_breakpoint(pid_t pid, unsigned long addr)
+    {
+        struct user_hwdebug_state hw_bp;
+        struct iovec iov;
+
+        iov.iov_base = &hw_bp;
+        iov.iov_len = sizeof(hw_bp);
+
+        // Get current debug registers
+        ptrace(PTRACE_GETREGSET, pid, NT_ARM_HW_BREAK, &iov);
+
+        // Set breakpoint address and control
+        hw_bp.dbg_regs[0].addr = addr;
+        hw_bp.dbg_regs[0].ctrl = DBGBCR_ENABLED | DBGBCR_EXEC;
+
+        // Update debug registers
+        ptrace(PTRACE_SETREGSET, pid, NT_ARM_HW_BREAK, &iov);
+
+        return 0;
+    }
+    ```
+
+7. **Event Handling**
+
+    ```c
+    /* Main debug loop */
+    static void debug_loop(pid_t pid)
+    {
+        int status;
+        struct user_pt_regs regs;
+    
+        while (1) {
+            waitpid(pid, &status, 0);
+    
+            if (WIFSTOPPED(status)) {
+                switch (WSTOPSIG(status)) {
+                    case SIGTRAP:
+                        // Handle breakpoint or single step
+                        gdb_get_registers(pid, &regs);
+                        handle_trap(pid, &regs);
+                        break;
+    
+                    case SIGINT:
+                        // Handle interrupt
+                        handle_interrupt(pid);
+                        break;
+                }
+            }
+        }
+    }
+    ```
+
 # kprobe
+
+![](../images/kernel/trace-kprob.svg)
+
+---
 
 ![](../images/kernel/trace-ss-brk-handler.svg)
 
+```sh
+/sys/kernel/debug/kprobes/
+/sys/kernel/debug/kprobes/blacklist
+```
+
 Feature | ftrace | kprobes
---- | --- | ---
+:-: | :-: | :-:
 Primary Purpose | Function tracing, performance analysis | Dynamic tracing, debugging
 Mechanism | Compile-time instrumentation (dynamic patching) | Runtime instruction rewriting
 Overhead | Low | Higher
@@ -1086,7 +1706,7 @@ Stability Risk | Low | Higher (if used incorrectly)
 **Summary of Technologies Using Kprobes**
 
 | **Technology** | **Purpose** | **Dependent Feature** |
-|---|---|---|
+|:-:|:-:|:-:|
 | **kretprobes** | Function return probing | Kprobe framework |
 | **eBPF** | Dynamic tracing and monitoring | Kprobe events |
 | **ftrace** | Function-level and dynamic tracing | Kprobes integration |
@@ -1129,15 +1749,17 @@ struct kprobe {
     /* copy of the original instruction */
     struct arch_specific_insn ainsn;
 
-    /*
-    * Indicates various status flags.
-    * Protected by kprobe_mutex after this kprobe is registered.
-    */
+    /* Indicates various status flags.
+    * Protected by kprobe_mutex after this kprobe is registered. */
     u32 flags;
 };
 ```
 
 ```c
+#define KPROBE_HASH_BITS 6
+#define KPROBE_TABLE_SIZE (1 << KPROBE_HASH_BITS)
+static struct hlist_head kprobe_table[KPROBE_TABLE_SIZE];
+
 int __init init_kprobes(void)
 {
     int i, err;
@@ -1604,8 +2226,11 @@ kprobe_breakpoint_handler(struct pt_regs *regs, unsigned long esr)
                         /* single step simulated, now go for post processing */
                         post_kprobe_handler(p, kcb, regs) {
                             /* return addr restore if non-branching insn */
-                            if (cur->ainsn.xol_restore != 0)
-                                instruction_pointer_set(regs, cur->ainsn.xol_restore);
+                            if (cur->ainsn.xol_restore != 0) {
+                                instruction_pointer_set(regs, cur->ainsn.xol_restore) {
+                                    regs->pc = val;
+                                }
+                            }
 
                             /* restore back original saved kprobe variables and continue */
                             if (kcb->kprobe_status == KPROBE_REENTER) {
@@ -1653,6 +2278,72 @@ kprobe_breakpoint_ss_handler(struct pt_regs *regs, unsigned long esr)
     /* not ours, kprobes should ignore it */
     return DBG_HOOK_ERROR;
 }
+```
+
+## kprobe.ko
+
+```c
+#include <linux/module.h>
+#include <linux/kprobes.h>
+
+static int handler_pre(struct kprobe *p, struct pt_regs *regs) {
+    pr_info("Jemmy Kprobe hit at %s, PC: 0x%lx\n", p->symbol_name, regs->ip);
+    return 0;
+}
+
+static void handler_post(struct kprobe *p, struct pt_regs *regs, unsigned long flags) {
+    pr_info("Jemmy Kprobe post-handler for %s\n", p->symbol_name);
+}
+
+static struct kprobe kp = {
+    .pre_handler = handler_pre,
+    .post_handler = handler_post,
+    .symbol_name = "kernel_clone",
+};
+
+
+static int __init kprobe_init(void) {
+    int ret;
+
+    ret = register_kprobe(&kp);
+    if (ret < 0) {
+        pr_err("Failed to register kprobe: %d\n", ret);
+        return ret;
+    }
+
+    pr_info("Jemmy Kprobe registered at %s\n", kp.symbol_name);
+    return 0;
+}
+
+static void __exit kprobe_exit(void) {
+    unregister_kprobe(&kp);
+    pr_info("Jemmy Kprobe unregistered\n");
+}
+
+module_init(kprobe_init);
+module_exit(kprobe_exit);
+MODULE_LICENSE("GPL");
+```
+
+```c
+# Makefile
+obj-m += kprobe.o
+
+all:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+
+clean:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+```
+
+```sh
+sudo insmod kprobe.ko
+lsmod | grep kprobe
+sudo dmesg -w
+sudo rmmod kprobe
+make clean
+
+cat /sys/kernel/debug/kprobes/list
 ```
 
 # kretprobe
@@ -2012,8 +2703,7 @@ static int trace_kprobe_create(const char *raw_command)
 
 static int __trace_kprobe_create(int argc, const char *argv[])
 {
-    /*
-    * Argument syntax:
+    /* Argument syntax:
     *  - Add kprobe:
     *      p[:[GRP/][EVENT]] [MOD:]KSYM[+OFFS]|KADDR [FETCHARGS]
     *  - Add kretprobe:
@@ -2034,8 +2724,7 @@ static int __trace_kprobe_create(int argc, const char *argv[])
     * Alias name of args:
     *  NAME=FETCHARG : set NAME as alias of FETCHARG.
     * Type of args:
-    *  FETCHARG:TYPE : use TYPE instead of unsigned long.
-    */
+    *  FETCHARG:TYPE : use TYPE instead of unsigned long. */
     struct trace_kprobe *tk = NULL;
     int i, len, new_argc = 0, ret = 0;
     bool is_return = false;
@@ -2092,8 +2781,7 @@ static int __trace_kprobe_create(int argc, const char *argv[])
             goto parse_error;
         }
         /* kretprobes instances are iterated over via a list. The
-        * maximum should stay reasonable.
-        */
+        * maximum should stay reasonable. */
         if (maxactive > KRETPROBE_MAXACTIVE_MAX) {
             trace_probe_log_err(1, MAXACT_TOO_BIG);
             goto parse_error;
@@ -2483,7 +3171,7 @@ error:
 
 # ftrace
 
-![](../images/kernel/trace-frace-arch.svg)
+![](../images/kernel/trace-ftrace-arch.svg)
 
 * [Kernel调试追踪技术之 Ftrace on ARM64](https://www.cnblogs.com/hpyu/p/14348523.html)
 * [什么是ftrace？怎么使用ftrace？](https://mp.weixin.qq.com/s/JYC-V-G3Y6Yd5LPSflBM_A)
@@ -2520,11 +3208,95 @@ error:
     - systrace      : Android system trace
 
 ```bash
+# Ensure CONFIG_FUNCTION_TRACER and CONFIG_DYNAMIC_FTRACE are enabled:
+grep CONFIG_FUNCTION_TRACER /boot/config-$(uname -r)
+grep CONFIG_DYNAMIC_FTRACE /boot/config-$(uname -r)
+
+
+# Mount the tracing filesystem:
+sudo mount -t debugfs debugfs /sys/kernel/debug
+
+
 # List available tracers
 cat /sys/kernel/debug/tracing/available_tracers
 
-# Set current tracer
+
+# Enable the function tracer to trace all kernel functions:
 echo function > /sys/kernel/debug/tracing/current_tracer
+# Alternatively, use function_graph for call stack tracing:
+echo function_graph > /sys/kernel/debug/tracing/current_tracer
+
+
+# Enable tracing to start logging:
+echo 1 > /sys/kernel/debug/tracing/tracing_on
+
+
+# Trace specific functions using set_ftrace_filter:
+echo do_fork > /sys/kernel/debug/tracing/set_ftrace_filter
+# Use wildcards for groups:
+echo 'vfs_*' > /sys/kernel/debug/tracing/set_ftrace_filter
+# Clear filters:
+echo > /sys/kernel/debug/tracing/set_ftrace_filter
+# Exclude noisy functions using set_ftrace_notrace:
+echo 'schedule*' > /sys/kernel/debug/tracing/set_ftrace_notrace
+
+
+# Read the Trace Buffer:
+cat /sys/kernel/debug/tracing/trace
+# Continuous Monitoring:
+cat /sys/kernel/debug/tracing/trace_pipe
+# Clear the Buffer:
+echo > /sys/kernel/debug/tracing/trace
+```
+
+```sh
+# Basic Ftrace Directory Structure:
+/sys/kernel/debug/tracing/  [Main Ftrace Directory]
+├── available_tracers       # List of available tracers
+├── current_tracer          # Currently active tracer
+├── tracing_on              # Global on/off switch
+├── trace                   # Main trace output file
+├── trace_pipe              # Live trace output
+├── events/                 # Tracepoint events directory
+│   ├── sched/
+│   ├── irq/
+│   └── syscalls/
+└── instances/              # Per-instance trace buffers
+
+# Event Directory Structure:
+/sys/kernel/debug/tracing/events/
+├── enable                  # Global events on/off
+├── sched/                  # Scheduler events
+│   ├── sched_switch/
+│   │   ├── enable          # Per-event enable
+│   │   └── filter          # Per-event filter
+│   └── sched_wakeup/
+├── irq/
+│   ├── irq_handler_entry/
+│   └── irq_handler_exit/
+└── syscalls/
+    ├── sys_enter_read/
+    └── sys_exit_read/
+
+# Function Tracing Files:
+/sys/kernel/debug/tracing/
+├── available_filter_functions  # Traceable functions
+├── set_ftrace_filter           # Function filter
+├── set_ftrace_pid              # Process filter
+├── set_graph_function          # Function graph start
+└── options/
+    ├── func_stack_trace
+    ├── sym-offset
+    └── traceable_functions
+
+# Dynamic events
+/sys/kernel/debug/tracing/
+├── dynamic_events              # Dynamic event definitions
+├── kprobe_events               # Kprobe definitions
+├── uprobe_events               # Uprobe definitions
+└── events/
+    ├── kprobes/                # Dynamic kprobe events
+    └── uprobes/                # Dynamic uprobe events
 ```
 
 ## ftrace_function
@@ -2536,55 +3308,164 @@ echo function > /sys/kernel/debug/tracing/current_tracer
 ### ftrace_caller
 
 In ARM64 (AArch64) architecture, the **literal pool** is a region of memory used to store constants that cannot be directly encoded within an instruction.
-* The literal pool is used with `BL` when the target function's address is outside the direct range of the BL instruction's immediate offset.
+* The literal pool is used with `BL`  insn when the target function's address is outside the direct range of the BL instruction's immediate offset.
 * The literal pool is not interleaved with the instructions. It is placed in a separate area of memory (usually after the function or in a separate data section).
+
+Case | Function Inserted | Callsite Patch | Description | Configuration
+:-: | :-: | :-: | :-: | :-:
+Initial | None (NOPs) | NOP; NOP | Compiler-inserted NOPs before function prologue | Any
+Ftrace Enabled | ftrace_caller | MOV X9, LR; BL ftrace_caller | Patched to call ftrace_caller for standard ftrace tracing. | `DYNAMIC_WITH_ARGS`
+Direct Call | op->direct_call (trampoline) | MOV X9, LR; BL ftrace_caller (leads to BR X17) | Bypasses tracer for direct trampoline call. | `DYNAMIC_DIRECT_CALLS`
+Direct Call After Tracers | FREGS_DIRECT_TRAMP (trampoline) | MOV X9, LR; BL ftrace_caller (leads to BR X17 after tracers) | Runs tracers, then jumps to direct trampoline. | `DYNAMIC_DIRECT_CALLS`
 
 ```c
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
+
 SYM_CODE_START(ftrace_caller)
-    bti c
+    bti	c
+{
+    #ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
+/* 1. calc ftrace_ops addr
+        * aligns the LR value (x30) to the nearest 8-byte boundary by clearing the lower 3 bits. */
+        bic x11, x30, 0x7
+        /* subtracts 4 * AARCH64_INSN_SIZE (typically 4 * 4 = 16 bytes)
+        * from x11 to locate the ftrace_ops pointer.
+        * The ftrace_ops pointer is stored 16 bytes before the aligned LR. */
+        ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)]		// op
 
-    /* The literal pointer to the ops is at an 8-byte aligned boundary
-     * which is either 12 or 16 bytes before the BL instruction in the call
-     * site. See ftrace_call_adjust() for details.
-     *
-     * Therefore here the LR points at `literal + 16` or `literal + 20`,
-     * and we can find the address of the literal in either case by
-     * aligning to an 8-byte boundary and subtracting 16. We do the
-     * alignment first as this allows us to fold the subtraction into the
-     * LDR. */
-
-/* 1. load ftrace_ops */
-    /* aligns the LR value (x30) to the nearest 8-byte boundary by clearing the lower 3 bits. */
-    bic x11, x30, 0x7
-    /* subtracts 4 * AARCH64_INSN_SIZE (typically 4 * 4 = 16 bytes)
-     * from x11 to locate the ftrace_ops pointer.
-     * The ftrace_ops pointer is stored 16 bytes before the aligned LR. */
-    ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)] // op
+        #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+            /* If the op has a direct call, handle it immediately without
+             * saving/restoring registers. */
+            ldr	x17, [x11, #FTRACE_OPS_DIRECT_CALL]		// op->direct_call
+            cbnz	x17, ftrace_caller_direct
+        #endif
+    #endif
+}
 
 /* 2. save context */
-    /* Save original SP, function arguments
-     * the callsite's FP, LR, SP
-     * the PC after the ftrace callsite */
 
-/* 3. create a frame record for the callsite above the ftrace regs */
+    /* Save original SP */
+    mov	x10, sp
+
+    /* Make room for ftrace regs, plus two frame records */
+    sub	sp, sp, #(FREGS_SIZE + 32)
+
+    /* Save function arguments */
+    stp	x0, x1, [sp, #FREGS_X0]
+    stp	x2, x3, [sp, #FREGS_X2]
+    stp	x4, x5, [sp, #FREGS_X4]
+    stp	x6, x7, [sp, #FREGS_X6]
+    str	x8,     [sp, #FREGS_X8]
+
+{
+    #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+        str	xzr, [sp, #FREGS_DIRECT_TRAMP]
+    #endif
+}
+
+    /* Save the callsite's FP, LR, SP */
+    str	x29, [sp, #FREGS_FP]
+    str	x9,  [sp, #FREGS_LR]
+    str	x10, [sp, #FREGS_SP]
+
+    /* Save the PC after the ftrace callsite */
+    str	x30, [sp, #FREGS_PC]
+
+/* 3. Create a frame record for the callsite above the ftrace regs */
+
+    stp	x29, x9, [sp, #FREGS_SIZE + 16]
+    add	x29, sp, #FREGS_SIZE + 16
+
+    /* Create our frame record above the ftrace regs */
+    stp	x29, x30, [sp, #FREGS_SIZE]
+    add	x29, sp, #FREGS_SIZE
+
+    /* Prepare arguments for the the tracer func */
+    sub	x0, x30, #AARCH64_INSN_SIZE		// ip (callsite's BL insn)
+    mov	x1, x9					// parent_ip (callsite's LR)
+    mov	x3, sp					// regs
 
 /* 4. call ftrace_ops */
+
+{
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
-        mov x2, x11                     // op
-        ldr x4, [x2, #FTRACE_OPS_FUNC]  // op->func
-        blr x4                          // op->func(ip, parent_ip, op, regs)
+        mov	x2, x11                         // op
+        ldr	x4, [x2, #FTRACE_OPS_FUNC]      // op->func
+        blr	x4                              // op->func(ip, parent_ip, op, regs)
+
     #else
-        ldr_l   x2, function_trace_op   // op
+        ldr_l   x2, function_trace_op       // op
 
     SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)
-        /* Wont be replaced with "bl xxx" */
-        bl      ftrace_stub             // func(ip, parent_ip, op, regs)
+        bl      ftrace_stub                 // func(ip, parent_ip, op, regs)
     #endif
+}
 
 /* 5. restore context */
-SYM_CODE_END(ftrace_caller)
 
+    ldp	x0, x1, [sp, #FREGS_X0]
+    ldp	x2, x3, [sp, #FREGS_X2]
+    ldp	x4, x5, [sp, #FREGS_X4]
+    ldp	x6, x7, [sp, #FREGS_X6]
+    ldr	x8,     [sp, #FREGS_X8]
+
+    /* Restore the callsite's FP */
+    ldr	x29, [sp, #FREGS_FP]
+
+{
+    #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+        ldr	x17, [sp, #FREGS_DIRECT_TRAMP]
+        cbnz	x17, ftrace_caller_direct_late
+    #endif
+}
+
+    /* Restore the callsite's LR and PC */
+    ldr	x30, [sp, #FREGS_LR]
+    ldr	x9,  [sp, #FREGS_PC]
+
+    /* Restore the callsite's SP */
+    add	sp, sp, #FREGS_SIZE + 32
+
+    ret	x9
+
+{
+    #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+    SYM_INNER_LABEL(ftrace_caller_direct_late, SYM_L_LOCAL)
+        /* Head to a direct trampoline in x17 after having run other tracers.
+        * The ftrace_regs are live, and x0-x8 and FP have been restored. The
+        * LR, PC, and SP have not been restored. */
+
+        /* Restore the callsite's LR and PC matching the trampoline calling
+        * convention. */
+        ldr	x9,  [sp, #FREGS_LR]
+        ldr	x30, [sp, #FREGS_PC]
+
+        /* Restore the callsite's SP */
+        add	sp, sp, #FREGS_SIZE + 32
+
+    SYM_INNER_LABEL(ftrace_caller_direct, SYM_L_LOCAL)
+        /* Head to a direct trampoline in x17.
+        *
+        * We use `BR X17` as this can safely land on a `BTI C` or `PACIASP` in
+        * the trampoline, and will not unbalance any return stack. */
+        br	x17
+    #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
+    SYM_CODE_END(ftrace_caller)
+}
+
+{
+    #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+    SYM_CODE_START(ftrace_stub_direct_tramp)
+        bti	c
+        mov	x10, x30
+        mov	x30, x9
+        ret	x10
+    SYM_CODE_END(ftrace_stub_direct_tramp)
+    #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
+}
+```
+
+```c
 #else /* CONFIG_DYNAMIC_FTRACE_WITH_ARGS */
 
     SYM_FUNC_START(_mcount)
@@ -2636,7 +3517,7 @@ struct dyn_ftrace {
 };
 ```
 
-Main jobs of ftrace_init:
+Main jobs of ftrace_fn_init:
 1. Initialize ftrace pages (memory allocation):
     - Allocate memory for ftrace pages
     - Setup ftrace_pages list
@@ -2664,8 +3545,13 @@ Main jobs of ftrace_init:
 
 This initialization ensures the ftrace infrastructure is ready but dormant (NOPs) until explicitly enabled.
 
+**__start_mcount_loc**
+
+* **Definition**: __start_mcount_loc is a linker-defined symbol marking the start of a table in the kernel’s memory that lists the addresses of all mcount call sites (i.e., locations where mcount is called in kernel functions).
+* **Purpose**: Provides ftrace with a map of all traceable function entry points, enabling dynamic modification of mcount calls.
+
 ```c
-void __init ftrace_init(void)
+void __init ftrace_fn_init(void)
 {
     extern unsigned long __start_mcount_loc[];
     extern unsigned long __stop_mcount_loc[];
@@ -2683,7 +3569,7 @@ void __init ftrace_init(void)
 
     /* | Compiled | Disabled   | Enabled    |
      * +----------+------------+------------+
-     * |        Literal Pool   | ftrace_op  |
+     * |        Literal Pool   | #ftrace_op  |
      * | NOP      | MOV X9, LR | MOV X9, LR |
      * | NOP      | NOP        | BL <entry> | */
 
@@ -2722,7 +3608,39 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
 /* 1. add to global ftrace_ops_list
      * ftraced funciont own frace_ops is encoded in trampoline
      * at ftrace_make_call */
-    ret = __register_ftrace_function(ops);
+    ret = __register_ftrace_function(ops) {
+        add_ftrace_ops(&ftrace_ops_list, ops);
+
+        /* Always save the function, and reset at unregistering */
+        ops->saved_func = ops->func;
+
+        if (ftrace_pids_enabled(ops))
+            ops->func = ftrace_pid_func;
+
+        ftrace_update_trampoline(ops) {
+            unsigned long trampoline = ops->trampoline;
+
+            arch_ftrace_update_trampoline(ops);
+            if (ops->trampoline && ops->trampoline != trampoline &&
+                (ops->flags & FTRACE_OPS_FL_ALLOC_TRAMP)) {
+                /* Add to kallsyms before the perf events */
+                ftrace_add_trampoline_to_kallsyms(ops);
+                perf_event_ksymbol(PERF_RECORD_KSYMBOL_TYPE_OOL,
+                        ops->trampoline, ops->trampoline_size, false,
+                        FTRACE_TRAMPOLINE_SYM);
+                /* Record the perf text poke event after the ksymbol register
+                * event. */
+                perf_event_text_poke((void *)ops->trampoline, NULL, 0,
+                    (void *)ops->trampoline,
+                    ops->trampoline_size);
+            }
+        }
+
+        if (ftrace_enabled)
+            update_ftrace_function();
+
+        return 0;
+    }
 
     ftrace_start_up++;
 
@@ -2783,12 +3701,15 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
 
                         FTRACE_WARN_ON(rec->flags & FTRACE_FL_DIRECT);
 
-                        /*bAnother ops with IPMODIFY is already
+                        /* Another ops with IPMODIFY is already
                          * attached. We are now attaching a direct
                          * ops. Run SHARE_IPMODIFY_SELF, to check
                          * whether sharing is supported. */
                         if (!ops->ops_func)
                             return -EBUSY;
+
+                        /* a callback (ftrace_ops_func_t) invoked during ftrace operations
+                         * like enabling/disabling tracing. */
                         ret = ops->ops_func(ops, FTRACE_OPS_CMD_ENABLE_SHARE_IPMODIFY_SELF);
                         if (ret)
                             return ret;
@@ -2813,6 +3734,136 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
     ops->flags &= ~FTRACE_OPS_FL_ADDING;
 
     return 0;
+}
+```
+
+```c
+static bool ftrace_hash_rec_enable(struct ftrace_ops *ops)
+{
+    /* This is the main engine to the ftrace updates to the dyn_ftrace records.
+     * increment the counters of the dyn_ftrace records */
+    return __ftrace_hash_rec_update(ops, true) {
+        struct ftrace_hash *hash;
+        struct ftrace_hash *notrace_hash;
+        struct ftrace_page *pg;
+        struct dyn_ftrace *rec;
+        bool update = false;
+        int count = 0;
+        int all = false;
+
+        /* Only update if the ops has been registered */
+        if (!(ops->flags & FTRACE_OPS_FL_ENABLED))
+            return false;
+
+        hash = ops->func_hash->filter_hash;
+        notrace_hash = ops->func_hash->notrace_hash;
+        if (ftrace_hash_empty(hash))
+            all = true;
+
+        do_for_each_ftrace_rec(pg, rec) {
+            int in_notrace_hash = 0;
+            int in_hash = 0;
+            int match = 0;
+
+            if (skip_record(rec))
+                continue;
+
+            if (all) {
+                if (!notrace_hash || !ftrace_lookup_ip(notrace_hash, rec->ip))
+                    match = 1;
+            } else {
+                in_hash = !!ftrace_lookup_ip(hash, rec->ip);
+                in_notrace_hash = !!ftrace_lookup_ip(notrace_hash, rec->ip);
+
+                if (in_hash && !in_notrace_hash)
+                    match = 1;
+            }
+            if (!match)
+                continue;
+
+            if (inc) {
+                rec->flags++;
+                if (FTRACE_WARN_ON(ftrace_rec_count(rec) == FTRACE_REF_MAX))
+                    return false;
+
+                if (ops->flags & FTRACE_OPS_FL_DIRECT)
+                    rec->flags |= FTRACE_FL_DIRECT;
+
+                /* If there's only a single callback registered to a
+                * function, and the ops has a trampoline registered
+                * for it, then we can call it directly. */
+                if (ftrace_rec_count(rec) == 1 && ops->trampoline)
+                    rec->flags |= FTRACE_FL_TRAMP;
+                else
+                    /* If we are adding another function callback
+                    * to this function, and the previous had a
+                    * custom trampoline in use, then we need to go
+                    * back to the default trampoline. */
+                    rec->flags &= ~FTRACE_FL_TRAMP;
+
+                /* If any ops wants regs saved for this function
+                * then all ops will get saved regs. */
+                if (ops->flags & FTRACE_OPS_FL_SAVE_REGS)
+                    rec->flags |= FTRACE_FL_REGS;
+            } else {
+                if (FTRACE_WARN_ON(ftrace_rec_count(rec) == 0))
+                    return false;
+                rec->flags--;
+
+                /* Only the internal direct_ops should have the
+                * DIRECT flag set. Thus, if it is removing a
+                * function, then that function should no longer
+                * be direct. */
+                if (ops->flags & FTRACE_OPS_FL_DIRECT)
+                    rec->flags &= ~FTRACE_FL_DIRECT;
+
+                /* If the rec had REGS enabled and the ops that is
+                * being removed had REGS set, then see if there is
+                * still any ops for this record that wants regs.
+                * If not, we can stop recording them. */
+                if (ftrace_rec_count(rec) > 0 &&
+                    rec->flags & FTRACE_FL_REGS &&
+                    ops->flags & FTRACE_OPS_FL_SAVE_REGS) {
+                    if (!test_rec_ops_needs_regs(rec))
+                        rec->flags &= ~FTRACE_FL_REGS;
+                }
+
+                /* The TRAMP needs to be set only if rec count
+                * is decremented to one, and the ops that is
+                * left has a trampoline. As TRAMP can only be
+                * enabled if there is only a single ops attached
+                * to it. */
+                if (ftrace_rec_count(rec) == 1 &&
+                    ftrace_find_tramp_ops_any_other(rec, ops))
+                    rec->flags |= FTRACE_FL_TRAMP;
+                else
+                    rec->flags &= ~FTRACE_FL_TRAMP;
+
+                /* flags will be cleared in ftrace_check_record()
+                * if rec count is zero. */
+            }
+
+            /* If the rec has a single associated ops, and ops->func can be
+            * called directly, allow the call site to call via the ops. */
+            if (IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS) &&
+                ftrace_rec_count(rec) == 1 &&
+                ftrace_ops_get_func(ops) == ops->func)
+                rec->flags |= FTRACE_FL_CALL_OPS;
+            else
+                rec->flags &= ~FTRACE_FL_CALL_OPS;
+
+            count++;
+
+            /* Must match FTRACE_UPDATE_CALLS in ftrace_modify_all_code() */
+            update |= ftrace_test_record(rec, true) != FTRACE_UPDATE_IGNORE;
+
+            /* Shortcut, if we handled all records, we are done. */
+            if (!all && count == hash->count)
+                return update;
+        } while_for_each_ftrace_rec();
+
+        return update;
+    }
 }
 ```
 
@@ -2842,6 +3893,7 @@ ftrace_startup_enable(command) {
 
                 if (update) {
                     err = update_ftrace_func(ftrace_ops_list_func);
+                        --->
                     if (FTRACE_WARN_ON(err))
                         return;
                 }
@@ -2860,7 +3912,11 @@ ftrace_startup_enable(command) {
                             return;
 
                         do_for_each_ftrace_rec(pg, rec) {
-                            if (skip_record(rec))
+                            ret = skip_record(rec) {
+                                return rec->flags & FTRACE_FL_DISABLED
+                                    && !(rec->flags & FTRACE_FL_ENABLED);
+                            }
+                            if (ret)
                                 continue;
 
                             failed = __ftrace_replace_code(rec, enable) {
@@ -2868,9 +3924,56 @@ ftrace_startup_enable(command) {
                                 unsigned long ftrace_addr;
                                 int ret;
 
-                                ftrace_addr = ftrace_get_addr_new(rec);
+                                /* Determines the new address to be patched into the callsite
+                                 * based on the current state of registered ftrace_ops for that callsite */
+                                ftrace_addr = ftrace_get_addr_new(rec) {
+                                    struct ftrace_ops *ops;
+                                    unsigned long addr;
 
-                                /* This needs to be done before we call ftrace_update_record */
+                                    if ((rec->flags & FTRACE_FL_DIRECT) && (ftrace_rec_count(rec) == 1)) {
+                                        addr = ftrace_find_rec_direct(rec->ip) {
+                                            struct ftrace_func_entry *entry;
+
+                                            entry = __ftrace_lookup_ip(direct_functions, ip);
+                                            if (!entry)
+                                                return 0;
+
+                                            return entry->direct;
+                                        }
+                                        if (addr)
+                                            return addr;
+                                        WARN_ON_ONCE(1);
+                                    }
+
+                                    /* Trampolines take precedence over regs */
+                                    if (rec->flags & FTRACE_FL_TRAMP) {
+                                        ops = ftrace_find_tramp_ops_new(rec) {
+                                            struct ftrace_ops *op;
+                                            unsigned long ip = rec->ip;
+
+                                            do_for_each_ftrace_op(op, ftrace_ops_list) {
+                                                /* pass rec in as regs to have non-NULL val */
+                                                if (hash_contains_ip(ip, op->func_hash))
+                                                    return op;
+                                            } while_for_each_ftrace_op(op);
+
+                                            return NULL;
+                                        }
+                                        if (FTRACE_WARN_ON(!ops || !ops->trampoline)) {
+                                            /* Ftrace is shutting down, return anything */
+                                            return (unsigned long)FTRACE_ADDR;
+                                        }
+                                        return ops->trampoline;
+                                    }
+
+                                    if (rec->flags & FTRACE_FL_REGS)
+                                        return (unsigned long)FTRACE_REGS_ADDR; /* (unsigned long)ftrace_regs_caller */
+                                    else
+                                        return (unsigned long)FTRACE_ADDR; /* (unsigned long)ftrace_caller */
+                                }
+
+                                /* Retrieves the current address already patched into the callsite,
+                                 * reflecting the existing ftrace_ops or trampoline. */
                                 ftrace_old_addr = ftrace_get_addr_curr(rec);
 
                                 ftrace_bug_type = FTRACE_BUG_UNKNOWN;
@@ -2883,19 +3986,51 @@ ftrace_startup_enable(command) {
 
                                 case FTRACE_UPDATE_MAKE_CALL:
                                     ftrace_bug_type = FTRACE_BUG_CALL;
-                                    return ftrace_make_call(rec, ftrace_addr) {
+                                    return ftrace_make_call(rec, ftrace_addr/*addr*/) {
                                         unsigned long pc = rec->ip;
                                         u32 old, new;
                                         int ret;
 
                                         /* Memory Layout After Patching:
-                                         * 0x0FF0  Pointer to ftrace_ops (literal pool entry)
-                                         * 0x1000  MOV X9, LR (save return address)
+                                         * 0x0FF0  IMM of ftrace_ops/ftrace_list_ops (literal pool entry)
+                                         * 0x1000  MOV X9, LR (save return address after BL ftrace_caller)
                                          * 0x1004  BL ftrace_caller (branch to trampoline)
                                          * 0x1008  Start of the original function body */
+
+                                        /* 1. patch the ftrace_ops/ftrace_list_ops into literal pool */
                                         ret = ftrace_rec_update_ops(rec) {
-                                            /* search rec->ip in hash table of every ftrace_ops linked in ftrace_ops_list*/
-                                            ops = arm64_rec_get_ops(rec);
+                                            /* search rec->ip in hash table of every ftrace_ops linked in ftrace_ops_list
+                                             * return the single ftrace_ops if the rec is attached only one ftrace_ops
+                                             * otherwise return `ftrace_list_ops` */
+                                            ops = arm64_rec_get_ops(rec) {
+                                                const struct ftrace_ops *ops = NULL;
+
+                                                if (rec->flags & FTRACE_FL_CALL_OPS_EN) {
+                                                    ops = ftrace_find_unique_ops(rec) {
+                                                        struct ftrace_ops *op, *found = NULL;
+                                                        unsigned long ip = rec->ip;
+
+                                                        do_for_each_ftrace_op(op, ftrace_ops_list) {
+
+                                                            if (hash_contains_ip(ip, op->func_hash)) {
+                                                                if (found)
+                                                                    return NULL;
+                                                                found = op;
+                                                            }
+
+                                                        } while_for_each_ftrace_op(op);
+
+                                                        return found;
+                                                    }
+                                                    WARN_ON_ONCE(!ops);
+                                                }
+
+                                                if (!ops)
+                                                    ops = &ftrace_list_ops; /* searh all ftrace_ops in the list */
+
+                                                return ops;
+                                            }
+
                                             return ftrace_rec_set_ops(rec, ops) {
                                                 unsigned long literal = ALIGN_DOWN(rec->ip - 12, 8);
                                                 return aarch64_insn_write_literal_u64((void *)literal, (unsigned long)ops) {
@@ -2922,8 +4057,11 @@ ftrace_startup_enable(command) {
                                             return -EINVAL;
 
                                         old = aarch64_insn_gen_nop();
-                                        new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
+                                        new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK) {
+                                            /* BL ftrace_call */
+                                        }
 
+                                        /* 2. patch `BL ftrace_call` after litral pool */
                                         return ftrace_modify_code(pc, old, new, true) {
                                             aarch64_insn_patch_text_nosync((void *)pc, new);
                                         }
@@ -2976,7 +4114,7 @@ ftrace_startup_enable(command) {
                     if (!irqs_disabled())
                         smp_call_function(ftrace_sync_ipi, NULL, 1);
 
-                    err = update_ftrace_func(ftrace_trace_function) {
+                    err = update_ftrace_func(ftrace_trace_function/*func*/) {
                         static ftrace_func_t save_func;
 
                         /* Avoid updating if it hasn't changed */
@@ -3017,6 +4155,74 @@ ftrace_startup_enable(command) {
             }
         }
         ftrace_arch_code_modify_post_process();
+    }
+}
+```
+
+### ftrace_ops_list_func
+
+**Which ftrace_ops Is Placed in the Literal Table?**
+* **Single** ftrace_ops: the literal table contains a pointer to that specific ftrace_ops structure.
+* **Multiple** ftrace_ops: the literal table contains a pointer to a consolidated ftrace_ops (e.g., `ftrace_list_ops` or a dynamically allocated ftrace_ops). This ftrace_ops has a tracer function (e.g., `ftrace_list_func`) that iterates over the `ftrace_ops_list` to invoke all registered tracers.
+* **Direct** Call Case (with `CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`): If a direct call trampoline is registered (i.e., op->direct_call is non-zero), the ftrace_ops in the literal table may still be a consolidated ftrace_ops, but ftrace_caller checks the FTRACE_OPS_DIRECT_CALL field and jumps to the direct trampoline if present, potentially bypassing the list iteration.
+
+---
+
+```c
+/* serves as the default callback for basic function tracing
+ * when a **single** ftrace_ops is registered or when no filtering is needed. */
+ftrace_func_t ftrace_trace_function __read_mostly = ftrace_stub;
+
+/* dispatches tracing callbacks for all ftrace_ops registered to trace a function,
+ * supporting **multiple** tracers and complex filtering. */
+void ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip,
+            struct ftrace_ops *op, struct ftrace_regs *fregs);
+
+/*  Stub used to invoke the list ops without requiring a separate trampoline. */
+const struct ftrace_ops ftrace_list_ops = {
+    .func   = ftrace_ops_list_func,
+    .flags  = FTRACE_OPS_FL_STUB,
+};
+
+```c
+/* include/asm-generic/vmlinux.lds.h */
+#define MCOUNT_REC() . = ALIGN(8); \
+    __start_mcount_loc = .; \
+    KEEP(*(__mcount_loc)) \
+    KEEP_PATCHABLE \
+    __stop_mcount_loc = .; \
+    FTRACE_STUB_HACK \
+    ftrace_ops_list_func = arch_ftrace_ops_list_func;
+
+void arch_ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip)
+{
+    __ftrace_ops_list_func(ip, parent_ip, NULL, NULL) {
+        struct pt_regs *regs = ftrace_get_regs(fregs);
+        struct ftrace_ops *op;
+        int bit;
+
+        /* The ftrace_test_and_set_recursion() will disable preemption,
+        * which is required since some of the ops may be dynamically
+        * allocated, they must be freed after a synchronize_rcu(). */
+        bit = trace_test_and_set_recursion(ip, parent_ip, TRACE_LIST_START);
+        if (bit < 0)
+            return;
+
+        do_for_each_ftrace_op(op, ftrace_ops_list) {
+            /* Stub functions don't need to be called nor tested */
+            if (op->flags & FTRACE_OPS_FL_STUB)
+                continue;
+            if ((!(op->flags & FTRACE_OPS_FL_RCU) || rcu_is_watching())
+                && ftrace_ops_test(op, ip, regs)) {
+                if (FTRACE_WARN_ON(!op->func)) {
+                    pr_warn("op=%p %pS\n", op, op);
+                    goto out;
+                }
+                op->func(ip, parent_ip, op, fregs);
+            }
+        } while_for_each_ftrace_op(op);
+    out:
+        trace_clear_recursion(bit);
     }
 }
 ```
@@ -3234,27 +4440,104 @@ int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
     }
 }
 ```
+### ftrace_fn.ko
 
-## trace_event
+```c
+#include <linux/module.h>
+#include <linux/ftrace.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+
+// Structure for ftrace operations
+static struct ftrace_ops trace_ops;
+
+// Callback function for function tracing
+static void notrace trace_callback(unsigned long ip, unsigned long parent_ip,
+                                  struct ftrace_ops *ops, struct ftrace_regs *regs)
+{
+    // Print function address and parent address
+    printk(KERN_INFO "Jemmy ftrace - Function: 0x%lx called from 0x%lx\n", ip, parent_ip);
+}
+
+static int __init trace_fn_init(void)
+{
+    int ret;
+
+    // Initialize ftrace operations
+    trace_ops.func = trace_callback;
+    trace_ops.flags = FTRACE_OPS_FL_SAVE_REGS;
+
+    // Set filter for fork syscall (x86_64 uses kernel_clone)
+    ret = ftrace_set_filter(&trace_ops, "kernel_clone", strlen("kernel_clone"), 0);
+    if (ret) {
+        printk(KERN_ERR "Jemmy ftrace - Failed to set ftrace filter for kernel_clone: %d\n", ret);
+        return ret;
+    }
+
+    // Register the ftrace operations
+    ret = register_ftrace_function(&trace_ops);
+    if (ret) {
+        printk(KERN_ERR "Jemmy ftrace - Failed to register ftrace ops: %d\n", ret);
+        return ret;
+    }
+
+    printk(KERN_INFO "Jemmy ftrace - Function trace module loaded\n");
+    return 0;
+}
+
+static void __exit trace_fn_exit(void)
+{
+    // Unregister ftrace operations
+    unregister_ftrace_function(&trace_ops);
+    printk(KERN_INFO "Jemmy ftrace - Function trace module unloaded\n");
+}
+
+module_init(trace_fn_init);
+module_exit(trace_fn_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("xAI");
+MODULE_DESCRIPTION("Simple ftrace function tracer for x86");
+```
+
+```sh
+obj-m += ftrace_fn.o
+
+all:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+
+clean:
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+```
+
+```sh
+sudo insmod ftrace_fn.ko
+lsmod | grep ftrace_fn
+sudo dmesg | tail -n 20
+sudo rmmod ftrace_fn
+make clean
+```
+
+## ftrace_event
 
 | **Event Type** | **Description** |
-| --- | --- |
+| :-: | :-: |
 | **Syscalls**           | Events triggered by system calls (e.g., `sys_enter`, `sys_exit`) to track entry and exit points of syscalls. |
-| **IRQ Events** | Events related to hardware interrupts, such as `irq_handler_entry` and `irq_handler_exit`. |
-| **SoftIRQ Events** | Events for software interrupts, such as `softirq_entry` and `softirq_exit`. |
-| **Sched Events** | Events related to the scheduler, such as `sched_switch`, `sched_wakeup`, and `sched_process_exit`. |
-| **Process Events** | Events related to process lifecycle, such as `task_newtask` and `task_rename`. |
-| **Memory Events** | Events related to memory management, such as `kmalloc`, `kmem_cache_alloc`, and `mm_page_alloc`. |
-| **Block I/O Events** | Events related to block I/O operations, such as `block_rq_insert`, `block_rq_complete`, and `block_bio_queue`.|
-| **Network Events** | Events for networking activities, such as `net_dev_xmit`, `netif_receive_skb`, and `tcp_probe`. |
-| **Filesystem Events** | Events related to filesystems, such as `vfs_read`, `vfs_write`, and `file_open`. |
+| **IRQ** | Events related to hardware interrupts, such as `irq_handler_entry` and `irq_handler_exit`. |
+| **SoftIRQ** | Events for software interrupts, such as `softirq_entry` and `softirq_exit`. |
+| **Sched** | Events related to the scheduler, such as `sched_switch`, `sched_wakeup`, and `sched_process_exit`. |
+| **Process** | Events related to process lifecycle, such as `task_newtask` and `task_rename`. |
+| **Memory** | Events related to memory management, such as `kmalloc`, `kmem_cache_alloc`, and `mm_page_alloc`. |
+| **Block I/O** | Events related to block I/O operations, such as `block_rq_insert`, `block_rq_complete`, and `block_bio_queue`.|
+| **Network** | Events for networking activities, such as `net_dev_xmit`, `netif_receive_skb`, and `tcp_probe`. |
+| **Filesystem** | Events related to filesystems, such as `vfs_read`, `vfs_write`, and `file_open`. |
 | **Power Management** | Events related to power states, such as `cpu_idle` and `cpu_frequency`. |
-| **Timer Events** | Events for timer-related activities, such as `timer_start` and `timer_expire_entry`. |
-| **Workqueue Events** | Events related to workqueues, such as `workqueue_execute_start` and `workqueue_execute_end`. |
-| **Thermal Events** | Events related to thermal management, such as `thermal_temperature` and `thermal_power_cpu_limit`. |
-| **Device Events** | Events for device-specific operations, such as `devfreq_switch` and `i2c_read_transfer`. |
-| **Lock Events** | Events for locking mechanisms, such as `lock_acquire`, `lock_release`, and `lock_contended`. |
-| **Module Events** | Events related to kernel modules, such as `module_load` and `module_free`. |
+| **Timer** | Events for timer-related activities, such as `timer_start` and `timer_expire_entry`. |
+| **Workqueue** | Events related to workqueues, such as `workqueue_execute_start` and `workqueue_execute_end`. |
+| **Thermal** | Events related to thermal management, such as `thermal_temperature` and `thermal_power_cpu_limit`. |
+| **Device** | Events for device-specific operations, such as `devfreq_switch` and `i2c_read_transfer`. |
+| **Lock** | Events for locking mechanisms, such as `lock_acquire`, `lock_release`, and `lock_contended`. |
+| **Module** | Events related to kernel modules, such as `module_load` and `module_free`. |
 
 TracePoints employee **static key** to eliminate **branch check/mispredict** overhead.
 
@@ -3428,7 +4711,71 @@ TRACE_EVENT(sched_switch,
 );
 ```
 
+## ftrace-cmd
+
+```sh
+sudo apt install trace-cmd
+
+# Verify ftrace support:
+grep CONFIG_FUNCTION_TRACER /boot/config-$(uname -r)
+grep CONFIG_DYNAMIC_FTRACE /boot/config-$(uname -r)
+
+# Ensure debugfs is mounted:
+sudo mount -t debugfs debugfs /sys/kernel/debug
+```
+
+```sh
+# Record Function Traces:
+# Trace specific functions (e.g., do_fork):
+sudo trace-cmd record -p function -l do_fork
+
+# Use wildcards:
+sudo trace-cmd record -p function -l 'vfs_*'
+
+# Exclude noisy functions:
+sudo trace-cmd record -p function -n 'schedule*'
+
+# Limit Trace Duration, Record for a specific command or duration:
+sudo trace-cmd record -p function sleep 5
+
+
+# Read the trace file:
+sudo trace-cmd report trace.dat
+
+# Stream Traces in Real-Time, Use trace-cmd listen for live tracing:
+sudo trace-cmd record -p function -o - | trace-cmd report
+```
+
+```sh
+# Trace function call stacks:
+sudo trace-cmd record -p function_graph -l do_fork
+
+# Trace functions and events (e.g., sched_switch):
+sudo trace-cmd record -p function -l do_fork -e sched:sched_switch
+
+# Check Available Tracers:
+trace-cmd list -t
+
+# List Traceable Functions:
+trace-cmd list -f | grep do_fork
+
+# Verify Events:
+trace-cmd list -e
+```
+
+```sh
+# Graphical Analysis with KernelShark:
+
+# Install kernelshark:
+sudo apt-get install kernelshark
+
+# View traces:
+kernelshark trace.dat
+```
+
 # static_key
+
+![](../images/kernel/trace-static_key.svg)
 
 1. At compiple time, compiler adds add a **jump_entry** in **_jump_table section** for each `static_branch_likely/unlikey` call
 2. At runnning time, `jump_label_init` sorts **jump_entry** by key so entries of same key are placed together, and points the `entries` filed of **static_key** to first entry, establishes `N:1` relationship between **jump_entry table**(sorted by key) and **key**
@@ -3439,7 +4786,7 @@ extern struct jump_entry __start___jump_table[];
 extern struct jump_entry __stop___jump_table[];
 
 struct jump_entry {
-    s32 code;    /* Relative offset to the jump instruction */
+    s32 code;    /* the addr of the branch insn */
     s32 target;  /* branch target code */
     long key;    /* static_key address */
 };
@@ -3633,6 +4980,7 @@ void static_key_enable(struct static_key *key)
                     s32 target;
                     long key;
                 } *entry;
+
             #ifdef CONFIG_MODULES
                 struct module *mod;
 
@@ -3777,4 +5125,341 @@ static __always_inline bool arch_static_branch_jump(struct static_key * const ke
 l_yes:
     return true;
 }
+```
+
+# Diagnose high interrupt latency
+
+If a system is experiencing high interrupt latency, what steps would you take to diagnose and mitigate the issue
+
+**Diagnose High Interrupt Latency**:
+1. **Monitor Interrupts**:
+   - Use `cat /proc/interrupts` to check IRQ counts and distribution.
+   - Run `top` or `htop` to identify CPU usage by interrupt handlers (`irq/` processes).
+2. **Profile Latency**:
+   - Use `perf` or `ftrace` to trace interrupt handling times and identify bottlenecks.
+   - Check `/proc/stat` for interrupt statistics.
+3. **Check Affinity**:
+   - Verify IRQ affinity with `cat /proc/irq/<irq>/smp_affinity` to ensure balanced CPU distribution.
+4. **Identify Long-Running Handlers**:
+   - Use `trace-cmd` or `dmesg` to spot handlers with excessive execution time.
+5. **Examine System Load**:
+   - Check for high CPU contention or long critical sections disabling interrupts (`local_irq_disable()`).
+
+**Mitigate High Interrupt Latency**:
+1. **Optimize IRQ Affinity**:
+   - Use `echo <cpumask> > /proc/irq/<irq>/smp_affinity` to bind IRQs to specific CPUs, balancing load.
+   - Use `irqbalance` for dynamic distribution.
+2. **Offload Work**:
+   - Move heavy processing to threaded interrupts (`request_threaded_irq()`) or workqueues.
+   - Minimize top-half handler work, deferring to softirqs/tasklets.
+3. **Tune Interrupt Handlers**:
+   - Optimize handlers to reduce execution time; avoid long loops or complex logic.
+   - Use `irq_chip->irq_mask()` to temporarily disable problematic IRQs.
+4. **Reduce Interrupt Storms**:
+   - Configure devices (e.g., network cards) to coalesce interrupts or lower interrupt frequency.
+5. **Isolate CPUs**:
+   - Use `isolcpus` kernel parameter or `cset` to dedicate CPUs for critical tasks, reducing contention.
+6. **Update Drivers/Kernel**:
+   - Apply patches or update to a newer kernel version to fix buggy drivers or improve interrupt handling.
+
+**Example**:
+```bash
+# Check interrupts
+cat /proc/interrupts
+# Set IRQ 10 to CPU 2
+echo 4 > /proc/irq/10/smp_affinity
+# Trace interrupt latency
+perf record -e irq:* -a
+```
+
+
+# perf trace diagnose example
+
+To diagnose high interrupt latency in the Linux kernel, tools like **perf** and **ftrace** are powerful for tracing interrupt handling times and identifying bottlenecks. Below is a detailed guide on how to use these tools effectively, including setup, commands, and analysis.
+
+---
+
+## 1. **Using `perf` to Trace Interrupt Handling Times**
+
+**perf** is a performance analysis tool that provides detailed profiling of kernel and user-space events, including interrupts. It can trace interrupt-related events, measure handler execution times, and identify bottlenecks.
+
+Steps to Trace Interrupt Handling with `perf`:
+
+1. **Ensure `perf` is Installed**:
+   - Install `perf` (part of `linux-tools`):
+     ```bash
+     sudo apt-get install linux-tools-common linux-tools-$(uname -r)
+     ```
+     or equivalent for your distribution.
+
+2. **Identify Interrupt-Related Events**:
+   - List available events related to interrupts:
+     ```bash
+     perf list | grep irq
+     ```
+     Common events include:
+     - `irq:irq_handler_entry`: Triggered when an interrupt handler starts.
+     - `irq:irq_handler_exit`: Triggered when an interrupt handler ends.
+     - `irq:softirq_entry/exit`: For softirq processing.
+
+3. **Record Interrupt Events**:
+   - Record interrupt handling events system-wide:
+     ```bash
+     sudo perf record -e irq:irq_handler_entry,irq:irq_handler_exit,irq:softirq_entry,irq:softirq_exit -a sleep 10
+     ```
+     - `-e`: Specifies events to trace.
+     - `-a`: System-wide collection.
+     - `sleep 10`: Collects data for 10 seconds.
+   - This generates a `perf.data` file with trace data.
+
+4. **Analyze the Trace**:
+   - Generate a report to view interrupt handling times:
+     ```bash
+     sudo perf report
+     ```
+     - Navigate the report to see which interrupt handlers consume the most time.
+   - For detailed timing, use a script to process raw data:
+     ```bash
+     sudo perf script > perf_script.out
+     ```
+     - This outputs a detailed trace of events, including timestamps and IRQ numbers.
+
+5. **Measure Latency**:
+   - To focus on latency, use `perf stat` to measure event frequencies or `perf trace` for a live trace:
+     ```bash
+     sudo perf trace -e irq:*
+     ```
+   - For precise latency analysis, calculate the time between `irq_handler_entry` and `irq_handler_exit` events in the `perf script` output.
+
+6. **Identify Bottlenecks**:
+   - Look for:
+     - Handlers with long execution times (high delta between entry/exit).
+     - Frequent interrupts (high event counts in `perf report`).
+     - Softirqs consuming excessive CPU (check `softirq_entry/exit`).
+   - Cross-reference with `/proc/interrupts` to map IRQ numbers to devices.
+
+Example Output (Simplified `perf script`):
+```
+  kworker/0:1 12345 [000] 1234.567890: irq:irq_handler_entry: irq=10 name=eth0
+  kworker/0:1 12345 [000] 1234.567910: irq:irq_handler_exit: irq=10 ret=handled
+```
+- Delta (0.000020 seconds) indicates handler execution time for IRQ 10.
+- High deltas or frequent entries suggest a bottleneck.
+
+---
+
+## 2. **Using `ftrace` to Trace Interrupt Handling Times**
+
+**ftrace** is a kernel tracing framework that provides low-overhead tracing of kernel events, including interrupts. It’s ideal for fine-grained analysis of interrupt handling and latency.
+
+Steps to Trace Interrupt Handling with `ftrace`:
+
+1. **Enable `ftrace`**:
+   - Ensure `ftrace` is enabled in the kernel (most modern kernels include it).
+   - Mount the tracing filesystem if not already mounted:
+     ```bash
+     sudo mount -t tracefs tracefs /sys/kernel/tracing
+     ```
+
+2. **List Available Events**:
+   - Check interrupt-related events:
+     ```bash
+     cat /sys/kernel/tracing/available_events | grep irq
+     ```
+     Key events:
+     - `irq:irq_handler_entry`
+     - `irq:irq_handler_exit`
+     - `irq:softirq_entry`
+     - `irq:softirq_exit`
+
+3. **Configure Tracing**:
+   - Enable interrupt events:
+     ```bash
+     sudo sh -c 'echo 1 > /sys/kernel/tracing/events/irq/irq_handler_entry/enable'
+     sudo sh -c 'echo 1 > /sys/kernel/tracing/events/irq/irq_handler_exit/enable'
+     sudo sh -c 'echo 1 > /sys/kernel/tracing/events/irq/softirq_entry/enable'
+     sudo sh -c 'echo 1 > /sys/kernel/tracing/events/irq/softirq_exit/enable'
+     ```
+   - Set the tracer to `function` or `function_graph` for detailed timing:
+     ```bash
+     sudo sh -c 'echo function > /sys/kernel/tracing/current_tracer'
+     ```
+
+4. **Start Tracing**:
+   - Clear the trace buffer:
+     ```bash
+     sudo sh -c 'echo > /sys/kernel/tracing/trace'
+     ```
+   - Enable tracing:
+     ```bash
+     sudo sh -c 'echo 1 > /sys/kernel/tracing/tracing_on'
+     ```
+   - Run the workload or wait (e.g., 10 seconds), then stop tracing:
+     ```bash
+     sudo sh -c 'echo 0 > /sys/kernel/tracing/tracing_on'
+     ```
+
+5. **Analyze the Trace**:
+   - View the trace:
+     ```bash
+     cat /sys/kernel/tracing/trace
+     ```
+   - Look for:
+     - Timestamps showing the duration between `irq_handler_entry` and `irq_handler_exit`.
+     - Frequent interrupts or long-running handlers.
+     - Softirq processing times (via `softirq_entry/exit`).
+
+6. **Use `trace-cmd` for Simplicity**:
+   - Install `trace-cmd` for a user-friendly interface:
+     ```bash
+     sudo apt-get install trace-cmd
+     ```
+   - Record interrupt events:
+     ```bash
+     sudo trace-cmd record -p function -e irq:irq_handler_entry -e irq:irq_handler_exit -e irq:softirq_entry -e irq:softirq_exit sleep 10
+     ```
+   - Analyze:
+     ```bash
+     sudo trace-cmd report
+     ```
+
+Example Output (Simplified `ftrace`):
+```
+  <idle>-0     [002] 1234.567890: irq_handler_entry: irq=10 name=eth0
+  <idle>-0     [002] 1234.567910: irq_handler_exit: irq=10 ret=handled
+```
+- Delta (0.000020 seconds) indicates handler time for IRQ 10.
+- High deltas or frequent IRQs indicate potential bottlenecks.
+
+---
+
+Identifying Bottlenecks with `perf` and `ftrace`
+
+1. **Long-Running Handlers**:
+   - Look for large time differences between `irq_handler_entry` and `irq_handler_exit` in `perf script` or `ftrace` output.
+   - Cross-reference IRQ numbers with `/proc/interrupts` to identify the device/driver (e.g., `eth0` for network).
+
+2. **Frequent Interrupts**:
+   - High event counts in `perf report` or dense `ftrace` logs suggest an interrupt storm.
+   - Check device configuration (e.g., network card interrupt coalescing) to reduce frequency.
+
+3. **Softirq Overload**:
+   - Excessive time in `softirq_entry/exit` events indicates bottom-half processing bottlenecks.
+   - Investigate specific softirqs (e.g., `NET_RX_SOFTIRQ`) and consider offloading to `ksoftirqd` or workqueues.
+
+4. **CPU Contention**:
+   - Use `perf stat` or `ftrace` with CPU-specific filters to check if interrupts are overloading specific CPUs.
+   - Adjust IRQ affinity (`/proc/irq/<irq>/smp_affinity`) to balance load.
+
+5. **Critical Sections**:
+   - Use `ftrace` with `function_graph` tracer to identify kernel functions (e.g., `local_irq_disable()`) causing long interrupt-disabled periods.
+   - Optimize drivers or kernel code to minimize such sections.
+
+---
+
+Practical Example Workflow
+
+**Scenario**: High interrupt latency suspected due to network traffic.
+
+1. **Using `perf`**:
+   ```bash
+   sudo perf record -e irq:irq_handler_entry,irq:irq_handler_exit,irq:softirq_entry,irq:softirq_exit -a sleep 10
+   sudo perf script > irq_trace.out
+   ```
+   - Analyze `irq_trace.out` for long handler times or frequent IRQs (e.g., IRQ 10 for `eth0`).
+
+2. **Using `ftrace`**:
+   ```bash
+   sudo sh -c 'echo function > /sys/kernel/tracing/current_tracer'
+   sudo sh -c 'echo 1 > /sys/kernel/tracing/events/irq/enable'
+   sudo sh -c 'echo 1 > /sys/kernel/tracing/tracing_on'
+   sleep 10
+   sudo sh -c 'echo 0 > /sys/kernel/tracing/tracing_on'
+   cat /sys/kernel/tracing/trace > irq_ftrace.out
+   ```
+   - Check `irq_ftrace.out` for IRQ 10 execution times and softirq activity.
+
+3. **Mitigation**:
+   - If IRQ 10 handler is slow, optimize the driver or defer work to a threaded interrupt.
+   - If frequent, enable interrupt coalescing on the network card:
+     ```bash
+     ethtool -C eth0 rx-usecs 100
+     ```
+   - Adjust affinity to distribute IRQs:
+     ```bash
+     echo 4 > /proc/irq/10/smp_affinity  # Bind to CPU 2
+     ```
+
+---
+
+**Tips for Effective Tracing**
+
+- **Filter Events**: Use `perf record -e 'irq:*' -a` or `ftrace` event filters to reduce noise and focus on interrupts.
+- **Combine Tools**: Use `perf` for high-level profiling and `ftrace` for detailed function-level tracing.
+- **Check Kernel Config**: Ensure `CONFIG_FTRACE` and `CONFIG_PERF_EVENTS` are enabled in the kernel.
+- **Minimize Overhead**: Limit tracing duration and events to avoid performance impact on the system.
+- **Cross-Reference**: Use `/proc/interrupts`, `dmesg`, or driver logs to correlate trace data with specific devices.
+
+By using `perf` and `ftrace`, you can pinpoint slow interrupt handlers, interrupt storms, or softirq bottlenecks, enabling targeted optimizations like driver tuning, affinity adjustments, or workload offloading to reduce latency.
+
+
+# kernel debugging
+
+## config
+
+```sh
+CONFIG_DEBUG_KERNEL, CONFIG_KASAN, CONFIG_LOCKDEP, CONFIG_DEBUG_PAGEALLOC
+```
+
+## kdb/kgdb
+
+Enable `CONFIG_KGDB` in the kernel. Connect via a serial port or network to a host running gdb.
+
+Example: `gdb vmlinux`, then target remote `/dev/ttyS0`. Practice on a test VM.
+
+
+## crash
+
+Configure kdump (`CONFIG_KEXEC`, kexec-tools). After a crash, run `crash vmlinux /proc/vmcore`. Use commands like `bt` (backtrace), `ps` (processes), and `log` (dmesg). Practice with sample vmcores.
+
+## perf
+
+```sh
+usage: perf [--version] [--help] [OPTIONS] COMMAND [ARGS]
+
+The most commonly used perf commands are:
+    record          Run a command and record its profile into perf.data
+    report          Read perf.data (created by perf record) and display the profile
+    script          Read perf.data (created by perf record) and display trace output
+    ftrace          simple wrapper for kernel's ftrace functionality
+
+    mem             Profile memory accesses
+
+    annotate        Read perf.data (created by perf record) and display annotated code
+    archive         Create archive with object files with build-ids found in perf.data file
+    bench           General framework for benchmark suites
+    buildid-cache   Manage build-id cache.
+    buildid-list    List the buildids in a perf.data file
+    c2c             Shared Data C2C/HITM Analyzer.
+    config          Get and set variables in a configuration file.
+    daemon          Run record sessions on background
+    data            Data file related processing
+    diff            Read perf.data files and display the differential profile
+    evlist          List the event names in a perf.data file
+    inject          Filter to augment the events stream with additional information
+    iostat          Show I/O performance metrics
+    kallsyms        Searches running kernel for symbols
+    kvm             Tool to trace/measure kvm guest os
+    list            List all symbolic event types
+    stat            Run a command and gather performance counter statistics
+    test            Runs sanity tests.
+    top             System profiling tool.
+    version         display the version of perf binary
+    probe           Define new dynamic tracepoints
+    trace           strace inspired tool
+    kmem            Tool to trace/measure kernel memory properties
+    kwork           Tool to trace/measure kernel work properties (latencies)
+    lock            Analyze lock events
+    sched           Tool to trace/measure scheduler properties (latencies)
+    timechart       Tool to visualize total system behavior during a workload
 ```
