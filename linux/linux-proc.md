@@ -108,6 +108,7 @@
 
 * [exec](#exec)
     * [load_elf_binary](#load_elf_binary)
+    * [exec_call_graph](#exec_call_graph)
 
 * [exit](#exit)
     * [exit_signals](#exit_signals)
@@ -712,6 +713,70 @@ bringup_cpu() {
         }
     }
 }
+```
+
+### cpuhp_hp_states
+
+```c
+static struct cpuhp_step cpuhp_hp_states[] = {
+    [CPUHP_OFFLINE] = {
+        .name               = "offline",
+        .startup.single     = NULL,
+        .teardown.single    = NULL,
+    },
+    [CPUHP_AP_OFFLINE] = {
+        .name            = "ap:offline",
+        .cant_stop        = true,
+    },
+    /* First state is scheduler control. Interrupts are disabled */
+    [CPUHP_AP_SCHED_STARTING] = {
+        .name            = "sched:starting",
+        .startup.single        = sched_cpu_starting,
+        .teardown.single    = sched_cpu_dying,
+    },
+    [CPUHP_AP_RCUTREE_DYING] = {
+        .name            = "RCU/tree:dying",
+        .startup.single        = NULL,
+        .teardown.single    = rcutree_dying_cpu,
+    },
+    [CPUHP_AP_SMPCFD_DYING] = {
+        .name            = "smpcfd:dying",
+        .startup.single        = NULL,
+        .teardown.single    = smpcfd_dying_cpu,
+    },
+    [CPUHP_AP_HRTIMERS_DYING] = {
+        .name            = "hrtimers:dying",
+        .startup.single        = hrtimers_cpu_starting,
+        .teardown.single    = hrtimers_cpu_dying,
+    },
+    [CPUHP_AP_TICK_DYING] = {
+        .name            = "tick:dying",
+        .startup.single        = NULL,
+        .teardown.single    = tick_cpu_dying,
+    },
+    /* Entry state on starting. Interrupts enabled from here on. Transient
+     * state for synchronsization */
+    [CPUHP_AP_ONLINE] = {
+        .name            = "ap:online",
+    },
+    [CPUHP_TEARDOWN_CPU] = {
+        .name               = "cpu:teardown",
+        .startup.single     = NULL,
+        .teardown.single    = takedown_cpu,
+        .cant_stop          = true,
+    },
+    [CPUHP_AP_ACTIVE] = {
+        .name               = "sched:active",
+        .startup.single     = sched_cpu_activate,
+        .teardown.single    = sched_cpu_deactivate,
+    },
+    /* CPU is fully up and running. */
+    [CPUHP_ONLINE] = {
+        .name               = "online",
+        .startup.single     = NULL,
+        .teardown.single    = NULL,
+    },
+};
 ```
 
 # syscall
@@ -1617,17 +1682,22 @@ picked:
                                     atomic64_set(this_cpu_ptr(&active_asids), asid);
 
                                 switch_mm_fastpath:
-                                    if (!system_uses_ttbr0_pan()) {
+                                    if (!system_uses_ttbr0_pan()) { /* Context Name Propagation */
                                         cpu_switch_mm(mm->pgd, mm) {
                                             BUG_ON(pgd == swapper_pg_dir);
                                             cpu_set_reserved_ttbr0();
                                                 --->
                                             cpu_do_switch_mm(virt_to_phys(pgd)/*pgd_phys*/, mm) {
+                                                /* TTBR0_EL1: Typically holds the base address of the user-space page tables.
+                                                 * TTBR1_EL1: Typically holds the base address of the kernel-space page tables
+                                                 * and includes the ASID when TCR_EL1.A1 is set. */
+
                                                 /* Set ASID in TTBR1 since TCR.A1 is set */
                                                 ttbr1 = read_sysreg(ttbr1_el1);
                                                 ttbr1 &= ~TTBR_ASID_MASK;
                                                 ttbr1 |= FIELD_PREP(TTBR_ASID_MASK, asid);
                                                 write_sysreg(ttbr1, ttbr1_el1);
+
                                                 isb();
                                                 ttbr0 = phys_to_ttbr(pgd_phys);
                                                 write_sysreg(ttbr0, ttbr0_el1);
@@ -1942,11 +2012,9 @@ do { \
 
 static  bool should_resched(int preempt_offset)
 {
-    return unlikely(preempt_count() == preempt_offset &&
-        tif_need_resched());
+    u64 pc = READ_ONCE(current_thread_info()->preempt_count);
+    return pc == preempt_offset;
 }
-
-#define tif_need_resched() test_thread_flag(TIF_NEED_RESCHED)
 
 /* __preempt_schedule -> */
 static void __sched notrace preempt_schedule_common(void)
@@ -3684,12 +3752,12 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
     update_curr(cfs_rq);
 
     /* When enqueuing a sched_entity, we must:
-        *   - Update loads to have both entity and cfs_rq synced with now.
-        *   - For group_entity, update its runnable_weight to reflect the new
-        *     h_nr_runnable of its group cfs_rq.
-        *   - For group_entity, update its weight to reflect the new share of
-        *     its group cfs_rq
-        *   - Add its new weight to cfs_rq->load.weight */
+     *   - Update loads to have both entity and cfs_rq synced with now.
+     *   - For group_entity, update its runnable_weight to reflect the new
+     *     h_nr_runnable of its group cfs_rq.
+     *   - For group_entity, update its weight to reflect the new share of
+     *     its group cfs_rq
+     *   - Add its new weight to cfs_rq->load.weight */
     update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
     se_update_runnable(se) {
         if (!entity_is_task(se))
@@ -3711,7 +3779,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
                 if (curr && curr->on_rq) {
                     unsigned long weight = scale_load_down(curr->load.weight);
 
-                    avg += entity_key(cfs_rq, curr) * weight;
+                    avg += weight * entity_key(cfs_rq, curr) {
+                        return (s64)(se->vruntime - cfs_rq->min_vruntime);
+                    }
                     load += weight;
                 }
 
@@ -3746,8 +3816,8 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
                     load = 1;
                 }
                 /* lag_i = S - s_i = w_i * (V - v_i)
-                    * old_lag / old_load == new_lag / new_load
-                    * old_lag * new_load == new_lag * old_load */
+                 * old_lag / old_load == new_lag / new_load
+                 * old_lag * new_load == new_lag * old_load */
                 lag = div_s64(lag, load);
             }
 
@@ -3763,7 +3833,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
                 vslice /= 2;
 
             /* EEVDF: vd_i = ve_i + r_i/w_i
-                * r_i: request time, w_i: weight(nice) */
+             * r_i: request time, w_i: weight(nice) */
             se->deadline = se->vruntime + vslice;
         }
     }
@@ -4061,7 +4131,7 @@ bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
     sub_nr_running(rq, 1);
 
     if (rq_h_nr_queued && !rq->cfs.h_nr_queued)
-                dl_server_stop(&rq->fair_server);
+        dl_server_stop(&rq->fair_server);
 
     /* balance early to pull high priority tasks */
     if (unlikely(!was_sched_idle && sched_idle_rq(rq)))
@@ -4366,7 +4436,7 @@ again:
                         goto found;
                     }
 
-                    /* Heap search for the EEVD entity */
+                    /* RBTree search for the EEVD entity */
                     while (node) {
                         /* 1. check left child */
                         struct rb_node *left = node->rb_left;
@@ -4856,7 +4926,7 @@ new_cpu = sched_balance_find_dst_cpu(sd, p, cpu, prev_cpu, sd_flag) {
         }
     }
 
-      /* search sd downwards
+    /* search sd downwards
      * sd the highest sd with sd_flag */
     while (sd) {
         struct sched_group *group;
@@ -6792,9 +6862,11 @@ get_cpu_for_node(struct device_node *node)
 ![](../images/kernel/proc-sched-pelt-last_update_time.svg)
 
 ```c
-/* Accumulate the three separate parts of the sum; d1 the remainder
- * of the last (incomplete) period, d2 the span of full periods and d3
- * the remainder of the (incomplete) current period.
+/* Exponential Moving Average (EMA) or Exponentially Weighted Moving Average (EWMA)
+ * Accumulate the three separate parts of the sum:
+ * d1 the remainder of the last (incomplete) period
+ * d2 the span of full periods and
+ * d3 the remainder of the (incomplete) current period.
  *
  *           d1          d2           d3
  *           ^           ^            ^
@@ -6814,7 +6886,7 @@ get_cpu_for_node(struct device_node *node)
 ```
 
 | **Metric** | **Tracks** | **Includes Blocked Tasks?** | **Includes Runnable Tasks?** | **Includes Running Tasks?** | **Use Case** |
-| --- | --- | --- | --- | --- | --- |
+| :-: | :-: | :-: | :-: | :-: | :-: |
 | **load_avg** | Weighted load of tasks contributing to system load (runnable + blocked). | :white_check_mark: | :white_check_mark: | :white_check_mark: | Load balancing between CPUs. |
 | **runnable_avg**  | Average time tasks spend in the runnable state. | :x: | :white_check_mark: | :white_check_mark: | Measuring CPU contention and task latency. |
 | **util_avg** | Average CPU utilization (time tasks spend running). | :x: | :x: | :white_check_mark: | CPU frequency scaling and power management. |
@@ -6833,60 +6905,76 @@ get_cpu_for_node(struct device_node *node)
 * [sched/pelt: Add a new runnable average signal](https://github.com/torvalds/linux/commit/9f68395333ad7f5bfe2f83473fed363d4229f11c) - Now that runnable_load_avg has been removed, we can replace it by a new signal that will highlight the runnable pressure on a cfs_rq. This signal track the waiting time of tasks on rq and can help to better define the state of rqs.
     * The new runnable_avg will track the runnable time of a task which simply adds the waiting time to the running time.
 
-* cfs_rq attach/detach load_avg
+* **load_avg attach/detach**
+
     * Dont detach load_avg and util_avg when a task sleeps, but detach runnable_avg since runnable is the count nr of se.on_rq
-    * Detach load_avg, runnable_avg and util_avg when changing sched class, group or cpu
+    * Detach load_avg, runnable_avg and util_avg when changing **sched class**, **group **or **cpu**
 
-    ```c
-    dequeue_entity(cfs_rq, se, flags) {
-        int action = UPDATE_TG;
-
-        /* detach load_avg only if task is migrating when dequeue_entity */
-        if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
-            action |= DO_DETACH;
-
-        update_curr(cfs_rq);
-        update_load_avg(cfs_rq, se, action);
-    }
-    ```
-
-    ```c
-    enqueue_entity(cfs_rq, se, flags) {
-        update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH) {
-            /* last_update_time is set to 0 when changing group or cpu */
-            if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
-                attach_entity_load_avg(cfs_rq, se);
+        ```c
+        enqueue_entity(cfs_rq, se, flags) {
+            update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH) {
+                /* last_update_time is set to 0 when changing group or cpu */
+                if (!se->avg.last_update_time && (flags & DO_ATTACH)) {
+                    attach_entity_load_avg(cfs_rq, se);
+                } else if (flag & DO_DETACH) {
+                    detach_entity_load_avg(cfs_rq, se);
+                }
             }
         }
-    }
-    ```
 
-    ```c
-    /* cpu change */
-    migrate_task_rq_fair(struct task_struct *p, int new_cpu) {
-        struct sched_entity *se = &p->se;
-        se->avg.last_update_time = 0; /* set to 0, attach load avg at enqueue_entity */
-    }
+        dequeue_entity(cfs_rq, se, flags) {
+            int action = UPDATE_TG;
 
-    /* group change */
-    task_change_group_fair(struct task_struct *p) {
-        detach_task_cfs_rq(p);
-        p->se.avg.last_update_time = 0;
-    }
+            /* detach load_avg only if task is migrating when dequeue_entity */
+            if (entity_is_task(se) && task_on_rq_migrating(task_of(se)))
+                action |= DO_DETACH;
 
-    /* sched class change */
-    check_class_changed(rq, p, prev_class, oldprio) {
-        if (prev_class != p->sched_class) {
-            if (prev_class->switched_from) {
-                prev_class->switched_from(rq, p) {
-                    switched_from_fair() {
-                        detach_task_cfs_rq(p);
+            update_load_avg(cfs_rq, se, action);
+        }
+        ```
+
+        ```c
+        /* cpu change */
+        migrate_task_rq_fair(struct task_struct *p, int new_cpu) {
+            struct sched_entity *se = &p->se;
+            se->avg.last_update_time = 0; /* set to 0, attach load avg at enqueue_entity */
+        }
+
+        /* group change */
+        task_change_group_fair(struct task_struct *p) {
+            detach_task_cfs_rq(p);
+            p->se.avg.last_update_time = 0;
+        }
+
+        /* sched class change */
+        check_class_changed(rq, p, prev_class, oldprio) {
+            if (prev_class != p->sched_class) {
+                if (prev_class->switched_from) {
+                    prev_class->switched_from(rq, p) {
+                        switched_from_fair() {
+                            detach_task_cfs_rq(p) {
+                                detach_entity_cfs_rq(se) {
+                                    if (!se->avg.last_update_time)
+                                        return;
+                                    detach_entity_load_avg(cfs_rq, se) {
+                                        dequeue_load_avg(cfs_rq, se) {
+                                            sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
+                                            sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
+
+                                            sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
+                                            sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
+
+                                            sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
+                                            sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-    }
-    ```
+        ```
 
 ```c
 struct sched_avg {
@@ -7161,7 +7249,7 @@ void update_load_avg(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
     decayed = update_cfs_rq_load_avg(now, cfs_rq);
 
 /* 3. update tg cfs util-load-runnable */
-    /* propogate form child gcfs_rq -> child se -> parent cfs_rq */
+    /* propogate path: child gcfs_rq -> child se -> parent cfs_rq */
     decayed |= propagate_entity_load_avg(se);
         --->
 
@@ -7350,7 +7438,7 @@ decayed |= propagate_entity_load_avg(se) {
         cfs_rq->prop_runnable_sum += runnable_sum;
     }
 
-    /* 3.2 propagate util from child gcfs_rq -> child se -> parent cfs_rq */
+    /* 3.2 util propagate path: child gcfs_rq -> child se -> parent cfs_rq */
     update_tg_cfs_util(cfs_rq, se, gcfs_rq) {
         /* gcfs_rq->avg.util_avg only updated when gcfs_rq->curr != NULL,
          * which means the grp has running tasks
@@ -7381,7 +7469,7 @@ decayed |= propagate_entity_load_avg(se) {
                         cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
     }
 
-    /* 3.3 propagate runnable from child gcfs_rq -> child se -> parent cfs_rq */
+    /* 3.3 runnable propagate path: child gcfs_rq -> child se -> parent cfs_rq */
     update_tg_cfs_runnable(cfs_rq, se, gcfs_rq) {
         long delta_sum, delta_avg = gcfs_rq->avg.runnable_avg - se->avg.runnable_avg;
         u32 new_sum, divider;
@@ -7406,7 +7494,7 @@ decayed |= propagate_entity_load_avg(se) {
                             cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
     }
 
-    /* 3.4 propagate load from child gcfs_rq -> child se -> parent cfs_rq */
+    /* 3.4 load propagate path: child gcfs_rq -> child se -> parent cfs_rq */
     update_tg_cfs_load(cfs_rq, se, gcfs_rq) {
         long delta_avg, running_sum, runnable_sum = gcfs_rq->prop_runnable_sum;
         unsigned long load_avg;
@@ -7653,7 +7741,7 @@ sched_balance_rq() {
 ## tick_balance
 
 ```c
-void sched_tick(void){
+void sched_tick(void) {
     rq->idle_balance = idle_cpu(cpu);
     sched_balance_trigger(rq) {
         if (unlikely(on_null_domain(rq) || !cpu_active(cpu_of(rq))))
@@ -7765,6 +7853,19 @@ static struct {
     unsigned long next_blocked; /* Next update of blocked load in jiffies */
 } nohz;
 
+void sched_tick(void) {
+    rq->idle_balance = idle_cpu(cpu); /* is a given cpu idle? */
+    sched_balance_trigger(rq) {
+        if (unlikely(on_null_domain(rq) || !cpu_active(cpu_of(rq))))
+            return;
+
+        if (time_after_eq(jiffies, rq->next_balance))
+            raise_softirq(SCHED_SOFTIRQ);
+
+        nohz_balancer_kick(rq);
+    }
+}
+
 nohz_balancer_kick(rq) {
     unsigned long now = jiffies;
     struct sched_domain_shared *sds;
@@ -7800,7 +7901,7 @@ nohz_balancer_kick(rq) {
     }
 
     if (likely(!atomic_read(&nohz.nr_cpus)))
-        return;
+        return; /* no idle cpu */
 
     if (READ_ONCE(nohz.has_blocked) && time_after(now, READ_ONCE(nohz.next_blocked)))
         flags = NOHZ_STATS_KICK;
@@ -7815,6 +7916,7 @@ nohz_balancer_kick(rq) {
 
     rcu_read_lock();
 
+    /* cpu capacity is reduced */
     sd = rcu_dereference(rq->sd);
     if (sd) {
         ret = check_cpu_capacity(rq, sd) {
@@ -7826,6 +7928,7 @@ nohz_balancer_kick(rq) {
         }
     }
 
+    /* idle asym cpu i (lower nubmer) has higher priority */
     sd = rcu_dereference(per_cpu(sd_asym_packing, cpu));
     if (sd) {
         for_each_cpu_and(i, sched_domain_span(sd), nohz.idle_cpus_mask) {
@@ -7836,6 +7939,7 @@ nohz_balancer_kick(rq) {
         }
     }
 
+    /* has misfit tasks */
     sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, cpu));
     if (sd) {
         if (check_misfit_status(rq, sd)) {
@@ -7845,6 +7949,7 @@ nohz_balancer_kick(rq) {
         goto unlock;
     }
 
+    /* has busy cpus */
     sds = rcu_dereference(per_cpu(sd_llc_shared, cpu));
     if (sds) {
         nr_busy = atomic_read(&sds->nr_busy_cpus);
@@ -7924,6 +8029,7 @@ nohz_idle_balance(this_rq, idle) {
     if (idle != CPU_IDLE)
         return false;
 
+    /* do_idle -> nohz_run_idle_balance -> */
     _nohz_idle_balance(this_rq, flags) {
         /* Earliest time when we have to do rebalance again */
         unsigned long now = jiffies;
@@ -8259,7 +8365,7 @@ ret = sched_balance_rq(cpu, rq, sd, idle, &continue_balancing) {
         .dst_rq         = this_rq,
         .dst_grpmask    = group_balance_mask(sd->groups),
         .idle           = idle,
-        .loop_break     = SCHED_NR_MIGRATE_BREAK,
+        .loop_break     = SCHED_NR_MIGRATE_BREAK, /* 8 for RT ohterwise 32 */
         .cpus           = cpus,
         .fbq_type       = all,
         .tasks          = LIST_HEAD_INIT(env.tasks),
@@ -8335,7 +8441,7 @@ more_balance:
             env.dst_cpu = env.new_dst_cpu;
             env.flags   &= ~LBF_DST_PINNED;
             env.loop    = 0;
-            env.loop_break     = SCHED_NR_MIGRATE_BREAK;
+            env.loop_break     = SCHED_NR_MIGRATE_BREAK; /* 8 for RT ohterwise 32 */
 
             goto more_balance;
         }
@@ -8353,7 +8459,7 @@ more_balance:
 
             if (!cpumask_subset(cpus, env.dst_grpmask)) {
                 env.loop = 0;
-                env.loop_break = SCHED_NR_MIGRATE_BREAK;
+                env.loop_break = SCHED_NR_MIGRATE_BREAK; /* 8 for RT ohterwise 32 */
                 goto redo;
             }
             goto out_all_pinned;
@@ -8505,7 +8611,9 @@ int should_we_balance(struct lb_env *env)
     }
 
     /* 4. Fallback to the first CPU in the group */
-    return group_balance_cpu(sg) == env->dst_cpu;
+    return env->dst_cpu == group_balance_cpu(sg) {
+        cpumask_first(group_balance_mask(sg))
+    };
 }
 ```
 
@@ -8649,91 +8757,8 @@ update_sd_lb_stats(env, &sds) {
             sgs = local;
 
             if (env->idle != CPU_NEWLY_IDLE || time_after_eq(jiffies, sg->sgc->next_update)) {
-                update_group_capacity(env->sd, env->dst_cpu) {
-                    struct sched_domain *child = sd->child;
-                    struct sched_group *group, *sdg = sd->groups;
-                    unsigned long capacity, min_capacity, max_capacity;
-                    unsigned long interval;
-
-                    interval = msecs_to_jiffies(sd->balance_interval);
-                    interval = clamp(interval, 1UL, max_load_balance_interval);
-                    sdg->sgc->next_update = jiffies + interval;
-
-                    if (!child) {
-                        update_cpu_capacity(sd, cpu) {
-                            /* calc the remaining usable capacity of a CPU for cfs tasks:
-                             * max - rt - dl - irq */
-                            unsigned long capacity = scale_rt_capacity(cpu) {
-                                struct rq *rq = cpu_rq(cpu);
-                                unsigned long max = arch_scale_cpu_capacity(cpu);
-                                unsigned long used, free;
-                                unsigned long irq;
-
-                                irq = cpu_util_irq(rq);
-
-                                if (unlikely(irq >= max))
-                                    return 1;
-
-                                used = cpu_util_rt(rq);
-                                used += cpu_util_dl(rq);
-
-                                if (unlikely(used >= max))
-                                    return 1;
-
-                                free = max - used;
-
-                                return scale_irq_capacity(free, irq, max);
-                            }
-                            struct sched_group *sdg = sd->groups;
-
-                            cpu_rq(cpu)->cpu_capacity_orig = arch_scale_cpu_capacity(cpu);
-
-                            if (!capacity)
-                                capacity = 1;
-
-                            cpu_rq(cpu)->cpu_capacity = capacity;
-
-                            sdg->sgc->capacity = capacity;
-                            sdg->sgc->min_capacity = capacity;
-                            sdg->sgc->max_capacity = capacity;
-                        }
-                        return;
-                    }
-
-                    capacity = 0;
-                    min_capacity = ULONG_MAX;
-                    max_capacity = 0;
-
-                    if (child->flags & SD_OVERLAP) {
-                        /* SD_OVERLAP domains cannot assume that child groups
-                         * span the current group. */
-
-                        for_each_cpu(cpu, sched_group_span(sdg)) {
-                            unsigned long cpu_cap = capacity_of(cpu);
-
-                            capacity += cpu_cap;
-                            min_capacity = min(cpu_cap, min_capacity);
-                            max_capacity = max(cpu_cap, max_capacity);
-                        }
-                    } else  {
-                        /* !SD_OVERLAP domains can assume that child groups
-                         * span the current group. */
-
-                        group = child->groups;
-                        do {
-                            struct sched_group_capacity *sgc = group->sgc;
-
-                            capacity += sgc->capacity;
-                            min_capacity = min(sgc->min_capacity, min_capacity);
-                            max_capacity = max(sgc->max_capacity, max_capacity);
-                            group = group->next;
-                        } while (group != child->groups);
-                    }
-
-                    sdg->sgc->capacity = capacity;
-                    sdg->sgc->min_capacity = min_capacity;
-                    sdg->sgc->max_capacity = max_capacity;
-                }
+                update_group_capacity(env->sd, env->dst_cpu);
+                    --->
             }
         }
 
@@ -8856,8 +8881,19 @@ update_sd_lb_stats(env, &sds) {
             }
 
             /* Check for loaded SMT group to be balanced to dst CPU */
-            if (!local_group && smt_balance(env, sgs, group))
+            if (!local_group && smt_balance(env, sgs, group) {
+                if (!env->idle)
+                    return false;
+                /* if a group has a single SMT, SD_SHARE_CPUCAPACITY will not be on. */
+                return (group->flags & SD_SHARE_CPUCAPACITY && sgs->sum_h_nr_running > 1);
+            }) {
                 sgs->group_smt_balance = 1;
+                /* group_smt_balance is a flag or logic in the CFS load balancer
+                 * that influences how tasks within scheduling groups are distributed across SMT siblings.
+                 * It ensures that tasks from a group are preferentially spread across physical cores
+                 * rather than packed onto SMT siblings of the same core,
+                 * improving performance by reducing resource contention. */
+            }
 
             sgs->group_type = group_classify(env->sd->imbalance_pct, group, sgs) {
                 if (group_is_overloaded(imbalance_pct, sgs) {
@@ -8960,6 +8996,94 @@ next_group:
     }
 
     update_idle_cpu_scan(env, sum_util);
+}
+```
+
+##### update_group_capacity
+
+```c
+update_group_capacity(env->sd, env->dst_cpu) {
+    struct sched_domain *child = sd->child;
+    struct sched_group *group, *sdg = sd->groups;
+    unsigned long capacity, min_capacity, max_capacity;
+    unsigned long interval;
+
+    interval = msecs_to_jiffies(sd->balance_interval);
+    interval = clamp(interval, 1UL, max_load_balance_interval);
+    sdg->sgc->next_update = jiffies + interval;
+
+    if (!child) {
+        update_cpu_capacity(sd, cpu) {
+            /* calc the remaining usable capacity of a CPU for cfs tasks:
+             * max - rt - dl - irq */
+            unsigned long capacity = scale_rt_capacity(cpu) {
+                struct rq *rq = cpu_rq(cpu);
+                unsigned long max = arch_scale_cpu_capacity(cpu);
+                unsigned long used, free;
+                unsigned long irq;
+
+                irq = cpu_util_irq(rq);
+
+                if (unlikely(irq >= max))
+                    return 1;
+
+                used = cpu_util_rt(rq);
+                used += cpu_util_dl(rq);
+
+                if (unlikely(used >= max))
+                    return 1;
+
+                free = max - used;
+
+                return scale_irq_capacity(free, irq, max);
+            }
+            struct sched_group *sdg = sd->groups;
+
+            cpu_rq(cpu)->cpu_capacity_orig = arch_scale_cpu_capacity(cpu);
+
+            if (!capacity)
+                capacity = 1;
+
+            cpu_rq(cpu)->cpu_capacity = capacity;
+
+            sdg->sgc->capacity = capacity;
+            sdg->sgc->min_capacity = capacity;
+            sdg->sgc->max_capacity = capacity;
+        }
+        return;
+    }
+
+    capacity = 0;
+    min_capacity = ULONG_MAX;
+    max_capacity = 0;
+
+    if (child->flags & SD_OVERLAP) {
+        /* SD_OVERLAP domains cannot assume that child groups
+         * span the current group. */
+        for_each_cpu(cpu, sched_group_span(sdg)) {
+            unsigned long cpu_cap = capacity_of(cpu);
+
+            capacity += cpu_cap;
+            min_capacity = min(cpu_cap, min_capacity);
+            max_capacity = max(cpu_cap, max_capacity);
+        }
+    } else  {
+        /* !SD_OVERLAP domains can assume that child groups
+         * span the current group. */
+        group = child->groups;
+        do {
+            struct sched_group_capacity *sgc = group->sgc;
+
+            capacity += sgc->capacity;
+            min_capacity = min(sgc->min_capacity, min_capacity);
+            max_capacity = max(sgc->max_capacity, max_capacity);
+            group = group->next;
+        } while (group != child->groups);
+    }
+
+    sdg->sgc->capacity = capacity;
+    sdg->sgc->min_capacity = min_capacity;
+    sdg->sgc->max_capacity = max_capacity;
 }
 ```
 
@@ -9380,7 +9504,7 @@ int detach_tasks(struct lb_env *env)
 
         /* take a breather every nr_migrate tasks */
         if (env->loop > env->loop_break) {
-            env->loop_break += SCHED_NR_MIGRATE_BREAK;
+            env->loop_break += SCHED_NR_MIGRATE_BREAK; /* 8 for RT ohterwise 32 */
             env->flags |= LBF_NEED_BREAK;
             break;
         }
@@ -10101,12 +10225,26 @@ x86 Fork Frame | Fork Flow
 ```c
 SYSCALL_DEFINE0(fork)
 {
-    return _do_fork(SIGCHLD, 0, 0, NULL, NULL, 0);
+    struct kernel_clone_args args = {
+        .exit_signal = SIGCHLD,
+    };
+    return kernel_clone(&args);
 }
 
-do_fork(clone_flags, stack_start, stack_size, parent_tidptr, child_tidptr, tls);
 kernel_clone(struct kernel_clone_args *args) {
-    copy_process() {
+    if (!(clone_flags & CLONE_UNTRACED)) {
+        if (clone_flags & CLONE_VFORK)
+            trace = PTRACE_EVENT_VFORK;
+        else if (args->exit_signal != SIGCHLD)
+            trace = PTRACE_EVENT_CLONE;
+        else
+            trace = PTRACE_EVENT_FORK;
+
+        if (likely(!ptrace_event_enabled(current, trace)))
+            trace = 0;
+    }
+
+    copy_process(struct pid *pid, int trace, int node, struct kernel_clone_args *args) {
         task_struct* tsk = dup_task_struct(current, node) {
             tsk = alloc_task_struct_node(node);
 
@@ -10138,16 +10276,7 @@ kernel_clone(struct kernel_clone_args *args) {
             p->sched_class = &fair_sched_class, &rt_sched_class;
             p->sched_class->task_fork(p) {
                 task_fork_fair() {
-                    place_entity(cfs_rq, se, ENQUEUE_INITIAL) {
-                        se->slice = sysctl_sched_base_slice;
-                        vslice = calc_delta_fair(se->slice, se);
-                        se->vruntime = vruntime - lag;
-                        if (sched_feat(PLACE_DEADLINE_INITIAL) && (flags & ENQUEUE_INITIAL)) {
-                            vslice /= 2;
-                        }
-                        /* EEVDF: vd_i = ve_i + r_i/w_i */
-                        se->deadline = se->vruntime + vslice;
-                    }
+                    set_task_max_allowed_capacity(p);
                 }
             }
             init_entity_runnable_average(&p->se) {
@@ -10164,7 +10293,7 @@ kernel_clone(struct kernel_clone_args *args) {
         copy_fs();
         copy_sighand();
         copy_signal();
-        copy_mm();
+        copy_mm(); /* see ./linux-mem.md#fork */
         copy_namespaces();
         copy_io();
         copy_thread(p, args) {
@@ -10283,6 +10412,13 @@ kernel_clone(struct kernel_clone_args *args) {
     }
 
     wake_up_new_task(p) {
+        WRITE_ONCE(p->__state, TASK_RUNNING);
+        p->recent_used_cpu = task_cpu(p);
+        rseq_migrate(p);
+        __set_task_cpu(p, select_task_rq(p, task_cpu(p), &wake_flags));
+
+        rq = __task_rq_lock(p, &rf);
+        update_rq_clock(rq);
         post_init_entity_util_avg(p) {
             struct sched_entity *se = &p->se;
             struct cfs_rq *cfs_rq = cfs_rq_of(se);
@@ -10314,6 +10450,15 @@ kernel_clone(struct kernel_clone_args *args) {
         wakeup_preempt();
         p->sched_class->task_woken(rq, p);
     }
+
+    /* forking complete and child started to run, tell ptracer */
+    if (unlikely(trace))
+        ptrace_event_pid(trace, pid);
+
+    if (clone_flags & CLONE_VFORK) {
+        if (!wait_for_vfork_done(p, &vfork))
+            ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
+    }
 }
 
 SYM_CODE_START(ret_from_fork)
@@ -10335,6 +10480,46 @@ SYM_CODE_END(ret_from_fork)
 * [ELF Format Cheatsheet](https://gist.github.com/x0nu11byt3/bcb35c3de461e5fb66173071a2379779)
 
 ![](../images/kernel/proc-elf.png)
+
+* **Program header** are used at runtime while **sections** are primarily used during linking and debugging
+* The **program header** is a structure that tells the system how to load an ELF file into memory for execution.
+* **Sections** in an ELF file contain the actual data or metadata, such as code, data, symbol tables, or debugging information.
+
+Program Header | Note
+:-: | :-:
+PT_NULL (0x0) | Unused entry.
+PT_LOAD (0x1) | Loadable segment (e.g., code or data to be mapped into memory).
+PT_DYNAMIC (0x2) | Dynamic linking information.
+PT_INTERP (0x3) | Path to the interpreter (e.g., the dynamic linker /lib/ld-linux.so.2).
+PT_NOTE (0x4) | Auxiliary information, such as vendor-specific notes.
+PT_SHLIB (0x5) | Reserved (not commonly used).
+PT_PHDR (0x6) | Location of the program header table itself.
+PT_TLS (0x7) | Thread-local storage template.
+PT_GNU_EH_FRAME (0x6474E550) | GCC exception handling data.
+PT_GNU_STACK (0x6474E551) | Stack attributes (e.g., executable or non-executable stack).
+PT_GNU_RELRO (0x6474E552) | Read-only after relocation segment.
+
+---
+
+Section Header | Note
+:-: | :-:
+SHT_NULL (0x0) | Inactive or null section.
+SHT_PROGBITS (0x1) | Program data (e.g., .text for code, .data for initialized data).
+SHT_SYMTAB (0x2) | Symbol table (used for linking).
+SHT_STRTAB (0x3) | String table (e.g., for section or symbol names).
+SHT_RELA (0x4) | Relocation entries with explicit addends.
+SHT_HASH (0x5) | Symbol hash table for dynamic linking.
+SHT_DYNAMIC (0x6) | Dynamic linking information.
+SHT_NOTE (0x7) | Notes or auxiliary information.
+SHT_NOBITS (0x8) | Uninitialized data (e.g., .bss; occupies no space in the file).
+SHT_REL (0x9) | Relocation entries without addends.
+SHT_SHLIB (0x0A) | Reserved.
+SHT_DYNSYM (0x0B) | Dynamic symbol table.
+SHT_INIT_ARRAY (0x0E) | Array of pointers to initialization functions.
+SHT_FINI_ARRAY (0x0F) | Array of pointers to termination functions.
+SHT_PREINIT_ARRAY (0x10) | Array of pointers to pre-initialization functions.
+SHT_GROUP (0x11) | Section group (for COMDAT sections).
+SHT_SYMTAB_SHNDX (0x12) | Extended section indices for symbol tables.
 
 ```c
 struct linux_binfmt {
@@ -10399,7 +10584,7 @@ SYSCALL_DEFINE3(execve,
             int retval;
 
             /* We're below the limit (still or again), so we don't want to make
-            * further execve() calls fail. */
+             * further execve() calls fail. */
             current->flags &= ~PF_NPROC_EXCEEDED;
 
             bprm = alloc_bprm(fd, filename) {
@@ -10492,7 +10677,7 @@ SYSCALL_DEFINE3(execve,
                             int retval;
 
                             retval = prepare_binprm(bprm) {
-                                memset(bprm->buf, 0, BINPRM_BUF_SIZE);
+                                memset(bprm->buf, 0, BINPRM_BUF_SIZE/*256*/);
                                 return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
                             }
 
@@ -10663,7 +10848,7 @@ out_free_interp:
     retval = begin_new_exec(bprm) {
         /* Make this the only thread in the thread group. */
         retval = de_thread(me);
-
+        io_uring_task_cancel();
         /* Ensure the files table is not shared. */
         retval = unshare_files();
 
@@ -10674,21 +10859,77 @@ out_free_interp:
         }
 
         /* Maps the mm_struct mm into the current task struct. */
-        retval = exec_mmap(bprm->mm) {
+        exec_mmap(bprm->mm) {
+            tsk = current;
+            old_mm = current->mm;
+            exec_mm_release(tsk, old_mm);
+
+            active_mm = tsk->active_mm;
+            tsk->active_mm = mm;
+            tsk->mm = mm;
+
             activate_mm(active_mm, mm) {
-                switch_mm(prev_mm, next_mm, current);
+                switch_mm(prev_mm, next_mm, current) {
+                    if (prev != next) {
+                        __switch_mm(next);
+                            --->
+                    }
+                    update_saved_ttbr0(tsk, next);
+                }
             }
+        }
+        bprm->mm = NULL;
+
+        exec_task_namespaces() {
+            if (tsk->nsproxy->time_ns_for_children == tsk->nsproxy->time_ns)
+                return 0;
+
+            new = create_new_namespaces(0, tsk, current_user_ns(), tsk->fs);
+            timens_on_fork(new, tsk);
+            switch_task_namespaces(tsk, new);
         }
 
         posix_cpu_timers_exit(me);
         exit_itimers(me);
         flush_itimer_signals();
 
+        unshare_sighand(me) {
+            struct sighand_struct *oldsighand = me->sighand;
+
+            if (refcount_read(&oldsighand->count) != 1) {
+                struct sighand_struct *newsighand;
+                newsighand = kmem_cache_alloc(sighand_cachep, GFP_KERNEL);
+                if (!newsighand)
+                    return -ENOMEM;
+
+                refcount_set(&newsighand->count, 1);
+
+                write_lock_irq(&tasklist_lock);
+                spin_lock(&oldsighand->siglock);
+                memcpy(newsighand->action, oldsighand->action,
+                    sizeof(newsighand->action));
+                rcu_assign_pointer(me->sighand, newsighand);
+                spin_unlock(&oldsighand->siglock);
+                write_unlock_irq(&tasklist_lock);
+
+                __cleanup_sighand(oldsighand) {
+                    if (refcount_dec_and_test(&sighand->count)) {
+                        signalfd_cleanup(sighand) {
+                            wake_up_pollfree(&sighand->signalfd_wqh);
+                        }
+                        kmem_cache_free(sighand_cachep, sighand);
+                    }
+                }
+            }
+        }
+
         do_close_on_exec(me->files) {
             for (i = 0; ; i++) {
                 filp_close(file, files);
             }
         }
+
+        perf_event_exec();
 
         setup_new_exec(bprm) {
             arch_pick_mmap_layout() {
@@ -10709,6 +10950,8 @@ out_free_interp:
 
         if (bprm->loader)
             bprm->loader -= stack_shift;
+        /* tracks the location of the program’s initial stack pointer
+         * (used for setting up argc, argv, and envp). */
         bprm->exec -= stack_shift;
 
         tlb_gather_mmu(&tlb, mm);
@@ -10716,8 +10959,7 @@ out_free_interp:
                 vm_flags);
         tlb_finish_mmu(&tlb);
 
-        /* shift tmp stack to its final location */
-        shift_arg_pages(vma, stack_shift);
+        ret = relocate_vma_down(vma, stack_shift);
 
         stack_expand = 131072UL; /* randomly 32*4k (or 2*64k) pages */
         stack_size = vma->vm_end - vma->vm_start;
@@ -10743,7 +10985,7 @@ out_free_interp:
 
     /* Now we do a little grungy work by mmapping the ELF image into
      * the correct location in memory. */
-    for(i = 0, elf_ppnt = elf_phdata; i < elf_ex->e_phnum; i++, elf_ppnt++) {
+    for (i = 0, elf_ppnt = elf_phdata; i < elf_ex->e_phnum; i++, elf_ppnt++) {
         int elf_prot, elf_flags;
         unsigned long k, vaddr;
         unsigned long total_size = 0;
@@ -10807,12 +11049,13 @@ out_free_interp:
                 map_addr = zero_start = ELF_PAGESTART(addr);
                 zero_end = zero_start + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
             }
+
             if (eppnt->p_memsz > eppnt->p_filesz) {
                 int error;
 
                 zero_start = ELF_PAGEALIGN(zero_start);
                 zero_end = ELF_PAGEALIGN(zero_end);
-
+                /* handling a memory break operation (expanding or contracting process memory) */
                 error = vm_brk_flags(zero_start, zero_end - zero_start, prot & PROT_EXEC ? VM_EXEC : 0);
                 if (error)
                     map_addr = error;
@@ -10972,149 +11215,168 @@ out_free_interp:
 }
 ```
 
+## exec_call_graph
+
 ```c
-SYSCALL_DEFINE3(execve);
-  do_execve();
-    do_execveat_common();
-        struct linux_binprm* bprm = alloc_bprm(fd, filename);
-            bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
-            bprm->filename = bprm->fdpath;
-            bprm->interp = bprm->filename;
+SYSCALL_DEFINE3(execve) {
+    do_execve() {
+        do_execveat_common() {
+            struct linux_binprm* bprm = alloc_bprm(fd, filename) {
+                bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
+                bprm->filename = bprm->fdpath;
+                bprm->interp = bprm->filename;
 
-            bprm_mm_init(bprm);
-                bprm->mm = mm = mm_alloc();
-                bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+                bprm_mm_init(bprm) {
+                    bprm->mm = mm = mm_alloc();
+                    bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
 
-                __bprm_mm_init(bprm);
-                    bprm->vma = vma = vm_area_alloc(mm);
-                    vma->vm_end = STACK_TOP_MAX;
-                    vma->vm_start = vma->vm_end - PAGE_SIZE;
-                    vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
-                    vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+                    __bprm_mm_init(bprm) {
+                        bprm->vma = vma = vm_area_alloc(mm);
+                        vma->vm_end = STACK_TOP_MAX;
+                        vma->vm_start = vma->vm_end - PAGE_SIZE;
+                        vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
+                        vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
 
-                    insert_vm_struct(mm, vma);
+                        insert_vm_struct(mm, vma);
 
-                    mm->stack_vm = mm->total_vm = 1;
-                    bprm->p = vma->vm_end - sizeof(void *);
-
-        bprm_execve(bprm, fd, filename, flags);
-            file = do_open_execat(fd, filename, flags);
-
-            sched_exec();
-
-            bprm->file = file;
-
-            exec_binprm(bprm);
-                search_binary_handler(bprm);
-                    prepare_binprm(bprm);
-                        /* read the first 128 (BINPRM_BUF_SIZE) bytes */
-                        kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
-                            vfs_read(file, (void __user *)buf, count, pos)
-
-                    list_for_each_entry(fmt, &formats, lh) {
-                        fmt->load_binary(bprm);
-                            load_elf_binary();
-                                /* consistency checks */
-                                if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
-                                    goto out;
-                                if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
-                                    goto out;
-                                if (!elf_check_arch(elf_ex))
-                                    goto out;
-                                if (elf_check_fdpic(elf_ex))
-                                    goto out;
-                                if (!bprm->file->f_op->mmap)
-                                    goto out;
-
-                                elf_ppnt = elf_phdata = load_elf_phdrs();
-
-                                /* find PT_INTERP header */
-                                for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
-                                    if (elf_ppnt->p_type != PT_INTERP)
-                                        continue;
-                                    /* read interprete name */
-                                    char* elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
-                                    elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz, elf_ppnt->p_offset);
-                                    /* open interpreter file */
-                                    interpreter = open_exec(elf_interpreter);
-                                    /* read interpreter elfhdr */
-                                    interp_elf_ex = kmalloc(sizeof(*interp_elf_ex), GFP_KERNEL);
-                                    elf_read(interpreter, interp_elf_ex, sizeof(*interp_elf_ex), 0);
-                                }
-
-                                if (interpreter) {
-                                    /* Load the interpreter program headers */
-                                    interp_elf_phdata = load_elf_phdrs(interp_elf_ex, interpreter);
-                                }
-
-                                /* Flush all traces of the currently running executable */
-                                retval = begin_new_exec(bprm);
-
-                                setup_new_exec(bprm);
-                                    arch_pick_mmap_layout();
-                                        mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
-                                        mm->get_unmapped_area = arch_get_unmapped_area;
-
-                                /* Finalizes the stack vm_area_struct. */
-                                setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack);
-                                    shift_arg_pages();
-                                        vma_adjust(vma, new_start, old_end);
-                                        move_page_tables();
-                                        free_pgd_range();
-                                        vma_adjust(vma, new_start, new_end);
-                                    current->mm->start_stack = bprm->p;
-                                    expand_stack();
-
-                                elf_bss = 0;
-                                elf_brk = 0;
-                                start_code = ~0UL;
-                                end_code = 0;
-                                start_data = 0;
-                                end_data = 0;
-
-                                /* mmapping the ELF image into the correct location in memory. */
-                                for (i < loc->elf_ex.e_phnum) {
-                                    if (elf_ppnt->p_type != PT_LOAD)
-                                        continue;
-
-                                    vaddr = elf_ppnt->p_vaddr;
-                                    if (interpreter) {
-                                        load_bias = ELF_ET_DYN_BASE;
-                                    } else
-                                        load_bias = 0;
-
-                                    elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
-                                }
-
-                                e_entry = elf_ex->e_entry + load_bias;
-                                phdr_addr += load_bias;
-                                elf_bss += load_bias;
-                                elf_brk += load_bias;
-                                start_code += load_bias;
-                                end_code += load_bias;
-                                start_data += load_bias;
-                                end_data += load_bias;
-
-                                set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
-
-                                if (elf_interpreter)
-                                    elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
-                                else
-                                    elf_entry = loc->elf_ex.e_entry;
-
-                                mm = current->mm;
-                                mm->end_code = end_code;
-                                mm->start_code = start_code;
-                                mm->start_data = start_data;
-                                mm->end_data = end_data;
-                                mm->start_stack = bprm->p;
-
-                                regs = current_pt_regs();
-                                start_thread(regs, elf_entry/* new_ip */, bprm->p/* new_sp */);
-                                    regs->ip = new_ip;
-                                    regs->sp = new_sp;
-                                    force_iret();
+                        mm->stack_vm = mm->total_vm = 1;
+                        bprm->p = vma->vm_end - sizeof(void *);
                     }
+                }
+            }
+            bprm_execve(bprm, fd, filename, flags) {
+                file = do_open_execat(fd, filename, flags);
+
+                sched_exec();
+
+                bprm->file = file;
+
+                exec_binprm(bprm) {
+                    search_binary_handler(bprm) {
+                        prepare_binprm(bprm) {
+                            /* read the first 128 (BINPRM_BUF_SIZE) bytes */
+                            kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos) {
+                                vfs_read(file, (void __user *)buf, count, pos)
+                            }
+                        }
+
+                        list_for_each_entry(fmt, &formats, lh) {
+                            fmt->load_binary(bprm) {
+                                load_elf_binary() {
+                                    /* consistency checks */
+                                    if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
+                                        goto out;
+                                    if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
+                                        goto out;
+                                    if (!elf_check_arch(elf_ex))
+                                        goto out;
+                                    if (elf_check_fdpic(elf_ex))
+                                        goto out;
+                                    if (!bprm->file->f_op->mmap)
+                                        goto out;
+
+                                    elf_ppnt = elf_phdata = load_elf_phdrs();
+
+                                    /* find PT_INTERP header */
+                                    for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
+                                        if (elf_ppnt->p_type != PT_INTERP)
+                                            continue;
+                                        /* read interprete name */
+                                        char* elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
+                                        elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz, elf_ppnt->p_offset);
+                                        /* open interpreter file */
+                                        interpreter = open_exec(elf_interpreter);
+                                        /* read interpreter elfhdr */
+                                        interp_elf_ex = kmalloc(sizeof(*interp_elf_ex), GFP_KERNEL);
+                                        elf_read(interpreter, interp_elf_ex, sizeof(*interp_elf_ex), 0);
+                                    }
+
+                                    if (interpreter) {
+                                        /* Load the interpreter program headers */
+                                        interp_elf_phdata = load_elf_phdrs(interp_elf_ex, interpreter);
+                                    }
+
+                                    /* Flush all traces of the currently running executable */
+                                    retval = begin_new_exec(bprm);
+
+                                    setup_new_exec(bprm) {
+                                        arch_pick_mmap_layout() {
+                                            mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
+                                            mm->get_unmapped_area = arch_get_unmapped_area;
+                                        }
+                                    }
+
+                                    /* Finalizes the stack vm_area_struct. */
+                                    setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack) {
+                                        relocate_vma_down() {
+                                            vma_adjust(vma, new_start, old_end);
+                                            move_page_tables();
+                                            free_pgd_range();
+                                            vma_adjust(vma, new_start, new_end);
+                                        }
+                                        current->mm->start_stack = bprm->p;
+                                        expand_stack();
+                                    }
+
+                                    elf_bss = 0;
+                                    elf_brk = 0;
+                                    start_code = ~0UL;
+                                    end_code = 0;
+                                    start_data = 0;
+                                    end_data = 0;
+
+                                    /* mmapping the ELF image into the correct location in memory. */
+                                    for (i < loc->elf_ex.e_phnum) {
+                                        if (elf_ppnt->p_type != PT_LOAD)
+                                            continue;
+
+                                        vaddr = elf_ppnt->p_vaddr;
+                                        if (interpreter) {
+                                            load_bias = ELF_ET_DYN_BASE;
+                                        } else
+                                            load_bias = 0;
+
+                                        elf_map(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+                                    }
+
+                                    e_entry = elf_ex->e_entry + load_bias;
+                                    phdr_addr += load_bias;
+                                    elf_bss += load_bias;
+                                    elf_brk += load_bias;
+                                    start_code += load_bias;
+                                    end_code += load_bias;
+                                    start_data += load_bias;
+                                    end_data += load_bias;
+
+                                    set_brk(elf_bss + load_bias, elf_brk + load_bias, bss_prot);
+
+                                    if (elf_interpreter)
+                                        elf_entry = load_elf_interp(&loc->interp_elf_ex, interpreter, &interp_map_addr, load_bias, interp_elf_phdata);
+                                    else
+                                        elf_entry = loc->elf_ex.e_entry;
+
+                                    mm = current->mm;
+                                    mm->end_code = end_code;
+                                    mm->start_code = start_code;
+                                    mm->start_data = start_data;
+                                    mm->end_data = end_data;
+                                    mm->start_stack = bprm->p;
+
+                                    regs = current_pt_regs();
+                                    start_thread(regs, elf_entry/* new_ip */, bprm->p/* new_sp */) {
+                                        regs->ip = new_ip;
+                                        regs->sp = new_sp;
+                                        force_iret();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 ```
 
