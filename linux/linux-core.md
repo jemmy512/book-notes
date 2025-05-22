@@ -186,6 +186,16 @@ Feature | (Data Memory Barrier)DMB | (Data Synchronization Barrier)DSB
 
 ![](../images/kernel/lock-type.png) TODO
 
+Lock Type | Disables Interrupts? | Disables Preemption? | Context | Sleepable?
+:-: | :-: | :-: | :-: | :-:
+Spinlock | :white_check_mark: (with _irqsave) | :white_check_mark: | Process/Interrupt | :heavy_multiplication_x:
+RW Spinlock | :white_check_mark: (with _irqsave) | :white_check_mark: | Process/Interrupt | :heavy_multiplication_x:
+Mutex | :heavy_multiplication_x: | :heavy_multiplication_x: | Process | :white_check_mark:
+RT-Mutex | :heavy_multiplication_x: | :heavy_multiplication_x: | Process (Threaded IRQs) | :white_check_mark:
+Semaphore | :heavy_multiplication_x: | :heavy_multiplication_x: | Process | :white_check_mark:
+RW Semaphore | :heavy_multiplication_x: | :heavy_multiplication_x: | Process | :white_check_mark:
+RCU Lock | Sometimes (variant-based) | :white_check_mark: (most variants) | Process/Interrupt | :heavy_multiplication_x:
+
 ## rcu
 
 * [kernel: RCU concepts](https://www.kernel.org/doc/html/latest/RCU/index.html)
