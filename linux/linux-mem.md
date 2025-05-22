@@ -70,6 +70,16 @@
 * [slub](#slub)
     * [slub_alloc](#slub_alloc)
     * [slub_free](#slub_free)
+* [kernel mapping](#kernel-mapping)
+* [kmalloc](#kmalloc)
+    * [kmalloc_caches](#kmalloc_caches)
+* [kmap_atomic](#kmap_atomic)
+* [vmalloc](#vmalloc)
+* [cma](#cma)
+    * [rmem_cma_setup](#rmem_cma_setup)
+    * [cma_init_reserved_areas](#cma_init_reserved_areas)
+    * [cma_alloc](#cma_alloc)
+* [rmap](#rmap)
 
 * [brk](#brk)
 
@@ -107,13 +117,6 @@
     * [anon_vma_fork](#anon_vma_fork)
     * [try_to_unmap](#try_to_unmap)
 
-* [rmap](#rmap)
-* [kernel mapping](#kernel-mapping)
-* [kmalloc](#kmalloc)
-    * [kmalloc_caches](#kmalloc_caches)
-* [kmap_atomic](#kmap_atomic)
-* [vmalloc](#vmalloc)
-
 * [page_reclaim](#page_reclaim)
     * [lru](#lru)
     * [folio_batch](#folio_batch)
@@ -132,14 +135,6 @@
             * [shrink_slab_memcg](#shrink_slab_memcg)
     * [vmpressure](#vmpressure)
 
-* [page_migrate](#page_migrate)
-    * [migreate_pages_batch](#migreate_pages_batch)
-        * [migrate_folio_unmap](#migrate_folio_unmap)
-            * [try_to_migrate](#try_to_migrate)
-        * [migrate_folio_move](#migrate_folio_move)
-            * [migrate_folio](#migrate_folio)
-        * [remove_migration_ptes](#remove_migration_ptes)
-
 * [page_compact](#page_compact)
     * [compact_finished](#compact_finished)
     * [isolate_migratepages](#isolate_migratepages)
@@ -148,6 +143,14 @@
     * [isolate_freepages](#isolate_freepages)
         * [fast_isolate_freepages](#fast_isolate_freepages)
         * [isolate_freepages_block](#isolate_freepages_block)
+
+* [page_migrate](#page_migrate)
+    * [migreate_pages_batch](#migreate_pages_batch)
+        * [migrate_folio_unmap](#migrate_folio_unmap)
+            * [try_to_migrate](#try_to_migrate)
+        * [migrate_folio_move](#migrate_folio_move)
+            * [migrate_folio](#migrate_folio)
+        * [remove_migration_ptes](#remove_migration_ptes)
 
 * [kcompactd](#kcompactd)
 * [kswapd](#kswapd)
@@ -167,10 +170,6 @@
 
 * [fork](#fork)
     * [copy_page_range](#copy_page_range)
-
-* [cma](#cma)
-    * [cma_init_reserved_areas](#cma_init_reserved_areas)
-    * [cma_alloc](cma_alloc)
 
 * [out_of_memory](#out_of_memory)
     * [oom_reaper](#oom_reaper)
@@ -261,13 +260,13 @@
                     +---------------------------------------------------------------+
         e820        |                                                               |
                     +---------------------------------------------------------------+
-
+        
         ```
 
-        * Migrate Types: Each pageblock has a single migrate type (e.g., MIGRATE_UNMOVABLE), set via **set_pageblock_migratetype**(). This ties to gfp_migratetype() we discussed.
-        * Zonelist: Pageblocks exist within zones (e.g., ZONE_NORMAL). The allocator walks the zonelist, and compaction operates on pageblocks within those zones.
-        * __gfp_pfmemalloc_flags: If ALLOC_NO_WATERMARKS is returned, the allocator might split a pageblock from a reserve pool (e.g., MIGRATE_HIGHATOMIC).
-        * Buddy System: Pageblocks are a higher-level abstraction over the buddy’s free lists, aiding bulk management.
+        * **Migrate Types**: Each pageblock has a single migrate type (e.g., MIGRATE_UNMOVABLE), set via **set_pageblock_migratetype**(). This ties to gfp_migratetype() we discussed.
+        * **Zonelist**: Pageblocks exist within zones (e.g., ZONE_NORMAL). The allocator walks the zonelist, and compaction operates on pageblocks within those zones.
+        * **__gfp_pfmemalloc_flags**: If ALLOC_NO_WATERMARKS is returned, the allocator might split a pageblock from a reserve pool (e.g., MIGRATE_HIGHATOMIC).
+        * **Buddy System**: Pageblocks are a higher-level abstraction over the buddy’s free lists, aiding bulk management.
 
 * [Linux watermark 内存水位](https://mp.weixin.qq.com/s/vCUfMgLAXshWhWa65SN_wA)
 * 深度 Linux
@@ -830,10 +829,13 @@ arch_numa_init() {
                     memset(srat_proc, 0, sizeof(srat_proc));
                     srat_proc[0].id = ACPI_SRAT_TYPE_CPU_AFFINITY;
                     srat_proc[0].handler = acpi_parse_processor_affinity;
+
                     srat_proc[1].id = ACPI_SRAT_TYPE_X2APIC_CPU_AFFINITY;
                     srat_proc[1].handler = acpi_parse_x2apic_affinity;
+
                     srat_proc[2].id = ACPI_SRAT_TYPE_GICC_AFFINITY;
                     srat_proc[2].handler = acpi_parse_gicc_affinity;
+
                     srat_proc[3].id = ACPI_SRAT_TYPE_GENERIC_AFFINITY;
                     srat_proc[3].handler = acpi_parse_gi_affinity;
 
@@ -965,6 +967,15 @@ typedef struct pglist_data {
     int node_id;
 } pg_data_t;
 
+struct zonelist {
+    struct zoneref {
+        struct zone *zone;  /* Pointer to actual zone */
+        int zone_idx;       /* zone_idx(zoneref->zone) */
+    } _zonerefs[MAX_ZONES_PER_ZONELIST + 1];
+};
+
+#define MAX_ZONES_PER_ZONELIST (MAX_NUMNODES * MAX_NR_ZONES)
+
 enum zone_type {
     ZONE_DMA,
     ZONE_DMA32,
@@ -986,13 +997,13 @@ ZONE_HIGHMEM | 896 MiB - End
 ## zone
 
 | **Type** | **Definition**  | **Usage** |
-| --- | --- | --- |
+| :-: | :-: | :-: |
 | `MIGRATE_UNMOVABLE`   | Pages that cannot be moved to another physical location. | Used for stable, critical allocations like kernel data or pinned DMA buffers. |
 | `MIGRATE_MOVABLE`     | Pages that can be migrated to another physical location. | Helps defragment memory for large allocations (e.g., user-space pages with `__GFP_MOVABLE`). |
 | `MIGRATE_RECLAIMABLE` | Pages that can be freed but not moved. | Reclaimed under memory pressure (e.g., slab caches with `__GFP_RECLAIMABLE`). |
 | `MIGRATE_PCPTYPES`    | Marker for the number of types in per-CPU page lists. | Defines scope of fast pcp caches (`UNMOVABLE`, `MOVABLE`, `RECLAIMABLE`). |
 | `MIGRATE_HIGHATOMIC`  | Reserve pool for high-priority atomic allocations. | Emergency pool for critical needs (e.g., `GFP_ATOMIC` with `ALLOC_HIGHATOMIC`). |
-| `MIGRATE_CMA`         | Pages reserved for the Contiguous Memory Allocator. | Supports large, contiguous allocations for devices like GPUs (movable).
+| `MIGRATE_CMA`         | Pages reserved for the Contiguous Memory Allocator. | Supports large, contiguous allocations for devices like GPUs (movable).|
 
 ```c
 /* The zone fallback order is MOVABLE=>HIGHMEM=>NORMAL=>DMA32=>DMA. */
@@ -2025,6 +2036,46 @@ void start_kernel(void) {
 
 # memblock
 
+```c
+struct memblock {
+    bool bottom_up;  /* is bottom up direction? */
+    phys_addr_t current_limit;
+    struct memblock_type memory;
+    struct memblock_type reserved;
+};
+
+struct memblock_type {
+    unsigned long cnt;
+    unsigned long max;
+    phys_addr_t total_size;
+    struct memblock_region *regions;
+    char *name;
+};
+
+struct memblock_region {
+    phys_addr_t base;
+    phys_addr_t size;
+    enum memblock_flags flags;
+    int nid;
+};
+
+static struct memblock_region memblock_memory_init_regions[INIT_MEMBLOCK_MEMORY_REGIONS];
+static struct memblock_region memblock_reserved_init_regions[INIT_MEMBLOCK_RESERVED_REGIONS];
+
+struct memblock memblock __initdata_memblock = {
+    .memory.regions     = memblock_memory_init_regions,
+    .memory.max         = INIT_MEMBLOCK_MEMORY_REGIONS,
+    .memory.name        = "memory",
+
+    .reserved.regions   = memblock_reserved_init_regions,
+    .reserved.max       = INIT_MEMBLOCK_RESERVED_REGIONS,
+    .reserved.name      = "reserved",
+
+    .bottom_up		= false,
+    .current_limit		= MEMBLOCK_ALLOC_ANYWHERE,
+};
+```
+
 ## memblock_add
 
 ```c
@@ -2807,62 +2858,7 @@ int memory_block_online(struct memory_block *mem)
         }
 
         /* Basic onlining is complete, allow allocation of onlined pages. */
-        undo_isolate_page_range(pfn, pfn + nr_pages, MIGRATE_MOVABLE) {
-            unsigned long pfn;
-            struct page *page;
-            unsigned long isolate_start = pageblock_start_pfn(start_pfn);
-            unsigned long isolate_end = pageblock_align(end_pfn);
-
-            for (pfn = isolate_start;
-                pfn < isolate_end;
-                pfn += pageblock_nr_pages) {
-                page = __first_valid_page(pfn, pageblock_nr_pages);
-                if (!page || !is_migrate_isolate_page(page))
-                    continue;
-
-                unset_migratetype_isolate(page, migratetype) {
-                    struct zone *zone;
-                    unsigned long flags, nr_pages;
-                    bool isolated_page = false;
-                    unsigned int order;
-                    struct page *buddy;
-
-                    zone = page_zone(page);
-                    spin_lock_irqsave(&zone->lock, flags);
-                    if (!is_migrate_isolate_page(page))
-                        goto out;
-
-                    if (PageBuddy(page)) {
-                        order = buddy_order(page);
-                        if (order >= pageblock_order && order < MAX_PAGE_ORDER) {
-                            buddy = find_buddy_page_pfn(page, page_to_pfn(page), order, NULL);
-                            if (buddy && !is_migrate_isolate_page(buddy)) {
-                                isolated_page = !!__isolate_free_page(page, order);
-                                    --->
-                                VM_WARN_ON(!isolated_page);
-                            }
-                        }
-                    }
-
-                    if (!isolated_page) {
-                        nr_pages = move_freepages_block(zone, page, migratetype, NULL);
-                        __mod_zone_freepage_state(zone, nr_pages, migratetype);
-                    }
-                    set_pageblock_migratetype(page, migratetype);
-
-                    if (isolated_page) {
-                        __putback_isolated_page(page, order, migratetype) {
-                            __free_one_page(page, page_to_pfn(page), zone, order, mt,
-                                FPI_SKIP_REPORT_NOTIFY | FPI_TO_TAIL
-                            );
-                        }
-                    }
-                    zone->nr_isolate_pageblock--;
-                out:
-                    spin_unlock_irqrestore(&zone->lock, flags);
-                }
-            }
-        }
+        undo_isolate_page_range(pfn, pfn + nr_pages, MIGRATE_MOVABLE);
 
         shuffle_zone(zone) {
             unsigned long i, flags;
@@ -3341,6 +3337,10 @@ struct vm_area_struct {
 
 # alloc_pages
 
+```sh
+proc/buddyinfo
+```
+
 ![](../images/kernel/mem-alloc_pages.svg)
 
 watermark | free area
@@ -3352,7 +3352,7 @@ watermark | free area
 ![](../images/kernel/mem-alloc-watermark.png)
 
 ```c
-#define ALLOC_OOM            ALLOC_NO_WATERMARKS
+#define ALLOC_OOM            ALLOC_NO_WATERMARKS /* performed during OOM handling */
 #define ALLOC_NON_BLOCK     0x10 /* Caller cannot block. Allow access
                                 * to 25% of the min watermark or
                                 * 62.5% if __GFP_HIGH is set. */
@@ -3762,7 +3762,9 @@ static inline bool zone_watermark_fast(
     unsigned int alloc_flags, gfp_t gfp_mask) {
 
     long free_pages;
-    free_pages = zone_page_state(z, NR_FREE_PAGES);
+    free_pages = zone_page_state(z, NR_FREE_PAGES) {
+        return atomic_long_read(&zone->vm_stat[item]);
+    }
 
     /* Fast check for order-0 only. If this fails then the reserves
      * need to be calculated. */
@@ -3888,9 +3890,41 @@ struct page *rmqueue(struct zone *preferred_zone,
             page = NULL;
             spin_lock_irqsave(&zone->lock, flags);
             if (alloc_flags & ALLOC_HIGHATOMIC) {
-                page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC) {
-                    struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
-                        int migratetype) {
+                page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
+            }
+            if (!page) {
+                page = __rmqueue(zone, order, migratetype, alloc_flags) {
+                    struct page *page;
+
+                    if (IS_ENABLED(CONFIG_CMA)) {
+                        if (alloc_flags & ALLOC_CMA &&
+                            zone_page_state(zone, NR_FREE_CMA_PAGES) >
+                            zone_page_state(zone, NR_FREE_PAGES) / 2) {
+
+                            page = __rmqueue_cma_fallback(zone, order) {
+                                return __rmqueue_smallest(zone, order, MIGRATE_CMA);
+                            }
+                            if (page)
+                                return page;
+                        }
+                    }
+                retry:
+                    page = __rmqueue_smallest(zone, order, migratetype);
+                    if (unlikely(!page)) {
+                        if (alloc_flags & ALLOC_CMA) {
+                            page = __rmqueue_cma_fallback(zone, order) {
+                                return __rmqueue_smallest(zone, order, MIGRATE_CMA);
+                            }
+                        }
+                        if (!page && __rmqueue_fallback(zone, order, migratetype, alloc_flags)) {
+                            goto retry;
+                        }
+                    }
+                    return page;
+                }
+
+                if (!page && (alloc_flags & ALLOC_OOM)) {
+                    page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC) {
                         unsigned int current_order;
                         struct free_area *area;
                         struct page *page;
@@ -3948,38 +3982,6 @@ struct page *rmqueue(struct zone *preferred_zone,
                         return NULL;
                     }
                 }
-            }
-            if (!page) {
-                page = __rmqueue(zone, order, migratetype, alloc_flags) {
-                    struct page *page;
-
-                    if (IS_ENABLED(CONFIG_CMA)) {
-                        if (alloc_flags & ALLOC_CMA &&
-                            zone_page_state(zone, NR_FREE_CMA_PAGES) >
-                            zone_page_state(zone, NR_FREE_PAGES) / 2) {
-
-                            page = __rmqueue_cma_fallback(zone, order) {
-                                return __rmqueue_smallest(zone, order, MIGRATE_CMA);
-                            }
-                            if (page)
-                                return page;
-                        }
-                    }
-                retry:
-                    page = __rmqueue_smallest(zone, order, migratetype);
-                    if (unlikely(!page)) {
-                        if (alloc_flags & ALLOC_CMA) {
-                            page = __rmqueue_cma_fallback(zone, order);
-                        }
-                        if (!page && __rmqueue_fallback(zone, order, migratetype, alloc_flags)) {
-                            goto retry;
-                        }
-                    }
-                    return page;
-                }
-
-                if (!page && (alloc_flags & ALLOC_OOM))
-                    page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
 
                 if (!page) {
                     spin_unlock_irqrestore(&zone->lock, flags);
@@ -4215,7 +4217,7 @@ do_steal:
             goto single_page;
 
     /* 1. steal whole page_block */
-        /* Take ownership for orders >= pageblock_order */
+        /* Take ownership if orders >= pageblock_order */
         if (current_order >= pageblock_order) {
             del_page_from_free_list(page, zone, current_order, block_type);
             change_pageblock_range(page, current_order, start_type) {
@@ -5816,6 +5818,8 @@ SLAB_MATCH(memcg_data, memcg_data);
 
 ![](../images/kernel/mem-slab_alloc.svg)
 
+---
+
 ![](../images/kernel/mem-slab_alloc.png)
 
 ```c
@@ -6265,7 +6269,17 @@ redo:
 ```c
 void kmem_cache_free(struct kmem_cache *s, void *x)
 {
-    s = cache_from_obj(s, x);
+    s = cache_from_obj(s, x) {
+        return virt_to_cache(x) {
+            struct slab *slab = virt_to_slab(obj) {
+                struct folio *folio = virt_to_folio(addr);
+                if (!folio_test_slab(folio))
+                    return NULL;
+                return folio_slab(folio);
+            }
+            return slab->slab_cache;
+        }
+    }
     if (!s)
         return;
     slab_free(s, virt_to_slab(x), x, _RET_IP_);
@@ -6473,6 +6487,1498 @@ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
             }
         }
     }
+}
+```
+
+# kmalloc
+
+* [bin的技术小屋](https://mp.weixin.qq.com/s/atHXeXxx0L63w99RW7bMHg)
+
+```c
+/* kmalloc is the normal method of allocating memory
+ * for objects smaller than page size in the kernel. */
+static void *kmalloc(size_t size, gfp_t flags) {
+    if (__builtin_constant_p(size)) {
+        if (size > KMALLOC_MAX_CACHE_SIZE)
+            return kmalloc_large(size, flags);
+
+    #ifndef CONFIG_SLOB
+        if (!(flags & GFP_DMA)) {
+            unsigned int index = kmalloc_index(size);
+            if (!index)
+                return ZERO_SIZE_PTR;
+            return kmem_cache_alloc_trace(kmalloc_caches[index], flags, size);
+        }
+    #endif
+    }
+
+    return __kmalloc(size, flags) {
+        struct kmem_cache *s;
+        void *ret;
+
+        if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
+            return kmalloc_large(size, flags) {
+                unsigned int order = get_order(size);
+                return kmalloc_order_trace(size, flags, order) {
+                    kmalloc_order(size, flags, order) {
+                        void *ret;
+                        struct page *page;
+
+                        flags |= __GFP_COMP;
+                        page = alloc_pages(flags, order);
+                        ret = page ? page_address(page) : NULL;
+                        kmemleak_alloc(ret, size, 1, flags);
+                        kasan_kmalloc_large(ret, size, flags);
+                        return ret;
+                    }
+                }
+            }
+
+        s = kmalloc_slab(size, flags) {
+            unsigned int index;
+
+            if (size <= 192) {
+                if (!size)
+                return ZERO_SIZE_PTR;
+
+                index = size_index[size_index_elem(size)] {
+                    return (bytes - 1) / 8;
+                }
+            } else {
+                if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
+                    WARN_ON(1);
+                    return NULL;
+                }
+                index = fls(size - 1);
+            }
+
+            #ifdef CONFIG_ZONE_DMA
+                if (unlikely((flags & GFP_DMA)))
+                    return kmalloc_dma_caches[index];
+            #endif
+            return kmalloc_caches[index];
+        }
+        if (unlikely(ZERO_OR_NULL_PTR(s)))
+            return s;
+
+        ret = slab_alloc(s, flags, _RET_IP_);
+
+        return ret;
+    }
+}
+```
+
+## kmalloc_caches
+
+```c
+/* mm/slab_common.c */
+struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
+
+void kmem_cache_init(void)
+{
+    setup_kmalloc_cache_index_table();
+    create_kmalloc_caches(0) {
+        for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
+            if (!kmalloc_caches[i])
+                new_kmalloc_cache(i, flags);
+
+            if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6) {
+                new_kmalloc_cache(1, flags);
+            }
+            if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7) {
+                new_kmalloc_cache(2, flags) {
+                    kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
+                        kmalloc_info[idx].size, flags, 0,
+                        kmalloc_info[idx].size
+                    ) {
+
+                    }
+                }
+            }
+        }
+
+        /* Kmalloc array is now usable */
+        slab_state = UP;
+
+        for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
+            struct kmem_cache *s = kmalloc_caches[i];
+
+            if (s) {
+                unsigned int size = kmalloc_size(i);
+                kmalloc_dma_caches[i] = create_kmalloc_cache(n,
+                    size, SLAB_CACHE_DMA | flags, 0, 0) {
+
+                    struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
+
+                    create_boot_cache(s, name, size, flags, useroffset, usersize);
+                    list_add(&s->list, &slab_caches);
+                    memcg_link_cache(s);
+                    s->refcount = 1;
+                    return s;
+                }
+            }
+        }
+    }
+}
+
+const struct kmalloc_info_struct kmalloc_info[] __initconst = {
+    {NULL,                      0},    {"kmalloc-96",             96},
+    {"kmalloc-192",           192},    {"kmalloc-8",               8},
+    {"kmalloc-16",             16},    {"kmalloc-32",             32},
+    {"kmalloc-64",             64},    {"kmalloc-128",           128},
+    {"kmalloc-256",           256},    {"kmalloc-512",           512},
+    {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
+    {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
+    {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
+    {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
+    {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
+    {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
+    {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
+    {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
+    {"kmalloc-67108864", 67108864}
+};
+
+/* Conversion table for small slabs sizes / 8 to the index in the
+ * kmalloc array. This is necessary for slabs < 192 since we have non power
+ * of two cache sizes there. The size of larger slabs can be determined using
+ * fls. */
+u8 size_index[24] = {
+  3,  /* 8 */
+  4,  /* 16 */
+  5,  /* 24 */
+  5,  /* 32 */
+  6,  /* 40 */
+  6,  /* 48 */
+  6,  /* 56 */
+  6,  /* 64 */
+  1,  /* 72 */
+  1,  /* 80 */
+  1,  /* 88 */
+  1,  /* 96 */
+  7,  /* 104 */
+  7,  /* 112 */
+  7,  /* 120 */
+  7,  /* 128 */
+  2,  /* 136 */
+  2,  /* 144 */
+  2,  /* 152 */
+  2,  /* 160 */
+  2,  /* 168 */
+  2,  /* 176 */
+  2,  /* 184 */
+  2   /* 192 */
+};
+```
+
+# vmalloc
+
+```c
+static struct kmem_cache *vmap_area_cachep;
+
+/* This linked list is used in pair with free_vmap_area_root.
+ * It gives O(1) access to prev/next to perform fast coalescing. */
+static LIST_HEAD(free_vmap_area_list);
+
+/* This augment red-black tree represents the free vmap space.
+ * All vmap_area objects in this tree are sorted by va->va_start
+ * address. */
+static struct rb_root free_vmap_area_root = RB_ROOT;
+
+struct vm_struct {
+    struct vm_struct  *next;
+    void              *addr;
+    unsigned long     size;
+    unsigned long     flags;
+    struct page       **pages;
+    unsigned int      nr_pages;
+    phys_addr_t       phys_addr;
+    const void        *caller;
+};
+
+struct vmap_area {
+    unsigned long va_start;
+    unsigned long va_end;
+
+    struct rb_node rb_node; /* address sorted rbtree */
+    struct list_head list; /* address sorted list */
+
+    union {
+        unsigned long subtree_max_size; /* in "free" tree free_vmap_area_root */
+        struct vm_struct *vm;           /* in "busy" tree vmap_area_root */
+    };
+};
+```
+
+```c
+/* allocate virtually contiguous memory */
+vmalloc(size) {
+    __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END, gfp_mask, PAGE_KERNEL, 0, node, caller) {
+        struct vm_struct *area = __get_vm_area_node() {
+            struct vmap_area *va;
+            struct vm_struct *area;
+            area = kzalloc_node(sizeof(*area));
+            /* Allocate a region of KVA */
+            va = alloc_vmap_area(size) {
+                va = kmem_cache_alloc_node(vmap_area_cachep);
+                addr = __alloc_vmap_area(
+                    &free_vmap_area_root/*root*/, &free_vmap_area_list/*head*/,
+                    size, align, vstart, vend) {
+
+                    va = find_vmap_lowest_match();
+                    adjust_va_to_fit_type();
+                        kmem_cache_alloc(vmap_area_cachep, GFP_NOWAIT);
+                }
+                va->va_start = addr;
+                va->va_end = addr + size;
+                va->vm = NULL;
+                insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
+            }
+            setup_vmalloc_vm(area, va, flags, caller);
+        }
+
+        ret = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
+        return area->addr;
+    }
+}
+
+/* Allocate physical pages and map them into vmalloc space. */
+__vmalloc_area_node(area, gfp_mask, prot, shift, node) {
+    vm_area_alloc_pages() {
+        alloc_pages();
+    }
+
+    vmap_pages_range(addr, addr + size, prot, area->pages, page_shift) {
+        vmap_range_noflush() {
+            pgd = pgd_offset_k(addr);
+            vmap_p4d_range() {
+                p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
+                vmap_pud_range() {
+                    pud = pud_alloc_track(&init_mm, p4d, addr, mask);
+                    vmap_pmd_range() {
+                        pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
+                        vmap_pte_range() {
+                            pte = pte_alloc_kernel_track(pmd, addr, mask);
+                            set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot)) {
+                                set_ptes(mm, addr, ptep, pte, 1) {
+                                    for (;;) {
+                                        __set_pte_at(mm, addr, ptep, pte) {
+                                            if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte)) {
+                                                __sync_icache_dcache(pte) {
+                                                    struct folio *folio = page_folio(pte_page(pte));
+                                                    if (!test_bit(PG_dcache_clean, &folio->flags)) {
+                                                        sync_icache_aliases(
+                                                            (unsigned long)folio_address(folio),
+                                                            (unsigned long)folio_address(folio) + folio_size(folio)) {
+
+                                                            if (icache_is_aliasing()) {
+                                                                dcache_clean_pou(start, end);
+                                                                icache_inval_all_pou();
+                                                            } else {
+                                                                caches_clean_inval_pou(start, end);
+                                                            }
+                                                        }
+                                                        set_bit(PG_dcache_clean, &folio->flags);
+                                                    }
+                                                }
+                                            }
+
+                                            set_pte(ptep, pte) {
+                                                WRITE_ONCE(*ptep, pte);
+                                                if (pte_valid_not_user(pte)) {
+                                                    dsb(ishst);
+                                                    isb();
+                                                }
+                                            }
+                                        }
+                                        if (--nr == 0)
+                                            break;
+                                        ptep++;
+                                        addr += PAGE_SIZE;
+                                        pte_val(pte) += PAGE_SIZE;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+# cma
+
+![](../images/kernel/mem-cam.png)
+
+* [wowo tech](http://www.wowotech.net/memory_management/cma.html)
+* [CMA技术原理分析 - 内核工匠](https://mp.weixin.qq.com/s/kNHys4p2sXFV6wwV7VDFqQ)
+* [LoyenWang - Linux内存管理之CMA](https://www.cnblogs.com/LoyenWang/p/12182594.html)
+
+```c
+struct cma {
+    unsigned long   count; /* page count */
+    unsigned long   available_count;
+    unsigned int    order_per_bit; /* Order of pages represented by one bit */
+    spinlock_t	    lock;
+    struct mutex    alloc_mutex;
+#ifdef CONFIG_CMA_DEBUGFS
+    struct hlist_head       mem_head;
+    spinlock_t              mem_head_lock;
+#endif
+    char                    name[CMA_MAX_NAME];
+    int                     nranges;
+    struct cma_memrange     ranges[CMA_MAX_RANGES];
+#ifdef CONFIG_CMA_SYSFS
+    /* the number of CMA page successful allocations */
+    atomic64_t              nr_pages_succeeded;
+    /* the number of CMA page allocation failures */
+    atomic64_t              nr_pages_failed;
+    /* the number of CMA page released */
+    atomic64_t              nr_pages_released;
+    /* kobject requires dynamic object */
+    struct cma_kobject      *cma_kobj;
+#endif
+    unsigned long           flags;
+    /* NUMA node (NUMA_NO_NODE if unspecified) */
+    int                     nid;
+};
+
+struct cma_memrange {
+    unsigned long base_pfn;
+    unsigned long early_pfn;
+    unsigned long count;
+    unsigned long *bitmap;
+#ifdef CONFIG_CMA_DEBUGFS
+    struct debugfs_u32_array dfs_bitmap;
+#endif
+};
+#define CMA_MAX_RANGES 8
+
+# define MAX_CMA_AREAS 20
+struct cma cma_areas[MAX_CMA_AREAS];
+unsigned cma_area_count;
+
+RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);
+RESERVEDMEM_OF_DECLARE(tegra210_emc_table, "nvidia,tegra210-emc-table", tegra210_emc_table_init);
+RESERVEDMEM_OF_DECLARE(dma, "restricted-dma-pool", rmem_swiotlb_setup);
+
+/* setup_arch -> arm64_memblock_init -> early_init_fdt_scan_reserved_mem
+ * -> fdt_init_reserved_mem -> __reserved_mem_init_node */
+#define #define RESERVEDMEM_OF_DECLARE(name, compat, init) \
+    _OF_DECLARE(reservedmem, name, compat, init, reservedmem_of_init_fn)
+
+#define _OF_DECLARE(table, name, compat, fn, fn_type) \
+    static const struct of_device_id __of_table_##name \
+        __used __section("__" #table "_of_table") \ /* __reservedmem_of_table */
+        __aligned(__alignof__(struct of_device_id)) \
+        = { .compatible = compat,   \
+            .data = (fn == (fn_type)NULL) ? fn : fn  }
+
+struct of_device_id {
+    char        name[32];
+    char        type[32];
+    char        compatible[128];
+    const void  *data;
+};
+
+/* arch/arm64/boot/dts/broadcom/bcm2712.dtsi */
+cma: linux,cma {
+    compatible = "shared-dma-pool";
+    size = <0x0 0x4000000>; /* 64MB */
+    reusable;
+    linux,cma-default;
+    alloc-ranges = <0x0 0x00000000 0x0 0x40000000>;
+};
+
+static int __init __reserved_mem_init_node(struct reserved_mem *rmem)
+{
+    extern const struct of_device_id __reservedmem_of_table[];
+    const struct of_device_id *i;
+    int ret = -ENOENT;
+
+    for (i = __reservedmem_of_table; i < &__rmem_of_table_sentinel; i++) {
+        reservedmem_of_init_fn initfn = i->data;
+        const char *compat = i->compatible;
+
+        if (!of_flat_dt_is_compatible(rmem->fdt_node, compat))
+            continue;
+
+        ret = initfn(rmem); /* rmem_cma_setup */
+        if (ret == 0) {
+            break;
+        }
+    }
+    return ret;
+}
+```
+
+## rmem_cma_setup
+
+```c
+struct reserved_mem {
+    const char                      *name;
+    unsigned long                   fdt_node;
+    const struct reserved_mem_ops   *ops; /* rmem_cma_ops */
+    phys_addr_t                     base;
+    phys_addr_t                     size;
+    void                            *priv; /* point to cma */
+};
+
+static int __init rmem_cma_setup(struct reserved_mem *rmem)
+{
+    unsigned long node = rmem->fdt_node;
+    bool default_cma = of_get_flat_dt_prop(node, "linux,cma-default", NULL);
+    struct cma *cma;
+    int err;
+
+    if (size_cmdline != -1 && default_cma) {
+        pr_info("Reserved memory: bypass %s node, using cmdline CMA params instead\n",
+            rmem->name);
+        return -EBUSY;
+    }
+
+    if (!of_get_flat_dt_prop(node, "reusable", NULL) ||
+        of_get_flat_dt_prop(node, "no-map", NULL))
+        return -EINVAL;
+
+    if (!IS_ALIGNED(rmem->base | rmem->size, CMA_MIN_ALIGNMENT_BYTES)) {
+        pr_err("Reserved memory: incorrect alignment of CMA region\n");
+        return -EINVAL;
+    }
+
+    err = cma_init_reserved_mem(rmem->base, rmem->size, 0, rmem->name, &cma/*res_cma*/) {
+        cma = &cma_areas[cma_area_count];
+
+        snprintf(cma->name, CMA_MAX_NAME,  "cma%d\n", cma_area_count);
+
+        cma->base_pfn = PFN_DOWN(base);
+        cma->count = size >> PAGE_SHIFT;
+        cma->order_per_bit = order_per_bit;
+        *res_cma = cma;
+        cma_area_count++;
+        totalcma_pages += (size / PAGE_SIZE);
+    }
+
+    /* Architecture specific contiguous memory fixup. */
+    dma_contiguous_early_fixup(rmem->base, rmem->size);
+
+    if (default_cma)
+        dma_contiguous_default_area = cma;
+
+    rmem->ops = &rmem_cma_ops;
+    rmem->priv = cma;
+
+    pr_info("Reserved memory: created CMA memory pool at %pa, size %ld MiB\n",
+        &rmem->base, (unsigned long)rmem->size / SZ_1M);
+
+    return 0;
+}
+```
+
+```c
+static const struct reserved_mem_ops rmem_cma_ops = {
+    .device_init    = rmem_cma_device_init(struct reserved_mem *rmem, struct device *dev) {
+        dev->cma_area = rmem->priv/* cma */;
+    },
+    .device_release = rmem_cma_device_release(struct reserved_mem *rmem, struct device *dev) {
+        dev->cma_area = NULL;
+    },
+};
+```
+
+## cma_init_reserved_areas
+
+![](../images/kernel/mem-cma_init_reserved_areas.png)
+
+```c
+core_initcall(cma_init_reserved_areas);
+
+cma_init_reserved_areas(void) {
+    for (i = 0; i < cma_area_count; i++) {
+        cma_activate_area(&cma_areas[i]/*cma*/) {
+            unsigned long base_pfn = cma->base_pfn, pfn;
+            struct zone *zone;
+
+            cma->bitmap = bitmap_zalloc(cma_bitmap_maxno(cma), GFP_KERNEL);
+
+            zone = page_zone(pfn_to_page(base_pfn));
+            for (pfn = base_pfn + 1; pfn < base_pfn + cma->count; pfn++) {
+                if (page_zone(pfn_to_page(pfn)) != zone)
+                    goto not_in_zone;
+            }
+
+            for (pfn = base_pfn; pfn < base_pfn + cma->count; pfn += pageblock_nr_pages) {
+                init_cma_reserved_pageblock(pfn_to_page(pfn)) {
+                    unsigned i = pageblock_nr_pages;
+                    struct page *p = page;
+
+                    do {
+                        __ClearPageReserved(p);
+                        set_page_count(p, 0);
+                    } while (++p, --i);
+
+                    set_pageblock_migratetype(page, MIGRATE_CMA) {
+                        if (unlikely(page_group_by_mobility_disabled && migratetype < MIGRATE_PCPTYPES)) {
+                            migratetype = MIGRATE_UNMOVABLE;
+                        }
+
+                        set_pfnblock_flags_mask(page, (unsigned long)migratetype, page_to_pfn(page), MIGRATETYPE_MASK) {
+                            unsigned long *bitmap;
+                            unsigned long bitidx, word_bitidx;
+                            unsigned long word;
+
+                            BUILD_BUG_ON(NR_PAGEBLOCK_BITS != 4);
+                            BUILD_BUG_ON(MIGRATE_TYPES > (1 << PB_migratetype_bits));
+
+                            bitmap = get_pageblock_bitmap(page, pfn) {
+                                #ifdef CONFIG_SPARSEMEM
+                                    return section_to_usemap(__pfn_to_section(pfn)) {
+                                        return ms->usage->pageblock_flags;
+                                    }
+                                #else
+                                    return page_zone(page)->pageblock_flags;
+                                #endif /* CONFIG_SPARSEMEM */
+                            }
+                            bitidx = pfn_to_bitidx(page, pfn);
+                            word_bitidx = bitidx / BITS_PER_LONG;
+                            bitidx &= (BITS_PER_LONG-1);
+
+                            VM_BUG_ON_PAGE(!zone_spans_pfn(page_zone(page), pfn), page);
+
+                            mask <<= bitidx;
+                            flags <<= bitidx;
+
+                            word = READ_ONCE(bitmap[word_bitidx]);
+                            do {
+                            } while (!try_cmpxchg(&bitmap[word_bitidx], &word, (word & ~mask) | flags));
+                        }
+                    }
+                    set_page_refcounted(page);
+                    /* pages were reserved and not allocated */
+                    clear_page_tag_ref(page);
+
+                    /* free pages to buddy system */
+                    __free_pages(page, pageblock_order);
+
+                    adjust_managed_page_count(page, pageblock_nr_pages);
+                    page_zone(page)->cma_pages += pageblock_nr_pages;
+                }
+            }
+
+            return;
+
+        not_in_zone:
+            bitmap_free(cma->bitmap);
+        out_error:
+            /* Expose all pages to the buddy, they are useless for CMA. */
+            if (!cma->reserve_pages_on_error) {
+                for (pfn = base_pfn; pfn < base_pfn + cma->count; pfn++) {
+                    free_reserved_page(pfn_to_page(pfn)) {
+
+                    }
+                }
+            }
+            totalcma_pages -= cma->count;
+            cma->count = 0;
+            pr_err("CMA area %s could not be activated\n", cma->name);
+            return;
+        }
+    }
+}
+```
+
+## cma_alloc
+
+![](../images/kernel/mem-cma_alloc.svg)
+
+```c
+cma_alloc(cma_heap->cma, pagecount, align, false);
+cma_alloc(kvm_cma, nr_pages, order_base_2(HPT_ALIGN_PAGES), false);
+cma_alloc(dev_get_cma_area(dev), count, align, no_warn);
+
+struct page *cma_alloc(struct cma *cma, unsigned long count,
+            unsigned int align, bool no_warn)
+{
+    return __cma_alloc(cma, count, align, GFP_KERNEL | (no_warn ? __GFP_NOWARN : 0));
+}
+
+static struct page *__cma_alloc(struct cma *cma, unsigned long count,
+            unsigned int align, gfp_t gfp)
+{
+    struct page *page = NULL;
+    int ret = -ENOMEM, r;
+    unsigned long i;
+    const char *name = cma ? cma->name : NULL;
+
+    trace_cma_alloc_start(name, count, align);
+
+    if (!cma || !cma->count)
+        return page;
+
+    if (!count)
+        return page;
+
+    for (r = 0; r < cma->nranges; r++) {
+        page = NULL;
+        ret = cma_range_alloc(cma, &cma->ranges[r], count, align, &page, gfp);
+        if (ret != -EBUSY || page)
+            break;
+    }
+
+    if (page) {
+        for (i = 0; i < count; i++)
+            page_kasan_tag_reset(nth_page(page, i));
+    }
+
+    if (ret && !(gfp & __GFP_NOWARN)) {
+        cma_debug_show_areas(cma);
+    }
+
+    trace_cma_alloc_finish(name, page ? page_to_pfn(page) : 0,
+                page, count, align, ret);
+    if (page) {
+        count_vm_event(CMA_ALLOC_SUCCESS);
+        cma_sysfs_account_success_pages(cma, count);
+    } else {
+        count_vm_event(CMA_ALLOC_FAIL);
+        cma_sysfs_account_fail_pages(cma, count);
+    }
+
+    return page;
+}
+
+static int cma_range_alloc(struct cma *cma, struct cma_memrange *cmr,
+                unsigned long count, unsigned int align,
+                struct page **pagep, gfp_t gfp) {
+
+    unsigned long mask, offset;
+    unsigned long pfn = -1;
+    unsigned long start = 0;
+    unsigned long bitmap_maxno, bitmap_no, bitmap_count;
+    unsigned long i;
+    struct page *page = NULL;
+    int ret = -ENOMEM;
+
+    mask = cma_bitmap_aligned_mask(cma, align) {
+        if (align_order <= cma->order_per_bit)
+            return 0;
+        return (1UL << (align_order - cma->order_per_bit)) - 1;
+
+    }
+    offset = cma_bitmap_aligned_offset(cma, align) {
+        return (cmr->base_pfn & ((1UL << align_order) - 1))
+            >> cma->order_per_bit;
+    }
+    bitmap_maxno = cma_bitmap_maxno(cma, cmr) {
+        return cmr->count >> cma->order_per_bit;
+    }
+    bitmap_count = cma_bitmap_pages_to_bits(cma, count) {
+        return ALIGN(pages, 1UL << cma->order_per_bit) >> cma->order_per_bit;
+    }
+
+    if (bitmap_count > bitmap_maxno)
+        goto out;
+
+    for (;;) {
+        spin_lock_irq(&cma->lock);
+        if (count > cma->available_count) {
+            spin_unlock_irq(&cma->lock);
+            break;
+        }
+
+        bitmap_no = bitmap_find_next_zero_area_off(cma->bitmap,
+            bitmap_maxno, start, bitmap_count, mask, offset
+        );
+
+        bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
+        cma->available_count -= count;
+        spin_unlock_irq(&cma->lock);
+
+        pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
+
+        mutex_lock(&cma->alloc_mutex);
+        ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA, gfp_mask) {
+            unsigned long outer_start, outer_end;
+            int ret = 0;
+
+            struct compact_control cc = {
+                .nr_migratepages = 0,
+                .order = -1,
+                .zone = page_zone(pfn_to_page(start)),
+                .mode = MIGRATE_SYNC,
+                .ignore_skip_hint = true,
+                .no_set_skip_hint = true,
+                .gfp_mask = current_gfp_context(gfp_mask),
+                .alloc_contig = true,
+            };
+            INIT_LIST_HEAD(&cc.migratepages);
+
+/* 1. moves free pages to the MIGRATE_ISOLATE freelist */
+            gfp_mask = current_gfp_context(gfp_mask);
+            ret = start_isolate_page_range(start, end, migratetype, 0/*flag*/, gfp_mask) {
+                unsigned long pfn;
+                struct page *page;
+                /* isolation is done at page block granularity */
+                unsigned long isolate_start = pageblock_start_pfn(start_pfn);
+                unsigned long isolate_end = pageblock_align(end_pfn);
+                int ret;
+                bool skip_isolation = false;
+
+                drain_all_pages(cc.zone);
+
+                /* start_pfn = 0x1200, end_pfn = 0x2800, and pageblock_nr_pages = 0x400 (1024 pages)
+                 * isolate_start = pageblock_start_pfn(0x1200) = 0x1000
+                 * isolate_end = pageblock_align(0x2800) = 0x2c00
+                 * Range: [0x1000, 0x2c00) spans three blocks:
+                 *      First Pageblock:        [0x1000, 0x1400)
+                 *      Last Pageblock:         [0x1400, 0x1800)
+                 *      Intermediate Pageblock: [0x1800, 0x2c00) */
+
+                /* isolate [isolate_start, isolate_start + pageblock_nr_pages) pageblock */
+                ret = isolate_single_pageblock(isolate_start, flags/*0*/, false, skip_isolation, migratetype);
+                if (ret) /* failed */
+                    return ret;
+
+                if (isolate_start == isolate_end - pageblock_nr_pages)
+                    skip_isolation = true;
+
+                /* isolate [isolate_end - pageblock_nr_pages, isolate_end) pageblock */
+                ret = isolate_single_pageblock(isolate_end, flags, true, skip_isolation, migratetype);
+                if (ret) {
+                    unset_migratetype_isolate(pfn_to_page(isolate_start), migratetype);
+                    return ret;
+                }
+
+                /* skip isolated pageblocks at the beginning and end */
+                for (pfn = isolate_start + pageblock_nr_pages;
+                    pfn < isolate_end - pageblock_nr_pages;
+                    pfn += pageblock_nr_pages) {
+
+                    page = __first_valid_page(pfn, pageblock_nr_pages);
+                    if (page && set_migratetype_isolate()) {
+                        undo_isolate_page_range();
+                        unset_migratetype_isolate(
+                            pfn_to_page(isolate_end - pageblock_nr_pages),
+                            migratetype
+                        );
+                        return -EBUSY;
+                    }
+                }
+            }
+            if (ret)
+                goto done;
+
+            drain_all_pages(cc.zone);
+
+/* 2. migrate any in-use pages in the range to other locations, freeing up the range for allocation */
+            ret = __alloc_contig_migrate_range(&cc, start, end, migratetype/*MIGRATE_CMA*/);
+            if (ret && ret != -EBUSY)
+                goto done;
+
+            /* locate a large free memory block that precedes or includes the given start_pfn.*/
+            outer_start = find_large_buddy(unsigned long start_pfn) {
+                int order = 0;
+                struct page *page;
+                unsigned long pfn = start_pfn;
+
+                while (!PageBuddy(page = pfn_to_page(pfn))) {
+                    /* Nothing found */
+                    if (++order > MAX_PAGE_ORDER)
+                        return start_pfn;
+                    pfn &= ~0UL << order;
+                }
+
+                /* Found a preceding buddy, but does it straddle? */
+                if (pfn + (1 << buddy_order(page)) > start_pfn)
+                    return pfn;
+
+                /* Nothing found */
+                return start_pfn;
+            }
+
+            /* Make sure the range is really isolated. */
+            if (test_pages_isolated(outer_start, end, 0)) {
+                ret = -EBUSY;
+                goto done;
+            }
+
+/* 3. moves pages from the MIGRATE_ISOLATE freelist to cc->freepages
+ * for the specific allocation request, removing them from the buddy allocator’s control. */
+            outer_end = isolate_freepages_range(&cc, outer_start, end);
+            if (!outer_end) {
+                ret = -EBUSY;
+                goto done;
+            }
+
+            if (!(gfp_mask & __GFP_COMP)) {
+                split_free_pages(cc.freepages, gfp_mask);
+
+                /* Free head and tail (if any) */
+                if (start != outer_start)
+                    free_contig_range(outer_start, start - outer_start);
+                if (end != outer_end)
+                    free_contig_range(end, outer_end - end);
+            } else if (start == outer_start && end == outer_end && is_power_of_2(end - start)) {
+                struct page *head = pfn_to_page(start);
+                int order = ilog2(end - start);
+
+                check_new_pages(head, order);
+                prep_new_page(head, order, gfp_mask, 0);
+                set_page_refcounted(head);
+            } else {
+                ret = -EINVAL;
+                WARN(true, "PFN range: requested [%lu, %lu), allocated [%lu, %lu)\n",
+                    start, end, outer_start, outer_end);
+            }
+        done:
+/* 4. reset the migrateype to MIGRATE_CMA */
+            undo_isolate_page_range(start, end, migratetype);
+            return ret;
+        }
+        mutex_unlock(&cma->alloc_mutex);
+
+        if (ret == 0) {
+            page = pfn_to_page(pfn);
+            break;
+        }
+
+        cma_clear_bitmap(cma, pfn, count);
+        if (ret != -EBUSY)
+            break;
+
+        /* try again with a bit different memory target */
+        start = bitmap_no + mask + 1;
+    }
+
+out:
+    *pagep = page;
+    return ret;
+}
+```
+
+### isolate_single_pageblock
+
+```c
+int isolate_single_pageblock(unsigned long boundary_pfn, int flags,
+        bool isolate_before, bool skip_isolation, int migratetype)
+{
+    unsigned long start_pfn;
+    unsigned long isolate_pageblock;
+    unsigned long pfn;
+    struct zone *zone;
+    int ret;
+
+    VM_BUG_ON(!pageblock_aligned(boundary_pfn));
+
+    if (isolate_before)
+        isolate_pageblock = boundary_pfn - pageblock_nr_pages;
+    else
+        isolate_pageblock = boundary_pfn;
+
+    /* scan at the beginning of MAX_ORDER_NR_PAGES aligned range to avoid
+     * only isolating a subset of pageblocks from a bigger than pageblock
+     * free or in-use page. Also make sure all to-be-isolated pageblocks
+     * are within the same zone. */
+    zone = page_zone(pfn_to_page(isolate_pageblock));
+    start_pfn  = max(ALIGN_DOWN(isolate_pageblock, MAX_ORDER_NR_PAGES), zone->zone_start_pfn);
+
+    if (skip_isolation) {
+        int mt __maybe_unused = get_pageblock_migratetype(pfn_to_page(isolate_pageblock));
+
+        VM_BUG_ON(!is_migrate_isolate(mt));
+    } else {
+        ret = set_migratetype_isolate(pfn_to_page(isolate_pageblock), migratetype,
+            flags, isolate_pageblock, isolate_pageblock + pageblock_nr_pages
+        );
+        if (ret)
+            return ret;
+    }
+
+    if (isolate_before) {
+        if (!pfn_to_online_page(boundary_pfn))
+            return 0;
+    } else {
+        if (!pfn_to_online_page(boundary_pfn - 1))
+            return 0;
+    }
+
+    for (pfn = start_pfn; pfn < boundary_pfn;) {
+        struct page *page = __first_valid_page(pfn, boundary_pfn - pfn);
+
+        VM_BUG_ON(!page);
+        pfn = page_to_pfn(page);
+
+        if (PageUnaccepted(page)) {
+            pfn += MAX_ORDER_NR_PAGES;
+            continue;
+        }
+
+        if (PageBuddy(page)) {
+            int order = buddy_order(page);
+            VM_WARN_ON_ONCE(pfn + (1 << order) > boundary_pfn);
+            pfn += 1UL << order;
+            continue;
+        }
+
+        /* If a compound page is straddling our block, attempt
+        * to migrate it out of the way.
+        *
+        * We don't have to worry about this creating a large
+        * free page that straddles into our block: gigantic
+        * pages are freed as order-0 chunks, and LRU pages
+        * (currently) do not exceed pageblock_order.
+        *
+        * The block of interest has already been marked
+        * MIGRATE_ISOLATE above, so when migration is done it
+        * will free its pages onto the correct freelists. */
+        if (PageCompound(page)) {
+            struct page *head = compound_head(page);
+            unsigned long head_pfn = page_to_pfn(head);
+            unsigned long nr_pages = compound_nr(head);
+
+            if (head_pfn + nr_pages <= boundary_pfn || PageHuge(page)) {
+                pfn = head_pfn + nr_pages;
+                continue;
+            }
+
+            /* These pages are movable too, but they're
+            * not expected to exceed pageblock_order.
+            *
+            * Let us know when they do, so we can add
+            * proper free and split handling for them. */
+            VM_WARN_ON_ONCE_PAGE(PageLRU(page), page);
+            VM_WARN_ON_ONCE_PAGE(__PageMovable(page), page);
+
+            goto failed;
+        }
+
+        pfn++;
+    }
+    return 0;
+
+failed:
+    /* restore the original migratetype */
+    if (!skip_isolation)
+        unset_migratetype_isolate(pfn_to_page(isolate_pageblock), migratetype);
+    return -EBUSY;
+}
+```
+
+#### set_migratetype_isolate
+
+```c
+static int set_migratetype_isolate(struct page *page, int migratetype, int isol_flags,
+            unsigned long start_pfn, unsigned long end_pfn)
+{
+    struct zone *zone = page_zone(page);
+    struct page *unmovable;
+    unsigned long flags;
+    unsigned long check_unmovable_start, check_unmovable_end;
+
+    if (PageUnaccepted(page))
+        accept_page(page);
+
+    spin_lock_irqsave(&zone->lock, flags);
+
+    /* We assume the caller intended to SET migrate type to isolate.
+    * If it is already set, then someone else must have raced and
+    * set it before us. */
+    if (is_migrate_isolate_page(page)) {
+        spin_unlock_irqrestore(&zone->lock, flags);
+        return -EBUSY;
+    }
+
+    /* FIXME: Now, memory hotplug doesn't call shrink_slab() by itself.
+    * We just check MOVABLE pages.
+    *
+    * Pass the intersection of [start_pfn, end_pfn) and the page's pageblock
+    * to avoid redundant checks. */
+    check_unmovable_start = max(page_to_pfn(page), start_pfn);
+    check_unmovable_end = min(pageblock_end_pfn(page_to_pfn(page)), end_pfn);
+
+    /* return the first unmovable page */
+    unmovable = has_unmovable_pages(check_unmovable_start, check_unmovable_end, migratetype, isol_flags) {
+        struct page *page = pfn_to_page(start_pfn);
+        struct zone *zone = page_zone(page);
+        unsigned long pfn;
+
+        VM_BUG_ON(pageblock_start_pfn(start_pfn) != pageblock_start_pfn(end_pfn - 1));
+
+        if (is_migrate_cma_page(page)) {
+            if (is_migrate_cma(migratetype))
+                return NULL;
+            return page;
+        }
+
+        for (pfn = start_pfn; pfn < end_pfn; pfn++) {
+            page = pfn_to_page(pfn);
+
+            if (PageReserved(page))
+                return page;
+
+            if (zone_idx(zone) == ZONE_MOVABLE)
+                continue;
+
+            if (PageHuge(page) || PageTransCompound(page)) {
+                struct folio *folio = page_folio(page);
+                unsigned int skip_pages;
+
+                if (PageHuge(page)) {
+                    struct hstate *h;
+                    h = size_to_hstate(folio_size(folio));
+                    if (h && !hugepage_migration_supported(h))
+                        return page;
+                } else if (!folio_test_lru(folio) && !__folio_test_movable(folio)) {
+                    return page;
+                }
+
+                skip_pages = folio_nr_pages(folio) - folio_page_idx(folio, page);
+                pfn += skip_pages - 1;
+                continue;
+            }
+
+            if (!page_ref_count(page)) {
+                if (PageBuddy(page))
+                    pfn += (1 << buddy_order(page)) - 1;
+                continue;
+            }
+
+            if ((flags & MEMORY_OFFLINE) && PageHWPoison(page))
+                continue;
+
+            if ((flags & MEMORY_OFFLINE) && PageOffline(page))
+                continue;
+
+            if (__PageMovable(page) || PageLRU(page))
+                continue;
+
+            return page;
+        }
+        return NULL;
+    }
+
+    if (!unmovable) {
+        ret = move_freepages_block_isolate(zone, page, MIGRATE_ISOLATE) {
+            unsigned long start_pfn, pfn;
+
+            if (!prep_move_freepages_block(zone, page, &start_pfn, NULL, NULL))
+                return false;
+
+            /* No splits needed if buddies can't span multiple blocks */
+            if (pageblock_order == MAX_PAGE_ORDER)
+                goto move;
+
+            /* We're a tail block in a larger buddy */
+            pfn = find_large_buddy(start_pfn);
+            if (pfn != start_pfn) {
+                struct page *buddy = pfn_to_page(pfn);
+                int order = buddy_order(buddy);
+
+                del_page_from_free_list(buddy, zone, order, get_pfnblock_migratetype(buddy, pfn));
+                set_pageblock_migratetype(page, migratetype);
+                split_large_buddy(zone, buddy, pfn, order, FPI_NONE);
+                return true;
+            }
+
+            /* We're the starting block of a larger buddy */
+            if (PageBuddy(page) && buddy_order(page) > pageblock_order) {
+                int order = buddy_order(page);
+
+                del_page_from_free_list(page, zone, order, get_pfnblock_migratetype(page, pfn));
+                set_pageblock_migratetype(page, migratetype);
+                split_large_buddy(zone, page, pfn, order, FPI_NONE);
+                return true;
+            }
+        move:
+            __move_freepages_block(zone, start_pfn, get_pfnblock_migratetype(page, start_pfn), migratetype) {
+                struct page *page;
+                unsigned long pfn, end_pfn;
+                unsigned int order;
+                int pages_moved = 0;
+
+                VM_WARN_ON(start_pfn & (pageblock_nr_pages - 1));
+                end_pfn = pageblock_end_pfn(start_pfn);
+
+                for (pfn = start_pfn; pfn < end_pfn;) {
+                    page = pfn_to_page(pfn);
+                    /* __ClearPageBuddy at __del_page_from_free_list
+                     * return data_race(page->page_type >> 24) == PGTY_buddy */
+                    if (!PageBuddy(page)) {
+                        pfn++;
+                        continue;
+                    }
+
+                    /* Make sure we are not inadvertently changing nodes */
+                    VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
+                    VM_BUG_ON_PAGE(page_zone(page) != zone, page);
+
+                    order = buddy_order(page);
+
+                    move_to_free_list(page, zone, order, old_mt, new_mt) {
+                        struct free_area *area = &zone->free_area[order];
+                        int nr_pages = 1 << order;
+
+                        list_move_tail(&page->buddy_list, &area->free_list[new_mt]);
+
+                        account_freepages(zone, -nr_pages, old_mt);
+                        account_freepages(zone, nr_pages, new_mt);
+
+                        if (order >= pageblock_order && is_migrate_isolate(old_mt) != is_migrate_isolate(new_mt)) {
+                            if (!is_migrate_isolate(old_mt))
+                                nr_pages = -nr_pages;
+                            __mod_zone_page_state(zone, NR_FREE_PAGES_BLOCKS, nr_pages);
+                        }
+                    }
+
+                    pfn += 1 << order;
+                    pages_moved += 1 << order;
+                }
+
+                set_pageblock_migratetype(pfn_to_page(start_pfn), new_mt);
+
+                return pages_moved;
+            }
+            return true;
+        }
+        if (!ret) {
+            spin_unlock_irqrestore(&zone->lock, flags);
+            return -EBUSY;
+        }
+        zone->nr_isolate_pageblock++;
+        spin_unlock_irqrestore(&zone->lock, flags);
+        return 0;
+    }
+
+    spin_unlock_irqrestore(&zone->lock, flags);
+    if (isol_flags & REPORT_FAILURE) {
+        dump_page(unmovable, "  unmovable page");
+    }
+
+    return -EBUSY;
+}
+```
+
+### __alloc_contig_migrate_range
+
+```c
+int __alloc_contig_migrate_range(struct compact_control *cc,
+        unsigned long start, unsigned long end, int migratetype)
+{
+    /* This function is based on compact_zone() from compaction.c. */
+    unsigned int nr_reclaimed;
+    unsigned long pfn = start;
+    unsigned int tries = 0;
+    int ret = 0;
+    struct migration_target_control mtc = {
+        .nid = zone_to_nid(cc->zone),
+        .gfp_mask = cc->gfp_mask,
+        .reason = MR_CONTIG_RANGE,
+    };
+    struct page *page;
+    unsigned long total_mapped = 0;
+    unsigned long total_migrated = 0;
+    unsigned long total_reclaimed = 0;
+
+    lru_cache_disable();
+
+    while (pfn < end || !list_empty(&cc->migratepages)) {
+        if (fatal_signal_pending(current)) {
+            ret = -EINTR;
+            break;
+        }
+
+        if (list_empty(&cc->migratepages)) {
+            cc->nr_migratepages = 0;
+            ret = isolate_migratepages_range(cc, pfn, end) {
+                unsigned long pfn, block_start_pfn, block_end_pfn;
+                int ret = 0;
+
+                /* Scan block by block. First and last block may be incomplete */
+                pfn = start_pfn;
+                block_start_pfn = pageblock_start_pfn(pfn);
+                if (block_start_pfn < cc->zone->zone_start_pfn)
+                    block_start_pfn = cc->zone->zone_start_pfn;
+                block_end_pfn = pageblock_end_pfn(pfn);
+
+                for (; pfn < end_pfn;
+                    pfn = block_end_pfn,
+                    block_start_pfn = block_end_pfn,
+                    block_end_pfn += pageblock_nr_pages) {
+
+                    block_end_pfn = min(block_end_pfn, end_pfn);
+
+                    if (!pageblock_pfn_to_page(block_start_pfn, block_end_pfn, cc->zone))
+                        continue;
+
+                    ret = isolate_migratepages_block(cc, pfn, block_end_pfn, ISOLATE_UNEVICTABLE);
+                    if (ret)
+                        break;
+
+                    if (cc->nr_migratepages >= COMPACT_CLUSTER_MAX)
+                        break;
+                }
+
+                return ret;
+            }
+            if (ret && ret != -EAGAIN)
+                break;
+            pfn = cc->migrate_pfn;
+            tries = 0;
+        } else if (++tries == 5) {
+            ret = -EBUSY;
+            break;
+        }
+
+        /* Reclaims clean pages from a provided list by attempting
+         * to free them back to the buddy allocator. */
+        nr_reclaimed = reclaim_clean_pages_from_list(cc->zone, &cc->migratepages) {
+            struct scan_control sc = {
+                .gfp_mask = GFP_KERNEL,
+                .may_unmap = 1,
+            };
+            struct reclaim_stat stat;
+            unsigned int nr_reclaimed;
+            struct folio *folio, *next;
+            LIST_HEAD(clean_folios);
+            unsigned int noreclaim_flag;
+
+            list_for_each_entry_safe(folio, next, folio_list, lru) {
+                if (!folio_test_hugetlb(folio) && folio_is_file_lru(folio) &&
+                    !folio_test_dirty(folio) && !__folio_test_movable(folio) &&
+                    !folio_test_unevictable(folio)) {
+
+                    folio_clear_active(folio);
+                    list_move(&folio->lru, &clean_folios);
+                }
+            }
+
+            noreclaim_flag = memalloc_noreclaim_save();
+            nr_reclaimed = shrink_folio_list(&clean_folios, zone->zone_pgdat, &sc, &stat, true);
+            memalloc_noreclaim_restore(noreclaim_flag);
+
+            list_splice(&clean_folios, folio_list);
+            mod_node_page_state(zone->zone_pgdat, NR_ISOLATED_FILE, -(long)nr_reclaimed);
+            mod_node_page_state(zone->zone_pgdat, NR_ISOLATED_ANON, stat.nr_lazyfree_fail);
+            mod_node_page_state(zone->zone_pgdat, NR_ISOLATED_FILE, -(long)stat.nr_lazyfree_fail);
+
+            return nr_reclaimed;
+        }
+        cc->nr_migratepages -= nr_reclaimed;
+
+        ret = migrate_pages(&cc->migratepages, alloc_migration_target,
+            NULL, (unsigned long)&mtc, cc->mode, MR_CONTIG_RANGE, NULL);
+
+        /* On -ENOMEM, migrate_pages() bails out right away. It is pointless
+         * to retry again over this error, so do the same here. */
+        if (ret == -ENOMEM)
+            break;
+    }
+
+    lru_cache_enable();
+    if (ret < 0) {
+        if (!(cc->gfp_mask & __GFP_NOWARN) && ret == -EBUSY)
+            alloc_contig_dump_pages(&cc->migratepages);
+        putback_movable_pages(&cc->migratepages);
+    }
+
+    return (ret < 0) ? ret : 0;
+}
+```
+
+### isolate_freepages_range
+
+```c
+unsigned long
+isolate_freepages_range(struct compact_control *cc,
+            unsigned long start_pfn, unsigned long end_pfn)
+{
+    unsigned long isolated, pfn, block_start_pfn, block_end_pfn;
+    int order;
+
+    for (order = 0; order < NR_PAGE_ORDERS; order++)
+        INIT_LIST_HEAD(&cc->freepages[order]);
+
+    pfn = start_pfn;
+    block_start_pfn = pageblock_start_pfn(pfn);
+    if (block_start_pfn < cc->zone->zone_start_pfn)
+        block_start_pfn = cc->zone->zone_start_pfn;
+    block_end_pfn = pageblock_end_pfn(pfn);
+
+    for (; pfn < end_pfn;
+        pfn += isolated, block_start_pfn = block_end_pfn, block_end_pfn += pageblock_nr_pages) {
+
+        /* Protect pfn from changing by isolate_freepages_block */
+        unsigned long isolate_start_pfn = pfn;
+
+        /* pfn could pass the block_end_pfn if isolated freepage
+        * is more than pageblock order. In this case, we adjust
+        * scanning range to right one. */
+        if (pfn >= block_end_pfn) {
+            block_start_pfn = pageblock_start_pfn(pfn);
+            block_end_pfn = pageblock_end_pfn(pfn);
+        }
+
+        block_end_pfn = min(block_end_pfn, end_pfn);
+
+        if (!pageblock_pfn_to_page(block_start_pfn, block_end_pfn, cc->zone))
+            break;
+
+        isolated = isolate_freepages_block(cc, &isolate_start_pfn, block_end_pfn, cc->freepages, 0, true);
+            --->
+
+        /* In strict mode, isolate_freepages_block() returns 0 if
+         * there are any holes in the block (ie. invalid PFNs or
+         * non-free pages). */
+        if (!isolated)
+            break;
+
+        /* If we managed to isolate pages, it is always (1 << n) *
+         * pageblock_nr_pages for some non-negative n.  (Max order
+         * page may span two pageblocks). */
+    }
+
+    if (pfn < end_pfn) {
+        /* Loop terminated early, cleanup. */
+        release_free_list(cc->freepages);
+        return 0;
+    }
+
+    /* We don't use freelists for anything. */
+    return pfn;
+}
+```
+
+### undo_isolate_page_range
+
+```c
+void undo_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn, int migratetype) {
+    unsigned long pfn;
+    struct page *page;
+    unsigned long isolate_start = pageblock_start_pfn(start_pfn);
+    unsigned long isolate_end = pageblock_align(end_pfn);
+
+    for (pfn = isolate_start;
+        pfn < isolate_end;
+        pfn += pageblock_nr_pages) {
+        page = __first_valid_page(pfn, pageblock_nr_pages);
+        if (!page || !is_migrate_isolate_page(page))
+            continue;
+
+        unset_migratetype_isolate(page, migratetype) {
+            struct zone *zone;
+            unsigned long flags, nr_pages;
+            bool isolated_page = false;
+            unsigned int order;
+            struct page *buddy;
+
+            zone = page_zone(page);
+            spin_lock_irqsave(&zone->lock, flags);
+            if (!is_migrate_isolate_page(page))
+                goto out;
+
+            if (PageBuddy(page)) {
+                order = buddy_order(page);
+                if (order >= pageblock_order && order < MAX_PAGE_ORDER) {
+                    buddy = find_buddy_page_pfn(page, page_to_pfn(page), order, NULL);
+                    if (buddy && !is_migrate_isolate_page(buddy)) {
+                        isolated_page = !!__isolate_free_page(page, order);
+                            --->
+                        VM_WARN_ON(!isolated_page);
+                    }
+                }
+            }
+
+
+            if (!isolated_page) {
+                move_freepages_block_isolate(zone, page, migratetype) {
+                    /* ISOATE pages are not PGTY_Buddy, so
+                     * __move_freepages_block just reset the migrateype
+                     * and doesn't mv pages */
+                }
+            } else {
+                set_pageblock_migratetype(page, migratetype);
+                __putback_isolated_page(page, order, migratetype) {
+                    __free_one_page(page, page_to_pfn(page), zone, order, mt,
+                        FPI_SKIP_REPORT_NOTIFY | FPI_TO_TAIL
+                    );
+                }
+            }
+            zone->nr_isolate_pageblock--;
+        out:
+            spin_unlock_irqrestore(&zone->lock, flags);
+        }
+    }
+}
+```
+
+## cma_release
+
+```c
+bool cma_release(struct cma *cma, const struct page *pages, unsigned long count)
+{
+    struct cma_memrange *cmr;
+    unsigned long pfn, end_pfn;
+    int r;
+
+    if (!cma_pages_valid(cma, pages, count))
+        return false;
+
+    pfn = page_to_pfn(pages);
+    end_pfn = pfn + count;
+
+    for (r = 0; r < cma->nranges; r++) {
+        cmr = &cma->ranges[r];
+        if (pfn >= cmr->base_pfn && pfn < (cmr->base_pfn + cmr->count)) {
+            VM_BUG_ON(end_pfn > cmr->base_pfn + cmr->count);
+            break;
+        }
+    }
+
+    if (r == cma->nranges)
+        return false;
+
+    free_contig_range(pfn, count) {
+        unsigned long count = 0;
+        struct folio *folio = pfn_folio(pfn);
+
+        if (folio_test_large(folio)) {
+            int expected = folio_nr_pages(folio);
+
+            if (nr_pages == expected)
+                folio_put(folio);
+            else
+                WARN(true, "PFN %lu: nr_pages %lu != expected %d\n",
+                    pfn, nr_pages, expected);
+            return;
+        }
+
+        for (; nr_pages--; pfn++) {
+            struct page *page = pfn_to_page(pfn);
+            count += page_count(page) != 1;
+            /* free to MIGRATE_CMA list */
+            __free_page(page);
+        }
+    }
+
+    cma_clear_bitmap(cma, cmr, pfn, count) {
+        unsigned long bitmap_no, bitmap_count;
+        unsigned long flags;
+
+        bitmap_no = (pfn - cmr->base_pfn) >> cma->order_per_bit;
+        bitmap_count = cma_bitmap_pages_to_bits(cma, count);
+
+        spin_lock_irqsave(&cma->lock, flags);
+        bitmap_clear(cmr->bitmap, bitmap_no, bitmap_count);
+        cma->available_count += count;
+        spin_unlock_irqrestore(&cma->lock, flags);
+    }
+
+    cma_sysfs_account_release_pages(cma, count) {
+        atomic64_add(nr_pages, &cma->nr_pages_released);
+    }
+
+    return true;
 }
 ```
 
@@ -7963,6 +9469,16 @@ handle_mm_fault(vma, address, flags, regs);
 
 ## do_pte_missing
 
+```c
+static vm_fault_t do_pte_missing(struct vm_fault *vmf)
+{
+    if (vma_is_anonymous(vmf->vma)) /* return !vma->vm_ops; */
+        return do_anonymous_page(vmf);
+    else
+        return do_fault(vmf);
+}
+```
+
 ### do_anonymous_page
 
 ![](../images/kernel/mem-fault-do_anonymous_fault.png)
@@ -7993,6 +9509,29 @@ do_anonymous_page(vmf) {
 ### do_fault
 
 ![](../images/kernel/mem-fault-do_fault.png)
+
+```c
+static vm_fault_t do_fault(struct vm_fault *vmf) {
+    if (!vma->vm_ops->fault) {
+        vmf->pte = pte_offset_map_lock(vmf->vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+        if (unlikely(!vmf->pte))
+            ret = VM_FAULT_SIGBUS;
+        else {
+            if (unlikely(pte_none(ptep_get(vmf->pte))))
+                ret = VM_FAULT_SIGBUS;
+            else
+                ret = VM_FAULT_NOPAGE;
+
+            pte_unmap_unlock(vmf->pte, vmf->ptl);
+        }
+    } else if (!(vmf->flags & FAULT_FLAG_WRITE))
+        ret = do_read_fault(vmf);
+    else if (!(vma->vm_flags & VM_SHARED))
+        ret = do_cow_fault(vmf);
+    else
+        ret = do_shared_fault(vmf);
+}
+```
 
 #### do_read_fault
 
@@ -9754,309 +11293,6 @@ unsigned long kernel_physical_mapping_init(
 }
 ```
 
-# kmalloc
-
-* [bin的技术小屋](https://mp.weixin.qq.com/s/atHXeXxx0L63w99RW7bMHg)
-
-```c
-/* kmalloc is the normal method of allocating memory
- * for objects smaller than page size in the kernel. */
-static void *kmalloc(size_t size, gfp_t flags) {
-    if (__builtin_constant_p(size)) {
-        if (size > KMALLOC_MAX_CACHE_SIZE)
-            return kmalloc_large(size, flags);
-
-    #ifndef CONFIG_SLOB
-        if (!(flags & GFP_DMA)) {
-            unsigned int index = kmalloc_index(size);
-            if (!index)
-                return ZERO_SIZE_PTR;
-            return kmem_cache_alloc_trace(kmalloc_caches[index], flags, size);
-        }
-    #endif
-    }
-
-    return __kmalloc(size, flags) {
-        struct kmem_cache *s;
-        void *ret;
-
-        if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
-            return kmalloc_large(size, flags) {
-                unsigned int order = get_order(size);
-                return kmalloc_order_trace(size, flags, order) {
-                    kmalloc_order(size, flags, order) {
-                        void *ret;
-                        struct page *page;
-
-                        flags |= __GFP_COMP;
-                        page = alloc_pages(flags, order);
-                        ret = page ? page_address(page) : NULL;
-                        kmemleak_alloc(ret, size, 1, flags);
-                        kasan_kmalloc_large(ret, size, flags);
-                        return ret;
-                    }
-                }
-            }
-
-        s = kmalloc_slab(size, flags) {
-            unsigned int index;
-
-            if (size <= 192) {
-                if (!size)
-                return ZERO_SIZE_PTR;
-
-                index = size_index[size_index_elem(size)] {
-                    return (bytes - 1) / 8;
-                }
-            } else {
-                if (unlikely(size > KMALLOC_MAX_CACHE_SIZE)) {
-                    WARN_ON(1);
-                    return NULL;
-                }
-                index = fls(size - 1);
-            }
-
-            #ifdef CONFIG_ZONE_DMA
-                if (unlikely((flags & GFP_DMA)))
-                    return kmalloc_dma_caches[index];
-            #endif
-            return kmalloc_caches[index];
-        }
-        if (unlikely(ZERO_OR_NULL_PTR(s)))
-            return s;
-
-        ret = slab_alloc(s, flags, _RET_IP_);
-
-        return ret;
-    }
-}
-```
-
-## kmalloc_caches
-
-```c
-/* mm/slab_common.c */
-struct kmem_cache *kmalloc_caches[KMALLOC_SHIFT_HIGH + 1];
-
-void kmem_cache_init(void)
-{
-    setup_kmalloc_cache_index_table();
-    create_kmalloc_caches(0) {
-        for (i = KMALLOC_SHIFT_LOW; i <= KMALLOC_SHIFT_HIGH; i++) {
-            if (!kmalloc_caches[i])
-                new_kmalloc_cache(i, flags);
-
-            if (KMALLOC_MIN_SIZE <= 32 && !kmalloc_caches[1] && i == 6) {
-                new_kmalloc_cache(1, flags);
-            }
-            if (KMALLOC_MIN_SIZE <= 64 && !kmalloc_caches[2] && i == 7) {
-                new_kmalloc_cache(2, flags) {
-                    kmalloc_caches[idx] = create_kmalloc_cache(kmalloc_info[idx].name,
-                        kmalloc_info[idx].size, flags, 0,
-                        kmalloc_info[idx].size
-                    ) {
-
-                    }
-                }
-            }
-        }
-
-        /* Kmalloc array is now usable */
-        slab_state = UP;
-
-        for (i = 0; i <= KMALLOC_SHIFT_HIGH; i++) {
-            struct kmem_cache *s = kmalloc_caches[i];
-
-            if (s) {
-                unsigned int size = kmalloc_size(i);
-                kmalloc_dma_caches[i] = create_kmalloc_cache(n,
-                    size, SLAB_CACHE_DMA | flags, 0, 0) {
-
-                    struct kmem_cache *s = kmem_cache_zalloc(kmem_cache, GFP_NOWAIT);
-
-                    create_boot_cache(s, name, size, flags, useroffset, usersize);
-                    list_add(&s->list, &slab_caches);
-                    memcg_link_cache(s);
-                    s->refcount = 1;
-                    return s;
-                }
-            }
-        }
-    }
-}
-
-const struct kmalloc_info_struct kmalloc_info[] __initconst = {
-    {NULL,                      0},    {"kmalloc-96",             96},
-    {"kmalloc-192",           192},    {"kmalloc-8",               8},
-    {"kmalloc-16",             16},    {"kmalloc-32",             32},
-    {"kmalloc-64",             64},    {"kmalloc-128",           128},
-    {"kmalloc-256",           256},    {"kmalloc-512",           512},
-    {"kmalloc-1024",         1024},    {"kmalloc-2048",         2048},
-    {"kmalloc-4096",         4096},    {"kmalloc-8192",         8192},
-    {"kmalloc-16384",       16384},    {"kmalloc-32768",       32768},
-    {"kmalloc-65536",       65536},    {"kmalloc-131072",     131072},
-    {"kmalloc-262144",     262144},    {"kmalloc-524288",     524288},
-    {"kmalloc-1048576",   1048576},    {"kmalloc-2097152",   2097152},
-    {"kmalloc-4194304",   4194304},    {"kmalloc-8388608",   8388608},
-    {"kmalloc-16777216", 16777216},    {"kmalloc-33554432", 33554432},
-    {"kmalloc-67108864", 67108864}
-};
-
-/* Conversion table for small slabs sizes / 8 to the index in the
- * kmalloc array. This is necessary for slabs < 192 since we have non power
- * of two cache sizes there. The size of larger slabs can be determined using
- * fls. */
-u8 size_index[24] = {
-  3,  /* 8 */
-  4,  /* 16 */
-  5,  /* 24 */
-  5,  /* 32 */
-  6,  /* 40 */
-  6,  /* 48 */
-  6,  /* 56 */
-  6,  /* 64 */
-  1,  /* 72 */
-  1,  /* 80 */
-  1,  /* 88 */
-  1,  /* 96 */
-  7,  /* 104 */
-  7,  /* 112 */
-  7,  /* 120 */
-  7,  /* 128 */
-  2,  /* 136 */
-  2,  /* 144 */
-  2,  /* 152 */
-  2,  /* 160 */
-  2,  /* 168 */
-  2,  /* 176 */
-  2,  /* 184 */
-  2   /* 192 */
-};
-```
-
-# vmalloc
-
-```c
-struct vm_struct {
-    struct vm_struct  *next;
-    void              *addr;
-    unsigned long     size;
-    unsigned long     flags;
-    struct page       **pages;
-    unsigned int      nr_pages;
-    phys_addr_t       phys_addr;
-    const void        *caller;
-};
-
-struct vmap_area {
-    unsigned long va_start;
-    unsigned long va_end;
-
-    struct rb_node rb_node; /* address sorted rbtree */
-    struct list_head list; /* address sorted list */
-
-    union {
-        unsigned long subtree_max_size; /* in "free" tree free_vmap_area_root */
-        struct vm_struct *vm;           /* in "busy" tree vmap_area_root */
-    };
-};
-```
-
-```c
-/* allocate virtually contiguous memory */
-vmalloc(size) {
-    __vmalloc_node_range(size, align, VMALLOC_START, VMALLOC_END, gfp_mask, PAGE_KERNEL, 0, node, caller) {
-        struct vm_struct *area = __get_vm_area_node() {
-            struct vmap_area *va;
-              struct vm_struct *area;
-            area = kzalloc_node(sizeof(*area));
-            /* Allocate a region of KVA */
-            va = alloc_vmap_area(size) {
-                va = kmem_cache_alloc_node(vmap_area_cachep);
-                addr = __alloc_vmap_area(&free_vmap_area_root, &free_vmap_area_list, size, align, vstart, vend) {
-                    va = find_vmap_lowest_match();
-                    adjust_va_to_fit_type();
-                        kmem_cache_alloc(vmap_area_cachep, GFP_NOWAIT);
-                }
-                va->va_start = addr;
-                va->va_end = addr + size;
-                va->vm = NULL;
-                insert_vmap_area(va, &vmap_area_root, &vmap_area_list);
-            }
-            setup_vmalloc_vm(area, va, flags, caller);
-        }
-
-        ret = __vmalloc_area_node(area, gfp_mask, prot, shift, node);
-        return area->addr;
-    }
-}
-
-/* Allocate physical pages and map them into vmalloc space. */
-__vmalloc_area_node(area, gfp_mask, prot, shift, node) {
-    vm_area_alloc_pages() {
-        alloc_pages();
-    }
-
-    vmap_pages_range(addr, addr + size, prot, area->pages, page_shift) {
-        vmap_range_noflush() {
-            pgd = pgd_offset_k(addr);
-            vmap_p4d_range() {
-                p4d = p4d_alloc_track(&init_mm, pgd, addr, mask);
-                vmap_pud_range() {
-                    pud = pud_alloc_track(&init_mm, p4d, addr, mask);
-                    vmap_pmd_range() {
-                        pmd = pmd_alloc_track(&init_mm, pud, addr, mask);
-                        vmap_pte_range() {
-                            pte = pte_alloc_kernel_track(pmd, addr, mask);
-                            set_pte_at(&init_mm, addr, pte, pfn_pte(pfn, prot)) {
-                                set_ptes(mm, addr, ptep, pte, 1) {
-                                    for (;;) {
-                                        __set_pte_at(mm, addr, ptep, pte) {
-                                            if (pte_present(pte) && pte_user_exec(pte) && !pte_special(pte)) {
-                                                __sync_icache_dcache(pte) {
-                                                    struct folio *folio = page_folio(pte_page(pte));
-                                                    if (!test_bit(PG_dcache_clean, &folio->flags)) {
-                                                        sync_icache_aliases(
-                                                            (unsigned long)folio_address(folio),
-                                                            (unsigned long)folio_address(folio) + folio_size(folio)) {
-
-                                                            if (icache_is_aliasing()) {
-                                                                dcache_clean_pou(start, end);
-                                                                icache_inval_all_pou();
-                                                            } else {
-                                                                caches_clean_inval_pou(start, end);
-                                                            }
-                                                        }
-                                                        set_bit(PG_dcache_clean, &folio->flags);
-                                                    }
-                                                }
-                                            }
-
-                                            set_pte(ptep, pte) {
-                                                WRITE_ONCE(*ptep, pte);
-                                                if (pte_valid_not_user(pte)) {
-                                                    dsb(ishst);
-                                                    isb();
-                                                }
-                                            }
-                                        }
-                                        if (--nr == 0)
-                                            break;
-                                        ptep++;
-                                        addr += PAGE_SIZE;
-                                        pte_val(pte) += PAGE_SIZE;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-```
-
 # page_reclaim
 
 ![](../images/kernel/mem-page_reclaim.svg)
@@ -10090,7 +11326,7 @@ Q: how workingset works?
 3. **Swap Cache**: These are pages that have been swapped out to disk but are still cached in memory. If memory is needed, these pages can be reclaimed, as they can be retrieved from the swap area on disk.
 4. **Slab Cache**: Memory allocated for kernel objects and data structures (e.g., **inodes**, **dentries**, or **buffers**). While this memory is often actively used, some of it can be reclaimed if it becomes unused or if memory pressure is high.
 5. **Movable Non-LRU Pages**: Pages not on LRU lists but marked as movable by subsystems (e.g., device drivers, balloon drivers). Managed by custom migration callbacks (e.g., isolate_movable_page).
-* Reclaim Process: Isolated via isolate_movable_page if the subsystem allows it (e.g., in isolate_migratepages_block).
+* Reclaim Process: Isolated via `isolate_movable_page` if the subsystem allows it (e.g., in isolate_migratepages_block).
 
 ## lru
 
@@ -10589,7 +11825,7 @@ __perform_reclaim(gfp_mask, order, ac) {
                         if (!first_pgdat)
                             first_pgdat = zone->zone_pgdat;
 
-                        /* See comment about same check for global reclaim above */
+                        /* scan at node level, skip the zone from same node of last_pgdat */
                         if (zone->zone_pgdat == last_pgdat)
                             continue;
                         last_pgdat = zone->zone_pgdat;
@@ -12562,7 +13798,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 ![](../images/kernel/mem-page_migrate.png)
 
 Type | Note
---- | ---
+:-: | :-:
 MIGRATE_ASYNC | means never block
 MIGRATE_SYNC_LIGHT | allow blocking on most operations but not `->writepage` as the potential stall time is too significant
 MIGRATE_SYNC | will block when migrating pages
@@ -12836,7 +14072,7 @@ rc = migrate_folio_unmap(get_new_folio, put_new_folio,
         return MIGRATEPAGE_SUCCESS;
     }
 
-    dst = get_new_folio(src, private);
+    dst = get_new_folio(src, private); /* compaction_alloc -> isolate_freepages */
     if (!dst)
         return -ENOMEM;
     *dstp = dst;
@@ -13513,6 +14749,11 @@ bool remove_migration_pte(struct folio *folio,
 
 # page_compact
 
+```sh
+/proc/sys/vm/compact_memory
+/sys/devices/system/node/nodex/compact
+/proc/sys/vm/compaction_proactiveness
+```
 
 ![](../images/kernel/mem-page_compact.svg)
 
@@ -13579,9 +14820,9 @@ struct compact_control {
     unsigned long free_pfn;         /* isolate_freepages search base */
 
     /* Acts as an in/out parameter to page isolation for migration.
-    * isolate_migratepages uses it as a search base.
-    * isolate_migratepages_block will update the value to the next pfn
-    * after the last isolated one. */
+     * isolate_migratepages uses it as a search base.
+     * isolate_migratepages_block will update the value to the next pfn
+     * after the last isolated one. */
     unsigned long migrate_pfn;
     unsigned long fast_start_pfn;   /* a pfn to start linear scan from */
     struct zone *zone;
@@ -13593,7 +14834,7 @@ struct compact_control {
     int order;                      /* order a direct compactor needs */
     int migratetype;                /* migratetype of direct compactor */
     const unsigned int alloc_flags; /* alloc flags of a direct compactor */
-    const int highest_zoneidx;       /* zone index of a direct compactor */
+    const int highest_zoneidx;      /* zone index of a direct compactor */
     enum migrate_mode mode;         /* Async or sync migration mode */
     bool ignore_skip_hint;          /* Scan blocks even if marked skip */
     bool no_set_skip_hint;          /* Don't mark blocks for skipping */
@@ -14161,7 +15402,7 @@ unsigned long fast_find_migrateblock(struct compact_control *cc)
 2. Not isolate **free buddy pages**
 3. **non-LRU** page allocated for kernel usage, can be isolated if the developer impelements isolate_page, migratepage and putback_page operations
 4. Not isolate **pinned pages**
-5. Not isolate file-mapped page on GFP_NOFS
+5. Not isolate **file-mapped page** on GFP_NOFS
 6. Isolation affected by policy: ISOLATE_ASYNC_MIGRATE wont isolate dirty pages and writing pages
 7. **Direct && Async** compact will skip the whole order-aligned page block on any failure within the block and put back any isolated pages. This behavior is contorled by `skip_on_failur` local varible.
 
@@ -14336,7 +15577,22 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
         if (unlikely(!folio))
             goto isolate_fail;
 
-        mapping = folio_mapping(folio);
+        mapping = folio_mapping(folio) {
+            struct address_space *mapping;
+
+            /* This happens if someone calls flush_dcache_page on slab page */
+            if (unlikely(folio_test_slab(folio)))
+                return NULL;
+
+            if (unlikely(folio_test_swapcache(folio)))
+                return swap_address_space(folio->swap);
+
+            mapping = folio->mapping;
+            if ((unsigned long)mapping & PAGE_MAPPING_FLAGS)
+                return NULL;
+
+            return mapping;
+        }
         /* an anonymous page is pinned in memory */
         if (!mapping && (folio_ref_count(folio) - 1) > folio_mapcount(folio))
             goto isolate_fail_put;
@@ -14562,8 +15818,10 @@ void isolate_freepages(struct compact_control *cc)
         }
 
         ret = suitable_migration_target(cc, page) {
-            if (PageBuddy(page) && (buddy_order_unsafe(page) >= pageblock_order)) {
-                return false;
+            if (PageBuddy(page)) {
+                int order = cc->order > 0 ? cc->order : pageblock_order;
+                if (buddy_order_unsafe(page) >= order)
+                    return false;
             }
 
             if (cc->ignore_block_suitable)
@@ -14591,7 +15849,7 @@ void isolate_freepages(struct compact_control *cc)
         if (cc->nr_freepages >= cc->nr_migratepages) {
             if (isolate_start_pfn >= block_end_pfn) {
                 /* Restart at previous pageblock if more
-                * freepages can be isolated next time. */
+                 * freepages can be isolated next time. */
                 isolate_start_pfn = block_start_pfn - pageblock_nr_pages;
             }
             break;
@@ -15024,7 +16282,7 @@ isolate_fail:
         ```c
         void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
             unsigned int highest_zoneidx) {
-
+        
             /* Return true if high watermarks have been met.
              * Since we have freed the memory, now we should compact it to make
              * allocation of the requested order possible. */
@@ -15058,10 +16316,12 @@ int kcompactd(void *p)
 
         if (!sysctl_compaction_proactiveness)
             timeout = MAX_SCHEDULE_TIMEOUT;
+
         ret = wait_event_freezable_timeout(pgdat->kcompactd_wait, kcompactd_work_requested(pgdat) {
             return pgdat->kcompactd_max_order > 0 || kthread_should_stop() ||
                 pgdat->proactive_compact_trigger;
         }, timeout);
+
         if (ret && !pgdat->proactive_compact_trigger) {
             kcompactd_do_work(pgdat) {
                 int zoneid;
@@ -17878,7 +19138,7 @@ again:
 
                 swp_entry_t entry = pte_to_swp_entry(orig_pte);
 
-                if (likely(!non_swap_entry(entry))) {
+                if (likely(!non_swap_entry(entry))) { /* swp_type(entry) >= MAX_SWAPFILES; */
                     /* inc swap refcnt */
                     if (swap_duplicate(entry) < 0)
                         return -EIO;
@@ -17896,7 +19156,7 @@ again:
                         set_pte_at(src_mm, addr, src_pte, pte);
                     }
                     rss[MM_SWAPENTS]++;
-                } else if (is_migration_entry(entry)) {
+                } else if (is_migration_entry(entry)) { /* swp_type(entry) == SWP_MIGRATION_* */
                     folio = pfn_swap_entry_folio(entry);
 
                     rss[mm_counter(folio)]++;
@@ -17926,6 +19186,7 @@ again:
                 set_pte_at(dst_mm, addr, dst_pte, pte);
                 return 0;
             }
+
             if (ret == -EIO) {
                 entry = pte_to_swp_entry(ptep_get(src_pte));
                 break;
@@ -18046,304 +19307,6 @@ out:
     if (unlikely(prealloc))
         folio_put(prealloc);
     return ret;
-}
-```
-
-# cma
-
-![](../images/kernel/mem-cam.png)
-
-* [wowo tech](http://www.wowotech.net/memory_management/cma.html)
-* [CMA技术原理分析 - 内核工匠](https://mp.weixin.qq.com/s/kNHys4p2sXFV6wwV7VDFqQ)
-
-```c
-struct cma {
-    unsigned long   base_pfn;
-    unsigned long   count;
-    unsigned long   *bitmap;
-    unsigned int    order_per_bit; /* Order of pages represented by one bit */
-    struct mutex    lock;
-    const char      *name;
-};
-
-extern struct cma cma_areas[MAX_CMA_AREAS];
-extern unsigned cma_area_count;
-
-/* setup_arch---> arm64_memblock_init---> early_init_fdt_scan_reserved_mem
- *---> fdt_init_reserved_mem---> __reserved_mem_init_node */
-RESERVEDMEM_OF_DECLARE(cma, "shared-dma-pool", rmem_cma_setup);
-
-static int __init __reserved_mem_init_node(struct reserved_mem *rmem)
-{
-    extern const struct of_device_id __reservedmem_of_table[];
-    const struct of_device_id *i;
-    int ret = -ENOENT;
-
-    for (i = __reservedmem_of_table; i < &__rmem_of_table_sentinel; i++) {
-        reservedmem_of_init_fn initfn = i->data;
-        const char *compat = i->compatible;
-
-        if (!of_flat_dt_is_compatible(rmem->fdt_node, compat))
-            continue;
-
-        ret = initfn(rmem);
-        if (ret == 0) {
-            break;
-        }
-    }
-    return ret;
-}
-
-rmem_cma_setup(struct reserved_mem *rmem)
-    unsigned long node = rmem->fdt_node;
-    bool default_cma = of_get_flat_dt_prop(node, "linux,cma-default", NULL);
-    struct cma *cma;
-
-    err = cma_init_reserved_mem(rmem->base, rmem->size, 0, rmem->name, &cma) {
-        cma = &cma_areas[cma_area_count];
-
-        snprintf(cma->name, CMA_MAX_NAME,  "cma%d\n", cma_area_count);
-
-        cma->base_pfn = PFN_DOWN(base);
-        cma->count = size >> PAGE_SHIFT;
-        cma->order_per_bit = order_per_bit;
-        *res_cma = cma;
-        cma_area_count++;
-        totalcma_pages += (size / PAGE_SIZE);
-    }
-
-    dma_contiguous_early_fixup(rmem->base, rmem->size);
-
-    rmem->ops = &rmem_cma_ops;
-    rmem->priv = cma;
-```
-
-## cma_init_reserved_areas
-
-![](../images/kernel/mem-cma_init_reserved_areas.png)
-```c
-cma_init_reserved_areas(void)
-    for (i = 0; i < cma_area_count; i++) {
-        cma_activate_area(&cma_areas[i]) {
-            unsigned long base_pfn = cma->base_pfn, pfn;
-            struct zone *zone;
-
-            cma->bitmap = bitmap_zalloc(cma_bitmap_maxno(cma), GFP_KERNEL);
-
-            zone = page_zone(pfn_to_page(base_pfn));
-            for (pfn = base_pfn + 1; pfn < base_pfn + cma->count; pfn++) {
-                if (page_zone(pfn_to_page(pfn)) != zone)
-                    goto not_in_zone;
-            }
-
-            for (pfn = base_pfn; pfn < base_pfn + cma->count; pfn += pageblock_nr_pages) {
-                init_cma_reserved_pageblock(pfn_to_page(pfn)) {
-                    do {
-                        __ClearPageReserved(p);
-                        set_page_count(p, 0);
-                    } while (++p, --i);
-
-                    set_pageblock_migratetype(page, MIGRATE_CMA);
-                    set_page_refcounted(page);
-                    /* free pages to the buddy */
-                    __free_pages(page, pageblock_order);
-
-                    adjust_managed_page_count(page, pageblock_nr_pages);
-                    page_zone(page)->cma_pages += pageblock_nr_pages;
-                }
-            }
-
-            return;
-
-        not_in_zone:
-            bitmap_free(cma->bitmap);
-        out_error:
-            /* Expose all pages to the buddy, they are useless for CMA. */
-            if (!cma->reserve_pages_on_error) {
-                for (pfn = base_pfn; pfn < base_pfn + cma->count; pfn++) {
-                    free_reserved_page(pfn_to_page(pfn)) {
-
-                    }
-                }
-            }
-            totalcma_pages -= cma->count;
-            cma->count = 0;
-            pr_err("CMA area %s could not be activated\n", cma->name);
-            return;
-        }
-    }
-```
-
-## cma_alloc
-
-![](../images/kernel/mem-cma_alloc.png)
-
-```c
-struct page *cma_alloc(struct cma *cma, unsigned long count,
-               unsigned int align, bool no_warn)
-    unsigned long mask, offset;
-    unsigned long pfn = -1;
-    unsigned long start = 0;
-    unsigned long bitmap_maxno, bitmap_no, bitmap_count;
-    unsigned long i;
-    struct page *page = NULL;
-    int ret = -ENOMEM;
-
-    mask = cma_bitmap_aligned_mask(cma, align);
-    offset = cma_bitmap_aligned_offset(cma, align);
-    bitmap_maxno = cma_bitmap_maxno(cma);
-    bitmap_count = cma_bitmap_pages_to_bits(cma, count);
-
-    for (;;) {
-        spin_lock_irq(&cma->lock);
-        bitmap_no = bitmap_find_next_zero_area_off(cma->bitmap,
-            bitmap_maxno, start, bitmap_count, mask, offset
-        );
-
-        bitmap_set(cma->bitmap, bitmap_no, bitmap_count);
-        spin_unlock_irq(&cma->lock);
-
-        pfn = cma->base_pfn + (bitmap_no << cma->order_per_bit);
-
-        mutex_lock(&cma_mutex);
-        ret = alloc_contig_range(pfn, pfn + count, MIGRATE_CMA) {
-            unsigned long outer_start, outer_end;
-            int order;
-            int ret = 0;
-
-            struct compact_control cc = {
-                .nr_migratepages = 0,
-                .order = -1,
-                .zone = page_zone(pfn_to_page(start)),
-                .mode = MIGRATE_SYNC,
-                .ignore_skip_hint = true,
-                .no_set_skip_hint = true,
-                .gfp_mask = current_gfp_context(gfp_mask),
-                .alloc_contig = true,
-            };
-            INIT_LIST_HEAD(&cc.migratepages);
-
-            ret = start_isolate_page_range(start, end, migratetype, 0, gfp_mask) {
-                /* isolate [isolate_start, isolate_start + pageblock_nr_pages) pageblock */
-                ret = isolate_single_pageblock() {
-                    set_migratetype_isolate() {
-                        set_pageblock_migratetype(page, MIGRATE_ISOLATE);
-                        zone->nr_isolate_pageblock++;
-                        nr_pages = move_freepages_block(zone, page, MIGRATE_ISOLATE, NULL) {
-                            move_freepages() {
-                                for (pfn = start_pfn; pfn <= end_pfn;) {
-                                    page = pfn_to_page(pfn);
-                                    order = buddy_order(page);
-                                    move_to_free_list(page, zone, order, migratetype) {
-                                        struct free_area *area = &zone->free_area[order];
-                                        list_move_tail(&page->buddy_list, &area->free_list[migratetype]);
-                                    }
-                                    pfn += 1 << order;
-                                    pages_moved += 1 << order;
-                                }
-                            }
-                        }
-
-                        __mod_zone_freepage_state(zone, -nr_pages, mt);
-                    }
-                }
-
-                if (isolate_start == isolate_end - pageblock_nr_pages)
-                    skip_isolation = true;
-
-                /* isolate [isolate_end - pageblock_nr_pages, isolate_end) pageblock */
-                ret = isolate_single_pageblock();
-
-                /* skip isolated pageblocks at the beginning and end */
-                for (pfn = isolate_start + pageblock_nr_pages;
-                    pfn < isolate_end - pageblock_nr_pages;
-                    pfn += pageblock_nr_pages) {
-                    page = __first_valid_page(pfn, pageblock_nr_pages);
-                    if (page && set_migratetype_isolate()) {
-                        undo_isolate_page_range();
-                        unset_migratetype_isolate(
-                            pfn_to_page(isolate_end - pageblock_nr_pages),
-                            migratetype);
-                        return -EBUSY;
-                    }
-                }
-            }
-            if (ret)
-                goto done;
-
-            drain_all_pages(cc.zone);
-
-            ret = __alloc_contig_migrate_range(&cc, start, end);
-            if (ret && ret != -EBUSY)
-                goto done;
-            ret = 0;
-
-            order = 0;
-            outer_start = start;
-            while (!PageBuddy(pfn_to_page(outer_start))) {
-                if (++order > MAX_PAGE_ORDER) {
-                    outer_start = start;
-                    break;
-                }
-                outer_start &= ~0UL << order;
-            }
-
-            if (outer_start != start) {
-                order = buddy_order(pfn_to_page(outer_start));
-
-                if (outer_start + (1UL << order) <= start)
-                    outer_start = start;
-            }
-
-            /* Make sure the range is really isolated. */
-            if (test_pages_isolated(outer_start, end, 0)) {
-                ret = -EBUSY;
-                goto done;
-            }
-
-            /* Grab isolated pages from freelists. */
-            outer_end = isolate_freepages_range(&cc, outer_start, end);
-            if (!outer_end) {
-                ret = -EBUSY;
-                goto done;
-            }
-
-            /* Free head and tail (if any) */
-            if (start != outer_start)
-                free_contig_range(outer_start, start - outer_start);
-            if (end != outer_end)
-                free_contig_range(end, outer_end - end);
-
-        done:
-            undo_isolate_page_range(start, end, migratetype);
-            return ret;
-        }
-        mutex_unlock(&cma_mutex);
-
-        if (ret == 0) {
-            page = pfn_to_page(pfn);
-            break;
-        }
-
-        cma_clear_bitmap(cma, pfn, count);
-        if (ret != -EBUSY)
-            break;
-
-        /* try again with a bit different memory target */
-        start = bitmap_no + mask + 1;
-    }
-
-out:
-    if (page) {
-        count_vm_event(CMA_ALLOC_SUCCESS);
-        cma_sysfs_account_success_pages(cma, count);
-    } else {
-        count_vm_event(CMA_ALLOC_FAIL);
-        if (cma)
-            cma_sysfs_account_fail_pages(cma, count);
-    }
-
-    return page;
 }
 ```
 
@@ -19081,6 +20044,332 @@ void exit_mm(void)
 }
 ```
 
+# dma
+
+## dma_alloc_coherent
+
+```c
+static inline void *dma_alloc_coherent(struct device *dev, size_t size,
+        dma_addr_t *dma_handle, gfp_t gfp)
+{
+    return dma_alloc_attrs(dev, size, dma_handle, gfp, (gfp & __GFP_NOWARN) ? DMA_ATTR_NO_WARN : 0) {
+        const struct dma_map_ops *ops = get_dma_ops(dev);
+        void *cpu_addr;
+
+        WARN_ON_ONCE(!dev->coherent_dma_mask);
+
+        /* DMA allocations can never be turned back into a page pointer, so
+        * requesting compound pages doesn't make sense (and can't even be
+        * supported at all by various backends). */
+        if (WARN_ON_ONCE(flag & __GFP_COMP))
+            return NULL;
+
+        if (dma_alloc_from_dev_coherent(dev, size, dma_handle, &cpu_addr)) {
+            trace_dma_alloc(dev, cpu_addr, *dma_handle, size,
+                    DMA_BIDIRECTIONAL, flag, attrs);
+            return cpu_addr;
+        }
+
+        /* let the implementation decide on the zone to allocate from: */
+        flag &= ~(__GFP_DMA | __GFP_DMA32 | __GFP_HIGHMEM);
+
+        if (dma_alloc_direct(dev, ops)) {
+            cpu_addr = dma_direct_alloc(dev, size, dma_handle, flag, attrs);
+        } else if (use_dma_iommu(dev)) {
+            cpu_addr = iommu_dma_alloc(dev, size, dma_handle, flag, attrs);
+        } else if (ops->alloc) {
+            cpu_addr = ops->alloc(dev, size, dma_handle, flag, attrs);
+        } else {
+            trace_dma_alloc(dev, NULL, 0, size, DMA_BIDIRECTIONAL, flag,
+                    attrs);
+            return NULL;
+        }
+
+        trace_dma_alloc(dev, cpu_addr, *dma_handle, size, DMA_BIDIRECTIONAL,
+                flag, attrs);
+        debug_dma_alloc_coherent(dev, size, *dma_handle, cpu_addr, attrs);
+        return cpu_addr;
+    }
+}
+```
+
+### dma_direct_alloc
+
+```c
+void *dma_direct_alloc(struct device *dev, size_t size,
+        dma_addr_t *dma_handle, gfp_t gfp, unsigned long attrs)
+{
+    bool remap = false, set_uncached = false;
+    struct page *page;
+    void *ret;
+
+    size = PAGE_ALIGN(size);
+    if (attrs & DMA_ATTR_NO_WARN)
+        gfp |= __GFP_NOWARN;
+
+    if ((attrs & DMA_ATTR_NO_KERNEL_MAPPING) &&
+        !force_dma_unencrypted(dev) && !is_swiotlb_for_alloc(dev))
+        return dma_direct_alloc_no_mapping(dev, size, dma_handle, gfp);
+
+    if (!dev_is_dma_coherent(dev)) {
+        if (IS_ENABLED(CONFIG_ARCH_HAS_DMA_ALLOC) &&
+            !is_swiotlb_for_alloc(dev))
+            return arch_dma_alloc(dev, size, dma_handle, gfp,
+                        attrs);
+
+        /* If there is a global pool, always allocate from it for
+        * non-coherent devices. */
+        if (IS_ENABLED(CONFIG_DMA_GLOBAL_POOL))
+            return dma_alloc_from_global_coherent(dev, size,
+                    dma_handle);
+
+        /* Otherwise we require the architecture to either be able to
+        * mark arbitrary parts of the kernel direct mapping uncached,
+        * or remapped it uncached. */
+        set_uncached = IS_ENABLED(CONFIG_ARCH_HAS_DMA_SET_UNCACHED);
+        remap = IS_ENABLED(CONFIG_DMA_DIRECT_REMAP);
+        if (!set_uncached && !remap) {
+            pr_warn_once("coherent DMA allocations not supported on this platform.\n");
+            return NULL;
+        }
+    }
+
+    /* Remapping or decrypting memory may block, allocate the memory from
+    * the atomic pools instead if we aren't allowed block. */
+    if ((remap || force_dma_unencrypted(dev)) &&
+        dma_direct_use_pool(dev, gfp))
+        return dma_direct_alloc_from_pool(dev, size, dma_handle, gfp);
+
+    /* we always manually zero the memory once we are done */
+    page = __dma_direct_alloc_pages(dev, size, gfp & ~__GFP_ZERO, true);
+    if (!page)
+        return NULL;
+
+    /* dma_alloc_contiguous can return highmem pages depending on a
+    * combination the cma= arguments and per-arch setup.  These need to be
+    * remapped to return a kernel virtual address. */
+    if (PageHighMem(page)) {
+        remap = true;
+        set_uncached = false;
+    }
+
+    if (remap) {
+        pgprot_t prot = dma_pgprot(dev, PAGE_KERNEL, attrs);
+
+        if (force_dma_unencrypted(dev))
+            prot = pgprot_decrypted(prot);
+
+        /* remove any dirty cache lines on the kernel alias */
+        arch_dma_prep_coherent(page, size);
+
+        /* create a coherent mapping */
+        ret = dma_common_contiguous_remap(page, size, prot,
+                __builtin_return_address(0));
+        if (!ret)
+            goto out_free_pages;
+    } else {
+        ret = page_address(page);
+        if (dma_set_decrypted(dev, ret, size))
+            goto out_leak_pages;
+    }
+
+    memset(ret, 0, size);
+
+    if (set_uncached) {
+        arch_dma_prep_coherent(page, size);
+        ret = arch_dma_set_uncached(ret, size);
+        if (IS_ERR(ret))
+            goto out_encrypt_pages;
+    }
+
+    *dma_handle = phys_to_dma_direct(dev, page_to_phys(page));
+    return ret;
+
+out_encrypt_pages:
+    if (dma_set_encrypted(dev, page_address(page), size))
+        return NULL;
+out_free_pages:
+    __dma_direct_free_pages(dev, page, size);
+    return NULL;
+out_leak_pages:
+    return NULL;
+}
+```
+
+### iommu_dma_alloc
+
+# fs_proc
+
+```sh
+/proc/meminfo
+/proc/zoneinfo
+/proc/buddyinfo
+/proc/slabinfo
+/proc/vmallocinfo
+/proc/iomem
+/proc/pagetypeinfo
+/proc/vmstat
+/proc/swaps
+/proc/kpagecount
+/proc/kpageflags
+
+/proc/sys/vm/overcommit_memory: Controls memory overcommit policy (0=heuristic, 1=always, 2=strict).
+/proc/sys/vm/swappiness: Controls swap usage tendency (0–100, higher means more swapping).
+/proc/sys/vm/min_free_kbytes: Minimum free memory to maintain.
+/proc/sys/vm/drop_caches: Write to clear caches (e.g., echo 3 > /proc/sys/vm/drop_caches).
+
+proc/<pid>/maps
+proc/<pid>/smaps
+/proc/<pid>/oom_adj
+/proc/<pid>/oom_score
+/proc/<pid>/oom_score_adj
+```
+
+## /proc/meminfo
+
+```c
+static int meminfo_proc_show(struct seq_file *m, void *v)
+{
+    struct sysinfo i;
+    unsigned long committed;
+    long cached;
+    long available;
+    unsigned long pages[NR_LRU_LISTS];
+    unsigned long sreclaimable, sunreclaim;
+    int lru;
+
+    si_meminfo(&i) {
+        val->totalram = totalram_pages() {
+            return (unsigned long)atomic_long_read(&_totalram_pages);
+        }
+        val->sharedram = global_node_page_state(NR_SHMEM) {
+            return global_node_page_state_pages(item) {
+                long x = atomic_long_read(&vm_node_stat[item]);
+            #ifdef CONFIG_SMP
+                if (x < 0)
+                    x = 0;
+            #endif
+                return x;
+            }
+        }
+        val->freeram = global_zone_page_state(NR_FREE_PAGES);
+        val->bufferram = nr_blockdev_pages() {
+            struct inode *inode;
+            long ret = 0;
+
+            spin_lock(&blockdev_superblock->s_inode_list_lock);
+            list_for_each_entry(inode, &blockdev_superblock->s_inodes, i_sb_list)
+                ret += inode->i_mapping->nrpages;
+            spin_unlock(&blockdev_superblock->s_inode_list_lock);
+
+            return ret;
+        }
+        val->totalhigh = totalhigh_pages() {
+            return __totalhigh_pages() {
+                unsigned long pages = 0;
+                struct zone *zone;
+
+                for_each_populated_zone(zone) {
+                    if (is_highmem(zone))
+                        pages += zone_managed_pages(zone);
+                }
+
+                return pages;
+            }
+        }
+        val->freehigh = nr_free_highpages() {
+            return __nr_free_highpages() {
+                unsigned long pages = 0;
+                struct zone *zone;
+
+                for_each_populated_zone(zone) {
+                    if (is_highmem(zone))
+                        pages += zone_page_state(zone, NR_FREE_PAGES);
+                }
+
+                return pages;
+            }
+        }
+        val->mem_unit = PAGE_SIZE;
+    }
+
+    si_swapinfo(&i) {
+        unsigned int type;
+        unsigned long nr_to_be_unused = 0;
+
+        spin_lock(&swap_lock);
+        for (type = 0; type < nr_swapfiles; type++) {
+            struct swap_info_struct *si = swap_info[type];
+
+            if ((si->flags & SWP_USED) && !(si->flags & SWP_WRITEOK)) {
+                nr_to_be_unused += swap_usage_in_pages(si) {
+                    return atomic_long_read(&si->inuse_pages) & SWAP_USAGE_COUNTER_MASK;
+                }
+            }
+        }
+        val->freeswap = atomic_long_read(&nr_swap_pages) + nr_to_be_unused;
+        val->totalswap = total_swap_pages + nr_to_be_unused;
+        spin_unlock(&swap_lock);
+    }
+    committed = vm_memory_committed();
+
+    cached = global_node_page_state(NR_FILE_PAGES) -
+            total_swapcache_pages() - i.bufferram;
+    if (cached < 0)
+        cached = 0;
+
+    for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
+        pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
+
+    available = si_mem_available() {
+        long available;
+        unsigned long pagecache;
+        unsigned long wmark_low = 0;
+        unsigned long reclaimable;
+        struct zone *zone;
+
+        for_each_zone(zone) {
+            wmark_low += low_wmark_pages(zone);
+        }
+
+        /*
+        * Estimate the amount of memory available for userspace allocations,
+        * without causing swapping or OOM.
+        */
+        available = global_zone_page_state(NR_FREE_PAGES) - totalreserve_pages;
+
+        /*
+        * Not all the page cache can be freed, otherwise the system will
+        * start swapping or thrashing. Assume at least half of the page
+        * cache, or the low watermark worth of cache, needs to stay.
+        */
+        pagecache = global_node_page_state(NR_ACTIVE_FILE) +
+            global_node_page_state(NR_INACTIVE_FILE);
+        pagecache -= min(pagecache / 2, wmark_low);
+        available += pagecache;
+
+        /*
+        * Part of the reclaimable slab and other kernel memory consists of
+        * items that are in use, and cannot be freed. Cap this estimate at the
+        * low watermark.
+        */
+        reclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B) +
+            global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE);
+        reclaimable -= min(reclaimable / 2, wmark_low);
+        available += reclaimable;
+
+        if (available < 0)
+            available = 0;
+        return available;
+    }
+
+    sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
+    sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
+
+    show_val_kb(m, "MemTotal:       ", i.totalram);
+    show_val_kb(m, "MemFree:        ", i.freeram);
+}
+```
 
 # Tuning
 
