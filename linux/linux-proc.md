@@ -131,6 +131,7 @@
 
 <img src='../images/kernel/kernel-structual.svg' style='max-height:850px'/>
 
+---
 
 In ARMv8-A AArch64 architecture, there are several types of registers. Below is an overview of the main registers used in this architecture:
 * General-Purpose Registers
@@ -1239,8 +1240,9 @@ struct task_struct {
 
     void                      *stack; /* kernel stack */
 
-    /* CPU-specific state of this task: */
-    /* arch/arm64/include/asm/thread_info.h */
+    /* CPU-specific state of kernel mode,
+     * used for kernel-mode context switching.
+     * save/restored at cpu_switch_to */
     struct thread_struct {
         struct cpu_context {
             unsigned long x19;
@@ -1253,9 +1255,9 @@ struct task_struct {
             unsigned long x26;
             unsigned long x27;
             unsigned long x28;
-            unsigned long fp;
-            unsigned long sp;
-            unsigned long pc;
+            unsigned long fp;  /* x29 */
+            unsigned long sp;  /* x9  */
+            unsigned long pc;  /* lr  */
         } cpu_context;
 
         unsigned long        fault_address;    /* fault info */
@@ -1302,8 +1304,8 @@ struct rq {
     1. System calls
     2. Interrupts (e.g., timer interrupts used for preemptive multitasking)
     3. Exceptions (e.g., page faults)
-- The full user space context is saved in pt_regs which is usually at the top of the kernel stack for that process.
-- The cpu_context in thread_struct holds the kernel execution context when a task is scheduled out.
+- The full user space context is saved in `pt_regs` which is usually at the top of the kernel stack for that process.
+- The `cpu_context` in thread_struct holds the kernel execution context when a task is scheduled out.
 - The scheduler uses the information in cpu_context to resume a task's execution in kernel space.
 - When returning to user space, the kernel uses the saved pt_regs to restore the full user space context.
 
@@ -1354,7 +1356,9 @@ extern const struct sched_class idle_sched_class;
 
 ## voluntary schedule
 
-<img src="../images/kernel/proc-sched-context-swith.svg" style="max-height:850px"/>
+arm64 | x86_64
+:-: | :-:
+![](../images/kernel/proc-sched-regs.svg) | <img src="../images/kernel/proc-sched-context-swith.svg" style="max-height:850px"/>
 
 <img src='../images/kernel/proc-sched-reg.png' style='max-height:850px'/>
 
@@ -1753,27 +1757,35 @@ picked:
                          * x1 = next task_struct
                          * Previous and next are guaranteed not to be the same. */
                         SYM_FUNC_START(cpu_switch_to)
-                            mov    x10, #THREAD_CPU_CONTEXT /* task.thread.cpu_context */
-                            add    x8, x0, x10 /* calc prev task cpu_context addr */
-                            mov    x9, sp
-                            stp    x19, x20, [x8], #16 /* store callee-saved registers */
+                            mov    x10, #THREAD_CPU_CONTEXT /* offset of thread.cpu_context within task_struct */
+                            add    x8, x0, x10         /* calc prev task cpu_context addr (prev + offset) */
+                            mov    x9, sp              /* save current x9(sp) to sp register */
+                            stp    x19, x20, [x8], #16
                             stp    x21, x22, [x8], #16
                             stp    x23, x24, [x8], #16
                             stp    x25, x26, [x8], #16
                             stp    x27, x28, [x8], #16
-                            stp    x29, x9, [x8], #16
-                            str    lr, [x8]
+                            stp    x29, x9, [x8], #16   /* x29-fp, x9-sp */
+                            str    lr, [x8]             /* str pc to lr register */
 
-                            add    x8, x1, x10  /* calc next task cpu_context addr */
-                            ldp    x19, x20, [x8], #16 /* restore callee-saved registers */
+                            add    x8, x1, x10  /* calc next task cpu_context addr (next + offset) */
+                            ldp    x19, x20, [x8], #16
                             ldp    x21, x22, [x8], #16
                             ldp    x23, x24, [x8], #16
                             ldp    x25, x26, [x8], #16
                             ldp    x27, x28, [x8], #16
                             ldp    x29, x9, [x8], #16
-                            ldr    lr, [x8] /* calc next task cpu_context addr */
-                            mov    sp, x9
+                            ldr    lr, [x8]             /* load pc of next tsk */
+
+                            mov    sp, x9       /* sp points to stack of next tsk */
+                            /* stack pointer of user-space points to next tsk,
+                             * linux doens't use it to track the stack of user-space while
+                             * retrieve the point of current tsk in kernel, see #define current */
                             msr    sp_el0, x1
+
+                            /* the user-space stack pointer is restored from the pt_regs structure,
+                             * which is typically stored at the top of the kernel stack,
+                             * during the transition from kernel mode (EL1) to user mode (EL0). */
 
                             /* Installs pointer authentication keys for the kernel */
                             ptrauth_keys_install_kernel x1, x8, x9, x10
@@ -11114,6 +11126,7 @@ out_free_interp:
     current->mm->start_brk = current->mm->brk = ELF_PAGEALIGN(elf_brk);
 
     if (interpreter) {
+        /* load and map interpreter into current addr space */
         elf_entry = load_elf_interp(interp_elf_ex,
             interpreter, load_bias, interp_elf_phdata, &arch_state
         );
@@ -11199,7 +11212,9 @@ out_free_interp:
         error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC, MAP_FIXED | MAP_PRIVATE, 0);
     }
 
-    regs = current_pt_regs();
+    regs = current_pt_regs() {
+        return ((struct pt_regs *)(THREAD_SIZE + task_stack_page(p)) - 1)
+    }
 
     finalize_exec(bprm) {
         current->signal->rlim[RLIMIT_STACK] = bprm->rlim_stack;
@@ -13087,6 +13102,24 @@ pool_mayday_timeout() {
     }
     mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
 }
+```
+
+# fs_proc
+
+```sh
+/proc/stat
+/proc/schedstat
+/proc/loadavg
+/proc/sys/kernel/pid_max
+/proc/sys/kernel/threads-max
+
+/proc/<pid>/sched</pid>
+/proc/<pid>/status</pid>
+/proc/<pid>/task/</pid>
+/proc/<pid>/cmdline</pid>
+/proc/<pid>/fd/</pid>
+/proc/<pid>/limits</pid>
+/proc/<pid>/cgroup</pid>
 ```
 
 # Tuning
