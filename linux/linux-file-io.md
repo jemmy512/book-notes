@@ -19,6 +19,11 @@
     * [coredump](#coredump)
     * [alloc_fd](#alloc_fd)
 
+* [FS](#FS)
+    * [overlay](#overlay)
+    * [ex4](#ext4)
+    * [proc](#proc)
+
 * [IO](#IO)
     * [kobject](#kobject)
     * [char dev](#char-dev)
@@ -53,9 +58,7 @@
 
 ---
 
-File System | Layer
---- | ---
-<img src='../images/kernel/file-arch-0.png' height='600'/> | <img src='../images/kernel/file-arch.svg' height='600'/>
+<img src='../images/kernel/file-layer.png' height='600'/>
 
 # File Management
 
@@ -277,37 +280,37 @@ struct ext4_extent {
 
 ```c
 const struct inode_operations ext4_dir_inode_operations = {
-  .create     = ext4_create,
-  .lookup     = ext4_lookup,
-  .link       = ext4_link,
-  .unlink     = ext4_unlink,
-  .symlink    = ext4_symlink,
-  .mkdir      = ext4_mkdir,
-  .rmdir      = ext4_rmdir,
-  .mknod      = ext4_mknod,
-  .tmpfile    = ext4_tmpfile,
-  .rename     = ext4_rename2,
-  .setattr    = ext4_setattr,
-  .getattr    = ext4_getattr,
-  .listxattr  = ext4_listxattr,
-  .get_acl    = ext4_get_acl,
-  .set_acl    = ext4_set_acl,
-  .fiemap      = ext4_fiemap,
+    .create     = ext4_create,
+    .lookup     = ext4_lookup,
+    .link       = ext4_link,
+    .unlink     = ext4_unlink,
+    .symlink    = ext4_symlink,
+    .mkdir      = ext4_mkdir,
+    .rmdir      = ext4_rmdir,
+    .mknod      = ext4_mknod,
+    .tmpfile    = ext4_tmpfile,
+    .rename     = ext4_rename2,
+    .setattr    = ext4_setattr,
+    .getattr    = ext4_getattr,
+    .listxattr  = ext4_listxattr,
+    .get_acl    = ext4_get_acl,
+    .set_acl    = ext4_set_acl,
+    .fiemap      = ext4_fiemap,
 };
 
 /* open -> do_sys_open -> do_filp_open -> path_openat -> do_last -> lookup_open
  * ext4_create -> ext4_new_inode_start_handle -> __ext4_new_inode */
 struct inode *__ext4_new_inode(
-  handle_t *handle, struct inode *dir,
-  umode_t mode, const struct qstr *qstr,
-  __u32 goal, uid_t *owner, __u32 i_flags,
-  int handle_type, unsigned int line_no,
-  int nblocks)
+    handle_t *handle, struct inode *dir,
+    umode_t mode, const struct qstr *qstr,
+    __u32 goal, uid_t *owner, __u32 i_flags,
+    int handle_type, unsigned int line_no,
+    int nblocks)
 {
-inode_bitmap_bh = ext4_read_inode_bitmap(sb, group);
-ino = ext4_find_next_zero_bit((unsigned long *)
-                inode_bitmap_bh->b_data,
-                EXT4_INODES_PER_GROUP(sb), ino);
+    inode_bitmap_bh = ext4_read_inode_bitmap(sb, group);
+    ino = ext4_find_next_zero_bit((unsigned long *)
+                    inode_bitmap_bh->b_data,
+                    EXT4_INODES_PER_GROUP(sb), ino);
 }
 ```
 
@@ -412,7 +415,8 @@ struct dx_entry
 <img src='../images/kernel/file-link.png' height='600'/>
 
 ## vfs
-<img src='../images/kernel/file-arch.png' height='600'/>
+
+<img src='../images/kernel/file-layer.png' height='600'/>
 
 ## init_rootfs
 
@@ -2373,33 +2377,9 @@ finish_lookup:
 
 * [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) ⊙ [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
 
-call stack
+### rw_call_stack
 
-```c
-write(fd, buf, size) {
-    vfs_write() {
-        file->f_op->write() {
-            ext4_file_write_iter() {
-                if (iocb->ki_flags & IOCB_DIRECT) {
-                    return ext4_dio_write_iter(iocb, from);
-                } else  {
-                    return ext4_buffered_write_iter(iocb, from);
-                }
-            }
-        }
-    }
-}
-
-ext4_dio_write_iter() {
-    if (extend) {
-        ext4_journal_start();
-        ext4_orphan_add();
-        ext4_journal_stop();
-    }
-
-    iomap_dio_rw(iocb, from, ext4_iomap_overwrite_ops, &ext4_dio_write_ops);
-}
-```
+#### buffered_io_read
 
 ```c
 read(fd, buf, size) {
@@ -2466,6 +2446,8 @@ generic_file_read_iter(iocb, iter) {
     }
 }
 ```
+
+#### buffered_io_write
 
 ```c
 write(fd, buf, size) {
@@ -2573,891 +2555,75 @@ delayed_work_timer_fn() {
 }
 ```
 
-```c
-SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
-{
-  struct fd f = fdget_pos(fd);
-  loff_t pos = file_pos_read(f.file);
-  ret = vfs_read(f.file, buf, count, &pos);
-}
-
-SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
-    size_t, count)
-{
-  struct fd f = fdget_pos(fd);
-  loff_t pos = file_pos_read(f.file);
-    ret = vfs_write(f.file, buf, count, &pos);
-}
-
-ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
-       loff_t *pos)
-{
-  if (file->f_op->read)
-    return file->f_op->read(file, buf, count, pos);
-  else if (file->f_op->read_iter)
-    return new_sync_read(file, buf, count, pos);
-  else
-    return -EINVAL;
-}
-
-
-ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
-        loff_t *pos)
-{
-  if (file->f_op->write)
-    return file->f_op->write(file, p, count, pos);
-  else if (file->f_op->write_iter)
-    return new_sync_write(file, p, count, pos);
-  else
-    return -EINVAL;
-}
-
-static ssize_t new_sync_read(
-  struct file *filp, char __user *buf, size_t len, loff_t *ppos)
-{
-  struct iovec iov = { .iov_base = buf, .iov_len = len };
-  struct kiocb kiocb;
-  struct iov_iter iter;
-  ssize_t ret;
-
-  init_sync_kiocb(&kiocb, filp);
-  kiocb.ki_pos = *ppos;
-  iov_iter_init(&iter, READ, &iov, 1, len);
-
-  /* file->f_op->read_iter(kio, iter); */
-  ret = call_read_iter(filp, &kiocb, &iter);
-  *ppos = kiocb.ki_pos;
-  return ret;
-}
-
-const struct file_operations ext4_file_operations = {
-  .read_iter    = ext4_file_read_iter,
-  .write_iter   = ext4_file_write_iter,
-  .write_begin  = ext4_write_begin,
-  .write_end    = ext4_write_end
-}
-
-ssize_t ext4_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
-{
-  struct inode *inode = file_inode(iocb->ki_filp);
-
-  if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
-    return -EIO;
-
-  if (!iov_iter_count(to))
-    return 0; /* skip atime */
-
-#ifdef CONFIG_FS_DAX
-  if (IS_DAX(inode))
-    return ext4_dax_read_iter(iocb, to);
-#endif
-  if (iocb->ki_flags & IOCB_DIRECT)
-    return ext4_dio_read_iter(iocb, to);
-
-  return generic_file_read_iter(iocb, to);
-}
-
-ssize_t ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
-{
-  struct inode *inode = file_inode(iocb->ki_filp);
-
-  if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
-    return -EIO;
-
-#ifdef CONFIG_FS_DAX
-  if (IS_DAX(inode))
-    return ext4_dax_write_iter(iocb, from);
-#endif
-  if (iocb->ki_flags & IOCB_DIRECT)
-    return ext4_dio_write_iter(iocb, from);
-  else
-    return ext4_buffered_write_iter(iocb, from);
-}
-
-/* ext4_file_{read, write}_iter -> ext4_dio_{read, write}_iter */
-ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
-{
-    if (iocb->ki_flags & IOCB_DIRECT) {
-      struct address_space *mapping = file->f_mapping;
-      retval = mapping->a_ops->direct_IO(iocb, iter);
-    }
-    retval = generic_file_buffered_read(iocb, iter, retval);
-}
-
-ssize_t __generic_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
-{
-    if (iocb->ki_flags & IOCB_DIRECT) {
-        written = generic_file_direct_write(iocb, from);
-    } else {
-        written = generic_perform_write(file, from, iocb->ki_pos);
-    }
-}
-```
-
-### direct_io
-
-* [[v5,12/12] ext4: introduce direct I/O write using iomap infrastructure](https://patchwork.ozlabs.org/project/linux-ext4/patch/c3438dad66a34a7d4e7509a5dd64c2326340a52a.1571647180.git.mbobrowski@mbobrowski.org/)
+#### dio
 
 ```c
-static const struct address_space_operations ext4_aops = {
-  .read_folio         = ext4_read_folio,
-  .readahead          = ext4_readahead,
-  .writepage          = ext4_writepage,
-  .writepages         = ext4_writepages,
-  .write_begin        = ext4_write_begin,
-  .write_end          = ext4_write_end,
-  .dirty_folio        = ext4_dirty_folio,
-  .bmap               = ext4_bmap,
-  .invalidate_folio   = ext4_invalidate_folio,
-  .release_folio      = ext4_release_folio,
-  .direct_IO          = noop_direct_IO,
-  .migrate_folio      = buffer_migrate_folio,
-  .is_partially_uptodate  = block_is_partially_uptodate,
-  .error_remove_page  = generic_error_remove_page,
-  .swap_activate      = ext4_iomap_swap_activate,
-};
-
-ssize_t ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
-{
-  ssize_t ret;
-  struct inode *inode = file_inode(iocb->ki_filp);
-
-  if (iocb->ki_flags & IOCB_NOWAIT) {
-    if (!inode_trylock_shared(inode))
-      return -EAGAIN;
-  } else {
-    inode_lock_shared(inode);
-  }
-
-  if (!ext4_dio_supported(iocb, to)) {
-    inode_unlock_shared(inode);
-    /* Fallback to buffered I/O if the operation being performed on
-     * the inode is not supported by direct I/O. */
-    iocb->ki_flags &= ~IOCB_DIRECT;
-    return generic_file_read_iter(iocb, to);
-  }
-
-  ret = iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL, 0, NULL, 0);
-  inode_unlock_shared(inode);
-
-  file_accessed(iocb->ki_filp);
-  return ret;
-}
-
-ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
-{
-  ssize_t ret;
-  handle_t *handle;
-  struct inode *inode = file_inode(iocb->ki_filp);
-  loff_t offset = iocb->ki_pos;
-  size_t count = iov_iter_count(from);
-  const struct iomap_ops *iomap_ops = &ext4_iomap_ops;
-  bool extend = false, unaligned_io = false;
-  bool ilock_shared = true;
-
-  /* Quick check here without any i_rwsem lock to see if it is extending
-   * IO. A more reliable check is done in ext4_dio_write_checks() with
-   * proper locking in place. */
-  if (offset + count > i_size_read(inode))
-    ilock_shared = false;
-
-  if (iocb->ki_flags & IOCB_NOWAIT) {
-    if (ilock_shared) {
-      if (!inode_trylock_shared(inode))
-        return -EAGAIN;
-    } else {
-      if (!inode_trylock(inode))
-        return -EAGAIN;
-    }
-  } else {
-    if (ilock_shared)
-      inode_lock_shared(inode);
-    else
-      inode_lock(inode);
-  }
-
-  /* Fallback to buffered I/O if the inode does not support direct I/O. */
-  if (!ext4_dio_supported(iocb, from)) {
-    if (ilock_shared)
-      inode_unlock_shared(inode);
-    else
-      inode_unlock(inode);
-    return ext4_buffered_write_iter(iocb, from);
-  }
-
-  ret = ext4_dio_write_checks(iocb, from, &ilock_shared, &extend);
-  if (ret <= 0)
-    return ret;
-
-  /* if we're going to block and IOCB_NOWAIT is set, return -EAGAIN */
-  if ((iocb->ki_flags & IOCB_NOWAIT) && (unaligned_io || extend)) {
-    ret = -EAGAIN;
-    goto out;
-  }
-
-  offset = iocb->ki_pos;
-  count = ret;
-
-  /* Unaligned direct IO must be serialized among each other as zeroing
-   * of partial blocks of two competing unaligned IOs can result in data
-   * corruption.
-   *
-   * So we make sure we don't allow any unaligned IO in flight.
-   * For IOs where we need not wait (like unaligned non-AIO DIO),
-   * below inode_dio_wait() may anyway become a no-op, since we start
-   * with exclusive lock. */
-  if (unaligned_io)
-    inode_dio_wait(inode);
-
-  if (extend) {
-    handle = ext4_journal_start(inode, EXT4_HT_INODE, 2);
-    if (IS_ERR(handle)) {
-      ret = PTR_ERR(handle);
-      goto out;
-    }
-
-    ret = ext4_orphan_add(handle, inode);
-    if (ret) {
-      ext4_journal_stop(handle);
-      goto out;
-    }
-
-    ext4_journal_stop(handle);
-  }
-
-  if (ilock_shared)
-    iomap_ops = &ext4_iomap_overwrite_ops;
-  ret = iomap_dio_rw(iocb, from, iomap_ops, &ext4_dio_write_ops,
-         (unaligned_io || extend) ? IOMAP_DIO_FORCE_WAIT : 0, NULL, 0);
-  if (ret == -ENOTBLK)
-    ret = 0;
-
-  if (extend)
-    ret = ext4_handle_inode_extension(inode, offset, ret, count);
-
-out:
-  if (ilock_shared)
-    inode_unlock_shared(inode);
-  else
-    inode_unlock(inode);
-
-  if (ret >= 0 && iov_iter_count(from)) {
-    ssize_t err;
-    loff_t endbyte;
-
-    offset = iocb->ki_pos;
-    err = ext4_buffered_write_iter(iocb, from);
-    if (err < 0)
-      return err;
-
-    /* We need to ensure that the pages within the page cache for
-     * the range covered by this I/O are written to disk and
-     * invalidated. This is in attempt to preserve the expected
-     * direct I/O semantics in the case we fallback to buffered I/O
-     * to complete off the I/O request. */
-    ret += err;
-    endbyte = offset + err - 1;
-    err = filemap_write_and_wait_range(iocb->ki_filp->f_mapping,
-               offset, endbyte);
-    if (!err)
-      invalidate_mapping_pages(iocb->ki_filp->f_mapping,
-             offset >> PAGE_SHIFT,
-             endbyte >> PAGE_SHIFT);
-  }
-
-  return ret;
-}
-```
-
-#### iomap_dio_rw
-
-```c
-ssize_t
-iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
-    const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
-    unsigned int dio_flags, void *private, size_t done_before)
-{
-  struct iomap_dio *dio;
-
-  dio = __iomap_dio_rw(iocb, iter, ops, dops, dio_flags, private, done_before);
-  if (IS_ERR_OR_NULL(dio))
-    return PTR_ERR_OR_ZERO(dio);
-  return iomap_dio_complete(dio);
-}
-
-struct iomap_dio *
-__iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
-    const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
-    unsigned int dio_flags, void *private, size_t done_before)
-{
-  struct address_space *mapping = iocb->ki_filp->f_mapping;
-  struct inode *inode = file_inode(iocb->ki_filp);
-  struct iomap_iter iomi = {
-    .inode    = inode,
-    .pos    = iocb->ki_pos,
-    .len    = iov_iter_count(iter),
-    .flags    = IOMAP_DIRECT,
-    .private  = private,
-  };
-  loff_t end = iomi.pos + iomi.len - 1, ret = 0;
-  bool wait_for_completion = is_sync_kiocb(iocb) || (dio_flags & IOMAP_DIO_FORCE_WAIT);
-  struct blk_plug plug;
-  struct iomap_dio *dio;
-
-  if (!iomi.len)
-    return NULL;
-
-  dio = kmalloc(sizeof(*dio), GFP_KERNEL);
-  if (!dio)
-    return ERR_PTR(-ENOMEM);
-
-  dio->iocb = iocb;
-  atomic_set(&dio->ref, 1);
-  dio->size = 0;
-  dio->i_size = i_size_read(inode);
-  dio->dops = dops;
-  dio->error = 0;
-  dio->flags = 0;
-  dio->done_before = done_before;
-
-  dio->submit.iter = iter;
-  dio->submit.waiter = current;
-  dio->submit.poll_bio = NULL;
-
-  if (iov_iter_rw(iter) == READ) {
-    if (iomi.pos >= dio->i_size)
-      goto out_free_dio;
-
-    if (iocb->ki_flags & IOCB_NOWAIT) {
-      if (filemap_range_needs_writeback(mapping, iomi.pos, end)) {
-        ret = -EAGAIN;
-        goto out_free_dio;
-      }
-      iomi.flags |= IOMAP_NOWAIT;
-    }
-
-    if (user_backed_iter(iter))
-      dio->flags |= IOMAP_DIO_DIRTY;
-  } else {
-    iomi.flags |= IOMAP_WRITE;
-    dio->flags |= IOMAP_DIO_WRITE;
-
-    if (iocb->ki_flags & IOCB_NOWAIT) {
-      if (filemap_range_has_page(mapping, iomi.pos, end)) {
-        ret = -EAGAIN;
-        goto out_free_dio;
-      }
-      iomi.flags |= IOMAP_NOWAIT;
-    }
-
-    /* for data sync or sync, we need sync completion processing */
-    if (iocb_is_dsync(iocb) && !(dio_flags & IOMAP_DIO_NOSYNC)) {
-      dio->flags |= IOMAP_DIO_NEED_SYNC;
-
-      if (!(iocb->ki_flags & IOCB_SYNC))
-        dio->flags |= IOMAP_DIO_WRITE_FUA;
-    }
-  }
-
-  if (dio_flags & IOMAP_DIO_OVERWRITE_ONLY) {
-    ret = -EAGAIN;
-    if (iomi.pos >= dio->i_size || iomi.pos + iomi.len > dio->i_size)
-      goto out_free_dio;
-    iomi.flags |= IOMAP_OVERWRITE_ONLY;
-  }
-
-  ret = filemap_write_and_wait_range(mapping, iomi.pos, end);
-  if (ret)
-    goto out_free_dio;
-
-  if (iov_iter_rw(iter) == WRITE) {
-    if (invalidate_inode_pages2_range(mapping, iomi.pos >> PAGE_SHIFT, end >> PAGE_SHIFT)) {
-      ret = -ENOTBLK;
-      goto out_free_dio;
-    }
-
-    if (!wait_for_completion && !inode->i_sb->s_dio_done_wq) {
-      ret = sb_init_dio_done_wq(inode->i_sb);
-      if (ret < 0)
-        goto out_free_dio;
-    }
-  }
-
-  inode_dio_begin(inode);
-
-  blk_start_plug(&plug);
-  while ((ret = iomap_iter(&iomi, ops)) > 0) {
-    iomi.processed = iomap_dio_iter(&iomi, dio);
-    iocb->ki_flags &= ~IOCB_HIPRI;
-  }
-
-  blk_finish_plug(&plug);
-
-  if (iov_iter_rw(iter) == READ && iomi.pos >= dio->i_size)
-    iov_iter_revert(iter, iomi.pos - dio->i_size);
-
-  if (ret == -EFAULT && dio->size && (dio_flags & IOMAP_DIO_PARTIAL)) {
-    if (!(iocb->ki_flags & IOCB_NOWAIT))
-      wait_for_completion = true;
-    ret = 0;
-  }
-
-  /* magic error code to fall back to buffered I/O */
-  if (ret == -ENOTBLK) {
-    wait_for_completion = true;
-    ret = 0;
-  }
-  if (ret < 0)
-    iomap_dio_set_error(dio, ret);
-
-  /* If all the writes we issued were FUA, we don't need to flush the
-   * cache on IO completion. Clear the sync flag for this case. */
-  if (dio->flags & IOMAP_DIO_WRITE_FUA)
-    dio->flags &= ~IOMAP_DIO_NEED_SYNC;
-
-  WRITE_ONCE(iocb->private, dio->submit.poll_bio);
-
-  dio->wait_for_completion = wait_for_completion;
-  if (!atomic_dec_and_test(&dio->ref)) {
-    if (!wait_for_completion)
-      return ERR_PTR(-EIOCBQUEUED);
-
-    for (;;) {
-      set_current_state(TASK_UNINTERRUPTIBLE);
-      if (!READ_ONCE(dio->submit.waiter))
-        break;
-
-      blk_io_schedule();
-    }
-    __set_current_state(TASK_RUNNING);
-  }
-
-  return dio;
-
-out_free_dio:
-  kfree(dio);
-  if (ret)
-    return ERR_PTR(ret);
-  return NULL;
-}
-
-static loff_t iomap_dio_iter(const struct iomap_iter *iter,
-    struct iomap_dio *dio)
-{
-  switch (iter->iomap.type) {
-  case IOMAP_HOLE:
-    if (WARN_ON_ONCE(dio->flags & IOMAP_DIO_WRITE))
-      return -EIO;
-    return iomap_dio_hole_iter(iter, dio);
-  case IOMAP_UNWRITTEN:
-    if (!(dio->flags & IOMAP_DIO_WRITE))
-      return iomap_dio_hole_iter(iter, dio);
-    return iomap_dio_bio_iter(iter, dio);
-  case IOMAP_MAPPED:
-    return iomap_dio_bio_iter(iter, dio);
-  case IOMAP_INLINE:
-    return iomap_dio_inline_iter(iter, dio);
-  case IOMAP_DELALLOC:
-    pr_warn_ratelimited("Direct I/O collision with buffered writes! File: %pD4 Comm: %.20s\n",
-            dio->iocb->ki_filp, current->comm);
-    return -EIO;
-  default:
-    WARN_ON_ONCE(1);
-    return -EIO;
-  }
-}
-
-loff_t iomap_dio_bio_iter(const struct iomap_iter *iter, struct iomap_dio *dio)
-{
-  const struct iomap *iomap = &iter->iomap;
-  struct inode *inode = iter->inode;
-  unsigned int blkbits = blksize_bits(bdev_logical_block_size(iomap->bdev));
-  unsigned int fs_block_size = i_blocksize(inode), pad;
-  loff_t length = iomap_length(iter);
-  loff_t pos = iter->pos;
-  blk_opf_t bio_opf;
-  struct bio *bio;
-  bool need_zeroout = false;
-  bool use_fua = false;
-  int nr_pages, ret = 0;
-  size_t copied = 0;
-  size_t orig_count;
-
-  if ((pos | length) & ((1 << blkbits) - 1) ||
-      !bdev_iter_is_aligned(iomap->bdev, dio->submit.iter))
-    return -EINVAL;
-
-  if (iomap->type == IOMAP_UNWRITTEN) {
-    dio->flags |= IOMAP_DIO_UNWRITTEN;
-    need_zeroout = true;
-  }
-
-  if (iomap->flags & IOMAP_F_SHARED)
-    dio->flags |= IOMAP_DIO_COW;
-
-  if (iomap->flags & IOMAP_F_NEW) {
-    need_zeroout = true;
-  } else if (iomap->type == IOMAP_MAPPED) {
-    if (!(iomap->flags & (IOMAP_F_SHARED|IOMAP_F_DIRTY)) &&
-        (dio->flags & IOMAP_DIO_WRITE_FUA) && bdev_fua(iomap->bdev))
-      use_fua = true;
-  }
-
-  orig_count = iov_iter_count(dio->submit.iter);
-  iov_iter_truncate(dio->submit.iter, length);
-
-  if (!iov_iter_count(dio->submit.iter))
-    goto out;
-
-  if (need_zeroout || ((dio->flags & IOMAP_DIO_WRITE) && pos >= i_size_read(inode)))
-    dio->iocb->ki_flags &= ~IOCB_HIPRI;
-
-  if (need_zeroout) {
-    /* zero out from the start of the block to the write offset */
-    pad = pos & (fs_block_size - 1);
-    if (pad)
-      iomap_dio_zero(iter, dio, pos - pad, pad);
-  }
-
-  /* Set the operation flags early so that bio_iov_iter_get_pages
-   * can set up the page vector appropriately for a ZONE_APPEND
-   * operation. */
-  bio_opf = iomap_dio_bio_opflags(dio, iomap, use_fua);
-
-  nr_pages = bio_iov_vecs_to_alloc(dio->submit.iter, BIO_MAX_VECS);
-  do {
-    size_t n;
-    if (dio->error) {
-      iov_iter_revert(dio->submit.iter, copied);
-      copied = ret = 0;
-      goto out;
-    }
-
-    bio = iomap_dio_alloc_bio(iter, dio, nr_pages, bio_opf);
-    fscrypt_set_bio_crypt_ctx(bio, inode, pos >> inode->i_blkbits, GFP_KERNEL);
-    bio->bi_iter.bi_sector = iomap_sector(iomap, pos);
-    bio->bi_ioprio = dio->iocb->ki_ioprio;
-    bio->bi_private = dio;
-    bio->bi_end_io = iomap_dio_bio_end_io;
-
-    ret = bio_iov_iter_get_pages(bio, dio->submit.iter);
-    if (unlikely(ret)) {
-      bio_put(bio);
-      goto zero_tail;
-    }
-
-    n = bio->bi_iter.bi_size;
-    if (dio->flags & IOMAP_DIO_WRITE) {
-      task_io_account_write(n);
-    } else {
-      if (dio->flags & IOMAP_DIO_DIRTY)
-        bio_set_pages_dirty(bio);
-    }
-
-    dio->size += n;
-    copied += n;
-
-    nr_pages = bio_iov_vecs_to_alloc(dio->submit.iter, BIO_MAX_VECS);
-
-    if (nr_pages)
-      dio->iocb->ki_flags &= ~IOCB_HIPRI;
-    iomap_dio_submit_bio(iter, dio, bio, pos);
-    pos += n;
-  } while (nr_pages);
-
-zero_tail:
-  if (need_zeroout || ((dio->flags & IOMAP_DIO_WRITE) && pos >= i_size_read(inode))) {
-    /* zero out from the end of the write to the end of the block */
-    pad = pos & (fs_block_size - 1);
-    if (pad)
-      iomap_dio_zero(iter, dio, pos, fs_block_size - pad);
-  }
-out:
-  /* Undo iter limitation to current extent */
-  iov_iter_reexpand(dio->submit.iter, orig_count - copied);
-  if (copied)
-    return copied;
-  return ret;
-}
-
-int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
-{
-  int ret = 0;
-
-  if (iov_iter_is_bvec(iter)) {
-    bio_iov_bvec_set(bio, iter);
-    iov_iter_advance(iter, bio->bi_iter.bi_size);
-    return 0;
-  }
-
-  do {
-    ret = __bio_iov_iter_get_pages(bio, iter);
-  } while (!ret && iov_iter_count(iter) && !bio_full(bio, 0));
-
-  /* don't account direct I/O as memory stall */
-  bio_clear_flag(bio, BIO_WORKINGSET);
-  return bio->bi_vcnt ? 0 : ret;
-}
-
-int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
-{
-  unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
-  unsigned short entries_left = bio->bi_max_vecs - bio->bi_vcnt;
-  struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
-  struct page **pages = (struct page **)bv;
-  ssize_t size, left;
-  unsigned len, i = 0;
-  size_t offset, trim;
-  int ret = 0;
-
-  BUILD_BUG_ON(PAGE_PTRS_PER_BVEC < 2);
-  pages += entries_left * (PAGE_PTRS_PER_BVEC - 1);
-
-  /* Each segment in the iov is required to be a block size multiple.
-   * However, we may not be able to get the entire segment if it spans
-   * more pages than bi_max_vecs allows, so we have to ALIGN_DOWN the
-   * result to ensure the bio's total size is correct. The remainder of
-   * the iov data will be picked up in the next bio iteration. */
-  size = iov_iter_get_pages2(iter, pages, UINT_MAX - bio->bi_iter.bi_size, nr_pages, &offset);
-  if (unlikely(size <= 0))
-    return size ? size : -EFAULT;
-
-  nr_pages = DIV_ROUND_UP(offset + size, PAGE_SIZE);
-
-  trim = size & (bdev_logical_block_size(bio->bi_bdev) - 1);
-  iov_iter_revert(iter, trim);
-
-  size -= trim;
-  if (unlikely(!size)) {
-    ret = -EFAULT;
-    goto out;
-  }
-
-  for (left = size, i = 0; left > 0; left -= len, i++) {
-    struct page *page = pages[i];
-
-    len = min_t(size_t, PAGE_SIZE - offset, left);
-    if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
-      ret = bio_iov_add_zone_append_page(bio, page, len, offset);
-      if (ret)
-        break;
-    } else
-      bio_iov_add_page(bio, page, len, offset);
-
-    offset = 0;
-  }
-
-  iov_iter_revert(iter, left);
-out:
-  while (i < nr_pages)
-    put_page(pages[i++]);
-
-  return ret;
-}
-
-ssize_t iov_iter_get_pages2(struct iov_iter *i,
-       struct page **pages, size_t maxsize, unsigned maxpages,
-       size_t *start)
-{
-  if (!maxpages)
-    return 0;
-  BUG_ON(!pages);
-
-  return __iov_iter_get_pages_alloc(i, &pages, maxsize, maxpages, start);
-}
-
-ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
-       struct page ***pages, size_t maxsize,
-       unsigned int maxpages, size_t *start)
-{
-  unsigned int n;
-
-  if (maxsize > i->count)
-    maxsize = i->count;
-  if (!maxsize)
-    return 0;
-  if (maxsize > MAX_RW_COUNT)
-    maxsize = MAX_RW_COUNT;
-
-  if (likely(user_backed_iter(i))) {
-    unsigned int gup_flags = 0;
-    unsigned long addr;
-    int res;
-
-    if (iov_iter_rw(i) != WRITE)
-      gup_flags |= FOLL_WRITE;
-    if (i->nofault)
-      gup_flags |= FOLL_NOFAULT;
-
-    addr = first_iovec_segment(i, &maxsize);
-    *start = addr % PAGE_SIZE;
-    addr &= PAGE_MASK;
-    n = want_pages_array(pages, maxsize, *start, maxpages);
-    if (!n)
-      return -ENOMEM;
-    res = get_user_pages_fast(addr, n, gup_flags, *pages);
-    if (unlikely(res <= 0))
-      return res;
-    maxsize = min_t(size_t, maxsize, res * PAGE_SIZE - *start);
-    iov_iter_advance(i, maxsize);
-    return maxsize;
-  }
-  if (iov_iter_is_bvec(i)) {
-    struct page **p;
-    struct page *page;
-
-    page = first_bvec_segment(i, &maxsize, start);
-    n = want_pages_array(pages, maxsize, *start, maxpages);
-    if (!n)
-      return -ENOMEM;
-    p = *pages;
-    for (int k = 0; k < n; k++)
-      get_page(p[k] = page + k);
-    maxsize = min_t(size_t, maxsize, n * PAGE_SIZE - *start);
-    i->count -= maxsize;
-    i->iov_offset += maxsize;
-    if (i->iov_offset == i->bvec->bv_len) {
-      i->iov_offset = 0;
-      i->bvec;
-      i->nr_segs--;
-    }
-    return maxsize;
-  }
-  if (iov_iter_is_pipe(i))
-    return pipe_get_pages(i, pages, maxsize, maxpages, start);
-  if (iov_iter_is_xarray(i))
-    return iter_xarray_get_pages(i, pages, maxsize, maxpages, start);
-  return -EFAULT;
-}
-
-int want_pages_array(struct page ***res, size_t size,
-          size_t start, unsigned int maxpages)
-{
-  unsigned int count = DIV_ROUND_UP(size + start, PAGE_SIZE);
-
-  if (count > maxpages)
-    count = maxpages;
-  WARN_ON(!count);  /* caller should've prevented that */
-  if (!*res) {
-    *res = kvmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
-    if (!*res)
-      return 0;
-  }
-  return count;
-}
-
-int bio_iov_add_page(struct bio *bio, struct page *page,
-    unsigned int len, unsigned int offset)
-{
-  bool same_page = false;
-
-    /* try appending data to an existing bvec. */
-  if (!__bio_try_merge_page(bio, page, len, offset, &same_page)) {
-    __bio_add_page(bio, page, len, offset);
-    return 0;
-  }
-
-  if (same_page)
-    put_page(page);
-  return 0;
-}
-
-/* add page(s) to a bio in a new segment */
-void __bio_add_page(struct bio *bio, struct page *page,
-    unsigned int len, unsigned int off)
-{
-  struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
-
-  WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
-  WARN_ON_ONCE(bio_full(bio, len));
-
-  bv->bv_page = page;
-  bv->bv_offset = off;
-  bv->bv_len = len;
-
-  bio->bi_iter.bi_size += len;
-  bio->bi_vcnt++;
-
-  if (!bio_flagged(bio, BIO_WORKINGSET) && unlikely(PageWorkingset(page)))
-    bio_set_flag(bio, BIO_WORKINGSET);
-}
-```
-
-### buffered read
-
-```c
-read(fd, buf, size) {
-    vfs_write() {
-        file->f_op->read() {
-            ext4_file_read_iter() {
-                if (iocb->ki_flags & IOCB_DIRECT) {
-                    return ext4_dio_read_iter(iocb, to);
-                } else {
-                    return generic_file_read_iter(iocb, to);
-                }
-            }
-        }
-    }
-}
-
 /* direct io read */
-ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
+ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to) {
     if (!ext4_dio_supported(iocb, to)) {
         iocb->ki_flags &= ~IOCB_DIRECT;
         return generic_file_read_iter(iocb, to);
     }
 
-    iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL);
+    iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL) {
         struct blk_plug plug;
         struct iomap_dio *dio = kmalloc(sizeof(*dio));
         dio->submit.iter = iter; /* iter: user data */
 
         blk_start_plug(&plug);
         while ((ret = iomap_iter(&iomi, ops)) > 0) { /* iterate over a ranges in a file */
-            iomi.processed = iomap_dio_iter(&iomi, dio);
-                iomap_dio_bio_iter();
+            iomi.processed = iomap_dio_iter(&iomi, dio) {
+                iomap_dio_bio_iter() {
                     nr_pages = bio_iov_vecs_to_alloc();
                     do {
                         struct bio *bio = iomap_dio_alloc_bio();
-                        bio_iov_iter_get_pages(); /* add user or kernel pages to a bio */
+                        bio_iov_iter_get_pages() { /* add user or kernel pages to a bio */
                             unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
                             unsigned short entries_left = bio->bi_max_vecs - bio->bi_vcnt;
                             struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
                             struct page **pages = (struct page **)bv;
 
-                            size = iov_iter_get_pages2(iter, pages);
+                            size = iov_iter_get_pages2(iter, pages) {
                                 /* alloc page* array to hold user iov iter */
-                                int n = want_pages_array(pages, maxsize, *start, maxpages);
-                                    kvmalloc_array(count, sizeof(struct page *));
+                                int n = want_pages_array(pages, maxsize, *start, maxpages) {
+                                    *pages = kvmalloc_array(count, sizeof(struct page *));
+                                }
                                 page = first_bvec_segment(i, &maxsize, start);
                                 p = *pages;
                                 /* add user iov iter to the allocated array*/
-                                for (int k = 0; k < n; k++)
+                                for (int k = 0; k < n; k++) {
                                     get_page(p[k] = page + k);
+                                }
+                            }
 
                             for (left = size, i = 0; left > 0; left -= len, i++) {
                                 struct page *page = pages[i];
                                 len = min_t(size_t, PAGE_SIZE - offset, left);
                                 if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
                                     bio_iov_add_zone_append_page(bio, page, len, offset);
-                                } else
+                                } else {
                                     /* add user iov iter page* into the bio iov */
-                                    bio_iov_add_page(bio, page, len, offset);
+                                    bio_iov_add_page(bio, page, len, offset) {
                                         struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
                                         bv->bv_page = page;
                                         bv->bv_offset = off;
                                         bv->bv_len = len;
-
+                                    }
+                                }
                                 offset = 0;
                             }
+                        }
                         nr_pages = bio_iov_vecs_to_alloc();
-                        iomap_dio_submit_bio();
+                        iomap_dio_submit_bio() {
                             if (dio->dops && dio->dops->submit_io)
                                 dio->dops->submit_io(iter, bio, pos);
                             else
                                 submit_bio(bio);
                                     --->
+                        }
                     } while (nr_pages);
+                }
+            }
             iocb->ki_flags &= ~IOCB_HIPRI;
         }
 
@@ -3472,444 +2638,1443 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to);
         __set_current_state(TASK_RUNNING);
 
         iomap_dio_complete();
+    }
+}
+```
+
+### direct_io
+
+![](../images/kernel/file-dio-struct.svg)
+
+* [[PATCH v5 00/12] ext4: port direct I/O to iomap infrastructure](https://lore.kernel.org/linux-fsdevel/cover.1571647178.git.mbobrowski@mbobrowski.org/)
+
+```c
+static const struct address_space_operations ext4_aops = {
+    .read_folio         = ext4_read_folio,
+    .readahead          = ext4_readahead,
+    .writepage          = ext4_writepage,
+    .writepages         = ext4_writepages,
+    .write_begin        = ext4_write_begin,
+    .write_end          = ext4_write_end,
+    .dirty_folio        = ext4_dirty_folio,
+    .bmap               = ext4_bmap,
+    .invalidate_folio   = ext4_invalidate_folio,
+    .release_folio      = ext4_release_folio,
+    .direct_IO          = noop_direct_IO,
+    .migrate_folio      = buffer_migrate_folio,
+    .is_partially_uptodate  = block_is_partially_uptodate,
+    .error_remove_page  = generic_error_remove_page,
+    .swap_activate      = ext4_iomap_swap_activate,
+};
+
+const struct iomap_ops ext4_iomap_ops = {
+    .iomap_begin        = ext4_iomap_begin,
+    .iomap_end          = ext4_iomap_end,
+};
+
+static const struct iomap_dio_ops ext4_dio_write_ops = {
+    .end_io = ext4_dio_write_end_io,
+};
+
+struct iomap_dio {
+    struct kiocb                    *iocb;
+    const struct iomap_dio_ops      *dops;
+    loff_t                          i_size;
+    loff_t                          size;
+    atomic_t                        ref;
+    unsigned                        flags;
+    int                             error;
+    size_t                          done_before;
+    bool                            wait_for_completion;
+
+    union {
+        /* used during submission and for synchronous completion: */
+        struct {
+            struct iov_iter         *iter;
+            struct task_struct      *waiter;
+        } submit;
+
+        /* used for aio completion: */
+        struct {
+            struct work_struct      work;
+        } aio;
+    };
+};
+
+struct iomap_dio_ops {
+    int (*end_io)(struct kiocb *iocb, ssize_t size, int error, unsigned flags);
+    void (*submit_io)(const struct iomap_iter *iter, struct bio *bio, loff_t file_offset);
+    struct bio_set *bio_set;
+};
+
+struct iomap_iter {
+    struct inode    *inode;
+    loff_t          pos;
+    u64             len;
+    loff_t          iter_start_pos;
+    int             status;
+    unsigned        flags;
+    struct          iomap iomap;
+    struct          iomap srcmap;
+    void            *private;
+};
+
+struct iomap {
+    u64                 addr;   /* disk offset of mapping, bytes */
+    loff_t              offset;	/* file offset of mapping, bytes */
+    u64                 length;	/* length of mapping, bytes */
+    u16                 type;	/* type of mapping */
+    u16                 flags;	/* flags for mapping */
+    struct block_device *bdev;	/* block device for I/O */
+    struct dax_device   *dax_dev;   /* dax_dev for dax operations */
+    void                *inline_data;
+    void                *private;   /* filesystem private */
+    const struct iomap_folio_ops *folio_ops;
+    u64                 validity_cookie; /* used with .iomap_valid() */
+};
+
+struct iomap_folio_ops {
+    struct folio *(*get_folio)(struct iomap_iter *iter, loff_t pos, unsigned len);
+    void (*put_folio)(struct inode *inode, loff_t pos, unsigned copied, struct folio *folio);
+    bool (*iomap_valid)(struct inode *inode, const struct iomap *iomap);
+};
+```
+
+```c
+ssize_t ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+    ssize_t ret;
+    struct inode *inode = file_inode(iocb->ki_filp);
+
+    if (iocb->ki_flags & IOCB_NOWAIT) {
+        if (!inode_trylock_shared(inode))
+        return -EAGAIN;
+    } else {
+        inode_lock_shared(inode);
+    }
+
+    if (!ext4_dio_supported(iocb, to)) {
+        inode_unlock_shared(inode);
+        /* Fallback to buffered I/O if the operation being performed on
+        * the inode is not supported by direct I/O. */
+        iocb->ki_flags &= ~IOCB_DIRECT;
+        return generic_file_read_iter(iocb, to);
+    }
+
+    ret = iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL, 0, NULL, 0);
+    inode_unlock_shared(inode);
+
+    file_accessed(iocb->ki_filp);
+    return ret;
+}
+
+ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+    ssize_t ret;
+    handle_t *handle;
+    struct inode *inode = file_inode(iocb->ki_filp);
+    loff_t offset = iocb->ki_pos;
+    size_t count = iov_iter_count(from);
+    const struct iomap_ops *iomap_ops = &ext4_iomap_ops;
+    bool extend = false, unaligned_io = false;
+    bool ilock_shared = true;
+
+    /* Quick check here without any i_rwsem lock to see if it is extending
+    * IO. A more reliable check is done in ext4_dio_write_checks() with
+    * proper locking in place. */
+    if (offset + count > i_size_read(inode))
+        ilock_shared = false;
+
+    if (iocb->ki_flags & IOCB_NOWAIT) {
+        if (ilock_shared) {
+            if (!inode_trylock_shared(inode))
+                return -EAGAIN;
+        } else {
+            if (!inode_trylock(inode))
+                return -EAGAIN;
+        }
+    } else {
+        if (ilock_shared)
+            inode_lock_shared(inode);
+        else
+            inode_lock(inode);
+    }
+
+    /* Fallback to buffered I/O if the inode does not support direct I/O. */
+    if (!ext4_dio_supported(iocb, from)) {
+        if (ilock_shared)
+            inode_unlock_shared(inode);
+        else
+            inode_unlock(inode);
+        return ext4_buffered_write_iter(iocb, from);
+    }
+
+    ret = ext4_dio_write_checks(iocb, from, &ilock_shared, &extend);
+    if (ret <= 0)
+        return ret;
+
+    /* if we're going to block and IOCB_NOWAIT is set, return -EAGAIN */
+    if ((iocb->ki_flags & IOCB_NOWAIT) && (unaligned_io || extend)) {
+        ret = -EAGAIN;
+        goto out;
+    }
+
+    offset = iocb->ki_pos;
+    count = ret;
+
+    /* Unaligned direct IO must be serialized among each other as zeroing
+    * of partial blocks of two competing unaligned IOs can result in data
+    * corruption.
+    *
+    * So we make sure we don't allow any unaligned IO in flight.
+    * For IOs where we need not wait (like unaligned non-AIO DIO),
+    * below inode_dio_wait() may anyway become a no-op, since we start
+    * with exclusive lock. */
+    if (unaligned_io)
+        inode_dio_wait(inode);
+
+    if (extend) {
+        handle = ext4_journal_start(inode, EXT4_HT_INODE, 2);
+        if (IS_ERR(handle)) {
+            ret = PTR_ERR(handle);
+            goto out;
+        }
+
+        ret = ext4_orphan_add(handle, inode);
+        if (ret) {
+            ext4_journal_stop(handle);
+            goto out;
+        }
+
+        ext4_journal_stop(handle);
+    }
+
+    if (ilock_shared)
+        iomap_ops = &ext4_iomap_overwrite_ops;
+    ret = iomap_dio_rw(iocb, from, iomap_ops, &ext4_dio_write_ops,
+            (unaligned_io || extend) ? IOMAP_DIO_FORCE_WAIT : 0, NULL, 0);
+    if (ret == -ENOTBLK)
+        ret = 0;
+
+    if (extend)
+        ret = ext4_handle_inode_extension(inode, offset, ret, count);
+
+out:
+    if (ilock_shared)
+        inode_unlock_shared(inode);
+    else
+        inode_unlock(inode);
+
+    if (ret >= 0 && iov_iter_count(from)) {
+        ssize_t err;
+        loff_t endbyte;
+
+        offset = iocb->ki_pos;
+        err = ext4_buffered_write_iter(iocb, from);
+        if (err < 0)
+            return err;
+
+        /* We need to ensure that the pages within the page cache for
+        * the range covered by this I/O are written to disk and
+        * invalidated. This is in attempt to preserve the expected
+        * direct I/O semantics in the case we fallback to buffered I/O
+        * to complete off the I/O request. */
+        ret += err;
+        endbyte = offset + err - 1;
+        err = filemap_write_and_wait_range(iocb->ki_filp->f_mapping,
+                offset, endbyte);
+        if (!err)
+        invalidate_mapping_pages(iocb->ki_filp->f_mapping,
+                offset >> PAGE_SHIFT,
+                endbyte >> PAGE_SHIFT);
+    }
+
+    return ret;
+}
+```
+
+#### iomap_dio_rw
+
+```c
+ssize_t iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
+    const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
+    unsigned int dio_flags, void *private, size_t done_before) {
+
+    struct iomap_dio *dio;
+    dio = __iomap_dio_rw(iocb, iter, ops, dops, dio_flags, private, done_before);
+    if (IS_ERR_OR_NULL(dio))
+        return PTR_ERR_OR_ZERO(dio);
+    return iomap_dio_complete(dio);
+}
+
+struct iomap_dio *
+__iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
+    const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
+    unsigned int dio_flags, void *private, size_t done_before)
+{
+    struct address_space *mapping = iocb->ki_filp->f_mapping;
+    struct inode *inode = file_inode(iocb->ki_filp);
+    struct iomap_iter iomi = {
+        .inode      = inode,
+        .pos        = iocb->ki_pos,
+        .len        = iov_iter_count(iter),
+        .flags      = IOMAP_DIRECT,
+        .private    = private,
+    };
+    loff_t end = iomi.pos + iomi.len - 1, ret = 0;
+    bool wait_for_completion = is_sync_kiocb(iocb) || (dio_flags & IOMAP_DIO_FORCE_WAIT);
+    struct blk_plug plug;
+    struct iomap_dio *dio;
+
+    if (!iomi.len)
+        return NULL;
+
+    dio = kmalloc(sizeof(*dio), GFP_KERNEL);
+    if (!dio)
+        return ERR_PTR(-ENOMEM);
+
+    dio->iocb = iocb;
+    atomic_set(&dio->ref, 1);
+    dio->size = 0;
+    dio->i_size = i_size_read(inode);
+    dio->dops = dops;
+    dio->error = 0;
+    dio->flags = 0;
+    dio->done_before = done_before;
+
+    dio->submit.iter = iter;
+    dio->submit.waiter = current;
+    dio->submit.poll_bio = NULL;
+
+    if (iov_iter_rw(iter) == READ) { /* return i->data_source ? WRITE : READ; */
+        if (iomi.pos >= dio->i_size)
+            goto out_free_dio;
+
+        if (iocb->ki_flags & IOCB_NOWAIT) {
+            if (filemap_range_needs_writeback(mapping, iomi.pos, end)) {
+                ret = -EAGAIN;
+                goto out_free_dio;
+            }
+            iomi.flags |= IOMAP_NOWAIT;
+        }
+
+        if (user_backed_iter(iter))
+            dio->flags |= IOMAP_DIO_DIRTY;
+    } else {
+        iomi.flags |= IOMAP_WRITE;
+        dio->flags |= IOMAP_DIO_WRITE;
+
+        if (iocb->ki_flags & IOCB_NOWAIT) {
+            if (filemap_range_has_page(mapping, iomi.pos, end)) {
+                ret = -EAGAIN;
+                goto out_free_dio;
+            }
+            iomi.flags |= IOMAP_NOWAIT;
+        }
+
+        /* for data sync or sync, we need sync completion processing */
+        if (iocb_is_dsync(iocb) && !(dio_flags & IOMAP_DIO_NOSYNC)) {
+            dio->flags |= IOMAP_DIO_NEED_SYNC;
+
+            if (!(iocb->ki_flags & IOCB_SYNC))
+                dio->flags |= IOMAP_DIO_WRITE_FUA;
+        }
+    }
+
+    if (dio_flags & IOMAP_DIO_OVERWRITE_ONLY) {
+        ret = -EAGAIN;
+        if (iomi.pos >= dio->i_size || iomi.pos + iomi.len > dio->i_size)
+            goto out_free_dio;
+        iomi.flags |= IOMAP_OVERWRITE_ONLY;
+    }
+
+    ret = filemap_write_and_wait_range(mapping, iomi.pos, end);
+    if (ret)
+        goto out_free_dio;
+
+    if (iov_iter_rw(iter) == WRITE) {
+        if (invalidate_inode_pages2_range(mapping, iomi.pos >> PAGE_SHIFT, end >> PAGE_SHIFT)) {
+            ret = -ENOTBLK;
+            goto out_free_dio;
+        }
+
+        if (!wait_for_completion && !inode->i_sb->s_dio_done_wq) {
+            ret = sb_init_dio_done_wq(inode->i_sb);
+            if (ret < 0)
+                goto out_free_dio;
+        }
+    }
+
+    inode_dio_begin(inode);
+
+    blk_start_plug(&plug);
+    while ((ret = iomap_iter(&iomi, ops)) > 0) { /* iterate over a ranges in a file */
+        iomi.processed = iomap_dio_iter(&iomi, dio);
+        iocb->ki_flags &= ~IOCB_HIPRI;
+    }
+    blk_finish_plug(&plug);
+
+    if (iov_iter_rw(iter) == READ && iomi.pos >= dio->i_size)
+        iov_iter_revert(iter, iomi.pos - dio->i_size);
+
+    if (ret == -EFAULT && dio->size && (dio_flags & IOMAP_DIO_PARTIAL)) {
+        if (!(iocb->ki_flags & IOCB_NOWAIT))
+        wait_for_completion = true;
+        ret = 0;
+    }
+
+    /* magic error code to fall back to buffered I/O */
+    if (ret == -ENOTBLK) {
+        wait_for_completion = true;
+        ret = 0;
+    }
+    if (ret < 0)
+        iomap_dio_set_error(dio, ret);
+
+    /* If all the writes we issued were FUA, we don't need to flush the
+    * cache on IO completion. Clear the sync flag for this case. */
+    if (dio->flags & IOMAP_DIO_WRITE_FUA)
+        dio->flags &= ~IOMAP_DIO_NEED_SYNC;
+
+    WRITE_ONCE(iocb->private, dio->submit.poll_bio);
+
+    dio->wait_for_completion = wait_for_completion;
+    if (!atomic_dec_and_test(&dio->ref)) {
+        if (!wait_for_completion)
+            return ERR_PTR(-EIOCBQUEUED);
+
+        for (;;) {
+            set_current_state(TASK_UNINTERRUPTIBLE);
+            if (!READ_ONCE(dio->submit.waiter))
+                break;
+
+            blk_io_schedule();
+        }
+        __set_current_state(TASK_RUNNING);
+    }
+
+  return dio;
+
+out_free_dio:
+    kfree(dio);
+    if (ret)
+        return ERR_PTR(ret);
+    return NULL;
+}
+```
+
+
+#### iomap_iter
+
+```c
+int iomap_iter(struct iomap_iter *iter, const struct iomap_ops *ops)
+{
+    bool stale = iter->iomap.flags & IOMAP_F_STALE;
+    ssize_t advanced;
+    u64 olen;
+    int ret;
+
+    trace_iomap_iter(iter, ops, _RET_IP_);
+
+    if (!iter->iomap.length)
+        goto begin;
+
+    /* Calculate how far the iter was advanced and the original length bytes
+    * for ->iomap_end(). */
+    advanced = iter->pos - iter->iter_start_pos;
+    olen = iter->len + advanced;
+
+    if (ops->iomap_end) {
+        ret = ops->iomap_end(iter->inode, iter->iter_start_pos,
+            iomap_length_trim(iter, iter->iter_start_pos, olen),
+            advanced, iter->flags, &iter->iomap
+        );
+        if (ret < 0 && !advanced)
+            return ret;
+    }
+
+    /* detect old return semantics where this would advance */
+    if (WARN_ON_ONCE(iter->status > 0))
+        iter->status = -EIO;
+
+    /* Use iter->len to determine whether to continue onto the next mapping.
+    * Explicitly terminate on error status or if the current iter has not
+    * advanced at all (i.e. no work was done for some reason) unless the
+    * mapping has been marked stale and needs to be reprocessed. */
+    if (iter->status < 0)
+        ret = iter->status;
+    else if (iter->len == 0 || (!advanced && !stale))
+        ret = 0;
+    else
+        ret = 1;
+    iomap_iter_reset_iomap(iter);
+    if (ret <= 0)
+        return ret;
+
+begin:
+    ret = ops->iomap_begin(iter->inode, iter->pos, iter->len, iter->flags,
+                &iter->iomap, &iter->srcmap);
+    if (ret < 0)
+        return ret;
+    iomap_iter_done(iter);
+    return 1;
+}
+```
+
+```c
+static int ext4_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
+        unsigned flags, struct iomap *iomap, struct iomap *srcmap)
+{
+    int ret;
+    struct ext4_map_blocks map;
+    u8 blkbits = inode->i_blkbits;
+
+    if ((offset >> blkbits) > EXT4_MAX_LOGICAL_BLOCK)
+        return -EINVAL;
+
+    if (WARN_ON_ONCE(ext4_has_inline_data(inode)))
+        return -ERANGE;
+
+    /* Calculate the first and last logical blocks respectively. */
+    map.m_lblk = offset >> blkbits;
+    map.m_len = min_t(loff_t, (offset + length - 1) >> blkbits,
+            EXT4_MAX_LOGICAL_BLOCK) - map.m_lblk + 1;
+
+    if (flags & IOMAP_WRITE) {
+        /* We check here if the blocks are already allocated, then we
+        * don't need to start a journal txn and we can directly return
+        * the mapping information. This could boost performance
+        * especially in multi-threaded overwrite requests. */
+        if (offset + length <= i_size_read(inode)) {
+            ret = ext4_map_blocks(NULL, inode, &map, 0);
+            if (ret > 0 && (map.m_flags & EXT4_MAP_MAPPED))
+                goto out;
+        }
+        ret = ext4_iomap_alloc(inode, &map, flags);
+    } else {
+        ret = ext4_map_blocks(NULL, inode, &map, 0);
+    }
+
+    if (ret < 0)
+        return ret;
+out:
+    /* When inline encryption is enabled, sometimes I/O to an encrypted file
+    * has to be broken up to guarantee DUN contiguity.  Handle this by
+    * limiting the length of the mapping returned. */
+    map.m_len = fscrypt_limit_io_blocks(inode, map.m_lblk, map.m_len);
+
+    ext4_set_iomap(inode, iomap, &map, offset, length, flags) {
+        u8 blkbits = inode->i_blkbits;
+
+        /* Writes that span EOF might trigger an I/O size update on completion,
+        * so consider them to be dirty for the purpose of O_DSYNC, even if
+        * there is no other metadata changes being made or are pending. */
+        iomap->flags = 0;
+        if (ext4_inode_datasync_dirty(inode) ||
+            offset + length > i_size_read(inode))
+            iomap->flags |= IOMAP_F_DIRTY;
+
+        if (map->m_flags & EXT4_MAP_NEW)
+            iomap->flags |= IOMAP_F_NEW;
+
+        /* HW-offload atomics are always used */
+        if (flags & IOMAP_ATOMIC)
+            iomap->flags |= IOMAP_F_ATOMIC_BIO;
+
+        if (flags & IOMAP_DAX)
+            iomap->dax_dev = EXT4_SB(inode->i_sb)->s_daxdev;
+        else
+            iomap->bdev = inode->i_sb->s_bdev;
+
+        iomap->offset = (u64) map->m_lblk << blkbits;
+        iomap->length = (u64) map->m_len << blkbits;
+
+        if ((map->m_flags & EXT4_MAP_MAPPED) &&
+            !ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+            iomap->flags |= IOMAP_F_MERGED;
+
+        if (map->m_flags & EXT4_MAP_UNWRITTEN) {
+            iomap->type = IOMAP_UNWRITTEN;
+            iomap->addr = (u64) map->m_pblk << blkbits;
+            if (flags & IOMAP_DAX)
+                iomap->addr += EXT4_SB(inode->i_sb)->s_dax_part_off;
+        } else if (map->m_flags & EXT4_MAP_MAPPED) {
+            iomap->type = IOMAP_MAPPED;
+            iomap->addr = (u64) map->m_pblk << blkbits;
+            if (flags & IOMAP_DAX)
+                iomap->addr += EXT4_SB(inode->i_sb)->s_dax_part_off;
+        } else if (map->m_flags & EXT4_MAP_DELAYED) {
+            iomap->type = IOMAP_DELALLOC;
+            iomap->addr = IOMAP_NULL_ADDR;
+        } else {
+            iomap->type = IOMAP_HOLE;
+            iomap->addr = IOMAP_NULL_ADDR;
+        }
+    }
+
+    return 0;
+}
+```
+
+#### iomap_dio_iter
+
+```c
+static loff_t iomap_dio_iter(const struct iomap_iter *iter, struct iomap_dio *dio)
+{
+    switch (iter->iomap.type) {
+    case IOMAP_HOLE:
+        if (WARN_ON_ONCE(dio->flags & IOMAP_DIO_WRITE))
+            return -EIO;
+        return iomap_dio_hole_iter(iter, dio);
+
+    case IOMAP_UNWRITTEN:
+        if (!(dio->flags & IOMAP_DIO_WRITE))
+            return iomap_dio_hole_iter(iter, dio);
+        return iomap_dio_bio_iter(iter, dio);
+
+    case IOMAP_MAPPED:
+        return iomap_dio_bio_iter(iter, dio);
+
+    case IOMAP_INLINE:
+        return iomap_dio_inline_iter(iter, dio);
+
+    case IOMAP_DELALLOC:
+        pr_warn_ratelimited("Direct I/O collision with buffered writes! File: %pD4 Comm: %.20s\n",
+                dio->iocb->ki_filp, current->comm);
+        return -EIO;
+
+    default:
+        WARN_ON_ONCE(1);
+        return -EIO;
+    }
+}
+
+loff_t iomap_dio_bio_iter(const struct iomap_iter *iter, struct iomap_dio *dio)
+{
+    const struct iomap *iomap = &iter->iomap;
+    struct inode *inode = iter->inode;
+    unsigned int blkbits = blksize_bits(bdev_logical_block_size(iomap->bdev));
+    unsigned int fs_block_size = i_blocksize(inode), pad;
+    loff_t length = iomap_length(iter);
+    loff_t pos = iter->pos;
+    blk_opf_t bio_opf;
+    struct bio *bio;
+    bool need_zeroout = false;
+    bool use_fua = false;
+    int nr_pages, ret = 0;
+    size_t copied = 0;
+    size_t orig_count;
+
+    if ((pos | length) & ((1 << blkbits) - 1) ||
+        !bdev_iter_is_aligned(iomap->bdev, dio->submit.iter))
+        return -EINVAL;
+
+    if (iomap->type == IOMAP_UNWRITTEN) {
+        dio->flags |= IOMAP_DIO_UNWRITTEN;
+        need_zeroout = true;
+    }
+
+    if (iomap->flags & IOMAP_F_SHARED)
+        dio->flags |= IOMAP_DIO_COW;
+
+    if (iomap->flags & IOMAP_F_NEW) {
+        need_zeroout = true;
+    } else if (iomap->type == IOMAP_MAPPED) {
+        if (!(iomap->flags & (IOMAP_F_SHARED|IOMAP_F_DIRTY))
+            && (dio->flags & IOMAP_DIO_WRITE_FUA) && bdev_fua(iomap->bdev)) {
+
+            use_fua = true;
+        }
+    }
+
+    orig_count = iov_iter_count(dio->submit.iter);
+    iov_iter_truncate(dio->submit.iter, length);
+
+    if (!iov_iter_count(dio->submit.iter))
+        goto out;
+
+    if (need_zeroout || ((dio->flags & IOMAP_DIO_WRITE) && pos >= i_size_read(inode)))
+        dio->iocb->ki_flags &= ~IOCB_HIPRI;
+
+    if (need_zeroout) {
+        /* zero out from the start of the block to the write offset */
+        pad = pos & (fs_block_size - 1);
+        if (pad)
+        iomap_dio_zero(iter, dio, pos - pad, pad);
+    }
+
+    /* Set the operation flags early so that bio_iov_iter_get_pages
+    * can set up the page vector appropriately for a ZONE_APPEND
+    * operation. */
+    bio_opf = iomap_dio_bio_opflags(dio, iomap, use_fua);
+
+    nr_pages = bio_iov_vecs_to_alloc(dio->submit.iter, BIO_MAX_VECS);
+    do {
+        size_t n;
+        if (dio->error) {
+            iov_iter_revert(dio->submit.iter, copied);
+            copied = ret = 0;
+            goto out;
+        }
+
+        bio = iomap_dio_alloc_bio(iter, dio, nr_pages, bio_opf);
+        fscrypt_set_bio_crypt_ctx(bio, inode, pos >> inode->i_blkbits, GFP_KERNEL);
+        bio->bi_iter.bi_sector = iomap_sector(iomap, pos);
+        bio->bi_ioprio = dio->iocb->ki_ioprio;
+        bio->bi_private = dio;
+        bio->bi_end_io = iomap_dio_bio_end_io;
+
+        ret = bio_iov_iter_get_pages(bio, dio->submit.iter);
+        if (unlikely(ret)) {
+            bio_put(bio);
+            goto zero_tail;
+        }
+
+        n = bio->bi_iter.bi_size;
+        if (dio->flags & IOMAP_DIO_WRITE) {
+            task_io_account_write(n);
+        } else {
+            if (dio->flags & IOMAP_DIO_DIRTY)
+                bio_set_pages_dirty(bio);
+        }
+
+        dio->size += n;
+        copied += n;
+
+        nr_pages = bio_iov_vecs_to_alloc(dio->submit.iter, BIO_MAX_VECS);
+
+        if (nr_pages)
+            dio->iocb->ki_flags &= ~IOCB_HIPRI;
+        iomap_dio_submit_bio(iter, dio, bio, pos);
+        pos += n;
+    } while (nr_pages);
+
+zero_tail:
+    if (need_zeroout || ((dio->flags & IOMAP_DIO_WRITE) && pos >= i_size_read(inode))) {
+        /* zero out from the end of the write to the end of the block */
+        pad = pos & (fs_block_size - 1);
+        if (pad)
+            iomap_dio_zero(iter, dio, pos, fs_block_size - pad);
+    }
+out:
+    /* Undo iter limitation to current extent */
+    iov_iter_reexpand(dio->submit.iter, orig_count - copied);
+    if (copied)
+        return copied;
+    return ret;
+}
+
+int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
+{
+    int ret = 0;
+
+    if (iov_iter_is_bvec(iter)) {
+        bio_iov_bvec_set(bio, iter);
+        iov_iter_advance(iter, bio->bi_iter.bi_size);
+        return 0;
+    }
+
+    do {
+        ret = __bio_iov_iter_get_pages(bio, iter);
+    } while (!ret && iov_iter_count(iter) && !bio_full(bio, 0));
+
+    /* don't account direct I/O as memory stall */
+    bio_clear_flag(bio, BIO_WORKINGSET);
+    return bio->bi_vcnt ? 0 : ret;
+}
+
+int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
+{
+    unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
+    unsigned short entries_left = bio->bi_max_vecs - bio->bi_vcnt;
+    struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
+    struct page **pages = (struct page **)bv;
+    ssize_t size, left;
+    unsigned len, i = 0;
+    size_t offset, trim;
+    int ret = 0;
+
+    BUILD_BUG_ON(PAGE_PTRS_PER_BVEC < 2);
+    pages += entries_left * (PAGE_PTRS_PER_BVEC - 1);
+
+    /* Each segment in the iov is required to be a block size multiple.
+    * However, we may not be able to get the entire segment if it spans
+    * more pages than bi_max_vecs allows, so we have to ALIGN_DOWN the
+    * result to ensure the bio's total size is correct. The remainder of
+    * the iov data will be picked up in the next bio iteration. */
+    size = iov_iter_get_pages2(iter, pages, UINT_MAX - bio->bi_iter.bi_size, nr_pages, &offset);
+    if (unlikely(size <= 0))
+        return size ? size : -EFAULT;
+
+    nr_pages = DIV_ROUND_UP(offset + size, PAGE_SIZE);
+
+    trim = size & (bdev_logical_block_size(bio->bi_bdev) - 1);
+    iov_iter_revert(iter, trim);
+
+    size -= trim;
+    if (unlikely(!size)) {
+        ret = -EFAULT;
+        goto out;
+    }
+
+    for (left = size, i = 0; left > 0; left -= len, i++) {
+        struct page *page = pages[i];
+
+        len = min_t(size_t, PAGE_SIZE - offset, left);
+        if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
+            ret = bio_iov_add_zone_append_page(bio, page, len, offset);
+            if (ret)
+                break;
+        } else {
+            bio_iov_add_page(bio, page, len, offset) {
+                bool same_page = false;
+
+                    /* try appending data to an existing bvec. */
+                if (!__bio_try_merge_page(bio, page, len, offset, &same_page)) {
+                    /* add page(s) to a bio in a new segment */
+                    __bio_add_page(bio, page, len, offset) {
+                        struct bio_vec *bv = &bio->bi_io_vec[bio->bi_vcnt];
+
+                        WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
+                        WARN_ON_ONCE(bio_full(bio, len));
+
+                        bv->bv_page = page;
+                        bv->bv_offset = off;
+                        bv->bv_len = len;
+
+                        bio->bi_iter.bi_size += len;
+                        bio->bi_vcnt++;
+
+                        if (!bio_flagged(bio, BIO_WORKINGSET) && unlikely(PageWorkingset(page)))
+                            bio_set_flag(bio, BIO_WORKINGSET);
+                    }
+                    return 0;
+                }
+
+                if (same_page)
+                    put_page(page);
+                return 0;
+            }
+        }
+
+        offset = 0;
+    }
+
+    iov_iter_revert(iter, left);
+out:
+    while (i < nr_pages)
+        put_page(pages[i++]);
+
+    return ret;
+}
+
+ssize_t iov_iter_get_pages2(struct iov_iter *i,
+       struct page **pages, size_t maxsize, unsigned maxpages,
+       size_t *start)
+{
+    if (!maxpages)
+        return 0;
+    BUG_ON(!pages);
+
+    return __iov_iter_get_pages_alloc(i, &pages, maxsize, maxpages, start);
+}
+
+ssize_t __iov_iter_get_pages_alloc(struct iov_iter *i,
+       struct page ***pages, size_t maxsize,
+       unsigned int maxpages, size_t *start)
+{
+    unsigned int n;
+
+    if (maxsize > i->count)
+        maxsize = i->count;
+    if (!maxsize)
+        return 0;
+    if (maxsize > MAX_RW_COUNT)
+        maxsize = MAX_RW_COUNT;
+
+    ret = user_backed_iter(i) {
+        return iter_is_ubuf(i) {
+            return iov_iter_type(i) == ITER_UBUF; }
+        || iter_is_iovec(i) {
+            return iov_iter_type(i) == ITER_IOVEC;
+        };
+    }
+    if (likely(ret)) {
+        unsigned int gup_flags = 0;
+        unsigned long addr;
+        int res;
+
+        if (iov_iter_rw(i) != WRITE)
+            gup_flags |= FOLL_WRITE;
+        if (i->nofault)
+            gup_flags |= FOLL_NOFAULT;
+
+        addr = first_iovec_segment(i, &maxsize);
+        *start = addr % PAGE_SIZE;
+        addr &= PAGE_MASK;
+        n = want_pages_array(pages, maxsize, *start, maxpages) {
+            unsigned int count = DIV_ROUND_UP(size + start, PAGE_SIZE);
+
+            if (count > maxpages)
+                count = maxpages;
+            WARN_ON(!count);  /* caller should've prevented that */
+            if (!*res) {
+                *res = kvmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
+                if (!*res)
+                return 0;
+            }
+            return count;
+        }
+        if (!n)
+            return -ENOMEM;
+        /* pin user pages in memory */
+        res = get_user_pages_fast(addr, n, gup_flags, *pages);
+        if (unlikely(res <= 0))
+            return res;
+        maxsize = min_t(size_t, maxsize, res * PAGE_SIZE - *start);
+        iov_iter_advance(i, maxsize);
+        return maxsize;
+    }
+
+    if (iov_iter_is_bvec(i)) { /* return iov_iter_type(i) == ITER_BVEC; */
+        struct page **p;
+        struct page *page;
+
+        page = first_bvec_segment(i, &maxsize, start);
+        n = want_pages_array(pages, maxsize, *start, maxpages);
+        if (!n)
+            return -ENOMEM;
+        p = *pages;
+        for (int k = 0; k < n; k++)
+            get_page(p[k] = page + k);
+        maxsize = min_t(size_t, maxsize, n * PAGE_SIZE - *start);
+        i->count -= maxsize;
+        i->iov_offset += maxsize;
+        if (i->iov_offset == i->bvec->bv_len) {
+            i->iov_offset = 0;
+            i->bvec;
+            i->nr_segs--;
+        }
+        return maxsize;
+    }
+    if (iov_iter_is_pipe(i))
+        return pipe_get_pages(i, pages, maxsize, maxpages, start);
+    if (iov_iter_is_xarray(i))
+        return iter_xarray_get_pages(i, pages, maxsize, maxpages, start);
+    return -EFAULT;
+}
+```
+
+### buffered read
+
+
+```c
+SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+{
+    struct fd f = fdget_pos(fd);
+    loff_t pos = file_pos_read(f.file);
+    ret = vfs_read(f.file, buf, count, &pos);
+}
+
+ssize_t __vfs_read(struct file *file, char __user *buf, size_t count,
+       loff_t *pos)
+{
+    if (file->f_op->read)
+        return file->f_op->read(file, buf, count, pos);
+    else if (file->f_op->read_iter)
+        return new_sync_read(file, buf, count, pos);
+    else
+        return -EINVAL;
+}
+
+static ssize_t new_sync_read(
+  struct file *filp, char __user *buf, size_t len, loff_t *ppos)
+{
+    struct iovec iov = { .iov_base = buf, .iov_len = len };
+    struct kiocb kiocb;
+    struct iov_iter iter;
+    ssize_t ret;
+
+    init_sync_kiocb(&kiocb, filp);
+    kiocb.ki_pos = *ppos;
+    iov_iter_init(&iter, READ, &iov, 1, len);
+
+    /* file->f_op->read_iter(kio, iter); */
+    ret = call_read_iter(filp, &kiocb, &iter);
+    *ppos = kiocb.ki_pos;
+    return ret;
+}
+
+ssize_t ext4_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
+{
+    struct inode *inode = file_inode(iocb->ki_filp);
+
+    if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
+        return -EIO;
+
+    if (!iov_iter_count(to))
+        return 0; /* skip atime */
+
+#ifdef CONFIG_FS_DAX
+    if (IS_DAX(inode))
+        return ext4_dax_read_iter(iocb, to);
+#endif
+    if (iocb->ki_flags & IOCB_DIRECT)
+        return ext4_dio_read_iter(iocb, to);
+
+    return generic_file_read_iter(iocb, to);
+}
+
+/* ext4_file_{read, write}_iter -> ext4_dio_{read, write}_iter */
+ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+    if (iocb->ki_flags & IOCB_DIRECT) {
+      struct address_space *mapping = file->f_mapping;
+      retval = mapping->a_ops->direct_IO(iocb, iter);
+    }
+    retval = generic_file_buffered_read(iocb, iter, retval);
+}
 ```
 
 ```c
 ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
-  size_t count = iov_iter_count(iter);
-  ssize_t retval = 0;
+    size_t count = iov_iter_count(iter);
+    ssize_t retval = 0;
 
-  if (!count)
-    return 0; /* skip atime */
+    if (!count)
+        return 0; /* skip atime */
 
-  if (iocb->ki_flags & IOCB_DIRECT) {
-    struct file *file = iocb->ki_filp;
-    struct address_space *mapping = file->f_mapping;
-    struct inode *inode = mapping->host;
+    if (iocb->ki_flags & IOCB_DIRECT) {
+        struct file *file = iocb->ki_filp;
+        struct address_space *mapping = file->f_mapping;
+        struct inode *inode = mapping->host;
 
-    if (iocb->ki_flags & IOCB_NOWAIT) {
-      if (filemap_range_needs_writeback(mapping, iocb->ki_pos, iocb->ki_pos + count - 1))
-        return -EAGAIN;
-    } else {
-        retval = filemap_write_and_wait_range(
-            mapping, iocb->ki_pos, iocb->ki_pos + count - 1
-        );
-        if (retval < 0)
+        if (iocb->ki_flags & IOCB_NOWAIT) {
+            if (filemap_range_needs_writeback(mapping, iocb->ki_pos, iocb->ki_pos + count - 1))
+                return -EAGAIN;
+        } else {
+            retval = filemap_write_and_wait_range(
+                mapping, iocb->ki_pos, iocb->ki_pos + count - 1
+            );
+            if (retval < 0)
+                return retval;
+        }
+
+        file_accessed(file);
+
+        retval = mapping->a_ops->direct_IO(iocb, iter);
+        if (retval >= 0) {
+            iocb->ki_pos += retval;
+            count -= retval;
+        }
+        if (retval != -EIOCBQUEUED)
+            iov_iter_revert(iter, count - iov_iter_count(iter));
+
+        if (retval < 0 || !count || IS_DAX(inode))
+            return retval;
+        if (iocb->ki_pos >= i_size_read(inode))
             return retval;
     }
 
-    file_accessed(file);
-
-    retval = mapping->a_ops->direct_IO(iocb, iter);
-    if (retval >= 0) {
-      iocb->ki_pos += retval;
-      count -= retval;
-    }
-    if (retval != -EIOCBQUEUED)
-      iov_iter_revert(iter, count - iov_iter_count(iter));
-
-    if (retval < 0 || !count || IS_DAX(inode))
-      return retval;
-    if (iocb->ki_pos >= i_size_read(inode))
-      return retval;
-  }
-
-  return filemap_read(iocb, iter, retval);
+    return filemap_read(iocb, iter, retval);
 }
 
 /* Read data from the page cache. */
 ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
     ssize_t already_read)
 {
-  struct file *filp = iocb->ki_filp;
-  struct file_ra_state *ra = &filp->f_ra;
-  struct address_space *mapping = filp->f_mapping;
-  struct inode *inode = mapping->host;
-  struct folio_batch fbatch;
-  int i, error = 0;
-  bool writably_mapped;
-  loff_t isize, end_offset;
+    struct file *filp = iocb->ki_filp;
+    struct file_ra_state *ra = &filp->f_ra;
+    struct address_space *mapping = filp->f_mapping;
+    struct inode *inode = mapping->host;
+    struct folio_batch fbatch;
+    int i, error = 0;
+    bool writably_mapped;
+    loff_t isize, end_offset;
 
-  if (unlikely(iocb->ki_pos >= inode->i_sb->s_maxbytes))
-    return 0;
-  if (unlikely(!iov_iter_count(iter)))
-    return 0;
+    if (unlikely(iocb->ki_pos >= inode->i_sb->s_maxbytes))
+        return 0;
+    if (unlikely(!iov_iter_count(iter)))
+        return 0;
 
-  iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
-  folio_batch_init(&fbatch);
-
-  do {
-    cond_resched();
-
-    if ((iocb->ki_flags & IOCB_WAITQ) && already_read)
-      iocb->ki_flags |= IOCB_NOWAIT;
-
-    if (unlikely(iocb->ki_pos >= i_size_read(inode)))
-      break;
-
-    error = filemap_get_pages(iocb, iter, &fbatch);
-    if (error < 0)
-      break;
-
-    isize = i_size_read(inode);
-    if (unlikely(iocb->ki_pos >= isize))
-      goto put_folios;
-    end_offset = min_t(loff_t, isize, iocb->ki_pos + iter->count);
-
-    /* Once we start copying data, we don't want to be touching any
-     * cachelines that might be contended: */
-    writably_mapped = mapping_writably_mapped(mapping);
-
-    /* When a read accesses the same folio several times, only
-     * mark it as accessed the first time. */
-    if (!pos_same_folio(iocb->ki_pos, ra->prev_pos - 1, fbatch.folios[0]))
-      folio_mark_accessed(fbatch.folios[0]);
-
-    for (i = 0; i < folio_batch_count(&fbatch); i++) {
-      struct folio *folio = fbatch.folios[i];
-      size_t fsize = folio_size(folio);
-      size_t offset = iocb->ki_pos & (fsize - 1);
-      size_t bytes = min_t(loff_t, end_offset - iocb->ki_pos, fsize - offset);
-      size_t copied;
-
-      if (end_offset < folio_pos(folio))
-        break;
-      if (i > 0)
-        folio_mark_accessed(folio);
-      /* If users can be writing to this folio using arbitrary
-       * virtual addresses, take care of potential aliasing
-       * before reading the folio on the kernel side. */
-      if (writably_mapped)
-        flush_dcache_folio(folio);
-
-      copied = copy_folio_to_iter(folio, offset, bytes, iter);
-
-      already_read += copied;
-      iocb->ki_pos += copied;
-      ra->prev_pos = iocb->ki_pos;
-
-      if (copied < bytes) {
-        error = -EFAULT;
-        break;
-      }
-    }
-put_folios:
-    for (i = 0; i < folio_batch_count(&fbatch); i++)
-      folio_put(fbatch.folios[i]);
+    iov_iter_truncate(iter, inode->i_sb->s_maxbytes);
     folio_batch_init(&fbatch);
-  } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
 
-  file_accessed(filp);
+    do {
+        cond_resched();
 
-  return already_read ? already_read : error;
+        if ((iocb->ki_flags & IOCB_WAITQ) && already_read)
+            iocb->ki_flags |= IOCB_NOWAIT;
+
+        if (unlikely(iocb->ki_pos >= i_size_read(inode)))
+            break;
+
+        error = filemap_get_pages(iocb, iter, &fbatch);
+            --->
+        if (error < 0)
+            break;
+
+        isize = i_size_read(inode);
+        if (unlikely(iocb->ki_pos >= isize))
+            goto put_folios;
+        end_offset = min_t(loff_t, isize, iocb->ki_pos + iter->count);
+
+        /* Once we start copying data, we don't want to be touching any
+         * cachelines that might be contended: */
+        writably_mapped = mapping_writably_mapped(mapping);
+
+        /* When a read accesses the same folio several times, only
+         * mark it as accessed the first time. */
+        if (!pos_same_folio(iocb->ki_pos, ra->prev_pos - 1, fbatch.folios[0]))
+            folio_mark_accessed(fbatch.folios[0]);
+
+        for (i = 0; i < folio_batch_count(&fbatch); i++) {
+            struct folio *folio = fbatch.folios[i];
+            size_t fsize = folio_size(folio);
+            size_t offset = iocb->ki_pos & (fsize - 1);
+            size_t bytes = min_t(loff_t, end_offset - iocb->ki_pos, fsize - offset);
+            size_t copied;
+
+            if (end_offset < folio_pos(folio))
+                break;
+            if (i > 0)
+                folio_mark_accessed(folio);
+            /* If users can be writing to this folio using arbitrary
+            * virtual addresses, take care of potential aliasing
+            * before reading the folio on the kernel side. */
+            if (writably_mapped)
+                flush_dcache_folio(folio);
+
+            copied = copy_folio_to_iter(folio, offset, bytes, iter);
+
+            already_read += copied;
+            iocb->ki_pos += copied;
+            ra->prev_pos = iocb->ki_pos;
+
+            if (copied < bytes) {
+                error = -EFAULT;
+                break;
+            }
+        }
+    put_folios:
+        for (i = 0; i < folio_batch_count(&fbatch); i++)
+            folio_put(fbatch.folios[i]);
+        folio_batch_init(&fbatch);
+    } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
+
+    file_accessed(filp);
+
+    return already_read ? already_read : error;
 }
 
 int filemap_get_pages(struct kiocb *iocb, struct iov_iter *iter,
     struct folio_batch *fbatch)
 {
-  struct file *filp = iocb->ki_filp;
-  struct address_space *mapping = filp->f_mapping;
-  struct file_ra_state *ra = &filp->f_ra;
-  pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
-  pgoff_t last_index;
-  struct folio *folio;
-  int err = 0;
+    struct file *filp = iocb->ki_filp;
+    struct address_space *mapping = filp->f_mapping;
+    struct file_ra_state *ra = &filp->f_ra;
+    pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
+    pgoff_t last_index;
+    struct folio *folio;
+    int err = 0;
 
-  last_index = DIV_ROUND_UP(iocb->ki_pos + iter->count, PAGE_SIZE);
+    last_index = DIV_ROUND_UP(iocb->ki_pos + iter->count, PAGE_SIZE);
 retry:
-  if (fatal_signal_pending(current))
-    return -EINTR;
+    if (fatal_signal_pending(current))
+        return -EINTR;
 
-  filemap_get_read_batch(mapping, index, last_index, fbatch);
-  if (!folio_batch_count(fbatch)) {
-    if (iocb->ki_flags & IOCB_NOIO)
-      return -EAGAIN;
-    page_cache_sync_readahead(mapping, ra, filp, index, last_index - index);
     filemap_get_read_batch(mapping, index, last_index, fbatch);
-  }
-  if (!folio_batch_count(fbatch)) {
-    if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
-      return -EAGAIN;
-    err = filemap_create_folio(filp, mapping, iocb->ki_pos >> PAGE_SHIFT, fbatch);
-    if (err == AOP_TRUNCATED_PAGE)
-      goto retry;
-    return err;
-  }
+    if (!folio_batch_count(fbatch)) {
+        if (iocb->ki_flags & IOCB_NOIO)
+            return -EAGAIN;
+        page_cache_sync_readahead(mapping, ra, filp, index, last_index - index);
+        filemap_get_read_batch(mapping, index, last_index, fbatch);
+    }
+    if (!folio_batch_count(fbatch)) {
+        if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
+            return -EAGAIN;
+        err = filemap_create_folio(filp, mapping, iocb->ki_pos >> PAGE_SHIFT, fbatch);
+        if (err == AOP_TRUNCATED_PAGE)
+            goto retry;
+        return err;
+    }
 
-  folio = fbatch->folios[folio_batch_count(fbatch) - 1];
-  if (folio_test_readahead(folio)) {
-    err = filemap_readahead(iocb, filp, mapping, folio, last_index);
-    if (err)
-      goto err;
-  }
-  if (!folio_test_uptodate(folio)) {
-    if ((iocb->ki_flags & IOCB_WAITQ) && folio_batch_count(fbatch) > 1)
-      iocb->ki_flags |= IOCB_NOWAIT;
-    err = filemap_update_page(iocb, mapping, iter, folio);
-    if (err)
-      goto err;
-  }
+    folio = fbatch->folios[folio_batch_count(fbatch) - 1];
+    if (folio_test_readahead(folio)) {
+        err = filemap_readahead(iocb, filp, mapping, folio, last_index);
+        if (err)
+        goto err;
+    }
+    if (!folio_test_uptodate(folio)) {
+        if ((iocb->ki_flags & IOCB_WAITQ) && folio_batch_count(fbatch) > 1)
+            iocb->ki_flags |= IOCB_NOWAIT;
+        err = filemap_update_page(iocb, mapping, iter, folio);
+        if (err)
+            goto err;
+    }
 
-  return 0;
-err:
-  if (err < 0)
-    folio_put(folio);
-  if (likely(--fbatch->nr))
     return 0;
-  if (err == AOP_TRUNCATED_PAGE)
-    goto retry;
-  return err;
+
+err:
+    if (err < 0)
+        folio_put(folio);
+    if (likely(--fbatch->nr))
+        return 0;
+    if (err == AOP_TRUNCATED_PAGE)
+        goto retry;
+    return err;
 }
 
 void filemap_get_read_batch(
-  struct address_space *mapping,
-  pgoff_t index, pgoff_t max,
-  struct folio_batch *fbatch)
+    struct address_space *mapping,
+    pgoff_t index, pgoff_t max,
+    struct folio_batch *fbatch)
 {
-  XA_STATE(xas, &mapping->i_pages, index);
-  struct folio *folio;
+    XA_STATE(xas, &mapping->i_pages, index);
+    struct folio *folio;
 
-  rcu_read_lock();
-  for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
-    if (xas_retry(&xas, folio))
-      continue;
-    if (xas.xa_index > max || xa_is_value(folio))
-      break;
-    if (xa_is_sibling(folio))
-      break;
-    if (!folio_try_get_rcu(folio))
-      goto retry;
+    rcu_read_lock();
+    for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
+        if (xas_retry(&xas, folio))
+            continue;
+        if (xas.xa_index > max || xa_is_value(folio))
+            break;
+        if (xa_is_sibling(folio))
+            break;
+        if (!folio_try_get_rcu(folio))
+            goto retry;
 
-    if (unlikely(folio != xas_reload(&xas)))
-      goto put_folio;
+        if (unlikely(folio != xas_reload(&xas)))
+            goto put_folio;
 
-    if (!folio_batch_add(fbatch, folio))
-      break;
-    if (!folio_test_uptodate(folio))
-      break;
-    if (folio_test_readahead(folio))
-      break;
-    xas_advance(&xas, folio->index + folio_nr_pages(folio) - 1);
-    continue;
+        if (!folio_batch_add(fbatch, folio))
+            break;
+        if (!folio_test_uptodate(folio))
+            break;
+        if (folio_test_readahead(folio))
+            break;
+        xas_advance(&xas, folio->index + folio_nr_pages(folio) - 1);
+        continue;
+
 put_folio:
-    folio_put(folio);
-retry:
-    xas_reset(&xas);
-  }
-  rcu_read_unlock();
+        folio_put(folio);
+reßtry:
+        xas_reset(&xas);
+    }
+    rcu_read_unlock();
 }
 
 int filemap_readahead(struct kiocb *iocb, struct file *file,
     struct address_space *mapping, struct folio *folio,
     pgoff_t last_index)
 {
-  DEFINE_READAHEAD(ractl, file, &file->f_ra, mapping, folio->index);
+    DEFINE_READAHEAD(ractl, file, &file->f_ra, mapping, folio->index);
 
-  if (iocb->ki_flags & IOCB_NOIO)
-    return -EAGAIN;
-  page_cache_async_ra(&ractl, folio, last_index - folio->index);
-  return 0;
+    if (iocb->ki_flags & IOCB_NOIO)
+        return -EAGAIN;
+    page_cache_async_ra(&ractl, folio, last_index - folio->index);
+    return 0;
 }
 
 void page_cache_async_ra(struct readahead_control *ractl,
     struct folio *folio, unsigned long req_count)
 {
-  /* no readahead */
-  if (!ractl->ra->ra_pages)
-    return;
+    /* no readahead */
+    if (!ractl->ra->ra_pages)
+        return;
 
-  if (folio_test_writeback(folio))
-    return;
+    if (folio_test_writeback(folio))
+        return;
 
-  folio_clear_readahead(folio);
+    folio_clear_readahead(folio);
 
-  if (blk_cgroup_congested())
-    return;
+    if (blk_cgroup_congested())
+        return;
 
-  ondemand_readahead(ractl, folio, req_count);
+    ondemand_readahead(ractl, folio, req_count);
 }
 
 void ondemand_readahead(struct readahead_control *ractl,
     struct folio *folio, unsigned long req_size)
 {
-  struct backing_dev_info *bdi = inode_to_bdi(ractl->mapping->host);
-  struct file_ra_state *ra = ractl->ra;
-  unsigned long max_pages = ra->ra_pages;
-  unsigned long add_pages;
-  pgoff_t index = readahead_index(ractl);
-  pgoff_t expected, prev_index;
-  unsigned int order = folio ? folio_order(folio) : 0;
+    struct backing_dev_info *bdi = inode_to_bdi(ractl->mapping->host);
+    struct file_ra_state *ra = ractl->ra;
+    unsigned long max_pages = ra->ra_pages;
+    unsigned long add_pages;
+    pgoff_t index = readahead_index(ractl);
+    pgoff_t expected, prev_index;
+    unsigned int order = folio ? folio_order(folio) : 0;
 
-  if (req_size > max_pages && bdi->io_pages > max_pages)
-    max_pages = min(req_size, bdi->io_pages);
+    if (req_size > max_pages && bdi->io_pages > max_pages)
+        max_pages = min(req_size, bdi->io_pages);
 
-  if (!index)
-    goto initial_readahead;
+    if (!index)
+        goto initial_readahead;
 
-  expected = round_up(ra->start + ra->size - ra->async_size, 1UL << order);
-  if (index == expected || index == (ra->start + ra->size)) {
-    ra->start += ra->size;
-    ra->size = get_next_ra_size(ra, max_pages);
-    ra->async_size = ra->size;
-    goto readit;
-  }
+    expected = round_up(ra->start + ra->size - ra->async_size, 1UL << order);
+    if (index == expected || index == (ra->start + ra->size)) {
+        ra->start += ra->size;
+        ra->size = get_next_ra_size(ra, max_pages);
+        ra->async_size = ra->size;
+        goto readit;
+    }
 
-  if (folio) {
-    pgoff_t start;
+    if (folio) {
+        pgoff_t start;
 
-    rcu_read_lock();
-        /* Find the next gap in the page cache */
-    start = page_cache_next_miss(ractl->mapping, index + 1, max_pages);
-    rcu_read_unlock();
+        rcu_read_lock();
+            /* Find the next gap in the page cache */
+        start = page_cache_next_miss(ractl->mapping, index + 1, max_pages);
+        rcu_read_unlock();
 
-    if (!start || start - index > max_pages)
-      return;
+        if (!start || start - index > max_pages)
+            return;
 
-    ra->start = start;
-    ra->size = start - index;  /* old async_size */
-    ra->size += req_size;
-    ra->size = get_next_ra_size(ra, max_pages);
-    ra->async_size = ra->size;
-    goto readit;
-  }
+        ra->start = start;
+        ra->size = start - index;  /* old async_size */
+        ra->size += req_size;
+        ra->size = get_next_ra_size(ra, max_pages);
+        ra->async_size = ra->size;
+        goto readit;
+    }
 
-  if (req_size > max_pages)
-    goto initial_readahead;
+    if (req_size > max_pages)
+        goto initial_readahead;
 
-  prev_index = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
-  if (index - prev_index <= 1UL)
-    goto initial_readahead;
+    prev_index = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
+    if (index - prev_index <= 1UL)
+        goto initial_readahead;
 
-  /* Query the page cache and look for the traces(cached history pages)
-   * that a sequential stream would leave behind. */
-  if (try_context_readahead(ractl->mapping, ra, index, req_size, max_pages))
-    goto readit;
+    /* Query the page cache and look for the traces(cached history pages)
+    * that a sequential stream would leave behind. */
+    if (try_context_readahead(ractl->mapping, ra, index, req_size, max_pages))
+        goto readit;
 
   /* actually reads a chunk of disk */
-  do_page_cache_ra(ractl, req_size, 0);
-  return;
+    do_page_cache_ra(ractl, req_size, 0);
+    return;
 
 initial_readahead:
-  ra->start = index;
-  ra->size = get_init_ra_size(req_size, max_pages);
-  ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
+    ra->start = index;
+    ra->size = get_init_ra_size(req_size, max_pages);
+    ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
 
 readit:
-  /* Will this read hit the readahead marker made by itself?
-   * If so, trigger the readahead marker hit now, and merge
-   * the resulted next readahead window into the current one.
-   * Take care of maximum IO pages as above. */
-  if (index == ra->start && ra->size == ra->async_size) {
-    add_pages = get_next_ra_size(ra, max_pages);
-    if (ra->size + add_pages <= max_pages) {
-      ra->async_size = add_pages;
-      ra->size += add_pages;
-    } else {
-      ra->size = max_pages;
-      ra->async_size = max_pages >> 1;
+    /* Will this read hit the readahead marker made by itself?
+    * If so, trigger the readahead marker hit now, and merge
+    * the resulted next readahead window into the current one.
+    * Take care of maximum IO pages as above. */
+    if (index == ra->start && ra->size == ra->async_size) {
+        add_pages = get_next_ra_size(ra, max_pages);
+        if (ra->size + add_pages <= max_pages) {
+            ra->async_size = add_pages;
+            ra->size += add_pages;
+        } else {
+            ra->size = max_pages;
+            ra->async_size = max_pages >> 1;
+        }
     }
-  }
 
-  ractl->_index = ra->start;
-  page_cache_ra_order(ractl, ra, order);
+    ractl->_index = ra->start;
+    page_cache_ra_order(ractl, ra, order);
 }
 
 void page_cache_ra_order(struct readahead_control *ractl,
     struct file_ra_state *ra, unsigned int new_order)
 {
-  struct address_space *mapping = ractl->mapping;
-  pgoff_t index = readahead_index(ractl);
-  pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
-  pgoff_t mark = index + ra->size - ra->async_size;
-  int err = 0;
-  gfp_t gfp = readahead_gfp_mask(mapping);
+    struct address_space *mapping = ractl->mapping;
+    pgoff_t index = readahead_index(ractl);
+    pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
+    pgoff_t mark = index + ra->size - ra->async_size;
+    int err = 0;
+    gfp_t gfp = readahead_gfp_mask(mapping);
 
-  if (!mapping_large_folio_support(mapping) || ra->size < 4)
-    goto fallback;
+    if (!mapping_large_folio_support(mapping) || ra->size < 4)
+        goto fallback;
 
-  limit = min(limit, index + ra->size - 1);
+    limit = min(limit, index + ra->size - 1);
 
-  if (new_order < MAX_PAGECACHE_ORDER) {
-    new_order += 2;
-    if (new_order > MAX_PAGECACHE_ORDER)
-      new_order = MAX_PAGECACHE_ORDER;
-    while ((1 << new_order) > ra->size)
-      new_order--;
-  }
-
-  filemap_invalidate_lock_shared(mapping);
-  while (index <= limit) {
-    unsigned int order = new_order;
-
-    /* Align with smaller pages if needed */
-    if (index & ((1UL << order) - 1)) {
-      order = __ffs(index);
-      if (order == 1)
-        order = 0;
+    if (new_order < MAX_PAGECACHE_ORDER) {
+        new_order += 2;
+        if (new_order > MAX_PAGECACHE_ORDER)
+            new_order = MAX_PAGECACHE_ORDER;
+        while ((1 << new_order) > ra->size)
+            new_order--;
     }
-    /* Don't allocate pages past EOF */
-    while (index + (1UL << order) - 1 > limit) {
-      if (--order == 1)
-        order = 0;
+
+    filemap_invalidate_lock_shared(mapping);
+    while (index <= limit) {
+        unsigned int order = new_order;
+
+        /* Align with smaller pages if needed */
+        if (index & ((1UL << order) - 1)) {
+            order = __ffs(index);
+        if (order == 1)
+            order = 0;
+        }
+        /* Don't allocate pages past EOF */
+        while (index + (1UL << order) - 1 > limit) {
+            if (--order == 1)
+                order = 0;
+        }
+        err = ra_alloc_folio(ractl, index, mark, order, gfp);
+        if (err)
+            break;
+        index += 1UL << order;
     }
-    err = ra_alloc_folio(ractl, index, mark, order, gfp);
-    if (err)
-      break;
-    index += 1UL << order;
-  }
 
-  if (index > limit) {
-    ra->size += index - limit - 1;
-    ra->async_size += index - limit - 1;
-  }
+    if (index > limit) {
+        ra->size += index - limit - 1;
+        ra->async_size += index - limit - 1;
+    }
 
-  read_pages(ractl);
-  filemap_invalidate_unlock_shared(mapping);
+    read_pages(ractl);
+    filemap_invalidate_unlock_shared(mapping);
 
-  /* If there were already pages in the page cache, then we may have
-   * left some gaps.  Let the regular readahead code take care of this
-   * situation. */
-  if (!err)
-    return;
+    /* If there were already pages in the page cache, then we may have
+    * left some gaps.  Let the regular readahead code take care of this
+    * situation. */
+    if (!err)
+        return;
 fallback:
-  /* actually reads a chunk of disk */
-  do_page_cache_ra(ractl, ra->size, ra->async_size);
+    /* actually reads a chunk of disk */
+    do_page_cache_ra(ractl, ra->size, ra->async_size);
 }
 
 void read_pages(struct readahead_control *rac)
 {
-  const struct address_space_operations *aops = rac->mapping->a_ops;
-  struct folio *folio;
-  struct blk_plug plug;
+    const struct address_space_operations *aops = rac->mapping->a_ops;
+    struct folio *folio;
+    struct blk_plug plug;
 
-  if (!readahead_count(rac))
-    return;
+    if (!readahead_count(rac))
+        return;
 
-  blk_start_plug(&plug);
+    blk_start_plug(&plug);
 
-  if (aops->readahead) {
-    aops->readahead(rac);
+    if (aops->readahead) {
+        aops->readahead(rac);
 
-    while ((folio = readahead_folio(rac)) != NULL) {
-      unsigned long nr = folio_nr_pages(folio);
+        while ((folio = readahead_folio(rac)) != NULL) {
+            unsigned long nr = folio_nr_pages(folio);
 
-      folio_get(folio);
-      rac->ra->size -= nr;
-      if (rac->ra->async_size >= nr) {
-        rac->ra->async_size -= nr;
-        filemap_remove_folio(folio);
-      }
-      folio_unlock(folio);
-      folio_put(folio);
+            folio_get(folio);
+            rac->ra->size -= nr;
+            if (rac->ra->async_size >= nr) {
+                rac->ra->async_size -= nr;
+                filemap_remove_folio(folio);
+            }
+            folio_unlock(folio);
+            folio_put(folio);
+        }
+    } else {
+        while ((folio = readahead_folio(rac)) != NULL) {
+            aops->read_folio(rac->file, folio);
+        }
     }
-  } else {
-    while ((folio = readahead_folio(rac)) != NULL) {
-      aops->read_folio(rac->file, folio);
-    }
-  }
 
-  blk_finish_plug(&plug);
+    blk_finish_plug(&plug);
 }
 
 /* do_page_cache_ra() actually reads a chunk of disk.  It allocates
@@ -3917,100 +4082,124 @@ void read_pages(struct readahead_control *rac)
 static void do_page_cache_ra(struct readahead_control *ractl,
     unsigned long nr_to_read, unsigned long lookahead_size)
 {
-  struct inode *inode = ractl->mapping->host;
-  unsigned long index = readahead_index(ractl);
-  loff_t isize = i_size_read(inode);
-  pgoff_t end_index;  /* The last page we want to read */
+    struct inode *inode = ractl->mapping->host;
+    unsigned long index = readahead_index(ractl);
+    loff_t isize = i_size_read(inode);
+    pgoff_t end_index;  /* The last page we want to read */
 
-  if (isize == 0)
-    return;
+    if (isize == 0)
+        return;
 
-  end_index = (isize - 1) >> PAGE_SHIFT;
-  if (index > end_index)
-    return;
-  /* Don't read past the page containing the last byte of the file */
-  if (nr_to_read > end_index - index)
-    nr_to_read = end_index - index + 1;
+    end_index = (isize - 1) >> PAGE_SHIFT;
+    if (index > end_index)
+        return;
+    /* Don't read past the page containing the last byte of the file */
+    if (nr_to_read > end_index - index)
+        nr_to_read = end_index - index + 1;
 
-  page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
+    page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
 }
 
 /* page_cache_ra_unbounded - Start unchecked readahead. */
 void page_cache_ra_unbounded(struct readahead_control *ractl,
     unsigned long nr_to_read, unsigned long lookahead_size)
 {
-  struct address_space *mapping = ractl->mapping;
-  unsigned long index = readahead_index(ractl);
-  gfp_t gfp_mask = readahead_gfp_mask(mapping);
-  unsigned long i;
+    struct address_space *mapping = ractl->mapping;
+    unsigned long index = readahead_index(ractl);
+    gfp_t gfp_mask = readahead_gfp_mask(mapping);
+    unsigned long i;
 
-  /* Partway through the readahead operation, we will have added
-   * locked pages to the page cache, but will not yet have submitted
-   * them for I/O.  Adding another page may need to allocate memory,
-   * which can trigger memory reclaim.  Telling the VM we're in
-   * the middle of a filesystem operation will cause it to not
-   * touch file-backed pages, preventing a deadlock.  Most (all?)
-   * filesystems already specify __GFP_NOFS in their mapping's
-   * gfp_mask, but let's be explicit here. */
-  unsigned int nofs = memalloc_nofs_save();
+    /* Partway through the readahead operation, we will have added
+    * locked pages to the page cache, but will not yet have submitted
+    * them for I/O.  Adding another page may need to allocate memory,
+    * which can trigger memory reclaim.  Telling the VM we're in
+    * the middle of a filesystem operation will cause it to not
+    * touch file-backed pages, preventing a deadlock.  Most (all?)
+    * filesystems already specify __GFP_NOFS in their mapping's
+    * gfp_mask, but let's be explicit here. */
+    unsigned int nofs = memalloc_nofs_save();
 
-  filemap_invalidate_lock_shared(mapping);
-  /* Preallocate as many pages as we will need. */
-  for (i = 0; i < nr_to_read; i++) {
-    struct folio *folio = xa_load(&mapping->i_pages, index + i);
+    filemap_invalidate_lock_shared(mapping);
+    /* Preallocate as many pages as we will need. */
+    for (i = 0; i < nr_to_read; i++) {
+        struct folio *folio = xa_load(&mapping->i_pages, index + i);
 
-    if (folio && !xa_is_value(folio)) {
-      /* Page already present?  Kick off the current batch
-       * of contiguous pages before continuing with the
-       * next batch.  This page may be the one we would
-       * have intended to mark as Readahead, but we don't
-       * have a stable reference to this page, and it's
-       * not worth getting one just for that. */
-      read_pages(ractl);
-      ractl->_index++;
-      i = ractl->_index + ractl->_nr_pages - index - 1;
-      continue;
+        if (folio && !xa_is_value(folio)) {
+            /* Page already present?  Kick off the current batch
+            * of contiguous pages before continuing with the
+            * next batch.  This page may be the one we would
+            * have intended to mark as Readahead, but we don't
+            * have a stable reference to this page, and it's
+            * not worth getting one just for that. */
+            read_pages(ractl);
+            ractl->_index++;
+            i = ractl->_index + ractl->_nr_pages - index - 1;
+            continue;
+        }
+
+        folio = filemap_alloc_folio(gfp_mask, 0);
+        if (!folio)
+            break;
+
+        if (filemap_add_folio(mapping, folio, index + i, gfp_mask) < 0) {
+            folio_put(folio);
+            read_pages(ractl);
+            ractl->_index++;
+            i = ractl->_index + ractl->_nr_pages - index - 1;
+            continue;
+        }
+        if (i == nr_to_read - lookahead_size)
+            folio_set_readahead(folio);
+        ractl->_nr_pages++;
     }
 
-    folio = filemap_alloc_folio(gfp_mask, 0);
-    if (!folio)
-      break;
-
-    if (filemap_add_folio(mapping, folio, index + i, gfp_mask) < 0) {
-      folio_put(folio);
-      read_pages(ractl);
-      ractl->_index++;
-      i = ractl->_index + ractl->_nr_pages - index - 1;
-      continue;
-    }
-    if (i == nr_to_read - lookahead_size)
-      folio_set_readahead(folio);
-    ractl->_nr_pages++;
-  }
-
-  read_pages(ractl);
-  filemap_invalidate_unlock_shared(mapping);
-  memalloc_nofs_restore(nofs);
+    read_pages(ractl);
+    filemap_invalidate_unlock_shared(mapping);
+    memalloc_nofs_restore(nofs);
 }
 ```
 
 ### buffered write
 
 ```c
-write(fd, buf, size) {
-    vfs_write() {
-        file->f_op->write() {
-            ext4_file_write_iter() {
-                if (iocb->ki_flags & IOCB_DIRECT) {
-                    return ext4_dio_write_iter(iocb, from);
-                } else {
-                    return ext4_buffered_write_iter(iocb, from);
-                }
-            }
-        }
-    }
+SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
+    size_t, count)
+{
+    struct fd f = fdget_pos(fd);
+    loff_t pos = file_pos_read(f.file);
+    ret = vfs_write(f.file, buf, count, &pos);
 }
 
+ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
+        loff_t *pos)
+{
+    if (file->f_op->write)
+        return file->f_op->write(file, p, count, pos);
+    else if (file->f_op->write_iter) /* ext4_file_write_iter */
+        return new_sync_write(file, p, count, pos);
+    else
+        return -EINVAL;
+}
+
+ssize_t ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+{
+    struct inode *inode = file_inode(iocb->ki_filp);
+
+    if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
+        return -EIO;
+
+    #ifdef CONFIG_FS_DAX
+    if (IS_DAX(inode))
+        return ext4_dax_write_iter(iocb, from);
+    #endif
+    if (iocb->ki_flags & IOCB_DIRECT)
+        return ext4_dio_write_iter(iocb, from);
+    else
+        return ext4_buffered_write_iter(iocb, from);
+}
+```
+
+```c
 ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
           struct iov_iter *from)
 {
@@ -4262,7 +4451,6 @@ int ext4_get_block(struct inode *inode, sector_t iblock,
                 goto found;
             }
 
-
         found:
             if (retval > 0 && map->m_flags & EXT4_MAP_MAPPED) {
                 ret = check_block_validity(inode, map);
@@ -4406,6 +4594,55 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
 }
 ```
 
+
+### iomap_readahead
+
+```c
+void iomap_readahead(struct readahead_control *rac, const struct iomap_ops *ops)
+{
+    struct iomap_iter iter = {
+        .inode  = rac->mapping->host,
+        .pos    = readahead_pos(rac),
+        .len    = readahead_length(rac),
+    };
+    struct iomap_readpage_ctx ctx = {
+        .rac	= rac,
+    };
+
+    trace_iomap_readahead(rac->mapping->host, readahead_count(rac));
+
+    while (iomap_iter(&iter, ops) > 0)
+        iter.status = iomap_readahead_iter(&iter, &ctx);
+
+    if (ctx.bio)
+        submit_bio(ctx.bio);
+    if (ctx.cur_folio) {
+        if (!ctx.cur_folio_in_bio)
+            folio_unlock(ctx.cur_folio);
+    }
+}
+```
+
+### iomap_writepages
+
+```c
+int iomap_writepages(struct address_space *mapping, struct writeback_control *wbc,
+        struct iomap_writepage_ctx *wpc,
+        const struct iomap_writeback_ops *ops)
+{
+    struct folio *folio = NULL;
+    int error;
+
+    if (WARN_ON_ONCE((current->flags & (PF_MEMALLOC | PF_KSWAPD)) == PF_MEMALLOC))
+        return -EIO;
+
+    wpc->ops = ops;
+    while ((folio = writeback_iter(mapping, wbc, folio, &error)))
+        error = iomap_writepage_map(wpc, wbc, folio);
+    return iomap_submit_ioend(wpc, error);
+}
+```
+
 ## writeback
 
 ![](../images/kernel/proc-cmwq.svg)
@@ -4419,7 +4656,7 @@ static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
                       |                            |            |
  mark_inode_dirty-----+                            |  inode.stat != wb.stat
                       |                            |            v
-                      |--> b_dirty_time               |      b_more_io
+                      |--> b_dirty_time            |         b_more_io
                                 |                  |            |
                       dirty time >= 12H            |            |
                                 |                  v            |
@@ -4610,9 +4847,6 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 2. Does system alloc a block for a dirctory or a file?
 3. What does ext4_file_open do?
 4. What happend when inserting data in a file?
-
-## TODO
-1. xarray
 
 
 ## coredump
@@ -5010,6 +5244,494 @@ int ovl_get_tree(struct fs_context *fc)
 * [Understanding Ext4 Disk Layout, Part 1](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-1) - [Part 2](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-2)
 * [Directory Entry Lookup in ext4](https://blogs.oracle.com/linux/post/directory-entry-lookup-in-ext4)
 * [Space Management With Large Directories in Ext4](https://blogs.oracle.com/linux/post/space-management-with-large-directories-in-ext4)
+
+## proc
+
+```c
+struct proc_dir_entry proc_root = {
+    .low_ino    = PROC_ROOT_INO,
+    .namelen    = 5,
+    .mode       = S_IFDIR | S_IRUGO | S_IXUGO,
+    .nlink      = 2,
+    .refcnt 	= REFCOUNT_INIT(1),
+    .proc_iops  = &proc_root_inode_operations,
+    .proc_dir_ops   = &proc_root_operations,
+    .parent     = &proc_root,
+    .subdir     = RB_ROOT,
+    .name       = "/proc",
+};
+
+
+struct proc_dir_entry {
+    /* number of callers into module in progress;
+    * negative -> it's going away RSN */
+    atomic_t in_use;
+    refcount_t refcnt;
+    struct list_head pde_openers;	/* who did ->open, but not ->release */
+    /* protects ->pde_openers and all struct pde_opener instances */
+    spinlock_t pde_unload_lock;
+    struct completion *pde_unload_completion;
+    const struct inode_operations *proc_iops;
+    union {
+        const struct proc_ops *proc_ops;
+        const struct file_operations *proc_dir_ops;
+    };
+    const struct dentry_operations *proc_dops;
+    union {
+        const struct seq_operations *seq_ops;
+        int (*single_show)(struct seq_file *, void *);
+    };
+
+    proc_write_t write;
+    void            *data;
+    unsigned int    state_size;
+    unsigned int    low_ino;
+    nlink_t         nlink;
+    kuid_t          uid;
+    kgid_t          gid;
+    loff_t          size;
+
+    struct proc_dir_entry   *parent;
+    struct rb_root          subdir;
+    struct rb_node          subdir_node;
+
+    char        *name;
+    umode_t     mode;
+    u8          flags;
+    u8          namelen;
+    char        inline_name[];
+};
+
+struct seq_file {
+    char *buf;
+    size_t size;
+    size_t from;
+    size_t count;
+    size_t pad_until;
+    loff_t index;
+    loff_t read_pos;
+    struct mutex lock;
+    const struct seq_operations *op;
+    int poll_event;
+    const struct file *file;
+    void *private;
+};
+
+struct seq_operations {
+    void * (*start) (struct seq_file *m, loff_t *pos);
+    void (*stop) (struct seq_file *m, void *v);
+    void * (*next) (struct seq_file *m, void *v, loff_t *pos);
+    int (*show) (struct seq_file *m, void *v);
+};
+
+static const struct proc_ops proc_single_ops = {
+    /* not permanent -- can call into arbitrary ->single_show */
+    .proc_open          = proc_single_open,
+    .proc_read_iter     = seq_read_iter,
+    .proc_lseek         = seq_lseek,
+    .proc_release	    = single_release,
+};
+```
+
+### proc_create_single
+
+```c
+#define proc_create_single(name, mode, parent, show) \
+    proc_create_single_data(name, mode, parent, show, NULL)
+
+struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
+    struct proc_dir_entry *parent,
+    int (*show)(struct seq_file *, void *), void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data) {
+        struct proc_dir_entry *p;
+
+        if ((mode & S_IFMT) == 0)
+            mode |= S_IFREG;
+        if ((mode & S_IALLUGO) == 0)
+            mode |= S_IRUGO;
+        if (WARN_ON_ONCE(!S_ISREG(mode)))
+            return NULL;
+
+        p = __proc_create(parent, name, mode, 1) {
+            struct proc_dir_entry *ent = NULL;
+            const char *fn;
+            struct qstr qstr;
+
+            ret = xlate_proc_name(name, parent, &fn) {
+                int rv;
+
+                read_lock(&proc_subdir_lock);
+                rv = __xlate_proc_name(name, ret, residual) {
+                    const char  *cp = name, *next;
+                    struct proc_dir_entry	*de;
+
+                    de = *ret ?: &proc_root;
+                    while ((next = strchr(cp, '/')) != NULL) {
+                        de = pde_subdir_find(de, cp, next - cp) {
+                            struct rb_node *node = dir->subdir.rb_node;
+
+                            while (node) {
+                                struct proc_dir_entry *de =
+                                    rb_entry(node, struct proc_dir_entry, subdir_node);
+                                int result = proc_match(name, de, len) {
+                                    if (len < de->namelen)
+                                        return -1;
+                                    if (len > de->namelen)
+                                        return 1;
+
+                                    return memcmp(name, de->name, len);
+                                }
+
+                                if (result < 0)
+                                    node = node->rb_left;
+                                else if (result > 0)
+                                    node = node->rb_right;
+                                else
+                                    return de;
+                            }
+                            return NULL;
+                        }
+                        if (!de) {
+                            WARN(1, "name '%s'\n", name);
+                            return -ENOENT;
+                        }
+                        cp = next + 1;
+                    }
+                    *residual = cp;
+                    *ret = de;
+                    return 0;
+                }
+                read_unlock(&proc_subdir_lock);
+                return rv;
+            }
+            if (ret != 0)
+                goto out;
+            qstr.name = fn;
+            qstr.len = strlen(fn);
+            if (qstr.len == 0 || qstr.len >= 256) {
+                WARN(1, "name len %u\n", qstr.len);
+                return NULL;
+            }
+            if (qstr.len == 1 && fn[0] == '.') {
+                WARN(1, "name '.'\n");
+                return NULL;
+            }
+            if (qstr.len == 2 && fn[0] == '.' && fn[1] == '.') {
+                WARN(1, "name '..'\n");
+                return NULL;
+            }
+            if (*parent == &proc_root && name_to_int(&qstr) != ~0U) {
+                WARN(1, "create '/proc/%s' by hand\n", qstr.name);
+                return NULL;
+            }
+            if (is_empty_pde(*parent)) {
+                WARN(1, "attempt to add to permanently empty directory");
+                return NULL;
+            }
+
+            ent = kmem_cache_zalloc(proc_dir_entry_cache, GFP_KERNEL);
+            if (!ent)
+                goto out;
+
+            if (qstr.len + 1 <= SIZEOF_PDE_INLINE_NAME) {
+                ent->name = ent->inline_name;
+            } else {
+                ent->name = kmalloc(qstr.len + 1, GFP_KERNEL);
+                if (!ent->name) {
+                    pde_free(ent);
+                    return NULL;
+                }
+            }
+
+            memcpy(ent->name, fn, qstr.len + 1);
+            ent->namelen = qstr.len;
+            ent->mode = mode;
+            ent->nlink = nlink;
+            ent->subdir = RB_ROOT;
+            refcount_set(&ent->refcnt, 1);
+            spin_lock_init(&ent->pde_unload_lock);
+            INIT_LIST_HEAD(&ent->pde_openers);
+            proc_set_user(ent, (*parent)->uid, (*parent)->gid);
+
+            ent->proc_dops = &proc_misc_dentry_ops;
+            /* Revalidate everything under /proc/${pid}/net */
+            if ((*parent)->proc_dops == &proc_net_dentry_ops) {
+                pde_force_lookup(ent) {
+                    /* /proc/net/ entries can be changed under us by setns(CLONE_NEWNET) */
+                    pde->proc_dops = &proc_net_dentry_ops;
+                }
+            }
+        }
+        if (p) {
+            p->proc_iops = &proc_file_inode_operations;
+            p->data = data;
+        }
+        return p;
+    }
+    if (!p)
+        return NULL;
+
+    p->proc_ops = &proc_single_ops;
+    p->single_show = show;
+    pde_set_flags(p);
+
+    return proc_register(parent, p) {
+        ret = proc_alloc_inum(&dp->low_ino) {
+            int i;
+
+            i = ida_alloc_max(&proc_inum_ida, UINT_MAX - PROC_DYNAMIC_FIRST, GFP_KERNEL);
+            if (i < 0)
+                return i;
+            *inum = PROC_DYNAMIC_FIRST + (unsigned int)i;
+            return 0;
+        }
+        if (ret)
+            goto out_free_entry;
+
+        write_lock(&proc_subdir_lock);
+        dp->parent = dir;
+
+        ret = pde_subdir_insert(dir, dp) {
+            struct rb_root *root = &dir->subdir;
+            struct rb_node **new = &root->rb_node, *parent = NULL;
+
+            /* Figure out where to put new node */
+            while (*new) {
+                struct proc_dir_entry *this = rb_entry(*new,
+                                    struct proc_dir_entry,
+                                    subdir_node);
+                int result = proc_match(de->name, this, de->namelen) {
+                    if (len < de->namelen)
+                        return -1;
+                    if (len > de->namelen)
+                        return 1;
+
+                    return memcmp(name, de->name, len);
+                }
+
+                parent = *new;
+                if (result < 0)
+                    new = &(*new)->rb_left;
+                else if (result > 0)
+                    new = &(*new)->rb_right;
+                else
+                    return false;
+            }
+
+            /* Add new node and rebalance tree. */
+            rb_link_node(&de->subdir_node, parent, new);
+            rb_insert_color(&de->subdir_node, root);
+            return true;
+        }
+        if (ret == false) {
+            WARN(1, "proc_dir_entry '%s/%s' already registered\n",
+                dir->name, dp->name);
+            write_unlock(&proc_subdir_lock);
+            goto out_free_inum;
+        }
+        dir->nlink++;
+        write_unlock(&proc_subdir_lock);
+
+        return dp;
+    out_free_inum:
+        proc_free_inum(dp->low_ino);
+    out_free_entry:
+        pde_free(dp);
+        return NULL;
+    }
+}
+```
+
+### proc_single_ops
+
+#### proc_singel_open
+
+```c
+static int proc_single_open(struct inode *inode, struct file *file)
+{
+    struct proc_dir_entry *de = PDE(inode);
+
+    return single_open(file, de->single_show, de->data) {
+        struct seq_operations *op = kmalloc(sizeof(*op), GFP_KERNEL_ACCOUNT);
+        int res = -ENOMEM;
+
+        if (op) {
+            op->start = single_start {
+                return *pos ? NULL : SEQ_START_TOKEN;
+            }
+            op->next = single_next {
+                ++*pos;
+                return NULL;
+            }
+            op->stop = single_stop;
+            op->show = show;
+
+            res = seq_open(file, op) {
+                struct seq_file *p;
+
+                WARN_ON(file->private_data);
+
+                p = kmem_cache_zalloc(seq_file_cache, GFP_KERNEL);
+                if (!p)
+                    return -ENOMEM;
+
+                file->private_data = p;
+
+                mutex_init(&p->lock);
+                p->op = op;
+                p->file = file;
+                file->f_mode &= ~FMODE_PWRITE;
+
+                return 0;
+            }
+            if (!res)
+                ((struct seq_file *)file->private_data)->private = data;
+            else
+                kfree(op);
+        }
+        return res;
+    }
+}
+```
+
+#### seq_read_iter
+
+```c
+/* Ready-made ->f_op->read_iter() */
+ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+    struct seq_file *m = iocb->ki_filp->private_data;
+    size_t copied = 0;
+    size_t n;
+    void *p;
+    int err = 0;
+
+    if (!iov_iter_count(iter))
+        return 0;
+
+    mutex_lock(&m->lock);
+
+    /* if request is to read from zero offset, reset iterator to first
+    * record as it might have been already advanced by previous requests */
+    if (iocb->ki_pos == 0) {
+        m->index = 0;
+        m->count = 0;
+    }
+
+    /* Don't assume ki_pos is where we left it */
+    if (unlikely(iocb->ki_pos != m->read_pos)) {
+        while ((err = traverse(m, iocb->ki_pos)) == -EAGAIN)
+            ;
+        if (err) {
+            /* With prejudice... */
+            m->read_pos = 0;
+            m->index = 0;
+            m->count = 0;
+            goto Done;
+        } else {
+            m->read_pos = iocb->ki_pos;
+        }
+    }
+
+    /* grab buffer if we didn't have one */
+    if (!m->buf) {
+        m->buf = seq_buf_alloc(m->size = PAGE_SIZE) {
+          if (unlikely(size > MAX_RW_COUNT))
+                return NULL;
+
+            return kvmalloc(size, GFP_KERNEL_ACCOUNT);
+        }
+        if (!m->buf)
+            goto Enomem;
+    }
+    // something left in the buffer - copy it out first
+    if (m->count) {
+        n = copy_to_iter(m->buf + m->from, m->count, iter);
+        m->count -= n;
+        m->from += n;
+        copied += n;
+        if (m->count)	// hadn't managed to copy everything
+            goto Done;
+    }
+    // get a non-empty record in the buffer
+    m->from = 0;
+    p = m->op->start(m, &m->index);
+    while (1) {
+        err = PTR_ERR(p);
+        if (!p || IS_ERR(p))	// EOF or an error
+            break;
+        err = m->op->show(m, p);
+        if (err < 0)		// hard error
+            break;
+        if (unlikely(err))	// ->show() says "skip it"
+            m->count = 0;
+        if (unlikely(!m->count)) { // empty record
+            p = m->op->next(m, p, &m->index);
+            continue;
+        }
+        if (!seq_has_overflowed(m)) // got it
+            goto Fill;
+        // need a bigger buffer
+        m->op->stop(m, p);
+        kvfree(m->buf);
+        m->count = 0;
+        m->buf = seq_buf_alloc(m->size <<= 1);
+        if (!m->buf)
+            goto Enomem;
+        p = m->op->start(m, &m->index);
+    }
+    // EOF or an error
+    m->op->stop(m, p);
+    m->count = 0;
+    goto Done;
+Fill:
+    // one non-empty record is in the buffer; if they want more,
+    // try to fit more in, but in any case we need to advance
+    // the iterator once for every record shown.
+    while (1) {
+        size_t offs = m->count;
+        loff_t pos = m->index;
+
+        p = m->op->next(m, p, &m->index);
+        if (pos == m->index) {
+            pr_info_ratelimited("buggy .next function %ps did not update position index\n",
+                        m->op->next);
+            m->index++;
+        }
+        if (!p || IS_ERR(p))	// no next record for us
+            break;
+        if (m->count >= iov_iter_count(iter))
+            break;
+        err = m->op->show(m, p);
+        if (err > 0) {		// ->show() says "skip it"
+            m->count = offs;
+        } else if (err || seq_has_overflowed(m)) {
+            m->count = offs;
+            break;
+        }
+    }
+    m->op->stop(m, p);
+    n = copy_to_iter(m->buf, m->count, iter);
+    copied += n;
+    m->count -= n;
+    m->from = n;
+Done:
+    if (unlikely(!copied)) {
+        copied = m->count ? -EFAULT : err;
+    } else {
+        iocb->ki_pos += copied;
+        m->read_pos += copied;
+    }
+    mutex_unlock(&m->lock);
+    return copied;
+Enomem:
+    err = -ENOMEM;
+    goto Done;
+}
+```
 
 # IO
 
@@ -5473,15 +6195,16 @@ static int chrdev_open(struct inode *inode, struct file *filp)
 ```
 
 ### write char dev
+
 ```c
 ssize_t __vfs_write(struct file *file, const char __user *p, size_t count, loff_t *pos)
 {
-  if (file->f_op->write)
-    return file->f_op->write(file, p, count, pos);
-  else if (file->f_op->write_iter)
-    return new_sync_write(file, p, count, pos);
-  else
-    return -EINVAL;
+    if (file->f_op->write)
+        return file->f_op->write(file, p, count, pos);
+    else if (file->f_op->write_iter)
+        return new_sync_write(file, p, count, pos);
+    else
+        return -EINVAL;
 }
 
 static ssize_t lp_write(
@@ -5702,17 +6425,17 @@ void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 }
 
 const struct file_operations def_blk_fops = {
-  .open           = blkdev_open, /* call blkdev_get */
-  .release        = blkdev_close,
-  .llseek         = block_llseek,
-  .read_iter      = blkdev_read_iter,
-  .write_iter     = blkdev_write_iter,
-  .mmap           = generic_file_mmap,
-  .fsync          = blkdev_fsync,
-  .unlocked_ioctl = block_ioctl,
-  .splice_read    = generic_file_splice_read,
-  .splice_write   = iter_file_splice_write,
-  .fallocate      = blkdev_fallocate,
+    .open           = blkdev_open, /* call blkdev_get */
+    .release        = blkdev_close,
+    .llseek         = block_llseek,
+    .read_iter      = blkdev_read_iter,
+    .write_iter     = blkdev_write_iter,
+    .mmap           = generic_file_mmap,
+    .fsync          = blkdev_fsync,
+    .unlocked_ioctl = block_ioctl,
+    .splice_read    = generic_file_splice_read,
+    .splice_write   = iter_file_splice_write,
+    .fallocate      = blkdev_fallocate,
 };
 ```
 
@@ -6580,9 +7303,8 @@ ext4_get_tree(fc);
 
 ## direct io
 
-
 ```c
-/* direct io, not used for ext4 */
+/* traditional direct io, ext4 uses iomap dio */
 do_direct_IO() {
     dio_get_page() {
         dio_refill_pages();
@@ -6603,6 +7325,12 @@ do_direct_IO() {
             ext4_map_blocks();
             ext4_es_lookup_extent() {
                 ext4_ext_map_blocks();
+            }
+            map_bh(bh, inode->i_sb, map.m_pblk) {
+                set_buffer_mapped(bh);
+                bh->b_bdev = sb->s_bdev;
+                bh->b_blocknr = block;
+                bh->b_size = sb->s_blocksize;
             }
         }
     }
@@ -6633,96 +7361,96 @@ do_direct_IO() {
 
 ```c
 read();
-  vfs_read();
-    file->f_op->write_iter(); /* ext4_file_read_iter */
-      generic_file_read_iter();
-        file->f_mapping->a_ops->direct_IO();
-        generic_file_buffered_read();
+    vfs_read();
+        file->f_op->write_iter(); /* ext4_file_read_iter */
+            generic_file_read_iter();
+                file->f_mapping->a_ops->direct_IO();
+                generic_file_buffered_read();
 
 static const struct address_space_operations ext4_aops = {
-  .read_folio         = ext4_read_folio,
-  .readahead          = ext4_readahead,
-  .writepage          = ext4_writepage,
-  .writepages         = ext4_writepages,
-  .write_begin        = ext4_write_begin,
-  .write_end          = ext4_write_end,
-  .dirty_folio        = ext4_dirty_folio,
-  .bmap               = ext4_bmap,
-  .invalidate_folio   = ext4_invalidate_folio,
-  .release_folio      = ext4_release_folio,
-  .direct_IO          = noop_direct_IO,
-  .migrate_folio      = buffer_migrate_folio,
-  .is_partially_uptodate  = block_is_partially_uptodate,
-  .error_remove_page  = generic_error_remove_page,
-  .swap_activate      = ext4_iomap_swap_activate,
+    .read_folio         = ext4_read_folio,
+    .readahead          = ext4_readahead,
+    .writepage          = ext4_writepage,
+    .writepages         = ext4_writepages,
+    .write_begin        = ext4_write_begin,
+    .write_end          = ext4_write_end,
+    .dirty_folio        = ext4_dirty_folio,
+    .bmap               = ext4_bmap,
+    .invalidate_folio   = ext4_invalidate_folio,
+    .release_folio      = ext4_release_folio,
+    .direct_IO          = noop_direct_IO,
+    .migrate_folio      = buffer_migrate_folio,
+    .is_partially_uptodate  = block_is_partially_uptodate,
+    .error_remove_page  = generic_error_remove_page,
+    .swap_activate      = ext4_iomap_swap_activate,
 };
 
 /* dio_state communicated between submission path and end_io */
 struct dio {
-  int             flags;
-  int             op;
-  int             op_flags;
+    int             flags;
+    int             op;
+    int             op_flags;
 
-  struct gendisk *bio_disk;
-  struct inode   *inode;
-  loff_t          i_size; /* i_size when submitted */
-  dio_iodone_t   *end_io; /* IO completion function */
+    struct gendisk *bio_disk;
+    struct inode   *inode;
+    loff_t          i_size; /* i_size when submitted */
+    dio_iodone_t   *end_io; /* IO completion function */
 
-  void            *private;  /* copy from map_bh.b_private */
+    void            *private;  /* copy from map_bh.b_private */
 
-  /* BIO completion state */
-  int             is_async;
-  bool            defer_completion;
-  bool            should_dirty;
-  int             io_error;
-  struct bio      *bio_list;
+    /* BIO completion state */
+    int             is_async;
+    bool            defer_completion;
+    bool            should_dirty;
+    int             io_error;
+    struct bio      *bio_list;
 
-  struct task_struct  *waiter;
+    struct task_struct  *waiter;
 
-  struct kiocb        *iocb; /* kiocb */
-  ssize_t             result;/* IO result */
+    struct kiocb        *iocb; /* kiocb */
+    ssize_t             result;/* IO result */
 
-  union {
-    struct page *pages[DIO_PAGES];  /* page buffer */
-    struct work_struct complete_work;/* deferred AIO completion */
-  };
+    union {
+        struct page *pages[DIO_PAGES];  /* page buffer */
+        struct work_struct complete_work;/* deferred AIO completion */
+    };
 };
 
 struct dio_submit {
-  struct bio    *bio;           /* bio under assembly */
-  unsigned      blkbits;        /* doesn't change */
-  unsigned      blkfactor;      /* When we're using an alignment which is finer than the filesystem's soft
-                                  blocksize, this specifies how much finer.
-                                  blkfactor=2 means 1/4-block alignment.  Does not change */
-  unsigned      start_zero_done; /* flag: sub-blocksize zeroing has been performed at the start of a write */
-  int           pages_in_io;     /* approximate total IO pages */
-  sector_t      block_in_file;   /* Current offset into the underlying file in dio_block units. */
-  unsigned      blocks_available;/* At block_in_file.  changes */
-  int           reap_counter;    /* rate limit reaping */
-  sector_t      final_block_in_request;/* doesn't change */
-  int           boundary;        /* prev block is at a boundary */
-  get_block_t   *get_block;      /* block mapping function */
-  dio_submit_t  *submit_io;      /* IO submition function */
+    struct bio    *bio;           /* bio under assembly */
+    unsigned      blkbits;        /* doesn't change */
+    unsigned      blkfactor;      /* When we're using an alignment which is finer than the filesystem's soft
+                                    blocksize, this specifies how much finer.
+                                    blkfactor=2 means 1/4-block alignment.  Does not change */
+    unsigned      start_zero_done; /* flag: sub-blocksize zeroing has been performed at the start of a write */
+    int           pages_in_io;     /* approximate total IO pages */
+    sector_t      block_in_file;   /* Current offset into the underlying file in dio_block units. */
+    unsigned      blocks_available;/* At block_in_file.  changes */
+    int           reap_counter;    /* rate limit reaping */
+    sector_t      final_block_in_request;/* doesn't change */
+    int           boundary;        /* prev block is at a boundary */
+    get_block_t   *get_block;      /* block mapping function */
+    dio_submit_t  *submit_io;      /* IO submition function */
 
-  loff_t        logical_offset_in_bio;  /* current first logical block in bio */
-  sector_t      final_block_in_bio;     /* current final block in bio + 1 */
-  sector_t      next_block_for_io;      /* next block to be put under IO, in dio_blocks units */
+    loff_t        logical_offset_in_bio;  /* current first logical block in bio */
+    sector_t      final_block_in_bio;     /* current final block in bio + 1 */
+    sector_t      next_block_for_io;      /* next block to be put under IO, in dio_blocks units */
 
-  /* Deferred addition of a page to the dio.  These variables are
-   * private to dio_send_cur_page(), submit_page_section() and
-   * dio_bio_add_page(). */
-  struct page   *cur_page;        /* The page */
-  unsigned      cur_page_offset;  /* Offset into it, in bytes */
-  unsigned      cur_page_len;     /* Nr of bytes at cur_page_offset */
-  sector_t      cur_page_block;   /* Where it starts */
-  loff_t        cur_page_fs_offset; /* Offset in file */
+    /* Deferred addition of a page to the dio.  These variables are
+    * private to dio_send_cur_page(), submit_page_section() and
+    * dio_bio_add_page(). */
+    struct page   *cur_page;        /* The page */
+    unsigned      cur_page_offset;  /* Offset into it, in bytes */
+    unsigned      cur_page_len;     /* Nr of bytes at cur_page_offset */
+    sector_t      cur_page_block;   /* Where it starts */
+    loff_t        cur_page_fs_offset; /* Offset in file */
 
-  struct iov_iter *iter;
+    struct iov_iter *iter;
 
-  /* Page queue.  These variables belong to dio_refill_pages() and* dio_get_page(). */
-  unsigned      head;      /* next page to process */
-  unsigned      tail;      /* last valid page + 1 */
-  size_t        from, to;
+    /* Page queue.  These variables belong to dio_refill_pages() and* dio_get_page(). */
+    unsigned      head;      /* next page to process */
+    unsigned      tail;      /* last valid page + 1 */
+    size_t        from, to;
 };
 
 ssize_t blockdev_direct_IO(struct kiocb *iocb,
@@ -6731,228 +7459,416 @@ ssize_t blockdev_direct_IO(struct kiocb *iocb,
     get_block_t get_block)
 {
     return __blockdev_direct_IO(iocb, inode, inode->i_sb->s_bdev, iter,
-        get_block, NULL, NULL, DIO_LOCKING | DIO_SKIP_HOLES);
+        get_block, NULL, NULL, DIO_LOCKING | DIO_SKIP_HOLES) {
+
+        unsigned i_blkbits = READ_ONCE(inode->i_blkbits);
+        unsigned blkbits = i_blkbits;
+        unsigned blocksize_mask = (1 << blkbits) - 1;
+        ssize_t retval = -EINVAL;
+        const size_t count = iov_iter_count(iter);
+        loff_t offset = iocb->ki_pos;
+        const loff_t end = offset + count;
+        struct dio *dio;
+        struct dio_submit sdio = { NULL, };
+        struct buffer_head map_bh = { 0, };
+        struct blk_plug plug;
+        unsigned long align = offset | iov_iter_alignment(iter);
+
+        /* watch out for a 0 len io from a tricksy fs */
+        if (iov_iter_rw(iter) == READ && !count)
+            return 0;
+
+        dio = kmem_cache_alloc(dio_cache, GFP_KERNEL);
+        if (!dio)
+            return -ENOMEM;
+        /* Believe it or not, zeroing out the page array caused a .5%
+        * performance regression in a database benchmark.  So, we take
+        * care to only zero out what's needed. */
+        memset(dio, 0, offsetof(struct dio, pages));
+
+        dio->flags = flags;
+        if (dio->flags & DIO_LOCKING && iov_iter_rw(iter) == READ) {
+            /* will be released by direct_io_worker */
+            inode_lock(inode);
+        }
+        dio->is_pinned = iov_iter_extract_will_pin(iter);
+
+        /* Once we sampled i_size check for reads beyond EOF */
+        dio->i_size = i_size_read(inode);
+        if (iov_iter_rw(iter) == READ && offset >= dio->i_size) {
+            retval = 0;
+            goto fail_dio;
+        }
+
+        if (align & blocksize_mask) {
+            if (bdev)
+                blkbits = blksize_bits(bdev_logical_block_size(bdev));
+            blocksize_mask = (1 << blkbits) - 1;
+            if (align & blocksize_mask)
+                goto fail_dio;
+        }
+
+        if (dio->flags & DIO_LOCKING && iov_iter_rw(iter) == READ) {
+            struct address_space *mapping = iocb->ki_filp->f_mapping;
+
+            retval = filemap_write_and_wait_range(mapping, offset, end - 1);
+            if (retval)
+                goto fail_dio;
+        }
+
+        /* For file extending writes updating i_size before data writeouts
+        * complete can expose uninitialized blocks in dumb filesystems.
+        * In that case we need to wait for I/O completion even if asked
+        * for an asynchronous write. */
+        if (is_sync_kiocb(iocb))
+            dio->is_async = false;
+        else if (iov_iter_rw(iter) == WRITE && end > i_size_read(inode))
+            dio->is_async = false;
+        else
+            dio->is_async = true;
+
+        dio->inode = inode;
+        if (iov_iter_rw(iter) == WRITE) {
+            dio->opf = REQ_OP_WRITE | REQ_SYNC | REQ_IDLE;
+            if (iocb->ki_flags & IOCB_NOWAIT)
+                dio->opf |= REQ_NOWAIT;
+        } else {
+            dio->opf = REQ_OP_READ;
+        }
+
+        /* For AIO O_(D)SYNC writes we need to defer completions to a workqueue
+        * so that we can call ->fsync. */
+        if (dio->is_async && iov_iter_rw(iter) == WRITE) {
+            retval = 0;
+            if (iocb_is_dsync(iocb))
+                retval = dio_set_defer_completion(dio);
+            else if (!dio->inode->i_sb->s_dio_done_wq) {
+                /* In case of AIO write racing with buffered read we
+                * need to defer completion. We can't decide this now,
+                * however the workqueue needs to be initialized here. */
+                retval = sb_init_dio_done_wq(dio->inode->i_sb);
+            }
+            if (retval)
+                goto fail_dio;
+        }
+
+        /* Will be decremented at I/O completion time. */
+        inode_dio_begin(inode);
+
+        sdio.blkbits = blkbits;
+        sdio.blkfactor = i_blkbits - blkbits;
+        sdio.block_in_file = offset >> blkbits;
+
+        sdio.get_block = get_block;
+        dio->end_io = end_io;
+        sdio.final_block_in_bio = -1;
+        sdio.next_block_for_io = -1;
+
+        dio->iocb = iocb;
+
+        spin_lock_init(&dio->bio_lock);
+        dio->refcount = 1;
+
+        dio->should_dirty = user_backed_iter(iter) && iov_iter_rw(iter) == READ;
+        sdio.iter = iter;
+        sdio.final_block_in_request = end >> blkbits;
+
+        /* In case of non-aligned buffers, we may need 2 more
+        * pages since we need to zero out first and last block. */
+        if (unlikely(sdio.blkfactor))
+            sdio.pages_in_io = 2;
+
+        sdio.pages_in_io += iov_iter_npages(iter, INT_MAX);
+
+        blk_start_plug(&plug);
+
+        retval = do_direct_IO(dio, &sdio, &map_bh);
+        if (retval)
+            dio_cleanup(dio, &sdio);
+
+        if (retval == -ENOTBLK) {
+            /* The remaining part of the request will be
+            * handled by buffered I/O when we return */
+            retval = 0;
+        }
+        /* There may be some unwritten disk at the end of a part-written
+        * fs-block-sized block.  Go zero that now. */
+        dio_zero_block(dio, &sdio, 1, &map_bh);
+
+        if (sdio.cur_page) {
+            ssize_t ret2;
+
+            ret2 = dio_send_cur_page(dio, &sdio, &map_bh);
+            if (retval == 0)
+                retval = ret2;
+            dio_unpin_page(dio, sdio.cur_page);
+            sdio.cur_page = NULL;
+        }
+        if (sdio.bio)
+            dio_bio_submit(dio, &sdio);
+
+        blk_finish_plug(&plug);
+
+        /* It is possible that, we return short IO due to end of file.
+        * In that case, we need to release all the pages we got hold on. */
+        dio_cleanup(dio, &sdio);
+
+        /* All block lookups have been performed. For READ requests
+        * we can let i_mutex go now that its achieved its purpose
+        * of protecting us from looking up uninitialized blocks. */
+        if (iov_iter_rw(iter) == READ && (dio->flags & DIO_LOCKING))
+            inode_unlock(dio->inode);
+
+        /* The only time we want to leave bios in flight is when a successful
+        * partial aio read or full aio write have been setup.  In that case
+        * bio completion will call aio_complete.  The only time it's safe to
+        * call aio_complete is when we return -EIOCBQUEUED, so we key on that.
+        * This had *better* be the only place that raises -EIOCBQUEUED. */
+        BUG_ON(retval == -EIOCBQUEUED);
+        if (dio->is_async && retval == 0 && dio->result &&
+            (iov_iter_rw(iter) == READ || dio->result == count))
+            retval = -EIOCBQUEUED;
+        else
+            dio_await_completion(dio);
+
+        if (drop_refcount(dio) == 0) {
+            retval = dio_complete(dio, retval, DIO_COMPLETE_INVALIDATE);
+        } else
+            BUG_ON(retval != -EIOCBQUEUED);
+
+        return retval;
+
+    fail_dio:
+        if (dio->flags & DIO_LOCKING && iov_iter_rw(iter) == READ)
+            inode_unlock(inode);
+
+        kmem_cache_free(dio_cache, dio);
+        return retval;
+    }
 }
 
 int do_direct_IO(struct dio *dio, struct dio_submit *sdio,
       struct buffer_head *map_bh)
 {
-  const unsigned blkbits = sdio->blkbits;
-  const unsigned i_blkbits = blkbits + sdio->blkfactor;
-  int ret = 0;
+    const unsigned blkbits = sdio->blkbits;
+    const unsigned i_blkbits = blkbits + sdio->blkfactor;
+    int ret = 0;
 
-  while (sdio->block_in_file < sdio->final_block_in_request) {
-    struct page *page;
-    size_t from, to;
+    while (sdio->block_in_file < sdio->final_block_in_request) {
+        struct page *page;
+        size_t from, to;
 
-    page = dio_get_page(dio, sdio);
-    if (IS_ERR(page)) {
-      ret = PTR_ERR(page);
-      goto out;
-    }
-    from = sdio->head ? 0 : sdio->from;
-    to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE;
-    sdio->head++;
-
-    while (from < to) {
-      unsigned this_chunk_bytes;  /* # of bytes mapped */
-      unsigned this_chunk_blocks;  /* # of blocks */
-      unsigned u;
-
-      if (sdio->blocks_available == 0) {
-        /* Need to go and map some more disk */
-        unsigned long blkmask;
-        unsigned long dio_remainder;
-
-        ret = get_more_blocks(dio, sdio, map_bh);
-        if (ret) {
-          put_page(page);
-          goto out;
+        page = dio_get_page(dio, sdio);
+        if (IS_ERR(page)) {
+            ret = PTR_ERR(page);
+            goto out;
         }
+        from = sdio->head ? 0 : sdio->from;
+        to = (sdio->head == sdio->tail - 1) ? sdio->to : PAGE_SIZE;
+        sdio->head++;
 
-        if (!buffer_mapped(map_bh))
-          goto do_holes;
+        while (from < to) {
+            unsigned this_chunk_bytes;  /* # of bytes mapped */
+            unsigned this_chunk_blocks;  /* # of blocks */
+            unsigned u;
 
-        sdio->blocks_available = map_bh->b_size >> blkbits;
-        sdio->next_block_for_io = map_bh->b_blocknr << sdio->blkfactor;
+            if (sdio->blocks_available == 0) {
+                /* Need to go and map some more disk */
+                unsigned long blkmask;
+                unsigned long dio_remainder;
 
-        if (buffer_new(map_bh)) {
-          clean_bdev_aliases(
-            map_bh->b_bdev,
-            map_bh->b_blocknr,
-            map_bh->b_size >> i_blkbits);
-        }
+                ret = get_more_blocks(dio, sdio, map_bh);
+                if (ret) {
+                    put_page(page);
+                    goto out;
+                }
 
-        if (!sdio->blkfactor)
-          goto do_holes;
+                if (!buffer_mapped(map_bh))
+                    goto do_holes;
 
-        blkmask = (1 << sdio->blkfactor) - 1;
-        dio_remainder = (sdio->block_in_file & blkmask);
+                sdio->blocks_available = map_bh->b_size >> blkbits;
+                sdio->next_block_for_io = map_bh->b_blocknr << sdio->blkfactor;
 
-        if (!buffer_new(map_bh))
-          sdio->next_block_for_io += dio_remainder;
+                if (buffer_new(map_bh)) {
+                clean_bdev_aliases(
+                    map_bh->b_bdev,
+                    map_bh->b_blocknr,
+                    map_bh->b_size >> i_blkbits);
+                }
 
-        sdio->blocks_available -= dio_remainder;
-      }
+                if (!sdio->blkfactor)
+                    goto do_holes;
+
+                blkmask = (1 << sdio->blkfactor) - 1;
+                dio_remainder = (sdio->block_in_file & blkmask);
+
+                if (!buffer_new(map_bh))
+                    sdio->next_block_for_io += dio_remainder;
+
+                sdio->blocks_available -= dio_remainder;
+            }
 
 do_holes:
-      /* Handle holes */
-      if (!buffer_mapped(map_bh)) {
-        loff_t i_size_aligned;
+            /* Handle holes */
+            if (!buffer_mapped(map_bh)) {
+                loff_t i_size_aligned;
 
-        /* AKPM: eargh, -ENOTBLK is a hack */
-        if (dio->op == REQ_OP_WRITE) {
-          put_page(page);
-          return -ENOTBLK;
-        }
+                /* AKPM: eargh, -ENOTBLK is a hack */
+                if (dio->op == REQ_OP_WRITE) {
+                    put_page(page);
+                    return -ENOTBLK;
+                }
 
-        /* Be sure to account for a partial block as the
-         * last block in the file */
-        i_size_aligned = ALIGN(i_size_read(dio->inode), 1 << blkbits);
-        if (sdio->block_in_file >= i_size_aligned >> blkbits) {
-          /* We hit eof */
-          put_page(page);
-          goto out;
-        }
-        zero_user(page, from, 1 << blkbits);
-        sdio->block_in_file++;
-        from += 1 << blkbits;
-        dio->result += 1 << blkbits;
-        goto next_block;
-      }
+                /* Be sure to account for a partial block as the
+                * last block in the file */
+                i_size_aligned = ALIGN(i_size_read(dio->inode), 1 << blkbits);
+                if (sdio->block_in_file >= i_size_aligned >> blkbits) {
+                    /* We hit eof */
+                    put_page(page);
+                    goto out;
+                }
+                zero_user(page, from, 1 << blkbits);
+                sdio->block_in_file++;
+                from += 1 << blkbits;
+                dio->result += 1 << blkbits;
+                goto next_block;
+            }
 
-      /* If we're performing IO which has an alignment which
-       * is finer than the underlying fs, go check to see if
-       * we must zero out the start of this block. */
-      if (unlikely(sdio->blkfactor && !sdio->start_zero_done))
-        dio_zero_block(dio, sdio, 0, map_bh);
+            /* If we're performing IO which has an alignment which
+            * is finer than the underlying fs, go check to see if
+            * we must zero out the start of this block. */
+            if (unlikely(sdio->blkfactor && !sdio->start_zero_done))
+                dio_zero_block(dio, sdio, 0, map_bh);
 
-      /* Work out, in this_chunk_blocks, how much disk we
-       * can add to this page */
-      this_chunk_blocks = sdio->blocks_available;
-      u = (to - from) >> blkbits;
-      if (this_chunk_blocks > u)
-        this_chunk_blocks = u;
-      u = sdio->final_block_in_request - sdio->block_in_file;
-      if (this_chunk_blocks > u)
-        this_chunk_blocks = u;
-      this_chunk_bytes = this_chunk_blocks << blkbits;
+            /* Work out, in this_chunk_blocks, how much disk we
+            * can add to this page */
+            this_chunk_blocks = sdio->blocks_available;
+            u = (to - from) >> blkbits;
+            if (this_chunk_blocks > u)
+                this_chunk_blocks = u;
+            u = sdio->final_block_in_request - sdio->block_in_file;
+            if (this_chunk_blocks > u)
+                this_chunk_blocks = u;
+            this_chunk_bytes = this_chunk_blocks << blkbits;
 
-      if (this_chunk_blocks == sdio->blocks_available)
-        sdio->boundary = buffer_boundary(map_bh);
+            if (this_chunk_blocks == sdio->blocks_available)
+                sdio->boundary = buffer_boundary(map_bh);
 
-      ret = submit_page_section(dio, sdio, page,
-              from,
-              this_chunk_bytes,
-              sdio->next_block_for_io,
-              map_bh);
-      if (ret) {
-        put_page(page);
-        goto out;
-      }
-      sdio->next_block_for_io += this_chunk_blocks;
+            ret = submit_page_section(dio, sdio, page,
+                    from,
+                    this_chunk_bytes,
+                    sdio->next_block_for_io,
+                    map_bh);
+            if (ret) {
+                put_page(page);
+                goto out;
+            }
+            sdio->next_block_for_io += this_chunk_blocks;
 
-      sdio->block_in_file += this_chunk_blocks;
-      from += this_chunk_bytes;
-      dio->result += this_chunk_bytes;
-      sdio->blocks_available -= this_chunk_blocks;
+            sdio->block_in_file += this_chunk_blocks;
+            from += this_chunk_bytes;
+            dio->result += this_chunk_bytes;
+            sdio->blocks_available -= this_chunk_blocks;
 
 next_block:
-      if (sdio->block_in_file == sdio->final_block_in_request)
-        break;
-    }
+            if (sdio->block_in_file == sdio->final_block_in_request)
+                break;
+        }
 
-    /* Drop the ref which was taken in get_user_pages() */
-    put_page(page);
-  }
+        /* Drop the ref which was taken in get_user_pages() */
+        put_page(page);
+    }
 out:
-  return ret;
+    return ret;
 }
 ```
 
 ### dio_get_page
+
 ```c
 struct page *dio_get_page(struct dio *dio, struct dio_submit *sdio)
 {
-  if (dio_pages_present(sdio) == 0) {
-    int ret;
+    if (dio_pages_present(sdio) == 0) {
+        int ret;
 
-    ret = dio_refill_pages(dio, sdio);
-    if (ret)
-      return ERR_PTR(ret);
-  }
+        ret = dio_refill_pages(dio, sdio);
+        if (ret)
+            return ERR_PTR(ret);
+    }
 
-  return dio->pages[sdio->head];
+    return dio->pages[sdio->head];
 }
 
 int dio_refill_pages(struct dio *dio, struct dio_submit *sdio)
 {
-  ssize_t ret;
+    ssize_t ret;
 
-  ret = iov_iter_get_pages(sdio->iter, dio->pages, LONG_MAX, DIO_PAGES,
-        &sdio->from);
+    ret = iov_iter_get_pages(sdio->iter, dio->pages, LONG_MAX, DIO_PAGES,
+            &sdio->from);
 
-  if (ret < 0 && sdio->blocks_available && (dio->op == REQ_OP_WRITE)) {
-    struct page *page = ZERO_PAGE(0);
+    if (ret < 0 && sdio->blocks_available && (dio->op == REQ_OP_WRITE)) {
+        struct page *page = ZERO_PAGE(0);
 
-    if (dio->page_errors == 0)
-      dio->page_errors = ret;
-    get_page(page);
-    dio->pages[0] = page;
-    sdio->head = 0;
-    sdio->tail = 1;
-    sdio->from = 0;
-    sdio->to = PAGE_SIZE;
-    return 0;
-  }
+        if (dio->page_errors == 0)
+            dio->page_errors = ret;
+        get_page(page);
+        dio->pages[0] = page;
+        sdio->head = 0;
+        sdio->tail = 1;
+        sdio->from = 0;
+        sdio->to = PAGE_SIZE;
+        return 0;
+    }
 
-  if (ret >= 0) {
-    iov_iter_advance(sdio->iter, ret);
-    ret += sdio->from;
-    sdio->head = 0;
-    sdio->tail = (ret + PAGE_SIZE - 1) / PAGE_SIZE;
-    sdio->to = ((ret - 1) & (PAGE_SIZE - 1)) + 1;
-    return 0;
-  }
-  return ret;
+    if (ret >= 0) {
+        iov_iter_advance(sdio->iter, ret);
+        ret += sdio->from;
+        sdio->head = 0;
+        sdio->tail = (ret + PAGE_SIZE - 1) / PAGE_SIZE;
+        sdio->to = ((ret - 1) & (PAGE_SIZE - 1)) + 1;
+        return 0;
+    }
+    return ret;
 }
 
 ssize_t iov_iter_get_pages(struct iov_iter *i,
        struct page **pages, size_t maxsize, unsigned maxpages,
        size_t *start)
 {
-  if (maxsize > i->count)
-    maxsize = i->count;
+    if (maxsize > i->count)
+        maxsize = i->count;
 
-  if (unlikely(i->type & ITER_PIPE))
-    return pipe_get_pages(i, pages, maxsize, maxpages, start);
+    if (unlikely(i->type & ITER_PIPE))
+        return pipe_get_pages(i, pages, maxsize, maxpages, start);
 
-  iterate_all_kinds(i, maxsize, v, ({
-      unsigned long addr = (unsigned long)v.iov_base;
-      size_t len = v.iov_len + (*start = addr & (PAGE_SIZE - 1));
-      int n;
-      int res;
+    iterate_all_kinds(i, maxsize, v,
+        ({
+            unsigned long addr = (unsigned long)v.iov_base;
+            size_t len = v.iov_len + (*start = addr & (PAGE_SIZE - 1));
+            int n;
+            int res;
 
-      if (len > maxpages * PAGE_SIZE)
-        len = maxpages * PAGE_SIZE;
-      addr &= ~(PAGE_SIZE - 1);
-      n = DIV_ROUND_UP(len, PAGE_SIZE);
-      res = get_user_pages_fast(addr, n, (i->type & WRITE) != WRITE, pages);
-      if (unlikely(res < 0))
-        return res;
-      return (res == n ? len : res * PAGE_SIZE) - *start;
-      0;
-    }),({
-      /* can't be more than PAGE_SIZE */
-      *start = v.bv_offset;
-      get_page(*pages = v.bv_page);
-      return v.bv_len;
-    }), ({
-      return -EFAULT;
-    })
-  )
+            if (len > maxpages * PAGE_SIZE)
+                len = maxpages * PAGE_SIZE;
+            addr &= ~(PAGE_SIZE - 1);
+            n = DIV_ROUND_UP(len, PAGE_SIZE);
+            /* pin user pages in memory */
+            res = get_user_pages_fast(addr, n, (i->type & WRITE) != WRITE, pages);
+            if (unlikely(res < 0))
+                return res;
+            return (res == n ? len : res * PAGE_SIZE) - *start;
+            0;
+        }), ({
+            /* can't be more than PAGE_SIZE */
+            *start = v.bv_offset;
+            get_page(*pages = v.bv_page);
+            return v.bv_len;
+        }), ({
+            return -EFAULT;
+        })
+    )
 
-  return 0;
+    return 0;
 }
 
 long __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
@@ -6960,240 +7876,235 @@ long __get_user_pages(struct task_struct *tsk, struct mm_struct *mm,
           unsigned int foll_flags, struct page **pages,
           struct vm_area_struct **vmas, int *nonblocking)
 {
-  struct vm_area_struct *vma;
-  unsigned long vm_flags;
-  int i;
+    struct vm_area_struct *vma;
+    unsigned long vm_flags;
+    int i;
 
-  /* calculate required read or write permissions.
-   * If FOLL_FORCE is set, we only require the "MAY" flags. */
-  vm_flags  = (foll_flags & FOLL_WRITE) ? (VM_WRITE | VM_MAYWRITE) : (VM_READ | VM_MAYREAD);
-  vm_flags &= (foll_flags & FOLL_FORCE) ? (VM_MAYREAD | VM_MAYWRITE) : (VM_READ | VM_WRITE);
+    /* calculate required read or write permissions.
+    * If FOLL_FORCE is set, we only require the "MAY" flags. */
+    vm_flags  = (foll_flags & FOLL_WRITE) ? (VM_WRITE | VM_MAYWRITE) : (VM_READ | VM_MAYREAD);
+    vm_flags &= (foll_flags & FOLL_FORCE) ? (VM_MAYREAD | VM_MAYWRITE) : (VM_READ | VM_WRITE);
 
-  for (i = 0; i < nr_pages; i++) {
-    vma = find_vma(mm, start);
-    if (!vma)
-      goto finish_or_fault;
+    for (i = 0; i < nr_pages; i++) {
+        vma = find_vma(mm, start);
+        if (!vma)
+            goto finish_or_fault;
 
-    /* protect what we can, including chardevs */
-    if ((vma->vm_flags & (VM_IO | VM_PFNMAP)) || !(vm_flags & vma->vm_flags))
-      goto finish_or_fault;
+        /* protect what we can, including chardevs */
+        if ((vma->vm_flags & (VM_IO | VM_PFNMAP)) || !(vm_flags & vma->vm_flags))
+            goto finish_or_fault;
 
-    if (pages) {
-      pages[i] = virt_to_page(start);
-      if (pages[i])
-        get_page(pages[i]);
+        if (pages) {
+            pages[i] = virt_to_page(start);
+            if (pages[i])
+                get_page(pages[i]);
+        }
+        if (vmas)
+            vmas[i] = vma;
+        start = (start + PAGE_SIZE) & PAGE_MASK;
     }
-    if (vmas)
-      vmas[i] = vma;
-    start = (start + PAGE_SIZE) & PAGE_MASK;
-  }
 
-  return i;
+    return i;
 
 finish_or_fault:
-  return i ? : -EFAULT;
+    return i ? : -EFAULT;
 }
 ```
 
 ### get_more_blocks
+
 ```c
 int get_more_blocks(struct dio *dio, struct dio_submit *sdio,
          struct buffer_head *map_bh)
 {
-  int ret;
-  sector_t fs_startblk;  /* Into file, in filesystem-sized blocks */
-  sector_t fs_endblk;  /* Into file, in filesystem-sized blocks */
-  unsigned long fs_count;  /* Number of filesystem-sized blocks */
-  int create;
-  unsigned int i_blkbits = sdio->blkbits + sdio->blkfactor;
-  loff_t i_size;
+    int ret;
+    sector_t fs_startblk;  /* Into file, in filesystem-sized blocks */
+    sector_t fs_endblk;  /* Into file, in filesystem-sized blocks */
+    unsigned long fs_count;  /* Number of filesystem-sized blocks */
+    int create;
+    unsigned int i_blkbits = sdio->blkbits + sdio->blkfactor;
+    loff_t i_size;
 
-  /* If there was a memory error and we've overwritten all the
-   * mapped blocks then we can now return that memory error */
-  ret = dio->page_errors;
-  if (ret == 0) {
-    fs_startblk = sdio->block_in_file >> sdio->blkfactor;
-    fs_endblk = (sdio->final_block_in_request - 1) >>
-          sdio->blkfactor;
-    fs_count = fs_endblk - fs_startblk + 1;
+    /* If there was a memory error and we've overwritten all the
+    * mapped blocks then we can now return that memory error */
+    ret = dio->page_errors;
+    if (ret == 0) {
+        fs_startblk = sdio->block_in_file >> sdio->blkfactor;
+        fs_endblk = (sdio->final_block_in_request - 1) >> sdio->blkfactor;
+        fs_count = fs_endblk - fs_startblk + 1;
 
-    map_bh->b_state = 0;
-    map_bh->b_size = fs_count << i_blkbits;
+        map_bh->b_state = 0;
+        map_bh->b_size = fs_count << i_blkbits;
 
-    /* For writes that could fill holes inside i_size on a
-     * DIO_SKIP_HOLES filesystem we forbid block creations: only
-     * overwrites are permitted. We will return early to the caller
-     * once we see an unmapped buffer head returned, and the caller
-     * will fall back to buffered I/O.
-     *
-     * Otherwise the decision is left to the get_blocks method,
-     * which may decide to handle it or also return an unmapped
-     * buffer head. */
-    create = dio->op == REQ_OP_WRITE;
-    if (dio->flags & DIO_SKIP_HOLES) {
-      i_size = i_size_read(dio->inode);
-      if (i_size && fs_startblk <= (i_size - 1) >> i_blkbits)
-        create = 0;
+        /* For writes that could fill holes inside i_size on a
+        * DIO_SKIP_HOLES filesystem we forbid block creations: only
+        * overwrites are permitted. We will return early to the caller
+        * once we see an unmapped buffer head returned, and the caller
+        * will fall back to buffered I/O.
+        *
+        * Otherwise the decision is left to the get_blocks method,
+        * which may decide to handle it or also return an unmapped
+        * buffer head. */
+        create = dio->op == REQ_OP_WRITE;
+        if (dio->flags & DIO_SKIP_HOLES) {
+            i_size = i_size_read(dio->inode);
+            if (i_size && fs_startblk <= (i_size - 1) >> i_blkbits)
+                create = 0;
+        }
+
+        ret = (*sdio->get_block)(dio->inode, fs_startblk, map_bh, create);
+
+        /* Store for completion */
+        dio->private = map_bh->b_private;
+
+        if (ret == 0 && buffer_defer_completion(map_bh))
+            ret = dio_set_defer_completion(dio);
     }
-
-    ret = (*sdio->get_block)(dio->inode, fs_startblk,
-            map_bh, create);
-
-    /* Store for completion */
-    dio->private = map_bh->b_private;
-
-    if (ret == 0 && buffer_defer_completion(map_bh))
-      ret = dio_set_defer_completion(dio);
-  }
-  return ret;
+    return ret;
 }
 ```
 
 ### submit_page_section
+
 ```c
 int submit_page_section(struct dio *dio, struct dio_submit *sdio, struct page *page,
         unsigned offset, unsigned len, sector_t blocknr,
         struct buffer_head *map_bh)
 {
-  int ret = 0;
-  int boundary = sdio->boundary;  /* dio_send_cur_page may clear it */
+    int ret = 0;
+    int boundary = sdio->boundary;  /* dio_send_cur_page may clear it */
 
-  if (dio->op == REQ_OP_WRITE) {
-    task_io_account_write(len);
-  }
+    if (dio->op == REQ_OP_WRITE) {
+        task_io_account_write(len);
+    }
 
-  /* Can we just grow the current page's presence in the dio? */
-  if (sdio->cur_page == page &&
-      sdio->cur_page_offset + sdio->cur_page_len == offset &&
-      sdio->cur_page_block + (sdio->cur_page_len >> sdio->blkbits) == blocknr)
-  {
-    sdio->cur_page_len += len;
-    goto out;
-  }
+    /* Can we just grow the current page's presence in the dio? */
+    if (sdio->cur_page == page &&
+        sdio->cur_page_offset + sdio->cur_page_len == offset &&
+        sdio->cur_page_block + (sdio->cur_page_len >> sdio->blkbits) == blocknr)
+    {
+        sdio->cur_page_len += len;
+        goto out;
+    }
 
-  /* If there's a deferred page already there then send it. */
-  if (sdio->cur_page) {
-    ret = dio_send_cur_page(dio, sdio, map_bh);
-    put_page(sdio->cur_page);
-    sdio->cur_page = NULL;
-    if (ret)
-      return ret;
-  }
+    /* If there's a deferred page already there then send it. */
+    if (sdio->cur_page) {
+        ret = dio_send_cur_page(dio, sdio, map_bh);
+        put_page(sdio->cur_page);
+        sdio->cur_page = NULL;
+        if (ret)
+        return ret;
+    }
 
-  get_page(page);    /* It is in dio */
-  sdio->cur_page = page;
-  sdio->cur_page_offset = offset;
-  sdio->cur_page_len = len;
-  sdio->cur_page_block = blocknr;
-  sdio->cur_page_fs_offset = sdio->block_in_file << sdio->blkbits;
+    get_page(page);    /* It is in dio */
+    sdio->cur_page = page;
+    sdio->cur_page_offset = offset;
+    sdio->cur_page_len = len;
+    sdio->cur_page_block = blocknr;
+    sdio->cur_page_fs_offset = sdio->block_in_file << sdio->blkbits;
 
 out:
-  /* If boundary then we want to schedule the IO now to avoid metadata seeks. */
-  if (boundary) {
-    ret = dio_send_cur_page(dio, sdio, map_bh);
-    if (sdio->bio)
-      dio_bio_submit(dio, sdio);
-    put_page(sdio->cur_page);
-    sdio->cur_page = NULL;
-  }
-  return ret;
+    /* If boundary then we want to schedule the IO now to avoid metadata seeks. */
+    if (boundary) {
+        ret = dio_send_cur_page(dio, sdio, map_bh);
+        if (sdio->bio)
+            dio_bio_submit(dio, sdio);
+        put_page(sdio->cur_page);
+        sdio->cur_page = NULL;
+    }
+    return ret;
 }
 
 int dio_send_cur_page(struct dio *dio, struct dio_submit *sdio,
     struct buffer_head *map_bh)
 {
-  int ret = 0;
+    int ret = 0;
 
-  if (sdio->bio) {
-    loff_t cur_offset = sdio->cur_page_fs_offset;
-    loff_t bio_next_offset = sdio->logical_offset_in_bio + sdio->bio->bi_iter.bi_size;
+    if (sdio->bio) {
+        loff_t cur_offset = sdio->cur_page_fs_offset;
+        loff_t bio_next_offset = sdio->logical_offset_in_bio + sdio->bio->bi_iter.bi_size;
 
-    if (sdio->final_block_in_bio != sdio->cur_page_block || cur_offset != bio_next_offset)
-      dio_bio_submit(dio, sdio);
-  }
-
-  if (sdio->bio == NULL) {
-    ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
-    if (ret)
-      goto out;
-  }
-
-  if (dio_bio_add_page(sdio) != 0) {
-    dio_bio_submit(dio, sdio);
-    ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
-    if (ret == 0) {
-      ret = dio_bio_add_page(sdio);
+        if (sdio->final_block_in_bio != sdio->cur_page_block || cur_offset != bio_next_offset)
+        dio_bio_submit(dio, sdio);
     }
-  }
+
+    if (sdio->bio == NULL) {
+        ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
+        if (ret)
+        goto out;
+    }
+
+    if (dio_bio_add_page(sdio) != 0) {
+        dio_bio_submit(dio, sdio);
+        ret = dio_new_bio(dio, sdio, sdio->cur_page_block, map_bh);
+        if (ret == 0) {
+            ret = dio_bio_add_page(sdio);
+        }
+    }
 out:
-  return ret;
+    return ret;
 }
 
 int dio_new_bio(struct dio *dio, struct dio_submit *sdio,
     sector_t start_sector, struct buffer_head *map_bh)
 {
-  sector_t sector;
-  int ret, nr_pages;
+    sector_t sector;
+    int ret, nr_pages;
 
-  ret = dio_bio_reap(dio, sdio);
-  if (ret)
-    goto out;
-  sector = start_sector << (sdio->blkbits - 9);
-  nr_pages = min(sdio->pages_in_io, BIO_MAX_PAGES);
-  dio_bio_alloc(dio, sdio, map_bh->b_bdev, sector, nr_pages);
-  sdio->boundary = 0;
+    ret = dio_bio_reap(dio, sdio);
+    if (ret)
+        goto out;
+    sector = start_sector << (sdio->blkbits - 9);
+    nr_pages = min(sdio->pages_in_io, BIO_MAX_PAGES);
+    dio_bio_alloc(dio, sdio, map_bh->b_bdev, sector/*first_sector*/, nr_pages/*nr_vecs*/) {
+        struct bio *bio;
+
+        bio = bio_alloc(GFP_KERNEL, nr_vecs);
+
+        bio_set_dev(bio, bdev);
+        bio->bi_iter.bi_sector = first_sector;
+        bio_set_op_attrs(bio, dio->op, dio->op_flags);
+
+        if (dio->is_async)
+            bio->bi_end_io = dio_bio_end_aio;
+        else
+            bio->bi_end_io = dio_bio_end_io;
+
+        bio->bi_write_hint = dio->iocb->ki_hint;
+
+        sdio->bio = bio;
+        sdio->logical_offset_in_bio = sdio->cur_page_fs_offset;
+    }
+    sdio->boundary = 0;
 out:
-  return ret;
-}
-
-void dio_bio_alloc(struct dio *dio, struct dio_submit *sdio,
-        struct block_device *bdev,
-        sector_t first_sector, int nr_vecs)
-{
-  struct bio *bio;
-
-  bio = bio_alloc(GFP_KERNEL, nr_vecs);
-
-  bio_set_dev(bio, bdev);
-  bio->bi_iter.bi_sector = first_sector;
-  bio_set_op_attrs(bio, dio->op, dio->op_flags);
-
-  if (dio->is_async)
-    bio->bi_end_io = dio_bio_end_aio;
-  else
-    bio->bi_end_io = dio_bio_end_io;
-
-  bio->bi_write_hint = dio->iocb->ki_hint;
-
-  sdio->bio = bio;
-  sdio->logical_offset_in_bio = sdio->cur_page_fs_offset;
+    return ret;
 }
 
 void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 {
-  struct bio *bio = sdio->bio;
-  unsigned long flags;
+    struct bio *bio = sdio->bio;
+    unsigned long flags;
 
-  bio->bi_private = dio;
+    bio->bi_private = dio;
 
-  spin_lock_irqsave(&dio->bio_lock, flags);
-  dio->refcount++;
-  spin_unlock_irqrestore(&dio->bio_lock, flags);
+    spin_lock_irqsave(&dio->bio_lock, flags);
+    dio->refcount++;
+    spin_unlock_irqrestore(&dio->bio_lock, flags);
 
-  if (dio->is_async && dio->op == REQ_OP_READ && dio->should_dirty)
-    bio_set_pages_dirty(bio);
+    if (dio->is_async && dio->op == REQ_OP_READ && dio->should_dirty)
+        bio_set_pages_dirty(bio);
 
-  dio->bio_disk = bio->bi_disk;
+    dio->bio_disk = bio->bi_disk;
 
-  if (sdio->submit_io) {
-    sdio->submit_io(bio, dio->inode, sdio->logical_offset_in_bio);
-    dio->bio_cookie = BLK_QC_T_NONE;
-  } else
-    dio->bio_cookie = submit_bio(bio);
+    if (sdio->submit_io) {
+        sdio->submit_io(bio, dio->inode, sdio->logical_offset_in_bio);
+        dio->bio_cookie = BLK_QC_T_NONE;
+    } else
+        dio->bio_cookie = submit_bio(bio);
 
-  sdio->bio = NULL;
-  sdio->boundary = 0;
-  sdio->logical_offset_in_bio = 0;
+    sdio->bio = NULL;
+    sdio->boundary = 0;
+    sdio->logical_offset_in_bio = 0;
 }
 ```
 
@@ -7348,8 +8259,9 @@ wb_workfn() {
                             }
                         }
                     } else {
-                        progress = __writeback_inodes_wb();
+                        progress = __writeback_inodes_wb() {
                             writeback_sb_inodes();
+                        }
                     }
 
                     if (progress)
@@ -8313,66 +9225,86 @@ struct elevator_queue
 /* main unit of I/O for the block layer and lower layers (ie drivers and
  * stacking drivers) */
 struct bio {
-  struct bio              *bi_next;  /* request queue link */
-  struct gendisk          *bi_disk;
-  unsigned int            bi_opf;    /* bottom bits req flags, top bits REQ_OP. Use accessors. */
-  unsigned short          bi_flags;  /* status, etc and bvec pool number */
-  unsigned short          bi_ioprio;
-  unsigned short          bi_write_hint;
-  blk_status_t            bi_status;
-  u8                      bi_partno;
+    struct bio              *bi_next;  /* request queue link */
+    struct gendisk          *bi_disk;
+    unsigned int            bi_opf;    /* REQ_OP_* + flags */
+    unsigned short          bi_flags;  /* status, etc and bvec pool number */
+    unsigned short          bi_ioprio;
+    unsigned short          bi_write_hint;
+    blk_status_t            bi_status;
+    u8                      bi_partno;
 
-  struct bio_vec          *bi_io_vec;  /* the actual vec list */
-  struct bvec_iter        bi_iter;
+    struct bio_vec          *bi_io_vec;  /* the actual vec list */
+    struct bvec_iter        bi_iter;
 
-  /* Number of segments in this BIO after
-   * physical address coalescing is performed. */
-  unsigned int            bi_phys_segments;
+    /* Number of segments in this BIO after
+    * physical address coalescing is performed. */
+    unsigned int            bi_phys_segments;
 
-  /* To keep track of the max segment size, we account for the
-   * sizes of the first and last mergeable segments in this bio. */
-  unsigned int            bi_seg_front_size;
-  unsigned int            bi_seg_back_size;
+    /* To keep track of the max segment size, we account for the
+    * sizes of the first and last mergeable segments in this bio. */
+    unsigned int            bi_seg_front_size;
+    unsigned int            bi_seg_back_size;
 
-  atomic_t                __bi_remaining;
-  bio_end_io_t            *bi_end_io;
+    atomic_t                __bi_remaining;
+    bio_end_io_t            *bi_end_io;
 
-  void                    *bi_private;
-  /* Optional ioc and css associated with this bio.  Put on bio
-   * release.  Read comment on top of bio_associate_current(). */
-  struct io_context           *bi_ioc;
-  struct cgroup_subsys_state  *bi_css;
-  struct blkcg_gq             *bi_blkg;
-  struct bio_issue            bi_issue;
+    void                    *bi_private;
+    /* Optional ioc and css associated with this bio.  Put on bio
+    * release.  Read comment on top of bio_associate_current(). */
+    struct io_context           *bi_ioc;
+    struct cgroup_subsys_state  *bi_css;
+    struct blkcg_gq             *bi_blkg;
+    struct bio_issue            bi_issue;
 
 
-  unsigned short              bi_vcnt;  /* how many bio_vec's */
+    unsigned short              bi_vcnt;  /* how many bio_vec's */
 
-  /* Everything starting with bi_max_vecs will be preserved by bio_reset() */
-  unsigned short              bi_max_vecs;  /* max bvl_vecs we can hold */
+    /* Everything starting with bi_max_vecs will be preserved by bio_reset() */
+    unsigned short              bi_max_vecs;  /* max bvl_vecs we can hold */
 
-  atomic_t                     __bi_cnt;  /* pin count */
+    atomic_t                     __bi_cnt;  /* pin count */
 
-  struct bio_set              *bi_pool;
+    struct bio_set              *bi_pool;
 
-  /* We can inline a number of vecs at the end of the bio, to avoid
-   * double allocations for a small number of bio_vecs. This member
-   * MUST obviously be kept at the very end of the bio. */
-  struct bio_vec              bi_inline_vecs[0];
+    /* We can inline a number of vecs at the end of the bio, to avoid
+    * double allocations for a small number of bio_vecs. This member
+    * MUST obviously be kept at the very end of the bio. */
+    struct bio_vec              bi_inline_vecs[0];
 };
 
 struct bvec_iter {
-  sector_t        bi_sector;    /* device address in 512 byte sectors */
-  unsigned int    bi_size;      /* residual I/O count */
-  unsigned int    bi_idx;       /* current index into bvl_vec */
-  unsigned int    bi_bvec_done; /* number of bytes completed in current bvec */
+    sector_t        bi_sector;    /* device address in 512 byte sectors */
+    unsigned int    bi_size;      /* residual I/O count */
+    unsigned int    bi_idx;       /* current index into bvl_vec */
+    unsigned int    bi_bvec_done; /* number of bytes completed in current bvec */
 };
 
 struct bio_vec {
-  struct page   *bv_page;
-  unsigned int  bv_len;
-  unsigned int  bv_offset;
+    struct page   *bv_page;
+    unsigned int  bv_len;
+    unsigned int  bv_offset;
 }
+
+struct bio_set {
+    struct kmem_cache       *bio_slab;
+    unsigned int            front_pad;
+
+    struct bio_alloc_cache __percpu *cache;
+
+    mempool_t               bio_pool;
+    mempool_t               bvec_pool;
+
+    unsigned int            back_pad;
+    /* Deadlock avoidance for stacking block drivers: see comments in
+    * bio_alloc_bioset() for details */
+    spinlock_t              rescue_lock;
+    struct bio_list         rescue_list;
+    struct work_struct      rescue_work;
+    struct workqueue_struct	*rescue_workqueue;
+
+    struct hlist_node       cpuhp_dead;
+};
 ```
 
 ```c
@@ -8964,10 +9896,12 @@ A plugged queue passes no requests to the underlying device; it allows them to a
 When I/O is queued to an empty device, that device enters a plugged state. This means that I/O isn't immediately dispatched to the low level device driver, instead it is held back by this plug. When a process is going to wait on the I/O to finish, the device is unplugged and request dispatching to the device driver is started. The idea behind plugging is to allow a buildup of requests to better utilize the hardware and to allow merging of sequential requests into one single larger request.
 
 ```c
-blk_finish_plug();
-if (plug == current->plug) {
-    __blk_flush_plug(plug, false);
-        blk_mq_flush_plug_list();
+blk_finish_plug() {
+    if (plug == current->plug) {
+        return;
+    }
+    __blk_flush_plug(plug, false) {
+        blk_mq_flush_plug_list() {
             struct request_queue *q = rq->q;
             if (!multiple_queues && !has_elevator && !from_schedule) {
                 if (__blk_mq_flush_plug_list(q, plug))
@@ -8978,19 +9912,29 @@ if (plug == current->plug) {
                     return;
             }
 
-            blk_mq_dispatch_plug_list();
-                blk_mq_sched_insert_requests();
+            blk_mq_dispatch_plug_list() {
+                blk_mq_sched_insert_requests() {
                     struct elevator_queue *e = hctx->queue->elevator;
                     e->type->ops.insert_requests(hctx, list, false);
 
-                    blk_mq_run_hw_queue();
-                        __blk_mq_delay_run_hw_queue();
-                            __blk_mq_run_hw_queue();
-                                blk_mq_sched_dispatch_requests();
-                                    __blk_mq_sched_dispatch_requests();
-                                        blk_mq_dispatch_rq_list();
+                    blk_mq_run_hw_queue() {
+                        __blk_mq_delay_run_hw_queue() {
+                            __blk_mq_run_hw_queue() {
+                                blk_mq_sched_dispatch_requests() {
+                                    __blk_mq_sched_dispatch_requests() {
+                                        blk_mq_dispatch_rq_list() {
                                             q->mq_ops->queue_rq(hctx, &bd);
                                             q->mq_ops->commit_rqs(hctx);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     current->plug = NULL;
 }
@@ -8999,37 +9943,37 @@ if (plug == current->plug) {
 ```c
 void blk_start_plug(struct blk_plug *plug)
 {
-  struct task_struct *tsk = current;
+    struct task_struct *tsk = current;
 
-  /* If this is a nested plug, don't actually assign it. */
-  if (tsk->plug)
-    return;
+    /* If this is a nested plug, don't actually assign it. */
+    if (tsk->plug)
+        return;
 
-  INIT_LIST_HEAD(&plug->list);
-  INIT_LIST_HEAD(&plug->mq_list);
-  INIT_LIST_HEAD(&plug->cb_list);
-  /* Store ordering should not be needed here, since a potential
-   * preempt will imply a full memory barrier */
-  tsk->plug = plug;
+    INIT_LIST_HEAD(&plug->list);
+    INIT_LIST_HEAD(&plug->mq_list);
+    INIT_LIST_HEAD(&plug->cb_list);
+    /* Store ordering should not be needed here, since a potential
+    * preempt will imply a full memory barrier */
+    tsk->plug = plug;
 }
 
 void blk_finish_plug(struct blk_plug *plug)
 {
-  if (plug == current->plug) {
-    __blk_flush_plug(plug, false);
-    current->plug = NULL;
-  }
+    if (plug == current->plug) {
+        __blk_flush_plug(plug, false);
+        current->plug = NULL;
+    }
 }
 
 void __blk_flush_plug(struct blk_plug *plug, bool from_schedule)
 {
-  if (!list_empty(&plug->cb_list))
-    flush_plug_callbacks(plug, from_schedule);
-  if (!rq_list_empty(plug->mq_list))
-    blk_mq_flush_plug_list(plug, from_schedule);
+    if (!list_empty(&plug->cb_list))
+        flush_plug_callbacks(plug, from_schedule);
+    if (!rq_list_empty(plug->mq_list))
+        blk_mq_flush_plug_list(plug, from_schedule);
 
-  if (unlikely(!rq_list_empty(plug->cached_rq)))
-    blk_mq_free_plug_rqs(plug);
+    if (unlikely(!rq_list_empty(plug->cached_rq)))
+        blk_mq_free_plug_rqs(plug);
 }
 
 void blk_mq_flush_plug_list(struct blk_plug *plug, bool from_schedule)
