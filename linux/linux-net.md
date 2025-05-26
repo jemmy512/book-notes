@@ -137,6 +137,7 @@
 * [tcp timer](#tcp_timer)
 * [inet_init](#inet_init)
 * [net_dev_init](#net_dev_init)
+* [ebpf](#ebpf)
 
 </details>
 
@@ -18503,6 +18504,10 @@ out:
     return rc;
 }
 ```
+
+# ebpf
+
+* [OPPO - ebpf工作原理介绍](https://mp.weixin.qq.com/s/EODZfKRn15HVXZTKh6Vg3Q)
 
 # Tunning
 

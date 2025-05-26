@@ -3337,10 +3337,6 @@ struct vm_area_struct {
 
 # alloc_pages
 
-```sh
-proc/buddyinfo
-```
-
 ![](../images/kernel/mem-alloc_pages.svg)
 
 watermark | free area
@@ -13305,6 +13301,7 @@ shrinker_register(vmap_node_shrinker); /* for vmalloc vmap node */
 shrinker_register(workingset_shadow_shrinker);
 shrinker_register(pool->shrinker); /* mm-zspool */
 shrinker_register(zswap_shrinker);
+shrinker_register(kfree_rcu_shrinker);
 ```
 
 ```c
@@ -18692,6 +18689,7 @@ bool folio_free_swap(struct folio *folio) {
 
     folio_set_dirty(folio);
     return true;
+}
 ```
 
 ## swap_writepage
@@ -20198,6 +20196,20 @@ out_leak_pages:
 
 ### iommu_dma_alloc
 
+# huge page
+
+# thp
+
+Config | val
+:-: | :-:
+/sys/kernel/mm/transparent_hugepage/ | always, defer, defer+madvise, madvise, never
+/sys/kernel/mm/transparent_hugepage/shmem_enabled | always, within_size, advise, never , deny, force
+/sys/kernel/mm/transparent_hugepage/use_zero_page | 0, 1
+/sys/kernel/mm/transparent_hugepage/hpage_pmd_size | read-only
+/sys/kernel/mm/transparent_hugepage/khugepaged/ | defrag, pages_to_scan, scan_sleep_millisecs, alloc_sleep_millisecs, max_ptes_none, max_ptes_swap
+/proc/[pid]/smaps | Shows THP usage for a specific process.
+/proc/meminfo | show AnonHugePages, ShmemHugePages, HugePages_Total
+
 # fs_proc
 
 ```sh
@@ -20213,17 +20225,68 @@ out_leak_pages:
 /proc/kpagecount
 /proc/kpageflags
 
-/proc/sys/vm/overcommit_memory: Controls memory overcommit policy (0=heuristic, 1=always, 2=strict).
-/proc/sys/vm/swappiness: Controls swap usage tendency (0–100, higher means more swapping).
-/proc/sys/vm/min_free_kbytes: Minimum free memory to maintain.
-/proc/sys/vm/drop_caches: Write to clear caches (e.g., echo 3 > /proc/sys/vm/drop_caches).
-
 proc/<pid>/maps
 proc/<pid>/smaps
 /proc/<pid>/oom_adj
 /proc/<pid>/oom_score
 /proc/<pid>/oom_score_adj
 ```
+
+/proc/sys/vm | Meaning
+:-: | :-:
+**admin_reserve_kbytes** | amount of memory (in KB) reserved for privileged processes
+**compaction_proactiveness** | [0, 100] Default: 20. Controls the aggressiveness of proactive memory compaction
+**compact_memory** |  Writing 1 to this file triggers manual compaction across all zones
+**compact_unevictable_allowed** | whether unevictable pages (e.g., mlocked pages) can be compacted
+**defrag_mode** | Controls THP defragmentation behavior. Values: always, defer, defer+madvise, madvise, never
+**dirty_background_bytes** | absolute amount of dirty memory (in bytes) that can be held before **background writeback(kswapd or pdflush)** starts.
+**dirty_background_ratio** | the percentage of total memory that can be dirty before background writeback begins.
+**dirty_bytes** | Absolute limit (in bytes) of dirty memory before processes are blocked and forced to write back.
+**dirty_ratio** | Percentage of total memory that can be dirty before **processes are blocked and forced** to write back. Default: ~20%.
+**dirty_expire_centisecs** | Time (in hundredths of a second) after which dirty pages are considered old and written back to disk. Default: ~3000 (30 seconds).
+**dirty_writeback_centisecs** | Interval (in hundredths of a second) at which the kernel’s writeback daemon checks for dirty pages to write. Default: ~500 (5 seconds).
+**dirtytime_expire_seconds** | Maximum age (in seconds) for dirty pages on filesystems supporting dirtytime before writeback.
+**drop_caches** | Writing a value clears caches: 1 (pagecache), 2 (slab objects), 3 (both).
+**enable_soft_offline** | Enables/disables soft offline of pages with correctable memory errors. 1 enables, 0 disables.
+**extfrag_threshold** | Controls the fragmentation threshold (default ~500, range 0–1000) Default: ~500.
+**hugetlb_optimize_vmemmap** | Enables optimization of virtual memory mappings for huge pages to reduce memory overhead. 1 enables, 0 disables.
+**hugetlb_shm_group** | Specifies the group ID allowed to use huge pages for shared memory.
+**laptop_mode** | Enables laptop mode (1) to reduce disk I/O for power saving, or disables it (0).
+**legacy_va_layout** | Reverts to older (pre-2.6.9) virtual address space layout if set to 1
+**lowmem_reserve_ratio** | Sets memory reserve ratios for different memory zones to prevent low-memory conditions in critical zones.
+**max_map_count** | Maximum number of memory map areas a process can have.
+**memfd_noexec** | Controls whether memfd_create() creates non-executable memory. 0 allows executable, 1 or 2 enforces non-executable.
+**memory_failure_early_kill** | If 1, immediately kills processes using pages with uncorrectable memory errors. If 0, tries to isolate pages.
+**memory_failure_recovery** | Enables (1) or disables (0) recovery from memory failures.
+**min_free_kbytes** | Minimum amount of free memory (in KB) the kernel keeps available.
+**min_slab_ratio** | Minimum percentage of memory that can be used for slab caches.
+**min_unmapped_ratio** | Minimum percentage of memory kept unmapped to prevent swapping under memory pressure.
+**mmap_min_addr** | Minimum virtual address for user-space mappings.
+**mmap_rnd_bits** | Number of bits for address space layout randomization (ASLR) for non-PIE
+**mmap_rnd_compat_bits** | ASLR bits for 32-bit compatibility mode on 64-bit systems.
+**nr_hugepages** | Sets the number of huge pages to allocate.
+**nr_hugepages_mempolicy** | Sets huge pages per NUMA node for specific memory policies.
+**nr_overcommit_hugepages** | Maximum number of overcommitted huge pages (allocated on demand).
+**numa_stat** | Enables (1) or disables (0) NUMA statistics in /proc/vmstat.
+**numa_zonelist_order** | Defines the order of NUMA zones for memory allocation (e.g., node, zone).
+**oom_dump_tasks** | If 1, logs detailed task info when the OOM killer is triggered.
+**oom_kill_allocating_task** | If 1, OOM killer targets the task triggering the allocation. If 0, it uses heuristics to select a victim.
+**overcommit_kbytes** | Absolute limit (in KB) for memory overcommitment.
+**overcommit_memory** | 0: Heuristic overcommit. 1: Always allow overcommit. 2: Never overcommit (strict).
+**overcommit_ratio** | Percentage of physical RAM allowed for overcommit when overcommit_memory=2 Default: ~50.
+**page-cluster** | Number of pages read/written in a single I/O operation during swapping. Default: ~3 (8 pages).
+**page_lock_unfairness** | Controls fairness of page lock acquisition. Higher values allow more unfairness (favoring current holder).
+**panic_on_oom** | If 1, kernel panics on OOM. If 0, OOM killer is invoked.
+**percpu_pagelist_high_fraction** | Fraction of memory reserved for per-CPU page lists.
+**stat_interval** | Interval (in seconds) for updating /proc/stat memory statistics.
+**stat_refresh** | Writing any value forces an immediate refresh of memory statistics.
+**swappiness** |
+**unprivileged_userfaultfd** | Controls whether unprivileged users can use userfaultfd (0=privileged only, 1=unprivileged).
+**user_reserve_kbytes** | Memory (in KB) reserved for user processes under memory pressure.
+**vfs_cache_pressure** | Controls how aggressively the kernel reclaims memory from VFS caches (e.g., dentries, inodes). Range: 0–1000. Default: ~100.
+**watermark_boost_factor** | Adjusts watermark boosting for memory reclaim under pressure (in percentage).
+**watermark_scale_factor** | Adjusts kswapd aggressiveness (range 0–3000, default ~10–30) to reduce fragmentation but increasing reclaim overhead. Default: ~10–30.
+**zone_reclaim_mode** | Controls NUMA zone reclaim behavior: 0: Disabled. 1: Reclaim from local zone before remote. 2: Reclaim even if pages are dirty.
 
 ## /proc/meminfo
 
@@ -20371,9 +20434,37 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 }
 ```
 
+# debug
+
+## CONFIG_DEBUG_KMEMLEAK
+
+```sh
+CONFIG_HAVE_DEBUG_KMEMLEAK=y
+CONFIG_DEBUG_KMEMLEAK=y
+CONFIG_DEBUG_KMEMLEAK_EARLY_LOG_SIZE=16000
+CONFIG_DEBUG_KMEMLEAK_DEFAULT_OFF=y
+
+# show memleak details
+mount -t debugfs debugfs /sys/kernel/debug
+echo scan > /sys/kernel/debug/kmemleak
+cat /sys/kernel/debug/kmemleak
+echo clear > /sys/kernel/debug/kmemleak
+```
+
+## CONFIG_KASAN
+
+KASAN detects invalid memory accesses and use-after-free bugs, which can lead to leaks.
+
+```sh
+CONFIG_KASAN=y
+
+dmesg | grep kasan
+```
+
 # Tuning
 
 ## Tunable Parameters
+
 Option | Default | Description
 :-- | :-: | :-:
 vm.dirty_background_bytes | 0 | Amount of dirty memory to trigger pdflush background write-back

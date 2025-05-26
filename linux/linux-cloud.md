@@ -537,15 +537,15 @@ static struct cftype cgroup_base_files[] = {
 
 /* cgroup v1 base files */
 struct cftype cgroup1_base_files[] = {
-	{
-		.name = "cgroup.procs",
-		.seq_start = cgroup_pidlist_start,
-		.seq_next = cgroup_pidlist_next,
-		.seq_stop = cgroup_pidlist_stop,
-		.seq_show = cgroup_pidlist_show,
-		.private = CGROUP_FILE_PROCS,
-		.write = cgroup1_procs_write,
-	},
+    {
+        .name = "cgroup.procs",
+        .seq_start = cgroup_pidlist_start,
+        .seq_next = cgroup_pidlist_next,
+        .seq_stop = cgroup_pidlist_stop,
+        .seq_show = cgroup_pidlist_show,
+        .private = CGROUP_FILE_PROCS,
+        .write = cgroup1_procs_write,
+    },
 };
 
 static struct kernfs_ops cgroup_kf_ops = {
@@ -1239,27 +1239,27 @@ write() {
 struct cgroup_mgctx {
     /* Preloaded source and destination csets.  Used to guarantee
      * atomic success or failure on actual migration. */
-    struct list_head	preloaded_src_csets;
-    struct list_head	preloaded_dst_csets;
+    struct list_head    preloaded_src_csets;
+    struct list_head    preloaded_dst_csets;
 
     /* tasks and csets to migrate */
-    struct cgroup_taskset	tset;
+    struct cgroup_taskset    tset;
 
     /* subsystems affected by migration */
-    u16			ss_mask;
+    u16            ss_mask;
 };
 
 /* used to track tasks and csets during migration */
 struct cgroup_taskset {
     /* the src and dst cset list running through cset->mg_node */
-    struct list_head	src_csets;
-    struct list_head	dst_csets;
+    struct list_head    src_csets;
+    struct list_head    dst_csets;
 
     /* the number of tasks in the set */
-    int			nr_tasks;
+    int            nr_tasks;
 
     /* the subsys currently being processed */
-    int			ssid;
+    int            ssid;
 
     /* Fields for cgroup_taskset_*() iteration.
     *
@@ -1270,9 +1270,9 @@ struct cgroup_taskset {
     *
     * ->cur_csets and ->cur_task point to the current task position
     * during iteration. */
-    struct list_head	*csets;
-    struct css_set		*cur_cset;
-    struct task_struct	*cur_task;
+    struct list_head    *csets;
+    struct css_set      *cur_cset;
+    struct task_struct  *cur_task;
 };
 ```
 
@@ -2280,7 +2280,7 @@ static struct cftype mem_cgroup_legacy_files[] = {
 };
 
 static struct cftype memory_files[] = {
-    	{
+        {
             .name = "min",
             .flags = CFTYPE_NOT_ON_ROOT,
             .seq_show = memory_min_show,
@@ -2343,7 +2343,7 @@ static struct cftype zswap_files[] = {
         .seq_show = zswap_writeback_show,
         .write = zswap_writeback_write,
     },
-    { }	/* terminate */
+    { } /* terminate */
 };
 ```
 
@@ -2897,7 +2897,7 @@ struct cgroup_subsys cpu_cgrp_subsys = {
     .css_local_stat_show = cpu_local_stat_show,
     .can_attach         = cpu_cgroup_can_attach,
     .attach             = cpu_cgroup_attach,
-    .cancel_attach	= cpu_cgroup_cancel_attach,
+    .cancel_attach      = cpu_cgroup_cancel_attach,
     .legacy_cftypes     = cpu_legacy_files,
     .dfl_cftypes        = cpu_files,
     .early_init         = true,
@@ -3135,7 +3135,7 @@ struct cfs_bandwidth {
 
     int                 nr_periods;
     int                 nr_throttled;
-    int                 nr_burst;		/* number of overrun */
+    int                 nr_burst;   /* number of overrun */
     u64                 throttled_time;
     u64                 burst_time; /* accumulative overrun time */
 };
@@ -3516,6 +3516,9 @@ int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 #### account_cfs_rq_runtime
 
 ```c
+/* 1. <enque, deque, task_fair> -> update_curr
+ * 2. enqueue_entity -> check_enqueue_throttle
+ * 3. set_next_task_fair */
 void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
 {
     if (!cfs_bandwidth_used() || !cfs_rq->runtime_enabled)
@@ -3582,8 +3585,9 @@ void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
     }
 }
 
-if (cfs_rq->runtime_remaining <= 0)
+if (cfs_rq->runtime_remaining <= 0) {
     throttle_cfs_rq(cfs_rq);
+}
 ```
 
 #### throttle_cfs_rq
@@ -3994,15 +3998,15 @@ CONFIG_RT_GROUP_SCHED=y
 ```c
 struct rt_bandwidth {
     raw_spinlock_t  rt_runtime_lock;
-    ktime_t         rt_period; 	/* timer interval of checking */
+    ktime_t         rt_period;  /* timer interval of checking */
     u64             rt_runtime; /* quota of running time */
     struct hrtimer  rt_period_timer;
     unsigned int    rt_period_active;
 };
 
 struct rt_rq {
-    u64             rt_time;		/* a accumulative running time */
-    u64             rt_runtime;	/* quota of running time */
+    u64             rt_time;    /* a accumulative running time */
+    u64             rt_runtime; /* quota of running time */
 };
 
 static struct cftype cpu_legacy_files[] = {
@@ -6901,4 +6905,29 @@ void timens_on_fork(struct nsproxy *nsproxy, struct task_struct *tsk)
 
 ```sh
 mount -t overlay overlay -o lowerdir=A:B:C,upperdir=C,workdir=worker /tmp/test
+```
+
+# fs_proc
+
+```sh
+# proc/cgroups
+# proc_cgroupstats_show()
+#subsys_name    hierarchy    num_cgroups    enabled
+cpu                 0           237             1
+cpuacct             0           237             1
+blkio               0           237             1
+devices             0           237             1
+freezer             0           237             1
+net_cls             0           237             1
+perf_event          0           237             1
+net_prio            0           237             1
+hugetlb             0           237             1
+pids                0           237             1
+rdma                0           237             1
+misc                0           237             1
+```
+
+```sh
+# /proc/[PID]/cgroup
+0::/user.slice/user-0.slice/session-44.scope
 ```

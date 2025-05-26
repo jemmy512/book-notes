@@ -1655,10 +1655,10 @@ static int ptrace_hbp_get_addr(unsigned int note_type,
     {
         int status;
         struct user_pt_regs regs;
-    
+
         while (1) {
             waitpid(pid, &status, 0);
-    
+
             if (WIFSTOPPED(status)) {
                 switch (WSTOPSIG(status)) {
                     case SIGTRAP:
@@ -1666,7 +1666,7 @@ static int ptrace_hbp_get_addr(unsigned int note_type,
                         gdb_get_registers(pid, &regs);
                         handle_trap(pid, &regs);
                         break;
-    
+
                     case SIGINT:
                         // Handle interrupt
                         handle_interrupt(pid);
@@ -3232,7 +3232,7 @@ echo 1 > /sys/kernel/debug/tracing/tracing_on
 
 
 # Trace specific functions using set_ftrace_filter:
-echo do_fork > /sys/kernel/debug/tracing/set_ftrace_filter
+echo kernel_clone > /sys/kernel/debug/tracing/set_ftrace_filter
 # Use wildcards for groups:
 echo 'vfs_*' > /sys/kernel/debug/tracing/set_ftrace_filter
 # Clear filters:
@@ -5408,7 +5408,26 @@ By using `perf` and `ftrace`, you can pinpoint slow interrupt handlers, interrup
 ## config
 
 ```sh
-CONFIG_DEBUG_KERNEL, CONFIG_KASAN, CONFIG_LOCKDEP, CONFIG_DEBUG_PAGEALLOC
+CONFIG_DEBUG_KERNEL, CONFIG_KASAN, CONFIG_LOCKDEP, CONFIG_DEBUG_PAGEALLOC, CONFIG_DEBUG_SLAB, CONFIG_DEBUG_SPINLOCK, CONFIG_DEBUG_ATOMIC_SLEEP, CONFIG_DEBUG_INFO, CONFIG_FRAME_POINTER, CONFIG_DEBUG_STACKOVERFLOW, CONFIG_DEBUG_STACK_USAGE, CONFIG_DEBUG_KMEMLEAK, CONFIG_KPROBES, CONFIG_FTRACE, CONFIG_KGDB,
+```
+
+```sh
+# Specifies the format and location of core dumps for crashed processes.
+# %e: Executable name, %p: PID, %t: Timestamp.
+echo "/var/crash/core.%e.%p.%t" > /proc/sys/kernel/core_pattern
+```
+
+**/etc/sysctl.conf**
+```sh
+# Sets the time (in seconds) before reboot after a kernel panic.
+kernel.panic = 10
+
+# Appends PID to core dump filenames to avoid overwriting.
+kernel.core_uses_pid = 1
+
+# /etc/systemd/system.conf
+# Sets the default core dump size limit for systemd-managed processes.
+DefaultLimitCORE=infinity
 ```
 
 ## kdb/kgdb

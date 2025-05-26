@@ -3513,7 +3513,8 @@ struct sched_entity {
 
 struct cfs_rq {
     struct load_weight      load;
-    unsigned int            nr_queued;      /* SCHED_{NORMAL,BATCH,IDLE} */
+    unsigned int            nr_queued;      /* running and delaed dequeue tasks */
+    unsigned int            h_nr_queued;    /* SCHED_{NORMAL,BATCH,IDLE} */
     unsigned int            h_nr_runnable;  /* SCHED_{NORMAL,BATCH,IDLE} */
     unsigned int            h_nr_idle;      /* SCHED_IDLE */
 
@@ -3531,7 +3532,6 @@ struct cfs_rq {
     struct sched_entity    *curr;
     struct sched_entity    *next;
     struct sched_entity    *last;
-    struct sched_entity    *skip;
 
 #ifdef CONFIG_SMP
     /* CFS load tracking */

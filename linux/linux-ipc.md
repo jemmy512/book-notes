@@ -318,7 +318,7 @@ static int fifo_open(struct inode *inode, struct file *filp)
 
 # signal
 
-<img src='../images/kernel/sig-handle.svg' style='max-height:850px'/>
+![](../images/kernel/sig-handle.svg)
 
 ---
 
@@ -1825,6 +1825,14 @@ open() {
 ## shmem_fault
 
 ```c
+struct shmem_falloc {
+    wait_queue_head_t *waitq;   /* faults into hole wait for punch to end */
+    pgoff_t start;              /* start of range currently being fallocated */
+    pgoff_t next;               /* the next page offset to be fallocated */
+    pgoff_t nr_falloced;        /* how many new pages have been fallocated */
+    pgoff_t nr_unswapped;       /* how often writepage refused to swap out */
+};
+
 vm_fault_t shmem_fault(struct vm_fault *vmf) {
     struct vm_area_struct *vma = vmf->vma;
     struct inode *inode = file_inode(vma->vm_file);

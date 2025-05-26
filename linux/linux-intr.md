@@ -1560,3 +1560,20 @@ void __tasklet_schedule_common(struct tasklet_struct *t,
     local_irq_restore(flags);
 }
 ```
+
+# fs_proc
+
+``sh
+/proc/stat
+/proc/interrupts
+/proc/softirqs
+
+/proc/irq/<pid>
+├── affinity_hint
+├── effective_affinity
+├── effective_affinity_list
+├── node
+├── smp_affinity
+├── smp_affinity_list
+└── spurious
+```

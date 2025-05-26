@@ -1,3 +1,9 @@
+```sh
+/proc/uptime
+/proc/timer_list
+/proc/[PID]/timers
+```
+
 * PPI (Private Peripheral Interrupt)
 * SPI (Shared Peripheral Interrupt)
 
