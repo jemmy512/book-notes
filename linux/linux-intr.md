@@ -17,6 +17,63 @@
 
 * [深入分析linux内核源码：中断子系统详解](https://mp.weixin.qq.com/s/8BV0aQMeBtqUlKrpa8QZeg)
 
+* PREEMPT_RT
+
+    * **Hard interrupts force threading**
+
+        * **Standard kernel**: non-threaded processing is adopted by default
+
+            After the kernel detects a hardware interrupt, it turns off preemption and interruption, performs some hardware-related operations (indicated by do_IRQ), directly calls the interrupt service routine (indicated by ISR) registered by the user, and then opens the interrupt, and exits the interrupt context after opening preemption. The entire processing process is carried out in the interrupt context.
+
+        * **Real-time kernel**: threaded processing is adopted by default
+
+            After the kernel detects a hardware interrupt, it turns off preemption and interruption, performs some hardware-related operations (indicated by do_IRQ), wakes up only the interrupt thread, and then opens the interrupt, and exits the interrupt context after opening preemption.
+
+            The processing of the interrupt service routine (indicated by ISR, which is really time-consuming) is placed in the interrupt thread. Among them, the interrupt thread defaults to a real-time process with **SCHED_FIFO** **priority 50**.
+
+        * Notes after threading the RT kernel hard interrupt
+
+            1. The RT kernel interrupt processing is threaded by default, and the interrupt processing function is actually executed in the interrupt thread. The interrupt thread defaults to a real-time thread, with a scheduling policy of SCHED_FIFO and a priority of 50. It may be preempted by a real-time thread with a higher priority, and there is a scheduling delay. Its execution time is more uncertain than before threading. Please pay attention to this change.
+            2. After threading, the execution of the interrupt needs to wake up the interrupt thread to execute, which has the overhead of task switching and scheduling delay. If the interrupt processing process is simple but frequent, such as just reading and writing registers or waking up processes, it is necessary to weigh the pros and cons of threading to confirm whether to thread the interrupt.
+            3. When registering an interrupt, interrupts with IRQF_NO_THREAD, IRQF_PERCPU (such as clock tick interrupts) or IRQF_ONESHOT marks (for reentry control of active threaded interrupts) will not be threaded. Normally, you can avoid threading interrupts by adding the IRQF_NO_THREAD flag when registering interrupts, but it is not advisable to perform too time-consuming operations in non-threaded interrupt handlers.
+            4. In non-threaded interrupt handlers, spinlock/rwlock/local_lock and other locks that can be preempted in the RT kernel cannot be used. Only non-preemptive versions, such as raw_spinlock_t, can be used.
+            5. In threaded interrupt handlers, the above-mentioned locks that can be preempted in the RT kernel can be used;
+
+    * **Softirq preemptable**
+
+        * Standard kernel soft interrupt **execution point**
+            1. **Hard Interrupt bottom half**
+
+                After the hard interrupt is processed, call irq_exit to exit. If it is detected that there is a soft interrupt to be processed, call invoke_softirq function to process the soft interrupt.
+
+            2. If the soft interrupt is not processed at the previous execution point, it will be processed in **ksoftirqd **by waking up ksoftirqd
+
+                The ksoftirqd thread is a normal thread of the default priority fair scheduling class
+
+            3. Some mutual exclusion mechanisms that close the bottom half (such as spin_lock_bh/spin_unlock_bh), when the outermost bottom half is enabled Call **__local_bh_enable_ip **function, if **not in the interrupt context**, call do_softirq() to process the soft interrupt
+
+            The above three soft interrupt execution points will disable the bottom half to ensure mutual exclusion. The standard kernel disables the bottom half by disabling preemption.
+
+        * The **priority **of standard kernel soft interrupt **execution**
+            1. The bottom half of the interrupt will only **be interrupted by hard interrupts **and will **not be preempted by other processes**. Theoretically, its priority is higher than that of real-time threads;
+            2. Although the ksoftirqd thread is a common thread of the fair scheduling class, once it is scheduled, the bottom half will be disabled and preemption will be disabled, and it will not be preempted by other processes.
+
+        * Changes to soft interrupts in the RT kernel
+            1. **Cancel the immediate processing** of the BH in hard irq ctx
+
+                After the hard interrupt is processed, if it is detected that there is a soft interrupt to be processed, only the ksoftirqd thread is waked up and then returned, and the actual processing is performed in the ksoftirqd thread.
+
+            2. Decouple the **control of soft interrupts** from the **control of preemption**, and disabling soft interrupts no longer implicitly disables preemption
+
+                This allows the processing of soft interrupts to remain preemptible, thereby reducing the scope of the non-preemptible area.
+
+            3. When the bottom half is enabled, In the **__local_bh_enable_ip** function, only when the current context is **preemptible** and the **interrupt is enabled**, __do_softirq() is directly called to process the soft interrupt, otherwise only the ksoftirqd thread is awakened. Also reduces the scope of the potential non-preemptible area
+
+        * RT kernel soft interrupt execution priority
+            1. Based on the above changes, the RT kernel's processing of soft interrupts becomes completely preemptible;
+            2. The ksoftirqd thread remains a normal thread of the default priority fair scheduling class. Since soft interrupt processing is preemptible, real-time processes can preempt soft interrupt execution.
+---
+
 ![](../images/kernel/intr-arch-layer.png)
 
 ---
@@ -303,13 +360,11 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
         } while (old);
     }
     *old_ptr = new;
-    if (new->thread)
-        wake_up_process(new->thread);
-}
-
-int wake_up_process(struct task_struct *p)
-{
-    return try_to_wake_up(p, TASK_NORMAL, 0);
+    if (new->thread) {
+        wake_up_process(new->thread) {
+            return try_to_wake_up(p, TASK_NORMAL, 0);
+        }
+    }
 }
 
 static int setup_irq_thread(
@@ -597,11 +652,9 @@ void register_irq_proc(unsigned int irq, struct irq_desc *desc)
     if (!root_irq_dir || (desc->irq_data.chip == &no_irq_chip))
         return;
 
-    /*
-    * irq directories are registered only when a handler is
+    /* irq directories are registered only when a handler is
     * added, not when the descriptor is created, so multiple
-    * tasks might try to register at the same time.
-    */
+    * tasks might try to register at the same time. */
     mutex_lock(&register_lock);
 
     if (desc->dir)
@@ -836,6 +889,7 @@ softirq ctrl & preemption | diable softirq will disalbe preemption | decouple th
                 wakeup_softirqd();
             }
         }
+    #endif
     ```
 
 2. **ksoftirqd Kernel Threads**:
@@ -860,7 +914,7 @@ softirq ctrl & preemption | diable softirq will disalbe preemption | decouple th
         pending = local_softirq_pending();
         if (pending) {
             if (time_before(jiffies, end) && !need_resched() && --max_restart)
-            goto restart;
+                goto restart;
 
             wakeup_softirqd();
         }
@@ -1117,11 +1171,12 @@ int smpboot_thread_fn(void *data)
 static void run_ksoftirqd(unsigned int cpu)
 {
     ksoftirqd_run_begin() {
-      #ifdef CONFIG_PREEMPT_RT
+    #ifdef CONFIG_PREEMPT_RT /* enabled again in handle_softirqs */
         __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
         local_irq_disable();
-      #else
+    #else
         local_irq_disable();
+        #endif
     }
 
     if (local_softirq_pending()) {
@@ -1130,7 +1185,16 @@ static void run_ksoftirqd(unsigned int cpu)
         cond_resched();
         return;
     }
-    ksoftirqd_run_end();
+
+    ksoftirqd_run_end() {
+    #ifdef CONFIG_PREEMPT_RT
+        __local_bh_enable(SOFTIRQ_OFFSET, true);
+        WARN_ON_ONCE(in_interrupt());
+        local_irq_enable();
+    #else
+        local_irq_enable();
+    #endif
+    }
 }
 
 struct softirq_action
@@ -1138,7 +1202,7 @@ struct softirq_action
     void (*action)(struct softirq_action *);
 };
 
-void handle_softirqs(bool ksirqd)
+static void handle_softirqs(bool ksirqd)
 {
     unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
     unsigned long old_flags = current->flags;
@@ -1148,27 +1212,28 @@ void handle_softirqs(bool ksirqd)
     __u32 pending;
     int softirq_bit;
 
-    /* Mask out PF_MEMALLOC s current task context is borrowed for the
-     * softirq. A softirq handled such as network RX might set PF_MEMALLOC
-     * again if the socket is related to swap */
     current->flags &= ~PF_MEMALLOC;
 
     pending = local_softirq_pending();
-    account_irq_enter_time(current);
 
-    __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
+    softirq_handle_begin() {
+        #ifndef CONFIG_PREEMPT_RT
+        __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
+        #endif
+    }
+
     in_hardirq = lockdep_softirq_start();
+    account_softirq_enter(current);
 
 restart:
-  /* Reset the pending bitmask before enabling irqs */
+    /* Reset the pending bitmask before enabling irqs */
     set_softirq_pending(0);
 
     local_irq_enable();
 
-    h = softirq_vec;
-
     /* 1. run in interrupt conext in bottom-half
      * with local irq disabled, non-preemptible, and non-blocking */
+    h = softirq_vec;
     while ((softirq_bit = ffs(pending))) {
         unsigned int vec_nr;
         int prev_count;
@@ -1180,12 +1245,21 @@ restart:
 
         kstat_incr_softirqs_this_cpu(vec_nr);
 
-        h->action(h); /* soft irq handler, e.g., net_rx_action, net_tx_action */
+        trace_softirq_entry(vec_nr);
+        h->action();
+        trace_softirq_exit(vec_nr);
+        if (unlikely(prev_count != preempt_count())) {
+                vec_nr, softirq_to_name[vec_nr], h->action,
+                prev_count, preempt_count());
+            preempt_count_set(prev_count);
+        }
         h++;
         pending >>= softirq_bit;
     }
 
-    rcu_bh_qs();
+    if (!IS_ENABLED(CONFIG_PREEMPT_RT) && ksirqd)
+        rcu_softirq_qs();
+
     local_irq_disable();
 
     /* 2. run in process context in ksoftirqd
@@ -1194,16 +1268,21 @@ restart:
      * and may defer remaining work to the ksoftirqd kernel thread. */
     pending = local_softirq_pending();
     if (pending) {
-        if (time_before(jiffies, end) && !need_resched() && --max_restart)
+        if (time_before(jiffies, end) && !need_resched() &&
+            --max_restart)
             goto restart;
 
         wakeup_softirqd();
     }
 
+    account_softirq_exit(current);
     lockdep_softirq_end(in_hardirq);
-    account_irq_exit_time(current);
-    __local_bh_enable(SOFTIRQ_OFFSET);
-    WARN_ON_ONCE(in_interrupt());
+    softirq_handle_end() {
+        #ifndef CONFIG_PREEMPT_RT
+        __local_bh_enable(SOFTIRQ_OFFSET);
+        WARN_ON_ONCE(in_interrupt());
+        #endif
+    }
     current_restore_flags(old_flags, PF_MEMALLOC);
 }
 ```
@@ -1265,27 +1344,40 @@ To summarize, each softirq goes through the following stages:
 void raise_softirq_irqoff(unsigned int nr)
 {
     __raise_softirq_irqoff(nr) {
-        or_softirq_pending(1UL << nr);
+        or_softirq_pending(1UL << nr) {
+            #define local_softirq_pending_ref irq_stat.__softirq_pending
+            #define or_softirq_pending(x)	(__this_cpu_or(local_softirq_pending_ref, (x)))
+        }
     }
 
-    if (!in_interrupt())
+    /* If we're in an interrupt or softirq, we're done
+    * (this also catches softirq-disabled code). We will
+    * actually run the softirq once we return from
+    * the irq or softirq (irq_exit_rcu)
+    *
+    * Otherwise we wake up ksoftirqd to make sure we
+    * schedule the softirq soon. */
+    if (!in_interrupt() && should_wake_ksoftirqd())
         wakeup_softirqd();
 }
 
-static __always_inline int preempt_count(void)
+#define in_interrupt()      (irq_count())
+
+#ifdef CONFIG_PREEMPT_RT
+# define softirq_count()    (current->softirq_disable_cnt & SOFTIRQ_MASK)
+# define irq_count()        ((preempt_count() & (NMI_MASK | HARDIRQ_MASK)) | softirq_count())
+#else
+# define softirq_count()    (preempt_count() & SOFTIRQ_MASK)
+# define irq_count()        (preempt_count() & (NMI_MASK | HARDIRQ_MASK | SOFTIRQ_MASK))
+#endif
+
+/* arch/arm64/include/asm/preempt.h */
+static inline int preempt_count(void)
 {
-  return raw_cpu_read_4(__preempt_count) & ~PREEMPT_NEED_RESCHED;
+    return READ_ONCE(current_thread_info()->preempt.count);
 }
 
-/* 1. per cpu data, non-zero means preemption is disabled
-0-7   Preemption counter (max value = 255)
-8-15  Softirq counter (max value = 255), indicate if soft IRQ processing is active,
-      while __softirq_pending shows which specific soft IRQs are pending
-16-27 Hardirq counter (max value = 4096)
-28    PREEMPT_ACTIVE flag */
-DECLARE_PER_CPU(int, __preempt_count);
-
-/* 2. per cpu bitmap that indicates which soft IRQs are pending for the CPU. */
+/* per cpu bitmap that indicates which soft IRQs are pending for the CPU. */
 typedef struct {
     unsigned int __softirq_pending;
 } ____cacheline_aligned irq_cpustat_t;
@@ -1365,7 +1457,9 @@ static DEFINE_PER_CPU(struct softirq_ctrl, softirq_ctrl) = {
 static inline void local_bh_enable(void)
 {
     __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET/*cnt*/) {
-        bool preempt_on = preemptible();
+        bool preempt_on = preemptible() {
+            return (preempt_count() == 0 && !irqs_disabled())
+        }
         unsigned long flags;
         u32 pending;
         int curcnt;
@@ -1389,8 +1483,6 @@ static inline void local_bh_enable(void)
         if (!pending)
             goto out;
 
-        /* If this was called from non preemptible context, wake up the
-         * softirq daemon. */
         if (!preempt_on) {
             wakeup_softirqd();
             goto out;
