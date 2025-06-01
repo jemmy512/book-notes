@@ -2833,7 +2833,7 @@ task_tick_rt() {
         if (--p->rt.time_slice)
             return;
 
-        p->rt.time_slice = sched_rr_timeslice;
+        p->rt.time_slice = sched_rr_timeslice; /* default 100 msecs */
         requeue_task_rt(rq, p, 0);
         resched_curr(rq);
     }
@@ -2917,7 +2917,7 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
     if (--p->rt.time_slice)
         return;
 
-    p->rt.time_slice = sched_rr_timeslice;
+    p->rt.time_slice = sched_rr_timeslice; /* default 100 msecs */
 
     for_each_sched_rt_entity(rt_se) {
         if (rt_se->run_list.prev != rt_se->run_list.next) {
@@ -6024,6 +6024,8 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 # sched_domain
 
+![](../images/kernel/proc-sched_domain-arch.svg)
+
 * [极致Linux内核 - Scheduling Domain](https://zhuanlan.zhihu.com/p/589693879)
 * [CPU的拓扑结构](https://s3.shizhz.me/linux-sched/lb/lb-cpu-topo) ⊙ [数据结构](https://s3.shizhz.me/linux-sched/lb/lb-data-structure)
 
@@ -6042,12 +6044,21 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 |  | SMT Doamin | CLS Domain | MC Domain | PGK Domain |
 | :-: | :-: | :-: | :-: | :-: |
+| **SD_BALANCE_NEWIDLE** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **SD_BALANCE_FORK** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **SD_BALANCE_EXEC** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| **SD_BALANCE_WAKE** |:white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| **SD_BALANCE_WAKE** |||||
 | **SD_WAKE_AFFINE**  | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| **SD_BALANCE_NEWIDLE** | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **SD_SHARE_CPUCAPACITY** | :white_check_mark: | | | |
+| **SD_SHARE_LLC** | :white_check_mark: |:white_check_mark:|:white_check_mark:||
+
+```c
+if (sched_domains_numa_distance[tl->numa_level] > node_reclaim_distance) {
+    sd->flags &= ~(SD_BALANCE_EXEC | SD_BALANCE_FORK | SD_WAKE_AFFINE);
+}
+```
+
+---
 
 Consider the following system:
 - **2 sockets** (packages).
@@ -6063,8 +6074,6 @@ The scheduler topology would look like this:
 | **CLS** | Cluster-level | CPUs 0-3 (Cluster 0 in Socket 0). |
 | **MC** | Core-level | CPUs 0-7 (All cores in Socket 0). |
 | **PKG** | Package-level | CPUs 0-7 (Socket 0) and CPUs 8-15 (Socket 1). |
-
-![](../images/kernel/proc-sched_domain-arch.svg)
 
 ```text
 System (Global View)
@@ -6140,8 +6149,8 @@ struct sched_domain_topology_level {
     struct sd_data          data;
 };
 
-static struct sched_domain_topology_level *sched_domain_topology =
-    default_topology = {
+static struct sched_domain_topology_level *sched_domain_topology
+= default_topology = {
 #ifdef CONFIG_SCHED_SMT
     { cpu_smt_mask, cpu_smt_flags, SD_INIT_NAME(SMT) },
 #endif
@@ -6156,6 +6165,11 @@ static struct sched_domain_topology_level *sched_domain_topology =
     { cpu_cpu_mask, SD_INIT_NAME(PKG) },
     { NULL, },
 };
+
+static inline int cpu_smt_flags(void) { return SD_SHARE_CPUCAPACITY | SD_SHARE_LLC; }
+static inline int cpu_cluster_flags(void) { return SD_CLUSTER | SD_SHARE_LLC; }
+static inline int cpu_core_flags(void) { return SD_SHARE_LLC; }
+static inline int cpu_numa_flags(void) { return SD_NUMA; }
 
 DEFINE_PER_CPU(struct sched_domain __rcu *, sd_llc);
 DEFINE_PER_CPU(int, sd_llc_size); /* nr of cpus */
@@ -6209,11 +6223,17 @@ struct sched_domain {
         void *private;  /* used during construction */
         struct rcu_head rcu; /* used during destruction */
     };
-    struct sched_domain_shared *shared;
 
-    unsigned int span_weight;
-    /* Span of all CPUs in this domain. */
+    struct sched_domain_shared *shared; /* point to 'shared' of sd_data*/
+
+    unsigned int span_weight; /* number of CPUs */
     unsigned long span[];
+
+    char *name;
+    union {
+        void *private;          /* used during construction, point to sd_data */
+        struct rcu_head rcu;    /* used during destruction */
+    };
 };
 
 struct sched_group {
@@ -6240,14 +6260,18 @@ struct sched_group_capacity {
 
     unsigned long       cpumask[]; /* Balance mask */
 };
-
-void __init sched_init_smp(void) {
-    sched_init_numa(void);
-    sched_init_domains(cpu_active_mask);
-}
 ```
 
 ```c
+kernel_init() {
+    kernel_init_freeable() {
+        void __init sched_init_smp(void) {
+            sched_init_numa(void);
+            sched_init_domains(cpu_active_mask);
+        }
+    }
+}
+
 sched_init_domains(cpu_active_mask) {
     zalloc_cpumask_var(&sched_domains_tmpmask, GFP_KERNEL);
     zalloc_cpumask_var(&sched_domains_tmpmask2, GFP_KERNEL);
@@ -6262,10 +6286,13 @@ sched_init_domains(cpu_active_mask) {
         doms_cur = &fallback_doms;
     cpumask_and(doms_cur[0], cpu_map, housekeeping_cpumask(HK_TYPE_DOMAIN));
 
-    err = build_sched_domains(doms_cur[0], NULL) {
+    err = build_sched_domains(const struct cpumask *cpu_map, NULL) {
         enum s_alloc alloc_state = sa_none;
         struct sched_domain *sd;
-        struct s_data d;
+        struct s_data {
+            struct sched_domain * __percpu *sd;
+            struct root_domain	*rd;
+        } d;
         struct rq *rq = NULL;
         int i, ret = -ENOMEM;
         bool has_asym = false;
@@ -6273,128 +6300,58 @@ sched_init_domains(cpu_active_mask) {
         if (WARN_ON(cpumask_empty(cpu_map)))
             goto error;
 
-        alloc_state = __visit_domain_allocation_hell(&d, cpu_map);
+        alloc_state = __visit_domain_allocation_hell(&d, cpu_map) {
+            memset(d, 0, sizeof(*d));
+
+            if (__sdt_alloc(cpu_map)) /* alloc per-cpu memrbers in sd_data */
+                return sa_sd_storage;
+
+            d->sd = alloc_percpu(struct sched_domain *);
+            if (!d->sd)
+                return sa_sd_storage;
+            d->rd = alloc_rootdomain() {
+                struct root_domain *rd;
+
+                rd = kzalloc(sizeof(*rd), GFP_KERNEL);
+                if (!rd)
+                    return NULL;
+
+                if (init_rootdomain(rd) != 0) {
+                    kfree(rd);
+                    return NULL;
+                }
+
+                return rd;
+            }
+            if (!d->rd)
+                return sa_sd;
+
+            return sa_rootdomain;
+        }
         if (alloc_state != sa_rootdomain)
             goto error;
 
         /* Set up domains for CPUs specified by the cpu_map: */
         for_each_cpu(i, cpu_map) {
             struct sched_domain_topology_level *tl;
-
             sd = NULL;
             for_each_sd_topology(tl) {
-                sd = build_sched_domain(tl, cpu_map, attr, sd, i) {
-                    struct sched_domain *sd = sd_init(tl, cpu_map, child, cpu) {
-                        struct sd_data *sdd = &tl->data;
-                        struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu);
-                        int sd_id, sd_weight, sd_flags = 0;
-                        struct cpumask *sd_span;
-
-                        sched_domains_curr_level = tl->numa_level;
-                        sd_weight = cpumask_weight(tl->mask(cpu));
-
-                        if (tl->sd_flags) {
-                            sd_flags = (*tl->sd_flags)();
-                        }
-                        *sd = (struct sched_domain) {
-                            .min_interval       = sd_weight,
-                            .max_interval       = 2*sd_weight,
-                            .busy_factor        = 16,
-                            .imbalance_pct      = 117,
-
-                            .cache_nice_tries   = 0,
-
-                            .flags = 1*SD_BALANCE_NEWIDLE
-                                | 1*SD_BALANCE_EXEC
-                                | 1*SD_BALANCE_FORK
-                                | 0*SD_BALANCE_WAKE
-                                | 1*SD_WAKE_AFFINE
-                                | 0*SD_SHARE_CPUCAPACITY
-                                | 0*SD_SHARE_LLC
-                                | 0*SD_SERIALIZE
-                                | 1*SD_PREFER_SIBLING
-                                | 0*SD_NUMA
-                                | sd_flags ,
-                            .last_balance           = jiffies,
-                            .balance_interval       = sd_weight,
-                            .max_newidle_lb_cost    = 0,
-                            .last_decay_max_lb_cost = jiffies,
-                            .child                  = child,
-                        };
-
-                        sd_span = sched_domain_span(sd);
-                        cpumask_and(sd_span, cpu_map, tl->mask(cpu));
-                        sd_id = cpumask_first(sd_span);
-
-                        sd->flags |= asym_cpu_capacity_classify(sd_span, cpu_map)
-
-                        /* Convert topological properties into behaviour. */
-                        /* Don't attempt to spread across CPUs of different capacities. */
-                        if ((sd->flags & SD_ASYM_CPUCAPACITY) && sd->child)
-                            sd->child->flags &= ~SD_PREFER_SIBLING;
-
-                        if (sd->flags & SD_SHARE_CPUCAPACITY) {
-                            sd->imbalance_pct = 110;
-
-                        } else if (sd->flags & SD_SHARE_LLC) {
-                            sd->imbalance_pct = 117;
-                            sd->cache_nice_tries = 1;
-                        } else if (sd->flags & SD_NUMA) {
-                            sd->cache_nice_tries = 2;
-                            sd->flags &= ~SD_PREFER_SIBLING;
-                            sd->flags |= SD_SERIALIZE;
-                            if (sched_domains_numa_distance[tl->numa_level] > node_reclaim_distance) {
-                                sd->flags &= ~(
-                                    SD_BALANCE_EXEC | SD_BALANCE_FORK | SD_WAKE_AFFINE
-                                );
-                            }
-                        } else {
-                            sd->cache_nice_tries = 1;
-                        }
-
-                        /* For all levels sharing cache; connect a sched_domain_shared
-                         * instance. */
-                        if (sd->flags & SD_SHARE_LLC) {
-                            sd->shared = *per_cpu_ptr(sdd->sds, sd_id);
-                            atomic_inc(&sd->shared->ref);
-                            atomic_set(&sd->shared->nr_busy_cpus, sd_weight);
-                        }
-
-                        sd->private = sdd;
-
-                        return sd;
-                    }
-
-                    if (child) {
-                        sd->level = child->level + 1;
-                        sched_domain_level_max = max(sched_domain_level_max, sd->level);
-                        child->parent = sd;
-
-                        if (!cpumask_subset(sched_domain_span(child), sched_domain_span(sd))) {
-                            /* Fixup, ensure @sd has at least @child CPUs. */
-                            cpumask_or(
-                                sched_domain_span(sd),
-                                sched_domain_span(sd),
-                                sched_domain_span(child)
-                            );
-                        }
-
-                    }
-                    set_domain_attribute(sd, attr);
-
-                    return sd;
-                }
-
+                /* return sd of tl.sd_data.sd */
+                sd = build_sched_domain(tl, cpu_map, attr, sd/*child*/, i);
+                    --->
                 has_asym |= sd->flags & SD_ASYM_CPUCAPACITY;
 
                 if (tl == sched_domain_topology)
-                    *per_cpu_ptr(d.sd, i) = sd;
+                    *per_cpu_ptr(d.sd, i) = sd; /* assign sd pointer only for SMT domain */
                 if (tl->flags & SDTL_OVERLAP)
                     sd->flags |= SD_OVERLAP;
                 if (cpumask_equal(cpu_map, sched_domain_span(sd)))
                     break;
             }
         }
+
+        if (WARN_ON(!topology_span_sane(cpu_map)))
+            goto error;
 
         /* Build the groups for the domains */
         for_each_cpu(i, cpu_map) {
@@ -6412,8 +6369,7 @@ sched_init_domains(cpu_active_mask) {
             }
         }
 
-        /* Calculate an allowed NUMA imbalance such that LLCs do not get
-        * imbalanced. */
+        /* Calculate an allowed NUMA imbalance such that LLCs do not get imbalanced. */
         for_each_cpu(i, cpu_map) {
             unsigned int imb = 0;
             unsigned int imb_span = 1;
@@ -6421,29 +6377,12 @@ sched_init_domains(cpu_active_mask) {
             for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
                 struct sched_domain *child = sd->child;
 
-                if (!(sd->flags & SD_SHARE_LLC) && child &&
-                    (child->flags & SD_SHARE_LLC)) {
+                if (!(sd->flags & SD_SHARE_LLC) && child && (child->flags & SD_SHARE_LLC)) {
                     struct sched_domain __rcu *top_p;
                     unsigned int nr_llcs;
 
                     /* For a single LLC per node, allow an
-                    * imbalance up to 12.5% of the node. This is
-                    * arbitrary cutoff based two factors -- SMT and
-                    * memory channels. For SMT-2, the intent is to
-                    * avoid premature sharing of HT resources but
-                    * SMT-4 or SMT-8 *may* benefit from a different
-                    * cutoff. For memory channels, this is a very
-                    * rough estimate of how many channels may be
-                    * active and is based on recent CPUs with
-                    * many cores.
-                    *
-                    * For multiple LLCs, allow an imbalance
-                    * until multiple tasks would share an LLC
-                    * on one node while LLCs on another node
-                    * remain idle. This assumes that there are
-                    * enough logical CPUs per LLC to avoid SMT
-                    * factors and that there is a correlation
-                    * between LLCs and memory channels. */
+                     * imbalance up to 12.5% of the node. */
                     nr_llcs = sd->span_weight / child->span_weight;
                     if (nr_llcs == 1)
                         imb = sd->span_weight >> 3;
@@ -6488,11 +6427,18 @@ sched_init_domains(cpu_active_mask) {
                 WRITE_ONCE(d.rd->max_cpu_capacity, rq->cpu_capacity_orig);
 
             cpu_attach_domain(sd, d.rd, i);
+                --->
+
+            if (lowest_flag_domain(i, SD_CLUSTER))
+                has_cluster = true;
         }
         rcu_read_unlock();
 
         if (has_asym)
             static_branch_inc_cpuslocked(&sched_asym_cpucapacity);
+
+        if (has_cluster)
+            static_branch_inc_cpuslocked(&sched_cluster_active);
 
         if (rq && sched_debug_verbose) {
             pr_info("root domain span: %*pbl (max cpu_capacity = %lu)\n",
@@ -6500,11 +6446,291 @@ sched_init_domains(cpu_active_mask) {
         }
 
         ret = 0;
+
     error:
         __free_domain_allocs(&d, alloc_state, cpu_map);
 
         return ret;
     }
+}
+
+/* Attach the domain 'sd' to 'cpu' as its base domain. Callers must
+ * hold the hotplug lock. */
+static void
+cpu_attach_domain(struct sched_domain *sd, struct root_domain *rd, int cpu)
+{
+    struct rq *rq = cpu_rq(cpu);
+    struct sched_domain *tmp;
+
+    /* Remove the sched domains which do not contribute to scheduling. */
+    for (tmp = sd; tmp; ) {
+        struct sched_domain *parent = tmp->parent;
+        if (!parent)
+            break;
+
+        if (sd_parent_degenerate(tmp, parent)) {
+            tmp->parent = parent->parent;
+
+            if (parent->parent) {
+                parent->parent->child = tmp;
+                parent->parent->groups->flags = tmp->flags;
+            }
+
+            /* Transfer SD_PREFER_SIBLING down in case of a
+            * degenerate parent; the spans match for this
+            * so the property transfers. */
+            if (parent->flags & SD_PREFER_SIBLING)
+                tmp->flags |= SD_PREFER_SIBLING;
+            destroy_sched_domain(parent);
+        } else
+            tmp = tmp->parent;
+    }
+
+    if (sd && sd_degenerate(sd)) {
+        tmp = sd;
+        sd = sd->parent;
+        destroy_sched_domain(tmp);
+        if (sd) {
+            struct sched_group *sg = sd->groups;
+
+            /* sched groups hold the flags of the child sched
+            * domain for convenience. Clear such flags since
+            * the child is being destroyed. */
+            do {
+                sg->flags = 0;
+            } while (sg != sd->groups);
+
+            sd->child = NULL;
+        }
+    }
+
+    sched_domain_debug(sd, cpu);
+
+    rq_attach_root(rq, rd);
+    tmp = rq->sd;
+    rcu_assign_pointer(rq->sd, sd);
+    dirty_sched_domain_sysctl(cpu);
+    destroy_sched_domains(tmp);
+
+    update_top_cache_domain(cpu) {
+        struct sched_domain_shared *sds = NULL;
+        struct sched_domain *sd;
+        int id = cpu;
+        int size = 1;
+
+        sd = highest_flag_domain(cpu, SD_SHARE_LLC);
+        if (sd) {
+            id = cpumask_first(sched_domain_span(sd));
+            size = cpumask_weight(sched_domain_span(sd));
+            sds = sd->shared;
+        }
+
+        rcu_assign_pointer(per_cpu(sd_llc, cpu), sd);
+        per_cpu(sd_llc_size, cpu) = size;
+        per_cpu(sd_llc_id, cpu) = id;
+        rcu_assign_pointer(per_cpu(sd_llc_shared, cpu), sds);
+
+        sd = lowest_flag_domain(cpu, SD_CLUSTER);
+        if (sd)
+            id = cpumask_first(sched_domain_span(sd));
+
+        per_cpu(sd_share_id, cpu) = id;
+
+        sd = lowest_flag_domain(cpu, SD_NUMA);
+        rcu_assign_pointer(per_cpu(sd_numa, cpu), sd);
+
+        sd = highest_flag_domain(cpu, SD_ASYM_PACKING);
+        rcu_assign_pointer(per_cpu(sd_asym_packing, cpu), sd);
+
+        sd = lowest_flag_domain(cpu, SD_ASYM_CPUCAPACITY_FULL);
+        rcu_assign_pointer(per_cpu(sd_asym_cpucapacity, cpu), sd);
+    }
+}
+```
+
+## build_sched_domain
+
+```c
+static struct sched_domain *build_sched_domain(struct sched_domain_topology_level *tl,
+        const struct cpumask *cpu_map, struct sched_domain_attr *attr,
+        struct sched_domain *child, int cpu)
+{
+    struct sched_domain *sd = sd_init(tl, cpu_map, child, cpu) {
+        struct sd_data *sdd = &tl->data;
+        struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu);
+        int sd_id, sd_weight, sd_flags = 0;
+        struct cpumask *sd_span;
+
+        sched_domains_curr_level = tl->numa_level;
+        /* Count of bits in *srcp */
+        sd_weight = cpumask_weight(tl->mask(cpu));
+
+        if (tl->sd_flags) {
+            sd_flags = (*tl->sd_flags)();
+        }
+        *sd = (struct sched_domain) {
+            .min_interval       = sd_weight,
+            .max_interval       = 2*sd_weight,
+            .busy_factor        = 16,
+            .imbalance_pct      = 117,
+
+            .cache_nice_tries   = 0,
+
+            .flags = 1*SD_BALANCE_NEWIDLE
+                | 1*SD_BALANCE_EXEC
+                | 1*SD_BALANCE_FORK
+                | 0*SD_BALANCE_WAKE
+                | 1*SD_WAKE_AFFINE
+                | 0*SD_SHARE_CPUCAPACITY
+                | 0*SD_SHARE_LLC
+                | 0*SD_SERIALIZE
+                | 1*SD_PREFER_SIBLING
+                | 0*SD_NUMA
+                | sd_flags,
+            .last_balance           = jiffies,
+            .balance_interval       = sd_weight,
+            .max_newidle_lb_cost    = 0,
+            .last_decay_max_lb_cost = jiffies,
+            .child                  = child,
+            .name                   = tl->name,
+        };
+
+        sd_span = sched_domain_span(sd);
+        cpumask_and(sd_span, cpu_map, tl->mask(cpu));
+        sd_id = cpumask_first(sd_span);
+
+        sd->flags |= asym_cpu_capacity_classify(sd_span, cpu_map)
+
+        /* Convert topological properties into behaviour. */
+        /* Don't attempt to spread across CPUs of different capacities. */
+        if ((sd->flags & SD_ASYM_CPUCAPACITY) && sd->child)
+            sd->child->flags &= ~SD_PREFER_SIBLING;
+
+        if (sd->flags & SD_SHARE_CPUCAPACITY) {
+            sd->imbalance_pct = 110;
+        } else if (sd->flags & SD_SHARE_LLC) {
+            sd->imbalance_pct = 117;
+            sd->cache_nice_tries = 1;
+        } else if (sd->flags & SD_NUMA) {
+            sd->cache_nice_tries = 2;
+            sd->flags &= ~SD_PREFER_SIBLING;
+            sd->flags |= SD_SERIALIZE;
+            if (sched_domains_numa_distance[tl->numa_level] > node_reclaim_distance/*30*/) {
+                sd->flags &= ~(SD_BALANCE_EXEC | SD_BALANCE_FORK | SD_WAKE_AFFINE);
+            }
+        } else {
+            sd->cache_nice_tries = 1;
+        }
+
+        /* For all levels sharing cache; connect a sched_domain_shared instance. */
+        if (sd->flags & SD_SHARE_LLC) {
+            sd->shared = *per_cpu_ptr(sdd->sds, sd_id);
+            atomic_inc(&sd->shared->ref);
+            atomic_set(&sd->shared->nr_busy_cpus, sd_weight);
+        }
+
+        sd->private = sdd;
+
+        return sd;
+    }
+
+    if (child) {
+        sd->level = child->level + 1;
+        sched_domain_level_max = max(sched_domain_level_max, sd->level);
+        child->parent = sd;
+
+        if (!cpumask_subset(sched_domain_span(child), sched_domain_span(sd))) {
+            /* Fixup, ensure @sd has at least @child CPUs. */
+            cpumask_or(
+                sched_domain_span(sd),
+                sched_domain_span(sd),
+                sched_domain_span(child)
+            );
+        }
+
+    }
+    set_domain_attribute(sd, attr);
+
+    return sd;
+}
+
+```
+
+## build_sched_groups
+
+```c
+static int
+build_sched_groups(struct sched_domain *sd, int cpu)
+{
+    struct sched_group *first = NULL, *last = NULL;
+    struct sd_data *sdd = sd->private;
+    const struct cpumask *span = sched_domain_span(sd);
+    struct cpumask *covered;
+    int i;
+
+    lockdep_assert_held(&sched_domains_mutex);
+    covered = sched_domains_tmpmask;
+
+    cpumask_clear(covered);
+
+    for_each_cpu_wrap(i, span, cpu) {
+        struct sched_group *sg;
+
+        if (cpumask_test_cpu(i, covered))
+            continue;
+
+        sg = get_group(i, sdd) {
+            struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu);
+            struct sched_domain *child = sd->child;
+            struct sched_group *sg;
+            bool already_visited;
+
+            if (child)
+                cpu = cpumask_first(sched_domain_span(child));
+
+            sg = *per_cpu_ptr(sdd->sg, cpu);
+            sg->sgc = *per_cpu_ptr(sdd->sgc, cpu);
+
+            /* Increase refcounts for claim_allocations: */
+            already_visited = atomic_inc_return(&sg->ref) > 1;
+            /* sgc visits should follow a similar trend as sg */
+            WARN_ON(already_visited != (atomic_inc_return(&sg->sgc->ref) > 1));
+
+            /* If we have already visited that group, it's already initialized. */
+            if (already_visited)
+                return sg;
+
+            if (child) {
+                cpumask_copy(sched_group_span(sg), sched_domain_span(child));
+                cpumask_copy(group_balance_mask(sg), sched_group_span(sg));
+                sg->flags = child->flags;
+            } else {
+                cpumask_set_cpu(cpu, sched_group_span(sg));
+                cpumask_set_cpu(cpu, group_balance_mask(sg));
+            }
+
+            sg->sgc->capacity = SCHED_CAPACITY_SCALE * cpumask_weight(sched_group_span(sg));
+            sg->sgc->min_capacity = SCHED_CAPACITY_SCALE;
+            sg->sgc->max_capacity = SCHED_CAPACITY_SCALE;
+
+            return sg;
+        }
+
+        cpumask_or(covered, covered, sched_group_span(sg));
+
+        if (!first)
+            first = sg;
+        if (last)
+            last->next = sg;
+        last = sg;
+    }
+
+    /* TODO?: The 1st cpu will setup the grp circular list of a sd.
+     * other cpu breakup the previous setting? */
+    last->next = first;
+    sd->groups = first;
+
+    return 0;
 }
 ```
 
@@ -10096,6 +10322,8 @@ try_to_wake_up() {
                     p->se.parent = tg->se[cpu];
                     p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
 
+                    if (!rt_group_sched_enabled())
+                        tg = &root_task_group;
                     p->rt.rt_rq  = tg->rt_rq[cpu];
                     p->rt.parent = tg->rt_se[cpu];
                 }
