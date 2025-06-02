@@ -6659,6 +6659,12 @@ static struct sched_domain *build_sched_domain(struct sched_domain_topology_leve
 ## build_sched_groups
 
 ```c
+for_each_cpu(i, cpu_map) {
+    for (sd = *per_cpu_ptr(d.sd, i); sd; sd = sd->parent) {
+        build_sched_groups(sd, i);
+    }
+}
+
 static int
 build_sched_groups(struct sched_domain *sd, int cpu)
 {
@@ -6673,12 +6679,14 @@ build_sched_groups(struct sched_domain *sd, int cpu)
 
     cpumask_clear(covered);
 
+    /* span = {0, 1, 2, 3}, start at cpu: 3, iterate: 3-0-1-2 */
     for_each_cpu_wrap(i, span, cpu) {
         struct sched_group *sg;
 
         if (cpumask_test_cpu(i, covered))
             continue;
 
+        /* returns the same group for CPUs in the same core (e.g., cpu0 and cpu1 both map to sg-cpu0). */
         sg = get_group(i, sdd) {
             struct sched_domain *sd = *per_cpu_ptr(sdd->sd, cpu);
             struct sched_domain *child = sd->child;
@@ -6701,7 +6709,7 @@ build_sched_groups(struct sched_domain *sd, int cpu)
                 return sg;
 
             if (child) {
-                cpumask_copy(sched_group_span(sg), sched_domain_span(child));
+                cpumask_copy(sched_group_span(sg)/*dst*/, sched_domain_span(child)/*src*/);
                 cpumask_copy(group_balance_mask(sg), sched_group_span(sg));
                 sg->flags = child->flags;
             } else {
@@ -6725,8 +6733,43 @@ build_sched_groups(struct sched_domain *sd, int cpu)
         last = sg;
     }
 
-    /* TODO?: The 1st cpu will setup the grp circular list of a sd.
-     * other cpu breakup the previous setting? */
+    /* SMT level:
+     * build(sd, cpu0):
+     * for_each_cpu_wrap(i, {0, 1}, 0)
+     *      i = cpu0: get_group = sg0{0}
+     *      i = cpu1: get_group = sg1{1}
+     *      sdcpu0 -> sg0{0} -> sg1{1}
+     *
+     * build(sd, cpu1):
+     * for_each_cpu_wrap(i, {0, 1}, 0)
+     *      i = cpu1: get_group = sg1{1}
+     *      i = cpu0: get_group = sg0{0}
+     *      sdcpu0 -> sg1{1} -> sg0{0}
+     *
+     * MC level:
+     * build(sd, cpu0):
+     * for_each_cpu_wrap(i, {0, 1, 2, 3}, 0)
+     *      i = cpu0: get_group = sg0{0, 1}, covered{0, 1}
+     *      i = cpu1: skipped
+     *      i = cpu2: get_group = sg2{2, 3}, covered{0, 1, 2, 3}
+     *      i = cpu3: skipped
+     *      sdcpu0 -> sg0{0, 1} -> sg2{2, 3}
+     *
+     * build(sd, cpu1):
+     * for_each_cpu_wrap(i, {0, 1, 2, 3}, 1)
+     *      i = cpu1: get_group = sg0{0, 1}, covered{0, 1}
+     *      i = cpu2: get_group = sg2{2, 3}, covered{0, 1, 2, 3}
+     *      i = cpu3: skipped
+     *      i = cpu0: skipped
+     *      sdcpu1 -> sg0{0, 1} -> sg2{2, 3}
+     *
+     * build(sd, cpu2):
+     * for_each_cpu_wrap(i, {0, 1, 2, 3}, 2)
+     *      i = cpu2: get_group = sg2{2, 3}, covered{2, 3}
+     *      i = cpu3: skipped
+     *      i = cpu0: get_group = sg0{0, 1}, covered{2, 3, 0, 1}
+     *      i = cpu1: skipped
+     *      sdcpu2 -> sg2{2, 3} -> sg0{0, 1} */
     last->next = first;
     sd->groups = first;
 
