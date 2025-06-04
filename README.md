@@ -7,6 +7,7 @@
 
 ## RFC
 
+* [:outbox_tray: [PATCH v0] sched/topology: Add lock guard support](https://lore.kernel.org/all/20250604185049.374165-1-jemmywong512@gmail.com/)
 * [:outbox_tray: [PATCH 0/2] sched: Refine scheduler naming for clarity and specificity, Thu, 20 Feb 2025](https://lore.kernel.org/all/20250219182020.393006-1-jemmywong512@gmail.com/)
 
 # Linux Kernel
