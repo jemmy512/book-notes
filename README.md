@@ -1,7 +1,13 @@
 # Kernel Contribution List
 
-* [Fri, 11 Apr 2025, [PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor()](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/)
-* [Fri,  7 Jun 2024, [PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/)
+## Merged
+
+* [:white_check_mark: [PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor(), Fri, 11 Apr 2025](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/)
+* [:white_check_mark: [PATCH v4] Improve readability of copy_tree, Fri, 7 Jun 2024](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/)
+
+## RFC
+
+* [:outbox_tray: [PATCH 0/2] sched: Refine scheduler naming for clarity and specificity, Thu, 20 Feb 2025](https://lore.kernel.org/all/20250219182020.393006-1-jemmywong512@gmail.com/)
 
 # Linux Kernel
 
@@ -15,6 +21,20 @@
 * [Time](./linux/linux-time.md)
 * [Cloud](./linux/linux-cloud.md)
 * [Tracing](./linux/linux-trace.md)
+
+# Linux
+
+* [Linux Programming](./linux/linux-programming.md)
+* [Understanding Linux Kernel](./linux/understanding-linux-kernel.md)
+* [Linux Kernel Development](./linux/linux-kernel-development.md)
+* [Professional Linux Kernel Architecture :soon:](./linux/professional-linux-kernel-architecture.md)
+* [Linux System Programming :soon:](./linux/linux-system-programming.md)
+* [Linux Device Drives :soon:](./linux/linux-device-derives.md)
+* [Understanding Linux Network Internals :soon:](./linux/understanding-linux-network-internals.md)
+* [Understanding The Linux Virtual Memory Manager](./linux/understanding-the-linux-virtual-memory-manager.md)
+* [Linux Programming](./linux/linux-programming.md)
+* [Linux Performance Tuning](./linux/linux-performance-tuning.md)
+* [Systems Performance Enterprise and the Cloud](./linux/system-performance-enterprise-and-cloud.md)
 
 # Architecture & Design
 
@@ -99,20 +119,6 @@
 * [MySQL](./cpp/mysql.txt)
 * [STL](./cpp/stl.txt)
 * [GCC: new allocator malloc](https://github.com/Jemmy512/software-engineer/blob/master/OpenSource/new-allocator-malloc.md)
-
-# Linux
-
-* [Linux Programming](./linux/linux-programming.md)
-* [Understanding Linux Kernel](./linux/understanding-linux-kernel.md)
-* [Linux Kernel Development](./linux/linux-kernel-development.md)
-* [Professional Linux Kernel Architecture :soon:](./linux/professional-linux-kernel-architecture.md)
-* [Linux System Programming :soon:](./linux/linux-system-programming.md)
-* [Linux Device Drives :soon:](./linux/linux-device-derives.md)
-* [Understanding Linux Network Internals :soon:](./linux/understanding-linux-network-internals.md)
-* [Understanding The Linux Virtual Memory Manager](./linux/understanding-the-linux-virtual-memory-manager.md)
-* [Linux Programming](./linux/linux-programming.md)
-* [Linux Performance Tuning](./linux/linux-performance-tuning.md)
-
 
 # Others
 
