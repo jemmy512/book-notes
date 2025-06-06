@@ -7,7 +7,7 @@
 
 ## RFC
 
-* [:outbox_tray: [PATCH v0] cgroup: Add lock guard support](https://lore.kernel.org/all/20250605211053.19200-1-jemmywong512@gmail.com/)
+* [:outbox_tray: [PATCH v1 0/3] cgroup: Add lock guard support](https://lore.kernel.org/all/20250606161841.44354-1-jemmywong512@gmail.com/)
 * [:outbox_tray: [PATCH v1 0/1] sched/topology: Add lock guard support](https://lore.kernel.org/all/20250605120424.14756-1-jemmywong512@gmail.com/)
 * [:outbox_tray: [PATCH 0/2] sched: Refine scheduler naming for clarity and specificity](https://lore.kernel.org/all/20250219182020.393006-1-jemmywong512@gmail.com/)
 
