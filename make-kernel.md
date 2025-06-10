@@ -14,7 +14,8 @@ sudo apt install -y build-essential libncurses-dev bison flex libssl-dev libelf-
 
 ```sh
 makdir -P /code && cd /code
-nohup git clone git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
+# vpn has issue to handle git:// protocol
+nohup git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
 ```
 
 # make ramfs
@@ -1002,8 +1003,7 @@ CONFIG_SYSTEM_REVOCATION_KEYS=""
 ```
 
 ```sh
-make -j$(nproc)
-make modules -j$(nproc)
+make -j$(nproc) && make modules -j$(nproc)
 
 sudo make modules_install && sudo make install && sudo update-grub && sudo reboot
 
@@ -1063,4 +1063,76 @@ sudo mount -a
 
 # Verify:
 df -h /code
+```
+
+# build perf
+
+```sh
+cd kernel_path/tools/perf
+mkdir arm64-cross
+cd arm64-cross
+```
+
+download following libs, unzip to current dir:
+```sh
+audit-4.0.5-1-aarch64.pkg.tar
+bash-5.2.037-5-aarch64.pkg.tar
+binutils-2.44-1-aarch64.pkg.tar
+coreutils-9.7-1-aarch64.pkg.tar
+elfutils-0.193-2-aarch64.pkg.tar
+filesystem-2025.05.03-1-any.pkg.tar
+glib2-2.84.2-1-aarch64.pkg.tar
+glibc-2.41+r6+gcf88351b685d-1-aarch64.pkg.tar
+iana-etc-20250502-1-any.pkg.tar
+jansson-2.14.1-1-aarch64.pkg.tar
+json-c-0.18-2-aarch64.pkg.tar
+libcap-2.76-1-aarch64.pkg.tar
+libelf-0.193-2-aarch64.pkg.tar
+libtraceevent-1.8.4-1-aarch64.pkg.tar
+libunwind-1.8.1-3-aarch64.pkg.tar
+llvm-libs-19.1.7-2-aarch64.pkg.tar
+numactl-2.0.19-1-aarch64.pkg.tar
+openssl-3.5.0-1-aarch64.pkg.tar
+perf-6.14-1-aarch64.pkg.tar
+perl-5.40.2-1-aarch64.pkg.tar
+python-3.13.3-1-aarch64.pkg.tar
+slang-2.3.3-3-aarch64.pkg.tar
+xz-5.8.1-1-aarch64.pkg.tar
+zlib-1_1.3.1-2-aarch64.pkg.t
+```
+
+copy libs under /usr to lib
+```sh
+cp usr/include/* include/ -r
+cp usr/lib/* lib/ -r
+```
+
+build cmd:
+```sh
+# 1. clean build dir
+make clean
+
+# 2. setup env
+CROSS_PATH=$(realpath arm64-cross)
+export CFLAGS="--sysroot ${CROSS_PATH} -isystem ${CROSS_PATH}/include -isystem ${CROSS_PATH}/include/gnu -O2 -Wall"
+export LDFLAGS="-L${CROSS_PATH}/lib -Wl,--sysroot=${CROSS_PATH} -lelf -ltraceevent -lcrypto -ldl -lm"
+export PKG_CONFIG_PATH="${CROSS_PATH}/lib/pkgconfig"
+export ARCH=arm64
+export CROSS_COMPILE=aarch64-linux-gnu-
+
+# 3. build - forcely skip denpendencies check
+make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+    NO_SDT=1 NO_SLANG=1 NO_PERL=1 NO_PYTHON=1 \
+    LIBELF_FOUND=yes LIBTRACEEVENT_FOUND=yes LIBCRYPTO_FOUND=yes \
+    CC="aarch64-linux-gnu-gcc ${CFLAGS}" \
+    CXX="aarch64-linux-gnu-g++ ${CFLAGS}"
+
+# cp perf to root
+cp perf ../../root/usr/bin
+
+# cp .so to root since static compilation doesnt work
+cp arm64-cross/include/ ../../root/ -r
+cp cp arm64-cross/lib/* ../../lib/ -r
+
+# open PERF and BPF related config in kernel
 ```
