@@ -1,15 +1,12 @@
 # Kernel Contribution List
 
-## Merged
-
-* [:white_check_mark: [PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor()](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/)
-* [:white_check_mark: [PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/)
-
-## RFC
-
-* [:outbox_tray: [PATCH v1 0/3] cgroup: Add lock guard support](https://lore.kernel.org/all/20250606161841.44354-1-jemmywong512@gmail.com/)
-* [:outbox_tray: [PATCH v1 0/1] sched/topology: Add lock guard support](https://lore.kernel.org/all/20250605120424.14756-1-jemmywong512@gmail.com/)
-* [:outbox_tray: [PATCH 0/2] sched: Refine scheduler naming for clarity and specificity](https://lore.kernel.org/all/20250219182020.393006-1-jemmywong512@gmail.com/)
+Patch | Merged
+ :- | :-:
+[[PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/) | :white_check_mark:
+[[PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor()](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/) | :white_check_mark:
+[[PATCH v2 0/1] sched/topology: Add lock guard support](https://lore.kernel.org/all/20250613083709.19071-2-jemmywong512@gmail.com/) |
+[[PATCH v1 0/3] cgroup: Add lock guard support](https://lore.kernel.org/all/20250606161841.44354-1-jemmywong512@gmail.com/) |
+[[PATCH 0/2] sched: Refine scheduler naming for clarity and specificity](https://lore.kernel.org/all/20250219182020.393006-1-jemmywong512@gmail.com/) |
 
 # Linux Kernel
 
