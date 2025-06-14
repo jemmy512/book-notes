@@ -260,7 +260,6 @@
                     +---------------------------------------------------------------+
         e820        |                                                               |
                     +---------------------------------------------------------------+
-        
         ```
 
         * **Migrate Types**: Each pageblock has a single migrate type (e.g., MIGRATE_UNMOVABLE), set via **set_pageblock_migratetype**(). This ties to gfp_migratetype() we discussed.
@@ -982,6 +981,7 @@ enum zone_type {
     ZONE_NORMAL, /* direct mmapping area */
     ZONE_HIGHMEM,
     ZONE_MOVABLE,
+    ZONE_DEVICE,
     __MAX_NR_ZONES
 };
 ```
@@ -1003,7 +1003,8 @@ ZONE_HIGHMEM | 896 MiB - End
 | `MIGRATE_RECLAIMABLE` | Pages that can be freed but not moved. | Reclaimed under memory pressure (e.g., slab caches with `__GFP_RECLAIMABLE`). |
 | `MIGRATE_PCPTYPES`    | Marker for the number of types in per-CPU page lists. | Defines scope of fast pcp caches (`UNMOVABLE`, `MOVABLE`, `RECLAIMABLE`). |
 | `MIGRATE_HIGHATOMIC`  | Reserve pool for high-priority atomic allocations. | Emergency pool for critical needs (e.g., `GFP_ATOMIC` with `ALLOC_HIGHATOMIC`). |
-| `MIGRATE_CMA`         | Pages reserved for the Contiguous Memory Allocator. | Supports large, contiguous allocations for devices like GPUs (movable).|
+| `MIGRATE_CMA`         | Pages reserved for the Contiguous Memory Allocator. | Supports large, contiguous allocations for devices like GPUs (movable). |
+| `MIGRATE_ISOLATE`     | |
 
 ```c
 /* The zone fallback order is MOVABLE=>HIGHMEM=>NORMAL=>DMA32=>DMA. */
@@ -1401,6 +1402,8 @@ build_all_zonelists(NULL) {
     * [Pulling slabs out of struct page](https://lwn.net/Articles/871982/)
     * [Struct slab comes to 5.17 ](https://lwn.net/Articles/881039/)
     * [The proper time to split struct page](https://lwn.net/Articles/937839/)
+
+* [Linux Compound Page](https://mp.weixin.qq.com/s/kj0UjP7QSynIb_KHov490g)
 
 | **Context** | <span style="color:yellowgreen">index Usage</span> | <span style="color:yellowgreen">private Usage</span> |
 | :-: | :-: | :-: |
@@ -3699,7 +3702,7 @@ check_alloc_wmark:
 
             ret = zone_allows_reclaim(ac->preferred_zoneref->zone, zone) {
                 return node_distance(zone_to_nid(local_zone), zone_to_nid(zone))
-                    <= node_reclaim_distance;
+                    <= node_reclaim_distance/*30*/;
             }
             if (!node_reclaim_enabled() || !ret)
                 continue;
@@ -6287,8 +6290,8 @@ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
     memcg_slab_free_hook(s, slab, &object, 1);
     /* With KASAN enabled slab_free_freelist_hook modifies the freelist
      * to remove objects, whose reuse must be delayed. */
-    if (slab_free_freelist_hook(s, object/*head*/, object/*tail*/, &cnt)) {
-        do_slab_free(s, slab, head, tail, 1/*cnt*/, addr) {
+    if (likely(slab_free_hook(s, object, slab_want_init_on_free(s), false))) {
+        do_slab_free(s, slab, object/*head*/, object/*tail*/, 1/*cnt*/, addr) {
             struct kmem_cache_cpu *c;
             unsigned long tid;
             void **freelist;
@@ -11445,6 +11448,8 @@ void folio_mark_accessed(struct folio *folio)
 }
 ```
 
+## MGLRU
+
 ## folio_batch
 
 ```c
@@ -11547,6 +11552,8 @@ void lru_add_drain(void)
 ```
 
 ## workingset
+
+* [Linux memory workingset 内存工作集](https://mp.weixin.qq.com/s/JB5OUvjFygHSj-SmEysDpg)
 
 **Shadow Entries:**
 * When a page is evicted (e.g., file page dropped or anon page swapped), a shadow entry is stored in the page cache’s radix tree (struct address_space->i_pages) or swap cache.
@@ -16279,7 +16286,7 @@ isolate_fail:
         ```c
         void kswapd_try_to_sleep(pg_data_t *pgdat, int alloc_order, int reclaim_order,
             unsigned int highest_zoneidx) {
-        
+
             /* Return true if high watermarks have been met.
              * Since we have freed the memory, now we should compact it to make
              * allocation of the requested order possible. */
@@ -20196,9 +20203,9 @@ out_leak_pages:
 
 ### iommu_dma_alloc
 
-# huge page
+# huge page - todo
 
-# thp
+# thp - todo
 
 Config | val
 :-: | :-:
