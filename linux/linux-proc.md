@@ -2086,6 +2086,106 @@ el1t_64_irq_handler() {
 ```
 <img src='../images/kernel/proc-sched.png' style='max-height:850px'/>
 
+# SCHED_DL
+
+```c
+DEFINE_SCHED_CLASS(dl) = {
+    .enqueue_task       = enqueue_task_dl,
+    .dequeue_task       = dequeue_task_dl,
+    .yield_task         = yield_task_dl,
+
+    .wakeup_preempt     = wakeup_preempt_dl,
+
+    .pick_task          = pick_task_dl,
+    .put_prev_task      = put_prev_task_dl,
+    .set_next_task      = set_next_task_dl,
+
+#ifdef CONFIG_SMP
+    .balance            = balance_dl,
+    .select_task_rq     = select_task_rq_dl,
+    .migrate_task_rq    = migrate_task_rq_dl,
+    .set_cpus_allowed   = set_cpus_allowed_dl,
+    .rq_online          = rq_online_dl,
+    .rq_offline         = rq_offline_dl,
+    .task_woken         = task_woken_dl,
+    .find_lock_rq       = find_lock_later_rq,
+#endif
+
+    .task_tick          = task_tick_dl,
+    .task_fork          = task_fork_dl,
+
+    .prio_changed       = prio_changed_dl,
+    .switched_from      = switched_from_dl,
+    .switched_to        = switched_to_dl,
+
+    .update_curr        = update_curr_dl,
+#ifdef CONFIG_SCHED_CORE
+    .task_is_throttled  = task_is_throttled_dl,
+#endif
+};
+```
+
+## enqueue_task_dl
+
+```c
+void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags)
+{
+    if (is_dl_boosted(&p->dl)) {
+        /*
+        * Because of delays in the detection of the overrun of a
+        * thread's runtime, it might be the case that a thread
+        * goes to sleep in a rt mutex with negative runtime. As
+        * a consequence, the thread will be throttled.
+        *
+        * While waiting for the mutex, this thread can also be
+        * boosted via PI, resulting in a thread that is throttled
+        * and boosted at the same time.
+        *
+        * In this case, the boost overrides the throttle.
+        */
+        if (p->dl.dl_throttled) {
+            /*
+            * The replenish timer needs to be canceled. No
+            * problem if it fires concurrently: boosted threads
+            * are ignored in dl_task_timer().
+            */
+            cancel_replenish_timer(&p->dl);
+            p->dl.dl_throttled = 0;
+        }
+    } else if (!dl_prio(p->normal_prio)) {
+        /*
+        * Special case in which we have a !SCHED_DEADLINE task that is going
+        * to be deboosted, but exceeds its runtime while doing so. No point in
+        * replenishing it, as it's going to return back to its original
+        * scheduling class after this. If it has been throttled, we need to
+        * clear the flag, otherwise the task may wake up as throttled after
+        * being boosted again with no means to replenish the runtime and clear
+        * the throttle.
+        */
+        p->dl.dl_throttled = 0;
+        if (!(flags & ENQUEUE_REPLENISH))
+            printk_deferred_once("sched: DL de-boosted task PID %d: REPLENISH flag missing\n",
+                        task_pid_nr(p));
+
+        return;
+    }
+
+    check_schedstat_required();
+    update_stats_wait_start_dl(dl_rq_of_se(&p->dl), &p->dl);
+
+    if (p->on_rq == TASK_ON_RQ_MIGRATING)
+        flags |= ENQUEUE_MIGRATING;
+
+    enqueue_dl_entity(&p->dl, flags);
+
+    if (dl_server(&p->dl))
+        return;
+
+    if (!task_current(rq, p) && !p->dl.dl_throttled && p->nr_cpus_allowed > 1)
+        enqueue_pushable_dl_task(rq, p);
+}
+```
+
 # SCHED_RT
 
 ![](../images/kernel/proc-sched-rt.png)
@@ -3473,7 +3573,12 @@ CFS focuses on distributing CPU time fairly in a weighted manner, but does not h
 
 ```c
 struct sched_entity {
-    struct load_weight      load;
+    struct load_weight {
+        /* The load.weight is a scaled value derived from shares or priorities,
+         * used to compute the CPU time allocated to an entity. */
+        unsigned long   weight;
+	    u32             inv_weight;
+    }                       load;
     struct rb_node          run_node;
     /* link all tsk in a list of cfs_rq */
     struct list_head        group_node;
@@ -4231,11 +4336,14 @@ bool dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
     update_stats_dequeue_fair(cfs_rq, se, flags);
 
     update_entity_lag(cfs_rq, se) {
-        s64 lag, limit;
+        s64 vlag, limit;Add commentMore actions
 
-        lag = avg_vruntime(cfs_rq) - se->vruntime;
+        SCHED_WARN_ON(!se->on_rq);
+
+        vlag = avg_vruntime(cfs_rq) - se->vruntime;
         limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
-        se->vlag = clamp(lag, -limit, limit);
+
+        se->vlag = clamp(vlag, -limit, limit);
     }
 
     if (sched_feat(PLACE_REL_DEADLINE) && !sleep) {
@@ -5545,7 +5653,7 @@ void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_fl
         if (!entity_eligible(cfs_rq, pse))
             return false;
 
-        if (entity_before(pse, se))
+        if (entity_before(pse, se) { return (s64)(a->deadline - b->deadline) < 0; })
             return true;
 
         if (!entity_eligible(cfs_rq, se))
@@ -5644,15 +5752,14 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
                         s64 delta = (s64)(vruntime - min_vruntime);
                         if (delta > 0) {
                             avg_vruntime_update(cfs_rq, delta) {
-                                /* v' = v + d ==> avg_vruntime' = avg_runtime - d*avg_load
-                                 *
-                                 * time line: v0 -> v0' -> vi
-                                 * avg_vruntime_new = \Sum ((v_i - v0') * w_i)
-                                 *  = \Sum ((v_i - v0) - (v0' - v0)) * w_i
-                                 *  = \Sum ((v_i - v0) * w_i) - \Sum ((v0' - v0) * w_i)
-                                 *  = avg_vruntime_old - (v0' - v0) * avg_load
-                                 *
-                                 * \Sum w_i is the total weight of all tasks, it is equivalent to avg_load */
+                                /* For each entity i:
+                                 * old: relative_vruntime_i  = actual_vruntime_i - old_min_vruntime
+                                 * new: relative_vruntime_i' = actual_vruntime_i - (old_min_vruntime + min_delta)
+                                 *                           = relative_vruntime_i - min_delta
+                                 * Therefore:
+                                 * new weighted sum = \Sum((relative_vruntime_i - min_delta) * weight_i)
+                                 *                  = \Sum(relative_vruntime_i * weight_i) - min_delta * \Sum(weight_i)
+                                 *                  = avg_vruntime - min_delta * avg_load */
                                 cfs_rq->avg_vruntime -= cfs_rq->avg_load * delta;
                             }
                             min_vruntime = vruntime;
@@ -10484,6 +10591,7 @@ try_to_wake_up() {
 
 * [Misc on Linux fork, switch_to, and scheduling](http://lastweek.io/notes/linux/fork/)
 * [man fork, inheritance behavior](https://man7.org/linux/man-pages/man2/fork.2.html)
+* [Fork() and File Descriptors: The Unix Gotcha Every Developer Should Know](https://chessman7.substack.com/p/fork-and-file-descriptors-the-unix)
 
 | Resource/Behavior | Process (fork-like) Flags | Thread (pthread-like) Flags|
 | :-: | :-: | :-: |
