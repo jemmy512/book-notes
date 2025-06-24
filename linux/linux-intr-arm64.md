@@ -895,10 +895,11 @@ GIC V3 | ITS
 * **NUMA Awareness**: `irqbalance` uses sysfs data (e.g., `/sys/devices/system/node/`) to bias IRQs toward local CPUs, reducing cross-node memory access latency.
 
 **Interrupt Types**:
-- SGI (Software Generated Interrupts): 0-15
-- PPI (Private Peripheral Interrupts): 16-31
-- SPI (Shared Peripheral Interrupts): 32-1019
-- LPI (Locality-specific Peripheral Interrupts): 8192+
+
+- **SGI **(Software Generated Interrupts): 0-15, private to each CPU core and are used for inter-processor communication
+- **PPI **(Private Peripheral Interrupts): 16-31, private to each CPU core within a GIC.
+- **SPI **(Shared Peripheral Interrupts): 32-1019, shared across CPUs and are unique within a single GIC instance.
+- **LPI **(Locality-specific Peripheral Interrupts): 8192+, managed by the GIC’s ITS (Interrupt Translation Service) and have a separate ID space (starting from 8192). LPIs are unique within the ITS of a GIC but could overlap across different GIC instances if they have separate ITS components.
 
 Feature | LPI Number | Hardware IRQ Number (HWIRQ) | Linux IRQ Number
 :-: | :-: | :-: | :-:

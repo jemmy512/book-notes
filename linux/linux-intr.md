@@ -23,13 +23,13 @@
 
         * **Standard kernel**: non-threaded processing is adopted by default
 
-            After the kernel detects a hardware interrupt, it turns off preemption and interruption, performs some hardware-related operations (indicated by do_IRQ), directly calls the interrupt service routine (indicated by ISR) registered by the user, and then opens the interrupt, and exits the interrupt context after opening preemption. The entire processing process is carried out in the interrupt context.
+            > After the kernel detects a hardware interrupt, it turns off preemption and interruption, performs some hardware-related operations (indicated by do_IRQ), directly calls the interrupt service routine (indicated by ISR) registered by the user, and then opens the interrupt, and exits the interrupt context after opening preemption. The entire processing process is carried out in the interrupt context.
 
         * **Real-time kernel**: threaded processing is adopted by default
 
-            After the kernel detects a hardware interrupt, it turns off preemption and interruption, performs some hardware-related operations (indicated by do_IRQ), wakes up only the interrupt thread, and then opens the interrupt, and exits the interrupt context after opening preemption.
+            > After the kernel detects a hardware interrupt, it turns off preemption and interruption, performs some hardware-related operations (indicated by do_IRQ), wakes up only the interrupt thread, and then opens the interrupt, and exits the interrupt context after opening preemption.
 
-            The processing of the interrupt service routine (indicated by ISR, which is really time-consuming) is placed in the interrupt thread. Among them, the interrupt thread defaults to a real-time process with **SCHED_FIFO** **priority 50**.
+            > The processing of the interrupt service routine (indicated by ISR, which is really time-consuming) is placed in the interrupt thread. Among them, the interrupt thread defaults to a real-time process with **SCHED_FIFO** **priority 50**.
 
         * Notes after threading the RT kernel hard interrupt
 
@@ -44,28 +44,30 @@
         * Standard kernel soft interrupt **execution point**
             1. **Hard Interrupt bottom half**
 
-                After the hard interrupt is processed, call irq_exit to exit. If it is detected that there is a soft interrupt to be processed, call invoke_softirq function to process the soft interrupt.
+                > After the hard interrupt is processed, call irq_exit to exit. If it is detected that there is a soft interrupt to be processed, call invoke_softirq function to process the soft interrupt.
 
             2. If the soft interrupt is not processed at the previous execution point, it will be processed in **ksoftirqd **by waking up ksoftirqd
 
-                The ksoftirqd thread is a normal thread of the default priority fair scheduling class
+                > The ksoftirqd thread is a normal thread of the default priority fair scheduling class
 
             3. Some mutual exclusion mechanisms that close the bottom half (such as spin_lock_bh/spin_unlock_bh), when the outermost bottom half is enabled Call **__local_bh_enable_ip **function, if **not in the interrupt context**, call do_softirq() to process the soft interrupt
 
-            The above three soft interrupt execution points will disable the bottom half to ensure mutual exclusion. The standard kernel disables the bottom half by disabling preemption.
+            > The above three soft interrupt execution points will disable the bottom half to ensure mutual exclusion. The standard kernel disables the bottom half by disabling preemption.
 
         * The **priority **of standard kernel soft interrupt **execution**
-            1. The bottom half of the interrupt will only **be interrupted by hard interrupts **and will **not be preempted by other processes**. Theoretically, its priority is higher than that of real-time threads;
-            2. Although the ksoftirqd thread is a common thread of the fair scheduling class, once it is scheduled, the bottom half will be disabled and preemption will be disabled, and it will not be preempted by other processes.
+            1. The ksoftirqd will only **be interrupted by hard interrupts **and will **not be preempted by other processes**. Theoretically, its priority is higher than that of real-time threads;
+            2. Disabling bottom halves (BH) implicitly disables preemption in the Linux kernel due to the shared use of the preempt_count variable.
 
         * Changes to soft interrupts in the RT kernel
             1. **Cancel the immediate processing** of the BH in hard irq ctx
 
-                After the hard interrupt is processed, if it is detected that there is a soft interrupt to be processed, only the ksoftirqd thread is waked up and then returned, and the actual processing is performed in the ksoftirqd thread.
+                > After the hard interrupt is processed, if it is detected that there is a soft interrupt to be processed, only the ksoftirqd thread is waked up and then returned, and the actual processing is performed in the ksoftirqd thread.
 
             2. Decouple the **control of soft interrupts** from the **control of preemption**, and disabling soft interrupts no longer implicitly disables preemption
 
-                This allows the processing of soft interrupts to remain preemptible, thereby reducing the scope of the non-preemptible area.
+                > RT kernel uses a seperate per-task variable `softirq_disable_cnt` to track softirq disable conditon while standard kernel employs a unified variable `preempt_count` to track both preempt and softirq conditions.
+
+                > This allows the processing of soft interrupts to remain preemptible, thereby reducing the scope of the non-preemptible area.
 
             3. When the bottom half is enabled, In the **__local_bh_enable_ip** function, only when the current context is **preemptible** and the **interrupt is enabled**, __do_softirq() is directly called to process the soft interrupt, otherwise only the ksoftirqd thread is awakened. Also reduces the scope of the potential non-preemptible area
 
@@ -315,7 +317,8 @@ static inline int request_irq(
 }
 
 int request_threaded_irq(
-    unsigned int irq, irq_handler_t handler,
+    unsigned int irq, /* Linux Virtual IRQ Number */
+    irq_handler_t handler,
     irq_handler_t thread_fn, unsigned long irqflags,
     const char *devname, void *dev_id)
 {
@@ -1332,6 +1335,28 @@ void open_softirq(int nr, void (*action)(struct softirq_action *))
 
 ## raise_softirq_irqoff
 
+```c
+ *         PREEMPT_MASK:    0x000000ff
+ *         SOFTIRQ_MASK:    0x0000ff00
+ *         HARDIRQ_MASK:    0x000f0000
+ *             NMI_MASK:    0x00f00000
+ * PREEMPT_NEED_RESCHED:    0x80000000
+
+struct thread_info {
+    union {
+        u64     preempt_count; /* 0 => preemptible, <0 => bug */
+        struct {
+#ifdef CONFIG_CPU_BIG_ENDIAN
+            u32	need_resched;
+            u32	count;
+#else
+            u32	count;
+            u32	need_resched;
+#endif
+        } preempt;
+    };
+};
+```
 ![](../images/kernel/proc-preempt_count.png)
 
 To summarize, each softirq goes through the following stages:
@@ -1377,13 +1402,6 @@ static inline int preempt_count(void)
     return READ_ONCE(current_thread_info()->preempt.count);
 }
 
-/* per cpu bitmap that indicates which soft IRQs are pending for the CPU. */
-typedef struct {
-    unsigned int __softirq_pending;
-} ____cacheline_aligned irq_cpustat_t;
-
-DEFINE_PER_CPU_ALIGNED(irq_cpustat_t, irq_stat);
-
 /* 3. per task data */
 struct task_struct {
     struct thread_info {
@@ -1411,10 +1429,12 @@ struct task_struct {
 #define in_nmi()  (preempt_count() & NMI_MASK)
 #define in_task()  (!(preempt_count() & (NMI_MASK | HARDIRQ_MASK | SOFTIRQ_OFFSET)))
 
-void __raise_softirq_irqoff(unsigned int nr)
-{
-    or_softirq_pending(1UL << nr);
-}
+/* per cpu bitmap that indicates which soft IRQs are pending for the CPU. */
+typedef struct {
+    unsigned int __softirq_pending;
+} ____cacheline_aligned irq_cpustat_t;
+
+DEFINE_PER_CPU_ALIGNED(irq_cpustat_t, irq_stat);
 
 #define local_softirq_pending_ref irq_stat.__softirq_pending
 
