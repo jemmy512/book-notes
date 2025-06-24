@@ -1687,7 +1687,14 @@ static int ptrace_hbp_get_addr(unsigned int note_type,
 
 ```sh
 /sys/kernel/debug/kprobes/
+/sys/kernel/debug/kprobes/list # Lists all registered Kprobes/Kretprobes
 /sys/kernel/debug/kprobes/blacklist
+    /sys/kernel/debug/kprobes/enabled
+/sys/kernel/debug/tracing/kprobe_events # Register/unregister Kprobes/Kretprobes
+/sys/kernel/debug/tracing/kprobe_profile
+/sys/kernel/debug/tracing/kprobes/<GRP>/<EVENT>/enabled
+/sys/kernel/debug/tracing/kprobes/<GRP>/<EVENT>/filter
+/sys/kernel/debug/tracing/kprobes/<GRP>/<EVENT>/format
 ```
 
 Feature | ftrace | kprobes
@@ -5173,9 +5180,11 @@ perf record -e irq:* -a
 ```
 
 
-# perf trace diagnose example
+# perf
 
 To diagnose high interrupt latency in the Linux kernel, tools like **perf** and **ftrace** are powerful for tracing interrupt handling times and identifying bottlenecks. Below is a detailed guide on how to use these tools effectively, including setup, commands, and analysis.
+
+![](../images/kernel/perf-events-map.png)
 
 ---
 
