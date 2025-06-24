@@ -2644,8 +2644,6 @@ ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to) {
 
 ### direct_io
 
-![](../images/kernel/file-dio-struct.svg)
-
 * [[PATCH v5 00/12] ext4: port direct I/O to iomap infrastructure](https://lore.kernel.org/linux-fsdevel/cover.1571647178.git.mbobrowski@mbobrowski.org/)
 
 ```c
@@ -5732,6 +5730,152 @@ Enomem:
     goto Done;
 }
 ```
+## kmsg
+
+![](../images/kernel/file-kmsg-arch.png)
+
+---
+
+![](../images/kernel/file-kmsg-syscall.png)
+
+```c
+static const struct proc_ops kmsg_proc_ops = {
+    .proc_flags     = PROC_ENTRY_PERMANENT,
+    .proc_read      = kmsg_read,
+    .proc_poll      = kmsg_poll,
+    .proc_open      = kmsg_open,
+    .proc_release   = kmsg_release,
+    .proc_lseek     = generic_file_llseek,
+};
+
+static int __init proc_kmsg_init(void)
+{
+	proc_create("kmsg", S_IRUSR, NULL, &kmsg_proc_ops);
+	return 0;
+}
+```
+
+### do_syslog
+
+```c
+int do_syslog(int type, char __user *buf, int len, int source)
+{
+    struct printk_info info;
+    bool clear = false;
+    static int saved_console_loglevel = LOGLEVEL_DEFAULT;
+    int error;
+
+    error = check_syslog_permissions(type, source);
+    if (error)
+        return error;
+
+    switch (type) {
+    case SYSLOG_ACTION_CLOSE:	/* Close log */
+        break;
+    case SYSLOG_ACTION_OPEN:	/* Open log */
+        break;
+    case SYSLOG_ACTION_READ:	/* Read from log */
+        if (!buf || len < 0)
+            return -EINVAL;
+        if (!len)
+            return 0;
+        if (!access_ok(buf, len))
+            return -EFAULT;
+        error = syslog_print(buf, len);
+        break;
+    /* Read/clear last kernel messages */
+    case SYSLOG_ACTION_READ_CLEAR:
+        clear = true;
+        fallthrough;
+    /* Read last kernel messages */
+    case SYSLOG_ACTION_READ_ALL:
+        if (!buf || len < 0)
+            return -EINVAL;
+        if (!len)
+            return 0;
+        if (!access_ok(buf, len))
+            return -EFAULT;
+        error = syslog_print_all(buf, len, clear);
+        break;
+    /* Clear ring buffer */
+    case SYSLOG_ACTION_CLEAR:
+        syslog_clear();
+        break;
+    /* Disable logging to console */
+    case SYSLOG_ACTION_CONSOLE_OFF:
+        if (saved_console_loglevel == LOGLEVEL_DEFAULT)
+            saved_console_loglevel = console_loglevel;
+        console_loglevel = minimum_console_loglevel;
+        break;
+    /* Enable logging to console */
+    case SYSLOG_ACTION_CONSOLE_ON:
+        if (saved_console_loglevel != LOGLEVEL_DEFAULT) {
+            console_loglevel = saved_console_loglevel;
+            saved_console_loglevel = LOGLEVEL_DEFAULT;
+        }
+        break;
+    /* Set level of messages printed to console */
+    case SYSLOG_ACTION_CONSOLE_LEVEL:
+        if (len < 1 || len > 8)
+            return -EINVAL;
+        if (len < minimum_console_loglevel)
+            len = minimum_console_loglevel;
+        console_loglevel = len;
+        /* Implicitly re-enable logging to console */
+        saved_console_loglevel = LOGLEVEL_DEFAULT;
+        break;
+    /* Number of chars in the log buffer */
+    case SYSLOG_ACTION_SIZE_UNREAD:
+        mutex_lock(&syslog_lock);
+        if (!prb_read_valid_info(prb, syslog_seq, &info, NULL)) {
+            /* No unread messages. */
+            mutex_unlock(&syslog_lock);
+            return 0;
+        }
+        if (info.seq != syslog_seq) {
+            /* messages are gone, move to first one */
+            syslog_seq = info.seq;
+            syslog_partial = 0;
+        }
+        if (source == SYSLOG_FROM_PROC) {
+            /*
+            * Short-cut for poll(/"proc/kmsg") which simply checks
+            * for pending data, not the size; return the count of
+            * records, not the length.
+            */
+            error = prb_next_seq(prb) - syslog_seq;
+        } else {
+            bool time = syslog_partial ? syslog_time : printk_time;
+            unsigned int line_count;
+            u64 seq;
+
+            prb_for_each_info(syslog_seq, prb, seq, &info,
+                    &line_count) {
+                error += get_record_print_text_size(&info, line_count,
+                                    true, time);
+                time = printk_time;
+            }
+            error -= syslog_partial;
+        }
+        mutex_unlock(&syslog_lock);
+        break;
+    /* Size of the log buffer */
+    case SYSLOG_ACTION_SIZE_BUFFER:
+        error = log_buf_len;
+        break;
+    default:
+        error = -EINVAL;
+        break;
+    }
+
+    return error;
+}
+```
+
+#### syslog_print
+
+```c
+```
 
 # IO
 
@@ -5812,133 +5956,134 @@ A kernel module consists:
 ```c
 static int __init lp_init (void)
 {
-  if (register_chrdev (LP_MAJOR, "lp", &lp_fops)) {
-    printk (KERN_ERR "lp: unable to get major %d\n", LP_MAJOR);
-    return -EIO;
-  }
+    if (register_chrdev (LP_MAJOR, "lp", &lp_fops)) {
+        printk (KERN_ERR "lp: unable to get major %d\n", LP_MAJOR);
+        return -EIO;
+    }
 }
 
 int __register_chrdev(
-  unsigned int major, unsigned int baseminor,
-  unsigned int count, const char *name,
-  const struct file_operations *fops)
+    unsigned int major, unsigned int baseminor,
+    unsigned int count, const char *name,
+    const struct file_operations *fops)
 {
-  struct char_device_struct *cd;
-  struct cdev *cdev;
-  int err = -ENOMEM;
+    struct char_device_struct *cd;
+    struct cdev *cdev;
+    int err = -ENOMEM;
 
-  cd = __register_chrdev_region(major, baseminor, count, name);
-  cdev = cdev_alloc();
-  cdev->owner = fops->owner;
-  cdev->ops = fops;
-  kobject_set_name(&cdev->kobj, "%s", name);
-  err = cdev_add(cdev, MKDEV(cd->major, baseminor), count);
-  cd->cdev = cdev;
-  return major ? 0 : cd->major;
+    cd = __register_chrdev_region(major, baseminor, count, name);
+    cdev = cdev_alloc();
+    cdev->owner = fops->owner;
+    cdev->ops = fops;
+    kobject_set_name(&cdev->kobj, "%s", name);
+    err = cdev_add(cdev, MKDEV(cd->major, baseminor), count);
+    cd->cdev = cdev;
+    return major ? 0 : cd->major;
 }
 
 int cdev_add(struct cdev *p, dev_t dev, unsigned count)
 {
-  int error;
-  p->dev = dev;
-  p->count = count;
+    int error;
+    p->dev = dev;
+    p->count = count;
 
-  error = kobj_map(cdev_map, dev, count, NULL,
-       exact_match, exact_lock, p);
-  kobject_get(p->kobj.parent);
+    error = kobj_map(cdev_map, dev, count, NULL,
+        exact_match, exact_lock, p);
+    kobject_get(p->kobj.parent);
 
-  return 0;
+    return 0;
 }
 ```
 
 ### dev_fs_type
 ```c
 rest_init();
-  kernel_thread(kernel_init);
-    kernel_init_freeable();
-      do_basic_setup();
-        driver_init();
-          devtmpfs_init();
-          devices_init();
-          buses_init();
-          classes_init();
-          firmware_init();
-          hypervisor_init();
+    kernel_thread(kernel_init);
+        kernel_init_freeable();
+            do_basic_setup();
+                driver_init();
+                    devtmpfs_init();
+                    devices_init();
+                    buses_init();
+                    classes_init();
+                    firmware_init();
+                    hypervisor_init();
 
-        shmem_init();
-          register_filesystem(&shmem_fs_type);
-            kern_mount(&shmem_fs_type);
+                shmem_init();
+                    register_filesystem(&shmem_fs_type);
+                        kern_mount(&shmem_fs_type);
 
-        init_irq_proc();
-        do_initcalls();
+                init_irq_proc();
+                do_initcalls();
 
-      workqueue_init();
-      load_default_modules();
-    run_init_process();
-  kernel_thread(kthreadd);
+            workqueue_init();
+            load_default_modules();
+        run_init_process();
+    kernel_thread(kthreadd);
 
 int __init devtmpfs_init(void)
 {
-  int err = register_filesystem(&dev_fs_type);
+    int err = register_filesystem(&dev_fs_type);
 
-  thread = kthread_run(devtmpfsd, &err, "kdevtmpfs");
-  if (!IS_ERR(thread)) {
-    wait_for_completion(&setup_done);
-  } else {
-    err = PTR_ERR(thread);
-    thread = NULL;
-  }
-  return 0;
+    thread = kthread_run(devtmpfsd, &err, "kdevtmpfs");
+    if (!IS_ERR(thread)) {
+        wait_for_completion(&setup_done);
+    } else {
+        err = PTR_ERR(thread);
+        thread = NULL;
+    }
+    return 0;
 }
 
 static int devtmpfsd(void *p)
 {
-  char options[] = "mode=0755";
-  int *err = p;
-  *err = ksys_unshare(CLONE_NEWNS);
-  if (*err)
-    goto out;
-  *err = ksys_mount("devtmpfs", "/", "devtmpfs", MS_SILENT, options);
-  if (*err)
-    goto out;
-  ksys_chdir("/.."); /* will traverse into overmounted root */
-  ksys_chroot(".");
-  complete(&setup_done);
-  while (1) {
-    spin_lock(&req_lock);
-    while (requests) {
-      struct req *req = requests;
-      requests = NULL;
-      spin_unlock(&req_lock);
-      while (req) {
-        struct req *next = req->next;
-        req->err = handle(req->name, req->mode,
-              req->uid, req->gid, req->dev);
-        complete(&req->done);
-        req = next;
-      }
-      spin_lock(&req_lock);
+    char options[] = "mode=0755";
+    int *err = p;
+    *err = ksys_unshare(CLONE_NEWNS);
+    if (*err)
+        goto out;
+    *err = ksys_mount("devtmpfs", "/", "devtmpfs", MS_SILENT, options);
+    if (*err)
+        goto out;
+    ksys_chdir("/.."); /* will traverse into overmounted root */
+    ksys_chroot(".");
+    complete(&setup_done);
+    while (1) {
+        spin_lock(&req_lock);
+        while (requests) {
+            struct req *req = requests;
+            requests = NULL;
+            spin_unlock(&req_lock);
+            while (req) {
+                struct req *next = req->next;
+                req->err = handle(req->name, req->mode,
+                    req->uid, req->gid, req->dev);
+                complete(&req->done);
+                req = next;
+            }
+            spin_lock(&req_lock);
+        }
+        __set_current_state(TASK_INTERRUPTIBLE);
+        spin_unlock(&req_lock);
+        schedule();
     }
-    __set_current_state(TASK_INTERRUPTIBLE);
-    spin_unlock(&req_lock);
-    schedule();
-  }
-  return 0;
+    return 0;
 out:
-  complete(&setup_done);
-  return *err;
+    complete(&setup_done);
+    return *err;
 }
 ```
 
 ### mount char dev
+
 ```c
 /* mount -t type device destination_dir
  *
  * mount -> ksys_mount -> do_mount -> do_new_mount ->
  * vfs_kern_mount -> mount_fs -> fs_type.mount */
 static struct file_system_type dev_fs_type = {
-  .name = "devtmpfs",
-  .mount = public_dev_mount,
+    .name = "devtmpfs",
+    .mount = public_dev_mount,
 };
 
 static struct dentry *dev_mount(
@@ -5946,9 +6091,9 @@ static struct dentry *dev_mount(
   const char *dev_name, void *data)
 {
 #ifdef CONFIG_TMPFS
-  return mount_single(fs_type, flags, data, shmem_fill_super);
+    return mount_single(fs_type, flags, data, shmem_fill_super);
 #else
-  return mount_single(fs_type, flags, data, ramfs_fill_super);
+    return mount_single(fs_type, flags, data, ramfs_fill_super);
 #endif
 }
 
@@ -5957,240 +6102,272 @@ struct dentry *mount_single(
   int flags, void *data,
   int (*fill_super)(struct super_block *, void *, int))
 {
-  struct super_block *s;
-  int error;
+    struct super_block *s;
+    int error;
 
-  /* find or create a superblock */
-  s = sget(fs_type, compare_single, set_anon_super, flags, NULL);
-  if (!s->s_root) {
-    error = fill_super(s, data, flags & SB_SILENT ? 1 : 0);
-    if (error) {
-      deactivate_locked_super(s);
-      return ERR_PTR(error);
+    /* find or create a superblock */
+    s = sget(fs_type, compare_single, set_anon_super, flags, NULL);
+    if (!s->s_root) {
+        error = fill_super(s, data, flags & SB_SILENT ? 1 : 0);
+        if (error) {
+            deactivate_locked_super(s);
+            return ERR_PTR(error);
+        }
+        s->s_flags |= SB_ACTIVE;
+    } else {
+        do_remount_sb(s, flags, data, 0);
     }
-    s->s_flags |= SB_ACTIVE;
-  } else {
-    do_remount_sb(s, flags, data, 0);
-  }
 
-  return dget(s->s_root);
+    return dget(s->s_root);
 }
 
 /* int ramfs_fill_super(struct super_block *sb, void *data, int silent) */
 int shmem_fill_super(struct super_block *sb, void *data, int silent)
 {
-  struct inode *inode;
-  struct shmem_sb_info *sbinfo;
-  int err = -ENOMEM;
+    struct inode *inode;
+    struct shmem_sb_info *sbinfo;
+    int err = -ENOMEM;
 
-  /* Round up to L1_CACHE_BYTES to resist false sharing */
-  sbinfo = kzalloc(max((int)sizeof(struct shmem_sb_info),
-        L1_CACHE_BYTES), GFP_KERNEL);
+    /* Round up to L1_CACHE_BYTES to resist false sharing */
+    sbinfo = kzalloc(max((int)sizeof(struct shmem_sb_info),
+            L1_CACHE_BYTES), GFP_KERNEL);
 
-  if (!(sb->s_flags & SB_KERNMOUNT)) {
-    sbinfo->max_blocks = shmem_default_max_blocks();
-    sbinfo->max_inodes = shmem_default_max_inodes();
-    if (shmem_parse_options(data, sbinfo, false)) {
-      err = -EINVAL;
-      goto failed;
+    if (!(sb->s_flags & SB_KERNMOUNT)) {
+        sbinfo->max_blocks = shmem_default_max_blocks();
+        sbinfo->max_inodes = shmem_default_max_inodes();
+        if (shmem_parse_options(data, sbinfo, false)) {
+        err = -EINVAL;
+        goto failed;
+        }
+    } else {
+        sb->s_flags |= SB_NOUSER;
     }
-  } else {
-    sb->s_flags |= SB_NOUSER;
-  }
 
-  sb->s_magic = TMPFS_MAGIC;
-  sb->s_op = &shmem_ops;
+    sb->s_magic = TMPFS_MAGIC;
+    sb->s_op = &shmem_ops;
 
-  inode = shmem_get_inode(sb, NULL, S_IFDIR | sbinfo->mode, 0, VM_NORESERVE);
-  sb->s_root = d_make_root(inode);
+    inode = shmem_get_inode(sb, NULL, S_IFDIR | sbinfo->mode, 0, VM_NORESERVE);
+    sb->s_root = d_make_root(inode);
 
-  return err;
+    return err;
 }
 
 static struct inode *shmem_get_inode(
   struct super_block *sb, const struct inode *dir,
   umode_t mode, dev_t dev, unsigned long flags)
 {
-  struct inode *inode;
-  struct shmem_inode_info *info;
-  struct shmem_sb_info *sbinfo = SHMEM_SB(sb);
+    struct inode *inode;
+    struct shmem_inode_info *info;
+    struct shmem_sb_info *sbinfo = SHMEM_SB(sb);
 
-  inode = new_inode(sb);
-  if (inode) {
-    switch (mode & S_IFMT) {
-    default:
-      inode->i_op = &shmem_special_inode_operations;
-      init_special_inode(inode, mode, dev);
-      break;
-    case S_IFREG:
-      inode->i_mapping->a_ops = &shmem_aops;
-      inode->i_op = &shmem_inode_operations;
-      inode->i_fop = &shmem_file_operations;
-      break;
-    case S_IFDIR:
-      inode->i_op = &shmem_dir_inode_operations;
-      inode->i_fop = &simple_dir_operations;
-      break;
-    case S_IFLNK:
-      mpol_shared_policy_init(&info->policy, NULL);
-      break;
-    }
+    inode = new_inode(sb);
+    if (inode) {
+        switch (mode & S_IFMT) {
+        default:
+            inode->i_op = &shmem_special_inode_operations;
+            init_special_inode(inode, mode, dev);
+            break;
+        case S_IFREG:
+            inode->i_mapping->a_ops = &shmem_aops;
+            inode->i_op = &shmem_inode_operations;
+            inode->i_fop = &shmem_file_operations;
+            break;
+        case S_IFDIR:
+            inode->i_op = &shmem_dir_inode_operations;
+            inode->i_fop = &simple_dir_operations;
+            break;
+        case S_IFLNK:
+            mpol_shared_policy_init(&info->policy, NULL);
+            break;
+        }
 
-    lockdep_annotate_inode_mutex_key(inode);
-  } else
-    shmem_free_inode(sb);
-  return inode;
+        lockdep_annotate_inode_mutex_key(inode);
+    } else
+        shmem_free_inode(sb);
+    return inode;
 }
 
 void init_special_inode(struct inode *inode, umode_t mode, dev_t rdev)
 {
-  inode->i_mode = mode;
-  if (S_ISCHR(mode)) {
-    inode->i_fop = &def_chr_fops;
-    inode->i_rdev = rdev;
-  } else if (S_ISBLK(mode)) {
-    inode->i_fop = &def_blk_fops;
-    inode->i_rdev = rdev;
-  } else if (S_ISFIFO(mode))
-    inode->i_fop = &pipefifo_fops;
-  else if (S_ISSOCK(mode))
-    ; /* leave it no_open_fops */
+    inode->i_mode = mode;
+    if (S_ISCHR(mode)) {
+        inode->i_fop = &def_chr_fops;
+        inode->i_rdev = rdev;
+    } else if (S_ISBLK(mode)) {
+        inode->i_fop = &def_blk_fops;
+        inode->i_rdev = rdev;
+    } else if (S_ISFIFO(mode))
+        inode->i_fop = &pipefifo_fops;
+    else if (S_ISSOCK(mode))
+        ; /* leave it no_open_fops */
 }
 ```
 
 ```c
 mount();
-  ksys_mount(); /* copy type, dev_name, data to kernel */
-    do_mount(); /* get path by name */
-      do_new_mount(); /* get fs_type by type */
-        vfs_kern_mount();
-          alloc_vfsmnt();
-          mount_fs();
-            fs_type.mount(); /* dev_fs_type */
-              dev_mount();
-                mount_single();
-                  sget();
-                  fill_super(); /* shmem_fill_super */
-                    shmem_get_inode();
-                      new_inode();
-                      init_special_inode();
-                    d_make_root();
-          list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
+    ksys_mount(); /* copy type, dev_name, data to kernel */
+        do_mount(); /* get path by name */
+            do_new_mount(); /* get fs_type by type */
+                vfs_kern_mount();
+                    alloc_vfsmnt();
+                        mount_fs();
+                            fs_type.mount(); /* dev_fs_type */
+                                dev_mount();
+                                    mount_single();
+                                        sget();
+                                        fill_super(); /* shmem_fill_super */
+                                            shmem_get_inode();
+                                                new_inode();
+                                                init_special_inode();
+                                            d_make_root();
+                        list_add_tail(&mnt->mnt_instance, &root->d_sb->s_mounts);
 ```
 
 ### mknod char dev
+
 ```c
 /* mknod /dev/ttyS0 c 4 64 */
 SYSCALL_DEFINE3(mknod, const char __user *, filename, umode_t, mode, unsigned, dev)
 {
-  return sys_mknodat(AT_FDCWD, filename, mode, dev);
+    return sys_mknodat(AT_FDCWD, filename, mode, dev);
 }
 
-SYSCALL_DEFINE4(
-  mknodat, int, dfd, const char __user *,
-  filename, umode_t, mode, unsigned, dev)
+SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *,
+    filename, umode_t, mode, unsigned, dev)
 {
-  struct dentry *dentry;
-  struct path path;
-  dentry = user_path_create(dfd, filename, &path, lookup_flags);
-  switch (mode & S_IFMT) {
-    case 0:
-    case S_IFREG:
-      error = vfs_create(path.dentry->d_inode,dentry,mode,true);
-      if (!error)
-        ima_post_path_mknod(dentry);
-      break;
+    struct dentry *dentry;
+    struct path path;
+    dentry = user_path_create(dfd, filename, &path, lookup_flags);
+    switch (mode & S_IFMT) {
+        case 0:
+        case S_IFREG:
+            error = vfs_create(idmap, path.dentry->d_inode, dentry, mode, true);
+            if (!error)
+                security_path_post_mknod(idmap, dentry);
+            break;
+        case S_IFCHR:
+        case S_IFBLK:
+            error = vfs_mknod(idmap, path.dentry->d_inode, dentry, mode, new_decode_dev(dev));
+            break;
 
-    case S_IFCHR:
-    case S_IFBLK:
-      error = vfs_mknod(path.dentry->d_inode,dentry,mode,
-          new_decode_dev(dev));
-      break;
-
-    case S_IFIFO: case S_IFSOCK:
-      error = vfs_mknod(path.dentry->d_inode,dentry,mode,0);
-      break;
-  }
+        case S_IFIFO:
+        case S_IFSOCK:
+            error = vfs_mknod(idmap, path.dentry->d_inode, dentry, mode, 0);
+            break;
+    }
 }
 
 int vfs_mknod(struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 {
-  error = dir->i_op->mknod(dir, dentry, mode, dev);
+    error = dir->i_op->mknod(dir, dentry, mode, dev);
 }
 
 static const struct inode_operations ramfs_dir_inode_operations = {
-  .mknod    = ramfs_mknod,
+    .mknod    = ramfs_mknod,
 };
 
 static const struct inode_operations shmem_dir_inode_operations = {
-#ifdef CONFIG_TMPFS
-  .mknod    = shmem_mknod,
+    .mknod    = shmem_mknod,
 };
 
 static int shmem_mknod(
-  struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
+    struct inode *dir, struct dentry *dentry, umode_t mode, dev_t dev)
 {
-  struct inode *inode;
-  int error = -ENOSPC;
+    struct inode *inode;
+    int error = -ENOSPC;
 
-  inode = shmem_get_inode(dir->i_sb, dir, mode, dev, VM_NORESERVE);
-  if (inode) {
-    dir->i_size += BOGO_DIRENT_SIZE;
-    dir->i_ctime = dir->i_mtime = current_time(dir);
-    d_instantiate(dentry, inode);
-    dget(dentry); /* Extra count - pin the dentry in core */
-  }
-  return error;
+    inode = shmem_get_inode(dir->i_sb, dir, mode, dev, VM_NORESERVE);
+    if (inode) {
+        dir->i_size += BOGO_DIRENT_SIZE;
+        dir->i_ctime = dir->i_mtime = current_time(dir);
+        d_instantiate(dentry, inode);
+        dget(dentry); /* Extra count - pin the dentry in core */
+    }
+    return error;
 }
 ```
 
 ```c
 mknod();
-  sys_mknodat();
-    user_path_create();
-    vfs_create(); /* S_IFREG*/
-    vfs_mknod();  /* S_IFCHR, S_IFBLK, S_IFPIPE, S_IFSOCK */
-      dir->i_op->mknod();
-        shmem_mknod();
-          shmem_get_inode();
-          d_instantiate();
-            __d_instantiate();
-              __d_set_inode_and_type();
-          dget();
+    sys_mknodat();
+        user_path_create();
+        vfs_create(); /* S_IFREG*/
+        vfs_mknod();  /* S_IFCHR, S_IFBLK, S_IFPIPE, S_IFSOCK */
+            dir->i_op->mknod();
+                shmem_mknod();
+                    shmem_get_inode();
+                        d_instantiate();
+                            __d_instantiate();
+                                __d_set_inode_and_type();
+                        dget();
 ```
 
 ### open char dev
+
 ```c
 const struct file_operations def_chr_fops = {
-  .open = chrdev_open,
+    .open = chrdev_open,
 };
 
 static int chrdev_open(struct inode *inode, struct file *filp)
 {
-  const struct file_operations *fops;
-  struct cdev *p;
-  struct cdev *new = NULL;
-  int ret = 0;
+    const struct file_operations *fops;
+    struct cdev *p;
+    struct cdev *new = NULL;
+    int ret = 0;
 
-  p = inode->i_cdev;
-  if (!p) {
-    struct kobject *kobj;
-    int idx;
-    kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);
-    new = container_of(kobj, struct cdev, kobj);
+    spin_lock(&cdev_lock);
     p = inode->i_cdev;
     if (!p) {
-      inode->i_cdev = p = new;
-      list_add(&inode->i_devices, &p->list);
-      new = NULL;
+        struct kobject *kobj;
+        int idx;
+        spin_unlock(&cdev_lock);
+        kobj = kobj_lookup(cdev_map, inode->i_rdev, &idx);
+        if (!kobj)
+            return -ENXIO;
+        new = container_of(kobj, struct cdev, kobj);
+        spin_lock(&cdev_lock);
+        /* Check i_cdev again in case somebody beat us to it while
+         * we dropped the lock. */
+        p = inode->i_cdev;
+        if (!p) {
+            inode->i_cdev = p = new;
+            list_add(&inode->i_devices, &p->list);
+            new = NULL;
+        } else if (!cdev_get(p))
+            ret = -ENXIO;
+    } else if (!cdev_get(p)) {
+        ret = -ENXIO;
     }
-  }
-  fops = fops_get(p->ops);
+    spin_unlock(&cdev_lock);
+    cdev_put(new);
+    if (ret)
+        return ret;
 
-  replace_fops(filp, fops);
-  if (filp->f_op->open) {
-    ret = filp->f_op->open(inode, filp);
-  }
+    ret = -ENXIO;
+    fops = fops_get(p->ops);
+    if (!fops)
+        goto out_cdev_put;
+
+    /* set the fops to cdev's fops */
+    replace_fops(filp, fops) {
+        do {    \
+            struct file *__file = (f);  \
+            fops_put(__file->f_op); \
+            BUG_ON(!(__file->f_op = (fops)));   \
+        } while(0)
+    }
+    if (filp->f_op->open) {
+        ret = filp->f_op->open(inode, filp);
+        if (ret)
+            goto out_cdev_put;
+    }
+
+    return 0;
+
+out_cdev_put:
+    cdev_put(p);
+    return ret;
 }
 ```
 
@@ -6211,52 +6388,54 @@ static ssize_t lp_write(
   struct file * file, const char __user * buf,
   size_t count, loff_t *ppos)
 {
-  unsigned int minor = iminor(file_inode(file));
-  struct parport *port = lp_table[minor].dev->port;
-  char *kbuf = lp_table[minor].lp_buffer;
-  ssize_t retv = 0;
-  ssize_t written;
-  size_t copy_size = count;
+    unsigned int minor = iminor(file_inode(file));
+    struct parport *port = lp_table[minor].dev->port;
+    char *kbuf = lp_table[minor].lp_buffer;
+    ssize_t retv = 0;
+    ssize_t written;
+    size_t copy_size = count;
 
-  /* Need to copy the data from user-space. */
-  if (copy_size > LP_BUFFER_SIZE)
-    copy_size = LP_BUFFER_SIZE;
-
-  if (copy_from_user (kbuf, buf, copy_size)) {
-    retv = -EFAULT;
-    goto out_unlock;
-  }
-
-  do {
-    /* Write the data. */
-    written = parport_write (port, kbuf, copy_size);
-    if (written > 0) {
-      copy_size -= written;
-      count -= written;
-      buf  += written;
-      retv += written;
-    }
-
-    if (need_resched())
-      schedule ();
-
-    if (count) {
-      copy_size = count;
-      if (copy_size > LP_BUFFER_SIZE)
+    /* Need to copy the data from user-space. */
+    if (copy_size > LP_BUFFER_SIZE)
         copy_size = LP_BUFFER_SIZE;
 
-      if (copy_from_user(kbuf, buf, copy_size)) {
-        if (retv == 0)
-          retv = -EFAULT;
-        break;
-      }
+    if (copy_from_user (kbuf, buf, copy_size)) {
+        retv = -EFAULT;
+        goto out_unlock;
     }
-  } while (count > 0);
+
+    do {
+        /* Write the data. */
+        written = parport_write (port, kbuf, copy_size);
+        if (written > 0) {
+            copy_size -= written;
+            count -= written;
+            buf  += written;
+            retv += written;
+        }
+
+        if (need_resched())
+            schedule ();
+
+        if (count) {
+            copy_size = count;
+            if (copy_size > LP_BUFFER_SIZE)
+                copy_size = LP_BUFFER_SIZE;
+
+            if (copy_from_user(kbuf, buf, copy_size)) {
+                if (retv == 0)
+                retv = -EFAULT;
+                break;
+            }
+        }
+    } while (count > 0);
 }
 ```
+
 ![](../images/kernel/io-char-dev-write.png)
 
 ### ioctl
+
 ```c
 SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
 {
