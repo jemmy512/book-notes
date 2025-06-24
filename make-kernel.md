@@ -269,7 +269,7 @@ qemu-system-aarch64 \
     -m 4096M -smp 8 \
     -cpu cortex-a57 \
     -machine virt \
-    -kernel arch/arm64/boot/Image \
+    -kernel ./arch/arm64/boot/Image \
     -append "rdinit=/linuxrc nokaslr console=ttyAMA0 loglevel=8" \
     -nographic
 
@@ -406,6 +406,8 @@ Enable 2-Step Verification
 	smtpPass = xxx
 	suppresscc = self
 	confirm = always
+    # only enable if send mail by msmtp
+    sendmailCmd = /usr/bin/msmtp
 [https]
 	proxy = http://localhost:7890
 [http]
@@ -419,7 +421,22 @@ sudo apt-get install msmtp
 sudo apt install git-email
 
 chmod 600 ~/.msmtprc
-sudo ln -s /usr/bin/msmtp /usr/sbin/sendmail
+# allow gmail 587 port
+sudo iptables -A OUTPUT -p tcp --dport 587 -j ACCEPT
+```
+
+```sh
+# ~/.msmtprc
+account default
+host smtp.gmail.com
+port 587
+auth on
+user xxx@gmail.com
+password xxx
+from xxx@gmail.com
+tls on
+tls_starttls on
+logfile ~/.msmtp.log
 ```
 
 # send patch
