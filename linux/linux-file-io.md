@@ -4669,81 +4669,113 @@ extern struct list_head         bdi_list;
 extern struct workqueue_struct  *bdi_wq;
 
 struct backing_dev_info {
-  struct list_head      bdi_list;
-  struct bdi_writeback  wb;      /* the root writeback info for this bdi */
-  struct list_head      wb_list; /* list of all wbs e.g., cgroup wb */
+    u64                 id;
+    struct rb_node rb_node;     /* keyed by ->id, global red-black tree */
+    struct list_head bdi_list;  /* global list of all BDIs. */
+    unsigned long ra_pages;     /* max readahead in PAGE_SIZE units */
+    unsigned long io_pages;     /* max allowed IO size */
 
-  wait_queue_head_t     wb_waitq;
+    struct kref refcnt;         /* Reference counter for the structure */
+    unsigned int capabilities;  /* Device capabilities */
+    unsigned int min_ratio;
+    unsigned int max_ratio, max_prop_frac;
 
-  struct device         *dev;
-  struct device         *owner;
+    /* Sum of avg_write_bw of wbs with dirty inodes.  > 0 if there are
+     * any dirty wbs, which is depended upon by bdi_has_dirty(). */
+    atomic_long_t tot_write_bandwidth;
+    /* Jiffies when last process was dirty throttled on this bdi. Used by blk-wbt. */
+    unsigned long last_bdp_sleep;
 
-  struct timer_list     laptop_mode_wb_timer;
+    struct bdi_writeback wb;  /* the root writeback info for this bdi */
+    struct list_head wb_list; /* list of all bdi_writeback for different cgroup */
+#ifdef CONFIG_CGROUP_WRITEBACK
+    struct radix_tree_root cgwb_tree; /* radix tree of active cgroup wbs, keyed by memcg_css->id */
+    struct mutex cgwb_release_mutex;  /* protect shutdown of wb structs */
+    struct rw_semaphore wb_switch_rwsem; /* no cgwb switch while syncing */
+#endif
+    wait_queue_head_t wb_waitq;
+
+    struct device *dev;
+    char dev_name[64];
+    struct device *owner;
+
+    struct timer_list laptop_mode_wb_timer;
+
+#ifdef CONFIG_DEBUG_FS
+    struct dentry *debug_dir;
+#endif
 };
 
 /* Manages writeback operations for specific inode groups */
 struct bdi_writeback {
-  struct list_head    work_list; /* Tasks requiring high-priority write-back for BDI devices */
-  struct delayed_work dwork;     /* work item used for writeback */
-  struct list_head    b_dirty;   /* Dirty inodes marked by mark_inode_dirty */
-  struct list_head    b_io;      /* parked for writeback, meet the write-back mode timeout
-    requirements from the b_dirty list and places them in the b_bio list. */
-  struct list_head    b_more_io; /* does not match the work write-back mode */
-  struct list_head    b_dirty_time;/*  inodes that time stamp is dirty */
+    struct list_head    work_list;  /* Tasks requiring high-priority write-back for BDI devices */
+    struct delayed_work dwork;      /* work item used for writeback */
+    struct delayed_work bw_dwork;   /* work item used for bandwidth estimate */
 
-  struct list_head    bdi_node;    /* anchored at bdi->wb_list */
+
+    struct list_head    b_dirty;   /* Dirty inodes marked by mark_inode_dirty */
+    struct list_head    b_io;      /* parked for writeback, meet the write-back mode timeout
+        requirements from the b_dirty list and places them in the b_bio list. */
+    struct list_head    b_more_io; /* does not match the work write-back mode */
+    struct list_head    b_dirty_time;/*  inodes that time stamp is dirty */
+
+    struct list_head    bdi_node;    /* anchored at bdi->wb_list */
+
+    unsigned long dirty_ratelimit;
+    unsigned long balanced_dirty_ratelimit;
 };
 
 struct delayed_work {
-  struct work_struct      work;
-  struct timer_list       timer;
+    struct work_struct      work;
+    struct timer_list       timer;
 
-  /* target workqueue and CPU ->timer uses to queue ->work */
-  struct workqueue_struct *wq;
-  int                     cpu;
+    /* target workqueue and CPU ->timer uses to queue ->work */
+    struct workqueue_struct *wq;
+    int                     cpu;
 };
 
 typedef void (*work_func_t)(struct work_struct *work);
 
 struct work_struct {
-  atomic_long_t     data;
-  struct list_head  entry;
-  work_func_t       func;
+    atomic_long_t     data;
+    struct list_head  entry;
+    work_func_t       func;
 };
 
 /* Represents a specific writeback operation task */
 struct wb_writeback_work {
-  long                      nr_pages;
-  struct super_block        *sb;
-  unsigned long             *older_than_this;
-  enum writeback_sync_modes sync_mode;
-  unsigned int              tagged_writepages:1;
-  unsigned int              for_kupdate:1; /* periodic wb flag */
-  unsigned int              range_cyclic:1; /* range wb flag */
-  unsigned int              for_background:1;
-  unsigned int              for_sync:1;   /* sync(2) WB_SYNC_ALL writeback */
-  unsigned int              auto_free:1;  /* free on completion */
-  enum wb_reason            reason;       /* why was writeback initiated? */
+    long                      nr_pages;
+    struct super_block        *sb;
+    unsigned long             *older_than_this;
+    enum writeback_sync_modes sync_mode;
+    unsigned int              tagged_writepages:1;
+    unsigned int              for_kupdate:1; /* periodic wb flag */
+    unsigned int              range_cyclic:1; /* range wb flag */
+    unsigned int              for_background:1;
+    unsigned int              for_sync:1;   /* sync(2) WB_SYNC_ALL writeback */
+    unsigned int              auto_free:1;  /* free on completion */
+    enum wb_reason            reason;       /* why was writeback initiated? */
 
-  struct list_head          list;         /* pending work list */
-  struct wb_completion      *done;        /* set if the caller waits */
+    struct list_head          list;         /* pending work list */
+    struct wb_completion      *done;        /* set if the caller waits */
 };
 ```
 
 ### bdi_init
+
 ```c
 static int default_bdi_init(void)
 {
-  int err;
+    int err;
 
-  bdi_wq = alloc_workqueue("writeback", WQ_MEM_RECLAIM | WQ_FREEZABLE |
-                WQ_UNBOUND | WQ_SYSFS, 0);
-  if (!bdi_wq)
-    return -ENOMEM;
+    bdi_wq = alloc_workqueue("writeback", WQ_MEM_RECLAIM | WQ_FREEZABLE |
+                    WQ_UNBOUND | WQ_SYSFS, 0);
+    if (!bdi_wq)
+        return -ENOMEM;
 
-  err = bdi_init(&noop_backing_dev_info);
+    err = bdi_init(&noop_backing_dev_info);
 
-  return err;
+    return err;
 }
 
 static int bdi_init(struct backing_dev_info *bdi)
@@ -4790,24 +4822,24 @@ static int wb_init(
   struct backing_dev_info *bdi,
   int blkcg_id, gfp_t gfp)
 {
-  wb->bdi = bdi;
-  wb->last_old_flush = jiffies;
-  INIT_LIST_HEAD(&wb->b_dirty);
-  INIT_LIST_HEAD(&wb->b_io);
-  INIT_LIST_HEAD(&wb->b_more_io);
-  INIT_LIST_HEAD(&wb->b_dirty_time);
+    wb->bdi = bdi;
+    wb->last_old_flush = jiffies;
+    INIT_LIST_HEAD(&wb->b_dirty);
+    INIT_LIST_HEAD(&wb->b_io);
+    INIT_LIST_HEAD(&wb->b_more_io);
+    INIT_LIST_HEAD(&wb->b_dirty_time);
 
-  wb->bw_time_stamp = jiffies;
-  wb->balanced_dirty_ratelimit = INIT_BW;
-  wb->dirty_ratelimit = INIT_BW;
-  wb->write_bandwidth = INIT_BW;
-  wb->avg_write_bandwidth = INIT_BW;
+    wb->bw_time_stamp = jiffies;
+    wb->balanced_dirty_ratelimit = INIT_BW;
+    wb->dirty_ratelimit = INIT_BW;
+    wb->write_bandwidth = INIT_BW;
+    wb->avg_write_bandwidth = INIT_BW;
 
-  spin_lock_init(&wb->work_lock);
-  INIT_LIST_HEAD(&wb->work_list);
-  INIT_DELAYED_WORK(&wb->dwork, wb_workfn);
-  INIT_DELAYED_WORK(&wb->bw_dwork, wb_update_bandwidth_workfn);
-  wb->dirty_sleep = jiffies;
+    spin_lock_init(&wb->work_lock);
+    INIT_LIST_HEAD(&wb->work_list);
+    INIT_DELAYED_WORK(&wb->dwork, wb_workfn);
+    INIT_DELAYED_WORK(&wb->bw_dwork, wb_update_bandwidth_workfn);
+    wb->dirty_sleep = jiffies;
 }
 
 #define __INIT_DELAYED_WORK(_work, _func, _tflags) \
@@ -4827,10 +4859,10 @@ static int wb_init(
 
 void delayed_work_timer_fn(struct timer_list *t)
 {
-  struct delayed_work *dwork = from_timer(dwork, t, timer);
+    struct delayed_work *dwork = from_timer(dwork, t, timer);
 
-  /* should have been called from irqsafe timer with irq already off */
-  __queue_work(dwork->cpu, dwork->wq, &dwork->work);
+    /* should have been called from irqsafe timer with irq already off */
+    __queue_work(dwork->cpu, dwork->wq, &dwork->work);
 }
 ```
 
@@ -4848,6 +4880,7 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 
 
 ## coredump
+
 ```c
 do_coredump() {
     struct core_state core_state;
@@ -5838,11 +5871,9 @@ int do_syslog(int type, char __user *buf, int len, int source)
             syslog_partial = 0;
         }
         if (source == SYSLOG_FROM_PROC) {
-            /*
-            * Short-cut for poll(/"proc/kmsg") which simply checks
+            /* Short-cut for poll(/"proc/kmsg") which simply checks
             * for pending data, not the size; return the count of
-            * records, not the length.
-            */
+            * records, not the length. */
             error = prb_next_seq(prb) - syslog_seq;
         } else {
             bool time = syslog_partial ? syslog_time : printk_time;
@@ -8322,138 +8353,7 @@ wb_workfn() {
     wb_do_writeback() { /* traverse Struct.1.wb_writeback_work */
         /* 1. wb work_list which has highest prio */
         while ((work = get_next_work_item(wb)) != NULL) {
-            wb_writeback(wb, work) {
-                for (;;) {
-                    struct blk_plug plug;
-                    blk_start_plug(plug);
-                    current->plug = plug;
-
-                    if (list_empty(&wb->b_io)) {
-                        /* Queue all expired dirty inodes for io, eldest first. */
-                        queue_io(wb, work, dirtied_before) {
-                            list_splice_init(&wb->b_more_io, &wb->b_io);
-                            move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
-                            move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
-                        }
-                    }
-
-                    if (work->sb) {
-                        /* traverse wb->b_io, which is inode list */
-                        progress = writeback_sb_inodes() { /* Struct.2.writeback_control */
-                            while (!list_empty(&wb->b_io)) {
-                                struct inode *inode = wb_inode(wb->b_io.prev);
-                                __writeback_single_inode(inode, &wbc) {
-                                    do_writepages() {
-                                        while (1) {
-                                            if (mapping->a_ops->writepages) {
-                                                mapping->a_ops->writepages(mapping, wbc) {
-                                                    ext4_writepages() { /* Struct.3.mpage_da_data */
-                                                        blk_start_plug(&plug);
-                                                        /* 1. find page cache data */
-                                                        mpage_prepare_extent_to_map() {
-                                                            struct pagevec pvec;
-                                                            pgoff_t index = mpd->first_page;
-                                                            pgoff_t end = mpd->last_page;
-
-                                                            while (index <= end) {
-                                                                /* 1.1 find dirty pages */
-                                                                nr_pages = pagevec_lookup_range_tag(&pvec) { /* PAGECACHE_TAG_{TOWRITE, DIRTY} */
-                                                                    find_get_pages_range_tag();
-                                                                        /* find in i_pages xarray */
-                                                                }
-
-                                                                for (i = 0; i < nr_pages; i++) {
-                                                                    struct page *page = pvec.pages[i];
-                                                                    /* Wait for a folio to finish writeback */
-                                                                    wait_on_page_writeback() {
-                                                                        wait_on_page_bit(page, PG_writeback) {
-                                                                            io_schedule() {
-                                                                                schedule();
-                                                                            }
-                                                                        }
-                                                                    }
-
-                                                                    /* converts the page index to a logical block number */
-                                                                    lblk = ((ext4_lblk_t)page->index) << (PAGE_SHIFT - blkbits);
-                                                                    head = page_buffers(page);
-
-                                                                    /* 1.2. submit page buffers for IO or add them to extent */
-                                                                    mpage_process_page_bufs(mpd, head, head, lblk) {
-                                                                        do {
-                                                                            if (lblk >= blocks || !mpage_add_bh_to_extent()) {
-                                                                                break;
-                                                                            }
-                                                                        } while (lblk++, (bh = bh->b_this_page) != head);
-
-                                                                        mpage_submit_page(mpd, head->b_page) {
-                                                                            ext4_bio_write_page() {
-                                                                                do {
-                                                                                    io_submit_add_bh() { /* Struct.4.buffer_head */
-                                                                                        io_submit_init_bio() { /* init bio */
-                                                                                            bio = bio_alloc();
-                                                                                            /* physical sector nr */
-                                                                                            bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
-                                                                                            wbc_init_bio();
-                                                                                        }
-                                                                                        bio_add_page() {
-                                                                                            bv->bv_page = page;
-                                                                                            bv->bv_offset = off;
-                                                                                            bv->bv_len = len;
-
-                                                                                            bio->bi_iter.bi_size += len;
-                                                                                            bio->bi_vcnt++;
-                                                                                        }
-                                                                                    }
-                                                                                } while ((bh = bh->b_this_page) != head);
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        /* 2. submit io data */
-                                                        ext4_io_submit() {
-                                                            submit_bio();
-                                                        }
-                                                        blk_start_unplug(&plug);
-                                                    }
-                                                }
-                                            } else {
-                                                generic_writepages(mapping, wbc);
-                                            }
-
-                                            if ((ret != -ENOMEM) || (wbc->sync_mode != WB_SYNC_ALL))
-                                                break;
-                                        }
-                                    }
-
-                                    bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
-                                    if ((inode->i_state & I_DIRTY_TIME)
-                                        && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
-                                    {
-                                        mark_inode_dirty_sync(inode);
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        progress = __writeback_inodes_wb() {
-                            writeback_sb_inodes();
-                        }
-                    }
-
-                    if (progress)
-                        continue;
-
-                    if (list_empty(&wb->b_more_io))
-                        break;
-
-                    blk_finish_plug();
-
-                    inode_sleep_on_writeback();
-                }
-            }
+            wb_writeback(wb, work);
         }
 
         /* 2. wb trigger by memory reclaim */
@@ -8524,6 +8424,139 @@ wb_workfn() {
                 --->
             }
         }
+    }
+}
+
+wb_writeback(wb, work) {
+    for (;;) {
+        struct blk_plug plug;
+        blk_start_plug(plug);
+        current->plug = plug;
+
+        if (list_empty(&wb->b_io)) {
+            /* Queue all expired dirty inodes for io, eldest first. */
+            queue_io(wb, work, dirtied_before) {
+                list_splice_init(&wb->b_more_io, &wb->b_io);
+                move_expired_inodes(&wb->b_dirty, &wb->b_io, dirtied_before);
+                move_expired_inodes(&wb->b_dirty_time, &wb->b_io, time_expire_jif);
+            }
+        }
+
+        if (work->sb) {
+            /* traverse wb->b_io, which is inode list */
+            progress = writeback_sb_inodes() { /* Struct.2.writeback_control */
+                while (!list_empty(&wb->b_io)) {
+                    struct inode *inode = wb_inode(wb->b_io.prev);
+                    __writeback_single_inode(inode, &wbc) {
+                        do_writepages() {
+                            while (1) {
+                                if (mapping->a_ops->writepages) {
+                                    mapping->a_ops->writepages(mapping, wbc) {
+                                        ext4_writepages() { /* Struct.3.mpage_da_data */
+                                            blk_start_plug(&plug);
+                                            /* 1. find page cache data */
+                                            mpage_prepare_extent_to_map() {
+                                                struct pagevec pvec;
+                                                pgoff_t index = mpd->first_page;
+                                                pgoff_t end = mpd->last_page;
+
+                                                while (index <= end) {
+                                                    /* 1.1 find dirty pages */
+                                                    nr_pages = pagevec_lookup_range_tag(&pvec) { /* PAGECACHE_TAG_{TOWRITE, DIRTY} */
+                                                        find_get_pages_range_tag();
+                                                            /* find in i_pages xarray */
+                                                    }
+
+                                                    for (i = 0; i < nr_pages; i++) {
+                                                        struct page *page = pvec.pages[i];
+                                                        /* Wait for a folio to finish writeback */
+                                                        wait_on_page_writeback() {
+                                                            wait_on_page_bit(page, PG_writeback) {
+                                                                io_schedule() {
+                                                                    schedule();
+                                                                }
+                                                            }
+                                                        }
+
+                                                        /* converts the page index to a logical block number */
+                                                        lblk = ((ext4_lblk_t)page->index) << (PAGE_SHIFT - blkbits);
+                                                        head = page_buffers(page);
+
+                                                        /* 1.2. submit page buffers for IO or add them to extent */
+                                                        mpage_process_page_bufs(mpd, head, head, lblk) {
+                                                            do {
+                                                                if (lblk >= blocks || !mpage_add_bh_to_extent()) {
+                                                                    break;
+                                                                }
+                                                            } while (lblk++, (bh = bh->b_this_page) != head);
+
+                                                            mpage_submit_page(mpd, head->b_page) {
+                                                                ext4_bio_write_page() {
+                                                                    do {
+                                                                        io_submit_add_bh() { /* Struct.4.buffer_head */
+                                                                            io_submit_init_bio() { /* init bio */
+                                                                                bio = bio_alloc();
+                                                                                /* physical sector nr */
+                                                                                bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+                                                                                wbc_init_bio();
+                                                                            }
+                                                                            bio_add_page() {
+                                                                                bv->bv_page = page;
+                                                                                bv->bv_offset = off;
+                                                                                bv->bv_len = len;
+
+                                                                                bio->bi_iter.bi_size += len;
+                                                                                bio->bi_vcnt++;
+                                                                            }
+                                                                        }
+                                                                    } while ((bh = bh->b_this_page) != head);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            /* 2. submit io data */
+                                            ext4_io_submit() {
+                                                submit_bio();
+                                            }
+                                            blk_start_unplug(&plug);
+                                        }
+                                    }
+                                } else {
+                                    generic_writepages(mapping, wbc);
+                                }
+
+                                if ((ret != -ENOMEM) || (wbc->sync_mode != WB_SYNC_ALL))
+                                    break;
+                            }
+                        }
+
+                        bool isAfter = time_after(jiffies, inode->dirtied_time_when + dirtytime_expire_interval * HZ);
+                        if ((inode->i_state & I_DIRTY_TIME)
+                            && (wbc->sync_mode == WB_SYNC_ALL || wbc->for_sync || isAfter))
+                        {
+                            mark_inode_dirty_sync(inode);
+                        }
+                    }
+                }
+            }
+        } else {
+            progress = __writeback_inodes_wb() {
+                writeback_sb_inodes();
+            }
+        }
+
+        if (progress)
+            continue;
+
+        if (list_empty(&wb->b_more_io))
+            break;
+
+        blk_finish_plug();
+
+        inode_sleep_on_writeback();
     }
 }
 
