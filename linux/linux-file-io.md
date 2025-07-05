@@ -8322,6 +8322,9 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 
 ![](../images/kernel/proc-cmwq.svg)
 
+* [[PATCH 00/13] Parallelizing filesystem writeback](https://lore.kernel.org/all/20250529111504.89912-1-kundan.kumar@samsung.com/)
+    * [[RFC 1/1] writeback: enable parallel writeback using multiple work items](https://lore.kernel.org/all/20250414102824.9901-2-kundan.kumar@samsung.com/)
+
 writeback cases:
 1. Periodic Write-back: `/proc/sys/vm/`
     * **dirty_background_ratio**: The percentage of total system memory (or "dirtyable" memory) at which the kernel starts **background writeback** of dirty pages.
