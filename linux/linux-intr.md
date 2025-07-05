@@ -1336,11 +1336,11 @@ void open_softirq(int nr, void (*action)(struct softirq_action *))
 ## raise_softirq_irqoff
 
 ```c
- *         PREEMPT_MASK:    0x000000ff
+/*         PREEMPT_MASK:    0x000000ff
  *         SOFTIRQ_MASK:    0x0000ff00
  *         HARDIRQ_MASK:    0x000f0000
  *             NMI_MASK:    0x00f00000
- * PREEMPT_NEED_RESCHED:    0x80000000
+ * PREEMPT_NEED_RESCHED:    0x80000000 */
 
 struct thread_info {
     union {
