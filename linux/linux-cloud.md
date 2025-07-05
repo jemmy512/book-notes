@@ -76,12 +76,12 @@
     3. fork: When a process forks a child process, the new process is born into the cgroup that the forking process belongs to at the time of the operation
     4. destroy: A cgroup which doesn't have any children or live processes can be destroyed by removing the directory.
     5. No Internal Process Constraint
-    6. Cgroup Type: By default, all cgroups are "domain" cgroups, meaning they can contain tasks (processes) and/or child cgroups.
+    6. Cgroup Type: By default, all cgroups are "**domain**" cgroups, meaning they can contain tasks (processes) and/or child cgroups.
 
 * Threaded cgroup:
 
     1. Inside a threaded subtree, threads of a process can be put in different cgroups and are not subject to the `no internal process constraint` - threaded controllers can be enabled on non-leaf cgroups whether they have threads in them or not.
-    2. As the threaded domain cgroup hosts all the domain resource consumptions of the subtree, it is considered to have internal resource consumptions whether there are processes in it or not and `can't have populated child cgroups which aren't threaded`.  Because the root cgroup is not subject to no internal process constraint, it can serve both as a threaded domain and a parent to domain cgroups.
+    2. As the **threaded domain** cgroup hosts all the domain resource consumptions of the subtree, it is considered to have internal resource consumptions whether there are processes in it or not and `can't have populated child cgroups which aren't threaded`.  Because the root cgroup is not subject to no internal process constraint, it can serve both as a threaded domain and a parent to domain cgroups.
     3. As the cgroup will join the parent's resource domain.  The parent  must either be a valid (threaded) domain or a threaded cgroup.
     4. A domain cgroup is turned into a threaded domain when one of its child cgroup becomes threaded or threaded controllers are enabled
     5. The threaded domain cgroup serves as the resource domain for the whole subtree, and, while the threads can be scattered across the subtree
@@ -163,6 +163,19 @@ The rules are Enforce at [cgroup_attach_permissions](#cgroup_attach_permissions)
     * Rule: Cgroups are automatically cleaned up when they become empty (no tasks or children), unless explicitly preserved (e.g., by user-space tools).
 
 ## v1 vs vs2
+
+| Feature | cgroup v1 | cgroup v2 |
+| :-: | :-: | :-: |
+|Hierarchy Structure|Multiple hierarchies, separate controllers|Single unified hierarchy|
+|Controller Organization|Independent controllers, separate mount points|Unified under single mount point, enabled via cgroup.controllers|
+|Delegation|No strict delegation, complex|Strict delegation via cgroup.subtree_control, namespace support|
+|Process Attachment|Tasks file, multiple cgroups per process|cgroup.procs, one cgroup per process, thread support|
+|Controller Features|Basic CPU, memory, blkio; no PSI|Enhanced memory (kernel, slab), CPU (weight), IO; PSI support|
+|Resource Limits|Per-controller files, inconsistent|Unified files (memory.max, cpu.max), memory.low/high|
+|Compatibility|Widely supported, legacy systems|Modern systems (Ubuntu 21.10+, RHEL 8+), not fully backward-compatible|
+|File System Interface|Controller-specific files (tasks, cpu.shares)|Standardized files (cgroup.procs, memory.events)|
+|Security/Isolation|Limited delegation, no strict rules|Strong isolation, safe delegation via namespaces|
+|Limitations|Fragmented, no thread support, no PSI|Missing some v1 controllers (net_cls), needs modern kernel|
 
 ```sh
 # cgroup v1
@@ -469,7 +482,7 @@ struct cgroup {
     struct cgroup *old_dom_cgrp; /* used while enabling threaded */
 
     /* refer to all the cgroups above it in the hierarchy,
-     * from its immediate parent up to the root. */
+     * from its immediate parent up to the root. level as index */
     struct cgroup *ancestors[];
 };
 
@@ -1180,7 +1193,7 @@ write() {
 
                     /* 3. do migrate */
                     cgroup_migrate() {
-                        /* 3.1 add task to cset->mg_tasks, src/dst_cset to mgctx */
+                        /* 3.1 add task to src_cset->mg_tasks, src/dst_cset to mgctx */
                         cgroup_migrate_add_task() {
                             list_move_tail(&task->cg_list, &cset->mg_tasks);
                             list_add_tail(&cset->mg_node, &mgctx->tset.src_csets);
@@ -1360,7 +1373,7 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
 
 /* 3. do migrate */
     ret = cgroup_migrate(leader, threadgroup, &mgctx) {
-    /* 3.1 add task to cset->mg_tasks, src/dst_cset to mgctx */
+    /* 3.1 add task to src_cset->mg_tasks, src/dst_cset to mgctx */
         task = leader;
         do {
             cgroup_migrate_add_task(task, mgctx) {
@@ -1396,11 +1409,14 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
                                 struct task_struct *task;
                                 struct cgroup_subsys_state *css;
 
+                                if (!rt_group_sched_enabled())
+                                    goto scx_check;
+
                                 cgroup_taskset_for_each(task, css, tset) {
                                     ret = sched_rt_can_attach(css_tg(css), task) {
                                         /* Don't accept real-time tasks
                                          * when there is no way for them to run */
-                                        if (rt_task(tsk) && tg->rt_bandwidth.rt_runtime == 0)
+                                        if (rt_group_sched_enabled() && rt_task(tsk) && tg->rt_bandwidth.rt_runtime == 0)
                                             return 0;
 
                                         return 1;
@@ -1408,6 +1424,7 @@ int cgroup_attach_task(struct cgroup *dst_cgrp, struct task_struct *leader, bool
                                     if (!ret)
                                         return -EINVAL;
                                 }
+                            scx_check:
                             #endif
                                 return scx_cgroup_can_attach(tset);
                             }
@@ -3286,7 +3303,7 @@ enum hrtimer_restart sched_cfs_slack_timer(struct hrtimer *timer)
 
     do_sched_cfs_slack_timer(cfs_b) {
         u64 runtime = 0, slice = sched_cfs_bandwidth_slice() {
-            return (u64)sysctl_sched_cfs_bandwidth_slice * NSEC_PER_USEC;
+            return (u64)sysctl_sched_cfs_bandwidth_slice * NSEC_PER_USEC; /* 5msec*/
         }
         unsigned long flags;
 
@@ -3541,7 +3558,7 @@ void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
 
             raw_spin_lock(&cfs_b->lock);
             slice =  sched_cfs_bandwidth_slice() {
-                return (u64)sysctl_sched_cfs_bandwidth_slice * NSEC_PER_USEC;
+                return (u64)sysctl_sched_cfs_bandwidth_slice * NSEC_PER_USEC; /* 5msec*/
             }
             ret = __assign_cfs_rq_runtime(cfs_b, cfs_rq, slice/*target_runtime*/) {
                 u64 min_amount, amount = 0;
@@ -3936,34 +3953,32 @@ void update_cfs_group(struct sched_entity *se) {
         reweight_entity(cfs_rq_of(se)/*cfs_rq*/, se, shares/*weight*/) {
             bool curr = cfs_rq->curr == se;
             if (se->on_rq) {
-                if (curr)
-                    update_curr(cfs_rq);
-                else
+                /* commit outstanding execution time */
+                update_curr(cfs_rq);
+                update_entity_lag(cfs_rq, se) {
+                    s64 vlag, limit;
+
+                    WARN_ON_ONCE(!se->on_rq);
+
+                    vlag = avg_vruntime(cfs_rq) - se->vruntime;
+                    limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
+
+                    se->vlag = clamp(vlag, -limit, limit);
+                }
+                se->deadline -= se->vruntime;
+                se->rel_deadline = 1;
+                cfs_rq->nr_queued--;
+                if (!curr)
                     __dequeue_entity(cfs_rq, se);
                 update_load_sub(&cfs_rq->load, se->load.weight);
             }
             dequeue_load_avg(cfs_rq, se);
 
-            if (!se->on_rq) {
-                se->vlag = div_s64(se->vlag * se->load.weight, weight);
-            } else {
-                reweight_eevdf(cfs_rq, se, weight) {
-                    unsigned long old_weight = se->load.weight;
-                    u64 avruntime = avg_vruntime(cfs_rq);
-                    s64 vlag, vslice;
-
-                    /* old_vlag * old_weight == new_vlag * new_weight */
-                    if (avruntime != se->vruntime) {
-                        vlag = (s64)(avruntime - se->vruntime);
-                        vlag = div_s64(vlag * old_weight, weight);
-                        se->vruntime = avruntime - vlag;
-                    }
-                    /* old_vslice * old_weight == new_vslice * new_weight */
-                    vslice = (s64)(se->deadline - avruntime);
-                    vslice = div_s64(vslice * old_weight, weight);
-                    se->deadline = avruntime + vslice;
-                }
-            }
+            /* Because we keep se->vlag = V - v_i, while: lag_i = w_i*(V - v_i),
+             * we need to scale se->vlag when w_i changes. */
+            se->vlag = div_s64(se->vlag * se->load.weight, weight);
+            if (se->rel_deadline)
+                se->deadline = div_s64(se->deadline * se->load.weight, weight);
 
             update_load_set(&se->load, weight);
 
@@ -3972,11 +3987,12 @@ void update_cfs_group(struct sched_entity *se) {
 
             enqueue_load_avg(cfs_rq, se);
             if (se->on_rq) {
+                place_entity(cfs_rq, se, 0);
                 update_load_add(&cfs_rq->load, se->load.weight);
-                if (!curr) {
+                if (!curr)
                     __enqueue_entity(cfs_rq, se);
-                    update_min_vruntime(cfs_rq);
-                }
+                cfs_rq->nr_queued++;
+                update_min_vruntime(cfs_rq);
             }
         }
     }
@@ -3984,6 +4000,8 @@ void update_cfs_group(struct sched_entity *se) {
 ```
 
 ### rt_bandwidth
+
+* [[RFC PATCH 0/9] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250605071412.139240-1-yurand2000@gmail.com/)
 
 Only applied to cgrou v1 but not v2.
 
@@ -4555,6 +4573,9 @@ struct task_group *sched_create_group(struct task_group *parent) {
         struct rt_rq *rt_rq;
         struct sched_rt_entity *rt_se;
         int i;
+
+        if (!rt_group_sched_enabled())
+            return 1;
 
         tg->rt_rq = kcalloc(nr_cpu_ids, sizeof(rt_rq), GFP_KERNEL);
         tg->rt_se = kcalloc(nr_cpu_ids, sizeof(rt_se), GFP_KERNEL);
