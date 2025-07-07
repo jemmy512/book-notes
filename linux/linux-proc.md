@@ -1873,6 +1873,8 @@ picked:
 
 ## preempt schedule
 
+* [全方位剖析内核抢占机制](https://mp.weixin.qq.com/s/1JQl7WqRjwDVv_ETC3XGgQ)
+
 preempt mode | preempt_count
 --- | ---
 ![](../images/kernel/proc-preempt-kernel.png) | ![](../images/kernel/proc-preempt_count.png)
@@ -5564,6 +5566,10 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
 }
 ```
 
+### find_energy_efficient_cpu
+
+* [Linux EAS介绍](https://mp.weixin.qq.com/s/HgEJ_IO-Gcy66vxMdsIGkQ)
+
 ## wakeup_preempt_fair
 
 ```c
@@ -7224,6 +7230,7 @@ get_cpu_for_node(struct device_node *node)
 
 # PELT
 
+* [[RFC PATCH 0/3] sched: Introduce Window Assisted Load Tracking](https://lore.kernel.org/all/1477638642-17428-1-git-send-email-markivx@codeaurora.org/)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
 * [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html) ⊙ [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 * [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
@@ -7820,7 +7827,7 @@ decayed |= propagate_entity_load_avg(se) {
         cfs_rq->prop_runnable_sum += runnable_sum;
     }
 
-    /* 3.2 util propagate path: child gcfs_rq -> child se -> parent cfs_rq */
+    /* 3.2 util propagate path: child gcfs_rq -> grp se -> parent cfs_rq */
     update_tg_cfs_util(cfs_rq, se, gcfs_rq) {
         /* gcfs_rq->avg.util_avg only updated when gcfs_rq->curr != NULL,
          * which means the grp has running tasks
@@ -7851,7 +7858,7 @@ decayed |= propagate_entity_load_avg(se) {
                         cfs_rq->avg.util_avg * PELT_MIN_DIVIDER);
     }
 
-    /* 3.3 runnable propagate path: child gcfs_rq -> child se -> parent cfs_rq */
+    /* 3.3 runnable propagate path: child gcfs_rq -> grp se -> parent cfs_rq */
     update_tg_cfs_runnable(cfs_rq, se, gcfs_rq) {
         long delta_sum, delta_avg = gcfs_rq->avg.runnable_avg - se->avg.runnable_avg;
         u32 new_sum, divider;
@@ -7876,7 +7883,7 @@ decayed |= propagate_entity_load_avg(se) {
                             cfs_rq->avg.runnable_avg * PELT_MIN_DIVIDER);
     }
 
-    /* 3.4 load propagate path: child gcfs_rq -> child se -> parent cfs_rq */
+    /* 3.4 load propagate path: child gcfs_rq -> grp se -> parent cfs_rq */
     update_tg_cfs_load(cfs_rq, se, gcfs_rq) {
         long delta_avg, running_sum, runnable_sum = gcfs_rq->prop_runnable_sum;
         unsigned long load_avg;
