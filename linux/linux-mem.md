@@ -188,7 +188,7 @@
     * [YouTube - Large Pages in the Linux Kernel - 2020.12.03 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=hoSpvGxXgNg)
     * [YouTuBe - Folios - 2022.6.20 Matthew Wilcox](https://www.youtube.com/watch?v=URTuP6wXYPA)
     * [YouTube - Memory Folios - 2022.6.23 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=nknQML80w3E)
-    * [论好名字的重要性： Linux内核page到folio的变迁](https://mp.weixin.qq.com/s/l7lIPwf66Py06X3ACf9BTg)
+    * [论好名字的重要性： Linux内核page到folio的变迁](https://mp.weixin.qq.com/s/4XnyOCSQwf6NGXY8RIAI0A)
 * [LWN - Compund Page](https://lwn.net/Kernel/Index/#Memory_management-Compound_pages)
 * [wowo tech - memory management :cn:](http://www.wowotech.net/sort/memory_management)
     * [ARM64 Kernel Image Mapping](http://www.wowotech.net/memory_management/436.html)
