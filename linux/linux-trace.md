@@ -10,10 +10,15 @@
 
 ---
 
+* [Linux内核性能剖析的方法学和主要工具](https://mp.weixin.qq.com/s/Snh5eYIQ4SGAxnfB75wSvg)
 * [LWN - Tracing](https://lwn.net/Kernel/Index/#Tracing)
 * [Linux tracing systems & how they fit together](https://jvns.ca/blog/2017/07/05/linux-tracing-systems/#kprobes)
 * [Kernel - Linux Tracing Technologies](https://www.kernel.org/doc/html/latest/trace/index.html)
 * [Linux tracing systems & how they fit together](https://jvns.ca/blog/2017/07/05/linux-tracing-systems/)
+
+* :orange_book: System Performance Enterprise and the Cloud - BrenDan Gregg
+* :orange_book: Performance Analysis and Tuning on Modern CPUs - Denis Bakhvalor
+---
 
 ![](../images/kernel/trace-arch.png)
 
@@ -5450,7 +5455,7 @@ Example: `gdb vmlinux`, then target remote `/dev/ttyS0`. Practice on a test VM.
 
 Configure kdump (`CONFIG_KEXEC`, kexec-tools). After a crash, run `crash vmlinux /proc/vmcore`. Use commands like `bt` (backtrace), `ps` (processes), and `log` (dmesg). Practice with sample vmcores.
 
-## perf
+# perf
 
 ```sh
 usage: perf [--version] [--help] [OPTIONS] COMMAND [ARGS]
@@ -5491,3 +5496,8 @@ The most commonly used perf commands are:
     sched           Tool to trace/measure scheduler properties (latencies)
     timechart       Tool to visualize total system behavior during a workload
 ```
+
+# bcc
+
+* [BCC - Tools for BPF-based Linux IO analysis, networking, monitoring, and more](https://github.com/iovisor/bcc/tree/master)
+![](../images/kernel/bcc-bpf.png)
