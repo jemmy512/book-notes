@@ -10015,16 +10015,26 @@ bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
         /* Unexpected PMD-mapped THP? */
         VM_BUG_ON_FOLIO(!pvmw.pte, folio);
 
-        pfn = pte_pfn(ptep_get(pvmw.pte));
-
-        if (folio_is_zone_device(folio)) {
-            VM_BUG_ON_FOLIO(folio_nr_pages(folio) > 1, folio);
-            subpage = &folio->page;
+        pteval = ptep_get(pvmw.pte);
+        if (likely(pte_present(pteval))) {
+            pfn = pte_pfn(pteval);
         } else {
-            subpage = folio_page(folio, pfn - folio_pfn(folio));
+            pfn = swp_offset_pfn(pte_to_swp_entry(pteval));
+            VM_WARN_ON_FOLIO(folio_test_hugetlb(folio), folio);
         }
+
+        subpage = folio_page(folio, pfn - folio_pfn(folio));
         address = pvmw.address;
         anon_exclusive = folio_test_anon(folio) && PageAnonExclusive(subpage);
+
+        if (folio_test_hugetlb(folio)) {
+
+        } else if (likely(pte_present(pteval))) {
+
+        } else {
+            pte_clear(mm, address, pvmw.pte);
+            writable = is_writable_device_private_entry(pte_to_swp_entry(pteval));
+        }
 
         /* Set the dirty flag on the folio now the pte is gone. */
         if (pte_dirty(pteval))
@@ -10074,16 +10084,23 @@ bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
             else
                 entry = make_readable_migration_entry(page_to_pfn(subpage));
 
-            if (pte_young(pteval))
-                entry = make_migration_entry_young(entry);
-            if (pte_dirty(pteval))
-                entry = make_migration_entry_dirty(entry);
-
-            swp_pte = swp_entry_to_pte(entry);
-            if (pte_soft_dirty(pteval))
-                swp_pte = pte_swp_mksoft_dirty(swp_pte);
-            if (pte_uffd_wp(pteval))
-                swp_pte = pte_swp_mkuffd_wp(swp_pte);
+            if (likely(pte_present(pteval))) {
+                if (pte_young(pteval))
+                    entry = make_migration_entry_young(entry);
+                if (pte_dirty(pteval))
+                    entry = make_migration_entry_dirty(entry);
+                swp_pte = swp_entry_to_pte(entry);
+                if (pte_soft_dirty(pteval))
+                    swp_pte = pte_swp_mksoft_dirty(swp_pte);
+                if (pte_uffd_wp(pteval))
+                    swp_pte = pte_swp_mkuffd_wp(swp_pte);
+            } else {
+                swp_pte = swp_entry_to_pte(entry);
+                if (pte_swp_soft_dirty(pteval))
+                    swp_pte = pte_swp_mksoft_dirty(swp_pte);
+                if (pte_swp_uffd_wp(pteval))
+                    swp_pte = pte_swp_mkuffd_wp(swp_pte);
+            }
 
             if (folio_test_hugetlb(folio))
                 set_huge_pte_at(mm, address, pvmw.pte, swp_pte, hsz);
@@ -13030,8 +13047,7 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
 {
     int (*writeout)(struct folio *, struct writeback_control *);
 
-    /*
-    * We no longer attempt to writeback filesystem folios here, other
+    /* We no longer attempt to writeback filesystem folios here, other
     * than tmpfs/shmem.  That's taken care of in page-writeback.
     * If we find a dirty filesystem folio at the end of the LRU list,
     * typically that means the filesystem is saturating the storage
@@ -13042,15 +13058,12 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
     * If the folio is swapcache, write it back even if that would
     * block, for some throttling. This happens by accident, because
     * swap_backing_dev_info is bust: it doesn't reflect the
-    * congestion state of the swapdevs.  Easy to fix, if needed.
-    */
+    * congestion state of the swapdevs.  Easy to fix, if needed. */
     if (!is_page_cache_freeable(folio))
         return PAGE_KEEP;
     if (!mapping) {
-        /*
-        * Some data journaling orphaned folios can have
-        * folio->mapping == NULL while being dirty with clean buffers.
-        */
+        /* Some data journaling orphaned folios can have
+        * folio->mapping == NULL while being dirty with clean buffers. */
         if (folio_test_private(folio)) {
             if (try_to_free_buffers(folio)) {
                 folio_clear_dirty(folio);
@@ -13078,11 +13091,9 @@ static pageout_t pageout(struct folio *folio, struct address_space *mapping,
             .swap_plug = plug,
         };
 
-        /*
-        * The large shmem folio can be split if CONFIG_THP_SWAP is
+        /* The large shmem folio can be split if CONFIG_THP_SWAP is
         * not enabled or contiguous swap entries are failed to
-        * allocate.
-        */
+        * allocate. */
         if (shmem_mapping(mapping) && folio_test_large(folio))
             wbc.list = folio_list;
 
@@ -18562,6 +18573,15 @@ out:
 
 ```c
 struct vm_area_struct {
+    union {
+        struct {
+            /* VMA covers [vm_start; vm_end) addresses within mm */
+            unsigned long vm_start;
+            unsigned long vm_end;
+        };
+        freeptr_t vm_freeptr; /* Pointer used by SLAB_TYPESAFE_BY_RCU */
+    };
+
     struct list_head    anon_vma_chain;
     struct anon_vma*    anon_vma;
 
@@ -18605,6 +18625,10 @@ struct page {
         }
     }
 };
+
+INTERVAL_TREE_DEFINE(struct anon_vma_chain, rb, unsigned long, rb_subtree_last,
+            avc_start_pgoff, avc_last_pgoff,
+            static inline, __anon_vma_interval_tree)
 ```
 
 ## anon_vma_prepare
@@ -18733,6 +18757,224 @@ int anon_vma_fork(struct vm_area_struct *vma, struct vm_area_struct *pvma)
     anon_vma_unlock_write(anon_vma);
 
     return 0;
+}
+```
+
+### page_vma_mapped_walk
+
+```c
+/* check if @pvmw->pfn is mapped in @pvmw->vma at @pvmw->address */
+bool page_vma_mapped_walk(struct page_vma_mapped_walk *pvmw)
+{
+    struct vm_area_struct *vma = pvmw->vma;
+    struct mm_struct *mm = vma->vm_mm;
+    unsigned long end;
+    spinlock_t *ptl;
+    pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t pmde;
+
+    /* The only possible pmd mapping has been handled on last iteration */
+    if (pvmw->pmd && !pvmw->pte)
+        return not_found(pvmw);
+
+    if (unlikely(is_vm_hugetlb_page(vma))) {
+        struct hstate *hstate = hstate_vma(vma);
+        unsigned long size = huge_page_size(hstate);
+        /* The only possible mapping was handled on last iteration */
+        if (pvmw->pte)
+            return not_found(pvmw);
+        /* All callers that get here will already hold the
+        * i_mmap_rwsem.  Therefore, no additional locks need to be
+        * taken before calling hugetlb_walk(). */
+        pvmw->pte = hugetlb_walk(vma, pvmw->address, size);
+        if (!pvmw->pte)
+            return false;
+
+        pvmw->ptl = huge_pte_lock(hstate, mm, pvmw->pte);
+        if (!check_pte(pvmw, pages_per_huge_page(hstate)))
+            return not_found(pvmw);
+        return true;
+    }
+
+    end = vma_address_end(pvmw);
+    if (pvmw->pte)
+        goto next_pte;
+restart:
+    do {
+        pgd = pgd_offset(mm, pvmw->address);
+        if (!pgd_present(*pgd)) {
+            step_forward(pvmw, PGDIR_SIZE);
+            continue;
+        }
+        p4d = p4d_offset(pgd, pvmw->address);
+        if (!p4d_present(*p4d)) {
+            step_forward(pvmw, P4D_SIZE);
+            continue;
+        }
+        pud = pud_offset(p4d, pvmw->address);
+        if (!pud_present(*pud)) {
+            step_forward(pvmw, PUD_SIZE) {
+                pvmw->address = (pvmw->address + size) & ~(size - 1);
+                if (!pvmw->address)
+                    pvmw->address = ULONG_MAX;
+            }
+            continue;
+        }
+
+        pvmw->pmd = pmd_offset(pud, pvmw->address);
+        /* Make sure the pmd value isn't cached in a register by the
+        * compiler and used as a stale value after we've observed a
+        * subsequent update. */
+        pmde = pmdp_get_lockless(pvmw->pmd);
+
+        if (pmd_trans_huge(pmde) || is_pmd_migration_entry(pmde) || (pmd_present(pmde) && pmd_devmap(pmde))) {
+            pvmw->ptl = pmd_lock(mm, pvmw->pmd);
+            pmde = *pvmw->pmd;
+            if (!pmd_present(pmde)) {
+                swp_entry_t entry;
+
+                if (!thp_migration_supported() || !(pvmw->flags & PVMW_MIGRATION))
+                    return not_found(pvmw);
+                entry = pmd_to_swp_entry(pmde);
+                if (!is_migration_entry(entry) || !check_pmd(swp_offset_pfn(entry), pvmw))
+                    return not_found(pvmw);
+                return true;
+            }
+            if (likely(pmd_trans_huge(pmde) || pmd_devmap(pmde))) {
+                if (pvmw->flags & PVMW_MIGRATION)
+                    return not_found(pvmw);
+                if (!check_pmd(pmd_pfn(pmde), pvmw))
+                    return not_found(pvmw);
+                return true;
+            }
+            /* THP pmd was split under us: handle on pte level */
+            spin_unlock(pvmw->ptl);
+            pvmw->ptl = NULL;
+        } else if (!pmd_present(pmde)) {
+            /* If PVMW_SYNC, take and drop THP pmd lock so that we
+            * cannot return prematurely, while zap_huge_pmd() has
+            * cleared *pmd but not decremented compound_mapcount(). */
+            if ((pvmw->flags & PVMW_SYNC)
+                && thp_vma_suitable_order(vma, pvmw->address, PMD_ORDER)
+                && (pvmw->nr_pages >= HPAGE_PMD_NR)) {
+
+                spinlock_t *ptl = pmd_lock(mm, pvmw->pmd);
+
+                spin_unlock(ptl);
+            }
+            step_forward(pvmw, PMD_SIZE);
+            continue;
+        }
+        if (!map_pte(pvmw, &pmde, &ptl) /* ---> */) {
+            if (!pvmw->pte)
+                goto restart;
+            goto next_pte;
+        }
+this_pte:
+        if (check_pte(pvmw, 1))
+            return true;
+next_pte:
+        do {
+            pvmw->address += PAGE_SIZE;
+            if (pvmw->address >= end)
+                return not_found(pvmw);
+            /* Did we cross page table boundary? */
+            if ((pvmw->address & (PMD_SIZE - PAGE_SIZE)) == 0) {
+                if (pvmw->ptl) {
+                    spin_unlock(pvmw->ptl);
+                    pvmw->ptl = NULL;
+                }
+                pte_unmap(pvmw->pte);
+                pvmw->pte = NULL;
+                goto restart;
+            }
+            pvmw->pte++;
+        } while (pte_none(ptep_get(pvmw->pte)));
+
+        if (!pvmw->ptl) {
+            spin_lock(ptl);
+            if (unlikely(!pmd_same(pmde, pmdp_get_lockless(pvmw->pmd)))) {
+                pte_unmap_unlock(pvmw->pte, ptl);
+                pvmw->pte = NULL;
+                goto restart;
+            }
+            pvmw->ptl = ptl;
+        }
+        goto this_pte;
+    } while (pvmw->address < end);
+
+    return false;
+}
+```
+
+#### map_pte
+
+```c
+bool map_pte(struct page_vma_mapped_walk *pvmw, pmd_t *pmdvalp,
+            spinlock_t **ptlp)
+{
+    pte_t ptent;
+
+    if (pvmw->flags & PVMW_SYNC) {
+        /* Use the stricter lookup */
+        pvmw->pte = pte_offset_map_lock(pvmw->vma->vm_mm, pvmw->pmd,
+                        pvmw->address, &pvmw->ptl);
+        *ptlp = pvmw->ptl;
+        return !!pvmw->pte;
+    }
+
+again:
+    /*
+    * It is important to return the ptl corresponding to pte,
+    * in case *pvmw->pmd changes underneath us; so we need to
+    * return it even when choosing not to lock, in case caller
+    * proceeds to loop over next ptes, and finds a match later.
+    * Though, in most cases, page lock already protects this.
+    */
+    pvmw->pte = pte_offset_map_rw_nolock(
+        pvmw->vma->vm_mm, pvmw->pmd, pvmw->address, pmdvalp, ptlp);
+    if (!pvmw->pte)
+        return false;
+
+    ptent = ptep_get(pvmw->pte);
+
+    if (pvmw->flags & PVMW_MIGRATION) {
+        if (!is_swap_pte(ptent))
+            return false;
+    } else if (is_swap_pte(ptent)) {
+        swp_entry_t entry;
+        /*
+        * Handle un-addressable ZONE_DEVICE memory.
+        *
+        * We get here when we are trying to unmap a private
+        * device page from the process address space. Such
+        * page is not CPU accessible and thus is mapped as
+        * a special swap entry, nonetheless it still does
+        * count as a valid regular mapping for the page
+        * (and is accounted as such in page maps count).
+        *
+        * So handle this special case as if it was a normal
+        * page mapping ie lock CPU page table and return true.
+        *
+        * For more details on device private memory see HMM
+        * (include/linux/hmm.h or mm/hmm.c).
+        */
+        entry = pte_to_swp_entry(ptent);
+        if (!is_device_private_entry(entry) && !is_device_exclusive_entry(entry))
+            return false;
+    } else if (!pte_present(ptent)) {
+        return false;
+    }
+    spin_lock(*ptlp);
+    if (unlikely(!pmd_same(*pmdvalp, pmdp_get_lockless(pvmw->pmd)))) {
+        pte_unmap_unlock(pvmw->pte, *ptlp);
+        goto again;
+    }
+    pvmw->ptl = *ptlp;
+
+    return true;
 }
 ```
 
