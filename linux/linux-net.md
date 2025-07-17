@@ -196,7 +196,7 @@
 
 ---
 
-<img src='../images/kernel/net-socket-sock.svg' style='max-height:850px'/>
+![](../images/kernel/net-socket-sock.svg)
 * While <span style="color:yellowgreen">struct proto</span> is protocol-specific (e.g., TCP vs. UDP), <span style="color:yellowgreen">struct proto_ops</span> is address-family-specific (e.g., IPv4 vs. IPv6).
 
 ---
