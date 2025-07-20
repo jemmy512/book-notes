@@ -71,7 +71,7 @@
 
 ---
 
-* [DumpStack 内核同步机制](http://www.dumpstack.cn/index.php/category/locking) ⊙ [ARM同步机制   ](http://www.dumpstack.cn/index.php/2022/09/18/1054.html) ⊙ [atomic](http://www.dumpstack.cn/index.php/2022/09/18/1055.html) ⊙ [spin](http://www.dumpstack.cn/index.php/2022/09/18/1056.html) ⊙ [mutex](http://www.dumpstack.cn/index.php/2022/09/18/1057.html) ⊙ [rwsem](http://www.dumpstack.cn/index.php/2022/09/18/1064.html) ⊙ [RCU](http://www.dumpstack.cn/index.php/2022/09/18/1065.html)
+* [DumpStack 内核同步机制](http://www.dumpstack.cn/index.php/category/locking) ⊙ [ARM同步机制](http://www.dumpstack.cn/index.php/2022/09/18/1054.html) ⊙ [atomic](http://www.dumpstack.cn/index.php/2022/09/18/1055.html) ⊙ [spin](http://www.dumpstack.cn/index.php/2022/09/18/1056.html) ⊙ [mutex](http://www.dumpstack.cn/index.php/2022/09/18/1057.html) ⊙ [rwsem](http://www.dumpstack.cn/index.php/2022/09/18/1064.html) ⊙ [RCU](http://www.dumpstack.cn/index.php/2022/09/18/1065.html)
 
 # Core
 
