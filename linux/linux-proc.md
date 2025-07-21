@@ -2090,6 +2090,8 @@ el1t_64_irq_handler() {
 
 # SCHED_DL
 
+* [[PATCH v5 0/7] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1699095159.git.bristot@kernel.org/)
+
 ```c
 DEFINE_SCHED_CLASS(dl) = {
     .enqueue_task       = enqueue_task_dl,
@@ -2509,8 +2511,9 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                 }
 
                                 dec_rt_prio_smp(rt_rq, prio, prev_prio) {
-                                    /* If no rt tasks, set highest_prio.curr = MAX_RT_PRIO-1,
-                                     * which has 0 idx in cpupri.pri_to_cpu[] means cfs cpu */
+                                    /* for the last rt task, dequeue_pushable_task set
+                                     * rq->rt.highest_prio.next = MAX_RT_PRIO-1;
+                                     * which has 0 idx in rq->rd->cpupri.pri_to_cpu[] means cfs cpu */
                                     if (rq->online && rt_rq->highest_prio.curr != prev_prio) {
                                         cpupri_set(&rq->rd->cpupri, rq->cpu, rt_rq->highest_prio.curr);
                                     }
@@ -2738,8 +2741,9 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
                     }
                     int idx, cpu;
 
-                    /* If no rt tasks, set highest_prio.curr = MAX_RT_PRIO-1
-                     * MAX_RT_PRIO-1 has 0 idx in cpupri.pri_to_cpu[] means cfs cpu */
+                    /* for the last rt task, dequeue_pushable_task set
+                     * rq->rt.highest_prio.next = MAX_RT_PRIO-1;
+                     * which has 0 idx in rq->rd->cpupri.pri_to_cpu[] means cfs cpu */
 
                     /* 1.1 find lowest cpus from vec[0, idx] */
                     for (idx = 0; idx < task_pri; idx++) {
@@ -3298,6 +3302,12 @@ skip:
     try_to_wake_up() {
         p->sched_class->task_woken(rq, p) {
             void task_woken_rt(struct rq *rq, struct task_struct *p) {
+                bool need_to_push = !task_on_cpu(rq, p) &&
+                    !test_tsk_need_resched(rq->curr) &&
+                    p->nr_cpus_allowed > 1 &&
+                    (dl_task(rq->donor) || rt_task(rq->donor)) &&
+                    (rq->curr->nr_cpus_allowed < 2 ||
+                        rq->donor->prio <= p->prio);
                 if (need_to_push)
                     push_rt_tasks(rq);
             }
@@ -3614,7 +3624,7 @@ struct sched_entity {
 
 struct cfs_rq {
     struct load_weight      load;
-    unsigned int            nr_queued;      /* running and delaed dequeue tasks */
+    unsigned int            nr_queued;      /* running and delayed dequeued tasks */
     unsigned int            h_nr_queued;    /* SCHED_{NORMAL,BATCH,IDLE} */
     unsigned int            h_nr_runnable;  /* SCHED_{NORMAL,BATCH,IDLE} */
     unsigned int            h_nr_idle;      /* SCHED_IDLE */
@@ -6886,7 +6896,6 @@ build_sched_groups(struct sched_domain *sd, int cpu)
 
 # cpu_topology
 
-* [DumpStack - 负载跟踪 - cpu算力](http://www.dumpstack.cn/index.php/2022/06/02/743.html  )
 * [深入探索Linux Kernel：CPU 拓扑结构探测](https://mp.weixin.qq.com/s/O4ieRkms_OkY_X9TOGvgNw)
 
 ```c
@@ -7232,7 +7241,7 @@ get_cpu_for_node(struct device_node *node)
 
 * [[RFC PATCH 0/3] sched: Introduce Window Assisted Load Tracking](https://lore.kernel.org/all/1477638642-17428-1-git-send-email-markivx@codeaurora.org/)
 * [DumpStack - PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html)
-* [Wowo Tech - :one:PELT](http://www.wowotech.net/process_management/450.html) ⊙ [:two:PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
+* [Wowo Tech - PELT](http://www.wowotech.net/process_management/450.html) ⊙ [PELT算法浅析](http://www.wowotech.net/process_management/pelt.html)
 * [Linux核心概念详解 - 2.7 负载追踪](https://s3.shizhz.me/linux-sched/load-trace)
 * [Linux 核心設計: Scheduler(4): PELT](https://hackmd.io/@RinHizakura/Bk4y_5o-9)
 
@@ -8797,7 +8806,11 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 
 # load_balance
 
-* [蜗窝科技 - CFS负载均衡 - :one:概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [:two: 任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [:three: CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [:four: load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [:five: load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
+* [蜗窝科技 - CFS负载均衡 - 概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
+
+* [DumpSatck - 负载跟踪](http://www.dumpstack.cn/index.php/category/tracking) ⊙ [cpu capacity](http://www.dumpstack.cn/index.php/2022/06/02/743.html) ⊙ [PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html) ⊙ [util_est](http://www.dumpstack.cn/index.php/2022/08/13/787.html) ⊙ [uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html) ⊙ [walt](http://www.dumpstack.cn/index.php/2022/08/13/789.html)
+
+---
 
 ![](../images/kernel/proc-sched-load_balance.svg)
 
@@ -11449,9 +11462,15 @@ kernel_clone(struct kernel_clone_args *args) {
             init_entity_runnable_average(&p->se) {
                 struct sched_avg *sa = &se->avg;
                 memset(sa, 0, sizeof(*sa));
+
+                /* Tasks are initialized with full load to be seen as heavy tasks until
+                 * they get a chance to stabilize to their real load level.
+                 * Group entities are initialized with zero load to reflect the fact that
+                 * nothing has been attached to the task group yet. */
                 if (entity_is_task(se)) {
                     sa->load_avg = scale_load_down(se->load.weight);
                 }
+                /* when this task is enqueued, it will contribute to its cfs_rq's load_avg */
             }
         }
         /* The child inherits the parent’s file descriptor table (struct files_struct),
@@ -14305,7 +14324,7 @@ CONFIG_PREEMPT_VOLUNTARY | y | Preemption at voluntary kernel code points
 Linux scheduler sysctl(8) tunables which can also be set from `/proc/sys/kernel`
 sysctl | Default | Description
 :-: | :-: | :-:
-sched_cfs_bandwidth_slice_us | 5000 | CPU time quanta used for CFS bandwidth calculations.
+sched_cfs_bandwidth_slice_us | 5ms | CPU time quanta used for CFS bandwidth calculations.
 sysctl_sched_nr_migrate | 32 | Sets how many tasks can be migrated at a time for load balancing.
 sched_schedstats | 0 | Enables additional scheduler statistics, including sched:sched_stat* tracepoints.
 sched_autogroup_enabled |
