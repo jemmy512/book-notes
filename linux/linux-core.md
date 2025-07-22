@@ -79,10 +79,12 @@
 
 ## xarray
 
+* [kern - xarray](https://docs.kernel.org/core-api/xarray.html)
 * [LWN Index - Radix tree](https://lwn.net/Kernel/Index/#Radix_tree)
 
 ## maple tree
 
+* [kern - maple tree](https://docs.kernel.org/core-api/maple_tree.html)
 * [LWN - Introducing maple trees](https://lwn.net/Articles/845507/)
 * [The Maple Tree, A Modern Data Structure for a Complex Problem](https://blogs.oracle.com/linux/the-maple-tree)
 * [Linux commit - Maple Tree: add new data structure](https://github.com/torvalds/linux/commit/54a611b605901c7d5d05b6b8f5d04a6ceb0962aa)
@@ -103,6 +105,7 @@
 
 ## barrier
 
+* [kern - LINUX KERNEL MEMORY BARRIERS](https://docs.kernel.org/core-api/wrappers/memory-barriers.html)
 * [Arm - Learn the architecture - Memory Systems, Ordering, and Barriers](https://developer.arm.com/documentation/102336/0100)
 * [memory-barrier - wowo tech :one:](http://www.wowotech.net/kernel_synchronization/memory-barrier.html) ⊙ [:link: :two:](https://mp.weixin.qq.com/s/s6AvLiVVkoMX4dIGpqmXYA)
 * [Memory access ordering :one: an introduction](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering---an-introduction)  ⊙ [:two: Barriers and the Linux kernel](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering-part-2---barriers-and-the-linux-kernel)  ⊙ [:three: Memory access ordering in the Arm Architecture](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering-part-3---memory-access-ordering-in-the-arm-architecture)
