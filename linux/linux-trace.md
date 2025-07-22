@@ -5184,16 +5184,95 @@ echo 4 > /proc/irq/10/smp_affinity
 perf record -e irq:* -a
 ```
 
+# kernel debugging
+
+## config
+
+```sh
+CONFIG_DEBUG_KERNEL, CONFIG_KASAN, CONFIG_LOCKDEP, CONFIG_DEBUG_PAGEALLOC, CONFIG_DEBUG_SLAB, CONFIG_DEBUG_SPINLOCK, CONFIG_DEBUG_ATOMIC_SLEEP, CONFIG_DEBUG_INFO, CONFIG_FRAME_POINTER, CONFIG_DEBUG_STACKOVERFLOW, CONFIG_DEBUG_STACK_USAGE, CONFIG_DEBUG_KMEMLEAK, CONFIG_KPROBES, CONFIG_FTRACE, CONFIG_KGDB,
+```
+
+```sh
+# Specifies the format and location of core dumps for crashed processes.
+# %e: Executable name, %p: PID, %t: Timestamp.
+echo "/var/crash/core.%e.%p.%t" > /proc/sys/kernel/core_pattern
+```
+
+**/etc/sysctl.conf**
+```sh
+# Sets the time (in seconds) before reboot after a kernel panic.
+kernel.panic = 10
+
+# Appends PID to core dump filenames to avoid overwriting.
+kernel.core_uses_pid = 1
+
+# /etc/systemd/system.conf
+# Sets the default core dump size limit for systemd-managed processes.
+DefaultLimitCORE=infinity
+```
+
+## kdb/kgdb
+
+Enable `CONFIG_KGDB` in the kernel. Connect via a serial port or network to a host running gdb.
+
+Example: `gdb vmlinux`, then target remote `/dev/ttyS0`. Practice on a test VM.
+
+
+## crash
+
+Configure kdump (`CONFIG_KEXEC`, kexec-tools). After a crash, run `crash vmlinux /proc/vmcore`. Use commands like `bt` (backtrace), `ps` (processes), and `log` (dmesg). Practice with sample vmcores.
 
 # perf
 
-To diagnose high interrupt latency in the Linux kernel, tools like **perf** and **ftrace** are powerful for tracing interrupt handling times and identifying bottlenecks. Below is a detailed guide on how to use these tools effectively, including setup, commands, and analysis.
-
 ![](../images/kernel/perf-events-map.png)
+
+```sh
+usage: perf [--version] [--help] [OPTIONS] COMMAND [ARGS]
+
+The most commonly used perf commands are:
+    record          Run a command and record its profile into perf.data
+    report          Read perf.data (created by perf record) and display the profile
+    script          Read perf.data (created by perf record) and display trace output
+    ftrace          simple wrapper for kernel's ftrace functionality
+
+    mem             Profile memory accesses
+
+    annotate        Read perf.data (created by perf record) and display annotated code
+    archive         Create archive with object files with build-ids found in perf.data file
+    bench           General framework for benchmark suites
+    buildid-cache   Manage build-id cache.
+    buildid-list    List the buildids in a perf.data file
+    c2c             Shared Data C2C/HITM Analyzer.
+    config          Get and set variables in a configuration file.
+    daemon          Run record sessions on background
+    data            Data file related processing
+    diff            Read perf.data files and display the differential profile
+    evlist          List the event names in a perf.data file
+    inject          Filter to augment the events stream with additional information
+    iostat          Show I/O performance metrics
+    kallsyms        Searches running kernel for symbols
+    kvm             Tool to trace/measure kvm guest os
+    list            List all symbolic event types
+    stat            Run a command and gather performance counter statistics
+    test            Runs sanity tests.
+    top             System profiling tool.
+    version         display the version of perf binary
+    probe           Define new dynamic tracepoints
+    trace           strace inspired tool
+    kmem            Tool to trace/measure kernel memory properties
+    kwork           Tool to trace/measure kernel work properties (latencies)
+    lock            Analyze lock events
+    sched           Tool to trace/measure scheduler properties (latencies)
+    timechart       Tool to visualize total system behavior during a workload
+```
+
+## perf-example
+
+To diagnose high interrupt latency in the Linux kernel, tools like **perf** and **ftrace** are powerful for tracing interrupt handling times and identifying bottlenecks. Below is a detailed guide on how to use these tools effectively, including setup, commands, and analysis.
 
 ---
 
-## 1. **Using `perf` to Trace Interrupt Handling Times**
+### 1. **Using `perf` to Trace Interrupt Handling Times**
 
 **perf** is a performance analysis tool that provides detailed profiling of kernel and user-space events, including interrupts. It can trace interrupt-related events, measure handler execution times, and identify bottlenecks.
 
@@ -5262,7 +5341,7 @@ Example Output (Simplified `perf script`):
 
 ---
 
-## 2. **Using `ftrace` to Trace Interrupt Handling Times**
+### 2. **Using `ftrace` to Trace Interrupt Handling Times**
 
 **ftrace** is a kernel tracing framework that provides low-overhead tracing of kernel events, including interrupts. It’s ideal for fine-grained analysis of interrupt handling and latency.
 
@@ -5415,87 +5494,6 @@ Practical Example Workflow
 - **Cross-Reference**: Use `/proc/interrupts`, `dmesg`, or driver logs to correlate trace data with specific devices.
 
 By using `perf` and `ftrace`, you can pinpoint slow interrupt handlers, interrupt storms, or softirq bottlenecks, enabling targeted optimizations like driver tuning, affinity adjustments, or workload offloading to reduce latency.
-
-
-# kernel debugging
-
-## config
-
-```sh
-CONFIG_DEBUG_KERNEL, CONFIG_KASAN, CONFIG_LOCKDEP, CONFIG_DEBUG_PAGEALLOC, CONFIG_DEBUG_SLAB, CONFIG_DEBUG_SPINLOCK, CONFIG_DEBUG_ATOMIC_SLEEP, CONFIG_DEBUG_INFO, CONFIG_FRAME_POINTER, CONFIG_DEBUG_STACKOVERFLOW, CONFIG_DEBUG_STACK_USAGE, CONFIG_DEBUG_KMEMLEAK, CONFIG_KPROBES, CONFIG_FTRACE, CONFIG_KGDB,
-```
-
-```sh
-# Specifies the format and location of core dumps for crashed processes.
-# %e: Executable name, %p: PID, %t: Timestamp.
-echo "/var/crash/core.%e.%p.%t" > /proc/sys/kernel/core_pattern
-```
-
-**/etc/sysctl.conf**
-```sh
-# Sets the time (in seconds) before reboot after a kernel panic.
-kernel.panic = 10
-
-# Appends PID to core dump filenames to avoid overwriting.
-kernel.core_uses_pid = 1
-
-# /etc/systemd/system.conf
-# Sets the default core dump size limit for systemd-managed processes.
-DefaultLimitCORE=infinity
-```
-
-## kdb/kgdb
-
-Enable `CONFIG_KGDB` in the kernel. Connect via a serial port or network to a host running gdb.
-
-Example: `gdb vmlinux`, then target remote `/dev/ttyS0`. Practice on a test VM.
-
-
-## crash
-
-Configure kdump (`CONFIG_KEXEC`, kexec-tools). After a crash, run `crash vmlinux /proc/vmcore`. Use commands like `bt` (backtrace), `ps` (processes), and `log` (dmesg). Practice with sample vmcores.
-
-# perf
-
-```sh
-usage: perf [--version] [--help] [OPTIONS] COMMAND [ARGS]
-
-The most commonly used perf commands are:
-    record          Run a command and record its profile into perf.data
-    report          Read perf.data (created by perf record) and display the profile
-    script          Read perf.data (created by perf record) and display trace output
-    ftrace          simple wrapper for kernel's ftrace functionality
-
-    mem             Profile memory accesses
-
-    annotate        Read perf.data (created by perf record) and display annotated code
-    archive         Create archive with object files with build-ids found in perf.data file
-    bench           General framework for benchmark suites
-    buildid-cache   Manage build-id cache.
-    buildid-list    List the buildids in a perf.data file
-    c2c             Shared Data C2C/HITM Analyzer.
-    config          Get and set variables in a configuration file.
-    daemon          Run record sessions on background
-    data            Data file related processing
-    diff            Read perf.data files and display the differential profile
-    evlist          List the event names in a perf.data file
-    inject          Filter to augment the events stream with additional information
-    iostat          Show I/O performance metrics
-    kallsyms        Searches running kernel for symbols
-    kvm             Tool to trace/measure kvm guest os
-    list            List all symbolic event types
-    stat            Run a command and gather performance counter statistics
-    test            Runs sanity tests.
-    top             System profiling tool.
-    version         display the version of perf binary
-    probe           Define new dynamic tracepoints
-    trace           strace inspired tool
-    kmem            Tool to trace/measure kernel memory properties
-    kwork           Tool to trace/measure kernel work properties (latencies)
-    lock            Analyze lock events
-    sched           Tool to trace/measure scheduler properties (latencies)
-    timechart       Tool to visualize total system behavior during a workload
-```
 
 # bcc
 
