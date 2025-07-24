@@ -160,6 +160,7 @@
         * [setup_swap_map_and_extents](#setup_swap_map_and_extents)
     * [swapoff](#swapoff)
         * [swap_discard_work](#swap_discard_work)
+    * [folio_alloc_swap](#folio_alloc_swap)
     * [add_to_swap](#add_to_swap)
         * [get_swap_pages](#get_swap_pages)
         * [swap_alloc_cluster](#swap_alloc_cluster)
@@ -5553,6 +5554,7 @@ Q: how workingset works?
 ## lru
 
 * [linux内存回收之 File page的 lru list算法原理](https://zhuanlan.zhihu.com/p/421298579)
+* [[PATCH 0/6 v4] sched/mm: LRU drain flush on nohz_full](https://lore.kernel.org/all/20250703140717.25703-1-frederic@kernel.org/)
 
 ```c
 enum pgdat_flags {
@@ -11167,6 +11169,9 @@ kswapd_try_sleep:
 
 ![](../images/kernel/mem-swap-arch.svg)
 
+* [[PATCH v4 00/13] mm, swap: rework of swap allocator locks](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/#t)
+* [[PATCH v3 0/7] mm, swap: remove swap slot cache Kairui Song](https://lore.kernel.org/all/20250313165935.63303-1-ryncsn@gmail.com/)
+
 ```md
 +-----------------------------------------------------+
 | +-----------------------------------------------+   |
@@ -12231,6 +12236,8 @@ int unuse_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
     return 0;
 }
 ```
+
+## folio_alloc_swap
 
 ## add_to_swap
 
