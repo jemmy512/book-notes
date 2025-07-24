@@ -1120,6 +1120,8 @@ export LD_LIBRARY_PATH=
 
 ![](../images/kernel/proc-sched-class.png)
 
+* [The long road to lazy preemption](https://lwn.net/Articles/994322/)
+
 * User Space Tasks Preemption Schedule Points:
 
     1. System Call Returns:
@@ -2091,6 +2093,7 @@ el1t_64_irq_handler() {
 # SCHED_DL
 
 * [[PATCH v5 0/7] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1699095159.git.bristot@kernel.org/)
+* [Deadline servers as a realtime throttling replacement](https://lwn.net/Articles/934415/)
 
 ```c
 DEFINE_SCHED_CLASS(dl) = {
