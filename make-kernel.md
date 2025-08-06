@@ -10,12 +10,33 @@ sudo apt-get install gcc-aarch64-linux-gnu libncurses5-dev  build-essential git 
 sudo apt install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc git
 ```
 
-# download kernel
+# clone kernel
 
 ```sh
 makdir -P /code && cd /code
-# vpn has issue to handle git:// protocol
+
+# vpn doesn't support git:// protocol
 nohup git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
+
+git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+```
+
+## fetch tag
+
+```sh
+# fetch all tags
+git fetch --tags 
+
+# fetch src(remote) tag as dst(local) tag
+git fetch stable refs/tags/v6.1.120:refs/tags/v6.1.120 
+
+# list specific tag commit hash
+git ls-remote stable refs/tags/v6.1.120
+
+# filter tags
+git tag -l | grep "v6.1.120*"
+
+git show v6.1.120
 ```
 
 # make ramfs
