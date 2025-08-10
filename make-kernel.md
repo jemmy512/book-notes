@@ -25,10 +25,10 @@ git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/lin
 
 ```sh
 # fetch all tags
-git fetch --tags 
+git fetch --tags
 
 # fetch src(remote) tag as dst(local) tag
-git fetch stable refs/tags/v6.1.120:refs/tags/v6.1.120 
+git fetch stable refs/tags/v6.1.120:refs/tags/v6.1.120
 
 # list specific tag commit hash
 git ls-remote stable refs/tags/v6.1.120
@@ -409,7 +409,7 @@ make distclean
     cd /Volumes/code/linux
     patch -p1 < /Volumes/code/kernel-dev/mac_patch_6-5-7.patch
 
-    make LLVM=1 defconfig ARCH=arm64
+    make defconfig ARCH=arm64 LLVM=1
 
     make allnoconfig ARCH=arm64
 
@@ -424,6 +424,7 @@ make distclean
         -m 1024 \
         -drive file=/Volumes/code/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2,format=qcow2 \
         -kernel "/Volumes/code/linux/arch/arm64/boot/Image" \
+        -nic vmnet-shared \
         -append "root=/dev/vda2" -nographic
     ```
 
@@ -651,6 +652,13 @@ sudo systemctl start clash.service
 sudo systemctl status clash.service
 sudo systemctl stop clash.service
 ```
+
+# share macOS vpn to qemu
+
+1. surge enables Enhanced Mode
+2. macOS enables shareing network: setting -> general -> sharing -> internet sharing: from surge to thunderbolt bridge
+3. add arg to qemu cmd: -nic vmnet-shared
+
 
 # ssh
 
