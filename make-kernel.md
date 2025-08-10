@@ -59,8 +59,10 @@ cd /code/busybox-1.33.1/
 
 * config busybox
 
+    Remove networking/tc.c
+
     ```sh
-    make menuconfig ---> Settings --->  [*] Build static binary (no shared libs)
+    make menuconfig ARCH=arm64 ---> Settings --->  [*] Build static binary (no shared libs)
     ```
 
 * make
@@ -78,7 +80,7 @@ We need additional config to start init process:
 * mkdir mkdir etc dev lib
 
     ```sh
-    cd /codebusybox-1.33.1/_install
+    cd /code/busybox-1.33.1/_install
     mkdir -p etc/init.d dev lib
     ls
     # bin  dev  etc  lib  linuxrc  sbin  usr
@@ -376,6 +378,54 @@ make mrproper
 # Goes even further than mrproper by removing editor backup files, patch files, and other miscellaneous leftovers.
 make distclean
 ```
+
+## make on macOS
+
+* [Kernel Programming Template for macOS + arm64 + VS Code](https://github.com/mastermakrela/kernel-dev)
+* [Compiling Linux kernel on macOS](https://mastermakrela.com/kernel/lkp/kernel-dev-on-macos)
+* [Building Linux kernel on macOS natively](https://seiya.me/blog/building-linux-on-macos-natively)
+
+1. make case-sensitive partiton
+
+    open Disk Utility.app to create APFS(Case-Sensive) partition
+
+2. install tools and config environment
+
+    ```sh
+    brew install make llvm lld findutils gnu-sed libelf qemu
+    ```
+
+    ```sh
+    # ~/.zshrc
+    export OPENSSL_ROOT=$(brew --prefix openssl)
+    export PATH="$(brew --prefix llvm)/bin:$PATH"
+    ```
+
+3. make kernel
+
+    ```sh
+    # apply patch
+    git clone https://github.com/jemmy512/kernel-dev.git /Volumes/code/kernel-dev
+    cd /Volumes/code/linux
+    patch -p1 < /Volumes/code/kernel-dev/mac_patch_6-5-7.patch
+
+    make LLVM=1 defconfig ARCH=arm64
+
+    make allnoconfig ARCH=arm64
+
+    make Image -j$(sysctl -n hw.ncpu) ARCH=arm64 LLVM=1 HOSTCFLAGS="-Iscripts/macos-include -I$(brew --prefix libelf)/include"
+    ```
+4. qemu start
+
+    ```sh
+    qemu-system-aarch64 \
+        -machine virt \
+        -cpu max \
+        -m 1024 \
+        -drive file=/Volumes/code/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2,format=qcow2 \
+        -kernel "/Volumes/code/linux/arch/arm64/boot/Image" \
+        -append "root=/dev/vda2" -nographic
+    ```
 
 # ltp
 
