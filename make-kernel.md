@@ -1087,6 +1087,24 @@ gtags -i
 # enter F12 in vs code to goto the definition of symbol
 ```
 
+[gtags.conf](https://fossies.org/linux/global/gtags.conf)
+```sh
+# ~/.globalrc
+default:\
+    :tc=native:
+
+native:\
+    :tc=gtags:
+
+common:\
+    :skip=out/,*.pid,*.sock:
+
+gtags:\
+    :tc=common:
+
+# gtags --gtagsconf=~/.globalrc
+```
+
 # update ubuntu kernel
 
 ```sh
