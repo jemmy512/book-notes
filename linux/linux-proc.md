@@ -258,6 +258,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     * [Linux 调度器(Schedular)](https://gitee.com/aosp-riscv/working-group/blob/master/articles/20230801-linux-scheduler.md)
 
 * [PREEMPT_RT Linux](https://wiki.linuxfoundation.org/realtime/start)
+    * [Download PREEMPT_RT patch set](https://www.kernel.org/pub/linux/kernel/projects/rt/)
     * [LWN - A realtime preemption overview](https://lwn.net/Articles/146861/)
     * [Preemption Models](https://wiki.linuxfoundation.org/realtime/documentation/technical_basics/preemption_models)
         Model | Case | Preempt Points
