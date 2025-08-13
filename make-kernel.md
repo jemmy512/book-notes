@@ -385,9 +385,9 @@ make distclean
 * [Compiling Linux kernel on macOS](https://mastermakrela.com/kernel/lkp/kernel-dev-on-macos)
 * [Building Linux kernel on macOS natively](https://seiya.me/blog/building-linux-on-macos-natively)
 
-1. make case-sensitive partiton
+1. make a case-sensitive partiton
 
-    open Disk Utility.app to create APFS(Case-Sensive) partition
+    Open Disk Utility.app and create an APFS (Case-sensitive) partition. You don't need to specify the size because it will scale automatically.
 
 2. install tools and config environment
 
@@ -398,6 +398,7 @@ make distclean
     ```sh
     # ~/.zshrc
     export OPENSSL_ROOT=$(brew --prefix openssl)
+    # prefer llvm rather than default clang provided by xcode
     export PATH="$(brew --prefix llvm)/bin:$PATH"
     ```
 
@@ -411,17 +412,16 @@ make distclean
 
     make defconfig ARCH=arm64 LLVM=1
 
-    make allnoconfig ARCH=arm64
-
     make Image -j$(sysctl -n hw.ncpu) ARCH=arm64 LLVM=1 HOSTCFLAGS="-Iscripts/macos-include -I$(brew --prefix libelf)/include"
     ```
-4. qemu start
+4. start qemu
 
     ```sh
-    qemu-system-aarch64 \
+    # -nic vmnet-shared needs root privilege
+    sudo qemu-system-aarch64 \
         -machine virt \
         -cpu max \
-        -m 1024 \
+        -m 8196 \
         -drive file=/Volumes/code/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2,format=qcow2 \
         -kernel "/Volumes/code/linux/arch/arm64/boot/Image" \
         -nic vmnet-shared \
@@ -525,10 +525,10 @@ logfile ~/.msmtp.log
     git commit -s
     git format-patch -<n> -v<n> origin --cover-letter
 
-    ./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
-    ./scripts/get_maintainer.pl v2-0001-xxx.patch v2-0002-xxx.patch
+    ./scripts/checkpatch.pl  vx-000x-name.patch
+    ./scripts/get_maintainer.pl vx-000x-name.patch
 
-    git send-email --to=xxx@gmail.com --cc=xxx@gmail.com v2-0001-xxx.patch
+    git send-email --to=xxx@gmail.com --cc=xxx@gmail.com vx-000x-name.patch
     ```
 
 * send at subsequent time
@@ -653,7 +653,7 @@ sudo systemctl status clash.service
 sudo systemctl stop clash.service
 ```
 
-# share macOS vpn to qemu
+## share macOS vpn to qemu
 
 1. surge enables Enhanced Mode
 2. macOS enables shareing network: setting -> general -> sharing -> internet sharing: from surge to thunderbolt bridge
@@ -876,6 +876,36 @@ update-grub
 reboot
 ```
 
+## prevent auto sleep
+
+
+```sh
+sudo vim /etc/systemd/logind.conf
+```
+
+```sh
+# Controls the action when the lid is closed (on battery or AC).
+# HandleLidSwitch=suspend
+HandleLidSwitch=ignore
+
+# Applies when the laptop is on AC power.
+# HandleLidSwitchExternalPower=suspend
+HandleLidSwitchExternalPower=ignore
+
+# Applies when connected to a dock or external display (if applicable).
+HandleLidSwitchDocked=ignore
+```
+
+```sh
+# turn off screen, max 65535
+echo 0 > /sys/class/backlight/gmux_backlight/brightness
+
+cat /sys/class/backlight/gmux_backlight/max_brightness
+
+sudo systemctl restart systemd-logind
+sudo reboot
+```
+
 # frp
 
 * [GitHub Doc](https://github.com/fatedier/frp/blob/dev/README.md)
@@ -886,7 +916,7 @@ reboot
     wget xxxx
     gunzip xxx # tar -zvf xxx
 
-    # mv frpc to clinet: /usr/local/bin
+    # mv frpc to client: /usr/local/bin
     # mv frps to server: /usr/local/bin
     ```
 
@@ -1018,36 +1048,6 @@ Host mbp2018-remote
   HostName server-ip-addr
   User root
   Port 6000
-```
-
-# prevent mac from auto sleep
-
-
-```sh
-sudo vim /etc/systemd/logind.conf
-```
-
-```sh
-# Controls the action when the lid is closed (on battery or AC).
-# HandleLidSwitch=suspend
-HandleLidSwitch=ignore
-
-# Applies when the laptop is on AC power.
-# HandleLidSwitchExternalPower=suspend
-HandleLidSwitchExternalPower=ignore
-
-# Applies when connected to a dock or external display (if applicable).
-HandleLidSwitchDocked=ignore
-```
-
-```sh
-# turn off screen, max 65535
-echo 0 > /sys/class/backlight/gmux_backlight/brightness
-
-cat /sys/class/backlight/gmux_backlight/max_brightness
-
-sudo systemctl restart systemd-logind
-sudo reboot
 ```
 
 # vscode
@@ -1187,7 +1187,8 @@ mkdir arm64-cross
 cd arm64-cross
 ```
 
-download following libs, unzip to current dir:
+download following libs from [archlinuxarm.org](https://archlinuxarm.org/packages/aarch64/perf), unzip to current dir:
+
 ```sh
 audit-4.0.5-1-aarch64.pkg.tar
 bash-5.2.037-5-aarch64.pkg.tar
