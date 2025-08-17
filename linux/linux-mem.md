@@ -21270,9 +21270,9 @@ static int __init hugetlb_init(void)
 #else
     num_fault_mutexes = 1;
 #endif
+
     hugetlb_fault_mutex_table =
-        kmalloc_array(num_fault_mutexes, sizeof(struct mutex),
-                GFP_KERNEL);
+        kmalloc_array(num_fault_mutexes, sizeof(struct mutex), GFP_KERNEL);
     BUG_ON(!hugetlb_fault_mutex_table);
 
     for (i = 0; i < num_fault_mutexes; i++)
@@ -21309,8 +21309,10 @@ static void __init hugetlb_hstate_alloc_pages(struct hstate *h)
 
                     for (i = 0; i < h->max_huge_pages_node[nid]; ++i) {
                         if (hstate_is_gigantic(h)) {
-                            if (!alloc_bootmem_huge_page(h, nid))
+                            if (!alloc_bootmem_huge_page(h, nid)) {
+                                --->
                                 break;
+                            }
                         } else {
                             struct folio *folio;
                             gfp_t gfp_mask = htlb_alloc_mask(h) | __GFP_THISNODE;
@@ -21335,7 +21337,10 @@ static void __init hugetlb_hstate_alloc_pages(struct hstate *h)
                             /* Add all new pool pages to free lists in one lock cycle */
                             spin_lock_irqsave(&hugetlb_lock, flags);
                             list_for_each_entry_safe(folio, tmp_f, folio_list, lru) {
-                                __prep_account_new_huge_page(h, folio_nid(folio));
+                                __prep_account_new_huge_page(h, folio_nid(folio)) {
+                                    h->nr_huge_pages++;
+                                    h->nr_huge_pages_node[nid]++;
+                                }
                                 enqueue_hugetlb_folio(h, folio) {
                                     int nid = folio_nid(folio);
 
@@ -21376,7 +21381,11 @@ static void __init hugetlb_hstate_alloc_pages(struct hstate *h)
     else
         allocated = hugetlb_pages_alloc_boot(h);
 
-    hugetlb_hstate_alloc_pages_errcheck(allocated, h);
+    hugetlb_hstate_alloc_pages_errcheck(allocated, h) {
+        if (allocated < h->max_huge_pages) {
+            h->max_huge_pages = allocated;
+        }
+    }
 }
 ```
 
@@ -21652,6 +21661,7 @@ static void __init hugetlb_pages_alloc_boot_node(unsigned long start, unsigned l
     }
 
     prep_and_add_allocated_folios(h, &folio_list);
+        --->
 }
 
 static struct folio *only_alloc_fresh_hugetlb_folio(struct hstate *h,
@@ -21691,7 +21701,6 @@ retry:
 
         if (hugetlb_cma[nid])
             folio = cma_alloc_folio(hugetlb_cma[nid], order, gfp_mask);
-
         if (!folio && !(gfp_mask & __GFP_THISNODE)) {
             for_each_node_mask(node, *nodemask) {
                 if (node == nid || !hugetlb_cma[node])
@@ -21709,7 +21718,7 @@ retry:
         return folio;
     }
     if (!folio) {
-        if (hugetlb_cma_exclusive_alloc())
+        if (hugetlb_cma_exclusive_alloc()) /* return hugetlb_cma_only; */
             return NULL;
 
         folio = folio_alloc_gigantic(order, gfp_mask, nid, nodemask) {
@@ -21765,7 +21774,15 @@ retry:
         return folio;
 
     pr_warn("HugeTLB: unexpected refcount on PFN %lu\n", folio_pfn(folio));
-    hugetlb_free_folio(folio);
+    hugetlb_free_folio(folio) {
+        if (folio_test_hugetlb_cma(folio)) {
+            hugetlb_cma_free_folio(folio);
+            return;
+        }
+
+        folio_put(folio);
+    }
+
     if (!retried) {
         retried = true;
         goto retry;
@@ -21823,6 +21840,7 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
     */
 
     ret = start_isolate_page_range(start, end, mode);
+        --->
     if (ret)
         goto done;
 
