@@ -8877,37 +8877,80 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             valid_page = page;
         }
 
-        if (PageHuge(page) && cc->alloc_contig) {
+        if (PageHuge(page)) {
+            const unsigned int order = compound_order(page);
+            /*
+            * skip hugetlbfs if we are not compacting for pages
+            * bigger than its order. THPs and other compound pages
+            * are handled below.
+            */
+            if (!cc->alloc_contig) {
+
+                if (order <= MAX_PAGE_ORDER) {
+                    low_pfn += (1UL << order) - 1;
+                    nr_scanned += (1UL << order) - 1;
+                }
+                goto isolate_fail;
+            }
+            /* for alloc_contig case */
             if (locked) {
                 unlock_page_lruvec_irqrestore(locked, flags);
                 locked = NULL;
             }
 
-            ret = isolate_or_dissolve_huge_page(page, &cc->migratepages);
+            folio = page_folio(page);
+            ret = isolate_or_dissolve_huge_folio(folio, &cc->migratepages) {
+                int ret = -EBUSY;
 
-            /* Fail isolation in case isolate_or_dissolve_huge_page()
-             * reports an error. In case of -ENOMEM, abort right away. */
+                /* Not to disrupt normal path by vainly holding hugetlb_lock */
+                if (!folio_test_hugetlb(folio))
+                    return 0;
+
+                /*
+                * Fence off gigantic pages as there is a cyclic dependency between
+                * alloc_contig_range and them. Return -ENOMEM as this has the effect
+                * of bailing out right away without further retrying.
+                */
+                if (folio_order(folio) > MAX_PAGE_ORDER)
+                    return -ENOMEM;
+
+                if (folio_ref_count(folio) && folio_isolate_hugetlb(folio, list))
+                    ret = 0;
+                else if (!folio_ref_count(folio))
+                    ret = alloc_and_dissolve_hugetlb_folio(folio, list);
+                        --->
+
+                return ret;
+            }
+
+            /*
+            * Fail isolation in case isolate_or_dissolve_huge_folio()
+            * reports an error. In case of -ENOMEM, abort right away.
+            */
             if (ret < 0) {
                 /* Do not report -EBUSY down the chain */
                 if (ret == -EBUSY)
                     ret = 0;
-                low_pfn += compound_nr(page) - 1;
-                nr_scanned += compound_nr(page) - 1;
+                low_pfn += (1UL << order) - 1;
+                nr_scanned += (1UL << order) - 1;
                 goto isolate_fail;
             }
 
-            if (PageHuge(page)) {
-                /* Hugepage was successfully isolated and placed
-                 * on the cc->migratepages list. */
-                folio = page_folio(page);
+            if (folio_test_hugetlb(folio)) {
+                /*
+                * Hugepage was successfully isolated and placed
+                * on the cc->migratepages list.
+                */
                 low_pfn += folio_nr_pages(folio) - 1;
                 goto isolate_success_no_list;
             }
 
-            /* Ok, the hugepage was dissolved. Now these pages are
-             * Buddy and cannot be re-allocated because they are
-             * isolated. Fall-through as the check below handles
-             * Buddy pages. */
+            /*
+            * Ok, the hugepage was dissolved. Now these pages are
+            * Buddy and cannot be re-allocated because they are
+            * isolated. Fall-through as the check below handles
+            * Buddy pages.
+            */
         }
 
         if (PageBuddy(page)) {
@@ -21142,6 +21185,12 @@ struct hstate {
 };
 ```
 
+## arm64_hugetlb_cma_reserve
+
+```c
+
+```
+
 ## hugetlb_init
 
 ```c
@@ -21278,6 +21327,112 @@ static int __init hugetlb_init(void)
     for (i = 0; i < num_fault_mutexes; i++)
         mutex_init(&hugetlb_fault_mutex_table[i]);
     return 0;
+}
+```
+
+### gather_bootmem_prealloc_parallel
+
+```c
+static void __init gather_bootmem_prealloc_parallel(unsigned long start,
+                            unsigned long end, void *arg)
+{
+    int nid;
+
+    for (nid = start; nid < end; nid++) {
+        gather_bootmem_prealloc_node(nid) {
+            LIST_HEAD(folio_list);
+            struct huge_bootmem_page *m, *tm;
+            struct hstate *h = NULL, *prev_h = NULL;
+
+            list_for_each_entry_safe(m, tm, &huge_boot_pages[nid], list) {
+                struct page *page = virt_to_page(m);
+                struct folio *folio = (void *)page;
+
+                h = m->hstate;
+                if (!hugetlb_bootmem_page_zones_valid(nid, m)) {
+                    /*
+                    * Can't use this page. Initialize the
+                    * page structures if that hasn't already
+                    * been done, and give them to the page
+                    * allocator.
+                    */
+                    hugetlb_bootmem_free_invalid_page(nid, page, h);
+                    continue;
+                }
+
+                /*
+                * It is possible to have multiple huge page sizes (hstates)
+                * in this list.  If so, process each size separately.
+                */
+                if (h != prev_h && prev_h != NULL)
+                    prep_and_add_bootmem_folios(prev_h, &folio_list);
+                prev_h = h;
+
+                VM_BUG_ON(!hstate_is_gigantic(h));
+                WARN_ON(folio_ref_count(folio) != 1);
+
+                hugetlb_folio_init_vmemmap(folio, h, HUGETLB_VMEMMAP_RESERVE_PAGES) {
+
+                }
+                init_new_hugetlb_folio(h, folio) {
+
+                }
+
+                if (hugetlb_bootmem_page_prehvo(m))
+                    /*
+                    * If pre-HVO was done, just set the
+                    * flag, the HVO code will then skip
+                    * this folio.
+                    */
+                    folio_set_hugetlb_vmemmap_optimized(folio);
+
+                if (hugetlb_bootmem_page_earlycma(m))
+                    folio_set_hugetlb_cma(folio);
+
+                list_add(&folio->lru, &folio_list);
+
+                /*
+                * We need to restore the 'stolen' pages to totalram_pages
+                * in order to fix confusing memory reports from free(1) and
+                * other side-effects, like CommitLimit going negative.
+                *
+                * For CMA pages, this is done in init_cma_pageblock
+                * (via hugetlb_bootmem_init_migratetype), so skip it here.
+                */
+                if (!folio_test_hugetlb_cma(folio))
+                    adjust_managed_page_count(page, pages_per_huge_page(h));
+                cond_resched();
+            }
+
+            prep_and_add_bootmem_folios(h, &folio_list) {
+                unsigned long flags;
+                struct folio *folio, *tmp_f;
+
+                /* Send list for bulk vmemmap optimization processing */
+                hugetlb_vmemmap_optimize_bootmem_folios(h, folio_list);
+
+                list_for_each_entry_safe(folio, tmp_f, folio_list, lru) {
+                    if (!folio_test_hugetlb_vmemmap_optimized(folio)) {
+                        /*
+                        * If HVO fails, initialize all tail struct pages
+                        * We do not worry about potential long lock hold
+                        * time as this is early in boot and there should
+                        * be no contention.
+                        */
+                        hugetlb_folio_init_tail_vmemmap(folio,
+                                HUGETLB_VMEMMAP_RESERVE_PAGES,
+                                pages_per_huge_page(h));
+                    }
+                    hugetlb_bootmem_init_migratetype(folio, h);
+                    /* Subdivide locks to achieve better parallel performance */
+                    spin_lock_irqsave(&hugetlb_lock, flags);
+                    __prep_account_new_huge_page(h, folio_nid(folio));
+                    enqueue_hugetlb_folio(h, folio);
+                    spin_unlock_irqrestore(&hugetlb_lock, flags);
+                }
+            }
+        }
+    }
 }
 ```
 
@@ -21752,6 +21907,7 @@ retry:
                                 unsigned long end_pfn = start_pfn + nr_pages;
 
                                 return alloc_contig_range_noprof(start_pfn, end_pfn, ACR_FLAGS_NONE, gfp_mask);
+                                    --->
                             }
                             if (!ret)
                                 return pfn_to_page(pfn);
@@ -21889,6 +22045,7 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
             }
 
             nr_reclaimed = reclaim_clean_pages_from_list(cc->zone, &cc->migratepages);
+                --->
             cc->nr_migratepages -= nr_reclaimed;
 
             ret = migrate_pages(&cc->migratepages, alloc_migration_target,
@@ -22141,6 +22298,8 @@ static struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
 
 ## hugetlbfs
 
+![](../images/kernel/mem-hugetlb.svg)
+
 ```c
 static struct file_system_type hugetlbfs_fs_type = {
     .name               = "hugetlbfs",
@@ -22372,7 +22531,9 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
 
     spin_unlock_irq(&hugetlb_lock);
 
-    hugetlb_set_folio_subpool(folio, spool);
+    hugetlb_set_folio_subpool(folio, spool) {
+        folio->_hugetlb_subpool = subpool;
+    }
 
     if (map_chg != MAP_CHG_ENFORCED) {
         /* commit() is only needed if the map_chg is not enforced */
@@ -22464,7 +22625,7 @@ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
     gfp_mask = htlb_alloc_mask(h);
     nid = huge_node(vma, address, gfp_mask, &mpol, &nodemask);
 
-    if (mpol_is_preferred_many(mpol)) {
+    if (mpol_is_preferred_many(mpol)) { /* (pol->mode == MPOL_PREFERRED_MANY) */
         folio = dequeue_hugetlb_folio_nodemask(h, gfp_mask, nid, nodemask);
 
         /* Fallback to all nodes if page==NULL */
@@ -22556,7 +22717,7 @@ struct folio *alloc_buddy_hugetlb_folio_with_mpol(struct hstate *h,
     nodemask_t *nodemask;
 
     nid = huge_node(vma, addr, gfp_mask, &mpol, &nodemask);
-    if (mpol_is_preferred_many(mpol)) {
+    if (mpol_is_preferred_many(mpol)) { /* (pol->mode == MPOL_PREFERRED_MANY) */
         gfp_t gfp = gfp_mask & ~(__GFP_DIRECT_RECLAIM | __GFP_NOFAIL);
 
         folio = alloc_surplus_hugetlb_folio(h, gfp, nid, nodemask);
@@ -22577,139 +22738,17 @@ struct folio *alloc_buddy_hugetlb_folio_with_mpol(struct hstate *h,
                 goto out_unlock;
             spin_unlock_irq(&hugetlb_lock);
 
-            folio = only_alloc_fresh_hugetlb_folio(h, gfp_mask, nid, nmask, NULL);
-                --->
+            folio = only_alloc_fresh_hugetlb_folio(h, gfp_mask, nid, nmask, NULL) {
+                if (hstate_is_gigantic(h))
+                    folio = alloc_gigantic_folio(h, gfp_mask, nid, nmask);
+                else
+                    folio = alloc_buddy_hugetlb_folio(h, gfp_mask, nid, nmask, node_alloc_noretry);
+            }
 
             if (!folio)
                 return NULL;
 
-            hugetlb_vmemmap_optimize_folio(h, folio) {
-                LIST_HEAD(vmemmap_pages);
-
-                __hugetlb_vmemmap_optimize_folio(h, folio, &vmemmap_pages, VMEMMAP_SYNCHRONIZE_RCU) {
-                    int ret = 0;
-                    unsigned long vmemmap_start = (unsigned long)&folio->page, vmemmap_end;
-                    unsigned long vmemmap_reuse;
-
-                    VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
-                    VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
-
-                    if (!vmemmap_should_optimize_folio(h, folio))
-                        return ret;
-
-                    static_branch_inc(&hugetlb_optimize_vmemmap_key);
-
-                    if (flags & VMEMMAP_SYNCHRONIZE_RCU)
-                        synchronize_rcu();
-                    /*
-                    * Very Subtle
-                    * If VMEMMAP_REMAP_NO_TLB_FLUSH is set, TLB flushing is not performed
-                    * immediately after remapping.  As a result, subsequent accesses
-                    * and modifications to struct pages associated with the hugetlb
-                    * page could be to the OLD struct pages.  Set the vmemmap optimized
-                    * flag here so that it is copied to the new head page.  This keeps
-                    * the old and new struct pages in sync.
-                    * If there is an error during optimization, we will immediately FLUSH
-                    * the TLB and clear the flag below.
-                    */
-                    folio_set_hugetlb_vmemmap_optimized(folio);
-
-                    vmemmap_end	= vmemmap_start + hugetlb_vmemmap_size(h);
-                    vmemmap_reuse	= vmemmap_start;
-                    vmemmap_start	+= HUGETLB_VMEMMAP_RESERVE_SIZE;
-
-                    /*
-                    * Remap the vmemmap virtual address range [@vmemmap_start, @vmemmap_end)
-                    * to the page which @vmemmap_reuse is mapped to.  Add pages previously
-                    * mapping the range to vmemmap_pages list so that they can be freed by
-                    * the caller.
-                    */
-                    ret = vmemmap_remap_free(vmemmap_start, vmemmap_end, vmemmap_reuse, vmemmap_pages, flags) {
-                        int ret;
-                        struct vmemmap_remap_walk walk = {
-                            .remap_pte      = vmemmap_remap_pte,
-                            .reuse_addr     = reuse,
-                            .vmemmap_pages  = vmemmap_pages,
-                            .flags          = flags,
-                        };
-                        int nid = page_to_nid((struct page *)reuse);
-                        gfp_t gfp_mask = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
-
-                        /*
-                        * Allocate a new head vmemmap page to avoid breaking a contiguous
-                        * block of struct page memory when freeing it back to page allocator
-                        * in free_vmemmap_page_list(). This will allow the likely contiguous
-                        * struct page backing memory to be kept contiguous and allowing for
-                        * more allocations of hugepages. Fallback to the currently
-                        * mapped head page in case should it fail to allocate.
-                        */
-                        walk.reuse_page = alloc_pages_node(nid, gfp_mask, 0);
-                        if (walk.reuse_page) {
-                            copy_page(page_to_virt(walk.reuse_page), (void *)walk.reuse_addr);
-                            list_add(&walk.reuse_page->lru, vmemmap_pages);
-                            memmap_pages_add(1);
-                        }
-
-                        /*
-                        * In order to make remapping routine most efficient for the huge pages,
-                        * the routine of vmemmap page table walking has the following rules
-                        * (see more details from the vmemmap_pte_range()):
-                        *
-                        * - The range [@start, @end) and the range [@reuse, @reuse + PAGE_SIZE)
-                        *   should be continuous.
-                        * - The @reuse address is part of the range [@reuse, @end) that we are
-                        *   walking which is passed to vmemmap_remap_range().
-                        * - The @reuse address is the first in the complete range.
-                        *
-                        * So we need to make sure that @start and @reuse meet the above rules.
-                        */
-                        BUG_ON(start - reuse != PAGE_SIZE);
-
-                        ret = vmemmap_remap_range(reuse, end, &walk);
-                        if (ret && walk.nr_walked) {
-                            end = reuse + walk.nr_walked * PAGE_SIZE;
-                            /*
-                            * vmemmap_pages contains pages from the previous
-                            * vmemmap_remap_range call which failed.  These
-                            * are pages which were removed from the vmemmap.
-                            * They will be restored in the following call.
-                            */
-                            walk = (struct vmemmap_remap_walk) {
-                                .remap_pte	= vmemmap_restore_pte,
-                                .reuse_addr	= reuse,
-                                .vmemmap_pages	= vmemmap_pages,
-                                .flags		= 0,
-                            };
-
-                            vmemmap_remap_range(reuse, end, &walk) {
-                                int ret;
-
-                                VM_BUG_ON(!PAGE_ALIGNED(start | end));
-
-                                mmap_read_lock(&init_mm);
-                                ret = walk_kernel_page_table_range(start, end, &vmemmap_remap_ops, NULL, walk);
-                                mmap_read_unlock(&init_mm);
-                                if (ret)
-                                    return ret;
-
-                                if (walk->remap_pte && !(walk->flags & VMEMMAP_REMAP_NO_TLB_FLUSH))
-                                    flush_tlb_kernel_range(start, end);
-
-                                return 0;
-                            }
-                        }
-
-                        return ret;
-                    }
-                    if (ret) {
-                        static_branch_dec(&hugetlb_optimize_vmemmap_key);
-                        folio_clear_hugetlb_vmemmap_optimized(folio);
-                    }
-
-                    return ret;
-                }
-                free_vmemmap_page_list(&vmemmap_pages);
-            }
+            hugetlb_vmemmap_optimize_folio(h, folio);
 
             spin_lock_irq(&hugetlb_lock);
             /*
@@ -22819,6 +22858,177 @@ int walk_kernel_page_table_range(unsigned long start, unsigned long end,
     }
 }
 ```
+
+### hugetlb_vmemmap_optimize_folio
+
+```c
+void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio) {
+    LIST_HEAD(vmemmap_pages);
+
+    __hugetlb_vmemmap_optimize_folio(h, folio, &vmemmap_pages, VMEMMAP_SYNCHRONIZE_RCU) {
+        int ret = 0;
+        unsigned long vmemmap_start = (unsigned long)&folio->page, vmemmap_end;
+        unsigned long vmemmap_reuse;
+
+        VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+        VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
+
+        if (!vmemmap_should_optimize_folio(h, folio))
+            return ret;
+
+        static_branch_inc(&hugetlb_optimize_vmemmap_key);
+
+        if (flags & VMEMMAP_SYNCHRONIZE_RCU)
+            synchronize_rcu();
+        /*
+        * Very Subtle
+        * If VMEMMAP_REMAP_NO_TLB_FLUSH is set, TLB flushing is not performed
+        * immediately after remapping.  As a result, subsequent accesses
+        * and modifications to struct pages associated with the hugetlb
+        * page could be to the OLD struct pages.  Set the vmemmap optimized
+        * flag here so that it is copied to the new head page.  This keeps
+        * the old and new struct pages in sync.
+        * If there is an error during optimization, we will immediately FLUSH
+        * the TLB and clear the flag below.
+        */
+        folio_set_hugetlb_vmemmap_optimized(folio);
+
+        vmemmap_end	= vmemmap_start + hugetlb_vmemmap_size(h);
+        vmemmap_reuse	= vmemmap_start;
+        vmemmap_start	+= HUGETLB_VMEMMAP_RESERVE_SIZE;
+
+        /*
+        * Remap the vmemmap virtual address range [@vmemmap_start, @vmemmap_end)
+        * to the page which @vmemmap_reuse is mapped to.  Add pages previously
+        * mapping the range to vmemmap_pages list so that they can be freed by
+        * the caller.
+        */
+        ret = vmemmap_remap_free(vmemmap_start, vmemmap_end, vmemmap_reuse, vmemmap_pages, flags) {
+            int ret;
+            struct vmemmap_remap_walk walk = {
+                .remap_pte      = vmemmap_remap_pte = {
+                    /*
+                    * Remap the tail pages as read-only to catch illegal write operation
+                    * to the tail pages.
+                    */
+                    pgprot_t pgprot = PAGE_KERNEL_RO;
+                    struct page *page = pte_page(ptep_get(pte));
+                    pte_t entry;
+
+                    /* Remapping the head page requires r/w */
+                    if (unlikely(addr == walk->reuse_addr)) {
+                        pgprot = PAGE_KERNEL;
+                        list_del(&walk->reuse_page->lru);
+
+                        /*
+                        * Makes sure that preceding stores to the page contents from
+                        * vmemmap_remap_free() become visible before the set_pte_at()
+                        * write.
+                        */
+                        smp_wmb();
+                    }
+
+                    entry = mk_pte(walk->reuse_page, pgprot);
+                    list_add(&page->lru, walk->vmemmap_pages);
+                    set_pte_at(&init_mm, addr, pte, entry);
+                },
+                .reuse_addr     = reuse,
+                .vmemmap_pages  = vmemmap_pages,
+                .flags          = flags,
+            };
+            int nid = page_to_nid((struct page *)reuse);
+            gfp_t gfp_mask = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
+
+            /*
+            * Allocate a new head vmemmap page to avoid breaking a contiguous
+            * block of struct page memory when freeing it back to page allocator
+            * in free_vmemmap_page_list(). This will allow the likely contiguous
+            * struct page backing memory to be kept contiguous and allowing for
+            * more allocations of hugepages. Fallback to the currently
+            * mapped head page in case should it fail to allocate.
+            */
+            walk.reuse_page = alloc_pages_node(nid, gfp_mask, 0);
+            if (walk.reuse_page) {
+                copy_page(page_to_virt(walk.reuse_page), (void *)walk.reuse_addr);
+                list_add(&walk.reuse_page->lru, vmemmap_pages);
+                memmap_pages_add(1);
+            }
+
+            /*
+            * In order to make remapping routine most efficient for the huge pages,
+            * the routine of vmemmap page table walking has the following rules
+            * (see more details from the vmemmap_pte_range()):
+            *
+            * - The range [@start, @end) and the range [@reuse, @reuse + PAGE_SIZE)
+            *   should be continuous.
+            * - The @reuse address is part of the range [@reuse, @end) that we are
+            *   walking which is passed to vmemmap_remap_range().
+            * - The @reuse address is the first in the complete range.
+            *
+            * So we need to make sure that @start and @reuse meet the above rules.
+            */
+            BUG_ON(start - reuse != PAGE_SIZE);
+
+            ret = vmemmap_remap_range(reuse, end, &walk);
+            if (ret && walk.nr_walked) {
+                end = reuse + walk.nr_walked * PAGE_SIZE;
+                /*
+                * vmemmap_pages contains pages from the previous
+                * vmemmap_remap_range call which failed.  These
+                * are pages which were removed from the vmemmap.
+                * They will be restored in the following call.
+                */
+                walk = (struct vmemmap_remap_walk) {
+                    .remap_pte	= vmemmap_restore_pte,
+                    .reuse_addr	= reuse,
+                    .vmemmap_pages	= vmemmap_pages,
+                    .flags		= 0,
+                };
+
+                vmemmap_remap_range(reuse, end, &walk) {
+                    int ret;
+
+                    VM_BUG_ON(!PAGE_ALIGNED(start | end));
+
+                    mmap_read_lock(&init_mm);
+                    ret = walk_kernel_page_table_range(start, end, &vmemmap_remap_ops, NULL, walk);
+                    mmap_read_unlock(&init_mm);
+                    if (ret)
+                        return ret;
+
+                    if (walk->remap_pte && !(walk->flags & VMEMMAP_REMAP_NO_TLB_FLUSH))
+                        flush_tlb_kernel_range(start, end);
+
+                    return 0;
+                }
+            }
+
+            return ret;
+        }
+        if (ret) {
+            static_branch_dec(&hugetlb_optimize_vmemmap_key);
+            folio_clear_hugetlb_vmemmap_optimized(folio);
+        }
+
+        return ret;
+    }
+    free_vmemmap_page_list(&vmemmap_pages) {
+        struct page *page, *next;
+
+        list_for_each_entry_safe(page, next, list, lru) {
+            free_vmemmap_page(page) {
+                if (PageReserved(page)) {
+                    memmap_boot_pages_add(-1);
+                    free_bootmem_page(page);
+                } else {
+                    memmap_pages_add(-1);
+                    __free_page(page);
+                }
+            }
+        }
+    }
+}
+````
 
 ## khugepaged
 
