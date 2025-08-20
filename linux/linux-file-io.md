@@ -64,7 +64,8 @@
 
 ![](../images/kernel/file-vfs-system.svg)
 
-* [Kernel Doc: Filesystems](https://www.kernel.org/doc/html/latest/filesystems/index.html)
+* [Kernel Doc: Filesystems](https://docs.kernel.org/filesystems/index.html)
+    * [VFS iomap](https://docs.kernel.org/filesystems/iomap/index.html)
 
 ```c
 register_filesystem(&ext4_fs_type);
