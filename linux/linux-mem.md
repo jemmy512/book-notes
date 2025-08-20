@@ -178,9 +178,45 @@
     * [select_bad_process](#select_bad_process)
     * [oom_kill_process](#oom_kill_process)
 
+* [exit_mm](#exit_mm)
+
+* [dma]
+    * [dma_alloc_coherent](#dma_alloc_coherent)
+        * [dma_direct_alloc](#dma_direct_alloc)
+        * [iommu_dma_alloc](#iommu_dma_alloc)
+
+* [hugetlb]
+    * [arm64_hugetlb_cma_reserve](#arm64_hugetlb_cma_alloc)
+    * [hugetlb_init](#hugetlb_init)
+        * [gather_bootmem_prealloc_parallel](#gather_bootmem_prealloc_parallel)
+    * [hugatble_hstat_alloc_pages](#hugetlb_hstate_alloc_pages)
+        * [hugetlb_gigantic_pages_alloc_boot](#hugetlb_gigantic_pages_alloc_boot)
+        * [hugetlb_pages_alloc_boot](#hugetlb_pages_alloc_boot)
+            * [alloc_gigantic_folio](#alloc_gigantic_folio)
+                * [alloc_contig_range_noprof](#alloc_contig_range_noprof)
+            * [alloc_buddy_hugetlb_folio](#alloc_buddy_hugetlb_folio)
+    * [alloc_hugetlb_folio](#alloc_hugetlb_folio)
+        * [dequeue_hugetlb_folio_vma](#dequeue_hugetlb_folio_vma)
+        * [alloc_buddy_hugetlb_folio_with_mpol](#alloc_buddy_hugetlb_folio_with_mpol)
+            * [walk_kernel_page_tale_range](#walk_kernel_page_table_range)
+        * [hugetlb_vmemmap_optimize_folio](#hugetlb_vmemmap_optimize_folio)
+    * [hugetlbfs]
+        * [hugetlbfs_create](#hugetlbfs_create)
+        * [hugetlbfs_file_map](#hugetlb_file_map)
+        * [hugetlb_reserve_pages](#hugetlb_reserve_pages)
+    * [khugepaged](#khugepaged)
+        * [hpage_collapse_scan_file](#hpage_collapse_scan_file)
+            * [collpase_file](#collpase_file)
+        * [collapse_pte_mapped_thp](#collapse_pte_mapped_thp)
+        * [hpage_collapse_scan_pmd](#hpage_collapse_scan_pmd)
+            * [collapse_huge_page](#collapse_huge_page)
+    * [split_huge_page](#split_huge_page)
+
 </details>
 
 ![](../images/kernel/kernel-structual.svg)
+
+# Doc
 
 * [:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
     * [Memory Layout on AArch64 Linux](https://docs.kernel.org/arch/arm64/memory.html)
@@ -1396,6 +1432,8 @@ build_all_zonelists(NULL) {
 
 ## page
 
+![](../images/kernel/mem-folio-layout.png)
+
 * [LWN Index  - struct_page](https://lwn.net/Kernel/Index/#Memory_management-struct_page)
     * [Pulling slabs out of struct page](https://lwn.net/Articles/871982/)
     * [Struct slab comes to 5.17 ](https://lwn.net/Articles/881039/)
@@ -2432,7 +2470,62 @@ check_alloc_wmark:
 try_this_zone:
         page = rmqueue(ac->preferred_zoneref->zone, zone, order, gfp_mask, alloc_flags, ac->migratetype);
         if (page) {
-            prep_new_page(page, order, gfp_mask, alloc_flags);
+            prep_new_page(page, order, gfp_mask, alloc_flags) {
+                post_alloc_hook(page, order, gfp_flags);
+
+                if (order && (gfp_flags & __GFP_COMP)) {
+                    prep_compound_page(page, order) {
+                        int i;
+                        int nr_pages = 1 << order;
+
+                        __SetPageHead(page);
+                        for (i = 1; i < nr_pages; i++) {
+                            prep_compound_tail(page, i) {
+                                struct page *p = head + tail_idx;
+
+                                p->mapping = TAIL_MAPPING;
+                                set_compound_head(p, head) {
+                                    WRITE_ONCE(page->compound_head, (unsigned long)head + 1);
+                                }
+                                set_page_private(p, 0) ;
+                            }
+                        }
+
+                        prep_compound_head(page, order) {
+                            struct folio *folio = (struct folio *)page;
+
+                            folio_set_order(folio, order) {
+                                if (WARN_ON_ONCE(!order || !folio_test_large(folio)))
+                                        return;
+                                    folio->_flags_1 = (folio->_flags_1 & ~0xffUL) | order;
+                                #ifdef NR_PAGES_IN_LARGE_FOLIO
+                                    folio->_nr_pages = 1U << order;
+                                #endif
+                            }
+
+                            atomic_set(&folio->_large_mapcount, -1);
+                            if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT))
+                                atomic_set(&folio->_nr_pages_mapped, 0);
+                            if (IS_ENABLED(CONFIG_MM_ID)) {
+                                folio->_mm_ids = 0;
+                                folio->_mm_id_mapcount[0] = -1;
+                                folio->_mm_id_mapcount[1] = -1;
+                            }
+                            if (IS_ENABLED(CONFIG_64BIT) || order > 1) {
+                                atomic_set(&folio->_pincount, 0);
+                                atomic_set(&folio->_entire_mapcount, -1);
+                            }
+                            if (order > 1)
+                                INIT_LIST_HEAD(&folio->_deferred_list);
+                        }
+                    }
+                }
+
+                if (alloc_flags & ALLOC_NO_WATERMARKS)
+                    set_page_pfmemalloc(page);
+                else
+                    clear_page_pfmemalloc(page);
+            }
 
             /* If this is a high-order atomic allocation then check
              * if the pageblock should be reserved for the future */
@@ -21372,6 +21465,8 @@ out_leak_pages:
 
 ![](../images/kernel/mem-hugetlb.svg)
 
+* [[PATCH v23 0/9] Free some vmemmap pages of HugeTLB page](https://lore.kernel.org/all/20210510030027.56044-1-songmuchun@bytedance.com/)
+
 ```c
 int hugetlb_max_hstate __read_mostly;
 
@@ -21576,17 +21671,12 @@ static int __init hugetlb_init(void)
 {
     int i;
 
-    BUILD_BUG_ON(sizeof_field(struct page, private) * BITS_PER_BYTE <
-            __NR_HPAGEFLAGS);
-
     if (!hugepages_supported()) {
         if (hugetlb_max_hstate || default_hstate_max_huge_pages)
             pr_warn("HugeTLB: huge pages not supported, ignoring associated command-line parameters\n");
         return 0;
     }
 
-    /* Make sure HPAGE_SIZE (HUGETLB_PAGE_ORDER) hstate exists.  Some
-    * architectures depend on setup being done here. */
     hugetlb_add_hstate(HUGETLB_PAGE_ORDER) {
         struct hstate *h;
         unsigned long i;
@@ -21610,12 +21700,6 @@ static int __init hugetlb_init(void)
     }
 
     if (!parsed_default_hugepagesz) {
-        /* If we did not parse a default huge page size, set
-        * default_hstate_idx to HPAGE_SIZE hstate. And, if the
-        * number of huge pages for this default size was implicitly
-        * specified, set that here as well.
-        * Note that the implicit setting will overwrite an explicit
-        * setting.  A warning will be printed in this case. */
         default_hstate_idx = hstate_index(size_to_hstate(HPAGE_SIZE));
         if (default_hstate_max_huge_pages) {
             if (default_hstate.max_huge_pages) {
@@ -25187,7 +25271,9 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
 }
 ```
 
-# mTHP
+# THP
+
+* [LWN - Transparent huge pages in the page cache](https://lwn.net/Articles/686690/)
 
 **Config Macro**
 * CONFIG_TRANSPARENT_HUGEPAGE
