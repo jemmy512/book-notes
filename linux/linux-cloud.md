@@ -241,7 +241,7 @@ The rules are Enforce at [cgroup_attach_permissions](#cgroup_attach_permissions)
 ├──
 ├── cpu.max # CPU bandwidth limit (quota and period, e.g., "100000 1000000").
 ├── cpu.max.burst # Allows temporary bursts beyond cpu.max quota (in µs)
-├── cpu.weight  # Sets the relative CPU share for the cgroup (range: 1–10000, default 100)
+├── cpu.weight # proportionally distributes CPU cycles (range: 1–10000, default 100)
 ├── cpu.weight.nice # Maps the cgroup’s CPU priority to a "nice" value (-20 to 19)
 ├── cpu.idle # Controls whether tasks in the cgroup are forced into an idle state
 ├── cpu.pressure # Reports Pressure Stall Information (PSI) for CPU, showing delays due to CPU contention
@@ -3571,9 +3571,22 @@ void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
                 /* note: this is a positive sum as runtime_remaining <= 0 */
                 min_amount = target_runtime - cfs_rq->runtime_remaining;
 
-                if (cfs_b->quota == RUNTIME_INF)
+                if (cfs_b->quota == RUNTIME_INF) {
+                   /* cpu.share controls proportional share while quota/period control hard limit.
+                    *
+                    * CPU time sharing between cgroups A and B, siblings under the same parent cgroup,
+                    * is set to a 6:4 ratio (via cpu.shares in v1 or cpu.weight in v2):
+                    *
+                    * 1. When a quota/period is set (cpu.cfs_quota_us in v1 or cpu.max in v2):
+                    *    Each group is limited by its own quota and the parent’s quota (if set).
+                    *    Group B can run within its quota or the parent’s available quota
+                    *    even if Group A has no tasks running.
+                    *
+                    * 2. When no quota/period is set:
+                    *    2.1: Group B can utilize all CPU time allocated to the parent cgroup if Group A has no tasks running.
+                    *    2.2: Groups A and B share the parent’s CPU time in a 6:4 ratio when both have tasks running. */
                     amount = min_amount;
-                else {
+                } else {
                     start_cfs_bandwidth(cfs_b) {
                         lockdep_assert_held(&cfs_b->lock);
 
@@ -3847,7 +3860,7 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
     for_each_sched_entity(se) {
         struct cfs_rq *qcfs_rq = cfs_rq_of(se);
 
-        update_load_avg(qcfs_rq, se, UPDATE_TG);
+     update_load_avg(qcfs_rq, se, UPDATE_TG);
         se_update_runnable(se);
 
         if (cfs_rq_is_idle(group_cfs_rq(se)))
@@ -3878,6 +3891,7 @@ unthrottle_throttle:
 ![](../images/kernel/proc-sched-task-group-sched_group_set_shares.png)
 
 ```c
+/* cgroup v1 */
 static struct cftype cpu_legacy_files[] = {
     {
         .name = "shares",
@@ -3890,6 +3904,47 @@ static struct cftype cpu_legacy_files[] = {
         .write_s64 = cpu_idle_write_s64,
     }
 };
+
+/* cgroup v2 */
+static struct cftype cpu_files[] = {
+    {
+        .name = "weight",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = cpu_weight_read_u64,
+        .write_u64 = cpu_weight_write_u64,
+    }, {
+        .name = "weight.nice",
+    }, {
+        .name = "idle",
+    }, {
+        .name = "max",
+    }, {
+        .name = "max.burst",
+    }, {
+        .name = "uclamp.min",
+    }, {
+        .name = "uclamp.max",
+    },
+    { }	/* terminate */
+};
+
+
+static int cpu_weight_write_u64(struct cgroup_subsys_state *css,
+                struct cftype *cft, u64 cgrp_weight)
+{
+    unsigned long weight;
+    int ret;
+
+    weight = sched_weight_from_cgroup(cgrp_weight) {
+        return DIV_ROUND_CLOSEST_ULL(cgrp_weight * 1024, CGROUP_WEIGHT_DFL);
+    }
+
+    ret = sched_group_set_shares(css_tg(css), scale_load(weight));
+        --->s
+    if (!ret)
+        scx_group_set_weight(css_tg(css), cgrp_weight);
+    return ret;
+}
 
 cpu_shares_write_u64() {
     sched_group_set_shares(css_tg(css), scale_load(shareval)) {
