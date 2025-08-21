@@ -10139,9 +10139,17 @@ bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
     mmu_notifier_invalidate_range_start(&range);
 
     while (page_vma_mapped_walk(&pvmw)) {
-#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
         /* PMD-mapped THP migration entry */
         if (!pvmw.pte) {
+            if (flags & TTU_SPLIT_HUGE_PMD) {
+                split_huge_pmd_locked(vma, pvmw.address,
+                            pvmw.pmd, true);
+                ret = false;
+                page_vma_mapped_walk_done(&pvmw);
+                break;
+            }
+
+#ifdef CONFIG_ARCH_ENABLE_THP_MIGRATION
             subpage = folio_page(folio, pmd_pfn(*pvmw.pmd) - folio_pfn(folio));
             if (set_pmd_migration_entry(&pvmw, subpage)) {
                 ret = false;
@@ -10168,7 +10176,41 @@ bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
         anon_exclusive = folio_test_anon(folio) && PageAnonExclusive(subpage);
 
         if (folio_test_hugetlb(folio)) {
+            bool anon = folio_test_anon(folio);
 
+            flush_cache_range(vma, range.start, range.end);
+
+            if (!anon) {
+                VM_BUG_ON(!(flags & TTU_RMAP_LOCKED));
+                if (!hugetlb_vma_trylock_write(vma)) {
+                    page_vma_mapped_walk_done(&pvmw);
+                    ret = false;
+                    break;
+                }
+                if (huge_pmd_unshare(mm, vma, address, pvmw.pte)) {
+                    hugetlb_vma_unlock_write(vma);
+                    /* unmap huge page backed by shared pte */
+                    flush_tlb_range(vma, range.start, range.end);
+
+                   /*
+                    * The ref count of the PMD page was
+                    * dropped which is part of the way map
+                    * counting is done for shared PMDs.
+                    * Return 'true' here.  When there is
+                    * no other sharing, huge_pmd_unshare
+                    * returns false and we will unmap the
+                    * actual page and drop map count
+                    * to zero. */
+                    page_vma_mapped_walk_done(&pvmw);
+                    break;
+                }
+                hugetlb_vma_unlock_write(vma);
+            }
+            /* Nuke the hugetlb page table entry */
+            pteval = huge_ptep_clear_flush(vma, address, pvmw.pte);
+            if (pte_dirty(pteval))
+                folio_mark_dirty(folio);
+            writable = pte_write(pteval);
         } else if (likely(pte_present(pteval))) {
 
         } else {
@@ -22474,62 +22516,8 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
     * allocated.  So, if we fall through be sure to clear ret so that
     * -EBUSY is not accidentally used or returned to caller.
     */
-    ret = __alloc_contig_migrate_range(&cc, start, end) {
-        /* This function is based on compact_zone() from compaction.c. */
-        unsigned int nr_reclaimed;
-        unsigned long pfn = start;
-        unsigned int tries = 0;
-        int ret = 0;
-        struct migration_target_control mtc = {
-            .nid = zone_to_nid(cc->zone),
-            .gfp_mask = cc->gfp_mask,
-            .reason = MR_CONTIG_RANGE,
-        };
-
-        lru_cache_disable();
-
-        while (pfn < end || !list_empty(&cc->migratepages)) {
-            if (fatal_signal_pending(current)) {
-                ret = -EINTR;
-                break;
-            }
-
-            if (list_empty(&cc->migratepages)) {
-                cc->nr_migratepages = 0;
-                ret = isolate_migratepages_range(cc, pfn, end);
-                if (ret && ret != -EAGAIN)
-                    break;
-                pfn = cc->migrate_pfn;
-                tries = 0;
-            } else if (++tries == 5) {
-                ret = -EBUSY;
-                break;
-            }
-
-            nr_reclaimed = reclaim_clean_pages_from_list(cc->zone, &cc->migratepages);
-                --->
-            cc->nr_migratepages -= nr_reclaimed;
-
-            ret = migrate_pages(&cc->migratepages, alloc_migration_target,
-                NULL, (unsigned long)&mtc, cc->mode, MR_CONTIG_RANGE, NULL);
-
-            /*
-            * On -ENOMEM, migrate_pages() bails out right away. It is pointless
-            * to retry again over this error, so do the same here.
-            */
-            if (ret == -ENOMEM)
-                break;
-        }
-
-        lru_cache_enable();
-        if (ret < 0) {
-            if (!(cc->gfp_mask & __GFP_NOWARN) && ret == -EBUSY)
-                alloc_contig_dump_pages(&cc->migratepages);
-            putback_movable_pages(&cc->migratepages);
-        }
-
-        return (ret < 0) ? ret : 0;
-    }
+    ret = __alloc_contig_migrate_range(&cc, start, end);
+        --->
     if (ret && ret != -EBUSY)
         goto done;
 
@@ -22551,94 +22539,35 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
 
             /* Not to disrupt normal path by vainly holding hugetlb_lock */
             if (folio_test_hugetlb(folio) && !folio_ref_count(folio)) {
-                ret = alloc_and_dissolve_hugetlb_folio(folio, &isolate_list) {
-                    gfp_t gfp_mask;
-                    struct hstate *h;
-                    int nid = folio_nid(old_folio);
-                    struct folio *new_folio = NULL;
-                    int ret = 0;
-
-                retry:
-                    /*
-                    * The old_folio might have been dissolved from under our feet, so make sure
-                    * to carefully check the state under the lock.
-                    */
-                    spin_lock_irq(&hugetlb_lock);
-                    if (!folio_test_hugetlb(old_folio)) {
-                        /*
-                        * Freed from under us. Drop new_folio too.
-                        */
-                        goto free_new;
-                    } else if (folio_ref_count(old_folio)) {
-                        bool isolated;
-
-                        /*
-                        * Someone has grabbed the folio, try to isolate it here.
-                        * Fail with -EBUSY if not possible.
-                        */
-                        spin_unlock_irq(&hugetlb_lock);
-                        isolated = folio_isolate_hugetlb(old_folio, list);
-                        ret = isolated ? 0 : -EBUSY;
-                        spin_lock_irq(&hugetlb_lock);
-                        goto free_new;
-                    } else if (!folio_test_hugetlb_freed(old_folio)) {
-                        /*
-                        * Folio's refcount is 0 but it has not been enqueued in the
-                        * freelist yet. Race window is small, so we can succeed here if
-                        * we retry.
-                        */
-                        spin_unlock_irq(&hugetlb_lock);
-                        cond_resched();
-                        goto retry;
-                    } else {
-                        h = folio_hstate(old_folio);
-                        if (!new_folio) {
-                            spin_unlock_irq(&hugetlb_lock);
-                            gfp_mask = htlb_alloc_mask(h) | __GFP_THISNODE;
-                            new_folio = alloc_buddy_hugetlb_folio(h, gfp_mask, nid, NULL, NULL);
-                                --->
-                            if (!new_folio)
-                                return -ENOMEM;
-                            __prep_new_hugetlb_folio(h, new_folio);
-                            goto retry;
-                        }
-
-                        /*
-                        * Ok, old_folio is still a genuine free hugepage. Remove it from
-                        * the freelist and decrease the counters. These will be
-                        * incremented again when calling __prep_account_new_huge_page()
-                        * and enqueue_hugetlb_folio() for new_folio. The counters will
-                        * remain stable since this happens under the lock.
-                        */
-                        remove_hugetlb_folio(h, old_folio, false);
-
-                        /*
-                        * Ref count on new_folio is already zero as it was dropped
-                        * earlier.  It can be directly added to the pool free list.
-                        */
-                        __prep_account_new_huge_page(h, nid);
-                        enqueue_hugetlb_folio(h, new_folio);
-
-                        /*
-                        * Folio has been replaced, we can safely free the old one.
-                        */
-                        spin_unlock_irq(&hugetlb_lock);
-                        update_and_free_hugetlb_folio(h, old_folio, false);
-                    }
-
-                    return ret;
-
-                free_new:
-                    spin_unlock_irq(&hugetlb_lock);
-                    if (new_folio)
-                        update_and_free_hugetlb_folio(h, new_folio, false);
-
-                    return ret;
-                }
+                ret = alloc_and_dissolve_hugetlb_folio(folio, &isolate_list);
                 if (ret)
                     break;
 
-                putback_movable_pages(&isolate_list);
+                putback_movable_pages(&isolate_list) {
+                    struct folio *folio;
+                    struct folio *folio2;
+
+                    list_for_each_entry_safe(folio, folio2, l, lru) {
+                        if (unlikely(folio_test_hugetlb(folio))) {
+                            folio_putback_hugetlb(folio) {
+                                spin_lock_irq(&hugetlb_lock);
+                                folio_set_hugetlb_migratable(folio);
+                                list_move_tail(&folio->lru, &(folio_hstate(folio))->hugepage_activelist);
+                                spin_unlock_irq(&hugetlb_lock);
+                                folio_put(folio);
+                            }
+                            continue;
+                        }
+                        list_del(&folio->lru);
+                        if (unlikely(page_has_movable_ops(&folio->page))) {
+                            putback_movable_ops_page(&folio->page);
+                        } else {
+                            node_stat_mod_folio(folio, NR_ISOLATED_ANON +
+                                    folio_is_file_lru(folio), -folio_nr_pages(folio));
+                            folio_putback_lru(folio);
+                        }
+                    }
+                }
             }
             start_pfn++;
         }
@@ -22702,6 +22631,150 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
 done:
     undo_isolate_page_range(start, end);
     return ret;
+}
+```
+
+#### alloc_and_dissolve_hugetlb_folio
+
+```c
+int alloc_and_dissolve_hugetlb_folio(struct folio *old_folio,
+			struct list_head *list)
+{
+	gfp_t gfp_mask;
+	struct hstate *h;
+	int nid = folio_nid(old_folio);
+	struct folio *new_folio = NULL;
+	int ret = 0;
+
+retry:
+	/*
+	 * The old_folio might have been dissolved from under our feet, so make sure
+	 * to carefully check the state under the lock.
+	 */
+	spin_lock_irq(&hugetlb_lock);
+	if (!folio_test_hugetlb(old_folio)) {
+		/*
+		 * Freed from under us. Drop new_folio too.
+		 */
+		goto free_new;
+	} else if (folio_ref_count(old_folio)) { /* in-use hugetlb */
+		bool isolated;
+
+		/*
+		 * Someone has grabbed the folio, try to isolate it here.
+		 * Fail with -EBUSY if not possible.
+		 */
+		spin_unlock_irq(&hugetlb_lock);
+		isolated = folio_isolate_hugetlb(old_folio, list) {
+            bool ret = true;
+
+            spin_lock_irq(&hugetlb_lock);
+            if (!folio_test_hugetlb(folio) ||
+                !folio_test_hugetlb_migratable(folio) ||
+                !folio_try_get(folio)) {
+                ret = false;
+                goto unlock;
+            }
+            folio_clear_hugetlb_migratable(folio);
+            list_move_tail(&folio->lru, list);
+        unlock:
+            spin_unlock_irq(&hugetlb_lock);
+            return ret;
+        }
+		ret = isolated ? 0 : -EBUSY;
+		spin_lock_irq(&hugetlb_lock);
+		goto free_new;
+
+	} else if (!folio_test_hugetlb_freed(old_folio)) {
+		/*
+		 * Folio's refcount is 0 but it has not been enqueued in the
+		 * freelist yet. Race window is small, so we can succeed here if
+		 * we retry.
+		 */
+		spin_unlock_irq(&hugetlb_lock);
+		cond_resched();
+		goto retry;
+	} else {
+		h = folio_hstate(old_folio);
+		if (!new_folio) {
+			spin_unlock_irq(&hugetlb_lock);
+			gfp_mask = htlb_alloc_mask(h) | __GFP_THISNODE;
+			new_folio = alloc_buddy_hugetlb_folio(h, gfp_mask, nid, NULL, NULL);
+                --->
+			if (!new_folio)
+				return -ENOMEM;
+			__prep_new_hugetlb_folio(h, new_folio);
+			goto retry;
+		}
+
+		/*
+		 * Ok, old_folio is still a genuine free hugepage. Remove it from
+		 * the freelist and decrease the counters. These will be
+		 * incremented again when calling __prep_account_new_huge_page()
+		 * and enqueue_hugetlb_folio() for new_folio. The counters will
+		 * remain stable since this happens under the lock.
+		 */
+		remove_hugetlb_folio(h, old_folio, false);
+            --->
+
+		/*
+		 * Ref count on new_folio is already zero as it was dropped
+		 * earlier.  It can be directly added to the pool free list.
+		 */
+		__prep_account_new_huge_page(h, nid);
+		enqueue_hugetlb_folio(h, new_folio);
+
+		/*
+		 * Folio has been replaced, we can safely free the old one.
+		 */
+		spin_unlock_irq(&hugetlb_lock);
+		update_and_free_hugetlb_folio(h, old_folio, false);
+	}
+
+	return ret;
+
+free_new:
+	spin_unlock_irq(&hugetlb_lock);
+	if (new_folio)
+		update_and_free_hugetlb_folio(h, new_folio, false);
+
+	return ret;
+}
+
+void remove_hugetlb_folio(struct hstate *h, struct folio *folio,
+                            bool adjust_surplus)
+{
+    int nid = folio_nid(folio);
+
+    VM_BUG_ON_FOLIO(hugetlb_cgroup_from_folio(folio), folio);
+    VM_BUG_ON_FOLIO(hugetlb_cgroup_from_folio_rsvd(folio), folio);
+
+    lockdep_assert_held(&hugetlb_lock);
+    if (hstate_is_gigantic(h) && !gigantic_page_runtime_supported())
+        return;
+
+    list_del(&folio->lru);
+
+    if (folio_test_hugetlb_freed(folio)) {
+        folio_clear_hugetlb_freed(folio);
+        h->free_huge_pages--;
+        h->free_huge_pages_node[nid]--;
+    }
+    if (adjust_surplus) {
+        h->surplus_huge_pages--;
+        h->surplus_huge_pages_node[nid]--;
+    }
+
+    /*
+    * We can only clear the hugetlb flag after allocating vmemmap
+    * pages.  Otherwise, someone (memory error handling) may try to write
+    * to tail struct pages.
+    */
+    if (!folio_test_hugetlb_vmemmap_optimized(folio))
+        __folio_clear_hugetlb(folio);
+
+    h->nr_huge_pages--;
+    h->nr_huge_pages_node[nid]--;
 }
 ```
 
@@ -24900,7 +24973,9 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
         !non_uniform_split_supported(folio, new_order, true))
         return -EINVAL;
 
-    is_hzp = is_huge_zero_folio(folio);
+    is_hzp = is_huge_zero_folio(folio) {
+        return READ_ONCE(huge_zero_folio) == folio;
+    }
     if (is_hzp) {
         pr_warn_ratelimited("Called split_huge_page for huge zero page\n");
         return -EBUSY;
@@ -24910,14 +24985,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
         return -EBUSY;
 
     if (is_anon) {
-        /*
-         * The caller does not necessarily hold an mmap_lock that would
-         * prevent the anon_vma disappearing so we first we take a
-         * reference to it and then lock the anon_vma for write. This
-         * is similar to folio_lock_anon_vma_read except the write lock
-         * is taken to serialise against parallel split or collapse
-         * operations.
-         */
         anon_vma = folio_get_anon_vma(folio);
         if (!anon_vma) {
             ret = -EBUSY;
@@ -24931,12 +24998,6 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
 
         mapping = folio->mapping;
 
-        /* Truncated ? */
-        /*
-         * TODO: add support for large shmem folio in swap cache.
-         * When shmem is in swap cache, mapping is NULL and
-         * folio_test_swapcache() is true.
-         */
         if (!mapping) {
             ret = -EBUSY;
             goto out;
@@ -24953,13 +25014,29 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
         gfp = current_gfp_context(mapping_gfp_mask(mapping) &
                             GFP_RECLAIM_MASK);
 
-        if (!filemap_release_folio(folio, gfp)) {
+        ret = filemap_release_folio(folio, gfp) {
+            struct address_space * const mapping = folio->mapping;
+
+            BUG_ON(!folio_test_locked(folio));
+            if (!folio_needs_release(folio))
+                return true;
+            if (folio_test_writeback(folio))
+                return false;
+
+            if (mapping && mapping->a_ops->release_folio)
+                return mapping->a_ops->release_folio(folio, gfp);
+            return try_to_free_buffers(folio);
+        }
+        if (!ret) {
             ret = -EBUSY;
             goto out;
         }
 
         if (uniform_split) {
             xas_set_order(&xas, folio->index, new_order);
+           /* allocate new nodes (and fill them with @entry) to prepare
+            * for the upcoming split of an entry of @order size into
+            * entries of the order stored in the @xas. */
             xas_split_alloc(&xas, folio, folio_order(folio), gfp);
             if (xas_error(&xas)) {
                 ret = xas_error(&xas);
@@ -24982,10 +25059,7 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             end = shmem_fallocend(mapping->host, end);
     }
 
-    /*
-     * Racy check if we can split the page, before unmap_folio() will
-     * split PMDs
-     */
+    /* check whether we're the only holder of the folio */
     if (!can_split_folio(folio, 1, &extra_pins)) {
         ret = -EAGAIN;
         goto out_unlock;
