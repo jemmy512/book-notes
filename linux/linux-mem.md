@@ -2102,73 +2102,95 @@ watermark | free area
 ```
 
 ```c
-struct page *alloc_pages(gfp_t gfp_mask, unsigned int order) {
-    return alloc_pages_node(numa_node_id(), gfp_mask, order) {
-        __alloc_pages(gfp_mask, order, nid, NULL/*nodemask*/) {
-            struct page *page;
-            unsigned int alloc_flags = ALLOC_WMARK_LOW;
-            gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
-            struct alloc_context ac = { };
+#define alloc_pages(...)    alloc_hooks(alloc_pages_noprof(__VA_ARGS__))
 
-            if (WARN_ON_ONCE_GFP(order > MAX_PAGE_ORDER, gfp))
-                return NULL;
+static inline struct page *alloc_pages_noprof(gfp_t gfp_mask, unsigned int order)
+{
+    return alloc_pages_node_noprof(numa_node_id(), gfp_mask, order) {
+        if (nid == NUMA_NO_NODE)
+            nid = numa_mem_id();
 
-            gfp &= gfp_allowed_mask;
-            gfp = current_gfp_context(gfp) {
-                unsigned int pflags = READ_ONCE(current->flags);
+        return __alloc_pages_node_noprof(nid, gfp_mask, order) {
+            VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
+            warn_if_node_offline(nid, gfp_mask);
 
-                if (pflags & PF_MEMALLOC_NOIO)
-                    flags &= ~(__GFP_IO | __GFP_FS);
-                else if (pflags & PF_MEMALLOC_NOFS)
-                    flags &= ~__GFP_FS;
+            return __alloc_pages_noprof(gfp_mask, order, nid, NULL) {
+                struct page *page;
 
-                if (pflags & PF_MEMALLOC_PIN)
-                    flags &= ~__GFP_MOVABLE;
-
-                return flags;
+                page = __alloc_frozen_pages_noprof(gfp, order, preferred_nid, nodemask);
+                if (page)
+                    set_page_refcounted(page);
+                return page;
             }
-            alloc_gfp = gfp;
-            ret = prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac, &alloc_gfp, &alloc_flags);
-                --->
-            if (!ret)
-                return NULL;
-
-            /* Forbid the first pass from falling back to types that fragment
-             * memory until all local zones are considered. */
-            alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp) {
-                unsigned int alloc_flags = (__force int) (gfp_mask & __GFP_KSWAPD_RECLAIM);
-                if (defrag_mode) {
-                    alloc_flags |= ALLOC_NOFRAGMENT;
-                    return alloc_flags;
-                }
-            }
-
-            /* First allocation attempt */
-            page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac);
-            if (likely(page))
-                goto out;
-
-            alloc_gfp = gfp;
-            ac.spread_dirty_pages = false;
-
-            /* Restore the original nodemask if it was potentially replaced with
-             * &cpuset_current_mems_allowed to optimize the fast-path attempt. */
-            ac.nodemask = nodemask;
-
-            page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
-
-        out:
-            if (memcg_kmem_online() && (gfp & __GFP_ACCOUNT) && page &&
-                unlikely(__memcg_kmem_charge_page(page, gfp, order) != 0)) {
-                __free_pages(page, order);
-                page = NULL;
-            }
-
-            kmsan_alloc_page(page, order, alloc_gfp);
-
-            return page;
         }
     }
+}
+
+struct page *__alloc_frozen_pages_noprof(gfp_t gfp, unsigned int order,
+        int preferred_nid, nodemask_t *nodemask)
+{
+    struct page *page;
+    unsigned int alloc_flags = ALLOC_WMARK_LOW;
+    gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
+    struct alloc_context ac = { };
+
+    if (WARN_ON_ONCE_GFP(order > MAX_PAGE_ORDER, gfp))
+        return NULL;
+
+    gfp &= gfp_allowed_mask;
+    gfp = current_gfp_context(gfp) {
+        unsigned int pflags = READ_ONCE(current->flags);
+
+        if (pflags & PF_MEMALLOC_NOIO)
+            flags &= ~(__GFP_IO | __GFP_FS);
+        else if (pflags & PF_MEMALLOC_NOFS)
+            flags &= ~__GFP_FS;
+
+        if (pflags & PF_MEMALLOC_PIN)
+            flags &= ~__GFP_MOVABLE;
+
+        return flags;
+    }
+    alloc_gfp = gfp;
+    ret = prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac, &alloc_gfp, &alloc_flags);
+        --->
+    if (!ret)
+        return NULL;
+
+   /* Forbid the first pass from falling back to types that fragment
+    * memory until all local zones are considered. */
+    alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp) {
+        unsigned int alloc_flags = (__force int) (gfp_mask & __GFP_KSWAPD_RECLAIM);
+        if (defrag_mode) {
+            alloc_flags |= ALLOC_NOFRAGMENT;
+            return alloc_flags;
+        }
+    }
+
+    /* First allocation attempt */
+    page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac);
+    if (likely(page))
+        goto out;
+
+    alloc_gfp = gfp;
+    ac.spread_dirty_pages = false;
+
+    /* Restore the original nodemask if it was potentially replaced with
+        * &cpuset_current_mems_allowed to optimize the fast-path attempt. */
+    ac.nodemask = nodemask;
+
+    page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
+
+out:
+    if (memcg_kmem_online() && (gfp & __GFP_ACCOUNT) && page &&
+        unlikely(__memcg_kmem_charge_page(page, gfp, order) != 0)) {
+        __free_pages(page, order);
+        page = NULL;
+    }
+
+    kmsan_alloc_page(page, order, alloc_gfp);
+
+    return page;
 }
 ```
 
@@ -2405,6 +2427,8 @@ retry:
                 goto retry;
             }
         }
+
+        cond_accept_memory(zone, order, alloc_flags);
 
         /* Detect whether the number of free pages is below high
          * watermark.  If so, we will decrease pcp->high and free
@@ -2688,12 +2712,19 @@ struct page *rmqueue(struct zone *preferred_zone,
 
         do {
             page = NULL;
-            spin_lock_irqsave(&zone->lock, flags);
+            if (unlikely(alloc_flags & ALLOC_TRYLOCK)) {
+                if (!spin_trylock_irqsave(&zone->lock, flags))
+                    return NULL;
+            } else {
+                spin_lock_irqsave(&zone->lock, flags);
+            }
+
             if (alloc_flags & ALLOC_HIGHATOMIC) {
                 page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
             }
             if (!page) {
-                page = __rmqueue(zone, order, migratetype, alloc_flags) {
+                enum rmqueue_mode rmqm = RMQUEUE_NORMAL;
+                page = __rmqueue(zone, order, migratetype, alloc_flags, &rmqueue_mode) {
                     struct page *page;
 
                     if (IS_ENABLED(CONFIG_CMA)) {
@@ -2708,79 +2739,65 @@ struct page *rmqueue(struct zone *preferred_zone,
                                 return page;
                         }
                     }
-                retry:
-                    page = __rmqueue_smallest(zone, order, migratetype);
-                    if (unlikely(!page)) {
+
+                    switch (*mode) {
+                    case RMQUEUE_NORMAL:
+                        page = __rmqueue_smallest(zone, order, migratetype);
+                        if (page)
+                            return page;
+                        fallthrough;
+                    case RMQUEUE_CMA:
                         if (alloc_flags & ALLOC_CMA) {
                             page = __rmqueue_cma_fallback(zone, order) {
                                 return __rmqueue_smallest(zone, order, MIGRATE_CMA);
                             }
+                            if (page) {
+                                *mode = RMQUEUE_CMA;
+                                return page;
+                            }
                         }
-                        if (!page && __rmqueue_fallback(zone, order, migratetype, alloc_flags)) {
-                            goto retry;
-                        }
-                    }
-                    return page;
-                }
-
-                if (!page && (alloc_flags & ALLOC_OOM)) {
-                    page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC) {
-                        unsigned int current_order;
-                        struct free_area *area;
-                        struct page *page;
-
-                        /* Find a page of the appropriate size in the preferred list */
-                        for (current_order = order; current_order < NR_PAGE_ORDERS; ++current_order) {
-                            area = &(zone->free_area[current_order]);
-                            page = get_page_from_free_area(area, migratetype) {
-                                return list_first_entry_or_null(&area->free_list[migratetype], struct page, buddy_list);
-                            }
-                            if (!page)
-                                continue;
-                            del_page_from_free_list(page, zone, current_order) {
-                                /* clear reported state and update reported page count */
-                                if (page_reported(page))
-                                    __ClearPageReported(page);
-
-                                list_del(&page->buddy_list);
-                                __ClearPageBuddy(page);
-                                set_page_private(page, 0);
-                                zone->free_area[order].nr_free--;
-                            }
-
-                            expand(zone, page, order/*low*/, current_order/*high*/, migratetype) {
-                                unsigned long size = 1 << high;
-
-                                while (high > low) {
-                                    high--;
-                                    size >>= 1;
-
-                                    if (set_page_guard(zone, &page[size], high, migratetype))
-                                        continue;
-
-                                    add_to_free_list(&page[size], zone, high/*order*/, migratetype) {
-                                        struct free_area *area = &zone->free_area[order];
-
-                                        list_add(&page->buddy_list, &area->free_list[migratetype]);
-                                        area->nr_free++;
-                                    }
-                                    set_buddy_order(&page[size], high) {
-                                        set_page_private(page, order) {
-                                            page->private = private;
-                                        }
-                                        __SetPageBuddy(page);
-                                    }
-                                }
-                            }
-
-                            set_pcppage_migratetype(page, migratetype) {
-                                page->index = migratetype;
-                            }
+                        fallthrough;
+                    case RMQUEUE_CLAIM:
+                        page = __rmqueue_claim(zone, order, migratetype, alloc_flags);
+                        if (page) {
+                            /* Replenished preferred freelist, back to normal mode. */
+                            *mode = RMQUEUE_NORMAL;
                             return page;
                         }
+                        fallthrough;
+                    case RMQUEUE_STEAL:
+                        if (!(alloc_flags & ALLOC_NOFRAGMENT)) {
+                            page = __rmqueue_steal(zone, order, migratetype) {
+                                struct free_area *area;
+                                int current_order;
+                                struct page *page;
+                                int fallback_mt;
 
-                        return NULL;
+                                for (current_order = order; current_order < NR_PAGE_ORDERS; current_order++) {
+                                    area = &(zone->free_area[current_order]);
+                                    fallback_mt = find_suitable_fallback(area, current_order,
+                                                        start_migratetype, false);
+                                    if (fallback_mt == -1)
+                                        continue;
+
+                                    page = get_page_from_free_area(area, fallback_mt);
+                                    page_del_and_expand(zone, page, order, current_order, fallback_mt);
+                                    return page;
+                                }
+
+                                return NULL;
+                            }
+                            if (page) {
+                                *mode = RMQUEUE_STEAL;
+                                return page;
+                            }
+                        }
                     }
+                    return NULL;
+                }
+
+                if (!page && (alloc_flags & (ALLOC_OOM|ALLOC_NON_BLOCK))) {
+                    page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
                 }
 
                 if (!page) {
@@ -2788,7 +2805,7 @@ struct page *rmqueue(struct zone *preferred_zone,
                     return NULL;
                 }
             }
-            __mod_zone_freepage_state(zone, -(1 << order), get_pcppage_migratetype(page));
+
             spin_unlock_irqrestore(&zone->lock, flags);
         } while (check_new_pages(page, order));
 
@@ -2808,6 +2825,100 @@ out:
     }
 
     return page;
+}
+```
+
+### rmqueue_smallest
+
+```c
+struct page *__rmqueue_smallest(struct zone *zone, unsigned int order, int migratetype)
+{
+    unsigned int current_order;
+    struct free_area *area;
+    struct page *page;
+
+    /* Find a page of the appropriate size in the preferred list */
+    for (current_order = order; current_order < NR_PAGE_ORDERS; ++current_order) {
+        area = &(zone->free_area[current_order]);
+        page = get_page_from_free_area(area, migratetype) {
+            return list_first_entry_or_null(&area->free_list[migratetype], struct page, buddy_list);
+        }
+        if (!page)
+            continue;
+
+        page_del_and_expand(zone, page, order, current_order,migratetype) {
+            int nr_pages = 1 << high;
+
+            __del_page_from_free_list(page, zone, high, migratetype){
+                int nr_pages = 1 << order;
+
+                /* clear reported state and update reported page count */
+                if (page_reported(page))
+                    __ClearPageReported(page);
+
+                list_del(&page->buddy_list);
+                __ClearPageBuddy(page);
+                set_page_private(page, 0);
+                zone->free_area[order].nr_free--;
+
+                if (order >= pageblock_order && !is_migrate_isolate(migratetype))
+                    __mod_zone_page_state(zone, NR_FREE_PAGES_BLOCKS, -nr_pages);
+            }
+            nr_pages -= expand(zone, page, low, high, migratetype) {
+                unsigned long size = 1 << high;
+
+                while (high > low) {
+                    high--;
+                    size >>= 1;
+
+                    ret = set_page_guard(zone, &page[size], high, migratetype) {
+                        if (!debug_guardpage_enabled())
+                            return false;
+                        return __set_page_guard(zone, page, order) {
+                            if (order >= debug_guardpage_minorder())
+                                return false;
+
+                            __SetPageGuard(page);
+                            INIT_LIST_HEAD(&page->buddy_list);
+                            set_page_private(page, order) {
+                                page->private = private;
+                            }
+
+                            return true;
+                        }
+                    }
+                    if (ret) /* continue when success */
+                        continue;
+
+                    __add_to_free_list(&page[size], zone, high/*order*/, migratetype, bool tail) {
+                        struct free_area *area = &zone->free_area[order];
+                        int nr_pages = 1 << order;
+
+                        if (tail)
+                            list_add_tail(&page->buddy_list, &area->free_list[migratetype]);
+                        else
+                            list_add(&page->buddy_list, &area->free_list[migratetype]);
+                        area->nr_free++;
+
+                        if (order >= pageblock_order && !is_migrate_isolate(migratetype))
+                            __mod_zone_page_state(zone, NR_FREE_PAGES_BLOCKS, nr_pages);
+                    }
+
+                    set_buddy_order(&page[size], high) {
+                        set_page_private(page, order) {
+                            page->private = private;
+                        }
+                        __SetPageBuddy(page);
+                    }
+                }
+            }
+            account_freepages(zone, -nr_pages, migratetype);
+        }
+
+        return page;
+    }
+
+    return NULL;
 }
 ```
 
@@ -2873,11 +2984,25 @@ struct page *rmqueue_pcplist(struct zone *preferred_zone,
                 int alloced;
 
                 alloced = rmqueue_bulk(zone, order, batch/*count*/, list, migratetype, alloc_flags) {
+                    enum rmqueue_mode rmqm = RMQUEUE_NORMAL;
                     unsigned long flags;
+                    int i;
+
+                    if (unlikely(alloc_flags & ALLOC_TRYLOCK)) {
+                        if (!spin_trylock_irqsave(&zone->lock, flags))
+                            return 0;
+                    } else {
+                        spin_lock_irqsave(&zone->lock, flags);
+                    }
                     for (i = 0; i < count; ++i) {
-                        struct page *page = __rmqueue(zone, order, migratetype, alloc_flags);
+                        struct page *page = __rmqueue(zone, order, migratetype, alloc_flags, &rmqm);
+                        if (unlikely(page == NULL))
+                            break;
+
                         list_add_tail(&page->pcp_list, list);
                     }
+                    spin_unlock_irqrestore(&zone->lock, flags);
+
                     return i;
                 }
 
@@ -2893,6 +3018,7 @@ struct page *rmqueue_pcplist(struct zone *preferred_zone,
 
         return page;
     }
+
     pcp_spin_unlock(pcp);
     pcp_trylock_finish(UP_flags);
     if (page) {
@@ -2903,7 +3029,7 @@ struct page *rmqueue_pcplist(struct zone *preferred_zone,
 }
 ```
 
-### rmqueue_fallback
+### rmqueue_claim
 
 ```c
 static int fallbacks[MIGRATE_TYPES][MIGRATE_PCPTYPES - 1] = {
@@ -2912,7 +3038,7 @@ static int fallbacks[MIGRATE_TYPES][MIGRATE_PCPTYPES - 1] = {
     [MIGRATE_RECLAIMABLE] = { MIGRATE_UNMOVABLE,   MIGRATE_MOVABLE   },
 };
 
-bool __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
+bool __rmqueue_claim(struct zone *zone, int order, int start_migratetype,
                         unsigned int alloc_flags)
 {
     struct free_area *area;
@@ -2931,10 +3057,25 @@ bool __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
     for (current_order = MAX_PAGE_ORDER; current_order >= min_order; --current_order) {
         area = &(zone->free_area[current_order]);
         fallback_mt = find_suitable_fallback(area, current_order,
-            start_migratetype/*migratetype*/, false, &can_steal) {
+            start_migratetype/*migratetype*/, bool claimable) {
 
             int i;
             int fallback_mt;
+
+            ret = should_try_claim_block(order, migratetype) {
+                if (order >= pageblock_order)
+                    return true;
+                if (order >= pageblock_order / 2)
+                    return true;
+                if (start_mt == MIGRATE_RECLAIMABLE || start_mt == MIGRATE_UNMOVABLE)
+                    return true;
+
+                if (page_group_by_mobility_disabled)
+                    return true;
+                return false;
+            }
+            if (claimable && !ret)
+                return -2;
 
             if (area->nr_free == 0)
                 return -1;
@@ -2975,214 +3116,118 @@ bool __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
         if (fallback_mt == -1)
             continue;
 
-        /* We cannot steal all free pages from the pageblock and the
-         * requested migratetype is movable. In that case it's better to
-         * steal and split the smallest available page instead of the
-         * largest available page, because even if the next movable
-         * allocation falls back into a different pageblock than this
-         * one, it won't cause permanent fragmentation. */
-        if (!can_steal && start_migratetype == MIGRATE_MOVABLE && current_order > order)
-            goto find_smallest;
-
-        goto do_steal;
-    }
-
-    return false;
-
-find_smallest:
-    for (current_order = order; current_order < NR_PAGE_ORDERS; current_order++) {
-        area = &(zone->free_area[current_order]);
-        fallback_mt = find_suitable_fallback(area, current_order,
-                start_migratetype, false, &can_steal);
-        if (fallback_mt != -1)
+        /* Advanced into orders too low to claim, abort */
+        if (fallback_mt == -2)
             break;
-    }
 
-do_steal:
-    page = get_page_from_free_area(area, fallback_mt);
+        page = get_page_from_free_area(area, fallback_mt);
+        page = try_to_claim_block(zone, page, current_order, order,
+            start_migratetype, fallback_mt, alloc_flags) {
 
-    /* whether to steal just one page or an entire pageblock */
-    steal_suitable_fallback(zone, page, alloc_flags,
-        start_migratetype/*start_type*/, can_steal/*whole_block*/) {
+            int free_pages, movable_pages, alike_pages;
+            unsigned long start_pfn;
 
-        unsigned int current_order = buddy_order(page);
-        int free_pages, movable_pages, alike_pages;
-        int old_block_type;
+            /* Take ownership for orders >= pageblock_order */
+            if (current_order >= pageblock_order) {
+                unsigned int nr_added;
 
-        old_block_type = get_pageblock_migratetype(page);
+                del_page_from_free_list(page, zone, current_order, block_type);
+                change_pageblock_range(page, current_order, start_type) {
+                    int nr_pageblocks = 1 << (start_order - pageblock_order);
 
-        /* This can happen due to races and we want to prevent broken
-         * highatomic accounting. */
-        if (is_migrate_highatomic(old_block_type))
-            goto single_page;
-
-    /* 1. steal whole page_block */
-        /* 1.1 Take ownership if orders >= pageblock_order */
-        if (current_order >= pageblock_order) {
-            del_page_from_free_list(page, zone, current_order, block_type);
-            change_pageblock_range(page, current_order, start_type) {
-                int nr_pageblocks = 1 << (start_order - pageblock_order);
-                while (nr_pageblocks--) {
-                    set_pageblock_migratetype(pageblock_page, migratetype);
-                    pageblock_page += pageblock_nr_pages;
+                    while (nr_pageblocks--) {
+                        set_pageblock_migratetype(pageblock_page, migratetype);
+                        pageblock_page += pageblock_nr_pages;
+                    }
                 }
+                nr_added = expand(zone, page, order, current_order, start_type);
+                account_freepages(zone, nr_added, start_type);
+                return page;
             }
-            nr_added = expand(zone, page, order, current_order, start_type);
-            account_freepages(zone, nr_added, start_type);
+
+            /* Boost watermarks to increase reclaim pressure to reduce the
+            * likelihood of future fallbacks. Wake kswapd now as the node
+            * may be balanced overall and kswapd will not wake naturally. */
+            if (boost_watermark(zone) && (alloc_flags & ALLOC_KSWAPD))
+                set_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
+
+            /* moving whole block can fail due to zone boundary conditions */
+            ret = prep_move_freepages_block(zone, page, &start_pfn,
+                &free_pages/* num_free */, &movable_pages/* num_movable */) {
+
+                unsigned long pfn, start, end;
+
+                pfn = page_to_pfn(page);
+                start = pageblock_start_pfn(pfn);
+                end = pageblock_end_pfn(pfn);
+
+                if (!zone_spans_pfn(zone, start))
+                    return false;
+                if (!zone_spans_pfn(zone, end - 1))
+                    return false;
+
+                *start_pfn = start;
+
+                if (num_free) {
+                    *num_free = 0;
+                    *num_movable = 0;
+                    for (pfn = start; pfn < end;) {
+                        page = pfn_to_page(pfn);
+                        if (PageBuddy(page)) {
+                            int nr = 1 << buddy_order(page);
+
+                            *num_free += nr;
+                            pfn += nr;
+                            continue;
+                        }
+                        /* We assume that pages that could be isolated for
+                        * migration are movable. But we don't actually try
+                        * isolating, as that would be expensive. */
+                        if (PageLRU(page) || page_has_movable_ops(page))
+                            (*num_movable)++;
+                        pfn++;
+                    }
+                }
+
+                return true;
+            }
+            if (!ret)
+                return NULL;
+
+            /* Determine how many pages are compatible with our allocation.
+            * For movable allocation, it's the number of movable pages which
+            * we just obtained. For other types it's a bit more tricky. */
+            if (start_type == MIGRATE_MOVABLE) {
+                alike_pages = movable_pages;
+            } else {
+                /* If we are falling back a RECLAIMABLE or UNMOVABLE allocation
+                * to MOVABLE pageblock, consider all non-movable pages as
+                * compatible. If it's UNMOVABLE falling back to RECLAIMABLE or
+                * vice versa, be conservative since we can't distinguish the
+                * exact migratetype of non-movable pages. */
+                if (block_type == MIGRATE_MOVABLE)
+                    alike_pages = pageblock_nr_pages
+                                - (free_pages + movable_pages);
+                else
+                    alike_pages = 0;
+            }
+            /* If a sufficient number of pages in the block are either free or of
+            * compatible migratability as our allocation, claim the whole block. */
+            if (free_pages + alike_pages >= (1 << (pageblock_order-1)) ||
+                    page_group_by_mobility_disabled) {
+                __move_freepages_block(zone, start_pfn, block_type, start_type);
+                set_pageblock_migratetype(pfn_to_page(start_pfn), start_type);
+                return __rmqueue_smallest(zone, order, start_type);
+            }
+
+            return NULL;
+        }
+        if (page) {
             return page;
         }
-
-        /* Boost watermarks to increase reclaim pressure to reduce the
-         * likelihood of future fallbacks. Wake kswapd now as the node
-         * may be balanced overall and kswapd will not wake naturally. */
-        if (boost_watermark(zone) && (alloc_flags & ALLOC_KSWAPD))
-            set_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
-
-        /* We are not allowed to try stealing from the whole block */
-        if (!whole_block)
-            goto single_page;
-
-        /* moving whole block can fail due to zone boundary conditions */
-        ret = prep_move_freepages_block(zone, page,
-            &start_pfn, &free_pages/*num_free*/, &movable_pages/*num_movable*/) {
-
-            unsigned long pfn, start, end;
-
-            pfn = page_to_pfn(page);
-            start = pageblock_start_pfn(pfn);
-            end = pageblock_end_pfn(pfn);
-
-            if (!zone_spans_pfn(zone, start))
-                return false;
-            if (!zone_spans_pfn(zone, end - 1))
-                return false;
-
-            *start_pfn = start;
-
-            if (num_free) {
-                *num_free = 0;
-                *num_movable = 0;
-                for (pfn = start; pfn < end;) {
-                    page = pfn_to_page(pfn);
-                    if (PageBuddy(page)) {
-                        int nr = 1 << buddy_order(page);
-
-                        *num_free += nr;
-                        pfn += nr;
-                        continue;
-                    }
-                    /* We assume that pages that could be isolated for
-                     * migration are movable. But we don't actually try
-                     * isolating, as that would be expensive. */
-                    if (PageLRU(page) || __PageMovable(page))
-                        (*num_movable)++;
-                    pfn++;
-                }
-            }
-
-            return true;
-        }
-        if (!ret)
-            goto single_page;
-
-        /* Determine how many pages are compatible with our allocation.
-         * For movable allocation, it's the number of movable pages which
-         * we just obtained. For other types it's a bit more tricky. */
-        if (start_type == MIGRATE_MOVABLE) {
-            alike_pages = movable_pages;
-        } else {
-            /* If we are falling back a RECLAIMABLE or UNMOVABLE allocation
-             * to MOVABLE pageblock, consider all non-movable pages as
-             * compatible. If it's UNMOVABLE falling back to RECLAIMABLE or
-             * vice versa, be conservative since we can't distinguish the
-             * exact migratetype of non-movable pages. */
-            if (old_block_type == MIGRATE_MOVABLE)
-                alike_pages = pageblock_nr_pages - (free_pages + movable_pages);
-            else
-                alike_pages = 0;
-        }
-
-        /* 1.2 If at least half of the pageblock's pages are free or compatible
-         * (free_pages + alike_pages > pageblock_nr_pages / 2),
-         * the pageblock's migration type is changed to the requested type. */
-        if (free_pages + alike_pages >= (1 << (pageblock_order-1)) || page_group_by_mobility_disabled) {
-            __move_freepages_block(zone, start_pfn, block_type, start_type) {
-                struct page *page;
-                unsigned long pfn, end_pfn;
-                unsigned int order;
-                int pages_moved = 0;
-
-                VM_WARN_ON(start_pfn & (pageblock_nr_pages - 1));
-                end_pfn = pageblock_end_pfn(start_pfn);
-
-                for (pfn = start_pfn; pfn < end_pfn;) {
-                    page = pfn_to_page(pfn);
-                    if (!PageBuddy(page)) {
-                        pfn++;
-                        continue;
-                    }
-
-                    /* Make sure we are not inadvertently changing nodes */
-                    VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
-                    VM_BUG_ON_PAGE(page_zone(page) != zone, page);
-
-                    order = buddy_order(page);
-
-                    move_to_free_list(page, zone, order, old_mt, new_mt);
-
-                    pfn += 1 << order;
-                    pages_moved += 1 << order;
-                }
-
-                set_pageblock_migratetype(pfn_to_page(start_pfn), new_mt/*migratetype*/) {
-                    if (unlikely(page_group_by_mobility_disabled && migratetype < MIGRATE_PCPTYPES))
-                        migratetype = MIGRATE_UNMOVABLE;
-
-                    set_pfnblock_flags_mask(page, (unsigned long)migratetype/*flag*/,
-                                page_to_pfn(page)/*pfn*/, MIGRATETYPE_MASK/*mask*/) {
-                        unsigned long *bitmap;
-                        unsigned long bitidx, word_bitidx;
-                        unsigned long word;
-
-                        bitmap = get_pageblock_bitmap(page, pfn);
-                        bitidx = pfn_to_bitidx(page, pfn);
-                        word_bitidx = bitidx / BITS_PER_LONG;
-                        bitidx &= (BITS_PER_LONG-1);
-
-                        mask <<= bitidx;
-                        flags <<= bitidx;
-
-                        word = READ_ONCE(bitmap[word_bitidx]);
-                        while (!try_cmpxchg(&bitmap[word_bitidx], &word, (word & ~mask) | flags));
-                    }
-                }
-
-                return pages_moved;
-            }
-            return __rmqueue_smallest(zone, order, start_type);
-        }
-    /* 2. steal single page */
-    single_page:
-        page_del_and_expand(zone, page, order, current_order, block_type) {
-            int nr_pages = 1 << high;
-
-            __del_page_from_free_list(page, zone, high, migratetype) {
-                if (page_reported(page))
-                    __ClearPageReported(page);
-
-                list_del(&page->buddy_list);
-                __ClearPageBuddy(page);
-                set_page_private(page, 0);
-                zone->free_area[order].nr_free--;
-            }
-            nr_pages -= expand(zone, page, low, high, migratetype);
-            account_freepages(zone, -nr_pages, migratetype);
-        }
-
-        return page;
     }
 
-    return true;
+    return NULL;
 }
 ```
 
@@ -3395,6 +3440,12 @@ restart:
     }
 
 retry:
+    /* Deal with possible cpuset update races or zonelist updates to avoid
+    * infinite retries. */
+    if (check_retry_cpuset(cpuset_mems_cookie, ac) ||
+        check_retry_zonelist(zonelist_iter_cookie))
+        goto restart;
+
     /* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
     if (alloc_flags & ALLOC_KSWAPD)
         wake_all_kswapds(order, gfp_mask, ac);
@@ -3420,7 +3471,13 @@ retry:
     }
     if (reserve_flags)
         alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags) |
-                    (alloc_flags & ALLOC_KSWAPD);
+                    (alloc_flags & ALLOC_KSWAPD) {
+    #ifdef CONFIG_CMA
+        if (gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
+            alloc_flags |= ALLOC_CMA;
+    #endif
+        return alloc_flags;
+    }
 
     /* Reset the nodemask and zonelist iterators if memory policies can be
      * ignored. These allocations are high priority and system rather than
@@ -8972,11 +9029,9 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
 
         if (PageHuge(page)) {
             const unsigned int order = compound_order(page);
-            /*
-            * skip hugetlbfs if we are not compacting for pages
+            /* skip hugetlbfs if we are not compacting for pages
             * bigger than its order. THPs and other compound pages
-            * are handled below.
-            */
+            * are handled below. */
             if (!cc->alloc_contig) {
 
                 if (order <= MAX_PAGE_ORDER) {
@@ -8999,11 +9054,9 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
                 if (!folio_test_hugetlb(folio))
                     return 0;
 
-                /*
-                * Fence off gigantic pages as there is a cyclic dependency between
+                /* Fence off gigantic pages as there is a cyclic dependency between
                 * alloc_contig_range and them. Return -ENOMEM as this has the effect
-                * of bailing out right away without further retrying.
-                */
+                * of bailing out right away without further retrying. */
                 if (folio_order(folio) > MAX_PAGE_ORDER)
                     return -ENOMEM;
 
@@ -9016,10 +9069,8 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
                 return ret;
             }
 
-            /*
-            * Fail isolation in case isolate_or_dissolve_huge_folio()
-            * reports an error. In case of -ENOMEM, abort right away.
-            */
+            /* Fail isolation in case isolate_or_dissolve_huge_folio()
+            * reports an error. In case of -ENOMEM, abort right away. */
             if (ret < 0) {
                 /* Do not report -EBUSY down the chain */
                 if (ret == -EBUSY)
@@ -9030,20 +9081,16 @@ int isolate_migratepages_block(struct compact_control *cc, unsigned long low_pfn
             }
 
             if (folio_test_hugetlb(folio)) {
-                /*
-                * Hugepage was successfully isolated and placed
-                * on the cc->migratepages list.
-                */
+                /* Hugepage was successfully isolated and placed
+                * on the cc->migratepages list. */
                 low_pfn += folio_nr_pages(folio) - 1;
                 goto isolate_success_no_list;
             }
 
-            /*
-            * Ok, the hugepage was dissolved. Now these pages are
+            /* Ok, the hugepage was dissolved. Now these pages are
             * Buddy and cannot be re-allocated because they are
             * isolated. Fall-through as the check below handles
-            * Buddy pages.
-            */
+            * Buddy pages. */
         }
 
         if (PageBuddy(page)) {
@@ -10192,8 +10239,7 @@ bool try_to_migrate_one(struct folio *folio, struct vm_area_struct *vma,
                     /* unmap huge page backed by shared pte */
                     flush_tlb_range(vma, range.start, range.end);
 
-                   /*
-                    * The ref count of the PMD page was
+                   /* The ref count of the PMD page was
                     * dropped which is part of the way map
                     * counting is done for shared PMDs.
                     * Return 'true' here.  When there is
@@ -18340,22 +18386,18 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
     unsigned long size;
     pte_t new_pte;
 
-    /*
-    * Currently, we are forced to kill the process in the event the
+    /* Currently, we are forced to kill the process in the event the
     * original mapper has unmapped pages from the child due to a failed
     * COW/unsharing. Warn that such a situation has occurred as it may not
-    * be obvious.
-    */
+    * be obvious. */
     if (is_vma_resv_set(vma, HPAGE_RESV_UNMAPPED)) {
         pr_warn_ratelimited("PID %d killed due to inadequate hugepage pool\n",
             current->pid);
         goto out;
     }
 
-    /*
-    * Use page lock to guard against racing truncation
-    * before we get page_table_lock.
-    */
+    /* Use page lock to guard against racing truncation
+    * before we get page_table_lock. */
     new_folio = false;
     folio = filemap_lock_hugetlb_folio(h, mapping, vmf->pgoff);
     if (IS_ERR(folio)) {
@@ -18364,8 +18406,7 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
             goto out;
         /* Check for page in userfault range */
         if (userfaultfd_missing(vma)) {
-            /*
-            * Since hugetlb_no_page() was examining pte
+            /* Since hugetlb_no_page() was examining pte
             * without pgtable lock, we need to re-test under
             * lock because the pte may not be stable and could
             * have changed from under us.  Try to detect
@@ -18379,8 +18420,7 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
             * confuse the userspace, so the strictness is very
             * much preferred.  E.g., MISSING event should
             * never happen on the page after UFFDIO_COPY has
-            * correctly installed the page and returned.
-            */
+            * correctly installed the page and returned. */
             if (!hugetlb_pte_stable(h, mm, vmf->address, vmf->pte, vmf->orig_pte)) {
                 ret = 0;
                 goto out;
@@ -18401,8 +18441,7 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
             --->
 
         if (IS_ERR(folio)) {
-            /*
-            * Returning error will result in faulting task being
+            /* Returning error will result in faulting task being
             * sent SIGBUS.  The hugetlb fault mutex prevents two
             * tasks from racing to fault in the same page which
             * could result in false unable to allocate errors.
@@ -18411,8 +18450,7 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
             * lock.  Page fault code could race with migration,
             * notice the clear pte and try to allocate a page
             * here.  Before returning error, get ptl and make
-            * sure there really is no pte entry.
-            */
+            * sure there really is no pte entry. */
             if (hugetlb_pte_stable(h, mm, vmf->address, vmf->pte, vmf->orig_pte))
                 ret = vmf_error(PTR_ERR(folio));
             else
@@ -18426,13 +18464,11 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
         if (vma->vm_flags & VM_MAYSHARE) {
             int err = hugetlb_add_to_page_cache(folio, mapping, vmf->pgoff);
             if (err) {
-                /*
-                * err can't be -EEXIST which implies someone
+                /* err can't be -EEXIST which implies someone
                 * else consumed the reservation since hugetlb
                 * fault mutex is held when add a hugetlb page
                 * to the page cache. So it's safe to call
-                * restore_reserve_on_error() here.
-                */
+                * restore_reserve_on_error() here. */
                 restore_reserve_on_error(h, vma, vmf->address,
                             folio);
                 folio_put(folio);
@@ -18444,11 +18480,9 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
             folio_lock(folio);
         }
     } else {
-        /*
-        * If memory error occurs between mmap() and fault, some process
+        /* If memory error occurs between mmap() and fault, some process
         * don't have hwpoisoned swap entry for errored virtual address.
-        * So we need to block hugepage fault by PG_hwpoison bit check.
-        */
+        * So we need to block hugepage fault by PG_hwpoison bit check. */
         if (unlikely(folio_test_hwpoison(folio))) {
             ret = VM_FAULT_HWPOISON_LARGE |
                 VM_FAULT_SET_HINDEX(hstate_index(h));
@@ -18469,12 +18503,10 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
         }
     }
 
-    /*
-    * If we are going to COW a private mapping later, we examine the
+    /* If we are going to COW a private mapping later, we examine the
     * pending reservations for this page now. This will ensure that
     * any allocations necessary to record that reservation occur outside
-    * the spinlock.
-    */
+    * the spinlock. */
     if ((vmf->flags & FAULT_FLAG_WRITE) && !(vma->vm_flags & VM_SHARED)) {
         if (vma_needs_reservation(h, vma, vmf->address) < 0) {
             ret = VM_FAULT_OOM;
@@ -18495,10 +18527,8 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
     else
         hugetlb_add_file_rmap(folio);
     new_pte = make_huge_pte(vma, folio, vma->vm_flags & VM_SHARED);
-    /*
-    * If this pte was previously wr-protected, keep it wr-protected even
-    * if populated.
-    */
+    /* If this pte was previously wr-protected, keep it wr-protected even
+    * if populated. */
     if (unlikely(pte_marker_uffd_wp(vmf->orig_pte)))
         new_pte = huge_pte_mkuffd_wp(new_pte);
     set_huge_pte_at(mm, vmf->address, vmf->pte, new_pte, huge_page_size(h));
@@ -18508,10 +18538,8 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
     }
 
     if ((vmf->flags & FAULT_FLAG_WRITE) && !(vma->vm_flags & VM_SHARED)) {
-        /*
-        * No need to keep file folios locked. See comment in
-        * hugetlb_fault().
-        */
+        /* No need to keep file folios locked. See comment in
+        * hugetlb_fault(). */
         if (!new_anon_folio) {
             folio_locked = false;
             folio_unlock(folio);
@@ -18522,11 +18550,9 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
 
     spin_unlock(vmf->ptl);
 
-    /*
-    * Only set hugetlb_migratable in newly allocated pages.  Existing pages
+    /* Only set hugetlb_migratable in newly allocated pages.  Existing pages
     * found in the pagecache may not have hugetlb_migratable if they have
-    * been isolated for migration.
-    */
+    * been isolated for migration. */
     if (new_folio)
         folio_set_hugetlb_migratable(folio);
 
@@ -18535,10 +18561,8 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
 out:
     hugetlb_vma_unlock_read(vma);
 
-    /*
-    * We must check to release the per-VMA lock. __vmf_anon_prepare() is
-    * the only way ret can be set to VM_FAULT_RETRY.
-    */
+    /* We must check to release the per-VMA lock. __vmf_anon_prepare() is
+    * the only way ret can be set to VM_FAULT_RETRY. */
     if (unlikely(ret & VM_FAULT_RETRY))
         vma_end_read(vma);
 
@@ -18574,14 +18598,12 @@ static vm_fault_t hugetlb_wp(struct vm_fault *vmf)
     vm_fault_t ret = 0;
     struct mmu_notifier_range range;
 
-    /*
-     * Never handle CoW for uffd-wp protected pages.  It should be only
+    /* Never handle CoW for uffd-wp protected pages.  It should be only
      * handled when the uffd-wp protection is removed.
      *
      * Note that only the CoW optimization path (in hugetlb_no_page())
      * can trigger this, because hugetlb_fault() will always resolve
-     * uffd-wp bit first.
-     */
+     * uffd-wp bit first. */
     if (!unshare && huge_pte_uffd_wp(pte))
         return 0;
 
@@ -18596,8 +18618,7 @@ static vm_fault_t hugetlb_wp(struct vm_fault *vmf)
     delayacct_wpcopy_start();
 
 retry_avoidcopy:
-    /*
-     * If no-one else is actually using this page, we're the exclusive
+    /* If no-one else is actually using this page, we're the exclusive
      * owner and can reuse this page.
      *
      * Note that we don't rely on the (safer) folio refcount here, because
@@ -18605,8 +18626,7 @@ retry_avoidcopy:
      * folio references could harm simple fork()+exit() users when
      * we run out of free hugetlb folios: we would have to kill processes
      * in scenarios that used to work. As a side effect, there can still
-     * be leaks between processes, for example, with FOLL_GET users.
-     */
+     * be leaks between processes, for example, with FOLL_GET users. */
     if (folio_mapcount(old_folio) == 1 && folio_test_anon(old_folio)) {
         if (!PageAnonExclusive(&old_folio->page)) {
             folio_move_anon_rmap(old_folio, vma) {
@@ -18626,51 +18646,43 @@ retry_avoidcopy:
     VM_BUG_ON_PAGE(folio_test_anon(old_folio) &&
                PageAnonExclusive(&old_folio->page), &old_folio->page);
 
-    /*
-     * If the process that created a MAP_PRIVATE mapping is about to perform
+    /* If the process that created a MAP_PRIVATE mapping is about to perform
      * a COW due to a shared page count, attempt to satisfy the allocation
      * without using the existing reserves.
      * In order to determine where this is a COW on a MAP_PRIVATE mapping it
      * is enough to check whether the old_folio is anonymous. This means that
      * the reserve for this address was consumed. If reserves were used, a
      * partial faulted mapping at the fime of fork() could consume its reserves
-     * on COW instead of the full address range.
-     */
+     * on COW instead of the full address range. */
     if (is_vma_resv_set(vma, HPAGE_RESV_OWNER) && folio_test_anon(old_folio))
         cow_from_owner = true;
 
     folio_get(old_folio);
 
-    /*
-     * Drop page table lock as buddy allocator may be called. It will
-     * be acquired again before returning to the caller, as expected.
-     */
+    /* Drop page table lock as buddy allocator may be called. It will
+     * be acquired again before returning to the caller, as expected. */
     spin_unlock(vmf->ptl);
     new_folio = alloc_hugetlb_folio(vma, vmf->address, cow_from_owner);
 
     if (IS_ERR(new_folio)) {
-        /*
-         * If a process owning a MAP_PRIVATE mapping fails to COW,
+        /* If a process owning a MAP_PRIVATE mapping fails to COW,
          * it is due to references held by a child and an insufficient
          * huge page pool. To guarantee the original mappers
          * reliability, unmap the page from child processes. The child
-         * may get SIGKILLed if it later faults.
-         */
+         * may get SIGKILLed if it later faults. */
         if (cow_from_owner) {
             struct address_space *mapping = vma->vm_file->f_mapping;
             pgoff_t idx;
             u32 hash;
 
             folio_put(old_folio);
-            /*
-             * Drop hugetlb_fault_mutex and vma_lock before
+            /* Drop hugetlb_fault_mutex and vma_lock before
              * unmapping.  unmapping needs to hold vma_lock
              * in write mode.  Dropping vma_lock in read mode
              * here is OK as COW mappings do not interact with
              * PMD sharing.
              *
-             * Reacquire both after unmap operation.
-             */
+             * Reacquire both after unmap operation. */
             idx = vma_hugecache_offset(h, vma, vmf->address);
             hash = hugetlb_fault_mutex_hash(mapping, idx);
             hugetlb_vma_unlock_read(vma);
@@ -18685,10 +18697,8 @@ retry_avoidcopy:
             if (likely(vmf->pte &&
                    pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte)))
                 goto retry_avoidcopy;
-            /*
-             * race occurs while re-acquiring page table
-             * lock, and our job is done.
-             */
+            /* race occurs while re-acquiring page table
+             * lock, and our job is done. */
             delayacct_wpcopy_end();
             return 0;
         }
@@ -18697,10 +18707,8 @@ retry_avoidcopy:
         goto out_release_old;
     }
 
-    /*
-     * When the original hugepage is shared one, it does not have
-     * anon_vma prepared.
-     */
+    /* When the original hugepage is shared one, it does not have
+     * anon_vma prepared. */
     ret = __vmf_anon_prepare(vmf) {
         struct vm_area_struct *vma = vmf->vma;
         vm_fault_t ret = 0;
@@ -18731,10 +18739,8 @@ retry_avoidcopy:
                 vmf->address + huge_page_size(h));
     mmu_notifier_invalidate_range_start(&range);
 
-    /*
-     * Retake the page table lock to check for racing updates
-     * before the page tables are altered
-     */
+    /* Retake the page table lock to check for racing updates
+     * before the page tables are altered */
     spin_lock(vmf->ptl);
     vmf->pte = hugetlb_walk(vma, vmf->address, huge_page_size(h));
     if (likely(vmf->pte && pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte))) {
@@ -18755,10 +18761,8 @@ retry_avoidcopy:
     mmu_notifier_invalidate_range_end(&range);
 
 out_release_all:
-    /*
-     * No restore in case of successful pagetable update (Break COW or
-     * unshare)
-     */
+    /* No restore in case of successful pagetable update (Break COW or
+     * unshare) */
     if (new_folio != old_folio)
         restore_reserve_on_error(h, vma, vmf->address, new_folio);
     folio_put(new_folio);
@@ -21573,12 +21577,10 @@ void __init hugetlb_cma_reserve(int order)
     bool node_specific_cma_alloc = false;
     int nid;
 
-    /*
-     * HugeTLB CMA reservation is required for gigantic
+    /* HugeTLB CMA reservation is required for gigantic
      * huge pages which could not be allocated via the
      * page allocator. Just warn if there is any change
-     * breaking this assumption.
-     */
+     * breaking this assumption. */
     VM_WARN_ON(order <= MAX_PAGE_ORDER);
     cma_reserve_called = true;
 
@@ -21631,10 +21633,8 @@ void __init hugetlb_cma_reserve(int order)
     }
 
     if (!node_specific_cma_alloc) {
-        /*
-         * If 3 GB area is requested on a machine with 4 numa nodes,
-         * let's allocate 1 GB on first three nodes and ignore the last one.
-         */
+        /* If 3 GB area is requested on a machine with 4 numa nodes,
+         * let's allocate 1 GB on first three nodes and ignore the last one. */
         per_node = DIV_ROUND_UP(hugetlb_cma_size,
                     nodes_weight(hugetlb_bootmem_nodes));
         pr_info("hugetlb_cma: reserve %lu MiB, up to %lu MiB per node\n",
@@ -21658,11 +21658,9 @@ void __init hugetlb_cma_reserve(int order)
         size = round_up(size, PAGE_SIZE << order);
 
         snprintf(name, sizeof(name), "hugetlb%d", nid);
-        /*
-         * Note that 'order per bit' is based on smallest size that
+        /* Note that 'order per bit' is based on smallest size that
          * may be returned to CMA allocator in the case of
-         * huge page demotion.
-         */
+         * huge page demotion. */
         res = cma_declare_contiguous_multi(size, PAGE_SIZE << order,
                     HUGETLB_PAGE_ORDER, name,
                     &hugetlb_cma[nid], nid);
@@ -21681,10 +21679,8 @@ void __init hugetlb_cma_reserve(int order)
     }
 
     if (!reserved)
-        /*
-         * hugetlb_cma_size is used to determine if allocations from
-         * cma are possible.  Set to zero if no cma regions are set up.
-         */
+        /* hugetlb_cma_size is used to determine if allocations from
+         * cma are possible.  Set to zero if no cma regions are set up. */
         hugetlb_cma_size = 0;
 }
 
@@ -21854,20 +21850,16 @@ static void __init gather_bootmem_prealloc_parallel(unsigned long start,
 
                 h = m->hstate;
                 if (!hugetlb_bootmem_page_zones_valid(nid, m)) {
-                    /*
-                    * Can't use this page. Initialize the
+                    /* Can't use this page. Initialize the
                     * page structures if that hasn't already
                     * been done, and give them to the page
-                    * allocator.
-                    */
+                    * allocator. */
                     hugetlb_bootmem_free_invalid_page(nid, page, h);
                     continue;
                 }
 
-                /*
-                * It is possible to have multiple huge page sizes (hstates)
-                * in this list.  If so, process each size separately.
-                */
+                /* It is possible to have multiple huge page sizes (hstates)
+                * in this list.  If so, process each size separately. */
                 if (h != prev_h && prev_h != NULL)
                     prep_and_add_bootmem_folios(prev_h, &folio_list);
                 prev_h = h;
@@ -21883,11 +21875,9 @@ static void __init gather_bootmem_prealloc_parallel(unsigned long start,
                 }
 
                 if (hugetlb_bootmem_page_prehvo(m))
-                    /*
-                    * If pre-HVO was done, just set the
+                    /* If pre-HVO was done, just set the
                     * flag, the HVO code will then skip
-                    * this folio.
-                    */
+                    * this folio. */
                     folio_set_hugetlb_vmemmap_optimized(folio);
 
                 if (hugetlb_bootmem_page_earlycma(m))
@@ -21895,14 +21885,12 @@ static void __init gather_bootmem_prealloc_parallel(unsigned long start,
 
                 list_add(&folio->lru, &folio_list);
 
-                /*
-                * We need to restore the 'stolen' pages to totalram_pages
+                /* We need to restore the 'stolen' pages to totalram_pages
                 * in order to fix confusing memory reports from free(1) and
                 * other side-effects, like CommitLimit going negative.
                 *
                 * For CMA pages, this is done in init_cma_pageblock
-                * (via hugetlb_bootmem_init_migratetype), so skip it here.
-                */
+                * (via hugetlb_bootmem_init_migratetype), so skip it here. */
                 if (!folio_test_hugetlb_cma(folio))
                     adjust_managed_page_count(page, pages_per_huge_page(h));
                 cond_resched();
@@ -21917,12 +21905,10 @@ static void __init gather_bootmem_prealloc_parallel(unsigned long start,
 
                 list_for_each_entry_safe(folio, tmp_f, folio_list, lru) {
                     if (!folio_test_hugetlb_vmemmap_optimized(folio)) {
-                        /*
-                        * If HVO fails, initialize all tail struct pages
+                        /* If HVO fails, initialize all tail struct pages
                         * We do not worry about potential long lock hold
                         * time as this is early in boot and there should
-                        * be no contention.
-                        */
+                        * be no contention. */
                         hugetlb_folio_init_tail_vmemmap(folio,
                                 HUGETLB_VMEMMAP_RESERVE_PAGES,
                                 pages_per_huge_page(h));
@@ -22252,8 +22238,7 @@ static unsigned long __init hugetlb_pages_alloc_boot(struct hstate *h)
     job.start       = 0;
     job.size        = h->max_huge_pages;
 
-    /*
-    * job.max_threads is 25% of the available cpu threads by default.
+    /* job.max_threads is 25% of the available cpu threads by default.
     *
     * On large servers with terabytes of memory, huge page allocation
     * can consume a considerably amount of time.
@@ -22266,8 +22251,7 @@ static unsigned long __init hugetlb_pages_alloc_boot(struct hstate *h)
     * +-----------------------+-------+-------+-------+-------+-------+
     * | skylake      144 cpus |   44s |   22s |   16s |   19s |   20s |
     * | cascade lake 192 cpus |   39s |   20s |   11s |   10s |    9s |
-    * +-----------------------+-------+-------+-------+-------+-------+
-    */
+    * +-----------------------+-------+-------+-------+-------+-------+ */
     if (hugepage_allocation_threads == 0) {
         hugepage_allocation_threads = num_online_cpus() / 4;
         hugepage_allocation_threads = max(hugepage_allocation_threads, 1);
@@ -22399,20 +22383,14 @@ retry:
                     pfn = ALIGN(zone->zone_start_pfn, nr_pages);
                     while (zone_spans_last_pfn(zone, pfn, nr_pages)) {
                         if (pfn_range_valid_contig(zone, pfn, nr_pages)) {
-                            /*
-                            * We release the zone lock here because
+                            /* We release the zone lock here because
                             * alloc_contig_range() will also lock the zone
                             * at some point. If there's an allocation
                             * spinning on this lock, it may win the race
-                            * and cause alloc_contig_range() to fail...
-                            */
+                            * and cause alloc_contig_range() to fail... */
                             spin_unlock_irqrestore(&zone->lock, flags);
-                            ret = __alloc_contig_pages(pfn, nr_pages, gfp_mask) {
-                                unsigned long end_pfn = start_pfn + nr_pages;
-
-                                return alloc_contig_range_noprof(start_pfn, end_pfn, ACR_FLAGS_NONE, gfp_mask);
-                                    --->
-                            }
+                            ret = __alloc_contig_pages(pfn, nr_pages, gfp_mask) ;
+                                --->
                             if (!ret)
                                 return pfn_to_page(pfn);
                             spin_lock_irqsave(&zone->lock, flags);
@@ -22430,6 +22408,7 @@ retry:
             return NULL;
     }
 
+    /* return page_ref_freeze(&folio->page, count) */
     if (folio_ref_freeze(folio, 1))
         return folio;
 
@@ -22451,9 +22430,15 @@ retry:
 }
 ```
 
-##### alloc_contig_range_noprof
+##### __alloc_contig_pages
 
 ```c
+ret = __alloc_contig_pages(pfn, nr_pages, gfp_mask) {
+    unsigned long end_pfn = start_pfn + nr_pages;
+
+    return alloc_contig_range_noprof(start_pfn, end_pfn, ACR_FLAGS_NONE, gfp_mask);
+}
+
 int alloc_contig_range_noprof(unsigned long start, unsigned long end,
                 acr_flags_t alloc_flags, gfp_t gfp_mask)
 {
@@ -22478,27 +22463,6 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
     if (__alloc_contig_verify_gfp_mask(gfp_mask, (gfp_t *)&cc.gfp_mask))
         return -EINVAL;
 
-    /*
-    * What we do here is we mark all pageblocks in range as
-    * MIGRATE_ISOLATE.  Because pageblock and max order pages may
-    * have different sizes, and due to the way page allocator
-    * work, start_isolate_page_range() has special handlings for this.
-    *
-    * Once the pageblocks are marked as MIGRATE_ISOLATE, we
-    * migrate the pages from an unaligned range (ie. pages that
-    * we are interested in). This will put all the pages in
-    * range back to page allocator as MIGRATE_ISOLATE.
-    *
-    * When this is done, we take the pages in range from page
-    * allocator removing them from the buddy system.  This way
-    * page allocator will never consider using them.
-    *
-    * This lets us mark the pageblocks back as
-    * MIGRATE_CMA/MIGRATE_MOVABLE so that free pages in the
-    * aligned range but not in the unaligned, original range are
-    * put back to page allocator so that buddy can use them.
-    */
-
     ret = start_isolate_page_range(start, end, mode);
         --->
     if (ret)
@@ -22506,28 +22470,12 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
 
     drain_all_pages(cc.zone);
 
-    /*
-    * In case of -EBUSY, we'd like to know which page causes problem.
-    * So, just fall through. test_pages_isolated() has a tracepoint
-    * which will report the busy page.
-    *
-    * It is possible that busy pages could become available before
-    * the call to test_pages_isolated, and the range will actually be
-    * allocated.  So, if we fall through be sure to clear ret so that
-    * -EBUSY is not accidentally used or returned to caller.
-    */
     ret = __alloc_contig_migrate_range(&cc, start, end);
         --->
     if (ret && ret != -EBUSY)
         goto done;
 
-    /*
-    * When in-use hugetlb pages are migrated, they may simply be released
-    * back into the free hugepage pool instead of being returned to the
-    * buddy system.  After the migration of in-use huge pages is completed,
-    * we will invoke replace_free_hugepage_folios() to ensure that these
-    * hugepages are properly released to the buddy system.
-    */
+   /* https://lore.kernel.org/all/1734503588-16254-1-git-send-email-yangge1116@126.com/ */
     ret = replace_free_hugepage_folios(start, end) {
         struct folio *folio;
         int ret = 0;
@@ -22540,6 +22488,7 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
             /* Not to disrupt normal path by vainly holding hugetlb_lock */
             if (folio_test_hugetlb(folio) && !folio_ref_count(folio)) {
                 ret = alloc_and_dissolve_hugetlb_folio(folio, &isolate_list);
+                    --->
                 if (ret)
                     break;
 
@@ -22577,26 +22526,64 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
     if (ret)
         goto done;
 
-    /*
-    * Pages from [start, end) are within a pageblock_nr_pages
-    * aligned blocks that are marked as MIGRATE_ISOLATE.  What's
-    * more, all pages in [start, end) are free in page allocator.
-    * What we are going to do is to allocate all pages from
-    * [start, end) (that is remove them from page allocator).
-    *
-    * The only problem is that pages at the beginning and at the
-    * end of interesting range may be not aligned with pages that
-    * page allocator holds, ie. they can be part of higher order
-    * pages.  Because of this, we reserve the bigger range and
-    * once this is done free the pages we are not interested in.
-    *
-    * We don't have to hold zone->lock here because the pages are
-    * isolated thus they won't get removed from buddy.
-    */
+   /* align start to page order size
+    * by looking for a buddy that straddles start_pfn */
     outer_start = find_large_buddy(start);
 
     /* Make sure the range is really isolated. */
-    if (test_pages_isolated(outer_start, end, mode)) {
+    ret = test_pages_isolated(outer_start, end, mode) {
+        unsigned long pfn, flags;
+        struct page *page;
+        struct zone *zone;
+        int ret;
+
+        /* wait for deferred freeing of hugetlb folios to be freed to buddy */
+        wait_for_freed_hugetlb_folios();
+
+       /* Note: pageblock_nr_pages != MAX_PAGE_ORDER. Then, chunks of free
+        * pages are not aligned to pageblock_nr_pages.
+        * Then we just check migratetype first. */
+        for (pfn = start_pfn; pfn < end_pfn; pfn += pageblock_nr_pages) {
+            page = __first_valid_page(pfn, pageblock_nr_pages);
+            if (page && !is_migrate_isolate_page(page))
+                break;
+        }
+        page = __first_valid_page(start_pfn, end_pfn - start_pfn);
+        if ((pfn < end_pfn) || !page) {
+            ret = -EBUSY;
+            goto out;
+        }
+
+        /* Check all pages are free or marked as ISOLATED */
+        zone = page_zone(page);
+        spin_lock_irqsave(&zone->lock, flags);
+        pfn = __test_page_isolated_in_pageblock(start_pfn, end_pfn, mode) {
+            struct page *page;
+
+            while (pfn < end_pfn) {
+                page = pfn_to_page(pfn);
+                if (PageBuddy(page))
+                    pfn += 1 << buddy_order(page);
+                else if ((mode == PB_ISOLATE_MODE_MEM_OFFLINE) && PageHWPoison(page))
+                    pfn++;
+                else if ((mode == PB_ISOLATE_MODE_MEM_OFFLINE) && PageOffline(page) && !page_count(page))
+                    pfn++;
+                else
+                    break;
+            }
+
+            return pfn;
+        }
+        spin_unlock_irqrestore(&zone->lock, flags);
+
+        ret = pfn < end_pfn ? -EBUSY : 0;
+
+    out:
+        trace_test_pages_isolated(start_pfn, end_pfn, pfn);
+
+        return ret;
+    }
+    if (ret) {
         ret = -EBUSY;
         goto done;
     }
@@ -22634,38 +22621,32 @@ done:
 }
 ```
 
-#### alloc_and_dissolve_hugetlb_folio
+##### alloc_and_dissolve_hugetlb_folio
 
 ```c
 int alloc_and_dissolve_hugetlb_folio(struct folio *old_folio,
-			struct list_head *list)
+            struct list_head *list)
 {
-	gfp_t gfp_mask;
-	struct hstate *h;
-	int nid = folio_nid(old_folio);
-	struct folio *new_folio = NULL;
-	int ret = 0;
+    gfp_t gfp_mask;
+    struct hstate *h;
+    int nid = folio_nid(old_folio);
+    struct folio *new_folio = NULL;
+    int ret = 0;
 
 retry:
-	/*
-	 * The old_folio might have been dissolved from under our feet, so make sure
-	 * to carefully check the state under the lock.
-	 */
-	spin_lock_irq(&hugetlb_lock);
-	if (!folio_test_hugetlb(old_folio)) {
-		/*
-		 * Freed from under us. Drop new_folio too.
-		 */
-		goto free_new;
-	} else if (folio_ref_count(old_folio)) { /* in-use hugetlb */
-		bool isolated;
+    /* The old_folio might have been dissolved from under our feet, so make sure
+     * to carefully check the state under the lock. */
+    spin_lock_irq(&hugetlb_lock);
+    if (!folio_test_hugetlb(old_folio)) {
+        /* Freed from under us. Drop new_folio too. */
+        goto free_new;
+    } else if (folio_ref_count(old_folio)) { /* in-use hugetlb */
+        bool isolated;
 
-		/*
-		 * Someone has grabbed the folio, try to isolate it here.
-		 * Fail with -EBUSY if not possible.
-		 */
-		spin_unlock_irq(&hugetlb_lock);
-		isolated = folio_isolate_hugetlb(old_folio, list) {
+        /* Someone has grabbed the folio, try to isolate it here.
+         * Fail with -EBUSY if not possible. */
+        spin_unlock_irq(&hugetlb_lock);
+        isolated = folio_isolate_hugetlb(old_folio, list) {
             bool ret = true;
 
             spin_lock_irq(&hugetlb_lock);
@@ -22681,100 +22662,85 @@ retry:
             spin_unlock_irq(&hugetlb_lock);
             return ret;
         }
-		ret = isolated ? 0 : -EBUSY;
-		spin_lock_irq(&hugetlb_lock);
-		goto free_new;
+        ret = isolated ? 0 : -EBUSY;
+        spin_lock_irq(&hugetlb_lock);
+        goto free_new;
 
-	} else if (!folio_test_hugetlb_freed(old_folio)) {
-		/*
-		 * Folio's refcount is 0 but it has not been enqueued in the
-		 * freelist yet. Race window is small, so we can succeed here if
-		 * we retry.
-		 */
-		spin_unlock_irq(&hugetlb_lock);
-		cond_resched();
-		goto retry;
-	} else {
-		h = folio_hstate(old_folio);
-		if (!new_folio) {
-			spin_unlock_irq(&hugetlb_lock);
-			gfp_mask = htlb_alloc_mask(h) | __GFP_THISNODE;
-			new_folio = alloc_buddy_hugetlb_folio(h, gfp_mask, nid, NULL, NULL);
+    } else if (!folio_test_hugetlb_freed(old_folio)) {
+        /* Folio's refcount is 0 but it has not been enqueued in the
+         * freelist yet. Race window is small, so we can succeed here if
+         * we retry. */
+        spin_unlock_irq(&hugetlb_lock);
+        cond_resched();
+        goto retry;
+    } else {
+        h = folio_hstate(old_folio);
+        if (!new_folio) {
+            spin_unlock_irq(&hugetlb_lock);
+            gfp_mask = htlb_alloc_mask(h) | __GFP_THISNODE;
+            new_folio = alloc_buddy_hugetlb_folio(h, gfp_mask, nid, NULL, NULL);
                 --->
-			if (!new_folio)
-				return -ENOMEM;
-			__prep_new_hugetlb_folio(h, new_folio);
-			goto retry;
-		}
+            if (!new_folio)
+                return -ENOMEM;
+            __prep_new_hugetlb_folio(h, new_folio);
+            goto retry;
+        }
 
-		/*
-		 * Ok, old_folio is still a genuine free hugepage. Remove it from
-		 * the freelist and decrease the counters. These will be
-		 * incremented again when calling __prep_account_new_huge_page()
-		 * and enqueue_hugetlb_folio() for new_folio. The counters will
-		 * remain stable since this happens under the lock.
-		 */
-		remove_hugetlb_folio(h, old_folio, false);
-            --->
+        /* Ok, old_folio is still a genuine free hugepage. Remove it from
+         * the freelist and decrease the counters. These will be
+         * incremented again when calling __prep_account_new_huge_page()
+         * and enqueue_hugetlb_folio() for new_folio. The counters will
+         * remain stable since this happens under the lock. */
+        remove_hugetlb_folio(h, old_folio, false) {
+            int nid = folio_nid(folio);
 
-		/*
-		 * Ref count on new_folio is already zero as it was dropped
-		 * earlier.  It can be directly added to the pool free list.
-		 */
-		__prep_account_new_huge_page(h, nid);
-		enqueue_hugetlb_folio(h, new_folio);
+            VM_BUG_ON_FOLIO(hugetlb_cgroup_from_folio(folio), folio);
+            VM_BUG_ON_FOLIO(hugetlb_cgroup_from_folio_rsvd(folio), folio);
 
-		/*
-		 * Folio has been replaced, we can safely free the old one.
-		 */
-		spin_unlock_irq(&hugetlb_lock);
-		update_and_free_hugetlb_folio(h, old_folio, false);
-	}
+            lockdep_assert_held(&hugetlb_lock);
+            if (hstate_is_gigantic(h) && !gigantic_page_runtime_supported())
+                return;
 
-	return ret;
+            list_del(&folio->lru);
+
+            if (folio_test_hugetlb_freed(folio)) {
+                folio_clear_hugetlb_freed(folio);
+                h->free_huge_pages--;
+                h->free_huge_pages_node[nid]--;
+            }
+            if (adjust_surplus) {
+                h->surplus_huge_pages--;
+                h->surplus_huge_pages_node[nid]--;
+            }
+
+            /* We can only clear the hugetlb flag after allocating vmemmap
+            * pages.  Otherwise, someone (memory error handling) may try to write
+            * to tail struct pages. */
+            if (!folio_test_hugetlb_vmemmap_optimized(folio))
+                __folio_clear_hugetlb(folio);
+
+            h->nr_huge_pages--;
+            h->nr_huge_pages_node[nid]--;
+        }
+
+        /* Ref count on new_folio is already zero as it was dropped
+         * earlier.  It can be directly added to the pool free list. */
+        __prep_account_new_huge_page(h, nid);
+        enqueue_hugetlb_folio(h, new_folio);
+
+        /* Folio has been replaced, we can safely free the old one. */
+        spin_unlock_irq(&hugetlb_lock);
+        update_and_free_hugetlb_folio(h, old_folio, false);
+    }
+
+    return ret;
 
 free_new:
-	spin_unlock_irq(&hugetlb_lock);
-	if (new_folio)
-		update_and_free_hugetlb_folio(h, new_folio, false);
+    spin_unlock_irq(&hugetlb_lock);
+    if (new_folio)
+        update_and_free_hugetlb_folio(h, new_folio, false);
 
-	return ret;
-}
-
-void remove_hugetlb_folio(struct hstate *h, struct folio *folio,
-                            bool adjust_surplus)
-{
-    int nid = folio_nid(folio);
-
-    VM_BUG_ON_FOLIO(hugetlb_cgroup_from_folio(folio), folio);
-    VM_BUG_ON_FOLIO(hugetlb_cgroup_from_folio_rsvd(folio), folio);
-
-    lockdep_assert_held(&hugetlb_lock);
-    if (hstate_is_gigantic(h) && !gigantic_page_runtime_supported())
-        return;
-
-    list_del(&folio->lru);
-
-    if (folio_test_hugetlb_freed(folio)) {
-        folio_clear_hugetlb_freed(folio);
-        h->free_huge_pages--;
-        h->free_huge_pages_node[nid]--;
-    }
-    if (adjust_surplus) {
-        h->surplus_huge_pages--;
-        h->surplus_huge_pages_node[nid]--;
-    }
-
-    /*
-    * We can only clear the hugetlb flag after allocating vmemmap
-    * pages.  Otherwise, someone (memory error handling) may try to write
-    * to tail struct pages.
-    */
-    if (!folio_test_hugetlb_vmemmap_optimized(folio))
-        __folio_clear_hugetlb(folio);
-
-    h->nr_huge_pages--;
-    h->nr_huge_pages_node[nid]--;
+    return ret;
 }
 ```
 
@@ -22789,13 +22755,11 @@ static struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
     struct folio *folio;
     bool alloc_try_hard = true;
 
-    /*
-    * By default we always try hard to allocate the folio with
+    /* By default we always try hard to allocate the folio with
     * __GFP_RETRY_MAYFAIL flag.  However, if we are allocating folios in
     * a loop (to adjust global huge page counts) and previous allocation
     * failed, do not continue to try hard on the same node.  Use the
-    * node_alloc_noretry bitmap to manage this state information.
-    */
+    * node_alloc_noretry bitmap to manage this state information. */
     if (node_alloc_noretry && node_isset(nid, *node_alloc_noretry))
         alloc_try_hard = false;
     if (alloc_try_hard)
@@ -22805,19 +22769,15 @@ static struct folio *alloc_buddy_hugetlb_folio(struct hstate *h,
 
     folio = (struct folio *)__alloc_frozen_pages(gfp_mask, order, nid, nmask);
 
-    /*
-    * If we did not specify __GFP_RETRY_MAYFAIL, but still got a
+    /* If we did not specify __GFP_RETRY_MAYFAIL, but still got a
     * folio this indicates an overall state change.  Clear bit so
-    * that we resume normal 'try hard' allocations.
-    */
+    * that we resume normal 'try hard' allocations. */
     if (node_alloc_noretry && folio && !alloc_try_hard)
         node_clear(nid, *node_alloc_noretry);
 
-    /*
-    * If we tried hard to get a folio but failed, set bit so that
+    /* If we tried hard to get a folio but failed, set bit so that
     * subsequent attempts will not try as hard until there is an
-    * overall state change.
-    */
+    * overall state change. */
     if (node_alloc_noretry && !folio && alloc_try_hard)
         node_set(nid, *node_alloc_noretry);
 
@@ -22850,48 +22810,38 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
 
     /* Whether we need a separate per-vma reservation? */
     if (cow_from_owner) {
-        /*
-        * Special case!  Since it's a CoW on top of a reserved
+        /* Special case!  Since it's a CoW on top of a reserved
         * page, the private resv map doesn't count.  So it cannot
-        * consume the per-vma resv map even if it's reserved.
-        */
+        * consume the per-vma resv map even if it's reserved. */
         map_chg = MAP_CHG_ENFORCED;
     } else {
-        /*
-        * Examine the region/reserve map to determine if the process
+        /* Examine the region/reserve map to determine if the process
         * has a reservation for the page to be allocated.  A return
-        * code of zero indicates a reservation exists (no change).
-        */
+        * code of zero indicates a reservation exists (no change). */
         retval = vma_needs_reservation(h, vma, addr);
         if (retval < 0)
             return ERR_PTR(-ENOMEM);
         map_chg = retval ? MAP_CHG_NEEDED : MAP_CHG_REUSE;
     }
 
-    /*
-    * Whether we need a separate global reservation?
+    /* Whether we need a separate global reservation?
     *
     * Processes that did not create the mapping will have no
     * reserves as indicated by the region/reserve map. Check
     * that the allocation will not exceed the subpool limit.
-    * Or if it can get one from the pool reservation directly.
-    */
+    * Or if it can get one from the pool reservation directly. */
     if (map_chg) {
         gbl_chg = hugepage_subpool_get_pages(spool, 1);
         if (gbl_chg < 0)
             goto out_end_reservation;
     } else {
-        /*
-        * If we have the vma reservation ready, no need for extra
-        * global reservation.
-        */
+        /* If we have the vma reservation ready, no need for extra
+        * global reservation. */
         gbl_chg = 0;
     }
 
-    /*
-    * If this allocation is not consuming a per-vma reservation,
-    * charge the hugetlb cgroup now.
-    */
+    /* If this allocation is not consuming a per-vma reservation,
+    * charge the hugetlb cgroup now. */
     if (map_chg) {
         ret = hugetlb_cgroup_charge_cgroup_rsvd(
             idx, pages_per_huge_page(h), &h_cg);
@@ -22904,11 +22854,9 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
         goto out_uncharge_cgroup_reservation;
 
     spin_lock_irq(&hugetlb_lock);
-    /*
-    * glb_chg is passed to indicate whether or not a page must be taken
+    /* glb_chg is passed to indicate whether or not a page must be taken
     * from the global free pool (global change).  gbl_chg == 0 indicates
-    * a reservation exists for the allocation.
-    */
+    * a reservation exists for the allocation. */
     folio = dequeue_hugetlb_folio_vma(h, vma, addr, gbl_chg);
     if (!folio) {
         spin_unlock_irq(&hugetlb_lock);
@@ -22921,10 +22869,8 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
         /* Fall through */
     }
 
-    /*
-    * Either dequeued or buddy-allocated folio needs to add special
-    * mark to the folio when it consumes a global reservation.
-    */
+    /* Either dequeued or buddy-allocated folio needs to add special
+    * mark to the folio when it consumes a global reservation. */
     if (!gbl_chg) {
         folio_set_hugetlb_restore_reserve(folio);
         h->resv_huge_pages--;
@@ -22932,8 +22878,7 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
 
     hugetlb_cgroup_commit_charge(idx, pages_per_huge_page(h), h_cg, folio);
     /* If allocation is not consuming a reservation, also store the
-    * hugetlb_cgroup pointer on the page.
-    */
+    * hugetlb_cgroup pointer on the page. */
     if (map_chg) {
         hugetlb_cgroup_commit_charge_rsvd(idx, pages_per_huge_page(h), h_cg, folio);
     }
@@ -22947,16 +22892,14 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
     if (map_chg != MAP_CHG_ENFORCED) {
         /* commit() is only needed if the map_chg is not enforced */
         retval = vma_commit_reservation(h, vma, addr);
-        /*
-        * Check for possible race conditions. When it happens..
+        /* Check for possible race conditions. When it happens..
         * The page was added to the reservation map between
         * vma_needs_reservation and vma_commit_reservation.
         * This indicates a race with hugetlb_reserve_pages.
         * Adjust for the subpool count incremented above AND
         * in hugetlb_reserve_pages for the same page. Also,
         * the reservation count added in hugetlb_reserve_pages
-        * no longer applies.
-        */
+        * no longer applies. */
         if (unlikely(map_chg == MAP_CHG_NEEDED && retval == 0)) {
             long rsv_adjust;
 
@@ -22973,11 +22916,9 @@ struct folio *alloc_hugetlb_folio(struct vm_area_struct *vma,
     }
 
     ret = mem_cgroup_charge_hugetlb(folio, gfp);
-    /*
-    * Unconditionally increment NR_HUGETLB here. If it turns out that
+    /* Unconditionally increment NR_HUGETLB here. If it turns out that
     * mem_cgroup_charge_hugetlb failed, then immediately free the page and
-    * decrement NR_HUGETLB.
-    */
+    * decrement NR_HUGETLB. */
     lruvec_stat_mod_folio(folio, NR_HUGETLB, pages_per_huge_page(h));
 
     if (ret == -ENOMEM) {
@@ -22994,10 +22935,8 @@ out_uncharge_cgroup_reservation:
         hugetlb_cgroup_uncharge_cgroup_rsvd(idx, pages_per_huge_page(h),
                             h_cg);
 out_subpool_put:
-    /*
-    * put page to subpool iff the quota of subpool's rsv_hpages is used
-    * during hugepage_subpool_get_pages.
-    */
+    /* put page to subpool iff the quota of subpool's rsv_hpages is used
+    * during hugepage_subpool_get_pages. */
     if (map_chg && !gbl_chg) {
         gbl_reserve = hugepage_subpool_put_pages(spool, 1);
         hugetlb_acct_memory(h, -gbl_reserve);
@@ -23024,10 +22963,8 @@ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
     nodemask_t *nodemask;
     int nid;
 
-    /*
-    * gbl_chg==1 means the allocation requires a new page that was not
-    * reserved before.  Making sure there's at least one free page.
-    */
+    /* gbl_chg==1 means the allocation requires a new page that was not
+    * reserved before.  Making sure there's at least one free page. */
     if (gbl_chg && !available_huge_pages(h))
         goto err;
 
@@ -23062,10 +22999,8 @@ static struct folio *dequeue_hugetlb_folio_vma(struct hstate *h,
 
                 if (!cpuset_zone_allowed(zone, gfp_mask))
                     continue;
-                /*
-                * no need to ask again on the same node. Pool is node rather than
-                * zone aware
-                */
+                /* no need to ask again on the same node. Pool is node rather than
+                * zone aware */
                 if (zone_to_nid(zone) == node)
                     continue;
                 node = zone_to_nid(zone);
@@ -23160,20 +23095,16 @@ struct folio *alloc_buddy_hugetlb_folio_with_mpol(struct hstate *h,
             hugetlb_vmemmap_optimize_folio(h, folio);
 
             spin_lock_irq(&hugetlb_lock);
-            /*
-            * nr_huge_pages needs to be adjusted within the same lock cycle
+            /* nr_huge_pages needs to be adjusted within the same lock cycle
             * as surplus_pages, otherwise it might confuse
-            * persistent_huge_pages() momentarily.
-            */
+            * persistent_huge_pages() momentarily. */
             __prep_account_new_huge_page(h, folio_nid(folio));
 
-            /*
-            * We could have raced with the pool size change.
+            /* We could have raced with the pool size change.
             * Double check that and simply deallocate the new page
             * if we would end up overcommiting the surpluses. Abuse
             * temporary page to workaround the nasty free_huge_folio
-            * codeflow
-            */
+            * codeflow */
             if (h->surplus_huge_pages >= h->nr_overcommit_huge_pages) {
                 folio_set_hugetlb_temporary(folio);
                 spin_unlock_irq(&hugetlb_lock);
@@ -23215,14 +23146,12 @@ int walk_kernel_page_table_range(unsigned long start, unsigned long end,
     if (!check_ops_valid(ops))
         return -EINVAL;
 
-    /*
-    * Kernel intermediate page tables are usually not freed, so the mmap
+    /* Kernel intermediate page tables are usually not freed, so the mmap
     * read lock is sufficient. But there are some exceptions.
     * E.g. memory hot-remove. In which case, the mmap lock is insufficient
     * to prevent the intermediate kernel pages tables belonging to the
     * specified address range from being freed. The caller should take
-    * other actions to prevent this race.
-    */
+    * other actions to prevent this race. */
     mmap_assert_locked(mm);
 
     return walk_pgd_range(start, end, &walk) {
@@ -23289,8 +23218,7 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
 
         if (flags & VMEMMAP_SYNCHRONIZE_RCU)
             synchronize_rcu();
-        /*
-        * Very Subtle
+        /* Very Subtle
         * If VMEMMAP_REMAP_NO_TLB_FLUSH is set, TLB flushing is not performed
         * immediately after remapping.  As a result, subsequent accesses
         * and modifications to struct pages associated with the hugetlb
@@ -23298,28 +23226,23 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
         * flag here so that it is copied to the new head page.  This keeps
         * the old and new struct pages in sync.
         * If there is an error during optimization, we will immediately FLUSH
-        * the TLB and clear the flag below.
-        */
+        * the TLB and clear the flag below. */
         folio_set_hugetlb_vmemmap_optimized(folio);
 
         vmemmap_end     = vmemmap_start + hugetlb_vmemmap_size(h);
         vmemmap_reuse   = vmemmap_start;
         vmemmap_start   += HUGETLB_VMEMMAP_RESERVE_SIZE;
 
-        /*
-        * Remap the vmemmap virtual address range [@vmemmap_start, @vmemmap_end)
+        /* Remap the vmemmap virtual address range [@vmemmap_start, @vmemmap_end)
         * to the page which @vmemmap_reuse is mapped to.  Add pages previously
         * mapping the range to vmemmap_pages list so that they can be freed by
-        * the caller.
-        */
+        * the caller. */
         ret = vmemmap_remap_free(vmemmap_start, vmemmap_end, vmemmap_reuse, vmemmap_pages, flags) {
             int ret;
             struct vmemmap_remap_walk walk = {
                 .remap_pte      = vmemmap_remap_pte = {
-                    /*
-                    * Remap the tail pages as read-only to catch illegal write operation
-                    * to the tail pages.
-                    */
+                    /* Remap the tail pages as read-only to catch illegal write operation
+                    * to the tail pages. */
                     pgprot_t pgprot = PAGE_KERNEL_RO;
                     struct page *page = pte_page(ptep_get(pte));
                     pte_t entry;
@@ -23329,11 +23252,9 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
                         pgprot = PAGE_KERNEL;
                         list_del(&walk->reuse_page->lru);
 
-                        /*
-                        * Makes sure that preceding stores to the page contents from
+                        /* Makes sure that preceding stores to the page contents from
                         * vmemmap_remap_free() become visible before the set_pte_at()
-                        * write.
-                        */
+                        * write. */
                         smp_wmb();
                     }
 
@@ -23348,14 +23269,12 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
             int nid = page_to_nid((struct page *)reuse);
             gfp_t gfp_mask = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
 
-            /*
-            * Allocate a new head vmemmap page to avoid breaking a contiguous
+            /* Allocate a new head vmemmap page to avoid breaking a contiguous
             * block of struct page memory when freeing it back to page allocator
             * in free_vmemmap_page_list(). This will allow the likely contiguous
             * struct page backing memory to be kept contiguous and allowing for
             * more allocations of hugepages. Fallback to the currently
-            * mapped head page in case should it fail to allocate.
-            */
+            * mapped head page in case should it fail to allocate. */
             walk.reuse_page = alloc_pages_node(nid, gfp_mask, 0);
             if (walk.reuse_page) {
                 copy_page(page_to_virt(walk.reuse_page), (void *)walk.reuse_addr);
@@ -23363,8 +23282,7 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
                 memmap_pages_add(1);
             }
 
-            /*
-            * In order to make remapping routine most efficient for the huge pages,
+            /* In order to make remapping routine most efficient for the huge pages,
             * the routine of vmemmap page table walking has the following rules
             * (see more details from the vmemmap_pte_range()):
             *
@@ -23374,19 +23292,16 @@ void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio)
             *   walking which is passed to vmemmap_remap_range().
             * - The @reuse address is the first in the complete range.
             *
-            * So we need to make sure that @start and @reuse meet the above rules.
-            */
+            * So we need to make sure that @start and @reuse meet the above rules. */
             BUG_ON(start - reuse != PAGE_SIZE);
 
             ret = vmemmap_remap_range(reuse, end, &walk);
             if (ret && walk.nr_walked) {
                 end = reuse + walk.nr_walked * PAGE_SIZE;
-                /*
-                * vmemmap_pages contains pages from the previous
+                /* vmemmap_pages contains pages from the previous
                 * vmemmap_remap_range call which failed.  These
                 * are pages which were removed from the vmemmap.
-                * They will be restored in the following call.
-                */
+                * They will be restored in the following call. */
                 walk = (struct vmemmap_remap_walk) {
                     .remap_pte      = vmemmap_restore_pte,
                     .reuse_addr     = reuse,
@@ -23634,10 +23549,8 @@ static void khugepaged_do_scan(struct collapse_control *cc)
             break;
 
         if (result == SCAN_ALLOC_HUGE_PAGE_FAIL) {
-            /*
-            * If fail to allocate the first time, try to sleep for
-            * a while.  When hit again, cancel the scan.
-            */
+            /* If fail to allocate the first time, try to sleep for
+            * a while.  When hit again, cancel the scan. */
             if (!wait)
                 break;
             wait = false;
@@ -23674,10 +23587,8 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages, int *result,
     spin_unlock(&khugepaged_mm_lock);
 
     mm = slot->mm;
-    /*
-    * Don't wait for semaphore (to avoid long wait times).  Just move to
-    * the next mm on the list.
-    */
+    /* Don't wait for semaphore (to avoid long wait times).  Just move to
+    * the next mm on the list. */
     vma = NULL;
     if (unlikely(!mmap_read_trylock(mm)))
         goto breakouterloop_mmap_lock;
@@ -23755,13 +23666,11 @@ skip:
             khugepaged_scan.address += HPAGE_PMD_SIZE;
             progress += HPAGE_PMD_NR;
             if (!mmap_locked)
-                /*
-                * We released mmap_lock so break loop.  Note
+                /* We released mmap_lock so break loop.  Note
                 * that we drop mmap_lock before all hugepage
                 * allocations, so if allocation fails, we are
                 * guaranteed to break here and report the
-                * correct result back to caller.
-                */
+                * correct result back to caller. */
                 goto breakouterloop_mmap_lock;
             if (progress >= pages)
                 goto breakouterloop;
@@ -23774,16 +23683,12 @@ breakouterloop_mmap_lock:
 
     spin_lock(&khugepaged_mm_lock);
     VM_BUG_ON(khugepaged_scan.mm_slot != mm_slot);
-    /*
-    * Release the current mm_slot if this mm is about to die, or
-    * if we scanned all vmas of this mm.
-    */
+    /* Release the current mm_slot if this mm is about to die, or
+    * if we scanned all vmas of this mm. */
     if (hpage_collapse_test_exit(mm) || !vma) {
-        /*
-        * Make sure that if mm_users is reaching zero while
+        /* Make sure that if mm_users is reaching zero while
         * khugepaged runs here, khugepaged_exit will find
-        * mm_slot not pointing to the exiting mm.
-        */
+        * mm_slot not pointing to the exiting mm. */
         if (slot->mm_node.next != &khugepaged_scan.mm_head) {
             slot = list_entry(slot->mm_node.next, struct mm_slot, mm_node);
             khugepaged_scan.mm_slot =
@@ -23848,12 +23753,10 @@ int hpage_collapse_scan_file(struct mm_struct *mm, unsigned long addr,
         if (folio_order(folio) == HPAGE_PMD_ORDER && folio->index == start) {
             /* Maybe PMD-mapped */
             result = SCAN_PTE_MAPPED_HUGEPAGE;
-            /*
-             * For SCAN_PTE_MAPPED_HUGEPAGE, further processing
+            /* For SCAN_PTE_MAPPED_HUGEPAGE, further processing
              * by the caller won't touch the page cache, and so
              * it's safe to skip LRU and refcount checks before
-             * returning.
-             */
+             * returning. */
             folio_put(folio);
             break;
         }
@@ -23878,12 +23781,10 @@ int hpage_collapse_scan_file(struct mm_struct *mm, unsigned long addr,
             break;
         }
 
-        /*
-         * We probably should check if the folio is referenced
+        /* We probably should check if the folio is referenced
          * here, but nobody would transfer pte_young() to
          * folio_test_referenced() for us.  And rmap walk here
-         * is just too costly...
-         */
+         * is just too costly... */
 
         present += folio_nr_pages(folio);
         folio_put(folio);
@@ -23942,10 +23843,8 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
     new_folio->index = start;
     new_folio->mapping = mapping;
 
-    /*
-     * Ensure we have slots for all the pages in the range.  This is
-     * almost certainly a no-op because most of the pages must be present
-     */
+    /* Ensure we have slots for all the pages in the range.  This is
+     * almost certainly a no-op because most of the pages must be present */
     do {
         xas_lock_irq(&xas);
         xas_create_range(&xas);
@@ -23965,11 +23864,9 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
         VM_BUG_ON(index != xas.xa_index);
         if (is_shmem) {
             if (!folio) {
-                /*
-                 * Stop if extent has been truncated or
+                /* Stop if extent has been truncated or
                  * hole-punched, and is now completely
-                 * empty.
-                 */
+                 * empty. */
                 if (index == start) {
                     if (!xas_next_entry(&xas, end - 1)) {
                         result = SCAN_TRUNCATED;
@@ -24011,8 +23908,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
                     goto xa_unlocked;
                 }
             } else if (folio_test_dirty(folio)) {
-                /*
-                 * khugepaged only works on read-only fd,
+                /* khugepaged only works on read-only fd,
                  * so this page is dirty because it hasn't
                  * been flushed since first write. There
                  * won't be new dirty pages.
@@ -24022,8 +23918,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
                  * revisits this page.
                  *
                  * This is a one-off situation. We are not
-                 * forcing writeback in loop.
-                 */
+                 * forcing writeback in loop. */
                 xas_unlock_irq(&xas);
                 filemap_flush(mapping);
                 result = SCAN_FAIL;
@@ -24041,10 +23936,8 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
             }
         }
 
-        /*
-         * The folio must be locked, so we can drop the i_pages lock
-         * without racing with truncate.
-         */
+        /* The folio must be locked, so we can drop the i_pages lock
+         * without racing with truncate. */
         VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
 
         /* make sure the folio is up to date */
@@ -24053,11 +23946,9 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
             goto out_unlock;
         }
 
-        /*
-         * If file was truncated then extended, or hole-punched, before
+        /* If file was truncated then extended, or hole-punched, before
          * we locked the first folio, then a THP might be there already.
-         * This will be discovered on the first iteration.
-         */
+         * This will be discovered on the first iteration. */
         if (folio_order(folio) == HPAGE_PMD_ORDER &&
             folio->index == start) {
             /* Maybe PMD-mapped */
@@ -24071,11 +23962,9 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
         }
 
         if (!is_shmem && (folio_test_dirty(folio) || folio_test_writeback(folio))) {
-            /*
-             * khugepaged only works on read-only fd, so this
+            /* khugepaged only works on read-only fd, so this
              * folio is dirty because it hasn't been flushed
-             * since first write.
-             */
+             * since first write. */
             result = SCAN_FAIL;
             goto out_unlock;
         }
@@ -24099,8 +23988,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
 
         VM_BUG_ON_FOLIO(folio != xa_load(xas.xa, index), folio);
 
-        /*
-         * We control 2 + nr_pages references to the folio:
+        /* We control 2 + nr_pages references to the folio:
          *  - we hold a pin on it;
          *  - nr_pages reference from page cache;
          *  - one from lru_isolate_folio;
@@ -24108,8 +23996,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
          * of the folio will have to fetch it from the page
          * cache. That requires locking the folio to handle
          * truncate, so any new usage will be blocked until we
-         * unlock folio after collapse/during rollback.
-         */
+         * unlock folio after collapse/during rollback. */
         if (folio_ref_count(folio) != 2 + folio_nr_pages(folio)) {
             result = SCAN_PAGE_COUNT;
             xas_unlock_irq(&xas);
@@ -24117,9 +24004,7 @@ static int collapse_file(struct mm_struct *mm, unsigned long addr,
             goto out_unlock;
         }
 
-        /*
-         * Accumulate the folios that are being collapsed.
-         */
+        /* Accumulate the folios that are being collapsed. */
         list_add_tail(&folio->lru, &pagelist);
         index += folio_nr_pages(folio);
         continue;
@@ -24131,12 +24016,10 @@ out_unlock:
 
     if (!is_shmem) {
         filemap_nr_thps_inc(mapping);
-        /*
-         * Paired with the fence in do_dentry_open() -> get_write_access()
+        /* Paired with the fence in do_dentry_open() -> get_write_access()
          * to ensure i_writecount is up to date and the update to nr_thps
          * is visible. Ensures the page cache will be truncated if the
-         * file is opened writable.
-         */
+         * file is opened writable. */
         smp_mb();
         if (inode_is_open_for_write(mapping->host)) {
             result = SCAN_FAIL;
@@ -24148,11 +24031,9 @@ xa_locked:
     xas_unlock_irq(&xas);
 xa_unlocked:
 
-    /*
-     * If collapse is successful, flush must be done now before copying.
+    /* If collapse is successful, flush must be done now before copying.
      * If collapse is unsuccessful, does flush actually need to be done?
-     * Do it anyway, to clear the state.
-     */
+     * Do it anyway, to clear the state. */
     try_to_unmap_flush();
 
     if (result == SCAN_SUCCEED && nr_none &&
@@ -24163,9 +24044,7 @@ xa_unlocked:
         goto rollback;
     }
 
-    /*
-     * The old folios are locked, so they won't change anymore.
-     */
+    /* The old folios are locked, so they won't change anymore. */
     index = start;
     dst = folio_page(new_folio, 0);
     list_for_each_entry(folio, &pagelist, lru) {
@@ -24216,8 +24095,7 @@ xa_unlocked:
             goto immap_locked;
         }
 
-        /*
-         * If userspace observed a missing page in a VMA with
+        /* If userspace observed a missing page in a VMA with
          * a MODE_MISSING userfaultfd, then it might expect a
          * UFFD_EVENT_PAGEFAULT for that page. If so, we need to
          * roll back to avoid suppressing such an event. Since
@@ -24227,8 +24105,7 @@ xa_unlocked:
          *
          * Any userfaultfds registered after this point will
          * not be able to observe any missing pages due to the
-         * previously inserted retry entries.
-         */
+         * previously inserted retry entries. */
         vma_interval_tree_foreach(vma, &mapping->i_mmap, start, end) {
             if (userfaultfd_missing(vma)) {
                 result = SCAN_EXCEED_NONE_PTE;
@@ -24263,11 +24140,9 @@ immap_locked:
         __lruvec_stat_mod_folio(new_folio, NR_SHMEM, nr_none);
     }
 
-    /*
-     * Mark new_folio as uptodate before inserting it into the
+    /* Mark new_folio as uptodate before inserting it into the
      * page cache so that it isn't mistaken for an fallocated but
-     * unwritten page.
-     */
+     * unwritten page. */
     folio_mark_uptodate(new_folio);
     folio_ref_add(new_folio, HPAGE_PMD_NR - 1);
 
@@ -24281,18 +24156,14 @@ immap_locked:
     WARN_ON_ONCE(xas_error(&xas));
     xas_unlock_irq(&xas);
 
-    /*
-     * Remove pte page tables, so we can re-fault the page as huge.
-     * If MADV_COLLAPSE, adjust result to call collapse_pte_mapped_thp().
-     */
+    /* Remove pte page tables, so we can re-fault the page as huge.
+     * If MADV_COLLAPSE, adjust result to call collapse_pte_mapped_thp(). */
     retract_page_tables(mapping, start);
     if (cc && !cc->is_khugepaged)
         result = SCAN_PTE_MAPPED_HUGEPAGE;
     folio_unlock(new_folio);
 
-    /*
-     * The collapse has succeeded, so free the old folios.
-     */
+    /* The collapse has succeeded, so free the old folios. */
     list_for_each_entry_safe(folio, tmp, &pagelist, lru) {
         list_del(&folio->lru);
         folio->mapping = NULL;
@@ -24319,17 +24190,13 @@ rollback:
         folio_putback_lru(folio);
         folio_put(folio);
     }
-    /*
-     * Undo the updates of filemap_nr_thps_inc for non-SHMEM
+    /* Undo the updates of filemap_nr_thps_inc for non-SHMEM
      * file only. This undo is not needed unless failure is
-     * due to SCAN_COPY_MC.
-     */
+     * due to SCAN_COPY_MC. */
     if (!is_shmem && result == SCAN_COPY_MC) {
         filemap_nr_thps_dec(mapping);
-        /*
-         * Paired with the fence in do_dentry_open() -> get_write_access()
-         * to ensure the update to nr_thps is visible.
-         */
+        /* Paired with the fence in do_dentry_open() -> get_write_access()
+         * to ensure the update to nr_thps is visible. */
         smp_mb();
     }
 
@@ -24375,13 +24242,11 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
     if (result == SCAN_PMD_MAPPED)
         return result;
 
-    /*
-    * If we are here, we've succeeded in replacing all the native pages
+    /* If we are here, we've succeeded in replacing all the native pages
     * in the page cache with a single hugepage. If a mm were to fault-in
     * this memory (mapped by a suitably aligned VMA), we'd get the hugepage
     * and map it by a PMD, regardless of sysfs THP settings. As such, let's
-    * analogously elide sysfs THP settings here.
-    */
+    * analogously elide sysfs THP settings here. */
     if (!thp_vma_allowable_order(vma, vma->vm_flags, 0, PMD_ORDER))
         return SCAN_VMA_CHECK;
 
@@ -24403,10 +24268,8 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
     case SCAN_SUCCEED:
         break;
     case SCAN_PMD_NONE:
-        /*
-        * All pte entries have been removed and pmd cleared.
-        * Skip all the pte checks and just update the pmd mapping.
-        */
+        /* All pte entries have been removed and pmd cleared.
+        * Skip all the pte checks and just update the pmd mapping. */
         goto maybe_install_pmd;
     default:
         goto drop_folio;
@@ -24436,10 +24299,8 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
         page = vm_normal_page(vma, addr, ptent);
         if (WARN_ON_ONCE(page && is_zone_device_page(page)))
             page = NULL;
-        /*
-        * Note that uprobe, debugger, or MAP_PRIVATE may change the
-        * page table, but the new page will not be a subpage of hpage.
-        */
+        /* Note that uprobe, debugger, or MAP_PRIVATE may change the
+        * page table, but the new page will not be a subpage of hpage. */
         if (folio_page(folio, i) != page)
             goto abort;
     }
@@ -24449,14 +24310,12 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
     mmu_notifier_invalidate_range_start(&range);
     notified = true;
 
-    /*
-    * pmd_lock covers a wider range than ptl, and (if split from mm's
+    /* pmd_lock covers a wider range than ptl, and (if split from mm's
     * page_table_lock) ptl nests inside pml. The less time we hold pml,
     * the better; but userfaultfd's mfill_atomic_pte() on a private VMA
     * inserts a valid as-if-COWed PTE without even looking up page cache.
     * So page lock of folio does not protect from it, so we must not drop
-    * ptl before pgt_pmd is removed, so uffd private needs pml taken now.
-    */
+    * ptl before pgt_pmd is removed, so uffd private needs pml taken now. */
     if (userfaultfd_armed(vma) && !(vma->vm_flags & VM_SHARED))
         pml = pmd_lock(mm, pmd);
 
@@ -24483,12 +24342,10 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
 
         if (pte_none(ptent))
             continue;
-        /*
-        * We dropped ptl after the first scan, to do the mmu_notifier:
+        /* We dropped ptl after the first scan, to do the mmu_notifier:
         * page lock stops more PTEs of the folio being faulted in, but
         * does not stop write faults COWing anon copies from existing
-        * PTEs; and does not stop those being swapped out or migrated.
-        */
+        * PTEs; and does not stop those being swapped out or migrated. */
         if (!pte_present(ptent)) {
             result = SCAN_PTE_NON_PRESENT;
             goto abort;
@@ -24500,11 +24357,9 @@ int collapse_pte_mapped_thp(struct mm_struct *mm, unsigned long addr,
 
         nr_batch_ptes = folio_pte_batch(folio, pte, ptent, max_nr_batch_ptes);
 
-        /*
-        * Must clear entry, or a racing truncate may re-remove it.
+        /* Must clear entry, or a racing truncate may re-remove it.
         * TLB flush can be left until pmdp_collapse_flush() does it.
-        * PTE dirty? Shmem page is already dirty; file is read-only.
-        */
+        * PTE dirty? Shmem page is already dirty; file is read-only. */
         clear_ptes(mm, addr, pte, nr_batch_ptes);
         folio_remove_rmap_ptes(folio, page, nr_batch_ptes, vma);
         nr_mapped_ptes += nr_batch_ptes;
@@ -24608,11 +24463,9 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
             ++unmapped;
             if (!cc->is_khugepaged ||
                 unmapped <= khugepaged_max_ptes_swap) {
-                /*
-                 * Always be strict with uffd-wp
+                /* Always be strict with uffd-wp
                  * enabled swap entries.  Please see
-                 * comment below for pte_uffd_wp().
-                 */
+                 * comment below for pte_uffd_wp(). */
                 if (pte_swp_uffd_wp_any(pteval)) {
                     result = SCAN_PTE_UFFD_WP;
                     goto out_unmap;
@@ -24637,15 +24490,13 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
             }
         }
         if (pte_uffd_wp(pteval)) {
-            /*
-             * Don't collapse the page if any of the small
+            /* Don't collapse the page if any of the small
              * PTEs are armed with uffd write protection.
              * Here we can also mark the new huge pmd as
              * write protected if any of the small ones is
              * marked but that could bring unknown
              * userfault messages that falls outside of
-             * the registered range.  So, just be simple.
-             */
+             * the registered range.  So, just be simple. */
             result = SCAN_PTE_UFFD_WP;
             goto out_unmap;
         }
@@ -24664,10 +24515,8 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
             goto out_unmap;
         }
 
-        /*
-         * We treat a single page as shared if any part of the THP
-         * is shared.
-         */
+        /* We treat a single page as shared if any part of the THP
+         * is shared. */
         if (folio_maybe_mapped_shared(folio)) {
             ++shared;
             if (cc->is_khugepaged &&
@@ -24678,12 +24527,10 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
             }
         }
 
-        /*
-         * Record which node the original page is from and save this
+        /* Record which node the original page is from and save this
          * information to cc->node_load[].
          * Khugepaged will allocate hugepage from the node has the max
-         * hit record.
-         */
+         * hit record. */
         node = folio_nid(folio);
         if (hpage_collapse_scan_abort(node, cc)) {
             result = SCAN_SCAN_ABORT;
@@ -24699,25 +24546,21 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
             goto out_unmap;
         }
 
-        /*
-         * Check if the page has any GUP (or other external) pins.
+        /* Check if the page has any GUP (or other external) pins.
          *
          * Here the check may be racy:
          * it may see folio_mapcount() > folio_ref_count().
          * But such case is ephemeral we could always retry collapse
          * later.  However it may report false positive if the page
          * has excessive GUP pins (i.e. 512).  Anyway the same check
-         * will be done again later the risk seems low.
-         */
+         * will be done again later the risk seems low. */
         if (folio_expected_ref_count(folio) != folio_ref_count(folio)) {
             result = SCAN_PAGE_COUNT;
             goto out_unmap;
         }
 
-        /*
-         * If collapse was initiated by khugepaged, check that there is
-         * enough young pte to justify collapsing the page
-         */
+        /* If collapse was initiated by khugepaged, check that there is
+         * enough young pte to justify collapsing the page */
         if (cc->is_khugepaged &&
             (pte_young(pteval) || folio_test_young(folio) ||
              folio_test_referenced(folio) || mmu_notifier_test_young(vma->vm_mm,
@@ -24766,12 +24609,10 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
 
     VM_BUG_ON(address & ~HPAGE_PMD_MASK);
 
-    /*
-     * Before allocating the hugepage, release the mmap_lock read lock.
+    /* Before allocating the hugepage, release the mmap_lock read lock.
      * The allocation can take potentially a long time if it involves
      * sync compaction, and we do not need to hold the mmap_lock during
-     * that. We will recheck the vma after taking it again in write mode.
-     */
+     * that. We will recheck the vma after taking it again in write mode. */
     mmap_read_unlock(mm);
 
     result = alloc_charge_folio(&folio, mm, cc);
@@ -24792,11 +24633,9 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
     }
 
     if (unmapped) {
-        /*
-         * __collapse_huge_page_swapin will return with mmap_lock
+        /* __collapse_huge_page_swapin will return with mmap_lock
          * released when it fails. So we jump out_nolock directly in
-         * that case.  Continuing to collapse causes inconsistency.
-         */
+         * that case.  Continuing to collapse causes inconsistency. */
         result = __collapse_huge_page_swapin(mm, vma, address, pmd,
                              referenced);
         if (result != SCAN_SUCCEED)
@@ -24804,14 +24643,12 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
     }
 
     mmap_read_unlock(mm);
-    /*
-     * Prevent all access to pagetables with the exception of
+    /* Prevent all access to pagetables with the exception of
      * gup_fast later handled by the ptep_clear_flush and the VM
      * handled by the anon_vma lock + PG_lock.
      *
      * UFFDIO_MOVE is prevented to race as well thanks to the
-     * mmap_lock.
-     */
+     * mmap_lock. */
     mmap_write_lock(mm);
     result = hugepage_vma_revalidate(mm, address, true, &vma, cc);
     if (result != SCAN_SUCCEED)
@@ -24829,14 +24666,12 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
     mmu_notifier_invalidate_range_start(&range);
 
     pmd_ptl = pmd_lock(mm, pmd); /* probably unnecessary */
-    /*
-     * This removes any huge TLB entry from the CPU so we won't allow
+    /* This removes any huge TLB entry from the CPU so we won't allow
      * huge and small TLB entries for the same virtual address to
      * avoid the risk of CPU bugs in that area.
      *
      * Parallel GUP-fast is fine since GUP-fast will back off when
-     * it detects PMD is changed.
-     */
+     * it detects PMD is changed. */
     _pmd = pmdp_collapse_flush(vma, address, pmd);
     spin_unlock(pmd_ptl);
     mmu_notifier_invalidate_range_end(&range);
@@ -24855,21 +24690,17 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
             pte_unmap(pte);
         spin_lock(pmd_ptl);
         BUG_ON(!pmd_none(*pmd));
-        /*
-         * We can only use set_pmd_at when establishing
+        /* We can only use set_pmd_at when establishing
          * hugepmds and never for establishing regular pmds that
-         * points to regular pagetables. Use pmd_populate for that
-         */
+         * points to regular pagetables. Use pmd_populate for that */
         pmd_populate(mm, pmd, pmd_pgtable(_pmd));
         spin_unlock(pmd_ptl);
         anon_vma_unlock_write(vma->anon_vma);
         goto out_up_write;
     }
 
-    /*
-     * All pages are isolated and locked so anon_vma rmap
-     * can't run anymore.
-     */
+    /* All pages are isolated and locked so anon_vma rmap
+     * can't run anymore. */
     anon_vma_unlock_write(vma->anon_vma);
 
     result = __collapse_huge_page_copy(pte, folio, pmd, _pmd,
@@ -24878,11 +24709,9 @@ static int collapse_huge_page(struct mm_struct *mm, unsigned long address,
     if (unlikely(result != SCAN_SUCCEED))
         goto out_up_write;
 
-    /*
-     * The smp_wmb() inside __folio_mark_uptodate() ensures the
+    /* The smp_wmb() inside __folio_mark_uptodate() ensures the
      * copy_huge_page writes become visible before the set_pmd_at()
-     * write.
-     */
+     * write. */
     __folio_mark_uptodate(folio);
     pgtable = pmd_pgtable(_pmd);
 
@@ -24924,13 +24753,11 @@ static inline int split_huge_page(struct page *page)
     if (ret < 0)
         return ret;
 
-    /*
-     * split_huge_page() locks the page before splitting and
+    /* split_huge_page() locks the page before splitting and
      * expects the same page that has been split to be locked when
      * returned. split_folio(page_folio(page)) cannot be used here
      * because it converts the page to folio and passes the head
-     * page to be split.
-     */
+     * page to be split. */
     /* try_folio_split, split_huge_page, split_folio_to_list_to_order, split_folio_to_list, */
     return split_huge_page_to_list_to_order(page, NULL, ret) {
         struct folio *folio = page_folio(page);
@@ -25047,13 +24874,11 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
         anon_vma = NULL;
         i_mmap_lock_read(mapping);
 
-        /*
-         *__split_unmapped_folio() may need to trim off pages beyond
+        /*__split_unmapped_folio() may need to trim off pages beyond
          * EOF: but on 32-bit, i_size_read() takes an irq-unsafe
          * seqlock, which cannot be nested inside the page tree lock.
          * So note end now: i_size itself may be changed at any moment,
-         * but folio lock is good enough to serialize the trimming.
-         */
+         * but folio lock is good enough to serialize the trimming. */
         end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE);
         if (shmem_mapping(mapping))
             end = shmem_fallocend(mapping->host, end);
@@ -25070,10 +24895,8 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
     /* block interrupt reentry in xa_lock and spinlock */
     local_irq_disable();
     if (mapping) {
-        /*
-         * Check if the folio is present in page cache.
-         * We assume all tail are present too, if folio is there.
-         */
+        /* Check if the folio is present in page cache.
+         * We assume all tail are present too, if folio is there. */
         xas_lock(&xas);
         xas_reset(&xas);
         if (xas_load(&xas) != folio) {
@@ -25089,20 +24912,17 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
         struct lruvec *lruvec;
         int expected_refs;
 
-        if (folio_order(folio) > 1 &&
-            !list_empty(&folio->_deferred_list)) {
+        if (folio_order(folio) > 1 && !list_empty(&folio->_deferred_list)) {
             ds_queue->split_queue_len--;
             if (folio_test_partially_mapped(folio)) {
                 folio_clear_partially_mapped(folio);
                 mod_mthp_stat(folio_order(folio),
                           MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
             }
-            /*
-             * Reinitialize page_deferred_list after removing the
+            /* Reinitialize page_deferred_list after removing the
              * page from the split_queue, otherwise a subsequent
              * split will see list corruption when checking the
-             * page_deferred_list.
-             */
+             * page_deferred_list. */
             list_del_init(&folio->_deferred_list);
         }
         spin_unlock(&ds_queue->split_queue_lock);
@@ -25112,11 +24932,9 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             if (folio_test_pmd_mappable(folio) &&
                 new_order < HPAGE_PMD_ORDER) {
                 if (folio_test_swapbacked(folio)) {
-                    __lruvec_stat_mod_folio(folio,
-                            NR_SHMEM_THPS, -nr);
+                    __lruvec_stat_mod_folio(folio, NR_SHMEM_THPS, -nr);
                 } else {
-                    __lruvec_stat_mod_folio(folio,
-                            NR_FILE_THPS, -nr);
+                    __lruvec_stat_mod_folio(folio, NR_FILE_THPS, -nr);
                     filemap_nr_thps_dec(mapping);
                 }
             }
@@ -25140,16 +24958,13 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
                          mapping, uniform_split);
             --->
 
-        /*
-         * Unfreeze after-split folios and put them back to the right
+        /* Unfreeze after-split folios and put them back to the right
          * list. @folio should be kept frozon until page cache
          * entries are updated with all the other after-split folios
          * to prevent others seeing stale page cache entries.
          * As a result, new_folio starts from the next folio of
-         * @folio.
-         */
-        for (new_folio = folio_next(folio); new_folio != end_folio;
-             new_folio = next) {
+         * @folio. */
+        for (new_folio = folio_next(folio); new_folio != end_folio; new_folio = next) {
             unsigned long nr_pages = folio_nr_pages(new_folio);
 
             next = folio_next(new_folio);
@@ -25159,10 +24974,8 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
 
             lru_add_split_folio(folio, new_folio, lruvec, list);
 
-            /*
-             * Anonymous folio with swap cache.
-             * NOTE: shmem in swap cache is not supported yet.
-             */
+            /* Anonymous folio with swap cache.
+             * NOTE: shmem in swap cache is not supported yet. */
             if (swap_cache) {
                 __xa_store(&swap_cache->i_pages,
                        swap_cache_index(new_folio->swap),
@@ -25190,12 +25003,10 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             __filemap_remove_folio(new_folio, NULL);
             folio_put_refs(new_folio, nr_pages);
         }
-        /*
-         * Unfreeze @folio only after all page cache entries, which
+        /* Unfreeze @folio only after all page cache entries, which
          * used to point to it, have been updated with new folios.
          * Otherwise, a parallel folio_try_get() can grab @folio
-         * and its caller can see stale page cache entries.
-         */
+         * and its caller can see stale page cache entries. */
         expected_refs = folio_expected_ref_count(folio) + 1;
         folio_ref_unfreeze(folio, expected_refs);
 
@@ -25220,23 +25031,19 @@ fail:
         remap_flags = RMP_USE_SHARED_ZEROPAGE;
     remap_page(folio, 1 << order, remap_flags);
 
-    /*
-     * Unlock all after-split folios except the one containing
-     * @lock_at page. If @folio is not split, it will be kept locked.
-     */
+    /* Unlock all after-split folios except the one containing
+     * @lock_at page. If @folio is not split, it will be kept locked. */
     for (new_folio = folio; new_folio != end_folio; new_folio = next) {
         next = folio_next(new_folio);
         if (new_folio == page_folio(lock_at))
             continue;
 
         folio_unlock(new_folio);
-        /*
-         * Subpages may be freed if there wasn't any mapping
+        /* Subpages may be freed if there wasn't any mapping
          * like if add_to_swap() is running on a lru page that
          * had its mapping zapped. And freeing these pages
          * requires taking the lru_lock so we do the put_page
-         * of the tail pages after the split is complete.
-         */
+         * of the tail pages after the split is complete. */
         free_folio_and_swap_cache(new_folio);
     }
 
@@ -25254,7 +25061,11 @@ out:
     count_mthp_stat(order, !ret ? MTHP_STAT_SPLIT : MTHP_STAT_SPLIT_FAILED);
     return ret;
 }
+```
 
+### __split_unmapped_folio
+
+```c
 int __split_unmapped_folio(struct folio *folio, int new_order,
         struct page *split_at, struct xa_state *xas,
         struct address_space *mapping, bool uniform_split)
@@ -25271,10 +25082,8 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
 
     folio_clear_has_hwpoisoned(folio);
 
-    /*
-     * split to new_order one order at a time. For uniform split,
-     * folio is split to new_order directly.
-     */
+    /* split to new_order one order at a time. For uniform split,
+     * folio is split to new_order directly. */
     for (split_order = start_order;
          split_order >= new_order && !stop_split;
          split_order--) {
@@ -25289,16 +25098,16 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
             continue;
 
         if (mapping) {
-            /*
-             * uniform split has xas_split_alloc() called before
+            /* uniform split has xas_split_alloc() called before
              * irq is disabled to allocate enough memory, whereas
-             * non-uniform split can handle ENOMEM.
-             */
+             * non-uniform split can handle ENOMEM. */
             if (uniform_split)
                 xas_split(xas, folio, old_order);
+                    --->
             else {
                 xas_set_order(xas, folio->index, split_order);
                 xas_try_split(xas, folio, old_order);
+                    --->
                 if (xas_error(xas)) {
                     ret = xas_error(xas);
                     stop_split = true;
@@ -25314,36 +25123,31 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
             __split_folio_to_order(folio, old_order, split_order);
         }
 
-        /*
-         * Iterate through after-split folios and update folio stats.
+        /* Iterate through after-split folios and update folio stats.
          * But in buddy allocator like split, the folio
          * containing the specified page is skipped until its order
          * is new_order, since the folio will be worked on in next
-         * iteration.
-         */
+         * iteration. */
         for (new_folio = folio; new_folio != end_folio; new_folio = next) {
             next = folio_next(new_folio);
-            /*
-             * for buddy allocator like split, new_folio containing
+            /* for buddy allocator like split, new_folio containing
              * @split_at page could be split again, thus do not
              * change stats yet. Wait until new_folio's order is
              * @new_order or stop_split is set to true by the above
-             * xas_split() failure.
-             */
+             * xas_split() failure. */
             if (new_folio == page_folio(split_at)) {
                 folio = new_folio;
                 if (split_order != new_order && !stop_split)
                     continue;
             }
             if (folio_test_anon(new_folio))
-                mod_mthp_stat(folio_order(new_folio),
-                          MTHP_STAT_NR_ANON, 1);
+                mod_mthp_stat(folio_order(new_folio), MTHP_STAT_NR_ANON, 1);
         }
     }
 
     return ret;
 }
-```
+```aaa
 
 # THP
 
@@ -25486,6 +25290,287 @@ proc/<pid>/smaps
 **watermark_boost_factor** | Adjusts watermark boosting for memory reclaim under pressure (in percentage).
 **watermark_scale_factor** | Adjusts kswapd aggressiveness (range 0–3000, default ~10–30) to reduce fragmentation but increasing reclaim overhead. Default: ~10–30.
 **zone_reclaim_mode** | Controls NUMA zone reclaim behavior: RECLAIM_ZONE, RECLAIM_WRITE, RECLAIM_UNMAP
+
+### __split_folio_to_order
+
+```c
+/* It splits @folio into @new_order folios and copies the @folio metadata to
+ * all the resulting folios. */
+static void __split_folio_to_order(struct folio *folio, int old_order,
+        int new_order)
+{
+    long new_nr_pages = 1 << new_order;
+    long nr_pages = 1 << old_order;
+    long i;
+
+    /* Skip the first new_nr_pages, since the new folio from them have all
+     * the flags from the original folio. */
+    for (i = new_nr_pages; i < nr_pages; i += new_nr_pages) {
+        struct page *new_head = &folio->page + i;
+
+        /* Careful: new_folio is not a "real" folio before we cleared PageTail.
+         * Don't pass it around before clear_compound_head(). */
+        struct folio *new_folio = (struct folio *)new_head;
+
+        VM_BUG_ON_PAGE(atomic_read(&new_folio->_mapcount) != -1, new_head);
+
+        /* Clone page flags before unfreezing refcount.
+         *
+         * After successful get_page_unless_zero() might follow flags change,
+         * for example lock_page() which set PG_waiters.
+         *
+         * Note that for mapped sub-pages of an anonymous THP,
+         * PG_anon_exclusive has been cleared in unmap_folio() and is stored in
+         * the migration entry instead from where remap_page() will restore it.
+         * We can still have PG_anon_exclusive set on effectively unmapped and
+         * unreferenced sub-pages of an anonymous THP: we can simply drop
+         * PG_anon_exclusive (-> PG_mappedtodisk) for these here. */
+        new_folio->flags &= ~PAGE_FLAGS_CHECK_AT_PREP;
+        new_folio->flags |= (folio->flags &
+                ((1L << PG_referenced) |
+                 (1L << PG_swapbacked) |
+                 (1L << PG_swapcache) |
+                 (1L << PG_mlocked) |
+                 (1L << PG_uptodate) |
+                 (1L << PG_active) |
+                 (1L << PG_workingset) |
+                 (1L << PG_locked) |
+                 (1L << PG_unevictable) |
+#ifdef CONFIG_ARCH_USES_PG_ARCH_2
+                 (1L << PG_arch_2) |
+#endif
+#ifdef CONFIG_ARCH_USES_PG_ARCH_3
+                 (1L << PG_arch_3) |
+#endif
+                 (1L << PG_dirty) |
+                 LRU_GEN_MASK | LRU_REFS_MASK));
+
+        new_folio->mapping = folio->mapping;
+        new_folio->index = folio->index + i;
+
+        /* page->private should not be set in tail pages. Fix up and warn once
+         * if private is unexpectedly set. */
+        if (unlikely(new_folio->private)) {
+            VM_WARN_ON_ONCE_PAGE(true, new_head);
+            new_folio->private = NULL;
+        }
+
+        if (folio_test_swapcache(folio))
+            new_folio->swap.val = folio->swap.val + i;
+
+        /* Page flags must be visible before we make the page non-compound. */
+        smp_wmb();
+
+        /* Clear PageTail before unfreezing page refcount.
+         *
+         * After successful get_page_unless_zero() might follow put_page()
+         * which needs correct compound_head(). */
+        clear_compound_head(new_head);
+        if (new_order) {
+            prep_compound_page(new_head, new_order);
+            folio_set_large_rmappable(new_folio);
+        }
+
+        if (folio_test_young(folio))
+            folio_set_young(new_folio);
+        if (folio_test_idle(folio))
+            folio_set_idle(new_folio);
+#ifdef CONFIG_MEMCG
+        new_folio->memcg_data = folio->memcg_data;
+#endif
+
+        folio_xchg_last_cpupid(new_folio, folio_last_cpupid(folio));
+    }
+
+    if (new_order)
+        folio_set_order(folio, new_order);
+    else
+        ClearPageCompound(&folio->page);
+}
+```
+
+### xas_split
+
+```c
+void xas_split_alloc(struct xa_state *xas, void *entry, unsigned int order,
+        gfp_t gfp)
+{
+    unsigned int sibs = (1 << (order % XA_CHUNK_SHIFT)) - 1;
+
+    /* XXX: no support for splitting really large entries yet */
+    if (WARN_ON(xas->xa_shift + 2 * XA_CHUNK_SHIFT <= order))
+        goto nomem;
+    if (xas->xa_shift + XA_CHUNK_SHIFT > order)
+        return;
+
+    do {
+        struct xa_node *node;
+
+        node = kmem_cache_alloc_lru(radix_tree_node_cachep, xas->xa_lru, gfp);
+        if (!node)
+            goto nomem;
+
+        __xas_init_node_for_split(xas, node, entry) {
+            unsigned int i;
+            void *sibling = NULL;
+            unsigned int mask = xas->xa_sibs;
+
+            if (!node)
+                return;
+            node->array = xas->xa;
+            for (i = 0; i < XA_CHUNK_SIZE; i++) {
+                if ((i & mask) == 0) {
+                    RCU_INIT_POINTER(node->slots[i], entry);
+                    sibling = xa_mk_sibling(i);
+                } else {
+                    RCU_INIT_POINTER(node->slots[i], sibling);
+                }
+            }
+        }
+        RCU_INIT_POINTER(node->parent, xas->xa_alloc);
+        xas->xa_alloc = node;
+    } while (sibs-- > 0);
+
+    return;
+nomem:
+    xas_destroy(xas);
+    xas_set_err(xas, -ENOMEM);
+}
+```
+
+```c
+void xas_split(struct xa_state *xas, void *entry, unsigned int order)
+{
+    unsigned int sibs = (1 << (order % XA_CHUNK_SHIFT)) - 1;
+    unsigned int offset, marks;
+    struct xa_node *node;
+    void *curr = xas_load(xas);
+    int values = 0;
+
+    node = xas->xa_node;
+    if (xas_top(node))
+        return;
+
+    marks = node_get_marks(node, xas->xa_offset);
+
+    offset = xas->xa_offset + sibs;
+    do {
+        if (xas->xa_shift < node->shift) {
+            struct xa_node *child = xas->xa_alloc;
+
+            xas->xa_alloc = rcu_dereference_raw(child->parent);
+            child->shift = node->shift - XA_CHUNK_SHIFT;
+            child->offset = offset;
+            child->count = XA_CHUNK_SIZE;
+            child->nr_values = xa_is_value(entry) ? XA_CHUNK_SIZE : 0;
+            RCU_INIT_POINTER(child->parent, node);
+            node_set_marks(node, offset, child, xas->xa_sibs, marks);
+            rcu_assign_pointer(node->slots[offset], xa_mk_node(child));
+            if (xa_is_value(curr))
+                values--;
+            xas_update(xas, child);
+        } else {
+            unsigned int canon = offset - xas->xa_sibs;
+
+            node_set_marks(node, canon, NULL, 0, marks);
+            rcu_assign_pointer(node->slots[canon], entry);
+            while (offset > canon)
+                rcu_assign_pointer(node->slots[offset--],
+                        xa_mk_sibling(canon));
+            values += (xa_is_value(entry) - xa_is_value(curr)) *
+                    (xas->xa_sibs + 1);
+        }
+    } while (offset-- > xas->xa_offset);
+
+    node->nr_values += values;
+    xas_update(xas, node);
+}
+```
+
+### xas_try_split
+
+```c
+void xas_try_split(struct xa_state *xas, void *entry, unsigned int order)
+{
+    unsigned int sibs = (1 << (order % XA_CHUNK_SHIFT)) - 1;
+    unsigned int offset, marks;
+    struct xa_node *node;
+    void *curr = xas_load(xas);
+    int values = 0;
+    gfp_t gfp = GFP_NOWAIT;
+
+    node = xas->xa_node;
+    if (xas_top(node))
+        return;
+
+    if (xas->xa->xa_flags & XA_FLAGS_ACCOUNT)
+        gfp |= __GFP_ACCOUNT;
+
+    marks = node_get_marks(node, xas->xa_offset);
+
+    offset = xas->xa_offset + sibs;
+
+    if (xas->xa_shift < node->shift) {
+        struct xa_node *child = xas->xa_alloc;
+        unsigned int expected_sibs =
+            (1 << ((order - 1) % XA_CHUNK_SHIFT)) - 1;
+
+        /* No support for splitting sibling entries
+        * (horizontally) or cascade split (vertically), which
+        * requires two or more new xa_nodes.
+        * Since if one xa_node allocation fails,
+        * it is hard to free the prior allocations. */
+        if (sibs || xas->xa_sibs != expected_sibs) {
+            xas_destroy(xas);
+            xas_set_err(xas, -EINVAL);
+            return;
+        }
+
+        if (!child) {
+            child = kmem_cache_alloc_lru(radix_tree_node_cachep,
+                            xas->xa_lru, gfp);
+            if (!child) {
+                xas_destroy(xas);
+                xas_set_err(xas, -ENOMEM);
+                return;
+            }
+            RCU_INIT_POINTER(child->parent, xas->xa_alloc);
+        }
+        __xas_init_node_for_split(xas, child, entry);
+
+        xas->xa_alloc = rcu_dereference_raw(child->parent);
+        child->shift = node->shift - XA_CHUNK_SHIFT;
+        child->offset = offset;
+        child->count = XA_CHUNK_SIZE;
+        child->nr_values = xa_is_value(entry) ?
+                XA_CHUNK_SIZE : 0;
+        RCU_INIT_POINTER(child->parent, node);
+        node_set_marks(node, offset, child, xas->xa_sibs,
+                marks);
+        rcu_assign_pointer(node->slots[offset],
+                xa_mk_node(child));
+        if (xa_is_value(curr))
+            values--;
+        xas_update(xas, child);
+
+    } else {
+        do {
+            unsigned int canon = offset - xas->xa_sibs;
+
+            node_set_marks(node, canon, NULL, 0, marks);
+            rcu_assign_pointer(node->slots[canon], entry);
+            while (offset > canon)
+                rcu_assign_pointer(node->slots[offset--],
+                        xa_mk_sibling(canon));
+            values += (xa_is_value(entry) - xa_is_value(curr)) *
+                    (xas->xa_sibs + 1);
+        } while (offset-- > xas->xa_offset);
+    }
+
+    node->nr_values += values;
+    xas_update(xas, node);
+}
+```
 
 ## /proc/meminfo
 
