@@ -23,6 +23,7 @@ Patch | Merged
 * [IPC](./linux/linux-ipc.md)
 * [Time](./linux/linux-time.md)
 * [Cloud](./linux/linux-cloud.md)
+* [Virtualization](./linux/linux-virt.md)
 * [Tracing](./linux/linux-trace.md)
 
 # Linux
