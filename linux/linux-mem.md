@@ -11395,8 +11395,11 @@ kswapd_try_sleep:
 
 ![](../images/kernel/mem-swap-arch.svg)
 
-* [[PATCH v4 00/13] mm, swap: rework of swap allocator locks](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/#t)
+* [[PATCH v4 00/13] mm, swap: rework of swap allocator locks](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/)
+* [[LSF/MM/BPF TOPIC] Integrate Swap Cache, Swap Maps with Swap Allocator](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/)
 * [[PATCH v3 0/7] mm, swap: remove swap slot cache Kairui Song](https://lore.kernel.org/all/20250313165935.63303-1-ryncsn@gmail.com/)
+* [[PATCH 00/28] mm, swap: introduce swap table](https://lore.kernel.org/linux-mm/20250514201729.48420-1-ryncsn@gmail.com/)
+* [[PATCH 0/9] mm, swap: introduce swap table as swap cache (phase I)](https://lore.kernel.org/lkml/20250822192023.13477-1-ryncsn@gmail.com/)
 
 ```md
 +-----------------------------------------------------+
@@ -21511,6 +21514,8 @@ out_leak_pages:
 
 ![](../images/kernel/mem-hugetlb.svg)
 
+* [kern - HugeTLB Pages](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html)
+* [kern - Transparent Hugepage Support](https://docs.kernel.org/admin-guide/mm/transhuge.html)
 * [[PATCH v23 0/9] Free some vmemmap pages of HugeTLB page](https://lore.kernel.org/all/20210510030027.56044-1-songmuchun@bytedance.com/)
 
 ```c
@@ -23370,9 +23375,9 @@ static const struct super_operations hugetlbfs_ops = {
     .free_inode     = hugetlbfs_free_inode,
     .destroy_inode  = hugetlbfs_destroy_inode,
     .evict_inode    = hugetlbfs_evict_inode,
-    .statfs        = hugetlbfs_statfs,
-    .put_super    = hugetlbfs_put_super,
-    .show_options    = hugetlbfs_show_options,
+    .statfs         = hugetlbfs_statfs,
+    .put_super      = hugetlbfs_put_super,
+    .show_options   = hugetlbfs_show_options,
 };
 
 static const struct inode_operations hugetlbfs_inode_operations = {
@@ -23380,17 +23385,17 @@ static const struct inode_operations hugetlbfs_inode_operations = {
 };
 
 static const struct inode_operations hugetlbfs_dir_inode_operations = {
-    .create        = hugetlbfs_create,
-    .lookup        = simple_lookup,
-    .link        = simple_link,
-    .unlink        = simple_unlink,
-    .symlink    = hugetlbfs_symlink,
-    .mkdir        = hugetlbfs_mkdir,
-    .rmdir        = simple_rmdir,
-    .mknod        = hugetlbfs_mknod,
-    .rename        = simple_rename,
-    .setattr    = hugetlbfs_setattr,
-    .tmpfile    = hugetlbfs_tmpfile,
+    .create         = hugetlbfs_create,
+    .lookup         = simple_lookup,
+    .link           = simple_link,
+    .unlink         = simple_unlink,
+    .symlink        = hugetlbfs_symlink,
+    .mkdir          = hugetlbfs_mkdir,
+    .rmdir          = simple_rmdir,
+    .mknod          = hugetlbfs_mknod,
+    .rename         = simple_rename,
+    .setattr        = hugetlbfs_setattr,
+    .tmpfile        = hugetlbfs_tmpfile,
 };
 
 static const struct file_operations hugetlbfs_file_operations = {
@@ -23404,11 +23409,11 @@ static const struct file_operations hugetlbfs_file_operations = {
 };
 
 const struct vm_operations_struct hugetlb_vm_ops = {
-    .fault = hugetlb_vm_op_fault,
-    .open = hugetlb_vm_op_open,
-    .close = hugetlb_vm_op_close,
-    .may_split = hugetlb_vm_op_split,
-    .pagesize = hugetlb_vm_op_pagesize,
+    .fault      = hugetlb_vm_op_fault,
+    .open       = hugetlb_vm_op_open,
+    .close      = hugetlb_vm_op_close,
+    .may_split  = hugetlb_vm_op_split,
+    .pagesize   = hugetlb_vm_op_pagesize,
 };
 ```
 
@@ -23514,8 +23519,30 @@ static int khugepaged(void *none)
     spin_lock(&khugepaged_mm_lock);
     mm_slot = khugepaged_scan.mm_slot;
     khugepaged_scan.mm_slot = NULL;
-    if (mm_slot)
-        collect_mm_slot(mm_slot);
+    if (mm_slot){
+        collect_mm_slot(mm_slot) {
+            struct mm_slot *slot = &mm_slot->slot;
+            struct mm_struct *mm = slot->mm;
+
+            lockdep_assert_held(&khugepaged_mm_lock);
+
+            if (hpage_collapse_test_exit(mm)) { /* return atomic_read(&mm->mm_users) == 0; */
+                /* free mm_slot */
+                hash_del(&slot->hash);
+                list_del(&slot->mm_node);
+
+                /* Not strictly needed because the mm exited already.
+                *
+                * clear_bit(MMF_VM_HUGEPAGE, &mm->flags); */
+
+                /* khugepaged_mm_lock actually not necessary for the below */
+                mm_slot_free(mm_slot_cache, mm_slot) {
+                    kmem_cache_free(cache, objp);
+                }
+                mmdrop(mm);
+            }
+        }
+    }
     spin_unlock(&khugepaged_mm_lock);
     return 0;
 }
@@ -24743,6 +24770,7 @@ out_nolock:
 
 ## split_huge_page
 
+* [[PATCH v10 0/8] Buddy allocator like (or non-uniform) folio split](https://lore.kernel.org/all/20250307174001.242794-1-ziy@nvidia.com/)
 
 ```c
 static inline int split_huge_page(struct page *page)
@@ -24770,9 +24798,20 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
         struct page *split_at, struct page *lock_at,
         struct list_head *list, bool uniform_split)
 {
-    struct deferred_split *ds_queue = get_deferred_split_queue(folio);
+    struct deferred_split *ds_queue = get_deferred_split_queue(folio) {
+        struct mem_cgroup *memcg = folio_memcg(folio);
+        struct pglist_data *pgdat = NODE_DATA(folio_nid(folio));
+
+        if (memcg)
+            return &memcg->deferred_split_queue;
+        else
+            return &pgdat->deferred_split_queue;
+    }
+
     XA_STATE(xas, &folio->mapping->i_pages, folio->index);
-    struct folio *end_folio = folio_next(folio);
+    struct folio *end_folio = folio_next(folio) {
+        return (struct folio *)folio_page(folio, folio_nr_pages(folio));
+    }
     bool is_anon = folio_test_anon(folio);
     struct address_space *mapping = NULL;
     struct anon_vma *anon_vma = NULL;
@@ -24830,7 +24869,11 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             goto out;
         }
 
-        min_order = mapping_min_folio_order(folio->mapping);
+        min_order = mapping_min_folio_order(folio->mapping) {
+            if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+                return 0;
+            return (mapping->flags & AS_FOLIO_ORDER_MIN_MASK) >> AS_FOLIO_ORDER_MIN;
+        }
         if (new_order < min_order) {
             VM_WARN_ONCE(1, "Cannot split mapped folio below min-order: %u",
                      min_order);
@@ -24838,8 +24881,7 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             goto out;
         }
 
-        gfp = current_gfp_context(mapping_gfp_mask(mapping) &
-                            GFP_RECLAIM_MASK);
+        gfp = current_gfp_context(mapping_gfp_mask(mapping) & GFP_RECLAIM_MASK);
 
         ret = filemap_release_folio(folio, gfp) {
             struct address_space * const mapping = folio->mapping;
@@ -24884,13 +24926,43 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             end = shmem_fallocend(mapping->host, end);
     }
 
-    /* check whether we're the only holder of the folio */
-    if (!can_split_folio(folio, 1, &extra_pins)) {
+    ret = can_split_folio(folio, 1/*caller_pins*/, &extra_pins) {
+        int extra_pins;
+
+        /* Additional pins from page cache */
+        if (folio_test_anon(folio))
+            extra_pins = folio_test_swapcache(folio) ? folio_nr_pages(folio) : 0;
+        else
+            extra_pins = folio_nr_pages(folio);
+        if (pextra_pins)
+            *pextra_pins = extra_pins;
+
+        return folio_mapcount(folio) == folio_ref_count(folio) - extra_pins - caller_pins;
+    }
+    if (!ret) {
         ret = -EAGAIN;
         goto out_unlock;
     }
 
-    unmap_folio(folio);
+    unmap_folio(folio) {
+        enum ttu_flags ttu_flags = TTU_RMAP_LOCKED | TTU_SYNC |
+        TTU_BATCH_FLUSH;
+
+        VM_BUG_ON_FOLIO(!folio_test_large(folio), folio);
+
+        if (folio_test_pmd_mappable(folio))
+            ttu_flags |= TTU_SPLIT_HUGE_PMD;
+
+        /* Anon pages need migration entries to preserve them, but file
+        * pages can simply be left unmapped, then faulted back on demand.
+        * If that is ever changed (perhaps for mlock), update remap_page(). */
+        if (folio_test_anon(folio))
+            try_to_migrate(folio, ttu_flags);
+        else
+            try_to_unmap(folio, ttu_flags | TTU_IGNORE_MLOCK);
+
+        try_to_unmap_flush();
+    }
 
     /* block interrupt reentry in xa_lock and spinlock */
     local_irq_disable();
@@ -24916,8 +24988,7 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             ds_queue->split_queue_len--;
             if (folio_test_partially_mapped(folio)) {
                 folio_clear_partially_mapped(folio);
-                mod_mthp_stat(folio_order(folio),
-                          MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
+                mod_mthp_stat(folio_order(folio), MTHP_STAT_NR_ANON_PARTIALLY_MAPPED, -1);
             }
             /* Reinitialize page_deferred_list after removing the
              * page from the split_queue, otherwise a subsequent
@@ -24998,8 +25069,7 @@ static int __folio_split(struct folio *folio, unsigned int new_order,
             if (shmem_mapping(mapping))
                 nr_shmem_dropped += nr_pages;
             else if (folio_test_clear_dirty(new_folio))
-                folio_account_cleaned(
-                    new_folio, inode_to_wb(mapping->host));
+                folio_account_cleaned(new_folio, inode_to_wb(mapping->host));
             __filemap_remove_folio(new_folio, NULL);
             folio_put_refs(new_folio, nr_pages);
         }
@@ -25029,7 +25099,37 @@ fail:
 
     if (!ret && is_anon)
         remap_flags = RMP_USE_SHARED_ZEROPAGE;
-    remap_page(folio, 1 << order, remap_flags);
+    remap_page(folio, 1 << order, remap_flags) {
+        int i = 0;
+
+        /* If unmap_folio() uses try_to_migrate() on file, remove this check */
+        if (!folio_test_anon(folio))
+            return;
+        for (;;) {
+            remove_migration_ptes(folio, folio, RMP_LOCKED | flags) {
+                struct rmap_walk_arg rmap_walk_arg = {
+                    .folio = src,
+                    .map_unused_to_zeropage = flags & RMP_USE_SHARED_ZEROPAGE,
+                };
+
+                struct rmap_walk_control rwc = {
+                    .rmap_one = remove_migration_pte,
+                    .arg = &rmap_walk_arg,
+                };
+
+                VM_BUG_ON_FOLIO((flags & RMP_USE_SHARED_ZEROPAGE) && (src != dst), src);
+
+                if (flags & RMP_LOCKED)
+                    rmap_walk_locked(dst, &rwc);
+                else
+                    rmap_walk(dst, &rwc);
+            }
+            i += folio_nr_pages(folio);
+            if (i >= nr)
+                break;
+            folio = folio_next(folio);
+        }
+    }
 
     /* Unlock all after-split folios except the one containing
      * @lock_at page. If @folio is not split, it will be kept locked. */
@@ -25044,7 +25144,11 @@ fail:
          * had its mapping zapped. And freeing these pages
          * requires taking the lru_lock so we do the put_page
          * of the tail pages after the split is complete. */
-        free_folio_and_swap_cache(new_folio);
+        free_folio_and_swap_cache(new_folio) {
+            free_swap_cache(folio);
+            if (!is_huge_zero_folio(folio))
+                folio_put(folio);
+        }
     }
 
 out_unlock:
@@ -25105,7 +25209,17 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
                 xas_split(xas, folio, old_order);
                     --->
             else {
-                xas_set_order(xas, folio->index, split_order);
+                xas_set_order(xas, folio->index, split_order) {
+                #ifdef CONFIG_XARRAY_MULTI
+                    xas->xa_index = order < BITS_PER_LONG ? (index >> order) << order : 0;
+                    xas->xa_shift = order - (order % XA_CHUNK_SHIFT);
+                    xas->xa_sibs = (1 << (order % XA_CHUNK_SHIFT)) - 1;
+                    xas->xa_node = XAS_RESTART;
+                #else
+                    BUG_ON(order > 0);
+                    xas_set(xas, index);
+                #endif
+                }
                 xas_try_split(xas, folio, old_order);
                     --->
                 if (xas_error(xas)) {
@@ -25116,11 +25230,31 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
         }
 
         if (!stop_split) {
-            folio_split_memcg_refs(folio, old_order, split_order);
-            split_page_owner(&folio->page, old_order, split_order);
+            folio_split_memcg_refs(folio, old_order, split_order) {
+                unsigned new_refs;
+
+                if (mem_cgroup_disabled() || !folio_memcg_charged(folio))
+                    return;
+
+                new_refs = (1 << (old_order - new_order)) - 1;
+                css_get_many(&__folio_memcg(folio)->css, new_refs);
+            }
+            split_page_owner(&folio->page, old_order, split_order) {
+                struct page_ext_iter iter;
+                struct page_ext *page_ext;
+                struct page_owner *page_owner;
+
+                rcu_read_lock();
+                for_each_page_ext(page, 1 << old_order, page_ext, iter) {
+                    page_owner = get_page_owner(page_ext);
+                    page_owner->order = new_order;
+                }
+                rcu_read_unlock();
+            }
             pgalloc_tag_split(folio, old_order, split_order);
 
             __split_folio_to_order(folio, old_order, split_order);
+                --->
         }
 
         /* Iterate through after-split folios and update folio stats.
@@ -25147,149 +25281,7 @@ int __split_unmapped_folio(struct folio *folio, int new_order,
 
     return ret;
 }
-```aaa
-
-# THP
-
-* [LWN - Transparent huge pages in the page cache](https://lwn.net/Articles/686690/)
-
-**Config Macro**
-* CONFIG_TRANSPARENT_HUGEPAGE
-* CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
-* CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
-* CONFIG_TRANSPARENT_HUGE_PAGECACHE
-
-**kernel boot args to enable mTHP**
-* transparent_hugepage=always
-* transparent_hugepage=madvise
-* transparent_hugepage=never
-
-Runtime Config to Enable mTHP | val
-:-: | :-:
-/sys/kernel/mm/transparent_hugepage/ | always, defer, defer+madvise, madvise, never
-/sys/kernel/mm/transparent_hugepage/shmem_enabled | always, within_size, advise, never , deny, force
-/sys/kernel/mm/transparent_hugepage/use_zero_page | 0, 1
-/sys/kernel/mm/transparent_hugepage/hpage_pmd_size | read-only
-/sys/kernel/mm/transparent_hugepage/khugepaged/ | defrag, pages_to_scan, scan_sleep_millisecs, alloc_sleep_millisecs, max_ptes_none, max_ptes_swap
-/proc/[pid]/smaps | Shows THP usage for a specific process.
-/proc/meminfo | show AnonHugePages, ShmemHugePages, HugePages_Total
-
-**Defragment policy when allocation failed:**
-> /sys/kernel/mm/transparent_hugepage/enabled
-> always, defer, defer + madvice, madvice, never
-
-/sys/kernel/mm/transparent_hugepage/khugepaged/pages_to_scan
-
-/sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs
-
-
-```c
-static ssize_t enabled_store(struct kobject *kobj,
-                struct kobj_attribute *attr,
-                const char *buf, size_t count)
-{
-    ssize_t ret = count;
-
-    if (sysfs_streq(buf, "always")) {
-        clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
-        set_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
-    } else if (sysfs_streq(buf, "madvise")) {
-        clear_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
-        set_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
-    } else if (sysfs_streq(buf, "never")) {
-        clear_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
-        clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
-    } else
-        ret = -EINVAL;
-
-    if (ret > 0) {
-        int err = start_stop_khugepaged();
-        if (err)
-            ret = err;
-    }
-    return ret;
-}
-```s
-
-##
-
-# fs_proc
-
-```sh
-/proc/meminfo
-/proc/zoneinfo
-/proc/buddyinfo
-/proc/slabinfo
-/proc/vmallocinfo
-/proc/iomem
-/proc/pagetypeinfo
-/proc/vmstat
-/proc/swaps
-/proc/kpagecount
-/proc/kpageflags
-
-proc/<pid>/maps
-proc/<pid>/smaps
-/proc/<pid>/oom_adj
-/proc/<pid>/oom_score
-/proc/<pid>/oom_score_adj
 ```
-
-/proc/sys/vm | Meaning
-:-: | :-:
-**admin_reserve_kbytes** | amount of memory (in KB) reserved for privileged processes
-**compaction_proactiveness** | [0, 100] Default: 20. Controls the aggressiveness of proactive memory compaction
-**compact_memory** |  Writing 1 to this file triggers manual compaction across all zones
-**compact_unevictable_allowed** | whether unevictable pages (e.g., mlocked pages) can be compacted
-**defrag_mode** | Controls THP defragmentation behavior. Values: always, defer, defer+madvise, madvise, never
-**dirty_background_bytes** | absolute amount of dirty memory (in bytes) that can be held before **background writeback(kswapd or pdflush)** starts.
-**dirty_background_ratio** | the percentage of total memory that can be dirty before background writeback begins.
-**dirty_bytes** | Absolute limit (in bytes) of dirty memory before processes are blocked and forced to write back.
-**dirty_ratio** | Percentage of total memory that can be dirty before **processes are blocked and forced** to write back. Default: ~20%.
-**dirty_expire_centisecs** | Time (in hundredths of a second) after which dirty pages are considered old and written back to disk. Default: ~3000 (30 seconds).
-**dirty_writeback_centisecs** | Interval (in hundredths of a second) at which the kernel’s writeback daemon checks for dirty pages to write. Default: ~500 (5 seconds).
-**dirtytime_expire_seconds** | Maximum age (in seconds) for dirty pages on filesystems supporting dirtytime before writeback.
-**drop_caches** | Writing a value clears caches: 1 (pagecache), 2 (slab objects), 3 (both).
-**enable_soft_offline** | Enables/disables soft offline of pages with correctable memory errors. 1 enables, 0 disables.
-**extfrag_threshold** | Controls the fragmentation threshold (default ~500, range 0–1000) Default: ~500.
-**hugetlb_optimize_vmemmap** | Enables optimization of virtual memory mappings for huge pages to reduce memory overhead. 1 enables, 0 disables.
-**hugetlb_shm_group** | Specifies the group ID allowed to use huge pages for shared memory.
-**laptop_mode** | Enables laptop mode (1) to reduce disk I/O for power saving, or disables it (0).
-**legacy_va_layout** | Reverts to older (pre-2.6.9) virtual address space layout if set to 1
-**lowmem_reserve_ratio** | Sets memory reserve ratios for different memory zones to prevent low-memory conditions in critical zones.
-**max_map_count** | Maximum number of memory map areas a process can have.
-**memfd_noexec** | Controls whether memfd_create() creates non-executable memory. 0 allows executable, 1 or 2 enforces non-executable.
-**memory_failure_early_kill** | If 1, immediately kills processes using pages with uncorrectable memory errors. If 0, tries to isolate pages.
-**memory_failure_recovery** | Enables (1) or disables (0) recovery from memory failures.
-**min_free_kbytes** | Minimum amount of free memory (in KB) the kernel keeps available.
-**min_slab_ratio** | Minimum percentage of memory that can be used for slab caches.
-**min_unmapped_ratio** | Minimum percentage of memory kept unmapped to prevent swapping under memory pressure.
-**mmap_min_addr** | Minimum virtual address for user-space mappings.
-**mmap_rnd_bits** | Number of bits for address space layout randomization (ASLR) for non-PIE
-**mmap_rnd_compat_bits** | ASLR bits for 32-bit compatibility mode on 64-bit systems.
-**nr_hugepages** | Sets the number of huge pages to allocate.
-**nr_hugepages_mempolicy** | Sets huge pages per NUMA node for specific memory policies.
-**nr_overcommit_hugepages** | Maximum number of overcommitted huge pages (allocated on demand).
-**numa_stat** | Enables (1) or disables (0) NUMA statistics in /proc/vmstat.
-**numa_zonelist_order** | Defines the order of NUMA zones for memory allocation (e.g., node, zone).
-**oom_dump_tasks** | If 1, logs detailed task info when the OOM killer is triggered.
-**oom_kill_allocating_task** | If 1, OOM killer targets the task triggering the allocation. If 0, it uses heuristics to select a victim.
-**overcommit_kbytes** | Absolute limit (in KB) for memory overcommitment.
-**overcommit_memory** | 0: Heuristic overcommit. 1: Always allow overcommit. 2: Never overcommit (strict).
-**overcommit_ratio** | Percentage of physical RAM allowed for overcommit when overcommit_memory=2 Default: ~50.
-**page-cluster** | Number of pages read/written in a single I/O operation during swapping. Default: ~3 (8 pages).
-**page_lock_unfairness** | Controls fairness of page lock acquisition. Higher values allow more unfairness (favoring current holder).
-**panic_on_oom** | If 1, kernel panics on OOM. If 0, OOM killer is invoked.
-**percpu_pagelist_high_fraction** | Fraction of memory reserved for per-CPU page lists.
-**stat_interval** | Interval (in seconds) for updating /proc/stat memory statistics.
-**stat_refresh** | Writing any value forces an immediate refresh of memory statistics.
-**swappiness** |
-**unprivileged_userfaultfd** | Controls whether unprivileged users can use userfaultfd (0=privileged only, 1=unprivileged).
-**user_reserve_kbytes** | Memory (in KB) reserved for user processes under memory pressure.
-**vfs_cache_pressure** | Controls how aggressively the kernel reclaims memory from VFS caches (e.g., dentries, inodes). Range: 0–1000. Default: ~100.
-**watermark_boost_factor** | Adjusts watermark boosting for memory reclaim under pressure (in percentage).
-**watermark_scale_factor** | Adjusts kswapd aggressiveness (range 0–3000, default ~10–30) to reduce fragmentation but increasing reclaim overhead. Default: ~10–30.
-**zone_reclaim_mode** | Controls NUMA zone reclaim behavior: RECLAIM_ZONE, RECLAIM_WRITE, RECLAIM_UNMAP
 
 ### __split_folio_to_order
 
@@ -25571,6 +25563,148 @@ void xas_try_split(struct xa_state *xas, void *entry, unsigned int order)
     xas_update(xas, node);
 }
 ```
+
+# THP
+
+* [LWN - Transparent huge pages in the page cache](https://lwn.net/Articles/686690/)
+
+**Config Macro**
+* CONFIG_TRANSPARENT_HUGEPAGE
+* CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS
+* CONFIG_TRANSPARENT_HUGEPAGE_MADVISE
+* CONFIG_TRANSPARENT_HUGE_PAGECACHE
+
+**kernel boot args to enable mTHP**
+* transparent_hugepage=always
+* transparent_hugepage=madvise
+* transparent_hugepage=never
+
+Runtime Config to Enable mTHP | val
+:-: | :-:
+/sys/kernel/mm/transparent_hugepage/ | always, defer, defer+madvise, madvise, never
+/sys/kernel/mm/transparent_hugepage/shmem_enabled | always, within_size, advise, never , deny, force
+/sys/kernel/mm/transparent_hugepage/use_zero_page | 0, 1
+/sys/kernel/mm/transparent_hugepage/hpage_pmd_size | read-only
+/sys/kernel/mm/transparent_hugepage/khugepaged/ | defrag, pages_to_scan, scan_sleep_millisecs, alloc_sleep_millisecs, max_ptes_none, max_ptes_swap
+/proc/[pid]/smaps | Shows THP usage for a specific process.
+/proc/meminfo | show AnonHugePages, ShmemHugePages, HugePages_Total
+
+**Defragment policy when allocation failed:**
+> /sys/kernel/mm/transparent_hugepage/enabled
+> always, defer, defer + madvice, madvice, never
+
+/sys/kernel/mm/transparent_hugepage/khugepaged/pages_to_scan
+
+/sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs
+
+
+```c
+static ssize_t enabled_store(struct kobject *kobj,
+                struct kobj_attribute *attr,
+                const char *buf, size_t count)
+{
+    ssize_t ret = count;
+
+    if (sysfs_streq(buf, "always")) {
+        clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
+        set_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
+    } else if (sysfs_streq(buf, "madvise")) {
+        clear_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
+        set_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
+    } else if (sysfs_streq(buf, "never")) {
+        clear_bit(TRANSPARENT_HUGEPAGE_FLAG, &transparent_hugepage_flags);
+        clear_bit(TRANSPARENT_HUGEPAGE_REQ_MADV_FLAG, &transparent_hugepage_flags);
+    } else
+        ret = -EINVAL;
+
+    if (ret > 0) {
+        int err = start_stop_khugepaged();
+        if (err)
+            ret = err;
+    }
+    return ret;
+}
+```s
+
+##
+
+# fs_proc
+
+```sh
+/proc/meminfo
+/proc/zoneinfo
+/proc/buddyinfo
+/proc/slabinfo
+/proc/vmallocinfo
+/proc/iomem
+/proc/pagetypeinfo
+/proc/vmstat
+/proc/swaps
+/proc/kpagecount
+/proc/kpageflags
+
+proc/<pid>/maps
+proc/<pid>/smaps
+/proc/<pid>/oom_adj
+/proc/<pid>/oom_score
+/proc/<pid>/oom_score_adj
+```
+
+/proc/sys/vm | Meaning
+:-: | :-:
+**admin_reserve_kbytes** | amount of memory (in KB) reserved for privileged processes
+**compaction_proactiveness** | [0, 100] Default: 20. Controls the aggressiveness of proactive memory compaction
+**compact_memory** |  Writing 1 to this file triggers manual compaction across all zones
+**compact_unevictable_allowed** | whether unevictable pages (e.g., mlocked pages) can be compacted
+**defrag_mode** | Controls THP defragmentation behavior. Values: always, defer, defer+madvise, madvise, never
+**dirty_background_bytes** | absolute amount of dirty memory (in bytes) that can be held before **background writeback(kswapd or pdflush)** starts.
+**dirty_background_ratio** | the percentage of total memory that can be dirty before background writeback begins.
+**dirty_bytes** | Absolute limit (in bytes) of dirty memory before processes are blocked and forced to write back.
+**dirty_ratio** | Percentage of total memory that can be dirty before **processes are blocked and forced** to write back. Default: ~20%.
+**dirty_expire_centisecs** | Time (in hundredths of a second) after which dirty pages are considered old and written back to disk. Default: ~3000 (30 seconds).
+**dirty_writeback_centisecs** | Interval (in hundredths of a second) at which the kernel’s writeback daemon checks for dirty pages to write. Default: ~500 (5 seconds).
+**dirtytime_expire_seconds** | Maximum age (in seconds) for dirty pages on filesystems supporting dirtytime before writeback.
+**drop_caches** | Writing a value clears caches: 1 (pagecache), 2 (slab objects), 3 (both).
+**enable_soft_offline** | Enables/disables soft offline of pages with correctable memory errors. 1 enables, 0 disables.
+**extfrag_threshold** | Controls the fragmentation threshold (default ~500, range 0–1000) Default: ~500.
+**hugetlb_optimize_vmemmap** | Enables optimization of virtual memory mappings for huge pages to reduce memory overhead. 1 enables, 0 disables.
+**hugetlb_shm_group** | Specifies the group ID allowed to use huge pages for shared memory.
+**laptop_mode** | Enables laptop mode (1) to reduce disk I/O for power saving, or disables it (0).
+**legacy_va_layout** | Reverts to older (pre-2.6.9) virtual address space layout if set to 1
+**lowmem_reserve_ratio** | Sets memory reserve ratios for different memory zones to prevent low-memory conditions in critical zones.
+**max_map_count** | Maximum number of memory map areas a process can have.
+**memfd_noexec** | Controls whether memfd_create() creates non-executable memory. 0 allows executable, 1 or 2 enforces non-executable.
+**memory_failure_early_kill** | If 1, immediately kills processes using pages with uncorrectable memory errors. If 0, tries to isolate pages.
+**memory_failure_recovery** | Enables (1) or disables (0) recovery from memory failures.
+**min_free_kbytes** | Minimum amount of free memory (in KB) the kernel keeps available.
+**min_slab_ratio** | Minimum percentage of memory that can be used for slab caches.
+**min_unmapped_ratio** | Minimum percentage of memory kept unmapped to prevent swapping under memory pressure.
+**mmap_min_addr** | Minimum virtual address for user-space mappings.
+**mmap_rnd_bits** | Number of bits for address space layout randomization (ASLR) for non-PIE
+**mmap_rnd_compat_bits** | ASLR bits for 32-bit compatibility mode on 64-bit systems.
+**nr_hugepages** | Sets the number of huge pages to allocate.
+**nr_hugepages_mempolicy** | Sets huge pages per NUMA node for specific memory policies.
+**nr_overcommit_hugepages** | Maximum number of overcommitted huge pages (allocated on demand).
+**numa_stat** | Enables (1) or disables (0) NUMA statistics in /proc/vmstat.
+**numa_zonelist_order** | Defines the order of NUMA zones for memory allocation (e.g., node, zone).
+**oom_dump_tasks** | If 1, logs detailed task info when the OOM killer is triggered.
+**oom_kill_allocating_task** | If 1, OOM killer targets the task triggering the allocation. If 0, it uses heuristics to select a victim.
+**overcommit_kbytes** | Absolute limit (in KB) for memory overcommitment.
+**overcommit_memory** | 0: Heuristic overcommit. 1: Always allow overcommit. 2: Never overcommit (strict).
+**overcommit_ratio** | Percentage of physical RAM allowed for overcommit when overcommit_memory=2 Default: ~50.
+**page-cluster** | Number of pages read/written in a single I/O operation during swapping. Default: ~3 (8 pages).
+**page_lock_unfairness** | Controls fairness of page lock acquisition. Higher values allow more unfairness (favoring current holder).
+**panic_on_oom** | If 1, kernel panics on OOM. If 0, OOM killer is invoked.
+**percpu_pagelist_high_fraction** | Fraction of memory reserved for per-CPU page lists.
+**stat_interval** | Interval (in seconds) for updating /proc/stat memory statistics.
+**stat_refresh** | Writing any value forces an immediate refresh of memory statistics.
+**swappiness** |
+**unprivileged_userfaultfd** | Controls whether unprivileged users can use userfaultfd (0=privileged only, 1=unprivileged).
+**user_reserve_kbytes** | Memory (in KB) reserved for user processes under memory pressure.
+**vfs_cache_pressure** | Controls how aggressively the kernel reclaims memory from VFS caches (e.g., dentries, inodes). Range: 0–1000. Default: ~100.
+**watermark_boost_factor** | Adjusts watermark boosting for memory reclaim under pressure (in percentage).
+**watermark_scale_factor** | Adjusts kswapd aggressiveness (range 0–3000, default ~10–30) to reduce fragmentation but increasing reclaim overhead. Default: ~10–30.
+**zone_reclaim_mode** | Controls NUMA zone reclaim behavior: RECLAIM_ZONE, RECLAIM_WRITE, RECLAIM_UNMAP
 
 ## /proc/meminfo
 

@@ -412,7 +412,7 @@ make distclean
 
     make defconfig ARCH=arm64 LLVM=1
 
-    make Image -j$(sysctl -n hw.ncpu) ARCH=arm64 LLVM=1 HOSTCFLAGS="-Iscripts/macos-include -I$(brew --prefix libelf)/include"
+    time make Image -j$(sysctl -n hw.ncpu) ARCH=arm64 LLVM=1 HOSTCFLAGS="-Iscripts/macos-include -I$(brew --prefix libelf)/include"
     ```
 4. start qemu
 
