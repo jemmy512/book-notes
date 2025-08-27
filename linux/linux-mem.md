@@ -198,7 +198,6 @@
     * [alloc_hugetlb_folio](#alloc_hugetlb_folio)
         * [dequeue_hugetlb_folio_vma](#dequeue_hugetlb_folio_vma)
         * [alloc_buddy_hugetlb_folio_with_mpol](#alloc_buddy_hugetlb_folio_with_mpol)
-            * [walk_kernel_page_tale_range](#walk_kernel_page_table_range)
         * [hugetlb_vmemmap_optimize_folio](#hugetlb_vmemmap_optimize_folio)
     * [hugetlbfs]
         * [hugetlbfs_create](#hugetlbfs_create)
@@ -23126,234 +23125,6 @@ struct folio *alloc_buddy_hugetlb_folio_with_mpol(struct hstate *h,
 }
 ```
 
-#### walk_kernel_page_table_range
-
-```c
-int walk_kernel_page_table_range(unsigned long start, unsigned long end,
-        const struct mm_walk_ops *ops, pgd_t *pgd, void *private)
-{
-    struct mm_struct *mm = &init_mm;
-    struct mm_walk walk = {
-        .ops        = ops,
-        .mm         = mm,
-        .pgd        = pgd,
-        .private    = private,
-        .no_vma     = true
-    };
-
-    if (start >= end)
-        return -EINVAL;
-    if (!check_ops_valid(ops))
-        return -EINVAL;
-
-    /* Kernel intermediate page tables are usually not freed, so the mmap
-    * read lock is sufficient. But there are some exceptions.
-    * E.g. memory hot-remove. In which case, the mmap lock is insufficient
-    * to prevent the intermediate kernel pages tables belonging to the
-    * specified address range from being freed. The caller should take
-    * other actions to prevent this race. */
-    mmap_assert_locked(mm);
-
-    return walk_pgd_range(start, end, &walk) {
-        pgd_t *pgd;
-        unsigned long next;
-        const struct mm_walk_ops *ops = walk->ops;
-        bool has_handler = ops->p4d_entry || ops->pud_entry || ops->pmd_entry ||
-            ops->pte_entry;
-        bool has_install = ops->install_pte;
-        int err = 0;
-
-        if (walk->pgd)
-            pgd = walk->pgd + pgd_index(addr);
-        else
-            pgd = pgd_offset(walk->mm, addr);
-
-        do {
-            next = pgd_addr_end(addr, end);
-            if (pgd_none_or_clear_bad(pgd)) {
-                if (has_install)
-                    err = __p4d_alloc(walk->mm, pgd, addr);
-                else if (ops->pte_hole)
-                    err = ops->pte_hole(addr, next, 0, walk);
-                if (err)
-                    break;
-                if (!has_install)
-                    continue;
-            }
-            if (ops->pgd_entry) {
-                err = ops->pgd_entry(pgd, addr, next, walk);
-                if (err)
-                    break;
-            }
-            if (has_handler || has_install)
-                err = walk_p4d_range(pgd, addr, next, walk);
-                    --->
-            if (err)
-                break;
-        } while (pgd++, addr = next, addr != end);
-
-        return err;
-    }
-}
-```
-
-### hugetlb_vmemmap_optimize_folio
-
-```c
-void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio) {
-    LIST_HEAD(vmemmap_pages);
-
-    __hugetlb_vmemmap_optimize_folio(h, folio, &vmemmap_pages, VMEMMAP_SYNCHRONIZE_RCU) {
-        int ret = 0;
-        unsigned long vmemmap_start = (unsigned long)&folio->page, vmemmap_end;
-        unsigned long vmemmap_reuse;
-
-        VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
-        VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
-
-        if (!vmemmap_should_optimize_folio(h, folio))
-            return ret;
-
-        static_branch_inc(&hugetlb_optimize_vmemmap_key);
-
-        if (flags & VMEMMAP_SYNCHRONIZE_RCU)
-            synchronize_rcu();
-        /* Very Subtle
-        * If VMEMMAP_REMAP_NO_TLB_FLUSH is set, TLB flushing is not performed
-        * immediately after remapping.  As a result, subsequent accesses
-        * and modifications to struct pages associated with the hugetlb
-        * page could be to the OLD struct pages.  Set the vmemmap optimized
-        * flag here so that it is copied to the new head page.  This keeps
-        * the old and new struct pages in sync.
-        * If there is an error during optimization, we will immediately FLUSH
-        * the TLB and clear the flag below. */
-        folio_set_hugetlb_vmemmap_optimized(folio);
-
-        vmemmap_end     = vmemmap_start + hugetlb_vmemmap_size(h);
-        vmemmap_reuse   = vmemmap_start;
-        vmemmap_start   += HUGETLB_VMEMMAP_RESERVE_SIZE;
-
-        /* Remap the vmemmap virtual address range [@vmemmap_start, @vmemmap_end)
-        * to the page which @vmemmap_reuse is mapped to.  Add pages previously
-        * mapping the range to vmemmap_pages list so that they can be freed by
-        * the caller. */
-        ret = vmemmap_remap_free(vmemmap_start, vmemmap_end, vmemmap_reuse, vmemmap_pages, flags) {
-            int ret;
-            struct vmemmap_remap_walk walk = {
-                .remap_pte      = vmemmap_remap_pte = {
-                    /* Remap the tail pages as read-only to catch illegal write operation
-                    * to the tail pages. */
-                    pgprot_t pgprot = PAGE_KERNEL_RO;
-                    struct page *page = pte_page(ptep_get(pte));
-                    pte_t entry;
-
-                    /* Remapping the head page requires r/w */
-                    if (unlikely(addr == walk->reuse_addr)) {
-                        pgprot = PAGE_KERNEL;
-                        list_del(&walk->reuse_page->lru);
-
-                        /* Makes sure that preceding stores to the page contents from
-                        * vmemmap_remap_free() become visible before the set_pte_at()
-                        * write. */
-                        smp_wmb();
-                    }
-
-                    entry = mk_pte(walk->reuse_page, pgprot);
-                    list_add(&page->lru, walk->vmemmap_pages);
-                    set_pte_at(&init_mm, addr, pte, entry);
-                },
-                .reuse_addr     = reuse,
-                .vmemmap_pages  = vmemmap_pages,
-                .flags          = flags,
-            };
-            int nid = page_to_nid((struct page *)reuse);
-            gfp_t gfp_mask = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
-
-            /* Allocate a new head vmemmap page to avoid breaking a contiguous
-            * block of struct page memory when freeing it back to page allocator
-            * in free_vmemmap_page_list(). This will allow the likely contiguous
-            * struct page backing memory to be kept contiguous and allowing for
-            * more allocations of hugepages. Fallback to the currently
-            * mapped head page in case should it fail to allocate. */
-            walk.reuse_page = alloc_pages_node(nid, gfp_mask, 0);
-            if (walk.reuse_page) {
-                copy_page(page_to_virt(walk.reuse_page), (void *)walk.reuse_addr);
-                list_add(&walk.reuse_page->lru, vmemmap_pages);
-                memmap_pages_add(1);
-            }
-
-            /* In order to make remapping routine most efficient for the huge pages,
-            * the routine of vmemmap page table walking has the following rules
-            * (see more details from the vmemmap_pte_range()):
-            *
-            * - The range [@start, @end) and the range [@reuse, @reuse + PAGE_SIZE)
-            *   should be continuous.
-            * - The @reuse address is part of the range [@reuse, @end) that we are
-            *   walking which is passed to vmemmap_remap_range().
-            * - The @reuse address is the first in the complete range.
-            *
-            * So we need to make sure that @start and @reuse meet the above rules. */
-            BUG_ON(start - reuse != PAGE_SIZE);
-
-            ret = vmemmap_remap_range(reuse, end, &walk);
-            if (ret && walk.nr_walked) {
-                end = reuse + walk.nr_walked * PAGE_SIZE;
-                /* vmemmap_pages contains pages from the previous
-                * vmemmap_remap_range call which failed.  These
-                * are pages which were removed from the vmemmap.
-                * They will be restored in the following call. */
-                walk = (struct vmemmap_remap_walk) {
-                    .remap_pte      = vmemmap_restore_pte,
-                    .reuse_addr     = reuse,
-                    .vmemmap_pages  = vmemmap_pages,
-                    .flags          = 0,
-                };
-
-                vmemmap_remap_range(reuse, end, &walk) {
-                    int ret;
-
-                    VM_BUG_ON(!PAGE_ALIGNED(start | end));
-
-                    mmap_read_lock(&init_mm);
-                    ret = walk_kernel_page_table_range(start, end, &vmemmap_remap_ops, NULL, walk);
-                    mmap_read_unlock(&init_mm);
-                    if (ret)
-                        return ret;
-
-                    if (walk->remap_pte && !(walk->flags & VMEMMAP_REMAP_NO_TLB_FLUSH))
-                        flush_tlb_kernel_range(start, end);
-
-                    return 0;
-                }
-            }
-
-            return ret;
-        }
-        if (ret) {
-            static_branch_dec(&hugetlb_optimize_vmemmap_key);
-            folio_clear_hugetlb_vmemmap_optimized(folio);
-        }
-
-        return ret;
-    }
-    free_vmemmap_page_list(&vmemmap_pages) {
-        struct page *page, *next;
-
-        list_for_each_entry_safe(page, next, list, lru) {
-            free_vmemmap_page(page) {
-                if (PageReserved(page)) {
-                    memmap_boot_pages_add(-1);
-                    free_bootmem_page(page);
-                } else {
-                    memmap_pages_add(-1);
-                    __free_page(page);
-                }
-            }
-        }
-    }
-}
-```
-
 ### hugetlb_acct_memory
 
 ```c
@@ -25824,6 +25595,970 @@ void xas_try_split(struct xa_state *xas, void *entry, unsigned int order)
 }
 ```
 
+## HVO
+
+```c
+atic const struct ctl_table hugetlb_vmemmap_sysctls[] = {
+    {
+        .procname       = "hugetlb_optimize_vmemmap",
+        .data           = &vmemmap_optimize_enabled,
+        .maxlen         = sizeof(vmemmap_optimize_enabled),
+        .mode           = 0644,
+        .proc_handler   = proc_dobool,
+    },
+};
+
+static int __init hugetlb_vmemmap_init(void)
+{
+    const struct hstate *h;
+
+    /* HUGETLB_VMEMMAP_RESERVE_SIZE should cover all used struct pages */
+    BUILD_BUG_ON(__NR_USED_SUBPAGE > HUGETLB_VMEMMAP_RESERVE_PAGES);
+
+    for_each_hstate(h) {
+        ret = hugetlb_vmemmap_optimizable(h) {
+            return 0 != hugetlb_vmemmap_optimizable_size(h) {
+                #define HUGETLB_VMEMMAP_RESERVE_SIZE    PAGE_SIZE
+                #define HUGETLB_VMEMMAP_RESERVE_PAGES   (HUGETLB_VMEMMAP_RESERVE_SIZE / sizeof(struct page))
+
+                int size = hugetlb_vmemmap_size(h) {
+                    return pages_per_huge_page(h) {
+                        eturn 1 << h->order;
+                    } * sizeof(struct page)
+                } - HUGETLB_VMEMMAP_RESERVE_SIZE;
+
+                if (!is_power_of_2(sizeof(struct page)))
+                    return 0;
+                return size > 0 ? size : 0;
+            };
+        }
+        if (ret) {
+            register_sysctl_init("vm", hugetlb_vmemmap_sysctls);
+            break;
+        }
+    }
+    return 0;
+}
+late_initcall(hugetlb_vmemmap_init);
+```
+
+### hugetlb_vmemmap_init_early
+
+```c
+void __init hugetlb_vmemmap_init_early(int nid)
+{
+    unsigned long psize, paddr, section_size;
+    unsigned long ns, i, pnum, pfn, nr_pages;
+    unsigned long start, end;
+    struct huge_bootmem_page {
+        struct list_head    list;
+        struct hstate       *hstate;
+        unsigned long       flags;
+        struct cma          *cma;
+    } *m = NULL;
+    void *map;
+
+    if (!hugetlb_bootmem_allocated())
+        return;
+
+    if (!READ_ONCE(vmemmap_optimize_enabled))
+        return;
+
+    section_size = (1UL << PA_SECTION_SHIFT);
+
+    list_for_each_entry(m, &huge_boot_pages[nid], list) {
+        ret = vmemmap_should_optimize_bootmem_page(m) {
+            unsigned long section_size, psize, pmd_vmemmap_size;
+            phys_addr_t paddr;
+
+            if (!READ_ONCE(vmemmap_optimize_enabled))
+                return false;
+
+            if (!hugetlb_vmemmap_optimizable(m->hstate))
+                return false;
+
+            psize = huge_page_size(m->hstate);
+            paddr = virt_to_phys(m);
+
+            /* Pre-HVO only works if the bootmem huge page
+            * is aligned to the section size. */
+            section_size = (1UL << PA_SECTION_SHIFT);
+            if (!IS_ALIGNED(paddr, section_size) ||
+                !IS_ALIGNED(psize, section_size))
+                return false;
+
+            /* The pre-HVO code does not deal with splitting PMDS,
+            * so the bootmem page must be aligned to the number
+            * of base pages that can be mapped with one vmemmap PMD. */
+            pmd_vmemmap_size = (PMD_SIZE / (sizeof(struct page))) << PAGE_SHIFT;
+            if (!IS_ALIGNED(paddr, pmd_vmemmap_size) ||
+                !IS_ALIGNED(psize, pmd_vmemmap_size))
+                return false;
+
+            return true;
+        }
+        if (!ret)
+            continue;
+
+        nr_pages = pages_per_huge_page(m->hstate);
+        psize = nr_pages << PAGE_SHIFT;
+        paddr = virt_to_phys(m);
+        pfn = PHYS_PFN(paddr);
+        map = pfn_to_page(pfn);
+        start = (unsigned long)map;
+        end = start + nr_pages * sizeof(struct page);
+
+        if (vmemmap_populate_hvo(start, end, nid,
+                    HUGETLB_VMEMMAP_RESERVE_SIZE) < 0)
+            continue;
+
+        memmap_boot_pages_add(HUGETLB_VMEMMAP_RESERVE_SIZE / PAGE_SIZE);
+
+        pnum = pfn_to_section_nr(pfn);
+        ns = psize / section_size;
+
+        for (i = 0; i < ns; i++) {
+            sparse_init_early_section(nid, map, pnum,
+                    SECTION_IS_VMEMMAP_PREINIT);
+            map += section_map_size();
+            pnum++;
+        }
+
+        m->flags |= HUGE_BOOTMEM_HVO;
+    }
+}
+```
+
+### hugetlb_vmemmap_init_late
+
+```c
+void __init hugetlb_vmemmap_init_late(int nid)
+{
+    struct huge_bootmem_page *m, *tm;
+    unsigned long phys, nr_pages, start, end;
+    unsigned long pfn, nr_mmap;
+    struct hstate *h;
+    void *map;
+
+    if (!hugetlb_bootmem_allocated())
+        return;
+
+    if (!READ_ONCE(vmemmap_optimize_enabled))
+        return;
+
+    list_for_each_entry_safe(m, tm, &huge_boot_pages[nid], list) {
+        if (!(m->flags & HUGE_BOOTMEM_HVO))
+            continue;
+
+        phys = virt_to_phys(m);
+        h = m->hstate;
+        pfn = PHYS_PFN(phys);
+        nr_pages = pages_per_huge_page(h);
+
+        if (!hugetlb_bootmem_page_zones_valid(nid, m)) {
+            /* Oops, the hugetlb page spans multiple zones.
+             * Remove it from the list, and undo HVO. */
+            list_del(&m->list);
+
+            map = pfn_to_page(pfn);
+
+            start = (unsigned long)map;
+            end = start + nr_pages * sizeof(struct page);
+
+            vmemmap_undo_hvo(start, end, nid,
+                     HUGETLB_VMEMMAP_RESERVE_SIZE);
+            nr_mmap = end - start - HUGETLB_VMEMMAP_RESERVE_SIZE;
+            memmap_boot_pages_add(DIV_ROUND_UP(nr_mmap, PAGE_SIZE));
+
+            memblock_phys_free(phys, huge_page_size(h));
+            continue;
+        } else
+            m->flags |= HUGE_BOOTMEM_ZONES_VALID;
+    }
+}
+```
+
+### hugetlb_vmemmap_optimize_folio
+
+```c
+void hugetlb_vmemmap_optimize_folio(const struct hstate *h, struct folio *folio) {
+    LIST_HEAD(vmemmap_pages);
+
+    __hugetlb_vmemmap_optimize_folio(h, folio, &vmemmap_pages, VMEMMAP_SYNCHRONIZE_RCU);
+
+    free_vmemmap_page_list(&vmemmap_pages) {
+        struct page *page, *next;
+
+        list_for_each_entry_safe(page, next, list, lru) {
+            free_vmemmap_page(page) {
+                if (PageReserved(page)) {
+                    memmap_boot_pages_add(-1);
+                    free_bootmem_page(page);
+                } else {
+                    memmap_pages_add(-1);
+                    __free_page(page);
+                }
+            }
+        }
+    }
+}
+
+static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
+    struct folio *folio,
+    struct list_head *vmemmap_pages,
+    unsigned long flags)
+{
+    int ret = 0;
+    unsigned long vmemmap_start = (unsigned long)&folio->page, vmemmap_end;
+    unsigned long vmemmap_reuse;
+
+    VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+    VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
+
+    if (!vmemmap_should_optimize_folio(h, folio))
+        return ret;
+
+    static_branch_inc(&hugetlb_optimize_vmemmap_key);
+
+    if (flags & VMEMMAP_SYNCHRONIZE_RCU)
+        synchronize_rcu();
+
+    folio_set_hugetlb_vmemmap_optimized(folio);
+
+    vmemmap_end     = vmemmap_start + hugetlb_vmemmap_size(h) {
+        return pages_per_huge_page(h) * sizeof(struct page);
+    }
+    vmemmap_reuse   = vmemmap_start;
+    vmemmap_start   += HUGETLB_VMEMMAP_RESERVE_SIZE;
+
+    /* Remap the vmemmap virtual address range [@vmemmap_start, @vmemmap_end)
+    * to the page which @vmemmap_reuse is mapped to.  Add pages previously
+    * mapping the range to vmemmap_pages list so that they can be freed by
+    * the caller. */
+    ret = vmemmap_remap_free(vmemmap_start, vmemmap_end, vmemmap_reuse, vmemmap_pages, flags) {
+        int ret;
+        struct vmemmap_remap_walk walk = {
+            .remap_pte      = vmemmap_remap_pte,
+            .reuse_addr     = reuse,
+            .reuse_page     = NULL,
+            .vmemmap_pages  = vmemmap_pages,
+            .flags          = flags,
+        };
+        int nid = page_to_nid((struct page *)reuse);
+        gfp_t gfp_mask = GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN;
+
+        /* Allocate a new head vmemmap page to avoid breaking a contiguous
+        * block of struct page memory when freeing it back to page allocator
+        * in free_vmemmap_page_list(). */
+        walk.reuse_page = alloc_pages_node(nid, gfp_mask, 0);
+        if (walk.reuse_page) {
+            copy_page(page_to_virt(walk.reuse_page), (void *)walk.reuse_addr);
+            list_add(&walk.reuse_page->lru, vmemmap_pages);
+            memmap_pages_add(1);
+        }
+
+        BUG_ON(start - reuse != PAGE_SIZE);
+
+        ret = vmemmap_remap_range(reuse, end, &walk)  {
+            int ret;
+            mmap_read_lock(&init_mm);
+            ret = walk_kernel_page_table_range(start, end, &vmemmap_remap_ops, NULL, walk);
+            mmap_read_unlock(&init_mm);
+            if (ret)
+                return ret;
+
+            if (walk->remap_pte && !(walk->flags & VMEMMAP_REMAP_NO_TLB_FLUSH))
+                flush_tlb_kernel_range(start, end);
+
+            return 0;
+        }
+        if (ret && walk.nr_walked) {
+            end = reuse + walk.nr_walked * PAGE_SIZE;
+            walk = (struct vmemmap_remap_walk) {
+                .remap_pte      = vmemmap_restore_pte,
+                .reuse_addr     = reuse,
+                .vmemmap_pages  = vmemmap_pages,
+                .flags          = 0,
+            };
+
+            vmemmap_remap_range(reuse, end, &walk);
+        }
+
+        return ret;
+    }
+    if (ret) {
+        static_branch_dec(&hugetlb_optimize_vmemmap_key);
+        folio_clear_hugetlb_vmemmap_optimized(folio);
+    }
+
+    return ret;
+}
+```
+
+#### walk_kernel_page_table_range
+
+```c
+int walk_kernel_page_table_range(unsigned long start, unsigned long end,
+        const struct mm_walk_ops *ops, pgd_t *pgd, void *private)
+{
+    struct mm_struct *mm = &init_mm;
+    struct mm_walk walk = {
+        .ops        = ops,
+        .mm         = mm,
+        .pgd        = pgd,
+        .private    = private,
+        .no_vma     = true,
+        .vma        = NULL,
+    };
+
+    if (start >= end)
+        return -EINVAL;
+    if (!check_ops_valid(ops))
+        return -EINVAL;
+
+    mmap_assert_locked(mm);
+
+    return walk_pgd_range(start, end, &walk) {
+        pgd_t *pgd;
+        unsigned long next;
+        const struct mm_walk_ops *ops = walk->ops;
+        bool has_handler = ops->p4d_entry || ops->pud_entry || ops->pmd_entry ||
+            ops->pte_entry;
+        bool has_install = ops->install_pte;
+        int err = 0;
+
+        if (walk->pgd)
+            pgd = walk->pgd + pgd_index(addr);
+        else
+            pgd = pgd_offset(walk->mm, addr);
+
+        do {
+            next = pgd_addr_end(addr, end);
+            if (pgd_none_or_clear_bad(pgd)) {
+                if (has_install)
+                    err = __p4d_alloc(walk->mm, pgd, addr);
+                else if (ops->pte_hole)
+                    err = ops->pte_hole(addr, next, 0, walk);
+                if (err)
+                    break;
+                if (!has_install)
+                    continue;
+            }
+            if (ops->pgd_entry) {
+                err = ops->pgd_entry(pgd, addr, next, walk);
+                if (err)
+                    break;
+            }
+            if (has_handler || has_install)
+                err = walk_p4d_range(pgd, addr, next, walk);
+            if (err)
+                break;
+        } while (pgd++, addr = next, addr != end);
+
+        return err;
+    }
+}
+
+static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    p4d_t *p4d;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->pud_entry || ops->pmd_entry || ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+    int depth = real_depth(1);
+
+    p4d = p4d_offset(pgd, addr);
+    do {
+        next = p4d_addr_end(addr, end);
+        if (p4d_none_or_clear_bad(p4d)) {
+            if (has_install)
+                err = __pud_alloc(walk->mm, p4d, addr);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, depth, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+        if (ops->p4d_entry) {
+            err = ops->p4d_entry(p4d, addr, next, walk);
+            if (err)
+                break;
+        }
+        if (has_handler || has_install)
+            err = walk_pud_range(p4d, addr, next, walk);
+        if (err)
+            break;
+    } while (p4d++, addr = next, addr != end);
+
+    return err;
+}
+
+int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pud_t *pud;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->pmd_entry || ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+    int depth = real_depth(2);
+
+    pud = pud_offset(p4d, addr);
+    do {
+ again:
+        next = pud_addr_end(addr, end);
+        if (pud_none(*pud)) {
+            if (has_install)
+                err = __pmd_alloc(walk->mm, pud, addr);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, depth, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+
+        walk->action = ACTION_SUBTREE;
+
+        if (ops->pud_entry)
+            err = ops->pud_entry(pud, addr, next, walk);
+        if (err)
+            break;
+
+        if (walk->action == ACTION_AGAIN)
+            goto again;
+        if (walk->action == ACTION_CONTINUE)
+            continue;
+
+        if (!has_handler) { /* No handlers for lower page tables. */
+            if (!has_install)
+                continue; /* Nothing to do. */
+            /* We are ONLY installing, so avoid unnecessarily
+             * splitting a present huge page. */
+            if (pud_present(*pud) && pud_trans_huge(*pud))
+                continue;
+        }
+
+        if (walk->vma)
+            split_huge_pud(walk->vma, pud, addr);
+        else if (pud_leaf(*pud) || !pud_present(*pud))
+            continue; /* Nothing to do. */
+
+        if (pud_none(*pud))
+            goto again;
+
+        err = walk_pmd_range(pud, addr, next, walk);
+        if (err)
+            break;
+    } while (pud++, addr = next, addr != end);
+
+    return err;
+}
+
+int walk_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pmd_t *pmd;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+    int depth = real_depth(3);
+
+    pmd = pmd_offset(pud, addr);
+    do {
+again:
+        next = pmd_addr_end(addr, end);
+        if (pmd_none(*pmd)) {
+            if (has_install)
+                err = __pte_alloc(walk->mm, pmd);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, depth, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+
+        walk->action = ACTION_SUBTREE;
+
+        if (ops->pmd_entry)
+            err = ops->pmd_entry(pmd, addr, next, walk);
+        if (err)
+            break;
+
+        if (walk->action == ACTION_AGAIN)
+            goto again;
+        if (walk->action == ACTION_CONTINUE)
+            continue;
+
+        if (!has_handler) { /* No handlers for lower page tables. */
+            if (!has_install)
+                continue; /* Nothing to do. */
+            /* We are ONLY installing, so avoid unnecessarily
+             * splitting a present huge page. */
+            if (pmd_present(*pmd) && pmd_trans_huge(*pmd))
+                continue;
+        }
+
+        if (walk->vma)
+            split_huge_pmd(walk->vma, pmd, addr);
+        else if (pmd_leaf(*pmd) || !pmd_present(*pmd))
+            continue; /* Nothing to do. */
+
+        err = walk_pte_range(pmd, addr, next, walk);
+        if (err)
+            break;
+
+        if (walk->action == ACTION_AGAIN)
+            goto again;
+
+    } while (pmd++, addr = next, addr != end);
+
+    return err;
+}
+
+int walk_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pte_t *pte;
+    int err = 0;
+    spinlock_t *ptl;
+
+    if (walk->no_vma) {
+        /* pte_offset_map() might apply user-specific validation.
+         * Indeed, on x86_64 the pmd entries set up by init_espfix_ap()
+         * fit its pmd_bad() check (_PAGE_NX set and _PAGE_RW clear),
+         * and CONFIG_EFI_PGT_DUMP efi_mm goes so far as to walk them. */
+        if (walk->mm == &init_mm || addr >= TASK_SIZE)
+            pte = pte_offset_kernel(pmd, addr);
+        else
+            pte = pte_offset_map(pmd, addr);
+
+        if (pte) {
+            err = walk_pte_range_inner(pte, addr, end, walk);
+            if (walk->mm != &init_mm && addr < TASK_SIZE)
+                pte_unmap(pte);
+        }
+    } else {
+        pte = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
+        if (pte) {
+            err = walk_pte_range_inner(pte, addr, end, walk);
+            pte_unmap_unlock(pte, ptl);
+        }
+    }
+    if (!pte)
+        walk->action = ACTION_AGAIN;
+    return err;
+}
+
+static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
+                unsigned long end, struct mm_walk *walk)
+{
+    const struct mm_walk_ops *ops = walk->ops;
+    int err = 0;
+
+    for (;;) {
+        if (ops->install_pte && pte_none(ptep_get(pte))) {
+            pte_t new_pte;
+
+            err = ops->install_pte(addr, addr + PAGE_SIZE, &new_pte, walk);
+            if (err)
+                break;
+
+            set_pte_at(walk->mm, addr, pte, new_pte);
+            /* Non-present before, so for arches that need it. */
+            if (!WARN_ON_ONCE(walk->no_vma))
+                update_mmu_cache(walk->vma, addr, pte);
+        } else {
+            err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
+            if (err)
+                break;
+        }
+        if (addr >= end - PAGE_SIZE)
+            break;
+        addr += PAGE_SIZE;
+        pte++;
+    }
+    return err;
+}
+```
+
+#### vmemmap_remap_ops
+
+```c
+static const struct mm_walk_ops vmemmap_remap_ops = {
+    .pmd_entry    = vmemmap_pmd_entry,
+    .pte_entry    = vmemmap_pte_entry,
+};
+
+int vmemmap_pmd_entry(pmd_t *pmd, unsigned long addr,
+                 unsigned long next, struct mm_walk *walk)
+{
+    int ret = 0;
+    struct page *head;
+    struct vmemmap_remap_walk *vmemmap_walk = walk->private;
+
+    /* Only splitting, not remapping the vmemmap pages. */
+    if (!vmemmap_walk->remap_pte)
+        walk->action = ACTION_CONTINUE;
+
+    spin_lock(&init_mm.page_table_lock);
+    head = pmd_leaf(*pmd) ? pmd_page(*pmd) : NULL;
+    /* Due to HugeTLB alignment requirements and the vmemmap
+     * pages being at the start of the hotplugged memory
+     * region in memory_hotplug.memmap_on_memory case. Checking
+     * the vmemmap page associated with the first vmemmap page
+     * if it is self-hosted is sufficient.
+     *
+     * [                  hotplugged memory                  ]
+     * [        section        ][...][        section        ]
+     * [ vmemmap ][              usable memory               ]
+     *   ^  | ^                        |
+     *   +--+ |                        |
+     *        +------------------------+ */
+    if (IS_ENABLED(CONFIG_MEMORY_HOTPLUG) && unlikely(!vmemmap_walk->nr_walked)) {
+        struct page *page = head
+            ? head + pte_index(addr)
+            :  pte_page(ptep_get(pte_offset_kernel(pmd, addr)));
+
+        if (PageVmemmapSelfHosted(page))
+            ret = -ENOTSUPP;
+    }
+    spin_unlock(&init_mm.page_table_lock);
+
+    if (!head || ret)
+        return ret;
+
+    return vmemmap_split_pmd(pmd, head, addr & PMD_MASK, vmemmap_walk) {
+        pmd_t __pmd;
+        int i;
+        unsigned long addr = start;
+        pte_t *pgtable;
+
+        pgtable = pte_alloc_one_kernel(&init_mm);
+        if (!pgtable)
+            return -ENOMEM;
+
+        pmd_populate_kernel(&init_mm, &__pmd, pgtable);
+
+        for (i = 0; i < PTRS_PER_PTE; i++, addr += PAGE_SIZE) {
+            pte_t entry, *pte;
+            pgprot_t pgprot = PAGE_KERNEL;
+
+            entry = mk_pte(head + i, pgprot) { /* phys addr of next level PTE table */
+                pfn = page_to_pfn(page) {
+                    return (unsigned long)((page) - vmemmap);
+                }
+                return pfn_pte(pfn, pgprot) {
+                    phys = __pfn_to_phys(pfn) {
+                        return ((phys_addr_t)(x) << PAGE_SHIFT);
+                    }
+                    return __pte(phys | pgprot_val(prot))
+                }
+            }
+            pte = pte_offset_kernel(&__pmd, addr);
+            set_pte_at(&init_mm, addr, pte, entry);
+        }
+
+        spin_lock(&init_mm.page_table_lock);
+        if (likely(pmd_leaf(*pmd))) { /* (pmd_present(pmd) && !pmd_table(pmd)) */
+            /* Higher order allocations from buddy allocator must be able to
+            * be treated as indepdenent small pages (as they can be freed
+            * individually). */
+            if (!PageReserved(head)) {
+                split_page(head, get_order(PMD_SIZE)) {
+                    int i;
+
+                    VM_BUG_ON_PAGE(PageCompound(page), page);
+                    VM_BUG_ON_PAGE(!page_count(page), page);
+
+                    for (i = 1; i < (1 << order); i++)
+                        set_page_refcounted(page + i);
+                    split_page_owner(page, order, 0);
+                    pgalloc_tag_split(page_folio(page), order, 0);
+                    split_page_memcg(page, order);
+                }
+            }
+
+            /* Make pte visible before pmd. See comment in pmd_install(). */
+            smp_wmb();
+            pmd_populate_kernel(&init_mm, pmd, pgtable)  {
+                __pmd_populate(pmdp, __pa(ptep), PMD_TYPE_TABLE | PMD_TABLE_AF | PMD_TABLE_UXN); {
+                    set_pmd(pmdp, __pmd(__phys_to_pmd_val(ptep) | prot)) {
+                        WRITE_ONCE(*pmdp, pmd);
+
+                        if (pmd_valid(pmd)) {
+                            queue_pte_barriers() {
+                                unsigned long flags;
+
+                                if (in_interrupt()) {
+                                    emit_pte_barriers();
+                                    return;
+                                }
+
+                                flags = read_thread_flags();
+
+                                if (flags & BIT(TIF_LAZY_MMU)) {
+                                    /* Avoid the atomic op if already set. */
+                                    if (!(flags & BIT(TIF_LAZY_MMU_PENDING)))
+                                        set_thread_flag(TIF_LAZY_MMU_PENDING);
+                                } else {
+                                    emit_pte_barriers() {
+                                        dsb(ishst);
+                                        isb();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!(walk->flags & VMEMMAP_SPLIT_NO_TLB_FLUSH))
+                flush_tlb_kernel_range(start, start + PMD_SIZE);
+        } else {
+            pte_free_kernel(&init_mm, pgtable) {
+                pagetable_dtor_free(virt_to_ptdesc(pte)) {
+                    pagetable_dtor(ptdesc) {
+                        struct folio *folio = ptdesc_folio(ptdesc);
+
+                        ptlock_free(ptdesc);
+                        __folio_clear_pgtable(folio);
+                        lruvec_stat_sub_folio(folio, NR_PAGETABLE);
+                    }
+
+                    pagetable_free(ptdesc) {
+                        struct page *page = ptdesc_page(pt);
+
+                        __free_pages(page, compound_order(page));
+                    }
+                }
+            }
+        }
+        spin_unlock(&init_mm.page_table_lock);
+
+        return 0;
+    }
+}
+
+static int vmemmap_pte_entry(pte_t *pte, unsigned long addr,
+                 unsigned long next, struct mm_walk *walk)
+{
+    struct vmemmap_remap_walk *vmemmap_walk = walk->private;
+
+    /* The reuse_page is found 'first' in page table walking before
+     * starting remapping. */
+    if (!vmemmap_walk->reuse_page)
+        vmemmap_walk->reuse_page = pte_page(ptep_get(pte));
+    else
+        vmemmap_walk->remap_pte(pte, addr, vmemmap_walk); /* vmemmap_remap_pte */
+    vmemmap_walk->nr_walked++;
+
+    return 0;
+}
+
+static void vmemmap_remap_pte(pte_t *pte, unsigned long addr,
+			      struct vmemmap_remap_walk *walk)
+{
+	/*
+	 * Remap the tail pages as read-only to catch illegal write operation
+	 * to the tail pages.
+	 */
+	pgprot_t pgprot = PAGE_KERNEL_RO;
+	struct page *page = pte_page(ptep_get(pte));
+	pte_t entry;
+
+	/* Remapping the head page requires r/w */
+	if (unlikely(addr == walk->reuse_addr)) {
+		pgprot = PAGE_KERNEL;
+		list_del(&walk->reuse_page->lru);
+
+		/*
+		 * Makes sure that preceding stores to the page contents from
+		 * vmemmap_remap_free() become visible before the set_pte_at()
+		 * write.
+		 */
+		smp_wmb();
+	}
+
+	entry = mk_pte(walk->reuse_page, pgprot);
+	list_add(&page->lru, walk->vmemmap_pages);
+	set_pte_at(&init_mm, addr, pte, entry);
+}
+```
+
+### hugetlb_vmemmap_restore_folio
+
+```c
+int hugetlb_vmemmap_restore_folio(const struct hstate *h, struct folio *folio)
+{
+    return __hugetlb_vmemmap_restore_folio(h, folio, VMEMMAP_SYNCHRONIZE_RCU);
+}
+
+int __hugetlb_vmemmap_restore_folio(const struct hstate *h,
+                       struct folio *folio, unsigned long flags)
+{
+    int ret;
+    unsigned long vmemmap_start = (unsigned long)&folio->page, vmemmap_end;
+    unsigned long vmemmap_reuse;
+
+    VM_WARN_ON_ONCE_FOLIO(!folio_test_hugetlb(folio), folio);
+    VM_WARN_ON_ONCE_FOLIO(folio_ref_count(folio), folio);
+
+    if (!folio_test_hugetlb_vmemmap_optimized(folio))
+        return 0;
+
+    if (flags & VMEMMAP_SYNCHRONIZE_RCU)
+        synchronize_rcu();
+
+    vmemmap_end     = vmemmap_start + hugetlb_vmemmap_size(h);
+    vmemmap_reuse   = vmemmap_start;
+    vmemmap_start   += HUGETLB_VMEMMAP_RESERVE_SIZE;
+
+    /* The pages which the vmemmap virtual address range [@vmemmap_start,
+     * @vmemmap_end) are mapped to are freed to the buddy allocator, and
+     * the range is mapped to the page which @vmemmap_reuse is mapped to.
+     * When a HugeTLB page is freed to the buddy allocator, previously
+     * discarded vmemmap pages must be allocated and remapping. */
+    ret = vmemmap_remap_alloc(vmemmap_start, vmemmap_end, vmemmap_reuse, flags);
+    if (!ret) {
+        folio_clear_hugetlb_vmemmap_optimized(folio);
+        static_branch_dec(&hugetlb_optimize_vmemmap_key);
+    }
+
+    return ret;
+}
+
+static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
+                   unsigned long reuse, unsigned long flags)
+{
+    LIST_HEAD(vmemmap_pages);
+    struct vmemmap_remap_walk walk = {
+        .remap_pte = vmemmap_restore_pte(pte_t *pte, unsigned long addr, struct vmemmap_remap_walk *walk) {
+            pgprot_t pgprot = PAGE_KERNEL;
+            struct page *page;
+            void *to;
+
+            BUG_ON(pte_page(ptep_get(pte)) != walk->reuse_page);
+
+            page = list_first_entry(walk->vmemmap_pages, struct page, lru);
+            list_del(&page->lru);
+            to = page_to_virt(page);
+            copy_page(to, (void *)walk->reuse_addr);
+            reset_struct_pages(to);
+
+            /* Makes sure that preceding stores to the page contents become visible
+            * before the set_pte_at() write. */
+            smp_wmb();
+            set_pte_at(&init_mm, addr, pte, mk_pte(page, pgprot));
+        },
+        .reuse_addr         = reuse,
+        .vmemmap_pages      = &vmemmap_pages,
+        .flags              = flags,
+    };
+
+    /* See the comment in the vmemmap_remap_free(). */
+    BUG_ON(start - reuse != PAGE_SIZE);
+
+    ret = alloc_vmemmap_page_list(start, end, &vmemmap_pages) {
+        gfp_t gfp_mask = GFP_KERNEL | __GFP_RETRY_MAYFAIL;
+        unsigned long nr_pages = (end - start) >> PAGE_SHIFT;
+        int nid = page_to_nid((struct page *)start);
+        struct page *page, *next;
+        int i;
+
+        for (i = 0; i < nr_pages; i++) {
+            page = alloc_pages_node(nid, gfp_mask, 0);
+            if (!page)
+                goto out;
+            list_add(&page->lru, list);
+        }
+        memmap_pages_add(nr_pages) {
+            atomic_long_add(delta, &nr_memmap_pages);
+        }
+
+        return 0;
+    out:
+        list_for_each_entry_safe(page, next, list, lru)
+            __free_page(page);
+        return -ENOMEM;
+    }
+    if (ret)
+        return -ENOMEM;
+
+    return vmemmap_remap_range(reuse, end, &walk);
+        --->
+}
+```
+
+### hugetlb_folio_init_vmemmap
+
+```c
+void __init hugetlb_folio_init_vmemmap(struct folio *folio,
+                          struct hstate *h,
+                          unsigned long nr_pages)
+{
+    int ret;
+
+    /* Prepare folio head */
+    __folio_clear_reserved(folio);
+    __folio_set_head(folio);
+    ret = folio_ref_freeze(folio, 1);
+    VM_BUG_ON(!ret);
+    /* Initialize the necessary tail struct pages */
+    hugetlb_folio_init_tail_vmemmap(folio, 1, nr_pages) {
+        enum zone_type zone = zone_idx(folio_zone(folio));
+        int nid = folio_nid(folio);
+        unsigned long head_pfn = folio_pfn(folio);
+        unsigned long pfn, end_pfn = head_pfn + end_page_number;
+        int ret;
+
+        for (pfn = head_pfn + start_page_number; pfn < end_pfn; pfn++) {
+            struct page *page = pfn_to_page(pfn);
+
+            __init_single_page(page, pfn, zone, nid) {
+                mm_zero_struct_page(page);
+                set_page_links(page, zone, nid, pfn) {
+                    set_page_zone(page, zone) {
+                        page->flags &= ~(ZONES_MASK << ZONES_PGSHIFT);
+                        page->flags |= (zone & ZONES_MASK) << ZONES_PGSHIFT;
+                    }
+                    set_page_node(page, node) {
+                        page->flags &= ~(NODES_MASK << NODES_PGSHIFT);
+                        page->flags |= (node & NODES_MASK) << NODES_PGSHIFT;
+                    }
+                    set_page_section(page, pfn_to_section_nr(pfn)) {
+                        page->flags &= ~(SECTIONS_MASK << SECTIONS_PGSHIFT);
+                        page->flags |= (section & SECTIONS_MASK) << SECTIONS_PGSHIFT;
+                    }
+                }
+                init_page_count(page);
+                atomic_set(&page->_mapcount, -1);
+                page_cpupid_reset_last(page);
+                page_kasan_tag_reset(page);
+
+                INIT_LIST_HEAD(&page->lru);
+            #ifdef WANT_PAGE_VIRTUAL
+                /* The shift won't overflow because ZONE_NORMAL is below 4G. */
+                if (!is_highmem_idx(zone))
+                    set_page_address(page, __va(pfn << PAGE_SHIFT));
+            #endif
+            }
+            prep_compound_tail((struct page *)folio, pfn - head_pfn);
+            ret = page_ref_freeze(page, 1);
+            VM_BUG_ON(!ret);
+        }
+    }
+    prep_compound_head((struct page *)folio, huge_page_order(h));
+}
+```
+
 ## THP
 
 * [LWN - Transparent huge pages in the page cache](https://lwn.net/Articles/686690/)
@@ -26090,6 +26825,8 @@ static const struct ctl_table hugetlb_table[] = {
     },
 };
 ```
+
+## init_hugetlbfs_fs
 
 ## hugetlbfs_fill_super
 
@@ -26620,8 +27357,7 @@ static long region_add(struct resv_map *resv, long f, long t,
 retry:
 
     /* Count how many regions are actually needed to execute this add. */
-    add_reservation_in_range(resv, f, t, NULL, NULL,
-                 &actual_regions_needed);
+    add_reservation_in_range(resv, f, t, NULL, NULL, &actual_regions_needed);
 
     /* Check for sufficient descriptors in the cache to accommodate
      * this add operation. Note that actual_regions_needed may be greater
