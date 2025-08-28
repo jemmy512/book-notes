@@ -1653,6 +1653,9 @@ struct page {
 ```c
 #define __is_lm_address(addr) (((u64)(addr) - PAGE_OFFSET) < (PAGE_END - PAGE_OFFSET))
 
+/* PHYS_OFFSET - the physical address of the start of memory. */
+#define PHYS_OFFSET ({ VM_BUG_ON(memstart_addr & 1); memstart_addr; })
+
 #define __lm_to_phys(addr) (((addr) - PAGE_OFFSET) + PHYS_OFFSET)
 #define __kimg_to_phys(addr) ((addr) - kimage_voffset)
 
@@ -1869,105 +1872,177 @@ int sparse_init(void) {
 vmemmap_populate(unsigned long start, unsigned long end, int node, struct vmem_altmap *altmap) {
     if (!IS_ENABLED(CONFIG_ARM64_4K_PAGES)) {
         return vmemmap_populate_basepages(start, end, node, altmap, NULL/*reuse*/) {
-            for (; addr < end; addr += PAGE_SIZE) {
-                pte = vmemmap_populate_address(addr, node, altmap, reuse) {
-                    pgd = vmemmap_pgd_populate(addr, node) {
-                        pgd_t *pgd = pgd_offset_k(addr);
-                        if (pgd_none(*pgd)) {
-                            void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node) {
-                                p = vmemmap_alloc_block(size, node) {
-                                    if (slab_is_available()) {
-                                        gfp_t gfp_mask = GFP_KERNEL|__GFP_RETRY_MAYFAIL|__GFP_NOWARN;
-
-                                        page = alloc_pages_node(node, gfp_mask, order) {
-                                            __alloc_pages();
-                                        }
-                                        if (page)
-                                            return page_address(page);
-
-                                        return NULL;
-                                    } else {
-                                        return __earlyonly_bootmem_alloc(node, size, size, __pa(MAX_DMA_ADDRESS)) {
-                                            memblock_alloc_try_nid_raw()
-                                                memblock_alloc_internal()
-                                                    --->
-                                        }
-                                    }
-                                }
-                                memset(p, 0, size);
-                            }
-                            if (!p)
-                                return NULL;
-                            pgd_populate(&init_mm, pgd, p);
-                        }
-                        return pgd;
-                    }
-
-                    p4d = vmemmap_p4d_populate(pgd, addr, node) {
-                        p4d_t *p4d = p4d_offset(pgd, addr);
-                        if (p4d_none(*p4d)) {
-                            void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
-                            if (!p)
-                                return NULL;
-                            pud_init(p);
-                            p4d_populate(&init_mm, p4d, p);
-                        }
-                        return p4d;
-                    }
-
-                    pud = vmemmap_pud_populate(p4d, addr, node) {
-                        pud_t *pud = pud_offset(p4d, addr);
-                        if (pud_none(*pud)) {
-                            void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
-                            if (!p)
-                                return NULL;
-                            pmd_init(p);
-                            pud_populate(&init_mm/*mm*/, pud/*pudp*/, p/*pmdp*/);
-                            return pud;
-                        }
-                    }
-
-                    pmd = vmemmap_pmd_populate(pud, addr, node);
-
-                    pte = vmemmap_pte_populate(pmd, addr, node, altmap, reuse) {
-                        pte_t *pte = pte_offset_kernel(pmd, addr);
-                        if (pte_none(ptep_get(pte))) {
-                            pte_t entry;
-                            void *p;
-
-                            if (!reuse) {
-                                p = vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
-                                if (!p)
-                                    return NULL;
-                            } else {
-                                get_page(reuse);
-                                p = page_to_virt(reuse);
-                            }
-                            entry = pfn_pte(__pa(p) >> PAGE_SHIFT, PAGE_KERNEL);
-                            set_pte_at(&init_mm, addr, pte, entry, 1/*nr*/) {
-                                for (;;) {
-                                    set_pte(ptep, pte) {
-                                        WRITE_ONCE(*ptep, pte);
-                                    }
-                                    if (--nr == 0)
-                                        break;
-                                    ptep++;
-                                    pte_val(pte) += PAGE_SIZE;
-                                }
-                            }
-                        }
-                        return pte;
-                    }
-
-                    vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
-                }
-                if (!pte)
-                    return -ENOMEM;
-            }
+            return vmemmap_populate_range(start, end, node, altmap, -1, 0);
         }
     } else {
         return vmemmap_populate_hugepages(start, end, node, altmap);
     }
+}
+
+static int __meminit vmemmap_populate_range(unsigned long start,
+					    unsigned long end, int node,
+					    struct vmem_altmap *altmap,
+					    unsigned long ptpfn,
+					    unsigned long flags)
+{
+	unsigned long addr = start;
+	pte_t *pte;
+
+	for (; addr < end; addr += PAGE_SIZE) {
+		pte = vmemmap_populate_address(addr, node, altmap, ptpfn, flags) {
+            pgd_t *pgd;
+            p4d_t *p4d;
+            pud_t *pud;
+            pmd_t *pmd;
+            pte_t *pte;
+
+            pgd = vmemmap_pgd_populate(addr, node);
+            if (!pgd)
+                return NULL;
+            p4d = vmemmap_p4d_populate(pgd, addr, node);
+            if (!p4d)
+                return NULL;
+            pud = vmemmap_pud_populate(p4d, addr, node);
+            if (!pud)
+                return NULL;
+
+            pmd = vmemmap_pmd_populate(pud, addr, node) {
+                pmd_t *pmd = pmd_offset(pud, addr);
+                if (pmd_none(*pmd)) {
+                    void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
+                    if (!p)
+                        return NULL;
+                    kernel_pte_init(p);
+                    pmd_populate_kernel(&init_mm, pmd, p) {
+                        VM_BUG_ON(mm && mm != &init_mm);
+                        __pmd_populate(pmdp, __pa(ptep), PMD_TYPE_TABLE | PMD_TABLE_AF | PMD_TABLE_UXN) {
+                            set_pmd(pmdp, __pmd(__phys_to_pmd_val(ptep) | prot));
+                        }
+                    }
+                }
+                return pmd;
+            }
+            if (!pmd)
+                return NULL;
+
+            pte = vmemmap_pte_populate(pmd, addr, node, altmap, ptpfn, flags) {
+                pte_t *pte = pte_offset_kernel(pmd, addr);
+                if (pte_none(ptep_get(pte))) {
+                    pte_t entry;
+                    void *p;
+
+                    if (ptpfn == (unsigned long)-1) {
+                        p = vmemmap_alloc_block_buf(PAGE_SIZE, node, altmap);
+                        if (!p)
+                            return NULL;
+                        ptpfn = PHYS_PFN(__pa(p));
+                    } else {
+                        if (flags & VMEMMAP_POPULATE_PAGEREF)
+                            get_page(pfn_to_page(ptpfn));
+                    }
+                    entry = pfn_pte(ptpfn, PAGE_KERNEL);
+                    set_pte_at(&init_mm, addr, pte, entry);
+                }
+                return pte;
+            }
+            if (!pte)
+                return NULL;
+            vmemmap_verify(pte, node, addr, addr + PAGE_SIZE);
+
+            return pte;
+        }
+		if (!pte)
+			return -ENOMEM;
+	}
+
+	return 0;
+}
+```
+
+```c
+int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
+					 int node, struct vmem_altmap *altmap)
+{
+	unsigned long addr;
+	unsigned long next;
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	for (addr = start; addr < end; addr = next) {
+		next = pmd_addr_end(addr, end);
+
+		pgd = vmemmap_pgd_populate(addr, node) {
+            pgd_t *pgd = pgd_offset_k(addr);
+            if (pgd_none(*pgd)) {
+                void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
+                if (!p)
+                    return NULL;
+                pgd_populate(&init_mm, pgd, p);
+            }
+        }
+		if (!pgd)
+			return -ENOMEM;
+
+		p4d = vmemmap_p4d_populate(pgd, addr, node)
+		if (!p4d)
+			return -ENOMEM;
+
+		pud = vmemmap_pud_populate(p4d, addr, node) {
+            p4d_t *p4d = p4d_offset(pgd, addr);
+            if (p4d_none(*p4d)) {
+                void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
+                if (!p)
+                    return NULL;
+                pud_init(p);
+                p4d_populate(&init_mm, p4d, p);
+            }
+            return p4d;
+        }
+		if (!pud)
+			return -ENOMEM;
+
+		pmd = pmd_offset(pud, addr);
+		if (pmd_none(READ_ONCE(*pmd))) {
+			void *p;
+
+			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
+			if (p) {
+				vmemmap_set_pmd(pmd, p, node, addr, next) {
+                    pmd_set_huge(pmdp, __pa(p), __pgprot(PROT_SECT_NORMAL)) {
+                        prot = mk_pmd_sect_prot(prot) {
+                            return __pgprot((pgprot_val(prot) & ~PMD_TYPE_MASK) | PMD_TYPE_SECT);
+                        }
+                        pmd_t new_pmd = pfn_pmd(__phys_to_pfn(phys), prot);
+
+                        /* Only allow permission changes for now */
+                        if (!pgattr_change_is_safe(READ_ONCE(pmd_val(*pmdp)), pmd_val(new_pmd)))
+                            return 0;
+
+                        VM_BUG_ON(phys & ~PMD_MASK);
+                        set_pmd(pmdp, new_pmd);
+                        return 1;
+                    }
+                }
+				continue;
+			} else if (altmap) {
+				/*
+				 * No fallback: In any case we care about, the
+				 * altmap should be reasonably sized and aligned
+				 * such that vmemmap_alloc_block_buf() will always
+				 * succeed. For consistency with the PTE case,
+				 * return an error here as failure could indicate
+				 * a configuration issue with the size of the altmap.
+				 */
+				return -ENOMEM;
+			}
+		} else if (vmemmap_check_pmd(pmd, node, addr, next))
+			continue;
+		if (vmemmap_populate_basepages(addr, next, node, altmap))
+			return -ENOMEM;
+	}
+	return 0;
 }
 ```
 
@@ -25597,6 +25672,8 @@ void xas_try_split(struct xa_state *xas, void *entry, unsigned int order)
 
 ## HVO
 
+* [A vmemmap diet for HugeTLB and Device DAX](https://docs.kernel.org/mm/vmemmap_dedup.html)
+
 ```c
 atic const struct ctl_table hugetlb_vmemmap_sysctls[] = {
     {
@@ -26236,6 +26313,9 @@ int vmemmap_pmd_entry(pmd_t *pmd, unsigned long addr,
     if (!head || ret)
         return ret;
 
+    /* The vmemmap area, which holds the metadata (struct page array) for a huge page,
+     * is often initially mapped by a single 2MB PMD entry. To remap the tail(0-7) pages,
+     * this huge vmemmap PMD needs to be split */
     return vmemmap_split_pmd(pmd, head, addr & PMD_MASK, vmemmap_walk) {
         pmd_t __pmd;
         int i;
@@ -26248,6 +26328,8 @@ int vmemmap_pmd_entry(pmd_t *pmd, unsigned long addr,
 
         pmd_populate_kernel(&init_mm, &__pmd, pgtable);
 
+        /* E.g., PMD points to a huge 2MB memory which contains
+         * 512 struct page to represent 512 4kb-sized page */
         for (i = 0; i < PTRS_PER_PTE; i++, addr += PAGE_SIZE) {
             pte_t entry, *pte;
             pgprot_t pgprot = PAGE_KERNEL;
@@ -26270,8 +26352,7 @@ int vmemmap_pmd_entry(pmd_t *pmd, unsigned long addr,
         spin_lock(&init_mm.page_table_lock);
         if (likely(pmd_leaf(*pmd))) { /* (pmd_present(pmd) && !pmd_table(pmd)) */
             /* Higher order allocations from buddy allocator must be able to
-            * be treated as indepdenent small pages (as they can be freed
-            * individually). */
+            * be treated as indepdenent small pages (as they can be freed individually). */
             if (!PageReserved(head)) {
                 split_page(head, get_order(PMD_SIZE)) {
                     int i;
@@ -26363,33 +26444,31 @@ static int vmemmap_pte_entry(pte_t *pte, unsigned long addr,
     return 0;
 }
 
+/* pte: A pointer to the page table entry (PTE) in the vmemmap region being processed.
+ * addr: The virtual address in the vmemmap region corresponding to the PTE. */
 static void vmemmap_remap_pte(pte_t *pte, unsigned long addr,
-			      struct vmemmap_remap_walk *walk)
+                  struct vmemmap_remap_walk *walk)
 {
-	/*
-	 * Remap the tail pages as read-only to catch illegal write operation
-	 * to the tail pages.
-	 */
-	pgprot_t pgprot = PAGE_KERNEL_RO;
-	struct page *page = pte_page(ptep_get(pte));
-	pte_t entry;
+    /* Remap the tail pages as read-only to catch illegal write operation
+     * to the tail pages. */
+    pgprot_t pgprot = PAGE_KERNEL_RO;
+    struct page *page = pte_page(ptep_get(pte));
+    pte_t entry;
 
-	/* Remapping the head page requires r/w */
-	if (unlikely(addr == walk->reuse_addr)) {
-		pgprot = PAGE_KERNEL;
-		list_del(&walk->reuse_page->lru);
+    /* Remapping the head page requires r/w */
+    if (unlikely(addr == walk->reuse_addr)) {
+        pgprot = PAGE_KERNEL;
+        list_del(&walk->reuse_page->lru);
 
-		/*
-		 * Makes sure that preceding stores to the page contents from
-		 * vmemmap_remap_free() become visible before the set_pte_at()
-		 * write.
-		 */
-		smp_wmb();
-	}
+        /* Makes sure that preceding stores to the page contents from
+         * vmemmap_remap_free() become visible before the set_pte_at()
+         * write. */
+        smp_wmb();
+    }
 
-	entry = mk_pte(walk->reuse_page, pgprot);
-	list_add(&page->lru, walk->vmemmap_pages);
-	set_pte_at(&init_mm, addr, pte, entry);
+    entry = mk_pte(walk->reuse_page, pgprot);
+    list_add(&page->lru, walk->vmemmap_pages);
+    set_pte_at(&init_mm, addr, pte, entry);
 }
 ```
 
@@ -26451,7 +26530,12 @@ static int vmemmap_remap_alloc(unsigned long start, unsigned long end,
             list_del(&page->lru);
             to = page_to_virt(page);
             copy_page(to, (void *)walk->reuse_addr);
-            reset_struct_pages(to);
+            reset_struct_pages(to) {
+                struct page *from = start + NR_RESET_STRUCT_PAGE;
+
+                BUILD_BUG_ON(NR_RESET_STRUCT_PAGE * 2 > PAGE_SIZE / sizeof(struct page));
+                memcpy(start, from, sizeof(*from) * NR_RESET_STRUCT_PAGE);
+            }
 
             /* Makes sure that preceding stores to the page contents become visible
             * before the set_pte_at() write. */
