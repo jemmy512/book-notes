@@ -14051,6 +14051,8 @@ memblock_free_all() {
 
 # hotplug
 
+* [kern - Memory hotplug](https://docs.kernel.org/core-api/memory-hotplug.html)
+
 ## add_memory
 
 ```c
@@ -23588,11 +23590,6 @@ static int khugepaged(void *none)
                 hash_del(&slot->hash);
                 list_del(&slot->mm_node);
 
-                /* Not strictly needed because the mm exited already.
-                *
-                * clear_bit(MMF_VM_HUGEPAGE, &mm->flags); */
-
-                /* khugepaged_mm_lock actually not necessary for the below */
                 mm_slot_free(mm_slot_cache, mm_slot) {
                     kmem_cache_free(cache, objp);
                 }
@@ -24543,13 +24540,10 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
     for (_address = address, _pte = pte; _pte < pte + HPAGE_PMD_NR;
          _pte++, _address += PAGE_SIZE) {
         pte_t pteval = ptep_get(_pte);
-        if (is_swap_pte(pteval)) {
+        if (is_swap_pte(pteval)) { /* return !pte_none(pte) && !pte_present(pte); */
             ++unmapped;
             if (!cc->is_khugepaged ||
                 unmapped <= khugepaged_max_ptes_swap) {
-                /* Always be strict with uffd-wp
-                 * enabled swap entries.  Please see
-                 * comment below for pte_uffd_wp(). */
                 if (pte_swp_uffd_wp_any(pteval)) {
                     result = SCAN_PTE_UFFD_WP;
                     goto out_unmap;
@@ -24573,14 +24567,9 @@ static int hpage_collapse_scan_pmd(struct mm_struct *mm,
                 goto out_unmap;
             }
         }
-        if (pte_uffd_wp(pteval)) {
+        if (pte_uffd_wp(pteval)) { /* return !!(pte_val(pte) & PTE_UFFD_WP); */
             /* Don't collapse the page if any of the small
-             * PTEs are armed with uffd write protection.
-             * Here we can also mark the new huge pmd as
-             * write protected if any of the small ones is
-             * marked but that could bring unknown
-             * userfault messages that falls outside of
-             * the registered range.  So, just be simple. */
+             * PTEs are armed with uffd write protection. */
             result = SCAN_PTE_UFFD_WP;
             goto out_unmap;
         }
@@ -25672,10 +25661,12 @@ void xas_try_split(struct xa_state *xas, void *entry, unsigned int order)
 
 ## HVO
 
+![](../images/kernel/mem-hvo.svg)
+
 * [A vmemmap diet for HugeTLB and Device DAX](https://docs.kernel.org/mm/vmemmap_dedup.html)
 
 ```c
-atic const struct ctl_table hugetlb_vmemmap_sysctls[] = {
+static const struct ctl_table hugetlb_vmemmap_sysctls[] = {
     {
         .procname       = "hugetlb_optimize_vmemmap",
         .data           = &vmemmap_optimize_enabled,
@@ -26322,11 +26313,13 @@ int vmemmap_pmd_entry(pmd_t *pmd, unsigned long addr,
         unsigned long addr = start;
         pte_t *pgtable;
 
+        /* pte_t is unsinged long which is 8 bytes,
+         * pgtable is 4KB which can comodate 4KB / 8 = 512 pte_t */
         pgtable = pte_alloc_one_kernel(&init_mm);
         if (!pgtable)
             return -ENOMEM;
 
-        pmd_populate_kernel(&init_mm, &__pmd, pgtable);
+        pmd_populate407644_kernel(&init_mm, &__pmd, pgtable);
 
         /* E.g., PMD points to a huge 2MB memory which contains
          * 512 struct page to represent 512 4kb-sized page */
