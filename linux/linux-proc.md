@@ -14282,6 +14282,10 @@ pool_mayday_timeout() {
 }
 ```
 
+# cpu_hotplug
+
+* [CPU hotplug in the Kernel](https://docs.kernel.org/core-api/cpu_hotplug.html)
+
 # fs_proc
 
 ```sh
