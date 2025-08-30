@@ -1,0 +1,123 @@
+<!-- customize your own config in <?> -->
+
+<domain type='hvf' id='1' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+    <name>Arch</name>
+    <memory dumpCore='on' unit='KiB'>8388608</memory>
+    <currentMemory unit='KiB'>8388608</currentMemory>
+    <vcpu placement='static'>12</vcpu>
+    <os firmware='efi'>
+        <type arch='aarch64' machine='virt-9.0'>hvm</type>
+        <firmware>
+            <feature enabled='no' name='enrolled-keys'/>
+            <feature enabled='no' name='secure-boot'/>
+        </firmware>
+        <loader readonly='yes' type='pflash' format='raw'>/opt/homebrew/Cellar/qemu/<?>/share/qemu/edk2-aarch64-code.fd</loader>
+        <nvram template='/opt/homebrew/Cellar/qemu/<?>/share/qemu/edk2-arm-vars.fd' templateFormat='raw' format='raw'>/Users/<?>/.config/libvirt/qemu/nvram/Arch_VARS.fd</nvram>
+        <boot dev='cdrom'/>
+        <boot dev='hd'/>
+    </os>
+    <features>
+        <acpi/>
+        <apic/>
+        <gic version='3'/>
+    </features>
+    <cpu mode='custom' match='exact' check='none'>
+        <model fallback='forbid'>host</model>
+    </cpu>
+    <clock offset='utc'>
+        <timer name='rtc' tickpolicy='catchup'/>
+        <timer name='hpet' present='no'/>
+        <timer name='pit' tickpolicy='delay'/>
+    </clock>
+    <on_poweroff>destroy</on_poweroff>
+    <on_reboot>restart</on_reboot>
+    <on_crash>destroy</on_crash>
+    <devices>
+        <emulator>/opt/homebrew/bin/qemu-system-aarch64</emulator>
+        <disk type='file' device='disk'>
+            <driver name='qemu' type='qcow2' cache='directsync'/>
+            <source file='<?>/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2' index='2'/>
+            <backingStore/>
+            <target dev='vda' bus='virtio'/>
+            <alias name='virtio-disk0'/>
+            <address type='pci' domain='0x0000' bus='0x02' slot='0x00' function='0x0'/>
+        </disk>
+        <disk type='file' device='disk'>
+            <driver name='qemu' type='raw'/>
+            <source file='<?>/linux/arch/arm64/boot/Image' index='1'/>
+            <backingStore/>
+            <target dev='vdb' bus='virtio'/>
+            <alias name='virtio-disk1'/>
+            <address type='pci' domain='0x0000' bus='0x03' slot='0x00' function='0x0'/>
+        </disk>
+        <controller type='pci' index='0' model='pcie-root'>
+            <alias name='pcie.0'/>
+        </controller>
+        <controller type='pci' index='1' model='pcie-root-port'>
+            <model name='pcie-root-port'/>
+            <target chassis='1' port='0x8'/>
+            <alias name='pci.1'/>
+            <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x0' multifunction='on'/>
+        </controller>
+        <controller type='pci' index='2' model='pcie-root-port'>
+            <model name='pcie-root-port'/>
+            <target chassis='2' port='0x9'/>
+            <alias name='pci.2'/>
+            <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x1'/>
+        </controller>
+        <controller type='pci' index='3' model='pcie-root-port'>
+            <model name='pcie-root-port'/>
+            <target chassis='3' port='0xa'/>
+            <alias name='pci.3'/>
+            <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x2'/>
+        </controller>
+        <controller type='pci' index='4' model='pcie-root-port'>
+            <model name='pcie-root-port'/>
+            <target chassis='4' port='0xb'/>
+            <alias name='pci.4'/>
+            <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x3'/>
+        </controller>
+        <controller type='pci' index='5' model='pcie-root-port'>
+            <model name='pcie-root-port'/>
+            <target chassis='5' port='0xc'/>
+            <alias name='pci.5'/>
+            <address type='pci' domain='0x0000' bus='0x00' slot='0x01' function='0x4'/>
+        </controller>
+        <filesystem type='mount' accessmode='squash'>
+            <source dir='/Volumes/code'/>
+            <target dir='code'/>
+            <alias name='fs0'/>
+            <address type='pci' domain='0x0000' bus='0x04' slot='0x00' function='0x0'/>
+        </filesystem>
+        <interface type='user'>
+            <mac address='52:54:00:1f:51:94'/>
+            <model type='virtio'/>
+            <alias name='net0'/>
+            <address type='pci' domain='0x0000' bus='0x01' slot='0x00' function='0x0'/>
+        </interface>
+        <serial type='pty'>
+            <source path='/dev/ttys014'/>
+            <target type='system-serial' port='0'>
+                <model name='pl011'/>
+            </target>
+            <alias name='serial0'/>
+        </serial>
+        <console type='pty' tty='/dev/ttys014'>
+            <source path='/dev/ttys014'/>
+            <target type='serial' port='0'/>
+            <alias name='serial0'/>
+        </console>
+        <audio id='1' type='none'/>
+    </devices>
+    <seclabel type='none' model='none'/>
+    <seclabel type='dynamic' model='dac' relabel='yes'>
+        <label>+0:+0</label>
+        <imagelabel>+0:+0</imagelabel>
+    </seclabel>
+    <qemu:commandline>
+        <qemu:arg value='-device'/>
+        <qemu:arg value='virtio-net,netdev=net0,mac=51:24:09:1c:22:31,addr=0xA'/>
+        <qemu:arg value='-netdev'/>
+        <qemu:arg value='vmnet-host,id=net0'/>
+    </qemu:commandline>
+</domain>

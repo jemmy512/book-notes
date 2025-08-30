@@ -416,6 +416,8 @@ make distclean
     ```
 4. start qemu
 
+    [Download the Arch Linux for UTM](https://mac.getutm.app/gallery/archlinux-arm)
+
     ```sh
     # -nic vmnet-shared needs root privilege
     sudo qemu-system-aarch64 \
@@ -427,6 +429,50 @@ make distclean
         -nic vmnet-shared \
         -append "root=/dev/vda2" -nographic
     ```
+
+## hvp
+
+* [在 MacOS 上做 Linux 内核开发的一些有趣经验和坑](https://blog.hackret.com/2023/07/564/)
+
+```sh
+brew install libvirt
+sudo brew services start libvirt
+sudo virtlogd -d
+
+mkdir -p /Users/jemmy/.config/libvirt/qemu/nvram/
+cp /opt/homebrew/Cellar/qemu/10.0.3/share/qemu/edk2-arm-vars.fd /Users/jemmy/.config/libvirt/qemu/nvram/Arch_VARS.fd
+
+# arch-linux.xml is in the same path with make-kernel.md
+sudo virsh define /Users/jemmy/.config/libvirt/arch-linux.xml
+sudo virsh undefine Arch --nvram
+
+sudo virsh list --all
+
+sudo virsh start Arch
+sudo virsh shutdown Arch
+sudo virsh destroy Arch
+
+sudo virsh console Arch
+
+# mount shared directory
+sudo mount -t 9p code -o trans=virtio /code
+# -t 9p: Specifies the 9p filesystem.
+# code: The target name from the XML.
+# -o trans=virtio: Uses the virtio transport for performance.
+# /code: The local mount point in the guest.
+
+mount | grep 9p
+df -h /code
+ls /code
+
+# persistent the mount, add the cfg to /etc/fstab
+code /code 9p trans=virtio,nofail 0 0
+
+# unmount
+lsof /code
+sudo fuser -km /code
+sudo umount /code
+```
 
 # ltp
 
