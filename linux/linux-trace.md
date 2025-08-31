@@ -14,7 +14,6 @@
 * [LWN - Tracing](https://lwn.net/Kernel/Index/#Tracing)
 * [Linux tracing systems & how they fit together](https://jvns.ca/blog/2017/07/05/linux-tracing-systems/#kprobes)
 * [Kernel - Linux Tracing Technologies](https://www.kernel.org/doc/html/latest/trace/index.html)
-* [Linux tracing systems & how they fit together](https://jvns.ca/blog/2017/07/05/linux-tracing-systems/)
 
 * :orange_book: System Performance Enterprise and the Cloud - BrenDan Gregg
 * :orange_book: Performance Analysis and Tuning on Modern CPUs - Denis Bakhvalor
@@ -5227,6 +5226,8 @@ Configure kdump (`CONFIG_KEXEC`, kexec-tools). After a crash, run `crash vmlinux
 ![](../images/kernel/perf-events-map.png)
 
 ```sh
+sudo pacman -S linux-headers
+
 usage: perf [--version] [--help] [OPTIONS] COMMAND [ARGS]
 
 The most commonly used perf commands are:

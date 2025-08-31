@@ -111,6 +111,7 @@
 * [Memory access ordering :one: an introduction](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering---an-introduction)  ⊙ [:two: Barriers and the Linux kernel](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering-part-2---barriers-and-the-linux-kernel)  ⊙ [:three: Memory access ordering in the Arm Architecture](https://community.arm.com/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering-part-3---memory-access-ordering-in-the-arm-architecture)
 * [Memory Model and Synchronization Primitive - Part 1: Memory Barrier](https://www.alibabacloud.com/blog/597460) ⊙ [Part 2: Memory Model](https://www.alibabacloud.com/blog/memory-model-and-synchronization-primitive---part-2-memory-model_597461)
 * [wowotech - Linux内核同步机制之三: memory barrier - store buffer, invalidate queue](http://www.wowotech.net/kernel_synchronization/memory-barrier.html)
+* [原理和实战解析Linux中如何正确地使用内存屏障](https://mp.weixin.qq.com/s/s6AvLiVVkoMX4dIGpqmXYA)
 
 | **Type** | **Compiler Barrier** (`barrier()`) | **Memory Barrier** (`smp_mb()`, `smp_rmb()`, etc.) |
 | :-: | :-: | :-: |

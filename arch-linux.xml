@@ -1,20 +1,13 @@
-<!-- customize your own config in <?> -->
-
 <domain type='hvf' id='1' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
     <name>Arch</name>
     <memory dumpCore='on' unit='KiB'>8388608</memory>
     <currentMemory unit='KiB'>8388608</currentMemory>
     <vcpu placement='static'>12</vcpu>
     <os firmware='efi'>
-        <type arch='aarch64' machine='virt-9.0'>hvm</type>
-        <firmware>
-            <feature enabled='no' name='enrolled-keys'/>
-            <feature enabled='no' name='secure-boot'/>
-        </firmware>
-        <loader readonly='yes' type='pflash' format='raw'>/opt/homebrew/Cellar/qemu/<?>/share/qemu/edk2-aarch64-code.fd</loader>
-        <nvram template='/opt/homebrew/Cellar/qemu/<?>/share/qemu/edk2-arm-vars.fd' templateFormat='raw' format='raw'>/Users/<?>/.config/libvirt/qemu/nvram/Arch_VARS.fd</nvram>
-        <boot dev='cdrom'/>
-        <boot dev='hd'/>
+        <type arch="aarch64" machine="virt">hvm</type>
+        <kernel>/Volumes/code/linux/arch/arm64/boot/Image</kernel>
+        <cmdline>root=/dev/vda2 console=ttyAMA0</cmdline>
+        <bootmenu enable="no"/>
     </os>
     <features>
         <acpi/>
@@ -36,19 +29,11 @@
         <emulator>/opt/homebrew/bin/qemu-system-aarch64</emulator>
         <disk type='file' device='disk'>
             <driver name='qemu' type='qcow2' cache='directsync'/>
-            <source file='<?>/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2' index='2'/>
+            <source file='/Volumes/code/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2' index='2'/>
             <backingStore/>
             <target dev='vda' bus='virtio'/>
             <alias name='virtio-disk0'/>
             <address type='pci' domain='0x0000' bus='0x02' slot='0x00' function='0x0'/>
-        </disk>
-        <disk type='file' device='disk'>
-            <driver name='qemu' type='raw'/>
-            <source file='<?>/linux/arch/arm64/boot/Image' index='1'/>
-            <backingStore/>
-            <target dev='vdb' bus='virtio'/>
-            <alias name='virtio-disk1'/>
-            <address type='pci' domain='0x0000' bus='0x03' slot='0x00' function='0x0'/>
         </disk>
         <controller type='pci' index='0' model='pcie-root'>
             <alias name='pcie.0'/>
