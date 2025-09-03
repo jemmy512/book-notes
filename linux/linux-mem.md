@@ -21555,6 +21555,7 @@ out_leak_pages:
     * [Transparent Hugepage Support](https://docs.kernel.org/admin-guide/mm/transhuge.html)
     * [Hugetlbfs Reservation](https://docs.kernel.org/mm/hugetlbfs_reserv.html)
 * [[PATCH v23 0/9] Free some vmemmap pages of HugeTLB page](https://lore.kernel.org/all/20210510030027.56044-1-songmuchun@bytedance.com/)
+* [Linux mTHP 动态大页](https://mp.weixin.qq.com/s/B76XlGP7efmsfZR-ABAM1A)
 
 Segment | hugetlb   | mTHP
 :-:     | :-:       | :-:
@@ -26651,23 +26652,24 @@ void __init hugetlb_folio_init_vmemmap(struct folio *folio,
 * transparent_hugepage=madvise
 * transparent_hugepage=never
 
-Runtime Config to Enable mTHP | val
+
+/sys/kernel/mm/transparent_hugepage/ | val
 :-: | :-:
-/sys/kernel/mm/transparent_hugepage/ | always, defer, defer+madvise, madvise, never
-/sys/kernel/mm/transparent_hugepage/shmem_enabled | always, within_size, advise, never , deny, force
-/sys/kernel/mm/transparent_hugepage/use_zero_page | 0, 1
-/sys/kernel/mm/transparent_hugepage/hpage_pmd_size | read-only
-/sys/kernel/mm/transparent_hugepage/khugepaged/ | defrag, pages_to_scan, scan_sleep_millisecs, alloc_sleep_millisecs, max_ptes_none, max_ptes_swap
+enabled | always, defer, defer+madvise, madvise, never
+defrag |
+shmem_enabled | always, within_size, advise, never , deny, force
+use_zero_page | 0, 1
+hpage_pmd_size | read-only
+khugepaged/alloc_sleep_millisecs |
+khugepaged/full_scans |
+khugepaged/max_ptes_swap |
+khugepaged/pages_to_scan |
+khugepaged/defrag |
+khugepaged/max_ptes_none |
+khugepaged/pages_collapsed |
+khugepaged/scan_sleep_millisecs |
 /proc/[pid]/smaps | Shows THP usage for a specific process.
 /proc/meminfo | show AnonHugePages, ShmemHugePages, HugePages_Total
-
-**Defragment policy when allocation failed:**
-> /sys/kernel/mm/transparent_hugepage/enabled
-> always, defer, defer + madvice, madvice, never
-
-/sys/kernel/mm/transparent_hugepage/khugepaged/pages_to_scan
-
-/sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs
 
 
 ```c
