@@ -11145,3 +11145,7 @@ int do_syslog(int type, char __user *buf, int len, int source)
 
 ```c
 ```
+
+## XFS
+
+* [XFS - Block Atomic Writes in UEK8](https://blogs.oracle.com/linux/post/xfs-block-atomic-writes-in-uek8)
