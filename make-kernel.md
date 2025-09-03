@@ -247,6 +247,8 @@ make install
 
 # make kernel
 
+* [How to use the Microsoft Linux kernel v6 on Windows Subsystem for Linux version 2 (WSL2)](https://learn.microsoft.com/en-us/community/content/wsl-user-msft-kernel-v6)
+
 ## config
 
 generate .config by arch/arm64/configs/defconfig
@@ -274,10 +276,58 @@ make defconfig ARCH=arm64
     CONFIG_VIRTIO_BLK=y
     ```
 
+```sh
+# 1. General Perf Support
+CONFIG_PERF_EVENTS=y
+CONFIG_HW_PERF_EVENTS=y
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_STACKTRACE=y
+CONFIG_KALLSYMS=y
+CONFIG_KALLSYMS_ALL=y
+CONFIG_DEBUG_FS=y
+
+# Optional (recommended for more metrics/tools):
+CONFIG_TRACING=y
+CONFIG_SCHED_TRACER=y
+CONFIG_FTRACE_SYSCALLS=y
+CONFIG_FUNCTION_GRAPH_TRACER=y
+CONFIG_TRACEPOINTS=y
+
+# 2. eBPF Core Support, For loading and running BPF programs:
+CONFIG_BPF=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_JIT=y
+CONFIG_HAVE_EBPF_JIT=y
+CONFIG_CGROUP_BPF=y
+CONFIG_BPF_EVENTS=y
+CONFIG_BPF_LSM=y        # if you want LSM hooks
+CONFIG_KPROBE_EVENTS=y
+CONFIG_UPROBE_EVENTS=y
+CONFIG_NET=y            # networking needed for tc/xdp
+
+# 3. Networking + XDP (optional, if using eBPF for packet filtering)
+CONFIG_BPF_JIT=y
+CONFIG_NETFILTER_XT_MATCH_BPF=m
+CONFIG_NETFILTER_XT_TARGET_BPF=m
+CONFIG_XDP_SOCKETS=y
+CONFIG_BPF_STREAM_PARSER=y
+
+# 4. Helpers for bcc / bpftrace
+CONFIG_IKHEADERS=m
+
+# 5. Debugging / Development (optional but useful)
+CONFIG_DEBUG_INFO=y
+CONFIG_DEBUG_INFO_BTF=y
+CONFIG_DEBUG_INFO_DWARF4=y
+CONFIG_DEBUG_INFO_REDUCED=n
+CONFIG_DEBUG_INFO_SPLIT=n
+```
+
 ## make
 
 ```sh
-make -j$(nproc) ARCH=arm64 Image  CROSS_COMPILE=aarch64-linux-gnu-
+time make -j$(nproc) ARCH=arm64 Image  CROSS_COMPILE=aarch64-linux-gnu-
 ```
 
 To speed up compile we only build Image, exclude modules.
@@ -414,6 +464,7 @@ make distclean
 
     time make Image -j$(sysctl -n hw.ncpu) ARCH=arm64 LLVM=1 HOSTCFLAGS="-Iscripts/macos-include -I$(brew --prefix libelf)/include"
     ```
+
 4. start qemu
 
     [Download the Arch Linux for UTM](https://mac.getutm.app/gallery/archlinux-arm)
@@ -616,12 +667,15 @@ chmod +x clash-*-*-v1.18.0
 cp clash-*-*-v1.18.0 /usr/local/bin/clash
 
 mkdir /usr/local/etc/clash
-# download proxy nodes
-wget -P /usr/local/etc/clash https://***.*/feeds/***/clash.yml
-mv /usr/local/etc/clash/clash.yml /usr/local/etc/clash/config.yaml
+cd /usr/local/etc/clash
+# download proxy cfg
+wget https://***.*/feeds/***/clash.yml
+# rename
+mv clash.yml ./config.yaml
+# download Country.mmdb file
+wget https://github.com/SukkaW/Koolshare-Clash/raw/refs/heads/master/koolclash/koolclash/config/Country.mmdb
 
 # run clash
-# Country.mmdb may cant download, copy it from other place
 clash -d /usr/local/etc/clash # default 127.0.0.1:7890
 ```
 
