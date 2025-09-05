@@ -2901,6 +2901,8 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
 
 ## cpu_cgroup
 
+* [[PATCH v4 0/5] Defer throttle when task exits to user](https://lore.kernel.org/all/20250829081120.806-1-ziqianlu@bytedance.com/)
+
 ```c
 struct task_group {
     struct cgroup_subsys_state css;
