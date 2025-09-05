@@ -8814,6 +8814,8 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 
 * [DumpSatck - 负载跟踪](http://www.dumpstack.cn/index.php/category/tracking) ⊙ [cpu capacity](http://www.dumpstack.cn/index.php/2022/06/02/743.html) ⊙ [PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html) ⊙ [util_est](http://www.dumpstack.cn/index.php/2022/08/13/787.html) ⊙ [uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html) ⊙ [walt](http://www.dumpstack.cn/index.php/2022/08/13/789.html)
 
+* [[RFC PATCH v4 00/28] Cache aware load-balancing](https://lore.kernel.org/all/cover.1754712565.git.tim.c.chen@linux.intel.com/)
+
 ---
 
 ![](../images/kernel/proc-sched-load_balance.svg)
