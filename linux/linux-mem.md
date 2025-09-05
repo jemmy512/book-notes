@@ -1880,16 +1880,16 @@ vmemmap_populate(unsigned long start, unsigned long end, int node, struct vmem_a
 }
 
 static int __meminit vmemmap_populate_range(unsigned long start,
-					    unsigned long end, int node,
-					    struct vmem_altmap *altmap,
-					    unsigned long ptpfn,
-					    unsigned long flags)
+                        unsigned long end, int node,
+                        struct vmem_altmap *altmap,
+                        unsigned long ptpfn,
+                        unsigned long flags)
 {
-	unsigned long addr = start;
-	pte_t *pte;
+    unsigned long addr = start;
+    pte_t *pte;
 
-	for (; addr < end; addr += PAGE_SIZE) {
-		pte = vmemmap_populate_address(addr, node, altmap, ptpfn, flags) {
+    for (; addr < end; addr += PAGE_SIZE) {
+        pte = vmemmap_populate_address(addr, node, altmap, ptpfn, flags) {
             pgd_t *pgd;
             p4d_t *p4d;
             pud_t *pud;
@@ -1951,29 +1951,29 @@ static int __meminit vmemmap_populate_range(unsigned long start,
 
             return pte;
         }
-		if (!pte)
-			return -ENOMEM;
-	}
+        if (!pte)
+            return -ENOMEM;
+    }
 
-	return 0;
+    return 0;
 }
 ```
 
 ```c
 int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
-					 int node, struct vmem_altmap *altmap)
+                     int node, struct vmem_altmap *altmap)
 {
-	unsigned long addr;
-	unsigned long next;
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
+    unsigned long addr;
+    unsigned long next;
+    pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
 
-	for (addr = start; addr < end; addr = next) {
-		next = pmd_addr_end(addr, end);
+    for (addr = start; addr < end; addr = next) {
+        next = pmd_addr_end(addr, end);
 
-		pgd = vmemmap_pgd_populate(addr, node) {
+        pgd = vmemmap_pgd_populate(addr, node) {
             pgd_t *pgd = pgd_offset_k(addr);
             if (pgd_none(*pgd)) {
                 void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
@@ -1982,14 +1982,14 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
                 pgd_populate(&init_mm, pgd, p);
             }
         }
-		if (!pgd)
-			return -ENOMEM;
+        if (!pgd)
+            return -ENOMEM;
 
-		p4d = vmemmap_p4d_populate(pgd, addr, node)
-		if (!p4d)
-			return -ENOMEM;
+        p4d = vmemmap_p4d_populate(pgd, addr, node)
+        if (!p4d)
+            return -ENOMEM;
 
-		pud = vmemmap_pud_populate(p4d, addr, node) {
+        pud = vmemmap_pud_populate(p4d, addr, node) {
             p4d_t *p4d = p4d_offset(pgd, addr);
             if (p4d_none(*p4d)) {
                 void *p = vmemmap_alloc_block_zero(PAGE_SIZE, node);
@@ -2000,16 +2000,16 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
             }
             return p4d;
         }
-		if (!pud)
-			return -ENOMEM;
+        if (!pud)
+            return -ENOMEM;
 
-		pmd = pmd_offset(pud, addr);
-		if (pmd_none(READ_ONCE(*pmd))) {
-			void *p;
+        pmd = pmd_offset(pud, addr);
+        if (pmd_none(READ_ONCE(*pmd))) {
+            void *p;
 
-			p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
-			if (p) {
-				vmemmap_set_pmd(pmd, p, node, addr, next) {
+            p = vmemmap_alloc_block_buf(PMD_SIZE, node, altmap);
+            if (p) {
+                vmemmap_set_pmd(pmd, p, node, addr, next) {
                     pmd_set_huge(pmdp, __pa(p), __pgprot(PROT_SECT_NORMAL)) {
                         prot = mk_pmd_sect_prot(prot) {
                             return __pgprot((pgprot_val(prot) & ~PMD_TYPE_MASK) | PMD_TYPE_SECT);
@@ -2025,24 +2025,22 @@ int __meminit vmemmap_populate_hugepages(unsigned long start, unsigned long end,
                         return 1;
                     }
                 }
-				continue;
-			} else if (altmap) {
-				/*
-				 * No fallback: In any case we care about, the
-				 * altmap should be reasonably sized and aligned
-				 * such that vmemmap_alloc_block_buf() will always
-				 * succeed. For consistency with the PTE case,
-				 * return an error here as failure could indicate
-				 * a configuration issue with the size of the altmap.
-				 */
-				return -ENOMEM;
-			}
-		} else if (vmemmap_check_pmd(pmd, node, addr, next))
-			continue;
-		if (vmemmap_populate_basepages(addr, next, node, altmap))
-			return -ENOMEM;
-	}
-	return 0;
+                continue;
+            } else if (altmap) {
+                /* No fallback: In any case we care about, the
+                 * altmap should be reasonably sized and aligned
+                 * such that vmemmap_alloc_block_buf() will always
+                 * succeed. For consistency with the PTE case,
+                 * return an error here as failure could indicate
+                 * a configuration issue with the size of the altmap. */
+                return -ENOMEM;
+            }
+        } else if (vmemmap_check_pmd(pmd, node, addr, next))
+            continue;
+        if (vmemmap_populate_basepages(addr, next, node, altmap))
+            return -ENOMEM;
+    }
+    return 0;
 }
 ```
 
@@ -23546,6 +23544,21 @@ static void free_hpage_workfn(struct work_struct *work)
 ## khugepaged
 
 ```c
+/* default scan 8*512 pte (or vmas) every 30 second */
+static unsigned int khugepaged_pages_to_scan __read_mostly;
+static unsigned int khugepaged_pages_collapsed;
+static unsigned int khugepaged_full_scans;
+static unsigned int khugepaged_scan_sleep_millisecs __read_mostly = 10000;
+/* during fragmentation poll the hugepage allocator once every minute */
+static unsigned int khugepaged_alloc_sleep_millisecs __read_mostly = 60000;
+static unsigned long khugepaged_sleep_expire;
+
+static DEFINE_SPINLOCK(khugepaged_mm_lock);
+static DECLARE_WAIT_QUEUE_HEAD(khugepaged_wait);
+
+static DEFINE_READ_MOSTLY_HASHTABLE(mm_slots_hash, MM_SLOTS_HASH_BITS);
+
+
 struct khugepaged_scan {
     struct list_head            mm_head;
     struct khugepaged_mm_slot   *mm_slot;
@@ -23564,6 +23577,53 @@ struct mm_slot {
 ```
 
 ```c
+1. do_huge_pmd_anonymous_page()
+2. hugepage_madvise()
+3. __mmap_region()
+__mmap_new_vma()
+4. vma_merge_new_range()
+5. vma_merge_existing_range()
+
+
+void khugepaged_enter_vma(struct vm_area_struct *vma,
+              vm_flags_t vm_flags)
+{
+    if (!test_bit(MMF_VM_HUGEPAGE, &vma->vm_mm->flags) &&
+        hugepage_pmd_enabled()) {
+        if (thp_vma_allowable_order(vma, vm_flags, TVA_ENFORCE_SYSFS, PMD_ORDER)) {
+
+            __khugepaged_enter(vma->vm_mm) {
+                struct khugepaged_mm_slot *mm_slot;
+                struct mm_slot *slot;
+                int wakeup;
+
+                /* __khugepaged_exit() must not run from under us */
+                VM_BUG_ON_MM(hpage_collapse_test_exit(mm), mm);
+                if (unlikely(test_and_set_bit(MMF_VM_HUGEPAGE, &mm->flags)))
+                    return;
+
+                mm_slot = mm_slot_alloc(mm_slot_cache);
+                if (!mm_slot)
+                    return;
+
+                slot = &mm_slot->slot;
+
+                spin_lock(&khugepaged_mm_lock);
+                mm_slot_insert(mm_slots_hash, mm, slot);
+                /* Insert just behind the scanning cursor, to let the area settle
+                * down a little. */
+                wakeup = list_empty(&khugepaged_scan.mm_head);
+                list_add_tail(&slot->mm_node, &khugepaged_scan.mm_head);
+                spin_unlock(&khugepaged_mm_lock);
+
+                mmgrab(mm);
+                if (wakeup)
+                    wake_up_interruptible(&khugepaged_wait);
+            }
+        }
+    }
+}
+
 static int khugepaged(void *none)
 {
     struct khugepaged_mm_slot *mm_slot;
@@ -23573,7 +23633,24 @@ static int khugepaged(void *none)
 
     while (!kthread_should_stop()) {
         khugepaged_do_scan(&khugepaged_collapse_control);
-        khugepaged_wait_work();
+        khugepaged_wait_work() {
+            if (khugepaged_has_work()) {
+                const unsigned long scan_sleep_jiffies =
+                    msecs_to_jiffies(khugepaged_scan_sleep_millisecs);
+
+                if (!scan_sleep_jiffies)
+                    return;
+
+                khugepaged_sleep_expire = jiffies + scan_sleep_jiffies;
+                wait_event_freezable_timeout(khugepaged_wait,
+                                khugepaged_should_wakeup(),
+                                scan_sleep_jiffies);
+                return;
+            }
+
+            if (hugepage_pmd_enabled())
+                wait_event_freezable(khugepaged_wait, khugepaged_wait_event());
+        }
     }
 
     spin_lock(&khugepaged_mm_lock);
@@ -23896,7 +23973,23 @@ int hpage_collapse_scan_file(struct mm_struct *mm, unsigned long addr,
 #### collpase_file
 
 ```c
-/* collapse filemap/tmpfs/shmem pages into huge one. */
+/* collapse filemap/tmpfs/shmem pages into huge one.
+ *
+ * Basic scheme is simple, details are more complex:
+ *  - allocate and lock a new huge page;
+ *  - scan page cache, locking old pages
+ *    + swap/gup in pages if necessary;
+ *  - copy data to new page
+ *  - handle shmem holes
+ *    + re-validate that holes weren't filled by someone else
+ *    + check for userfaultfd
+ *  - finalize updates to the page cache;
+ *  - if replacing succeeds:
+ *    + unlock huge page;
+ *    + free old pages;
+ *  - if replacing failed;
+ *    + unlock old pages
+ *    + unlock and free huge page; */
 static int collapse_file(struct mm_struct *mm, unsigned long addr,
              struct file *file, pgoff_t start,
              struct collapse_control *cc)
