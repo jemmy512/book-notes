@@ -68,7 +68,8 @@ cd /code/busybox-1.33.1/
 * make
 
     ```sh
-    make install
+    make -j$(nproc)
+    make CONFIG_PREFIX=/code/ramfs install
     ```
 
 _install dir under busybox is generated after successful make
@@ -344,6 +345,15 @@ qemu-system-aarch64 \
     -machine virt \
     -kernel ./arch/arm64/boot/Image \
     -append "rdinit=/linuxrc nokaslr console=ttyAMA0 loglevel=8" \
+    -nographic
+
+qemu-system-x86_64 \
+    -machine q35 \
+    -cpu max \
+    -m 8196 \
+    -kernel "/code/kern/arch/x86/boot/bzImage" \
+    -nic user,model=virtio-net-pci \
+    -append "nokaslr console=ttyS0 loglevel=8" \
     -nographic
 
 # terminate qemu
