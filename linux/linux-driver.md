@@ -26,6 +26,94 @@
     /sys/class/<class>/...
 ```
 
+# core
+
+```c
+struct device {
+    struct kobject              kobj;
+    struct device               *parent;
+
+    struct device_private       *p;
+
+    const char                  *init_name; /* initial name of the device */
+    const struct device_type    *type;
+
+    const struct bus_type       *bus; /* type of bus device is on */
+    struct device_driver        *driver;
+    void                        *platform_data;
+    void                        *driver_data;
+    struct mutex                mutex;
+
+    struct dev_links_info       links;
+    struct dev_pm_info          power;
+    struct dev_pm_domain        *pm_domain;
+};
+
+struct device_type {
+    const char *name;
+    const struct attribute_group **groups;
+    int (*uevent)(const struct device *dev, struct kobj_uevent_env *env);
+    char *(*devnode)(const struct device *dev, umode_t *mode, kuid_t *uid, kgid_t *gid);
+    void (*release)(struct device *dev);
+
+    const struct dev_pm_ops *pm;
+};
+
+struct device_driver {
+    const char              *name;
+    const struct bus_type   *bus;
+
+    struct module           *owner;
+    const char              *mod_name;    /* used for built-in modules */
+
+    bool suppress_bind_attrs;    /* disables bind/unbind via sysfs */
+    enum probe_type probe_type;
+
+    const struct of_device_id       *of_match_table;
+    const struct acpi_device_id     *acpi_match_table;
+
+    int (*probe) (struct device *dev);
+    void (*sync_state)(struct device *dev);
+    int (*remove) (struct device *dev);
+    void (*shutdown) (struct device *dev);
+    int (*suspend) (struct device *dev, pm_message_t state);
+    int (*resume) (struct device *dev);
+    const struct attribute_group **groups;
+    const struct attribute_group **dev_groups;
+
+    const struct dev_pm_ops *pm;
+    void (*coredump) (struct device *dev);
+
+    struct driver_private *p;
+};
+
+struct of_device_id {
+    char        name[32];
+    char        type[32];
+    char        compatible[128];
+    const void  *data;
+};
+```
+
+## mknode
+
+## device_add
+
+## requset_mem_region
+
+## relese_mem_region
+
+## ioremap
+
+## iounmap
+
+## readl
+
+## writel
+
+## remap_pfn_range
+
+
 # bus
 
 ```c
@@ -62,6 +150,31 @@ struct bus_type {
     bool need_parent_lock;
 };
 
+struct attribute_group {
+    const char  *name;
+    umode_t (*is_visible)(struct kobject *, struct attribute *, int);
+    umode_t (*is_bin_visible)(struct kobject *, const struct bin_attribute *, int);
+    size_t  (*bin_size)(struct kobject *, const struct bin_attribute *, int);
+    struct attribute    **attrs;
+    union {
+        const struct bin_attribute    *const *bin_attrs;
+        const struct bin_attribute    *const *bin_attrs_new;
+    };
+};
+
+struct bin_attribute {
+    struct attribute    attr;
+    size_t              size;
+    void                *private;
+    struct address_space *(*f_mapping)(void);
+    ssize_t (*read)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t);
+    ssize_t (*read_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t);
+    ssize_t (*write)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t);
+    ssize_t (*write_new)(struct file *, struct kobject *, const struct bin_attribute *, char *, loff_t, size_t);
+    loff_t (*llseek)(struct file *, struct kobject *, const struct bin_attribute *, loff_t, int);
+    int     (*mmap)(struct file *, struct kobject *, const struct bin_attribute *attr, struct vm_area_struct *vma);
+};
+
 struct pci_dev {
     struct device dev;   // embedded generic device
     ...
@@ -78,63 +191,9 @@ struct platform_device {
 };
 ```
 
-```c
-struct device_driver {
-    const char              *name;
-    const struct bus_type   *bus;
-
-    struct module           *owner;
-    const char              *mod_name;    /* used for built-in modules */
-
-    bool suppress_bind_attrs;    /* disables bind/unbind via sysfs */
-    enum probe_type probe_type;
-
-    const struct of_device_id       *of_match_table;
-    const struct acpi_device_id     *acpi_match_table;
-
-    int (*probe) (struct device *dev);
-    void (*sync_state)(struct device *dev);
-    int (*remove) (struct device *dev);
-    void (*shutdown) (struct device *dev);
-    int (*suspend) (struct device *dev, pm_message_t state);
-    int (*resume) (struct device *dev);
-    const struct attribute_group **groups;
-    const struct attribute_group **dev_groups;
-
-    const struct dev_pm_ops *pm;
-    void (*coredump) (struct device *dev);
-
-    struct driver_private *p;
-};
-```
-
 # platform
 
 ```c
-struct device {
-    struct kobject          kobj;
-    struct device           *parent;
-
-    struct device_private   *p;
-
-    const char                  *init_name; /* initial name of the device */
-    const struct device_type    *type;
-
-    const struct bus_type       *bus;    /* type of bus device is on */
-    struct device_driver        *driver;    /* which driver has allocated this
-                       device */
-    void        *platform_data;    /* Platform specific data, device
-                       core doesn't touch it */
-    void        *driver_data;    /* Driver data, set and get with
-                       dev_set_drvdata/dev_get_drvdata */
-    struct mutex    mutex;    /* mutex to synchronize calls to
-                     * its driver. */
-
-    struct dev_links_info   links;
-    struct dev_pm_info      power;
-    struct dev_pm_domain    *pm_domain;
-}
-
 struct platform_device {
     const char      *name;
     int             id;
@@ -155,6 +214,15 @@ struct platform_device {
 
     /* arch specific additions */
     struct pdev_archdata    archdata;
+};
+
+struct resource {
+    resource_size_t start;
+    resource_size_t end;
+    const char      *name;
+    unsigned long   flags;
+    unsigned long   desc;
+    struct resource *parent, *sibling, *child;
 };
 
 struct platform_driver {
@@ -337,25 +405,6 @@ struct cdev {
     dev_t                           dev;
     unsigned int                    count;
 };
-
-void cdev_init(struct cdev *, const struct file_operations *);
-
-struct cdev *cdev_alloc(void);
-
-void cdev_put(struct cdev *p);
-
-int cdev_add(struct cdev *, dev_t, unsigned);
-
-void cdev_set_parent(struct cdev *p, struct kobject *kobj);
-int cdev_device_add(struct cdev *cdev, struct device *dev);
-void cdev_device_del(struct cdev *cdev, struct device *dev);
-
-void cdev_del(struct cdev *);
-
-void cd_forget(struct inode *);
-
-int register_chrdev_region(dev_t from, unsigned count, const char *name);
-int alloc_chrdev_region(dev_t *dev, unsigned baseminor, unsigned count, const char *name)
 ```
 
 ```c
@@ -387,23 +436,15 @@ static void __exit xxx_exit(void)
 }
 ```
 
-# core
+## register_chrdev
 
-## device_add
+## register_chrdev_region
 
-# requset_mem_region
+## alloc_chrdev_region
 
-# relese_mem_region
+## cdev_init
 
-# ioremap
-
-# iounmap
-
-# readl
-
-# writel
-
-# remap_pfn_range
+## cdev_add
 
 # block
 
