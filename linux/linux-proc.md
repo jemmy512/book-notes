@@ -202,6 +202,11 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 
 # Reference
 
+* [LNW - A proxy-execution baby step](https://lwn.net/Articles/1030842/)
+    * [1. [RFC PATCH 00/11] Reviving the Proxy Execution Series](https://lore.kernel.org/lkml/20221003214501.2050087-1-connoro@google.com/)
+    * [2. [RESEND][PATCH v8 0/7] Preparatory changes for Proxy Execution v8](https://lore.kernel.org/lkml/20240224001153.2584030-1-jstultz@google.com/)
+    * [3. [PATCH v19 0/8] Single RunQueue Proxy Execution (v19)](https://lore.kernel.org/all/20250712033407.2383110-1-jstultz@google.com/)
+    * [Phoronix - Linux 6.13 Poised To Land Prep Patches Working Toward Proxy Execution](https://www.phoronix.com/news/Linux-6.13-Prep-For-Proxy-Exec)
 * [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 * [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
 * [Kernel Index Sched - LWN](https://lwn.net/Kernel/Index/#Scheduler)
@@ -1971,6 +1976,68 @@ SYSCALL_DEFINE3(sched_setscheduler) {
 ##### return from system call
 ```c
 /* syscall_exit_to_user_mode_work -> exit_to_user_mode_prepare -> */
+static __always_inline void exit_to_user_mode(struct pt_regs *regs)
+{
+	exit_to_user_mode_prepare(regs);
+	mte_check_tfsr_exit();
+	__exit_to_user_mode();
+}
+
+void exit_to_user_mode_prepare(struct pt_regs *regs)
+{
+    flags = read_thread_flags();
+    if (unlikely(flags & _TIF_WORK_MASK)) {
+        do_notify_resume(regs, flags) {
+            do {
+                local_irq_enable();
+
+                if (thread_flags & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY))
+                    schedule();
+
+                if (thread_flags & _TIF_UPROBE)
+                    uprobe_notify_resume(regs);
+
+                if (thread_flags & _TIF_MTE_ASYNC_FAULT) {
+                    clear_thread_flag(TIF_MTE_ASYNC_FAULT);
+                    send_sig_fault(SIGSEGV, SEGV_MTEAERR, (void __user *)NULL, current);
+                }
+
+                if (thread_flags & _TIF_PATCH_PENDING)
+                    klp_update_patch_state(current);
+
+                if (thread_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                    do_signal(regs);
+
+                if (thread_flags & _TIF_NOTIFY_RESUME) {
+                    resume_user_mode_work(regs) {
+                        clear_thread_flag(TIF_NOTIFY_RESUME);
+                        smp_mb__after_atomic();
+                        if (unlikely(task_work_pending(current))) {
+                            task_work_run();
+                        }
+
+                        if (unlikely(current->cached_requested_key)) {
+                            key_put(current->cached_requested_key);
+                            current->cached_requested_key = NULL;
+                        }
+
+                        mem_cgroup_handle_over_high(GFP_KERNEL);
+                        blkcg_maybe_throttle_current();
+
+                        rseq_handle_notify_resume(NULL, regs);
+                    }
+                }
+
+                if (thread_flags & _TIF_FOREIGN_FPSTATE)
+                    fpsimd_restore_current_state();
+
+                local_irq_disable();
+                thread_flags = read_thread_flags();
+            } while (thread_flags & _TIF_WORK_MASK);
+        }
+    }
+}
+
 static void exit_to_user_mode_loop(struct pt_regs *regs, u32 cached_flags)
 {
     while (ti_work & EXIT_TO_USER_MODE_WORK) {
