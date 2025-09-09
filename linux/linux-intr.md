@@ -712,7 +712,7 @@ out_unlock:
 static const struct proc_ops irq_affinity_proc_ops = {
     .proc_open      = irq_affinity_proc_open,
     .proc_read      = seq_read,
-    .proc_lseek	    = seq_lseek,
+    .proc_lseek     = seq_lseek,
     .proc_release   = single_release,
     .proc_write     = irq_affinity_proc_write,
 };
@@ -954,11 +954,23 @@ static struct smp_hotplug_thread softirq_threads = {
     .thread_comm        = "ksoftirqd/%u",
 };
 
+static struct smp_hotplug_thread timer_thread = {
+    .store              = &ktimerd,
+    .setup              = ktimerd_setup,
+    .thread_should_run  = ktimerd_should_run,
+    .thread_fn          = run_ktimerd,
+    .thread_comm        = "ktimers/%u",
+};
+
 static __init int spawn_ksoftirqd(void)
 {
-    cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL, takeover_tasklets);
+    cpuhp_setup_state_nocalls(CPUHP_SOFTIRQ_DEAD, "softirq:dead", NULL,
+                  takeover_tasklets);
     BUG_ON(smpboot_register_percpu_thread(&softirq_threads));
-
+#ifdef CONFIG_IRQ_FORCED_THREADING
+    if (force_irqthreads())
+        BUG_ON(smpboot_register_percpu_thread(&timer_thread));
+#endif
     return 0;
 }
 early_initcall(spawn_ksoftirqd);
@@ -1102,6 +1114,32 @@ void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_ma
 {
     cpumask_copy(&p->cpus_allowed, new_mask);
     p->nr_cpus_allowed = cpumask_weight(new_mask);
+}
+```
+
+## run_ktimerd
+
+```c
+static void run_ktimerd(unsigned int cpu)
+{
+    unsigned int timer_si;
+
+    ksoftirqd_run_begin() {
+        local_irq_disable();
+    }
+
+    timer_si = local_timers_pending_force_th();
+    __this_cpu_write(pending_timer_softirq, 0);
+    or_softirq_pending(timer_si);
+
+    __do_softirq() {
+        handle_softirqs(false);
+            --->
+    }
+
+    ksoftirqd_run_end() {
+        local_irq_enable();
+    }
 }
 ```
 
@@ -1347,11 +1385,11 @@ struct thread_info {
         u64     preempt_count; /* 0 => preemptible, <0 => bug */
         struct {
 #ifdef CONFIG_CPU_BIG_ENDIAN
-            u32	need_resched;
-            u32	count;
+            u32    need_resched;
+            u32    count;
 #else
-            u32	count;
-            u32	need_resched;
+            u32    count;
+            u32    need_resched;
 #endif
         } preempt;
     };
@@ -1371,7 +1409,7 @@ void raise_softirq_irqoff(unsigned int nr)
     __raise_softirq_irqoff(nr) {
         or_softirq_pending(1UL << nr) {
             #define local_softirq_pending_ref irq_stat.__softirq_pending
-            #define or_softirq_pending(x)	(__this_cpu_or(local_softirq_pending_ref, (x)))
+            #define or_softirq_pending(x)    (__this_cpu_or(local_softirq_pending_ref, (x)))
         }
     }
 
