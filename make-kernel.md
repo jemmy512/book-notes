@@ -18,6 +18,8 @@ makdir -P /code && cd /code
 # vpn doesn't support git:// protocol
 nohup git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
 
+# sched/core subsystem git repo
+git remote add tip git://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git
 git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 ```
 
