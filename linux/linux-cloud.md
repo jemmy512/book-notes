@@ -3129,7 +3129,7 @@ ssize_t cpu_max_write(struct kernfs_open_file *of,
 * [LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
     * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
 
-* [[RFC PATCH v3 00/10] sched/fair: Defer CFS throttle to user entry](https://lore.kernel.org/lkml/20240711130004.2157737-1-vschneid@redhat.com/)
+* [[PATCH v4 0/5] Defer throttle when task exits to user](https://lore.kernel.org/lkml/20250829081120.806-1-ziqianlu@bytedance.com/)
 
 kernel build .config:
 ```sh
