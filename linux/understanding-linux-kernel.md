@@ -648,7 +648,7 @@ scheduling classes: SCHED_FIFO, SCHED_RR, SCHED_NORMAL
 
     The scheduler can also be invoked in a lazy way by setting the TIF_NEED_RESCHED flag of current to 1.
 
-    * When current has used up its quantum of CPU time; this is done by the **scheduler_tick**() function.
+    * When current has used up its quantum of CPU time; this is done by the **sched_tick**() function.
     * When a process is woken up and its priority is higher than that of the current process; this task is performed by the **try_to_wake_up**() function.
     * When a **sched_setscheduler**() system call is issued (see the section "System Calls Related to Scheduling" later in this chapter).
 
