@@ -14953,6 +14953,7 @@ struct vm_area_struct {
 * [wowo tech](http://www.wowotech.net/memory_management/cma.html)
 * [CMA技术原理分析 - 内核工匠](https://mp.weixin.qq.com/s/kNHys4p2sXFV6wwV7VDFqQ)
 * [LoyenWang - Linux内存管理之CMA](https://www.cnblogs.com/LoyenWang/p/12182594.html)
+* [Leo - Linux内存管理之CMA](https://mp.weixin.qq.com/s/ZRC554JSD3K-K6X2QRoKoA)
 
 ```c
 struct cma {
@@ -21558,7 +21559,7 @@ out_leak_pages:
     * [Hugetlbfs Reservation](https://docs.kernel.org/mm/hugetlbfs_reserv.html)
 * [[PATCH v23 0/9] Free some vmemmap pages of HugeTLB page](https://lore.kernel.org/all/20210510030027.56044-1-songmuchun@bytedance.com/)
 * [Linux mTHP 动态大页](https://mp.weixin.qq.com/s/B76XlGP7efmsfZR-ABAM1A)
-
+* [Leo - Linux内存管理之透明大页(THP)](https://mp.weixin.qq.com/s/xRxP4beYJ-5URA7MUW96eA)
 Segment | hugetlb   | mTHP
 :-:     | :-:       | :-:
 Text    | Limited   | Limited
