@@ -238,25 +238,33 @@ tick_handle_periodic() {
             run_local_timers() {
                 hrtimer_run_queues() {
                     tick_check_oneshot_change() {
-                        hrtimer_switch_to_hres();
-                            tick_setup_sched_timer(); /* hrtimer tick emulation */
-                                hrtimer_init(&ts->sched_timer, CLOCK_MONOTONIC, HRTIMER_MODE_S);
-                                ts->sched_timer.function = tick_sched_timer;
-                                    tick_sched_timer();
-                                        tick_sched_do_timer();
-                                            tick_do_update_jiffies64(now)
-                                                do_timer();
-                                                update_wall_time();
-                                        tick_sched_handle();
-                                            update_process_times();
+                        hrtimer_switch_to_hres() {
+                            tick_setup_sched_timer() { /* hrtimer tick emulation */
+                                hrtimer_setup(&ts->sched_timer, tick_nohz_handler) =  {
+                                    tick_sched_do_timer() {
+                                        tick_do_update_jiffies64(now) {
+                                            do_timer();
+                                            update_wall_time();
+                                        }
+                                    }
+                                    tick_sched_handle() {
+                                        update_process_times();
+                                    }
+                                    hrtimer_forward(timer, now, TICK_NSEC);
+                                }
+                            }
+                        }
                     }
-                    !ktime_before(now, cpu_base->softirq_expires_next) {
-                        raise_softirq_irqoff(HRTIMER_SOFTIRQ);
-                            hrtimer_run_softirq();
+                    if (!ktime_before(now, cpu_base->softirq_expires_next)) {
+                        raise_timer_softirq(HRTIMER_SOFTIRQ) {
+                            hrtimer_run_softirq() {
                                 __hrtimer_run_queues();
+                            }
+                        }
                     }
-                    __hrtimer_run_queues();
+                    __hrtimer_run_queues() {
                         __run_hrtimer();
+                    }
                 }
 
                 raise_softirq(TIMER_SOFTIRQ) {
@@ -296,7 +304,7 @@ tick_handle_periodic() {
                 }
             }
 
-            scheduler_tick() {
+            sched_tick() {
                 curr->sched_class->task_tick(rq, curr, 0);
             }
 
