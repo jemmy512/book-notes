@@ -3129,7 +3129,10 @@ ssize_t cpu_max_write(struct kernfs_open_file *of,
 * [LoyenWang](https://www.cnblogs.com/LoyenWang/tag/进程调度/)
     * [4. 组调度及带宽控制](https://www.cnblogs.com/LoyenWang/p/12459000.html)
 
-* [[PATCH v4 0/5] Defer throttle when task exits to user](https://lore.kernel.org/lkml/20250829081120.806-1-ziqianlu@bytedance.com/)
+* [Aaron Lu - [PATCH v4 0/5] Defer throttle when task exits to user](https://lore.kernel.org/lkml/20250829081120.806-1-ziqianlu@bytedance.com/)
+    * [Valentin Schneider - [RFC PATCH v3 00/10] sched/fair: Defer CFS throttle to user entry](https://lore.kernel.org/lkml/20240711130004.2157737-1-vschneid@redhat.com/)
+    * [[RFC PATCH 0/7] Defer throttle when task exits to user](https://lore.kernel.org/lkml/20250313072030.1032893-1-ziqianlu@bytedance.com/)
+        * [Chengming's suggestion: move task work attaching time from throttle chekcing time point to pick_task](https://lore.kernel.org/lkml/58e0515a-ed67-4d1a-825f-bfc2b31d1d18@linux.dev/)
 
 kernel build .config:
 ```sh
@@ -3627,7 +3630,7 @@ if (cfs_rq->runtime_remaining <= 0) {
 
 #### throttle_cfs_rq
 
-![](../images/kernel/proc-sched-cfs-throttle_cfs_rq.png)
+![](../images/kernel/proc-sched-cfs-throttle_cfs_rq.svg)
 
 ```c
 static void check_enqueue_throttle(struct cfs_rq *cfs_rq)
