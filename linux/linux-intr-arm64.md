@@ -21,6 +21,8 @@
 
 ![](../images/kernel/intr-arch.svg)
 
+* [中断专题——中断及中断虚拟化总汇](https://mp.weixin.qq.com/s/8S8dsQKBuhNX3gffRpaRbQ)
+
 # vectors
 
 ```c
@@ -245,11 +247,9 @@ alternative_else_nop_endif
     mrs    x23, spsr_el1
     stp    lr, x21, [sp, #S_LR]
 
-    /*
-     * For exceptions from EL0, create a final frame record.
+    /* For exceptions from EL0, create a final frame record.
      * For exceptions from EL1, create a synthetic frame record so the
-     * interrupted code shows up in the backtrace.
-     */
+     * interrupted code shows up in the backtrace. */
     .if \el == 0
         stp    xzr, xzr, [sp, #S_STACKFRAME]
     .else
@@ -355,13 +355,11 @@ alternative_else_nop_endif
 
 #ifdef CONFIG_ARM64_PTR_AUTH
 alternative_if ARM64_HAS_ADDRESS_AUTH
-    /*
-     * IA was enabled for in-kernel PAC. Disable it now if needed, or
+    /* IA was enabled for in-kernel PAC. Disable it now if needed, or
      * alternatively install the user's IA. All other per-task keys and
      * SCTLR bits were updated on task switch.
      *
-     * No kernel C function calls after this.
-     */
+     * No kernel C function calls after this. */
     tbz    x0, SCTLR_ELx_ENIA_SHIFT, 1f
     __ptrauth_keys_install_user tsk, x0, x1, x2
     b    2f
@@ -883,6 +881,8 @@ irqreturn_t ipi_handler(int irq, void *data) {
 
 ![](../images/kernel/intr-gic_chip_data.png)
 
+* [浅析 MSI-X 实现原理：结合ARM GICv3和PCIe硬件实现](https://mp.weixin.qq.com/s/A-LsAtKlWvHgoG_gwgr09g)
+
 ---
 
 GIC V3 | ITS
@@ -1037,7 +1037,7 @@ static struct irq_chip gic_chip = {
 ![](../images/kernel/intr-gic_of_init.png)
 
 ```c
-static struct gic_chip_data gic_data __read_mostly;
+static struct gic_chip_data gic_data; /* init at gic_init_bases */
 ```
 
 ```c
@@ -1084,6 +1084,104 @@ gic_of_init(struct device_node *node, struct device_node *parent)
 
     gic_cnt++;
     return 0;
+}
+```
+
+### gic_init_bases
+
+```c
+int __init gic_init_bases(phys_addr_t dist_phys_base,
+                 void __iomem *dist_base,
+                 struct redist_region *rdist_regs,
+                 u32 nr_redist_regions,
+                 u64 redist_stride,
+                 struct fwnode_handle *handle)
+{
+    u32 typer;
+    int err;
+
+    if (!is_hyp_mode_available())
+        static_branch_disable(&supports_deactivate_key);
+
+    if (static_branch_likely(&supports_deactivate_key))
+        pr_info("GIC: Using split EOI/Deactivate mode\n");
+
+    gic_data.fwnode = handle;
+    gic_data.dist_phys_base = dist_phys_base;
+    gic_data.dist_base = dist_base;
+    gic_data.redist_regions = rdist_regs;
+    gic_data.nr_redist_regions = nr_redist_regions;
+    gic_data.redist_stride = redist_stride;
+
+    /* Find out how many interrupts are supported. */
+    typer = readl_relaxed(gic_data.dist_base + GICD_TYPER);
+    gic_data.rdists.gicd_typer = typer;
+
+    gic_enable_quirks(readl_relaxed(gic_data.dist_base + GICD_IIDR),
+              gic_quirks, &gic_data);
+
+    pr_info("%d SPIs implemented\n", GIC_LINE_NR - 32);
+    pr_info("%d Extended SPIs implemented\n", GIC_ESPI_NR);
+
+    /* ThunderX1 explodes on reading GICD_TYPER2, in violation of the
+     * architecture spec (which says that reserved registers are RES0). */
+    if (!(gic_data.flags & FLAGS_WORKAROUND_CAVIUM_ERRATUM_38539))
+        gic_data.rdists.gicd_typer2 = readl_relaxed(gic_data.dist_base + GICD_TYPER2);
+
+    gic_data.domain = irq_domain_create_tree(handle, &gic_irq_domain_ops,
+                         &gic_data);
+    gic_data.rdists.rdist = alloc_percpu(typeof(*gic_data.rdists.rdist));
+    if (!static_branch_unlikely(&gic_nvidia_t241_erratum)) {
+        /* Disable GICv4.x features for the erratum T241-FABRIC-4 */
+        gic_data.rdists.has_rvpeid = true;
+        gic_data.rdists.has_vlpis = true;
+        gic_data.rdists.has_direct_lpi = true;
+        gic_data.rdists.has_vpend_valid_dirty = true;
+    }
+
+    if (WARN_ON(!gic_data.domain) || WARN_ON(!gic_data.rdists.rdist)) {
+        err = -ENOMEM;
+        goto out_free;
+    }
+
+    irq_domain_update_bus_token(gic_data.domain, DOMAIN_BUS_WIRED);
+
+    gic_data.has_rss = !!(typer & GICD_TYPER_RSS);
+
+    if (typer & GICD_TYPER_MBIS) {
+        err = mbi_init(handle, gic_data.domain);
+        if (err)
+            pr_err("Failed to initialize MBIs\n");
+    }
+
+    set_handle_irq(gic_handle_irq);
+
+    gic_update_rdist_properties();
+
+    gic_cpu_sys_reg_enable();
+    gic_prio_init();
+    gic_dist_init();
+    gic_cpu_init();
+    gic_enable_nmi_support();
+    gic_smp_init();
+    gic_cpu_pm_init();
+
+    if (gic_dist_supports_lpis()) {
+        its_init(handle, &gic_data.rdists, gic_data.domain, dist_prio_irq);
+        its_cpu_init();
+        its_lpi_memreserve_init();
+    } else {
+        if (IS_ENABLED(CONFIG_ARM_GIC_V2M))
+            gicv2m_init(handle, gic_data.domain);
+    }
+
+    return 0;
+
+out_free:
+    if (gic_data.domain)
+        irq_domain_remove(gic_data.domain);
+    free_percpu(gic_data.rdists.rdist);
+    return err;
 }
 ```
 
@@ -1153,6 +1251,7 @@ set_smp_ipi_range(int ipi_base, int n) {
 gic_of_init() {
     gic_init_bases() {
         set_handle_irq(gic_handle_irq);
+        its_init(handle, &gic_data.rdists, gic_data.domain, dist_prio_irq);
     }
 }
 
@@ -1481,11 +1580,9 @@ static inline unsigned int irq_create_mapping(struct irq_domain *host,
                                     return -EINVAL;
                                 from = irq;
                             } else {
-                                /*
-                                * For interrupts which are freely allocated the
+                                /* For interrupts which are freely allocated the
                                 * architecture can force a lower bound to the @from
-                                * argument. x86 uses this to exclude the GSI space.
-                                */
+                                * argument. x86 uses this to exclude the GSI space. */
                                 from = arch_dynirq_lower_bound(from);
                             }
 
