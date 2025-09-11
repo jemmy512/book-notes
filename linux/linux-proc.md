@@ -82,7 +82,7 @@
         * [update_cfs_rq_load_avg](#update_cfs_rq_load_avg)
     * [rq_clock](#rq_clock)
 
-* [load_balance](#load_balance)
+* [sched_balance_rq](#sched_balance_rq)
     * [tick_balance](#tick_balance)
     * [nohz_idle_balance](#nohz_idle_balance)
     * [sched_balance_newidle](#sched_balance_newidle)
@@ -1908,7 +1908,7 @@ void sched_tick(void)
     rq_lock(rq, &rf);
 
     update_rq_clock(rq);
-    curr->sched_class->task_tick(rq, curr, 0); /* task_tick_fair */
+    curr->sched_class->task_tick(rq, curr, 0);
     cpu_load_update_active(rq);
 
     calc_global_load_tick(rq) {
@@ -10228,7 +10228,7 @@ static void sugov_work(struct kthread_work *work)
     * cfs_rq_util_change
         * attach_entity_load_avg, detach_entity_load_avg, update_load_avg
     * enqueue_task_fair
-    * update_blocked_averages
+    * sched_balance_update_blocked_averages
 3. rt: sched_rt_rq_dequeue/dequeue_top_rt_rq, enqueue_top_rt_rq
 
 ```c
@@ -10268,9 +10268,9 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 
 * [dumpstack - uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html)
 
-# load_balance
+# sched_balance_rq
 
-* [蜗窝科技 - CFS负载均衡 - 概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [load_balance](http://www.wowotech.net/process_management/load_balance_function.html)
+* [蜗窝科技 - CFS负载均衡 - 概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [sched_balance_rq](http://www.wowotech.net/process_management/load_balance_function.html)
 
 * [DumpSatck - 负载跟踪](http://www.dumpstack.cn/index.php/category/tracking) ⊙ [cpu capacity](http://www.dumpstack.cn/index.php/2022/06/02/743.html) ⊙ [PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html) ⊙ [util_est](http://www.dumpstack.cn/index.php/2022/08/13/787.html) ⊙ [uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html) ⊙ [walt](http://www.dumpstack.cn/index.php/2022/08/13/789.html)
 
