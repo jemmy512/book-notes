@@ -5807,6 +5807,46 @@ Q: how workingset works?
 5. **Movable Non-LRU Pages**: Pages not on LRU lists but marked as movable by subsystems (e.g., device drivers, balloon drivers). Managed by custom migration callbacks (e.g., isolate_movable_page).
 * Reclaim Process: Isolated via `isolate_movable_page` if the subsystem allows it (e.g., in isolate_migratepages_block).
 
+```sh
+/proc/sys/vm/               # Virtual memory kernel parameters for page reclaim
+├── dirty_background_bytes  # Bytes of dirty memory before background reclaim/writeout (0 = use ratio)
+├── dirty_background_ratio  # % of memory for dirty pages before background reclaim/writeout
+├── dirty_bytes             # Bytes of dirty memory before foreground reclaim/writeout (0 = use ratio)
+├── dirty_ratio             # % of memory for dirty pages before foreground reclaim/writeout
+├── dirty_expire_centisecs  # Time dirty pages can stay in memory before reclaim (centisecs)
+├── dirty_writeback_centisecs # Interval for periodic dirty page writeback (centisecs; 0 = disable)
+├── drop_caches         # Drop caches to force reclaim (write-only: 1 = pagecache, 2 = slab, 3 = both)
+├── min_free_kbytes     # Minimum free memory to maintain, triggering reclaim when low (kB)
+├── overcommit_kbytes   # Fixed memory overcommit limit for reclaim calculations (kB)
+├── overcommit_memory   # Memory overcommit policy (0 = heuristic, 1 = always, 2 = never)
+├── overcommit_ratio    # % of physical RAM for overcommit calculation when overcommit_memory=0
+├── swappiness          # Tendency to reclaim via swap (0-100; higher = more swapping)
+├── vfs_cache_pressure  # Tendency to reclaim inode/dentry cache (0-100; higher = more aggressive)
+├── watermark_boost_factor  # Boost memory watermarks to trigger earlier reclaim (0-10000; 0 = disable)
+├── watermark_scale_factor  # Scaling factor for memory watermarks (1-1000; affects reclaim frequency)
+├── zone_reclaim_mode       # NUMA zone reclaim behavior (0 = off, 1 = reclaim, 2 = writeout, 3 = swap)
+├── panic_on_oom            # Panic on out-of-memory (0 = OOM killer, 1 = panic, 2 = panic if not system-wide)
+├── oom_kill_allocating_task    # Prefer killing allocating task on OOM (0 = heuristic, 1 = kill requester)
+├── oom_dump_tasks              # Dump task info on OOM killer invocation (0 or 1)
+└── memory_failure_early_kill   # Kill processes on memory failure during reclaim (0 or 1)
+
+/proc/          # Virtual filesystem with reclaim-related info
+├── meminfo     # Memory stats (free, available, swap usage, etc.; reflects reclaim effects)
+├── vmstat      # VM statistics (page faults, reclaim counters like pgscan_kswapd, pgsteal)
+├── swaps       # Swap space details (total, used, priority per swap device)
+├── zoneinfo    # Per-memory-zone stats (free pages, watermarks, scanned pages for reclaim)
+├── buddyinfo   # Buddy allocator stats (free blocks by order; indicates reclaim success)
+└── <pid>/              # Process-specific directories
+    ├── oom_score       # OOM killer score for process (badness heuristic for reclaim)
+    ├── oom_score_adj   # Adjust OOM score (-1000 to 1000; tunes process reclaim priority)
+    └── smaps           # Memory mappings with reclaim-relevant stats (e.g., RSS, Dirty pages)
+
+/sys/devices/system/node/   # NUMA node-specific reclaim info
+├── node[0-N]/              # Per-NUMA node directories
+│   ├── vmstat              # Node-specific VM stats (e.g., numa_pages_migrated, pgscan_direct)
+│   └── meminfo             # Node-specific memory stats (free, used, swap for reclaim monitoring)
+```
+
 ## lru
 
 * [linux内存回收之 File page的 lru list算法原理](https://zhuanlan.zhihu.com/p/421298579)
@@ -8371,9 +8411,22 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 # page_compact
 
 ```sh
-/proc/sys/vm/compact_memory
-/sys/devices/system/node/nodex/compact
-/proc/sys/vm/compaction_proactiveness
+/proc/sys/vm/           # Virtual memory kernel parameters
+├── compact_memory      # Trigger manual memory compaction (write-only: echo 1 to compact all zones)
+├── extfrag_threshold   # Fragmentation threshold for compaction (1-1000; lower values increase compaction aggressiveness)
+├── min_unmapped_ratio  # Minimum % of unmapped pages to trigger compaction (0-100; affects compaction trigger)
+├── compact_unevictable_allowed # Allow compaction of unevictable pages (0 or 1; typically 1)
+└── zone_reclaim_mode   # NUMA zone reclaim behavior (0, 1, 2, or 3; affects compaction on NUMA systems)
+
+/proc/              # Virtual filesystem with compaction-related info
+├── buddyinfo       # Buddy allocator stats (free memory blocks by order per zone; indicates fragmentation)
+├── pagetypeinfo    # Page type and migration stats (free/used pages by order; useful for compaction analysis)
+├── zoneinfo        # Per-memory-zone stats (free pages, min/free/high watermarks, affects compaction)
+
+/sys/devices/system/node/   # NUMA node-specific compaction info
+├── node[0-N]/      # Per-NUMA node directories
+│   ├── compact     # Trigger compaction for this node (write-only: echo 1)
+│   └── vmstat      # Node-specific VM stats (includes compaction-related counters like compact_migrate_scanned)
 ```
 
 ![](../images/kernel/mem-page_compact.svg)
@@ -21598,6 +21651,45 @@ Stack   | :negative_squared_cross_mark: | Y
     * The nr_overcommit_hugepages parameter allows the system to allocate surplus huge pages from the normal page pool when the persistent pool is exhausted.
 9. Architecture-Specific Constraints
 
+```sh
+/proc/                       # Virtual filesystem with HugeTLB info
+├── meminfo                  # Memory info, including HugePages stats
+│                            # - HugePages_Total: Total huge pages allocated
+│                            # - HugePages_Free: Free huge pages
+│                            # - HugePages_Rsvd: Reserved huge pages
+│                            # - HugePages_Surp: Surplus huge pages
+│                            # - Hugepagesize: Default huge page size (e.g., 2MB)
+│
+├── [pid]/                   # Process-specific directories
+│   ├── smaps                # Memory mappings, including huge page usage
+│   └── numa_maps            # NUMA memory mappings, showing huge page details
+
+/sys/kernel/mm/hugepages/    # HugeTLB configuration directory
+├── hugepages-2048kB/        # Directory for 2MB huge pages (example size)
+│   ├── nr_hugepages         # Number of huge pages allocated
+│   ├── nr_hugepages_mempolicy  # Number of huge pages for NUMA policy
+│   ├── nr_overcommit_hugepages # Overcommit huge pages
+│   ├── free_hugepages       # Number of free huge pages
+│   ├── resv_hugepages       # Number of reserved huge pages
+│   ├── surplus_hugepages    # Number of surplus huge pages
+├── hugepages-1048576kB/     # Directory for 1GB huge pages (if supported)
+│   ├── nr_hugepages         # Same as above, for 1GB pages
+│   ├── nr_hugepages_mempolicy
+│   ├── nr_overcommit_hugepages
+│   ├── free_hugepages
+│   ├── resv_hugepages
+│   ├── surplus_hugepages
+
+/sys/devices/system/node/    # NUMA node-specific huge page info
+├── node[0-N]/               # Per-NUMA node directories
+│   ├── hugepages/           # HugeTLB info for the node
+│   │   ├── hugepages-2048kB/ # 2MB huge pages for this node
+│   │   │   ├── nr_hugepages  # Number of huge pages on this node
+│   │   │   ├── free_hugepages      # Free huge pages on this node
+│   │   │   ├── surplus_hugepages   # Surplus huge pages on this node
+│   │   ├── hugepages-1048576kB/    # 1GB huge pages (if supported)
+```
+
 ---
 
 ```c
@@ -26785,25 +26877,49 @@ void __init hugetlb_folio_init_vmemmap(struct folio *folio,
 * transparent_hugepage=madvise
 * transparent_hugepage=never
 
+```sh
+/sys/kernel/mm/transparent_hugepage/ # Main mTHP configuration directory
+├── enabled                          # Global THP/mTHP enablement
+│                                    # Values: always, madvise, never
+│
+├── defrag                           # Defragmentation behavior
+│                                    # Values: always, defer, defer+madvise, madvise, never
+│
+├── shmem_enabled                    # THP/mTHP for shmem (shared memory)
+│                                    # Values: always, within_size, advise, never, deny, force
+│
+├── use_zero_page                    # Use zero page for huge pages (0 or 1)
+├── hpage_pmd_size                   # Default huge page size for PMD (e.g., 2MB)
+├── khugepaged/                      # khugepaged daemon configuration
+│   ├── alloc_sleep_millisecs        # Sleep time between allocation attempts
+│   ├── scan_sleep_millisecs         # Sleep time between scans
+│   ├── max_ptes_none                # Max PTEs with no mapping
+│   ├── max_ptes_swap                # Max PTEs in swap
+│   ├── max_ptes_shared              # Max PTEs in shared mappings
+│   ├── pages_to_scan                # Pages to scan per cycle
+│   └── defrag                       # khugepaged defragmentation (0 or 1)
+├── hugepages-*/                     # Directories for specific huge page sizes
+│   ├── [size]kB/                    # e.g., hugepages-64kB, hugepages-512kB, etc.
+│   │   ├── enabled                  # Per-size enablement
+│   │   │                            # Values: always, madvise, inherit
+│   │   ├── nr_hugepages             # Number of huge pages allocated
+│   │   ├── free_hugepages           # Number of free huge pages
+│   │   ├── resv_hugepages           # Number of reserved huge pages
+│   │   ├── surplus_hugepages        # Number of surplus huge pages
+│   │   └── numa/                    # NUMA-specific configuration (if NUMA enabled)
+│   │       ├── node[0-N]/           # Per-NUMA node settings
+│   │       │   ├── nr_hugepages     # Huge pages allocated on this node
+│   │       │   ├── free_hugepages   # Free huge pages on this node
+│   │       │   └── surplus_hugepages # Surplus huge pages on this node
 
-/sys/kernel/mm/transparent_hugepage/ | val
-:-: | :-:
-enabled | always, defer, defer+madvise, madvise, never
-defrag |
-shmem_enabled | always, within_size, advise, never , deny, force
-use_zero_page | 0, 1
-hpage_pmd_size | read-only
-khugepaged/alloc_sleep_millisecs |
-khugepaged/full_scans |
-khugepaged/max_ptes_swap |
-khugepaged/pages_to_scan |
-khugepaged/defrag |
-khugepaged/max_ptes_none |
-khugepaged/pages_collapsed |
-khugepaged/scan_sleep_millisecs |
-/proc/[pid]/smaps | Shows THP usage for a specific process.
-/proc/meminfo | show AnonHugePages, ShmemHugePages, HugePages_Total
-
+/sys/devices/system/node/            # NUMA node-specific mTHP info
+├── node[0-N]/                       # Per-NUMA node directories
+│   ├── hugepages/                   # HugeTLB/mTHP info for the node
+│   │   ├── hugepages-[size]kB/      # e.g., hugepages-64kB, hugepages-2048kB
+│   │       ├── nr_hugepages         # Number of huge pages on this node
+│   │       ├── free_hugepages       # Free huge pages on this node
+│   │       └── surplus_hugepages    # Surplus huge pages on this node
+```
 
 ```c
 static ssize_t enabled_store(struct kobject *kobj,
@@ -26831,87 +26947,7 @@ static ssize_t enabled_store(struct kobject *kobj,
     }
     return ret;
 }
-```s
-
-##
-
-# fs_proc
-
-```sh
-/proc/meminfo
-/proc/zoneinfo
-/proc/buddyinfo
-/proc/slabinfo
-/proc/vmallocinfo
-/proc/iomem
-/proc/pagetypeinfo
-/proc/vmstat
-/proc/swaps
-/proc/kpagecount
-/proc/kpageflags
-
-proc/<pid>/maps
-proc/<pid>/smaps
-/proc/<pid>/oom_adj
-/proc/<pid>/oom_score
-/proc/<pid>/oom_score_adj
 ```
-
-/proc/sys/vm | Meaning
-:-: | :-:
-**admin_reserve_kbytes** | amount of memory (in KB) reserved for privileged processes
-**compaction_proactiveness** | [0, 100] Default: 20. Controls the aggressiveness of proactive memory compaction
-**compact_memory** |  Writing 1 to this file triggers manual compaction across all zones
-**compact_unevictable_allowed** | whether unevictable pages (e.g., mlocked pages) can be compacted
-**defrag_mode** | Controls THP defragmentation behavior. Values: always, defer, defer+madvise, madvise, never
-**dirty_background_bytes** | absolute amount of dirty memory (in bytes) that can be held before **background writeback(kswapd or pdflush)** starts.
-**dirty_background_ratio** | the percentage of total memory that can be dirty before background writeback begins.
-**dirty_bytes** | Absolute limit (in bytes) of dirty memory before processes are blocked and forced to write back.
-**dirty_ratio** | Percentage of total memory that can be dirty before **processes are blocked and forced** to write back. Default: ~20%.
-**dirty_expire_centisecs** | Time (in hundredths of a second) after which dirty pages are considered old and written back to disk. Default: ~3000 (30 seconds).
-**dirty_writeback_centisecs** | Interval (in hundredths of a second) at which the kernel’s writeback daemon checks for dirty pages to write. Default: ~500 (5 seconds).
-**dirtytime_expire_seconds** | Maximum age (in seconds) for dirty pages on filesystems supporting dirtytime before writeback.
-**drop_caches** | Writing a value clears caches: 1 (pagecache), 2 (slab objects), 3 (both).
-**enable_soft_offline** | Enables/disables soft offline of pages with correctable memory errors. 1 enables, 0 disables.
-**extfrag_threshold** | Controls the fragmentation threshold (default ~500, range 0–1000) Default: ~500.
-**hugetlb_optimize_vmemmap** | Enables optimization of virtual memory mappings for huge pages to reduce memory overhead. 1 enables, 0 disables.
-**hugetlb_shm_group** | Specifies the group ID allowed to use huge pages for shared memory.
-**laptop_mode** | Enables laptop mode (1) to reduce disk I/O for power saving, or disables it (0).
-**legacy_va_layout** | Reverts to older (pre-2.6.9) virtual address space layout if set to 1
-**lowmem_reserve_ratio** | Sets memory reserve ratios for different memory zones to prevent low-memory conditions in critical zones.
-**max_map_count** | Maximum number of memory map areas a process can have.
-**memfd_noexec** | Controls whether memfd_create() creates non-executable memory. 0 allows executable, 1 or 2 enforces non-executable.
-**memory_failure_early_kill** | If 1, immediately kills processes using pages with uncorrectable memory errors. If 0, tries to isolate pages.
-**memory_failure_recovery** | Enables (1) or disables (0) recovery from memory failures.
-**min_free_kbytes** | Minimum amount of free memory (in KB) the kernel keeps available.
-**min_slab_ratio** | Minimum percentage of memory that can be used for slab caches.
-**min_unmapped_ratio** | Minimum percentage of memory kept unmapped to prevent swapping under memory pressure.
-**mmap_min_addr** | Minimum virtual address for user-space mappings.
-**mmap_rnd_bits** | Number of bits for address space layout randomization (ASLR) for non-PIE
-**mmap_rnd_compat_bits** | ASLR bits for 32-bit compatibility mode on 64-bit systems.
-**nr_hugepages** | Sets the number of huge pages to allocate.
-**nr_hugepages_mempolicy** | Sets huge pages per NUMA node for specific memory policies.
-**nr_overcommit_hugepages** | Maximum number of overcommitted huge pages (allocated on demand).
-**numa_stat** | Enables (1) or disables (0) NUMA statistics in /proc/vmstat.
-**numa_zonelist_order** | Defines the order of NUMA zones for memory allocation (e.g., node, zone).
-**oom_dump_tasks** | If 1, logs detailed task info when the OOM killer is triggered.
-**oom_kill_allocating_task** | If 1, OOM killer targets the task triggering the allocation. If 0, it uses heuristics to select a victim.
-**overcommit_kbytes** | Absolute limit (in KB) for memory overcommitment.
-**overcommit_memory** | 0: Heuristic overcommit. 1: Always allow overcommit. 2: Never overcommit (strict).
-**overcommit_ratio** | Percentage of physical RAM allowed for overcommit when overcommit_memory=2 Default: ~50.
-**page-cluster** | Number of pages read/written in a single I/O operation during swapping. Default: ~3 (8 pages).
-**page_lock_unfairness** | Controls fairness of page lock acquisition. Higher values allow more unfairness (favoring current holder).
-**panic_on_oom** | If 1, kernel panics on OOM. If 0, OOM killer is invoked.
-**percpu_pagelist_high_fraction** | Fraction of memory reserved for per-CPU page lists.
-**stat_interval** | Interval (in seconds) for updating /proc/stat memory statistics.
-**stat_refresh** | Writing any value forces an immediate refresh of memory statistics.
-**swappiness** |
-**unprivileged_userfaultfd** | Controls whether unprivileged users can use userfaultfd (0=privileged only, 1=unprivileged).
-**user_reserve_kbytes** | Memory (in KB) reserved for user processes under memory pressure.
-**vfs_cache_pressure** | Controls how aggressively the kernel reclaims memory from VFS caches (e.g., dentries, inodes). Range: 0–1000. Default: ~100.
-**watermark_boost_factor** | Adjusts watermark boosting for memory reclaim under pressure (in percentage).
-**watermark_scale_factor** | Adjusts kswapd aggressiveness (range 0–3000, default ~10–30) to reduce fragmentation but increasing reclaim overhead. Default: ~10–30.
-**zone_reclaim_mode** | Controls NUMA zone reclaim behavior: RECLAIM_ZONE, RECLAIM_WRITE, RECLAIM_UNMAP
 
 ## create_huge_pmd
 
@@ -27783,10 +27819,19 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
                unsigned int flags, struct pt_regs *regs)
 {
     /* return !!(vma->vm_flags & VM_HUGETLB); */
-    if (unlikely(is_vm_hugetlb_page(vma)))
+    if (unlikely(is_vm_hugetlb_page(vma))) {
         ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
-    else
-        ret = __handle_mm_fault(vma, address, flags);
+
+    } else {
+        ret = __handle_mm_fault(vma, address, flags) {
+            thp_allowed = thp_vma_allowable_order(vma, vm_flags, TVA_IN_PF | TVA_ENFORCE_SYSFS, PUD_ORDER);
+            if (pud_none(*vmf.pud) && thp_allowed) {
+                ret = create_huge_pud(&vmf);
+                if (!(ret & VM_FAULT_FALLBACK))
+                    return ret;
+            }
+        }
+    }
 }
 
 vm_fault_t hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
@@ -28214,6 +28259,267 @@ backout_unlocked:
     folio_unlock(folio);
     folio_put(folio);
     goto out;
+}
+```
+
+### thp_vma_allowable_order
+
+```c
+#define thp_vma_allowable_order(vma, vm_flags, tva_flags, order) \
+    (!!thp_vma_allowable_orders(vma, vm_flags, tva_flags, BIT(order)))
+
+unsigned long thp_vma_allowable_orders(struct vm_area_struct *vma,
+    vm_flags_t vm_flags, unsigned long tva_flags, unsigned long orders)
+{
+    return thp_vma_allowable_orders(vma, vm_flags, tva_flags, BIT(order)) {
+        /* Optimization to check if required orders are enabled early. */
+        if ((tva_flags & TVA_ENFORCE_SYSFS) && vma_is_anonymous(vma)) {
+            unsigned long mask = READ_ONCE(huge_anon_orders_always);
+
+            if (vm_flags & VM_HUGEPAGE)
+                mask |= READ_ONCE(huge_anon_orders_madvise);
+            if (hugepage_global_always() ||
+                ((vm_flags & VM_HUGEPAGE) && hugepage_global_enabled()))
+                mask |= READ_ONCE(huge_anon_orders_inherit);
+
+            orders &= mask;
+            if (!orders)
+                return 0;
+        }
+
+        return __thp_vma_allowable_orders(vma, vm_flags, tva_flags, orders) {
+            bool smaps = tva_flags & TVA_SMAPS;
+            bool in_pf = tva_flags & TVA_IN_PF;
+            bool enforce_sysfs = tva_flags & TVA_ENFORCE_SYSFS;
+            unsigned long supported_orders;
+
+            /* Check the intersection of requested and supported orders. */
+            if (vma_is_anonymous(vma))
+                supported_orders = THP_ORDERS_ALL_ANON;
+            else if (vma_is_special_huge(vma))
+                supported_orders = THP_ORDERS_ALL_SPECIAL;
+            else
+                supported_orders = THP_ORDERS_ALL_FILE_DEFAULT;
+
+            orders &= supported_orders;
+            if (!orders)
+                return 0;
+
+            if (!vma->vm_mm)        /* vdso */
+                return 0;
+
+            if (thp_disabled_by_hw() || vma_thp_disabled(vma, vm_flags))
+                return 0;
+
+            /* khugepaged doesn't collapse DAX vma, but page fault is fine. */
+            if (vma_is_dax(vma))
+                return in_pf ? orders : 0;
+
+            /* khugepaged special VMA and hugetlb VMA.
+            * Must be checked after dax since some dax mappings may have
+            * VM_MIXEDMAP set. */
+            if (!in_pf && !smaps && (vm_flags & VM_NO_KHUGEPAGED))
+                return 0;
+
+            /* Check alignment for file vma and size for both file and anon vma by
+            * filtering out the unsuitable orders.
+            *
+            * Skip the check for page fault. Huge fault does the check in fault
+            * handlers. */
+            if (!in_pf) {
+                int order = highest_order(orders) {
+                    return fls_long(orders) - 1;
+                }
+                unsigned long addr;
+
+                while (orders) {
+                    addr = vma->vm_end - (PAGE_SIZE << order);
+                    ret = thp_vma_suitable_order(vma, addr, order) {
+                        unsigned long hpage_size = PAGE_SIZE << order;
+                        unsigned long haddr;
+
+                        /* Don't have to check pgoff for anonymous vma */
+                        if (!vma_is_anonymous(vma)) {
+                            if (!IS_ALIGNED((vma->vm_start >> PAGE_SHIFT) - vma->vm_pgoff,
+                                    hpage_size >> PAGE_SHIFT))
+                                return false;
+                        }
+
+                        haddr = ALIGN_DOWN(addr, hpage_size);
+
+                        if (haddr < vma->vm_start || haddr + hpage_size > vma->vm_end)
+                            return false;
+                        return true;
+                    }
+                    if (ret)
+                        break;
+
+                    order = next_order(&orders, order) {
+                        *orders &= ~BIT(prev);
+                        return highest_order(*orders);
+                    }
+                }
+
+                if (!orders)
+                    return 0;
+            }
+
+            /* Enabled via shmem mount options or sysfs settings.
+            * Must be done before hugepage flags check since shmem has its
+            * own flags. */
+            if (!in_pf && shmem_file(vma->vm_file))
+                return orders & shmem_allowable_huge_orders(file_inode(vma->vm_file),
+                    vma, vma->vm_pgoff, 0, !enforce_sysfs) {
+
+                    unsigned long mask = READ_ONCE(huge_shmem_orders_always);
+                    unsigned long within_size_orders = READ_ONCE(huge_shmem_orders_within_size);
+                    vm_flags_t vm_flags = vma ? vma->vm_flags : 0;
+                    unsigned int global_orders;
+
+                    if (thp_disabled_by_hw() || (vma && vma_thp_disabled(vma, vm_flags)))
+                        return 0;
+
+                    global_orders = shmem_huge_global_enabled(inode, index, write_end, shmem_huge_force, vma, vm_flags) {
+                        unsigned int maybe_pmd_order = HPAGE_PMD_ORDER > MAX_PAGECACHE_ORDER
+                            ? 0 : BIT(HPAGE_PMD_ORDER);
+                        unsigned long within_size_orders;
+
+                        if (!S_ISREG(inode->i_mode))
+                            return 0;
+                        if (shmem_huge == SHMEM_HUGE_DENY)
+                            return 0;
+                        if (shmem_huge_force || shmem_huge == SHMEM_HUGE_FORCE)
+                            return maybe_pmd_order;
+
+                        /* The huge order allocation for anon shmem is controlled through
+                        * the mTHP interface, so we still use PMD-sized huge order to
+                        * check whether global control is enabled.
+                        *
+                        * For tmpfs mmap()'s huge order, we still use PMD-sized order to
+                        * allocate huge pages due to lack of a write size hint.
+                        *
+                        * Otherwise, tmpfs will allow getting a highest order hint based on
+                        * the size of write and fallocate paths, then will try each allowable
+                        * huge orders. */
+                        switch (SHMEM_SB(inode->i_sb)->huge) {
+                        case SHMEM_HUGE_ALWAYS:
+                            if (vma)
+                                return maybe_pmd_order;
+
+                            return shmem_mapping_size_orders(inode->i_mapping, index, write_end);
+                        case SHMEM_HUGE_WITHIN_SIZE:
+                            if (vma)
+                                within_size_orders = maybe_pmd_order;
+                            else {
+                                within_size_orders = shmem_mapping_size_orders(inode->i_mapping, index, write_end) {
+                                    unsigned int order;
+                                    size_t size;
+
+                                    if (!mapping_large_folio_support(mapping) || !write_end)
+                                        return 0;
+
+                                    /* Calculate the write size based on the write_end */
+                                    size = write_end - (index << PAGE_SHIFT);
+                                    order = filemap_get_order(size);
+                                    if (!order)
+                                        return 0;
+
+                                    /* If we're not aligned, allocate a smaller folio */
+                                    if (index & ((1UL << order) - 1))
+                                        order = __ffs(index);
+
+                                    order = min_t(size_t, order, MAX_PAGECACHE_ORDER);
+                                    return order > 0 ? BIT(order + 1) - 1 : 0;
+                                }
+                            }
+
+                            within_size_orders = shmem_get_orders_within_size(inode, within_size_orders, index, write_end) {
+                                pgoff_t aligned_index;
+                                unsigned long order;
+                                loff_t i_size;
+
+                                order = highest_order(within_size_orders);
+                                while (within_size_orders) {
+                                    aligned_index = round_up(index + 1, 1 << order);
+                                    i_size = max(write_end, i_size_read(inode));
+                                    i_size = round_up(i_size, PAGE_SIZE);
+                                    if (i_size >> PAGE_SHIFT >= aligned_index)
+                                        return within_size_orders;
+
+                                    order = next_order(&within_size_orders, order);
+                                }
+
+                                return 0;
+                            }
+                            if (within_size_orders > 0)
+                                return within_size_orders;
+
+                            fallthrough;
+                        case SHMEM_HUGE_ADVISE:
+                            if (vm_flags & VM_HUGEPAGE)
+                                return maybe_pmd_order;
+                            fallthrough;
+                        default:
+                            return 0;
+                        }
+                    }
+                    /* Tmpfs huge pages allocation */
+                    if (!vma || !vma_is_anon_shmem(vma))
+                        return global_orders;
+
+                    /* Following the 'deny' semantics of the top level, force the huge
+                    * option off from all mounts. */
+                    if (shmem_huge == SHMEM_HUGE_DENY)
+                        return 0;
+
+                    /* Only allow inherit orders if the top-level value is 'force', which
+                    * means non-PMD sized THP can not override 'huge' mount option now. */
+                    if (shmem_huge == SHMEM_HUGE_FORCE)
+                        return READ_ONCE(huge_shmem_orders_inherit);
+
+                    /* Allow mTHP that will be fully within i_size. */
+                    mask |= shmem_get_orders_within_size(inode, within_size_orders, index, 0);
+
+                    if (vm_flags & VM_HUGEPAGE)
+                        mask |= READ_ONCE(huge_shmem_orders_madvise);
+
+                    if (global_orders > 0)
+                        mask |= READ_ONCE(huge_shmem_orders_inherit);
+
+                    return THP_ORDERS_ALL_FILE_DEFAULT & mask;
+                }
+
+            if (!vma_is_anonymous(vma)) {
+                /* Enforce sysfs THP requirements as necessary. Anonymous vmas
+                * were already handled in thp_vma_allowable_orders(). */
+                if (enforce_sysfs &&
+                    (!hugepage_global_enabled() || (!(vm_flags & VM_HUGEPAGE) && !hugepage_global_always())))
+                    return 0;
+
+                /* Trust that ->huge_fault() handlers know what they are doing
+                * in fault path. */
+                if (((in_pf || smaps)) && vma->vm_ops->huge_fault)
+                    return orders;
+                /* Only regular file is valid in collapse path */
+                if (((!in_pf || smaps)) && file_thp_enabled(vma))
+                    return orders;
+                return 0;
+            }
+
+            if (vma_is_temporary_stack(vma))
+                return 0;
+
+            /* THPeligible bit of smaps should show 1 for proper VMAs even
+            * though anon_vma is not initialized yet.
+            *
+            * Allow page fault since anon_vma may be not initialized until
+            * the first page fault. */
+            if (!vma->anon_vma)
+                return (smaps || in_pf) ? orders : 0;
+
+            return orders;
+        }
+    }
 }
 ```
 
@@ -28720,6 +29026,79 @@ KASAN detects invalid memory accesses and use-after-free bugs, which can lead to
 CONFIG_KASAN=y
 
 dmesg | grep kasan
+```
+
+# fs_proc
+
+```sh
+/proc/          # Virtual filesystem for system and process information
+├── meminfo     # Detailed memory usage statistics (total, free, buffers, cache, swap, etc.)
+├── zoneinfo    # Per-memory-zone statistics (e.g., DMA, Normal, HighMem zones on each NUMA node)
+├── buddyinfo   # Buddy allocator statistics for diagnosing memory fragmentation (free blocks by order per zone)
+├── slabinfo    # Slab cache usage details (kernel object pools like inodes, dentries, etc.)
+├── vmallocinfo # Information on vmalloc areas (virtual memory allocations, sizes, and callers)
+├── iomem       # Physical memory map and I/O memory regions (addresses reserved for devices)
+├── pagetypeinfo # Page type and migration info (free/used pages by type and migrate order for fragmentation analysis)
+├── vmstat      # Virtual memory statistics (page ins/outs, interrupts, context switches, etc.)
+├── swaps       # Swap space statistics (total, used, priority for each swap device)
+├── kpagecount  # Page reference counts (number of times each physical page is mapped; indexed by PFN)
+├── kpageflags  # Page flags (e.g., locked, referenced, dirty for each physical page; indexed by PFN)
+└── <pid>/      # Process-specific directory (one per PID)
+    ├── maps        # Virtual memory mappings (addresses, permissions, offsets for libraries, heap, stack)
+    ├── smaps       # Detailed per-mapping memory stats (RSS, PSS, shared/clean/private for each map)
+    ├── oom_adj     # Deprecated OOM adjustment score (legacy; use oom_score_adj instead)
+    ├── oom_score   # OOM kill score (badness heuristic for process selection on out-of-memory)
+    └── oom_score_adj # OOM adjustment value (-1000 to 1000; tunes oom_score for process priority)
+```
+
+```sh
+/proc/sys/vm/                    # Virtual memory kernel parameters
+├── admin_reserve_kbytes         # Memory reserved for admin tasks (kB)
+├── compact_memory               # Trigger memory compaction (write-only: echo 1)
+├── compact_unevictable_allowed  # whether unevictable pages (e.g., mlocked pages) can be compacted
+├── dirty_background_bytes       # Bytes of dirty memory before background writeout
+├── dirty_background_ratio       # % of memory for background writeout
+├── dirty_bytes                  # Bytes of dirty memory before writeout
+├── dirty_ratio                  # % of memory for dirty pages before writeout
+├── dirty_expire_centisecs       # Time before dirty pages are written out (centisecs)
+├── dirty_writeback_centisecs    # Interval for dirty page writeback (centisecs)
+├── dirtytime_expire_seconds     # Maximum age (in seconds) for dirty pages on filesystems supporting dirtytime before writeback.
+├── drop_caches                  # Drop pagecache, dentries, inodes (write-only: echo 1, 2, or 3)
+├── extfrag_threshold            # Fragmentation threshold for memory compaction
+├── hugepages_treat_as_movable   # Allow huge pages in movable zones (0 or 1)
+├── hugetlb_shm_group            # Group ID allowed to use HugeTLB for shmem
+├── laptop_mode                  # Optimize for laptop power saving (0-5)
+├── legacy_va_layout             # Use legacy virtual address layout (0 or 1)
+├── lowmem_reserve_ratio         # Memory reserve ratios for low memory zones
+├── max_map_count                # Max number of memory map areas per process
+├── memory_failure_early_kill    # Kill processes on memory failure (0 or 1)
+├── memory_failure_recovery      # Enable memory failure recovery (0 or 1)
+├── min_free_kbytes              # Minimum free memory for allocation (kB)
+├── min_slab_ratio               # Min % of memory for slab caches
+├── min_unmapped_ratio           # Min % of unmapped pages for compaction
+├── mmap_min_addr                # Minimum address for mmap (security)
+├── mmap_rnd_bits                # Bits for mmap address randomization
+├── mmap_rnd_compat_bits         # Bits for compat mode address randomization
+├── nr_hugepages                 # Number of HugeTLB pages (global)
+├── nr_hugepages_mempolicy       # Number of HugeTLB pages for NUMA policy
+├── nr_overcommit_hugepages      # Overcommit HugeTLB pages
+├── numa_stat                    # NUMA memory statistics (read-only)
+├── numa_zonelist_order          # NUMA zonelist order (e.g., "node", "zone")
+├── oom_dump_tasks               # Dump tasks on OOM killer invocation (0 or 1)
+├── oom_kill_allocating_task     # Kill allocating task on OOM (0 or 1)
+├── overcommit_kbytes            # Fixed overcommit memory limit (kB)
+├── overcommit_memory            # Memory overcommit policy (0, 1, or 2)
+├── overcommit_ratio             # % of memory for overcommit calculation
+├── page-cluster                 # Pages to read/write in one go for swapping
+├── panic_on_oom                 # Panic on OOM (0, 1, or 2)
+├── percpu_pagelist_fraction     # Fraction of pages for per-CPU lists
+├── stat_interval                # Interval for updating VM statistics (seconds)
+├── swappiness                   # Tendency to swap out memory (0-100)
+├── user_reserve_kbytes          # Memory reserved for user tasks (kB)
+├── vfs_cache_pressure           # Tendency to reclaim inode/dentry cache (0-100)
+├── watermark_boost_factor       # Boost factor for memory watermarks
+├── watermark_scale_factor       # Scale factor for memory watermarks
+└── zone_reclaim_mode            # Reclaim mode for NUMA zones (0, 1, 2, or 3)
 ```
 
 # Tuning
