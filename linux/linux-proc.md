@@ -10243,23 +10243,22 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 ```
 
 ```sh
-/sys/devices/system/cpu/cpu0/cpufreq
-├── affected_cpus
-├── related_cpus
-├── scaling_governor
-├── scaling_available_governors
-├── scaling_max_freq
-├── scaling_cur_freq
-├── scaling_min_freq
-├── scaling_driver
-├── scaling_setspeed
-├── cpuinfo_min_freq
-├── cpuinfo_transition_latency
-├── cpuinfo_avg_freq
-├── cpuinfo_max_freq
-├── base_frequency
-├── energy_performance_available_preferences
-├── energy_performance_preference
+/sys/devices/system/cpu/cpu0/cpufreq/  # CPU frequency scaling control for CPU0
+├── affected_cpus       # List of CPUs affected by frequency changes to this CPU (space-separated CPU IDs)
+├── base_frequency      # Base frequency of the CPU in kHz (nominal frequency without boost)
+├── cpuinfo_max_freq    # Maximum supported CPU frequency in kHz (hardware limit)
+├── cpuinfo_min_freq    # Minimum supported CPU frequency in kHz (hardware limit)
+├── cpuinfo_transition_latency  # Time in nanoseconds for CPU frequency transition
+├── energy_performance_available_preferences  # Available energy-performance preferences (e.g., performance, balance_performance, balance_power, power)
+├── energy_performance_preference   # Current energy-performance preference setting (e.g., balance_performance)
+├── related_cpus        # CPUs sharing the same clock domain as this CPU (space-separated CPU IDs)
+├── scaling_available_governors # List of available cpufreq governors (e.g., performance, powersave, ondemand, schedutil)
+├── scaling_cur_freq    # Current CPU frequency in kHz (actual operating frequency)
+├── scaling_driver      # Driver providing cpufreq support (e.g., acpi-cpufreq, intel_pstate)
+├── scaling_governor    # Current cpufreq governor controlling frequency scaling
+├── scaling_max_freq    # Maximum allowed frequency for scaling in kHz (user-configurable limit)
+├── scaling_min_freq    # Minimum allowed frequency for scaling in kHz (user-configurable limit)
+└── scaling_setspeed    # Target frequency for userspace governor in kHz (write-only; used with userspace governor)
 ```
 
 # uclap
