@@ -151,12 +151,13 @@
 * [NAT - Network Address Translation](https://www.karlrupp.net/en/computer/nat_tutorial)
 * [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
 * [Introduction to modern network load balancing and proxying](https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236)
-* [[译] [论文] BBR：基于拥塞（而非丢包）的拥塞控制（ACM, 2017）](http://arthurchiao.art/blog/bbr-paper-zh/)
-* [Linux 网络栈原理、监控与调优：前言（2022）](http://arthurchiao.art/blog/linux-net-stack-zh/)
-    * [Linux 网络栈接收数据（RX）：配置调优（2022）](http://arthurchiao.art/blog/linux-net-stack-tuning-rx-zh/)
-    * [Linux 网络栈接收数据（RX）：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-net-stack-implementation-rx-zh/)
-    * [Linux 中断（IRQ/softirq）基础：原理及内核实现（2022）](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
+* [[译] [论文] BBR：基于拥塞(而非丢包)的拥塞控制(ACM, 2017)](http://arthurchiao.art/blog/bbr-paper-zh/)
+* [Linux 网络栈原理、监控与调优：前言(2022)](http://arthurchiao.art/blog/linux-net-stack-zh/)
+    * [Linux 网络栈接收数据(RX)：配置调优(2022)](http://arthurchiao.art/blog/linux-net-stack-tuning-rx-zh/)
+    * [Linux 网络栈接收数据(RX)：原理及内核实现(2022)](http://arthurchiao.art/blog/linux-net-stack-implementation-rx-zh/)
+    * [Linux 中断(IRQ/softirq)基础：原理及内核实现(2022)](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
 * [Linux Network Performance Ultimate Guide](https://ntk148v.github.io/posts/linux-network-performance-ultimate-guide/)
+* [Life of a Packet in Kubernetes -veth, bridge, ns](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-1-f9bc0909e051) ⊙ [calico](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-2-a07f5bf0ff14) ⊙ [iptables](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-3-dd881476da0f) ⊙ [Ingress](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-4-4dbc5256050a)
 
 ---
 
@@ -11211,9 +11212,11 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 
 <img src='../images/kernel/net-bridge.svg' style='max-height:850px'/>
 
-[lab](https://github.com/yanfeizhang/coder-kung-fu/tree/main/tests/network/test05)
-
+* [lab](https://github.com/yanfeizhang/coder-kung-fu/tree/main/tests/network/test05)
 * [Linux虚拟网络设备之bridge(桥)](https://segmentfault.com/a/1190000009491002)
+* **Purpose**: A bridge is a Layer 2 virtual device that connects multiple network interfaces (e.g., veth, tap, or physical NICs) to act as a virtual switch, forwarding Ethernet frames between them.
+* **How it works**: It forwards traffic based on MAC addresses, enabling communication between interfaces attached to it.
+
 
 <img src='../images/kernel/net-filter-3.png' style='max-height:850px'/>
 
@@ -11256,7 +11259,7 @@ void dst_init(struct dst_entry *dst, struct dst_ops *ops,
 |        +------+     +--------+     +-------+                   |               +-------+                 |                +-------+                |
 |        | eth0 |<--->|   br0  |<--->|tun/tap|                   |               | eth0  |                 |                | eth0  |                |
 |        +------+     +--------+     +-------+                   |               +-------+                 |                +-------+                |
-|            ↑             ↑             ↑                       |                   ↑                     |                    ↑新·                    |
+|            ↑             ↑             ↑                       |                   ↑                     |                    ↑                    |
 |            |             |             +-------------------------------------------+                     |                    |                    |
 |            |             ↓                                     |                                         |                    |                    |
 |            |         +-------+                                 |                                         |                    |                    |
@@ -11959,8 +11962,62 @@ br_handle_frame()
         br_multicast_flood(mdst, skb);
 ```
 
+## lab-bridge
+
+```sh
+brctl show
+ip link show type bridge
+
+# add new bridge
+ip link add bridge1 type bridge
+brctl show
+
+# enable bridge
+ip link set dev bridge1 up
+ip link show type bridge
+
+# create ns
+ip netns add ns-br-client
+ip netns add ns-br-server
+
+# add veth
+ip link add vbr-client-ns type veth peer name vbr-client-br
+ip link add vbr-server-ns type veth peer name vbr-server-br
+
+# add veth to br and ns
+ip link set vbr-client-ns netns ns-br-client
+ip link set vbr-server-ns netns ns-br-server
+ip link set vbr-client-br master bridge1
+ip link set vbr-server-br master bridge1
+
+# set ip
+ip netns exec ns-br-client ip addr add 172.30.0.11/24 dev vbr-client-ns
+ip netns exec ns-br-server ip addr add 172.30.0.12/24 dev vbr-server-ns
+ip addr add 172.30.0.1/24 dev bridge1
+
+# up dev
+ip link set vbr-client-br up
+ip link set vbr-server-br up
+ip netns exec ns-br-client ip link set vbr-client-ns up
+ip netns exec ns-br-server ip link set vbr-server-ns up
+
+# check ip
+ip netns exec ns-br-client ip a
+ip netns exec ns-br-server ip a
+
+ip a | grep bridge1
+
+# ping test
+ip netns exec ns-br-client ping -c 4 172.30.0.12
+ip netns exec ns-br-client ping -c 4 172.30.0.1
+ip netns exec ns-br-server ping -c 4 172.30.0.11
+ip netns exec ns-br-server ping -c 4 172.30.0.1
+```
+
 # veth
 
+* **Purpose**: Virtual Ethernet interfaces are used to connect two network namespaces or virtual devices, acting like a virtual cable.
+* **How it works**: A veth interface is created as a pair (e.g., veth0 and veth1). Data sent to one end is received on the other, enabling communication between namespaces or containers.
 * [Linux虚拟网络设备之veth](https://segmentfault.com/a/1190000009251098)
 
 ```c
@@ -12243,7 +12300,57 @@ static int netif_rx_internal(struct sk_buff *skb)
 }
 ```
 
+## lab-veth
+
+```sh
+# add cilent and sever netns
+ip netns add client
+ip netns add server
+
+ip netns ls
+
+# look the veth dev
+ip link ls | grep veth
+
+# add veth dev pair
+ip link add veth-client type veth peer name veth-server
+ip link ls | grep veth
+
+# put the veth dev pair into their own netns
+ip link set veth-client netns client
+ip link set veth-server netns server
+
+# check the veth dev in root ns
+ip link ls | grep veth
+
+# check the veth dev in client and sever ns
+ip netns exec client ip link ls
+ip netns exec server ip link ls
+
+# config ip for client
+ip netns exec client ip address add 10.0.0.11/24 dev veth-client
+ip netns exec client ip link set veth-client up
+ip netns exec client ip addr
+
+# config ip for server
+ip netns exec server ip address add 10.0.0.12/24 dev veth-server
+ip netns exec server ip link set veth-server up
+ip netns exec server ip addr
+
+# test ping between client-server
+ip netns exec client ping -c 4 10.0.0.12
+ip netns exec server ping -c 4 10.0.0.11
+```
+
 # tun
+
+* tun
+    * **Purpose**: A TUN interface operates at the network layer (Layer 3, IP packets) and is used for routing IP traffic, often in VPNs or tunnels.
+    * **How it works**: It captures IP packets from the kernel and passes them to a user-space program (e.g., a VPN client like OpenVPN) or vice versa.
+
+* Tap (Ethernet Tap)
+    * **Purpose**: A TAP interface operates at the data link layer (Layer 2, Ethernet frames) and is used for bridging Ethernet traffic.
+    * **How it works**: Similar to TUN, but it handles full Ethernet frames, making it suitable for applications that need to process raw Ethernet traffic.
 
 * [Linux虚拟网络设备之tun/tap](https://segmentfault.com/a/1190000009249039)
 
