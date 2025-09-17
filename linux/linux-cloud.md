@@ -4064,7 +4064,9 @@ void update_cfs_group(struct sched_entity *se) {
 
 ### rt_bandwidth
 
-* [[RFC PATCH 0/9] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250605071412.139240-1-yurand2000@gmail.com/)
+* [LWN - The hierarchical constant bandwidth server scheduler](https://lwn.net/Articles/1024757/)
+    * [[RFC PATCH 0/9] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250605071412.139240-1-yurand2000@gmail.com/)
+    * [[RFC PATCH v2 00/25] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250731105543.40832-1-yurand2000@gmail.com/)
 
 Only applied to cgrou v1 but not v2.
 
