@@ -19,7 +19,7 @@
 
 ---
 
-![](../images/kernel/intr-arch.svg)
+![](../images/kernel/intr-arm64.svg)
 
 * [中断专题——中断及中断虚拟化总汇](https://mp.weixin.qq.com/s/8S8dsQKBuhNX3gffRpaRbQ)
 

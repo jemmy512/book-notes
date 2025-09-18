@@ -17437,7 +17437,7 @@ int __mm_populate(unsigned long start, unsigned long len, int ignore_errors)
 
 # page_fault
 
-![](../images/kernel/intr-arch.svg)
+![](../images/kernel/intr-arm64.svg)
 
 ---
 
@@ -27712,7 +27712,6 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
     /* return !!(vma->vm_flags & VM_HUGETLB); */
     if (unlikely(is_vm_hugetlb_page(vma))) {
         ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
-
     } else {
         ret = __handle_mm_fault(vma, address, flags) {
             thp_allowed = thp_vma_allowable_order(vma, vm_flags, TVA_IN_PF | TVA_ENFORCE_SYSFS, PUD_ORDER);
@@ -27970,7 +27969,12 @@ static vm_fault_t hugetlb_no_page(struct address_space *mapping,
     /* Use page lock to guard against racing truncation
     * before we get page_table_lock. */
     new_folio = false;
-    folio = filemap_lock_hugetlb_folio(h, mapping, vmf->pgoff);
+    folio = filemap_lock_hugetlb_folio(h, mapping, vmf->pgoff) {
+        return filemap_lock_folio(mapping, idx << huge_page_order(h)) {
+            return __filemap_get_folio(mapping, index, FGP_LOCK, 0);
+        }
+    }
+
     if (IS_ERR(folio)) {
         size = i_size_read(mapping->host) >> huge_page_shift(h);
         if (vmf->pgoff >= size)
@@ -28148,6 +28152,203 @@ backout_unlocked:
     folio_unlock(folio);
     folio_put(folio);
     goto out;
+}
+```
+
+### hugetlb_wp
+
+```c
+static vm_fault_t hugetlb_wp(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct mm_struct *mm = vma->vm_mm;
+    const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
+    pte_t pte = huge_ptep_get(mm, vmf->address, vmf->pte);
+    struct hstate *h = hstate_vma(vma);
+    struct folio *old_folio;
+    struct folio *new_folio;
+    bool cow_from_owner = 0;
+    vm_fault_t ret = 0;
+    struct mmu_notifier_range range;
+
+    if (!unshare && huge_pte_uffd_wp(pte))
+        return 0;
+
+    /* Let's take out MAP_SHARED mappings first. */
+    if (vma->vm_flags & VM_MAYSHARE) {
+        set_huge_ptep_writable(vma, vmf->address, vmf->pte);
+        return 0;
+    }
+
+    old_folio = page_folio(pte_page(pte));
+
+    delayacct_wpcopy_start();
+
+retry_avoidcopy:
+
+    if (folio_mapcount(old_folio) == 1 && folio_test_anon(old_folio)) {
+        if (!PageAnonExclusive(&old_folio->page)) {
+            folio_move_anon_rmap(old_folio, vma) {
+                /* move a folio to our anon_vma */
+                void *anon_vma = vma->anon_vma;
+                anon_vma += FOLIO_MAPPING_ANON;
+                WRITE_ONCE(folio->mapping, anon_vma);
+            }
+            SetPageAnonExclusive(&old_folio->page);
+        }
+        if (likely(!unshare))
+            set_huge_ptep_maybe_writable(vma, vmf->address, vmf->pte);
+
+        delayacct_wpcopy_end();
+        return 0;
+    }
+
+    if (is_vma_resv_set(vma, HPAGE_RESV_OWNER) && folio_test_anon(old_folio))
+        cow_from_owner = true;
+
+    folio_get(old_folio);
+
+
+    spin_unlock(vmf->ptl);
+    new_folio = alloc_hugetlb_folio(vma, vmf->address, cow_from_owner);
+
+    if (IS_ERR(new_folio)) {
+        /* If a process owning a MAP_PRIVATE mapping fails to COW,
+         * it is due to references held by a child and an insufficient
+         * huge page pool. To guarantee the original mappers
+         * reliability, unmap the page from child processes. The child
+         * may get SIGKILLed if it later faults. */
+        if (cow_from_owner) {
+            struct address_space *mapping = vma->vm_file->f_mapping;
+            pgoff_t idx;
+            u32 hash;
+
+            folio_put(old_folio);
+            /* Drop hugetlb_fault_mutex and vma_lock before
+             * unmapping.  unmapping needs to hold vma_lock
+             * in write mode.  Dropping vma_lock in read mode
+             * here is OK as COW mappings do not interact with
+             * PMD sharing.
+             *
+             * Reacquire both after unmap operation. */
+            idx = vma_hugecache_offset(h, vma, vmf->address);
+            hash = hugetlb_fault_mutex_hash(mapping, idx);
+            hugetlb_vma_unlock_read(vma);
+            mutex_unlock(&hugetlb_fault_mutex_table[hash]);
+
+            unmap_ref_private(mm, vma, old_folio, vmf->address) {
+                struct hstate *h = hstate_vma(vma);
+                struct vm_area_struct *iter_vma;
+                struct address_space *mapping;
+                pgoff_t pgoff;
+
+                address = address & huge_page_mask(h);
+                pgoff = ((address - vma->vm_start) >> PAGE_SHIFT) + vma->vm_pgoff;
+                mapping = vma->vm_file->f_mapping;
+
+                i_mmap_lock_write(mapping);
+                vma_interval_tree_foreach(iter_vma, &mapping->i_mmap, pgoff, pgoff) {
+                    /* Do not unmap the current VMA */
+                    if (iter_vma == vma)
+                        continue;
+
+                    /* Shared VMAs have their own reserves and do not affect
+                    * MAP_PRIVATE accounting but it is possible that a shared
+                    * VMA is using the same page so check and skip such VMAs. */
+                    if (iter_vma->vm_flags & VM_MAYSHARE)
+                        continue;
+
+                    /* Unmap the page from other VMAs without their own reserves. */
+                    if (!is_vma_resv_set(iter_vma, HPAGE_RESV_OWNER))
+                        unmap_hugepage_range(iter_vma, address,
+                            address + huge_page_size(h), folio, 0);
+                }
+                i_mmap_unlock_write(mapping);
+            }
+            mutex_lock(&hugetlb_fault_mutex_table[hash]);
+            hugetlb_vma_lock_read(vma);
+            spin_lock(vmf->ptl);
+            vmf->pte = hugetlb_walk(vma, vmf->address, huge_page_size(h));
+            if (likely(vmf->pte &&
+                   pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte)))
+                goto retry_avoidcopy;
+            /* race occurs while re-acquiring page table
+             * lock, and our job is done. */
+            delayacct_wpcopy_end();
+            return 0;
+        }
+
+        ret = vmf_error(PTR_ERR(new_folio));
+        goto out_release_old;
+    }
+
+    /* When the original hugepage is shared one, it does not have
+     * anon_vma prepared. */
+    ret = __vmf_anon_prepare(vmf) {
+        struct vm_area_struct *vma = vmf->vma;
+        vm_fault_t ret = 0;
+
+        if (likely(vma->anon_vma))
+            return 0;
+        if (vmf->flags & FAULT_FLAG_VMA_LOCK) {
+            if (!mmap_read_trylock(vma->vm_mm))
+                return VM_FAULT_RETRY;
+        }
+        /* attach an anon_vma to a memory region */
+        if (__anon_vma_prepare(vma))
+            ret = VM_FAULT_OOM;
+        if (vmf->flags & FAULT_FLAG_VMA_LOCK)
+            mmap_read_unlock(vma->vm_mm);
+        return ret;
+    }
+    if (unlikely(ret))
+        goto out_release_all;
+
+    if (copy_user_large_folio(new_folio, old_folio, vmf->real_address, vma)) {
+        ret = VM_FAULT_HWPOISON_LARGE | VM_FAULT_SET_HINDEX(hstate_index(h));
+        goto out_release_all;
+    }
+    __folio_mark_uptodate(new_folio);
+
+    mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, vmf->address,
+                vmf->address + huge_page_size(h));
+    mmu_notifier_invalidate_range_start(&range);
+
+    /* Retake the page table lock to check for racing updates
+     * before the page tables are altered */
+    spin_lock(vmf->ptl);
+    vmf->pte = hugetlb_walk(vma, vmf->address, huge_page_size(h));
+    if (likely(vmf->pte && pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte))) {
+        pte_t newpte = make_huge_pte(vma, new_folio, !unshare);
+
+        /* Break COW or unshare */
+        huge_ptep_clear_flush(vma, vmf->address, vmf->pte);
+        hugetlb_remove_rmap(old_folio);
+        hugetlb_add_new_anon_rmap(new_folio, vma, vmf->address);
+        if (huge_pte_uffd_wp(pte))
+            newpte = huge_pte_mkuffd_wp(newpte);
+        set_huge_pte_at(mm, vmf->address, vmf->pte, newpte, huge_page_size(h));
+        folio_set_hugetlb_migratable(new_folio);
+        /* Make the old page be freed below */
+        new_folio = old_folio;
+    }
+    spin_unlock(vmf->ptl);
+    mmu_notifier_invalidate_range_end(&range);
+
+out_release_all:
+    /* No restore in case of successful pagetable update (Break COW or
+     * unshare) */
+    if (new_folio != old_folio)
+        restore_reserve_on_error(h, vma, vmf->address, new_folio);
+    folio_put(new_folio);
+
+out_release_old:
+    folio_put(old_folio);
+
+    spin_lock(vmf->ptl); /* Caller expects lock to be held */
+
+    delayacct_wpcopy_end();
+    return ret;
 }
 ```
 
@@ -28409,203 +28610,6 @@ unsigned long thp_vma_allowable_orders(struct vm_area_struct *vma,
             return orders;
         }
     }
-}
-```
-
-### hugetlb_wp
-
-```c
-static vm_fault_t hugetlb_wp(struct vm_fault *vmf)
-{
-    struct vm_area_struct *vma = vmf->vma;
-    struct mm_struct *mm = vma->vm_mm;
-    const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
-    pte_t pte = huge_ptep_get(mm, vmf->address, vmf->pte);
-    struct hstate *h = hstate_vma(vma);
-    struct folio *old_folio;
-    struct folio *new_folio;
-    bool cow_from_owner = 0;
-    vm_fault_t ret = 0;
-    struct mmu_notifier_range range;
-
-    if (!unshare && huge_pte_uffd_wp(pte))
-        return 0;
-
-    /* Let's take out MAP_SHARED mappings first. */
-    if (vma->vm_flags & VM_MAYSHARE) {
-        set_huge_ptep_writable(vma, vmf->address, vmf->pte);
-        return 0;
-    }
-
-    old_folio = page_folio(pte_page(pte));
-
-    delayacct_wpcopy_start();
-
-retry_avoidcopy:
-
-    if (folio_mapcount(old_folio) == 1 && folio_test_anon(old_folio)) {
-        if (!PageAnonExclusive(&old_folio->page)) {
-            folio_move_anon_rmap(old_folio, vma) {
-                /* move a folio to our anon_vma */
-                void *anon_vma = vma->anon_vma;
-                anon_vma += FOLIO_MAPPING_ANON;
-                WRITE_ONCE(folio->mapping, anon_vma);
-            }
-            SetPageAnonExclusive(&old_folio->page);
-        }
-        if (likely(!unshare))
-            set_huge_ptep_maybe_writable(vma, vmf->address, vmf->pte);
-
-        delayacct_wpcopy_end();
-        return 0;
-    }
-
-    if (is_vma_resv_set(vma, HPAGE_RESV_OWNER) && folio_test_anon(old_folio))
-        cow_from_owner = true;
-
-    folio_get(old_folio);
-
-
-    spin_unlock(vmf->ptl);
-    new_folio = alloc_hugetlb_folio(vma, vmf->address, cow_from_owner);
-
-    if (IS_ERR(new_folio)) {
-        /* If a process owning a MAP_PRIVATE mapping fails to COW,
-         * it is due to references held by a child and an insufficient
-         * huge page pool. To guarantee the original mappers
-         * reliability, unmap the page from child processes. The child
-         * may get SIGKILLed if it later faults. */
-        if (cow_from_owner) {
-            struct address_space *mapping = vma->vm_file->f_mapping;
-            pgoff_t idx;
-            u32 hash;
-
-            folio_put(old_folio);
-            /* Drop hugetlb_fault_mutex and vma_lock before
-             * unmapping.  unmapping needs to hold vma_lock
-             * in write mode.  Dropping vma_lock in read mode
-             * here is OK as COW mappings do not interact with
-             * PMD sharing.
-             *
-             * Reacquire both after unmap operation. */
-            idx = vma_hugecache_offset(h, vma, vmf->address);
-            hash = hugetlb_fault_mutex_hash(mapping, idx);
-            hugetlb_vma_unlock_read(vma);
-            mutex_unlock(&hugetlb_fault_mutex_table[hash]);
-
-            unmap_ref_private(mm, vma, old_folio, vmf->address) {
-                struct hstate *h = hstate_vma(vma);
-                struct vm_area_struct *iter_vma;
-                struct address_space *mapping;
-                pgoff_t pgoff;
-
-                address = address & huge_page_mask(h);
-                pgoff = ((address - vma->vm_start) >> PAGE_SHIFT) + vma->vm_pgoff;
-                mapping = vma->vm_file->f_mapping;
-
-                i_mmap_lock_write(mapping);
-                vma_interval_tree_foreach(iter_vma, &mapping->i_mmap, pgoff, pgoff) {
-                    /* Do not unmap the current VMA */
-                    if (iter_vma == vma)
-                        continue;
-
-                    /* Shared VMAs have their own reserves and do not affect
-                    * MAP_PRIVATE accounting but it is possible that a shared
-                    * VMA is using the same page so check and skip such VMAs. */
-                    if (iter_vma->vm_flags & VM_MAYSHARE)
-                        continue;
-
-                    /* Unmap the page from other VMAs without their own reserves. */
-                    if (!is_vma_resv_set(iter_vma, HPAGE_RESV_OWNER))
-                        unmap_hugepage_range(iter_vma, address,
-                            address + huge_page_size(h), folio, 0);
-                }
-                i_mmap_unlock_write(mapping);
-            }
-            mutex_lock(&hugetlb_fault_mutex_table[hash]);
-            hugetlb_vma_lock_read(vma);
-            spin_lock(vmf->ptl);
-            vmf->pte = hugetlb_walk(vma, vmf->address, huge_page_size(h));
-            if (likely(vmf->pte &&
-                   pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte)))
-                goto retry_avoidcopy;
-            /* race occurs while re-acquiring page table
-             * lock, and our job is done. */
-            delayacct_wpcopy_end();
-            return 0;
-        }
-
-        ret = vmf_error(PTR_ERR(new_folio));
-        goto out_release_old;
-    }
-
-    /* When the original hugepage is shared one, it does not have
-     * anon_vma prepared. */
-    ret = __vmf_anon_prepare(vmf) {
-        struct vm_area_struct *vma = vmf->vma;
-        vm_fault_t ret = 0;
-
-        if (likely(vma->anon_vma))
-            return 0;
-        if (vmf->flags & FAULT_FLAG_VMA_LOCK) {
-            if (!mmap_read_trylock(vma->vm_mm))
-                return VM_FAULT_RETRY;
-        }
-        /* attach an anon_vma to a memory region */
-        if (__anon_vma_prepare(vma))
-            ret = VM_FAULT_OOM;
-        if (vmf->flags & FAULT_FLAG_VMA_LOCK)
-            mmap_read_unlock(vma->vm_mm);
-        return ret;
-    }
-    if (unlikely(ret))
-        goto out_release_all;
-
-    if (copy_user_large_folio(new_folio, old_folio, vmf->real_address, vma)) {
-        ret = VM_FAULT_HWPOISON_LARGE | VM_FAULT_SET_HINDEX(hstate_index(h));
-        goto out_release_all;
-    }
-    __folio_mark_uptodate(new_folio);
-
-    mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, mm, vmf->address,
-                vmf->address + huge_page_size(h));
-    mmu_notifier_invalidate_range_start(&range);
-
-    /* Retake the page table lock to check for racing updates
-     * before the page tables are altered */
-    spin_lock(vmf->ptl);
-    vmf->pte = hugetlb_walk(vma, vmf->address, huge_page_size(h));
-    if (likely(vmf->pte && pte_same(huge_ptep_get(mm, vmf->address, vmf->pte), pte))) {
-        pte_t newpte = make_huge_pte(vma, new_folio, !unshare);
-
-        /* Break COW or unshare */
-        huge_ptep_clear_flush(vma, vmf->address, vmf->pte);
-        hugetlb_remove_rmap(old_folio);
-        hugetlb_add_new_anon_rmap(new_folio, vma, vmf->address);
-        if (huge_pte_uffd_wp(pte))
-            newpte = huge_pte_mkuffd_wp(newpte);
-        set_huge_pte_at(mm, vmf->address, vmf->pte, newpte, huge_page_size(h));
-        folio_set_hugetlb_migratable(new_folio);
-        /* Make the old page be freed below */
-        new_folio = old_folio;
-    }
-    spin_unlock(vmf->ptl);
-    mmu_notifier_invalidate_range_end(&range);
-
-out_release_all:
-    /* No restore in case of successful pagetable update (Break COW or
-     * unshare) */
-    if (new_folio != old_folio)
-        restore_reserve_on_error(h, vma, vmf->address, new_folio);
-    folio_put(new_folio);
-
-out_release_old:
-    folio_put(old_folio);
-
-    spin_lock(vmf->ptl); /* Caller expects lock to be held */
-
-    delayacct_wpcopy_end();
-    return ret;
 }
 ```
 
