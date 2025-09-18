@@ -11570,11 +11570,11 @@ kswapd_try_sleep:
 
 ![](../images/kernel/mem-swap-arch.svg)
 
-* [[PATCH v4 00/13] mm, swap: rework of swap allocator locks](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/)
-* [[LSF/MM/BPF TOPIC] Integrate Swap Cache, Swap Maps with Swap Allocator](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/)
-* [[PATCH v3 0/7] mm, swap: remove swap slot cache Kairui Song](https://lore.kernel.org/all/20250313165935.63303-1-ryncsn@gmail.com/)
-* [[PATCH 00/28] mm, swap: introduce swap table](https://lore.kernel.org/linux-mm/20250514201729.48420-1-ryncsn@gmail.com/)
-* [[PATCH 0/9] mm, swap: introduce swap table as swap cache (phase I)](https://lore.kernel.org/lkml/20250822192023.13477-1-ryncsn@gmail.com/)
+* [[LSF/MM/BPF TOPIC] Integrate Swap Cache, Swap Maps with Swap Allocator](https://lore.kernel.org/all/CAMgjq7BvQ0ZXvyLGp2YP96+i+6COCBBJCYmjXHGBnfisCAb8VA@mail.gmail.com/)
+    * [[PATCH v4 00/13] mm, swap: rework of swap allocator locks](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/)
+    * [[PATCH v3 0/7] mm, swap: remove swap slot cache Kairui Song](https://lore.kernel.org/all/20250313165935.63303-1-ryncsn@gmail.com/)
+    * [[PATCH 00/28] mm, swap: introduce swap table](https://lore.kernel.org/linux-mm/20250514201729.48420-1-ryncsn@gmail.com/)
+    * [[PATCH 0/9] mm, swap: introduce swap table as swap cache (phase I)](https://lore.kernel.org/lkml/20250822192023.13477-1-ryncsn@gmail.com/)
 
 ```md
 +-----------------------------------------------------+
@@ -21616,6 +21616,7 @@ out_leak_pages:
 
 * [Linux mTHP 动态大页](https://mp.weixin.qq.com/s/B76XlGP7efmsfZR-ABAM1A)
 * [Leo - Linux内存管理之透明大页(THP)](https://mp.weixin.qq.com/s/xRxP4beYJ-5URA7MUW96eA)
+* [为什么HugePage能让Oracle数据库如虎添翼?](https://mp.weixin.qq.com/s/3Lb7-KuAlN6NnfFPL5RDdQ)
 
 Segment | hugetlb   | mTHP
 :-:     | :-:       | :-:
