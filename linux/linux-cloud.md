@@ -45,6 +45,8 @@
         * [task_group](#task_group)
             * [sched_create_group](#sched_create_group)
 
+* [[RFC 0/5] parker: PARtitioned KERnel](https://lore.kernel.org/linux-pm/20250923153146.365015-1-fam.zheng@bytedance.com/)
+
 # cgroup
 
 * [iximiuz Labs - Controlling Process Resources with Linux Control Groups](https://labs.iximiuz.com/tutorials/controlling-process-resources-with-cgroups)
