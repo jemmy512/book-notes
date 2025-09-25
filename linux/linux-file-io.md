@@ -10050,6 +10050,7 @@ int ovl_get_tree(struct fs_context *fc)
 * [Directory Entry Lookup in ext4](https://blogs.oracle.com/linux/post/directory-entry-lookup-in-ext4)
 * [Space Management With Large Directories in Ext4](https://blogs.oracle.com/linux/post/space-management-with-large-directories-in-ext4)
 * [ext4文件系统](https://blog.csdn.net/hu1610552336/category_12079527.html)
+* [[PATCH 00/13] ext4: optimize online defragment](https://lore.kernel.org/lkml/20250923012724.2378858-1-yi.zhang@huaweicloud.com/)
 
 ### extent
 
