@@ -4,6 +4,7 @@ Patch | Merged
  :- | :-:
 [[PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/) | :white_check_mark:
 [[PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor()](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/) | :white_check_mark:
+[[PATCH] sched: Add _TIF_NEED_RESCHED_LAZY to __resched_curr check](https://lore.kernel.org/all/20250928151421.60919-1-jemmywong512@gmail.com/) |
 [[PATCH v1] sched/eevdf: propagate min slice during {throttle, unthrottle}_cfs_rq](https://lore.kernel.org/all/20250714040516.10196-1-jemmywong512@gmail.com/) |
 [[PATCH v1] sched: Move curr check into __enqueue_entity and __dequeue_entity](https://lore.kernel.org/all/20250621142055.7110-1-jemmywong512@gmail.com/) |
 [[PATCH v0] [RFC] cleanup: Unify DEFINE_LOCK_GUARD_0 and DEFINE_LOCK_GUARD_1](https://lore.kernel.org/all/20250616111436.665171-1-jemmywong512@gmail.com/) |
