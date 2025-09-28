@@ -877,6 +877,156 @@ irqreturn_t ipi_handler(int irq, void *data) {
 }
 ```
 
+## IPI_CALL_FUNC
+
+```c
+#define generic_smp_call_function_interrupt \
+    generic_smp_call_function_single_interrupt
+
+void generic_smp_call_function_single_interrupt(void)
+{
+    __flush_smp_call_function_queue(true);
+}
+
+void __flush_smp_call_function_queue(bool warn_cpu_offline)
+{
+    call_single_data_t *csd, *csd_next;
+    struct llist_node *entry, *prev;
+    struct llist_head *head;
+    static bool warned;
+    atomic_t *tbt;
+
+    lockdep_assert_irqs_disabled();
+
+    /* Allow waiters to send backtrace NMI from here onwards */
+    tbt = this_cpu_ptr(&trigger_backtrace);
+    atomic_set_release(tbt, 1);
+
+    head = this_cpu_ptr(&call_single_queue);
+    entry = llist_del_all(head);
+    entry = llist_reverse_order(entry);
+
+    /* There shouldn't be any pending callbacks on an offline CPU. */
+    if (unlikely(warn_cpu_offline && !cpu_online(smp_processor_id()) &&
+             !warned && entry != NULL)) {
+        warned = true;
+        WARN(1, "IPI on offline CPU %d\n", smp_processor_id());
+
+        /* We don't have to use the _safe() variant here
+         * because we are not invoking the IPI handlers yet. */
+        llist_for_each_entry(csd, entry, node.llist) {
+            switch (CSD_TYPE(csd)) {
+            case CSD_TYPE_ASYNC:
+            case CSD_TYPE_SYNC:
+            case CSD_TYPE_IRQ_WORK:
+                pr_warn("IPI callback %pS sent to offline CPU\n",
+                    csd->func);
+                break;
+
+            case CSD_TYPE_TTWU:
+                pr_warn("IPI task-wakeup sent to offline CPU\n");
+                break;
+
+            default:
+                pr_warn("IPI callback, unknown type %d, sent to offline CPU\n",
+                    CSD_TYPE(csd));
+                break;
+            }
+        }
+    }
+
+/* 1. run all SYNC callbacks, people are waiting for us. */
+    prev = NULL;
+    llist_for_each_entry_safe(csd, csd_next, entry, node.llist) {
+        /* Do we wait until *after* callback? */
+        if (CSD_TYPE(csd) == CSD_TYPE_SYNC) {
+            smp_call_func_t func = csd->func;
+            void *info = csd->info;
+
+            if (prev) {
+                prev->next = &csd_next->node.llist;
+            } else {
+                entry = &csd_next->node.llist;
+            }
+
+            csd_lock_record(csd);
+            csd_do_func(func, info, csd) {
+                func(info);
+            }
+            csd_unlock(csd);
+            csd_lock_record(NULL);
+        } else {
+            prev = &csd->node.llist;
+        }
+    }
+
+    if (!entry)
+        return;
+
+/* 2. run all !SYNC callbacks. */
+    prev = NULL;
+    llist_for_each_entry_safe(csd, csd_next, entry, node.llist) {
+        int type = CSD_TYPE(csd);
+
+        if (type != CSD_TYPE_TTWU) {
+            if (prev) {
+                prev->next = &csd_next->node.llist;
+            } else {
+                entry = &csd_next->node.llist;
+            }
+
+            if (type == CSD_TYPE_ASYNC) {
+                smp_call_func_t func = csd->func;
+                void *info = csd->info;
+
+                csd_lock_record(csd);
+                csd_unlock(csd);
+                csd_do_func(func, info, csd);
+                csd_lock_record(NULL);
+            } else if (type == CSD_TYPE_IRQ_WORK) {
+                irq_work_single(csd);
+            }
+
+        } else {
+            prev = &csd->node.llist;
+        }
+    }
+
+/* 3. only CSD_TYPE_TTWU is left, issue those. */
+    if (entry) {
+        csd = llist_entry(entry, typeof(*csd), node.llist);
+        csd_do_func(sched_ttwu_pending, entry, csd);
+    }
+}
+
+void sched_ttwu_pending(void *arg)
+{
+    struct llist_node *llist = arg;
+    struct rq *rq = this_rq();
+    struct task_struct *p, *t;
+    struct rq_flags rf;
+
+    if (!llist)
+        return;
+
+    rq_lock_irqsave(rq, &rf);
+    update_rq_clock(rq);
+
+    llist_for_each_entry_safe(p, t, llist, wake_entry.llist) {
+        if (WARN_ON_ONCE(p->on_cpu))
+            smp_cond_load_acquire(&p->on_cpu, !VAL);
+
+        if (WARN_ON_ONCE(task_cpu(p) != cpu_of(rq)))
+            set_task_cpu(p, cpu_of(rq));
+
+        ttwu_do_activate(rq, p, p->sched_remote_wakeup ? WF_MIGRATED : 0, &rf);
+    }
+
+    WRITE_ONCE(rq->ttwu_pending, 0);
+    rq_unlock_irqrestore(rq, &rf);
+}
+```
+
 # gic_v3
 
 ![](../images/kernel/intr-gic_chip_data.png)
