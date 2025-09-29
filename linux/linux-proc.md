@@ -1952,10 +1952,8 @@ void sched_tick(void)
 
     perf_event_task_tick();
 
-#ifdef CONFIG_SMP
     rq->idle_balance = idle_cpu(cpu);
     sched_balance_trigger(rq);
-#endif
 }
 ```
 
@@ -5088,9 +5086,7 @@ struct sched_entity {
     unsigned long           runnable_weight;
 #endif
 
-#ifdef CONFIG_SMP
     struct sched_avg        avg;
-#endif
 };
 
 struct cfs_rq {
@@ -5115,7 +5111,6 @@ struct cfs_rq {
     struct sched_entity    *next;
     struct sched_entity    *last;
 
-#ifdef CONFIG_SMP
     /* CFS load tracking */
     struct sched_avg        avg;
 
@@ -5138,7 +5133,6 @@ struct cfs_rq {
     struct sched_entity     *h_load_next;
 #endif /* CONFIG_FAIR_GROUP_SCHED */
 
-#ifdef CONFIG_FAIR_GROUP_SCHED
     struct rq               *rq; /* CPU runqueue to which this cfs_rq is attached */
 
     int                     on_list;
@@ -5148,7 +5142,6 @@ struct cfs_rq {
     /* Locally cached copy of our task_group's idle value */
     int                     idle;
 
-#ifdef CONFIG_CFS_BANDWIDTH
     int            runtime_enabled;
     s64            runtime_remaining;
     u64            throttled_pelt_idle;
@@ -5162,7 +5155,6 @@ struct cfs_rq {
     int            throttle_count;
     struct list_head    throttled_list;
     struct list_head    throttled_csd_list;
-#endif
 };
 ```
 

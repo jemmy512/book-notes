@@ -670,7 +670,6 @@ void register_irq_proc(unsigned int irq, struct irq_desc *desc)
     if (!desc->dir)
         goto out_unlock;
 
-#ifdef CONFIG_SMP
     umode_t umode = S_IRUGO;
 
     if (irq_can_set_affinity_usr(desc->irq_data.irq))
@@ -697,7 +696,6 @@ void register_irq_proc(unsigned int irq, struct irq_desc *desc)
             irq_effective_aff_list_proc_show, irqp);
 # endif
 
-#endif
     proc_create_single_data("spurious", 0444, desc->dir,
             irq_spurious_proc_show, (void *)(long)irq);
 
@@ -1104,10 +1102,9 @@ void do_set_cpus_allowed(struct task_struct *p, const struct cpumask *new_mask)
     if (running)
         set_curr_task(rq, p);
 }
+
 const struct sched_class fair_sched_class = {
-  #ifdef CONFIG_SMP
-  .set_cpus_allowed  = set_cpus_allowed_common,
-#endif
+    .set_cpus_allowed  = set_cpus_allowed_common,
 };
 
 void set_cpus_allowed_common(struct task_struct *p, const struct cpumask *new_mask)

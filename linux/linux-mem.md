@@ -22021,11 +22021,7 @@ static int __init hugetlb_init(void)
     hugetlb_sysfs_init();
     hugetlb_cgroup_file_init();
 
-#ifdef CONFIG_SMP
     num_fault_mutexes = roundup_pow_of_two(8 * num_possible_cpus());
-#else
-    num_fault_mutexes = 1;
-#endif
 
     hugetlb_fault_mutex_table =
         kmalloc_array(num_fault_mutexes, sizeof(struct mutex), GFP_KERNEL);
@@ -29523,10 +29519,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
         val->sharedram = global_node_page_state(NR_SHMEM) {
             return global_node_page_state_pages(item) {
                 long x = atomic_long_read(&vm_node_stat[item]);
-            #ifdef CONFIG_SMP
                 if (x < 0)
                     x = 0;
-            #endif
                 return x;
             }
         }
