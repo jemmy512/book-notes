@@ -207,6 +207,11 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     * [2. [RESEND][PATCH v8 0/7] Preparatory changes for Proxy Execution v8](https://lore.kernel.org/lkml/20240224001153.2584030-1-jstultz@google.com/)
     * [3. [PATCH v19 0/8] Single RunQueue Proxy Execution (v19)](https://lore.kernel.org/all/20250712033407.2383110-1-jstultz@google.com/)
     * [Phoronix - Linux 6.13 Poised To Land Prep Patches Working Toward Proxy Execution](https://www.phoronix.com/news/Linux-6.13-Prep-For-Proxy-Exec)
+
+    The **scheduling context** is essentially a task's position in the scheduler's run queue, while the **execution context** describes the task that actually runs when the scheduling context is selected for execution.
+
+    The CPU time used by the execution context will be charged against the scheduling context — the proxy will burn a bit of the donor's time slice so that it can get its work done. But the total CPU time usage of the execution context should be increased to reflect the time it spends running in the proxy mode. That is the time value that is visible to user space; having it reflect the actual execution time of the task makes it clear that the task is, indeed, executing.
+
 * [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 * [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
 * [Kernel Index Sched - LWN](https://lwn.net/Kernel/Index/#Scheduler)
@@ -491,7 +496,14 @@ static void rest_init(void)
 
     complete(&kthreadd_done);
 
-    cpu_startup_entry(CPUHP_ONLINE);
+    cpu_startup_entry(CPUHP_ONLINE) {
+        current->flags |= PF_IDLE;
+        arch_cpu_idle_prepare();
+        cpuhp_online_idle(state);
+        while (1) {
+            do_idle();
+        }
+    }
 }
 
 /* init/init_task.c */
@@ -1224,8 +1236,8 @@ struct task_struct {
         union {
             u64             preempt_count;  /* 0 => preemptible, <0 => bug */
             struct {
-                u32         count;
-                u32         need_resched;
+                u32         count;          /* preemption disable depth */
+                u32         need_resched;   /* resched request pending */
             } preempt;
         };
         u32                 cpu;
@@ -1496,13 +1508,18 @@ __schedule(sched_mode) { /* kernel/sched/core.c */
             goto picked;
         }
     } else if (!preempt && prev_state/* tsk not running */) {
-        try_to_block_task(rq, prev, prev_state) {
+        try_to_block_task(rq, prev, prev_state, unsigned long *task_state_p, bool should_block) {
+            unsigned long task_state = *task_state_p;
             int flags = DEQUEUE_NOCLOCK;
 
             if (signal_pending_state(task_state, p)) {
                 WRITE_ONCE(p->__state, TASK_RUNNING);
+                *task_state_p = TASK_RUNNING;
                 return false;
             }
+
+            if (!should_block)
+                return false;
 
             p->sched_contributes_to_load =
                 (task_state & TASK_UNINTERRUPTIBLE) &&
@@ -1538,104 +1555,32 @@ __schedule(sched_mode) { /* kernel/sched/core.c */
         switch_count = &prev->nvcsw;
     }
 
-    next = pick_next_task(rq, prev, &rf) {
-        if (!sched_core_enabled(rq)) {
-            return __pick_next_task(rq, prev, rf) {
-                onst struct sched_class *class;
-                struct task_struct *p;
-
-                rq->dl_server = NULL;
-
-                if (scx_enabled())
-                    goto restart;
-
-                if (likely(!sched_class_above(prev->sched_class, &fair_sched_class)
-                    && rq->nr_running == rq->cfs.h_nr_runnable)) {
-
-                    p = pick_next_task_fair(rq, prev, rf);
-                    if (unlikely(p == RETRY_TASK))
-                        goto restart;
-
-                    /* Assume the next prioritized class is idle_sched_class */
-                    if (!p) {
-                        put_prev_task(rq, prev);
-                        p = pick_next_task_idle(rq);
-                    }
-
-                    return p;
-                }
-
-            restart:
-                prev_balance(rq, prev, rf) {
-                    const struct sched_class *start_class = prev->sched_class;
-                    const struct sched_class *class;
-
-                #ifdef CONFIG_SCHED_CLASS_EXT
-                    /* SCX requires a balance() call before every pick_task() including when
-                     * waking up from SCHED_IDLE. If @start_class is below SCX, start from
-                     * SCX instead. Also, set a flag to detect missing balance() call. */
-                    if (scx_enabled()) {
-                        rq->scx.flags |= SCX_RQ_BAL_PENDING;
-                        if (sched_class_above(&ext_sched_class, start_class))
-                            start_class = &ext_sched_class;
-                    }
-                #endif
-
-                    for_active_class_range(class, start_class, &idle_sched_class) {
-                        if (class->balance && class->balance(rq, prev, rf))
-                            break;
-                    }
-                }
-
-                for_each_active_class(class) {
-                    if (class->pick_next_task) {
-                        p = class->pick_next_task(rq, prev);
-                        if (p)
-                            return p;
-                    } else {
-                        p = class->pick_task(rq);
-                        if (p) {
-                            put_prev_set_next_task(rq, prev, p) {
-                                __put_prev_set_next_dl_server(rq, prev, next) {
-                                    prev->dl_server = NULL;
-                                    next->dl_server = rq->dl_server;
-                                    rq->dl_server = NULL;
-                                }
-
-                                if (next == prev)
-                                    return;
-
-                                prev->sched_class->put_prev_task(rq, prev, next);
-                                next->sched_class->set_next_task(rq, next, true);
-                            }
-                            return p;
-                        }
-                    }
-                }
-
-                BUG();
-            }
-        }
-
-        cpu = cpu_of(rq);
-
-        /* Stopper task is switching into idle, no need core-wide selection. */
-        if (cpu_is_offline(cpu)) {
-            rq->core_pick = NULL;
-            return __pick_next_task(rq, prev, rf);
-        }
-
-        /* do core sched */
-    }
+pick_again:
+    next = pick_next_task(rq, prev, &rf);
+        --->
     rq_set_donor(rq, next);
+    if (unlikely(task_is_blocked(next))) {
+        next = find_proxy_task(rq, next, &rf);
+            --->
+        if (!next)
+            goto pick_again;
+        if (next == rq->idle)
+            goto keep_resched;
+    }
 
 picked:
     clear_tsk_need_resched(prev);
     clear_preempt_need_resched();
+keep_resched:
+    rq->last_seen_need_resched_ns = 0;
 
     if (likely(prev != next)) {
         rq->nr_switches++;
         RCU_INIT_POINTER(rq->curr, next);
+
+        if (!task_current_donor(rq, next))
+            proxy_tag_curr(rq, next);
+
         ++*switch_count;
 
         migrate_disable_switch(rq, prev);
@@ -1643,228 +1588,11 @@ picked:
         psi_sched_switch(prev, next, !task_on_rq_queued(prev) ||
                         prev->se.sched_delayed);
 
-        context_switch(rq, prev, next, &rf) {
-            prepare_task_switch(rq, prev, next);
-            arch_start_context_switch(prev);
-
-            /* kernel -> kernel   lazy + transfer active
-             *   user -> kernel   lazy + mmgrab_lazy_tlb() active
-             *
-             * kernel ->   user   switch + mmdrop_lazy_tlb() active
-             *   user ->   user   switch */
-            if (!next->mm) { /* to kernel task */
-                enter_lazy_tlb(prev->active_mm, next) {
-                    /* empty on arm64 */
-                }
-                next->active_mm = prev->active_mm;
-
-                if (prev->mm) {/* from user */
-                    mmgrab_lazy_tlb(prev->active_mm) {
-                        /* kernel(next) task reuses user(prev) task' mm,
-                         * inc refcnt to avoid the free of user mm */
-                        atomic_inc(&mm->mm_count);
-                    }
-                } else {
-                    prev->active_mm = NULL;
-                }
-            } else { /* to user task */
-                membarrier_switch_mm(rq, prev->active_mm, next->mm);
-                switch_mm_irqs_off(prev->active_mm, next->mm, next) {
-                    /* arch/arm64/include/asm/mmu_context.h */
-                    switch_mm(mm_prev, mm_next, tsk) {
-                        if (prev != next) {
-                            __switch_mm(next) {
-                                if (next == &init_mm) {
-                                    cpu_set_reserved_ttbr0() {
-                                        ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
-                                        write_sysreg(ttbr, ttbr0_el1);
-                                    }
-                                    return;
-                                }
-
-                                check_and_switch_context(next) {
-                                    if (system_supports_cnp())
-                                        cpu_set_reserved_ttbr0();
-
-                                    asid = atomic64_read(&mm->context.id);
-
-                                    old_active_asid = atomic64_read(this_cpu_ptr(&active_asids));
-                                    if (old_active_asid && asid_gen_match(asid)
-                                        && atomic64_cmpxchg_relaxed(this_cpu_ptr(&active_asids), old_active_asid, asid))
-                                        goto switch_mm_fastpath;
-
-                                    asid = atomic64_read(&mm->context.id);
-                                    if (!asid_gen_match(asid)) {
-                                        asid = new_context(mm);
-                                        atomic64_set(&mm->context.id, asid);
-                                    }
-
-                                    cpu = smp_processor_id();
-                                    if (cpumask_test_and_clear_cpu(cpu, &tlb_flush_pending))
-                                        local_flush_tlb_all();
-
-                                    atomic64_set(this_cpu_ptr(&active_asids), asid);
-
-                                switch_mm_fastpath:
-                                    if (!system_uses_ttbr0_pan()) { /* Context Name Propagation */
-                                        cpu_switch_mm(mm->pgd, mm) {
-                                            BUG_ON(pgd == swapper_pg_dir);
-                                            cpu_set_reserved_ttbr0();
-                                                --->
-                                            cpu_do_switch_mm(virt_to_phys(pgd)/*pgd_phys*/, mm) {
-                                                /* TTBR0_EL1: Typically holds the base address of the user-space page tables.
-                                                 * TTBR1_EL1: Typically holds the base address of the kernel-space page tables
-                                                 * and includes the ASID when TCR_EL1.A1 is set. */
-
-                                                /* Set ASID in TTBR1 since TCR.A1 is set */
-                                                ttbr1 = read_sysreg(ttbr1_el1);
-                                                ttbr1 &= ~TTBR_ASID_MASK;
-                                                ttbr1 |= FIELD_PREP(TTBR_ASID_MASK, asid);
-                                                write_sysreg(ttbr1, ttbr1_el1);
-
-                                                isb();
-                                                ttbr0 = phys_to_ttbr(pgd_phys);
-                                                write_sysreg(ttbr0, ttbr0_el1);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        update_saved_ttbr0(tsk, next) {
-                            if (mm == &init_mm)
-                                ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
-                            else
-                                ttbr = phys_to_ttbr(virt_to_phys(mm->pgd)) | ASID(mm) << 48;
-
-                            WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
-                        }
-                    }
-                }
-                lru_gen_use_mm(next->mm);
-
-                if (!prev->mm) { /* from kernel */
-                    /* kernel task no longer uses user mm, mark it
-                     * and free it in finish_task_switch(). */
-                    rq->prev_mm = prev->active_mm;
-                    prev->active_mm = NULL;
-                }
-            }
-
-            switch_to(prev, next, prev) {
-                __switch_to() {
-                    /* Switches the floating-point and SIMD (Single Instruction, Multiple Data)
-                     * context to the next task. */
-                    fpsimd_thread_switch(next);
-                    /* Handles the Thread Local Storage (TLS) switch for the next task. */
-                    tls_thread_switch(next);
-                    /* Manages hardware breakpoint settings for the next task. */
-                    hw_breakpoint_thread_switch(next);
-                    /* Switches the Context ID Register (CONTEXTIDR) for the next task. */
-                    contextidr_thread_switch(next);
-                    entry_task_switch(next) {
-                        __this_cpu_write(__entry_task, next);
-                    }
-                    /* Handles the Speculative Store Bypass Safe (SSBS) state switch. */
-                    ssbs_thread_switch(next);
-                    erratum_1418040_thread_switch(next);
-                    ptrauth_thread_switch_user(next);
-
-                    /* arch/arm64/kernel/entry.S */
-                    last = cpu_switch_to(prev, next) {
-                        /* x0 = previous task_struct (must be preserved across the switch)
-                         * x1 = next task_struct
-                         * Previous and next are guaranteed not to be the same. */
-                        SYM_FUNC_START(cpu_switch_to)
-                            mov    x10, #THREAD_CPU_CONTEXT /* offset of thread.cpu_context within task_struct */
-                            add    x8, x0, x10         /* calc prev task cpu_context addr (prev + offset) */
-                            mov    x9, sp              /* save current x9(sp) to sp register */
-                            stp    x19, x20, [x8], #16
-                            stp    x21, x22, [x8], #16
-                            stp    x23, x24, [x8], #16
-                            stp    x25, x26, [x8], #16
-                            stp    x27, x28, [x8], #16
-                            stp    x29, x9, [x8], #16   /* x29-fp, x9-sp */
-                            str    lr, [x8]             /* str pc to lr register */
-
-                            add    x8, x1, x10  /* calc next task cpu_context addr (next + offset) */
-                            ldp    x19, x20, [x8], #16
-                            ldp    x21, x22, [x8], #16
-                            ldp    x23, x24, [x8], #16
-                            ldp    x25, x26, [x8], #16
-                            ldp    x27, x28, [x8], #16
-                            ldp    x29, x9, [x8], #16
-                            ldr    lr, [x8]             /* load pc of next tsk */
-
-                            mov    sp, x9       /* sp points to stack of next tsk */
-                            /* stack pointer of user-space points to next tsk,
-                             * linux doens't use it to track the stack of user-space while
-                             * retrieve the point of current tsk in kernel, see #define current */
-                            msr    sp_el0, x1
-
-                            /* the user-space stack pointer is restored from the pt_regs structure,
-                             * which is typically stored at the top of the kernel stack,
-                             * during the transition from kernel mode (EL1) to user mode (EL0). */
-
-                            /* Installs pointer authentication keys for the kernel */
-                            ptrauth_keys_install_kernel x1, x8, x9, x10
-                            scs_save x0
-                            scs_load_current
-                            ret
-                    }
-                    return last; /* lr points here when a task scheduled in */
-                }
-            }
-
-            return finish_task_switch(prev) {
-                struct rq *rq = this_rq();
-                struct mm_struct *mm = rq->prev_mm;
-
-                rq->prev_mm = NULL;
-
-                prev_state = READ_ONCE(prev->__state);
-                vtime_task_switch(prev);
-                perf_event_task_sched_in(prev, current);
-                finish_task(prev) {
-                    smp_store_release(&prev->on_cpu, 0);
-                }
-                tick_nohz_task_switch();
-                finish_lock_switch(rq) {
-                    __balance_callbacks(rq);
-                        --->
-                }
-                finish_arch_post_lock_switch();
-                kcov_finish_switch(current);
-                kmap_local_sched_in();
-
-                fire_sched_in_preempt_notifiers(current);
-
-                if (mm) {
-                    membarrier_mm_sync_core_before_usermode(mm);
-                    mmdrop_lazy_tlb_sched(mm) {
-                        mmdrop_sched(mm) {
-                            if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
-                                __mmdrop(mm);
-                            }
-                        }
-                    }
-                }
-
-                if (unlikely(prev_state == TASK_DEAD)) {
-                    if (prev->sched_class->task_dead)
-                        prev->sched_class->task_dead(prev);
-
-                    /* Task is done with its stack. */
-                    put_task_stack(prev);
-
-                    put_task_struct_rcu_user(prev);
-                }
-
-                return rq;
-            }
-        }
+        rq = context_switch(rq, prev, next, &rf);
     } else {
+        if (!task_current_donor(rq, next))
+            proxy_tag_curr(rq, next);
+
         __balance_callbacks(rq) {
             do_balance_callbacks(rq, __splice_balance_callbacks(rq, false)/*head*/) {
                 void (*func)(struct rq *rq);
@@ -1884,6 +1612,533 @@ picked:
             raw_spin_rq_unlock(rq);
             local_irq_enable();
         }
+    }
+}
+```
+
+### pick_next_task
+
+```c
+next = pick_next_task(rq, prev, &rf) {
+    if (!sched_core_enabled(rq)) {
+        return __pick_next_task(rq, prev, rf) {
+            onst struct sched_class *class;
+            struct task_struct *p;
+
+            rq->dl_server = NULL;
+
+            if (scx_enabled())
+                goto restart;
+
+            if (likely(!sched_class_above(prev->sched_class, &fair_sched_class)
+                && rq->nr_running == rq->cfs.h_nr_runnable)) {
+
+                p = pick_next_task_fair(rq, prev, rf);
+                if (unlikely(p == RETRY_TASK))
+                    goto restart;
+
+                /* Assume the next prioritized class is idle_sched_class */
+                if (!p) {
+                    put_prev_task(rq, prev);
+                    p = pick_next_task_idle(rq);
+                }
+
+                return p;
+            }
+
+        restart:
+            prev_balance(rq, prev, rf) {
+                const struct sched_class *start_class = prev->sched_class;
+                const struct sched_class *class;
+
+            #ifdef CONFIG_SCHED_CLASS_EXT
+                /* SCX requires a balance() call before every pick_task() including when
+                    * waking up from SCHED_IDLE. If @start_class is below SCX, start from
+                    * SCX instead. Also, set a flag to detect missing balance() call. */
+                if (scx_enabled()) {
+                    rq->scx.flags |= SCX_RQ_BAL_PENDING;
+                    if (sched_class_above(&ext_sched_class, start_class))
+                        start_class = &ext_sched_class;
+                }
+            #endif
+
+                for_active_class_range(class, start_class, &idle_sched_class) {
+                    if (class->balance && class->balance(rq, prev, rf))
+                        break;
+                }
+            }
+
+            for_each_active_class(class) {
+                if (class->pick_next_task) {
+                    p = class->pick_next_task(rq, prev);
+                    if (p)
+                        return p;
+                } else {
+                    p = class->pick_task(rq);
+                    if (p) {
+                        put_prev_set_next_task(rq, prev, p) {
+                            __put_prev_set_next_dl_server(rq, prev, next) {
+                                prev->dl_server = NULL;
+                                next->dl_server = rq->dl_server;
+                                rq->dl_server = NULL;
+                            }
+
+                            if (next == prev)
+                                return;
+
+                            prev->sched_class->put_prev_task(rq, prev, next);
+                            next->sched_class->set_next_task(rq, next, true);
+                        }
+                        return p;
+                    }
+                }
+            }
+
+            BUG();
+        }
+    }
+
+    cpu = cpu_of(rq);
+
+    /* Stopper task is switching into idle, no need core-wide selection. */
+    if (cpu_is_offline(cpu)) {
+        rq->core_pick = NULL;
+        return __pick_next_task(rq, prev, rf);
+    }
+
+    /* do core sched */
+}
+```
+
+### find_proxy_task
+
+```c
+static struct task_struct *
+find_proxy_task(struct rq *rq, struct task_struct *donor, struct rq_flags *rf)
+{
+    struct task_struct *owner = NULL;
+    int this_cpu = cpu_of(rq);
+    struct task_struct *p;
+    struct mutex *mutex;
+
+    for (p = donor; task_is_blocked(p); p = owner) {
+        mutex = p->blocked_on;
+        /* Something changed in the chain, so pick again */
+        if (!mutex)
+            return NULL;
+        /* By taking mutex->wait_lock we hold off concurrent mutex_unlock()
+         * and ensure @owner sticks around. */
+        guard(raw_spinlock)(&mutex->wait_lock);
+
+        /* Check again that p is blocked with wait_lock held */
+        if (mutex != __get_task_blocked_on(p)) {
+            /* Something changed in the blocked_on chain and
+             * we don't know if only at this level. So, let's
+             * just bail out completely and let __schedule()
+             * figure things out (pick_again loop). */
+            return NULL;
+        }
+
+        owner = __mutex_owner(mutex);
+        if (!owner) {
+            __clear_task_blocked_on(p, mutex);
+            return p;
+        }
+
+        if (!READ_ONCE(owner->on_rq) || owner->se.sched_delayed) {
+            /* XXX Don't handle blocked owners/delayed dequeue yet */
+            return proxy_deactivate(rq, donor);
+        }
+
+        if (task_cpu(owner) != this_cpu) {
+            /* XXX Don't handle migrations yet */
+            return proxy_deactivate(rq, donor) {
+                ret = __proxy_deactivate(rq, donor) {
+                    unsigned long state = READ_ONCE(donor->__state);
+
+                    /* Don't deactivate if the state has been changed to TASK_RUNNING */
+                    if (state == TASK_RUNNING)
+                        return false;
+                    /* Because we got donor from pick_next_task(), it is *crucial*
+                    * that we call proxy_resched_idle() before we deactivate it.
+                    * As once we deactivate donor, donor->on_rq is set to zero,
+                    * which allows ttwu() to immediately try to wake the task on
+                    * another rq. So we cannot use *any* references to donor
+                    * after that point. So things like cfs_rq->curr or rq->donor
+                    * need to be changed from next *before* we deactivate. */
+                    proxy_resched_idle(rq) {
+                        put_prev_set_next_task(rq, rq->donor, rq->idle);
+                        rq_set_donor(rq, rq->idle);
+                        set_tsk_need_resched(rq->idle);
+                        return rq->idle;
+                    }
+                    return try_to_block_task(rq, donor, &state, true);
+                }
+                if (!ret) {
+                    /* XXX: For now, if deactivation failed, set donor
+                    * as unblocked, as we aren't doing proxy-migrations
+                    * yet (more logic will be needed then). */
+                    donor->blocked_on = NULL;
+                }
+                return NULL;
+            }
+        }
+
+        if (task_on_rq_migrating(owner)) {
+            /* One of the chain of mutex owners is currently migrating to this
+             * CPU, but has not yet been enqueued because we are holding the
+             * rq lock. As a simple solution, just schedule rq->idle to give
+             * the migration a chance to complete. Much like the migrate_task
+             * case we should end up back in find_proxy_task(), this time
+             * hopefully with all relevant tasks already enqueued. */
+            return proxy_resched_idle(rq);
+        }
+
+        /* Its possible to race where after we check owner->on_rq
+         * but before we check (owner_cpu != this_cpu) that the
+         * task on another cpu was migrated back to this cpu. In
+         * that case it could slip by our  checks. So double check
+         * we are still on this cpu and not migrating. If we get
+         * inconsistent results, try again. */
+        if (!task_on_rq_queued(owner) || task_cpu(owner) != this_cpu)
+            return NULL;
+
+        if (owner == p) {
+            /* It's possible we interleave with mutex_unlock like:
+             *
+             *                              lock(&rq->lock);
+             *                                      find_proxy_task()
+             * mutex_unlock()
+             *      lock(&wait_lock);
+             *      donor(owner) = current->blocked_donor;
+             *      unlock(&wait_lock);
+             *
+             *      wake_up_q();
+             *          ...
+             *          ttwu_runnable()
+             *                  __task_rq_lock()
+             *                                      lock(&wait_lock);
+             *                                      owner == p
+             *
+             * Which leaves us to finish the ttwu_runnable() and make it go.
+             *
+             * So schedule rq->idle so that ttwu_runnable() can get the rq
+             * lock and mark owner as running. */
+            return proxy_resched_idle(rq);
+        }
+        /* OK, now we're absolutely sure @owner is on this
+         * rq, therefore holding @rq->lock is sufficient to
+         * guarantee its existence, as per ttwu_remote(). */
+    }
+
+    WARN_ON_ONCE(owner && !owner->on_rq);
+    return owner;
+}
+```
+
+### context_switch
+
+```c
+static __always_inline struct rq *
+context_switch(struct rq *rq, struct task_struct *prev,
+           struct task_struct *next, struct rq_flags *rf)
+{
+    prepare_task_switch(rq, prev, next) {
+        kcov_prepare_switch(prev);
+        sched_info_switch(rq, prev, next) {
+            if (prev != rq->idle) {
+                sched_info_depart(rq, prev); {
+                    unsigned long long delta = rq_clock(rq) - t->sched_info.last_arrival;
+
+                    rq_sched_info_depart(rq, delta) {
+                        if (rq)
+		                    rq->rq_cpu_time += delta;
+                    }
+
+                    if (task_is_running(t)) {
+                        sched_info_enqueue(rq, t) {
+                            if (!t->sched_info.last_queued)
+		                        t->sched_info.last_queued = rq_clock(rq);
+                        }
+                    }
+                }
+            }
+
+            if (next != rq->idle) {
+                sched_info_arrive(rq, next) {
+                    unsigned long long now, delta = 0;
+
+                    if (!t->sched_info.last_queued)
+                        return;
+
+                    now = rq_clock(rq);
+                    delta = now - t->sched_info.last_queued;
+                    t->sched_info.last_queued = 0;
+                    t->sched_info.run_delay += delta;
+                    t->sched_info.last_arrival = now;
+                    t->sched_info.pcount++;
+                    if (delta > t->sched_info.max_run_delay)
+                        t->sched_info.max_run_delay = delta;
+                    if (delta && (!t->sched_info.min_run_delay || delta < t->sched_info.min_run_delay))
+                        t->sched_info.min_run_delay = delta;
+
+                    rq_sched_info_arrive(rq, delta) {
+                        if (rq) {
+                            rq->rq_sched_info.run_delay += delta;
+                            rq->rq_sched_info.pcount++;
+                        }
+                    }
+                }
+            }
+        }
+        perf_event_task_sched_out(prev, next);
+        rseq_preempt(prev);
+        fire_sched_out_preempt_notifiers(prev, next);
+        kmap_local_sched_out();
+        prepare_task(next) {
+            WRITE_ONCE(next->on_cpu, 1);
+        }
+        prepare_arch_switch(next);
+    }
+
+    arch_start_context_switch(prev);
+
+    /* kernel -> kernel   lazy + transfer active
+    *   user -> kernel   lazy + mmgrab_lazy_tlb() active
+    *
+    * kernel ->   user   switch + mmdrop_lazy_tlb() active
+    *   user ->   user   switch */
+    if (!next->mm) { /* to kernel task */
+        enter_lazy_tlb(prev->active_mm, next) {
+            /* empty on arm64 */
+        }
+        next->active_mm = prev->active_mm;
+
+        if (prev->mm) {/* from user */
+            mmgrab_lazy_tlb(prev->active_mm) {
+                /* kernel(next) task reuses user(prev) task' mm,
+                    * inc refcnt to avoid the free of user mm */
+                atomic_inc(&mm->mm_count);
+            }
+        } else {
+            prev->active_mm = NULL;
+        }
+    } else { /* to user task */
+        membarrier_switch_mm(rq, prev->active_mm, next->mm) {
+            int membarrier_state;
+
+            if (prev_mm == next_mm)
+                return;
+
+            membarrier_state = atomic_read(&next_mm->membarrier_state);
+            if (READ_ONCE(rq->membarrier_state) == membarrier_state)
+                return;
+
+            WRITE_ONCE(rq->membarrier_state, membarrier_state);
+        }
+
+        switch_mm_irqs_off(prev->active_mm, next->mm, next) {
+            /* arch/arm64/include/asm/mmu_context.h */
+            switch_mm(mm_prev, mm_next, tsk) {
+                if (prev != next) {
+                    __switch_mm(next) {
+                        if (next == &init_mm) {
+                            cpu_set_reserved_ttbr0() {
+                                ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+                                write_sysreg(ttbr, ttbr0_el1);
+                            }
+                            return;
+                        }
+
+                        check_and_switch_context(next) {
+                            if (system_supports_cnp())
+                                cpu_set_reserved_ttbr0();
+
+                            asid = atomic64_read(&mm->context.id);
+
+                            old_active_asid = atomic64_read(this_cpu_ptr(&active_asids));
+                            if (old_active_asid && asid_gen_match(asid)
+                                && atomic64_cmpxchg_relaxed(this_cpu_ptr(&active_asids), old_active_asid, asid))
+                                goto switch_mm_fastpath;
+
+                            asid = atomic64_read(&mm->context.id);
+                            if (!asid_gen_match(asid)) {
+                                asid = new_context(mm);
+                                atomic64_set(&mm->context.id, asid);
+                            }
+
+                            cpu = smp_processor_id();
+                            if (cpumask_test_and_clear_cpu(cpu, &tlb_flush_pending))
+                                local_flush_tlb_all();
+
+                            atomic64_set(this_cpu_ptr(&active_asids), asid);
+
+                        switch_mm_fastpath:
+                            if (!system_uses_ttbr0_pan()) { /* Context Name Propagation */
+                                cpu_switch_mm(mm->pgd, mm) {
+                                    BUG_ON(pgd == swapper_pg_dir);
+                                    cpu_set_reserved_ttbr0();
+                                        --->
+                                    cpu_do_switch_mm(virt_to_phys(pgd)/*pgd_phys*/, mm) {
+                                        /* TTBR0_EL1: Typically holds the base address of the user-space page tables.
+                                        * TTBR1_EL1: Typically holds the base address of the kernel-space page tables
+                                        * and includes the ASID when TCR_EL1.A1 is set. */
+
+                                        /* Set ASID in TTBR1 since TCR.A1 is set */
+                                        ttbr1 &= ~TTBR_ASID_MASK;
+                                        ttbr1 |= FIELD_PREP(TTBR_ASID_MASK, asid);
+
+                                        cpu_set_reserved_ttbr0_nosync();
+                                        write_sysreg(ttbr1, ttbr1_el1);
+                                        write_sysreg(ttbr0, ttbr0_el1);
+                                        isb();
+                                        post_ttbr_update_workaround();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                update_saved_ttbr0(tsk, next) {
+                    if (mm == &init_mm)
+                        ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+                    else
+                        ttbr = phys_to_ttbr(virt_to_phys(mm->pgd)) | ASID(mm) << 48;
+
+                    WRITE_ONCE(task_thread_info(tsk)->ttbr0, ttbr);
+                }
+            }
+        }
+        lru_gen_use_mm(next->mm);
+
+        if (!prev->mm) { /* from kernel */
+            /* kernel task no longer uses user mm, mark it
+            * and free it in finish_task_switch(). */
+            rq->prev_mm = prev->active_mm;
+            prev->active_mm = NULL;
+        }
+    }
+
+    /* switch_mm_cid() requires the memory barriers above. */
+	switch_mm_cid(rq, prev, next);
+
+    switch_to(prev, next, prev) {
+        __switch_to() {
+            /* Switches the floating-point and SIMD (Single Instruction, Multiple Data)
+            * context to the next task. */
+            fpsimd_thread_switch(next);
+
+            /* Handles the Thread Local Storage (TLS) switch for the next task. */
+            tls_thread_switch(next);
+
+            /* Manages hardware breakpoint settings for the next task. */
+            hw_breakpoint_thread_switch(next);
+
+            /* Switches the Context ID Register (CONTEXTIDR) for the next task. */
+            contextidr_thread_switch(next);
+
+            entry_task_switch(next) {
+                __this_cpu_write(__entry_task, next);
+            }
+
+            /* Handles the Speculative Store Bypass Safe (SSBS) state switch. */
+            ssbs_thread_switch(next);
+            erratum_1418040_thread_switch(next);
+            ptrauth_thread_switch_user(next);
+
+            /* arch/arm64/kernel/entry.S */
+            last = cpu_switch_to(prev, next) {
+               /* x0 = previous task_struct (must be preserved across the switch)
+                * x1 = next task_struct
+                * Previous and next are guaranteed not to be the same. */
+                SYM_FUNC_START(cpu_switch_to)
+                    mov    x10, #THREAD_CPU_CONTEXT /* offset of thread.cpu_context within task_struct */
+                    add    x8, x0, x10         /* calc prev task cpu_context addr (prev + offset) */
+                    mov    x9, sp              /* save current x9(sp) to sp register */
+                    stp    x19, x20, [x8], #16
+                    stp    x21, x22, [x8], #16
+                    stp    x23, x24, [x8], #16
+                    stp    x25, x26, [x8], #16
+                    stp    x27, x28, [x8], #16
+                    stp    x29, x9, [x8], #16   /* x29-fp, x9-sp */
+                    str    lr, [x8]             /* str pc to lr register */
+
+                    add    x8, x1, x10  /* calc next task cpu_context addr (next + offset) */
+                    ldp    x19, x20, [x8], #16
+                    ldp    x21, x22, [x8], #16
+                    ldp    x23, x24, [x8], #16
+                    ldp    x25, x26, [x8], #16
+                    ldp    x27, x28, [x8], #16
+                    ldp    x29, x9, [x8], #16
+                    ldr    lr, [x8]             /* load pc of next tsk */
+
+                    mov    sp, x9       /* sp points to stack of next tsk */
+                    /* stack pointer of user-space points to next tsk,
+                        * linux doens't use it to track the stack of user-space while
+                        * retrieve the point of current tsk in kernel, see #define current */
+                    msr    sp_el0, x1
+
+                    /* the user-space stack pointer is restored from the pt_regs structure,
+                        * which is typically stored at the top of the kernel stack,
+                        * during the transition from kernel mode (EL1) to user mode (EL0). */
+
+                    /* Installs pointer authentication keys for the kernel */
+                    ptrauth_keys_install_kernel x1, x8, x9, x10
+                    scs_save x0
+                    scs_load_current
+                    ret
+            }
+            return last; /* lr points here when a task scheduled in */
+        }
+    }
+
+    /* @prev: the thread we just switched away from. */
+    return finish_task_switch(prev) {
+        struct rq *rq = this_rq();
+        struct mm_struct *mm = rq->prev_mm;
+
+        rq->prev_mm = NULL;
+
+        prev_state = READ_ONCE(prev->__state);
+        vtime_task_switch(prev);
+        perf_event_task_sched_in(prev, current);
+        finish_task(prev) {
+            smp_store_release(&prev->on_cpu, 0);
+        }
+        tick_nohz_task_switch();
+        finish_lock_switch(rq) {
+            __balance_callbacks(rq);
+                --->
+        }
+        finish_arch_post_lock_switch();
+        kcov_finish_switch(current);
+        kmap_local_sched_in();
+
+        fire_sched_in_preempt_notifiers(current);
+
+        if (mm) {
+            membarrier_mm_sync_core_before_usermode(mm);
+            mmdrop_lazy_tlb_sched(mm) {
+                mmdrop_sched(mm) {
+                    if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
+                        __mmdrop(mm);
+                    }
+                }
+            }
+        }
+
+        if (unlikely(prev_state == TASK_DEAD)) {
+            if (prev->sched_class->task_dead)
+                prev->sched_class->task_dead(prev);
+
+            /* Task is done with its stack. */
+            put_task_stack(prev);
+
+            put_task_struct_rcu_user(prev);
+        }
+
+        return rq;
     }
 }
 ```
@@ -4244,7 +4499,7 @@ void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
 ```c
 task_tick_rt() {
     update_curr_rt() {
-        update_curr_se();
+        update_se();
         sched_rt_runtime_exceeded();
     }
 
@@ -4281,15 +4536,18 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
                 if (entity_is_task(se)) {
                     struct task_struct *donor = task_of(se);
                     struct task_struct *running = rq->curr;
-                    /* If se is a task, we account the time against the running
-                    * task, as w/ proxy-exec they may not be the same. */
+                    /* charge the execution context rq->curr (ie: proxy/lock holder) execution
+                    * time to its sum_exec_runtime (so it's clear to userland the
+                    * rq->curr task *is* running), as well as its thread group. */
                     running->se.exec_start = now;
                     running->se.sum_exec_runtime += delta_exec;
 
                     trace_sched_stat_runtime(running, delta_exec);
                     account_group_exec_runtime(running, delta_exec);
 
-                    /* cgroup time is always accounted against the donor */
+                    /* we charge the rest of the time accounting (such a vruntime and cgroup accounting)
+                    * against the scheduler context(rq->donor) task,
+                    * because it is from that task that the time is being "donated". */
                     cgroup_account_cputime(donor, delta_exec);
                 } else {
                     /* If not task, account the time against donor se  */
@@ -4523,6 +4781,11 @@ void pull_rt_task(struct rq *this_rq) {
 
     if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
         return;
+
+    if (sched_feat(RT_PUSH_IPI)) {
+        tell_cpu_to_push(this_rq);
+        return;
+    }
 
     /* rd->rto_maks is updated in enqueue_pushable_task */
     for_each_cpu(cpu, this_rq->rd->rto_mask) {
@@ -5045,6 +5308,8 @@ CFS focuses on distributing CPU time fairly in a weighted manner, but does not h
 ---
 
 ![](../images/kernel/proc-sched-cfs-eevdf.svg)
+
+* [[PATCH v3 0/6] sched/fair: Manage lag and run to parity with different slices](https://lore.kernel.org/all/20250708165630.1948751-1-vincent.guittot@linaro.org/)
 
 ```c
 struct sched_entity {
@@ -6251,7 +6516,7 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
                     u64 slice = normalized_sysctl_sched_base_slice; /* 0.70 msec */
                     u64 vprot = se->deadline;
 
-                    if (sched_feat(RUN_TO_PARITY)) {}
+                    if (sched_feat(RUN_TO_PARITY))
                         slice = cfs_rq_min_slice(cfs_rq);
 
                     slice = min(slice, se->slice);
@@ -7260,12 +7525,12 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
 
 void update_curr(struct cfs_rq *cfs_rq) {
     struct sched_entity *curr = cfs_rq->curr;
-	struct rq *rq = rq_of(cfs_rq);
-	s64 delta_exec;
-	bool resched;
+    struct rq *rq = rq_of(cfs_rq);
+    s64 delta_exec;
+    bool resched;
 
-	if (unlikely(!curr))
-		return;
+    if (unlikely(!curr))
+        return;
 
     delta_exec = now - curr->exec_start;
     curr->exec_start = now;
@@ -7341,11 +7606,6 @@ void update_curr(struct cfs_rq *cfs_rq) {
     }
 
     if (entity_is_task(curr)) {
-        struct task_struct *p = task_of(curr);
-        update_curr_task(p, delta_exec) {
-            account_group_exec_runtime(p, delta_exec);
-            cgroup_account_cputime(p, delta_exec);
-        }
         if (dl_server_active(&rq->fair_server))
             dl_server_update(&rq->fair_server, delta_exec);
     }
@@ -10827,6 +11087,18 @@ out:
 ```
 
 ```c
+void nohz_run_idle_balance(int cpu)
+{
+    unsigned int flags;
+
+    flags = atomic_fetch_andnot(NOHZ_NEWILB_KICK, nohz_flags(cpu));
+
+    /* Update the blocked load only if no SCHED_SOFTIRQ is about to happen
+     * (i.e. NOHZ_STATS_KICK set) and will do the same. */
+    if ((flags == NOHZ_NEWILB_KICK) && !need_resched())
+        _nohz_idle_balance(cpu_rq(cpu), NOHZ_STATS_KICK);
+}
+
 nohz_idle_balance(this_rq, idle) {
     unsigned int flags = this_rq->nohz_idle_balance;
 
