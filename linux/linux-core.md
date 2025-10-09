@@ -1523,6 +1523,8 @@ struct optimistic_spin_node {
 };
 
 struct optimistic_spin_queue {
+    /* Stores an encoded value of the CPU # of the tail node in the queue.
+     * If the queue is empty, then it's set to OSQ_UNLOCKED_VAL. */
     atomic_t tail;
 };
 
@@ -1550,10 +1552,10 @@ bool osq_lock(struct optimistic_spin_queue *lock)
     prev = decode_cpu(old);
     node->prev = prev;
 
-    /* osq_lock               unqueue
+    /* osq_lock                 unqueue
      *
      * node->prev = prev        osq_wait_next()
-     * WMB                MB
+     * WMB                      MB
      * prev->next = node        next->prev = prev // unqueue-C
      *
      * Here 'node->prev' and 'next->prev' are the same variable and we need
@@ -1854,6 +1856,7 @@ mutex_lock() {
 
                     return false;
                 }
+
                 if (ret) {
                     preempt_enable();
                     return 0;
@@ -1907,6 +1910,8 @@ mutex_lock() {
                     }
 
                     first = __mutex_waiter_is_first(lock, &waiter);
+
+                    set_task_blocked_on(current, lock);
                     ret = __mutex_trylock_or_handoff(lock, first) {
                         return !__mutex_trylock_common(lock, handoff);
                     }
@@ -1914,12 +1919,21 @@ mutex_lock() {
                         break;
                     }
 
-                    if (first && mutex_optimistic_spin(lock, ww_ctx, &waiter)) {
-                        break;
+                    if (first) {
+                        trace_contention_begin(lock, LCB_F_MUTEX | LCB_F_SPIN);
+                        /* mutex_optimistic_spin() can call schedule(), so
+                        * clear blocked on so we don't become unselectable
+                        * to run. */
+                        clear_task_blocked_on(current, lock);
+                        if (mutex_optimistic_spin(lock, ww_ctx, &waiter))
+                            break;
+                        set_task_blocked_on(current, lock);
+                        trace_contention_begin(lock, LCB_F_MUTEX);
                     }
 
-                    raw_spin_lock(&lock->wait_lock);
+                    raw_spin_lock_irqsave(&lock->wait_lock, flags);
                 }
+                raw_spin_lock_irqsave(&lock->wait_lock, flags);
 
             acquired:
                 __set_current_state(TASK_RUNNING);
