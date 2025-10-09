@@ -1784,8 +1784,73 @@ int __init init_kprobes(void)
     if (kretprobe_blacklist_size) {
         for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
             kretprobe_blacklist[i].addr = kprobe_lookup_name(
-                kretprobe_blacklist[i].name, 0
-            );
+                kretprobe_blacklist[i].name, 0) {
+                return ((kprobe_opcode_t *)(kallsyms_lookup_name(name))) {
+                    int ret;
+                    unsigned int i;
+
+                    /* Skip the search for empty string. */
+                    if (!*name)
+                        return 0;
+
+                    ret = kallsyms_lookup_names(name, &i, NULL) {
+                        int ret;
+                        int low, mid, high;
+                        unsigned int seq, off;
+                        char namebuf[KSYM_NAME_LEN];
+
+                        low = 0;
+                        high = kallsyms_num_syms - 1;
+
+                        while (low <= high) {
+                            mid = low + (high - low) / 2;
+                            seq = get_symbol_seq(mid);
+                            off = get_symbol_offset(seq);
+                            kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+                            ret = strcmp(name, namebuf);
+                            if (ret > 0)
+                                low = mid + 1;
+                            else if (ret < 0)
+                                high = mid - 1;
+                            else
+                                break;
+                        }
+
+                        if (low > high)
+                            return -ESRCH;
+
+                        low = mid;
+                        while (low) {
+                            seq = get_symbol_seq(low - 1);
+                            off = get_symbol_offset(seq);
+                            kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+                            if (strcmp(name, namebuf))
+                                break;
+                            low--;
+                        }
+                        *start = low;
+
+                        if (end) {
+                            high = mid;
+                            while (high < kallsyms_num_syms - 1) {
+                                seq = get_symbol_seq(high + 1);
+                                off = get_symbol_offset(seq);
+                                kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+                                if (strcmp(name, namebuf))
+                                    break;
+                                high++;
+                            }
+                            *end = high;
+                        }
+
+                        return 0;
+                    }
+                    if (!ret)
+                        return kallsyms_sym_address(get_symbol_seq(i));
+
+                    return module_kallsyms_lookup_name(name);
+                }
+            }
         }
     }
 
@@ -2375,6 +2440,92 @@ struct kretprobe {
     struct kretprobe_holder *rph;
 #endif
 };
+```
+
+## register_kretprobe
+
+```c
+int register_kretprobe(struct kretprobe *rp)
+{
+	int ret;
+	int i;
+	void *addr;
+
+	ret = kprobe_on_func_entry(rp->kp.addr, rp->kp.symbol_name, rp->kp.offset) {
+        bool on_func_entry;
+        kprobe_opcode_t *kp_addr = _kprobe_addr(addr, sym, offset, &on_func_entry);
+
+        if (IS_ERR(kp_addr))
+            return PTR_ERR(kp_addr);
+
+        if (!on_func_entry)
+            return -EINVAL;
+
+        return 0;
+    }
+	if (ret)
+		return ret;
+
+	/* If only 'rp->kp.addr' is specified, check reregistering kprobes */
+	if (rp->kp.addr && warn_kprobe_rereg(&rp->kp))
+		return -EINVAL;
+
+	if (kretprobe_blacklist_size) {
+		addr = kprobe_addr(&rp->kp);
+		if (IS_ERR(addr))
+			return PTR_ERR(addr);
+
+		for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
+			if (kretprobe_blacklist[i].addr == addr)
+				return -EINVAL;
+		}
+	}
+
+	if (rp->data_size > KRETPROBE_MAX_DATA_SIZE)
+		return -E2BIG;
+
+	rp->kp.pre_handler = pre_handler_kretprobe;
+	rp->kp.post_handler = NULL;
+
+	/* Pre-allocate memory for max kretprobe instances */
+	if (rp->maxactive <= 0)
+		rp->maxactive = max_t(unsigned int, 10, 2*num_possible_cpus());
+
+#ifdef CONFIG_KRETPROBE_ON_RETHOOK
+	rp->rh = rethook_alloc((void *)rp, kretprobe_rethook_handler,
+				sizeof(struct kretprobe_instance) +
+				rp->data_size, rp->maxactive);
+	if (IS_ERR(rp->rh))
+		return PTR_ERR(rp->rh);
+
+	rp->nmissed = 0;
+	/* Establish function entry probe point */
+	ret = register_kprobe(&rp->kp);
+	if (ret != 0) {
+		rethook_free(rp->rh);
+		rp->rh = NULL;
+	}
+#else	/* !CONFIG_KRETPROBE_ON_RETHOOK */
+	rp->rph = kzalloc(sizeof(struct kretprobe_holder), GFP_KERNEL);
+	if (!rp->rph)
+		return -ENOMEM;
+
+	if (objpool_init(&rp->rph->pool, rp->maxactive, rp->data_size +
+			sizeof(struct kretprobe_instance), GFP_KERNEL,
+			rp->rph, kretprobe_init_inst, kretprobe_fini_pool)) {
+		kfree(rp->rph);
+		rp->rph = NULL;
+		return -ENOMEM;
+	}
+	rcu_assign_pointer(rp->rph->rp, rp);
+	rp->nmissed = 0;
+	/* Establish function entry probe point */
+	ret = register_kprobe(&rp->kp);
+	if (ret != 0)
+		free_rp_inst(rp);
+#endif
+	return ret;
+}
 ```
 
 # kprobe_events
