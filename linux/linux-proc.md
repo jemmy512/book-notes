@@ -2436,8 +2436,11 @@ el1t_64_irq_handler() {
 
 # SCHED_DL
 
+![](../images/kernel/proc-dl-se.svg)
+
 * [LWN - Deadline servers as a realtime throttling replacement](https://lwn.net/Articles/934415/)
     * [[PATCH V7 0/9] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1716811043.git.bristot@kernel.org/)
+    * realtime throttling enforces the limit even when no lower-priority tasks are waiting to run, causing the CPU to go idle unnecessarily instead of allowing the RT task to continue.
 * [LWN - The hierarchical constant bandwidth server scheduler](https://lwn.net/Articles/1024757/)
     * [[RFC PATCH v3 00/24] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250929092221.10947-1-yurand2000@gmail.com/)
 
@@ -2848,8 +2851,7 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
         dl_check_constrained_dl(dl_se) {
             struct rq *rq = rq_of_dl_se(dl_se);
 
-            if (dl_time_before(dl_se->deadline, rq_clock(rq)) &&
-                dl_time_before(rq_clock(rq), dl_next_period(dl_se))) {
+            if (dl_time_before(dl_se->deadline, rq_clock(rq)) && dl_time_before(rq_clock(rq), dl_next_period(dl_se))) {
                 if (unlikely(is_dl_boosted(dl_se) || !start_dl_timer(dl_se)))
                     return;
                 dl_se->dl_throttled = 1;
@@ -4140,6 +4142,460 @@ void switched_to_dl(struct rq *rq, struct task_struct *p)
     } else {
         update_dl_rq_load_avg(rq_clock_pelt(rq), rq, 0);
     }
+}
+```
+
+## start_dl_timer
+
+```c
+static int start_dl_timer(struct sched_dl_entity *dl_se)
+{
+    struct hrtimer *timer = &dl_se->dl_timer;
+    struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
+    struct rq *rq = rq_of_dl_rq(dl_rq);
+    ktime_t now, act;
+    s64 delta;
+
+    lockdep_assert_rq_held(rq);
+
+    /* We want the timer to fire at the deadline, but considering
+     * that it is actually coming from rq->clock and not from
+     * hrtimer's time base reading.
+     *
+     * The deferred reservation will have its timer set to
+     * (deadline - runtime). At that point, the CBS rule will decide
+     * if the current deadline can be used, or if a replenishment is
+     * required to avoid add too much pressure on the system
+     * (current u > U). */
+    if (dl_se->dl_defer_armed) {
+        WARN_ON_ONCE(!dl_se->dl_throttled);
+        act = ns_to_ktime(dl_se->deadline - dl_se->runtime);
+    } else {
+        /* act = deadline - rel-deadline + period */
+        act = ns_to_ktime(dl_next_period(dl_se));
+    }
+
+    now = hrtimer_cb_get_time(timer);
+    delta = ktime_to_ns(now) - rq_clock(rq);
+    act = ktime_add_ns(act, delta);
+
+    /* If the expiry time already passed, e.g., because the value
+     * chosen as the deadline is too small, don't even try to
+     * start the timer in the past! */
+    if (ktime_us_delta(act, now) < 0)
+        return 0;
+
+    /* !enqueued will guarantee another callback; even if one is already in
+     * progress. This ensures a balanced {get,put}_task_struct().
+     *
+     * The race against __run_timer() clearing the enqueued state is
+     * harmless because we're holding task_rq()->lock, therefore the timer
+     * expiring after we've done the check will wait on its task_rq_lock()
+     * and observe our state. */
+    if (!hrtimer_is_queued(timer)) {
+        if (!dl_server(dl_se))
+            get_task_struct(dl_task_of(dl_se));
+        hrtimer_start(timer, act, HRTIMER_MODE_ABS_HARD);
+    }
+
+    return 1;
+}
+```
+
+## fair_server
+
+```c
+void fair_server_init(struct rq *rq)
+{
+    struct sched_dl_entity *dl_se = &rq->fair_server;
+
+    init_dl_entity(dl_se) {
+        RB_CLEAR_NODE(&dl_se->rb_node);
+        init_dl_task_timer(dl_se) {
+            struct hrtimer *timer = &dl_se->dl_timer;
+
+            hrtimer_setup(timer, dl_task_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
+        }
+
+        init_dl_inactive_task_timer(dl_se) {
+            struct hrtimer *timer = &dl_se->inactive_timer;
+
+            hrtimer_setup(timer, inactive_task_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
+        }
+
+        __dl_clear_params(dl_se) {
+            dl_se->dl_runtime           = 0;
+            dl_se->dl_deadline          = 0;
+            dl_se->dl_period            = 0;
+            dl_se->flags                = 0;
+            dl_se->dl_bw                = 0;
+            dl_se->dl_density           = 0;
+
+            dl_se->dl_throttled         = 0;
+            dl_se->dl_yielded           = 0;
+            dl_se->dl_non_contending    = 0;
+            dl_se->dl_overrun           = 0;
+            dl_se->dl_server            = 0;
+            dl_se->pi_se                = dl_se;
+        }
+    }
+
+    dl_server_init(dl_se, rq, fair_server_pick_task) {
+        dl_se->rq = rq;
+        dl_se->server_pick_task = pick_task;
+    }
+}
+```
+
+### dl_task_timer
+
+```c
+enum hrtimer_restart dl_task_timer(struct hrtimer *timer)
+{
+    struct sched_dl_entity *dl_se = container_of(timer,
+                             struct sched_dl_entity,
+                             dl_timer);
+    struct task_struct *p;
+    struct rq_flags rf;
+    struct rq *rq;
+
+    if (dl_server(dl_se)) {
+        return dl_server_timer(timer, dl_se);
+            --->
+    }
+
+    p = dl_task_of(dl_se);
+    rq = task_rq_lock(p, &rf);
+
+    /* The task might have changed its scheduling policy to something
+     * different than SCHED_DEADLINE (through switched_from_dl()). */
+    if (!dl_task(p))
+        goto unlock;
+
+    /* The task might have been boosted by someone else and might be in the
+     * boosting/deboosting path, its not throttled. */
+    if (is_dl_boosted(dl_se))
+        goto unlock;
+
+    /* Spurious timer due to start_dl_timer() race; or we already received
+     * a replenishment from rt_mutex_setprio(). */
+    if (!dl_se->dl_throttled)
+        goto unlock;
+
+    sched_clock_tick();
+    update_rq_clock(rq);
+
+    /* If the throttle happened during sched-out; like:
+     *
+     *   schedule()
+     *     deactivate_task()
+     *       dequeue_task_dl()
+     *         update_curr_dl()
+     *           start_dl_timer()
+     *         __dequeue_task_dl()
+     *     prev->on_rq = 0;
+     *
+     * We can be both throttled and !queued. Replenish the counter
+     * but do not enqueue -- wait for our wakeup to do that. */
+    if (!task_on_rq_queued(p)) {
+        replenish_dl_entity(dl_se);
+        goto unlock;
+    }
+
+    if (unlikely(!rq->online)) {
+        /* If the runqueue is no longer available, migrate the
+         * task elsewhere. This necessarily changes rq. */
+        lockdep_unpin_lock(__rq_lockp(rq), rf.cookie);
+        rq = dl_task_offline_migration(rq, p);
+            --->
+        rf.cookie = lockdep_pin_lock(__rq_lockp(rq));
+        update_rq_clock(rq);
+
+        /* Now that the task has been migrated to the new RQ and we
+         * have that locked, proceed as normal and enqueue the task
+         * there. */
+    }
+
+    enqueue_task_dl(rq, p, ENQUEUE_REPLENISH);
+    if (dl_task(rq->donor))
+        wakeup_preempt_dl(rq, p, 0);
+    else
+        resched_curr(rq);
+
+    __push_dl_task(rq, &rf);
+
+unlock:
+    task_rq_unlock(rq, p, &rf);
+
+    /* This can free the task_struct, including this hrtimer, do not touch
+     * anything related to that after this. */
+    put_task_struct(p);
+
+    return HRTIMER_NORESTART;
+}
+
+static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_dl_entity *dl_se) {
+    struct rq *rq = rq_of_dl_se(dl_se);
+    u64 fw;
+
+    scoped_guard (rq_lock, rq) {
+        struct rq_flags *rf = &scope.rf;
+
+        if (!dl_se->dl_throttled || !dl_se->dl_runtime)
+            return HRTIMER_NORESTART;
+
+        sched_clock_tick();
+        update_rq_clock(rq);
+
+        if (!dl_se->dl_runtime)
+            return HRTIMER_NORESTART;
+
+        if (!dl_se->server_has_tasks(dl_se)) {
+            replenish_dl_entity(dl_se);
+            dl_server_stopped(dl_se);
+            return HRTIMER_NORESTART;
+        }
+
+        if (dl_se->dl_defer_armed) {
+            /* First check if the server could consume runtime in background.
+            * If so, it is possible to push the defer timer for this amount
+            * of time. The dl_server_min_res serves as a limit to avoid
+            * forwarding the timer for a too small amount of time. */
+            if (dl_time_before(rq_clock(dl_se->rq), (dl_se->deadline - dl_se->runtime - dl_server_min_res))) {
+                /* reset the defer timer */
+                fw = dl_se->deadline - rq_clock(dl_se->rq) - dl_se->runtime;
+
+                hrtimer_forward_now(timer, ns_to_ktime(fw));
+                return HRTIMER_RESTART;
+            }
+
+            dl_se->dl_defer_running = 1;
+        }
+
+        enqueue_dl_entity(dl_se, ENQUEUE_REPLENISH);
+
+        if (!dl_task(dl_se->rq->curr) || dl_entity_preempt(dl_se, &dl_se->rq->curr->dl))
+            resched_curr(rq);
+
+        __push_dl_task(rq, rf);
+    }
+
+    return HRTIMER_NORESTART;
+}
+```
+
+### inactive_task_timer
+
+```c
+enum hrtimer_restart inactive_task_timer(struct hrtimer *timer)
+{
+    struct sched_dl_entity *dl_se = container_of(timer,
+                             struct sched_dl_entity,
+                             inactive_timer);
+    struct task_struct *p = NULL;
+    struct rq_flags rf;
+    struct rq *rq;
+
+    if (!dl_server(dl_se)) {
+        p = dl_task_of(dl_se);
+        rq = task_rq_lock(p, &rf);
+    } else {
+        rq = dl_se->rq;
+        rq_lock(rq, &rf);
+    }
+
+    sched_clock_tick();
+    update_rq_clock(rq);
+
+    if (dl_server(dl_se))
+        goto no_task;
+
+    if (!dl_task(p) || READ_ONCE(p->__state) == TASK_DEAD) {
+        struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
+
+        if (READ_ONCE(p->__state) == TASK_DEAD && dl_se->dl_non_contending) {
+            sub_running_bw(&p->dl, dl_rq_of_se(&p->dl));
+            sub_rq_bw(&p->dl, dl_rq_of_se(&p->dl));
+            dl_se->dl_non_contending = 0;
+        }
+
+        raw_spin_lock(&dl_b->lock);
+        __dl_sub(dl_b, p->dl.dl_bw, dl_bw_cpus(task_cpu(p)));
+        raw_spin_unlock(&dl_b->lock);
+        __dl_clear_params(dl_se);
+
+        goto unlock;
+    }
+
+no_task:
+    if (dl_se->dl_non_contending == 0)
+        goto unlock;
+
+    sub_running_bw(dl_se, &rq->dl);
+    dl_se->dl_non_contending = 0;
+unlock:
+
+    if (!dl_server(dl_se)) {
+        task_rq_unlock(rq, p, &rf);
+        put_task_struct(p);
+    } else {
+        rq_unlock(rq, &rf);
+    }
+
+    return HRTIMER_NORESTART;
+}
+```
+
+## dl_server
+
+```c
+void dl_server_update_idle_time(struct rq *rq, struct task_struct *p)
+{
+    s64 delta_exec;
+
+    if (!rq->fair_server.dl_defer)
+        return;
+
+    /* no need to discount more */
+    if (rq->fair_server.runtime < 0)
+        return;
+
+    delta_exec = rq_clock_task(rq) - p->se.exec_start;
+    if (delta_exec < 0)
+        return;
+
+    rq->fair_server.runtime -= delta_exec;
+
+    if (rq->fair_server.runtime < 0) {
+        rq->fair_server.dl_defer_running = 0;
+        rq->fair_server.runtime = 0;
+    }
+
+    p->se.exec_start = rq_clock_task(rq);
+}
+
+/* called from update_curr_common(), propagates runtime to the server. */
+void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec)
+{
+    /* 0 runtime = fair server disabled */
+    if (dl_se->dl_runtime)
+        update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+}
+
+void dl_server_start(struct sched_dl_entity *dl_se)
+{
+    struct rq *rq = dl_se->rq;
+
+    if (!dl_server(dl_se) || dl_se->dl_server_active)
+        return;
+
+    dl_se->dl_server_active = 1;
+    enqueue_dl_entity(dl_se, ENQUEUE_WAKEUP);
+    if (!dl_task(dl_se->rq->curr) || dl_entity_preempt(dl_se, &rq->curr->dl))
+        resched_curr(dl_se->rq);
+}
+
+void dl_server_stop(struct sched_dl_entity *dl_se)
+{
+    if (!dl_server(dl_se) || !dl_server_active(dl_se))
+        return;
+
+    dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
+    hrtimer_try_to_cancel(&dl_se->dl_timer);
+    dl_se->dl_defer_armed = 0;
+    dl_se->dl_throttled = 0;
+    dl_se->dl_server_active = 0;
+}
+
+void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
+            dl_server_pick_f pick_task)
+{
+    dl_se->rq = rq;
+    dl_se->server_pick_task = pick_task;
+}
+
+void sched_init_dl_servers(void)
+{
+    int cpu;
+    struct rq *rq;
+    struct sched_dl_entity *dl_se;
+
+    for_each_online_cpu(cpu) {
+        u64 runtime =  50 * NSEC_PER_MSEC;
+        u64 period = 1000 * NSEC_PER_MSEC;
+
+        rq = cpu_rq(cpu);
+
+        guard(rq_lock_irq)(rq);
+
+        dl_se = &rq->fair_server;
+
+        WARN_ON(dl_server(dl_se));
+
+        dl_server_apply_params(dl_se, runtime, period, 1);
+
+        dl_se->dl_server = 1;
+        dl_se->dl_defer = 1;
+        setup_new_dl_entity(dl_se);
+    }
+}
+
+int dl_server_apply_params(struct sched_dl_entity *dl_se, u64 runtime, u64 period, bool init)
+{
+    u64 old_bw = init ? 0 : to_ratio(dl_se->dl_period, dl_se->dl_runtime);
+    u64 new_bw = to_ratio(period, runtime);
+    struct rq *rq = dl_se->rq;
+    int cpu = cpu_of(rq);
+    struct dl_bw *dl_b;
+    unsigned long cap;
+    int retval = 0;
+    int cpus;
+
+    dl_b = dl_bw_of(cpu);
+    guard(raw_spinlock)(&dl_b->lock);
+
+    cpus = dl_bw_cpus(cpu);
+    cap = dl_bw_capacity(cpu);
+
+    if (__dl_overflow(dl_b, cap, old_bw, new_bw))
+        return -EBUSY;
+
+    if (init) {
+        __add_rq_bw(new_bw, &rq->dl);
+        __dl_add(dl_b, new_bw, cpus);
+    } else {
+        __dl_sub(dl_b, dl_se->dl_bw, cpus);
+        __dl_add(dl_b, new_bw, cpus);
+
+        dl_rq_change_utilization(rq, dl_se, new_bw);
+    }
+
+    dl_se->dl_runtime = runtime;
+    dl_se->dl_deadline = period;
+    dl_se->dl_period = period;
+
+    dl_se->runtime = 0;
+    dl_se->deadline = 0;
+
+    dl_se->dl_bw = to_ratio(dl_se->dl_period, dl_se->dl_runtime);
+    dl_se->dl_density = to_ratio(dl_se->dl_deadline, dl_se->dl_runtime);
+
+    return retval;
+}
+
+void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
+{
+    u64 new_bw = dl_se->dl_bw;
+    int cpu = cpu_of(rq);
+    struct dl_bw *dl_b;
+
+    dl_b = dl_bw_of(cpu_of(rq));
+    guard(raw_spinlock)(&dl_b->lock);
+
+    if (!dl_bw_cpus(cpu))
+        return;
+
+    __dl_add(dl_b, new_bw, dl_bw_cpus(cpu));
 }
 ```
 
@@ -5859,7 +6315,6 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     }
 
     if (!rq_h_nr_queued && rq->cfs.h_nr_queued) {
-        /* Account for idle runtime */
         if (!rq->nr_running)
             dl_server_update_idle_time(rq, rq->curr);
         dl_server_start(&rq->fair_server) {
@@ -13695,15 +14150,7 @@ kernel_clone(struct kernel_clone_args *args) {
                 memset(&p->stats, 0, sizeof(p->stats));
             #endif
 
-                init_dl_entity(&p->dl) {
-                    RB_CLEAR_NODE(&dl_se->rb_node);
-                    init_dl_task_timer(dl_se) {
-                        struct hrtimer *timer = &dl_se->dl_timer;
-                        hrtimer_setup(timer, dl_task_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
-                    }
-                    init_dl_inactive_task_timer(dl_se);
-                    __dl_clear_params(dl_se);
-                }
+                init_dl_entity(&p->dl);
 
                 INIT_LIST_HEAD(&p->rt.run_list);
                 p->rt.timeout        = 0;
