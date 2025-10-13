@@ -1362,26 +1362,118 @@ void __init gic_smp_init(void)
     set_smp_ipi_range(base_sgi, 8);
 }
 
-set_smp_ipi_range(int ipi_base, int n) {
-    int i;
+static inline void set_smp_ipi_range(int ipi_base, int n)
+{
+    set_smp_ipi_range_percpu(ipi_base, n, 0) {
+        int i;
 
-    nr_ipi = min(n, MAX_IPI);
+        WARN_ON(n < MAX_IPI);
+        nr_ipi = min(n, MAX_IPI);
 
-    for (i = 0; i < nr_ipi; i++) {
-        int err;
+        percpu_ipi_descs = !!ncpus;
+        ipi_irq_base = ipi_base;
 
-        err = request_percpu_irq(ipi_base + i, ipi_handler,
-                     "IPI", &irq_stat);
-        WARN_ON(err);
+        for (i = 0; i < nr_ipi; i++) {
+            if (!percpu_ipi_descs)
+                ipi_setup_sgi(i);
+            else
+                ipi_setup_lpi(i, ncpus);
+        }
 
-        ipi_desc[i] = irq_to_desc(ipi_base + i);
-        irq_set_status_flags(ipi_base + i, IRQ_HIDDEN);
+        /* Setup the boot CPU immediately */
+        ipi_setup(smp_processor_id());
+    }
+}
+
+static void ipi_setup_sgi(int ipi)
+{
+    int err, irq, cpu;
+
+    irq = ipi_irq_base + ipi;
+
+    if (ipi_should_be_nmi(ipi)) {
+        err = request_percpu_nmi(irq, ipi_handler, "IPI", &irq_stat);
+    } else {
+        err = request_percpu_irq(irq, ipi_handler, "IPI", &irq_stat);
     }
 
-    ipi_irq_base = ipi_base;
+    for_each_possible_cpu(cpu)
+        get_ipi_desc(cpu, ipi) = irq_to_desc(irq);
 
-    /* Setup the boot CPU immediately */
-    ipi_setup(smp_processor_id());
+    irq_set_status_flags(irq, IRQ_HIDDEN);
+}
+
+static void ipi_setup_lpi(int ipi, int ncpus)
+{
+    for (int cpu = 0; cpu < ncpus; cpu++) {
+        int err, irq;
+
+        irq = ipi_irq_base + (cpu * nr_ipi) + ipi;
+
+        err = irq_force_affinity(irq, cpumask_of(cpu));
+
+        err = request_irq(irq, ipi_handler, IRQF_NO_AUTOEN, "IPI", NULL);
+
+        irq_set_status_flags(irq, (IRQ_HIDDEN | IRQ_NO_BALANCING_MASK));
+
+        get_ipi_desc(cpu, ipi) = irq_to_desc(irq);
+    }
+}
+
+static void ipi_setup(int cpu)
+{
+    int i;
+
+    if (WARN_ON_ONCE(!ipi_irq_base))
+        return;
+
+    for (i = 0; i < nr_ipi; i++) {
+        if (!percpu_ipi_descs) {
+            if (ipi_should_be_nmi(i)) {
+                prepare_percpu_nmi(ipi_irq_base + i);
+                enable_percpu_nmi(ipi_irq_base + i, 0);
+            } else {
+                enable_percpu_irq(ipi_irq_base + i, 0);
+            }
+        } else {
+            enable_irq(irq_desc_get_irq(get_ipi_desc(cpu, i))) {
+                scoped_irqdesc_get_and_lock(irq, IRQ_GET_DESC_CHECK_GLOBAL) {
+                    struct irq_desc *desc = scoped_irqdesc;
+
+                    if (WARN(!desc->irq_data.chip, "enable_irq before setup/request_irq: irq %u\n", irq))
+                        return;
+                    __enable_irq(desc) {
+                        switch (desc->depth) {
+                        case 0:
+                    err_out:
+                            WARN(1, KERN_WARNING "Unbalanced enable for IRQ %d\n",
+                                irq_desc_get_irq(desc));
+                            break;
+                        case 1: {
+                            if (desc->istate & IRQS_SUSPENDED)
+                                goto err_out;
+                            /* Prevent probing on this irq: */
+                            irq_settings_set_noprobe(desc);
+                            /* Call irq_startup() not irq_enable() here because the
+                            * interrupt might be marked NOAUTOEN so irq_startup()
+                            * needs to be invoked when it gets enabled the first time.
+                            * This is also required when __enable_irq() is invoked for
+                            * a managed and shutdown interrupt from the S3 resume
+                            * path.
+                            *
+                            * If it was already started up, then irq_startup() will
+                            * invoke irq_enable() under the hood. */
+                            irq_startup(desc, IRQ_RESEND, IRQ_START_FORCE);
+                            break;
+                        }
+                        default:
+                            desc->depth--;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 ```
 
