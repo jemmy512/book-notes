@@ -229,7 +229,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
                 * [[PATCH 08/15] sched: Commit to EEVDF](https://github.com/torvalds/linux/commit/5e963f2bd4654a202a8a05aa3a86cb0300b10e6c)
             * [[PATCH 00/24] Complete EEVDF](https://lore.kernel.org/all/20240727102732.960974693@infradead.org/)
             * [Completing the EEVDF scheduler](https://lwn.net/Articles/969062/) `Delayed Dequeue` ⊙ `Wakeup Preemption`
-
+        * [OSPM 2015 - The EEVDF verifier: a tale of trying to catch up](https://lwn.net/Articles/1022054)
         * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
         * [Linux 核心設計: Scheduler(5): EEVDF Scheduler 1](https://hackmd.io/@RinHizakura/SyG4t5u1a) ⊙ [2](https://hackmd.io/@RinHizakura/HkyEtNkjA)
     * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
@@ -1244,6 +1244,7 @@ struct task_struct {
     } thread_info;
 
     int                       on_rq; /* TASK_ON_RQ_{QUEUED, MIGRATING} */
+    int                       on_cpu; /* Task is actively running on a CPU */
 
     int                       prio;
     int                       static_prio;
@@ -2221,6 +2222,83 @@ void sched_tick(void)
     rq->idle_balance = idle_cpu(cpu);
     sched_balance_trigger(rq);
 }
+
+void sched_tick(void)
+{
+    int cpu = smp_processor_id();
+    struct rq *rq = cpu_rq(cpu);
+    /* accounting goes to the donor task */
+    struct task_struct *donor;
+    struct rq_flags rf;
+    unsigned long hw_pressure;
+    u64 resched_latency;
+
+    if (housekeeping_cpu(cpu, HK_TYPE_KERNEL_NOISE))
+        arch_scale_freq_tick();
+
+    sched_clock_tick();
+
+    rq_lock(rq, &rf);
+    donor = rq->donor;
+
+    psi_account_irqtime(rq, donor, NULL);
+
+    update_rq_clock(rq);
+    hw_pressure = arch_scale_hw_pressure(cpu_of(rq));
+    update_hw_load_avg(rq_clock_task(rq), rq, hw_pressure);
+
+    if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
+        resched_curr(rq);
+
+    donor->sched_class->task_tick(rq, donor, 0);
+    if (sched_feat(LATENCY_WARN))
+        resched_latency = cpu_resched_latency(rq);
+
+    calc_global_load_tick(rq) {
+        long delta;
+
+        if (time_before(jiffies, this_rq->calc_load_update))
+            return;
+
+        delta  = calc_load_fold_active(this_rq, 0) {
+            long nr_active, delta = 0;
+
+            nr_active = this_rq->nr_running - adjust;
+            nr_active += (int)this_rq->nr_uninterruptible;
+
+            if (nr_active != this_rq->calc_load_active) {
+                delta = nr_active - this_rq->calc_load_active;
+                this_rq->calc_load_active = nr_active;
+            }
+
+            return delta;
+        }
+        if (delta)
+            atomic_long_add(delta, &calc_load_tasks);
+
+        this_rq->calc_load_update += LOAD_FREQ;
+    }
+
+    sched_core_tick(rq);
+    task_tick_mm_cid(rq, donor);
+    scx_tick(rq);
+
+    rq_unlock(rq, &rf);
+
+    if (sched_feat(LATENCY_WARN) && resched_latency)
+        resched_latency_warn(cpu, resched_latency);
+
+    perf_event_task_tick();
+
+    if (donor->flags & PF_WQ_WORKER)
+        wq_worker_tick(donor);
+            -->
+
+    if (!scx_switched_all()) {
+        rq->idle_balance = idle_cpu(cpu);
+        sched_balance_trigger(rq);
+    }
+}
 ```
 
 ##### try_to_wake_upp
@@ -2439,6 +2517,7 @@ el1t_64_irq_handler() {
 ![](../images/kernel/proc-dl-se.svg)
 
 * [LWN - Deadline servers as a realtime throttling replacement](https://lwn.net/Articles/934415/)
+    * [OSPM 2025 - Hierarchical CBS with deadline servers](https://lwn.net/Articles/1021332)
     * [[PATCH V7 0/9] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1716811043.git.bristot@kernel.org/)
     * realtime throttling enforces the limit even when no lower-priority tasks are waiting to run, causing the CPU to go idle unnecessarily instead of allowing the RT task to continue.
 * [LWN - The hierarchical constant bandwidth server scheduler](https://lwn.net/Articles/1024757/)
@@ -2583,6 +2662,12 @@ struct sched_dl_entity {
 ## task_tick_dl
 
 ```c
+static void hrtick_rq_init(struct rq *rq)
+{
+    INIT_CSD(&rq->hrtick_csd, __hrtick_start, rq);
+    hrtimer_setup(&rq->hrtick_timer, hrtick, CLOCK_MONOTONIC, HRTIMER_MODE_REL_HARD);
+}
+
 static enum hrtimer_restart hrtick(struct hrtimer *timer)
 {
     struct rq *rq = container_of(timer, struct rq, hrtick_timer);
@@ -2606,12 +2691,6 @@ void task_tick_dl(struct rq *rq, struct task_struct *p, int queued)
         if (!dl_task(donor) || !on_dl_rq(dl_se))
             return;
 
-        /* Consumed budget is computed considering the time as
-        * observed by schedulable tasks (excluding time spent
-        * in hardirq context, etc.). Deadlines are instead
-        * computed using hard walltime. This seems to be the more
-        * natural solution, but the full ramifications of this
-        * approach need further study. */
         delta_exec = update_curr_common(rq) {
             return update_se(rq, &rq->donor->se);
         }
@@ -2619,13 +2698,11 @@ void task_tick_dl(struct rq *rq, struct task_struct *p, int queued)
     }
 
     update_dl_rq_load_avg(rq_clock_pelt(rq), rq, 1);
-    /* Even when we have runtime, update_curr_dl() might have resulted in us
-     * not being the leftmost task anymore. In that case NEED_RESCHED will
-     * be set and schedule() will start a new hrtick for the next task. */
-    if (hrtick_enabled_dl(rq) && queued && p->dl.runtime > 0 &&
-        is_leftmost(&p->dl, &rq->dl)) {
 
-        start_hrtick_dl(rq, &p->dl);
+    if (hrtick_enabled_dl(rq) && queued && p->dl.runtime > 0 && is_leftmost(&p->dl, &rq->dl)) {
+        start_hrtick_dl(rq, &p->dl) {
+            hrtick_start(rq, dl_se->runtime);
+        }
     }
 }
 
@@ -2730,17 +2807,19 @@ throttle:
         dl_se->dl_throttled = 1;
 
         /* If requested, inform the user about runtime overruns. */
-        if (dl_runtime_exceeded(dl_se) && /* return (dl_se->runtime <= 0); */
-            (dl_se->flags & SCHED_FLAG_DL_OVERRUN))
+        if (dl_runtime_exceeded(dl_se) && (dl_se->flags & SCHED_FLAG_DL_OVERRUN))
             dl_se->dl_overrun = 1;
 
         dequeue_dl_entity(dl_se, 0);
+
         if (!dl_server(dl_se)) {
             update_stats_dequeue_dl(&rq->dl, dl_se, 0);
             dequeue_pushable_dl_task(rq, dl_task_of(dl_se));
         }
 
         if (unlikely(is_dl_boosted(dl_se) || !start_dl_timer(dl_se))) {
+            /* The failure of `start_dl_timer` is caused by attempting to register a
+             * timer with an expiration time that is already in the past. */
             if (dl_server(dl_se)) {
                 replenish_dl_new_period(dl_se, rq);
                 start_dl_timer(dl_se);
@@ -2847,13 +2926,15 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
      * after the deadline but before the next period.
      * If that is the case, the task will be throttled and
      * the replenishment timer will be set to the next period. */
-    if (!dl_se->dl_throttled && !dl_is_implicit(dl_se)) { /* return dl_se->dl_deadline == dl_se->dl_period; */
+    if (!dl_se->dl_throttled && !dl_is_implicit(dl_se)) {
         dl_check_constrained_dl(dl_se) {
             struct rq *rq = rq_of_dl_se(dl_se);
 
+            /* deadline < now < next_period */
             if (dl_time_before(dl_se->deadline, rq_clock(rq)) && dl_time_before(rq_clock(rq), dl_next_period(dl_se))) {
                 if (unlikely(is_dl_boosted(dl_se) || !start_dl_timer(dl_se)))
                     return;
+
                 dl_se->dl_throttled = 1;
                 if (dl_se->runtime > 0)
                     dl_se->runtime = 0;
@@ -2941,33 +3022,31 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
      * parameters of the task might need updating. Otherwise,
      * we want a replenishment of its runtime. */
     if (flags & ENQUEUE_WAKEUP) {
-        task_contending(dl_se, flags) {
-            struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
-
-            if (dl_se->dl_runtime == 0)
-                return;
-
-            if (flags & ENQUEUE_MIGRATED)
-                add_rq_bw(dl_se, dl_rq);
-
-            if (dl_se->dl_non_contending) {
-                dl_se->dl_non_contending = 0;
-                cancel_inactive_timer(dl_se);
-            } else {
-                add_running_bw(dl_se, dl_rq);
-            }
-        }
+        task_contending(dl_se, flags);
 
         update_dl_entity(dl_se) {
             struct rq *rq = rq_of_dl_se(dl_se);
 
-            if (dl_time_before(dl_se->deadline, rq_clock(rq)) || dl_entity_overflow(dl_se, rq_clock(rq))) {
-                if (unlikely(!dl_is_implicit(dl_se) &&
-                        !dl_time_before(dl_se->deadline, rq_clock(rq)) &&
-                        !is_dl_boosted(dl_se))) {
-                    /* 1. Revisited CBS: Reduces runtime for constrained-deadline tasks
-                     * (deadline < period) to prevent bandwidth overruns. */
+            bool ovf = dl_entity_overflow(dl_se, rq_clock(rq)) {
+                /* return runtime / (deadline - t) > dl_runtime / dl_deadline */
+                u64 left, right;
+
+                left = (pi_of(dl_se)->dl_deadline >> DL_SCALE) * (dl_se->runtime >> DL_SCALE);
+                right = ((dl_se->deadline - t) >> DL_SCALE) *
+                    (pi_of(dl_se)->dl_runtime >> DL_SCALE);
+
+                return dl_time_before(right, left);
+            }
+            if (dl_time_before(dl_se->deadline, rq_clock(rq)) || ovf) {
+                /* 1. Revised CBS -> constrained deadline: Reduces runtime for constrained-deadline tasks
+                 * (deadline < period) to prevent bandwidth overruns. */
+                if (unlikely(!dl_is_implicit(dl_se) && !dl_time_before(dl_se->deadline, rq_clock(rq)) && !is_dl_boosted(dl_se))) {
                     update_dl_revised_wakeup(dl_se, rq) {
+                       /* Reasoning: a task may overrun the density if:
+                        *    runtime / (deadline - t) > dl_runtime / dl_deadline
+                        *
+                        * Therefore, runtime can be adjusted to:
+                        *     runtime = (dl_runtime / dl_deadline) * (deadline - t) */
                         u64 laxity = dl_se->deadline - rq_clock(rq);
                         WARN_ON(dl_time_before(dl_se->deadline, rq_clock(rq)));
 
@@ -2976,7 +3055,7 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
                     return;
                 }
 
-                /* 2. Original CBS: Replenishes runtime and advances the deadline
+                /* 2. Original CBS -> implicit deadline: Replenishes runtime and advances the deadline
                 * for new periods or implicit-deadline tasks (deadline == period). */
                 replenish_dl_new_period(dl_se, rq) {
                     /* for non-boosted task, pi_of(dl_se) == dl_se */
@@ -3293,8 +3372,10 @@ bool dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
 
         /* This check allows to start the inactive timer (or to immediately
         * decrease the active utilization, if needed) in two cases:
-        * when the task blocks and when it is terminating
-        * (p->state == TASK_DEAD). We can handle the two cases in the same
+        * 1. when the task blocks
+        * 2. when it is terminating (p->state == TASK_DEAD).
+        *
+        * We can handle the two cases in the same
         * way, because from GRUB's point of view the same thing is happening
         * (the task moves from "active contending" to "active non contending"
         * or "inactive") */
@@ -3471,7 +3552,7 @@ struct task_struct *pick_task_dl(struct rq *rq)
         }
         WARN_ON_ONCE(!dl_se);
 
-        if (dl_server(dl_se)) { /* return dl_se->dl_server; */
+        if (dl_server(dl_se)) {
             p = dl_se->server_pick_task(dl_se) {
                 fair_server_pick_task(dl_se) {
                     return pick_task_fair(dl_se->rq);
@@ -4145,64 +4226,7 @@ void switched_to_dl(struct rq *rq, struct task_struct *p)
 }
 ```
 
-## start_dl_timer
-
-```c
-static int start_dl_timer(struct sched_dl_entity *dl_se)
-{
-    struct hrtimer *timer = &dl_se->dl_timer;
-    struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
-    struct rq *rq = rq_of_dl_rq(dl_rq);
-    ktime_t now, act;
-    s64 delta;
-
-    lockdep_assert_rq_held(rq);
-
-    /* We want the timer to fire at the deadline, but considering
-     * that it is actually coming from rq->clock and not from
-     * hrtimer's time base reading.
-     *
-     * The deferred reservation will have its timer set to
-     * (deadline - runtime). At that point, the CBS rule will decide
-     * if the current deadline can be used, or if a replenishment is
-     * required to avoid add too much pressure on the system
-     * (current u > U). */
-    if (dl_se->dl_defer_armed) {
-        WARN_ON_ONCE(!dl_se->dl_throttled);
-        act = ns_to_ktime(dl_se->deadline - dl_se->runtime);
-    } else {
-        /* act = deadline - rel-deadline + period */
-        act = ns_to_ktime(dl_next_period(dl_se));
-    }
-
-    now = hrtimer_cb_get_time(timer);
-    delta = ktime_to_ns(now) - rq_clock(rq);
-    act = ktime_add_ns(act, delta);
-
-    /* If the expiry time already passed, e.g., because the value
-     * chosen as the deadline is too small, don't even try to
-     * start the timer in the past! */
-    if (ktime_us_delta(act, now) < 0)
-        return 0;
-
-    /* !enqueued will guarantee another callback; even if one is already in
-     * progress. This ensures a balanced {get,put}_task_struct().
-     *
-     * The race against __run_timer() clearing the enqueued state is
-     * harmless because we're holding task_rq()->lock, therefore the timer
-     * expiring after we've done the check will wait on its task_rq_lock()
-     * and observe our state. */
-    if (!hrtimer_is_queued(timer)) {
-        if (!dl_server(dl_se))
-            get_task_struct(dl_task_of(dl_se));
-        hrtimer_start(timer, act, HRTIMER_MODE_ABS_HARD);
-    }
-
-    return 1;
-}
-```
-
-## fair_server
+## dl_timer
 
 ```c
 void fair_server_init(struct rq *rq)
@@ -4333,7 +4357,11 @@ unlock:
 
     return HRTIMER_NORESTART;
 }
+```
 
+### dl_server_timer
+
+```c
 static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_dl_entity *dl_se) {
     struct rq *rq = rq_of_dl_se(dl_se);
     u64 fw;
@@ -4443,6 +4471,52 @@ unlock:
     }
 
     return HRTIMER_NORESTART;
+}
+```
+
+
+### start_dl_timer
+
+```c
+static int start_dl_timer(struct sched_dl_entity *dl_se)
+{
+    struct hrtimer *timer = &dl_se->dl_timer;
+    struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
+    struct rq *rq = rq_of_dl_rq(dl_rq);
+    ktime_t now, act;
+    s64 delta;
+
+    lockdep_assert_rq_held(rq);
+
+    if (dl_se->dl_defer_armed) {
+        WARN_ON_ONCE(!dl_se->dl_throttled);
+        act = ns_to_ktime(dl_se->deadline - dl_se->runtime);
+    } else {
+        /* act = deadline - rel-deadline + period */
+        act = ns_to_ktime(dl_next_period(dl_se));
+    }
+
+    now = hrtimer_cb_get_time(timer);
+    delta = ktime_to_ns(now) - rq_clock(rq);
+    act = ktime_add_ns(act, delta);
+
+    if (ktime_us_delta(act, now) < 0)
+        return 0;
+
+    /* !enqueued will guarantee another callback; even if one is already in
+     * progress. This ensures a balanced {get,put}_task_struct().
+     *
+     * The race against __run_timer() clearing the enqueued state is
+     * harmless because we're holding task_rq()->lock, therefore the timer
+     * expiring after we've done the check will wait on its task_rq_lock()
+     * and observe our state. */
+    if (!hrtimer_is_queued(timer)) {
+        if (!dl_server(dl_se))
+            get_task_struct(dl_task_of(dl_se));
+        hrtimer_start(timer, act, HRTIMER_MODE_ABS_HARD);
+    }
+
+    return 1;
 }
 ```
 
@@ -11461,8 +11535,9 @@ static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 
 * [dumpstack - uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html)
 
-# sched_balance_rq
+# load_balance
 
+* [OSPM 2025 - Reduce, reuse, recycle: propagating load-balancer statistics up the hierarchy](https://lwn.net/Articles/1021332/)
 * [蜗窝科技 - CFS负载均衡 - 概述](http://www.wowotech.net/process_management/load_balance.html) ⊙ [任务放置](http://www.wowotech.net/process_management/task_placement.html) ⊙ [CFS选核](http://www.wowotech.net/process_management/task_placement_detail.html) ⊙ [load balance触发场景](http://www.wowotech.net/process_management/load_balance_detail.html) ⊙ [sched_balance_rq](http://www.wowotech.net/process_management/load_balance_function.html)
 
 * [DumpSatck - 负载跟踪](http://www.dumpstack.cn/index.php/category/tracking) ⊙ [cpu capacity](http://www.dumpstack.cn/index.php/2022/06/02/743.html) ⊙ [PELT](http://www.dumpstack.cn/index.php/2022/08/13/785.html) ⊙ [util_est](http://www.dumpstack.cn/index.php/2022/08/13/787.html) ⊙ [uclamp](http://www.dumpstack.cn/index.php/2022/08/13/788.html) ⊙ [walt](http://www.dumpstack.cn/index.php/2022/08/13/789.html)
@@ -13816,6 +13891,7 @@ struct wait_queue_entry {
  * -> wakeup_preempt -> resched_curr */
 
 try_to_wake_up() {
+    guard(preempt)();
     wake_flags |= WF_TTWU;
 
     if (p == current) {
@@ -13829,9 +13905,9 @@ try_to_wake_up() {
     }
 
 scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
-        smp_mb__after_spinlock();
-        if (!ttwu_state_match(p, state, &success))
-            break;
+    smp_mb__after_spinlock();
+    if (!ttwu_state_match(p, state, &success))
+        break;
 
     if (READ_ONCE(p->on_rq) && ttwu_runnable(p, wake_flags))
             break;
@@ -13852,7 +13928,9 @@ scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
                  * it should preempt the task that is current now. */
                 wakeup_preempt(rq, p, wake_flags);
             }
-            ttwu_do_wakeup(p);
+            ttwu_do_wakeup(p) {
+                WRITE_ONCE(p->__state, TASK_RUNNING);
+            }
             ret = 1;
         }
         __task_rq_unlock(rq, &rf);
@@ -15300,7 +15378,7 @@ pid val | note
 --- | ---
 < -1 |  meaning wait for any child process whose `process group ID is equal` to the absolute value of pid.
 -1 | meaning wait for `any child process`.
-0 | meaning wait for any child process whose `process group ID is equal` to that of the calling process at the time of the call to waitpid()
+## 0 | meaning wait for any child process whose `process group ID is equal` to that of the calling process at the time of the call to waitpid()
 \> 0 | meaning wait for the child whose `process ID is equal` to the value of pid.
 
 ```c
@@ -16217,6 +16295,14 @@ struct kthread_create_info
     struct list_head list;
 };
 
+ rest_init(void)
+{
+    pid = kernel_thread(kthreadd, NULL, NULL, CLONE_FS | CLONE_FILES);
+    rcu_read_lock();
+    kthreadd_task = find_task_by_pid_ns(pid, &init_pid_ns);
+    rcu_read_unlock();
+}
+
 int kthreadd(void *unused)
 {
     struct task_struct *tsk = current;
@@ -16233,7 +16319,7 @@ int kthreadd(void *unused)
     for (;;) {
         set_current_state(TASK_INTERRUPTIBLE);
         if (list_empty(&kthread_create_list))
-        schedule();
+            schedule();
         __set_current_state(TASK_RUNNING);
 
         spin_lock(&kthread_create_lock);
@@ -16245,10 +16331,22 @@ int kthreadd(void *unused)
             spin_unlock(&kthread_create_lock);
 
             create_kthread(create) {
-                kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD) {
+                pid = kernel_thread(kthread, create, CLONE_FS | CLONE_FILES | SIGCHLD) {
                     return _do_fork(flags|CLONE_VM|CLONE_UNTRACED, (unsigned long)fn,
                         (unsigned long)arg, NULL, NULL, 0);
                 }
+                if (pid < 0) {
+                /* Release the structure when caller killed by a fatal signal. */
+                struct completion *done = xchg(&create->done, NULL);
+
+                kfree(create->full_name);
+                if (!done) {
+                    kfree(create);
+                    return;
+                }
+                create->result = ERR_PTR(pid);
+                complete(done);
+            }
             }
 
             spin_lock(&kthread_create_lock);
@@ -16543,7 +16641,7 @@ struct workqueue_struct *system_freezable_power_efficient_wq;
 ```c
 start_kernel();
     workqueue_init_early() {
-        int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL };
+        int std_nice[NR_STD_WORKER_POOLS] = { 0, HIGHPRI_NICE_LEVEL/* -19 */ };
         void (*irq_work_fns[2])(struct irq_work *) = {
             bh_pool_kick_normal,
             bh_pool_kick_highpri
@@ -16556,7 +16654,12 @@ start_kernel();
             for_each_bh_worker_pool(pool, cpu) {
                 init_cpu_worker_pool(pool, cpu, std_nice[i]);
                 pool->flags |= POOL_BH;
-                init_irq_work(bh_pool_irq_work(pool), irq_work_fns[i]) {
+
+                irq_work = bh_pool_irq_work(struct worker_pool *pool) {
+                    int high = pool->attrs->nice == HIGHPRI_NICE_LEVEL ? 1 : 0;
+                    return &per_cpu(bh_pool_irq_works, pool->cpu)[high];
+                }
+                init_irq_work(irq_work, irq_work_fns[i]) {
                     *work = IRQ_WORK_INIT(func);
                 }
                 i++;
@@ -16566,10 +16669,26 @@ start_kernel();
             for_each_cpu_worker_pool(pool, cpu) {
                 init_cpu_worker_pool(pool, cpu, std_nice[i++]) {
                     init_worker_pool(pool) {
+                        pool->id = -1;
+                        pool->cpu = -1;
+                        pool->node = NUMA_NO_NODE;
+                        pool->flags |= POOL_DISASSOCIATED;
+                        pool->watchdog_ts = jiffies;
+                        INIT_LIST_HEAD(&pool->worklist);
+                        INIT_LIST_HEAD(&pool->idle_list);
+                        hash_init(pool->busy_hash);
+
                         timer_setup(&pool->idle_timer, idle_worker_timeout, TIMER_DEFERRABLE);
                         timer_setup(&pool->mayday_timer, pool_mayday_timeout, 0);
                         alloc_workqueue_attrs();
                     }
+
+                    pool->cpu = cpu;
+                    cpumask_copy(pool->attrs->cpumask, cpumask_of(cpu));
+                    cpumask_copy(pool->attrs->__pod_cpumask, cpumask_of(cpu));
+                    pool->attrs->nice = nice;
+                    pool->attrs->affn_strict = true;
+                    pool->node = cpu_to_node(cpu);
                 }
             }
         }
@@ -16589,8 +16708,54 @@ start_kernel();
             kernel_init() {
                 kernel_init_freeable() {
                     workqueue_init() {
+                        wq_cpu_intensive_thresh_init() {
+
+                        }
+
                         wq_numa_init() {
                             wq_numa_possible_cpumask = tbl;
+                        }
+                        for_each_possible_cpu(cpu) {
+                            for_each_bh_worker_pool(pool, cpu)
+                                pool->node = cpu_to_node(cpu);
+                            for_each_cpu_worker_pool(pool, cpu)
+                                pool->node = cpu_to_node(cpu);
+                        }
+                        list_for_each_entry(wq, &workqueues, list) {
+                            init_rescuer(wq) {
+                                struct worker *rescuer;
+                                char id_buf[WORKER_ID_LEN];
+                                int ret;
+
+                                lockdep_assert_held(&wq_pool_mutex);
+
+                                if (!(wq->flags & WQ_MEM_RECLAIM))
+                                    return 0;
+
+                                rescuer = alloc_worker(NUMA_NO_NODE);
+                                if (!rescuer) {
+                                    return -ENOMEM;
+                                }
+
+                                rescuer->rescue_wq = wq;
+                                format_worker_id(id_buf, sizeof(id_buf), rescuer, NULL);
+
+                                rescuer->task = kthread_create(rescuer_thread, rescuer, "%s", id_buf);
+                                if (IS_ERR(rescuer->task)) {
+                                    ret = PTR_ERR(rescuer->task);
+                                    kfree(rescuer);
+                                    return ret;
+                                }
+
+                                wq->rescuer = rescuer;
+                                if (wq->flags & WQ_UNBOUND)
+                                    kthread_bind_mask(rescuer->task, unbound_effective_cpumask(wq));
+                                else
+                                    kthread_bind_mask(rescuer->task, cpu_possible_mask);
+                                wake_up_process(rescuer->task);
+
+                                return 0;
+                            }
                         }
                         for_each_online_cpu(cpu) {
                             for_each_cpu_worker_pool(pool, cpu) {
@@ -16720,27 +16885,118 @@ alloc_unbound_pwq() {
 
 ```c
 create_worker(pool) {
+    id = ida_alloc(&pool->worker_ida, GFP_KERNEL);
     woker = alloc_worker(pool->node) {
         worker->flags = WORKER_PREP;
     }
-    worker->task = kthread_create_on_node(worker_thread) {
-        kthreadd() {
-            create_kthread() {
-                kernel_thread() {
-                    _do_fork();
+    worker->id = id;
+
+    if (!(pool->flags & POOL_BH)) {
+        worker->task = kthread_create_on_node(worker_thread) {
+            kthreadd() {
+                create_kthread() {
+                    kernel_thread() {
+                        _do_fork();
+                    }
                 }
             }
+            wake_up_process(kthreadd_task); /* kthreadd */
+            wait_for_completion_killable(&done);
         }
-        wake_up_process(kthreadd_task); /* kthreadd */
-        wait_for_completion_killable(&done);
+        set_user_nice(worker->task, pool->attrs->nice);
+        kthread_bind_mask(worker->task, pool_allowed_cpus(pool));
     }
+
     worker_attach_to_pool();
+
+    worker->pool->nr_workers++;
     worker_enter_idle(worker) {
         pool->nr_idle++;
     }
-    wake_up_process(worker->task) {
-        try_to_wake_up();
+
+    if (worker->task)
+        wake_up_process(worker->task);
+}
+
+void set_user_nice(struct task_struct *p, long nice)
+{
+    bool queued, running;
+    struct rq *rq;
+    int old_prio;
+
+    if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
+        return;
+
+    CLASS(task_rq_lock, rq_guard)(p);
+    rq = rq_guard.rq;
+
+    update_rq_clock(rq);
+
+    if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+        p->static_prio = NICE_TO_PRIO(nice);
+        return;
     }
+
+    queued = task_on_rq_queued(p);
+    running = task_current_donor(rq, p);
+    if (queued)
+        dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+    if (running)
+        put_prev_task(rq, p);
+
+    p->static_prio = NICE_TO_PRIO(nice) {
+        return ((nice) + DEFAULT_PRIO);
+    }
+    set_load_weight(p, true) {
+        int prio = p->static_prio - MAX_RT_PRIO;
+        struct load_weight lw;
+
+        if (task_has_idle_policy(p)) {
+            lw.weight = scale_load(WEIGHT_IDLEPRIO);
+            lw.inv_weight = WMULT_IDLEPRIO;
+        } else {
+            lw.weight = scale_load(sched_prio_to_weight[prio]);
+            lw.inv_weight = sched_prio_to_wmult[prio];
+        }
+
+        /* SCHED_OTHER tasks have to update their load when changing their
+        * weight */
+        if (update_load && p->sched_class->reweight_task)
+            p->sched_class->reweight_task(task_rq(p), p, &lw);
+        else
+            p->se.load = lw;
+    }
+
+    old_prio = p->prio;
+    p->prio = effective_prio(p) {
+        p->normal_prio = normal_prio(p)  {
+            return __normal_prio(p->policy, p->rt_priority, PRIO_TO_NICE(p->static_prio)) {
+                int prio;
+
+                if (dl_policy(policy))
+                    prio = MAX_DL_PRIO - 1;
+                else if (rt_policy(policy))
+                    prio = MAX_RT_PRIO - 1 - rt_prio;
+                else
+                    prio = NICE_TO_PRIO(nice);
+
+                return prio;
+            }
+        }
+
+        if (!rt_or_dl_prio(p->prio))
+            return p->normal_prio;
+        return p->prio;
+    }
+
+    if (queued)
+        enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+    if (running)
+        set_next_task(rq, p);
+
+    /* If the task increased its priority or is running and
+     * lowered its priority, then reschedule its CPU: */
+    p->sched_class->prio_changed(rq, p, old_prio);
 }
 ```
 
@@ -16748,10 +17004,27 @@ create_worker(pool) {
 
 ```c
 worker_thread() {
+    struct worker *worker = __worker;
+    struct worker_pool *pool = worker->pool;
+
+    /* tell the scheduler that this is a workqueue worker */
+    set_pf_worker(true) {
+        mutex_lock(&wq_pool_attach_mutex);
+        if (val)
+            current->flags |= PF_WQ_WORKER;
+        else
+            current->flags &= ~PF_WQ_WORKER;
+        mutex_unlock(&wq_pool_attach_mutex);
+    }
+
 woke_up:
-    if (worker->flags & WORKER_DIE) {
-        kfree(worker);
-        return;
+    if (unlikely(worker->flags & WORKER_DIE)) {
+        raw_spin_unlock_irq(&pool->lock);
+        set_pf_worker(false);
+
+        worker->pool = NULL;
+        ida_free(&pool->worker_ida, worker->id);
+        return 0;
     }
 
     worker_leave_idle() {
@@ -16792,13 +17065,38 @@ recheck:
 
         ret = assign_work(work, worker, NULL) {
             struct worker_pool *pool = worker->pool;
-            struct worker *collision = find_worker_executing_work(pool, work);
+            struct worker *collision = find_worker_executing_work(pool, work) {
+                struct worker *worker;
+
+                hash_for_each_possible(pool->busy_hash, worker, hentry, (unsigned long)work)
+                    if (worker->current_work == work && worker->current_func == work->func)
+                        return worker;
+
+                return NULL;
+            }
             if (unlikely(collision)) {
                 move_linked_works(work, &collision->scheduled, nextp);
                 return false;
             }
 
-            move_linked_works(work, &worker->scheduled, nextp);
+            move_linked_works(work, &worker->scheduled, nextp) {
+                struct work_struct *n;
+
+                /* Linked worklist will always end before the end of the list,
+                * use NULL for list head. */
+                list_for_each_entry_safe_from(work, n, NULL, entry) {
+                    list_move_tail(&work->entry, head);
+                    if (!(*work_data_bits(work) & WORK_STRUCT_LINKED))
+                        break;
+                }
+
+                /* If we're already inside safe list traversal and have moved
+                * multiple works to the scheduled queue, the next position
+                * needs to be updated. */
+                if (nextp)
+                    *nextp = n;
+            }
+
             return true;
         }
         if (ret) {
@@ -16820,6 +17118,9 @@ recheck:
                         worker->current_func = work->func;
                         worker->current_pwq = pwq;
 
+                        if (worker->task)
+                            worker->current_at = worker->task->se.sum_exec_runtime;
+
                         if (pwq->wq->flags & WQ_CPU_INTENSIVE) {
                             worker_set_flags(worker, WORKER_CPU_INTENSIVE) {     /* 2.1 [nr_running]-- == 0 */
                                 worker->flags |= flags;
@@ -16829,6 +17130,7 @@ recheck:
                             }
                         }
 
+                        /* wake up an idle worker if necessary */
                         kick_pool(pool) {
                             struct worker *worker = first_idle_worker(pool);
                             struct task_struct *p;
@@ -16838,18 +17140,25 @@ recheck:
                                 return false;
 
                             if (pool->flags & POOL_BH) {
-                                kick_bh_pool(pool);
+                                kick_bh_pool(pool) {
+                                    if (unlikely(pool->cpu != smp_processor_id() && !(pool->flags & POOL_BH_DRAINING))) {
+                                        /* bh_pool_kick_normal, bh_pool_kick_highpri */
+                                        irq_work_queue_on(bh_pool_irq_work(pool), pool->cpu);
+                                        return;
+                                    }
+                                    if (pool->attrs->nice == HIGHPRI_NICE_LEVEL)
+                                        raise_softirq_irqoff(HI_SOFTIRQ);
+                                    else
+                                        raise_softirq_irqoff(TASKLET_SOFTIRQ);
+                                }
                                 return true;
                             }
 
                             p = worker->task;
 
-                            if (!pool->attrs->affn_strict &&
-                                !cpumask_test_cpu(p->wake_cpu, pool->attrs->__pod_cpumask)) {
-                                struct work_struct *work = list_first_entry(&pool->worklist,
-                                                struct work_struct, entry);
-                                int wake_cpu = cpumask_any_and_distribute(pool->attrs->__pod_cpumask,
-                                                    cpu_online_mask);
+                            if (!pool->attrs->affn_strict && !cpumask_test_cpu(p->wake_cpu, pool->attrs->__pod_cpumask)) {
+                                struct work_struct *work = list_first_entry(&pool->worklist, struct work_struct, entry);
+                                int wake_cpu = cpumask_any_and_distribute(pool->attrs->__pod_cpumask, cpu_online_mask);
                                 if (wake_cpu < nr_cpu_ids) {
                                     p->wake_cpu = wake_cpu;
                                     get_work_pwq(work)->stats[PWQ_STAT_REPATRIATED]++;
@@ -16873,8 +17182,7 @@ recheck:
                                     pwq->nr_active--;
                                     if (!nna) {
                                         pwq_activate_first_inactive(pwq, false) {
-                                            struct work_struct *work =
-                                                list_first_entry_or_null(&pwq->inactive_works, struct work_struct, entry);
+                                            struct work_struct *work = list_first_entry_or_null(&pwq->inactive_works, struct work_struct, entry);
                                             if (work && pwq_tryinc_nr_active(pwq, fill)) {
                                                 __pwq_activate_work(pwq, work) {
                                                     move_linked_works(work, &pwq->pool->worklist, NULL);
@@ -16904,7 +17212,15 @@ recheck:
         pool->nr_idle++;
         worker->last_active = jiffies;
         list_add(&worker->entry, &pool->idle_list);
-        if (too_many_workers(pool) && !timer_pending(&pool->idle_timer)) {
+        ret = too_many_workers(pool) {
+            bool managing = pool->flags & POOL_MANAGER_ACTIVE;
+            int nr_idle = pool->nr_idle + managing; /* manager is considered idle */
+            int nr_busy = pool->nr_workers - nr_idle;
+
+            return nr_idle > 2 && (nr_idle - 2) * MAX_IDLE_WORKERS_RATIO >= nr_busy;
+
+        }
+        if (ret && !timer_pending(&pool->idle_timer)) {
             mod_timer(&pool->idle_timer, jiffies + IDLE_WORKER_TIMEOUT);
         }
 
@@ -16912,19 +17228,142 @@ recheck:
 
     schedule() {
         if (prev->flags & PF_WQ_WORKER) {
-            to_wakeup = wq_worker_sleeping() {
-                if (pool->cpu != raw_smp_processor_id())
-                    return NULL;
-                /* only wakeup idle thread when running task is going to suspend in process_one_work */
-                if (atomic_dec_and_test(&pool->nr_running) && !list_empty(&pool->worklist)) {
-                    to_wakeup = first_idle_worker(pool);
+            wq_worker_sleeping() {
+                struct worker *worker = kthread_data(task);
+                struct worker_pool *pool;
+
+                if (worker->flags & WORKER_NOT_RUNNING)
+                    return;
+
+                pool = worker->pool;
+
+                /* Return if preempted before wq_worker_running() was reached */
+                if (READ_ONCE(worker->sleeping))
+                    return;
+
+                WRITE_ONCE(worker->sleeping, 1);
+                raw_spin_lock_irq(&pool->lock);
+
+                /* Recheck in case unbind_workers() preempted us. We don't
+                * want to decrement nr_running after the worker is unbound
+                * and nr_running has been reset. */
+                if (worker->flags & WORKER_NOT_RUNNING) {
+                    raw_spin_unlock_irq(&pool->lock);
+                    return;
                 }
-                try_to_wake_up_local(to_wakeup, &rf);
+
+                pool->nr_running--;
+                if (kick_pool(pool))
+                    worker->current_pwq->stats[PWQ_STAT_CM_WAKEUP]++;
+
+                raw_spin_unlock_irq(&pool->lock);
             }
         }
     }
 
     goto woke_up;
+}
+```
+
+## rescure_thread
+
+```c
+int rescuer_thread(void *__rescuer)
+{
+    struct worker *rescuer = __rescuer;
+    struct workqueue_struct *wq = rescuer->rescue_wq;
+    bool should_stop;
+
+    set_user_nice(current, RESCUER_NICE_LEVEL);
+
+    /* Mark rescuer as worker too.  As WORKER_PREP is never cleared, it
+     * doesn't participate in concurrency management. */
+    set_pf_worker(true);
+repeat:
+    set_current_state(TASK_IDLE);
+
+    /* By the time the rescuer is requested to stop, the workqueue
+     * shouldn't have any work pending, but @wq->maydays may still have
+     * pwq(s) queued.  This can happen by non-rescuer workers consuming
+     * all the work items before the rescuer got to them.  Go through
+     * @wq->maydays processing before acting on should_stop so that the
+     * list is always empty on exit. */
+    should_stop = kthread_should_stop();
+
+    /* see whether any pwq is asking for help */
+    raw_spin_lock_irq(&wq_mayday_lock);
+
+    while (!list_empty(&wq->maydays)) {
+        struct pool_workqueue *pwq = list_first_entry(&wq->maydays, struct pool_workqueue, mayday_node);
+        struct worker_pool *pool = pwq->pool;
+        struct work_struct *work, *n;
+
+        __set_current_state(TASK_RUNNING);
+        list_del_init(&pwq->mayday_node);
+
+        raw_spin_unlock_irq(&wq_mayday_lock);
+
+        worker_attach_to_pool(rescuer, pool);
+
+        raw_spin_lock_irq(&pool->lock);
+
+        /* Slurp in all works issued via this workqueue and
+         * process'em. */
+        WARN_ON_ONCE(!list_empty(&rescuer->scheduled));
+        list_for_each_entry_safe(work, n, &pool->worklist, entry) {
+            if (get_work_pwq(work) == pwq && assign_work(work, rescuer, &n))
+                pwq->stats[PWQ_STAT_RESCUED]++;
+        }
+
+        if (!list_empty(&rescuer->scheduled)) {
+            process_scheduled_works(rescuer);
+
+            /* The above execution of rescued work items could
+             * have created more to rescue through
+             * pwq_activate_first_inactive() or chained
+             * queueing.  Let's put @pwq back on mayday list so
+             * that such back-to-back work items, which may be
+             * being used to relieve memory pressure, don't
+             * incur MAYDAY_INTERVAL delay inbetween. */
+            if (pwq->nr_active && need_to_create_worker(pool)) {
+                raw_spin_lock(&wq_mayday_lock);
+                /* Queue iff we aren't racing destruction
+                 * and somebody else hasn't queued it already. */
+                if (wq->rescuer && list_empty(&pwq->mayday_node)) {
+                    get_pwq(pwq);
+                    list_add_tail(&pwq->mayday_node, &wq->maydays);
+                }
+                raw_spin_unlock(&wq_mayday_lock);
+            }
+        }
+
+        /* Leave this pool. Notify regular workers; otherwise, we end up
+         * with 0 concurrency and stalling the execution. */
+        kick_pool(pool);
+
+        raw_spin_unlock_irq(&pool->lock);
+
+        worker_detach_from_pool(rescuer);
+
+        /* Put the reference grabbed by send_mayday().  @pool might
+         * go away any time after it. */
+        put_pwq_unlocked(pwq);
+
+        raw_spin_lock_irq(&wq_mayday_lock);
+    }
+
+    raw_spin_unlock_irq(&wq_mayday_lock);
+
+    if (should_stop) {
+        __set_current_state(TASK_RUNNING);
+        set_pf_worker(false);
+        return 0;
+    }
+
+    /* rescuers should never participate in concurrency management */
+    WARN_ON_ONCE(!(rescuer->flags & WORKER_NOT_RUNNING));
+    schedule();
+    goto repeat;
 }
 ```
 
@@ -16994,12 +17433,54 @@ idle_worker_timeout() {
 
 pool_mayday_timeout() {
     if (need_to_create_worker(pool)) { /* need_more_worker(pool) && !may_start_working(pool) */
-        send_mayday(work) {
-            list_add_tail(&pwq->mayday_node, &wq->maydays);
-            wake_up_process(wq->rescuer->task);
+        list_for_each_entry(work, &pool->worklist, entry) {
+			send_mayday(work) {
+                list_add_tail(&pwq->mayday_node, &wq->maydays);
+                wake_up_process(wq->rescuer->task);
+            }
         }
     }
     mod_timer(&pool->mayday_timer, jiffies + MAYDAY_INTERVAL);
+}
+```
+
+## wq_worker_tick
+
+```c
+sched_tick(void) {
+    if (donor->flags & PF_WQ_WORKER)
+        wq_worker_tick(donor);
+}
+
+void wq_worker_tick(struct task_struct *task)
+{
+    struct worker *worker = kthread_data(task);
+    struct pool_workqueue *pwq = worker->current_pwq;
+    struct worker_pool *pool = worker->pool;
+
+    if (!pwq)
+        return;
+
+    pwq->stats[PWQ_STAT_CPU_TIME] += TICK_USEC;
+
+    if (!wq_cpu_intensive_thresh_us)
+        return;
+
+    ret = worker->task->se.sum_exec_runtime - worker->current_at <
+        wq_cpu_intensive_thresh_us * NSEC_PER_USEC;
+    if ((worker->flags & WORKER_NOT_RUNNING) || READ_ONCE(worker->sleeping) || ret)
+        return;
+
+    raw_spin_lock(&pool->lock);
+
+    worker_set_flags(worker, WORKER_CPU_INTENSIVE);
+    wq_cpu_intensive_report(worker->current_func);
+    pwq->stats[PWQ_STAT_CPU_INTENSIVE]++;
+
+    if (kick_pool(pool))
+        pwq->stats[PWQ_STAT_CM_WAKEUP]++;
+
+    raw_spin_unlock(&pool->lock);
 }
 ```
 
