@@ -464,41 +464,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
         if (regs->pc & BIT(55))
             arm64_apply_bp_hardening();
 
-        irq_enter_rcu() {
-            __irq_enter_raw() {
-                preempt_count_add(HARDIRQ_OFFSET);
-                lockdep_hardirq_enter();
-            }
-
-            if (tick_nohz_full_cpu(smp_processor_id())
-                || (is_idle_task(current) && (irq_count() == HARDIRQ_OFFSET))) {
-                tick_irq_enter();
-            }
-
-            account_hardirq_enter(current) {
-                vtime_account_irq(tsk, HARDIRQ_OFFSET);
-                irqtime_account_irq(tsk, HARDIRQ_OFFSET) {
-                    struct irqtime *irqtime = this_cpu_ptr(&cpu_irqtime);
-                    unsigned int pc;
-                    s64 delta;
-                    int cpu;
-
-                    if (!sched_clock_irqtime)
-                        return;
-
-                    cpu = smp_processor_id();
-                    /* TODO?: account current time to previous exit time? */
-                    delta = sched_clock_cpu(cpu) - irqtime->irq_start_time;
-                    irqtime->irq_start_time += delta;
-                    pc = irq_count() - offset;
-
-                    if (pc & HARDIRQ_MASK)
-                        irqtime_account_delta(irqtime, delta, CPUTIME_IRQ);
-                    else if ((pc & SOFTIRQ_OFFSET) && curr != this_cpu_ksoftirqd())
-                        irqtime_account_delta(irqtime, delta, CPUTIME_SOFTIRQ);
-                }
-            }
-        }
+        irq_enter_rcu();
 
         do_interrupt_handler(regs, handler) {
             struct pt_regs *old_regs = set_irq_regs(regs);
@@ -512,57 +478,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
             set_irq_regs(old_regs);
         }
 
-        irq_exit_rcu() {
-            account_hardirq_exit(current) {
-                vtime_account_hardirq(tsk);
-                irqtime_account_irq(tsk, 0);
-            }
-            preempt_count_sub(HARDIRQ_OFFSET);
-            if (!in_interrupt() && local_softirq_pending()) {
-            #ifdef CONFIG_PREEMPT_RT
-                /* PREEMPT_RT kernel just wakes up softirqd */
-                static inline void invoke_softirq(void) {
-                    if (should_wake_ksoftirqd() { return !this_cpu_read(softirq_ctrl.cnt) }) {
-                        wakeup_softirqd();
-                    }
-                }
-            #else
-                /* standard kernel __do_softirq to handle the irqs and wakes up
-                 * ksoftirqd if softirq execution MAX_SOFTIRQ_TIME timeout */
-                static inline void invoke_softirq(void) {
-                    if (!force_irqthreads() || !__this_cpu_read(ksoftirqd)) {
-                        __do_softirq() {
-                            handle_softirqs(false) {
-                                end = jiffies + MAX_SOFTIRQ_TIME;
-                                pending = local_softirq_pending();
-                                h = softirq_vec;
-
-                                /* run in interrupt conext in bottom-half
-                                 * with local irq disabled, non-preemptible, and non-blocking */
-                                while ((softirq_bit = ffs(pending))) {
-                                    h->action(h); /* soft irq handler, e.g., net_rx_action, net_tx_action */
-                                    h++;
-                                    pending >>= softirq_bit;
-                                }
-
-                                /* run in process context in ksoftirqd */
-                                pending = local_softirq_pending();
-                                if (pending) {
-                                    if (time_before(jiffies, end) && !need_resched() && --max_restart)
-                                    goto restart;
-
-                                    wakeup_softirqd();
-                                }
-                            }
-                        }
-                    } else {
-                        wakeup_softirqd();
-                    }
-                }
-            }
-
-            tick_irq_exit();
-        }
+        irq_exit_rcu();
 
         exit_to_user_mode(regs) {
             exit_to_user_mode_prepare(regs) {
@@ -1278,8 +1194,7 @@ int __init gic_init_bases(phys_addr_t dist_phys_base,
     if (!(gic_data.flags & FLAGS_WORKAROUND_CAVIUM_ERRATUM_38539))
         gic_data.rdists.gicd_typer2 = readl_relaxed(gic_data.dist_base + GICD_TYPER2);
 
-    gic_data.domain = irq_domain_create_tree(handle, &gic_irq_domain_ops,
-                         &gic_data);
+    gic_data.domain = irq_domain_create_tree(handle, &gic_irq_domain_ops, &gic_data);
     gic_data.rdists.rdist = alloc_percpu(typeof(*gic_data.rdists.rdist));
     if (!static_branch_unlikely(&gic_nvidia_t241_erratum)) {
         /* Disable GICv4.x features for the erratum T241-FABRIC-4 */
@@ -1474,6 +1389,73 @@ static void ipi_setup(int cpu)
             }
         }
     }
+}
+```
+
+### gic_irq_domain_ops
+
+```c
+static const struct irq_domain_ops gic_irq_domain_ops = {
+    .translate  = gic_irq_domain_translate,
+    .alloc      = gic_irq_domain_alloc,
+    .free       = gic_irq_domain_free,
+    .select     = gic_irq_domain_select,
+};
+
+static int gic_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
+                unsigned int nr_irqs, void *arg)
+{
+    int i, ret;
+    irq_hw_number_t hwirq;
+    unsigned int type = IRQ_TYPE_NONE;
+    struct irq_fwspec *fwspec = arg;
+
+    ret = gic_irq_domain_translate(domain, fwspec, &hwirq, &type);
+    if (ret)
+        return ret;
+
+    for (i = 0; i < nr_irqs; i++) {
+        ret = gic_irq_domain_map(domain, virq + i, hwirq + i) {
+            struct irq_chip *chip = &gic_chip;
+            struct irq_data *irqd = irq_desc_get_irq_data(irq_to_desc(irq));
+
+            if (static_branch_likely(&supports_deactivate_key))
+                chip = &gic_eoimode1_chip;
+
+            switch (__get_intid_range(hw)) {
+            case SGI_RANGE:
+            case PPI_RANGE:
+            case EPPI_RANGE:
+                irq_set_percpu_devid(irq);
+                irq_domain_set_info(d, irq, hw, chip, d->host_data, handle_percpu_devid_irq, NULL, NULL);
+                break;
+
+            case SPI_RANGE:
+            case ESPI_RANGE:
+                irq_domain_set_info(d, irq, hw, chip, d->host_data, handle_fasteoi_irq, NULL, NULL);
+                irq_set_probe(irq);
+                irqd_set_single_target(irqd);
+                break;
+
+            case LPI_RANGE:
+                if (!gic_dist_supports_lpis())
+                    return -EPERM;
+                irq_domain_set_info(d, irq, hw, chip, d->host_data, andle_fasteoi_irq, NULL, NULL);
+                break;
+
+            default:
+                return -EPERM;
+            }
+
+            /* Prevents SW retriggers which mess up the ACK/EOI ordering */
+            irqd_set_handle_enforce_irqctx(irqd);
+            return 0;
+        }
+        if (ret)
+            return ret;
+    }
+
+    return 0;
 }
 ```
 
