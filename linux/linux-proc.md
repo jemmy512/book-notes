@@ -2162,9 +2162,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
 * [全方位剖析内核抢占机制](https://mp.weixin.qq.com/s/1JQl7WqRjwDVv_ETC3XGgQ)
 
-preempt mode | preempt_count
---- | ---
-![](../images/kernel/proc-preempt-kernel.png) | ![](../images/kernel/proc-preempt_count.png)
+![](../images/kernel/proc-preempt-kernel.png)
 
 ### user preempt
 
@@ -2519,6 +2517,7 @@ el1t_64_irq_handler() {
 * [LWN - Deadline servers as a realtime throttling replacement](https://lwn.net/Articles/934415/)
     * [OSPM 2025 - Hierarchical CBS with deadline servers](https://lwn.net/Articles/1021332)
     * [[PATCH V7 0/9] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1716811043.git.bristot@kernel.org/)
+        * [[PATCH V7 5/9] sched/deadline: Deferrable dl server](https://lore.kernel.org/all/dd175943c72533cd9f0b87767c6499204879cc38.1716811044.git.bristot@kernel.org/)
     * realtime throttling enforces the limit even when no lower-priority tasks are waiting to run, causing the CPU to go idle unnecessarily instead of allowing the RT task to continue.
 * [LWN - The hierarchical constant bandwidth server scheduler](https://lwn.net/Articles/1024757/)
     * [[RFC PATCH v3 00/24] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250929092221.10947-1-yurand2000@gmail.com/)
@@ -6392,17 +6391,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     if (!rq_h_nr_queued && rq->cfs.h_nr_queued) {
         if (!rq->nr_running)
             dl_server_update_idle_time(rq, rq->curr);
-        dl_server_start(&rq->fair_server) {
-            struct rq *rq = dl_se->rq;
-
-            if (!dl_server(dl_se) || dl_se->dl_server_active)
-                return;
-
-            dl_se->dl_server_active = 1;
-            enqueue_dl_entity(dl_se, ENQUEUE_WAKEUP);
-            if (!dl_task(dl_se->rq->curr) || dl_entity_preempt(dl_se, &rq->curr->dl))
-                resched_curr(dl_se->rq);
-        }
+        dl_server_start(&rq->fair_server);
+            --->
     }
 
     add_nr_running(rq, 1);
@@ -17252,7 +17242,11 @@ recheck:
 
     goto woke_up;
 }
+```
 
+## nna
+
+```c
 bool pwq_tryinc_nr_active(struct pool_workqueue *pwq, bool fill)
 {
     struct workqueue_struct *wq = pwq->wq;
@@ -17743,6 +17737,53 @@ void wq_worker_tick(struct task_struct *task)
         pwq->stats[PWQ_STAT_CM_WAKEUP]++;
 
     raw_spin_unlock(&pool->lock);
+}
+```
+
+## workqueue_softirq_action
+
+```c
+void workqueue_softirq_action(bool highpri)
+{
+    struct worker_pool *pool =
+        &per_cpu(bh_worker_pools, smp_processor_id())[highpri];
+    if (need_more_worker(pool))
+        bh_worker(list_first_entry(&pool->workers, struct worker, node));
+}
+
+void bh_worker(struct worker *worker)
+{
+    struct worker_pool *pool = worker->pool;
+    int nr_restarts = BH_WORKER_RESTARTS;
+    unsigned long end = jiffies + BH_WORKER_JIFFIES;
+
+    worker_lock_callback(pool);
+    raw_spin_lock_irq(&pool->lock);
+    worker_leave_idle(worker);
+
+    /* This function follows the structure of worker_thread(). See there for
+     * explanations on each step. */
+    if (!need_more_worker(pool))
+        goto done;
+
+    WARN_ON_ONCE(!list_empty(&worker->scheduled));
+    worker_clr_flags(worker, WORKER_PREP | WORKER_REBOUND);
+
+    do {
+        struct work_struct *work =
+            list_first_entry(&pool->worklist, struct work_struct, entry);
+
+        if (assign_work(work, worker, NULL))
+            process_scheduled_works(worker);
+    } while (keep_working(pool) && --nr_restarts && time_before(jiffies, end));
+
+    worker_set_flags(worker, WORKER_PREP);
+
+done:
+    worker_enter_idle(worker);
+    kick_pool(pool);
+    raw_spin_unlock_irq(&pool->lock);
+    worker_unlock_callback(pool);
 }
 ```
 
