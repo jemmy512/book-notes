@@ -2518,6 +2518,7 @@ el1t_64_irq_handler() {
     * [OSPM 2025 - Hierarchical CBS with deadline servers](https://lwn.net/Articles/1021332)
     * [[PATCH V7 0/9] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1716811043.git.bristot@kernel.org/)
         * [[PATCH V7 5/9] sched/deadline: Deferrable dl server](https://lore.kernel.org/all/dd175943c72533cd9f0b87767c6499204879cc38.1716811044.git.bristot@kernel.org/)
+    * [[PATCH V2 0/2] sched/deadline: Revised wakeup for suspending constrained dl tasks](https://lore.kernel.org/all/cover.1495803804.git.bristot@redhat.com/)
     * realtime throttling enforces the limit even when no lower-priority tasks are waiting to run, causing the CPU to go idle unnecessarily instead of allowing the RT task to continue.
 * [LWN - The hierarchical constant bandwidth server scheduler](https://lwn.net/Articles/1024757/)
     * [[RFC PATCH v3 00/24] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250929092221.10947-1-yurand2000@gmail.com/)
@@ -2557,7 +2558,7 @@ DEFINE_SCHED_CLASS(dl) = {
 };
 
 struct dl_rq {
-    struct rb_root_cached    root;
+    struct rb_root_cached   root;
 
     unsigned int            dl_nr_running;
 
@@ -2606,9 +2607,6 @@ struct sched_dl_entity {
     u64     dl_bw;      /* dl_runtime / dl_period */
     u64     dl_density; /* dl_runtime / dl_deadline */
 
-    /* Actual scheduling parameters. Initialized with the values above,
-     * they are continuously updated during task execution. Note that
-     * the remaining runtime could be < 0 in case we are in overrun.   */
     s64             runtime;    /* Remaining runtime for this instance */
     u64             deadline;   /* Absolute deadline for this instance */
     unsigned int    flags;      /* Specifying the scheduler behaviour  */
@@ -2638,13 +2636,6 @@ struct sched_dl_entity {
      * time. */
     struct hrtimer            inactive_timer;
 
-    /* Bits for DL-server functionality. Also see the comment near
-     * dl_server_update().
-     *
-     * @rq the runqueue this server is for
-     *
-     * @server_has_tasks() returns true if @server_pick return a
-     * runnable task. */
     struct rq                   *rq;
     dl_server_has_tasks_f       server_has_tasks;
     dl_server_pick_f            server_pick_task;
@@ -2764,8 +2755,8 @@ void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64 delta_e
 
     dl_se->runtime -= scaled_delta_exec;
 
-    /* https://lore.kernel.org/all/dd175943c72533cd9f0b87767c6499204879cc38.1716811044.git.bristot@kernel.org
-     * CFS tasks get chance to run before dl_server_timer triggers,
+    /* https://lore.kernel.org/all/dd175943c72533cd9f0b87767c6499204879cc38.1716811044.git.bristot@kernel.org/
+     * CFS/idle tasks get chance to run before dl_server_timer triggers,
      * so the fair server can consume its runtime while throttled.
      *
      * If the server consumes its entire runtime in this state. The server
@@ -3024,6 +3015,9 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
     if (flags & ENQUEUE_WAKEUP) {
         task_contending(dl_se, flags);
 
+        /* 1. handle density ovf
+         * 2. handle deadline timeout
+         * 3. handle dl_serfer_defer_not_running */
         update_dl_entity(dl_se) {
             struct rq *rq = rq_of_dl_se(dl_se);
 
@@ -3032,8 +3026,7 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
                 u64 left, right;
 
                 left = (pi_of(dl_se)->dl_deadline >> DL_SCALE) * (dl_se->runtime >> DL_SCALE);
-                right = ((dl_se->deadline - t) >> DL_SCALE) *
-                    (pi_of(dl_se)->dl_runtime >> DL_SCALE);
+                right = ((dl_se->deadline - t) >> DL_SCALE) * (pi_of(dl_se)->dl_runtime >> DL_SCALE);
 
                 return dl_time_before(right, left);
             }
@@ -3094,15 +3087,9 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
             WARN_ON(is_dl_boosted(dl_se));
             WARN_ON(dl_time_before(rq_clock(rq), dl_se->deadline));
 
-            /* We are racing with the deadline timer. So, do nothing because
-            * the deadline timer handler will take care of properly recharging
-            * the runtime and postponing the deadline */
             if (dl_se->dl_throttled)
                 return;
 
-            /* We use the regular wall clock time to set deadlines in the
-            * future; in fact, we must consider execution overheads (time
-            * spent on hardirq context, etc.). */
             replenish_dl_new_period(dl_se, rq);
         }
     }
@@ -3273,7 +3260,6 @@ void replenish_dl_entity(struct sched_dl_entity *dl_se)
      * resetting the deadline and the budget of the
      * entity. */
     if (dl_time_before(dl_se->deadline, rq_clock(rq))) {
-        printk_deferred_once("sched: DL replenish lagged too much\n");
         replenish_dl_new_period(dl_se, rq);
     }
 
