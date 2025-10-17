@@ -3383,8 +3383,7 @@ bool dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
                 WARN_ON(dl_se->dl_non_contending);
 
                 zerolag_time = dl_se->deadline -
-                    div64_long((dl_se->runtime * dl_se->dl_period),
-                        dl_se->dl_runtime);
+                    div64_long((dl_se->runtime * dl_se->dl_period), dl_se->dl_runtime);
 
                 /* Using relative times instead of the absolute "0-lag time"
                 * allows to simplify the code */
@@ -3973,8 +3972,7 @@ int find_later_rq(struct task_struct *task)
                 return this_cpu;
             }
 
-            best_cpu = cpumask_any_and_distribute(later_mask,
-                                  sched_domain_span(sd));
+            best_cpu = cpumask_any_and_distribute(later_mask, sched_domain_span(sd));
             /* Last chance: if a CPU being in both later_mask
              * and current sd span is valid, that becomes our
              * choice. Of course, the latest possible CPU is
@@ -3997,6 +3995,60 @@ int find_later_rq(struct task_struct *task)
         return cpu;
 
     return -1;
+}
+
+int cpudl_find(struct cpudl *cp, struct task_struct *p,
+           struct cpumask *later_mask)
+{
+    const struct sched_dl_entity *dl_se = &p->dl;
+
+    if (later_mask && cpumask_and(later_mask, cp->free_cpus, &p->cpus_mask)) {
+        unsigned long cap, max_cap = 0;
+        int cpu, max_cpu = -1;
+
+        if (!sched_asym_cpucap_active())
+            return 1;
+
+        /* Ensure the capacity of the CPUs fits the task. */
+        for_each_cpu(cpu, later_mask) {
+            fit = dl_task_fits_capacity(p, cpu) {
+                unsigned long cap = arch_scale_cpu_capacity(cpu) {
+                    return per_cpu(cpu_scale, cpu);
+                }
+
+                return cap >= p->dl.dl_density >> (BW_SHIFT - SCHED_CAPACITY_SHIFT);
+            }
+            if (!fit) {
+                cpumask_clear_cpu(cpu, later_mask);
+
+                cap = arch_scale_cpu_capacity(cpu);
+
+                if (cap > max_cap || (cpu == task_cpu(p) && cap == max_cap)) {
+                    max_cap = cap;
+                    max_cpu = cpu;
+                }
+            }
+        }
+
+        if (cpumask_empty(later_mask))
+            cpumask_set_cpu(max_cpu, later_mask);
+
+        return 1;
+    } else {
+        int best_cpu = cpudl_maximum(cp) {
+        	return cp->elements[0].cpu;
+        }
+
+        WARN_ON(best_cpu != -1 && !cpu_present(best_cpu));
+
+        if (cpumask_test_cpu(best_cpu, &p->cpus_mask) && dl_time_before(dl_se->deadline, cp->elements[0].dl)) {
+            if (later_mask)
+                cpumask_set_cpu(best_cpu, later_mask);
+
+            return 1;
+        }
+    }
+    return 0;
 }
 ```
 
@@ -4023,14 +4075,12 @@ void wakeup_preempt_dl(struct rq *rq, struct task_struct *p,
         check_preempt_equal_dl(rq, p) {
             /* Current can't be migrated, useless to reschedule,
             * let's hope p can move out. */
-            if (rq->curr->nr_cpus_allowed == 1 ||
-                !cpudl_find(&rq->rd->cpudl, rq->donor, NULL))
+            if (rq->curr->nr_cpus_allowed == 1 || !cpudl_find(&rq->rd->cpudl, rq->donor, NULL))
                 return;
 
             /* p is migratable, so let's not schedule it and
             * see if it is pushed or pulled somewhere else. */
-            if (p->nr_cpus_allowed != 1 &&
-                cpudl_find(&rq->rd->cpudl, p, NULL))
+            if (p->nr_cpus_allowed != 1 && cpudl_find(&rq->rd->cpudl, p, NULL))
                 return;
 
             resched_curr(rq);
@@ -4656,6 +4706,195 @@ void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
         return;
 
     __dl_add(dl_b, new_bw, dl_bw_cpus(cpu));
+}
+```
+
+## sched_dl_overflow
+
+```c
+struct dl_bw {
+    raw_spinlock_t  lock;
+    /* the max bw of the big core, little core bw = bw * cap / SCHED_CAPACITY_SHIFT /
+    u64             bw;         /* (< 100%) is the deadline bandwidth of each CPU; */
+    u64             total_bw;   /* the currently allocated bandwidth in each root domain */
+};
+
+struct dl_rq {
+    u64             running_bw;  /* only running bw */
+    u64             this_bw;     /* runnable, running, blocked bw */
+
+    u64             extra_bw;
+    u64             max_bw;
+    u64             bw_ratio;
+};
+
+struct sched_dl_entity {
+    u64             dl_bw;      /* dl_runtime / dl_period   */
+    u64             dl_density; /* dl_runtime / dl_deadline */
+
+};
+void sched_dl_do_global(void)
+{
+    u64 new_bw = -1;
+    u64 cookie = ++dl_cookie;
+    struct dl_bw *dl_b;
+    int cpu;
+    unsigned long flags;
+
+    if (global_rt_runtime() != RUNTIME_INF)
+        new_bw = to_ratio(global_rt_period(), global_rt_runtime());
+
+    for_each_possible_cpu(cpu) {
+        init_dl_rq_bw_ratio(&cpu_rq(cpu)->dl) {
+            if (global_rt_runtime() == RUNTIME_INF) {
+                dl_rq->bw_ratio = 1 << RATIO_SHIFT;
+                dl_rq->max_bw = dl_rq->extra_bw = 1 << BW_SHIFT;
+            } else {
+                dl_rq->bw_ratio = to_ratio(global_rt_runtime(), global_rt_period()) >> (BW_SHIFT - RATIO_SHIFT);
+                dl_rq->max_bw = dl_rq->extra_bw = to_ratio(global_rt_period(), global_rt_runtime()) {
+                    return div64_u64(runtime << BW_SHIFT, period);
+                }
+            }
+        }
+    }
+
+    for_each_possible_cpu(cpu) {
+        rcu_read_lock_sched();
+
+        if (dl_bw_visited(cpu, cookie)) {
+            rcu_read_unlock_sched();
+            continue;
+        }
+
+        dl_b = dl_bw_of(cpu);
+
+        raw_spin_lock_irqsave(&dl_b->lock, flags);
+        dl_b->bw = new_bw;
+        raw_spin_unlock_irqrestore(&dl_b->lock, flags);
+
+        rcu_read_unlock_sched();
+    }
+}
+```
+
+```c
+int sched_dl_overflow(struct task_struct *p, int policy, const struct sched_attr *attr)
+{
+    u64 period = attr->sched_period ?: attr->sched_deadline;
+    u64 runtime = attr->sched_runtime;
+    u64 new_bw = dl_policy(policy) ? to_ratio(period, runtime) : 0;
+    int cpus, err = -1, cpu = task_cpu(p);
+    struct dl_bw *dl_b = dl_bw_of(cpu) { return &cpu_rq(i)->rd->dl_bw; }
+    unsigned long cap;
+
+    if (attr->sched_flags & SCHED_FLAG_SUGOV)
+        return 0;
+
+    /* !deadline task may carry old deadline bandwidth */
+    if (new_bw == p->dl.dl_bw && task_has_dl_policy(p))
+        return 0;
+
+    /* Either if a task, enters, leave, or stays -deadline but changes
+    * its parameters, we may need to update accordingly the total
+    * allocated bandwidth of the container. */
+    raw_spin_lock(&dl_b->lock);
+    cpus = dl_bw_cpus(cpu);
+    cap = dl_bw_capacity(cpu) {
+        if (!sched_asym_cpucap_active() && arch_scale_cpu_capacity(i) == SCHED_CAPACITY_SCALE) {
+            return dl_bw_cpus(i) << SCHED_CAPACITY_SHIFT;
+        } else {
+            return __dl_bw_capacity(cpu_rq(i)->rd->span) {
+                unsigned long cap = 0;
+                int i;
+
+                for_each_cpu_and(i, mask, cpu_active_mask)
+                    cap += arch_scale_cpu_capacity(i);
+
+                return cap;
+            }
+        }
+    }
+
+    ovf = __dl_overflow(dl_b, cap, 0, new_bw) {
+        return dl_b->bw != -1 && cap_scale(dl_b->bw, cap) {
+            (v)*(s) >> SCHED_CAPACITY_SHIFT
+        } < dl_b->total_bw - old_bw + new_bw;
+    }
+    if (dl_policy(policy) && !task_has_dl_policy(p) && !ovf) {
+        if (hrtimer_active(&p->dl.inactive_timer)) {
+            __dl_sub(dl_b, p->dl.dl_bw, cpus);
+        }
+        __dl_add(dl_b, new_bw, cpus);
+        err = 0;
+    } else if (dl_policy(policy) && task_has_dl_policy(p) && !__dl_overflow(dl_b, cap, p->dl.dl_bw, new_bw)) {
+        /* XXX this is slightly incorrect: when the task
+        * utilization decreases, we should delay the total
+        * utilization change until the task's 0-lag point.
+        * But this would require to set the task's "inactive
+        * timer" when the task is not inactive. */
+        __dl_sub(dl_b, p->dl.dl_bw, cpus) {
+            dl_b->total_bw -= tsk_bw;
+            __dl_update(dl_b, (s32)tsk_bw / cpus);
+        }
+
+        __dl_add(dl_b, new_bw, cpus) {
+            dl_b->total_bw += tsk_bw;
+            __dl_update(dl_b, -((s32)tsk_bw / cpus)) {
+                struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
+                int i;
+
+                for_each_cpu_and(i, rd->span, cpu_active_mask) {
+                    struct rq *rq = cpu_rq(i);
+
+                    rq->dl.extra_bw += bw;
+                }
+            }
+        }
+
+        dl_change_utilization(p, new_bw) {
+            if (task_on_rq_queued(p))
+                return;
+
+            dl_rq_change_utilization(task_rq(p), &p->dl, new_bw) {
+                if (dl_se->dl_non_contending) {
+                    sub_running_bw(dl_se, &rq->dl);
+                    dl_se->dl_non_contending = 0;
+
+                    if (hrtimer_try_to_cancel(&dl_se->inactive_timer) == 1) {
+                        if (!dl_server(dl_se))
+                            put_task_struct(dl_task_of(dl_se));
+                    }
+                }
+                __sub_rq_bw(dl_se->dl_bw, &rq->dl) {
+                    u64 old = dl_rq->this_bw;
+
+                    lockdep_assert_rq_held(rq_of_dl_rq(dl_rq));
+                    dl_rq->this_bw -= dl_bw;
+                    WARN_ON_ONCE(dl_rq->this_bw > old); /* underflow */
+                    if (dl_rq->this_bw > old)
+                        dl_rq->this_bw = 0;
+                    WARN_ON_ONCE(dl_rq->running_bw > dl_rq->this_bw);
+                }
+
+                __add_rq_bw(new_bw, &rq->dl) {
+                    u64 old = dl_rq->this_bw;
+
+                    lockdep_assert_rq_held(rq_of_dl_rq(dl_rq));
+                    dl_rq->this_bw += dl_bw;
+                    WARN_ON_ONCE(dl_rq->this_bw < old); /* overflow */
+                }
+            }
+        }
+        err = 0;
+    } else if (!dl_policy(policy) && task_has_dl_policy(p)) {
+        /* Do not decrease the total deadline utilization here,
+        * switched_from_dl() will take care to do it at the correct
+        * (0-lag) time. */
+        err = 0;
+    }
+    raw_spin_unlock(&dl_b->lock);
+
+    return err;
 }
 ```
 
