@@ -453,7 +453,13 @@ make distclean
 
 2. install tools and config environment
 
-    ```sh
+    [Bee Headers](https://github.com/bee-headers/homebrew-bee-headers) provides a set of headers including `byteswap.h`, `elf.h`, and `endian.h` that are required to build the Linux kernel. This project allows easy installation of these headers via Homebrew.
+
+    ```
+    # brew tap bee-headers/bee-headers
+    brew tap bee-headers/bee-headers
+    brew install bee-headers/bee-headers/bee-headers
+
     brew install make llvm lld findutils gnu-sed libelf qemu
     ```
 
@@ -467,14 +473,11 @@ make distclean
 3. make kernel
 
     ```sh
-    # apply patch
-    git clone https://github.com/jemmy512/kernel-dev.git /Volumes/code/kernel-dev
-    cd /Volumes/code/linux
-    patch -p1 < /Volumes/code/kernel-dev/mac_patch_6-5-7.patch
-
     make defconfig ARCH=arm64 LLVM=1
 
-    time make Image -j$(sysctl -n hw.ncpu) ARCH=arm64 LLVM=1 HOSTCFLAGS="-Iscripts/macos-include -I$(brew --prefix libelf)/include"
+    # source with every new shell:
+    source bee-init
+    time make Image -j$(nproc) ARCH=arm64
     ```
 
 4. start qemu
