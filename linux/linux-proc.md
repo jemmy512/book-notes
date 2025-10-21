@@ -191,7 +191,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     - **SPSR_EL2**: Saved Program Status Register for EL2.
     - **SPSR_EL3**: Saved Program Status Register for EL3.
 
-* Summary
+* Summarydeactivate_task
 
     - **General-purpose registers**: x0 - x30 (64-bit) and w0 - w30 (32-bit).
     - **Stack pointer**: sp.
@@ -204,7 +204,8 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 
 * [LNW - A proxy-execution baby step](https://lwn.net/Articles/1030842/)
     * [1. [RFC PATCH 00/11] Reviving the Proxy Execution Series](https://lore.kernel.org/lkml/20221003214501.2050087-1-connoro@google.com/)
-    * [2. [RESEND][PATCH v8 0/7] Preparatory changes for Proxy Execution v8](https://lore.kernel.org/lkml/20240224001153.2584030-1-jstultz@google.com/)
+    * [2. [PATCH v8 0/7] Preparatory changes for Proxy Execution v8](https://lore.kernel.org/lkml/20240224001153.2584030-1-jstultz@google.com/)
+    * [3. [PATCH v12 0/7] Preparatory changes for Proxy Execution v12](https://lore.kernel.org/all/20241009235352.1614323-1-jstultz@google.com/)
     * [3. [PATCH v19 0/8] Single RunQueue Proxy Execution (v19)](https://lore.kernel.org/all/20250712033407.2383110-1-jstultz@google.com/)
     * [Phoronix - Linux 6.13 Poised To Land Prep Patches Working Toward Proxy Execution](https://www.phoronix.com/news/Linux-6.13-Prep-For-Proxy-Exec)
 
@@ -1401,6 +1402,8 @@ __sched | context_switch
 --- | ---
 ![](../images/kernel/proc-sched-arch.png) | ![](../images/kernel/proc-sched-context_switch.png)
 
+![](../images/kernel/proc-sched.svg)
+
 ```c
 asmlinkage __visible void __sched schedule(void)
 {
@@ -1510,7 +1513,7 @@ __schedule(sched_mode) { /* kernel/sched/core.c */
             goto picked;
         }
     } else if (!preempt && prev_state/* tsk not running */) {
-        try_to_block_task(rq, prev, prev_state, unsigned long *task_state_p, bool should_block) {
+        try_to_block_task(rq, prev, &prev_state, !task_is_blocked(prev)) {
             unsigned long task_state = *task_state_p;
             int flags = DEQUEUE_NOCLOCK;
 
@@ -1549,8 +1552,19 @@ __schedule(sched_mode) { /* kernel/sched/core.c */
                     uclamp_rq_dec(rq, p);
                     return p->sched_class->dequeue_task(rq, p, flags);
                 }
-                if (ret)
-                    __block_task(rq, p);
+                if (ret) {
+                    __block_task(rq, p) {
+                        if (p->sched_contributes_to_load)
+                            rq->nr_uninterruptible++;
+
+                        if (p->in_iowait) {
+                            atomic_inc(&rq->nr_iowait);
+                            delayacct_blkio_start();
+                        }
+
+                        smp_store_release(&p->on_rq, 0);
+                    }
+                }
             }
             return true;
         }
@@ -1573,6 +1587,7 @@ pick_again:
 picked:
     clear_tsk_need_resched(prev);
     clear_preempt_need_resched();
+
 keep_resched:
     rq->last_seen_need_resched_ns = 0;
 
@@ -1587,8 +1602,7 @@ keep_resched:
 
         migrate_disable_switch(rq, prev);
         psi_account_irqtime(rq, prev, next);
-        psi_sched_switch(prev, next, !task_on_rq_queued(prev) ||
-                        prev->se.sched_delayed);
+        psi_sched_switch(prev, next, !task_on_rq_queued(prev) || prev->se.sched_delayed);
 
         rq = context_switch(rq, prev, next, &rf);
     } else {
@@ -2161,6 +2175,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 ## preempt schedule
 
 * [全方位剖析内核抢占机制](https://mp.weixin.qq.com/s/1JQl7WqRjwDVv_ETC3XGgQ)
+* [从CPU资源大战，看懂内核抢占机制](https://mp.weixin.qq.com/s/DeiJqUEDeHzXn0LWxSjxQA)
 
 ![](../images/kernel/proc-preempt-kernel.png)
 
@@ -2173,54 +2188,6 @@ context_switch(struct rq *rq, struct task_struct *prev,
 ##### sched_tick
 
 ```c
-void sched_tick(void)
-{
-    int cpu = smp_processor_id();
-    struct rq *rq = cpu_rq(cpu);
-    struct task_struct *curr = rq->curr;
-    struct rq_flags rf;
-
-    sched_clock_tick();
-
-    rq_lock(rq, &rf);
-
-    update_rq_clock(rq);
-    curr->sched_class->task_tick(rq, curr, 0);
-    cpu_load_update_active(rq);
-
-    calc_global_load_tick(rq) {
-        long delta;
-
-        if (time_before(jiffies, this_rq->calc_load_update))
-            return;
-
-        delta  = calc_load_fold_active(this_rq, 0) {
-            long nr_active, delta = 0;
-
-            nr_active = this_rq->nr_running - adjust;
-            nr_active += (int)this_rq->nr_uninterruptible;
-
-            if (nr_active != this_rq->calc_load_active) {
-                delta = nr_active - this_rq->calc_load_active;
-                this_rq->calc_load_active = nr_active;
-            }
-
-            return delta;
-        }
-        if (delta)
-            atomic_long_add(delta, &calc_load_tasks);
-
-        this_rq->calc_load_update += LOAD_FREQ;
-    }
-
-    rq_unlock(rq, &rf);
-
-    perf_event_task_tick();
-
-    rq->idle_balance = idle_cpu(cpu);
-    sched_balance_trigger(rq);
-}
-
 void sched_tick(void)
 {
     int cpu = smp_processor_id();
@@ -2295,6 +2262,50 @@ void sched_tick(void)
     if (!scx_switched_all()) {
         rq->idle_balance = idle_cpu(cpu);
         sched_balance_trigger(rq);
+    }
+}
+
+void resched_curr(struct rq *rq)
+{
+    __resched_curr(rq, TIF_NEED_RESCHED);
+}
+
+static void __resched_curr(struct rq *rq, int tif) {
+    struct task_struct *curr = rq->curr;
+    struct thread_info *cti = task_thread_info(curr);
+    int cpu;
+
+    lockdep_assert_rq_held(rq);
+
+    if (is_idle_task(curr) && tif == TIF_NEED_RESCHED_LAZY)
+        tif = TIF_NEED_RESCHED;
+
+    if (cti->flags & ((1 << tif) | _TIF_NEED_RESCHED))
+        return;
+
+    cpu = cpu_of(rq);
+
+    if (cpu == smp_processor_id()) {
+        set_ti_thread_flag(cti, tif) {
+            set_bit(flag, (unsigned long *)&ti->flags);
+        }
+
+        if (tif == TIF_NEED_RESCHED) {
+            set_preempt_need_resched() {
+                current_thread_info()->preempt.need_resched = 0;
+            }
+        }
+        return;
+    }
+
+    ret = set_nr_and_not_polling(cti, tif) {
+        return !(fetch_or(&ti->flags, 1 << tif) & _TIF_POLLING_NRFLAG);
+    }
+    if (ret) {
+        if (tif == TIF_NEED_RESCHED)
+            smp_send_reschedule(cpu);
+    } else {
+        trace_sched_wake_idle_without_ipi(cpu);
     }
 }
 ```
@@ -2452,7 +2463,21 @@ static  bool should_resched(int preempt_offset)
     return pc == preempt_offset;
 }
 
-/* __preempt_schedule -> */
+#define __preempt_schedule()    preempt_schedule()
+
+asmlinkage __visible void __sched notrace preempt_schedule(void)
+{
+    if (likely(!preemptible()))
+        return;
+    preempt_schedule_common();
+}
+
+#define preemptible()   (preempt_count() == 0 && !irqs_disabled())
+static inline int preempt_count(void)
+{
+	return READ_ONCE(current_thread_info()->preempt.count);
+}
+
 static void __sched notrace preempt_schedule_common(void)
 {
     do {
@@ -2460,6 +2485,45 @@ static void __sched notrace preempt_schedule_common(void)
         __schedule(SM_PREEMPT);
         preempt_enable_no_resched_notrace();
     } while (need_resched());
+}
+
+static __always_inline bool need_resched(void)
+{
+    ret = tif_need_resched(void) {
+        return tif_test_bit(TIF_NEED_RESCHED) {
+            return test_bit(bit, (unsigned long *)(&current_thread_info()->flags));
+        }
+    }
+    return unlikely(ret);
+}
+
+#define preempt_disable_notrace() \
+do { \
+    __preempt_count_inc(); \
+    barrier(); \
+} while (0)
+
+#define preempt_enable_no_resched_notrace() \
+do { \
+    barrier(); \
+    __preempt_count_dec(); \
+} while (0)
+
+#define __preempt_count_inc() __preempt_count_add(1)
+#define __preempt_count_dec() __preempt_count_sub(1)
+
+static inline void __preempt_count_add(int val)
+{
+    u32 pc = READ_ONCE(current_thread_info()->preempt.count);
+    pc += val;
+    WRITE_ONCE(current_thread_info()->preempt.count, pc);
+}
+
+static inline void __preempt_count_sub(int val)
+{
+    u32 pc = READ_ONCE(current_thread_info()->preempt.count);
+    pc -= val;
+    WRITE_ONCE(current_thread_info()->preempt.count, pc);
 }
 ```
 
@@ -3021,6 +3085,7 @@ enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
         update_dl_entity(dl_se) {
             struct rq *rq = rq_of_dl_se(dl_se);
 
+            /* DL: admission control */
             bool ovf = dl_entity_overflow(dl_se, rq_clock(rq)) {
                 /* return runtime / (deadline - t) > dl_runtime / dl_deadline */
                 u64 left, right;
@@ -3733,11 +3798,7 @@ void pull_dl_task(struct rq *this_rq)
                     return get_task_struct(p);
                 }
             } else {
-                move_queued_task_locked(src_rq, this_rq, p) {
-                    deactivate_task(src_rq, task, 0);
-                    set_task_cpu(task, dst_rq->cpu);
-                    activate_task(dst_rq, task, 0);
-                }
+                move_queued_task_locked(src_rq, this_rq, p);
                 dmin = p->dl.deadline;
                 resched = true;
             }
@@ -3826,11 +3887,7 @@ retry:
         goto retry;
     }
 
-    move_queued_task_locked(rq, later_rq, next_task) {
-        deactivate_task(src_rq, task, 0);
-        set_task_cpu(task, dst_rq->cpu);
-        activate_task(dst_rq, task, 0);
-    }
+    move_queued_task_locked(rq, later_rq, next_task);
     ret = 1;
 
     resched_curr(later_rq);
@@ -4015,7 +4072,11 @@ int cpudl_find(struct cpudl *cp, struct task_struct *p,
                 unsigned long cap = arch_scale_cpu_capacity(cpu) {
                     return per_cpu(cpu_scale, cpu);
                 }
-
+                /* cap_scale(dl_deadline, cap) >= dl_runtime
+                 * dl_deadline * cap >> SCHED_CAPACITY_SHIFT >= dl_runtime
+                 * cap >= dl_runtime << SCHED_CAPACITY_SHIFT / dl_deadline
+                 * cap >= (dl_runtime << BW_SHIFT / dl_deadline) >> BW_SHIFT - SCHED_CAPACITY_SHIFT
+                 * cap >= dl_density >> BW_SHIFT - SCHED_CAPACITY_SHIFT */
                 return cap >= p->dl.dl_density >> (BW_SHIFT - SCHED_CAPACITY_SHIFT);
             }
             if (!fit) {
@@ -4036,7 +4097,7 @@ int cpudl_find(struct cpudl *cp, struct task_struct *p,
         return 1;
     } else {
         int best_cpu = cpudl_maximum(cp) {
-        	return cp->elements[0].cpu;
+            return cp->elements[0].cpu;
         }
 
         WARN_ON(best_cpu != -1 && !cpu_present(best_cpu));
@@ -4709,18 +4770,38 @@ void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq)
 }
 ```
 
-## sched_dl_overflow
+## dl_bw_capacity
 
 ```c
 struct dl_bw {
     raw_spinlock_t  lock;
-    /* the max bw of the big core, little core bw = bw * cap / SCHED_CAPACITY_SHIFT /
+    /* __dl_add: the max bw of the big core,
+     * little core bw = bw * cap / SCHED_CAPACITY_SHIFT */
     u64             bw;         /* (< 100%) is the deadline bandwidth of each CPU; */
     u64             total_bw;   /* the currently allocated bandwidth in each root domain */
 };
 
+void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
+{
+    dl_b->total_bw += tsk_bw;
+    __dl_update(dl_b, -((s32)tsk_bw / cpus)) {
+        struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
+        int i;
+
+        for_each_cpu_and(i, rd->span, cpu_active_mask) {
+            struct rq *rq = cpu_rq(i);
+
+            rq->dl.extra_bw += bw;
+        }
+    }
+}
+```
+
+```c
 struct dl_rq {
+    /* add_running_bw */
     u64             running_bw;  /* only running bw */
+    /* add_rq_bw /
     u64             this_bw;     /* runnable, running, blocked bw */
 
     u64             extra_bw;
@@ -4728,11 +4809,49 @@ struct dl_rq {
     u64             bw_ratio;
 };
 
+void add_rq_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
+{
+    if (!dl_entity_is_special(dl_se)) {
+        __add_rq_bw(dl_se->dl_bw, dl_rq) {
+            u64 old = dl_rq->this_bw;
+
+            dl_rq->this_bw += dl_bw;
+            WARN_ON_ONCE(dl_rq->this_bw < old); /* overflow */
+        }
+    }
+}
+
+void add_running_bw(struct sched_dl_entity *dl_se, struct dl_rq *dl_rq)
+{
+    if (!dl_entity_is_special(dl_se)) {
+        __add_running_bw(dl_se->dl_bw, dl_rq) {
+            u64 old = dl_rq->running_bw;
+
+            lockdep_assert_rq_held(rq_of_dl_rq(dl_rq));
+            dl_rq->running_bw += dl_bw;
+            WARN_ON_ONCE(dl_rq->running_bw < old); /* overflow */
+            WARN_ON_ONCE(dl_rq->running_bw > dl_rq->this_bw);
+            /* kick cpufreq (see the comment in kernel/sched/sched.h). */
+            cpufreq_update_util(rq_of_dl_rq(dl_rq), 0);
+        }
+    }
+}
+```
+
+```c
 struct sched_dl_entity {
     u64             dl_bw;      /* dl_runtime / dl_period   */
     u64             dl_density; /* dl_runtime / dl_deadline */
 
 };
+
+int __sched_setscheduler(struct task_struct *p, const struct sched_attr *attr, bool user, bool pi) {
+    if ((dl_policy(policy) || dl_task(p)) && sched_dl_overflow(p, policy, attr)) {
+        retval = -EBUSY;
+        goto unlock;
+    }
+}
+
 void sched_dl_do_global(void)
 {
     u64 new_bw = -1;
@@ -4832,24 +4951,8 @@ int sched_dl_overflow(struct task_struct *p, int policy, const struct sched_attr
         * utilization change until the task's 0-lag point.
         * But this would require to set the task's "inactive
         * timer" when the task is not inactive. */
-        __dl_sub(dl_b, p->dl.dl_bw, cpus) {
-            dl_b->total_bw -= tsk_bw;
-            __dl_update(dl_b, (s32)tsk_bw / cpus);
-        }
-
-        __dl_add(dl_b, new_bw, cpus) {
-            dl_b->total_bw += tsk_bw;
-            __dl_update(dl_b, -((s32)tsk_bw / cpus)) {
-                struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
-                int i;
-
-                for_each_cpu_and(i, rd->span, cpu_active_mask) {
-                    struct rq *rq = cpu_rq(i);
-
-                    rq->dl.extra_bw += bw;
-                }
-            }
-        }
+        __dl_sub(dl_b, p->dl.dl_bw, cpus);
+        __dl_add(dl_b, new_bw, cpus);
 
         dl_change_utilization(p, new_bw) {
             if (task_on_rq_queued(p))
@@ -4865,24 +4968,9 @@ int sched_dl_overflow(struct task_struct *p, int policy, const struct sched_attr
                             put_task_struct(dl_task_of(dl_se));
                     }
                 }
-                __sub_rq_bw(dl_se->dl_bw, &rq->dl) {
-                    u64 old = dl_rq->this_bw;
+                __sub_rq_bw(dl_se->dl_bw, &rq->dl);
 
-                    lockdep_assert_rq_held(rq_of_dl_rq(dl_rq));
-                    dl_rq->this_bw -= dl_bw;
-                    WARN_ON_ONCE(dl_rq->this_bw > old); /* underflow */
-                    if (dl_rq->this_bw > old)
-                        dl_rq->this_bw = 0;
-                    WARN_ON_ONCE(dl_rq->running_bw > dl_rq->this_bw);
-                }
-
-                __add_rq_bw(new_bw, &rq->dl) {
-                    u64 old = dl_rq->this_bw;
-
-                    lockdep_assert_rq_held(rq_of_dl_rq(dl_rq));
-                    dl_rq->this_bw += dl_bw;
-                    WARN_ON_ONCE(dl_rq->this_bw < old); /* overflow */
-                }
+                __add_rq_bw(new_bw, &rq->dl);
             }
         }
         err = 0;
@@ -5882,17 +5970,16 @@ void pull_rt_task(struct rq *this_rq) {
                     return get_task_struct(p);
                 }
             } else {
-                deactivate_task(src_rq, p, 0);
-                set_task_cpu(p, this_cpu);
-                activate_task(this_rq, p, 0);
+                move_queued_task_locked(rq, later_rq, next_task);
                 resched = true;
             }
         }
 skip:
         if (push_task) {
+            preempt_disable();
             raw_spin_rq_unlock(this_rq);
-            stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
-                        push_task, &src_rq->push_work);
+            stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop, push_task, &src_rq->push_work);
+            preempt_enable();
             raw_spin_rq_lock(this_rq);
         }
     }
@@ -6019,72 +6106,74 @@ retry:
         goto retry;
     }
 
-    deactivate_task(rq, next_task, 0) {
-        WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
-        dequeue_task(rq, p, flags) {
-            if (sched_core_enabled(rq)) {
-                sched_core_dequeue(rq, p, flags);
+    move_queued_task_locked(rq, lowest_rq, next_task) {
+        deactivate_task(rq, next_task, 0) {
+            WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
+            dequeue_task(rq, p, flags) {
+                if (sched_core_enabled(rq)) {
+                    sched_core_dequeue(rq, p, flags);
+                }
+
+                if (!(flags & DEQUEUE_NOCLOCK))
+                    update_rq_clock(rq);
+
+                if (!(flags & DEQUEUE_SAVE)) {
+                    sched_info_dequeue(rq, p);
+                    psi_dequeue(p, flags & DEQUEUE_SLEEP);
+                }
+
+                uclamp_rq_dec(rq, p);
+                p->sched_class->dequeue_task(rq, p, flags);
             }
-
-            if (!(flags & DEQUEUE_NOCLOCK))
-                update_rq_clock(rq);
-
-            if (!(flags & DEQUEUE_SAVE)) {
-                sched_info_dequeue(rq, p);
-                psi_dequeue(p, flags & DEQUEUE_SLEEP);
-            }
-
-            uclamp_rq_dec(rq, p);
-            p->sched_class->dequeue_task(rq, p, flags);
-        }
-    }
-
-    set_task_cpu(next_task, lowest_rq->cpu);
-
-    activate_task(lowest_rq, next_task, 0) {
-        if (task_on_rq_migrating(p))
-            flags |= ENQUEUE_MIGRATED;
-        if (flags & ENQUEUE_MIGRATED)
-            sched_mm_cid_migrate_to(rq, p);
-
-        enqueue_task(rq, p, flags) {
-            if (!(flags & ENQUEUE_NOCLOCK))
-                update_rq_clock(rq);
-
-            p->sched_class->enqueue_task(rq, p, flags);
-
-            /*  Must be after ->enqueue_task() because ENQUEUE_DELAYED can clear
-             * ->sched_delayed. */
-            uclamp_rq_inc(rq, p) {
-                enum uclamp_id clamp_id;
-
-                if (!static_branch_unlikely(&sched_uclamp_used))
-                    return;
-
-                if (unlikely(!p->sched_class->uclamp_enabled))
-                    return;
-
-                if (p->se.sched_delayed)
-                    return;
-
-                for_each_clamp_id(clamp_id)
-                    uclamp_rq_inc_id(rq, p, clamp_id);
-
-                /* Reset clamp idle holding when there is one RUNNABLE task */
-                if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
-                    rq->uclamp_flags &= ~UCLAMP_FLAG_IDLE;
-            }
-
-            psi_enqueue(p, flags);
-
-            if (!(flags & ENQUEUE_RESTORE))
-                sched_info_enqueue(rq, p);
-
-            if (sched_core_enabled(rq))
-                sched_core_enqueue(rq, p);
         }
 
-        p->on_rq = TASK_ON_RQ_QUEUED;
+        set_task_cpu(next_task, lowest_rq->cpu);
+
+        activate_task(lowest_rq, next_task, 0) {
+            if (task_on_rq_migrating(p))
+                flags |= ENQUEUE_MIGRATED;
+            if (flags & ENQUEUE_MIGRATED)
+                sched_mm_cid_migrate_to(rq, p);
+
+            enqueue_task(rq, p, flags) {
+                if (!(flags & ENQUEUE_NOCLOCK))
+                    update_rq_clock(rq);
+
+                p->sched_class->enqueue_task(rq, p, flags);
+
+                /*  Must be after ->enqueue_task() because ENQUEUE_DELAYED can clear
+                 * ->sched_delayed. */
+                uclamp_rq_inc(rq, p) {
+                    enum uclamp_id clamp_id;
+
+                    if (!static_branch_unlikely(&sched_uclamp_used))
+                        return;
+
+                    if (unlikely(!p->sched_class->uclamp_enabled))
+                        return;
+
+                    if (p->se.sched_delayed)
+                        return;
+
+                    for_each_clamp_id(clamp_id)
+                        uclamp_rq_inc_id(rq, p, clamp_id);
+
+                    /* Reset clamp idle holding when there is one RUNNABLE task */
+                    if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
+                        rq->uclamp_flags &= ~UCLAMP_FLAG_IDLE;
+                }
+
+                psi_enqueue(p, flags);
+
+                if (!(flags & ENQUEUE_RESTORE))
+                    sched_info_enqueue(rq, p);
+
+                if (sched_core_enabled(rq))
+                    sched_core_enqueue(rq, p);
+            }
+
+            p->on_rq = TASK_ON_RQ_QUEUED;
+        }
     }
     resched_curr(lowest_rq);
     ret = 1;
@@ -8699,35 +8788,7 @@ void update_curr(struct cfs_rq *cfs_rq) {
 
                 return TIF_NEED_RESCHED;
             }
-            __resched_curr(rq, bit) {
-                struct task_struct *curr = rq->curr;
-                struct thread_info *cti = task_thread_info(curr);
-                int cpu;
-
-                lockdep_assert_rq_held(rq);
-
-                if (is_idle_task(curr) && tif == TIF_NEED_RESCHED_LAZY)
-                    tif = TIF_NEED_RESCHED;
-
-                if (cti->flags & ((1 << tif) | _TIF_NEED_RESCHED))
-                    return;
-
-                cpu = cpu_of(rq);
-
-                if (cpu == smp_processor_id()) {
-                    set_ti_thread_flag(cti, tif);
-                    if (tif == TIF_NEED_RESCHED)
-                        set_preempt_need_resched();
-                    return;
-                }
-
-                if (set_nr_and_not_polling(cti, tif)) {
-                    if (tif == TIF_NEED_RESCHED)
-                        smp_send_reschedule(cpu);
-                } else {
-                    trace_sched_wake_idle_without_ipi(cpu);
-                }
-            }
+            __resched_curr(rq, bit);
         }
         clear_buddies(cfs_rq, curr);
     }
@@ -8919,7 +8980,10 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
 {
     struct sched_entity *se = &p->se;
 
+    /* A task is marked WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
+     * if it istemporarily detached */
     if (!task_on_rq_migrating(p)) {
+        /* The block only executes for regular migrations, not for ongoing detach/attach transitions. */
         remove_entity_load_avg(se) {
             struct cfs_rq *cfs_rq = cfs_rq_of(se);
             unsigned long flags;
@@ -8940,9 +9004,9 @@ static void migrate_task_rq_fair(struct task_struct *p, int new_cpu)
             raw_spin_unlock_irqrestore(&cfs_rq->removed.lock, flags);
         }
 
-        /* estimates the "lag" (the time difference between the current time
-         * and the last update of the runqueue’s clock)
-         * and adjusts the task’s sched_avg metrics to account for this missing time. */
+        /* Iestimates the missing time (lag) since the last update of the
+        * source runqueue’s clock (cfs_rq->last_update_time) and adjusts the
+        * task’s sched_avg metrics accordingly. */
         migrate_se_pelt_lag(se) {
             u64 throttled = 0, now, lut;
             struct cfs_rq *cfs_rq;
