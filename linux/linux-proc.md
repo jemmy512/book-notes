@@ -2362,9 +2362,9 @@ void exit_to_user_mode_prepare(struct pt_regs *regs)
 {
     tick_nohz_user_enter_prepare();
 
-	ti_work = read_thread_flags();
-	if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {
-		ti_work = exit_to_user_mode_loop(regs, ti_work) {
+    ti_work = read_thread_flags();
+    if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {
+        ti_work = exit_to_user_mode_loop(regs, ti_work) {
             while (ti_work & EXIT_TO_USER_MODE_WORK) {
                 local_irq_enable_exit_to_user(ti_work) {
                     local_irq_enable();
@@ -2634,7 +2634,7 @@ el1t_64_irq_handler() {
 
 static inline int _cond_resched(void)
 {
-	return __cond_resched() {
+    return __cond_resched() {
         if (should_resched(0) && !irqs_disabled()) {
             preempt_schedule_common();
             return 1;
@@ -6702,11 +6702,26 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     int rq_h_nr_queued = rq->cfs.h_nr_queued;
     u64 slice = 0;
 
+    ret = enqueue_throttled_task(p) {
+        struct cfs_rq *cfs_rq = cfs_rq_of(&p->se);
+
+        if (throttled_hierarchy(cfs_rq) && !task_current_donor(rq_of(cfs_rq), p)) {
+            list_add(&p->throttle_node, &cfs_rq->throttled_limbo_list);
+            return true;
+        }
+
+        /* we can't take the fast path, do an actual enqueue*/
+        p->throttled = false;
+        return false;
+    }
+    if (task_is_throttled(p) && ret)
+        return;
+
     /* The code below (indirectly) updates schedutil which looks at
      * the cfs_rq utilization to select a frequency.
      * Let's add the task's estimated utilization to the cfs_rq's
      * estimated utilization, before we update schedutil. */
-    if (!(p->se.sched_delayed && (task_on_rq_migrating(p) || (flags & ENQUEUE_RESTORE)))) {
+    if (!p->se.sched_delayed || (flags & ENQUEUE_DELAYED)) {
         util_est_enqueue(&rq->cfs, p) {
             int enqueued  = cfs_rq->avg.util_est;
             enqueued += _task_util_est(p) {
@@ -6793,9 +6808,6 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
         if (cfs_rq_is_idle(cfs_rq))
             h_nr_idle = 1;
 
-        if (cfs_rq_throttled(cfs_rq))
-            goto enqueue_throttle;
-
         flags = ENQUEUE_WAKEUP;
     }
 
@@ -6816,10 +6828,6 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
 
         if (cfs_rq_is_idle(cfs_rq))
             h_nr_idle = 1;
-
-        /* end evaluation on encountering a throttled cfs_rq */
-        if (cfs_rq_throttled(cfs_rq))
-            goto enqueue_throttle;
     }
 
     if (!rq_h_nr_queued && rq->cfs.h_nr_queued) {
@@ -6834,7 +6842,6 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     if (!task_new)
         check_update_overutilized_status(rq);
 
-enqueue_throttle:
     assert_list_leaf_cfs_rq(rq);
 
     hrtick_update(rq);
@@ -7032,17 +7039,15 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
             if (cfs_rq->runtime_remaining <= 0)
                 throttle_cfs_rq(cfs_rq);
         }
-        if (!throttled_hierarchy(cfs_rq)) {
-            list_add_leaf_cfs_rq(cfs_rq);
-        } else {
-#ifdef CONFIG_CFS_BANDWIDTH
-            struct rq *rq = rq_of(cfs_rq);
+        list_add_leaf_cfs_rq(cfs_rq);
+        #ifdef CONFIG_CFS_BANDWIDTH
+            if (cfs_rq->pelt_clock_throttled) {
+                struct rq *rq = rq_of(cfs_rq);
 
-            if (cfs_rq_throttled(cfs_rq) && !cfs_rq->throttled_clock)
-                cfs_rq->throttled_clock = rq_clock(rq);
-            if (!cfs_rq->throttled_clock_self)
-                cfs_rq->throttled_clock_self = rq_clock(rq);
-#endif
+                cfs_rq->throttled_clock_pelt_time += rq_clock_pelt(rq) - cfs_rq->throttled_clock_pelt;
+                cfs_rq->pelt_clock_throttled = 0;
+            }
+        #endif
         }
     }
 }
@@ -7087,7 +7092,25 @@ dequeue_task_fair() {
 ```c
 static bool dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 {
-    if (!(p->se.sched_delayed && (task_on_rq_migrating(p) || (flags & DEQUEUE_SAVE))))
+    if (task_is_throttled(p)) {
+        dequeue_throttled_task(p, flags) {
+            list_del_init(&p->throttle_node);
+
+            /* task blocked after throttled */
+            if (flags & DEQUEUE_SLEEP) {
+                p->throttled = false;
+                return;
+            }
+
+            /* task is migrating off its old cfs_rq, detach
+            * the task's load from its old cfs_rq. */
+            if (task_on_rq_migrating(p))
+                detach_task_cfs_rq(p);
+        }
+        return true;
+    }
+
+    if (!p->se.sched_delayed)
         util_est_dequeue(&rq->cfs, p);
 
     util_est_update(&rq->cfs, p, flags & DEQUEUE_SLEEP) {
@@ -7148,9 +7171,9 @@ static bool dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
  *  1 - dequeue complete */
 bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
     bool was_sched_idle = sched_idle_rq(rq);
-    int rq_h_nr_queued = rq->cfs.h_nr_queued;
     bool task_sleep = flags & DEQUEUE_SLEEP;
     bool task_delayed = flags & DEQUEUE_DELAYED;
+    bool task_throttled = flags & DEQUEUE_THROTTLE;
     struct task_struct *p = NULL;
     int h_nr_idle = 0;
     int h_nr_queued = 0;
@@ -7189,9 +7212,8 @@ bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
         if (cfs_rq_is_idle(cfs_rq))
             h_nr_idle = 1;
 
-        /* end evaluation on encountering a throttled cfs_rq */
-        if (cfs_rq_throttled(cfs_rq))
-            return 0;
+        if (throttled_hierarchy(cfs_rq) && task_throttled)
+            record_throttle_clock(cfs_rq);
 
         /* Don't dequeue parent if it has other entities besides us */
         if (cfs_rq->load.weight) {
@@ -7225,9 +7247,8 @@ bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
         if (cfs_rq_is_idle(cfs_rq))
             h_nr_idle = h_nr_queued;
 
-        /* end evaluation on encountering a throttled cfs_rq */
-        if (cfs_rq_throttled(cfs_rq))
-            return 0;
+        if (throttled_hierarchy(cfs_rq) && task_throttled)
+            record_throttle_clock(cfs_rq);
     }
 
     /* At this point se is NULL and we are at root level*/
@@ -7295,7 +7316,7 @@ bool dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
         bool delay = sleep;
         /* DELAY_DEQUEUE relies on spurious wakeups, special task
          * states must not suffer spurious wakeups, excempt them. */
-        if (flags & DEQUEUE_SPECIAL)
+        if (flags & (DEQUEUE_SPECIAL | DEQUEUE_THROTTLE))
             delay = false;
 
         SCHED_WARN_ON(delay && se->sched_delayed);
@@ -7435,8 +7456,18 @@ bool dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
         }
     }
 
-    if (cfs_rq->nr_queued == 0)
+    if (cfs_rq->nr_queued == 0) {
         update_idle_cfs_rq_clock_pelt(cfs_rq);
+#ifdef CONFIG_CFS_BANDWIDTH
+        if (throttled_hierarchy(cfs_rq)) {
+            struct rq *rq = rq_of(cfs_rq);
+
+            list_del_leaf_cfs_rq(cfs_rq);
+            cfs_rq->throttled_clock_pelt = rq_clock_pelt(rq);
+            cfs_rq->pelt_clock_throttled = 1;
+        }
+#endif
+    }
 
     return true;
 }
@@ -7735,6 +7766,41 @@ idle:
     update_idle_rq_clock_pelt(rq);
 
     return NULL;
+}
+
+void throttle_cfs_rq_work(struct callback_head *work)
+{
+    struct task_struct *p = container_of(work, struct task_struct, sched_throttle_work);
+    struct sched_entity *se;
+    struct cfs_rq *cfs_rq;
+    struct rq *rq;
+
+    WARN_ON_ONCE(p != current);
+    p->sched_throttle_work.next = &p->sched_throttle_work;
+
+    if ((p->flags & PF_EXITING))
+        return;
+
+    scoped_guard(task_rq_lock, p) {
+        se = &p->se;
+        cfs_rq = cfs_rq_of(se);
+
+        /* Raced, forget */
+        if (p->sched_class != &fair_sched_class)
+            return;
+
+        if (!cfs_rq->throttle_count)
+            return;
+        rq = scope.rq;
+        update_rq_clock(rq);
+        WARN_ON_ONCE(p->throttled || !list_empty(&p->throttle_node));
+        dequeue_task_fair(rq, p, DEQUEUE_SLEEP | DEQUEUE_THROTTLE);
+        list_add(&p->throttle_node, &cfs_rq->throttled_limbo_list);
+        /* Must not set throttled before dequeue or dequeue will
+         * mistakenly regard this task as an already throttled one. */
+        p->throttled = true;
+        resched_curr(rq);
+    }
 }
 ```
 
@@ -13990,16 +14056,13 @@ ret = can_migrate_task(p, env) {
 
     /* We do not migrate tasks that are:
      * 1) delayed dequeued unless we migrate load, or
-     * 2) throttled_lb_pair, or
+     * 2) target cfs_rq is in throttled hierarchy, or
      * 3) cannot be migrated to this CPU due to cpus_ptr, or
      * 4) running (obviously), or
-     * 5) are cache-hot on their current CPU.
+     * 5) are cache-hot on their current CPU, or
      * 6) are blocked on mutexes (if SCHED_PROXY_EXEC is enabled) */
 
     if ((p->se.sched_delayed) && (env->migration_type != migrate_load))
-        return 0;
-
-    if (throttled_lb_pair(task_group(p), env->src_cpu, env->dst_cpu))
         return 0;
 
     /* Disregard pcpu kthreads; they are where they need to be. */
