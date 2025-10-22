@@ -1390,6 +1390,10 @@ extern const struct sched_class idle_sched_class;
 
 <img src='../images/kernel/proc-sched-cpu-rq-class-entity-task.svg' style='max-height:850px'/>
 
+---
+
+![](../images/kernel/proc-sched-latency.png)
+
 ## voluntary schedule
 
 arm64 | x86_64
@@ -1585,8 +1589,13 @@ pick_again:
     }
 
 picked:
-    clear_tsk_need_resched(prev);
-    clear_preempt_need_resched();
+    clear_tsk_need_resched(prev) {
+        atomic_long_andnot(_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY,
+            (atomic_long_t *)&task_thread_info(tsk)->flags);
+    }
+    clear_preempt_need_resched() {
+        current_thread_info()->preempt.need_resched = 1;
+    }
 
 keep_resched:
     rq->last_seen_need_resched_ns = 0;
@@ -2174,8 +2183,10 @@ context_switch(struct rq *rq, struct task_struct *prev,
 
 ## preempt schedule
 
+* [Latency](https://hugh712.gitbooks.io/embeddedsystem/content/latency.html)
 * [全方位剖析内核抢占机制](https://mp.weixin.qq.com/s/1JQl7WqRjwDVv_ETC3XGgQ)
 * [从CPU资源大战，看懂内核抢占机制](https://mp.weixin.qq.com/s/DeiJqUEDeHzXn0LWxSjxQA)
+* [The PREEMPT_RT Approach To Real Time.pdf](https://tinylab.org/wp-content/uploads/2014/04/preempt_rt1.pdf)
 
 ![](../images/kernel/proc-preempt-kernel.png)
 
@@ -2280,6 +2291,7 @@ static void __resched_curr(struct rq *rq, int tif) {
     if (is_idle_task(curr) && tif == TIF_NEED_RESCHED_LAZY)
         tif = TIF_NEED_RESCHED;
 
+    /* no other tif need to be set since _TIF_NEED_RESCHED has highest prio */
     if (cti->flags & ((1 << tif) | _TIF_NEED_RESCHED))
         return;
 
@@ -2348,28 +2360,27 @@ static __always_inline void exit_to_user_mode(struct pt_regs *regs)
 
 void exit_to_user_mode_prepare(struct pt_regs *regs)
 {
-    flags = read_thread_flags();
-    if (unlikely(flags & _TIF_WORK_MASK)) {
-        do_notify_resume(regs, flags) {
-            do {
-                local_irq_enable();
+    tick_nohz_user_enter_prepare();
 
-                if (thread_flags & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY))
-                    schedule();
-
-                if (thread_flags & _TIF_UPROBE)
-                    uprobe_notify_resume(regs);
-
-                if (thread_flags & _TIF_MTE_ASYNC_FAULT) {
-                    clear_thread_flag(TIF_MTE_ASYNC_FAULT);
-                    send_sig_fault(SIGSEGV, SEGV_MTEAERR, (void __user *)NULL, current);
+	ti_work = read_thread_flags();
+	if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {
+		ti_work = exit_to_user_mode_loop(regs, ti_work) {
+            while (ti_work & EXIT_TO_USER_MODE_WORK) {
+                local_irq_enable_exit_to_user(ti_work) {
+                    local_irq_enable();
                 }
 
-                if (thread_flags & _TIF_PATCH_PENDING)
+                if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY))
+                    schedule();
+
+                if (ti_work & _TIF_UPROBE)
+                    uprobe_notify_resume(regs);
+
+                if (ti_work & _TIF_PATCH_PENDING)
                     klp_update_patch_state(current);
 
-                if (thread_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                    do_signal(regs);
+                if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                    arch_do_signal_or_restart(regs);
 
                 if (thread_flags & _TIF_NOTIFY_RESUME) {
                     resume_user_mode_work(regs) {
@@ -2391,12 +2402,17 @@ void exit_to_user_mode_prepare(struct pt_regs *regs)
                     }
                 }
 
-                if (thread_flags & _TIF_FOREIGN_FPSTATE)
-                    fpsimd_restore_current_state();
+                /* Architecture specific TIF work */
+                arch_exit_to_user_mode_work(regs, ti_work);
 
-                local_irq_disable();
-                thread_flags = read_thread_flags();
-            } while (thread_flags & _TIF_WORK_MASK);
+                local_irq_disable_exit_to_user() {
+                    local_irq_disable();
+                }
+
+                tick_nohz_user_enter_prepare();
+
+                ti_work = read_thread_flags();
+            }
         }
     }
 }
@@ -2448,6 +2464,21 @@ irqentry_exit() {
 #### preempt_enble
 
 ```c
+struct thread_info {
+    unsigned long   flags;          /* low level flags */
+    union {
+        u64         preempt_count;  /* 0 => preemptible, <0 => bug */
+        struct {
+            u32     count;
+            u32     need_resched;
+        } preempt;
+    };
+
+    void            *scs_base;
+    void            *scs_sp;
+    u32             cpu;
+};
+
 #define preempt_enable() \
 do { \
     if (unlikely(preempt_count_dec_and_test())) \
@@ -2459,8 +2490,15 @@ do { \
 
 static  bool should_resched(int preempt_offset)
 {
+    /* preempt_count includes both count and need_resched */
     u64 pc = READ_ONCE(current_thread_info()->preempt_count);
     return pc == preempt_offset;
+}
+
+static inline int preempt_count(void)
+{
+    /* only include count exclude need_resched */
+    return READ_ONCE(current_thread_info()->preempt.count);
 }
 
 #define __preempt_schedule()    preempt_schedule()
@@ -2475,7 +2513,7 @@ asmlinkage __visible void __sched notrace preempt_schedule(void)
 #define preemptible()   (preempt_count() == 0 && !irqs_disabled())
 static inline int preempt_count(void)
 {
-	return READ_ONCE(current_thread_info()->preempt.count);
+    return READ_ONCE(current_thread_info()->preempt.count);
 }
 
 static void __sched notrace preempt_schedule_common(void)
@@ -2539,31 +2577,43 @@ el1t_64_irq_handler() {
             __el1_pnmi(regs, handler);
         } else {
             __el1_irq(regs, handler) {
-                enter_from_kernel_mode(regs);
+                irqentry_state_t state;
+
+                state = enter_from_kernel_mode(regs);
 
                 irq_enter_rcu();
                 do_interrupt_handler(regs, handler);
                 irq_exit_rcu();
 
-                arm64_preempt_schedule_irq() {
-                    if (!need_irq_preemption())
-                        return;
-
-                    if (READ_ONCE(current_thread_info()->preempt_count) != 0)
-                        return;
-
-                    if (system_uses_irq_prio_masking() && read_sysreg(daif))
-                        return;
-
-                    if (system_capabilities_finalized()) {
-                        preempt_schedule_irq() {
-                            do {
-                                preempt_disable();
-                                local_irq_enable();
-                                __schedule(SM_PREEMPT);
-                                local_irq_disable();
-                                sched_preempt_enable_no_resched();
-                            } while (need_resched());
+                exit_to_kernel_mode(regs, state); {
+                    irqentry_exit(regs, state) {
+                        if (user_mode(regs)) {
+                            irqentry_exit_to_user_mode(regs);
+                        } else if (!regs_irqs_disabled(regs)) {
+                            if (IS_ENABLED(CONFIG_PREEMPTION)) {
+                                irqentry_exit_cond_resched() {
+                                    if (!preempt_count()) {
+                                        /* Sanity check RCU and thread stack */
+                                        rcu_irq_exit_check_preempt();
+                                        if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
+                                            WARN_ON_ONCE(!on_thread_stack());
+                                        if (need_resched() && arch_irqentry_exit_need_resched()) {
+                                            preempt_schedule_irq() {
+                                                do {
+                                                    preempt_disable();
+                                                    local_irq_enable();
+                                                    __schedule(SM_PREEMPT);
+                                                    local_irq_disable();
+                                                    sched_preempt_enable_no_resched();
+                                                } while (need_resched());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            if (state.exit_rcu)
+                                ct_irq_exit();
                         }
                     }
                 }
@@ -2573,6 +2623,76 @@ el1t_64_irq_handler() {
 }
 ```
 <img src='../images/kernel/proc-sched.png' style='max-height:850px'/>
+
+#### cond_resched
+
+```c
+#define cond_resched() ({   \
+    __might_resched(__FILE__, __LINE__, 0); \
+    _cond_resched();    \
+})
+
+static inline int _cond_resched(void)
+{
+	return __cond_resched() {
+        if (should_resched(0) && !irqs_disabled()) {
+            preempt_schedule_common();
+            return 1;
+        }
+
+    #ifndef CONFIG_PREEMPT_RCU
+        rcu_all_qs();
+    #endif
+        return 0;
+    }
+}
+
+void __might_resched(const char *file, int line, unsigned int offsets)
+{
+    /* Ratelimiting timestamp: */
+    static unsigned long prev_jiffy;
+
+    unsigned long preempt_disable_ip;
+
+    /* WARN_ON_ONCE() by default, no rate limit required: */
+    rcu_sleep_check();
+
+    ok = resched_offsets_ok(offsets) {
+        unsigned int nested = preempt_count() {
+            return READ_ONCE(current_thread_info()->preempt.count);
+        }
+
+        nested += rcu_preempt_depth() {
+            READ_ONCE(current->rcu_read_lock_nesting)
+        } << MIGHT_RESCHED_RCU_SHIFT;
+
+        return nested == offsets;
+    }
+    if ((ok && !irqs_disabled() && !is_idle_task(current) && !current->non_block_count) ||
+        system_state == SYSTEM_BOOTING || system_state > SYSTEM_RUNNING ||
+        oops_in_progress)
+        return;
+
+    if (time_before(jiffies, prev_jiffy + HZ) && prev_jiffy)
+        return;
+    prev_jiffy = jiffies;
+
+    /* Save this before calling printk(), since that will clobber it: */
+    preempt_disable_ip = get_preempt_disable_ip(current);
+
+    if (task_stack_end_corrupted(current))
+        pr_emerg("Thread overran stack, or stack corrupted\n");
+
+    debug_show_held_locks(current);
+    if (irqs_disabled())
+        print_irqtrace_events(current);
+
+    print_preempt_disable_ip(offsets & MIGHT_RESCHED_PREEMPT_MASK, preempt_disable_ip);
+
+    dump_stack();
+    add_taint(TAINT_WARN, LOCKDEP_STILL_OK);
+}
+```
 
 # SCHED_DL
 
