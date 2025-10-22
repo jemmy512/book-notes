@@ -4,7 +4,7 @@
 * [signal](#signal)
     * [sigaction](#sigaction)
     * [do_send_sig_info](#do_send_sig_info)
-    * [do_signal](#do_signal)
+    * [arch_do_signal_or_restart](#arch_do_signal_or_restart)
         * [get_signal](#get_signal)
         * [rt_sigreturn](#rt_sigreturn)
 
@@ -1156,7 +1156,7 @@ ret:
 
 * [try_to_wake_up](#ttwu)
 
-## do_signal
+## arch_do_signal_or_restart
 
 Signal handling in Linux occurs at specific points during process execution. Here are the key signal handling points in Linux:
 
@@ -1260,22 +1260,46 @@ struct rt_sigframe_user_layout {
 ```c
 static void exit_to_user_mode_prepare(struct pt_regs *regs, u32 cached_flags)
 {
-    do_notify_resume(regs, flags) {
-        while (true) {
-            if (cached_flags & _TIF_NEED_RESCHED)
-                schedule();
+    ti_work = read_thread_flags();
+	if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {
+		ti_work = exit_to_user_mode_loop(regs, ti_work) {
+            while (ti_work & EXIT_TO_USER_MODE_WORK) {
+                local_irq_enable_exit_to_user(ti_work) {
+                    local_irq_enable();
+                }
 
-            /* deal with pending signal delivery */
-            if (cached_flags & _TIF_SIGPENDING)
-                do_signal(regs);
+                if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY))
+                    schedule();
 
-            if (!(cached_flags & EXIT_TO_USERMODE_LOOP_FLAGS))
-                break;
+                if (ti_work & _TIF_UPROBE)
+                    uprobe_notify_resume(regs);
+
+                if (ti_work & _TIF_PATCH_PENDING)
+                    klp_update_patch_state(current);
+
+                if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                    arch_do_signal_or_restart(regs);
+
+                if (ti_work & _TIF_NOTIFY_RESUME)
+                    resume_user_mode_work(regs);
+
+                arch_exit_to_user_mode_work(regs, ti_work);
+
+                local_irq_disable_exit_to_user() {
+                    local_irq_disable();
+                }
+
+                tick_nohz_user_enter_prepare();
+
+                ti_work = read_thread_flags();
+            }
         }
     }
+
+	arch_exit_to_user_mode_prepare(regs, ti_work);
 }
 
-static void do_signal(struct pt_regs *regs)
+static void arch_do_signal_or_restart(struct pt_regs *regs)
 {
     unsigned long continue_addr = 0, restart_addr = 0;
     int retval = 0;

@@ -459,6 +459,8 @@ el0t_64_irq_handler(struct pt_regs *regs) {
     el0_interrupt(regs, handle_arch_irq = gic_handle_irq) {
         enter_from_user_mode(regs);
 
+        /* #define DAIF_PROCCTX_NOIRQ (PSR_D_BIT | PSR_A_BIT | PSR_F_BIT)
+         * mask (disable) Debug, SError, and FIQ, but leave IRQ unmasked */
         write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
 
         if (regs->pc & BIT(55))
@@ -480,7 +482,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
 
         irq_exit_rcu();
 
-        exit_to_user_mode(regs) {
+        arm64_exit_to_user_mode(regs) {
             exit_to_user_mode_prepare(regs) {
                 flags = read_thread_flags();
                 if (unlikely(flags & _TIF_WORK_MASK)) {
@@ -501,7 +503,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
                                 }
 
                                 if (thread_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                                    do_signal(regs);
+                                    arch_do_signal_or_restart(regs);
 
                                 if (thread_flags & _TIF_NOTIFY_RESUME) {
                                     resume_user_mode_work(regs);
@@ -540,50 +542,119 @@ el1h_64_irq_handler(struct pt_regs *regs) {
             __el1_pnmi(regs, handler);
         } else {
             __el1_irq(regs, handler) {
-                enter_from_kernel_mode(regs);
+                enter_from_kernel_mode(regs) {
+                    return irqentry_enter(regs) {
+                        irqentry_state_t ret = {
+                            .exit_rcu = false,
+                        };
+
+                        if (user_mode(regs)) {
+                            irqentry_enter_from_user_mode(regs) {
+                                enter_from_user_mode(regs) {
+                                    arch_enter_from_user_mode(regs);
+                                    lockdep_hardirqs_off(CALLER_ADDR0);
+
+                                    CT_WARN_ON(__ct_state() != CT_STATE_USER);
+                                    user_exit_irqoff();
+
+                                    instrumentation_begin();
+                                    kmsan_unpoison_entry_regs(regs);
+                                    trace_hardirqs_off_finish();
+                                    instrumentation_end();
+                                }
+                            }
+                            return ret;
+                        }
+
+                        if (!IS_ENABLED(CONFIG_TINY_RCU) && (is_idle_task(current) || arch_in_rcu_eqs())) {
+                            lockdep_hardirqs_off(CALLER_ADDR0);
+                            ct_irq_enter();
+                            instrumentation_begin();
+                            kmsan_unpoison_entry_regs(regs);
+                            trace_hardirqs_off_finish();
+                            instrumentation_end();
+
+                            ret.exit_rcu = true;
+                            return ret;
+                        }
+
+                        lockdep_hardirqs_off(CALLER_ADDR0);
+                        instrumentation_begin();
+                        kmsan_unpoison_entry_regs(regs);
+                        rcu_irq_enter_check_tick();
+                        trace_hardirqs_off_finish();
+                        instrumentation_end();
+
+                        return ret;
+                    }
+                }
 
                 irq_enter_rcu();
                 do_interrupt_handler(regs, handler);
                 irq_exit_rcu();
 
-                arm64_preempt_schedule_irq() {
-                    if (!need_irq_preemption())
-                        return;
+                exit_to_kernel_mode(regs, state) {
+                   irqentry_exit(regs, state) {
+                        if (user_mode(regs)) {
+                            irqentry_exit_to_user_mode(regs) {
+                                instrumentation_begin();
+                                exit_to_user_mode_prepare(regs);
+                                instrumentation_end();
+                                exit_to_user_mode();
+                            }
+                        } else if (!regs_irqs_disabled(regs)) {
+                            if (state.exit_rcu) {
+                                instrumentation_begin();
+                                /* Tell the tracer that IRET will enable interrupts */
+                                trace_hardirqs_on_prepare();
+                                lockdep_hardirqs_on_prepare();
+                                instrumentation_end();
+                                ct_irq_exit();
+                                lockdep_hardirqs_on(CALLER_ADDR0);
+                                return;
+                            }
 
-                    if (READ_ONCE(current_thread_info()->preempt_count) != 0)
-                        return;
+                            instrumentation_begin();
+                            if (IS_ENABLED(CONFIG_PREEMPTION)) {
+                                irqentry_exit_cond_resched() {
+                                    if (!preempt_count()) {
+                                        rcu_irq_exit_check_preempt();
+                                        if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
+                                            WARN_ON_ONCE(!on_thread_stack());
 
-                    if (system_uses_irq_prio_masking() && read_sysreg(daif))
-                        return;
+                                        if (need_resched() && arch_irqentry_exit_need_resched()) {
+                                            preempt_schedule_irq() {
+                                                enum ctx_state prev_state;
 
-                    if (system_capabilities_finalized()) {
-                        preempt_schedule_irq() {
-                            do {
-                                preempt_disable();
-                                local_irq_enable();
-                                __schedule(SM_PREEMPT);
-                                local_irq_disable();
-                                sched_preempt_enable_no_resched();
-                            } while (need_resched());
+                                                BUG_ON(preempt_count() || !irqs_disabled());
+
+                                                prev_state = exception_enter();
+
+                                                do {
+                                                    preempt_disable();
+                                                    local_irq_enable();
+                                                    __schedule(SM_PREEMPT);
+                                                    local_irq_disable();
+                                                    sched_preempt_enable_no_resched();
+                                                } while (need_resched());
+
+                                                exception_exit(prev_state);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            /* Covers both tracing and lockdep */
+                            trace_hardirqs_on();
+                            instrumentation_end();
+                        } else {
+                            /* IRQ flags state is correct already. Just tell RCU if it
+                            * was not watching on entry. */
+                            if (state.exit_rcu)
+                                ct_irq_exit();
                         }
-                    }
-                }
-
-                exit_to_kernel_mode(regs) {
-                    if (interrupts_enabled(regs)) {
-                        if (regs->exit_rcu) {
-                            trace_hardirqs_on_prepare();
-                            lockdep_hardirqs_on_prepare();
-                            ct_irq_exit();
-                            lockdep_hardirqs_on(CALLER_ADDR0);
-                            return;
-                        }
-
-                        trace_hardirqs_on();
-                    } else {
-                        if (regs->exit_rcu)
-                            ct_irq_exit();
-                    }
+                   }
                 }
             }
         }

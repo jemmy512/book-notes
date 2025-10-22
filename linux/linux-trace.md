@@ -647,8 +647,8 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
    - The `SIGTRAP` signal is queued for the tracee.
 
 5. **Tracee Stops and Notifies the Tracer**:
-   - The tracee `do_signal` when exiting `single_step_handler`, and notifies the tracer (e.g., via `waitpid()` or `waitid()`) that the tracee has stopped due to the single-step event by sending `SIGCLD` signal. Tracee call `schedule` to stop.
-   - Tracer is notified in kernel mode in do_signal not the signal handler of tracee in user space
+   - The tracee `arch_do_signal_or_restart` when exiting `single_step_handler`, and notifies the tracer (e.g., via `waitpid()` or `waitid()`) that the tracee has stopped due to the single-step event by sending `SIGCLD` signal. Tracee call `schedule` to stop.
+   - Tracer is notified in kernel mode in arch_do_signal_or_restart not the signal handler of tracee in user space
 
 6. **Tracer Handles the Event**:
    - The tracer inspects the tracee's state using `ptrace()` (e.g., by reading registers or memory).
@@ -912,10 +912,10 @@ int single_step_handler(unsigned long unused, unsigned long esr,
 }
 ```
 
-### do_signal
+### arch_do_signal_or_restart
 
 ```c
-void do_signal(struct pt_regs *regs)
+void arch_do_signal_or_restart(struct pt_regs *regs)
 {
     ret = get_signal(&ksig) {
         for (;;) {
