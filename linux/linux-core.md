@@ -210,7 +210,377 @@ RCU Lock | Sometimes (variant-based) | :white_check_mark: (most variants) | Proc
 
 * [kernel: RCU concepts](https://www.kernel.org/doc/html/latest/RCU/index.html)
 * [内核工匠 - RCU前传：从同步到RCU的引入](https://mp.weixin.qq.com/s/0wTQbrAFrRI8rrEtzHzCXw)
-* [wowo tech - RCU synchronize原理分析](http://www.wowotech.net/kernel_synchronization/223.html) [:link: RCU基础](http://www.wowotech.net/kernel_synchronization/rcu_fundamentals.html)
+* [wowo tech - RCU基础](http://www.wowotech.net/kernel_synchronization/rcu_fundamentals.html) ⊙ [RCU synchronize原理分析](http://www.wowotech.net/kernel_synchronization/223.html)
+
+
+### rcu_sched_clock_irq
+
+```c
+void rcu_sched_clock_irq(int user)
+{
+    unsigned long j;
+
+    if (IS_ENABLED(CONFIG_PROVE_RCU)) {
+        j = jiffies;
+        WARN_ON_ONCE(time_before(j, __this_cpu_read(rcu_data.last_sched_clock)));
+        __this_cpu_write(rcu_data.last_sched_clock, j);
+    }
+    trace_rcu_utilization(TPS("Start scheduler-tick"));
+    lockdep_assert_irqs_disabled();
+    raw_cpu_inc(rcu_data.ticks_this_gp);
+    /* The load-acquire pairs with the store-release setting to true. */
+    if (smp_load_acquire(this_cpu_ptr(&rcu_data.rcu_urgent_qs))) {
+        /* Idle and userspace execution already are quiescent states. */
+        if (!rcu_is_cpu_rrupt_from_idle() && !user) {
+            set_tsk_need_resched(current);
+            set_preempt_need_resched();
+        }
+        __this_cpu_write(rcu_data.rcu_urgent_qs, false);
+    }
+    rcu_flavor_sched_clock_irq(user);
+    if (rcu_pending(user)) { --->
+        invoke_rcu_core() {
+            if (!cpu_online(smp_processor_id()))
+                return;
+            if (use_softirq)
+                raise_softirq(RCU_SOFTIRQ);
+            else
+                invoke_rcu_core_kthread();
+        }
+    }
+    if (user || rcu_is_cpu_rrupt_from_idle())
+        rcu_note_voluntary_context_switch(current);
+    lockdep_assert_irqs_disabled();
+
+    trace_rcu_utilization(TPS("End scheduler-tick"));
+}
+
+int rcu_pending(int user)
+{
+    bool gp_in_progress;
+    struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
+    struct rcu_node *rnp = rdp->mynode;
+
+    lockdep_assert_irqs_disabled();
+
+    /* Check for CPU stalls, if enabled. */
+    check_cpu_stall(rdp);
+        --->
+
+    /* Does this CPU need a deferred NOCB wakeup? */
+    if (rcu_nocb_need_deferred_wakeup(rdp, RCU_NOCB_WAKE))
+        return 1;
+
+    /* Is this a nohz_full CPU in userspace or idle?  (Ignore RCU if so.) */
+    gp_in_progress = rcu_gp_in_progress();
+    if ((user || rcu_is_cpu_rrupt_from_idle() ||
+         (gp_in_progress &&
+          time_before(jiffies, READ_ONCE(rcu_state.gp_start) +
+              nohz_full_patience_delay_jiffies))) &&
+        rcu_nohz_full_cpu())
+        return 0;
+
+    /* Is the RCU core waiting for a quiescent state from this CPU? */
+    if (rdp->core_needs_qs && !rdp->cpu_no_qs.b.norm && gp_in_progress)
+        return 1;
+
+    /* Does this CPU have callbacks ready to invoke? */
+    if (!rcu_rdp_is_offloaded(rdp) &&
+        rcu_segcblist_ready_cbs(&rdp->cblist))
+        return 1;
+
+    /* Has RCU gone idle with this CPU needing another grace period? */
+    if (!gp_in_progress && rcu_segcblist_is_enabled(&rdp->cblist) &&
+        !rcu_rdp_is_offloaded(rdp) &&
+        !rcu_segcblist_restempty(&rdp->cblist, RCU_NEXT_READY_TAIL))
+        return 1;
+
+    /* Have RCU grace period completed or started?  */
+    if (rcu_seq_current(&rnp->gp_seq) != rdp->gp_seq ||
+        unlikely(READ_ONCE(rdp->gpwrap))) /* outside lock */
+        return 1;
+
+    /* nothing to do */
+    return 0;
+}
+
+void check_cpu_stall(struct rcu_data *rdp)
+{
+    bool self_detected;
+    unsigned long gs1;
+    unsigned long gs2;
+    unsigned long gps;
+    unsigned long j;
+    unsigned long jn;
+    unsigned long js;
+    struct rcu_node *rnp;
+
+    lockdep_assert_irqs_disabled();
+    if ((rcu_stall_is_suppressed() && !READ_ONCE(rcu_kick_kthreads)) || !rcu_gp_in_progress())
+        return;
+    rcu_stall_kick_kthreads();
+
+    /* Check if it was requested (via rcu_cpu_stall_reset()) that the FQS
+     * loop has to set jiffies to ensure a non-stale jiffies value. This
+     * is required to have good jiffies value after coming out of long
+     * breaks of jiffies updates. Not doing so can cause false positives. */
+    if (READ_ONCE(rcu_state.nr_fqs_jiffies_stall) > 0)
+        return;
+
+    j = jiffies;
+
+    /* Lots of memory barriers to reject false positives.
+     *
+     * The idea is to pick up rcu_state.gp_seq, then
+     * rcu_state.jiffies_stall, then rcu_state.gp_start, and finally
+     * another copy of rcu_state.gp_seq.  These values are updated in
+     * the opposite order with memory barriers (or equivalent) during
+     * grace-period initialization and cleanup.  Now, a false positive
+     * can occur if we get an new value of rcu_state.gp_start and a old
+     * value of rcu_state.jiffies_stall.  But given the memory barriers,
+     * the only way that this can happen is if one grace period ends
+     * and another starts between these two fetches.  This is detected
+     * by comparing the second fetch of rcu_state.gp_seq with the
+     * previous fetch from rcu_state.gp_seq.
+     *
+     * Given this check, comparisons of jiffies, rcu_state.jiffies_stall,
+     * and rcu_state.gp_start suffice to forestall false positives. */
+    gs1 = READ_ONCE(rcu_state.gp_seq);
+    smp_rmb(); /* Pick up ->gp_seq first... */
+    js = READ_ONCE(rcu_state.jiffies_stall);
+    smp_rmb(); /* ...then ->jiffies_stall before the rest... */
+    gps = READ_ONCE(rcu_state.gp_start);
+    smp_rmb(); /* ...and finally ->gp_start before ->gp_seq again. */
+    gs2 = READ_ONCE(rcu_state.gp_seq);
+    if (gs1 != gs2 ||
+        ULONG_CMP_LT(j, js) ||
+        ULONG_CMP_GE(gps, js) ||
+        !rcu_seq_state(gs2))
+        return; /* No stall or GP completed since entering function. */
+
+    rnp = rdp->mynode;
+    jn = jiffies + ULONG_MAX / 2;
+    self_detected = READ_ONCE(rnp->qsmask) & rdp->grpmask;
+    if (rcu_gp_in_progress() &&
+        (self_detected || ULONG_CMP_GE(j, js + RCU_STALL_RAT_DELAY)) &&
+        cmpxchg(&rcu_state.jiffies_stall, js, jn) == js) {
+        /* If a virtual machine is stopped by the host it can look to
+         * the watchdog like an RCU stall. Check to see if the host
+         * stopped the vm. */
+        if (kvm_check_and_clear_guest_paused())
+            return;
+
+#ifdef CONFIG_SYSFS
+        ++rcu_stall_count;
+#endif
+
+        rcu_stall_notifier_call_chain(RCU_STALL_NOTIFY_NORM, (void *)j - gps);
+        if (READ_ONCE(csd_lock_suppress_rcu_stall) && csd_lock_is_stuck()) {
+            pr_err("INFO: %s detected stall, but suppressed full report due to a stuck CSD-lock.\n", rcu_state.name);
+        } else if (self_detected) {
+            /* We haven't checked in, so go dump stack. */
+            print_cpu_stall(gs2, gps);
+        } else {
+            /* They had a few time units to dump stack, so complain. */
+            print_other_cpu_stall(gs2, gps);
+                --->
+        }
+
+        if (READ_ONCE(rcu_cpu_stall_ftrace_dump))
+            rcu_ftrace_dump(DUMP_ALL);
+
+        if (READ_ONCE(rcu_state.jiffies_stall) == jn) {
+            jn = jiffies + 3 * rcu_jiffies_till_stall_check() + 3;
+            WRITE_ONCE(rcu_state.jiffies_stall, jn);
+        }
+    }
+}
+
+ void print_other_cpu_stall(unsigned long gp_seq, unsigned long gps)
+{
+    int cpu;
+    unsigned long flags;
+    unsigned long gpa;
+    unsigned long j;
+    int ndetected = 0;
+    struct rcu_node *rnp;
+    long totqlen = 0;
+
+    lockdep_assert_irqs_disabled();
+
+    /* Kick and suppress, if so configured. */
+    rcu_stall_kick_kthreads();
+    if (rcu_stall_is_suppressed())
+        return;
+
+    nbcon_cpu_emergency_enter();
+
+    /* OK, time to rat on our buddy...
+     * See Documentation/RCU/stallwarn.rst for info on how to debug
+     * RCU CPU stall warnings. */
+    trace_rcu_stall_warning(rcu_state.name, TPS("StallDetected"));
+    pr_err("INFO: %s detected stalls on CPUs/tasks:\n", rcu_state.name);
+    rcu_for_each_leaf_node(rnp) {
+        raw_spin_lock_irqsave_rcu_node(rnp, flags);
+        if (rnp->qsmask != 0) {
+            for_each_leaf_node_possible_cpu(rnp, cpu)
+                if (rnp->qsmask & leaf_node_cpu_bit(rnp, cpu)) {
+                    print_cpu_stall_info(cpu);
+                    ndetected++;
+                }
+        }
+        ndetected += rcu_print_task_stall(rnp, flags); // Releases rnp->lock.
+        lockdep_assert_irqs_disabled();
+    }
+
+    for_each_possible_cpu(cpu)
+        totqlen += rcu_get_n_cbs_cpu(cpu);
+    pr_err("\t(detected by %d, t=%ld jiffies, g=%ld, q=%lu ncpus=%d)\n",
+           smp_processor_id(), (long)(jiffies - gps),
+           (long)rcu_seq_current(&rcu_state.gp_seq), totqlen,
+           data_race(rcu_state.n_online_cpus)); // Diagnostic read
+    if (ndetected) {
+        rcu_dump_cpu_stacks(gp_seq);
+
+        /* Complain about tasks blocking the grace period. */
+        rcu_for_each_leaf_node(rnp)
+            rcu_print_detail_task_stall_rnp(rnp);
+    } else {
+        if (rcu_seq_current(&rcu_state.gp_seq) != gp_seq) {
+            pr_err("INFO: Stall ended before state dump start\n");
+        } else {
+            j = jiffies;
+            gpa = data_race(READ_ONCE(rcu_state.gp_activity));
+            pr_err("All QSes seen, last %s kthread activity %ld (%ld-%ld), jiffies_till_next_fqs=%ld, root ->qsmask %#lx\n",
+                   rcu_state.name, j - gpa, j, gpa,
+                   data_race(READ_ONCE(jiffies_till_next_fqs)),
+                   data_race(READ_ONCE(rcu_get_root()->qsmask)));
+        }
+    }
+    /* Rewrite if needed in case of slow consoles. */
+    if (ULONG_CMP_GE(jiffies, READ_ONCE(rcu_state.jiffies_stall)))
+        WRITE_ONCE(rcu_state.jiffies_stall,
+               jiffies + 3 * rcu_jiffies_till_stall_check() + 3);
+
+    rcu_check_gp_kthread_expired_fqs_timer();
+    rcu_check_gp_kthread_starvation();
+        --->
+
+    nbcon_cpu_emergency_exit();
+
+    panic_on_rcu_stall();
+
+    rcu_force_quiescent_state();  /* Kick them all. */
+}
+
+void rcu_check_gp_kthread_starvation(void)
+{
+    int cpu;
+    struct task_struct *gpk = rcu_state.gp_kthread;
+    unsigned long j;
+
+    if (rcu_is_gp_kthread_starving(&j)) {
+        cpu = gpk ? task_cpu(gpk) : -1;
+        pr_err("%s kthread starved for %ld jiffies! g%ld f%#x %s(%d) ->state=%#x ->cpu=%d\n",
+               rcu_state.name, j,
+               (long)rcu_seq_current(&rcu_state.gp_seq),
+               data_race(READ_ONCE(rcu_state.gp_flags)),
+               gp_state_getname(rcu_state.gp_state),
+               data_race(READ_ONCE(rcu_state.gp_state)),
+               gpk ? data_race(READ_ONCE(gpk->__state)) : ~0, cpu);
+        if (gpk) {
+            struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+
+            pr_err("\tUnless %s kthread gets sufficient CPU time, OOM is now expected behavior.\n", rcu_state.name);
+            pr_err("RCU grace-period kthread stack dump:\n");
+            sched_show_task(gpk);
+            if (cpu_is_offline(cpu)) {
+                pr_err("RCU GP kthread last ran on offline CPU %d.\n", cpu);
+            } else if (!(data_race(READ_ONCE(rdp->mynode->qsmask)) & rdp->grpmask)) {
+                pr_err("Stack dump where RCU GP kthread last ran:\n");
+                dump_cpu_task(cpu);
+            }
+            wake_up_process(gpk);
+        }
+    }
+}
+```
+
+### rcu_cpu_kthread
+
+```c
+void rcu_cpu_kthread(unsigned int cpu)
+{
+    unsigned int *statusp = this_cpu_ptr(&rcu_data.rcu_cpu_kthread_status);
+    char work, *workp = this_cpu_ptr(&rcu_data.rcu_cpu_has_work);
+    unsigned long *j = this_cpu_ptr(&rcu_data.rcuc_activity);
+    int spincnt;
+
+    trace_rcu_utilization(TPS("Start CPU kthread@rcu_run"));
+    for (spincnt = 0; spincnt < 10; spincnt++) {
+        WRITE_ONCE(*j, jiffies);
+        local_bh_disable();
+        *statusp = RCU_KTHREAD_RUNNING;
+        local_irq_disable();
+        work = *workp;
+        WRITE_ONCE(*workp, 0);
+        local_irq_enable();
+        if (work)
+            rcu_core();
+        local_bh_enable();
+        if (!READ_ONCE(*workp)) {
+            trace_rcu_utilization(TPS("End CPU kthread@rcu_wait"));
+            *statusp = RCU_KTHREAD_WAITING;
+            return;
+        }
+    }
+    *statusp = RCU_KTHREAD_YIELDING;
+    trace_rcu_utilization(TPS("Start CPU kthread@rcu_yield"));
+    schedule_timeout_idle(2);
+    trace_rcu_utilization(TPS("End CPU kthread@rcu_yield"));
+    *statusp = RCU_KTHREAD_WAITING;
+    WRITE_ONCE(*j, jiffies);
+}
+```
+
+### rcu_gp_kthread
+
+```c
+int __noreturn rcu_gp_kthread(void *unused)
+{
+    rcu_bind_gp_kthread();
+    for (;;) {
+
+        /* Handle grace-period start. */
+        for (;;) {
+            trace_rcu_grace_period(rcu_state.name, rcu_state.gp_seq,
+                           TPS("reqwait"));
+            WRITE_ONCE(rcu_state.gp_state, RCU_GP_WAIT_GPS);
+            swait_event_idle_exclusive(rcu_state.gp_wq,
+                     READ_ONCE(rcu_state.gp_flags) &
+                     RCU_GP_FLAG_INIT);
+            rcu_gp_torture_wait();
+            WRITE_ONCE(rcu_state.gp_state, RCU_GP_DONE_GPS);
+            /* Locking provides needed memory barrier. */
+            if (rcu_gp_init())
+                break;
+            cond_resched_tasks_rcu_qs();
+            WRITE_ONCE(rcu_state.gp_activity, jiffies);
+            WARN_ON(signal_pending(current));
+            trace_rcu_grace_period(rcu_state.name, rcu_state.gp_seq,
+                           TPS("reqwaitsig"));
+        }
+
+        /* Handle quiescent-state forcing. */
+        rcu_gp_fqs_loop();
+
+        /* Handle grace-period end. */
+        WRITE_ONCE(rcu_state.gp_state, RCU_GP_CLEANUP);
+        rcu_gp_cleanup();
+        WRITE_ONCE(rcu_state.gp_state, RCU_GP_CLEANED);
+    }
+}
+```
 
 ## futex
 
@@ -1888,6 +2258,11 @@ mutex_lock() {
                         goto err_early_kill;
                 }
 
+                __set_task_blocked_on(current, lock) {
+                    WRITE_ONCE(p->blocked_on, m);
+                }
+                set_current_state(state);
+
                 for (;;) {
                     if (__mutex_trylock(lock))
                         goto acquired;
@@ -1912,6 +2287,8 @@ mutex_lock() {
                     first = __mutex_waiter_is_first(lock, &waiter);
 
                     set_task_blocked_on(current, lock);
+                    set_current_state(state);
+
                     ret = __mutex_trylock_or_handoff(lock, first) {
                         return !__mutex_trylock_common(lock, handoff);
                     }
