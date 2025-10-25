@@ -1616,9 +1616,10 @@ keep_resched:
         rq = context_switch(rq, prev, next, &rf);
     } else {
         if (!task_current_donor(rq, next)) {
-            /* adda a dequeue/enqueue cycle on the proxy task before __schedule
-            * returns, which allows the sched class logic to avoid adding the now
-            * current task to the pushable_list. */
+            /* both donor and proxy tasks are not push/pull-able.
+             * donor is setted in pick_next_task -> set_next_task
+             * proxy need to be setted here by qeueue-enqueue cycle:
+             * if (task_is_blocked(p)) prevents from putting the task into push/pullable queue */
             proxy_tag_curr(rq, next) {
                 if (!sched_proxy_exec())
                     return;
@@ -2350,12 +2351,13 @@ SYSCALL_DEFINE3(sched_setscheduler) {
 
 ##### return from system call
 ```c
-/* syscall_exit_to_user_mode_work -> exit_to_user_mode_prepare -> */
-static __always_inline void exit_to_user_mode(struct pt_regs *regs)
+static void noinstr el0_svc(struct pt_regs *regs)
 {
-    exit_to_user_mode_prepare(regs);
-    mte_check_tfsr_exit();
-    __exit_to_user_mode();
+    arm64_enter_from_user_mode(regs);
+    do_el0_svc(regs);
+    arm64_exit_to_user_mode(regs) {
+        exit_to_user_mode_prepare(regs);
+    }
 }
 
 void exit_to_user_mode_prepare(struct pt_regs *regs)
@@ -2416,43 +2418,51 @@ void exit_to_user_mode_prepare(struct pt_regs *regs)
         }
     }
 }
-
-static void exit_to_user_mode_loop(struct pt_regs *regs, u32 cached_flags)
-{
-    while (ti_work & EXIT_TO_USER_MODE_WORK) {
-        if (ti_work & _TIF_NEED_RESCHED)
-            schedule();
-
-        if (ti_work & _TIF_UPROBE)
-            uprobe_notify_resume(regs);
-
-        if (ti_work & _TIF_PATCH_PENDING)
-            klp_update_patch_state(current);
-
-        if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-            arch_do_signal_or_restart(regs);
-
-        if (ti_work & _TIF_NOTIFY_RESUME)
-            resume_user_mode_work(regs);
-
-        ti_work = read_thread_flags();
-    }
-}
 ```
 
 ##### return from interrupt
 
-x86_64
-
 ```c
-irqentry_exit() {
-    if (user_mode(regs)) {
-        irqentry_exit_to_user_mode(regs);
-            exit_to_user_mode_prepare(ress);
-                exit_to_user_mode_loop(regs);
-                    if (ti_work & _TIF_NEED_RESCHED)
-                        schedule();
-                arch_exit_to_user_mode_prepare(regs, ti_work);
+static __always_inline void __el1_irq(struct pt_regs *regs,
+                      void (*handler)(struct pt_regs *))
+{
+    irqentry_state_t state;
+
+    state = enter_from_kernel_mode(regs);
+
+    irq_enter_rcu();
+    do_interrupt_handler(regs, handler);
+    irq_exit_rcu();
+
+    exit_to_kernel_mode(regs, state) {
+        irqentry_exit() {
+            if (user_mode(regs)) {
+                irqentry_exit_to_user_mode(regs) {
+                    exit_to_user_mode_prepare(ress);
+                }
+            } else if (!regs_irqs_disabled(regs)) {
+                irqentry_exit_cond_resched() {
+                    if (!preempt_count()) {
+                        rcu_irq_exit_check_preempt();
+                        if (need_resched() && arch_irqentry_exit_need_resched()) {
+                            preempt_schedule_irq() {
+                                prev_state = exception_enter();
+
+                                do {
+                                    preempt_disable();
+                                    local_irq_enable();
+                                    __schedule(SM_PREEMPT);
+                                    local_irq_disable();
+                                    sched_preempt_enable_no_resched();
+                                } while (need_resched());
+
+                                exception_exit(prev_state);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 ```
@@ -3085,6 +3095,9 @@ void enqueue_task_dl(struct rq *rq, struct task_struct *p, int flags)
     enqueue_dl_entity(&p->dl, flags);
 
     if (dl_server(&p->dl))
+        return;
+
+    if (task_is_blocked(p))
         return;
 
     if (!task_current(rq, p) && !p->dl.dl_throttled && p->nr_cpus_allowed > 1)
@@ -5377,6 +5390,9 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
         }
     }
 
+    if (task_is_blocked(p))
+        return;
+
 /* 4. enqueue pushable task */
     if (!task_current(rq, p) && p->nr_cpus_allowed > 1) {
         enqueue_pushable_task(rq, p) {
@@ -5538,6 +5554,9 @@ put_prev_task_rt(struct rq *rq, struct task_struct *p) {
     update_curr_rt(rq);
 
     update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+
+    if (task_is_blocked(p))
+        return;
 
     if (on_rt_rq(&p->rt) && p->nr_cpus_allowed > 1) {
         enqueue_pushable_task(rq, p);
@@ -8986,17 +9005,28 @@ void update_curr(struct cfs_rq *cfs_rq) {
 ![](../images/kernel/proc-sched-cfs-task_fork_fair.png)
 
 ```c
-task_fork_fair(struct task_struct *p)
-    update_rq_clock(rq);
-    cfs_rq = task_cfs_rq(current);
-    curr = cfs_rq->curr;
-    if (curr) {
-        update_curr(cfs_rq);
-        se->vruntime = curr->vruntime;
+static void task_fork_fair(struct task_struct *p)
+{
+	set_task_max_allowed_capacity(p) {
+        struct asym_cap_data *entry;
+
+        if (!sched_asym_cpucap_active())
+            return;
+
+        rcu_read_lock();
+        list_for_each_entry_rcu(entry, &asym_cap_list, link) {
+            cpumask_t *cpumask;
+
+            cpumask = cpu_capacity_span(entry);
+            if (!cpumask_intersects(p->cpus_ptr, cpumask))
+                continue;
+
+            p->max_allowed_capacity = entry->capacity;
+            break;
+        }
+        rcu_read_unlock();
     }
-    /* udpate se: slice, vruntime, deadline */
-    place_entity(cfs_rq, se, ENQUEUE_INITIAL);
-        --->
+}
 ```
 
 ## yield_task_fair
@@ -14898,7 +14928,7 @@ kernel_clone(struct kernel_clone_args *args) {
             sa->runnable_avg = sa->util_avg;
         }
 
-        activate_task();
+        activate_task(rq, p, ENQUEUE_NOCLOCK | ENQUEUE_INITIAL);
         wakeup_preempt();
         p->sched_class->task_woken(rq, p);
     }
