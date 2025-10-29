@@ -4704,6 +4704,7 @@ void kmem_cache_init(void)
 * [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1) ⊙ [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2) ⊙ [:three: - KASan :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3) ⊙ [:four: - KFENCE :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
 * [[PATCH v7 00/21] SLUB percpu sheaves](https://lore.kernel.org/lkml/20250903-slub-percpu-caches-v7-0-71c114cdefef@suse.cz/)
     * [benchmarks](https://lore.kernel.org/lkml/20250913000935.1021068-1-sudarsanm@google.com)
+    * [[PATCH RFC 00/19] slab: replace cpu (partial) slabs with sheaves](https://lore.kernel.org/lkml/20251023-sheaves-for-all-v1-0-6ffa2c9941c0@suse.cz/)
 
 * bin 的技术小屋
     * [80 张图带你一步一步推演 slab 内存池的设计与实现](https://mp.weixin.qq.com/s/yHF5xBm5yMXDAHmE_noeCg)
