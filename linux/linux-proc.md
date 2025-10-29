@@ -1,7 +1,7 @@
 # Table of Contents
 
 <details>
-<summary>Open * Close</summary>
+<summary>▾ Expand ▴ Collapse</summary>
 
 * [CPU](#cpu)
 * [bios](#bios)
