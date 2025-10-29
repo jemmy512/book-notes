@@ -135,16 +135,26 @@ We need additional config to start init process:
     This is a shell script executed during system initialization (often triggered by inittab’s sysinit entry). It performs early setup tasks.
 
     ```sh
-    mkdir -p /sys
-    mkdir -p /tmp
-    mkdir -p /proc
-    mkdir -p /mnt
+    #!/bin/sh
+
+    mkdir -p /proc /sys /tmp /mnt /dev /etc /var
+
+    # Create essential device nodes
+    mknod -m 622 /dev/console c 5 1
+    mknod -m 666 /dev/null c 1 3
+    mknod -m 666 /dev/zero c 1 5
+    mknod -m 666 /dev/tty c 5 0
+
     /bin/mount -a
+    # Mount virtual filesystems
+    mount -t proc proc /proc
+    mount -t sysfs sysfs /sys
+    mount -t devtmpfs none /dev
     mkdir -p /dev/pts
     mount -t devpts devpts /dev/pts
-    mkdir -p /proc/sys/kernel/hotplug
-    echo /sbin/mdev > /proc/sys/kernel/hotplug
-    mdev -s
+
+    # Optional: run mdev
+    /sbin/mdev -s
     ```
 
     ```sh
@@ -161,8 +171,11 @@ We need additional config to start init process:
 
     ```sh
     cd busybox-1.33.1/_install/dev
-    sudo mknod console c 5 1
-    sudo mknod /dev/null c 1 3
+
+    sudo mknod -m 622 console c 5 1
+    sudo mknod -m 666 null c 1 3
+    sudo mknod -m 666 zero c 1 5
+    sudo mknod -m 666 tty c 5 0
     ```
 
     Without console, user output can't print
@@ -173,6 +186,7 @@ We need additional config to start init process:
 
     ```sh
     cd /code/busybox-1.33.1/_install/lib
+    cp /usr/lib/x86_64-linux-gnu/*.so* -a .
     cp /usr/aarch64-linux-gnu/lib/*.so*  -a .
     ```
 
@@ -202,7 +216,7 @@ cp -r /code/busybox-1.33.1/_install/* /code/ramfs
     ```sh
     # copy busybox
     mkdir /code/mnt
-    sudo mount -o loop rootfs.ext2 /code/mnt
+    sudo mount -o loop rootfs.ext4 /code/mnt
 
     sudo cp -r /path/to/busybox-1.36.1/_install/* /code/mnt/
 
@@ -246,6 +260,53 @@ cd coreutils-9.0
 ./configure --host=aarch64-linux-gnu --disable-nls  --prefix=/home/xxx/linux/linux-stable/root/gnu
 make
 make install
+```
+
+## ready-to-use-x86
+
+```sh
+# 1. download
+wget https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64-root.tar.xz
+
+sudo tar -xf jammy-server-cloudimg-amd64-root.tar.xz -C initramfs
+
+# 2. Pack as initramfs
+cd initramfs
+
+vim init
+```
+
+```sh
+#!/bin/sh
+
+# Mount essential filesystems
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t tmpfs tmpfs /tmp
+
+# Run the real init (systemd)
+exec /sbin/init
+```
+
+```sh
+chmod +x init
+
+# enale password-less login
+cd initramfs
+# etc/shadow
+change <root:*:20382:0:99999:7:::> to <root::20382:0:99999:7:::>
+
+find . | cpio -H newc -o | gzip > ../initramfs.img
+
+# 3. Boot QEMU
+qemu-system-x86_64 \
+    -m 65536 \
+    -smp 112 \
+    -kernel ~/code/linux/arch/x86/boot/bzImage \
+    -initrd initramfs.img \
+    -append "console=ttyS0" \
+    -nographic
 ```
 
 # make kernel
