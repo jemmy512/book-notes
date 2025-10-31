@@ -691,7 +691,32 @@ void rcu_sched_clock_irq(int user)
         __this_cpu_write(rcu_data.rcu_urgent_qs, false);
     }
 
-    rcu_flavor_sched_clock_irq(user);
+    rcu_flavor_sched_clock_irq(user) {
+        struct task_struct *t = current;
+
+        lockdep_assert_irqs_disabled();
+        if (rcu_preempt_depth() > 0 || (preempt_count() & (PREEMPT_MASK | SOFTIRQ_MASK))) {
+            /* No QS, force context switch if deferred. */
+            if (rcu_preempt_need_deferred_qs(t)) {
+                set_tsk_need_resched(t);
+                set_preempt_need_resched();
+            }
+        } else if (rcu_preempt_need_deferred_qs(t)) {
+            rcu_preempt_deferred_qs(t); /* Report deferred QS. */
+            return;
+        } else if (!WARN_ON_ONCE(rcu_preempt_depth())) {
+            rcu_qs(); /* Report immediate QS. */
+            return;
+        }
+
+        /* If GP is oldish, ask for help from rcu_read_unlock_special(). */
+        if (rcu_preempt_depth() > 0 &&
+            __this_cpu_read(rcu_data.core_needs_qs) &&
+            __this_cpu_read(rcu_data.cpu_no_qs.b.norm) &&
+            !t->rcu_read_unlock_special.b.need_qs &&
+            time_after(jiffies, rcu_state.gp_start + HZ))
+            t->rcu_read_unlock_special.b.need_qs = true;
+    }
 
     if (rcu_pending(user)) { --->
         invoke_rcu_core() {
@@ -926,7 +951,18 @@ void check_cpu_stall(struct rcu_data *rdp)
 
     nbcon_cpu_emergency_exit();
 
-    panic_on_rcu_stall();
+    panic_on_rcu_stall() {
+        static int cpu_stall;
+
+        if (scx_rcu_cpu_stall())
+            return;
+
+        if (++cpu_stall < sysctl_max_rcu_stall_to_panic)
+            return;
+
+        if (sysctl_panic_on_rcu_stall)
+            panic("RCU Stall\n");
+    }
 
     rcu_force_quiescent_state();  /* Kick them all. */
 }
@@ -1944,7 +1980,18 @@ int __noreturn rcu_gp_kthread(void *unused)
     }
 
     /* Advance to a new grace period and initialize state. */
-    record_gp_stall_check_time();
+    record_gp_stall_check_time() {
+        unsigned long j = jiffies;
+        unsigned long j1;
+
+        WRITE_ONCE(rcu_state.gp_start, j);
+        j1 = rcu_jiffies_till_stall_check();
+        smp_mb(); // ->gp_start before ->jiffies_stall and caller's ->gp_seq.
+        WRITE_ONCE(rcu_state.nr_fqs_jiffies_stall, 0);
+        WRITE_ONCE(rcu_state.jiffies_stall, j + j1);
+        rcu_state.jiffies_resched = j + j1 / 2;
+        rcu_state.n_force_qs_gpstart = READ_ONCE(rcu_state.n_force_qs);
+    }
     /* A new wait segment must be started before gp_seq advanced, so
      * that previous gp waiters won't observe the new gp_seq. */
     start_new_poll = rcu_sr_normal_gp_init() {
