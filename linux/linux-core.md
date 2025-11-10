@@ -640,156 +640,22 @@ static int __init rcu_spawn_gp_kthread(void)
     WARN_ON(num_online_cpus() > 1);
 
     rcu_spawn_cpu_nocb_kthread(smp_processor_id());
-    rcu_spawn_rnp_kthreads(rdp->mynode);
+
+    rcu_spawn_rnp_kthreads(rdp->mynode) {
+        if (rcu_scheduler_fully_active) {
+            mutex_lock(&rnp->kthread_mutex);
+
+            rcu_spawn_one_boost_kthread(rnp);
+            rcu_spawn_exp_par_gp_kworker(rnp);
+
+            mutex_unlock(&rnp->kthread_mutex);
+        }
+    }
+
     rcu_spawn_core_kthreads();
     rcu_start_exp_gp_kworker();
+
     return 0;
-}
-```
-
-##### rcu_nocb_gb_cb_kthread-rcuog/%d
-
-```c
-static int __init rcu_nocb_setup(char *str)
-{
-    alloc_bootmem_cpumask_var(&rcu_nocb_mask);
-    if (*str == '=') {
-        if (cpulist_parse(++str, rcu_nocb_mask)) {
-            pr_warn("rcu_nocbs= bad CPU range, all CPUs set\n");
-            cpumask_setall(rcu_nocb_mask);
-        }
-    }
-    rcu_state.nocb_is_setup = true;
-    return 1;
-}
-__setup("rcu_nocbs", rcu_nocb_setup);
-
-static int __init parse_rcu_nocb_poll(char *arg)
-{
-    rcu_nocb_poll = true;
-    return 1;
-}
-__setup("rcu_nocb_poll", parse_rcu_nocb_poll);
-```
-
-```c
-void rcu_spawn_cpu_nocb_kthread(int cpu)
-{
-    struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
-    struct rcu_data *rdp_gp;
-    struct task_struct *t;
-    struct sched_param sp;
-
-    if (!rcu_scheduler_fully_active || !rcu_state.nocb_is_setup)
-        return;
-
-    /* If there already is an rcuo kthread, then nothing to do. */
-    if (rdp->nocb_cb_kthread)
-        return;
-
-    /* If we didn't spawn the GP kthread first, reorganize! */
-    sp.sched_priority = kthread_prio;
-    rdp_gp = rdp->nocb_gp_rdp;
-    mutex_lock(&rdp_gp->nocb_gp_kthread_mutex);
-    if (!rdp_gp->nocb_gp_kthread) {
-        t = kthread_run(rcu_nocb_gp_kthread, rdp_gp, "rcuog/%d", rdp_gp->cpu);
-        if (WARN_ONCE(IS_ERR(t), "%s: Could not start rcuo GP kthread, OOM is now expected behavior\n", __func__)) {
-            mutex_unlock(&rdp_gp->nocb_gp_kthread_mutex);
-            goto err;
-        }
-        WRITE_ONCE(rdp_gp->nocb_gp_kthread, t);
-        if (kthread_prio)
-            sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
-    }
-    mutex_unlock(&rdp_gp->nocb_gp_kthread_mutex);
-
-    /* Spawn the kthread for this CPU. */
-    t = kthread_create(rcu_nocb_cb_kthread, rdp, "rcuo%c/%d", rcu_state.abbr, cpu);
-    if (WARN_ONCE(IS_ERR(t), "%s: Could not start rcuo CB kthread, OOM is now expected behavior\n", __func__))
-        goto err;
-
-    if (rcu_rdp_is_offloaded(rdp))
-        wake_up_process(t);
-    else
-        kthread_park(t);
-
-    if (IS_ENABLED(CONFIG_RCU_NOCB_CPU_CB_BOOST) && kthread_prio)
-        sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
-
-    WRITE_ONCE(rdp->nocb_cb_kthread, t);
-    WRITE_ONCE(rdp->nocb_gp_kthread, rdp_gp->nocb_gp_kthread);
-    return;
-
-err:
-    /* No need to protect against concurrent rcu_barrier()
-     * because the number of callbacks should be 0 for a non-boot CPU,
-     * therefore rcu_barrier() shouldn't even try to grab the nocb_lock.
-     * But hold nocb_mutex to avoid nocb_lock imbalance from shrinker. */
-    WARN_ON_ONCE(system_state > SYSTEM_BOOTING && rcu_segcblist_n_cbs(&rdp->cblist));
-    mutex_lock(&rcu_state.nocb_mutex);
-    if (rcu_rdp_is_offloaded(rdp)) {
-        rcu_nocb_rdp_deoffload(rdp);
-        cpumask_clear_cpu(cpu, rcu_nocb_mask);
-    }
-    mutex_unlock(&rcu_state.nocb_mutex);
-}
-```
-
-##### rcu_boost_kthread-rcub/%d
-
-```c
-static void rcu_spawn_rnp_kthreads(struct rcu_node *rnp)
-{
-    if (rcu_scheduler_fully_active) {
-        mutex_lock(&rnp->kthread_mutex);
-
-        rcu_spawn_one_boost_kthread(rnp) {
-            unsigned long flags;
-            int rnp_index = rnp - rcu_get_root();
-            struct sched_param sp;
-            struct task_struct *t;
-
-            if (rnp->boost_kthread_task)
-                return;
-
-            t = kthread_create(rcu_boost_kthread, (void *)rnp, "rcub/%d", rnp_index);
-            if (WARN_ON_ONCE(IS_ERR(t)))
-                return;
-
-            raw_spin_lock_irqsave_rcu_node(rnp, flags);
-            rnp->boost_kthread_task = t;
-            raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
-
-            sp.sched_priority = kthread_prio;
-            sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
-            rcu_thread_affine_rnp(t, rnp);
-            wake_up_process(t); /* get to TASK_INTERRUPTIBLE quickly. */
-        }
-
-        rcu_spawn_exp_par_gp_kworker(rnp) {
-            struct kthread_worker *kworker;
-            const char *name = "rcu_exp_par_gp_kthread_worker/%d";
-            struct sched_param param = { .sched_priority = kthread_prio };
-            int rnp_index = rnp - rcu_get_root();
-
-            if (rnp->exp_kworker)
-                return;
-
-            kworker = kthread_create_worker(0, name, rnp_index);
-            if (IS_ERR_OR_NULL(kworker)) {
-                return;
-            }
-            WRITE_ONCE(rnp->exp_kworker, kworker);
-
-            if (IS_ENABLED(CONFIG_RCU_EXP_KTHREAD))
-                sched_setscheduler_nocheck(kworker->task, SCHED_FIFO, &param);
-
-            rcu_thread_affine_rnp(kworker->task, rnp);
-            wake_up_process(kworker->task);
-        }
-
-        mutex_unlock(&rnp->kthread_mutex);
-    }
 }
 ```
 
@@ -3118,7 +2984,32 @@ static noinline void rcu_gp_cleanup(void)
 }
 ```
 
-### rcu_nocb_gp_kthread
+### RCU_NOCB_CPU
+
+```c
+static int __init rcu_nocb_setup(char *str)
+{
+    alloc_bootmem_cpumask_var(&rcu_nocb_mask);
+    if (*str == '=') {
+        if (cpulist_parse(++str, rcu_nocb_mask)) {
+            pr_warn("rcu_nocbs= bad CPU range, all CPUs set\n");
+            cpumask_setall(rcu_nocb_mask);
+        }
+    }
+    rcu_state.nocb_is_setup = true;
+    return 1;
+}
+__setup("rcu_nocbs", rcu_nocb_setup);
+
+static int __init parse_rcu_nocb_poll(char *arg)
+{
+    rcu_nocb_poll = true;
+    return 1;
+}
+__setup("rcu_nocb_poll", parse_rcu_nocb_poll);
+```
+
+#### rcu_nocb_gp_kthread
 
 ```c
 static int rcu_nocb_gp_kthread(void *arg)
@@ -3323,7 +3214,7 @@ void nocb_gp_wait(struct rcu_data *my_rdp)
 
 ```
 
-### rcu_nocb_cb_kthread
+#### rcu_nocb_cb_kthread
 
 ```c
 static int rcu_nocb_cb_kthread(void *arg)
@@ -3404,6 +3295,149 @@ void nocb_cb_wait(struct rcu_data *rdp)
     if (needwake_gp)
         rcu_gp_kthread_wake();
 }
+```
+
+#### rcuox/%d
+```c
+void rcu_spawn_cpu_nocb_kthread(int cpu)
+{
+    struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+    struct rcu_data *rdp_gp;
+    struct task_struct *t;
+    struct sched_param sp;
+
+    if (!rcu_scheduler_fully_active || !rcu_state.nocb_is_setup)
+        return;
+
+    /* If there already is an rcuo kthread, then nothing to do. */
+    if (rdp->nocb_cb_kthread)
+        return;
+
+    /* If we didn't spawn the GP kthread first, reorganize! */
+    sp.sched_priority = kthread_prio;
+    rdp_gp = rdp->nocb_gp_rdp;
+    mutex_lock(&rdp_gp->nocb_gp_kthread_mutex);
+    if (!rdp_gp->nocb_gp_kthread) {
+        t = kthread_run(rcu_nocb_gp_kthread, rdp_gp, "rcuog/%d", rdp_gp->cpu);
+        if (WARN_ONCE(IS_ERR(t), "%s: Could not start rcuo GP kthread, OOM is now expected behavior\n", __func__)) {
+            mutex_unlock(&rdp_gp->nocb_gp_kthread_mutex);
+            goto err;
+        }
+        WRITE_ONCE(rdp_gp->nocb_gp_kthread, t);
+        if (kthread_prio)
+            sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
+    }
+    mutex_unlock(&rdp_gp->nocb_gp_kthread_mutex);
+
+    /* Spawn the kthread for this CPU.
+     * %c: "p" for RCU-preempt (PREEMPTION kernels)
+     * "s" for RCU-sched (!PREEMPTION kernels) */
+    t = kthread_create(rcu_nocb_cb_kthread, rdp, "rcuo%c/%d", rcu_state.abbr, cpu);
+    if (WARN_ONCE(IS_ERR(t), "%s: Could not start rcuo CB kthread, OOM is now expected behavior\n", __func__))
+        goto err;
+
+    if (rcu_rdp_is_offloaded(rdp))
+        wake_up_process(t);
+    else
+        kthread_park(t);
+
+    if (IS_ENABLED(CONFIG_RCU_NOCB_CPU_CB_BOOST) && kthread_prio)
+        sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
+
+    WRITE_ONCE(rdp->nocb_cb_kthread, t);
+    WRITE_ONCE(rdp->nocb_gp_kthread, rdp_gp->nocb_gp_kthread);
+    return;
+
+err:
+    /* No need to protect against concurrent rcu_barrier()
+     * because the number of callbacks should be 0 for a non-boot CPU,
+     * therefore rcu_barrier() shouldn't even try to grab the nocb_lock.
+     * But hold nocb_mutex to avoid nocb_lock imbalance from shrinker. */
+    WARN_ON_ONCE(system_state > SYSTEM_BOOTING && rcu_segcblist_n_cbs(&rdp->cblist));
+    mutex_lock(&rcu_state.nocb_mutex);
+    if (rcu_rdp_is_offloaded(rdp)) {
+        rcu_nocb_rdp_deoffload(rdp);
+        cpumask_clear_cpu(cpu, rcu_nocb_mask);
+    }
+    mutex_unlock(&rcu_state.nocb_mutex);
+}
+```
+
+### RCU_EXP_KTHREAD
+
+```c
+static void rcu_spawn_exp_par_gp_kworker(struct rcu_node *rnp)
+{
+    struct kthread_worker *kworker;
+    const char *name = "rcu_exp_par_gp_kthread_worker/%d";
+    struct sched_param param = { .sched_priority = kthread_prio };
+    int rnp_index = rnp - rcu_get_root();
+
+    if (rnp->exp_kworker)
+        return;
+
+    kworker = kthread_create_worker(0, name, rnp_index);
+    if (IS_ERR_OR_NULL(kworker)) {
+        pr_err("Failed to create par gp kworker on %d/%d\n", rnp->grplo, rnp->grphi);
+        return;
+    }
+    WRITE_ONCE(rnp->exp_kworker, kworker);
+
+    if (IS_ENABLED(CONFIG_RCU_EXP_KTHREAD))
+        sched_setscheduler_nocheck(kworker->task, SCHED_FIFO, &param);
+
+    rcu_thread_affine_rnp(kworker->task, rnp);
+    wake_up_process(kworker->task);
+}
+
+static void __init rcu_start_exp_gp_kworker(void)
+{
+    const char *name = "rcu_exp_gp_kthread_worker";
+    struct sched_param param = { .sched_priority = kthread_prio };
+
+    rcu_exp_gp_kworker = kthread_run_worker(0, name);
+    if (IS_ERR_OR_NULL(rcu_exp_gp_kworker)) {
+        pr_err("Failed to create %s!\n", name);
+        rcu_exp_gp_kworker = NULL;
+        return;
+    }
+
+    if (IS_ENABLED(CONFIG_RCU_EXP_KTHREAD))
+        sched_setscheduler_nocheck(rcu_exp_gp_kworker->task, SCHED_FIFO, &param);
+}
+```
+
+### RCU_BOOST
+
+```c
+static void rcu_spawn_one_boost_kthread(struct rcu_node *rnp)
+{
+    unsigned long flags;
+    int rnp_index = rnp - rcu_get_root();
+    struct sched_param sp;
+    struct task_struct *t;
+
+    if (rnp->boost_kthread_task)
+        return;
+
+    t = kthread_create(rcu_boost_kthread, (void *)rnp, "rcub/%d", rnp_index);
+    if (WARN_ON_ONCE(IS_ERR(t)))
+        return;
+
+    raw_spin_lock_irqsave_rcu_node(rnp, flags);
+    rnp->boost_kthread_task = t;
+    raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+
+    sp.sched_priority = kthread_prio;
+    sched_setscheduler_nocheck(t, SCHED_FIFO, &sp);
+    rcu_thread_affine_rnp(t, rnp);
+    wake_up_process(t); /* get to TASK_INTERRUPTIBLE quickly. */
+}
+```
+
+### CONFIG_SRCU
+
+```c
 ```
 
 ### rcu_barrier
