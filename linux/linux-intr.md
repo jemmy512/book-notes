@@ -17,6 +17,18 @@
 
 * [深入分析linux内核源码：中断子系统详解](https://mp.weixin.qq.com/s/8BV0aQMeBtqUlKrpa8QZeg)
 
+| PREEMT_RT | IRQs | Preemptible | Sleepable | Notes |
+| :-: | :-: | :-: | :-: | :-: |
+| Hard IRQ                  | ❌ | ❌ | ❌ | Fast, minimal, IRQ context |
+| Soft IRQ - run_ksoftirqd  | ✅ | ✅ | ❌ | Process context |
+| Soft IRQ - handle_softirqs| ✅ | ❌ | ❌ | Aotmic context |
+| Workqueue                 | ✅ | ✅ | ✅ | Process context |
+| Normal process            | ✅ | ✅ | ✅ | User/kernel mode |
+
+> In the top half (hard IRQ handler), hardware disables interrupts automatically when the exception (interrupt) is taken.
+
+> Soft IRQ is not-preemptable in handle_softirqs but preemptable run_ksoftirqd
+
 * PREEMPT_RT
 
     * **Hard interrupts force threading**
@@ -54,7 +66,7 @@
 
             > The above three soft interrupt execution points will disable the bottom half to ensure mutual exclusion. The standard kernel disables the bottom half by disabling preemption.
 
-        * The **priority **of standard kernel soft interrupt **execution**
+        * The **priority** of standard kernel soft interrupt **execution**
             1. The ksoftirqd will only **be interrupted by hard interrupts **and will **not be preempted by other processes**. Theoretically, its priority is higher than that of real-time threads;
             2. Disabling bottom halves (BH) implicitly disables preemption in the Linux kernel due to the shared use of the preempt_count variable.
 
@@ -85,15 +97,6 @@
 ---
 
 ![](../images/kernel/intr-preempt_count.png)
-
-| Context | IRQs | Preemption | Sleep OK? | Notes |
-| - | - | - | - | - |
-| Hard IRQ | :x: | :x: | :x: | Fast, minimal, IRQ context |
-| Soft IRQ | :white_check_mark: | :x: | :x: | Deferred but atomic |
-| Workqueue | :white_check_mark: | :white_check_mark: | :white_check_mark: | Process context, can block |
-| Normal process | :white_check_mark: | :white_check_mark: | :white_check_mark: | User/kernel mode |
-
-* In the top half (hard IRQ handler), hardware disables interrupts automatically when the exception (interrupt) is taken.
 
 ```c
 /* The interrupt vector interrupt controller sent to
@@ -821,7 +824,7 @@ int irq_thread(void *data)
 ## irq_thead_fn
 
 ```c
-static irqreturn_t irq_thread_fn(struct irq_desc *desc,    struct irqaction *action)
+static irqreturn_t irq_thread_fn(struct irq_desc *desc, struct irqaction *action)
 {
     irqreturn_t ret = action->thread_fn(action->irq, action->dev_id);
 
@@ -1733,17 +1736,20 @@ int smpboot_thread_fn(void *data)
 
 static void run_ksoftirqd(unsigned int cpu)
 {
+    /* While executing handle_softirqs, preemption is locally disabled to
+     * maintain atomicity for that handler region.
+     * But softirq can be preempted in cond_resched */
     ksoftirqd_run_begin() {
-    #ifdef CONFIG_PREEMPT_RT /* enabled again in handle_softirqs */
+    #ifdef CONFIG_PREEMPT_RT
         __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
-        local_irq_disable();
+        local_irq_disable(); /* enabled again in handle_softirqs */
     #else
         local_irq_disable();
-        #endif
+    #endif
     }
 
     if (local_softirq_pending()) {
-        handle_softirqs(true);
+        handle_softirqs(true); /* atomic section with bh disabled cant be preempted */
             --->
         ksoftirqd_run_end();
         cond_resched();
