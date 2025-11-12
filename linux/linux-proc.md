@@ -191,7 +191,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     - **SPSR_EL2**: Saved Program Status Register for EL2.
     - **SPSR_EL3**: Saved Program Status Register for EL3.
 
-* Summarydeactivate_task
+* Summary
 
     - **General-purpose registers**: x0 - x30 (64-bit) and w0 - w30 (32-bit).
     - **Stack pointer**: sp.
@@ -1142,6 +1142,18 @@ export LD_LIBRARY_PATH=
 # sched
 
 ![](../images/kernel/proc-sched-class.png)
+
+| PREEMT_RT | IRQs | Preemptible | Sleepable | Notes |
+| :-: | :-: | :-: | :-: | :-: |
+| Hard IRQ                  | ❌ | ❌ | ❌ | Fast, minimal, IRQ context |
+| Soft IRQ - run_ksoftirqd  | ✅ | ✅ | ❌ | Process context |
+| Soft IRQ - handle_softirqs| ✅ | ❌ | ❌ | Aotmic context |
+| Workqueue                 | ✅ | ✅ | ✅ | Process context |
+| Normal process            | ✅ | ✅ | ✅ | User/kernel mode |
+
+> In the top half (hard IRQ handler), hardware disables interrupts automatically when the exception (interrupt) is taken.
+
+> Soft IRQ is not-preemptable in handle_softirqs but preemptable run_ksoftirqd
 
 * User Space Tasks Preemption Schedule Points:
 
