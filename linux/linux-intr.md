@@ -1365,8 +1365,16 @@ __irq_exit_rcu() {
 
         /* Make sure that timer wheel updates are propagated */
         if ((sched_core_idle_cpu(cpu) && !need_resched()) || tick_nohz_full_cpu(cpu)) {
-            if (!in_hardirq())
-                tick_nohz_irq_exit();
+            if (!in_hardirq()) {
+                tick_nohz_irq_exit() {
+                    struct tick_sched *ts = this_cpu_ptr(&tick_cpu_sched);
+
+                    if (tick_sched_flag_test(ts, TS_FLAG_INIDLE))
+                        tick_nohz_start_idle(ts);
+                    else
+                        tick_nohz_full_update_tick(ts);
+                }
+            }
         }
     #endif
     }
