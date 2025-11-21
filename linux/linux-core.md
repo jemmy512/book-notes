@@ -230,6 +230,11 @@ RCU Lock | Sometimes (variant-based) | :white_check_mark: (most variants) | Proc
             * Deadlock Immunity
             * RCU Readers and Updaters Run Concurrently
             * Low-Priority RCU Readers Can Block High-Priority Reclaimers
+    * [Requirements for RCU part 1: the fundamentals](https://lwn.net/Articles/652156/) ⊙ [part 2: parallelism and software engineering](https://lwn.net/Articles/652677/) ⊙ [part 3](https://lwn.net/Articles/653326/)
+        * Grace-Period Guarantee
+        * Publish-Subscribe Guarantee
+        * RCU Primitives Guaranteed to Execute Unconditionally. They are invoked, they do their job, and they return, with no possibility of error and no need to retry.
+        * Guaranteed Read-to-Write Upgrade
     * [The design of preemptible read-copy-update](https://lwn.net/Articles/253651/)
     * [Priority-Boosting RCU Read-Side Critical Sections](https://lwn.net/Articles/220677/)
     * [Sleepable RCU](https://lwn.net/Articles/202847/)
