@@ -727,6 +727,30 @@ logfile ~/.msmtp.log
 * `--subject-prefix="PATCH <MOD NAME>"`
 * `--in-reply-to`: Message id can be found at https://lore.kernel.org/all/ according to the patch name
 
+# git cmd
+
+```sh
+git rebase -i HEAD~<n>
+# amend code
+git add .
+git commit --amend
+git rebase --continue
+```
+
+```sh
+repo init -u https://android.googlesource.com/platform/manifest -b master
+repo sync -j8
+repo status
+repo diff
+repo start <branch-name> --all
+repo branches
+
+repo upload .
+repo list
+repo info
+repo forall -c 'git clean -fdx'
+```
+
 # vpn
 
 ## download
