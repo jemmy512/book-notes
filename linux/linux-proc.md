@@ -457,7 +457,7 @@ primary_entry
 
 # start_kernel
 
-![](../images/kernel/ker-start.svg) /* TODO */
+![](../images/kernel/start-kernel.drawio.svg)
 
 ```c
 /* init/main.c */
