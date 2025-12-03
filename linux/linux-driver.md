@@ -191,6 +191,194 @@ struct platform_device {
 };
 ```
 
+## bus_register
+
+```c
+struct subsys_private {
+    struct kset subsys;
+    struct kset *devices_kset;
+    struct list_head interfaces;
+    struct mutex mutex;
+
+    struct kset *drivers_kset;
+    struct klist klist_devices;
+    struct klist klist_drivers;
+    struct blocking_notifier_head bus_notifier;
+    unsigned int drivers_autoprobe:1;
+    const struct bus_type *bus;
+    struct device *dev_root;
+
+    struct kset glue_dirs;
+    const struct class *class;
+
+    struct lock_class_key lock_key;
+};
+```
+
+```c
+int bus_register(const struct bus_type *bus)
+{
+    int retval;
+    struct subsys_private *priv;
+    struct kobject *bus_kobj;
+    struct lock_class_key *key;
+
+    priv = kzalloc(sizeof(struct subsys_private), GFP_KERNEL);
+    if (!priv)
+        return -ENOMEM;
+
+    priv->bus = bus;
+
+    BLOCKING_INIT_NOTIFIER_HEAD(&priv->bus_notifier);
+
+    bus_kobj = &priv->subsys.kobj;
+    retval = kobject_set_name(bus_kobj, "%s", bus->name);
+    if (retval)
+        goto out;
+
+    bus_kobj->kset = bus_kset;
+    bus_kobj->ktype = &bus_ktype;
+    priv->drivers_autoprobe = 1;
+
+    retval = kset_register(&priv->subsys);
+    if (retval)
+        goto out;
+
+    retval = bus_create_file(bus, &bus_attr_uevent);
+    if (retval)
+        goto bus_uevent_fail;
+
+    priv->devices_kset = kset_create_and_add("devices", NULL, bus_kobj);
+    if (!priv->devices_kset) {
+        retval = -ENOMEM;
+        goto bus_devices_fail;
+    }
+
+    priv->drivers_kset = kset_create_and_add("drivers", NULL, bus_kobj);
+    if (!priv->drivers_kset) {
+        retval = -ENOMEM;
+        goto bus_drivers_fail;
+    }
+
+    INIT_LIST_HEAD(&priv->interfaces);
+    key = &priv->lock_key;
+    lockdep_register_key(key);
+    __mutex_init(&priv->mutex, "subsys mutex", key);
+    klist_init(&priv->klist_devices, klist_devices_get, klist_devices_put);
+    klist_init(&priv->klist_drivers, NULL, NULL);
+
+    retval = add_probe_files(bus) {
+        int retval;
+
+        retval = bus_create_file(bus, &bus_attr_drivers_probe);
+        if (retval)
+            goto out;
+
+        retval = bus_create_file(bus, &bus_attr_drivers_autoprobe);
+        if (retval)
+            bus_remove_file(bus, &bus_attr_drivers_probe);
+    out:
+        return retval;
+    }
+    if (retval)
+        goto bus_probe_files_fail;
+
+    retval = sysfs_create_groups(bus_kobj, bus->bus_groups) {
+        return internal_create_groups(kobj, 0, groups) {
+            int error = 0;
+            int i;
+
+            if (!groups)
+                return 0;
+
+            for (i = 0; groups[i]; i++) {
+                error = internal_create_group(kobj, update, groups[i]) {
+                    struct kernfs_node *kn;
+                    kuid_t uid;
+                    kgid_t gid;
+                    int error;
+
+                    if (WARN_ON(!kobj || (!update && !kobj->sd)))
+                        return -EINVAL;
+
+                    /* Updates may happen before the object has been instantiated */
+                    if (unlikely(update && !kobj->sd))
+                        return -EINVAL;
+
+                    if (!grp->attrs && !grp->bin_attrs) {
+                        pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
+                            kobj->name, grp->name ?: "");
+                        return 0;
+                    }
+
+                    kobject_get_ownership(kobj, &uid, &gid);
+                    if (grp->name) {
+                        umode_t mode = __first_visible(grp, kobj);
+
+                        if (mode & SYSFS_GROUP_INVISIBLE)
+                            mode = 0;
+                        else
+                            mode = S_IRWXU | S_IRUGO | S_IXUGO;
+
+                        if (update) {
+                            kn = kernfs_find_and_get(kobj->sd, grp->name);
+                            if (!kn) {
+                                pr_debug("attr grp %s/%s not created yet\n",
+                                    kobj->name, grp->name);
+                                /* may have been invisible prior to this update */
+                                update = 0;
+                            } else if (!mode) {
+                                sysfs_remove_group(kobj, grp);
+                                kernfs_put(kn);
+                                return 0;
+                            }
+                        }
+
+                        if (!update) {
+                            if (!mode)
+                                return 0;
+                            kn = kernfs_create_dir_ns(kobj->sd, grp->name, mode,
+                                        uid, gid, kobj, NULL);
+                            if (IS_ERR(kn)) {
+                                if (PTR_ERR(kn) == -EEXIST)
+                                    sysfs_warn_dup(kobj->sd, grp->name);
+                                return PTR_ERR(kn);
+                            }
+                        }
+                    } else {
+                        kn = kobj->sd;
+                    }
+
+                    kernfs_get(kn);
+                    error = create_files(kn, kobj, uid, gid, grp, update);
+                    if (error) {
+                        if (grp->name)
+                            kernfs_remove(kn);
+                    }
+                    kernfs_put(kn);
+
+                    if (grp->name && update)
+                        kernfs_put(kn);
+
+                    return error;
+                }
+                if (error) {
+                    while (--i >= 0)
+                        sysfs_remove_group(kobj, groups[i]);
+                    break;
+                }
+            }
+            return error;
+        }
+    }
+    if (retval)
+        goto bus_groups_fail;
+
+    pr_debug("bus: '%s': registered\n", bus->name);
+    return 0;
+}
+```
+
 # platform
 
 ```c
