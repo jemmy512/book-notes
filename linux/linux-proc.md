@@ -4605,7 +4605,8 @@ unlock:
 ### dl_server_timer
 
 ```c
-static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_dl_entity *dl_se) {
+static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_dl_entity *dl_se)
+{
     struct rq *rq = rq_of_dl_se(dl_se);
     u64 fw;
 
@@ -4618,20 +4619,21 @@ static enum hrtimer_restart dl_server_timer(struct hrtimer *timer, struct sched_
         sched_clock_tick();
         update_rq_clock(rq);
 
-        if (!dl_se->dl_runtime)
-            return HRTIMER_NORESTART;
+        /* Make sure current has propagated its pending runtime into
+         * any relevant server through calling dl_server_update() and
+         * friends. */
+        rq->donor->sched_class->update_curr(rq);
 
-        if (!dl_se->server_has_tasks(dl_se)) {
-            replenish_dl_entity(dl_se);
-            dl_server_stopped(dl_se);
+        if (dl_se->dl_defer_idle) {
+            dl_server_stop(dl_se);
             return HRTIMER_NORESTART;
         }
 
         if (dl_se->dl_defer_armed) {
             /* First check if the server could consume runtime in background.
-            * If so, it is possible to push the defer timer for this amount
-            * of time. The dl_server_min_res serves as a limit to avoid
-            * forwarding the timer for a too small amount of time. */
+             * If so, it is possible to push the defer timer for this amount
+             * of time. The dl_server_min_res serves as a limit to avoid
+             * forwarding the timer for a too small amount of time. */
             if (dl_time_before(rq_clock(dl_se->rq), (dl_se->deadline - dl_se->runtime - dl_server_min_res))) {
                 /* reset the defer timer */
                 fw = dl_se->deadline - rq_clock(dl_se->rq) - dl_se->runtime;
@@ -4766,31 +4768,6 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 ## dl_server
 
 ```c
-void dl_server_update_idle_time(struct rq *rq, struct task_struct *p)
-{
-    s64 delta_exec;
-
-    if (!rq->fair_server.dl_defer)
-        return;
-
-    /* no need to discount more */
-    if (rq->fair_server.runtime < 0)
-        return;
-
-    delta_exec = rq_clock_task(rq) - p->se.exec_start;
-    if (delta_exec < 0)
-        return;
-
-    rq->fair_server.runtime -= delta_exec;
-
-    if (rq->fair_server.runtime < 0) {
-        rq->fair_server.dl_defer_running = 0;
-        rq->fair_server.runtime = 0;
-    }
-
-    p->se.exec_start = rq_clock_task(rq);
-}
-
 /* called from update_curr_common(), propagates runtime to the server. */
 void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec)
 {
@@ -6863,8 +6840,12 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags) {
     }
 
     if (!rq_h_nr_queued && rq->cfs.h_nr_queued) {
-        if (!rq->nr_running)
-            dl_server_update_idle_time(rq, rq->curr);
+        if (!rq->nr_running) {
+            dl_server_update_idle(rq, rq->curr) {
+                if (dl_se->dl_server_active && dl_se->dl_runtime && dl_se->dl_defer)
+                    update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+            }
+        }
         dl_server_start(&rq->fair_server);
             --->
     }
@@ -8966,7 +8947,7 @@ void update_curr(struct cfs_rq *cfs_rq) {
         if (dl_server_active(&rq->fair_server))
             dl_server_update(&rq->fair_server, delta_exec) {
                 /* 0 runtime = fair server disabled */
-                if (dl_se->dl_runtime) {
+                if (dl_se->dl_server_active && dl_se->dl_runtime)
                     dl_se->dl_server_idle = 0;
                     update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
                 }
@@ -9020,7 +9001,7 @@ void update_curr(struct cfs_rq *cfs_rq) {
 ```c
 static void task_fork_fair(struct task_struct *p)
 {
-	set_task_max_allowed_capacity(p) {
+    set_task_max_allowed_capacity(p) {
         struct asym_cap_data *entry;
 
         if (!sched_asym_cpucap_active())
