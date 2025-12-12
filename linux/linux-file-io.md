@@ -7568,7 +7568,21 @@ sync_filesystem() {
                         }
                     }
                 }
-                wb_wait_for_completion();
+                wb_wait_for_completion() {
+                    done->wait_start = jiffies;
+                    atomic_dec(&done->cnt); /* put down the initial count */
+                    wait_event(*done->waitq, wb_wait_for_completion_cb(done) = {
+                        unsigned long waited_secs = (jiffies - done->wait_start) / HZ;
+
+                        done->progress_stamp = jiffies;
+                        if (waited_secs > sysctl_hung_task_timeout_secs)
+                            pr_info("INFO: The task %s:%d has been waiting for writeback "
+                                "completion for more than %lu seconds.",
+                                current->comm, current->pid, waited_secs);
+
+                        return !atomic_read(&done->cnt);
+                    });
+                }
             }
         }
     }
@@ -7672,84 +7686,72 @@ static long wb_writeback(
 
 /* Write a portion of b_io inodes which belong to @sb. */
 static long writeback_sb_inodes(
-  struct super_block *sb,
-  struct bdi_writeback *wb,
-  struct wb_writeback_work *work)
+    struct super_block *sb,
+    struct bdi_writeback *wb,
+    struct wb_writeback_work *work)
 {
-  struct writeback_control wbc = {
-    .sync_mode          = work->sync_mode,
-    .tagged_writepages  = work->tagged_writepages,
-    .for_kupdate        = work->for_kupdate,
-    .for_background     = work->for_background,
-    .for_sync           = work->for_sync,
-    .range_cyclic       = work->range_cyclic,
-    .range_start        = 0,
-    .range_end          = LLONG_MAX,
-  };
+    struct writeback_control wbc = {
+        .sync_mode          = work->sync_mode,
+        .tagged_writepages  = work->tagged_writepages,
+        .for_kupdate        = work->for_kupdate,
+        .for_background     = work->for_background,
+        .for_sync           = work->for_sync,
+        .range_cyclic       = work->range_cyclic,
+        .range_start        = 0,
+        .range_end          = LLONG_MAX,
+    };
 
-  unsigned long start_time = jiffies;
-  long write_chunk;
-  long wrote = 0;  /* count both pages and inodes */
+    unsigned long start_time = jiffies;
+    long write_chunk;
+    long wrote = 0;  /* count both pages and inodes */
 
-  while (!list_empty(&wb->b_io)) {
-    struct inode *inode = wb_inode(wb->b_io.prev);
-    struct bdi_writeback *tmp_wb;
+    while (!list_empty(&wb->b_io)) {
+        struct inode *inode = wb_inode(wb->b_io.prev);
+        struct bdi_writeback *tmp_wb;
 
-    write_chunk = writeback_chunk_size(wb, work);
-    wbc.nr_to_write = write_chunk;
-    wbc.pages_skipped = 0;
+        write_chunk = writeback_chunk_size(wb, work) {
+            if (work->sync_mode == WB_SYNC_ALL || work->tagged_writepages)
+                return LONG_MAX;
 
-    __writeback_single_inode(inode, &wbc);
+            pages = min(wb->avg_write_bandwidth / 2, global_wb_domain.dirty_limit / DIRTY_SCOPE);
+            pages = min(pages, work->nr_pages);
+            return round_down(pages + sb->s_min_writeback_pages, sb->s_min_writeback_pages);
+        }
+        wbc.nr_to_write = write_chunk;
+        wbc.pages_skipped = 0;
 
-    wbc_detach_inode(&wbc);
-    work->nr_pages -= write_chunk - wbc.nr_to_write;
-    wrote += write_chunk - wbc.nr_to_write;
+        __writeback_single_inode(inode, &wbc);
 
-    if (need_resched()) {
-      blk_flush_plug(current);
-      cond_resched();
+        wbc_detach_inode(&wbc);
+        work->nr_pages -= write_chunk - wbc.nr_to_write;
+        wrote += write_chunk - wbc.nr_to_write;
+
+        if (need_resched()) {
+            blk_flush_plug(current);
+            cond_resched();
+        }
+
+        tmp_wb = inode_to_wb_and_lock_list(inode);
+        spin_lock(&inode->i_lock);
+        if (!(inode->i_state & I_DIRTY_ALL))
+            wrote++;
+        requeue_inode(inode, tmp_wb, &wbc);
+        inode_sync_complete(inode);
+        spin_unlock(&inode->i_lock);
+
+        if (unlikely(tmp_wb != wb)) {
+            spin_unlock(&tmp_wb->list_lock);
+            spin_lock(&wb->list_lock);
+        }
+
+        if (wrote) {
+            if (time_is_before_jiffies(start_time + HZ / 10UL))
+                break;
+            if (work->nr_pages <= 0)
+                break;
+        }
     }
-
-    tmp_wb = inode_to_wb_and_lock_list(inode);
-    spin_lock(&inode->i_lock);
-    if (!(inode->i_state & I_DIRTY_ALL))
-      wrote++;
-    requeue_inode(inode, tmp_wb, &wbc);
-    inode_sync_complete(inode);
-    spin_unlock(&inode->i_lock);
-
-    if (unlikely(tmp_wb != wb)) {
-      spin_unlock(&tmp_wb->list_lock);
-      spin_lock(&wb->list_lock);
-    }
-
-    if (wrote) {
-      if (time_is_before_jiffies(start_time + HZ / 10UL))
-        break;
-      if (work->nr_pages <= 0)
-        break;
-    }
-  }
-  return wrote;
-}
-
-static long writeback_chunk_size(
-  struct bdi_writeback *wb,
-  struct wb_writeback_work *work)
-{
-  long pages;
-
-  if (work->sync_mode == WB_SYNC_ALL || work->tagged_writepages)
-    pages = LONG_MAX;
-  else {
-    pages = min(wb->avg_write_bandwidth / 2,
-          global_wb_domain.dirty_limit / DIRTY_SCOPE);
-    pages = min(pages, work->nr_pages);
-    pages = round_down(pages + MIN_WRITEBACK_PAGES,
-           MIN_WRITEBACK_PAGES);
-  }
-
-  return pages;
+    return wrote;
 }
 
 /* Write out an inode and its dirty pages */
