@@ -871,7 +871,7 @@ int single_step_handler(unsigned long unused, unsigned long esr,
 
         list = user_mode(regs) ? &user_step_hook : &kernel_step_hook;
 
-        list_for_each_entry_rcu(hook, list, node)	{
+        list_for_each_entry_rcu(hook, list, node)    {
             retval = hook->fn(regs, esr);
             if (retval == DBG_HOOK_HANDLED)
                 break;
@@ -1332,9 +1332,9 @@ static const struct user_regset aarch64_regsets[] = {
 
 ```c
 int ptrace_request(struct task_struct *child, long request,
-		   unsigned long addr, unsigned long data)
+           unsigned long addr, unsigned long data)
 {
-	switch (request) {
+    switch (request) {
         case PTRACE_GETREGSET:
         case PTRACE_SETREGSET: {
             struct iovec kiov;
@@ -2406,10 +2406,10 @@ MODULE_LICENSE("GPL");
 obj-m += kprobe.o
 
 all:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+    make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+    make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 ```
 
 ```sh
@@ -2447,11 +2447,11 @@ struct kretprobe {
 ```c
 int register_kretprobe(struct kretprobe *rp)
 {
-	int ret;
-	int i;
-	void *addr;
+    int ret;
+    int i;
+    void *addr;
 
-	ret = kprobe_on_func_entry(rp->kp.addr, rp->kp.symbol_name, rp->kp.offset) {
+    ret = kprobe_on_func_entry(rp->kp.addr, rp->kp.symbol_name, rp->kp.offset) {
         bool on_func_entry;
         kprobe_opcode_t *kp_addr = _kprobe_addr(addr, sym, offset, &on_func_entry);
 
@@ -2463,68 +2463,68 @@ int register_kretprobe(struct kretprobe *rp)
 
         return 0;
     }
-	if (ret)
-		return ret;
+    if (ret)
+        return ret;
 
-	/* If only 'rp->kp.addr' is specified, check reregistering kprobes */
-	if (rp->kp.addr && warn_kprobe_rereg(&rp->kp))
-		return -EINVAL;
+    /* If only 'rp->kp.addr' is specified, check reregistering kprobes */
+    if (rp->kp.addr && warn_kprobe_rereg(&rp->kp))
+        return -EINVAL;
 
-	if (kretprobe_blacklist_size) {
-		addr = kprobe_addr(&rp->kp);
-		if (IS_ERR(addr))
-			return PTR_ERR(addr);
+    if (kretprobe_blacklist_size) {
+        addr = kprobe_addr(&rp->kp);
+        if (IS_ERR(addr))
+            return PTR_ERR(addr);
 
-		for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
-			if (kretprobe_blacklist[i].addr == addr)
-				return -EINVAL;
-		}
-	}
+        for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
+            if (kretprobe_blacklist[i].addr == addr)
+                return -EINVAL;
+        }
+    }
 
-	if (rp->data_size > KRETPROBE_MAX_DATA_SIZE)
-		return -E2BIG;
+    if (rp->data_size > KRETPROBE_MAX_DATA_SIZE)
+        return -E2BIG;
 
-	rp->kp.pre_handler = pre_handler_kretprobe;
-	rp->kp.post_handler = NULL;
+    rp->kp.pre_handler = pre_handler_kretprobe;
+    rp->kp.post_handler = NULL;
 
-	/* Pre-allocate memory for max kretprobe instances */
-	if (rp->maxactive <= 0)
-		rp->maxactive = max_t(unsigned int, 10, 2*num_possible_cpus());
+    /* Pre-allocate memory for max kretprobe instances */
+    if (rp->maxactive <= 0)
+        rp->maxactive = max_t(unsigned int, 10, 2*num_possible_cpus());
 
 #ifdef CONFIG_KRETPROBE_ON_RETHOOK
-	rp->rh = rethook_alloc((void *)rp, kretprobe_rethook_handler,
-				sizeof(struct kretprobe_instance) +
-				rp->data_size, rp->maxactive);
-	if (IS_ERR(rp->rh))
-		return PTR_ERR(rp->rh);
+    rp->rh = rethook_alloc((void *)rp, kretprobe_rethook_handler,
+                sizeof(struct kretprobe_instance) +
+                rp->data_size, rp->maxactive);
+    if (IS_ERR(rp->rh))
+        return PTR_ERR(rp->rh);
 
-	rp->nmissed = 0;
-	/* Establish function entry probe point */
-	ret = register_kprobe(&rp->kp);
-	if (ret != 0) {
-		rethook_free(rp->rh);
-		rp->rh = NULL;
-	}
-#else	/* !CONFIG_KRETPROBE_ON_RETHOOK */
-	rp->rph = kzalloc(sizeof(struct kretprobe_holder), GFP_KERNEL);
-	if (!rp->rph)
-		return -ENOMEM;
+    rp->nmissed = 0;
+    /* Establish function entry probe point */
+    ret = register_kprobe(&rp->kp);
+    if (ret != 0) {
+        rethook_free(rp->rh);
+        rp->rh = NULL;
+    }
+#else    /* !CONFIG_KRETPROBE_ON_RETHOOK */
+    rp->rph = kzalloc(sizeof(struct kretprobe_holder), GFP_KERNEL);
+    if (!rp->rph)
+        return -ENOMEM;
 
-	if (objpool_init(&rp->rph->pool, rp->maxactive, rp->data_size +
-			sizeof(struct kretprobe_instance), GFP_KERNEL,
-			rp->rph, kretprobe_init_inst, kretprobe_fini_pool)) {
-		kfree(rp->rph);
-		rp->rph = NULL;
-		return -ENOMEM;
-	}
-	rcu_assign_pointer(rp->rph->rp, rp);
-	rp->nmissed = 0;
-	/* Establish function entry probe point */
-	ret = register_kprobe(&rp->kp);
-	if (ret != 0)
-		free_rp_inst(rp);
+    if (objpool_init(&rp->rph->pool, rp->maxactive, rp->data_size +
+            sizeof(struct kretprobe_instance), GFP_KERNEL,
+            rp->rph, kretprobe_init_inst, kretprobe_fini_pool)) {
+        kfree(rp->rph);
+        rp->rph = NULL;
+        return -ENOMEM;
+    }
+    rcu_assign_pointer(rp->rph->rp, rp);
+    rp->nmissed = 0;
+    /* Establish function entry probe point */
+    ret = register_kprobe(&rp->kp);
+    if (ret != 0)
+        free_rp_inst(rp);
 #endif
-	return ret;
+    return ret;
 }
 ```
 
@@ -3484,7 +3484,7 @@ Direct Call After Tracers | FREGS_DIRECT_TRAMP (trampoline) | MOV X9, LR; BL ftr
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
 
 SYM_CODE_START(ftrace_caller)
-    bti	c
+    bti    c
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
 /* 1. calc ftrace_ops addr
@@ -3493,13 +3493,13 @@ SYM_CODE_START(ftrace_caller)
         /* subtracts 4 * AARCH64_INSN_SIZE (typically 4 * 4 = 16 bytes)
         * from x11 to locate the ftrace_ops pointer.
         * The ftrace_ops pointer is stored 16 bytes before the aligned LR. */
-        ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)]		// op
+        ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)]        // op
 
         #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
             /* If the op has a direct call, handle it immediately without
              * saving/restoring registers. */
-            ldr	x17, [x11, #FTRACE_OPS_DIRECT_CALL]		// op->direct_call
-            cbnz	x17, ftrace_caller_direct
+            ldr    x17, [x11, #FTRACE_OPS_DIRECT_CALL]        // op->direct_call
+            cbnz    x17, ftrace_caller_direct
         #endif
     #endif
 }
@@ -3507,53 +3507,53 @@ SYM_CODE_START(ftrace_caller)
 /* 2. save context */
 
     /* Save original SP */
-    mov	x10, sp
+    mov    x10, sp
 
     /* Make room for ftrace regs, plus two frame records */
-    sub	sp, sp, #(FREGS_SIZE + 32)
+    sub    sp, sp, #(FREGS_SIZE + 32)
 
     /* Save function arguments */
-    stp	x0, x1, [sp, #FREGS_X0]
-    stp	x2, x3, [sp, #FREGS_X2]
-    stp	x4, x5, [sp, #FREGS_X4]
-    stp	x6, x7, [sp, #FREGS_X6]
-    str	x8,     [sp, #FREGS_X8]
+    stp    x0, x1, [sp, #FREGS_X0]
+    stp    x2, x3, [sp, #FREGS_X2]
+    stp    x4, x5, [sp, #FREGS_X4]
+    stp    x6, x7, [sp, #FREGS_X6]
+    str    x8,     [sp, #FREGS_X8]
 
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
-        str	xzr, [sp, #FREGS_DIRECT_TRAMP]
+        str    xzr, [sp, #FREGS_DIRECT_TRAMP]
     #endif
 }
 
     /* Save the callsite's FP, LR, SP */
-    str	x29, [sp, #FREGS_FP]
-    str	x9,  [sp, #FREGS_LR]
-    str	x10, [sp, #FREGS_SP]
+    str    x29, [sp, #FREGS_FP]
+    str    x9,  [sp, #FREGS_LR]
+    str    x10, [sp, #FREGS_SP]
 
     /* Save the PC after the ftrace callsite */
-    str	x30, [sp, #FREGS_PC]
+    str    x30, [sp, #FREGS_PC]
 
 /* 3. Create a frame record for the callsite above the ftrace regs */
 
-    stp	x29, x9, [sp, #FREGS_SIZE + 16]
-    add	x29, sp, #FREGS_SIZE + 16
+    stp    x29, x9, [sp, #FREGS_SIZE + 16]
+    add    x29, sp, #FREGS_SIZE + 16
 
     /* Create our frame record above the ftrace regs */
-    stp	x29, x30, [sp, #FREGS_SIZE]
-    add	x29, sp, #FREGS_SIZE
+    stp    x29, x30, [sp, #FREGS_SIZE]
+    add    x29, sp, #FREGS_SIZE
 
     /* Prepare arguments for the the tracer func */
-    sub	x0, x30, #AARCH64_INSN_SIZE		// ip (callsite's BL insn)
-    mov	x1, x9					// parent_ip (callsite's LR)
-    mov	x3, sp					// regs
+    sub    x0, x30, #AARCH64_INSN_SIZE        // ip (callsite's BL insn)
+    mov    x1, x9                    // parent_ip (callsite's LR)
+    mov    x3, sp                    // regs
 
 /* 4. call ftrace_ops */
 
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
-        mov	x2, x11                         // op
-        ldr	x4, [x2, #FTRACE_OPS_FUNC]      // op->func
-        blr	x4                              // op->func(ip, parent_ip, op, regs)
+        mov    x2, x11                         // op
+        ldr    x4, [x2, #FTRACE_OPS_FUNC]      // op->func
+        blr    x4                              // op->func(ip, parent_ip, op, regs)
 
     #else
         ldr_l   x2, function_trace_op       // op
@@ -3565,30 +3565,30 @@ SYM_CODE_START(ftrace_caller)
 
 /* 5. restore context */
 
-    ldp	x0, x1, [sp, #FREGS_X0]
-    ldp	x2, x3, [sp, #FREGS_X2]
-    ldp	x4, x5, [sp, #FREGS_X4]
-    ldp	x6, x7, [sp, #FREGS_X6]
-    ldr	x8,     [sp, #FREGS_X8]
+    ldp    x0, x1, [sp, #FREGS_X0]
+    ldp    x2, x3, [sp, #FREGS_X2]
+    ldp    x4, x5, [sp, #FREGS_X4]
+    ldp    x6, x7, [sp, #FREGS_X6]
+    ldr    x8,     [sp, #FREGS_X8]
 
     /* Restore the callsite's FP */
-    ldr	x29, [sp, #FREGS_FP]
+    ldr    x29, [sp, #FREGS_FP]
 
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
-        ldr	x17, [sp, #FREGS_DIRECT_TRAMP]
-        cbnz	x17, ftrace_caller_direct_late
+        ldr    x17, [sp, #FREGS_DIRECT_TRAMP]
+        cbnz    x17, ftrace_caller_direct_late
     #endif
 }
 
     /* Restore the callsite's LR and PC */
-    ldr	x30, [sp, #FREGS_LR]
-    ldr	x9,  [sp, #FREGS_PC]
+    ldr    x30, [sp, #FREGS_LR]
+    ldr    x9,  [sp, #FREGS_PC]
 
     /* Restore the callsite's SP */
-    add	sp, sp, #FREGS_SIZE + 32
+    add    sp, sp, #FREGS_SIZE + 32
 
-    ret	x9
+    ret    x9
 
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
@@ -3599,18 +3599,18 @@ SYM_CODE_START(ftrace_caller)
 
         /* Restore the callsite's LR and PC matching the trampoline calling
         * convention. */
-        ldr	x9,  [sp, #FREGS_LR]
-        ldr	x30, [sp, #FREGS_PC]
+        ldr    x9,  [sp, #FREGS_LR]
+        ldr    x30, [sp, #FREGS_PC]
 
         /* Restore the callsite's SP */
-        add	sp, sp, #FREGS_SIZE + 32
+        add    sp, sp, #FREGS_SIZE + 32
 
     SYM_INNER_LABEL(ftrace_caller_direct, SYM_L_LOCAL)
         /* Head to a direct trampoline in x17.
         *
         * We use `BR X17` as this can safely land on a `BTI C` or `PACIASP` in
         * the trampoline, and will not unbalance any return stack. */
-        br	x17
+        br    x17
     #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
     SYM_CODE_END(ftrace_caller)
 }
@@ -3618,10 +3618,10 @@ SYM_CODE_START(ftrace_caller)
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
     SYM_CODE_START(ftrace_stub_direct_tramp)
-        bti	c
-        mov	x10, x30
-        mov	x30, x9
-        ret	x10
+        bti    c
+        mov    x10, x30
+        mov    x30, x9
+        ret    x10
     SYM_CODE_END(ftrace_stub_direct_tramp)
     #endif /* CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS */
 }
@@ -4666,10 +4666,10 @@ MODULE_DESCRIPTION("Simple ftrace function tracer for x86");
 obj-m += ftrace_fn.o
 
 all:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
+    make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
+    make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
 ```
 
 ```sh
@@ -4954,18 +4954,18 @@ struct jump_entry {
 };
 
 struct static_key {
-	atomic_t enabled;
+    atomic_t enabled;
 #ifdef CONFIG_JUMP_LABEL
 /* bit 0 => 1 if key is initially true
- *	        0 if initially false
+ *            0 if initially false
  * bit 1 => 1 if points to struct static_key_mod
- *	        0 if points to struct jump_entry */
+ *            0 if points to struct jump_entry */
     union {
         unsigned long type;
         struct jump_entry *entries; /* a key has multiple jump_entry */
         struct static_key_mod *next;
     };
-#endif	/* CONFIG_JUMP_LABEL */
+#endif    /* CONFIG_JUMP_LABEL */
 };
 
 /* Combine the right initial value (type) with the right branch order
@@ -5279,7 +5279,7 @@ static __always_inline bool arch_static_branch_jump(struct static_key * const ke
     /* k is passed as an immediate input ("i"),
      * representing the address of the static key. */
     asm goto(
-        "1:	b       %l[l_yes]   \n\t"   /* jumps to the label l_yes. */
+        "1:    b       %l[l_yes]   \n\t"   /* jumps to the label l_yes. */
         JUMP_TABLE_ENTRY("%c0", "%l[l_yes]")
         :  :  "i"(k) :  : l_yes
         );
@@ -5646,6 +5646,354 @@ Practical Example Workflow
 - **Cross-Reference**: Use `/proc/interrupts`, `dmesg`, or driver logs to correlate trace data with specific devices.
 
 By using `perf` and `ftrace`, you can pinpoint slow interrupt handlers, interrupt storms, or softirq bottlenecks, enabling targeted optimizations like driver tuning, affinity adjustments, or workload offloading to reduce latency.
+
+## perf_event_open
+
+```c
+SYSCALL_DEFINE5(perf_event_open,
+        struct perf_event_attr __user *, attr_uptr,
+        pid_t, pid, int, cpu, int, group_fd, unsigned long, flags)
+{
+    struct perf_event *group_leader = NULL, *output_event = NULL;
+    struct perf_event_pmu_context *pmu_ctx;
+    struct perf_event *event, *sibling;
+    struct perf_event_attr attr;
+    struct perf_event_context *ctx;
+    struct file *event_file = NULL;
+    struct task_struct *task = NULL;
+    struct pmu *pmu;
+    int event_fd;
+    int move_group = 0;
+    int err;
+    int f_flags = O_RDWR;
+    int cgroup_fd = -1;
+
+    /* for future expandability... */
+    if (flags & ~PERF_FLAG_ALL)
+        return -EINVAL;
+
+    err = perf_copy_attr(attr_uptr, &attr);
+    if (err)
+        return err;
+
+    /* Do we allow access to perf_event_open(2) ? */
+    err = security_perf_event_open(PERF_SECURITY_OPEN);
+    if (err)
+        return err;
+
+    if (!attr.exclude_kernel) {
+        err = perf_allow_kernel();
+        if (err)
+            return err;
+    }
+
+    if (attr.namespaces) {
+        if (!perfmon_capable())
+            return -EACCES;
+    }
+
+    if (attr.freq) {
+        if (attr.sample_freq > sysctl_perf_event_sample_rate)
+            return -EINVAL;
+    } else {
+        if (attr.sample_period & (1ULL << 63))
+            return -EINVAL;
+    }
+
+    /* Only privileged users can get physical addresses */
+    if ((attr.sample_type & PERF_SAMPLE_PHYS_ADDR)) {
+        err = perf_allow_kernel();
+        if (err)
+            return err;
+    }
+
+    /* REGS_INTR can leak data, lockdown must prevent this */
+    if (attr.sample_type & PERF_SAMPLE_REGS_INTR) {
+        err = security_locked_down(LOCKDOWN_PERF);
+        if (err)
+            return err;
+    }
+
+    /* In cgroup mode, the pid argument is used to pass the fd
+     * opened to the cgroup directory in cgroupfs. The cpu argument
+     * designates the cpu on which to monitor threads from that
+     * cgroup. */
+    if ((flags & PERF_FLAG_PID_CGROUP) && (pid == -1 || cpu == -1))
+        return -EINVAL;
+
+    if (flags & PERF_FLAG_FD_CLOEXEC)
+        f_flags |= O_CLOEXEC;
+
+    event_fd = get_unused_fd_flags(f_flags);
+    if (event_fd < 0)
+        return event_fd;
+
+    /* Event creation should be under SRCU, see perf_pmu_unregister(). */
+    guard(srcu)(&pmus_srcu);
+
+    CLASS(fd, group)(group_fd);     // group_fd == -1 => empty
+    if (group_fd != -1) {
+        if (!is_perf_file(group)) {
+            err = -EBADF;
+            goto err_fd;
+        }
+        group_leader = fd_file(group)->private_data;
+        if (group_leader->state <= PERF_EVENT_STATE_REVOKED) {
+            err = -ENODEV;
+            goto err_fd;
+        }
+        if (flags & PERF_FLAG_FD_OUTPUT)
+            output_event = group_leader;
+        if (flags & PERF_FLAG_FD_NO_GROUP)
+            group_leader = NULL;
+    }
+
+    if (pid != -1 && !(flags & PERF_FLAG_PID_CGROUP)) {
+        task = find_lively_task_by_vpid(pid);
+        if (IS_ERR(task)) {
+            err = PTR_ERR(task);
+            goto err_fd;
+        }
+    }
+
+    if (task && group_leader &&
+        group_leader->attr.inherit != attr.inherit) {
+        err = -EINVAL;
+        goto err_task;
+    }
+
+    if (flags & PERF_FLAG_PID_CGROUP)
+        cgroup_fd = pid;
+
+    event = perf_event_alloc(&attr, cpu, task, group_leader, NULL,
+                 NULL, NULL, cgroup_fd);
+    if (IS_ERR(event)) {
+        err = PTR_ERR(event);
+        goto err_task;
+    }
+
+    if (is_sampling_event(event)) {
+        if (event->pmu->capabilities & PERF_PMU_CAP_NO_INTERRUPT) {
+            err = -EOPNOTSUPP;
+            goto err_alloc;
+        }
+    }
+
+    /* Special case software events and allow them to be part of
+     * any hardware group. */
+    pmu = event->pmu;
+
+    if (attr.use_clockid) {
+        err = perf_event_set_clock(event, attr.clockid);
+        if (err)
+            goto err_alloc;
+    }
+
+    if (pmu->task_ctx_nr == perf_sw_context)
+        event->event_caps |= PERF_EV_CAP_SOFTWARE;
+
+    if (task) {
+        err = down_read_interruptible(&task->signal->exec_update_lock);
+        if (err)
+            goto err_alloc;
+
+        /* We must hold exec_update_lock across this and any potential
+         * perf_install_in_context() call for this new event to
+         * serialize against exec() altering our credentials (and the
+         * perf_event_exit_task() that could imply). */
+        err = -EACCES;
+        if (!perf_check_permission(&attr, task))
+            goto err_cred;
+    }
+
+    /* Get the target context (task or percpu): */
+    ctx = find_get_context(task, event);
+    if (IS_ERR(ctx)) {
+        err = PTR_ERR(ctx);
+        goto err_cred;
+    }
+
+    mutex_lock(&ctx->mutex);
+
+    if (ctx->task == TASK_TOMBSTONE) {
+        err = -ESRCH;
+        goto err_locked;
+    }
+
+    if (!task) {
+        /* Check if the @cpu we're creating an event for is online.
+         *
+         * We use the perf_cpu_context::ctx::mutex to serialize against
+         * the hotplug notifiers. See perf_event_{init,exit}_cpu(). */
+        struct perf_cpu_context *cpuctx = per_cpu_ptr(&perf_cpu_context, event->cpu);
+
+        if (!cpuctx->online) {
+            err = -ENODEV;
+            goto err_locked;
+        }
+    }
+
+    if (group_leader) {
+        err = -EINVAL;
+
+        /* Do not allow a recursive hierarchy (this new sibling
+         * becoming part of another group-sibling): */
+        if (group_leader->group_leader != group_leader)
+            goto err_locked;
+
+        /* All events in a group should have the same clock */
+        if (group_leader->clock != event->clock)
+            goto err_locked;
+
+        /* Make sure we're both events for the same CPU;
+         * grouping events for different CPUs is broken; since
+         * you can never concurrently schedule them anyhow. */
+        if (group_leader->cpu != event->cpu)
+            goto err_locked;
+
+        /* Make sure we're both on the same context; either task or cpu. */
+        if (group_leader->ctx != ctx)
+            goto err_locked;
+
+        /* Only a group leader can be exclusive or pinned */
+        if (attr.exclusive || attr.pinned)
+            goto err_locked;
+
+        if (is_software_event(event) &&
+            !in_software_context(group_leader)) {
+            /* If the event is a sw event, but the group_leader
+             * is on hw context.
+             *
+             * Allow the addition of software events to hw
+             * groups, this is safe because software events
+             * never fail to schedule.
+             *
+             * Note the comment that goes with struct
+             * perf_event_pmu_context. */
+            pmu = group_leader->pmu_ctx->pmu;
+        } else if (!is_software_event(event)) {
+            if (is_software_event(group_leader) &&
+                (group_leader->group_caps & PERF_EV_CAP_SOFTWARE)) {
+                /* In case the group is a pure software group, and we
+                 * try to add a hardware event, move the whole group to
+                 * the hardware context. */
+                move_group = 1;
+            }
+
+            /* Don't allow group of multiple hw events from different pmus */
+            if (!in_software_context(group_leader) &&
+                group_leader->pmu_ctx->pmu != pmu)
+                goto err_locked;
+        }
+    }
+
+    /* Now that we're certain of the pmu; find the pmu_ctx. */
+    pmu_ctx = find_get_pmu_context(pmu, ctx, event);
+    if (IS_ERR(pmu_ctx)) {
+        err = PTR_ERR(pmu_ctx);
+        goto err_locked;
+    }
+    event->pmu_ctx = pmu_ctx;
+
+    if (output_event) {
+        err = perf_event_set_output(event, output_event);
+        if (err)
+            goto err_context;
+    }
+
+    if (!perf_event_validate_size(event)) {
+        err = -E2BIG;
+        goto err_context;
+    }
+
+    if (perf_need_aux_event(event) && !perf_get_aux_event(event, group_leader)) {
+        err = -EINVAL;
+        goto err_context;
+    }
+
+    /* Must be under the same ctx::mutex as perf_install_in_context(),
+     * because we need to serialize with concurrent event creation. */
+    if (!exclusive_event_installable(event, ctx)) {
+        err = -EBUSY;
+        goto err_context;
+    }
+
+    WARN_ON_ONCE(ctx->parent_ctx);
+
+    event_file = anon_inode_getfile("[perf_event]", &perf_fops, event, f_flags);
+    if (IS_ERR(event_file)) {
+        err = PTR_ERR(event_file);
+        event_file = NULL;
+        goto err_context;
+    }
+
+    /* This is the point on no return; we cannot fail hereafter. This is
+     * where we start modifying current state. */
+
+    if (move_group) {
+        perf_remove_from_context(group_leader, 0);
+        put_pmu_ctx(group_leader->pmu_ctx);
+
+        for_each_sibling_event(sibling, group_leader) {
+            perf_remove_from_context(sibling, 0);
+            put_pmu_ctx(sibling->pmu_ctx);
+        }
+
+        /* Install the group siblings before the group leader.
+         *
+         * Because a group leader will try and install the entire group
+         * (through the sibling list, which is still in-tact), we can
+         * end up with siblings installed in the wrong context.
+         *
+         * By installing siblings first we NO-OP because they're not
+         * reachable through the group lists. */
+        for_each_sibling_event(sibling, group_leader) {
+            sibling->pmu_ctx = pmu_ctx;
+            get_pmu_ctx(pmu_ctx);
+            perf_event__state_init(sibling);
+            perf_install_in_context(ctx, sibling, sibling->cpu);
+        }
+
+        /* Removing from the context ends up with disabled
+         * event. What we want here is event in the initial
+         * startup state, ready to be add into new context. */
+        group_leader->pmu_ctx = pmu_ctx;
+        get_pmu_ctx(pmu_ctx);
+        perf_event__state_init(group_leader);
+        perf_install_in_context(ctx, group_leader, group_leader->cpu);
+    }
+
+    /* Precalculate sample_data sizes; do while holding ctx::mutex such
+     * that we're serialized against further additions and before
+     * perf_install_in_context() which is the point the event is active and
+     * can use these values. */
+    perf_event__header_size(event);
+    perf_event__id_header_size(event);
+
+    event->owner = current;
+
+    perf_install_in_context(ctx, event, event->cpu);
+    perf_unpin_context(ctx);
+
+    mutex_unlock(&ctx->mutex);
+
+    if (task) {
+        up_read(&task->signal->exec_update_lock);
+        put_task_struct(task);
+    }
+
+    mutex_lock(&current->perf_event_mutex);
+    list_add_tail(&event->owner_entry, &current->perf_event_list);
+    mutex_unlock(&current->perf_event_mutex);
+
+    /* File reference in group guarantees that group_leader has been
+     * kept alive until we place the new event on the sibling_list.
+     * This ensures destruction of the group leader will find
+     * the pointer to itself in perf_group_detach(). */
+    fd_install(event_fd, event_file);
+    return event_fd;
+}
+```
 
 # bcc
 
