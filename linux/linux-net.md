@@ -15752,37 +15752,40 @@ ep_insert() {
         if (!is_file_epoll(epi->ffd.file)) { /* return f->f_op == &eventpoll_fops; */
             vfs_poll(file,  &epq.pt, 1) {
                 file->f_op->poll() {
-                    sock_poll(struct file *file, poll_table *wait) {
-                        sock->ops->poll(); /* tcp_poll() */
-                        /* 1. register observer
-                         * pass _qproc NULL if only polling */
-                        sock_poll_wait() {
-                            if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
-                                poll_wait(filp, &sock->wq->wait, p) {
-                                    if (p && p->_qproc && wait_address) {
-                                        p->_qproc() {
-                                            init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
-                                            add_wait_queue(whead, &pwq->wait);
+                    = sock_poll(struct file *file, poll_table *wait) {
+                        sock->ops->poll() {
+                            = tcp_poll() {
+                                /* 1. register observer
+                                * pass _qproc NULL if only polling */
+                                sock_poll_wait() {
+                                    if (!poll_does_not_wait(p)) /* return p == NULL || p->_qproc == NULL */
+                                        poll_wait(filp, &sock->wq->wait, p) {
+                                            if (p && p->_qproc && wait_address) {
+                                                p->_qproc() {
+                                                    init_waitqueue_func_entry(&pwq->wait, ep_poll_callback);
+                                                    add_wait_queue(whead, &pwq->wait);
+                                                }
+                                            }
                                         }
+                                }
+                                /* 2. poll listen socket */
+                                if (state == TCP_LISTEN) {
+                                    return inet_csk_listen_poll(sk) {
+                                        return !reqsk_queue_empty(&inet_csk(sk)->icsk_accept_queue)
+                                            ? (EPOLLIN | EPOLLRDNORM) : 0;
                                     }
                                 }
-                        }
-                        /* 2. poll listen socket */
-                        if (state == TCP_LISTEN) {
-                            return inet_csk_listen_poll(sk) {
-                                return !reqsk_queue_empty(&inet_csk(sk)->icsk_accept_queue)
-                                    ? (EPOLLIN | EPOLLRDNORM) : 0;
+
+                                /* 3. poll ready events */
+                                if (tcp_stream_is_readable(tp, target, sk))
+                                    mask |= EPOLLIN | EPOLLRDNORM;
+                                if (sk_stream_is_writeable(sk))
+                                    mask |= EPOLLOUT | EPOLLWRNORM;
+                                return mask;
                             }
                         }
-
-                        /* 3. poll ready events */
-                        if (tcp_stream_is_readable(tp, target, sk))
-                            mask |= EPOLLIN | EPOLLRDNORM;
-                        if (sk_stream_is_writeable(sk))
-                            mask |= EPOLLOUT | EPOLLWRNORM;
-                        return mask;
                     }
-                    eventfd_poll(struct file *file, poll_table *wait) {
+                    = eventfd_poll(struct file *file, poll_table *wait) {
                         poll_wait(struct file * filp, wait_queue_head_t * queue, poll_table *pt)
                             pt->_qproc(filep, queue, pt) {
                                 /* ep_ptable_queue_proc,

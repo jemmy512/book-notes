@@ -7595,93 +7595,93 @@ sync_filesystem() {
  * -> do_writepages -> ext4_writepages */
 void wb_workfn(struct work_struct *work)
 {
-  struct bdi_writeback *wb = container_of(to_delayed_work(work),
-            struct bdi_writeback, dwork);
-  long pages_written;
+    struct bdi_writeback *wb = container_of(to_delayed_work(work),
+                struct bdi_writeback, dwork);
+    long pages_written;
 
-  if (likely(!current_is_workqueue_rescuer() || !test_bit(WB_registered, &wb->state)))
-  {
-    do {
-      pages_written = wb_do_writeback(wb);
-    } while (!list_empty(&wb->work_list));
-  } else {
-    pages_written = writeback_inodes_wb(wb, 1024, WB_REASON_FORKER_THREAD);
-  }
+    if (likely(!current_is_workqueue_rescuer() || !test_bit(WB_registered, &wb->state)))
+    {
+        do {
+            pages_written = wb_do_writeback(wb);
+        } while (!list_empty(&wb->work_list));
+    } else {
+        pages_written = writeback_inodes_wb(wb, 1024, WB_REASON_FORKER_THREAD);
+    }
 
-  if (!list_empty(&wb->work_list))
-    wb_wakeup(wb);
-  else if (wb_has_dirty_io(wb) && dirty_writeback_interval)
-    wb_wakeup_delayed(wb);
+    if (!list_empty(&wb->work_list))
+        wb_wakeup(wb);
+    else if (wb_has_dirty_io(wb) && dirty_writeback_interval)
+        wb_wakeup_delayed(wb);
 
-  current->flags &= ~PF_SWAPWRITE;
+    current->flags &= ~PF_SWAPWRITE;
 }
 
 /* Retrieve work items and do the writeback they describe */
 static long wb_do_writeback(struct bdi_writeback *wb)
 {
-  struct wb_writeback_work *work;
-  long wrote = 0;
+    struct wb_writeback_work *work;
+    long wrote = 0;
 
-  set_bit(WB_writeback_running, &wb->state);
-  /* get next work from wb->work_list */
-  while ((work = get_next_work_item(wb)) != NULL) {
-    wrote += wb_writeback(wb, work);
-    finish_writeback_work(wb, work);
-  }
+    set_bit(WB_writeback_running, &wb->state);
+    /* get next work from wb->work_list */
+    while ((work = get_next_work_item(wb)) != NULL) {
+        wrote += wb_writeback(wb, work);
+        finish_writeback_work(wb, work);
+    }
 
-  wrote += wb_check_start_all(wb);
-  wrote += wb_check_start_all(wb);
-  wrote += wb_check_old_data_flush(wb);
-  wrote += wb_check_background_flush(wb);
-  clear_bit(WB_writeback_running, &wb->state);
+    wrote += wb_check_start_all(wb);
+    wrote += wb_check_start_all(wb);
+    wrote += wb_check_old_data_flush(wb);
+    wrote += wb_check_background_flush(wb);
+    clear_bit(WB_writeback_running, &wb->state);
 
-  return wrote;
+    return wrote;
 }
 
 /* Explicit flushing or periodic writeback of "old" data. */
 static long wb_writeback(
   struct bdi_writeback *wb, struct wb_writeback_work *work)
 {
-  unsigned long wb_start = jiffies;
-  long nr_pages = work->nr_pages;
-  unsigned long oldest_jif;
-  struct inode *inode;
-  long progress;
-  struct blk_plug plug;
+    unsigned long wb_start = jiffies;
+    long nr_pages = work->nr_pages;
+    unsigned long oldest_jif;
+    struct inode *inode;
+    long progress;
+    struct blk_plug plug;
 
-  oldest_jif = jiffies;
-  work->older_than_this = &oldest_jif;
+    oldest_jif = jiffies;
+    work->older_than_this = &oldest_jif;
 
-  blk_start_plug(&plug);
-  spin_lock(&wb->list_lock);
-  for (;;) {
-    if (list_empty(&wb->b_io))
-      queue_io(wb, work);
-
-    if (work->sb)
-      progress = writeback_sb_inodes(work->sb, wb, work);
-    else
-      progress = __writeback_inodes_wb(wb, work);
-
-    wb_update_bandwidth(wb, wb_start);
-
-    if (progress)
-      continue;
-
-    if (list_empty(&wb->b_more_io))
-      break;
-
-    inode = wb_inode(wb->b_more_io.prev);
-    spin_lock(&inode->i_lock);
-    spin_unlock(&wb->list_lock);
-    /* This function drops i_lock... */
-    inode_sleep_on_writeback(inode);
+    blk_start_plug(&plug);
     spin_lock(&wb->list_lock);
-  }
-  spin_unlock(&wb->list_lock);
-  blk_finish_plug(&plug);
+    for (;;) {
+        if (list_empty(&wb->b_io))
+        queue_io(wb, work);
 
-  return nr_pages - work->nr_pages;
+        if (work->sb)
+            progress = writeback_sb_inodes(work->sb, wb, work);
+        else
+            progress = __writeback_inodes_wb(wb, work);
+
+        wb_update_bandwidth(wb, wb_start);
+
+        if (progress)
+            continue;
+
+        if (list_empty(&wb->b_more_io))
+            break;
+
+        inode = wb_inode(wb->b_more_io.prev);
+        spin_lock(&inode->i_lock);
+        spin_unlock(&wb->list_lock);
+        /* This function drops i_lock... */
+        inode_sleep_on_writeback(inode);
+        spin_lock(&wb->list_lock);
+    }
+    spin_unlock(&wb->list_lock);
+    blk_finish_plug(&plug);
+
+    return nr_pages - work->nr_pages;
 }
 
 /* Write a portion of b_io inodes which belong to @sb. */
@@ -7758,149 +7758,153 @@ static long writeback_sb_inodes(
 static int __writeback_single_inode(
   struct inode *inode, struct writeback_control *wbc)
 {
-  struct address_space *mapping = inode->i_mapping;
-  long nr_to_write = wbc->nr_to_write;
-  unsigned dirty;
-  int ret;
+    struct address_space *mapping = inode->i_mapping;
+    long nr_to_write = wbc->nr_to_write;
+    unsigned dirty;
+    int ret;
 
-  ret = do_writepages(mapping, wbc);
+    ret = do_writepages(mapping, wbc);
 
-  /* Make sure to wait on the data before writing out the metadata.
-   * This is important for filesystems that modify metadata on data
-   * I/O completion. We don't do it for sync(2) writeback because it has a
-   * separate, external IO completion path and ->sync_fs for guaranteeing
-   * inode metadata is written back correctly. */
-  if (wbc->sync_mode == WB_SYNC_ALL && !wbc->for_sync) {
-    int err = filemap_fdatawait(mapping);
-    if (ret == 0)
-      ret = err;
-  }
-
-  /* Some filesystems may redirty the inode during the writeback
-   * due to delalloc, clear dirty metadata flags right before
-   * write_inode() */
-  spin_lock(&inode->i_lock);
-
-  dirty = inode->i_state & I_DIRTY;
-  if (inode->i_state & I_DIRTY_TIME) {
-    if ((dirty & I_DIRTY_INODE) ||
-        wbc->sync_mode == WB_SYNC_ALL ||
-        unlikely(inode->i_state & I_DIRTY_TIME_EXPIRED) ||
-        unlikely(time_after(jiffies, (inode->dirtied_time_when + dirtytime_expire_interval * HZ))))
-    {
-      dirty |= I_DIRTY_TIME | I_DIRTY_TIME_EXPIRED;
+    /* Make sure to wait on the data before writing out the metadata.
+    * This is important for filesystems that modify metadata on data
+    * I/O completion. We don't do it for sync(2) writeback because it has a
+    * separate, external IO completion path and ->sync_fs for guaranteeing
+    * inode metadata is written back correctly. */
+    if (wbc->sync_mode == WB_SYNC_ALL && !wbc->for_sync) {
+        int err = filemap_fdatawait(mapping);
+        if (ret == 0)
+        ret = err;
     }
-  } else
-    inode->i_state &= ~I_DIRTY_TIME_EXPIRED;
 
-  inode->i_state &= ~dirty;
+    /* Some filesystems may redirty the inode during the writeback
+    * due to delalloc, clear dirty metadata flags right before
+    * write_inode() */
+    spin_lock(&inode->i_lock);
 
-  /* Paired with smp_mb() in __mark_inode_dirty().  This allows
-   * __mark_inode_dirty() to test i_state without grabbing i_lock -
-   * either they see the I_DIRTY bits cleared or we see the dirtied
-   * inode.
-   *
-   * I_DIRTY_PAGES is always cleared together above even if @mapping
-   * still has dirty pages.  The flag is reinstated after smp_mb() if
-   * necessary.  This guarantees that either __mark_inode_dirty()
-   * sees clear I_DIRTY_PAGES or we see PAGECACHE_TAG_DIRTY. */
-  smp_mb();
+    dirty = inode->i_state & I_DIRTY;
+    if (inode->i_state & I_DIRTY_TIME) {
+        if ((dirty & I_DIRTY_INODE) ||
+            wbc->sync_mode == WB_SYNC_ALL ||
+            unlikely(inode->i_state & I_DIRTY_TIME_EXPIRED) ||
+            unlikely(time_after(jiffies, (inode->dirtied_time_when + dirtytime_expire_interval * HZ))))
+        {
+            dirty |= I_DIRTY_TIME | I_DIRTY_TIME_EXPIRED;
+        }
+    } else
+        inode->i_state &= ~I_DIRTY_TIME_EXPIRED;
 
-  if (mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
-    inode->i_state |= I_DIRTY_PAGES;
+    inode->i_state &= ~dirty;
 
-  spin_unlock(&inode->i_lock);
+    /* Paired with smp_mb() in __mark_inode_dirty().  This allows
+    * __mark_inode_dirty() to test i_state without grabbing i_lock -
+    * either they see the I_DIRTY bits cleared or we see the dirtied
+    * inode.
+    *
+    * I_DIRTY_PAGES is always cleared together above even if @mapping
+    * still has dirty pages.  The flag is reinstated after smp_mb() if
+    * necessary.  This guarantees that either __mark_inode_dirty()
+    * sees clear I_DIRTY_PAGES or we see PAGECACHE_TAG_DIRTY. */
+    smp_mb();
 
-  if (dirty & I_DIRTY_TIME)
-    mark_inode_dirty_sync(inode);
-  /* Don't write the inode if only I_DIRTY_PAGES was set */
-  if (dirty & ~I_DIRTY_PAGES) {
-    int err = write_inode(inode, wbc);
-    if (ret == 0)
-      ret = err;
-  }
-  trace_writeback_single_inode(inode, wbc, nr_to_write);
-  return ret;
+    if (mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
+        inode->i_state |= I_DIRTY_PAGES;
+
+    spin_unlock(&inode->i_lock);
+
+    if (dirty & I_DIRTY_TIME)
+        mark_inode_dirty_sync(inode);
+    /* Don't write the inode if only I_DIRTY_PAGES was set */
+    if (dirty & ~I_DIRTY_PAGES) {
+        int err = write_inode(inode, wbc);
+        if (ret == 0)
+            ret = err;
+    }
+    trace_writeback_single_inode(inode, wbc, nr_to_write);
+    return ret;
 }
 
 int do_writepages(
   struct address_space *mapping, struct writeback_control *wbc)
 {
-  int ret;
+    int ret;
 
-  if (wbc->nr_to_write <= 0)
-    return 0;
-  while (1) {
-    if (mapping->a_ops->writepages)
-      ret = mapping->a_ops->writepages(mapping, wbc);
-    else
-      ret = generic_writepages(mapping, wbc);
+    if (wbc->nr_to_write <= 0)
+        return 0;
+    while (1) {
+        if (mapping->a_ops->writepages)
+            ret = mapping->a_ops->writepages(mapping, wbc);
+        else
+            ret = generic_writepages(mapping, wbc);
 
-    if ((ret != -ENOMEM) || (wbc->sync_mode != WB_SYNC_ALL))
-      break;
-    cond_resched();
-    congestion_wait(BLK_RW_ASYNC, HZ/50);
-  }
-  return ret;
+        if ((ret != -ENOMEM) || (wbc->sync_mode != WB_SYNC_ALL))
+            break;
+        cond_resched();
+        congestion_wait(BLK_RW_ASYNC, HZ/50);
+    }
+    return ret;
 }
+```
 
+### ext4_writepages
+
+```c
 static int ext4_writepages(
   struct address_space *mapping,
   struct writeback_control *wbc)
 {
-  struct mpage_da_data mpd;
-  struct inode *inode = mapping->host;
-  struct ext4_sb_info *sbi = EXT4_SB(mapping->host->i_sb);
+    struct mpage_da_data mpd;
+    struct inode *inode = mapping->host;
+    struct ext4_sb_info *sbi = EXT4_SB(mapping->host->i_sb);
 
-  if (wbc->range_cyclic) {
-    writeback_index = mapping->writeback_index;
-    if (writeback_index)
-      cycled = 0;
-    mpd.first_page = writeback_index;
-    mpd.last_page = -1;
-  } else {
-    mpd.first_page = wbc->range_start >> PAGE_SHIFT;
-    mpd.last_page = wbc->range_end >> PAGE_SHIFT;
-  }
+    if (wbc->range_cyclic) {
+        writeback_index = mapping->writeback_index;
+        if (writeback_index)
+            cycled = 0;
+        mpd.first_page = writeback_index;
+        mpd.last_page = -1;
+    } else {
+        mpd.first_page = wbc->range_start >> PAGE_SHIFT;
+        mpd.last_page = wbc->range_end >> PAGE_SHIFT;
+    }
 
-  mpd.inode = inode;
-  mpd.wbc = wbc;
-  ext4_io_submit_init(&mpd.io_submit, wbc);
-  mpd.do_map = 0;
-  mpd.io_submit.io_end = ext4_init_io_end(inode, GFP_KERNEL);
+    mpd.inode = inode;
+    mpd.wbc = wbc;
+    ext4_io_submit_init(&mpd.io_submit, wbc);
+    mpd.do_map = 0;
+    mpd.io_submit.io_end = ext4_init_io_end(inode, GFP_KERNEL);
 
-  /* find & lock contiguous range of dirty pages and underlying extent to map */
-  ret = mpage_prepare_extent_to_map(&mpd);
-  ext4_io_submit(&mpd.io_submit);
+    /* find & lock contiguous range of dirty pages and underlying extent to map */
+    ret = mpage_prepare_extent_to_map(&mpd);
+    ext4_io_submit(&mpd.io_submit);
 }
 
 /* Delayed allocation stuff
  * mpage : multi-page I/O */
 struct mpage_da_data {
-  struct inode              *inode;
-  struct writeback_control  *wbc;
+    struct inode              *inode;
+    struct writeback_control  *wbc;
 
-  pgoff_t first_page;  /* The first page to write */
-  pgoff_t next_page;  /* Current page to examine */
-  pgoff_t last_page;  /* Last page to examine */
+    pgoff_t first_page;  /* The first page to write */
+    pgoff_t next_page;  /* Current page to examine */
+    pgoff_t last_page;  /* Last page to examine */
 
-  struct ext4_map_blocks map;
-  struct ext4_io_submit io_submit; /* IO submission data */
-  unsigned int do_map:1;
+    struct ext4_map_blocks map;
+    struct ext4_io_submit io_submit; /* IO submission data */
+    unsigned int do_map:1;
 };
 
 struct ext4_map_blocks {
-  ext4_fsblk_t m_pblk;  /* Physical block number */
-  ext4_lblk_t  m_lblk;  /* Logical block number */
-  unsigned int m_len;   /* Length of the block mapping (in blocks) */
-  unsigned int m_flags; /* Flags indicating mapping status or properties */
+    ext4_fsblk_t m_pblk;  /* Physical block number */
+    ext4_lblk_t  m_lblk;  /* Logical block number */
+    unsigned int m_len;   /* Length of the block mapping (in blocks) */
+    unsigned int m_flags; /* Flags indicating mapping status or properties */
 };
 
 struct ext4_io_submit {
-  struct writeback_control  *io_wbc;
-  struct bio                *io_bio;
-  ext4_io_end_t             *io_end;
-  sector_t                  io_next_block;
+    struct writeback_control  *io_wbc;
+    struct bio                *io_bio;
+    ext4_io_end_t             *io_end;
+    sector_t                  io_next_block;
 };
 
 /* For converting unwritten extents on a work queue. 'handle' is used for
@@ -7923,55 +7927,55 @@ typedef struct ext4_io_end {
 /* mpage_submit_page -> ext4_bio_write_page -> io_submit_add_bh */
 static int mpage_prepare_extent_to_map(struct mpage_da_data *mpd)
 {
-  struct address_space *mapping = mpd->inode->i_mapping;
-  struct pagevec pvec;
-  unsigned int nr_pages;
-  long left = mpd->wbc->nr_to_write;
-  pgoff_t index = mpd->first_page;
-  pgoff_t end = mpd->last_page;
-  int tag;
-  int i, err = 0;
-  int blkbits = mpd->inode->i_blkbits;
-  ext4_lblk_t lblk;
-  struct buffer_head *head;
+    struct address_space *mapping = mpd->inode->i_mapping;
+    struct pagevec pvec;
+    unsigned int nr_pages;
+    long left = mpd->wbc->nr_to_write;
+    pgoff_t index = mpd->first_page;
+    pgoff_t end = mpd->last_page;
+    int tag;
+    int i, err = 0;
+    int blkbits = mpd->inode->i_blkbits;
+    ext4_lblk_t lblk;
+    struct buffer_head *head;
 
-  if (mpd->wbc->sync_mode == WB_SYNC_ALL || mpd->wbc->tagged_writepages)
-    tag = PAGECACHE_TAG_TOWRITE;
-  else
-    tag = PAGECACHE_TAG_DIRTY;
+    if (mpd->wbc->sync_mode == WB_SYNC_ALL || mpd->wbc->tagged_writepages)
+        tag = PAGECACHE_TAG_TOWRITE;
+    else
+        tag = PAGECACHE_TAG_DIRTY;
 
-  pagevec_init(&pvec);
-  mpd->map.m_len = 0;
-  mpd->next_page = index;
+    pagevec_init(&pvec);
+    mpd->map.m_len = 0;
+    mpd->next_page = index;
 
-  while (index <= end) {
-    nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end, tag);
+    while (index <= end) {
+        nr_pages = pagevec_lookup_range_tag(&pvec, mapping, &index, end, tag);
 
-    for (i = 0; i < nr_pages; i++) {
-      struct page *page = pvec.pages[i];
-      lock_page(page);
-      wait_on_page_writeback(page);
+        for (i = 0; i < nr_pages; i++) {
+            struct page *page = pvec.pages[i];
+            lock_page(page);
+            wait_on_page_writeback(page);
 
-      if (mpd->map.m_len == 0)
-        mpd->first_page = page->index;
-      mpd->next_page = page->index + 1;
+            if (mpd->map.m_len == 0)
+                mpd->first_page = page->index;
+            mpd->next_page = page->index + 1;
 
-      /* converts the page index to a logical block number */
-      lblk = ((ext4_lblk_t)page->index) << (PAGE_SHIFT - blkbits);
-      head = page_buffers(page) {
-        return page_private(page)
-      };
-      err = mpage_process_page_bufs(mpd, head, head, lblk);
+            /* converts the page index to a logical block number */
+            lblk = ((ext4_lblk_t)page->index) << (PAGE_SHIFT - blkbits);
+            head = page_buffers(page) {
+                return page_private(page)
+            };
+            err = mpage_process_page_bufs(mpd, head, head, lblk);
 
-      left--;
+            left--;
+        }
+        pagevec_release(&pvec);
+        cond_resched();
     }
-    pagevec_release(&pvec);
-    cond_resched();
-  }
-  return 0;
+    return 0;
 out:
-  pagevec_release(&pvec);
-  return err;
+    pagevec_release(&pvec);
+    return err;
 }
 
 /* find_get_pages_range_tag - Find and return head pages matching @tag. */
@@ -7979,50 +7983,50 @@ unsigned find_get_pages_range_tag(struct address_space *mapping, pgoff_t *index,
       pgoff_t end, xa_mark_t tag, unsigned int nr_pages,
       struct page **pages)
 {
-  XA_STATE(xas, &mapping->i_pages, *index);
-  struct folio *folio;
-  unsigned ret = 0;
+    XA_STATE(xas, &mapping->i_pages, *index);
+    struct folio *folio;
+    unsigned ret = 0;
 
-  if (unlikely(!nr_pages))
-    return 0;
+    if (unlikely(!nr_pages))
+        return 0;
 
-  rcu_read_lock();
-  while ((folio = find_get_entry(&xas, end, tag))) {
-    if (xa_is_value(folio))
-      continue;
+    rcu_read_lock();
+    while ((folio = find_get_entry(&xas, end, tag))) {
+        if (xa_is_value(folio))
+            continue;
 
-    pages[ret] = &folio->page;
-    if (++ret == nr_pages) {
-      *index = folio->index + folio_nr_pages(folio);
-      goto out;
+        pages[ret] = &folio->page;
+        if (++ret == nr_pages) {
+            *index = folio->index + folio_nr_pages(folio);
+            goto out;
+        }
     }
-  }
 
-  if (end == (pgoff_t)-1)
-    *index = (pgoff_t)-1;
-  else
-    *index = end + 1;
+    if (end == (pgoff_t)-1)
+        *index = (pgoff_t)-1;
+    else
+        *index = end + 1;
 out:
-  rcu_read_unlock();
+    rcu_read_unlock();
 
-  return ret;
+    return ret;
 }
 
 struct buffer_head {
-  unsigned long       b_state;      /* buffer state bitmap (see above) */
-  struct buffer_head  *b_this_page; /* circular list of page's buffers */
-  struct page         *b_page;      /* the page this bh is mapped to */
+    unsigned long       b_state;      /* buffer state bitmap (see above) */
+    struct buffer_head  *b_this_page; /* circular list of page's buffers */
+    struct page         *b_page;      /* the page this bh is mapped to */
 
-  sector_t            b_blocknr; /* start block number */
-  size_t              b_size;    /* size of mapping */
-  char                *b_data;   /* pointer to data within the page */
+    sector_t            b_blocknr; /* start block number */
+    size_t              b_size;    /* size of mapping */
+    char                *b_data;   /* pointer to data within the page */
 
-  struct block_device   *b_bdev;
-  bh_end_io_t           *b_end_io; /* I/O completion */
-   void                 *b_private;/* reserved for b_end_io */
-  struct list_head      b_assoc_buffers;/* associated with another mapping */
-  struct address_space  *b_assoc_map;   /* mapping this buffer is associated with */
-  atomic_t              b_count;        /* users using this buffer_head */
+    struct block_device *b_bdev;
+    bh_end_io_t         *b_end_io; /* I/O completion */
+    void                *b_private;/* reserved for b_end_io */
+    struct list_head    b_assoc_buffers;/* associated with another mapping */
+    struct address_space    *b_assoc_map;   /* mapping this buffer is associated with */
+    atomic_t            b_count;        /* users using this buffer_head */
 };
 
 /* submit page buffers for IO or add them to extent */
@@ -8032,29 +8036,29 @@ static int mpage_process_page_bufs(
   struct buffer_head *bh,
   ext4_lblk_t lblk)
 {
-  struct inode *inode = mpd->inode;
-  int err;
-  ext4_lblk_t blocks = (i_size_read(inode) + i_blocksize(inode) - 1) >> inode->i_blkbits;
+    struct inode *inode = mpd->inode;
+    int err;
+    ext4_lblk_t blocks = (i_size_read(inode) + i_blocksize(inode) - 1) >> inode->i_blkbits;
 
-  do {
-    if (lblk >= blocks || !mpage_add_bh_to_extent(mpd, lblk, bh)) {
-      /* Found extent to map? */
-      if (mpd->map.m_len)
-        return 0;
-      /* Buffer needs mapping and handle is not started? */
-      if (!mpd->do_map)
-        return 0;
-      /* Everything mapped so far and we hit EOF */
-      break;
+    do {
+        if (lblk >= blocks || !mpage_add_bh_to_extent(mpd, lblk, bh)) {
+        /* Found extent to map? */
+        if (mpd->map.m_len)
+            return 0;
+        /* Buffer needs mapping and handle is not started? */
+        if (!mpd->do_map)
+            return 0;
+        /* Everything mapped so far and we hit EOF */
+        break;
+        }
+    } while (lblk++, (bh = bh->b_this_page) != head);
+    /* So far everything mapped? Submit the page for IO. */
+    if (mpd->map.m_len == 0) {
+        err = mpage_submit_page(mpd, head->b_page);
+        if (err < 0)
+            return err;
     }
-  } while (lblk++, (bh = bh->b_this_page) != head);
-  /* So far everything mapped? Submit the page for IO. */
-  if (mpd->map.m_len == 0) {
-    err = mpage_submit_page(mpd, head->b_page);
-    if (err < 0)
-      return err;
-  }
-  return lblk < blocks;
+    return lblk < blocks;
 }
 
 /* try to add bh to extent of blocks to map */
@@ -8134,181 +8138,173 @@ int ext4_bio_write_page(struct ext4_io_submit *io,
       struct writeback_control *wbc,
       bool keep_towrite)
 {
-  struct page *data_page = NULL;
-  struct inode *inode = page->mapping->host;
-  unsigned block_start;
-  struct buffer_head *bh, *head;
-  int ret = 0;
-  int nr_submitted = 0;
-  int nr_to_submit = 0;
+    struct page *data_page = NULL;
+    struct inode *inode = page->mapping->host;
+    unsigned block_start;
+    struct buffer_head *bh, *head;
+    int ret = 0;
+    int nr_submitted = 0;
+    int nr_to_submit = 0;
 
 
-  if (keep_towrite)
-    set_page_writeback_keepwrite(page);
-  else
-    set_page_writeback(page);
-  ClearPageError(page);
+    if (keep_towrite)
+        set_page_writeback_keepwrite(page);
+    else
+        set_page_writeback(page);
+    ClearPageError(page);
 
-  /* Comments copied from block_write_full_page:
-   *
-   * The page straddles i_size.  It must be zeroed out on each and every
-   * writepage invocation because it may be mmapped.  "A file is mapped
-   * in multiples of the page size.  For a file that is not a multiple of
-   * the page size, the remaining memory is zeroed when mapped, and
-   * writes to that region are not written out to the file." */
-  if (len < PAGE_SIZE)
-    zero_user_segment(page, len, PAGE_SIZE);
-  /* In the first loop we prepare and mark buffers to submit. We have to
-   * mark all buffers in the page before submitting so that
-   * end_page_writeback() cannot be called from ext4_bio_end_io() when IO
-   * on the first buffer finishes and we are still working on submitting
-   * the second buffer. */
-  bh = head = page_buffers(page);
-  do {
-    block_start = bh_offset(bh);
-    if (block_start >= len) {
-      clear_buffer_dirty(bh);
-      set_buffer_uptodate(bh);
-      continue;
-    }
-    if (!buffer_dirty(bh) || buffer_delay(bh) ||
-        !buffer_mapped(bh) || buffer_unwritten(bh)) {
-      /* A hole? We can safely clear the dirty bit */
-      if (!buffer_mapped(bh))
-        clear_buffer_dirty(bh);
-      if (io->io_bio)
-        ext4_io_submit(io);
-      continue;
-    }
-    if (buffer_new(bh)) {
-      clear_buffer_new(bh);
-      clean_bdev_bh_alias(bh);
-    }
-    set_buffer_async_write(bh);
-    nr_to_submit++;
-  } while ((bh = bh->b_this_page) != head);
-
-  bh = head = page_buffers(page);
-
-  if (ext4_encrypted_inode(inode) && S_ISREG(inode->i_mode) &&
-      nr_to_submit) {
-    gfp_t gfp_flags = GFP_NOFS;
-
-    /* Since bounce page allocation uses a mempool, we can only use
-     * a waiting mask (i.e. request guaranteed allocation) on the
-     * first page of the bio.  Otherwise it can deadlock. */
-    if (io->io_bio)
-      gfp_flags = GFP_NOWAIT | __GFP_NOWARN;
-  retry_encrypt:
-    data_page = fscrypt_encrypt_page(inode, page, PAGE_SIZE, 0,
-            page->index, gfp_flags);
-    if (IS_ERR(data_page)) {
-      ret = PTR_ERR(data_page);
-      if (ret == -ENOMEM &&
-          (io->io_bio || wbc->sync_mode == WB_SYNC_ALL)) {
-        gfp_flags = GFP_NOFS;
-        if (io->io_bio)
-          ext4_io_submit(io);
-        else
-          gfp_flags |= __GFP_NOFAIL;
-        congestion_wait(BLK_RW_ASYNC, HZ/50);
-        goto retry_encrypt;
-      }
-      data_page = NULL;
-      goto out;
-    }
-  }
-
-  /* Now submit buffers to write */
-  do {
-    if (!buffer_async_write(bh))
-      continue;
-    ret = io_submit_add_bh(io, inode,
-               data_page ? data_page : page, bh);
-    if (ret) {
-      /* We only get here on ENOMEM.  Not much else
-       * we can do but mark the page as dirty, and
-       * better luck next time. */
-      break;
-    }
-    nr_submitted++;
-    clear_buffer_dirty(bh);
-  } while ((bh = bh->b_this_page) != head);
-
-  /* Error stopped previous loop? Clean up buffers... */
-  if (ret) {
-  out:
-    if (data_page)
-      fscrypt_restore_control_page(data_page);
-    printk_ratelimited(KERN_ERR "%s: ret = %d\n", __func__, ret);
-    redirty_page_for_writepage(wbc, page);
+    /* Comments copied from block_write_full_page:
+    *
+    * The page straddles i_size.  It must be zeroed out on each and every
+    * writepage invocation because it may be mmapped.  "A file is mapped
+    * in multiples of the page size.  For a file that is not a multiple of
+    * the page size, the remaining memory is zeroed when mapped, and
+    * writes to that region are not written out to the file." */
+    if (len < PAGE_SIZE)
+        zero_user_segment(page, len, PAGE_SIZE);
+    /* In the first loop we prepare and mark buffers to submit. We have to
+    * mark all buffers in the page before submitting so that
+    * end_page_writeback() cannot be called from ext4_bio_end_io() when IO
+    * on the first buffer finishes and we are still working on submitting
+    * the second buffer. */
+    bh = head = page_buffers(page);
     do {
-      clear_buffer_async_write(bh);
-      bh = bh->b_this_page;
-    } while (bh != head);
-  }
-  unlock_page(page);
-  /* Nothing submitted - we have to end page writeback */
-  if (!nr_submitted)
-    end_page_writeback(page);
-  return ret;
+        block_start = bh_offset(bh);
+        if (block_start >= len) {
+            clear_buffer_dirty(bh);
+            set_buffer_uptodate(bh);
+            continue;
+        }
+        if (!buffer_dirty(bh) || buffer_delay(bh) || !buffer_mapped(bh) || buffer_unwritten(bh)) {
+            /* A hole? We can safely clear the dirty bit */
+            if (!buffer_mapped(bh))
+                clear_buffer_dirty(bh);
+            if (io->io_bio)
+                ext4_io_submit(io);
+            continue;
+        }
+        if (buffer_new(bh)) {
+            clear_buffer_new(bh);
+            clean_bdev_bh_alias(bh);
+        }
+        set_buffer_async_write(bh);
+        nr_to_submit++;
+    } while ((bh = bh->b_this_page) != head);
+
+    bh = head = page_buffers(page);
+
+    if (ext4_encrypted_inode(inode) && S_ISREG(inode->i_mode) &&
+        nr_to_submit) {
+        gfp_t gfp_flags = GFP_NOFS;
+
+        /* Since bounce page allocation uses a mempool, we can only use
+        * a waiting mask (i.e. request guaranteed allocation) on the
+        * first page of the bio.  Otherwise it can deadlock. */
+        if (io->io_bio)
+        gfp_flags = GFP_NOWAIT | __GFP_NOWARN;
+retry_encrypt:
+        data_page = fscrypt_encrypt_page(inode, page, PAGE_SIZE, 0, page->index, gfp_flags);
+        if (IS_ERR(data_page)) {
+            ret = PTR_ERR(data_page);
+            if (ret == -ENOMEM && (io->io_bio || wbc->sync_mode == WB_SYNC_ALL)) {
+                gfp_flags = GFP_NOFS;
+                if (io->io_bio)
+                    ext4_io_submit(io);
+                else
+                    gfp_flags |= __GFP_NOFAIL;
+                    congestion_wait(BLK_RW_ASYNC, HZ/50);
+                goto retry_encrypt;
+            }
+            data_page = NULL;
+            goto out;
+        }
+    }
+
+    /* Now submit buffers to write */
+    do {
+        if (!buffer_async_write(bh))
+            continue;
+        ret = io_submit_add_bh(io, inode, data_page ? data_page : page, bh);
+        if (ret) {
+            /* We only get here on ENOMEM.  Not much else
+            * we can do but mark the page as dirty, and
+            * better luck next time. */
+            break;
+        }
+        nr_submitted++;
+        clear_buffer_dirty(bh);
+    } while ((bh = bh->b_this_page) != head);
+
+    /* Error stopped previous loop? Clean up buffers... */
+    if (ret) {
+out:
+        if (data_page)
+            fscrypt_restore_control_page(data_page);
+        printk_ratelimited(KERN_ERR "%s: ret = %d\n", __func__, ret);
+        redirty_page_for_writepage(wbc, page);
+        do {
+            clear_buffer_async_write(bh);
+            bh = bh->b_this_page;
+        } while (bh != head);
+    }
+    unlock_page(page);
+    /* Nothing submitted - we have to end page writeback */
+    if (!nr_submitted)
+        end_page_writeback(page);
+    return ret;
 }
 
 static int io_submit_add_bh(
   struct ext4_io_submit *io, struct inode *inode,
   struct page *page, struct buffer_head *bh)
 {
-  int ret;
+    int ret;
 
-  if (io->io_bio && bh->b_blocknr != io->io_next_block) {
+    if (io->io_bio && bh->b_blocknr != io->io_next_block) {
 submit_and_retry:
-    ext4_io_submit(io);
-  }
-  if (io->io_bio == NULL) {
-    ret = io_submit_init_bio(io, bh);
-    if (ret)
-      return ret;
-    io->io_bio->bi_write_hint = inode->i_write_hint;
-  }
+        ext4_io_submit(io);
+    }
+    if (io->io_bio == NULL) {
+        ret = io_submit_init_bio(io, bh) {
+            struct bio *bio;
+            bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
+            if (!bio)
+                return -ENOMEM;
+            wbc_init_bio(io->io_wbc, bio);
+            /* physical sector nr which is get in _ext4_get_block() */
+            bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+            bio->bi_bdev = bh->b_bdev;
+            bio->bi_end_io = ext4_end_bio;
+            bio->bi_private = ext4_get_io_end(io->io_end);
+            io->io_bio = bio;
+            io->io_next_block = bh->b_blocknr;
+            return 0;
+        }
+        if (ret)
+            return ret;
+        io->io_bio->bi_write_hint = inode->i_write_hint;
+    }
 
-  ret = bio_add_page(io->io_bio, page, bh->b_size, bh_offset(bh));
-  if (ret != bh->b_size)
-    goto submit_and_retry;
+    ret = bio_add_page(io->io_bio, page, bh->b_size, bh_offset(bh));
+    if (ret != bh->b_size)
+        goto submit_and_retry;
 
-  wbc_account_io(io->io_wbc, page, bh->b_size);
-  io->io_next_block++;
-  return 0;
-}
-
-static int io_submit_init_bio(
-  struct ext4_io_submit *io, struct buffer_head *bh)
-{
-  struct bio *bio;
-  bio = bio_alloc(GFP_NOIO, BIO_MAX_PAGES);
-  if (!bio)
-    return -ENOMEM;
-  wbc_init_bio(io->io_wbc, bio);
-  /* physical sector nr which is get in _ext4_get_block() */
-  bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
-  bio->bi_bdev = bh->b_bdev;
-  bio->bi_end_io = ext4_end_bio;
-  bio->bi_private = ext4_get_io_end(io->io_end);
-  io->io_bio = bio;
-  io->io_next_block = bh->b_blocknr;
-  return 0;
+    wbc_account_io(io->io_wbc, page, bh->b_size);
+    io->io_next_block++;
+    return 0;
 }
 
 void ext4_io_submit(struct ext4_io_submit *io)
 {
-  struct bio *bio = io->io_bio;
-  if (bio) {
-    int io_op_flags = io->io_wbc->sync_mode == WB_SYNC_ALL ?
-          REQ_SYNC : 0;
-    io->io_bio->bi_write_hint = io->io_end->inode->i_write_hint;
-    bio_set_op_attrs(io->io_bio, REQ_OP_WRITE, io_op_flags);
-    submit_bio(io->io_bio);
-  }
-  io->io_bio = NULL;
+    struct bio *bio = io->io_bio;
+    if (bio) {
+        int io_op_flags = io->io_wbc->sync_mode == WB_SYNC_ALL ?
+            REQ_SYNC : 0;
+        io->io_bio->bi_write_hint = io->io_end->inode->i_write_hint;
+        bio_set_op_attrs(io->io_bio, REQ_OP_WRITE, io_op_flags);
+        submit_bio(io->io_bio);
+    }
+    io->io_bio = NULL;
 }
 /* ---> submit_bio */
 ```
