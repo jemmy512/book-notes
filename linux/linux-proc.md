@@ -202,7 +202,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 
 # Reference
 
-* [tip.git: sched/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=sched/core)
+* [lore.git - tip.git: sched/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=sched/core)
 * [LNW - A proxy-execution baby step](https://lwn.net/Articles/1030842/)
     * [1. [RFC PATCH 00/11] Reviving the Proxy Execution Series](https://lore.kernel.org/lkml/20221003214501.2050087-1-connoro@google.com/)
     * [2. [PATCH v8 0/7] Preparatory changes for Proxy Execution v8](https://lore.kernel.org/lkml/20240224001153.2584030-1-jstultz@google.com/)

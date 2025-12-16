@@ -217,6 +217,7 @@
 
 # Doc
 
+* [lore.git - mm.git](https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git/)
 * [:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
     * [Memory Layout on AArch64 Linux](https://docs.kernel.org/arch/arm64/memory.html)
 
@@ -4698,7 +4699,7 @@ void kmem_cache_init(void)
 
 # slub
 
-* [https://git.kernel.org/pub/scm/linux/kernel/git/vbabka/slab.git](https://git.kernel.org/pub/scm/linux/kernel/git/vbabka/slab.git)
+* [lore.git - slab.git](https://git.kernel.org/pub/scm/linux/kernel/git/vbabka/slab.git)
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
     * [The SLUB allocator ](https://lwn.net/Articles/229984/)
 * [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1) ⊙ [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2) ⊙ [:three: - KASan :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3) ⊙ [:four: - KFENCE :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)

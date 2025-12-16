@@ -1,5 +1,5 @@
 [:link: Linux - Core API Documentation :link:](https://docs.kernel.org/core-api/index.html)
-* [tip.git: locking/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=locking/core)
+* [lore.git - tip.git: locking/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=locking/core)
 
 * [并发机制 - LoyenWang](https://www.cnblogs.com/LoyenWang/category/1689461.html)
     * [Semophore](https://www.cnblogs.com/LoyenWang/p/12907230.html)

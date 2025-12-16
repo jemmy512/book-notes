@@ -60,6 +60,10 @@
 
 <img src='../images/kernel/file-layer.png' height='600'/>
 
+---
+
+* [lore.git - block.git](https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git)
+
 # File Management
 
 ![](../images/kernel/file-vfs-system.svg)
@@ -2540,11 +2544,11 @@ struct iomap_iter {
 
 struct iomap {
     u64                 addr;   /* disk offset of mapping, bytes */
-    loff_t              offset;	/* file offset of mapping, bytes */
-    u64                 length;	/* length of mapping, bytes */
-    u16                 type;	/* type of mapping */
-    u16                 flags;	/* flags for mapping */
-    struct block_device *bdev;	/* block device for I/O */
+    loff_t              offset;    /* file offset of mapping, bytes */
+    u64                 length;    /* length of mapping, bytes */
+    u16                 type;    /* type of mapping */
+    u16                 flags;    /* flags for mapping */
+    struct block_device *bdev;    /* block device for I/O */
     struct dax_device   *dax_dev;   /* dax_dev for dax operations */
     void                *inline_data;
     void                *private;   /* filesystem private */
@@ -4000,17 +4004,33 @@ ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
         return -EINVAL;
 }
 
-ssize_t ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
+static ssize_t
+ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
+    int ret;
     struct inode *inode = file_inode(iocb->ki_filp);
 
-    if (unlikely(ext4_forced_shutdown(EXT4_SB(inode->i_sb))))
-        return -EIO;
+    ret = ext4_emergency_state(inode->i_sb);
+    if (unlikely(ret))
+        return ret;
 
-    #ifdef CONFIG_FS_DAX
+#ifdef CONFIG_FS_DAX
     if (IS_DAX(inode))
         return ext4_dax_write_iter(iocb, from);
-    #endif
+#endif
+
+    if (iocb->ki_flags & IOCB_ATOMIC) {
+        size_t len = iov_iter_count(from);
+
+        if (len < EXT4_SB(inode->i_sb)->s_awu_min ||
+            len > EXT4_SB(inode->i_sb)->s_awu_max)
+            return -EINVAL;
+
+        ret = generic_atomic_write_valid(iocb, from);
+        if (ret)
+            return ret;
+    }
+
     if (iocb->ki_flags & IOCB_DIRECT)
         return ext4_dio_write_iter(iocb, from);
     else
@@ -4425,7 +4445,7 @@ void iomap_readahead(struct readahead_control *rac, const struct iomap_ops *ops)
         .len    = readahead_length(rac),
     };
     struct iomap_readpage_ctx ctx = {
-        .rac	= rac,
+        .rac    = rac,
     };
 
     trace_iomap_readahead(rac->mapping->host, readahead_count(rac));
@@ -4466,6 +4486,16 @@ int iomap_writepages(struct address_space *mapping, struct writeback_control *wb
 
 ![](../images/kernel/proc-cmwq.svg)
 
+```sh
+/proc/sys/vm/               # Virtual memory kernel parameters for page reclaim
+├── dirty_background_bytes  # Bytes of dirty memory before background reclaim/writeout (0 = use ratio)
+├── dirty_background_ratio  # % of memory for dirty pages before background reclaim/writeout
+├── dirty_bytes             # Bytes of dirty memory before foreground reclaim/writeout (0 = use ratio)
+├── dirty_ratio             # % of memory for dirty pages before foreground reclaim/writeout
+├── dirty_expire_centisecs  # Time dirty pages can stay in memory before reclaim (centisecs)
+├── dirty_writeback_centisecs # Interval for periodic dirty page writeback (centisecs; 0 = disable)
+```
+
 ```c
                              +--- indoe->sb != sb <-+
                              |                      |
@@ -4483,6 +4513,59 @@ int iomap_writepages(struct address_space *mapping, struct writeback_control *wb
 ```
 
 ### backing_dev_info
+
+```c
+static const struct ctl_table vm_page_writeback_sysctls[] = {
+    {
+        .procname   = "dirty_background_ratio",
+        .data       = &dirty_background_ratio,
+        .maxlen     = sizeof(dirty_background_ratio),
+        .mode       = 0644,
+        .proc_handler   = dirty_background_ratio_handler,
+        .extra1     = SYSCTL_ZERO,
+        .extra2     = SYSCTL_ONE_HUNDRED,
+    },
+    {
+        .procname   = "dirty_background_bytes",
+        .data       = &dirty_background_bytes,
+        .maxlen     = sizeof(dirty_background_bytes),
+        .mode       = 0644,
+        .proc_handler   = dirty_background_bytes_handler,
+        .extra1     = SYSCTL_LONG_ONE,
+    },
+    {
+        .procname   = "dirty_ratio",
+        .data       = &vm_dirty_ratio,
+        .maxlen     = sizeof(vm_dirty_ratio),
+        .mode       = 0644,
+        .proc_handler   = dirty_ratio_handler,
+        .extra1     = SYSCTL_ZERO,
+        .extra2     = SYSCTL_ONE_HUNDRED,
+    },
+    {
+        .procname   = "dirty_bytes",
+        .data       = &vm_dirty_bytes,
+        .maxlen     = sizeof(vm_dirty_bytes),
+        .mode       = 0644,
+        .proc_handler   = dirty_bytes_handler,
+        .extra1     = (void *)&dirty_bytes_min,
+    },
+    {
+        .procname   = "dirty_writeback_centisecs",
+        .data       = &dirty_writeback_interval,
+        .maxlen     = sizeof(dirty_writeback_interval),
+        .mode       = 0644,
+        .proc_handler   = dirty_writeback_centisecs_handler,
+    },
+    {
+        .procname   = "dirty_expire_centisecs",
+        .data       = &dirty_expire_interval,
+        .maxlen     = sizeof(dirty_expire_interval),
+        .mode       = 0644,
+        .proc_handler   = proc_dointvec_minmax,
+        .extra1     = SYSCTL_ZERO,
+    },
+```
 
 ```c
 extern spinlock_t               bdi_lock;
@@ -6560,6 +6643,14 @@ read();
                 file->f_mapping->a_ops->direct_IO();
                 generic_file_buffered_read();
 
+static const struct address_space_operations ext4_da_aops = {
+    .read_folio         = ext4_read_folio,
+    .readahead          = ext4_readahead,
+    .writepages         = ext4_writepages,
+    .write_begin        = ext4_da_write_begin,
+    .write_end          = ext4_da_write_end,
+}
+
 static const struct address_space_operations ext4_aops = {
     .read_folio         = ext4_read_folio,
     .readahead          = ext4_readahead,
@@ -7303,7 +7394,7 @@ void dio_bio_submit(struct dio *dio, struct dio_submit *sdio)
 
 ## wb_workfn
 
-![](../images/kernel/proc-cmwq.svg)
+![](../images/kernel/proc-cmw q.svg)
 
 * [[PATCH 00/13] Parallelizing filesystem writeback](https://lore.kernel.org/all/20250529111504.89912-1-kundan.kumar@samsung.com/)
     * [[RFC 1/1] writeback: enable parallel writeback using multiple work items](https://lore.kernel.org/all/20250414102824.9901-2-kundan.kumar@samsung.com/)
@@ -8502,7 +8593,7 @@ struct bio_set {
     spinlock_t              rescue_lock;
     struct bio_list         rescue_list;
     struct work_struct      rescue_work;
-    struct workqueue_struct	*rescue_workqueue;
+    struct workqueue_struct    *rescue_workqueue;
 
     struct hlist_node       cpuhp_dead;
 };
@@ -8536,10 +8627,8 @@ void submit_bio_noacct(struct bio *bio)
 
     might_sleep();
 
-    /*
-    * For a REQ_NOWAIT based request, return -EOPNOTSUPP
-    * if queue does not support NOWAIT.
-    */
+    /* For a REQ_NOWAIT based request, return -EOPNOTSUPP
+    * if queue does not support NOWAIT. */
     if ((bio->bi_opf & REQ_NOWAIT) && !bdev_nowait(bdev))
         goto not_supported;
 
@@ -8554,10 +8643,8 @@ void submit_bio_noacct(struct bio *bio)
             goto end_io;
     }
 
-    /*
-    * Filter flush bio's early so that bio based drivers without flush
-    * support don't have to worry about them.
-    */
+    /* Filter flush bio's early so that bio based drivers without flush
+    * support don't have to worry about them. */
     if (op_is_flush(bio->bi_opf)) {
         if (WARN_ON_ONCE(bio_op(bio) != REQ_OP_WRITE &&
                 bio_op(bio) != REQ_OP_ZONE_APPEND))
@@ -8582,10 +8669,8 @@ void submit_bio_noacct(struct bio *bio)
         }
         break;
     case REQ_OP_FLUSH:
-        /*
-        * REQ_OP_FLUSH can't be submitted through bios, it is only
-        * synthetized in struct request by the flush state machine.
-        */
+        /* REQ_OP_FLUSH can't be submitted through bios, it is only
+        * synthetized in struct request by the flush state machine. */
         goto not_supported;
     case REQ_OP_DISCARD:
         if (!bdev_max_discard_sectors(bdev))
@@ -8614,10 +8699,8 @@ void submit_bio_noacct(struct bio *bio)
         break;
     case REQ_OP_DRV_IN:
     case REQ_OP_DRV_OUT:
-        /*
-        * Driver private operations are only used with passthrough
-        * requests.
-        */
+        /* Driver private operations are only used with passthrough
+        * requests. */
         fallthrough;
     default:
         goto not_supported;
@@ -8648,19 +8731,15 @@ void submit_bio_noacct_nocheck(struct bio *bio)
 
     if (!bio_flagged(bio, BIO_TRACE_COMPLETION)) {
         trace_block_bio_queue(bio);
-        /*
-        * Now that enqueuing has been traced, we need to trace
-        * completion as well.
-        */
+        /* Now that enqueuing has been traced, we need to trace
+        * completion as well. */
         bio_set_flag(bio, BIO_TRACE_COMPLETION);
     }
 
-    /*
-    * We only want one ->submit_bio to be active at a time, else stack
+    /* We only want one ->submit_bio to be active at a time, else stack
     * usage with stacked devices could be a problem.  Use current->bio_list
     * to collect a list of requests submited by a ->submit_bio method while
-    * it is active, and then process them after it returned.
-    */
+    * it is active, and then process them after it returned. */
     if (current->bio_list)
         bio_list_add(&current->bio_list[0], bio);
     else if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO))
@@ -8696,8 +8775,7 @@ void __submit_bio(struct bio *bio)
     } else if (likely(bio_queue_enter(bio) == 0)) {
         struct gendisk *disk = bio->bi_bdev->bd_disk;
 
-        if ((bio->bi_opf & REQ_POLLED) &&
-            !(disk->queue->limits.features & BLK_FEAT_POLL)) {
+        if ((bio->bi_opf & REQ_POLLED) && !(disk->queue->limits.features & BLK_FEAT_POLL)) {
             bio->bi_status = BLK_STS_NOTSUPP;
             bio_endio(bio);
         } else {
@@ -8824,10 +8902,8 @@ new_request:
     return;
 
 queue_exit:
-    /*
-    * Don't drop the queue reference if we were trying to use a cached
-    * request and thus didn't acquire one.
-    */
+    /* Don't drop the queue reference if we were trying to use a cached
+    * request and thus didn't acquire one. */
     if (!rq)
         blk_queue_exit(q);
 
@@ -8842,11 +8918,11 @@ struct request *blk_mq_get_new_requests(
     struct blk_mq_alloc_data data = {
         .q          = q,
         .flags      = 0,
-        .shallow_depth	= 0,
+        .shallow_depth = 0,
         .cmd_flags  = bio->bi_opf,
         .rq_flags   = 0,
         .nr_tags    = 1,
-        .cached_rqs	= NULL,
+        .cached_rqs = NULL,
         .ctx        = NULL,
         .hctx       = NULL
     };
@@ -8942,11 +9018,9 @@ bool blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio,
 
     /* default per sw-queue merge */
     spin_lock(&ctx->lock);
-    /*
-    * Reverse check our software queue for entries that we could
+    /* Reverse check our software queue for entries that we could
     * potentially merge with. Currently includes a hand-wavy stop
-    * count of 8, to not spend too much time checking for merges.
-    */
+    * count of 8, to not spend too much time checking for merges. */
     if (blk_bio_list_merge(q, &ctx->rq_lists[type], bio, nr_segs))
         ret = true;
 
@@ -8978,11 +9052,11 @@ struct elevator_type iosched_bfq_mq = {
         .exit_sched         = bfq_exit_queue,
     },
 
-    .icq_size =    sizeof(struct bfq_io_cq),
-    .icq_align =    __alignof__(struct bfq_io_cq),
-    .elevator_attrs =  bfq_attrs,
-    .elevator_name =  "bfq",
-    .elevator_owner =  THIS_MODULE,
+    .icq_size               = sizeof(struct bfq_io_cq),
+    .icq_align              = __alignof__(struct bfq_io_cq),
+    .elevator_attrs         =  bfq_attrs,
+    .elevator_name          =  "bfq",
+    .elevator_owner         =  THIS_MODULE,
 };
 
 bool bfq_bio_merge(struct request_queue *q, struct bio *bio,
@@ -9063,18 +9137,14 @@ enum elv_merge elv_merge(
     struct elevator_queue *e = q->elevator;
     struct request *__rq;
 
-    /*
-    * Levels of merges:
+    /* Levels of merges:
     *   nomerges:   No merges at all attempted
     *   noxmerges:  Only simple one-hit cache try
-    *   merges:     All merge tries attempted
-    */
+    *   merges:     All merge tries attempted */
     if (blk_queue_nomerges(q) || !bio_mergeable(bio))
         return ELEVATOR_NO_MERGE;
 
-    /*
-    * First try one-hit cache.
-    */
+    /* First try one-hit cache. */
     if (q->last_merge && elv_bio_merge_ok(q->last_merge, bio)) {
         enum elv_merge ret = blk_try_merge(q->last_merge, bio);
 
@@ -9087,9 +9157,7 @@ enum elv_merge elv_merge(
     if (blk_queue_noxmerges(q))
         return ELEVATOR_NO_MERGE;
 
-    /*
-    * See if our hash lookup can find a potential backmerge.
-    */
+    /* See if our hash lookup can find a potential backmerge. */
     __rq = elv_rqhash_find(q, bio->bi_iter.bi_sector);
     if (__rq && elv_bio_merge_ok(__rq, bio)) {
         *req = __rq;
@@ -9168,6 +9236,33 @@ static void blk_mq_run_work_fn(struct work_struct *work)
 
     blk_mq_run_dispatch_ops(hctx->queue,
                 blk_mq_sched_dispatch_requests(hctx));
+}
+```
+
+```c
+struct request_queue *blk_mq_alloc_queue(struct blk_mq_tag_set *set,
+        struct queue_limits *lim, void *queuedata)
+{
+    struct queue_limits default_lim = { };
+    struct request_queue *q;
+    int ret;
+
+    if (!lim)
+        lim = &default_lim;
+    lim->features |= BLK_FEAT_IO_STAT | BLK_FEAT_NOWAIT;
+    if (set->nr_maps > HCTX_TYPE_POLL)
+        lim->features |= BLK_FEAT_POLL;
+
+    q = blk_alloc_queue(lim, set->numa_node);
+    if (IS_ERR(q))
+        return q;
+    q->queuedata = queuedata;
+    ret = blk_mq_init_allocated_queue(set, q);
+    if (ret) {
+        blk_put_queue(q);
+        return ERR_PTR(ret);
+    }
+    return q;
 }
 ```
 
@@ -10043,7 +10138,8 @@ int ovl_get_tree(struct fs_context *fc)
 
 ## ext4
 
-* [Kern - ext4 Data Structures and Algorithms](https://www.kernel.org/doc/html/latest/filesystems/ext4/)
+* [lore.git - ext4.git](https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git)
+* [Kern - ext4 Data Structures and Algorithms](https://docs.kernel.org/filesystems/ext4/)
 * [Understanding Ext4 Disk Layout, Part 1](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-1) ⊙ [Part 2](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-2)
 * [Directory Entry Lookup in ext4](https://blogs.oracle.com/linux/post/directory-entry-lookup-in-ext4)
 * [Space Management With Large Directories in Ext4](https://blogs.oracle.com/linux/post/space-management-with-large-directories-in-ext4)
@@ -10077,10 +10173,10 @@ struct ext4_extent_header {
 
 /* Point to disk blocks containing more extents or deeper index nodes (for large files) */
 struct ext4_extent_idx {
-    __le32  ei_block;     /* index covers logical blocks from 'block' */
-    __le32  ei_leaf_lo;  /* pointer to the physical block of the next *
+    __le32  ei_block;   /* index covers logical blocks from 'block' */
+    __le32  ei_leaf_lo; /* pointer to the physical block of the next *
                           * level. leaf or next index could be there */
-    __le16  ei_leaf_hi;  /* high 16 bits of physical block */
+    __le16  ei_leaf_hi; /* high 16 bits of physical block */
     __u16  ei_unused;
 };
 
@@ -10260,11 +10356,9 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 
     depth = ext_depth(inode);
 
-    /*
-    * consistent leaf must not be empty;
+    /* consistent leaf must not be empty;
     * this situation is possible, though, _during_ tree modification;
-    * this is why assert can't be put in ext4_find_extent()
-    */
+    * this is why assert can't be put in ext4_find_extent() */
     if (unlikely(path[depth].p_ext == NULL && depth != 0)) {
         EXT4_ERROR_INODE(inode, "bad extent address "
                 "lblock: %lu, depth: %d pblock %lld",
@@ -10281,10 +10375,8 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
         unsigned short ee_len;
 
 
-        /*
-        * unwritten extents are treated as holes, except that
-        * we split out initialized portions during a write.
-        */
+        /* unwritten extents are treated as holes, except that
+        * we split out initialized portions during a write. */
         ee_len = ext4_ext_get_actual_len(ex);
 
         trace_ext4_ext_show_extent(inode, ee_block, ee_start, ee_len);
@@ -10297,10 +10389,8 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
             ext_debug(inode, "%u fit into %u:%d -> %llu\n",
                 map->m_lblk, ee_block, ee_len, newblock);
 
-            /*
-            * If the extent is initialized check whether the
-            * caller wants to convert it to unwritten.
-            */
+            /* If the extent is initialized check whether the
+            * caller wants to convert it to unwritten. */
             if ((!ext4_ext_is_unwritten(ex)) &&
                 (flags & EXT4_GET_BLOCKS_CONVERT_UNWRITTEN)) {
                 path = convert_initialized_extent(handle,
@@ -10327,10 +10417,8 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
         }
     }
 
-    /*
-    * requested block isn't allocated yet;
-    * we couldn't try to create block if flags doesn't contain EXT4_GET_BLOCKS_CREATE
-    */
+    /* requested block isn't allocated yet;
+    * we couldn't try to create block if flags doesn't contain EXT4_GET_BLOCKS_CREATE */
     if ((flags & EXT4_GET_BLOCKS_CREATE) == 0) {
         ext4_lblk_t len;
 
@@ -10341,16 +10429,12 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
         goto out;
     }
 
-    /*
-    * Okay, we need to do block allocation.
-    */
+    /* Okay, we need to do block allocation. */
     newex.ee_block = cpu_to_le32(map->m_lblk);
     cluster_offset = EXT4_LBLK_COFF(sbi, map->m_lblk);
 
-    /*
-    * If we are doing bigalloc, check to see if the extent returned
-    * by ext4_find_extent() implies a cluster we can use.
-    */
+    /* If we are doing bigalloc, check to see if the extent returned
+    * by ext4_find_extent() implies a cluster we can use. */
     if (cluster_offset && ex &&
         get_implied_cluster_alloc(inode->i_sb, map, ex, path)) {
         ar.len = allocated = map->m_len;
@@ -10379,12 +10463,10 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
         goto got_allocated_blocks;
     }
 
-    /*
-    * See if request is beyond maximum number of blocks we can have in
+    /* See if request is beyond maximum number of blocks we can have in
     * a single extent. For an initialized extent this limit is
     * EXT_INIT_MAX_LEN and for an unwritten extent this limit is
-    * EXT_UNWRITTEN_MAX_LEN.
-    */
+    * EXT_UNWRITTEN_MAX_LEN. */
     if (map->m_len > EXT_INIT_MAX_LEN &&
         !(flags & EXT4_GET_BLOCKS_UNWRIT_EXT))
         map->m_len = EXT_INIT_MAX_LEN;
@@ -10404,14 +10486,12 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
     ar.inode = inode;
     ar.goal = ext4_ext_find_goal(inode, path, map->m_lblk);
     ar.logical = map->m_lblk;
-    /*
-    * We calculate the offset from the beginning of the cluster
+    /* We calculate the offset from the beginning of the cluster
     * for the logical block number, since when we allocate a
     * physical cluster, the physical block should start at the
     * same offset from the beginning of the cluster.  This is
     * needed so that future calls to get_implied_cluster_alloc()
-    * work correctly.
-    */
+    * work correctly. */
     offset = EXT4_LBLK_COFF(sbi, map->m_lblk);
     ar.len = EXT4_NUM_B2C(sbi, offset+allocated);
     ar.goal -= offset;
@@ -10454,11 +10534,9 @@ got_allocated_blocks:
         if (allocated_clusters) {
             int fb_flags = 0;
 
-            /*
-            * free data blocks we just allocated.
+            /* free data blocks we just allocated.
             * not a good idea to call discard here directly,
-            * but otherwise we'd need to call it every free().
-            */
+            * but otherwise we'd need to call it every free(). */
             ext4_discard_preallocations(inode);
             if (flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE)
                 fb_flags = EXT4_FREE_BLOCKS_NO_QUOT_UPDATE;
@@ -10469,10 +10547,8 @@ got_allocated_blocks:
         goto out;
     }
 
-    /*
-    * Cache the extent and update transaction to commit on fdatasync only
-    * when it is _not_ an unwritten extent.
-    */
+    /* Cache the extent and update transaction to commit on fdatasync only
+    * when it is _not_ an unwritten extent. */
     if ((flags & EXT4_GET_BLOCKS_UNWRIT_EXT) == 0)
         ext4_update_inode_fsync_trans(handle, inode, 1);
     else
@@ -10484,14 +10560,12 @@ got_allocated_blocks:
     allocated = map->m_len;
     ext4_ext_show_leaf(inode, path);
 out:
-    /*
-    * We never use EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF with CREATE flag.
+    /* We never use EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF with CREATE flag.
     * So we know that the depth used here is correct, since there was no
     * block allocation done if EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF is set.
     * If tomorrow we start using this QUERY flag with CREATE, then we will
     * need to re-calculate the depth as it might have changed due to block
-    * allocation.
-    */
+    * allocation. */
     if (flags & EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF) {
         WARN_ON_ONCE(flags & EXT4_GET_BLOCKS_CREATE);
         if (!err && ex && (ex == EXT_LAST_EXTENT(path[depth].p_hdr)))
@@ -10521,7 +10595,7 @@ struct proc_dir_entry proc_root = {
     .namelen    = 5,
     .mode       = S_IFDIR | S_IRUGO | S_IXUGO,
     .nlink      = 2,
-    .refcnt 	= REFCOUNT_INIT(1),
+    .refcnt     = REFCOUNT_INIT(1),
     .proc_iops  = &proc_root_inode_operations,
     .proc_dir_ops   = &proc_root_operations,
     .parent     = &proc_root,
@@ -10535,7 +10609,7 @@ struct proc_dir_entry {
     * negative -> it's going away RSN */
     atomic_t in_use;
     refcount_t refcnt;
-    struct list_head pde_openers;	/* who did ->open, but not ->release */
+    struct list_head pde_openers;    /* who did ->open, but not ->release */
     /* protects ->pde_openers and all struct pde_opener instances */
     spinlock_t pde_unload_lock;
     struct completion *pde_unload_completion;
@@ -10597,7 +10671,7 @@ static const struct proc_ops proc_single_ops = {
     .proc_open          = proc_single_open,
     .proc_read_iter     = seq_read_iter,
     .proc_lseek         = seq_lseek,
-    .proc_release	    = single_release,
+    .proc_release        = single_release,
 };
 ```
 
@@ -10634,7 +10708,7 @@ struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
                 read_lock(&proc_subdir_lock);
                 rv = __xlate_proc_name(name, ret, residual) {
                     const char  *cp = name, *next;
-                    struct proc_dir_entry	*de;
+                    struct proc_dir_entry    *de;
 
                     de = *ret ?: &proc_root;
                     while ((next = strchr(cp, '/')) != NULL) {
@@ -10921,7 +10995,7 @@ ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
         m->count -= n;
         m->from += n;
         copied += n;
-        if (m->count)	// hadn't managed to copy everything
+        if (m->count)    // hadn't managed to copy everything
             goto Done;
     }
     // get a non-empty record in the buffer
@@ -10929,12 +11003,12 @@ ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
     p = m->op->start(m, &m->index);
     while (1) {
         err = PTR_ERR(p);
-        if (!p || IS_ERR(p))	// EOF or an error
+        if (!p || IS_ERR(p))    // EOF or an error
             break;
         err = m->op->show(m, p);
-        if (err < 0)		// hard error
+        if (err < 0)        // hard error
             break;
-        if (unlikely(err))	// ->show() says "skip it"
+        if (unlikely(err))    // ->show() says "skip it"
             m->count = 0;
         if (unlikely(!m->count)) { // empty record
             p = m->op->next(m, p, &m->index);
@@ -10969,12 +11043,12 @@ Fill:
                         m->op->next);
             m->index++;
         }
-        if (!p || IS_ERR(p))	// no next record for us
+        if (!p || IS_ERR(p))    // no next record for us
             break;
         if (m->count >= iov_iter_count(iter))
             break;
         err = m->op->show(m, p);
-        if (err > 0) {		// ->show() says "skip it"
+        if (err > 0) {        // ->show() says "skip it"
             m->count = offs;
         } else if (err || seq_has_overflowed(m)) {
             m->count = offs;
@@ -11020,8 +11094,8 @@ static const struct proc_ops kmsg_proc_ops = {
 
 static int __init proc_kmsg_init(void)
 {
-	proc_create("kmsg", S_IRUSR, NULL, &kmsg_proc_ops);
-	return 0;
+    proc_create("kmsg", S_IRUSR, NULL, &kmsg_proc_ops);
+    return 0;
 }
 ```
 
@@ -11040,11 +11114,11 @@ int do_syslog(int type, char __user *buf, int len, int source)
         return error;
 
     switch (type) {
-    case SYSLOG_ACTION_CLOSE:	/* Close log */
+    case SYSLOG_ACTION_CLOSE:    /* Close log */
         break;
-    case SYSLOG_ACTION_OPEN:	/* Open log */
+    case SYSLOG_ACTION_OPEN:    /* Open log */
         break;
-    case SYSLOG_ACTION_READ:	/* Read from log */
+    case SYSLOG_ACTION_READ:    /* Read from log */
         if (!buf || len < 0)
             return -EINVAL;
         if (!len)
