@@ -2993,67 +2993,62 @@ void cpu_cgroup_attach(struct cgroup_taskset *tset)
     struct cgroup_subsys_state *css;
 
     cgroup_taskset_for_each(task, css, tset) {
-        sched_move_task(task) {
-            group = sched_get_task_group(tsk);
-            if (group == tsk->sched_task_group)
-                return;
+        sched_move_task(struct task_struct *tsk, bool for_autogroup) {
+            unsigned int queue_flags = DEQUEUE_SAVE | DEQUEUE_MOVE;
+            bool resched = false;
+            struct rq *rq;
 
-            update_rq_clock(rq);
+            CLASS(task_rq_lock, rq_guard)(tsk);
+            rq = rq_guard.rq;
 
-            running = task_current(rq, tsk);
-            queued = task_on_rq_queued(tsk);
+            scoped_guard (sched_change, tsk, queue_flags) {
+                sched_change_group(tsk)  {
+                    tsk->sched_task_group = group;
 
-            if (queued)
-                dequeue_task(rq, tsk, queue_flags);
-            if (running)
-                put_prev_task(rq, tsk);
+                    if (tsk->sched_class->task_change_group) {
+                        tsk->sched_class->task_change_group(tsk) {
+                            task_change_group_fair(struct task_struct *p) {
+                                if (READ_ONCE(p->__state) == TASK_NEW)
+                                    return;
 
-            sched_change_group(tsk, group) {
-                tsk->sched_task_group = group;
-
-                if (tsk->sched_class->task_change_group) {
-                    tsk->sched_class->task_change_group(tsk) {
-                        task_change_group_fair(struct task_struct *p) {
-                            if (READ_ONCE(p->__state) == TASK_NEW)
-                                return;
-
-                            detach_task_cfs_rq(p);
-                            p->se.avg.last_update_time = 0;
-                            set_task_rq(p, task_cpu(p));
-                            attach_task_cfs_rq(p);
-                        }
-                    }
-                } else {
-                    set_task_rq(tsk, task_cpu(tsk)) {
-                        struct task_group *tg = task_group(p);
-
-                        if (CONFIG_FAIR_GROUP_SCHED) {
-                            set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]) {
-                                p_last_update_time = cfs_rq_last_update_time(prev);
-                                n_last_update_time = cfs_rq_last_update_time(next);
-
-                                __update_load_avg_blocked_se(p_last_update_time, se);
-                                se->avg.last_update_time = n_last_update_time;
+                                detach_task_cfs_rq(p);
+                                p->se.avg.last_update_time = 0;
+                                set_task_rq(p, task_cpu(p));
+                                attach_task_cfs_rq(p);
                             }
-                            p->se.cfs_rq = tg->cfs_rq[cpu];
-                            p->se.parent = tg->se[cpu];
-                            p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
                         }
+                    } else {
+                        set_task_rq(tsk, task_cpu(tsk)) {
+                            struct task_group *tg = task_group(p);
 
-                        if (CONFIG_RT_GROUP_SCHED) {
-                            p->rt.rt_rq  = tg->rt_rq[cpu];
-                            p->rt.parent = tg->rt_se[cpu];
+                            if (CONFIG_FAIR_GROUP_SCHED) {
+                                set_task_rq_fair(&p->se, p->se.cfs_rq, tg->cfs_rq[cpu]) {
+                                    p_last_update_time = cfs_rq_last_update_time(prev);
+                                    n_last_update_time = cfs_rq_last_update_time(next);
+
+                                    __update_load_avg_blocked_se(p_last_update_time, se);
+                                    se->avg.last_update_time = n_last_update_time;
+                                }
+                                p->se.cfs_rq = tg->cfs_rq[cpu];
+                                p->se.parent = tg->se[cpu];
+                                p->se.depth = tg->se[cpu] ? tg->se[cpu]->depth + 1 : 0;
+                            }
+
+                            if (CONFIG_RT_GROUP_SCHED) {
+                                p->rt.rt_rq  = tg->rt_rq[cpu];
+                                p->rt.parent = tg->rt_se[cpu];
+                            }
                         }
                     }
                 }
+                if (!for_autogroup)
+                    scx_cgroup_move_task(tsk);
+                if (scope->running)
+                    resched = true;
             }
 
-            if (queued)
-                enqueue_task(rq, tsk, queue_flags);
-            if (running) {
-                set_next_task(rq, tsk);
+            if (resched)
                 resched_curr(rq);
-            }
         }
     }
 }

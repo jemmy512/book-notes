@@ -1331,6 +1331,7 @@ struct rq {
     struct sched_dl_entity  *dl_server;
     struct task_struct      *idle;
     struct task_struct      *stop;
+    const struct sched_class *next_class;
     struct task_struct      *curr, *idle, *stop;
 
     struct mm_struct    *prev_mm;
@@ -1509,6 +1510,7 @@ __schedule(sched_mode) { /* kernel/sched/core.c */
 
     local_irq_disable();
     rcu_note_context_switch(preempt);
+    migrate_disable_switch(rq, prev);
 
     /* Promote REQ to ACT */
     rq->clock_update_flags <<= 1;
@@ -1592,6 +1594,7 @@ pick_again:
     next = pick_next_task(rq, prev, &rf);
         --->
     rq_set_donor(rq, next);
+    rq->next_class = next->sched_class;
     if (unlikely(task_is_blocked(next))) {
         next = find_proxy_task(rq, next, &rf);
             --->
@@ -1622,7 +1625,6 @@ keep_resched:
 
         ++*switch_count;
 
-        migrate_disable_switch(rq, prev);
         psi_account_irqtime(rq, prev, next);
         psi_sched_switch(prev, next, !task_on_rq_queued(prev) || prev->se.sched_delayed);
 
@@ -6303,6 +6305,7 @@ retry:
 
             p->on_rq = TASK_ON_RQ_QUEUED;
         }
+        wakeup_preempt(dst_rq, task, 0);
     }
     resched_curr(lowest_rq);
     ret = 1;
@@ -6690,7 +6693,7 @@ DEFINE_SCHED_CLASS(fair) = {
     .dequeue_task       = dequeue_task_fair,
     .yield_task         = yield_task_fair,
     .yield_to_task      = yield_to_task_fair,
-    .wakeup_preempt     = check_preempt_wakeup_fair,
+    .wakeup_preempt     = wakeup_preempt_fair,
     .pick_next_task     = __pick_next_task_fair,
     .put_prev_task      = put_prev_task_fair,
     .set_next_task      = set_next_task_fair,
@@ -8696,13 +8699,16 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
 ## wakeup_preempt_fair
 
 ```c
-void check_preempt_wakeup_fair(struct rq *rq, struct task_struct *p, int wake_flags)
+void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
 {
     struct task_struct *donor = rq->donor;
     struct sched_entity *se = &donor->se, *pse = &p->se;
     struct cfs_rq *cfs_rq = task_cfs_rq(donor);
     int cse_is_idle, pse_is_idle;
     bool do_preempt_short = false;
+
+    if (p->sched_class != &fair_sched_class)
+        return;
 
     if (unlikely(se == pse))
         return;
@@ -9054,6 +9060,9 @@ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
     if (!task_on_rq_queued(p))
         return;
 
+    if (p->prio == oldprio)
+		return;
+
     if (rq->cfs.nr_queued == 1)
         return;
 
@@ -9063,8 +9072,9 @@ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
     if (task_current(rq, p)) {
         if (p->prio > oldprio)
             resched_curr(rq);
-    } else
+    } else {
         wakeup_preempt(rq, p, 0);
+    }
 }
 
 ```
@@ -9166,6 +9176,16 @@ void switched_to_fair(struct rq *rq, struct task_struct *p)
         else
             wakeup_preempt(rq, p, 0);
     }
+}
+```
+
+### switching_from
+
+```c
+static void switching_from_fair(struct rq *rq, struct task_struct *p)
+{
+	if (p->se.sched_delayed)
+		dequeue_task(rq, p, DEQUEUE_SLEEP | DEQUEUE_DELAYED | DEQUEUE_NOCLOCK);
 }
 ```
 
@@ -14533,9 +14553,10 @@ scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
             }
 
             wakeup_preempt(rq, p, wake_flags) {
-                if (p->sched_class == rq->curr->sched_class) {
-                    rq->curr->sched_class->wakeup_preempt(rq, p, flags);
-                } else if (sched_class_above(p->sched_class, rq->curr->sched_class)) {
+                if (p->sched_class == rq->next_class) {
+                    rq->next_class->wakeup_preempt(rq, p, flags);
+                } else if (sched_class_above(p->sched_class, rq->next_class)) {
+                    rq->next_class->wakeup_preempt(rq, p, flags);
                     resched_curr(rq) {
                         if (test_tsk_need_resched(curr))
                             return;
@@ -14570,6 +14591,7 @@ scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
                             }
                         }
                     }
+                    rq->next_class = p->sched_class;
                 }
 
                 /* A queue event has occurred, and we're going to schedule.  In
@@ -17430,66 +17452,52 @@ void set_user_nice(struct task_struct *p, long nice)
         return;
     }
 
-    queued = task_on_rq_queued(p);
-    running = task_current_donor(rq, p);
-    if (queued)
-        dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
-    if (running)
-        put_prev_task(rq, p);
-
-    p->static_prio = NICE_TO_PRIO(nice) {
-        return ((nice) + DEFAULT_PRIO);
-    }
-    set_load_weight(p, true) {
-        int prio = p->static_prio - MAX_RT_PRIO;
-        struct load_weight lw;
-
-        if (task_has_idle_policy(p)) {
-            lw.weight = scale_load(WEIGHT_IDLEPRIO);
-            lw.inv_weight = WMULT_IDLEPRIO;
-        } else {
-            lw.weight = scale_load(sched_prio_to_weight[prio]);
-            lw.inv_weight = sched_prio_to_wmult[prio];
+    scoped_guard (sched_change, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK) {
+        p->static_prio = NICE_TO_PRIO(nice) {
+            return ((nice) + DEFAULT_PRIO);
         }
+        set_load_weight(p, true) {
+            int prio = p->static_prio - MAX_RT_PRIO;
+            struct load_weight lw;
 
-        /* SCHED_OTHER tasks have to update their load when changing their
-        * weight */
-        if (update_load && p->sched_class->reweight_task)
-            p->sched_class->reweight_task(task_rq(p), p, &lw);
-        else
-            p->se.load = lw;
-    }
-
-    old_prio = p->prio;
-    p->prio = effective_prio(p) {
-        p->normal_prio = normal_prio(p)  {
-            return __normal_prio(p->policy, p->rt_priority, PRIO_TO_NICE(p->static_prio)) {
-                int prio;
-
-                if (dl_policy(policy))
-                    prio = MAX_DL_PRIO - 1;
-                else if (rt_policy(policy))
-                    prio = MAX_RT_PRIO - 1 - rt_prio;
-                else
-                    prio = NICE_TO_PRIO(nice);
-
-                return prio;
+            if (task_has_idle_policy(p)) {
+                lw.weight = scale_load(WEIGHT_IDLEPRIO);
+                lw.inv_weight = WMULT_IDLEPRIO;
+            } else {
+                lw.weight = scale_load(sched_prio_to_weight[prio]);
+                lw.inv_weight = sched_prio_to_wmult[prio];
             }
+
+            /* SCHED_OTHER tasks have to update their load when changing their
+            * weight */
+            if (update_load && p->sched_class->reweight_task)
+                p->sched_class->reweight_task(task_rq(p), p, &lw);
+            else
+                p->se.load = lw;
         }
 
-        if (!rt_or_dl_prio(p->prio))
-            return p->normal_prio;
-        return p->prio;
+        old_prio = p->prio;
+        p->prio = effective_prio(p) {
+            p->normal_prio = normal_prio(p)  {
+                return __normal_prio(p->policy, p->rt_priority, PRIO_TO_NICE(p->static_prio)) {
+                    int prio;
+
+                    if (dl_policy(policy))
+                        prio = MAX_DL_PRIO - 1;
+                    else if (rt_policy(policy))
+                        prio = MAX_RT_PRIO - 1 - rt_prio;
+                    else
+                        prio = NICE_TO_PRIO(nice);
+
+                    return prio;
+                }
+            }
+
+            if (!rt_or_dl_prio(p->prio))
+                return p->normal_prio;
+            return p->prio;
+        }
     }
-
-    if (queued)
-        enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
-    if (running)
-        set_next_task(rq, p);
-
-    /* If the task increased its priority or is running and
-     * lowered its priority, then reschedule its CPU: */
-    p->sched_class->prio_changed(rq, p, old_prio);
 }
 ```
 
