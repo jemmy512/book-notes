@@ -2730,7 +2730,7 @@ void __might_resched(const char *file, int line, unsigned int offsets)
     * [[PATCH V2 0/2] sched/deadline: Revised wakeup for suspending constrained dl tasks](https://lore.kernel.org/all/cover.1495803804.git.bristot@redhat.com/)
     * realtime throttling enforces the limit even when no lower-priority tasks are waiting to run, causing the CPU to go idle unnecessarily instead of allowing the RT task to continue.
 * [LWN - The hierarchical constant bandwidth server scheduler](https://lwn.net/Articles/1024757/)
-    * [[RFC PATCH v3 00/24] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20250929092221.10947-1-yurand2000@gmail.com/)
+    * [[RFC PATCH v4 00/28] Hierarchical Constant Bandwidth Server](https://lore.kernel.org/all/20251201124205.11169-1-yurand2000@gmail.com/)
 
 ```c
 DEFINE_SCHED_CLASS(dl) = {
