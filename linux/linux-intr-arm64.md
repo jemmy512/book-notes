@@ -2021,3 +2021,69 @@ static inline unsigned int irq_create_mapping(struct irq_domain *host,
     }
 }
 ```
+
+# init_IRQ
+
+```c
+void __init init_IRQ(void)
+{
+    init_irq_stacks() {
+        int cpu;
+        unsigned long *p;
+
+        for_each_possible_cpu(cpu) {
+            p = arch_alloc_vmap_stack(IRQ_STACK_SIZE, early_cpu_to_node(cpu));
+            per_cpu(irq_stack_ptr, cpu) = p;
+        }
+    }
+
+    init_irq_scs() {
+        int cpu;
+
+        if (!scs_is_enabled())
+            return;
+
+        for_each_possible_cpu(cpu)
+            per_cpu(irq_shadow_call_stack_ptr, cpu) =
+                scs_alloc(early_cpu_to_node(cpu));
+    }
+    irqchip_init() {
+        of_irq_init(__irqchip_of_table);
+	    acpi_probe_device_table(irqchip) {
+            extern struct acpi_probe_entry ACPI_PROBE_TABLE(t), ACPI_PROBE_TABLE_END(t);
+            __acpi_probe_device_table(&ACPI_PROBE_TABLE(t)/*ap_head*/，
+                (&ACPI_PROBE_TABLE_END(t) - &ACPI_PROBE_TABLE(t))/*nr*/);	 {
+                int count = 0;
+
+                if (acpi_disabled)
+                    return 0;
+
+                mutex_lock(&acpi_probe_mutex);
+                arch_sort_irqchip_probe(ap_head, nr);
+                for (ape = ap_head; nr; ape++, nr--) {
+                    if (ACPI_COMPARE_NAMESEG(ACPI_SIG_MADT, ape->id)) {
+                        acpi_probe_count = 0;
+                        acpi_table_parse_madt(ape->type, acpi_match_madt, 0);
+                        count += acpi_probe_count;
+                    } else {
+                        int res;
+                        res = acpi_table_parse(ape->id, ape->probe_table);
+                        if (!res)
+                            count++;
+                    }
+                }
+                mutex_unlock(&acpi_probe_mutex);
+
+                return count;
+            }
+        }
+    }
+
+    if (system_uses_irq_prio_masking()) {
+        /* Now that we have a stack for our IRQ handler, set
+         * the PMR/PSR pair to a consistent state. */
+        WARN_ON(read_sysreg(daif) & PSR_A_BIT);
+        local_daif_restore(DAIF_PROCCTX_NOIRQ);
+    }
+}
+```
