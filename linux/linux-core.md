@@ -4081,7 +4081,22 @@ int init_srcu_struct(struct srcu_struct *ssp)
         }
         if (!ssp->sda)
             goto err_free_sup;
-        init_srcu_struct_data(ssp);
+        init_srcu_struct_data(ssp) {
+            for_each_possible_cpu(cpu) {
+                sdp = per_cpu_ptr(ssp->sda, cpu);
+                spin_lock_init(&ACCESS_PRIVATE(sdp, lock));
+                rcu_segcblist_init(&sdp->srcu_cblist);
+                sdp->srcu_cblist_invoking = false;
+                sdp->srcu_gp_seq_needed = ssp->srcu_sup->srcu_gp_seq;
+                sdp->srcu_gp_seq_needed_exp = ssp->srcu_sup->srcu_gp_seq;
+                sdp->srcu_barrier_head.next = &sdp->srcu_barrier_head;
+                sdp->mynode = NULL;
+                sdp->cpu = cpu;
+                INIT_WORK(&sdp->work, srcu_invoke_callbacks);
+                timer_setup(&sdp->delay_work, srcu_delay_timer, 0);
+                sdp->ssp = ssp;
+            }
+        }
         ssp->srcu_sup->srcu_gp_seq_needed_exp = SRCU_GP_SEQ_INITIAL_VAL;
         ssp->srcu_sup->srcu_last_gp_end = ktime_get_mono_fast_ns();
         if (READ_ONCE(ssp->srcu_sup->srcu_size_state) == SRCU_SIZE_SMALL && SRCU_SIZING_IS_INIT()) {
@@ -4183,8 +4198,7 @@ void __init srcu_init(void)
     while (!list_empty(&srcu_boot_list)) {
         sup = list_first_entry(&srcu_boot_list, struct srcu_usage, work.work.entry);
         list_del_init(&sup->work.work.entry);
-        if (SRCU_SIZING_IS(SRCU_SIZING_INIT) &&
-            sup->srcu_size_state == SRCU_SIZE_SMALL)
+        if (SRCU_SIZING_IS(SRCU_SIZING_INIT) && sup->srcu_size_state == SRCU_SIZE_SMALL)
             sup->srcu_size_state = SRCU_SIZE_ALLOC;
         queue_work(rcu_gp_wq, &sup->work.work);
     }
@@ -4302,49 +4316,9 @@ void call_srcu(struct srcu_struct *ssp, struct rcu_head *rhp,
             spin_lock_irqsave_sdp_contention(sdp, &flags);
 
             if (rhp)
-                rcu_segcblist_enqueue(&sdp->srcu_cblist, rhp);
-            /* It's crucial to capture the snapshot 's' for acceleration before
-            * reading the current gp_seq that is used for advancing. This is
-            * essential because if the acceleration snapshot is taken after a
-            * failed advancement attempt, there's a risk that a grace period may
-            * conclude and a new one may start in the interim. If the snapshot is
-            * captured after this sequence of events, the acceleration snapshot 's'
-            * could be excessively advanced, leading to acceleration failure.
-            * In such a scenario, an 'acceleration leak' can occur, where new
-            * callbacks become indefinitely stuck in the RCU_NEXT_TAIL segment.
-            * Also note that encountering advancing failures is a normal
-            * occurrence when the grace period for RCU_WAIT_TAIL is in progress.
-            *
-            * To see this, consider the following events which occur if
-            * rcu_seq_snap() were to be called after advance:
-            *
-            *  1) The RCU_WAIT_TAIL segment has callbacks (gp_num = X + 4) and the
-            *     RCU_NEXT_READY_TAIL also has callbacks (gp_num = X + 8).
-            *
-            *  2) The grace period for RCU_WAIT_TAIL is seen as started but not
-            *     completed so rcu_seq_current() returns X + SRCU_STATE_SCAN1.
-            *
-            *  3) This value is passed to rcu_segcblist_advance() which can't move
-            *     any segment forward and fails.
-            *
-            *  4) srcu_gp_start_if_needed() still proceeds with callback acceleration.
-            *     But then the call to rcu_seq_snap() observes the grace period for the
-            *     RCU_WAIT_TAIL segment as completed and the subsequent one for the
-            *     RCU_NEXT_READY_TAIL segment as started (ie: X + 4 + SRCU_STATE_SCAN1)
-            *     so it returns a snapshot of the next grace period, which is X + 12.
-            *
-            *  5) The value of X + 12 is passed to rcu_segcblist_accelerate() but the
-            *     freshly enqueued callback in RCU_NEXT_TAIL can't move to
-            *     RCU_NEXT_READY_TAIL which already has callbacks for a previous grace
-            *     period (gp_num = X + 8). So acceleration fails. */
             s = rcu_seq_snap(&ssp->srcu_sup->srcu_gp_seq);
             if (rhp) {
                 rcu_segcblist_advance(&sdp->srcu_cblist, rcu_seq_current(&ssp->srcu_sup->srcu_gp_seq));
-                /* Acceleration can never fail because the base current gp_seq
-                * used for acceleration is <= the value of gp_seq used for
-                * advancing. This means that RCU_NEXT_TAIL segment will
-                * always be able to be emptied by the acceleration into the
-                * RCU_NEXT_READY_TAIL or RCU_WAIT_TAIL segments. */
                 WARN_ON_ONCE(!rcu_segcblist_accelerate(&sdp->srcu_cblist, s));
             }
             if (ULONG_CMP_LT(sdp->srcu_gp_seq_needed, s)) {
@@ -4507,7 +4481,13 @@ void process_srcu(struct work_struct *work)
                 mutex_unlock(&ssp->srcu_sup->srcu_gp_mutex);
                 return; /* readers present, retry later. */
             }
-            srcu_flip(ssp);
+            srcu_flip(ssp) {
+                smp_mb(); /* E */  /* Pairs with B and C. */
+
+                WRITE_ONCE(ssp->srcu_ctrp, &ssp->sda->srcu_ctrs[!(ssp->srcu_ctrp - &ssp->sda->srcu_ctrs[0])]);
+
+                smp_mb(); /* D */  /* Pairs with C. */
+            }
             spin_lock_irq_rcu_node(ssp->srcu_sup);
             rcu_seq_set_state(&ssp->srcu_sup->srcu_gp_seq, SRCU_STATE_SCAN2);
             ssp->srcu_sup->srcu_n_exp_nodelay = 0;
@@ -4515,7 +4495,6 @@ void process_srcu(struct work_struct *work)
         }
 
         if (rcu_seq_state(READ_ONCE(ssp->srcu_sup->srcu_gp_seq)) == SRCU_STATE_SCAN2) {
-
             /* SRCU read-side critical sections are normally short,
             * so check at least twice in quick succession after a flip. */
             idx = !(ssp->srcu_ctrp - &ssp->sda->srcu_ctrs[0]);
