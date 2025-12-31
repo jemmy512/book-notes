@@ -26,6 +26,8 @@
     /sys/class/<class>/...
 ```
 
+* [Linux 设备驱动模型 device-bus-driver](https://mp.weixin.qq.com/s/09VGwzEa4ndc8urd5RfJxA)
+
 # core
 
 ```c
