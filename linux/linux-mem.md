@@ -2149,6 +2149,8 @@ void sparse_remove_section(unsigned long pfn, unsigned long nr_pages,
 
 ![](../images/kernel/mem-alloc_pages.svg)
 
+* [Freezing out the page reference count](https://lwn.net/Articles/1000654/)
+
 watermark | free area
 --- | ---
 ![](../images/kernel/mem-alloc_pages.png) | ![](../images/kernel/mem-free_area.png)
@@ -2191,8 +2193,11 @@ static inline struct page *alloc_pages_noprof(gfp_t gfp_mask, unsigned int order
                 struct page *page;
 
                 page = __alloc_frozen_pages_noprof(gfp, order, preferred_nid, nodemask);
-                if (page)
-                    set_page_refcounted(page);
+                if (page) {
+                    set_page_refcounted(page) {
+                        set_page_count(page, 1);
+                    }
+                }
                 return page;
             }
         }
@@ -3465,8 +3470,7 @@ restart:
         struct zoneref *z = first_zones_zonelist(
             ac->zonelist,
             ac->highest_zoneidx,
-            &cpuset_current_mems_allowed
-        );
+            &cpuset_current_mems_allowed);
         if (!z->zone)
             goto nopage;
     }
@@ -3501,8 +3505,7 @@ restart:
         /* Checks for costly allocations with __GFP_NORETRY, which
          * includes some THP page fault allocations */
         if (costly_order && (gfp_mask & __GFP_NORETRY)) {
-            if (compact_result == COMPACT_SKIPPED ||
-                compact_result == COMPACT_DEFERRED)
+            if (compact_result == COMPACT_SKIPPED || compact_result == COMPACT_DEFERRED)
                 goto nopage;
 
             /* Looks like reclaim/compaction is worth trying, but
@@ -4048,7 +4051,12 @@ free_one_page(zone, page, pfn, order, migratetype, FPI_NONE) {
 
     if (unlikely(fpi_flags & FPI_TRYLOCK)) {
         if (!spin_trylock_irqsave(&zone->lock, flags)) {
-            add_page_to_zone_llist(zone, page, order);
+            add_page_to_zone_llist(zone, page, order) {
+                /* Remember the order */
+                page->private = order;
+                /* Add the page to the free list */
+                llist_add(&page->pcp_llist, &zone->trylock_free_pages);
+            }
             return;
         }
     } else {
@@ -4346,22 +4354,35 @@ kmem_cache_create_usercopy(const char *name,
                 init_cache_random_seq(s);
 
                 init_kmem_cache_nodes(s) {
+                    int node;
+
                     for_each_node_mask(node, slab_nodes) {
                         struct kmem_cache_node *n;
+                        struct node_barn *barn = NULL;
 
                         if (slab_state == DOWN) {
                             early_kmem_cache_node_alloc(node);
                             continue;
                         }
 
-                        n = kmem_cache_alloc_node(kmem_cache_node, GFP_KERNEL, node);
-                        init_kmem_cache_node(n) {
-                            n->nr_partial = 0;
-                            spin_lock_init(&n->list_lock);
-                            INIT_LIST_HEAD(&n->partial);
+                        if (s->cpu_sheaves) {
+                            barn = kmalloc_node(sizeof(*barn), GFP_KERNEL, node);
+
+                            if (!barn)
+                                return 0;
                         }
+
+                        n = kmem_cache_alloc_node(kmem_cache_node, GFP_KERNEL, node);
+                        if (!n) {
+                            kfree(barn);
+                            return 0;
+                        }
+
+                        init_kmem_cache_node(n, barn);
+
                         s->node[node] = n;
                     }
+                    return 1;
                 }
 
                 alloc_kmem_cache_cpus(s) {
@@ -4931,17 +4952,14 @@ SLAB_MATCH(memcg_data, obj_exts);
 
 ```c
 kmem_cache_alloc(s, flags) {
-    __kmem_cache_alloc_lru(s, lru, flags)
-        slab_alloc() {
-            slab_alloc_node() {
-                slab_pre_alloc_hook()
-                kfence_alloc()
-                if (s->cpu_sheaves)
-                    object = alloc_from_pcs(s, gfpflags, node);
-                if (!object)
-                    object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
-            }
-        }
+    slab_alloc_node(s, NULL, gfpflags, NUMA_NO_NODE, _RET_IP_, s->object_size) {
+        slab_pre_alloc_hook()
+        kfence_alloc()
+        if (s->cpu_sheaves)
+            object = alloc_from_pcs(s, gfpflags, node);
+        if (!object)
+            object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
+    }
 }
 ```
 
