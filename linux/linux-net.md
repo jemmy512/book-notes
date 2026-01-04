@@ -141,6 +141,9 @@
 
 </details>
 
+* [git.kernel - net.git](https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git/)
+* [git.kernel - net-next.git](https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git/)
+* [lore.kernel - netdev](https://lore.kernel.org/netdev/)
 ---
 
 * [iximiuz Labs - Computer Networking Fundamentals For Developers, DevOps, and Platform Engineers](https://labs.iximiuz.com/courses/computer-networking-fundamentals)
@@ -18174,6 +18177,9 @@ int do_poll(struct poll_list *list, struct poll_wqueues *wait,
     return count;
 }
 ```
+# io-uring
+
+* [lore.kernel - io-uring](https://lore.kernel.org/io-uring/)
 
 # inet_init
 

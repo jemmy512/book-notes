@@ -217,7 +217,8 @@
 
 # Doc
 
-* [lore.git - mm.git](https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git/)
+* [git.kernel - mm.git](https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git/)
+* [lore.kernel - mm](https://lore.kernel.org/linux-mm/)
 * [:link: Linux - Memory Management Documentation](https://docs.kernel.org/mm/index.html)
     * [Memory Layout on AArch64 Linux](https://docs.kernel.org/arch/arm64/memory.html)
 
@@ -4859,7 +4860,7 @@ void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
 
 # slub
 
-* [lore.git - slab.git](https://git.kernel.org/pub/scm/linux/kernel/git/vbabka/slab.git)
+* [git.kernel - slab.git](https://git.kernel.org/pub/scm/linux/kernel/git/vbabka/slab.git)
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
     * [The SLUB allocator ](https://lwn.net/Articles/229984/)
 * [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1) ⊙ [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2) ⊙ [:three: - KASan :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3) ⊙ [:four: - KFENCE :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
@@ -4945,6 +4946,8 @@ SLAB_MATCH(memcg_data, obj_exts);
 ## slub_alloc
 
 ![](../images/kernel/mem-slab_alloc.svg)
+
+![](../images/kernel/mem-slub.drawio.svg)
 
 ---
 

@@ -1,5 +1,5 @@
 [:link: Linux - Core API Documentation :link:](https://docs.kernel.org/core-api/index.html)
-* [lore.git - tip.git: locking/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=locking/core)
+* [git.kernel - tip.git: locking/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=locking/core)
 
 * [并发机制 - LoyenWang](https://www.cnblogs.com/LoyenWang/category/1689461.html)
     * [Semophore](https://www.cnblogs.com/LoyenWang/p/12907230.html)
@@ -211,6 +211,7 @@ RCU Lock | Sometimes (variant-based) | :white_check_mark: (most variants) | Proc
 
 ---
 
+* [lore.kernel - rcu](https://lore.kernel.org/rcu/)
 * [kernel: RCU Handbook](https://docs.kernel.org/RCU/index.html)
     * [A Tour Through TREE_RCU’s Data Structures](https://docs.kernel.org/RCU/Design/Data-Structures/Data-Structures.html)
     * [Tree RCU Grace Period Memory Ordering Components](https://docs.kernel.org/RCU/Design/Memory-Ordering/Tree-RCU-Memory-Ordering.html#tree-rcu-grace-period-memory-ordering-components)
