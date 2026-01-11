@@ -3944,6 +3944,11 @@ void free_frozen_pages(struct page *page, unsigned int order)
         pcpmigratetype = MIGRATE_MOVABLE;
     }
 
+    if (unlikely((fpi_flags & FPI_TRYLOCK) && IS_ENABLED(CONFIG_PREEMPT_RT) && (in_nmi() || in_hardirq()))) {
+        add_page_to_zone_llist(zone, page, order);
+        return;
+    }
+
     pcp_trylock_prepare(UP_flags);
     pcp = pcp_spin_trylock(zone->per_cpu_pageset);
     if (pcp) {
@@ -4040,6 +4045,131 @@ void __free_pages_ok(struct page *page, unsigned int order, fpi_t fpi_flags)
 
     if (free_pages_prepare(page, order))
         free_one_page(zone, page, pfn, order, fpi_flags);
+}
+```
+
+```c
+bool free_pages_prepare(struct page *page,
+            unsigned int order)
+{
+    int bad = 0;
+    bool skip_kasan_poison = should_skip_kasan_poison(page);
+    bool init = want_init_on_free();
+    bool compound = PageCompound(page);
+    struct folio *folio = page_folio(page);
+
+    VM_BUG_ON_PAGE(PageTail(page), page);
+
+    trace_mm_page_free(page, order);
+    kmsan_free_page(page, order);
+
+    if (memcg_kmem_online() && PageMemcgKmem(page))
+        __memcg_kmem_uncharge_page(page, order);
+
+    /* In rare cases, when truncation or holepunching raced with
+     * munlock after VM_LOCKED was cleared, Mlocked may still be
+     * found set here.  This does not indicate a problem, unless
+     * "unevictable_pgs_cleared" appears worryingly large. */
+    if (unlikely(folio_test_mlocked(folio))) {
+        long nr_pages = folio_nr_pages(folio);
+
+        __folio_clear_mlocked(folio);
+        zone_stat_mod_folio(folio, NR_MLOCK, -nr_pages);
+        count_vm_events(UNEVICTABLE_PGCLEARED, nr_pages);
+    }
+
+    if (unlikely(PageHWPoison(page)) && !order) {
+        /* Do not let hwpoison pages hit pcplists/buddy */
+        reset_page_owner(page, order);
+        page_table_check_free(page, order);
+        pgalloc_tag_sub(page, 1 << order);
+
+        /* The page is isolated and accounted for.
+         * Mark the codetag as empty to avoid accounting error
+         * when the page is freed by unpoison_memory(). */
+        clear_page_tag_ref(page);
+        return false;
+    }
+
+    VM_BUG_ON_PAGE(compound && compound_order(page) != order, page);
+
+    /* Check tail pages before head page information is cleared to
+     * avoid checking PageCompound for order-0 pages. */
+    if (unlikely(order)) {
+        int i;
+
+        if (compound) {
+            page[1].flags.f &= ~PAGE_FLAGS_SECOND;
+#ifdef NR_PAGES_IN_LARGE_FOLIO
+            folio->_nr_pages = 0;
+#endif
+        }
+        for (i = 1; i < (1 << order); i++) {
+            if (compound)
+                bad += free_tail_page_prepare(page, page + i);
+            if (is_check_pages_enabled()) {
+                if (free_page_is_bad(page + i)) {
+                    bad++;
+                    continue;
+                }
+            }
+            (page + i)->flags.f &= ~PAGE_FLAGS_CHECK_AT_PREP;
+        }
+    }
+    if (folio_test_anon(folio)) {
+        mod_mthp_stat(order, MTHP_STAT_NR_ANON, -1);
+        folio->mapping = NULL;
+    }
+    if (unlikely(page_has_type(page)))
+        /* Reset the page_type (which overlays _mapcount) */
+        page->page_type = UINT_MAX;
+
+    if (is_check_pages_enabled()) {
+        if (free_page_is_bad(page))
+            bad++;
+        if (bad)
+            return false;
+    }
+
+    page_cpupid_reset_last(page);
+    page->flags.f &= ~PAGE_FLAGS_CHECK_AT_PREP;
+    reset_page_owner(page, order);
+    page_table_check_free(page, order);
+    pgalloc_tag_sub(page, 1 << order);
+
+    if (!PageHighMem(page)) {
+        debug_check_no_locks_freed(page_address(page),
+                       PAGE_SIZE << order);
+        debug_check_no_obj_freed(page_address(page),
+                       PAGE_SIZE << order);
+    }
+
+    kernel_poison_pages(page, 1 << order);
+
+    /* As memory initialization might be integrated into KASAN,
+     * KASAN poisoning and memory initialization code must be
+     * kept together to avoid discrepancies in behavior.
+     *
+     * With hardware tag-based KASAN, memory tags must be set before the
+     * page becomes unavailable via debug_pagealloc or arch_free_page. */
+    if (!skip_kasan_poison) {
+        kasan_poison_pages(page, order, init);
+
+        /* Memory is already initialized if KASAN did it internally. */
+        if (kasan_has_integrated_init())
+            init = false;
+    }
+    if (init)
+        kernel_init_pages(page, 1 << order);
+
+    /* arch_free_page() can make the page's contents inaccessible.  s390
+     * does this.  So nothing which can access the page's contents should
+     * happen after this. */
+    arch_free_page(page, order);
+
+    debug_pagealloc_unmap_pages(page, 1 << order);
+
+    return true;
 }
 ```
 
@@ -4419,6 +4549,29 @@ out_unlock:
     if (err) {
         return NULL;
     }
+    return s;
+}
+
+struct kmem_cache *
+__kmem_cache_alias(const char *name, unsigned int size, unsigned int align,
+           slab_flags_t flags, void (*ctor)(void *))
+{
+    struct kmem_cache *s;
+
+    s = find_mergeable(size, align, flags, name, ctor);
+    if (s) {
+        if (sysfs_slab_alias(s, name))
+            pr_err("SLUB: Unable to add cache alias %s to sysfs\n",
+                   name);
+
+        s->refcount++;
+
+        /* Adjust the object sizes so that we clear
+         * the complete object on kzalloc. */
+        s->object_size = max(s->object_size, size);
+        s->inuse = max(s->inuse, ALIGN(size, sizeof(void *)));
+    }
+
     return s;
 }
 ```
@@ -4945,8 +5098,6 @@ SLAB_MATCH(memcg_data, obj_exts);
 
 ## slub_alloc
 
-![](../images/kernel/mem-slab_alloc.svg)
-
 ![](../images/kernel/mem-slub.drawio.svg)
 
 ---
@@ -4954,15 +5105,152 @@ SLAB_MATCH(memcg_data, obj_exts);
 ![](../images/kernel/mem-slab_alloc.png)
 
 ```c
-kmem_cache_alloc(s, flags) {
-    slab_alloc_node(s, NULL, gfpflags, NUMA_NO_NODE, _RET_IP_, s->object_size) {
-        slab_pre_alloc_hook()
-        kfence_alloc()
-        if (s->cpu_sheaves)
-            object = alloc_from_pcs(s, gfpflags, node);
-        if (!object)
-            object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
+static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list_lru *lru,
+        gfp_t gfpflags, int node, unsigned long addr, size_t orig_size)
+{
+    void *object;
+    bool init = false;
+
+    s = slab_pre_alloc_hook(s, gfpflags) {
+        flags &= gfp_allowed_mask;
+
+        might_alloc(flags) {
+            fs_reclaim_acquire(gfp_mask);
+            fs_reclaim_release(gfp_mask);
+
+            if (current->flags & PF_MEMALLOC)
+                return;
+
+            ret = gfpflags_allow_blocking(gfp_mask) {
+                return !!(gfp_flags & __GFP_DIRECT_RECLAIM)
+            }
+            might_sleep_if(ret) {
+                if (cond) might_sleep();
+            }
+        }
+
+        ret = should_failslab(s, flags) {
+            int flags = 0;
+
+            /* No fault-injection for bootstrap cache */
+            if (unlikely(s == kmem_cache))
+                return 0;
+
+            if (gfpflags & __GFP_NOFAIL)
+                return 0;
+
+            if (failslab.ignore_gfp_reclaim && (gfpflags & __GFP_DIRECT_RECLAIM))
+                return 0;
+
+            if (failslab.cache_filter && !(s->flags & SLAB_FAILSLAB))
+                return 0;
+
+            /* In some cases, it expects to specify __GFP_NOWARN
+            * to avoid printing any information(not just a warning),
+            * thus avoiding deadlocks. See commit 6b9dbedbe349 for
+            * details. */
+            if (gfpflags & __GFP_NOWARN)
+                flags |= FAULT_NOWARN;
+
+            return should_fail_ex(&failslab.attr, s->object_size, flags) {
+                bool stack_checked = false;
+
+                if (in_task()) {
+                    unsigned int fail_nth = READ_ONCE(current->fail_nth);
+
+                    if (fail_nth) {
+                        if (!fail_stacktrace(attr))
+                            return false;
+
+                        stack_checked = true;
+                        fail_nth--;
+                        WRITE_ONCE(current->fail_nth, fail_nth);
+                        if (!fail_nth)
+                            goto fail;
+
+                        return false;
+                    }
+                }
+
+                /* No need to check any other properties if the probability is 0 */
+                if (attr->probability == 0)
+                    return false;
+
+                if (attr->task_filter && !fail_task(attr, current))
+                    return false;
+
+                if (atomic_read(&attr->times) == 0)
+                    return false;
+
+                if (!stack_checked && !fail_stacktrace(attr))
+                    return false;
+
+                if (atomic_read(&attr->space) > size) {
+                    atomic_sub(size, &attr->space);
+                    return false;
+                }
+
+                if (attr->interval > 1) {
+                    attr->count++;
+                    if (attr->count % attr->interval)
+                        return false;
+                }
+
+                if (attr->probability <= fault_prandom_u32_below_100())
+                    return false;
+
+            fail:
+                if (!(flags & FAULT_NOWARN))
+                    fail_dump(attr);
+
+                if (atomic_read(&attr->times) != -1)
+                    atomic_dec_not_zero(&attr->times);
+
+                return true;
+            }
+            ? -ENOMEM : 0;
+        }
+        if (unlikely(ret))
+            return NULL;
+
+        return s;
     }
+    if (unlikely(!s))
+        return NULL;
+
+    object = kfence_alloc(s, orig_size, gfpflags);
+    if (unlikely(object))
+        goto out;
+
+    if (s->cpu_sheaves)
+        object = alloc_from_pcs(s, gfpflags, node);
+
+    if (!object)
+        object = __slab_alloc_node(s, gfpflags, node, addr, orig_size);
+
+    maybe_wipe_obj_freeptr(s, object) {
+        ret = freeptr_outside_object(s) {
+            return s->offset >= s->inuse;
+        }
+        ret1 = slab_want_init_on_free(s) {
+            if (static_branch_maybe(CONFIG_INIT_ON_FREE_DEFAULT_ON, &init_on_free))
+                return !(c->ctor || (c->flags & (SLAB_TYPESAFE_BY_RCU | SLAB_POISON)));
+            return false;
+        }
+        if (unlikely(ret1) && obj && !ret)
+            memset((void *)((char *)kasan_reset_tag(obj) + s->offset),
+                0, sizeof(void *));
+    }
+    init = slab_want_init_on_alloc(gfpflags, s);
+
+out:
+    /* When init equals 'true', like for kzalloc() family, only
+     * @orig_size bytes might be zeroed instead of s->object_size
+     * In case this fails due to memcg_slab_post_alloc_hook(),
+     * object is set to NULL */
+     slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size);
+
+    return object;
 }
 ```
 
@@ -5578,6 +5866,297 @@ redo:
 }
 ```
 
+### slab_post_alloc_hook
+
+```c
+slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size) {
+    unsigned int zero_size = s->object_size;
+    bool kasan_init = init;
+    size_t i;
+    gfp_t init_flags = flags & gfp_allowed_mask;
+
+    /* For kmalloc object, the allocated memory size(object_size) is likely
+    * larger than the requested size(orig_size). If redzone check is
+    * enabled for the extra space, don't zero it, as it will be redzoned
+    * soon. The redzone operation for this extra space could be seen as a
+    * replacement of current poisoning under certain debug option, and
+    * won't break other sanity checks. */
+    if (kmem_cache_debug_flags(s, SLAB_STORE_USER | SLAB_RED_ZONE) &&
+        (s->flags & SLAB_KMALLOC))
+        zero_size = orig_size;
+
+    /* When slab_debug is enabled, avoid memory initialization integrated
+    * into KASAN and instead zero out the memory via the memset below with
+    * the proper size. Otherwise, KASAN might overwrite SLUB redzones and
+    * cause false-positive reports. This does not lead to a performance
+    * penalty on production builds, as slab_debug is not intended to be
+    * enabled there. */
+    if (__slub_debug_enabled())
+        kasan_init = false;
+
+    /* As memory initialization might be integrated into KASAN,
+    * kasan_slab_alloc and initialization memset must be
+    * kept together to avoid discrepancies in behavior.
+    *
+    * As p[i] might get tagged, memset and kmemleak hook come after KASAN. */
+    for (i = 0; i < size; i++) {
+        p[i] = kasan_slab_alloc(s, p[i], init_flags, kasan_init);
+        if (p[i] && init && (!kasan_init || !kasan_has_integrated_init()))
+            memset(p[i], 0, zero_size);
+        if (gfpflags_allow_spinning(flags))
+            kmemleak_alloc_recursive(p[i], s->object_size, 1, s->flags, init_flags);
+        kmsan_slab_alloc(s, p[i], init_flags);
+        alloc_tagging_slab_alloc_hook(s, p[i], flags);
+    }
+
+    return memcg_slab_post_alloc_hook(s, lru, flags, size, p) {
+        if (likely(!memcg_kmem_online()))
+            return true;
+
+        if (likely(!(flags & __GFP_ACCOUNT) && !(s->flags & SLAB_ACCOUNT)))
+            return true;
+
+        ret = __memcg_slab_post_alloc_hook(s, lru, flags, size, p) {
+            struct obj_cgroup *objcg;
+            struct slab *slab;
+            unsigned long off;
+            size_t i;
+
+            /* The obtained objcg pointer is safe to use within the current scope,
+            * defined by current task or set_active_memcg() pair.
+            * obj_cgroup_get() is used to get a permanent reference. */
+            objcg = current_obj_cgroup();
+            if (!objcg)
+                return true;
+
+            /* slab_alloc_node() avoids the NULL check, so we might be called with a
+            * single NULL object. kmem_cache_alloc_bulk() aborts if it can't fill
+            * the whole requested size.
+            * return success as there's nothing to free back */
+            if (unlikely(*p == NULL))
+                return true;
+
+            flags &= gfp_allowed_mask;
+
+            if (lru) {
+                int ret;
+                struct mem_cgroup *memcg;
+
+                memcg = get_mem_cgroup_from_objcg(objcg);
+                ret = memcg_list_lru_alloc(memcg, lru, flags);
+                css_put(&memcg->css);
+
+                if (ret)
+                    return false;
+            }
+
+            for (i = 0; i < size; i++) {
+                slab = virt_to_slab(p[i]);
+
+                if (!slab_obj_exts(slab) && alloc_slab_obj_exts(slab, s, flags, false)) {
+                    continue;
+                }
+
+                /* if we fail and size is 1, memcg_alloc_abort_single() will
+                * just free the object, which is ok as we have not assigned
+                * objcg to its obj_ext yet
+                *
+                * for larger sizes, kmem_cache_free_bulk() will uncharge
+                * any objects that were already charged and obj_ext assigned
+                *
+                * TODO: we could batch this until slab_pgdat(slab) changes
+                * between iterations, with a more complicated undo */
+                if (obj_cgroup_charge_account(objcg, flags, obj_full_size(s), slab_pgdat(slab), cache_vmstat_idx(s)))
+                    return false;
+
+                off = obj_to_index(s, slab, p[i]);
+                obj_cgroup_get(objcg);
+                slab_obj_exts(slab)[off].objcg = objcg;
+            }
+
+            return true;
+        }
+        if (likely(ret))
+            return true;
+
+        if (likely(size == 1)) {
+            memcg_alloc_abort_single(s, *p);
+            *p = NULL;
+        } else {
+            kmem_cache_free_bulk(s, size, p);
+        }
+
+        return false;
+    }
+}
+
+int obj_cgroup_charge_account(struct obj_cgroup *objcg, gfp_t gfp, size_t size,
+                     struct pglist_data *pgdat, enum node_stat_item idx)
+{
+    unsigned int nr_pages, nr_bytes;
+    int ret;
+
+    if (likely(consume_obj_stock(objcg, size, pgdat, idx)))
+        return 0;
+
+    /* In theory, objcg->nr_charged_bytes can have enough
+     * pre-charged bytes to satisfy the allocation. However,
+     * flushing objcg->nr_charged_bytes requires two atomic
+     * operations, and objcg->nr_charged_bytes can't be big.
+     * The shared objcg->nr_charged_bytes can also become a
+     * performance bottleneck if all tasks of the same memcg are
+     * trying to update it. So it's better to ignore it and try
+     * grab some new pages. The stock's nr_bytes will be flushed to
+     * objcg->nr_charged_bytes later on when objcg changes.
+     *
+     * The stock's nr_bytes may contain enough pre-charged bytes
+     * to allow one less page from being charged, but we can't rely
+     * on the pre-charged bytes not being changed outside of
+     * consume_obj_stock() or refill_obj_stock(). So ignore those
+     * pre-charged bytes as well when charging pages. To avoid a
+     * page uncharge right after a page charge, we set the
+     * allow_uncharge flag to false when calling refill_obj_stock()
+     * to temporarily allow the pre-charged bytes to exceed the page
+     * size limit. The maximum reachable value of the pre-charged
+     * bytes is (sizeof(object) + PAGE_SIZE - 2) if there is no data
+     * race. */
+    nr_pages = size >> PAGE_SHIFT;
+    nr_bytes = size & (PAGE_SIZE - 1);
+
+    if (nr_bytes)
+        nr_pages += 1;
+
+    ret = obj_cgroup_charge_pages(objcg, gfp, nr_pages) {
+        struct mem_cgroup *memcg;
+        int ret;
+
+        memcg = get_mem_cgroup_from_objcg(objcg);
+
+        ret = try_charge_memcg(memcg, gfp, nr_pages);
+        if (ret)
+            goto out;
+
+        account_kmem_nmi_safe(memcg, nr_pages);
+        memcg1_account_kmem(memcg, nr_pages);
+    out:
+        css_put(&memcg->css);
+
+        return ret;
+    }
+    if (!ret && (nr_bytes || pgdat))
+        refill_obj_stock(objcg, nr_bytes ? PAGE_SIZE - nr_bytes : 0, false, size, pgdat, idx);
+
+    return ret;
+}
+
+static bool consume_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+                  struct pglist_data *pgdat, enum node_stat_item idx)
+{
+    struct obj_stock_pcp *stock;
+    bool ret = false;
+
+    if (!local_trylock(&obj_stock.lock))
+        return ret;
+
+    stock = this_cpu_ptr(&obj_stock);
+    if (objcg == READ_ONCE(stock->cached_objcg) && stock->nr_bytes >= nr_bytes) {
+        stock->nr_bytes -= nr_bytes;
+        ret = true;
+
+        if (pgdat) {
+            __account_obj_stock(objcg, stock, nr_bytes, pgdat, idx) {
+                int *bytes;
+
+                /* Save vmstat data in stock and skip vmstat array update unless
+                * accumulating over a page of vmstat data or when pgdat changes. */
+                if (stock->cached_pgdat != pgdat) {
+                    /* Flush the existing cached vmstat data */
+                    struct pglist_data *oldpg = stock->cached_pgdat;
+
+                    if (stock->nr_slab_reclaimable_b) {
+                        mod_objcg_mlstate(objcg, oldpg, NR_SLAB_RECLAIMABLE_B,
+                                stock->nr_slab_reclaimable_b);
+                        stock->nr_slab_reclaimable_b = 0;
+                    }
+                    if (stock->nr_slab_unreclaimable_b) {
+                        mod_objcg_mlstate(objcg, oldpg, NR_SLAB_UNRECLAIMABLE_B,
+                                stock->nr_slab_unreclaimable_b);
+                        stock->nr_slab_unreclaimable_b = 0;
+                    }
+                    stock->cached_pgdat = pgdat;
+                }
+
+                bytes = (idx == NR_SLAB_RECLAIMABLE_B) ? &stock->nr_slab_reclaimable_b
+                                    : &stock->nr_slab_unreclaimable_b;
+                /* Even for large object >= PAGE_SIZE, the vmstat data will still be
+                * cached locally at least once before pushing it out. */
+                if (!*bytes) {
+                    *bytes = nr;
+                    nr = 0;
+                } else {
+                    *bytes += nr;
+                    if (abs(*bytes) > PAGE_SIZE) {
+                        nr = *bytes;
+                        *bytes = 0;
+                    } else {
+                        nr = 0;
+                    }
+                }
+                if (nr)
+                    mod_objcg_mlstate(objcg, pgdat, idx, nr);
+            }
+        }
+    }
+
+    local_unlock(&obj_stock.lock);
+
+    return ret;
+}
+
+void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
+        bool allow_uncharge, int nr_acct, struct pglist_data *pgdat,
+        enum node_stat_item idx)
+{
+    struct obj_stock_pcp *stock;
+    unsigned int nr_pages = 0;
+
+    if (!local_trylock(&obj_stock.lock)) {
+        if (pgdat)
+            mod_objcg_mlstate(objcg, pgdat, idx, nr_bytes);
+        nr_pages = nr_bytes >> PAGE_SHIFT;
+        nr_bytes = nr_bytes & (PAGE_SIZE - 1);
+        atomic_add(nr_bytes, &objcg->nr_charged_bytes);
+        goto out;
+    }
+
+    stock = this_cpu_ptr(&obj_stock);
+    if (READ_ONCE(stock->cached_objcg) != objcg) { /* reset if necessary */
+        drain_obj_stock(stock);
+        obj_cgroup_get(objcg);
+        stock->nr_bytes = atomic_read(&objcg->nr_charged_bytes)
+                ? atomic_xchg(&objcg->nr_charged_bytes, 0) : 0;
+        WRITE_ONCE(stock->cached_objcg, objcg);
+
+        allow_uncharge = true;    /* Allow uncharge when objcg changes */
+    }
+    stock->nr_bytes += nr_bytes;
+
+    if (pgdat)
+        __account_obj_stock(objcg, stock, nr_acct, pgdat, idx);
+            --->
+
+    if (allow_uncharge && (stock->nr_bytes > PAGE_SIZE)) {
+        nr_pages = stock->nr_bytes >> PAGE_SHIFT;
+        stock->nr_bytes &= (PAGE_SIZE - 1);
+    }
+
+    local_unlock(&obj_stock.lock);
+out:
+    if (nr_pages)
+        obj_cgroup_uncharge_pages(objcg, nr_pages);
+}
+```
+
 ## slab_free
 
 ![](../images/kernel/mme-slab_free.png)
@@ -5604,7 +6183,41 @@ void kmem_cache_free(struct kmem_cache *s, void *x)
 void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
            unsigned long addr)
 {
-    memcg_slab_free_hook(s, slab, &object, 1);
+    memcg_slab_free_hook(s, slab, &object, 1) {
+        struct slabobj_ext *obj_exts;
+
+        if (!memcg_kmem_online())
+            return;
+
+        obj_exts = slab_obj_exts(slab);
+        if (likely(!obj_exts))
+            return;
+
+        __memcg_slab_free_hook(s, slab, p, objects, obj_exts) {
+            size_t obj_size = obj_full_size(s);
+
+            for (int i = 0; i < objects; i++) {
+                struct obj_cgroup *objcg;
+                unsigned int off;
+
+                off = obj_to_index(s, slab, p[i]) {
+                    if (is_kfence_address(obj))
+                        return 0;
+                    return __obj_to_index(cache, slab_address(slab), obj) {
+                        return reciprocal_divide(kasan_reset_tag(obj) - addr, cache->reciprocal_size);
+                    }
+                }
+                objcg = obj_exts[off].objcg;
+                if (!objcg)
+                    continue;
+
+                obj_exts[off].objcg = NULL;
+                refill_obj_stock(objcg, obj_size, true, -obj_size, slab_pgdat(slab), cache_vmstat_idx(s));
+                obj_cgroup_put(objcg);
+            }
+        }
+
+    }
     alloc_tagging_slab_free_hook(s, slab, &object, 1);
 
     if (unlikely(!slab_free_hook(s, object, slab_want_init_on_free(s), false)))
@@ -5811,6 +6424,85 @@ void slab_free(struct kmem_cache *s, struct slab *slab, void *object,
             local_unlock(&s->cpu_slab->lock);
         }
     }
+}
+```
+
+### slab_free_hook
+
+```c
+static __always_inline
+bool slab_free_hook(struct kmem_cache *s, void *x, bool init,
+            bool after_rcu_delay)
+{
+    /* Are the object contents still accessible? */
+    bool still_accessible = (s->flags & SLAB_TYPESAFE_BY_RCU) && !after_rcu_delay;
+
+    kmemleak_free_recursive(x, s->flags);
+    kmsan_slab_free(s, x);
+
+    debug_check_no_locks_freed(x, s->object_size);
+
+    if (!(s->flags & SLAB_DEBUG_OBJECTS))
+        debug_check_no_obj_freed(x, s->object_size);
+
+    /* Use KCSAN to help debug racy use-after-free. */
+    if (!still_accessible)
+        __kcsan_check_access(x, s->object_size, KCSAN_ACCESS_WRITE | KCSAN_ACCESS_ASSERT);
+
+    if (kfence_free(x))
+        return false;
+
+    /* Give KASAN a chance to notice an invalid free operation before we
+     * modify the object. */
+    if (kasan_slab_pre_free(s, x))
+        return false;
+
+#ifdef CONFIG_SLUB_RCU_DEBUG
+    if (still_accessible) {
+        struct rcu_delayed_free *delayed_free;
+
+        delayed_free = kmalloc(sizeof(*delayed_free), GFP_NOWAIT);
+        if (delayed_free) {
+            /* Let KASAN track our call stack as a "related work
+             * creation", just like if the object had been freed
+             * normally via kfree_rcu().
+             * We have to do this manually because the rcu_head is
+             * not located inside the object. */
+            kasan_record_aux_stack(x);
+
+            delayed_free->object = x;
+            call_rcu(&delayed_free->head, slab_free_after_rcu_debug);
+            return false;
+        }
+    }
+#endif /* CONFIG_SLUB_RCU_DEBUG */
+
+    /* As memory initialization might be integrated into KASAN,
+     * kasan_slab_free and initialization memset's must be
+     * kept together to avoid discrepancies in behavior.
+     *
+     * The initialization memset's clear the object and the metadata,
+     * but don't touch the SLAB redzone.
+     *
+     * The object's freepointer is also avoided if stored outside the
+     * object. */
+    if (unlikely(init)) {
+        int rsize;
+        unsigned int inuse, orig_size;
+
+        inuse = get_info_end(s);
+        orig_size = get_orig_size(s, x);
+        if (!kasan_has_integrated_init())
+            memset(kasan_reset_tag(x), 0, orig_size);
+        rsize = (s->flags & SLAB_RED_ZONE) ? s->red_left_pad : 0;
+        memset((char *)kasan_reset_tag(x) + inuse, 0, s->size - inuse - rsize);
+        /* Restore orig_size, otherwise kmalloc redzone overwritten
+         * would be reported */
+        set_orig_size(s, x, orig_size);
+
+    }
+    /* KASAN might put x into memory quarantine, delaying its reuse. */
+    return !kasan_slab_free(s, x, init, still_accessible, false);
 }
 ```
 
@@ -11790,27 +12482,27 @@ int rc = folio_migrate_mapping(mapping, dst, src, extra_count) {
         old_lruvec = mem_cgroup_lruvec(memcg, oldzone->zone_pgdat);
         new_lruvec = mem_cgroup_lruvec(memcg, newzone->zone_pgdat);
 
-        __mod_lruvec_state(old_lruvec, NR_FILE_PAGES, -nr);
-        __mod_lruvec_state(new_lruvec, NR_FILE_PAGES, nr);
+        mod_lruvec_state(old_lruvec, NR_FILE_PAGES, -nr);
+        mod_lruvec_state(new_lruvec, NR_FILE_PAGES, nr);
         if (folio_test_swapbacked(folio) && !folio_test_swapcache(folio)) {
-            __mod_lruvec_state(old_lruvec, NR_SHMEM, -nr);
-            __mod_lruvec_state(new_lruvec, NR_SHMEM, nr);
+            mod_lruvec_state(old_lruvec, NR_SHMEM, -nr);
+            mod_lruvec_state(new_lruvec, NR_SHMEM, nr);
 
             if (folio_test_pmd_mappable(folio)) {
-                __mod_lruvec_state(old_lruvec, NR_SHMEM_THPS, -nr);
-                __mod_lruvec_state(new_lruvec, NR_SHMEM_THPS, nr);
+                mod_lruvec_state(old_lruvec, NR_SHMEM_THPS, -nr);
+                mod_lruvec_state(new_lruvec, NR_SHMEM_THPS, nr);
             }
         }
 #ifdef CONFIG_SWAP
         if (folio_test_swapcache(folio)) {
-            __mod_lruvec_state(old_lruvec, NR_SWAPCACHE, -nr);
-            __mod_lruvec_state(new_lruvec, NR_SWAPCACHE, nr);
+            mod_lruvec_state(old_lruvec, NR_SWAPCACHE, -nr);
+            mod_lruvec_state(new_lruvec, NR_SWAPCACHE, nr);
         }
 #endif
         if (dirty && mapping_can_writeback(mapping)) {
-            __mod_lruvec_state(old_lruvec, NR_FILE_DIRTY, -nr);
+            mod_lruvec_state(old_lruvec, NR_FILE_DIRTY, -nr);
             __mod_zone_page_state(oldzone, NR_ZONE_WRITE_PENDING, -nr);
-            __mod_lruvec_state(new_lruvec, NR_FILE_DIRTY, nr);
+            mod_lruvec_state(new_lruvec, NR_FILE_DIRTY, nr);
             __mod_zone_page_state(newzone, NR_ZONE_WRITE_PENDING, nr);
         }
     }
