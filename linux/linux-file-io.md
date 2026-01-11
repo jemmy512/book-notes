@@ -11225,3 +11225,63 @@ int do_syslog(int type, char __user *buf, int len, int source)
 ## XFS
 
 * [XFS - Block Atomic Writes in UEK8](https://blogs.oracle.com/linux/post/xfs-block-atomic-writes-in-uek8)
+
+## initramfs
+
+```c
+static int __init populate_rootfs(void)
+{
+	initramfs_cookie = async_schedule_domain(do_populate_rootfs, NULL,
+						 &initramfs_domain);
+	usermodehelper_enable();
+	if (!initramfs_async)
+		wait_for_initramfs();
+	return 0;
+}
+rootfs_initcall(populate_rootfs);
+
+void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
+{
+	/* Load the built in initramfs */
+	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
+	if (err)
+		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
+
+	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
+		goto done;
+
+	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
+		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
+	else
+		printk(KERN_INFO "Unpacking initramfs...\n");
+
+	err = unpack_to_rootfs((char *)initrd_start, initrd_end - initrd_start);
+	if (err) {
+#ifdef CONFIG_BLK_DEV_RAM
+		populate_initrd_image(err);
+#else
+		printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
+#endif
+	}
+
+done:
+	security_initramfs_populated();
+
+	/*
+	 * If the initrd region is overlapped with crashkernel reserved region,
+	 * free only memory that is not part of crashkernel region.
+	 */
+	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
+		free_initrd_mem(initrd_start, initrd_end);
+	} else if (do_retain_initrd && initrd_start) {
+		bin_attr_initrd.size = initrd_end - initrd_start;
+		bin_attr_initrd.private = (void *)initrd_start;
+		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
+			pr_err("Failed to create initrd sysfs file");
+	}
+	initrd_start = 0;
+	initrd_end = 0;
+
+	init_flush_fput();
+}
+```
