@@ -5999,3 +5999,822 @@ SYSCALL_DEFINE5(perf_event_open,
 
 * [BCC - Tools for BPF-based Linux IO analysis, networking, monitoring, and more](https://github.com/iovisor/bcc/tree/master)
 ![](../images/kernel/bcc-bpf.png)
+
+# bpf
+
+```c
+SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
+{
+    return __sys_bpf(cmd, USER_BPFPTR(uattr), size) {
+        union bpf_attr attr;
+        int err;
+
+        err = bpf_check_uarg_tail_zero(uattr, sizeof(attr), size);
+        if (err)
+            return err;
+        size = min_t(u32, size, sizeof(attr));
+
+        /* copy attributes from user space, may be less than sizeof(bpf_attr) */
+        memset(&attr, 0, sizeof(attr));
+        if (copy_from_bpfptr(&attr, uattr, size) != 0)
+            return -EFAULT;
+
+        err = security_bpf(cmd, &attr, size, uattr.is_kernel);
+        if (err < 0)
+            return err;
+
+        switch (cmd) {
+        case BPF_MAP_CREATE:
+            err = map_create(&attr, uattr);
+            break;
+        case BPF_MAP_LOOKUP_ELEM:
+            err = map_lookup_elem(&attr);
+            break;
+        case BPF_MAP_UPDATE_ELEM:
+            err = map_update_elem(&attr, uattr);
+            break;
+        case BPF_MAP_DELETE_ELEM:
+            err = map_delete_elem(&attr, uattr);
+            break;
+        case BPF_MAP_GET_NEXT_KEY:
+            err = map_get_next_key(&attr);
+            break;
+        case BPF_MAP_FREEZE:
+            err = map_freeze(&attr);
+            break;
+        case BPF_PROG_LOAD:
+            err = bpf_prog_load(&attr, uattr, size);
+            break;
+        case BPF_OBJ_PIN:
+            err = bpf_obj_pin(&attr);
+            break;
+        case BPF_OBJ_GET:
+            err = bpf_obj_get(&attr);
+            break;
+        case BPF_PROG_ATTACH:
+            err = bpf_prog_attach(&attr);
+            break;
+        case BPF_PROG_DETACH:
+            err = bpf_prog_detach(&attr);
+            break;
+        case BPF_PROG_QUERY:
+            err = bpf_prog_query(&attr, uattr.user);
+            break;
+        case BPF_PROG_TEST_RUN:
+            err = bpf_prog_test_run(&attr, uattr.user);
+            break;
+        case BPF_PROG_GET_NEXT_ID:
+            err = bpf_obj_get_next_id(&attr, uattr.user,
+                        &prog_idr, &prog_idr_lock);
+            break;
+        case BPF_MAP_GET_NEXT_ID:
+            err = bpf_obj_get_next_id(&attr, uattr.user,
+                        &map_idr, &map_idr_lock);
+            break;
+        case BPF_BTF_GET_NEXT_ID:
+            err = bpf_obj_get_next_id(&attr, uattr.user,
+                        &btf_idr, &btf_idr_lock);
+            break;
+        case BPF_PROG_GET_FD_BY_ID:
+            err = bpf_prog_get_fd_by_id(&attr);
+            break;
+        case BPF_MAP_GET_FD_BY_ID:
+            err = bpf_map_get_fd_by_id(&attr);
+            break;
+        case BPF_OBJ_GET_INFO_BY_FD:
+            err = bpf_obj_get_info_by_fd(&attr, uattr.user);
+            break;
+        case BPF_RAW_TRACEPOINT_OPEN:
+            err = bpf_raw_tracepoint_open(&attr);
+            break;
+        case BPF_BTF_LOAD:
+            err = bpf_btf_load(&attr, uattr, size);
+            break;
+        case BPF_BTF_GET_FD_BY_ID:
+            err = bpf_btf_get_fd_by_id(&attr);
+            break;
+        case BPF_TASK_FD_QUERY:
+            err = bpf_task_fd_query(&attr, uattr.user);
+            break;
+        case BPF_MAP_LOOKUP_AND_DELETE_ELEM:
+            err = map_lookup_and_delete_elem(&attr);
+            break;
+        case BPF_MAP_LOOKUP_BATCH:
+            err = bpf_map_do_batch(&attr, uattr.user, BPF_MAP_LOOKUP_BATCH);
+            break;
+        case BPF_MAP_LOOKUP_AND_DELETE_BATCH:
+            err = bpf_map_do_batch(&attr, uattr.user,
+                        BPF_MAP_LOOKUP_AND_DELETE_BATCH);
+            break;
+        case BPF_MAP_UPDATE_BATCH:
+            err = bpf_map_do_batch(&attr, uattr.user, BPF_MAP_UPDATE_BATCH);
+            break;
+        case BPF_MAP_DELETE_BATCH:
+            err = bpf_map_do_batch(&attr, uattr.user, BPF_MAP_DELETE_BATCH);
+            break;
+        case BPF_LINK_CREATE:
+            err = link_create(&attr, uattr);
+            break;
+        case BPF_LINK_UPDATE:
+            err = link_update(&attr);
+            break;
+        case BPF_LINK_GET_FD_BY_ID:
+            err = bpf_link_get_fd_by_id(&attr);
+            break;
+        case BPF_LINK_GET_NEXT_ID:
+            err = bpf_obj_get_next_id(&attr, uattr.user,
+                        &link_idr, &link_idr_lock);
+            break;
+        case BPF_ENABLE_STATS:
+            err = bpf_enable_stats(&attr);
+            break;
+        case BPF_ITER_CREATE:
+            err = bpf_iter_create(&attr);
+            break;
+        case BPF_LINK_DETACH:
+            err = link_detach(&attr);
+            break;
+        case BPF_PROG_BIND_MAP:
+            err = bpf_prog_bind_map(&attr);
+            break;
+        case BPF_TOKEN_CREATE:
+            err = token_create(&attr);
+            break;
+        case BPF_PROG_STREAM_READ_BY_FD:
+            err = prog_stream_read(&attr);
+            break;
+        default:
+            err = -EINVAL;
+            break;
+        }
+
+        return err;
+    }
+}
+```
+
+# module
+
+## init_module
+
+```c
+SYSCALL_DEFINE3(init_module, void __user *, umod,
+        unsigned long, len, const char __user *, uargs)
+{
+    int err;
+    struct load_info info = { };
+
+    err = may_init_module() {
+        if (!capable(CAP_SYS_MODULE) || modules_disabled)
+            return -EPERM;
+
+        return 0;
+    }
+    if (err)
+        return err;
+
+    pr_debug("init_module: umod=%p, len=%lu, uargs=%p\n",
+           umod, len, uargs);
+
+    err = copy_module_from_user(umod, len, &info);
+    if (err) {
+        mod_stat_inc(&failed_kreads);
+        mod_stat_add_long(len, &invalid_kread_bytes);
+        return err;
+    }
+
+    return load_module(&info, uargs, 0);
+}
+
+int load_module(struct load_info *info, const char __user *uargs,
+               int flags)
+{
+    struct module *mod;
+    bool module_allocated = false;
+    long err = 0;
+    char *after_dashes;
+
+    /* Do the signature check (if any) first. All that
+     * the signature check needs is info->len, it does
+     * not need any of the section info. That can be
+     * set up later. This will minimize the chances
+     * of a corrupt module causing problems before
+     * we even get to the signature check.
+     *
+     * The check will also adjust info->len by stripping
+     * off the sig length at the end of the module, making
+     * checks against info->len more correct. */
+    err = module_sig_check(info, flags);
+    if (err)
+        goto free_copy;
+
+    /* Do basic sanity checks against the ELF header and
+     * sections. Cache useful sections and set the
+     * info->mod to the userspace passed struct module. */
+    err = elf_validity_cache_copy(info, flags);
+    if (err)
+        goto free_copy;
+
+    err = early_mod_check(info, flags) {
+        int err;
+
+        /* Now that we know we have the correct module name, check
+        * if it's blacklisted. */
+        if (blacklisted(info->name)) {
+            pr_err("Module %s is blacklisted\n", info->name);
+            return -EPERM;
+        }
+
+        err = rewrite_section_headers(info, flags) {
+            unsigned int i;
+
+            /* This should always be true, but let's be sure. */
+            info->sechdrs[0].sh_addr = 0;
+
+            for (i = 1; i < info->hdr->e_shnum; i++) {
+                Elf_Shdr *shdr = &info->sechdrs[i];
+
+                /* Mark all sections sh_addr with their address in the
+                * temporary image. */
+                shdr->sh_addr = (size_t)info->hdr + shdr->sh_offset;
+
+            }
+
+            /* Track but don't keep modinfo and version sections. */
+            info->sechdrs[info->index.vers].sh_flags &= ~(unsigned long)SHF_ALLOC;
+            info->sechdrs[info->index.vers_ext_crc].sh_flags &=
+                ~(unsigned long)SHF_ALLOC;
+            info->sechdrs[info->index.vers_ext_name].sh_flags &=
+                ~(unsigned long)SHF_ALLOC;
+            info->sechdrs[info->index.info].sh_flags &= ~(unsigned long)SHF_ALLOC;
+
+            return 0;
+        }
+        if (err)
+            return err;
+
+        /* Check module struct version now, before we try to use module. */
+        ret = check_modstruct_version(info, info->mod) {
+            struct find_symbol_arg fsa = {
+                .name   = "module_layout",
+                .gplok  = true,
+            };
+            bool have_symbol;
+
+            /* Since this should be found in kernel (which can't be removed), no
+            * locking is necessary. Regardless use a RCU read section to keep
+            * lockdep happy. */
+            scoped_guard(rcu)
+                have_symbol = find_symbol(&fsa);
+            BUG_ON(!have_symbol);
+
+            return check_version(info, "module_layout", mod, fsa.crc);
+        }
+        if (!ret)
+            return -ENOEXEC;
+
+        err = check_modinfo(info->mod, info, flags) {
+            const char *modmagic = get_modinfo(info, "vermagic");
+            int err;
+
+            if (flags & MODULE_INIT_IGNORE_VERMAGIC)
+                modmagic = NULL;
+
+            /* This is allowed: modprobe --force will invalidate it. */
+            if (!modmagic) {
+                err = try_to_force_load(mod, "bad vermagic");
+                if (err)
+                    return err;
+            } else if (!same_magic(modmagic, vermagic, info->index.vers)) {
+                pr_err("%s: version magic '%s' should be '%s'\n",
+                    info->name, modmagic, vermagic);
+                return -ENOEXEC;
+            }
+
+            err = check_modinfo_livepatch(mod, info);
+            if (err)
+                return err;
+
+            return 0;
+        }
+        if (err)
+            return err;
+
+        mutex_lock(&module_mutex);
+        err = module_patient_check_exists(info->mod->name, FAIL_DUP_MOD_BECOMING);
+        mutex_unlock(&module_mutex);
+
+        return err;
+    }
+    if (err)
+        goto free_copy;
+
+    /* Figure out module layout, and allocate all the memory. */
+    mod = layout_and_allocate(info, flags);
+    if (IS_ERR(mod)) {
+        err = PTR_ERR(mod);
+        goto free_copy;
+    }
+
+    module_allocated = true;
+
+    audit_log_kern_module(info->name);
+
+    /* Reserve our place in the list. */
+    err = add_unformed_module(mod);
+    if (err)
+        goto free_module;
+
+    /* We are tainting your kernel if your module gets into
+     * the modules linked list somehow. */
+    module_augment_kernel_taints(mod, info);
+
+    /* To avoid stressing percpu allocator, do this once we're unique. */
+    err = percpu_modalloc(mod, info);
+    if (err)
+        goto unlink_mod;
+
+    /* Now module is in final location, initialize linked lists, etc. */
+    err = module_unload_init(mod);
+    if (err)
+        goto unlink_mod;
+
+    init_param_lock(mod);
+
+    /* Now we've got everything in the final locations, we can
+     * find optional sections. */
+    err = find_module_sections(mod, info);
+    if (err)
+        goto free_unload;
+
+    err = check_export_symbol_versions(mod);
+    if (err)
+        goto free_unload;
+
+    /* Set up MODINFO_ATTR fields */
+    err = setup_modinfo(mod, info);
+    if (err)
+        goto free_modinfo;
+
+    /* Fix up syms, so that st_value is a pointer to location. */
+    err = simplify_symbols(mod, info);
+    if (err < 0)
+        goto free_modinfo;
+
+    err = apply_relocations(mod, info);
+    if (err < 0)
+        goto free_modinfo;
+
+    err = post_relocation(mod, info);
+    if (err < 0)
+        goto free_modinfo;
+
+    flush_module_icache(mod);
+
+    /* Now copy in args */
+    mod->args = strndup_user(uargs, ~0UL >> 1);
+    if (IS_ERR(mod->args)) {
+        err = PTR_ERR(mod->args);
+        goto free_arch_cleanup;
+    }
+
+    init_build_id(mod, info);
+
+    /* Ftrace init must be called in the MODULE_STATE_UNFORMED state */
+    ftrace_module_init(mod);
+
+    /* Finally it's fully formed, ready to start executing. */
+    err = complete_formation(mod, info);
+    if (err)
+        goto ddebug_cleanup;
+
+    err = prepare_coming_module(mod);
+    if (err)
+        goto bug_cleanup;
+
+    mod->async_probe_requested = async_probe;
+
+    /* Module is ready to execute: parsing args may do that. */
+    after_dashes = parse_args(mod->name, mod->args, mod->kp, mod->num_kp,
+                  -32768, 32767, mod,
+                  unknown_module_param_cb);
+    if (IS_ERR(after_dashes)) {
+        err = PTR_ERR(after_dashes);
+        goto coming_cleanup;
+    } else if (after_dashes) {
+        pr_warn("%s: parameters '%s' after `--' ignored\n",
+               mod->name, after_dashes);
+    }
+
+    /* Link in to sysfs. */
+    err = mod_sysfs_setup(mod, info, mod->kp, mod->num_kp);
+    if (err < 0)
+        goto coming_cleanup;
+
+    if (is_livepatch_module(mod)) {
+        err = copy_module_elf(mod, info);
+        if (err < 0)
+            goto sysfs_cleanup;
+    }
+
+    if (codetag_load_module(mod))
+        goto sysfs_cleanup;
+
+    /* Get rid of temporary copy. */
+    free_copy(info, flags);
+
+    /* Done! */
+    trace_module_load(mod);
+
+    return do_init_module(mod);
+
+ sysfs_cleanup:
+    mod_sysfs_teardown(mod);
+ coming_cleanup:
+    mod->state = MODULE_STATE_GOING;
+    destroy_params(mod->kp, mod->num_kp);
+    blocking_notifier_call_chain(&module_notify_list,
+                     MODULE_STATE_GOING, mod);
+    klp_module_going(mod);
+ bug_cleanup:
+    mod->state = MODULE_STATE_GOING;
+    /* module_bug_cleanup needs module_mutex protection */
+    mutex_lock(&module_mutex);
+    module_bug_cleanup(mod);
+    mutex_unlock(&module_mutex);
+
+ ddebug_cleanup:
+    ftrace_release_mod(mod);
+    synchronize_rcu();
+    kfree(mod->args);
+ free_arch_cleanup:
+    module_arch_cleanup(mod);
+ free_modinfo:
+    free_modinfo(mod);
+ free_unload:
+    module_unload_free(mod);
+ unlink_mod:
+    mutex_lock(&module_mutex);
+    /* Unlink carefully: kallsyms could be walking list. */
+    list_del_rcu(&mod->list);
+    mod_tree_remove(mod);
+    wake_up_all(&module_wq);
+    /* Wait for RCU-sched synchronizing before releasing mod->list. */
+    synchronize_rcu();
+    mutex_unlock(&module_mutex);
+ free_module:
+    mod_stat_bump_invalid(info, flags);
+    /* Free lock-classes; relies on the preceding sync_rcu() */
+    for_class_mod_mem_type(type, core_data) {
+        lockdep_free_key_range(mod->mem[type].base,
+                       mod->mem[type].size);
+    }
+
+    module_memory_restore_rox(mod);
+    module_deallocate(mod, info);
+ free_copy:
+    /* The info->len is always set. We distinguish between
+     * failures once the proper module was allocated and
+     * before that. */
+    if (!module_allocated) {
+        audit_log_kern_module(info->name ? info->name : "?");
+        mod_stat_bump_becoming(info, flags);
+    }
+    free_copy(info, flags);
+    return err;
+}
+```
+
+### apply_relocations
+
+```c
+int apply_relocations(struct module *mod, const struct load_info *info)
+{
+    unsigned int i;
+    int err = 0;
+
+    /* Now do relocations. */
+    for (i = 1; i < info->hdr->e_shnum; i++) {
+        unsigned int infosec = info->sechdrs[i].sh_info;
+
+        /* Not a valid relocation section? */
+        if (infosec >= info->hdr->e_shnum)
+            continue;
+
+        /* Don't bother with non-allocated sections.
+         * An exception is the percpu section, which has separate allocations
+         * for individual CPUs. We relocate the percpu section in the initial
+         * ELF template and subsequently copy it to the per-CPU destinations. */
+        if (!(info->sechdrs[infosec].sh_flags & SHF_ALLOC) &&
+            (!infosec || infosec != info->index.pcpu))
+            continue;
+
+        if (info->sechdrs[i].sh_flags & SHF_RELA_LIVEPATCH)
+            err = klp_apply_section_relocs(mod, info->sechdrs,
+                               info->secstrings,
+                               info->strtab,
+                               info->index.sym, i,
+                               NULL);
+        else if (info->sechdrs[i].sh_type == SHT_REL)
+            err = apply_relocate(info->sechdrs, info->strtab, info->index.sym, i, mod);
+        else if (info->sechdrs[i].sh_type == SHT_RELA)
+            err = apply_relocate_add(info->sechdrs, info->strtab, info->index.sym, i, mod);
+        if (err < 0)
+            break;
+    }
+    return err;
+}
+
+int apply_relocate_add(Elf64_Shdr *sechdrs,
+               const char *strtab,
+               unsigned int symindex,
+               unsigned int relsec,
+               struct module *me)
+{
+    unsigned int i;
+    int ovf;
+    bool overflow_check;
+    Elf64_Sym *sym;
+    void *loc;
+    u64 val;
+    Elf64_Rela *rel = (void *)sechdrs[relsec].sh_addr;
+
+    for (i = 0; i < sechdrs[relsec].sh_size / sizeof(*rel); i++) {
+        /* loc corresponds to P in the AArch64 ELF document. */
+        loc = (void *)sechdrs[sechdrs[relsec].sh_info].sh_addr
+            + rel[i].r_offset;
+
+        /* sym is the ELF symbol we're referring to. */
+        sym = (Elf64_Sym *)sechdrs[symindex].sh_addr
+            + ELF64_R_SYM(rel[i].r_info);
+
+        /* val corresponds to (S + A) in the AArch64 ELF document. */
+        val = sym->st_value + rel[i].r_addend;
+
+        /* Check for overflow by default. */
+        overflow_check = true;
+
+        /* Perform the static relocation. */
+        switch (ELF64_R_TYPE(rel[i].r_info)) {
+        /* Null relocations. */
+        case R_ARM_NONE:
+        case R_AARCH64_NONE:
+            ovf = 0;
+            break;
+
+        /* Data relocations. */
+        case R_AARCH64_ABS64:
+            overflow_check = false;
+            ovf = reloc_data(RELOC_OP_ABS, loc, val, 64, me);
+            break;
+        case R_AARCH64_ABS32:
+            ovf = reloc_data(RELOC_OP_ABS, loc, val, 32, me);
+            break;
+        case R_AARCH64_ABS16:
+            ovf = reloc_data(RELOC_OP_ABS, loc, val, 16, me);
+            break;
+        case R_AARCH64_PREL64:
+            overflow_check = false;
+            ovf = reloc_data(RELOC_OP_PREL, loc, val, 64, me);
+            break;
+        case R_AARCH64_PREL32:
+            ovf = reloc_data(RELOC_OP_PREL, loc, val, 32, me);
+            break;
+        case R_AARCH64_PREL16:
+            ovf = reloc_data(RELOC_OP_PREL, loc, val, 16, me);
+            break;
+
+        /* MOVW instruction relocations. */
+        case R_AARCH64_MOVW_UABS_G0_NC:
+            overflow_check = false;
+            fallthrough;
+        case R_AARCH64_MOVW_UABS_G0:
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 0,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_UABS_G1_NC:
+            overflow_check = false;
+            fallthrough;
+        case R_AARCH64_MOVW_UABS_G1:
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 16,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_UABS_G2_NC:
+            overflow_check = false;
+            fallthrough;
+        case R_AARCH64_MOVW_UABS_G2:
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 32,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_UABS_G3:
+            /* We're using the top bits so we can't overflow. */
+            overflow_check = false;
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 48,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_SABS_G0:
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 0,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+        case R_AARCH64_MOVW_SABS_G1:
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 16,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+        case R_AARCH64_MOVW_SABS_G2:
+            ovf = reloc_insn_movw(RELOC_OP_ABS, loc, val, 32,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G0_NC:
+            overflow_check = false;
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 0,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G0:
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 0,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G1_NC:
+            overflow_check = false;
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 16,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G1:
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 16,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G2_NC:
+            overflow_check = false;
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 32,
+                          AARCH64_INSN_IMM_MOVKZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G2:
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 32,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+        case R_AARCH64_MOVW_PREL_G3:
+            /* We're using the top bits so we can't overflow. */
+            overflow_check = false;
+            ovf = reloc_insn_movw(RELOC_OP_PREL, loc, val, 48,
+                          AARCH64_INSN_IMM_MOVNZ, me);
+            break;
+
+        /* Immediate instruction relocations. */
+        case R_AARCH64_LD_PREL_LO19:
+            ovf = reloc_insn_imm(RELOC_OP_PREL, loc, val, 2, 19,
+                         AARCH64_INSN_IMM_19, me);
+            break;
+        case R_AARCH64_ADR_PREL_LO21:
+            ovf = reloc_insn_imm(RELOC_OP_PREL, loc, val, 0, 21,
+                         AARCH64_INSN_IMM_ADR, me);
+            break;
+        case R_AARCH64_ADR_PREL_PG_HI21_NC:
+            overflow_check = false;
+            fallthrough;
+        case R_AARCH64_ADR_PREL_PG_HI21:
+            ovf = reloc_insn_adrp(me, sechdrs, loc, val, me);
+            if (ovf && ovf != -ERANGE)
+                return ovf;
+            break;
+        case R_AARCH64_ADD_ABS_LO12_NC:
+        case R_AARCH64_LDST8_ABS_LO12_NC:
+            overflow_check = false;
+            ovf = reloc_insn_imm(RELOC_OP_ABS, loc, val, 0, 12,
+                         AARCH64_INSN_IMM_12, me);
+            break;
+        case R_AARCH64_LDST16_ABS_LO12_NC:
+            overflow_check = false;
+            ovf = reloc_insn_imm(RELOC_OP_ABS, loc, val, 1, 11,
+                         AARCH64_INSN_IMM_12, me);
+            break;
+        case R_AARCH64_LDST32_ABS_LO12_NC:
+            overflow_check = false;
+            ovf = reloc_insn_imm(RELOC_OP_ABS, loc, val, 2, 10,
+                         AARCH64_INSN_IMM_12, me);
+            break;
+        case R_AARCH64_LDST64_ABS_LO12_NC:
+            overflow_check = false;
+            ovf = reloc_insn_imm(RELOC_OP_ABS, loc, val, 3, 9,
+                         AARCH64_INSN_IMM_12, me);
+            break;
+        case R_AARCH64_LDST128_ABS_LO12_NC:
+            overflow_check = false;
+            ovf = reloc_insn_imm(RELOC_OP_ABS, loc, val, 4, 8,
+                         AARCH64_INSN_IMM_12, me);
+            break;
+        case R_AARCH64_TSTBR14:
+            ovf = reloc_insn_imm(RELOC_OP_PREL, loc, val, 2, 14,
+                         AARCH64_INSN_IMM_14, me);
+            break;
+        case R_AARCH64_CONDBR19:
+            ovf = reloc_insn_imm(RELOC_OP_PREL, loc, val, 2, 19,
+                         AARCH64_INSN_IMM_19, me);
+            break;
+        case R_AARCH64_JUMP26:
+        case R_AARCH64_CALL26:
+            ovf = reloc_insn_imm(RELOC_OP_PREL, loc, val, 2, 26,
+                         AARCH64_INSN_IMM_26, me);
+            if (ovf == -ERANGE) {
+                val = module_emit_plt_entry(me, sechdrs, loc, &rel[i], sym);
+                if (!val)
+                    return -ENOEXEC;
+                ovf = reloc_insn_imm(RELOC_OP_PREL, loc, val, 2,
+                             26, AARCH64_INSN_IMM_26, me);
+            }
+            break;
+
+        default:
+            pr_err("module %s: unsupported RELA relocation: %llu\n",
+                   me->name, ELF64_R_TYPE(rel[i].r_info));
+            return -ENOEXEC;
+        }
+
+        if (overflow_check && ovf == -ERANGE)
+            goto overflow;
+
+    }
+
+    return 0;
+
+overflow:
+    pr_err("module %s: overflow in relocation type %d val %Lx\n",
+           me->name, (int)ELF64_R_TYPE(rel[i].r_info), val);
+    return -ENOEXEC;
+}
+
+int reloc_data(enum aarch64_reloc_op op, void *place, u64 val, int len,
+              struct module *me)
+{
+    s64 sval = do_reloc(op, place, val) {
+        switch (reloc_op) {
+        case RELOC_OP_ABS:
+            return val;
+        case RELOC_OP_PREL:
+            return val - (u64)place;
+        case RELOC_OP_PAGE:
+            return (val & ~0xfff) - ((u64)place & ~0xfff);
+        case RELOC_OP_NONE:
+            return 0;
+        }
+
+        pr_err("do_reloc: unknown relocation operation %d\n", reloc_op);
+        return 0;
+    }
+
+    /* The ELF psABI for AArch64 documents the 16-bit and 32-bit place
+     * relative and absolute relocations as having a range of [-2^15, 2^16)
+     * or [-2^31, 2^32), respectively. However, in order to be able to
+     * detect overflows reliably, we have to choose whether we interpret
+     * such quantities as signed or as unsigned, and stick with it.
+     * The way we organize our address space requires a signed
+     * interpretation of 32-bit relative references, so let's use that
+     * for all R_AARCH64_PRELxx relocations. This means our upper
+     * bound for overflow detection should be Sxx_MAX rather than Uxx_MAX. */
+
+    switch (len) {
+    case 16:
+        WRITE_PLACE((s16 *)place, sval, me);
+        switch (op) {
+        case RELOC_OP_ABS:
+            if (sval < 0 || sval > U16_MAX)
+                return -ERANGE;
+            break;
+        case RELOC_OP_PREL:
+            if (sval < S16_MIN || sval > S16_MAX)
+                return -ERANGE;
+            break;
+        default:
+            pr_err("Invalid 16-bit data relocation (%d)\n", op);
+            return 0;
+        }
+        break;
+    case 32:
+        WRITE_PLACE((s32 *)place, sval, me);
+        switch (op) {
+        case RELOC_OP_ABS:
+            if (sval < 0 || sval > U32_MAX)
+                return -ERANGE;
+            break;
+        case RELOC_OP_PREL:
+            if (sval < S32_MIN || sval > S32_MAX)
+                return -ERANGE;
+            break;
+        default:
+            pr_err("Invalid 32-bit data relocation (%d)\n", op);
+            return 0;
+        }
+        break;
+    case 64:
+        WRITE_PLACE((s64 *)place, sval, me);
+        break;
+    default:
+        pr_err("Invalid length (%d) for data relocation\n", len);
+        return 0;
+    }
+    return 0;
+}
+
+enum aarch64_insn_movw_imm_type {
+    AARCH64_INSN_IMM_MOVNZ,
+    AARCH64_INSN_IMM_MOVKZ,
+};
+```
