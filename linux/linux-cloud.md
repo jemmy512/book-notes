@@ -2368,6 +2368,398 @@ static struct cftype zswap_files[] = {
 };
 ```
 
+### mem_cgroup_css_online
+
+```c
+int mem_cgroup_css_online(struct cgroup_subsys_state *css)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+    if (memcg_online_kmem(memcg))
+        goto remove_id;
+
+    /* A memcg must be visible for expand_shrinker_info()
+     * by the time the maps are allocated. So, we allocate maps
+     * here, when for_each_mem_cgroup() can't skip it. */
+    if (alloc_shrinker_info(memcg))
+        goto offline_kmem;
+
+    if (unlikely(mem_cgroup_is_root(memcg)) && !mem_cgroup_disabled())
+        queue_delayed_work(system_unbound_wq, &stats_flush_dwork, FLUSH_TIME);
+    lru_gen_online_memcg(memcg);
+
+    /* Online state pins memcg ID, memcg ID pins CSS */
+    refcount_set(&memcg->id.ref, 1);
+    css_get(css);
+
+    /* Ensure mem_cgroup_from_id() works once we're fully online.
+     *
+     * We could do this earlier and require callers to filter with
+     * css_tryget_online(). But right now there are no users that
+     * need earlier access, and the workingset code relies on the
+     * cgroup tree linkage (mem_cgroup_get_nr_swap_pages()). So
+     * publish it here at the end of onlining. This matches the
+     * regular ID destruction during offlining. */
+    xa_store(&mem_cgroup_ids, memcg->id.id, memcg, GFP_KERNEL);
+
+    return 0;
+offline_kmem:
+    memcg_offline_kmem(memcg);
+remove_id:
+    mem_cgroup_id_remove(memcg);
+    return -ENOMEM;
+}
+
+int memcg_online_kmem(struct mem_cgroup *memcg)
+{
+    struct obj_cgroup *objcg;
+
+    if (mem_cgroup_kmem_disabled())
+        return 0;
+
+    if (unlikely(mem_cgroup_is_root(memcg)))
+        return 0;
+
+    objcg = obj_cgroup_alloc() {
+        struct obj_cgroup *objcg;
+        int ret;
+
+        objcg = kzalloc(sizeof(struct obj_cgroup), GFP_KERNEL);
+        if (!objcg)
+            return NULL;
+
+        ret = percpu_ref_init(&objcg->refcnt, obj_cgroup_release, 0, GFP_KERNEL);
+        if (ret) {
+            kfree(objcg);
+            return NULL;
+        }
+        INIT_LIST_HEAD(&objcg->list);
+        return objcg;
+    }
+    if (!objcg)
+        return -ENOMEM;
+
+    objcg->memcg = memcg;
+    rcu_assign_pointer(memcg->objcg, objcg);
+    obj_cgroup_get(objcg);
+    memcg->orig_objcg = objcg;
+
+    static_branch_enable(&memcg_kmem_online_key);
+
+    memcg->kmemcg_id = memcg->id.id;
+
+    return 0;
+}
+```
+
+### mem_cgroup_css_offline
+
+```c
+void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+    memcg1_css_offline(memcg);
+
+    page_counter_set_min(&memcg->memory, 0);
+    page_counter_set_low(&memcg->memory, 0);
+
+    zswap_memcg_offline_cleanup(memcg);
+
+    memcg_offline_kmem(memcg);
+    reparent_deferred_split_queue(memcg);
+    reparent_shrinker_deferred(memcg);
+    wb_memcg_offline(memcg);
+    lru_gen_offline_memcg(memcg);
+
+    drain_all_stock(memcg);
+
+    mem_cgroup_id_put(memcg);
+}
+
+void memcg_offline_kmem(struct mem_cgroup *memcg)
+{
+    struct mem_cgroup *parent;
+
+    if (mem_cgroup_kmem_disabled())
+        return;
+
+    if (unlikely(mem_cgroup_is_root(memcg)))
+        return;
+
+    parent = parent_mem_cgroup(memcg);
+    if (!parent)
+        parent = root_mem_cgroup;
+
+    memcg_reparent_list_lrus(memcg, parent);
+
+    /* Objcg's reparenting must be after list_lru's, make sure list_lru
+     * helpers won't use parent's list_lru until child is drained. */
+    memcg_reparent_objcgs(memcg, parent) {
+        struct obj_cgroup *objcg, *iter;
+
+        objcg = rcu_replace_pointer(memcg->objcg, NULL, true);
+
+        spin_lock_irq(&objcg_lock);
+
+        /* 1) Ready to reparent active objcg. */
+        list_add(&objcg->list, &memcg->objcg_list);
+        /* 2) Reparent active objcg and already reparented objcgs to parent. */
+        list_for_each_entry(iter, &memcg->objcg_list, list)
+            WRITE_ONCE(iter->memcg, parent);
+        /* 3) Move already reparented objcgs to the parent's list */
+        list_splice(&memcg->objcg_list, &parent->objcg_list);
+
+        spin_unlock_irq(&objcg_lock);
+
+        percpu_ref_kill(&objcg->refcnt) {
+            percpu_ref_kill_and_confirm(ref, NULL) {
+                unsigned long flags;
+
+                spin_lock_irqsave(&percpu_ref_switch_lock, flags);
+
+                WARN_ONCE(percpu_ref_is_dying(ref),
+                    "%s called more than once on %ps!", __func__,
+                    ref->data->release);
+
+                ref->percpu_count_ptr |= __PERCPU_REF_DEAD;
+                __percpu_ref_switch_mode(ref, confirm_kill);
+                percpu_ref_put(ref) {
+                    percpu_ref_put_many(ref, 1) {
+                        unsigned long __percpu *percpu_count;
+
+                        rcu_read_lock();
+
+                        ret = __ref_is_percpu(ref, &percpu_count) {
+                            unsigned long percpu_ptr;
+
+                            percpu_ptr = READ_ONCE(ref->percpu_count_ptr);
+
+                            if (unlikely(percpu_ptr & __PERCPU_REF_ATOMIC_DEAD))
+                                return false;
+
+                            *percpu_countp = (unsigned long __percpu *)percpu_ptr;
+                            return true;
+                        }
+                        if (ret)
+                            this_cpu_sub(*percpu_count, nr);
+                        else if (unlikely(atomic_long_sub_and_test(nr, &ref->data->count))) {
+                            ref->data->release(ref) {
+                                obj_cgroup_release()
+                                    --->
+                            }
+                        }
+
+                        rcu_read_unlock();
+                    }
+                }
+
+                spin_unlock_irqrestore(&percpu_ref_switch_lock, flags);
+            }
+        }
+    }
+}
+
+void obj_cgroup_release(struct percpu_ref *ref)
+{
+    struct obj_cgroup *objcg = container_of(ref, struct obj_cgroup, refcnt);
+    unsigned int nr_bytes;
+    unsigned int nr_pages;
+    unsigned long flags;
+
+    /* At this point all allocated objects are freed, and
+     * objcg->nr_charged_bytes can't have an arbitrary byte value.
+     * However, it can be PAGE_SIZE or (x * PAGE_SIZE).
+     *
+     * The following sequence can lead to it:
+     * 1) CPU0: objcg == stock->cached_objcg
+     * 2) CPU1: we do a small allocation (e.g. 92 bytes),
+     *          PAGE_SIZE bytes are charged
+     * 3) CPU1: a process from another memcg is allocating something,
+     *          the stock if flushed,
+     *          objcg->nr_charged_bytes = PAGE_SIZE - 92
+     * 5) CPU0: we do release this object,
+     *          92 bytes are added to stock->nr_bytes
+     * 6) CPU0: stock is flushed,
+     *          92 bytes are added to objcg->nr_charged_bytes
+     *
+     * In the result, nr_charged_bytes == PAGE_SIZE.
+     * This page will be uncharged in obj_cgroup_release(). */
+    nr_bytes = atomic_read(&objcg->nr_charged_bytes);
+    WARN_ON_ONCE(nr_bytes & (PAGE_SIZE - 1));
+    nr_pages = nr_bytes >> PAGE_SHIFT;
+
+    if (nr_pages) {
+        struct mem_cgroup *memcg;
+
+        memcg = get_mem_cgroup_from_objcg(objcg);
+        mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
+        memcg1_account_kmem(memcg, -nr_pages);
+        if (!mem_cgroup_is_root(memcg))
+            memcg_uncharge(memcg, nr_pages);
+        mem_cgroup_put(memcg);
+    }
+
+    spin_lock_irqsave(&objcg_lock, flags);
+    list_del(&objcg->list);
+    spin_unlock_irqrestore(&objcg_lock, flags);
+
+    percpu_ref_exit(ref);
+    kfree_rcu(objcg, rcu);
+}
+```
+
+#### drain_all_stock
+
+```c
+void drain_all_stock(struct mem_cgroup *root_memcg)
+{
+    int cpu, curcpu;
+
+    /* If someone's already draining, avoid adding running more workers. */
+    if (!mutex_trylock(&percpu_charge_mutex))
+        return;
+    /* Notify other cpus that system-wide "drain" is running
+     * We do not care about races with the cpu hotplug because cpu down
+     * as well as workers from this path always operate on the local
+     * per-cpu data. CPU up doesn't touch memcg_stock at all. */
+    migrate_disable();
+    curcpu = smp_processor_id();
+    for_each_online_cpu(cpu) {
+        struct memcg_stock_pcp *memcg_st = &per_cpu(memcg_stock, cpu);
+        struct obj_stock_pcp *obj_st = &per_cpu(obj_stock, cpu);
+
+        if (!test_bit(FLUSHING_CACHED_CHARGE, &memcg_st->flags) &&
+            is_memcg_drain_needed(memcg_st, root_memcg) &&
+            !test_and_set_bit(FLUSHING_CACHED_CHARGE,
+                      &memcg_st->flags)) {
+            if (cpu == curcpu)
+                drain_local_memcg_stock(&memcg_st->work);
+            else if (!cpu_is_isolated(cpu))
+                schedule_work_on(cpu, &memcg_st->work);
+        }
+
+        if (!test_bit(FLUSHING_CACHED_CHARGE, &obj_st->flags) &&
+            obj_stock_flush_required(obj_st, root_memcg) &&
+            !test_and_set_bit(FLUSHING_CACHED_CHARGE, &obj_st->flags)) {
+            if (cpu == curcpu)
+                drain_local_obj_stock(&obj_st->work);
+            else if (!cpu_is_isolated(cpu))
+                schedule_work_on(cpu, &obj_st->work);
+        }
+    }
+    migrate_enable();
+    mutex_unlock(&percpu_charge_mutex);
+}
+
+static void drain_local_memcg_stock(struct work_struct *dummy)
+{
+    struct memcg_stock_pcp *stock;
+
+    if (WARN_ONCE(!in_task(), "drain in non-task context"))
+        return;
+
+    local_lock(&memcg_stock.lock);
+
+    stock = this_cpu_ptr(&memcg_stock);
+    drain_stock_fully(stock)  {
+        int i;
+
+        for (i = 0; i < NR_MEMCG_STOCK; ++i) {
+            drain_stock(stock, i) {
+                struct mem_cgroup *old = READ_ONCE(stock->cached[i]);
+                uint8_t stock_pages;
+
+                if (!old)
+                    return;
+
+                stock_pages = READ_ONCE(stock->nr_pages[i]);
+                if (stock_pages) {
+                    memcg_uncharge(old, stock_pages);
+                    WRITE_ONCE(stock->nr_pages[i], 0);
+                }
+
+                css_put(&old->css);
+                WRITE_ONCE(stock->cached[i], NULL);
+            }
+        }
+    }
+    clear_bit(FLUSHING_CACHED_CHARGE, &stock->flags);
+
+    local_unlock(&memcg_stock.lock);
+}
+
+static void drain_local_obj_stock(struct work_struct *dummy)
+{
+    struct obj_stock_pcp *stock;
+
+    if (WARN_ONCE(!in_task(), "drain in non-task context"))
+        return;
+
+    local_lock(&obj_stock.lock);
+
+    stock = this_cpu_ptr(&obj_stock);
+    drain_obj_stock(stock) {
+        struct obj_cgroup *old = READ_ONCE(stock->cached_objcg);
+
+        if (!old)
+            return;
+
+        if (stock->nr_bytes) {
+            unsigned int nr_pages = stock->nr_bytes >> PAGE_SHIFT;
+            unsigned int nr_bytes = stock->nr_bytes & (PAGE_SIZE - 1);
+
+            if (nr_pages) {
+                struct mem_cgroup *memcg;
+
+                memcg = get_mem_cgroup_from_objcg(old);
+
+                mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
+                memcg1_account_kmem(memcg, -nr_pages);
+                if (!mem_cgroup_is_root(memcg))
+                    memcg_uncharge(memcg, nr_pages);
+
+                css_put(&memcg->css);
+            }
+
+            /* The leftover is flushed to the centralized per-memcg value.
+            * On the next attempt to refill obj stock it will be moved
+            * to a per-cpu stock (probably, on an other CPU), see
+            * refill_obj_stock().
+            *
+            * How often it's flushed is a trade-off between the memory
+            * limit enforcement accuracy and potential CPU contention,
+            * so it might be changed in the future. */
+            atomic_add(nr_bytes, &old->nr_charged_bytes);
+            stock->nr_bytes = 0;
+        }
+
+        /* Flush the vmstat data in current stock */
+        if (stock->nr_slab_reclaimable_b || stock->nr_slab_unreclaimable_b) {
+            if (stock->nr_slab_reclaimable_b) {
+                mod_objcg_mlstate(old, stock->cached_pgdat,
+                        NR_SLAB_RECLAIMABLE_B,
+                        stock->nr_slab_reclaimable_b);
+                stock->nr_slab_reclaimable_b = 0;
+            }
+            if (stock->nr_slab_unreclaimable_b) {
+                mod_objcg_mlstate(old, stock->cached_pgdat,
+                        NR_SLAB_UNRECLAIMABLE_B,
+                        stock->nr_slab_unreclaimable_b);
+                stock->nr_slab_unreclaimable_b = 0;
+            }
+            stock->cached_pgdat = NULL;
+        }
+
+        WRITE_ONCE(stock->cached_objcg, NULL);
+        obj_cgroup_put(old);
+    }
+    clear_bit(FLUSHING_CACHED_CHARGE, &stock->flags);
+
+    local_unlock(&obj_stock.lock);
+}
+```
+
 ### mem_cgroup_write
 
 ```c
@@ -3727,7 +4119,7 @@ void unthrottle_cfs_rq(struct cfs_rq *cfs_rq)
     long task_delta, idle_task_delta;
 
     if (cfs_rq->runtime_enabled && cfs_rq->runtime_remaining <= 0)
-		return;
+        return;
 
     se = cfs_rq->tg->se[cpu_of(rq)];
 
@@ -3838,7 +4230,7 @@ static struct cftype cpu_files[] = {
     }, {
         .name = "uclamp.max",
     },
-    { }	/* terminate */
+    { }    /* terminate */
 };
 
 
