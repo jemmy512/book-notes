@@ -49,7 +49,8 @@
 
 # cgroup
 
-* [lore.kernel - cgroup](https://lore.kernel.org/cgroups)
+* [lore.cgroup](https://lore.kernel.org/cgroups)
+* [git.cgroup](https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git/)
 * [iximiuz Labs - Controlling Process Resources with Linux Control Groups](https://labs.iximiuz.com/tutorials/controlling-process-resources-with-cgroups)
 * [Control Group v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
 * [LWN - Understanding the new control groups API](https://lwn.net/Articles/679786/)

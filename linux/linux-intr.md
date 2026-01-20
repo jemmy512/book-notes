@@ -1,4 +1,4 @@
-* [git.kernel - tip.git: irq/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=irq/core)
+* [git.irq/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=irq/core)
 * [中断管理 - LoyenWang](https://www.cnblogs.com/LoyenWang/category/1777370.html)
     * [1. 中断控制器及驱动分析](https://www.cnblogs.com/LoyenWang/p/12249106.html)
     * [2. 通用框架处理](https://www.cnblogs.com/LoyenWang/p/13052677.html)

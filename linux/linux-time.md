@@ -1,4 +1,4 @@
-* [git.kernel - tip.git: timer/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=timers/core)
+* [git.timer/core](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/log/?h=timers/core)
 
 ```sh
 /proc/uptime

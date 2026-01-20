@@ -62,8 +62,8 @@
 
 ---
 
-* [git.kernel - block.git](https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git)
-* [lore.kernel - block](https://lore.kernel.org/linux-block/)
+* [git.block](https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git)
+* [lore.block](https://lore.kernel.org/linux-block/)
 
 # File Management
 
@@ -10140,8 +10140,8 @@ int ovl_get_tree(struct fs_context *fc)
 
 ## ext4
 
-* [git.kernel - ext4.git](https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git)
-* [lore.kernl - ext4](https://lore.kernel.org/linux-ext4/)
+* [git.ext4](https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git)
+* [lore.ext4](https://lore.kernel.org/linux-ext4/)
 * [Kern - ext4 Data Structures and Algorithms](https://docs.kernel.org/filesystems/ext4/)
 * [Understanding Ext4 Disk Layout, Part 1](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-1) ⊙ [Part 2](https://blogs.oracle.com/linux/post/understanding-ext4-disk-layout-part-2)
 * [Directory Entry Lookup in ext4](https://blogs.oracle.com/linux/post/directory-entry-lookup-in-ext4)
