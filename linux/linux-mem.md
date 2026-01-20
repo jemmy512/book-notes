@@ -16777,8 +16777,7 @@ static int __init rmem_cma_setup(struct reserved_mem *rmem)
         return -EBUSY;
     }
 
-    if (!of_get_flat_dt_prop(node, "reusable", NULL) ||
-        of_get_flat_dt_prop(node, "no-map", NULL))
+    if (!of_get_flat_dt_prop(node, "reusable", NULL) || of_get_flat_dt_prop(node, "no-map", NULL))
         return -EINVAL;
 
     if (!IS_ALIGNED(rmem->base | rmem->size, CMA_MIN_ALIGNMENT_BYTES)) {
@@ -16857,40 +16856,52 @@ cma_init_reserved_areas(void) {
                         set_page_count(p, 0);
                     } while (++p, --i);
 
-                    set_pageblock_migratetype(page, MIGRATE_CMA) {
+                    init_pageblock_migratetype(page, MIGRATE_CMA, false) {
                         if (unlikely(page_group_by_mobility_disabled && migratetype < MIGRATE_PCPTYPES)) {
                             migratetype = MIGRATE_UNMOVABLE;
                         }
 
-                        set_pfnblock_flags_mask(page, (unsigned long)migratetype, page_to_pfn(page), MIGRATETYPE_MASK) {
-                            unsigned long *bitmap;
-                            unsigned long bitidx, word_bitidx;
+                        flags = migratetype;
+
+                    #ifdef CONFIG_MEMORY_ISOLATION
+                        if (migratetype == MIGRATE_ISOLATE) {
+                            VM_WARN_ONCE( 1, "Set isolate=true to isolate pageblock with a migratetype");
+                            return;
+                        }
+                        if (isolate)
+                            flags |= BIT(PB_migrate_isolate);
+                    #endif
+
+                        __set_pfnblock_flags_mask(page, page_to_pfn(page), flags, MIGRATETYPE_AND_ISO_MASK) {
+                            unsigned long *bitmap_word;
+                            unsigned long bitidx;
                             unsigned long word;
 
-                            BUILD_BUG_ON(NR_PAGEBLOCK_BITS != 4);
-                            BUILD_BUG_ON(MIGRATE_TYPES > (1 << PB_migratetype_bits));
+                            get_pfnblock_bitmap_bitidx(page, pfn, &bitmap_word, &bitidx) {
+                                	unsigned long *bitmap;
+                                unsigned long word_bitidx;
 
-                            bitmap = get_pageblock_bitmap(page, pfn) {
-                                #ifdef CONFIG_SPARSEMEM
-                                    return section_to_usemap(__pfn_to_section(pfn)) {
-                                        return ms->usage->pageblock_flags;
-                                    }
-                                #else
-                                    return page_zone(page)->pageblock_flags;
-                                #endif /* CONFIG_SPARSEMEM */
+                            #ifdef CONFIG_MEMORY_ISOLATION
+                                BUILD_BUG_ON(NR_PAGEBLOCK_BITS != 8);
+                            #else
+                                BUILD_BUG_ON(NR_PAGEBLOCK_BITS != 4);
+                            #endif
+                                BUILD_BUG_ON(__MIGRATE_TYPE_END > MIGRATETYPE_MASK);
+                                VM_BUG_ON_PAGE(!zone_spans_pfn(page_zone(page), pfn), page);
+
+                                bitmap = get_pageblock_bitmap(page, pfn);
+                                *bitidx = pfn_to_bitidx(page, pfn);
+                                word_bitidx = *bitidx / BITS_PER_LONG;
+                                *bitidx &= (BITS_PER_LONG - 1);
+                                *bitmap_word = &bitmap[word_bitidx];
                             }
-                            bitidx = pfn_to_bitidx(page, pfn);
-                            word_bitidx = bitidx / BITS_PER_LONG;
-                            bitidx &= (BITS_PER_LONG-1);
-
-                            VM_BUG_ON_PAGE(!zone_spans_pfn(page_zone(page), pfn), page);
 
                             mask <<= bitidx;
                             flags <<= bitidx;
 
-                            word = READ_ONCE(bitmap[word_bitidx]);
+                            word = READ_ONCE(*bitmap_word);
                             do {
-                            } while (!try_cmpxchg(&bitmap[word_bitidx], &word, (word & ~mask) | flags));
+                            } while (!try_cmpxchg(bitmap_word, &word, (word & ~mask) | flags));
                         }
                     }
                     set_page_refcounted(page);
@@ -31144,143 +31155,6 @@ void unmap_hugepage_range(struct vm_area_struct *vma, unsigned long start,
 }
 ```
 
-## /proc/meminfo
-
-```c
-static int meminfo_proc_show(struct seq_file *m, void *v)
-{
-    struct sysinfo i;
-    unsigned long committed;
-    long cached;
-    long available;
-    unsigned long pages[NR_LRU_LISTS];
-    unsigned long sreclaimable, sunreclaim;
-    int lru;
-
-    si_meminfo(&i) {
-        val->totalram = totalram_pages() {
-            return (unsigned long)atomic_long_read(&_totalram_pages);
-        }
-        val->sharedram = global_node_page_state(NR_SHMEM) {
-            return global_node_page_state_pages(item) {
-                long x = atomic_long_read(&vm_node_stat[item]);
-                if (x < 0)
-                    x = 0;
-                return x;
-            }
-        }
-        val->freeram = global_zone_page_state(NR_FREE_PAGES);
-        val->bufferram = nr_blockdev_pages() {
-            struct inode *inode;
-            long ret = 0;
-
-            spin_lock(&blockdev_superblock->s_inode_list_lock);
-            list_for_each_entry(inode, &blockdev_superblock->s_inodes, i_sb_list)
-                ret += inode->i_mapping->nrpages;
-            spin_unlock(&blockdev_superblock->s_inode_list_lock);
-
-            return ret;
-        }
-        val->totalhigh = totalhigh_pages() {
-            return __totalhigh_pages() {
-                unsigned long pages = 0;
-                struct zone *zone;
-
-                for_each_populated_zone(zone) {
-                    if (is_highmem(zone))
-                        pages += zone_managed_pages(zone);
-                }
-
-                return pages;
-            }
-        }
-        val->freehigh = nr_free_highpages() {
-            return __nr_free_highpages() {
-                unsigned long pages = 0;
-                struct zone *zone;
-
-                for_each_populated_zone(zone) {
-                    if (is_highmem(zone))
-                        pages += zone_page_state(zone, NR_FREE_PAGES);
-                }
-
-                return pages;
-            }
-        }
-        val->mem_unit = PAGE_SIZE;
-    }
-
-    si_swapinfo(&i) {
-        unsigned int type;
-        unsigned long nr_to_be_unused = 0;
-
-        spin_lock(&swap_lock);
-        for (type = 0; type < nr_swapfiles; type++) {
-            struct swap_info_struct *si = swap_info[type];
-
-            if ((si->flags & SWP_USED) && !(si->flags & SWP_WRITEOK)) {
-                nr_to_be_unused += swap_usage_in_pages(si) {
-                    return atomic_long_read(&si->inuse_pages) & SWAP_USAGE_COUNTER_MASK;
-                }
-            }
-        }
-        val->freeswap = atomic_long_read(&nr_swap_pages) + nr_to_be_unused;
-        val->totalswap = total_swap_pages + nr_to_be_unused;
-        spin_unlock(&swap_lock);
-    }
-    committed = vm_memory_committed();
-
-    cached = global_node_page_state(NR_FILE_PAGES) -
-            total_swapcache_pages() - i.bufferram;
-    if (cached < 0)
-        cached = 0;
-
-    for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
-        pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
-
-    available = si_mem_available() {
-        long available;
-        unsigned long pagecache;
-        unsigned long wmark_low = 0;
-        unsigned long reclaimable;
-        struct zone *zone;
-
-        for_each_zone(zone) {
-            wmark_low += low_wmark_pages(zone);
-        }
-
-        /* Estimate the amount of memory available for userspace allocations,
-        * without causing swapping or OOM. */
-        available = global_zone_page_state(NR_FREE_PAGES) - totalreserve_pages;
-
-        /* Not all the page cache can be freed, otherwise the system will
-        * start swapping or thrashing. Assume at least half of the page
-        * cache, or the low watermark worth of cache, needs to stay. */
-        pagecache = global_node_page_state(NR_ACTIVE_FILE) +
-            global_node_page_state(NR_INACTIVE_FILE);
-        pagecache -= min(pagecache / 2, wmark_low);
-        available += pagecache;
-
-        /* Part of the reclaimable slab and other kernel memory consists of
-        * items that are in use, and cannot be freed. Cap this estimate at the
-        * low watermark. */
-        reclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B) +
-            global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE);
-        reclaimable -= min(reclaimable / 2, wmark_low);
-        available += reclaimable;
-
-        if (available < 0)
-            available = 0;
-        return available;
-    }
-
-    sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
-    sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
-
-    show_val_kb(m, "MemTotal:       ", i.totalram);
-    show_val_kb(m, "MemFree:        ", i.freeram);
-}
-```
 
 # hugetlb_cgroup
 
@@ -31456,6 +31330,557 @@ dmesg | grep kasan
 ├── watermark_boost_factor       # Boost factor for memory watermarks
 ├── watermark_scale_factor       # Scale factor for memory watermarks
 └── zone_reclaim_mode            # Reclaim mode for NUMA zones (0, 1, 2, or 3)
+```
+
+## /proc/buddyinfo
+
+```c
+proc_create_seq("buddyinfo", 0444, NULL, &fragmentation_op);
+
+static const struct seq_operations fragmentation_op = {
+    .start  = frag_start,
+    .next   = frag_next,
+    .stop   = frag_stop,
+    .show   = frag_show,
+};
+
+static int frag_show(struct seq_file *m, void *arg)
+{
+    pg_data_t *pgdat = (pg_data_t *)arg;
+    walk_zones_in_node(m, pgdat, true, false, frag_show_print) {
+        struct zone *zone;
+        struct zone *node_zones = pgdat->node_zones;
+        unsigned long flags;
+
+        for (zone = node_zones; zone - node_zones < MAX_NR_ZONES; ++zone) {
+            if (assert_populated && !populated_zone(zone))
+                continue;
+
+            if (!nolock)
+                spin_lock_irqsave(&zone->lock, flags);
+            print(m, pgdat, zone);
+            if (!nolock)
+                spin_unlock_irqrestore(&zone->lock, flags);
+        }
+    }
+    return 0;
+}
+
+static void frag_show_print(struct seq_file *m, pg_data_t *pgdat,
+                        struct zone *zone)
+{
+    int order;
+
+    seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, zone->name);
+    for (order = 0; order < NR_PAGE_ORDERS; ++order)
+        /* Access to nr_free is lockless as nr_free is used only for
+         * printing purposes. Use data_race to avoid KCSAN warning. */
+        seq_printf(m, "%6lu ", data_race(zone->free_area[order].nr_free));
+    seq_putc(m, '\n');
+}
+
+void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
+                            struct zone *zone)
+{
+    int i;
+    seq_printf(m, "Node %d, zone %8s", pgdat->node_id, zone->name);
+    if (is_zone_first_populated(pgdat, zone)) {
+        seq_printf(m, "\n  per-node stats");
+        for (i = 0; i < NR_VM_NODE_STAT_ITEMS; i++) {
+            unsigned long pages = node_page_state_pages(pgdat, i);
+
+            if (vmstat_item_print_in_thp(i))
+                pages /= HPAGE_PMD_NR;
+            seq_printf(m, "\n      %-12s %lu", node_stat_name(i),
+                   pages);
+        }
+    }
+    seq_printf(m,
+           "\n  pages free     %lu"
+           "\n        boost    %lu"
+           "\n        min      %lu"
+           "\n        low      %lu"
+           "\n        high     %lu"
+           "\n        promo    %lu"
+           "\n        spanned  %lu"
+           "\n        present  %lu"
+           "\n        managed  %lu"
+           "\n        cma      %lu",
+           zone_page_state(zone, NR_FREE_PAGES),
+           zone->watermark_boost,
+           min_wmark_pages(zone),
+           low_wmark_pages(zone),
+           high_wmark_pages(zone),
+           promo_wmark_pages(zone),
+           zone->spanned_pages,
+           zone->present_pages,
+           zone_managed_pages(zone),
+           zone_cma_pages(zone));
+
+    seq_printf(m,
+           "\n        protection: (%ld",
+           zone->lowmem_reserve[0]);
+    for (i = 1; i < ARRAY_SIZE(zone->lowmem_reserve); i++)
+        seq_printf(m, ", %ld", zone->lowmem_reserve[i]);
+    seq_putc(m, ')');
+
+    /* If unpopulated, no other information is useful */
+    if (!populated_zone(zone)) {
+        seq_putc(m, '\n');
+        return;
+    }
+
+    for (i = 0; i < NR_VM_ZONE_STAT_ITEMS; i++)
+        seq_printf(m, "\n      %-12s %lu", zone_stat_name(i),
+               zone_page_state(zone, i));
+
+#ifdef CONFIG_NUMA
+    fold_vm_zone_numa_events(zone);
+    for (i = 0; i < NR_VM_NUMA_EVENT_ITEMS; i++)
+        seq_printf(m, "\n      %-12s %lu", numa_stat_name(i),
+               zone_numa_event_state(zone, i));
+#endif
+
+    seq_printf(m, "\n  pagesets");
+    for_each_online_cpu(i) {
+        struct per_cpu_pages *pcp;
+        struct per_cpu_zonestat __maybe_unused *pzstats;
+
+        pcp = per_cpu_ptr(zone->per_cpu_pageset, i);
+        seq_printf(m,
+               "\n    cpu: %i"
+               "\n              count:    %i"
+               "\n              high:     %i"
+               "\n              batch:    %i"
+               "\n              high_min: %i"
+               "\n              high_max: %i",
+               i,
+               pcp->count,
+               pcp->high,
+               pcp->batch,
+               pcp->high_min,
+               pcp->high_max);
+#ifdef CONFIG_SMP
+        pzstats = per_cpu_ptr(zone->per_cpu_zonestats, i);
+        seq_printf(m, "\n  vm stats threshold: %d",
+                pzstats->stat_threshold);
+#endif
+    }
+    seq_printf(m,
+           "\n  node_unreclaimable:  %u"
+           "\n  start_pfn:           %lu"
+           "\n  reserved_highatomic: %lu"
+           "\n  free_highatomic:     %lu",
+           atomic_read(&pgdat->kswapd_failures) >= MAX_RECLAIM_RETRIES,
+           zone->zone_start_pfn,
+           zone->nr_reserved_highatomic,
+           zone->nr_free_highatomic);
+    seq_putc(m, '\n');
+}
+```
+
+## /proc/meminfo
+
+* NR_FILE_PAGES
+    * Page cache for files
+    * mmap’ed file pages
+    * tmpfs/shmem file pages (some of these)
+    * Includes swapcache
+    * Includes pages that back block-device buffers
+
+```c
+static int __init proc_meminfo_init(void)
+{
+    struct proc_dir_entry *pde;
+
+    pde = proc_create_single("meminfo", 0, NULL, meminfo_proc_show);
+    pde_make_permanent(pde);
+    return 0;
+}
+fs_initcall(proc_meminfo_init);
+
+static int meminfo_proc_show(struct seq_file *m, void *v)
+{
+    struct sysinfo i;
+    unsigned long committed;
+    long cached;
+    long available;
+    unsigned long pages[NR_LRU_LISTS];
+    unsigned long sreclaimable, sunreclaim;
+    int lru;
+
+    si_meminfo(&i) {
+        val->totalram = totalram_pages() {
+            return (unsigned long)atomic_long_read(&_totalram_pages);
+        }
+        val->sharedram = global_node_page_state(NR_SHMEM) {
+            return global_node_page_state_pages(item) {
+                long x = atomic_long_read(&vm_node_stat[item]);
+                if (x < 0)
+                    x = 0;
+                return x;
+            }
+        }
+        val->freeram = global_zone_page_state(NR_FREE_PAGES);
+        val->bufferram = nr_blockdev_pages() {
+            struct inode *inode;
+            long ret = 0;
+
+            spin_lock(&blockdev_superblock->s_inode_list_lock);
+            list_for_each_entry(inode, &blockdev_superblock->s_inodes, i_sb_list)
+                ret += inode->i_mapping->nrpages;
+            spin_unlock(&blockdev_superblock->s_inode_list_lock);
+
+            return ret;
+        }
+        val->totalhigh = totalhigh_pages() {
+            return __totalhigh_pages() {
+                unsigned long pages = 0;
+                struct zone *zone;
+
+                for_each_populated_zone(zone) {
+                    if (is_highmem(zone))
+                        pages += zone_managed_pages(zone);
+                }
+
+                return pages;
+            }
+        }
+        val->freehigh = nr_free_highpages() {
+            return __nr_free_highpages() {
+                unsigned long pages = 0;
+                struct zone *zone;
+
+                for_each_populated_zone(zone) {
+                    if (is_highmem(zone))
+                        pages += zone_page_state(zone, NR_FREE_PAGES);
+                }
+
+                return pages;
+            }
+        }
+        val->mem_unit = PAGE_SIZE;
+    }
+
+    si_swapinfo(&i) {
+        unsigned int type;
+        unsigned long nr_to_be_unused = 0;
+
+        spin_lock(&swap_lock);
+        for (type = 0; type < nr_swapfiles; type++) {
+            struct swap_info_struct *si = swap_info[type];
+
+            if ((si->flags & SWP_USED) && !(si->flags & SWP_WRITEOK)) {
+                nr_to_be_unused += swap_usage_in_pages(si) {
+                    return atomic_long_read(&si->inuse_pages) & SWAP_USAGE_COUNTER_MASK;
+                }
+            }
+        }
+        val->freeswap = atomic_long_read(&nr_swap_pages) + nr_to_be_unused;
+        val->totalswap = total_swap_pages + nr_to_be_unused;
+        spin_unlock(&swap_lock);
+    }
+    committed = vm_memory_committed() {
+        return percpu_counter_sum_positive(&vm_committed_as) {
+            s64 ret = __percpu_counter_sum(fbc) {
+                s64 ret;
+                int cpu;
+                unsigned long flags;
+
+                raw_spin_lock_irqsave(&fbc->lock, flags);
+                ret = fbc->count;
+                for_each_cpu_or(cpu, cpu_online_mask, cpu_dying_mask) {
+                    s32 *pcount = per_cpu_ptr(fbc->counters, cpu);
+                    ret += *pcount;
+                }
+                raw_spin_unlock_irqrestore(&fbc->lock, flags);
+                return ret;
+            }
+	        return ret < 0 ? 0 : ret;
+        }
+    }
+
+    cached = global_node_page_state(NR_FILE_PAGES) -
+            total_swapcache_pages() {
+                return global_node_page_state(NR_SWAPCACHE);
+            } - i.bufferram;
+    if (cached < 0)
+        cached = 0;
+
+    for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
+        pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
+
+    available = si_mem_available() {
+        long available;
+        unsigned long pagecache;
+        unsigned long wmark_low = 0;
+        unsigned long reclaimable;
+        struct zone *zone;
+
+        for_each_zone(zone) {
+            wmark_low += low_wmark_pages(zone) {
+                return wmark_pages(z, WMARK_LOW) {
+                    return z->_watermark[w] + z->watermark_boost;
+                }
+            }
+        }
+
+        /* Estimate the amount of memory available for userspace allocations,
+        * without causing swapping or OOM. */
+        available = global_zone_page_state(NR_FREE_PAGES) - totalreserve_pages;
+
+        /* Not all the page cache can be freed, otherwise the system will
+        * start swapping or thrashing. Assume at least half of the page
+        * cache, or the low watermark worth of cache, needs to stay. */
+        pagecache = global_node_page_state(NR_ACTIVE_FILE) +
+            global_node_page_state(NR_INACTIVE_FILE);
+        pagecache -= min(pagecache / 2, wmark_low);
+        available += pagecache;
+
+        /* Part of the reclaimable slab and other kernel memory consists of
+        * items that are in use, and cannot be freed. Cap this estimate at the
+        * low watermark. */
+        reclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B) +
+            global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE);
+        reclaimable -= min(reclaimable / 2, wmark_low);
+        available += reclaimable;
+
+        if (available < 0)
+            available = 0;
+        return available;
+    }
+
+    sreclaimable = global_node_page_state_pages(NR_SLAB_RECLAIMABLE_B);
+    sunreclaim = global_node_page_state_pages(NR_SLAB_UNRECLAIMABLE_B);
+
+    show_val_kb(m, "MemTotal:       ", i.totalram);
+    show_val_kb(m, "MemFree:        ", i.freeram);
+    show_val_kb(m, "MemAvailable:   ", available);
+    show_val_kb(m, "Buffers:        ", i.bufferram);
+    show_val_kb(m, "Cached:         ", cached);
+    show_val_kb(m, "SwapCached:     ", total_swapcache_pages());
+    show_val_kb(m, "Active:         ", pages[LRU_ACTIVE_ANON] + pages[LRU_ACTIVE_FILE]);
+    show_val_kb(m, "Inactive:       ", pages[LRU_INACTIVE_ANON] + pages[LRU_INACTIVE_FILE]);
+    show_val_kb(m, "Active(anon):   ", pages[LRU_ACTIVE_ANON]);
+    show_val_kb(m, "Inactive(anon): ", pages[LRU_INACTIVE_ANON]);
+    show_val_kb(m, "Active(file):   ", pages[LRU_ACTIVE_FILE]);
+    show_val_kb(m, "Inactive(file): ", pages[LRU_INACTIVE_FILE]);
+    show_val_kb(m, "Unevictable:    ", pages[LRU_UNEVICTABLE]);
+    show_val_kb(m, "Mlocked:        ", global_zone_page_state(NR_MLOCK));
+
+#ifdef CONFIG_HIGHMEM
+    show_val_kb(m, "HighTotal:      ", i.totalhigh);
+    show_val_kb(m, "HighFree:       ", i.freehigh);
+    show_val_kb(m, "LowTotal:       ", i.totalram - i.totalhigh);
+    show_val_kb(m, "LowFree:        ", i.freeram - i.freehigh);
+#endif
+
+#ifndef CONFIG_MMU
+    show_val_kb(m, "MmapCopy:       ", (unsigned long)atomic_long_read(&mmap_pages_allocated));
+#endif
+
+    show_val_kb(m, "SwapTotal:      ", i.totalswap);
+    show_val_kb(m, "SwapFree:       ", i.freeswap);
+#ifdef CONFIG_ZSWAP
+    show_val_kb(m, "Zswap:          ", zswap_total_pages());
+    seq_printf(m,  "Zswapped:       %8lu kB\n", (unsigned long)atomic_long_read(&zswap_stored_pages) << (PAGE_SHIFT - 10));
+#endif
+    show_val_kb(m, "Dirty:          ", global_node_page_state(NR_FILE_DIRTY));
+    show_val_kb(m, "Writeback:      ", global_node_page_state(NR_WRITEBACK));
+    show_val_kb(m, "AnonPages:      ", global_node_page_state(NR_ANON_MAPPED));
+    show_val_kb(m, "Mapped:         ", global_node_page_state(NR_FILE_MAPPED));
+    show_val_kb(m, "Shmem:          ", i.sharedram);
+    show_val_kb(m, "KReclaimable:   ", sreclaimable + global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE));
+    show_val_kb(m, "Slab:           ", sreclaimable + sunreclaim);
+    show_val_kb(m, "SReclaimable:   ", sreclaimable);
+    show_val_kb(m, "SUnreclaim:     ", sunreclaim);
+    seq_printf(m, "KernelStack:    %8lu kB\n", global_node_page_state(NR_KERNEL_STACK_KB));
+#ifdef CONFIG_SHADOW_CALL_STACK
+    seq_printf(m, "ShadowCallStack:%8lu kB\n", global_node_page_state(NR_KERNEL_SCS_KB));
+#endif
+    show_val_kb(m, "PageTables:     ", global_node_page_state(NR_PAGETABLE));
+    show_val_kb(m, "SecPageTables:  ", global_node_page_state(NR_SECONDARY_PAGETABLE));
+
+    show_val_kb(m, "NFS_Unstable:   ", 0);
+    show_val_kb(m, "Bounce:         ", 0);
+    show_val_kb(m, "WritebackTmp:   ", 0);
+    show_val_kb(m, "CommitLimit:    ", vm_commit_limit());
+    show_val_kb(m, "Committed_AS:   ", committed);
+    seq_printf(m, "VmallocTotal:   %8lu kB\n", (unsigned long)VMALLOC_TOTAL >> 10);
+    show_val_kb(m, "VmallocUsed:    ", vmalloc_nr_pages());
+    show_val_kb(m, "VmallocChunk:   ", 0ul);
+    show_val_kb(m, "Percpu:         ", pcpu_nr_pages());
+
+    memtest_report_meminfo(m);
+
+#ifdef CONFIG_MEMORY_FAILURE
+    seq_printf(m, "HardwareCorrupted: %5lu kB\n", atomic_long_read(&num_poisoned_pages) << (PAGE_SHIFT - 10));
+#endif
+
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+    show_val_kb(m, "AnonHugePages:  ", global_node_page_state(NR_ANON_THPS));
+    show_val_kb(m, "ShmemHugePages: ", global_node_page_state(NR_SHMEM_THPS));
+    show_val_kb(m, "ShmemPmdMapped: ", global_node_page_state(NR_SHMEM_PMDMAPPED));
+    show_val_kb(m, "FileHugePages:  ", global_node_page_state(NR_FILE_THPS));
+    show_val_kb(m, "FilePmdMapped:  ", global_node_page_state(NR_FILE_PMDMAPPED));
+#endif
+
+#ifdef CONFIG_CMA
+    show_val_kb(m, "CmaTotal:       ", totalcma_pages);
+    show_val_kb(m, "CmaFree:        ", global_zone_page_state(NR_FREE_CMA_PAGES));
+#endif
+
+#ifdef CONFIG_UNACCEPTED_MEMORY
+    show_val_kb(m, "Unaccepted:     ", global_zone_page_state(NR_UNACCEPTED));
+#endif
+    show_val_kb(m, "Balloon:        ", global_node_page_state(NR_BALLOON_PAGES));
+
+    hugetlb_report_meminfo(m);
+
+    arch_report_meminfo(m);
+
+    return 0;
+}
+```
+
+## /proc/pagetypeinfo
+
+```c
+proc_create_seq("pagetypeinfo", 0400, NULL, &pagetypeinfo_op);
+```
+
+## /proc/vmstat
+
+```c
+proc_create_seq("vmstat", 0444, NULL, &vmstat_op);
+
+static const struct seq_operations vmstat_op = {
+    .start    = vmstat_start,
+    .next    = vmstat_next,
+    .stop    = vmstat_stop,
+    .show    = vmstat_show,
+};
+
+```
+
+## /proc/zoneinfo
+
+```c
+proc_create_seq("zoneinfo", 0444, NULL, &zoneinfo_op);
+
+static const struct seq_operations zoneinfo_op = {
+    .start    = frag_start, /* iterate over all zones. The same as in
+                   * fragmentation. */
+    .next    = frag_next,
+    .stop    = frag_stop,
+    .show    = zoneinfo_show,
+};
+
+static int zoneinfo_show(struct seq_file *m, void *arg)
+{
+    pg_data_t *pgdat = (pg_data_t *)arg;
+    walk_zones_in_node(m, pgdat, false, false, zoneinfo_show_print);
+    return 0;
+}
+
+static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
+                            struct zone *zone)
+{
+    int i;
+    seq_printf(m, "Node %d, zone %8s", pgdat->node_id, zone->name);
+    if (is_zone_first_populated(pgdat, zone)) {
+        seq_printf(m, "\n  per-node stats");
+        for (i = 0; i < NR_VM_NODE_STAT_ITEMS; i++) {
+            unsigned long pages = node_page_state_pages(pgdat, i);
+
+            if (vmstat_item_print_in_thp(i))
+                pages /= HPAGE_PMD_NR;
+            seq_printf(m, "\n      %-12s %lu", node_stat_name(i),
+                   pages);
+        }
+    }
+    seq_printf(m,
+           "\n  pages free     %lu"
+           "\n        boost    %lu"
+           "\n        min      %lu"
+           "\n        low      %lu"
+           "\n        high     %lu"
+           "\n        promo    %lu"
+           "\n        spanned  %lu"
+           "\n        present  %lu"
+           "\n        managed  %lu"
+           "\n        cma      %lu",
+           zone_page_state(zone, NR_FREE_PAGES),
+           zone->watermark_boost,
+           min_wmark_pages(zone),
+           low_wmark_pages(zone),
+           high_wmark_pages(zone),
+           promo_wmark_pages(zone),
+           zone->spanned_pages,
+           zone->present_pages,
+           zone_managed_pages(zone),
+           zone_cma_pages(zone));
+
+    seq_printf(m,
+           "\n        protection: (%ld",
+           zone->lowmem_reserve[0]);
+    for (i = 1; i < ARRAY_SIZE(zone->lowmem_reserve); i++)
+        seq_printf(m, ", %ld", zone->lowmem_reserve[i]);
+    seq_putc(m, ')');
+
+    /* If unpopulated, no other information is useful */
+    if (!populated_zone(zone)) {
+        seq_putc(m, '\n');
+        return;
+    }
+
+    for (i = 0; i < NR_VM_ZONE_STAT_ITEMS; i++)
+        seq_printf(m, "\n      %-12s %lu", zone_stat_name(i),
+               zone_page_state(zone, i));
+
+#ifdef CONFIG_NUMA
+    fold_vm_zone_numa_events(zone);
+    for (i = 0; i < NR_VM_NUMA_EVENT_ITEMS; i++)
+        seq_printf(m, "\n      %-12s %lu", numa_stat_name(i),
+               zone_numa_event_state(zone, i));
+#endif
+
+    seq_printf(m, "\n  pagesets");
+    for_each_online_cpu(i) {
+        struct per_cpu_pages *pcp;
+        struct per_cpu_zonestat __maybe_unused *pzstats;
+
+        pcp = per_cpu_ptr(zone->per_cpu_pageset, i);
+        seq_printf(m,
+               "\n    cpu: %i"
+               "\n              count:    %i"
+               "\n              high:     %i"
+               "\n              batch:    %i"
+               "\n              high_min: %i"
+               "\n              high_max: %i",
+               i,
+               pcp->count,
+               pcp->high,
+               pcp->batch,
+               pcp->high_min,
+               pcp->high_max);
+#ifdef CONFIG_SMP
+        pzstats = per_cpu_ptr(zone->per_cpu_zonestats, i);
+        seq_printf(m, "\n  vm stats threshold: %d",
+                pzstats->stat_threshold);
+#endif
+    }
+    seq_printf(m,
+           "\n  node_unreclaimable:  %u"
+           "\n  start_pfn:           %lu"
+           "\n  reserved_highatomic: %lu"
+           "\n  free_highatomic:     %lu",
+           atomic_read(&pgdat->kswapd_failures) >= MAX_RECLAIM_RETRIES,
+           zone->zone_start_pfn,
+           zone->nr_reserved_highatomic,
+           zone->nr_free_highatomic);
+    seq_putc(m, '\n');
+}
 ```
 
 # Tuning
